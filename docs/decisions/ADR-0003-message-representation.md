@@ -53,18 +53,19 @@ caller owns and never constructs a large object.**
 pub struct FieldEntry { tag: u32, offset: u32, length: u16, _pad: u16 }
 
 /// Owned once per connection and reused for every message. No lifetime parameter.
-pub struct FieldIndex { count: u16, fields: [FieldEntry; MAX_FIELDS] }
+/// `N` is chosen by the caller: 64 for order flow, 512 for a market-data snapshot.
+pub struct FieldIndex<const N: usize> { count: u16, fields: [FieldEntry; N] }
 
 /// Two words. Free to copy, free to pass by value.
 #[derive(Clone, Copy)]
-pub struct MessageView<'a> { buf: &'a [u8], idx: &'a FieldIndex }
+pub struct MessageView<'a, const N: usize> { buf: &'a [u8], idx: &'a FieldIndex<N> }
 
-pub fn parse_into(buf: &[u8], idx: &mut FieldIndex) -> Result<usize, ParseError>;
+pub fn parse_into<const N: usize>(buf: &[u8], idx: &mut FieldIndex<N>) -> Result<usize, ParseError>;
 ```
 
-1. **`MAX_FIELDS = 64`** to begin with. Overflow is `ParseError::TooManyFields` — surfaced,
-   never silently truncated. The number is revisited when a real message population is
-   available, not by preference.
+1. **`N` is a const generic**, defaulting to 64 in the convenience aliases. Overflow is
+   `ParseError::TooManyFields` — surfaced, never silently truncated. Monomorphisation means
+   a `FieldIndex<512>` for market data costs the order-flow path nothing.
 2. **`#[repr(C)]` with natural alignment, not `align(16)`.** Padding a 12-byte struct to 16
    wastes 25% of every cache line for nothing.
 3. **`MessageView` is `Copy` and two words wide**, so passing it across the layers in
@@ -90,11 +91,10 @@ pub fn parse_into(buf: &[u8], idx: &mut FieldIndex) -> Result<usize, ParseError>
   `parse_into(buf, &mut idx) -> usize`. Every user has to learn that they own an index. This
   is a genuine ergonomic cost paid for a measured performance gain, and it should be
   documented at the top of the crate rather than buried.
-- **`MAX_FIELDS = 64` will reject real messages.** Large repeating groups — a market-data
-  snapshot, a mass-quote — exceed it easily. FIX 4.4 session messages and single-order flow
-  do not, which is why 64 is right *for the acceptor path this project targets first*. It is
-  wrong for a market-data decoder, and that limitation must be stated in the crate docs, not
-  discovered.
+- **The const generic leaks into every signature.** `MessageView<'a, N>` is harder to read
+  than `MessageView<'a>`, and a handler written for `N = 64` cannot receive an `N = 512`
+  view without a conversion. Type aliases (`OrderView<'a> = MessageView<'a, 64>`) soften it;
+  they do not remove it.
 - **Two lifetimes now interact**: the buffer's and the index's. `MessageView<'a>` requires
   both to outlive it. Users who read into a fresh buffer per message will meet borrow-checker
   errors that the naive design would not have produced.
@@ -109,6 +109,7 @@ pub fn parse_into(buf: &[u8], idx: &mut FieldIndex) -> Result<usize, ParseError>
 | Alternative | Why rejected |
 |---|---|
 | Keep the index inline, just shrink `MAX_FIELDS` to 64 | Recovers most of the measured win (1,056 B) but still constructs and moves a 1 KB object per message, and still has no way to reuse it. Half a fix |
+| A single fixed `MAX_FIELDS = 64` constant | Right for order flow, wrong for market data, and forces one crate to apologise for the other. A const generic is the same code with the choice moved to the caller |
 | Heap-allocate the index (`Vec<FieldEntry>`) | One allocation per message, or a pool to avoid it — and a pool is exactly what "the caller owns a `FieldIndex`" already is, with more machinery |
 | Parse lazily — scan for a tag on each lookup | No index at all, so nothing to size. Attractive for messages read once, but FIX message handling reads many fields, and re-scanning per lookup is O(n·m) |
 | `MaybeUninit` for the array, skipping initialisation | Removes the zeroing but not the size or the move, and buys `unsafe` in the most-executed function in the codebase. Rejected under the workspace rule that every `unsafe` block must name what proves it sound |

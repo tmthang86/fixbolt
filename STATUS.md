@@ -12,7 +12,7 @@ Last updated: **2026-08-27**.
 | Branch | **`main`** |
 | Milestone | **M0 — decisions and architecture.** No engine code |
 | Plan in flight | **None.** Next plan to write: `codec` + `dict` (build order step 1) |
-| Last closed | Proposed architecture written: `DESIGN.md`, ADR-0002, ADR-0003, `reference/measured-costs.md`. Repository renamed `nanofix` → `nanofixengine` |
+| Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
 
@@ -38,8 +38,10 @@ Last updated: **2026-08-27**.
 - The **150 ns gates** in `DESIGN.md` §6 are anchored to one measurement on one macOS
   laptop. macOS gives no thread pinning and schedules across three core types — these rank
   designs against each other, they are **not an SLA**.
-- The ring-buffer handoff cost in ADR-0002 is arithmetic, not a measurement. It is the first
-  benchmark to write after `codec`.
+- **Every figure in `DESIGN.md` §8 (latency budget) is from the literature**, not measured.
+  The `tools/w2w` harness replaces that table; nothing in it is evidence until then.
+- The ring-buffer hop (200–500 ns) and the busy-poll saving (2–5 µs) are literature figures.
+  `benches/dispatch.rs` and `tools/w2w` are what turn them into numbers.
 - `MAX_FIELDS = 64` is a starting number. No real message population has been surveyed.
 - No crates exist. `cargo metadata` resolves the workspace; `cargo build` errors with
   *"manifest is virtual, and the workspace has no members"*.
@@ -54,3 +56,4 @@ Last updated: **2026-08-27**.
 | 3 | Read `test/definitions/client/` — do the 59 server defs cover the acceptor fully? | The `conformance` plan |
 | 4 | Does QuickFIX field ordering follow `spec/FIX44.xml` declaration order in every case? | Whether the serialiser can be generated from XML alone |
 | 5 | Ring-buffer policy when the library falls behind: block, drop, or disconnect? | ADR-0002, and the `engine` plan |
+| 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number | Every gate in §6 that matters |

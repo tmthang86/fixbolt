@@ -1,4 +1,4 @@
-# ADR-0002 — Split the engine from the library, with a ring buffer between them
+# ADR-0002 — Dispatch is a trait: inline by default, ring buffer as the option
 
 - **Status**: Proposed
 - **Date**: 2026-08-27
@@ -34,33 +34,42 @@ property. It is also the only one designed after the problem was widely understo
 
 ## Decision
 
-**Adopt the engine/library split, including Artio's ownership handover. Start in-process,
-over an SPSC ring buffer, with the boundary shaped so that moving the library to another
-process is a transport swap rather than a rewrite.**
+**Revised 2026-08-27, same day, after review against the HFT latency budget
+([DESIGN.md §8](../DESIGN.md#8-latency-budget-on-kernel-tcp)).** The first draft made the ring
+buffer the default. That was wrong for the stated positioning — the fastest acceptor on kernel
+TCP — and this section records the reversal rather than hiding it.
+
+**Make dispatch a trait. `InlineDispatch` — the handler runs on the engine thread, zero
+hops — is the default. `RingDispatch` — Artio's engine/library split over an SPSC ring — is
+the option for applications that may block.**
 
 Concretely:
 
 1. `engine` owns the listening socket, the TCP connections, the session state machines
    ([D1](../DESIGN.md#d1--the-session-layer-is-a-pure-state-machine-with-no-io)) and the
-   journal. It never calls application code.
-2. `library` owns the `SessionHandler` the application implements, and runs on its own
-   thread.
-3. Between them: a single-producer single-consumer ring buffer carrying framed bytes, not
-   Rust references. Bytes cross the boundary, so the boundary can later be shared memory or
-   a socket without changing either side's types.
-4. A session is **owned by the engine on connect**. A library **requests ownership**; until
-   it is granted, the engine answers session-level traffic on its own. Copied from Artio
-   deliberately — it is what makes engine-only operation (heartbeats during library restart)
-   possible.
-5. **In-process first.** One binary, two threads. Cross-process is not built now.
+   journal. After the session machine has run, it hands the message to a `Dispatch`.
+2. **`InlineDispatch<H>`** calls the application's `SessionHandler` on the engine thread,
+   immediately, with the borrowed `MessageView`. No copy, no hop. This is the shape every
+   low-latency engine converges on: `recv → parse → decide → encode → send` on one core.
+3. **`RingDispatch`** copies framed bytes into an SPSC ring; a library thread consumes them.
+   Bytes cross the boundary, not references, so the boundary can later be shared memory or a
+   socket without changing either side's types.
+4. Under `RingDispatch`, a session is **owned by the engine on connect** and a library
+   **requests ownership** — Artio's model, kept because it is what makes engine-only
+   operation (heartbeats during a library restart) possible. Under `InlineDispatch` there is
+   no ownership question.
+5. **In-process only.** Cross-process is not built now; the ring's byte-oriented boundary
+   keeps the option.
 
 ## Consequences
 
 **Good**
 
-- **An application that blocks does not stall the session layer.** Heartbeats keep flowing,
-  sequence numbers keep advancing, the counterparty stays connected. This is the property
-  the whole ADR exists for.
+- **The default path has zero handoffs.** An application that answers in nanoseconds pays
+  nothing for a capability it does not use.
+- **An application that blocks can opt into not stalling the session layer.** Under
+  `RingDispatch` heartbeats keep flowing, sequence numbers keep advancing, the counterparty
+  stays connected. A simulator serving a QA application wants exactly this.
 - A library can be restarted while the engine holds the sessions up — Artio's ownership
   model is precisely what enables that.
 - Business logic gets its own thread, so it can be profiled, throttled and reasoned about
@@ -70,11 +79,13 @@ Concretely:
 
 **Bad — and these are real**
 
-- **A hop is added to every message.** A ring-buffer handoff is on the order of tens of
-  nanoseconds, against a ~139 ns parse — so it is a **meaningful fraction, not a rounding
-  error.** For an application that only needs to see messages, this cost is pure overhead
-  compared with a direct callback. It is accepted because an application that blocks is a
-  worse outcome than one that is 20% slower, but it must be measured, not assumed.
+- **Two dispatchers is two code paths to keep correct**, and the inline one lets a careless
+  handler stall the session layer — the very failure this ADR set out to prevent. The
+  documentation has to say so at the top of the `SessionHandler` trait, in bold.
+- **The ring hop is not "tens of nanoseconds".** The first draft said that. With the consumer
+  on another core the cost includes a cache-line transfer of the frame and of the ring's
+  indices — realistically 200–500 ns, several times a parse. It is now a published
+  benchmark (`benches/dispatch.rs`), not an estimate.
 - **The API is harder.** A direct callback hands the application a borrowed view into the
   read buffer. Across a ring buffer, bytes are copied into the ring and the borrow is
   reconstructed on the other side. Zero-copy stops at the boundary by construction.
@@ -92,15 +103,16 @@ Concretely:
 
 | Alternative | Why rejected |
 |---|---|
-| Direct callback on the session thread, as QuickFIX does | Simplest and fastest, and it is exactly the design whose failure mode motivated this ADR. Retrofitting the split later means rewriting every place that assumed the application runs on the session's thread |
+| Direct callback **only**, as QuickFIX does | Simplest and fastest, and it is now the default — but as the *only* option it leaves a blocking application with no recourse except a thread pool, which breaks per-session ordering |
+| Ring buffer **only** — the first draft of this ADR | Pays 200–500 ns on every message for isolation most latency-sensitive applications do not want. Justified for Artio by JVM GC isolation, which does not transfer to Rust |
 | Split, but cross-process from day one | Buys process isolation nobody has asked for, at the cost of shared-memory transport, a separate lifecycle and a much harder debugging story. In-process first, with the boundary drawn correctly, keeps the option without paying for it |
 | Give the application a thread pool behind the callback | Solves blocking without a boundary, but reintroduces ordering problems — FIX messages on a session are ordered, and a pool is not |
 
 ## Open questions
 
-1. **What is the ring-buffer handoff cost, measured on this design?** Until it is benchmarked
-   against a direct callback on the same machine, the "20% slower" figure above is arithmetic,
-   not evidence. This is the first benchmark to write after `codec`.
+1. **What is the ring-buffer handoff cost, measured on this design?** `benches/dispatch.rs`
+   answers it — inline versus ring, same machine, same message. Until it exists the 200–500 ns
+   above is literature, not evidence.
 2. What is the policy when the ring fills — block the engine, drop the message, or disconnect
    the session? Each is defensible; the choice needs a stated rationale.
 3. Should ownership handover ship in v1 at all, or wait until something needs it?

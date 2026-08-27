@@ -1,8 +1,13 @@
 # nanofixengine
 
-A FIX 4.4 protocol engine in Rust, built for low latency and for use as a **server
-(acceptor)** — the side of the protocol that the Rust ecosystem does not currently cover
+A FIX 4.4 protocol engine in Rust, built to be **the fastest acceptor that can run on
+kernel TCP** — the side of the protocol that the Rust ecosystem does not currently cover
 with anything production-proven.
+
+It is not an HFT client and does not do kernel bypass. FIX tag=value over the kernel stack
+has a floor of roughly 15–25 µs wire-to-wire that no codec can move; this engine's job is to
+make everything above that floor vanish, and to measure the floor honestly
+([DESIGN.md §8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp)).
 
 > **Status: design. No engine code exists yet.** The repository holds the decisions that
 > come before it. Start with **[docs/DESIGN.md](docs/DESIGN.md)** for the proposed
@@ -40,9 +45,10 @@ Six layers, split so that the framework stays off the hot path. `codec` parses a
 serialises in place at the I/O buffer with no allocation. `session` is the FIX session
 protocol as a **pure state machine with no I/O**, which makes the 59 QuickFIX acceptance
 definitions run as unit tests. `engine` owns the TCP connections and drives those machines;
-`library` runs the application's business logic on its own thread, with a ring buffer
-between the two — Artio's split, so an application that blocks cannot stall the session
-layer. The full reasoning, with the measurements behind it, is in
+`library` is where the application's `SessionHandler` lives — called **inline on the
+engine thread by default** (zero hops), or behind a ring buffer on its own thread for
+applications that may block. The engine thread busy-polls, never sleeps in the kernel;
+outbound messages are pre-encoded templates patched per send. The full reasoning, with the measurements behind it, is in
 [docs/DESIGN.md](docs/DESIGN.md), [ADR-0002](docs/decisions/ADR-0002-engine-library-split.md)
 and [ADR-0003](docs/decisions/ADR-0003-message-representation.md).
 
