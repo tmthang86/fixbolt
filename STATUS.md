@@ -11,7 +11,7 @@ Last updated: **2026-08-27**.
 |---|---|
 | Branch | **`main`** |
 | Milestone | **M0 — decisions and architecture.** No engine code |
-| Plan in flight | **None.** Engineering rules (`CLAUDE.md`) written against the accepted design. Next plan to write: `codec` + `dict` (build order step 1) |
+| Plan in flight | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — Chờ duyệt |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
@@ -25,6 +25,8 @@ Last updated: **2026-08-27**.
 - `scripts/fetch-quickfix-assets.sh` runs and reports **59 acceptance definitions** on disk.
 - The `.def` format was decoded from the files and `Comparator.rb`: 7 directives, one
   `<TIME>` placeholder, literal `0x01` separators. It pins **field ordering** positionally.
+- **The ordering rule is tag-ascending within header and body, not XML order** — checked by
+  script over all 247 expected lines, zero violations. Open item 4 closed by data.
 - The QuickFIX Software License was read directly: BSD-3 in shape, plus attribution and a
   naming restriction.
 - `git check-ignore -v` blocks `vendor/`, `testdata/recordings/`, `*.docx`, `target/`,
@@ -54,6 +56,5 @@ Last updated: **2026-08-27**.
 |---|---|---|
 | 1 | **Final name.** `nanofixengine` is a placeholder. Free on both crates.io and GitHub: `machfix`, `veloxfix`, `tachyonfix`, `luxfix`, `fixwire`, `fixbolt`, `sohwire` | Nothing yet — but renaming after a crates.io publish is expensive |
 | 3 | Read `test/definitions/client/` — do the 59 server defs cover the acceptor fully? | The `conformance` plan |
-| 4 | Does QuickFIX field ordering follow `spec/FIX44.xml` declaration order in every case? | Whether the serialiser can be generated from XML alone |
 | 5 | Ring-buffer policy when the library falls behind: block, drop, or disconnect? | ADR-0002, and the `engine` plan |
 | 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number | Every gate in §6 that matters |

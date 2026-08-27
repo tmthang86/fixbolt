@@ -85,6 +85,36 @@ message body is byte-for-byte the expected length.
 a `Reject` with correct fields in a deliberately wrong order and asserts the runner rejects
 it. Without that test, this page is just prose, and prose does not hold a constraint.
 
+## The ordering rule — answered from the data, 2026-08-27
+
+Rule 3 pins field order, so the question was: *what* order? XML declaration order was the
+guess. It is wrong.
+
+All **247** `E` lines in the 59 files were checked by script. Every one follows:
+
+```
+8, 9, 35            fixed, in that order
+header fields       ascending by tag number   (34, 49, 52, 56, …)
+body fields         ascending by tag number   (45, 58, 371, 372, 373 for a Reject)
+10                  last
+```
+
+Zero violations. Evidence that it is *not* XML order: `spec/FIX44.xml` declares
+`SenderCompID(49)` and `TargetCompID(56)` before `MsgSeqNum(34)`, yet every expected header
+reads `35, 34, 49, 52, 56`. This is QuickFIX's `FieldMap` — a tag-sorted map with the three
+leading header tags forced first.
+
+**Consequence for the serialiser:** no per-message ordering table is needed. The generated
+data the serialiser needs is the **set of header tags**, to split header from body. Within
+each section, order is `sort_by_tag`. Repeating groups are the known exception (QuickFIX keeps
+declaration order inside a group, delimiter first); the FIX 4.4 acceptance set contains no
+populated group — one `454=0` — so groups are out of scope until something needs them.
+
+**Also observed:** 3 `E` lines carry neither `9=` nor `10=`, and 3 more carry `9=` without
+`10=`. `Reflector.rb`'s `fixify!` inserts a computed `9=` when absent and a computed `10=`
+when absent. The conformance runner must apply the same normalisation to expected lines
+before comparing, or those six tests can never pass.
+
 ## Cost estimate for the runner
 
 Revised down after reading the files. The runner needs: a line parser for 7 directives,

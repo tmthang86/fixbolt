@@ -28,10 +28,10 @@ Nêu tên những file sẽ tạo hoặc sửa.
 
 ## Bất biến bị đụng tới
 
-Trong năm điều bất di bất dịch ở `CLAUDE.md` §2, việc này có thể ảnh hưởng cái nào, và giữ nguyên chúng bằng
+Trong mười điều bất di bất dịch ở `CLAUDE.md` §2, việc này có thể ảnh hưởng cái nào, và giữ nguyên chúng bằng
 cách nào.
 
-Chỉ ghi "không" khi việc này không đụng vào `matching/` lẫn `marketdata/`.
+Chỉ ghi "không" khi việc này không đụng vào `codec`, `session`, `engine` lẫn `transport`.
 
 ## Chia việc
 
