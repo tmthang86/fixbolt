@@ -11,6 +11,7 @@ Last updated: **2026-08-27**.
 |---|---|
 | Branch | **`main`** |
 | Milestone | **M0 — decisions and architecture.** No engine code |
+| Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **Two phase-1 gaps have no plan yet: repeating groups, and TLS** |
 | Plan in flight | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — reviewed (eng + Codex), 16 decisions folded in, chờ duyệt |
 | Decision in flight | **[ADR-0004](docs/decisions/ADR-0004-bidirectional-engine.md)** — bidirectional engine (acceptor + initiator, one session core). **Proposed**, awaiting acceptance. `DESIGN.md` and `README.md` are untouched until it is accepted |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
