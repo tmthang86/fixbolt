@@ -338,29 +338,35 @@ message. Xem `CLAUDE.md` §10.
 
 Theo bảng đồng bộ `CLAUDE.md` §4.
 
-- [ ] `DESIGN.md` §2 **sơ đồ**: vẽ lại thành hai nhánh — inline mặc định, ring tùy chọn.
+> **[x] đánh dấu 2026-08-27, trong đợt quét sau khi duyệt** — không đợi tới lúc viết code.
+> Lý do: chúng là **sai ngay bây giờ**, không phải "sẽ sai khi code xong". `CLAUDE.md` §4:
+> *tài liệu cũ tệ hơn không có tài liệu*. Mục nào còn `[ ]` là mục **chỉ làm được khi có
+> code**, không phải mục bị bỏ quên.
+
+- [x] `DESIGN.md` §2 **sơ đồ**: vẽ lại thành hai nhánh — inline mặc định, ring tùy chọn.
       Sơ đồ hiện đặt ring bắt buộc giữa L4/L3, cũ hơn D4.
-- [ ] `DESIGN.md` §3 bảng crate: `dict` phụ thuộc `codec`; `conformance` phụ thuộc
+- [x] `DESIGN.md` §3 bảng crate: `dict` phụ thuộc `codec`; `conformance` phụ thuộc
       `codec` + `session` (không phải chỉ `codec`).
-- [ ] `DESIGN.md` §1 vs §8: sàn độ trễ ghi hai con số khác nhau (15–25 µs / 10–20 µs).
+- [x] `DESIGN.md` §1 vs §8: sàn độ trễ ghi hai con số khác nhau (15–25 µs / 10–20 µs).
       Chốt một, sửa cả README.
-- [ ] `DESIGN.md` D2 + ADR-0003: `MessageView` là **24 byte**, không phải 16 / "two words".
+- [x] `DESIGN.md` D2 + ADR-0003: `MessageView` là **24 byte**, không phải 16 / "two words".
       Đính chính tại chỗ, có ghi ngày, theo hình dạng ADR-0002 đã dùng. Ghi kèm hệ quả ABI
       (>16 byte → truyền gián tiếp → phải `#[inline]`).
-- [ ] `DESIGN.md` D2: chữ ký `parse_into` đổi sang `Result<Parsed, ParseError>` + tham số
+- [x] `DESIGN.md` D2: chữ ký `parse_into` đổi sang `Result<Parsed, ParseError>` + tham số
       `Validation`.
-- [ ] `DESIGN.md` D4 dòng 147: bỏ `MessageView<'_, 64>` hardcode, để N là tham số.
-- [ ] `DESIGN.md` D9: sửa "patch tại offset tính sẵn" → "danh sách phần đã sắp, phần tĩnh
+- [x] `DESIGN.md` D4 dòng 147: bỏ `MessageView<'_, 64>` hardcode, để N là tham số.
+- [x] `DESIGN.md` D9: sửa "patch tại offset tính sẵn" → "danh sách phần đã sắp, phần tĩnh
       encode sẵn trong buffer template tự sở hữu, body ghi trước rồi prefix canh phải, slot
       tùy chọn bỏ qua được".
-- [ ] `DESIGN.md` D10 dòng 240: bỏ câu "byte xếp hàng chính là byte journal đang giữ" —
+- [x] `DESIGN.md` D10 dòng 240: bỏ câu "byte xếp hàng chính là byte journal đang giữ" —
       sai dưới `JournalPolicy::None`.
-- [ ] `reference/quickfix-acceptance-def-format.md`: sửa "247 E lines" → 250 dòng E, 247 có
+- [x] `reference/quickfix-acceptance-def-format.md`: sửa "247 E lines" → 250 dòng E, 247 có
       `9=`, 244 có `10=`. Sửa dòng 121 "cần một TCP client" → runner chạy **thuần trong tiến
       trình** đối với máy trạng thái session, không socket.
-- [ ] `reference/measured-costs.md` dòng 81, 86: `MessageView` 24 byte. Thêm §5 — số của
+- [~] `reference/measured-costs.md` dòng 81, 86: `MessageView` 24 byte **đã sửa 2026-08-27**;
+      §5 (số của chính mình) còn thiếu — chưa có code nên chưa có số. Thêm §5 — số của
       chính mình, kèm máy và settings.
-- [ ] `CLAUDE.md` §6: "`MessageView` is two words" → three words / 24 bytes.
+- [x] `CLAUDE.md` §6: "`MessageView` is two words" → three words / 24 bytes.
 - [ ] `README.md` layout: thêm `crates/codec`, `crates/dict`.
 - [ ] `STATUS.md`: đóng plan, ghi số đo, ghi cái chưa làm, thêm 3 dòng Open items (mục dưới).
 - [ ] `CHANGELOG.md`: tạo mới, mục `Unreleased`.

@@ -127,7 +127,7 @@ never reused. `Proposed` → `Accepted` → (`Superseded by ADR-NNNN` | `Depreca
 - `cargo fmt` and `cargo clippy --all-targets -- -D warnings` clean before commit.
 - Errors are typed, fieldless where they sit on a hot path, `thiserror` elsewhere. Never
   `Box<dyn Error>` in a public API.
-- **Public API takes borrowed views into the caller's buffer.** `MessageView` is two words
+- **Public API takes borrowed views into the caller's buffer.** `MessageView` is 24 bytes
   and `Copy`; an owned decoded struct on the hot path is a design regression.
 - **`FieldIndex<const N>`** — the caller picks `N`. Aliases for the common sizes; no hidden
   constant.

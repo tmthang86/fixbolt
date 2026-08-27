@@ -78,13 +78,18 @@ the borrowed view, so the parser never constructs a large object.
 
 ```rust
 pub struct FieldIndex { count: u16, fields: [FieldEntry; MAX_FIELDS] }  // owned once, reused
-pub struct MessageView<'a> { buf: &'a [u8], idx: &'a FieldIndex }       // 16 bytes
+pub struct MessageView<'a> { buf: &'a [u8], idx: &'a FieldIndex }       // 24 bytes
 pub fn parse_into(buf: &[u8], idx: &mut FieldIndex) -> Result<usize, ParseError>;
 ```
 
-**Guard:** `benches/parse.rs` asserts the ≤ 150 ns gate, and a `static_assert` pins
-`size_of::<MessageView>()` to two words. Without both, this page is prose, and prose does not
-hold a constraint.
+`[measured]` **24 bytes, not 16** — verified with `rustc -O` on 2026-08-27. `&[u8]` is a fat
+pointer (16 bytes) plus 8 for the index reference. Over 16 bytes means passed **indirectly**
+on x86-64 SysV and AArch64, so hot-path functions taking it by value carry `#[inline]`.
+
+**Guard:** `benches/parse.rs` asserts a regression ceiling (not the published 150 ns — see
+[DESIGN.md §6](../DESIGN.md#6-gates) for why the two numbers differ), and
+`const _: () = assert!(size_of::<MessageView<64>>() == 24);` pins the size. Without both, this
+page is prose, and prose does not hold a constraint.
 
 ---
 

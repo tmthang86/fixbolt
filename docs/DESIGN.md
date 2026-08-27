@@ -1,12 +1,21 @@
 # nanofixengine — Design
 
-A FIX 4.4 engine in Rust, **acceptor-first**, built so that latency is a property the design
-guarantees rather than one it hopes for.
+A FIX 4.4 engine in Rust, **bidirectional** — acceptor and initiator on one session core,
+parameterised by role ([ADR-0004](decisions/ADR-0004-bidirectional-engine.md)) — built so that
+latency is a property the design guarantees rather than one it hopes for.
 
 **Positioning, stated plainly:** the fastest FIX acceptor that can be built **on kernel TCP**.
+The acceptor stays the headline because that is where the gap is: as of 2026-08-27 the Rust
+ecosystem has no production-proven FIX acceptor, while it already has two initiators
+([reference/prior-art.md](reference/prior-art.md)). The initiator ships in the same phase, held
+to the same gates — it is simply not the differentiator.
+
 Not an HFT client, not kernel-bypass. FIX tag=value over the kernel stack has a latency floor
-of roughly 15–25 µs wire-to-wire that no codec can move; §8 puts numbers on it. The job is to
-make everything *above* that floor disappear, and to measure the floor honestly.
+of roughly **10–20 µs** wire-to-wire that no codec can move — the figure §8 derives, and the
+only one this repository uses. The job is to make everything *above* that floor disappear, and
+to measure the floor honestly.
+
+What must be built and in which phase is [PRD.md](PRD.md); this document is *how*.
 
 > **`nanofixengine` is a placeholder name.** It exists to get off the collision with
 > `matthart1983/nanofix`. The shortlist of clean replacements is in [STATUS.md](../STATUS.md).
@@ -44,21 +53,30 @@ nothing about I/O strategy, outbound encoding, or the OS underneath has optimise
 ┌─────────────────────────────────────────────────────────────┐
 │  Application — implements SessionHandler                    │
 └──────────────────────────▲──────────────────────────────────┘
-                           │  library thread(s)
+                           │
+     ┌─────────────────────┴──────────────────────┐
+     │  InlineDispatch — same thread as the       │  ← THE DEFAULT (D4)
+     │  session machine, zero hops, the borrowed  │
+     │  MessageView handed straight through       │
+     │                  ── or ──                  │
+     │  RingDispatch — SPSC ring, library on its  │  ← the option: an application
+     │  own thread. In-process now, shared        │    that may block cannot stall
+     │  memory later, without an API change       │    the session layer
+     └─────────────────────┬──────────────────────┘
 ┌──────────────────────────┴──────────────────────────────────┐
 │ L4  library    session ownership, dispatch to business code │
 ├─────────────────────────────────────────────────────────────┤
-│         SPSC ring buffer — in-process now, shared memory     │
-│         later, without an API change                         │
-├─────────────────────────────────────────────────────────────┤
-│ L3  engine     TCP accept, drives session machines, journal │
+│ L3  engine     TCP accept AND connect (ADR-0004), drives    │
+│                the session machines, owns the journal       │
 ├─────────────────────────────────────────────────────────────┤
 │ L2  session    FIX session protocol as a PURE state machine │
-│                — no sockets, no clock, no I/O               │
+│                — no sockets, no clock, no I/O.              │
+│                Role { Acceptor, Initiator } is a parameter  │
 ├─────────────────────────────────────────────────────────────┤
 │ L1  codec      parse / serialise in place, zero allocation  │
 ├─────────────────────────────────────────────────────────────┤
-│ L0  transport  trait; TCP is the only default implementation│
+│ L0  transport  trait. TCP is the default; TLS is a second   │
+│                implementation behind a feature flag (D11)   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -69,12 +87,12 @@ Added one at a time, each behind an approved plan.
 | Crate | Layer | Owns | Depends on |
 |---|---|---|---|
 | `codec` | L1 | Parse and serialise. The hot path. Target: `no_std`-compatible, zero dependencies | — |
-| `dict` | build | Code generation from FIX XML: tag constants, message shapes, required-field tables, **field ordering** | — |
-| `session` | L2 | The FIX session state machine. Pure. No I/O | `codec`, `dict` |
-| `transport` | L0 | `Transport` trait + TCP implementation | — |
-| `engine` | L3 | TCP acceptor, drives session machines, owns the journal | `session`, `transport` |
+| `dict` | build | Code generation from FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members | `codec` — it implements `codec::Dictionary` |
+| `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised | `codec`, `dict` |
+| `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
+| `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport` |
 | `library` | L4 | The application-facing API | `engine` |
-| `conformance` | dev | The `.def` acceptance runner | `codec` |
+| `conformance` | dev | The `.def` acceptance runner, both roles | `codec`, `session` |
 
 ## 4. The decisions that shape it
 
@@ -91,6 +109,16 @@ pub enum Action { Send { range: Range<u16> }, Deliver, Store { seq: SeqNum, rang
 
 fn step(&mut self, input: Input<'_>, out: &mut ActionBuf) -> Result<(), SessionError>;
 ```
+
+```rust
+pub enum Role { Acceptor, Initiator }   // set at construction, never changes
+```
+
+**One machine, both roles.** The acceptor waits for `Logon` and answers; the initiator sends
+`Logon` and waits. Sequence handling, resend, heartbeat, test-request and logout are the same
+protocol read from the other end. [ADR-0004](decisions/ADR-0004-bidirectional-engine.md)
+measured how much differs — 51 of the 59 acceptance definitions mirror unchanged — and
+concluded that a session core which cannot invert is a rewrite later, not an extension.
 
 No socket, no clock, no allocation inside. Time arrives as `Tick`. `SessionError` is a
 fieldless enum — no `String`, no `format!`, nothing that allocates on an error path.
@@ -113,14 +141,28 @@ Measured, not assumed. Full detail in
 pub struct FieldEntry { tag: u32, offset: u32, length: u16, _pad: u16 }
 
 pub struct FieldIndex<const N: usize> { count: u16, fields: [FieldEntry; N] }  // reusable, no lifetime
-pub struct MessageView<'a, const N: usize> { buf: &'a [u8], idx: &'a FieldIndex<N> } // two words
+pub struct MessageView<'a, const N: usize> { buf: &'a [u8], idx: &'a FieldIndex<N> }
 
-pub fn parse_into<const N: usize>(buf: &[u8], idx: &mut FieldIndex<N>) -> Result<usize, ParseError>;
+/// Incomplete is Ok, not Err: TCP delivers bytes, not messages. Folding "wait for more"
+/// into the error branch makes every call site pay to tell it apart from "session is broken".
+pub enum Parsed { Complete { consumed: usize }, Incomplete }
+
+pub fn parse_into<D: Dictionary, const N: usize>(
+    buf: &[u8], idx: &mut FieldIndex<N>, v: Validation,
+) -> Result<Parsed, ParseError>;
 ```
 
 The caller owns one `FieldIndex` and reuses it for every message on that connection. The
-parser never constructs or returns a large struct. `MessageView` is 16 bytes and can be
-passed by value anywhere.
+parser never constructs or returns a large struct.
+
+**`MessageView` is 24 bytes, not 16.** `&[u8]` is a fat pointer — 16 bytes — plus 8 for the
+index reference. `[measured]` verified with `rustc -O` on 2026-08-27; the earlier "two words"
+claim in the first draft of this document and in ADR-0003 was wrong, and both are corrected in
+place. The consequence is an ABI one: on x86-64 SysV and AArch64 a struct over 16 bytes is
+passed **indirectly**, so any function taking a `MessageView` by value on the hot path carries
+`#[inline]` and `crates/codec/src/index.rs` carries
+`const _: () = assert!(size_of::<MessageView<64>>() == 24);` so that growing it fails to
+compile rather than silently costing a spill.
 
 `N` is a const generic, so the caller chooses: `FieldIndex<64>` for order flow,
 `FieldIndex<512>` for a market-data snapshot, same code, no runtime cost. Overflow is
@@ -144,7 +186,7 @@ adopted as the default.** Full reasoning and the reversal in
 [ADR-0002](decisions/ADR-0002-engine-library-split.md).
 
 ```rust
-pub trait Dispatch { fn deliver(&mut self, session: SessionId, msg: MessageView<'_, 64>) -> Flow; }
+pub trait Dispatch { fn deliver<const N: usize>(&mut self, session: SessionId, msg: MessageView<'_, N>) -> Flow; }
 
 pub struct InlineDispatch<H: SessionHandler>(H);   // same thread, zero hops — the default
 pub struct RingDispatch { ring: Spsc<Frame> }      // library on its own thread
@@ -209,19 +251,36 @@ engine controls. It burns a core — that is the price, and it is the standard p
 A `Waiting` strategy is a trait so tests and low-priority deployments can use a blocking
 variant. The default ships as spin.
 
-### D9 — Outbound messages are templates, patched, not built
+### D9 — Outbound messages are templates: a pre-sorted parts list, patched, not built
 
 An `ExecutionReport` from a given session has a fixed skeleton: `BeginString`, `SenderCompID`,
-`TargetCompID`, `MsgType`, the field order (D3). That skeleton is encoded **once per session
-per message type**. At send time only the variable fields, `MsgSeqNum`, `SendingTime`,
-`BodyLength` and `CheckSum` are written into pre-computed offsets.
+`TargetCompID`, `MsgType`, and the field order (D3). That skeleton is encoded **once per
+session per message type**, into a scratch buffer **the template owns**. It cannot borrow one:
+the bytes are per-session and must outlive any single send.
 
-`SendingTime` is the hidden cost: naive formatting is 50–100 ns, as much as a whole parse.
-The `YYYYMMDD-HH:MM` prefix is cached and re-derived once a minute; only `SS.sss` is
-formatted per message.
+```rust
+enum Part { Static(Range<u16>), Slot(u32) }        // ranges into the template's own scratch
+pub struct Template<const P: usize, const S: usize> {
+    scratch: [u8; S], parts: [Part; P], len: u8,
+}
+pub fn encode(&self, out: &mut [u8], slots: &[(u32, &[u8])]) -> Result<Range<usize>, EncodeError>;
+```
 
-This is how the fastest commercial engines reach tens of nanoseconds per serialise, and it
-is why the serialise gate in §6 is 60 ns, not 150.
+Three properties that are not obvious, and that the first sketch of this decision got wrong:
+
+- **The parts are sorted at build time** (D3), so `encode` walks them in order and never makes
+  an ordering judgement. A slot the caller does not supply is skipped, so one template serves
+  messages that differ in their optional fields.
+- **The body is written first; the prefix is then written right-aligned in front of it.**
+  `BodyLength` is variable-width, so writing the prefix first would mean shifting the whole
+  body once its width is known. That is why `encode` returns a `Range` and not a length — the
+  message does not begin at `out[0]`.
+- **`SendingTime` is the hidden cost.** Naive formatting is 50–100 ns, as much as a whole
+  parse. The `YYYYMMDD-HH:MM` prefix is cached and re-derived once a minute; only `SS.sss` is
+  formatted per message.
+
+This is how the fastest commercial engines reach tens of nanoseconds per serialise, and it is
+why the published serialise target in §6 is 60 ns, not 150.
 
 ### D10 — TCP send backpressure has a stated policy
 
@@ -237,20 +296,52 @@ Policy, per session, chosen in configuration:
 | `Disconnect` | …drop the session with a `Logout(text="slow consumer")`. **The default** — a FIX counterparty that cannot keep up is a broken counterparty |
 | `Block` | …spin until the socket drains. Available for tests; never the default |
 
-The queued bytes are the same bytes the journal (D7) already holds, so queuing costs no
-extra copy.
+The queue is its own storage. It is tempting to say the queued bytes are the ones the journal
+(D7) already holds — but under `JournalPolicy::None` the journal holds nothing, and that is the
+policy simulators and tests run. The queue owns a per-session buffer, sized at startup.
+
+### D11 — TLS is a transport implementation, and the guarantee is stated per mode
+
+Decided in [ADR-0005](decisions/ADR-0005-tls.md). It needs a decision at all because of one
+collision: the codec parses in place at the I/O buffer, and **encrypted bytes cannot be parsed
+in place.** Userspace TLS reintroduces exactly the copy
+[ADR-0003](decisions/ADR-0003-message-representation.md) spent its length removing.
+
+| Mode | When | Hot-path guarantee |
+|---|---|---|
+| Handshake — `rustls`, userspace | Once per session, before any message flows | **Allocation permitted.** A named, bounded carve-out from non-negotiable 1 — to the handshake, not to the connection |
+| Steady state — **kTLS** | Linux, and a cipher suite the kernel carries | **Met.** The kernel delivers plaintext into the read buffer; the D8 spin loop and parse-in-place both survive unchanged |
+| Steady state — userspace `rustls` | macOS, older kernels, unsupported suites | **Not met, and the documentation says so in those words.** One copy each way, and it allocates. A number measured in this mode is never quoted as the engine's number |
+
+`cargo build --no-default-features` produces a binary with no TLS code and no crypto
+dependency at all (D5, and CI proves it on a machine with neither installed).
+
+**Unverified and load-bearing:** whether `ktls-core` can be driven from a plain non-blocking
+socket with no async runtime. Its documented usage is `tokio-rustls`-shaped, this engine has no
+runtime and will not acquire one, and the question cannot be answered on a macOS laptop. It is
+[STATUS.md](../STATUS.md) open item 10. **No TLS plan is written until it is answered**, and if
+the answer is no, ADR-0005 is superseded rather than patched.
 
 ## 5. Non-goals for v1
 
-Stated so that scope creep has to argue with a document.
+Stated so that scope creep has to argue with a document. The full list with phases is
+[PRD.md §5](PRD.md); this is the subset that shapes the architecture.
 
-- FIX 5.0 / FIXT 1.1. FIX 4.4 only, until something concrete needs more.
-- SBE, FAST, FIXML.
-- Kernel bypass — DPDK, OpenOnload. Not before an ordinary TCP path has been measured and
-  found to be the limit.
+- FIX 5.0 / FIXT 1.1 — phase 2, and it arrives together with SBE, because SBE messages are
+  versioned by `ApplVerID`.
+- SBE, FAST, FIXML — phase 2, and **an encoding ADR comes first**: `MessageView` presupposes
+  tags on the wire and SBE has none, so the question is whether there is one view type or
+  several (PRD §2).
+- Kernel bypass — DPDK, OpenOnload, `ef_vi`. Not before an ordinary TCP path has been measured
+  and found to be the limit. §8 puts that limit at 10–20 µs.
 - Clustering, HA, replication.
 - Metrics dashboards and web UIs.
-- The initiator side, beyond what the acceptance definitions require.
+- Matching engine, order book, risk. This is a protocol engine.
+
+**No longer a non-goal:** the initiator side.
+[ADR-0004](decisions/ADR-0004-bidirectional-engine.md) moved it into phase 1 on the finding
+that the two roles differ by about one enum's worth of behaviour, and that a session core
+which cannot invert is a rewrite later rather than an extension.
 
 ## 6. Gates
 
@@ -258,12 +349,15 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 
 | Gate | Target | Proven by |
 |---|---|---|
-| Parse `NewOrderSingle` | ≤ 150 ns | `benches/parse.rs` |
-| Serialise `ExecutionReport` (template, D9) | ≤ 60 ns | `benches/serialize.rs` |
+| Parse `NewOrderSingle` | ≤ 150 ns **published**; the bench asserts a **regression ceiling** — see below | `benches/parse.rs` |
+| Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**; same rule | `benches/serialize.rs` |
 | `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is | `benches/dispatch.rs` |
 | Allocations on the hot path | **0** | `benches/alloc.rs`, counting allocator |
-| Session conformance | **59 / 59** | `conformance` runner |
+| Session conformance, acceptor | **59 / 59** | `conformance` runner, in-process, no socket |
+| Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
+| Repeating groups | all **93** FIX 4.4 groups read and written; in-group ordering verified against the dictionary | `crates/codec/tests/groups.rs` ([plan](plans/2026-08-27-repeating-groups.md)) |
 | **Wire-to-wire, NIC to NIC** | p50 / p99 / p99.9 published; p99 ≤ 50 µs on kernel TCP | `tools/w2w` — `SO_TIMESTAMPING`, HdrHistogram, load generator on a **separate machine** |
+| Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every
@@ -274,21 +368,37 @@ Apple M5 on 2026-08-27, in the harness described in
 [reference/measured-costs.md](reference/measured-costs.md). They are **a reference point on
 one machine, not a promise about any other.**
 
+**Published target and asserted ceiling are deliberately different numbers.** The benchmark
+asserts a regression ceiling of roughly 1.5–2× the baseline measured on the machine at hand,
+not 150 / 60 ns. The reason is arithmetic: 139 ns sits 8% under 150 ns, and an unpinned laptop
+varies by more than 8%, so a hard assert would go red at random — and a gate that goes red at
+random is a gate somebody switches off, which is worse than having none. The 150 / 60 ns
+figures stay as the published targets, to be confirmed on Linux at the `engine` step.
+
 ## 7. Build order
 
 Each step is a plan, a branch, and a merge. Nothing starts before its predecessor is green.
 
-1. **`codec` + `dict`** — parse, serialise, generated tables. Gated by the parse/serialise
-   and allocation benchmarks.
-2. **`conformance`** — the `.def` runner. 1–2 days; needed regardless of anything else.
-3. **`session`** — the pure state machine, driven to **59/59**.
-4. **`engine`** — busy-poll TCP acceptor (D8), journal, both dispatchers (D4), backpressure
-   (D10).
-5. **`tools/w2w`** — the wire-to-wire harness, run against step 4 on Linux **before** step 6.
-6. **`library`** — the public API and the first end-to-end example.
+1. **`codec` + `dict`** — parse, serialise, generated tables. Gated by the parse/serialise and
+   allocation benchmarks. [Plan](plans/2026-08-27-codec-dict.md), approved.
+2. **Repeating groups** — `GroupIter` over the flat index, plus `<component>` recursion in
+   `dict`. [Plan](plans/2026-08-27-repeating-groups.md), approved. Immediately after step 1,
+   because without it the codec cannot read an application message.
+3. **`conformance`** — the `.def` runner. 1–2 days; needed regardless of anything else.
+4. **`session`, acceptor role** — the pure state machine, driven to **59/59**.
+5. **`session`, initiator role** — `Role::Initiator` against the 51 mirrorable definitions,
+   then interop against `libquickfix` in CI. A separate step because the *oracle* differs, not
+   because the code does (ADR-0004).
+6. **`engine`** — busy-poll TCP acceptor **and connector** (D8), journal, both dispatchers
+   (D4), backpressure (D10).
+7. **`tools/w2w`** — the wire-to-wire harness, run against step 6 on Linux **before** step 8.
+8. **`library`** — the public API and the first end-to-end example.
 
-Step 2 before step 3 is deliberate: the gate exists before the thing it gates. Step 5 before
-step 6 for the same reason.
+Step 3 before step 4 is deliberate: the gate exists before the thing it gates. Step 7 before
+step 8 for the same reason.
+
+**TLS (D11) has no step here, because it has no plan** — it is blocked on ADR-0005 open
+question 1. When it lands it belongs beside step 6, in `transport`.
 
 ## 8. Latency budget on kernel TCP
 
@@ -299,6 +409,7 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | Stage | Typical | Who controls it |
 |---|---|---|
 | NIC → kernel → socket buffer | 3–8 µs | Kernel, IRQ affinity, driver |
+| TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
 | Wakeup — `epoll` **vs** busy-poll (D8) | 2–5 µs **vs** ~0 | **This design** |
 | Parse (D2) | ~0.14 µs | This design |
 | Session machine (D1) | ~0.1 µs | This design |
@@ -307,6 +418,10 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
 | **Everything this design controls** | **< 1 µs** | |
+
+The TLS row has no number in it on purpose: none has been measured here, and none is quoted
+from elsewhere either. It gets filled in when `tools/w2w` runs the same load three ways — TLS
+off, kTLS, userspace `rustls` — on the same Linux box (ADR-0005 decision 5).
 
 Two readings of this table:
 
@@ -329,5 +444,6 @@ anything:
 | Transparent huge pages **off** | THP compaction stalls are multi-millisecond |
 | CPU frequency governor `performance`, C-states off | A core waking from C6 costs ~100 µs |
 | `SO_BUSY_POLL` / `net.core.busy_poll` | Lets the kernel's own receive path spin instead of sleeping |
+| **If TLS is on:** a kernel that carries the negotiated cipher suite in kTLS | kTLS support is narrower than what `rustls` will happily negotiate. A session that negotiates outside it drops silently to the userspace path and off the hot-path guarantee (D11). Which kernel version and which suites is ADR-0005 open question 2 — **unanswered** |
 
 A latency number published without stating which of these were set is not a number.

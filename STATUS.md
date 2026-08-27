@@ -40,6 +40,12 @@ Last updated: **2026-08-27**.
   `.DS_Store`.
 - Repository is **private** as of 2026-08-27 (it was public at creation). `cargo 1.95.0`.
 - **ADR-0001, -0002, -0003 accepted 2026-08-27** by the owner, after the latency-budget review.
+- **DESIGN.md, README.md, ADR-0003 and three reference pages swept 2026-08-27** to match the
+  accepted decisions: bidirectional positioning, one latency floor figure (10–20 µs, was two
+  conflicting), `MessageView` corrected to 24 bytes in all four places that claimed 16 or
+  "two words", the real `parse_into` signature, D9 rewritten as a parts list, D11 added for
+  TLS, an 8-step build order with the initiator in it, and three new gate rows. The
+  `codec-dict` plan's doc checklist records which items this closed and which still need code.
 - **ADR-0004 and ADR-0005 accepted 2026-08-27** by the owner. -0004 makes the engine
   bidirectional; -0005 makes TLS a transport with the hot-path guarantee stated per mode.
   Both accepted on reasoning, not measurement — ADR-0005's open question 1 is unanswered and

@@ -68,8 +68,17 @@ pub fn parse_into<const N: usize>(buf: &[u8], idx: &mut FieldIndex<N>) -> Result
    a `FieldIndex<512>` for market data costs the order-flow path nothing.
 2. **`#[repr(C)]` with natural alignment, not `align(16)`.** Padding a 12-byte struct to 16
    wastes 25% of every cache line for nothing.
-3. **`MessageView` is `Copy` and two words wide**, so passing it across the layers in
-   [DESIGN.md §2](../DESIGN.md#2-layers) costs nothing.
+3. **`MessageView` is `Copy`**, so passing it across the layers in
+   [DESIGN.md §2](../DESIGN.md#2-layers) needs no reference, no box and no defensive clone.
+
+   > **Correction, 2026-08-27** — recorded in place because this ADR is Accepted and its
+   > substance is unchanged; only a wrong number is. This decision originally said *two words
+   > wide* and *16 bytes*. It is **24 bytes**: `&[u8]` is a fat pointer (16) plus 8 for the
+   > index reference. `[measured]` with `rustc -O` on 2026-08-27. **The consequence is real:**
+   > on x86-64 SysV and AArch64 a struct over 16 bytes is passed **indirectly**, so a hot-path
+   > function taking `MessageView` by value needs `#[inline]` to avoid a spill. The compile-time
+   > assertion in point 2 below therefore pins 24, not two words. Nothing else in this ADR
+   > changes — the 4–6× measurement that justified the split is unaffected.
 4. Field lookup stays a **linear scan** over `count` entries. For 15–30 fields a scan beats a
    map, and it needs no allocation and no hashing.
 
@@ -80,8 +89,8 @@ pub fn parse_into<const N: usize>(buf: &[u8], idx: &mut FieldIndex<N>) -> Result
 - The measured 4–6× is available by construction rather than by remembering to be careful.
 - `FieldIndex` has **no lifetime parameter**, so it can be stored in a connection struct,
   pooled, or reused across reads without fighting the borrow checker.
-- `MessageView` being 16 bytes and `Copy` removes any temptation to pass it by reference,
-  box it, or clone defensively.
+- `MessageView` being small and `Copy` removes any temptation to pass it by reference, box it,
+  or clone defensively. (24 bytes — see the correction above.)
 - Overflow becomes an error the caller sees, instead of a message that silently loses its
   tail — which is how a truncating parser produces a wrong `ExecutionReport` and no warning.
 
@@ -119,7 +128,8 @@ pub fn parse_into<const N: usize>(buf: &[u8], idx: &mut FieldIndex<N>) -> Result
 Prose does not hold a constraint. These must exist before this ADR is called enforced:
 
 1. `benches/parse.rs` — asserts the ≤ 150 ns gate for `NewOrderSingle`.
-2. A compile-time assertion pinning `size_of::<MessageView>()` to two words.
+2. `const _: () = assert!(size_of::<MessageView<64>>() == 24);` — see the 2026-08-27
+   correction above. Growing the struct then fails to compile instead of silently spilling.
 3. `benches/alloc.rs` — a counting allocator, asserting **zero** allocations across a parse.
 4. A test that a message with more than `MAX_FIELDS` fields returns `TooManyFields` and
    **not** a truncated success.

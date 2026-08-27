@@ -90,7 +90,10 @@ it. Without that test, this page is just prose, and prose does not hold a constr
 Rule 3 pins field order, so the question was: *what* order? XML declaration order was the
 guess. It is wrong.
 
-All **247** `E` lines in the 59 files were checked by script. Every one follows:
+All **250** `E` lines in the 59 files were checked by script. **247** of them carry `9=` and
+**244** carry `10=` — the frame fields below exist only on that subset, and a runner that
+assumes every `E` line is a complete frame will trip over the rest. Field ordering holds on
+every one:
 
 ```
 8, 9, 35            fixed, in that order
@@ -118,8 +121,14 @@ before comparing, or those six tests can never pass.
 ## Cost estimate for the runner
 
 Revised down after reading the files. The runner needs: a line parser for 7 directives,
-`<TIME>` substitution, a TCP client that can hold more than one session, and the ~40-line
-comparator above.
+`<TIME>` substitution, the 5-step normalisation above, and the ~40-line comparator.
+
+**It needs no TCP client.** An earlier version of this page said it did. Because the session
+layer is a pure state machine ([DESIGN.md D1](../DESIGN.md#4-the-decisions-that-shape-it)),
+the runner drives it **in-process**: feed `I` lines in, compare the `Action::Send` bytes
+against `E` lines. No socket, no listener, no timing window, no flake. The `iCONNECT` /
+`eDISCONNECT` / `i<N>,CONNECT` directives become calls on the machine, not real connections.
+That is the whole reason D1 exists.
 
 **1–2 days**, not the 3–5 originally guessed in ADR-0001 before the format had been read.
 
