@@ -100,7 +100,7 @@ find them whether or not this page does.
 | FIX versions | 4.0–5.0 SP2 + FIXT 1.1 — **8 dictionaries** `[measured]` | 4.4 | 5.0/FIXT → P2 |
 | Acceptor | Yes `[documented]` | Yes | P1 |
 | Initiator | Yes `[documented]` | Yes | P1 (ADR-0004) |
-| **Repeating groups** | Full — **93 groups in FIX 4.4** `[measured]` | **Not yet scoped in any plan** | **P1, gap** |
+| **Repeating groups** | Full — **93 groups in FIX 4.4** `[measured]` | Planned: [2026-08-27-repeating-groups.md](plans/2026-08-27-repeating-groups.md), awaiting approval | **P1, gap** |
 | **Dictionary validation** — types, enums, structure | Full `[documented]` | 5 generated tables; `<component>` recursion missing `[measured]` | **P1, gap** |
 | Decimal / price types | Yes `[documented]` | Bytes and integers only | P1, gap |
 | Session schedules — start/end time, weekday | Yes `[documented]` | Entered scope with ADR-0004; unspecified | P1, gap |
@@ -156,7 +156,7 @@ Not "later" — these are out unless a new ADR reverses them.
 | # | Question | Blocks |
 |---|---|---|
 | 1 | Does the headline positioning stay "the fastest acceptor on kernel TCP" now that the engine is bidirectional? | `DESIGN.md` §1, `README.md` |
-| 2 | Repeating groups — which plan owns them, and do they land in `codec` step 1 or a step of their own? | Phase 1 exit criterion 2 |
+| 2 | ~~Repeating groups — which plan owns them?~~ **Answered:** [their own plan](plans/2026-08-27-repeating-groups.md), starting after `codec` step 1. Only the `Dictionary` trait shape lands in step 1, because the trait is public API | Phase 1 exit criterion 2 |
 | 3 | Does SBE ride a tag=value session, or does FIXP enter scope? | The size of phase 2, by roughly 5× |
 | 4 | One view type or several, once encodings stop having tags on the wire? | Every phase-2 line, and possibly `codec`'s public API today |
 | 5 | ~~TLS — own implementation, `rustls`, or terminate outside the process?~~ **Answered by [ADR-0005](decisions/ADR-0005-tls.md)**, which raises six of its own. The blocking one: can `ktls-core` be driven from a non-blocking socket with no async runtime? | Phase 1 deployability |
