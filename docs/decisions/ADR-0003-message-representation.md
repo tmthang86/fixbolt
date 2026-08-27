@@ -1,6 +1,6 @@
 # ADR-0003 — Separate the field index from the message view
 
-- **Status**: Proposed
+- **Status**: Accepted — 2026-08-27
 - **Date**: 2026-08-27
 - **Deciders**: Tran Manh Thang
 - **Related**: [reference/measured-costs.md §1](../reference/measured-costs.md)

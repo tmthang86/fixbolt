@@ -1,6 +1,6 @@
 # ADR-0001 — Relationship to QuickFIX C++: take the data, not the code
 
-- **Status**: Proposed
+- **Status**: Accepted — 2026-08-27
 - **Date**: 2026-08-27
 - **Deciders**: Tran Manh Thang
 

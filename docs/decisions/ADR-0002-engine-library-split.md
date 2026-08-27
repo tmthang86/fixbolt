@@ -1,6 +1,6 @@
 # ADR-0002 — Dispatch is a trait: inline by default, ring buffer as the option
 
-- **Status**: Proposed
+- **Status**: Accepted — 2026-08-27
 - **Date**: 2026-08-27
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0001](ADR-0001-relationship-to-quickfix.md)
