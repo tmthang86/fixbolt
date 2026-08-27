@@ -11,10 +11,11 @@ Last updated: **2026-08-27**.
 |---|---|
 | Branch | **`main`** |
 | Milestone | **M0 — decisions and architecture.** No engine code |
-| Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **Phase-1 gap still without a plan: TLS** |
+| Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS now has ADR-0005 (Proposed) but no plan — blocked on open item 10** |
 | Plan in flight | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — reviewed (eng + Codex), 16 decisions folded in, chờ duyệt |
 | Plan queued | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — chờ duyệt. Bắt đầu sau khi codec-dict xong bước 1. Đóng luôn open item 8 |
 | Decision in flight | **[ADR-0004](docs/decisions/ADR-0004-bidirectional-engine.md)** — bidirectional engine (acceptor + initiator, one session core). **Proposed**, awaiting acceptance. `DESIGN.md` and `README.md` are untouched until it is accepted |
+| Decision in flight | **[ADR-0005](docs/decisions/ADR-0005-tls.md)** — TLS: `rustls` handshake (allocation carve-out, bounded), kTLS steady state on Linux, userspace fallback that does **not** meet the hot-path guarantee. **Proposed** |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
@@ -68,3 +69,4 @@ Last updated: **2026-08-27**.
 | 7 | **`scripts/fetch-quickfix-assets.sh` tracks mutable `master`.** Every acceptance number in the codec plan (539 lines, 247 with `9=`, 244 with `10=`, 8 tag-set patterns for `35=3`) can change silently upstream. Pin a commit and verify it | Reproducibility of every step-1 gate |
 | 8 | **`dict::required()` does not recurse through `<component>`.** `FIX44.xml` uses `<component>` in 632 places; `NewOrderSingle` references `Parties`, `PreAllocGrp`, `TrdgSesGrp`, so the generated table is missing fields | The `session` plan |
 | 9 | **The encoder has no DATA invariant.** Writing a dynamic DATA field must regenerate its length field, place it immediately before, and count bytes including embedded `0x01`. Only the read path is specified | Any counterparty that sends `RawData`/`XmlData` |
+| 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **Cannot be checked here — needs the Linux box of open item 6** | The TLS plan; ADR-0005 acceptance |

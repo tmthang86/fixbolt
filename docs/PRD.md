@@ -106,7 +106,7 @@ find them whether or not this page does.
 | Session schedules — start/end time, weekday | Yes `[documented]` | Entered scope with ADR-0004; unspecified | P1, gap |
 | Message stores | File, memory, and SQL backends `[documented]` | mmap journal, 3 policies (`None`/`Async`/`Fsync`) | P1, by design narrower |
 | Logging | File, screen, SQL backends `[documented]` | `tracing` behind a feature flag; **never on the hot path** | P1, by design narrower |
-| SSL / TLS | Yes `[documented]` | **Nothing specified.** Real venues require it | **P1, gap** |
+| SSL / TLS | Yes `[documented]` | [ADR-0005](decisions/ADR-0005-tls.md) **Proposed** — `rustls` handshake, kTLS steady state on Linux. No plan yet: it is blocked on verifying kTLS works without an async runtime | **P1, gap** |
 | Configuration file format | Yes `[documented]` | Nothing specified | P1, gap |
 | Typed message classes / cracker | Generated per message `[documented]` | Borrowed `MessageView` over the wire buffer | Deliberate — [ADR-0003](decisions/ADR-0003-message-representation.md) |
 | Code generation targets | C++, Python, Ruby `[measured]` | Rust only | Not a goal |
@@ -159,5 +159,5 @@ Not "later" — these are out unless a new ADR reverses them.
 | 2 | Repeating groups — which plan owns them, and do they land in `codec` step 1 or a step of their own? | Phase 1 exit criterion 2 |
 | 3 | Does SBE ride a tag=value session, or does FIXP enter scope? | The size of phase 2, by roughly 5× |
 | 4 | One view type or several, once encodings stop having tags on the wire? | Every phase-2 line, and possibly `codec`'s public API today |
-| 5 | TLS — own implementation, `rustls`, or terminate outside the process? | Phase 1 deployability |
+| 5 | ~~TLS — own implementation, `rustls`, or terminate outside the process?~~ **Answered by [ADR-0005](decisions/ADR-0005-tls.md)**, which raises six of its own. The blocking one: can `ktls-core` be driven from a non-blocking socket with no async runtime? | Phase 1 deployability |
 | 6 | Final name. `nanofixengine` is a placeholder | Publishing to crates.io, ever |
