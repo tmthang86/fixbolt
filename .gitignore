@@ -1,0 +1,28 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Criterion benchmark output
+/target/criterion/
+
+# OS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Confidential — NEVER commit. This repo is PUBLIC.
+# Exchange specifications are distributed privately to members.
+KRX-Specs/
+*.docx
+*.pdf
+/testdata/recordings/
+/testdata/captures/
+*.pcap
+*.pcapng
+
+# Third-party vendored specs kept out of git; fetched by scripts/fetch-quickfix-assets.sh
+/vendor/

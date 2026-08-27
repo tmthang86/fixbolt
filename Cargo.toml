@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = []
+
+# Crates are added one at a time, each behind an approved plan in docs/plans/.
+# See CLAUDE.md §1 — Rule Zero.
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tmthang86/nanofix"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
