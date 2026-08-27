@@ -1,7 +1,10 @@
 # Bước 1 — `codec` và `dict`: đọc, ghi FIX 4.4 không cấp phát bộ nhớ
 
-> **Loại:** Plan · **Ngày:** 2026-08-27 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-27 · **Trạng thái:** Đã review (eng), chờ duyệt
 > **Phạm vi:** `DESIGN.md` §7 bước 1 — hai crate đầu tiên của workspace
+> **Sửa lần 2 — 2026-08-27**, sau `/plan-eng-review` + outside voice (Codex). 16 quyết định
+> ghi ở mục *Nhật ký review* cuối file. Bản đầu dựa trên vài con số đếm sai; mục
+> *Những gì đã biết chắc* đã được đếm lại bằng script trên chính `vendor/`.
 
 > Tên file luôn tiếng Anh: `docs/plans/YYYY-MM-DD-<topic>.md`.
 > Nội dung viết tiếng Việt, ngôn ngữ dễ hiểu — xem `CLAUDE.md` §6.
@@ -21,99 +24,198 @@ chính mình, thay cho con số đi mượn trong `reference/measured-costs.md`.
 DATA (giá trị có thể chứa ký tự phân cách), và tag nào bắt buộc trong từng loại bản tin.
 Ba thứ đó sinh ra từ file XML của QuickFIX lúc build, không gõ tay.
 
+**Bước này đóng khi API dùng được, không phải khi con số đẹp.** Xem *Điều kiện đóng bước*.
+
 ## Những gì đã biết chắc
+
+Mọi con số ở nhóm dưới đều đếm lại bằng script tách theo byte `0x01` trên `vendor/`, ngày
+2026-08-27. Bản plan đầu ghi 536 / 247 / 244 và cả ba đều sai hoặc lẫn tập.
 
 | Sự thật | Nguồn |
 |---|---|
 | Mảng field 512 phần tử nằm trong struct làm parse chậm 4–6 lần; tách index ra, N=64 → heartbeat 95 ns, `NewOrderSingle` 139 ns trên M5 | `reference/measured-costs.md` §1, đo 2026-08-27 |
-| Thứ tự field trong bản tin phát ra: `8, 9, 35` cố định → header **tag tăng dần** → body **tag tăng dần** → `10`. Không phải thứ tự XML. 247/247 dòng expected, không ngoại lệ | `reference/quickfix-acceptance-def-format.md`, mục "The ordering rule" |
-| Bộ so sánh của acceptance test so **theo vị trí** và so `9=` **bằng chuỗi chính xác** — BodyLength phải đúng từng byte, không đệm số 0 | cùng trang, mục "Comparison rules" |
-| Ký tự phân cách là byte `0x01` thật trong file, không phải escape | cùng trang, hexdump |
-| `spec/FIX44.xml` dùng thuộc tính **nháy đơn** (`name='BeginString'`); header khai báo 8, 9, 35, 49, 56, 115, 128… | `vendor/quickfix/spec/FIX44.xml` dòng 2–10 |
-| Trong FIX 4.4, field kiểu DATA đi kèm một field độ dài đứng ngay trước nó (ví dụ `RawDataLength(95)` → `RawData(96)`, `XmlDataLen(212)` → `XmlData(213)`); giá trị DATA **được phép chứa `0x01`** | Đặc tả FIX 4.4, và danh sách `type='DATA'` trong XML — sinh lúc build, không liệt kê tay |
-| 289 dòng `I` và 247 dòng `E` trong 59 file `.def` là bản tin FIX **thật** do QuickFIX phát — dữ liệu test có sẵn, không phải tự bịa | `vendor/quickfix/test/definitions/server/fix44/` |
+| **`size_of::<MessageView<64>>()` = 24 byte, không phải 16.** `&[u8]` là con trỏ béo (16) + `&FieldIndex` (8). Không có cách nào giữ hai tham chiếu an toàn mà xuống 16 | Chạy `rustc -O` với đúng định nghĩa ADR-0003, 2026-08-27 |
+| **59 file `.def` chứa 289 dòng `I` và 250 dòng `E` — tổng 539** | đếm bằng script trên `vendor/quickfix/test/definitions/server/fix44/` |
+| **Trong 250 dòng `E`: 247 có `9=`, 244 có cả `9=` lẫn `10=`.** 3 dòng không có `9=` (`2d`/`3c_GarbledMessage`), 3 dòng có `9=` mà không `10=` (`3b_InvalidChecksum`, `SessionReset` ×2) | cùng nguồn |
+| **Trong 289 dòng `I`: chỉ 8 có `9=`, chỉ 7 có `10=`.** Dòng `I` là *template*, không phải bản tin dây. `Reflector.rb::fixify!` tính `9=` và `10=` lúc gửi | cùng nguồn, và `reference/quickfix-acceptance-def-format.md` |
+| **`<TIME>` xuất hiện 350 lần trong `I`, 2 lần trong `E`.** `<TIME>` dài 6 byte; timestamp thật 17 hoặc 21 byte. BodyLength/CheckSum tính trên dòng thô là vô nghĩa | cùng nguồn |
+| **8 dòng mang tiền tố số phiên** (`I1,`, `I2,`, `E1,`) — 5 dòng `I`, 3 dòng `E` | cùng nguồn |
+| **7 dòng cố tình sai chuẩn**: `8=FIX.3.9` (`1d`), `8=FIX.4.1` ×2 (`2i`), `35=` đứng trước `8=` (`2t`), checksum sai (`3b`), garbled (`2d`, `3c`) | cùng nguồn |
+| **7 field giá trị rỗng trên dòng `I`, trong 2 file, đòi hai hành vi khác nhau.** `14d`: `56=` rỗng → session phải trả Reject có `371=56`, `373=4`, **và tăng inbound MsgSeqNum**. `ReverseRouteWithEmptyRoutingTags`: 6 field rỗng (`115=`,`128=`,`116=`,`129=`,`144=`,`145=`) → **không** reject | cùng nguồn |
+| **Một loại bản tin có nhiều tập tag khác nhau.** Trên 244 dòng `E` sạch: `35=3` có **8** mẫu, `35=D` có 4, `35=A`/`35=5` có 2 | cùng nguồn |
+| Thứ tự field: `8, 9, 35` cố định → header **tag tăng dần** → body **tag tăng dần** → `10`. Không phải thứ tự XML. 247/247 dòng, không ngoại lệ | `reference/quickfix-acceptance-def-format.md` |
+| Bộ so sánh so **theo vị trí**; tag `10/42/52/60/122` so bằng **regex**, mọi tag khác so **chuỗi chính xác**. `9=` không nằm trong `fields.fmt` → so chính xác | cùng trang |
+| `FIX44.xml` dùng `<component>` ở **632 chỗ**; `NewOrderSingle` tham chiếu `Parties`, `PreAllocGrp`, `TrdgSesGrp` | đếm trên `vendor/quickfix/spec/FIX44.xml` |
+| Trong FIX 4.4, field DATA đi kèm field độ dài đứng ngay trước (`95`→`96`, `212`→`213`); giá trị DATA **được phép chứa `0x01`**. `.def` **không có mẫu DATA nào** | Đặc tả FIX 4.4 + `type='DATA'` trong XML |
 | QuickFIX Software License cho phép dùng XML và `.def` làm dữ liệu; **không** commit chúng | ADR-0001 |
-| `MessageView` phải là hai word, `Copy`; `FieldIndex<const N>` do người gọi chọn N | ADR-0003 (Accepted) |
-| Serialize theo template: phần tĩnh encode sẵn một lần, mỗi lần gửi chỉ ghi phần động; `SendingTime` cache tiền tố `YYYYMMDD-HH:MM` | `DESIGN.md` D9 |
-| Gate: parse `NewOrderSingle` ≤ 150 ns, serialize `ExecutionReport` ≤ 60 ns, **0** cấp phát trên hot path | `DESIGN.md` §6 |
+| Gate: parse `NewOrderSingle` ≤ 150 ns, serialize `ExecutionReport` ≤ 60 ns, **0** cấp phát | `DESIGN.md` §6 |
 
 ## Cách làm
 
+### Ranh giới ngữ nghĩa `codec` ↔ `session` — chốt trước mọi thứ khác
+
+Đây là quyết định gốc, mọi chữ ký hàm bên dưới suy ra từ nó.
+
+```
+                 byte từ counterparty
+                          │
+                          ▼
+        ┌─────────────────────────────────────────┐
+        │  codec — biết CÚ PHÁP                    │
+        │  Từ chối chỉ khi KHÔNG ĐỌC NỔI:          │
+        │    · tag phi số / tràn u32               │
+        │    · độ dài DATA vượt biên buffer        │
+        │    · thiếu field độ dài của DATA         │
+        │    · BodyLength / CheckSum sai (bật cờ)  │
+        └───────────────┬─────────────────────────┘
+                        │  đọc được → MessageView
+                        ▼
+        ┌─────────────────────────────────────────┐
+        │  session — biết LUẬT                     │
+        │  Phán mọi thứ đọc được nhưng sai luật:   │
+        │    · giá trị rỗng   (14d → Reject 373=4) │
+        │    · BeginString lạ (1d, 2i)             │
+        │    · sai thứ tự     (2t)                 │
+        │  Vì chỉ session biết phải TRẢ LỜI gì.    │
+        └─────────────────────────────────────────┘
+```
+
+Hệ quả trực tiếp: **không có `ParseError::EmptyValue`.** Field `56=` được ghi vào index với
+`len = 0`; `view.get(56)` trả lát rỗng. Nếu parser từ chối sớm, session không đọc được
+`34=2` để tăng seq và không biết tag nào để đặt vào `371=56` — `14d` và
+`ReverseRouteWithEmptyRoutingTags` **không thể pass**, tức tự nguyện bỏ 2 trong 59.
+
 ### `crates/dict` — sinh bảng từ XML lúc build
 
-- `build.rs` đọc `vendor/quickfix/spec/FIX44.xml` (đường dẫn ghi đè được bằng biến môi
-  trường `NANOFIX_FIX44_XML`). **Thiếu file → build fail với thông báo chỉ thẳng tới
-  `scripts/fetch-quickfix-assets.sh`.** Không im lặng, không fallback.
-- Dependency **chỉ ở build**: `roxmltree`. Runtime của `dict` không có dependency nào.
-- Sinh ra `$OUT_DIR/fix44.rs`, gồm:
-  - `pub mod tag` — hằng số `pub const MSG_SEQ_NUM: u32 = 34;` cho mọi field.
-  - `pub mod msg_type` — hằng `pub const NEW_ORDER_SINGLE: &[u8] = b"D";`.
-  - `pub fn is_header(tag: u32) -> bool` — bảng tra, dùng để tách header/body khi ghi.
-  - `pub fn data_length_tag(tag: u32) -> Option<u32>` — với field kiểu DATA, trả về tag
-    độ dài đứng trước nó. Dùng để parse đúng giá trị có chứa `0x01`.
-  - `pub fn required(msg_type: &[u8]) -> &'static [u32]` — field bắt buộc theo loại bản
-    tin. Session layer dùng sau; sinh luôn ở đây vì cùng nguồn.
-- `dict` implement trait `codec::Dictionary` (định nghĩa bên `codec`, xem dưới).
+- `build.rs` đọc `vendor/quickfix/spec/FIX44.xml` (ghi đè bằng `NANOFIX_FIX44_XML`).
+  **Thiếu file → build fail với thông báo chỉ thẳng tới `scripts/fetch-quickfix-assets.sh`.**
+  Không im lặng, không fallback.
+- Dependency **chỉ ở build**: `roxmltree`, pin version. Runtime của `dict` không dependency.
+- Sinh ra `$OUT_DIR/fix44.rs`:
+  - `pub mod tag` — `pub const MSG_SEQ_NUM: u32 = 34;` cho mọi field.
+  - `pub mod msg_type` — `pub const NEW_ORDER_SINGLE: &[u8] = b"D";`.
+  - `pub fn is_header(tag: u32) -> bool` — bảng tra, tách header/body khi ghi.
+  - `pub fn data_length_tag(tag: u32) -> Option<u32>` — tag độ dài của field DATA.
+  - `pub fn required(msg_type: &[u8]) -> &'static [u32]` — field bắt buộc theo loại bản tin.
+    **Giới hạn đã biết:** bản này chỉ đọc `<field>` con trực tiếp, **không đệ quy qua
+    `<component>`**. Với 632 chỗ dùng component trong XML, bảng này thiếu field. Chấp nhận
+    ở bước 1 vì chưa ai gọi; ghi vào `STATUS.md` Open items, chặn plan `session`.
+- `dict` implement trait `codec::Dictionary`, nên **`dict` phụ thuộc `codec`** — `DESIGN.md`
+  §3 hiện ghi "—", phải sửa.
 
 ### `crates/codec` — đọc và ghi, `#![no_std]`, không dependency
 
-**Kiểu dữ liệu** (đúng ADR-0003):
+**Kiểu dữ liệu** (ADR-0003, với số byte đã đếm lại):
 
 ```rust
 #[repr(C)] pub struct FieldEntry { tag: u32, offset: u32, len: u16, _pad: u16 }   // 12 byte
 pub struct FieldIndex<const N: usize> { count: u16, fields: [FieldEntry; N] }
 #[derive(Clone, Copy)] pub struct MessageView<'a, const N: usize> { buf: &'a [u8], idx: &'a FieldIndex<N> }
 pub type OrderView<'a> = MessageView<'a, 64>;
+
+const _: () = assert!(core::mem::size_of::<MessageView<64>>() == 24);   // 3 word, KHÔNG phải 2
 ```
 
-**Trait `Dictionary`** — `codec` chỉ cần hai câu hỏi, và hỏi qua trait để không phụ thuộc
-`dict`:
+`MessageView` là **24 byte**. Cả x86-64 SysV lẫn AArch64 truyền struct >16 byte gián tiếp,
+nên phải `#[inline]` mọi hàm nhận nó qua ranh giới crate. Guard vẫn giữ nguyên tác dụng: ai
+thêm field vào view thì build fail.
+
+**Trait `Dictionary`** — `codec` chỉ hỏi hai câu, hỏi qua trait để không phụ thuộc `dict`:
 
 ```rust
 pub trait Dictionary { fn is_header(tag: u32) -> bool; fn data_length_tag(tag: u32) -> Option<u32>; }
 ```
 
-Hàm được `#[inline]`, không `dyn`. `codec` ship sẵn `NoDict` (mọi câu trả lời là "không")
-để test nội bộ.
+Hàm `#[inline]`, không `dyn`. `codec` ship sẵn `NoDict` (mọi câu trả lời là "không").
 
-**Đọc — `parse_into::<D: Dictionary, const N>(buf, &mut FieldIndex<N>) -> Result<usize, ParseError>`**
+**Đọc**
 
-1. Kiểm tra `8=` ở byte 0, `9=` ngay sau, `35=` ngay sau nữa — sai vị trí là lỗi.
-2. Quét tuyến tính: đọc tag (số thập phân, tràn `u32` là lỗi), `=`, rồi tìm `0x01`. Với
-   tag mà `D::data_length_tag` trả `Some(len_tag)`, **không tìm `0x01`** mà lấy đúng số
-   byte đã đọc được từ `len_tag` ngay trước đó.
-3. Ghi `(tag, offset, len)` vào index. Vượt `N` → `ParseError::TooManyFields`, **không** cắt
-   bớt.
-4. Khi gặp `10=`: kiểm `BodyLength` (số byte từ sau `0x01` của `9=` đến trước `10=`) và
-   `CheckSum` (tổng byte mod 256 của mọi thứ trước `10=`, ba chữ số). Hai kiểm tra này
-   tắt được bằng `Validation` flags — mặc định bật.
-5. Trả về số byte đã tiêu thụ, để caller xử lý buffer chứa nhiều bản tin.
+```rust
+pub enum Parsed { Complete { consumed: usize }, Incomplete }
 
-`ParseError` là enum `Copy`, mang tối đa một `u32` (tag hoặc vị trí). Không `String`.
+pub fn parse_into<D: Dictionary, const N: usize>(
+    buf: &[u8], idx: &mut FieldIndex<N>, v: Validation,
+) -> Result<Parsed, ParseError>;
+```
+
+`Incomplete` nằm trong nhánh `Ok` vì nó **không phải lỗi** — TCP giao byte, không giao bản
+tin. Trộn nó vào `Err` là trộn "mọi thứ vẫn tốt, đợi thêm" với "phiên hỏng, ngắt đi"; mọi
+call site sẽ phải trả giá. `Validation` là tham số thật, không phải cờ trong tài liệu.
+
+```
+parse_into  ─┬─ Ok(Complete { consumed })  → caller tiến buf, parse tiếp
+             ├─ Ok(Incomplete)             → đợi read sau, GIỮ NGUYÊN buf
+             └─ Err(ParseError)            → ngắt phiên
+```
+
+1. Kiểm `8=` ở byte 0, `9=` ngay sau, `35=` ngay sau nữa — sai vị trí là lỗi. Chỉ kiểm
+   **vị trí**, không kiểm **giá trị**: `8=FIX.3.9` parse bình thường, session phán.
+2. Quét tuyến tính: đọc tag (thập phân, tràn `u32` là lỗi), `=`, rồi tìm `0x01`. Với tag mà
+   `D::data_length_tag` trả `Some(len_tag)`, **không tìm `0x01`** mà lấy đúng số byte từ
+   `len_tag` đọc được ngay trước.
+3. Ghi `(tag, offset, len)` vào index. `len` được phép bằng 0. Vượt `N` →
+   `ParseError::TooManyFields`, **không** cắt bớt.
+4. Hết buffer mà chưa gặp `10=` → `Ok(Parsed::Incomplete)`.
+5. Gặp `10=`: kiểm `BodyLength` (số byte từ sau `0x01` của `9=` đến trước `10=`) và
+   `CheckSum` (tổng byte mod 256 của mọi thứ trước `10=`, ba chữ số). Cả hai theo cờ
+   `Validation`, mặc định bật. Trả `Ok(Complete { consumed })`.
+
+```rust
+pub enum ParseError {                       // Copy, mang tối đa một u32. Không String.
+    BadTag(u32),            // phi số hoặc tràn u32
+    TooManyFields,
+    MissingLengthField(u32),// field DATA mà tag độ dài vắng hoặc không đứng liền trước
+    LengthOutOfBounds(u32), // độ dài DATA vượt phần buffer còn lại  ← chỗ duy nhất đọc ngoài biên
+    BadBodyLength,
+    BadCheckSum,
+    FieldTooLong(u32),      // giá trị > u16::MAX byte, không tràn im lặng
+}
+```
 
 **Tra field**: `view.get(tag) -> Option<&[u8]>` quét tuyến tính, trả lần xuất hiện đầu.
-`view.find_from(pos, tag)` cho repeating group. Bộ chuyển kiểu: `as_u32`, `as_i64`,
-`as_char` — trả `Result`, không panic. **Không** có kiểu decimal trong bước này.
+`view.find_from(pos, tag)` cho repeating group. Bộ chuyển kiểu `as_u32`, `as_i64`, `as_char`
+trả `Result`, không panic. **Không** có kiểu decimal trong bước này.
 
 **Ghi — `Template`**
 
-Một template là **danh sách đã sắp thứ tự** các mục, dựng một lần cho mỗi cặp (session,
-loại bản tin):
+Template **sở hữu** byte tĩnh của nó. Không lifetime, cất thẳng vào struct mỗi phiên.
+`&'static` không dùng được: `49=ISLD\x0156=TW44\x01` đến từ Logon lúc chạy, giữ nó bằng
+`'static` là phải leak mỗi phiên. Mượn arena của session thì thành struct tự tham chiếu.
 
 ```rust
-enum Part { Static(&'static [u8]) /* "49=ISLD\x0156=TW44\x01" đã encode sẵn */, Slot(u32) }
-pub struct Template<const P: usize> { parts: [Part; P], len: u8 }
+enum Part { Static(Range<u16>), Slot(u32) }          // Static trỏ vào scratch
+pub struct Template<const P: usize, const S: usize> {
+    scratch: [u8; S],                                 // byte tĩnh, chép vào một lần lúc dựng
+    parts:   [Part; P],
+    len:     u8,                                      // ≤ P ≤ 255
+}
+
+pub fn encode(&self, out: &mut [u8], slots: &[(u32, &[u8])]) -> Result<Range<usize>, EncodeError>;
 ```
 
-- Lúc dựng: nhận các tag tĩnh kèm giá trị, các tag động; sắp theo quy tắc đã xác lập —
+- **Lúc dựng**: nhận tag tĩnh kèm giá trị và tag động; sắp theo quy tắc đã xác lập —
   `35` trước, header tăng dần, body tăng dần — rồi gộp các tag tĩnh liền nhau thành một
   `Static`. **Sắp xếp xảy ra lúc dựng, không xảy ra lúc gửi.**
-- Lúc gửi, `encode(&self, out: &mut [u8], get: impl Fn(u32) -> &[u8]) -> Result<Range<usize>>`:
-  1. Ghi body **từ vị trí `K`** trong `out` (`K` = độ dài tối đa của `8=FIX.4.4\x019=NNNNN\x01`).
-  2. Ghi `8=FIX.4.4\x019=<len>\x01` **kết thúc đúng tại `K`**, canh phải. Không dịch chuyển
-     buffer. `BodyLength` là số thật, không đệm `0` — bộ so sánh yêu cầu vậy.
-  3. Tính checksum, ghi `10=NNN\x01`. Trả về khoảng `[start, end)` — caller gửi đúng
-     khoảng đó.
+- **Slot tùy chọn**: một `Slot(tag)` không có mặt trong `slots` thì **bỏ qua**. Đây là điều
+  bắt buộc, không phải tiện nghi: `35=3` có 8 mẫu tập-tag khác nhau trong dữ liệu thật, một
+  template cứng không biểu diễn nổi.
+- **Lúc gửi** — bố cục buffer, phần khó nhất:
+
+```
+out:  [ ...... chừa K byte ...... | body ................. | 10=NNN␁ ]
+                                  ^                        ^
+                                  K                        end
+      ┌───────── bước 1: ghi body từ vị trí K ─────────────┘
+      │
+      └─ bước 2: ghi "8=FIX.4.4␁9=<len>␁" KẾT THÚC ĐÚNG TẠI K, canh phải
+                 ├─ start = K - độ_dài_prefix        ← trả về [start, end)
+                 └─ KHÔNG dịch chuyển buffer, KHÔNG đệm 0 vào 9=
+                    (bộ so sánh so 9= bằng chuỗi chính xác)
+         bước 3: checksum trên [start, trước 10=), ba chữ số CÓ đệm 0
+```
+
+  `K` = độ dài tối đa của `8=FIX.4.4␁9=NNNNN␁`. BodyLength ≥ 100000 → `EncodeError::BodyTooLong`,
+  không tràn qua `K`. `out` quá nhỏ → `EncodeError::OutputTooSmall`, không panic.
 - `SendingTime`: `TimestampCache` giữ 15 byte `YYYYMMDD-HH:MM:` và phút hiện tại; mỗi bản
   tin chỉ format `SS.mmm`. Đổi phút thì format lại tiền tố. Đây là một `Slot` đặc biệt.
 
@@ -122,31 +224,63 @@ pub struct Template<const P: usize> { parts: [Part; P], len: u8 }
 ```
 crates/codec/src/lib.rs        #![no_std], re-export
 crates/codec/src/index.rs      FieldEntry, FieldIndex, MessageView, tra field
-crates/codec/src/parse.rs      parse_into, ParseError, Validation
+crates/codec/src/parse.rs      parse_into, Parsed, ParseError, Validation
 crates/codec/src/checksum.rs   tổng mod 256 — bản thường trước, SIMD chỉ khi đo thấy cần
-crates/codec/src/template.rs   Template, Part, encode
+crates/codec/src/template.rs   Template, Part, encode, EncodeError
 crates/codec/src/timestamp.rs  TimestampCache
 crates/codec/src/dict.rs       trait Dictionary, NoDict
 crates/codec/benches/{parse,serialize,alloc}.rs
-crates/codec/tests/defs.rs     nạp 536 dòng I/E từ vendor/ — nếu thiếu vendor: FAIL, không skip
+crates/codec/tests/defs.rs         bảng phân loại 539 dòng
+crates/codec/tests/roundtrip.rs    244 dòng E byte-identical
+crates/codec/tests/template_reuse.rs  một template, nhiều bản tin
+crates/codec/tests/stream.rs       vòng lặp đọc TCP giả lập
 crates/dict/build.rs, src/lib.rs
+fuzz/                          crate RIÊNG, ngoài workspace — chỉ nightly
 ```
 
-`Cargo.toml` workspace: thêm hai member, `[workspace.lints]` đã có. Thêm lint
+`Cargo.toml` workspace: thêm hai member (`fuzz/` **không** phải member). Thêm lint
 `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic` = `deny` cho hai crate này
 (cho phép trong `#[cfg(test)]` và `benches/`).
+
+### Nạp fixture — chuẩn hoá trước, rồi mới phân loại
+
+`.def` không phải bản tin dây. Loader dùng chung cho bước 1 **và** bước `conformance`:
+
+```
+dòng thô  "I1,8=FIX.4.4␁35=A␁…␁52=<TIME>␁"
+   │
+   ├─ 1. bỏ ký tự directive (I / E)
+   ├─ 2. cắt tiền tố số phiên "N,"          ← 8 dòng có, bỏ sót là BadTag ngay field đầu
+   ├─ 3. thay <TIME> bằng MỘT mốc UTC CỐ ĐỊNH ← để checksum tái lập được giữa các lần chạy
+   ├─ 4. fixify!: chèn 9= tính sẵn nếu vắng, 10= tính sẵn nếu vắng  (giống Reflector.rb)
+   └─ 5. tra bảng phân loại → kỳ vọng Ok, hay Err(<biến thể cụ thể>)
+```
+
+Bảng phân loại liệt kê 7 dòng sai chuẩn **theo tên file**. Parser từ chối đúng chỗ là XANH;
+từ chối sai chỗ, hoặc nhận sai chỗ, là ĐỎ. Đây là lý do không dùng bộ đếm thành công: một
+bộ đếm sẽ đỏ ngày đầu và phản xạ tự nhiên là nới assertion — đúng cái bẫy `CLAUDE.md` §10.
+
+## Điều kiện đóng bước 1
+
+Không phải "đạt 150/60 ns". Bước 1 đóng khi **API dùng được theo cách `engine` sẽ dùng**:
+
+`tests/stream.rs` nạp byte của cả 244 dòng E vào một vòng lặp đọc giả lập TCP — mỗi lần
+"read" trả về một mẩu dài ngẫu nhiên từ 1 byte tới cả bản tin, đôi khi chứa nhiều bản tin —
+và phải: đẩy hết 244 bản tin qua `parse_into` mà **không** bỏ sót, **không** nhân đôi, mọi
+mẩu chưa đủ trả `Incomplete`; rồi encode trả lại và so byte-identical. Số đo được ghi lại
+kèm máy và cài đặt, nhưng số **không** là điều kiện đóng.
 
 ## Bất biến bị đụng tới
 
 | # | Điều | Cách giữ |
 |---|---|---|
-| 1 | Không cấp phát trên hot path | `#![no_std]` không có `alloc` → **không thể** cấp phát, trình biên dịch chặn. `benches/alloc.rs` đếm để chứng minh cả với caller |
+| 1 | Không cấp phát trên hot path | `#![no_std]` **không** tự nó chứng minh điều này — crate vẫn khai `alloc` được, caller vẫn cấp phát được. Thứ chứng minh là `benches/alloc.rs` với allocator đếm |
 | 5 | Thứ tự field từ bảng sinh, không từ call site | `Template` sắp lúc dựng theo `D::is_header` + sort tag. Không có API nào cho caller tự chọn thứ tự |
-| 6 | Feature flag gate `mod` | Bước này không có feature nào. `build.rs` của `dict` chỉ đọc file XML, không gọi toolchain ngoài |
-| 7 | Không `unwrap`/`expect`/`panic` | Clippy `deny` ở cấp crate — build fail nếu vi phạm |
-| 8 | `unsafe` phải có chứng minh | **Mục tiêu: 0 `unsafe`** trong bước này. Nếu SIMD checksum cần, để bước sau kèm Miri |
+| 6 | Feature flag gate `mod` | Bước này không có feature nào — nên `cargo test --no-default-features` ở bước này là **kiểm tra rỗng**, ghi rõ vậy chứ không kể là cổng. `build.rs` của `dict` chỉ đọc XML, không gọi toolchain ngoài |
+| 7 | Không `unwrap`/`expect`/`panic` | Clippy `deny` ở cấp crate. Riêng đường DATA: `LengthOutOfBounds` tồn tại chính để tránh panic khi cắt lát |
+| 8 | `unsafe` phải có chứng minh | **Mục tiêu: 0 `unsafe`.** Đây là lý do nhận `MessageView` 24 byte thay vì ép về 16 bằng con trỏ thô |
 | 9 | Không copy mã QuickFIX | `dict` chỉ đọc XML lúc build. Không nhìn `src/C++` khi viết parser |
-| 10 | Số hiệu năng phải kèm bench + máy + settings | Số trong nhật ký giao hàng ghi rõ "M5, macOS, không pin, so sánh tương đối" |
+| 10 | Số hiệu năng phải kèm bench + máy + settings | Nhật ký ghi rõ "M5, macOS, không pin, so sánh tương đối" |
 
 Điều 2, 3, 4 (session thuần, 59/59, engine không ngủ) chưa đụng — chưa có session, chưa
 có engine.
@@ -155,91 +289,192 @@ có engine.
 
 | Bước | Kết quả | Thời gian | Phụ thuộc |
 |---|---|---|---|
-| 0 | Nhánh `plan/codec-dict`. Workspace lint `deny` unwrap/expect/panic. `cargo build` **fail đúng thông báo** khi thiếu `vendor/` | ½ ngày | — |
-| 1 | `dict`: `build.rs` đọc XML → `is_header`, `data_length_tag`, `tag::*`, `msg_type::*`, `required`. Test: `is_header(34)==true`, `is_header(11)==false`, `data_length_tag(96)==Some(95)`, `required(b"D")` chứa 11, 21, 55, 54, 60, 40 | 2–3 ngày | 0 |
-| 2 | `codec::index` + `parse_into` với `NoDict`. Đọc được **cả 536 dòng** I/E; `TooManyFields`; `BodyLength`/`CheckSum` đúng với 244 dòng có `9=` | 3 ngày | 0 |
-| 3 | Parse với `dict` thật: field DATA chứa `0x01`. Fuzz parser (`cargo fuzz`, 10 phút) không panic | 1 ngày | 1, 2 |
-| 4 | `Template` + `TimestampCache`. **Round-trip 247 dòng E**: parse → dựng template cùng tập tag → encode → **byte-identical** | 3 ngày | 2 |
-| 5 | Ba bench, mỗi cái assert bound của nó. Chạy, ghi số vào nhật ký. Cập nhật docs theo bảng dưới. Merge | 1 ngày | 3, 4 |
+| 0 | Nhánh `plan/codec-dict`. Workspace lint `deny`. `cargo build` **fail đúng thông báo** khi thiếu `vendor/`. CI: job `--no-default-features`, job fetch vendor | ½ ngày | — |
+| 1 | `dict`: `build.rs` → `is_header`, `data_length_tag`, `tag::*`, `msg_type::*`, `required` (không đệ quy component) | 2–3 ngày | 0 |
+| 2 | Loader fixture (chuẩn hoá 5 bước) + `codec::index` + `parse_into` với `NoDict`. Bảng phân loại 539 dòng | 3 ngày | 0 |
+| 3 | Parse với `dict` thật: field DATA chứa `0x01`, hai lỗi biên. Fuzz `cargo +nightly fuzz`, 10 phút, không panic | 1 ngày | 1, 2 |
+| 4 | `Template` + `TimestampCache` + slot tùy chọn. Round-trip 244 dòng E; test một-template-nhiều-bản-tin | 3 ngày | 2 |
+| 5 | `tests/stream.rs` (điều kiện đóng bước). Ba bench assert trần hồi quy. Ghi số vào nhật ký. Cập nhật docs. Merge | 1½ ngày | 3, 4 |
 
-**Tổng: ~11 ngày làm việc nếu quen Rust. Team chưa quen → tính 3–4 tuần.** Bước 2 là chỗ
-học ownership thật sự; bước 4 là chỗ học lifetime. Đừng làm hai bước đó cùng lúc.
+**Tổng: ~11,5 ngày nếu quen Rust. Team chưa quen → 3–4 tuần.** Bước 2 là chỗ học ownership;
+bước 4 là chỗ học lifetime. Đừng làm hai bước đó cùng lúc.
 
 ## Cách kiểm chứng
 
 | Bước | Lệnh | Đạt khi |
 |---|---|---|
 | 0 | `mv vendor vendor.bak && cargo build -p dict; mv vendor.bak vendor` | Output chứa đúng dòng "run scripts/fetch-quickfix-assets.sh". Không phải lỗi khác |
-| 1 | `cargo test -p dict` | Xanh, và **đọc** output thấy tên 5 test kể trên |
-| 2 | `cargo test -p codec --test defs` | In ra `parsed 536/536`, `bodylength ok 244/244`. Số thấp hơn là đỏ |
+| 1 | `cargo test -p dict` | Xanh, và **đọc** output thấy tên 5 test: `is_header(34)==true`, `is_header(11)==false`, `data_length_tag(96)==Some(95)`, `data_length_tag(35)==None`, `required(b"D")` chứa 11,21,55,54,60,40 |
+| 2 | `cargo test -p codec --test defs` | In `classified 539/539`. Trong đó: 532 dòng kỳ vọng `Ok`, 7 dòng kỳ vọng `Err` **đúng biến thể đã khai**. Một dòng lệch là đỏ |
+| 2 | `cargo test -p codec --test defs -- bodylength` | `bodylength ok 247/247` (dòng E có `9=`), `checksum ok 244/244` (dòng E có `10=`) |
 | 2 | Test `TooManyFields`: parse một dòng E thật với `FieldIndex<4>` | Trả `Err(TooManyFields)`, và **không** có index nào chứa 4 field "thành công" |
-| 3 | `cargo fuzz run parse -- -max_total_time=600` | Không crash, không timeout |
-| 4 | `cargo test -p codec --test roundtrip` | `identical 247/247`. Một byte lệch là đỏ, in ra dòng lệch dưới dạng `|` |
-| 5 | `cargo bench -p codec` | Ba bench xanh **theo assert trong bench**, không phải theo mắt nhìn. Copy nguyên output vào nhật ký |
+| 3 | `cargo +nightly fuzz run parse -- -max_total_time=600` | Không crash, không timeout. Corpus lưu lại thành test hồi quy |
+| 4 | `cargo test -p codec --test roundtrip` | `identical 244/244`. Một byte lệch là đỏ, in dòng lệch dưới dạng `\|` |
+| 4 | `cargo test -p codec --test template_reuse` | **Một** template `35=3` duy nhất, dựng từ hợp của cả 8 mẫu, encode đúng cả 38 dòng Reject. Đây là test duy nhất chứng minh cơ chế D9 |
+| 5 | `cargo test -p codec --test stream` | 244 bản tin qua vòng lặp đọc giả lập, không sót, không nhân đôi, `Incomplete` đúng mọi mẩu cụt |
+| 5 | `cargo bench -p codec` | Ba bench xanh **theo assert trong bench**. Ngưỡng là **trần hồi quy ~1,5–2× baseline đo được**, không phải 150/60 ns — xem *Rủi ro*. Copy nguyên output vào nhật ký |
 | 5 | `benches/alloc.rs` | In `allocations: 0` cho parse và encode |
-| mọi bước | `cargo clippy --all-targets -- -D warnings` và `cargo test --no-default-features` | Sạch |
+| mọi bước | `cargo clippy --all-targets -- -D warnings` và `cargo test --no-default-features` | Sạch. Ghi rõ: `--no-default-features` ở bước này không kiểm được gì vì chưa có feature |
 
-**Dữ liệu thật:** mọi test parse/round-trip chạy trên 536 dòng QuickFIX phát ra, nạp từ
-`vendor/`. Test **không được skip** khi thiếu vendor — phải fail với thông báo rõ. Một test
-skip âm thầm là test đã bị tắt.
+**Dữ liệu thật:** mọi test parse/round-trip chạy trên 539 dòng QuickFIX phát ra, nạp từ
+`vendor/`. Test **không được skip** khi thiếu vendor — phải fail với thông báo rõ.
 
-**Bằng chứng đỏ trước:** với mỗi bước, commit đầu tiên là test đỏ, output trích trong
-commit message. Xem `CLAUDE.md` §10.
+**Bằng chứng đỏ trước:** với mỗi bước, commit đầu tiên là test đỏ, output trích trong commit
+message. Xem `CLAUDE.md` §10.
 
 ## Tài liệu phải cập nhật
 
-Theo bảng đồng bộ ở `CLAUDE.md` §4.
+Theo bảng đồng bộ `CLAUDE.md` §4.
 
-- [ ] `DESIGN.md` §3 bảng crate: `dict` phụ thuộc `codec` (vì trait `Dictionary`), không
-      phải "—". Sửa cả sơ đồ nếu cần.
-- [ ] `DESIGN.md` D3: sửa câu chữ — bảng sinh cần thiết là **tập header**, quy tắc thứ tự là
-      **sort theo tag trong từng phần**. Ghi nguồn: `reference/quickfix-acceptance-def-format.md`.
-- [ ] `DESIGN.md` D9: sửa "patch tại offset tính sẵn" thành "danh sách phần đã sắp, phần
-      tĩnh encode sẵn, body ghi trước rồi prefix canh phải" — vì field FIX có độ rộng thay
-      đổi, offset cố định không đúng.
+- [ ] `DESIGN.md` §2 **sơ đồ**: vẽ lại thành hai nhánh — inline mặc định, ring tùy chọn.
+      Sơ đồ hiện đặt ring bắt buộc giữa L4/L3, cũ hơn D4.
+- [ ] `DESIGN.md` §3 bảng crate: `dict` phụ thuộc `codec`; `conformance` phụ thuộc
+      `codec` + `session` (không phải chỉ `codec`).
+- [ ] `DESIGN.md` §1 vs §8: sàn độ trễ ghi hai con số khác nhau (15–25 µs / 10–20 µs).
+      Chốt một, sửa cả README.
+- [ ] `DESIGN.md` D2 + ADR-0003: `MessageView` là **24 byte**, không phải 16 / "two words".
+      Đính chính tại chỗ, có ghi ngày, theo hình dạng ADR-0002 đã dùng. Ghi kèm hệ quả ABI
+      (>16 byte → truyền gián tiếp → phải `#[inline]`).
+- [ ] `DESIGN.md` D2: chữ ký `parse_into` đổi sang `Result<Parsed, ParseError>` + tham số
+      `Validation`.
+- [ ] `DESIGN.md` D4 dòng 147: bỏ `MessageView<'_, 64>` hardcode, để N là tham số.
+- [ ] `DESIGN.md` D9: sửa "patch tại offset tính sẵn" → "danh sách phần đã sắp, phần tĩnh
+      encode sẵn trong buffer template tự sở hữu, body ghi trước rồi prefix canh phải, slot
+      tùy chọn bỏ qua được".
+- [ ] `DESIGN.md` D10 dòng 240: bỏ câu "byte xếp hàng chính là byte journal đang giữ" —
+      sai dưới `JournalPolicy::None`.
+- [ ] `reference/quickfix-acceptance-def-format.md`: sửa "247 E lines" → 250 dòng E, 247 có
+      `9=`, 244 có `10=`. Sửa dòng 121 "cần một TCP client" → runner chạy **thuần trong tiến
+      trình** đối với máy trạng thái session, không socket.
+- [ ] `reference/measured-costs.md` dòng 81, 86: `MessageView` 24 byte. Thêm §5 — số của
+      chính mình, kèm máy và settings.
+- [ ] `CLAUDE.md` §6: "`MessageView` is two words" → three words / 24 bytes.
 - [ ] `README.md` layout: thêm `crates/codec`, `crates/dict`.
-- [ ] `reference/measured-costs.md`: thêm mục §5 — số của chính mình, kèm máy và settings.
-- [ ] `STATUS.md`: đóng plan, ghi số đo, ghi cái chưa làm.
+- [ ] `STATUS.md`: đóng plan, ghi số đo, ghi cái chưa làm, thêm 3 dòng Open items (mục dưới).
 - [ ] `CHANGELOG.md`: tạo mới, mục `Unreleased`.
 
 ## Bẫy đã lường trước
 
 | Bẫy | Test canh |
 |---|---|
-| Thứ tự field — sort theo tag, không theo XML | `roundtrip`: 247/247 byte-identical. Sai thứ tự là lệch byte |
-| `BodyLength` đếm từ **sau** `0x01` của `9=` đến **trước** `10=` — lệch 1 là lỗi kinh điển | So với 244 giá trị `9=` thật trong `.def` |
-| `BodyLength` phải là số thật, không đệm `0` — vì bộ so sánh so chuỗi | `roundtrip` bắt được; thêm test riêng với body dài 9, 99, 999 byte |
-| `CheckSum` tính trên **mọi byte** trước `10=`, kể cả `8=` và `9=`; ba chữ số có đệm `0` | Test đối chiếu với cài đặt tham chiếu ngây thơ trong file test; xác nhận lần cuối khi conformance runner chạy thật |
-| Field DATA chứa `0x01` — parser tìm `0x01` sẽ cắt sai | Test với `RawDataLength=5, RawData=ab\x01cd`. **Bịa** — không có mẫu thật trong `.def`; ghi rõ là mẫu theo đặc tả |
-| Giá trị rỗng `55=` — hợp lệ về cú pháp nhưng FIX cấm | Trả `ParseError::EmptyValue`, không panic. Fuzz canh |
-| Tag tràn số (`99999999999=`) hoặc không phải số | `ParseError::BadTag`, không panic. Fuzz canh |
-| `MessageView` phình ra khi ai đó thêm field | `const _: () = assert!(size_of::<MessageView<64>>() == 16);` — compile fail |
-| Vượt `N` bị cắt âm thầm thay vì báo lỗi | Test `FieldIndex<4>` trên dòng thật → phải `Err`, không `Ok` |
-| `TimestampCache` sai khi đổi phút, đổi ngày | Test tại `23:59:59.999 → 00:00:00.000`; test `12:34:59.999 → 12:35:00.000` |
-| Index tái dùng khi view cũ còn sống → view trỏ sai | Kiểu: `parse_into` mượn `&mut` index, view mượn `&` — trình biên dịch chặn. Thêm doc-test `compile_fail` chứng minh |
-| Test skip âm thầm khi thiếu vendor | Test đọc vendor gọi `panic!` với thông báo trong `#[cfg(test)]` — cho phép panic ở test |
-| Bench xanh nhờ compiler bỏ code chết | `black_box` trên input **và** output; kiểm bằng cách so ns/op với và không có `black_box` — phải gần nhau |
+| Dòng `I` không phải bản tin dây — 281/289 thiếu `9=` và `10=` | Loader chuẩn hoá 5 bước; `defs.rs` phân loại 539/539 |
+| Tiền tố số phiên `I1,` bị đưa thẳng vào parser | Bước 2 của loader; test riêng trên 8 dòng đó |
+| `<TIME>` dài 6 byte, timestamp thật 17–21 byte | Bước 3 của loader thay bằng mốc cố định trước khi tính `9=`/`10=` |
+| 7 dòng cố tình sai chuẩn bị coi là thất bại | Bảng phân loại khai theo tên file: từ chối đúng chỗ là XANH |
+| Giá trị rỗng `55=` bị parser từ chối → `14d` không pass | **Không** có `EmptyValue`. Test: parse dòng `I` của `14d`, `view.get(56)` trả `Some(&[])`, `view.get(34)` trả `b"2"` |
+| Bản tin cụt bị coi là hỏng → ngắt phiên của counterparty bình thường | `tests/stream.rs`: cắt 244 dòng tại **mọi** điểm byte, mọi tiền tố phải trả `Incomplete` |
+| Thứ tự field — sort theo tag, không theo XML | `roundtrip`: 244/244 byte-identical |
+| Một template cứng không biểu diễn nổi 8 mẫu của `35=3` | `template_reuse`: một template, 38 dòng |
+| `BodyLength` đếm từ **sau** `0x01` của `9=` đến **trước** `10=` — lệch 1 là lỗi kinh điển | So với 247 giá trị `9=` thật |
+| `BodyLength` phải là số thật, không đệm `0` | `roundtrip` bắt được; thêm test riêng body dài 9, 99, 999 byte |
+| `BodyLength` ≥ 100000 làm vỡ canh phải tại `K` | `EncodeError::BodyTooLong`; test dựng body 100001 byte |
+| `CheckSum` tính trên **mọi byte** trước `10=`, kể cả `8=` và `9=`; ba chữ số đệm `0` | Đối chiếu cài đặt tham chiếu ngây thơ trong file test |
+| Field DATA chứa `0x01` — parser tìm `0x01` sẽ cắt sai | Test `RawDataLength=5, RawData=ab\x01cd`. **Bịa** — `.def` không có mẫu thật; ghi rõ là mẫu theo đặc tả |
+| Độ dài DATA vượt buffer → đọc ngoài biên hoặc panic khi cắt lát | `LengthOutOfBounds`; test `95=999999` trên buffer 20 byte; làm hạt giống fuzz |
+| Field độ dài của DATA vắng mặt hoặc không đứng liền trước | `MissingLengthField`; hạt giống fuzz |
+| Giá trị field > `u16::MAX` byte tràn im lặng vào `len: u16` | `FieldTooLong`; test dựng field 65536 byte |
+| Tag tràn số (`99999999999=`) hoặc không phải số | `BadTag`, không panic. Fuzz canh |
+| `MessageView` phình ra khi ai đó thêm field | `const _: () = assert!(size_of::<MessageView<64>>() == 24);` — compile fail |
+| Vượt `N` bị cắt âm thầm | Test `FieldIndex<4>` trên dòng thật → phải `Err`, không `Ok` |
+| `out` quá nhỏ khi encode | `EncodeError::OutputTooSmall`, không panic. Test với `out` đúng thiếu 1 byte |
+| `TimestampCache` sai khi đổi phút, đổi ngày, hoặc lần gọi đầu | Test `23:59:59.999 → 00:00:00.000`; `12:34:59.999 → 12:35:00.000`; cache trống |
+| Index tái dùng khi view cũ còn sống → view trỏ sai | Kiểu: `parse_into` mượn `&mut`, view mượn `&`. Thêm doc-test `compile_fail` |
+| Test skip âm thầm khi thiếu vendor | Test đọc vendor gọi `panic!` với thông báo, trong `#[cfg(test)]` |
+| Bench xanh nhờ compiler bỏ code chết | `black_box` trên input **và** output; so ns/op có và không có `black_box` |
 
 ## Rủi ro
 
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
-| Team chưa quen Rust; bước 2 và 4 là chỗ ownership/lifetime khó nhất | Cao | Ước lượng đã nhân 1,5–2. Bước 2 xong hẳn rồi mới sang 4. Không `unsafe` để "cho qua" borrow checker |
-| Số đo trên M5/macOS không phản ánh Linux | Trung bình | Ghi rõ trong nhật ký là số so sánh tương đối. Gate ≤150/≤60 ns coi là **tạm đạt** trên Mac; xác nhận trên Linux ở bước `engine` |
-| `#![no_std]` gây ma sát (không `Vec`, không `format!`) | Trung bình | Đó là mục đích. Nếu thật sự kẹt, `alloc` feature cho `dict` được phép — `codec` thì không |
-| Quy tắc thứ tự có ngoại lệ ngoài 247 dòng đã xem (repeating group) | Thấp | Ngoài phạm vi bước này. Ghi trong `Ngoài phạm vi` |
+| Team chưa quen Rust; bước 2 và 4 là chỗ ownership/lifetime khó nhất | Cao | Ước lượng đã nhân 1,5–2. Bước 2 xong hẳn rồi mới sang 4. Không `unsafe` để "cho qua" borrow checker. Bước 4 đã tránh sẵn bẫy struct tự tham chiếu bằng cách cho `Template` tự sở hữu buffer |
+| **Bench assert cứng ≤150/≤60 ns sẽ nhấp nháy trên macOS** | Cao | Baseline 138,8 ns chỉ cách 150 ns 8%, mà macOS không pin nhân dao động hơn thế; ≤60 ns thì **chưa từng đo trên máy này**. Bench assert **trần hồi quy ~1,5–2× baseline thật**, số cụ thể vào nhật ký. 150/60 ns giữ nguyên là **mục tiêu công bố**, xác nhận trên Linux ở bước `engine`. Một cổng đỏ ngẫu nhiên là cổng sẽ bị tắt |
+| Số đo trên M5/macOS không phản ánh Linux | Trung bình | Ghi rõ là số so sánh tương đối |
+| `#![no_std]` gây ma sát | Trung bình | Đó là mục đích. Nếu thật sự kẹt, `alloc` feature cho `dict` được phép — `codec` thì không |
+| `fuzz/` cần nightly, workspace ghim stable | Trung bình | `fuzz/` là crate riêng **ngoài** workspace; chạy `cargo +nightly fuzz`. Thư viện vẫn ship trên stable. CI cài hai toolchain |
+| Quy tắc thứ tự có ngoại lệ ngoài 244 dòng đã xem (repeating group) | Thấp | Ngoài phạm vi. `.def` chỉ có một `454=0` |
 | `roxmltree` đổi API | Thấp | Chỉ ở build; pin version |
-| CI không có `vendor/` | Trung bình | CI job chạy `scripts/fetch-quickfix-assets.sh` trước `cargo test`; test fail rõ nếu thiếu |
+| CI không có `vendor/` | Trung bình | CI job chạy `scripts/fetch-quickfix-assets.sh` trước `cargo test` |
+| **`fetch-quickfix-assets.sh` bám nhánh `master` đổi được** | Trung bình | Mọi con số nghiệm thu (539, 247, 244, 8 mẫu Reject) có thể đổi mà không ai sửa plan. Chưa xử lý ở bước này — ghi vào `STATUS.md` Open items |
 
 ## Ngoài phạm vi
 
+Cân nhắc rồi hoãn, kèm lý do:
+
+- **Bất biến DATA khi ghi** — `encode` chưa tự sinh lại field độ dài cho DATA động. Chưa cần
+  vì không counterparty nào trong bộ test gửi DATA. → `STATUS.md` Open items.
+- **`<component>` đệ quy trong `required()`** — 632 chỗ dùng component; bảng `required` bước
+  này thiếu field. Chưa ai gọi nó ở bước 1. → `STATUS.md` Open items, chặn plan `session`.
+- **Ghim commit QuickFIX trong fetch script** — rẻ nhưng ngoài phạm vi hai crate.
+  → `STATUS.md` Open items.
 - **Repeating group có thứ tự riêng** — chỉ có `find_from`, không sắp xếp group khi ghi.
-- **Kiểu decimal / giá** — chỉ bytes và số nguyên. Giá là việc của người dùng, hoặc bước sau.
+- **Kiểu decimal / giá** — chỉ bytes và số nguyên.
 - **SIMD cho checksum/quét `0x01`** — 139 ns không SIMD đã đạt gate. Đo trước, tối ưu sau.
+- **Metadata cho conformance** (allowed-tag, enum, type-format, group) — `dict` bước này chỉ
+  sinh 5 bảng. Phần còn lại thuộc plan `conformance`.
 - FIX 5.0 / FIXT 1.1, FIXML, FAST, SBE.
 - Session, socket, engine, dispatch — bước 3 và 4 của `DESIGN.md` §7.
-- Conformance runner `.def` — bước 2 của §7, plan riêng.
+- Conformance runner `.def` — bước 2 của §7, plan riêng. **Đã chốt: chạy thuần trong tiến
+  trình, không socket** (xem Nhật ký review D5).
+- Phân phối / publish crates.io — tên `nanofixengine` còn là placeholder; publish trước khi
+  đổi tên là sai lầm không đảo được.
 
 ## Nhật ký giao hàng
 
 *(trống — điền khi đóng từng bước)*
+
+---
+
+## Nhật ký review — 2026-08-27
+
+16 quyết định từ `/plan-eng-review` + outside voice (Codex, `model_reasoning_effort=high`).
+Mọi con số dưới đây đếm bằng script trên `vendor/`, không lấy từ tài liệu.
+
+| # | Quyết định | Nguồn |
+|---|---|---|
+| D2 | Giữ phạm vi 2 crate / ~14 file. Vấn đề là số liệu và kiểu, không phải độ lớn | Step 0 |
+| D3 | `MessageView` = 24 byte. Sửa 6 chỗ, assert `== 24`, đính chính ADR-0003 tại chỗ có ghi ngày | review |
+| D4 | Fixture `.def`: bảng phân loại + chuẩn hoá `fixify!`. 539 / 247 / 244 | review + Codex #1, #2 |
+| D5 | Conformance runner chạy **thuần trong tiến trình**, không socket. Sửa `DESIGN.md` §3, §7 và reference dòng 121 | review |
+| D6 | Sửa cả 5 mâu thuẫn trong `DESIGN.md`, cùng commit | review |
+| D7 | `Template` **tự sở hữu** buffer inline; `encode(out, &[(u32, &[u8])])` | review + Codex #6 |
+| D8 | Thêm `MissingLengthField` + `LengthOutOfBounds`, kèm test và hạt giống fuzz | review |
+| D9 | `parse_into` trả `Ok(Parsed::Incomplete)` — trạng thái riêng trong nhánh Ok | review + Codex #5 |
+| D10 | `fuzz/` là crate ngoài workspace, chạy `cargo +nightly fuzz`. Thư viện giữ stable | review |
+| D11 | Bench assert **trần hồi quy ~1,5–2× baseline**, không phải 150/60 ns | review + Codex #13 |
+| D12 | **Bỏ `ParseError::EmptyValue`.** Parser biết cú pháp, session biết luật | Codex #3, kiểm chứng trên `14d` + `ReverseRouteWithEmptyRoutingTags` |
+| D13 | Slot tùy chọn + test `template_reuse` (một template, 38 dòng Reject, 8 mẫu) | Codex #7, kiểm chứng bằng đếm |
+| D14 | Giữ thứ tự `DESIGN.md` §7, nhưng **đổi điều kiện đóng bước 1** sang `tests/stream.rs` | CROSS-MODEL TENSION, Codex #14 |
+| D15 | Gấp vào plan: tham số `Validation` thật + ngữ nghĩa giới hạn (`FieldTooLong`, `BodyTooLong`, `OutputTooSmall`) | Codex #4, #11 |
+| D16 | 3 mục hoãn → `STATUS.md` Open items, không tạo `TODOS.md` | review |
+
+**Codex #8, #9, #10, #12 được xem xét và hoãn có chủ ý** — xem *Ngoài phạm vi*. #10 (câu chữ
+`no_std`) đã sửa luôn trong bảng *Bất biến bị đụng tới*.
+
+## GSTACK REVIEW REPORT
+
+| Runs | Status | Findings |
+|---|---|---|
+| `/plan-eng-review` (Architecture, Code Quality, Tests, Performance) | issues_found | 9 |
+| Outside voice — Codex `exec`, `model_reasoning_effort=high`, read-only | issues_found | 14 (7 mới, 5 trùng, 2 hoãn) |
+| Kiểm chứng độc lập — `rustc -O`, script đếm trên `vendor/` | confirmed | 6 claim sai trong tài liệu |
+
+**Độ phủ test:** trước review 17/32 nhánh (53%). Sau 16 quyết định: 30/32 nhánh có test khai
+tên. Còn 2 GAP có chủ ý — `NANOFIX_FIX44_XML` override, và XML hỏng giữa chừng.
+
+**Critical gaps đã đóng:** 2 — bản tin cụt trên luồng TCP (D9), và giá trị rỗng chặn 2/59
+định nghĩa acceptance (D12).
+
+**Song song hoá:** Lane A = `dict` (bước 1). Lane B = loader fixture + `codec::parse`
+(bước 2). Hai lane không chung module, chạy song song được. Bước 3 chờ cả hai; bước 4 chỉ
+chờ bước 2; bước 5 chờ tất cả. Xung đột duy nhất: cả hai lane đụng `Cargo.toml` workspace —
+làm bước 0 xong hẳn trước khi tách lane.
+
+CODEX absorbed: #1, #2, #3, #4, #5, #6, #7, #11, #13 → D4, D12, D15, D9, D7, D13, D11.
+CODEX deferred: #8, #9, #12 → `STATUS.md` Open items. #10 → sửa trực tiếp.
+CROSS-MODEL resolved: #14 → D14, giữ thứ tự build, đổi điều kiện đóng bước.
+
+**VERDICT: APPROVED WITH CHANGES.** Plan này khi chưa sửa sẽ đỏ ngay commit đầu (assert
+`== 16` không biên dịch) và không thể đạt 59/59 (giá trị rỗng). Sau 16 quyết định, mọi tiêu
+chí nghiệm thu đều đếm được trên dữ liệu thật và mọi chữ ký đều biên dịch được.
+
+NO UNRESOLVED DECISIONS

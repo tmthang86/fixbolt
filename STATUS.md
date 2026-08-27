@@ -11,7 +11,7 @@ Last updated: **2026-08-27**.
 |---|---|
 | Branch | **`main`** |
 | Milestone | **M0 — decisions and architecture.** No engine code |
-| Plan in flight | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — Chờ duyệt |
+| Plan in flight | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — reviewed (eng + Codex), 16 decisions folded in, chờ duyệt |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
@@ -58,3 +58,6 @@ Last updated: **2026-08-27**.
 | 3 | Read `test/definitions/client/` — do the 59 server defs cover the acceptor fully? | The `conformance` plan |
 | 5 | Ring-buffer policy when the library falls behind: block, drop, or disconnect? | ADR-0002, and the `engine` plan |
 | 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number | Every gate in §6 that matters |
+| 7 | **`scripts/fetch-quickfix-assets.sh` tracks mutable `master`.** Every acceptance number in the codec plan (539 lines, 247 with `9=`, 244 with `10=`, 8 tag-set patterns for `35=3`) can change silently upstream. Pin a commit and verify it | Reproducibility of every step-1 gate |
+| 8 | **`dict::required()` does not recurse through `<component>`.** `FIX44.xml` uses `<component>` in 632 places; `NewOrderSingle` references `Parties`, `PreAllocGrp`, `TrdgSesGrp`, so the generated table is missing fields | The `session` plan |
+| 9 | **The encoder has no DATA invariant.** Writing a dynamic DATA field must regenerate its length field, place it immediately before, and count bytes including embedded `0x01`. Only the read path is specified | Any counterparty that sends `RawData`/`XmlData` |
