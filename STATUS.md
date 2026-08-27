@@ -11,11 +11,9 @@ Last updated: **2026-08-27**.
 |---|---|
 | Branch | **`main`** |
 | Milestone | **M0 — decisions and architecture.** No engine code |
-| Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS now has ADR-0005 (Proposed) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — reviewed (eng + Codex), 16 decisions folded in, chờ duyệt |
-| Plan queued | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — chờ duyệt. Bắt đầu sau khi codec-dict xong bước 1. Đóng luôn open item 8 |
-| Decision in flight | **[ADR-0004](docs/decisions/ADR-0004-bidirectional-engine.md)** — bidirectional engine (acceptor + initiator, one session core). **Proposed**, awaiting acceptance. `DESIGN.md` and `README.md` are untouched until it is accepted |
-| Decision in flight | **[ADR-0005](docs/decisions/ADR-0005-tls.md)** — TLS: `rustls` handshake (allocation carve-out, bounded), kTLS steady state on Linux, userspace fallback that does **not** meet the hot-path guarantee. **Proposed** |
+| Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
+| Plan in flight | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — **approved 2026-08-27.** Ready to build; nothing started |
+| Plan queued | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — **approved 2026-08-27.** Starts after codec-dict step 1. Closes open item 8 |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
@@ -42,6 +40,10 @@ Last updated: **2026-08-27**.
   `.DS_Store`.
 - Repository is **private** as of 2026-08-27 (it was public at creation). `cargo 1.95.0`.
 - **ADR-0001, -0002, -0003 accepted 2026-08-27** by the owner, after the latency-budget review.
+- **ADR-0004 and ADR-0005 accepted 2026-08-27** by the owner. -0004 makes the engine
+  bidirectional; -0005 makes TLS a transport with the hot-path guarantee stated per mode.
+  Both accepted on reasoning, not measurement — ADR-0005's open question 1 is unanswered and
+  load-bearing (open item 10).
 
 ## Not proven — claimed, researched, or simply not yet run
 

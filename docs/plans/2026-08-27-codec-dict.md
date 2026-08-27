@@ -1,6 +1,6 @@
 # Bước 1 — `codec` và `dict`: đọc, ghi FIX 4.4 không cấp phát bộ nhớ
 
-> **Loại:** Plan · **Ngày:** 2026-08-27 · **Trạng thái:** Đã review (eng), chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-27 · **Trạng thái:** **Đã duyệt** — 2026-08-27, sau review kỹ thuật + outside voice
 > **Phạm vi:** `DESIGN.md` §7 bước 1 — hai crate đầu tiên của workspace
 > **Sửa lần 2 — 2026-08-27**, sau `/plan-eng-review` + outside voice (Codex). 16 quyết định
 > ghi ở mục *Nhật ký review* cuối file. Bản đầu dựa trên vài con số đếm sai; mục

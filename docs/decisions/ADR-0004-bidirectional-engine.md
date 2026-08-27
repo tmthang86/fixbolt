@@ -1,6 +1,6 @@
 # ADR-0004 — The engine is bidirectional: acceptor and initiator share one session core
 
-- **Status**: Proposed — 2026-08-27
+- **Status**: Accepted — 2026-08-27
 - **Date**: 2026-08-27
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0001](ADR-0001-relationship-to-quickfix.md), [ADR-0002](ADR-0002-engine-library-split.md),

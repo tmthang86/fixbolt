@@ -1,6 +1,6 @@
 # Repeating group — đọc, ghi, và kiểm đếm
 
-> **Loại:** Plan · **Ngày:** 2026-08-27 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-27 · **Trạng thái:** **Đã duyệt** — 2026-08-27
 > **Phạm vi:** [PRD.md](../PRD.md) phase 1, tiêu chí 2 — lỗ hổng lớn nhất so với QuickFIX
 
 > Tên file luôn tiếng Anh: `docs/plans/YYYY-MM-DD-<topic>.md`.

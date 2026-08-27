@@ -1,6 +1,6 @@
 # ADR-0005 — TLS is a transport implementation, and the hot-path guarantee is stated per mode
 
-- **Status**: Proposed — 2026-08-27
+- **Status**: Accepted — 2026-08-27
 - **Date**: 2026-08-27
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0001](ADR-0001-relationship-to-quickfix.md),
@@ -50,6 +50,11 @@ non-blocking socket in a spin loop is the single most important thing to verify 
 this is built, and it is an open question below, not an assumption.
 
 ## Decision
+
+**Accepted 2026-08-27 on the strength of the reasoning, not on measurement** — the same basis
+STATUS.md records for ADR-0001, -0002 and -0003. Open question 1 below is load-bearing and
+still unanswered: if `ktls-core` cannot be driven without an async runtime, this decision is
+superseded rather than patched. It is tracked as STATUS open item 10.
 
 **TLS is a `transport` implementation behind a feature flag, with two steady-state modes. The
 hot-path guarantee is stated separately for each mode instead of being claimed for both.**
