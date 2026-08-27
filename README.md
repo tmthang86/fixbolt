@@ -1,11 +1,14 @@
-# nanofix
+# nanofixengine
 
 A FIX 4.4 protocol engine in Rust, built for low latency and for use as a **server
 (acceptor)** — the side of the protocol that the Rust ecosystem does not currently cover
 with anything production-proven.
 
-> **Status: design. No engine code exists yet.** The repository holds the decisions and the
-> plan that come before it. See [STATUS.md](STATUS.md).
+> **Status: design. No engine code exists yet.** The repository holds the decisions that
+> come before it. Start with **[docs/DESIGN.md](docs/DESIGN.md)** for the proposed
+> architecture; [STATUS.md](STATUS.md) says where the work stands.
+>
+> **`nanofixengine` is a placeholder name**, taken to clear a collision. See STATUS.md.
 
 ## Why this exists
 
@@ -20,8 +23,8 @@ that should be read before anything else.**
 
 ## Relationship to QuickFIX
 
-nanofix is **not** a port of QuickFIX C++. A port is legally permitted but would import the
-architecture responsible for its throughput ceiling. Instead nanofix takes three things
+nanofixengine is **not** a port of QuickFIX C++. A port is legally permitted but would import the
+architecture responsible for its throughput ceiling. Instead nanofixengine takes three things
 from that project as *data*: the FIX XML dictionaries, the 59 FIX 4.4 session acceptance
 tests, and `Session.cpp` as a reference for behaviour.
 
@@ -30,6 +33,18 @@ The reasoning, the licence analysis and the costs are in
 
 The codec design follows [`hffix`](https://jamesdbrock.github.io/hffix/) instead: parse and
 serialise in place at the I/O buffer, with no heap allocation on the hot path.
+
+## Architecture, in one paragraph
+
+Six layers, split so that the framework stays off the hot path. `codec` parses and
+serialises in place at the I/O buffer with no allocation. `session` is the FIX session
+protocol as a **pure state machine with no I/O**, which makes the 59 QuickFIX acceptance
+definitions run as unit tests. `engine` owns the TCP connections and drives those machines;
+`library` runs the application's business logic on its own thread, with a ring buffer
+between the two — Artio's split, so an application that blocks cannot stall the session
+layer. The full reasoning, with the measurements behind it, is in
+[docs/DESIGN.md](docs/DESIGN.md), [ADR-0002](docs/decisions/ADR-0002-engine-library-split.md)
+and [ADR-0003](docs/decisions/ADR-0003-message-representation.md).
 
 ## Layout
 

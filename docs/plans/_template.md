@@ -28,7 +28,7 @@ Nêu tên những file sẽ tạo hoặc sửa.
 
 ## Bất biến bị đụng tới
 
-Trong tám bất biến ở `CLAUDE.md` §3, việc này có thể ảnh hưởng cái nào, và giữ nguyên chúng bằng
+Trong năm điều bất di bất dịch ở `CLAUDE.md` §2, việc này có thể ảnh hưởng cái nào, và giữ nguyên chúng bằng
 cách nào.
 
 Chỉ ghi "không" khi việc này không đụng vào `matching/` lẫn `marketdata/`.
@@ -49,7 +49,7 @@ phát lại bản ghi nào.
 
 ## Tài liệu phải cập nhật
 
-Theo bảng đồng bộ ở [`CLAUDE.md` §4](../../CLAUDE.md).
+Theo bảng đồng bộ ở `CLAUDE.md` §3.
 
 - [ ] …
 
