@@ -26,3 +26,10 @@ KRX-Specs/
 
 # Third-party vendored specs kept out of git; fetched by scripts/fetch-quickfix-assets.sh
 /vendor/
+
+# CLAUDE.md is ignored machine-wide by ~/.gitignore_global. Un-ignore it HERE only:
+# it is this project's engineering constitution and 14 references across README.md,
+# the ADRs and the plans point at its sections. Without this line every one of those
+# dangles for anyone who clones the repository. Scoped deliberately — the global rule
+# still protects CLAUDE.md in every other repo on this machine.
+!CLAUDE.md
