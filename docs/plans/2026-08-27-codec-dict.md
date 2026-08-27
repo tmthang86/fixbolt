@@ -123,7 +123,19 @@ thêm field vào view thì build fail.
 **Trait `Dictionary`** — `codec` chỉ hỏi hai câu, hỏi qua trait để không phụ thuộc `dict`:
 
 ```rust
-pub trait Dictionary { fn is_header(tag: u32) -> bool; fn data_length_tag(tag: u32) -> Option<u32>; }
+pub trait Dictionary {
+    fn is_header(tag: u32) -> bool;
+    fn data_length_tag(tag: u32) -> Option<u32>;
+
+    // Ba hàm dưới thuộc plan repeating-groups, KHÔNG cài đặt ở bước này.
+    // Chúng nằm đây vì `Dictionary` là API công khai: thêm hàm sau là breaking change.
+    // Cùng logic `Role` ở ADR-0004 — rẻ bây giờ, gãy sau.
+    // Khoá là (msg_type, counter), KHÔNG phải counter một mình: 4 counter tag
+    // (268, 124, 420, 295) có delimiter khác nhau tùy bản tin. Chi tiết trong plan đó.
+    fn group_delimiter(_msg_type: &[u8], _counter: u32) -> Option<u32> { None }
+    fn group_members(_msg_type: &[u8], _counter: u32) -> &'static [u32] { &[] }
+    fn group_order(_msg_type: &[u8], _counter: u32) -> &'static [u32] { &[] }
+}
 ```
 
 Hàm `#[inline]`, không `dyn`. `codec` ship sẵn `NoDict` (mọi câu trả lời là "không").
@@ -406,7 +418,9 @@ Cân nhắc rồi hoãn, kèm lý do:
   này thiếu field. Chưa ai gọi nó ở bước 1. → `STATUS.md` Open items, chặn plan `session`.
 - **Ghim commit QuickFIX trong fetch script** — rẻ nhưng ngoài phạm vi hai crate.
   → `STATUS.md` Open items.
-- **Repeating group có thứ tự riêng** — chỉ có `find_from`, không sắp xếp group khi ghi.
+- **Repeating group** — chỉ có `find_from`, không đọc/ghi group. Đã có plan riêng:
+  [2026-08-27-repeating-groups.md](2026-08-27-repeating-groups.md). Bước 1 chỉ nhận **hình
+  dạng** của trait `Dictionary` (3 hàm mặc định trả rỗng) để không phải đổi API công khai sau.
 - **Kiểu decimal / giá** — chỉ bytes và số nguyên.
 - **SIMD cho checksum/quét `0x01`** — 139 ns không SIMD đã đạt gate. Đo trước, tối ưu sau.
 - **Metadata cho conformance** (allowed-tag, enum, type-format, group) — `dict` bước này chỉ
@@ -446,6 +460,7 @@ Mọi con số dưới đây đếm bằng script trên `vendor/`, không lấy 
 | D14 | Giữ thứ tự `DESIGN.md` §7, nhưng **đổi điều kiện đóng bước 1** sang `tests/stream.rs` | CROSS-MODEL TENSION, Codex #14 |
 | D15 | Gấp vào plan: tham số `Validation` thật + ngữ nghĩa giới hạn (`FieldTooLong`, `BodyTooLong`, `OutputTooSmall`) | Codex #4, #11 |
 | D16 | 3 mục hoãn → `STATUS.md` Open items, không tạo `TODOS.md` | review |
+| D18 | Trait `Dictionary` nhận sẵn 3 hàm group (mặc định rỗng) ở bước 1 | plan repeating-groups, rủi ro mức Cao |
 
 **Codex #8, #9, #10, #12 được xem xét và hoãn có chủ ý** — xem *Ngoài phạm vi*. #10 (câu chữ
 `no_std`) đã sửa luôn trong bảng *Bất biến bị đụng tới*.
