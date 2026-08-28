@@ -120,14 +120,20 @@ crates/conformance/tests/fix44.rs  chạy cả 59 file, in bảng đạt/trượ
 
 ### Máy trạng thái là một trait, chưa phải một cài đặt
 
+**Sửa 2026-08-28 khi làm bước 4: trait phải theo *engine*, không theo connection.**
+`1b_DuplicateIdentity.def` mở connection 1, logon, mở connection 2 **cùng danh tính**, và
+chờ connection 2 bị ngắt — connection 2 bị từ chối **vì** connection 1 đang tồn tại. Trait
+cấp mỗi connection một đối tượng session riêng thì test đó không đời nào pass được. Nên
+`Conn` là tham số, một thể hiện thấy mọi connection. 2/59 file cần điều này.
+
 ```rust
+pub struct Conn(pub u32);
 pub enum Input<'a> { Connect, Disconnect, Bytes(&'a [u8]), Tick(u64) }
-pub enum Output<'a> { Send(&'a [u8]), Disconnect }
+pub enum Link { Up, Dropped }
 
 pub trait SessionUnderTest {
-    /// Đưa một input, nhận về 0..n output. Không cấp phát: output ghi vào bộ đệm
-    /// của người gọi và trả về lát cắt.
-    fn step<'a>(&mut self, input: Input<'_>, out: &'a mut [u8]) -> Outputs<'a>;
+    /// `emit` là generic chứ không phải `dyn` — cài đặt không trả phí vtable.
+    fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, input: Input<'_>, emit: F) -> Link;
 }
 ```
 
