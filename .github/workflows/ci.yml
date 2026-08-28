@@ -6,9 +6,12 @@
 # are skipped with a visible annotation rather than passed silently.
 name: CI
 
+# Every branch, not only main. CLAUDE.md §8 says implementation happens on a
+# branch per plan and "gates must be green FOR THAT COMMIT, not merely for the
+# branch tip" — which a main-only trigger cannot deliver, because it first sees
+# the work after the merge.
 on:
   push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -63,9 +66,11 @@ jobs:
             echo "::warning title=Gates skipped, not passed::The workspace has no crates yet, so fmt, clippy and test did not run. This job is green because there is nothing to check — CLAUDE.md §10: a green result that was inferred rather than observed is not a result."
           fi
 
-      # When the conformance runner lands it needs vendor/, which is gitignored:
-      #   - run: scripts/fetch-quickfix-assets.sh
-      # goes here, before the test steps. Not yet — nothing reads it.
+      # nanofix-dict generates its tables from the QuickFIX XML at build time and
+      # fails the build when it is absent — deliberately, see crates/dict/build.rs.
+      # vendor/ is gitignored (ADR-0001), so CI fetches it before anything builds.
+      - if: steps.ws.outputs.count != '0'
+        run: scripts/fetch-quickfix-assets.sh
 
       - if: steps.ws.outputs.count != '0'
         run: cargo fmt --all -- --check
@@ -89,5 +94,7 @@ jobs:
           if [ "$n" -eq 0 ]; then
             echo "::warning title=Skipped, not passed::No crates yet, so --no-default-features did not run."
           fi
+      - if: steps.ws.outputs.count != '0'
+        run: scripts/fetch-quickfix-assets.sh
       - if: steps.ws.outputs.count != '0'
         run: cargo test --all --no-default-features

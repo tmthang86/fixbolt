@@ -349,8 +349,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 
 | Gate | Target | Proven by |
 |---|---|---|
-| Parse `NewOrderSingle` | ≤ 150 ns **published**; the bench asserts a **regression ceiling** — see below | `benches/parse.rs` |
-| Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**; same rule | `benches/serialize.rs` |
+| Parse `NewOrderSingle` | ≤ 150 ns **published**. `[measured]` **77.0 ns**, 2026-08-28 | `benches/parse.rs`, asserting a 150 ns regression ceiling |
+| Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**. `[measured]` **93.8 ns — the target is NOT met** | `benches/serialize.rs`, asserting a 190 ns regression ceiling |
 | `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is | `benches/dispatch.rs` |
 | Allocations on the hot path | **0** | `benches/alloc.rs`, counting allocator |
 | Session conformance, acceptor | **59 / 59** | `conformance` runner, in-process, no socket |
@@ -358,6 +358,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Repeating groups | all **93** FIX 4.4 groups read and written; in-group ordering verified against the dictionary | `crates/codec/tests/groups.rs` ([plan](plans/2026-08-27-repeating-groups.md)) |
 | **Wire-to-wire, NIC to NIC** | p50 / p99 / p99.9 published; p99 ≤ 50 µs on kernel TCP | `tools/w2w` — `SO_TIMESTAMPING`, HdrHistogram, load generator on a **separate machine** |
 | Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |
+| `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
 | Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job |
 | No documentation link points at a missing file | 102 internal links resolve | `scripts/check-links.py`, run in CI |
@@ -366,7 +367,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every
 other row is an internal number; without this one they are unfalsifiable.
 
-**Three of these rows run today; the rest cannot, and CI says so out loud.** The workspace has
+**Most of these rows run today. The rest cannot, and CI says so out loud.** The workspace has
 no crates, so `fmt`, `clippy` and `test` have nothing to check — the CI job emits a warning
 annotation saying it *skipped* rather than passing, because a green tick that means "there was
 nothing to look at" is the exact failure `CLAUDE.md` §10 names.
@@ -375,6 +376,14 @@ The 150 ns targets are anchored to a real measurement — 139 ns for a `NewOrder
 Apple M5 on 2026-08-27, in the harness described in
 [reference/measured-costs.md](reference/measured-costs.md). They are **a reference point on
 one machine, not a promise about any other.**
+
+`[measured]` **The serialise target is missed by 56%.** 93.8 ns against a published 60 ns, on
+an `ExecutionReport` with 3 fixed fields and 14 slots. The cause is visible rather than
+mysterious: `encode` looks each slot up with a linear scan of the supplied list, so the cost
+grows with slots × parts. It is recorded here rather than optimised, because
+`reference/measured-costs.md` exists to stop exactly the reverse — optimising before
+measuring on the machine that matters. The number to beat is the Linux one, at the `engine`
+step.
 
 **Published target and asserted ceiling are deliberately different numbers.** The benchmark
 asserts a regression ceiling of roughly 1.5–2× the baseline measured on the machine at hand,

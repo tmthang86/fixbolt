@@ -12,8 +12,8 @@ Last updated: **2026-08-27**.
 | Branch | **`main`** |
 | Milestone | **M0 — decisions and architecture.** No engine code |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — **approved 2026-08-27.** Ready to build; nothing started |
-| Plan queued | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — **approved 2026-08-27.** Starts after codec-dict step 1. Closes open item 8 |
+| Plan in flight | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — approved, starting now |
+| Last closed | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — closed and merged 2026-08-28. 54 tests, 0 allocations, 304M fuzz executions |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
@@ -40,6 +40,37 @@ Last updated: **2026-08-27**.
   `.DS_Store`.
 - Repository is **private** as of 2026-08-27 (it was public at creation). `cargo 1.95.0`.
 - **ADR-0001, -0002, -0003 accepted 2026-08-27** by the owner, after the latency-budget review.
+- **Step 1 of the codec plan is CLOSED, 2026-08-28.** 54 tests green. The closing condition —
+  533 real messages through a simulated TCP read loop under 5 chunk patterns and byte-at-a-time
+  — passes. `[measured]` parse 77.0 ns, encode 93.8 ns, **0 allocations**, 304 million fuzz
+  executions with no crash. Full method and machine in
+  [reference/measured-costs.md §5](docs/reference/measured-costs.md).
+- **The serialise target is missed: 93.8 ns against a published 60 ns.** Cause identified
+  (linear slot lookup, slots × parts), deliberately not optimised — the number that decides is
+  the Linux one at the `engine` step.
+- **New open item: Criterion is deferred.** `DESIGN.md` §6 names it; the benches use a 24-line
+  dependency-free harness instead, because the benches must *assert* and Criterion measures
+  without asserting. The cost is outlier detection and confidence intervals. Revisit when
+  hot-path work moves to Linux.
+- **`codec` parses FIX as of 2026-08-28.** 29 tests green; all 539 `.def` lines classified.
+  Two more plan defects surfaced and were decided by the owner: the plan contradicted itself
+  about `2t` (the boundary diagram gave it to the session, the parse algorithm to the codec —
+  resolved by refusing only what cannot be **framed**), and `14a_BadField` could not pass with
+  a plain `Err`, so `ParseError::BadTag` now carries a byte offset and the index keeps every
+  field read before the failure.
+- **Nothing in the corpus can be checksum-validated.** `[measured]` 244 `E` lines carry `10=`
+  and **0** are the real checksum of their own bytes; 238 are literally `10=0`. The comparator
+  matches tag 10 by regex. **This constrains the conformance plan**: frame validation belongs
+  on the `I` side and on the engine's own output, never on expected lines.
+- **`codec` + `dict` step 0 and step 1 landed 2026-08-28** on branch `plan/codec-dict`.
+  `dict` generates 5 tables from `FIX44.xml`: 912 tag constants, 93 message types, 30 header
+  tags, 16 DATA→length pairs, 84 required-field arms. 11/11 tests green. The plan was wrong in
+  three places about the dictionary and was revised and re-approved — see its delivery log and
+  the new **[reference/fix44-dictionary-traps.md](docs/reference/fix44-dictionary-traps.md)**,
+  which records all four traps with the test that guards each.
+- **New open item: the 3 trailer tags are unclassified.** `is_header(89)` and `is_header(93)`
+  return `false`, so a written `Signature` would sort into the body. Nothing writes one — no
+  `.def` carries a signature — so this is pinned by a test rather than fixed.
 - **CI exists as of 2026-08-28**, and closes a gap that had been asserted eight times. "CI
   proves it" appeared in `CLAUDE.md` §2, ADR-0004, ADR-0005, `DESIGN.md` D11 and `PRD.md`
   while `.github/` did not exist. It now has three jobs. Two of them cannot do anything yet —

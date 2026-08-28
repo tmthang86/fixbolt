@@ -33,3 +33,9 @@ KRX-Specs/
 # dangles for anyone who clones the repository. Scoped deliberately — the global rule
 # still protects CLAUDE.md in every other repo on this machine.
 !CLAUDE.md
+
+# cargo-fuzz build output and crash artifacts. The seed corpus IS committed:
+# it is the regression suite the fuzzer builds, and it is a few kilobytes.
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/Cargo.lock

@@ -144,3 +144,63 @@ architecture. **Every row is the vendor's or project's own claim.**
 Set against the 138.8 ns measured in §1: the distance between a mature C++ engine and a
 flyweight parser is roughly **an order of magnitude**, and fix8's own numbers say where it
 goes. That is the entire argument for [DESIGN.md §1](../DESIGN.md#1-the-finding-this-architecture-is-built-around).
+
+---
+
+## 5. This engine's own numbers
+
+`[measured]` 2026-08-28. **Everything above this section was measured on somebody else's
+code**; this section is the first row of the table that is ours.
+
+**Machine and method, because a number without them is not a number** (`CLAUDE.md` §2 rule 10):
+
+| | |
+|---|---|
+| Machine | Apple M5, macOS |
+| Core pinning | **none** — `DESIGN.md` §9 settings are Linux-only and none is in force |
+| Build | `cargo bench`, release profile, `nanofix-codec` at `886daa8`'s successor |
+| Estimator | **best of 7 runs × 200,000 iterations**, not the mean |
+| Harness | `crates/codec/benches/harness.rs`, 24 lines, no dependencies |
+
+**The estimator is optimistic and that matters.** Taking the minimum reports the
+least-disturbed run. It suppresses scheduler noise, which is what makes a laptop number
+comparable at all, but it is not what a mean would say and it is not what a p99 would say.
+Consecutive runs of the same binary moved by ~6% (72.8 → 77.0 ns), which is the honest
+precision of this setup.
+
+| Operation | ns/op | Published target | Verdict |
+|---|---|---|---|
+| Parse `NewOrderSingle`, `Validation::ALL` | **77.0** | ≤ 150 | inside, by 2× |
+| Parse `NewOrderSingle`, no frame checks | 74.5 | — | body-length and checksum cost ~2.5 ns |
+| Parse `Heartbeat`, `Validation::ALL` | 35.0 | — | |
+| Encode `ExecutionReport`, 3 fixed + 14 slots | **93.8** | ≤ 60 | **missed, by 56%** |
+| `SendingTime` from `TimestampCache` | 1.8 | — | against 50-100 ns formatted naively (§1) |
+| Allocations, parse / encode / lookup | **0 / 0 / 0** | 0 | `benches/alloc.rs`, counting allocator |
+
+**The one that misses.** `Template::encode` finds each slot by scanning the caller's list, so
+the cost is slots × parts. Fourteen slots is a realistic `ExecutionReport` and it is where the
+93.8 ns goes. Not optimised, deliberately: this whole page exists because the reference project
+optimised a codec that was 1% of its budget. The number that decides is the Linux one at the
+`engine` step, and `DESIGN.md` §8 puts the codec at ~1% of wire-to-wire either way.
+
+**Do not quote any of these as the engine's numbers.** They are a relative reference on one
+unpinned laptop. `DESIGN.md` §6's wire-to-wire row is the only one that measures what a
+counterparty experiences, and it has not been run.
+
+### Robustness, same day
+
+`[measured]` `cargo +nightly fuzz run parse -- -max_total_time=600`:
+
+```
+Done 304230294 runs in 601 second(s)
+stat::number_of_executed_units: 304230294
+stat::average_exec_per_sec:     506206
+stat::new_units_added:          1370
+stat::peak_rss_mb:              542
+```
+
+Zero crashes, zero timeouts, `fuzz/artifacts/` empty. The target asserts three properties, not
+just the absence of a panic: `consumed` never exceeds the input, and every field the index
+reports lies inside the consumed prefix. The second is what makes `LengthOutOfBounds`
+load-bearing — a DATA length is supplied by the counterparty.
+
