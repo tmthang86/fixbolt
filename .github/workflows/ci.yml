@@ -37,6 +37,15 @@ jobs:
       - run: rustup component add clippy
       - run: scripts/check-lint-config.sh
 
+  # Also meaningful today: this repository is 17 markdown files and has already
+  # shipped dead links twice, both found by hand.
+  links:
+    name: No dead internal links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/check-links.py
+
   gates:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
