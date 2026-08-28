@@ -64,23 +64,67 @@ fn the_harness_clock_and_the_corpus_agree() {
     );
 }
 
+/// `[measured 2026-08-28]` **14 / 59** — and the plan predicted 18.
+///
+/// The prediction came from a classification table that said 12 files expect
+/// only `{A, 5}` back. Solving it off the corpus instead gives **9**, and two of
+/// the reachable set need something this step does not have:
+/// `AlreadyLoggedOn.def` and `1b_DuplicateIdentity.def` both turn on refusing a
+/// second connection with the same identity, which is step 6. So the ceiling
+/// for step 2 is `6 + 9 − 1 = 14`, and 14 is what it scores.
+///
+/// The two it lost on the way are worth naming, because both had been passing
+/// **by accident** and a step that only counts upwards would have hidden it:
+/// before `connect` reset the sequence numbers, the second Logon in each file
+/// was refused as *too low* rather than as a duplicate identity.
 #[test]
-fn step_one_refuses_a_bad_logon_and_scores_six() {
+fn step_two_answers_a_logon_and_a_logout_and_scores_fourteen() {
     let report = run(|_| acceptor()).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
-        report.passed, 6,
-        "step 1 of the plan predicts 6 / 59:\n{report}"
+        report.passed, 14,
+        "step 2 of the plan, revised from 18 to 14 against the corpus:\n{report}"
     );
     assert_eq!(
         report.passed_files,
         vec![
+            "13b_UnsolicitedLogoutMessage.def",
+            "1a_ValidLogonWithCorrectMsgSeqNum.def",
             "1c_InvalidSenderCompID.def",
             "1c_InvalidTargetCompID.def",
             "1d_InvalidLogonBadSendingTime.def",
             "1d_InvalidLogonLengthInvalid.def",
             "1d_InvalidLogonWrongBeginString.def",
             "1e_NotLogonMessage.def",
+            "2a_MsgSeqNumCorrect.def",
+            "2c_MsgSeqNumTooLow.def",
+            "2e_PossDupAlreadyReceived.def",
+            "2e_PossDupNotReceived.def",
+            "2i_BeginStringValueUnexpected.def",
+            "7_ReceiveRejectMessage.def",
         ],
-        "and these are the six, named — a different six scoring 6 is not the same result"
+        "and these are the fourteen, named — a different fourteen is a different result"
     );
+}
+
+/// The step-1 six are still in the fourteen.
+///
+/// Not implied by the count: step 2 added eight and could have lost one of the
+/// six to a rule that now fires earlier. This is the assertion that says it did
+/// not.
+#[test]
+fn step_two_did_not_cost_any_of_the_step_one_six() {
+    let report = run(|_| acceptor()).unwrap_or_else(|e| panic!("{e}"));
+    for f in [
+        "1c_InvalidSenderCompID.def",
+        "1c_InvalidTargetCompID.def",
+        "1d_InvalidLogonBadSendingTime.def",
+        "1d_InvalidLogonLengthInvalid.def",
+        "1d_InvalidLogonWrongBeginString.def",
+        "1e_NotLogonMessage.def",
+    ] {
+        assert!(
+            report.passed_files.iter().any(|p| p == f),
+            "{f} passed at step 1 and does not now:\n{report}"
+        );
+    }
 }

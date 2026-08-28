@@ -1,6 +1,6 @@
 # Máy trạng thái session FIX 4.4 — từ 0/59 lên 59/59
 
-> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 1/6 xong)
+> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 2/6 xong)
 > **Phạm vi:** Phase 1, tiêu chí 1 của `PRD.md` §2. Đây là plan lớn nhất dự án.
 
 ## Bối cảnh
@@ -236,6 +236,41 @@ Plan không nói `Tick(u64)` đếm từ đâu. Đếm từ 1970 thì hơn một
 `SendingTime` viết được không tồn tại, và phép trừ lệch giờ sẽ tràn ngầm. Đổi sang đếm từ
 0000-01-01. Đây là quyết định kiến trúc nên nó nằm ở `DESIGN.md` D13, không nằm trong plan.
 
+### Sửa 4 — bảng phân loại 59 file sai, và mọi con số dự đoán sai theo
+
+**Phát hiện ở bước 2.** Bảng trong plan nói 12 file chỉ chờ `{A, 5}`. Giải lại từ chính corpus
+— gom mọi dòng `E` theo tập `35=` mà nó chờ — thì là **9**. Bảng đúng, đo ngày 2026-08-28:
+
+| `35=` mà file chờ nhận | Số file | Bước |
+|---|---|---|
+| *(không gì cả)* | 6 | 1 |
+| `A` `5` | 9 | 2, **trừ `AlreadyLoggedOn` → bước 6** |
+| `A` | 1 | 6 — `1b_DuplicateIdentity` |
+| `A` `5` `3` | 13 | 3 |
+| `A` `5` `0` | 8 | 4 |
+| `A` `1` `0` | 1 | 4 |
+| `A` `5` `3` `0` | 1 | 4 |
+| `A` `5` `2` | 3 | 5 |
+| `A` `5` `0` `4` | 1 | 5 |
+| `A` `5` `3` `2` `0` | 1 | 5 |
+| còn lại, đều có `D`/`d`/`j` | 15 | 6 |
+
+Điểm dự đoán mới, cộng dồn: **6 → 14 → 27 → 37 → 42 → 59**. Vẫn là dự đoán.
+
+Hai file mất đi ở bước 2 và **trước đó đang đậu nhờ ăn may**: `1b_DuplicateIdentity` và
+`AlreadyLoggedOn`. Cả hai mở connection thứ hai với cùng danh tính. Khi `connect` chưa reset số
+thứ tự, Logon thứ hai (`34=1`) bị từ chối vì *số quá thấp* chứ không phải vì trùng danh tính —
+đúng kết quả, sai lý do. Reset số thứ tự (mà `2i` bắt buộc phải có) làm lộ ra.
+
+**Bài học ghi lại: một bước chỉ đếm lên thì không thấy chỗ này.** Cổng bước 2 vì thế liệt kê
+đủ tên 14 file, và có thêm một test riêng nói "sáu file của bước 1 vẫn còn trong đó".
+
+### Sửa 5 — `SessionText` dời sang `session` ở bước 2, không phải bước 3
+
+`2c` và `2i` cần `58=` trên Logout ngay ở bước 2. Đã `git mv` cả module lẫn test sang
+`session`; `codec/benches/alloc.rs` bỏ ca `text` vì bảng đi rồi, và ca đó nay nằm ở
+`session/benches/alloc.rs`.
+
 ## Nhật ký giao hàng
 
 ### Bước 1 — 2026-08-28 — **6 / 59**, đúng dự đoán
@@ -270,3 +305,43 @@ Hai bẫy nữa, cả hai là "xanh giả":
 **Cổng:** `cargo fmt --check`, `clippy --all-targets --all-features -D warnings`, `clippy
 --no-default-features`, `cargo test --all`, `cargo test --all --no-default-features` — tất cả
 rc=0. Máy: Apple M5, macOS 25.5.0, cargo 1.95.0.
+
+
+### Bước 2 — 2026-08-28 — **14 / 59**, dự đoán 18, và chênh lệch đã hiểu
+
+Trả lời Logon (ném lại `98=` và `108=`), trả lời Logout, số thứ tự vào/ra, `TimestampCache`
+cho `52=`. Thêm trạng thái `AwaitingLogout`, và Logout kèm `58=` cho hai lỗi xảy ra *sau khi*
+đã logon — cùng lỗi ấy trước khi logon thì im lặng ngắt (`1d` so với `2i`).
+
+Chênh lệch: xem "Sửa 4". Trần thật của bước 2 là 14, và nó đạt đúng 14.
+
+**Đảo ngược, 11 lần.** Chín lần đầu:
+
+| Bỏ đi | Điểm |
+|---|---|
+| không trả lời Logon | test riêng đỏ |
+| không trả lời Logout | 8 / 59 |
+| `43=Y` không còn tha số thứ tự thấp | 12 / 59 |
+| số quá thấp ngắt im lặng thay vì nói lý do | 13 / 59 |
+| BeginString sai sau logon ngắt im lặng | 13 / 59 |
+| `connect` không reset số thứ tự | 13 / 59 |
+| trả lời cả byte đến sau khi link đã xuống | 13 / 59 |
+| `next_out` không tăng | 6 / 59 |
+| **`52=` đóng dấu từ hằng số, không từ đồng hồ** | **14 / 59 — không đổi, tất cả xanh** |
+
+Lần thứ chín là một phát hiện: `52` nằm trong `fields.fmt`, nên comparator chỉ so **hình
+dạng**. **Corpus không nhìn thấy giá trị của trường này.** Đã viết
+`the_reply_carries_the_clock_the_session_was_ticked_to` và
+`the_clock_moves_and_the_next_message_says_so`; hai đảo ngược cuối (đóng dấu từ hằng số, và
+đóng dấu một lần rồi cache mãi) nay đều đỏ.
+
+Một bẫy nữa: test cũ dựng "Logon" bằng cách sửa `35=0` thành `35=A` trên dòng của
+`1e_NotLogonMessage` — dòng đó **không có `98=` và `108=`**, mà FIX 4.4 bắt buộc cả hai. Đã
+dựng lại từ dòng Logon thật của `1c_InvalidTargetCompID`, và thêm test cho Logon thiếu trường
+bắt buộc.
+
+**Cấp phát:** `accept 0 refuse 0 tick 0 clock 0 text 0`.
+
+**Cổng:** `fmt --check`, `clippy --all-targets --all-features -D warnings`, `test --all`,
+`test --all --no-default-features`, `check-lint-config.sh`, `check-links.py` — tất cả rc=0.
+Máy: Apple M5, macOS 25.5.0, cargo 1.95.0.

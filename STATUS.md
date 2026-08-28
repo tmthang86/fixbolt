@@ -10,9 +10,9 @@ Last updated: **2026-08-28**.
 | | |
 |---|---|
 | Branch | **`plan/session-layer`** |
-| Milestone | **M2 — the session layer.** `[measured 2026-08-28]` **6 / 59**, step 1 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
+| Milestone | **M2 — the session layer.** `[measured 2026-08-28]` **14 / 59**, step 2 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Step 1 of 6 done: 6 / 59**, which is exactly what the step predicted. One revision recorded in the plan (the runner seeds the clock; see the plan's Revisions section) |
+| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–2 of 6 done: 14 / 59.** Step 1 hit its prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus — five revisions recorded in the plan |
 | Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
 | Last closed | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — closed and merged 2026-08-28. 54 tests, 0 allocations, 304M fuzz executions |
@@ -123,7 +123,22 @@ Last updated: **2026-08-28**.
 - **`<TIME>` is 17 bytes on an `I` line and 21 on an `E` line**, solved from the corpus's own
   `9=` values. The single-width substitution both loaders used before was wrong by 4 bytes per
   timestamp, and one loader now serves both crates.
-- **The session layer scores 6 / 59, 2026-08-28 — step 1 of six, and the step predicted 6.**
+- **The session layer scores 14 / 59, 2026-08-28 — step 2 of six.** The plan predicted 18. Its
+  classification table said 12 files expect only `{A, 5}` back; solving that off the corpus
+  gives **9**, and two of the reachable set turn on refusing a second connection with the same
+  identity, which is step 6. The ceiling for step 2 is 14 and it scores 14. Eleven reversals
+  were run; nine take the score down.
+- **Two files had been passing by accident, and only a step that could *lose* points found it.**
+  `1b_DuplicateIdentity` and `AlreadyLoggedOn` were passing because the second Logon was refused
+  as *sequence too low* rather than as a duplicate identity — right answer, wrong reason. Making
+  `connect` reset the sequence numbers, which `2i_BeginStringValueUnexpected` requires, exposed
+  it. The score gate now names all 14 files.
+- **The corpus cannot see the value of `52=`.** Stamping `SendingTime` from a constant instead of
+  from the clock leaves the score at 14 / 59 with every test green: `52` is one of the five tags
+  `fields.fmt` matches by shape. Held by `crates/session/tests/logon.rs` instead.
+- **The step-1 six are still in the fourteen** — asserted separately, because a count that only
+  goes up cannot say so.
+- **Step 1 scored 6 / 59, 2026-08-28, exactly as predicted.**
   The six are `1c_InvalidSenderCompID`, `1c_InvalidTargetCompID`, `1d_InvalidLogonBadSendingTime`,
   `1d_InvalidLogonLengthInvalid`, `1d_InvalidLogonWrongBeginString`, `1e_NotLogonMessage` —
   named in the assertion, because a different six scoring 6 is a different result. Six
@@ -134,8 +149,8 @@ Last updated: **2026-08-28**.
   [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md)
   and now held by `crates/session/tests/logon.rs`.
 - **The session layer allocates nothing**, on the accept path and on the refusal path, counted
-  separately. `[measured]` `accept 0 refuse 0 tick 0 clock 0`; the reversal — one `format!` on
-  the error path — reports `refuse 30000`.
+  separately. `[measured]` `accept 0 refuse 0 tick 0 clock 0 text 0`; the reversal — one
+  `format!` on the error path — reports `refuse 30000`.
 - **`00000000-00:00:00` is not a date, and this loader was substituting it for `<TIME>`.**
   It is the corpus's placeholder for output the comparator never reads by value. Fixed to a
   real instant, which also fixed `<TIME-121>` running 86 279 seconds *forward*.
@@ -157,8 +172,9 @@ Last updated: **2026-08-28**.
   file is real evidence and is not the same as a venue accepting the bytes. Nothing here has
   been sent to a real FIX peer.
 - **DATA fields inside a repeating group are untested** on both paths — open item 8.
-- **53 of the 59 definitions still fail**, and every one of them fails with `NoOutput`: the
-  session accepts a Logon and says nothing back. That is step 2.
+- **45 of the 59 definitions still fail.** The session answers a Logon and a Logout and nothing
+  else: no `Reject (35=3)`, no Heartbeat, no TestRequest, no ResendRequest, no application echo,
+  and no second-connection identity check.
 - **`Input::Tick` is sent but never advances.** The runner seeds one fixed instant before every
   message. Nothing moves time forward yet, so `4a_NoDataSentDuringHeartBtInt.def` cannot pass —
   the advance rule is step 4 of the session plan.
@@ -166,7 +182,10 @@ Last updated: **2026-08-28**.
   `1d_InvalidLogonBadSendingTime` is 2001 years out, so nothing in the corpus distinguishes 120
   seconds from any other bound.
 - **`Role` is parameterised but only `Acceptor` is exercised.** `Initiator::SPEAKS_FIRST` is
-  read and does nothing yet; ADR-0004's cost is not paid until step 2 gives it something to say.
+  read and does nothing yet; ADR-0004's cost is not paid until an initiator has something to say.
+- **Sequence numbers reset on every connect.** Persisting them across a reconnect is the
+  journal's job and the journal belongs to `engine`. Nothing in the corpus requires persistence,
+  so nothing here proves the reset is right for a real deployment.
 - The ADRs are accepted on the strength of the reasoning in them, **not on measurement** — see the §8 caveat above.
 
 ## Open items

@@ -20,6 +20,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nanofix_conformance::script::{Kind, scenarios};
+use nanofix_session::text::SessionText;
 use nanofix_session::{Acceptor, Config, Link, Session, clock};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -156,13 +157,37 @@ fn main() {
         }
     });
 
+    // A Logout's or a Reject's `58=` text. The two numbered variants are the
+    // case that tempts `format!`, which is exactly what non-negotiable 2
+    // forbids here. This case moved from `codec`'s bench with the table.
+    let mut text = [0u8; SessionText::MAX_LEN];
+    let _ = SessionText::ValueIsIncorrect.render(&mut text);
+    let text_allocs = count(|| {
+        for i in 0..10_000u32 {
+            for v in SessionText::ALL {
+                let _ = v.render(&mut text);
+            }
+            let _ = SessionText::MsgSeqNumTooLow {
+                expecting: i,
+                received: i / 2,
+            }
+            .render(&mut text);
+        }
+    });
+
     println!(
         "allocations: accept {accept_allocs} refuse {refuse_allocs} \
-         tick {tick_allocs} clock {clock_allocs}"
+         tick {tick_allocs} clock {clock_allocs} text {text_allocs}"
     );
     assert_eq!(
-        (accept_allocs, refuse_allocs, tick_allocs, clock_allocs),
-        (0, 0, 0, 0),
-        "non-negotiable 1: the session layer allocates nothing, on either path"
+        (
+            accept_allocs,
+            refuse_allocs,
+            tick_allocs,
+            clock_allocs,
+            text_allocs
+        ),
+        (0, 0, 0, 0, 0),
+        "non-negotiable 1: the session layer allocates nothing, on any path"
     );
 }

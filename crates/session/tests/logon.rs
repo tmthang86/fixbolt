@@ -7,7 +7,9 @@
 //! stayed green.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::script::{FIXED_TIME_IN, Kind, scenarios, with_real_checksum};
+use nanofix_conformance::script::{
+    FIXED_TIME_IN, FIXED_TIME_MILLIS, FIXED_TIME_OUT, Kind, scenarios, with_real_checksum,
+};
 use nanofix_session::{Acceptor, Config, Link, Session};
 
 fn acceptor() -> Session<Acceptor, 256> {
@@ -69,6 +71,19 @@ fn reframe(wire: &[u8]) -> Vec<u8> {
     with_real_checksum(rebuilt.as_bytes())
 }
 
+/// Like [`feed`], but keeps what came back.
+fn collect(session: &mut Session<Acceptor, 256>, wire: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    session.connect(|b| out.push(render(b)));
+    session.tick(FIXED_TIME_MILLIS, |b| out.push(render(b)));
+    session.received(wire, |b| out.push(render(b)));
+    out
+}
+
+fn render(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).replace('\u{1}', "|")
+}
+
 fn feed(session: &mut Session<Acceptor, 256>, wire: &[u8]) -> (Link, usize) {
     let mut sent = 0usize;
     session.connect(|_| sent += 1);
@@ -79,12 +94,23 @@ fn feed(session: &mut Session<Acceptor, 256>, wire: &[u8]) -> (Link, usize) {
     (link, sent)
 }
 
+/// A real Logon: `1c_InvalidTargetCompID.def`'s line with its one wrong field
+/// corrected. `98=` and `108=` are both present, as FIX 4.4 requires.
+fn good_logon() -> Vec<u8> {
+    swap(
+        &first_input("1c_InvalidTargetCompID.def"),
+        "56=DLSI",
+        "56=ISLD",
+    )
+}
+
 #[test]
 fn a_first_message_that_is_not_a_logon_is_refused_on_its_own_merits() {
-    // `1e_NotLogonMessage.def` with its one confounding field corrected: the
-    // corpus sends `35=0` to `56=DLSI`, so the identity check answers first and
-    // the rule this file is named for is never reached.
-    let wire = swap(&first_input("1e_NotLogonMessage.def"), "56=DLSI", "56=ISLD");
+    // One field's difference from the message below, and the field is `35`.
+    // The corpus cannot make this comparison: `1e_NotLogonMessage.def` sends
+    // `35=0` to `56=DLSI`, so the identity check answers first and the rule the
+    // file is named for is never reached.
+    let wire = swap(&good_logon(), "35=A", "35=0");
 
     let mut session = acceptor();
     let (link, sent) = feed(&mut session, &wire);
@@ -95,20 +121,27 @@ fn a_first_message_that_is_not_a_logon_is_refused_on_its_own_merits() {
 
 #[test]
 fn the_same_message_as_a_logon_is_not_refused() {
-    // The other half of the reversal: if `35=0` were refused for some reason
-    // other than not being a Logon, this would fail too and the test above
-    // would prove nothing.
-    let wire = swap(
-        &swap(&first_input("1e_NotLogonMessage.def"), "56=DLSI", "56=ISLD"),
-        "35=0",
-        "35=A",
-    );
-
+    // The other half. Without it the test above proves only that *some* rule
+    // fired on this wire, not that it was the one about `35`.
     let mut session = acceptor();
-    let (link, sent) = feed(&mut session, &wire);
+    let (link, sent) = feed(&mut session, &good_logon());
 
     assert_eq!(link, Link::Up, "a well-formed Logon is not refused");
-    assert_eq!(sent, 0, "step 1 does not answer it yet — that is step 2");
+    assert_eq!(sent, 1, "and it is answered with exactly one Logon");
+}
+
+#[test]
+fn a_logon_missing_a_required_field_is_refused() {
+    // `98=` and `108=` are required in FIX 4.4 and the acceptor has to echo
+    // both, so it cannot answer a Logon without them. Every Logon in the corpus
+    // carries both, which is why nothing there covers this.
+    for gone in ["98=0\u{1}", "108=30\u{1}"] {
+        let wire = reframe(&replace(&good_logon(), gone, ""));
+        let mut session = acceptor();
+        let (link, sent) = feed(&mut session, &wire);
+        assert_eq!(link, Link::Dropped, "a Logon without {gone} is not one");
+        assert_eq!(sent, 0);
+    }
 }
 
 #[test]
@@ -116,8 +149,7 @@ fn a_sending_time_the_engine_cannot_read_is_refused() {
     // `1d_InvalidLogonBadSendingTime` is 2001 years out, which the skew check
     // catches. A field that is not a timestamp at all takes a different branch,
     // and nothing in the corpus exercises it.
-    let wire = first_input("1c_InvalidTargetCompID.def");
-    let good = swap(&wire, "56=DLSI", "56=ISLD");
+    let good = good_logon();
 
     let mut session = acceptor();
     assert_eq!(feed(&mut session, &good).0, Link::Up, "baseline");
@@ -167,5 +199,59 @@ fn a_comp_id_too_long_to_hold_does_not_match_its_own_truncation() {
         feed(&mut overflows, &wire).0,
         Link::Dropped,
         "a configuration that does not fit must not match its own truncation"
+    );
+}
+
+#[test]
+fn the_reply_carries_the_clock_the_session_was_ticked_to() {
+    // `[measured 2026-08-28]` stamping `52=` from a constant instead of from
+    // the clock leaves the score at 14 / 59 and every test green: tag 52 is one
+    // of the five in `fields.fmt`, so the acceptance comparator matches it by
+    // **shape** and never by value. The corpus cannot see this field. Only this
+    // test can.
+    let mut session = acceptor();
+    let out = collect(&mut session, &good_logon());
+
+    assert_eq!(out.len(), 1, "one Logon back");
+    assert!(
+        out[0].contains(&format!("|52={FIXED_TIME_OUT}|")),
+        "52= must be the instant of the last tick, not a constant: {}",
+        out[0]
+    );
+    assert!(
+        out[0].contains("|34=1|"),
+        "and the first message is 34=1: {}",
+        out[0]
+    );
+    assert!(out[0].contains("|49=ISLD|"), "sender is us: {}", out[0]);
+    assert!(out[0].contains("|56=TW44|"), "target is them: {}", out[0]);
+}
+
+#[test]
+fn the_clock_moves_and_the_next_message_says_so() {
+    // The other half: if `52=` were stamped once and cached forever, the test
+    // above would still pass.
+    let minute = 60_000;
+    let mut session = acceptor();
+    session.connect(|_| ());
+    session.tick(FIXED_TIME_MILLIS, |_| ());
+    let mut first = Vec::new();
+    session.received(&good_logon(), |b| first.push(render(b)));
+
+    session.tick(FIXED_TIME_MILLIS + minute, |_| ());
+    let logout = swap(&good_logon(), "35=A", "35=5");
+    let mut second = Vec::new();
+    session.received(&logout, |b| second.push(render(b)));
+
+    assert_eq!(second.len(), 1, "a Logout is answered with one: {second:?}");
+    assert!(
+        first[0].contains("|52=20260828-12:00:00.000|"),
+        "{}",
+        first[0]
+    );
+    assert!(
+        second[0].contains("|52=20260828-12:01:00.000|"),
+        "the second message is a minute later: {}",
+        second[0]
     );
 }

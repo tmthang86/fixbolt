@@ -28,15 +28,19 @@ below describe what a first release would contain.
   - `clock::parse_utc` and `clock::MILLIS_YEAR_ZERO_TO_EPOCH` — `Tick` counts milliseconds
     from **0000-01-01**, not from 1970, so every year `SendingTime` can name is a non-negative
     `u64` and the skew cannot wrap. See `DESIGN.md` D13.
-  - Scores **6 / 59** on the acceptance definitions: step 1 of six.
+  - `text::SessionText` — the 17 expected `58=` values and their `373=` codes, rendered with
+    no `format!` and no allocation. **Moved here from `nanofix-conformance`**, where it lived
+    only because the session did not exist yet.
+  - Answers a Logon by echoing `98=` and `108=`, answers a Logout, and tracks sequence numbers
+    in both directions. A message with `43=Y` and a sequence number already seen is dropped in
+    silence; one without it ends the session with a Logout saying so.
+  - Scores **14 / 59** on the acceptance definitions: step 2 of six.
 
 - **`nanofix-conformance`** — the 59 QuickFIX FIX 4.4 acceptance definitions, run in process
   with no socket. Zero runtime dependencies. Not published: it is a measuring instrument.
   - `script` — the corpus as 669 typed steps. Refuses to skip a directive it cannot read.
   - `compare` — `Comparator.rb`'s positional rules, with the five loosely-matched tags read
     out of `fields.fmt` rather than hard-coded.
-  - `text` — the 17 expected `58=` values and their `373=` codes, rendered with no `format!`
-    and no allocation.
   - `runner` — `SessionUnderTest`, keyed by connection so `1b_DuplicateIdentity` is
     expressible; `NullSession` scores **0 / 59** and `Replay` scores **59 / 59**.
   - `echo` — the echo application the corpus assumes. All 22 application pairs reproduced.
@@ -85,6 +89,9 @@ below describe what a first release would contain.
 - **`<TIME±N>` is now real arithmetic.** With the base at midnight of year zero there was
   nowhere to go backwards to, so the offset wrapped: `<TIME-121>` came out 86 279 seconds
   *forward*, in the one file that exists to test `SendingTime` accuracy.
+- **`nanofix-conformance::text` moved to `nanofix-session::text`.** The table describes what a
+  session says, and it lived in `conformance` only because no session crate existed. `codec`'s
+  allocation bench loses its `text` case, which reappears in `session`'s.
 - **`runner::run_scenario` seeds the clock**, sending `Input::Tick` before the connect and
   before every message. A session has no clock, so the harness is its clock. The value is fixed;
   advancing it is the heartbeat rule and belongs to a later step.
