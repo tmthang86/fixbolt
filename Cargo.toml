@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = []
+members = ["crates/codec", "crates/dict"]
 
 # Crates are added one at a time, each behind an approved plan in docs/plans/.
 # See CLAUDE.md §1 — Rule Zero.
