@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "nanofix-codec"
 version = "0.0.0"
+dependencies = [
+ "nanofix-dict",
+]
 
 [[package]]
 name = "nanofix-dict"

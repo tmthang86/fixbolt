@@ -8,5 +8,23 @@ rust-version.workspace = true
 publish = false
 description = "FIX 4.4 parse and serialise in place, no allocation on the hot path"
 
+[dev-dependencies]
+# A dev-dependency cycle: dict depends on codec, and codec's TESTS depend on
+# dict. Cargo permits exactly this shape, and it is the only way to test the
+# parser against the real generated dictionary without duplicating the loader.
+nanofix-dict = { path = "../dict" }
+
+[[bench]]
+name = "parse"
+harness = false
+
+[[bench]]
+name = "serialize"
+harness = false
+
+[[bench]]
+name = "alloc"
+harness = false
+
 [lints]
 workspace = true

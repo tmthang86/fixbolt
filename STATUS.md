@@ -40,6 +40,18 @@ Last updated: **2026-08-27**.
   `.DS_Store`.
 - Repository is **private** as of 2026-08-27 (it was public at creation). `cargo 1.95.0`.
 - **ADR-0001, -0002, -0003 accepted 2026-08-27** by the owner, after the latency-budget review.
+- **Step 1 of the codec plan is CLOSED, 2026-08-28.** 54 tests green. The closing condition —
+  533 real messages through a simulated TCP read loop under 5 chunk patterns and byte-at-a-time
+  — passes. `[measured]` parse 77.0 ns, encode 93.8 ns, **0 allocations**, 304 million fuzz
+  executions with no crash. Full method and machine in
+  [reference/measured-costs.md §5](docs/reference/measured-costs.md).
+- **The serialise target is missed: 93.8 ns against a published 60 ns.** Cause identified
+  (linear slot lookup, slots × parts), deliberately not optimised — the number that decides is
+  the Linux one at the `engine` step.
+- **New open item: Criterion is deferred.** `DESIGN.md` §6 names it; the benches use a 24-line
+  dependency-free harness instead, because the benches must *assert* and Criterion measures
+  without asserting. The cost is outlier detection and confidence intervals. Revisit when
+  hot-path work moves to Linux.
 - **`codec` parses FIX as of 2026-08-28.** 29 tests green; all 539 `.def` lines classified.
   Two more plan defects surfaced and were decided by the owner: the plan contradicted itself
   about `2t` (the boundary diagram gave it to the session, the parse algorithm to the codec —

@@ -66,7 +66,11 @@ it, is in [docs/DESIGN.md](docs/DESIGN.md),
 ## Layout
 
 ```
-crates/          engine crates — added one at a time, each behind an approved plan
+crates/
+  codec/         parse and serialise in place, no allocation, no dependencies
+  dict/          FIX 4.4 tables generated from the QuickFIX XML at build time
+                 (more crates are added one at a time, each behind an approved plan)
+fuzz/            cargo-fuzz targets — nightly, outside the workspace
 docs/
   PRD.md         what must be built, in which phase, and the distance from QuickFIX
   DESIGN.md      how the system is built, and the latency budget it is built against

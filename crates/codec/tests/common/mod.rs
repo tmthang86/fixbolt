@@ -10,6 +10,10 @@
 //!
 //! Shared with the conformance runner when that lands.
 
+// Each test binary compiles this module separately and uses a different part of
+// it, so every field looks dead to at least one of them.
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 
 /// A fixed instant, so a checksum computed here is the same on every run and on
@@ -112,8 +116,8 @@ fn parse_line(file: &str, line_no: usize, raw: &str) -> Option<DefLine> {
         return None;
     }
 
-    // Step 3: a fixed timestamp, before anything is measured over these bytes.
-    let template = body.replace("<TIME>", FIXED_TIME);
+    // Step 3: fixed timestamps, before anything is measured over these bytes.
+    let template = substitute_times(body);
 
     let had_body_length = has_field(&template, "9");
     let had_checksum = has_field(&template, "10");
@@ -130,6 +134,49 @@ fn parse_line(file: &str, line_no: usize, raw: &str) -> Option<DefLine> {
         had_body_length,
         had_checksum,
     })
+}
+
+/// Replace every `<TIME>` and `<TIME+N>` / `<TIME-N>` with a fixed 21-byte
+/// timestamp, `N` being seconds.
+///
+/// The offset forms are easy to miss: there are only four of them against 352
+/// bare `<TIME>`, and a loader that leaves them alone produces a 9-byte
+/// placeholder where a 21-byte value belongs, so the body length is wrong and
+/// nothing says why. They exist to test `SendingTime` accuracy — `<TIME+121>` is
+/// two minutes into the future.
+///
+/// The clock wraps within the zero date, which is enough to make lengths and
+/// checksums deterministic. Real offset semantics belong to the conformance
+/// runner, which has to compare them against a live engine.
+fn substitute_times(body: &str) -> String {
+    let mut out = String::with_capacity(body.len() + 64);
+    let mut rest = body;
+    while let Some(i) = rest.find("<TIME") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 5..];
+        let Some(close) = after.find('>') else {
+            out.push_str(&rest[i..]);
+            return out;
+        };
+        let offset: i64 = after[..close].parse().unwrap_or(0);
+        out.push_str(&at_offset(offset));
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn at_offset(seconds: i64) -> String {
+    if seconds == 0 {
+        return FIXED_TIME.to_string();
+    }
+    let s = seconds.rem_euclid(86_400);
+    format!(
+        "00000000-{:02}:{:02}:{:02}.000",
+        s / 3600,
+        (s % 3600) / 60,
+        s % 60
+    )
 }
 
 /// Is `tag=` present as a field, rather than as a substring of some value?

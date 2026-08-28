@@ -1,0 +1,25 @@
+# Deliberately OUTSIDE the workspace. cargo-fuzz needs nightly; the library ships
+# on stable and rust-toolchain.toml pins stable for everything else. An empty
+# [workspace] table detaches this crate so `cargo build` at the root never sees it.
+[package]
+name = "nanofix-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nanofix-codec = { path = "../crates/codec" }
+nanofix-dict = { path = "../crates/dict" }
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false

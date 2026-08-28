@@ -506,6 +506,43 @@ với D12. Cùng file đó gửi `999=`, `0=`, `5000=` — cả ba parse bình t
 dòng `E` mang `10=`, **không dòng nào** là checksum thật. Một conformance runner đi xác thực
 checksum trên dòng kỳ vọng sẽ đỏ cả 244 và không học được gì.
 
+### Bước 3, 4, 5 — xong 2026-08-28. **Bước 1 ĐÓNG.**
+
+**54 test xanh.** Điều kiện đóng bước — `tests/stream.rs` — đạt: 533 bản tin thật đi qua vòng
+lặp đọc TCP giả lập, **5 kiểu chia mẩu khác nhau** cộng thêm kiểu **từng byte một**, không sót,
+không nhân đôi, mọi mẩu cụt trả `Incomplete`.
+
+| Đo được | Số | Mục tiêu công bố |
+|---|---|---|
+| parse `NewOrderSingle`, validation đầy đủ | **77,0 ns** | ≤ 150 — đạt, dư 2× |
+| parse `Heartbeat` | 35,0 ns | — |
+| encode `ExecutionReport`, 3 field cố định + 14 slot | **93,8 ns** | ≤ 60 — **KHÔNG đạt, thiếu 56%** |
+| `SendingTime` từ cache | 1,8 ns | — |
+| **Cấp phát: parse / encode / tra field** | **0 / 0 / 0** | 0 |
+| Fuzz | **304.230.294 lượt / 601 giây, 0 crash** | — |
+
+Máy: Apple M5, macOS, **không pin nhân**. Ước lượng là **tốt nhất trong 7 lần × 200.000 vòng**,
+tức lạc quan. Hai lần chạy liên tiếp lệch ~6% (72,8 → 77,0 ns) — đó là độ chính xác thật của
+setup này. Chi tiết ở `reference/measured-costs.md` §5.
+
+**Vì sao encode chậm hơn mục tiêu:** `encode` tra mỗi slot bằng quét tuyến tính danh sách
+caller đưa, nên chi phí là slot × part. **Không tối ưu**, đúng theo *Ngoài phạm vi* — đo trước,
+tối ưu sau, và số quyết định là số trên Linux ở bước `engine`.
+
+**Round-trip có một kết quả đáng chú ý.** 533 bản tin parse rồi dựng lại bằng `Template`:
+**505 trùng byte, 28 bị sắp lại**. Và khẳng định mạnh hơn một con số: bản tin trùng byte
+**khi và chỉ khi** nguồn đã đúng thứ tự chuẩn và `9=` đúng — kiểm trên cả 533 dòng, không dòng
+nào phá quy tắc. 28 dòng lệch tự giải thích: `14g`, `15`, `2t` cố tình sai thứ tự; 6 dòng có
+`9=` sai; phần còn lại là dòng `I` viết tay không tăng dần.
+
+**Chỗ sai thứ sáu của plan — placeholder `<TIME±N>`.** Plan đếm 352 `<TIME>` và bỏ sót 4 dạng
+có độ lệch: `<TIME+10>`, `<TIME+121>`, `<TIME-121>`, `<TIME-1>`. Loader không thay chúng thì
+chèn 9 byte vào chỗ đáng lẽ 21 byte, và mọi độ dài đều sai mà không có gì nói tại sao.
+
+**Criterion hoãn, có lý do.** `DESIGN.md` §6 gọi tên Criterion. Bench ở đây là harness 24 dòng
+tự viết, không dependency, vì **bench phải assert** mà Criterion thì đo chứ không assert. Đổi
+lại mất outlier detection và khoảng tin cậy. Ghi vào `STATUS.md` Open items.
+
 **Chưa làm, ghi lại:** 3 tag trailer (`89`, `93`, `10`) không được phân loại — `is_header` trả
 `false` nên chúng sẽ xếp vào body nếu có ai ghi. Chưa ai ghi. Có test ghim.
 

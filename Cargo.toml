@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/codec", "crates/dict"]
+# fuzz/ needs nightly and is its own workspace. Excluded so `cargo build` at the
+# root, and CI's --no-default-features job, never try to build it on stable.
+exclude = ["fuzz"]
 
 # Crates are added one at a time, each behind an approved plan in docs/plans/.
 # See CLAUDE.md §1 — Rule Zero.
