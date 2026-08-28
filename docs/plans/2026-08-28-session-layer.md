@@ -271,6 +271,19 @@ thứ tự, Logon thứ hai (`34=1`) bị từ chối vì *số quá thấp* ch�
 `session`; `codec/benches/alloc.rs` bỏ ca `text` vì bảng đi rồi, và ca đó nay nằm ở
 `session/benches/alloc.rs`.
 
+### Sửa 6 — bước 3 bị chặn bởi một plan khác
+
+**Phát hiện khi bắt đầu bước 3.** 8 trong 12 mã `373` không phải luật của session mà là câu hỏi
+cho từ điển: tag có tồn tại không, tag có thuộc bản tin này không, giá trị có trong enum không,
+giá trị có đúng kiểu không, MsgType có thật không. `dict` hôm nay chỉ sinh `is_header`,
+`data_length_tag`, `required` và `group_members` — không có bảng nào trả lời được.
+
+Đây là thay đổi codegen và public API của `dict`, đúng là **tiêu chí 3 của `PRD.md`**, thứ PRD
+vốn ghi là gap chưa có plan. Chủ dự án chọn: plan riêng, duyệt trước.
+
+→ [2026-08-28-dict-validation.md](2026-08-28-dict-validation.md). **Bước 3 dừng cho tới khi
+plan ấy xong.**
+
 ## Nhật ký giao hàng
 
 ### Bước 1 — 2026-08-28 — **6 / 59**, đúng dự đoán

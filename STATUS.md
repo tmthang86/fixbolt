@@ -12,7 +12,8 @@ Last updated: **2026-08-28**.
 | Branch | **`plan/session-layer`** |
 | Milestone | **M2 — the session layer.** `[measured 2026-08-28]` **14 / 59**, step 2 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–2 of 6 done: 14 / 59.** Step 1 hit its prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus — five revisions recorded in the plan |
+| Plan in flight | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — **chờ duyệt**, no code written. It blocks step 3 of the session plan |
+| Plan paused | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–2 of 6 done: 14 / 59.** Step 1 hit its prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus — six revisions recorded in the plan. **Step 3 is blocked**: 8 of its 12 `373` codes are dictionary questions, not session rules |
 | Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
 | Last closed | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — closed and merged 2026-08-28. 54 tests, 0 allocations, 304M fuzz executions |
