@@ -40,6 +40,16 @@ Last updated: **2026-08-27**.
   `.DS_Store`.
 - Repository is **private** as of 2026-08-27 (it was public at creation). `cargo 1.95.0`.
 - **ADR-0001, -0002, -0003 accepted 2026-08-27** by the owner, after the latency-budget review.
+- **`codec` parses FIX as of 2026-08-28.** 29 tests green; all 539 `.def` lines classified.
+  Two more plan defects surfaced and were decided by the owner: the plan contradicted itself
+  about `2t` (the boundary diagram gave it to the session, the parse algorithm to the codec —
+  resolved by refusing only what cannot be **framed**), and `14a_BadField` could not pass with
+  a plain `Err`, so `ParseError::BadTag` now carries a byte offset and the index keeps every
+  field read before the failure.
+- **Nothing in the corpus can be checksum-validated.** `[measured]` 244 `E` lines carry `10=`
+  and **0** are the real checksum of their own bytes; 238 are literally `10=0`. The comparator
+  matches tag 10 by regex. **This constrains the conformance plan**: frame validation belongs
+  on the `I` side and on the engine's own output, never on expected lines.
 - **`codec` + `dict` step 0 and step 1 landed 2026-08-28** on branch `plan/codec-dict`.
   `dict` generates 5 tables from `FIX44.xml`: 912 tag constants, 93 message types, 30 header
   tags, 16 DATA→length pairs, 84 required-field arms. 11/11 tests green. The plan was wrong in

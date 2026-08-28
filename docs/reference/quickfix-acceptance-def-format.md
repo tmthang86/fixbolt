@@ -118,6 +118,66 @@ populated group — one `454=0` — so groups are out of scope until something n
 when absent. The conformance runner must apply the same normalisation to expected lines
 before comparing, or those six tests can never pass.
 
+## The `10=` values are placeholders, and the `9=` values are mostly not
+
+`[measured]` 2026-08-28, by parsing all 539 lines through `crates/codec`:
+
+| | Count |
+|---|---|
+| `E` lines carrying `10=` | 244 |
+| …whose value is the real checksum of their own bytes | **0** |
+| …that are literally `10=0` | 238 |
+| `E` lines carrying `9=` | 247 |
+| …that agree with their own body | 244 |
+
+This follows from rule 3 above — the comparator matches tag 10 by regular
+expression, so its value never had to be real — but the consequence is worth stating
+outright: **a conformance runner that checksum-validates expected output fails all 244
+lines and learns nothing.** Frame validation belongs on the `I` side, where the
+reflector computes real values, and on the engine's own output.
+
+The three `E` lines whose `9=` is wrong are each **stale by exactly 4 bytes**:
+
+| Line | Declared | Actual |
+|---|---|---|
+| `14e_IncorrectEnumValue.def:26` | 121 | 117 |
+| `8_OnlyApplicationMessages.def:29` | 93 | 89 |
+| `RejectResentMessage.def:6` | 63 | 59 |
+
+All three carry a 17-character `SendingTime` where the length was computed for a
+21-character one — the missing `.000`. QuickFIX's own fixtures, not a loader bug.
+
+> **Guarded by** `crates/codec/tests/defs.rs` — `the_corpus_checksums_are_placeholders_not_checksums`
+> asserts the 0, and `body_length_is_checked_where_the_corpus_declares_one` pins the
+> exact six lines whose `9=` disagrees.
+
+## What the deliberately malformed lines actually expect
+
+`[measured]` Six lines across the 539 cannot be parsed. Five are dropped in silence:
+
+| Line | Why | What QuickFIX does |
+|---|---|---|
+| `2t_FirstThreeFieldsOutOfOrder.def:8` | `35=0` before `8=` | ignored, sequence number **not** consumed |
+| `2d`/`3c_GarbledMessage.def:8` | `4garbled9=` | ignored |
+| `2d`/`3c_GarbledMessage.def:13` | `49garbled=` | ignored |
+| `14a_BadField.def:25` | `-1=HI` | **Reject sent, sequence number consumed** |
+
+The last one is the exception that shapes the codec's API. `2m_BodyLengthValueNotCorrect`
+says it in its own comment — *"Invalid message was ignored, and valid one was processed.
+Therefore we should expect a resend request"* — so a parser that returns `Err` is right for
+the first five. For `14a` it is not enough: `@expected` says *"Send Reject … Increment
+inbound MsgSeqNum"*, so the session must read `34=` out of a message the parser could not
+finish, and must put the text `-1` into `371=`.
+
+That is why `ParseError::BadTag` carries a **byte offset** rather than a tag value, and why
+the index keeps every field read before the failure. Same reasoning as the decision to have
+no `EmptyValue` error: refuse only what cannot be read, and never in a way that makes a
+definition unpassable.
+
+Note the same file sends `999=`, `0=` and `5000=` and expects a Reject for each. Those are
+readable numbers; the parser passes them up and the session rejects them against the
+dictionary. Only the unreadable one stops in the codec.
+
 ## Cost estimate for the runner
 
 Revised down after reading the files. The runner needs: a line parser for 7 directives,

@@ -326,8 +326,9 @@ bước 4 là chỗ học lifetime. Đừng làm hai bước đó cùng lúc.
 |---|---|---|
 | 0 | `mv vendor vendor.bak && cargo build -p dict; mv vendor.bak vendor` | Output chứa đúng dòng "run scripts/fetch-quickfix-assets.sh". Không phải lỗi khác |
 | 1 | `cargo test -p nanofix-dict` | Xanh, và **đọc** output thấy tên các test. **Sửa 2026-08-28:** `required(b"D")` là `[11, 40, 54, 60]` — **không** chứa 21 và 55. Cả hai là `required='N'` trong `FIX44.xml`, đệ quy component cũng không thêm chúng. Xem `reference/fix44-dictionary-traps.md` bẫy 2 |
-| 2 | `cargo test -p codec --test defs` | In `classified 539/539`. Trong đó: 532 dòng kỳ vọng `Ok`, 7 dòng kỳ vọng `Err` **đúng biến thể đã khai**. Một dòng lệch là đỏ |
-| 2 | `cargo test -p codec --test defs -- bodylength` | `bodylength ok 247/247` (dòng E có `9=`), `checksum ok 244/244` (dòng E có `10=`) |
+| 2 | `cargo test -p nanofix-codec --test defs` | In `classified 539/539`. **Sửa 2026-08-28: 533 dòng `Ok`, 6 dòng `Err`**, không phải 532/7 — `8=FIX.3.9` và `8=FIX.4.1` ×2 parse bình thường (parser chỉ kiểm vị trí, không kiểm giá trị), còn `2t` có **hai** bản tin sai nhưng chỉ một cái không đóng khung được |
+| 2 | `--test defs` (body length) | **Sửa 2026-08-28:** 250 dòng mang `9=` của chính nó, **6** lệch. Ba do cố ý (`1d`, `2m` ×2), ba là dòng `E` của QuickFIX mang `9=` cũ, lệch **đúng 4 byte** vì timestamp 17 ký tự trong khi `9=` tính cho 21 |
+| 2 | `--test defs` (checksum) | **Sửa 2026-08-28: `checksum ok 244/244` là BẤT KHẢ THI.** 246 dòng mang `10=` và **0** dòng nào là checksum thật — 238 dòng là `10=0`. Bộ so sánh khớp tag 10 bằng regex nên giá trị chưa từng cần đúng. Thay bằng: xác thực checksum trên **287** bản tin mà loader tự tính, tức hai cài đặt độc lập đồng ý với nhau |
 | 2 | Test `TooManyFields`: parse một dòng E thật với `FieldIndex<4>` | Trả `Err(TooManyFields)`, và **không** có index nào chứa 4 field "thành công" |
 | 3 | `cargo +nightly fuzz run parse -- -max_total_time=600` | Không crash, không timeout. Corpus lưu lại thành test hồi quy |
 | 4 | `cargo test -p codec --test roundtrip` | `identical 244/244`. Một byte lệch là đỏ, in dòng lệch dưới dạng `\|` |
@@ -480,6 +481,30 @@ Generator sinh 5 bảng từ XML: `tag::*` (912 hằng), `msg_type::*` (93), `is
 
 Cả ba vào `reference/fix44-dictionary-traps.md`, mỗi cái kèm test canh. Bẫy 1 đã kiểm chứng
 bằng đảo ngược: đổi sang `tag − 1` → đúng 1 test đỏ, `left: Some(88), right: Some(93)`.
+
+### Bước 2 — xong 2026-08-28. Plan sai thêm 2 chỗ
+
+`codec` đọc được FIX. 29 test xanh (11 dict, 14 parser, 4 corpus). `classified 539/539`.
+
+**Chỗ sai thứ tư — plan tự mâu thuẫn về `2t`.** Sơ đồ ranh giới xếp "sai thứ tự (2t)" vào
+phần session; thuật toán parse bước 1 lại bắt parser từ chối cả ba vị trí `8=`, `9=`, `35=`.
+Dữ liệu cho thấy `2t` có **hai** bản tin sai khác hẳn nhau: một cái `35=` đứng trước `8=`
+(**không đóng khung được** — không biết bản tin kết thúc ở đâu), một cái `34=` đứng trước
+`35=` (đóng khung bình thường). QuickFIX bỏ im lặng cả hai, không tăng seq.
+→ **Quyết định của chủ repo: chỉ từ chối cái không đóng khung được.** Thêm
+`ParseError::BadFrameStart`. Vị trí `35=` để session phán.
+
+**Chỗ sai thứ năm — `14a` không pass được với `Err` thuần.** `-1=HI` là tag không đọc nổi
+thành `u32`, nhưng `@expected` ghi rõ *"Send Reject … Increment inbound MsgSeqNum"* — session
+phải đọc `34=4` và đặt text `-1` vào `371=`. Đây là ca duy nhất trong 539 dòng.
+→ **Quyết định của chủ repo:** `ParseError::BadTag` mang **offset byte** thay vì giá trị, và
+index **giữ mọi field đọc được trước chỗ hỏng**. Thêm `tag_text_at(buf, at)`. Cùng lý lẽ
+với D12. Cùng file đó gửi `999=`, `0=`, `5000=` — cả ba parse bình thường, session tra từ
+điển rồi Reject; chỉ cái không đọc nổi mới dừng ở codec.
+
+**Phát hiện lớn nhất, đã ghi vào `reference/quickfix-acceptance-def-format.md`:** trong 244
+dòng `E` mang `10=`, **không dòng nào** là checksum thật. Một conformance runner đi xác thực
+checksum trên dòng kỳ vọng sẽ đỏ cả 244 và không học được gì.
 
 **Chưa làm, ghi lại:** 3 tag trailer (`89`, `93`, `10`) không được phân loại — `is_header` trả
 `false` nên chúng sẽ xếp vào body nếu có ai ghi. Chưa ai ghi. Có test ghim.

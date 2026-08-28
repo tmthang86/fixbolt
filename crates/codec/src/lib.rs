@@ -6,6 +6,22 @@
 //! đụng tới", row 1.
 #![no_std]
 
+pub mod checksum;
 pub mod dict;
+pub mod index;
+pub mod parse;
 
+pub use checksum::{checksum, format_checksum};
 pub use dict::{Dictionary, NoDict};
+pub use index::{ConvertError, FieldEntry, FieldIndex, MessageView, as_char, as_i64, as_u32};
+pub use parse::{ParseError, Parsed, SOH, Validation, parse_into, tag_text_at};
+
+/// `MessageView` is three words, not two.
+///
+/// `&[u8]` is a fat pointer (16 bytes) plus 8 for the index reference. Over 16
+/// bytes means x86-64 SysV and AArch64 pass it indirectly, so hot-path functions
+/// taking it by value carry `#[inline]`. If someone adds a field here, this stops
+/// compiling rather than quietly costing a spill.
+const _: () = assert!(core::mem::size_of::<MessageView<'static, 64>>() == 24);
+const _: () = assert!(core::mem::size_of::<FieldEntry>() == 12);
+const _: () = assert!(core::mem::align_of::<FieldEntry>() == 4);
