@@ -35,7 +35,7 @@ Mọi con số dưới đây đếm bằng script trên `vendor/quickfix/spec/FI
 | Loại bản tin có ít nhất một group | **75 / 93** |
 | Khai báo `<group>` trong dictionary | **93** |
 | **Trong đó khai báo bên trong `<component>`** | **91 / 93** — chỉ 1 nằm thẳng trong `<message>` |
-| Vị trí group thực tế sau khi mở hết component | **1028** |
+| Vị trí group thực tế sau khi mở hết component | **731** (số 1028 ghi lúc lập plan là sai — xem nhật ký giao hàng, bước 1) |
 | Counter tag khác nhau | **59**. Mỗi counter tag ứng đúng một tên group, không dùng lại |
 | Độ lồng sâu nhất trong một bản tin | **4** (`TradeCaptureReport`) |
 | **Counter tag có delimiter KHÁC NHAU tùy ngữ cảnh** | **4** — xem bảng dưới |
@@ -221,7 +221,7 @@ tools/interop/                    MỚI — sinh/đối chiếu group qua libqui
 | Bước | Lệnh | Đạt khi |
 |---|---|---|
 | 0 | `cargo test -p dict -- component_recursion` | `required(b"D")` chứa field nằm trong `Parties`, `PreAllocGrp`, `TrdgSesGrp` — hiện đang thiếu |
-| 1 | `cargo test -p dict -- group_tables` | In `groups: 59 counters, 1028 positions`. Và **4 ca nhập nhằng phải đúng**: `(W,268)→269`, `(X,268)→279`, `(J,124)→32`, `(BA,124)→17` |
+| 1 | `cargo test -p dict -- group_tables` | In `GROUP_COUNTERS = 59`, `GROUP_POSITIONS = 731`. Và **4 ca nhập nhằng phải đúng**: `(W,268)→269`, `(X,268)→279`, `(J,124)→32`, `(BA,124)→17` |
 | 2 | `cargo test -p codec --test groups -- count_mismatch` | Trên dòng `I` thật của `14i`: `declared()==3`, `counted()==2`, và `parse_into` vẫn trả **`Ok`** — không phải `Err` |
 | 2 | `cargo test -p codec --test groups -- terminator` | Group `386` dừng đúng ở `60=`, không nuốt `60` vào entry cuối |
 | 3 | `cargo test -p codec --test groups -- nested` | Bản tin `TradeCaptureReport` dựng theo dictionary, lồng 4 tầng, đọc đúng field ở tầng sâu nhất |
@@ -291,3 +291,46 @@ Theo bảng đồng bộ `CLAUDE.md` §4. *(Ghi chú: `_template.md` chỉ sai s
 ## Nhật ký giao hàng
 
 *(trống — điền khi đóng từng bước)*
+
+### Bước 1 — bảng group, đóng ngày 2026-08-28
+
+**Xanh:** `cargo test -p nanofix-dict --test group_tables` — 6/6.
+
+**Lỗi thứ hai của plan này, sửa theo dữ liệu.** Plan ghi **1028 vị trí group**. Không
+đếm được ra con số đó bằng bất kỳ cách nào. Đo lại, bằng chính `build.rs` đang sinh bảng:
+
+| Đại lượng | Đo được |
+|---|---|
+| Khai báo `<group>` trong file | 93 — trong đó **1** ở `<messages>`, **91** ở `<components>`, **1** ở `<header>` |
+| Counter tag phân biệt | **59** (58 trong bản tin + `NoHops(627)` của header) |
+| Vị trí group sau khi mở component | **731** |
+
+Cách đếm: mỗi lần một `<group>` xuất hiện trong một bản tin sau khi thay mọi
+`<component>` bằng nội dung của nó, đếm một vị trí; header đếm một lần. Con số 59 khớp
+plan; 731 thay cho 1028. Test khẳng định 731, không khẳng định 1028.
+
+**Phát hiện đắt nhất của bước này:** **58/59 counter — và 91/93 khai báo — chỉ tới được
+qua `<component>`.** Bộ sinh chỉ đọc con trực tiếp của `<message>` tìm được đúng **một**
+group (`NoMsgTypes(384)` trong Logon). Không phải "thiếu vài trường hợp" mà là "gần như
+không thấy gì". Vào `docs/reference/fix44-dictionary-traps.md` làm trap 5.
+
+**Ba hàm, một bảng.** `group_delimiter` là phần tử đầu của `group_members`, `group_order`
+chính là `group_members`. Hai bảng riêng là hai thứ có thể lệch nhau về cùng một group.
+
+**Khoá bằng `(msg_type, counter)`, tra theo counter trước.** `match counter` là bảng
+nhảy trên `u32`; so sánh chuỗi msg_type chỉ chạy trong nhánh của counter đó, thường vài
+nhánh. Cặp không được khai báo trả `&[]` — nên `268` trong NewOrderSingle **không** bị
+trả lời bằng delimiter của snapshot.
+
+**Chứng minh bằng đảo ngược, hai lần:**
+
+| Phá | Kết quả |
+|---|---|
+| Bỏ đệ quy vào `<component>` khi tìm group | `GROUP_COUNTERS` 59 → **2**; `(W,268)` → `None`. 4/6 test đỏ |
+| Khoá bảng bằng counter, bỏ `msg_type` | `(X,268)` → **269** thay vì 279 — đúng cú cắt sai của incremental refresh; `(D,268)` → `Some(269)` thay vì `None`. 2/6 test đỏ |
+
+Khôi phục → 6/6 xanh lại.
+
+**Bộ sinh dừng build thay vì đoán**, ở ba chỗ mới: một counter vừa nằm trong `<header>`
+vừa nằm trong bản tin (khoá không trả lời được cả hai), cùng một counter xuất hiện hai
+lần trong một bản tin với danh sách thành viên khác nhau, và một group rỗng.

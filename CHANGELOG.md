@@ -25,9 +25,15 @@ below describe what a first release would contain.
   - `Template<P, S>` and `TemplateBuilder` — a message skeleton that sorts its fields once, at
     build time, and fills holes at send time. Optional slots may be omitted.
   - `TimestampCache` — `SendingTime` with the minute prefix cached.
-  - `Dictionary` trait, with the three repeating-group methods declared and unimplemented.
-- **`nanofix-dict`** — 912 tag constants, 93 message types, `is_header`, `data_length_tag` and
-  `required`, all generated from `FIX44.xml` at build time.
+  - `Dictionary` trait. `is_header` and `data_length_tag` are answered by `nanofix-dict`;
+    of the three repeating-group methods, all three are now implemented there — reading and
+    writing groups is not, and lands with the rest of the repeating-groups plan.
+- **`nanofix-dict`** — 912 tag constants, 93 message types, `is_header`, `data_length_tag`,
+  `required` and the group tables, all generated from `FIX44.xml` at build time.
+  - `group_members(msg_type, counter)` — one table serving `group_delimiter` (its head) and
+    `group_order` (itself), so the three cannot disagree. Keyed by **`(msg_type, counter)`**:
+    four counters take a different delimiter in different messages.
+  - `GROUP_COUNTERS = 59`, `GROUP_POSITIONS = 731`.
 
 ### Known limitations, stated rather than discovered
 
