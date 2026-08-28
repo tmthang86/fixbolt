@@ -23,6 +23,10 @@ name = "serialize"
 harness = false
 
 [[bench]]
+name = "groups"
+harness = false
+
+[[bench]]
 name = "alloc"
 harness = false
 

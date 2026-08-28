@@ -61,21 +61,6 @@ fn required_fields_of_new_order_single() {
 }
 
 #[test]
-fn required_is_knowingly_incomplete_without_component_recursion() {
-    // Pinned so the limitation cannot be used by accident and cannot be closed
-    // by accident either. News(B) requires MsgSeqNum-adjacent LinesOfText(33)
-    // through a required component; without recursion only Headline(148) shows.
-    // The repeating-groups plan lands recursion and this test flips to
-    // [33, 148] there. STATUS.md open item 8.
-    assert_eq!(
-        Fix44::required(b"B"),
-        &[148],
-        "if this now contains 33, component recursion landed \
-         — update this test, the plan and STATUS open item 8"
-    );
-}
-
-#[test]
 fn unknown_message_type_is_indistinguishable_from_no_requirements() {
     // Documented hole, pinned. b"ZZZ" is not a FIX 4.4 message type; Heartbeat
     // is, and requires nothing directly. Both answer the same. A caller that
@@ -116,4 +101,42 @@ fn trailer_fields_are_not_classified_and_that_is_a_known_gap() {
     for t in [10u32, 89, 93] {
         assert!(!Fix44::is_header(t), "tag {t} is trailer, not header");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Component recursion — repeating-groups plan, step 0. Closes STATUS item 8.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn required_descends_into_required_components() {
+    // The plan asked for NewOrderSingle(D) to gain fields from Parties,
+    // PreAllocGrp and TrdgSesGrp. It cannot: all three are required='N' there,
+    // so recursion correctly adds nothing — the same mistake the codec plan made
+    // about Symbol(55), and corrected the same way.
+    //
+    // News(B) is a message where recursion does change the answer. Headline(148)
+    // is a direct required field; LinesOfText(33) is the counter of a required
+    // <group> inside the required LinesOfTextGrp component, and is invisible to
+    // a generator that reads only direct children.
+    assert_eq!(Fix44::required(b"B"), &[33, 148]);
+}
+
+#[test]
+fn a_required_component_does_not_make_its_fields_required() {
+    // Instrument is required='Y' in NewOrderSingle and every field inside it,
+    // Symbol(55) included, is required='N'. "The message requires an Instrument"
+    // and "the message requires a Symbol" are different statements and only the
+    // first is in the dictionary.
+    assert_eq!(Fix44::required(b"D"), &[11, 40, 54, 60]);
+}
+
+#[test]
+fn recursion_reaches_through_more_than_one_level() {
+    // QuoteRequest(R): NoRelatedSym(146) is required, and the required fields
+    // beneath it sit two components deep.
+    let r = Fix44::required(b"R");
+    assert!(
+        r.contains(&146),
+        "NoRelatedSym(146) is required in QuoteRequest, got {r:?}"
+    );
 }

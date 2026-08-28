@@ -58,7 +58,7 @@ Every one is a command that either passes or fails. A criterion nobody can run i
 | # | Criterion | Gate |
 |---|---|---|
 | 1 | Session conformance | **59 / 59** — `conformance` runner, in-process, no socket |
-| 2 | Repeating groups | Read and written for all **93** groups the FIX 4.4 dictionary defines `[measured]`. **The 59 definitions do not test this** — see §4 |
+| 2 | Repeating groups | **Met 2026-08-28.** Read and written for all **93** groups `[measured]`; order agreed with QuickFIX's generated C++ on 730/730. **The 59 definitions do not test this** — see §4 |
 | 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion |
 | 4 | Both sides | Acceptor 59/59; initiator interop-green against `libquickfix` in CI |
 | 5 | Allocations on the hot path | **0**, proven by `benches/alloc.rs` |
@@ -100,8 +100,8 @@ find them whether or not this page does.
 | FIX versions | 4.0–5.0 SP2 + FIXT 1.1 — **8 dictionaries** `[measured]` | 4.4 | 5.0/FIXT → P2 |
 | Acceptor | Yes `[documented]` | Yes | P1 |
 | Initiator | Yes `[documented]` | Yes | P1 (ADR-0004) |
-| **Repeating groups** | Full — **93 groups in FIX 4.4** `[measured]` | Planned: [2026-08-27-repeating-groups.md](plans/2026-08-27-repeating-groups.md), awaiting approval | **P1, gap** |
-| **Dictionary validation** — types, enums, structure | Full `[documented]` | 5 generated tables; `<component>` recursion missing `[measured]` | **P1, gap** |
+| **Repeating groups** | Full — **93 groups in FIX 4.4** `[measured]` | Read and written, nested to depth 4. Field order agreed with QuickFIX's generated C++ on **730/730** groups `[measured]` | P1, **closed** |
+| **Dictionary validation** — types, enums, structure | Full `[documented]` | 6 generated tables with `<component>` recursion; **types and enum values are still not validated** `[measured]` | **P1, gap** |
 | Decimal / price types | Yes `[documented]` | Bytes and integers only | P1, gap |
 | Session schedules — start/end time, weekday | Yes `[documented]` | Entered scope with ADR-0004; unspecified | P1, gap |
 | Message stores | File, memory, and SQL backends `[documented]` | mmap journal, 3 policies (`None`/`Async`/`Fsync`) | P1, by design narrower |
@@ -116,12 +116,14 @@ find them whether or not this page does.
 
 **The two that matter most:**
 
-1. **Repeating groups.** `[measured]` FIX 4.4 defines 93 of them, and the 59 acceptance
-   definitions populate exactly one — `386=3` in `14i_RepeatingGroupCountNotEqual.def`, a file
-   whose purpose is testing a *wrong* count. `454` appears twice, both `=0`. **So 59/59 proves
-   nothing about repeating groups**, and without them almost no real application message —
-   `Parties`, allocations, market data, legs — can be read or written. This is the single
-   largest gap and it currently has no plan.
+1. **Repeating groups — closed 2026-08-28, and here is what closed it.** `[measured]` FIX 4.4
+   defines 93 of them, and the 59 acceptance definitions populate exactly one — `386=3` in
+   `14i_RepeatingGroupCountNotEqual.def`, a file whose purpose is testing a *wrong* count.
+   `454` appears twice, both `=0`. **So 59/59 proves nothing about repeating groups.** The
+   gate that does is two independent ones: `group_roundtrip.rs`, which round-trips 357
+   top-level positions byte-for-byte across all 59 counters, and
+   `interop_quickfix_order.rs`, which agrees with QuickFIX's own generated C++ on 730/730
+   groups. The second exists because the first reads the same table the encoder does.
 2. **Production track record.** `[documented]` [ADR-0001](decisions/ADR-0001-relationship-to-quickfix.md)
    says it directly: QuickFIX's real value is that thousands of counterparties have already
    found its bugs. No amount of test coverage substitutes. This gap does not close by writing

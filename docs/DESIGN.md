@@ -169,6 +169,32 @@ compile rather than silently costing a spill.
 `ParseError::TooManyFields`, never silent truncation. The 64 default is a measurement, not a
 preference — see ADR-0003.
 
+**Repeating groups do not change the index, and that is the decision.** The index stays flat:
+`parse_into` records tags in wire order and knows nothing about groups. A group is resolved
+only when asked for, by `MessageView::group(msg_type, counter)`, which walks the flat entries
+and returns a pair of positions.
+
+```rust
+pub struct GroupIter<'a, D: Dictionary, const N: usize>;  // Iterator<Item = GroupEntry<'a, N>>
+pub struct GroupEntry<'a, const N: usize>;                // get(tag), group::<D>(msg_type, counter)
+```
+
+Three consequences, each of which is why it is shaped this way:
+
+- **A message with no group pays nothing**, because none of this runs unless it is called.
+  `[measured]` parse is unchanged at 77 ns; walking a group is a separate 29–145 ns depending
+  on depth (`benches/groups.rs`).
+- **Nothing is built and nothing is allocated.** `benches/alloc.rs` walks four nesting levels
+  and reports 0.
+- **The scan steps over nested regions.** A group ends at the first tag outside its member
+  set, and a nested group's members are not members of the group around it, so a scanner that
+  does not skip stops inside the first nested group. `[measured]` 235 of the 731 group
+  positions in FIX 4.4 contain a nested group — 32%.
+
+`declared()` (what the counter field says) and `counted()` (what is on the wire) are reported
+separately and never reconciled by the codec. Whether a mismatch is a `Reject 373=16` is the
+session layer's decision, and it needs the counter tag for `371=`.
+
 ### D3 — Field ordering comes from generated tables, never from hand-written code
 
 The QuickFIX acceptance comparator compares fields **positionally**: a correct FIX message
@@ -177,6 +203,23 @@ whose fields are in a different order fails. This is recorded as a trap in
 
 So the serialiser emits in an order derived from the dictionary at build time. Ordering is
 never a judgement made at a call site.
+
+**Inside a repeating group the ascending-tag rule does not apply**, and this is the place D3
+actually bites. `MsgType` first, then header tags ascending, then body tags ascending governs
+the message; a group entry is written in the dictionary's **declaration** order, delimiter
+first — `269` before `270`, `279` before `285`. The counter tag itself sorts among the body
+tags like any other field; nothing after it sorts at all.
+
+`Template::encode_with::<D>` therefore walks `D::group_order(msg_type, counter)` and never the
+order the caller supplied. `[measured]` `crates/codec/tests/group_roundtrip.rs` hands every
+entry over in reverse and round-trips 357 top-level positions byte-for-byte.
+
+**A round-trip against your own table proves stability, not correctness**, so the order is
+checked against a second implementation: QuickFIX's generated C++ for FIX 4.4, which carries
+each group as `FIX::Group(counter, delimiter, message_order(...))`. `[measured]` delimiter
+agrees on 730/730 groups and QuickFIX's order is an exact subsequence of this crate's on
+730/730 (`crates/dict/tests/interop_quickfix_order.rs`). Swapping two adjacent members in
+every group leaves the round-trip green and turns that test red — which is why it exists.
 
 ### D4 — Dispatch is a trait; inline is the default, the ring buffer is the option
 
@@ -355,7 +398,9 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Allocations on the hot path | **0** | `benches/alloc.rs`, counting allocator |
 | Session conformance, acceptor | **59 / 59** | `conformance` runner, in-process, no socket |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
-| Repeating groups | all **93** FIX 4.4 groups read and written; in-group ordering verified against the dictionary | `crates/codec/tests/groups.rs` ([plan](plans/2026-08-27-repeating-groups.md)) |
+| Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |
+| Repeating groups — written | parse → encode **byte-identical** at all **357** top-level positions, exercising all **59** counters and nesting to depth 4 | `crates/codec/tests/group_roundtrip.rs` |
+| In-group field order matches another implementation | delimiter exact on all **730** groups, and QuickFIX's `message_order` an exact subsequence of this crate's member list on all 730 | `crates/dict/tests/interop_quickfix_order.rs`, read out of QuickFIX's generated C++. Exists because the round-trip test reads the same table the encoder does and is blind to a wrong order |
 | **Wire-to-wire, NIC to NIC** | p50 / p99 / p99.9 published; p99 ≤ 50 µs on kernel TCP | `tools/w2w` — `SO_TIMESTAMPING`, HdrHistogram, load generator on a **separate machine** |
 | Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |
 | `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |

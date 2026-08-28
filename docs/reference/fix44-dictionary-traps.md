@@ -20,6 +20,10 @@ test*.
 | `type='DATA'` fields | **16** |
 | `type='LENGTH'` fields | **18** — 16 lengths of DATA, plus `BodyLength(9)` and `MaxMessageSize(383)` |
 | Messages whose required-field set changes if `<component>` is descended into | **21 / 93** |
+| `<group>` declarations | **93** — **1** under `<messages>`, **91** under `<components>`, **1** under `<header>` |
+| Distinct group counter tags | **59** — 58 in messages, plus `NoHops(627)` from the header |
+| Group positions once components are expanded | **731** |
+| Counters whose delimiter depends on the message | **4** — `268`, `124`, `295`, `420` |
 
 ## Trap 1 — a DATA field's length field is not `tag - 1`
 
@@ -112,3 +116,90 @@ was redone with `xml.etree` after the regex was caught. Every count above change
 
 > **Guarded by** the generator itself: `msg_type::XM_LNON_FIX` is emitted, and the build fails
 > if two messages collide on a constant name. A regex-based generator would have dropped one.
+
+## Trap 5 — 58 of the 59 group counters are unreachable without descending into `<component>`
+
+**Measured 2026-08-28** against `vendor/quickfix/spec/FIX44.xml`.
+
+Of the 93 `<group>` declarations in the file, **1** sits under `<messages>`, **91** under
+`<components>`, and **1** under `<header>`. A generator that walks the children of each
+`<message>` — including nested groups, but not entering component references — finds
+exactly **one** counter: `NoMsgTypes(384)` in Logon.
+
+This is not "a few edge cases missed". `NoTradingSessions(386)` reaches NewOrderSingle only
+through `TrdgSesGrp`; `NoPartyIDs(453)` reaches almost everything only through `Parties`;
+`NoMDEntries(268)` reaches the market-data messages only through `MDFullGrp` /
+`MDIncGrp`. Descending into components is not an optimisation of the group walker — it is
+the group walker.
+
+The failure is quiet in the worst way. The tables generate, the crate compiles, every test
+that does not name a group passes, and every repeating group in every real application
+message is invisible. Nothing in the 59 acceptance definitions notices, because
+[the suite populates one group and does it to test a wrong count](quickfix-acceptance-def-format.md).
+
+**Guarded by** `crates/dict/tests/group_tables.rs`:
+`a_group_reached_through_a_component_is_still_found` pins `(D, 386) → 336`, a pair that
+exists only through a component, and `the_tables_cover_what_the_dictionary_declares` pins
+the totals. Proven by reversal on 2026-08-28: removing the component descent from
+`collect_groups` drops `GROUP_COUNTERS` from 59 to 2 and turns 4 of the 6 tests red.
+
+## Trap 6 — four group counters take a different delimiter in different messages
+
+**Measured 2026-08-28.** A group ends when a tag outside its member set appears, and the
+*delimiter* — the tag that starts each entry — is the group's first declared field. Four
+counters in FIX 4.4 are declared with different first fields in different messages:
+
+| Counter | Message | Delimiter |
+|---|---|---|
+| `NoMDEntries(268)` | `W` MarketDataSnapshotFullRefresh | `MDEntryType(269)` |
+| `NoMDEntries(268)` | `X` MarketDataIncrementalRefresh | `MDUpdateAction(279)` |
+| `NoExecs(124)` | `J` AllocationInstruction | `LastQty(32)` |
+| `NoExecs(124)` | `BA` CollateralReport | `ExecID(17)` |
+| `NoQuoteEntries(295)` | `Z` QuoteCancel | `Symbol(55)` |
+| `NoQuoteEntries(295)` | `i` MassQuote | `QuoteEntryID(299)` |
+| `NoBidComponents(420)` | `k` BidRequest | `ListID(66)` |
+| `NoBidComponents(420)` | `l` BidResponse | `Commission(12)` |
+
+So a table keyed by counter alone answers half of these wrongly, and `268` is the painful
+one: MarketDataIncrementalRefresh is the highest-volume message type in production FIX, and
+a wrong delimiter mis-cuts every entry in it while parsing without error.
+
+**Guarded by** `the_four_ambiguous_counters_resolve_by_message`. Proven by reversal on
+2026-08-28: re-keying the generated table by counter alone makes `(X, 268)` answer `269`
+instead of `279`, and makes `(D, 268)` — a message with no market data at all — answer
+`Some(269)` instead of `None`.
+
+## Trap 7 — QuickFIX's `message_order` and a group's member list are not the same list
+
+**Measured 2026-08-28.** QuickFIX ships generated C++ for FIX 4.4, one header per message,
+and every group appears in it as
+
+```cpp
+NoMDEntries() : FIX::Group(268,279,FIX::message_order(279,285,269,278,280,55,...,0)) {}
+```
+
+counter, delimiter, order. That is a second opinion on field order written by a different
+generator, and comparing against it caught nothing — which is the result worth recording.
+
+The comparison is **not** equality, and expecting equality wastes an afternoon. QuickFIX's
+`message_order` lists a nested group's counter tag only sometimes; this crate's
+`group_members` always does, because its writer walks the list and emits the nested group
+when it reaches that counter, so the counter has to be in the list. Measured across the 730
+groups QuickFIX generates:
+
+| Claim | Result |
+|---|---|
+| Delimiter agrees | **730 / 730** |
+| QuickFIX's order is an exact subsequence of this crate's | **730 / 730** |
+| Tags QuickFIX has that this crate lacks | **0** |
+| Tags this crate has that QuickFIX omits | 7 distinct, **every one a group counter** |
+
+QuickFIX generates one file per message and `<header>` is not a message, so `NoHops(627)` has
+no file: 730 + 1 = 731.
+
+**Guarded by** `crates/dict/tests/interop_quickfix_order.rs`. Proven by reversal on
+2026-08-28, and the reversal is the point: swapping two adjacent members in every generated
+group leaves `crates/codec/tests/group_roundtrip.rs` **green** — that test generates its
+messages from the same table the encoder reads, so a wrong order is invisible to it — and
+turns the interop test **red**. A round-trip against your own table proves stability, not
+correctness.

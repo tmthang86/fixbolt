@@ -21,6 +21,28 @@ impl nanofix_codec::Dictionary for Fix44 {
     fn data_length_tag(tag: u32) -> Option<u32> {
         data_length_tag(tag)
     }
+
+    #[inline]
+    fn group_delimiter(msg_type: &[u8], counter: u32) -> Option<u32> {
+        // The head of the member list, never a table of its own: two tables
+        // are two things that can disagree about the same group.
+        match group_members(msg_type, counter) {
+            [first, ..] => Some(*first),
+            [] => None,
+        }
+    }
+
+    #[inline]
+    fn group_members(msg_type: &[u8], counter: u32) -> &'static [u32] {
+        group_members(msg_type, counter)
+    }
+
+    #[inline]
+    fn group_order(msg_type: &[u8], counter: u32) -> &'static [u32] {
+        // Declaration order already begins with the delimiter, so `order` and
+        // `members` are one list read two ways.
+        group_members(msg_type, counter)
+    }
 }
 
 impl Fix44 {

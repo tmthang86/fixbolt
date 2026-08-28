@@ -22,7 +22,8 @@
 use core::ops::Range;
 
 use crate::checksum::{checksum, format_checksum};
-use crate::dict::Dictionary;
+use crate::dict::{Dictionary, NoDict};
+use crate::group::MAX_DEPTH;
 
 /// `BodyLength` is rendered without padding, so five digits is the ceiling this
 /// layout reserves. Longer is [`EncodeError::BodyTooLong`].
@@ -46,6 +47,47 @@ pub enum EncodeError {
     ScratchFull,
     /// `8`, `9` and `10` are the frame, not fields. `encode` writes them.
     ReservedTag(u32),
+    /// A group was declared but the dictionary has no `(msg_type, counter)`
+    /// entry for it. Writing it would mean inventing a field order.
+    UnknownGroup(u32),
+    /// A tag was supplied for a group entry that the group does not contain.
+    /// Writing it would put a field where no reader expects one.
+    NotAGroupMember(u32),
+    /// An entry of this group arrived without its delimiter — the tag that
+    /// starts every entry. A reader cannot cut the group without it.
+    MissingDelimiter(u32),
+    /// A template with a group hole has no `MsgType`, so the group tables
+    /// cannot be looked up: they are keyed by `(msg_type, counter)`.
+    MsgTypeMissing,
+    /// Groups nested deeper than [`MAX_DEPTH`](crate::group::MAX_DEPTH).
+    GroupTooDeep,
+}
+
+/// One entry of a repeating group being written.
+///
+/// `fields` may be in any order: [`Template::encode_with`] writes them in the
+/// dictionary's declaration order. That is non-negotiable 5, and a group is the
+/// place it bites — inside a group the order is not ascending by tag, so the
+/// rule that governs the body cannot catch a mistake here.
+#[derive(Clone, Copy)]
+pub struct GroupEntryData<'a> {
+    /// Fields of this entry. Must include the group's delimiter.
+    pub fields: &'a [(u32, &'a [u8])],
+    /// Groups nested inside this entry.
+    pub groups: &'a [GroupData<'a>],
+}
+
+/// A repeating group being written: its counter tag and its entries.
+///
+/// Borrowed and recursive, so nesting costs no allocation — the caller builds
+/// it on the stack. The counter value is not supplied: it is `entries.len()`,
+/// so the two cannot disagree.
+#[derive(Clone, Copy)]
+pub struct GroupData<'a> {
+    /// The counter tag, such as `453` for `NoPartyIDs`.
+    pub counter: u32,
+    /// The entries, in the order they go on the wire.
+    pub entries: &'a [GroupEntryData<'a>],
 }
 
 #[derive(Clone, Copy)]
@@ -54,6 +96,17 @@ enum Part {
     Static { at: u16, len: u16 },
     /// A hole. Filled from `slots` at send time, or skipped when absent.
     Slot(u32),
+    /// A repeating group. Filled from `groups` at send time, or skipped when
+    /// absent. The counter tag sorts among the body tags like any other; what
+    /// follows it does not sort at all.
+    Group(u32),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Static,
+    Slot,
+    Group,
 }
 
 #[derive(Clone, Copy)]
@@ -61,7 +114,7 @@ struct Entry {
     tag: u32,
     at: u16,
     len: u16,
-    is_static: bool,
+    kind: Kind,
 }
 
 /// A message skeleton with holes in it.
@@ -72,6 +125,10 @@ pub struct Template<const P: usize, const S: usize> {
     scratch: [u8; S],
     begin_at: u16,
     begin_len: u16,
+    /// Where `MsgType`'s value sits in `scratch`. The group tables are keyed by
+    /// `(msg_type, counter)`, so writing a group needs it.
+    mt_at: u16,
+    mt_len: u16,
     parts: [Part; P],
     len: u8,
 }
@@ -100,7 +157,7 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
                 tag: 0,
                 at: 0,
                 len: 0,
-                is_static: true,
+                kind: Kind::Static,
             }; P],
             n: 0,
             err: None,
@@ -133,6 +190,16 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
         self
     }
 
+    /// A repeating group hole. The counter tag takes its ordinary ascending
+    /// place among the body tags; the entries after it are ordered by the
+    /// dictionary, not by this call.
+    pub fn group(mut self, counter: u32) -> Self {
+        if let Err(e) = self.push_group(counter) {
+            self.err.get_or_insert(e);
+        }
+        self
+    }
+
     /// Sort into wire order and freeze.
     ///
     /// The dictionary decides header from body. No call site ever chooses an
@@ -157,6 +224,8 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
             scratch: [0; S],
             begin_at: 0,
             begin_len: self.begin_len,
+            mt_at: 0,
+            mt_len: 0,
             parts: [Part::Static { at: 0, len: 0 }; P],
             len: 0,
         };
@@ -171,10 +240,16 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
         used += bl;
 
         let mut nparts: usize = 0;
+        let mut has_group = false;
         for i in 0..self.n {
             let e = self.entries[i];
-            if e.is_static {
+            if e.kind == Kind::Static {
                 let src = &self.scratch[e.at as usize..e.at as usize + e.len as usize];
+                if e.tag == 35 {
+                    // `35=X\x01` — the value is what sits between `35=` and SOH.
+                    out.mt_at = (used + 3) as u16;
+                    out.mt_len = e.len - 4;
+                }
                 out.scratch
                     .get_mut(used..used + src.len())
                     .ok_or(EncodeError::ScratchFull)?
@@ -199,9 +274,21 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
                 }
                 used += src.len();
             } else {
-                *out.parts.get_mut(nparts).ok_or(EncodeError::TooManyParts)? = Part::Slot(e.tag);
+                *out.parts.get_mut(nparts).ok_or(EncodeError::TooManyParts)? = match e.kind {
+                    Kind::Group => {
+                        has_group = true;
+                        Part::Group(e.tag)
+                    }
+                    _ => Part::Slot(e.tag),
+                };
                 nparts += 1;
             }
+        }
+
+        // Refusing here rather than at send time: a template that can never
+        // write its group is a build-time mistake, not a per-message one.
+        if has_group && out.mt_len == 0 {
+            return Err(EncodeError::MsgTypeMissing);
         }
 
         out.begin_at = 0;
@@ -219,7 +306,7 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
             tag,
             at,
             len: self.used - at,
-            is_static: true,
+            kind: Kind::Static,
         })
     }
 
@@ -229,7 +316,17 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
             tag,
             at: 0,
             len: 0,
-            is_static: false,
+            kind: Kind::Slot,
+        })
+    }
+
+    fn push_group(&mut self, counter: u32) -> Result<(), EncodeError> {
+        reserved(counter)?;
+        self.entry(Entry {
+            tag: counter,
+            at: 0,
+            len: 0,
+            kind: Kind::Group,
         })
     }
 
@@ -329,10 +426,33 @@ impl<const P: usize, const S: usize> Template<P, S> {
     ///
     /// The message does **not** start at `out[0]`: the prefix is right-aligned so
     /// the body never moves. Send `out[range]`.
+    ///
+    /// A template carrying a group hole needs
+    /// [`encode_with`](Self::encode_with): this one has no dictionary, so it
+    /// would write the group's counter and nothing after it.
     pub fn encode(
         &self,
         out: &mut [u8],
         slots: &[(u32, &[u8])],
+    ) -> Result<Range<usize>, EncodeError> {
+        self.encode_with::<NoDict>(out, slots, &[])
+    }
+
+    /// [`encode`](Self::encode), plus repeating groups.
+    ///
+    /// Each [`GroupData`] fills the hole with its counter tag. Field order
+    /// inside an entry comes from `D::group_order`, never from the order the
+    /// caller supplied — see [`GroupEntryData`].
+    ///
+    /// A declared group with no matching [`GroupData`] writes nothing at all,
+    /// not even `counter=0`: an absent optional group and one with zero entries
+    /// are different messages, and the caller says which by supplying data or
+    /// not.
+    pub fn encode_with<D: Dictionary>(
+        &self,
+        out: &mut [u8],
+        slots: &[(u32, &[u8])],
+        groups: &[GroupData<'_>],
     ) -> Result<Range<usize>, EncodeError> {
         let k = self.reserve();
         let mut w = k;
@@ -350,15 +470,15 @@ impl<const P: usize, const S: usize> Template<P, S> {
                     let Some((_, value)) = slots.iter().find(|(t, _)| *t == tag) else {
                         continue; // an unsupplied slot is simply not written
                     };
-                    let mut d = [0u8; 10];
-                    let digits = render_u32(tag, &mut d);
-                    let n = digits.len() + 1 + value.len() + 1;
-                    let dst = out.get_mut(w..w + n).ok_or(EncodeError::OutputTooSmall)?;
-                    dst[..digits.len()].copy_from_slice(digits);
-                    dst[digits.len()] = b'=';
-                    dst[digits.len() + 1..n - 1].copy_from_slice(value);
-                    dst[n - 1] = SOH;
-                    w += n;
+                    w = put(out, w, tag, value)?;
+                }
+                Part::Group(counter) => {
+                    let Some(g) = groups.iter().find(|g| g.counter == counter) else {
+                        continue; // an unsupplied group is not written at all
+                    };
+                    let mt = &self.scratch
+                        [self.mt_at as usize..self.mt_at as usize + self.mt_len as usize];
+                    w = put_group::<D>(out, w, mt, g, 0)?;
                 }
             }
         }
@@ -409,4 +529,68 @@ impl<const P: usize, const S: usize> Template<P, S> {
 
         Ok(start..w + TRAILER_LEN)
     }
+}
+
+/// Writes `tag=value` and its separator at `w`, and returns the new `w`.
+#[inline]
+fn put(out: &mut [u8], w: usize, tag: u32, value: &[u8]) -> Result<usize, EncodeError> {
+    let mut d = [0u8; 10];
+    let digits = render_u32(tag, &mut d);
+    let n = digits.len() + 1 + value.len() + 1;
+    let dst = out.get_mut(w..w + n).ok_or(EncodeError::OutputTooSmall)?;
+    dst[..digits.len()].copy_from_slice(digits);
+    dst[digits.len()] = b'=';
+    dst[digits.len() + 1..n - 1].copy_from_slice(value);
+    dst[n - 1] = SOH;
+    Ok(w + n)
+}
+
+/// `counter=N` followed by `N` entries, each in the dictionary's order.
+fn put_group<D: Dictionary>(
+    out: &mut [u8],
+    mut w: usize,
+    msg_type: &[u8],
+    g: &GroupData<'_>,
+    depth: u8,
+) -> Result<usize, EncodeError> {
+    if depth >= MAX_DEPTH {
+        return Err(EncodeError::GroupTooDeep);
+    }
+    let order = D::group_order(msg_type, g.counter);
+    if order.is_empty() {
+        return Err(EncodeError::UnknownGroup(g.counter));
+    }
+    let mut d = [0u8; 10];
+    let count = u32::try_from(g.entries.len()).map_err(|_| EncodeError::BodyTooLong)?;
+    w = put(out, w, g.counter, render_u32(count, &mut d))?;
+
+    for e in g.entries {
+        // Every supplied tag must belong to this group. Checked before writing
+        // anything, so a rejected entry never leaves half a group in `out`.
+        for (t, _) in e.fields {
+            if !order.contains(t) {
+                return Err(EncodeError::NotAGroupMember(*t));
+            }
+        }
+        for sub in e.groups {
+            if !order.contains(&sub.counter) {
+                return Err(EncodeError::NotAGroupMember(sub.counter));
+            }
+        }
+        let delimiter = *order.first().ok_or(EncodeError::UnknownGroup(g.counter))?;
+        if !e.fields.iter().any(|(t, _)| *t == delimiter) {
+            return Err(EncodeError::MissingDelimiter(g.counter));
+        }
+
+        // Declaration order, from the table. The caller's order is not consulted
+        // and cannot be: `order` is walked, not `e.fields`.
+        for &tag in order {
+            if let Some((_, v)) = e.fields.iter().find(|(t, _)| *t == tag) {
+                w = put(out, w, tag, v)?;
+            } else if let Some(sub) = e.groups.iter().find(|s| s.counter == tag) {
+                w = put_group::<D>(out, w, msg_type, sub, depth + 1)?;
+            }
+        }
+    }
+    Ok(w)
 }

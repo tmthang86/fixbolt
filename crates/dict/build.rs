@@ -124,9 +124,19 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
         }
     }
 
-    // ---- required fields, per message. NO component recursion --------------
-    // Deliberate, and it is wrong for 21 of the 93 messages. See the plan's
-    // revision of 2026-08-28 and STATUS.md open item 8.
+    // ---- required fields, per message, descending into components ---------
+    // A `required='Y'` component contributes its own `required='Y'` fields, and
+    // nothing else: Instrument is required in NewOrderSingle while every field
+    // inside it, Symbol(55) included, is optional. "The message requires an
+    // Instrument" and "the message requires a Symbol" are different statements.
+    let components: BTreeMap<&str, roxmltree::Node<'_, '_>> = match child(root, "components") {
+        Some(el) => el
+            .children()
+            .filter(|n| n.has_tag_name("component"))
+            .filter_map(|n| n.attribute("name").map(|k| (k, n)))
+            .collect(),
+        None => BTreeMap::new(),
+    };
     let Some(messages_el) = child(root, "messages") else {
         die("<messages> section missing")
     };
@@ -138,20 +148,73 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
         };
         msg_consts.push((screaming(name), mt.to_string()));
 
-        let mut tags: Vec<u32> = m
-            .children()
-            .filter(|c| c.has_tag_name("field") || c.has_tag_name("group"))
-            .filter(|c| c.attribute("required") == Some("Y"))
-            .filter_map(|c| c.attribute("name"))
-            .map(|n| match number_of.get(n) {
-                Some(t) => *t,
-                None => die(&format!("message {name} names unknown field {n}")),
-            })
-            .collect();
+        let mut set = BTreeSet::new();
+        collect_required(m, &components, &number_of, name, &mut set, &mut Vec::new());
+        let mut tags: Vec<u32> = set.into_iter().collect();
         tags.sort_unstable();
-        tags.dedup();
         if !tags.is_empty() {
             required.push((mt.to_string(), tags));
+        }
+    }
+
+    // ---- repeating groups, per message -------------------------------------
+    // Keyed by (msg_type, counter). Never by counter alone: NoMDEntries(268)
+    // takes MDEntryType(269) in a snapshot and MDUpdateAction(279) in an
+    // incremental refresh, and an incremental refresh is the highest-volume
+    // message there is. Three more counters behave the same way.
+    let mut groups: BTreeMap<(String, u32), Vec<u32>> = BTreeMap::new();
+    let mut positions: usize = 0usize;
+    for m in messages_el.children().filter(|n| n.has_tag_name("message")) {
+        let Some(mt) = m.attribute("msgtype") else {
+            die("<message> without msgtype")
+        };
+        collect_groups(
+            m,
+            &components,
+            &number_of,
+            mt,
+            &mut groups,
+            &mut positions,
+            &mut Vec::new(),
+        );
+    }
+    // The header's one group, NoHops(627), can appear in ANY message, so it is
+    // keyed under the empty message type and emitted without a msg_type arm.
+    collect_groups(
+        header_el,
+        &components,
+        &number_of,
+        "",
+        &mut groups,
+        &mut positions,
+        &mut Vec::new(),
+    );
+
+    // Distinct member lists, deduplicated: many messages share a group verbatim.
+    let mut lists: Vec<Vec<u32>> = Vec::new();
+    let mut list_id: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
+    let mut by_counter: BTreeMap<u32, BTreeMap<usize, Vec<String>>> = BTreeMap::new();
+    for ((mt, counter), members) in &groups {
+        let id = *list_id.entry(members.clone()).or_insert_with(|| {
+            lists.push(members.clone());
+            lists.len() - 1
+        });
+        by_counter
+            .entry(*counter)
+            .or_default()
+            .entry(id)
+            .or_default()
+            .push(mt.clone());
+    }
+    for (counter, per) in &by_counter {
+        let owners: Vec<&String> = per.values().flatten().collect();
+        if owners.iter().any(|m| m.is_empty()) && owners.len() > 1 {
+            die(&format!(
+                "counter {counter} is declared in <header> and in a message.\n\
+                 A header group applies to every message, so it cannot also be\n\
+                 keyed per message. Refusing to emit a table that answers one\n\
+                 of the two wrongly."
+            ));
         }
     }
 
@@ -211,12 +274,15 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     o.push_str(
         "/// Fields a message type requires.\n\
          ///\n\
-         /// **Incomplete, knowingly.** Only `required='Y'` children of `<message>`\n\
-         /// are counted; `<component>` is not descended into, which is wrong for 21\n\
-         /// of the 93 message types. An unknown message type is indistinguishable\n\
-         /// from one with no required fields — both give `&[]`. Nothing calls this\n\
-         /// yet, and nothing should until the repeating-groups plan lands component\n\
-         /// recursion. STATUS.md open item 8.\n\
+         /// Descends into `required='Y'` components, transitively. A required\n\
+         /// `<group>` contributes its counter tag, which is the field that appears\n\
+         /// on the wire; what a group entry requires is a different question.\n\
+         ///\n\
+         /// A required component does NOT make its fields required — Instrument is\n\
+         /// required in NewOrderSingle and Symbol(55) inside it is not.\n\
+         ///\n\
+         /// **Remaining hole:** an unknown message type is indistinguishable from\n\
+         /// one with no required fields; both give `&[]`.\n\
          #[inline]\npub fn required(msg_type: &[u8]) -> &'static [u32] {\n    match msg_type {\n",
     );
     for (mt, tags) in &required {
@@ -227,9 +293,121 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
             .join(", ");
         let _ = writeln!(o, "        b\"{mt}\" => &[{list}],");
     }
+    o.push_str("        _ => &[],\n    }\n}\n\n");
+
+    // ---- group tables ------------------------------------------------------
+    let _ = writeln!(
+        o,
+        "/// Distinct group counter tags in FIX 4.4, `NoHops(627)` from the\n\
+         /// header included.\npub const GROUP_COUNTERS: usize = {};\n",
+        by_counter.len()
+    );
+    let _ = writeln!(
+        o,
+        "/// Group positions once `<component>` references are expanded: the\n\
+         /// number of places a group can appear across all 93 messages plus the\n\
+         /// header. Larger than the 93 `<group>` declarations because a component\n\
+         /// holding a group is referenced from many messages.\n\
+         pub const GROUP_POSITIONS: usize = {positions};\n"
+    );
+    for (i, l) in lists.iter().enumerate() {
+        let items = l.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+        let _ = writeln!(o, "static G{i}: [u32; {}] = [{items}];", l.len());
+    }
+    let _ = writeln!(
+        o,
+        "\n/// Every `(msg_type, counter)` pair the dictionary declares, sorted.\n\
+         ///\n\
+         /// Exists so a test can enumerate the groups instead of naming a few by\n\
+         /// hand: \"covers every group\" is a claim, and this is what makes it\n\
+         /// checkable. A validator walking a message would want the same list.\n\
+         pub static GROUP_KEYS: [(&[u8], u32); {}] = [",
+        groups.len()
+    );
+    for (mt, counter) in groups.keys() {
+        let _ = writeln!(o, "    (b\"{mt}\", {counter}),");
+    }
+    o.push_str("];\n");
+    o.push_str(
+        "\n/// Every tag that may appear inside a group, in declaration order,\n\
+         /// delimiter first.\n\
+         ///\n\
+         /// One table serves all three `Dictionary` group methods, so they cannot\n\
+         /// disagree: `group_delimiter` is this list's head and `group_order` is\n\
+         /// this list. A second table would be a second thing to keep in step.\n\
+         ///\n\
+         /// Matched on the counter first — a `u32` jump table — then on the\n\
+         /// message. A pair the dictionary does not declare gives `&[]`, so\n\
+         /// `268` in a NewOrderSingle is not answered with the snapshot's\n\
+         /// delimiter.\n\
+         #[inline]\n#[must_use]\npub fn group_members(msg_type: &[u8], counter: u32) -> &'static [u32] {\n    match counter {\n",
+    );
+    for (counter, per) in &by_counter {
+        let header_owned = per.values().flatten().any(|m| m.is_empty());
+        if header_owned {
+            let id = *per.keys().next().unwrap_or(&0);
+            let _ = writeln!(o, "        {counter} => &G{id}, // <header>");
+            continue;
+        }
+        let _ = writeln!(o, "        {counter} => match msg_type {{");
+        for (id, mts) in per {
+            let pats = mts
+                .iter()
+                .map(|m| format!("b\"{m}\""))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let _ = writeln!(o, "            {pats} => &G{id},");
+        }
+        o.push_str("            _ => &[],\n        },\n");
+    }
     o.push_str("        _ => &[],\n    }\n}\n");
 
     o
+}
+
+/// Required tags of an element, descending into required components.
+///
+/// A `<group required='Y'>` contributes its **counter** tag: that is the field
+/// that appears on the wire. What is inside the group is required per entry, not
+/// per message, and belongs to a different question.
+///
+/// `path` guards against a component cycle. FIX 4.4 has none — measured, deepest
+/// nesting is 5 — but a generator that loops on a malformed dictionary hangs the
+/// build with no message.
+fn collect_required<'a>(
+    el: roxmltree::Node<'a, '_>,
+    components: &BTreeMap<&'a str, roxmltree::Node<'a, '_>>,
+    number_of: &BTreeMap<&str, u32>,
+    msg: &str,
+    out: &mut BTreeSet<u32>,
+    path: &mut Vec<&'a str>,
+) {
+    for c in el.children() {
+        if c.attribute("required") != Some("Y") {
+            continue;
+        }
+        let Some(name) = c.attribute("name") else {
+            continue;
+        };
+        if c.has_tag_name("field") || c.has_tag_name("group") {
+            match number_of.get(name) {
+                Some(t) => {
+                    out.insert(*t);
+                }
+                None => die(&format!("message {msg} names unknown field {name}")),
+            }
+        } else if c.has_tag_name("component") {
+            let Some(def) = components.get(name) else {
+                die(&format!("message {msg} names unknown component {name}"))
+            };
+            if path.contains(&name) {
+                die(&format!("component cycle: {} -> {name}", path.join(" -> ")));
+            }
+            path.push(name);
+            collect_required(*def, components, number_of, msg, out, path);
+            path.pop();
+        }
+    }
 }
 
 /// Every tag under `<header>`, descending into groups. The group's own counter
@@ -277,4 +455,108 @@ fn screaming(name: &str) -> String {
         out.push(c.to_ascii_uppercase());
     }
     out
+}
+
+/// Every tag a group can hold, in declaration order, components spliced in
+/// where they are referenced.
+///
+/// A nested `<group>` contributes its counter tag and nothing else: the counter
+/// is the field that appears at this level of the wire, and what the nested
+/// entries hold is the nested group's own question.
+fn collect_members<'a>(
+    el: roxmltree::Node<'a, '_>,
+    components: &BTreeMap<&'a str, roxmltree::Node<'a, '_>>,
+    number_of: &BTreeMap<&str, u32>,
+    ctx: &str,
+    out: &mut Vec<u32>,
+    path: &mut Vec<&'a str>,
+) {
+    for c in el.children() {
+        let Some(name) = c.attribute("name") else {
+            continue;
+        };
+        if c.has_tag_name("field") || c.has_tag_name("group") {
+            match number_of.get(name) {
+                Some(t) => out.push(*t),
+                None => die(&format!("{ctx} names unknown field {name}")),
+            }
+        } else if c.has_tag_name("component") {
+            let Some(def) = components.get(name) else {
+                die(&format!("{ctx} names unknown component {name}"))
+            };
+            if path.contains(&name) {
+                die(&format!("component cycle: {} -> {name}", path.join(" -> ")));
+            }
+            path.push(name);
+            collect_members(*def, components, number_of, ctx, out, path);
+            path.pop();
+        }
+    }
+}
+
+/// Registers every group reachable from `el` under message type `mt`,
+/// descending through components and through nested groups.
+///
+/// A group reached only through a component is the common case, not the
+/// exception: `NoTradingSessions(386)` reaches NewOrderSingle solely through
+/// `TrdgSesGrp`, so a walker that reads `<message>` children alone finds
+/// nothing for it.
+fn collect_groups<'a>(
+    el: roxmltree::Node<'a, '_>,
+    components: &BTreeMap<&'a str, roxmltree::Node<'a, '_>>,
+    number_of: &BTreeMap<&str, u32>,
+    mt: &str,
+    groups: &mut BTreeMap<(String, u32), Vec<u32>>,
+    positions: &mut usize,
+    path: &mut Vec<&'a str>,
+) {
+    for c in el.children() {
+        let Some(name) = c.attribute("name") else {
+            continue;
+        };
+        if c.has_tag_name("group") {
+            let Some(&counter) = number_of.get(name) else {
+                die(&format!("message {mt} names unknown group counter {name}"))
+            };
+            let mut members = Vec::new();
+            collect_members(
+                c,
+                components,
+                number_of,
+                &format!("group {name}"),
+                &mut members,
+                &mut Vec::new(),
+            );
+            if members.is_empty() {
+                die(&format!("group {name} in message {mt} has no members"));
+            }
+            *positions += 1;
+            match groups.entry((mt.to_string(), counter)) {
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    v.insert(members);
+                }
+                std::collections::btree_map::Entry::Occupied(prev) => {
+                    if prev.get() != &members {
+                        die(&format!(
+                            "counter {counter} appears twice in message {mt} with\n\
+                             different members: {:?} then {members:?}.\n\
+                             A (msg_type, counter) key cannot answer both.",
+                            prev.get()
+                        ));
+                    }
+                }
+            }
+            collect_groups(c, components, number_of, mt, groups, positions, path);
+        } else if c.has_tag_name("component") {
+            let Some(def) = components.get(name) else {
+                die(&format!("message {mt} names unknown component {name}"))
+            };
+            if path.contains(&name) {
+                die(&format!("component cycle: {} -> {name}", path.join(" -> ")));
+            }
+            path.push(name);
+            collect_groups(*def, components, number_of, mt, groups, positions, path);
+            path.pop();
+        }
+    }
 }

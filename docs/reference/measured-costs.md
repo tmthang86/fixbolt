@@ -175,7 +175,29 @@ precision of this setup.
 | Parse `Heartbeat`, `Validation::ALL` | 35.0 | — | |
 | Encode `ExecutionReport`, 3 fixed + 14 slots | **93.8** | ≤ 60 | **missed, by 56%** |
 | `SendingTime` from `TimestampCache` | 1.8 | — | against 50-100 ns formatted naively (§1) |
-| Allocations, parse / encode / lookup | **0 / 0 / 0** | 0 | `benches/alloc.rs`, counting allocator |
+| Allocations, parse / encode / lookup / group walk | **0 / 0 / 0 / 0** | 0 | `benches/alloc.rs`, counting allocator |
+
+### Repeating groups, same machine and method
+
+`[measured]` 2026-08-28, `crates/codec/benches/groups.rs`.
+
+| Operation | ns/op | |
+|---|---|---|
+| Walk one group, 2 entries, 2-tag member list | **29.4** | `386` in a `NewOrderSingle` — the corpus's only populated group |
+| Walk 4 nesting levels, 61-tag outer member list | **145.2** | `552 → 78 → 756 → 806` in a `TradeCaptureReport`, FIX 4.4's deepest chain |
+| `group_members().contains()`, 61 tags | **5.6** | |
+| Encode one group, 2 entries | **35.6** | |
+
+**The 5.6 ns settles an open question and closes it against optimising.** `group_members`
+returns the dictionary's *declaration* order, so membership is a linear scan and cannot be a
+binary search without a second, sorted table. The repeating-groups plan flagged that as a
+risk and refused to act without a number. The longest member list FIX 4.4 has — `(AE, 552)`,
+61 tags — costs 5.6 ns to scan. A second table is not bought.
+
+**Walking the deepest message in the dictionary costs about what parsing it costs** (145 ns
+against 77 ns for a `NewOrderSingle` parse), and it is only paid when something asks for the
+group. A message with no groups pays none of it: `MessageView` does not know groups exist
+until `group()` is called.
 
 **The one that misses.** `Template::encode` finds each slot by scanning the caller's list, so
 the cost is slots × parts. Fourteen slots is a realistic `ExecutionReport` and it is where the
