@@ -334,3 +334,45 @@ Khôi phục → 6/6 xanh lại.
 **Bộ sinh dừng build thay vì đoán**, ở ba chỗ mới: một counter vừa nằm trong `<header>`
 vừa nằm trong bản tin (khoá không trả lời được cả hai), cùng một counter xuất hiện hai
 lần trong một bản tin với danh sách thành viên khác nhau, và một group rỗng.
+
+### Bước 2 và 3 — gộp làm một, đóng ngày 2026-08-28
+
+**Xanh:** `cargo test -p nanofix-codec --test groups` — 10/10.
+`cargo bench --bench alloc` — `allocations: group 0`.
+
+**Lỗi thứ ba của plan, và lần này là lỗi chia việc.** Plan tách bước 2 ("`GroupIter` một
+tầng") khỏi bước 3 ("lồng tới 4 tầng"). Tách được phần **đọc**, nhưng không tách được phần
+**kết thúc**: một group hết khi gặp tag không thuộc tập thành viên của nó, và thành viên của
+group con **không** nằm trong tập của group cha. Nên bộ quét không biết nhảy qua vùng con
+sẽ dừng ngay bên trong group con đầu tiên và báo group cha dài đúng một entry.
+
+Đo trên FIX 4.4: **235/731 vị trí group có group lồng bên trong — 32%**. Độ sâu: 357 vị trí
+ở tầng 1, 281 tầng 2, 80 tầng 3, 13 tầng 4. Giao bước 2 "một tầng" là giao một thứ sai ở gần
+một phần ba số ca. Gộp hai bước.
+
+**Ba chỗ lệch so với API đã duyệt trong plan, đều là plan không diễn đạt được ca thật:**
+
+| Plan | Thực tế | Vì sao |
+|---|---|---|
+| `declared() -> u32` | `-> Option<u32>` | `386=abc` không phải số. Trả `0` sẽ trộn nó với group rỗng hợp lệ `386=0`. Session cần phân biệt: hai reject khác nhau |
+| "`GroupIter` không phải `Iterator`" | **Là** `Iterator` | Lý do trong plan là lending. Không đúng: `GroupEntry` mượn bản tin (`'a`), không mượn iterator. Trait chuẩn vừa khít, và người dùng có `for` / `count` miễn phí |
+| `MessageView::group` tìm counter | Tìm counter **ở tầng ngoài cùng** | `NoAllocs(78)` trong TradeCaptureReport chỉ tồn tại bên trong `NoSides(552)`. Quét phẳng sẽ tìm thấy bản của side 1 và trình bày nó như group của bản tin. Nay nhảy qua vùng group khi tìm, nên `(AE,78)` trả `None` còn `(J,78)` — nơi 78 thật sự ở tầng ngoài — vẫn trả đúng |
+
+**Chứng minh bằng đảo ngược, ba lần, khôi phục xanh lại sau mỗi lần:**
+
+| Phá | Kết quả |
+|---|---|
+| Bỏ bước nhảy qua group lồng trong `entry_end` | `552` đếm 1 thay vì 2; `78` đếm 0 thay vì 1. 4/10 test đỏ |
+| Bỏ bước nhảy top-level trong `open()` | `(AE,78)` trả `Some` thay vì `None`. 1/10 test đỏ |
+| Thêm một `Vec::with_capacity` vào vòng đếm group của `benches/alloc.rs` | `allocations: group 10000`, assert đỏ |
+
+**Chặn đệ quy:** `MAX_DEPTH = 8`. FIX 4.4 đo được sâu nhất là 4. Cái chặn không phải cho
+FIX 4.4 mà cho một bảng sinh sai trong tương lai — để nó không biến một lần parse thành
+stack overflow. Chạm trần thì kết thúc group, tức đọc thiếu chứ không đọc thừa.
+
+**Chưa đo:** `members.contains(&tag)` là quét tuyến tính. Danh sách dài nhất là `(AE,552)`
+với **61** tag. Chưa có số nào nói nó tốn bao nhiêu — bench group vào bước 5, và chỉ tối ưu
+sau khi có số.
+
+**Test dùng gói tự viết tay, không phải capture thật.** Với lồng 4 tầng repo này không có
+capture nào để dùng. Nói rõ ở đầu `tests/groups.rs`. Ca `14i` thì là dữ liệu thật.

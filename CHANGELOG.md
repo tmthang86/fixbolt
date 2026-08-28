@@ -25,6 +25,12 @@ below describe what a first release would contain.
   - `Template<P, S>` and `TemplateBuilder` — a message skeleton that sorts its fields once, at
     build time, and fills holes at send time. Optional slots may be omitted.
   - `TimestampCache` — `SendingTime` with the minute prefix cached.
+  - `MessageView::group` / `GroupIter` / `GroupEntry` — repeating groups **read** off the
+    flat index, nested to the 4 levels FIX 4.4 reaches. No allocation: an iterator is a pair
+    of positions into the index the parser already filled. `GroupIter` is an `Iterator`.
+    `declared()` (what the counter says, `Option` — a non-numeric count is not a count) and
+    `counted()` (what is on the wire) are reported separately and never reconciled here.
+    Writing groups is not in yet.
   - `Dictionary` trait. `is_header` and `data_length_tag` are answered by `nanofix-dict`;
     of the three repeating-group methods, all three are now implemented there — reading and
     writing groups is not, and lands with the rest of the repeating-groups plan.

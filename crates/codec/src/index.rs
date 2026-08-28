@@ -170,6 +170,13 @@ impl<'a, const N: usize> MessageView<'a, N> {
             .and_then(|(i, e)| self.value_of(e).map(|v| (i, v)))
     }
 
+    /// The recorded fields. Crate-internal: the public surface is `get`,
+    /// `find_from` and `field_at`, and group scanning needs the raw tags.
+    #[inline]
+    pub(crate) fn entries(&self) -> &'a [FieldEntry] {
+        self.idx.entries()
+    }
+
     /// The `i`th field in wire order.
     #[inline]
     #[must_use]

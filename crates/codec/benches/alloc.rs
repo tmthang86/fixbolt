@@ -23,6 +23,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nanofix_codec::{FieldIndex, NoDict, TemplateBuilder, TimestampCache, Validation, parse_into};
+use nanofix_dict::Fix44;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
@@ -111,11 +112,60 @@ fn main() {
         }
     });
 
+    // A repeating group, walked to all four levels. `GroupIter` is a pair of
+    // positions into the index the parser already filled; if it ever built a
+    // tree instead, this is where that would show.
+    let ae: &[u8] = b"8=FIX.4.4\x019=163\x0135=AE\x0134=2\x0149=TW\x0156=ISLD\x01\
+52=20260828-00:00:00.000\x01571=TRID\x01487=0\x01856=0\x01828=0\x01552=1\x0154=1\x01\
+37=ORD1\x0178=1\x0179=ACC1\x01756=1\x01757=NP1\x01806=1\x01760=SUB1\x0180=50\x01\
+60=20260828-00:00:00.000\x0110=228\x01";
+    let mut gidx: FieldIndex<64> = FieldIndex::new();
+    parse_into::<Fix44, 64>(ae, &mut gidx, Validation::NONE).expect("AE parses");
+    {
+        let v = gidx.view(ae);
+        let s1 = v
+            .group::<Fix44>(b"AE", 552)
+            .expect("552")
+            .next()
+            .expect("side");
+        let a1 = s1
+            .group::<Fix44>(b"AE", 78)
+            .expect("78")
+            .next()
+            .expect("alloc");
+        let p1 = a1
+            .group::<Fix44>(b"AE", 756)
+            .expect("756")
+            .next()
+            .expect("party");
+        assert!(p1.group::<Fix44>(b"AE", 806).expect("806").next().is_some());
+    }
+    let group_allocs = count(|| {
+        let v = gidx.view(ae);
+        for _ in 0..10_000 {
+            for side in v.group::<Fix44>(b"AE", 552).expect("552") {
+                for a in side.group::<Fix44>(b"AE", 78).expect("78") {
+                    let _ = a.get(80);
+                    for p in a.group::<Fix44>(b"AE", 756).expect("756") {
+                        for sub in p.group::<Fix44>(b"AE", 806).expect("806") {
+                            let _ = sub.get(760);
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     println!("allocations: parse   {parse_allocs}");
     println!("allocations: encode  {encode_allocs}");
     println!("allocations: lookup  {lookup_allocs}");
+    println!("allocations: group   {group_allocs}");
     assert_eq!(parse_allocs, 0, "parse must not allocate");
     assert_eq!(encode_allocs, 0, "encode must not allocate");
     assert_eq!(lookup_allocs, 0, "field lookup must not allocate");
+    assert_eq!(
+        group_allocs, 0,
+        "walking a repeating group must not allocate"
+    );
     println!("allocations: 0");
 }
