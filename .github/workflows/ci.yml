@@ -6,9 +6,12 @@
 # are skipped with a visible annotation rather than passed silently.
 name: CI
 
+# Every branch, not only main. CLAUDE.md §8 says implementation happens on a
+# branch per plan and "gates must be green FOR THAT COMMIT, not merely for the
+# branch tip" — which a main-only trigger cannot deliver, because it first sees
+# the work after the merge.
 on:
   push:
-    branches: [main]
   pull_request:
 
 permissions:
