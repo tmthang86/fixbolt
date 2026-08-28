@@ -22,7 +22,9 @@
 use core::fmt;
 
 use crate::compare::{Mismatch, compare};
-use crate::script::{Kind, LoadError, Scenario, Step, scenarios, with_real_checksum};
+use crate::script::{
+    FIXED_TIME_MILLIS, Kind, LoadError, Scenario, Step, scenarios, with_real_checksum,
+};
 
 /// Which connection an input arrived on.
 ///
@@ -172,6 +174,10 @@ pub fn run_scenario<S: SessionUnderTest>(s: &Scenario, session: &mut S) -> Vec<F
     // Outbound messages the session has produced and no `E` line has claimed.
     let mut pending: Vec<Vec<u8>> = Vec::new();
     let mut dropped: Vec<Conn> = Vec::new();
+    // A session has no clock, so the harness is its clock. Fixed for now: the
+    // corpus writes one instant into every `I` line and the session must agree
+    // with it. Step 4 of the session plan makes this advance.
+    let tick = Input::Tick(FIXED_TIME_MILLIS);
 
     for step in &s.steps {
         let conn = Conn(step.session.unwrap_or(1));
@@ -184,11 +190,13 @@ pub fn run_scenario<S: SessionUnderTest>(s: &Scenario, session: &mut S) -> Vec<F
             Kind::Connect => {
                 dropped.retain(|c| *c != conn);
                 feed(session, conn, Input::Connect, &mut pending, &mut dropped);
+                feed(session, conn, tick, &mut pending, &mut dropped);
             }
             Kind::Disconnect => {
                 feed(session, conn, Input::Disconnect, &mut pending, &mut dropped);
             }
             Kind::Send(m) => {
+                feed(session, conn, tick, &mut pending, &mut dropped);
                 feed(
                     session,
                     conn,
@@ -349,7 +357,13 @@ impl Replay {
 }
 
 impl SessionUnderTest for Replay {
-    fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, _input: Input<'_>, emit: F) -> Link {
+    fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, input: Input<'_>, emit: F) -> Link {
+        // A `Tick` is the harness's clock, not a line of the file. Consuming a
+        // step for it would shift `Replay` one line out of phase with the
+        // scenario and take `59 / 59` to nonsense.
+        if matches!(input, Input::Tick(_)) {
+            return Link::Up;
+        }
         // Consume the input step this call corresponds to, then answer.
         if self
             .remaining

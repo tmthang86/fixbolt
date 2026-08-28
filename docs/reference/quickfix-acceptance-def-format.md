@@ -303,3 +303,77 @@ guessing "no header fields" fails the first.
 
 **Guarded by** `crates/conformance/tests/echo.rs` — all 22 pairs reproduced, plus
 `poss_resend_is_echoed_and_orig_sending_time_is_not`.
+
+## `00000000-00:00:00` is a placeholder, not a time — and substituting it breaks the clock
+
+`[measured 2026-08-28]` Two different things in this corpus look identical and are not:
+
+| Where | What it is | What a loader must do |
+|---|---|---|
+| `52=<TIME>`, 288 occurrences, almost all on `I` lines | **Input.** QuickFIX's reflector substitutes the real clock before sending | Substitute a **real instant** |
+| `52=00000000-00:00:00.000`, 244 occurrences, all on `E` lines | **A placeholder for expected output**, for a tag the comparator matches by shape and never by value | Leave it alone |
+
+This loader substituted the placeholder for `<TIME>` as well, for a year, and nothing noticed —
+because until a session existed, nothing parsed a `52=` value. It is **not a date**: month 00,
+day 00. A `SendingTime` check that accepts it accepts anything, and one that rejects it rejects
+every message in the corpus.
+
+The corpus writes the same placeholder into every one of the five `fields.fmt` tags on an `E`
+line — `10=0`, `52=`, `60=`, and where they appear `42=` and `122=`. **A test that compares an
+`E` line byte for byte is comparing placeholders**, and it passes only for as long as the
+loader happens to produce the same ones. One did, in `crates/conformance/tests/echo.rs`, and it
+went red the moment `<TIME>` became a real instant. The fix is to compare by the corpus's own
+rule and assert the specific invariant separately.
+
+**Guarded by** `crates/session/src/clock.rs::the_corpus_placeholder_is_not_a_date` and
+`crates/session/tests/score.rs::the_harness_clock_and_the_corpus_agree`, which proves the
+number the runner ticks with is the instant the loader writes.
+
+### `<TIME±N>` ran backwards, and only one file would ever have shown it
+
+Four lines carry an offset: `<TIME-1>`, `<TIME+10>`, `<TIME-121>`, `<TIME+121>`. With the base
+at midnight of year zero there is nowhere to go backwards to, so the substitution wrapped with
+`rem_euclid` — turning `<TIME-121>` into **86 279 seconds forward**, in
+`2o_SendingTimeValueOutOfRange.def`, the one file in the corpus that exists to test
+`SendingTime` accuracy. Both halves of that test would have measured the same sign.
+
+A base with room on either side — midday of an ordinary day — makes the arithmetic ordinary.
+Years away from the four hard-coded `52=` values in the corpus (2001, 2002, 2004), so none of
+them becomes accidentally fresh.
+
+## A file's name is not its test: `1e_NotLogonMessage.def`
+
+`[measured 2026-08-28]` Deleting the "the first message must be a Logon" rule from the session
+**leaves the score unchanged at 6 / 59.** The file named for that rule sends:
+
+```
+I8=FIX.4.4^A35=0^A34=1^A49=TW44^A52=<TIME>^A56=DLSI^A
+```
+
+`56=DLSI` is the wrong TargetCompID. Whichever check runs first ends the connection, and both
+produce the same `eDISCONNECT`, so the corpus cannot distinguish them. **Two rules, one
+observation.**
+
+This is not the only such pair — it is the first one a reversal caught. The general shape:
+a `.def` file proves *some* rule fired, never *which*. Anywhere two rules share an outcome, the
+score is satisfied by either, and only a test written outside the corpus separates them.
+
+**Guarded by** `crates/session/tests/logon.rs`, which takes that same corpus line, corrects
+`56=` to `ISLD`, and asserts the drop still happens — and, as its other half, that flipping
+`35=0` to `35=A` is then accepted.
+
+## A message with no `10=` parses as `Incomplete`, and `Incomplete` means "wait"
+
+`[measured 2026-08-28]` A test helper rebuilt a message's `9=` and forgot to re-append the
+trailer. `parse_into` returned `Ok(Parsed::Incomplete)` — correct: without `10=` the frame is
+not finished. The session treats `Incomplete` as *wait for more bytes*, which is also correct,
+and returns `Link::Up`.
+
+So **both halves of a two-sided test passed on a message that was never judged**: the "must be
+accepted" case, and — vacuously — nothing at all. It surfaced only because the case that was
+*supposed* to fail also passed.
+
+Any hand-built FIX message in a test needs its `10=` present before `with_real_checksum` can
+replace it, and any test that asserts `Link::Up` should be paired with one asserting
+`Link::Dropped` on the same wire. A green from `Incomplete` looks exactly like a green from
+`Ok`.

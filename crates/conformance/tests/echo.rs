@@ -10,8 +10,9 @@
 //! The gate is `9=101` — byte-exact, because tag 9 is not in `fields.fmt`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use nanofix_conformance::compare::compare;
 use nanofix_conformance::echo::echo;
-use nanofix_conformance::script::{Kind, Step, scenarios};
+use nanofix_conformance::script::{FIXED_TIME_IN, FIXED_TIME_OUT, Kind, Step, scenarios};
 
 fn file(name: &str) -> Vec<Step> {
     scenarios()
@@ -52,21 +53,19 @@ fn the_echo_reproduces_the_expected_bytes_exactly() {
     let mut out = [0u8; 1024];
     for (n, (incoming, expected)) in ps.iter().enumerate() {
         let seq = seq_of(expected);
-        let r = echo(incoming, &mut out, seq, b"00000000-00:00:00.000")
+        let r = echo(incoming, &mut out, seq, FIXED_TIME_OUT.as_bytes())
             .unwrap_or_else(|e| panic!("pair {n}: {e:?}"));
-        // Byte for byte up to the trailer, then by the corpus's own rule: the
-        // expected `10=0` is a placeholder and tag 10 is matched by shape.
         let actual = &out[r.clone()];
-        let cut = |w: &[u8]| {
-            w.windows(4)
-                .position(|x| x == b"\x0110=")
-                .map_or_else(|| w.to_vec(), |i| w[..=i].to_vec())
-        };
-        assert_eq!(
-            String::from_utf8_lossy(&cut(actual)).replace('\x01', "|"),
-            String::from_utf8_lossy(&cut(expected)).replace('\x01', "|"),
-            "pair {n} did not echo byte for byte up to the trailer"
-        );
+        // By the corpus's own rule. **Not** byte for byte: this `E` line writes
+        // a placeholder into every one of the five `fields.fmt` tags it carries
+        // — `52=00000000-00:00:00.000`, `60=00000000-00:00:00`, `10=0` — none
+        // of which the acceptance comparator compares by value. An earlier
+        // version of this test did compare them byte for byte and passed only
+        // because the loader happened to substitute the same placeholder; it
+        // went red the moment `<TIME>` became a real instant, which is the
+        // trap. `compare` is positional, so what this file exists to prove —
+        // the field **order** — is proven either way.
+        compare(expected, actual).unwrap_or_else(|e| panic!("pair {n}: {e:?}"));
         assert_eq!(
             nanofix_conformance::compare::compare(expected, actual),
             Ok(()),
@@ -96,15 +95,19 @@ fn body_length_is_one_hundred_and_one() {
     // and 60 is echoed verbatim from the input (17).
     let ps = pairs("15_HeaderAndBodyFieldsOrderedDifferently.def", b'D');
     let mut out = [0u8; 1024];
-    let r = echo(&ps[0].0, &mut out, 2, b"00000000-00:00:00.000").expect("echo");
+    let r = echo(&ps[0].0, &mut out, 2, FIXED_TIME_OUT.as_bytes()).expect("echo");
     let s = String::from_utf8_lossy(&out[r]).replace('\x01', "|");
     assert!(s.starts_with("8=FIX.4.4|9=101|35=D|"), "{s}");
+    // The two widths, named rather than spelled: `60` is echoed verbatim from
+    // the input and keeps the input's 17 bytes, `52` is regenerated and carries
+    // milliseconds. This is the assertion the byte-for-byte comparison above
+    // used to make implicitly, kept explicit now that it does not.
     assert!(
-        s.contains("|60=00000000-00:00:00|"),
+        s.contains(&format!("|60={FIXED_TIME_IN}|")),
         "60 must not gain millis: {s}"
     );
     assert!(
-        s.contains("|52=00000000-00:00:00.000|"),
+        s.contains(&format!("|52={FIXED_TIME_OUT}|")),
         "52 must have them: {s}"
     );
 }
@@ -152,7 +155,7 @@ fn every_application_echo_in_the_corpus_is_reproduced() {
                         &incoming,
                         &mut out,
                         seq_of(&m.wire),
-                        b"00000000-00:00:00.000",
+                        FIXED_TIME_OUT.as_bytes(),
                     )
                     .unwrap_or_else(|e| panic!("{}:{} {e:?}", st.file, st.line_no));
                     assert_eq!(
@@ -185,7 +188,7 @@ fn poss_resend_is_echoed_and_orig_sending_time_is_not() {
         incoming,
         &mut out,
         seq_of(expected),
-        b"00000000-00:00:00.000",
+        FIXED_TIME_OUT.as_bytes(),
     )
     .expect("echo");
     let s = String::from_utf8_lossy(&out[r]).replace('\x01', "|");
@@ -200,7 +203,7 @@ fn poss_resend_is_echoed_and_orig_sending_time_is_not() {
         incoming,
         &mut out,
         seq_of(expected),
-        b"00000000-00:00:00.000",
+        FIXED_TIME_OUT.as_bytes(),
     )
     .expect("echo");
     let s = String::from_utf8_lossy(&out[r]).replace('\x01', "|");

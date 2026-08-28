@@ -3,17 +3,17 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-08-27**.
+Last updated: **2026-08-28**.
 
 ## Where the work is
 
 | | |
 |---|---|
-| Branch | **`main`** |
-| Milestone | **M1 — the codec.** `codec` and `dict` read and write FIX 4.4 including repeating groups. No session layer, no engine, no socket |
+| Branch | **`plan/session-layer`** |
+| Milestone | **M2 — the session layer.** `[measured 2026-08-28]` **6 / 59**, step 1 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — **chờ duyệt**, no code written |
-| Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process and score **0 / 59**; a replaying fake scores 59 / 59, which is what makes the zero mean something |
+| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Step 1 of 6 done: 6 / 59**, which is exactly what the step predicted. One revision recorded in the plan (the runner seeds the clock; see the plan's Revisions section) |
+| Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
 | Last closed | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — closed and merged 2026-08-28. 54 tests, 0 allocations, 304M fuzz executions |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
@@ -123,6 +123,22 @@ Last updated: **2026-08-27**.
 - **`<TIME>` is 17 bytes on an `I` line and 21 on an `E` line**, solved from the corpus's own
   `9=` values. The single-width substitution both loaders used before was wrong by 4 bytes per
   timestamp, and one loader now serves both crates.
+- **The session layer scores 6 / 59, 2026-08-28 — step 1 of six, and the step predicted 6.**
+  The six are `1c_InvalidSenderCompID`, `1c_InvalidTargetCompID`, `1d_InvalidLogonBadSendingTime`,
+  `1d_InvalidLogonLengthInvalid`, `1d_InvalidLogonWrongBeginString`, `1e_NotLogonMessage` —
+  named in the assertion, because a different six scoring 6 is a different result. Six
+  reversals were run: five take the score to 5.
+- **The sixth reversal did not.** Deleting "the first message must be a Logon" leaves 6 / 59,
+  because `1e_NotLogonMessage.def` also carries a wrong `56=`. Two rules, one observation —
+  written up in
+  [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md)
+  and now held by `crates/session/tests/logon.rs`.
+- **The session layer allocates nothing**, on the accept path and on the refusal path, counted
+  separately. `[measured]` `accept 0 refuse 0 tick 0 clock 0`; the reversal — one `format!` on
+  the error path — reports `refuse 30000`.
+- **`00000000-00:00:00` is not a date, and this loader was substituting it for `<TIME>`.**
+  It is the corpus's placeholder for output the comparator never reads by value. Fixed to a
+  real instant, which also fixed `<TIME-121>` running 86 279 seconds *forward*.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -141,10 +157,16 @@ Last updated: **2026-08-27**.
   file is real evidence and is not the same as a venue accepting the bytes. Nothing here has
   been sent to a real FIX peer.
 - **DATA fields inside a repeating group are untested** on both paths — open item 8.
-- **`0 / 59` is the score.** No session layer exists. The runner is proven to be able to
-  recognise a correct answer; nothing has produced one.
-- **`Input::Tick` is defined and never sent.** Nothing advances time yet, so
-  `4a_NoDataSentDuringHeartBtInt.def` cannot pass even once a session exists.
+- **53 of the 59 definitions still fail**, and every one of them fails with `NoOutput`: the
+  session accepts a Logon and says nothing back. That is step 2.
+- **`Input::Tick` is sent but never advances.** The runner seeds one fixed instant before every
+  message. Nothing moves time forward yet, so `4a_NoDataSentDuringHeartBtInt.def` cannot pass —
+  the advance rule is step 4 of the session plan.
+- **The 120-second `SendingTime` skew is QuickFIX's documented default, not a measured one.**
+  `1d_InvalidLogonBadSendingTime` is 2001 years out, so nothing in the corpus distinguishes 120
+  seconds from any other bound.
+- **`Role` is parameterised but only `Acceptor` is exercised.** `Initiator::SPEAKS_FIRST` is
+  read and does nothing yet; ADR-0004's cost is not paid until step 2 gives it something to say.
 - The ADRs are accepted on the strength of the reasoning in them, **not on measurement** — see the §8 caveat above.
 
 ## Open items

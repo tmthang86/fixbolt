@@ -40,6 +40,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use nanofix_codec::TimestampCache;
+
 /// A fixed instant, so a checksum computed here is the same on every run and on
 /// every machine.
 ///
@@ -57,9 +59,37 @@ use std::path::PathBuf;
 ///
 /// Getting this wrong costs 4 bytes per timestamp, which is invisible until
 /// something compares a `9=`.
-pub const FIXED_TIME_IN: &str = "00000000-00:00:00";
+/// # Why not `00000000-00:00:00`
+///
+/// That is the corpus's own placeholder for output it does not compare, and it
+/// was this loader's substitution until a session tried to validate it. **It is
+/// not a date** — month 00, day 00 — so a `SendingTime` check that accepts it
+/// accepts nothing a real engine would. QuickFIX's reflector substitutes the
+/// real clock; substituting a real instant is what makes this loader behave the
+/// same way, deterministically.
+///
+/// Midday, so the four `<TIME±N>` offsets in the corpus stay inside the day,
+/// and years away from every hard-coded `52=` in it — 2001, 2002, 2004 — so
+/// none of those becomes accidentally fresh.
+pub const FIXED_TIME_IN: &str = "20260828-12:00:00";
 /// See [`FIXED_TIME_IN`].
-pub const FIXED_TIME_OUT: &str = "00000000-00:00:00.000";
+pub const FIXED_TIME_OUT: &str = "20260828-12:00:00.000";
+
+/// [`FIXED_TIME_IN`] as Unix milliseconds. The base every `<TIME±N>` offset is
+/// measured from.
+const BASE_UNIX_MS: u64 = 1_787_918_400_000;
+
+/// [`FIXED_TIME_IN`] on the scale `Input::Tick` carries: milliseconds since
+/// 0000-01-01.
+///
+/// The runner feeds this before every message, so a session under test has a
+/// "now" that agrees with the `52=` it is about to read. Advancing it is the
+/// heartbeat rule, and that arrives with step 4 of the session plan.
+///
+/// Not checked here — `conformance` has no timestamp parser and must not grow
+/// one to check its own constant. `crates/session/tests/score.rs` sees both
+/// crates and proves this equals `clock::parse_utc(FIXED_TIME_IN)`.
+pub const FIXED_TIME_MILLIS: u64 = BASE_UNIX_MS + 719_528 * 86_400_000;
 
 const SOH: u8 = 0x01;
 
@@ -330,22 +360,24 @@ fn substitute_times(body: &str, millis: bool) -> String {
     out
 }
 
+/// [`FIXED_TIME_IN`] shifted by `seconds`, in whichever of the two widths the
+/// line calls for.
+///
+/// Real arithmetic on a real instant. The previous version wrapped the offset
+/// with `rem_euclid` because the base was midnight of year zero and there was
+/// nowhere to go backwards to — which turned `<TIME-121>` into *121 seconds
+/// before tomorrow midnight*, 86 279 seconds in the wrong direction, in the one
+/// file that exists to test `SendingTime` accuracy.
 fn at_offset(seconds: i64, millis: bool) -> String {
-    if seconds == 0 {
-        return if millis {
-            FIXED_TIME_OUT
-        } else {
-            FIXED_TIME_IN
-        }
-        .to_string();
-    }
-    let s = seconds.rem_euclid(86_400);
-    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
-    if millis {
-        format!("00000000-{h:02}:{m:02}:{sec:02}.000")
+    let mut cache = TimestampCache::new();
+    let at = BASE_UNIX_MS.saturating_add_signed(seconds.saturating_mul(1_000));
+    let full = cache.format(at);
+    let width = if millis {
+        full.len()
     } else {
-        format!("00000000-{h:02}:{m:02}:{sec:02}")
-    }
+        full.len() - 4 // drop `.sss`
+    };
+    String::from_utf8_lossy(&full[..width]).into_owned()
 }
 
 /// Is `tag=` present as a field, rather than as a substring of some value?

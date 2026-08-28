@@ -88,7 +88,7 @@ Added one at a time, each behind an approved plan.
 |---|---|---|---|
 | `codec` | L1 | Parse and serialise. The hot path. Target: `no_std`-compatible, zero dependencies | — |
 | `dict` | build | Code generation from FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members | `codec` — it implements `codec::Dictionary` |
-| `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised | `codec`, `dict` |
+| `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised. Time enters as `Tick`, in **milliseconds since 0000-01-01** — see D13 | `codec`, `dict` |
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
 | `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport` |
 | `library` | L4 | The application-facing API | `engine` |
@@ -365,6 +365,26 @@ runtime and will not acquire one, and the question cannot be answered on a macOS
 [STATUS.md](../STATUS.md) open item 10. **No TLS plan is written until it is answered**, and if
 the answer is no, ADR-0005 is superseded rather than patched.
 
+### D13 — `Tick` counts milliseconds from year zero, not from the Unix epoch
+
+D1 says time reaches the session only as `Input::Tick`. What that number *means* had been left
+open, and the obvious answer is wrong.
+
+`SendingTime` is `YYYYMMDD-HH:MM:SS[.sss]` — four year digits, so the wire can name any instant
+from 0000 to 9999. **Counted from 1970 in a `u64`, more than a fifth of that range does not
+exist.** A counterparty sending `52=19600101-00:00:00` would wrap the skew subtraction into a
+difference of half a billion years: it fails no check, but it crosses one, and the failure is
+silent.
+
+So `Tick` and every parsed `SendingTime` are **milliseconds since 0000-01-01T00:00:00Z**,
+proleptic Gregorian. Every timestamp FIX can express is then a non-negative `u64`, the skew is
+a plain `abs_diff` that cannot wrap, and the session needs no signed arithmetic. The engine
+converts once at the edge: `tick = unix_millis + clock::MILLIS_YEAR_ZERO_TO_EPOCH`.
+
+The cost is one added constant at the edge, and one asymmetry to remember:
+`codec::TimestampCache` still takes Unix milliseconds, because it is `no_std` and shared with
+callers that have no session. Bridging the two is the session's job, not the codec's.
+
 ## 5. Non-goals for v1
 
 Stated so that scope creep has to argue with a document. The full list with phases is
@@ -395,8 +415,10 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Parse `NewOrderSingle` | ≤ 150 ns **published**. `[measured]` **77.0 ns**, 2026-08-28 | `benches/parse.rs`, asserting a 150 ns regression ceiling |
 | Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**. `[measured]` **93.8 ns — the target is NOT met** | `benches/serialize.rs`, asserting a 190 ns regression ceiling |
 | `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is | `benches/dispatch.rs` |
-| Allocations on the hot path | **0** | `benches/alloc.rs`, counting allocator |
-| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-conformance --test fix44`, in-process, no socket. **0 / 59 today** — the runner exists, the session does not |
+| Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
+| Allocations on the hot path — session | **0**, on the accept path **and** the refusal path | `crates/session/benches/alloc.rs`. The refusal path is counted separately because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for |
+| The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`. `[measured]` deleting the "first message must be a Logon" check leaves the score at 6 / 59, because `1e_NotLogonMessage.def` also carries a wrong `56=` |
+| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-28]` **6 / 59** — step 1 of six in the session plan, and the step's prediction was 6 |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |

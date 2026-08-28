@@ -1,6 +1,6 @@
 # Máy trạng thái session FIX 4.4 — từ 0/59 lên 59/59
 
-> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 1/6 xong)
 > **Phạm vi:** Phase 1, tiêu chí 1 của `PRD.md` §2. Đây là plan lớn nhất dự án.
 
 ## Bối cảnh
@@ -203,6 +203,70 @@ những file mình vừa làm xanh chuyển đỏ.
   chúng là plan khác.
 - **Không tối ưu.** Bench chỉ để chứng minh 0 cấp phát, không để đuổi con số.
 
+## Sửa plan giữa chừng
+
+Rule Zero: plan sai giữa chừng thì **sửa plan, ghi lại**, không âm thầm đi lệch.
+
+### Sửa 1 — runner phải gieo đồng hồ ngay từ bước 1, không phải bước 4
+
+**Plan viết:** luật `Tick` vào runner ở bước 4.
+
+**Thực tế:** bước 1 phải từ chối `1d_InvalidLogonBadSendingTime`, và muốn so lệch giờ thì
+session phải biết "bây giờ là mấy giờ". Chưa có `Tick` nào thì nó không biết.
+
+**Đã làm:** `run_scenario` gửi `Input::Tick(FIXED_TIME_MILLIS)` trước `iCONNECT` và trước mỗi
+dòng `I`. Giá trị **cố định** — đây chỉ là gieo đồng hồ, đúng như engine thật đọc clock mỗi
+vòng lặp. Cái *đẩy* đồng hồ lên một `HeartBtInt` vẫn nguyên ở bước 4.
+
+`Replay` phải bỏ qua `Tick`, nếu không nó ăn nhầm một dòng của file và `59/59` thành vô nghĩa.
+
+### Sửa 2 — `<TIME>` phải là một thời điểm có thật
+
+Không có trong plan, phát hiện khi làm bước 1. Loader đang thay `<TIME>` bằng
+`00000000-00:00:00`, **không phải một ngày** (tháng 00, ngày 00). Đó là placeholder của corpus
+cho phần *output* mà comparator không bao giờ đọc theo giá trị — không phải cho input.
+
+Đã đổi sang `20260828-12:00:00`. Việc này còn sửa luôn một lỗi im lặng: `<TIME-121>` trước đây
+chạy **tới** 86 279 giây chứ không lùi 121 giây. Chi tiết trong
+[reference/quickfix-acceptance-def-format.md](../reference/quickfix-acceptance-def-format.md).
+
+### Sửa 3 — thêm `DESIGN.md` D13, mốc thời gian của `Tick`
+
+Plan không nói `Tick(u64)` đếm từ đâu. Đếm từ 1970 thì hơn một phần năm dải năm mà
+`SendingTime` viết được không tồn tại, và phép trừ lệch giờ sẽ tràn ngầm. Đổi sang đếm từ
+0000-01-01. Đây là quyết định kiến trúc nên nó nằm ở `DESIGN.md` D13, không nằm trong plan.
+
 ## Nhật ký giao hàng
 
-*(chưa bắt đầu)*
+### Bước 1 — 2026-08-28 — **6 / 59**, đúng dự đoán
+
+Crate `nanofix-session`: `Session<R, N>`, `Role`/`Acceptor`/`Initiator`, `Config`, `clock`.
+Từ chối theo 5 luật; chưa phát gì.
+
+**Đảo ngược, 6 lần.** Năm lần đầu đưa điểm về 5/59:
+
+| Bỏ đi | Điểm |
+|---|---|
+| kiểm `8=` BeginString | 5 / 59 |
+| kiểm `49=` SenderCompID | 5 / 59 |
+| kiểm `56=` TargetCompID | 5 / 59 |
+| kiểm lệch `52=` SendingTime | 5 / 59 |
+| `Validation::ALL` → `NONE` | 5 / 59 |
+| **"bản tin đầu phải là Logon"** | **6 / 59 — không đổi** |
+
+Lần thứ sáu là một phát hiện: `1e_NotLogonMessage.def` gửi `35=0` **và** `56=DLSI`. Kiểm
+CompID bắt trước, nên corpus không phân biệt được hai luật. Đã viết
+`crates/session/tests/logon.rs` cầm luật đó, lấy chính dòng đó và sửa `56=` lại cho đúng.
+
+Hai bẫy nữa, cả hai là "xanh giả":
+- `Name::fits` lúc đầu vô dụng — tràn thì `len` đã bằng 0 rồi, nên bỏ `fits` đi vẫn xanh. Đã
+  đổi để `fits` là thứ duy nhất chặn, và đảo ngược mới đỏ.
+- Một bản tin thiếu `10=` parse ra `Incomplete`, mà session coi `Incomplete` là "chờ thêm" →
+  `Link::Up`. Cả hai vế của một test hai chiều cùng xanh trên một bản tin chưa hề bị xét.
+
+**Cấp phát:** `accept 0 refuse 0 tick 0 clock 0`. Đảo ngược (một `format!` trên đường lỗi) cho
+`refuse 30000`.
+
+**Cổng:** `cargo fmt --check`, `clippy --all-targets --all-features -D warnings`, `clippy
+--no-default-features`, `cargo test --all`, `cargo test --all --no-default-features` — tất cả
+rc=0. Máy: Apple M5, macOS 25.5.0, cargo 1.95.0.

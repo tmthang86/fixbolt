@@ -57,7 +57,7 @@ Every one is a command that either passes or fails. A criterion nobody can run i
 
 | # | Criterion | Gate |
 |---|---|---|
-| 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-conformance --test fix44`, in-process, no socket. `[measured 2026-08-28]` **0 / 59**: the runner is built and proven, the session layer is not written |
+| 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-28]` **6 / 59**: step 1 of the six-step session plan, which predicted 6 |
 | 2 | Repeating groups | **Met 2026-08-28.** Read and written for all **93** groups `[measured]`; order agreed with QuickFIX's generated C++ on 730/730. **The 59 definitions do not test this** — see §4 |
 | 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion |
 | 4 | Both sides | Acceptor 59/59; initiator interop-green against `libquickfix` in CI |

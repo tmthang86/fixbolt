@@ -12,10 +12,23 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 
 ## [Unreleased]
 
-**Nothing has been released.** Two crates now exist and neither is published; the entries
+**Nothing has been released.** Four crates now exist and none is published; the entries
 below describe what a first release would contain.
 
 ### Added
+
+- **`nanofix-session`** — the FIX session state machine. Pure: no socket, no clock, no
+  allocation, no `format!` on any path. Depends on `codec` and `dict`.
+  - `Session<R: Role, N>` with `connect` / `disconnect` / `received` / `tick`, each taking an
+    `emit` closure and returning `Link`. `Role` is a sealed marker — `Acceptor` and
+    `Initiator` — so the two ends differ at compile time rather than on a branch per message.
+  - `Config::acceptor(begin_string, sender_comp_id, target_comp_id)`. CompIDs are held inline;
+    one too long for its buffer **fails closed** and matches nothing, rather than being
+    compared on its first 32 bytes.
+  - `clock::parse_utc` and `clock::MILLIS_YEAR_ZERO_TO_EPOCH` — `Tick` counts milliseconds
+    from **0000-01-01**, not from 1970, so every year `SendingTime` can name is a non-negative
+    `u64` and the skew cannot wrap. See `DESIGN.md` D13.
+  - Scores **6 / 59** on the acceptance definitions: step 1 of six.
 
 - **`nanofix-conformance`** — the 59 QuickFIX FIX 4.4 acceptance definitions, run in process
   with no socket. Zero runtime dependencies. Not published: it is a measuring instrument.
@@ -60,6 +73,21 @@ below describe what a first release would contain.
     four counters take a different delimiter in different messages.
   - `GROUP_COUNTERS = 59`, `GROUP_POSITIONS = 731`, and `GROUP_KEYS` — every declared
     `(msg_type, counter)` pair, so a caller can enumerate the groups rather than name them.
+
+### Changed
+
+- **`nanofix-conformance::script`** — `<TIME>` now substitutes a **real instant**
+  (`20260828-12:00:00`, and `…​.000` on `E` lines) instead of `00000000-00:00:00`. The old
+  value is the corpus's placeholder for output the comparator never reads by value, and it is
+  not a date at all — month 00, day 00 — so no `SendingTime` check could be written against it.
+  `FIXED_TIME_IN` and `FIXED_TIME_OUT` keep their names and their two widths; `FIXED_TIME_MILLIS`
+  is new, and is what the runner ticks with.
+- **`<TIME±N>` is now real arithmetic.** With the base at midnight of year zero there was
+  nowhere to go backwards to, so the offset wrapped: `<TIME-121>` came out 86 279 seconds
+  *forward*, in the one file that exists to test `SendingTime` accuracy.
+- **`runner::run_scenario` seeds the clock**, sending `Input::Tick` before the connect and
+  before every message. A session has no clock, so the harness is its clock. The value is fixed;
+  advancing it is the heartbeat rule and belongs to a later step.
 
 ### Known limitations, stated rather than discovered
 
