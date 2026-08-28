@@ -10,9 +10,10 @@ Last updated: **2026-08-27**.
 | | |
 |---|---|
 | Branch | **`main`** |
-| Milestone | **M0 — decisions and architecture.** No engine code |
+| Milestone | **M1 — the codec.** `codec` and `dict` read and write FIX 4.4 including repeating groups. No session layer, no engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — approved, starting now |
+| Plan in flight | **none** — next is the `conformance` runner, and it has no plan yet |
+| Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
 | Last closed | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — closed and merged 2026-08-28. 54 tests, 0 allocations, 304M fuzz executions |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
@@ -94,6 +95,22 @@ Last updated: **2026-08-27**.
   Both accepted on reasoning, not measurement — ADR-0005's open question 1 is unanswered and
   load-bearing (open item 10).
 
+- **Repeating groups, 2026-08-28.** `dict` generates group tables keyed by `(msg_type,
+  counter)` — **59 counters, 731 positions**, from **93** `<group>` declarations of which
+  **91 sit inside `<component>`**. `codec` reads groups nested to FIX 4.4's full depth of 4
+  and writes them ordered by the dictionary. `group_roundtrip.rs`: **357 top-level positions
+  round-trip byte-identical**, exercising all 59 counters. `benches/alloc.rs`:
+  **0 allocations** walking four levels.
+- **The group field order agrees with QuickFIX's own generated C++ on 730 / 730 groups**
+  — delimiter exact everywhere, and QuickFIX's `message_order` an exact subsequence of this
+  crate's member list in every case, with the 7 extra tags all being nested group counters.
+  `crates/dict/tests/interop_quickfix_order.rs`. The one group QuickFIX has no file for is
+  `NoHops(627)`, which lives in `<header>`: 730 + 1 = 731.
+- **That interop test catches what the round-trip cannot, demonstrated by reversal.**
+  Swapping two adjacent members in every generated group leaves `group_roundtrip.rs`
+  **green** — it generates its messages from the same table — and turns the interop test
+  **red**. Run 2026-08-28.
+
 ## Not proven — claimed, researched, or simply not yet run
 
 - **Every figure in [prior-art.md](docs/reference/prior-art.md) is someone else's claim**,
@@ -106,8 +123,11 @@ Last updated: **2026-08-27**.
 - The ring-buffer hop (200–500 ns) and the busy-poll saving (2–5 µs) are literature figures.
   `benches/dispatch.rs` and `tools/w2w` are what turn them into numbers.
 - `MAX_FIELDS = 64` is a starting number. No real message population has been surveyed.
-- No crates exist. `cargo metadata` resolves the workspace; `cargo build` errors with
-  *"manifest is virtual, and the workspace has no members"*.
+- **In-group order is agreed with one other implementation, not with a counterparty.**
+  QuickFIX's generator reads the same `FIX44.xml`. Two programs agreeing on how to read one
+  file is real evidence and is not the same as a venue accepting the bytes. Nothing here has
+  been sent to a real FIX peer.
+- **DATA fields inside a repeating group are untested** on both paths — open item 8.
 - The ADRs are accepted on the strength of the reasoning in them, **not on measurement** — see the §8 caveat above.
 
 ## Open items
@@ -118,6 +138,6 @@ Last updated: **2026-08-27**.
 | 5 | Ring-buffer policy when the library falls behind: block, drop, or disconnect? | ADR-0002, and the `engine` plan |
 | 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number | Every gate in §6 that matters |
 | 7 | **`scripts/fetch-quickfix-assets.sh` tracks mutable `master`.** Every acceptance number in the codec plan (539 lines, 247 with `9=`, 244 with `10=`, 8 tag-set patterns for `35=3`) can change silently upstream. Pin a commit and verify it | Reproducibility of every step-1 gate |
-| 8 | **`dict::required()` does not recurse through `<component>`.** `FIX44.xml` uses `<component>` in 632 places; `NewOrderSingle` references `Parties`, `PreAllocGrp`, `TrdgSesGrp`, so the generated table is missing fields | The `session` plan |
+| 8 | **DATA fields inside a repeating group are untested**, on either the read or the write path. `group_roundtrip.rs` skips every DATA member, because writing one needs its length field placed immediately in front — which is open item 9, seen from inside a group | Any counterparty that puts `RawData` in a `Parties` entry |
 | 9 | **The encoder has no DATA invariant.** Writing a dynamic DATA field must regenerate its length field, place it immediately before, and count bytes including embedded `0x01`. Only the read path is specified | Any counterparty that sends `RawData`/`XmlData` |
 | 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **Cannot be checked here — needs the Linux box of open item 6** | The TLS plan; ADR-0005 acceptance |

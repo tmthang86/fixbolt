@@ -240,16 +240,16 @@ bản tin **sinh từ dictionary** (ghi rõ là sinh, không phải bắt đư�
 
 Theo bảng đồng bộ `CLAUDE.md` §4. *(Ghi chú: `_template.md` chỉ sai sang §3 — sửa luôn.)*
 
-- [ ] `DESIGN.md` §4 D2: `MessageView` thêm `group()`; nêu rõ index vẫn phẳng, group giải lười.
-- [ ] `DESIGN.md` §4 D3: bổ sung — quy tắc tag tăng dần **không** áp dụng bên trong group.
-- [ ] `DESIGN.md` §6: thêm dòng gate "group round-trip" và "thứ tự trong group đã xác minh".
-- [ ] `reference/quickfix-acceptance-def-format.md`: ghi điểm mù — 59 def điền đúng 1 group, và
+- [x] `DESIGN.md` §4 D2: `MessageView` thêm `group()`; nêu rõ index vẫn phẳng, group giải lười.
+- [x] `DESIGN.md` §4 D3: bổ sung — quy tắc tag tăng dần **không** áp dụng bên trong group.
+- [x] `DESIGN.md` §6: thêm dòng gate "group round-trip" và "thứ tự trong group đã xác minh".
+- [x] `reference/quickfix-acceptance-def-format.md`: ghi điểm mù — 59 def điền đúng 1 group, và
       đó là test âm. Hạ câu về thứ tự trong group xuống "chưa kiểm chứng" cho tới bước 5.
-- [ ] `reference/` — trang mới cho 4 counter tag nhập nhằng. **Đây là bẫy đắt nhất ở đây**, và
+- [x] `reference/` — 4 counter nhập nhằng: trap 6 trong `fix44-dictionary-traps.md`, không tách trang mới (một quy tắc, một chỗ). **Đây là bẫy đắt nhất ở đây**, và
       `CLAUDE.md` §4 xếp `reference/` ưu tiên cao nhất.
-- [ ] `PRD.md` §3: đổi hàng "Repeating groups" khi xong.
-- [ ] `STATUS.md`: đóng open item 8, ghi số đo.
-- [ ] `CHANGELOG.md`.
+- [x] `PRD.md` §3: đổi hàng "Repeating groups" khi xong.
+- [x] `STATUS.md`: đóng open item 8, ghi số đo.
+- [x] `CHANGELOG.md`.
 
 ## Bẫy đã lường trước
 
@@ -418,3 +418,64 @@ bảng giống thứ tự một đối tác thật ghi. Việc đó là `tools/i
 
 **Chưa phủ:** trường `DATA` bên trong group (cần trường length đứng trước — test khác), và
 374 vị trí lồng được phủ gián tiếp qua cha chứ không dựng bản tin riêng.
+
+### Bước 5 — đối chiếu thứ tự, bench, đóng plan, ngày 2026-08-28
+
+**Xanh:** `cargo test -p nanofix-dict --test interop_quickfix_order` — 2/2,
+`agreed on 730 groups; 7 nested-counter extras`.
+
+**Không cần build libquickfix, và cách này mạnh hơn.** Plan viết `tools/interop` dựng
+libquickfix rồi sinh/đối chiếu bản tin. Máy này không có `cmake`, và `vendor/quickfix/` chỉ
+lấy `spec/` với `test/`. Nhưng QuickFIX **có sẵn C++ sinh cho FIX 4.4** trong repo của họ —
+`src/C++/fix44/*.h`, 95 file — và mỗi group nằm ngay trong đó dưới dạng
+`FIX::Group(counter, delimiter, message_order(...))`. Đọc thẳng từ đó:
+
+- không phải cài toolchain, không phải build C++;
+- **vét cạn cả 730 group**, thay vì chạy vài bản tin mẫu;
+- thứ tự trong group là thuộc tính tĩnh của mã sinh, nên chạy thư viện lên cũng chỉ đọc lại
+  đúng những bảng ấy.
+
+Mở rộng sparse-checkout trong `scripts/fetch-quickfix-assets.sh`. **Chỉ đọc, không chép,
+không dịch, không commit** — vẫn nằm trong `vendor/` bị gitignore, đúng cách đang làm với
+`.def` (CLAUDE.md §2 điều 9, ADR-0001). Script nay set sparse-checkout **mọi lần chạy**,
+không chỉ lúc clone mới: checkout cũ do bản script cũ tạo sẽ thiếu file, và thiếu một cách
+im lặng.
+
+**Kết quả:**
+
+| Khẳng định | Kết quả |
+|---|---|
+| Delimiter khớp | **730 / 730** |
+| `message_order` của QuickFIX là dãy con chính xác của `group_members` | **730 / 730** |
+| Tag QuickFIX có mà tôi thiếu | **0** |
+| Tag tôi có mà QuickFIX bỏ | 7, **tất cả đều là counter của group con** |
+
+Không phải bằng nhau, và tưởng là bằng nhau thì mất một buổi chiều — vào
+`docs/reference/fix44-dictionary-traps.md` làm trap 7.
+
+**Đảo ngược, và đây mới là chỗ đáng giá:** hoán vị hai thành viên kề nhau trong **mọi**
+group sinh ra → `group_roundtrip.rs` vẫn **xanh** (nó sinh bản tin từ chính bảng đó, nên thứ
+tự sai là vô hình với nó), `interop_quickfix_order.rs` **đỏ**. Round-trip với bảng của chính
+mình chứng minh tính ổn định, không chứng minh tính đúng.
+
+**Bench** (`crates/codec/benches/groups.rs`, Apple M5, macOS, không ghim lõi, best-of-7 ×
+200k — không phải số của engine):
+
+| | ns/op |
+|---|---|
+| Duyệt 1 group, 2 entry, danh sách 2 tag | 29.4 |
+| Duyệt 4 tầng, danh sách ngoài 61 tag | 145.2 |
+| `group_members().contains()`, 61 tag | **5.6** |
+| Mã hoá 1 group, 2 entry | 35.6 |
+
+**5.6 ns đóng câu hỏi bỏ ngỏ ở bước 2** theo hướng *không* tối ưu: quét tuyến tính danh
+sách dài nhất FIX 4.4 có tốn 5.6 ns, không mua bảng sắp xếp thứ hai. Vào
+`docs/reference/measured-costs.md`.
+
+**Chưa làm, nói rõ:**
+
+- **Chưa có byte nào đi tới một đối tác thật.** Hai chương trình đọc cùng một `FIX44.xml` mà
+  đồng ý là bằng chứng thật, nhưng không phải là một sàn chấp nhận gói tin. Vào `STATUS.md`
+  mục *Not proven*.
+- **Trường `DATA` bên trong group chưa test**, cả đọc lẫn ghi — `STATUS.md` open item 8 mới.
+- 374 vị trí group lồng được phủ gián tiếp qua cha, không dựng bản tin riêng cho từng cái.

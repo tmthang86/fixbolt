@@ -109,9 +109,22 @@ leading header tags forced first.
 
 **Consequence for the serialiser:** no per-message ordering table is needed. The generated
 data the serialiser needs is the **set of header tags**, to split header from body. Within
-each section, order is `sort_by_tag`. Repeating groups are the known exception (QuickFIX keeps
-declaration order inside a group, delimiter first); the FIX 4.4 acceptance set contains no
-populated group — one `454=0` — so groups are out of scope until something needs them.
+each section, order is `sort_by_tag`.
+
+**The blind spot, stated plainly: the 59 definitions prove nothing about repeating groups.**
+`[measured]` FIX 4.4 declares 93 of them and the acceptance set populates exactly **one** —
+`386=3` in `14i_RepeatingGroupCountNotEqual.def`, a file whose whole purpose is a *wrong*
+count. `454` appears twice, both `=0`. So a session that is 59/59 has had its group handling
+tested by two entries of one group in one negative test.
+
+Inside a group the tag-ascending rule above **does not hold**: order is declaration order,
+delimiter first. That sentence used to sit here as an aside marked "out of scope"; it is now
+`[measured]` and gated, but by two tests that have nothing to do with this corpus —
+`crates/codec/tests/group_roundtrip.rs` and `crates/dict/tests/interop_quickfix_order.rs`,
+the latter checking the order against QuickFIX's own generated C++ on 730/730 groups. See
+[fix44-dictionary-traps.md](fix44-dictionary-traps.md) traps 5 to 7.
+
+**Do not reach for this corpus to test a group.** It has no group to test with.
 
 **Also observed:** 3 `E` lines carry neither `9=` nor `10=`, and 3 more carry `9=` without
 `10=`. `Reflector.rb`'s `fixify!` inserts a computed `9=` when absent and a computed `10=`

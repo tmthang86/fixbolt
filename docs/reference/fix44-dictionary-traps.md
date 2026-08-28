@@ -168,3 +168,38 @@ a wrong delimiter mis-cuts every entry in it while parsing without error.
 2026-08-28: re-keying the generated table by counter alone makes `(X, 268)` answer `269`
 instead of `279`, and makes `(D, 268)` — a message with no market data at all — answer
 `Some(269)` instead of `None`.
+
+## Trap 7 — QuickFIX's `message_order` and a group's member list are not the same list
+
+**Measured 2026-08-28.** QuickFIX ships generated C++ for FIX 4.4, one header per message,
+and every group appears in it as
+
+```cpp
+NoMDEntries() : FIX::Group(268,279,FIX::message_order(279,285,269,278,280,55,...,0)) {}
+```
+
+counter, delimiter, order. That is a second opinion on field order written by a different
+generator, and comparing against it caught nothing — which is the result worth recording.
+
+The comparison is **not** equality, and expecting equality wastes an afternoon. QuickFIX's
+`message_order` lists a nested group's counter tag only sometimes; this crate's
+`group_members` always does, because its writer walks the list and emits the nested group
+when it reaches that counter, so the counter has to be in the list. Measured across the 730
+groups QuickFIX generates:
+
+| Claim | Result |
+|---|---|
+| Delimiter agrees | **730 / 730** |
+| QuickFIX's order is an exact subsequence of this crate's | **730 / 730** |
+| Tags QuickFIX has that this crate lacks | **0** |
+| Tags this crate has that QuickFIX omits | 7 distinct, **every one a group counter** |
+
+QuickFIX generates one file per message and `<header>` is not a message, so `NoHops(627)` has
+no file: 730 + 1 = 731.
+
+**Guarded by** `crates/dict/tests/interop_quickfix_order.rs`. Proven by reversal on
+2026-08-28, and the reversal is the point: swapping two adjacent members in every generated
+group leaves `crates/codec/tests/group_roundtrip.rs` **green** — that test generates its
+messages from the same table the encoder reads, so a wrong order is invisible to it — and
+turns the interop test **red**. A round-trip against your own table proves stability, not
+correctness.

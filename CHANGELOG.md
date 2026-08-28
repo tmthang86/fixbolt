@@ -47,7 +47,8 @@ below describe what a first release would contain.
   - `group_members(msg_type, counter)` — one table serving `group_delimiter` (its head) and
     `group_order` (itself), so the three cannot disagree. Keyed by **`(msg_type, counter)`**:
     four counters take a different delimiter in different messages.
-  - `GROUP_COUNTERS = 59`, `GROUP_POSITIONS = 731`.
+  - `GROUP_COUNTERS = 59`, `GROUP_POSITIONS = 731`, and `GROUP_KEYS` — every declared
+    `(msg_type, counter)` pair, so a caller can enumerate the groups rather than name them.
 
 ### Known limitations, stated rather than discovered
 
