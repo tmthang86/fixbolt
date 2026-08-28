@@ -12,7 +12,7 @@ Last updated: **2026-08-27**.
 | Branch | **`main`** |
 | Milestone | **M1 — the codec.** `codec` and `dict` read and write FIX 4.4 including repeating groups. No session layer, no engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **none** — next is the `conformance` runner, and it has no plan yet |
+| Plan in flight | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — **chờ duyệt**, no code written |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
 | Last closed | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — closed and merged 2026-08-28. 54 tests, 0 allocations, 304M fuzz executions |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |

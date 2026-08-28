@@ -49,7 +49,7 @@ phát lại bản ghi nào.
 
 ## Tài liệu phải cập nhật
 
-Theo bảng đồng bộ ở `CLAUDE.md` §3.
+Theo bảng đồng bộ ở `CLAUDE.md` §4.
 
 - [ ] …
 
