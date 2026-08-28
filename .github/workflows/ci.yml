@@ -33,7 +33,7 @@ jobs:
     name: Lint config enforces non-negotiable 7
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup component add clippy
       - run: scripts/check-lint-config.sh
 
@@ -41,7 +41,7 @@ jobs:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup component add rustfmt clippy
 
       - id: ws
@@ -72,7 +72,7 @@ jobs:
     name: Builds with nothing optional installed
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: ws
         run: |
           n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
