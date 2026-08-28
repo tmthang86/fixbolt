@@ -5,3 +5,7 @@
 //! is `benches/alloc.rs` with a counting allocator. See the plan, "Bất biến bị
 //! đụng tới", row 1.
 #![no_std]
+
+pub mod dict;
+
+pub use dict::{Dictionary, NoDict};

@@ -1,6 +1,8 @@
 # Bước 1 — `codec` và `dict`: đọc, ghi FIX 4.4 không cấp phát bộ nhớ
 
 > **Loại:** Plan · **Ngày:** 2026-08-27 · **Trạng thái:** **Đã duyệt** — 2026-08-27, sau review kỹ thuật + outside voice
+> **Sửa lần 3 — 2026-08-28, duyệt lại cùng ngày.** Một tiêu chí nghiệm thu của Bước 1 sai so
+> với dữ liệu và không thể đạt. Chi tiết ở *Nhật ký giao hàng → Bước 1*.
 > **Phạm vi:** `DESIGN.md` §7 bước 1 — hai crate đầu tiên của workspace
 > **Sửa lần 2 — 2026-08-27**, sau `/plan-eng-review` + outside voice (Codex). 16 quyết định
 > ghi ở mục *Nhật ký review* cuối file. Bản đầu dựa trên vài con số đếm sai; mục
@@ -95,7 +97,14 @@ Hệ quả trực tiếp: **không có `ParseError::EmptyValue`.** Field `56=` �
   - `pub mod tag` — `pub const MSG_SEQ_NUM: u32 = 34;` cho mọi field.
   - `pub mod msg_type` — `pub const NEW_ORDER_SINGLE: &[u8] = b"D";`.
   - `pub fn is_header(tag: u32) -> bool` — bảng tra, tách header/body khi ghi.
+    **Sửa 2026-08-28:** phải **đi vào cả `<group>`** trong `<header>`. `NoHops(627)` cùng 3
+    field con (628, 629, 630) là field header. Chỉ đọc `<field>` con trực tiếp ra 26 tag thay
+    vì 30, và 4 tag thiếu sẽ xếp nhầm vào body khi ghi — đúng kiểu hỏng của bất biến 5.
+    **59 `.def` không có tag nào trong số đó**, nên 59/59 vẫn xanh khi sai. Bẫy 3.
   - `pub fn data_length_tag(tag: u32) -> Option<u32>` — tag độ dài của field DATA.
+    **Sửa 2026-08-28:** khớp **theo tên** (`XLen` / `XLength`), **không** theo `tag − 1`.
+    `Signature(89)` dùng `SignatureLength(93)`. 15/16 field DATA theo `tag − 1` và đúng cái
+    thứ 16 thì không. Bẫy 1.
   - `pub fn required(msg_type: &[u8]) -> &'static [u32]` — field bắt buộc theo loại bản tin.
     **Giới hạn đã biết:** bản này chỉ đọc `<field>` con trực tiếp, **không đệ quy qua
     `<component>`**. Với 632 chỗ dùng component trong XML, bảng này thiếu field. Chấp nhận
@@ -316,7 +325,7 @@ bước 4 là chỗ học lifetime. Đừng làm hai bước đó cùng lúc.
 | Bước | Lệnh | Đạt khi |
 |---|---|---|
 | 0 | `mv vendor vendor.bak && cargo build -p dict; mv vendor.bak vendor` | Output chứa đúng dòng "run scripts/fetch-quickfix-assets.sh". Không phải lỗi khác |
-| 1 | `cargo test -p dict` | Xanh, và **đọc** output thấy tên 5 test: `is_header(34)==true`, `is_header(11)==false`, `data_length_tag(96)==Some(95)`, `data_length_tag(35)==None`, `required(b"D")` chứa 11,21,55,54,60,40 |
+| 1 | `cargo test -p nanofix-dict` | Xanh, và **đọc** output thấy tên các test. **Sửa 2026-08-28:** `required(b"D")` là `[11, 40, 54, 60]` — **không** chứa 21 và 55. Cả hai là `required='N'` trong `FIX44.xml`, đệ quy component cũng không thêm chúng. Xem `reference/fix44-dictionary-traps.md` bẫy 2 |
 | 2 | `cargo test -p codec --test defs` | In `classified 539/539`. Trong đó: 532 dòng kỳ vọng `Ok`, 7 dòng kỳ vọng `Err` **đúng biến thể đã khai**. Một dòng lệch là đỏ |
 | 2 | `cargo test -p codec --test defs -- bodylength` | `bodylength ok 247/247` (dòng E có `9=`), `checksum ok 244/244` (dòng E có `10=`) |
 | 2 | Test `TooManyFields`: parse một dòng E thật với `FieldIndex<4>` | Trả `Err(TooManyFields)`, và **không** có index nào chứa 4 field "thành công" |
@@ -441,7 +450,39 @@ Cân nhắc rồi hoãn, kèm lý do:
 
 ## Nhật ký giao hàng
 
-*(trống — điền khi đóng từng bước)*
+### Bước 0 — xong 2026-08-28
+
+Workspace có 2 crate (`nanofix-codec`, `nanofix-dict` — tên `codec`/`dict` đã có người lấy
+trên crates.io). `cargo build -p nanofix-dict` khi thiếu `vendor/` → `EXIT=101` kèm đúng dòng
+`run scripts/fetch-quickfix-assets.sh`; có `vendor/` → `EXIT=0`; `NANOFIX_FIX44_XML` trỏ file
+không tồn tại → cũng báo đúng đường dẫn đó. CI thêm bước fetch vendor.
+
+### Bước 1 — xong 2026-08-28. Plan sai 3 chỗ, sửa và duyệt lại
+
+Generator sinh 5 bảng từ XML: `tag::*` (912 hằng), `msg_type::*` (93), `is_header` (30 tag),
+`data_length_tag` (16), `required` (84 nhánh). 11/11 test xanh.
+
+**Ba chỗ plan sai so với dữ liệu**, phát hiện khi viết generator, đo lại bằng parser XML:
+
+1. **`required(b"D")` không chứa 21 và 55.** Plan đòi `[11,21,40,54,55,60]`. `HandlInst(21)`
+   là `required='N'` ngay trong `<message>`; `Symbol(55)` là `required='N'` trong component
+   `Instrument` — mà `Instrument` thì `required='Y'`. Một component bắt buộc **không** kéo
+   theo field bắt buộc nào. Đáp án đúng: `[11, 40, 54, 60]`. Đệ quy component không đổi kết
+   quả này (nhưng đổi ở **21/93** message khác).
+   → **Quyết định của chủ repo, 2026-08-28: sửa test theo dữ liệu, giữ hoãn đệ quy.** Đệ quy
+   vẫn thuộc plan repeating-groups. Thêm 2 test ghim giới hạn để không ai dùng nhầm.
+
+2. **`data_length_tag` không phải `tag − 1`** — `Signature(89)` → `SignatureLength(93)`.
+   Khớp theo tên. Generator **từ chối sinh bảng** nếu có field DATA không khớp được, thay vì
+   trả `None` — `None` nghĩa là "quét `0x01`", tức trả lời sai dưới dạng mặc định.
+
+3. **`<header>` có `<group>`** — `NoHops(627)` + 628/629/630. Phải đi vào group.
+
+Cả ba vào `reference/fix44-dictionary-traps.md`, mỗi cái kèm test canh. Bẫy 1 đã kiểm chứng
+bằng đảo ngược: đổi sang `tag − 1` → đúng 1 test đỏ, `left: Some(88), right: Some(93)`.
+
+**Chưa làm, ghi lại:** 3 tag trailer (`89`, `93`, `10`) không được phân loại — `is_header` trả
+`false` nên chúng sẽ xếp vào body nếu có ai ghi. Chưa ai ghi. Có test ghim.
 
 ---
 

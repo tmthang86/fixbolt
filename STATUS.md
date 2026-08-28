@@ -40,6 +40,15 @@ Last updated: **2026-08-27**.
   `.DS_Store`.
 - Repository is **private** as of 2026-08-27 (it was public at creation). `cargo 1.95.0`.
 - **ADR-0001, -0002, -0003 accepted 2026-08-27** by the owner, after the latency-budget review.
+- **`codec` + `dict` step 0 and step 1 landed 2026-08-28** on branch `plan/codec-dict`.
+  `dict` generates 5 tables from `FIX44.xml`: 912 tag constants, 93 message types, 30 header
+  tags, 16 DATA→length pairs, 84 required-field arms. 11/11 tests green. The plan was wrong in
+  three places about the dictionary and was revised and re-approved — see its delivery log and
+  the new **[reference/fix44-dictionary-traps.md](docs/reference/fix44-dictionary-traps.md)**,
+  which records all four traps with the test that guards each.
+- **New open item: the 3 trailer tags are unclassified.** `is_header(89)` and `is_header(93)`
+  return `false`, so a written `Signature` would sort into the body. Nothing writes one — no
+  `.def` carries a signature — so this is pinned by a test rather than fixed.
 - **CI exists as of 2026-08-28**, and closes a gap that had been asserted eight times. "CI
   proves it" appeared in `CLAUDE.md` §2, ADR-0004, ADR-0005, `DESIGN.md` D11 and `PRD.md`
   while `.github/` did not exist. It now has three jobs. Two of them cannot do anything yet —
