@@ -17,6 +17,17 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`nanofix-conformance`** — the 59 QuickFIX FIX 4.4 acceptance definitions, run in process
+  with no socket. Zero runtime dependencies. Not published: it is a measuring instrument.
+  - `script` — the corpus as 669 typed steps. Refuses to skip a directive it cannot read.
+  - `compare` — `Comparator.rb`'s positional rules, with the five loosely-matched tags read
+    out of `fields.fmt` rather than hard-coded.
+  - `text` — the 17 expected `58=` values and their `373=` codes, rendered with no `format!`
+    and no allocation.
+  - `runner` — `SessionUnderTest`, keyed by connection so `1b_DuplicateIdentity` is
+    expressible; `NullSession` scores **0 / 59** and `Replay` scores **59 / 59**.
+  - `echo` — the echo application the corpus assumes. All 22 application pairs reproduced.
+
 - **`nanofix-codec`** — FIX 4.4 read and write, `no_std`, zero runtime dependencies.
   - `parse_into::<D, N>(buf, &mut idx, validation) -> Result<Parsed, ParseError>`. `Incomplete`
     is an `Ok`, because TCP delivers bytes and not messages.

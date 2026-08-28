@@ -6,6 +6,15 @@ version = 4
 name = "nanofix-codec"
 version = "0.0.0"
 dependencies = [
+ "nanofix-conformance",
+ "nanofix-dict",
+]
+
+[[package]]
+name = "nanofix-conformance"
+version = "0.0.0"
+dependencies = [
+ "nanofix-codec",
  "nanofix-dict",
 ]
 

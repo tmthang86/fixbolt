@@ -23,6 +23,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nanofix_codec::{FieldIndex, NoDict, TemplateBuilder, TimestampCache, Validation, parse_into};
+use nanofix_conformance::text::SessionText;
 use nanofix_dict::Fix44;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -156,10 +157,28 @@ fn main() {
         }
     });
 
+    // A Reject's 58= text. The two numbered variants are the case that tempts
+    // format!, which is what non-negotiable 2 forbids in the session layer.
+    let mut text = [0u8; SessionText::MAX_LEN];
+    let _ = SessionText::ValueIsIncorrect.render(&mut text);
+    let text_allocs = count(|| {
+        for i in 0..10_000u32 {
+            for v in SessionText::ALL {
+                let _ = v.render(&mut text);
+            }
+            let _ = SessionText::MsgSeqNumTooLow {
+                expecting: i,
+                received: i / 2,
+            }
+            .render(&mut text);
+        }
+    });
+
     println!("allocations: parse   {parse_allocs}");
     println!("allocations: encode  {encode_allocs}");
     println!("allocations: lookup  {lookup_allocs}");
     println!("allocations: group   {group_allocs}");
+    println!("allocations: text    {text_allocs}");
     assert_eq!(parse_allocs, 0, "parse must not allocate");
     assert_eq!(encode_allocs, 0, "encode must not allocate");
     assert_eq!(lookup_allocs, 0, "field lookup must not allocate");

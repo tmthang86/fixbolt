@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/codec", "crates/dict"]
+members = ["crates/codec", "crates/conformance", "crates/dict"]
 # fuzz/ needs nightly and is its own workspace. Excluded so `cargo build` at the
 # root, and CI's --no-default-features job, never try to build it on stable.
 exclude = ["fuzz"]

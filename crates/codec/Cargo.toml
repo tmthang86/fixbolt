@@ -13,6 +13,10 @@ description = "FIX 4.4 parse and serialise in place, no allocation on the hot pa
 # dict. Cargo permits exactly this shape, and it is the only way to test the
 # parser against the real generated dictionary without duplicating the loader.
 nanofix-dict = { path = "../dict" }
+# A dev-dependency cycle, which cargo permits: conformance depends on codec.
+# The alloc bench needs the real SessionText table, and copying it here would
+# be a second place for a rule that has one.
+nanofix-conformance = { path = "../conformance" }
 
 [[bench]]
 name = "parse"

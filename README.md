@@ -69,6 +69,7 @@ it, is in [docs/DESIGN.md](docs/DESIGN.md),
 crates/
   codec/         parse and serialise in place, no allocation, no dependencies
   dict/          FIX 4.4 tables generated from the QuickFIX XML at build time
+  conformance/   runs the 59 acceptance definitions in process, no socket
                  (more crates are added one at a time, each behind an approved plan)
 fuzz/            cargo-fuzz targets — nightly, outside the workspace
 docs/
@@ -77,7 +78,8 @@ docs/
   decisions/     ADRs — expensive or hard-to-reverse decisions
   reference/     protocol facts, prior art, traps
   plans/         what is about to be built (Vietnamese; see CLAUDE.md §6)
-vendor/          QuickFIX XML specs + acceptance definitions, fetched by script, gitignored
+vendor/          QuickFIX XML, acceptance definitions and generated C++ — fetched by
+                 script, read as a test oracle, gitignored, never committed
 ```
 
 ## Licence

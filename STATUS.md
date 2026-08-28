@@ -12,7 +12,8 @@ Last updated: **2026-08-27**.
 | Branch | **`main`** |
 | Milestone | **M1 — the codec.** `codec` and `dict` read and write FIX 4.4 including repeating groups. No session layer, no engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — **chờ duyệt**, no code written |
+| Plan in flight | **none** — next is the `session` layer, and it has no plan yet |
+| Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process and score **0 / 59**; a replaying fake scores 59 / 59, which is what makes the zero mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
 | Last closed | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — closed and merged 2026-08-28. 54 tests, 0 allocations, 304M fuzz executions |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
@@ -111,6 +112,18 @@ Last updated: **2026-08-27**.
   **green** — it generates its messages from the same table — and turns the interop test
   **red**. Run 2026-08-28.
 
+- **The conformance runner, 2026-08-28.** The 59 definitions load as **669 steps** — 289 `I`,
+  250 `E`, 65 connects, 1 disconnect, 64 expected disconnects — and run in process against a
+  `SessionUnderTest`. `NullSession` scores **0 / 59**, which is the true state of the world;
+  `Replay`, which answers with each file's own expected output, scores **59 / 59**, which is
+  what makes the zero evidence rather than a coincidence.
+- **The echo application the corpus assumes.** `[measured]` 42 of the 250 `E` lines carry
+  `35=D` and there are **22 application `(I, E)` pairs**; all 22 are reproduced, `9=101`
+  included. A session state machine alone cannot pass this suite.
+- **`<TIME>` is 17 bytes on an `I` line and 21 on an `E` line**, solved from the corpus's own
+  `9=` values. The single-width substitution both loaders used before was wrong by 4 bytes per
+  timestamp, and one loader now serves both crates.
+
 ## Not proven — claimed, researched, or simply not yet run
 
 - **Every figure in [prior-art.md](docs/reference/prior-art.md) is someone else's claim**,
@@ -128,6 +141,10 @@ Last updated: **2026-08-27**.
   file is real evidence and is not the same as a venue accepting the bytes. Nothing here has
   been sent to a real FIX peer.
 - **DATA fields inside a repeating group are untested** on both paths — open item 8.
+- **`0 / 59` is the score.** No session layer exists. The runner is proven to be able to
+  recognise a correct answer; nothing has produced one.
+- **`Input::Tick` is defined and never sent.** Nothing advances time yet, so
+  `4a_NoDataSentDuringHeartBtInt.def` cannot pass even once a session exists.
 - The ADRs are accepted on the strength of the reasoning in them, **not on measurement** — see the §8 caveat above.
 
 ## Open items

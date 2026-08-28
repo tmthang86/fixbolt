@@ -209,3 +209,97 @@ That is the whole reason D1 exists.
 
 These files are QuickFIX-licensed. They are used here as a **test oracle**, fetched at build
 time into a gitignored directory. They are never redistributed inside nanofixengine. See ADR-0001.
+
+## The trap that cost the most: never `cat *.def`
+
+`[measured 2026-08-28]` **35 of the 59 files do not end in a newline**, and most files begin
+with a `#` comment. So concatenating them glues the last line of one file onto the first line
+of the next:
+
+```
+$ tail -1 10_MsgSeqNumEqual.def      # no trailing newline
+eDISCONNECT
+$ head -1 10_MsgSeqNumGreater.def
+# @testcase 10 - Message sequence number greater than expected
+$ cat 10_MsgSeqNumEqual.def 10_MsgSeqNumGreater.def | grep '^e'
+eDISCONNECT# @testcase 10 - Message sequence number greater than expected
+```
+
+The corpus then appears to carry comments on the same line as a directive. It does not:
+**0 lines in the corpus have a `#` after a directive.** Counting exact `eDISCONNECT` over the
+concatenated blob gives **28**; the real number is **64**.
+
+This is not a hypothetical. The claim "a `#` comment can sit on the same line as an `i`/`e`
+directive" reached a plan's *"what is known for certain"* section as a measured fact, and the
+loader was about to be written to strip something that is never there — code that guards
+nothing, justified by a comment that is false.
+
+**What survives concatenation and what does not.** Counting lines by their *first* character
+is safe, because gluing only damages the end of a line: `I` 289, `E` 250, `i` 66, `e` 64 come
+out right either way. Anything matching a whole line, or reading the last field of a line, is
+wrong. The `58=`, `373=` and `35=` tallies on this page were re-measured per file on
+2026-08-28 and were unaffected.
+
+**Guarded by** `crates/conformance/tests/script.rs::concatenating_the_files_corrupts_the_corpus`,
+which asserts both numbers — the 28 the naive reading produces and the 64 the loader sees.
+
+## `<TIME>` is not one width, and the corpus's `9=` values say which
+
+`[measured 2026-08-28]` Solving each line's declared `BodyLength` for the length of the
+`<TIME>` it contains, over every line that carries its own `9=`:
+
+| Line | `<TIME>` width | Evidence |
+|---|---|---|
+| `I` | **17** — `YYYYMMDD-HH:MM:SS` | `2d_GarbledMessage` and `3c_GarbledMessage`, two lines each, all four agree |
+| `E` | **21** — with `.mmm` | `SessionReset.def` lines 18 and 27 |
+
+An `E` line is the engine's own output and FIX 4.4 `SendingTime` carries milliseconds; an `I`
+line is what the reflector sends, and it does not. Substituting one width everywhere costs
+four bytes per timestamp, and nothing notices until something compares a `9=`.
+
+### And three `E` lines write a placeholder their own `9=` does not match
+
+`14e_IncorrectEnumValue.def:26`, `8_OnlyApplicationMessages.def:29` and
+`RejectResentMessage.def:6` each carry a **literal** `52=` of 17 bytes while their `9=` is
+computed for 21. They are not stale. They are the same phenomenon as `10=0`: **tag 52 is
+matched by regex, so its written value never had to be right, and the author computed `9=`
+for what the engine actually emits.**
+
+The consequence is the one that matters: an engine passing this suite must write `SendingTime`
+**with milliseconds**, because three `9=` values depend on it and tag `9` is compared exactly.
+
+### The other side of the same rule: `60=` is echoed, not regenerated
+
+`15_HeaderAndBodyFieldsOrderedDifferently.def` expects `9=101`, and that number only comes out
+when `52` is 21 bytes and `60` is **17** — the value copied verbatim off the inbound message.
+An engine that regenerates `TransactTime` in its own format moves the body by four bytes and
+fails a test whose name says nothing about time.
+
+**Guarded by** `crates/conformance/tests/script.rs::
+a_time_placeholder_is_seventeen_bytes_inbound_and_twenty_one_outbound` (343 inbound at 17, 0 at
+21; 247 outbound at 21) and `crates/conformance/tests/echo.rs::body_length_is_one_hundred_and_one`.
+
+## What the acceptance server actually is: an echo server that re-orders
+
+`[measured 2026-08-28]` 42 of the 250 `E` lines carry `35=D`, and there are **22 `(I, E)`
+application pairs** across the 59 files. The server under test sends application messages
+straight back. **A session state machine alone cannot pass this suite** — fifteen files need an
+application behind it.
+
+It re-orders, and that is the point of
+`15_HeaderAndBodyFieldsOrderedDifferently.def`: the same `NewOrderSingle` arrives twice, once
+in order and once shuffled, and the **same bytes** are expected back both times.
+
+Which header fields come back is not "all" or "none", and the corpus is emphatic:
+
+| Tag | | Echoed? | The file that says so |
+|---|---|---|---|
+| `97` | PossResend | **yes** | `19b_PossResendMessageThatHasNotBeenSent.def` |
+| `122` | OrigSendingTime | **no** | `2m_BodyLengthValueNotCorrect.def` |
+
+The line runs between resend metadata, which belongs to the transmission, and a flag the
+counterparty set about the order itself. Guessing "all header fields" fails the second;
+guessing "no header fields" fails the first.
+
+**Guarded by** `crates/conformance/tests/echo.rs` — all 22 pairs reproduced, plus
+`poss_resend_is_echoed_and_orig_sending_time_is_not`.
