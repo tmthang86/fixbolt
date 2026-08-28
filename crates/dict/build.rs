@@ -314,6 +314,20 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
         let items = l.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
         let _ = writeln!(o, "static G{i}: [u32; {}] = [{items}];", l.len());
     }
+    let _ = writeln!(
+        o,
+        "\n/// Every `(msg_type, counter)` pair the dictionary declares, sorted.\n\
+         ///\n\
+         /// Exists so a test can enumerate the groups instead of naming a few by\n\
+         /// hand: \"covers every group\" is a claim, and this is what makes it\n\
+         /// checkable. A validator walking a message would want the same list.\n\
+         pub static GROUP_KEYS: [(&[u8], u32); {}] = [",
+        groups.len()
+    );
+    for (mt, counter) in groups.keys() {
+        let _ = writeln!(o, "    (b\"{mt}\", {counter}),");
+    }
+    o.push_str("];\n");
     o.push_str(
         "\n/// Every tag that may appear inside a group, in declaration order,\n\
          /// delimiter first.\n\

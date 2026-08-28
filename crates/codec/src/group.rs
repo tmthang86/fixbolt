@@ -36,7 +36,7 @@ use crate::index::{FieldEntry, MessageView, as_u32};
 /// malformed dictionary cannot turn a parse into a stack overflow. Reaching it
 /// ends the group rather than descending further, which under-reads rather than
 /// over-reads.
-const MAX_DEPTH: u8 = 8;
+pub(crate) const MAX_DEPTH: u8 = 8;
 
 /// Entries of one repeating group, at one level.
 ///

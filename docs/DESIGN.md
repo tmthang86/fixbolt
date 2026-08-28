@@ -356,7 +356,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Session conformance, acceptor | **59 / 59** | `conformance` runner, in-process, no socket |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |
-| Repeating groups — written | all **93** declarations written, in-group ordering verified against `libquickfix` | `crates/codec/tests/group_roundtrip.rs` + `tools/interop` ([plan](plans/2026-08-27-repeating-groups.md)) — **not built yet** |
+| Repeating groups — written | parse → encode **byte-identical** at all **357** top-level positions, exercising all **59** counters and nesting to depth 4 | `crates/codec/tests/group_roundtrip.rs` |
+| In-group field order matches a real implementation | the order `dict` emits is what `libquickfix` writes | `tools/interop` ([plan](plans/2026-08-27-repeating-groups.md)) — **not built yet, and the round-trip test cannot substitute**: it reads the same table the encoder does |
 | **Wire-to-wire, NIC to NIC** | p50 / p99 / p99.9 published; p99 ≤ 50 µs on kernel TCP | `tools/w2w` — `SO_TIMESTAMPING`, HdrHistogram, load generator on a **separate machine** |
 | Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |
 | `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |

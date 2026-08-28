@@ -30,7 +30,15 @@ below describe what a first release would contain.
     of positions into the index the parser already filled. `GroupIter` is an `Iterator`.
     `declared()` (what the counter says, `Option` — a non-numeric count is not a count) and
     `counted()` (what is on the wire) are reported separately and never reconciled here.
-    Writing groups is not in yet.
+    `GroupIter` yields `GroupEntry`, which can itself be descended into.
+  - `TemplateBuilder::group(counter)` and `Template::encode_with::<D>` — repeating groups
+    **written**. `GroupData` / `GroupEntryData` are borrowed and recursive, so nesting costs
+    no allocation. Field order inside an entry comes from `D::group_order`, never from the
+    order the caller supplied: inside a group the order is not ascending by tag, so the rule
+    that governs the body cannot catch a mistake there. The counter's value is
+    `entries.len()`, so the count and the entries cannot disagree.
+  - `EncodeError` gains `UnknownGroup`, `NotAGroupMember`, `MissingDelimiter`,
+    `MsgTypeMissing` and `GroupTooDeep`.
   - `Dictionary` trait. `is_header` and `data_length_tag` are answered by `nanofix-dict`;
     of the three repeating-group methods, all three are now implemented there — reading and
     writing groups is not, and lands with the rest of the repeating-groups plan.

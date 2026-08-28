@@ -376,3 +376,45 @@ sau khi có số.
 
 **Test dùng gói tự viết tay, không phải capture thật.** Với lồng 4 tầng repo này không có
 capture nào để dùng. Nói rõ ở đầu `tests/groups.rs`. Ca `14i` thì là dữ liệu thật.
+
+### Bước 4 — ghi group, đóng ngày 2026-08-28
+
+**Xanh:** `cargo test -p nanofix-codec --test group_roundtrip` — 2/2.
+`round-tripped 357 top-level positions, 59 counters`. Alloc bench vẫn `group 0`.
+`benches/serialize.rs`: encode 93.3 ns/op (trần 190) — không đụng vào bản tin không có group.
+
+**Hình dạng dữ liệu, khác plan.** Plan viết `Part::Group { counter, order: &'static [u32] }`
+và một danh sách entry phẳng. Phẳng không diễn đạt được lồng nhau, mà lồng nhau là 32% số
+ca. Thay bằng cấu trúc **mượn, đệ quy** — dựng trên stack, không cấp phát:
+
+```rust
+pub struct GroupData<'a>      { pub counter: u32, pub entries: &'a [GroupEntryData<'a>] }
+pub struct GroupEntryData<'a> { pub fields: &'a [(u32, &'a [u8])], pub groups: &'a [GroupData<'a>] }
+```
+
+`order` không nằm trong `Part` mà tra từ `D` lúc ghi, nên `Template` phải nhớ `MsgType` —
+bảng group khoá theo `(msg_type, counter)`. Template có lỗ group mà không có `35=` thì
+`build()` trả `MsgTypeMissing` ngay, không đợi tới lúc gửi.
+
+**Giá trị counter không do người gọi đưa** mà là `entries.len()`. Hai thứ đó không thể lệch
+nhau. Đây chính là lỗi mà `14i` tồn tại để bắt, ở phía ghi.
+
+**Group khai báo nhưng không có dữ liệu thì không ghi gì cả** — kể cả `counter=0`. Group tùy
+chọn vắng mặt và group có 0 entry là hai bản tin khác nhau; người gọi chọn bằng cách đưa
+hoặc không đưa dữ liệu.
+
+**Từ chối trước khi ghi.** Mọi tag trong entry được kiểm tra thuộc `order`, và delimiter
+phải có mặt, **trước** khi byte đầu tiên của entry ra `out`. Một entry bị từ chối không để
+lại nửa group trong buffer.
+
+**Chứng minh bằng đảo ngược:** đổi `put_group` sang ghi theo thứ tự người gọi đưa thay vì
+`order` → cả 2 test đỏ, `0/627 did not round-trip`. Khôi phục → xanh.
+
+**Điểm yếu của chính test này, nói rõ:** bộ sinh bản tin trong `group_roundtrip.rs` đi theo
+`group_order` — **cùng bảng** mà bộ mã hoá đọc. Nên nó chứng minh parse→encode ổn định
+byte-for-byte và bộ mã hoá bỏ qua thứ tự người gọi đưa; nó **không** chứng minh thứ tự trong
+bảng giống thứ tự một đối tác thật ghi. Việc đó là `tools/interop` ở bước 5, và không có gì
+ở đây thay thế được.
+
+**Chưa phủ:** trường `DATA` bên trong group (cần trường length đứng trước — test khác), và
+374 vị trí lồng được phủ gián tiếp qua cha chứ không dựng bản tin riêng.
