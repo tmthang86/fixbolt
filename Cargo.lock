@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanofix-conformance"
+version = "0.0.0"
+dependencies = [
+ "nanofix-codec",
+ "nanofix-dict",
+]
+
+[[package]]
 name = "nanofix-dict"
 version = "0.0.0"
 dependencies = [

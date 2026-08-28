@@ -209,3 +209,36 @@ That is the whole reason D1 exists.
 
 These files are QuickFIX-licensed. They are used here as a **test oracle**, fetched at build
 time into a gitignored directory. They are never redistributed inside nanofixengine. See ADR-0001.
+
+## The trap that cost the most: never `cat *.def`
+
+`[measured 2026-08-28]` **35 of the 59 files do not end in a newline**, and most files begin
+with a `#` comment. So concatenating them glues the last line of one file onto the first line
+of the next:
+
+```
+$ tail -1 10_MsgSeqNumEqual.def      # no trailing newline
+eDISCONNECT
+$ head -1 10_MsgSeqNumGreater.def
+# @testcase 10 - Message sequence number greater than expected
+$ cat 10_MsgSeqNumEqual.def 10_MsgSeqNumGreater.def | grep '^e'
+eDISCONNECT# @testcase 10 - Message sequence number greater than expected
+```
+
+The corpus then appears to carry comments on the same line as a directive. It does not:
+**0 lines in the corpus have a `#` after a directive.** Counting exact `eDISCONNECT` over the
+concatenated blob gives **28**; the real number is **64**.
+
+This is not a hypothetical. The claim "a `#` comment can sit on the same line as an `i`/`e`
+directive" reached a plan's *"what is known for certain"* section as a measured fact, and the
+loader was about to be written to strip something that is never there — code that guards
+nothing, justified by a comment that is false.
+
+**What survives concatenation and what does not.** Counting lines by their *first* character
+is safe, because gluing only damages the end of a line: `I` 289, `E` 250, `i` 66, `e` 64 come
+out right either way. Anything matching a whole line, or reading the last field of a line, is
+wrong. The `58=`, `373=` and `35=` tallies on this page were re-measured per file on
+2026-08-28 and were unaffected.
+
+**Guarded by** `crates/conformance/tests/script.rs::concatenating_the_files_corrupts_the_corpus`,
+which asserts both numbers — the 28 the naive reading produces and the 64 the loader sees.

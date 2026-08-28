@@ -37,8 +37,19 @@ Tất cả đo trên `vendor/quickfix/test/definitions/server/fix44/`, ngày 202
   `<TIME>` và `<TIME±N>`, `fixify` (chèn `9=`, nối `10=`), phân loại. Đã chạy trên 539 dòng.
 - `docs/reference/quickfix-acceptance-def-format.md` — 7 chỉ thị, quy tắc so sánh **theo vị
   trí**, các tag 10/42/52/60/122 so bằng regex.
-- `[measured]` 250 dòng mang `9=`, **6 dòng sai** (cố ý). 246 dòng mang `10=`, **0 dòng
-  đúng** — `10=` là giá trị giả, phải tính lại. Cả hai đã ghi trong `measured-costs.md`.
+- `[measured]` **đo lại 2026-08-28, sửa hai con số của chính plan này.** Bản đầu viết "250
+  dòng mang `9=`" — 250 là số dòng `E`, không phải số dòng mang `9=`. Số đúng:
+
+  | | Toàn bộ I+E | Riêng E |
+  |---|---|---|
+  | Mang `9=` | **255** | **247** |
+  | Mang `10=` | **251** | **244** |
+
+  Trong đó **6 dòng có `9=` sai** (cố ý, `defs.rs::BAD_BODY_LENGTH` liệt kê cả sáu), và
+  trong 246 dòng mang `10=` đi tới được phép so (251 trừ 5 dòng bị từ chối), **0 dòng có
+  `10=` thật** — 238 dòng ghi thẳng `10=0`. Đã có trong
+  [quickfix-acceptance-def-format.md](../reference/quickfix-acceptance-def-format.md) và
+  `crates/codec/tests/defs.rs`.
 
 ### Ba sự thật quyết định hình dạng của bộ chạy
 
@@ -83,9 +94,16 @@ trí nghĩa là giá trị cũng phải đúng. 17 chuỗi phân biệt:
 `373=` SessionRejectReason dùng **12 giá trị**: `5`(10), `4`(7), `0`(4), `9`(3), `10`(3),
 `1`(3), `6`(2), `14`(2), `2`, `16`, `13`, `11`.
 
-**3. Chú thích `#` nằm cùng dòng với chỉ thị `i`/`e`, không nằm cùng dòng `I`/`E`.**
-`eDISCONNECT# If message is garbled, it should be ignored` là **một** dòng. `[measured]` 0
-dòng `I`/`E` nào chứa `#`. Bộ nạp hiện tại chưa gặp ca này vì nó chỉ đọc `I`/`E`.
+**3. ~~Chú thích `#` nằm cùng dòng với chỉ thị `i`/`e`.~~ SAI — sửa 2026-08-28 khi làm
+bước 1.** Trong corpus có **0** dòng như vậy. Cái tôi thấy là do `cat *.def`: **35/59 file
+không kết thúc bằng newline**, nên dòng cuối file này dính vào dòng đầu file kia, mà dòng
+đầu phần lớn các file là một chú thích `#`. Đếm `eDISCONNECT` kiểu ấy ra **28** thay vì 64.
+
+Sự thật thay thế, và nó quan trọng hơn: **đọc từng file một, đừng bao giờ `cat`.** Vào
+[quickfix-acceptance-def-format.md](../reference/quickfix-acceptance-def-format.md) làm bẫy
+riêng, và `tests/script.rs::concatenating_the_files_corrupts_the_corpus` tái hiện lại đúng
+nó. Thay cho việc cắt `#` — vốn chỉ là code chết — bộ nạp **báo lỗi** khi gặp dòng chỉ thị
+không hiểu được, thay vì bỏ qua im lặng.
 
 ## Cách làm
 
@@ -193,7 +211,7 @@ chứng bộ chạy hoạt động. Bước 4 phải kèm một `AlwaysCorrectSe
 | Chú thích `#` cùng dòng với `eDISCONNECT` bị nuốt vào chỉ thị | bước 1, đếm 64 dòng `e` |
 | Bộ so sánh luôn báo đạt, `0/59` trông như đúng | bước 4, `AlwaysCorrectSession` phải cho `59/59` |
 | So sánh chuỗi `58=` bằng "chứa" thay vì bằng nhau | bước 3, so từng byte với chuỗi lấy từ file |
-| `10=` trong dòng `E` là giá trị giả — so nguyên văn sẽ trượt hết | đã ghi: 246 dòng mang `10=`, **0 đúng**. Bộ so sánh phải tính lại |
+| `10=` trong dòng `E` là giá trị giả — so nguyên văn sẽ trượt hết | đã ghi: **244 dòng `E`** mang `10=`, 238 trong đó là `10=0`. Comparator khớp tag 10 bằng regex `\d{3}`, không so nguyên văn |
 | Bỏ quên 2 file nhiều session, chạy chúng như một session | bước 4, hai file ấy phải nằm trong danh sách chạy và không panic |
 | `EchoApp` tự xếp thứ tự trường thay vì dùng `Template` | bước 5, byte phải khớp `9=101` — thứ tự sai thì độ dài vẫn đúng nhưng byte thì không |
 
