@@ -1,6 +1,6 @@
 # Máy trạng thái session FIX 4.4 — từ 0/59 lên 59/59
 
-> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 2/6 xong)
+> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 3/6 xong)
 > **Phạm vi:** Phase 1, tiêu chí 1 của `PRD.md` §2. Đây là plan lớn nhất dự án.
 
 ## Bối cảnh
@@ -281,8 +281,18 @@ giá trị có đúng kiểu không, MsgType có thật không. `dict` hôm nay 
 Đây là thay đổi codegen và public API của `dict`, đúng là **tiêu chí 3 của `PRD.md`**, thứ PRD
 vốn ghi là gap chưa có plan. Chủ dự án chọn: plan riêng, duyệt trước.
 
-→ [2026-08-28-dict-validation.md](2026-08-28-dict-validation.md). **Bước 3 dừng cho tới khi
-plan ấy xong.**
+→ [2026-08-28-dict-validation.md](2026-08-28-dict-validation.md). Xong 2026-08-28, bước 3 chạy
+tiếp.
+
+### Sửa 7 — thiếu một bảng nữa: `required_header()`
+
+Phát hiện khi làm bước 3, **sau khi** plan dict đã đóng. `14b_RequiredFieldMissing.def` gửi
+Heartbeat không có `56=` và chờ `373=1` với `371=56`. Nhưng `required(msg_type)` trả lời cho
+*thân* bản tin, và doc của chính nó nói vậy — `56` là trường header.
+
+Đã thêm `Fix44::required_header()` (7 tag). Đây là **hoàn thiện một bảng đã có**, không phải năng
+lực mới, nhưng nó vẫn là public API nên ghi ra đây thay vì làm im. Plan dict đã đóng và
+`CLAUDE.md` §5 cấm sửa nội dung một bản ghi đã đóng, nên chỗ ghi là plan đang chạy — plan này.
 
 ## Nhật ký giao hàng
 
@@ -352,6 +362,46 @@ Một bẫy nữa: test cũ dựng "Logon" bằng cách sửa `35=0` thành `35=
 `1e_NotLogonMessage` — dòng đó **không có `98=` và `108=`**, mà FIX 4.4 bắt buộc cả hai. Đã
 dựng lại từ dòng Logon thật của `1c_InvalidTargetCompID`, và thêm test cho Logon thiếu trường
 bắt buộc.
+
+**Cấp phát:** `accept 0 refuse 0 tick 0 clock 0 text 0`.
+
+**Cổng:** `fmt --check`, `clippy --all-targets --all-features -D warnings`, `test --all`,
+`test --all --no-default-features`, `check-lint-config.sh`, `check-links.py` — tất cả rc=0.
+Máy: Apple M5, macOS 25.5.0, cargo 1.95.0.
+
+### Bước 3 — 2026-08-28 — **27 / 59**, đúng dự đoán đã sửa
+
+`Reject (35=3)`, đủ 13 file nhóm `{A, 5, 3}`. 12 mã `373`, 6 tag định tuyến đảo chiều, và
+`SessionText` đã dời sang từ bước 2.
+
+**Thứ tự kiểm là thứ tự corpus trả lời, và nó chịu lực.** Nhiều bản tin sai *hai* kiểu cùng lúc,
+mà corpus chỉ thấy mã nào về:
+
+| File | Sai gì | Mã thắng | Suy ra |
+|---|---|---|---|
+| `14d` | `56=` rỗng **và** lệch CompID | `373=4` | quét trường chạy trước kiểm CompID |
+| `14b` | thiếu hẳn `56=` **và** lệch CompID | `373=1` | trường bắt buộc cũng chạy trước CompID |
+| `2q` | `35=*` — kiểu sai, nên **mọi** tag đều "không thuộc bản tin này" | `373=11` | MsgType phải xong trước mọi câu hỏi theo trường |
+
+Hai mã kèm Logout ngay sau Reject (`2k` CompID, `2o` SendingTime); mười mã còn lại giữ phiên
+sống — `14a` từ chối bốn bản tin liên tiếp trên một kết nối.
+
+`14a` gửi `-1=HI`, không phải tag và không bao giờ là tag. Codec trả `ParseError::BadTag { at }`
+và **đặc tả rằng index vẫn giữ mọi trường đọc trước đó** — nhờ vậy `34=` và `35=` vẫn còn để trả
+lời, và `371=` lấy nguyên văn bản chứ không phải một số.
+
+**Đảo ngược, 13 lần, cả 13 đỏ** — sau khi sửa một lần đảo ngược sai. Lần đầu tôi xoá một dòng
+`next_in = seq + 1` **không bao giờ chạy tới** nằm trong nhánh Reject; tất nhiên không có gì đổi.
+**Một đảo ngược không làm đổi hành vi thì không chứng minh gì về cái chốt.** Đã xoá dòng chết,
+đảo ngược lại đúng chỗ, và nó đỏ ở `tests/reject.rs`.
+
+Một chốt corpus **không** thấy: Reject có tiêu thụ số thứ tự vào hay không. Nhánh "số quá cao"
+chưa có (bước 5), nên bản tin vượt trước hiện được đọc như đúng thứ tự, và số thứ tự không tăng
+trông y hệt số thứ tự có tăng. `tests/reject.rs` cầm luật đó.
+
+Thêm một cổng ngoài điểm số: `all_twelve_session_reject_reasons_are_produced` quét chính các dòng
+`E` của corpus, rút ra 12 mã `373`, rồi kiểm rằng session **thực sự phát ra đủ 12**. Đếm file
+không nói được điều này — `14a` có bốn ca và một session trả cùng một mã cho cả bốn vẫn qua file.
 
 **Cấp phát:** `accept 0 refuse 0 tick 0 clock 0 text 0`.
 

@@ -11,12 +11,15 @@ use nanofix_dict::Fix44;
 
 /// Parts and scratch bytes a session message needs.
 ///
-/// `[measured]` the widest is Logon at 7 parts; 16 leaves room for the Reject
-/// and Resend shapes that steps 3 and 5 add without re-sizing every template.
-/// Scratch holds `BeginString` plus two CompIDs plus tag digits — 256 covers
+/// `[measured]` the widest is the Reject at **17** parts — three static fields
+/// and fourteen slots, six of them routing tags that `ReverseRoute.def`
+/// exercises one pair at a time. 24 leaves room for the Resend shapes step 5
+/// adds without re-sizing every template.
+///
+/// Scratch holds `BeginString` plus two CompIDs plus tag digits — 320 covers
 /// the 32-byte maximum [`crate::Config`] can hold, which
 /// [`tests::the_widest_configuration_still_builds`] proves rather than assumes.
-type Skeleton = Template<16, 256>;
+pub(crate) type Skeleton = Template<24, 320>;
 
 /// Every message a session generates itself, pre-sorted, plus the buffer it
 /// writes into.
@@ -28,6 +31,7 @@ type Skeleton = Template<16, 256>;
 pub(crate) struct Outbound {
     pub(crate) logon: Skeleton,
     pub(crate) logout: Skeleton,
+    pub(crate) reject: Skeleton,
     pub(crate) buf: [u8; 512],
 }
 
@@ -40,7 +44,7 @@ impl Outbound {
     /// answer [`crate::Config`] gives a CompID it cannot hold.
     pub(crate) fn new(begin: &[u8], sender: &[u8], target: &[u8]) -> Option<Self> {
         Some(Self {
-            logon: TemplateBuilder::<16, 256>::new(begin)
+            logon: TemplateBuilder::<24, 320>::new(begin)
                 .field(tag::MSG_TYPE, b"A")
                 .field(tag::SENDER_COMP_ID, sender)
                 .field(tag::TARGET_COMP_ID, target)
@@ -50,13 +54,35 @@ impl Outbound {
                 .slot(tag::HEART_BT_INT)
                 .build::<Fix44>()
                 .ok()?,
-            logout: TemplateBuilder::<16, 256>::new(begin)
+            logout: TemplateBuilder::<24, 320>::new(begin)
                 .field(tag::MSG_TYPE, b"5")
                 .field(tag::SENDER_COMP_ID, sender)
                 .field(tag::TARGET_COMP_ID, target)
                 .slot(tag::MSG_SEQ_NUM)
                 .slot(tag::SENDING_TIME)
                 .slot(tag::TEXT)
+                .build::<Fix44>()
+                .ok()?,
+            reject: TemplateBuilder::<24, 320>::new(begin)
+                .field(tag::MSG_TYPE, b"3")
+                .field(tag::SENDER_COMP_ID, sender)
+                .field(tag::TARGET_COMP_ID, target)
+                .slot(tag::MSG_SEQ_NUM)
+                .slot(tag::SENDING_TIME)
+                // The routing tags, reversed. An `OnBehalfOf` on the way in is
+                // a `DeliverTo` on the way out, and `ReverseRoute.def` sends
+                // all six one pair at a time.
+                .slot(tag::ON_BEHALF_OF_COMP_ID)
+                .slot(tag::ON_BEHALF_OF_SUB_ID)
+                .slot(tag::ON_BEHALF_OF_LOCATION_ID)
+                .slot(tag::DELIVER_TO_COMP_ID)
+                .slot(tag::DELIVER_TO_SUB_ID)
+                .slot(tag::DELIVER_TO_LOCATION_ID)
+                .slot(tag::REF_SEQ_NUM)
+                .slot(tag::TEXT)
+                .slot(tag::REF_TAG_ID)
+                .slot(tag::REF_MSG_TYPE)
+                .slot(tag::SESSION_REJECT_REASON)
                 .build::<Fix44>()
                 .ok()?,
             buf: [0; 512],

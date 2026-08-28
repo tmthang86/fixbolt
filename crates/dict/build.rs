@@ -300,6 +300,43 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     // so the two tables cannot end up different widths.
     let max_tag = number_of.values().copied().max().unwrap_or(0);
     let words = (max_tag as usize / 64) + 1;
+    // ---- required_header ---------------------------------------------------
+    // `required()` answers for a message BODY, and its own doc comment says so.
+    // `14b_RequiredFieldMissing.def` sends a Heartbeat with no TargetCompID and
+    // expects `373=1` with `371=56` — a header field, which `required(b"0")`
+    // does not and should not mention.
+    let mut header_required: BTreeSet<u32> = BTreeSet::new();
+    if let Some(el) = child(root, "header") {
+        for c in el.children() {
+            if c.attribute("required") != Some("Y") {
+                continue;
+            }
+            if let Some(name) = c.attribute("name")
+                && let Some(&t) = number_of.get(name)
+            {
+                header_required.insert(t);
+            }
+        }
+    }
+    let _ = writeln!(
+        o,
+        "/// Header fields every message must carry, whatever its type.\n\
+         ///\n\
+         /// {} of them. Separate from [`required`], which answers for a message\n\
+         /// body: the two are different questions and a caller asks both.\n\
+         #[inline]\n\
+         #[must_use]\n\
+         pub const fn required_header() -> &'static [u32] {{\n\
+         \x20   &[{}]\n\
+         }}\n",
+        header_required.len(),
+        header_required
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+
     // ---- enum_allows: the values each enumerated field will take -----------
     // `None` for a field with no enumeration, never `Some(true)`: the two mean
     // different things and confusing them makes `373=5` fire on nothing, which

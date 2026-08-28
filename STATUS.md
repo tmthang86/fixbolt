@@ -10,10 +10,10 @@ Last updated: **2026-08-28**.
 | | |
 |---|---|
 | Branch | **`plan/dict-validation`**, on top of `plan/session-layer` |
-| Milestone | **M2 — the session layer.** `[measured 2026-08-28]` **14 / 59**, step 2 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
+| Milestone | **M2 — the session layer.** `[measured 2026-08-28]` **27 / 59**, step 3 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — approved 2026-08-28, **all 6 steps done**. Four tables generated and agreed with QuickFIX's own generated C++ |
-| Plan paused | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–2 of 6 done: 14 / 59.** Step 1 hit its prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus — six revisions recorded in the plan. **Step 3 is blocked**: 8 of its 12 `373` codes are dictionary questions, not session rules |
+| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–2 of 6 done: 14 / 59.** Step 1 hit its prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus — seven revisions recorded in the plan. Steps 1–3 done |
+| Last closed | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — closed 2026-08-28. Four validation tables, agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 12 524/12 524 message-tag pairs and 1 708/1 708 enum values |
 | Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
 | Last closed | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — closed and merged 2026-08-28. 54 tests, 0 allocations, 304M fuzz executions |
@@ -166,6 +166,15 @@ Last updated: **2026-08-28**.
   1 708/1 708, with zero exceptions. Written up in
   [reference/fix44-dictionary-traps.md](docs/reference/fix44-dictionary-traps.md).
 - **`dict` grew about 33 KB of static data** and its build script still runs in under a second.
+- **The session scores 27 / 59, 2026-08-28 — step 3, and the revised prediction was 27.** All
+  thirteen `Reject (35=3)` files. Thirteen reversals were run and all thirteen go red.
+- **All twelve `373` codes are produced, and that is asserted rather than inferred.** The test
+  reads the codes out of the corpus's own `E` lines and checks the session emits each. The file
+  count cannot say it: `14a_BadField.def` holds four cases, and answering all four with one code
+  still passes the file.
+- **One reversal was worthless and it is worth recording why.** It deleted a
+  `next_in = seq + 1` that could never be reached, and nothing changed — which says nothing
+  about the guard. A reversal has to alter behaviour before its green means anything.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -184,14 +193,15 @@ Last updated: **2026-08-28**.
   file is real evidence and is not the same as a venue accepting the bytes. Nothing here has
   been sent to a real FIX peer.
 - **DATA fields inside a repeating group are untested** on both paths — open item 8.
-- **The dictionary tables are not applied by anything yet.** `session` does not call one of
-  them; that is step 3 of the session plan, and until then `Reject (35=3)` is not sent.
+- **Whether a Reject consumes the inbound sequence number is invisible to the corpus.** The
+  *too high* branch does not exist yet, so a message running ahead is read as if it were in
+  order and a sequence number that never advanced looks exactly like one that did. Held by
+  `crates/session/tests/reject.rs`.
 - **What each of the 23 field types accepts is invented, not captured.** The corpus supplies two
   cases — `38=+200.00` and `126=20040415`. The other 21 types are held by hand-written rows in
   `crates/dict/tests/field_types.rs`, and that is the weakest evidence in this crate.
-- **45 of the 59 definitions still fail.** The session answers a Logon and a Logout and nothing
-  else: no `Reject (35=3)`, no Heartbeat, no TestRequest, no ResendRequest, no application echo,
-  and no second-connection identity check.
+- **32 of the 59 definitions still fail.** No Heartbeat, no TestRequest, no ResendRequest, no
+  SequenceReset, no application echo, and no second-connection identity check.
 - **`Input::Tick` is sent but never advances.** The runner seeds one fixed instant before every
   message. Nothing moves time forward yet, so `4a_NoDataSentDuringHeartBtInt.def` cannot pass —
   the advance rule is step 4 of the session plan.
@@ -216,3 +226,7 @@ Last updated: **2026-08-28**.
 | 8 | **DATA fields inside a repeating group are untested**, on either the read or the write path. `group_roundtrip.rs` skips every DATA member, because writing one needs its length field placed immediately in front — which is open item 9, seen from inside a group | Any counterparty that puts `RawData` in a `Parties` entry |
 | 9 | **The encoder has no DATA invariant.** Writing a dynamic DATA field must regenerate its length field, place it immediately before, and count bytes including embedded `0x01`. Only the read path is specified | Any counterparty that sends `RawData`/`XmlData` |
 | 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **Cannot be checked here — needs the Linux box of open item 6** | The TLS plan; ADR-0005 acceptance |
+| 11 | **Serialise misses its gate: 93.8 ns against 60 ns** (DESIGN §6). Cause is known — `Template::encode` finds each slot by a linear scan of the caller's list, so cost is slots × parts. Fix candidates: index slots by tag at template build, or require the caller to hand slots in parts order. The only red gate that does not need the Linux box | DESIGN §6 serialise row; the `engine` step, where the number is re-measured |
+| 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement | Nothing until open item 6 is answered |
+| 13 | **Release profile is default.** No `lto = "fat"`, no `codegen-units = 1`, no PGO, no `#[cold]` on error paths. Cheap, but each is a number to be measured before and after, not a setting to be assumed | The `engine` step; every §6 number published from Linux |
+| 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what nanofix claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |

@@ -396,7 +396,15 @@ Stated so that scope creep has to argue with a document. The full list with phas
   tags on the wire and SBE has none, so the question is whether there is one view type or
   several (PRD §2).
 - Kernel bypass — DPDK, OpenOnload, `ef_vi`. Not before an ordinary TCP path has been measured
-  and found to be the limit. §8 puts that limit at 10–20 µs.
+  and found to be the limit. §8 puts that limit at 10–20 µs. The path is decided even though
+  the work is not: Onload first, because D8's spin loop and the socket API survive unchanged;
+  `ef_vi` second, as an `impl Transport` behind a D5-style flag; DPDK never, because it has
+  no TCP stack. It is plaintext only, so it and D11 exclude each other.
+  [STATUS.md](../STATUS.md) open item 14.
+- SIMD delimiter scan and checksum. Not until `benches/parse.rs` on Linux shows the parse on
+  the critical path — `matthart1983/nanofix` has SIMD and parses 4–6× slower, because layout
+  beat it ([reference/measured-costs.md](reference/measured-costs.md)).
+  [STATUS.md](../STATUS.md) open item 12.
 - Clustering, HA, replication.
 - Metrics dashboards and web UIs.
 - Matching engine, order book, risk. This is a protocol engine.
@@ -417,8 +425,9 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is | `benches/dispatch.rs` |
 | Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
 | Allocations on the hot path — session | **0**, on the accept path **and** the refusal path | `crates/session/benches/alloc.rs`. The refusal path is counted separately because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for |
-| The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`. `[measured]` two so far: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; and stamping `52=` from a constant leaves it unchanged too, because `52` is one of the five tags `fields.fmt` matches by shape |
-| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-28]` **14 / 59** — step 2 of six in the session plan |
+| Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
+| The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs` and `tests/reject.rs`. `[measured]` three so far: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged too, because `52` is one of the five tags `fields.fmt` matches by shape; and a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet |
+| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-28]` **27 / 59** — step 3 of six in the session plan |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |

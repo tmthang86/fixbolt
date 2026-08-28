@@ -34,7 +34,11 @@ below describe what a first release would contain.
   - Answers a Logon by echoing `98=` and `108=`, answers a Logout, and tracks sequence numbers
     in both directions. A message with `43=Y` and a sequence number already seen is dropped in
     silence; one without it ends the session with a Logout saying so.
-  - Scores **14 / 59** on the acceptance definitions: step 2 of six.
+  - `Reject (35=3)` with all twelve `SessionRejectReason` codes, driven by `nanofix-dict`'s
+    validation tables. Routing tags are reversed on the way back — `115` in becomes `128` out and
+    the other way round. A CompID or SendingTime fault answers with a Reject **and** a Logout;
+    the other ten leave the session running.
+  - Scores **27 / 59** on the acceptance definitions: step 3 of six.
 
 - **`nanofix-dict`** — four validation tables, generated from `FIX44.xml`, answering the
   dictionary half of `Reject (35=3)`.
@@ -50,6 +54,9 @@ below describe what a first release would contain.
   - `Fix44::field_type(tag)` and `FieldType::accepts(value)` — the 23 FIX 4.4 types and what each
     takes on the wire. `FieldType` is the one place the XML type names map to behaviour;
     `build.rs` includes the same file by path rather than restating it. Answers `373=6`.
+  - `Fix44::required_header()` — the 7 header fields every message must carry. `required()`
+    answers for a message body and says so in its own doc; this is the other half, and
+    `14b_RequiredFieldMissing.def` needs both.
   - `Fix44::enum_allows(tag, value)` — 245 enumerated fields, 1 708 values, 98 distinct lists
     after deduplication. `None` means *not enumerated*, never *fine*. Answers `373=5`.
   - Roughly **33 KB** of static data; the build script's run time is unchanged at under a second.

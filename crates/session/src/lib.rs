@@ -21,8 +21,11 @@ pub mod text;
 
 use core::marker::PhantomData;
 
-use nanofix_codec::{FieldIndex, Parsed, TimestampCache, Validation, as_u32, parse_into};
-use nanofix_dict::Fix44;
+use nanofix_codec::{
+    Dictionary, FieldIndex, MessageView, ParseError, Parsed, TimestampCache, Validation, as_u32,
+    parse_into, tag_text_at,
+};
+use nanofix_dict::{FieldType, Fix44};
 
 use crate::out::Outbound;
 use crate::text::SessionText;
@@ -33,7 +36,17 @@ use crate::text::SessionText;
 pub(crate) mod tag {
     pub const BEGIN_STRING: u32 = 8;
     pub const MSG_SEQ_NUM: u32 = 34;
+    pub const REF_SEQ_NUM: u32 = 45;
     pub const POSS_DUP_FLAG: u32 = 43;
+    pub const ON_BEHALF_OF_COMP_ID: u32 = 115;
+    pub const ON_BEHALF_OF_SUB_ID: u32 = 116;
+    pub const ON_BEHALF_OF_LOCATION_ID: u32 = 144;
+    pub const DELIVER_TO_COMP_ID: u32 = 128;
+    pub const DELIVER_TO_SUB_ID: u32 = 129;
+    pub const DELIVER_TO_LOCATION_ID: u32 = 145;
+    pub const REF_TAG_ID: u32 = 371;
+    pub const REF_MSG_TYPE: u32 = 372;
+    pub const SESSION_REJECT_REASON: u32 = 373;
     pub const MSG_TYPE: u32 = 35;
     pub const SENDER_COMP_ID: u32 = 49;
     pub const SENDING_TIME: u32 = 52;
@@ -368,6 +381,67 @@ impl<R: Role, const N: usize> Session<R, N> {
         Link::Dropped
     }
 
+    /// Write one `Reject (35=3)` and hand it to `emit`.
+    fn send_reject<F: FnMut(&[u8])>(&mut self, r: &Reject, emit: &mut F) -> Link {
+        let mut text = [0u8; SessionText::MAX_LEN];
+        let mut code = [0u8; 10];
+        let mut seq = [0u8; 10];
+        let mut extra: [(u32, &[u8]); 12] = [(0, &[]); 12];
+        let mut n = 0usize;
+
+        for (t, held) in r.route.iter().flatten() {
+            extra[n] = (*t, held);
+            n += 1;
+        }
+        if let Some(v) = r.ref_seq {
+            let d = digits(v, &mut seq);
+            extra[n] = (tag::REF_SEQ_NUM, d);
+            n += 1;
+        }
+        let Some(len) = r.text.render(&mut text) else {
+            // A text that will not render is a bug in the table, not a reason
+            // to answer with a malformed Reject.
+            self.state = State::Disconnected;
+            return Link::Dropped;
+        };
+        extra[n] = (tag::TEXT, &text[..len]);
+        n += 1;
+        if let Some(ref t) = r.ref_tag {
+            extra[n] = (tag::REF_TAG_ID, t);
+            n += 1;
+        }
+        if let Some(ref mt) = r.ref_msg_type {
+            extra[n] = (tag::REF_MSG_TYPE, mt);
+            n += 1;
+        }
+        if let Some(reason) = r.text.session_reject_reason() {
+            let d = digits(reason, &mut code);
+            extra[n] = (tag::SESSION_REJECT_REASON, d);
+            n += 1;
+        }
+
+        if self.send(Which::Reject, &extra[..n], emit).is_err() {
+            self.state = State::Disconnected;
+            return Link::Dropped;
+        }
+
+        // Two of the twelve reasons end the session as well as answering it.
+        // `2k_CompIDDoesNotMatchProfile.def` and
+        // `2o_SendingTimeValueOutOfRange.def` both expect a Reject **and then a
+        // Logout**, and then wait for the counterparty's. The other ten leave
+        // the session running — `14a` rejects four messages in a row on one
+        // connection.
+        if matches!(
+            r.text,
+            SessionText::CompIdProblem | SessionText::SendingTimeAccuracyProblem
+        ) {
+            let _ = self.send(Which::Logout, &[], emit);
+            self.state = State::AwaitingLogout;
+            return Link::Dropped;
+        }
+        Link::Up
+    }
+
     fn send<F: FnMut(&[u8])>(
         &mut self,
         which: Which,
@@ -384,7 +458,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         let seq = digits(self.next_out, &mut seq);
 
         let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
-        let mut slots: [(u32, &[u8]); 8] = [(0, &[]); 8];
+        let mut slots: [(u32, &[u8]); 16] = [(0, &[]); 16];
         slots[0] = (tag::MSG_SEQ_NUM, seq);
         slots[1] = (tag::SENDING_TIME, &stamp);
         let mut n = 2;
@@ -395,10 +469,16 @@ impl<R: Role, const N: usize> Session<R, N> {
 
         // Destructured so the chosen template and the output buffer are two
         // disjoint borrows of one struct rather than two borrows of the whole.
-        let Outbound { logon, logout, buf } = o;
+        let Outbound {
+            logon,
+            logout,
+            reject,
+            buf,
+        } = o;
         let template = match which {
             Which::Logon => &*logon,
             Which::Logout => &*logout,
+            Which::Reject => &*reject,
         };
         let range = template
             .encode(buf, &slots[..n])
@@ -417,6 +497,27 @@ impl<R: Role, const N: usize> Session<R, N> {
             // A partial read is not a refusal: the next call brings the rest.
             Ok(Parsed::Incomplete) => return Ok(Link::Up),
             Ok(Parsed::Complete { .. }) => {}
+            // `14a_BadField.def` sends `-1=HI`, which is not a tag and never
+            // will be — so there is no number to put in `371=`, only the text
+            // the counterparty wrote. The codec specifies that the index still
+            // holds every field read *before* the bad one, which is how `34=`
+            // and `35=` are still available to answer with.
+            Err(ParseError::BadTag { at }) if self.state == State::LoggedOn => {
+                let view = self.idx.view(bytes);
+                let r = Reject {
+                    text: SessionText::InvalidTagNumber,
+                    ref_tag: copy::<12>(tag_text_at(bytes, at as usize)),
+                    ref_msg_type: copy::<8>(view.get(tag::MSG_TYPE)),
+                    ref_seq: view.get(tag::MSG_SEQ_NUM).and_then(|v| as_u32(v).ok()),
+                    route: [None, None, None, None, None, None],
+                };
+                if let Some(seq) = r.ref_seq
+                    && seq >= self.next_in
+                {
+                    self.next_in = seq + 1;
+                }
+                return Ok(self.send_reject(&r, emit));
+            }
             Err(_) => return Err(Refusal::Malformed),
         }
 
@@ -440,26 +541,77 @@ impl<R: Role, const N: usize> Session<R, N> {
             return Err(Refusal::NotALogon);
         }
 
-        if !view
+        let sender_ok = view
             .get(tag::SENDER_COMP_ID)
-            .is_some_and(|v| cfg.target_comp_id.matches(v))
-        {
-            return Err(Refusal::WrongSenderCompId);
-        }
-        if !view
+            .is_some_and(|v| cfg.target_comp_id.matches(v));
+        let target_ok = view
             .get(tag::TARGET_COMP_ID)
-            .is_some_and(|v| cfg.sender_comp_id.matches(v))
-        {
-            return Err(Refusal::WrongTargetCompId);
-        }
-
-        let sending_time = view
+            .is_some_and(|v| cfg.sender_comp_id.matches(v));
+        let time_ok = view
             .get(tag::SENDING_TIME)
             .and_then(clock::parse_utc)
-            .ok_or(Refusal::BadSendingTime)?;
-        if sending_time.abs_diff(self.now_ms) > cfg.max_skew_ms {
-            return Err(Refusal::BadSendingTime);
+            .is_some_and(|t| t.abs_diff(self.now_ms) <= cfg.max_skew_ms);
+
+        // Before a Logon there is no session to answer with, so these are all
+        // one thing: hang up in silence (`1c`, `1d`). Afterwards each has its
+        // own `373` and the connection stays up (`2k`, `2o`). Same faults,
+        // different answer, and the state is what decides.
+        if self.state == State::AwaitingLogon {
+            if !sender_ok {
+                return Err(Refusal::WrongSenderCompId);
+            }
+            if !target_ok {
+                return Err(Refusal::WrongTargetCompId);
+            }
+            if !time_ok {
+                return Err(Refusal::BadSendingTime);
+            }
         }
+
+        // ---- the dictionary's questions, in the order the corpus answers them
+        //
+        // Order is not cosmetic. Every one of these ends in `eDISCONNECT`-free
+        // Reject, so the corpus sees only *which* `373` came back — and several
+        // messages are faulty in two ways at once:
+        //
+        // * `14d` sends `56=` — empty **and** a CompID mismatch. `373=4` wins,
+        //   so the field scan runs before the CompID check.
+        // * `14b` sends no `56=` at all — missing **and** a CompID mismatch.
+        //   `373=1` wins, so required-field runs before CompID too.
+        // * `2q` sends `35=*` — an invalid type, and every tag in the message is
+        //   then "not defined for this message type". `373=11` wins, so MsgType
+        //   is settled before any per-field question is asked.
+        let msg_type_bytes = copy::<8>(view.get(tag::MSG_TYPE));
+        let ref_seq = view.get(tag::MSG_SEQ_NUM).and_then(|v| as_u32(v).ok());
+        let mut route: [Option<(u32, Held<32>)>; 6] = [None, None, None, None, None, None];
+        for (i, (from, to)) in ROUTING.into_iter().enumerate() {
+            // An empty routing tag is not echoed:
+            // `ReverseRouteWithEmptyRoutingTags.def` sends `116=` with a good
+            // `115=JCD` and the Reject carries `128=JCD` and nothing else.
+            if let Some(v) = view.get(from).filter(|v| !v.is_empty())
+                && let Some(held) = copy::<32>(Some(v))
+            {
+                route[i] = Some((to, held));
+            }
+        }
+
+        let mt = view.get(tag::MSG_TYPE).unwrap_or_default();
+        let fault = if self.state != State::LoggedOn {
+            None
+        } else if !Fix44::is_msg_type(mt) {
+            Some((SessionText::InvalidMsgType, None))
+        } else {
+            scan_fields(&view, mt)
+                .or_else(|| missing_required(&view, mt))
+                .or_else(|| bad_group_count(&view, mt))
+                // A CompID that is merely wrong, once there is a session to say
+                // so with. `2k_CompIDDoesNotMatchProfile.def` sends all three
+                // combinations and expects `373=9` for each.
+                .or_else(|| {
+                    (!sender_ok || !target_ok).then_some((SessionText::CompIdProblem, None))
+                })
+                .or_else(|| (!time_ok).then_some((SessionText::SendingTimeAccuracyProblem, None)))
+        };
 
         // Everything below is decided from values already read out of `view`,
         // so the borrow of `self.idx` ends here and `send` can take `&mut self`.
@@ -499,6 +651,20 @@ impl<R: Role, const N: usize> Session<R, N> {
         }
         self.next_in = seq + 1;
 
+        // The line above has already consumed the sequence number, and a Reject
+        // does not give it back: `14a_BadField.def` rejects four messages in a
+        // row, 34=2..5, and the fifth is accepted as 34=6.
+        if let Some((text, ref_tag)) = fault {
+            let r = Reject {
+                text,
+                ref_tag,
+                ref_msg_type: msg_type_bytes,
+                ref_seq,
+                route,
+            };
+            return Ok(self.send_reject(&r, emit));
+        }
+
         if is_logon {
             let encrypt = encrypt.as_deref().ok_or(Refusal::LogonIncomplete)?;
             let heart_bt = heart_bt.as_deref().ok_or(Refusal::LogonIncomplete)?;
@@ -524,10 +690,163 @@ impl<R: Role, const N: usize> Session<R, N> {
     }
 }
 
+/// A `Reject (35=3)` decided but not yet written.
+///
+/// Everything is copied out of the message before the borrow of the index ends,
+/// because `send` needs `&mut self` and the view does not survive that.
+struct Reject {
+    text: SessionText,
+    /// `371=`, as **text** rather than a number: `14a_BadField.def` sends
+    /// `-1=HI` and expects `371=-1`, which is not a `u32`.
+    ref_tag: Option<Held<12>>,
+    /// `372=`. Absent when the message had no `MsgType` at all.
+    ref_msg_type: Option<Held<8>>,
+    /// `45=`. Absent when `34=` could not be read.
+    ref_seq: Option<u32>,
+    /// The routing tags, already reversed. `115` in becomes `128` out.
+    route: [Option<(u32, Held<32>)>; 6],
+}
+
+/// The three routing pairs, **read in both directions**.
+///
+/// `ReverseRoute.def` sends each pair one way and then the other, and expects
+/// the swap each time: `115` in becomes `128` out, and `128` in becomes `115`
+/// out. Mapping only one direction passes three of its six cases, which is the
+/// kind of half-right that a count alone would not show.
+const ROUTING: [(u32, u32); 6] = [
+    (tag::ON_BEHALF_OF_COMP_ID, tag::DELIVER_TO_COMP_ID),
+    (tag::ON_BEHALF_OF_SUB_ID, tag::DELIVER_TO_SUB_ID),
+    (tag::ON_BEHALF_OF_LOCATION_ID, tag::DELIVER_TO_LOCATION_ID),
+    (tag::DELIVER_TO_COMP_ID, tag::ON_BEHALF_OF_COMP_ID),
+    (tag::DELIVER_TO_SUB_ID, tag::ON_BEHALF_OF_SUB_ID),
+    (tag::DELIVER_TO_LOCATION_ID, tag::ON_BEHALF_OF_LOCATION_ID),
+];
+
 /// Which pre-sorted template a send uses.
 enum Which {
     Logon,
     Logout,
+    Reject,
+}
+
+/// Walk the message in wire order and return the first fault, if any.
+///
+/// One pass, first fault wins — which is what the corpus expects: `14h` sends
+/// `40=1|40=2` among a dozen good fields and names `371=40`, not the first tag
+/// in the message.
+fn scan_fields<const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+) -> Option<(SessionText, Option<Held<12>>)> {
+    let mut in_body = false;
+    for i in 0..view.len() {
+        let Some((tag, value)) = view.field_at(i) else {
+            continue;
+        };
+
+        // `373=14`: the header is over once a body tag has been seen.
+        // `14g_HeaderBodyTrailerFieldsOutOfOrder.def` puts `34=` after `11=`
+        // and names `371=34`. Within the header the order is free — `14b`
+        // sends `49, 34, 56, 52` and is faulted for something else entirely.
+        if Fix44::is_header(tag) {
+            if in_body {
+                return Some((SessionText::TagSpecifiedOutOfRequiredOrder, tag_text(tag)));
+            }
+        } else if tag != 10 {
+            in_body = true;
+        }
+
+        if !Fix44::is_defined_tag(tag) {
+            return Some((SessionText::InvalidTagNumber, tag_text(tag)));
+        }
+        // `373=4` before `373=6`: an empty value is its own fault, and
+        // `14d_TagSpecifiedWithoutValue.def` says so with `56=`.
+        if value.is_empty() && Fix44::field_type(tag) != Some(FieldType::Data) {
+            return Some((SessionText::TagSpecifiedWithoutValue, tag_text(tag)));
+        }
+        if !Fix44::allows(msg_type, tag) {
+            return Some((SessionText::TagNotDefinedForThisMessageType, tag_text(tag)));
+        }
+        // A repeat at the top level. Group members repeat by design, so a tag
+        // that belongs to a group present in this message is skipped — that is
+        // what `21_RepeatingGroupSpecifierWithValueOfZero.def` and `14i` sit on.
+        if view.find_from(0, tag).is_some_and(|(at, _)| at < i) && !in_a_group(view, msg_type, tag)
+        {
+            return Some((SessionText::TagAppearsMoreThanOnce, tag_text(tag)));
+        }
+        if Fix44::enum_allows(tag, value) == Some(false) {
+            return Some((SessionText::ValueIsIncorrect, tag_text(tag)));
+        }
+        if Fix44::field_type(tag).is_some_and(|t| !t.accepts(value)) {
+            return Some((SessionText::IncorrectDataFormat, tag_text(tag)));
+        }
+    }
+    None
+}
+
+/// `373=16`: a group counter that disagrees with the entries behind it.
+///
+/// `14i_RepeatingGroupCountNotEqual.def` declares `386=3` and sends two
+/// entries. This is the **only** repeating group the 59 definitions populate,
+/// and it is in a negative test — see `PRD.md` §4.
+fn bad_group_count<const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+) -> Option<(SessionText, Option<Held<12>>)> {
+    for i in 0..view.len() {
+        let (counter, _) = view.field_at(i)?;
+        if Fix44::group_delimiter(msg_type, counter).is_none() {
+            continue;
+        }
+        let group = view.group::<Fix44>(msg_type, counter)?;
+        if group.declared() != Some(group.counted()) {
+            return Some((SessionText::IncorrectNumInGroupCount, tag_text(counter)));
+        }
+    }
+    None
+}
+
+/// Whether `tag` is a member of some repeating group this message carries.
+fn in_a_group<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8], tag: u32) -> bool {
+    for i in 0..view.len() {
+        let Some((counter, _)) = view.field_at(i) else {
+            continue;
+        };
+        if Fix44::group_delimiter(msg_type, counter).is_some()
+            && Fix44::group_members(msg_type, counter).contains(&tag)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// `373=1`: a required field the message does not carry.
+///
+/// The header's requirements and the body's are two tables, because they answer
+/// two questions — `14b_RequiredFieldMissing.def` needs both, once for `56=`
+/// and once for `11=`.
+fn missing_required<const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+) -> Option<(SessionText, Option<Held<12>>)> {
+    for &tag in Fix44::required_header() {
+        if view.get(tag).is_none() {
+            return Some((SessionText::RequiredTagMissing, tag_text(tag)));
+        }
+    }
+    for &tag in Fix44::required(msg_type) {
+        if view.get(tag).is_none() {
+            return Some((SessionText::RequiredTagMissing, tag_text(tag)));
+        }
+    }
+    None
+}
+
+/// A tag number as the digits `371=` carries.
+fn tag_text(tag: u32) -> Option<Held<12>> {
+    let mut buf = [0u8; 10];
+    copy::<12>(Some(digits(tag, &mut buf)))
 }
 
 /// A field value copied out of the view, so the borrow of the index can end

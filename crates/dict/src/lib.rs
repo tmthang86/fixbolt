@@ -69,6 +69,17 @@ impl Fix44 {
         is_defined_tag(tag)
     }
 
+    /// Header fields every message must carry.
+    ///
+    /// [`Self::required`] answers for a message body and says so in its own
+    /// doc; this is the other half. `14b_RequiredFieldMissing.def` sends a
+    /// Heartbeat with no `56=` and expects `373=1` with `371=56`.
+    #[inline]
+    #[must_use]
+    pub const fn required_header() -> &'static [u32] {
+        required_header()
+    }
+
     /// Whether an enumerated field will take this value.
     ///
     /// The dictionary's answer to `SessionRejectReason 5`, *Value is incorrect

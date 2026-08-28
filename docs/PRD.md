@@ -48,7 +48,9 @@ Phase 2 — the encoding axis, and the version axis
   └── FIXML                 ← post-trade; outside the hot-path guarantee
 
 Phase 3 — not scoped, listed so scope creep has to argue with a document
-  kernel bypass (DPDK / OpenOnload / ef_vi) · clustering · HA · replication
+  kernel bypass — Onload first, ef_vi second, DPDK never (STATUS open item 14)
+  SIMD SOH scan / checksum — only if the Linux parse number asks for it (open item 12)
+  clustering · HA · replication
 ```
 
 ### Phase 1 — exit criteria
@@ -57,9 +59,9 @@ Every one is a command that either passes or fails. A criterion nobody can run i
 
 | # | Criterion | Gate |
 |---|---|---|
-| 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-28]` **14 / 59**: step 2 of six. The plan predicted 18; re-deriving its file classification off the corpus gives 14, and the ceiling for this step is 14 |
+| 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-28]` **27 / 59**: step 3 of six, and the revised prediction was 27 |
 | 2 | Repeating groups | **Met 2026-08-28.** Read and written for all **93** groups `[measured]`; order agreed with QuickFIX's generated C++ on 730/730. **The 59 definitions do not test this** — see §4 |
-| 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion. `[measured 2026-08-28]` **the tables exist**: 912 tags, 93 message types, 12 524 (message, tag) pairs, 23 field types, 1 708 enum values. **The session does not yet apply them** — that is step 3 of the session plan |
+| 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion. `[measured 2026-08-28]` **the tables exist**: 912 tags, 93 message types, 12 524 (message, tag) pairs, 23 field types, 1 708 enum values. **Applied by the session as of step 3** — all twelve `373` codes are produced, and a test asserts that rather than inferring it from the file count |
 | 4 | Both sides | Acceptor 59/59; initiator interop-green against `libquickfix` in CI |
 | 5 | Allocations on the hot path | **0**, proven by `benches/alloc.rs` |
 | 6 | Wire-to-wire | p50 / p99 / p99.9 published from `tools/w2w` on Linux with the §9 settings stated |
@@ -101,7 +103,7 @@ find them whether or not this page does.
 | Acceptor | Yes `[documented]` | Yes | P1 |
 | Initiator | Yes `[documented]` | Yes | P1 (ADR-0004) |
 | **Repeating groups** | Full — **93 groups in FIX 4.4** `[measured]` | Read and written, nested to depth 4. Field order agreed with QuickFIX's generated C++ on **730/730** groups `[measured]` | P1, **closed** |
-| **Dictionary validation** — types, enums, structure | Full `[documented]` | 10 generated tables with `<component>` recursion. `[measured 2026-08-28]` types and enum values **are** now tabulated and agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 898/912 type names (14 named differences), 12 524/12 524 message-tag pairs and 1 708/1 708 enum values. **Not yet applied by the session** | P1, tables done, application pending |
+| **Dictionary validation** — types, enums, structure | Full `[documented]` | 10 generated tables with `<component>` recursion. `[measured 2026-08-28]` types and enum values **are** now tabulated and agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 898/912 type names (14 named differences), 12 524/12 524 message-tag pairs and 1 708/1 708 enum values. Applied by the session's `Reject (35=3)` | P1, **closed for the session layer**; application-message validation is phase 2 |
 | Decimal / price types | Yes `[documented]` | Bytes and integers only | P1, gap |
 | Session schedules — start/end time, weekday | Yes `[documented]` | Entered scope with ADR-0004; unspecified | P1, gap |
 | Message stores | File, memory, and SQL backends `[documented]` | mmap journal, 3 policies (`None`/`Async`/`Fsync`) | P1, by design narrower |
@@ -147,7 +149,10 @@ exit criterion 2 and 3 exist because of this paragraph.
 Not "later" — these are out unless a new ADR reverses them.
 
 - **Kernel bypass** (DPDK, OpenOnload, `ef_vi`). Not before an ordinary TCP path has been
-  measured and found to be the limit. `DESIGN.md` §8 puts that limit at 10–20 µs.
+  measured and found to be the limit. `DESIGN.md` §8 puts that limit at 10–20 µs. If an ADR
+  ever reverses this, the order is fixed in advance — Onload (engine unchanged), then `ef_vi`
+  as a second `Transport`, DPDK never because it ships no TCP stack — and it is plaintext
+  only: it excludes TLS (D11). `STATUS.md` open item 14.
 - **Clustering, HA, replication.**
 - **Metrics dashboards, web UIs.**
 - **Code generation for languages other than Rust.**
