@@ -369,7 +369,8 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
 - [x] `CLAUDE.md` §6: "`MessageView` is two words" → three words / 24 bytes.
 - [ ] `README.md` layout: thêm `crates/codec`, `crates/dict`.
 - [ ] `STATUS.md`: đóng plan, ghi số đo, ghi cái chưa làm, thêm 3 dòng Open items (mục dưới).
-- [ ] `CHANGELOG.md`: tạo mới, mục `Unreleased`.
+- [~] `CHANGELOG.md`: **đã tạo 2026-08-28** với mục `Unreleased`. Mục `Added` cho
+      `codec` + `dict` viết khi crate thật sự phát hành.
 
 ## Bẫy đã lường trước
 
