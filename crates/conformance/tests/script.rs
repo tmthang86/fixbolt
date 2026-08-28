@@ -169,3 +169,39 @@ fn placeholders_are_gone_and_the_frame_is_complete() {
     expected.sort();
     assert_eq!(odd, expected, "\nunexpected set of malformed frames");
 }
+
+#[test]
+fn a_time_placeholder_is_seventeen_bytes_inbound_and_twenty_one_outbound() {
+    // Solved from the corpus's own 9= values, not chosen: over every line that
+    // carries its own body length and a <TIME>, an I line's placeholder is 17
+    // bytes (2d_GarbledMessage and 3c_GarbledMessage, two lines each) and an E
+    // line's is 21 (SessionReset lines 18 and 27).
+    //
+    // An E line is the engine's own output and FIX 4.4 SendingTime carries
+    // milliseconds; an I line is what the reflector sends and does not. Getting
+    // it wrong costs four bytes per timestamp, which is invisible until
+    // something compares a 9=.
+    let (mut inbound, mut outbound) = ((0, 0), (0, 0));
+    for s in steps() {
+        let Some(m) = s.message() else { continue };
+        for f in m.wire.split(|&b| b == 0x01) {
+            if !(f.starts_with(b"52=") || f.starts_with(b"60=")) {
+                continue;
+            }
+            let slot = match s.kind {
+                Kind::Send(_) => &mut inbound,
+                Kind::Expect(_) => &mut outbound,
+                _ => continue,
+            };
+            match f.len() - 3 {
+                17 => slot.0 += 1,
+                21 => slot.1 += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(inbound, (343, 0), "every inbound timestamp is 17 bytes");
+    // 247 of the outbound ones are the substituted 52=; the 45 at 17 bytes are
+    // literal 60= values the corpus authors typed by hand.
+    assert_eq!(outbound, (45, 247));
+}

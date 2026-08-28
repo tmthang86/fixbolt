@@ -41,8 +41,25 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// A fixed instant, so a checksum computed here is the same on every run and on
-/// every machine. The expected-output lines use this exact text.
-pub const FIXED_TIME: &str = "00000000-00:00:00.000";
+/// every machine.
+///
+/// **Two widths, and the corpus's own `9=` values say which goes where.**
+/// `[measured 2026-08-28]` solving `9=` for the length of `<TIME>` over every
+/// line that carries its own body length:
+///
+/// | Line | `<TIME>` width | Evidence |
+/// |---|---|---|
+/// | `I` | **17** — `YYYYMMDD-HH:MM:SS` | `2d_GarbledMessage` and `3c_GarbledMessage`, 2 lines each, all four consistent |
+/// | `E` | **21** — with `.mmm` | `SessionReset.def` lines 18 and 27 |
+///
+/// An `E` line is the engine's own output and FIX 4.4 `SendingTime` carries
+/// milliseconds; an `I` line is what the reflector sends, and it does not.
+///
+/// Getting this wrong costs 4 bytes per timestamp, which is invisible until
+/// something compares a `9=`.
+pub const FIXED_TIME_IN: &str = "00000000-00:00:00";
+/// See [`FIXED_TIME_IN`].
+pub const FIXED_TIME_OUT: &str = "00000000-00:00:00.000";
 
 const SOH: u8 = 0x01;
 
@@ -252,7 +269,9 @@ fn parse_line(file: &str, line_no: usize, raw: &str) -> Result<Option<Step>, Loa
         ('e', "DISCONNECT") => Kind::ExpectDisconnect,
         ('i' | 'e', _) => return Err(unknown()),
         _ => {
-            let msg = message(body).ok_or_else(unknown)?;
+            // An `E` line is engine output and carries milliseconds; an `I`
+            // line is what the reflector sends and does not.
+            let msg = message(body, letter == 'E').ok_or_else(unknown)?;
             if letter == 'I' {
                 Kind::Send(msg)
             } else {
@@ -269,12 +288,12 @@ fn parse_line(file: &str, line_no: usize, raw: &str) -> Result<Option<Step>, Loa
     }))
 }
 
-fn message(body: &str) -> Option<Message> {
+fn message(body: &str, millis: bool) -> Option<Message> {
     if !(body.starts_with("8=") || body.starts_with("9=") || body.starts_with("35=")) {
         return None;
     }
     // Step 3: fixed timestamps, before anything is measured over these bytes.
-    let template = substitute_times(body);
+    let template = substitute_times(body, millis);
     let had_body_length = has_field(&template, "9");
     let had_checksum = has_field(&template, "10");
     // Step 4: fixify! — supply what the reflector would have supplied.
@@ -293,7 +312,7 @@ fn message(body: &str) -> Option<Message> {
 /// placeholder where a 21-byte value belongs, so the body length is wrong and
 /// nothing says why. They exist to test `SendingTime` accuracy — `<TIME+121>` is
 /// two minutes into the future.
-fn substitute_times(body: &str) -> String {
+fn substitute_times(body: &str, millis: bool) -> String {
     let mut out = String::with_capacity(body.len() + 64);
     let mut rest = body;
     while let Some(i) = rest.find("<TIME") {
@@ -304,24 +323,29 @@ fn substitute_times(body: &str) -> String {
             return out;
         };
         let offset: i64 = after[..close].parse().unwrap_or(0);
-        out.push_str(&at_offset(offset));
+        out.push_str(&at_offset(offset, millis));
         rest = &after[close + 1..];
     }
     out.push_str(rest);
     out
 }
 
-fn at_offset(seconds: i64) -> String {
+fn at_offset(seconds: i64, millis: bool) -> String {
     if seconds == 0 {
-        return FIXED_TIME.to_string();
+        return if millis {
+            FIXED_TIME_OUT
+        } else {
+            FIXED_TIME_IN
+        }
+        .to_string();
     }
     let s = seconds.rem_euclid(86_400);
-    format!(
-        "00000000-{:02}:{:02}:{:02}.000",
-        s / 3600,
-        (s % 3600) / 60,
-        s % 60
-    )
+    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
+    if millis {
+        format!("00000000-{h:02}:{m:02}:{sec:02}.000")
+    } else {
+        format!("00000000-{h:02}:{m:02}:{sec:02}")
+    }
 }
 
 /// Is `tag=` present as a field, rather than as a substring of some value?

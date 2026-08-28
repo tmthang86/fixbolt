@@ -62,7 +62,7 @@ const BAD_BODY_LENGTH: &[(&str, usize, &str)] = &[
     (
         "14e_IncorrectEnumValue.def",
         26,
-        "E line: 9=121, body is 117 — stale by 4",
+        "E line: 52= written 17 bytes, 9=121 counts it as 21",
     ),
     (
         "1d_InvalidLogonLengthInvalid.def",
@@ -82,12 +82,12 @@ const BAD_BODY_LENGTH: &[(&str, usize, &str)] = &[
     (
         "8_OnlyApplicationMessages.def",
         29,
-        "E line: 9=93, body is 89 — stale by 4",
+        "E line: 52= written 17 bytes, 9=93 counts it as 21",
     ),
     (
         "RejectResentMessage.def",
         6,
-        "E line: 9=63, body is 59 — stale by 4",
+        "E line: 52= written 17 bytes, 9=63 counts it as 21",
     ),
 ];
 

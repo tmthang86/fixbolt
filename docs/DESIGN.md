@@ -92,7 +92,7 @@ Added one at a time, each behind an approved plan.
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
 | `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport` |
 | `library` | L4 | The application-facing API | `engine` |
-| `conformance` | dev | The `.def` acceptance runner, both roles | `codec`, `session` |
+| `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
 
 ## 4. The decisions that shape it
 
@@ -396,7 +396,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**. `[measured]` **93.8 ns — the target is NOT met** | `benches/serialize.rs`, asserting a 190 ns regression ceiling |
 | `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is | `benches/dispatch.rs` |
 | Allocations on the hot path | **0** | `benches/alloc.rs`, counting allocator |
-| Session conformance, acceptor | **59 / 59** | `conformance` runner, in-process, no socket |
+| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-conformance --test fix44`, in-process, no socket. **0 / 59 today** — the runner exists, the session does not |
+| The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |
 | Repeating groups — written | parse → encode **byte-identical** at all **357** top-level positions, exercising all **59** counters and nesting to depth 4 | `crates/codec/tests/group_roundtrip.rs` |

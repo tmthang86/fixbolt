@@ -11,6 +11,7 @@
 //! failure.
 
 pub mod compare;
+pub mod echo;
 pub mod runner;
 pub mod script;
 pub mod text;

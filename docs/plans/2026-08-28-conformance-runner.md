@@ -1,6 +1,6 @@
 # Bộ chạy 59 định nghĩa acceptance
 
-> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Xong
 > **Phạm vi:** Phase 1 — cái cổng cho session layer, dựng **trước** session layer
 
 ## Bối cảnh
@@ -218,12 +218,12 @@ chứng bộ chạy hoạt động. Bước 4 phải kèm một `AlwaysCorrectSe
 
 ## Tài liệu phải cập nhật
 
-- [ ] `DESIGN.md` §3: thêm crate `conformance` vào bảng; `README.md` layout; `Cargo.toml` members
-- [ ] `DESIGN.md` §6: dòng gate "session conformance" trỏ vào lệnh chạy thật
-- [ ] `reference/quickfix-acceptance-def-format.md`: chú thích cùng dòng trên `i`/`e`; echo
+- [x] `DESIGN.md` §3: thêm crate `conformance` vào bảng; `README.md` layout; `Cargo.toml` members
+- [x] `DESIGN.md` §6: dòng gate "session conformance" trỏ vào lệnh chạy thật
+- [x] `reference/quickfix-acceptance-def-format.md`: chú thích cùng dòng trên `i`/`e`; echo
       server; 17 chuỗi `58=` và hai chuỗi có số
-- [ ] `PRD.md` §2 tiêu chí 1: ghi lệnh chạy được
-- [ ] `STATUS.md`, `CHANGELOG.md`
+- [x] `PRD.md` §2 tiêu chí 1: ghi lệnh chạy được
+- [x] `STATUS.md`, `CHANGELOG.md`
 
 ## Bẫy đã lường trước
 
@@ -255,3 +255,73 @@ chứng bộ chạy hoạt động. Bước 4 phải kèm một `AlwaysCorrectSe
 ## Nhật ký giao hàng
 
 *(chưa bắt đầu)*
+
+## Nhật ký giao hàng
+
+### Đóng plan — 2026-08-28
+
+**Xanh:** `cargo test --all` 23 binary, 0 fail. `--no-default-features` xanh. `fmt` +
+`clippy -D warnings` sạch (đọc exit code, không đọc dòng chữ). Links sạch.
+`benches/alloc.rs`: parse 0, encode 0, lookup 0, group 0, **text 0**.
+
+| Bước | Kết quả |
+|---|---|
+| 1 | `script` 6/6. In `289 I, 250 E, 65 Connect, 1 Disconnect, 64 ExpectDisconnect` = 669 |
+| 2 | `compare` 10/10. Năm tag lỏng **đọc từ `fields.fmt`**, không hard-code |
+| 3 | `text` 5/5. 17 chuỗi lấy từ corpus lúc chạy, khớp từng byte |
+| 4 | `fix44` 7/7. `NullSession` → **0/59**. `Replay` → **59/59** |
+| 5 | `echo` 5/5. `9=101` byte-exact, và **22/22** cặp echo của cả corpus |
+
+**Bốn chỗ plan sai, sửa theo dữ liệu:**
+
+1. **"Chú thích `#` cùng dòng chỉ thị"** — không tồn tại. Là ảo giác của `cat *.def`:
+   35/59 file không có newline cuối. Đếm `eDISCONNECT` kiểu ấy ra 28 thay vì 64.
+2. **"250 dòng mang `9=`"** — 250 là số dòng `E`. Số đúng: 255 dòng mang `9=` (247 dòng `E`),
+   251 mang `10=` (244 dòng `E`).
+3. **`RejectText`** — sai tên. 5/17 chuỗi không nằm trên `Reject`, và **hai chuỗi có số nằm
+   trên `Logout`**. Đổi thành `SessionText`.
+4. **Trait theo connection** — phải theo **engine**. `1b_DuplicateIdentity` từ chối Logon thứ
+   hai *vì* connection 1 tồn tại; cấp mỗi connection một session riêng thì test đó vô phương.
+
+**Ba phát hiện mới, mỗi cái một test canh:**
+
+- **`<TIME>` có hai độ rộng.** Giải từ chính `9=` của corpus: dòng `I` là **17** byte, dòng
+  `E` là **21**. Cả hai bộ nạp trước đó dùng 21 cho tất cả — lệch 4 byte mỗi mốc thời gian,
+  vô hình cho tới khi có thứ so `9=`. Ba dòng `E` "lệch 4" hoá ra không cũ: chúng viết `52=`
+  17 byte trong khi `9=` tính theo 21, **đúng hiện tượng của `10=0`**.
+- **Server trong bộ 59 là echo server có sắp lại thứ tự.** 22 cặp `(I, E)` ứng dụng, tái tạo
+  đủ 22. Máy trạng thái session một mình không qua được bộ này.
+- **Trường header nào được ném lại thì corpus nói rất rõ**: `97` PossResend **có**, `122`
+  OrigSendingTime **không**. Đoán "tất cả" hỏng cái thứ hai, đoán "không cái nào" hỏng cái đầu.
+
+**Một bộ nạp, một chỗ.** `crates/codec/tests/common/mod.rs` từng giữ bản sao riêng và **đã
+bất đồng** với bản mới về độ rộng `<TIME>`. Nay nó chỉ còn là lớp chuyển đổi hình dạng trên
+`nanofix_conformance::script`. Toàn bộ test của `codec` vẫn xanh không sửa một con số nào.
+
+**Chứng minh bằng đảo ngược, mỗi lần khôi phục lại xanh:**
+
+| Phá | Kết quả |
+|---|---|
+| Bộ nạp âm thầm bỏ chỉ thị lạ | 65 connect → 0, test đỏ |
+| Bộ nạp bỏ thay `<TIME>` | `10_MsgSeqNumEqual.def:4 kept a placeholder` |
+| Comparator luôn `Ok` | 8/9 test `compare` đỏ; `fix44` báo cả 59 file "pass" |
+| Comparator so theo tag thay vì theo vị trí | hai test thứ tự đỏ — và **đây mới là cái đáng giá**: so theo tag là điều một comparator FIX tử tế sẽ làm, và bộ này không làm thế |
+| Coi tag `9` là lỏng | test body-length đỏ |
+| Đổi một byte của một chuỗi `58=` | `no table entry renders …` |
+| Dựng chuỗi có số bằng `format!` | `allocations: text 10000`, assert nổ |
+| Runner bỏ qua mọi dòng `E` | `Replay` tụt 59 → 53 |
+| Bỏ kiểm "đầu ra thừa" | **vẫn xanh** — cho tới khi viết test cho nó |
+| Echo giữ thứ tự đầu vào | cặp bị xáo trộn đỏ |
+
+**Cái đáng ghi nhất:** kiểm tra "đầu ra thừa" đã được viết, chạy đúng, và **xoá đi thì không
+gì đổi màu** — cho tới khi có một fake vừa trả lời đúng vừa nói thêm một câu. *Một phép kiểm
+không có gì kiểm nó là một phép kiểm không tồn tại.*
+
+**Chưa làm, nói rõ:**
+
+- **`0/59` là điểm thật.** Chưa có session layer. Runner chỉ mới được chứng minh là **biết
+  phân biệt** đúng/sai.
+- **`Input::Tick` khai báo rồi nhưng chưa ai gửi.** `4a_NoDataSentDuringHeartBtInt.def` sẽ cần
+  nó.
+- **Bộ 51 định nghĩa initiator** vẫn phải tự viết — ADR-0004, plan khác.
+- `SessionText` sẽ dời sang `session` khi crate đó tồn tại; viết sẵn để dời được.
