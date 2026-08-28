@@ -137,11 +137,26 @@ nghĩa hình dạng, không phải ngược lại.
 
 ### Chuỗi `58=` — quyết định lớn nhất
 
+**Sửa 2026-08-28 khi làm bước 3: tên `RejectText` sai.** Đo lại: 17 chuỗi xuất hiện 44 lần,
+nhưng chỉ **12** đi kèm `373=` và nằm trên `Reject (35=3)`. Năm chuỗi còn lại không phải
+reject:
+
+| Chuỗi | Nằm trên |
+|---|---|
+| `Incorrect BeginString` | `Logout (35=5)` |
+| `MsgSeqNum too low, expecting 3 but received 1` | `Logout (35=5)` |
+| `MsgSeqNum too low, expecting 5 but received 2` | `Logout (35=5)` |
+| `No Products found for this Class Symbol` | `SecurityDefinition (35=d)` |
+| `Unsupported Message Type` | `BusinessMessageReject (35=j)` |
+
+**Hai chuỗi có số là lý do Logout, không phải lý do reject.** Nên enum tên `SessionText`.
+Cặp text↔code là 1:1 hai chiều, nên `session_reject_reason()` suy ra được từ variant.
+
 Session layer **không dựng chuỗi**. Nó trả một enum không trường cộng với số:
 
 ```rust
-pub enum RejectText {
-    ValueOutOfRange, TagWithoutValue, InvalidTagNumber, /* … 15 cái */
+pub enum SessionText {
+    InvalidTagNumber, RequiredTagMissing, /* … 13 cái nữa */
     MsgSeqNumTooLow { expecting: u32, received: u32 },   // biến thể DUY NHẤT có trường
 }
 ```

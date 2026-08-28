@@ -12,3 +12,4 @@
 
 pub mod compare;
 pub mod script;
+pub mod text;
