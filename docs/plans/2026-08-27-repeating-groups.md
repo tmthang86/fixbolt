@@ -479,3 +479,27 @@ sách dài nhất FIX 4.4 có tốn 5.6 ns, không mua bảng sắp xếp thứ 
   mục *Not proven*.
 - **Trường `DATA` bên trong group chưa test**, cả đọc lẫn ghi — `STATUS.md` open item 8 mới.
 - 374 vị trí group lồng được phủ gián tiếp qua cha, không dựng bản tin riêng cho từng cái.
+
+### Đóng plan — 2026-08-28
+
+Từng tiêu chí trong *Cách kiểm chứng*, chạy lại lần cuối trên nhánh, output đã đọc:
+
+| Bước | Kết quả |
+|---|---|
+| 0 | `tables` 13/13. **Tiêu chí gốc bất khả thi** — `Parties`/`PreAllocGrp`/`TrdgSesGrp` đều `required='N'` trong `D`. Sửa test theo dữ liệu (anh đã chốt): `required(b"B")==[33,148]`, `required(b"R")` chứa 146 |
+| 1 | `group_tables` 6/6. `GROUP_COUNTERS = 59`, `GROUP_POSITIONS = 731` (plan ghi 1028, sai) |
+| 2 | `declared_and_counted_are_separate_numbers` xanh trên dòng `I` thật của `14i`: 3 vs 2, `parse_into` trả `Ok`. `an_entry_holds_its_own_fields_and_not_the_next_ones`: `386` dừng đúng ở `60=` |
+| 3 | `nesting_reaches_all_four_levels` xanh |
+| 4 | `group_roundtrip` 2/2 — `round-tripped 357 top-level positions, 59 counters` |
+| 5 | `interop_quickfix_order` 2/2 — `agreed on 730 groups`. **Làm bằng C++ sinh sẵn của QuickFIX, không dựng libquickfix** — lý do ở nhật ký bước 5 |
+| 5 | `parse NewOrderSingle 69.7 ns` (trần 150) — bản tin không group không đổi. `allocations: group 0` |
+| mọi bước | **Không chạy được.** Bộ 59 acceptance cần `conformance` runner, chưa tồn tại — nó là plan sau. Thay bằng: `defs` 4/4, `roundtrip` 3/3, `stream` 2/2, tất cả trên 539 dòng `.def` thật |
+
+Toàn bộ: `cargo test --all` 16 binary, 0 fail; `--no-default-features` xanh; `fmt` +
+`clippy -D warnings` sạch; 4 bench dưới trần; links sạch; `check-lint-config.sh` đỏ-rồi-xanh.
+
+**Ba lỗi của chính plan này, đã sửa theo dữ liệu chứ không sửa dữ liệu theo plan:** tiêu chí
+bước 0 bất khả thi, `1028` vị trí không tái lập được (thật: 731), và bước 2/3 không tách rời
+được. Cộng ba chỗ API mà plan không diễn đạt nổi ca thật (bước 2+3) và một chỗ hình dạng dữ
+liệu (bước 4). Plan trước đó có sáu. **Đây là điều đáng chú ý nhất về quy trình: plan viết
+trước khi nhìn dữ liệu thì sai, đều đặn.**
