@@ -203,3 +203,89 @@ group leaves `crates/codec/tests/group_roundtrip.rs` **green** — that test gen
 messages from the same table the encoder reads, so a wrong order is invisible to it — and
 turns the interop test **red**. A round-trip against your own table proves stability, not
 correctness.
+
+## There is no user-defined tag range, whatever `FieldNumbers.h` says
+
+`[measured 2026-08-28]` QuickFIX's own `src/C++/FieldNumbers.h` declares:
+
+```cpp
+const int NormalMin = 1;    const int NormalMax = 4999;
+const int UserMin   = 5000; const int UserMax   = 9999;
+const int InternalMin = 10000;
+```
+
+So 5000–9999 reads as *user-defined and therefore acceptable*. But
+`14a_BadField.def` sends `5000=HI` and expects:
+
+```
+58=Invalid tag number|371=5000|373=0
+```
+
+In the acceptance configuration, **"defined" means "in `FIX44.xml`", and nothing
+else.** A dictionary that carves out a user range fails that definition and no
+other definition would notice, because 5000 is the only tag in the range the
+corpus ever sends.
+
+**Guarded by** `crates/dict/tests/interop_quickfix_fields.rs`, whose negative
+half refuses all 5 168 field names QuickFIX knows whose tag FIX 4.4 does not
+define — 5000 among them.
+
+## QuickFIX's own generator disagrees with the XML about 14 field types
+
+`[measured 2026-08-28]` `src/C++/FixFields.h` is generated once for **every** FIX
+version, so it carries the type each field ended up with in the latest one:
+
+| Tag | Name | `FIX44.xml` | QuickFIX |
+|---|---|---|---|
+| 10 | CheckSum | STRING | CHECKSUM |
+| 18 | ExecInst | MULTIPLEVALUESTRING | MULTIPLECHARVALUE |
+| 63 | SettlType | CHAR | STRING |
+| 276 | QuoteCondition | MULTIPLEVALUESTRING | MULTIPLESTRINGVALUE |
+| 277 | TradeCondition | MULTIPLEVALUESTRING | MULTIPLESTRINGVALUE |
+| 286 | OpenCloseSettlFlag | MULTIPLEVALUESTRING | MULTIPLECHARVALUE |
+| 291 | FinancialStatus | MULTIPLEVALUESTRING | MULTIPLECHARVALUE |
+| 292 | CorporateAction | MULTIPLEVALUESTRING | MULTIPLECHARVALUE |
+| 529 | OrderRestrictions | MULTIPLEVALUESTRING | MULTIPLECHARVALUE |
+| 532 | MassCancelRejectReason | STRING | INT |
+| 546 | Scope | MULTIPLEVALUESTRING | MULTIPLECHARVALUE |
+| 587 | LegSettlType | CHAR | STRING |
+| 674 | LegAllocAcctIDSource | STRING | INT |
+| 877 | UnderlyingCPProgram | STRING | INT |
+
+The other **898 agree exactly**. ADR-0001 makes the XML the source of truth, so
+this crate follows the XML — but the difference is written down and counted
+rather than papered over with a loose comparison. **A fifteenth is a test
+failure**, which is the whole point of writing the fourteen out.
+
+**Guarded by** `interop_quickfix_fields.rs::every_field_type_agrees_with_quickfix_or_is_a_named_exemption`.
+
+## Reading `FixValues.h` with the wrong regex makes a good oracle look useless
+
+`[measured 2026-08-28]` The plan for the validation tables recorded that
+QuickFIX's enum table was a **weak** oracle: 228 of 245 fields covered, 95 of
+them differing in count. That measurement was wrong, and the cause was one line
+of throwaway scouting code.
+
+`FixValues.h` writes character enums and string enums differently:
+
+```cpp
+const char OrdType_MARKET = '1';                        // char
+const char SecurityType_CORPORATE_BOND[] = "CORP";      // char ARRAY
+```
+
+A pattern expecting `Name = literal` finds the first and misses the second. The
+array form is exactly the 17 fields that looked uncovered — `SecurityType(167)`
+among them, which is the field `14e_IncorrectEnumValue.def` actually tests. So
+the one field the corpus exercises was the one the bad parse hid.
+
+Read properly, the oracle covers **245 / 245 fields and 1 708 / 1 708 values,
+with zero exceptions**.
+
+The lesson is not about regexes. **A scouting script that under-reports makes an
+oracle look weak, and "the oracle is weak" is an argument for testing less.** It
+went into a plan and was approved on that basis. Anything a plan claims about
+how much evidence is available has to be re-derived by the test that will rely
+on it, not carried over from the scout.
+
+**Guarded by** `crates/dict/tests/enums.rs::the_array_form_is_read_and_not_skipped`,
+which asserts `SecurityType` parses to more than 50 values.

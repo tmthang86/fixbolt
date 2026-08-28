@@ -59,7 +59,7 @@ Every one is a command that either passes or fails. A criterion nobody can run i
 |---|---|---|
 | 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-28]` **14 / 59**: step 2 of six. The plan predicted 18; re-deriving its file classification off the corpus gives 14, and the ceiling for this step is 14 |
 | 2 | Repeating groups | **Met 2026-08-28.** Read and written for all **93** groups `[measured]`; order agreed with QuickFIX's generated C++ on 730/730. **The 59 definitions do not test this** — see §4 |
-| 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion |
+| 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion. `[measured 2026-08-28]` **the tables exist**: 912 tags, 93 message types, 12 524 (message, tag) pairs, 23 field types, 1 708 enum values. **The session does not yet apply them** — that is step 3 of the session plan |
 | 4 | Both sides | Acceptor 59/59; initiator interop-green against `libquickfix` in CI |
 | 5 | Allocations on the hot path | **0**, proven by `benches/alloc.rs` |
 | 6 | Wire-to-wire | p50 / p99 / p99.9 published from `tools/w2w` on Linux with the §9 settings stated |
@@ -101,7 +101,7 @@ find them whether or not this page does.
 | Acceptor | Yes `[documented]` | Yes | P1 |
 | Initiator | Yes `[documented]` | Yes | P1 (ADR-0004) |
 | **Repeating groups** | Full — **93 groups in FIX 4.4** `[measured]` | Read and written, nested to depth 4. Field order agreed with QuickFIX's generated C++ on **730/730** groups `[measured]` | P1, **closed** |
-| **Dictionary validation** — types, enums, structure | Full `[documented]` | 6 generated tables with `<component>` recursion; **types and enum values are still not validated** `[measured]` | **P1, gap** |
+| **Dictionary validation** — types, enums, structure | Full `[documented]` | 10 generated tables with `<component>` recursion. `[measured 2026-08-28]` types and enum values **are** now tabulated and agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 898/912 type names (14 named differences), 12 524/12 524 message-tag pairs and 1 708/1 708 enum values. **Not yet applied by the session** | P1, tables done, application pending |
 | Decimal / price types | Yes `[documented]` | Bytes and integers only | P1, gap |
 | Session schedules — start/end time, weekday | Yes `[documented]` | Entered scope with ADR-0004; unspecified | P1, gap |
 | Message stores | File, memory, and SQL backends `[documented]` | mmap journal, 3 policies (`None`/`Async`/`Fsync`) | P1, by design narrower |

@@ -36,6 +36,26 @@ below describe what a first release would contain.
     silence; one without it ends the session with a Logout saying so.
   - Scores **14 / 59** on the acceptance definitions: step 2 of six.
 
+- **`nanofix-dict`** — four validation tables, generated from `FIX44.xml`, answering the
+  dictionary half of `Reject (35=3)`.
+  - `Fix44::is_defined_tag(tag)` — a bitset over 0..=956. **No user-defined range**: QuickFIX's
+    own header calls 5000..=9999 user-defined and the acceptance corpus expects `5000=HI`
+    refused anyway. Answers `373=0`.
+  - `Fix44::is_msg_type(msg_type)` — the 93 FIX 4.4 message types. `required()` could not answer
+    this: it gives `&[]` for an unknown type and for a known one with no required fields alike.
+    Answers `373=11`.
+  - `Fix44::allows(msg_type, tag)` — one 120-byte bitset per message, header and trailer folded
+    in so a caller asks once rather than three times. 12 524 (message, tag) pairs. Answers
+    `373=2`.
+  - `Fix44::field_type(tag)` and `FieldType::accepts(value)` — the 23 FIX 4.4 types and what each
+    takes on the wire. `FieldType` is the one place the XML type names map to behaviour;
+    `build.rs` includes the same file by path rather than restating it. Answers `373=6`.
+  - `Fix44::enum_allows(tag, value)` — 245 enumerated fields, 1 708 values, 98 distinct lists
+    after deduplication. `None` means *not enumerated*, never *fine*. Answers `373=5`.
+  - Roughly **33 KB** of static data; the build script's run time is unchanged at under a second.
+  - **A field type the enum does not know stops the build.** Falling through to `STRING` would
+    make `373=6` blind to a whole type, and no acceptance definition would notice.
+
 - **`nanofix-conformance`** — the 59 QuickFIX FIX 4.4 acceptance definitions, run in process
   with no socket. Zero runtime dependencies. Not published: it is a measuring instrument.
   - `script` — the corpus as 669 typed steps. Refuses to skip a directive it cannot read.
@@ -92,6 +112,9 @@ below describe what a first release would contain.
 - **`nanofix-conformance::text` moved to `nanofix-session::text`.** The table describes what a
   session says, and it lived in `conformance` only because no session crate existed. `codec`'s
   allocation bench loses its `text` case, which reappears in `session`'s.
+- **`scripts/fetch-quickfix-assets.sh` fetches four more QuickFIX headers** — `FixFieldNumbers.h`,
+  `FixFields.h`, `FixCommonFields.h` and `FixValues.h` — read as oracles, never copied. `vendor/`
+  stays gitignored (ADR-0001).
 - **`runner::run_scenario` seeds the clock**, sending `Input::Tick` before the connect and
   before every message. A session has no clock, so the harness is its clock. The value is fixed;
   advancing it is the heartbeat rule and belongs to a later step.

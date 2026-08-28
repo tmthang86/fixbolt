@@ -3,6 +3,10 @@
 //! Nothing here is hand-written. See `build.rs`, and ADR-0001 for why the XML is
 //! data rather than something copied into this repository.
 
+mod field_type;
+
+pub use field_type::FieldType;
+
 include!(concat!(env!("OUT_DIR"), "/fix44.rs"));
 
 /// The FIX 4.4 dictionary, as `codec` sees it.
@@ -51,5 +55,62 @@ impl Fix44 {
     #[must_use]
     pub fn required(msg_type: &[u8]) -> &'static [u32] {
         required(msg_type)
+    }
+
+    /// Whether FIX 4.4 defines this tag at all.
+    ///
+    /// The dictionary's answer to `SessionRejectReason 0`, *Invalid tag
+    /// number*. Note that there is **no user-defined range**: QuickFIX's own
+    /// header calls 5000..=9999 user-defined, and the acceptance corpus expects
+    /// `5000=HI` refused anyway.
+    #[inline]
+    #[must_use]
+    pub const fn is_defined_tag(tag: u32) -> bool {
+        is_defined_tag(tag)
+    }
+
+    /// Whether an enumerated field will take this value.
+    ///
+    /// The dictionary's answer to `SessionRejectReason 5`, *Value is incorrect
+    /// (out of range) for this tag*. `None` means the field is not enumerated —
+    /// **not** that the value is fine. Confusing the two makes `373=5` fire on
+    /// nothing, and no acceptance definition would notice.
+    #[inline]
+    #[must_use]
+    pub fn enum_allows(tag: u32, value: &[u8]) -> Option<bool> {
+        enum_allows(tag, value)
+    }
+
+    /// Whether this message type may carry this tag.
+    ///
+    /// The dictionary's answer to `SessionRejectReason 2`, *Tag not defined for
+    /// this message type*. Header and trailer tags are allowed on every message
+    /// — otherwise `52=` would be refused on everything.
+    #[inline]
+    #[must_use]
+    pub fn allows(msg_type: &[u8], tag: u32) -> bool {
+        allows(msg_type, tag)
+    }
+
+    /// The declared type of a field, or `None` if FIX 4.4 does not define the
+    /// tag.
+    ///
+    /// The dictionary's answer to `SessionRejectReason 6`, *Incorrect data
+    /// format for value* — via [`FieldType::accepts`].
+    #[inline]
+    #[must_use]
+    pub const fn field_type(tag: u32) -> Option<FieldType> {
+        field_type(tag)
+    }
+
+    /// Whether this is one of the 93 FIX 4.4 message types.
+    ///
+    /// The dictionary's answer to `SessionRejectReason 11`, *Invalid MsgType*.
+    /// [`Self::required`] cannot answer it — it gives `&[]` both for a message
+    /// type that does not exist and for one that requires nothing.
+    #[inline]
+    #[must_use]
+    pub fn is_msg_type(msg_type: &[u8]) -> bool {
+        is_msg_type(msg_type)
     }
 }

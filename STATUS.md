@@ -9,10 +9,10 @@ Last updated: **2026-08-28**.
 
 | | |
 |---|---|
-| Branch | **`plan/session-layer`** |
+| Branch | **`plan/dict-validation`**, on top of `plan/session-layer` |
 | Milestone | **M2 — the session layer.** `[measured 2026-08-28]` **14 / 59**, step 2 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — **chờ duyệt**, no code written. It blocks step 3 of the session plan |
+| Plan in flight | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — approved 2026-08-28, **all 6 steps done**. Four tables generated and agreed with QuickFIX's own generated C++ |
 | Plan paused | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–2 of 6 done: 14 / 59.** Step 1 hit its prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus — six revisions recorded in the plan. **Step 3 is blocked**: 8 of its 12 `373` codes are dictionary questions, not session rules |
 | Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
@@ -155,6 +155,17 @@ Last updated: **2026-08-28**.
 - **`00000000-00:00:00` is not a date, and this loader was substituting it for `<TIME>`.**
   It is the corpus's placeholder for output the comparator never reads by value. Fixed to a
   real instant, which also fixed `<TIME-121>` running 86 279 seconds *forward*.
+- **The four dictionary validation tables exist and agree with an independent generator,
+  2026-08-28.** `[measured]` 912/912 tag numbers, 898/912 field types with 14 differences each
+  named by tag, 12 524/12 524 (message, tag) pairs checked as 84 816 exhaustive answers, and
+  1 708/1 708 enum values. Eight reversals were run and all eight go red.
+- **The plan called the enum oracle weak and the plan was wrong.** A scouting script matched
+  `const char Name_X = 'v';` and missed `const char Name_X[] = "vv";`, so it reported 228 of 245
+  fields covered. The array form is 17 fields — including `SecurityType(167)`, the one field
+  `14e_IncorrectEnumValue.def` actually tests. Read properly the oracle covers 245/245 and
+  1 708/1 708, with zero exceptions. Written up in
+  [reference/fix44-dictionary-traps.md](docs/reference/fix44-dictionary-traps.md).
+- **`dict` grew about 33 KB of static data** and its build script still runs in under a second.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -173,6 +184,11 @@ Last updated: **2026-08-28**.
   file is real evidence and is not the same as a venue accepting the bytes. Nothing here has
   been sent to a real FIX peer.
 - **DATA fields inside a repeating group are untested** on both paths — open item 8.
+- **The dictionary tables are not applied by anything yet.** `session` does not call one of
+  them; that is step 3 of the session plan, and until then `Reject (35=3)` is not sent.
+- **What each of the 23 field types accepts is invented, not captured.** The corpus supplies two
+  cases — `38=+200.00` and `126=20040415`. The other 21 types are held by hand-written rows in
+  `crates/dict/tests/field_types.rs`, and that is the weakest evidence in this crate.
 - **45 of the 59 definitions still fail.** The session answers a Logon and a Logout and nothing
   else: no `Reject (35=3)`, no Heartbeat, no TestRequest, no ResendRequest, no application echo,
   and no second-connection identity check.

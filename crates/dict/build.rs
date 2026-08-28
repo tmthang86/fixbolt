@@ -29,6 +29,10 @@ fn main() {
         Err(_) => PathBuf::from(DEFAULT),
     };
     println!("cargo:rerun-if-changed={}", path.display());
+    // The type table is emitted from `FieldType::from_xml`, so editing that
+    // file must regenerate. Without this line a new variant compiles into the
+    // crate and never reaches the generated table.
+    println!("cargo:rerun-if-changed=src/field_type.rs");
 
     if !path.exists() {
         die(&format!(
@@ -57,6 +61,16 @@ fn main() {
     }
 }
 
+// The same file `src/field_type.rs` compiles into the crate. Included by path
+// rather than copied, because "which XML type name is which variant" is one
+// rule and `CLAUDE.md` §4 gives it one place. `build.rs` cannot `use` the crate
+// it builds, so this is how the two stay in step.
+#[path = "src/field_type.rs"]
+#[allow(dead_code)]
+mod field_type;
+
+use field_type::FieldType;
+
 fn die(msg: &str) -> ! {
     eprintln!("\nnanofix-dict: {msg}\n");
     std::process::exit(1)
@@ -75,6 +89,7 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     };
     let mut number_of: BTreeMap<&str, u32> = BTreeMap::new();
     let mut type_of: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut enum_of: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for f in fields_el.children().filter(|n| n.has_tag_name("field")) {
         let (Some(name), Some(num)) = (f.attribute("name"), f.attribute("number")) else {
             die("<field> without name or number")
@@ -86,6 +101,20 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
             die(&format!("field name {name} appears twice"));
         }
         type_of.insert(name, f.attribute("type").unwrap_or(""));
+
+        let values: Vec<&str> = f
+            .children()
+            .filter(|n| n.has_tag_name("value"))
+            .map(|v| match v.attribute("enum") {
+                Some(e) => e,
+                None => die(&format!(
+                    "field {name} has a <value> with no enum attribute"
+                )),
+            })
+            .collect();
+        if !values.is_empty() {
+            enum_of.insert(name, values);
+        }
     }
 
     // ---- header tags -------------------------------------------------------
@@ -142,11 +171,16 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     };
     let mut required: Vec<(String, Vec<u32>)> = Vec::new();
     let mut msg_consts: Vec<(String, String)> = Vec::new();
+    let mut msg_types: BTreeSet<String> = BTreeSet::new();
+    let mut allowed: Vec<(String, BTreeSet<u32>)> = Vec::new();
     for m in messages_el.children().filter(|n| n.has_tag_name("message")) {
         let (Some(name), Some(mt)) = (m.attribute("name"), m.attribute("msgtype")) else {
             die("<message> without name or msgtype")
         };
         msg_consts.push((screaming(name), mt.to_string()));
+        if !msg_types.insert(mt.to_string()) {
+            die(&format!("two messages share msgtype {mt}"));
+        }
 
         let mut set = BTreeSet::new();
         collect_required(m, &components, &number_of, name, &mut set, &mut Vec::new());
@@ -155,6 +189,10 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
         if !tags.is_empty() {
             required.push((mt.to_string(), tags));
         }
+
+        let mut body = BTreeSet::new();
+        collect_allowed(m, &components, &number_of, name, &mut body, &mut Vec::new());
+        allowed.push((mt.to_string(), body));
     }
 
     // ---- repeating groups, per message -------------------------------------
@@ -256,6 +294,213 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(" | ")
+    );
+
+    // One bit per tag over 0..=max_tag. Shared by `ALLOWED` and `DEFINED_TAGS`
+    // so the two tables cannot end up different widths.
+    let max_tag = number_of.values().copied().max().unwrap_or(0);
+    let words = (max_tag as usize / 64) + 1;
+    // ---- enum_allows: the values each enumerated field will take -----------
+    // `None` for a field with no enumeration, never `Some(true)`: the two mean
+    // different things and confusing them makes `373=5` fire on nothing, which
+    // no acceptance definition would notice.
+    //
+    // Value lists are deduplicated — the Y/N pair alone appears 30 times.
+    let mut enum_lists: Vec<Vec<&str>> = Vec::new();
+    let mut enum_index: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut enum_values = 0usize;
+    for (&name, values) in &enum_of {
+        enum_values += values.len();
+        let at = enum_lists
+            .iter()
+            .position(|v| v == values)
+            .unwrap_or_else(|| {
+                enum_lists.push(values.clone());
+                enum_lists.len() - 1
+            });
+        enum_index.insert(number_of[name], at);
+    }
+    for (i, values) in enum_lists.iter().enumerate() {
+        let _ = writeln!(
+            o,
+            "static V{i}: [&[u8]; {}] = [{}];",
+            values.len(),
+            values
+                .iter()
+                .map(|v| format!("b\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let _ = writeln!(
+        o,
+        "\n/// The values an enumerated field will take. `None` means the field is\n\
+         /// not enumerated, or the tag is not FIX 4.4 at all.\n\
+         ///\n\
+         /// `[measured]` {} enumerated fields, {enum_values} values, {} distinct\n\
+         /// lists after deduplication.\n\
+         #[inline]\n\
+         #[must_use]\n\
+         pub fn enum_allows(tag: u32, value: &[u8]) -> Option<bool> {{\n\
+         \x20   let list: &[&[u8]] = match tag {{",
+        enum_of.len(),
+        enum_lists.len(),
+    );
+    for (tag, at) in &enum_index {
+        let _ = writeln!(o, "        {tag} => &V{at},");
+    }
+    o.push_str("        _ => return None,\n    };\n    Some(list.contains(&value))\n}\n\n");
+
+    // ---- allows: one bitset per message type -------------------------------
+    // A bitset, not a sorted list: 15 words against a binary search over up to
+    // 300 tags, and the session asks once per field of every message it
+    // validates. Header and trailer are folded in at generation time so the
+    // call site asks one question instead of three.
+    let mut trailer: BTreeSet<u32> = BTreeSet::new();
+    match child(root, "trailer") {
+        Some(el) => collect_header(el, &number_of, &mut trailer),
+        None => die("<trailer> section missing"),
+    }
+    let mut allow_bits: Vec<(String, Vec<u64>)> = Vec::new();
+    let mut body_pairs = 0usize;
+    for (mt, body) in &allowed {
+        body_pairs += body.len();
+        let mut bits = vec![0u64; words];
+        for t in body.iter().chain(header.iter()).chain(trailer.iter()) {
+            bits[*t as usize / 64] |= 1u64 << (t % 64);
+        }
+        allow_bits.push((mt.clone(), bits));
+    }
+    let _ = writeln!(
+        o,
+        "/// Tags each message type may carry, as a bitset over 0..={max_tag}.\n\
+         ///\n\
+         /// `[measured]` {body_pairs} (message, tag) pairs from the message bodies,\n\
+         /// plus the {} header and {} trailer tags folded into every one — so a\n\
+         /// caller asks once, not three times. {} messages x {words} words.\n\
+         static ALLOWED: [(&[u8], [u64; {words}]); {}] = [",
+        header.len(),
+        trailer.len(),
+        allow_bits.len(),
+        allow_bits.len(),
+    );
+    for (mt, bits) in &allow_bits {
+        let _ = writeln!(
+            o,
+            "    (b\"{mt}\", [{}]),",
+            bits.iter()
+                .map(|w| format!("0x{w:016x}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    o.push_str("];\n\n");
+    o.push_str(
+        "/// Whether this message type may carry this tag. Answers `373=2`.\n\
+         ///\n\
+         /// An unknown message type allows **nothing**. It is answered by\n\
+         /// `is_msg_type` and `373=11` before this is ever asked, but the safe\n\
+         /// answer to a question that should not have been asked is no.\n\
+         #[inline]\n\
+         #[must_use]\n\
+         pub fn allows(msg_type: &[u8], tag: u32) -> bool {\n\
+         \x20   let word = (tag / 64) as usize;\n\
+         \x20   ALLOWED\n\
+         \x20       .iter()\n\
+         \x20       .find(|(mt, _)| *mt == msg_type)\n\
+         \x20       .is_some_and(|(_, bits)| word < bits.len() && (bits[word] >> (tag % 64)) & 1 == 1)\n\
+         }\n\n",
+    );
+
+    // ---- field_type: the declared type of every tag ------------------------
+    // The type *names* come from the XML; what each type accepts is
+    // `src/field_type.rs`, included above rather than restated here.
+    let mut typed: BTreeMap<u32, &'static str> = BTreeMap::new();
+    for (&name, &ty) in &type_of {
+        match FieldType::from_xml(ty) {
+            Some(t) => {
+                typed.insert(number_of[name], t.as_rust());
+            }
+            // A 24th type appearing upstream must stop the build. Falling back
+            // to STRING would make `373=6` silently blind to a whole type, and
+            // no acceptance definition would notice.
+            None => die(&format!(
+                "field {name} has type {ty:?}, which src/field_type.rs does not know.\n\
+                 Add the variant there — both `from_xml` and `as_rust` — rather than\n\
+                 letting it fall through to STRING."
+            )),
+        }
+    }
+    let _ = writeln!(
+        o,
+        "/// The declared type of a field. `None` means FIX 4.4 has no such tag.\n\
+         ///\n\
+         /// {} fields across {} types.\n\
+         #[inline]\n\
+         #[must_use]\n\
+         pub const fn field_type(tag: u32) -> Option<crate::FieldType> {{\n\
+         \x20   use crate::FieldType::*;\n\
+         \x20   Some(match tag {{",
+        typed.len(),
+        typed.values().collect::<BTreeSet<_>>().len(),
+    );
+    for (tag, ty) in &typed {
+        let _ = writeln!(o, "        {tag} => {ty},");
+    }
+    o.push_str("        _ => return None,\n    })\n}\n\n");
+
+    // ---- is_defined_tag: a bitset over the whole tag range -----------------
+    // A bitset rather than a `matches!` over 912 arms: 15 words of 8 bytes
+    // against a jump table, and a shift-and-mask instead of a branch. The
+    // acceptance corpus asks this question once per field of every message it
+    // rejects, so it sits next to the parse loop.
+    let mut bits = vec![0u64; words];
+    for &t in number_of.values() {
+        bits[t as usize / 64] |= 1u64 << (t % 64);
+    }
+    let _ = writeln!(
+        o,
+        "/// Tags FIX 4.4 defines, as a bitset over 0..={max_tag}.\n\
+         ///\n\
+         /// {} fields, the highest being tag {max_tag}. **There is no user-defined\n\
+         /// range here.** QuickFIX\'s own `FieldNumbers.h` calls 5000..=9999\n\
+         /// user-defined, but `14a_BadField.def` expects `5000=HI` refused as an\n\
+         /// invalid tag, so \"defined\" means \"in FIX44.xml\" and nothing else.\n\
+         static DEFINED_TAGS: [u64; {words}] = [{}];\n\
+         \n\
+         /// Whether FIX 4.4 defines this tag at all. Answers `373=0`.\n\
+         #[inline]\n\
+         #[must_use]\n\
+         pub const fn is_defined_tag(tag: u32) -> bool {{\n\
+         \x20   let word = (tag / 64) as usize;\n\
+         \x20   word < DEFINED_TAGS.len() && (DEFINED_TAGS[word] >> (tag % 64)) & 1 == 1\n\
+         }}\n",
+        number_of.len(),
+        bits.iter()
+            .map(|w| format!("0x{w:016x}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+
+    // ---- is_msg_type -------------------------------------------------------
+    let _ = writeln!(
+        o,
+        "/// Whether this is a FIX 4.4 message type. Answers `373=11`.\n\
+         ///\n\
+         /// {} of them. `required()` cannot answer this: it gives `&[]` for an\n\
+         /// unknown type and for a known one with no required fields alike, which\n\
+         /// is the hole its own doc comment names.\n\
+         #[inline]\n\
+         #[must_use]\n\
+         pub fn is_msg_type(msg_type: &[u8]) -> bool {{\n\
+         \x20   matches!(msg_type, {})\n\
+         }}\n",
+        msg_types.len(),
+        msg_types
+            .iter()
+            .map(|mt| format!("b\"{mt}\""))
+            .collect::<Vec<_>>()
+            .join(" | "),
     );
 
     o.push_str(
@@ -405,6 +650,48 @@ fn collect_required<'a>(
             }
             path.push(name);
             collect_required(*def, components, number_of, msg, out, path);
+            path.pop();
+        }
+    }
+}
+
+/// Every tag a message may carry: fields, group counters, and everything a
+/// component splices in — all of it transitively.
+///
+/// Unlike [`collect_required`] this ignores `required`. "May carry" and "must
+/// carry" are different questions and the corpus asks both, with different
+/// `373` codes: 2 and 1.
+fn collect_allowed<'a>(
+    el: roxmltree::Node<'a, '_>,
+    components: &BTreeMap<&'a str, roxmltree::Node<'a, '_>>,
+    number_of: &BTreeMap<&str, u32>,
+    msg: &str,
+    out: &mut BTreeSet<u32>,
+    path: &mut Vec<&'a str>,
+) {
+    for c in el.children() {
+        let Some(name) = c.attribute("name") else {
+            continue;
+        };
+        if c.has_tag_name("field") || c.has_tag_name("group") {
+            match number_of.get(name) {
+                Some(t) => {
+                    out.insert(*t);
+                }
+                None => die(&format!("message {msg} names unknown field {name}")),
+            }
+            if c.has_tag_name("group") {
+                collect_allowed(c, components, number_of, msg, out, path);
+            }
+        } else if c.has_tag_name("component") {
+            let Some(def) = components.get(name) else {
+                die(&format!("message {msg} names unknown component {name}"))
+            };
+            if path.contains(&name) {
+                die(&format!("component cycle: {} -> {name}", path.join(" -> ")));
+            }
+            path.push(name);
+            collect_allowed(*def, components, number_of, msg, out, path);
             path.pop();
         }
     }
