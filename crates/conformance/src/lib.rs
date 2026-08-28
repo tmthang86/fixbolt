@@ -10,4 +10,5 @@
 //! which, and because a gate that panics on its own bug reports the wrong
 //! failure.
 
+pub mod compare;
 pub mod script;

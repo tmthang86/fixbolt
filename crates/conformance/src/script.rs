@@ -358,3 +358,23 @@ fn trailer_start(bytes: &[u8]) -> Option<usize> {
         .position(|w| w == [SOH, b'1', b'0', b'='])
         .map(|i| i + 1)
 }
+
+/// Replace a message's `10=` with the real checksum of its own bytes.
+///
+/// `[measured 2026-08-28]` 240 of the corpus's 244 expected checksums are not
+/// three digits — 238 are the literal `10=0` and 2 are `10=7`. Only 4 look like
+/// a checksum at all. `Comparator.rb` matches tag 10 by shape against the **received**
+/// value, so the placeholder never had to be real — which means a corpus `E`
+/// line cannot stand in for engine output without this. Used by the runner's
+/// own fake session, where feeding back an unmodified `E` line would fail rule 4
+/// and make the runner look broken.
+#[must_use]
+pub fn with_real_checksum(wire: &[u8]) -> Vec<u8> {
+    let Some(at) = trailer_start(wire) else {
+        return wire.to_vec();
+    };
+    let mut out = wire[..at].to_vec();
+    let sum: u8 = out.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+    out.extend_from_slice(format!("10={sum:03}\u{1}").as_bytes());
+    out
+}
