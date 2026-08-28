@@ -15,4 +15,15 @@ rust-version = "1.85"
 unsafe_code = "warn"
 
 [workspace.lints.clippy]
-all = "warn"
+# priority = -1 is required. Without it cargo refuses the config outright:
+# "lint group `all` has the same priority (0) as a lint".
+all = { level = "warn", priority = -1 }
+
+# CLAUDE.md §2 non-negotiable 7. These are `clippy::restriction` lints and are
+# NOT part of `clippy::all` — measured 2026-08-28: with `all` alone, a library
+# crate containing unwrap(), expect() and panic!() passed
+# `cargo clippy --all-targets -- -D warnings` with exit 0. The rule was prose.
+# scripts/check-lint-config.sh proves these by reversal, and CI runs it.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

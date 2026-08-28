@@ -40,6 +40,18 @@ Last updated: **2026-08-27**.
   `.DS_Store`.
 - Repository is **private** as of 2026-08-27 (it was public at creation). `cargo 1.95.0`.
 - **ADR-0001, -0002, -0003 accepted 2026-08-27** by the owner, after the latency-budget review.
+- **CI exists as of 2026-08-28**, and closes a gap that had been asserted eight times. "CI
+  proves it" appeared in `CLAUDE.md` §2, ADR-0004, ADR-0005, `DESIGN.md` D11 and `PRD.md`
+  while `.github/` did not exist. It now has three jobs. Two of them cannot do anything yet —
+  there are no crates — and they emit a *skipped, not passed* annotation rather than a silent
+  green tick.
+- **`[workspace.lints.clippy] all = "warn"` did not enforce non-negotiable 7.** `[measured]`
+  2026-08-28: a library crate containing `unwrap()`, `expect()` and `panic!()` passed
+  `cargo clippy --all-targets -- -D warnings` with **exit 0**, because those three are
+  `clippy::restriction` lints and `clippy::all` never includes them. `CLAUDE.md` §2 had
+  claimed the workspace lints enforced this since the repository was initialised. Fixed, and
+  `scripts/check-lint-config.sh` now proves it by reversal so it cannot silently regress.
+  `priority = -1` on the group is mandatory — cargo rejects the config without it.
 - **DESIGN.md, README.md, ADR-0003 and three reference pages swept 2026-08-27** to match the
   accepted decisions: bidirectional positioning, one latency floor figure (10–20 µs, was two
   conflicting), `MessageView` corrected to 24 bytes in all four places that claimed 16 or

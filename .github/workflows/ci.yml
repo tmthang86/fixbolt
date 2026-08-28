@@ -1,0 +1,84 @@
+# The gates CLAUDE.md §2 and DESIGN.md §6 name. Until this file existed, "CI
+# proves it" appeared in eight places across the documentation and nothing ran.
+#
+# One rule governs this file: a green run must mean something was checked. The
+# workspace has no crates yet, so the crate-dependent gates cannot run — they
+# are skipped with a visible annotation rather than passed silently.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # No global RUSTFLAGS: -D warnings here. The clippy step already denies them,
+  # and a global setting would split cargo's build cache between the clippy and
+  # test steps for no extra coverage — and would leak into the temp crate that
+  # scripts/check-lint-config.sh builds.
+
+jobs:
+  # The one gate that is meaningful today, and the only one that does not
+  # depend on a crate existing. It proves by reversal that the workspace lint
+  # configuration actually denies unwrap/expect/panic — CLAUDE.md §2 rule 7.
+  lint-config:
+    name: Lint config enforces non-negotiable 7
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add clippy
+      - run: scripts/check-lint-config.sh
+
+  gates:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt clippy
+
+      - id: ws
+        name: How many crates are there to check?
+        run: |
+          n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "Workspace members: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::warning title=Gates skipped, not passed::The workspace has no crates yet, so fmt, clippy and test did not run. This job is green because there is nothing to check — CLAUDE.md §10: a green result that was inferred rather than observed is not a result."
+          fi
+
+      # When the conformance runner lands it needs vendor/, which is gitignored:
+      #   - run: scripts/fetch-quickfix-assets.sh
+      # goes here, before the test steps. Not yet — nothing reads it.
+
+      - if: steps.ws.outputs.count != '0'
+        run: cargo fmt --all -- --check
+      - if: steps.ws.outputs.count != '0'
+        run: cargo clippy --all-targets -- -D warnings
+      - if: steps.ws.outputs.count != '0'
+        run: cargo test --all
+
+  # CLAUDE.md §2 non-negotiable 6: this must build on a machine with nothing
+  # optional installed. Its own runner, so it cannot inherit anything a
+  # previous step put there.
+  no-default-features:
+    name: Builds with nothing optional installed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: ws
+        run: |
+          n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -eq 0 ]; then
+            echo "::warning title=Skipped, not passed::No crates yet, so --no-default-features did not run."
+          fi
+      - if: steps.ws.outputs.count != '0'
+        run: cargo test --all --no-default-features

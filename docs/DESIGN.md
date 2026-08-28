@@ -358,10 +358,17 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Repeating groups | all **93** FIX 4.4 groups read and written; in-group ordering verified against the dictionary | `crates/codec/tests/groups.rs` ([plan](plans/2026-08-27-repeating-groups.md)) |
 | **Wire-to-wire, NIC to NIC** | p50 / p99 / p99.9 published; p99 ≤ 50 µs on kernel TCP | `tools/w2w` — `SO_TIMESTAMPING`, HdrHistogram, load generator on a **separate machine** |
 | Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |
+| The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
+| Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every
 other row is an internal number; without this one they are unfalsifiable.
+
+**Two of these rows run today; the rest cannot, and CI says so out loud.** The workspace has
+no crates, so `fmt`, `clippy` and `test` have nothing to check — the CI job emits a warning
+annotation saying it *skipped* rather than passing, because a green tick that means "there was
+nothing to look at" is the exact failure `CLAUDE.md` §10 names.
 
 The 150 ns targets are anchored to a real measurement — 139 ns for a `NewOrderSingle` on an
 Apple M5 on 2026-08-27, in the harness described in

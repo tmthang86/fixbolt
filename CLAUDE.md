@@ -65,9 +65,11 @@ list by hand. Each names the decision it enforces.
     it ran on, and the §9 settings in force.** A number missing any of the three is
     someone else's claim and is labelled as such.
 
-**Why these can't be gated:** 1, 3, 7 have or will have a machine check. The rest are
-hand-checks on every relevant PR until a lint or test exists — say explicitly that you
-walked the list.
+**Machine-checked today:** 7 — `scripts/check-lint-config.sh`, run by CI, proves by reversal
+that the workspace lints actually deny `unwrap`/`expect`/`panic`. 6 — the
+`no-default-features` CI job. **Will be, once code exists:** 1 (`benches/alloc.rs`), 3 (the
+conformance runner). **The rest are hand-checks** on every relevant PR until a lint or test
+exists — say explicitly that you walked the list.
 
 ## 3. Read before you touch the code
 
