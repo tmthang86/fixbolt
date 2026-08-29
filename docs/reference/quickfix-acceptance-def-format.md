@@ -539,3 +539,70 @@ The shape is specific, and every part of it is compared:
   resent message carries both. `122` is one of the five tags matched by shape,
   so only its width is pinned — 21 bytes, with milliseconds, and the file's own
   `9=93` is what says so.
+
+## A tag is a *signed* integer, and that is what separates garbled from `Reject`
+
+Three files turn on one line of QuickFIX's tokeniser. It reads the characters
+before `=` with an ordinary signed-integer conversion, so:
+
+| On the wire | QuickFIX sees | What the file expects |
+|---|---|---|
+| `-1=x` | the field with tag −1 | `Reject`, `373=0` **Invalid tag number** — `14a_BadField.def` |
+| `4garbled9=x` | not a field at all | the whole message **ignored**, in silence — `2d`, `3c` |
+
+`[cost 2026-08-29]` an hour, and a wrong fix that got reverted. The first
+hypothesis was that `2d_InvalidBodyLength.def` failed on its `9=`, and
+`crates/codec/src/parse.rs` was changed to check the frame before tokenising.
+Then `2d`'s frame was actually counted: `9=52` is **correct**. The file's name
+is about the *other* line in it. The rule above is what those files are for, and
+it cost 53 → 55 to find. Guard: `is_signed_integer` in `crates/session/src/lib.rs`,
+and the score gate that names all 55 files.
+
+## The corpus assumes an application, and lends it two things it does not own
+
+42 of the 250 `E` lines carry `35=D`. The acceptance server is an echo server
+(§ *What the acceptance server actually is*), which means the session layer
+cannot pass alone — it must hand the message somewhere and send back what comes
+out. Two rules the corpus states plainly:
+
+- **The sequence number and the clock belong to the session.** The reply's `34=`
+  is the session's next outbound number and its `52=` is the session's own
+  clock. An application that wrote either itself would be numbering someone
+  else's stream.
+- **An application that says nothing spends nothing.**
+  `19a_PossResendMessageThatHAsAlreadyBeenSent.def` sends a `97=Y` order whose
+  `11=` has been seen, expects **no** reply, and then numbers its next expected
+  message as though nothing had happened.
+
+`19a` and `19b` are the same file twice, differing only in whether that `11=`
+has been seen before. **A session layer cannot answer that** — a sequence number
+says nothing about an order ID — which is exactly why the two files exist.
+
+## `PossDup` asks two questions, and only of a message behind the count
+
+`43=Y` on a message whose number is **not** behind the count is never
+challenged: `20_SimultaneousResendRequest.def` sends three and none is asked
+anything. Behind the count, QuickFIX's `doPossDup` asks:
+
+| Missing | Answer |
+|---|---|
+| no `122=` **OrigSendingTime** | `Reject`, `373=1` naming tag 122 — and the number is **not** spent, so the file's next message is numbered as though this one never arrived (`2g`) |
+| `122=` later than `52=` | `Reject`, `373=10`, followed by a `Logout` (`2f`) |
+
+A `SequenceReset` is exempt from both: a gap fill stands in for messages rather
+than repeating one, so it has no original send time to carry. **The corpus
+cannot see that exemption** — every `43=Y` `SequenceReset` in it carries `122=`
+anyway — so it is held by `crates/session/tests/application.rs` instead.
+
+## One identity, one connection — and that is the engine's rule
+
+`1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def` open a **second**
+connection and send a Logon with the same `49`/`56` as the first. Both expect no
+reply at all on the second, and the first to carry on undisturbed.
+
+Nothing in a session state machine can answer this: a session does not know
+another one exists. It is the *engine*'s rule — which connection holds an
+identity — and `engine` does not exist yet, so `crates/session/tests/score.rs`
+plays the smallest engine that can hold two connections. `runner.rs` had already
+allowed for it: `SessionUnderTest` is one instance for the whole harness, not
+one per connection.

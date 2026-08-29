@@ -59,7 +59,7 @@ Every one is a command that either passes or fails. A criterion nobody can run i
 
 | # | Criterion | Gate |
 |---|---|---|
-| 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **42 / 59**: step 5 of six, and the prediction was 42 |
+| 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **55 / 59**: step 6a, and the prediction was 52 |
 | 2 | Repeating groups | **Met 2026-08-28.** Read and written for all **93** groups `[measured]`; order agreed with QuickFIX's generated C++ on 730/730. **The 59 definitions do not test this** — see §4 |
 | 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion. `[measured 2026-08-28]` **the tables exist**: 912 tags, 93 message types, 12 524 (message, tag) pairs, 23 field types, 1 708 enum values. **Applied by the session as of step 3** — all twelve `373` codes are produced, and a test asserts that rather than inferring it from the file count. `[2026-08-29]` one type rule was wrong and the corpus caught it: `SEQNUM` refused `0`, on a rule this project invented and an invented test that agreed with it |
 | 4 | Both sides | Acceptor 59/59; initiator interop-green against `libquickfix` in CI |
@@ -138,6 +138,8 @@ find them whether or not this page does.
 
 - **Repeating groups: untested** (one populated group, in a negative test).
 - **Application-message semantics: untested.** The suite is a *session-layer* suite.
+  `[measured 2026-08-29]` it does hand 42 application messages to an application — and only to
+  have them echoed back unchanged. Nothing in it asks what an order *means*.
 - **Reconnect, backoff, session schedules: untested** — zero definitions, on either side.
 - **Field types, enum values, decimal precision: untested.**
 

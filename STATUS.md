@@ -10,9 +10,9 @@ Last updated: **2026-08-28**.
 | | |
 |---|---|
 | Branch | **`plan/dict-validation`**, on top of `plan/session-layer` |
-| Milestone | **M2 — the session layer.** `[measured 2026-08-29]` **42 / 59**, step 5 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
+| Milestone | **M2 — the session layer.** `[measured 2026-08-29]` **55 / 59**, step 6a. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–5 of 6 done: 42 / 59.** Steps 1, 3, 4 and 5 hit their prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus. Nine revisions recorded in the plan |
+| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–6a done: 55 / 59.** Steps 1, 3, 4 and 5 hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Ten revisions recorded there |
 | Last closed | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — closed 2026-08-28. Four validation tables, agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 12 524/12 524 message-tag pairs and 1 708/1 708 enum values |
 | Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
@@ -198,6 +198,23 @@ Last updated: **2026-08-28**.
   stated exactly once in the corpus, by `10_MsgSeqNumGreater` and `1a_ValidLogonMsgSeqNumTooHigh`.
   Written up in
   [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md).
+
+- **The session scores 55 / 59, 2026-08-29 — step 6a, and the prediction was 52.** The session
+  now owns seven administrative message types and hands everything else to an `Application`,
+  giving it the outbound sequence number and the clock and sending back whatever it returns.
+  Eight reversals into the score go red; two more behaviours the corpus cannot see are held by
+  `crates/session/tests/application.rs`.
+- **The prediction was beaten for a measurable reason.** The 6a/6b split was drawn from the
+  expected `35=` sets of the remaining files, and an expected set cannot tell an *echo* from a
+  *replay*: `2d`, `3b` and `3c` look like they need an outbound store and do not — the
+  counterparty resends and this end only echoes.
+- **QuickFIX reads a tag as a *signed* integer**, so `-1=x` is a field and is Rejected, while
+  `4garbled9=x` is not a field at all and the whole message is ignored. Three files turn on
+  that one distinction. Written up in
+  [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md).
+- **"One identity, one connection" is an engine rule, not a session rule.** `1b_DuplicateIdentity`
+  and `AlreadyLoggedOn` need it, and `engine` does not exist, so `crates/session/tests/score.rs`
+  plays the smallest engine that can hold two connections. That is stated there and here.
 
 ## Not proven — claimed, researched, or simply not yet run
 

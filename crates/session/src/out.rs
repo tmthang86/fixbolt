@@ -37,6 +37,11 @@ pub(crate) struct Outbound {
     pub(crate) resend_request: Skeleton,
     pub(crate) gap_fill: Skeleton,
     pub(crate) buf: [u8; 512],
+    /// Where an [`crate::Application`] writes its reply. Separate from `buf`
+    /// because an application message is bigger than a session one: the
+    /// longest reply in the corpus is `21_RepeatingGroupSpecifierWithValueOfZero`'s
+    /// `35=d` at 177 body bytes, against 101 for the longest `35=D`.
+    pub(crate) app: [u8; 1024],
 }
 
 impl Outbound {
@@ -139,6 +144,7 @@ impl Outbound {
                 .build::<Fix44>()
                 .ok()?,
             buf: [0; 512],
+            app: [0; 1024],
         })
     }
 }

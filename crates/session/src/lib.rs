@@ -82,6 +82,65 @@ mod msg {
 /// default, and this is the one place that depends on it.
 const OWN_TEST_REQ_ID: &[u8] = b"TEST";
 
+/// What an application does with a message the session layer does not own.
+///
+/// The session owns the seven administrative types — `0 1 2 3 4 5 A` — and
+/// hands everything else here. It supplies the two things an application does
+/// not own, the outbound sequence number and the clock, and sends back exactly
+/// what it is given.
+///
+/// The reply is written as **whole message bytes**, not as a body: the corpus's
+/// own acceptance server re-sorts an incoming order through the dictionary and
+/// sends it back, and re-encoding that a second time inside the session would
+/// be work for nothing. It is the shape [ADR-0004] called `Action::Deliver`.
+///
+/// [ADR-0004]: https://github.com/
+pub trait Application {
+    /// One message for the application.
+    ///
+    /// Write a complete FIX message into `out` and return the range it
+    /// occupies; the session emits it and spends `seq`. `None` says nothing,
+    /// which is what `19a_PossResendMessageThatHAsAlreadyBeenSent.def` asks
+    /// for: a `97=Y` whose order ID the application has already seen.
+    ///
+    /// `stamp` is 21 bytes with milliseconds. A reply that regenerates its own
+    /// `SendingTime` is a body-length failure four bytes later.
+    fn on_message(
+        &mut self,
+        msg: &[u8],
+        seq: u32,
+        stamp: &[u8],
+        out: &mut [u8],
+    ) -> Option<core::ops::Range<usize>>;
+}
+
+/// An application that never answers.
+///
+/// What [`Session::received`] uses, so a caller with no application at all
+/// still has the same API. A session wired to this one is a pure session
+/// machine: it answers the seven administrative types and drops the rest.
+pub struct Silent;
+
+impl Application for Silent {
+    fn on_message(
+        &mut self,
+        _msg: &[u8],
+        _seq: u32,
+        _stamp: &[u8],
+        _out: &mut [u8],
+    ) -> Option<core::ops::Range<usize>> {
+        None
+    }
+}
+
+/// The seven message types the session layer answers itself.
+///
+/// Everything else is the application's. `7_ReceiveRejectMessage.def` is why
+/// `3` is in the list: a Reject arriving is read and not answered, and an
+/// application that echoed it would put a message on the wire the file does not
+/// expect.
+const ADMIN: [&[u8]; 7] = [b"0", b"1", b"2", b"3", b"4", b"5", b"A"];
+
 /// Whether the connection survived the input.
 ///
 /// The session never closes a socket — it does not have one. It says the link
@@ -464,7 +523,19 @@ impl<R: Role, const N: usize> Session<R, N> {
     }
 
     /// One whole message arrived. Framing is the transport's job.
-    pub fn received<F: FnMut(&[u8])>(&mut self, bytes: &[u8], mut emit: F) -> Link {
+    pub fn received<F: FnMut(&[u8])>(&mut self, bytes: &[u8], emit: F) -> Link {
+        self.received_with(bytes, &mut Silent, emit)
+    }
+
+    /// One whole message arrived, with an [`Application`] to hand it to.
+    ///
+    /// The same as [`Self::received`] in every other respect.
+    pub fn received_with<A: Application, F: FnMut(&[u8])>(
+        &mut self,
+        bytes: &[u8],
+        app: &mut A,
+        mut emit: F,
+    ) -> Link {
         // Once the link is down, bytes still arrive — the counterparty's own
         // Logout crossing ours, or anything already in flight. Reading them is
         // free; answering them would put a message on a connection this end has
@@ -472,7 +543,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         if matches!(self.state, State::Disconnected | State::AwaitingLogout) {
             return Link::Dropped;
         }
-        let link = match self.judge(bytes, &mut emit) {
+        let link = match self.judge(bytes, app, &mut emit) {
             Ok(link) => link,
             Err(_) => {
                 self.state = State::Disconnected;
@@ -488,11 +559,11 @@ impl<R: Role, const N: usize> Session<R, N> {
         // Draining here rather than inside `judge` keeps the recursion out:
         // `judge` never calls this, so a held message that queues another
         // cannot nest.
-        self.drain(&mut emit)
+        self.drain(app, &mut emit)
     }
 
     /// Judge every held message the count has caught up with.
-    fn drain<F: FnMut(&[u8])>(&mut self, emit: &mut F) -> Link {
+    fn drain<A: Application, F: FnMut(&[u8])>(&mut self, app: &mut A, emit: &mut F) -> Link {
         // Bounded by the queue itself, and every round empties one slot.
         for _ in 0..QUEUED {
             let Some(i) = (0..QUEUED).find(|&i| self.queue[i].seq == self.next_in) else {
@@ -505,7 +576,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             let mut held = [0u8; QUEUED_LEN];
             held[..len].copy_from_slice(&self.queue[i].buf[..len]);
             self.queue[i].seq = 0;
-            match self.judge(&held[..len], emit) {
+            match self.judge(&held[..len], app, emit) {
                 Ok(Link::Up) => {}
                 Ok(Link::Dropped) => return Link::Dropped,
                 Err(_) => {
@@ -717,6 +788,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             resend_request,
             gap_fill,
             buf,
+            app: _,
         } = o;
         let template = match which {
             Which::Logon => &*logon,
@@ -742,7 +814,12 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// the order QuickFIX applies them, and it is load-bearing: two rules that
     /// share an outcome are indistinguishable to the corpus, so which one fires
     /// first is only visible to `tests/logon.rs`.
-    fn judge<F: FnMut(&[u8])>(&mut self, bytes: &[u8], emit: &mut F) -> Result<Link, Refusal> {
+    fn judge<A: Application, F: FnMut(&[u8])>(
+        &mut self,
+        bytes: &[u8],
+        app: &mut A,
+        emit: &mut F,
+    ) -> Result<Link, Refusal> {
         match parse_into::<Fix44, N>(bytes, &mut self.idx, Validation::ALL) {
             // A partial read is not a refusal: the next call brings the rest.
             Ok(Parsed::Incomplete) => return Ok(Link::Up),
@@ -753,10 +830,25 @@ impl<R: Role, const N: usize> Session<R, N> {
             // holds every field read *before* the bad one, which is how `34=`
             // and `35=` are still available to answer with.
             Err(ParseError::BadTag { at }) if self.state == State::LoggedOn => {
+                let text = tag_text_at(bytes, at as usize);
+                // **One `ParseError`, two answers.** QuickFIX's own tokeniser
+                // reads a tag with a signed-integer conversion, so `-1` is a
+                // field — an absurd one, which the dictionary then refuses —
+                // while `4garbled9` is not a number in any base and the whole
+                // message is unreadable.
+                //
+                // `14a_BadField.def` sends `-1=HI` and expects
+                // `Reject 373=0` naming `371=-1`. `2d_GarbledMessage.def` and
+                // `3c_GarbledMessage.def` send `4garbled9=TW` and expect the
+                // message **ignored**, with the counterparty carrying on. The
+                // difference is only in the text.
+                if !text.is_some_and(is_signed_integer) {
+                    return Ok(self.garbled(bytes));
+                }
                 let view = self.idx.view(bytes);
                 let r = Reject {
                     text: SessionText::InvalidTagNumber,
-                    ref_tag: copy::<12>(tag_text_at(bytes, at as usize)),
+                    ref_tag: copy::<12>(text),
                     ref_msg_type: copy::<8>(view.get(tag::MSG_TYPE)),
                     ref_seq: view.get(tag::MSG_SEQ_NUM).and_then(|v| as_u32(v).ok()),
                     route: [None, None, None, None, None, None],
@@ -876,6 +968,8 @@ impl<R: Role, const N: usize> Session<R, N> {
         // Everything below is decided from values already read out of `view`,
         // so the borrow of `self.idx` ends here and `send` can take `&mut self`.
         let msg_type = view.get(tag::MSG_TYPE).unwrap_or_default();
+        // Read while the index is still borrowed, used after it is not.
+        let is_application = !ADMIN.contains(&msg_type);
         let is_logon = msg_type == msg::LOGON;
         let is_logout = msg_type == msg::LOGOUT;
         let is_test_request = msg_type == msg::TEST_REQUEST;
@@ -885,6 +979,8 @@ impl<R: Role, const N: usize> Session<R, N> {
         let gap_fill = view.get(tag::GAP_FILL_FLAG) == Some(b"Y");
         let new_seq_no = view.get(tag::NEW_SEQ_NO).and_then(|v| as_u32(v).ok());
         let is_resend_request = msg_type == msg::RESEND_REQUEST;
+        let orig_sending_time = view.get(tag::ORIG_SENDING_TIME).and_then(clock::parse_utc);
+        let sending_time = view.get(tag::SENDING_TIME).and_then(clock::parse_utc);
         let begin_seq_no = view.get(tag::BEGIN_SEQ_NO).and_then(|v| as_u32(v).ok());
         let end_seq_no = view.get(tag::END_SEQ_NO).and_then(|v| as_u32(v).ok());
         let reset_seq = view.get(tag::RESET_SEQ_NUM_FLAG) == Some(b"Y");
@@ -952,6 +1048,42 @@ impl<R: Role, const N: usize> Session<R, N> {
             // repeat puts an extra Logout on the wire, and the file's real
             // Logout then compares against it.
             if poss_dup {
+                // QuickFIX's `doPossDup`, and it is only reached here: a
+                // `43=Y` message that is *not* behind the count is never asked
+                // these two questions. `20_SimultaneousResendRequest.def`
+                // sends three of them in order and none is challenged.
+                //
+                // A `SequenceReset` is exempt — a gap fill stands in for
+                // messages, so there is no original send time to carry.
+                if !is_sequence_reset {
+                    let Some(orig) = orig_sending_time else {
+                        // `2g_PossDupNoOrigSendingTime.def`: `373=1` naming
+                        // tag 122, and the sequence number is **not** spent —
+                        // the file's next message is numbered as though this
+                        // one never arrived.
+                        let r = Reject {
+                            text: SessionText::RequiredTagMissing,
+                            ref_tag: tag_text(tag::ORIG_SENDING_TIME),
+                            ref_msg_type: msg_type_bytes,
+                            ref_seq,
+                            route,
+                        };
+                        return Ok(self.send_reject(&r, emit));
+                    };
+                    // `2f_PossDupOrigSendingTimeTooHigh.def`: a message that
+                    // claims to have been sent after it was resent. `373=10`,
+                    // and `send_reject` puts the Logout after it.
+                    if sending_time.is_some_and(|sent| orig > sent) {
+                        let r = Reject {
+                            text: SessionText::SendingTimeAccuracyProblem,
+                            ref_tag: None,
+                            ref_msg_type: msg_type_bytes,
+                            ref_seq,
+                            route,
+                        };
+                        return Ok(self.send_reject(&r, emit));
+                    }
+                }
                 return Ok(Link::Up);
             }
             let why = SessionText::MsgSeqNumTooLow {
@@ -1092,6 +1224,27 @@ impl<R: Role, const N: usize> Session<R, N> {
                 }
             }
             return Ok(Link::Up);
+        }
+
+        // Everything the session does not own belongs to the application.
+        if is_application {
+            let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
+            let stamp = *self.stamp.format(unix);
+            let seq_out = self.next_out;
+            let sent = {
+                let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
+                match app.on_message(bytes, seq_out, &stamp, &mut o.app) {
+                    Some(r) => {
+                        emit(&o.app[r]);
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if sent {
+                self.next_out += 1;
+                self.last_sent_ms = self.now_ms;
+            }
         }
 
         Ok(Link::Up)
@@ -1270,6 +1423,16 @@ fn msg_type_of(bytes: &[u8]) -> Option<&[u8]> {
     };
     let end = bytes[at..].iter().position(|&b| b == 0x01)? + at;
     Some(&bytes[at..end])
+}
+
+/// Whether these bytes are what QuickFIX's tokeniser would accept as a tag:
+/// an optional `-` and then at least one digit, and nothing else.
+///
+/// Not `is_ascii_digit` alone: `14a_BadField.def` turns on `-1` being a
+/// readable number. Not "starts with a digit" either: `49garbled` does.
+fn is_signed_integer(v: &[u8]) -> bool {
+    let digits = v.strip_prefix(b"-").unwrap_or(v);
+    !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
 }
 
 /// A tag number as the digits `371=` carries.

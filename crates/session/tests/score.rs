@@ -24,23 +24,124 @@ fn link(l: nanofix_session::Link) -> Link {
 
 /// The orphan rule: `SessionUnderTest` belongs to `conformance` and `Session`
 /// to `session`, so neither is local here. A local wrapper is the whole reason
-/// this type exists.
-struct Adapter(Session<Acceptor, 256>);
+/// this type exists — and it has grown into the smallest engine the corpus
+/// insists on.
+///
+/// # This is standing in for `engine`, and it says so
+///
+/// Two things here are **not** session rules and are not in the session crate:
+///
+/// * **which connection owns an identity.** `1b_DuplicateIdentity.def` opens a
+///   second connection with the same CompIDs and expects it dropped. A session
+///   object is one connection's state machine and cannot know about another;
+///   deciding between them is what an engine does. `runner.rs` anticipated this
+///   — `SessionUnderTest` takes a `Conn` and one instance sees every connection.
+/// * **the application.** [`EchoApp`] is the acceptance server's own behaviour,
+///   wired in through [`nanofix_session::Application`].
+///
+/// When `engine` exists, the first of these moves into it. Until then it is
+/// here, in the open, rather than smuggled into `Session`.
+struct Adapter {
+    conns: Vec<(Conn, Session<Acceptor, 256>)>,
+    app: EchoApp,
+}
+
+impl Adapter {
+    fn new() -> Self {
+        Self {
+            conns: Vec::new(),
+            app: EchoApp::default(),
+        }
+    }
+
+    fn at(&mut self, conn: Conn) -> usize {
+        if let Some(i) = self.conns.iter().position(|(c, _)| *c == conn) {
+            return i;
+        }
+        self.conns.push((
+            conn,
+            Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+        ));
+        self.conns.len() - 1
+    }
+}
 
 impl SessionUnderTest for Adapter {
-    fn step<F: FnMut(&[u8])>(&mut self, _conn: Conn, input: Input<'_>, emit: F) -> Link {
+    fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, input: Input<'_>, emit: F) -> Link {
+        let i = self.at(conn);
+        // One identity, one connection. A Logon arriving on a second connection
+        // while a first is logged on is refused by dropping it, in silence —
+        // `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def` both expect no
+        // reply at all on the second.
+        if let Input::Bytes(b) = input
+            && field(b, 35) == Some(b"A")
+            && self
+                .conns
+                .iter()
+                .enumerate()
+                .any(|(j, (_, s))| j != i && s.is_logged_on())
+        {
+            self.conns[i].1.disconnect(emit);
+            return Link::Dropped;
+        }
+        let Self { conns, app } = self;
+        let s = &mut conns[i].1;
         link(match input {
-            Input::Connect => self.0.connect(emit),
-            Input::Disconnect => self.0.disconnect(emit),
-            Input::Bytes(b) => self.0.received(b, emit),
-            Input::Tick(ms) => self.0.tick(ms, emit),
+            Input::Connect => s.connect(emit),
+            Input::Disconnect => s.disconnect(emit),
+            Input::Bytes(b) => s.received_with(b, app, emit),
+            Input::Tick(ms) => s.tick(ms, emit),
         })
+    }
+}
+
+/// The application the acceptance corpus assumes, wired to the session.
+///
+/// `conformance` cannot implement [`nanofix_session::Application`] — it does not
+/// depend on `session`, and reversing that is a cycle — so the trait is
+/// implemented here over the two functions that crate does provide.
+///
+/// The state is the interesting part. `19a` and `19b` are the same file twice
+/// with one difference: whether the `11=` on a `97=Y` message has been seen
+/// before on this session. **That is not something a session layer can answer**
+/// — a sequence number says nothing about an order ID — and the two files exist
+/// to say so.
+#[derive(Default)]
+struct EchoApp {
+    seen: Vec<Vec<u8>>,
+}
+
+impl nanofix_session::Application for EchoApp {
+    fn on_message(
+        &mut self,
+        msg: &[u8],
+        seq: u32,
+        stamp: &[u8],
+        out: &mut [u8],
+    ) -> Option<std::ops::Range<usize>> {
+        let msg_type = field(msg, 35)?;
+        // The acceptance server trades orders and security definitions and
+        // nothing else. `2r_UnregisteredMsgType.def` sends `35=8`, which FIX 4.4
+        // defines and this application does not want.
+        if msg_type != b"D" && msg_type != b"d" {
+            return nanofix_conformance::echo::business_reject(msg, out, seq, stamp).ok();
+        }
+        if let Some(id) = field(msg, 11) {
+            let already = self.seen.iter().any(|s| s == id);
+            if field(msg, 97) == Some(b"Y") && already {
+                return None;
+            }
+            if !already {
+                self.seen.push(id.to_vec());
+            }
+        }
+        nanofix_conformance::echo::echo(msg, out, seq, stamp).ok()
     }
 }
 
 /// The acceptor the corpus talks to: it is ISLD and its counterparty is TW44.
 fn acceptor() -> Adapter {
-    Adapter(Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")))
+    Adapter::new()
 }
 
 /// The two crates agree on what time it is.
@@ -65,19 +166,24 @@ fn the_harness_clock_and_the_corpus_agree() {
     );
 }
 
-/// `[measured 2026-08-29]` **42 / 59** — step 5, and the prediction was 42.
+/// `[measured 2026-08-29]` **55 / 59** — step 6a, and the plan predicted 52.
 ///
-/// Step 5 is the gap: a sequence number running ahead of the count. The session
-/// asks for what it missed with a `ResendRequest (35=2)`, holds the message
-/// that ran ahead until the gap closes, and answers an inbound `ResendRequest`
-/// with a `SequenceReset` gap fill — because everything it has sent so far is
-/// an administrative message, and those are never replayed.
+/// **Three more than predicted, and the reason is a real one.** The split
+/// between 6a and 6b was drawn from the set of `35=` values each file expects
+/// back, and that set cannot tell a message this session *echoes* from one it
+/// *replays*: both are `35=D`. `3b_InvalidChecksum`, `2d_GarbledMessage` and
+/// `3c_GarbledMessage` all look like they need a store of sent messages and
+/// none of them does — in all three it is the **counterparty** that resends,
+/// and this end only has to ask, ignore what it could not read, and echo what
+/// it could.
+///
+/// The four that remain all replay something this session sent.
 #[test]
-fn step_five_closes_the_gap_and_scores_forty_two() {
+fn step_six_a_hands_over_to_the_application_and_scores_fifty_five() {
     let report = run(|_| acceptor()).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
-        report.passed, 42,
-        "step 5 of the plan predicts 42 / 59:\n{report}"
+        report.passed, 55,
+        "step 6a: the plan predicted 52 and the difference is explained above:\n{report}"
     );
     assert_eq!(
         report.passed_files,
@@ -93,39 +199,52 @@ fn step_five_closes_the_gap_and_scores_forty_two() {
             "14b_RequiredFieldMissing.def",
             "14c_TagNotDefinedForMsgType.def",
             "14d_TagSpecifiedWithoutValue.def",
+            "14e_IncorrectEnumValue.def",
             "14f_IncorrectDataFormat.def",
             "14g_HeaderBodyTrailerFieldsOutOfOrder.def",
             "14h_RepeatedTag.def",
             "14i_RepeatingGroupCountNotEqual.def",
+            "15_HeaderAndBodyFieldsOrderedDifferently.def",
+            "19a_PossResendMessageThatHAsAlreadyBeenSent.def",
+            "19b_PossResendMessageThatHasNotBeenSent.def",
             "1a_ValidLogonMsgSeqNumTooHigh.def",
             "1a_ValidLogonWithCorrectMsgSeqNum.def",
+            "1b_DuplicateIdentity.def",
             "1c_InvalidSenderCompID.def",
             "1c_InvalidTargetCompID.def",
             "1d_InvalidLogonBadSendingTime.def",
             "1d_InvalidLogonLengthInvalid.def",
             "1d_InvalidLogonWrongBeginString.def",
             "1e_NotLogonMessage.def",
+            "21_RepeatingGroupSpecifierWithValueOfZero.def",
             "2a_MsgSeqNumCorrect.def",
             "2b_MsgSeqNumTooHigh.def",
             "2c_MsgSeqNumTooLow.def",
+            "2d_GarbledMessage.def",
             "2e_PossDupAlreadyReceived.def",
             "2e_PossDupNotReceived.def",
+            "2f_PossDupOrigSendingTimeTooHigh.def",
+            "2g_PossDupNoOrigSendingTime.def",
             "2i_BeginStringValueUnexpected.def",
             "2k_CompIDDoesNotMatchProfile.def",
             "2o_SendingTimeValueOutOfRange.def",
             "2q_MsgTypeNotValid.def",
+            "2r_UnregisteredMsgType.def",
             "2t_FirstThreeFieldsOutOfOrder.def",
+            "3b_InvalidChecksum.def",
+            "3c_GarbledMessage.def",
             "4a_NoDataSentDuringHeartBtInt.def",
             "4b_ReceivedTestRequest.def",
             "6_SendTestRequest.def",
             "7_ReceiveRejectMessage.def",
             "8_OnlyAdminMessages.def",
+            "AlreadyLoggedOn.def",
             "RejectResentMessage.def",
             "ReverseRoute.def",
             "ReverseRouteWithEmptyRoutingTags.def",
             "SessionReset.def",
         ],
-        "and these are the forty-two, named"
+        "and these are the fifty-five, named"
     );
 }
 
@@ -210,7 +329,7 @@ fn field(wire: &[u8], tag: u32) -> Option<&[u8]> {
     Some(&wire[at..end])
 }
 
-/// The step-1 six are still in the forty-two.
+/// The step-1 six are still in the fifty-five.
 ///
 /// Not implied by the count: each step adds files and could lose one to a rule
 /// that now fires earlier. Step 2 did exactly that to two files, and only a

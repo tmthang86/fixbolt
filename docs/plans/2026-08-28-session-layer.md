@@ -334,6 +334,44 @@ Thêm một trait mà chưa file nào chạm tới là thêm trạng thái khôn
 `RejectResentMessage.def` giữ một `TestRequest` `34=3`, xử lý `34=2`, rồi phát lại `34=3` *trước*
 `34=4` vừa tới. Không có hàng đợi thì mất file đó.
 
+### Sửa 10 — bước 6 tách làm 6a và 6b
+
+**Phát hiện khi bắt đầu bước 6.** 17 file còn lại, và chúng cần **năm** năng lực khác nhau, trong
+đó hai cái là thay đổi API công khai. Một commit ôm cả năm thì không có cổng nào ở giữa, và
+`CLAUDE.md` §8 nói một commit là một thay đổi mạch lạc.
+
+Chia theo cái chúng cần, đo từ chính corpus:
+
+| Bước | Năng lực | File | Điểm |
+|---|---|---|---|
+| **6a** | Giao bản tin cho **ứng dụng** (trait mới, API công khai); `PossDup` thiếu `122=` và `122=` lớn hơn `52=`; trùng danh tính giữa nhiều connection | `15`, `14e`, `21`, `2r`, `19a`, `19b`, `2f`, `2g`, `1b`, `AlreadyLoggedOn` | **52 / 59** |
+| **6b** | `MessageStore`: lưu bản tin ứng dụng đã gửi và **phát lại** chúng; xen kẽ với gap fill cho các đoạn quản trị | `8_OnlyApplicationMessages`, `8_AdminAndApplicationMessages`, `20`, `2d`, `2m`, `3b`, `3c` | **59 / 59** |
+
+**Bảng trên sai ba dòng, và đã đo ra chỗ sai.** Bước 6a về đích ở **55**, không phải 52.
+Cách chia được rút ra từ *tập `35=` mà mỗi file chờ đợi*, mà một tập `35=` **không phân biệt được
+echo với phát lại**: `2d`, `3b` và `3c` trông như cần kho bản tin gửi ra nhưng không cần — đối tác
+tự gửi lại, đầu này chỉ echo. Ba file ấy thuộc 6a. `2d` và `3c` còn cần thêm một luật nữa, ghi ở
+nhật ký bên dưới. Bước **6b** còn đúng **bốn** file: `20`, `2m`, `8_AdminAndApplicationMessages`,
+`8_OnlyApplicationMessages`.
+
+**Trait `Application` là API công khai mới**, nên nó được ghi ra đây thay vì làm im:
+
+```rust
+pub trait Application {
+    fn on_message(&mut self, msg: &[u8], seq: u32, stamp: &[u8], out: &mut [u8])
+        -> Option<Range<usize>>;
+}
+```
+
+Session sở hữu bảy loại bản tin quản trị (`0 1 2 3 4 5 A`) và giao mọi thứ khác cho đây. Nó cấp
+hai thứ ứng dụng không sở hữu — số thứ tự phát và đồng hồ — rồi gửi nguyên văn cái nhận lại.
+`received` cũ giữ nguyên chữ ký và gọi `received_with` với một ứng dụng không bao giờ trả lời.
+
+**Luật "trùng danh tính" không nằm trong session.** Nó là luật của *engine*: connection nào đang
+giữ danh tính. `engine` chưa tồn tại, nên `tests/score.rs` đóng vai nó — và điều đó được ghi rõ
+ở đó, ở đây, và trong `STATUS.md`. Doc của `runner.rs` đã lường trước: `SessionUnderTest` là một
+instance cho cả engine, không phải cho một connection.
+
 ## Nhật ký giao hàng
 
 ### Bước 1 — 2026-08-28 — **6 / 59**, đúng dự đoán
@@ -596,3 +634,56 @@ chứ không cắt.
 **Cổng:** `fmt --check`, `clippy --all-targets --all-features -D warnings`, `test --all`,
 `test --all --no-default-features`, `check-lint-config.sh`, `check-links.py` — tất cả rc=0.
 Máy: Apple M5, macOS 25.5.0, cargo 1.95.0.
+
+### Bước 6a — 2026-08-29 — **55 / 59**, dự đoán 52 và vượt vì một lý do đo được
+
+Session sở hữu bảy loại bản tin quản trị (`0 1 2 3 4 5 A`) và **giao mọi thứ khác cho ứng dụng**.
+Trait `Application` là API công khai thứ hai của crate này; nó được cho mượn hai thứ nó không sở
+hữu — số thứ tự phát ra và đồng hồ — cùng một vùng đệm để viết câu trả lời vào.
+
+**Trả lời `None` thì không tiêu số nào.** `19a` chứng minh: nó gửi một order `97=Y` có `11=` đã
+thấy, chờ **không** hồi đáp, rồi đánh số bản tin sau như thể bản tin ấy chưa từng tới.
+
+**Vượt dự đoán vì cách chia 6a/6b vẽ từ tập `35=` mong đợi**, và tập ấy không phân biệt được echo
+với phát lại. `2d`, `3b`, `3c` không cần kho bản tin nào cả.
+
+**Một luật, một giờ, và một bản sửa đã bị revert.** Giả thuyết đầu: `2d_InvalidBodyLength.def`
+rớt ở `9=`, nên `codec/src/parse.rs` được sửa để kiểm khung *trước* khi tách trường. Rồi đếm thật
+khung của `2d`: `9=52` **đúng**. Sự thật là QuickFIX đọc tag bằng một phép chuyển **số nguyên có
+dấu**, nên `-1=x` **là** một trường (Reject, `14a`) còn `4garbled9=x` **không** là trường nào cả
+(cả bản tin bị bỏ qua, `2d` và `3c`). Ba file đứng trên đúng một dòng ấy. 53 → 55. Ba file codec
+đã `git checkout` về nguyên trạng.
+
+**Đảo ngược: 10 lần, cả 10 đỏ.** Tám lần vào cổng điểm số:
+
+| Bỏ đi | Điểm |
+|---|---|
+| không giao bản tin cho ứng dụng | 44 |
+| tag không phải số nguyên có dấu vẫn là một trường | 53 |
+| hai connection cùng danh tính đều được trả lời | 53 |
+| `PossDup` thiếu `122=` không bị từ chối | 54 |
+| `122=` lớn hơn `52=` không bị từ chối | 54 |
+| ứng dụng im lặng vẫn tiêu một số | 54 |
+| `35=8` được echo thay vì trả `35=j` | 54 |
+| `97=Y` với `11=` đã thấy vẫn được trả lời | 54 |
+
+Hai lần còn lại **xanh ở cổng điểm số và đó là điều đúng**: corpus không nhìn thấy chúng. Cả hai
+được giữ bằng `crates/session/tests/application.rs`:
+
+- **Đồng hồ trao cho ứng dụng bị dời 4 giây** — `52` là một trong năm tag `fields.fmt` so theo
+  *hình dạng*, nên corpus chỉ chốt bề rộng, không chốt giá trị. Điểm vẫn 55.
+- **Bỏ miễn trừ `122=` cho `SequenceReset`** — mọi `43=Y` `SequenceReset` trong corpus đều có
+  `122=` sẵn. Điểm vẫn 55.
+
+**"Một danh tính, một connection" là luật của engine, không phải của session.** `engine` chưa có,
+nên `tests/score.rs` đóng vai engine nhỏ nhất giữ được hai connection. Ghi rõ ở đó, ở
+`reference/quickfix-acceptance-def-format.md` và trong `STATUS.md`.
+
+**Cấp phát:** `accept 0 refuse 0 tick 0 beat 0 answer 0 gap 0 fill 0 deliver 0 clock 0 text 0`.
+Case `deliver` là mới — nó chạy cả echo thật (một `FieldIndex<256>` nữa, một
+`TemplateBuilder<128, 4096>`, một lần encode) sau `received_with`. Đảo ngược (một `to_vec()`
+trong `on_message`) cho `deliver 10000`.
+
+**Cổng:** `fmt --check`, `clippy --all-targets -D warnings`, `test --all`,
+`test --all --no-default-features`, `check-lint-config.sh`, `check-links.py` — tất cả rc=0.
+Máy: Apple M5, macOS 26.6.2 (Darwin 25.6.0), cargo 1.95.0.

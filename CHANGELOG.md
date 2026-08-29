@@ -57,7 +57,18 @@ below describe what a first release would contain.
   - An inbound `ResendRequest` is answered with one `SequenceReset` gap fill. Every message this
     session has sent so far is administrative and QuickFIX never replays those. A store of
     application messages, and a real replay, are still to come.
-  - Scores **42 / 59** on the acceptance definitions: step 5 of six.
+  - An `Application` trait, and `received_with`. The session owns the seven administrative
+    message types (`0 1 2 3 4 5 A`) and hands everything else over, lending the application the
+    outbound sequence number, the clock, and a buffer to answer in. **Returning nothing spends
+    no sequence number.** `received` keeps its signature and delivers to an application that
+    never answers.
+  - `PossDup (43=Y)` on a message behind the count is asked for `122=` **OrigSendingTime**, and
+    refused if it claims to have been sent after it was resent. A `SequenceReset` is exempt from
+    both.
+  - A tag is read as a **signed** integer, as QuickFIX's tokeniser does: `-1=x` is a field and
+    is Rejected, `4garbled9=x` is not a field and the message is ignored.
+  - Scores **55 / 59** on the acceptance definitions: step 6a. The four that remain need a store
+    of outbound application messages and a real replay.
 
 - **`nanofix-dict`** — four validation tables, generated from `FIX44.xml`, answering the
   dictionary half of `Reject (35=3)`.

@@ -19,9 +19,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use nanofix_conformance::echo::echo;
 use nanofix_conformance::script::{Kind, scenarios};
 use nanofix_session::text::SessionText;
-use nanofix_session::{Acceptor, Config, Link, Session, clock};
+use nanofix_session::{Acceptor, Application, Config, Link, Session, clock};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
@@ -82,6 +83,26 @@ fn inputs(file: &str) -> Vec<Vec<u8>> {
             _ => None,
         })
         .collect()
+}
+
+/// The corpus's own application, echoing every order back.
+///
+/// It is the heaviest thing that runs behind [`Session::received_with`]: a
+/// second `FieldIndex<256>`, a `TemplateBuilder<128, 4096>` and an encode, all
+/// on the stack of one call. If any of it reached the heap, `deliver` below
+/// would say so.
+struct EchoApp;
+
+impl Application for EchoApp {
+    fn on_message(
+        &mut self,
+        msg: &[u8],
+        seq: u32,
+        stamp: &[u8],
+        out: &mut [u8],
+    ) -> Option<core::ops::Range<usize>> {
+        echo(msg, out, seq, stamp).ok()
+    }
 }
 
 fn acceptor() -> Session<Acceptor, 256> {
@@ -253,6 +274,30 @@ fn main() {
         }
     });
 
+    // Step 6a's path: an application message handed over, echoed, and the
+    // reply written back through the session's own buffer.
+    let ordered = inputs("15_HeaderAndBodyFieldsOrderedDifferently.def");
+    let (order_logon, order) = (&ordered[0], &ordered[1]);
+    {
+        let mut s = acceptor();
+        s.connect(|_| ());
+        s.tick(now, |_| ());
+        s.received(order_logon, |_| ());
+        let mut echoed = 0usize;
+        s.received_with(order, &mut EchoApp, |_| echoed += 1);
+        assert_eq!(echoed, 1, "the delivery path must actually deliver");
+    }
+
+    let deliver_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s = acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            s.received(order_logon, |_| ());
+            s.received_with(order, &mut EchoApp, |_| ());
+        }
+    });
+
     let clock_allocs = count(|| {
         for _ in 0..10_000 {
             let _ = clock::parse_utc(b"20260828-12:00:00.123");
@@ -281,7 +326,8 @@ fn main() {
     println!(
         "allocations: accept {accept_allocs} refuse {refuse_allocs} \
          tick {tick_allocs} beat {beat_allocs} answer {answer_allocs} \
-         gap {gap_allocs} fill {fill_allocs} clock {clock_allocs} text {text_allocs}"
+         gap {gap_allocs} fill {fill_allocs} deliver {deliver_allocs} \
+         clock {clock_allocs} text {text_allocs}"
     );
     assert_eq!(
         (
@@ -292,10 +338,11 @@ fn main() {
             answer_allocs,
             gap_allocs,
             fill_allocs,
+            deliver_allocs,
             clock_allocs,
             text_allocs
         ),
-        (0, 0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         "non-negotiable 1: the session layer allocates nothing, on any path"
     );
 }
