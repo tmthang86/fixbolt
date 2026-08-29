@@ -22,8 +22,8 @@ pub mod text;
 use core::marker::PhantomData;
 
 use nanofix_codec::{
-    Dictionary, FieldIndex, MessageView, ParseError, Parsed, SOH, TimestampCache, Validation,
-    as_u32, checksum, format_checksum, parse_into, tag_text_at,
+    Dictionary, FieldIndex, MessageView, ParseError, Parsed, SOH, TemplateBuilder, TimestampCache,
+    Validation, as_u32, parse_into, tag_text_at,
 };
 use nanofix_dict::{FieldType, Fix44};
 
@@ -833,8 +833,8 @@ impl<R: Role, const N: usize> Session<R, N> {
         let Some(kept) = journal.get(seq) else {
             return Ok(false);
         };
-        let n = as_resend(kept, &now, buf).ok_or(Refusal::CannotSend)?;
-        emit(&buf[..n]);
+        let r = as_resend(kept, &now, buf).ok_or(Refusal::CannotSend)?;
+        emit(&buf[r]);
         self.last_sent_ms = self.now_ms;
         Ok(true)
     }
@@ -1500,79 +1500,62 @@ fn msg_type_of(bytes: &[u8]) -> Option<&[u8]> {
 /// `9=132` against the original's `9=101`, and the difference is exactly those
 /// two fields.
 ///
-/// The order is not decided here. A kept message came out of a [`Template`]
-/// sorted by `Fix44`, so `34` precedes `49` and `52` precedes `56`; writing
-/// `43` straight after `34` and `122` straight after `56` lands both where the
-/// dictionary would have put them — `43` among the header tags in ascending
-/// order, `122` after the last of them and before the first body tag.
+/// **Nothing here decides an order.** The fields go into a [`TemplateBuilder`]
+/// in whatever order they are read out of the kept bytes, and `Fix44` sorts
+/// them — non-negotiable 5. That is what puts `43` among the header tags and
+/// `122` after the last of them, and it is the same path
+/// `15_HeaderAndBodyFieldsOrderedDifferently.def` proves for an echo.
 ///
-/// Returns the number of bytes written, or `None` if `out` is too small or the
-/// kept bytes are not a message.
-fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<usize> {
+/// Returns the range of `out` the message occupies, or `None` if the kept bytes
+/// are not a message or the result does not fit.
+fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<core::ops::Range<usize>> {
     let at_35 = kept.windows(4).position(|w| w == b"\x0135=")? + 1;
     let at_10 = kept.windows(4).position(|w| w == b"\x0110=")? + 1;
-    let mut w = 0;
+    let begin_end = kept.iter().position(|b| *b == SOH)?;
+    let begin = kept.get(2..begin_end)?;
 
-    // `8=FIX.4.4|` verbatim: a resend is the same session's message.
-    let head = kept.iter().position(|b| *b == SOH)? + 1;
-    push(out, &mut w, kept.get(..head)?)?;
+    let mut b = TemplateBuilder::<128, 1024>::new(begin)
+        .field(tag::POSS_DUP_FLAG, b"Y")
+        .field(tag::SENDING_TIME, now);
 
-    // The body, into the tail of `out`, so its length is known before `9=` is
-    // written. Written after the header it will follow, then moved back.
-    let body_at = w + 16;
-    let mut b = body_at;
-    let mut orig = None;
     for f in kept.get(at_35..at_10)?.split(|c| *c == SOH) {
         if f.is_empty() {
             continue;
         }
         let eq = f.iter().position(|c| *c == b'=')?;
-        let (tag, value) = (&f[..eq], &f[eq + 1..]);
+        let (text, value) = (&f[..eq], &f[eq + 1..]);
+        let tag = digits_to_u32(text)?;
         match tag {
-            // Already said, and said again below with the right value.
-            b"43" | b"122" => continue,
-            b"52" => {
-                orig = Some(value);
-                push(out, &mut b, b"52=")?;
-                push(out, &mut b, now)?;
-                push(out, &mut b, &[SOH])?;
-            }
-            _ => {
-                push(out, &mut b, f)?;
-                push(out, &mut b, &[SOH])?;
-                if tag == b"34" {
-                    push(out, &mut b, b"43=Y\x01")?;
-                } else if tag == b"56"
-                    && let Some(v) = orig
-                {
-                    push(out, &mut b, b"122=")?;
-                    push(out, &mut b, v)?;
-                    push(out, &mut b, &[SOH])?;
-                }
-            }
+            // Said above, with the value this resend needs rather than the one
+            // the message first went out with.
+            tag::POSS_DUP_FLAG | tag::ORIG_SENDING_TIME => continue,
+            // The clock the message first went out on becomes `122=`, and the
+            // one above stands as `52=`.
+            tag::SENDING_TIME => b = b.field(tag::ORIG_SENDING_TIME, value),
+            _ => b = b.field(tag, value),
         }
     }
 
-    let mut len = [0u8; 10];
-    let len = digits(u32::try_from(b - body_at).ok()?, &mut len);
-    push(out, &mut w, b"9=")?;
-    push(out, &mut w, len)?;
-    push(out, &mut w, &[SOH])?;
-    out.copy_within(body_at..b, w);
-    w += b - body_at;
-
-    push(out, &mut w, b"10=")?;
-    let sum = format_checksum(checksum(out.get(..w)?));
-    push(out, &mut w, &sum)?;
-    push(out, &mut w, &[SOH])?;
-    Some(w)
+    let t = b.build::<Fix44>().ok()?;
+    t.encode_with::<Fix44>(out, &[], &[]).ok()
 }
 
-/// Append `bytes` at `at`, or `None` if they do not fit.
-fn push(out: &mut [u8], at: &mut usize, bytes: &[u8]) -> Option<()> {
-    out.get_mut(*at..*at + bytes.len())?.copy_from_slice(bytes);
-    *at += bytes.len();
-    Some(())
+/// ASCII digits to a tag number. `None` for anything else — a kept message came
+/// out of this crate, so this cannot fail without a bug.
+fn digits_to_u32(text: &[u8]) -> Option<u32> {
+    if text.is_empty() {
+        return None;
+    }
+    let mut n: u32 = 0;
+    for c in text {
+        n = n
+            .checked_mul(10)?
+            .checked_add(u32::from(c.checked_sub(b'0')?))?;
+        if *c > b'9' {
+            return None;
+        }
+    }
+    Some(n)
 }
 
 fn is_signed_integer(v: &[u8]) -> bool {

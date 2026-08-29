@@ -776,5 +776,11 @@ text 0`. Case `resend` là mới; đảo ngược (một `to_vec()` trên đư�
 `test --all --no-default-features`, `check-lint-config.sh`, `check-links.py`, `benches/alloc.rs`
 — tất cả rc=0. Máy: Apple M5, macOS 26.6.2 (Darwin 25.6.0), cargo 1.95.0.
 
+**Bất biến số 5, đi bộ bằng tay và bắt được một lỗi.** Bản `as_resend` đầu tiên chèn `43=Y` ngay
+sau `34=` và `122=` ngay sau `56=` bằng tay — đúng chỗ, đúng kết quả, và **vi phạm luật**: thứ tự
+trường phải đến từ bảng sinh chứ không từ call site. Đã viết lại: mọi trường đọc ra được đưa vào
+một `TemplateBuilder` theo thứ tự nào cũng được, `Fix44` sắp. Điểm giữ nguyên 59, cấp phát giữ
+nguyên 0, và ba lần đảo ngược về hình dạng phát lại vẫn đỏ.
+
 **Chưa chứng minh:** journal nằm trong bộ nhớ, mất khi khởi động lại, và nằm sai crate —
 `DESIGN.md` D1 nói engine giữ nó. Không có số nào đo trên Linux.
