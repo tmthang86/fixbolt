@@ -38,7 +38,18 @@ below describe what a first release would contain.
     validation tables. Routing tags are reversed on the way back — `115` in becomes `128` out and
     the other way round. A CompID or SendingTime fault answers with a Reject **and** a Logout;
     the other ten leave the session running.
-  - Scores **27 / 59** on the acceptance definitions: step 3 of six.
+  - `Heartbeat (35=0)` and `TestRequest (35=1)`, on the session's own clock. Three thresholds,
+    QuickFIX's: a heartbeat one `HeartBtInt` after this end last spoke, a test request 1.2
+    intervals after the counterparty last did, the link at 2.4. A `TestRequest` is answered with
+    the `112=` it carried; the one this session invents is the literal `TEST`, because the
+    acceptance comparator reads tag 112 byte for byte.
+  - Inbound `SequenceReset (35=4)`, gap fill and plain, and `ResetSeqNumFlag` on a Logon.
+    **Whether a message's sequence number is checked, and whether it advances the count, is per
+    `MsgType`** — a Logout is never checked and a `SequenceReset` never advances.
+  - A frame the codec cannot read is now ignored rather than fatal, **unless it identifies
+    itself as a Logon**. `MsgType` must be the third field; a message that puts it elsewhere is
+    treated the same way.
+  - Scores **37 / 59** on the acceptance definitions: step 4 of six.
 
 - **`nanofix-dict`** — four validation tables, generated from `FIX44.xml`, answering the
   dictionary half of `Reject (35=3)`.
@@ -59,6 +70,9 @@ below describe what a first release would contain.
     `14b_RequiredFieldMissing.def` needs both.
   - `Fix44::enum_allows(tag, value)` — 245 enumerated fields, 1 708 values, 98 distinct lists
     after deduplication. `None` means *not enumerated*, never *fine*. Answers `373=5`.
+  - `SEQNUM` accepts `0`. It did not, on a rule this project invented and an invented test
+    that agreed with it. `11a`, `11b` and `11c` all send `34=0` and QuickFIX processes them —
+    the restored rule costs three files. See `docs/reference/fix44-dictionary-traps.md`.
   - Roughly **33 KB** of static data; the build script's run time is unchanged at under a second.
   - **A field type the enum does not know stops the build.** Falling through to `STRING` would
     make `373=6` blind to a whole type, and no acceptance definition would notice.
@@ -70,6 +84,10 @@ below describe what a first release would contain.
     out of `fields.fmt` rather than hard-coded.
   - `runner` — `SessionUnderTest`, keyed by connection so `1b_DuplicateIdentity` is
     expressible; `NullSession` scores **0 / 59** and `Replay` scores **59 / 59**.
+  - The harness clock moves forward, and only when the file is waiting: before matching an `E`
+    line the session has not answered, it advances one `HeartBtInt` — the file's own, from its
+    Logon — and retries, at most three times. `[measured]` 33 of the 250 `E` lines have no `I`
+    line in front of them, and that absence is the only "wait" the `.def` grammar has.
   - `echo` — the echo application the corpus assumes. All 22 application pairs reproduced.
 
 - **`nanofix-codec`** — FIX 4.4 read and write, `no_std`, zero runtime dependencies.

@@ -32,6 +32,8 @@ pub(crate) struct Outbound {
     pub(crate) logon: Skeleton,
     pub(crate) logout: Skeleton,
     pub(crate) reject: Skeleton,
+    pub(crate) heartbeat: Skeleton,
+    pub(crate) test_request: Skeleton,
     pub(crate) buf: [u8; 512],
 }
 
@@ -52,6 +54,9 @@ impl Outbound {
                 .slot(tag::SENDING_TIME)
                 .slot(tag::ENCRYPT_METHOD)
                 .slot(tag::HEART_BT_INT)
+                // `SessionReset.def` logs on a second time with `141=Y` and
+                // expects it echoed, in the dictionary's order: `98, 108, 141`.
+                .slot(tag::RESET_SEQ_NUM_FLAG)
                 .build::<Fix44>()
                 .ok()?,
             logout: TemplateBuilder::<24, 320>::new(begin)
@@ -83,6 +88,27 @@ impl Outbound {
                 .slot(tag::REF_TAG_ID)
                 .slot(tag::REF_MSG_TYPE)
                 .slot(tag::SESSION_REJECT_REASON)
+                .build::<Fix44>()
+                .ok()?,
+            // A Heartbeat carries `112=` only when it answers a TestRequest.
+            // An unset slot is not written, which is what makes one template
+            // serve both `4a`'s bare heartbeat and `4b`'s reply.
+            heartbeat: TemplateBuilder::<24, 320>::new(begin)
+                .field(tag::MSG_TYPE, b"0")
+                .field(tag::SENDER_COMP_ID, sender)
+                .field(tag::TARGET_COMP_ID, target)
+                .slot(tag::MSG_SEQ_NUM)
+                .slot(tag::SENDING_TIME)
+                .slot(tag::TEST_REQ_ID)
+                .build::<Fix44>()
+                .ok()?,
+            test_request: TemplateBuilder::<24, 320>::new(begin)
+                .field(tag::MSG_TYPE, b"1")
+                .field(tag::SENDER_COMP_ID, sender)
+                .field(tag::TARGET_COMP_ID, target)
+                .slot(tag::MSG_SEQ_NUM)
+                .slot(tag::SENDING_TIME)
+                .slot(tag::TEST_REQ_ID)
                 .build::<Fix44>()
                 .ok()?,
             buf: [0; 512],

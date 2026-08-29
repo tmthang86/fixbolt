@@ -65,28 +65,35 @@ fn the_harness_clock_and_the_corpus_agree() {
     );
 }
 
-/// `[measured 2026-08-28]` **27 / 59** — step 3, and the revised prediction was
-/// 27.
+/// `[measured 2026-08-29]` **37 / 59** — step 4, and the revised prediction
+/// was 37.
 ///
-/// Step 3 is `Reject (35=3)`: all thirteen files whose expected output is
-/// exactly `{A, 5, 3}`. Twelve `373` codes, eight of which are questions for
-/// the dictionary rather than rules of the session — which is why
-/// `docs/plans/2026-08-28-dict-validation.md` had to be written and closed
-/// before this step could start.
+/// Step 4 is the clock: heartbeats the session sends on its own, the
+/// `TestRequest` it sends when the counterparty has gone quiet, the
+/// `Heartbeat` it sends when asked, and the disconnect when a `TestRequest`
+/// goes unanswered. `4a_NoDataSentDuringHeartBtInt` and `6_SendTestRequest`
+/// are the only two files in the corpus whose expected output has no `I` line
+/// in front of it, and they are what the runner's tick rule exists for.
 ///
-/// The two files that still fail with a `3` in them — `14e_IncorrectEnumValue`
-/// and `21_RepeatingGroupSpecifierWithValueOfZero` — also expect an application
-/// message echoed back, and that is step 6.
+/// The other eight arrived with it because their *output* is only
+/// `{A, 5, 0}` even though their input is not: inbound `SequenceReset`,
+/// `ResetSeqNumFlag`, and a garbled message that must be ignored rather than
+/// hung up on. See "Sửa 8" in the plan.
 #[test]
-fn step_three_rejects_and_scores_twenty_seven() {
+fn step_four_keeps_time_and_scores_thirty_seven() {
     let report = run(|_| acceptor()).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
-        report.passed, 27,
-        "step 3 of the plan predicts 27 / 59:\n{report}"
+        report.passed, 37,
+        "step 4 of the plan predicts 37 / 59:\n{report}"
     );
     assert_eq!(
         report.passed_files,
         vec![
+            "10_MsgSeqNumEqual.def",
+            "10_MsgSeqNumLess.def",
+            "11a_NewSeqNoGreater.def",
+            "11b_NewSeqNoEqual.def",
+            "11c_NewSeqNoLess.def",
             "13b_UnsolicitedLogoutMessage.def",
             "14a_BadField.def",
             "14b_RequiredFieldMissing.def",
@@ -111,11 +118,16 @@ fn step_three_rejects_and_scores_twenty_seven() {
             "2k_CompIDDoesNotMatchProfile.def",
             "2o_SendingTimeValueOutOfRange.def",
             "2q_MsgTypeNotValid.def",
+            "2t_FirstThreeFieldsOutOfOrder.def",
+            "4a_NoDataSentDuringHeartBtInt.def",
+            "4b_ReceivedTestRequest.def",
+            "6_SendTestRequest.def",
             "7_ReceiveRejectMessage.def",
             "ReverseRoute.def",
             "ReverseRouteWithEmptyRoutingTags.def",
+            "SessionReset.def",
         ],
-        "and these are the twenty-seven, named"
+        "and these are the thirty-seven, named"
     );
 }
 
@@ -200,8 +212,7 @@ fn field(wire: &[u8], tag: u32) -> Option<&[u8]> {
     Some(&wire[at..end])
 }
 
-/// The step-1 six are still in the fourteen.
-/// The step-1 six are still in the twenty-seven.
+/// The step-1 six are still in the thirty-seven.
 ///
 /// Not implied by the count: each step adds files and could lose one to a rule
 /// that now fires earlier. Step 2 did exactly that to two files, and only a

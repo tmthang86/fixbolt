@@ -168,16 +168,25 @@ pub fn run<S: SessionUnderTest>(mut make: impl FnMut(&Scenario) -> S) -> Result<
     Ok(report)
 }
 
+/// How many heartbeat intervals the harness will wait for output the file
+/// expects and the session has not produced.
+///
+/// A `.def` file has no "wait" directive: an `E` line with no `I` line in front
+/// of it *is* the wait. Three is enough for every file in the corpus —
+/// `6_SendTestRequest`, the one that waits most, needs one per line.
+const WAITS: usize = 3;
+
 /// Drive one file. Returns every failure in it, in line order.
 pub fn run_scenario<S: SessionUnderTest>(s: &Scenario, session: &mut S) -> Vec<Failure> {
     let mut failures = Vec::new();
     // Outbound messages the session has produced and no `E` line has claimed.
     let mut pending: Vec<Vec<u8>> = Vec::new();
     let mut dropped: Vec<Conn> = Vec::new();
-    // A session has no clock, so the harness is its clock. Fixed for now: the
-    // corpus writes one instant into every `I` line and the session must agree
-    // with it. Step 4 of the session plan makes this advance.
-    let tick = Input::Tick(FIXED_TIME_MILLIS);
+    // A session has no clock, so the harness is its clock. It starts at the
+    // instant the corpus writes into every `I` line and only ever moves
+    // forward, one `HeartBtInt` at a time and only when the file is waiting.
+    let mut now = FIXED_TIME_MILLIS;
+    let beat = heart_bt_ms(s);
 
     for step in &s.steps {
         let conn = Conn(step.session.unwrap_or(1));
@@ -190,13 +199,13 @@ pub fn run_scenario<S: SessionUnderTest>(s: &Scenario, session: &mut S) -> Vec<F
             Kind::Connect => {
                 dropped.retain(|c| *c != conn);
                 feed(session, conn, Input::Connect, &mut pending, &mut dropped);
-                feed(session, conn, tick, &mut pending, &mut dropped);
+                feed(session, conn, Input::Tick(now), &mut pending, &mut dropped);
             }
             Kind::Disconnect => {
                 feed(session, conn, Input::Disconnect, &mut pending, &mut dropped);
             }
             Kind::Send(m) => {
-                feed(session, conn, tick, &mut pending, &mut dropped);
+                feed(session, conn, Input::Tick(now), &mut pending, &mut dropped);
                 feed(
                     session,
                     conn,
@@ -205,15 +214,38 @@ pub fn run_scenario<S: SessionUnderTest>(s: &Scenario, session: &mut S) -> Vec<F
                     &mut dropped,
                 );
             }
-            Kind::Expect(m) => match pop_front(&mut pending) {
-                None => failures.push(at(Reason::NoOutput)),
-                Some(actual) => {
-                    if let Err(e) = compare(&m.wire, &actual) {
-                        failures.push(at(Reason::Mismatch(e)));
+            Kind::Expect(m) => {
+                // `[measured]` 33 of the 250 `E` lines do not follow an `I`
+                // line. They are the engine speaking on its own — a heartbeat
+                // that came due, a test request after silence — so the only
+                // thing that can produce them is time passing.
+                for _ in 0..WAITS {
+                    if !pending.is_empty() {
+                        break;
+                    }
+                    now += beat;
+                    feed(session, conn, Input::Tick(now), &mut pending, &mut dropped);
+                }
+                match pop_front(&mut pending) {
+                    None => failures.push(at(Reason::NoOutput)),
+                    Some(actual) => {
+                        if let Err(e) = compare(&m.wire, &actual) {
+                            failures.push(at(Reason::Mismatch(e)));
+                        }
                     }
                 }
-            },
+            }
             Kind::ExpectDisconnect => {
+                // Same rule, and `6_SendTestRequest` is why: its last line is a
+                // disconnect the session reaches by running out of patience,
+                // with no message in between.
+                for _ in 0..WAITS {
+                    if dropped.contains(&conn) {
+                        break;
+                    }
+                    now += beat;
+                    feed(session, conn, Input::Tick(now), &mut pending, &mut dropped);
+                }
                 if !dropped.contains(&conn) {
                     failures.push(at(Reason::StillConnected));
                 }
@@ -244,6 +276,59 @@ fn feed<S: SessionUnderTest>(
     if link == Link::Dropped && !dropped.contains(&conn) {
         dropped.push(conn);
     }
+}
+
+/// The `HeartBtInt` this file's counterparty asked for, in milliseconds.
+///
+/// Taken from the file's own Logon rather than configured, because the corpus
+/// varies it deliberately: `[measured]` `108=30` in most files, `108=6` in
+/// `4a_NoDataSentDuringHeartBtInt` and `6_SendTestRequest` — the only two whose
+/// output depends on it — and `108=2` in the initiator definitions this crate
+/// does not run. 30 seconds if the file never says.
+fn heart_bt_ms(s: &Scenario) -> u64 {
+    for step in &s.steps {
+        if let Kind::Send(m) = &step.kind
+            && field(&m.wire, 35) == Some(b"A")
+            && let Some(v) = field(&m.wire, 108)
+            && let Ok(secs) = core::str::from_utf8(v).unwrap_or("").parse::<u64>()
+        {
+            return secs * 1_000;
+        }
+    }
+    30_000
+}
+
+/// The value of one field of a wire message, by tag.
+fn field(wire: &[u8], tag: u32) -> Option<&[u8]> {
+    let mut needle = [0u8; 12];
+    needle[0] = 0x01;
+    let mut n = 1;
+    let mut digits = [0u8; 10];
+    let mut at = digits.len();
+    let mut t = tag;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + u8::try_from(t % 10).unwrap_or(0);
+        t /= 10;
+        if t == 0 {
+            break;
+        }
+    }
+    for &d in &digits[at..] {
+        needle[n] = d;
+        n += 1;
+    }
+    needle[n] = b'=';
+    n += 1;
+    let needle = &needle[..n];
+    // The first field has no SOH in front of it, so try it separately.
+    let start = if wire.starts_with(&needle[1..]) {
+        needle.len() - 1
+    } else {
+        wire.windows(needle.len()).position(|w| w == needle)? + needle.len()
+    };
+    let end = wire[start..].iter().position(|&b| b == 0x01)? + start;
+    Some(&wire[start..end])
 }
 
 fn pop_front(v: &mut Vec<Vec<u8>>) -> Option<Vec<u8>> {

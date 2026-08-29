@@ -59,9 +59,9 @@ Every one is a command that either passes or fails. A criterion nobody can run i
 
 | # | Criterion | Gate |
 |---|---|---|
-| 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-28]` **27 / 59**: step 3 of six, and the revised prediction was 27 |
+| 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **37 / 59**: step 4 of six, and the revised prediction was 37 |
 | 2 | Repeating groups | **Met 2026-08-28.** Read and written for all **93** groups `[measured]`; order agreed with QuickFIX's generated C++ on 730/730. **The 59 definitions do not test this** — see §4 |
-| 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion. `[measured 2026-08-28]` **the tables exist**: 912 tags, 93 message types, 12 524 (message, tag) pairs, 23 field types, 1 708 enum values. **Applied by the session as of step 3** — all twelve `373` codes are produced, and a test asserts that rather than inferring it from the file count |
+| 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion. `[measured 2026-08-28]` **the tables exist**: 912 tags, 93 message types, 12 524 (message, tag) pairs, 23 field types, 1 708 enum values. **Applied by the session as of step 3** — all twelve `373` codes are produced, and a test asserts that rather than inferring it from the file count. `[2026-08-29]` one type rule was wrong and the corpus caught it: `SEQNUM` refused `0`, on a rule this project invented and an invented test that agreed with it |
 | 4 | Both sides | Acceptor 59/59; initiator interop-green against `libquickfix` in CI |
 | 5 | Allocations on the hot path | **0**, proven by `benches/alloc.rs` |
 | 6 | Wire-to-wire | p50 / p99 / p99.9 published from `tools/w2w` on Linux with the §9 settings stated |

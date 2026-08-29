@@ -1,6 +1,6 @@
 # Máy trạng thái session FIX 4.4 — từ 0/59 lên 59/59
 
-> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 3/6 xong)
+> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 4/6 xong)
 > **Phạm vi:** Phase 1, tiêu chí 1 của `PRD.md` §2. Đây là plan lớn nhất dự án.
 
 ## Bối cảnh
@@ -294,6 +294,27 @@ Heartbeat không có `56=` và chờ `373=1` với `371=56`. Nhưng `required(ms
 lực mới, nhưng nó vẫn là public API nên ghi ra đây thay vì làm im. Plan dict đã đóng và
 `CLAUDE.md` §5 cấm sửa nội dung một bản ghi đã đóng, nên chỗ ghi là plan đang chạy — plan này.
 
+### Sửa 8 — bước 4 phải làm nhiều hơn dòng mô tả của nó
+
+**Dòng "Chia việc" của bước 4 viết:** Heartbeat, TestRequest, luật `Tick`.
+
+**Thực tế:** bảng phân loại đã sửa (Sửa 4) giao cho bước 4 **10 file**, và ba trong số đó cần
+những thứ dòng ấy không nhắc tới. Bảng phân loại nhóm file theo *cái session phát ra*, còn dòng
+mô tả nói về *cái session phải hiểu* — hai chuyện khác nhau, và với ba file này chúng lệch:
+
+| File | Phát ra | Nhưng phải hiểu |
+|---|---|---|
+| `10_*`, `11a`, `11b`, `11c` | `{A, 5, 0}` hoặc `{A, 5, 3, 0}` | `SequenceReset (35=4)` vào, cả gap fill lẫn không |
+| `SessionReset` | `{A, 5, 0}` | `141=Y` `ResetSeqNumFlag` trên Logon |
+| `2t` | `{A, 5, 0}` | bản tin hỏng phải **bỏ qua**, không ngắt kết nối |
+
+`SequenceReset` nằm ở dòng bước 5 của bảng "Chia việc". Nhưng bước 5 là *phát* `2` và `4`;
+phần *nhận* thuộc về những file này. Đã làm ở bước 4 và ghi ở đây. Dự đoán điểm không đổi:
+bảng phân loại vốn đã tính đúng 10 file, chỉ dòng mô tả là hụt.
+
+**Bài học: một plan mô tả việc bằng tên bản tin thì sẽ hụt ở mọi chỗ mà đọc và viết không đối
+xứng.**
+
 ## Nhật ký giao hàng
 
 ### Bước 1 — 2026-08-28 — **6 / 59**, đúng dự đoán
@@ -404,6 +425,92 @@ Thêm một cổng ngoài điểm số: `all_twelve_session_reject_reasons_are_p
 không nói được điều này — `14a` có bốn ca và một session trả cùng một mã cho cả bốn vẫn qua file.
 
 **Cấp phát:** `accept 0 refuse 0 tick 0 clock 0 text 0`.
+
+**Cổng:** `fmt --check`, `clippy --all-targets --all-features -D warnings`, `test --all`,
+`test --all --no-default-features`, `check-lint-config.sh`, `check-links.py` — tất cả rc=0.
+Máy: Apple M5, macOS 25.5.0, cargo 1.95.0.
+### Bước 4 — 2026-08-29 — **37 / 59**, đúng dự đoán đã sửa
+
+Đồng hồ. `Heartbeat (35=0)`, `TestRequest (35=1)`, `SequenceReset` vào, `141=Y`, và bản tin
+hỏng thì bỏ qua thay vì ngắt. Cộng thêm luật `Tick` ở runner.
+
+**Corpus không nhìn thấy một ngưỡng nào cả.** Harness chỉ đẩy đồng hồ được từng `HeartBtInt`
+một, nên `[đo 2026-08-29]` mọi ngưỡng test request trong (1×, 2×] và mọi ngưỡng bỏ cuộc trong
+(2×, 3×] đều tái tạo `6_SendTestRequest.def` y hệt. Ba con số 1.0 / 1.2 / 2.4 là của QuickFIX
+và chỉ `tests/heartbeat.rs` giữ chúng — nó đẩy đồng hồ từng mili giây và kiểm cả hai phía biên.
+
+**Thứ tự kiểm số thứ tự là *của từng `MsgType`*, không phải một luật chung.** QuickFIX gọi
+`verify(msg, checkTooHigh, checkTooLow)` với tham số khác nhau từ mỗi handler:
+
+| `35=` | kiểm quá thấp | tăng `34=` vào | File chứng minh |
+|---|---|---|---|
+| `5` Logout | **không** | có | `10_MsgSeqNumEqual` — gap fill lên 20 rồi logout với `34=3` |
+| `4` có `123=Y` | có | **không** | `10_MsgSeqNumLess` |
+| `4` không gap fill | **không** | **không** | `11a`, `11b`, `11c` — cả ba gửi `34=0` |
+| còn lại | có | có | `2c`, `14a` |
+
+Áp một luật cho tất cả thì được **36 / 59**, và mất file nào thì tuỳ luật chọn — đã đảo ngược
+đủ bốn cách.
+
+**Một luật tôi tự bịa, và corpus bác.** `FieldType::SeqNum` từ chối `34=0`, chú thích viện dẫn
+`11c_NewSeqNoLess.def` làm bằng chứng — và đọc sai file ấy. `11c` từ chối vì `36=1` thấp hơn số
+đã tới (`373=5`, **không có `371=`**), chứ không phải vì `34=0` sai kiểu (thì đã là `373=6` với
+`371=34`). Ca kiểm thử phủ định tương ứng nằm đúng trong khối mà chú thích của chính nó ghi
+"những ca này viết tay, không lấy từ capture". **Một ca bịa ra đồng ý với một luật bịa ra là
+hai lần phát biểu cùng một phỏng đoán, và nó đọc y như một cái test.** Khôi phục luật cũ:
+37 → 34.
+
+**Đảo ngược: 32 lần, cả 32 đỏ — sau khi sửa ba lần đảo ngược vô giá trị.**
+
+22 lần đầu chạy vào cổng điểm số:
+
+| Bỏ đi | Điểm |
+|---|---|
+| runner không đẩy đồng hồ ở dòng `E` | 35 |
+| runner không đẩy đồng hồ ở `eDISCONNECT` | 36 |
+| runner đặt lại đồng hồ về mốc corpus trước mỗi `I` | 35 |
+| runner hard-code `HeartBtInt` 30 s | 35 |
+| `112=` tự sinh không phải chữ `TEST` | 36 |
+| trả lời TestRequest bằng ID của mình | **29** |
+| một tick phát hai bản tin | 36 |
+| kiểm test request trước khi kiểm hết hạn | 36 |
+| bản tin đến không xoá test request đang treo | 36 |
+| bản tin hỏng lại thành chí mạng | 36 |
+| Logon hỏng bị bỏ qua như mọi bản tin khác | 36 |
+| `35=` không cần là trường thứ ba | 36 |
+| Logout bị kiểm số thứ tự | 36 |
+| `SequenceReset` thường bị kiểm số thứ tự | 34 |
+| `SequenceReset` tăng số thứ tự vào | 36 |
+| `36=NewSeqNo` lùi mà không bị Reject | 36 |
+| `141=Y` không đặt lại hai bộ đếm | 36 |
+| `141=Y` không được ném lại | 36 |
+| khoảng nhịp hard-code thay vì lấy của đối tác | 35 |
+| im lặng không đo từ lần nhận cuối | **6** |
+| im lặng không đo từ lần gửi cuối | **6** |
+| `SeqNum` từ chối số 0 trở lại | 34 |
+
+10 lần sau chạy vào `tests/heartbeat.rs`, mỗi lần đỏ đúng test giữ luật đó: ba ngưỡng 1.0 /
+1.2 / 2.4, việc kiên nhẫn nới ra theo số test request đang treo, việc một test request chưa
+trả lời làm im nhịp tim, `108=0`, và cả hai vế của luật "bản tin hỏng chỉ chí mạng khi nó tự
+xưng là Logon".
+
+**Ba lần đảo ngược vô giá trị, và cả ba là cùng một hình dạng: hai chốt che nhau.**
+
+- `else if` cho nhịp tim **và** điều kiện `test_requests == 0` — bỏ cái nào cũng xanh, vì cái
+  còn lại đủ. Giữ điều kiện (nó chặn được cả khoảng giữa 1.2× và 2.4×, `else` thì không), bỏ
+  `else`. Đảo ngược lại thì đỏ.
+- `connect` xoá đồng hồ **và** `tick` trả về sớm khi chưa logon — bỏ cái nào cũng xanh. Giữ
+  cái kiểm trạng thái, bỏ khối xoá trong `connect`, vì mọi trường nó xoá đều bị Logon ghi đè
+  trước khi có ai đọc.
+- Một test viết sai: nó kiểm output rỗng mà không kiểm `Link`, nên đảo ngược làm rớt kết nối
+  vẫn xanh. Đã kiểm cả hai.
+
+**Bench cấp phát mọc thêm hai ca**, vì bước này thêm hai đường *gửi*: `beat` (tick tự phát nhịp
+tim) và `answer` (trả lời TestRequest). Ca `accept` cũng sửa: nó phát lại một Logon vào **cùng**
+một session 10 000 lần, nên 9 999 lần đo nhánh thoát sớm chứ không đo đường nó mang tên.
+
+`allocations: accept 0 refuse 0 tick 0 beat 0 answer 0 clock 0 text 0`. Đảo ngược (một
+`format!` trên cả hai đường mới) cho `beat 10000 answer 10000`.
 
 **Cổng:** `fmt --check`, `clippy --all-targets --all-features -D warnings`, `test --all`,
 `test --all --no-default-features`, `check-lint-config.sh`, `check-links.py` — tất cả rc=0.

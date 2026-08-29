@@ -10,9 +10,9 @@ Last updated: **2026-08-28**.
 | | |
 |---|---|
 | Branch | **`plan/dict-validation`**, on top of `plan/session-layer` |
-| Milestone | **M2 — the session layer.** `[measured 2026-08-28]` **27 / 59**, step 3 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
+| Milestone | **M2 — the session layer.** `[measured 2026-08-29]` **37 / 59**, step 4 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–2 of 6 done: 14 / 59.** Step 1 hit its prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus — seven revisions recorded in the plan. Steps 1–3 done |
+| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–4 of 6 done: 37 / 59.** Steps 1, 3 and 4 hit their prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus. Eight revisions recorded in the plan |
 | Last closed | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — closed 2026-08-28. Four validation tables, agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 12 524/12 524 message-tag pairs and 1 708/1 708 enum values |
 | Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
@@ -175,6 +175,21 @@ Last updated: **2026-08-28**.
 - **One reversal was worthless and it is worth recording why.** It deleted a
   `next_in = seq + 1` that could never be reached, and nothing changed — which says nothing
   about the guard. A reversal has to alter behaviour before its green means anything.
+- **The session scores 37 / 59, 2026-08-29 — step 4, and the revised prediction was 37.**
+  Heartbeat, TestRequest, inbound `SequenceReset`, `ResetSeqNumFlag`, and a garbled frame that
+  is ignored rather than fatal. Thirty-two reversals were run and all thirty-two go red.
+- **Whether a message's sequence number is checked is per `MsgType`, not one rule.** A Logout is
+  never checked; a `SequenceReset` never advances the count at all. Applying one rule to
+  everything costs a file whichever rule is picked — measured four ways. Written up in
+  [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md).
+- **A rule this project invented was refuted by the corpus.** `FieldType::SeqNum` refused `34=0`,
+  and its comment cited `11c_NewSeqNoLess.def` — which it had misread. `11a`, `11b` and `11c` all
+  send `34=0` and QuickFIX processes them; restoring the rule costs three files. The refused case
+  lived in the block whose own doc comment says the cases there are invented. **An invented test
+  agreeing with an invented rule is one guess written twice.**
+- **Three reversals were worthless in step 4, all the same shape: two guards covering one rule.**
+  Each pair was reduced to the single guard that can actually be broken. A fourth was a test that
+  checked the output and not the link, so a reversal that dropped the connection stayed green.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -193,6 +208,10 @@ Last updated: **2026-08-28**.
   file is real evidence and is not the same as a venue accepting the bytes. Nothing here has
   been sent to a real FIX peer.
 - **DATA fields inside a repeating group are untested** on both paths — open item 8.
+- **None of the three heartbeat thresholds is visible to the corpus.** The acceptance harness
+  can only tick a whole `HeartBtInt` at a time, so any test-request threshold in (1×, 2×] and any
+  timeout in (2×, 3×] reproduces `6_SendTestRequest.def` exactly. The numbers 1.0, 1.2 and 2.4
+  are QuickFIX's, and `crates/session/tests/heartbeat.rs` is the only thing holding them.
 - **Whether a Reject consumes the inbound sequence number is invisible to the corpus.** The
   *too high* branch does not exist yet, so a message running ahead is read as if it were in
   order and a sequence number that never advanced looks exactly like one that did. Held by

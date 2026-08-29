@@ -111,8 +111,18 @@ fn step(&mut self, input: Input<'_>, out: &mut ActionBuf) -> Result<(), SessionE
 ```
 
 ```rust
-pub enum Role { Acceptor, Initiator }   // set at construction, never changes
+pub trait Role: sealed::Sealed { const SPEAKS_FIRST: bool; }
+pub struct Acceptor;   // SPEAKS_FIRST = false
+pub struct Initiator;  // SPEAKS_FIRST = true
 ```
+
+**Written, and it came out narrower than the sketch.** `[measured 2026-08-29]` `Role` is a
+sealed trait with two marker types rather than an enum, so the branch is resolved at compile
+time and costs nothing at run time. `ActionBuf` does not exist: the four inputs are four
+methods — `connect`, `disconnect`, `tick`, `received` — each taking an `emit` closure the
+caller supplies, and each answering `Link::{Up, Dropped}`. One input may call `emit` up to five
+times; `[measured]` two files in the corpus need five. The buffer the messages are written into
+is the session's own, so nothing is borrowed from the input. The rest of this section stands.
 
 **One machine, both roles.** The acceptor waits for `Logon` and answers; the initiator sends
 `Logon` and waits. Sequence handling, resend, heartbeat, test-request and logout are the same
@@ -424,10 +434,10 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**. `[measured]` **93.8 ns — the target is NOT met** | `benches/serialize.rs`, asserting a 190 ns regression ceiling |
 | `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is | `benches/dispatch.rs` |
 | Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
-| Allocations on the hot path — session | **0**, on the accept path **and** the refusal path | `crates/session/benches/alloc.rs`. The refusal path is counted separately because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for |
+| Allocations on the hot path — session | **0**, counted separately on seven paths: accept, refuse, tick, beat, answer, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
-| The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs` and `tests/reject.rs`. `[measured]` three so far: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged too, because `52` is one of the five tags `fields.fmt` matches by shape; and a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet |
-| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-28]` **27 / 59** — step 3 of six in the session plan |
+| The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`, `tests/reject.rs` and `tests/heartbeat.rs`. `[measured]` seven so far. Three from steps 1–3: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged, because `52` is one of the five tags `fields.fmt` matches by shape; a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet. Four from step 4: all three heartbeat thresholds, which the harness's whole-interval ticks cannot see; and that a garbled frame is fatal only when it claims to be a Logon, which the corpus states once from each side in different files |
+| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **37 / 59** — step 4 of six in the session plan |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |

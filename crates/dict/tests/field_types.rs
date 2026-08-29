@@ -35,7 +35,9 @@ fn every_type_refuses_something() {
     let cases: &[(FieldType, &[u8], &[u8])] = &[
         (FieldType::Int, b"42", b"4.2"),
         (FieldType::Length, b"9", b"-9"),
-        (FieldType::SeqNum, b"1", b"0"),
+        // Not `b"0"`: `11a`/`11b`/`11c` send `34=0` and QuickFIX processes
+        // them. That case was invented, and the corpus refuted it.
+        (FieldType::SeqNum, b"0", b"-1"),
         (FieldType::NumInGroup, b"3", b""),
         (FieldType::Float, b"-1.5", b"1.5.5"),
         (FieldType::Qty, b"100", b"1e5"),

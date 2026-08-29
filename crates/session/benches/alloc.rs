@@ -65,6 +65,11 @@ fn count<F: FnOnce()>(f: F) -> usize {
 /// allocations for a path it never walked. The links are asserted below for
 /// the same reason.
 fn first_input(file: &str) -> Vec<u8> {
+    inputs(file).into_iter().next().expect("an I line")
+}
+
+/// Every `I` line of a definition file, in order.
+fn inputs(file: &str) -> Vec<Vec<u8>> {
     scenarios()
         .expect("corpus")
         .into_iter()
@@ -72,11 +77,11 @@ fn first_input(file: &str) -> Vec<u8> {
         .unwrap_or_else(|| panic!("{file} is not in the corpus"))
         .steps
         .into_iter()
-        .find_map(|s| match s.kind {
+        .filter_map(|s| match s.kind {
             Kind::Send(m) => Some(m.wire),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("{file} has no I line"))
+        .collect()
 }
 
 fn acceptor() -> Session<Acceptor, 256> {
@@ -120,9 +125,16 @@ fn main() {
         );
     }
 
+    // A fresh session each time. Replaying one Logon into the *same* session
+    // would be refused as a sequence number already used from the second
+    // iteration on, and 9 999 of the 10 000 would measure the early return
+    // rather than the path this case is named for.
     let accept_allocs = count(|| {
         for _ in 0..10_000 {
-            session.received(&good, |_| ());
+            let mut s = acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            s.received(&good, |_| ());
         }
     });
 
@@ -147,6 +159,45 @@ fn main() {
     let tick_allocs = count(|| {
         for i in 0..10_000u64 {
             session.tick(now + i, |_| ());
+        }
+    });
+
+    // The two paths step 4 added, and both of them *send*. `108=30` in `4b`'s
+    // Logon, so one tick a whole interval later is a heartbeat this session
+    // decided on by itself — the only output in this crate that no input asked
+    // for. A fresh session per iteration, for the reason `accept` gives.
+    let heartbeat_wire = inputs("4b_ReceivedTestRequest.def");
+    let (beat_logon, test_request) = (&heartbeat_wire[0], &heartbeat_wire[1]);
+    {
+        let mut s = acceptor();
+        s.connect(|_| ());
+        s.tick(now, |_| ());
+        s.received(beat_logon, |_| ());
+        let mut sent = 0usize;
+        s.tick(now + 30_000, |_| sent += 1);
+        assert_eq!(sent, 1, "the beat path must actually beat");
+        let mut answered = 0usize;
+        s.received(test_request, |_| answered += 1);
+        assert_eq!(answered, 1, "the answer path must actually answer");
+    }
+
+    let beat_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s = acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            s.received(beat_logon, |_| ());
+            s.tick(now + 30_000, |_| ());
+        }
+    });
+
+    let answer_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s = acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            s.received(beat_logon, |_| ());
+            s.received(test_request, |_| ());
         }
     });
 
@@ -177,17 +228,20 @@ fn main() {
 
     println!(
         "allocations: accept {accept_allocs} refuse {refuse_allocs} \
-         tick {tick_allocs} clock {clock_allocs} text {text_allocs}"
+         tick {tick_allocs} beat {beat_allocs} answer {answer_allocs} \
+         clock {clock_allocs} text {text_allocs}"
     );
     assert_eq!(
         (
             accept_allocs,
             refuse_allocs,
             tick_allocs,
+            beat_allocs,
+            answer_allocs,
             clock_allocs,
             text_allocs
         ),
-        (0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0),
         "non-negotiable 1: the session layer allocates nothing, on any path"
     );
 }

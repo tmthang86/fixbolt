@@ -54,13 +54,29 @@ pub(crate) mod tag {
     pub const TEXT: u32 = 58;
     pub const ENCRYPT_METHOD: u32 = 98;
     pub const HEART_BT_INT: u32 = 108;
+    pub const NEW_SEQ_NO: u32 = 36;
+    pub const TEST_REQ_ID: u32 = 112;
+    pub const GAP_FILL_FLAG: u32 = 123;
+    pub const RESET_SEQ_NUM_FLAG: u32 = 141;
 }
 
 /// `MsgType` values this layer acts on.
 mod msg {
     pub const LOGON: &[u8] = b"A";
     pub const LOGOUT: &[u8] = b"5";
+    pub const TEST_REQUEST: &[u8] = b"1";
+    pub const SEQUENCE_RESET: &[u8] = b"4";
 }
+
+/// The `TestReqID` this session writes when it asks the question itself.
+///
+/// **A constant because the oracle makes it one.** `112` is absent from
+/// `test/definitions/fields.fmt`, so `Comparator.rb` matches it byte for byte,
+/// and `6_SendTestRequest.def` writes `112=TEST` twice. Nothing in FIX 4.4 says
+/// a `TestReqID` must be any particular string — a counter or a timestamp would
+/// be just as correct on the wire and would fail this gate. It is QuickFIX's
+/// default, and this is the one place that depends on it.
+const OWN_TEST_REQ_ID: &[u8] = b"TEST";
 
 /// Whether the connection survived the input.
 ///
@@ -220,8 +236,6 @@ enum State {
 /// that deserve a `Reject (35=3)` into one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refusal {
-    /// The frame could not be read: bad `9=`, bad `10=`, an unreadable tag.
-    Malformed,
     /// `8=` is not the configured BeginString.
     WrongBeginString,
     /// The first message on a connection was not a Logon.
@@ -271,6 +285,17 @@ pub struct Session<R: Role, const N: usize> {
     next_out: u32,
     /// `34=` this session expects next from the counterparty.
     next_in: u32,
+    /// The counterparty's `108=`, in milliseconds. Zero until a Logon says
+    /// otherwise, and zero means no heartbeats at all — which is what FIX 4.4
+    /// says `108=0` means.
+    beat_ms: u64,
+    /// When this session last put a message on the wire, and last accepted one.
+    /// Both are read only by [`Session::tick`].
+    last_sent_ms: u64,
+    last_recv_ms: u64,
+    /// How many `TestRequest`s have gone out since the last message arrived.
+    /// QuickFIX widens its patience by this count and so does this.
+    test_requests: u32,
     _role: PhantomData<R>,
 }
 
@@ -294,6 +319,10 @@ impl<R: Role, const N: usize> Session<R, N> {
             stamp: TimestampCache::new(),
             next_out: 1,
             next_in: 1,
+            beat_ms: 0,
+            last_sent_ms: 0,
+            last_recv_ms: 0,
+            test_requests: 0,
             _role: PhantomData,
         }
     }
@@ -314,6 +343,12 @@ impl<R: Role, const N: usize> Session<R, N> {
         // expects `34=1` back both times.
         self.next_out = 1;
         self.next_in = 1;
+        // The heartbeat clock is deliberately **not** reset here. Every field
+        // it uses is written again before it can be read: `beat_ms`,
+        // `last_recv_ms` and `test_requests` by the Logon this connection must
+        // now send, `last_sent_ms` by the reply. Clearing them as well changed
+        // nothing when it was reversed, and a line that cannot be broken is
+        // not a guard.
         // An initiator speaks first. Step 2 gives it something to say; until
         // then the constant is read here so the role parameter is not decoration.
         if R::SPEAKS_FIRST {
@@ -330,14 +365,80 @@ impl<R: Role, const N: usize> Session<R, N> {
     }
 
     /// Time passed. `now_ms` is milliseconds since 0000-01-01 — see [`clock`].
-    pub fn tick<F: FnMut(&[u8])>(&mut self, now_ms: u64, emit: F) -> Link {
-        let _ = emit;
+    ///
+    /// This is the only thing that makes a session speak without being spoken
+    /// to, and the three thresholds are QuickFIX's, in QuickFIX's order:
+    ///
+    /// | Silence since the last message arrived | Answer |
+    /// |---|---|
+    /// | ≥ 2.4 × `HeartBtInt` | give up the link |
+    /// | ≥ 1.2 × (n+1) × `HeartBtInt` | send a `TestRequest`, n being how many are already outstanding |
+    /// | otherwise, and ≥ 1 × `HeartBtInt` since *we* last spoke | send a `Heartbeat` |
+    ///
+    /// **At most one message leaves per call**, which is what makes the corpus
+    /// readable: `6_SendTestRequest.def` expects exactly one `E` line per
+    /// interval of waiting, and a tick that sent both a test request and a
+    /// heartbeat would put two where the file allows one.
+    pub fn tick<F: FnMut(&[u8])>(&mut self, now_ms: u64, mut emit: F) -> Link {
         self.now_ms = now_ms;
         match self.state {
-            State::Disconnected => Link::Dropped,
-            State::AwaitingLogon | State::LoggedOn => Link::Up,
-            State::AwaitingLogout => Link::Dropped,
+            State::Disconnected | State::AwaitingLogout => return Link::Dropped,
+            // Before a Logon there is no agreed interval, so there is nothing
+            // to measure — and this is the **only** thing that says so, which
+            // is why `connect` no longer clears the clock as well. A logon
+            // timeout is the engine's business, and no acceptance definition
+            // tests one. `tests/heartbeat.rs` holds this.
+            State::AwaitingLogon => return Link::Up,
+            State::LoggedOn => {}
         }
+        // `108=0` means the counterparty asked for no heartbeats at all.
+        if self.beat_ms == 0 {
+            return Link::Up;
+        }
+        let quiet = now_ms.saturating_sub(self.last_recv_ms);
+        let silent = now_ms.saturating_sub(self.last_sent_ms);
+
+        if quiet >= self.beat_ms * 24 / 10 {
+            self.state = State::Disconnected;
+            return Link::Dropped;
+        }
+        if quiet >= self.beat_ms * 12 * u64::from(self.test_requests + 1) / 10 {
+            self.test_requests += 1;
+            let _ = self.send(
+                Which::TestRequest,
+                &[(tag::TEST_REQ_ID, OWN_TEST_REQ_ID)],
+                &mut emit,
+            );
+        }
+        // An unanswered `TestRequest` silences the heartbeat until it is
+        // answered — `needHeartbeat` in QuickFIX carries `testRequest() == 0`.
+        // The counter was incremented above, so this also makes the branch
+        // above and this one mutually exclusive: one message per tick at most.
+        //
+        // **The corpus cannot see this rule.** Its harness ticks a whole
+        // interval at a time, so the test request and the timeout land on
+        // consecutive ticks with nothing in between. `tests/heartbeat.rs` ticks
+        // by the millisecond and is what holds it.
+        if self.test_requests == 0 && silent >= self.beat_ms {
+            let _ = self.send(Which::Heartbeat, &[], &mut emit);
+        }
+        Link::Up
+    }
+
+    /// A frame the codec could not read at all.
+    ///
+    /// QuickFIX identifies the type out of the raw bytes and hangs up **only**
+    /// if it says Logon; anything else is logged and ignored, and the
+    /// counterparty carries on from where it was.
+    /// `1d_InvalidLogonLengthInvalid.def` is the Logon half — one bad `9=` and
+    /// the link goes — and `2d`, `3c` and `2t` are the other, where the
+    /// following message must be read as though the garbled one never arrived.
+    fn garbled(&mut self, bytes: &[u8]) -> Link {
+        if msg_type_of(bytes) == Some(msg::LOGON) {
+            self.state = State::Disconnected;
+            return Link::Dropped;
+        }
+        Link::Up
     }
 
     /// One whole message arrived. Framing is the transport's job.
@@ -473,18 +574,23 @@ impl<R: Role, const N: usize> Session<R, N> {
             logon,
             logout,
             reject,
+            heartbeat,
+            test_request,
             buf,
         } = o;
         let template = match which {
             Which::Logon => &*logon,
             Which::Logout => &*logout,
             Which::Reject => &*reject,
+            Which::Heartbeat => &*heartbeat,
+            Which::TestRequest => &*test_request,
         };
         let range = template
             .encode(buf, &slots[..n])
             .map_err(|_| Refusal::CannotSend)?;
         emit(&buf[range]);
         self.next_out += 1;
+        self.last_sent_ms = self.now_ms;
         Ok(())
     }
 
@@ -518,7 +624,17 @@ impl<R: Role, const N: usize> Session<R, N> {
                 }
                 return Ok(self.send_reject(&r, emit));
             }
-            Err(_) => return Err(Refusal::Malformed),
+            Err(_) => return Ok(self.garbled(bytes)),
+        }
+
+        // `MsgType` must be the third field. This codec deliberately leaves
+        // that to the session — `ParseError::BadFrameStart` covers `8=` and
+        // `9=` and says so — and QuickFIX's own parser treats a message that
+        // breaks it as unreadable rather than as a rejectable fault.
+        // `[measured]` `2t_FirstThreeFieldsOutOfOrder.def` is the only file in
+        // the corpus that sends one, and it expects both to be ignored.
+        if self.idx.view(bytes).field_at(2).map(|(t, _)| t) != Some(tag::MSG_TYPE) {
+            return Ok(self.garbled(bytes));
         }
 
         let view = self.idx.view(bytes);
@@ -618,6 +734,17 @@ impl<R: Role, const N: usize> Session<R, N> {
         let msg_type = view.get(tag::MSG_TYPE).unwrap_or_default();
         let is_logon = msg_type == msg::LOGON;
         let is_logout = msg_type == msg::LOGOUT;
+        let is_test_request = msg_type == msg::TEST_REQUEST;
+        let is_sequence_reset = msg_type == msg::SEQUENCE_RESET;
+        // `123=` defaults to `N` when absent — `11a` and `11b` leave it out and
+        // their comments say "default to N".
+        let gap_fill = view.get(tag::GAP_FILL_FLAG) == Some(b"Y");
+        let new_seq_no = view.get(tag::NEW_SEQ_NO).and_then(|v| as_u32(v).ok());
+        let reset_seq = view.get(tag::RESET_SEQ_NUM_FLAG) == Some(b"Y");
+        // 64 bytes: the corpus's longest is `HELLO1`. A longer one is dropped
+        // rather than truncated, and the reply then carries no `112=` at all —
+        // wrong, but visibly wrong, which a truncation would not be.
+        let test_req_id = copy::<64>(view.get(tag::TEST_REQ_ID));
         let seq = view
             .get(tag::MSG_SEQ_NUM)
             .and_then(|v| as_u32(v).ok())
@@ -626,11 +753,39 @@ impl<R: Role, const N: usize> Session<R, N> {
         let encrypt = copy::<8>(view.get(tag::ENCRYPT_METHOD));
         let heart_bt = copy::<8>(view.get(tag::HEART_BT_INT));
 
+        // A Logon carrying `141=Y` restarts both counts **before** its own
+        // sequence number is judged: QuickFIX resets in `nextLogon` and only
+        // then verifies. `SessionReset.def` sends `34=1` to a session sitting
+        // at 11 and expects `34=1` back.
+        if is_logon && reset_seq {
+            self.next_in = 1;
+            self.next_out = 1;
+        }
+
+        // Which messages have their sequence number checked, and which advance
+        // it, is per `MsgType` in QuickFIX — `verify(msg, checkTooHigh,
+        // checkTooLow)` is called with different arguments from each handler,
+        // and `nextSequenceReset` is the one that never advances at all.
+        //
+        // | `35=` | too low checked | advances `34=` in |
+        // |---|---|---|
+        // | `5` Logout | no | yes |
+        // | `4` SequenceReset, no gap fill | no | **no** |
+        // | `4` SequenceReset, gap fill | yes | **no** |
+        // | everything else | yes | yes |
+        //
+        // `10_MsgSeqNumEqual.def` proves the Logout row: it gap-fills to 20,
+        // then logs out with `34=3`, and expects the ordinary Logout reply.
+        // `11a`/`11b`/`11c` prove the SequenceReset rows: all three send
+        // `34=0`, which is below every expectation there has ever been.
+        let plain_reset = is_sequence_reset && !gap_fill;
+        let check_too_low = !is_logout && !plain_reset;
+
         // A sequence number already used cannot be taken back, so the session
         // hangs up. Too *high* means a gap, which is a ResendRequest and not a
         // refusal — that is a later step, and until it exists such a message is
         // read and answered as if it were in order.
-        if seq < self.next_in {
+        if check_too_low && seq < self.next_in {
             // `43=Y` says the counterparty knows it is re-sending. A repeat it
             // has admitted to is dropped in silence; a repeat it has not is the
             // one fault FIX cannot recover from, because a sequence number that
@@ -649,7 +804,15 @@ impl<R: Role, const N: usize> Session<R, N> {
             };
             return Ok(self.logout_with(why, emit));
         }
-        self.next_in = seq + 1;
+        if !is_sequence_reset {
+            self.next_in = seq + 1;
+        }
+
+        // This message is one the session accepts, which is what the heartbeat
+        // clock measures silence against — and it is the thing that clears an
+        // outstanding `TestRequest`.
+        self.last_recv_ms = self.now_ms;
+        self.test_requests = 0;
 
         // The line above has already consumed the sequence number, and a Reject
         // does not give it back: `14a_BadField.def` rejects four messages in a
@@ -668,15 +831,24 @@ impl<R: Role, const N: usize> Session<R, N> {
         if is_logon {
             let encrypt = encrypt.as_deref().ok_or(Refusal::LogonIncomplete)?;
             let heart_bt = heart_bt.as_deref().ok_or(Refusal::LogonIncomplete)?;
+            // The interval is the counterparty's, echoed and then obeyed. A
+            // `108=` this session cannot read is not a reason to refuse a
+            // Logon it is about to answer — it is a reason to keep quiet, which
+            // is exactly what `beat_ms == 0` means.
+            self.beat_ms = as_u32(heart_bt).map_or(0, |s| u64::from(s) * 1_000);
             self.state = State::LoggedOn;
-            self.send(
-                Which::Logon,
-                &[
-                    (tag::ENCRYPT_METHOD, encrypt),
-                    (tag::HEART_BT_INT, heart_bt),
-                ],
-                emit,
-            )?;
+            let mut extra: [(u32, &[u8]); 3] = [
+                (tag::ENCRYPT_METHOD, encrypt),
+                (tag::HEART_BT_INT, heart_bt),
+                (0, &[]),
+            ];
+            let n = if reset_seq {
+                extra[2] = (tag::RESET_SEQ_NUM_FLAG, b"Y");
+                3
+            } else {
+                2
+            };
+            self.send(Which::Logon, &extra[..n], emit)?;
             return Ok(Link::Up);
         }
 
@@ -684,6 +856,37 @@ impl<R: Role, const N: usize> Session<R, N> {
             self.send(Which::Logout, &[], emit)?;
             self.state = State::Disconnected;
             return Ok(Link::Dropped);
+        }
+
+        // A `TestRequest` is answered with a `Heartbeat` carrying the **same**
+        // `112=`, not one of this session's own: `4b_ReceivedTestRequest.def`
+        // sends `112=HELLO` and `SessionReset.def` sends `112=1`, and the
+        // comparator reads tag 112 byte for byte.
+        if is_test_request {
+            let id = test_req_id.as_deref().unwrap_or_default();
+            self.send(Which::Heartbeat, &[(tag::TEST_REQ_ID, id)], emit)?;
+            return Ok(Link::Up);
+        }
+
+        // `36=NewSeqNo` moves the inbound count, forwards only. Equal is a
+        // no-op and backwards is a Reject — and it is a Reject with no `371=`,
+        // because QuickFIX's `generateReject(msg, reason)` names no field here.
+        if is_sequence_reset {
+            if let Some(new_seq) = new_seq_no {
+                if new_seq > self.next_in {
+                    self.next_in = new_seq;
+                } else if new_seq < self.next_in {
+                    let r = Reject {
+                        text: SessionText::ValueIsIncorrect,
+                        ref_tag: None,
+                        ref_msg_type: msg_type_bytes,
+                        ref_seq,
+                        route,
+                    };
+                    return Ok(self.send_reject(&r, emit));
+                }
+            }
+            return Ok(Link::Up);
         }
 
         Ok(Link::Up)
@@ -727,6 +930,8 @@ enum Which {
     Logon,
     Logout,
     Reject,
+    Heartbeat,
+    TestRequest,
 }
 
 /// Walk the message in wire order and return the first fault, if any.
@@ -841,6 +1046,23 @@ fn missing_required<const N: usize>(
         }
     }
     None
+}
+
+/// The `35=` of a frame the parser could not read, straight out of the bytes.
+///
+/// QuickFIX does the same thing for the same reason: it has to decide whether
+/// an unreadable message was a Logon, and it cannot ask the parser that failed.
+/// Handles `35=` both as the first field and after a separator, because
+/// `2t_FirstThreeFieldsOutOfOrder.def` sends it first.
+fn msg_type_of(bytes: &[u8]) -> Option<&[u8]> {
+    const NEEDLE: &[u8] = b"\x0135=";
+    let at = if bytes.starts_with(b"35=") {
+        3
+    } else {
+        bytes.windows(NEEDLE.len()).position(|w| w == NEEDLE)? + NEEDLE.len()
+    };
+    let end = bytes[at..].iter().position(|&b| b == 0x01)? + at;
+    Some(&bytes[at..end])
 }
 
 /// A tag number as the digits `371=` carries.

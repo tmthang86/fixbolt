@@ -139,10 +139,11 @@ impl FieldType {
             | Self::PriceOffset
             | Self::Amt
             | Self::Percentage => signed_number(value),
-            Self::Length | Self::NumInGroup => unsigned_int(value),
-            // A sequence number counts from 1; `11c_NewSeqNoLess.def` sends
-            // `34=0` and the corpus rejects it.
-            Self::SeqNum => unsigned_int(value) && value.iter().any(|&b| b != b'0'),
+            // `[unproven]` FIX 4.4 words all three as counts, so a negative is
+            // refused here. QuickFIX types them through its plain `IntConvertor`
+            // and would accept one; nothing in the corpus sends a negative, so
+            // no oracle settles it. See `reference/fix44-dictionary-traps.md`.
+            Self::Length | Self::NumInGroup | Self::SeqNum => unsigned_int(value),
             Self::Char => value.len() == 1,
             Self::Boolean => value == b"Y" || value == b"N",
             // A value may hold anything but the separator, which cannot reach

@@ -377,3 +377,102 @@ Any hand-built FIX message in a test needs its `10=` present before `with_real_c
 replace it, and any test that asserts `Link::Up` should be paired with one asserting
 `Link::Dropped` on the same wire. A green from `Incomplete` looks exactly like a green from
 `Ok`.
+
+## An `E` line with no `I` in front of it is the corpus's only way to say "wait"
+
+`[measured 2026-08-29]` **33 of the 250 `E` lines** do not follow an `I` line.
+There is no `WAIT` directive in the grammar, and none is needed: an expected
+message with no input in front of it can only be the engine speaking on its own,
+and the only thing that makes an engine do that is time passing.
+
+So the runner's rule is: **before matching an `E` line, if the session has said
+nothing, push the clock forward by one `HeartBtInt` and try again, at most three
+times.** The same rule applies to `eDISCONNECT` — `6_SendTestRequest.def` ends
+by running out of patience, with no message in between. `WAITS` in
+`crates/conformance/src/runner.rs`.
+
+`HeartBtInt` comes from **the file's own Logon**, not from configuration:
+`[measured]` `108=30` in most files, `108=6` in `4a_NoDataSentDuringHeartBtInt`
+and `6_SendTestRequest` — the only two whose output depends on it at all.
+
+### And that granularity hides every threshold the session has
+
+Because the harness can only tick a whole interval at a time, the corpus cannot
+see where any of QuickFIX's three timers actually sit. `[measured 2026-08-29]`
+against `6_SendTestRequest.def`:
+
+| Timer | QuickFIX's value | What the corpus would also accept |
+|---|---|---|
+| heartbeat due | 1.0 × `HeartBtInt` since we last sent | anything in (0×, 1×] |
+| test request due | 1.2 × (n+1) × `HeartBtInt` since they last sent | anything in (1×, 2×] |
+| give up | 2.4 × `HeartBtInt` since they last sent | anything in (2×, 3×] |
+
+`crates/session/tests/heartbeat.rs` ticks by the millisecond and asserts the
+boundary on both sides. Every one of the three has a reversal that is red only
+there.
+
+## `TestReqID` is compared byte for byte, so `112=TEST` is a constant
+
+Tag `112` is **not** in `test/definitions/fields.fmt`, so rule 5 applies and the
+expected value is matched exactly. `[measured]` the distribution across `E`
+lines: `HELLO` ×23 — the ID the counterparty sent, thrown back — **`TEST` ×2**,
+`HELLO1`/`HELLO2` ×1, `1` ×2.
+
+The two `TEST`s are the ones the engine invented, in `6_SendTestRequest.def`.
+Nothing in FIX 4.4 requires any particular string there; a counter or a
+timestamp is equally correct on the wire and fails this gate. **It is QuickFIX's
+default leaking into the oracle**, and `OWN_TEST_REQ_ID` in
+`crates/session/src/lib.rs` is the one place that depends on it.
+
+## Whether a message's sequence number is checked depends on its `MsgType`
+
+This is not a session-wide rule with exceptions; it is a per-handler argument.
+QuickFIX's `Session::verify(msg, checkTooHigh, checkTooLow)` is called with
+different arguments from `nextLogon`, `nextLogout`, `nextSequenceReset` and the
+rest, and **`nextSequenceReset` is the only handler that never advances the
+inbound count at all**.
+
+| `35=` | too low checked | advances `34=` in | The file that proves it |
+|---|---|---|---|
+| `A` Logon | yes | yes | `2c` |
+| `5` Logout | **no** | yes | `10_MsgSeqNumEqual` — gap-fills to 20, then logs out with `34=3` |
+| `4` SequenceReset, `123=Y` | yes | **no** | `10_MsgSeqNumLess` |
+| `4` SequenceReset, no gap fill | **no** | **no** | `11a`, `11b`, `11c` — all three send `34=0` |
+| everything else | yes | yes | `2c`, `14a` |
+
+A session that applies one rule to everything scores **36 / 59** instead of 37,
+and the file it loses depends on which rule it picked. `[measured 2026-08-29]`
+by reversal, four ways.
+
+`11c_NewSeqNoLess.def` is the sharpest of these: the `SequenceReset` it rejects
+carries `34=0`, the Reject that answers it carries `45=0`, and the *next*
+message is `34=2` — so the rejected message did not consume a number, unlike
+every other Reject in the corpus.
+
+## `MsgType` must be the third field, and the codec does not say so
+
+`ParseError::BadFrameStart` covers `8=` at byte 0 and `9=` immediately after it,
+and its documentation says MsgType's position is deliberately not the parser's
+business. Something still has to enforce it: QuickFIX's own parser throws
+`InvalidMessage` when `35=` is not third.
+
+`[measured 2026-08-29]` **`2t_FirstThreeFieldsOutOfOrder.def` is the only file
+in the corpus that sends one** — two of them, `35=0|8=…` and `8=…|34=3|35=0` —
+and both expect to be **ignored**, with the connection carrying on and the
+inbound sequence number untouched.
+
+## A frame that cannot be read is fatal only if it says it is a Logon
+
+QuickFIX catches `InvalidMessage`, then digs the `35=` out of the raw bytes with
+`identifyType` and disconnects **only** when it reads `A`. Everything else is
+logged and dropped on the floor.
+
+The corpus states this once from each side and the two halves are in different
+files: `1d_InvalidLogonLengthInvalid.def` is a Logon with a wrong `9=` and
+expects the link to go; `2d`, `3c` and `2t` are garbled non-Logons and expect
+the next message to be read as though nothing happened.
+
+**One file cannot separate the rule from a weaker one.** "Any unreadable frame
+before a Logon is fatal" passes `1d` just as well and is wrong.
+`crates/session/tests/heartbeat.rs::a_garbled_frame_is_fatal_only_when_it_claims_to_be_a_logon`
+holds both halves against the same bytes.

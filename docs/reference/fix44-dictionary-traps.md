@@ -289,3 +289,32 @@ on it, not carried over from the scout.
 
 **Guarded by** `crates/dict/tests/enums.rs::the_array_form_is_read_and_not_skipped`,
 which asserts `SecurityType` parses to more than 50 values.
+
+## `SEQNUM` accepts zero, and the rule that said otherwise was invented
+
+`crates/dict/src/field_type.rs` refused `34=0` as a `SEQNUM`, on the reasoning
+that a sequence number counts from 1. The comment cited
+`11c_NewSeqNoLess.def` as evidence. **It had misread the file.**
+
+`11c` sends `35=4|34=0|…|36=1` and expects back
+`45=0|58=Value is incorrect (out of range) for this tag|372=4|373=5`. That is
+`373=5` — a value out of range — with **no `371=`** naming a tag. A rejected
+`34=0` would have been `373=6` with `371=34`. The fault the file is testing is
+`36=1`, a `NewSeqNo` lower than the sequence number already reached; the `34=0`
+beside it is a field QuickFIX processes without comment, because a plain
+`SequenceReset` has no meaningful sequence number and QuickFIX's own
+`SEQNUM_CONVERTOR` is a plain integer parser.
+
+`[measured 2026-08-29]` restoring the rule takes the acceptance score from
+**37 / 59 to 34**: `11a`, `11b` and `11c` all send `34=0` and all three answer
+with a Reject where the file expects a Heartbeat.
+
+**The shape of the mistake is what to remember.** The refused case lived in
+`crates/dict/tests/field_types.rs`, in the block whose own doc comment says
+"these cases are written by hand, not taken from a capture". An invented case
+that agrees with an invented rule is two statements of the same guess, and it
+reads exactly like a test.
+
+`Length` and `NumInGroup` refuse a negative on the same reasoning and nothing in
+the corpus sends one, so they stay refused and are marked `[unproven]` in the
+source. QuickFIX would accept them.
