@@ -164,12 +164,18 @@ những file mình vừa làm xanh chuyển đỏ.
 
 ## Tài liệu phải cập nhật
 
-- [ ] `DESIGN.md` §3 bảng crate, `README.md` layout, `Cargo.toml` members
-- [ ] `DESIGN.md` §4 D1 — hình dạng thật của `Session<R>`, sau khi viết chứ không trước
-- [ ] `DESIGN.md` §6 — dòng gate 59/59 đổi từ "0/59 hôm nay" sang số thật
-- [ ] `reference/` — mỗi bẫy đo được: `112=TEST`, `108` ném lại, luật `Tick`
-- [ ] `PRD.md` §2 tiêu chí 1; `STATUS.md`; `CHANGELOG.md`
-- [ ] ADR mới nếu `MessageStore` hoá ra cần hình dạng khác `put`/`get`
+- [x] `DESIGN.md` §3 bảng crate, `README.md` layout, `Cargo.toml` members — bước 1
+- [x] `DESIGN.md` §4 D1 — hình dạng thật của `Session<R>`, sau khi viết chứ không trước; thêm
+      `Application` ở 6a và món nợ `Store` ở 6b
+- [x] `DESIGN.md` §6 — dòng gate đổi sang **59 / 59**
+- [x] `reference/quickfix-acceptance-def-format.md` — mười bẫy đo được, từ `112=TEST` và luật
+      `Tick` tới luật tag số nguyên có dấu và luật đóng khung theo `9=`
+- [x] `PRD.md` §2 tiêu chí 1; `STATUS.md`; `CHANGELOG.md`
+- [x] Không cần ADR: `MessageStore` đúng hình dạng `put`/`get` đã phác
+
+**Một dòng ở bảng kiểm chứng đã làm khác:** bench cấp phát của session là
+`cargo bench -p nanofix-session --bench alloc`, không phải thêm một dòng vào bench của `codec`.
+Lý do: nó cần corpus, mà `codec` không phụ thuộc `conformance` và không được phép phụ thuộc.
 
 ## Bẫy đã lường trước
 
