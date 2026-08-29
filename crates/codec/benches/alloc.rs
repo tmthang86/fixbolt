@@ -23,7 +23,6 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nanofix_codec::{FieldIndex, NoDict, TemplateBuilder, TimestampCache, Validation, parse_into};
-use nanofix_conformance::text::SessionText;
 use nanofix_dict::Fix44;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -157,20 +156,22 @@ fn main() {
         }
     });
 
-    // A Reject's 58= text. The two numbered variants are the case that tempts
-    // format!, which is what non-negotiable 2 forbids in the session layer.
-    let mut text = [0u8; SessionText::MAX_LEN];
-    let _ = SessionText::ValueIsIncorrect.render(&mut text);
-    let text_allocs = count(|| {
-        for i in 0..10_000u32 {
-            for v in SessionText::ALL {
-                let _ = v.render(&mut text);
-            }
-            let _ = SessionText::MsgSeqNumTooLow {
-                expecting: i,
-                received: i / 2,
-            }
-            .render(&mut text);
+    // The five dictionary lookups a message under validation makes, once per
+    // field. `enum_allows` is the one that could allocate — its values are
+    // variable-length byte strings, and comparing them the obvious wrong way
+    // would build a `String` per call.
+    let validate_allocs = count(|| {
+        for _ in 0..10_000 {
+            let _ = Fix44::is_defined_tag(55);
+            let _ = Fix44::is_defined_tag(999);
+            let _ = Fix44::is_msg_type(b"D");
+            let _ = Fix44::is_msg_type(b"*");
+            let _ = Fix44::allows(b"D", 55);
+            let _ = Fix44::allows(b"0", 55);
+            let _ = Fix44::field_type(38).map(|t| t.accepts(b"+200.00"));
+            let _ = Fix44::field_type(126).map(|t| t.accepts(b"20040415-12:00:00"));
+            let _ = Fix44::enum_allows(167, b"BOO");
+            let _ = Fix44::enum_allows(40, b"1");
         }
     });
 
@@ -178,13 +179,17 @@ fn main() {
     println!("allocations: encode  {encode_allocs}");
     println!("allocations: lookup  {lookup_allocs}");
     println!("allocations: group   {group_allocs}");
-    println!("allocations: text    {text_allocs}");
+    println!("allocations: validate {validate_allocs}");
     assert_eq!(parse_allocs, 0, "parse must not allocate");
     assert_eq!(encode_allocs, 0, "encode must not allocate");
     assert_eq!(lookup_allocs, 0, "field lookup must not allocate");
     assert_eq!(
         group_allocs, 0,
         "walking a repeating group must not allocate"
+    );
+    assert_eq!(
+        validate_allocs, 0,
+        "a dictionary lookup must not allocate — it happens once per field"
     );
     println!("allocations: 0");
 }

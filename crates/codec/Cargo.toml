@@ -14,8 +14,8 @@ description = "FIX 4.4 parse and serialise in place, no allocation on the hot pa
 # parser against the real generated dictionary without duplicating the loader.
 nanofix-dict = { path = "../dict" }
 # A dev-dependency cycle, which cargo permits: conformance depends on codec.
-# The alloc bench needs the real SessionText table, and copying it here would
-# be a second place for a rule that has one.
+# The codec's tests read the `.def` corpus through conformance's loader, because
+# a second loader would be a second place for a rule that has one.
 nanofix-conformance = { path = "../conformance" }
 
 [[bench]]

@@ -134,3 +134,56 @@ fn render(mut v: u32, buf: &mut [u8; 10]) -> &[u8] {
     }
     &buf[i..]
 }
+
+/// The text `2r_UnregisteredMsgType.def` expects, byte for byte.
+///
+/// It belongs to the application, not to the session: `nanofix_session::text`
+/// holds the seventeen strings a *session* says, and "unsupported message type"
+/// is a statement about what this end trades, not about the protocol.
+const UNSUPPORTED: &[u8] = b"Unsupported Message Type";
+
+/// `BusinessMessageReject (35=j)` — the application does not handle this type.
+///
+/// `[measured]` `2r_UnregisteredMsgType.def` is the only file that asks for one.
+/// It sends `35=8` **ExecutionReport**, which is a perfectly good FIX 4.4
+/// message type — `Fix44::is_msg_type` says so and the session therefore
+/// accepts it. Only the application knows it has nothing to do with one, which
+/// is exactly why `373=11` is the wrong answer and `380=3` is the right one.
+///
+/// # Errors
+///
+/// As [`echo`].
+pub fn business_reject(
+    incoming: &[u8],
+    out: &mut [u8],
+    seq: u32,
+    sending_time: &[u8],
+) -> Result<Range<usize>, EchoError> {
+    let mut idx: FieldIndex<256> = FieldIndex::new();
+    parse_into::<Fix44, 256>(incoming, &mut idx, Validation::NONE).map_err(EchoError::Parse)?;
+    let view = idx.view(incoming);
+
+    let msg_type = view.get(35).ok_or(EchoError::MissingHeader(35))?;
+    let sender = view.get(49).ok_or(EchoError::MissingHeader(49))?;
+    let target = view.get(56).ok_or(EchoError::MissingHeader(56))?;
+    let ref_seq = view.get(34).unwrap_or(b"0");
+
+    let mut seq_buf = [0u8; 10];
+    let seq_bytes = render(seq, &mut seq_buf);
+
+    let t = TemplateBuilder::<16, 256>::new(b"FIX.4.4")
+        .field(35, b"j")
+        .field(34, seq_bytes)
+        .field(49, target)
+        .field(56, sender)
+        .field(52, sending_time)
+        .field(45, ref_seq)
+        .field(58, UNSUPPORTED)
+        .field(372, msg_type)
+        // `BusinessRejectReason = 3`, "Unsupported Message Type".
+        .field(380, b"3")
+        .build::<Fix44>()
+        .map_err(EchoError::Encode)?;
+    t.encode_with::<Fix44>(out, &[], &[])
+        .map_err(EchoError::Encode)
+}

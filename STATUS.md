@@ -3,17 +3,19 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-08-27**.
+Last updated: **2026-08-28**.
 
 ## Where the work is
 
 | | |
 |---|---|
-| Branch | **`main`** |
-| Milestone | **M1 — the codec.** `codec` and `dict` read and write FIX 4.4 including repeating groups. No session layer, no engine, no socket |
+| Branch | **`plan/dict-validation`**, on top of `plan/session-layer` |
+| Milestone | **M2 — the session layer, closed.** `[measured 2026-08-29]` **59 / 59**. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — **chờ duyệt**, no code written |
-| Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process and score **0 / 59**; a replaying fake scores 59 / 59, which is what makes the zero mean something |
+| Plan in flight | **None.** Next is `engine`, per `DESIGN.md` §7 — and it needs a plan before a line of it exists |
+| Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
+| Last closed | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — closed 2026-08-28. Four validation tables, agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 12 524/12 524 message-tag pairs and 1 708/1 708 enum values |
+| Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
 | Last closed | **[2026-08-27-codec-dict.md](docs/plans/2026-08-27-codec-dict.md)** — closed and merged 2026-08-28. 54 tests, 0 allocations, 304M fuzz executions |
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
@@ -123,6 +125,112 @@ Last updated: **2026-08-27**.
 - **`<TIME>` is 17 bytes on an `I` line and 21 on an `E` line**, solved from the corpus's own
   `9=` values. The single-width substitution both loaders used before was wrong by 4 bytes per
   timestamp, and one loader now serves both crates.
+- **The session layer scores 14 / 59, 2026-08-28 — step 2 of six.** The plan predicted 18. Its
+  classification table said 12 files expect only `{A, 5}` back; solving that off the corpus
+  gives **9**, and two of the reachable set turn on refusing a second connection with the same
+  identity, which is step 6. The ceiling for step 2 is 14 and it scores 14. Eleven reversals
+  were run; nine take the score down.
+- **Two files had been passing by accident, and only a step that could *lose* points found it.**
+  `1b_DuplicateIdentity` and `AlreadyLoggedOn` were passing because the second Logon was refused
+  as *sequence too low* rather than as a duplicate identity — right answer, wrong reason. Making
+  `connect` reset the sequence numbers, which `2i_BeginStringValueUnexpected` requires, exposed
+  it. The score gate now names all 14 files.
+- **The corpus cannot see the value of `52=`.** Stamping `SendingTime` from a constant instead of
+  from the clock leaves the score at 14 / 59 with every test green: `52` is one of the five tags
+  `fields.fmt` matches by shape. Held by `crates/session/tests/logon.rs` instead.
+- **The step-1 six are still in the fourteen** — asserted separately, because a count that only
+  goes up cannot say so.
+- **Step 1 scored 6 / 59, 2026-08-28, exactly as predicted.**
+  The six are `1c_InvalidSenderCompID`, `1c_InvalidTargetCompID`, `1d_InvalidLogonBadSendingTime`,
+  `1d_InvalidLogonLengthInvalid`, `1d_InvalidLogonWrongBeginString`, `1e_NotLogonMessage` —
+  named in the assertion, because a different six scoring 6 is a different result. Six
+  reversals were run: five take the score to 5.
+- **The sixth reversal did not.** Deleting "the first message must be a Logon" leaves 6 / 59,
+  because `1e_NotLogonMessage.def` also carries a wrong `56=`. Two rules, one observation —
+  written up in
+  [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md)
+  and now held by `crates/session/tests/logon.rs`.
+- **The session layer allocates nothing**, on the accept path and on the refusal path, counted
+  separately. `[measured]` `accept 0 refuse 0 tick 0 clock 0 text 0`; the reversal — one
+  `format!` on the error path — reports `refuse 30000`.
+- **`00000000-00:00:00` is not a date, and this loader was substituting it for `<TIME>`.**
+  It is the corpus's placeholder for output the comparator never reads by value. Fixed to a
+  real instant, which also fixed `<TIME-121>` running 86 279 seconds *forward*.
+- **The four dictionary validation tables exist and agree with an independent generator,
+  2026-08-28.** `[measured]` 912/912 tag numbers, 898/912 field types with 14 differences each
+  named by tag, 12 524/12 524 (message, tag) pairs checked as 84 816 exhaustive answers, and
+  1 708/1 708 enum values. Eight reversals were run and all eight go red.
+- **The plan called the enum oracle weak and the plan was wrong.** A scouting script matched
+  `const char Name_X = 'v';` and missed `const char Name_X[] = "vv";`, so it reported 228 of 245
+  fields covered. The array form is 17 fields — including `SecurityType(167)`, the one field
+  `14e_IncorrectEnumValue.def` actually tests. Read properly the oracle covers 245/245 and
+  1 708/1 708, with zero exceptions. Written up in
+  [reference/fix44-dictionary-traps.md](docs/reference/fix44-dictionary-traps.md).
+- **`dict` grew about 33 KB of static data** and its build script still runs in under a second.
+- **The session scores 27 / 59, 2026-08-28 — step 3, and the revised prediction was 27.** All
+  thirteen `Reject (35=3)` files. Thirteen reversals were run and all thirteen go red.
+- **All twelve `373` codes are produced, and that is asserted rather than inferred.** The test
+  reads the codes out of the corpus's own `E` lines and checks the session emits each. The file
+  count cannot say it: `14a_BadField.def` holds four cases, and answering all four with one code
+  still passes the file.
+- **One reversal was worthless and it is worth recording why.** It deleted a
+  `next_in = seq + 1` that could never be reached, and nothing changed — which says nothing
+  about the guard. A reversal has to alter behaviour before its green means anything.
+- **The session scores 37 / 59, 2026-08-29 — step 4, and the revised prediction was 37.**
+  Heartbeat, TestRequest, inbound `SequenceReset`, `ResetSeqNumFlag`, and a garbled frame that
+  is ignored rather than fatal. Thirty-two reversals were run and all thirty-two go red.
+- **Whether a message's sequence number is checked is per `MsgType`, not one rule.** A Logout is
+  never checked; a `SequenceReset` never advances the count at all. Applying one rule to
+  everything costs a file whichever rule is picked — measured four ways. Written up in
+  [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md).
+- **A rule this project invented was refuted by the corpus.** `FieldType::SeqNum` refused `34=0`,
+  and its comment cited `11c_NewSeqNoLess.def` — which it had misread. `11a`, `11b` and `11c` all
+  send `34=0` and QuickFIX processes them; restoring the rule costs three files. The refused case
+  lived in the block whose own doc comment says the cases there are invented. **An invented test
+  agreeing with an invented rule is one guess written twice.**
+- **Three reversals were worthless in step 4, all the same shape: two guards covering one rule.**
+  Each pair was reduced to the single guard that can actually be broken. A fourth was a test that
+  checked the output and not the link, so a reversal that dropped the connection stayed green.
+- **The session scores 42 / 59, 2026-08-29 — step 5, and the prediction was 42.** A message running
+  ahead of the count is held and the gap is asked for; an inbound `ResendRequest` over
+  administrative messages is answered with one `SequenceReset` gap fill. Nineteen reversals were
+  run and all nineteen go red.
+- **A gap is asked for once, and a Logon that runs ahead is answered before it is asked.** Both are
+  stated exactly once in the corpus, by `10_MsgSeqNumGreater` and `1a_ValidLogonMsgSeqNumTooHigh`.
+  Written up in
+  [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md).
+
+- **The session scores 55 / 59, 2026-08-29 — step 6a, and the prediction was 52.** The session
+  now owns seven administrative message types and hands everything else to an `Application`,
+  giving it the outbound sequence number and the clock and sending back whatever it returns.
+  Eight reversals into the score go red; two more behaviours the corpus cannot see are held by
+  `crates/session/tests/application.rs`.
+- **The prediction was beaten for a measurable reason.** The 6a/6b split was drawn from the
+  expected `35=` sets of the remaining files, and an expected set cannot tell an *echo* from a
+  *replay*: `2d`, `3b` and `3c` look like they need an outbound store and do not — the
+  counterparty resends and this end only echoes.
+- **QuickFIX reads a tag as a *signed* integer**, so `-1=x` is a field and is Rejected, while
+  `4garbled9=x` is not a field at all and the whole message is ignored. Three files turn on
+  that one distinction. Written up in
+  [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md).
+- **"One identity, one connection" is an engine rule, not a session rule.** `1b_DuplicateIdentity`
+  and `AlreadyLoggedOn` need it, and `engine` does not exist, so `crates/session/tests/score.rs`
+  plays the smallest engine that can hold two connections. That is stated there and here.
+
+- **The session scores 59 / 59, 2026-08-29 — step 6b, and the plan's last four files came in as
+  predicted.** A resend replays the application messages this end sent, at the numbers they were
+  sent with and spending none, and fills over every contiguous run it cannot replay. Nine
+  reversals into the score go red; three more behaviours the corpus cannot see are held by
+  `crates/session/tests/journal.rs`.
+- **`2m_BodyLengthValueNotCorrect` turned out to be about framing, not about a store.** `9=` is
+  taken at its word: a body length that does not land on a `10=` trailer discards the whole
+  receive buffer, which is why a too-long one swallows the message after it. That is the
+  engine's job, so it lives in `tests/score.rs` next to the identity rule — and the rubbish is
+  still handed to the session once, so "fatal only if it claims to be a Logon" stays in one
+  place.
+- **The outbound journal is a stopgap, and it is in the wrong crate.** Eight 512-byte slots
+  inside the session, in memory, lost on restart. `DESIGN.md` D1 has the session emitting a
+  `Store` action and the engine holding the journal; that is what `engine`'s plan has to build.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -141,10 +249,37 @@ Last updated: **2026-08-27**.
   file is real evidence and is not the same as a venue accepting the bytes. Nothing here has
   been sent to a real FIX peer.
 - **DATA fields inside a repeating group are untested** on both paths — open item 8.
-- **`0 / 59` is the score.** No session layer exists. The runner is proven to be able to
-  recognise a correct answer; nothing has produced one.
-- **`Input::Tick` is defined and never sent.** Nothing advances time yet, so
-  `4a_NoDataSentDuringHeartBtInt.def` cannot pass even once a session exists.
+- **None of the three heartbeat thresholds is visible to the corpus.** The acceptance harness
+  can only tick a whole `HeartBtInt` at a time, so any test-request threshold in (1×, 2×] and any
+  timeout in (2×, 3×] reproduces `6_SendTestRequest.def` exactly. The numbers 1.0, 1.2 and 2.4
+  are QuickFIX's, and `crates/session/tests/heartbeat.rs` is the only thing holding them.
+- **Nothing about a *second* gap is visible to the corpus.** Every file that opens one ends before
+  opening another, and the deepest any of them holds is two messages. Closing a filled gap,
+  replaying held messages in sequence order, and dropping one there is no room for are all held by
+  `crates/session/tests/resend.rs` alone.
+- **No application message has ever been replayed.** The inbound `ResendRequest` path answers with
+  a gap fill because everything this session has sent so far is administrative. A `MessageStore`
+  and a real replay are step 6 — see the plan's "Sửa 9".
+- **Whether a Reject consumes the inbound sequence number is invisible to the corpus.** The
+  *too high* branch does not exist yet, so a message running ahead is read as if it were in
+  order and a sequence number that never advanced looks exactly like one that did. Held by
+  `crates/session/tests/reject.rs`.
+- **What each of the 23 field types accepts is invented, not captured.** The corpus supplies two
+  cases — `38=+200.00` and `126=20040415`. The other 21 types are held by hand-written rows in
+  `crates/dict/tests/field_types.rs`, and that is the weakest evidence in this crate.
+- **32 of the 59 definitions still fail.** No Heartbeat, no TestRequest, no ResendRequest, no
+  SequenceReset, no application echo, and no second-connection identity check.
+- **`Input::Tick` is sent but never advances.** The runner seeds one fixed instant before every
+  message. Nothing moves time forward yet, so `4a_NoDataSentDuringHeartBtInt.def` cannot pass —
+  the advance rule is step 4 of the session plan.
+- **The 120-second `SendingTime` skew is QuickFIX's documented default, not a measured one.**
+  `1d_InvalidLogonBadSendingTime` is 2001 years out, so nothing in the corpus distinguishes 120
+  seconds from any other bound.
+- **`Role` is parameterised but only `Acceptor` is exercised.** `Initiator::SPEAKS_FIRST` is
+  read and does nothing yet; ADR-0004's cost is not paid until an initiator has something to say.
+- **Sequence numbers reset on every connect.** Persisting them across a reconnect is the
+  journal's job and the journal belongs to `engine`. Nothing in the corpus requires persistence,
+  so nothing here proves the reset is right for a real deployment.
 - The ADRs are accepted on the strength of the reasoning in them, **not on measurement** — see the §8 caveat above.
 
 ## Open items
@@ -158,3 +293,7 @@ Last updated: **2026-08-27**.
 | 8 | **DATA fields inside a repeating group are untested**, on either the read or the write path. `group_roundtrip.rs` skips every DATA member, because writing one needs its length field placed immediately in front — which is open item 9, seen from inside a group | Any counterparty that puts `RawData` in a `Parties` entry |
 | 9 | **The encoder has no DATA invariant.** Writing a dynamic DATA field must regenerate its length field, place it immediately before, and count bytes including embedded `0x01`. Only the read path is specified | Any counterparty that sends `RawData`/`XmlData` |
 | 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **Cannot be checked here — needs the Linux box of open item 6** | The TLS plan; ADR-0005 acceptance |
+| 11 | **Serialise misses its gate: 93.8 ns against 60 ns** (DESIGN §6). Cause is known — `Template::encode` finds each slot by a linear scan of the caller's list, so cost is slots × parts. Fix candidates: index slots by tag at template build, or require the caller to hand slots in parts order. The only red gate that does not need the Linux box | DESIGN §6 serialise row; the `engine` step, where the number is re-measured |
+| 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement | Nothing until open item 6 is answered |
+| 13 | **Release profile is default.** No `lto = "fat"`, no `codegen-units = 1`, no PGO, no `#[cold]` on error paths. Cheap, but each is a number to be measured before and after, not a setting to be assumed | The `engine` step; every §6 number published from Linux |
+| 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what nanofix claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |

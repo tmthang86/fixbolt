@@ -27,19 +27,30 @@ fi
 # would leave it that way. That failure is silent — the tests that need the new
 # paths just do not find them.
 git -C "${VENDOR}" sparse-checkout set --no-cone \
-  '/spec/' '/test/definitions/' '/src/C++/fix44/' '/LICENSE'
+  '/spec/' '/test/definitions/' '/src/C++/fix44/' '/LICENSE' \
+  '/src/C++/FixFieldNumbers.h' '/src/C++/FixFields.h' \
+  '/src/C++/FixCommonFields.h' '/src/C++/FixValues.h'
 
 echo
 echo "Fetched into ${VENDOR}:"
 echo "  spec/FIX44.xml                    — data dictionary, input to the code generator"
 echo "  test/definitions/server/fix44/    — session acceptance definitions (59 files)"
-echo "  src/C++/fix44/                    — generated headers, read ONLY as an ordering oracle"
+echo "  src/C++/fix44/                    — generated headers, read ONLY as an oracle"
+echo "  src/C++/FixFieldNumbers.h         — tag numbers, read ONLY as an oracle"
+echo "  src/C++/FixFields.h + FixCommonFields.h — field types, read ONLY as an oracle"
+echo "  src/C++/FixValues.h               — enum values, a PARTIAL oracle (see the plan)"
 echo "  LICENSE                           — read it before using anything else here"
 echo
 ls "${VENDOR}/test/definitions/server/fix44" | wc -l | xargs echo "acceptance definitions:"
 ls "${VENDOR}/src/C++/fix44" | wc -l | xargs echo "generated headers:"
+for f in FixFieldNumbers.h FixFields.h FixCommonFields.h FixValues.h; do
+  [[ -f "${VENDOR}/src/C++/${f}" ]] || { echo "MISSING ${f}" >&2; exit 1; }
+  wc -l < "${VENDOR}/src/C++/${f}" | xargs echo "  src/C++/${f}:"
+done
 echo
-echo "src/C++/fix44/ is QuickFIX's own generated C++. It is fetched to be READ as a"
-echo "second opinion on repeating-group field order — see crates/dict/tests/"
-echo "interop_quickfix_order.rs. Nothing is copied, translated or committed; vendor/"
-echo "is gitignored and stays that way (ADR-0001, CLAUDE.md §2 rule 9)."
+echo "Everything under src/C++/ is QuickFIX's own generated C++. It is fetched to be"
+echo "READ as a second opinion — on repeating-group field order (crates/dict/tests/"
+echo "interop_quickfix_order.rs), and on tag numbers, field types and per-message tag"
+echo "sets (interop_quickfix_fields.rs, interop_quickfix_messages.rs). Nothing is"
+echo "copied, translated or committed; vendor/ is gitignored and stays that way"
+echo "(ADR-0001, CLAUDE.md §2 rule 9)."

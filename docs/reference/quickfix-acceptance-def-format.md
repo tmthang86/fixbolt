@@ -303,3 +303,365 @@ guessing "no header fields" fails the first.
 
 **Guarded by** `crates/conformance/tests/echo.rs` — all 22 pairs reproduced, plus
 `poss_resend_is_echoed_and_orig_sending_time_is_not`.
+
+## `00000000-00:00:00` is a placeholder, not a time — and substituting it breaks the clock
+
+`[measured 2026-08-28]` Two different things in this corpus look identical and are not:
+
+| Where | What it is | What a loader must do |
+|---|---|---|
+| `52=<TIME>`, 288 occurrences, almost all on `I` lines | **Input.** QuickFIX's reflector substitutes the real clock before sending | Substitute a **real instant** |
+| `52=00000000-00:00:00.000`, 244 occurrences, all on `E` lines | **A placeholder for expected output**, for a tag the comparator matches by shape and never by value | Leave it alone |
+
+This loader substituted the placeholder for `<TIME>` as well, for a year, and nothing noticed —
+because until a session existed, nothing parsed a `52=` value. It is **not a date**: month 00,
+day 00. A `SendingTime` check that accepts it accepts anything, and one that rejects it rejects
+every message in the corpus.
+
+The corpus writes the same placeholder into every one of the five `fields.fmt` tags on an `E`
+line — `10=0`, `52=`, `60=`, and where they appear `42=` and `122=`. **A test that compares an
+`E` line byte for byte is comparing placeholders**, and it passes only for as long as the
+loader happens to produce the same ones. One did, in `crates/conformance/tests/echo.rs`, and it
+went red the moment `<TIME>` became a real instant. The fix is to compare by the corpus's own
+rule and assert the specific invariant separately.
+
+**Guarded by** `crates/session/src/clock.rs::the_corpus_placeholder_is_not_a_date` and
+`crates/session/tests/score.rs::the_harness_clock_and_the_corpus_agree`, which proves the
+number the runner ticks with is the instant the loader writes.
+
+### `<TIME±N>` ran backwards, and only one file would ever have shown it
+
+Four lines carry an offset: `<TIME-1>`, `<TIME+10>`, `<TIME-121>`, `<TIME+121>`. With the base
+at midnight of year zero there is nowhere to go backwards to, so the substitution wrapped with
+`rem_euclid` — turning `<TIME-121>` into **86 279 seconds forward**, in
+`2o_SendingTimeValueOutOfRange.def`, the one file in the corpus that exists to test
+`SendingTime` accuracy. Both halves of that test would have measured the same sign.
+
+A base with room on either side — midday of an ordinary day — makes the arithmetic ordinary.
+Years away from the four hard-coded `52=` values in the corpus (2001, 2002, 2004), so none of
+them becomes accidentally fresh.
+
+## A file's name is not its test: `1e_NotLogonMessage.def`
+
+`[measured 2026-08-28]` Deleting the "the first message must be a Logon" rule from the session
+**leaves the score unchanged at 6 / 59.** The file named for that rule sends:
+
+```
+I8=FIX.4.4^A35=0^A34=1^A49=TW44^A52=<TIME>^A56=DLSI^A
+```
+
+`56=DLSI` is the wrong TargetCompID. Whichever check runs first ends the connection, and both
+produce the same `eDISCONNECT`, so the corpus cannot distinguish them. **Two rules, one
+observation.**
+
+This is not the only such pair — it is the first one a reversal caught. The general shape:
+a `.def` file proves *some* rule fired, never *which*. Anywhere two rules share an outcome, the
+score is satisfied by either, and only a test written outside the corpus separates them.
+
+**Guarded by** `crates/session/tests/logon.rs`, which takes that same corpus line, corrects
+`56=` to `ISLD`, and asserts the drop still happens — and, as its other half, that flipping
+`35=0` to `35=A` is then accepted.
+
+## A message with no `10=` parses as `Incomplete`, and `Incomplete` means "wait"
+
+`[measured 2026-08-28]` A test helper rebuilt a message's `9=` and forgot to re-append the
+trailer. `parse_into` returned `Ok(Parsed::Incomplete)` — correct: without `10=` the frame is
+not finished. The session treats `Incomplete` as *wait for more bytes*, which is also correct,
+and returns `Link::Up`.
+
+So **both halves of a two-sided test passed on a message that was never judged**: the "must be
+accepted" case, and — vacuously — nothing at all. It surfaced only because the case that was
+*supposed* to fail also passed.
+
+Any hand-built FIX message in a test needs its `10=` present before `with_real_checksum` can
+replace it, and any test that asserts `Link::Up` should be paired with one asserting
+`Link::Dropped` on the same wire. A green from `Incomplete` looks exactly like a green from
+`Ok`.
+
+## An `E` line with no `I` in front of it is the corpus's only way to say "wait"
+
+`[measured 2026-08-29]` **33 of the 250 `E` lines** do not follow an `I` line.
+There is no `WAIT` directive in the grammar, and none is needed: an expected
+message with no input in front of it can only be the engine speaking on its own,
+and the only thing that makes an engine do that is time passing.
+
+So the runner's rule is: **before matching an `E` line, if the session has said
+nothing, push the clock forward by one `HeartBtInt` and try again, at most three
+times.** The same rule applies to `eDISCONNECT` — `6_SendTestRequest.def` ends
+by running out of patience, with no message in between. `WAITS` in
+`crates/conformance/src/runner.rs`.
+
+`HeartBtInt` comes from **the file's own Logon**, not from configuration:
+`[measured]` `108=30` in most files, `108=6` in `4a_NoDataSentDuringHeartBtInt`
+and `6_SendTestRequest` — the only two whose output depends on it at all.
+
+### And that granularity hides every threshold the session has
+
+Because the harness can only tick a whole interval at a time, the corpus cannot
+see where any of QuickFIX's three timers actually sit. `[measured 2026-08-29]`
+against `6_SendTestRequest.def`:
+
+| Timer | QuickFIX's value | What the corpus would also accept |
+|---|---|---|
+| heartbeat due | 1.0 × `HeartBtInt` since we last sent | anything in (0×, 1×] |
+| test request due | 1.2 × (n+1) × `HeartBtInt` since they last sent | anything in (1×, 2×] |
+| give up | 2.4 × `HeartBtInt` since they last sent | anything in (2×, 3×] |
+
+`crates/session/tests/heartbeat.rs` ticks by the millisecond and asserts the
+boundary on both sides. Every one of the three has a reversal that is red only
+there.
+
+## `TestReqID` is compared byte for byte, so `112=TEST` is a constant
+
+Tag `112` is **not** in `test/definitions/fields.fmt`, so rule 5 applies and the
+expected value is matched exactly. `[measured]` the distribution across `E`
+lines: `HELLO` ×23 — the ID the counterparty sent, thrown back — **`TEST` ×2**,
+`HELLO1`/`HELLO2` ×1, `1` ×2.
+
+The two `TEST`s are the ones the engine invented, in `6_SendTestRequest.def`.
+Nothing in FIX 4.4 requires any particular string there; a counter or a
+timestamp is equally correct on the wire and fails this gate. **It is QuickFIX's
+default leaking into the oracle**, and `OWN_TEST_REQ_ID` in
+`crates/session/src/lib.rs` is the one place that depends on it.
+
+## Whether a message's sequence number is checked depends on its `MsgType`
+
+This is not a session-wide rule with exceptions; it is a per-handler argument.
+QuickFIX's `Session::verify(msg, checkTooHigh, checkTooLow)` is called with
+different arguments from `nextLogon`, `nextLogout`, `nextSequenceReset` and the
+rest, and **`nextSequenceReset` is the only handler that never advances the
+inbound count at all**.
+
+| `35=` | too high | too low | advances `34=` in | The file that proves it |
+|---|---|---|---|---|
+| `A` Logon | **after the reply** | yes | only if not too high | `1a_ValidLogonMsgSeqNumTooHigh` |
+| `5` Logout | no | **no** | yes | `10_MsgSeqNumEqual` — gap-fills to 20, then logs out with `34=3` |
+| `2` ResendRequest | no | **no** | yes | `8_OnlyAdminMessages` — sends `34=5` twice, the second time behind the count |
+| `4` SequenceReset, `123=Y` | yes | yes | **no** | `10_MsgSeqNumLess` |
+| `4` SequenceReset, no gap fill | **no** | **no** | **no** | `11a`, `11b`, `11c` — all three send `34=0` |
+| everything else | yes | yes | yes | `2c`, `14a`, `2b` |
+
+A session that applies one rule to everything scores **36 / 59** instead of 37,
+and the file it loses depends on which rule it picked. `[measured 2026-08-29]`
+by reversal, four ways.
+
+`11c_NewSeqNoLess.def` is the sharpest of these: the `SequenceReset` it rejects
+carries `34=0`, the Reject that answers it carries `45=0`, and the *next*
+message is `34=2` — so the rejected message did not consume a number, unlike
+every other Reject in the corpus.
+
+## `MsgType` must be the third field, and the codec does not say so
+
+`ParseError::BadFrameStart` covers `8=` at byte 0 and `9=` immediately after it,
+and its documentation says MsgType's position is deliberately not the parser's
+business. Something still has to enforce it: QuickFIX's own parser throws
+`InvalidMessage` when `35=` is not third.
+
+`[measured 2026-08-29]` **`2t_FirstThreeFieldsOutOfOrder.def` is the only file
+in the corpus that sends one** — two of them, `35=0|8=…` and `8=…|34=3|35=0` —
+and both expect to be **ignored**, with the connection carrying on and the
+inbound sequence number untouched.
+
+## A frame that cannot be read is fatal only if it says it is a Logon
+
+QuickFIX catches `InvalidMessage`, then digs the `35=` out of the raw bytes with
+`identifyType` and disconnects **only** when it reads `A`. Everything else is
+logged and dropped on the floor.
+
+The corpus states this once from each side and the two halves are in different
+files: `1d_InvalidLogonLengthInvalid.def` is a Logon with a wrong `9=` and
+expects the link to go; `2d`, `3c` and `2t` are garbled non-Logons and expect
+the next message to be read as though nothing happened.
+
+**One file cannot separate the rule from a weaker one.** "Any unreadable frame
+before a Logon is fatal" passes `1d` just as well and is wrong.
+`crates/session/tests/heartbeat.rs::a_garbled_frame_is_fatal_only_when_it_claims_to_be_a_logon`
+holds both halves against the same bytes.
+
+
+## A gap is asked for **once**, and the Logon is answered before it is asked
+
+A message running ahead of the count is not refused: it is held, and the session
+asks for what it missed with `ResendRequest (35=2)` carrying `7=` the number it
+expects and `16=0` — "and everything after", which is how FIX 4.2 and later
+write infinity.
+
+Two things about that are stated exactly once each in the corpus.
+
+**Once per gap.** `10_MsgSeqNumGreater.def` sends `34=10` and then `34=20` while
+the gap is open, and expects **one** `ResendRequest`. QuickFIX's
+`doTargetTooHigh` returns early when a resend is already outstanding and the new
+number is at or past the one it asked from. A session that asks twice fails the
+file on the second message, as output no line asked for.
+
+**The Logon first.** `1a_ValidLogonMsgSeqNumTooHigh.def` opens with `34=5` on an
+empty session and expects `35=A` and *then* `35=2`, in that order. QuickFIX's
+`nextLogon` answers the Logon, and only afterwards asks whether the number ran
+ahead — so a Logon with a gap in front of it still logs the session on, and the
+inbound count does **not** move past it.
+
+### What the corpus cannot see about a gap
+
+`[measured 2026-08-29]` every file that opens a gap ends before opening a second
+one, and the deepest any of them holds is **two** messages. So three behaviours
+score the same either way and have their own tests in
+`crates/session/tests/resend.rs`:
+
+- **A filled gap is closed.** A session that never clears the outstanding range
+  scores 42 / 59 and then never asks again — it has already asked. The next gap
+  in a real session goes unrequested, in silence.
+- **Held messages are replayed in sequence order.** `RejectResentMessage.def`
+  holds exactly one, so it proves only that a held message precedes a fresh one.
+- **What happens when there is no room.** The held message must be dropped
+  rather than truncated, and dropping it must leave the count where it was, so
+  the counterparty's next message running ahead asks for it again.
+
+## An inbound `ResendRequest` over administrative messages is answered with one gap fill
+
+QuickFIX never replays an administrative message — a Logon, a Heartbeat, a
+Reject are all meaningless out of their moment. It emits a `SequenceReset` with
+`123=Y` covering them instead, and `8_OnlyAdminMessages.def` is the file whose
+name says exactly that.
+
+The shape is specific, and every part of it is compared:
+
+```
+35=4 | 34=<BeginSeqNo> | 43=Y | 49 | 52 | 56 | 122=<a timestamp> | 36=<EndSeqNo + 1> | 123=Y
+```
+
+- **`34=` is the first number of the range being filled**, not the next outbound
+  number, and sending it does **not** spend one. The file fills `34=1` while its
+  next real message is `34=5`, and both are in it.
+- **`36=` is one past the last number filled.** `16=4` gives `36=5`; `16=0`
+  means "everything sent so far", so the end becomes the last number this end
+  used and `36=` is the next one.
+- `43=Y` and `122=` are there because a gap fill stands in for a resend, and a
+  resent message carries both. `122` is one of the five tags matched by shape,
+  so only its width is pinned — 21 bytes, with milliseconds, and the file's own
+  `9=93` is what says so.
+
+## A tag is a *signed* integer, and that is what separates garbled from `Reject`
+
+Three files turn on one line of QuickFIX's tokeniser. It reads the characters
+before `=` with an ordinary signed-integer conversion, so:
+
+| On the wire | QuickFIX sees | What the file expects |
+|---|---|---|
+| `-1=x` | the field with tag −1 | `Reject`, `373=0` **Invalid tag number** — `14a_BadField.def` |
+| `4garbled9=x` | not a field at all | the whole message **ignored**, in silence — `2d`, `3c` |
+
+`[cost 2026-08-29]` an hour, and a wrong fix that got reverted. The first
+hypothesis was that `2d_InvalidBodyLength.def` failed on its `9=`, and
+`crates/codec/src/parse.rs` was changed to check the frame before tokenising.
+Then `2d`'s frame was actually counted: `9=52` is **correct**. The file's name
+is about the *other* line in it. The rule above is what those files are for, and
+it cost 53 → 55 to find. Guard: `is_signed_integer` in `crates/session/src/lib.rs`,
+and the score gate that names all 55 files.
+
+## The corpus assumes an application, and lends it two things it does not own
+
+42 of the 250 `E` lines carry `35=D`. The acceptance server is an echo server
+(§ *What the acceptance server actually is*), which means the session layer
+cannot pass alone — it must hand the message somewhere and send back what comes
+out. Two rules the corpus states plainly:
+
+- **The sequence number and the clock belong to the session.** The reply's `34=`
+  is the session's next outbound number and its `52=` is the session's own
+  clock. An application that wrote either itself would be numbering someone
+  else's stream.
+- **An application that says nothing spends nothing.**
+  `19a_PossResendMessageThatHAsAlreadyBeenSent.def` sends a `97=Y` order whose
+  `11=` has been seen, expects **no** reply, and then numbers its next expected
+  message as though nothing had happened.
+
+`19a` and `19b` are the same file twice, differing only in whether that `11=`
+has been seen before. **A session layer cannot answer that** — a sequence number
+says nothing about an order ID — which is exactly why the two files exist.
+
+## `PossDup` asks two questions, and only of a message behind the count
+
+`43=Y` on a message whose number is **not** behind the count is never
+challenged: `20_SimultaneousResendRequest.def` sends three and none is asked
+anything. Behind the count, QuickFIX's `doPossDup` asks:
+
+| Missing | Answer |
+|---|---|
+| no `122=` **OrigSendingTime** | `Reject`, `373=1` naming tag 122 — and the number is **not** spent, so the file's next message is numbered as though this one never arrived (`2g`) |
+| `122=` later than `52=` | `Reject`, `373=10`, followed by a `Logout` (`2f`) |
+
+A `SequenceReset` is exempt from both: a gap fill stands in for messages rather
+than repeating one, so it has no original send time to carry. **The corpus
+cannot see that exemption** — every `43=Y` `SequenceReset` in it carries `122=`
+anyway — so it is held by `crates/session/tests/application.rs` instead.
+
+## One identity, one connection — and that is the engine's rule
+
+`1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def` open a **second**
+connection and send a Logon with the same `49`/`56` as the first. Both expect no
+reply at all on the second, and the first to carry on undisturbed.
+
+Nothing in a session state machine can answer this: a session does not know
+another one exists. It is the *engine*'s rule — which connection holds an
+identity — and `engine` does not exist yet, so `crates/session/tests/score.rs`
+plays the smallest engine that can hold two connections. `runner.rs` had already
+allowed for it: `SessionUnderTest` is one instance for the whole harness, not
+one per connection.
+
+## `9=` is taken at its word, and a frame that misses its trailer takes the buffer with it
+
+`2m_BodyLengthValueNotCorrect.def` states the rule in its own two comments, and
+they only make sense together:
+
+| `9=` says | Reality | The file's comment |
+|---|---|---|
+| `30` | the body is 91 | *"Invalid message was ignored, and valid one was processed"* |
+| `111` | the body is 91 | *"it will combine with the next message and be ignored"* |
+
+One rule covers both: count to where `9=` says the body ends, and if a `10=`
+trailer is not there, **the whole receive buffer is rubbish**, not just the
+message. The short one loses itself, because the next message arrives in a
+later read. The long one reaches into the message after it, so both go.
+
+**This is framing, and framing is the engine's.** `DESIGN.md` §2 puts it at L3;
+the session layer is handed one complete message. Until `engine` exists,
+`crates/session/tests/score.rs` does it — and hands the rubbish to the session
+anyway, once, so that `1d_InvalidLogonLengthInvalid.def` still gets the answer
+it wants: a frame that cannot be read is fatal **only** if it claims to be a
+Logon, and that rule stays in one place.
+
+## A resend replays what was sent, and fills over what cannot be replayed
+
+`8_AdminAndApplicationMessages.def` is the file that says it plainly. Asked for
+`7=2, 16=8` over an outbound stream of admin 2–4, application 5–6, admin 7–8, it
+expects four messages:
+
+```
+35=4  34=2  36=5   123=Y     ← one gap fill for the run 2..4
+35=D  34=5  43=Y  122=…      ← the message itself, again
+35=D  34=6  43=Y  122=…
+35=4  34=7  36=9   123=Y     ← one gap fill for the run 7..8
+```
+
+- **Runs are found, not assumed.** A gap fill covers one contiguous run of
+  numbers this end cannot replay; the file asks four times with four different
+  ranges and every answer is a different interleaving.
+- **An administrative message is never replayed.** A Logon, a Heartbeat, a
+  Reject are meaningless out of their moment, so only application messages are
+  kept at all.
+- **A replay carries the number it was sent with, and spends none.** After all
+  of the above the file's next `Heartbeat` is `34=10`, the number that was next
+  before the resend arrived.
+- **The shape is the original plus two fields.** `43=Y`, and `122=` holding the
+  `52=` the message first went out with; `52=` itself is rewritten to now. The
+  file's `9=132` against the original's `9=101` is what says so — 31 bytes,
+  which is exactly `43=Y` and a 21-byte `122=`.
+
+### What the corpus cannot see about a store
+
+- **That the replayed `52=` is fresh.** It is matched by shape and the two are
+  the same width, so keeping the original scores 59 / 59.
+- **What happens when a reply is too long to keep**, or when more are kept than
+  there is room for. The longest reply in the corpus is 177 body bytes and no
+  file keeps more than three.
+
+Held by `crates/session/tests/journal.rs` instead.

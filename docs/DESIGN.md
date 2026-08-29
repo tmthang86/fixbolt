@@ -87,8 +87,8 @@ Added one at a time, each behind an approved plan.
 | Crate | Layer | Owns | Depends on |
 |---|---|---|---|
 | `codec` | L1 | Parse and serialise. The hot path. Target: `no_std`-compatible, zero dependencies | — |
-| `dict` | build | Code generation from FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members | `codec` — it implements `codec::Dictionary` |
-| `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised | `codec`, `dict` |
+| `dict` | build | Code generation from FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the four validation tables — defined tags, message types, per-message tag sets, field types and enum values | `codec` — it implements `codec::Dictionary` |
+| `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised. Time enters as `Tick`, in **milliseconds since 0000-01-01** — see D13 | `codec`, `dict` |
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
 | `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport` |
 | `library` | L4 | The application-facing API | `engine` |
@@ -111,8 +111,42 @@ fn step(&mut self, input: Input<'_>, out: &mut ActionBuf) -> Result<(), SessionE
 ```
 
 ```rust
-pub enum Role { Acceptor, Initiator }   // set at construction, never changes
+pub trait Role: sealed::Sealed { const SPEAKS_FIRST: bool; }
+pub struct Acceptor;   // SPEAKS_FIRST = false
+pub struct Initiator;  // SPEAKS_FIRST = true
 ```
+
+**Written, and it came out narrower than the sketch.** `[measured 2026-08-29]` `Role` is a
+sealed trait with two marker types rather than an enum, so the branch is resolved at compile
+time and costs nothing at run time. `ActionBuf` does not exist: the four inputs are four
+methods — `connect`, `disconnect`, `tick`, `received` — each taking an `emit` closure the
+caller supplies, and each answering `Link::{Up, Dropped}`. One input may call `emit` up to five
+times; `[measured]` two files in the corpus need five. The buffer the messages are written into
+is the session's own, so nothing is borrowed from the input. The rest of this section stands.
+
+**`Deliver` became a trait, and it is the only other public API.** `[measured 2026-08-29]` the
+session owns the seven administrative message types (`0 1 2 3 4 5 A`) and hands everything else
+to the application:
+
+```rust
+pub trait Application {
+    fn on_message(&mut self, msg: &[u8], seq: u32, stamp: &[u8], out: &mut [u8])
+        -> Option<Range<usize>>;
+}
+```
+
+It is given the two things an application does not own — the outbound sequence number and the
+clock — writes its reply into a buffer the session lends it, and returns the range it used, or
+`None` to say nothing. **`None` spends no sequence number.** `received` keeps its signature and
+calls `received_with` with an application that never answers, so a session used as a pure
+protocol machine is unchanged.
+
+**`Store` did not become anything, and that is a debt.** `[measured 2026-08-29]` a resend has to
+replay application messages this end already sent, so the session keeps them — a ring of eight
+512-byte slots inside its own `Outbound`, `pub(crate)`, no API change. It is enough for the
+corpus and it is not enough for a real acceptor: a journal has to survive a restart, and this
+one does not. The sketch above had the session *emit* a `Store` action and the engine hold the
+journal, and that is still the answer; `engine` is where it lands.
 
 **One machine, both roles.** The acceptor waits for `Logon` and answers; the initiator sends
 `Logon` and waits. Sequence handling, resend, heartbeat, test-request and logout are the same
@@ -365,6 +399,26 @@ runtime and will not acquire one, and the question cannot be answered on a macOS
 [STATUS.md](../STATUS.md) open item 10. **No TLS plan is written until it is answered**, and if
 the answer is no, ADR-0005 is superseded rather than patched.
 
+### D13 — `Tick` counts milliseconds from year zero, not from the Unix epoch
+
+D1 says time reaches the session only as `Input::Tick`. What that number *means* had been left
+open, and the obvious answer is wrong.
+
+`SendingTime` is `YYYYMMDD-HH:MM:SS[.sss]` — four year digits, so the wire can name any instant
+from 0000 to 9999. **Counted from 1970 in a `u64`, more than a fifth of that range does not
+exist.** A counterparty sending `52=19600101-00:00:00` would wrap the skew subtraction into a
+difference of half a billion years: it fails no check, but it crosses one, and the failure is
+silent.
+
+So `Tick` and every parsed `SendingTime` are **milliseconds since 0000-01-01T00:00:00Z**,
+proleptic Gregorian. Every timestamp FIX can express is then a non-negative `u64`, the skew is
+a plain `abs_diff` that cannot wrap, and the session needs no signed arithmetic. The engine
+converts once at the edge: `tick = unix_millis + clock::MILLIS_YEAR_ZERO_TO_EPOCH`.
+
+The cost is one added constant at the edge, and one asymmetry to remember:
+`codec::TimestampCache` still takes Unix milliseconds, because it is `no_std` and shared with
+callers that have no session. Bridging the two is the session's job, not the codec's.
+
 ## 5. Non-goals for v1
 
 Stated so that scope creep has to argue with a document. The full list with phases is
@@ -376,7 +430,15 @@ Stated so that scope creep has to argue with a document. The full list with phas
   tags on the wire and SBE has none, so the question is whether there is one view type or
   several (PRD §2).
 - Kernel bypass — DPDK, OpenOnload, `ef_vi`. Not before an ordinary TCP path has been measured
-  and found to be the limit. §8 puts that limit at 10–20 µs.
+  and found to be the limit. §8 puts that limit at 10–20 µs. The path is decided even though
+  the work is not: Onload first, because D8's spin loop and the socket API survive unchanged;
+  `ef_vi` second, as an `impl Transport` behind a D5-style flag; DPDK never, because it has
+  no TCP stack. It is plaintext only, so it and D11 exclude each other.
+  [STATUS.md](../STATUS.md) open item 14.
+- SIMD delimiter scan and checksum. Not until `benches/parse.rs` on Linux shows the parse on
+  the critical path — `matthart1983/nanofix` has SIMD and parses 4–6× slower, because layout
+  beat it ([reference/measured-costs.md](reference/measured-costs.md)).
+  [STATUS.md](../STATUS.md) open item 12.
 - Clustering, HA, replication.
 - Metrics dashboards and web UIs.
 - Matching engine, order book, risk. This is a protocol engine.
@@ -395,12 +457,20 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Parse `NewOrderSingle` | ≤ 150 ns **published**. `[measured]` **77.0 ns**, 2026-08-28 | `benches/parse.rs`, asserting a 150 ns regression ceiling |
 | Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**. `[measured]` **93.8 ns — the target is NOT met** | `benches/serialize.rs`, asserting a 190 ns regression ceiling |
 | `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is | `benches/dispatch.rs` |
-| Allocations on the hot path | **0** | `benches/alloc.rs`, counting allocator |
-| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-conformance --test fix44`, in-process, no socket. **0 / 59 today** — the runner exists, the session does not |
+| Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
+| Allocations on the hot path — session | **0**, counted separately on nine paths: accept, refuse, tick, beat, answer, gap, fill, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
+| Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
+| The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`, `tests/reject.rs` and `tests/heartbeat.rs`. `[measured]` seven so far. Three from steps 1–3: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged, because `52` is one of the five tags `fields.fmt` matches by shape; a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet. Four from step 4: all three heartbeat thresholds, which the harness's whole-interval ticks cannot see; and that a garbled frame is fatal only when it claims to be a Logon, which the corpus states once from each side in different files. Five from step 5, in `tests/resend.rs`: every file that opens a gap ends before opening a second one, so closing a filled gap, replaying held messages in sequence order, and what happens when there is no room to hold one are all invisible to the score |
+| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |
 | Repeating groups — written | parse → encode **byte-identical** at all **357** top-level positions, exercising all **59** counters and nesting to depth 4 | `crates/codec/tests/group_roundtrip.rs` |
+| Every tag number matches another implementation | **912 / 912** against QuickFIX's `FixFieldNumbers.h`, **and** 5 168 field names whose tag FIX 4.4 does not define are refused | `crates/dict/tests/interop_quickfix_fields.rs`. The negative half is what stops `is_defined_tag` being `true` for everything |
+| Every field type matches another implementation | **898 / 912** exact, **14** differences each named by tag with both spellings | same test. QuickFIX's `FixFields.h` is shared across versions and carries later refinements; the XML is the source of truth (ADR-0001) |
+| Every (message, tag) pair matches another implementation | **12 524 / 12 524** body pairs, checked as **84 816** answers — every message against every tag, both directions | `crates/dict/tests/interop_quickfix_messages.rs`. One acceptance definition covers this table; 84 816 answers do |
+| Every enum value is one QuickFIX also knows | **245 / 245** fields, **1 708 / 1 708** values, zero exceptions | `crates/dict/tests/enums.rs`. One-directional by construction: QuickFIX lists every version's values, so it can only confirm, never forbid |
+| What each of the 23 field types accepts | at least one accepted and one refused value per type | `crates/dict/tests/field_types.rs`. **These cases are invented** — the corpus supplies two, and 23 types with 2 real cases is not coverage |
 | In-group field order matches another implementation | delimiter exact on all **730** groups, and QuickFIX's `message_order` an exact subsequence of this crate's member list on all 730 | `crates/dict/tests/interop_quickfix_order.rs`, read out of QuickFIX's generated C++. Exists because the round-trip test reads the same table the encoder does and is blind to a wrong order |
 | **Wire-to-wire, NIC to NIC** | p50 / p99 / p99.9 published; p99 ≤ 50 µs on kernel TCP | `tools/w2w` — `SO_TIMESTAMPING`, HdrHistogram, load generator on a **separate machine** |
 | Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |

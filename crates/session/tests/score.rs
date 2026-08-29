@@ -1,0 +1,445 @@
+//! The score. This is the gate, and it is the only one that matters.
+//!
+//! `CLAUDE.md` §2 non-negotiable 3: a session change that has not run the 59
+//! definitions is not done. Every step of
+//! `docs/plans/2026-08-28-session-layer.md` predicts a number here, and a step
+//! that misses its prediction — **or beats it** — stops until the difference is
+//! understood.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use nanofix_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
+use nanofix_conformance::script::FIXED_TIME_MILLIS;
+use nanofix_session::{Acceptor, Config, Session};
+
+/// `session` cannot depend on `conformance` — that is the dev-dependency
+/// direction, and reversing it is a cycle. So the two crates each own a `Link`
+/// and this maps between them. Two names for one idea, and the alternative is
+/// worse.
+fn link(l: nanofix_session::Link) -> Link {
+    match l {
+        nanofix_session::Link::Up => Link::Up,
+        nanofix_session::Link::Dropped => Link::Dropped,
+    }
+}
+
+/// The orphan rule: `SessionUnderTest` belongs to `conformance` and `Session`
+/// to `session`, so neither is local here. A local wrapper is the whole reason
+/// this type exists — and it has grown into the smallest engine the corpus
+/// insists on.
+///
+/// # This is standing in for `engine`, and it says so
+///
+/// Two things here are **not** session rules and are not in the session crate:
+///
+/// * **which connection owns an identity.** `1b_DuplicateIdentity.def` opens a
+///   second connection with the same CompIDs and expects it dropped. A session
+///   object is one connection's state machine and cannot know about another;
+///   deciding between them is what an engine does. `runner.rs` anticipated this
+///   — `SessionUnderTest` takes a `Conn` and one instance sees every connection.
+/// * **framing.** TCP delivers bytes, not messages. `2m_BodyLengthValueNotCorrect.def`
+///   is entirely about that: a `9=` that promises too few bytes loses its own
+///   message, and one that promises too many **swallows the next**. See
+///   [`frame`].
+/// * **the application.** [`EchoApp`] is the acceptance server's own behaviour,
+///   wired in through [`nanofix_session::Application`].
+///
+/// When `engine` exists, the first two move into it. Until then they are here,
+/// in the open, rather than smuggled into `Session`.
+struct Adapter {
+    conns: Vec<Wire>,
+    app: EchoApp,
+}
+
+/// One connection: its state machine and the bytes that have arrived for it.
+struct Wire {
+    conn: Conn,
+    session: Session<Acceptor, 256>,
+    rx: Vec<u8>,
+}
+
+/// What the front of a receive buffer holds.
+enum Frame {
+    /// A complete message, `..0`.
+    Message(usize),
+    /// `9=` promises bytes that have not arrived.
+    Need,
+    /// `9=` does not land on a `10=NNN` trailer.
+    Garbage,
+}
+
+/// Take `9=` at its word, and check that it lands on the trailer.
+///
+/// `[measured 2026-08-29]` this is what `2m_BodyLengthValueNotCorrect.def`
+/// says, in its own two comments. `9=30` on a 91-byte body lands mid-message,
+/// so that message is lost and the next one — arriving in a later read — is
+/// untouched. `9=111` lands inside the message *after* it, so both are lost
+/// together. One rule covers both: what `9=` promises is either a message or
+/// rubbish, and rubbish takes the whole buffer with it.
+fn frame(rx: &[u8]) -> Frame {
+    let Some(at) = rx.windows(3).position(|w| w == b"\x019=") else {
+        return Frame::Garbage;
+    };
+    let digits = &rx[at + 3..];
+    let Some(end) = digits.iter().position(|b| *b == 1) else {
+        return Frame::Need;
+    };
+    let Ok(len) = std::str::from_utf8(&digits[..end])
+        .unwrap_or("x")
+        .parse::<usize>()
+    else {
+        return Frame::Garbage;
+    };
+    let stop = at + 3 + end + 1 + len;
+    // The checksum's width is not fixed here: 238 of the corpus's `I` lines
+    // carry the literal `10=0`, one digit, and the loader keeps them.
+    if rx.len() < stop + 4 {
+        return Frame::Need;
+    }
+    if &rx[stop..stop + 3] != b"10=" {
+        return Frame::Garbage;
+    }
+    match rx[stop + 3..].iter().position(|b| *b == 1) {
+        Some(k) => Frame::Message(stop + 3 + k + 1),
+        None => Frame::Need,
+    }
+}
+
+impl Adapter {
+    fn new() -> Self {
+        Self {
+            conns: Vec::new(),
+            app: EchoApp::default(),
+        }
+    }
+
+    fn at(&mut self, conn: Conn) -> usize {
+        if let Some(i) = self.conns.iter().position(|w| w.conn == conn) {
+            return i;
+        }
+        self.conns.push(Wire {
+            conn,
+            session: Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+            rx: Vec::new(),
+        });
+        self.conns.len() - 1
+    }
+}
+
+impl SessionUnderTest for Adapter {
+    fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, input: Input<'_>, mut emit: F) -> Link {
+        let i = self.at(conn);
+        let Input::Bytes(bytes) = input else {
+            let s = &mut self.conns[i].session;
+            return link(match input {
+                Input::Connect => s.connect(emit),
+                Input::Disconnect => s.disconnect(emit),
+                Input::Tick(ms) => s.tick(ms, emit),
+                Input::Bytes(_) => unreachable!("handled below"),
+            });
+        };
+
+        self.conns[i].rx.extend_from_slice(bytes);
+        let mut result = Link::Up;
+        loop {
+            if self.conns[i].rx.is_empty() {
+                break;
+            }
+            let taken = match frame(&self.conns[i].rx) {
+                Frame::Need => break,
+                Frame::Message(n) => n,
+                // The whole buffer goes, and the session is still the one that
+                // judges it: it will fail to parse, run its garbled rule, and
+                // drop the link only if the rubbish claims to be a Logon —
+                // `1d_InvalidLogonLengthInvalid.def`.
+                Frame::Garbage => self.conns[i].rx.len(),
+            };
+
+            // One identity, one connection. A Logon arriving on a second
+            // connection while a first is logged on is refused by dropping it,
+            // in silence — `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def`
+            // both expect no reply at all on the second.
+            let taken_is_logon = field(&self.conns[i].rx[..taken], 35) == Some(b"A");
+            if taken_is_logon
+                && self
+                    .conns
+                    .iter()
+                    .enumerate()
+                    .any(|(j, w)| j != i && w.session.is_logged_on())
+            {
+                self.conns[i].rx.clear();
+                self.conns[i].session.disconnect(&mut emit);
+                return Link::Dropped;
+            }
+
+            let app = &mut self.app;
+            let w = &mut self.conns[i];
+            result = link(w.session.received_with(&w.rx[..taken], app, &mut emit));
+            w.rx.drain(..taken);
+            if result == Link::Dropped {
+                break;
+            }
+        }
+        result
+    }
+}
+
+/// The application the acceptance corpus assumes, wired to the session.
+///
+/// `conformance` cannot implement [`nanofix_session::Application`] — it does not
+/// depend on `session`, and reversing that is a cycle — so the trait is
+/// implemented here over the two functions that crate does provide.
+///
+/// The state is the interesting part. `19a` and `19b` are the same file twice
+/// with one difference: whether the `11=` on a `97=Y` message has been seen
+/// before on this session. **That is not something a session layer can answer**
+/// — a sequence number says nothing about an order ID — and the two files exist
+/// to say so.
+#[derive(Default)]
+struct EchoApp {
+    seen: Vec<Vec<u8>>,
+}
+
+impl nanofix_session::Application for EchoApp {
+    fn on_message(
+        &mut self,
+        msg: &[u8],
+        seq: u32,
+        stamp: &[u8],
+        out: &mut [u8],
+    ) -> Option<std::ops::Range<usize>> {
+        let msg_type = field(msg, 35)?;
+        // The acceptance server trades orders and security definitions and
+        // nothing else. `2r_UnregisteredMsgType.def` sends `35=8`, which FIX 4.4
+        // defines and this application does not want.
+        if msg_type != b"D" && msg_type != b"d" {
+            return nanofix_conformance::echo::business_reject(msg, out, seq, stamp).ok();
+        }
+        if let Some(id) = field(msg, 11) {
+            let already = self.seen.iter().any(|s| s == id);
+            if field(msg, 97) == Some(b"Y") && already {
+                return None;
+            }
+            if !already {
+                self.seen.push(id.to_vec());
+            }
+        }
+        nanofix_conformance::echo::echo(msg, out, seq, stamp).ok()
+    }
+}
+
+/// The acceptor the corpus talks to: it is ISLD and its counterparty is TW44.
+fn acceptor() -> Adapter {
+    Adapter::new()
+}
+
+/// The two crates agree on what time it is.
+///
+/// `conformance` states the corpus's instant as a number because the runner
+/// needs one to tick with, and it has no timestamp parser to check it against.
+/// `session` has the parser. Neither crate can prove this alone; this is the
+/// only place that sees both.
+#[test]
+fn the_harness_clock_and_the_corpus_agree() {
+    use nanofix_conformance::script::{FIXED_TIME_IN, FIXED_TIME_MILLIS, FIXED_TIME_OUT};
+
+    assert_eq!(
+        nanofix_session::clock::parse_utc(FIXED_TIME_IN.as_bytes()),
+        Some(FIXED_TIME_MILLIS),
+        "the runner would tick to an instant the corpus never writes"
+    );
+    assert_eq!(
+        nanofix_session::clock::parse_utc(FIXED_TIME_OUT.as_bytes()),
+        Some(FIXED_TIME_MILLIS),
+        "the two widths must name the same instant"
+    );
+}
+
+/// `[measured 2026-08-29]` **55 / 59** — step 6a, and the plan predicted 52.
+///
+/// **Three more than predicted, and the reason is a real one.** The split
+/// between 6a and 6b was drawn from the set of `35=` values each file expects
+/// back, and that set cannot tell a message this session *echoes* from one it
+/// *replays*: both are `35=D`. `3b_InvalidChecksum`, `2d_GarbledMessage` and
+/// `3c_GarbledMessage` all look like they need a store of sent messages and
+/// none of them does — in all three it is the **counterparty** that resends,
+/// and this end only has to ask, ignore what it could not read, and echo what
+/// it could.
+///
+/// The four that remain all replay something this session sent.
+#[test]
+fn step_six_b_replays_what_it_sent_and_scores_fifty_nine() {
+    let report = run(|_| acceptor()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        report.passed, 59,
+        "step 6a: the plan predicted 52 and the difference is explained above:\n{report}"
+    );
+    assert_eq!(
+        report.passed_files,
+        vec![
+            "10_MsgSeqNumEqual.def",
+            "10_MsgSeqNumGreater.def",
+            "10_MsgSeqNumLess.def",
+            "11a_NewSeqNoGreater.def",
+            "11b_NewSeqNoEqual.def",
+            "11c_NewSeqNoLess.def",
+            "13b_UnsolicitedLogoutMessage.def",
+            "14a_BadField.def",
+            "14b_RequiredFieldMissing.def",
+            "14c_TagNotDefinedForMsgType.def",
+            "14d_TagSpecifiedWithoutValue.def",
+            "14e_IncorrectEnumValue.def",
+            "14f_IncorrectDataFormat.def",
+            "14g_HeaderBodyTrailerFieldsOutOfOrder.def",
+            "14h_RepeatedTag.def",
+            "14i_RepeatingGroupCountNotEqual.def",
+            "15_HeaderAndBodyFieldsOrderedDifferently.def",
+            "19a_PossResendMessageThatHAsAlreadyBeenSent.def",
+            "19b_PossResendMessageThatHasNotBeenSent.def",
+            "1a_ValidLogonMsgSeqNumTooHigh.def",
+            "1a_ValidLogonWithCorrectMsgSeqNum.def",
+            "1b_DuplicateIdentity.def",
+            "1c_InvalidSenderCompID.def",
+            "1c_InvalidTargetCompID.def",
+            "1d_InvalidLogonBadSendingTime.def",
+            "1d_InvalidLogonLengthInvalid.def",
+            "1d_InvalidLogonWrongBeginString.def",
+            "1e_NotLogonMessage.def",
+            "20_SimultaneousResendRequest.def",
+            "21_RepeatingGroupSpecifierWithValueOfZero.def",
+            "2a_MsgSeqNumCorrect.def",
+            "2b_MsgSeqNumTooHigh.def",
+            "2c_MsgSeqNumTooLow.def",
+            "2d_GarbledMessage.def",
+            "2e_PossDupAlreadyReceived.def",
+            "2e_PossDupNotReceived.def",
+            "2f_PossDupOrigSendingTimeTooHigh.def",
+            "2g_PossDupNoOrigSendingTime.def",
+            "2i_BeginStringValueUnexpected.def",
+            "2k_CompIDDoesNotMatchProfile.def",
+            "2m_BodyLengthValueNotCorrect.def",
+            "2o_SendingTimeValueOutOfRange.def",
+            "2q_MsgTypeNotValid.def",
+            "2r_UnregisteredMsgType.def",
+            "2t_FirstThreeFieldsOutOfOrder.def",
+            "3b_InvalidChecksum.def",
+            "3c_GarbledMessage.def",
+            "4a_NoDataSentDuringHeartBtInt.def",
+            "4b_ReceivedTestRequest.def",
+            "6_SendTestRequest.def",
+            "7_ReceiveRejectMessage.def",
+            "8_AdminAndApplicationMessages.def",
+            "8_OnlyAdminMessages.def",
+            "8_OnlyApplicationMessages.def",
+            "AlreadyLoggedOn.def",
+            "RejectResentMessage.def",
+            "ReverseRoute.def",
+            "ReverseRouteWithEmptyRoutingTags.def",
+            "SessionReset.def",
+        ],
+        "and these are the fifty-nine, named"
+    );
+}
+
+/// Every `373` code the corpus asks for is actually reached.
+///
+/// Not implied by the count: `14a` alone carries four cases and a session that
+/// answered every one of them with the same code would still pass the file, so
+/// long as the code happened to be `0`. This walks the corpus's own `E` lines
+/// and checks each distinct `373` value is produced somewhere.
+#[test]
+fn all_twelve_session_reject_reasons_are_produced() {
+    use nanofix_conformance::script::{Kind, scenarios};
+
+    let mut wanted: Vec<u32> = Vec::new();
+    for s in scenarios().unwrap_or_else(|e| panic!("{e}")) {
+        for step in &s.steps {
+            if let Kind::Expect(m) = &step.kind
+                && let Some(code) = field(&m.wire, 373).and_then(|v| std::str::from_utf8(v).ok())
+                && let Ok(n) = code.parse::<u32>()
+                && !wanted.contains(&n)
+            {
+                wanted.push(n);
+            }
+        }
+    }
+    wanted.sort_unstable();
+    assert_eq!(
+        wanted,
+        vec![0, 1, 2, 4, 5, 6, 9, 10, 11, 13, 14, 16],
+        "the twelve 373 codes the corpus asks for"
+    );
+
+    let mut produced: Vec<u32> = Vec::new();
+    for s in scenarios().unwrap_or_else(|e| panic!("{e}")) {
+        let mut session = acceptor();
+        let mut seen: Vec<u32> = Vec::new();
+        for step in &s.steps {
+            let conn = Conn(step.session.unwrap_or(1));
+            let mut collect = |b: &[u8]| {
+                if let Some(v) = field(b, 373)
+                    && let Ok(n) = std::str::from_utf8(v).unwrap_or("x").parse::<u32>()
+                {
+                    seen.push(n);
+                }
+            };
+            match &step.kind {
+                Kind::Connect => {
+                    session.step(conn, Input::Connect, &mut collect);
+                    session.step(conn, Input::Tick(FIXED_TIME_MILLIS), &mut collect);
+                }
+                Kind::Disconnect => {
+                    session.step(conn, Input::Disconnect, &mut collect);
+                }
+                Kind::Send(m) => {
+                    session.step(conn, Input::Tick(FIXED_TIME_MILLIS), &mut collect);
+                    session.step(conn, Input::Bytes(&m.wire), &mut collect);
+                }
+                Kind::Expect(_) | Kind::ExpectDisconnect => {}
+            }
+        }
+        for n in seen {
+            if !produced.contains(&n) {
+                produced.push(n);
+            }
+        }
+    }
+    produced.sort_unstable();
+    assert_eq!(
+        produced, wanted,
+        "every 373 code the corpus asks for must actually be produced"
+    );
+}
+
+/// The value of one field, by tag.
+fn field(wire: &[u8], tag: u32) -> Option<&[u8]> {
+    let needle = format!("\u{1}{tag}=");
+    let at = wire
+        .windows(needle.len())
+        .position(|w| w == needle.as_bytes())?
+        + needle.len();
+    let end = wire[at..].iter().position(|&b| b == 1)? + at;
+    Some(&wire[at..end])
+}
+
+/// The step-1 six are still in the fifty-five.
+///
+/// Not implied by the count: each step adds files and could lose one to a rule
+/// that now fires earlier. Step 2 did exactly that to two files, and only a
+/// named list caught it.
+#[test]
+fn the_step_one_six_are_still_there() {
+    let report = run(|_| acceptor()).unwrap_or_else(|e| panic!("{e}"));
+    for f in [
+        "1c_InvalidSenderCompID.def",
+        "1c_InvalidTargetCompID.def",
+        "1d_InvalidLogonBadSendingTime.def",
+        "1d_InvalidLogonLengthInvalid.def",
+        "1d_InvalidLogonWrongBeginString.def",
+        "1e_NotLogonMessage.def",
+    ] {
+        assert!(
+            report.passed_files.iter().any(|p| p == f),
+            "{f} passed at step 1 and does not now:\n{report}"
+        );
+    }
+}
