@@ -49,7 +49,15 @@ below describe what a first release would contain.
   - A frame the codec cannot read is now ignored rather than fatal, **unless it identifies
     itself as a Logon**. `MsgType` must be the third field; a message that puts it elsewhere is
     treated the same way.
-  - Scores **37 / 59** on the acceptance definitions: step 4 of six.
+  - `ResendRequest (35=2)` when a message runs ahead of the count. The message is **held**, not
+    refused, and replayed in sequence order once the gap closes; the gap is asked for **once**,
+    and a Logon that runs ahead is answered before it is asked for. Four held messages per
+    connection, 512 bytes each — one that does not fit is dropped, which costs a round trip and
+    never an allocation.
+  - An inbound `ResendRequest` is answered with one `SequenceReset` gap fill. Every message this
+    session has sent so far is administrative and QuickFIX never replays those. A store of
+    application messages, and a real replay, are still to come.
+  - Scores **42 / 59** on the acceptance definitions: step 5 of six.
 
 - **`nanofix-dict`** — four validation tables, generated from `FIX44.xml`, answering the
   dictionary half of `Reject (35=3)`.

@@ -10,9 +10,9 @@ Last updated: **2026-08-28**.
 | | |
 |---|---|
 | Branch | **`plan/dict-validation`**, on top of `plan/session-layer` |
-| Milestone | **M2 — the session layer.** `[measured 2026-08-29]` **37 / 59**, step 4 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
+| Milestone | **M2 — the session layer.** `[measured 2026-08-29]` **42 / 59**, step 5 of six. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–4 of 6 done: 37 / 59.** Steps 1, 3 and 4 hit their prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus. Eight revisions recorded in the plan |
+| Plan in flight | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — approved 2026-08-28. **Steps 1–5 of 6 done: 42 / 59.** Steps 1, 3, 4 and 5 hit their prediction; step 2 missed it (18 predicted) and the plan's file classification was re-derived from the corpus. Nine revisions recorded in the plan |
 | Last closed | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — closed 2026-08-28. Four validation tables, agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 12 524/12 524 message-tag pairs and 1 708/1 708 enum values |
 | Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
 | Last closed | **[2026-08-27-repeating-groups.md](docs/plans/2026-08-27-repeating-groups.md)** — closed 2026-08-28. Groups read and written, nested to depth 4; field order agreed with QuickFIX's own generated C++ on 730/730 groups |
@@ -190,6 +190,14 @@ Last updated: **2026-08-28**.
 - **Three reversals were worthless in step 4, all the same shape: two guards covering one rule.**
   Each pair was reduced to the single guard that can actually be broken. A fourth was a test that
   checked the output and not the link, so a reversal that dropped the connection stayed green.
+- **The session scores 42 / 59, 2026-08-29 — step 5, and the prediction was 42.** A message running
+  ahead of the count is held and the gap is asked for; an inbound `ResendRequest` over
+  administrative messages is answered with one `SequenceReset` gap fill. Nineteen reversals were
+  run and all nineteen go red.
+- **A gap is asked for once, and a Logon that runs ahead is answered before it is asked.** Both are
+  stated exactly once in the corpus, by `10_MsgSeqNumGreater` and `1a_ValidLogonMsgSeqNumTooHigh`.
+  Written up in
+  [reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md).
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -212,6 +220,13 @@ Last updated: **2026-08-28**.
   can only tick a whole `HeartBtInt` at a time, so any test-request threshold in (1×, 2×] and any
   timeout in (2×, 3×] reproduces `6_SendTestRequest.def` exactly. The numbers 1.0, 1.2 and 2.4
   are QuickFIX's, and `crates/session/tests/heartbeat.rs` is the only thing holding them.
+- **Nothing about a *second* gap is visible to the corpus.** Every file that opens one ends before
+  opening another, and the deepest any of them holds is two messages. Closing a filled gap,
+  replaying held messages in sequence order, and dropping one there is no room for are all held by
+  `crates/session/tests/resend.rs` alone.
+- **No application message has ever been replayed.** The inbound `ResendRequest` path answers with
+  a gap fill because everything this session has sent so far is administrative. A `MessageStore`
+  and a real replay are step 6 — see the plan's "Sửa 9".
 - **Whether a Reject consumes the inbound sequence number is invisible to the corpus.** The
   *too high* branch does not exist yet, so a message running ahead is read as if it were in
   order and a sequence number that never advanced looks exactly like one that did. Held by

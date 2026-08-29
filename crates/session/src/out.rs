@@ -34,6 +34,8 @@ pub(crate) struct Outbound {
     pub(crate) reject: Skeleton,
     pub(crate) heartbeat: Skeleton,
     pub(crate) test_request: Skeleton,
+    pub(crate) resend_request: Skeleton,
+    pub(crate) gap_fill: Skeleton,
     pub(crate) buf: [u8; 512],
 }
 
@@ -109,6 +111,31 @@ impl Outbound {
                 .slot(tag::MSG_SEQ_NUM)
                 .slot(tag::SENDING_TIME)
                 .slot(tag::TEST_REQ_ID)
+                .build::<Fix44>()
+                .ok()?,
+            resend_request: TemplateBuilder::<24, 320>::new(begin)
+                .field(tag::MSG_TYPE, b"2")
+                .field(tag::SENDER_COMP_ID, sender)
+                .field(tag::TARGET_COMP_ID, target)
+                .slot(tag::MSG_SEQ_NUM)
+                .slot(tag::SENDING_TIME)
+                .slot(tag::BEGIN_SEQ_NO)
+                .slot(tag::END_SEQ_NO)
+                .build::<Fix44>()
+                .ok()?,
+            // A `SequenceReset` sent as a gap fill: it stands in for messages
+            // this session will not replay, so it carries `43=Y` and the
+            // `122=` a resent message would have carried.
+            gap_fill: TemplateBuilder::<24, 320>::new(begin)
+                .field(tag::MSG_TYPE, b"4")
+                .field(tag::SENDER_COMP_ID, sender)
+                .field(tag::TARGET_COMP_ID, target)
+                .slot(tag::MSG_SEQ_NUM)
+                .slot(tag::POSS_DUP_FLAG)
+                .slot(tag::SENDING_TIME)
+                .slot(tag::ORIG_SENDING_TIME)
+                .slot(tag::NEW_SEQ_NO)
+                .slot(tag::GAP_FILL_FLAG)
                 .build::<Fix44>()
                 .ok()?,
             buf: [0; 512],

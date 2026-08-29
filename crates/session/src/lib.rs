@@ -54,7 +54,10 @@ pub(crate) mod tag {
     pub const TEXT: u32 = 58;
     pub const ENCRYPT_METHOD: u32 = 98;
     pub const HEART_BT_INT: u32 = 108;
+    pub const BEGIN_SEQ_NO: u32 = 7;
+    pub const END_SEQ_NO: u32 = 16;
     pub const NEW_SEQ_NO: u32 = 36;
+    pub const ORIG_SENDING_TIME: u32 = 122;
     pub const TEST_REQ_ID: u32 = 112;
     pub const GAP_FILL_FLAG: u32 = 123;
     pub const RESET_SEQ_NUM_FLAG: u32 = 141;
@@ -65,6 +68,7 @@ mod msg {
     pub const LOGON: &[u8] = b"A";
     pub const LOGOUT: &[u8] = b"5";
     pub const TEST_REQUEST: &[u8] = b"1";
+    pub const RESEND_REQUEST: &[u8] = b"2";
     pub const SEQUENCE_RESET: &[u8] = b"4";
 }
 
@@ -296,6 +300,15 @@ pub struct Session<R: Role, const N: usize> {
     /// How many `TestRequest`s have gone out since the last message arrived.
     /// QuickFIX widens its patience by this count and so does this.
     test_requests: u32,
+    /// The gap this session has already asked for: the `7=` it sent and the
+    /// last number it is waiting on. `resend_from == 0` means none is
+    /// outstanding, which is what stops a second `ResendRequest` going out for
+    /// a gap already being filled.
+    resend_from: u32,
+    resend_to: u32,
+    /// Messages that arrived ahead of [`Self::next_in`], held until the gap in
+    /// front of them closes.
+    queue: [Queued; QUEUED],
     _role: PhantomData<R>,
 }
 
@@ -323,6 +336,15 @@ impl<R: Role, const N: usize> Session<R, N> {
             last_sent_ms: 0,
             last_recv_ms: 0,
             test_requests: 0,
+            resend_from: 0,
+            resend_to: 0,
+            queue: [const {
+                Queued {
+                    seq: 0,
+                    len: 0,
+                    buf: [0; QUEUED_LEN],
+                }
+            }; QUEUED],
             _role: PhantomData,
         }
     }
@@ -450,13 +472,113 @@ impl<R: Role, const N: usize> Session<R, N> {
         if matches!(self.state, State::Disconnected | State::AwaitingLogout) {
             return Link::Dropped;
         }
-        match self.judge(bytes, &mut emit) {
+        let link = match self.judge(bytes, &mut emit) {
             Ok(link) => link,
             Err(_) => {
                 self.state = State::Disconnected;
                 Link::Dropped
             }
+        };
+        if link == Link::Dropped {
+            return link;
         }
+        // A message that ran ahead of the count was held rather than answered.
+        // Now that this one has been judged the gap may have closed, and the
+        // held messages are due — in sequence order, which is the whole point.
+        // Draining here rather than inside `judge` keeps the recursion out:
+        // `judge` never calls this, so a held message that queues another
+        // cannot nest.
+        self.drain(&mut emit)
+    }
+
+    /// Judge every held message the count has caught up with.
+    fn drain<F: FnMut(&[u8])>(&mut self, emit: &mut F) -> Link {
+        // Bounded by the queue itself, and every round empties one slot.
+        for _ in 0..QUEUED {
+            let Some(i) = (0..QUEUED).find(|&i| self.queue[i].seq == self.next_in) else {
+                return Link::Up;
+            };
+            // Copied to the stack because `judge` takes `&mut self`. 512 bytes
+            // and no allocation — non-negotiable 1 — and it happens only when
+            // a gap closes, which is not the common path.
+            let len = usize::from(self.queue[i].len);
+            let mut held = [0u8; QUEUED_LEN];
+            held[..len].copy_from_slice(&self.queue[i].buf[..len]);
+            self.queue[i].seq = 0;
+            match self.judge(&held[..len], emit) {
+                Ok(Link::Up) => {}
+                Ok(Link::Dropped) => return Link::Dropped,
+                Err(_) => {
+                    self.state = State::Disconnected;
+                    return Link::Dropped;
+                }
+            }
+        }
+        Link::Up
+    }
+
+    /// Hold a message that arrived ahead of the count.
+    ///
+    /// Silently drops it when there is no room, or when it is longer than a
+    /// slot. That is not a hole in the protocol: the message was never
+    /// acknowledged, `next_in` did not move, and the next message running ahead
+    /// asks for it again. Losing it costs a round trip, and the alternative is
+    /// an allocation on the receive path.
+    fn enqueue(&mut self, seq: u32, bytes: &[u8]) {
+        if bytes.len() > QUEUED_LEN {
+            return;
+        }
+        let Some(i) = (0..QUEUED).find(|&i| self.queue[i].seq == seq || self.queue[i].seq == 0)
+        else {
+            return;
+        };
+        self.queue[i].seq = seq;
+        self.queue[i].len = bytes.len() as u16;
+        self.queue[i].buf[..bytes.len()].copy_from_slice(bytes);
+    }
+
+    /// Move the inbound count past `seq`, and close the gap if this was the
+    /// last message it was waiting on.
+    ///
+    /// **The corpus never sees the closing.** Every file that opens a gap ends
+    /// before opening a second one, so a session that asks once and then never
+    /// asks again scores the same. Leaving it open would strand a real session
+    /// on its next gap, in silence. `tests/resend.rs` holds it.
+    fn advance_past(&mut self, seq: u32) {
+        self.next_in = seq + 1;
+        if self.resend_from != 0 && seq >= self.resend_to {
+            self.resend_from = 0;
+            self.resend_to = 0;
+        }
+    }
+
+    /// A message running ahead of the count: hold it, and ask for the gap.
+    fn too_high<F: FnMut(&[u8])>(&mut self, seq: u32, bytes: &[u8], emit: &mut F) -> Link {
+        self.enqueue(seq, bytes);
+        // **Ask once per gap.** `10_MsgSeqNumGreater.def` sends two messages
+        // running ahead and expects exactly one `ResendRequest`; a second would
+        // be output no line asked for, and the file fails on it.
+        if self.resend_from != 0 && seq >= self.resend_from {
+            return Link::Up;
+        }
+        self.resend_from = self.next_in;
+        self.resend_to = seq - 1;
+        let mut begin = [0u8; 10];
+        let begin = digits(self.next_in, &mut begin);
+        // `16=0` — "and everything after". FIX 4.2 and later say it that way;
+        // 4.0 and 4.1 wrote `999999`, and this engine is 4.4 only.
+        if self
+            .send(
+                Which::ResendRequest,
+                &[(tag::BEGIN_SEQ_NO, begin), (tag::END_SEQ_NO, b"0")],
+                emit,
+            )
+            .is_err()
+        {
+            self.state = State::Disconnected;
+            return Link::Dropped;
+        }
+        Link::Up
     }
 
     /// Write one templated message and hand it to `emit`.
@@ -549,6 +671,22 @@ impl<R: Role, const N: usize> Session<R, N> {
         extra: &[(u32, &[u8])],
         emit: &mut F,
     ) -> Result<(), Refusal> {
+        self.send_as(which, None, extra, emit)
+    }
+
+    /// As [`Self::send`], but with the sequence number chosen by the caller.
+    ///
+    /// `Some(n)` writes `34=n` and leaves the outbound count alone: a gap fill
+    /// stands in for numbers already spent, so it must not spend another.
+    /// `8_OnlyAdminMessages.def` fills `34=1` while the next real message is
+    /// `34=5`, and both are in the file.
+    fn send_as<F: FnMut(&[u8])>(
+        &mut self,
+        which: Which,
+        at: Option<u32>,
+        extra: &[(u32, &[u8])],
+        emit: &mut F,
+    ) -> Result<(), Refusal> {
         // Unix milliseconds, because that is what `TimestampCache` takes and it
         // is `no_std` and shared with callers that have no session. Saturating:
         // a session ticked before 1970 is a misconfiguration, and reporting
@@ -556,7 +694,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
         let stamp = *self.stamp.format(unix);
         let mut seq = [0u8; 10];
-        let seq = digits(self.next_out, &mut seq);
+        let seq = digits(at.unwrap_or(self.next_out), &mut seq);
 
         let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
         let mut slots: [(u32, &[u8]); 16] = [(0, &[]); 16];
@@ -576,6 +714,8 @@ impl<R: Role, const N: usize> Session<R, N> {
             reject,
             heartbeat,
             test_request,
+            resend_request,
+            gap_fill,
             buf,
         } = o;
         let template = match which {
@@ -584,12 +724,16 @@ impl<R: Role, const N: usize> Session<R, N> {
             Which::Reject => &*reject,
             Which::Heartbeat => &*heartbeat,
             Which::TestRequest => &*test_request,
+            Which::ResendRequest => &*resend_request,
+            Which::GapFill => &*gap_fill,
         };
         let range = template
             .encode(buf, &slots[..n])
             .map_err(|_| Refusal::CannotSend)?;
         emit(&buf[range]);
-        self.next_out += 1;
+        if at.is_none() {
+            self.next_out += 1;
+        }
         self.last_sent_ms = self.now_ms;
         Ok(())
     }
@@ -740,6 +884,9 @@ impl<R: Role, const N: usize> Session<R, N> {
         // their comments say "default to N".
         let gap_fill = view.get(tag::GAP_FILL_FLAG) == Some(b"Y");
         let new_seq_no = view.get(tag::NEW_SEQ_NO).and_then(|v| as_u32(v).ok());
+        let is_resend_request = msg_type == msg::RESEND_REQUEST;
+        let begin_seq_no = view.get(tag::BEGIN_SEQ_NO).and_then(|v| as_u32(v).ok());
+        let end_seq_no = view.get(tag::END_SEQ_NO).and_then(|v| as_u32(v).ok());
         let reset_seq = view.get(tag::RESET_SEQ_NUM_FLAG) == Some(b"Y");
         // 64 bytes: the corpus's longest is `HELLO1`. A longer one is dropped
         // rather than truncated, and the reply then carries no `112=` at all —
@@ -767,19 +914,28 @@ impl<R: Role, const N: usize> Session<R, N> {
         // checkTooLow)` is called with different arguments from each handler,
         // and `nextSequenceReset` is the one that never advances at all.
         //
-        // | `35=` | too low checked | advances `34=` in |
-        // |---|---|---|
-        // | `5` Logout | no | yes |
-        // | `4` SequenceReset, no gap fill | no | **no** |
-        // | `4` SequenceReset, gap fill | yes | **no** |
-        // | everything else | yes | yes |
+        // | `35=` | too high | too low | advances `34=` in |
+        // |---|---|---|---|
+        // | `A` Logon | **after the reply** | yes | only if not too high |
+        // | `5` Logout | no | no | yes |
+        // | `2` ResendRequest | no | no | yes |
+        // | `4` SequenceReset, no gap fill | no | no | **no** |
+        // | `4` SequenceReset, gap fill | yes | yes | **no** |
+        // | everything else | yes | yes | yes |
         //
         // `10_MsgSeqNumEqual.def` proves the Logout row: it gap-fills to 20,
         // then logs out with `34=3`, and expects the ordinary Logout reply.
         // `11a`/`11b`/`11c` prove the SequenceReset rows: all three send
         // `34=0`, which is below every expectation there has ever been.
+        // `8_OnlyAdminMessages.def` proves the ResendRequest row: it sends
+        // `34=5` twice, and the second time the count has passed it.
+        // `1a_ValidLogonMsgSeqNumTooHigh.def` proves the Logon row: `34=5` on
+        // an empty session, answered with a Logon **and then** a
+        // `ResendRequest`, in that order.
         let plain_reset = is_sequence_reset && !gap_fill;
-        let check_too_low = !is_logout && !plain_reset;
+        let skips_sequencing = is_logout || is_resend_request || plain_reset;
+        let check_too_low = !skips_sequencing;
+        let check_too_high = !skips_sequencing && !is_logon;
 
         // A sequence number already used cannot be taken back, so the session
         // hangs up. Too *high* means a gap, which is a ResendRequest and not a
@@ -804,8 +960,14 @@ impl<R: Role, const N: usize> Session<R, N> {
             };
             return Ok(self.logout_with(why, emit));
         }
-        if !is_sequence_reset {
-            self.next_in = seq + 1;
+        // A gap. The message is held rather than answered, the count does not
+        // move, and the session asks for what it missed.
+        if check_too_high && seq > self.next_in {
+            return Ok(self.too_high(seq, bytes, emit));
+        }
+
+        if !is_sequence_reset && !is_logon {
+            self.advance_past(seq);
         }
 
         // This message is one the session accepts, which is what the heartbeat
@@ -849,6 +1011,15 @@ impl<R: Role, const N: usize> Session<R, N> {
                 2
             };
             self.send(Which::Logon, &extra[..n], emit)?;
+            // **After the reply, not before.** A Logon that runs ahead is still
+            // a Logon: `1a_ValidLogonMsgSeqNumTooHigh.def` sends `34=5` to an
+            // empty session and expects the Logon answered first and the
+            // `ResendRequest` second. Answering in the other order, or refusing
+            // it, loses the session over a gap that is recoverable.
+            if seq > self.next_in {
+                return Ok(self.too_high(seq, bytes, emit));
+            }
+            self.advance_past(seq);
             return Ok(Link::Up);
         }
 
@@ -865,6 +1036,40 @@ impl<R: Role, const N: usize> Session<R, N> {
         if is_test_request {
             let id = test_req_id.as_deref().unwrap_or_default();
             self.send(Which::Heartbeat, &[(tag::TEST_REQ_ID, id)], emit)?;
+            return Ok(Link::Up);
+        }
+
+        // An inbound `ResendRequest` asks for messages back. **Every message
+        // this session has sent so far is an administrative one, and QuickFIX
+        // never replays those** — it fills the gap instead, with one
+        // `SequenceReset` covering the whole range. A store of application
+        // messages is step 6's; until it exists this is the whole answer, and
+        // `8_OnlyAdminMessages.def` is the file that says so in its name.
+        if is_resend_request {
+            let last = self.next_out.saturating_sub(1);
+            // `16=0` means "and everything after", and a counterparty may also
+            // ask for more than this end has ever sent.
+            let end = match end_seq_no {
+                Some(n) if n != 0 && n <= last => n,
+                _ => last,
+            };
+            if let Some(begin) = begin_seq_no.filter(|b| *b <= end) {
+                let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
+                let orig = *self.stamp.format(unix);
+                let mut new_seq = [0u8; 10];
+                let new_seq = digits(end + 1, &mut new_seq);
+                self.send_as(
+                    Which::GapFill,
+                    Some(begin),
+                    &[
+                        (tag::POSS_DUP_FLAG, b"Y"),
+                        (tag::ORIG_SENDING_TIME, &orig),
+                        (tag::NEW_SEQ_NO, new_seq),
+                        (tag::GAP_FILL_FLAG, b"Y"),
+                    ],
+                    emit,
+                )?;
+            }
             return Ok(Link::Up);
         }
 
@@ -932,6 +1137,8 @@ enum Which {
     Reject,
     Heartbeat,
     TestRequest,
+    ResendRequest,
+    GapFill,
 }
 
 /// Walk the message in wire order and return the first fault, if any.
@@ -1083,6 +1290,26 @@ fn copy<const N: usize>(value: Option<&[u8]>) -> Option<Held<N>> {
     let mut buf = [0u8; N];
     buf[..v.len()].copy_from_slice(v);
     Some(Held { buf, len: v.len() })
+}
+
+/// How many messages running ahead of the count this session will hold.
+///
+/// `[measured 2026-08-29]` the deepest the acceptance corpus goes is **two** —
+/// `10_MsgSeqNumGreater.def`, which sends a `SequenceReset` and a
+/// `TestRequest` while the gap in front of them is open. Four is that with room
+/// to spare, and holding more is not free: this array is per connection.
+const QUEUED: usize = 4;
+
+/// The longest held message. The same 512 as the outbound buffer, and for the
+/// same reason: the longest message in the corpus is 101 bytes.
+const QUEUED_LEN: usize = 512;
+
+/// One message held until the count catches up. `seq == 0` means the slot is
+/// free — FIX counts from 1, so no real message can claim it.
+struct Queued {
+    seq: u32,
+    len: u16,
+    buf: [u8; QUEUED_LEN],
 }
 
 struct Held<const N: usize> {

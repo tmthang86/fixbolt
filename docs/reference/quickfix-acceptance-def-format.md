@@ -432,13 +432,14 @@ different arguments from `nextLogon`, `nextLogout`, `nextSequenceReset` and the
 rest, and **`nextSequenceReset` is the only handler that never advances the
 inbound count at all**.
 
-| `35=` | too low checked | advances `34=` in | The file that proves it |
-|---|---|---|---|
-| `A` Logon | yes | yes | `2c` |
-| `5` Logout | **no** | yes | `10_MsgSeqNumEqual` — gap-fills to 20, then logs out with `34=3` |
-| `4` SequenceReset, `123=Y` | yes | **no** | `10_MsgSeqNumLess` |
-| `4` SequenceReset, no gap fill | **no** | **no** | `11a`, `11b`, `11c` — all three send `34=0` |
-| everything else | yes | yes | `2c`, `14a` |
+| `35=` | too high | too low | advances `34=` in | The file that proves it |
+|---|---|---|---|---|
+| `A` Logon | **after the reply** | yes | only if not too high | `1a_ValidLogonMsgSeqNumTooHigh` |
+| `5` Logout | no | **no** | yes | `10_MsgSeqNumEqual` — gap-fills to 20, then logs out with `34=3` |
+| `2` ResendRequest | no | **no** | yes | `8_OnlyAdminMessages` — sends `34=5` twice, the second time behind the count |
+| `4` SequenceReset, `123=Y` | yes | yes | **no** | `10_MsgSeqNumLess` |
+| `4` SequenceReset, no gap fill | **no** | **no** | **no** | `11a`, `11b`, `11c` — all three send `34=0` |
+| everything else | yes | yes | yes | `2c`, `14a`, `2b` |
 
 A session that applies one rule to everything scores **36 / 59** instead of 37,
 and the file it loses depends on which rule it picked. `[measured 2026-08-29]`
@@ -476,3 +477,65 @@ the next message to be read as though nothing happened.
 before a Logon is fatal" passes `1d` just as well and is wrong.
 `crates/session/tests/heartbeat.rs::a_garbled_frame_is_fatal_only_when_it_claims_to_be_a_logon`
 holds both halves against the same bytes.
+
+
+## A gap is asked for **once**, and the Logon is answered before it is asked
+
+A message running ahead of the count is not refused: it is held, and the session
+asks for what it missed with `ResendRequest (35=2)` carrying `7=` the number it
+expects and `16=0` — "and everything after", which is how FIX 4.2 and later
+write infinity.
+
+Two things about that are stated exactly once each in the corpus.
+
+**Once per gap.** `10_MsgSeqNumGreater.def` sends `34=10` and then `34=20` while
+the gap is open, and expects **one** `ResendRequest`. QuickFIX's
+`doTargetTooHigh` returns early when a resend is already outstanding and the new
+number is at or past the one it asked from. A session that asks twice fails the
+file on the second message, as output no line asked for.
+
+**The Logon first.** `1a_ValidLogonMsgSeqNumTooHigh.def` opens with `34=5` on an
+empty session and expects `35=A` and *then* `35=2`, in that order. QuickFIX's
+`nextLogon` answers the Logon, and only afterwards asks whether the number ran
+ahead — so a Logon with a gap in front of it still logs the session on, and the
+inbound count does **not** move past it.
+
+### What the corpus cannot see about a gap
+
+`[measured 2026-08-29]` every file that opens a gap ends before opening a second
+one, and the deepest any of them holds is **two** messages. So three behaviours
+score the same either way and have their own tests in
+`crates/session/tests/resend.rs`:
+
+- **A filled gap is closed.** A session that never clears the outstanding range
+  scores 42 / 59 and then never asks again — it has already asked. The next gap
+  in a real session goes unrequested, in silence.
+- **Held messages are replayed in sequence order.** `RejectResentMessage.def`
+  holds exactly one, so it proves only that a held message precedes a fresh one.
+- **What happens when there is no room.** The held message must be dropped
+  rather than truncated, and dropping it must leave the count where it was, so
+  the counterparty's next message running ahead asks for it again.
+
+## An inbound `ResendRequest` over administrative messages is answered with one gap fill
+
+QuickFIX never replays an administrative message — a Logon, a Heartbeat, a
+Reject are all meaningless out of their moment. It emits a `SequenceReset` with
+`123=Y` covering them instead, and `8_OnlyAdminMessages.def` is the file whose
+name says exactly that.
+
+The shape is specific, and every part of it is compared:
+
+```
+35=4 | 34=<BeginSeqNo> | 43=Y | 49 | 52 | 56 | 122=<a timestamp> | 36=<EndSeqNo + 1> | 123=Y
+```
+
+- **`34=` is the first number of the range being filled**, not the next outbound
+  number, and sending it does **not** spend one. The file fills `34=1` while its
+  next real message is `34=5`, and both are in it.
+- **`36=` is one past the last number filled.** `16=4` gives `36=5`; `16=0`
+  means "everything sent so far", so the end becomes the last number this end
+  used and `36=` is the next one.
+- `43=Y` and `122=` are there because a gap fill stands in for a resend, and a
+  resent message carries both. `122` is one of the five tags matched by shape,
+  so only its width is pinned — 21 bytes, with milliseconds, and the file's own
+  `9=93` is what says so.

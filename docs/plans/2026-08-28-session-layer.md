@@ -1,6 +1,6 @@
 # Máy trạng thái session FIX 4.4 — từ 0/59 lên 59/59
 
-> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 4/6 xong)
+> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 5/6 xong)
 > **Phạm vi:** Phase 1, tiêu chí 1 của `PRD.md` §2. Đây là plan lớn nhất dự án.
 
 ## Bối cảnh
@@ -315,6 +315,25 @@ bảng phân loại vốn đã tính đúng 10 file, chỉ dòng mô tả là h�
 **Bài học: một plan mô tả việc bằng tên bản tin thì sẽ hụt ở mọi chỗ mà đọc và viết không đối
 xứng.**
 
+### Sửa 9 — `MessageStore` và `PossDup`/`PossResend` không thuộc bước 5
+
+**Dòng bước 5 viết:** ResendRequest, SequenceReset/gap fill, PossDup/PossResend, `MessageStore`.
+
+**Thực tế:** năm file của bước 5 không cần cái nào trong hai thứ sau.
+
+- `8_OnlyAdminMessages.def` — tên file nói thẳng — chỉ chứa bản tin quản trị, mà QuickFIX
+  **không bao giờ phát lại bản tin quản trị**: nó lấp khoảng trống bằng một `SequenceReset`. Không
+  có gì để lưu, nên không có `MessageStore`.
+- `PossDup`/`PossResend` nằm ở `2f`, `2g`, `19a`, `19b` — cả bốn đều chờ thêm bản tin ứng dụng dội
+  lại, tức nhóm bước 6.
+
+Thêm một trait mà chưa file nào chạm tới là thêm trạng thái không có gì kiểm — đúng thứ plan này
+đã viết ở bước 1 là không làm. Dời cả hai sang bước 6, ghi ở đây. Dự đoán điểm không đổi.
+
+**Đổi lại, bước 5 phải làm một thứ dòng mô tả không nhắc: hàng đợi bản tin đến sớm.**
+`RejectResentMessage.def` giữ một `TestRequest` `34=3`, xử lý `34=2`, rồi phát lại `34=3` *trước*
+`34=4` vừa tới. Không có hàng đợi thì mất file đó.
+
 ## Nhật ký giao hàng
 
 ### Bước 1 — 2026-08-28 — **6 / 59**, đúng dự đoán
@@ -511,6 +530,68 @@ một session 10 000 lần, nên 9 999 lần đo nhánh thoát sớm chứ khôn
 
 `allocations: accept 0 refuse 0 tick 0 beat 0 answer 0 clock 0 text 0`. Đảo ngược (một
 `format!` trên cả hai đường mới) cho `beat 10000 answer 10000`.
+
+**Cổng:** `fmt --check`, `clippy --all-targets --all-features -D warnings`, `test --all`,
+`test --all --no-default-features`, `check-lint-config.sh`, `check-links.py` — tất cả rc=0.
+Máy: Apple M5, macOS 25.5.0, cargo 1.95.0.
+
+### Bước 5 — 2026-08-29 — **42 / 59**, đúng dự đoán
+
+Khoảng trống số thứ tự. Bản tin chạy trước bị **giữ lại** chứ không bị từ chối, session hỏi lại
+phần đã mất bằng `ResendRequest (35=2)`, và một `ResendRequest` đến được trả lời bằng một
+`SequenceReset` lấp trống.
+
+**Hai luật, mỗi luật corpus chỉ nói đúng một lần.**
+
+- **Hỏi một lần cho một khoảng trống.** `10_MsgSeqNumGreater.def` gửi `34=10` rồi `34=20` khi
+  khoảng trống còn mở, và chờ **một** `ResendRequest`. Hỏi hai lần thì lần thứ hai là output không
+  dòng nào yêu cầu, và file rớt vì nó.
+- **Trả lời Logon trước, rồi mới hỏi.** `1a_ValidLogonMsgSeqNumTooHigh.def` mở phiên bằng `34=5`
+  và chờ `35=A` rồi mới `35=2`. Một Logon chạy trước vẫn là một Logon.
+
+**Bảng kiểm số thứ tự mọc thêm hai dòng** so với bước 4: `ResendRequest` không bị kiểm (nó có thể
+đến sau khi bộ đếm đã vượt qua nó — `8_OnlyAdminMessages` gửi `34=5` hai lần), và `Logon` kiểm
+"quá cao" **sau** khi đã trả lời.
+
+**Hình dạng của gap fill, mọi phần đều bị so:** `34=` là *số đầu của khoảng được lấp*, không phải
+số phát tiếp theo — và phát nó **không tiêu một số nào**. `8_OnlyAdminMessages` lấp `34=1` trong khi
+bản tin thật kế tiếp là `34=5`, và cả hai đều nằm trong file. `36=` là một số sau số cuối được lấp.
+
+**Đảo ngược: 19 lần, cả 19 đỏ** — 13 lần vào cổng điểm số:
+
+| Bỏ đi | Điểm |
+|---|---|
+| không hỏi lại khi bản tin chạy trước | 39 |
+| Logon chạy trước không hỏi lại | 41 |
+| hỏi trước rồi mới trả lời Logon | 41 |
+| hỏi lại một khoảng trống đã hỏi | 41 |
+| bản tin chạy trước bị bỏ chứ không giữ | 41 |
+| không bao giờ phát lại bản tin đã giữ | 41 |
+| `ResendRequest` bị kiểm số thứ tự | 41 |
+| `ResendRequest` đến không được trả lời | 41 |
+| `16=0` không đọc là "và tất cả sau đó" | 41 |
+| gap fill tiêu một số phát ra | 41 |
+| gap fill tự đánh số theo bộ đếm phát | 41 |
+| `36=` là số cuối chứ không phải một số sau nó | 41 |
+| `ResendRequest` hỏi từ 1 thay vì từ bộ đếm | 39 |
+
+6 lần sau vào `tests/resend.rs`. **Hai trong sáu lần đầu xanh, và cả hai là test của tôi viết
+hụt**, không phải chốt thừa:
+
+- "khoảng trống đóng ở bản tin đầu thay vì bản tin cuối" — test lấp đủ khoảng trống trong một
+  nhịp nên không bao giờ ở trạng thái *lấp một nửa*. Đã thêm một bản tin chạy trước ngay giữa
+  chừng: khoảng trống còn mở nên nó **không** được hỏi lại.
+- "bản tin dài quá chỗ giữ thì cứ chép" — corpus dài nhất 101 byte, chỗ giữ 512, nên không có gì
+  chạm biên. Bỏ chốt ấy đi là `copy_from_slice` lệch độ dài, tức **panic trên một đường mà đối
+  tác điều khiển hoàn toàn**. Đã viết test hai vế: 400 byte thì giữ, 500 byte thì bỏ.
+
+**Ba luật corpus không nhìn thấy**, vì mọi file mở khoảng trống đều kết thúc trước khi mở cái thứ
+hai, và sâu nhất chỉ giữ hai bản tin: khoảng trống đã lấp thì phải **đóng** (không đóng thì lần sau
+session câm lặng vì "đã hỏi rồi"), bản tin giữ phát lại **theo thứ tự số**, và hết chỗ thì **bỏ**
+chứ không cắt.
+
+**Cấp phát:** `accept 0 refuse 0 tick 0 beat 0 answer 0 gap 0 fill 0 clock 0 text 0`. Đảo ngược
+(một `format!` trên cả hai đường mới) cho `gap 10000 fill 10000`.
 
 **Cổng:** `fmt --check`, `clippy --all-targets --all-features -D warnings`, `test --all`,
 `test --all --no-default-features`, `check-lint-config.sh`, `check-links.py` — tất cả rc=0.

@@ -65,31 +65,25 @@ fn the_harness_clock_and_the_corpus_agree() {
     );
 }
 
-/// `[measured 2026-08-29]` **37 / 59** — step 4, and the revised prediction
-/// was 37.
+/// `[measured 2026-08-29]` **42 / 59** — step 5, and the prediction was 42.
 ///
-/// Step 4 is the clock: heartbeats the session sends on its own, the
-/// `TestRequest` it sends when the counterparty has gone quiet, the
-/// `Heartbeat` it sends when asked, and the disconnect when a `TestRequest`
-/// goes unanswered. `4a_NoDataSentDuringHeartBtInt` and `6_SendTestRequest`
-/// are the only two files in the corpus whose expected output has no `I` line
-/// in front of it, and they are what the runner's tick rule exists for.
-///
-/// The other eight arrived with it because their *output* is only
-/// `{A, 5, 0}` even though their input is not: inbound `SequenceReset`,
-/// `ResetSeqNumFlag`, and a garbled message that must be ignored rather than
-/// hung up on. See "Sửa 8" in the plan.
+/// Step 5 is the gap: a sequence number running ahead of the count. The session
+/// asks for what it missed with a `ResendRequest (35=2)`, holds the message
+/// that ran ahead until the gap closes, and answers an inbound `ResendRequest`
+/// with a `SequenceReset` gap fill — because everything it has sent so far is
+/// an administrative message, and those are never replayed.
 #[test]
-fn step_four_keeps_time_and_scores_thirty_seven() {
+fn step_five_closes_the_gap_and_scores_forty_two() {
     let report = run(|_| acceptor()).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
-        report.passed, 37,
-        "step 4 of the plan predicts 37 / 59:\n{report}"
+        report.passed, 42,
+        "step 5 of the plan predicts 42 / 59:\n{report}"
     );
     assert_eq!(
         report.passed_files,
         vec![
             "10_MsgSeqNumEqual.def",
+            "10_MsgSeqNumGreater.def",
             "10_MsgSeqNumLess.def",
             "11a_NewSeqNoGreater.def",
             "11b_NewSeqNoEqual.def",
@@ -103,6 +97,7 @@ fn step_four_keeps_time_and_scores_thirty_seven() {
             "14g_HeaderBodyTrailerFieldsOutOfOrder.def",
             "14h_RepeatedTag.def",
             "14i_RepeatingGroupCountNotEqual.def",
+            "1a_ValidLogonMsgSeqNumTooHigh.def",
             "1a_ValidLogonWithCorrectMsgSeqNum.def",
             "1c_InvalidSenderCompID.def",
             "1c_InvalidTargetCompID.def",
@@ -111,6 +106,7 @@ fn step_four_keeps_time_and_scores_thirty_seven() {
             "1d_InvalidLogonWrongBeginString.def",
             "1e_NotLogonMessage.def",
             "2a_MsgSeqNumCorrect.def",
+            "2b_MsgSeqNumTooHigh.def",
             "2c_MsgSeqNumTooLow.def",
             "2e_PossDupAlreadyReceived.def",
             "2e_PossDupNotReceived.def",
@@ -123,11 +119,13 @@ fn step_four_keeps_time_and_scores_thirty_seven() {
             "4b_ReceivedTestRequest.def",
             "6_SendTestRequest.def",
             "7_ReceiveRejectMessage.def",
+            "8_OnlyAdminMessages.def",
+            "RejectResentMessage.def",
             "ReverseRoute.def",
             "ReverseRouteWithEmptyRoutingTags.def",
             "SessionReset.def",
         ],
-        "and these are the thirty-seven, named"
+        "and these are the forty-two, named"
     );
 }
 
@@ -212,7 +210,7 @@ fn field(wire: &[u8], tag: u32) -> Option<&[u8]> {
     Some(&wire[at..end])
 }
 
-/// The step-1 six are still in the thirty-seven.
+/// The step-1 six are still in the forty-two.
 ///
 /// Not implied by the count: each step adds files and could lose one to a rule
 /// that now fires earlier. Step 2 did exactly that to two files, and only a

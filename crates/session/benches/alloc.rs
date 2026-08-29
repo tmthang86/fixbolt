@@ -201,6 +201,58 @@ fn main() {
         }
     });
 
+    // Step 5's paths, and two of them send. `RejectResentMessage.def` opens a
+    // gap with a `TestRequest` running ahead, closes it with the message that
+    // was missing, and the held one is replayed — a `ResendRequest` out, a
+    // 512-byte copy off the queue, and a `Heartbeat` out.
+    // `8_OnlyAdminMessages.def` asks this end for messages back and gets a
+    // `SequenceReset` gap fill.
+    let resent = inputs("RejectResentMessage.def");
+    let (gap_logon, runs_ahead, closes_gap) = (&resent[0], &resent[1], &resent[2]);
+    let admin = inputs("8_OnlyAdminMessages.def");
+    {
+        let mut s = acceptor();
+        s.connect(|_| ());
+        s.tick(now, |_| ());
+        let mut n = 0usize;
+        s.received(gap_logon, |_| n += 1);
+        s.received(runs_ahead, |_| n += 1);
+        assert_eq!(n, 2, "a Logon reply and a resend request");
+        s.received(closes_gap, |_| n += 1);
+        assert_eq!(n, 4, "a reject, and the held message replayed");
+
+        let mut s = acceptor();
+        s.connect(|_| ());
+        s.tick(now, |_| ());
+        let mut n = 0usize;
+        for wire in &admin[..5] {
+            s.received(wire, |_| n += 1);
+        }
+        assert_eq!(n, 5, "a Logon reply, three heartbeats and one gap fill");
+    }
+
+    let gap_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s = acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            s.received(gap_logon, |_| ());
+            s.received(runs_ahead, |_| ());
+            s.received(closes_gap, |_| ());
+        }
+    });
+
+    let fill_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s = acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            for wire in &admin[..5] {
+                s.received(wire, |_| ());
+            }
+        }
+    });
+
     let clock_allocs = count(|| {
         for _ in 0..10_000 {
             let _ = clock::parse_utc(b"20260828-12:00:00.123");
@@ -229,7 +281,7 @@ fn main() {
     println!(
         "allocations: accept {accept_allocs} refuse {refuse_allocs} \
          tick {tick_allocs} beat {beat_allocs} answer {answer_allocs} \
-         clock {clock_allocs} text {text_allocs}"
+         gap {gap_allocs} fill {fill_allocs} clock {clock_allocs} text {text_allocs}"
     );
     assert_eq!(
         (
@@ -238,10 +290,12 @@ fn main() {
             tick_allocs,
             beat_allocs,
             answer_allocs,
+            gap_allocs,
+            fill_allocs,
             clock_allocs,
             text_allocs
         ),
-        (0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0, 0),
         "non-negotiable 1: the session layer allocates nothing, on any path"
     );
 }
