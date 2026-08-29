@@ -298,6 +298,32 @@ fn main() {
         }
     });
 
+    // Step 6b's path: three kept application messages replayed, each rebuilt
+    // with `43=Y` and its original `52=` carried as `122=`, then framed again.
+    let only_app = inputs("8_OnlyApplicationMessages.def");
+    {
+        let mut s = acceptor();
+        s.connect(|_| ());
+        s.tick(now, |_| ());
+        for wire in &only_app[..4] {
+            s.received_with(wire, &mut EchoApp, |_| ());
+        }
+        let mut replayed = 0usize;
+        s.received_with(&only_app[4], &mut EchoApp, |_| replayed += 1);
+        assert_eq!(replayed, 3, "the resend path must actually resend");
+    }
+
+    let resend_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s = acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            for wire in &only_app[..5] {
+                s.received_with(wire, &mut EchoApp, |_| ());
+            }
+        }
+    });
+
     let clock_allocs = count(|| {
         for _ in 0..10_000 {
             let _ = clock::parse_utc(b"20260828-12:00:00.123");
@@ -327,7 +353,7 @@ fn main() {
         "allocations: accept {accept_allocs} refuse {refuse_allocs} \
          tick {tick_allocs} beat {beat_allocs} answer {answer_allocs} \
          gap {gap_allocs} fill {fill_allocs} deliver {deliver_allocs} \
-         clock {clock_allocs} text {text_allocs}"
+         resend {resend_allocs} clock {clock_allocs} text {text_allocs}"
     );
     assert_eq!(
         (
@@ -339,10 +365,11 @@ fn main() {
             gap_allocs,
             fill_allocs,
             deliver_allocs,
+            resend_allocs,
             clock_allocs,
             text_allocs
         ),
-        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         "non-negotiable 1: the session layer allocates nothing, on any path"
     );
 }

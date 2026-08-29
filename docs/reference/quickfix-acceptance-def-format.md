@@ -606,3 +606,62 @@ identity — and `engine` does not exist yet, so `crates/session/tests/score.rs`
 plays the smallest engine that can hold two connections. `runner.rs` had already
 allowed for it: `SessionUnderTest` is one instance for the whole harness, not
 one per connection.
+
+## `9=` is taken at its word, and a frame that misses its trailer takes the buffer with it
+
+`2m_BodyLengthValueNotCorrect.def` states the rule in its own two comments, and
+they only make sense together:
+
+| `9=` says | Reality | The file's comment |
+|---|---|---|
+| `30` | the body is 91 | *"Invalid message was ignored, and valid one was processed"* |
+| `111` | the body is 91 | *"it will combine with the next message and be ignored"* |
+
+One rule covers both: count to where `9=` says the body ends, and if a `10=`
+trailer is not there, **the whole receive buffer is rubbish**, not just the
+message. The short one loses itself, because the next message arrives in a
+later read. The long one reaches into the message after it, so both go.
+
+**This is framing, and framing is the engine's.** `DESIGN.md` §2 puts it at L3;
+the session layer is handed one complete message. Until `engine` exists,
+`crates/session/tests/score.rs` does it — and hands the rubbish to the session
+anyway, once, so that `1d_InvalidLogonLengthInvalid.def` still gets the answer
+it wants: a frame that cannot be read is fatal **only** if it claims to be a
+Logon, and that rule stays in one place.
+
+## A resend replays what was sent, and fills over what cannot be replayed
+
+`8_AdminAndApplicationMessages.def` is the file that says it plainly. Asked for
+`7=2, 16=8` over an outbound stream of admin 2–4, application 5–6, admin 7–8, it
+expects four messages:
+
+```
+35=4  34=2  36=5   123=Y     ← one gap fill for the run 2..4
+35=D  34=5  43=Y  122=…      ← the message itself, again
+35=D  34=6  43=Y  122=…
+35=4  34=7  36=9   123=Y     ← one gap fill for the run 7..8
+```
+
+- **Runs are found, not assumed.** A gap fill covers one contiguous run of
+  numbers this end cannot replay; the file asks four times with four different
+  ranges and every answer is a different interleaving.
+- **An administrative message is never replayed.** A Logon, a Heartbeat, a
+  Reject are meaningless out of their moment, so only application messages are
+  kept at all.
+- **A replay carries the number it was sent with, and spends none.** After all
+  of the above the file's next `Heartbeat` is `34=10`, the number that was next
+  before the resend arrived.
+- **The shape is the original plus two fields.** `43=Y`, and `122=` holding the
+  `52=` the message first went out with; `52=` itself is rewritten to now. The
+  file's `9=132` against the original's `9=101` is what says so — 31 bytes,
+  which is exactly `43=Y` and a 21-byte `122=`.
+
+### What the corpus cannot see about a store
+
+- **That the replayed `52=` is fresh.** It is matched by shape and the two are
+  the same width, so keeping the original scores 59 / 59.
+- **What happens when a reply is too long to keep**, or when more are kept than
+  there is room for. The longest reply in the corpus is 177 body bytes and no
+  file keeps more than three.
+
+Held by `crates/session/tests/journal.rs` instead.

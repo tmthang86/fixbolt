@@ -22,8 +22,8 @@ pub mod text;
 use core::marker::PhantomData;
 
 use nanofix_codec::{
-    Dictionary, FieldIndex, MessageView, ParseError, Parsed, TimestampCache, Validation, as_u32,
-    parse_into, tag_text_at,
+    Dictionary, FieldIndex, MessageView, ParseError, Parsed, SOH, TimestampCache, Validation,
+    as_u32, checksum, format_checksum, parse_into, tag_text_at,
 };
 use nanofix_dict::{FieldType, Fix44};
 
@@ -789,6 +789,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             gap_fill,
             buf,
             app: _,
+            journal: _,
         } = o;
         let template = match which {
             Which::Logon => &*logon,
@@ -808,6 +809,53 @@ impl<R: Role, const N: usize> Session<R, N> {
         }
         self.last_sent_ms = self.now_ms;
         Ok(())
+    }
+
+    /// Is `seq` still in the journal?
+    fn kept(&self, seq: u32) -> bool {
+        self.out
+            .as_ref()
+            .is_some_and(|o| o.journal.get(seq).is_some())
+    }
+
+    /// Send the kept message numbered `seq` again, as a resend of itself.
+    ///
+    /// `false` if it is not in the journal — the caller then fills over it.
+    /// A replay **spends no sequence number**: it carries the one it was sent
+    /// with, which is the whole point of a resend.
+    fn replay<F: FnMut(&[u8])>(&mut self, seq: u32, emit: &mut F) -> Result<bool, Refusal> {
+        let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
+        let now = *self.stamp.format(unix);
+        let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
+        let out::Outbound {
+            app: buf, journal, ..
+        } = o;
+        let Some(kept) = journal.get(seq) else {
+            return Ok(false);
+        };
+        let n = as_resend(kept, &now, buf).ok_or(Refusal::CannotSend)?;
+        emit(&buf[..n]);
+        self.last_sent_ms = self.now_ms;
+        Ok(true)
+    }
+
+    /// One `SequenceReset` gap fill covering `from..upto`, numbered `from`.
+    fn fill<F: FnMut(&[u8])>(&mut self, from: u32, upto: u32, emit: &mut F) -> Result<(), Refusal> {
+        let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
+        let orig = *self.stamp.format(unix);
+        let mut new_seq = [0u8; 10];
+        let new_seq = digits(upto, &mut new_seq);
+        self.send_as(
+            Which::GapFill,
+            Some(from),
+            &[
+                (tag::POSS_DUP_FLAG, b"Y"),
+                (tag::ORIG_SENDING_TIME, &orig),
+                (tag::NEW_SEQ_NO, new_seq),
+                (tag::GAP_FILL_FLAG, b"Y"),
+            ],
+            emit,
+        )
     }
 
     /// Read one message, decide, and answer. The order the checks run in is
@@ -1186,21 +1234,28 @@ impl<R: Role, const N: usize> Session<R, N> {
                 _ => last,
             };
             if let Some(begin) = begin_seq_no.filter(|b| *b <= end) {
-                let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
-                let orig = *self.stamp.format(unix);
-                let mut new_seq = [0u8; 10];
-                let new_seq = digits(end + 1, &mut new_seq);
-                self.send_as(
-                    Which::GapFill,
-                    Some(begin),
-                    &[
-                        (tag::POSS_DUP_FLAG, b"Y"),
-                        (tag::ORIG_SENDING_TIME, &orig),
-                        (tag::NEW_SEQ_NO, new_seq),
-                        (tag::GAP_FILL_FLAG, b"Y"),
-                    ],
-                    emit,
-                )?;
+                let mut n = begin;
+                while n <= end {
+                    if self.replay(n, emit)? {
+                        n += 1;
+                        continue;
+                    }
+                    // A run this end cannot replay — every administrative
+                    // message is one — is covered by a single gap fill.
+                    // `8_AdminAndApplicationMessages.def` asks for 2..=8 and
+                    // expects fill(2..5), 5, 6, fill(7..9): the runs are found,
+                    // not assumed.
+                    // `n` itself could not be replayed, so the run starts
+                    // there and is at least one long — the loop cannot stand
+                    // still even if [`Self::kept`] and [`Self::replay`] ever
+                    // disagree about a number.
+                    let from = n;
+                    n += 1;
+                    while n <= end && !self.kept(n) {
+                        n += 1;
+                    }
+                    self.fill(from, n, emit)?;
+                }
             }
             return Ok(Link::Up);
         }
@@ -1233,9 +1288,16 @@ impl<R: Role, const N: usize> Session<R, N> {
             let seq_out = self.next_out;
             let sent = {
                 let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
-                match app.on_message(bytes, seq_out, &stamp, &mut o.app) {
+                let out::Outbound {
+                    app: buf, journal, ..
+                } = o;
+                match app.on_message(bytes, seq_out, &stamp, buf) {
                     Some(r) => {
-                        emit(&o.app[r]);
+                        // Kept before it is sent, and only application messages
+                        // are kept: QuickFIX never replays an administrative
+                        // message, it fills over it.
+                        journal.put(seq_out, &buf[r.clone()]);
+                        emit(&buf[r]);
                         true
                     }
                     None => false,
@@ -1430,6 +1492,89 @@ fn msg_type_of(bytes: &[u8]) -> Option<&[u8]> {
 ///
 /// Not `is_ascii_digit` alone: `14a_BadField.def` turns on `-1` being a
 /// readable number. Not "starts with a digit" either: `49garbled` does.
+/// Rebuild a kept message as a resend of itself.
+///
+/// `[measured 2026-08-29]` what the corpus asks for, byte for byte: the
+/// original `34=`, `43=Y` admitting the repeat, a **fresh** `52=`, and the
+/// original `52=` carried as `122=`. `8_OnlyApplicationMessages.def` declares
+/// `9=132` against the original's `9=101`, and the difference is exactly those
+/// two fields.
+///
+/// The order is not decided here. A kept message came out of a [`Template`]
+/// sorted by `Fix44`, so `34` precedes `49` and `52` precedes `56`; writing
+/// `43` straight after `34` and `122` straight after `56` lands both where the
+/// dictionary would have put them — `43` among the header tags in ascending
+/// order, `122` after the last of them and before the first body tag.
+///
+/// Returns the number of bytes written, or `None` if `out` is too small or the
+/// kept bytes are not a message.
+fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<usize> {
+    let at_35 = kept.windows(4).position(|w| w == b"\x0135=")? + 1;
+    let at_10 = kept.windows(4).position(|w| w == b"\x0110=")? + 1;
+    let mut w = 0;
+
+    // `8=FIX.4.4|` verbatim: a resend is the same session's message.
+    let head = kept.iter().position(|b| *b == SOH)? + 1;
+    push(out, &mut w, kept.get(..head)?)?;
+
+    // The body, into the tail of `out`, so its length is known before `9=` is
+    // written. Written after the header it will follow, then moved back.
+    let body_at = w + 16;
+    let mut b = body_at;
+    let mut orig = None;
+    for f in kept.get(at_35..at_10)?.split(|c| *c == SOH) {
+        if f.is_empty() {
+            continue;
+        }
+        let eq = f.iter().position(|c| *c == b'=')?;
+        let (tag, value) = (&f[..eq], &f[eq + 1..]);
+        match tag {
+            // Already said, and said again below with the right value.
+            b"43" | b"122" => continue,
+            b"52" => {
+                orig = Some(value);
+                push(out, &mut b, b"52=")?;
+                push(out, &mut b, now)?;
+                push(out, &mut b, &[SOH])?;
+            }
+            _ => {
+                push(out, &mut b, f)?;
+                push(out, &mut b, &[SOH])?;
+                if tag == b"34" {
+                    push(out, &mut b, b"43=Y\x01")?;
+                } else if tag == b"56"
+                    && let Some(v) = orig
+                {
+                    push(out, &mut b, b"122=")?;
+                    push(out, &mut b, v)?;
+                    push(out, &mut b, &[SOH])?;
+                }
+            }
+        }
+    }
+
+    let mut len = [0u8; 10];
+    let len = digits(u32::try_from(b - body_at).ok()?, &mut len);
+    push(out, &mut w, b"9=")?;
+    push(out, &mut w, len)?;
+    push(out, &mut w, &[SOH])?;
+    out.copy_within(body_at..b, w);
+    w += b - body_at;
+
+    push(out, &mut w, b"10=")?;
+    let sum = format_checksum(checksum(out.get(..w)?));
+    push(out, &mut w, &sum)?;
+    push(out, &mut w, &[SOH])?;
+    Some(w)
+}
+
+/// Append `bytes` at `at`, or `None` if they do not fit.
+fn push(out: &mut [u8], at: &mut usize, bytes: &[u8]) -> Option<()> {
+    out.get_mut(*at..*at + bytes.len())?.copy_from_slice(bytes);
+    *at += bytes.len();
+    Some(())
+}
+
 fn is_signed_integer(v: &[u8]) -> bool {
     let digits = v.strip_prefix(b"-").unwrap_or(v);
     !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)

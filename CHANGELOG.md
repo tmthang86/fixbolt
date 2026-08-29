@@ -67,8 +67,11 @@ below describe what a first release would contain.
     both.
   - A tag is read as a **signed** integer, as QuickFIX's tokeniser does: `-1=x` is a field and
     is Rejected, `4garbled9=x` is not a field and the message is ignored.
-  - Scores **55 / 59** on the acceptance definitions: step 6a. The four that remain need a store
-    of outbound application messages and a real replay.
+  - A journal of outbound application messages, and a real resend. A `ResendRequest` is answered
+    by replaying each kept message at the number it was sent with — `43=Y`, a fresh `52=`, and
+    the original `52=` carried as `122=` — and by covering each contiguous run that cannot be
+    replayed with **one** `SequenceReset` gap fill. A replay spends no sequence number.
+  - Scores **59 / 59** on the acceptance definitions. The session layer's gate is met.
 
 - **`nanofix-dict`** — four validation tables, generated from `FIX44.xml`, answering the
   dictionary half of `Reject (35=3)`.

@@ -372,6 +372,37 @@ giữ danh tính. `engine` chưa tồn tại, nên `tests/score.rs` đóng vai n
 ở đó, ở đây, và trong `STATUS.md`. Doc của `runner.rs` đã lường trước: `SessionUnderTest` là một
 instance cho cả engine, không phải cho một connection.
 
+### Sửa 11 — `2m` không cần kho bản tin, nó cần **đóng khung**
+
+**Phát hiện khi bắt đầu bước 6b.** Bảng ở Sửa 10 xếp `2m_BodyLengthValueNotCorrect` vào nhóm
+"cần `MessageStore`". Đọc kỹ file thì không: nó không chờ một bản tin phát lại nào cả. Nó chờ
+**hai bản tin sai `9=` bị bỏ đi đúng cách**, và hai dòng comment trong chính file nói ra luật:
+
+- `9=30` (khai báo *ngắn* hơn thân thật) — *"Invalid message was ignored, and valid one was
+  processed"*. Bản tin ấy biến mất; bản tin kế tiếp tới ở lần đọc khác nên nguyên vẹn.
+- `9=111` (khai báo *dài* hơn) — *"it will combine with the next message and be ignored"*. Nó
+  **nuốt** bản tin kế tiếp, và cả hai cùng biến mất.
+
+Một luật tái tạo được cả hai: **`9=` được tin theo đúng nghĩa đen.** Đếm tới cuối thân mà không
+gặp `10=NNN|` ở đúng chỗ thì cả **bộ đệm** bị vứt, không phải chỉ bản tin ấy.
+
+**Chỗ đặt: `tests/score.rs`, không phải `session`.** Đóng khung là việc của engine —
+`DESIGN.md` §2 xếp nó ở L3 — và session nhận vào một bản tin đã trọn vẹn. Giống hệt luật
+"một danh tính, một connection" ở bước 6a.
+
+**Và luật cũ không bị chép lại.** Khi bộ đệm bị vứt, adapter vẫn đưa nguyên bộ đệm ấy cho
+session một lần: session tự thấy không đọc nổi, tự chạy `garbled()`, và tự quyết định —
+`1d_InvalidLogonLengthInvalid.def` (`9=40` trên một Logon) vẫn phải **rớt kết nối**, vì luật
+"khung hỏng chỉ chí mạng khi nó tự xưng là Logon" nằm ở đúng một chỗ và không được nhân đôi.
+
+**Bước 6b vì thế còn ba file cần kho**: `20`, `8_AdminAndApplicationMessages`,
+`8_OnlyApplicationMessages`.
+
+**Kho nằm trong `out::Outbound`, `pub(crate)` — không đổi API công khai.** Doc của `Outbound`
+đã lường trước: *"a resend replays stored bytes rather than re-encoding"*. Đây là **tạm**:
+`DESIGN.md` D1 phác `Action::Store` và §2 nói engine giữ journal. Một acceptor thật cần journal
+sống qua lần khởi động lại, và cái đó thuộc về `engine`.
+
 ## Nhật ký giao hàng
 
 ### Bước 1 — 2026-08-28 — **6 / 59**, đúng dự đoán
@@ -687,3 +718,57 @@ trong `on_message`) cho `deliver 10000`.
 **Cổng:** `fmt --check`, `clippy --all-targets -D warnings`, `test --all`,
 `test --all --no-default-features`, `check-lint-config.sh`, `check-links.py` — tất cả rc=0.
 Máy: Apple M5, macOS 26.6.2 (Darwin 25.6.0), cargo 1.95.0.
+
+### Bước 6b — 2026-08-29 — **59 / 59**, đúng dự đoán sau khi Sửa 11 chia lại
+
+Hai thay đổi độc lập, và chỉ một trong hai nằm trong `session`.
+
+**Đóng khung, ở `tests/score.rs`.** `9=` được tin theo nghĩa đen: đếm tới cuối thân mà không gặp
+`10=` thì **cả bộ đệm** là rác. `9=30` mất chính nó, `9=111` nuốt luôn bản tin sau. Rác vẫn được
+đưa cho session đúng một lần, nên `1d_InvalidLogonLengthInvalid` vẫn rớt kết nối và luật "khung
+hỏng chỉ chí mạng khi tự xưng là Logon" không bị chép ra hai chỗ. `2m` xanh → **56**.
+
+**Kho và phát lại, trong `session`.** Vòng 8 chỗ × 512 byte trong `out::Outbound`, chỉ giữ bản
+tin **ứng dụng**. Trả lời một `ResendRequest` là đi từ `7=` tới `16=` (0 nghĩa là "tới hết"):
+số nào còn giữ thì phát lại, đoạn liền nhau nào không giữ được thì **một** gap fill phủ lên.
+`8_AdminAndApplicationMessages` hỏi bốn lần với bốn dải khác nhau và cả bốn câu trả lời là bốn
+cách xen kẽ khác nhau — đoạn phải *tìm ra*, không đoán được. Ba file cuối xanh → **59**.
+
+Hình dạng một lần phát lại: nguyên bản cộng đúng hai trường — `43=Y`, và `122=` giữ cái `52=`
+lần đầu gửi; `52=` được viết lại thành bây giờ. `9=132` so với `9=101` của bản gốc nói ra con số:
+31 byte, đúng bằng `43=Y` và một `122=` 21 byte. **Phát lại không tiêu số nào**, nên nhịp tim kế
+tiếp trong file vẫn là `34=10`.
+
+**Một lỗi tìm ra bằng đảo ngược, không phải bằng đọc.** Đảo ngược "không phát lại, luôn lấp trống"
+làm treo vô hạn: vòng quét đoạn dựa vào `kept()` đồng ý với `replay()`, mà bản đảo ngược làm hai
+cái bất đồng. Đã sửa để đoạn luôn dài ít nhất một số — vòng không đứng yên được nữa dù hai hàm
+có bất đồng.
+
+**Đảo ngược: 12 lần, cả 12 đỏ.** Chín lần vào cổng điểm số:
+
+| Bỏ đi | Điểm |
+|---|---|
+| khung hỏng không vứt cả bộ đệm | 56 |
+| khung hỏng không đưa cho session | 58 |
+| không phát lại, luôn lấp trống | 56 |
+| phát lại tiêu một số thứ tự | 56 |
+| phát lại không có `43=Y` | 56 |
+| phát lại không mang `122=` | 56 |
+| lấp trống cả dải thay vì từng đoạn | 58 |
+| `36=` là số cuối đoạn chứ không phải một số sau nó | 56 |
+| bản tin quản trị cũng được lưu | 56 |
+
+Ba lần còn lại **xanh ở cổng điểm số**, và cả ba được giữ bằng `crates/session/tests/journal.rs`:
+`52=` giữ nguyên thay vì làm mới (cùng bề rộng, so theo hình dạng); bỏ chốt độ dài khi lưu
+(là `copy_from_slice` lệch độ dài — **panic**, và độ dài ấy do đối tác quyết vì nó theo độ dài
+lệnh gửi vào); vòng không ghi đè cái cũ nhất.
+
+**Cấp phát:** `accept 0 refuse 0 tick 0 beat 0 answer 0 gap 0 fill 0 deliver 0 resend 0 clock 0
+text 0`. Case `resend` là mới; đảo ngược (một `to_vec()` trên đường phát lại) cho `resend 30000`.
+
+**Cổng:** `fmt --check`, `clippy --all-targets --all-features -D warnings`, `test --all`,
+`test --all --no-default-features`, `check-lint-config.sh`, `check-links.py`, `benches/alloc.rs`
+— tất cả rc=0. Máy: Apple M5, macOS 26.6.2 (Darwin 25.6.0), cargo 1.95.0.
+
+**Chưa chứng minh:** journal nằm trong bộ nhớ, mất khi khởi động lại, và nằm sai crate —
+`DESIGN.md` D1 nói engine giữ nó. Không có số nào đo trên Linux.
