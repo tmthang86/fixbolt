@@ -99,6 +99,28 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   z = 0.00** — and with ASLR off the layout is *fixed* across runs, so a layout-dependent
   effect would have to be 0% or 100%, not 5.6%. At n=60 the same comparison had read 8.3%
   against 3.3%; **the third time in one day a small-sample rate difference dissolved.**
+- **The box does not drift, which is what makes it publishable.** `[measured 2026-08-30]` a
+  7-minute soak — 379 runs of `ring, one way`, §9 satisfied, pinned to the isolated cores, with
+  temperature sampled per run — moves the median from **259.0 to 258.9 ns**, 0.2% between the
+  first window and the last, while Tctl rises 59 → 64 °C in the first minute and then sits
+  there. `r(temp, ns) = +0.060`. The 3700X throttles at 95 °C, so the **31 °C of headroom**
+  means the Mini-ITX case and its `silent` fan profile constrain nothing at this load; the
+  91 °C seen earlier came from an eight-spinner stress test, and even there the frequency never
+  stepped down. Also settled: **GNOME Power Mode `Balanced` does not reach the measurement** —
+  the driver is `amd-pstate-epp` and EPP already reads `performance` under `Balanced`, while a
+  measurement's `governor=performance` collapses the available preferences to `performance`
+  alone. The A/B meant to prove that **failed and is recorded as failed** (`powerprofilesctl`
+  errored, so both arms ran `balanced`); the state readings are what answer it. And the failure
+  found a real side effect: **`SMT off` breaks `power-profiles-daemon`**, which writes
+  `policy11` — a CPU that is offline while SMT is off. Harmless, reverts, worth knowing.
+- **`scaling_cur_freq` is frozen on a `nohz_full` core and reads 41% low.** `[measured
+  2026-08-30]` it reported the isolated core at **2240 MHz** — exactly `scaling_min_freq` —
+  while that core executed **7,895,418 loops/s against an ordinary core's 7,958,092, 0.8%
+  apart**. `amd-pstate-epp` refreshes that file from a periodic tick and `nohz_full` stops the
+  tick on precisely the cores worth measuring on. **The isolation that makes a core worth
+  measuring is what breaks the instrument pointed at it.** Measure work per unit time, or
+  `aperf`/`mperf`; `check-machine.sh` is unaffected, it never reads a per-core current
+  frequency. Fourth instrument in one day that could not see what it was pointed at.
 - **The 324 ns mode is now characterised, even though eight hypotheses about its cause have
   all failed.** `[measured 2026-08-30]` pooling those 500 §9-satisfied runs of
   `ring, one way`: **two discrete states with an empty gap** — main mode n=472, median

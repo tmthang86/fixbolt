@@ -1092,3 +1092,116 @@ here, keyed on the CPU model it is — the single-threaded cases hold to 3% or b
 all 30 runs — but **the two ring ceilings cannot be rescued by tuning a box**. They sit
 inside the harness's own run-to-run variation, and closing that needs pinning (`isolcpus`,
 still unset here) or a different measurement, not a better governor.
+
+## `scaling_cur_freq` is frozen on a `nohz_full` core, and reads 41% low
+
+`[measured 2026-08-30]` After the desk box was booted with
+`isolcpus=6,7,14,15 nohz_full=6,7,14,15`, a thermal sample taken while the benchmark ran
+pinned to those cores reported:
+
+```
+xung lõi 6: min 2240 med 2240 max 2240 MHz      (governor: performance)
+```
+
+**2240 MHz is this CPU's `scaling_min_freq`.** Taken at face value it says every measurement
+pinned to an isolated core ran at 59% clock — while producing **the same 259 ns** as an
+unpinned run at 3790 MHz. Both cannot be true, so one of the two instruments was lying.
+
+The one that lies is the sysfs file. Counting work actually executed, one second each:
+
+```
+cpu6 (isolated, nohz_full):  7,895,418 loops/s
+cpu0 (ordinary):             7,958,092 loops/s      0.8% apart
+```
+
+The isolated core runs at full speed. The driver is **`amd-pstate-epp`**, which refreshes
+`scaling_cur_freq` from a periodic tick — and `nohz_full` **stops that tick on exactly the
+cores being measured**. The hardware is fine; the file is frozen at whatever it held when the
+tick stopped.
+
+The trap is sharper than a stale number: **the isolation that makes a core worth measuring on
+is what breaks the instrument pointed at it**, so the reading is wrong precisely where
+somebody would think to take it, and it is wrong in the direction that invites a wrong story
+— a benchmark "running at minimum clock" is a tidy explanation for almost anything.
+
+**Use it only on cores without `nohz_full`.** On an isolated core, measure work done per unit
+time — or `aperf`/`mperf` via `turbostat`, which reads the counters rather than the governor's
+opinion. `scripts/check-machine.sh` is unaffected: it reads the governor and the boost flag,
+never a per-core current frequency.
+
+`[to testing-skills]` — *the fourth instrument in one day that could not see what it was
+pointed at*, after `ps %CPU` (a lifetime average), a per-process sampler slow enough to
+distort its own window, and a `quietness` sampler whose wait loop was a busy spin. The pattern
+across all four is one rule: **check the instrument against a known state before believing a
+surprising reading.** Here the known state was free — an ordinary core, measured the same way,
+one second of work.
+
+## The SFF case, the fan profile, and GNOME's power mode: three non-effects, measured
+
+The desk box is a Mini-ITX / small-form-factor build, its BIOS fan profile is `silent`, and
+GNOME's Power Mode is `Balanced`. Each was raised as a possible source of instability. All
+three were measured rather than reasoned about, and none of them moves anything.
+
+### Thermal drift over a 7-minute soak: none
+
+`[measured 2026-08-30]` §9 satisfied, `ring, one way` run continuously pinned to the isolated
+cores, 379 runs in 420 s, temperature sampled alongside every run:
+
+| window (s) | n | median ns | Tctl |
+|---|---|---|---|
+| 1–84 | 75 | 259.0 | 64 °C |
+| 85–167 | 75 | 258.8 | 64 °C |
+| 168–250 | 75 | 258.5 | 64 °C |
+| 251–332 | 75 | 258.8 | 64 °C |
+| 333–416 | 75 | 258.9 | 64 °C |
+
+**0.5 ns — 0.2% — between the first window and the last.** Temperature rises 59 → 64 °C in the
+first minute and then sits there for the remaining six. Correlation of temperature against
+per-run time, main mode only: **r = +0.060**, which is nothing.
+
+The 3700X throttles at 95 °C Tctl. The workload that matters reaches **64 °C**, leaving 31 °C
+of headroom, so the `silent` fan profile does not constrain it. The 91 °C recorded earlier came
+from an artificial eight-spinner stress test, not from anything this project measures — and
+even there the frequency never stepped down.
+
+**This is what makes the box publishable, more than the tuning is:** a machine whose numbers
+drift as it warms cannot carry a latency figure however well configured, and this one does not
+drift.
+
+### GNOME Power Mode `Balanced`: no effect, for a reason worth knowing
+
+The driver is **`amd-pstate-epp`**, where `power-profiles-daemon` sets an EPP hint separately
+from the governor. An earlier check here only watched the governor, which would have missed it.
+Reading both:
+
+```
+tuning off:  PPD=balanced  governor=powersave    epp=performance  max=4426 MHz  boost=1
+tuning on:   PPD=balanced  governor=performance  epp=performance  max=3600 MHz  boost=0
+```
+
+**EPP is already `performance` under `Balanced`** — on this machine PPD's balanced profile does
+not ask for a conservative preference. And setting `governor=performance` for a measurement
+collapses `energy_performance_available_preferences` to `performance` alone, so the desktop
+setting cannot reach the measurement even in principle.
+
+**The A/B intended to prove this failed, and is recorded as failed.** `powerprofilesctl set
+performance` returned `Failed to activate CPU driver 'amd_pstate': ... policy11 ... Device or
+resource busy`, so both arms ran under `balanced` — two samples of one condition, not a
+comparison. They agreed (258.5 and 258.8, 4/100 and 7/100 in the second mode), which measures
+reproducibility and answers nothing about PPD. The state readings above are what answer it.
+
+### And a side effect of the tuning, found by that failure
+
+`[measured 2026-08-30]` **`SMT off` breaks `power-profiles-daemon`'s mode switching.** Proven
+by reversal:
+
+```
+SMT on  (CPU 0-15):  performance -> balanced      succeeds
+SMT off (CPU 0-7 ):  policy11: Device or resource busy    fails
+```
+
+`policy11` belongs to a CPU that is offline while SMT is off, and PPD writes every policy. It
+is harmless and reverts when SMT comes back, but anyone measuring on this box will see the
+desktop's Power Mode selector throw an error and should know why. It also cost a working A/B,
+which is the more expensive half: **a failed intervention that still produces two clean-looking
+arms is exactly the shape of a false green.**
