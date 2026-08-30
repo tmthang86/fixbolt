@@ -130,7 +130,7 @@ fn the_message_types_agree_exactly_in_both_directions() {
     let alphabet: Vec<u8> = (b'0'..=b'9')
         .chain(b'A'..=b'Z')
         .chain(b'a'..=b'z')
-        .chain([b'*', b'?', b'!'])
+        .chain(*b"*?!")
         .collect();
     let mut rejected = 0usize;
     for &a in &alphabet {

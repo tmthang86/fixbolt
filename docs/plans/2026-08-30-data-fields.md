@@ -1,6 +1,6 @@
 # DATA field: đường ghi, và bên trong repeating group
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt (2026-08-30)
 > **Phạm vi:** open item 8, 9 — `codec` và `dict`
 
 ## Bối cảnh
@@ -141,4 +141,8 @@ Bỏ dòng bỏ-qua ở `group_roundtrip.rs:80` và cho DATA member chạy như 
 
 ## Nhật ký giao hàng
 
-*(chưa bắt đầu — plan đang chờ duyệt)*
+**Duyệt 2026-08-30.** Chủ dự án duyệt cả sáu plan cùng lúc, kèm một uỷ quyền ghi rõ:
+*trong quá trình làm, nếu plan sai thì được sửa plan theo tình hình thực tế.* Điều đó nới
+`CLAUDE.md` §1 — chỗ bảo "dừng lại, sửa plan, xin duyệt lại" — thành "sửa plan, **ghi lại
+vào đây**, đi tiếp". Mỗi lần sửa plan phải có một mục dưới đây nói rõ **sửa gì và vì sao**,
+nếu không thì uỷ quyền này biến thành giấy phép đi chệch trong im lặng.

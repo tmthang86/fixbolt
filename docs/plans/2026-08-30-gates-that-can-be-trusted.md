@@ -1,6 +1,6 @@
 # Cổng phải nói đúng, và nói ở chỗ có người đọc
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt (2026-08-30)
 > **Phạm vi:** open item 7, 17, 18, 19 — hạ tầng kiểm chứng, không phải giao thức
 
 ## Bối cảnh
@@ -222,4 +222,56 @@ Theo bảng đồng bộ `CLAUDE.md` §4:
 
 ## Nhật ký giao hàng
 
-*(chưa bắt đầu — plan đang chờ duyệt)*
+**Duyệt 2026-08-30.** Chủ dự án duyệt cả sáu plan cùng lúc, kèm một uỷ quyền ghi rõ:
+*trong quá trình làm, nếu plan sai thì được sửa plan theo tình hình thực tế.* Điều đó nới
+`CLAUDE.md` §1 — chỗ bảo "dừng lại, sửa plan, xin duyệt lại" — thành "sửa plan, **ghi lại
+vào đây**, đi tiếp". Mỗi lần sửa plan phải có một mục dưới đây nói rõ **sửa gì và vì sao**,
+nếu không thì uỷ quyền này biến thành giấy phép đi chệch trong im lặng.
+
+---
+
+### Bước 1 — item 19, xong 2026-08-30
+
+**Sửa plan, lý do thật.** Plan viết: *"không chứng minh được ở máy này vì `0.1.94` không có
+lint đó, nên bằng chứng duy nhất là runner xanh"*. **Sai.** `rustup toolchain install stable`
+kéo về đúng `1.98.0 (88d9e12ae 2026-08-18)` — chính bản runner đang chạy — nên lỗi tái hiện
+được tại chỗ và chứng minh được bằng đảo ngược, không phải chờ CI. Cái sai đến từ việc lẫn
+"toolchain mặc định của container" với "toolchain có thể cài được".
+
+**Sửa plan thứ hai: ghim `1.98.0`, không phải `1.95.0`.** Plan đề xuất 1.95.0 vì đó là bản trên
+M5. Nhưng sau khi sửa lint thì workspace **sạch trên 1.98.0**, tức là bản mới nhất. Ghim lùi về
+1.95.0 chỉ đổi một cú bất ngờ lấy một cuộc trôi chậm khỏi trình biên dịch mà mọi người đang
+dùng. Ghim bản mới nhất mà code đi qua được.
+
+**Đã làm:**
+
+- `rust-toolchain.toml` mới, ghim `1.98.0` với `rustfmt` + `clippy`.
+- `crates/dict/tests/interop_quickfix_fields.rs:133` — `.chain([b'*', b'?', b'!'])` →
+  `.chain(*b"*?!")`. Một dòng, không dùng `#[allow]`.
+- `.github/workflows/ci.yml` — job `clippy-latest-stable`, `continue-on-error: true`, chạy
+  `cargo +stable clippy` và in ra cả hai phiên bản. Comment trong file nói rõ: **job này mà
+  bị làm thành chặn merge thì cái ghim hết là ghim, và item 19 quay lại.**
+
+**Đã chạy và đọc output, Linux 6.18 x86_64, 4 vCPU:**
+
+```
+RED   rustup run stable cargo clippy --all-targets -- -D warnings
+      error: can be more succinctly written as a byte str
+         --> crates/dict/tests/interop_quickfix_fields.rs:133:16
+                        help: try: `*b"*?!"`
+      error: could not compile `nanofix-dict` (test "interop_quickfix_fields")
+      EXIT=101
+
+GREEN cargo clippy --all-targets -- -D warnings          (1.98.0 đã ghim)  EXIT=0
+      cargo fmt --check                                                    sạch
+      cargo test -p nanofix-dict                                           tất cả xanh
+      scripts/check-lint-config.sh              RED ok / GREEN ok — cả hai chiều
+```
+
+**Đảo ngược, và có xác nhận cái sửa đã vào file** (`grep` thấy dòng 133 đúng dạng cũ trước khi
+kết luận — một reversal không làm gì cũng báo PASS, bài học đã ghi ở `false-greens.md` §5):
+đưa lại dạng cũ → clippy nhắc `byte_char_slices`; khôi phục → `EXIT=0`.
+
+**Chưa chứng minh:** rằng runner cũng xanh. Việc đó chỉ CI trả lời được, và nó là bước 4.
+**Cũng chưa chứng minh:** rằng `1.98.0` là bản cuối cùng cần ghim — job advisory tồn tại chính
+vì câu đó không ai chứng minh được.

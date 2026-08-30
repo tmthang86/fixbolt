@@ -79,6 +79,39 @@ jobs:
       - if: steps.ws.outputs.count != '0'
         run: cargo test --all
 
+  # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
+  # clippy release cannot turn this repository red with no commit behind it —
+  # `[measured 2026-08-30]` clippy::byte_char_slices did exactly that. Pinning
+  # alone would only trade that surprise for a slow drift, so this job runs the
+  # NEWEST stable and is allowed to fail: the next such lint arrives here as a
+  # warning to read, at the time it appears, instead of as a red morning later.
+  #
+  # continue-on-error is the whole point. If this job is ever made blocking, the
+  # pin stops being a pin and item 19 is back.
+  clippy-latest-stable:
+    name: clippy on the newest stable (advisory, never blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - id: ws
+        run: |
+          n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -eq 0 ]; then
+            echo "::warning title=Skipped, not passed::No crates yet, so the advisory clippy run did not run."
+          fi
+      - if: steps.ws.outputs.count != '0'
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - if: steps.ws.outputs.count != '0'
+        run: |
+          echo "pinned:  $(cargo --version)"
+          echo "newest:  $(cargo +stable --version)"
+      - if: steps.ws.outputs.count != '0'
+        run: scripts/fetch-quickfix-assets.sh
+      - if: steps.ws.outputs.count != '0'
+        run: cargo +stable clippy --all-targets -- -D warnings
+
   # CLAUDE.md §2 non-negotiable 6: this must build on a machine with nothing
   # optional installed. Its own runner, so it cannot inherit anything a
   # previous step put there.
