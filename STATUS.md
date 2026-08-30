@@ -20,8 +20,10 @@ delivery log. In dependency order:
    `tools/w2w` runs and **item 15 is closed**. Items 6, 11, 13 and the decision on 12 are
    **blocked on a machine matching `DESIGN.md` §9**, and the plan stops there rather than
    lowering the bar to close.
-3. **[ktls-spike](docs/plans/2026-08-30-ktls-spike.md)** — item 10. Independent of the rest,
-   and now runnable: it needed Linux, not a §9 machine.
+3. **[ktls-spike](docs/plans/2026-08-30-ktls-spike.md)** — item 10. **Paused 2026-08-30 after
+   step 1.** It needed Linux rather than a §9 machine, which was right — but it needs a kernel
+   built with `CONFIG_TLS`, which this one is not. Nothing about `ktls-core` or ADR-0005 was
+   concluded, because the experiment never reached the library.
 4. **[data-fields](docs/plans/2026-08-30-data-fields.md)** — items 8, 9.
 5. **[session-recovery](docs/plans/2026-08-30-session-recovery.md)** — item 16.
 6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5.
@@ -35,7 +37,7 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Branch | **`claude/project-status-irgurb`**, PR #1. `[measured 2026-08-30]` CI green on `a52a954` — runs `33295128793` and `33295130319`. First green since `engine` merged: `1013a30` |
 | Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p nanofix-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md)** — half A done (item 15), half B blocked on a §9 machine. `gates-that-can-be-trusted` closed 2026-08-30 (items 7, 17, 18, 19). Four plans approved and not started |
+| Plan in flight | *(none runnable here)*. `gates-that-can-be-trusted` **closed** (7, 17, 18, 19); `w2w-and-linux-numbers` **half A done** (15), half B needs a §9 machine; `ktls-spike` **paused** (10) needing a `CONFIG_TLS` kernel. Three plans approved and not started: `data-fields`, `session-recovery`, `ring-full-policy` |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
@@ -406,6 +408,15 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   5 000 samples, 4 vCPU container. **Not publishable and the binary says so itself on every
   run** — no `isolcpus`, no pinning, no frequency control, so it does not match `DESIGN.md` §9.
   **No row of §8 was changed on the strength of it.**
+- **The blocker on item 10 was wrong, and knowing that is most of the value.** `[measured
+  2026-08-30]` it had been recorded as needing the §9 machine of item 6. kTLS is a **kernel
+  feature, not a latency property**, so it needs no such machine — but a Linux box is not
+  enough either: it needs a kernel built with `CONFIG_TLS`. This one is not.
+  `setsockopt(TCP_ULP, "tls")` on a real connected socket returns **`ENOENT` on both ends**,
+  and the kernel config reads `# CONFIG_TLS is not set`. **The config line alone would not
+  have been enough** — a config says what was compiled, not what a container may do; the
+  syscall says both, which is why `scripts/check-ktls-available.sh` makes the call rather than
+  grepping.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -466,7 +477,7 @@ plans are **approved**; the first is in progress.
 |---|---|
 | ~~[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)~~ | **CLOSED 2026-08-30** — 7, 17, 18, 19 |
 | [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | **15 closed 2026-08-30**; 6, 11, 13 blocked on a §9 machine; **decides** 12 |
-| [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 |
+| [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 — **paused 2026-08-30**, blocked on a kernel with `CONFIG_TLS` |
 | [data-fields](docs/plans/2026-08-30-data-fields.md) | 8, 9 |
 | [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 |
 | [ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) | 5 |
@@ -485,7 +496,7 @@ against hardware that does not exist.
 | 7 | **`scripts/fetch-quickfix-assets.sh` tracks mutable `master`.** Every acceptance number in the codec plan (539 lines, 247 with `9=`, 244 with `10=`, 8 tag-set patterns for `35=3`) can change silently upstream. Pin a commit and verify it | Reproducibility of every step-1 gate |
 | 8 | **DATA fields inside a repeating group are untested**, on either the read or the write path. `group_roundtrip.rs` skips every DATA member, because writing one needs its length field placed immediately in front — which is open item 9, seen from inside a group | Any counterparty that puts `RawData` in a `Parties` entry |
 | 9 | **The encoder has no DATA invariant.** Writing a dynamic DATA field must regenerate its length field, place it immediately before, and count bytes including embedded `0x01`. Only the read path is specified | Any counterparty that sends `RawData`/`XmlData` |
-| 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **Cannot be checked here — needs the Linux box of open item 6** | The TLS plan; ADR-0005 acceptance |
+| 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **`[measured 2026-08-30]` the blocker was recorded wrongly and is now known**: it needs a kernel built with **`CONFIG_TLS`**, *not* the §9 machine of item 6 — kTLS is a kernel feature, not a latency property. This box refuses `setsockopt(TCP_ULP, "tls")` with `ENOENT` and its config says `# CONFIG_TLS is not set`. `scripts/check-ktls-available.sh` answers "can I start?" in one command; [reference/ktls-on-a-plain-socket.md](docs/reference/ktls-on-a-plain-socket.md) records what was and was not concluded | The TLS plan; ADR-0005 acceptance |
 | 11 | **Serialise misses its gate: 93.8 ns against 60 ns** (DESIGN §6). Cause is known — `Template::encode` finds each slot by a linear scan of the caller's list, so cost is slots × parts. Fix candidates: index slots by tag at template build, or require the caller to hand slots in parts order. The only red gate that does not need the Linux box | DESIGN §6 serialise row; the `engine` step, where the number is re-measured |
 | 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement | Nothing until open item 6 is answered |
 | 13 | **Release profile is default.** No `lto = "fat"`, no `codegen-units = 1`, no PGO, no `#[cold]` on error paths. Cheap, but each is a number to be measured before and after, not a setting to be assumed | The `engine` step; every §6 number published from Linux |

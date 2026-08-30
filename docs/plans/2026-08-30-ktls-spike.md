@@ -1,6 +1,6 @@
 # `ktls-core` có lái được từ một socket non-blocking trần không?
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt (2026-08-30)
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Tạm dừng (2026-08-30) — chặn ở kernel có `CONFIG_TLS`
 > **Phạm vi:** open item 10 — một spike, kết quả là một phát hiện chứ không phải code
 
 ## Bối cảnh
@@ -126,3 +126,40 @@ Kết thúc bằng một trang trong `docs/reference/`, và có thể là một 
 `CLAUDE.md` §1 — chỗ bảo "dừng lại, sửa plan, xin duyệt lại" — thành "sửa plan, **ghi lại
 vào đây**, đi tiếp". Mỗi lần sửa plan phải có một mục dưới đây nói rõ **sửa gì và vì sao**,
 nếu không thì uỷ quyền này biến thành giấy phép đi chệch trong im lặng.
+
+---
+
+### Bước 1 — dừng ở đây, có ghi chép. 2026-08-30.
+
+**Kết quả: không kết luận được trên máy này, và đó là nhánh mà chính bước 1 đã lường trước.**
+
+`[measured 2026-08-30]` Linux 6.18.44-fc-v22:
+
+```
+config:    # CONFIG_TLS is not set
+tls_stat:  absent
+setsockopt(TCP_ULP, "tls"): REFUSED errno=2 (ENOENT)
+```
+
+`setsockopt` được gọi trên **socket TCP thật, đã kết nối**, ở cả hai đầu — trên socket chưa
+kết nối nó hỏng vì lý do khác và kết quả đó chẳng nói gì. `ENOENT` nghĩa là kernel **không có**
+ULP tên `tls` chút nào: module không tồn tại, chứ không phải chưa nạp hay bị policy chặn.
+
+**Đọc dòng config là chưa đủ**, và đó là lý do phép kiểm gọi syscall chứ không `grep`: một
+kernel config nói cái gì đã được biên dịch, nó không nói một container được phép làm gì. Lời
+gọi syscall nói cả hai.
+
+**Sửa plan — hai lần, và cả hai đều về chỗ item 10 bị chặn.** Plan này viết rằng item 10 bị
+ghi sai là "cần máy Linux của item 6", và điều đó đúng: kTLS là **tính năng kernel**, không
+phải đặc tính hiệu năng, nên nó không cần máy §9 nào cả. **Nhưng plan cũng sai**: nó kết luận
+"nên chạy được ngay ở đây". Không phải "một máy Linux" là đủ — phải là **kernel build với
+`CONFIG_TLS`**, một thứ hẹp hơn hẳn và không suy ra được từ việc đang chạy Linux.
+
+**Không kết luận gì về `ktls-core` hay ADR-0005.** Thí nghiệm chưa đi tới được thư viện. Ghi
+"chắc là được" hay "chắc là hỏng" ở đây đúng là loại phát biểu `CLAUDE.md` §10 cấm.
+
+**Cái thu được, và nó có giá trị thật:** yêu cầu để làm tiếp giờ đã đúng và kiểm được bằng một
+lệnh. `scripts/check-ktls-available.sh` trả lời "máy này bắt đầu được chưa?" và thoát khác 0
+kèm lý do khi chưa. Bước 2–5 của plan giữ nguyên.
+
+**Trạng thái: Tạm dừng.** Chặn ở một kernel có `CONFIG_TLS` — **không phải** ở máy §9.

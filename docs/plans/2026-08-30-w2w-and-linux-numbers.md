@@ -242,5 +242,8 @@ GREEN ok / RED ok       scripts/check-no-kernel-sleep.sh
 no dead internal links  scripts/check-links.py
 ```
 
+**Bước 4 — CI.** Run **`33295397667`** trên commit `7e00e25`, `success`. Job `no-kernel-sleep`
+chạy trên runner GitHub (cài `strace` qua apt) và xanh ở đó, không chỉ ở máy này.
+
 **Còn lại:** nửa B (item 6, 11, 13, và quyết định 12) — **chặn ở một máy đúng §9**, và plan
 dừng ở đó chứ không hạ tiêu chuẩn để đóng.
