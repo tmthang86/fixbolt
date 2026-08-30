@@ -18,7 +18,7 @@ Last updated: **2026-08-30**.
 
 | | |
 |---|---|
-| Branch | **`plan/engine`**, on top of `main`. **Ready to merge** — its exit criteria are met |
+| Branch | **`main`.** `plan/engine` merged 2026-08-30, exit criteria met, gates re-run green on the merge commit |
 | Milestone | **M3 — the engine, closed.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket**: `cargo test -p nanofix-engine --test wire` → **59 / 59**. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
 | Plan in flight | *(none)* |
