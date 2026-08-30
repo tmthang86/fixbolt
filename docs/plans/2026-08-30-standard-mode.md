@@ -242,7 +242,7 @@ Cái tên `density` vẫn dùng được như một **nhãn cho con số**, cạ
 | 2 | ~~seam~~ — **xong 2026-08-30.** `Source`, `Interest`, `Transport::POLLABLE`/`source()`; `Waiting` đổi chữ ký + `NEEDS_SOURCES`; `Park` → `Yield`; **và `libc` + feature `standard` + `poll::Poller`** — xem "Sửa 1" bên dưới | 1 |
 | 3 | ~~`wait::Block`~~ — **xong 2026-08-30.** Timeout 100 ms mặc định có sàn 5 ms, `EINTR` quay lại chờ **phần còn lại**, `NEEDS_SOURCES = true`, lỗi `poll` được **ghi lại** và vẫn trả core lại | 2 |
 | 4 | ~~tập interest~~ — **xong 2026-08-30.** `refresh_interests[_with]`, `idle_with`, `Acceptor::source()`, `serve()` đăng ký listener, const-assert thật của ADR-0014 quyết định 4, và `sources_missing()` | 3 |
-| 5 | Waker: self-pipe trong tập poll, `RingDispatch` đánh thức khi push | 4 |
+| 5 | ~~waker~~ — **xong 2026-08-30.** Self-pipe; engine tự bỏ đầu đọc vào tập poll và **tự drain**; **`RingApp`** đánh thức khi đẩy reply — không phải `RingDispatch`, xem "Sửa 3" | 4 |
 | 6 | `w2w --mode standard\|hft`, mặc định `hft`, in mode mỗi lần chạy. Nửa đỏ của `check-no-kernel-sleep.sh` chuyển sang `--mode standard` | 4 |
 | 7 | **Cổng mới** `scripts/check-standard-gives-the-core-back.sh` + job CI `standard-blocks`. Nửa xanh `standard`, **nửa đỏ `hft` và phải trượt** | 6 |
 | 8 | Chạy 59 định nghĩa ở **cả hai mode**. Đo giá một lần thức của `standard` trên máy §9 và thay dòng §8 — hoặc giữ nhãn "từ tài liệu" nếu máy chưa `pass 10 fail 0` | 7, máy §9 |
@@ -352,6 +352,71 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
   workload thật, mà cái đó chưa có.
 
 ## Nhật ký giao hàng
+
+### 2026-08-30 — bước 5 xong: waker, và ADR-0014 gọi tên nhầm đầu
+
+**Đã dựng.** `crates/engine/src/waker.rs`: `Waker` (đầu đọc, ở engine) và `WakeHandle`
+(`Clone + Send`, ở thread khác). `Engine::with_waker` và `RingApp::with_waker`.
+
+**Sửa 3 — ADR-0014 quyết định 6 gọi tên nhầm đầu, và tôi ghi lại chứ không lặng lẽ sửa.** Nó
+viết *"`RingDispatch` writes one byte on push"*. Nhưng `RingDispatch::deliver` và `collect` đều
+được gọi **từ `Engine::turn`**, tức là trên chính thread engine, tại thời điểm engine **đang
+thức** — nó không bao giờ cần đánh thức ai. Thread phải đánh thức là **của ứng dụng**, và điểm
+gọi là `RingApp::pump`, sau khi nó đẩy reply về. `CLAUDE.md` §5 cấm sửa nội dung một ADR đã
+`Accepted`, mà đây là **lỗi sự thật ở một chi tiết**, không phải đổi ý — cơ chế (self-pipe), lý
+do (`poll` thức vì fd chứ không vì ring buffer) và yêu cầu đều không đổi. Nên nó được ghi thành
+một khối đính chính ngay trong ADR, và nhắc lại ở đầu `waker.rs` nơi người đọc code sẽ gặp.
+
+**Ba quyết định thiết kế, mỗi cái vì một cái bẫy:**
+
+1. **Engine tự bỏ waker của nó vào tập poll, không để người gọi thêm.** Quên nó chính là toàn bộ
+   thất bại mà cơ chế này sinh ra để chặn; để một call site có thể quên là thiết kế sai.
+2. **Drain sau *mỗi* lần chờ.** Một self-pipe còn byte chưa đọc thì **vẫn readable**, nên mọi
+   `poll` sau đó trả về tức thì, mãi mãi. Engine vẫn chạy hoàn hảo và **đốt một core** — đúng
+   thứ duy nhất `standard` sinh ra để tránh, và không bộ test đúng-sai nào lẫn phép đo độ trễ
+   đánh thức nào nhìn thấy. Đây là cái bẫy lớn nhất của bước này và nó có test riêng.
+3. **`wake()` không chặn, và một lần ghi bị từ chối không phải là việc bị mất.** Pipe đầy (64 KiB)
+   thì `write` trả `EAGAIN` — mà một pipe còn byte chưa đọc thì **đã readable rồi**, tức là tín
+   hiệu đã ở đó. Một wake đang chờ và một trăm nghìn wake nói cùng một điều: *nhìn lại đi.*
+
+**Ba đảo ngược, ba lần đỏ đúng chỗ:**
+
+| Đảo ngược | Đỏ ở đâu |
+|---|---|
+| bỏ `drain()` sau khi chờ | `a_wake_is_drained_so_the_next_wait_still_waits` |
+| engine không bỏ waker của mình vào tập poll | **5 test** cùng đỏ |
+| `RingApp` không đánh thức sau khi đẩy reply | `a_reply_from_another_thread_wakes_a_sleeping_engine` |
+
+**Clippy bắt được hai thứ mà `cargo test` không bắt** — nhắc rằng "test xanh" không phải "gate
+xanh". Một là `cast_signed()` **ổn định từ Rust 1.87 trong khi workspace ghim MSRV 1.85**; thay
+bằng `usize::try_from`, và hoá ra đúng hơn thật: `read` trả về số **có dấu** có thể âm, mà `as`
+sẽ biến số âm thành một độ dài khổng lồ. Hai là hai nhánh `if` giống hệt nhau trong `fcntl` —
+viết lại thành ba bước tuần tự, mỗi bước trả lỗi riêng.
+
+**Chưa làm:** bốn vực latency của ADR-0014 quyết định 6 giờ **đã bịt cả bốn** (listener,
+`POLLOUT`, waker, timeout 0), nhưng **chưa mode nào chạy đầu-cuối**: `serve()` và `w2w` đều còn
+`Spin`. Bước 6.
+
+**Gate cho commit này:**
+
+```
+cargo fmt --all --check                     sạch
+cargo clippy --all-targets -- -D warnings   sạch (0 lỗi)
+cargo test --all                            229 passed, 0 failed
+cargo test --all --no-default-features      0 failed
+scripts/check-no-optional-deps.sh           exit 0
+crates/engine --test standard               18 passed; 0/40 lần đỏ khi chạy lặp
+cargo test -p fixbolt-engine --doc          1 passed (compile_fail,E0080)
+-p fixbolt-session --test score             59/59 trong process
+-p fixbolt-engine  --test wire              59/59 qua socket thật
+scripts/check-no-kernel-sleep.sh            exit 0; nửa đỏ trượt vì 2970 sched_yield
+scripts/bench.sh                            exit 0; 8/8 target; 0 invariant failure
+  engine alloc: idle 0 send 0 recv 0 frame 0 turn 0 busy 0 ring 0 interests 0
+scripts/check-links.py                      289 link, 0 chết
+```
+
+Hai target vượt trần vẫn là `fixbolt-codec/groups` và `serialize` — mục 11 và 20. **Không đo gì
+mới.**
 
 ### 2026-08-30 — bước 4 xong: tập nguồn thật, và một test mang tên thứ nó không canh
 

@@ -133,6 +133,14 @@ below describe what a first release would contain.
   - `Engine::sources_missing()` — connections that claimed to be pollable and produced no
     source. Zero on a healthy engine; anything else is traffic arriving one timeout late, and
     the count is the only thing that would say so.
+  - `waker::{Waker, WakeHandle}`, `Engine::with_waker` and `RingApp::with_waker` — a self-pipe,
+    so a thread that is not the engine can say *look again*. `poll` wakes for descriptors, not
+    for a ring buffer, so without it a reply produced by `RingApp` waits out the engine's whole
+    timeout. The engine puts the read end in its **own** poll set and **drains it after every
+    wait**: a pipe holding an unread byte stays readable, so an undrained one makes every
+    subsequent `poll` return instantly and turns `standard` back into a spin. `wake()` never
+    blocks, and a write refused because the pipe is full is not lost work — a full pipe is
+    already readable, which is the entire signal.
   - **Pairing `Block` with a transport that cannot be waited on does not compile.** `Loopback`
     is the case that matters: an engine there would answer every message, pass all 59
     definitions, read 0% CPU, and be 100 ms slower per message. A `compile_fail,E0080` doctest

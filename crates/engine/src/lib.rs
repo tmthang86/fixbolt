@@ -32,6 +32,8 @@ pub mod poll;
 pub mod ring;
 pub mod transport;
 pub mod wait;
+#[cfg(all(feature = "standard", unix))]
+pub mod waker;
 
 use std::net::{TcpListener, TcpStream};
 
@@ -74,6 +76,12 @@ pub struct Engine<T, R: Role, D, C, W, J, const N: usize, const RX: usize, const
     /// What every connection this engine takes on does when its outbound queue
     /// fills. `DESIGN.md` D10.
     backpressure: Backpressure,
+    /// The self-pipe another thread writes to when it has produced work.
+    ///
+    /// `None` unless [`Self::with_waker`] was called. Only `standard` needs
+    /// one: a spinning engine sees out-of-band work on its next turn anyway.
+    #[cfg(all(feature = "standard", unix))]
+    waker: Option<crate::waker::Waker>,
 }
 
 /// One connection's view of the dispatch, as the [`Application`] the session
@@ -129,6 +137,8 @@ where
             wait,
             next_id: 0,
             backpressure: Backpressure::Disconnect,
+            #[cfg(all(feature = "standard", unix))]
+            waker: None,
         }
     }
 
@@ -138,6 +148,25 @@ where
     #[must_use]
     pub const fn with_backpressure(mut self, policy: Backpressure) -> Self {
         self.backpressure = policy;
+        self
+    }
+
+    /// The same engine, woken by `waker` when another thread produces work.
+    ///
+    /// **Only an out-of-band dispatch needs this.** With
+    /// [`dispatch::InlineDispatch`] the application runs on the engine thread
+    /// and there is nobody else to wake. With [`dispatch::RingDispatch`] the
+    /// application is elsewhere, and without a waker its reply waits until this
+    /// engine's timeout expires — up to 100 ms, on the one path such an
+    /// application cares most about.
+    ///
+    /// The engine keeps the read end, puts it in its own poll set, and drains
+    /// it after every wait. The caller keeps the [`waker::WakeHandle`] and
+    /// gives it to whoever produces the work.
+    #[cfg(all(feature = "standard", unix))]
+    #[must_use]
+    pub fn with_waker(mut self, waker: crate::waker::Waker) -> Self {
+        self.waker = Some(waker);
         self
     }
 
@@ -276,10 +305,21 @@ where
     /// also passed with `idle_with`'s append **deleted**, because it never went
     /// near that code — a test named after a behaviour it did not exercise.
     pub fn refresh_interests_with(&mut self, extra: &[Interest]) -> &[Interest] {
+        // The engine's own waker joins the list here rather than being left to
+        // the caller. Leaving it out is the whole failure this mechanism
+        // exists to prevent, so it is not something a call site can forget.
+        #[cfg(all(feature = "standard", unix))]
+        let own = self.waker.as_ref().map(|w| Interest::readable(w.source()));
+        #[cfg(all(feature = "standard", unix))]
+        let own = own.as_slice();
+        #[cfg(not(all(feature = "standard", unix)))]
+        let own: &[Interest] = &[];
+
         Self::rebuild(
             &self.conns,
             &mut self.interests,
             &mut self.sources_missing,
+            own,
             extra,
         );
         &self.interests
@@ -299,11 +339,12 @@ where
         conns: &[Connection<T, R, J, N, RX, TX>],
         interests: &mut Vec<Interest>,
         missing: &mut usize,
+        own: &[Interest],
         extra: &[Interest],
     ) {
         interests.clear();
         *missing = 0;
-        let wanted = conns.len() + extra.len();
+        let wanted = conns.len() + own.len() + extra.len();
         if interests.capacity() < wanted {
             interests.reserve(wanted - interests.capacity());
         }
@@ -316,6 +357,7 @@ where
                 None => *missing += 1,
             }
         }
+        interests.extend_from_slice(own);
         interests.extend_from_slice(extra);
     }
 
@@ -359,6 +401,14 @@ where
                 interests, wait, ..
             } = self;
             wait.idle(interests);
+            // **After the wait, always.** A self-pipe holding an unread byte
+            // stays readable, so a `poll` that is never drained returns
+            // instantly for ever — a working engine, burning a core, which is
+            // the one thing this mode exists to avoid.
+            #[cfg(all(feature = "standard", unix))]
+            if let Some(w) = &self.waker {
+                w.drain();
+            }
         } else {
             self.wait.idle(&[]);
         }

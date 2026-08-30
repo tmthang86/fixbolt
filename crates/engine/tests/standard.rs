@@ -565,3 +565,210 @@ fn logon() -> Vec<u8> {
     out.extend_from_slice(format!("10={:03}\x01", sum % 256).as_bytes());
     out
 }
+
+// ---------------------------------------------------------------------------
+// Step 5: the waker.
+//
+// In `hft` this whole problem is absent: the engine is spinning and sees
+// out-of-band work microseconds later. In `standard` it is asleep inside
+// `poll`, which wakes for descriptors and not for a ring buffer.
+// ---------------------------------------------------------------------------
+
+use fixbolt_engine::waker::Waker;
+
+/// A blocking engine over TCP, with a waker and no connections.
+///
+/// No connections on purpose: what is being measured is whether the *waker*
+/// wakes it, and a socket in the set would be a second thing that could.
+type BlockingEngine = Engine<
+    TcpTransport,
+    fixbolt_session::Acceptor,
+    InlineDispatch<Silent>,
+    ManualClock,
+    Block,
+    Store,
+    256,
+    4096,
+    8192,
+>;
+
+fn blocking_engine(timeout_ms: u32) -> (BlockingEngine, fixbolt_engine::waker::WakeHandle) {
+    let (waker, handle) = Waker::new().expect("a pipe");
+    let e = Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TEST"),
+        InlineDispatch::new(Silent),
+        ManualClock::at(fixbolt_conformance::script::FIXED_TIME_MILLIS),
+        Block::with_timeout_ms(8, timeout_ms),
+        4,
+    )
+    .with_waker(waker);
+    (e, handle)
+}
+
+/// The engine puts its own waker in the poll set. The caller cannot forget it.
+#[test]
+fn the_waker_is_in_the_set_without_the_caller_adding_it() {
+    let (mut e, _h) = blocking_engine(100);
+    assert_eq!(
+        e.refresh_interests().len(),
+        1,
+        "no connections, and still one interest: the waker's own descriptor"
+    );
+}
+
+/// A wake ends the wait at once, instead of after the timeout.
+#[test]
+fn a_wake_ends_the_wait_immediately() {
+    let (mut e, handle) = blocking_engine(2_000);
+
+    let waker_thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        handle.wake();
+    });
+
+    let before = Instant::now();
+    e.idle();
+    let elapsed = before.elapsed();
+    waker_thread.join().expect("the waker thread finished");
+
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "a wake arrived after 50 ms against a 2000 ms timeout; waiting {elapsed:?} \
+         means the engine slept through it and woke on the clock"
+    );
+}
+
+/// **The wake is drained, so the next wait is a real wait.**
+///
+/// This is the failure the mechanism is most likely to have: a self-pipe holding
+/// an unread byte stays readable, so every subsequent `poll` returns instantly,
+/// for ever. The engine keeps working perfectly and burns a core — which is the
+/// single thing `standard` exists to avoid, and neither a correctness suite nor
+/// a wakeup-latency test would notice.
+///
+/// Reversal: delete the `drain()` in `Engine::idle_with` and this fails.
+#[test]
+fn a_wake_is_drained_so_the_next_wait_still_waits() {
+    let (mut e, handle) = blocking_engine(300);
+
+    handle.wake();
+    let before = Instant::now();
+    e.idle();
+    assert!(
+        before.elapsed() < Duration::from_millis(150),
+        "the pending wake should have ended the first wait at once"
+    );
+
+    // Nothing has woken it since. If the byte were still in the pipe this
+    // returns instantly and `standard` is a spin.
+    let before = Instant::now();
+    e.idle();
+    let elapsed = before.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(250),
+        "the second wait had nothing to wake it and must have run its full \
+         timeout; {elapsed:?} means the pipe was never drained and this engine \
+         now polls in a tight loop for ever"
+    );
+}
+
+/// Waking far more often than anyone drains neither blocks nor fails.
+///
+/// A pipe holds 64 KiB. Once it is full a write returns `EAGAIN`, and that is
+/// **correct rather than lost work**: a pipe with unread bytes is already
+/// readable, which is the whole signal. One pending wake and a hundred thousand
+/// mean the same thing.
+#[test]
+fn waking_more_often_than_anyone_drains_is_harmless() {
+    let (mut e, handle) = blocking_engine(100);
+    let before = Instant::now();
+    for _ in 0..200_000 {
+        handle.wake();
+    }
+    assert!(
+        before.elapsed() < Duration::from_secs(10),
+        "wake() must never block, even with nobody draining"
+    );
+    // And the engine still comes back promptly, then drains it all.
+    let before = Instant::now();
+    e.idle();
+    assert!(before.elapsed() < Duration::from_millis(50));
+}
+
+/// A reply produced on another thread reaches a sleeping engine at once.
+///
+/// The end-to-end shape: `RingApp` on the application's thread pushes a reply
+/// and wakes; the engine is inside `poll` and comes back for it. Without the
+/// waker this takes a whole timeout — correct, and 100 ms late.
+#[test]
+fn a_reply_from_another_thread_wakes_a_sleeping_engine() {
+    use fixbolt_engine::dispatch::{RingApp, RingDispatch};
+    use fixbolt_engine::ring;
+
+    let (waker, handle) = Waker::new().expect("a pipe");
+    let (to_app_tx, to_app_rx) = ring::pair(4096);
+    let (to_engine_tx, to_engine_rx) = ring::pair(4096);
+
+    type RingEngine = Engine<
+        TcpTransport,
+        fixbolt_session::Acceptor,
+        RingDispatch<512>,
+        ManualClock,
+        Block,
+        Store,
+        256,
+        4096,
+        8192,
+    >;
+    let mut engine: RingEngine = Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TEST"),
+        RingDispatch::new(to_app_tx, to_engine_rx),
+        ManualClock::at(fixbolt_conformance::script::FIXED_TIME_MILLIS),
+        Block::with_timeout_ms(8, 2_000),
+        4,
+    )
+    .with_waker(waker);
+
+    // The application thread: hand it something to reply to, then let it push.
+    let mut app: RingApp<512> = RingApp::new(to_app_rx, to_engine_tx).with_waker(handle);
+    struct Echo;
+    impl fixbolt_session::Application for Echo {
+        fn on_message(
+            &mut self,
+            m: &[u8],
+            _s: u32,
+            _t: &[u8],
+            out: &mut [u8],
+        ) -> Option<core::ops::Range<usize>> {
+            out[..m.len()].copy_from_slice(m);
+            Some(0..m.len())
+        }
+    }
+
+    // Put one message on the outbound ring by hand, exactly as `deliver` would.
+    {
+        use fixbolt_engine::dispatch::Dispatch;
+        engine
+            .dispatch_mut()
+            .deliver(0, b"35=D\x01", 2, b"20260828-12:00:00.000", &mut [0u8; 512]);
+    }
+
+    let pusher = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(app.pump(&mut Echo), 1, "the application saw the message");
+        app
+    });
+
+    let before = Instant::now();
+    engine.idle();
+    let elapsed = before.elapsed();
+    let app = pusher.join().expect("the application thread finished");
+    assert_eq!(app.dropped(), 0);
+
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "the reply was pushed after 50 ms against a 2000 ms timeout; {elapsed:?} \
+         means the engine slept through it — which is exactly the cliff the \
+         waker exists to remove"
+    );
+}

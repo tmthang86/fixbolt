@@ -206,6 +206,14 @@ pub struct RingApp<const M: usize> {
     scratch: [u8; M],
     reply: [u8; M],
     dropped: usize,
+    /// Whom to tell that a reply is waiting.
+    ///
+    /// `None` in `hft`, where the engine is spinning and will see the reply on
+    /// its next turn regardless. In `standard` the engine is asleep inside
+    /// `poll`, which wakes for descriptors and not for a ring buffer — so
+    /// without this a reply waits out the engine's whole timeout.
+    #[cfg(all(feature = "standard", unix))]
+    waker: Option<crate::waker::WakeHandle>,
 }
 
 impl<const M: usize> RingApp<M> {
@@ -218,7 +226,21 @@ impl<const M: usize> RingApp<M> {
             scratch: [0; M],
             reply: [0; M],
             dropped: 0,
+            #[cfg(all(feature = "standard", unix))]
+            waker: None,
         }
+    }
+
+    /// The same end, waking a `standard` engine each time a reply goes back.
+    ///
+    /// Get the handle from the [`crate::waker::Waker`] handed to
+    /// [`crate::Engine::with_waker`]. Leaving it out costs nothing in `hft` and
+    /// costs one whole timeout per reply in `standard`.
+    #[cfg(all(feature = "standard", unix))]
+    #[must_use]
+    pub fn with_waker(mut self, waker: crate::waker::WakeHandle) -> Self {
+        self.waker = Some(waker);
+        self
     }
 
     /// Replies the return ring would not take. See [`RingDispatch::refused`].
@@ -257,11 +279,23 @@ impl<const M: usize> RingApp<M> {
                 ..
             } = self;
             let (stamp, msg) = (&scratch[12..OUT_HEADER], &scratch[OUT_HEADER..n]);
-            if let Some(r) = handler.on_message(msg, seq, stamp, reply)
-                && !to_engine.push(&[&conn, &reply[r]])
-            {
-                *dropped += 1;
+            let mut pushed = false;
+            if let Some(r) = handler.on_message(msg, seq, stamp, reply) {
+                if to_engine.push(&[&conn, &reply[r]]) {
+                    pushed = true;
+                } else {
+                    *dropped += 1;
+                }
             }
+            // **After the push, not before.** Waking first would send the
+            // engine to look at a ring that does not hold the reply yet, and
+            // the reply would then wait for the next wake or the timeout.
+            #[cfg(all(feature = "standard", unix))]
+            if pushed && let Some(w) = &self.waker {
+                w.wake();
+            }
+            #[cfg(not(all(feature = "standard", unix)))]
+            let _ = pushed;
         }
     }
 }

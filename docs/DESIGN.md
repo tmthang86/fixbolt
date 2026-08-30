@@ -111,7 +111,7 @@ Added one at a time, each behind an approved plan.
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
 | `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport`, and **`libc` only under the `standard` feature** |
 | | | `[2026-08-30]` step 1 of six exists: `Transport`, `TcpTransport`, `Loopback`, `Waiting`. `transport` is a module here rather than its own crate until something needs it to be otherwise | |
-| | | `[2026-08-30]` modules `poll` and `block` — `poll(2)` and `standard`'s idle turn, behind `#[cfg(all(feature = "standard", unix))]`. **The crate's first external dependency and first `unsafe`, both behind that feature**: `--no-default-features` builds it with neither (ADR-0014) | |
+| | | `[2026-08-30]` modules `poll`, `block` and `waker` — `poll(2)` and `standard`'s idle turn, behind `#[cfg(all(feature = "standard", unix))]`. **The crate's first external dependency and first `unsafe`, both behind that feature**: `--no-default-features` builds it with neither (ADR-0014) | |
 | `library` | L4 | The application-facing API | `engine` |
 | `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
 
@@ -452,9 +452,15 @@ has since closed and been reissued. `serve` hands the listener over, so a connec
 on the connect rather than on the next timeout. Pairing a blocking strategy with a transport
 that cannot name a source — `Loopback` — **does not compile**.
 
-**What is missing is the waker.** A reply produced on another thread by `RingDispatch` still
-waits up to one timeout, and no mode has been wired end to end: `serve` and `tools/w2w` both
-still spin. Steps 5, 6 and 8 of
+**And the waker.** `poll` wakes for descriptors and not for a ring buffer, so a reply produced
+on the application's thread would wait out the whole timeout; a self-pipe closes that. The
+engine holds the read end itself and **drains it after every wait**, because a pipe with an
+unread byte stays readable and an undrained one makes every subsequent `poll` return instantly
+— a working engine, burning a core, which is the single thing this mode exists to avoid.
+
+**What is missing is the wiring.** No mode is reachable end to end: `serve` and `tools/w2w` both
+still spin, so nothing has yet run a `standard` engine over a real socket and nothing has
+measured what one wakeup costs. Steps 6 to 8 of
 [plans/2026-08-30-standard-mode.md](plans/2026-08-30-standard-mode.md).
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is

@@ -95,9 +95,10 @@ delivery log. In dependency order:
    **first external dependency and first `unsafe`**, both behind the feature. **Step 4 built the source list** —
    readable always, writable only while bytes are queued, the listener carried by `serve`,
    rebuilt every turn because a `Source` borrows its descriptor. Pairing a blocking strategy
-   with a transport that cannot name a source **does not compile**. **Next is step 5, the waker**:
-   until it lands, a reply produced on another thread waits up to one whole timeout, and no mode
-   is wired end to end — `serve` and `w2w` both still spin.
+   with a transport that cannot name a source **does not compile**. **Step 5 added the waker**, so all
+   four of ADR-0014 decision 6's latency cliffs are now closed. **Next is step 6, the wiring**:
+   no mode is reachable end to end — `serve` and `w2w` both still spin — so nothing has run a
+   `standard` engine over a real socket and nothing has measured what one wakeup costs.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus

@@ -201,6 +201,19 @@ that one source and watching the test go red by exactly one timeout.
 path across two platforms for nothing. `RingDispatch` writes one byte on push; the read end sits
 in the poll set.
 
+> **`[correction 2026-08-30, after this ADR was accepted]` The last sentence names the wrong
+> end.** `RingDispatch` runs on the **engine** thread — `deliver` and `collect` are both called
+> from `Engine::turn`, when the engine is by definition awake — so it never needs to wake
+> anybody. The thread that must do the waking is the **application's**, and the call site is
+> `RingApp::pump`, after it pushes a reply back.
+>
+> This is recorded here rather than edited away: `CLAUDE.md` §5 forbids changing an accepted
+> ADR's substance, and this is a factual error in a supporting detail, not a change of mind. The
+> mechanism (a self-pipe), the reason (`poll` wakes for descriptors, not for a ring buffer) and
+> the requirement (or the reply waits out a whole timeout) are all unchanged. Built that way in
+> `crates/engine/src/waker.rs`, whose module comment repeats the correction where somebody
+> reading the code will meet it.
+
 ### 7. `wait::Park` becomes `wait::Yield`, and is documented as **neither mode**
 
 ADR-0013 open question 3.
