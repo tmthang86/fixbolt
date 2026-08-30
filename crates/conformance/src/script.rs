@@ -223,6 +223,88 @@ pub fn definitions_dir() -> PathBuf {
 /// definitions other than 59. Never skips: a suite that quietly runs on zero
 /// real messages is worse than one that fails.
 pub fn scenarios() -> Result<Vec<Scenario>, LoadError> {
+    load(false)
+}
+
+/// Every `.def` file, read from the other side.
+///
+/// `I` lines become what this engine is expected to **send** and `E` lines
+/// become what arrives. Two things change with them, and both are load-bearing:
+///
+/// * **`iDISCONNECT` and `eDISCONNECT` swap** — the side that hangs up is the
+///   other one now.
+/// * **an `I` line's `<TIME>` grows to 21 bytes.** The plain corpus gives it 17
+///   because QuickFIX's reflector writes it and writes no milliseconds; here
+///   *this engine* writes it, and it writes milliseconds. The `9=` computed
+///   over those bytes is compared exactly, so getting this wrong is four bytes
+///   on every message in the suite.
+///
+/// `iCONNECT` does not swap: both sides see a connection open.
+///
+/// # Errors
+///
+/// As [`scenarios`].
+pub fn scenarios_mirrored() -> Result<Vec<Scenario>, LoadError> {
+    let mut all = load(true)?;
+    for s in &mut all {
+        for step in &mut s.steps {
+            step.kind = match core::mem::replace(&mut step.kind, Kind::Connect) {
+                Kind::Send(m) => Kind::Expect(m),
+                Kind::Expect(m) => Kind::Send(m),
+                Kind::Disconnect => Kind::ExpectDisconnect,
+                Kind::ExpectDisconnect => Kind::Disconnect,
+                Kind::Connect => Kind::Connect,
+            };
+        }
+    }
+    Ok(all)
+}
+
+/// Can this engine play the other side of this file?
+///
+/// `ADR-0004` decision 6, applied rather than quoted: a file mirrors when every
+/// line **this engine would have to send** is something a correct engine would
+/// actually send. Anything else is a file whose whole purpose is the acceptor
+/// refusing rubbish, and an initiator has no analogue for it.
+///
+/// Takes a scenario in mirrored form — the lines to check are its
+/// [`Kind::Expect`] ones.
+#[must_use]
+pub fn mirrors(s: &Scenario) -> bool {
+    s.steps.iter().all(|step| match &step.kind {
+        Kind::Expect(m) => sendable(&m.wire),
+        // Mirrored, an `ExpectDisconnect` is **this engine** hanging up — and
+        // it can only come from an `iDISCONNECT` in the original, because
+        // every file's own `eDISCONNECT` mirrors the other way, into an input.
+        // `[measured 2026-08-30]` exactly one file has one:
+        // `1b_DuplicateIdentity.def`, whose last line hangs up the *first*
+        // connection after the second was refused. Nothing on the wire says to
+        // — no message arrived, no timer fired. It is the harness tidying up
+        // after itself, and no initiator has an analogue for it.
+        Kind::ExpectDisconnect => false,
+        _ => true,
+    })
+}
+
+/// Would a correct engine ever put these bytes on the wire?
+fn sendable(wire: &[u8]) -> bool {
+    if !wire.starts_with(b"8=FIX.4.4\x01") {
+        return false;
+    }
+    wire.split(|b| *b == SOH).all(|f| {
+        f.is_empty() || {
+            match f.iter().position(|c| *c == b'=') {
+                None => false,
+                Some(eq) => {
+                    let (tag, value) = (&f[..eq], &f[eq + 1..]);
+                    !tag.is_empty() && tag.iter().all(u8::is_ascii_digit) && !value.is_empty()
+                }
+            }
+        }
+    })
+}
+
+fn load(mirrored: bool) -> Result<Vec<Scenario>, LoadError> {
     let dir = definitions_dir();
     let entries = std::fs::read_dir(&dir).map_err(|e| LoadError::NoCorpus {
         path: dir.clone(),
@@ -252,7 +334,7 @@ pub fn scenarios() -> Result<Vec<Scenario>, LoadError> {
         })?;
         let mut steps = Vec::new();
         for (i, raw) in text.lines().enumerate() {
-            if let Some(step) = parse_line(&name, i + 1, raw)? {
+            if let Some(step) = parse_line(&name, i + 1, raw, mirrored)? {
                 steps.push(step);
             }
         }
@@ -270,7 +352,12 @@ pub fn load_all() -> Result<Vec<Step>, LoadError> {
     Ok(scenarios()?.into_iter().flat_map(|s| s.steps).collect())
 }
 
-fn parse_line(file: &str, line_no: usize, raw: &str) -> Result<Option<Step>, LoadError> {
+fn parse_line(
+    file: &str,
+    line_no: usize,
+    raw: &str,
+    mirrored: bool,
+) -> Result<Option<Step>, LoadError> {
     let unknown = || LoadError::UnknownDirective {
         file: file.to_string(),
         line_no,
@@ -300,8 +387,9 @@ fn parse_line(file: &str, line_no: usize, raw: &str) -> Result<Option<Step>, Loa
         ('i' | 'e', _) => return Err(unknown()),
         _ => {
             // An `E` line is engine output and carries milliseconds; an `I`
-            // line is what the reflector sends and does not.
-            let msg = message(body, letter == 'E').ok_or_else(unknown)?;
+            // line is what the reflector sends and does not. Mirrored, this
+            // engine writes both.
+            let msg = message(body, mirrored || letter == 'E').ok_or_else(unknown)?;
             if letter == 'I' {
                 Kind::Send(msg)
             } else {

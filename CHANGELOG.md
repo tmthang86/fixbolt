@@ -73,6 +73,18 @@ below describe what a first release would contain.
     replayed with **one** `SequenceReset` gap fill. A replay spends no sequence number.
   - Scores **59 / 59** on the acceptance definitions. The session layer's gate is met.
 
+- **`nanofix-conformance`** — the mirrored corpus, for the initiator role.
+  - `script::scenarios_mirrored()` reads the same 59 files from the other side: `I` lines
+    become what this engine must send, `E` lines become what arrives, and `iDISCONNECT` /
+    `eDISCONNECT` swap. An `I` line's `<TIME>` grows to 21 bytes with it, because mirrored it
+    is **this engine** that writes it and this engine writes milliseconds.
+  - `script::mirrors()` applies `ADR-0004` decision 6 as amended by `ADR-0006` rather than
+    quoting it, and a test asserts the set it computes equals the nine names. **50 of the 59
+    mirror**, not the 51 the ADR first said: `1b_DuplicateIdentity.def` mirrors into this
+    engine hanging up a connection nothing told it to.
+  - `runner::run_mirrored()` scores out of 50. `NullSession` scores **0 / 50** and `Replay`
+    scores **50 / 50**, which is what makes a real score mean something.
+
 - **`nanofix-dict`** — four validation tables, generated from `FIX44.xml`, answering the
   dictionary half of `Reject (35=3)`.
   - `Fix44::is_defined_tag(tag)` — a bitset over 0..=956. **No user-defined range**: QuickFIX's
