@@ -22,10 +22,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use nanofix_codec::{
+use fixbolt_codec::{
     Dictionary, FieldIndex, NoDict, TemplateBuilder, TimestampCache, Validation, parse_into,
 };
-use nanofix_dict::Fix44;
+use fixbolt_dict::Fix44;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 

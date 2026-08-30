@@ -72,7 +72,7 @@ mod field_type;
 use field_type::FieldType;
 
 fn die(msg: &str) -> ! {
-    eprintln!("\nnanofix-dict: {msg}\n");
+    eprintln!("\nfixbolt-dict: {msg}\n");
     std::process::exit(1)
 }
 

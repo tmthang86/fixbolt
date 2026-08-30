@@ -19,11 +19,11 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use nanofix_conformance::echo::echo;
-use nanofix_conformance::script::{Kind, scenarios};
-use nanofix_engine::journal::Store;
-use nanofix_session::text::SessionText;
-use nanofix_session::{Acceptor, Application, Config, Initiator, Link, Session, clock};
+use fixbolt_conformance::echo::echo;
+use fixbolt_conformance::script::{Kind, scenarios};
+use fixbolt_engine::journal::Store;
+use fixbolt_session::text::SessionText;
+use fixbolt_session::{Acceptor, Application, Config, Initiator, Link, Session, clock};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 

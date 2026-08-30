@@ -16,8 +16,8 @@
 //! is that the mutation actually failed something, not that it compiled.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios};
-use nanofix_session::{Acceptor, Config, Link, Session};
+use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios};
+use fixbolt_session::{Acceptor, Config, Link, Session};
 
 /// Every `I` line of one definition file, in order.
 fn inputs(file: &str) -> Vec<Vec<u8>> {

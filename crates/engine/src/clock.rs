@@ -7,7 +7,7 @@
 //! same seam that makes the 59 definitions runnable over a socket is the one a
 //! deployment uses to feed a hardware clock.
 //!
-//! Milliseconds since **0000-01-01**, matching `nanofix_session::clock` and
+//! Milliseconds since **0000-01-01**, matching `fixbolt_session::clock` and
 //! `DESIGN.md` D13.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// Not restated: taken from the session layer, which derives it rather than
 /// recalling it.
-pub const YEAR_ZERO_TO_EPOCH: u64 = nanofix_session::clock::MILLIS_YEAR_ZERO_TO_EPOCH;
+pub const YEAR_ZERO_TO_EPOCH: u64 = fixbolt_session::clock::MILLIS_YEAR_ZERO_TO_EPOCH;
 
 /// What time it is, in the session layer's units.
 pub trait Clock {

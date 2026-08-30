@@ -1,4 +1,4 @@
-# nanofixengine — Engineering Rules
+# fixbolt — Engineering Rules
 
 A FIX 4.4 engine in **Rust**, acceptor-first, positioned as **the fastest acceptor that can
 run on kernel TCP**. Not a port of QuickFIX ([ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md)).
@@ -11,8 +11,11 @@ read it before picking up work, update it when a plan phase closes.
 > no counterparty configuration, nothing from `shadow-exchange`. `.gitignore` is a safety
 > net, not the control. **The control is you, before `git add`.**
 >
-> **`nanofixengine` is a placeholder name.** Shortlist in STATUS.md. Rename before the first
-> crates.io publish, never after.
+> **The name is `fixbolt`, decided 2026-08-30.** It replaced the placeholder
+> `nanofixengine`, which sat one word from `matthart1983/nanofix` — the reference project
+> this repository measures itself against. Verified free on crates.io and GitHub before
+> adoption, on **both**: a free global registry says nothing about who already owns the
+> name in the reader's mind. Nothing is published yet, so nothing is locked in.
 >
 > **Editing this file mid-session does not affect that session.** Say out loud which rule
 > you changed. **One rule, one place** — a rule restated in two places is two rules that
@@ -259,7 +262,7 @@ desktop app, through a UI.
 **This repository is the other half of that evidence, and it is the half that has no UI at
 all.** A FIX acceptor is tested end-to-end by driving real bytes through a real socket and
 reading what comes back — the same loop, with a wire protocol where the skills have a screen.
-That makes nanofixengine the place where the *protocol* side of e2e testing gets found out,
+That makes fixbolt the place where the *protocol* side of e2e testing gets found out,
 and what is found here is owed back.
 
 ### What goes back

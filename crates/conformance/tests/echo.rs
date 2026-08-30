@@ -10,9 +10,9 @@
 //! The gate is `9=101` — byte-exact, because tag 9 is not in `fields.fmt`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::compare::compare;
-use nanofix_conformance::echo::echo;
-use nanofix_conformance::script::{FIXED_TIME_IN, FIXED_TIME_OUT, Kind, Step, scenarios};
+use fixbolt_conformance::compare::compare;
+use fixbolt_conformance::echo::echo;
+use fixbolt_conformance::script::{FIXED_TIME_IN, FIXED_TIME_OUT, Kind, Step, scenarios};
 
 fn file(name: &str) -> Vec<Step> {
     scenarios()
@@ -67,7 +67,7 @@ fn the_echo_reproduces_the_expected_bytes_exactly() {
         // the field **order** — is proven either way.
         compare(expected, actual).unwrap_or_else(|e| panic!("pair {n}: {e:?}"));
         assert_eq!(
-            nanofix_conformance::compare::compare(expected, actual),
+            fixbolt_conformance::compare::compare(expected, actual),
             Ok(()),
             "pair {n} does not satisfy the corpus's own comparison rules"
         );
@@ -159,7 +159,7 @@ fn every_application_echo_in_the_corpus_is_reproduced() {
                     )
                     .unwrap_or_else(|e| panic!("{}:{} {e:?}", st.file, st.line_no));
                     assert_eq!(
-                        nanofix_conformance::compare::compare(&m.wire, &out[r]),
+                        fixbolt_conformance::compare::compare(&m.wire, &out[r]),
                         Ok(()),
                         "{}:{}",
                         st.file,

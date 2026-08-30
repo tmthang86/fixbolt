@@ -12,7 +12,7 @@ would make this gate flaky, and a flaky gate gets switched off.
 
 **That exemption had a hole, and it cost two dead links that lived in the code
 for a day.** `crates/engine/src/dispatch.rs` and `crates/session/src/journal.rs`
-each cited an ADR as `https://github.com/nanofixengine/docs/decisions/...` — an
+each cited an ADR as `https://github.com/fixbolt/docs/decisions/...` — an
 organisation that does not exist. Two things hid them: this walked markdown only,
 so it never opened a `.rs` file; and the link was an external URL, which it skips
 by design. Extending the walk alone would still have missed them.

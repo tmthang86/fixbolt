@@ -18,10 +18,10 @@
 
 use std::ops::Range;
 
-use nanofix_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
-use nanofix_engine::journal::{Durability, FileJournal, SLOT_LEN, Store};
-use nanofix_session::journal::{Journal, NoJournal};
-use nanofix_session::{Acceptor, Application, Config, Link, Session};
+use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_engine::journal::{Durability, FileJournal, SLOT_LEN, Store};
+use fixbolt_session::journal::{Journal, NoJournal};
+use fixbolt_session::{Acceptor, Application, Config, Link, Session};
 
 /// The acceptance server's own application: echo every order back.
 struct EchoApp;
@@ -34,7 +34,7 @@ impl Application for EchoApp {
         stamp: &[u8],
         out: &mut [u8],
     ) -> Option<Range<usize>> {
-        nanofix_conformance::echo::echo(msg, out, seq, stamp).ok()
+        fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
     }
 }
 
@@ -279,7 +279,7 @@ fn none_keeps_nothing_and_fills_over_everything() {
 #[test]
 fn fsync_puts_the_message_on_disk_before_it_returns() {
     let path =
-        std::env::temp_dir().join(format!("nanofix-journal-fsync-{}.log", std::process::id()));
+        std::env::temp_dir().join(format!("fixbolt-journal-fsync-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&path);
 
     let (mut s, _) = logged_on();
@@ -308,7 +308,7 @@ fn fsync_puts_the_message_on_disk_before_it_returns() {
 #[test]
 fn async_reaches_the_disk_once_the_writer_has_caught_up() {
     let path =
-        std::env::temp_dir().join(format!("nanofix-journal-async-{}.log", std::process::id()));
+        std::env::temp_dir().join(format!("fixbolt-journal-async-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&path);
 
     let (mut s, _) = logged_on();
@@ -346,7 +346,7 @@ fn a_message_too_long_for_a_slot_is_refused_by_every_journal() {
     assert!(mem.get(9).is_none(), "the ring refused it");
 
     let path =
-        std::env::temp_dir().join(format!("nanofix-journal-long-{}.log", std::process::id()));
+        std::env::temp_dir().join(format!("fixbolt-journal-long-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let mut file: FileJournal<8, SLOT_LEN> =
         FileJournal::open(&path, Durability::Fsync).expect("open");

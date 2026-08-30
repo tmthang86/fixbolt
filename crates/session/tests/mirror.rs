@@ -11,14 +11,14 @@
 //! the plan — is what stands in front of that.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::runner::{Conn, Input, Link, SessionUnderTest, run_mirrored};
-use nanofix_conformance::script::{Kind, Scenario};
-use nanofix_session::{Config, Initiator, Session};
+use fixbolt_conformance::runner::{Conn, Input, Link, SessionUnderTest, run_mirrored};
+use fixbolt_conformance::script::{Kind, Scenario};
+use fixbolt_session::{Config, Initiator, Session};
 
-fn link(l: nanofix_session::Link) -> Link {
+fn link(l: fixbolt_session::Link) -> Link {
     match l {
-        nanofix_session::Link::Up => Link::Up,
-        nanofix_session::Link::Dropped => Link::Dropped,
+        fixbolt_session::Link::Up => Link::Up,
+        fixbolt_session::Link::Dropped => Link::Dropped,
     }
 }
 

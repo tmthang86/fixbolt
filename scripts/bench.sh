@@ -39,21 +39,13 @@ is_invariant() {
   esac
 }
 
-echo "=== machine"
-uname -srm
-if [ -r /proc/cpuinfo ]; then
-  echo "cpu       $(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')"
-  echo "cores     $(nproc)"
-  gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unknown")
-  echo "governor  $gov"
-  nt=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo "unknown")
-  echo "no_turbo  $nt"
-  echo "isolcpus  $(tr ' ' '\n' < /proc/cmdline | grep -c '^isolcpus=' || true) setting(s) on the kernel command line"
-else
-  echo "cpu       $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
-  echo "cores     $(getconf _NPROCESSORS_ONLN 2>/dev/null || echo unknown)"
-fi
-echo "rustc     $(rustc --version)"
+# The machine block is scripts/check-machine.sh, so every figure below travels
+# with the DESIGN.md §9 settings that were actually READ off the box rather than
+# asserted — CLAUDE.md §2 non-negotiable 10. Its exit code is deliberately
+# ignored here: an untuned machine still produces usable allocation counts and
+# usable A/B comparisons. --strict is where it becomes fatal.
+scripts/check-machine.sh || MACHINE_NOT_TUNED=1
+: "${MACHINE_NOT_TUNED:=0}"
 echo "profile   bench (release)"
 echo
 
@@ -120,6 +112,17 @@ fi
 
 if [ "${#invariant_failed[@]}" -ne 0 ]; then
   echo "FAIL: a machine-independent benchmark failed; that is a real defect" >&2
+  exit 1
+fi
+
+# --strict is for a DESIGN.md §9 machine, and on such a machine the settings are
+# part of the result. Publishing a latency figure from an untuned box is exactly
+# what non-negotiable 10 forbids, so --strict refuses before it even looks at the
+# ceilings.
+if [ "$STRICT" -eq 1 ] && [ "$MACHINE_NOT_TUNED" -ne 0 ]; then
+  echo "FAIL: --strict, and this machine is not set up to DESIGN.md §9" >&2
+  echo "      See the failing rows above. Without --strict the counts and the" >&2
+  echo "      A/B comparisons are still usable; the latency figures are not." >&2
   exit 1
 fi
 

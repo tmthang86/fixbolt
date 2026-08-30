@@ -15,9 +15,9 @@ mod harness;
 use std::hint::black_box;
 use std::ops::Range;
 
-use nanofix_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
-use nanofix_engine::ring;
-use nanofix_session::Application;
+use fixbolt_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
+use fixbolt_engine::ring;
+use fixbolt_session::Application;
 
 const M: usize = 512;
 

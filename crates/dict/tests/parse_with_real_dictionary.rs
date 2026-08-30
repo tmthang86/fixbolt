@@ -5,8 +5,8 @@
 //! table `build.rs` produced from the XML, used for real.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use nanofix_codec::{FieldIndex, Parsed, Validation, parse_into};
-use nanofix_dict::Fix44;
+use fixbolt_codec::{FieldIndex, Parsed, Validation, parse_into};
+use fixbolt_dict::Fix44;
 
 fn frame(body: &[u8]) -> Vec<u8> {
     let mut out = b"8=FIX.4.4\x01".to_vec();

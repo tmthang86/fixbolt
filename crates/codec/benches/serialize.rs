@@ -3,7 +3,7 @@
 #[path = "harness.rs"]
 mod harness;
 
-use nanofix_codec::{NoDict, TemplateBuilder, TimestampCache};
+use fixbolt_codec::{NoDict, TemplateBuilder, TimestampCache};
 use std::hint::black_box;
 
 fn main() {

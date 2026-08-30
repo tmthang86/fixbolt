@@ -35,7 +35,7 @@ bước đo, hoặc nó bị đóng vĩnh viễn, hoặc nó có dữ liệu đ�
 - **`Engine::turn` là một lượt không chặn**, và `crates/engine/tests/wire.rs` đã lái nó bằng
   tay qua socket thật — nên `w2w` không phải phát minh cách chạy engine, chỉ phải thêm vòng
   lặp và đo.
-- `nanofix_engine::wait::Spin` đã tồn tại và có ghi chú là dành cho `w2w`; test dùng `Park`.
+- `fixbolt_engine::wait::Spin` đã tồn tại và có ghi chú là dành cho `w2w`; test dùng `Park`.
 - **Chi phí đo được của một lần nhảy luồng:** inline 2,7 ns, ring một chiều 128,0 ns, khứ hồi
   242,5 ns, trên `NewOrderSingle` 163 byte, Apple M5, không ghim core.
   `crates/engine/benches/dispatch.rs` có assert.

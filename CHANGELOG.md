@@ -17,7 +17,7 @@ below describe what a first release would contain.
 
 ### Added
 
-- **`nanofix-session`** — the FIX session state machine. Pure: no socket, no clock, no
+- **`fixbolt-session`** — the FIX session state machine. Pure: no socket, no clock, no
   allocation, no `format!` on any path. Depends on `codec` and `dict`.
   - `Session<R: Role, N>` with `connect` / `disconnect` / `received` / `tick`, each taking an
     `emit` closure and returning `Link`. `Role` is a sealed marker — `Acceptor` and
@@ -35,12 +35,12 @@ below describe what a first release would contain.
     supplies `NoJournal` so a pure protocol machine is unchanged.
     [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md).
   - `text::SessionText` — the 17 expected `58=` values and their `373=` codes, rendered with
-    no `format!` and no allocation. **Moved here from `nanofix-conformance`**, where it lived
+    no `format!` and no allocation. **Moved here from `fixbolt-conformance`**, where it lived
     only because the session did not exist yet.
   - Answers a Logon by echoing `98=` and `108=`, answers a Logout, and tracks sequence numbers
     in both directions. A message with `43=Y` and a sequence number already seen is dropped in
     silence; one without it ends the session with a Logout saying so.
-  - `Reject (35=3)` with all twelve `SessionRejectReason` codes, driven by `nanofix-dict`'s
+  - `Reject (35=3)` with all twelve `SessionRejectReason` codes, driven by `fixbolt-dict`'s
     validation tables. Routing tags are reversed on the way back — `115` in becomes `128` out and
     the other way round. A CompID or SendingTime fault answers with a Reject **and** a Logout;
     the other ten leave the session running.
@@ -87,7 +87,7 @@ below describe what a first release would contain.
   - `[measured 2026-08-30]` **0 / 50** on the mirrored corpus. Every mirrored Logon is
     accepted; what the files ask for next is a message only an operator can order.
 
-- **`nanofix-engine`** — the crate that touches the socket. **All six steps.**
+- **`fixbolt-engine`** — the crate that touches the socket. **All six steps.**
   - `Transport`, with `TcpTransport` (non-blocking, `TCP_NODELAY`) and `Loopback` (in memory,
     for tests that must not depend on a free port).
   - **`Io::{Ready, Idle, Closed, Failed}` rather than `io::Result<usize>`.** On a stream socket
@@ -99,7 +99,7 @@ below describe what a first release would contain.
   - `Framer<N>` — one fixed buffer per connection, no allocation, no parsing. It reads one
     field, `9=`, and answers `Cut::{Message, Garbage, Need}`. **Rubbish is handed to the session
     once** rather than dropped, so "a bad frame is fatal only if it claims to be a Logon" stays
-    in `nanofix-session` and is not duplicated. A message bigger than the buffer is `Garbage`
+    in `fixbolt-session` and is not duplicated. A message bigger than the buffer is `Garbage`
     too: a buffer that fills and never empties is a connection wedged by a number the
     counterparty chose.
   - `crates/session/tests/score.rs` now calls that framer instead of keeping its own copy, and
@@ -117,7 +117,7 @@ below describe what a first release would contain.
     capacity)` — the whole loop written once, with `TcpAcceptorEngine<A>` naming the shape a
     deployment runs.
   - **The 59 acceptance definitions now pass through a real socket**: `cargo test -p
-    nanofix-engine --test wire` → **59 / 59**, kernel TCP, no background thread and no sleep.
+    fixbolt-engine --test wire` → **59 / 59**, kernel TCP, no background thread and no sleep.
   - `Dispatch`, with `InlineDispatch<H>` (the default, D4 / ADR-0002) and `RingDispatch<M>`
     plus its `RingApp<M>` on the far side. The trait carries `const OUT_OF_BAND: bool`, so the
     engine's out-of-band collection compiles away entirely on the inline engine.
@@ -141,7 +141,7 @@ below describe what a first release would contain.
     refused the first message on every connection. The wire gate is unchanged at 59 / 59.
   - A connection whose socket has died is finished even with bytes queued. It previously
     stayed up for as long as it was turned.
-  - `nanofix-session`: `Session::logout_now(text, emit)` — send a `Logout` carrying `58=text`
+  - `fixbolt-session`: `Session::logout_now(text, emit)` — send a `Logout` carrying `58=text`
     and give up the link. Additive, for the engine's D10 policy; the session cannot see a full
     queue and the engine cannot build a message.
   - `journal::{MemJournal, FileJournal, Durability, Store}` (D7). `FileJournal` appends to a
@@ -154,7 +154,7 @@ below describe what a first release would contain.
   - `benches/alloc.rs`: **0** on seven paths — idle, send, receive, framing, an idle turn, a
     turn carrying a message in and a reply out, and a full ring round trip.
 
-- **`nanofix-conformance`** — the mirrored corpus, for the initiator role.
+- **`fixbolt-conformance`** — the mirrored corpus, for the initiator role.
   - `script::scenarios_mirrored()` reads the same 59 files from the other side: `I` lines
     become what this engine must send, `E` lines become what arrives, and `iDISCONNECT` /
     `eDISCONNECT` swap. An `I` line's `<TIME>` grows to 21 bytes with it, because mirrored it
@@ -166,7 +166,7 @@ below describe what a first release would contain.
   - `runner::run_mirrored()` scores out of 50. `NullSession` scores **0 / 50** and `Replay`
     scores **50 / 50**, which is what makes a real score mean something.
 
-- **`nanofix-dict`** — four validation tables, generated from `FIX44.xml`, answering the
+- **`fixbolt-dict`** — four validation tables, generated from `FIX44.xml`, answering the
   dictionary half of `Reject (35=3)`.
   - `Fix44::is_defined_tag(tag)` — a bitset over 0..=956. **No user-defined range**: QuickFIX's
     own header calls 5000..=9999 user-defined and the acceptance corpus expects `5000=HI`
@@ -192,7 +192,7 @@ below describe what a first release would contain.
   - **A field type the enum does not know stops the build.** Falling through to `STRING` would
     make `373=6` blind to a whole type, and no acceptance definition would notice.
 
-- **`nanofix-conformance`** — the 59 QuickFIX FIX 4.4 acceptance definitions, run in process
+- **`fixbolt-conformance`** — the 59 QuickFIX FIX 4.4 acceptance definitions, run in process
   with no socket. Zero runtime dependencies. Not published: it is a measuring instrument.
   - `script` — the corpus as 669 typed steps. Refuses to skip a directive it cannot read.
   - `compare` — `Comparator.rb`'s positional rules, with the five loosely-matched tags read
@@ -205,7 +205,7 @@ below describe what a first release would contain.
     line in front of them, and that absence is the only "wait" the `.def` grammar has.
   - `echo` — the echo application the corpus assumes. All 22 application pairs reproduced.
 
-- **`nanofix-codec`** — FIX 4.4 read and write, `no_std`, zero runtime dependencies.
+- **`fixbolt-codec`** — FIX 4.4 read and write, `no_std`, zero runtime dependencies.
   - `parse_into::<D, N>(buf, &mut idx, validation) -> Result<Parsed, ParseError>`. `Incomplete`
     is an `Ok`, because TCP delivers bytes and not messages.
   - `FieldIndex<N>` and `MessageView<'_, N>` — the caller owns the index and reuses it;
@@ -227,10 +227,10 @@ below describe what a first release would contain.
     `entries.len()`, so the count and the entries cannot disagree.
   - `EncodeError` gains `UnknownGroup`, `NotAGroupMember`, `MissingDelimiter`,
     `MsgTypeMissing` and `GroupTooDeep`.
-  - `Dictionary` trait. `is_header` and `data_length_tag` are answered by `nanofix-dict`;
+  - `Dictionary` trait. `is_header` and `data_length_tag` are answered by `fixbolt-dict`;
     of the three repeating-group methods, all three are now implemented there — reading and
     writing groups is not, and lands with the rest of the repeating-groups plan.
-- **`nanofix-dict`** — 912 tag constants, 93 message types, `is_header`, `data_length_tag`,
+- **`fixbolt-dict`** — 912 tag constants, 93 message types, `is_header`, `data_length_tag`,
   `required` and the group tables, all generated from `FIX44.xml` at build time.
   - `group_members(msg_type, counter)` — one table serving `group_delimiter` (its head) and
     `group_order` (itself), so the three cannot disagree. Keyed by **`(msg_type, counter)`**:
@@ -240,7 +240,7 @@ below describe what a first release would contain.
 
 ### Changed
 
-- **`nanofix-conformance::script`** — `<TIME>` now substitutes a **real instant**
+- **`fixbolt-conformance::script`** — `<TIME>` now substitutes a **real instant**
   (`20260828-12:00:00`, and `…​.000` on `E` lines) instead of `00000000-00:00:00`. The old
   value is the corpus's placeholder for output the comparator never reads by value, and it is
   not a date at all — month 00, day 00 — so no `SendingTime` check could be written against it.
@@ -249,7 +249,7 @@ below describe what a first release would contain.
 - **`<TIME±N>` is now real arithmetic.** With the base at midnight of year zero there was
   nowhere to go backwards to, so the offset wrapped: `<TIME-121>` came out 86 279 seconds
   *forward*, in the one file that exists to test `SendingTime` accuracy.
-- **`nanofix-conformance::text` moved to `nanofix-session::text`.** The table describes what a
+- **`fixbolt-conformance::text` moved to `fixbolt-session::text`.** The table describes what a
   session says, and it lived in `conformance` only because no session crate existed. `codec`'s
   allocation bench loses its `text` case, which reappears in `session`'s.
 - **`scripts/fetch-quickfix-assets.sh` fetches four more QuickFIX headers** — `FixFieldNumbers.h`,
@@ -292,8 +292,10 @@ below describe what a first release would contain.
   bytes.
 - `[measured]` Encoding an `ExecutionReport` costs 93.8 ns against a published target of 60 ns.
 
-Crate names change before any publish: `nanofixengine` is a placeholder.
+Crate names settled before any publish: they are `fixbolt-*` as of 2026-08-30.
 
-**Before the first publish, the crate names change.** `nanofixengine` is a placeholder taken
-to clear a collision with `matthart1983/nanofix`; the shortlist is in [STATUS.md](STATUS.md).
-Renaming after a crates.io publish is not possible, so it happens before.
+**The crate names are settled.** `nanofix-*` became `fixbolt-*` on 2026-08-30, before any
+publish, because the old prefix sat one word from `matthart1983/nanofix` — the reference
+project this repository measures itself against. `fixbolt` was checked free on crates.io
+**and** GitHub; the rejected candidates and the reasons are in [STATUS.md](STATUS.md) item 1.
+Renaming after a crates.io publish is not possible, so it happened before.

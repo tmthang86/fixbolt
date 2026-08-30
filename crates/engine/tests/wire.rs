@@ -9,7 +9,7 @@
 //!
 //! Every `I` line in the corpus carries a fixed instant. Against the wall clock
 //! that is two days of skew and every message is refused for a reason that has
-//! nothing to do with the engine. `nanofix_engine::clock::ManualClock` is the
+//! nothing to do with the engine. `fixbolt_engine::clock::ManualClock` is the
 //! one seam; the sockets, the framing, the session and the application are all
 //! the real ones.
 //!
@@ -25,14 +25,14 @@ use std::net::TcpStream;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use nanofix_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
-use nanofix_conformance::script::FIXED_TIME_MILLIS;
-use nanofix_engine::clock::ManualClock;
-use nanofix_engine::dispatch::InlineDispatch;
-use nanofix_engine::journal::Store;
-use nanofix_engine::transport::TcpTransport;
-use nanofix_engine::{Acceptor, Engine};
-use nanofix_session::{Application, Config};
+use fixbolt_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
+use fixbolt_conformance::script::FIXED_TIME_MILLIS;
+use fixbolt_engine::clock::ManualClock;
+use fixbolt_engine::dispatch::InlineDispatch;
+use fixbolt_engine::journal::Store;
+use fixbolt_engine::transport::TcpTransport;
+use fixbolt_engine::{Acceptor, Engine};
+use fixbolt_session::{Application, Config};
 
 const N: usize = 256;
 const RX: usize = 4096;
@@ -42,7 +42,7 @@ const TX: usize = 8192;
 ///
 /// The same one `crates/session/tests/score.rs` uses, for the same reason: 42
 /// of the corpus's 250 `E` lines carry `35=D`, so a session layer alone cannot
-/// pass. See `nanofix_conformance::echo`.
+/// pass. See `fixbolt_conformance::echo`.
 #[derive(Default)]
 struct EchoApp {
     seen: Vec<Vec<u8>>,
@@ -58,7 +58,7 @@ impl Application for EchoApp {
     ) -> Option<Range<usize>> {
         let msg_type = field(msg, 35)?;
         if msg_type != b"D" && msg_type != b"d" {
-            return nanofix_conformance::echo::business_reject(msg, out, seq, stamp).ok();
+            return fixbolt_conformance::echo::business_reject(msg, out, seq, stamp).ok();
         }
         if let Some(id) = field(msg, 11) {
             let already = self.seen.iter().any(|s| s == id);
@@ -69,7 +69,7 @@ impl Application for EchoApp {
                 self.seen.push(id.to_vec());
             }
         }
-        nanofix_conformance::echo::echo(msg, out, seq, stamp).ok()
+        fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
     }
 }
 
@@ -92,7 +92,7 @@ struct Wire {
     acceptor: Acceptor,
     engine: Engine<
         TcpTransport,
-        nanofix_session::Acceptor,
+        fixbolt_session::Acceptor,
         InlineDispatch<EchoApp>,
         ManualClock,
         Park,
@@ -106,7 +106,7 @@ struct Wire {
 
 /// The engine idles by yielding here. A spinning engine in a test suite is a
 /// test suite that pins a core for no reason — `wait::Spin` is for `tools/w2w`.
-use nanofix_engine::wait::Park;
+use fixbolt_engine::wait::Park;
 
 impl Wire {
     fn new() -> Self {

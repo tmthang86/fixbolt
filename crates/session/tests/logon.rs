@@ -7,10 +7,10 @@
 //! stayed green.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::script::{
+use fixbolt_conformance::script::{
     FIXED_TIME_IN, FIXED_TIME_MILLIS, FIXED_TIME_OUT, Kind, scenarios, with_real_checksum,
 };
-use nanofix_session::{Acceptor, Config, Link, Session};
+use fixbolt_session::{Acceptor, Config, Link, Session};
 
 fn acceptor() -> Session<Acceptor, 256> {
     Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"))
@@ -87,7 +87,7 @@ fn render(b: &[u8]) -> String {
 fn feed(session: &mut Session<Acceptor, 256>, wire: &[u8]) -> (Link, usize) {
     let mut sent = 0usize;
     session.connect(|_| sent += 1);
-    session.tick(nanofix_conformance::script::FIXED_TIME_MILLIS, |_| {
+    session.tick(fixbolt_conformance::script::FIXED_TIME_MILLIS, |_| {
         sent += 1
     });
     let link = session.received(wire, |_| sent += 1);

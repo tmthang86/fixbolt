@@ -16,10 +16,10 @@
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-use nanofix_codec::{
+use fixbolt_codec::{
     Dictionary, FieldIndex, GroupData, GroupEntryData, TemplateBuilder, Validation, parse_into,
 };
-use nanofix_dict::{Fix44, GROUP_KEYS};
+use fixbolt_dict::{Fix44, GROUP_KEYS};
 
 const SOH: u8 = 0x01;
 const MAX_DEPTH: usize = 4;

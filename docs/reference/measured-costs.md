@@ -161,7 +161,7 @@ code**; this section is the first row of the table that is ours.
 |---|---|
 | Machine | Apple M5, macOS |
 | Core pinning | **none** — `DESIGN.md` §9 settings are Linux-only and none is in force |
-| Build | `cargo bench`, release profile, `nanofix-codec` at `886daa8`'s successor |
+| Build | `cargo bench`, release profile, `fixbolt-codec` at `886daa8`'s successor |
 | Estimator | **best of 7 runs × 200,000 iterations**, not the mean |
 | Harness | `crates/codec/benches/harness.rs`, 24 lines, no dependencies |
 
@@ -443,7 +443,7 @@ original number, which is what makes this a reversal and not a story.
 59 / 59 at both 1 ms and 20 ms** — only the run time moves, 0.8 s against 14.5 s. That
 flatness is the whole justification: a bound in turns is a bound on a machine. But nothing
 measured here shows it mattering, and the code comment says so rather than implying otherwise.
-An earlier draft of this fix also added a `settle` hook to `nanofix_conformance`'s public
+An earlier draft of this fix also added a `settle` hook to `fixbolt_conformance`'s public
 trait; **the reversal that was supposed to prove it showed the gate stayed at 59 / 59 with it
 disabled**, so it was deleted rather than shipped. Machinery that cannot be shown to matter is
 machinery that will be believed later.

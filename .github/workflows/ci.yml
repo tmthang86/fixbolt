@@ -66,7 +66,7 @@ jobs:
             echo "::warning title=Gates skipped, not passed::The workspace has no crates yet, so fmt, clippy and test did not run. This job is green because there is nothing to check — CLAUDE.md §10: a green result that was inferred rather than observed is not a result."
           fi
 
-      # nanofix-dict generates its tables from the QuickFIX XML at build time and
+      # fixbolt-dict generates its tables from the QuickFIX XML at build time and
       # fails the build when it is absent — deliberately, see crates/dict/build.rs.
       # vendor/ is gitignored (ADR-0001), so CI fetches it before anything builds.
       - if: steps.ws.outputs.count != '0'
@@ -135,7 +135,7 @@ jobs:
       - if: steps.ws.outputs.count != '0'
         run: scripts/fetch-quickfix-assets.sh
       - if: steps.ws.outputs.count != '0'
-        run: cargo build -p nanofix-w2w --release
+        run: cargo build -p fixbolt-w2w --release
       - if: steps.ws.outputs.count != '0'
         run: scripts/check-no-kernel-sleep.sh
 

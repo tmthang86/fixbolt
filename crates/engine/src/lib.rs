@@ -1,4 +1,4 @@
-//! The engine: TCP on one side, [`nanofix_session`] on the other, and a thread
+//! The engine: TCP on one side, [`fixbolt_session`] on the other, and a thread
 //! that never sleeps in the kernel.
 //!
 //! `DESIGN.md` D8 is the shape of this crate: the loop spins on non-blocking
@@ -26,7 +26,7 @@ pub mod wait;
 
 use std::net::{TcpListener, TcpStream};
 
-pub use nanofix_session::{Application, Config, Role, Session};
+pub use fixbolt_session::{Application, Config, Role, Session};
 
 use crate::backpressure::Backpressure;
 use crate::clock::Clock;
@@ -34,7 +34,7 @@ use crate::conn::{Connection, Turn};
 use crate::dispatch::{ConnId, Dispatch, InlineDispatch};
 use crate::transport::{TcpTransport, Transport};
 use crate::wait::Waiting;
-use nanofix_session::journal::Journal as SessionJournal;
+use fixbolt_session::journal::Journal as SessionJournal;
 
 /// A running engine: the connections it holds, and what drives them.
 ///
@@ -240,7 +240,7 @@ where
 /// The shape a deployment runs.
 pub type TcpAcceptorEngine<A> = Engine<
     TcpTransport,
-    nanofix_session::Acceptor,
+    fixbolt_session::Acceptor,
     InlineDispatch<A>,
     crate::clock::SystemClock,
     crate::wait::Spin,

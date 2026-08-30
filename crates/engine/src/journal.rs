@@ -6,7 +6,7 @@
 //!
 //! | Policy | Type | Survives a restart |
 //! |---|---|---|
-//! | `None` | [`nanofix_session::journal::NoJournal`] | no — and nothing is kept at all |
+//! | `None` | [`fixbolt_session::journal::NoJournal`] | no — and nothing is kept at all |
 //! | in memory | [`MemJournal`] | no |
 //! | `Async` | [`FileJournal`] with [`Durability::Async`] | yes, once the writer thread catches up |
 //! | `Fsync` | [`FileJournal`] with [`Durability::Fsync`] | yes, before the message is on the wire |
@@ -27,7 +27,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-use nanofix_session::journal::Journal;
+use fixbolt_session::journal::Journal;
 
 use crate::ring::{Consumer, Producer};
 
@@ -54,7 +54,7 @@ struct Slot<const LEN: usize> {
 /// A ring of `N` slots, oldest overwritten first. Keeps nothing across a
 /// restart, and says so.
 ///
-/// This is the store that used to live inside `nanofix_session`, moved out
+/// This is the store that used to live inside `fixbolt_session`, moved out
 /// under D1: the session says *keep this* and asks *do you still have it*, and
 /// owns neither the bytes nor the policy.
 pub struct MemJournal<const N: usize, const LEN: usize> {

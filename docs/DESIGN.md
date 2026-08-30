@@ -1,4 +1,4 @@
-# nanofixengine — Design
+# fixbolt — Design
 
 A FIX 4.4 engine in Rust, **bidirectional** — acceptor and initiator on one session core,
 parameterised by role ([ADR-0004](decisions/ADR-0004-bidirectional-engine.md)) — built so that
@@ -17,8 +17,9 @@ to measure the floor honestly.
 
 What must be built and in which phase is [PRD.md](PRD.md); this document is *how*.
 
-> **`nanofixengine` is a placeholder name.** It exists to get off the collision with
-> `matthart1983/nanofix`. The shortlist of clean replacements is in [STATUS.md](../STATUS.md).
+> **The name is `fixbolt`**, decided 2026-08-30. It replaced the placeholder
+> `nanofixengine`, which collided with `matthart1983/nanofix` — see [STATUS.md](../STATUS.md)
+> item 1 for what was checked and why the rest of the shortlist was set aside.
 
 Settled decisions live in [decisions/](decisions/). What the landscape looks like is in
 [reference/prior-art.md](reference/prior-art.md). Numbers that were actually measured — and
@@ -348,7 +349,7 @@ satisfied. The engine appends to a memory-mapped journal under a policy the user
 | `Fsync` | `fsync` before the message is acknowledged | Regulated deployments that require it |
 
 **As built.** Three types rather than three branches:
-`nanofix_session::journal::NoJournal` is `None`, `engine::journal::MemJournal` is a ring that
+`fixbolt_session::journal::NoJournal` is `None`, `engine::journal::MemJournal` is a ring that
 keeps but does not persist, and `engine::journal::FileJournal` carries
 `Durability::{Async, Fsync}`. A `FileJournal` **also** keeps the ring and answers `get` from
 it: reading a replay back off disk would be a blocking `read` on the thread non-negotiable 4
@@ -567,9 +568,9 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Allocations on the hot path — session | **0**, counted separately on thirteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
 | The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`, `tests/reject.rs` and `tests/heartbeat.rs`. `[measured]` seven so far. Three from steps 1–3: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged, because `52` is one of the five tags `fields.fmt` matches by shape; a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet. Four from step 4: all three heartbeat thresholds, which the harness's whole-interval ticks cannot see; and that a garbled frame is fatal only when it claims to be a Logon, which the corpus states once from each side in different files. Five from step 5, in `tests/resend.rs`: every file that opens a gap ends before opening a second one, so closing a filled gap, replaying held messages in sequence order, and what happens when there is no room to hold one are all invisible to the score |
-| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
+| Session conformance, acceptor | **59 / 59** | `cargo test -p fixbolt-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
 | The journal keeps what a resend needs, under each D7 policy | `None` fills over everything; `MemJournal` and `FileJournal` replay; a message longer than a slot is refused rather than truncated | `crates/engine/tests/journal.rs`, seven tests. Reversal: making `put` keep nothing turns four of them red **and drops the acceptance score**, which is what proves the score depends on the journal |
-| Session conformance, acceptor, **through a real socket** | **59 / 59, on every machine** | `cargo test -p nanofix-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59 on the M5 and on Linux x86_64** — **met**. It read 39 / 59 on Linux until the harness's client socket was given `TCP_NODELAY`, which the engine's own sockets have always had; the gate is now flat across a 20× span of its timing bounds, which is what makes the figure mean something |
+| Session conformance, acceptor, **through a real socket** | **59 / 59, on every machine** | `cargo test -p fixbolt-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59 on the M5 and on Linux x86_64** — **met**. It read 39 / 59 on Linux until the harness's client socket was given `TCP_NODELAY`, which the engine's own sockets have always had; the gate is now flat across a 20× span of its timing bounds, which is what makes the figure mean something |
 | **The engine thread never sleeps in the kernel** | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`. Traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid — the client blocks on purpose and would mask everything. `[measured 2026-08-30]` Linux 6.18 x86_64: `accept4`, `recvfrom`, `sendto` and **zero** of `epoll_wait`/`poll`/`select`/`futex`/`nanosleep`/`sched_yield`. **The script runs the binary again with `wait::Park` and fails if that run does *not* trip it** — non-negotiable 4 had two machine checks before this one and both were green with a sleep present |
 | Allocations on the hot path — engine | **0**, counted separately on seven paths: idle, send, recv, frame, turn, busy, ring | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
@@ -736,3 +737,33 @@ anything:
 | **If TLS is on:** a kernel that carries the negotiated cipher suite in kTLS | kTLS support is narrower than what `rustls` will happily negotiate. A session that negotiates outside it drops silently to the userspace path and off the hot-path guarantee (D11). Which kernel version and which suites is ADR-0005 open question 2 — **unanswered** |
 
 A latency number published without stating which of these were set is not a number.
+
+### Checking, and the difference between a tuned box and an untuned one
+
+The table above was a list of things somebody was supposed to have done. There was no way to
+tell a tuned machine from an untuned one except by asking the person who set it up — which is
+prose holding a constraint, and `CLAUDE.md` §4 says prose does not.
+
+**`scripts/check-machine.sh` reads every row off the running machine** and prints `PASS`,
+`FAIL` or `? ? ?` for each, with the command that fixes a failing one. It reads only: applying
+these is root, machine-specific, and belongs to the person at the box.
+
+`unknown` is deliberately **not** a pass. A container that cannot read `/sys` must not be able
+to look like a tuned host — that is the shape of a green result nobody checked.
+
+```
+scripts/check-machine.sh          # what is in force, and how to fix what is not
+scripts/bench.sh                  # counts and A/B comparisons, on any machine
+scripts/bench.sh --strict         # refuses unless check-machine.sh is clean
+```
+
+`--strict` is the gate that makes non-negotiable 10 real: it fails **before it looks at a
+single ceiling** if the machine is not set up, because a latency figure from an untuned box is
+exactly the number that rule forbids publishing. Without `--strict` the run is still useful —
+allocation counts are machine-independent, and an A/B comparison against the same box is valid
+whatever that box is.
+
+`[measured 2026-08-30]` On the shared container this repository was developed in, the script
+reports `pass 1  fail 5  unknown 3` and exits 1, and `scripts/bench.sh --strict` refuses. That
+is the correct answer for that machine, and it is why every timing figure in §6 above is
+labelled with the box it came from.

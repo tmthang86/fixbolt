@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the QuickFIX assets nanofixengine uses as data and as a test oracle.
+# Fetch the QuickFIX assets fixbolt uses as data and as a test oracle.
 #
 # These land in vendor/, which is gitignored. They are NEVER committed: doing so would
 # pull the QuickFIX Software License's attribution clause into this repository.

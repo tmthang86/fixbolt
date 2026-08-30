@@ -296,7 +296,7 @@ chứng bộ chạy hoạt động. Bước 4 phải kèm một `AlwaysCorrectSe
 
 **Một bộ nạp, một chỗ.** `crates/codec/tests/common/mod.rs` từng giữ bản sao riêng và **đã
 bất đồng** với bản mới về độ rộng `<TIME>`. Nay nó chỉ còn là lớp chuyển đổi hình dạng trên
-`nanofix_conformance::script`. Toàn bộ test của `codec` vẫn xanh không sửa một con số nào.
+`fixbolt_conformance::script`. Toàn bộ test của `codec` vẫn xanh không sửa một con số nào.
 
 **Chứng minh bằng đảo ngược, mỗi lần khôi phục lại xanh:**
 

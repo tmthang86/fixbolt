@@ -12,8 +12,8 @@
 //! when it claims to be a Logon, and `108=0` means no heartbeats at all.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
-use nanofix_session::{Acceptor, Config, Link, Session};
+use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_session::{Acceptor, Config, Link, Session};
 
 /// `HeartBtInt` for the tests that name a threshold, in milliseconds. Ten
 /// seconds so 1.2× and 2.4× are whole milliseconds and the assertions can sit

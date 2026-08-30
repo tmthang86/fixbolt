@@ -3,7 +3,7 @@
 #[path = "harness.rs"]
 mod harness;
 
-use nanofix_codec::{FieldIndex, NoDict, Validation, parse_into};
+use fixbolt_codec::{FieldIndex, NoDict, Validation, parse_into};
 use std::hint::black_box;
 
 fn main() {

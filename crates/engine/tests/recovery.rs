@@ -10,13 +10,13 @@
 //! in memory either way, and the restart is the whole question.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_engine::journal::{Durability, FileJournal};
-use nanofix_session::journal::Journal;
+use fixbolt_engine::journal::{Durability, FileJournal};
+use fixbolt_session::journal::Journal;
 
 fn tmp(name: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!(
-        "nanofix-recovery-{name}-{}",
+        "fixbolt-recovery-{name}-{}",
         std::process::id() as u64 * 1000
             + std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

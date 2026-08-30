@@ -17,8 +17,8 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use nanofix_engine::dispatch::{Dispatch, RingDispatch};
-use nanofix_engine::ring;
+use fixbolt_engine::dispatch::{Dispatch, RingDispatch};
+use fixbolt_engine::ring;
 
 const M: usize = 512;
 /// The capacity `benches/dispatch.rs` measures the hop at, so the two numbers

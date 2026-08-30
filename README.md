@@ -1,4 +1,4 @@
-# nanofixengine
+# fixbolt
 
 A FIX 4.4 protocol engine in Rust, built to be **the fastest acceptor that can run on
 kernel TCP** — the side of the protocol that the Rust ecosystem does not currently cover
@@ -28,7 +28,8 @@ to make everything above that floor vanish, and to measure the floor honestly
 > **[docs/DESIGN.md](docs/DESIGN.md)** says how it is built; [STATUS.md](STATUS.md) says
 > where the work stands.
 >
-> **`nanofixengine` is a placeholder name**, taken to clear a collision. See STATUS.md.
+> **The name is `fixbolt`**, decided 2026-08-30 — it replaced the placeholder
+> `nanofixengine`, which collided with `matthart1983/nanofix`. See STATUS.md.
 
 ## Why this exists
 
@@ -43,8 +44,8 @@ that should be read before anything else.**
 
 ## Relationship to QuickFIX
 
-nanofixengine is **not** a port of QuickFIX C++. A port is legally permitted but would import the
-architecture responsible for its throughput ceiling. Instead nanofixengine takes three things
+fixbolt is **not** a port of QuickFIX C++. A port is legally permitted but would import the
+architecture responsible for its throughput ceiling. Instead fixbolt takes three things
 from that project as *data*: the FIX XML dictionaries, the 59 FIX 4.4 session acceptance
 tests, and `Session.cpp` as a reference for behaviour.
 

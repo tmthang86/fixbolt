@@ -1,6 +1,6 @@
 # The QuickFIX `.def` acceptance format
 
-The FIX 4.4 session acceptance definitions are the gate for nanofixengine's session layer
+The FIX 4.4 session acceptance definitions are the gate for fixbolt's session layer
 ([ADR-0001](../decisions/ADR-0001-relationship-to-quickfix.md)). This page records what the
 format actually is, so nobody has to re-derive it.
 
@@ -72,7 +72,7 @@ From `Comparator.rb`. An expected `E` line and the received message are compared
 
 Rule 3 is the one that will cost time if it is not known in advance.
 
-**nanofixengine's serialiser must emit fields in exactly the order QuickFIX emits them**, or these
+**fixbolt's serialiser must emit fields in exactly the order QuickFIX emits them**, or these
 tests fail on messages that are perfectly valid FIX. The acceptance suite is not only a test
 of session *behaviour*; it silently pins the *field ordering* of every message the session
 layer generates.
@@ -208,7 +208,7 @@ That is the whole reason D1 exists.
 ## Licence note
 
 These files are QuickFIX-licensed. They are used here as a **test oracle**, fetched at build
-time into a gitignored directory. They are never redistributed inside nanofixengine. See ADR-0001.
+time into a gitignored directory. They are never redistributed inside fixbolt. See ADR-0001.
 
 ## The trap that cost the most: never `cat *.def`
 

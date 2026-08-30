@@ -22,15 +22,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use std::ops::Range;
 
-use nanofix_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
-use nanofix_engine::clock::ManualClock;
-use nanofix_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
-use nanofix_engine::frame::{Cut, Framer};
-use nanofix_engine::journal::Store;
-use nanofix_engine::ring;
-use nanofix_engine::transport::{Io, Loopback, TcpTransport, Transport};
-use nanofix_engine::wait::Park;
-use nanofix_engine::{Application, Config, Engine};
+use fixbolt_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
+use fixbolt_engine::clock::ManualClock;
+use fixbolt_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
+use fixbolt_engine::frame::{Cut, Framer};
+use fixbolt_engine::journal::Store;
+use fixbolt_engine::ring;
+use fixbolt_engine::transport::{Io, Loopback, TcpTransport, Transport};
+use fixbolt_engine::wait::Park;
+use fixbolt_engine::{Application, Config, Engine};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
@@ -181,7 +181,7 @@ fn main() {
     let (mut peer, engine_side) = Loopback::pair();
     let mut engine: Engine<
         Loopback,
-        nanofix_session::Acceptor,
+        fixbolt_session::Acceptor,
         InlineDispatch<Silent>,
         ManualClock,
         Park,
@@ -248,7 +248,7 @@ fn main() {
     let (mut peer2, engine_side2) = Loopback::pair();
     let mut engine2: Engine<
         Loopback,
-        nanofix_session::Acceptor,
+        fixbolt_session::Acceptor,
         InlineDispatch<Silent>,
         ManualClock,
         Park,

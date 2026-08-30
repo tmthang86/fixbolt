@@ -184,7 +184,7 @@ Phản chứng đã chạy, cả hai đều xác nhận có injection bằng `gr
 
 | Phản chứng | Kết quả |
 |---|---|
-| Bật lại `autobenches` → phantom target quay lại | `EXIT=1`, `targets silent 1 nanofix-codec/harness` |
+| Bật lại `autobenches` → phantom target quay lại | `EXIT=1`, `targets silent 1 fixbolt-codec/harness` |
 | Hạ trần case **đầu tiên** của `parse` xuống 50 | `EXIT=101`, và **case 2 và 3 vẫn in ra số** — bản cũ sẽ mất chúng |
 
 Gate chạy tại chỗ, đọc output chứ không đọc exit status:
@@ -206,7 +206,7 @@ job `bench` mới. Đọc log job `99239255091`:
 targets measuring    8 of 8
 targets silent       0
 invariant failures   0
-timing over ceiling  3  nanofix-codec/groups nanofix-codec/serialize nanofix-engine/dispatch
+timing over ceiling  3  fixbolt-codec/groups fixbolt-codec/serialize fixbolt-engine/dispatch
 OK
 ```
 

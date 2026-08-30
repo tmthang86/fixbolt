@@ -16,8 +16,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nanofix_codec::{parse_into, FieldIndex, Parsed, Validation};
-use nanofix_dict::Fix44;
+use fixbolt_codec::{parse_into, FieldIndex, Parsed, Validation};
+use fixbolt_dict::Fix44;
 
 fuzz_target!(|data: &[u8]| {
     for v in [Validation::ALL, Validation::NONE] {

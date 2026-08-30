@@ -32,7 +32,7 @@ use common::{
     quickfix_field_types, quickfix_msg_types, quickfix_tag_numbers, xml_field_names,
     xml_field_types,
 };
-use nanofix_dict::{FieldType, Fix44};
+use fixbolt_dict::{FieldType, Fix44};
 
 /// Tags QuickFIX names differently in a later version but numbers the same.
 ///

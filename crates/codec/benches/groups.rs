@@ -13,10 +13,10 @@ mod harness;
 
 use std::hint::black_box;
 
-use nanofix_codec::{
+use fixbolt_codec::{
     Dictionary, FieldIndex, GroupData, GroupEntryData, TemplateBuilder, Validation, parse_into,
 };
-use nanofix_dict::Fix44;
+use fixbolt_dict::Fix44;
 
 fn main() {
     harness::suite(|b| {

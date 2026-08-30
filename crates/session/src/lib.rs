@@ -22,11 +22,11 @@ pub mod text;
 
 use core::marker::PhantomData;
 
-use nanofix_codec::{
+use fixbolt_codec::{
     Dictionary, FieldIndex, MessageView, ParseError, Parsed, SOH, TemplateBuilder, TimestampCache,
     Validation, as_u32, parse_into, tag_text_at,
 };
-use nanofix_dict::{FieldType, Fix44};
+use fixbolt_dict::{FieldType, Fix44};
 
 use crate::journal::{Journal, NoJournal};
 use crate::out::Outbound;

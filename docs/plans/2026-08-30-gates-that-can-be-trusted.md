@@ -6,7 +6,7 @@
 ## Bối cảnh
 
 Ngày 30-08-2026, chạy lại toàn bộ suite trên một máy Linux (không phải chiếc M5 đã dùng để
-đóng plan `engine`) thì **cổng quan trọng nhất của dự án đỏ**: `cargo test -p nanofix-engine
+đóng plan `engine`) thì **cổng quan trọng nhất của dự án đỏ**: `cargo test -p fixbolt-engine
 --test wire` ra 39/59 thay vì 59/59. Đi tìm nguyên nhân thì lòi ra ba chuyện lớn hơn cái lỗi
 ban đầu:
 
@@ -39,7 +39,7 @@ Tất cả đều đã chạy và đọc output, không suy đoán:
   | 2 000 | 43/59 | 4,3 s |
   | 20 000 | 59/59 | 41,3 s |
 
-- **Bản thân session đúng.** `cargo test -p nanofix-session --test score` trên chính máy đó ra
+- **Bản thân session đúng.** `cargo test -p fixbolt-session --test score` trên chính máy đó ra
   **59/59**. Sai lệch nằm ở thời điểm đến của câu trả lời, không ở nội dung.
 - **Các diff báo lỗi nói đúng như vậy:** `FieldCount { expected: 9, actual: 8 }` ở một dòng và
   `expected: 8, actual: 9` bốn dòng sau là *một* câu trả lời đến sau cái bước lẽ ra phải đọc
@@ -56,7 +56,7 @@ Tất cả đều đã chạy và đọc output, không suy đoán:
   từ corpus (539 dòng, 247 dòng có `9=`, 244 dòng có `10=`, 59 file) có thể đổi mà không ai hay.
 - **`scripts/check-links.py` chỉ đi qua Markdown.** Nó báo "26 markdown files, 162 internal
   links checked". Nó **không đọc rustdoc**, và hiện có hai link chết trong doc comment trỏ tới
-  `https://github.com/nanofixengine/...` — một org không tồn tại:
+  `https://github.com/fixbolt/...` — một org không tồn tại:
   `crates/engine/src/dispatch.rs:8` và `crates/session/src/journal.rs:18`.
 
 ## Cách làm
@@ -69,7 +69,7 @@ xanh trên **cả** máy Linux ở đây **và** CI — không có "xanh trên l
 Bỏ đếm vòng quay. Harness sẽ **chờ đúng số message mà bước đó kỳ vọng**, vì corpus đã biết con
 số ấy: mỗi bước trong `.def` có bao nhiêu dòng `E` là biết phải nhận bao nhiêu message.
 
-Việc này cần `nanofix_conformance::runner` nói cho `SessionUnderTest` biết bước hiện tại kỳ
+Việc này cần `fixbolt_conformance::runner` nói cho `SessionUnderTest` biết bước hiện tại kỳ
 vọng bao nhiêu output — hôm nay `step()` không nhận thông tin đó. Đây là **đổi API công khai
 của một crate**, nên đi kèm một ADR mới (ADR-0009).
 
@@ -259,12 +259,12 @@ RED   rustup run stable cargo clippy --all-targets -- -D warnings
       error: can be more succinctly written as a byte str
          --> crates/dict/tests/interop_quickfix_fields.rs:133:16
                         help: try: `*b"*?!"`
-      error: could not compile `nanofix-dict` (test "interop_quickfix_fields")
+      error: could not compile `fixbolt-dict` (test "interop_quickfix_fields")
       EXIT=101
 
 GREEN cargo clippy --all-targets -- -D warnings          (1.98.0 đã ghim)  EXIT=0
       cargo fmt --check                                                    sạch
-      cargo test -p nanofix-dict                                           tất cả xanh
+      cargo test -p fixbolt-dict                                           tất cả xanh
       scripts/check-lint-config.sh              RED ok / GREEN ok — cả hai chiều
 ```
 
@@ -284,7 +284,7 @@ vì câu đó không ai chứng minh được.
 
 Plan viết rằng tiêu chí lắng đếm vòng quay là khuyết tật, và đề ra cách sửa là cho harness chờ
 đúng số message mà bước đó kỳ vọng — kèm ADR-0009 vì việc đó đổi API công khai của
-`nanofix_conformance`. **Bảng số 39/43/59 theo ngưỡng 200/2 000/20 000 là thật; cách đọc nó thì
+`fixbolt_conformance`. **Bảng số 39/43/59 theo ngưỡng 200/2 000/20 000 là thật; cách đọc nó thì
 sai.** Một điểm số nhích theo timeout nói rằng harness đang chờ *một cái gì đó*, không nói rằng
 cái timeout là thủ phạm.
 
@@ -315,7 +315,7 @@ hai chiều. Gỡ đúng dòng đó khỏi bản đã sửa thì điểm về l�
   và được dán nhãn đúng như vậy trong chính doc comment**: nó không phải cái đã sửa, và không có
   gì đo được trên máy này cho thấy nó có tác dụng.
 - **`ADR-0009` không được viết, và hook `settle` bị xoá chứ không được ship.** Bản nháp đầu có
-  thêm `SessionUnderTest::settle` vào trait công khai của `nanofix_conformance`; reversal lẽ ra
+  thêm `SessionUnderTest::settle` vào trait công khai của `fixbolt_conformance`; reversal lẽ ra
   để chứng minh nó lại cho thấy **tắt nó đi cổng vẫn 59 / 59**. Không chứng minh được là có tác
   dụng thì không phải là code, mà là một thứ sẽ được tin nhầm về sau. `runner.rs` trở về nguyên
   trạng.
@@ -323,11 +323,11 @@ hai chiều. Gỡ đúng dòng đó khỏi bản đã sửa thì điểm về l�
 **Đã chạy và đọc output:**
 
 ```
-59 / 59   cargo test -p nanofix-engine --test wire          0.81 s
+59 / 59   cargo test -p fixbolt-engine --test wire          0.81 s
 59 / 59   cùng thế, quiet 20 ms thay vì 1 ms               14.46 s   <- điểm phẳng
 39 / 59   cùng thế, gỡ đúng dòng set_nodelay                0.95 s   <- reversal
 59 / 59   pump đếm vòng quay cũ + set_nodelay               0.45 s   <- cô lập biến
-59 / 59   cargo test -p nanofix-session --test score        không đổi
+59 / 59   cargo test -p fixbolt-session --test score        không đổi
 ```
 
 **Điểm phẳng theo ngưỡng** là điều plan đòi hỏi và nó đạt: 59 / 59 ở cả 1 ms lẫn 20 ms, chỉ thời
@@ -399,7 +399,7 @@ mà không ai nhìn; và **một nguyên nhân được chấp nhận chỉ vì 
 ```
 200 passed / 0 failed   cargo test --all
 200 passed / 0 failed   cargo test --all --no-default-features
-59 / 59                 cargo test -p nanofix-engine --test wire
+59 / 59                 cargo test -p fixbolt-engine --test wire
 clean                   cargo clippy --all-targets -- -D warnings
 clean                   cargo fmt --check
 RED ok / GREEN ok       scripts/check-lint-config.sh

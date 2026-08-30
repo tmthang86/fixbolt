@@ -30,7 +30,7 @@ command -v strace >/dev/null || {
   echo "CLAUDE.md §10: a green result that was inferred rather than observed is not a result." >&2
   exit 2
 }
-[[ -x "${BIN}" ]] || { echo "build it first: cargo build -p nanofix-w2w --release" >&2; exit 2; }
+[[ -x "${BIN}" ]] || { echo "build it first: cargo build -p fixbolt-w2w --release" >&2; exit 2; }
 
 # Syscalls that mean the thread left user space to wait. `accept4`, `recvfrom`
 # and `sendto` are the socket path and are non-blocking; they are not here.

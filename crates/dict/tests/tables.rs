@@ -1,8 +1,8 @@
 //! The five checks the plan names for step 1, plus the trap the XML sprang.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use nanofix_codec::Dictionary;
-use nanofix_dict::{Fix44, tag};
+use fixbolt_codec::Dictionary;
+use fixbolt_dict::{Fix44, tag};
 
 #[test]
 fn header_tags_are_header() {

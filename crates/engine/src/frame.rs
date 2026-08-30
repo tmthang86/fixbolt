@@ -21,7 +21,7 @@
 //!
 //! Dropping it here would lose `1d_InvalidLogonLengthInvalid.def`, which wants
 //! the link dropped because the unreadable frame *claims to be a Logon*. That
-//! rule lives in `nanofix_session` and is not duplicated here: the engine hands
+//! rule lives in `fixbolt_session` and is not duplicated here: the engine hands
 //! the bytes over once and lets the session decide. [`Cut::Garbage`] is how it
 //! says so.
 

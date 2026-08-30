@@ -11,7 +11,7 @@
 //! nothing in the 59 definitions notices, because only two of them look.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_dict::{FieldType, Fix44};
+use fixbolt_dict::{FieldType, Fix44};
 
 /// The two the corpus actually supplies. Everything else here is invented.
 #[test]

@@ -15,7 +15,7 @@ include!(concat!(env!("OUT_DIR"), "/fix44.rs"));
 /// is no receiver to pass and nothing on the parse path but a `match`.
 pub struct Fix44;
 
-impl nanofix_codec::Dictionary for Fix44 {
+impl fixbolt_codec::Dictionary for Fix44 {
     #[inline]
     fn is_header(tag: u32) -> bool {
         is_header(tag)

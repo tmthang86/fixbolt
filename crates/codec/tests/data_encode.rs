@@ -12,7 +12,7 @@
 //! weakest evidence in this crate.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_codec::{Dictionary, EncodeError, TemplateBuilder};
+use fixbolt_codec::{Dictionary, EncodeError, TemplateBuilder};
 
 /// The three DATA pairings that matter to these tests, including the one that
 /// breaks the `tag - 1` rule everything else happens to satisfy.
@@ -199,7 +199,7 @@ impl Dictionary for G {
     }
 }
 
-fn group_template() -> nanofix_codec::Template<16, 256> {
+fn group_template() -> fixbolt_codec::Template<16, 256> {
     TemplateBuilder::<16, 256>::new(b"FIX.4.4")
         .field(35, b"D")
         .field(49, b"ME")
@@ -215,7 +215,7 @@ fn group_template() -> nanofix_codec::Template<16, 256> {
 /// survives, because the length in front says how far to read.
 #[test]
 fn a_data_member_of_a_group_round_trips_with_embedded_soh() {
-    use nanofix_codec::{GroupData, GroupEntryData};
+    use fixbolt_codec::{GroupData, GroupEntryData};
     let t = group_template();
     let value: &[u8] = b"x\x01y\x01z\x01!"; // 7 bytes, three of them SOH
     let entries = [GroupEntryData {
@@ -262,7 +262,7 @@ fn a_data_member_of_a_group_round_trips_with_embedded_soh() {
 /// refused, and refused before anything is written.
 #[test]
 fn a_group_data_member_without_its_length_is_refused() {
-    use nanofix_codec::{GroupData, GroupEntryData};
+    use fixbolt_codec::{GroupData, GroupEntryData};
     // 96 (RawData) takes 95, and this group declares neither 95 nor 96 — so
     // supplying 96 is refused as not a member first. The case that matters is a
     // member whose LENGTH is missing from the order, which `NO_LEN` below is.

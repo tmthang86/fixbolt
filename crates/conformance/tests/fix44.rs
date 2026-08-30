@@ -11,7 +11,7 @@
 //! of the plan is not "it printed zero".
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::runner::{NullSession, Replay, run};
+use fixbolt_conformance::runner::{NullSession, Replay, run};
 
 #[test]
 fn a_session_that_answers_nothing_scores_zero() {
@@ -88,7 +88,7 @@ fn a_session_that_says_one_extra_thing_has_not_passed() {
         report
             .failures
             .iter()
-            .all(|f| matches!(f.reason, nanofix_conformance::runner::Reason::Unexpected(_))),
+            .all(|f| matches!(f.reason, fixbolt_conformance::runner::Reason::Unexpected(_))),
         "and for that reason, not another"
     );
 }
@@ -97,13 +97,13 @@ fn a_session_that_says_one_extra_thing_has_not_passed() {
 fn six_definitions_expect_no_message_at_all() {
     // The other half of the claim above, read off the corpus rather than
     // assumed: these six are pass/fail on the disconnect alone.
-    let empty: Vec<String> = nanofix_conformance::script::scenarios()
+    let empty: Vec<String> = fixbolt_conformance::script::scenarios()
         .unwrap_or_else(|e| panic!("{e}"))
         .into_iter()
         .filter(|s| {
             !s.steps
                 .iter()
-                .any(|x| matches!(x.kind, nanofix_conformance::script::Kind::Expect(_)))
+                .any(|x| matches!(x.kind, fixbolt_conformance::script::Kind::Expect(_)))
         })
         .map(|s| s.file)
         .collect();

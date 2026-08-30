@@ -11,7 +11,7 @@
 //! deployment gets.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_engine::frame::{Cut, Framer};
+use fixbolt_engine::frame::{Cut, Framer};
 
 /// A well-formed message with a correct `9=` and a three-digit `10=`.
 fn msg(seq: u32) -> Vec<u8> {

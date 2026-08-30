@@ -10,8 +10,8 @@
 
 mod common;
 
-use nanofix_codec::{FieldIndex, Validation, parse_into};
-use nanofix_dict::Fix44;
+use fixbolt_codec::{FieldIndex, Validation, parse_into};
+use fixbolt_dict::Fix44;
 
 /// `|` for SOH; `9=` and `10=` computed. The group tests hand-write field
 /// sequences because what is under test is *where the scan stops*, not whether

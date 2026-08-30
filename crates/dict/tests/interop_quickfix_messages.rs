@@ -24,7 +24,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::{quickfix_message_fields, quickfix_msg_types, xml_field_names, xml_section_tags};
-use nanofix_dict::Fix44;
+use fixbolt_dict::Fix44;
 
 #[test]
 fn every_message_tag_pair_agrees_with_quickfix_in_both_directions() {

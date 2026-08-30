@@ -28,7 +28,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::{read, xml_field_names};
-use nanofix_dict::Fix44;
+use fixbolt_dict::Fix44;
 
 /// `name -> the values FIX44.xml allows`.
 fn xml_enums() -> BTreeMap<String, BTreeSet<String>> {

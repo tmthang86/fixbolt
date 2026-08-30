@@ -6,8 +6,8 @@
 //! how a corpus change goes by unnoticed.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::runner::{NullSession, Replay, run_mirrored};
-use nanofix_conformance::script::{Kind, mirrors, scenarios, scenarios_mirrored};
+use fixbolt_conformance::runner::{NullSession, Replay, run_mirrored};
+use fixbolt_conformance::script::{Kind, mirrors, scenarios, scenarios_mirrored};
 
 /// The nine names the ADRs give, and the reason each is there.
 const CANNOT_MIRROR: [&str; 9] = [

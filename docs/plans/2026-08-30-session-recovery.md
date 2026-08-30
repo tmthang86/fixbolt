@@ -20,7 +20,7 @@ connect**, và không có gì chứng minh cái reset đó đúng cho một tri�
 
 ## Những gì đã biết chắc
 
-- `nanofix_session::journal::Journal` là một trait với đúng hai phương thức: `put(seq, bytes)`
+- `fixbolt_session::journal::Journal` là một trait với đúng hai phương thức: `put(seq, bytes)`
   và `get(seq) -> Option<&[u8]>`. Session không giữ byte nào nó không tự sinh ra.
 - [ADR-0008](../decisions/ADR-0008-journal-is-a-trait.md) giải thích vì sao là trait chứ không
   phải `Action::Store` như D1 phác — **một resend phải đọc, mà một action thì không trả lời
@@ -37,7 +37,7 @@ connect**, và không có gì chứng minh cái reset đó đúng cho một tri�
 - **Trait không có phương thức nào để hỏi "log này đang có gì".** Không có `last_seq`, không
   có cách duyệt. Đó chính là mảnh thiếu.
 - `crates/session/src/journal.rs:18` có một link rustdoc chết trỏ tới
-  `https://github.com/nanofixengine/...` — sửa trong plan `gates-that-can-be-trusted`.
+  `https://github.com/fixbolt/...` — sửa trong plan `gates-that-can-be-trusted`.
 
 ## Cách làm
 
@@ -163,9 +163,9 @@ nhưng gắn journal vào codec và vẫn để cái đuôi bị cắt dở ở 
 **Đã chạy, đọc output:**
 
 ```
-4 / 4    cargo test -p nanofix-engine --test recovery
-59 / 59  cargo test -p nanofix-session --test score      (bất di bất dịch 3)
-59 / 59  cargo test -p nanofix-engine  --test wire
+4 / 4    cargo test -p fixbolt-engine --test recovery
+59 / 59  cargo test -p fixbolt-session --test score      (bất di bất dịch 3)
+59 / 59  cargo test -p fixbolt-engine  --test wire
 210 passed / 0 failed   cargo test --all · --no-default-features
 0 allocations           benches/alloc.rs
 clean                   clippy -D warnings · fmt --check

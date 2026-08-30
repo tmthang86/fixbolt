@@ -2,7 +2,7 @@
 //! wrong in a way that only shows up at 00:00 or on New Year's Eve.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use nanofix_codec::TimestampCache;
+use fixbolt_codec::TimestampCache;
 
 fn at(c: &mut TimestampCache, millis: u64) -> String {
     String::from_utf8(c.format(millis).to_vec()).unwrap()

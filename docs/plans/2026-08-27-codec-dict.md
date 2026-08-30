@@ -325,8 +325,8 @@ bước 4 là chỗ học lifetime. Đừng làm hai bước đó cùng lúc.
 | Bước | Lệnh | Đạt khi |
 |---|---|---|
 | 0 | `mv vendor vendor.bak && cargo build -p dict; mv vendor.bak vendor` | Output chứa đúng dòng "run scripts/fetch-quickfix-assets.sh". Không phải lỗi khác |
-| 1 | `cargo test -p nanofix-dict` | Xanh, và **đọc** output thấy tên các test. **Sửa 2026-08-28:** `required(b"D")` là `[11, 40, 54, 60]` — **không** chứa 21 và 55. Cả hai là `required='N'` trong `FIX44.xml`, đệ quy component cũng không thêm chúng. Xem `reference/fix44-dictionary-traps.md` bẫy 2 |
-| 2 | `cargo test -p nanofix-codec --test defs` | In `classified 539/539`. **Sửa 2026-08-28: 533 dòng `Ok`, 6 dòng `Err`**, không phải 532/7 — `8=FIX.3.9` và `8=FIX.4.1` ×2 parse bình thường (parser chỉ kiểm vị trí, không kiểm giá trị), còn `2t` có **hai** bản tin sai nhưng chỉ một cái không đóng khung được |
+| 1 | `cargo test -p fixbolt-dict` | Xanh, và **đọc** output thấy tên các test. **Sửa 2026-08-28:** `required(b"D")` là `[11, 40, 54, 60]` — **không** chứa 21 và 55. Cả hai là `required='N'` trong `FIX44.xml`, đệ quy component cũng không thêm chúng. Xem `reference/fix44-dictionary-traps.md` bẫy 2 |
+| 2 | `cargo test -p fixbolt-codec --test defs` | In `classified 539/539`. **Sửa 2026-08-28: 533 dòng `Ok`, 6 dòng `Err`**, không phải 532/7 — `8=FIX.3.9` và `8=FIX.4.1` ×2 parse bình thường (parser chỉ kiểm vị trí, không kiểm giá trị), còn `2t` có **hai** bản tin sai nhưng chỉ một cái không đóng khung được |
 | 2 | `--test defs` (body length) | **Sửa 2026-08-28:** 250 dòng mang `9=` của chính nó, **6** lệch. Ba do cố ý (`1d`, `2m` ×2), ba là dòng `E` của QuickFIX mang `9=` cũ, lệch **đúng 4 byte** vì timestamp 17 ký tự trong khi `9=` tính cho 21 |
 | 2 | `--test defs` (checksum) | **Sửa 2026-08-28: `checksum ok 244/244` là BẤT KHẢ THI.** 246 dòng mang `10=` và **0** dòng nào là checksum thật — 238 dòng là `10=0`. Bộ so sánh khớp tag 10 bằng regex nên giá trị chưa từng cần đúng. Thay bằng: xác thực checksum trên **287** bản tin mà loader tự tính, tức hai cài đặt độc lập đồng ý với nhau |
 | 2 | Test `TooManyFields`: parse một dòng E thật với `FieldIndex<4>` | Trả `Err(TooManyFields)`, và **không** có index nào chứa 4 field "thành công" |
@@ -446,15 +446,15 @@ Cân nhắc rồi hoãn, kèm lý do:
 - Session, socket, engine, dispatch — bước 3 và 4 của `DESIGN.md` §7.
 - Conformance runner `.def` — bước 2 của §7, plan riêng. **Đã chốt: chạy thuần trong tiến
   trình, không socket** (xem Nhật ký review D5).
-- Phân phối / publish crates.io — tên `nanofixengine` còn là placeholder; publish trước khi
+- Phân phối / publish crates.io — tên `fixbolt` còn là placeholder; publish trước khi
   đổi tên là sai lầm không đảo được.
 
 ## Nhật ký giao hàng
 
 ### Bước 0 — xong 2026-08-28
 
-Workspace có 2 crate (`nanofix-codec`, `nanofix-dict` — tên `codec`/`dict` đã có người lấy
-trên crates.io). `cargo build -p nanofix-dict` khi thiếu `vendor/` → `EXIT=101` kèm đúng dòng
+Workspace có 2 crate (`fixbolt-codec`, `fixbolt-dict` — tên `codec`/`dict` đã có người lấy
+trên crates.io). `cargo build -p fixbolt-dict` khi thiếu `vendor/` → `EXIT=101` kèm đúng dòng
 `run scripts/fetch-quickfix-assets.sh`; có `vendor/` → `EXIT=0`; `NANOFIX_FIX44_XML` trỏ file
 không tồn tại → cũng báo đúng đường dẫn đó. CI thêm bước fetch vendor.
 
