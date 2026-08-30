@@ -1205,3 +1205,94 @@ is harmless and reverts when SMT comes back, but anyone measuring on this box wi
 desktop's Power Mode selector throw an error and should know why. It also cost a working A/B,
 which is the more expensive half: **a failed intervention that still produces two clean-looking
 arms is exactly the shape of a false green.**
+
+## The engine is syscall-bound, and the §8 budget is spent before FIX begins
+
+`[measured 2026-08-30]` desk box, §9 satisfied, pinned to an isolated core. **Not a measurement
+of `Engine::turn`** — a C program issuing the syscall that `turn` issues, on connected loopback
+sockets, which makes it a **floor** for the engine rather than a reading of it.
+
+D8 defines the model: *"`Engine::turn` is one non-blocking pass over every connection … read
+once … a counterparty that writes faster than this end processes must not be able to starve the
+other connections on the thread."* So an idle turn is **one `read` per connection**, and each
+returns `EAGAIN`.
+
+```
+N=1      703.2 ns/read      703.2 ns/turn
+N=2      705.1 ns/read     1410.1 ns/turn
+N=4      704.1 ns/read     2816.5 ns/turn
+N=16     702.3 ns/read    11237.5 ns/turn
+N=64     703.6 ns/read    45033.0 ns/turn
+N=256    707.0 ns/read   180988.1 ns/turn
+```
+
+**Flat to N=256** — 703 ns is a fixed per-socket cost and the sweep is exactly linear. A message
+that arrives just after its socket was polled waits up to one whole turn to be seen, so this
+table is *added latency per session*, not throughput.
+
+### Where the 703 ns goes
+
+```
+clock_gettime (vDSO, no kernel entry)    22.9 ns
+syscall(getpid) — enters and leaves, does nothing   353.8 ns
+read(/dev/null)                         452.2 ns
+read(socket) -> EAGAIN                  703.0 ns
+```
+
+**354 ns of every socket poll is kernel entry and exit doing nothing at all.** Set against this
+project's own numbers: `parse NewOrderSingle (validated)` is **125.5 ns**. *The syscall that
+discovers there is nothing to parse costs 5.6× the parse.*
+
+`DESIGN.md` §8 budgets *"an entire user-space path under 1 µs"*. The user-space path is not the
+problem — the vDSO line shows user space doing work in tens of nanoseconds. **The budget is
+spent crossing into the kernel, before any FIX work starts.**
+
+### What this says about "many sessions on one core"
+
+`PRD.md` names the target as *"an acceptor that holds **many sessions on one core** and does not
+stall"*. Against the table above, "many" has a cost that can be stated exactly:
+
+| Sessions on one polling thread | Idle sweep | Against §8's 1 µs |
+|---|---|---|
+| 1 | 703 ns | 70% of it, spent finding nothing |
+| **2** | **1.41 µs** | **the whole budget, exceeded, before parsing anything** |
+| 16 | 11.2 µs | 11× |
+| 128 | 90 µs | 90× |
+
+**Two sessions on one core exhausts the design's entire user-space latency budget in polling
+alone.** That is not a tuning problem; it is the arithmetic of one syscall per socket per turn.
+It is also why HFT practice dedicates a core to a latency-critical gateway rather than sharing
+one — a point the outside literature makes in general terms and this table makes in nanoseconds
+for this codebase.
+
+The PRD's target is not thereby wrong: a broker gateway carrying many client sessions is a real
+product, and 90 µs is unremarkable for one. **But it is a different product from "the fastest
+acceptor that can run on kernel TCP", and the two cannot share a polling thread.** That is a
+decision for `PRD.md` and it has not been made.
+
+### It also reprioritises the open items, by an order of magnitude
+
+Open item 12 defers SIMD on the grounds that it would win *"20–40 ns per message on a 10–20 µs
+floor — under 0.5%"*. That reasoning stands and this measurement sharpens it: **the syscall is
+703 ns per socket per turn**, so anything that removes syscalls is worth roughly **20× what
+SIMD is worth**, and the ordering follows from measurement rather than taste:
+
+1. **Fewer sessions per polling thread.** Free, and the largest single factor.
+2. **`mitigations=off`.** Full mitigations are in force — `retbleed` untrained return thunk,
+   `spec_rstack_overflow` Safe RET, `spectre_v2` retpolines with STIBP always-on, and
+   `vmscape: IBPB before exit to userspace`, an IBPB on **every** syscall return. Zen 2 pays
+   heavily for these. **`[unproven]` — this has NOT been measured here**, it needs a reboot,
+   and it is a security decision on a machine somebody also uses as a desktop.
+3. **Batch the syscall** — `recvmmsg`, or `io_uring` with `SQPOLL`, which removes the per-socket
+   entry entirely.
+4. **Kernel bypass**, open item 14, which removes the kernel from the path. Its own entry
+   already says the first measurement is `tools/w2w` twice on one box, kernel versus Onload.
+
+`[to testing-skills]` — *the budget was being checked against the wrong half of the system.*
+Every measurement in this file until now timed **user-space work**: parse, encode, ring hop,
+allocation counts, all in the 5–500 ns range and all carefully guarded. The path they sit on
+crosses into the kernel once per socket per turn at 703 ns, and **nothing measured that until
+somebody asked a question about deployment shape**. A latency budget stated for "the user-space
+path" invites exactly this: the measured part is optimised to a fraction of the unmeasured part.
+The cheap defence is to measure one whole turn end to end, including the syscalls, before
+tuning anything inside it.
