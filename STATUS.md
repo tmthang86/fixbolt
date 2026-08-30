@@ -9,22 +9,31 @@ Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire
 
 **Next, and each needs its own plan before any code (Rule Zero):**
 
-1. **The wire gate's settle criterion** — open item 17, and it comes first because it is the
-   gate `tools/w2w` is built on and it is currently **red on Linux**. `Wire::pump` counts
-   spins instead of waiting for the socket; the score follows the bound, not the protocol.
-2. **`tools/w2w`** — `DESIGN.md` §7 step 7. The wire-to-wire harness. It is also the only
-   thing that can close open items 6 and 15, so it unblocks every latency number and the one
-   non-negotiable with no machine check.
-3. **`library`** — §7 step 8. The application-facing API.
-4. **Steps 3–4 of the paused initiator plan**, whose gate is interop against `libquickfix`
-   rather than the mirrored corpus (ADR-0004, ADR-0006).
+**Six plans were written on 2026-08-30 and all six are awaiting approval.** No code until
+they are. In dependency order:
+
+1. **[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)** —
+   items 7, 17, 18, 19. Everything else waits on this: CI is red and the wire gate does not
+   reproduce, so no other plan can prove it finished.
+2. **[w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md)** — items 6, 11,
+   12, 13, 15. `DESIGN.md` §7 step 7. Half of it runs here; half of it is blocked on a §9
+   machine and says so.
+3. **[ktls-spike](docs/plans/2026-08-30-ktls-spike.md)** — item 10. Independent of the rest,
+   and now runnable: it needed Linux, not a §9 machine.
+4. **[data-fields](docs/plans/2026-08-30-data-fields.md)** — items 8, 9.
+5. **[session-recovery](docs/plans/2026-08-30-session-recovery.md)** — item 16.
+6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5.
+
+Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
+initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
+(ADR-0004, ADR-0006).
 
 | | |
 |---|---|
 | Branch | **`main`.** `plan/engine` merged 2026-08-30, exit criteria met, gates re-run green on the merge commit |
 | Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p nanofix-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | *(none)* |
+| Plan in flight | *(none started)*. **Six plans awaiting approval**, written 2026-08-30 — see the list above. Between them they cover 14 of the 16 open items |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
@@ -400,6 +409,24 @@ Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire
 - The ADRs are accepted on the strength of the reasoning in them, **not on measurement** — see the §8 caveat above.
 
 ## Open items
+
+Every one of these is either inside a plan or has a stated reason for not being in one. The
+plans are **awaiting approval** — nothing below is being worked on yet.
+
+| Plan | Closes |
+|---|---|
+| [gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md) | 7, 17, 18, 19 |
+| [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | 15 now; 6, 11, 13 on a §9 machine; **decides** 12 |
+| [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 |
+| [data-fields](docs/plans/2026-08-30-data-fields.md) | 8, 9 |
+| [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 |
+| [ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) | 5 |
+
+**The two with no plan, and why.** **1** (the final name) is a decision for the owner, not a
+piece of work — when it is made it is an ADR and a rename, and neither can be planned around
+an undecided name. **14** (kernel bypass) is phase 3, is excluded by PRD §5 as it stands, and
+needs a Solarflare/AMD X2-class NIC that nobody here has; planning it would be planning
+against hardware that does not exist.
 
 | # | Item | Blocks |
 |---|---|---|
