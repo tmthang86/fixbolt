@@ -82,7 +82,13 @@ fn main() {
     println!("this end's full rate before the engine starts dropping messages the");
     println!("session has already accepted, numbered and journalled.");
     println!();
-    println!("NOT a latency number: this machine is not DESIGN.md §9. What it");
-    println!("bounds is a COUNT and a duration under saturation, which is what");
-    println!("ADR-0011 needs and which does not need an isolated core.");
+    // `[measured 2026-08-30]` this said "this machine is not DESIGN.md §9" — a
+    // claim about the machine, hard-coded into a file that cannot see one. It
+    // became false the day the desk box was tuned and `check-machine.sh` first
+    // printed `§9 satisfied`. What is true whatever the machine is said instead,
+    // and the machine question is left to the thing that actually answers it.
+    println!("NOT a latency number, on any machine: what it bounds is a COUNT and");
+    println!("a duration under saturation, which is what ADR-0011 needs and which");
+    println!("does not need an isolated core. Whether this box meets DESIGN.md §9");
+    println!("is scripts/check-machine.sh's answer, printed above by bench.sh.");
 }

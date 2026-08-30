@@ -71,6 +71,30 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   Non-negotiable 1 is machine-checked on two architectures now. Three timing groups are over
   their ceilings on this untuned box — see open item 20, where the interesting part is *which
   direction* they miss in.
+- **`§9 satisfied`, for the first time in this project — 2026-08-30.** `[measured]` after
+  `isolcpus=6,7,14,15 nohz_full=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1` on the
+  kernel command line plus the five runtime rows, `scripts/check-machine.sh` reports
+  **`pass 10  fail 0  unknown 1`** and `scripts/bench.sh --strict` **ran for the first time**
+  rather than refusing. These are the first figures this repository has that non-negotiable 10
+  permits publishing. `EXIT=1`, on three ceilings and one marginal:
+  `walk 4 levels` **354.6** vs 300, `encode 1 group` **103.5** vs 75,
+  `encode ExecutionReport` **240.0** vs 190, `ring, round trip` **500.5** vs 500;
+  `ring, one way` **259.6** came in *under* its 260. Clean: `parse NewOrderSingle` 125.5 / 150,
+  `parse Heartbeat` 55.6 / 70, `SendingTime from the cache` 4.9 / 5,
+  `inline deliver + reply` 6.3 / 15. All eight targets measured, **0 invariant failures**.
+  The three over-ceiling cases are the same three that were over in every machine state
+  measured that day, which is what makes them real rather than noise.
+  **A prediction failed here and is recorded rather than quietly dropped**: `fail 2` was
+  predicted after the reboot and the answer was **`fail 5`** — governor, turbo, SMT, THP and
+  `busy_poll` are all *runtime* settings that do not survive a reboot, and only the two
+  command-line rows do.
+- **Isolating a core does not remove the 324 ns mode — hypotheses six and seven.** `[measured
+  2026-08-30]` pinned to cores 6,7 under `isolcpus` + `nohz_full` + `rcu_nocbs`, where the
+  scheduler places nothing else and the tick is off: **5/60 against 4/60 unpinned**, medians
+  259.0 and 259.4. Not the scheduler. Interrupts do still reach an isolated core (15.7k on
+  each of 6 and 7 against 512k on CPU0), so those were counted per run too — **two outliers
+  carried ~1300 interrupts and three carried exactly zero**, while a normal run carried 1085.
+  Not interrupts either.
 - **A cloud VM cannot be the §9 machine, and the checklist could not say so.**
   `[measured 2026-08-30]` `governor`, `turbo`, `C-states`, `SMT` and NIC IRQ affinity are
   **host** properties. A guest does not fail those rows loudly — the `/sys` files are absent,
