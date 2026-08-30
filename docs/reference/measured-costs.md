@@ -105,6 +105,9 @@ The target was written as a comment. Nothing read it, nothing failed when it was
 [DESIGN.md §6](../DESIGN.md#6-gates) names a committed benchmark, and the benchmark asserts
 the bound. A target that only a human can check is not a gate.
 
+`[to testing-skills]` — *a target written as a comment is not a gate.* One measured instance,
+7× off, unnoticed. Nothing FIX-specific in it.
+
 ---
 
 ## 3. A feature flag that does not gate its module makes a crate unbuildable
@@ -254,6 +257,10 @@ reports "still zero" is a reversal that did not run.** `CLAUDE.md` §7 already
 says a guard is proven by reversal and that the reversal must be confirmed to
 have changed something. This is what that sentence costs when it is skipped.
 
+`[to testing-skills]` — *the optimiser deleted the reversal.* `false-greens.md` §5 already has
+"a reversal can itself be a no-op" from a search-and-replace that missed; this is the same
+shape produced by the compiler instead, which no amount of grepping the diff would catch.
+
 ## `nm -u` on an rlib proves nothing about generic code
 
 `[cost 2026-08-30]` Non-negotiable 4 — *the engine thread never sleeps in the
@@ -281,6 +288,10 @@ Two things follow, and the second is the general one:
   checking.** For a generic-heavy crate that is a binary that actually uses it,
   not the library.
 
+`[to testing-skills]` — *two instruments that cannot see what they were pointed at*: a syscall
+tracer the OS refuses to run, and a symbol check that passes with the violation present. Both
+were deleted rather than shipped, which is the part worth contributing.
+
 ## A benchmark that replays one message measures a dropped connection
 
 `[cost 2026-08-30]` The engine's allocation bench had a case called `busy`: a
@@ -304,6 +315,10 @@ assert_eq!(engine.connections(), 1, "not dropped at message two");
 
 and traffic with increasing sequence numbers, rendered before the count starts
 so the harness's own `format!` is not charged to the engine.
+
+`[to testing-skills]` — *the benchmark measured a torn-down system.* Sibling of "the vacuous
+wait": an assertion whose expected value is *nothing* passed because the thing under test was
+no longer there. Contribute the fix — every case asserts its own path is live.
 
 **Generalised:** a zero from a counting allocator means *did not allocate* only
 if something separately proves *did run*. Every case in these benches now
@@ -361,3 +376,58 @@ The inline figure moved between 2.5 and 4.9 ns across runs of the same binary. A
 the loop is a handful of instructions and the harness's own overhead is the same order, so the
 ceiling is set at 15 ns rather than at 2×. **A ceiling tighter than the measurement's own
 spread is a gate that goes red at random**, and DESIGN §6 already says what happens to those.
+
+## A settle criterion that counts spins measures the machine, not the protocol
+
+`[measured 2026-08-30]` Linux 6.18 x86_64, 4 vCPU container, `cargo 1.94.1` — **not** the
+M5 laptop every other number on this page came from.
+
+`crates/engine/tests/wire.rs` is the gate that matters: the same 59 acceptance definitions
+that `crates/session/tests/score.rs` runs in process, run again through kernel TCP. It was
+recorded here and in `README.md` as **59 / 59**. On the Linux box it scores **39 / 59**,
+first run, with the working tree unchanged.
+
+The engine is not what is wrong. Three runs, changing one constant and nothing else — the
+`quiet` bound in `Wire::pump`, the number of consecutive `Engine::turn` calls that moved
+nothing before the harness declares the exchange settled:
+
+| `quiet` bound | Score | Wall time |
+|---|---|---|
+| 200 — as committed | 39 / 59 | 0.7 s |
+| 2 000 | 43 / 59 | 4.3 s |
+| 20 000 | **59 / 59** | 41.3 s |
+
+**A score that climbs monotonically with a timeout is a timing artefact**, and the reported
+diffs say the same thing in the other direction: `FieldCount { expected: 9, actual: 8 }` at
+one line and `expected: 8, actual: 9` four lines later is one reply arriving after the step
+that was supposed to read it, shifting every comparison behind it. `--test score` scores
+59 / 59 on this same machine, so the session's answers are right and only their arrival time
+is being measured.
+
+**The defect is that a spin count is not a settle criterion.** `pump` races loopback
+delivery: it asks "have I turned 200 times with nothing to do", which is a question about how
+fast this CPU spins, when the question it means to ask is "has the kernel finished handing
+over what the engine wrote". Those coincide only on the machine the constant was tuned on.
+The doc comment on `pump` is explicit that idling once is not settled and that the bound
+exists to avoid hanging — the bound was right to exist and wrong to be a count.
+
+Two consequences worth keeping separate:
+
+- **The 59 / 59 over TCP is a single-machine result.** It reproduces on the M5 and does not
+  reproduce here. Until the criterion is deterministic the wire gate cannot go in CI, and
+  `tools/w2w` — which exists to produce Linux numbers — would be built on top of a gate that
+  Linux is currently failing. Open item 17.
+- **The in-process gate is unaffected**, because it never touches a socket. That is the
+  reason it is worth keeping both, and it is what makes the diagnosis above cheap: two gates
+  over the same corpus disagreeing localises the fault to the thing that differs.
+
+**Generalised, and the reason this is written down rather than fixed in passing:** a check
+whose green depends on a duration is not a check, it is a coin whose weighting is the
+hardware. It reads as a gate, it goes in a status page as a number, and it is discovered by
+running it somewhere else — never by reading it. The same shape has a name and a collection
+of siblings in the sibling repository's `false-greens.md`; `CLAUDE.md` §11 says what goes
+back there.
+
+`[to testing-skills]` — as a false-green case: *a gate whose green is a duration*. Contribute
+the three-row table, the monotonic-score diagnostic, and the rule that a settle criterion must
+name the event it waits for. It needs no FIX to be understood.

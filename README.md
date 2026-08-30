@@ -15,8 +15,13 @@ to make everything above that floor vanish, and to measure the floor honestly
 ([DESIGN.md §8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp)).
 
 > **Status: it speaks FIX over a socket.** `[measured 2026-08-30]` the 59 QuickFIX acceptance
-> definitions pass **59 / 59 through kernel TCP**. `codec`, `dict`, `session` and `engine`
-> exist, with dispatch, backpressure and the journal built; `tools/w2w` and the
+> definitions pass **59 / 59 through kernel TCP** — on one machine. On a second machine the
+> same command scores 39 / 59, because the test harness decides the exchange has settled by
+> counting spins rather than by waiting on the socket; the in-process gate over the same
+> corpus is 59 / 59 on both. **Read the TCP figure as single-machine until that is fixed** —
+> [STATUS.md](STATUS.md) open item 17 and
+> [reference/measured-costs.md](docs/reference/measured-costs.md). `codec`, `dict`, `session`
+> and `engine` exist, with dispatch, backpressure and the journal built; `tools/w2w` and the
 > application-facing `library` do not.
 > **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;
 > **[docs/DESIGN.md](docs/DESIGN.md)** says how it is built; [STATUS.md](STATUS.md) says

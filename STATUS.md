@@ -3,23 +3,26 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-08-30**.
+Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17.
 
 ## Where the work is
 
 **Next, and each needs its own plan before any code (Rule Zero):**
 
-1. **`tools/w2w`** — `DESIGN.md` §7 step 7. The wire-to-wire harness. It is also the only
+1. **The wire gate's settle criterion** — open item 17, and it comes first because it is the
+   gate `tools/w2w` is built on and it is currently **red on Linux**. `Wire::pump` counts
+   spins instead of waiting for the socket; the score follows the bound, not the protocol.
+2. **`tools/w2w`** — `DESIGN.md` §7 step 7. The wire-to-wire harness. It is also the only
    thing that can close open items 6 and 15, so it unblocks every latency number and the one
    non-negotiable with no machine check.
-2. **`library`** — §7 step 8. The application-facing API.
-3. **Steps 3–4 of the paused initiator plan**, whose gate is interop against `libquickfix`
+3. **`library`** — §7 step 8. The application-facing API.
+4. **Steps 3–4 of the paused initiator plan**, whose gate is interop against `libquickfix`
    rather than the mirrored corpus (ADR-0004, ADR-0006).
 
 | | |
 |---|---|
 | Branch | **`main`.** `plan/engine` merged 2026-08-30, exit criteria met, gates re-run green on the merge commit |
-| Milestone | **M3 — the engine, closed.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket**: `cargo test -p nanofix-engine --test wire` → **59 / 59**. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
+| Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p nanofix-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
 | Plan in flight | *(none)* |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
@@ -316,6 +319,23 @@ Last updated: **2026-08-30**.
   `MemJournal::put` keep nothing turns four of `tests/journal.rs`'s seven red **and** drops
   `--test score` below 59. Restored: 59 / 59, and 59 / 59 over a socket.
 
+- **The wire gate is 59 / 59 on one machine and 39 / 59 on another, and the engine is not
+  what differs.** `[measured 2026-08-30]` Linux 6.18 x86_64, 4 vCPU, `cargo 1.94.1`, working
+  tree unchanged: `cargo test -p nanofix-engine --test wire` → **39 / 59**, while
+  `cargo test -p nanofix-session --test score` over the same corpus on the same machine →
+  **59 / 59**. Changing one constant and nothing else — the `quiet` bound in `Wire::pump`,
+  which counts consecutive `Engine::turn` calls that moved nothing — walks the score
+  **200 → 39/59, 2 000 → 43/59, 20 000 → 59/59 (41 s)**. A score that climbs monotonically
+  with a timeout is a timing artefact: the harness is racing loopback delivery, and a spin
+  count is not a settle criterion. Written up in
+  [reference/measured-costs.md](docs/reference/measured-costs.md). **Open item 17** — until
+  it is deterministic the wire gate cannot go in CI, and it is the gate `tools/w2w` builds on.
+- **The rest of the suite is green on Linux.** `[measured 2026-08-30]` same box: `cargo fmt
+  --check` clean, `cargo clippy --all-targets -- -D warnings` clean,
+  `scripts/check-lint-config.sh` green in both directions, `cargo test --all` **158 passed /
+  1 failed** across 30 test binaries — the one failure being the wire gate above — and
+  `cargo test --no-default-features` fails on that one and nothing else.
+
 ## Not proven — claimed, researched, or simply not yet run
 
 - **Every figure in [prior-art.md](docs/reference/prior-art.md) is someone else's claim**,
@@ -383,3 +403,4 @@ Last updated: **2026-08-30**.
 | 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what nanofix claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |
 | 15 | **Non-negotiable 4 — *the engine thread never sleeps in the kernel* — is a hand-check.** No gate exists. `dtruss` needs SIP disabled; a symbol-based check over the rlib is defeated by generics (it passes with a `sleep` in the loop). The answer is a syscall trace of a concrete binary on Linux, which `tools/w2w` will be | DESIGN §6; every claim that D8 holds |
 | 16 | **A journal is written and never read back.** Nothing recovers a session's outbound sequence number or its unacknowledged messages from the log on startup, so `Fsync` today is an audit trail rather than a recovery mechanism ([ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md)). It needs a session constructible *from* a journal, which is a session-layer change with its own plan | A restart that resumes a session rather than starting one |
+| 17 | **The wire gate's settle criterion is a spin count.** `Wire::pump` in `crates/engine/tests/wire.rs` declares the exchange settled after 200 consecutive `Engine::turn` calls that moved nothing, which is a question about CPU speed rather than about kernel delivery. Measured: 39 / 59 on Linux, 59 / 59 on the M5, 59 / 59 on Linux at a 100× bound. Needs a real criterion — readiness on the client sockets with a deadline — behind its own plan, because it changes how a `DESIGN.md` §6 gate is measured | The wire gate in CI; `tools/w2w`, which builds on it; every claim that the 59 / 59 over TCP is reproducible |
