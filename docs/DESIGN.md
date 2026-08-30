@@ -398,17 +398,38 @@ unconditionally, so recovered numbers are wiped before anything can use them.
 is a decision rather than an oversight: the acceptance corpus resets on every connect, FIX
 numbers a session rather than a connection, and one entry point cannot serve both.
 
-### D8 — The engine thread busy-polls; it never sleeps in the kernel
+### D8 — In `hft` the engine thread busy-polls; in `standard` it blocks
 
-The engine thread is pinned to an isolated core and spins on non-blocking sockets. No
-`epoll_wait`, no condition variables, no futex on the hot path.
+`[amended 2026-08-30, ADR-0013]` **This decision is mode-scoped, and `standard` is the
+default.**
+
+| | `standard` — the default | `hft` — opt-in, Linux only |
+|---|---|---|
+| Idle behaviour | **blocks on readiness** with a timeout, and gives the core back | spins on non-blocking sockets, never enters the kernel |
+| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-30]` one `read` at 703 ns per socket |
+| Pinning | none | the polling thread is pinned to an isolated core |
+| Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
+| Rule 4 says | it **must** block | it must **not** sleep |
+
+**In `hft`,** the engine thread is pinned to an isolated core and spins on non-blocking
+sockets. No `epoll_wait`, no condition variables, no futex on the hot path.
 
 **Why:** an `epoll` wakeup costs 2–5 µs *and* brings scheduler jitter with it. On a design
 whose entire user-space path is under 1 µs, a blocking wait is the single largest cost the
-engine controls. It burns a core — that is the price, and it is the standard price.
+engine controls. It burns a core — that is the price, and in `hft` it is worth paying.
 
-A `Waiting` strategy is a trait so tests and low-priority deployments can use a blocking
-variant. The default ships as spin.
+**Why `standard` exists, and why it is the default:** an engine whose out-of-the-box
+configuration pins a core at 100% is one most people cannot evaluate — it looks broken. And
+`[measured 2026-08-30]` the spin is not free even in `hft`: the poll it replaces `epoll` with
+costs **703 ns per socket per turn**, so the trade **wins at N = 1 and loses by N = 8**.
+`standard` is the honest default for everything that is not one session on an isolated core.
+
+`Waiting` is a trait and is the right seam, but **`wait::Park` is not `standard`**: it is
+`std::thread::yield_now()`, which yields the scheduler and **does not block**, so it still
+burns its core. A real `standard` mode blocks on readiness, which is a `Transport` concern
+because the poller must know the sockets — D5 already makes that a trait. `[2026-08-30]` **not
+built yet**; ADR-0013 open question 1 is which mechanism and which dependency, and `std`
+exposes none.
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is
 queued, **tick the clock**, read once, cut whole messages out, judge them, flush again — and
@@ -719,7 +740,8 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 |---|---|---|
 | NIC → kernel → socket buffer | 3–8 µs | Kernel, IRQ affinity, driver |
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
-| Wakeup — `epoll` **vs** busy-poll (D8) | 2–5 µs **vs** `[measured 2026-08-30]` **703 ns × N**, N = sockets on the thread | **This design** |
+| Wakeup — **`standard`** blocks on readiness | 2–5 µs, `epoll`-class, **and the core is given back** | **This design**, D8 |
+| Wakeup — **`hft`** busy-polls | `[measured 2026-08-30]` **703 ns × N**, N = sockets on the thread, **and a core is burned** | **This design**, D8 |
 | Parse (D2) | ~0.14 µs | This design |
 | Session machine (D1) | ~0.1 µs | This design |
 | Dispatch — inline **vs** ring (D4) | ~0 **vs** 0.2–0.5 µs | Application's choice |
@@ -729,6 +751,13 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | **User-space work only** | **< 1 µs** | The half that was always cheap |
 | **Everything this design controls, N = 1** | **~1.7 µs** — the row above plus one 703 ns poll | |
 | **Everything this design controls, N sessions** | **`< 1 µs + N × 703 ns`** | |
+
+**Which mode the table is about: `hft`.** `[amended 2026-08-30, ADR-0013]` `standard` is the
+default and its wakeup row is the 2–5 µs one, so **its bottom line is `epoll`-class and this
+table does not describe it**. A `standard` figure and an `hft` figure are not comparable and
+must not be quoted as if they were — ADR-0013 decision 4. `standard`'s own budget has **not been
+measured**; the row above is the literature figure, as the header of this section says of every
+row.
 
 `[measured 2026-08-30]` **the last two rows are the honest bottom line and the "< 1 µs" line
 alone was not.** It counted user-space work and excluded the syscall that reaches the socket —

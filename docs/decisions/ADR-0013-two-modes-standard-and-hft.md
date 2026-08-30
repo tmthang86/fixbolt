@@ -1,6 +1,8 @@
 # ADR-0013 — Two modes: `standard` runs anywhere, `hft` buys the microsecond
 
-- **Status**: Proposed — 2026-08-30
+- **Status**: **Accepted — 2026-08-30**, signed by the owner, who also accepted decision 5's
+  wording: `CLAUDE.md` §2 non-negotiable 4 is now mode-scoped. **Its substance is fixed —
+  changing it takes a new ADR that supersedes it.**
 - **Date**: 2026-08-30
 - **Deciders**: Tran Manh Thang
 - **Related**: **re-scopes [ADR-0012](ADR-0012-latency-first-and-one-session-per-polling-thread.md)

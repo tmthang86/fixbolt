@@ -14,7 +14,15 @@ has a floor of roughly **10–20 µs** wire-to-wire that no codec can move; this
 to make everything above that floor vanish, and to measure the floor honestly
 ([DESIGN.md §8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp)).
 
-**Latency beats session density, and that is a rule rather than a preference**
+**Two modes, and the default is the portable one**
+([ADR-0013](docs/decisions/ADR-0013-two-modes-standard-and-hft.md)). **`standard`** blocks on
+readiness, gives the core back and runs on any OS and any hardware — it is what you get if you
+say nothing. **`hft`** is opt-in, Linux-only, pins its polling threads to isolated cores and
+**burns a core per thread** to buy the microsecond. An engine whose out-of-the-box configuration
+pins a core at 100% is one most people cannot evaluate, so `hft` is the claim and `standard` is
+the front door. `[2026-08-30]` **`standard` is decided and not yet built.**
+
+**Inside `hft`, latency beats session density, and that is a rule rather than a preference**
 ([ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). The
 shape this engine is built for is **one session on one isolated polling thread**. `[measured
 2026-08-30]` an idle turn is one non-blocking `read` per connection at **703 ns**, flat from 1

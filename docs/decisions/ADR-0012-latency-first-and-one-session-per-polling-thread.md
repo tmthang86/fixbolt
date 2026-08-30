@@ -1,7 +1,7 @@
 # ADR-0012 — Latency is the priority, and a polling thread carries one session
 
 - **Status**: **Accepted — 2026-08-30**, signed by the owner. Proposed the same day; the revisions recorded below were made while it was `Proposed`, per `CLAUDE.md` §5. **Its substance is now fixed — changing it takes a new ADR that supersedes it.**
-- **Amended by [ADR-0013](ADR-0013-two-modes-standard-and-hft.md)** — 2026-08-30, `Proposed`. Decisions **1 and 2 below are re-scoped to `hft` mode**, not repealed; decisions 3, 4 and 5 stand unchanged and apply to both modes. The substance below is untouched, per `CLAUDE.md` §5.
+- **Amended by [ADR-0013](ADR-0013-two-modes-standard-and-hft.md)** — 2026-08-30, **`Accepted`**. Decisions **1 and 2 below are re-scoped to `hft` mode**, not repealed; decisions 3, 4 and 5 stand unchanged and apply to both modes. The substance below is untouched, per `CLAUDE.md` §5.
 - **Date**: 2026-08-30
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0002](ADR-0002-engine-library-split.md),

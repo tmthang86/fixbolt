@@ -16,9 +16,36 @@ the type system or a test, this page says so.**
 
 ---
 
+## 0. First decide your mode
+
+`[ADR-0013](decisions/ADR-0013-two-modes-standard-and-hft.md)` — and if you say nothing you get
+`standard`, which is almost certainly what you want.
+
+| | **`standard`** — the default | **`hft`** — opt-in |
+|---|---|---|
+| When idle | **blocks on readiness, gives the core back** | spins; **burns a core, permanently, per polling thread** |
+| Wakeup cost | `epoll`-class, 2–5 µs | `[measured 2026-08-30]` 703 ns per socket per turn |
+| Runs on | any OS, any hardware, a container, a shared box | Linux, on a machine that satisfies `DESIGN.md` §9 |
+| Core pinning | none | required, and it refuses to start without it |
+| Choose it when | you are not counting microseconds, or you share the machine | one session matters more than the core it costs |
+
+**Do not choose `hft` because it sounds better.** It pins a core at 100% for as long as the
+process lives. On a shared machine, in a container, or on a laptop that is not a bug you will
+enjoy diagnosing — it is the engine doing exactly what you asked.
+
+**A `standard` number and an `hft` number are not comparable.** When you publish one, say which.
+
+`[2026-08-30]` **`standard` is not built yet.** The decision is accepted and the code is not
+written; today the engine spins. Everything below describes the design both modes share, and
+says where a mode changes it.
+
+---
+
 ## 1. The one thing that decides your latency
 
-**Sessions per polling thread.** Nothing else on this page comes close.
+**Sessions per polling thread**, and this section is about **`hft`**. Nothing else on this page
+comes close for that mode. In `standard` the thread blocks rather than sweeping, so the term
+below is replaced by the wakeup — different arithmetic, and **unmeasured**.
 
 An idle turn of the engine is one non-blocking `read` per connection. `[measured 2026-08-30]`
 that syscall costs **703 ns**, flat from 1 to 256 sockets, and **353.8 ns of it is kernel entry

@@ -15,11 +15,25 @@ Decisions live in [decisions/](decisions/); what is about to be built lives in [
 
 ## 1. Who this is for
 
-**This is a low-latency FIX engine, and that is a tie-breaker rather than an adjective.**
-[ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md): when
-latency and session density conflict, **latency wins**, and a change that trades per-session
-latency for sessions-per-core needs its own ADR to reverse that. The shape the engine is
-optimised for, budgeted for and measured at is **one session on an isolated polling thread**.
+**Two modes, and `standard` is the default** —
+[ADR-0013](decisions/ADR-0013-two-modes-standard-and-hft.md):
+
+| Mode | For | Buys | Costs |
+|---|---|---|---|
+| **`standard`** — the default | anybody, any OS, any hardware, a container, a laptop | portability, and **the core back** — it blocks on readiness when idle | the microsecond |
+| **`hft`** — opt-in, Linux only | a tuned box with isolated cores | the microsecond | **a core burned per polling thread**, and a machine that satisfies `DESIGN.md` §9 |
+
+An engine whose out-of-the-box configuration pins a core at 100% is one most people cannot
+evaluate — it looks broken. **`hft` is the claim; `standard` is the front door.** Every figure
+this project publishes names **which mode**, as well as its session count and its machine.
+
+**Inside `hft`, latency is a tie-breaker rather than an adjective.**
+[ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md), re-scoped
+to `hft` by ADR-0013: when latency and session density conflict **inside `hft`**, latency wins,
+and a change that trades per-session latency for sessions-per-core needs its own ADR to reverse
+that. The shape `hft` is optimised for, budgeted for and measured at is **one session on an
+isolated polling thread**. Inside `standard` the tie-breaker is **portability, then the core
+back** — many sessions on one blocked thread is simply how it is run.
 
 `[measured 2026-08-30]` the reason is arithmetic, not preference. An idle turn is one
 non-blocking `read` per connection and that syscall costs **703 ns**, flat from 1 to 256
