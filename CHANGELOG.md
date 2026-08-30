@@ -255,6 +255,13 @@ below describe what a first release would contain.
 - **`scripts/fetch-quickfix-assets.sh` fetches four more QuickFIX headers** — `FixFieldNumbers.h`,
   `FixFields.h`, `FixCommonFields.h` and `FixValues.h` — read as oracles, never copied. `vendor/`
   stays gitignored (ADR-0001).
+- **`Journal` gains `highest()`, and it has no default implementation.** Every implementation
+  must answer, because a default `None` would let a journal that holds messages report that it
+  holds none and a resumed session would silently start again at 1.
+- **`FileJournal`'s on-disk record gains a length**: `seq(4) || len(4) || bytes` instead of
+  `seq(4) || bytes`. Without it records could not be separated on read, so the file was
+  append-only by construction. `FileJournal::open` now reads the file back before appending,
+  and drops a torn trailing record rather than half-reading it.
 - **`TemplateBuilder::build` enforces the DATA invariant, so it can now fail where it did not.**
   A DATA field declared without the length field that must sit immediately in front of it
   returns the new `EncodeError::DataWithoutLength(tag)` — at build, once, rather than emitting

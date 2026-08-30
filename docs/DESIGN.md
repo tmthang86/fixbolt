@@ -365,6 +365,20 @@ documents for the dispatch ring.
 startup, so `Fsync` today is an audit trail rather than a recovery mechanism. That needs a
 session constructible *from* a journal, which is its own plan — STATUS open item 16.
 
+**A journal reads back, and until 2026-08-30 it did not.** `Journal::highest()` reports the
+highest sequence number held, `FileJournal::open` reads the file before appending, and a record
+torn by a process killed mid-write is dropped rather than half-read. The on-disk record carries
+its own length — `seq(4) || len(4) || bytes` — because without it records cannot be separated
+and the file is append-only by construction, which is what `Durability::Fsync` was paying for
+before this. Held by `crates/engine/tests/recovery.rs`, which drops the journal between the
+write and the read; a `MemJournal` there would prove nothing.
+
+**What still does not resume is the session.** `Session::connect` resets both counters
+unconditionally, so recovered numbers are wiped before anything can use them.
+[ADR-0010](decisions/ADR-0010-a-reconnect-is-not-a-restart.md) is `Proposed` and says why that
+is a decision rather than an oversight: the acceptance corpus resets on every connect, FIX
+numbers a session rather than a connection, and one entry point cannot serve both.
+
 ### D8 — The engine thread busy-polls; it never sleeps in the kernel
 
 The engine thread is pinned to an isolated core and spins on non-blocking sockets. No

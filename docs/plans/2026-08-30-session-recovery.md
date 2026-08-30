@@ -1,6 +1,6 @@
 # Khởi động lại mà phiên vẫn tiếp tục
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt (2026-08-30)
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đang chờ ADR-0010 được duyệt (2026-08-30)
 > **Phạm vi:** open item 16 — `session` và `engine`
 
 ## Bối cảnh
@@ -138,3 +138,62 @@ Bước 4 là bước phải xin duyệt trước khi viết code, vì nó chạ
 `CLAUDE.md` §1 — chỗ bảo "dừng lại, sửa plan, xin duyệt lại" — thành "sửa plan, **ghi lại
 vào đây**, đi tiếp". Mỗi lần sửa plan phải có một mục dưới đây nói rõ **sửa gì và vì sao**,
 nếu không thì uỷ quyền này biến thành giấy phép đi chệch trong im lặng.
+
+---
+
+### Bước 1–3 xong 2026-08-30. Dừng trước bước 4, đúng như plan.
+
+**Journal đọc lại được. Trước đó nó là *chỉ-ghi*, và đó không phải chuyện nhỏ.**
+
+**Sửa plan — một khuyết tật plan không lường trước.** Format trên đĩa là
+`seq(4 byte) || message`, **không có độ dài**, nên **không tách được bản ghi khi đọc**. File có
+thể ghi thêm mãi mà không bao giờ phân tích được. Tách bằng cách re-frame FIX thì chạy được,
+nhưng gắn journal vào codec và vẫn để cái đuôi bị cắt dở ở trạng thái mơ hồ. Đổi thành
+`seq(4) || len(4) || bytes` — crate chưa publish nên không có ràng buộc tương thích.
+
+**Đã làm:**
+
+- `Journal::highest() -> Option<u32>` — **cố ý không có default**. Một default trả `None` sẽ
+  để một journal *đang giữ* message báo là không giữ gì, và session resume từ nó lặng lẽ bắt
+  đầu lại từ 1.
+- `FileJournal::open` **đọc file trước khi append**, nạp lại vào ring bộ nhớ. Đuôi bị cắt dở
+  thì **bỏ, không đọc nửa vời** — phát lại byte chưa từng lên dây tệ hơn phát lại không gì cả,
+  vì gap fill là câu trả lời hợp lệ còn một message hỏng thì không.
+
+**Đã chạy, đọc output:**
+
+```
+4 / 4    cargo test -p nanofix-engine --test recovery
+59 / 59  cargo test -p nanofix-session --test score      (bất di bất dịch 3)
+59 / 59  cargo test -p nanofix-engine  --test wire
+210 passed / 0 failed   cargo test --all · --no-default-features
+0 allocations           benches/alloc.rs
+clean                   clippy -D warnings · fmt --check
+git diff score.rs wire.rs   rỗng — không sửa test nào để đi qua
+```
+
+**Đảo ngược ba lần, và lần thứ ba đáng ghi lại.** Bỏ đọc file lúc open → 3/4 đỏ. Chấp nhận
+đuôi cắt dở → 1/4 đỏ. Lần thứ ba — đổi `max()` thành `min()` — **báo XANH, và nó là một
+reversal rỗng**: chuỗi thay thế không khớp vì `cargo fmt` đã gộp dòng, nên **không có gì được
+tiêm vào cả**. `grep` đếm ra `0` và đó là thứ bắt được. Tiêm lại cho đúng thì đỏ đúng như phải
+thế (`left: Some(7), right: Some(8)`). Đây chính xác là bẫy `false-greens.md` §5 mà tôi đã
+trích dẫn suốt phiên này — **và tôi vẫn dính**. Bài học không phải "cẩn thận hơn" mà là
+**luôn `grep` xác nhận cái tiêm đã vào file trước khi đọc kết quả**.
+
+**Dừng trước bước 4 — và lý do khác plan.** Plan nói ADR-0010 là về *journal bất đồng với
+counterparty lúc Logon*. Câu hỏi thật sự đứng trước nó và lớn hơn:
+
+`[measured 2026-08-30]` **ba file trong corpus reconnect** — `2i` (2 lần), `2k` (3),
+`2o` (2) — và **cả bảy lần connect đều kỳ vọng `34=1` trả về**, **không Logon nào mang
+`141=Y`**. Cả corpus chỉ một file nhắc tới `141=`.
+
+Nhưng **corpus là cái harness, không phải giao thức.** FIX 4.4 đánh số một *session*, không
+phải một *connection*; QuickFIX khi triển khai thật thì giữ số qua reconnect và reset theo giờ
+trong ngày. Harness của nó bắt đầu mỗi `iCONNECT` từ store sạch — đó là tính chất của cách chạy
+test, không phải phát biểu về nghĩa vụ của một acceptor.
+
+**Nên corpus và một triển khai thật đòi hai hành vi ngược nhau, và code hiện không phân biệt
+được nó đang ở đâu**, vì `connect` là lối vào duy nhất và được gọi trong cả hai trường hợp.
+
+[ADR-0010](../decisions/ADR-0010-a-reconnect-is-not-a-restart.md) đặt đúng câu hỏi đó, trạng
+thái **Proposed**. Bước 4 và 5 chờ chữ ký.

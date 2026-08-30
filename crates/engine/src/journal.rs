@@ -109,6 +109,10 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
             .find(|s| s.seq == seq && s.len > 0)
             .map(|s| &s.buf[..usize::from(s.len)])
     }
+
+    fn highest(&self) -> Option<u32> {
+        self.slots.iter().filter(|s| s.len > 0).map(|s| s.seq).max()
+    }
 }
 
 /// A [`MemJournal`] at the sizes [`SLOTS`] and [`SLOT_LEN`] name.
@@ -149,8 +153,18 @@ pub struct FileJournal<const N: usize, const LEN: usize> {
     writer: Option<std::thread::JoinHandle<()>>,
 }
 
-/// The record a `FileJournal` appends: `34=` then the message.
+/// The header a `FileJournal` appends before each message: the sequence number
+/// and the message's length, both little-endian `u32`.
+///
+/// **The length is what makes the file readable.** `[measured 2026-08-30]` the
+/// first version wrote the sequence number and then the bytes, with nothing to
+/// say where one record ended — so the file could be appended to and never
+/// parsed, and open item 16 could not be closed without changing it. Splitting
+/// records by re-framing FIX would work and would couple the journal to the
+/// codec, and would still leave a torn tail ambiguous.
 const RECORD_SEQ: usize = 4;
+const RECORD_LEN: usize = 4;
+const RECORD_HEADER: usize = RECORD_SEQ + RECORD_LEN;
 
 impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
     /// Append to `path`, creating it if it is not there.
@@ -159,9 +173,38 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
     ///
     /// Whatever opening the file returns.
     pub fn open(path: &Path, how: Durability) -> std::io::Result<Self> {
+        // **Read before appending.** Everything already in the file is put back
+        // into the in-memory ring, so `get` and `highest` answer for messages
+        // this process never sent. That is the difference between an audit trail
+        // and a recovery mechanism.
+        let mut mem_recovered: MemJournal<N, LEN> = MemJournal::new();
+        let mut torn = 0usize;
+        if let Ok(bytes) = std::fs::read(path) {
+            let mut at = 0usize;
+            while at + RECORD_HEADER <= bytes.len() {
+                let mut s4 = [0u8; 4];
+                let mut l4 = [0u8; 4];
+                s4.copy_from_slice(&bytes[at..at + RECORD_SEQ]);
+                l4.copy_from_slice(&bytes[at + RECORD_SEQ..at + RECORD_HEADER]);
+                let seq = u32::from_le_bytes(s4);
+                let len = u32::from_le_bytes(l4) as usize;
+                let end = at + RECORD_HEADER + len;
+                if end > bytes.len() {
+                    // A process killed mid-write. The tail is dropped rather
+                    // than half-read: replaying bytes that never went on the
+                    // wire is worse than replaying nothing, because a gap fill
+                    // is a legal answer and a corrupt message is not.
+                    torn += 1;
+                    break;
+                }
+                mem_recovered.put(seq, &bytes[at + RECORD_HEADER..end]);
+                at = end;
+            }
+        }
+        let _ = torn;
         let file = File::options().create(true).append(true).open(path)?;
         let (mem, mut this) = (
-            MemJournal::new(),
+            mem_recovered,
             Self {
                 mem: MemJournal::new(),
                 how,
@@ -239,13 +282,16 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
                     // dropped rather than waited on: waiting would put a
                     // disk's latency on the engine thread, which is the whole
                     // thing `Async` exists to avoid.
-                    let _ = p.push(&[&seq.to_le_bytes(), bytes]);
+                    let n = u32::try_from(bytes.len()).unwrap_or(0);
+                    let _ = p.push(&[&seq.to_le_bytes(), &n.to_le_bytes(), bytes]);
                 }
             }
             Durability::Fsync => {
                 if let Some(f) = self.file.as_mut() {
-                    let mut rec = [0u8; RECORD_SEQ];
-                    rec.copy_from_slice(&seq.to_le_bytes());
+                    let mut rec = [0u8; RECORD_HEADER];
+                    rec[..RECORD_SEQ].copy_from_slice(&seq.to_le_bytes());
+                    let n = u32::try_from(bytes.len()).unwrap_or(0);
+                    rec[RECORD_SEQ..].copy_from_slice(&n.to_le_bytes());
                     let _ = f.write_all(&rec);
                     let _ = f.write_all(bytes);
                     let _ = f.sync_data();
@@ -256,5 +302,9 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
 
     fn get(&self, seq: u32) -> Option<&[u8]> {
         self.mem.get(seq)
+    }
+
+    fn highest(&self) -> Option<u32> {
+        self.mem.highest()
     }
 }

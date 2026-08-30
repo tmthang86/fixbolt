@@ -25,7 +25,9 @@ delivery log. In dependency order:
    built with `CONFIG_TLS`, which this one is not. Nothing about `ktls-core` or ADR-0005 was
    concluded, because the experiment never reached the library.
 4. ~~**data-fields**~~ — **closed 2026-08-30**, items 8 and 9.
-5. **[session-recovery](docs/plans/2026-08-30-session-recovery.md)** — item 16.
+5. **[session-recovery](docs/plans/2026-08-30-session-recovery.md)** — item 16. **Steps 1–3 done
+   2026-08-30**: the journal reads back. Steps 4–5 wait on
+   [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md), `Proposed`.
 6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5. **Steps 1–2 done
    2026-08-30**; steps 3–4 wait on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md),
    which is `Proposed` and needs the owner's signature.
@@ -460,6 +462,29 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   `CLAUDE.md` §7 names `alloc` and the Criterion suite together and only `alloc` was run.
   **Open item 20**; not fixed here, because every fix changes how a `DESIGN.md` §6 gate is
   measured.
+- **The journal reads back, and it could not have before.** `[measured 2026-08-30]` the
+  on-disk record was `seq(4) || message` with **no length**, so records could not be separated
+  on read: the file was append-only by construction and item 16 could not be closed without
+  changing it. Now `seq(4) || len(4) || bytes`. `FileJournal::open` reads the file before
+  appending, `Journal::highest()` says what is held — **deliberately with no default
+  implementation**, because a default `None` would let a journal that holds messages report
+  that it holds none — and **a torn tail is dropped rather than half-read**. Four tests in
+  `crates/engine/tests/recovery.rs`, each using `FileJournal` and dropping it between the write
+  and the read: a `MemJournal` there would prove nothing, since the restart is the question.
+- **A reversal reported PASS because it inserted nothing, and `grep` is what caught it.**
+  Changing `max()` to `min()` in `highest()` silently failed to apply — `cargo fmt` had joined
+  the line, so the replacement string did not match. The count came back **0** and that is the
+  only reason it was not read as "this guard cannot fail". Re-injected properly it goes red
+  (`left: Some(7), right: Some(8)`). This is `false-greens.md` §5's own case, hit while quoting
+  it. **Confirm the injection is in the file before reading the result** — every time.
+- **The corpus resets on every connect, and it cannot settle whether that is right.**
+  `[measured 2026-08-30]` three files reconnect — `2i` (2 connects), `2k` (3), `2o` (2) — and
+  **all seven expect `34=1` back**, with **no `141=Y` on any of those Logons**; one file in the
+  corpus mentions `141=` at all. But FIX numbers a *session*, not a *connection*, and QuickFIX
+  persists across a reconnect in a deployment while its harness starts each `iCONNECT` from a
+  clean store. **The corpus and a real deployment want opposite behaviour, and `connect` cannot
+  tell which it is in.** [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)
+  proposes separating the two and is `Proposed`.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -522,7 +547,7 @@ plans are **approved**; the first is in progress.
 | [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | **15 closed 2026-08-30**; 6, 11, 13 blocked on a §9 machine; **decides** 12 |
 | [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 — **paused 2026-08-30**, blocked on a kernel with `CONFIG_TLS` |
 | ~~[data-fields](docs/plans/2026-08-30-data-fields.md)~~ | **CLOSED 2026-08-30** — 8, 9 |
-| [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 |
+| [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 — **journal read-back done 2026-08-30; blocked on [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)** |
 | [ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) | 5 — **measured 2026-08-30; blocked on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md) being accepted** |
 
 **The two with no plan, and why.** **1** (the final name) is a decision for the owner, not a
@@ -543,5 +568,5 @@ against hardware that does not exist.
 | 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement | Nothing until open item 6 is answered |
 | 13 | **Release profile is default.** No `lto = "fat"`, no `codegen-units = 1`, no PGO, no `#[cold]` on error paths. Cheap, but each is a number to be measured before and after, not a setting to be assumed | The `engine` step; every §6 number published from Linux |
 | 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what nanofix claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |
-| 16 | **A journal is written and never read back.** Nothing recovers a session's outbound sequence number or its unacknowledged messages from the log on startup, so `Fsync` today is an audit trail rather than a recovery mechanism ([ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md)). It needs a session constructible *from* a journal, which is a session-layer change with its own plan | A restart that resumes a session rather than starting one |
+| 16 | **A journal is written and never read back** — *half closed 2026-08-30*. It now reads back: length-prefixed records, `Journal::highest()`, a torn tail dropped. What remains is the session: `connect` resets unconditionally, so a resumed session's numbers are wiped before they can be used. **[ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md) needs signing** | A restart that resumes a session rather than starting one |
 | 18 | **A plan can close on a laptop's word while CI is red.** The engine plan closed and merged with its gates reported green from an Apple M5; the GitHub run on that same commit failed and was not read, and four documents carried the laptop's number for a day. Nothing in `CLAUDE.md` §9 requires the closing evidence to name a CI run | Every "gates green" claim in a merge commit |
