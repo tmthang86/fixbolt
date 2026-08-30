@@ -101,7 +101,12 @@ that decision needs its own ADR.
    `libquickfix`, runs it as an acceptor, and drives nanofixengine's initiator against it
    through logon, heartbeat, `TestRequest`, `ResendRequest`, gap fill and logout. A
    disagreement is a disagreement with twenty years of real deployment.
-6. **51 of the 59 definitions mirror, and they are the secondary gate.** The harness plays
+6. **51 of the 59 definitions mirror, and they are the secondary gate.**
+   > **Superseded by [ADR-0006](ADR-0006-mirrored-corpus-is-fifty.md), 2026-08-30.** The
+   > criterion below is right about the lines it looks at and reproduces these eight names
+   > exactly; it looks only at message lines. `1b_DuplicateIdentity.def` mirrors into this
+   > engine hanging up a connection nothing told it to. The number is **50**.
+ The harness plays
    acceptor: `E` lines become inputs to our initiator and `I` lines become expected outputs.
    The criterion is mechanical and reproducible — a definition mirrors when every one of its
    `I` lines is something a correct initiator would actually send, i.e. it begins with

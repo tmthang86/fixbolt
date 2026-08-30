@@ -519,9 +519,13 @@ Each step is a plan, a branch, and a merge. Nothing starts before its predecesso
    because without it the codec cannot read an application message.
 3. **`conformance`** — the `.def` runner. 1–2 days; needed regardless of anything else.
 4. **`session`, acceptor role** — the pure state machine, driven to **59/59**.
-5. **`session`, initiator role** — `Role::Initiator` against the 51 mirrorable definitions,
-   then interop against `libquickfix` in CI. A separate step because the *oracle* differs, not
-   because the code does (ADR-0004).
+5. **`session`, initiator role** — `Role::Initiator` against the mirrorable definitions, then
+   interop against `libquickfix` in CI. A separate step because the *oracle* differs, not
+   because the code does (ADR-0004). **Paused after its own step 2, 2026-08-30**, and step 6
+   taken first: the mirrored gate turned out to top out at 45 of 50 and to measure framing
+   rather than protocol wherever the harness has to play the operator. The initiator speaks
+   first and can originate; the rest waits. See
+   [the plan](plans/2026-08-29-session-initiator.md) Sửa 2 and `STATUS.md`.
 6. **`engine`** — busy-poll TCP acceptor **and connector** (D8), journal, both dispatchers
    (D4), backpressure (D10).
 7. **`tools/w2w`** — the wire-to-wire harness, run against step 6 on Linux **before** step 8.

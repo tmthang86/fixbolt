@@ -12,7 +12,8 @@ Last updated: **2026-08-28**.
 | Branch | **`plan/dict-validation`**, on top of `plan/session-layer` |
 | Milestone | **M2 — the session layer, closed.** `[measured 2026-08-29]` **59 / 59**. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — **Chờ duyệt**, written 2026-08-29, nothing built. `DESIGN.md` §7 step 5: the initiator role, 51 mirrored definitions, and interop against `libquickfix` in CI. The last of those is the item that needs a decision — it puts a C++ toolchain in CI for good |
+| Plan in flight | **None.** Next is `engine` — `DESIGN.md` §7 step 6, taken before step 5 by decision on 2026-08-30. It needs a plan before a line of it exists |
+| Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
 | Last closed | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — closed 2026-08-28. Four validation tables, agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 12 524/12 524 message-tag pairs and 1 708/1 708 enum values |
 | Last closed | **[2026-08-28-conformance-runner.md](docs/plans/2026-08-28-conformance-runner.md)** — closed 2026-08-28. The 59 definitions run in process; a replaying fake scores 59 / 59, which is what makes the real score mean something |
@@ -231,6 +232,19 @@ Last updated: **2026-08-28**.
 - **The outbound journal is a stopgap, and it is in the wrong crate.** Eight 512-byte slots
   inside the session, in memory, lost on restart. `DESIGN.md` D1 has the session emitting a
   `Store` action and the engine holding the journal; that is what `engine`'s plan has to build.
+
+- **The mirrored acceptance gate tops out at 45 of 50, not 50, and it is worth less than it
+  looks.** `[measured 2026-08-30]` 46 of the 50 mirrorable files need this end to *originate* a
+  message no state machine can invent — 42 a Logout, 19 an application message, 14 an unprompted
+  Heartbeat, 13 a TestRequest with a given `112=`, 6 a SequenceReset, 4 a ResendRequest — so the
+  harness has to play the operator, and wherever it does the gate measures numbering and framing
+  rather than a protocol decision. A further 5 ask this end to send a message that is wrong on
+  purpose, which a correct engine cannot do.
+- **`ADR-0004`'s mirroring criterion is syntactic; the corpus's client-side badness is
+  semantic.** `ADR-0006` fixed one gap in it (`iDISCONNECT`). The five files above are a second,
+  and they cannot be detected by looking at bytes: all five are syntactically perfect. Interop
+  against `libquickfix` is the answer, and this is the evidence for why ADR-0004 made it the
+  primary gate rather than the secondary one.
 
 ## Not proven — claimed, researched, or simply not yet run
 

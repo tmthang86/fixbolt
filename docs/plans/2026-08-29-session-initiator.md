@@ -1,6 +1,6 @@
 # Vai initiator cho session layer
 
-> **Loại:** Plan · **Ngày:** 2026-08-29 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-29 · **Trạng thái:** Tạm dừng sau bước 2 (2026-08-30) — xem Sửa 2
 > **Phạm vi:** M2 — bước 5 trong `DESIGN.md` §7, tiêu chí thoát số 4 của phase 1
 
 ## Bối cảnh
@@ -65,7 +65,7 @@ tám tên vào một mảng là để một thay đổi corpus im lặng đi qua
 | `ResetSeqNumFlag` | nghe theo | **quyết định** rồi báo |
 | Logon không được trả lời | không có tình huống | timeout → rớt kết nối |
 
-### 3. Chạy tới 51 / 51
+### 3. Chạy tới 50 / 50
 
 Cổng: `cargo test -p nanofix-session --test mirror`. Mỗi lần tăng điểm phải đi kèm một lần đảo
 ngược đỏ, như năm bước trước.
@@ -78,7 +78,7 @@ qua logon → heartbeat → `TestRequest` → `ResendRequest` → gap fill → l
 binary trong `tools/`, **không phải một test của crate nào**, để bất biến 6 và ADR-0004 quyết
 định 7 vẫn đúng: `cargo test --no-default-features` trên một máy không có CMake vẫn phải xanh.
 
-**Đây là mục cần quyết định — xem Rủi ro.**
+**Đã duyệt 2026-08-30**, cùng với chi phí duy trì mà Rủi ro nêu ra.
 
 ### File sẽ tạo hoặc sửa
 
@@ -88,7 +88,7 @@ binary trong `tools/`, **không phải một test của crate nào**, để bấ
 | `crates/conformance/tests/mirror.rs` | tám file bị loại đúng là tám file ADR-0004 nêu |
 | `crates/session/src/lib.rs` | `connect()` phát Logon khi `SPEAKS_FIRST`; timeout Logon |
 | `crates/session/src/out.rs` | Logon của initiator có slot `141` |
-| `crates/session/tests/mirror.rs` | cổng 51 / 51 |
+| `crates/session/tests/mirror.rs` | cổng 50 / 50 |
 | `crates/session/tests/initiator.rs` | cái corpus soi gương không thấy |
 | `tools/interop/` | kịch bản chạy với `libquickfix` (bước 4) |
 | `.github/workflows/ci.yml` | job interop (bước 4) |
@@ -109,9 +109,9 @@ binary trong `tools/`, **không phải một test của crate nào**, để bấ
 
 | Bước | Kết quả | Phụ thuộc | Điểm dự đoán |
 |---|---|---|---|
-| 1 | `run_mirrored` + `mirrors()`, tám file bị loại đúng tên | — | 0 / 51 |
-| 2 | Initiator phát Logon; `141=Y` | 1 | ~30 / 51 |
-| 3 | Phần bất đối xứng còn lại + đảo ngược | 2 | **51 / 51** |
+| 1 | `run_mirrored` + `mirrors()`, chín file bị loại đúng tên | — | 0 / 50 |
+| 2 | Initiator phát Logon; `141=Y` | 1 | ~30 / 50 |
+| 3 | Phần bất đối xứng còn lại + đảo ngược | 2 | **50 / 50** |
 | 4 | Job interop `libquickfix` | 3 | tiêu chí 4 của phase 1 |
 
 Dự đoán bước 2 là **ước**, không phải đo — mọi file soi gương đều bắt đầu bằng một Logon, nên
@@ -121,7 +121,7 @@ chỉ riêng Logon đã mở được phần lớn; con số thật sẽ ghi và
 
 | Bước | Lệnh | Đạt khi |
 |---|---|---|
-| 1 | `cargo test -p nanofix-conformance --test mirror` | Tám file bị loại đúng là tám tên ADR-0004 nêu, **tính ra chứ không chép** |
+| 1 | `cargo test -p nanofix-conformance --test mirror` | Chín file bị loại đúng chín tên ADR-0004 + ADR-0006 nêu, **tính ra chứ không chép** |
 | 2–3 | `cargo test -p nanofix-session --test mirror` | In đúng điểm dự đoán. **Cao hơn cũng phải dừng giải thích** |
 | mọi bước | `cargo test -p nanofix-session --test score` | Vẫn **59 / 59** — không được lùi một file nào |
 | mọi bước | `cargo bench -p nanofix-session --bench alloc` | Thêm `logon_out 0`, và tiêm một `to_vec()` phải thấy `logon_out 10000` |
@@ -135,7 +135,7 @@ cái nào.
 ## Tài liệu phải cập nhật
 
 - [ ] `DESIGN.md` §4 D1 — hình dạng thật của vai initiator sau khi viết
-- [ ] `DESIGN.md` §6 — thêm dòng gate 51 / 51 soi gương
+- [ ] `DESIGN.md` §6 — thêm dòng gate 50 / 50 soi gương
 - [ ] `docs/reference/quickfix-acceptance-def-format.md` — luật soi gương và mọi bẫy đo được
 - [ ] `PRD.md` §2 tiêu chí 4; `STATUS.md`; `CHANGELOG.md`
 - [ ] ADR mới nếu phần bất đối xứng hoá ra lớn hơn ~10% ADR-0004 dự đoán
@@ -145,7 +145,7 @@ cái nào.
 | Bẫy | Test canh |
 |---|---|
 | Soi gương xanh vì **cách đọc của chính mình** sai, không phải vì code đúng | Job interop bước 4 — đó là lý do nó tồn tại |
-| Danh sách tám file bị loại chép tay, corpus đổi mà không ai biết | `tests/mirror.rs`: tập tính ra phải bằng tập tên |
+| Danh sách chín file bị loại chép tay, corpus đổi mà không ai biết | `tests/mirror.rs`: tập tính ra phải bằng tập tên |
 | Logon của initiator xếp trường bằng tay | Dựng bằng `Template`, và comparator vị trí bắt |
 | `108` lấy nhầm của đối tác thay vì của mình | `tests/initiator.rs`, và đảo ngược phải đỏ |
 | `connect()` phát Logon rồi `tick` phát thêm heartbeat ngay | `tests/initiator.rs`: một `connect` ra đúng một bản tin |
@@ -169,6 +169,68 @@ cái nào.
 - **Sequence persistence qua lần khởi động lại.** Journal hôm nay nằm trong bộ nhớ và nằm sai
   crate; cả hai thuộc plan của `engine`.
 - **`tools/w2w`** và mọi con số Linux. Bước 7 trong `DESIGN.md` §7.
+
+## Sửa plan giữa chừng
+
+### Sửa 1 — soi gương được là **50**, không phải 51
+
+**Phát hiện ngay ở bước 1**, khi bản `Replay` trả lời đúng từng dòng vẫn chỉ được 50/51.
+
+Tiêu chí của ADR-0004 quyết định 6 chỉ nhìn **dòng bản tin**. Một file `.def` còn có **chỉ
+thị**, và một chỉ thị soi gương ra thứ không initiator nào làm: `1b_DuplicateIdentity.def` kết
+thúc bằng `i1,DISCONNECT` — soi gương thành `e1,DISCONNECT`, tức **máy này** phải tự cúp kết nối
+1 trong khi không có gì trên dây bảo nó cúp. Ở bản gốc đó là harness dọn dẹp, không phải luật
+giao thức.
+
+`[đo 2026-08-30]` `1b` là file **duy nhất** trong 59 file có `iDISCONNECT`.
+
+Đã ghi thành [ADR-0006](../decisions/ADR-0006-mirrored-corpus-is-fifty.md), thay thế **riêng**
+quyết định 6 của ADR-0004. Mọi cổng trong plan này đổi 51 → **50**.
+
+### Sửa 2 — **cần quyết định**: soi gương đo được ít hơn plan tưởng, và ở chỗ nào
+
+**Phát hiện ở cuối bước 2, bằng số đo chứ không bằng đọc.** Logon của initiator đã đúng —
+45 trong 50 file không rớt ở dòng mang nó. Nhưng điểm là **0 / 50**, và hai số đo dưới đây nói
+vì sao:
+
+**Số đo 1 — 46 / 50 file đòi đầu này *tự phát* một bản tin mà máy trạng thái không thể tự nghĩ ra:**
+
+| Phải tự phát | Số file |
+|---|---|
+| `5` Logout | 42 |
+| `D` / `d` / `8` bản tin ứng dụng | 19 |
+| `0` Heartbeat, không ai hỏi | 14 |
+| `1` TestRequest, với `112=` cho sẵn | 13 |
+| `4` SequenceReset | 6 |
+| `2` ResendRequest | 4 |
+
+Không dòng nào trên dây yêu cầu chúng, và không đồng hồ nào sinh ra một Logout. Muốn chúng ra
+được thì **harness phải đóng vai người vận hành** và bảo session "gửi cái này, bây giờ". Chỗ nào
+harness lái thì chỗ đó cổng đo **đánh số và đóng khung**, không đo quyết định giao thức.
+
+**Số đo 2 — 5 / 50 file đòi đầu này gửi một bản tin *sai có chủ đích*:**
+`1c_InvalidSenderCompID`, `1c_InvalidTargetCompID`, `1d_InvalidLogonBadSendingTime`,
+`1d_InvalidLogonLengthInvalid`, `1e_NotLogonMessage`. CompID không khớp, `SendingTime` lệch 2001
+năm, `9=` thiếu 23 byte, và một cái không phải Logon. Một engine đúng đắn **không gửi được**
+chúng — mà `sendable()` cũng không thấy được, vì cả năm cái đều đúng cú pháp hoàn hảo. Đó chính
+là điều khiến chúng đáng chú ý: tiêu chí của ADR-0004 là **cú pháp**, còn cái sai trong corpus
+phần lớn là **ngữ nghĩa**.
+
+Trần thật của cổng soi gương vì thế là **45**, không phải 50 — và 45 ấy chỉ đạt được nếu harness
+lái mọi lần tự phát.
+
+**Quyết định 2026-08-30: tạm dừng plan này, làm `engine` trước** (`DESIGN.md` §7 bước 6).
+Bước 1 và 2 đã xanh và đã merge; bước 3 và 4 chưa bắt đầu. Tiêu chí thoát số 4 của phase 1 lùi
+lại sau `engine`.
+
+Khi quay lại, ba việc đã biết trước:
+
+1. Viết API một initiator thật cần — `logout()`, `test_request(id)`, `resend_request(from, to)`,
+   `sequence_reset()` — chứ **không** phải một cửa sau "gửi nguyên byte này". Session vẫn dựng
+   bản tin từ `Template` của nó, harness chỉ cấp ý định.
+2. Hạ trần cổng soi gương 50 → **45** bằng một ADR, kèm năm tên và lý do.
+3. Interop `libquickfix` là cổng thật, đúng như ADR-0004 quyết định 5 đã nói ngay từ đầu — và
+   Sửa 2 là bằng chứng cho chính lý do nó tồn tại.
 
 ## Nhật ký giao hàng
 

@@ -23,7 +23,8 @@ use core::fmt;
 
 use crate::compare::{Mismatch, compare};
 use crate::script::{
-    FIXED_TIME_MILLIS, Kind, LoadError, Scenario, Step, scenarios, with_real_checksum,
+    FIXED_TIME_MILLIS, Kind, LoadError, Scenario, Step, mirrors, scenarios, scenarios_mirrored,
+    with_real_checksum,
 };
 
 /// Which connection an input arrived on.
@@ -143,6 +144,40 @@ impl fmt::Display for Report {
         }
         Ok(())
     }
+}
+
+/// Run the 50 mirrorable scenarios, this engine playing the **initiator**.
+///
+/// The corpus is `crates/conformance/src/script.rs`'s
+/// [`scenarios_mirrored`](crate::script::scenarios_mirrored), and the eight
+/// files that cannot mirror are dropped by
+/// [`mirrors`](crate::script::mirrors) rather than by name — `ADR-0004`
+/// decision 6 as amended by `ADR-0006`.
+///
+/// `Report::scenarios` is 50, not 59: a score out of 59 here would be a score
+/// against files this side has no analogue for.
+///
+/// # Errors
+///
+/// [`LoadError`] if the corpus cannot be read.
+pub fn run_mirrored<S: SessionUnderTest>(
+    mut make: impl FnMut(&Scenario) -> S,
+) -> Result<Report, LoadError> {
+    let all: Vec<Scenario> = scenarios_mirrored()?.into_iter().filter(mirrors).collect();
+    let mut report = Report {
+        scenarios: all.len(),
+        ..Report::default()
+    };
+    for s in &all {
+        let mut session = make(s);
+        let failures = run_scenario(s, &mut session);
+        if failures.is_empty() {
+            report.passed += 1;
+            report.passed_files.push(s.file.clone());
+        }
+        report.failures.extend(failures);
+    }
+    Ok(report)
 }
 
 /// Run every scenario, building one session per file.
@@ -287,7 +322,7 @@ fn feed<S: SessionUnderTest>(
 /// does not run. 30 seconds if the file never says.
 fn heart_bt_ms(s: &Scenario) -> u64 {
     for step in &s.steps {
-        if let Kind::Send(m) = &step.kind
+        if let Kind::Send(m) | Kind::Expect(m) = &step.kind
             && field(&m.wire, 35) == Some(b"A")
             && let Some(v) = field(&m.wire, 108)
             && let Ok(secs) = core::str::from_utf8(v).unwrap_or("").parse::<u64>()
