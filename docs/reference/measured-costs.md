@@ -975,9 +975,28 @@ core while measuring quietness, and another read `ps %CPU` — a **lifetime aver
 reported an idle process at 19% on a machine `/proc/stat` measured as 1% busy, and that
 number reached the owner as fact before the two were compared.
 
-**What is still unexplained:** the mode does not vanish on a quiet machine. It runs a few
-percent there — 3/60 and 1/60 in the cleanest samples — and nothing so far accounts for that
-residue. Load amplifies it roughly twentyfold; load is not all of it.
+**What is still unexplained, and a fifth hypothesis refuted.** The mode does not vanish on a
+quiet machine, so the obvious next step was to stop measuring load *before* a batch and
+measure it *per run* — `/proc/stat` either side of each individual execution, so every
+outlier carries the busy figure for its own 1.1 s. Sixty runs, then sixty more with the
+desktop's LLM shut down:
+
+```
+                 mode >=300   median (normal runs)   busy% on the outliers
+LLM resident        6 / 60          259.5 ns         13 13 13 17 13 13
+LLM shut down       6 / 60          259.3 ns         14 13 13 14 14 13
+```
+
+`13%` is the benchmark itself — one core of eight. **The outliers carry the same background
+load as every other run, and closing the LLM changed nothing: 6/60 either way.** So load is
+**sufficient** to produce the mode — eight spinners take it to 92% — and is **not what
+produces the naturally occurring ones**. Sufficient is not necessary, and the intervention
+that proved the first had been quietly answering the second.
+
+Five hypotheses have now been proposed and measured away: L3 placement, SMT, governor/boost,
+thermal, and background load. The residue is roughly 5–10% of runs at ~324 ns, and **nothing
+in this file explains it.** It is left open rather than attributed, which is the only honest
+option left and is cheaper than the four wrong answers that preceded it.
 
 ### Clean baselines, quiet machine, `dispatch` run directly
 
