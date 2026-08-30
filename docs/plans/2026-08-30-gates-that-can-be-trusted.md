@@ -407,4 +407,8 @@ no dead internal links  scripts/check-links.py   (109 file, 183 link)
 corpus verified         scripts/fetch-quickfix-assets.sh   59 / 539 / 244
 ```
 
+**CI trên chính commit đóng plan** (`a52a954`): runs **`33295128793`** (push) và
+**`33295130319`** (pull_request), cả hai `success`. Commit đó tự ghi là *chưa chứng minh được
+điều này* — đúng theo ô §9 vừa thêm ở chính nó — và đây là chỗ điền vào.
+
 **Trạng thái: Xong.** Bốn item đóng: 7, 17, 18, 19.

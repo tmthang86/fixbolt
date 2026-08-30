@@ -112,6 +112,33 @@ jobs:
       - if: steps.ws.outputs.count != '0'
         run: cargo +stable clippy --all-targets -- -D warnings
 
+  # CLAUDE.md §2 non-negotiable 4: the engine thread never sleeps in the kernel.
+  # STATUS.md open item 15, which had no machine check at all until 2026-08-30 —
+  # two attempts to build one both reported success while a sleep was present.
+  #
+  # This one traces a real binary and requires its own RED half to fail, so a
+  # green here cannot mean "the check is broken".
+  no-kernel-sleep:
+    name: The engine thread never sleeps in the kernel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: ws
+        run: |
+          n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -eq 0 ]; then
+            echo "::warning title=Skipped, not passed::No crates yet, so the syscall trace did not run."
+          fi
+      - if: steps.ws.outputs.count != '0'
+        run: sudo apt-get update && sudo apt-get install -y strace
+      - if: steps.ws.outputs.count != '0'
+        run: scripts/fetch-quickfix-assets.sh
+      - if: steps.ws.outputs.count != '0'
+        run: cargo build -p nanofix-w2w --release
+      - if: steps.ws.outputs.count != '0'
+        run: scripts/check-no-kernel-sleep.sh
+
   # CLAUDE.md §2 non-negotiable 6: this must build on a machine with nothing
   # optional installed. Its own runner, so it cannot inherit anything a
   # previous step put there.

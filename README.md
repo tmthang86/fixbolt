@@ -20,8 +20,10 @@ to make everything above that floor vanish, and to measure the floor honestly
 > Nagle on the test harness's own client socket rather than anything in the engine — the story,
 > including a confident wrong diagnosis and what it cost, is in
 > [reference/measured-costs.md](docs/reference/measured-costs.md). `codec`, `dict`, `session`
-> and `engine` exist, with dispatch, backpressure and the journal built; `tools/w2w` and the
-> application-facing `library` do not.
+> and `engine` exist, with dispatch, backpressure and the journal built, and **`tools/w2w`**
+> now runs — which is what finally gave *the engine thread never sleeps in the kernel* a
+> machine check (`scripts/check-no-kernel-sleep.sh`). The application-facing `library` does
+> not exist.
 > **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;
 > **[docs/DESIGN.md](docs/DESIGN.md)** says how it is built; [STATUS.md](STATUS.md) says
 > where the work stands.

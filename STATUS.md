@@ -16,9 +16,10 @@ delivery log. In dependency order:
 1. ~~**gates-that-can-be-trusted**~~ — **closed 2026-08-30.** Items 7, 17, 18 and 19 are gone,
    CI is green, and the whole suite passes on Linux for the first time. Everything below was
    waiting on it, because every plan closes by quoting a gate.
-2. **[w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md)** — items 6, 11,
-   12, 13, 15. `DESIGN.md` §7 step 7. Half of it runs here; half of it is blocked on a §9
-   machine and says so.
+2. **[w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md)** — **half done.**
+   `tools/w2w` runs and **item 15 is closed**. Items 6, 11, 13 and the decision on 12 are
+   **blocked on a machine matching `DESIGN.md` §9**, and the plan stops there rather than
+   lowering the bar to close.
 3. **[ktls-spike](docs/plans/2026-08-30-ktls-spike.md)** — item 10. Independent of the rest,
    and now runnable: it needed Linux, not a §9 machine.
 4. **[data-fields](docs/plans/2026-08-30-data-fields.md)** — items 8, 9.
@@ -31,10 +32,10 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 
 | | |
 |---|---|
-| Branch | **`claude/project-status-irgurb`**, PR #1. `[measured 2026-08-30]` CI green on `1013a30` — runs `33294919021` and `33294920450`, the first green runs since `engine` merged |
+| Branch | **`claude/project-status-irgurb`**, PR #1. `[measured 2026-08-30]` CI green on `a52a954` — runs `33295128793` and `33295130319`. First green since `engine` merged: `1013a30` |
 | Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p nanofix-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | *(none)*. **[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md) closed 2026-08-30** — items 7, 17, 18, 19. Five plans approved and not started; next is [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) |
+| Plan in flight | **[w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md)** — half A done (item 15), half B blocked on a §9 machine. `gates-that-can-be-trusted` closed 2026-08-30 (items 7, 17, 18, 19). Four plans approved and not started |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
@@ -387,6 +388,24 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   rather than files — the trap the plan had named in advance, caught by the guard it named.
   `CLAUDE.md` §9 now requires a green CI run named by id for the commit being closed, and §10
   gains two more failures no gate can see.
+- **Item 15 closed: *the engine thread never sleeps in the kernel* has a machine check, and
+  the check proves itself.** `[measured 2026-08-30]` `tools/w2w` exists and runs;
+  `scripts/check-no-kernel-sleep.sh` traces it with `strace -f` and attributes syscalls to the
+  engine thread **by tid** — the client blocks on purpose and would mask everything. The engine
+  thread made **3111 `recvfrom`, 3111 `accept4`, 351 `sendto`, and zero** of `epoll_wait`,
+  `poll`, `select`, `futex`, `nanosleep`, `sched_yield`. **The script then runs the binary again
+  with `wait::Park` and fails if that does not trip it** — `RED ok — --park trips it: 1749
+  sched_yield`. That second half is the point: this rule had two machine checks before and both
+  were green with a `sleep` present. The zero is only accepted because the same run separately
+  proves the thread did socket work.
+- **`tools/w2w` measures an administrative round trip, not an application echo.**
+  `TestRequest` out, `Heartbeat` back — the session owns `35=1`, so no application is involved
+  and the number cannot be contaminated by the tool's own message building. An application echo
+  comes with the half of its plan that needs a §9 machine.
+- **`[measured 2026-08-30]` w2w on this box: min 14 967 ns, p50 29 745 ns, p99 67 943 ns**,
+  5 000 samples, 4 vCPU container. **Not publishable and the binary says so itself on every
+  run** — no `isolcpus`, no pinning, no frequency control, so it does not match `DESIGN.md` §9.
+  **No row of §8 was changed on the strength of it.**
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -446,7 +465,7 @@ plans are **approved**; the first is in progress.
 | Plan | Closes |
 |---|---|
 | ~~[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)~~ | **CLOSED 2026-08-30** — 7, 17, 18, 19 |
-| [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | 15 now; 6, 11, 13 on a §9 machine; **decides** 12 |
+| [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | **15 closed 2026-08-30**; 6, 11, 13 blocked on a §9 machine; **decides** 12 |
 | [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 |
 | [data-fields](docs/plans/2026-08-30-data-fields.md) | 8, 9 |
 | [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 |
@@ -471,6 +490,5 @@ against hardware that does not exist.
 | 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement | Nothing until open item 6 is answered |
 | 13 | **Release profile is default.** No `lto = "fat"`, no `codegen-units = 1`, no PGO, no `#[cold]` on error paths. Cheap, but each is a number to be measured before and after, not a setting to be assumed | The `engine` step; every §6 number published from Linux |
 | 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what nanofix claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |
-| 15 | **Non-negotiable 4 — *the engine thread never sleeps in the kernel* — is a hand-check.** No gate exists. `dtruss` needs SIP disabled; a symbol-based check over the rlib is defeated by generics (it passes with a `sleep` in the loop). The answer is a syscall trace of a concrete binary on Linux, which `tools/w2w` will be | DESIGN §6; every claim that D8 holds |
 | 16 | **A journal is written and never read back.** Nothing recovers a session's outbound sequence number or its unacknowledged messages from the log on startup, so `Fsync` today is an audit trail rather than a recovery mechanism ([ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md)). It needs a session constructible *from* a journal, which is a session-layer change with its own plan | A restart that resumes a session rather than starting one |
 | 18 | **A plan can close on a laptop's word while CI is red.** The engine plan closed and merged with its gates reported green from an Apple M5; the GitHub run on that same commit failed and was not read, and four documents carried the laptop's number for a day. Nothing in `CLAUDE.md` §9 requires the closing evidence to name a CI run | Every "gates green" claim in a merge commit |

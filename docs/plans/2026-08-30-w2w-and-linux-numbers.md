@@ -175,3 +175,72 @@ báo là chưa xong, chứ không hạ tiêu chuẩn để đóng.
 `CLAUDE.md` §1 — chỗ bảo "dừng lại, sửa plan, xin duyệt lại" — thành "sửa plan, **ghi lại
 vào đây**, đi tiếp". Mỗi lần sửa plan phải có một mục dưới đây nói rõ **sửa gì và vì sao**,
 nếu không thì uỷ quyền này biến thành giấy phép đi chệch trong im lặng.
+
+---
+
+### Nửa A — bước 1 tới 4, xong 2026-08-30. Item 15 đóng.
+
+**`tools/w2w` chạy được**, là một binary thật trong workspace, hình dạng đúng như một triển
+khai: `wait::Spin`, `InlineDispatch`, `SystemClock`, luồng engine riêng.
+
+**Sửa plan — phạm vi đo hẹp hơn plan mô tả, và nói rõ ra.** Bản này đo **vòng khứ hồi hành
+chính: `TestRequest` đi, `Heartbeat` về**. Không có ứng dụng nào tham gia — session sở hữu
+`35=1`, nên `Never::on_message` không bao giờ được gọi (và nếu bị gọi thì nó tự kêu lên, chứ
+không lặng lẽ trả `None`). Chọn thế vì nó **không cần một echo application và không cần
+corpus**, nên con số không bị nhiễm bởi chính công cụ. Echo ứng dụng — thứ mà `DESIGN.md` §8
+thật sự mô tả — đi cùng nửa B.
+
+**Item 15 đóng, và cổng tự mang theo phép đảo ngược của nó.**
+`scripts/check-no-kernel-sleep.sh` chạy `strace -f` trên binary và quy syscall về **đúng luồng
+engine theo tid** — client ở luồng chính chặn *có chủ đích* và sẽ che hết nếu đếm theo tiến
+trình.
+
+`[measured 2026-08-30]` Linux 6.18 x86_64, luồng engine:
+
+```
+   3111 accept4      3111 recvfrom      351 sendto
+      0 epoll_wait / poll / select / futex / nanosleep / sched_yield
+```
+
+**Cổng chạy binary lần thứ hai với `--park`** (`wait::Park`, tức `sched_yield`) và **bắt buộc
+lần đó phải làm cổng đỏ**:
+
+```
+GREEN ok — engine thread made no blocking call; it did make socket calls
+RED   ok — --park trips it:  1749 sched_yield
+```
+
+Đó là điểm mấu chốt. Non-negotiable 4 đã có **hai** máy kiểm trước đây và **cả hai đều xanh
+trong khi có `sleep` nằm bên trong** — `dtruss` bị SIP từ chối nên không chạy gì cả, còn đọc
+symbol từ rlib thì không thấy được code generic. Một cổng chỉ từng được nhìn thấy xanh thì
+chưa được biết là hoạt động, nên cổng này mang nửa RED bên trong chính nó, chạy mỗi lần.
+
+Cũng theo bài học cũ: **số 0 chỉ có nghĩa khi có thứ khác chứng minh đường đó đã chạy.** Script
+đòi luồng engine phải có `recvfrom`/`sendto` khác 0 trước khi chấp nhận con số 0 kia.
+
+`--park` là một công tắc "làm cho engine ngủ" nằm trong một công cụ, và nó tồn tại **chỉ để**
+chứng minh cổng biết đỏ. Điều đó được ghi ngay trong doc comment của `main.rs`.
+
+**Một cái sửa nhỏ đáng ghi:** bản đầu dùng `.expect()` khi spawn luồng, và clippy chặn đúng
+theo non-negotiable 7. Đổi sang `?`. **Một công cụ không được miễn một rule mà workspace ép
+bằng lint** — nếu miễn thì rule đó chỉ còn là lời khuyên.
+
+**Số đo, và tại sao chúng không được công bố.** `[measured 2026-08-30]` container 4 vCPU:
+min 14 967 ns, p50 29 745 ns, p99 67 943 ns trên 5 000 mẫu. Chính binary tự in ra rằng đây
+**không phải** con số latency để công bố, mỗi lần chạy — vì máy này không khớp `DESIGN.md` §9
+(không cô lập core, không tắt tần số động, không ghim luồng). Không có dòng nào của §8 được
+sửa dựa trên nó.
+
+**Gate:**
+
+```
+200 passed / 0 failed   cargo test --all
+200 passed / 0 failed   cargo test --all --no-default-features
+clean                   cargo clippy --all-targets -- -D warnings
+clean                   cargo fmt --check
+GREEN ok / RED ok       scripts/check-no-kernel-sleep.sh
+no dead internal links  scripts/check-links.py
+```
+
+**Còn lại:** nửa B (item 6, 11, 13, và quyết định 12) — **chặn ở một máy đúng §9**, và plan
+dừng ở đó chứ không hạ tiêu chuẩn để đóng.
