@@ -71,6 +71,19 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   Non-negotiable 1 is machine-checked on two architectures now. Three timing groups are over
   their ceilings on this untuned box — see open item 20, where the interesting part is *which
   direction* they miss in.
+- **A cloud VM cannot be the §9 machine, and the checklist could not say so.**
+  `[measured 2026-08-30]` `governor`, `turbo`, `C-states`, `SMT` and NIC IRQ affinity are
+  **host** properties. A guest does not fail those rows loudly — the `/sys` files are absent,
+  so it collects `unknown` and reads as under-configured rather than structurally unable.
+  `check-machine.sh` gained a **`not virtualised`** row (`systemd-detect-virt` + steal over
+  the same window), guarded by `scripts/check-machine-verdicts.sh` — 11 cases, no VM and no
+  root needed, in CI. **The GitHub runner is itself a guest**, so the bench job's machine
+  block now says so on every run. Consequence for the plan: **development can move to cloud;
+  measurement stays on the desk.** The first version of the row reported this bare-metal box
+  as a guest — `systemd-detect-virt` **exits 1 when the answer is `none`**, so
+  `$(... || echo unknown)` ran both halves and set the variable to two lines. The verdict test
+  could not catch it, because it feeds the function directly and never sees how the argument
+  is obtained; running the real script did.
 - **Tuning a machine to §9 moves every bench median by under 2%.** `[measured 2026-08-30]`
   30 full `scripts/bench.sh` runs on the desktop, 15 with §9 tuning on and 15 with it off —
   the first time any machine in this project could be measured **in both states**. Three cases

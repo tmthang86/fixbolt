@@ -34,6 +34,56 @@ row() { # row PASS|FAIL|UNKNOWN name value fixcmd
 # Read a file, or print nothing if it is not there / not readable.
 r() { cat "$1" 2>/dev/null; }
 
+# virt_verdict <systemd-detect-virt output> <steal % over the window>
+#
+# Why this row exists: a guest CANNOT satisfy §9, and it does not fail loudly — it
+# fails by the files simply not being there. `governor`, `turbo`, `C-states`, `SMT`
+# and NIC IRQ affinity are all HOST properties; a guest that sets its own THP and
+# busy_poll can collect `unknown` on the rest and look merely under-configured
+# rather than structurally unable. `unknown` is already not a pass, so the script
+# does not lie — but it does not say the one thing the reader needs, which is that
+# no amount of configuration inside this machine will fix those rows.
+#
+# Split out so scripts/check-machine-verdicts.sh can exercise it: this repository
+# has no VM to run against, and a row that cannot be tested where it matters is how
+# scripts/check-ktls-available.sh shipped a wrong answer for a day.
+virt_verdict() {
+  local virt="$1" steal="$2"
+  case "$virt" in
+    none)
+      if [ "${steal:-0}" -gt 0 ] 2>/dev/null; then
+        echo "STEAL_ON_METAL"
+        echo "  Bare metal reporting ${steal}% steal. Nothing here explains that;"
+        echo "  find out why before publishing a number from this machine."
+        return 1
+      fi
+      echo "BARE_METAL"
+      echo "  Bare metal, no steal. §9's host-level rows are settable here."
+      return 0
+      ;;
+    ""|unknown)
+      echo "UNKNOWN"
+      echo "  Cannot tell whether this is a guest. Treat every §9 row below as"
+      echo "  unconfirmed — CLAUDE.md §2 non-negotiable 10."
+      return 1
+      ;;
+    *)
+      echo "GUEST"
+      echo "  Running under '${virt}'. governor, turbo, C-states, SMT and NIC IRQ"
+      echo "  affinity are HOST properties: no configuration inside this machine"
+      echo "  can set them, so §9 cannot be satisfied here and no latency figure"
+      echo "  from it is publishable. Steal over the window: ${steal:-unknown}%."
+      echo "  Use bare metal, or publish nothing but counts and same-machine A/B."
+      return 1
+      ;;
+  esac
+}
+
+# Sourced by the verdict test, which wants the functions and none of the probing.
+if [ "${MACHINE_SOURCE_ONLY:-0}" = 1 ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 echo "=== machine"
 uname -srm
 if [ -r /proc/cpuinfo ]; then
@@ -159,6 +209,7 @@ fi
 # adjacent to the one asked is the failure this repository keeps finding.
 QUIET_WINDOW=${QUIET_WINDOW:-1}
 busy_pct=""
+steal_pct=""
 # One awk pass over every /proc/<pid>/stat. Done in shell it took seconds, which
 # made the sampling window longer than QUIET_WINDOW and reported a single-threaded
 # process at 310% of a core — a reading that is impossible on its face, and the
@@ -179,13 +230,39 @@ if [ -r /proc/stat ]; then
   A=$(snap); sleep "$QUIET_WINDOW"; B=$(snap)
   # shellcheck disable=SC2046
   set -- $(echo "$A" | head -1); shift
-  a_idle=$(($4 + $5)); a_tot=0; for v in "$@"; do a_tot=$((a_tot + v)); done
+  a_idle=$(($4 + $5)); a_steal=${8:-0}; a_tot=0; for v in "$@"; do a_tot=$((a_tot + v)); done
   # shellcheck disable=SC2046
   set -- $(echo "$B" | head -1); shift
-  b_idle=$(($4 + $5)); b_tot=0; for v in "$@"; do b_tot=$((b_tot + v)); done
-  d_tot=$((b_tot - a_tot)); d_idle=$((b_idle - a_idle))
+  b_idle=$(($4 + $5)); b_steal=${8:-0}; b_tot=0; for v in "$@"; do b_tot=$((b_tot + v)); done
+  d_tot=$((b_tot - a_tot)); d_idle=$((b_idle - a_idle)); d_steal=$((b_steal - a_steal))
   [ "$d_tot" -gt 0 ] && busy_pct=$(((d_tot - d_idle) * 100 / d_tot))
+  [ "$d_tot" -gt 0 ] && steal_pct=$((d_steal * 100 / d_tot))
 fi
+
+# --- virtualisation -----------------------------------------------------------
+# Reported before the quiet row because it governs it: on a guest, "quiet" can only
+# ever mean "quiet inside this VM", and the neighbours are invisible except as steal.
+# `systemd-detect-virt` EXITS 1 WHEN THE ANSWER IS "none" — the good case is
+# reported as a failure. `[measured 2026-08-30]` written first as
+# `$(systemd-detect-virt || echo unknown)`, which on bare metal ran both halves and
+# set VIRT to the two lines "none\nunknown", so this machine reported itself a
+# guest. The verdict test could not catch it: it feeds virt_verdict directly and
+# never sees how the argument is obtained. Running the real script did.
+VIRT=$(systemd-detect-virt 2>/dev/null)
+[ -z "$VIRT" ] && VIRT=unknown
+vv=$(virt_verdict "$VIRT" "${steal_pct:-0}")
+case "$(echo "$vv" | head -1)" in
+  BARE_METAL) row PASS "not virtualised" "bare metal, ${steal_pct:-0}% steal" ;;
+  GUEST) row FAIL "not virtualised" "guest under '${VIRT}', ${steal_pct:-0}% steal" \
+    "measure on bare metal; governor, turbo, C-states, SMT and IRQ affinity are host properties" ;;
+  STEAL_ON_METAL) row FAIL "not virtualised" "bare metal but ${steal_pct}% steal — unexplained" \
+    "find out what is stealing time before publishing a number from this machine" ;;
+  *) row UNKNOWN "not virtualised" "cannot tell (systemd-detect-virt unavailable)" \
+    "confirm by hand; every row below is unconfirmed until you do" ;;
+esac
+# The reasoning only earns its space when the answer is not PASS — every other row
+# here prints a fix line and nothing else when it passes.
+[ "$(echo "$vv" | head -1)" = BARE_METAL ] || echo "$vv" | tail -n +2 | sed 's/^/     /'
 
 if [ -z "$busy_pct" ]; then
   row UNKNOWN "machine is quiet" "cannot read /proc/stat" \
