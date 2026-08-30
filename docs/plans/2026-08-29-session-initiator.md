@@ -1,6 +1,6 @@
 # Vai initiator cho session layer
 
-> **Loại:** Plan · **Ngày:** 2026-08-29 · **Trạng thái:** Đã duyệt (2026-08-30, cả bốn bước)
+> **Loại:** Plan · **Ngày:** 2026-08-29 · **Trạng thái:** Tạm dừng sau bước 2 (2026-08-30) — xem Sửa 2
 > **Phạm vi:** M2 — bước 5 trong `DESIGN.md` §7, tiêu chí thoát số 4 của phase 1
 
 ## Bối cảnh
@@ -219,7 +219,18 @@ phần lớn là **ngữ nghĩa**.
 Trần thật của cổng soi gương vì thế là **45**, không phải 50 — và 45 ấy chỉ đạt được nếu harness
 lái mọi lần tự phát.
 
-**Chờ chủ dự án quyết**, xem tin nhắn kèm theo. Bước 3 chưa bắt đầu.
+**Quyết định 2026-08-30: tạm dừng plan này, làm `engine` trước** (`DESIGN.md` §7 bước 6).
+Bước 1 và 2 đã xanh và đã merge; bước 3 và 4 chưa bắt đầu. Tiêu chí thoát số 4 của phase 1 lùi
+lại sau `engine`.
+
+Khi quay lại, ba việc đã biết trước:
+
+1. Viết API một initiator thật cần — `logout()`, `test_request(id)`, `resend_request(from, to)`,
+   `sequence_reset()` — chứ **không** phải một cửa sau "gửi nguyên byte này". Session vẫn dựng
+   bản tin từ `Template` của nó, harness chỉ cấp ý định.
+2. Hạ trần cổng soi gương 50 → **45** bằng một ADR, kèm năm tên và lý do.
+3. Interop `libquickfix` là cổng thật, đúng như ADR-0004 quyết định 5 đã nói ngay từ đầu — và
+   Sửa 2 là bằng chứng cho chính lý do nó tồn tại.
 
 ## Nhật ký giao hàng
 
