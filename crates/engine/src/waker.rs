@@ -38,15 +38,36 @@ use std::sync::Arc;
 
 use crate::transport::Source;
 
-/// The engine's end of the self-pipe: the descriptor to wait on, and the drain.
-pub struct Waker {
+/// Both ends, held together.
+///
+/// **They are not separable, and that is the whole point.** Writing to a pipe
+/// whose read end has closed raises `SIGPIPE`, whose **default action
+/// terminates the process** — and a library cannot assume otherwise. Rust's
+/// runtime sets `SIGPIPE` to `SIG_IGN` before `main`, which makes the bug
+/// invisible from an ordinary Rust binary; a `cdylib` loaded into a C program,
+/// or a `main` that restores the default, gets the default.
+///
+/// So the read end is owned jointly: dropping the [`Waker`] while any
+/// [`WakeHandle`] survives does **not** close it, and a wake that arrives after
+/// the engine has gone lands in a pipe nobody will read. That is not a leak —
+/// the handle is the thing keeping it open, deliberately, and the descriptors
+/// go when the last one does. `[measured 2026-08-30]` before this, the same
+/// sequence killed the test binary with `signal: 13`.
+struct Pipe {
     read: OwnedFd,
+    write: OwnedFd,
 }
 
-/// The other threads' end. Cheap to clone, and safe to hold anywhere.
+/// The engine's end of the self-pipe: the descriptor to wait on, and the drain.
+pub struct Waker {
+    pipe: Arc<Pipe>,
+}
+
+/// The other threads' end. Cheap to clone, and safe to hold anywhere —
+/// **including after the engine it belonged to has been dropped**.
 #[derive(Clone)]
 pub struct WakeHandle {
-    write: Arc<OwnedFd>,
+    pipe: Arc<Pipe>,
 }
 
 impl Waker {
@@ -80,18 +101,19 @@ impl Waker {
         set_nonblocking_cloexec(&read)?;
         set_nonblocking_cloexec(&write)?;
 
+        let pipe = Arc::new(Pipe { read, write });
         Ok((
-            Self { read },
-            WakeHandle {
-                write: Arc::new(write),
+            Self {
+                pipe: Arc::clone(&pipe),
             },
+            WakeHandle { pipe },
         ))
     }
 
     /// The descriptor to put in the poll set.
     #[must_use]
     pub fn source(&self) -> Source {
-        Source::from_raw_fd(self.read.as_raw_fd())
+        Source::from_raw_fd(self.pipe.read.as_raw_fd())
     }
 
     /// Throw away everything queued in the pipe.
@@ -110,7 +132,7 @@ impl Waker {
             #[allow(unsafe_code)]
             let n = unsafe {
                 libc::read(
-                    self.read.as_raw_fd(),
+                    self.pipe.read.as_raw_fd(),
                     buf.as_mut_ptr().cast::<libc::c_void>(),
                     buf.len(),
                 )
@@ -136,6 +158,13 @@ impl WakeHandle {
     /// `EAGAIN` — and a pipe with unread bytes in it is already readable, which
     /// is the entire signal. One pending wake and a thousand mean the same
     /// thing: *look again*.
+    ///
+    /// **Safe after the engine has gone**, which is a shutdown race that will
+    /// happen: the application thread pushes one last reply while the engine is
+    /// being dropped. The read end is held jointly with this handle (see
+    /// [`Pipe`]), so there is always a reader and the write can never raise
+    /// `SIGPIPE`. Those wakes accumulate in a pipe nobody drains and then stop
+    /// at `EAGAIN`, which is exactly right — nobody is listening.
     pub fn wake(&self) {
         let byte = 1u8;
         // SAFETY: writes exactly one byte from a live local through a
@@ -145,7 +174,7 @@ impl WakeHandle {
         #[allow(unsafe_code)]
         unsafe {
             libc::write(
-                self.write.as_raw_fd(),
+                self.pipe.write.as_raw_fd(),
                 std::ptr::from_ref(&byte).cast::<libc::c_void>(),
                 1,
             );

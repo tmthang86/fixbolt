@@ -354,6 +354,45 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
 
 ## Nhật ký giao hàng
 
+### 2026-08-30 — sau khi đóng: một lỗi thật, do review bot tìm ra
+
+**Plan đã đóng ở trên. Mục này là việc phát sinh sau đó, ghi ở đây vì nó thuộc code của plan
+này.**
+
+`chatgpt-codex-connector[bot]` để lại một nhận xét P1 trên PR #2: nếu `Engine` bị drop trong khi
+một thread khác còn giữ `WakeHandle`, thì đầu đọc của pipe đóng còn đầu ghi thì không, và
+`libc::write` vào một pipe không còn ai đọc **raises `SIGPIPE`** — mà hành động mặc định của nó
+là **giết cả tiến trình**.
+
+**Tái hiện trước khi sửa, và nó chết đúng như bot nói:**
+
+```
+process didn't exit successfully: waker_sigpipe-...
+  (signal: 13, SIGPIPE: write on a pipe with no one to read)
+```
+
+**Vì sao nó vô hình với mọi test bình thường:** runtime của Rust đặt `SIGPIPE` thành `SIG_IGN`
+trước `main`, nên trong một binary Rust thông thường `write` chỉ trả `EPIPE` và giá trị trả về
+đang bị bỏ qua sẽ nuốt nốt. **Nhưng đây là một thư viện.** Một `cdylib` nạp vào chương trình C,
+hay một `main` khôi phục disposition mặc định, sẽ nhận hành động mặc định. Test do đó nằm trong
+**binary riêng của nó** và tự đặt `SIGPIPE` về `SIG_DFL` — đổi một thứ toàn cục thì không được
+làm thế với phần còn lại của suite.
+
+**Cách sửa: hai đầu pipe được giữ chung trong một `Arc`.** Drop `Waker` không đóng đầu đọc chừng
+nào còn `WakeHandle` sống, nên write luôn có người đọc. Wake đến sau khi engine đã đi thì rơi vào
+một pipe không ai vét và dừng ở `EAGAIN` — đúng, vì không còn ai nghe. **Không phải rò rỉ**:
+chính cái handle là thứ giữ nó mở, có chủ ý, và descriptor đi khi handle cuối cùng đi.
+
+**Và một giả định đi kèm đã được đo thay vì được tin.** Lý lẽ dễ dãi ở đây là *"`std` tự canh
+socket của nó, nên chỉ lời gọi `write` thô mới hở"* — đó là một khẳng định về hiện thực của người
+khác. Nên có test thứ hai: ghi 100 lần vào một socket mà đầu kia đã đóng, trong cùng binary đó,
+dưới cùng disposition. **Sống sót.** Giờ nó là quan sát.
+
+**Bài học, và nó không phải về `SIGPIPE`:** `unsafe` ở đây có bình luận SAFETY nói đúng về **bộ
+nhớ** — con trỏ sống, độ dài đúng, kernel không giữ lại gì — và hoàn toàn đúng. Cái nó không nói
+là **hợp đồng của tín hiệu**. `CLAUDE.md` §2 rule 8 đòi *"một bình luận nêu thứ chứng minh nó
+đúng"*, và cái được chứng minh là an toàn bộ nhớ, không phải an toàn tiến trình. `[to testing-skills]`
+
 ### 2026-08-30 — ĐÓNG
 
 **`CLAUDE.md` §9 ô cuối — một run CI xanh, gọi tên bằng id, cho commit đang đóng:**

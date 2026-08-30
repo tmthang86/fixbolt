@@ -113,6 +113,21 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 
 ## Proven — the command was run and its output read
 
+**`[measured 2026-08-30]` A review bot found a real one, and it killed the process.** If the
+engine is dropped while another thread still holds a `WakeHandle`, the self-pipe's read end
+closes and the write end does not; `libc::write` into it raises `SIGPIPE`, whose default action
+terminates. Reproduced before fixing — `signal: 13, SIGPIPE: write on a pipe with no one to
+read` — and it is **invisible from any ordinary Rust test**, because the runtime sets `SIG_IGN`
+before `main` and the ignored return value swallows the `EPIPE`. A library cannot assume its host
+does that. Fixed by holding both ends jointly, so a writer always has a reader. The test lives in
+its own binary because it changes a process-global disposition.
+
+The `unsafe` block's SAFETY comment was **correct and insufficient**: it proved memory safety —
+live pointer, right length, nothing retained — and said nothing about the signal contract.
+`CLAUDE.md` §2 rule 8 asks for "a comment naming what proves it sound", and what was proven was
+the wrong kind of soundness.
+
+
 **`[measured 2026-08-30]` The `standard` gate agrees with itself on two different machines, with
 two orders of magnitude of headroom.** Its ceilings are not the marginal kind open item 20 is
 about. Same commit, same script:

@@ -141,6 +141,11 @@ below describe what a first release would contain.
     subsequent `poll` return instantly and turns `standard` back into a spin. `wake()` never
     blocks, and a write refused because the pipe is full is not lost work — a full pipe is
     already readable, which is the entire signal.
+  - **A `WakeHandle` outliving its `Waker` is safe.** Both pipe ends are held jointly, so
+    dropping the engine while an application thread still holds a handle cannot leave a write
+    without a reader. `[measured 2026-08-30]` before this it raised `SIGPIPE` and killed the
+    process — invisible from an ordinary Rust binary, because the runtime sets `SIG_IGN` before
+    `main`, and a library cannot assume its host does the same.
   - **Pairing `Block` with a transport that cannot be waited on does not compile.** `Loopback`
     is the case that matters: an engine there would answer every message, pass all 59
     definitions, read 0% CPU, and be 100 ms slower per message. A `compile_fail,E0080` doctest
