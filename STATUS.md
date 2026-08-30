@@ -330,11 +330,24 @@ Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire
   count is not a settle criterion. Written up in
   [reference/measured-costs.md](docs/reference/measured-costs.md). **Open item 17** — until
   it is deterministic the wire gate cannot go in CI, and it is the gate `tools/w2w` builds on.
-- **The rest of the suite is green on Linux.** `[measured 2026-08-30]` same box: `cargo fmt
-  --check` clean, `cargo clippy --all-targets -- -D warnings` clean,
+- **The rest of the suite is green on Linux, on this toolchain.** `[measured 2026-08-30]`
+  same box, `cargo 1.94.1`: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D
+  warnings` clean **here and red on the runner's newer clippy — see the next entry**,
   `scripts/check-lint-config.sh` green in both directions, `cargo test --all` **158 passed /
   1 failed** across 30 test binaries — the one failure being the wire gate above — and
   `cargo test --no-default-features` fails on that one and nothing else.
+- **CI had been red on `main` for both of those, and nobody read it.** `[measured 2026-08-30]`
+  GitHub Actions run `33291318638`, commit `9986890` — the tip this branch was cut from —
+  fails two jobs. *Builds with nothing optional installed* fails on
+  `the_fifty_nine_definitions_pass_through_a_real_socket`, which is the wire gate above: **the
+  runner had been saying 39 / 59 within a minute of the engine merging**, while this page, the
+  `README`, `DESIGN.md` §6 and `PRD.md` all said 59 / 59 on the strength of a laptop run.
+  *fmt · clippy · test* fails on `clippy::byte_char_slices` at
+  `crates/dict/tests/interop_quickfix_fields.rs:133` — a lint that does not exist in
+  `clippy 0.1.94` here or `1.95.0` on the M5, and does in the runner's `1.98.0`. **CI installs
+  whatever stable is current and there is no `rust-toolchain.toml`**, so `-D warnings` denies
+  lints that had not been written when the code was. Both written up in
+  [reference/measured-costs.md](docs/reference/measured-costs.md). **Open items 18 and 19.**
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -404,3 +417,5 @@ Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire
 | 15 | **Non-negotiable 4 — *the engine thread never sleeps in the kernel* — is a hand-check.** No gate exists. `dtruss` needs SIP disabled; a symbol-based check over the rlib is defeated by generics (it passes with a `sleep` in the loop). The answer is a syscall trace of a concrete binary on Linux, which `tools/w2w` will be | DESIGN §6; every claim that D8 holds |
 | 16 | **A journal is written and never read back.** Nothing recovers a session's outbound sequence number or its unacknowledged messages from the log on startup, so `Fsync` today is an audit trail rather than a recovery mechanism ([ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md)). It needs a session constructible *from* a journal, which is a session-layer change with its own plan | A restart that resumes a session rather than starting one |
 | 17 | **The wire gate's settle criterion is a spin count.** `Wire::pump` in `crates/engine/tests/wire.rs` declares the exchange settled after 200 consecutive `Engine::turn` calls that moved nothing, which is a question about CPU speed rather than about kernel delivery. Measured: 39 / 59 on Linux, 59 / 59 on the M5, 59 / 59 on Linux at a 100× bound. Needs a real criterion — readiness on the client sockets with a deadline — behind its own plan, because it changes how a `DESIGN.md` §6 gate is measured | The wire gate in CI; `tools/w2w`, which builds on it; every claim that the 59 / 59 over TCP is reproducible |
+| 18 | **A plan can close on a laptop's word while CI is red.** The engine plan closed and merged with its gates reported green from an Apple M5; the GitHub run on that same commit failed and was not read, and four documents carried the laptop's number for a day. Nothing in `CLAUDE.md` §9 requires the closing evidence to name a CI run | Every "gates green" claim in a merge commit |
+| 19 | **CI's toolchain is unpinned and the workspace denies all warnings.** The runner installs whatever stable is current, so `cargo clippy -- -D warnings` denies lints released after the code was written — measured: `clippy::byte_char_slices` red on `1.98.0`, absent from `0.1.94` and `1.95.0`. The repository can go red with no commit. Pin a `rust-toolchain.toml` and upgrade deliberately, or deny a named list | Every clippy gate; anyone reading a red CI and looking for what they broke |

@@ -431,3 +431,55 @@ back there.
 `[to testing-skills]` — as a false-green case: *a gate whose green is a duration*. Contribute
 the three-row table, the monotonic-score diagnostic, and the rule that a settle criterion must
 name the event it waits for. It needs no FIX to be understood.
+
+## CI had been red for both of these before either was noticed
+
+`[measured 2026-08-30]` The section above was written as though running the suite on Linux
+was what found the wire gate. It was not the first thing to find it. **GitHub Actions had
+already been failing on the same assertion, on `main`, since the engine merged** — run
+`33291318638`, commit `9986890`, job *Builds with nothing optional installed*:
+
+```
+failures:
+    the_fifty_nine_definitions_pass_through_a_real_socket
+test result: FAILED. 0 passed; 1 failed
+```
+
+The merge commit's own message reports the gates green on an Apple M5 with `cargo 1.95.0`,
+and that report is true. CI disagreed with it within a minute and **nothing read the
+disagreement**. `CLAUDE.md` §10 already names this in its own words — *a check proves nothing
+until something reads it* — and here it cost the repository a status page, a `README` blurb,
+a `DESIGN.md` §6 row and a `PRD.md` exit criterion that all said 59 / 59 while the machine
+that runs on every push said otherwise. **The gate was not missing and was not wrong. It was
+unread.**
+
+The same run was red for a second, independent reason, and that one has a different cause:
+
+```
+error: can be more succinctly written as a byte str
+   --> crates/dict/tests/interop_quickfix_fields.rs:133:16
+133 |         .chain([b'*', b'?', b'!'])
+    |                ^^^^^^^^^^^^^^^^^^ help: try: `*b"*?!"`
+    = note: `-D clippy::byte-char-slices` implied by `-D warnings`
+```
+
+`clippy::byte_char_slices` does not exist in the toolchains this repository is developed on —
+`clippy 0.1.94` here and `1.95.0` on the M5 both pass that file. The runner's help URL says
+`rust-1.98.0`. **CI installs whatever stable is on the day it runs, and there is no
+`rust-toolchain.toml`**, so `-D warnings` means *deny every lint any future clippy invents*.
+A repository can go red with no commit, and the person who reads it first will be looking for
+what they broke.
+
+Two rules, and neither is about FIX:
+
+- **A gate on a machine you do not sit at has to report to somewhere you look.** A red run
+  that only exists in a tab is the same as no run. The cheapest fix is that a plan cannot
+  close on a laptop's word: the closing evidence names the CI run.
+- **`-D warnings` with an unpinned toolchain is a scheduled outage.** Either pin the
+  toolchain and upgrade deliberately, or deny a named list rather than the category.
+
+`[to testing-skills]` — two cases. *A red check nobody read*, which is the mirror of
+`false-greens.md` §7 "the report that only speaks when it fails": here it spoke and there was
+no one on the channel. And *`-D warnings` against a rolling toolchain*, where the failing
+build is caused by a release rather than by a change. The second is not a false green at all
+and may belong in a section of its own upstream.
