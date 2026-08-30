@@ -25,7 +25,7 @@ approval gate was never the safety net here in the first place.
 
 **The next session's starting points, in the order that costs least:**
 
-1. ~~**A plan for `standard` mode**~~ — **CLOSED 2026-08-30.**
+1. ~~**A plan for `standard` mode**~~ — **CLOSED and MERGED 2026-08-30** (`6d35b75`).
    [standard-mode](docs/plans/2026-08-30-standard-mode.md), 8 steps, and
    **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**. `standard` exists,
    **is the default** (`serve` blocks, `serve_hft` spins), and passes the 59 definitions.
@@ -46,8 +46,17 @@ measurements and open items 6, 11 and 13 all wait on the same thing: the desktop
 
 **One thing needs the owner, not the agent:** `CLAUDE.md` §11 says the upstream
 `testing-skills` pull request opens when the plan that found the cases closes. This plan found
-**seven** false greens and one false claim. That PR would push content to a **public**
-repository, so it is not covered by the standing delegation and has not been opened.
+**eight** cases — seven where the evidence broke while the code was right, and one real bug (a
+wake after shutdown raising `SIGPIPE`, found by a review bot) whose `unsafe` block had a SAFETY
+comment that was correct and insufficient: it proved memory safety and said nothing about the
+signal contract. That PR would push content to a **public** repository, so it is not covered by
+the standing delegation and **has not been opened**.
+
+**On the delegation itself, recorded so it is not inferred later.** `[2026-08-30]` the owner
+delegated plan-writing and plan approval — *"tự lên plan và tự duyệt, tự chạy"* — and then, on
+this branch, merging when the tests pass. Three things stayed out of it and stay out: amending
+one of `CLAUDE.md` §2's ten non-negotiables, anything that leaves this repository for a public
+one, and any claim that a gate is green without the run that says so.
 
 **Read before touching the engine:** [GUIDE.md](docs/GUIDE.md) §0 for the mode split, and
 [reference/measured-costs.md](docs/reference/measured-costs.md) for why the numbers are what
@@ -98,7 +107,7 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 
 | | |
 |---|---|
-| Branch | **`claude/project-status-hdx7k1`**, PR #2, 10 commits — `standard-mode` closed. `[measured 2026-08-30]` **CI green on `59d048a`, the closing commit: run [`33325120775`](https://github.com/tmthang86/fixbolt/actions/runs/33325120775), 9 / 9 jobs**, including the new `standard-blocks` job on its first run against a GitHub runner. Not merged — that is the owner's. Previously: **`main`.** PR #1 (`claude/project-status-irgurb`) merged 2026-08-30 as `76d6989`, no-ff. `[measured 2026-08-30]` **CI green on the merge commit itself**, run `33307963879`, all seven jobs — the first green `main` has had; the run before it, `9986890`, failed. In flight: **`plan/ktls-unblocked`** |
+| Branch | **`main`.** PR #2 (`claude/project-status-hdx7k1`) merged 2026-08-30 as **`6d35b75`**, no-ff, 12 commits — `standard-mode` closed. `[measured 2026-08-30]` **CI green on the merge commit itself, run [`33326803468`](https://github.com/tmthang86/fixbolt/actions/runs/33326803468)**, and on the merged head `ae3d78a` before it, run `33325530208`, 9 / 9 jobs. `git diff ae3d78a 6d35b75` is **empty**, so the branch's green transfers to the merge exactly rather than by assumption. Before that: PR #1 merged as `76d6989`, run `33307963879` |
 | Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p fixbolt-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
 | Plan in flight | **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — measured, blocked on ADR-0011. `gates-that-can-be-trusted` **closed** (7, 17, 18, 19); `w2w-and-linux-numbers` **half A done** (15), half B needs the desktop tuned to §9; `ktls-spike` **unpaused** (10) — the desktop has `CONFIG_TLS`. Three plans approved and not started: `data-fields`, `session-recovery`, `ring-full-policy` |
