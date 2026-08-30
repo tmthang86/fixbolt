@@ -113,6 +113,18 @@ below describe what a first release would contain.
     dependency and no `unsafe` at all**. `POLLNVAL` is `PollError::BadSource`, never counted as
     readiness — `poll(2)` includes it in its return value, so trusting that number would report
     an unknown descriptor as a ready one.
+  - `block::Block` — `standard` mode's idle turn, behind the same feature and `cfg(unix)`.
+    Blocks on readiness with a **100 ms default timeout**, floored at 5 ms because a timeout
+    short enough to be indistinguishable from a spin defeats the mode. The timeout is a
+    correctness parameter rather than a knob: `Session` takes no clock, so in `standard` it is
+    the coarsest grain of time the session can see. `EINTR` goes back and waits out **what is
+    left**, never the full timeout again. A `poll` that fails is recorded in `Block::last_error`
+    **and still gives the core back** — an error `idle` cannot return must at least be
+    observable.
+  - **Pairing `Block` with `Engine` does not compile yet**, on purpose: `Engine::idle` still
+    hands its waiter an empty source list, and a `Block` there would be a *correct* engine that
+    is 100 ms slower per message — invisible to a correctness suite and to a CPU measurement
+    alike. A `compile_fail,E0080` doctest on `Block` keeps it that way.
   - `Park` is renamed **`Yield`**. It is neither mode and its rustdoc says so: it fails the
     `hft` gate (`sched_yield`) and fails the `standard` gate (it burns the core). Nothing about
     its behaviour changed.

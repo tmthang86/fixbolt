@@ -26,6 +26,8 @@ pub mod journal;
 // target with no poller `standard` does not exist, so code written against it
 // does not compile there rather than failing at startup.
 #[cfg(all(feature = "standard", unix))]
+pub mod block;
+#[cfg(all(feature = "standard", unix))]
 pub mod poll;
 pub mod ring;
 pub mod transport;
@@ -227,15 +229,30 @@ where
 
     /// One idle turn, by the chosen [`Waiting`] strategy.
     ///
-    /// `[2026-08-30]` The source list is **empty** here, and it is empty
-    /// because nothing yet needs it: [`wait::Spin`] and [`wait::Yield`] both
-    /// declare `NEEDS_SOURCES = false`, and no strategy that declares `true`
-    /// exists in this crate yet. Step 4 of
-    /// `docs/plans/2026-08-30-standard-mode.md` builds the real list — one
-    /// interest per connection, writable while it still has bytes queued — and
-    /// lands the compile-time refusal that stops a source-needing strategy
-    /// from ever reaching this empty slice.
+    /// `[2026-08-30]` The source list is **empty** here. [`wait::Spin`] and
+    /// [`wait::Yield`] both declare `NEEDS_SOURCES = false`, so for them an
+    /// empty slice is not a lie — they were going to return on their own.
+    /// [`block::Block`] declares `true`, and pairing it with this `Engine`
+    /// **does not compile**: it would block on nothing and wake only on its own
+    /// timeout, which is a working engine that is 100 ms slow per message and
+    /// therefore the worst kind of bug this plan can produce.
+    ///
+    /// Step 4 of `docs/plans/2026-08-30-standard-mode.md` builds the real list
+    /// — one interest per connection, writable while it still has bytes queued,
+    /// plus the listener and the waker — and replaces the assertion below with
+    /// ADR-0014 decision 4's, which refuses a transport that cannot be waited
+    /// on at all.
     pub fn idle(&mut self) {
+        const {
+            assert!(
+                !W::NEEDS_SOURCES,
+                "this Engine hands `idle` an empty source list, so a strategy that \
+                 needs the sources would block on nothing and wake only on its own \
+                 timeout. Step 4 of docs/plans/2026-08-30-standard-mode.md builds \
+                 the list; until then this pairing is refused here rather than \
+                 remembered."
+            )
+        };
         self.wait.idle(&[]);
     }
 
@@ -247,6 +264,12 @@ where
     /// See [`Self::idle`] for why the source list is empty today and what fills
     /// it.
     pub fn run(&mut self) -> ! {
+        const {
+            assert!(
+                !W::NEEDS_SOURCES,
+                "this Engine hands `idle` an empty source list — see Engine::idle"
+            )
+        };
         loop {
             if !self.turn() {
                 self.wait.idle(&[]);

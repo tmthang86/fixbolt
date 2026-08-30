@@ -39,16 +39,29 @@ for case in "${CASES[@]}"; do
 
   echo "== ${crate} --no-default-features must not pull ${dep} =="
 
-  # `-i <dep>` errors when the package is not in the graph at all, which is the
-  # passing case. Distinguish "not there" from "the command broke" by looking at
-  # the message rather than at the exit status alone.
+  # The only unambiguous evidence is the tree itself: `-i <dep>` prints a root
+  # line `<dep> v<version>` when the dependency really is in the normal graph.
+  # Absence has TWO different messages and which one appears depends on
+  # something unrelated to what is being asked:
+  #
+  #   "did not match any packages"  the crate is nowhere in the graph at all
+  #   "nothing to print"            it is in the graph, but not through the
+  #                                 edges `-e normal` selected — a dev- or
+  #                                 build-dependency
+  #
+  # `[measured 2026-08-30]` that second message appeared the moment `libc`
+  # became a dev-dependency of this crate as well, and the first version of
+  # this script called it "could not tell" and failed. Failing was the right
+  # thing to do — a check that cannot tell must never report ok — but both
+  # messages mean the dependency is absent from what ships, so both pass.
+  # Anything else is still a refusal to guess.
   out="$(cargo tree -p "${crate}" --no-default-features -e normal -i "${dep}" 2>&1)"
-  if grep -q "did not match any packages" <<<"${out}"; then
-    echo "ok — ${dep} is absent"
-  elif grep -q "^${dep} " <<<"${out}"; then
-    echo "FAIL: ${dep} is in ${crate}'s dependency graph with no features on:" >&2
+  if grep -qE "^${dep} v" <<<"${out}"; then
+    echo "FAIL: ${dep} is in ${crate}'s normal dependency graph with no features on:" >&2
     echo "${out}" >&2
     rc=1
+  elif grep -qE "did not match any packages|nothing to print" <<<"${out}"; then
+    echo "ok — ${dep} is absent from what ships"
   else
     echo "FAIL: could not tell. cargo said:" >&2
     echo "${out}" >&2

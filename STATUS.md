@@ -89,12 +89,13 @@ delivery log. In dependency order:
    and 2 done.** 8 steps. Builds the mode ADR-0013 made the *default* and nobody had written,
    and with it the missing half of non-negotiable 4's machine check. Step 1 is
    **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**, `Accepted`; it took
-   0014, so `threads-and-affinity`'s step 1 takes **0015**. **Step 2 is the seam and the raw
-   syscall**: `Source`, `Interest`, `Transport::POLLABLE`/`source()`, `Waiting` with
-   `NEEDS_SOURCES`, `Park` → `Yield`, and `poll::Poller` — the crate's **first external
-   dependency and first `unsafe`**, both behind the feature. Next: `wait::Block` (step 3), then
-   the source list and the compile-time refusal (step 4). **`Engine::idle` still passes an empty
-   slice**, which is safe only because no strategy declares `NEEDS_SOURCES` yet.
+   0014, so `threads-and-affinity`'s step 1 takes **0015**. **Steps 2 and 3 are the seam, the
+   syscall and the strategy**: `Source`, `Interest`, `Transport::POLLABLE`/`source()`, `Waiting`
+   with `NEEDS_SOURCES`, `Park` → `Yield`, `poll::Poller`, and `block::Block` — the crate's
+   **first external dependency and first `unsafe`**, both behind the feature. **Next is step 4,
+   the source list**, and until it lands `Engine::idle` passes an empty slice and pairing
+   `Block` with an `Engine` **does not compile**: that engine would be correct, idle, and 100 ms
+   slower per message, which nothing else in this repository can see.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus

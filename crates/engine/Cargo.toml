@@ -34,6 +34,23 @@ libc = { version = "0.2", optional = true }
 [dev-dependencies]
 fixbolt-conformance = { path = "../conformance" }
 
+# For `crates/engine/tests/standard.rs` only, which sends a signal to a thread
+# that is inside `poll` to prove `EINTR` does not end the wait early — that
+# needs `pthread_kill`, and an integration test does not inherit the crate's own
+# dependencies. **This does not weaken the zero-dependency claim**: a
+# dev-dependency reaches no consumer, and `scripts/check-no-optional-deps.sh`
+# asks with `-e normal`, which excludes dev-dependencies by construction.
+libc = "0.2"
+
+# Also a dev-dependency, purely so that doctests can NAME it. A doctest is
+# compiled as its own crate against `fixbolt_engine` and its dev-dependencies,
+# so `fixbolt_session::Acceptor` is otherwise unreachable from one — and the
+# `compile_fail` doctest on `block::Block` needs to build a whole `Engine` type
+# to prove the pairing is refused. `Acceptor` cannot simply be re-exported here:
+# this crate already has a type of that name, the TCP listener.
+fixbolt-session = { path = "../session" }
+
+
 [lints]
 workspace = true
 

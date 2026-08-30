@@ -240,7 +240,7 @@ Cái tên `density` vẫn dùng được như một **nhãn cho con số**, cạ
 |---|---|---|
 | 1 | ~~**ADR**~~ — **xong 2026-08-30**: [ADR-0014](../decisions/ADR-0014-standard-mode-blocks-on-poll.md), `Proposed`. Cơ chế readiness và dependency (`poll(2)` + `libc`), phạm vi Windows, số phận của `Park`, mặc định của `w2w`/bench, `density`. Trả lời cả bốn câu hỏi mở của ADR-0013. Chốt hình dạng API | ADR-0013 (đã ký) |
 | 2 | ~~seam~~ — **xong 2026-08-30.** `Source`, `Interest`, `Transport::POLLABLE`/`source()`; `Waiting` đổi chữ ký + `NEEDS_SOURCES`; `Park` → `Yield`; **và `libc` + feature `standard` + `poll::Poller`** — xem "Sửa 1" bên dưới | 1 |
-| 3 | `wait::Block`: chính sách timeout, `EINTR` là quay lại chờ với phần thời gian còn lại, `NEEDS_SOURCES = true`. Syscall thô đã có từ bước 2 | 2 |
+| 3 | ~~`wait::Block`~~ — **xong 2026-08-30.** Timeout 100 ms mặc định có sàn 5 ms, `EINTR` quay lại chờ **phần còn lại**, `NEEDS_SOURCES = true`, lỗi `poll` được **ghi lại** và vẫn trả core lại | 2 |
 | 4 | Engine dựng tập interest: readable luôn, **writable khi `has_pending_output()`**. `Acceptor::source()`, và `serve()` đăng ký listener. Const-assert từ chối transport không chờ được | 3 |
 | 5 | Waker: self-pipe trong tập poll, `RingDispatch` đánh thức khi push | 4 |
 | 6 | `w2w --mode standard\|hft`, mặc định `hft`, in mode mỗi lần chạy. Nửa đỏ của `check-no-kernel-sleep.sh` chuyển sang `--mode standard` | 4 |
@@ -352,6 +352,80 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
   workload thật, mà cái đó chưa có.
 
 ## Nhật ký giao hàng
+
+### 2026-08-30 — bước 3 xong: `wait::Block`, và một quả mìn được gỡ bằng compile error
+
+**Đã dựng.** `crates/engine/src/block.rs` sau `#[cfg(all(feature = "standard", unix))]`:
+`Block` với `DEFAULT_TIMEOUT_MS = 100` và sàn `MIN_TIMEOUT_MS = 5`, `SLEEPS = true`,
+**`NEEDS_SOURCES = true`** — strategy đầu tiên khai như vậy.
+
+**Ba quyết định nhỏ, mỗi cái vì một lý do:**
+
+1. **`EINTR` chờ tiếp phần thời gian còn lại, không chờ lại từ đầu.** Chờ lại đủ timeout thì một
+   luồng tín hiệu kéo dài lượt rỗi vô hạn, và kéo theo hạt thời gian mà session nhìn thấy.
+2. **Timeout 0 bị nâng lên sàn, không được tôn trọng.** Nó là một vòng quay đội tên mode này —
+   ADR-0014 quyết định 6 đã liệt kê sẵn. Đọc lại bằng `timeout_ms()` nếu cần biết.
+3. **Lỗi `poll` không trả về được thì phải quan sát được.** `Waiting::idle` trả `()`, nên một
+   `poll` hỏng không có chỗ nào để đi. Hai thứ xảy ra và không cái nào là im lặng: **vẫn trả
+   core lại** (ngủ nốt phần còn lại, chứ không biến mode này thành cái nó sinh ra để thay), và
+   **lỗi được giữ** ở `last_error()`. Cùng nguyên tắc ADR-0011 đã chốt cho ring đầy: *lời từ
+   chối không bao giờ im lặng.*
+
+**Quả mìn, và cách gỡ.** `Block` khai `NEEDS_SOURCES = true` trong khi `Engine::idle` vẫn truyền
+slice **rỗng**. Ghép hai cái lại cho ra một engine **đúng**: trả lời mọi tin, qua đủ 59 định
+nghĩa, đọc 0% CPU — và **chậm 100 ms mỗi tin**. Không bộ test đúng-sai nào và không phép đo CPU
+nào nhìn thấy nó. Nên nó bị chặn ở chỗ nó được viết ra: một `const assert!(!W::NEEDS_SOURCES)`
+tạm thời trong `Engine::idle` và `run`, kèm doctest `compile_fail,E0080` canh vĩnh viễn. Bước 4
+thay nó bằng assert thật của ADR-0014 quyết định 4, cùng lúc với danh sách nguồn thật.
+
+**Năm đảo ngược, năm lần đỏ vì đúng lý do:**
+
+| Đảo ngược | Đỏ ở đâu |
+|---|---|
+| `EINTR` coi là wakeup, trả về ngay | `a_signal_does_not_end_the_wait_early` |
+| `poll` hỏng thì trả về ngay (thành vòng quay) | `a_failing_poll_is_recorded_and_still_sleeps` |
+| `Ok(_)` không trả về — luôn chờ hết timeout | `bytes_wake_it_far_sooner_than_the_timeout`, hết 2.13 s |
+| bỏ `const assert` khỏi `Engine::idle` | doctest `compile_fail` **FAILED** (nó biên dịch được) |
+| bỏ `optional = true` khỏi `libc` | `check-no-optional-deps.sh` exit **1**, in cả cây |
+
+**`compile_fail` xanh khi code hỏng vì bất kỳ lý do gì — và tôi đã vấp đúng cái đó.** Lần thử
+đầu, file kiểm mìn không biên dịch được vì **trait bound sai** (`InlineDispatch<Store>` không hợp
+lệ), chứ không phải vì const assert. Nó "đỏ" mà chẳng chứng minh gì. Sửa: dựng đúng kiểu `Engine`
+hợp lệ, đọc thông điệp lỗi để xác nhận đó là câu của mình, rồi **ghim mã lỗi `E0080`** vào
+doctest. Đây chính là §10 bản thu nhỏ: một kết quả đỏ cũng cần đúng lý do, y như một kết quả xanh.
+
+**Một thứ nữa tự đến.** Test tín hiệu cần `pthread_kill`, mà integration test không thừa hưởng
+dependency của crate — nên `libc` thành dev-dependency **không điều kiện**. Việc đó **làm cổng
+`check-no-optional-deps.sh` chuyển sang trạng thái "không phân biệt được" và trượt**: thông điệp
+của `cargo tree -i` đổi từ *"did not match any packages"* sang *"nothing to print"*, vì `libc`
+giờ có trong đồ thị nhưng không qua cạnh `-e normal`. **Trượt là đúng** — một cổng không phân
+biệt được thì tuyệt đối không được báo ok. Đã sửa để nhận cả hai thông điệp là "vắng mặt khỏi thứ
+được ship", giữ nguyên nhánh từ chối đoán, và **chạy lại đảo ngược để chứng minh nó vẫn đỏ được**
+(exit 1, in cả cây). Dev-dependency không tới tay người dùng, và cổng hỏi bằng `-e normal` nên
+loại nó theo đúng cấu trúc — ghi thẳng trong manifest.
+
+**Chưa làm:** danh sách nguồn thật, listener, `POLLOUT`, waker. Bước 4 và 5.
+
+**Gate cho commit này — chạy và đọc output:**
+
+```
+cargo fmt --all --check                     sạch
+cargo clippy --all-targets -- -D warnings   sạch (0 dòng)
+cargo test --all                            220 passed, 0 failed
+cargo test --all --no-default-features      0 failed
+scripts/check-no-optional-deps.sh           exit 0; đảo ngược cho exit 1
+crates/engine --test standard               9 passed; 0/40 lần đỏ khi chạy lặp
+cargo test -p fixbolt-engine --doc          1 passed (compile_fail,E0080)
+-p fixbolt-session --test score             59/59 trong process
+-p fixbolt-engine  --test wire              59/59 qua socket thật
+scripts/check-no-kernel-sleep.sh            exit 0; nửa đỏ trượt vì 2646 sched_yield
+scripts/bench.sh                            exit 0; 8/8 target; 0 invariant failure
+  engine alloc: idle 0 send 0 recv 0 frame 0 turn 0 busy 0 ring 0
+```
+
+Hai target vượt trần thời gian vẫn là `fixbolt-codec/groups` và `fixbolt-codec/serialize` — mục
+11 và 20, crate này không đụng tới. **Không đo gì mới:** giá một lần thức của `standard` vẫn mang
+nhãn "lấy từ tài liệu" — `Block` chưa nối vào `Engine` thì chưa có đường nào để đo nó.
 
 ### 2026-08-30 — bước 2 xong: chỗ nối mở, và hai cổng hoá ra đang canh nhầm thứ
 

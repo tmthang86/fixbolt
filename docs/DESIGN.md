@@ -111,7 +111,7 @@ Added one at a time, each behind an approved plan.
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
 | `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport`, and **`libc` only under the `standard` feature** |
 | | | `[2026-08-30]` step 1 of six exists: `Transport`, `TcpTransport`, `Loopback`, `Waiting`. `transport` is a module here rather than its own crate until something needs it to be otherwise | |
-| | | `[2026-08-30]` module `poll` — `poll(2)` for `standard` mode, behind `#[cfg(all(feature = "standard", unix))]`. **The crate's first external dependency and first `unsafe`, both behind that feature**: `--no-default-features` builds it with neither (ADR-0014) | |
+| | | `[2026-08-30]` modules `poll` and `block` — `poll(2)` and `standard`'s idle turn, behind `#[cfg(all(feature = "standard", unix))]`. **The crate's first external dependency and first `unsafe`, both behind that feature**: `--no-default-features` builds it with neither (ADR-0014) | |
 | `library` | L4 | The application-facing API | `engine` |
 | `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
 
@@ -438,12 +438,18 @@ feature**; `epoll` is O(1) where this is O(N) and is a later ADR **with numbers*
 difference at `standard`'s shape is unmeasured. On a target with no poller `wait::Block` does
 not exist, so the refusal is a compile error rather than a startup one.
 
-`[2026-08-30]` **The seam is built and the blocking strategy is not.** `Source`, `Interest`,
-`Transport::POLLABLE`/`source()` and `poll::Poller` exist and are tested; `wait::Block`, the
-source list `Engine` hands over, and the waker are steps 3-5 of
-[plans/2026-08-30-standard-mode.md](plans/2026-08-30-standard-mode.md). Until then
-`Engine::idle` passes an **empty** slice, which is safe only because no strategy declaring
-`NEEDS_SOURCES` exists yet.
+`[2026-08-30]` **The seam and the blocking strategy are built; the wiring is not.** `Source`,
+`Interest`, `Transport::POLLABLE`/`source()`, `poll::Poller` and `block::Block` exist and are
+tested. `Block` blocks on readiness at a **100 ms** timeout — which is a correctness parameter,
+not a knob, because a session with no clock sees time only through `Input::Tick` and in
+`standard` that timeout is what delivers it.
+
+**What is missing is the source list.** `Engine::idle` still passes an **empty** slice, so
+pairing `Block` with an `Engine` **does not compile** — that engine would answer every message,
+pass all 59 definitions, read 0% CPU, and be 100 ms slower per message, which no correctness
+suite and no CPU measurement can see. The list, the listener, `POLLOUT` while bytes are still
+queued, and the waker for out-of-band dispatch are steps 4 and 5 of
+[plans/2026-08-30-standard-mode.md](plans/2026-08-30-standard-mode.md).
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is
 queued, **tick the clock**, read once, cut whole messages out, judge them, flush again — and
