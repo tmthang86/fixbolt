@@ -718,9 +718,37 @@ The rule, and it is the whole lesson of this entry: **before calling a spread "n
 each sample with the machine that produced it.** A bimodal result from a heterogeneous fleet is
 indistinguishable from a noisy result on one box until you write down which box.
 
-One thing this does **not** explain, and it is left open rather than tidied away: `ring_full`
-read 194, 195 and then **356** on the same 7763. Single-shot timings stay fragile inside one
-CPU model, which is why the count and not the duration is what ADR-0011 leans on.
+### And with the CPU controlled, the earlier correction turns out to have been right
+
+`ring_full` was left open above: 194, 195, then **356** on the same 7763. A sixth run put the
+same shape on the *other* CPU — 139, 139, then **263** on the 9V74 — so it is not one bad
+sample on one box:
+
+| CPU | `ring, one way` (harness) | `ring_full` ns/msg (single shot) |
+|---|---|---|
+| EPYC 7763 | 328.3, 331.1, 327.2 — **1.2%** | 194, 195, **356** — **83%** |
+| EPYC 9V74 | 270.7, 272.9, 271.4 — **0.8%** | 139, 139, **263** — **89%** |
+
+**Two measurements of the same cross-thread hop, on the same machine, in the same run** — and
+one holds to ~1% while the other roughly doubles. The only difference between them is that one
+takes the best of 7 runs of 200 000 iterations and the other times 352 operations once.
+
+So correction 4 — *the stability is the harness's, not the machine's* — was **true**, and the
+fourth sample never refuted it. That sample changed the CPU, and with CPU uncontrolled the two
+effects were indistinguishable. Labelling the machine separated them:
+
+| Effect | Size | Visible in |
+|---|---|---|
+| CPU generation | **21%** cross-thread, 3% single-threaded | between clusters |
+| single shot vs best-of-7 | **~2×**, on both CPUs | within a cluster |
+
+The confound was never in the data; it was in not recording which machine each number came
+from. **Two real effects of similar magnitude, one uncontrolled variable, and a sequence of
+corrections that each explained the whole of the spread by one of them.** That is what makes a
+finding oscillate rather than converge.
+
+ADR-0011 leans on the count, which is exactly right and now for a measured reason: 352 messages
+on every run of both CPUs, and a fill duration that spans 139–356 ns per message.
 
 The rules that generalise: **a threshold whose margin is smaller than the spread of the
 machines it will run on reports the infrastructure, not the code** — and **before crediting a
