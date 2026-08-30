@@ -628,6 +628,26 @@ The `ring` figures have a visible cause rather than a mysterious one: the benchm
 message between two threads, and the runner has exactly two cores — the worst case for a
 cross-thread hop, with nothing left over for anything else on the box.
 
+### And the noise itself is a property of the machine
+
+A second CI run on the next commit (`bf7fe48`, run 33304926978) repeated the figures on the
+same runner class:
+
+| Case | Run 1 | Run 2 | Difference |
+|---|---|---|---|
+| `ring, one way` | 328.3 | 331.1 | **0.9%** |
+| `ring, round trip` | 622.9 | 623.5 | **0.1%** |
+| `ring_full`, ns per message | 194 | 195 | 0.5% |
+
+**The runner reproduces to under 1% on the case the container swings 24% on.** So the two
+machines differ in both terms at once, and in opposite directions: the container is fast and
+noisy, the runner is slow and quiet. "Shared infrastructure is noisy" was too coarse — one
+shared machine here is a perfectly stable instrument that happens to be calibrated wrong.
+
+That has a practical consequence for the fix. A ceiling expressed as a **per-machine baseline**
+would work on this runner, because 0.9% run-to-run leaves room for a real regression to show.
+The absolute ceilings are what cannot survive the move between machines, not the measurement.
+
 The rule that generalises: **a threshold whose margin is smaller than the spread of the
 machines it will run on reports the infrastructure, not the code.** Measure the spread on more
 than one machine before believing any verdict from such a gate — and note that the first
