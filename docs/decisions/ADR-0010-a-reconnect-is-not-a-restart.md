@@ -88,6 +88,18 @@ needs an exemption and none is granted.
 
 ## Open questions
 
+**Revision, 2026-08-30 — research added, decisions unchanged.** Recorded in place because this
+ADR is still `Proposed` (`CLAUDE.md` §5). All three questions below now have prior art gathered
+in [reference/session-lifecycle-prior-art.md](../reference/session-lifecycle-prior-art.md):
+QuickFIX's session-time predicate compares *now against the session's creation time*, not
+against an end time; FIX 4.4's **`NextExpectedMsgSeqNum` (789)** — absent from this ADR — makes
+the Logon mismatch an explicit negotiation, recoverable when the peer is behind and a refusal
+when it is ahead; and QuickFIX persists the inbound number on **every** message with a flush and
+**no `fsync`**, which is a third durability class this ADR did not consider and maps onto the
+journal's existing `Async` policy. **Nothing above is decided by that page and no decision here
+changes.**
+
+
 1. **When does a session end?** A time-of-day reset is what QuickFIX does. Nothing here has it,
    and without it "resume" has no opposite.
 2. **What happens when the journal and the counterparty disagree at Logon** — the journal says
