@@ -20,8 +20,14 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use std::ops::Range;
+
+use nanofix_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
+use nanofix_engine::clock::ManualClock;
 use nanofix_engine::frame::{Cut, Framer};
-use nanofix_engine::transport::{Io, TcpTransport, Transport};
+use nanofix_engine::transport::{Io, Loopback, TcpTransport, Transport};
+use nanofix_engine::wait::Park;
+use nanofix_engine::{Application, Config, Engine};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
@@ -50,6 +56,27 @@ unsafe impl GlobalAlloc for Counting {
 
 #[global_allocator]
 static A: Counting = Counting;
+
+/// An application that never answers. The engine's own paths are what is being
+/// measured here, not an application's.
+struct Silent;
+
+impl Application for Silent {
+    fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], _: &mut [u8]) -> Option<Range<usize>> {
+        None
+    }
+}
+
+/// A whole message from its body: `8=`, `9=`, the identity fields and `10=`
+/// supplied around it.
+///
+/// The `52=` is the corpus's fixed instant, which is also what the engine's
+/// clock reads — a `SendingTime` two days out is refused for skew, and the
+/// bench would then measure the refusal path and call it the message path.
+fn wire(body: &str) -> Vec<u8> {
+    let body = format!("{body}49=TW44\x0152=20260828-12:00:00.000\x0156=ISLD\x01");
+    with_real_checksum(format!("8=FIX.4.4\x019={}\x01{body}10=0\x01", body.len()).as_bytes())
+}
 
 fn count<F: FnOnce()>(f: F) -> usize {
     let before = ALLOCS.load(Ordering::Relaxed);
@@ -134,13 +161,133 @@ fn main() {
         }
     });
 
+    // A whole turn of the loop, over a transport with no kernel in it: accept
+    // nothing, read nothing, tick every session. This is what the engine thread
+    // does on the overwhelming majority of its turns.
+    let (mut peer, engine_side) = Loopback::pair();
+    let mut engine: Engine<
+        Loopback,
+        nanofix_session::Acceptor,
+        Silent,
+        ManualClock,
+        Park,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+        Silent,
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Park,
+        4,
+    );
+    engine.add(engine_side);
+    assert_eq!(
+        engine.connections(),
+        1,
+        "the turn path must have a connection"
+    );
+    engine.turn();
+
+    let turn_allocs = count(|| {
+        for _ in 0..10_000 {
+            engine.turn();
+        }
+    });
+
+    // And turns that actually carry messages: a Logon, then a thousand
+    // Heartbeats with sequence numbers that keep going up.
+    //
+    // **Every message is rendered before the count starts**, on purpose.
+    // Rendering allocates here — it is a `format!` in a harness, not on any
+    // path this bench is about — and counting it would report the harness's
+    // allocations as the engine's.
+    //
+    // `[measured 2026-08-30]` an earlier version of this case sent the *same*
+    // Logon a thousand times. The session refused the second as a sequence
+    // number already used and dropped the link, so from iteration three onward
+    // the bench measured an engine with no connections while `Loopback`'s
+    // queue grew unboundedly behind it. It reported "1 allocation", which was
+    // that queue doubling — a number that looked like a near-pass and was
+    // measuring nothing at all. `[trap recorded]` in
+    // `docs/reference/measured-costs.md`.
+    let traffic: Vec<Vec<u8>> = core::iter::once(wire("35=A\x0134=1\x0198=0\x01108=30\x01"))
+        .chain((2..=1_000).map(|n| wire(&format!("35=0\x0134={n}\x01"))))
+        .collect();
+
+    // `Loopback`'s queue is a `VecDeque` and it grows by doubling, so the first
+    // iterations allocate in the *fake*. Run the whole exchange once against a
+    // throwaway engine to reach its steady capacity, then count a second one.
+    let mut sink = [0u8; 4096];
+    for m in &traffic {
+        let _ = peer.send(m);
+        engine.turn();
+        let _ = peer.recv(&mut sink);
+    }
+    assert_eq!(
+        engine.connections(),
+        1,
+        "the busy path must still hold a live session after a thousand messages"
+    );
+
+    let (mut peer2, engine_side2) = Loopback::pair();
+    let mut engine2: Engine<
+        Loopback,
+        nanofix_session::Acceptor,
+        Silent,
+        ManualClock,
+        Park,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+        Silent,
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Park,
+        4,
+    );
+    engine2.add(engine_side2);
+    // **One empty turn before the first byte**, and it is not decoration.
+    // `Session::received_with` takes no clock: it judges `SendingTime` against
+    // the last instant a `tick` gave it, which for a session that has never
+    // ticked is zero. The corpus's `52=` is then 2026 years of skew and the
+    // Logon is refused. `[measured 2026-08-30]` the engine above only accepted
+    // the same Logon because the `turn` case had already ticked it 10 000
+    // times. A deployment turns continuously and never meets this; a bench
+    // that sends on turn one does.
+    engine2.turn();
+    let _ = peer2.send(&traffic[0]);
+    engine2.turn();
+    let _ = peer2.recv(&mut sink);
+
+    let busy_allocs = count(|| {
+        for m in &traffic[1..] {
+            let _ = peer2.send(m);
+            engine2.turn();
+            let _ = peer2.recv(&mut sink);
+        }
+    });
+    assert_eq!(
+        engine2.connections(),
+        1,
+        "and it must still be live after the count, not dropped at message two"
+    );
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
-         frame {frame_allocs}"
+         frame {frame_allocs} turn {turn_allocs} busy {busy_allocs}"
     );
     assert_eq!(
-        [idle_allocs, send_allocs, recv_allocs, frame_allocs],
-        [0; 4],
+        [
+            idle_allocs,
+            send_allocs,
+            recv_allocs,
+            frame_allocs,
+            turn_allocs,
+            busy_allocs
+        ],
+        [0; 6],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

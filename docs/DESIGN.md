@@ -329,6 +329,24 @@ engine controls. It burns a core — that is the price, and it is the standard p
 A `Waiting` strategy is a trait so tests and low-priority deployments can use a blocking
 variant. The default ships as spin.
 
+**As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is
+queued, read once, cut whole messages out, judge them, tick the clock, flush again — and
+`Engine::run` is `loop { if !turn() { wait.idle() } }` and nothing else. Reading *once* per
+turn rather than until the socket is empty is deliberate: a counterparty that writes faster
+than this end processes must not be able to starve the other connections on the thread.
+
+Keeping the pass separate from the loop is what lets the 59 acceptance definitions run
+**through a real socket** with no background thread, no sleep and no timing window —
+`crates/engine/tests/wire.rs` drives `turn` by hand and is as deterministic as the in-process
+gate.
+
+**Non-negotiable 4 has no machine check yet, and that is stated rather than glossed.**
+`dtruss` is refused by macOS SIP, and the substitute — reading undefined symbols out of the
+compiled rlib — fails its own reversal, because `Engine` and `serve` are generic and are
+therefore never code-generated into the library at all. It is a hand-check until `tools/w2w`
+runs on Linux and a syscall trace can be taken. See
+[reference/measured-costs.md](reference/measured-costs.md).
+
 ### D9 — Outbound messages are templates: a pre-sorted parts list, patched, not built
 
 An `ExecutionReport` from a given session has a fixed skeleton: `BeginString`, `SenderCompID`,
@@ -463,6 +481,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
 | The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`, `tests/reject.rs` and `tests/heartbeat.rs`. `[measured]` seven so far. Three from steps 1–3: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged, because `52` is one of the five tags `fields.fmt` matches by shape; a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet. Four from step 4: all three heartbeat thresholds, which the harness's whole-interval ticks cannot see; and that a garbled frame is fatal only when it claims to be a Logon, which the corpus states once from each side in different files. Five from step 5, in `tests/resend.rs`: every file that opens a gap ends before opening a second one, so closing a filled gap, replaying held messages in sequence order, and what happens when there is no room to hold one are all invisible to the score |
 | Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
+| Session conformance, acceptor, **through a real socket** | **59 / 59** | `cargo test -p nanofix-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59** |
+| Allocations on the hot path — engine | **0**, counted separately on six paths: idle, send, recv, frame, turn, busy | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |
@@ -478,7 +498,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
 | Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job |
-| No documentation link points at a missing file | 102 internal links resolve | `scripts/check-links.py`, run in CI |
+| No documentation link points at a missing file | 133 internal links resolve | `scripts/check-links.py`, run in CI |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every

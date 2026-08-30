@@ -81,7 +81,7 @@ below describe what a first release would contain.
   - `[measured 2026-08-30]` **0 / 50** on the mirrored corpus. Every mirrored Logon is
     accepted; what the files ask for next is a message only an operator can order.
 
-- **`nanofix-engine`** — the crate that touches the socket. Step 1 of six.
+- **`nanofix-engine`** — the crate that touches the socket. Steps 1–3 of six.
   - `Transport`, with `TcpTransport` (non-blocking, `TCP_NODELAY`) and `Loopback` (in memory,
     for tests that must not depend on a free port).
   - **`Io::{Ready, Idle, Closed, Failed}` rather than `io::Result<usize>`.** On a stream socket
@@ -98,7 +98,22 @@ below describe what a first release would contain.
     counterparty chose.
   - `crates/session/tests/score.rs` now calls that framer instead of keeping its own copy, and
     still scores **59 / 59**.
-  - `benches/alloc.rs`: **0** on the idle, send, receive and framing paths.
+  - `Clock`, with `SystemClock` and `ManualClock`. A seam that exists for the corpus rather
+    than for tidiness: every `I` line carries a fixed instant, so an engine wired to the wall
+    clock cannot be driven by the acceptance files at all.
+  - `Connection<T, R, N, RX, TX>` — one socket, one framer, one session, and an outbound
+    queue of `TX` bytes. `Turn::{Up(bool), Gone}` says whether anything moved.
+  - `Engine<T, R, A, C, W, N, RX, TX>` — `turn()` is one non-blocking pass over every
+    connection; `run()` is `loop { if !turn() { wait.idle() } }` and nothing else. It reads
+    **once** per connection per turn, so a counterparty that writes faster than this end
+    processes cannot starve the others.
+  - `Acceptor::{bind, local_addr, accept}`, `connect(addr)`, and `serve(addr, cfg, app,
+    capacity)` — the whole loop written once, with `TcpAcceptorEngine<A>` naming the shape a
+    deployment runs.
+  - **The 59 acceptance definitions now pass through a real socket**: `cargo test -p
+    nanofix-engine --test wire` → **59 / 59**, kernel TCP, no background thread and no sleep.
+  - `benches/alloc.rs`: **0** on six paths — idle, send, receive, framing, an idle turn, and a
+    turn carrying a message in and a reply out.
 
 - **`nanofix-conformance`** — the mirrored corpus, for the initiator role.
   - `script::scenarios_mirrored()` reads the same 59 files from the other side: `I` lines

@@ -253,3 +253,78 @@ allocated value (`msg.to_vec()` then passed on), so nothing could remove them.
 reports "still zero" is a reversal that did not run.** `CLAUDE.md` §7 already
 says a guard is proven by reversal and that the reversal must be confirmed to
 have changed something. This is what that sentence costs when it is skipped.
+
+## `nm -u` on an rlib proves nothing about generic code
+
+`[cost 2026-08-30]` Non-negotiable 4 — *the engine thread never sleeps in the
+kernel* — has no machine check, and this is the attempt that failed.
+
+`dtruss` is the right tool and macOS System Integrity Protection refuses it
+without disabling SIP. The substitute tried was to read the compiled rlib's
+undefined symbols: a blocking primitive the linker never has to resolve cannot
+be called.
+
+It reported clean. It also reported clean with `std::thread::sleep` added to the
+middle of the loop, which is the reversal that should have failed it.
+
+**The reason is monomorphisation.** `Engine` is generic in six parameters and
+`serve` is generic in its application type, so neither is code-generated into
+the rlib at all — there is nothing for `nm` to see. Adding one concrete type
+alias did not help: the *function bodies* are still generic.
+
+Two things follow, and the second is the general one:
+
+* **Non-negotiable 4 is a hand-check** until `tools/w2w` runs on Linux, where a
+  syscall trace can be taken. `CLAUDE.md` §2's table of what is machine-checked
+  says so; it is not claimed anywhere else.
+* **A check over compiled artefacts has to be told which instantiation it is
+  checking.** For a generic-heavy crate that is a binary that actually uses it,
+  not the library.
+
+## A benchmark that replays one message measures a dropped connection
+
+`[cost 2026-08-30]` The engine's allocation bench had a case called `busy`: a
+Logon sent into `Loopback` a thousand times, one `Engine::turn` per send. It
+reported **1 allocation per 1000 iterations** — close enough to zero to look
+like a rounding artefact, and stable across consecutive runs, which made it look
+real.
+
+It was measuring nothing. The session refuses the second Logon as a sequence
+number already used and drops the link, so from iteration three on the engine
+held **no connections** and the loop was `send into a queue nobody reads`. The
+one allocation was that `VecDeque` reaching a doubling boundary. Two hours went
+into looking for it in `Engine::turn`, which never ran.
+
+The fix is not a bigger warm-up. It is an **assertion that the path is still
+alive at the end of the count**:
+
+```rust
+assert_eq!(engine.connections(), 1, "not dropped at message two");
+```
+
+and traffic with increasing sequence numbers, rendered before the count starts
+so the harness's own `format!` is not charged to the engine.
+
+**Generalised:** a zero from a counting allocator means *did not allocate* only
+if something separately proves *did run*. Every case in these benches now
+asserts its own path — `the send path sends`, `the framing path must actually
+cut a message`, `must still hold a live session`. Injection proves the counter
+sees the path; the assertion proves the path was taken.
+
+## `received_with` judges `SendingTime` against the last `tick`, not the wall
+
+`[cost 2026-08-30]` Found while fixing the above. `Session::received_with` takes
+no clock — by design, D1: the session layer has none, and time arrives only as
+`Input::Tick`. So the 120-second `SendingTime` skew check compares against the
+last instant a `tick` supplied, and **a session that has never ticked holds
+zero**.
+
+A Logon is then 2026 years of skew and is refused silently. The first engine in
+the bench accepted the identical Logon only because an earlier case had already
+ticked it ten thousand times.
+
+Nothing in a deployment meets this: `Engine::run` turns continuously and every
+turn ticks. `crates/engine/tests/wire.rs` does not meet it either, because the
+corpus's `Connect` line pumps before any byte arrives. **A test or bench that
+sends on turn one does**, and one empty turn before the first byte is the whole
+fix.

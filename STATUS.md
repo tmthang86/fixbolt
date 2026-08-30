@@ -3,16 +3,16 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-08-28**.
+Last updated: **2026-08-30**.
 
 ## Where the work is
 
 | | |
 |---|---|
-| Branch | **`plan/dict-validation`**, on top of `plan/session-layer` |
-| Milestone | **M2 — the session layer, closed.** `[measured 2026-08-29]` **59 / 59**. `codec`, `dict` and `conformance` are closed behind it. No engine, no socket |
+| Branch | **`plan/engine`**, on top of `main` |
+| Milestone | **M3 — the engine, in flight.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket**: `cargo test -p nanofix-engine --test wire` → **59 / 59**. `codec`, `dict`, `conformance` and `session` are closed behind it |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — **Approved 2026-08-30**, all six steps. Steps 1–2 of six done. `DESIGN.md` §7 step 6, taken before step 5 by decision. Six steps; the gate that matters is the same 59 definitions run **through a real socket** |
+| Plan in flight | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — **Approved 2026-08-30**, all six steps. Steps 1–3 of six done. `DESIGN.md` §7 step 6, taken before step 5 by decision. Six steps; the gate that matters is the same 59 definitions run **through a real socket** |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
 | Last closed | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — closed 2026-08-28. Four validation tables, agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 12 524/12 524 message-tag pairs and 1 708/1 708 enum values |
@@ -246,6 +246,26 @@ Last updated: **2026-08-28**.
   against `libquickfix` is the answer, and this is the evidence for why ADR-0004 made it the
   primary gate rather than the secondary one.
 
+- **The 59 definitions pass through a real socket, first run.** `[measured 2026-08-30]`
+  `cargo test -p nanofix-engine --test wire` → **59 / 59**. Kernel TCP, the real
+  framer, the real session, the real application; the clock is the only injected part,
+  because every `I` line in the corpus carries a fixed instant. No background thread and no
+  sleep: `Engine::turn` is one non-blocking pass and the test drives it by hand, so it is as
+  deterministic as the in-process gate.
+- **The engine allocates nothing on the byte path.** `[measured 2026-08-30]` six paths at
+  zero — idle, send, recv, frame, turn, busy — each proven by injection
+  (`crates/engine/benches/alloc.rs`).
+- **Non-negotiable 4 has no machine check, and the attempt to build one failed.** `dtruss` is
+  refused by macOS SIP; reading undefined symbols out of the compiled rlib passes even with a
+  `thread::sleep` added, because `Engine` and `serve` are generic and are never
+  code-generated into the library. The script was deleted rather than shipped. Hand-check
+  until `tools/w2w` runs on Linux — open item 15.
+- **A bench reporting "1 allocation per 1000" was measuring a dropped connection.** The busy
+  case replayed one Logon, which the session refuses the second time as a sequence number
+  already used; from iteration three the engine held no connections and the count was the
+  test double's queue doubling. Every case now asserts its own path is live.
+  [reference/measured-costs.md](docs/reference/measured-costs.md).
+
 ## Not proven — claimed, researched, or simply not yet run
 
 - **Every figure in [prior-art.md](docs/reference/prior-art.md) is someone else's claim**,
@@ -311,3 +331,4 @@ Last updated: **2026-08-28**.
 | 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement | Nothing until open item 6 is answered |
 | 13 | **Release profile is default.** No `lto = "fat"`, no `codegen-units = 1`, no PGO, no `#[cold]` on error paths. Cheap, but each is a number to be measured before and after, not a setting to be assumed | The `engine` step; every §6 number published from Linux |
 | 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what nanofix claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |
+| 15 | **Non-negotiable 4 — *the engine thread never sleeps in the kernel* — is a hand-check.** No gate exists. `dtruss` needs SIP disabled; a symbol-based check over the rlib is defeated by generics (it passes with a `sleep` in the loop). The answer is a syscall trace of a concrete binary on Linux, which `tools/w2w` will be | DESIGN §6; every claim that D8 holds |
