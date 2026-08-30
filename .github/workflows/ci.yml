@@ -160,6 +160,41 @@ jobs:
       - if: steps.ws.outputs.count != '0'
         run: scripts/check-no-kernel-sleep.sh
 
+  # CLAUDE.md §2 non-negotiable 4, SECOND HALF: in `standard` mode the engine
+  # thread must block when idle and give the core back. ADR-0013 decision 6
+  # asked for it; until this job existed rule 4 was half-enforced and
+  # CLAUDE.md's own machine-checked list said so.
+  #
+  # It asserts four things because CPU near zero is passable by an engine that
+  # is broken in three different ways — a dead thread, a run that never reached
+  # the mode it was asked for, and an engine woken by its own 100 ms timeout
+  # rather than by the data. `[measured 2026-08-30]` that last one is not
+  # hypothetical: with `Block` made to ignore readiness the p50 goes to
+  # 99 046 599 ns, one whole timeout, while CPU stays at 0% and the thread is
+  # found sleeping 20 times out of 20. Two of the four assertions pass and only
+  # the fourth catches it.
+  #
+  # And it requires its own red halves to fail, on the POLICY rather than on a
+  # broken measurement — the two are separate exit codes for a reason.
+  standard-blocks:
+    name: A standard engine gives the core back
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: ws
+        run: |
+          n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -eq 0 ]; then
+            echo "::warning title=Skipped, not passed::No crates yet, so the CPU measurement did not run."
+          fi
+      - if: steps.ws.outputs.count != '0'
+        run: scripts/fetch-quickfix-assets.sh
+      - if: steps.ws.outputs.count != '0'
+        run: cargo build -p fixbolt-w2w --release
+      - if: steps.ws.outputs.count != '0'
+        run: scripts/check-standard-gives-the-core-back.sh
+
   # CLAUDE.md §2 non-negotiable 6: this must build on a machine with nothing
   # optional installed. Its own runner, so it cannot inherit anything a
   # previous step put there.

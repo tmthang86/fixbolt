@@ -98,8 +98,11 @@ delivery log. In dependency order:
    with a transport that cannot name a source **does not compile**. **Step 5 added the waker**, so all
    four of ADR-0014 decision 6's latency cliffs are now closed. **Step 6 wired both modes**: `serve` is
    `standard` (it used to spin — ADR-0013's default reversal lands there), `serve_hft` spins, and
-   `w2w --mode hft|standard|yield` prints the mode a gate then reads back. **Next is step 7, the
-   `standard` gate itself** — non-negotiable 4's unenforced half.
+   `w2w --mode hft|standard|yield` prints the mode a gate then reads back. **Step 7 closed non-negotiable 4's
+   unenforced half**: `scripts/check-standard-gives-the-core-back.sh`, four assertions, red
+   halves `hft` **and** `yield`. `CLAUDE.md`'s machine-checked list now says rule 4 is enforced
+   in both halves. **Next is step 8**: the 59 definitions in both modes, and the wakeup cost on a
+   §9 machine.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
@@ -121,6 +124,28 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
+
+**`[measured 2026-08-30]` Non-negotiable 4's second half is machine-checked, and it took four
+assertions rather than the one ADR-0013 asked for.** CPU near zero is also what a **dead** thread
+reports, what a run that **never reached the mode** reports, and what an engine woken by its own
+100 ms timeout reports. The last is not hypothetical: with `Block` made to ignore readiness,
+`scripts/check-standard-gives-the-core-back.sh` measured **0% CPU**, found the thread sleeping in
+**20 of 20 samples** — assertions 2 and 3 both green — and a round-trip p50 of **99 046 599 ns**,
+one whole timeout. Only the fourth assertion saw it. On this shared container: `standard` 0.00%
+CPU / 20-of-20 sleeping / p50 10 917 ns; `hft` 98.81% / 0-of-20 / 19 909 ns; `yield` 99.70% /
+0-of-20 / 18 096 ns — **the first time `wait::Yield` has been shown to fail both gates rather
+than said to.**
+
+**`[measured 2026-08-30]` And that gate was green for the wrong reason twice before it was
+believed.** A missing pair of braces (`$12` is `${1}2`) broke every measurement, and because
+*failed the policy* and *could not be measured* shared one exit code, **both red halves reported
+`RED ok`** while nothing had been measured at all — a red half that is red because the harness is
+broken proves as much as a green half that is green because nothing ran. And the p50 was read
+with `grep -oE '[0-9]+' | head -1`, which returned **50** every time: the digits in the *label*
+`p50`. The assertion that is the only thing able to distinguish "woken by the data" from "woken
+by the clock" was comparing a constant against its ceiling, and passing in all three arms, which
+is exactly why nothing looked wrong.
+
 
 **`[measured 2026-08-30]` A tool that accepted a mode, announced it, and did not run it.**
 `tools/w2w --mode standard` printed `mode: standard`, exited 0, and never entered its timed loop:

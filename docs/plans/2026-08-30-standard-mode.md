@@ -244,7 +244,7 @@ Cái tên `density` vẫn dùng được như một **nhãn cho con số**, cạ
 | 4 | ~~tập interest~~ — **xong 2026-08-30.** `refresh_interests[_with]`, `idle_with`, `Acceptor::source()`, `serve()` đăng ký listener, const-assert thật của ADR-0014 quyết định 4, và `sources_missing()` | 3 |
 | 5 | ~~waker~~ — **xong 2026-08-30.** Self-pipe; engine tự bỏ đầu đọc vào tập poll và **tự drain**; **`RingApp`** đánh thức khi đẩy reply — không phải `RingDispatch`, xem "Sửa 3" | 4 |
 | 6 | ~~`w2w --mode`~~ — **xong 2026-08-30.** Ba giá trị `hft\|standard\|yield`, mặc định `hft`, in mode mỗi lần chạy và **cổng đọc lại**. Nửa đỏ của `check-no-kernel-sleep.sh` sang `--mode standard`. **Và `serve()` thành `standard`** — xem "Sửa 4" | 4 |
-| 7 | **Cổng mới** `scripts/check-standard-gives-the-core-back.sh` + job CI `standard-blocks`. Nửa xanh `standard`, **nửa đỏ `hft` và phải trượt** | 6 |
+| 7 | ~~cổng `standard`~~ — **xong 2026-08-30.** `scripts/check-standard-gives-the-core-back.sh` + job CI `standard-blocks`. **Bốn** khẳng định, nửa đỏ là **`hft` và `yield`**, và hai mã thoát tách *hỏng chính sách* khỏi *hỏng phép đo* | 6 |
 | 8 | Chạy 59 định nghĩa ở **cả hai mode**. Đo giá một lần thức của `standard` trên máy §9 và thay dòng §8 — hoặc giữ nhãn "từ tài liệu" nếu máy chưa `pass 10 fail 0` | 7, máy §9 |
 
 ## Cách kiểm chứng
@@ -352,6 +352,79 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
   workload thật, mà cái đó chưa có.
 
 ## Nhật ký giao hàng
+
+### 2026-08-30 — bước 7 xong: nguyên tắc 4 hết nửa vời
+
+**Đã dựng.** `scripts/check-standard-gives-the-core-back.sh` và job CI `standard-blocks`.
+`CLAUDE.md` §2 danh sách "machine-checked today" giờ ghi nguyên tắc 4 là **cả hai nửa**, thay cho
+*"half of it"*.
+
+**Bốn khẳng định, vì CPU gần 0 là thứ mà ba loại engine hỏng khác nhau đều đạt được:**
+
+| # | Khẳng định | Nó bắt cái gì mà cái khác không bắt |
+|---|---|---|
+| 1 | mode mà binary **tự khai** đúng với mode được xin | một lần chạy không hề tới được mode đó — đã xảy ra một lần ở bước 6 |
+| 2 | CPU của engine thread dưới trần 5% | engine quay vòng |
+| 3 | trạng thái scheduler là `S` chứ không `R`, lấy mẫu 20 lần | **thread đã chết** — nó cũng cho 0% CPU |
+| 4 | p50 khứ hồi thấp hơn hẳn timeout | **engine thức vì đồng hồ của chính nó, không vì dữ liệu** |
+
+**`[đo 2026-08-30]` Khẳng định 4 không phải lý thuyết, và không cái nào khác thay được nó.** Đảo
+ngược `Block` để nó bỏ qua readiness và luôn chờ hết timeout: CPU **0%**, tìm thấy đang ngủ
+**20/20 mẫu** — khẳng định 2 và 3 **đều xanh** — và p50 nhảy lên **99 046 599 ns, đúng một
+timeout**. Chỉ khẳng định 4 nhìn thấy. Đó là con engine *đúng, rỗi, và chậm 100 ms mỗi tin* mà
+plan này đã gọi tên từ đầu, giờ có số đo.
+
+**Hai lỗi trong chính cổng, và cái thứ hai đáng sợ hơn:**
+
+1. **`$12` trong bash là `${1}2`.** Thiếu ngoặc nhọn, và dưới `set -u` nó thành một biến chưa
+   khai báo mang tên trạng thái của thread. Mọi phép đo hỏng.
+2. **Và khi mọi phép đo hỏng, cả ba arm đều báo cái trông như đáp án đúng**: nửa xanh trượt, và
+   **cả hai nửa đỏ báo `RED ok`**. Vì `judge` trả 1 cho cả *hỏng chính sách* lẫn *không đo được*,
+   còn arm đỏ coi mọi thất bại là thành công. **Một nửa đỏ đỏ vì harness hỏng chứng minh đúng
+   bằng một nửa xanh xanh vì không có gì chạy** — §10 áp vào chính cái nửa đáng lẽ là lưới an
+   toàn. Sửa: hai mã thoát tách bạch, `1` là chính sách và `2` là không đo được; nửa đỏ **chỉ
+   chấp nhận `1`**.
+
+**Và một false green thứ ba, ngay bên trong khẳng định 4.** Bản đầu lấy p50 bằng
+`grep -oE '[0-9]+' | head -1`, và nó trả **50** cho mọi mode — chữ *50* trong **nhãn** `p50`, vì
+đó là dãy số đầu tiên trên dòng. Nên khẳng định *thứ duy nhất phân biệt được thức-vì-dữ-liệu với
+thức-vì-đồng-hồ* đang so một hằng số với trần của nó và **luôn luôn đạt**. Nó đạt ở cả ba arm,
+mà đó chính là lý do không có gì trông sai. Sửa bằng `awk` lấy đúng trường thứ hai; số thật của
+`standard` là **10 917 ns**, thấp hơn timeout bốn bậc. `[to testing-skills]`
+
+**`yield` giờ được *chứng minh* là trượt cả hai cổng**, thay vì được khẳng định. Từ bước 2 tới
+giờ tài liệu vẫn nói vậy và chưa gì cho thấy. `[đo 2026-08-30]` `yield` cho CPU **99.70%**, ngủ
+**0/20 mẫu**.
+
+**Số đo trên container 4 vCPU dùng chung, không phải máy §9:**
+
+```
+standard   CPU  0.00%   ngu 20/20   p50 10 917 ns
+hft        CPU 98.81%   ngu  0/20   p50 19 909 ns
+yield      CPU 99.70%   ngu  0/20   p50 18 096 ns
+```
+
+CPU và trạng thái ngủ **không phải số latency** — chúng là tỉ lệ và một phép đếm, không cần máy
+§9. p50 thì cần, nên nó vẫn không được công bố ở đâu và `DESIGN.md` §8 giữ nguyên nhãn.
+
+**Còn lại:** bước 8 — chạy 59 định nghĩa ở cả hai mode, và đo giá một lần thức trên máy §9.
+
+**Gate cho commit này:**
+
+```
+cargo fmt --all --check                          sach
+cargo clippy --all-targets -- -D warnings        sach
+cargo test --all                                 229 passed, 0 failed
+cargo test --all --no-default-features           0 failed
+scripts/check-no-optional-deps.sh                exit 0
+scripts/check-no-kernel-sleep.sh                 exit 0
+scripts/check-standard-gives-the-core-back.sh    exit 0; hai nua do truot tren chinh sach
+  (dao nguoc tran p50 -> exit 1; dao nguoc Block bo qua readiness -> exit 1, p50 99 ms)
+-p fixbolt-session --test score                  59/59 trong process
+-p fixbolt-engine  --test wire                   59/59 qua socket that
+scripts/bench.sh                                 exit 0; 8/8; 0 invariant failure
+scripts/check-links.py                           292 link, 0 chet
+```
 
 ### 2026-08-30 — bước 6 xong: cả hai mode chạy được, và một mode từng chỉ giả vờ chạy
 

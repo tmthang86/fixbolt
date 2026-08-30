@@ -470,9 +470,16 @@ them is worth reading anyway — **`standard`'s p50 is three orders of magnitude
 timeout**, so it is woken by the data and not by its own clock. The §8 row below keeps its "from
 the literature" label until a §9 machine says otherwise.
 
-**What is missing is the `standard` gate itself** — CPU over a wall-clock window, non-negotiable
-4's second half. Step 7 of
-[plans/2026-08-30-standard-mode.md](plans/2026-08-30-standard-mode.md).
+**And rule 4's second half is now machine-checked.**
+`scripts/check-standard-gives-the-core-back.sh` asserts four things at once, because CPU near
+zero is passable by three different broken engines: the mode the binary reports, its CPU over a
+wall-clock window, its scheduler state sampled to tell sleeping from dead, and the round-trip p50
+against the poll timeout. `[measured 2026-08-30]` an engine made to ignore readiness reads **0%
+CPU**, is found sleeping **20 of 20 samples**, and has a p50 of **99 046 599 ns** — one whole
+timeout. Only the fourth assertion sees it.
+
+**What is left is step 8**: the 59 definitions in both modes, and the wakeup cost measured on a
+§9 machine. [plans/2026-08-30-standard-mode.md](plans/2026-08-30-standard-mode.md).
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is
 queued, **tick the clock**, read once, cut whole messages out, judge them, flush again — and
@@ -653,6 +660,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Session conformance, acceptor | **59 / 59** | `cargo test -p fixbolt-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
 | The journal keeps what a resend needs, under each D7 policy | `None` fills over everything; `MemJournal` and `FileJournal` replay; a message longer than a slot is refused rather than truncated | `crates/engine/tests/journal.rs`, seven tests. Reversal: making `put` keep nothing turns four of them red **and drops the acceptance score**, which is what proves the score depends on the journal |
 | Session conformance, acceptor, **through a real socket** | **59 / 59, on every machine** | `cargo test -p fixbolt-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59 on the M5 and on Linux x86_64** — **met**. It read 39 / 59 on Linux until the harness's client socket was given `TCP_NODELAY`, which the engine's own sockets have always had; the gate is now flat across a 20× span of its timing bounds, which is what makes the figure mean something |
+| **A `standard` engine gives the core back** | engine-thread CPU under 5% over a wall-clock window, found sleeping rather than running, **and** a round-trip p50 far below the poll timeout | `scripts/check-standard-gives-the-core-back.sh`, non-negotiable 4's second half. Four assertions, because CPU near zero is also what a dead thread, a run that never reached the mode, and an engine woken by its own timeout all report. `[measured 2026-08-30]` a `Block` made to ignore readiness reads **0% CPU**, sleeping **20/20**, p50 **99 046 599 ns** — only the p50 catches it. Requires **`hft` and `yield`** to trip it, and separates *failed the policy* from *could not be measured* so a broken harness cannot pass as a red half |
 | **The engine thread never sleeps in the kernel** | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`. Traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid — the client blocks on purpose and would mask everything. `[measured 2026-08-30]` Linux 6.18 x86_64: `accept4`, `recvfrom`, `sendto` and **zero** of `epoll_wait`/`poll`/`select`/`futex`/`nanosleep`/`sched_yield`. **The script runs the binary again with `wait::Park` and fails if that run does *not* trip it** — non-negotiable 4 had two machine checks before this one and both were green with a sleep present |
 | Allocations on the hot path — engine | **0**, counted separately on seven paths: idle, send, recv, frame, turn, busy, ring | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
