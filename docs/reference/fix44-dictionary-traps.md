@@ -318,3 +318,45 @@ reads exactly like a test.
 `Length` and `NumInGroup` refuse a negative on the same reasoning and nothing in
 the corpus sends one, so they stay refused and are marked `[unproven]` in the
 source. QuickFIX would accept them.
+
+## Fifteen of the sixteen DATA pairs are `length == data - 1`, and the sixteenth is not
+
+`[measured 2026-08-30]` FIX 4.4 declares **16 DATA fields**, each taking its length from a
+separate field that must sit immediately in front of it on the wire. Fifteen of them number
+the length one below the data:
+
+```
+91 <- 90    96 <- 95    213 <- 212   349 <- 348   351 <- 350   353 <- 352
+355 <- 354  357 <- 356  359 <- 358   361 <- 360   363 <- 362   365 <- 364
+446 <- 445  619 <- 618  622 <- 621
+```
+
+The sixteenth is **`Signature(89)`, whose length is `SignatureLength(93)`** — already recorded
+above as the trap that breaks a `tag - 1` rule on the read path. On the **write** path it costs
+something different and worse: an encoder that sorts body fields by ascending tag, which is
+what non-negotiable 5 requires, emits `89=` *before* `93=`. Fifteen pairs come out right by
+arithmetic accident and the sixteenth comes out unframable.
+
+**Why this is easy to ship and hard to notice.** Nothing in the corpus carries a DATA message,
+so the acceptance gate cannot see it; the round-trip test skipped DATA members with a comment
+saying they were "a different test", and they were not tested anywhere; and the fifteen lucky
+pairs make any spot-check pass. The defect is visible only in the one pairing nobody reaches
+for when writing an example.
+
+The fix is not a special case for 89. Sorting a DATA field **by its length field's tag, one
+place behind it** puts every pair right whatever the numbers are, and leaves the ascending rule
+intact for everything else. `crates/codec/src/template.rs::key` does that;
+`crates/codec/tests/data_encode.rs` holds the `Signature` case by name.
+
+**In repeating groups the order was already right — and that is not the same as tested.**
+`[measured 2026-08-30]` **66 DATA members appear across the group tables, and all 66 have their
+length declared immediately in front**, because FIX 4.4's XML declares them adjacent. What was
+missing there was enforcement: nothing required the pair to be supplied together, and nothing
+stopped a caller stating a wrong length. `group_roundtrip.rs` now writes **508 DATA members**,
+each with a `0x01` inside its value — a DATA value without one is indistinguishable from an
+ordinary field and would make the whole case vanish.
+
+`[to testing-skills]` — *fifteen out of sixteen is what a lucky fixture looks like.* A rule
+derived from a set where almost every member satisfies it by coincidence will pass every
+example anyone writes. The defence is to enumerate the set and check the rule against all of
+it — which took one script here and would have found this on day one.

@@ -255,6 +255,19 @@ below describe what a first release would contain.
 - **`scripts/fetch-quickfix-assets.sh` fetches four more QuickFIX headers** — `FixFieldNumbers.h`,
   `FixFields.h`, `FixCommonFields.h` and `FixValues.h` — read as oracles, never copied. `vendor/`
   stays gitignored (ADR-0001).
+- **`TemplateBuilder::build` enforces the DATA invariant, so it can now fail where it did not.**
+  A DATA field declared without the length field that must sit immediately in front of it
+  returns the new `EncodeError::DataWithoutLength(tag)` — at build, once, rather than emitting
+  bytes no reader can frame on every message. Inside a repeating group the same refusal comes
+  from `encode_with`, before anything is written.
+- **The encoder writes a DATA field's length itself.** A value supplied by the caller for a
+  length field is ignored, and the byte count of the data — embedded `0x01` included — is
+  written instead. If the caller could state it, the invariant would be advice: one wrong
+  number and every reader mis-frames the message after it.
+- **Field order inside a message now places a DATA field immediately behind its length field**
+  rather than at its own tag's ascending position. `[measured 2026-08-30]` fifteen of FIX 4.4's
+  sixteen DATA pairs have `length == data - 1`, so ascending order was right by luck;
+  `Signature(89)` takes `SignatureLength(93)` and was emitted **before** its length.
 - **`runner::run_scenario` seeds the clock**, sending `Input::Tick` before the connect and
   before every message. A session has no clock, so the harness is its clock. The value is fixed;
   advancing it is the heartbeat rule and belongs to a later step.
@@ -263,10 +276,13 @@ below describe what a first release would contain.
 
 - `required()` does not descend into `<component>`, so it is wrong for 21 of the 93 message
   types. Nothing calls it. Component recursion arrives with the repeating-groups plan.
-- Repeating groups are not read or written. `Template` sorts by tag, which would reorder a
-  group's members.
 - The trailer tags — `Signature(89)`, `SignatureLength(93)`, `CheckSum(10)` — are classified as
-  neither header nor body, so a written `Signature` would sort into the body. Nothing writes one.
+  neither header nor body, so a written `Signature` sorts into the body. It is now at least
+  emitted **after** its length field, which it was not before 2026-08-30.
+- **Nothing on the DATA write path is backed by real data.** No `.def` file in the corpus
+  carries a DATA message, so every frame in `tests/data_encode.rs` is built to the FIX 4.4
+  specification. Two implementations agreeing about a spec is not a counterparty accepting the
+  bytes.
 - `[measured]` Encoding an `ExecutionReport` costs 93.8 ns against a published target of 60 ns.
 
 Crate names change before any publish: `nanofixengine` is a placeholder.

@@ -61,6 +61,14 @@ pub enum EncodeError {
     MsgTypeMissing,
     /// Groups nested deeper than [`MAX_DEPTH`](crate::group::MAX_DEPTH).
     GroupTooDeep,
+    /// A DATA field was declared without the length field that must sit
+    /// immediately in front of it.
+    ///
+    /// A DATA value may legally contain `0x01`, so a reader takes its length
+    /// from that field and from nothing else. Writing the data without it emits
+    /// bytes no reader can frame — every message, for ever — so this is refused
+    /// once, when the template is built, rather than at send time.
+    DataWithoutLength(u32),
 }
 
 /// One entry of a repeating group being written.
@@ -100,6 +108,13 @@ enum Part {
     /// absent. The counter tag sorts among the body tags like any other; what
     /// follows it does not sort at all.
     Group(u32),
+    /// The length field of a DATA slot. Its value is **not** taken from the
+    /// caller: it is the byte count of the value the caller supplied for
+    /// `data_tag`, counted at send time, embedded `0x01` included.
+    ///
+    /// If the caller could state it, the invariant would be advice — one wrong
+    /// number and every reader mis-frames the message after it.
+    DataLen { tag: u32, data_tag: u32 },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -107,6 +122,10 @@ enum Kind {
     Static,
     Slot,
     Group,
+    /// The length field of a DATA **slot**; the encoder writes it. A length for
+    /// a DATA field that is static is folded into the static bytes at build
+    /// time instead, because its value is already known then.
+    DataLen(u32),
 }
 
 #[derive(Clone, Copy)]
@@ -239,6 +258,38 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
             .copy_from_slice(&self.scratch[ba..ba + bl]);
         used += bl;
 
+        // **The DATA invariant, checked once, here.** A DATA field whose length
+        // field is absent could be written every message for ever and no reader
+        // could frame any of them, so it is a build-time refusal rather than a
+        // send-time one. Sorting has already put the pair adjacent, in order.
+        for i in 0..self.n {
+            let e = self.entries[i];
+            let Some(len_tag) = D::data_length_tag(e.tag) else {
+                continue;
+            };
+            let Some(j) = (0..self.n).find(|k| self.entries[*k].tag == len_tag) else {
+                return Err(EncodeError::DataWithoutLength(e.tag));
+            };
+            match e.kind {
+                // A static DATA value has a known length now, so the length
+                // field is rewritten to it and stays static: nothing is left for
+                // the caller to get wrong.
+                Kind::Static => {
+                    let n = e.len as usize - (tag_prefix_len(e.tag) + 1);
+                    let mut digits = [0u8; 10];
+                    let text = render_u32(n as u32, &mut digits);
+                    let Some((at, len)) = self.stash_field(len_tag, text) else {
+                        return Err(EncodeError::ScratchFull);
+                    };
+                    self.entries[j].at = at;
+                    self.entries[j].len = len;
+                    self.entries[j].kind = Kind::Static;
+                }
+                // A DATA slot's length is only knowable at send time.
+                _ => self.entries[j].kind = Kind::DataLen(e.tag),
+            }
+        }
+
         let mut nparts: usize = 0;
         let mut has_group = false;
         for i in 0..self.n {
@@ -279,6 +330,10 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
                         has_group = true;
                         Part::Group(e.tag)
                     }
+                    Kind::DataLen(data_tag) => Part::DataLen {
+                        tag: e.tag,
+                        data_tag,
+                    },
                     _ => Part::Slot(e.tag),
                 };
                 nparts += 1;
@@ -339,6 +394,20 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
         Ok(())
     }
 
+    /// Write `tag=value\x01` into scratch and say where it landed.
+    ///
+    /// Used to rewrite a static DATA field's length once the real length is
+    /// known. The old bytes are left behind rather than reclaimed — this runs
+    /// once per template, at build, and a scratch buffer that is too small says
+    /// so with [`EncodeError::ScratchFull`].
+    fn stash_field(&mut self, tag: u32, value: &[u8]) -> Option<(u16, u16)> {
+        let at = self.used;
+        self.write_tag(tag).ok()?;
+        self.write(value).ok()?;
+        self.write(&[SOH]).ok()?;
+        Some((at, self.used - at))
+    }
+
     fn stash(&mut self, bytes: &[u8]) -> Option<(u16, u16)> {
         let at = self.used;
         self.write(bytes).ok()?;
@@ -391,14 +460,40 @@ fn reserved(tag: u32) -> Result<(), EncodeError> {
 }
 
 /// `MsgType` first, then header tags ascending, then body tags ascending.
-fn key<D: Dictionary>(e: &Entry) -> (u8, u32) {
-    if e.tag == 35 {
+/// Where a field sorts: `MsgType` first, then header tags ascending, then body
+/// tags ascending — non-negotiable 5, and never a call site's choice.
+///
+/// The third element is what makes DATA work. A DATA field sorts **by its
+/// length field's tag**, one place behind it, so the two are adjacent and in the
+/// right order whatever their own numbers are.
+///
+/// `[measured 2026-08-30]` fifteen of FIX 4.4's sixteen DATA pairs have
+/// `length == data - 1`, so ascending order put them right by luck.
+/// `Signature(89)` takes `SignatureLength(93)` and ascending order emitted the
+/// data **before** its length, which no reader can frame.
+/// `tests/data_encode.rs` holds that case.
+fn key<D: Dictionary>(e: &Entry) -> (u8, u32, u8) {
+    let (rank, tag) = if e.tag == 35 {
         (0, 0)
     } else if D::is_header(e.tag) {
         (1, e.tag)
     } else {
         (2, e.tag)
+    };
+    match D::data_length_tag(e.tag) {
+        Some(len_tag) if rank == 2 => (rank, len_tag, 1),
+        _ => (rank, tag, 0),
     }
+}
+
+/// Bytes a `tag=` prefix occupies: the decimal digits, plus the `=`.
+const fn tag_prefix_len(mut tag: u32) -> usize {
+    let mut n = 1;
+    while tag >= 10 {
+        tag /= 10;
+        n += 1;
+    }
+    n + 1
 }
 
 fn render_u32(mut v: u32, buf: &mut [u8; 10]) -> &[u8] {
@@ -465,6 +560,18 @@ impl<const P: usize, const S: usize> Template<P, S> {
                         .ok_or(EncodeError::OutputTooSmall)?
                         .copy_from_slice(src);
                     w += src.len();
+                }
+                Part::DataLen { tag, data_tag } => {
+                    // Absent DATA means absent length. An optional DATA field
+                    // that was not supplied must not leave a lone length behind.
+                    if let Some((_, value)) = slots.iter().find(|(t, _)| *t == data_tag) {
+                        let mut digits = [0u8; 10];
+                        let text = render_u32(
+                            u32::try_from(value.len()).map_err(|_| EncodeError::BodyTooLong)?,
+                            &mut digits,
+                        );
+                        w = put(out, w, tag, text)?;
+                    }
                 }
                 Part::Slot(tag) => {
                     let Some((_, value)) = slots.iter().find(|(t, _)| *t == tag) else {
@@ -546,6 +653,14 @@ fn put(out: &mut [u8], w: usize, tag: u32, value: &[u8]) -> Result<usize, Encode
 }
 
 /// `counter=N` followed by `N` entries, each in the dictionary's order.
+/// The DATA member this tag is the length of, if this group has one.
+fn data_owner<D: Dictionary>(order: &[u32], tag: u32) -> Option<u32> {
+    order
+        .iter()
+        .copied()
+        .find(|t| D::data_length_tag(*t) == Some(tag))
+}
+
 fn put_group<D: Dictionary>(
     out: &mut [u8],
     mut w: usize,
@@ -582,10 +697,36 @@ fn put_group<D: Dictionary>(
             return Err(EncodeError::MissingDelimiter(g.counter));
         }
 
+        // A DATA member without its length member cannot be framed by any
+        // reader, exactly as at the top level. Refused before a byte is written,
+        // so a rejected entry never leaves half a group in `out`.
+        //
+        // `[measured 2026-08-30]` FIX 4.4 has **66 DATA members across the group
+        // tables, and all 66 have their length declared immediately in front**,
+        // so the order below is already right — what was missing is that
+        // nothing required the pair to be supplied, or the length to be true.
+        for (t, _) in e.fields {
+            if let Some(len_tag) = D::data_length_tag(*t)
+                && !order.contains(&len_tag)
+            {
+                return Err(EncodeError::DataWithoutLength(*t));
+            }
+        }
+
         // Declaration order, from the table. The caller's order is not consulted
         // and cannot be: `order` is walked, not `e.fields`.
         for &tag in order {
             if let Some((_, v)) = e.fields.iter().find(|(t, _)| *t == tag) {
+                // A length field for a DATA member present in this entry is
+                // written from the data, never from what the caller passed.
+                if let Some(data_tag) = data_owner::<D>(order, tag)
+                    && let Some((_, dv)) = e.fields.iter().find(|(t, _)| *t == data_tag)
+                {
+                    let mut d = [0u8; 10];
+                    let n = u32::try_from(dv.len()).map_err(|_| EncodeError::BodyTooLong)?;
+                    w = put(out, w, tag, render_u32(n, &mut d))?;
+                    continue;
+                }
                 w = put(out, w, tag, v)?;
             } else if let Some(sub) = e.groups.iter().find(|s| s.counter == tag) {
                 w = put_group::<D>(out, w, msg_type, sub, depth + 1)?;

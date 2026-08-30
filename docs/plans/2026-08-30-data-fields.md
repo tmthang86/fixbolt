@@ -1,6 +1,6 @@
 # DATA field: đường ghi, và bên trong repeating group
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt (2026-08-30)
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Xong (2026-08-30)
 > **Phạm vi:** open item 8, 9 — `codec` và `dict`
 
 ## Bối cảnh
@@ -146,3 +146,59 @@ Bỏ dòng bỏ-qua ở `group_roundtrip.rs:80` và cho DATA member chạy như 
 `CLAUDE.md` §1 — chỗ bảo "dừng lại, sửa plan, xin duyệt lại" — thành "sửa plan, **ghi lại
 vào đây**, đi tiếp". Mỗi lần sửa plan phải có một mục dưới đây nói rõ **sửa gì và vì sao**,
 nếu không thì uỷ quyền này biến thành giấy phép đi chệch trong im lặng.
+
+---
+
+### Xong 2026-08-30. Item 8 và 9 đóng.
+
+**Test đỏ trước, và đỏ đúng trên assertion** — không phải lỗi biên dịch. Bốn test, bốn dòng
+`panicked at`, trong đó dòng quan trọng nhất là `SignatureLength must precede Signature`.
+
+**Khuyết tật là thật và đã ship.** `[measured 2026-08-30]` FIX 4.4 có 16 cặp DATA; **15 cặp có
+`length == data - 1`**, nên sort tăng dần đúng **do trùng số học**. Cặp thứ 16 —
+`Signature(89)` lấy `SignatureLength(93)` — bị phát ra **data trước length**, không reader nào
+frame nổi. Sửa không phải bằng một ca đặc biệt cho 89: **một DATA field sort theo tag của
+field độ dài của nó, đứng ngay sau nó**, thế là đúng cả 16 mà quy tắc tăng dần vẫn nguyên.
+
+**Trong group thì thứ tự vốn đã đúng — và đó không phải là *đã được kiểm*.** `[measured
+2026-08-30]` **66 DATA member trong các bảng group, cả 66 đều có length khai báo ngay trước**,
+vì XML của FIX 4.4 khai báo liền nhau. Cái thiếu là ép buộc.
+
+**Ba quy tắc, cả ba là *từ chối* chứ không phải lời khuyên:**
+
+1. DATA khai báo mà thiếu field độ dài → `EncodeError::DataWithoutLength` **lúc build**, một
+   lần khi khởi động, thay vì phát ra byte không ai frame được ở mọi message mãi mãi.
+2. Trong group, cùng ca đó → từ chối trong `encode_with`, **trước khi ghi byte nào**.
+3. **Encoder tự tính độ dài từ dữ liệu**, bỏ qua con số caller đưa. Nếu caller nói được thì bất
+   biến chỉ còn là lời khuyên: một số sai là mọi reader frame lệch message phía sau.
+
+**Đảo ngược cả ba, mỗi lần xác nhận cái sửa đã vào file trước khi kết luận:** bỏ quy tắc thứ
+tự → đỏ; để caller ghi độ dài → đỏ; bỏ từ chối trong group → đỏ. Khôi phục → 6/6 xanh.
+
+**Bỏ dòng bỏ-qua ở `group_roundtrip.rs`.** Nó viết **508 DATA member, mỗi cái có `0x01` bên
+trong giá trị**, tất cả round-trip byte-identical. Test tự khẳng định con số đó khác 0 — *một
+round-trip không chạm DATA member nào trông hệt như một cái có chạm.*
+
+**Ba lỗi của chính tôi, đáng ghi vì cùng một hình dạng.** Ba lần liên tiếp tôi đếm tay độ dài
+cửa sổ `windows(N)` sai một byte. Mỗi lần, cửa sổ lệch **khớp không gì cả và đọc y hệt một
+phép kiểm đã qua** — hai lần đầu may mà assertion khác bắt được, lần thứ ba thì chính assertion
+liveness của bench bắt. Sửa tận gốc: **không bao giờ đếm tay nữa**, dùng `needle.len()`. Ghi
+thành comment tại chỗ.
+
+Và hai lần trong số đó **code vốn đã đúng** — output `93=5|89=...` và `354=7|355=...` là chuẩn
+FIX. Sửa assertion trong trường hợp đó là đúng, nhưng nó cách "sửa fixture cho code sai đi qua"
+đúng một bước, nên cả hai lần đều được nói ra chứ không lặng lẽ sửa.
+
+**Corpus không cứu được ở đây**, và tài liệu nói thẳng: **không `.def` nào có DATA message**.
+Mọi frame trong `data_encode.rs` dựng theo spec. Đây vẫn là bằng chứng yếu nhất của crate.
+
+**Gate:**
+
+```
+206 passed / 0 failed   cargo test --all
+206 passed / 0 failed   cargo test --all --no-default-features
+0 allocations           benches/alloc.rs, case `data` — injection ra 10 000
+clean                   cargo clippy --all-targets -- -D warnings · cargo fmt --check
+no dead internal links  scripts/check-links.py
+357 vị trí / 59 counter / 508 DATA member   group_roundtrip.rs
+```

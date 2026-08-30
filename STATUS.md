@@ -24,7 +24,7 @@ delivery log. In dependency order:
    step 1.** It needed Linux rather than a §9 machine, which was right — but it needs a kernel
    built with `CONFIG_TLS`, which this one is not. Nothing about `ktls-core` or ADR-0005 was
    concluded, because the experiment never reached the library.
-4. **[data-fields](docs/plans/2026-08-30-data-fields.md)** — items 8, 9.
+4. ~~**data-fields**~~ — **closed 2026-08-30**, items 8 and 9.
 5. **[session-recovery](docs/plans/2026-08-30-session-recovery.md)** — item 16.
 6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5.
 
@@ -417,6 +417,27 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   have been enough** — a config says what was compiled, not what a container may do; the
   syscall says both, which is why `scripts/check-ktls-available.sh` makes the call rather than
   grepping.
+- **Items 8 and 9 closed: the DATA write path has invariants, and they are refusals.**
+  `[measured 2026-08-30]` `TemplateBuilder::build` refuses a DATA field declared without its
+  length field (`EncodeError::DataWithoutLength`); `encode_with` refuses the same inside a
+  repeating group before a byte is written; and **the encoder computes the length from the
+  data**, ignoring what the caller passed — `0x01` inside the value included. Six tests in
+  `crates/codec/tests/data_encode.rs`, each rule proven by reversal with the injection
+  confirmed present first.
+- **The ordering defect was real and had shipped.** `[measured 2026-08-30]` fifteen of FIX
+  4.4's sixteen DATA pairs have `length == data - 1`, so sorting body tags ascending put them
+  right **by arithmetic accident**. `Signature(89)` takes `SignatureLength(93)` and was emitted
+  **before** its length — unframable by any reader. Field order now places a DATA field one
+  place behind its length field's tag, which fixes all sixteen without a special case. Written
+  up in [reference/fix44-dictionary-traps.md](docs/reference/fix44-dictionary-traps.md).
+- **In groups the order was already right, and that is not the same as tested.** `[measured
+  2026-08-30]` **66 DATA members across the group tables, all 66 with the length declared
+  immediately in front.** `group_roundtrip.rs` no longer skips them: it writes **508 DATA
+  members, each with a separator inside its value**, and asserts that count is non-zero —
+  a round-trip that covered no DATA member would look exactly like one that did.
+- **`benches/alloc.rs` writes a DATA field at zero allocations**, and the case asserts its own
+  path is live before the zero counts. Proven by injection: one `format!` in that loop reports
+  **10 000**.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -478,7 +499,7 @@ plans are **approved**; the first is in progress.
 | ~~[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)~~ | **CLOSED 2026-08-30** — 7, 17, 18, 19 |
 | [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | **15 closed 2026-08-30**; 6, 11, 13 blocked on a §9 machine; **decides** 12 |
 | [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 — **paused 2026-08-30**, blocked on a kernel with `CONFIG_TLS` |
-| [data-fields](docs/plans/2026-08-30-data-fields.md) | 8, 9 |
+| ~~[data-fields](docs/plans/2026-08-30-data-fields.md)~~ | **CLOSED 2026-08-30** — 8, 9 |
 | [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 |
 | [ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) | 5 |
 
@@ -494,8 +515,6 @@ against hardware that does not exist.
 | 5 | Ring-buffer policy when the library falls behind: block, drop, or disconnect? | ADR-0002, and the `engine` plan |
 | 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number | Every gate in §6 that matters |
 | 7 | **`scripts/fetch-quickfix-assets.sh` tracks mutable `master`.** Every acceptance number in the codec plan (539 lines, 247 with `9=`, 244 with `10=`, 8 tag-set patterns for `35=3`) can change silently upstream. Pin a commit and verify it | Reproducibility of every step-1 gate |
-| 8 | **DATA fields inside a repeating group are untested**, on either the read or the write path. `group_roundtrip.rs` skips every DATA member, because writing one needs its length field placed immediately in front — which is open item 9, seen from inside a group | Any counterparty that puts `RawData` in a `Parties` entry |
-| 9 | **The encoder has no DATA invariant.** Writing a dynamic DATA field must regenerate its length field, place it immediately before, and count bytes including embedded `0x01`. Only the read path is specified | Any counterparty that sends `RawData`/`XmlData` |
 | 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **`[measured 2026-08-30]` the blocker was recorded wrongly and is now known**: it needs a kernel built with **`CONFIG_TLS`**, *not* the §9 machine of item 6 — kTLS is a kernel feature, not a latency property. This box refuses `setsockopt(TCP_ULP, "tls")` with `ENOENT` and its config says `# CONFIG_TLS is not set`. `scripts/check-ktls-available.sh` answers "can I start?" in one command; [reference/ktls-on-a-plain-socket.md](docs/reference/ktls-on-a-plain-socket.md) records what was and was not concluded | The TLS plan; ADR-0005 acceptance |
 | 11 | **Serialise misses its gate: 93.8 ns against 60 ns** (DESIGN §6). Cause is known — `Template::encode` finds each slot by a linear scan of the caller's list, so cost is slots × parts. Fix candidates: index slots by tag at template build, or require the caller to hand slots in parts order. The only red gate that does not need the Linux box | DESIGN §6 serialise row; the `engine` step, where the number is re-measured |
 | 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement | Nothing until open item 6 is answered |

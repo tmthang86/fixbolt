@@ -257,6 +257,18 @@ agrees on 730/730 groups and QuickFIX's order is an exact subsequence of this cr
 730/730 (`crates/dict/tests/interop_quickfix_order.rs`). Swapping two adjacent members in
 every group leaves the round-trip green and turns that test red — which is why it exists.
 
+**A DATA field is written immediately behind its length field, and the encoder writes that
+length.** A DATA value may legally contain `0x01`, so a reader takes its length from the field
+in front and from nowhere else. Two rules follow, and both are refusals rather than advice:
+a DATA field declared without its length field fails at `TemplateBuilder::build` — once, at
+startup — with `EncodeError::DataWithoutLength`, and inside a repeating group the same case
+fails in `encode_with` before a byte is written; and the length's value is computed from the
+data rather than taken from the caller, because a caller who can state it can state it wrongly.
+`[measured 2026-08-30]` fifteen of FIX 4.4's sixteen DATA pairs have `length == data - 1`, so
+ordering by ascending tag was right by accident; `Signature(89)` takes `SignatureLength(93)`
+and was emitted before its length. Held by `crates/codec/tests/data_encode.rs`, and by
+`group_roundtrip.rs`, which writes **508 DATA members** with a separator inside every value.
+
 ### D4 — Dispatch is a trait; inline is the default, the ring buffer is the option
 
 Taken from [Artio](https://github.com/artiofix/artio), which separates `FixEngine` (owns TCP
