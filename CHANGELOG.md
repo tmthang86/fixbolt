@@ -81,7 +81,7 @@ below describe what a first release would contain.
   - `[measured 2026-08-30]` **0 / 50** on the mirrored corpus. Every mirrored Logon is
     accepted; what the files ask for next is a message only an operator can order.
 
-- **`nanofix-engine`** — the crate that touches the socket. Steps 1–4 of six.
+- **`nanofix-engine`** — the crate that touches the socket. Steps 1–5 of six.
   - `Transport`, with `TcpTransport` (non-blocking, `TCP_NODELAY`) and `Loopback` (in memory,
     for tests that must not depend on a free port).
   - **`Io::{Ready, Idle, Closed, Failed}` rather than `io::Result<usize>`.** On a stream socket
@@ -126,6 +126,18 @@ below describe what a first release would contain.
     became `dispatch_mut()`.
   - `benches/dispatch.rs`: inline **2.7 ns**, ring **128.0 ns** one way, **242.5 ns** round
     trip, each asserting its own ceiling.
+  - `Backpressure` (D10), on an engine or on one connection: `Disconnect` (the default),
+    `Queue { max_bytes }`, `Block`. A message is queued whole or refused whole; a refusal ends
+    the session with `Logout(58=slow consumer)`, written after the queue is discarded so that
+    a bound smaller than one Logout cannot end a session in silence.
+  - **`Connection::turn` now ticks before it reads.** `Session::received_with` has no clock
+    (D1) and judges `SendingTime` against the last tick, so a session that has never ticked
+    refused the first message on every connection. The wire gate is unchanged at 59 / 59.
+  - A connection whose socket has died is finished even with bytes queued. It previously
+    stayed up for as long as it was turned.
+  - `nanofix-session`: `Session::logout_now(text, emit)` — send a `Logout` carrying `58=text`
+    and give up the link. Additive, for the engine's D10 policy; the session cannot see a full
+    queue and the engine cannot build a message.
   - `benches/alloc.rs`: **0** on seven paths — idle, send, receive, framing, an idle turn, a
     turn carrying a message in and a reply out, and a full ring round trip.
 

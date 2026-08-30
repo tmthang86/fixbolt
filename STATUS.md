@@ -12,7 +12,7 @@ Last updated: **2026-08-30**.
 | Branch | **`plan/engine`**, on top of `main` |
 | Milestone | **M3 — the engine, in flight.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket**: `cargo test -p nanofix-engine --test wire` → **59 / 59**. `codec`, `dict`, `conformance` and `session` are closed behind it |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — **Approved 2026-08-30**, all six steps. Steps 1–4 of six done. `DESIGN.md` §7 step 6, taken before step 5 by decision. Six steps; the gate that matters is the same 59 definitions run **through a real socket** |
+| Plan in flight | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — **Approved 2026-08-30**, all six steps. Steps 1–5 of six done. `DESIGN.md` §7 step 6, taken before step 5 by decision. Six steps; the gate that matters is the same 59 definitions run **through a real socket** |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
 | Last closed | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — closed 2026-08-28. Four validation tables, agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 12 524/12 524 message-tag pairs and 1 708/1 708 enum values |
@@ -279,6 +279,22 @@ Last updated: **2026-08-30**.
   [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md): the plan authorised neither
   `unsafe` nor a dependency, so the copy is byte-at-a-time and costs ~0.8 ns per byte. The
   reversal is cheap and is written down.
+
+- **A slow consumer ends with a reason, not in silence.** `DESIGN.md` D10 built:
+  `Disconnect` (default), `Queue { max_bytes }`, `Block`.
+  `crates/engine/tests/backpressure.rs`, six tests, and both guards proven by reversal —
+  truncating instead of refusing turns three red, and removing the dead-socket check turns one
+  red.
+- **Two real bugs came out of writing those tests, not out of reading the code.** A socket that
+  died with bytes still queued left the connection `Up` for ever, because "finished" meant
+  *closing and the queue is empty*. And `Queue { max_bytes }` smaller than one Logout would
+  have ended the session silently — the message that says why is now written into the whole
+  `TX` buffer after the queue is discarded.
+- **The tick moved to the front of `Connection::turn`, and the wire gate did not move.**
+  `[measured 2026-08-30]` still **59 / 59**. `received_with` has no clock (D1), so a session
+  that has never ticked judges `SendingTime` against zero and refuses the first message on
+  every connection. It had been worked around in three places; the workarounds were deleted in
+  the same commit as the fix.
 
 ## Not proven — claimed, researched, or simply not yet run
 

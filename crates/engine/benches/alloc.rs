@@ -261,15 +261,6 @@ fn main() {
         4,
     );
     let _ = engine2.add(engine_side2);
-    // **One empty turn before the first byte**, and it is not decoration.
-    // `Session::received_with` takes no clock: it judges `SendingTime` against
-    // the last instant a `tick` gave it, which for a session that has never
-    // ticked is zero. The corpus's `52=` is then 2026 years of skew and the
-    // Logon is refused. `[measured 2026-08-30]` the engine above only accepted
-    // the same Logon because the `turn` case had already ticked it 10 000
-    // times. A deployment turns continuously and never meets this; a bench
-    // that sends on turn one does.
-    engine2.turn();
     let _ = peer2.send(&traffic[0]);
     engine2.turn();
     let _ = peer2.recv(&mut sink);

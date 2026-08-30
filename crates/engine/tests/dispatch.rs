@@ -160,10 +160,6 @@ fn engine<D: Dispatch>(dispatch: D) -> (Loopback, Wired<D>) {
         4,
     );
     let _ = engine.add(side);
-    // One empty turn before the first byte: `received_with` judges
-    // `SendingTime` against the last `tick`, and a session that has never
-    // ticked holds zero. See docs/reference/measured-costs.md.
-    engine.turn();
     (peer, engine)
 }
 

@@ -3,6 +3,7 @@
 
 use nanofix_session::{Application, Link, Role, Session};
 
+use crate::backpressure::{Backpressure, SLOW_CONSUMER};
 use crate::dispatch::ConnId;
 use crate::frame::{Cut, Framer};
 use crate::transport::{Io, Transport};
@@ -36,6 +37,16 @@ pub struct Connection<T, R: Role, const N: usize, const RX: usize, const TX: usi
     /// Set when the session says the link is down, so the engine can drop it
     /// after the last bytes have been pushed out.
     closing: bool,
+    /// Set when the **socket** is gone. Different from `closing`: a closing
+    /// connection still has bytes to write, a dead one has nowhere to write
+    /// them, and waiting for a queue to drain into a dead socket is a
+    /// connection that never leaves.
+    dead: bool,
+    /// What to do when `tx` will not take the next message. `DESIGN.md` D10.
+    policy: Backpressure,
+    /// Set when a message did not fit. Read once per turn, and answered with a
+    /// `Logout(58=slow consumer)`.
+    overflow: bool,
 }
 
 impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
@@ -51,7 +62,22 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
             tx: [0; TX],
             tx_len: 0,
             closing: false,
+            dead: false,
+            policy: Backpressure::Disconnect,
+            overflow: false,
         }
+    }
+
+    /// The same connection under a different backpressure policy (D10).
+    #[must_use]
+    pub const fn with_backpressure(mut self, policy: Backpressure) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// How many bytes may wait, under this connection's policy.
+    const fn bound(&self) -> usize {
+        self.policy.bound(TX)
     }
 
     /// Tell the session the link is open, and queue whatever it says.
@@ -59,9 +85,27 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
     /// An initiator answers with a Logon on its first `tick`; an acceptor says
     /// nothing until one arrives.
     pub fn opened(&mut self) {
-        let tx = &mut self.tx;
-        let tx_len = &mut self.tx_len;
-        let link = self.session.connect(|b| push(tx, tx_len, b));
+        let bound = self.bound();
+        let blocks = self.policy.blocks();
+        let Self {
+            session,
+            transport,
+            tx,
+            tx_len,
+            overflow,
+            dead,
+            ..
+        } = self;
+        let mut out = Out {
+            transport,
+            tx,
+            tx_len,
+            bound,
+            blocks,
+            overflow,
+            failed: dead,
+        };
+        let link = session.connect(|b| out.push(b));
         self.closing |= link == Link::Dropped;
     }
 
@@ -71,14 +115,31 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
     /// `SendingTime`, whether the link is even up — so an application that
     /// hands over a stale or half-formed header cannot corrupt the stream.
     pub fn send_application(&mut self, msg: &[u8]) {
+        let bound = self.bound();
+        let blocks = self.policy.blocks();
         let Self {
             session,
+            transport,
             tx,
             tx_len,
+            overflow,
+            dead,
             ..
         } = self;
-        if session.send_application(msg, |b| push(tx, tx_len, b)) == Link::Dropped {
+        let mut out = Out {
+            transport,
+            tx,
+            tx_len,
+            bound,
+            blocks,
+            overflow,
+            failed: dead,
+        };
+        if session.send_application(msg, |b| out.push(b)) == Link::Dropped {
             self.closing = true;
+        }
+        if self.overflow {
+            self.slow_consumer();
         }
         // Push it now rather than next turn. `turn` has already flushed by the
         // time the engine collects out-of-band replies, so without this every
@@ -115,6 +176,35 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
     ) -> Turn {
         let mut moved = self.flush();
 
+        if !self.closing {
+            let bound = self.bound();
+            let blocks = self.policy.blocks();
+            let Self {
+                session,
+                transport,
+                tx,
+                tx_len,
+                overflow,
+                dead,
+                ..
+            } = self;
+            let mut out = Out {
+                transport,
+                tx,
+                tx_len,
+                bound,
+                blocks,
+                overflow,
+                failed: dead,
+            };
+            if session.tick(now_ms, |b| out.push(b)) == Link::Dropped {
+                self.closing = true;
+            }
+            if self.overflow {
+                self.slow_consumer();
+            }
+        }
+
         // Read once per turn, not until the socket is empty: a counterparty
         // that can write faster than this end can process must not be able to
         // starve every other connection on the thread.
@@ -142,30 +232,38 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
                 let _ = self.session.disconnect(|_| {});
                 return Turn::Gone;
             }
+            let bound = self.bound();
+            let blocks = self.policy.blocks();
             let Self {
                 session,
                 rx,
+                transport,
                 tx,
                 tx_len,
+                overflow,
+                dead,
                 ..
             } = self;
-            let link = session.received_with(rx.bytes(taken), app, |b| push(tx, tx_len, b));
+            let mut out = Out {
+                transport,
+                tx,
+                tx_len,
+                bound,
+                blocks,
+                overflow,
+                failed: dead,
+            };
+            let link = session.received_with(rx.bytes(taken), app, |b| out.push(b));
             self.rx.take(taken);
             if link == Link::Dropped {
                 self.closing = true;
                 break;
             }
-        }
-
-        if !self.closing {
-            let Self {
-                session,
-                tx,
-                tx_len,
-                ..
-            } = self;
-            if session.tick(now_ms, |b| push(tx, tx_len, b)) == Link::Dropped {
-                self.closing = true;
+            if self.overflow {
+                // Stop reading: every further message would answer into a
+                // queue that is already full.
+                self.slow_consumer();
+                break;
             }
         }
 
@@ -181,18 +279,63 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
             let _ = self.session.disconnect(|_| {});
             return Turn::Gone;
         }
+        if self.dead {
+            // Nowhere left to write. Waiting for the queue to drain would be
+            // waiting for ever — `[measured 2026-08-30]` found by a test that
+            // killed the socket with bytes still queued and watched the
+            // connection stay `Up` for as long as it was turned.
+            let _ = self.session.disconnect(|_| {});
+            return Turn::Gone;
+        }
         if self.closing && self.tx_len == 0 {
             return Turn::Gone;
         }
         Turn::Up(moved)
     }
 
+    /// End the session because its outbound queue filled. `DESIGN.md` D10.
+    ///
+    /// **The queue is thrown away first, and that is deliberate.** It holds
+    /// messages for a counterparty that has stopped reading, and the Logout
+    /// that says so has to fit somewhere. Keeping them would mean the one
+    /// message that matters is the one that cannot be sent.
+    fn slow_consumer(&mut self) {
+        self.tx_len = 0;
+        self.overflow = false;
+        // **`TX`, not the policy's bound.** `Queue { max_bytes }` bounds how
+        // much traffic may wait; it does not bound the message that says the
+        // waiting is over. A bound smaller than one Logout would otherwise end
+        // the session in silence, which is the one thing D10 forbids.
+        let bound = TX;
+        let Self {
+            session,
+            transport,
+            tx,
+            tx_len,
+            overflow,
+            dead,
+            ..
+        } = self;
+        let mut out = Out {
+            transport,
+            tx,
+            tx_len,
+            bound,
+            // Never block on the way out: the socket is the thing that is not
+            // draining.
+            blocks: false,
+            overflow,
+            failed: dead,
+        };
+        let _ = session.logout_now(SLOW_CONSUMER, |b| out.push(b));
+        self.overflow = false;
+        self.closing = true;
+    }
+
     /// Push as much of the queue as the socket will take.
     ///
     /// A short write is ordinary and is not an error: the rest stays queued and
-    /// goes on the next turn. What to do when the queue itself fills is
-    /// `DESIGN.md` D10's question and step 5's work; until then the queue
-    /// simply drops what does not fit, and says so by refusing to grow.
+    /// goes on the next turn.
     fn flush(&mut self) -> bool {
         if self.tx_len == 0 {
             return false;
@@ -206,20 +349,66 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
             Io::Idle => false,
             Io::Closed | Io::Failed(_) => {
                 self.closing = true;
+                self.dead = true;
                 false
             }
         }
     }
 }
 
-/// Append to the outbound queue, dropping what does not fit.
+/// The outbound queue, as the session's `emit` closure sees it.
+///
+/// Holds borrows of four disjoint fields rather than copies, so it costs
+/// nothing and allocates nothing. It exists because [`Backpressure::Block`]
+/// has to reach the socket from inside `emit`, and a free function taking
+/// `(&mut [u8], &mut usize)` cannot.
 ///
 /// `[measured]` `TX` is 8 KiB against a longest corpus message of 200 bytes and
-/// a longest burst of five, so nothing in the suite comes near it. A real slow
-/// consumer does, and that is D10's policy rather than this function's.
-fn push(tx: &mut [u8], tx_len: &mut usize, bytes: &[u8]) {
-    let room = tx.len() - *tx_len;
-    let n = room.min(bytes.len());
-    tx[*tx_len..*tx_len + n].copy_from_slice(&bytes[..n]);
-    *tx_len += n;
+/// a longest burst of five, so nothing in the acceptance suite comes near the
+/// bound. A real slow consumer does, which is why D10 exists.
+struct Out<'a, T> {
+    transport: &'a mut T,
+    tx: &'a mut [u8],
+    tx_len: &'a mut usize,
+    bound: usize,
+    blocks: bool,
+    overflow: &'a mut bool,
+    /// Set when the socket died while being spun on. It is the connection's
+    /// `dead` flag, borrowed.
+    failed: &'a mut bool,
+}
+
+impl<T: Transport> Out<'_, T> {
+    /// One whole message, or none of it.
+    ///
+    /// **Never a partial write.** Half a FIX message on the wire is a frame the
+    /// counterparty cannot recover from; a message that did not fit is a
+    /// session that ends with a reason.
+    fn push(&mut self, bytes: &[u8]) {
+        if self.blocks {
+            // D10's `Block`: spin on the socket until there is room. A spin is
+            // not a kernel sleep, so D8 and non-negotiable 4 still hold — but
+            // one slow counterparty now stops every other session on this
+            // thread, which is why it is never a default.
+            while *self.tx_len + bytes.len() > self.bound {
+                match self.transport.send(&self.tx[..*self.tx_len]) {
+                    Io::Ready(n) => {
+                        self.tx.copy_within(n..*self.tx_len, 0);
+                        *self.tx_len -= n;
+                    }
+                    Io::Idle => core::hint::spin_loop(),
+                    Io::Closed | Io::Failed(_) => {
+                        *self.failed = true;
+                        return;
+                    }
+                }
+            }
+        }
+        if *self.tx_len + bytes.len() > self.bound {
+            *self.overflow = true;
+            return;
+        }
+        self.tx[*self.tx_len..*self.tx_len + bytes.len()].copy_from_slice(bytes);
+        *self.tx_len += bytes.len();
+    }
 }

@@ -14,6 +14,7 @@
 //! a timing window — `crates/engine/tests/wire.rs` drives `turn` by hand and is
 //! as deterministic as the in-process gate.
 
+pub mod backpressure;
 pub mod clock;
 pub mod conn;
 pub mod dispatch;
@@ -26,6 +27,7 @@ use std::net::{TcpListener, TcpStream};
 
 pub use nanofix_session::{Application, Config, Role, Session};
 
+use crate::backpressure::Backpressure;
 use crate::clock::Clock;
 use crate::conn::{Connection, Turn};
 use crate::dispatch::{ConnId, Dispatch, InlineDispatch};
@@ -45,6 +47,9 @@ pub struct Engine<T, R: Role, D, C, W, const N: usize, const RX: usize, const TX
     /// The next connection id. Only ever counts up, so an id is never reused
     /// and a reply that arrives after a hang-up matches nothing.
     next_id: ConnId,
+    /// What every connection this engine takes on does when its outbound queue
+    /// fills. `DESIGN.md` D10.
+    backpressure: Backpressure,
 }
 
 /// One connection's view of the dispatch, as the [`Application`] the session
@@ -92,7 +97,17 @@ where
             clock,
             wait,
             next_id: 0,
+            backpressure: Backpressure::Disconnect,
         }
+    }
+
+    /// The same engine, with a different backpressure policy for every
+    /// connection it takes on from now (D10). The default is
+    /// [`Backpressure::Disconnect`].
+    #[must_use]
+    pub const fn with_backpressure(mut self, policy: Backpressure) -> Self {
+        self.backpressure = policy;
+        self
     }
 
     /// Take on a connection that is already open, and tell its session so.
@@ -101,7 +116,8 @@ where
     pub fn add(&mut self, transport: T) -> ConnId {
         let id = self.next_id;
         self.next_id += 1;
-        let mut conn = Connection::new(id, transport, Session::new(self.cfg));
+        let mut conn = Connection::new(id, transport, Session::new(self.cfg))
+            .with_backpressure(self.backpressure);
         conn.opened();
         self.conns.push(conn);
         id

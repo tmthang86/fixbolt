@@ -347,10 +347,16 @@ A `Waiting` strategy is a trait so tests and low-priority deployments can use a 
 variant. The default ships as spin.
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is
-queued, read once, cut whole messages out, judge them, tick the clock, flush again — and
+queued, **tick the clock**, read once, cut whole messages out, judge them, flush again — and
 `Engine::run` is `loop { if !turn() { wait.idle() } }` and nothing else. Reading *once* per
 turn rather than until the socket is empty is deliberate: a counterparty that writes faster
 than this end processes must not be able to starve the other connections on the thread.
+
+**The tick comes before the read, and that is a correctness ordering rather than a taste.**
+`Session::received_with` takes no clock — D1 — so it judges `SendingTime` against the last
+instant a `tick` gave it, and a session that has never ticked holds zero. Reading first means
+the very first message on a connection is judged against 0000-01-01 and refused for skew.
+`[measured 2026-08-30]` moving the tick left the wire gate at 59 / 59.
 
 Keeping the pass separate from the loop is what lets the 59 acceptance definitions run
 **through a real socket** with no background thread, no sleep and no timing window —
@@ -412,6 +418,24 @@ Policy, per session, chosen in configuration:
 The queue is its own storage. It is tempting to say the queued bytes are the ones the journal
 (D7) already holds — but under `JournalPolicy::None` the journal holds nothing, and that is the
 policy simulators and tests run. The queue owns a per-session buffer, sized at startup.
+
+**As built.** `Backpressure` on `Engine` or on a single `Connection`; the queue is the
+connection's `TX` buffer and `Queue { max_bytes }` only tightens the bound. Three rules the
+code makes explicit and `crates/engine/tests/backpressure.rs` holds:
+
+- **A message goes in whole or not at all.** The session emits one message per `emit` call, so
+  a refusal is always at a message boundary; a queue that wrote as much as would fit would put
+  a frame on the wire that the counterparty cannot recover from.
+- **The Logout that says `58=slow consumer` is not subject to `max_bytes`.** It is written into
+  the whole `TX` buffer after the queue is discarded — the queued messages are for a
+  counterparty that stopped reading, and the one message that matters must not be the one that
+  cannot be sent.
+- **A socket that has died ends the connection even with bytes queued.** `[measured 2026-08-30]`
+  before this, killing the socket mid-write left the connection `Up` for as long as it was
+  turned, because "finished" was defined as *closing and the queue is empty*.
+
+`Block` spins rather than sleeping, so D8 still holds for the thread — but one slow
+counterparty then stops every other session on it, which is why it is never a default.
 
 ### D11 — TLS is a transport implementation, and the guarantee is stated per mode
 

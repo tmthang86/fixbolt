@@ -727,6 +727,25 @@ impl<R: Role, const N: usize> Session<R, N> {
         Link::Dropped
     }
 
+    /// Send a `Logout` carrying `58=text`, then give up the link.
+    ///
+    /// **For the engine, and for one policy: `DESIGN.md` D10.** A queue that
+    /// has filled because the counterparty stopped reading is not something a
+    /// pure state machine can see — there is no socket here — so the decision
+    /// belongs to the engine. The *message* still belongs to the session, which
+    /// owns the sequence number, the timestamp and the field order.
+    ///
+    /// `text` is written straight into `58=`; the caller supplies a literal, so
+    /// nothing here allocates or formats.
+    pub fn logout_now<F: FnMut(&[u8])>(&mut self, text: &[u8], mut emit: F) -> Link {
+        if matches!(self.state, State::Disconnected | State::AwaitingLogout) {
+            return Link::Dropped;
+        }
+        let _ = self.send(Which::Logout, &[(tag::TEXT, text)], &mut emit);
+        self.state = State::AwaitingLogout;
+        Link::Dropped
+    }
+
     /// Write one `Reject (35=3)` and hand it to `emit`.
     fn send_reject<F: FnMut(&[u8])>(&mut self, r: &Reject, emit: &mut F) -> Link {
         let mut text = [0u8; SessionText::MAX_LEN];

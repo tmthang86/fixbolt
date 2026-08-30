@@ -323,11 +323,16 @@ A Logon is then 2026 years of skew and is refused silently. The first engine in
 the bench accepted the identical Logon only because an earlier case had already
 ticked it ten thousand times.
 
-Nothing in a deployment meets this: `Engine::run` turns continuously and every
-turn ticks. `crates/engine/tests/wire.rs` does not meet it either, because the
-corpus's `Connect` line pumps before any byte arrives. **A test or bench that
-sends on turn one does**, and one empty turn before the first byte is the whole
-fix.
+It bit three times — an allocation bench, a dispatch test and a backpressure
+test — before it was fixed rather than worked around. **The fix is the order
+inside `Connection::turn`: tick first, then read.** A session then always has a
+time before it judges anything, and the hole closes for every caller at once
+rather than for whichever one last tripped over it.
+
+`[measured 2026-08-30]` moving the tick left the wire gate at 59 / 59, so the
+corpus does not care which side of the read it falls on. The three workarounds
+were deleted in the same commit — **a workaround left in place after the cause
+is fixed is a comment that will be believed later.**
 
 ## What a thread hop costs when the ring may not use `unsafe`
 
