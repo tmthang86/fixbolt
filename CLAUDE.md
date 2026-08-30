@@ -68,7 +68,10 @@ list by hand. Each names the decision it enforces.
 **Machine-checked today:** 7 — `scripts/check-lint-config.sh`, run by CI, proves by reversal
 that the workspace lints actually deny `unwrap`/`expect`/`panic`. 6 — the
 `no-default-features` CI job. 1 — `benches/alloc.rs`, each case asserting its own path is
-live. 3 — the conformance runner, in process and over a socket. 4 —
+live, run by the `bench` CI job through `scripts/bench.sh`; **`[measured 2026-08-30]` this
+entry was false until that job existed** — `cargo test --all` does not run a `harness = false`
+bench target and nothing else invoked `cargo bench`, so the list named a check nothing ran.
+3 — the conformance runner, in process and over a socket. 4 —
 `scripts/check-no-kernel-sleep.sh`, which traces `tools/w2w` on Linux and attributes syscalls
 to the engine thread by tid; **it runs the binary a second time with `wait::Park` and requires
 that run to trip the check**, because two earlier attempts at this rule reported success with

@@ -611,6 +611,45 @@ grows with slots × parts. It is recorded here rather than optimised, because
 measuring on the machine that matters. The number to beat is the Linux one, at the `engine`
 step.
 
+`[measured 2026-08-30]` **The Linux number now exists, and it is worse.** Five runs on a
+shared 4 vCPU Xeon container, `rustc 1.98.0`: 177.6–199.4 ns, a 3.0–3.3× miss rather than the
+M5's 1.6×. Still recorded rather than optimised, and for the same reason — a shared container
+is not §9 either.
+
+### How the benchmarks are run
+
+Nothing ran them until 2026-08-30. `cargo test --all` does not run a `harness = false` bench
+target — measured: 43 test binaries, not one of them a bench — and no CI job called
+`cargo bench`. Every ceiling in the rows above, and every allocation count, was an assertion
+no machine executed. `benches/alloc.rs` is what `CLAUDE.md` §2 names as the machine check for
+non-negotiable 1, so that entry named a check nothing invoked.
+
+`scripts/bench.sh` runs every bench target and the `bench` CI job runs the script on every
+push. **It splits the two kinds of benchmark by what decides their result**, because they
+cannot share an exit code:
+
+| | What it measures | On a failure |
+|---|---|---|
+| **Invariant** — `alloc` × 3, `ring_full` | allocation counts, message counts | **CI red.** The answer is the same on every machine, so a failure is a defect |
+| **Timing** — `parse`, `serialize`, `groups`, `dispatch` | ns/op against a ceiling | **Reported, never red.** The ceilings are M5-tuned and the runner is shared |
+
+`--strict` makes a timing failure fatal too; that is what a §9 machine should use. The script
+also fails when a target produces **no** measurement, which is not hypothetical: Cargo had
+auto-discovered `benches/harness.rs` — a module, containing no case — as a ninth bench target
+that reported `0 measured` and exited 0.
+
+**Timing ceilings are not enforced on a shared runner because they cannot be.**
+`[measured 2026-08-30]` five runs of the twelve timing cases on that container: run-to-run
+spread 5–232%, three cases flip colour between runs, and not one case exceeds its ceiling in
+all five runs. A gate that goes red at random gets switched off. Re-tuning waits for §9 —
+STATUS.md open item 20.
+
+**Every case is measured and printed before any is allowed to fail.** The harness used to
+assert inside each case, so the first one over its ceiling ended the process: a single 17.8 ns
+outlier on a 3.7 ns baseline threw away both `ring` figures on that run, and `groups` had a
+fourth case — `encode 1 group, 2 entries`, over its ceiling — that **nobody had ever seen**,
+because the process died two cases earlier.
+
 **Published target and asserted ceiling are deliberately different numbers.** The benchmark
 asserts a regression ceiling of roughly 1.5–2× the baseline measured on the machine at hand,
 not 150 / 60 ns. The reason is arithmetic: 139 ns sits 8% under 150 ns, and an unpinned laptop

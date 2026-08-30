@@ -50,51 +50,53 @@ impl Application for Mute {
 }
 
 fn main() {
-    // The NewOrderSingle from reference/measured-costs.md — the same shape
-    // every other benchmark in this repository is measured on.
-    let msg: &[u8] = b"8=FIX.4.4\x019=126\x0135=D\x0134=2\x0149=TW44\x01\
+    harness::suite(|b| {
+        // The NewOrderSingle from reference/measured-costs.md — the same shape
+        // every other benchmark in this repository is measured on.
+        let msg: &[u8] = b"8=FIX.4.4\x019=126\x0135=D\x0134=2\x0149=TW44\x01\
 52=00000000-00:00:00.000\x0156=ISLD\x0111=ID\x0121=1\x0138=002000.00\x0140=1\x01\
 54=1\x0155=INTC\x0160=00000000-00:00:00.000\x01167=BOO\x0110=098\x01";
-    let stamp = b"20260828-12:00:00.000";
-    let mut out = [0u8; 1024];
+        let stamp = b"20260828-12:00:00.000";
+        let mut out = [0u8; 1024];
 
-    let mut inline = InlineDispatch::new(Bounce);
-    harness::bench("inline deliver + reply", CEILING_INLINE, || {
-        let r = inline.deliver(0, black_box(msg), 2, stamp, &mut out);
-        black_box(r);
+        let mut inline = InlineDispatch::new(Bounce);
+        b.bench("inline deliver + reply", CEILING_INLINE, || {
+            let r = inline.deliver(0, black_box(msg), 2, stamp, &mut out);
+            black_box(r);
+        });
+
+        // A ring big enough that the round trip below never meets a full queue —
+        // what a full queue does is step 5's question, not this one's.
+        let (to_app, from_engine) = ring::pair(1 << 16);
+        let (to_engine, from_app) = ring::pair(1 << 16);
+        let mut ringed: RingDispatch<M> = RingDispatch::new(to_app, from_app);
+        let mut app: RingApp<M> = RingApp::new(from_engine, to_engine);
+
+        // One way only: the engine pushes, the application takes it and says
+        // nothing. This is the byte-at-a-time copy on its own, which is what the
+        // `AtomicU8` buffer buys the absence of `unsafe` with.
+        b.bench("ring, one way", CEILING_RING_ONE_WAY, || {
+            let r = ringed.deliver(0, black_box(msg), 2, stamp, &mut out);
+            black_box(r);
+            // Drained by a handler that answers nothing, so nothing comes back and
+            // the queue cannot fill.
+            let n = app.pump(&mut Mute);
+            black_box(n);
+        });
+
+        b.bench("ring, round trip", CEILING_RING_TRIP, || {
+            ringed.deliver(0, black_box(msg), 2, stamp, &mut out);
+            let n = app.pump(&mut Bounce);
+            black_box(n);
+            let mut back = 0;
+            ringed.collect(|_, b| back += b.len());
+            black_box(back);
+        });
+
+        assert_eq!(ringed.refused(), 0, "no measurement here met a full ring");
+        assert_eq!(ringed.dropped(), 0, "and none met a reply that did not fit");
+        assert_eq!(app.dropped(), 0);
     });
-
-    // A ring big enough that the round trip below never meets a full queue —
-    // what a full queue does is step 5's question, not this one's.
-    let (to_app, from_engine) = ring::pair(1 << 16);
-    let (to_engine, from_app) = ring::pair(1 << 16);
-    let mut ringed: RingDispatch<M> = RingDispatch::new(to_app, from_app);
-    let mut app: RingApp<M> = RingApp::new(from_engine, to_engine);
-
-    // One way only: the engine pushes, the application takes it and says
-    // nothing. This is the byte-at-a-time copy on its own, which is what the
-    // `AtomicU8` buffer buys the absence of `unsafe` with.
-    harness::bench("ring, one way", CEILING_RING_ONE_WAY, || {
-        let r = ringed.deliver(0, black_box(msg), 2, stamp, &mut out);
-        black_box(r);
-        // Drained by a handler that answers nothing, so nothing comes back and
-        // the queue cannot fill.
-        let n = app.pump(&mut Mute);
-        black_box(n);
-    });
-
-    harness::bench("ring, round trip", CEILING_RING_TRIP, || {
-        ringed.deliver(0, black_box(msg), 2, stamp, &mut out);
-        let n = app.pump(&mut Bounce);
-        black_box(n);
-        let mut back = 0;
-        ringed.collect(|_, b| back += b.len());
-        black_box(back);
-    });
-
-    assert_eq!(ringed.refused(), 0, "no measurement here met a full ring");
-    assert_eq!(ringed.dropped(), 0, "and none met a reply that did not fit");
-    assert_eq!(app.dropped(), 0);
 }
 
 // Regression ceilings, roughly 2x the baseline measured on this machine.

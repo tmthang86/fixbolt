@@ -566,3 +566,72 @@ sync table says needs its own plan. `STATUS.md` open item 20.
 another*: the number is honest, the comparison is not, and the failure looks exactly like a
 regression. And *the assertion nothing runs* — a guard outside the command CI actually invokes,
 which is a false green that never even had to lie, because nobody asked it.
+
+## One run is not a measurement: the ceiling that was "red on Linux" flips both ways
+
+The section above recorded, on one run, that `benches/dispatch.rs` was **red on Linux — ring
+one way 332.5 ns against a 260 ns ceiling**. That went into `STATUS.md` as open item 20 and
+into a pull-request description as a property of the machine.
+
+`[measured 2026-08-30]` Five runs of every timing case, same container — Linux 6.18.44
+x86_64, Intel Xeon 2.10GHz, 4 vCPU shared, `rustc 1.98.0`, `cargo bench` release profile,
+each figure already a best-of-7 over 200 000 iterations:
+
+| Case | Ceiling | min | max | Spread | Over the ceiling |
+|---|---|---|---|---|---|
+| `parse NewOrderSingle (validated)` | 150 | 102.0 | 107.5 | 5% | 0 / 5 |
+| `parse NewOrderSingle (no checks)` | 145 | 97.3 | 102.0 | 5% | 0 / 5 |
+| `parse Heartbeat (validated)` | 70 | 52.4 | 54.4 | 4% | 0 / 5 |
+| `encode ExecutionReport (template)` | 190 | 177.6 | 199.4 | 12% | **2 / 5** |
+| `SendingTime from the cache` | 5 | 3.4 | 3.7 | 9% | 0 / 5 |
+| `walk 1 group, 2 entries` | 60 | 50.8 | 56.8 | 12% | 0 / 5 |
+| `walk 4 levels, 61-tag member list` | 300 | 285.0 | 314.8 | 10% | **3 / 5** |
+| `group_members contains, 61 tags` | 12 | 8.9 | 10.1 | 13% | 0 / 5 |
+| `encode 1 group, 2 entries` | 75 | 72.8 | 88.5 | 22% | **4 / 5** |
+| `inline deliver + reply` | 15 | 3.4 | 11.3 | **232%** | 0 / 5 |
+| `ring, one way` | 260 | 188.5 | 233.2 | 24% | 0 / 5 |
+| `ring, round trip` | 500 | 339.4 | 447.3 | 32% | 0 / 5 |
+
+**`ring, one way` never exceeded its ceiling in five runs.** The 332.5 ns that named the item
+was one moment on a shared host, not a property of Linux. In the same five runs `parse` moved
+between 102.0 and 136.3 ns across sessions — the whole machine gets slower and faster over
+minutes, and every case moves together.
+
+**Three cases flip colour between runs. Not one case is over in all five.** So the container
+shows no regression at all; it shows twelve ceilings sitting inside its noise. Both the
+original reading (*this ceiling is red on Linux*) and its natural correction (*this ceiling is
+too low for Linux*) are unsupported by the data — the honest statement is that **this machine
+cannot decide these gates in either direction.**
+
+The rule that generalises: a threshold whose distance from the measurement is smaller than the
+measurement's own run-to-run spread reports the load, not the code. Before believing any
+verdict from such a gate, measure the spread — one run tells you nothing, and the direction of
+a single result is not evidence of its sign.
+
+`inline deliver + reply` is the extreme and it was predicted in writing. `harness.rs` said in
+its own doc comment: *"Baseline 2.5–4.9 ns across runs. The spread is the measurement's, not
+the code's."* The ceiling was set at 15 ns anyway. Observed: 3.4–11.3 ns over five runs, and
+17.8 ns on a sixth — a 232% spread against a ceiling 3× the baseline.
+
+### Two things found only because the benchmarks were finally run
+
+**A bench target that measured nothing and passed.** Cargo auto-discovers `benches/*.rs`.
+`benches/harness.rs` is a module included by `#[path]`, not a benchmark, and Cargo made it a
+target of its own: `cargo bench --bench harness` printed `running 0 tests … 0 measured` and
+exited 0. Fixed with `autobenches = false`, and it is now the injection that proves
+`scripts/bench.sh`'s liveness check can fail.
+
+**A failing case nobody had ever seen.** The harness asserted inside each case, so the first
+case over its ceiling ended the process. `groups` has four cases; it died at the second, and
+the fourth — `encode 1 group, 2 entries`, over its ceiling on 4 of 5 runs — had never once
+been executed. A benchmark exists to produce numbers, and one that stops at the first bad
+number hides exactly the ones worth having. The harness now measures and prints every case,
+then asserts at the end; the assertion is reachable only through `suite()`, so a bench cannot
+report figures without being checked.
+
+`[to testing-skills]` — two cases. *One run is not a measurement, and its direction is not
+evidence of its sign*: a gate whose spread exceeds its margin was read once, in each
+direction, and both readings reached documents. The fix is not a better threshold but
+measuring the spread before believing any verdict. And *the fail-fast assertion that hides its
+own evidence*: a check that aborts at the first failure suppresses the results after it, so
+the run that most needed reading produces the least. Report every case, then fail.
