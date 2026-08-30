@@ -163,3 +163,49 @@ lệnh. `scripts/check-ktls-available.sh` trả lời "máy này bắt đầu đ
 kèm lý do khi chưa. Bước 2–5 của plan giữ nguyên.
 
 **Trạng thái: Tạm dừng.** Chặn ở một kernel có `CONFIG_TLS` — **không phải** ở máy §9.
+
+### Bước 1b — chặn được gỡ, và cái chặn là chính phép kiểm. 2026-08-30.
+
+**Trạng thái: Hết tạm dừng.** Bước 2–5 chạy được.
+
+`[đo 2026-08-30]` trên desktop Linux của chủ dự án — AMD Ryzen 7 3700X, Linux 7.0.0-30-generic:
+
+```
+config: CONFIG_TLS=m
+module: loaded=yes on_disk=yes
+setsockopt(TCP_ULP, "tls"): ACCEPTED
+READY — This machine can answer STATUS.md open item 10.       EXIT=0
+```
+
+**Máy này vốn đã đủ điều kiện từ đầu. Cái nói ngược lại là `scripts/check-ktls-available.sh`.**
+Lần chạy đầu tiên trên đúng máy này in ra `config: CONFIG_TLS=m`, rồi bốn dòng sau in *"the
+kernel has no `tls` ULP at all: it was built without CONFIG_TLS"*. Hai câu, một lần chạy, mâu
+thuẫn nhau. Nguyên nhân: script in **một đoạn văn ENOENT cố định cho mọi `OSError`**, và không
+bao giờ đọc lại dòng config mà chính nó vừa in.
+
+Điều `ENOENT` từ `TCP_ULP` thực sự nói là **không có ULP nào đăng ký dưới tên `tls`**. Đăng ký
+khác với biên dịch: kernel chỉ tự `request_module` cho ULP khi tiến trình gọi có
+`CAP_NET_ADMIN`, nên một tiến trình thường thấy `ENOENT` trong khi `tls.ko` nằm ngay trên đĩa.
+Đó chính là trạng thái của máy này.
+
+**Bẫy thứ hai, phát hiện trong lúc sửa bẫy thứ nhất.** Bản sửa dò module bằng
+`lsmod | grep -q '^tls '` và báo `loaded=no` trên máy đang nạp module. Dưới `set -o pipefail`
+của chính script, `grep -q` thoát ngay khi khớp, `lsmod` chết vì `SIGPIPE` với mã 141, và
+**pipeline báo thất bại đúng vào lần tìm thấy thứ cần tìm**. `scripts/check-machine.sh` có y
+hệt cấu trúc đó ở hàng kTLS; ở đó nó bị `|| modinfo tls` che, nhưng trên kernel `CONFIG_TLS=y`
+thì module là built-in, `modinfo` không tìm thấy gì, và hàng đó sẽ báo *"no tls module"* trên
+đúng loại máy chạy kTLS tốt nhất. Cả hai giờ hỏi `/sys/module/tls`.
+
+**Sửa plan.** Bước 1 của plan này coi `check-ktls-available.sh` là kết quả giao được. Nó không
+phải: nó là một cổng mà **không có gì canh nó**, nên nó sai suốt một ngày mà không ai biết.
+Bổ sung vào bước 1: `scripts/check-ktls-classify.sh` — 8 tổ hợp (syscall, config, loaded,
+on_disk), khẳng định token cho từng cái, không cần kernel, không cần root, chạy trong CI ở job
+`script-logic`. Đối chiếu với logic cũ nó **trượt 5/8**, gồm cả chính trường hợp của desktop
+này; 3 cái nó qua là trường hợp container và trường hợp accepted — logic cũ đúng ở đó thật.
+
+**Chứng minh bằng đảo ngược, trên script thật chứ không chỉ trên hàm:** gỡ module ra để tái
+tạo đúng trạng thái đã cho câu trả lời sai → script mới báo `LOADABLE`, `EXIT=2`, kèm đúng
+lệnh cần chạy. Nạp lại → `READY`, `EXIT=0`.
+
+**Vẫn không kết luận gì về `ktls-core` hay ADR-0005.** Thí nghiệm vẫn chưa chạm tới thư viện.
+Cái thay đổi duy nhất là bây giờ nó chạm được.

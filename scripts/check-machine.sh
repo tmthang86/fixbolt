@@ -141,10 +141,20 @@ fi
 # --- kTLS ---------------------------------------------------------------------
 # STATUS.md open item 10. This is a kernel feature, not a latency property, so it
 # is reported separately from the tuning rows above.
-if [ -d /proc/sys/net/ipv4 ] && { lsmod 2>/dev/null | grep -q '^tls' || modinfo tls >/dev/null 2>&1; }; then
-  row PASS "kTLS (CONFIG_TLS)" "tls module present — open item 10 is unblocked here"
+# `[measured 2026-08-30]` this row used `lsmod | grep -q '^tls'`, and under this
+# script's own `set -o pipefail` that branch can never be taken: grep -q exits on
+# the first match, lsmod dies of SIGPIPE with status 141, and the pipeline reports
+# failure exactly when the module IS loaded. The `|| modinfo` fallback hid it here
+# — but on a kernel with CONFIG_TLS=y the module is built in, `modinfo` has
+# nothing to find, and this row would have reported "no tls module" on the machine
+# best equipped to run kTLS. /sys/module/tls covers loaded and built-in alike.
+# Guarded by scripts/check-ktls-classify.sh, which holds the same rule.
+if [ -d /sys/module/tls ]; then
+  row PASS "kTLS (CONFIG_TLS)" "tls module loaded — open item 10 is unblocked here"
+elif modinfo tls >/dev/null 2>&1; then
+  row PASS "kTLS (CONFIG_TLS)" "tls module on disk, not loaded — 'sudo modprobe tls' away"
 else
-  row FAIL "kTLS (CONFIG_TLS)" "no tls module" \
+  row FAIL "kTLS (CONFIG_TLS)" "no tls module, loaded or on disk" \
     "sudo modprobe tls; if that fails the kernel lacks CONFIG_TLS — see scripts/check-ktls-available.sh"
 fi
 

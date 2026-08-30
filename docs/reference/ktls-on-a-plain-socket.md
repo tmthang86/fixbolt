@@ -1,8 +1,12 @@
-# kTLS on a plain socket: what is known, and what this machine could not answer
+# kTLS on a plain socket: what is known, and what blocked it twice
 
-> **What this page is:** the record of a spike that **did not reach its
-> conclusion**, and the exact reason. `STATUS.md` open item 10 stays open.
-> `docs/plans/2026-08-30-ktls-spike.md` is the plan; this is its result.
+> **What this page is:** the record of a spike that was **blocked for two
+> different wrong reasons in a row**, the second of which was a defect in the very
+> script written to diagnose the first. `[measured 2026-08-30]` the blocker is now
+> **gone**: the owner's Linux desktop accepts `setsockopt(TCP_ULP, "tls")`, so
+> `STATUS.md` open item 10 can be answered. Nothing about `ktls-core` or ADR-0005
+> is concluded here — the spike's steps 2–5 still have to happen.
+> `docs/plans/2026-08-30-ktls-spike.md` is the plan; this is its result so far.
 
 ## The question, and why it is load-bearing
 
@@ -77,6 +81,70 @@ described wrongly:
 exits non-zero with the reason when the answer is no. Run it first on any machine
 before picking this spike back up; the rest of the plan is unchanged and its
 steps 2–5 are still what has to happen.
+
+## The third blocker was the diagnostic script itself
+
+`[measured 2026-08-30]` on the owner's Linux desktop — Linux 7.0.0-30-generic,
+AMD Ryzen 7 3700X — the script printed this, and **both halves are from the same
+run**:
+
+```
+config: CONFIG_TLS=m
+setsockopt(TCP_ULP, "tls"): REFUSED errno=2 (ENOENT) No such file or directory
+  ENOENT here means the kernel has no `tls` ULP at all: it was built
+  without CONFIG_TLS.
+```
+
+The kernel it says was built without `CONFIG_TLS` reports `CONFIG_TLS=m` four
+lines above. Open item 10 sat blocked on that sentence.
+
+**The rule was already written down correctly on this page** — the provisioning
+table says *"`CONFIG_TLS=y` **or `=m` with the module loadable**"* — and the script
+did not implement it. A page that states a rule does not enforce it.
+
+### What ENOENT from TCP_ULP actually means
+
+`ENOENT` says **no ULP is registered under the name `tls`**. Registered is not the
+same as compiled, and it is not the same as available:
+
+| State | `setsockopt` unprivileged | What it means |
+|---|---|---|
+| No `CONFIG_TLS` | `ENOENT` | Genuinely cannot. Provision another kernel |
+| `CONFIG_TLS=m`, module **not loaded** | `ENOENT` | **One `modprobe` away** |
+| `CONFIG_TLS=m`, module loaded | accepted | Ready |
+| `CONFIG_TLS=y` | accepted | Ready, nothing to load |
+
+The middle row is the trap. The kernel autoloads a ULP through `request_module`
+**only for a caller holding `CAP_NET_ADMIN`**, so an unprivileged probe gets
+`ENOENT` while `tls.ko` sits on disk. Proven by reversal on the desktop: with the
+module unloaded the fixed script reports `LOADABLE` and exits 2; after
+`modprobe tls` the same script reports `READY` and exits 0.
+
+### And a second defect, found while fixing the first
+
+The replacement detected "is the module loaded" with `lsmod | grep -q '^tls '`
+and reported `loaded=no` on a machine where `tls` was loaded. Under the script's
+own `set -o pipefail`, `grep -q` exits at the first match, `lsmod` dies of
+`SIGPIPE` with status 141, and **the pipeline reports failure precisely when the
+thing was found**. `modinfo` escaped only because it is not in a pipeline.
+
+`scripts/check-machine.sh` had the same construction in its kTLS row. There it was
+masked by a `|| modinfo tls` fallback — but on a kernel with `CONFIG_TLS=y` the
+module is built in, `modinfo` finds nothing, and that row would have reported
+*"no tls module"* on the machine best equipped to run kTLS. Both now ask
+`/sys/module/tls`, which covers loaded and built-in alike.
+
+### The guard
+
+`scripts/check-ktls-classify.sh` runs the verdict logic over eight
+(syscall, config, loaded, on-disk) combinations and asserts the token for each. It
+needs no kernel, no root and no kTLS, so CI runs it on every push — the job is
+`script-logic` in `.github/workflows/ci.yml`.
+
+Against the old logic it fails 5 of 8, including the desktop's own case; the three
+it passes are the container case and the accepted case, which the old script did
+get right. **A gate that nothing gated** is what let a script contradict itself in
+its own output for a day.
 
 ## The generalisation
 

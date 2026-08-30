@@ -40,6 +40,19 @@ jobs:
       - run: rustup component add clippy
       - run: scripts/check-lint-config.sh
 
+  # `[measured 2026-08-30]` scripts/check-ktls-available.sh printed
+  # `config: CONFIG_TLS=m` and then "it was built without CONFIG_TLS" in the SAME
+  # run, and STATUS.md open item 10 stayed blocked on that sentence for a day.
+  # Nothing could have caught it: the script was a gate nothing gated. The
+  # classification is pure logic, so it is checked here on every push, on a runner
+  # whose own kernel state is irrelevant to the result.
+  script-logic:
+    name: The kTLS check classifies a refusal correctly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/check-ktls-classify.sh
+
   # Also meaningful today: this repository is 17 markdown files and has already
   # shipped dead links twice, both found by hand.
   links:
