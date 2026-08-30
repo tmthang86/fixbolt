@@ -81,6 +81,17 @@ below describe what a first release would contain.
   - `[measured 2026-08-30]` **0 / 50** on the mirrored corpus. Every mirrored Logon is
     accepted; what the files ask for next is a message only an operator can order.
 
+- **`nanofix-engine`** — the crate that touches the socket. Step 1 of six.
+  - `Transport`, with `TcpTransport` (non-blocking, `TCP_NODELAY`) and `Loopback` (in memory,
+    for tests that must not depend on a free port).
+  - **`Io::{Ready, Idle, Closed, Failed}` rather than `io::Result<usize>`.** On a stream socket
+    `Ok(0)` already means end-of-stream, so reporting `WouldBlock` the same way hands the caller
+    one value for two opposite facts — a session dropped because the counterparty was quiet, or
+    a loop spinning forever on a socket that closed. Same answer the codec reached for
+    `Parsed::Incomplete`.
+  - `Waiting`, with `Spin` (the default, D8) and `Park` (every test in this repository).
+  - `benches/alloc.rs`: **0** on the idle, send and receive paths.
+
 - **`nanofix-conformance`** — the mirrored corpus, for the initiator role.
   - `script::scenarios_mirrored()` reads the same 59 files from the other side: `I` lines
     become what this engine must send, `E` lines become what arrives, and `iDISCONNECT` /

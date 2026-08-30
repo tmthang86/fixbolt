@@ -1,0 +1,26 @@
+[package]
+name = "nanofix-engine"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "TCP acceptor and connector, a thread that never sleeps in the kernel"
+
+[dependencies]
+nanofix-codec = { path = "../codec" }
+nanofix-dict = { path = "../dict" }
+nanofix-session = { path = "../session" }
+
+# The 59 acceptance definitions are this crate's gate too — the same files,
+# through a real socket rather than a closure (CLAUDE.md §2 rule 3).
+[dev-dependencies]
+nanofix-conformance = { path = "../conformance" }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "alloc"
+harness = false

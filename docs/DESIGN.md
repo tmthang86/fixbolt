@@ -91,6 +91,7 @@ Added one at a time, each behind an approved plan.
 | `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised. Time enters as `Tick`, in **milliseconds since 0000-01-01** — see D13 | `codec`, `dict` |
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
 | `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport` |
+| | | `[2026-08-30]` step 1 of six exists: `Transport`, `TcpTransport`, `Loopback`, `Waiting`. `transport` is a module here rather than its own crate until something needs it to be otherwise | |
 | `library` | L4 | The application-facing API | `engine` |
 | `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
 

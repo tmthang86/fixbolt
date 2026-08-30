@@ -226,3 +226,30 @@ just the absence of a panic: `consumed` never exceeds the input, and every field
 reports lies inside the consumed prefix. The second is what makes `LengthOutOfBounds`
 load-bearing — a DATA length is supplied by the counterparty.
 
+
+## An injected allocation the optimiser can delete proves nothing
+
+`[cost 2026-08-30]` The counting-allocator benches are proven by *reversal*: put
+an allocation on the path, see the number move. The first injection into
+`crates/engine/benches/alloc.rs` was
+
+```rust
+let _leak = std::vec![0u8; 4];
+```
+
+and it reported **0**, exactly as if the guard were working. It was not — the
+`Vec` is never read, the bench builds in release, and LLVM deleted the
+allocation before it happened.
+
+```rust
+let leak = std::vec![0u8; 4];
+core::hint::black_box(&leak);   // now it reports 10000
+```
+
+Earlier injections in `codec` and `session` survived by luck: they used the
+allocated value (`msg.to_vec()` then passed on), so nothing could remove them.
+
+**The rule: an injection must be observed, not assumed, and a reversal that
+reports "still zero" is a reversal that did not run.** `CLAUDE.md` §7 already
+says a guard is proven by reversal and that the reversal must be confirmed to
+have changed something. This is what that sentence costs when it is skipped.

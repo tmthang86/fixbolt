@@ -71,6 +71,7 @@ crates/
   dict/          FIX 4.4 tables generated from the QuickFIX XML at build time
   conformance/   runs the 59 acceptance definitions in process, no socket
   session/       the FIX session state machine — pure, no I/O, role-parameterised
+  engine/        TCP acceptor and connector; a thread that never sleeps in the kernel
                  (more crates are added one at a time, each behind an approved plan)
 fuzz/            cargo-fuzz targets — nightly, outside the workspace
 docs/
