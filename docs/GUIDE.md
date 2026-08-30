@@ -55,6 +55,49 @@ Full working: [reference/measured-costs.md](reference/measured-costs.md).
 
 ---
 
+## 1a. Running many sessions: shard across threads, do not stack on one
+
+A gateway with a hundred sessions on a sixteen-core server is a perfectly good deployment, and
+the arithmetic works — **as long as it is *shard*, not *stack***. The two are different
+architectures and the difference is the whole of §1:
+
+| Shape | 100 sessions | Sweep |
+|---|---|---|
+| **Stack** — one engine, one thread | 100 on one thread | `100 × 703 ns` = **70 µs** |
+| **Shard** — 8 engines, 8 pinned threads | ~13 each | `13 × 703 ns` = **9 µs** |
+
+Nine microseconds sits under the 10–20 µs kernel-TCP floor, so for a gateway it is not the
+dominant term any more. Sharding is what makes "many sessions" reasonable — **not the core
+count by itself**, because a session only benefits from a core its own polling thread is on.
+
+**The engine does not shard for you.** `[2026-08-30]` `Engine` holds a flat
+`Vec<Connection>`, `turn()` sweeps all of them and `run()` is `loop { turn() }`. The only
+thread the crate spawns is the journal's async writer. **You build the sharding**, and the
+pieces are there because `Acceptor` and `Engine` are separate:
+
+- `Acceptor::bind(addr)` / `accept() -> Option<TcpTransport>` — one listener
+- `Engine::add(transport) -> ConnId` — hand a socket to whichever engine owns that shard
+- one `Engine` per thread, each pinned to its own core, each running `turn()` in its own loop
+
+`serve()` is the single-threaded convenience that composes those three. It is the right
+starting point and the wrong production shape for a gateway; read it as an example rather than
+as the API.
+
+**What you own once you shard**, and none of it is provided:
+
+- **Which shard a session lands on.** Round-robin is fine until sessions are unequal; there is
+  no rebalancing, and a `ConnId` never moves between engines.
+- **Handing the socket across the thread boundary.** `Engine::add` takes `&mut self`, so the
+  owning thread must make the call — a channel from the accept loop, and a `TcpTransport` that
+  crosses it.
+- **Pinning.** `DESIGN.md` D8 assumes a pinned engine thread and `[2026-08-30]` nothing in the
+  code pins one (`STATUS.md` open item 21). One `Engine` per core is only true if you make it
+  true.
+- **Isolating those cores.** `isolcpus` plus `nohz_full`, or the scheduler will put other work
+  on them.
+
+---
+
 ## 2. The engine calls you on its hot path
 
 `InlineDispatch` — the default — runs your handler **on the engine thread**, between the read
