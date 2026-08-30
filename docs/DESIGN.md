@@ -639,9 +639,12 @@ auto-discovered `benches/harness.rs` — a module, containing no case — as a n
 that reported `0 measured` and exited 0.
 
 **Timing ceilings are not enforced on a shared runner because they cannot be.**
-`[measured 2026-08-30]` five runs of the twelve timing cases on that container: run-to-run
-spread 5–232%, three cases flip colour between runs, and not one case exceeds its ceiling in
-all five runs. A gate that goes red at random gets switched off. Re-tuning waits for §9 —
+`[measured 2026-08-30]` Five runs of the twelve timing cases on a 4 vCPU Xeon container:
+run-to-run spread 5–232%, three cases flip colour between runs, and **not one case exceeds its
+ceiling in all five**. The same commit on the CI runner — AMD EPYC 7763, **2 cores**, run
+33304774414 — puts **six of the twelve over**, `ring, one way` at 328.3 ns against 188.5–233.2
+on the container. The same case differs by **1.7× between two shared machines** and the ceiling
+sits between them. A gate that goes red at random gets switched off. Re-tuning waits for §9 —
 STATUS.md open item 20.
 
 **Every case is measured and printed before any is allowed to fail.** The harness used to

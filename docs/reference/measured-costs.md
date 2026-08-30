@@ -592,21 +592,48 @@ each figure already a best-of-7 over 200 000 iterations:
 | `ring, one way` | 260 | 188.5 | 233.2 | 24% | 0 / 5 |
 | `ring, round trip` | 500 | 339.4 | 447.3 | 32% | 0 / 5 |
 
-**`ring, one way` never exceeded its ceiling in five runs.** The 332.5 ns that named the item
-was one moment on a shared host, not a property of Linux. In the same five runs `parse` moved
-between 102.0 and 136.3 ns across sessions — the whole machine gets slower and faster over
-minutes, and every case moves together.
+**On this container `ring, one way` never exceeded its ceiling in five runs**, and `parse`
+moved between 102.0 and 136.3 ns across sessions — the whole machine gets slower and faster
+over minutes, and every case moves together. Three cases flip colour between runs; not one is
+over in all five.
 
-**Three cases flip colour between runs. Not one case is over in all five.** So the container
-shows no regression at all; it shows twelve ceilings sitting inside its noise. Both the
-original reading (*this ceiling is red on Linux*) and its natural correction (*this ceiling is
-too low for Linux*) are unsupported by the data — the honest statement is that **this machine
-cannot decide these gates in either direction.**
+### Then the same benchmarks ran on a second shared machine and disagreed
 
-The rule that generalises: a threshold whose distance from the measurement is smaller than the
-measurement's own run-to-run spread reports the load, not the code. Before believing any
-verdict from such a gate, measure the spread — one run tells you nothing, and the direction of
-a single result is not evidence of its sign.
+`[measured 2026-08-30]` CI run 33304774414, GitHub Actions `ubuntu-latest`: **AMD EPYC 7763,
+2 cores**, Linux 6.17.0-1022-azure, same commit, same `rustc 1.98.0`.
+
+| Case | Ceiling | 4 vCPU Xeon, 5 runs | 2-core EPYC, CI |
+|---|---|---|---|
+| `parse NewOrderSingle (validated)` | 150 | 102.0–107.5 | 127.6 |
+| `walk 1 group, 2 entries` | 60 | 50.8–56.8 | **62.9** |
+| `walk 4 levels` | 300 | 285.0–314.8 | **319.7** |
+| `encode 1 group, 2 entries` | 75 | 72.8–88.5 | **101.4** |
+| `encode ExecutionReport (template)` | 190 | 177.6–199.4 | **261.0** |
+| `inline deliver + reply` | 15 | 3.4–11.3 | 6.4 |
+| `ring, one way` | 260 | 188.5–233.2 | **328.3** |
+| `ring, round trip` | 500 | 339.4–447.3 | **622.9** |
+
+**Six of twelve cases are over the ceiling on the CI runner and zero were on the container.**
+And `ring, one way` came in at 328.3 ns — within 1.3% of the 332.5 ns that originally named
+open item 20. So the first correction written here was itself half wrong: the 332.5 ns was not
+only a noisy moment, it is close to what that *class* of machine actually does.
+
+Both statements are needed and neither alone is true:
+
+* **Run to run on one machine**, the spread is 5–232% and three cases change colour.
+* **Machine to machine**, the same case differs by up to **1.7×** (`ring, one way`: 188.5 to
+  328.3), and the ceiling sits between the two.
+
+The `ring` figures have a visible cause rather than a mysterious one: the benchmark moves a
+message between two threads, and the runner has exactly two cores — the worst case for a
+cross-thread hop, with nothing left over for anything else on the box.
+
+The rule that generalises: **a threshold whose margin is smaller than the spread of the
+machines it will run on reports the infrastructure, not the code.** Measure the spread on more
+than one machine before believing any verdict from such a gate — and note that the first
+correction is as likely to be wrong as the first reading was. Here the sequence was: *red on
+Linux* (one run), then *noise on Linux* (five runs, one machine), then *1.7× between machines*
+(two machines). Only the third survived contact with more data.
 
 `inline deliver + reply` is the extreme and it was predicted in writing. `harness.rs` said in
 its own doc comment: *"Baseline 2.5–4.9 ns across runs. The spread is the measurement's, not

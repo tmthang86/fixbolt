@@ -1,6 +1,6 @@
 # Bench chạy thật, và số đọc được
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Xong
 > **Phạm vi:** open item 20 — gate `DESIGN.md` §6, CI
 
 ## Bối cảnh
@@ -199,5 +199,34 @@ GREEN ok / RED ok       scripts/check-no-kernel-sleep.sh
 links OK                scripts/check-links.py
 ```
 
-**Chưa chứng minh:** CI thật chưa chạy lần nào với job mới. Không đóng plan cho tới khi
-đọc được log CI của commit này — `CLAUDE.md` §9 ô cuối.
+**CI đã đọc, không chỉ nhìn màu.** Commit `b1c1695`, run **33304774414**, 7/7 job xanh, kể cả
+job `bench` mới. Đọc log job `99239255091`:
+
+```
+targets measuring    8 of 8
+targets silent       0
+invariant failures   0
+timing over ceiling  3  nanofix-codec/groups nanofix-codec/serialize nanofix-engine/dispatch
+OK
+```
+
+**Và log cho một kết quả thứ tư, ngoài dự tính, sửa tiếp chỗ tôi vừa sửa.** Runner là
+**AMD EPYC 7763, 2 nhân** — khác hẳn container 4 vCPU ở đây. Trên nó **6/12 case vượt trần**,
+trong khi ở đây 0/12 vượt qua cả 5 lần. `ring, one way` = **328.3 ns**, lệch 1.3% so với con số
+332.5 ns ban đầu đặt tên cho item 20.
+
+Nghĩa là bản sửa đầu tiên của tôi ("332.5 chỉ là một khoảnh khắc") **cũng sai một nửa**. Sự thật
+cần cả hai vế: dao động 5–232% giữa các lần trên **một** máy, và chênh tới **1.7×** giữa **hai**
+máy chia sẻ, với cái trần nằm lọt ở giữa. Nguyên nhân của `ring` thì nhìn thấy được: bench đẩy
+message qua hai luồng, mà runner có đúng hai nhân.
+
+Trình tự đã đi: *đỏ trên Linux* (1 lần chạy) → *nhiễu trên Linux* (5 lần, 1 máy) → *1.7× giữa
+hai máy* (2 máy). Chỉ cái thứ ba sống sót khi có thêm dữ liệu. Đã ghi vào `measured-costs.md`,
+`DESIGN.md` §6 và item 20.
+
+**Job xanh trong khi 6/12 case vượt trần là đúng thiết kế**, không phải sơ suất: bất biến chặn,
+thời gian chỉ báo cáo. Nếu để thời gian chặn thì CI đỏ vĩnh viễn vì hạ tầng, và một gate đỏ
+ngẫu nhiên sẽ bị tắt đi.
+
+**Còn lại cho máy §9:** đặt lại toàn bộ trần. Không làm ở đây — hai máy chia sẻ không đủ để
+chọn con số nào là đúng.
