@@ -669,46 +669,58 @@ Two consequences, one for each half:
   `ring_full` is the count (352 messages, exact three times); the microseconds are one sample
   of a distribution nobody has characterised.
 
-### The fourth sample broke the third correction
+### It was two CPUs all along
 
-A fourth CI run (`17e6824`, run 33307245558) does not agree with the three above:
+A fifth run resolved it, and the thing that resolved it was a line added to
+`scripts/check-machine.sh` one commit earlier: **the CPU model, printed with every set of
+figures.**
 
-| Case | Run 1 | Run 2 | Run 3 | **Run 4** | Spread |
+| Run | CPU | `ring, one way` | `ring, round trip` | `ring_full` ns/msg | `parse` |
 |---|---|---|---|---|---|
-| `ring, one way` | 328.3 | 331.1 | 327.2 | **270.7** | **22%** |
-| `ring, round trip` | 622.9 | 623.5 | 622.2 | **514.7** | **21%** |
-| `ring_full`, ns per message | 194 | 195 | 356 | **139** | **156%** |
-| `parse NewOrderSingle` | 127.6 | — | — | 124.0 | 3% |
-| `encode 1 group, 2 entries` | 101.4 | — | — | 98.5 | 3% |
+| 33304774414 | **EPYC 7763** | 328.3 | 622.9 | 194 | 127.6 |
+| 33304926978 | (7763) | 331.1 | 623.5 | 195 | — |
+| 33304998832 | (7763) | 327.2 | 622.2 | 356 | — |
+| 33307245558 | (9V74) | 270.7 | 514.7 | 139 | 124.0 |
+| 33307366947 | **EPYC 9V74** | 272.9 | 517.7 | 139 | 123.3 |
 
-**"The runner reproduces to 1.2%" was written from three consecutive runs and did not survive a
-fourth.** Three agreeing samples are not evidence of stability — they are three samples.
+The GitHub runner pool is **not one machine**. It has at least two CPU generations, and the
+five samples are not one noisy distribution — they are **two tight ones**:
 
-What the four runs do support is a split the earlier readings could not see: the
-**single-threaded** cases move ~3% and the **cross-thread** cases move 17–22%. `ring` and
-`ring_full` both carry a message between two threads on a 2-core runner with SMT on; `parse`
-and `encode` stay on one. Stability is a property of **what is measured**, not only of the
-machine or of the averaging.
+| | within EPYC 7763 | within EPYC 9V74 | between them |
+|---|---|---|---|
+| `ring, one way` | 327.2–331.1, **1.2%** | 270.7–272.9, **0.8%** | **21%** |
+| `ring, round trip` | 622.2–623.5, **0.2%** | 514.7–517.7, **0.6%** | **20%** |
+| `parse NewOrderSingle` | 127.6 | 123.3–124.0 | **3%** |
 
-What the data cannot distinguish, and this is stated rather than guessed: whether run 4 landed
-on different hardware or on the same hardware under different load. Four samples with no
-machine identity recorded per run cannot separate those.
+And the mechanism is visible rather than assumed: the gap is **21% on the cross-thread cases
+and 3% on the single-threaded ones**. `ring` moves a message between two cores; Zen 3 and the
+later generation differ in inter-core latency far more than in single-core throughput. The
+figure that moved is exactly the figure that should move.
 
-### The shape of the mistake, five times over
+So the run of corrections resolves like this, and the last one is an explanation rather than a
+description:
 
-| # | Claim | n behind it | Refuted by |
+| # | Claim | n | Refuted by |
 |---|---|---|---|
 | 1 | red on Linux | 1 run | 5 runs |
 | 2 | noise on Linux, 3 of 12 flap | 5 runs, 1 machine | a second machine |
-| 3 | 1.7× between machines; the runner is stable | 2 machines | a single-shot timing on the same box |
+| 3 | 1.7× between machines; the runner is stable | 2 machines | a single-shot timing |
 | 4 | the stability is the harness's | 3 CI runs | a fourth CI run |
-| 5 | single-thread stable, cross-thread not | 4 CI runs + 5 local | *nothing yet* |
+| 5 | cross-thread is unstable | 4 CI runs | **a fifth, once the CPU was labelled** |
+| 6 | **the pool is two CPUs; each is stable to ~1%; they differ 21% cross-thread and 3% single-threaded** | 5 CI runs, 2 labelled | *nothing yet* |
 
-Each correction was made from more data than the one before, and each was published as settled.
-**The error was never the reasoning — it was treating the sample in hand as the population.**
-The rule that would have prevented all five: before publishing a number as a property, state
-how many samples it rests on and what would change it. Claim 5 rests on four runs and would be
-refuted by a cross-thread case that stays put across ten.
+**Every one of the first five treated a pooled sample from an unlabelled fleet as a
+measurement of one thing.** More samples never fixed that and could not: averaging over a
+mixture converges on a number that describes neither component. What fixed it was one line of
+metadata per sample.
+
+The rule, and it is the whole lesson of this entry: **before calling a spread "noise", label
+each sample with the machine that produced it.** A bimodal result from a heterogeneous fleet is
+indistinguishable from a noisy result on one box until you write down which box.
+
+One thing this does **not** explain, and it is left open rather than tidied away: `ring_full`
+read 194, 195 and then **356** on the same 7763. Single-shot timings stay fragile inside one
+CPU model, which is why the count and not the duration is what ADR-0011 leans on.
 
 The rules that generalise: **a threshold whose margin is smaller than the spread of the
 machines it will run on reports the infrastructure, not the code** — and **before crediting a
