@@ -356,6 +356,15 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
 
 ### 2026-08-30 — ĐÓNG
 
+**`CLAUDE.md` §9 ô cuối — một run CI xanh, gọi tên bằng id, cho commit đang đóng:**
+**`59d048a`, GitHub Actions run [`33325120775`](https://github.com/tmthang86/fixbolt/actions/runs/33325120775),
+9 / 9 job `success`** — gồm cả job mới `A standard engine gives the core back`, chạy trên runner
+GitHub chứ không phải container của phiên này. Ô đó tồn tại vì mục 18: một plan từng đóng và
+merge với gate báo xanh từ laptop trong khi CI đỏ trên chính commit đó, và bốn tài liệu mang con
+số của laptop suốt một ngày. Ghi commit đóng đây là **`59d048a`**; bản thân ghi chú này là một
+commit tài liệu nằm trên nó và có run riêng của nó.
+
+
 **Tám bước, bảy rưỡi làm xong.** `standard` mode tồn tại, **là mặc định** (`serve()` chặn,
 `serve_hft()` quay vòng), và nguyên tắc 4 của `CLAUDE.md` hết nửa vời.
 
