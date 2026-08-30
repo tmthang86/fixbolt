@@ -20,16 +20,27 @@ signature any more; everything below is blocked on work.**
 
 **The next session's three obvious starting points, in the order that costs least:**
 
-1. **A plan for `standard` mode** — it does not exist and it is now the *default* mode, so the
-   documented default is unbuilt. ADR-0013's open question 1 must be answered first: which
-   readiness mechanism, and which dependency, given that `engine` has **zero external
-   dependencies** today and `std` exposes no readiness API. Windows in scope or not is also
-   undecided.
+1. ~~**A plan for `standard` mode**~~ — **written 2026-08-30, awaiting approval**:
+   [standard-mode](docs/plans/2026-08-30-standard-mode.md), 8 steps. It answers **all four** of
+   ADR-0013's open questions rather than only the first: `poll(2)` through `libc` behind a
+   default-on `standard` feature (so `--no-default-features` still yields a zero-dependency,
+   spin-only engine), **Windows out of scope and refused with a typed error rather than a silent
+   fallback to spinning**, `hft` stays the default for `w2w` and the benchmarks, and `density` is
+   a shape within `standard` rather than a third mode. **Nothing is built yet — this is a plan,
+   not code.**
 2. **The `standard` half of rule 4 has no gate.** ADR-0013 decision 6 specifies it — CPU time
    over a wall-clock window, not read off the code. Until it exists, rule 4 is half-enforced
-   and `CLAUDE.md`'s own machine-checked list says so.
+   and `CLAUDE.md`'s own machine-checked list says so. It is **step 7** of the plan above, and
+   the plan's own note is that CPU time alone is not enough: a dead thread also reads 0%, and an
+   engine woken by its own 100 ms timeout rather than by the data reads 0% **and** blocks
+   **and** still costs 100 ms a message. The gate therefore asserts three things at once, and
+   requires its own `hft` half to fail.
 3. **`wait::Park` belongs to neither mode** — it yields without blocking, and **every test in
-   the repository uses it**. ADR-0013 open question 3.
+   the repository uses it**. ADR-0013 open question 3. The plan's answer: keep it, rename it
+   `wait::Yield`, and document that it **fails both gates** — that is its definition, not a
+   defect. The red half of `check-no-kernel-sleep.sh` then moves from `sched_yield`, which
+   nobody writes into an engine by accident, to `standard`'s real `ppoll`, which is what an
+   actual regression would look like.
 
 **Read before touching the engine:** [GUIDE.md](docs/GUIDE.md) §0 for the mode split, and
 [reference/measured-costs.md](docs/reference/measured-costs.md) for why the numbers are what
@@ -40,7 +51,8 @@ refuted hypotheses about a 324 ns mode that is still unexplained.
 
 **Next, and each needs its own plan before any code (Rule Zero):**
 
-**Six plans were written and approved on 2026-08-30**, with the owner's standing permission to
+**Six plans were written and approved on 2026-08-30**, and a seventh — `standard-mode` — was
+written the same day and **is awaiting approval**. All of it comes with the owner's standing permission to
 revise a plan mid-flight when reality disagrees with it — each revision recorded in that plan's
 delivery log. In dependency order:
 
@@ -66,6 +78,12 @@ delivery log. In dependency order:
 6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5. **Steps 1–2 done
    2026-08-30**; steps 3–4 wait on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md),
    which is **`Accepted` 2026-08-30** and awaits implementation, not a signature.
+7. **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** — **written 2026-08-30, awaiting
+   approval.** 8 steps. Builds the mode ADR-0013 made the *default* and nobody has written, and
+   with it the missing half of non-negotiable 4's machine check. Its step 1 is an ADR, and
+   **that ADR competes for number 0014 with `threads-and-affinity`'s step 1** — whichever is
+   written first takes 0014, the other takes 0015; §5 forbids reusing a number, so check
+   `ls docs/decisions/` rather than trusting either plan's text.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
