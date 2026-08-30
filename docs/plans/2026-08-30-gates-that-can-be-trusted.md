@@ -1,6 +1,6 @@
 # Cổng phải nói đúng, và nói ở chỗ có người đọc
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt (2026-08-30)
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Xong (2026-08-30)
 > **Phạm vi:** open item 7, 17, 18, 19 — hạ tầng kiểm chứng, không phải giao thức
 
 ## Bối cảnh
@@ -342,3 +342,69 @@ và đã bác bỏ nó trước khi bất cứ dòng nào kia được viết. G
 test là bên duy nhất cấu hình sai*.
 
 **Còn lại của plan này:** bước 4 (CI xanh), bước 5 (item 7), bước 6 (item 18).
+
+---
+
+### Bước 4, 5, 6 — xong 2026-08-30. Plan đóng.
+
+**Bước 4 — CI xanh.** Run **`33294919021`** (push) và **`33294920450`** (pull_request) trên
+commit `1013a30`, cả hai `conclusion: success`. Đây là lần CI xanh đầu tiên kể từ khi `engine`
+merge. Đọc trạng thái run, không đọc dấu tích.
+
+**Bước 5 — item 7, ghim corpus.** `scripts/fetch-quickfix-assets.sh` mặc định ghim commit
+`386ce46e917ae494ab6e90b1be90fd421cdbe3f9` (2026-05-20) thay vì `master`, và tự kiểm ba con số
+mà tài liệu đang trích: **59 định nghĩa, 539 dòng message, 244 dòng `E` có `10=`**. Lệch thì
+thoát khác 0 ngay tại chỗ tải, chứ không nổ ở một test cách đó ba lớp.
+
+*Sửa plan nhỏ:* `git clone --branch` không nhận SHA, nên script chuyển sang `git init` +
+`fetch --depth 1 <sha>`. Cùng kết quả, và nói thẳng ra rằng một tên nhánh là mục tiêu di động.
+
+*Một cái bẫy đã ăn ngay:* `grep -E '\x01'` **không** hiểu escape đó — pattern khớp rỗng và
+phép kiểm sẽ vĩnh viễn xanh ở con số 0. Bắt được vì phép kiểm chạy lần đầu ra `0` chứ không ra
+244. Đổi sang `$'\001'`.
+
+*Đảo ngược, hai lần.* Lần đầu vô nghĩa và đáng ghi lại: đặt `QUICKFIX_REF=master` → **EXIT=0**,
+vì `master` **đang trỏ đúng vào commit được ghim** (`386ce46e917a`). Một reversal qua không
+chứng minh guard đúng — nó chỉ nói là chưa đụng tới guard. Lần thứ hai làm lệch corpus thật
+(thêm một file `.def`): **60 file → EXIT=1**, kèm câu `CORPUS MISMATCH: acceptance definitions
+is 60, this project measured 59`; gỡ ra → EXIT=0.
+
+**Nói thẳng cái ghim này *chưa* mua được gì hôm nay:** upstream chưa trôi. Giá trị của nó nằm
+hoàn toàn ở tương lai, và cơ chế thì đã được chứng minh.
+
+**Bước 6 — item 18.**
+
+*Sửa plan, và plan sai về cách sửa.* Plan nói "mở rộng `check-links.py` đọc cả file `.rs`".
+**Riêng việc đó sẽ không bắt được hai link kia**, vì chúng là **URL ngoài**, mà checker cố tình
+không fetch URL ngoài (một gate gọi mạng là một gate chập chờn, và một gate chập chờn thì bị
+tắt). Nên quy tắc thật phải khác, và nó không cần mạng: **một file nằm trong repo này phải được
+link bằng đường dẫn tương đối, không bao giờ bằng URL tuyệt đối.** Quy tắc đó bắt sai tổ chức,
+sai tên repo và file bị dời — cùng một lúc.
+
+Nó tìm ra **3** chứ không phải 2: thêm `crates/conformance/src/compare.rs:39`.
+
+*Bẫy plan đã lường trước nổ đúng như viết:* bản đầu quét `.rs` xong báo **13 false positive**,
+tất cả là intra-doc link của rustdoc — `[crate::FieldIndex]`, `[Self::render]`. Chúng đặt tên
+cho *item* Rust chứ không phải file, và rustdoc tự phân giải; kiểm ở đây là viết lại tệ hơn thứ
+trình biên dịch đã làm. Hàng canh trong plan ghi "phải ra **đúng 2**, không nhiều hơn" — chính
+nó bắt được.
+
+`CLAUDE.md` **§9 thêm một ô**: *nêu tên một CI run xanh, theo id, cho đúng commit đang đóng*.
+`CLAUDE.md` **§10 thêm hai dòng** vào mục "failures no gate can see": một plan đóng khi CI đỏ
+mà không ai nhìn; và **một nguyên nhân được chấp nhận chỉ vì có một cái núm xê dịch cùng nó** —
+đúng cái đã xảy ra ở bước 3.
+
+**Gate trên commit đóng plan, Linux 6.18 x86_64, `cargo 1.98.0`:**
+
+```
+200 passed / 0 failed   cargo test --all
+200 passed / 0 failed   cargo test --all --no-default-features
+59 / 59                 cargo test -p nanofix-engine --test wire
+clean                   cargo clippy --all-targets -- -D warnings
+clean                   cargo fmt --check
+RED ok / GREEN ok       scripts/check-lint-config.sh
+no dead internal links  scripts/check-links.py   (109 file, 183 link)
+corpus verified         scripts/fetch-quickfix-assets.sh   59 / 539 / 244
+```
+
+**Trạng thái: Xong.** Bốn item đóng: 7, 17, 18, 19.

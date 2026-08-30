@@ -36,7 +36,7 @@
 //! ordering check is what catches it, and the length check is what catches a
 //! field written with the wrong width.
 //!
-//! [`docs/reference/quickfix-acceptance-def-format.md`]: https://github.com/tmthang86/nanofixengine/blob/main/docs/reference/quickfix-acceptance-def-format.md
+//! [`docs/reference/quickfix-acceptance-def-format.md`]: ../../../docs/reference/quickfix-acceptance-def-format.md
 
 const SOH: u8 = 0x01;
 

@@ -201,6 +201,11 @@ Done only when **all** hold. Any unchecked box → report it as **not done**, an
 - [ ] An ADR exists if an architectural decision was made
 - [ ] Every performance claim names its benchmark, its machine, and its §9 settings
 - [ ] **Hot-path changes were measured on Linux**, not only on the development laptop
+- [ ] **A green CI run is named, by id, for the commit being closed.** `[measured 2026-08-30]`
+      the `engine` plan closed and merged with its gates reported green from an Apple M5 —
+      truthfully — while GitHub Actions failed on the same commit within the minute and nobody
+      read it. Four documents carried the laptop's number for a day. A laptop says the gates
+      pass *for you*; only CI says they pass *for the commit*
 
 ## 10. Evidence, not promises
 
@@ -221,6 +226,12 @@ unit of work owes this evidence:
 - A timestamp formatted from scratch per message instead of patched from the cache.
 - A `mod` behind a feature in `Cargo.toml` but not behind `#[cfg]` in `lib.rs`.
 - A number quoted from the laptop as though it were from the Linux box.
+- A plan closed, or a branch merged, while CI was red on that commit and nobody looked. §9's
+  last box exists because this already happened.
+- A cause accepted because a knob moved with it. A score that responds to a timeout says
+  something is being waited on and **nothing about what** — `[measured 2026-08-30]` a wire
+  gate whose score walked 39 → 43 → 59 with its own timeout was failing on Nagle, and the
+  wrong answer reached five documents before a one-variable experiment refuted it.
 - Docs not updated in the same commit as the code, per §4.
 
 **The trap that outlives every process change: a check proves nothing until something reads

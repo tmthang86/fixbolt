@@ -13,9 +13,9 @@ Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire
 revise a plan mid-flight when reality disagrees with it — each revision recorded in that plan's
 delivery log. In dependency order:
 
-1. **[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)** —
-   **in progress.** Items **17 and 19 are closed**; 7 and 18 remain. Everything else waits on
-   this, because every other plan closes by quoting a gate.
+1. ~~**gates-that-can-be-trusted**~~ — **closed 2026-08-30.** Items 7, 17, 18 and 19 are gone,
+   CI is green, and the whole suite passes on Linux for the first time. Everything below was
+   waiting on it, because every plan closes by quoting a gate.
 2. **[w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md)** — items 6, 11,
    12, 13, 15. `DESIGN.md` §7 step 7. Half of it runs here; half of it is blocked on a §9
    machine and says so.
@@ -31,10 +31,10 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 
 | | |
 |---|---|
-| Branch | **`main`.** `plan/engine` merged 2026-08-30, exit criteria met, gates re-run green on the merge commit |
+| Branch | **`claude/project-status-irgurb`**, PR #1. `[measured 2026-08-30]` CI green on `1013a30` — runs `33294919021` and `33294920450`, the first green runs since `engine` merged |
 | Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p nanofix-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)** — items 17 and 19 closed 2026-08-30, items 7 and 18 open. Five more plans approved and not started |
+| Plan in flight | *(none)*. **[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md) closed 2026-08-30** — items 7, 17, 18, 19. Five plans approved and not started; next is [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
@@ -370,6 +370,23 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   whatever stable is current and there is no `rust-toolchain.toml`**, so `-D warnings` denies
   lints that had not been written when the code was. Both written up in
   [reference/measured-costs.md](docs/reference/measured-costs.md). **Open items 18 and 19.**
+- **Item 7 closed: the corpus is pinned and verified.** `[measured 2026-08-30]`
+  `scripts/fetch-quickfix-assets.sh` defaults to commit `386ce46e917a` instead of `master` and
+  checks the three counts the documents quote — **59 definitions, 539 message lines, 244 `E`
+  lines carrying `10=`** — failing at the fetch rather than three layers away. Proven by
+  reversal: adding one `.def` gives `CORPUS MISMATCH: acceptance definitions is 60`, EXIT=1;
+  removing it, EXIT=0. **The first reversal was worthless and it is worth saying why**:
+  `QUICKFIX_REF=master` passed, because `master` currently *is* the pinned commit. And the pin
+  buys nothing today — upstream has not drifted. Its value is entirely future; only the
+  mechanism is proven.
+- **Item 18 closed, and the plan was wrong about how.** The two dead rustdoc links were
+  **external URLs**, which `check-links.py` skips by design, so walking `.rs` files would not
+  have caught them. The rule that does, and needs no network: **a file in this repository must
+  be linked by relative path, never by absolute URL.** It found **three**, not two. Scanning
+  `.rs` first produced **13 false positives**, all rustdoc intra-doc links naming Rust items
+  rather than files — the trap the plan had named in advance, caught by the guard it named.
+  `CLAUDE.md` §9 now requires a green CI run named by id for the commit being closed, and §10
+  gains two more failures no gate can see.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -428,7 +445,7 @@ plans are **approved**; the first is in progress.
 
 | Plan | Closes |
 |---|---|
-| [gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md) | **17 and 19 closed 2026-08-30**; 7 and 18 in progress |
+| ~~[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)~~ | **CLOSED 2026-08-30** — 7, 17, 18, 19 |
 | [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | 15 now; 6, 11, 13 on a §9 machine; **decides** 12 |
 | [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 |
 | [data-fields](docs/plans/2026-08-30-data-fields.md) | 8, 9 |

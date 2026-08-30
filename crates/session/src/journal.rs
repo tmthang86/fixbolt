@@ -15,7 +15,7 @@
 //! D1's original sketch had the session emit an `Action::Store(seq, bytes)`
 //! instead. A trait is the same information with a name and a return value —
 //! `get` has to answer, and an emitted action cannot.
-//! [ADR-0008](https://github.com/nanofixengine/docs/decisions/ADR-0008-journal-is-a-trait.md)
+//! [ADR-0008](../../../docs/decisions/ADR-0008-journal-is-a-trait.md)
 //! records the difference and why.
 
 /// The messages this end has sent, by sequence number.

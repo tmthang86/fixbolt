@@ -5,7 +5,7 @@
 //! The reversal is recorded in the ADR — the first draft had it the other way
 //! round, on reasoning that turned out to be about the JVM.
 //!
-//! [ADR-0002]: https://github.com/nanofixengine/docs/decisions/ADR-0002-engine-library-split.md
+//! [ADR-0002]: ../../../docs/decisions/ADR-0002-engine-library-split.md
 //!
 //! # The two shapes
 //!
