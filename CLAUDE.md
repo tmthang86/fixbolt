@@ -103,6 +103,7 @@ describes. **A stale document is worse than no document.**
 | Anything that moves a row of the latency budget | `DESIGN.md` §8, with the measurement that moved it |
 | Discover a protocol trap, a wrong assumption, or a measured surprise | `docs/reference/` ← **highest priority** |
 | Pick a dependency, change technique, reverse a decision | New ADR in `docs/decisions/` |
+| The surprise was about **testing**, not about FIX | the same `docs/reference/` entry, marked `[to testing-skills]` — §11 |
 
 **No row here is machine-checked.** Every one is walked by hand before a plan is closed.
 
@@ -227,3 +228,64 @@ it.** Any green result that was *inferred* rather than *observed* is not a resul
 
 **Review of a diff catches almost nothing.** Bugs get caught by running something and
 reading the output. Do not use review as the primary safety net.
+
+
+## 11. Contributing back to `testing-skills`
+
+**[`tmthang86/testing-skills`](https://github.com/tmthang86/testing-skills)** is the owner's
+other project: two Claude Code skills — `e2e-testing` and `design-conformance-testing` — plus
+the tooling that keeps them honest. **Its own roadmap names its biggest gap: nothing in it has
+been proven against a real system.** Everything measured in it so far came from one Tauri
+desktop app, through a UI.
+
+**This repository is the other half of that evidence, and it is the half that has no UI at
+all.** A FIX acceptor is tested end-to-end by driving real bytes through a real socket and
+reading what comes back — the same loop, with a wire protocol where the skills have a screen.
+That makes nanofixengine the place where the *protocol* side of e2e testing gets found out,
+and what is found here is owed back.
+
+### What goes back
+
+Only material that this repository **measured**. A case is contributed when the command was
+run here, the output was read, and the numbers are the observed ones — never from reasoning
+about what would probably happen. That is §10 applied to somebody else's repository.
+
+| Found here | Goes to |
+|---|---|
+| A check that passed, or failed, for a reason other than the thing under test | `references/false-greens.md` |
+| A gate whose result depends on the machine, the timeout, or the load | `references/false-greens.md` |
+| A reversal that turned out to be a no-op, or that passed and exposed a hole in the test | `references/false-greens.md` |
+| How an e2e loop is driven against a **protocol** rather than a UI — settling, framing, a corpus as oracle, an injected clock as the only test double | the protocol reference the roadmap does not yet have |
+| A tool that claimed to prove something and could not — `dtruss` under SIP, `nm -u` over generic code | `references/false-greens.md` |
+
+**Strip it to the testing lesson.** The upstream repository is **public today**, and this one
+is written as though it already were. A case goes back as *the shape, the measurement, the
+fix* — legible to somebody who has never heard of FIX. **No message bytes, no counterparty
+anything, no exchange specification, nothing from `shadow-exchange`, no `vendor/` content.**
+If a case cannot be told without one of those, it does not go back; it stays in
+`docs/reference/` here.
+
+### When
+
+**A case is written into `docs/reference/` here first** — §4's row, unchanged, and it is what
+makes the case real. **The queue is that write-up itself**: a contributable case carries the
+literal marker **`[to testing-skills]`** on its own line, so `grep -rn '\[to testing-skills\]'
+docs/` is the whole backlog and there is no second list to go stale. The marker is replaced by
+the pull-request link when it lands.
+
+**The upstream pull request is opened when the plan that found the case closes**, so that a
+case which turns out to be a misunderstanding is corrected here before it is published
+somewhere else. One pull request per plan, however many cases it carries; the generalised
+paragraph in the local write-up is the draft of the upstream one.
+
+### What does not happen
+
+- **Nothing here depends on `testing-skills` to build, test or run.** No crate links it, no
+  script fetches it, no gate needs it installed. It is read by the person or the agent doing
+  the work, and the workspace must stay buildable by somebody who has never heard of it.
+- **The skills are not a substitute for this file.** Where the two disagree about this
+  repository, `CLAUDE.md` wins — §2's ten non-negotiables in particular are not up for
+  revision by an installed skill.
+- **Nothing flows the other way as a rule.** A useful idea from upstream is adopted here on
+  its merits, in a plan, like any other technique — not because it arrived from the sibling
+  project.
