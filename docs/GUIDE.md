@@ -40,6 +40,19 @@ project's headline figures ([ADR-0012](decisions/ADR-0012-latency-first-and-one-
 **Nothing enforces this.** The engine will happily carry 500 sessions on one thread and will
 not warn you.
 
+**And kernel bypass does not rescue it.** `[measured 2026-08-30]` removing the syscall — Onload,
+`ef_vi`, DPDK — takes 703 ns down to the cost of a memory read, which is real and worth having.
+Two terms survive it:
+
+- **Cache.** One `Connection` is **53.3 KiB**; `L1d` on the test machine is 32 KiB, so *one
+  connection does not fit in L1*. Random access costs **1.05 ns** in L1 and **78.5 ns** from
+  RAM — **75×** — and that applies to every access the engine makes, not just to polling.
+- **Head-of-line blocking.** One thread serialises. Per-message work here is ~465 ns
+  (`parse` 125.5 + `encode` 240.0 + the session step), so `k` sessions holding a message at
+  once make the last one wait `(k-1) × 465 ns`. Nothing removes this except fewer sessions.
+
+Full working: [reference/measured-costs.md](reference/measured-costs.md).
+
 ---
 
 ## 2. The engine calls you on its hot path

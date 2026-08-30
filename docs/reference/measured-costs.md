@@ -1296,3 +1296,78 @@ somebody asked a question about deployment shape**. A latency budget stated for 
 path" invites exactly this: the measured part is optimised to a fraction of the unmeasured part.
 The cheap defence is to measure one whole turn end to end, including the syscalls, before
 tuning anything inside it.
+
+## Kernel bypass removes the largest term and leaves two behind
+
+Asked whether kernel bypass — no syscall — makes many sessions on one core a non-issue. It
+removes the term that dominates today and **does not remove the shape of the problem**. Three
+terms, measured where they can be.
+
+### Term 1 — the polling sweep stays linear in N
+
+Bypass replaces `read()` with a userspace descriptor poll. The syscall's **703 ns** goes; what
+replaces it is a memory read of a descriptor the NIC wrote by DMA, so it costs what a memory
+access costs — see the curve below, **1 to 80 ns** depending on where it lands. That is a
+9–70× improvement and it is still `N ×`. At N=128 and 50 ns a sweep is **6.4 µs**, six times
+`DESIGN.md` §8's whole user-space budget.
+
+### Term 2 — cache, which bypass does not touch at all
+
+`[measured 2026-08-30]` `size_of::<Connection<Loopback, Acceptor, MemJournal<64,512>, 64, 4096,
+8192>>()` = **54 600 bytes, 53.3 KiB**. `Session<Acceptor,64>` is 8 960 B and
+`MemJournal<64,512>` is 33 288 B of it. **`L1d` on this machine is 32 KiB — one connection does
+not fit in L1.**
+
+Random-access latency by working-set size, pointer-chase, §9 machine, isolated core:
+
+| Working set | ns per access | Tier |
+|---|---|---|
+| 16–32 KiB | **1.05** | L1d |
+| 64 KiB | 2.58 | |
+| 256 KiB | 3.11 | L2 |
+| 512 KiB | 5.53 | L2 edge |
+| 1 MiB | 9.65 | |
+| 4–8 MiB | 11.5–12.0 | L3 |
+| 16 MiB | 31.0 | L3 edge |
+| 32–64 MiB | 68–79 | RAM |
+
+**L1 to RAM is 75×**, and it applies to *every* memory access the engine makes — parse, session
+step, template patch — not to the polling alone. Adding sessions walks the whole engine down
+that table.
+
+**What is not known, and it decides where the wall is:** how much of the 53.3 KiB a connection
+touches per message. The structure size is measured; the *touched* set is not. The two bounds
+are far apart and both are stated rather than one being picked:
+
+- If a message touched all of it, the L2 edge arrives at **N ≈ 9**.
+- If it touched 4 KiB — a framer head, the live part of the field index, the hot session
+  fields, a template — the L2 edge arrives at **N ≈ 128**.
+
+Measuring that fraction is worth more than any further guess about the 324 ns mode.
+
+### Term 3 — head-of-line blocking, which nothing removes
+
+One thread and N sessions serialise by construction. The per-message work is measured on this
+machine: `parse NewOrderSingle` 125.5 ns, `encode ExecutionReport` 240.0 ns, plus the session
+step — call it ~465 ns of work per message. With `k` sessions holding a message at the same
+instant, the last one served waits `(k-1) × 465 ns` before its own processing begins.
+
+Bypass does not touch this. Neither does a faster codec. **It is the cost of sharing a thread**,
+and the only fix is fewer sessions on it — which is
+[ADR-0012](../decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)'s
+decision, arrived at from a different direction.
+
+### So: does bypass make density free?
+
+**No.** It removes 703 ns per socket, which is the largest single term today and worth doing
+for that reason alone — open item 14 already ranks Onload first. What is left afterwards is a
+sweep still linear in N, a cache hierarchy that punishes N by up to 75×, and serialisation that
+is linear in *active* sessions. **A latency-first engine wants few sessions per thread whether
+or not the kernel is in the path**, which is the conclusion ADR-0012 reached before this
+measurement existed and which this measurement did not overturn.
+
+`[to testing-skills]` — *removing the dominant term promotes the next one, and it is rarely the
+one that was being discussed.* The instinct "no syscall, therefore no problem" is right about
+the term it names and silent about the two behind it. The cheap defence is to write down every
+term you can name **before** removing any of them, so that the second-largest is already
+measured when it becomes the largest.
