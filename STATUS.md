@@ -20,34 +20,34 @@ approval gate was never the safety net here in the first place.
 | **[ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)** `Accepted` | latency beats density; every figure names its `N`. Decisions 1–2 re-scoped to `hft` by ADR-0013 |
 | **[ADR-0013](docs/decisions/ADR-0013-two-modes-standard-and-hft.md)** `Accepted` | **two modes.** `standard` blocks and runs anywhere and **is the default**; `hft` spins, pins and burns a core. **Amended `CLAUDE.md` §2 rule 4** — it is now mode-scoped and its `standard` half **has no machine check yet** |
 | **[threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md)** approved | 6 steps, `hft`-scoped. Step 1 is the affinity API ADR — **it is ADR-0015, not 0014**: `standard-mode` wrote its ADR first and §5 forbids reusing a number. That plan's own text still says 0014 |
-| **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** approved | 8 steps, `standard`-scoped, **step 1 done**. Builds the default mode and the missing half of rule 4's machine check |
-| **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)** `Accepted` | `poll(2)` through `libc` behind a default-on `standard` feature; **Windows refused at compile time**, never a silent spin; `Waiting` is given the sources and `Transport` names its own; `Park` → `Yield`, neither mode, **fails both gates**. Answers **all four** of ADR-0013's open questions. Accepted **by standing delegation** — the owner delegated plan-writing and approval on 2026-08-30, so nobody read these nine decisions on their behalf; the ADR says so in its own header |
+| **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** **closed** | 8 steps, `standard`-scoped. Built the default mode and closed rule 4's unenforced half. One thing deferred to a §9 machine, deliberately |
+| **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)** `Accepted`, **implemented** | `poll(2)` through `libc` behind a default-on `standard` feature; **Windows refused at compile time**, never a silent spin; `Waiting` is given the sources and `Transport` names its own; `Park` → `Yield`, neither mode, **fails both gates**. Answers **all four** of ADR-0013's open questions. Accepted **by standing delegation** — the owner delegated plan-writing and approval on 2026-08-30, so nobody read these nine decisions on their behalf; the ADR says so in its own header |
 
-**The next session's three obvious starting points, in the order that costs least:**
+**The next session's starting points, in the order that costs least:**
 
-1. ~~**A plan for `standard` mode**~~ — **approved 2026-08-30, and its step 1 is done**:
+1. ~~**A plan for `standard` mode**~~ — **CLOSED 2026-08-30.**
    [standard-mode](docs/plans/2026-08-30-standard-mode.md), 8 steps, and
-   **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**, `Proposed`. It
-   answers **all four** of ADR-0013's open questions rather than only the first: `poll(2)`
-   through `libc` behind a default-on `standard` feature (so `--no-default-features` still
-   yields a zero-dependency, zero-`unsafe`, spin-only engine), **Windows out of scope and
-   refused with a typed error rather than a silent fallback to spinning**, `hft` stays the
-   default for `w2w` and the benchmarks, and `density` is a shape within `standard` rather than
-   a third mode. **The next thing this blocks on is a signature**: step 2 writes no code until
-   ADR-0014 is `Accepted`.
-2. **The `standard` half of rule 4 has no gate.** ADR-0013 decision 6 specifies it — CPU time
-   over a wall-clock window, not read off the code. Until it exists, rule 4 is half-enforced
-   and `CLAUDE.md`'s own machine-checked list says so. It is **step 7** of the plan above, and
-   the plan's own note is that CPU time alone is not enough: a dead thread also reads 0%, and an
-   engine woken by its own 100 ms timeout rather than by the data reads 0% **and** blocks
-   **and** still costs 100 ms a message. The gate therefore asserts three things at once, and
-   requires its own `hft` half to fail.
-3. **`wait::Park` belongs to neither mode** — it yields without blocking, and **every test in
-   the repository uses it**. ADR-0013 open question 3. The plan's answer: keep it, rename it
-   `wait::Yield`, and document that it **fails both gates** — that is its definition, not a
-   defect. The red half of `check-no-kernel-sleep.sh` then moves from `sched_yield`, which
-   nobody writes into an engine by accident, to `standard`'s real `ppoll`, which is what an
-   actual regression would look like.
+   **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**. `standard` exists,
+   **is the default** (`serve` blocks, `serve_hft` spins), and passes the 59 definitions.
+   **One thing was left and it is not a slip**: the `standard` wakeup cost needs a §9 machine,
+   and the plan's risk table said from the start it would keep `DESIGN.md` §8's *from the
+   literature* label rather than close on a number from the wrong box.
+2. ~~**The `standard` half of rule 4 has no gate**~~ — **CLOSED.**
+   `scripts/check-standard-gives-the-core-back.sh`, four assertions, red halves `hft` **and**
+   `yield`. `CLAUDE.md`'s machine-checked list now reads rule 4 as both halves.
+3. ~~**`wait::Park` belongs to neither mode**~~ — **CLOSED.** It is `wait::Yield` now, and
+   `[measured 2026-08-30]` it is **shown** to fail both gates rather than said to: 99.7% CPU,
+   sleeping 0 of 20 samples.
+
+**What is next, and it is a choice rather than a queue:** `threads-and-affinity` (approved,
+`hft`-scoped, its step 1 is **ADR-0015**), `session-recovery` steps 4–5, `ring-full-policy`
+steps 3–4, and `ktls-spike` steps 2–5. All four are work, not decisions. **The `standard`-mode
+measurements and open items 6, 11 and 13 all wait on the same thing: the desktop tuned to §9.**
+
+**One thing needs the owner, not the agent:** `CLAUDE.md` §11 says the upstream
+`testing-skills` pull request opens when the plan that found the cases closes. This plan found
+**seven** false greens and one false claim. That PR would push content to a **public**
+repository, so it is not covered by the standing delegation and has not been opened.
 
 **Read before touching the engine:** [GUIDE.md](docs/GUIDE.md) §0 for the mode split, and
 [reference/measured-costs.md](docs/reference/measured-costs.md) for why the numbers are what
@@ -58,8 +58,8 @@ refuted hypotheses about a 324 ns mode that is still unexplained.
 
 **Next, and each needs its own plan before any code (Rule Zero):**
 
-**Seven plans were written and approved on 2026-08-30**, the seventh being `standard-mode`,
-**whose step 1 is also already done**. All of it comes with the owner's standing permission to
+**Seven plans were written and approved on 2026-08-30**, and the seventh — `standard-mode` — is
+**closed**. All of it comes with the owner's standing permission to
 revise a plan mid-flight when reality disagrees with it — each revision recorded in that plan's
 delivery log. In dependency order:
 
@@ -85,27 +85,12 @@ delivery log. In dependency order:
 6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5. **Steps 1–2 done
    2026-08-30**; steps 3–4 wait on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md),
    which is **`Accepted` 2026-08-30** and awaits implementation, not a signature.
-7. **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** — **approved 2026-08-30, steps 1
-   and 2 done.** 8 steps. Builds the mode ADR-0013 made the *default* and nobody had written,
-   and with it the missing half of non-negotiable 4's machine check. Step 1 is
-   **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**, `Accepted`; it took
-   0014, so `threads-and-affinity`'s step 1 takes **0015**. **Steps 2 and 3 are the seam, the
-   syscall and the strategy**: `Source`, `Interest`, `Transport::POLLABLE`/`source()`, `Waiting`
-   with `NEEDS_SOURCES`, `Park` → `Yield`, `poll::Poller`, and `block::Block` — the crate's
-   **first external dependency and first `unsafe`**, both behind the feature. **Step 4 built the source list** —
-   readable always, writable only while bytes are queued, the listener carried by `serve`,
-   rebuilt every turn because a `Source` borrows its descriptor. Pairing a blocking strategy
-   with a transport that cannot name a source **does not compile**. **Step 5 added the waker**, so all
-   four of ADR-0014 decision 6's latency cliffs are now closed. **Step 6 wired both modes**: `serve` is
-   `standard` (it used to spin — ADR-0013's default reversal lands there), `serve_hft` spins, and
-   `w2w --mode hft|standard|yield` prints the mode a gate then reads back. **Step 7 closed non-negotiable 4's
-   unenforced half**: `scripts/check-standard-gives-the-core-back.sh`, four assertions, red
-   halves `hft` **and** `yield`. `CLAUDE.md`'s machine-checked list now says rule 4 is enforced
-   in both halves. **Step 8 is half closed**: `[measured 2026-08-30]` the 59
-   definitions pass **59 / 59 in `standard` mode** with the engine blocking between steps. The
-   other half — the wakeup cost — needs a §9 machine and this container reads `pass 2 fail 6
-   unknown 3`, so `DESIGN.md` §8 keeps its *from the literature* label rather than being closed
-   on a number from the wrong box. **The plan is otherwise done.**
+7. ~~**[standard-mode](docs/plans/2026-08-30-standard-mode.md)**~~ — **CLOSED 2026-08-30**, 8
+   steps, plus **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**. Built
+   the mode ADR-0013 made the default and nobody had written, and closed non-negotiable 4's
+   unenforced half. `serve` blocks and `serve_hft` spins; the 59 definitions pass in both modes;
+   all four of ADR-0014 decision 6's latency cliffs are shut. **Left open on purpose**: the
+   wakeup cost, which needs a §9 machine.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
@@ -127,6 +112,23 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
+
+**`[measured 2026-08-30]` The `standard` gate agrees with itself on two different machines, with
+two orders of magnitude of headroom.** Its ceilings are not the marginal kind open item 20 is
+about. Same commit, same script:
+
+| | this session's container | GitHub runner (`33324622355`) |
+|---|---|---|
+| `standard` | 0.00% CPU, sleeping 20/20, p50 **10 917 ns** | 0% CPU, sleeping 20/20, p50 **24 848 ns** |
+| `hft` | 98.81% CPU, sleeping 0/20 | 98.83% CPU, sleeping 0/20 |
+| `yield` | 99.70% CPU, sleeping 0/20 | 99.74% CPU, sleeping 0/20 |
+
+The p50 ceiling is 1 000 000 ns and the two machines differ by 2.3× while sitting **40× and 100×
+below it**; the CPU figures differ by hundredths of a percent. `DESIGN.md` §6's *timing* ceilings
+swing 5–232% run to run on one box and 1.7× between two — this gate is measuring a different kind
+of thing, a ratio and a count, and it is worth saying which kind before somebody assumes the
+worst about both.
+
 
 **`[measured 2026-08-30]` The 59 acceptance definitions pass with the engine actually blocking.**
 `cargo test -p fixbolt-engine --test wire` now runs the corpus twice, once per idle strategy, and

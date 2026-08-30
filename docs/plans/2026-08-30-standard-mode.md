@@ -1,6 +1,7 @@
 # `standard` mode — engine chặn khi rỗi và trả core lại
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Đã duyệt 2026-08-30**
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **ĐÓNG 2026-08-30**, với đúng một việc
+> để lại và nói rõ vì sao — xem nhật ký giao hàng, mục *bước 8*
 > **Phạm vi:** `engine` — public API, vòng lặp rỗi, `Transport`, `Waiting`. Không đụng `codec`,
 > không đụng `session`.
 
@@ -352,6 +353,46 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
   workload thật, mà cái đó chưa có.
 
 ## Nhật ký giao hàng
+
+### 2026-08-30 — ĐÓNG
+
+**Tám bước, bảy rưỡi làm xong.** `standard` mode tồn tại, **là mặc định** (`serve()` chặn,
+`serve_hft()` quay vòng), và nguyên tắc 4 của `CLAUDE.md` hết nửa vời.
+
+**Việc duy nhất để lại, và lý do:** đo giá một lần thức của `standard` cần máy `DESIGN.md` §9.
+Container của phiên này đọc `pass 2 fail 6 unknown 3`. Dòng wakeup trong `DESIGN.md` §8 **giữ
+nguyên nhãn "lấy từ tài liệu"**. Plan đã dự phòng đúng tình huống này trong bảng Rủi ro ngay từ
+lúc viết — *"không hạ chuẩn để đóng"* — nên đây là kế hoạch chạy đúng, không phải kế hoạch trượt.
+Nó về desktop của chủ dự án cùng với mục 6, 11, 13.
+
+**Bốn vực latency mà ADR-0014 quyết định 6 gọi tên: bịt cả bốn.** Listener trong tập poll,
+`POLLOUT` khi còn byte tồn đọng, waker cho dispatch ngoài luồng, và timeout 0 bị từ chối ở
+constructor.
+
+**Điều đáng nhớ nhất của plan này không phải `standard` mode.** Là **bảy lần một thứ xanh (hoặc
+đỏ) vì lý do khác với thứ nó nói mình đang kiểm**, và cả bảy đều bị bắt bởi việc chạy và đọc chứ
+không phải bởi việc đọc lại code:
+
+| # | Thứ báo sai | Bắt được nhờ |
+|---|---|---|
+| 1 | *"30 test binaries"* — thật ra là `head -30` cắt output | đếm lại cho tử tế |
+| 2 | job CI `no-default-features` xanh về một bản build chưa từng xảy ra | **số test lệch 4** |
+| 3 | test hỏi về fd đã đóng — xanh 30 lần, đỏ lần chạy nguội đầu | vị trí panic chỉ đúng nhánh |
+| 4 | `compile_fail` đỏ vì trait bound sai, không vì const-assert | đọc thông điệp lỗi |
+| 5 | test listener xanh cả khi xoá đúng dòng nó phải canh | đảo ngược |
+| 6 | `--mode standard` in banner rồi không chạy gì | chạy công cụ, thấy thiếu khối latency |
+| 7 | cổng `standard`: p50 trả về **50** — chữ số trong *nhãn* `p50` | nhìn con số và thấy nó vô lý |
+
+Cộng thêm một lần **prose sai**: doc comment của bài test `standard` khẳng định nó bắt được lỗi
+nối dây, và ba phép đo thời gian bác bỏ.
+
+**Bảy trong bảy đều là false green, không phải bug.** Code gần như luôn đúng; thứ hỏng là **bằng
+chứng**. Đó chính là điều `CLAUDE.md` §10 nói và là điều repo này nợ `testing-skills`. Bốn case
+đã có `[to testing-skills]` trong `docs/reference/`.
+
+**PR upstream `testing-skills`** — §11 nói mở khi plan đóng. **Chưa mở**, và đó là việc phải
+hỏi chủ dự án trước: nó đẩy nội dung ra một repo **công khai**, và đó là một trong ba thứ mà uỷ
+quyền "tự duyệt tự chạy" không bao gồm.
 
 ### 2026-08-30 — bước 8: nửa làm được đã xong, nửa kia cần máy khác
 
