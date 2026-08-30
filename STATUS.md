@@ -26,7 +26,9 @@ delivery log. In dependency order:
    concluded, because the experiment never reached the library.
 4. ~~**data-fields**~~ — **closed 2026-08-30**, items 8 and 9.
 5. **[session-recovery](docs/plans/2026-08-30-session-recovery.md)** — item 16.
-6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5.
+6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5. **Steps 1–2 done
+   2026-08-30**; steps 3–4 wait on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md),
+   which is `Proposed` and needs the owner's signature.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
@@ -37,7 +39,7 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Branch | **`claude/project-status-irgurb`**, PR #1. `[measured 2026-08-30]` CI green on `a52a954` — runs `33295128793` and `33295130319`. First green since `engine` merged: `1013a30` |
 | Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p nanofix-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | *(none runnable here)*. `gates-that-can-be-trusted` **closed** (7, 17, 18, 19); `w2w-and-linux-numbers` **half A done** (15), half B needs a §9 machine; `ktls-spike` **paused** (10) needing a `CONFIG_TLS` kernel. Three plans approved and not started: `data-fields`, `session-recovery`, `ring-full-policy` |
+| Plan in flight | **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — measured, blocked on ADR-0011. `gates-that-can-be-trusted` **closed** (7, 17, 18, 19); `w2w-and-linux-numbers` **half A done** (15), half B needs a §9 machine; `ktls-spike` **paused** (10) needing a `CONFIG_TLS` kernel. Three plans approved and not started: `data-fields`, `session-recovery`, `ring-full-policy` |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
@@ -438,6 +440,15 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 - **`benches/alloc.rs` writes a DATA field at zero allocations**, and the case asserts its own
   path is live before the zero counts. Proven by injection: one `format!` in that loop reports
   **10 000**.
+- **The ring holds 56.7 µs of slack, and ADR-0002 assumed milliseconds.** `[measured
+  2026-08-30]` `crates/engine/benches/ring_full.rs`, Linux 6.18 x86_64: at the 65 536-byte
+  capacity `benches/dispatch.rs` measures the hop at, a stalled application costs the engine
+  **352 messages and 56.7 µs** before the ring starts refusing. ADR-0002 bought the ring so that
+  *an application that stalls does not stall the session layer*, priced against a stall of
+  "milliseconds" — **one millisecond overflows this ring about eighteen times over.** The ring
+  as sized does not buy what it was bought for, which makes capacity part of the policy decision
+  rather than a tuning detail. The bench asserts the ring **accepted** before it refused: one
+  that rejected everything from the first message would print a plausible number.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -501,7 +512,7 @@ plans are **approved**; the first is in progress.
 | [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 — **paused 2026-08-30**, blocked on a kernel with `CONFIG_TLS` |
 | ~~[data-fields](docs/plans/2026-08-30-data-fields.md)~~ | **CLOSED 2026-08-30** — 8, 9 |
 | [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 |
-| [ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) | 5 |
+| [ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) | 5 — **measured 2026-08-30; blocked on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md) being accepted** |
 
 **The two with no plan, and why.** **1** (the final name) is a decision for the owner, not a
 piece of work — when it is made it is an ADR and a rename, and neither can be planned around
@@ -512,7 +523,7 @@ against hardware that does not exist.
 | # | Item | Blocks |
 |---|---|---|
 | 1 | **Final name.** `nanofixengine` is a placeholder. Free on both crates.io and GitHub: `machfix`, `veloxfix`, `tachyonfix`, `luxfix`, `fixwire`, `fixbolt`, `sohwire` | Nothing yet — but renaming after a crates.io publish is expensive |
-| 5 | Ring-buffer policy when the library falls behind: block, drop, or disconnect? | ADR-0002, and the `engine` plan |
+| 5 | **Ring-buffer policy when the application behind the ring falls behind: block, drop, or disconnect?** Not `DESIGN.md` D10, which answered the socket side. `[measured 2026-08-30]` the ring holds **352 messages / 56.7 µs** at its current 64 KiB, against the "milliseconds" ADR-0002 assumed — so capacity is part of the decision. **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md) proposes disconnect + a 4 MiB default and needs signing** | ADR-0002; steps 3–4 of the ring plan |
 | 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number | Every gate in §6 that matters |
 | 7 | **`scripts/fetch-quickfix-assets.sh` tracks mutable `master`.** Every acceptance number in the codec plan (539 lines, 247 with `9=`, 244 with `10=`, 8 tag-set patterns for `35=3`) can change silently upstream. Pin a commit and verify it | Reproducibility of every step-1 gate |
 | 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **`[measured 2026-08-30]` the blocker was recorded wrongly and is now known**: it needs a kernel built with **`CONFIG_TLS`**, *not* the §9 machine of item 6 — kTLS is a kernel feature, not a latency property. This box refuses `setsockopt(TCP_ULP, "tls")` with `ENOENT` and its config says `# CONFIG_TLS is not set`. `scripts/check-ktls-available.sh` answers "can I start?" in one command; [reference/ktls-on-a-plain-socket.md](docs/reference/ktls-on-a-plain-socket.md) records what was and was not concluded | The TLS plan; ADR-0005 acceptance |

@@ -1,6 +1,6 @@
 # Ring đầy thì làm gì
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt (2026-08-30)
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đang chờ ADR-0011 được duyệt (2026-08-30)
 > **Phạm vi:** open item 5 — `engine`, và một ADR
 
 ## Bối cảnh
@@ -118,3 +118,43 @@ nên nó cần ADR chứ không chỉ cần code.
 `CLAUDE.md` §1 — chỗ bảo "dừng lại, sửa plan, xin duyệt lại" — thành "sửa plan, **ghi lại
 vào đây**, đi tiếp". Mỗi lần sửa plan phải có một mục dưới đây nói rõ **sửa gì và vì sao**,
 nếu không thì uỷ quyền này biến thành giấy phép đi chệch trong im lặng.
+
+---
+
+### Bước 1 và 2 xong 2026-08-30. Dừng ở bước 2, đúng như plan.
+
+**Bước 1 — số đo, và nó làm đổi hẳn câu hỏi.** `crates/engine/benches/ring_full.rs`, Linux 6.18
+x86_64, 4 vCPU:
+
+| | |
+|---|---|
+| Dung lượng ring | **65 536 byte** (đúng cái `benches/dispatch.rs` đo hop) |
+| Message | 149 byte + header 32 byte |
+| Nhận được trước lần từ chối đầu | **352** |
+| Thời gian lấp đầy ở tốc độ tối đa | **56,7 µs** (160 ns/message) |
+
+Bench **khẳng định cả hai chiều**: ring đã *từ chối*, **và** đã *nhận* trước đó. Một ring từ
+chối ngay từ message đầu cũng in ra một con số trông rất hợp lý — đúng hình dạng của cái
+benchmark báo 0 allocation cho một đường chưa từng chạy.
+
+**56,7 micro-giây là toàn bộ khoảng đệm.** ADR-0002 biện minh cho ring bằng lập luận *ứng dụng
+khựng thì tầng session không khựng theo*, và chính plan `engine` định giá 240 ns của hop so với
+một ứng dụng "có thể khựng hàng mili-giây". Ở dung lượng này, **một mili-giây làm tràn ring
+khoảng mười tám lần**. Ring như đang cấu hình **không mua được thứ nó được mua để mua.**
+
+Vì thế **dung lượng trở thành một phần của quyết định**, không phải chi tiết chỉnh sau — đó là
+chỗ plan này không lường trước và là sửa plan duy nhất ở đây.
+
+**Bước 2 — [ADR-0011](../decisions/ADR-0011-a-full-ring-disconnects.md) viết xong, trạng thái
+Proposed.** Đề xuất: ring đầy thì **ngắt kết nối** (mặc định), **từ chối không bao giờ im lặng**,
+dung lượng mặc định lên `1 << 22` (~3,6 ms đệm), và **không cung cấp `Block`** ở phía này — vì
+quay vòng chờ một luồng *ứng dụng* làm tiến độ của luồng engine phụ thuộc vào code engine không
+kiểm soát, và cổng non-negotiable 4 không phân biệt được một spin kết thúc với một spin không.
+
+ADR ghi rõ ba cái giá: 4 MiB mỗi ring là chi phí thật; ngắt kết nối biến một ứng dụng chậm
+thành một sự cố; và **chưa có ứng dụng thật nào từng làm nghẽn ring này** — cả chính sách lẫn
+dung lượng đều chọn từ một lần chạy bão hoà tổng hợp cộng với lập luận về order flow.
+
+**Dừng ở đây.** Bước 3 và 4 (cài chính sách, làm bộ đếm quan sát được) **chờ ADR-0011 được
+duyệt** — `CLAUDE.md` §5 nói một quyết định đắt, khó đảo thì cần ADR, và "Accepted" là chữ ký
+của chủ dự án chứ không phải của tôi.
