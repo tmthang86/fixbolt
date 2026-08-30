@@ -20,6 +20,13 @@ pub mod conn;
 pub mod dispatch;
 pub mod frame;
 pub mod journal;
+// ADR-0014 decision 1 and 2. The feature gates the `mod` declaration itself,
+// not only the manifest — non-negotiable 6, and `CLAUDE.md` §10 lists getting
+// this wrong as a standing trap. `cfg(unix)` on top of it is decision 2: on a
+// target with no poller `standard` does not exist, so code written against it
+// does not compile there rather than failing at startup.
+#[cfg(all(feature = "standard", unix))]
+pub mod poll;
 pub mod ring;
 pub mod transport;
 pub mod wait;
@@ -219,18 +226,30 @@ where
     }
 
     /// One idle turn, by the chosen [`Waiting`] strategy.
+    ///
+    /// `[2026-08-30]` The source list is **empty** here, and it is empty
+    /// because nothing yet needs it: [`wait::Spin`] and [`wait::Yield`] both
+    /// declare `NEEDS_SOURCES = false`, and no strategy that declares `true`
+    /// exists in this crate yet. Step 4 of
+    /// `docs/plans/2026-08-30-standard-mode.md` builds the real list — one
+    /// interest per connection, writable while it still has bytes queued — and
+    /// lands the compile-time refusal that stops a source-needing strategy
+    /// from ever reaching this empty slice.
     pub fn idle(&mut self) {
-        self.wait.idle();
+        self.wait.idle(&[]);
     }
 
     /// Turn forever, idling by the chosen [`Waiting`] strategy.
     ///
-    /// The default strategy is [`wait::Spin`], which is D8: no `epoll_wait`, no
-    /// futex, no blocking read.
+    /// The default strategy is [`wait::Spin`], which is D8's `hft` half: no
+    /// `epoll_wait`, no futex, no blocking read.
+    ///
+    /// See [`Self::idle`] for why the source list is empty today and what fills
+    /// it.
     pub fn run(&mut self) -> ! {
         loop {
             if !self.turn() {
-                self.wait.idle();
+                self.wait.idle(&[]);
             }
         }
     }

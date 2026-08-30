@@ -239,8 +239,8 @@ Cái tên `density` vẫn dùng được như một **nhãn cho con số**, cạ
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
 | 1 | ~~**ADR**~~ — **xong 2026-08-30**: [ADR-0014](../decisions/ADR-0014-standard-mode-blocks-on-poll.md), `Proposed`. Cơ chế readiness và dependency (`poll(2)` + `libc`), phạm vi Windows, số phận của `Park`, mặc định của `w2w`/bench, `density`. Trả lời cả bốn câu hỏi mở của ADR-0013. Chốt hình dạng API | ADR-0013 (đã ký) |
-| 2 | `Source`, `Transport::source()`, `POLLABLE`; `Waiting` đổi chữ ký; `Spin` giữ nguyên hành vi; `Park` → `Yield` với rustdoc nói nó trượt cả hai cổng. **Chưa có `Block`** — bước này chỉ mở chỗ nối và phải giữ mọi test xanh | **1 được ký** |
-| 3 | `wait::Block` sau feature `standard`: `poll(2)` với timeout, một khối `unsafe`, `EINTR` là quay lại chờ, lỗi có kiểu. `libc` chỉ trong feature | 2 |
+| 2 | ~~seam~~ — **xong 2026-08-30.** `Source`, `Interest`, `Transport::POLLABLE`/`source()`; `Waiting` đổi chữ ký + `NEEDS_SOURCES`; `Park` → `Yield`; **và `libc` + feature `standard` + `poll::Poller`** — xem "Sửa 1" bên dưới | 1 |
+| 3 | `wait::Block`: chính sách timeout, `EINTR` là quay lại chờ với phần thời gian còn lại, `NEEDS_SOURCES = true`. Syscall thô đã có từ bước 2 | 2 |
 | 4 | Engine dựng tập interest: readable luôn, **writable khi `has_pending_output()`**. `Acceptor::source()`, và `serve()` đăng ký listener. Const-assert từ chối transport không chờ được | 3 |
 | 5 | Waker: self-pipe trong tập poll, `RingDispatch` đánh thức khi push | 4 |
 | 6 | `w2w --mode standard\|hft`, mặc định `hft`, in mode mỗi lần chạy. Nửa đỏ của `check-no-kernel-sleep.sh` chuyển sang `--mode standard` | 4 |
@@ -352,6 +352,86 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
   workload thật, mà cái đó chưa có.
 
 ## Nhật ký giao hàng
+
+### 2026-08-30 — bước 2 xong: chỗ nối mở, và hai cổng hoá ra đang canh nhầm thứ
+
+**Đã dựng.** `Source`, `Interest`, `Transport::POLLABLE` + `source()`, `Waiting` đổi chữ ký kèm
+`NEEDS_SOURCES`, `Park` → `Yield`, và module `poll` (`Poller`, `PollError`, `Ready`) sau
+`#[cfg(all(feature = "standard", unix))]`. Dependency ngoài **đầu tiên** và khối `unsafe`
+**đầu tiên** của crate, cả hai nằm sau feature. Test mới: `crates/engine/tests/standard.rs`.
+
+**Sửa 1 — `libc` và `poll::Poller` bị kéo từ bước 3 lên bước 2.** Plan viết bước 2 là "chỉ mở chỗ
+nối, chưa có `Block`", nhưng cách kiểm chứng của chính bước 2 lại là *"`poll` một lần với timeout
+0 trên fd ấy"* — tức là cần `libc`. Không có nó, test khả dĩ duy nhất là so `source()` với
+`as_raw_fd()`, mà **đó là so một hàm với chính thân nó**: `TcpTransport::source` *là*
+`as_raw_fd`, nên phép so sẽ xanh kể cả với một phiên bản trả về fd của socket khác, miễn là nó
+lấy sai theo cùng một cách. Nên bước 2 nhận cả syscall thô; bước 3 giờ là chính sách timeout,
+`EINTR`, và `NEEDS_SOURCES = true`.
+
+**Sửa 2 — `Source::from_raw_fd` phải là public, và đó là lỗ thiết kế chứ không phải tiện tay.**
+Bản đầu chỉ có `as_raw_fd`. Nghĩa là **không crate nào ngoài repo dựng nổi một `Source`**, nên
+`Transport::POLLABLE = true` không thể implement từ bên ngoài — `Transport` sẽ là trait chỉ trên
+danh nghĩa. Nó an toàn (giữ sai số không phải unsound; `poll` trả `POLLNVAL`), nhưng hợp đồng
+"fd phải còn sống" thì viết đậm trong rustdoc.
+
+**Đảo ngược — mỗi guard đã được thấy đỏ vì đúng lý do:**
+
+| Đảo ngược | Kết quả |
+|---|---|
+| `source()` trả fd hằng số `0` | `poll_can_tell_the_two_sockets_apart_by_their_source` **FAILED** |
+| `Poller::wait` tin `rc` thay vì đếm cờ `revents` | `an_unknown_descriptor_is_an_error_and_not_a_quiet_socket` **FAILED** |
+| bỏ `optional = true` khỏi `libc` | `check-no-optional-deps.sh` **FAILED**, in ra cả cây |
+
+Ghi thêm một quan sát về đảo ngược thứ nhất: nó đỏ **luân phiên giữa hai test** qua các lần chạy,
+vì fd 0 là stdin — một tài nguyên dùng chung mà test nào chộp trước thì test đó đỏ. Guard vẫn
+đỏ, nhưng nếu ai đó chỉ chạy một lần rồi kết luận "test X canh cái này" thì kết luận đó sai.
+
+**Hai thứ tìm ra khi làm, và cả hai đều là cổng đang canh nhầm:**
+
+1. **Một test flaky, bắt được vì nó đỏ đúng lần chạy nguội đầu tiên.**
+   `an_unknown_descriptor_...` bản đầu đóng một socket rồi hỏi về fd của nó. Đỏ 1 lần, rồi xanh
+   30 lần liên tiếp. Vị trí panic chỉ thẳng nhánh `Ok(count == 0)`: **một thread test khác trong
+   cùng binary đã được cấp lại đúng số fd đó**, nên fd hợp lệ, sống, và im lặng — mà "im lặng"
+   không phân biệt được với "đã đóng" ở tầng này, tức là đúng thứ khẳng định kia định canh. Sửa
+   không phải bằng retry: hỏi về `i32::MAX`, số mà tiến trình này không bao giờ được cấp. Sau đó
+   **0/40 lần đỏ**.
+2. **`[đo 2026-08-30]` Job CI `no-default-features` xanh về một bản build chưa từng xảy ra.**
+   `cargo test --all --no-default-features` **vẫn build `libc`**, vì `tools/w2w` là thành viên
+   workspace phụ thuộc `fixbolt-engine` với default features, và cargo hợp nhất feature trong một
+   lần gọi. Cờ đang bị kiểm bị chính một crate anh em bật lại. Phát hiện **không phải nhờ cổng**
+   mà nhờ **số test**: bản `--no-default-features` lẽ ra 210, nó ra 214 — đúng 4 test của
+   `standard.rs`. Nếu module mới không mang test riêng, hai con số đã bằng nhau và không gì chỉ
+   vào đó. Sửa: `scripts/check-no-optional-deps.sh`, hỏi **theo từng crate**, nối vào CI.
+   Viết vào [feature-flags-unify-across-a-workspace.md](../reference/feature-flags-unify-across-a-workspace.md).
+   `[to testing-skills]`
+
+**Chưa làm, và vì sao:** `Engine::idle` vẫn truyền slice **rỗng**. An toàn *chỉ vì* chưa có
+strategy nào khai `NEEDS_SOURCES = true`, và `const`-assert của quyết định 4 hạ cánh ở bước 4
+cùng lúc với danh sách nguồn thật. Điều này ghi thẳng trong rustdoc của `Engine::idle` chứ không
+để ai đó phải suy ra.
+
+**Gate cho commit này — chạy và đọc output, không đọc exit code:**
+
+```
+cargo fmt --all --check                     sạch
+cargo clippy --all-targets -- -D warnings   sạch
+cargo test --all                            49 dòng test result, 214 passed, 0 failed
+cargo test --all --no-default-features      0 failed  (và xem phát hiện 2 ở trên)
+scripts/check-no-optional-deps.sh           ok — libc vắng mặt, crate vẫn build và test
+cargo test -p fixbolt-session --test score  4 passed        (59/59 trong process)
+cargo test -p fixbolt-engine  --test wire   1 passed        (59/59 qua socket thật)
+scripts/check-no-kernel-sleep.sh            exit 0 — nửa xanh không có syscall chặn,
+                                            nửa đỏ trượt vì 2861 sched_yield
+scripts/bench.sh                            8/8 target đo được, 0 invariant failure
+  engine alloc: idle 0 send 0 recv 0 frame 0 turn 0 busy 0 ring 0
+```
+
+`bench.sh` báo **2 target vượt trần thời gian: `fixbolt-codec/groups` và
+`fixbolt-codec/serialize`**. Cả hai nằm trong `codec`, crate mà thay đổi này **không đụng tới một
+dòng nào**, và cả hai đúng là các ca mục 11 và 20 đã gọi tên sẵn. Không phải của commit này.
+
+**Không đo gì mới.** Giá một lần thức của `standard` vẫn mang nhãn "lấy từ tài liệu" trong
+`DESIGN.md` §8 — chưa có `wait::Block` thì chưa có gì để đo.
 
 ### 2026-08-30 — plan được duyệt, bước 1 xong
 

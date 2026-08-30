@@ -95,7 +95,27 @@ below describe what a first release would contain.
     one value for two opposite facts — a session dropped because the counterparty was quiet, or
     a loop spinning forever on a socket that closed. Same answer the codec reached for
     `Parsed::Incomplete`.
-  - `Waiting`, with `Spin` (the default, D8) and `Park` (every test in this repository).
+  - `Waiting`, with `Spin` (`hft`, D8) and `Yield` (every test in this repository).
+    **`Waiting::idle` takes the source list**, and `Waiting::NEEDS_SOURCES` says whether a
+    strategy actually needs it — blocking on readiness requires knowing the sockets, and
+    splitting idling across two traits to express that would have been worse than showing the
+    sources to a waiter that ignores them. `Spin` drops the slice and the call disappears at
+    `-O2`. [ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md) decision 3.
+  - `Transport::POLLABLE` and `Transport::source()`, with `Source` and `Interest`.
+    `source()` has a default body returning `None`, so a transport written elsewhere keeps
+    compiling; what it cannot do is join a `standard` engine. `Source::from_raw_fd` is public
+    because without it no transport outside this crate could ever be pollable — **and it
+    borrows rather than owns**: a `Source` outliving its socket silently starts naming whichever
+    socket the kernel gave that number to next.
+  - `poll::{Poller, PollError, Ready}`, behind the **`standard` feature (on by default)** and
+    `cfg(unix)`. The crate's first external dependency (`libc`) and first `unsafe`, both
+    arriving behind that feature: `--no-default-features` still builds an engine with **no
+    dependency and no `unsafe` at all**. `POLLNVAL` is `PollError::BadSource`, never counted as
+    readiness — `poll(2)` includes it in its return value, so trusting that number would report
+    an unknown descriptor as a ready one.
+  - `Park` is renamed **`Yield`**. It is neither mode and its rustdoc says so: it fails the
+    `hft` gate (`sched_yield`) and fails the `standard` gate (it burns the core). Nothing about
+    its behaviour changed.
   - `Framer<N>` — one fixed buffer per connection, no allocation, no parsing. It reads one
     field, `9=`, and answers `Cut::{Message, Garbage, Need}`. **Rubbish is handed to the session
     once** rather than dropped, so "a bad frame is fatal only if it claims to be a Logon" stays

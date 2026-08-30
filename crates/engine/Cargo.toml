@@ -8,10 +8,26 @@ rust-version.workspace = true
 publish = false
 description = "TCP acceptor and connector, a thread that never sleeps in the kernel"
 
+# ADR-0014 decision 1. `standard` is the default mode, so its feature is on by
+# default — and the consequence is a property worth having rather than an
+# accident: `--no-default-features` builds an engine with NO dependency and NO
+# `unsafe` at all, `hft` only. CI's `no-default-features` job is what keeps that
+# true (non-negotiable 6).
+[features]
+default = ["standard"]
+standard = ["dep:libc"]
+
 [dependencies]
 fixbolt-codec = { path = "../codec" }
 fixbolt-dict = { path = "../dict" }
 fixbolt-session = { path = "../session" }
+
+# The first external dependency this crate has ever had, and it arrives behind a
+# feature. `std` exposes no readiness API (ADR-0013), so blocking until a socket
+# is readable needs `poll(2)`. `libc` has no transitive dependencies, pulls in no
+# async runtime, and is the same crate `plans/2026-08-30-threads-and-affinity.md`
+# takes for `sched_setaffinity` — one tree, not two. ADR-0014 decision 1.
+libc = { version = "0.2", optional = true }
 
 # The 59 acceptance definitions are this crate's gate too — the same files,
 # through a real socket rather than a closure (CLAUDE.md §2 rule 3).

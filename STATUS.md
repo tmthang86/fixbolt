@@ -7,11 +7,11 @@ Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire
 
 ## Start here — 2026-08-30, end of session
 
-**Four decisions were signed and two plans approved on 2026-08-30.** The sentence that stood here
-earlier the same day — *"nothing is blocked on a signature any more"* — **stopped being true when
-[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md) was written**: it is
-`Proposed`, and `standard-mode` step 2 writes no code until it is signed. Everything else below
-is blocked on work.
+**Five decisions signed and two plans approved on 2026-08-30, and from that day the owner
+delegated plan-writing and plan approval to the agent working here.** Nothing is blocked on a
+signature; everything below is blocked on work. **What the delegation did not change is
+`CLAUDE.md` §10** — it removed a signature, not the evidence each unit of work owes, and the
+approval gate was never the safety net here in the first place.
 
 | | |
 |---|---|
@@ -21,7 +21,7 @@ is blocked on work.
 | **[ADR-0013](docs/decisions/ADR-0013-two-modes-standard-and-hft.md)** `Accepted` | **two modes.** `standard` blocks and runs anywhere and **is the default**; `hft` spins, pins and burns a core. **Amended `CLAUDE.md` §2 rule 4** — it is now mode-scoped and its `standard` half **has no machine check yet** |
 | **[threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md)** approved | 6 steps, `hft`-scoped. Step 1 is the affinity API ADR — **it is ADR-0015, not 0014**: `standard-mode` wrote its ADR first and §5 forbids reusing a number. That plan's own text still says 0014 |
 | **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** approved | 8 steps, `standard`-scoped, **step 1 done**. Builds the default mode and the missing half of rule 4's machine check |
-| **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)** **`Proposed`** | `poll(2)` through `libc` behind a default-on `standard` feature; Windows refused with a typed error, never a silent spin; `Waiting` is given the sources and `Transport` names its own; `Park` → `Yield`, neither mode, **fails both gates**. Answers **all four** of ADR-0013's open questions. **Awaiting signature — step 2 does not start without it** |
+| **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)** `Accepted` | `poll(2)` through `libc` behind a default-on `standard` feature; **Windows refused at compile time**, never a silent spin; `Waiting` is given the sources and `Transport` names its own; `Park` → `Yield`, neither mode, **fails both gates**. Answers **all four** of ADR-0013's open questions. Accepted **by standing delegation** — the owner delegated plan-writing and approval on 2026-08-30, so nobody read these nine decisions on their behalf; the ADR says so in its own header |
 
 **The next session's three obvious starting points, in the order that costs least:**
 
@@ -85,12 +85,16 @@ delivery log. In dependency order:
 6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5. **Steps 1–2 done
    2026-08-30**; steps 3–4 wait on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md),
    which is **`Accepted` 2026-08-30** and awaits implementation, not a signature.
-7. **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** — **approved 2026-08-30, step 1
-   done the same day.** 8 steps. Builds the mode ADR-0013 made the *default* and nobody has
-   written, and with it the missing half of non-negotiable 4's machine check. Step 1 is
-   **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md), `Proposed`** — it took
-   0014, so `threads-and-affinity`'s step 1 takes **0015**. **Step 2 does not start until
-   ADR-0014 is signed**; nothing here is code yet.
+7. **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** — **approved 2026-08-30, steps 1
+   and 2 done.** 8 steps. Builds the mode ADR-0013 made the *default* and nobody had written,
+   and with it the missing half of non-negotiable 4's machine check. Step 1 is
+   **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**, `Accepted`; it took
+   0014, so `threads-and-affinity`'s step 1 takes **0015**. **Step 2 is the seam and the raw
+   syscall**: `Source`, `Interest`, `Transport::POLLABLE`/`source()`, `Waiting` with
+   `NEEDS_SOURCES`, `Park` → `Yield`, and `poll::Poller` — the crate's **first external
+   dependency and first `unsafe`**, both behind the feature. Next: `wait::Block` (step 3), then
+   the source list and the compile-time refusal (step 4). **`Engine::idle` still passes an empty
+   slice**, which is safe only because no strategy declares `NEEDS_SOURCES` yet.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
@@ -112,6 +116,26 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
+
+**`[measured 2026-08-30]` A CI job was green about a build that never happened.**
+`cargo test --all --no-default-features`, the machine check for non-negotiable 6, **still built
+`libc`**: `tools/w2w` is a workspace member depending on `fixbolt-engine` with defaults, and
+cargo unifies features across one invocation, so the flag under test was switched back on by a
+sibling crate. `cargo tree --workspace --no-default-features -i libc` prints the edge. It was
+caught by a **test count** — the run should have reported 210 and reported 214, the four tests
+of a `cfg`-gated file that should have vanished — and **a module carrying no tests of its own
+would have hidden it completely**. Fixed by `scripts/check-no-optional-deps.sh`, which asks per
+crate and is proven by reversal (drop `optional = true` → red, with the graph printed).
+Write-up: [reference/feature-flags-unify-across-a-workspace.md](docs/reference/feature-flags-unify-across-a-workspace.md).
+
+**`[measured 2026-08-30]` A test that was green because another thread had not reused a file
+descriptor yet.** `crates/engine/tests/standard.rs` closed a socket and asserted that `poll`
+called its descriptor unknown. It went red on the first cold run and then passed **30 runs in a
+row**; the panic site named the `Ok(count == 0)` branch, which says what happened — another test
+thread in the same binary had been handed that number, so the descriptor was live and quiet, and
+quiet is indistinguishable from closed at that layer. Asking about `i32::MAX` instead is
+deterministic: **0 failures in 40 runs**. A retry would have buried it.
+
 
 - **The whole suite runs on the owner's desktop, 2026-08-30 — the first time any of it has.**
   `[measured]` rustc 1.98.0 on AMD Ryzen 7 3700X / Linux 7.0.0-30: `cargo fmt --check`,

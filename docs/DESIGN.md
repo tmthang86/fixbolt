@@ -109,8 +109,9 @@ Added one at a time, each behind an approved plan.
 | `dict` | build | Code generation from FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the four validation tables — defined tags, message types, per-message tag sets, field types and enum values | `codec` — it implements `codec::Dictionary` |
 | `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised. Time enters as `Tick`, in **milliseconds since 0000-01-01** — see D13 | `codec`, `dict` |
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
-| `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport` |
+| `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport`, and **`libc` only under the `standard` feature** |
 | | | `[2026-08-30]` step 1 of six exists: `Transport`, `TcpTransport`, `Loopback`, `Waiting`. `transport` is a module here rather than its own crate until something needs it to be otherwise | |
+| | | `[2026-08-30]` module `poll` — `poll(2)` for `standard` mode, behind `#[cfg(all(feature = "standard", unix))]`. **The crate's first external dependency and first `unsafe`, both behind that feature**: `--no-default-features` builds it with neither (ADR-0014) | |
 | `library` | L4 | The application-facing API | `engine` |
 | `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
 
@@ -424,12 +425,25 @@ configuration pins a core at 100% is one most people cannot evaluate — it look
 costs **703 ns per socket per turn**, so the trade **wins at N = 1 and loses by N = 8**.
 `standard` is the honest default for everything that is not one session on an isolated core.
 
-`Waiting` is a trait and is the right seam, but **`wait::Park` is not `standard`**: it is
+`Waiting` is a trait and is the right seam, but **`wait::Yield` is not `standard`**: it is
 `std::thread::yield_now()`, which yields the scheduler and **does not block**, so it still
-burns its core. A real `standard` mode blocks on readiness, which is a `Transport` concern
-because the poller must know the sockets — D5 already makes that a trait. `[2026-08-30]` **not
-built yet**; ADR-0013 open question 1 is which mechanism and which dependency, and `std`
-exposes none.
+burns its core. It is `[renamed 2026-08-30]` from `Park` for exactly that reason, and its
+rustdoc now says it fails **both** gates rather than sitting beside `Spin` as a peer.
+
+A real `standard` mode blocks on readiness, which needs the sockets — so
+[ADR-0014](decisions/ADR-0014-standard-mode-blocks-on-poll.md) hands the source list to
+`Waiting::idle` and has `Transport` name its own descriptor, rather than splitting idling
+across two traits. The mechanism is **`poll(2)` through `libc`, behind a default-on `standard`
+feature**; `epoll` is O(1) where this is O(N) and is a later ADR **with numbers**, because the
+difference at `standard`'s shape is unmeasured. On a target with no poller `wait::Block` does
+not exist, so the refusal is a compile error rather than a startup one.
+
+`[2026-08-30]` **The seam is built and the blocking strategy is not.** `Source`, `Interest`,
+`Transport::POLLABLE`/`source()` and `poll::Poller` exist and are tested; `wait::Block`, the
+source list `Engine` hands over, and the waker are steps 3-5 of
+[plans/2026-08-30-standard-mode.md](plans/2026-08-30-standard-mode.md). Until then
+`Engine::idle` passes an **empty** slice, which is safe only because no strategy declaring
+`NEEDS_SOURCES` exists yet.
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is
 queued, **tick the clock**, read once, cut whole messages out, judge them, flush again — and
@@ -626,7 +640,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |
 | `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
-| Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job |
+| Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job. **`[measured 2026-08-30]` the workspace-wide command alone is not enough**: `cargo test --all --no-default-features` still built `libc`, because `tools/w2w` depends on `fixbolt-engine` with defaults and cargo unifies features across one invocation — the flag under test was switched back on by a sibling crate. See [reference/feature-flags-unify-across-a-workspace.md](reference/feature-flags-unify-across-a-workspace.md) |
+| An optional dependency is really optional | absent from the crate's graph with no features on, **and** the crate still builds and tests that way | `scripts/check-no-optional-deps.sh`, run by the same CI job, **per crate** — the only scope where `--no-default-features` means what it reads as. Reversal: removing `optional = true` from `libc` turns it red with the graph printed |
 | No documentation link points at a missing file | 155 internal links resolve | `scripts/check-links.py`, run in CI |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |
 

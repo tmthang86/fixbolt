@@ -95,7 +95,7 @@ struct Wire {
         fixbolt_session::Acceptor,
         InlineDispatch<EchoApp>,
         ManualClock,
-        Park,
+        Yield,
         Store,
         N,
         RX,
@@ -106,7 +106,7 @@ struct Wire {
 
 /// The engine idles by yielding here. A spinning engine in a test suite is a
 /// test suite that pins a core for no reason — `wait::Spin` is for `tools/w2w`.
-use fixbolt_engine::wait::Park;
+use fixbolt_engine::wait::Yield;
 
 impl Wire {
     fn new() -> Self {
@@ -117,7 +117,7 @@ impl Wire {
                 Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
                 InlineDispatch::new(EchoApp::default()),
                 ManualClock::at(FIXED_TIME_MILLIS),
-                Park,
+                Yield,
                 4,
             ),
             clients: Vec::new(),

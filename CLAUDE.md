@@ -77,7 +77,14 @@ list by hand. Each names the decision it enforces.
 
 **Machine-checked today:** 7 — `scripts/check-lint-config.sh`, run by CI, proves by reversal
 that the workspace lints actually deny `unwrap`/`expect`/`panic`. 6 — the
-`no-default-features` CI job. 1 — `benches/alloc.rs`, each case asserting its own path is
+`no-default-features` CI job **plus `scripts/check-no-optional-deps.sh`, and the second is not
+a nicety**: `[measured 2026-08-30]` the CI job alone was green about a build that never
+happened. `cargo test --all --no-default-features` still compiled `libc`, because `tools/w2w`
+depends on `fixbolt-engine` with defaults and cargo unifies features across one invocation —
+the flag under test was switched back on by a sibling crate. It was noticed by a **test count**,
+not by the gate, and a module with no tests of its own would have hidden it entirely. The
+script asks per crate, which is the only scope where the flag means what it reads as
+(`docs/reference/feature-flags-unify-across-a-workspace.md`). 1 — `benches/alloc.rs`, each case asserting its own path is
 live, run by the `bench` CI job through `scripts/bench.sh`; **`[measured 2026-08-30]` this
 entry was false until that job existed** — `cargo test --all` does not run a `harness = false`
 bench target and nothing else invoked `cargo bench`, so the list named a check nothing ran.

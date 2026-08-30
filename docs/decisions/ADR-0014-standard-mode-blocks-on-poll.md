@@ -1,10 +1,16 @@
 # ADR-0014 — `standard` blocks on `poll(2)`, and the waiter is given the sockets
 
-- **Status**: **Proposed — 2026-08-30**. Awaiting the owner's signature. Step 2 of
-  [plans/2026-08-30-standard-mode.md](../plans/2026-08-30-standard-mode.md) does not start until
-  this is `Accepted`.
+- **Status**: **Accepted — 2026-08-30**, with decision 2 revised in place while it was still
+  `Proposed` (the revision is recorded in decision 2's own text, per `CLAUDE.md` §5). **Its
+  substance is now fixed — changing it takes a new ADR that supersedes it.**
 - **Date**: 2026-08-30
-- **Deciders**: Tran Manh Thang
+- **Deciders**: Tran Manh Thang, **by standing delegation**. On 2026-08-30 the owner delegated
+  plan-writing and plan approval to the agent working in this repository — *"từ giờ tự lên plan
+  và tự duyệt, tự chạy"*. **So nobody weighed these nine decisions on the owner's behalf by
+  reading them; they were written and accepted in one step.** That is recorded here rather than
+  left to be inferred from a signature line, because a reader six months from now would
+  otherwise assume a second pair of eyes that did not exist. What did not change is `CLAUDE.md`
+  §10: the delegation removes a signature, not the evidence each decision owes.
 - **Related**: **answers all four open questions of
   [ADR-0013](ADR-0013-two-modes-standard-and-hft.md)**,
   [ADR-0012](ADR-0012-latency-first-and-one-session-per-polling-thread.md) decision 3,
@@ -83,13 +89,25 @@ descriptors per wakeup**, where `epoll` is O(1). At the shape `standard` is for 
 on one blocking thread — that is a real term and it is **unmeasured**. It is accepted, not
 dismissed; see open question 2.
 
-### 2. Windows is out of scope, and is refused with a typed error — never a silent spin
+### 2. Windows is out of scope, and is refused **at compile time** — never a silent spin
 
 ADR-0013 open question 1, second half.
 
 An engine that quietly falls back to spinning on a platform it does not support is precisely the
 failure ADR-0013 exists to prevent: it looks like it is doing what you asked and it is burning a
-core. A platform with no poller returns a typed error from the constructor and does not run.
+core.
+
+**`[revised 2026-08-30, while still `Proposed`]`** This decision first read *"returns a typed
+error from the constructor and does not run"*. It is stricter now, for decision 4's reason:
+whether a poller exists is a property of the **target**, known before the program runs, so a
+runtime error is the wrong instrument for it. On a platform with no poller **`wait::Block` does
+not exist** — its module carries `#[cfg(unix)]` as well as the feature — and code written against
+it does not compile there. A startup error would have carried the same refusal into production
+instead.
+
+The rest of the crate stays portable, which matters because ADR-0013's first fact is that this
+code has no `cfg(target_os)` anywhere: `Block`'s absence is the only difference, `Spin` and
+`Yield` are unconditional, and `serve()` is untouched by this ADR.
 
 ### 3. `Waiting` is given the sources; `Transport` says what its source is
 

@@ -29,7 +29,7 @@ use fixbolt_engine::frame::{Cut, Framer};
 use fixbolt_engine::journal::Store;
 use fixbolt_engine::ring;
 use fixbolt_engine::transport::{Io, Loopback, TcpTransport, Transport};
-use fixbolt_engine::wait::Park;
+use fixbolt_engine::wait::Yield;
 use fixbolt_engine::{Application, Config, Engine};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -184,7 +184,7 @@ fn main() {
         fixbolt_session::Acceptor,
         InlineDispatch<Silent>,
         ManualClock,
-        Park,
+        Yield,
         Store,
         256,
         4096,
@@ -193,7 +193,7 @@ fn main() {
         Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
         InlineDispatch::new(Silent),
         ManualClock::at(FIXED_TIME_MILLIS),
-        Park,
+        Yield,
         4,
     );
     let _ = engine.add(engine_side);
@@ -251,7 +251,7 @@ fn main() {
         fixbolt_session::Acceptor,
         InlineDispatch<Silent>,
         ManualClock,
-        Park,
+        Yield,
         Store,
         256,
         4096,
@@ -260,7 +260,7 @@ fn main() {
         Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
         InlineDispatch::new(Silent),
         ManualClock::at(FIXED_TIME_MILLIS),
-        Park,
+        Yield,
         4,
     );
     let _ = engine2.add(engine_side2);

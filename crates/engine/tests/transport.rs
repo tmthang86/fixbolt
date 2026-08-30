@@ -12,7 +12,7 @@
 use std::net::{TcpListener, TcpStream};
 
 use fixbolt_engine::transport::{Io, Loopback, TcpTransport, Transport};
-use fixbolt_engine::wait::{Park, Spin, Waiting};
+use fixbolt_engine::wait::{Spin, Waiting, Yield};
 
 #[test]
 fn a_quiet_socket_is_idle_a_closed_one_is_closed_and_neither_is_an_error() {
@@ -95,20 +95,35 @@ fn a_buffer_smaller_than_the_message_loses_nothing() {
 
 /// `Waiting` is a trait so a test loop does not have to burn a core.
 ///
-/// `Spin` is the default and the reason D8 exists; `Park` is what every test in
+/// `Spin` is `hft` and the reason D8 exists; `Yield` is what every test in
 /// this repository uses, because a CI machine running four spinning loops is a
 /// CI machine that times out.
 #[test]
 fn both_waiting_strategies_return_and_neither_is_the_other() {
     let mut spin = Spin;
-    let mut park = Park;
-    spin.idle();
-    park.idle();
+    let mut yielding = Yield;
+    spin.idle(&[]);
+    yielding.idle(&[]);
     // A `const` block, because clippy is right that these are known at compile
     // time — which is the point: a caller can branch on them without paying
     // anything, and a test can tell the two strategies apart without timing.
-    const { assert!(!Spin::SLEEPS, "the default never leaves user space") };
-    const { assert!(Park::SLEEPS, "and the test strategy says it does") };
+    const { assert!(!Spin::SLEEPS, "hft never leaves user space") };
+    const { assert!(Yield::SLEEPS, "and the test strategy says it does") };
+
+    // **Both of these are `false`, and that is the fact worth asserting.**
+    // Neither strategy is `standard`: `Spin` returns on its own and `Yield`
+    // returns on its own, so an empty source list is not a bug for either.
+    // The moment a strategy declares `true`, the empty slice
+    // `Engine::idle` passes today becomes a message arriving one timeout late
+    // — which is why ADR-0014 makes that pairing a compile error rather than
+    // something to remember.
+    const {
+        assert!(
+            !Spin::NEEDS_SOURCES,
+            "a spin never needs to know the sockets"
+        )
+    };
+    const { assert!(!Yield::NEEDS_SOURCES, "and neither does a yield") };
 }
 
 /// A hang-up does not swallow bytes already sent.

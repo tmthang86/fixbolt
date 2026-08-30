@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fixbolt_engine::dispatch::InlineDispatch;
-use fixbolt_engine::wait::{Park, Spin, Waiting};
+use fixbolt_engine::wait::{Spin, Waiting, Yield};
 use fixbolt_engine::{Acceptor, Engine};
 use fixbolt_session::{Application, Config};
 
@@ -77,7 +77,7 @@ fn main() -> std::io::Result<()> {
     // The engine thread, in the shape a deployment runs: `Spin` +
     // `InlineDispatch` + `SystemClock`, which is what `TcpAcceptorEngine` names.
     //
-    // `--park` swaps `Spin` for `Park`, and it exists for exactly one reason:
+    // `--park` swaps `Spin` for `Yield`, and it exists for exactly one reason:
     // **`scripts/check-no-kernel-sleep.sh` runs this binary both ways and
     // requires the second one to fail.** Non-negotiable 4 has had two machine
     // checks before this and both were green with a `sleep` present, so a guard
@@ -96,7 +96,7 @@ fn main() -> std::io::Result<()> {
                 println!("engine-tid: {tid}");
             }
             if park {
-                pump(acceptor, &engine_stop, Park);
+                pump(acceptor, &engine_stop, Yield);
             } else {
                 pump(acceptor, &engine_stop, Spin);
             }

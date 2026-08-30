@@ -180,6 +180,19 @@ jobs:
       - if: steps.ws.outputs.count != '0'
         run: cargo test --all --no-default-features
 
+      # `[measured 2026-08-30]` THE STEP ABOVE DOES NOT PROVE WHAT IT READS AS,
+      # and on its own this job was green about a build that never happened.
+      # `--no-default-features` applies to the invocation, and cargo unifies
+      # features across everything in it — so `tools/w2w`, a workspace member
+      # depending on `fixbolt-engine` with defaults on, switched the `standard`
+      # feature back on for the whole build and `libc` was compiled anyway.
+      # The flag under test was turned back on by a sibling crate.
+      #
+      # Asking per crate is the only scope where the flag means what it says.
+      # See docs/reference/feature-flags-unify-across-a-workspace.md.
+      - if: steps.ws.outputs.count != '0'
+        run: scripts/check-no-optional-deps.sh
+
   # STATUS.md open item 20. Eight bench targets asserted ceilings and counts —
   # and a ninth that Cargo had auto-discovered from benches/harness.rs, which
   # contains no case and reported "0 measured", exit 0. NOTHING RAN ANY OF THEM: `cargo test --all` does not run a `harness = false` bench
