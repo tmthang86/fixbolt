@@ -121,10 +121,22 @@ below describe what a first release would contain.
     left**, never the full timeout again. A `poll` that fails is recorded in `Block::last_error`
     **and still gives the core back** — an error `idle` cannot return must at least be
     observable.
-  - **Pairing `Block` with `Engine` does not compile yet**, on purpose: `Engine::idle` still
-    hands its waiter an empty source list, and a `Block` there would be a *correct* engine that
-    is 100 ms slower per message — invisible to a correctness suite and to a CPU measurement
-    alike. A `compile_fail,E0080` doctest on `Block` keeps it that way.
+  - `Engine::refresh_interests`, `refresh_interests_with` and `idle_with` — the list of sources
+    an idle turn waits on. **Readable always; writable only while that connection still has
+    bytes queued**, because a socket is almost always ready to accept bytes and asking
+    unconditionally would wake the engine continuously and turn `standard` back into a spin.
+    Rebuilt every turn rather than cached: a `Source` borrows a descriptor, and one kept across
+    a turn can name a socket that has since closed and been reissued. For a strategy that does
+    not need the sources the whole rebuild compiles away.
+  - `Acceptor::source()`, and `serve` now hands the listener to `idle_with`. Without it a new
+    connection is accepted on the next timeout rather than on the connect.
+  - `Engine::sources_missing()` — connections that claimed to be pollable and produced no
+    source. Zero on a healthy engine; anything else is traffic arriving one timeout late, and
+    the count is the only thing that would say so.
+  - **Pairing `Block` with a transport that cannot be waited on does not compile.** `Loopback`
+    is the case that matters: an engine there would answer every message, pass all 59
+    definitions, read 0% CPU, and be 100 ms slower per message. A `compile_fail,E0080` doctest
+    on `Block` keeps it refused.
   - `Park` is renamed **`Yield`**. It is neither mode and its rustdoc says so: it fails the
     `hft` gate (`sched_yield`) and fails the `standard` gate (it burns the core). Nothing about
     its behaviour changed.

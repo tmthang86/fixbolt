@@ -326,3 +326,242 @@ fn a_zero_timeout_is_raised_to_the_floor() {
         )
     };
 }
+
+// ---------------------------------------------------------------------------
+// Step 4: the source list the engine hands over.
+//
+// Every test here READS THE LIST rather than timing a wakeup. All four ways of
+// getting this wrong produce an engine that works and is one timeout slower, so
+// the obvious test is a timing test — and a timing test for a 100 ms difference
+// on a shared CI runner is the flaky kind. The list is the fact; the latency is
+// only its symptom.
+// ---------------------------------------------------------------------------
+
+use fixbolt_engine::clock::ManualClock;
+use fixbolt_engine::dispatch::InlineDispatch;
+use fixbolt_engine::journal::Store;
+use fixbolt_engine::transport::Io;
+use fixbolt_engine::{Acceptor, Config, Engine};
+
+/// An application that never answers.
+struct Silent;
+impl fixbolt_session::Application for Silent {
+    fn on_message(
+        &mut self,
+        _m: &[u8],
+        _s: u32,
+        _t: &[u8],
+        _o: &mut [u8],
+    ) -> Option<core::ops::Range<usize>> {
+        None
+    }
+}
+
+/// A real socket that **never accepts a byte**.
+///
+/// `Connection::flush` treats `Io::Idle` as "the socket would not take it, keep
+/// it queued", so this leaves `has_pending_output()` true deterministically.
+/// The alternative — filling a real kernel send buffer — depends on
+/// `net.core.wmem_*` and on how fast the other end is not reading, which is a
+/// test that passes or fails for reasons that have nothing to do with FIX.
+struct Stubborn(TcpTransport);
+
+impl Transport for Stubborn {
+    const POLLABLE: bool = true;
+    fn source(&self) -> Option<Source> {
+        self.0.source()
+    }
+    fn recv(&mut self, buf: &mut [u8]) -> Io {
+        self.0.recv(buf)
+    }
+    fn send(&mut self, _buf: &[u8]) -> Io {
+        Io::Idle
+    }
+}
+
+type TestEngine<T> = Engine<
+    T,
+    fixbolt_session::Acceptor,
+    InlineDispatch<Silent>,
+    ManualClock,
+    fixbolt_engine::wait::Yield,
+    Store,
+    256,
+    4096,
+    8192,
+>;
+
+fn engine<T: Transport>() -> TestEngine<T> {
+    Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TEST"),
+        InlineDispatch::new(Silent),
+        ManualClock::at(fixbolt_conformance::script::FIXED_TIME_MILLIS),
+        fixbolt_engine::wait::Yield,
+        4,
+    )
+}
+
+/// Every connection is in the list, once, naming its own socket.
+#[test]
+fn every_connection_contributes_exactly_one_readable_interest() {
+    let mut e: TestEngine<TcpTransport> = engine();
+    let (_c1, t1) = pair();
+    let (_c2, t2) = pair();
+    let s1 = t1.source().expect("a descriptor");
+    let s2 = t2.source().expect("a descriptor");
+    e.add(t1);
+    e.add(t2);
+
+    let list = e.refresh_interests().to_vec();
+    assert_eq!(
+        list.len(),
+        2,
+        "one interest per connection, no more, no fewer"
+    );
+    assert!(
+        list.contains(&Interest::readable(s1)),
+        "the first socket is in it"
+    );
+    assert!(
+        list.contains(&Interest::readable(s2)),
+        "and so is the second"
+    );
+    assert_eq!(e.sources_missing(), 0);
+}
+
+/// **Writable is asked for only while bytes are queued**, and it really is
+/// asked for when they are.
+///
+/// Both halves matter and they fail differently. Never asking means a stalled
+/// flush waits for the timeout. Always asking means the engine is woken every
+/// time any socket has room — which is always — and `standard` is a spin again.
+#[test]
+fn writable_is_asked_for_exactly_while_bytes_are_queued() {
+    let mut e: TestEngine<Stubborn> = engine();
+    let (mut client, t) = pair();
+    let source = t.source().expect("a descriptor");
+    e.add(Stubborn(t));
+
+    assert_eq!(
+        e.refresh_interests(),
+        [Interest::readable(source)],
+        "nothing is queued yet, so writability is not asked for"
+    );
+
+    // A Logon draws a Logon back, and this transport refuses every byte, so the
+    // reply stays in the outbound queue.
+    client
+        .write_all(&logon())
+        .expect("the client can always write");
+    for _ in 0..1_000 {
+        e.turn();
+        if e.refresh_interests() == [Interest::readable_and_writable(source)] {
+            return;
+        }
+    }
+    panic!(
+        "the reply never queued, or writability was never asked for: {:?}",
+        e.refresh_interests()
+    );
+}
+
+/// A transport that cannot name a source is counted, not silently dropped.
+#[test]
+fn a_connection_with_no_source_is_counted() {
+    struct Blind(TcpTransport);
+    impl Transport for Blind {
+        const POLLABLE: bool = true;
+        fn source(&self) -> Option<Source> {
+            None
+        }
+        fn recv(&mut self, buf: &mut [u8]) -> Io {
+            self.0.recv(buf)
+        }
+        fn send(&mut self, buf: &[u8]) -> Io {
+            self.0.send(buf)
+        }
+    }
+
+    let mut e: TestEngine<Blind> = engine();
+    let (_c, t) = pair();
+    e.add(Blind(t));
+
+    assert!(
+        e.refresh_interests().is_empty(),
+        "it cannot be waited on, so it is not in the list"
+    );
+    assert_eq!(
+        e.sources_missing(),
+        1,
+        "and that is counted — otherwise its traffic is simply one timeout late \
+         and nothing anywhere says so"
+    );
+}
+
+/// The listener reaches the poll set that `idle_with` actually waits on.
+///
+/// Without it a new connection is accepted on the next timeout instead of on
+/// the connect: the handshake works, and is up to 100 ms slower.
+///
+/// # This test was wrong once, and it is worth saying how
+///
+/// `[measured 2026-08-30]` the first version built the list by hand —
+/// `refresh_interests().to_vec()` and then `push(listener)` — and asserted the
+/// listener was in it. Of course it was: the test had put it there. Deleting
+/// `idle_with`'s own `extend_from_slice(extra)` left this **green**, because
+/// the test never went near that line.
+///
+/// So it now goes through `refresh_interests_with`, which is the same call
+/// `idle_with` makes. A test that assembles the thing it is checking is
+/// checking itself.
+#[test]
+fn the_listener_reaches_the_set_idle_with_waits_on() {
+    let acceptor = Acceptor::bind("127.0.0.1:0").expect("a free port");
+    let listener = acceptor.source().expect("a listener has a descriptor");
+
+    let mut e: TestEngine<TcpTransport> = engine();
+    let (_c, t) = pair();
+    let conn = t.source().expect("a descriptor");
+    e.add(t);
+
+    let list = e
+        .refresh_interests_with(&[Interest::readable(listener)])
+        .to_vec();
+    assert_eq!(list.len(), 2, "the connection and the listener, both");
+    assert!(list.contains(&Interest::readable(conn)));
+    assert!(
+        list.contains(&Interest::readable(listener)),
+        "the listener must be in the set the engine waits on, not only in the \
+         one the caller handed over"
+    );
+
+    // And it is a descriptor `poll` will actually accept, which no `contains`
+    // assertion can show.
+    let mut poller = Poller::with_capacity(4);
+    assert!(
+        poller.wait(&list, 0).is_ok(),
+        "poll must accept the listener's descriptor alongside a connection's"
+    );
+}
+
+/// A well-formed Logon from a client, at the corpus's fixed instant.
+///
+/// The instant is [`fixbolt_conformance::script::FIXED_TIME_IN`] and not a
+/// hand-written one: the engine's clock here is a `ManualClock` at
+/// `FIXED_TIME_MILLIS`, and a `52=` more than 120 seconds from it is refused for
+/// skew. `[measured 2026-08-30]` the first version of this test invented a
+/// timestamp, the Logon was Rejected, the connection was dropped, and the
+/// symptom was an **empty** interest list — which reads exactly like "the list
+/// was never built".
+fn logon() -> Vec<u8> {
+    let body = format!(
+        "35=A\x0134=1\x0149=TEST\x0152={}\x0156=ISLD\x0198=0\x01108=30\x01",
+        fixbolt_conformance::script::FIXED_TIME_IN
+    );
+    let head = format!("8=FIX.4.4\x019={}\x01", body.len());
+    let mut out = head.into_bytes();
+    out.extend_from_slice(body.as_bytes());
+    let sum: u32 = out.iter().map(|b| u32::from(*b)).sum();
+    out.extend_from_slice(format!("10={:03}\x01", sum % 256).as_bytes());
+    out
+}

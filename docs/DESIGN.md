@@ -444,11 +444,17 @@ tested. `Block` blocks on readiness at a **100 ms** timeout — which is a corre
 not a knob, because a session with no clock sees time only through `Input::Tick` and in
 `standard` that timeout is what delivers it.
 
-**What is missing is the source list.** `Engine::idle` still passes an **empty** slice, so
-pairing `Block` with an `Engine` **does not compile** — that engine would answer every message,
-pass all 59 definitions, read 0% CPU, and be 100 ms slower per message, which no correctness
-suite and no CPU measurement can see. The list, the listener, `POLLOUT` while bytes are still
-queued, and the waker for out-of-band dispatch are steps 4 and 5 of
+**The source list is built too.** One interest per connection — readable always, writable only
+while that connection still has bytes queued, because a socket is almost always ready to accept
+bytes and asking unconditionally would wake the engine continuously. It is rebuilt every turn,
+never cached: a `Source` borrows a descriptor, and one kept across a turn can name a socket that
+has since closed and been reissued. `serve` hands the listener over, so a connection is accepted
+on the connect rather than on the next timeout. Pairing a blocking strategy with a transport
+that cannot name a source — `Loopback` — **does not compile**.
+
+**What is missing is the waker.** A reply produced on another thread by `RingDispatch` still
+waits up to one timeout, and no mode has been wired end to end: `serve` and `tools/w2w` both
+still spin. Steps 5, 6 and 8 of
 [plans/2026-08-30-standard-mode.md](plans/2026-08-30-standard-mode.md).
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is

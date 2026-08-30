@@ -92,10 +92,12 @@ delivery log. In dependency order:
    0014, so `threads-and-affinity`'s step 1 takes **0015**. **Steps 2 and 3 are the seam, the
    syscall and the strategy**: `Source`, `Interest`, `Transport::POLLABLE`/`source()`, `Waiting`
    with `NEEDS_SOURCES`, `Park` → `Yield`, `poll::Poller`, and `block::Block` — the crate's
-   **first external dependency and first `unsafe`**, both behind the feature. **Next is step 4,
-   the source list**, and until it lands `Engine::idle` passes an empty slice and pairing
-   `Block` with an `Engine` **does not compile**: that engine would be correct, idle, and 100 ms
-   slower per message, which nothing else in this repository can see.
+   **first external dependency and first `unsafe`**, both behind the feature. **Step 4 built the source list** —
+   readable always, writable only while bytes are queued, the listener carried by `serve`,
+   rebuilt every turn because a `Source` borrows its descriptor. Pairing a blocking strategy
+   with a transport that cannot name a source **does not compile**. **Next is step 5, the waker**:
+   until it lands, a reply produced on another thread waits up to one whole timeout, and no mode
+   is wired end to end — `serve` and `w2w` both still spin.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus

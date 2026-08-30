@@ -41,7 +41,7 @@ use crate::backpressure::Backpressure;
 use crate::clock::Clock;
 use crate::conn::{Connection, Turn};
 use crate::dispatch::{ConnId, Dispatch, InlineDispatch};
-use crate::transport::{TcpTransport, Transport};
+use crate::transport::{Interest, Source, TcpTransport, Transport};
 use crate::wait::Waiting;
 use fixbolt_session::journal::Journal as SessionJournal;
 
@@ -51,6 +51,19 @@ use fixbolt_session::journal::Journal as SessionJournal;
 /// connection's receive buffer, `TX` its outbound queue.
 pub struct Engine<T, R: Role, D, C, W, J, const N: usize, const RX: usize, const TX: usize> {
     conns: Vec<Connection<T, R, J, N, RX, TX>>,
+    /// What an idle turn waits on, rebuilt in place every time it is needed.
+    ///
+    /// A [`Source`] borrows a descriptor rather than owning one, so this list is
+    /// **never** carried across a turn: a connection that hung up between two
+    /// turns would leave behind a number the kernel has already reissued.
+    interests: Vec<Interest>,
+    /// Connections that claimed to be pollable and then produced no source.
+    ///
+    /// Zero on a healthy engine. Anything else is a `Transport` breaking its own
+    /// contract, and the symptom is not a crash — it is that connection's
+    /// messages arriving up to one whole timeout late. Counted so the failure is
+    /// visible rather than merely slow. See [`Self::sources_missing`].
+    sources_missing: usize,
     cfg: Config,
     dispatch: D,
     clock: C,
@@ -104,6 +117,12 @@ where
     pub fn new(cfg: Config, dispatch: D, clock: C, wait: W, capacity: usize) -> Self {
         Self {
             conns: Vec::with_capacity(capacity),
+            // Two more than the connections: `serve` adds the listener, and the
+            // out-of-band waker is one more. Going over is not fatal — it costs
+            // one allocation on a path that must not have any, which is a
+            // sizing mistake rather than a steady state.
+            interests: Vec::with_capacity(capacity + 2),
+            sources_missing: 0,
             cfg,
             dispatch,
             clock,
@@ -227,33 +246,122 @@ where
         moved
     }
 
+    /// Rebuild the list of sources an idle turn should wait on, and return it.
+    ///
+    /// One [`Interest`] per connection: **readable always**, and **writable
+    /// only while that connection still has bytes queued**. The asymmetry is
+    /// the point — a socket is almost always ready to accept bytes, so asking
+    /// for writability unconditionally would wake the engine continuously and
+    /// turn `standard` back into a spin.
+    ///
+    /// Rebuilt rather than cached, every time. A [`Source`] borrows a
+    /// descriptor; one kept from a previous turn can name a socket that has
+    /// since closed and been reissued to somebody else.
+    ///
+    /// Public because it is the only way to *see* this list. Every way of
+    /// getting it wrong produces an engine that still works and is one timeout
+    /// slower, and timing tests for that are exactly the flaky kind — so
+    /// `crates/engine/tests/standard.rs` reads the list directly instead.
+    pub fn refresh_interests(&mut self) -> &[Interest] {
+        self.refresh_interests_with(&[])
+    }
+
+    /// As [`Self::refresh_interests`], also carrying sources this engine does
+    /// not own — the listener, the waker.
+    ///
+    /// **This is the exact list [`Self::idle_with`] waits on**, and it is public
+    /// for that reason. `[measured 2026-08-30]` the first version of this step
+    /// had no such method, so the test for "the listener reaches the poll set"
+    /// built the list by hand and appended the listener itself. It passed. It
+    /// also passed with `idle_with`'s append **deleted**, because it never went
+    /// near that code — a test named after a behaviour it did not exercise.
+    pub fn refresh_interests_with(&mut self, extra: &[Interest]) -> &[Interest] {
+        Self::rebuild(
+            &self.conns,
+            &mut self.interests,
+            &mut self.sources_missing,
+            extra,
+        );
+        &self.interests
+    }
+
+    /// How many connections claimed to be pollable and produced no source.
+    ///
+    /// Zero on a healthy engine. Anything else means those connections are not
+    /// in the poll set, so their traffic waits for the timeout instead of for
+    /// the data — a working engine, and a slow one.
+    #[must_use]
+    pub const fn sources_missing(&self) -> usize {
+        self.sources_missing
+    }
+
+    fn rebuild(
+        conns: &[Connection<T, R, J, N, RX, TX>],
+        interests: &mut Vec<Interest>,
+        missing: &mut usize,
+        extra: &[Interest],
+    ) {
+        interests.clear();
+        *missing = 0;
+        let wanted = conns.len() + extra.len();
+        if interests.capacity() < wanted {
+            interests.reserve(wanted - interests.capacity());
+        }
+        for conn in conns {
+            match conn.source() {
+                Some(source) if conn.has_pending_output() => {
+                    interests.push(Interest::readable_and_writable(source));
+                }
+                Some(source) => interests.push(Interest::readable(source)),
+                None => *missing += 1,
+            }
+        }
+        interests.extend_from_slice(extra);
+    }
+
     /// One idle turn, by the chosen [`Waiting`] strategy.
-    ///
-    /// `[2026-08-30]` The source list is **empty** here. [`wait::Spin`] and
-    /// [`wait::Yield`] both declare `NEEDS_SOURCES = false`, so for them an
-    /// empty slice is not a lie — they were going to return on their own.
-    /// [`block::Block`] declares `true`, and pairing it with this `Engine`
-    /// **does not compile**: it would block on nothing and wake only on its own
-    /// timeout, which is a working engine that is 100 ms slow per message and
-    /// therefore the worst kind of bug this plan can produce.
-    ///
-    /// Step 4 of `docs/plans/2026-08-30-standard-mode.md` builds the real list
-    /// — one interest per connection, writable while it still has bytes queued,
-    /// plus the listener and the waker — and replaces the assertion below with
-    /// ADR-0014 decision 4's, which refuses a transport that cannot be waited
-    /// on at all.
     pub fn idle(&mut self) {
+        self.idle_with(&[]);
+    }
+
+    /// One idle turn, also waiting on sources this engine does not own.
+    ///
+    /// **The listener is the one that matters.** [`Acceptor`] is deliberately
+    /// not part of [`Engine`] — the acceptance corpus drives an engine over
+    /// [`transport::Loopback`], which needs no port — so whoever holds both has
+    /// to hand the listener over here. Leave it out and a new connection waits
+    /// up to a whole timeout to be accepted: correct, and slow enough to
+    /// notice in production and nowhere else.
+    ///
+    /// The out-of-band dispatch waker goes here too, when it exists.
+    pub fn idle_with(&mut self, extra: &[Interest]) {
+        // ADR-0014 decision 4. A strategy that must know the sockets, over a
+        // transport that cannot name one, would block on an empty list and wake
+        // only on its own timeout. That is a property of the types, known
+        // before the program runs, so it is refused here rather than turned
+        // into a `Result` on `add` — see `block::Block` for the `compile_fail`
+        // doctest that keeps this honest.
         const {
             assert!(
-                !W::NEEDS_SOURCES,
-                "this Engine hands `idle` an empty source list, so a strategy that \
-                 needs the sources would block on nothing and wake only on its own \
-                 timeout. Step 4 of docs/plans/2026-08-30-standard-mode.md builds \
-                 the list; until then this pairing is refused here rather than \
-                 remembered."
+                !W::NEEDS_SOURCES || T::POLLABLE,
+                "this waiting strategy blocks on readiness, and this transport \
+                 cannot say what to wait on. It would block on an empty list \
+                 and wake only on its own timeout."
             )
         };
-        self.wait.idle(&[]);
+        // A constant, so for `Spin` and `Yield` the whole rebuild — and the
+        // walk over every connection it costs — compiles away. `hft` budgets
+        // 703 ns per socket per turn and would not survive paying for a list
+        // nothing reads.
+        if W::NEEDS_SOURCES {
+            self.refresh_interests_with(extra);
+            let Self {
+                interests, wait, ..
+            } = self;
+            wait.idle(interests);
+        } else {
+            self.wait.idle(&[]);
+        }
     }
 
     /// Turn forever, idling by the chosen [`Waiting`] strategy.
@@ -264,15 +372,9 @@ where
     /// See [`Self::idle`] for why the source list is empty today and what fills
     /// it.
     pub fn run(&mut self) -> ! {
-        const {
-            assert!(
-                !W::NEEDS_SOURCES,
-                "this Engine hands `idle` an empty source list — see Engine::idle"
-            )
-        };
         loop {
             if !self.turn() {
-                self.wait.idle(&[]);
+                self.idle();
             }
         }
     }
@@ -315,6 +417,13 @@ pub fn serve<A: Application>(
         crate::wait::Spin,
         capacity,
     );
+    // The listener, so an idle turn waits on "somebody connected" as well as on
+    // "somebody sent something". `TcpAcceptorEngine` still spins today, and for
+    // `Spin` this list is never read — but the plumbing is what a `standard`
+    // `serve` needs, and building it here means the listener cannot be the
+    // thing that was forgotten when the mode changes.
+    let listener = acceptor.source().map(Interest::readable);
+    let extra: &[Interest] = listener.as_slice();
     loop {
         let mut moved = false;
         while let Some(t) = acceptor.accept() {
@@ -323,7 +432,7 @@ pub fn serve<A: Application>(
         }
         moved |= engine.turn();
         if !moved {
-            engine.idle();
+            engine.idle_with(extra);
         }
     }
 }
@@ -375,6 +484,25 @@ impl Acceptor {
     /// Whatever `local_addr` returns.
     pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
         self.listener.local_addr()
+    }
+
+    /// What a poller waits on to learn that a connection is waiting.
+    ///
+    /// Hand this to [`Engine::idle_with`]. Without it a `standard` engine still
+    /// accepts every connection — on its next timeout, which is up to 100 ms
+    /// after the counterparty connected. Nothing fails; the handshake is simply
+    /// slow, on a path nobody times.
+    #[must_use]
+    pub fn source(&self) -> Option<Source> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            Some(Source::from_raw_fd(self.listener.as_raw_fd()))
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     /// One connection, if one is waiting. Never blocks.

@@ -241,7 +241,7 @@ Cái tên `density` vẫn dùng được như một **nhãn cho con số**, cạ
 | 1 | ~~**ADR**~~ — **xong 2026-08-30**: [ADR-0014](../decisions/ADR-0014-standard-mode-blocks-on-poll.md), `Proposed`. Cơ chế readiness và dependency (`poll(2)` + `libc`), phạm vi Windows, số phận của `Park`, mặc định của `w2w`/bench, `density`. Trả lời cả bốn câu hỏi mở của ADR-0013. Chốt hình dạng API | ADR-0013 (đã ký) |
 | 2 | ~~seam~~ — **xong 2026-08-30.** `Source`, `Interest`, `Transport::POLLABLE`/`source()`; `Waiting` đổi chữ ký + `NEEDS_SOURCES`; `Park` → `Yield`; **và `libc` + feature `standard` + `poll::Poller`** — xem "Sửa 1" bên dưới | 1 |
 | 3 | ~~`wait::Block`~~ — **xong 2026-08-30.** Timeout 100 ms mặc định có sàn 5 ms, `EINTR` quay lại chờ **phần còn lại**, `NEEDS_SOURCES = true`, lỗi `poll` được **ghi lại** và vẫn trả core lại | 2 |
-| 4 | Engine dựng tập interest: readable luôn, **writable khi `has_pending_output()`**. `Acceptor::source()`, và `serve()` đăng ký listener. Const-assert từ chối transport không chờ được | 3 |
+| 4 | ~~tập interest~~ — **xong 2026-08-30.** `refresh_interests[_with]`, `idle_with`, `Acceptor::source()`, `serve()` đăng ký listener, const-assert thật của ADR-0014 quyết định 4, và `sources_missing()` | 3 |
 | 5 | Waker: self-pipe trong tập poll, `RingDispatch` đánh thức khi push | 4 |
 | 6 | `w2w --mode standard\|hft`, mặc định `hft`, in mode mỗi lần chạy. Nửa đỏ của `check-no-kernel-sleep.sh` chuyển sang `--mode standard` | 4 |
 | 7 | **Cổng mới** `scripts/check-standard-gives-the-core-back.sh` + job CI `standard-blocks`. Nửa xanh `standard`, **nửa đỏ `hft` và phải trượt** | 6 |
@@ -352,6 +352,84 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
   workload thật, mà cái đó chưa có.
 
 ## Nhật ký giao hàng
+
+### 2026-08-30 — bước 4 xong: tập nguồn thật, và một test mang tên thứ nó không canh
+
+**Đã dựng.** `Engine::refresh_interests[_with]` và `idle_with(extra)`; `Connection::source()`;
+`Acceptor::source()`; `serve()` đăng ký listener; `sources_missing()`; và **const-assert thật**
+của ADR-0014 quyết định 4 thay cho cái tạm ở bước 3.
+
+**Ba điều đáng nói về cách dựng:**
+
+1. **`writable` bất đối xứng với `readable`, và đó là điểm mấu chốt.** Một connection *luôn*
+   đáng chờ để nhận byte, nhưng chỉ đáng chờ để *gửi* khi còn byte tồn đọng. Hỏi writable vô
+   điều kiện thì engine bị đánh thức mỗi lần socket còn chỗ trống — tức là liên tục — và
+   `standard` thành vòng quay trở lại. Cả hai nửa đều có test và **hỏng theo hai kiểu khác nhau**.
+2. **Dựng lại mỗi lần, không cache.** `Source` mượn fd chứ không sở hữu; một danh sách giữ qua
+   lượt trước có thể gọi tên một socket đã đóng và đã bị cấp lại cho người khác. Đây chính là bài
+   học đã trả giá ở bước 2.
+3. **`if W::NEEDS_SOURCES` là hằng số, nên với `Spin`/`Yield` toàn bộ việc dựng biến mất khi biên
+   dịch.** `hft` có ngân sách 703 ns mỗi socket mỗi lượt và không chịu nổi việc trả tiền cho một
+   danh sách không ai đọc.
+
+**Test đọc thẳng danh sách, không đo thời gian.** Bốn cách làm sai đều cho ra engine chạy đúng và
+chậm hơn đúng một timeout, nên test hiển nhiên là test thời gian — mà test thời gian cho một khác
+biệt 100 ms trên runner dùng chung chính là loại flaky. Danh sách là **sự thật**; latency chỉ là
+triệu chứng của nó.
+
+**Sáu đảo ngược, sáu lần đỏ đúng chỗ** — sau khi một cái trong số đó lộ ra rằng test của tôi sai:
+
+| Đảo ngược | Đỏ ở đâu |
+|---|---|
+| không bao giờ hỏi writable | `writable_is_asked_for_exactly_while_bytes_are_queued` |
+| luôn hỏi writable | ba test cùng đỏ |
+| nguồn thiếu bị bỏ im lặng, không đếm | `a_connection_with_no_source_is_counted` |
+| `idle_with` bỏ qua nguồn phụ (quên listener) | `the_listener_reaches_the_set_idle_with_waits_on` |
+| `Loopback` + `Block` | không biên dịch, đúng thông điệp const-assert |
+| bỏ const-assert | doctest `compile_fail` **FAILED** |
+| `rebuild` cấp phát `Vec` mới mỗi lượt | `benches/alloc.rs` → **interests 10000**, invariant đỏ |
+
+**`[đo 2026-08-30]` Test listener bản đầu xanh cả khi tôi xoá đúng dòng nó phải canh.** Nó tự tay
+ghép danh sách — `refresh_interests().to_vec()` rồi `push(listener)` — và khẳng định listener có
+trong đó. Tất nhiên là có: chính nó đặt vào. Xoá `extend_from_slice(extra)` trong `idle_with` để
+lại test **xanh**, vì test chưa từng đi tới dòng ấy. **Một test đặt tên theo hành vi nó không hề
+chạm tới.** Sửa bằng cách thêm `refresh_interests_with` — đúng lời gọi mà `idle_with` dùng — rồi
+cho test đi qua đó. Bài học ngắn gọn: *một test tự lắp ráp thứ nó đang kiểm là đang kiểm chính
+nó.* `[to testing-skills]`
+
+**Và một cái nữa bắt được nhờ triệu chứng đọc như thứ khác.** Test writable đầu tiên trượt với
+danh sách interest **rỗng**, đọc hệt như "danh sách chưa bao giờ được dựng". Thật ra Logon của
+test bị Reject vì lệch giờ — tôi **bịa** một timestamp thay vì dùng
+`fixbolt_conformance::script::FIXED_TIME_IN`, mà engine trong test chạy `ManualClock` tại
+`FIXED_TIME_MILLIS`. Connection bị bỏ, nên `conns` rỗng, nên danh sách rỗng. Đã ghi thẳng trong
+rustdoc của hàm `logon()` trong test.
+
+**Chưa làm:** waker cho `RingDispatch` (bước 5). Cho tới lúc đó, một reply sinh trên thread khác
+vẫn chờ tới một timeout ở `standard` — cái ô thứ ba trong bảng bốn vực latency ở mục "Cách làm"
+§4, vẫn còn nguyên. `serve()` vẫn dùng `Spin`, nên listener đã nối dây nhưng chưa được đọc; đổi
+mode là bước 6.
+
+**Gate cho commit này:**
+
+```
+cargo fmt --all --check                     sạch
+cargo clippy --all-targets -- -D warnings   sạch
+cargo test --all                            224 passed, 0 failed
+cargo test --all --no-default-features      0 failed
+scripts/check-no-optional-deps.sh           exit 0
+crates/engine --test standard               13 passed; 0/40 lần đỏ khi chạy lặp
+cargo test -p fixbolt-engine --doc          1 passed (compile_fail,E0080)
+-p fixbolt-session --test score             59/59 trong process
+-p fixbolt-engine  --test wire              59/59 qua socket thật
+scripts/check-no-kernel-sleep.sh            exit 0; nửa đỏ trượt vì 2901 sched_yield
+scripts/bench.sh                            exit 0; 8/8 target; 0 invariant failure
+  engine alloc: idle 0 send 0 recv 0 frame 0 turn 0 busy 0 ring 0 interests 0
+scripts/check-links.py                      289 link, 0 chết
+```
+
+Hai target vượt trần vẫn là `fixbolt-codec/groups` và `serialize` — mục 11 và 20. **Không đo gì
+mới:** `Block` giờ đã ghép được với `Engine`, nhưng chưa có đường nào chạy nó đầu-cuối (`serve()`
+và `w2w` đều còn `Spin`), nên `DESIGN.md` §8 vẫn giữ nhãn "lấy từ tài liệu".
 
 ### 2026-08-30 — bước 3 xong: `wait::Block`, và một quả mìn được gỡ bằng compile error
 

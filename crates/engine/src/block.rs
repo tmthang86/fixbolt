@@ -42,15 +42,18 @@ pub const MIN_TIMEOUT_MS: u32 = 5;
 
 /// Block until a source is ready or the timeout passes. **`standard` mode.**
 ///
-/// # It cannot be paired with an `Engine` yet, and that is a compile error
+/// # A transport that cannot be waited on is refused where it is written
 ///
-/// [`crate::Engine::idle`] still hands its waiter an **empty** source list, so
-/// a `Block` inside one would block on nothing and wake only on its own
-/// timeout. That engine is *correct*: it answers every message, passes the 59
-/// acceptance definitions, and reads 0% CPU. It is also 100 ms slower per
-/// message, which no correctness suite and no CPU measurement can see.
+/// ADR-0014 decision 4. `Block` blocks on readiness, so it must know the
+/// sockets; a transport that cannot name one — [`crate::transport::Loopback`],
+/// the acceptance corpus's transport — would leave it blocking on an empty list
+/// and waking only on its own timeout. That engine is *correct*: it answers
+/// every message, passes all 59 definitions, and reads 0% CPU. It is also
+/// 100 ms slower per message, which no correctness suite and no CPU
+/// measurement can see.
 ///
-/// So the pairing is refused where it is written, not remembered:
+/// Whether a transport is pollable is a property of the **type**, known before
+/// the program runs, so it is a compile error rather than a `Result` on `add`:
 ///
 /// ```compile_fail,E0080
 /// # struct App;
@@ -59,10 +62,10 @@ pub const MIN_TIMEOUT_MS: u32 = 5;
 /// #         -> Option<core::ops::Range<usize>> { None }
 /// # }
 /// use fixbolt_engine::{Engine, block::Block, clock::SystemClock};
-/// use fixbolt_engine::{dispatch::InlineDispatch, journal::Store, transport::TcpTransport};
+/// use fixbolt_engine::{dispatch::InlineDispatch, journal::Store, transport::Loopback};
 ///
 /// let mut engine: Engine<
-///     TcpTransport, fixbolt_session::Acceptor, InlineDispatch<App>,
+///     Loopback, fixbolt_session::Acceptor, InlineDispatch<App>,
 ///     SystemClock, Block, Store, 256, 4096, 8192,
 /// > = Engine::new(
 ///     fixbolt_session::Config::acceptor(b"FIX.4.4", b"ISLD", b"TEST"),
@@ -74,10 +77,11 @@ pub const MIN_TIMEOUT_MS: u32 = 5;
 /// engine.idle();
 /// ```
 ///
-/// Step 4 of `docs/plans/2026-08-30-standard-mode.md` builds the real list and
-/// swaps that assertion for ADR-0014 decision 4's, which refuses a transport
-/// that cannot be waited on at all. **This doctest is expected to keep failing
-/// to compile then too** — for the other reason.
+/// `[2026-08-30]` This doctest previously used `TcpTransport` and proved a
+/// different thing: that `Engine` had no source list at all yet, so **every**
+/// blocking pairing was refused. Step 4 built the list, `TcpTransport` became a
+/// legitimate pairing, and the doctest went red — correctly. It now names the
+/// transport that is still refused, and for the reason that will not expire.
 ///
 /// # Errors it cannot return
 ///
