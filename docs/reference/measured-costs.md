@@ -517,3 +517,52 @@ Two rules, and neither is about FIX:
 no one on the channel. And *`-D warnings` against a rolling toolchain*, where the failing
 build is caused by a release rather than by a change. The second is not a false green at all
 and may belong in a section of its own upstream.
+
+## A ceiling tuned on one machine, red on another, and not in CI so nobody saw it
+
+`[measured 2026-08-30]` `crates/engine/benches/dispatch.rs` **fails on Linux**:
+
+```
+inline deliver + reply                  5.4 ns/op   ceiling 15
+ring, one way                         332.5 ns/op   ceiling 260
+panicked: ring, one way: 332.5 ns/op exceeds the 260 ns regression ceiling
+```
+
+The ceilings were set from the M5 figures published above — inline 2.7 ns, ring one way
+128.0 ns — with roughly 2× of headroom. On a shared 4 vCPU container the inline case is
+comfortably inside its ceiling and **the ring hop is 2.6× the M5's**, which puts it outside.
+
+**Nothing is regressing.** A cross-thread hand-off over two atomics is dominated by
+inter-core latency, and inter-core latency on a virtualised shared host is not the M5's. The
+gate is measuring the machine, which `DESIGN.md` §6 already says these numbers do — *they rank
+designs against each other on one machine, they are not an SLA*. What it does not say is what
+happens when the gate itself is then asserted on a different one.
+
+**Three things went wrong at once, and the third is the one that matters.**
+
+1. `CLAUDE.md` §7 says a hot-path change runs the Criterion suite **and** `benches/alloc.rs`.
+   Working on the ring, `alloc` was run and `dispatch` was not — the two are named together in
+   the table and only one was read.
+2. The commit that closed that work stated its gates and did not include this one, because it
+   had not been run. That is the `§9` box's failure mode inside a single commit rather than
+   across a merge.
+3. **The bench is not in CI.** `cargo test --all` does not run a `harness = false` bench, and no
+   job runs `cargo bench`. So a ceiling that has been red on every Linux machine since it was
+   written has never once been reported by anything. It was found by running it by hand while
+   doing something else.
+
+The third is the general shape and it is not about benchmarks: **an assertion that no automated
+thing executes is a comment.** This repository already has that written down — *a check proves
+nothing until something reads it* — and had already paid for it once, when CI was red on `main`
+for a day. This is the same defect one layer down: not a check nobody read, but a check nobody
+ran.
+
+**Not fixed here, deliberately.** Raising the ceiling makes it stop catching a real regression
+on the machine it was tuned for; deleting it throws away a real guard; making it relative to a
+per-machine baseline is a design change to how a `DESIGN.md` §6 gate is measured, which the §4
+sync table says needs its own plan. `STATUS.md` open item 20.
+
+`[to testing-skills]` — two cases. *A threshold calibrated on one machine and asserted on
+another*: the number is honest, the comparison is not, and the failure looks exactly like a
+regression. And *the assertion nothing runs* — a guard outside the command CI actually invokes,
+which is a false green that never even had to lie, because nobody asked it.

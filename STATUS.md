@@ -449,6 +449,17 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   as sized does not buy what it was bought for, which makes capacity part of the policy decision
   rather than a tuning detail. The bench asserts the ring **accepted** before it refused: one
   that rejected everything from the first message would print a plausible number.
+- **A gate has been red on Linux the whole time and nothing ran it.** `[measured 2026-08-30]`
+  `cargo bench -p nanofix-engine --bench dispatch` fails here: **ring one way 332.5 ns against
+  its 260 ns ceiling**, while inline is 5.4 ns against 15 and passes. The ceilings came from the
+  M5 (2.7 ns and 128.0 ns) with ~2× headroom; a cross-thread hop on a shared 4 vCPU host is
+  2.6× the M5's, and **nothing is regressing** — the gate is measuring the machine.
+  **`cargo test --all` does not run a `harness = false` bench and no CI job runs `cargo bench`,
+  so this has never been reported by anything.** Found by hand, while doing something else.
+  It also means the commit before this one stated its gates without this one, because
+  `CLAUDE.md` §7 names `alloc` and the Criterion suite together and only `alloc` was run.
+  **Open item 20**; not fixed here, because every fix changes how a `DESIGN.md` §6 gate is
+  measured.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -524,6 +535,7 @@ against hardware that does not exist.
 |---|---|---|
 | 1 | **Final name.** `nanofixengine` is a placeholder. Free on both crates.io and GitHub: `machfix`, `veloxfix`, `tachyonfix`, `luxfix`, `fixwire`, `fixbolt`, `sohwire` | Nothing yet — but renaming after a crates.io publish is expensive |
 | 5 | **Ring-buffer policy when the application behind the ring falls behind: block, drop, or disconnect?** Not `DESIGN.md` D10, which answered the socket side. `[measured 2026-08-30]` the ring holds **352 messages / 56.7 µs** at its current 64 KiB, against the "milliseconds" ADR-0002 assumed — so capacity is part of the decision. **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md) proposes disconnect + a 4 MiB default and needs signing** | ADR-0002; steps 3–4 of the ring plan |
+| 20 | **`benches/dispatch.rs` asserts M5-tuned ceilings and nothing runs it.** `[measured 2026-08-30]` red on Linux — ring one way 332.5 ns against a 260 ns ceiling — with no regression behind it: a cross-thread hop is dominated by inter-core latency and this host is not the M5. `cargo test --all` does not run a `harness = false` bench and no CI job runs `cargo bench`, so **an assertion nothing executes is a comment**. Raising the ceiling blinds the machine it was tuned for; deleting it throws away a real guard; a per-machine baseline changes how a §6 gate is measured and needs its own plan | `DESIGN.md` §6; every ring number; `CLAUDE.md` §7's bench row meaning anything |
 | 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number | Every gate in §6 that matters |
 | 7 | **`scripts/fetch-quickfix-assets.sh` tracks mutable `master`.** Every acceptance number in the codec plan (539 lines, 247 with `9=`, 244 with `10=`, 8 tag-set patterns for `35=3`) can change silently upstream. Pin a commit and verify it | Reproducibility of every step-1 gate |
 | 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **`[measured 2026-08-30]` the blocker was recorded wrongly and is now known**: it needs a kernel built with **`CONFIG_TLS`**, *not* the §9 machine of item 6 — kTLS is a kernel feature, not a latency property. This box refuses `setsockopt(TCP_ULP, "tls")` with `ENOENT` and its config says `# CONFIG_TLS is not set`. `scripts/check-ktls-available.sh` answers "can I start?" in one command; [reference/ktls-on-a-plain-socket.md](docs/reference/ktls-on-a-plain-socket.md) records what was and was not concluded | The TLS plan; ADR-0005 acceptance |
