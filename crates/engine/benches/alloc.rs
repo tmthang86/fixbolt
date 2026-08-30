@@ -24,7 +24,9 @@ use std::ops::Range;
 
 use nanofix_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
 use nanofix_engine::clock::ManualClock;
+use nanofix_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
 use nanofix_engine::frame::{Cut, Framer};
+use nanofix_engine::ring;
 use nanofix_engine::transport::{Io, Loopback, TcpTransport, Transport};
 use nanofix_engine::wait::Park;
 use nanofix_engine::{Application, Config, Engine};
@@ -76,6 +78,17 @@ impl Application for Silent {
 fn wire(body: &str) -> Vec<u8> {
     let body = format!("{body}49=TW44\x0152=20260828-12:00:00.000\x0156=ISLD\x01");
     with_real_checksum(format!("8=FIX.4.4\x019={}\x01{body}10=0\x01", body.len()).as_bytes())
+}
+
+/// Copies the message back, so the return direction of the ring is exercised.
+struct Bounce;
+
+impl Application for Bounce {
+    fn on_message(&mut self, msg: &[u8], _: u32, _: &[u8], out: &mut [u8]) -> Option<Range<usize>> {
+        let n = msg.len().min(out.len());
+        out[..n].copy_from_slice(&msg[..n]);
+        Some(0..n)
+    }
 }
 
 fn count<F: FnOnce()>(f: F) -> usize {
@@ -168,7 +181,7 @@ fn main() {
     let mut engine: Engine<
         Loopback,
         nanofix_session::Acceptor,
-        Silent,
+        InlineDispatch<Silent>,
         ManualClock,
         Park,
         256,
@@ -176,12 +189,12 @@ fn main() {
         8192,
     > = Engine::new(
         Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
-        Silent,
+        InlineDispatch::new(Silent),
         ManualClock::at(FIXED_TIME_MILLIS),
         Park,
         4,
     );
-    engine.add(engine_side);
+    let _ = engine.add(engine_side);
     assert_eq!(
         engine.connections(),
         1,
@@ -234,7 +247,7 @@ fn main() {
     let mut engine2: Engine<
         Loopback,
         nanofix_session::Acceptor,
-        Silent,
+        InlineDispatch<Silent>,
         ManualClock,
         Park,
         256,
@@ -242,12 +255,12 @@ fn main() {
         8192,
     > = Engine::new(
         Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
-        Silent,
+        InlineDispatch::new(Silent),
         ManualClock::at(FIXED_TIME_MILLIS),
         Park,
         4,
     );
-    engine2.add(engine_side2);
+    let _ = engine2.add(engine_side2);
     // **One empty turn before the first byte**, and it is not decoration.
     // `Session::received_with` takes no clock: it judges `SendingTime` against
     // the last instant a `tick` gave it, which for a session that has never
@@ -274,9 +287,42 @@ fn main() {
         "and it must still be live after the count, not dropped at message two"
     );
 
+    // The ring, both directions. It allocates **once**, in `ring::pair`, and
+    // never again — which is the whole point of a fixed buffer shared between
+    // two threads. Everything below is the steady state.
+    let (to_app, from_engine) = ring::pair(1 << 16);
+    let (to_engine, from_app) = ring::pair(1 << 16);
+    let mut ringed: RingDispatch<1024> = RingDispatch::new(to_app, from_app);
+    let mut app: RingApp<1024> = RingApp::new(from_engine, to_engine);
+    let stamp = b"20260828-12:00:00.000";
+    let mut reply = [0u8; 1024];
+    let order = &traffic[1];
+
+    // Prove the path is the path: a message goes across and one comes back.
+    ringed.deliver(0, order, 2, stamp, &mut reply);
+    assert_eq!(
+        app.pump(&mut Bounce),
+        1,
+        "the ring path must carry a message"
+    );
+    let mut came_back = 0usize;
+    ringed.collect(|_, b| came_back += b.len());
+    assert!(came_back > 0, "and must carry a reply back");
+
+    let ring_allocs = count(|| {
+        for _ in 0..10_000 {
+            ringed.deliver(0, order, 2, stamp, &mut reply);
+            app.pump(&mut Bounce);
+            ringed.collect(|_, b| {
+                core::hint::black_box(b);
+            });
+        }
+    });
+    assert_eq!(ringed.refused(), 0, "no case above met a full ring");
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
-         frame {frame_allocs} turn {turn_allocs} busy {busy_allocs}"
+         frame {frame_allocs} turn {turn_allocs} busy {busy_allocs} ring {ring_allocs}"
     );
     assert_eq!(
         [
@@ -285,9 +331,10 @@ fn main() {
             recv_allocs,
             frame_allocs,
             turn_allocs,
-            busy_allocs
+            busy_allocs,
+            ring_allocs
         ],
-        [0; 6],
+        [0; 7],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

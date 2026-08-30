@@ -24,3 +24,7 @@ workspace = true
 [[bench]]
 name = "alloc"
 harness = false
+
+[[bench]]
+name = "dispatch"
+harness = false

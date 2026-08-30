@@ -3,6 +3,7 @@
 
 use nanofix_session::{Application, Link, Role, Session};
 
+use crate::dispatch::ConnId;
 use crate::frame::{Cut, Framer};
 use crate::transport::{Io, Transport};
 
@@ -22,6 +23,9 @@ pub enum Turn {
 /// bytes it has written but the socket has not taken. All three are the
 /// caller's choice and none is a hidden constant — `CLAUDE.md` §6.
 pub struct Connection<T, R: Role, const N: usize, const RX: usize, const TX: usize> {
+    /// Which connection this is, for routing a reply that comes back from
+    /// another thread. Never reused: the engine only ever counts up.
+    pub id: ConnId,
     /// The socket. `None` once it has been given up.
     pub transport: T,
     pub session: Session<R, N>,
@@ -38,8 +42,9 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
     Connection<T, R, N, RX, TX>
 {
     /// Wrap a socket and a session that has not been told about it yet.
-    pub const fn new(transport: T, session: Session<R, N>) -> Self {
+    pub const fn new(id: ConnId, transport: T, session: Session<R, N>) -> Self {
         Self {
+            id,
             transport,
             session,
             rx: Framer::new(),
@@ -58,6 +63,28 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
         let tx_len = &mut self.tx_len;
         let link = self.session.connect(|b| push(tx, tx_len, b));
         self.closing |= link == Link::Dropped;
+    }
+
+    /// Offer the session a message the application originated.
+    ///
+    /// The session decides everything about it that matters — sequence number,
+    /// `SendingTime`, whether the link is even up — so an application that
+    /// hands over a stale or half-formed header cannot corrupt the stream.
+    pub fn send_application(&mut self, msg: &[u8]) {
+        let Self {
+            session,
+            tx,
+            tx_len,
+            ..
+        } = self;
+        if session.send_application(msg, |b| push(tx, tx_len, b)) == Link::Dropped {
+            self.closing = true;
+        }
+        // Push it now rather than next turn. `turn` has already flushed by the
+        // time the engine collects out-of-band replies, so without this every
+        // reply from another thread would wait a whole extra pass — the ring
+        // costs a hop, and it should not also cost a turn.
+        self.flush();
     }
 
     /// Is there anything waiting to go out?

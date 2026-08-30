@@ -81,7 +81,7 @@ below describe what a first release would contain.
   - `[measured 2026-08-30]` **0 / 50** on the mirrored corpus. Every mirrored Logon is
     accepted; what the files ask for next is a message only an operator can order.
 
-- **`nanofix-engine`** — the crate that touches the socket. Steps 1–3 of six.
+- **`nanofix-engine`** — the crate that touches the socket. Steps 1–4 of six.
   - `Transport`, with `TcpTransport` (non-blocking, `TCP_NODELAY`) and `Loopback` (in memory,
     for tests that must not depend on a free port).
   - **`Io::{Ready, Idle, Closed, Failed}` rather than `io::Result<usize>`.** On a stream socket
@@ -112,8 +112,22 @@ below describe what a first release would contain.
     deployment runs.
   - **The 59 acceptance definitions now pass through a real socket**: `cargo test -p
     nanofix-engine --test wire` → **59 / 59**, kernel TCP, no background thread and no sleep.
-  - `benches/alloc.rs`: **0** on six paths — idle, send, receive, framing, an idle turn, and a
-    turn carrying a message in and a reply out.
+  - `Dispatch`, with `InlineDispatch<H>` (the default, D4 / ADR-0002) and `RingDispatch<M>`
+    plus its `RingApp<M>` on the far side. The trait carries `const OUT_OF_BAND: bool`, so the
+    engine's out-of-band collection compiles away entirely on the inline engine.
+  - **A reply is routed by `ConnId`, never by index.** `swap_remove` reuses indices the moment
+    anything hangs up; a reply for a connection that has gone is dropped.
+  - `ring::pair(capacity)` — a single-producer single-consumer **record** queue built from
+    `Box<[AtomicU8]>`: no `unsafe`, no dependency, allocated once. A push is one whole message
+    or none, and a record too long for the reader is dropped rather than wedging the queue.
+    [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) carries the price.
+  - `Engine::new` now takes a `Dispatch` rather than an `Application`; `serve` still takes an
+    application and wraps it inline, so the deployment shape is unchanged. `application()`
+    became `dispatch_mut()`.
+  - `benches/dispatch.rs`: inline **2.7 ns**, ring **128.0 ns** one way, **242.5 ns** round
+    trip, each asserting its own ceiling.
+  - `benches/alloc.rs`: **0** on seven paths — idle, send, receive, framing, an idle turn, a
+    turn carrying a message in and a reply out, and a full ring round trip.
 
 - **`nanofix-conformance`** — the mirrored corpus, for the initiator role.
   - `script::scenarios_mirrored()` reads the same 59 files from the other side: `I` lines

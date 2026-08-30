@@ -27,6 +27,7 @@ use std::ops::Range;
 use nanofix_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
 use nanofix_conformance::script::FIXED_TIME_MILLIS;
 use nanofix_engine::clock::ManualClock;
+use nanofix_engine::dispatch::InlineDispatch;
 use nanofix_engine::transport::TcpTransport;
 use nanofix_engine::{Acceptor, Engine};
 use nanofix_session::{Application, Config};
@@ -87,7 +88,16 @@ fn field(wire: &[u8], tag: u32) -> Option<&[u8]> {
 /// side of the loopback interface.
 struct Wire {
     acceptor: Acceptor,
-    engine: Engine<TcpTransport, nanofix_session::Acceptor, EchoApp, ManualClock, Park, N, RX, TX>,
+    engine: Engine<
+        TcpTransport,
+        nanofix_session::Acceptor,
+        InlineDispatch<EchoApp>,
+        ManualClock,
+        Park,
+        N,
+        RX,
+        TX,
+    >,
     clients: Vec<(Conn, Option<TcpStream>)>,
 }
 
@@ -102,7 +112,7 @@ impl Wire {
             acceptor,
             engine: Engine::new(
                 Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
-                EchoApp::default(),
+                InlineDispatch::new(EchoApp::default()),
                 ManualClock::at(FIXED_TIME_MILLIS),
                 Park,
                 4,
@@ -131,7 +141,7 @@ impl Wire {
         for _ in 0..20_000 {
             let mut moved = false;
             while let Some(t) = self.acceptor.accept() {
-                self.engine.add(t);
+                let _ = self.engine.add(t);
                 moved = true;
             }
             moved |= self.engine.turn();

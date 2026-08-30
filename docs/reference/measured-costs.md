@@ -328,3 +328,31 @@ turn ticks. `crates/engine/tests/wire.rs` does not meet it either, because the
 corpus's `Connect` line pumps before any byte arrives. **A test or bench that
 sends on turn one does**, and one empty turn before the first byte is the whole
 fix.
+
+## What a thread hop costs when the ring may not use `unsafe`
+
+`[measured 2026-08-30]` Apple M5, macOS 25.6, unpinned, best-of-7 × 200 000 iterations,
+`crates/engine/benches/dispatch.rs`. A 163-byte `NewOrderSingle` — the same message every
+other benchmark here is measured on.
+
+| Path | ns/op |
+|---|---|
+| `InlineDispatch::deliver` + reply | **2.7** |
+| Ring, one way (engine → application) | **128.0** |
+| Ring, round trip (→ handler → back) | **242.5** |
+
+**The hop is ~50× the inline call**, and the one-way figure is ~0.8 ns per byte, which is
+almost exactly the cost of copying with `AtomicU8` loads and stores instead of `memcpy`. The
+reason it is built that way, and what would reverse it, is
+[ADR-0007](../decisions/ADR-0007-spsc-ring-without-unsafe.md).
+
+Two things this number is *not*:
+
+- **Not the cost of the option.** An application that chose the ring did so because it may
+  stall for milliseconds. 240 ns against 40 ms is not the trade it is making.
+- **Not a Linux number.** Nothing here was measured on the machine `DESIGN.md` §9 describes.
+
+The inline figure moved between 2.5 and 4.9 ns across runs of the same binary. At that size
+the loop is a handful of instructions and the harness's own overhead is the same order, so the
+ceiling is set at 15 ns rather than at 2×. **A ceiling tighter than the measurement's own
+spread is a gate that goes red at random**, and DESIGN §6 already says what happens to those.

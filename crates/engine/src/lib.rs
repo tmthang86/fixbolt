@@ -16,7 +16,9 @@
 
 pub mod clock;
 pub mod conn;
+pub mod dispatch;
 pub mod frame;
+pub mod ring;
 pub mod transport;
 pub mod wait;
 
@@ -26,6 +28,7 @@ pub use nanofix_session::{Application, Config, Role, Session};
 
 use crate::clock::Clock;
 use crate::conn::{Connection, Turn};
+use crate::dispatch::{ConnId, Dispatch, InlineDispatch};
 use crate::transport::{TcpTransport, Transport};
 use crate::wait::Waiting;
 
@@ -33,20 +36,47 @@ use crate::wait::Waiting;
 ///
 /// Every size is the caller's: `N` the session's field index, `RX` a
 /// connection's receive buffer, `TX` its outbound queue.
-pub struct Engine<T, R: Role, A, C, W, const N: usize, const RX: usize, const TX: usize> {
+pub struct Engine<T, R: Role, D, C, W, const N: usize, const RX: usize, const TX: usize> {
     conns: Vec<Connection<T, R, N, RX, TX>>,
     cfg: Config,
-    app: A,
+    dispatch: D,
     clock: C,
     wait: W,
+    /// The next connection id. Only ever counts up, so an id is never reused
+    /// and a reply that arrives after a hang-up matches nothing.
+    next_id: ConnId,
 }
 
-impl<T, R, A, C, W, const N: usize, const RX: usize, const TX: usize>
-    Engine<T, R, A, C, W, N, RX, TX>
+/// One connection's view of the dispatch, as the [`Application`] the session
+/// takes.
+///
+/// The session's API is `received_with(bytes, app, emit)` and knows nothing
+/// about connections; the dispatch routes by connection and knows nothing about
+/// sessions. This is the four-line adapter between them, and it holds a
+/// borrow rather than a copy, so it costs nothing.
+struct Deliver<'a, D> {
+    dispatch: &'a mut D,
+    conn: ConnId,
+}
+
+impl<D: Dispatch> Application for Deliver<'_, D> {
+    fn on_message(
+        &mut self,
+        msg: &[u8],
+        seq: u32,
+        stamp: &[u8],
+        out: &mut [u8],
+    ) -> Option<core::ops::Range<usize>> {
+        self.dispatch.deliver(self.conn, msg, seq, stamp, out)
+    }
+}
+
+impl<T, R, D, C, W, const N: usize, const RX: usize, const TX: usize>
+    Engine<T, R, D, C, W, N, RX, TX>
 where
     T: Transport,
     R: Role,
-    A: Application,
+    D: Dispatch,
     C: Clock,
     W: Waiting,
 {
@@ -54,21 +84,27 @@ where
     ///
     /// `capacity` is reserved once, here, so that adding a connection later
     /// does not allocate on a thread that must not — non-negotiable 1.
-    pub fn new(cfg: Config, app: A, clock: C, wait: W, capacity: usize) -> Self {
+    pub fn new(cfg: Config, dispatch: D, clock: C, wait: W, capacity: usize) -> Self {
         Self {
             conns: Vec::with_capacity(capacity),
             cfg,
-            app,
+            dispatch,
             clock,
             wait,
+            next_id: 0,
         }
     }
 
     /// Take on a connection that is already open, and tell its session so.
-    pub fn add(&mut self, transport: T) {
-        let mut conn = Connection::new(transport, Session::new(self.cfg));
+    ///
+    /// Returns the id a reply from another thread is routed by.
+    pub fn add(&mut self, transport: T) -> ConnId {
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut conn = Connection::new(id, transport, Session::new(self.cfg));
         conn.opened();
         self.conns.push(conn);
+        id
     }
 
     /// How many connections are live.
@@ -77,9 +113,9 @@ where
         self.conns.len()
     }
 
-    /// The application, for a caller that wants to look at what it recorded.
-    pub const fn application(&mut self) -> &mut A {
-        &mut self.app
+    /// The dispatch, and through it whatever the application recorded.
+    pub const fn dispatch_mut(&mut self) -> &mut D {
+        &mut self.dispatch
     }
 
     /// The clock, for a caller that owns it.
@@ -113,9 +149,13 @@ where
                 .filter(|(j, c)| *j != i && c.session.is_logged_on())
                 .count();
 
-            let app = &mut self.app;
-            let outcome =
-                self.conns[i].turn(now, app, |msg| others_on > 0 && msg_type_is_logon(msg));
+            let mut deliver = Deliver {
+                dispatch: &mut self.dispatch,
+                conn: self.conns[i].id,
+            };
+            let outcome = self.conns[i].turn(now, &mut deliver, |msg| {
+                others_on > 0 && msg_type_is_logon(msg)
+            });
             match outcome {
                 Turn::Up(m) => {
                     moved |= m;
@@ -126,6 +166,24 @@ where
                     moved = true;
                 }
             }
+        }
+
+        // Anything the application produced on another thread. The constant is
+        // `false` for `InlineDispatch`, so this whole block compiles away
+        // rather than costing a branch on the commonest engine there is.
+        if D::OUT_OF_BAND {
+            let conns = &mut self.conns;
+            let mut any = false;
+            self.dispatch.collect(|id, msg| {
+                any = true;
+                if let Some(c) = conns.iter_mut().find(|c| c.id == id) {
+                    c.send_application(msg);
+                }
+                // A reply for a connection that has gone is dropped, on
+                // purpose: the session that owned its sequence numbers is gone
+                // with it, and sending it anywhere else would be worse.
+            });
+            moved |= any;
         }
         moved
     }
@@ -148,11 +206,12 @@ where
     }
 }
 
-/// An acceptor with the usual sizes, spinning. The shape a deployment runs.
+/// An acceptor with the usual sizes, spinning, with the application inline.
+/// The shape a deployment runs.
 pub type TcpAcceptorEngine<A> = Engine<
     TcpTransport,
     nanofix_session::Acceptor,
-    A,
+    InlineDispatch<A>,
     crate::clock::SystemClock,
     crate::wait::Spin,
     256,
@@ -178,7 +237,7 @@ pub fn serve<A: Application>(
     let acceptor = Acceptor::bind(addr)?;
     let mut engine: TcpAcceptorEngine<A> = Engine::new(
         cfg,
-        app,
+        InlineDispatch::new(app),
         crate::clock::SystemClock,
         crate::wait::Spin,
         capacity,

@@ -284,6 +284,23 @@ A gateway that answers in nanoseconds wants inline. Both are the same engine.
 process isolation contains GC pauses. Rust has no GC, so half the motivation does not
 transfer, and what remains is a property some applications need and others pay for.
 
+**As built.** `Dispatch` carries a `const OUT_OF_BAND: bool`, and it is `false` for
+`InlineDispatch` — so the engine's "collect what the other thread produced" block is behind a
+constant and compiles away entirely on the default engine. A reply from the ring comes back
+through `Session::send_application`, which means the sequence number and `SendingTime` are the
+session's own: an application on another thread cannot get either wrong, because it is never
+told them.
+
+A reply is routed by a **connection id, never an index** — the engine drops a dead connection
+with `swap_remove`, so an index is stale the moment anything hangs up, and a reply for a
+connection that has gone is dropped rather than delivered to whoever took its slot.
+`crates/engine/tests/dispatch.rs` asserts that, and asserts the thing that makes the whole
+trait worth having: **the same message produces the same bytes on the wire under either
+dispatch.** The dispatch chooses a thread, not a protocol.
+
+The ring itself is `Box<[AtomicU8]>` — safe Rust, no dependency, and a byte-at-a-time copy
+whose price is published rather than hidden. [ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md).
+
 ### D5 — Transport is a trait; TCP is the only implementation that ships by default
 
 ```rust
@@ -475,14 +492,14 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 |---|---|---|
 | Parse `NewOrderSingle` | ≤ 150 ns **published**. `[measured]` **77.0 ns**, 2026-08-28 | `benches/parse.rs`, asserting a 150 ns regression ceiling |
 | Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**. `[measured]` **93.8 ns — the target is NOT met** | `benches/serialize.rs`, asserting a 190 ns regression ceiling |
-| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is | `benches/dispatch.rs` |
+| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is. `[measured 2026-08-30]` inline **2.7 ns**; ring **128.0 ns** one way and **242.5 ns** round trip, on a 163-byte `NewOrderSingle`, Apple M5, macOS 25.6, unpinned — **the ring hop is ~50x the inline call**, and ~0.8 ns of every byte of it is the `AtomicU8` copy ([ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)) | `crates/engine/benches/dispatch.rs`, asserting ceilings of 15 / 260 / 500 ns |
 | Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
 | Allocations on the hot path — session | **0**, counted separately on nine paths: accept, refuse, tick, beat, answer, gap, fill, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
 | The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`, `tests/reject.rs` and `tests/heartbeat.rs`. `[measured]` seven so far. Three from steps 1–3: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged, because `52` is one of the five tags `fields.fmt` matches by shape; a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet. Four from step 4: all three heartbeat thresholds, which the harness's whole-interval ticks cannot see; and that a garbled frame is fatal only when it claims to be a Logon, which the corpus states once from each side in different files. Five from step 5, in `tests/resend.rs`: every file that opens a gap ends before opening a second one, so closing a filled gap, replaying held messages in sequence order, and what happens when there is no room to hold one are all invisible to the score |
 | Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
 | Session conformance, acceptor, **through a real socket** | **59 / 59** | `cargo test -p nanofix-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59** |
-| Allocations on the hot path — engine | **0**, counted separately on six paths: idle, send, recv, frame, turn, busy | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
+| Allocations on the hot path — engine | **0**, counted separately on seven paths: idle, send, recv, frame, turn, busy, ring | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |
@@ -498,7 +515,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
 | Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job |
-| No documentation link points at a missing file | 133 internal links resolve | `scripts/check-links.py`, run in CI |
+| No documentation link points at a missing file | 143 internal links resolve | `scripts/check-links.py`, run in CI |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every

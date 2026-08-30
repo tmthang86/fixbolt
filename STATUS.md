@@ -12,7 +12,7 @@ Last updated: **2026-08-30**.
 | Branch | **`plan/engine`**, on top of `main` |
 | Milestone | **M3 — the engine, in flight.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket**: `cargo test -p nanofix-engine --test wire` → **59 / 59**. `codec`, `dict`, `conformance` and `session` are closed behind it |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — **Approved 2026-08-30**, all six steps. Steps 1–3 of six done. `DESIGN.md` §7 step 6, taken before step 5 by decision. Six steps; the gate that matters is the same 59 definitions run **through a real socket** |
+| Plan in flight | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — **Approved 2026-08-30**, all six steps. Steps 1–4 of six done. `DESIGN.md` §7 step 6, taken before step 5 by decision. Six steps; the gate that matters is the same 59 definitions run **through a real socket** |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
 | Last closed | **[2026-08-28-dict-validation.md](docs/plans/2026-08-28-dict-validation.md)** — closed 2026-08-28. Four validation tables, agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 12 524/12 524 message-tag pairs and 1 708/1 708 enum values |
@@ -265,6 +265,20 @@ Last updated: **2026-08-30**.
   already used; from iteration three the engine held no connections and the count was the
   test double's queue doubling. Every case now asserts its own path is live.
   [reference/measured-costs.md](docs/reference/measured-costs.md).
+
+- **The ring hop costs ~50x the inline call, and the number is published rather than
+  assumed.** `[measured 2026-08-30]` inline **2.7 ns**, ring **128.0 ns** one way, **242.5 ns**
+  round trip, on a 163-byte `NewOrderSingle`, Apple M5, macOS 25.6, unpinned.
+  `crates/engine/benches/dispatch.rs` asserts 15 / 260 / 500 ns and was proven to assert by
+  lowering a ceiling and watching it go red.
+- **The dispatch chooses a thread, not a protocol.** The same message produces byte-identical
+  output under `InlineDispatch` and `RingDispatch` — `crates/engine/tests/dispatch.rs`. And a
+  reply for a connection that has hung up is dropped rather than delivered to whoever took its
+  slot, because routing is by id and `swap_remove` reuses indices.
+- **The ring is `AtomicU8`, not `unsafe`, and that was a decision with a price.**
+  [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md): the plan authorised neither
+  `unsafe` nor a dependency, so the copy is byte-at-a-time and costs ~0.8 ns per byte. The
+  reversal is cheap and is written down.
 
 ## Not proven — claimed, researched, or simply not yet run
 
