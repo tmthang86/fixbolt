@@ -78,7 +78,13 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   `check-machine.sh` gained a **`not virtualised`** row (`systemd-detect-virt` + steal over
   the same window), guarded by `scripts/check-machine-verdicts.sh` — 11 cases, no VM and no
   root needed, in CI. **The GitHub runner is itself a guest**, so the bench job's machine
-  block now says so on every run. Consequence for the plan: **development can move to cloud;
+  block now says so on every run — `[measured 2026-08-30]` run `33314721411` prints
+  `FAIL not virtualised  guest under 'microsoft', 0% steal` and
+  `FAIL machine is quiet  6% CPU busy — Runner.Worker 11% of a core`. That closes the
+  commit's own "not proven": the GUEST path had been tested as logic only and has now run on
+  a real guest, correctly naming Hyper-V and attributing the load to the Actions worker.
+  **Every bench figure CI has ever produced came from a machine that is both a guest and not
+  quiet, and from this commit the output says so.** Consequence for the plan: **development can move to cloud;
   measurement stays on the desk.** The first version of the row reported this bare-metal box
   as a guest — `systemd-detect-virt` **exits 1 when the answer is `none`**, so
   `$(... || echo unknown)` ran both halves and set the variable to two lines. The verdict test
