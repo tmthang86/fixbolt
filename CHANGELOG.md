@@ -173,6 +173,9 @@ below describe what a first release would contain.
     reversal lands. `TcpAcceptorEngine<A, W>` is now parameterised by the mode, with
     `HftAcceptorEngine` and `StandardAcceptorEngine` naming the two, and both `serve` functions
     run **one** shared loop so they can differ in exactly one type and nothing else.
+  - **The 59 acceptance definitions pass in both modes**: the same corpus, once with the engine
+    yielding and once with it blocking between steps, 59 / 59 each way. ADR-0013 named this cost
+    when it accepted two modes.
   - **The 59 acceptance definitions now pass through a real socket**: `cargo test -p
     fixbolt-engine --test wire` → **59 / 59**, kernel TCP, no background thread and no sleep.
   - `Dispatch`, with `InlineDispatch<H>` (the default, D4 / ADR-0002) and `RingDispatch<M>`

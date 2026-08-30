@@ -101,8 +101,11 @@ delivery log. In dependency order:
    `w2w --mode hft|standard|yield` prints the mode a gate then reads back. **Step 7 closed non-negotiable 4's
    unenforced half**: `scripts/check-standard-gives-the-core-back.sh`, four assertions, red
    halves `hft` **and** `yield`. `CLAUDE.md`'s machine-checked list now says rule 4 is enforced
-   in both halves. **Next is step 8**: the 59 definitions in both modes, and the wakeup cost on a
-   §9 machine.
+   in both halves. **Step 8 is half closed**: `[measured 2026-08-30]` the 59
+   definitions pass **59 / 59 in `standard` mode** with the engine blocking between steps. The
+   other half — the wakeup cost — needs a §9 machine and this container reads `pass 2 fail 6
+   unknown 3`, so `DESIGN.md` §8 keeps its *from the literature* label rather than being closed
+   on a number from the wrong box. **The plan is otherwise done.**
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
@@ -124,6 +127,24 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
+
+**`[measured 2026-08-30]` The 59 acceptance definitions pass with the engine actually blocking.**
+`cargo test -p fixbolt-engine --test wire` now runs the corpus twice, once per idle strategy, and
+scores **59 / 59** both ways — ADR-0013's *"two modes is two things to test, for ever"*, paid.
+The blocking run takes 3.00 s of wall time and **0.25 s of user time**, which is the mode doing
+what it says.
+
+**`[measured 2026-08-30]` And a claim written into that test's own documentation was refuted by
+reversal.** It said a wiring failure — the listener left out, writability never asked for, the
+waker undrained — would show up as the run taking minutes instead of seconds. It does not: with
+`Block` made to ignore readiness entirely the run took **3.30 s**, with the listener removed from
+the poll set **3.34 s**, against a baseline of **3.28 s**. The settle criterion is 1 ms and the
+blocking timeout is 5 ms, so **one block satisfies it whether it was woken by data or by its own
+timeout**, and the harness cannot tell those apart. The test proves the protocol is unchanged
+under blocking, which is real and worth having; the wiring is proven by `tests/standard.rs`
+reading the interest list directly and by the p50 assertion in the `standard` gate. The comment
+now says so.
+
 
 **`[measured 2026-08-30]` Non-negotiable 4's second half is machine-checked, and it took four
 assertions rather than the one ADR-0013 asked for.** CPU near zero is also what a **dead** thread

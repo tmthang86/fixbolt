@@ -245,7 +245,7 @@ Cái tên `density` vẫn dùng được như một **nhãn cho con số**, cạ
 | 5 | ~~waker~~ — **xong 2026-08-30.** Self-pipe; engine tự bỏ đầu đọc vào tập poll và **tự drain**; **`RingApp`** đánh thức khi đẩy reply — không phải `RingDispatch`, xem "Sửa 3" | 4 |
 | 6 | ~~`w2w --mode`~~ — **xong 2026-08-30.** Ba giá trị `hft\|standard\|yield`, mặc định `hft`, in mode mỗi lần chạy và **cổng đọc lại**. Nửa đỏ của `check-no-kernel-sleep.sh` sang `--mode standard`. **Và `serve()` thành `standard`** — xem "Sửa 4" | 4 |
 | 7 | ~~cổng `standard`~~ — **xong 2026-08-30.** `scripts/check-standard-gives-the-core-back.sh` + job CI `standard-blocks`. **Bốn** khẳng định, nửa đỏ là **`hft` và `yield`**, và hai mã thoát tách *hỏng chính sách* khỏi *hỏng phép đo* | 6 |
-| 8 | Chạy 59 định nghĩa ở **cả hai mode**. Đo giá một lần thức của `standard` trên máy §9 và thay dòng §8 — hoặc giữ nhãn "từ tài liệu" nếu máy chưa `pass 10 fail 0` | 7, máy §9 |
+| 8 | ~~59 ở cả hai mode~~ — **xong 2026-08-30, 59/59 ở `standard`**. **Đo trên máy §9: KHÔNG LÀM ĐƯỢC** ở container này (`check-machine.sh`: `pass 2 fail 6 unknown 3`); dòng §8 giữ nguyên nhãn "từ tài liệu", đúng như plan đã dự phòng | 7, máy §9 |
 
 ## Cách kiểm chứng
 
@@ -352,6 +352,58 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
   workload thật, mà cái đó chưa có.
 
 ## Nhật ký giao hàng
+
+### 2026-08-30 — bước 8: nửa làm được đã xong, nửa kia cần máy khác
+
+**Đã dựng.** `crates/engine/tests/wire.rs` nhận mode làm tham số kiểu, và có bài chạy thứ hai:
+**59 / 59 với engine thật sự chặn giữa các bước.** Đây là hoá đơn mà ADR-0013 biết mình đang ký
+— *"hai mode là hai thứ phải kiểm, mãi mãi"* — và là chỗ duy nhất corpus gặp `standard`, vì mọi
+dòng khác trong file đó lái `turn` bằng tay, nơi chiến lược rỗi không bao giờ được chạm tới.
+
+Chạy hết 3.00 s so với 0.78 s ở `Yield`, và `user 0.247s` trên 3 giây wall — engine ngủ thật.
+
+**`[đo 2026-08-30]` Và tôi đã viết một lời khẳng định sai vào chính doc comment của bài test
+đó, rồi đảo ngược bác bỏ nó.** Bản đầu viết: *"lỗi nối dây — quên listener, không hỏi
+writability, không drain waker — sẽ hiện ra thành test chạy hàng phút thay vì hàng giây."*
+
+Hai đảo ngược, và **không cái nào làm nó chậm đi**:
+
+| | wall |
+|---|---|
+| baseline | 3.28 s |
+| `Block` bỏ qua readiness hoàn toàn | 3.30 s |
+| listener bị bỏ khỏi tập poll | 3.34 s |
+
+Lý do nằm ở tiêu chí settle: một bước kết thúc khi engine không động gì trong `STEP_QUIET` =
+1 ms, còn timeout ở đây là sàn 5 ms. Nên **một lần block luôn thoả tiêu chí đó** — dù nó thức
+sau 0.1 ms vì có dữ liệu hay sau 5 ms vì hết giờ. Harness không phân biệt được hai cái, và thời
+gian chạy là `số bước × 5 ms` trong cả hai trường hợp. Nâng timeout lên không giúp gì: nó nhân
+đều cả hai nhánh.
+
+**Bài test vẫn có giá trị thật** — nó chứng minh giao thức không đổi khi engine chặn — nhưng nó
+**không** chứng minh phần nối dây, và comment giờ nói đúng điều đó, kèm chỗ phần nối dây thật sự
+được canh: `tests/standard.rs` đọc thẳng danh sách interest, và khẳng định p50 trong cổng
+`standard`. `CLAUDE.md` §4 nói *prose không giữ nổi một ràng buộc*; ở đây prose còn **sai**, và
+thứ phát hiện ra là đảo ngược chứ không phải đọc lại. `[to testing-skills]`
+
+**Nửa còn lại KHÔNG làm được, và không hạ chuẩn để đóng.** Đo giá một lần thức của `standard`
+cần máy `DESIGN.md` §9. `[đo 2026-08-30]` container của phiên này: `check-machine.sh` cho
+**`pass 2 fail 6 unknown 3`** — nó tự nói ra rằng số ở đây dùng được cho phép đếm và cho so sánh
+A/B với chính nó, **không** dùng được làm số latency. Nên `DESIGN.md` §8 **giữ nguyên nhãn "lấy
+từ tài liệu"** cho dòng wakeup, đúng như plan đã dự phòng ngay từ mục Rủi ro.
+
+Việc còn lại thuộc về máy desktop của chủ dự án, cùng chỗ với các mục 6, 11, 13 vốn đã chờ ở đó.
+
+**Gate cho commit này:**
+
+```
+cargo fmt --all --check                    sach
+cargo clippy --all-targets -- -D warnings  sach
+cargo test --all                           230 passed, 0 failed
+cargo test --all --no-default-features     0 failed
+-p fixbolt-engine --test wire              2 passed: 59/59 hft-style, 59/59 standard
+scripts/check-machine.sh                   pass 2 fail 6 unknown 3 -- KHONG phai may §9
+```
 
 ### 2026-08-30 — bước 7 xong: nguyên tắc 4 hết nửa vời
 

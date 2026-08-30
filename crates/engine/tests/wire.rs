@@ -88,38 +88,45 @@ fn field(wire: &[u8], tag: u32) -> Option<&[u8]> {
 
 /// The counterparty: one client socket per `Conn`, and the engine on the other
 /// side of the loopback interface.
-struct Wire {
+struct Wire<W: Waiting> {
     acceptor: Acceptor,
     engine: Engine<
         TcpTransport,
         fixbolt_session::Acceptor,
         InlineDispatch<EchoApp>,
         ManualClock,
-        Yield,
+        W,
         Store,
         N,
         RX,
         TX,
     >,
+    /// The listener, so a blocking engine learns about a new connection when it
+    /// arrives rather than when its timeout expires.
+    listener: Option<Interest>,
     clients: Vec<(Conn, Option<TcpStream>)>,
 }
 
-/// The engine idles by yielding here. A spinning engine in a test suite is a
-/// test suite that pins a core for no reason — `wait::Spin` is for `tools/w2w`.
-use fixbolt_engine::wait::Yield;
+/// The engine idles by whatever strategy the run names. A spinning engine in a
+/// test suite is a test suite that pins a core for no reason — `wait::Spin` is
+/// for `tools/w2w`.
+use fixbolt_engine::transport::Interest;
+use fixbolt_engine::wait::{Waiting, Yield};
 
-impl Wire {
-    fn new() -> Self {
+impl<W: Waiting> Wire<W> {
+    fn with(wait: W) -> Self {
         let acceptor = Acceptor::bind("127.0.0.1:0").expect("a free port");
+        let listener = acceptor.source().map(Interest::readable);
         Self {
             acceptor,
             engine: Engine::new(
                 Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
                 InlineDispatch::new(EchoApp::default()),
                 ManualClock::at(FIXED_TIME_MILLIS),
-                Yield,
+                wait,
                 4,
             ),
+            listener,
             clients: Vec::new(),
         }
     }
@@ -167,6 +174,15 @@ impl Wire {
                 last_move = now;
             } else if now.duration_since(last_move) >= quiet {
                 return;
+            } else {
+                // **The mode under test.** For `Yield` this is a scheduler
+                // yield and the loop is what it always was. For a blocking
+                // strategy the engine actually sleeps here, woken by the
+                // client's next write or by its own timeout — which is the
+                // only way this file exercises `standard` at all, because
+                // every other line drives `turn` by hand.
+                let extra = self.listener.as_slice();
+                self.engine.idle_with(extra);
             }
             if now.duration_since(start) >= deadline {
                 return;
@@ -218,7 +234,7 @@ fn next_message(bytes: &[u8]) -> Option<usize> {
     Some(stop + 3 + k + 1)
 }
 
-impl SessionUnderTest for Wire {
+impl<W: Waiting> SessionUnderTest for Wire<W> {
     fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, input: Input<'_>, mut emit: F) -> Link {
         let i = self.at(conn);
         match input {
@@ -270,7 +286,7 @@ impl SessionUnderTest for Wire {
     }
 }
 
-impl Wire {
+impl<W: Waiting> Wire<W> {
     fn engine_clock(&mut self) -> &mut ManualClock {
         self.engine.clock_mut()
     }
@@ -300,6 +316,55 @@ const STEP_DEADLINE: Duration = Duration::from_millis(50);
 /// including the first one, which was wrong.
 #[test]
 fn the_fifty_nine_definitions_pass_through_a_real_socket() {
-    let report = run(|_| Wire::new()).unwrap_or_else(|e| panic!("{e}"));
+    let report = run(|_| Wire::with(Yield)).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(report.passed, 59, "over TCP, not in process:\n{report}");
+}
+
+/// The same 59, with the engine **actually blocking** between steps.
+///
+/// ADR-0013's bad consequence, stated when the two modes were accepted: *"two
+/// modes is two things to test, for ever."* This is that bill, and it is the
+/// only place the corpus meets `standard` — everywhere else in this file drives
+/// `turn` by hand, where the idle strategy is never reached.
+///
+/// # What it proves, and what it does not
+///
+/// It proves the **protocol** is unchanged when the engine blocks: same 59, same
+/// comparator, same bytes. That is the bill ADR-0013 knew it was signing.
+///
+/// **It does not prove the wiring, and the first version of this comment claimed
+/// it did.** That claim said a wiring failure would show up as this test taking
+/// minutes instead of seconds. `[measured 2026-08-30]` it was refuted by
+/// reversal, twice: with `Block` made to ignore readiness entirely, and with the
+/// listener removed from the poll set, the run took **3.30 s and 3.34 s against a
+/// baseline of 3.28 s**. Neither is a difference.
+///
+/// The reason is in the settle criterion. A step ends when the engine has moved
+/// nothing for `STEP_QUIET` = 1 ms, and the blocking timeout here is the floor,
+/// 5 ms. So **one block always satisfies the criterion**, whether it returned
+/// after 0.1 ms because data arrived or after 5 ms because it timed out — the
+/// harness cannot tell those apart, and the run time is `steps × 5 ms` either
+/// way. Raising the timeout does not help; it scales both arms together.
+///
+/// So the wiring is proven elsewhere, on purpose: `tests/standard.rs` reads the
+/// interest list directly rather than timing it, and
+/// `scripts/check-standard-gives-the-core-back.sh` asserts a round-trip p50
+/// against the poll timeout, which is the assertion that actually separates
+/// "woken by the data" from "woken by the clock".
+///
+/// Behind the feature and `cfg(unix)`, because `wait::Block` does not exist
+/// without them — ADR-0014 decision 2. `[measured 2026-08-30]` an unconditional
+/// `use` of it here broke `cargo test -p fixbolt-engine --no-default-features`,
+/// and `scripts/check-no-optional-deps.sh` caught it, which is the gate that
+/// exists for exactly this.
+#[cfg(all(feature = "standard", unix))]
+#[test]
+fn the_fifty_nine_definitions_pass_in_standard_mode_too() {
+    use fixbolt_engine::block::Block;
+    let report =
+        run(|_| Wire::with(Block::with_timeout_ms(8, 5))).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        report.passed, 59,
+        "blocking between steps must not change what the protocol does:\n{report}"
+    );
 }
