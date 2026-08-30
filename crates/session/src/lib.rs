@@ -240,6 +240,12 @@ impl<const N: usize> Name<N> {
 /// default, labelled as such.
 pub const DEFAULT_MAX_SKEW_MS: u64 = 120_000;
 
+/// The `HeartBtInt` an initiator proposes unless told otherwise, in seconds.
+///
+/// `[measured]` 50 of the corpus's 65 Logons ask for 30, and it is QuickFIX's
+/// own default.
+pub const DEFAULT_HEART_BT_INT: u32 = 30;
+
 /// Everything a session needs to know that is not on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
@@ -250,6 +256,9 @@ pub struct Config {
     /// Theirs. `56=` out, `49=` in.
     target_comp_id: Name<32>,
     max_skew_ms: u64,
+    /// `108=`, in seconds. An acceptor never reads it — it throws the
+    /// counterparty's back. An initiator proposes it.
+    heart_bt_int: u32,
 }
 
 impl Config {
@@ -261,7 +270,25 @@ impl Config {
             sender_comp_id: Name::new(sender_comp_id),
             target_comp_id: Name::new(target_comp_id),
             max_skew_ms: DEFAULT_MAX_SKEW_MS,
+            heart_bt_int: DEFAULT_HEART_BT_INT,
         }
+    }
+
+    /// An initiator's configuration. `sender_comp_id` is *this* end.
+    ///
+    /// The one field an acceptor never uses is [`Self::with_heart_bt_int`]: an
+    /// acceptor throws the counterparty's `108=` back, an initiator proposes
+    /// its own.
+    #[must_use]
+    pub fn initiator(begin_string: &[u8], sender_comp_id: &[u8], target_comp_id: &[u8]) -> Self {
+        Self::acceptor(begin_string, sender_comp_id, target_comp_id)
+    }
+
+    /// Override [`DEFAULT_HEART_BT_INT`]. Initiators only.
+    #[must_use]
+    pub const fn with_heart_bt_int(mut self, secs: u32) -> Self {
+        self.heart_bt_int = secs;
+        self
     }
 
     /// Override [`DEFAULT_MAX_SKEW_MS`].
@@ -282,6 +309,13 @@ enum State {
     Disconnected,
     /// Connected, and the next message must be a Logon.
     AwaitingLogon,
+    /// Connected, and **this end** owes the Logon.
+    ///
+    /// Separate from [`State::AwaitingLogon`] because the two differ in what
+    /// the next `tick` does, and `connect` has no clock to do it with — time
+    /// enters this layer through `tick` and nowhere else (D1). An engine
+    /// connects and then turns its loop; this is that turn.
+    MustLogon,
     /// Logon exchanged. Application messages may flow.
     LoggedOn,
     /// This end sent a Logout and is waiting for the counterparty's. It may
@@ -430,9 +464,13 @@ impl<R: Role, const N: usize> Session<R, N> {
         // now send, `last_sent_ms` by the reply. Clearing them as well changed
         // nothing when it was reversed, and a line that cannot be broken is
         // not a guard.
-        // An initiator speaks first. Step 2 gives it something to say; until
-        // then the constant is read here so the role parameter is not decoration.
+        // An initiator speaks first — but not here. `connect` has no clock,
+        // and a Logon carries a `52=`; time enters this layer through `tick`
+        // and nowhere else (D1). So this records whose turn it is and the next
+        // tick does the speaking, which is also what an engine does: connect,
+        // then turn the loop.
         if R::SPEAKS_FIRST {
+            self.state = State::MustLogon;
             return Link::Up;
         }
         Link::Up
@@ -470,6 +508,20 @@ impl<R: Role, const N: usize> Session<R, N> {
             // timeout is the engine's business, and no acceptance definition
             // tests one. `tests/heartbeat.rs` holds this.
             State::AwaitingLogon => return Link::Up,
+            // This end owes the Logon, and now it has a clock to date it with.
+            State::MustLogon => {
+                self.state = State::AwaitingLogon;
+                let mut beat = [0u8; 10];
+                let beat = digits(self.cfg.heart_bt_int, &mut beat);
+                self.beat_ms = u64::from(self.cfg.heart_bt_int) * 1_000;
+                self.last_recv_ms = now_ms;
+                let _ = self.send(
+                    Which::Logon,
+                    &[(tag::ENCRYPT_METHOD, b"0"), (tag::HEART_BT_INT, beat)],
+                    &mut emit,
+                );
+                return Link::Up;
+            }
             State::LoggedOn => {}
         }
         // `108=0` means the counterparty asked for no heartbeats at all.
@@ -809,6 +861,51 @@ impl<R: Role, const N: usize> Session<R, N> {
         }
         self.last_sent_ms = self.now_ms;
         Ok(())
+    }
+
+    /// Originate an application message.
+    ///
+    /// The acceptor never needs this — everything it sends is an answer. An
+    /// **initiator** does: nothing on the wire asks it to send an order.
+    ///
+    /// `msg` is the message the application wants sent; the session takes over
+    /// what the application does not own — the sequence number and the clock —
+    /// and keeps a copy for a later resend. `8=`, `9=`, `34=`, `52=` and `10=`
+    /// on the input are ignored and rewritten; everything else is carried
+    /// through and **ordered by `Fix44`**, never by the caller.
+    ///
+    /// A message that cannot be laid out is **not sent and not counted** — the
+    /// same fail-closed answer the rest of this layer gives. `Refusal` is
+    /// private on purpose: nothing a caller can do about it differs from doing
+    /// nothing.
+    pub fn send_application<F: FnMut(&[u8])>(&mut self, msg: &[u8], mut emit: F) -> Link {
+        // Nothing to say before the Logon is agreed, and nothing after the
+        // Logout. Silence rather than an error: an application that offers a
+        // message to a session that is not up has not done anything wrong.
+        if self.state != State::LoggedOn {
+            return Link::Up;
+        }
+        let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
+        let now = *self.stamp.format(unix);
+        let mut seq = [0u8; 10];
+        let seq = digits(self.next_out, &mut seq);
+        let seq_out = self.next_out;
+
+        let Some(o) = self.out.as_mut() else {
+            return Link::Up;
+        };
+        let out::Outbound {
+            app: buf, journal, ..
+        } = o;
+        let Some(r) = rebuild(msg, Some(seq), &now, false, buf) else {
+            return Link::Up;
+        };
+        journal.put(seq_out, &buf[r.clone()]);
+        emit(&buf[r]);
+
+        self.next_out += 1;
+        self.last_sent_ms = self.now_ms;
+        Link::Up
     }
 
     /// Is `seq` still in the journal?
@@ -1509,16 +1606,41 @@ fn msg_type_of(bytes: &[u8]) -> Option<&[u8]> {
 /// Returns the range of `out` the message occupies, or `None` if the kept bytes
 /// are not a message or the result does not fit.
 fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<core::ops::Range<usize>> {
-    let at_35 = kept.windows(4).position(|w| w == b"\x0135=")? + 1;
-    let at_10 = kept.windows(4).position(|w| w == b"\x0110=")? + 1;
-    let begin_end = kept.iter().position(|b| *b == SOH)?;
-    let begin = kept.get(2..begin_end)?;
+    rebuild(kept, None, now, true, out)
+}
 
-    let mut b = TemplateBuilder::<128, 1024>::new(begin)
-        .field(tag::POSS_DUP_FLAG, b"Y")
-        .field(tag::SENDING_TIME, now);
+/// Write an application message this end is originating, or replaying.
+///
+/// `seq` renumbers it; `None` keeps the number already on it, which is what a
+/// replay needs. `resend` adds `43=Y` and carries the old `52=` as `122=`.
+///
+/// **Nothing here decides an order.** Every field goes into a
+/// [`TemplateBuilder`] in whatever order it is read, and `Fix44` sorts them —
+/// non-negotiable 5.
+fn rebuild(
+    src: &[u8],
+    seq: Option<&[u8]>,
+    now: &[u8],
+    resend: bool,
+    out: &mut [u8],
+) -> Option<core::ops::Range<usize>> {
+    let at_35 = src.windows(4).position(|w| w == b"\x0135=")? + 1;
+    let at_10 = src
+        .windows(4)
+        .position(|w| w == b"\x0110=")
+        .map_or(src.len(), |i| i + 1);
+    let begin_end = src.iter().position(|b| *b == SOH)?;
+    let begin = src.get(2..begin_end)?;
 
-    for f in kept.get(at_35..at_10)?.split(|c| *c == SOH) {
+    let mut b = TemplateBuilder::<128, 1024>::new(begin).field(tag::SENDING_TIME, now);
+    if resend {
+        b = b.field(tag::POSS_DUP_FLAG, b"Y");
+    }
+    if let Some(n) = seq {
+        b = b.field(tag::MSG_SEQ_NUM, n);
+    }
+
+    for f in src.get(at_35..at_10)?.split(|c| *c == SOH) {
         if f.is_empty() {
             continue;
         }
@@ -1526,12 +1648,14 @@ fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<core::ops::Range
         let (text, value) = (&f[..eq], &f[eq + 1..]);
         let tag = digits_to_u32(text)?;
         match tag {
-            // Said above, with the value this resend needs rather than the one
-            // the message first went out with.
-            tag::POSS_DUP_FLAG | tag::ORIG_SENDING_TIME => continue,
+            // Written above with the values this send needs, not the ones the
+            // source happened to carry.
+            tag::POSS_DUP_FLAG | tag::ORIG_SENDING_TIME => {}
+            tag::MSG_SEQ_NUM if seq.is_some() => {}
             // The clock the message first went out on becomes `122=`, and the
             // one above stands as `52=`.
-            tag::SENDING_TIME => b = b.field(tag::ORIG_SENDING_TIME, value),
+            tag::SENDING_TIME if resend => b = b.field(tag::ORIG_SENDING_TIME, value),
+            tag::SENDING_TIME => {}
             _ => b = b.field(tag, value),
         }
     }

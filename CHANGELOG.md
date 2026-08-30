@@ -72,6 +72,14 @@ below describe what a first release would contain.
     the original `52=` carried as `122=` — and by covering each contiguous run that cannot be
     replayed with **one** `SequenceReset` gap fill. A replay spends no sequence number.
   - Scores **59 / 59** on the acceptance definitions. The session layer's gate is met.
+  - `Config::initiator` and `Config::with_heart_bt_int`, and an initiator that **speaks
+    first**: `connect` records whose turn it is and the next `tick` sends the Logon, because
+    `connect` has no clock and a Logon carries a `52=`.
+  - `Session::send_application` — an initiator has to be able to originate, and nothing on the
+    wire asks it to. The session takes over the sequence number and the clock, keeps a copy for
+    a later resend, and lets `Fix44` order the fields.
+  - `[measured 2026-08-30]` **0 / 50** on the mirrored corpus. Every mirrored Logon is
+    accepted; what the files ask for next is a message only an operator can order.
 
 - **`nanofix-conformance`** — the mirrored corpus, for the initiator role.
   - `script::scenarios_mirrored()` reads the same 59 files from the other side: `I` lines

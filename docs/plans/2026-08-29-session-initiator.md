@@ -187,6 +187,40 @@ giao thức.
 Đã ghi thành [ADR-0006](../decisions/ADR-0006-mirrored-corpus-is-fifty.md), thay thế **riêng**
 quyết định 6 của ADR-0004. Mọi cổng trong plan này đổi 51 → **50**.
 
+### Sửa 2 — **cần quyết định**: soi gương đo được ít hơn plan tưởng, và ở chỗ nào
+
+**Phát hiện ở cuối bước 2, bằng số đo chứ không bằng đọc.** Logon của initiator đã đúng —
+45 trong 50 file không rớt ở dòng mang nó. Nhưng điểm là **0 / 50**, và hai số đo dưới đây nói
+vì sao:
+
+**Số đo 1 — 46 / 50 file đòi đầu này *tự phát* một bản tin mà máy trạng thái không thể tự nghĩ ra:**
+
+| Phải tự phát | Số file |
+|---|---|
+| `5` Logout | 42 |
+| `D` / `d` / `8` bản tin ứng dụng | 19 |
+| `0` Heartbeat, không ai hỏi | 14 |
+| `1` TestRequest, với `112=` cho sẵn | 13 |
+| `4` SequenceReset | 6 |
+| `2` ResendRequest | 4 |
+
+Không dòng nào trên dây yêu cầu chúng, và không đồng hồ nào sinh ra một Logout. Muốn chúng ra
+được thì **harness phải đóng vai người vận hành** và bảo session "gửi cái này, bây giờ". Chỗ nào
+harness lái thì chỗ đó cổng đo **đánh số và đóng khung**, không đo quyết định giao thức.
+
+**Số đo 2 — 5 / 50 file đòi đầu này gửi một bản tin *sai có chủ đích*:**
+`1c_InvalidSenderCompID`, `1c_InvalidTargetCompID`, `1d_InvalidLogonBadSendingTime`,
+`1d_InvalidLogonLengthInvalid`, `1e_NotLogonMessage`. CompID không khớp, `SendingTime` lệch 2001
+năm, `9=` thiếu 23 byte, và một cái không phải Logon. Một engine đúng đắn **không gửi được**
+chúng — mà `sendable()` cũng không thấy được, vì cả năm cái đều đúng cú pháp hoàn hảo. Đó chính
+là điều khiến chúng đáng chú ý: tiêu chí của ADR-0004 là **cú pháp**, còn cái sai trong corpus
+phần lớn là **ngữ nghĩa**.
+
+Trần thật của cổng soi gương vì thế là **45**, không phải 50 — và 45 ấy chỉ đạt được nếu harness
+lái mọi lần tự phát.
+
+**Chờ chủ dự án quyết**, xem tin nhắn kèm theo. Bước 3 chưa bắt đầu.
+
 ## Nhật ký giao hàng
 
 *(trống — plan chưa được duyệt)*

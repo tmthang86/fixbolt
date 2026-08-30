@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use nanofix_conformance::echo::echo;
 use nanofix_conformance::script::{Kind, scenarios};
 use nanofix_session::text::SessionText;
-use nanofix_session::{Acceptor, Application, Config, Link, Session, clock};
+use nanofix_session::{Acceptor, Application, Config, Initiator, Link, Session, clock};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
@@ -324,6 +324,51 @@ fn main() {
         }
     });
 
+    // The initiator's two send paths: the Logon it owes on connecting, and an
+    // application message it originates. Neither exists on the acceptor side —
+    // everything an acceptor sends is an answer.
+    let order = inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[1].clone();
+    let logon_reply = inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[0].clone();
+    {
+        let mut s: Session<Initiator, 256> =
+            Session::new(Config::initiator(b"FIX.4.4", b"TW44", b"ISLD"));
+        s.connect(|_| ());
+        let mut sent = 0usize;
+        s.tick(now, |_| sent += 1);
+        assert_eq!(sent, 1, "the initiator must actually send a Logon");
+    }
+
+    let logon_out_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s: Session<Initiator, 256> =
+                Session::new(Config::initiator(b"FIX.4.4", b"TW44", b"ISLD"));
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+        }
+    });
+
+    // Originating an application message needs a logged-on session, and the
+    // acceptor is the side this corpus can log on in one step.
+    {
+        let mut s = acceptor();
+        s.connect(|_| ());
+        s.tick(now, |_| ());
+        s.received(&logon_reply, |_| ());
+        let mut sent = 0usize;
+        s.send_application(&order, |_| sent += 1);
+        assert_eq!(sent, 1, "the origination path must actually originate");
+    }
+
+    let originate_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s = acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            s.received(&logon_reply, |_| ());
+            s.send_application(&order, |_| ());
+        }
+    });
+
     let clock_allocs = count(|| {
         for _ in 0..10_000 {
             let _ = clock::parse_utc(b"20260828-12:00:00.123");
@@ -353,10 +398,12 @@ fn main() {
         "allocations: accept {accept_allocs} refuse {refuse_allocs} \
          tick {tick_allocs} beat {beat_allocs} answer {answer_allocs} \
          gap {gap_allocs} fill {fill_allocs} deliver {deliver_allocs} \
-         resend {resend_allocs} clock {clock_allocs} text {text_allocs}"
+         resend {resend_allocs} logon_out {logon_out_allocs} \
+         originate {originate_allocs} clock {clock_allocs} text {text_allocs}"
     );
+    // An array, not a tuple: `Debug` and `PartialEq` stop at twelve.
     assert_eq!(
-        (
+        [
             accept_allocs,
             refuse_allocs,
             tick_allocs,
@@ -366,10 +413,12 @@ fn main() {
             fill_allocs,
             deliver_allocs,
             resend_allocs,
+            logon_out_allocs,
+            originate_allocs,
             clock_allocs,
             text_allocs
-        ),
-        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        ],
+        [0; 13],
         "non-negotiable 1: the session layer allocates nothing, on any path"
     );
 }
