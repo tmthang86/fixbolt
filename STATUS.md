@@ -94,7 +94,21 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   259.0 and 259.4. Not the scheduler. Interrupts do still reach an isolated core (15.7k on
   each of 6 and 7 against 512k on CPU0), so those were counted per run too — **two outliers
   carried ~1300 interrupts and three carried exactly zero**, while a normal run carried 1085.
-  Not interrupts either.
+  Not interrupts either. **Hypothesis eight, ASLR, went the same way and refutes itself twice:**
+  250 runs with `setarch --addr-no-randomize` against 250 without gave **14/250 vs 14/250,
+  z = 0.00** — and with ASLR off the layout is *fixed* across runs, so a layout-dependent
+  effect would have to be 0% or 100%, not 5.6%. At n=60 the same comparison had read 8.3%
+  against 3.3%; **the third time in one day a small-sample rate difference dissolved.**
+- **The 324 ns mode is now characterised, even though eight hypotheses about its cause have
+  all failed.** `[measured 2026-08-30]` pooling those 500 §9-satisfied runs of
+  `ring, one way`: **two discrete states with an empty gap** — main mode n=472, median
+  **258.4**, stdev 1.98; second mode n=**28** (5.6%), median **323.7**, stdev **1.25**; and
+  **exactly one value out of 500 lies between them**. Both clusters are equally tight, so this
+  is not a perturbed run — **a process picks one of two states at startup and keeps it for
+  life**, the two differing by a factor of **1.2527**, near 5/4. The practical consequence,
+  which is what makes this worth having without a cause: **any single run of this case has a
+  5.6% chance of being 25% wrong**, and every `DESIGN.md` §6 ceiling is read off single runs.
+  [reference/measured-costs.md](docs/reference/measured-costs.md).
 - **A cloud VM cannot be the §9 machine, and the checklist could not say so.**
   `[measured 2026-08-30]` `governor`, `turbo`, `C-states`, `SMT` and NIC IRQ affinity are
   **host** properties. A guest does not fail those rows loudly — the `/sys` files are absent,

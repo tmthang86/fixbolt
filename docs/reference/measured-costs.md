@@ -994,9 +994,66 @@ produces the naturally occurring ones**. Sufficient is not necessary, and the in
 that proved the first had been quietly answering the second.
 
 Five hypotheses have now been proposed and measured away: L3 placement, SMT, governor/boost,
-thermal, and background load. The residue is roughly 5–10% of runs at ~324 ns, and **nothing
-in this file explains it.** It is left open rather than attributed, which is the only honest
-option left and is cheaper than the four wrong answers that preceded it.
+thermal, and background load. Three more followed, and so did a proper characterisation.
+
+### Eight hypotheses, and what the thing actually looks like
+
+`[measured 2026-08-30]` on the desk box with `DESIGN.md` §9 **satisfied** — `check-machine.sh`
+`pass 10 fail 0 unknown 1` — after `isolcpus=6,7,14,15 nohz_full=6,7,14,15 rcu_nocbs=6,7,14,15
+processor.max_cstate=1` and the five runtime rows.
+
+| # | Hypothesis | Test | Result |
+|---|---|---|---|
+| 1 | Zen-2 L3 placement | `taskset`, CPU count held at 2 | **Refuted** — ~259 ns in all three arms |
+| 2 | SMT off | 2 × 2 over (governor·boost) × SMT, 50 runs a cell | **Refuted** — present in all four |
+| 3 | governor / boost | same 2 × 2 | **Refuted** |
+| 4 | Thermal throttling | temp + per-core frequency under load | **Refuted** — 91 °C, no step-down |
+| 5 | Background CPU load | `/proc/stat` per run; LLM shut down | **Refuted** — 6/60 either way, outliers carry the same busy % |
+| 6 | The scheduler | pinned to isolated cores, tick off, RCU elsewhere | **Refuted** — 5/60 vs 4/60 unpinned |
+| 7 | Interrupts on the core | `/proc/interrupts` per run on the pinned pair | **Refuted** — 2 outliers with ~1300, **3 with exactly 0**, a normal run with 1085 |
+| 8 | Memory layout / ASLR | 250 runs `setarch --addr-no-randomize`, 250 with | **Refuted** — **14/250 vs 14/250**, z = 0.00 |
+
+Hypothesis 8 refutes itself twice over, and the second way is stronger than the statistics:
+**with ASLR off the layout is fixed across runs, so a layout-dependent effect would have to be
+0% or 100% — not 5.6%.**
+
+### What it is, precisely, even though the cause is unknown
+
+Pooling those 500 runs — one process each, `ring, one way`:
+
+```
+250-254 ns  #######                                                        7
+255-259 ns  ############################################################ 455
+260-264 ns  #########                                                      9
+290-294 ns  #                                                              1
+320-324 ns  ########################                                      24
+325-329 ns  ####                                                           4
+
+  main mode    n=472   median 258.4   stdev 1.98
+  second mode  n= 28   median 323.7   stdev 1.25     5.6% of runs
+  ratio of medians                    1.2527
+```
+
+**The gap is empty**: one value out of 500 lies between the two clusters. Both clusters are
+equally tight, which rules out "a slow run" — a run perturbed by something external would
+smear, and these do not. **A process picks one of two states at startup and stays in it for
+its whole life**, and the two states differ by a factor of **1.2527**, near enough 5/4 to be
+worth saying out loud.
+
+That is worth more than another guess at the cause. "Sometimes slow" cannot be designed
+against; "5.6% of processes run in a second state 25% slower, decided at startup, invariant
+to machine tuning, isolation, load, interrupts and address layout" is a specific thing to go
+looking for — and it says plainly that **any single benchmark run of this case has a 5.6%
+chance of being 25% wrong**, which is the practical consequence for every ceiling in
+`DESIGN.md` §6.
+
+`[to testing-skills]` — *characterise before you attribute.* Eight hypotheses were proposed
+and eight refuted, three of them from associations in samples of 5 to 60 runs that dissolved
+when the sample grew — the ASLR difference read 8.3% against 3.3% at n=60 and 5.6% against
+5.6% at n=250. What finally produced something usable was not a ninth hypothesis but 500 runs
+and a histogram: an empty gap between two tight clusters says "two states", and that is a
+fact about the system that survives every wrong guess about why. **The rate needs a large
+sample; the shape needs only an honest plot, and the shape is what was actionable.**
 
 ### Clean baselines, quiet machine, `dispatch` run directly
 
