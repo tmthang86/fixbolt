@@ -10,6 +10,7 @@
 use nanofix_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
 use nanofix_conformance::script::FIXED_TIME_MILLIS;
 use nanofix_engine::frame::{Cut, Framer};
+use nanofix_engine::journal::Store;
 use nanofix_session::{Acceptor, Config, Session};
 
 /// `session` cannot depend on `conformance` — that is the dev-dependency
@@ -55,6 +56,9 @@ struct Adapter {
 struct Wire {
     conn: Conn,
     session: Session<Acceptor, 256>,
+    /// The store moved to `engine` at step 6 of its plan; the score adapter
+    /// stands in for an engine, so it supplies the real one.
+    journal: Store,
     rx: Framer<RX>,
 }
 
@@ -77,6 +81,7 @@ impl Adapter {
         self.conns.push(Wire {
             conn,
             session: Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+            journal: Store::new(),
             rx: Framer::new(),
         });
         self.conns.len() - 1
@@ -136,7 +141,11 @@ impl SessionUnderTest for Adapter {
 
             let app = &mut self.app;
             let w = &mut self.conns[i];
-            result = link(w.session.received_with(w.rx.bytes(taken), app, &mut emit));
+            result =
+                link(
+                    w.session
+                        .received_with(w.rx.bytes(taken), app, &mut w.journal, &mut emit),
+                );
             w.rx.take(taken);
             if result == Link::Dropped {
                 break;

@@ -1,6 +1,7 @@
 //! One connection: a socket, a receive buffer, a state machine, and whatever
 //! could not be written yet.
 
+use nanofix_session::journal::Journal as SessionJournal;
 use nanofix_session::{Application, Link, Role, Session};
 
 use crate::backpressure::{Backpressure, SLOW_CONSUMER};
@@ -23,13 +24,17 @@ pub enum Turn {
 /// `N` sizes the session's field index, `RX` its receive buffer and `TX` the
 /// bytes it has written but the socket has not taken. All three are the
 /// caller's choice and none is a hidden constant — `CLAUDE.md` §6.
-pub struct Connection<T, R: Role, const N: usize, const RX: usize, const TX: usize> {
+pub struct Connection<T, R: Role, J, const N: usize, const RX: usize, const TX: usize> {
     /// Which connection this is, for routing a reply that comes back from
     /// another thread. Never reused: the engine only ever counts up.
     pub id: ConnId,
     /// The socket. `None` once it has been given up.
     pub transport: T,
     pub session: Session<R, N>,
+    /// What this connection has already sent, for a `ResendRequest` to be
+    /// answered from. `DESIGN.md` D7 — the session says *keep this*, the
+    /// journal decides how and whether it survives a restart.
+    pub journal: J,
     rx: Framer<RX>,
     /// Written by the session, not yet accepted by the socket.
     tx: [u8; TX],
@@ -49,15 +54,16 @@ pub struct Connection<T, R: Role, const N: usize, const RX: usize, const TX: usi
     overflow: bool,
 }
 
-impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
-    Connection<T, R, N, RX, TX>
+impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, const TX: usize>
+    Connection<T, R, J, N, RX, TX>
 {
     /// Wrap a socket and a session that has not been told about it yet.
-    pub const fn new(id: ConnId, transport: T, session: Session<R, N>) -> Self {
+    pub const fn new(id: ConnId, transport: T, session: Session<R, N>, journal: J) -> Self {
         Self {
             id,
             transport,
             session,
+            journal,
             rx: Framer::new(),
             tx: [0; TX],
             tx_len: 0,
@@ -120,6 +126,7 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
         let Self {
             session,
             transport,
+            journal,
             tx,
             tx_len,
             overflow,
@@ -135,7 +142,7 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
             overflow,
             failed: dead,
         };
-        if session.send_application(msg, |b| out.push(b)) == Link::Dropped {
+        if session.send_application(msg, journal, |b| out.push(b)) == Link::Dropped {
             self.closing = true;
         }
         if self.overflow {
@@ -238,6 +245,7 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
                 session,
                 rx,
                 transport,
+                journal,
                 tx,
                 tx_len,
                 overflow,
@@ -253,7 +261,7 @@ impl<T: Transport, R: Role, const N: usize, const RX: usize, const TX: usize>
                 overflow,
                 failed: dead,
             };
-            let link = session.received_with(rx.bytes(taken), app, |b| out.push(b));
+            let link = session.received_with(rx.bytes(taken), app, journal, |b| out.push(b));
             self.rx.take(taken);
             if link == Link::Dropped {
                 self.closing = true;

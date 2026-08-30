@@ -11,6 +11,7 @@ use std::ops::Range;
 use nanofix_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
 use nanofix_engine::clock::ManualClock;
 use nanofix_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
+use nanofix_engine::journal::Store;
 use nanofix_engine::ring;
 use nanofix_engine::transport::{Io, Loopback, Transport};
 use nanofix_engine::wait::Park;
@@ -148,7 +149,8 @@ fn drain(peer: &mut Loopback) -> Vec<u8> {
     out
 }
 
-type Wired<D> = Engine<Loopback, nanofix_session::Acceptor, D, ManualClock, Park, 256, 4096, 8192>;
+type Wired<D> =
+    Engine<Loopback, nanofix_session::Acceptor, D, ManualClock, Park, Store, 256, 4096, 8192>;
 
 fn engine<D: Dispatch>(dispatch: D) -> (Loopback, Wired<D>) {
     let (peer, side) = Loopback::pair();

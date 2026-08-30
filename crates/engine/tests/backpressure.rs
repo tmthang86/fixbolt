@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use nanofix_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
 use nanofix_engine::backpressure::Backpressure;
 use nanofix_engine::conn::{Connection, Turn};
+use nanofix_engine::journal::Store;
 use nanofix_engine::transport::{Io, Transport};
 use nanofix_session::{Acceptor, Config, Session, Silent};
 
@@ -63,7 +64,7 @@ impl Transport for Choked {
     }
 }
 
-type Conn = Connection<Choked, Acceptor, N, RX, TX>;
+type Conn = Connection<Choked, Acceptor, Store, N, RX, TX>;
 
 fn conn(policy: Backpressure, allow: usize) -> Conn {
     let transport = Choked {
@@ -74,6 +75,7 @@ fn conn(policy: Backpressure, allow: usize) -> Conn {
         1,
         transport,
         Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+        Store::new(),
     )
     .with_backpressure(policy);
     c.opened();

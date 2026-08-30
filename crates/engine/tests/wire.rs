@@ -28,6 +28,7 @@ use nanofix_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
 use nanofix_conformance::script::FIXED_TIME_MILLIS;
 use nanofix_engine::clock::ManualClock;
 use nanofix_engine::dispatch::InlineDispatch;
+use nanofix_engine::journal::Store;
 use nanofix_engine::transport::TcpTransport;
 use nanofix_engine::{Acceptor, Engine};
 use nanofix_session::{Application, Config};
@@ -94,6 +95,7 @@ struct Wire {
         InlineDispatch<EchoApp>,
         ManualClock,
         Park,
+        Store,
         N,
         RX,
         TX,

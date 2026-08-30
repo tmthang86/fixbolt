@@ -28,6 +28,12 @@ below describe what a first release would contain.
   - `clock::parse_utc` and `clock::MILLIS_YEAR_ZERO_TO_EPOCH` — `Tick` counts milliseconds
     from **0000-01-01**, not from 1970, so every year `SendingTime` can name is a non-negative
     `u64` and the skew cannot wrap. See `DESIGN.md` D13.
+  - `journal::{Journal, NoJournal}` — the session no longer keeps the messages it has sent. It
+    is handed a journal, exactly as it is handed an `Application`, and asks two questions:
+    *keep `34=n`, these are its bytes*, and *do you still have `34=n`?*
+    **`received_with` and `send_application` therefore take one more argument**, and `received`
+    supplies `NoJournal` so a pure protocol machine is unchanged.
+    [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md).
   - `text::SessionText` — the 17 expected `58=` values and their `373=` codes, rendered with
     no `format!` and no allocation. **Moved here from `nanofix-conformance`**, where it lived
     only because the session did not exist yet.
@@ -81,7 +87,7 @@ below describe what a first release would contain.
   - `[measured 2026-08-30]` **0 / 50** on the mirrored corpus. Every mirrored Logon is
     accepted; what the files ask for next is a message only an operator can order.
 
-- **`nanofix-engine`** — the crate that touches the socket. Steps 1–5 of six.
+- **`nanofix-engine`** — the crate that touches the socket. **All six steps.**
   - `Transport`, with `TcpTransport` (non-blocking, `TCP_NODELAY`) and `Loopback` (in memory,
     for tests that must not depend on a free port).
   - **`Io::{Ready, Idle, Closed, Failed}` rather than `io::Result<usize>`.** On a stream socket
@@ -138,6 +144,13 @@ below describe what a first release would contain.
   - `nanofix-session`: `Session::logout_now(text, emit)` — send a `Logout` carrying `58=text`
     and give up the link. Additive, for the engine's D10 policy; the session cannot see a full
     queue and the engine cannot build a message.
+  - `journal::{MemJournal, FileJournal, Durability, Store}` (D7). `FileJournal` appends to a
+    file — `Fsync` writes and syncs inline, `Async` hands the bytes to a writer thread over the
+    ADR-0007 ring — and answers a resend from its in-memory ring rather than from disk, because
+    reading it back would be a blocking `read` on the engine thread.
+    [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md).
+  - `Engine::add_with_journal`, for a journal the caller built. `Engine::add` uses
+    `J::default()`.
   - `benches/alloc.rs`: **0** on seven paths — idle, send, receive, framing, an idle turn, a
     turn carrying a message in and a reply out, and a full ring round trip.
 

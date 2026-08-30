@@ -26,6 +26,7 @@ use nanofix_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
 use nanofix_engine::clock::ManualClock;
 use nanofix_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
 use nanofix_engine::frame::{Cut, Framer};
+use nanofix_engine::journal::Store;
 use nanofix_engine::ring;
 use nanofix_engine::transport::{Io, Loopback, TcpTransport, Transport};
 use nanofix_engine::wait::Park;
@@ -184,6 +185,7 @@ fn main() {
         InlineDispatch<Silent>,
         ManualClock,
         Park,
+        Store,
         256,
         4096,
         8192,
@@ -250,6 +252,7 @@ fn main() {
         InlineDispatch<Silent>,
         ManualClock,
         Park,
+        Store,
         256,
         4096,
         8192,

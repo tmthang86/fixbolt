@@ -14,9 +14,10 @@ has a floor of roughly **10–20 µs** wire-to-wire that no codec can move; this
 to make everything above that floor vanish, and to measure the floor honestly
 ([DESIGN.md §8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp)).
 
-> **Status: the session layer speaks FIX over a socket.** `[measured 2026-08-30]` the 59
-> QuickFIX acceptance definitions pass **59 / 59 through kernel TCP** — `codec`, `dict`,
-> `session` and `engine` exist; dispatch, backpressure and the journal do not yet.
+> **Status: it speaks FIX over a socket.** `[measured 2026-08-30]` the 59 QuickFIX acceptance
+> definitions pass **59 / 59 through kernel TCP**. `codec`, `dict`, `session` and `engine`
+> exist, with dispatch, backpressure and the journal built; `tools/w2w` and the
+> application-facing `library` do not.
 > **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;
 > **[docs/DESIGN.md](docs/DESIGN.md)** says how it is built; [STATUS.md](STATUS.md) says
 > where the work stands.

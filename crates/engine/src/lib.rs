@@ -19,6 +19,7 @@ pub mod clock;
 pub mod conn;
 pub mod dispatch;
 pub mod frame;
+pub mod journal;
 pub mod ring;
 pub mod transport;
 pub mod wait;
@@ -33,13 +34,14 @@ use crate::conn::{Connection, Turn};
 use crate::dispatch::{ConnId, Dispatch, InlineDispatch};
 use crate::transport::{TcpTransport, Transport};
 use crate::wait::Waiting;
+use nanofix_session::journal::Journal as SessionJournal;
 
 /// A running engine: the connections it holds, and what drives them.
 ///
 /// Every size is the caller's: `N` the session's field index, `RX` a
 /// connection's receive buffer, `TX` its outbound queue.
-pub struct Engine<T, R: Role, D, C, W, const N: usize, const RX: usize, const TX: usize> {
-    conns: Vec<Connection<T, R, N, RX, TX>>,
+pub struct Engine<T, R: Role, D, C, W, J, const N: usize, const RX: usize, const TX: usize> {
+    conns: Vec<Connection<T, R, J, N, RX, TX>>,
     cfg: Config,
     dispatch: D,
     clock: C,
@@ -76,14 +78,15 @@ impl<D: Dispatch> Application for Deliver<'_, D> {
     }
 }
 
-impl<T, R, D, C, W, const N: usize, const RX: usize, const TX: usize>
-    Engine<T, R, D, C, W, N, RX, TX>
+impl<T, R, D, C, W, J, const N: usize, const RX: usize, const TX: usize>
+    Engine<T, R, D, C, W, J, N, RX, TX>
 where
     T: Transport,
     R: Role,
     D: Dispatch,
     C: Clock,
     W: Waiting,
+    J: SessionJournal,
 {
     /// An engine with no connections yet.
     ///
@@ -113,10 +116,21 @@ where
     /// Take on a connection that is already open, and tell its session so.
     ///
     /// Returns the id a reply from another thread is routed by.
-    pub fn add(&mut self, transport: T) -> ConnId {
+    ///
+    /// The journal is `J::default()`. A deployment whose journal needs a name
+    /// per connection — a file, say — uses [`Self::add_with_journal`].
+    pub fn add(&mut self, transport: T) -> ConnId
+    where
+        J: Default,
+    {
+        self.add_with_journal(transport, J::default())
+    }
+
+    /// As [`Self::add`], with a journal the caller built.
+    pub fn add_with_journal(&mut self, transport: T, journal: J) -> ConnId {
         let id = self.next_id;
         self.next_id += 1;
-        let mut conn = Connection::new(id, transport, Session::new(self.cfg))
+        let mut conn = Connection::new(id, transport, Session::new(self.cfg), journal)
             .with_backpressure(self.backpressure);
         conn.opened();
         self.conns.push(conn);
@@ -230,6 +244,7 @@ pub type TcpAcceptorEngine<A> = Engine<
     InlineDispatch<A>,
     crate::clock::SystemClock,
     crate::wait::Spin,
+    crate::journal::Store,
     256,
     4096,
     8192,
