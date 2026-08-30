@@ -787,3 +787,90 @@ direction, and both readings reached documents. The fix is not a better threshol
 measuring the spread before believing any verdict. And *the fail-fast assertion that hides its
 own evidence*: a check that aborts at the first failure suppresses the results after it, so
 the run that most needed reading produces the least. Report every case, then fail.
+
+### And on a machine whose settings we control, tuning moves the median by 0.5%
+
+`[measured 2026-08-30]` The owner's Linux desktop — AMD Ryzen 7 3700X (Zen 2, 8 cores,
+2 × 4-core L3 domains), Linux 7.0.0-30-generic, rustc 1.98.0 — is the first machine in
+this thread whose `DESIGN.md` §9 state could be **changed and changed back at will**, so
+the question "how much of the ceiling problem is the machine" finally has a same-machine
+A/B rather than a comparison between two rented CPUs.
+
+`scripts/check-machine.sh` goes `pass 1 fail 7` → `pass 6 fail 2` with five settings —
+governor `performance`, boost off, SMT off, THP `never`, `busy_poll=50`. The two that
+remain need a kernel command line and a reboot.
+
+**15 full `scripts/bench.sh` runs in each state.** Medians, and how often each case cleared
+its own ceiling:
+
+| case | ceiling | tuned med | over | untuned med | over |
+|---|---|---|---|---|---|
+| `walk 4 levels, 61-tag member list` | 300 | 347.6 | **15/15** | 354.2 | **15/15** |
+| `encode 1 group, 2 entries` | 75 | 104.7 | **15/15** | 103.5 | **15/15** |
+| `encode ExecutionReport (template)` | 190 | 241.4 | **15/15** | 236.7 | **15/15** |
+| `ring, one way` | 260 | 259.6 | 5/15 | 260.4 | 9/15 |
+| `ring, round trip` | 500 | 499.1 | 7/15 | 500.4 | 8/15 |
+| `parse NewOrderSingle (validated)` | 150 | 122.2 | 0/15 | 122.9 | 0/15 |
+| `parse Heartbeat (validated)` | 70 | 55.3 | 0/15 | 56.2 | 0/15 |
+
+**Every median moves less than 2%.** Tuning a machine to §9 is not what makes these numbers
+what they are.
+
+The table separates the cases into two kinds, and the distinction is the useful part:
+
+- **Three cases are over on every single run in both states**, by 16%, 40% and 27%. No
+  amount of machine state explains those. They are real gaps between the code and the
+  ceiling somebody wrote, and they are the only rows here that a §6 gate can honestly fail
+  on today.
+- **The two ring cases are coin flips.** 5/15 and 9/15, 7/15 and 8/15 — the ceiling sits
+  *at the median*, so the verdict is decided by which side of its own noise a run lands on.
+  A gate that reports red 33% of the time on unchanged code is not measuring the code.
+
+### The 0.5% that decides a ceiling
+
+Run the `dispatch` bench **alone** — not through `bench.sh` — 15 times in each state, and
+the ring case is well behaved:
+
+```
+TUNED    n=15  min=257.2  med=259.6  max=260.4  spread=1.2%  stdev=0.89  over 260:  1/15
+UNTUNED  n=15  min=259.2  med=260.9  max=264.7  spread=2.1%  stdev=1.32  over 260: 14/15
+```
+
+The median moves **0.5%** — and the ceiling is inside that 0.5%, so the same unchanged code
+goes from failing 14 of 15 runs to passing 14 of 15. **The ceiling is not measuring the
+code; on this machine it is measuring the CPU governor.**
+
+That the same case is stable at 1.2% alone and swings 26–38% inside `bench.sh` is its own
+result: what the harness measures depends on what ran before it in the same script. The
+number is a property of the run, not only of the machine.
+
+### A second mode at 323.8 ns, three sightings, unexplained
+
+`ring, one way` occasionally returns **323.7–323.9 ns** instead of ~259 — a value too
+repeatable to be jitter, seen three times, in tuned runs and in `taskset`-pinned runs, and
+never in 30 dispatch-only runs. It is **not explained**, and it is recorded here rather
+than in a commit message because the next person to see 323.8 should know it is not new.
+
+**A hypothesis was tested and refuted.** Zen 2 puts 4 cores per L3 domain, so the obvious
+guess was that a run straddling the two domains pays Infinity Fabric latency. The first
+attempt to check it was a bad experiment — `taskset -c 0-3` against `-c 0,4` changes the
+CPU **count** as well as the L3 relationship, so it could not attribute anything. Repeated
+with the count held at two:
+
+```
+2 CPUs, same L3 (0,1):   323.7  259.7  259.8  259.9  259.8
+2 CPUs, cross L3 (0,4):  259.6  260.0  256.6  257.4  259.8
+8 CPUs, free    (0-7):   256.2  259.9  259.9  257.3  259.6
+```
+
+**No L3 effect** — all three arms sit at ~259 — and the outlier appeared in the *same*-L3
+arm, which is where the hypothesis predicted it least. Inter-CCX distance is not the
+mechanism. What is, is unknown.
+
+### What this says about the ceilings
+
+`STATUS.md` open item 20 asked whether a per-machine baseline is viable. On the evidence
+here, keyed on the CPU model it is — the single-threaded cases hold to 3% or better across
+all 30 runs — but **the two ring ceilings cannot be rescued by tuning a box**. They sit
+inside the harness's own run-to-run variation, and closing that needs pinning (`isolcpus`,
+still unset here) or a different measurement, not a better governor.
