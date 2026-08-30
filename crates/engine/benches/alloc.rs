@@ -20,6 +20,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use nanofix_engine::frame::{Cut, Framer};
 use nanofix_engine::transport::{Io, TcpTransport, Transport};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -66,7 +67,10 @@ fn main() {
     let mut server = TcpTransport::new(accepted).expect("non-blocking");
     let mut client = TcpTransport::new(client).expect("non-blocking");
 
-    let msg = b"8=FIX.4.4\x019=63\x0135=A\x0134=1\x0149=ISLD\x0156=TW44\x0110=0\x01";
+    // `9=26` is the real body length of what follows — a bench that framed a
+    // message with a wrong `9=` would measure the rubbish path and call it the
+    // message path.
+    let msg = b"8=FIX.4.4\x019=26\x0135=A\x0134=1\x0149=ISLD\x0156=TW44\x0110=0\x01";
     let mut buf = [0u8; 512];
 
     // Warm anything lazy, and prove both paths are the paths they claim to be:
@@ -105,10 +109,38 @@ fn main() {
         }
     });
 
-    println!("allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs}");
+    // Framing is the other thing every byte goes through.
+    let mut framer: Framer<4096> = Framer::new();
+    {
+        let spare = framer.spare();
+        spare[..msg.len()].copy_from_slice(msg);
+        framer.filled(msg.len());
+        assert!(
+            matches!(framer.cut(), Cut::Message(n) if n == msg.len()),
+            "the framing path must actually cut a message"
+        );
+        framer.take(msg.len());
+    }
+
+    let frame_allocs = count(|| {
+        for _ in 0..10_000 {
+            let spare = framer.spare();
+            spare[..msg.len()].copy_from_slice(msg);
+            framer.filled(msg.len());
+            match framer.cut() {
+                Cut::Message(n) | Cut::Garbage(n) => framer.take(n),
+                Cut::Need => {}
+            }
+        }
+    });
+
+    println!(
+        "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
+         frame {frame_allocs}"
+    );
     assert_eq!(
-        [idle_allocs, send_allocs, recv_allocs],
-        [0; 3],
+        [idle_allocs, send_allocs, recv_allocs, frame_allocs],
+        [0; 4],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

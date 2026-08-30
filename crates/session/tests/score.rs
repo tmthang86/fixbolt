@@ -9,6 +9,7 @@
 
 use nanofix_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
 use nanofix_conformance::script::FIXED_TIME_MILLIS;
+use nanofix_engine::frame::{Cut, Framer};
 use nanofix_session::{Acceptor, Config, Session};
 
 /// `session` cannot depend on `conformance` — that is the dev-dependency
@@ -54,55 +55,12 @@ struct Adapter {
 struct Wire {
     conn: Conn,
     session: Session<Acceptor, 256>,
-    rx: Vec<u8>,
+    rx: Framer<RX>,
 }
 
-/// What the front of a receive buffer holds.
-enum Frame {
-    /// A complete message, `..0`.
-    Message(usize),
-    /// `9=` promises bytes that have not arrived.
-    Need,
-    /// `9=` does not land on a `10=NNN` trailer.
-    Garbage,
-}
-
-/// Take `9=` at its word, and check that it lands on the trailer.
-///
-/// `[measured 2026-08-29]` this is what `2m_BodyLengthValueNotCorrect.def`
-/// says, in its own two comments. `9=30` on a 91-byte body lands mid-message,
-/// so that message is lost and the next one — arriving in a later read — is
-/// untouched. `9=111` lands inside the message *after* it, so both are lost
-/// together. One rule covers both: what `9=` promises is either a message or
-/// rubbish, and rubbish takes the whole buffer with it.
-fn frame(rx: &[u8]) -> Frame {
-    let Some(at) = rx.windows(3).position(|w| w == b"\x019=") else {
-        return Frame::Garbage;
-    };
-    let digits = &rx[at + 3..];
-    let Some(end) = digits.iter().position(|b| *b == 1) else {
-        return Frame::Need;
-    };
-    let Ok(len) = std::str::from_utf8(&digits[..end])
-        .unwrap_or("x")
-        .parse::<usize>()
-    else {
-        return Frame::Garbage;
-    };
-    let stop = at + 3 + end + 1 + len;
-    // The checksum's width is not fixed here: 238 of the corpus's `I` lines
-    // carry the literal `10=0`, one digit, and the loader keeps them.
-    if rx.len() < stop + 4 {
-        return Frame::Need;
-    }
-    if &rx[stop..stop + 3] != b"10=" {
-        return Frame::Garbage;
-    }
-    match rx[stop + 3..].iter().position(|b| *b == 1) {
-        Some(k) => Frame::Message(stop + 3 + k + 1),
-        None => Frame::Need,
-    }
-}
+/// `[measured]` the longest message in the corpus is 200 bytes; 4 KiB leaves
+/// room for an application message an order of magnitude bigger.
+const RX: usize = 4096;
 
 impl Adapter {
     fn new() -> Self {
@@ -119,7 +77,7 @@ impl Adapter {
         self.conns.push(Wire {
             conn,
             session: Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
-            rx: Vec::new(),
+            rx: Framer::new(),
         });
         self.conns.len() - 1
     }
@@ -138,27 +96,32 @@ impl SessionUnderTest for Adapter {
             });
         };
 
-        self.conns[i].rx.extend_from_slice(bytes);
+        // TCP delivers bytes, not messages. `nanofix_engine::frame` is the
+        // real thing an engine uses; this adapter is standing in for an engine,
+        // so it calls it rather than keeping a second copy of the rule.
+        {
+            let spare = self.conns[i].rx.spare();
+            let n = spare.len().min(bytes.len());
+            spare[..n].copy_from_slice(&bytes[..n]);
+            self.conns[i].rx.filled(n);
+        }
+
         let mut result = Link::Up;
         loop {
-            if self.conns[i].rx.is_empty() {
-                break;
-            }
-            let taken = match frame(&self.conns[i].rx) {
-                Frame::Need => break,
-                Frame::Message(n) => n,
-                // The whole buffer goes, and the session is still the one that
-                // judges it: it will fail to parse, run its garbled rule, and
-                // drop the link only if the rubbish claims to be a Logon —
-                // `1d_InvalidLogonLengthInvalid.def`.
-                Frame::Garbage => self.conns[i].rx.len(),
+            let taken = match self.conns[i].rx.cut() {
+                Cut::Need => break,
+                Cut::Message(n) => n,
+                // The rubbish still goes to the session, once: it will fail to
+                // parse, run its garbled rule, and drop the link only if the
+                // frame claims to be a Logon — `1d_InvalidLogonLengthInvalid`.
+                Cut::Garbage(n) => n,
             };
 
             // One identity, one connection. A Logon arriving on a second
             // connection while a first is logged on is refused by dropping it,
             // in silence — `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def`
             // both expect no reply at all on the second.
-            let taken_is_logon = field(&self.conns[i].rx[..taken], 35) == Some(b"A");
+            let taken_is_logon = field(self.conns[i].rx.bytes(taken), 35) == Some(b"A");
             if taken_is_logon
                 && self
                     .conns
@@ -166,15 +129,15 @@ impl SessionUnderTest for Adapter {
                     .enumerate()
                     .any(|(j, w)| j != i && w.session.is_logged_on())
             {
-                self.conns[i].rx.clear();
+                self.conns[i].rx.take(taken);
                 self.conns[i].session.disconnect(&mut emit);
                 return Link::Dropped;
             }
 
             let app = &mut self.app;
             let w = &mut self.conns[i];
-            result = link(w.session.received_with(&w.rx[..taken], app, &mut emit));
-            w.rx.drain(..taken);
+            result = link(w.session.received_with(w.rx.bytes(taken), app, &mut emit));
+            w.rx.take(taken);
             if result == Link::Dropped {
                 break;
             }

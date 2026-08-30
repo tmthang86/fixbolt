@@ -17,6 +17,14 @@ nanofix-dict = { path = "../dict" }
 # depend on session, so there is no cycle.
 [dev-dependencies]
 nanofix-conformance = { path = "../conformance" }
+# Framing belongs to the engine (DESIGN §2 L3). The score adapter stands in for
+# an engine, so it calls the real one rather than keeping a second copy.
+#
+# `engine` depends on `session`, so this is a cycle — allowed, because a
+# dev-dependency is not part of the library build. `cargo build -p
+# nanofix-session` does not compile `engine`; `cargo test -p nanofix-session`
+# does.
+nanofix-engine = { path = "../engine" }
 
 [lints]
 workspace = true

@@ -5,5 +5,6 @@
 //! sockets, and a blocking call on the engine thread is a bug rather than a
 //! style choice (`CLAUDE.md` §2 non-negotiable 4).
 
+pub mod frame;
 pub mod transport;
 pub mod wait;

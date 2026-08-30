@@ -43,6 +43,7 @@ dependencies = [
  "nanofix-codec",
  "nanofix-conformance",
  "nanofix-dict",
+ "nanofix-engine",
 ]
 
 [[package]]

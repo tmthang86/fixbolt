@@ -90,7 +90,15 @@ below describe what a first release would contain.
     a loop spinning forever on a socket that closed. Same answer the codec reached for
     `Parsed::Incomplete`.
   - `Waiting`, with `Spin` (the default, D8) and `Park` (every test in this repository).
-  - `benches/alloc.rs`: **0** on the idle, send and receive paths.
+  - `Framer<N>` — one fixed buffer per connection, no allocation, no parsing. It reads one
+    field, `9=`, and answers `Cut::{Message, Garbage, Need}`. **Rubbish is handed to the session
+    once** rather than dropped, so "a bad frame is fatal only if it claims to be a Logon" stays
+    in `nanofix-session` and is not duplicated. A message bigger than the buffer is `Garbage`
+    too: a buffer that fills and never empties is a connection wedged by a number the
+    counterparty chose.
+  - `crates/session/tests/score.rs` now calls that framer instead of keeping its own copy, and
+    still scores **59 / 59**.
+  - `benches/alloc.rs`: **0** on the idle, send, receive and framing paths.
 
 - **`nanofix-conformance`** — the mirrored corpus, for the initiator role.
   - `script::scenarios_mirrored()` reads the same 59 files from the other side: `I` lines
