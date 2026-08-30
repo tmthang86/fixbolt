@@ -836,20 +836,70 @@ TUNED    n=15  min=257.2  med=259.6  max=260.4  spread=1.2%  stdev=0.89  over 26
 UNTUNED  n=15  min=259.2  med=260.9  max=264.7  spread=2.1%  stdev=1.32  over 260: 14/15
 ```
 
-The median moves **0.5%** — and the ceiling is inside that 0.5%, so the same unchanged code
-goes from failing 14 of 15 runs to passing 14 of 15. **The ceiling is not measuring the
-code; on this machine it is measuring the CPU governor.**
+**That paragraph was written here, and it was wrong.** It said the median moves 0.5%, the
+ceiling is inside that 0.5%, and unchanged code therefore "goes from failing 14 of 15 runs
+to passing 14 of 15". The first half survives. **The verdict does not.**
 
-That the same case is stable at 1.2% alone and swings 26–38% inside `bench.sh` is its own
-result: what the harness measures depends on what ran before it in the same script. The
-number is a property of the run, not only of the machine.
+`[measured 2026-08-30]` The owner asked whether the machine had been idling with its screen
+off during that sample, so the identical command was run again — and the second sample
+disagrees with the first:
 
-### A second mode at 323.8 ns, three sightings, unexplained
+```
+TUNED    sample 1  n=15  med=259.6  min=257.2  max=260.4   over 260:  1/15
+TUNED    sample 2  n=15  med=260.3  min=256.7  max=325.1   over 260:  9/15
+UNTUNED  sample 1  n=15  med=260.9  min=259.2  max=264.7   over 260: 14/15
+UNTUNED  sample 2  n=15  med=262.3  min=258.8  max=265.5   over 260: 14/15
+```
 
-`ring, one way` occasionally returns **323.7–323.9 ns** instead of ~259 — a value too
-repeatable to be jitter, seen three times, in tuned runs and in `taskset`-pinned runs, and
-never in 30 dispatch-only runs. It is **not explained**, and it is recorded here rather
-than in a commit message because the next person to see 323.8 should know it is not new.
+**The medians reproduce to within 1.4 ns. The pass rate does not reproduce at all** — 1/15
+became 9/15 on the same machine, same command, same binary. Pooled over 30 runs per state:
+
+| | median | over the 260 ceiling | second mode ≥300 |
+|---|---|---|---|
+| tuned | 259.7 | **10 / 30 — 33%** | 2 / 30 |
+| untuned | 261.8 | **28 / 30 — 93%** | 0 / 30 |
+
+So the honest statement is the weaker one: the governor moves the median **0.8%**, the
+ceiling sits between the two medians, and the case fails **93% of the time untuned and 33%
+tuned**. Tuning helps and does not rescue it. **Neither state produces a stable verdict, and
+that is the finding** — a gate that answers differently a third of the time on unchanged
+code is not a gate, whichever way the machine is set.
+
+`[to testing-skills]` — *the median reproduced and the verdict did not.* Fifteen runs looked
+like plenty: the spread was 1.2%, the distribution looked tight, and one sample was written
+up as a result. What made it wrong was not noise in the numbers, it was that **the statistic
+being reported was a threshold crossing** — and a threshold sitting near the median converts
+a small, well-behaved shift into a coin flip, so the pass rate needs far more samples than
+the median does. The check that would have caught it costs one command: **run the sample
+twice before writing down a rate.** A second reason this one slipped: it was found by a
+question from outside — *"was the machine idling?"* — not by the person holding the data.
+
+The screen-off hypothesis itself was refuted while testing it. CPU frequency was sampled
+throughout both re-runs and held **3793–3814 MHz** in each state, `sleep-inactive-ac-timeout`
+is `0` so the box never suspends on AC, and `power-profiles-daemon` at `balanced` was watched
+for 40 s and **did not** revert the `performance` governor. None of the three could have
+produced the difference, and the difference turned out not to need producing: it was sampling.
+
+That the same case is stable at 1.2% in one sample and swings 26% in the next, and 26–38%
+inside `bench.sh`, is the same lesson from a third angle: what the harness measures depends
+on what ran before it and on nothing you can see in the number.
+
+### A second mode near 324 ns, five sightings, all in one machine state
+
+`ring, one way` occasionally returns **323.7, 323.9, 323.7, 324.9, 325.1 ns** instead of
+~259 — five values inside 1.4 ns of each other, which is not jitter but a second mode. It
+is **not explained**, and it is recorded here rather than in a commit message because the
+next person to see 324 should know it is not new.
+
+What can be said about it is where it appears. **All five sightings are in the §9-tuned
+state; none in roughly 45 untuned runs.** Tuning changes three things at once — governor
+`performance`, boost off, **SMT off, which halves the machine from 16 logical CPUs to 8** —
+and the third is the one that would plausibly let two bench threads collide. That is a
+hypothesis and **it has not been tested**: isolating it needs a fourth machine state
+(performance + boost off + SMT **on**) that the `fixbolt-machine` helper does not expose,
+since its `on` verb applies all five settings together. Until that runs, "SMT off" is a
+suspect and not a cause — and a knob that correlates with a score says nothing about what
+the score is measuring, which is a rule this file already records twice.
 
 **A hypothesis was tested and refuted.** Zen 2 puts 4 cores per L3 domain, so the obvious
 guess was that a run straddling the two domains pays Infinity Fabric latency. The first

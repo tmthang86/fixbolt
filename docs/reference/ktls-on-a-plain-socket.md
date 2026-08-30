@@ -156,3 +156,26 @@ one-command capability probe that *states its own requirement*, so the blocker i
 re-tested rather than re-read. The expensive version is what happened here: an
 item blocked on the wrong thing for days, in a repository whose own status page
 is explicitly maintained against staleness.
+
+`[to testing-skills]` — **a diagnostic that contradicts its own output, and nothing
+tests the diagnostic.** The script printed the evidence (`CONFIG_TLS=m`) and the
+opposite conclusion ("built without CONFIG_TLS") four lines apart, in one run, and
+that ran for a day. Two properties made it survivable. First, it was a **gate that
+nothing gated**: every other check in this repository is exercised by CI, and this
+one, being the thing that reads the machine, was assumed to be the thing that
+tells the truth. Second, its failure mode was **a confident sentence, not an
+error** — exit codes and output were both well-formed, so nothing looked broken.
+
+The cheap defence generalises past kernels and past FIX: **when a checker's output
+includes both an observation and a verdict, the mapping between them is pure logic
+and can be tested without the system under test.** Eight synthetic cases, no
+kernel, no root, and the old logic scores 3/8. The three it passes matter as much
+as the five it fails — they are what shows the test is not simply asserting the
+new behaviour.
+
+The second defect is the same shape one level down: `lsmod | grep -q` under
+`set -o pipefail` reports **failure on the run where the thing is found**, because
+`grep -q` exits early and SIGPIPEs the producer. A guard whose success path is the
+path that reports failure is invisible until something reads its answer against a
+known state — here, unloading the module on purpose and requiring the answer to
+change.
