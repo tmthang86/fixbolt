@@ -891,15 +891,107 @@ on what ran before it and on nothing you can see in the number.
 is **not explained**, and it is recorded here rather than in a commit message because the
 next person to see 324 should know it is not new.
 
-What can be said about it is where it appears. **All five sightings are in the §9-tuned
-state; none in roughly 45 untuned runs.** Tuning changes three things at once — governor
-`performance`, boost off, **SMT off, which halves the machine from 16 logical CPUs to 8** —
-and the third is the one that would plausibly let two bench threads collide. That is a
-hypothesis and **it has not been tested**: isolating it needs a fourth machine state
-(performance + boost off + SMT **on**) that the `fixbolt-machine` helper does not expose,
-since its `on` verb applies all five settings together. Until that runs, "SMT off" is a
-suspect and not a cause — and a knob that correlates with a score says nothing about what
-the score is measuring, which is a rule this file already records twice.
+The paragraph that stood here said **"all five sightings are in the §9-tuned state; none in
+roughly 45 untuned runs"**, and named SMT-off as the suspect. That was the third hypothesis
+about this mode, and like the two before it, it was wrong — and wrong the same way: an
+association read off a sample too small for a 5% event.
+
+## Three hypotheses about one 324 ns mode, all refuted by measurement
+
+### 1. Zen-2 L3 placement — refuted
+
+The 3700X has two 4-core L3 domains, so the guess was that a run straddling them pays
+Infinity Fabric latency. The first check was a **bad experiment**: `taskset -c 0-3` against
+`-c 0,4` changes the CPU *count* as well as the L3 relationship, and can attribute nothing.
+Redone with the count held at two:
+
+```
+2 CPUs, same L3 (0,1):   323.7  259.7  259.8  259.9  259.8
+2 CPUs, cross L3 (0,4):  259.6  260.0  256.6  257.4  259.8
+8 CPUs, free    (0-7):   256.2  259.9  259.9  257.3  259.6
+```
+
+**No L3 effect** — ~259 in all three arms — and the outlier landed in the arm the hypothesis
+favoured least.
+
+### 2. SMT off — refuted by a 2 × 2
+
+A verb was added to the machine helper so SMT could be varied **independently** of the other
+four settings, which is the only way to attribute anything. 50 runs in each of four states:
+
+| | governor / boost | SMT | mode ≥300 |
+|---|---|---|---|
+| A | powersave / on | on | 2 / 50 |
+| B | performance / off | **off** | 3 / 50 |
+| C | performance / off | on | 3 / 50 |
+| D | powersave / on | **off** | 5 / 50 |
+
+**All four.** Not SMT, not the governor, not boost. The earlier "all five sightings were
+tuned" was the sample, not the machine — the second time in one afternoon that a rate
+computed from a handful of runs pointed at the wrong cause.
+
+### 3. Thermal throttling — refuted
+
+Asked whether a hot CPU was stepping down mid-run. It gets genuinely hot: **91 °C** under
+load, against the 3700X's 95 °C Tctl limit. But throttling means **frequency falls**, and it
+did not:
+
+```
+quiet      1/30 over 300   med 262.4 ns   65-77 °C   min freq across all cores 3789 MHz
++8 spinners  30/30         med 449.5 ns   76-91 °C   min freq across all cores 3786 MHz
+```
+
+At 91 °C every core was still at ~3790 MHz. No step-down, so no throttle. (The first attempt
+at this measurement sampled only the **maximum** frequency across cores — which cannot see
+one core dropping — and its sampler's wait loop was a **busy spin**, so the "quiet" arm was
+never quiet. Both fixed before the numbers above were taken.)
+
+## What it actually is: the row that was not on the checklist
+
+```
+quiet machine, 60 runs           mode ≥300:  0-3 / 60   (~5%)
++ 8 spinners,  60 runs           mode ≥300:     55 / 60   (92%)
+median under load                262 ns -> 449 ns        (+71%)
+```
+
+**Competing CPU load.** Against **0.8%** for every `DESIGN.md` §9 tuning row combined — the
+checklist was reading governor, SMT, THP and C-states, and had **no row at all** for whether
+anything else was running. The box reported `pass 6` while an LLM, an editor and two Electron
+apps shared it.
+
+`scripts/check-machine.sh` now carries **`machine is quiet`**: CPU busy over a one-second
+window from `/proc/stat`, FAIL above 3%, with the top processes attributed by their own delta
+over the same window. Proven by reversal — eight spinners take it from `PASS 1%` to
+`FAIL 26%`, naming each spinner at exactly 100% of a core.
+
+`[to testing-skills]` — *three causes proposed, three refuted, and the real one was not on
+the checklist.* The generalisable part is not "check CPU load"; it is that **a tuning
+checklist enumerates what somebody thought of, and the largest term can simply be absent from
+it** — here by a factor of ninety, 71% against 0.8%. Two supporting rules, both paid for:
+**an association from a handful of samples of a rare event will point at whatever varied
+most recently** (L3, then SMT, then thermal — each fitted the data available when proposed),
+and **the instrument must be checked before the hypothesis**: one sampler here spun a whole
+core while measuring quietness, and another read `ps %CPU` — a **lifetime average**, which
+reported an idle process at 19% on a machine `/proc/stat` measured as 1% busy, and that
+number reached the owner as fact before the two were compared.
+
+**What is still unexplained:** the mode does not vanish on a quiet machine. It runs a few
+percent there — 3/60 and 1/60 in the cleanest samples — and nothing so far accounts for that
+residue. Load amplifies it roughly twentyfold; load is not all of it.
+
+### Clean baselines, quiet machine, `dispatch` run directly
+
+Not through `cargo`, which is itself a competing process — via `cargo bench` the same box
+gives ~5% where the bare binary gives 0/60.
+
+```
+untuned + quiet   n=60  min 257.4  med 260.6  max 326.1   over 260: 43/60   mode: 3/60
+tuned   + quiet   n=60  min 256.6  med 259.7  max 323.9   over 260: 13/60   mode: 1/60
+```
+
+The medians are 0.3% apart and the pass rates are 72% and 22%, which is the same lesson this
+file records twice above: **the ceiling sits at the median, so the rate is not a measurement
+of the code in any machine state.**
 
 **A hypothesis was tested and refuted.** Zen 2 puts 4 cores per L3 domain, so the obvious
 guess was that a run straddling the two domains pays Infinity Fabric latency. The first

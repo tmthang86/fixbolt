@@ -138,6 +138,74 @@ else
   row FAIL "net.core.busy_poll" "$bp" "sudo sysctl -w net.core.busy_poll=50 net.core.busy_read=50"
 fi
 
+# --- the machine is quiet -----------------------------------------------------
+# `[measured 2026-08-30]` This row exists because the rows above were measuring the
+# wrong thing. On this project's own desktop the five tuning rows move the ring
+# benchmark's median by 0.8%; competing CPU load moves it by 71% — 262 ns to 449 ns
+# — and NOTHING in §9 looked at load. The box scored `pass 6` while running an LLM,
+# an editor and two Electron apps. A tuned machine that is busy is not a machine you
+# can take a latency number from, and until this row existed the script could not say
+# so. Guarded by reversal: with eight spinners running it must FAIL.
+#
+# CPU time over a real window, not `loadavg` — loadavg is a one-minute average and
+# says nothing about the second the benchmark ran in.
+#
+# Both the total AND the per-process attribution are deltas over that window.
+# `[measured 2026-08-30]` `ps -eo pcpu` was used here first and named the wrong
+# processes: **`%CPU` from `ps` is an average over the process's whole lifetime**,
+# not what it is doing now. It reported an LLM at 19% on a machine /proc/stat
+# measured as 1% busy, and that number reached the owner as "the machine is loaded"
+# before the two were put side by side. An instrument that answers a question
+# adjacent to the one asked is the failure this repository keeps finding.
+QUIET_WINDOW=${QUIET_WINDOW:-1}
+busy_pct=""
+# One awk pass over every /proc/<pid>/stat. Done in shell it took seconds, which
+# made the sampling window longer than QUIET_WINDOW and reported a single-threaded
+# process at 310% of a core — a reading that is impossible on its face, and the
+# only reason it was caught.
+snap() {
+  head -1 /proc/stat
+  awk 'FNR==1 {
+         a = index($0, "(")
+         b = 0; for (i = length($0); i > 0; i--) if (substr($0, i, 1) == ")") { b = i; break }
+         if (a == 0 || b == 0) next
+         pid  = substr($0, 1, a - 2)
+         comm = substr($0, a + 1, b - a - 1)
+         n = split(substr($0, b + 2), f, " ")      # f[1] is state, so utime=f[12]
+         if (n >= 13) print "p", pid, f[12] + f[13], comm
+       }' /proc/[0-9]*/stat 2>/dev/null
+}
+if [ -r /proc/stat ]; then
+  A=$(snap); sleep "$QUIET_WINDOW"; B=$(snap)
+  # shellcheck disable=SC2046
+  set -- $(echo "$A" | head -1); shift
+  a_idle=$(($4 + $5)); a_tot=0; for v in "$@"; do a_tot=$((a_tot + v)); done
+  # shellcheck disable=SC2046
+  set -- $(echo "$B" | head -1); shift
+  b_idle=$(($4 + $5)); b_tot=0; for v in "$@"; do b_tot=$((b_tot + v)); done
+  d_tot=$((b_tot - a_tot)); d_idle=$((b_idle - a_idle))
+  [ "$d_tot" -gt 0 ] && busy_pct=$(((d_tot - d_idle) * 100 / d_tot))
+fi
+
+if [ -z "$busy_pct" ]; then
+  row UNKNOWN "machine is quiet" "cannot read /proc/stat" \
+    "a latency number needs a quiet machine; find another way to confirm it"
+elif [ "$busy_pct" -le 3 ]; then
+  row PASS "machine is quiet" "${busy_pct}% CPU busy over ${QUIET_WINDOW}s"
+else
+  top=$(
+    { echo "$A" | awk '$1=="p"{print "a", $2, $3, $4}'
+      echo "$B" | awk '$1=="p"{print "b", $2, $3, $4}'; } |
+    awk '$1=="a"{was[$2]=$3; nm[$2]=$4}
+         $1=="b" && ($2 in was){d=$3-was[$2]; if(d>0) print d, nm[$2]}' |
+    sort -rn | head -3 |
+    awk -v tot="$d_tot" -v ncpu="$(nproc 2>/dev/null || echo 1)" \
+      'tot > 0 {printf "%s %d%% of a core  ", $2, $1 * 100 * ncpu / tot}'
+  )
+  row FAIL "machine is quiet" "${busy_pct}% CPU busy over ${QUIET_WINDOW}s — ${top:-unattributed}" \
+    "close what is running; competing load moved this project's ring median 71%, against 0.8% for every tuning row combined"
+fi
+
 # --- kTLS ---------------------------------------------------------------------
 # STATUS.md open item 10. This is a kernel feature, not a latency property, so it
 # is reported separately from the tuning rows above.

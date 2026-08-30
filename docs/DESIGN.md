@@ -729,6 +729,7 @@ anything:
 
 | Setting | Why |
 |---|---|
+| **Nothing else is running on the machine** | `[measured 2026-08-30]` **the row that was missing, and it dominates every other row here.** On the project's Ryzen 7 3700X, all six tuning rows below move the `ring, one way` median by **0.8%** — 260.6 ns untuned to 259.7 ns tuned, both on a quiet box. Competing CPU load moves it by **71%**, 262 ns to 449 ns, and takes the rate of a second mode near 324 ns from ~5% to **92%**. A machine can satisfy every other line in this table and still be useless to measure on. `scripts/check-machine.sh` now reads CPU busy over a one-second window and **FAILs above 3%**, naming the processes by their delta in that window |
 | `isolcpus` + `nohz_full` for the engine core | No scheduler ticks, no other tenants |
 | IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt |
 | `mlockall` + pre-faulted buffers | No page fault on the hot path. The reference project's `pool.rs` touches every page at startup — copy that |
