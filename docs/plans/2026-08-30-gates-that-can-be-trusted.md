@@ -275,3 +275,70 @@ kết luận — một reversal không làm gì cũng báo PASS, bài học đã
 **Chưa chứng minh:** rằng runner cũng xanh. Việc đó chỉ CI trả lời được, và nó là bước 4.
 **Cũng chưa chứng minh:** rằng `1.98.0` là bản cuối cùng cần ghim — job advisory tồn tại chính
 vì câu đó không ai chứng minh được.
+
+---
+
+### Bước 2 và 3 — item 17, xong 2026-08-30, và plan sai ở chỗ quan trọng nhất
+
+**Sửa plan, và đây là cái sửa đắt nhất cho tới giờ: plan chẩn đoán sai nguyên nhân.**
+
+Plan viết rằng tiêu chí lắng đếm vòng quay là khuyết tật, và đề ra cách sửa là cho harness chờ
+đúng số message mà bước đó kỳ vọng — kèm ADR-0009 vì việc đó đổi API công khai của
+`nanofix_conformance`. **Bảng số 39/43/59 theo ngưỡng 200/2 000/20 000 là thật; cách đọc nó thì
+sai.** Một điểm số nhích theo timeout nói rằng harness đang chờ *một cái gì đó*, không nói rằng
+cái timeout là thủ phạm.
+
+**Thủ phạm là Nagle, trên chính socket client của harness.** `2m_BodyLengthValueNotCorrect` —
+đúng một file duy nhất hỏng — gửi một frame `9=` quá dài, và frame dở dang thì **không có gì để
+trả lời**. Không có segment đi ra thì không có ACK ăn ké; delayed ACK của đầu kia giữ hàng chục
+mili-giây; Nagle giữ mọi lệnh ghi nhỏ tiếp theo lại phía sau. Bốn dòng `I` dồn thành **một lần
+đọc 477 byte** và framer vứt cả bốn. Mấy cái timeout dài chỉ đơn giản là **chờ cho delayed ACK
+nổ**.
+
+Engine vốn đã bật `TCP_NODELAY` cho socket nó accept (`transport.rs:68`). Harness thì không —
+nên chính bộ đồ test là bên duy nhất còn bật Nagle trong cuộc trao đổi.
+
+**Bảng 2 × 2 chốt lại, mỗi ô một lần chạy:**
+
+| | Nagle bật (như đang commit) | `set_nodelay(true)` |
+|---|---|---|
+| Đếm vòng quay, 200 | **39 / 59** | **59 / 59** |
+| Chặn theo đồng hồ tường | **39 / 59** | **59 / 59** |
+
+Đếm vòng quay không làm xê dịch gì theo cả hai chiều. `set_nodelay` làm xê dịch tất cả theo cả
+hai chiều. Gỡ đúng dòng đó khỏi bản đã sửa thì điểm về lại **đúng 39 / 59**.
+
+**Đã làm:**
+
+- `crates/engine/tests/wire.rs` — `sock.set_nodelay(true)` trên socket client. **Đây là bản sửa.**
+- `Wire::pump` chặn theo đồng hồ tường thay vì đếm vòng quay. **Giữ lại như một khoản bảo hiểm,
+  và được dán nhãn đúng như vậy trong chính doc comment**: nó không phải cái đã sửa, và không có
+  gì đo được trên máy này cho thấy nó có tác dụng.
+- **`ADR-0009` không được viết, và hook `settle` bị xoá chứ không được ship.** Bản nháp đầu có
+  thêm `SessionUnderTest::settle` vào trait công khai của `nanofix_conformance`; reversal lẽ ra
+  để chứng minh nó lại cho thấy **tắt nó đi cổng vẫn 59 / 59**. Không chứng minh được là có tác
+  dụng thì không phải là code, mà là một thứ sẽ được tin nhầm về sau. `runner.rs` trở về nguyên
+  trạng.
+
+**Đã chạy và đọc output:**
+
+```
+59 / 59   cargo test -p nanofix-engine --test wire          0.81 s
+59 / 59   cùng thế, quiet 20 ms thay vì 1 ms               14.46 s   <- điểm phẳng
+39 / 59   cùng thế, gỡ đúng dòng set_nodelay                0.95 s   <- reversal
+59 / 59   pump đếm vòng quay cũ + set_nodelay               0.45 s   <- cô lập biến
+59 / 59   cargo test -p nanofix-session --test score        không đổi
+```
+
+**Điểm phẳng theo ngưỡng** là điều plan đòi hỏi và nó đạt: 59 / 59 ở cả 1 ms lẫn 20 ms, chỉ thời
+gian chạy đổi. Bản cũ nhích 39 → 43 → 59 trên khoảng 100× của nó.
+
+**Cái giá phải ghi lại.** Chẩn đoán sai đã kịp đi vào `STATUS.md`, `README.md`, `DESIGN.md` §6,
+`PRD.md` và một pull request **trong cùng một giờ nó được hình thành**, mỗi chỗ đều phát biểu như
+đã xong. Thứ còn thiếu là một thí nghiệm đổi một biến — bảng 2 × 2 ở trên tốn mỗi ô một lần chạy
+và đã bác bỏ nó trước khi bất cứ dòng nào kia được viết. Ghi đầy đủ ở
+[reference/measured-costs.md](../reference/measured-costs.md), kèm hai case
+`[to testing-skills]`: *cái núm tương quan với bản sửa nhưng không phải nguyên nhân*, và *bộ đồ
+test là bên duy nhất cấu hình sai*.
+
+**Còn lại của plan này:** bước 4 (CI xanh), bước 5 (item 7), bước 6 (item 18).

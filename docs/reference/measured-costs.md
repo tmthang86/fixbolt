@@ -377,60 +377,94 @@ the loop is a handful of instructions and the harness's own overhead is the same
 ceiling is set at 15 ns rather than at 2×. **A ceiling tighter than the measurement's own
 spread is a gate that goes red at random**, and DESIGN §6 already says what happens to those.
 
-## A settle criterion that counts spins measures the machine, not the protocol
+## The score followed the timeout, and the timeout was not the cause
 
-`[measured 2026-08-30]` Linux 6.18 x86_64, 4 vCPU container, `cargo 1.94.1` — **not** the
-M5 laptop every other number on this page came from.
+`[measured 2026-08-30]` Linux 6.18 x86_64, 4 vCPU container, `cargo 1.98.0`.
 
-`crates/engine/tests/wire.rs` is the gate that matters: the same 59 acceptance definitions
-that `crates/session/tests/score.rs` runs in process, run again through kernel TCP. It was
-recorded here and in `README.md` as **59 / 59**. On the Linux box it scores **39 / 59**,
-first run, with the working tree unchanged.
+`crates/engine/tests/wire.rs` runs the 59 acceptance definitions through kernel TCP. It was
+recorded as **59 / 59**. On this machine it scored **39 / 59**, first run, working tree
+unchanged. Changing one constant and nothing else — the `quiet` bound in `Wire::pump`, the
+number of consecutive `Engine::turn` calls that moved nothing before the harness declared the
+exchange settled — walked the score:
 
-The engine is not what is wrong. Three runs, changing one constant and nothing else — the
-`quiet` bound in `Wire::pump`, the number of consecutive `Engine::turn` calls that moved
-nothing before the harness declares the exchange settled:
+| `quiet` bound | Score |
+|---|---|
+| 200 — as committed | 39 / 59 |
+| 2 000 | 43 / 59 |
+| 20 000 | 59 / 59 |
 
-| `quiet` bound | Score | Wall time |
+**That table is real and its obvious reading is wrong.** A score that climbs with a timeout
+does say the harness is waiting for something. It does *not* say the timeout is the defect,
+and the first write-up here concluded that it did: *"a spin count is not a settle criterion"*.
+That went into `STATUS.md`, `README.md`, `DESIGN.md` §6, `PRD.md` and a pull request before it
+was checked.
+
+### What it actually was
+
+**Nagle's algorithm, on the test harness's own client socket.**
+
+`2m_BodyLengthValueNotCorrect.def` is the one file that fails, and its own comment says why it
+is unusual: *"Send a message with a length that is too long, it will combine with the next
+message and be ignored."* An over-long `9=` produces **no reply** — an incomplete frame has
+nothing to answer. No outbound segment therefore carries a piggybacked ACK, the peer's delayed
+ACK holds for tens of milliseconds, and Nagle keeps every subsequent small write queued behind
+the unacknowledged one. Four `I` lines then arrive as **one 477-byte read**, and the framer
+discards all four — the correct answer to a question the corpus never asked.
+
+Traced, rather than reasoned:
+
+```
+DBG recv 120        DBG cut=Need len=120     <- the over-long frame, correctly held
+   write ok                                  <- the next I line, into the kernel
+DBG recv idle       DBG cut=Need len=120     <- and again, and again, for milliseconds
+   write ok            write ok
+DBG cut=Garbage(477)                         <- all four, at once
+```
+
+The engine already sets `TCP_NODELAY` on the sockets it accepts (`transport.rs:68`). The
+harness did not set it on the client, which made the test rig the only Nagle-enabled peer in
+the exchange. **One line fixes it**, and the longer timeouts were merely outwaiting the
+delayed ACK.
+
+### The 2 × 2 that settles it
+
+| | Nagle on (as committed) | `set_nodelay(true)` |
 |---|---|---|
-| 200 — as committed | 39 / 59 | 0.7 s |
-| 2 000 | 43 / 59 | 4.3 s |
-| 20 000 | **59 / 59** | 41.3 s |
+| Spin count, 200 | **39 / 59** | **59 / 59** |
+| Wall-clock bound | **39 / 59** | **59 / 59** |
 
-**A score that climbs monotonically with a timeout is a timing artefact**, and the reported
-diffs say the same thing in the other direction: `FieldCount { expected: 9, actual: 8 }` at
-one line and `expected: 8, actual: 9` four lines later is one reply arriving after the step
-that was supposed to read it, shifting every comparison behind it. `--test score` scores
-59 / 59 on this same machine, so the session's answers are right and only their arrival time
-is being measured.
+The spin count moves nothing in either direction. `set_nodelay` moves everything in both.
+Removing that one line from the finished fix returns the score to exactly **39 / 59** — the
+original number, which is what makes this a reversal and not a story.
 
-**The defect is that a spin count is not a settle criterion.** `pump` races loopback
-delivery: it asks "have I turned 200 times with nothing to do", which is a question about how
-fast this CPU spins, when the question it means to ask is "has the kernel finished handing
-over what the engine wrote". Those coincide only on the machine the constant was tuned on.
-The doc comment on `pump` is explicit that idling once is not settled and that the bound
-exists to avoid hanging — the bound was right to exist and wrong to be a count.
+### What was kept anyway, and labelled
 
-Two consequences worth keeping separate:
+`Wire::pump` now bounds itself in wall time rather than in turns, and **the gate scores
+59 / 59 at both 1 ms and 20 ms** — only the run time moves, 0.8 s against 14.5 s. That
+flatness is the whole justification: a bound in turns is a bound on a machine. But nothing
+measured here shows it mattering, and the code comment says so rather than implying otherwise.
+An earlier draft of this fix also added a `settle` hook to `nanofix_conformance`'s public
+trait; **the reversal that was supposed to prove it showed the gate stayed at 59 / 59 with it
+disabled**, so it was deleted rather than shipped. Machinery that cannot be shown to matter is
+machinery that will be believed later.
 
-- **The 59 / 59 over TCP is a single-machine result.** It reproduces on the M5 and does not
-  reproduce here. Until the criterion is deterministic the wire gate cannot go in CI, and
-  `tools/w2w` — which exists to produce Linux numbers — would be built on top of a gate that
-  Linux is currently failing. Open item 17.
-- **The in-process gate is unaffected**, because it never touches a socket. That is the
-  reason it is worth keeping both, and it is what makes the diagnosis above cheap: two gates
-  over the same corpus disagreeing localises the fault to the thing that differs.
+### What this cost, and the rule that comes out of it
 
-**Generalised, and the reason this is written down rather than fixed in passing:** a check
-whose green depends on a duration is not a check, it is a coin whose weighting is the
-hardware. It reads as a gate, it goes in a status page as a number, and it is discovered by
-running it somewhere else — never by reading it. The same shape has a name and a collection
-of siblings in the sibling repository's `false-greens.md`; `CLAUDE.md` §11 says what goes
-back there.
+Two things, and the second is the expensive one.
 
-`[to testing-skills]` — as a false-green case: *a gate whose green is a duration*. Contribute
-the three-row table, the monotonic-score diagnostic, and the rule that a settle criterion must
-name the event it waits for. It needs no FIX to be understood.
+- **A number that moves with a knob invites the conclusion that the knob is the cause.** It is
+  evidence that something is being waited on, and nothing more. The next question is *what*,
+  and the way to answer it is a trace, not a third value of the knob.
+- **A wrong diagnosis published confidently is worse than an open question.** This one reached
+  five documents and a pull request in the same hour it was formed, each restating it as
+  settled. What it lacked was a single-variable experiment — the 2 × 2 above took one run per
+  cell and would have refuted it before any of that was written.
+
+`[to testing-skills]` — two cases, both legible without FIX. *The knob that correlates with
+the fix and is not the cause* — a monotonic response to a timeout, a plausible mechanism, and
+a completely different real cause. And *the test rig as the only misconfigured peer*: the
+system under test had `TCP_NODELAY` set and the harness did not, so the harness measured a
+network condition the product never has.
 
 ## CI had been red for both of these before either was noticed
 

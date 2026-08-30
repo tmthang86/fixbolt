@@ -9,12 +9,13 @@ Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire
 
 **Next, and each needs its own plan before any code (Rule Zero):**
 
-**Six plans were written on 2026-08-30 and all six are awaiting approval.** No code until
-they are. In dependency order:
+**Six plans were written and approved on 2026-08-30**, with the owner's standing permission to
+revise a plan mid-flight when reality disagrees with it — each revision recorded in that plan's
+delivery log. In dependency order:
 
 1. **[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)** —
-   items 7, 17, 18, 19. Everything else waits on this: CI is red and the wire gate does not
-   reproduce, so no other plan can prove it finished.
+   **in progress.** Items **17 and 19 are closed**; 7 and 18 remain. Everything else waits on
+   this, because every other plan closes by quoting a gate.
 2. **[w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md)** — items 6, 11,
    12, 13, 15. `DESIGN.md` §7 step 7. Half of it runs here; half of it is blocked on a §9
    machine and says so.
@@ -33,7 +34,7 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Branch | **`main`.** `plan/engine` merged 2026-08-30, exit criteria met, gates re-run green on the merge commit |
 | Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p nanofix-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | *(none started)*. **Six plans awaiting approval**, written 2026-08-30 — see the list above. Between them they cover 14 of the 16 open items |
+| Plan in flight | **[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)** — items 17 and 19 closed 2026-08-30, items 7 and 18 open. Five more plans approved and not started |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
@@ -328,17 +329,29 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   `MemJournal::put` keep nothing turns four of `tests/journal.rs`'s seven red **and** drops
   `--test score` below 59. Restored: 59 / 59, and 59 / 59 over a socket.
 
-- **The wire gate is 59 / 59 on one machine and 39 / 59 on another, and the engine is not
-  what differs.** `[measured 2026-08-30]` Linux 6.18 x86_64, 4 vCPU, `cargo 1.94.1`, working
-  tree unchanged: `cargo test -p nanofix-engine --test wire` → **39 / 59**, while
-  `cargo test -p nanofix-session --test score` over the same corpus on the same machine →
-  **59 / 59**. Changing one constant and nothing else — the `quiet` bound in `Wire::pump`,
-  which counts consecutive `Engine::turn` calls that moved nothing — walks the score
-  **200 → 39/59, 2 000 → 43/59, 20 000 → 59/59 (41 s)**. A score that climbs monotonically
-  with a timeout is a timing artefact: the harness is racing loopback delivery, and a spin
-  count is not a settle criterion. Written up in
-  [reference/measured-costs.md](docs/reference/measured-costs.md). **Open item 17** — until
-  it is deterministic the wire gate cannot go in CI, and it is the gate `tools/w2w` builds on.
+- **The wire gate was 39 / 59 on Linux, the cause was Nagle, and the first diagnosis of it was
+  wrong.** `[measured 2026-08-30]` `cargo test -p nanofix-engine --test wire` scored 39 / 59
+  while `--test score` over the same corpus on the same machine scored 59 / 59. Walking the
+  harness's `quiet` bound walked the score — 200 → 39, 2 000 → 43, 20 000 → 59 — and that was
+  read as "a spin count is not a settle criterion". **It was Nagle on the harness's own client
+  socket.** `2m_BodyLengthValueNotCorrect` sends a frame that produces no reply, so no
+  piggybacked ACK; the peer's delayed ACK holds; four `I` lines coalesce into one 477-byte read
+  and the framer discards all four. The longer timeouts were outwaiting the delayed ACK. The
+  engine already sets `TCP_NODELAY` (`transport.rs:68`); the harness did not, which made the
+  test rig the only Nagle-enabled peer. **Fixed with one line, and proven by a 2 × 2**: spin
+  count and wall-clock bound both score 39 / 59 without `set_nodelay` and 59 / 59 with it.
+  Removing that line from the finished fix returns exactly 39 / 59. **Item 17 closed**;
+  full write-up, including what the wrong diagnosis cost, in
+  [reference/measured-costs.md](docs/reference/measured-costs.md).
+- **The wire gate is 59 / 59 on Linux, and its bounds are flat.** `[measured 2026-08-30]`
+  59 / 59 at a 1 ms and a 20 ms quiet window; only the run time moves, 0.8 s against 14.5 s.
+  The `settle` hook an earlier draft added to `nanofix_conformance`'s public trait was
+  **deleted rather than shipped**: the reversal meant to prove it left the gate at 59 / 59 with
+  it disabled.
+- **The toolchain is pinned and the lint that turned `main` red is fixed.** `[measured
+  2026-08-30]` `clippy::byte_char_slices` reproduces on `1.98.0` — installable here, so it did
+  not need CI to prove — and `rust-toolchain.toml` now pins 1.98.0, with an advisory
+  `clippy-latest-stable` CI job that never blocks a merge. **Item 19 closed.**
 - **The rest of the suite is green on Linux, on this toolchain.** `[measured 2026-08-30]`
   same box, `cargo 1.94.1`: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D
   warnings` clean **here and red on the runner's newer clippy — see the next entry**,
@@ -410,12 +423,12 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 
 ## Open items
 
-Every one of these is either inside a plan or has a stated reason for not being in one. The
-plans are **awaiting approval** — nothing below is being worked on yet.
+Every one of these is either inside a plan or has a stated reason for not being in one. All six
+plans are **approved**; the first is in progress.
 
 | Plan | Closes |
 |---|---|
-| [gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md) | 7, 17, 18, 19 |
+| [gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md) | **17 and 19 closed 2026-08-30**; 7 and 18 in progress |
 | [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | 15 now; 6, 11, 13 on a §9 machine; **decides** 12 |
 | [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 |
 | [data-fields](docs/plans/2026-08-30-data-fields.md) | 8, 9 |
@@ -443,6 +456,4 @@ against hardware that does not exist.
 | 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what nanofix claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |
 | 15 | **Non-negotiable 4 — *the engine thread never sleeps in the kernel* — is a hand-check.** No gate exists. `dtruss` needs SIP disabled; a symbol-based check over the rlib is defeated by generics (it passes with a `sleep` in the loop). The answer is a syscall trace of a concrete binary on Linux, which `tools/w2w` will be | DESIGN §6; every claim that D8 holds |
 | 16 | **A journal is written and never read back.** Nothing recovers a session's outbound sequence number or its unacknowledged messages from the log on startup, so `Fsync` today is an audit trail rather than a recovery mechanism ([ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md)). It needs a session constructible *from* a journal, which is a session-layer change with its own plan | A restart that resumes a session rather than starting one |
-| 17 | **The wire gate's settle criterion is a spin count.** `Wire::pump` in `crates/engine/tests/wire.rs` declares the exchange settled after 200 consecutive `Engine::turn` calls that moved nothing, which is a question about CPU speed rather than about kernel delivery. Measured: 39 / 59 on Linux, 59 / 59 on the M5, 59 / 59 on Linux at a 100× bound. Needs a real criterion — readiness on the client sockets with a deadline — behind its own plan, because it changes how a `DESIGN.md` §6 gate is measured | The wire gate in CI; `tools/w2w`, which builds on it; every claim that the 59 / 59 over TCP is reproducible |
 | 18 | **A plan can close on a laptop's word while CI is red.** The engine plan closed and merged with its gates reported green from an Apple M5; the GitHub run on that same commit failed and was not read, and four documents carried the laptop's number for a day. Nothing in `CLAUDE.md` §9 requires the closing evidence to name a CI run | Every "gates green" claim in a merge commit |
-| 19 | **CI's toolchain is unpinned and the workspace denies all warnings.** The runner installs whatever stable is current, so `cargo clippy -- -D warnings` denies lints released after the code was written — measured: `clippy::byte_char_slices` red on `1.98.0`, absent from `0.1.94` and `1.95.0`. The repository can go red with no commit. Pin a `rust-toolchain.toml` and upgrade deliberately, or deny a named list | Every clippy gate; anyone reading a red CI and looking for what they broke |

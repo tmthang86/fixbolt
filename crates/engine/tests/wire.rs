@@ -23,6 +23,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::ops::Range;
+use std::time::{Duration, Instant};
 
 use nanofix_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
 use nanofix_conformance::script::FIXED_TIME_MILLIS;
@@ -131,29 +132,44 @@ impl Wire {
         self.clients.len() - 1
     }
 
-    /// Turn the engine until it settles.
+    /// Turn the engine until nothing has moved for `quiet`, or `deadline` is up.
     ///
-    /// **Idle once is not settled.** Loopback delivery is not instantaneous:
-    /// the first turn after a write regularly finds nothing, and a pump that
-    /// stopped there would report silence for a message that arrives a
-    /// microsecond later. So it keeps turning until a run of turns in a row has
-    /// moved nothing, and gives up after a bound rather than hanging.
-    fn pump(&mut self) {
-        let mut quiet = 0;
-        for _ in 0..20_000 {
+    /// **Idle once is not settled**, because loopback delivery is not
+    /// instantaneous. The previous version answered that with a run of 200
+    /// turns that moved nothing, and a count of turns is a question about how
+    /// fast this CPU spins rather than about whether anything has been
+    /// delivered. Both bounds here are wall time instead, which is the unit the
+    /// thing being waited on is actually measured in.
+    ///
+    /// **This is insurance, not the fix.** `[measured 2026-08-30]` the spin
+    /// count was not what made this gate score 39 / 59 on Linux — Nagle was, on
+    /// the client socket above. With `set_nodelay` in place the original
+    /// spin-count pump also scores 59 / 59, and with it removed this pump also
+    /// scores 39 / 59. The change is kept because a bound in turns is a bound
+    /// on a machine, and this one is not; nothing in the corpus on this machine
+    /// demonstrates that it matters, and that is said here rather than implied.
+    ///
+    /// `deadline` is a lifeline, not a criterion. Hitting it means the engine
+    /// never went quiet, which is a real failure and is left for the comparator
+    /// to report.
+    fn pump(&mut self, quiet: Duration, deadline: Duration) {
+        let start = Instant::now();
+        let mut last_move = start;
+        loop {
             let mut moved = false;
             while let Some(t) = self.acceptor.accept() {
                 let _ = self.engine.add(t);
                 moved = true;
             }
             moved |= self.engine.turn();
+            let now = Instant::now();
             if moved {
-                quiet = 0;
-            } else {
-                quiet += 1;
-                if quiet > 200 {
-                    return;
-                }
+                last_move = now;
+            } else if now.duration_since(last_move) >= quiet {
+                return;
+            }
+            if now.duration_since(start) >= deadline {
+                return;
             }
         }
     }
@@ -210,6 +226,24 @@ impl SessionUnderTest for Wire {
                 let addr = self.acceptor.local_addr().expect("bound");
                 let sock = TcpStream::connect(addr).expect("loopback");
                 sock.set_nonblocking(true).expect("non-blocking");
+                // **Nagle must be off on this side too, and it is not cosmetic.**
+                //
+                // `[measured 2026-08-30]` with it on, `2m_BodyLengthValueNotCorrect`
+                // fails and no other file does. Its `I` lines include one whose
+                // `9=` is too long and which the corpus expects to swallow exactly
+                // the message after it. That message produces no reply — an
+                // incomplete frame has nothing to answer — so no outbound segment
+                // carries a piggybacked ACK, the peer's delayed ACK holds for tens
+                // of milliseconds, and Nagle keeps every subsequent small write
+                // queued behind it. Four `I` lines then arrive as one 477-byte read
+                // and the framer discards all four, which is the correct answer to
+                // the wrong question.
+                //
+                // The engine already sets this on the sockets it accepts
+                // (`transport.rs`), so leaving it off here made the harness the only
+                // Nagle-enabled peer in the test — a property of the test rig that
+                // the corpus never intended to describe.
+                sock.set_nodelay(true).expect("nodelay");
                 self.clients[i].1 = Some(sock);
             }
             Input::Disconnect => {
@@ -226,7 +260,7 @@ impl SessionUnderTest for Wire {
                 *self.engine_clock() = ManualClock::at(ms);
             }
         }
-        self.pump();
+        self.pump(STEP_QUIET, STEP_DEADLINE);
         let closed = self.drain(i, &mut emit);
         if closed {
             self.clients[i].1 = None;
@@ -242,7 +276,28 @@ impl Wire {
     }
 }
 
-/// `[measured 2026-08-30]` step 3 of the engine plan.
+/// How long the engine must be idle before a step is considered finished.
+///
+/// Well above a loopback round trip, which is the quantity actually being
+/// waited on.
+///
+/// **Neither this nor [`STEP_DEADLINE`] is load-bearing, and that is how they
+/// were checked.** `[measured 2026-08-30]` the gate scores **59 / 59 at both**
+/// 1 ms and 20 ms — a 20× span in which only the run time moves, 0.8 s against
+/// 14.5 s. The old spin-count version scored 39, 43 and 59 over its own 100×
+/// span, and **that climb was Nagle being outwaited, not a bound being tuned.**
+///
+/// A score that is flat across its bounds is measuring the protocol. One that
+/// climbs is measuring something else, and the next question is what — not a
+/// third value of the bound.
+const STEP_QUIET: Duration = Duration::from_millis(1);
+/// Lifeline for one step. Reaching it is a failure, not a settle.
+const STEP_DEADLINE: Duration = Duration::from_millis(50);
+
+/// `[measured 2026-08-30]` **59 / 59 on Apple M5 and on Linux x86_64.** It read
+/// 39 / 59 on Linux until the client socket above was given `TCP_NODELAY`;
+/// `STATUS.md` item 17 and `reference/measured-costs.md` carry the diagnosis,
+/// including the first one, which was wrong.
 #[test]
 fn the_fifty_nine_definitions_pass_through_a_real_socket() {
     let report = run(|_| Wire::new()).unwrap_or_else(|e| panic!("{e}"));
