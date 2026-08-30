@@ -45,6 +45,37 @@ sized does not buy what it was bought for.
 
 That is why the capacity is part of this decision and not a tuning detail left for later.
 
+### Revision, 2026-08-30 — the count is hard, the duration is soft
+
+Recorded in place because this ADR is still `Proposed` (`CLAUDE.md` §5).
+
+The benchmark now runs in CI, and three consecutive runs on the same GitHub runner report:
+
+| Run | messages accepted | time to fill | ns per message |
+|---|---|---|---|
+| 33304774414 | 352 | 68.518 µs | 194 |
+| 33304926978 | 352 | 68.889 µs | 195 |
+| 33304998832 | 352 | **125.595 µs** | **356** |
+
+Against the 352 / 56.7 µs / 160 ns above, measured on a different container.
+
+**The count is exact on every machine and every run: 352 messages at 64 KiB.** The fill
+*duration* varies by 83% on one machine within ten minutes, and by 2.2× across machines. It is
+a single-shot timing of 352 operations — it does not go through the bench harness's
+best-of-7-over-200 000, which is what makes the other figures reproduce to ~1%.
+
+Nothing in the decision changes. What changes is the weight the two halves carry:
+
+* **Decision 3's "roughly 3.6 ms of slack"** is derived from a fill rate that has been observed
+  between 160 and 356 ns per message, so the true figure spans roughly **1.6–3.6 ms**. The
+  argument survives — every value in that range is three orders above the 56.7 µs it replaces —
+  but the number should be read as an order of magnitude, not a measurement.
+* **"One millisecond overflows the current ring eighteen times over"** rests on the count and
+  the capacity, not on the rate, and is unaffected.
+
+The `[measured 2026-08-30]` table earlier in this document is left as written: it records what
+that run measured, and correcting it in place would hide that the spread exists.
+
 ## Decision
 
 **1. A full ring ends the connection, by default.** `Backpressure::Disconnect` is already D10's

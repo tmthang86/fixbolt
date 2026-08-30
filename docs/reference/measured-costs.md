@@ -639,17 +639,41 @@ same runner class:
 | `ring, round trip` | 622.9 | 623.5 | **0.1%** |
 | `ring_full`, ns per message | 194 | 195 | 0.5% |
 
-**The runner reproduces to under 1% on the case the container swings 24% on.** So the two
-machines differ in both terms at once, and in opposite directions: the container is fast and
-noisy, the runner is slow and quiet. "Shared infrastructure is noisy" was too coarse — one
-shared machine here is a perfectly stable instrument that happens to be calibrated wrong.
+A third run (`db5d8b1`, run 33304998832) held: `ring, one way` 327.2, `ring, round trip` 622.2.
+Across three runs those are **1.2%** and **0.2%** apart.
 
-That has a practical consequence for the fix. A ceiling expressed as a **per-machine baseline**
-would work on this runner, because 0.9% run-to-run leaves room for a real regression to show.
-The absolute ceilings are what cannot survive the move between machines, not the measurement.
+**But the same three runs disagree by 83% about something else, and that is the real lesson.**
+`ring_full` is the one measurement in this repository that does *not* go through the bench
+harness — it fills the ring once and times the fill:
 
-The rule that generalises: **a threshold whose margin is smaller than the spread of the
-machines it will run on reports the infrastructure, not the code.** Measure the spread on more
+| Run | messages accepted | time to fill | ns per message |
+|---|---|---|---|
+| 33304774414 | 352 | 68.518 µs | 194 |
+| 33304926978 | 352 | 68.889 µs | 195 |
+| 33304998832 | 352 | **125.595 µs** | **356** |
+
+The **count is identical to the message** in all three. The **duration nearly doubles.**
+
+So the correction written above — *the runner is a stable instrument that happens to be
+calibrated wrong* — is itself too strong, and this is the third time this one finding has had
+to be narrowed. **The stability belongs to the measurement method, not to the machine.** The
+harness takes the best of 7 runs of 200 000 iterations, which is what discards the scheduler's
+interference; the one figure gathered as a single shot of 352 operations swings 83% on the same
+box in the same ten minutes.
+
+Two consequences, one for each half:
+
+* **A per-machine baseline is a live option for the ceilings**, because the harness-mediated
+  figures reproduce to ~1% on this runner — there is room for a real regression to show.
+* **Any single-shot duration is not a measurement**, wherever it appears. What survives from
+  `ring_full` is the count (352 messages, exact three times); the microseconds are one sample
+  of a distribution nobody has characterised.
+
+The rules that generalise: **a threshold whose margin is smaller than the spread of the
+machines it will run on reports the infrastructure, not the code** — and **before crediting a
+machine with being quiet, check whether the quiet came from the machine or from the averaging
+in your harness.** Two figures from the same box in the same minutes, one repeating to 0.2%
+and one swinging 83%, differ only in how they were gathered. Measure the spread on more
 than one machine before believing any verdict from such a gate — and note that the first
 correction is as likely to be wrong as the first reading was. Here the sequence was: *red on
 Linux* (one run), then *noise on Linux* (five runs, one machine), then *1.7× between machines*
