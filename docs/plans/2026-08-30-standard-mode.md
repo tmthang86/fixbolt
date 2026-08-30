@@ -243,7 +243,7 @@ Cái tên `density` vẫn dùng được như một **nhãn cho con số**, cạ
 | 3 | ~~`wait::Block`~~ — **xong 2026-08-30.** Timeout 100 ms mặc định có sàn 5 ms, `EINTR` quay lại chờ **phần còn lại**, `NEEDS_SOURCES = true`, lỗi `poll` được **ghi lại** và vẫn trả core lại | 2 |
 | 4 | ~~tập interest~~ — **xong 2026-08-30.** `refresh_interests[_with]`, `idle_with`, `Acceptor::source()`, `serve()` đăng ký listener, const-assert thật của ADR-0014 quyết định 4, và `sources_missing()` | 3 |
 | 5 | ~~waker~~ — **xong 2026-08-30.** Self-pipe; engine tự bỏ đầu đọc vào tập poll và **tự drain**; **`RingApp`** đánh thức khi đẩy reply — không phải `RingDispatch`, xem "Sửa 3" | 4 |
-| 6 | `w2w --mode standard\|hft`, mặc định `hft`, in mode mỗi lần chạy. Nửa đỏ của `check-no-kernel-sleep.sh` chuyển sang `--mode standard` | 4 |
+| 6 | ~~`w2w --mode`~~ — **xong 2026-08-30.** Ba giá trị `hft\|standard\|yield`, mặc định `hft`, in mode mỗi lần chạy và **cổng đọc lại**. Nửa đỏ của `check-no-kernel-sleep.sh` sang `--mode standard`. **Và `serve()` thành `standard`** — xem "Sửa 4" | 4 |
 | 7 | **Cổng mới** `scripts/check-standard-gives-the-core-back.sh` + job CI `standard-blocks`. Nửa xanh `standard`, **nửa đỏ `hft` và phải trượt** | 6 |
 | 8 | Chạy 59 định nghĩa ở **cả hai mode**. Đo giá một lần thức của `standard` trên máy §9 và thay dòng §8 — hoặc giữ nhãn "từ tài liệu" nếu máy chưa `pass 10 fail 0` | 7, máy §9 |
 
@@ -352,6 +352,74 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
   workload thật, mà cái đó chưa có.
 
 ## Nhật ký giao hàng
+
+### 2026-08-30 — bước 6 xong: cả hai mode chạy được, và một mode từng chỉ giả vờ chạy
+
+**Đã dựng.** `w2w --mode hft|standard|yield`, mặc định `hft`, in `mode: <tên>` ngay dòng đầu.
+Nửa đỏ của `check-no-kernel-sleep.sh` chuyển sang `--mode standard`. `serve()` giờ là
+`standard`; `serve_hft()` là bản quay vòng.
+
+**Sửa 4 — plan thiếu một việc mà ADR-0013 bắt buộc.** Không bước nào trong tám bước làm `serve()`
+thành `standard`, trong khi ADR-0013 quyết định 1 nói `standard` là *"cái người ta nhận được khi
+không nói gì"* — và `serve()` **chính là** cái đó. Thiếu nó thì `standard` chỉ *tồn tại*, chứ
+chưa *là mặc định*, mà "là mặc định" mới là toàn bộ nội dung của ADR. Đưa vào bước 6.
+`TcpAcceptorEngine<A>` thành `TcpAcceptorEngine<A, W>` với hai alias `HftAcceptorEngine` và
+`StandardAcceptorEngine`, và **một hàm `pump` dùng chung cho cả hai `serve`** — hai vòng lặp viết
+riêng là hai vòng lặp sẽ trôi khỏi nhau, mà listener được đăng ký ở cái này và không ở cái kia
+đúng là kiểu trôi tốn một timeout và không hiện ra ở đâu cả.
+
+**`--mode yield` không thừa.** Tài liệu **khẳng định** `Yield` trượt cả hai cổng từ bước 2 và
+chưa gì chứng minh. Giờ có một arm để chạy nó qua từng cổng và **nhìn** nó trượt, thay vì đọc
+câu nói nó sẽ trượt. `CLAUDE.md` §4: *prose không giữ nổi một ràng buộc.*
+
+**`[đo 2026-08-30]` `--mode standard` từng được chấp nhận, in banner, và không chạy gì cả.**
+Nhánh chọn chiến lược nằm sau `#[cfg(all(feature = "standard", unix))]` — mà **feature là của
+từng crate, và `cfg` không bao giờ với sang được feature của dependency**. `w2w` không khai
+feature nào trong manifest của chính nó, nên điều kiện đơn giản là **sai**, mọi nhánh lấy `else`,
+và vòng đo không hề chạy. Binary vẫn chạy. Mode thì không tồn tại.
+
+Triệu chứng im lặng đến khó chịu: banner vẫn in (nó in **trước** nhánh), tiến trình vẫn exit 0,
+dấu hiệu duy nhất là **khối latency vắng mặt** — mà người đọc lướt tìm "nó có chạy không" thì
+nhìn thấy dòng mode rồi dừng. `cargo build` **có cảnh báo** đúng dòng đó suốt thời gian ấy
+(`unexpected_cfg_condition_value`), và `clippy -D warnings` sẽ biến nó thành lỗi. Nhưng thứ bắt
+được nó trước tiên là **chạy công cụ và đọc cái nó trả về**.
+
+Đây là **mặt lật ngược của nguyên tắc 6**: rule 6 canh "feature có trong manifest mà `mod` không
+có `#[cfg]`" — làm crate không ai build được. Đây là cùng lỗi từ phía kia, và hỏng theo chiều
+ngược lại: **mọi thứ build được, và một nhánh code lặng lẽ biến mất.** Viết vào
+[feature-flags-unify-across-a-workspace.md](../reference/feature-flags-unify-across-a-workspace.md)
+làm case thứ hai. `[to testing-skills]`
+
+**Và cổng thôi giả định nó đã chạy đúng arm nó xin.** `check-no-kernel-sleep.sh` gọi binary hai
+lần và **toàn bộ ý nghĩa của nó nằm ở chỗ lần hai xử sự khác lần một**. Nếu script này có hình
+dạng hiện tại sớm hơn một ngày, nó đã **xanh về hai lần chạy cùng một mode**. Nên `w2w` in mode
+ra và script **đọc lại, sai thì trượt**. Đảo ngược: xin `hft` mà truyền `--mode yield` →
+`w2w ran mode 'yield' when 'hft' was asked for`, exit 1.
+
+**Số đầu tiên của `standard`, và nó không phải số để công bố.** Container 4 vCPU dùng chung, chưa
+phải máy §9: `hft` p50 **17.7 µs**, `standard` p50 **29.0 µs**, `yield` p50 **18.2 µs**. Điều
+đáng đọc không phải con số mà là **p50 của `standard` nhỏ hơn timeout 100 ms tới hơn ba bậc** —
+tức là engine thức **vì dữ liệu, không vì đồng hồ**, chính là khẳng định thứ ba mà cổng ở bước 7
+cần. `DESIGN.md` §8 **vẫn giữ nhãn "lấy từ tài liệu"**: đây không phải máy §9.
+
+**Gate cho commit này:**
+
+```
+cargo fmt --all --check                     sạch
+cargo clippy --all-targets -- -D warnings   sạch
+cargo test --all                            229 passed, 0 failed
+cargo test --all --no-default-features      0 failed
+scripts/check-no-optional-deps.sh           exit 0
+crates/engine --test standard               18 passed; 0/30 lần đỏ khi chạy lặp
+cargo test -p fixbolt-engine --doc          1 passed
+-p fixbolt-session --test score             59/59 trong process
+-p fixbolt-engine  --test wire              59/59 qua socket thật
+scripts/check-no-kernel-sleep.sh            exit 0; nửa xanh hft không có syscall chặn,
+                                            nửa đỏ standard trượt vì 6 poll
+                                            (đảo ngược mode read-back: exit 1)
+scripts/bench.sh                            exit 0; 8/8 target; 0 invariant failure
+scripts/check-links.py                      290 link, 0 chết
+```
 
 ### 2026-08-30 — bước 5 xong: waker, và ADR-0014 gọi tên nhầm đầu
 

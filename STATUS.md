@@ -96,9 +96,10 @@ delivery log. In dependency order:
    readable always, writable only while bytes are queued, the listener carried by `serve`,
    rebuilt every turn because a `Source` borrows its descriptor. Pairing a blocking strategy
    with a transport that cannot name a source **does not compile**. **Step 5 added the waker**, so all
-   four of ADR-0014 decision 6's latency cliffs are now closed. **Next is step 6, the wiring**:
-   no mode is reachable end to end — `serve` and `w2w` both still spin — so nothing has run a
-   `standard` engine over a real socket and nothing has measured what one wakeup costs.
+   four of ADR-0014 decision 6's latency cliffs are now closed. **Step 6 wired both modes**: `serve` is
+   `standard` (it used to spin — ADR-0013's default reversal lands there), `serve_hft` spins, and
+   `w2w --mode hft|standard|yield` prints the mode a gate then reads back. **Next is step 7, the
+   `standard` gate itself** — non-negotiable 4's unenforced half.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
@@ -120,6 +121,21 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
+
+**`[measured 2026-08-30]` A tool that accepted a mode, announced it, and did not run it.**
+`tools/w2w --mode standard` printed `mode: standard`, exited 0, and never entered its timed loop:
+the branch selecting the blocking strategy sat behind `#[cfg(feature = "standard")]`, and
+**features are per-crate** — `w2w` declared none of its own, so the condition was false and every
+such branch took its `else`. The engine's feature being on by default did not reach it. `cargo
+build` had warned on that exact line the whole time (`unexpected_cfg_condition_value`); what
+found it was running the tool and noticing the latency block was missing. This is `CLAUDE.md` §2
+rule 6 **inverted** — that rule guards a feature in the manifest with no `#[cfg]`, which makes a
+crate unbuildable; this is a `#[cfg]` with no feature in the manifest, and everything builds
+while a code path disappears. `scripts/check-no-kernel-sleep.sh` would have been green about two
+runs of the same mode, so `w2w` now states the mode it took and the script **reads it back**
+(reversal: `w2w ran mode 'yield' when 'hft' was asked for`, exit 1). Write-up:
+[reference/feature-flags-unify-across-a-workspace.md](docs/reference/feature-flags-unify-across-a-workspace.md).
+
 
 **`[measured 2026-08-30]` A CI job was green about a build that never happened.**
 `cargo test --all --no-default-features`, the machine check for non-negotiable 6, **still built

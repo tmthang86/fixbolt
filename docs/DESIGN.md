@@ -458,9 +458,20 @@ engine holds the read end itself and **drains it after every wait**, because a p
 unread byte stays readable and an undrained one makes every subsequent `poll` return instantly
 — a working engine, burning a core, which is the single thing this mode exists to avoid.
 
-**What is missing is the wiring.** No mode is reachable end to end: `serve` and `tools/w2w` both
-still spin, so nothing has yet run a `standard` engine over a real socket and nothing has
-measured what one wakeup costs. Steps 6 to 8 of
+**Both modes are now reachable end to end.** `serve` is `standard` and `serve_hft` spins, both
+over one shared loop; `tools/w2w --mode hft|standard|yield` prints the mode it ran and
+`scripts/check-no-kernel-sleep.sh` reads that back rather than trusting the flag it passed. Its
+red half is now `standard`'s real `poll`, because nobody writes `sched_yield` into an engine by
+accident and somebody might well reach for `poll`.
+
+`[measured 2026-08-30]` first figures, on a **shared 4-vCPU container that is not a §9 machine**:
+`hft` p50 17.7 µs, `standard` p50 29.0 µs, `yield` p50 18.2 µs. Not publishable, and one thing in
+them is worth reading anyway — **`standard`'s p50 is three orders of magnitude below its 100 ms
+timeout**, so it is woken by the data and not by its own clock. The §8 row below keeps its "from
+the literature" label until a §9 machine says otherwise.
+
+**What is missing is the `standard` gate itself** — CPU over a wall-clock window, non-negotiable
+4's second half. Step 7 of
 [plans/2026-08-30-standard-mode.md](plans/2026-08-30-standard-mode.md).
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is

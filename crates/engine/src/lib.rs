@@ -430,29 +430,50 @@ where
     }
 }
 
-/// An acceptor with the usual sizes, spinning, with the application inline.
-/// The shape a deployment runs.
-pub type TcpAcceptorEngine<A> = Engine<
+/// An acceptor with the usual sizes and the application inline, over whichever
+/// idle strategy the caller names.
+///
+/// `W` is the mode: [`wait::Spin`] for `hft`, `block::Block` for `standard`.
+/// [`HftAcceptorEngine`] and [`StandardAcceptorEngine`] name the two.
+pub type TcpAcceptorEngine<A, W> = Engine<
     TcpTransport,
     fixbolt_session::Acceptor,
     InlineDispatch<A>,
     crate::clock::SystemClock,
-    crate::wait::Spin,
+    W,
     crate::journal::Store,
     256,
     4096,
     8192,
 >;
 
-/// Accept FIX connections on `addr` and never return.
+/// The `hft` shape: spins, burns a core, and needs a machine that satisfies
+/// `DESIGN.md` §9.
+pub type HftAcceptorEngine<A> = TcpAcceptorEngine<A, crate::wait::Spin>;
+
+/// The `standard` shape, and **the default**: blocks on readiness and gives the
+/// core back.
+#[cfg(all(feature = "standard", unix))]
+pub type StandardAcceptorEngine<A> = TcpAcceptorEngine<A, crate::block::Block>;
+
+/// Accept FIX connections on `addr` and never return. **`standard` mode.**
 ///
-/// This is the loop `DESIGN.md` D8 describes, written once so a caller does not
-/// have to: accept what is waiting, turn every connection, and spin when there
-/// is nothing to do.
+/// This is what you get if you say nothing, which is
+/// [ADR-0013](../../../docs/decisions/ADR-0013-two-modes-standard-and-hft.md)
+/// decision 1: it blocks when idle and gives the core back, so it runs on a
+/// laptop, in a container, and on a machine somebody else is also using. It is
+/// **not** the fastest shape — see [`serve_hft`] for that, and read
+/// `docs/GUIDE.md` §0 before choosing it.
+///
+/// `[2026-08-30]` **This function used to spin.** An engine whose out-of-the-box
+/// configuration pins a core at 100% is one most people cannot evaluate: it
+/// looks broken. ADR-0013 reversed that default and this is where the reversal
+/// lands.
 ///
 /// # Errors
 ///
 /// Whatever binding the listener returns.
+#[cfg(all(feature = "standard", unix))]
 pub fn serve<A: Application>(
     addr: &str,
     cfg: Config,
@@ -460,18 +481,59 @@ pub fn serve<A: Application>(
     capacity: usize,
 ) -> std::io::Result<core::convert::Infallible> {
     let acceptor = Acceptor::bind(addr)?;
-    let mut engine: TcpAcceptorEngine<A> = Engine::new(
+    let engine: StandardAcceptorEngine<A> = Engine::new(
+        cfg,
+        InlineDispatch::new(app),
+        crate::clock::SystemClock,
+        // Sized for the connections, the listener and the waker. An inline
+        // dispatch has no waker, so this is one spare.
+        crate::block::Block::new(capacity + 2),
+        capacity,
+    );
+    pump(acceptor, engine)
+}
+
+/// As [`serve`], in `hft` mode: **spins, and burns a core for as long as the
+/// process lives.**
+///
+/// On a shared machine, in a container, or on a laptop that is not a bug you
+/// will enjoy diagnosing — it is the engine doing exactly what you asked.
+/// `DESIGN.md` §9 says what the machine has to look like for it to be worth it.
+///
+/// # Errors
+///
+/// Whatever binding the listener returns.
+pub fn serve_hft<A: Application>(
+    addr: &str,
+    cfg: Config,
+    app: A,
+    capacity: usize,
+) -> std::io::Result<core::convert::Infallible> {
+    let acceptor = Acceptor::bind(addr)?;
+    let engine: HftAcceptorEngine<A> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
         crate::wait::Spin,
         capacity,
     );
+    pump(acceptor, engine)
+}
+
+/// The loop both `serve` functions run: accept what is waiting, turn every
+/// connection, and idle when nothing moved.
+///
+/// One function so the two modes differ in **exactly one type** and in nothing
+/// else. A loop written twice is two loops that will drift, and the listener
+/// being registered in one and not the other is precisely the kind of drift
+/// that costs a whole timeout and shows up as nothing at all.
+fn pump<A: Application, W: Waiting>(
+    acceptor: Acceptor,
+    mut engine: TcpAcceptorEngine<A, W>,
+) -> std::io::Result<core::convert::Infallible> {
     // The listener, so an idle turn waits on "somebody connected" as well as on
-    // "somebody sent something". `TcpAcceptorEngine` still spins today, and for
-    // `Spin` this list is never read — but the plumbing is what a `standard`
-    // `serve` needs, and building it here means the listener cannot be the
-    // thing that was forgotten when the mode changes.
+    // "somebody sent something". Leave it out and a new connection waits up to
+    // a whole timeout to be accepted.
     let listener = acceptor.source().map(Interest::readable);
     let extra: &[Interest] = listener.as_slice();
     loop {

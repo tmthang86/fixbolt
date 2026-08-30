@@ -166,8 +166,13 @@ below describe what a first release would contain.
     **once** per connection per turn, so a counterparty that writes faster than this end
     processes cannot starve the others.
   - `Acceptor::{bind, local_addr, accept}`, `connect(addr)`, and `serve(addr, cfg, app,
-    capacity)` — the whole loop written once, with `TcpAcceptorEngine<A>` naming the shape a
-    deployment runs.
+    capacity)` — the whole loop written once.
+  - **`serve` is `standard` and blocks; `serve_hft` spins.** `[2026-08-30]` `serve` used to
+    spin. An engine whose out-of-the-box configuration pins a core at 100% is one most people
+    cannot evaluate — it looks broken — so ADR-0013 reversed the default and this is where the
+    reversal lands. `TcpAcceptorEngine<A, W>` is now parameterised by the mode, with
+    `HftAcceptorEngine` and `StandardAcceptorEngine` naming the two, and both `serve` functions
+    run **one** shared loop so they can differ in exactly one type and nothing else.
   - **The 59 acceptance definitions now pass through a real socket**: `cargo test -p
     fixbolt-engine --test wire` → **59 / 59**, kernel TCP, no background thread and no sleep.
   - `Dispatch`, with `InlineDispatch<H>` (the default, D4 / ADR-0002) and `RingDispatch<M>`
