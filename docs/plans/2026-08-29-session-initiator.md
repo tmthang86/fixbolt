@@ -6,7 +6,7 @@
 ## Bối cảnh
 
 Acceptor đã đạt **59 / 59**. Vai còn lại — initiator, tức đầu **chủ động gọi ra** — mới là cái
-làm `nanofixengine` dùng được cho một công ty vừa chạy acceptor cho khách vừa nối ra sàn, mà
+làm `fixbolt` dùng được cho một công ty vừa chạy acceptor cho khách vừa nối ra sàn, mà
 theo [ADR-0004](../decisions/ADR-0004-bidirectional-engine.md) là hầu hết công ty chạy một
 trong hai.
 
@@ -67,7 +67,7 @@ tám tên vào một mảng là để một thay đổi corpus im lặng đi qua
 
 ### 3. Chạy tới 50 / 50
 
-Cổng: `cargo test -p nanofix-session --test mirror`. Mỗi lần tăng điểm phải đi kèm một lần đảo
+Cổng: `cargo test -p fixbolt-session --test mirror`. Mỗi lần tăng điểm phải đi kèm một lần đảo
 ngược đỏ, như năm bước trước.
 
 ### 4. Interop với `libquickfix` trong CI
@@ -121,10 +121,10 @@ chỉ riêng Logon đã mở được phần lớn; con số thật sẽ ghi và
 
 | Bước | Lệnh | Đạt khi |
 |---|---|---|
-| 1 | `cargo test -p nanofix-conformance --test mirror` | Chín file bị loại đúng chín tên ADR-0004 + ADR-0006 nêu, **tính ra chứ không chép** |
-| 2–3 | `cargo test -p nanofix-session --test mirror` | In đúng điểm dự đoán. **Cao hơn cũng phải dừng giải thích** |
-| mọi bước | `cargo test -p nanofix-session --test score` | Vẫn **59 / 59** — không được lùi một file nào |
-| mọi bước | `cargo bench -p nanofix-session --bench alloc` | Thêm `logon_out 0`, và tiêm một `to_vec()` phải thấy `logon_out 10000` |
+| 1 | `cargo test -p fixbolt-conformance --test mirror` | Chín file bị loại đúng chín tên ADR-0004 + ADR-0006 nêu, **tính ra chứ không chép** |
+| 2–3 | `cargo test -p fixbolt-session --test mirror` | In đúng điểm dự đoán. **Cao hơn cũng phải dừng giải thích** |
+| mọi bước | `cargo test -p fixbolt-session --test score` | Vẫn **59 / 59** — không được lùi một file nào |
+| mọi bước | `cargo bench -p fixbolt-session --bench alloc` | Thêm `logon_out 0`, và tiêm một `to_vec()` phải thấy `logon_out 10000` |
 | 4 | job CI `interop` | Logon → heartbeat → `TestRequest` → `ResendRequest` → gap fill → logout, đọc **output** chứ không đọc exit code |
 | mọi bước | `cargo test --all`, `--no-default-features`, `clippy -D warnings`, `fmt --check` | rc = 0 |
 

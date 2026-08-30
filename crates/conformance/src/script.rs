@@ -40,7 +40,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use nanofix_codec::TimestampCache;
+use fixbolt_codec::TimestampCache;
 
 /// A fixed instant, so a checksum computed here is the same on every run and on
 /// every machine.

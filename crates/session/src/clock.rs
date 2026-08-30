@@ -109,7 +109,7 @@ const fn days_in_month(y: u32, m: u32) -> u32 {
 }
 
 /// Days since 1970-01-01. Howard Hinnant's `days_from_civil` — the exact
-/// inverse of `nanofix_codec::timestamp`'s `civil_from_days`, which is what
+/// inverse of `fixbolt_codec::timestamp`'s `civil_from_days`, which is what
 /// [`tests::a_timestamp_survives_a_round_trip_through_the_codec`] uses as its
 /// oracle.
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
@@ -163,7 +163,7 @@ mod tests {
     fn a_timestamp_survives_a_round_trip_through_the_codec() {
         // `civil_from_days` in `codec` is the inverse function. Feeding it what
         // this module produced is an oracle that is not this module.
-        let mut cache = nanofix_codec::TimestampCache::new();
+        let mut cache = fixbolt_codec::TimestampCache::new();
         for s in [
             "19700101-00:00:00.000",
             "20260828-13:45:59.123",

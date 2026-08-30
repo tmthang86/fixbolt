@@ -1,4 +1,4 @@
-# nanofixengine
+# fixbolt
 
 A FIX 4.4 protocol engine in Rust, built to be **the fastest acceptor that can run on
 kernel TCP** — the side of the protocol that the Rust ecosystem does not currently cover
@@ -15,14 +15,21 @@ to make everything above that floor vanish, and to measure the floor honestly
 ([DESIGN.md §8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp)).
 
 > **Status: it speaks FIX over a socket.** `[measured 2026-08-30]` the 59 QuickFIX acceptance
-> definitions pass **59 / 59 through kernel TCP**. `codec`, `dict`, `session` and `engine`
-> exist, with dispatch, backpressure and the journal built; `tools/w2w` and the
-> application-facing `library` do not.
+> definitions pass **59 / 59 through kernel TCP**, on an Apple M5 and on a Linux x86_64 box.
+> It scored 39 / 59 on the second machine until 2026-08-30, and the cause turned out to be
+> Nagle on the test harness's own client socket rather than anything in the engine — the story,
+> including a confident wrong diagnosis and what it cost, is in
+> [reference/measured-costs.md](docs/reference/measured-costs.md). `codec`, `dict`, `session`
+> and `engine` exist, with dispatch, backpressure and the journal built, and **`tools/w2w`**
+> now runs — which is what finally gave *the engine thread never sleeps in the kernel* a
+> machine check (`scripts/check-no-kernel-sleep.sh`). The application-facing `library` does
+> not exist.
 > **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;
 > **[docs/DESIGN.md](docs/DESIGN.md)** says how it is built; [STATUS.md](STATUS.md) says
 > where the work stands.
 >
-> **`nanofixengine` is a placeholder name**, taken to clear a collision. See STATUS.md.
+> **The name is `fixbolt`**, decided 2026-08-30 — it replaced the placeholder
+> `nanofixengine`, which collided with `matthart1983/nanofix`. See STATUS.md.
 
 ## Why this exists
 
@@ -37,8 +44,8 @@ that should be read before anything else.**
 
 ## Relationship to QuickFIX
 
-nanofixengine is **not** a port of QuickFIX C++. A port is legally permitted but would import the
-architecture responsible for its throughput ceiling. Instead nanofixengine takes three things
+fixbolt is **not** a port of QuickFIX C++. A port is legally permitted but would import the
+architecture responsible for its throughput ceiling. Instead fixbolt takes three things
 from that project as *data*: the FIX XML dictionaries, the 59 FIX 4.4 session acceptance
 tests, and `Session.cpp` as a reference for behaviour.
 

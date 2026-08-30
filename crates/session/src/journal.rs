@@ -15,7 +15,7 @@
 //! D1's original sketch had the session emit an `Action::Store(seq, bytes)`
 //! instead. A trait is the same information with a name and a return value —
 //! `get` has to answer, and an emitted action cannot.
-//! [ADR-0008](https://github.com/nanofixengine/docs/decisions/ADR-0008-journal-is-a-trait.md)
+//! [ADR-0008](../../../docs/decisions/ADR-0008-journal-is-a-trait.md)
 //! records the difference and why.
 
 /// The messages this end has sent, by sequence number.
@@ -33,6 +33,19 @@ pub trait Journal {
 
     /// The message numbered `seq`, if it is still held.
     fn get(&self, seq: u32) -> Option<&[u8]>;
+
+    /// The highest sequence number this journal holds, or `None` when it holds
+    /// nothing.
+    ///
+    /// **This is what a restart needs and nothing else provides.** Until it
+    /// existed a journal was written and never read back, so
+    /// `Durability::Fsync` bought an audit trail rather than a recovery
+    /// mechanism — a cost that looks like a guarantee.
+    ///
+    /// There is deliberately **no default implementation**. A default returning
+    /// `None` would let a journal that does hold messages report that it holds
+    /// none, and a session resuming from it would silently start again at 1.
+    fn highest(&self) -> Option<u32>;
 }
 
 /// A journal that keeps nothing. `DESIGN.md` D7's `None`.
@@ -47,6 +60,10 @@ pub struct NoJournal;
 
 impl Journal for NoJournal {
     fn put(&mut self, _seq: u32, _bytes: &[u8]) {}
+
+    fn highest(&self) -> Option<u32> {
+        None
+    }
 
     fn get(&self, _seq: u32) -> Option<&[u8]> {
         None

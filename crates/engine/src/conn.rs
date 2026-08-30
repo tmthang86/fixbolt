@@ -1,8 +1,8 @@
 //! One connection: a socket, a receive buffer, a state machine, and whatever
 //! could not be written yet.
 
-use nanofix_session::journal::Journal as SessionJournal;
-use nanofix_session::{Application, Link, Role, Session};
+use fixbolt_session::journal::Journal as SessionJournal;
+use fixbolt_session::{Application, Link, Role, Session};
 
 use crate::backpressure::{Backpressure, SLOW_CONSUMER};
 use crate::dispatch::ConnId;

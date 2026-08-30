@@ -1,11 +1,11 @@
-//! The `.def` corpus, borrowed from `nanofix-conformance`.
+//! The `.def` corpus, borrowed from `fixbolt-conformance`.
 //!
 //! This file used to hold its own copy of the loader. It no longer does: the
 //! conformance crate owns it, and two loaders that disagree about how to read
 //! the same corpus is exactly the failure `CLAUDE.md` §4 means by *one rule,
 //! one place*. They **did** disagree — this crate's copy substituted a 21-byte
 //! `<TIME>` everywhere, and the corpus's own `9=` values say an `I` line's is
-//! 17. See `nanofix_conformance::script::FIXED_TIME_IN`.
+//! 17. See `fixbolt_conformance::script::FIXED_TIME_IN`.
 //!
 //! What is left here is a shape adapter, because these tests were written
 //! against `DefLine` and rewriting them to prove the same things a second way
@@ -17,13 +17,13 @@
 
 use std::path::PathBuf;
 
-use nanofix_conformance::script::{Kind, Step, scenarios};
+use fixbolt_conformance::script::{Kind, Step, scenarios};
 
 pub const SOH: u8 = 0x01;
 
 /// The timestamp an `E` line's `<TIME>` becomes — engine output, with
 /// milliseconds.
-pub const FIXED_TIME: &str = nanofix_conformance::script::FIXED_TIME_OUT;
+pub const FIXED_TIME: &str = fixbolt_conformance::script::FIXED_TIME_OUT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -48,7 +48,7 @@ pub struct DefLine {
 
 /// The 59 FIX 4.4 acceptance definitions.
 pub fn definitions_dir() -> PathBuf {
-    nanofix_conformance::script::definitions_dir()
+    fixbolt_conformance::script::definitions_dir()
 }
 
 /// Every `I` and `E` line across the 59 files, normalised.

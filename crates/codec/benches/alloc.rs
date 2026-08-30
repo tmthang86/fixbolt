@@ -22,8 +22,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use nanofix_codec::{FieldIndex, NoDict, TemplateBuilder, TimestampCache, Validation, parse_into};
-use nanofix_dict::Fix44;
+use fixbolt_codec::{
+    Dictionary, FieldIndex, NoDict, TemplateBuilder, TimestampCache, Validation, parse_into,
+};
+use fixbolt_dict::Fix44;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
@@ -52,6 +54,20 @@ unsafe impl GlobalAlloc for Counting {
 
 #[global_allocator]
 static A: Counting = Counting;
+
+/// The one DATA pairing this bench writes. `Fix44` would do, but the bench
+/// deliberately keeps its templates free of the generated dictionary so a
+/// change there cannot quietly change what is being counted.
+struct DataDict;
+
+impl Dictionary for DataDict {
+    fn is_header(tag: u32) -> bool {
+        matches!(tag, 8 | 9 | 35 | 34 | 49 | 52 | 56)
+    }
+    fn data_length_tag(tag: u32) -> Option<u32> {
+        if tag == 96 { Some(95) } else { None }
+    }
+}
 
 fn count<F: FnOnce()>(f: F) -> usize {
     let before = ALLOCS.load(Ordering::Relaxed);
@@ -175,11 +191,47 @@ fn main() {
         }
     });
 
+    // A DATA field on the write path, `STATUS.md` items 8 and 9. The encoder
+    // now computes the length field itself, and the obvious wrong way to do
+    // that — render into a `String` — would show up here and nowhere else.
+    //
+    // The value carries `0x01`, because a DATA value without one is
+    // indistinguishable from an ordinary field and this case would measure
+    // nothing.
+    let dt = TemplateBuilder::<16, 256>::new(b"FIX.4.4")
+        .field(35, b"D")
+        .slot(34)
+        .slot(95)
+        .slot(96)
+        .build::<DataDict>()
+        .expect("a template with raw data");
+    let raw: &[u8] = b"a\x01bb\x01ccc";
+    let mut dout = [0u8; 256];
+    let warm = dt
+        .encode(&mut dout, &[(34, b"1".as_ref()), (96, raw)])
+        .expect("warm");
+    // The path must be live before its zero means anything: the length really
+    // was written, and it is the length of the value rather than the caller's.
+    // `needle.len()`, never a hand-counted window: this bench's author got that
+    // wrong three times in one afternoon and each time the check silently found
+    // nothing rather than failing loudly.
+    let needle = b"\x0195=8\x0196=";
+    assert!(
+        dout[warm].windows(needle.len()).any(|w| w == needle),
+        "the DATA length path must actually run"
+    );
+    let data_allocs = count(|| {
+        for _ in 0..10_000 {
+            let _ = dt.encode(&mut dout, &[(34, b"2".as_ref()), (96, raw)]);
+        }
+    });
+
     println!("allocations: parse   {parse_allocs}");
     println!("allocations: encode  {encode_allocs}");
     println!("allocations: lookup  {lookup_allocs}");
     println!("allocations: group   {group_allocs}");
     println!("allocations: validate {validate_allocs}");
+    println!("allocations: data    {data_allocs}");
     assert_eq!(parse_allocs, 0, "parse must not allocate");
     assert_eq!(encode_allocs, 0, "encode must not allocate");
     assert_eq!(lookup_allocs, 0, "field lookup must not allocate");
@@ -190,6 +242,10 @@ fn main() {
     assert_eq!(
         validate_allocs, 0,
         "a dictionary lookup must not allocate — it happens once per field"
+    );
+    assert_eq!(
+        data_allocs, 0,
+        "writing a DATA field and its length must not allocate"
     );
     println!("allocations: 0");
 }

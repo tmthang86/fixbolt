@@ -1,4 +1,4 @@
-# nanofixengine — Product Requirements
+# fixbolt — Product Requirements
 
 What this engine is for, what ships in which phase, and — stated plainly — **how far it is
 from QuickFIX**, which is the only honest baseline for a FIX engine.
@@ -59,7 +59,7 @@ Every one is a command that either passes or fails. A criterion nobody can run i
 
 | # | Criterion | Gate |
 |---|---|---|
-| 1 | Session conformance | **59 / 59** — `cargo test -p nanofix-session --test score`, in-process, no socket. **Met** `[measured 2026-08-29]`. `[measured 2026-08-30]` and **59 / 59 again through a real socket**, `cargo test -p nanofix-engine --test wire` |
+| 1 | Session conformance | **59 / 59** — `cargo test -p fixbolt-session --test score`, in-process, no socket. **Met** `[measured 2026-08-29]`, re-run 59 / 59 on a second machine 2026-08-30. Through a real socket, `cargo test -p fixbolt-engine --test wire`: `[measured 2026-08-30]` **59 / 59 on both machines — met.** It read 39 / 59 on Linux until the harness's own client socket was given `TCP_NODELAY` |
 | 2 | Repeating groups | **Met 2026-08-28.** Read and written for all **93** groups `[measured]`; order agreed with QuickFIX's generated C++ on 730/730. **The 59 definitions do not test this** — see §4 |
 | 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion. `[measured 2026-08-28]` **the tables exist**: 912 tags, 93 message types, 12 524 (message, tag) pairs, 23 field types, 1 708 enum values. **Applied by the session as of step 3** — all twelve `373` codes are produced, and a test asserts that rather than inferring it from the file count. `[2026-08-29]` one type rule was wrong and the corpus caught it: `SEQNUM` refused `0`, on a rule this project invented and an invented test that agreed with it |
 | 4 | Both sides | Acceptor 59/59 — **met**. Initiator interop-green against `libquickfix` in CI — **not met, and deferred behind `engine` on 2026-08-30**. `[measured]` the initiator speaks first and can originate; the mirrored corpus scores 0/50 and tops out at 45 for reasons in `STATUS.md` |
@@ -106,7 +106,7 @@ QuickFIX is 20+ years old with complete spec coverage. Matching it is not a phas
 possibly never a goal — but the gaps have to be named, because a user comparing the two will
 find them whether or not this page does.
 
-| Capability | QuickFIX | nanofixengine | Phase |
+| Capability | QuickFIX | fixbolt | Phase |
 |---|---|---|---|
 | FIX versions | 4.0–5.0 SP2 + FIXT 1.1 — **8 dictionaries** `[measured]` | 4.4 | 5.0/FIXT → P2 |
 | Acceptor | Yes `[documented]` | Yes | P1 |
@@ -178,4 +178,4 @@ Not "later" — these are out unless a new ADR reverses them.
 | 3 | Does SBE ride a tag=value session, or does FIXP enter scope? | The size of phase 2, by roughly 5× |
 | 4 | One view type or several, once encodings stop having tags on the wire? | Every phase-2 line, and possibly `codec`'s public API today |
 | 5 | ~~TLS — own implementation, `rustls`, or terminate outside the process?~~ **Answered by [ADR-0005](decisions/ADR-0005-tls.md)**, which raises six of its own. The blocking one: can `ktls-core` be driven from a non-blocking socket with no async runtime? | Phase 1 deployability |
-| 6 | Final name. `nanofixengine` is a placeholder | Publishing to crates.io, ever |
+| 6 | ~~Final name~~ — **decided 2026-08-30: `fixbolt`**. Was blocking any crates.io publish |

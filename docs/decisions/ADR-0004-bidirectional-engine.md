@@ -98,7 +98,7 @@ that decision needs its own ADR.
    must be right before the asymmetric ~10% means anything. The initiator role lands after
    the session layer is green, and before `library`.
 5. **The initiator's primary gate is interop against QuickFIX C++.** A CI job builds
-   `libquickfix`, runs it as an acceptor, and drives nanofixengine's initiator against it
+   `libquickfix`, runs it as an acceptor, and drives fixbolt's initiator against it
    through logon, heartbeat, `TestRequest`, `ResendRequest`, gap fill and logout. A
    disagreement is a disagreement with twenty years of real deployment.
 6. **51 of the 59 definitions mirror, and they are the secondary gate.**
@@ -139,7 +139,7 @@ that decision needs its own ADR.
   *and* connects out to venues — which is most firms that run either.
 - Interop against `libquickfix` is a better test than anything this project could write for
   itself, and it also benefits the **acceptor**: the same job can point QuickFIX's initiator
-  at nanofixengine's acceptor and cross-check the 59/59 result against a real counterparty.
+  at fixbolt's acceptor and cross-check the 59/59 result against a real counterparty.
 
 **Bad — and these are real**
 

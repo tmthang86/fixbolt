@@ -52,9 +52,9 @@ lần 3, 2 lần 4, **2 lần 5**. Trait `SessionUnderTest` đã nhận `emit` g
 
 ### Đã có sẵn, dùng lại
 
-- `nanofix_conformance::text::SessionText` — 17 chuỗi `58=`, 12 mã `373=`, dựng không
+- `fixbolt_conformance::text::SessionText` — 17 chuỗi `58=`, 12 mã `373=`, dựng không
   `format!`, không cấp phát. **Viết sẵn để dời**: nó chuyển sang `session` ở bước 3.
-- `nanofix_conformance::runner::{Input, Link, SessionUnderTest, Conn}` — hình dạng đã chốt.
+- `fixbolt_conformance::runner::{Input, Link, SessionUnderTest, Conn}` — hình dạng đã chốt.
 - `codec`: `parse_into`, `MessageView`, `Template`, `TimestampCache`, `GroupIter`.
 - `dict`: `is_header`, `required`, `group_*`, `GROUP_KEYS`.
 
@@ -125,7 +125,7 @@ phép cấp phát trên đường gửi.
 |---|---|
 | 1 — không cấp phát trên hot path | Đây **là** hot path. `benches/alloc.rs` thêm ca "một vòng logon → 100 bản tin → logout" và phải in `0`. Chứng minh bằng đảo ngược, như bốn ca hiện có |
 | 2 — session layer thuần | Plan này tồn tại để giữ nó. Chữ ký `step` không có socket/clock/allocator. Thời gian vào bằng `Input::Tick`. Lỗi là enum không trường, trừ `MsgSeqNumTooLow` đã có tên |
-| 3 — 59 định nghĩa là cổng | **Mỗi bước của plan này báo cáo điểm.** Không có bước nào đóng mà không chạy `cargo test -p nanofix-conformance --test fix44` |
+| 3 — 59 định nghĩa là cổng | **Mỗi bước của plan này báo cáo điểm.** Không có bước nào đóng mà không chạy `cargo test -p fixbolt-conformance --test fix44` |
 | 5 — thứ tự trường từ bảng sinh | Mọi bản tin phát ra đi qua `Template` + `Fix44`. Không call site nào tự xếp |
 | 7 — không `unwrap`/`expect`/`panic` | `session` là crate thư viện. Lint workspace đã chặn, `check-lint-config.sh` chứng minh bằng đảo ngược |
 | 4 — engine thread không ngủ | Chưa đụng tới: không có thread ở đây |
@@ -149,13 +149,13 @@ toái.
 
 | Bước | Lệnh | Đạt khi |
 |---|---|---|
-| mọi bước | `cargo test -p nanofix-conformance --test fix44` | In đúng điểm dự đoán ở bảng trên. **Cao hơn dự đoán cũng phải dừng lại giải thích** — nó nghĩa là bảng phân loại sai |
-| 1 | `cargo test -p nanofix-session state` | Máy trạng thái từ chối bản tin đầu không phải Logon, và **không phát gì** trước khi ngắt |
-| 2 | `cargo test -p nanofix-session logon` | Logon response ném lại `108` của đối tác, không phải hằng số. Đảo ngược: hard-code `108=30` → `4a` và `6` đỏ |
-| 3 | `cargo test -p nanofix-session reject` | 12 mã `373` ánh xạ đúng. Byte của `58=` khớp corpus — test đã có sẵn ở `conformance`, chỉ đổi nguồn |
-| 4 | `cargo test -p nanofix-session heartbeat` | `112=TEST` khi tự sinh; ném lại ID khi trả lời. Đảo ngược: sinh ID kiểu counter → 2 file đỏ |
-| 5 | `cargo test -p nanofix-session resend` | Gap fill đúng `36=NewSeqNo`, `123=Y`. Bản tin ứng dụng phát lại có `43=Y` và `122=` |
-| 6 | `cargo bench -p nanofix-codec --bench alloc` | Thêm dòng `allocations: session 0` |
+| mọi bước | `cargo test -p fixbolt-conformance --test fix44` | In đúng điểm dự đoán ở bảng trên. **Cao hơn dự đoán cũng phải dừng lại giải thích** — nó nghĩa là bảng phân loại sai |
+| 1 | `cargo test -p fixbolt-session state` | Máy trạng thái từ chối bản tin đầu không phải Logon, và **không phát gì** trước khi ngắt |
+| 2 | `cargo test -p fixbolt-session logon` | Logon response ném lại `108` của đối tác, không phải hằng số. Đảo ngược: hard-code `108=30` → `4a` và `6` đỏ |
+| 3 | `cargo test -p fixbolt-session reject` | 12 mã `373` ánh xạ đúng. Byte của `58=` khớp corpus — test đã có sẵn ở `conformance`, chỉ đổi nguồn |
+| 4 | `cargo test -p fixbolt-session heartbeat` | `112=TEST` khi tự sinh; ném lại ID khi trả lời. Đảo ngược: sinh ID kiểu counter → 2 file đỏ |
+| 5 | `cargo test -p fixbolt-session resend` | Gap fill đúng `36=NewSeqNo`, `123=Y`. Bản tin ứng dụng phát lại có `43=Y` và `122=` |
+| 6 | `cargo bench -p fixbolt-codec --bench alloc` | Thêm dòng `allocations: session 0` |
 | mọi bước | `cargo test --all`, `--no-default-features`, `clippy -D warnings`, `fmt --check` | Exit 0, **đọc exit code chứ không đọc dòng chữ** |
 
 **Chứng minh bằng đảo ngược, bắt buộc ở mỗi bước.** Điểm số tăng là bằng chứng mạnh nhưng
@@ -174,7 +174,7 @@ những file mình vừa làm xanh chuyển đỏ.
 - [x] Không cần ADR: `MessageStore` đúng hình dạng `put`/`get` đã phác
 
 **Một dòng ở bảng kiểm chứng đã làm khác:** bench cấp phát của session là
-`cargo bench -p nanofix-session --bench alloc`, không phải thêm một dòng vào bench của `codec`.
+`cargo bench -p fixbolt-session --bench alloc`, không phải thêm một dòng vào bench của `codec`.
 Lý do: nó cần corpus, mà `codec` không phụ thuộc `conformance` và không được phép phụ thuộc.
 
 ## Bẫy đã lường trước
@@ -413,7 +413,7 @@ sống qua lần khởi động lại, và cái đó thuộc về `engine`.
 
 ### Bước 1 — 2026-08-28 — **6 / 59**, đúng dự đoán
 
-Crate `nanofix-session`: `Session<R, N>`, `Role`/`Acceptor`/`Initiator`, `Config`, `clock`.
+Crate `fixbolt-session`: `Session<R, N>`, `Role`/`Acceptor`/`Initiator`, `Config`, `clock`.
 Từ chối theo 5 luật; chưa phát gì.
 
 **Đảo ngược, 6 lần.** Năm lần đầu đưa điểm về 5/59:

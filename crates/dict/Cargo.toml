@@ -1,5 +1,5 @@
 [package]
-name = "nanofix-dict"
+name = "fixbolt-dict"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ publish = false
 description = "FIX 4.4 tables generated from the QuickFIX XML dictionary at build time"
 
 [dependencies]
-nanofix-codec = { path = "../codec" }
+fixbolt-codec = { path = "../codec" }
 
 [build-dependencies]
 roxmltree = "=0.20.0"

@@ -6,7 +6,7 @@
 //! labelled as such — see `docs/reference/fix44-dictionary-traps.md`.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
-use nanofix_codec::{Dictionary, FieldIndex, ParseError, Parsed, Validation, parse_into};
+use fixbolt_codec::{Dictionary, FieldIndex, ParseError, Parsed, Validation, parse_into};
 
 /// Three real FIX 4.4 DATA pairings, including the one that breaks the obvious
 /// `tag - 1` rule. `crates/dict` generates the full table; this keeps the codec's

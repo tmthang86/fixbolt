@@ -14,11 +14,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-use nanofix_codec::{
+use fixbolt_codec::{
     Dictionary, FieldIndex, GroupData, GroupEntryData, TemplateBuilder, Validation, parse_into,
 };
-use nanofix_dict::{Fix44, GROUP_KEYS};
+use fixbolt_dict::{Fix44, GROUP_KEYS};
 
 const SOH: u8 = 0x01;
 const MAX_DEPTH: usize = 4;
@@ -76,9 +77,33 @@ fn build(
                     wire.extend_from_slice(&sub.wire);
                     subs.push(sub.data);
                 }
-            } else if plain < 2 && Fix44::data_length_tag(tag).is_none() {
-                // DATA fields need a length field in front of them, which is a
-                // different test.
+            } else if Fix44::data_length_tag(tag).is_some() {
+                // **A DATA member, and its value carries the separator.**
+                // `STATUS.md` item 8. This branch used to be a `continue` with a
+                // comment saying DATA was a different test; it was not tested
+                // anywhere, and `[measured 2026-08-30]` FIX 4.4 has 66 DATA
+                // members across these tables.
+                //
+                // The length is handed over deliberately WRONG. The encoder
+                // computes it from the value, so a test that supplied the right
+                // one could not tell the two apart — the same shape as a fixture
+                // that agrees with the bug.
+                let len_tag = Fix44::data_length_tag(tag).unwrap_or(0);
+                let dv: &'static [u8] =
+                    Box::leak(format!("D{e}\u{1}x").into_bytes().into_boxed_slice());
+                DATA_WRITTEN.fetch_add(1, AtomicOrdering::Relaxed);
+                push(&mut wire, len_tag, dv.len().to_string().as_bytes());
+                push(&mut wire, tag, dv);
+                fields.push((len_tag, b"999999" as &[u8]));
+                fields.push((tag, dv));
+            } else if order
+                .iter()
+                .any(|d| Fix44::data_length_tag(*d) == Some(tag))
+            {
+                // The length member of a DATA member in this group. It is
+                // written when its data is, immediately in front — pushing it
+                // here as an ordinary field would emit it twice.
+            } else if plain < 2 {
                 push(&mut wire, tag, v);
                 fields.push((tag, v));
                 plain += 1;
@@ -103,6 +128,14 @@ fn build(
         },
     }
 }
+
+/// How many DATA members this run actually wrote.
+///
+/// **A round-trip that covers no DATA member is a round-trip that proves
+/// nothing about DATA**, and it would look exactly like one that did — the same
+/// shape as a benchmark reporting zero allocations for a path that never ran.
+/// The assertion at the end reads this.
+static DATA_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 
 fn push(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
     out.extend_from_slice(tag.to_string().as_bytes());
@@ -174,6 +207,12 @@ fn every_declared_group_round_trips_byte_for_byte() {
     println!(
         "round-tripped {checked} top-level positions, {} counters",
         covered.len()
+    );
+    let data = DATA_WRITTEN.load(AtomicOrdering::Relaxed);
+    println!("wrote {data} DATA members, each with a separator inside its value");
+    assert!(
+        data >= 20,
+        "the DATA members must actually be exercised; wrote {data}"
     );
     assert!(
         checked >= 357,

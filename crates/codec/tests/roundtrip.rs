@@ -12,10 +12,10 @@
 
 mod common;
 
-use nanofix_codec::{
+use fixbolt_codec::{
     Dictionary, FieldIndex, MessageView, Parsed, Template, TemplateBuilder, Validation, parse_into,
 };
-use nanofix_dict::Fix44;
+use fixbolt_dict::Fix44;
 
 /// `MsgType` first, then header tags ascending, then body tags ascending —
 /// the order the acceptance comparator checks positionally.

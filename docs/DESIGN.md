@@ -1,4 +1,4 @@
-# nanofixengine — Design
+# fixbolt — Design
 
 A FIX 4.4 engine in Rust, **bidirectional** — acceptor and initiator on one session core,
 parameterised by role ([ADR-0004](decisions/ADR-0004-bidirectional-engine.md)) — built so that
@@ -17,8 +17,9 @@ to measure the floor honestly.
 
 What must be built and in which phase is [PRD.md](PRD.md); this document is *how*.
 
-> **`nanofixengine` is a placeholder name.** It exists to get off the collision with
-> `matthart1983/nanofix`. The shortlist of clean replacements is in [STATUS.md](../STATUS.md).
+> **The name is `fixbolt`**, decided 2026-08-30. It replaced the placeholder
+> `nanofixengine`, which collided with `matthart1983/nanofix` — see [STATUS.md](../STATUS.md)
+> item 1 for what was checked and why the rest of the shortlist was set aside.
 
 Settled decisions live in [decisions/](decisions/). What the landscape looks like is in
 [reference/prior-art.md](reference/prior-art.md). Numbers that were actually measured — and
@@ -257,6 +258,18 @@ agrees on 730/730 groups and QuickFIX's order is an exact subsequence of this cr
 730/730 (`crates/dict/tests/interop_quickfix_order.rs`). Swapping two adjacent members in
 every group leaves the round-trip green and turns that test red — which is why it exists.
 
+**A DATA field is written immediately behind its length field, and the encoder writes that
+length.** A DATA value may legally contain `0x01`, so a reader takes its length from the field
+in front and from nowhere else. Two rules follow, and both are refusals rather than advice:
+a DATA field declared without its length field fails at `TemplateBuilder::build` — once, at
+startup — with `EncodeError::DataWithoutLength`, and inside a repeating group the same case
+fails in `encode_with` before a byte is written; and the length's value is computed from the
+data rather than taken from the caller, because a caller who can state it can state it wrongly.
+`[measured 2026-08-30]` fifteen of FIX 4.4's sixteen DATA pairs have `length == data - 1`, so
+ordering by ascending tag was right by accident; `Signature(89)` takes `SignatureLength(93)`
+and was emitted before its length. Held by `crates/codec/tests/data_encode.rs`, and by
+`group_roundtrip.rs`, which writes **508 DATA members** with a separator inside every value.
+
 ### D4 — Dispatch is a trait; inline is the default, the ring buffer is the option
 
 Taken from [Artio](https://github.com/artiofix/artio), which separates `FixEngine` (owns TCP
@@ -336,7 +349,7 @@ satisfied. The engine appends to a memory-mapped journal under a policy the user
 | `Fsync` | `fsync` before the message is acknowledged | Regulated deployments that require it |
 
 **As built.** Three types rather than three branches:
-`nanofix_session::journal::NoJournal` is `None`, `engine::journal::MemJournal` is a ring that
+`fixbolt_session::journal::NoJournal` is `None`, `engine::journal::MemJournal` is a ring that
 keeps but does not persist, and `engine::journal::FileJournal` carries
 `Durability::{Async, Fsync}`. A `FileJournal` **also** keeps the ring and answers `get` from
 it: reading a replay back off disk would be a blocking `read` on the thread non-negotiable 4
@@ -352,6 +365,20 @@ documents for the dispatch ring.
 **A journal is written and never read back.** Nothing recovers a session from the log on
 startup, so `Fsync` today is an audit trail rather than a recovery mechanism. That needs a
 session constructible *from* a journal, which is its own plan — STATUS open item 16.
+
+**A journal reads back, and until 2026-08-30 it did not.** `Journal::highest()` reports the
+highest sequence number held, `FileJournal::open` reads the file before appending, and a record
+torn by a process killed mid-write is dropped rather than half-read. The on-disk record carries
+its own length — `seq(4) || len(4) || bytes` — because without it records cannot be separated
+and the file is append-only by construction, which is what `Durability::Fsync` was paying for
+before this. Held by `crates/engine/tests/recovery.rs`, which drops the journal between the
+write and the read; a `MemJournal` there would prove nothing.
+
+**What still does not resume is the session.** `Session::connect` resets both counters
+unconditionally, so recovered numbers are wiped before anything can use them.
+[ADR-0010](decisions/ADR-0010-a-reconnect-is-not-a-restart.md) is `Proposed` and says why that
+is a decision rather than an oversight: the acceptance corpus resets on every connect, FIX
+numbers a session rather than a connection, and one entry point cannot serve both.
 
 ### D8 — The engine thread busy-polls; it never sleeps in the kernel
 
@@ -385,9 +412,10 @@ gate.
 **Non-negotiable 4 has no machine check yet, and that is stated rather than glossed.**
 `dtruss` is refused by macOS SIP, and the substitute — reading undefined symbols out of the
 compiled rlib — fails its own reversal, because `Engine` and `serve` are generic and are
-therefore never code-generated into the library at all. It is a hand-check until `tools/w2w`
-runs on Linux and a syscall trace can be taken. See
-[reference/measured-costs.md](reference/measured-costs.md).
+therefore never code-generated into the library at all. **Closed 2026-08-30**:
+`scripts/check-no-kernel-sleep.sh` traces `tools/w2w` — a concrete binary, on Linux, with the
+syscalls attributed to the engine thread by tid — and the script's own second run swaps
+`wait::Spin` for `wait::Park` and fails if that does not trip it. §6 has the row.
 
 ### D9 — Outbound messages are templates: a pre-sorted parts list, patched, not built
 
@@ -540,9 +568,10 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Allocations on the hot path — session | **0**, counted separately on thirteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
 | The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`, `tests/reject.rs` and `tests/heartbeat.rs`. `[measured]` seven so far. Three from steps 1–3: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged, because `52` is one of the five tags `fields.fmt` matches by shape; a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet. Four from step 4: all three heartbeat thresholds, which the harness's whole-interval ticks cannot see; and that a garbled frame is fatal only when it claims to be a Logon, which the corpus states once from each side in different files. Five from step 5, in `tests/resend.rs`: every file that opens a gap ends before opening a second one, so closing a filled gap, replaying held messages in sequence order, and what happens when there is no room to hold one are all invisible to the score |
-| Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
+| Session conformance, acceptor | **59 / 59** | `cargo test -p fixbolt-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
 | The journal keeps what a resend needs, under each D7 policy | `None` fills over everything; `MemJournal` and `FileJournal` replay; a message longer than a slot is refused rather than truncated | `crates/engine/tests/journal.rs`, seven tests. Reversal: making `put` keep nothing turns four of them red **and drops the acceptance score**, which is what proves the score depends on the journal |
-| Session conformance, acceptor, **through a real socket** | **59 / 59** | `cargo test -p nanofix-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59** |
+| Session conformance, acceptor, **through a real socket** | **59 / 59, on every machine** | `cargo test -p fixbolt-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59 on the M5 and on Linux x86_64** — **met**. It read 39 / 59 on Linux until the harness's client socket was given `TCP_NODELAY`, which the engine's own sockets have always had; the gate is now flat across a 20× span of its timing bounds, which is what makes the figure mean something |
+| **The engine thread never sleeps in the kernel** | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`. Traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid — the client blocks on purpose and would mask everything. `[measured 2026-08-30]` Linux 6.18 x86_64: `accept4`, `recvfrom`, `sendto` and **zero** of `epoll_wait`/`poll`/`select`/`futex`/`nanosleep`/`sched_yield`. **The script runs the binary again with `wait::Park` and fails if that run does *not* trip it** — non-negotiable 4 had two machine checks before this one and both were green with a sleep present |
 | Allocations on the hot path — engine | **0**, counted separately on seven paths: idle, send, recv, frame, turn, busy, ring | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
@@ -582,6 +611,49 @@ grows with slots × parts. It is recorded here rather than optimised, because
 `reference/measured-costs.md` exists to stop exactly the reverse — optimising before
 measuring on the machine that matters. The number to beat is the Linux one, at the `engine`
 step.
+
+`[measured 2026-08-30]` **The Linux number now exists, and it is worse.** Five runs on a
+shared 4 vCPU Xeon container, `rustc 1.98.0`: 177.6–199.4 ns, a 3.0–3.3× miss rather than the
+M5's 1.6×. Still recorded rather than optimised, and for the same reason — a shared container
+is not §9 either.
+
+### How the benchmarks are run
+
+Nothing ran them until 2026-08-30. `cargo test --all` does not run a `harness = false` bench
+target — measured: 43 test binaries, not one of them a bench — and no CI job called
+`cargo bench`. Every ceiling in the rows above, and every allocation count, was an assertion
+no machine executed. `benches/alloc.rs` is what `CLAUDE.md` §2 names as the machine check for
+non-negotiable 1, so that entry named a check nothing invoked.
+
+`scripts/bench.sh` runs every bench target and the `bench` CI job runs the script on every
+push. **It splits the two kinds of benchmark by what decides their result**, because they
+cannot share an exit code:
+
+| | What it measures | On a failure |
+|---|---|---|
+| **Invariant** — `alloc` × 3, `ring_full` | allocation counts, message counts | **CI red.** The answer is the same on every machine, so a failure is a defect |
+| **Timing** — `parse`, `serialize`, `groups`, `dispatch` | ns/op against a ceiling | **Reported, never red.** The ceilings are M5-tuned and the runner is shared |
+
+`--strict` makes a timing failure fatal too; that is what a §9 machine should use. The script
+also fails when a target produces **no** measurement, which is not hypothetical: Cargo had
+auto-discovered `benches/harness.rs` — a module, containing no case — as a ninth bench target
+that reported `0 measured` and exited 0.
+
+**Timing ceilings are not enforced on a shared runner because they cannot be.**
+`[measured 2026-08-30]` Five runs of the twelve timing cases on a 4 vCPU Xeon container:
+run-to-run spread 5–232%, three cases flip colour between runs, and **not one case exceeds its
+ceiling in all five**. The same commit on the CI runner — AMD EPYC 7763, **2 cores**, run
+33304774414 — puts **six of the twelve over**, `ring, one way` at 328.3 ns against 188.5–233.2
+on the container. Across four CI runs that case ranges **270.7–331.1 ns**, while the
+single-threaded cases hold to ~3%: the spread follows **whether a case crosses threads**, not
+just which machine it ran on. A gate that goes red at random gets switched off. Re-tuning waits for §9 —
+STATUS.md open item 20.
+
+**Every case is measured and printed before any is allowed to fail.** The harness used to
+assert inside each case, so the first one over its ceiling ended the process: a single 17.8 ns
+outlier on a 3.7 ns baseline threw away both `ring` figures on that run, and `groups` had a
+fourth case — `encode 1 group, 2 entries`, over its ceiling — that **nobody had ever seen**,
+because the process died two cases earlier.
 
 **Published target and asserted ceiling are deliberately different numbers.** The benchmark
 asserts a regression ceiling of roughly 1.5–2× the baseline measured on the machine at hand,
@@ -666,3 +738,33 @@ anything:
 | **If TLS is on:** a kernel that carries the negotiated cipher suite in kTLS | kTLS support is narrower than what `rustls` will happily negotiate. A session that negotiates outside it drops silently to the userspace path and off the hot-path guarantee (D11). Which kernel version and which suites is ADR-0005 open question 2 — **unanswered** |
 
 A latency number published without stating which of these were set is not a number.
+
+### Checking, and the difference between a tuned box and an untuned one
+
+The table above was a list of things somebody was supposed to have done. There was no way to
+tell a tuned machine from an untuned one except by asking the person who set it up — which is
+prose holding a constraint, and `CLAUDE.md` §4 says prose does not.
+
+**`scripts/check-machine.sh` reads every row off the running machine** and prints `PASS`,
+`FAIL` or `? ? ?` for each, with the command that fixes a failing one. It reads only: applying
+these is root, machine-specific, and belongs to the person at the box.
+
+`unknown` is deliberately **not** a pass. A container that cannot read `/sys` must not be able
+to look like a tuned host — that is the shape of a green result nobody checked.
+
+```
+scripts/check-machine.sh          # what is in force, and how to fix what is not
+scripts/bench.sh                  # counts and A/B comparisons, on any machine
+scripts/bench.sh --strict         # refuses unless check-machine.sh is clean
+```
+
+`--strict` is the gate that makes non-negotiable 10 real: it fails **before it looks at a
+single ceiling** if the machine is not set up, because a latency figure from an untuned box is
+exactly the number that rule forbids publishing. Without `--strict` the run is still useful —
+allocation counts are machine-independent, and an A/B comparison against the same box is valid
+whatever that box is.
+
+`[measured 2026-08-30]` On the shared container this repository was developed in, the script
+reports `pass 1  fail 5  unknown 3` and exits 1, and `scripts/bench.sh --strict` refuses. That
+is the correct answer for that machine, and it is why every timing figure in §6 above is
+labelled with the box it came from.

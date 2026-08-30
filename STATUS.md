@@ -3,25 +3,45 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-08-30**.
+Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17.
 
 ## Where the work is
 
 **Next, and each needs its own plan before any code (Rule Zero):**
 
-1. **`tools/w2w`** — `DESIGN.md` §7 step 7. The wire-to-wire harness. It is also the only
-   thing that can close open items 6 and 15, so it unblocks every latency number and the one
-   non-negotiable with no machine check.
-2. **`library`** — §7 step 8. The application-facing API.
-3. **Steps 3–4 of the paused initiator plan**, whose gate is interop against `libquickfix`
-   rather than the mirrored corpus (ADR-0004, ADR-0006).
+**Six plans were written and approved on 2026-08-30**, with the owner's standing permission to
+revise a plan mid-flight when reality disagrees with it — each revision recorded in that plan's
+delivery log. In dependency order:
+
+1. ~~**gates-that-can-be-trusted**~~ — **closed 2026-08-30.** Items 7, 17, 18 and 19 are gone,
+   CI is green, and the whole suite passes on Linux for the first time. Everything below was
+   waiting on it, because every plan closes by quoting a gate.
+2. **[w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md)** — **half done.**
+   `tools/w2w` runs and **item 15 is closed**. Items 6, 11, 13 and the decision on 12 are
+   **blocked on a machine matching `DESIGN.md` §9**, and the plan stops there rather than
+   lowering the bar to close.
+3. **[ktls-spike](docs/plans/2026-08-30-ktls-spike.md)** — item 10. **Paused 2026-08-30 after
+   step 1.** It needed Linux rather than a §9 machine, which was right — but it needs a kernel
+   built with `CONFIG_TLS`, which this one is not. Nothing about `ktls-core` or ADR-0005 was
+   concluded, because the experiment never reached the library.
+4. ~~**data-fields**~~ — **closed 2026-08-30**, items 8 and 9.
+5. **[session-recovery](docs/plans/2026-08-30-session-recovery.md)** — item 16. **Steps 1–3 done
+   2026-08-30**: the journal reads back. Steps 4–5 wait on
+   [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md), `Proposed`.
+6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5. **Steps 1–2 done
+   2026-08-30**; steps 3–4 wait on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md),
+   which is `Proposed` and needs the owner's signature.
+
+Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
+initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
+(ADR-0004, ADR-0006).
 
 | | |
 |---|---|
-| Branch | **`main`.** `plan/engine` merged 2026-08-30, exit criteria met, gates re-run green on the merge commit |
-| Milestone | **M3 — the engine, closed.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket**: `cargo test -p nanofix-engine --test wire` → **59 / 59**. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
+| Branch | **`claude/project-status-irgurb`**, PR #1. `[measured 2026-08-30]` CI green on `a52a954` — runs `33295128793` and `33295130319`. First green since `engine` merged: `1013a30` |
+| Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p fixbolt-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | *(none)* |
+| Plan in flight | **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — measured, blocked on ADR-0011. `gates-that-can-be-trusted` **closed** (7, 17, 18, 19); `w2w-and-linux-numbers` **half A done** (15), half B needs a §9 machine; `ktls-spike` **paused** (10) needing a `CONFIG_TLS` kernel. Three plans approved and not started: `data-fields`, `session-recovery`, `ring-full-policy` |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
@@ -257,7 +277,7 @@ Last updated: **2026-08-30**.
   primary gate rather than the secondary one.
 
 - **The 59 definitions pass through a real socket, first run.** `[measured 2026-08-30]`
-  `cargo test -p nanofix-engine --test wire` → **59 / 59**. Kernel TCP, the real
+  `cargo test -p fixbolt-engine --test wire` → **59 / 59**. Kernel TCP, the real
   framer, the real session, the real application; the clock is the only injected part,
   because every `I` line in the corpus carries a fixed instant. No background thread and no
   sleep: `Engine::turn` is one non-blocking pass and the test drives it by hand, so it is as
@@ -307,7 +327,7 @@ Last updated: **2026-08-30**.
   the same commit as the fix.
 
 - **The journal left the session, and D1's debt is paid.** `[measured 2026-08-30]`
-  `nanofix_session::journal::Journal` is a trait the caller supplies, like `Application`; the
+  `fixbolt_session::journal::Journal` is a trait the caller supplies, like `Application`; the
   session holds no bytes it did not generate. Three D7 tiers as three types: `NoJournal`,
   `MemJournal`, `FileJournal` with `Durability::{Async, Fsync}`.
   [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) records why a trait and not the
@@ -315,6 +335,172 @@ Last updated: **2026-08-30**.
 - **The acceptance score depends on the journal, and the reversal proves it.** Making
   `MemJournal::put` keep nothing turns four of `tests/journal.rs`'s seven red **and** drops
   `--test score` below 59. Restored: 59 / 59, and 59 / 59 over a socket.
+
+- **The wire gate was 39 / 59 on Linux, the cause was Nagle, and the first diagnosis of it was
+  wrong.** `[measured 2026-08-30]` `cargo test -p fixbolt-engine --test wire` scored 39 / 59
+  while `--test score` over the same corpus on the same machine scored 59 / 59. Walking the
+  harness's `quiet` bound walked the score — 200 → 39, 2 000 → 43, 20 000 → 59 — and that was
+  read as "a spin count is not a settle criterion". **It was Nagle on the harness's own client
+  socket.** `2m_BodyLengthValueNotCorrect` sends a frame that produces no reply, so no
+  piggybacked ACK; the peer's delayed ACK holds; four `I` lines coalesce into one 477-byte read
+  and the framer discards all four. The longer timeouts were outwaiting the delayed ACK. The
+  engine already sets `TCP_NODELAY` (`transport.rs:68`); the harness did not, which made the
+  test rig the only Nagle-enabled peer. **Fixed with one line, and proven by a 2 × 2**: spin
+  count and wall-clock bound both score 39 / 59 without `set_nodelay` and 59 / 59 with it.
+  Removing that line from the finished fix returns exactly 39 / 59. **Item 17 closed**;
+  full write-up, including what the wrong diagnosis cost, in
+  [reference/measured-costs.md](docs/reference/measured-costs.md).
+- **The wire gate is 59 / 59 on Linux, and its bounds are flat.** `[measured 2026-08-30]`
+  59 / 59 at a 1 ms and a 20 ms quiet window; only the run time moves, 0.8 s against 14.5 s.
+  The `settle` hook an earlier draft added to `fixbolt_conformance`'s public trait was
+  **deleted rather than shipped**: the reversal meant to prove it left the gate at 59 / 59 with
+  it disabled.
+- **The toolchain is pinned and the lint that turned `main` red is fixed.** `[measured
+  2026-08-30]` `clippy::byte_char_slices` reproduces on `1.98.0` — installable here, so it did
+  not need CI to prove — and `rust-toolchain.toml` now pins 1.98.0, with an advisory
+  `clippy-latest-stable` CI job that never blocks a merge. **Item 19 closed.**
+- **The rest of the suite is green on Linux, on this toolchain.** `[measured 2026-08-30]`
+  same box, `cargo 1.94.1`: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D
+  warnings` clean **here and red on the runner's newer clippy — see the next entry**,
+  `scripts/check-lint-config.sh` green in both directions, `cargo test --all` **158 passed /
+  1 failed** across 30 test binaries — the one failure being the wire gate above — and
+  `cargo test --no-default-features` fails on that one and nothing else.
+- **CI had been red on `main` for both of those, and nobody read it.** `[measured 2026-08-30]`
+  GitHub Actions run `33291318638`, commit `9986890` — the tip this branch was cut from —
+  fails two jobs. *Builds with nothing optional installed* fails on
+  `the_fifty_nine_definitions_pass_through_a_real_socket`, which is the wire gate above: **the
+  runner had been saying 39 / 59 within a minute of the engine merging**, while this page, the
+  `README`, `DESIGN.md` §6 and `PRD.md` all said 59 / 59 on the strength of a laptop run.
+  *fmt · clippy · test* fails on `clippy::byte_char_slices` at
+  `crates/dict/tests/interop_quickfix_fields.rs:133` — a lint that does not exist in
+  `clippy 0.1.94` here or `1.95.0` on the M5, and does in the runner's `1.98.0`. **CI installs
+  whatever stable is current and there is no `rust-toolchain.toml`**, so `-D warnings` denies
+  lints that had not been written when the code was. Both written up in
+  [reference/measured-costs.md](docs/reference/measured-costs.md). **Open items 18 and 19.**
+- **Item 7 closed: the corpus is pinned and verified.** `[measured 2026-08-30]`
+  `scripts/fetch-quickfix-assets.sh` defaults to commit `386ce46e917a` instead of `master` and
+  checks the three counts the documents quote — **59 definitions, 539 message lines, 244 `E`
+  lines carrying `10=`** — failing at the fetch rather than three layers away. Proven by
+  reversal: adding one `.def` gives `CORPUS MISMATCH: acceptance definitions is 60`, EXIT=1;
+  removing it, EXIT=0. **The first reversal was worthless and it is worth saying why**:
+  `QUICKFIX_REF=master` passed, because `master` currently *is* the pinned commit. And the pin
+  buys nothing today — upstream has not drifted. Its value is entirely future; only the
+  mechanism is proven.
+- **Item 18 closed, and the plan was wrong about how.** The two dead rustdoc links were
+  **external URLs**, which `check-links.py` skips by design, so walking `.rs` files would not
+  have caught them. The rule that does, and needs no network: **a file in this repository must
+  be linked by relative path, never by absolute URL.** It found **three**, not two. Scanning
+  `.rs` first produced **13 false positives**, all rustdoc intra-doc links naming Rust items
+  rather than files — the trap the plan had named in advance, caught by the guard it named.
+  `CLAUDE.md` §9 now requires a green CI run named by id for the commit being closed, and §10
+  gains two more failures no gate can see.
+- **Item 15 closed: *the engine thread never sleeps in the kernel* has a machine check, and
+  the check proves itself.** `[measured 2026-08-30]` `tools/w2w` exists and runs;
+  `scripts/check-no-kernel-sleep.sh` traces it with `strace -f` and attributes syscalls to the
+  engine thread **by tid** — the client blocks on purpose and would mask everything. The engine
+  thread made **3111 `recvfrom`, 3111 `accept4`, 351 `sendto`, and zero** of `epoll_wait`,
+  `poll`, `select`, `futex`, `nanosleep`, `sched_yield`. **The script then runs the binary again
+  with `wait::Park` and fails if that does not trip it** — `RED ok — --park trips it: 1749
+  sched_yield`. That second half is the point: this rule had two machine checks before and both
+  were green with a `sleep` present. The zero is only accepted because the same run separately
+  proves the thread did socket work.
+- **`tools/w2w` measures an administrative round trip, not an application echo.**
+  `TestRequest` out, `Heartbeat` back — the session owns `35=1`, so no application is involved
+  and the number cannot be contaminated by the tool's own message building. An application echo
+  comes with the half of its plan that needs a §9 machine.
+- **`[measured 2026-08-30]` w2w on this box: min 14 967 ns, p50 29 745 ns, p99 67 943 ns**,
+  5 000 samples, 4 vCPU container. **Not publishable and the binary says so itself on every
+  run** — no `isolcpus`, no pinning, no frequency control, so it does not match `DESIGN.md` §9.
+  **No row of §8 was changed on the strength of it.**
+- **The blocker on item 10 was wrong, and knowing that is most of the value.** `[measured
+  2026-08-30]` it had been recorded as needing the §9 machine of item 6. kTLS is a **kernel
+  feature, not a latency property**, so it needs no such machine — but a Linux box is not
+  enough either: it needs a kernel built with `CONFIG_TLS`. This one is not.
+  `setsockopt(TCP_ULP, "tls")` on a real connected socket returns **`ENOENT` on both ends**,
+  and the kernel config reads `# CONFIG_TLS is not set`. **The config line alone would not
+  have been enough** — a config says what was compiled, not what a container may do; the
+  syscall says both, which is why `scripts/check-ktls-available.sh` makes the call rather than
+  grepping.
+- **Items 8 and 9 closed: the DATA write path has invariants, and they are refusals.**
+  `[measured 2026-08-30]` `TemplateBuilder::build` refuses a DATA field declared without its
+  length field (`EncodeError::DataWithoutLength`); `encode_with` refuses the same inside a
+  repeating group before a byte is written; and **the encoder computes the length from the
+  data**, ignoring what the caller passed — `0x01` inside the value included. Six tests in
+  `crates/codec/tests/data_encode.rs`, each rule proven by reversal with the injection
+  confirmed present first.
+- **The ordering defect was real and had shipped.** `[measured 2026-08-30]` fifteen of FIX
+  4.4's sixteen DATA pairs have `length == data - 1`, so sorting body tags ascending put them
+  right **by arithmetic accident**. `Signature(89)` takes `SignatureLength(93)` and was emitted
+  **before** its length — unframable by any reader. Field order now places a DATA field one
+  place behind its length field's tag, which fixes all sixteen without a special case. Written
+  up in [reference/fix44-dictionary-traps.md](docs/reference/fix44-dictionary-traps.md).
+- **In groups the order was already right, and that is not the same as tested.** `[measured
+  2026-08-30]` **66 DATA members across the group tables, all 66 with the length declared
+  immediately in front.** `group_roundtrip.rs` no longer skips them: it writes **508 DATA
+  members, each with a separator inside its value**, and asserts that count is non-zero —
+  a round-trip that covered no DATA member would look exactly like one that did.
+- **`benches/alloc.rs` writes a DATA field at zero allocations**, and the case asserts its own
+  path is live before the zero counts. Proven by injection: one `format!` in that loop reports
+  **10 000**.
+- **The ring holds 56.7 µs of slack, and ADR-0002 assumed milliseconds.** `[measured
+  2026-08-30]` `crates/engine/benches/ring_full.rs`, Linux 6.18 x86_64: at the 65 536-byte
+  capacity `benches/dispatch.rs` measures the hop at, a stalled application costs the engine
+  **352 messages and 56.7 µs** before the ring starts refusing. ADR-0002 bought the ring so that
+  *an application that stalls does not stall the session layer*, priced against a stall of
+  "milliseconds" — **one millisecond overflows this ring about eighteen times over.** The ring
+  as sized does not buy what it was bought for, which makes capacity part of the policy decision
+  rather than a tuning detail. The bench asserts the ring **accepted** before it refused: one
+  that rejected everything from the first message would print a plausible number.
+- **A gate has been red on Linux the whole time and nothing ran it.** `[measured 2026-08-30]`
+  `cargo bench -p fixbolt-engine --bench dispatch` fails here: **ring one way 332.5 ns against
+  its 260 ns ceiling**, while inline is 5.4 ns against 15 and passes. The ceilings came from the
+  M5 (2.7 ns and 128.0 ns) with ~2× headroom; a cross-thread hop on a shared 4 vCPU host is
+  2.6× the M5's, and **nothing is regressing** — the gate is measuring the machine.
+  **`cargo test --all` does not run a `harness = false` bench and no CI job runs `cargo bench`,
+  so this has never been reported by anything.** Found by hand, while doing something else.
+  It also means the commit before this one stated its gates without this one, because
+  `CLAUDE.md` §7 names `alloc` and the Criterion suite together and only `alloc` was run.
+  **Open item 20**; not fixed here, because every fix changes how a `DESIGN.md` §6 gate is
+  measured.
+- **The journal reads back, and it could not have before.** `[measured 2026-08-30]` the
+  on-disk record was `seq(4) || message` with **no length**, so records could not be separated
+  on read: the file was append-only by construction and item 16 could not be closed without
+  changing it. Now `seq(4) || len(4) || bytes`. `FileJournal::open` reads the file before
+  appending, `Journal::highest()` says what is held — **deliberately with no default
+  implementation**, because a default `None` would let a journal that holds messages report
+  that it holds none — and **a torn tail is dropped rather than half-read**. Four tests in
+  `crates/engine/tests/recovery.rs`, each using `FileJournal` and dropping it between the write
+  and the read: a `MemJournal` there would prove nothing, since the restart is the question.
+- **A reversal reported PASS because it inserted nothing, and `grep` is what caught it.**
+  Changing `max()` to `min()` in `highest()` silently failed to apply — `cargo fmt` had joined
+  the line, so the replacement string did not match. The count came back **0** and that is the
+  only reason it was not read as "this guard cannot fail". Re-injected properly it goes red
+  (`left: Some(7), right: Some(8)`). This is `false-greens.md` §5's own case, hit while quoting
+  it. **Confirm the injection is in the file before reading the result** — every time.
+- **The corpus resets on every connect, and it cannot settle whether that is right.**
+  `[measured 2026-08-30]` three files reconnect — `2i` (2 connects), `2k` (3), `2o` (2) — and
+  **all seven expect `34=1` back**, with **no `141=Y` on any of those Logons**; one file in the
+  corpus mentions `141=` at all. But FIX numbers a *session*, not a *connection*, and QuickFIX
+  persists across a reconnect in a deployment while its harness starts each `iCONNECT` from a
+  clean store. **The corpus and a real deployment want opposite behaviour, and `connect` cannot
+  tell which it is in.** [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)
+  proposes separating the two and is `Proposed`.
+- **Seven cases went back to `testing-skills`, and the queue now matches the rule.**
+  [PR #2](https://github.com/tmthang86/testing-skills/pull/2), draft, on branch
+  `claude/false-greens-from-a-protocol-engine`: three new numbered cases in `false-greens.md`
+  (the knob that moved with the fix and was not the cause; the check nobody ran; fifteen out of
+  sixteen), a fourth on instruments that cannot see what they were aimed at, two more ways a
+  reversal inserts nothing added to its §5, and two foldings into its §2 and §11. **The first
+  commit contributed four of the seven due and the second fixed that** — `CLAUDE.md` §11 says a
+  case goes back when the plan that found it closes, and three came from closed plans.
+  `[measured]` upstream's own checks on the branch: `validate-repo.mjs` 0 errors 0 warnings,
+  `compare-design.mjs --self-test` 33/33, `check-theme-contract.mjs --self-test` all passed.
+  **One case is correctly still held**: the `ktls` blocker case, because that plan is paused
+  rather than closed.
+- **The contribution is evidence upstream could not previously have.** Its roadmap names its
+  biggest gap as *nothing proven against a real system*, with everything measured on one Tauri
+  app through a UI. These came from a system with **no UI at all** — no browser, no locators, no
+  screenshots — and the same shapes appear, which is what makes them not browser problems.
 
 ## Not proven — claimed, researched, or simply not yet run
 
@@ -368,18 +554,35 @@ Last updated: **2026-08-30**.
 
 ## Open items
 
+Every one of these is either inside a plan or has a stated reason for not being in one. All six
+plans are **approved**; the first is in progress.
+
+| Plan | Closes |
+|---|---|
+| ~~[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)~~ | **CLOSED 2026-08-30** — 7, 17, 18, 19 |
+| [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | **15 closed 2026-08-30**; 6, 11, 13 blocked on a §9 machine; **decides** 12 |
+| [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 — **paused 2026-08-30**, blocked on a kernel with `CONFIG_TLS` |
+| ~~[data-fields](docs/plans/2026-08-30-data-fields.md)~~ | **CLOSED 2026-08-30** — 8, 9 |
+| [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 — **journal read-back done 2026-08-30; blocked on [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)** |
+| [ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) | 5 — **measured 2026-08-30; blocked on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md) being accepted** |
+
+**The two with no plan, and why.** **1** (the final name) is a decision for the owner, not a
+piece of work — when it is made it is an ADR and a rename, and neither can be planned around
+an undecided name. **14** (kernel bypass) is phase 3, is excluded by PRD §5 as it stands, and
+needs a Solarflare/AMD X2-class NIC that nobody here has; planning it would be planning
+against hardware that does not exist.
+
 | # | Item | Blocks |
 |---|---|---|
-| 1 | **Final name.** `nanofixengine` is a placeholder. Free on both crates.io and GitHub: `machfix`, `veloxfix`, `tachyonfix`, `luxfix`, `fixwire`, `fixbolt`, `sohwire` | Nothing yet — but renaming after a crates.io publish is expensive |
-| 5 | Ring-buffer policy when the library falls behind: block, drop, or disconnect? | ADR-0002, and the `engine` plan |
-| 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number | Every gate in §6 that matters |
+| 1 | ~~**Final name**~~ — **closed 2026-08-30: `fixbolt`.** The placeholder `nanofixengine` was not merely undecided, it was **a near-collision with the project this repository measures itself against**: `matthart1983/nanofix` is *"Ultra-low-latency FIX protocol engine in Rust"* (item 12; `CLAUDE.md` §2 rule 7's "276 unwraps"), and `LMAX-Exchange/nanofix` is a Java FIX test client with 40 stars in the same domain. `DESIGN.md` had said so since it was written and the rename kept being deferred. `fixbolt` was checked free on crates.io **and** GitHub — checking only the global registry is how `nanofix` itself nearly got re-adopted. Rejected, with reasons: `rustfix` (taken — the crate behind `cargo fix`, and literally a repair tool), `tesla-fix` (TSLA is a ticker; the engine would be named after an instrument it carries), `swiftfix` (SWIFT is the interbank network), `flashfix` ("flash crash"), `fixarc` (`Arc<T>`), `fleetfix` (37 fleet-repair apps), and the whole `<speed-word>fix` family, because *quick fix* is an English idiom for a shoddy repair — putting FIX **first** is what makes it read as the protocol. **One step remains and it is the owner's: rename the GitHub repository**, after this branch is pushed; GitHub redirects the old URL afterwards | Nothing. Publishing to crates.io is unblocked |
+| 5 | **Ring-buffer policy when the application behind the ring falls behind: block, drop, or disconnect?** Not `DESIGN.md` D10, which answered the socket side. `[measured 2026-08-30]` the ring holds **352 messages / 56.7 µs** at its current 64 KiB, against the "milliseconds" ADR-0002 assumed — so capacity is part of the decision. **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md) proposes disconnect + a 4 MiB default and needs signing** | ADR-0002; steps 3–4 of the ring plan |
+| 20 | **The bench ceilings are tuned to a machine no gate runs on.** The half of this item that said *nothing runs them* is closed: `scripts/bench.sh` and the `bench` CI job run all eight targets on every push, and `benches/alloc.rs` — non-negotiable 1's machine check — now runs automatically for the first time. What is left is the ceilings themselves. `[measured 2026-08-30]` five runs of each of the twelve timing cases on a shared 4 vCPU Linux container: run-to-run spread is **5–232%**, three cases flip colour between runs (`encode ExecutionReport` 2/5, `walk 4 levels` 3/5, `encode 1 group` 4/5) and **not one case is over its ceiling in all five**. So there is no regression here to fix — the ceilings are simply inside this machine's noise. Then the same commit ran on the CI runner — AMD EPYC 7763, **2 cores**, run 33304774414 — and put **six of the twelve over**, with `ring, one way` at **328.3 ns**, within 1.3% of the 332.5 ns that originally named this item. So the spread is both kinds at once: 5–232% run to run on one machine, and up to **1.7× between two shared machines**, with the ceiling sitting between them. `[measured 2026-08-30]` **The CI runner pool is two CPU generations**, and once each sample carries its CPU the five runs are two tight distributions, not one noisy one: EPYC 7763 gives `ring, one way` 327.2–331.1 (**1.2%**), EPYC 9V74 gives 270.7–272.9 (**0.8%**), and they differ **21%** — against **3%** on the single-threaded cases, because the ring crosses cores and Zen generations differ in inter-core latency. So **a per-machine baseline is viable**, keyed on the CPU model that `scripts/check-machine.sh` now prints with every figure; a single absolute ceiling across the pool is not. **Re-tuning needs the §9 machine of item 6**; re-tuning from a shared container would trade one wrong number for another | `DESIGN.md` §6 ceilings; item 6 |
+| 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number. **`[2026-08-30]` the owner has a Linux desktop.** Start with `scripts/check-machine.sh`: it reads the §9 checklist off the box and names the command that fixes each failing row. Then `scripts/bench.sh --strict`, which refuses to publish a latency figure until that script is clean. | Every gate in §6 that matters |
 | 7 | **`scripts/fetch-quickfix-assets.sh` tracks mutable `master`.** Every acceptance number in the codec plan (539 lines, 247 with `9=`, 244 with `10=`, 8 tag-set patterns for `35=3`) can change silently upstream. Pin a commit and verify it | Reproducibility of every step-1 gate |
-| 8 | **DATA fields inside a repeating group are untested**, on either the read or the write path. `group_roundtrip.rs` skips every DATA member, because writing one needs its length field placed immediately in front — which is open item 9, seen from inside a group | Any counterparty that puts `RawData` in a `Parties` entry |
-| 9 | **The encoder has no DATA invariant.** Writing a dynamic DATA field must regenerate its length field, place it immediately before, and count bytes including embedded `0x01`. Only the read path is specified | Any counterparty that sends `RawData`/`XmlData` |
-| 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **Cannot be checked here — needs the Linux box of open item 6** | The TLS plan; ADR-0005 acceptance |
-| 11 | **Serialise misses its gate: 93.8 ns against 60 ns** (DESIGN §6). Cause is known — `Template::encode` finds each slot by a linear scan of the caller's list, so cost is slots × parts. Fix candidates: index slots by tag at template build, or require the caller to hand slots in parts order. The only red gate that does not need the Linux box | DESIGN §6 serialise row; the `engine` step, where the number is re-measured |
-| 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement | Nothing until open item 6 is answered |
-| 13 | **Release profile is default.** No `lto = "fat"`, no `codegen-units = 1`, no PGO, no `#[cold]` on error paths. Cheap, but each is a number to be measured before and after, not a setting to be assumed | The `engine` step; every §6 number published from Linux |
-| 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what nanofix claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |
-| 15 | **Non-negotiable 4 — *the engine thread never sleeps in the kernel* — is a hand-check.** No gate exists. `dtruss` needs SIP disabled; a symbol-based check over the rlib is defeated by generics (it passes with a `sleep` in the loop). The answer is a syscall trace of a concrete binary on Linux, which `tools/w2w` will be | DESIGN §6; every claim that D8 holds |
-| 16 | **A journal is written and never read back.** Nothing recovers a session's outbound sequence number or its unacknowledged messages from the log on startup, so `Fsync` today is an audit trail rather than a recovery mechanism ([ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md)). It needs a session constructible *from* a journal, which is a session-layer change with its own plan | A restart that resumes a session rather than starting one |
+| 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **`[measured 2026-08-30]` the blocker was recorded wrongly and is now known**: it needs a kernel built with **`CONFIG_TLS`**, *not* the §9 machine of item 6 — kTLS is a kernel feature, not a latency property. This box refuses `setsockopt(TCP_ULP, "tls")` with `ENOENT` and its config says `# CONFIG_TLS is not set`. `scripts/check-ktls-available.sh` answers "can I start?" in one command; [reference/ktls-on-a-plain-socket.md](docs/reference/ktls-on-a-plain-socket.md) records what was and was not concluded. `[measured 2026-08-30]` **the GitHub runner has it**: `check-machine.sh` reports `PASS kTLS (CONFIG_TLS)` in CI run 33307245558, so this can be investigated on CI without waiting for any hardware. **Start with `scripts/check-ktls-available.sh`** — one command, answers "can I start?". `scripts/check-machine.sh` also reports the `tls` module as its own row. | The TLS plan; ADR-0005 acceptance |
+| 11 | **Serialise misses its gate: 93.8 ns against 60 ns** on the M5, and `[measured 2026-08-30]` **177.6–199.4 ns across five runs on Linux x86_64** — a 3.0–3.3× miss there, not 1.6×. (DESIGN §6). Cause is known — `Template::encode` finds each slot by a linear scan of the caller's list, so cost is slots × parts. Fix candidates: index slots by tag at template build, or require the caller to hand slots in parts order. The only red gate that does not need the Linux box. **Start with `scripts/bench.sh --strict`** on the §9 box: the number to optimise against is the one from that machine, not the 93.8 ns or the 177.6-199.4 ns above. | DESIGN §6 serialise row; the `engine` step, where the number is re-measured |
+| 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement. **Start with `scripts/bench.sh --strict`**: this is a same-machine A/B, so it needs the box to be quiet, not to be a particular box. | Nothing until open item 6 is answered |
+| 13 | **Release profile is default.** No `lto = "fat"`, no `codegen-units = 1`, no PGO, no `#[cold]` on error paths. Cheap, but each is a number to be measured before and after, not a setting to be assumed. **Start with `scripts/bench.sh --strict`**, once before any profile change and once after — same machine, same settings, or the comparison means nothing. | The `engine` step; every §6 number published from Linux |
+| 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what fixbolt claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |
+| 16 | **A journal is written and never read back** — *half closed 2026-08-30*. It now reads back: length-prefixed records, `Journal::highest()`, a torn tail dropped. What remains is the session: `connect` resets unconditionally, so a resumed session's numbers are wiped before they can be used. **[ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md) needs signing** | A restart that resumes a session rather than starting one |
+| 18 | **A plan can close on a laptop's word while CI is red.** The engine plan closed and merged with its gates reported green from an Apple M5; the GitHub run on that same commit failed and was not read, and four documents carried the laptop's number for a day. Nothing in `CLAUDE.md` §9 requires the closing evidence to name a CI run | Every "gates green" claim in a merge commit |

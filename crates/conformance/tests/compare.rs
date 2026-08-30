@@ -10,8 +10,8 @@
 //! assertion that the body is byte-for-byte the expected length.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::compare::{Mismatch, compare};
-use nanofix_conformance::script::{Step, scenarios};
+use fixbolt_conformance::compare::{Mismatch, compare};
+use fixbolt_conformance::script::{Step, scenarios};
 
 fn w(s: &str) -> Vec<u8> {
     s.replace('|', "\x01").into_bytes()
@@ -22,7 +22,7 @@ const LOGON: &str =
 
 /// The corpus writes `10=0`. Anything playing the engine has to compute one.
 fn engine_output(s: &str) -> Vec<u8> {
-    nanofix_conformance::script::with_real_checksum(&w(s))
+    fixbolt_conformance::script::with_real_checksum(&w(s))
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn expects() -> Vec<Vec<u8>> {
         .unwrap_or_else(|e| panic!("{e}"))
         .into_iter()
         .flat_map(|s| s.steps)
-        .filter(|s| matches!(s.kind, nanofix_conformance::script::Kind::Expect(_)))
+        .filter(|s| matches!(s.kind, fixbolt_conformance::script::Kind::Expect(_)))
         .filter_map(|s| Step::message(&s).map(|m| m.wire.clone()))
         .collect()
 }
@@ -137,7 +137,7 @@ fn every_expected_line_matches_itself_once_its_checksum_is_real() {
     assert_eq!(all.len(), 250);
     let mut placeholder = 0;
     for (i, e) in all.iter().enumerate() {
-        let as_sent = nanofix_conformance::script::with_real_checksum(e);
+        let as_sent = fixbolt_conformance::script::with_real_checksum(e);
         assert_eq!(
             compare(e, &as_sent),
             Ok(()),
@@ -173,7 +173,7 @@ fn swapping_two_fields_of_every_corpus_line_fails_every_time() {
             actual.extend_from_slice(f);
             actual.push(0x01);
         }
-        let actual = nanofix_conformance::script::with_real_checksum(&actual);
+        let actual = fixbolt_conformance::script::with_real_checksum(&actual);
         assert!(
             compare(&e, &actual).is_err(),
             "a swapped message compared equal:\n{}",
@@ -192,7 +192,7 @@ fn the_loose_tag_list_is_read_off_fields_fmt_not_believed() {
     // vendor/quickfix/test/definitions/fields.fmt is the source of rule 4. If
     // upstream adds a tag, this goes red rather than the runner quietly
     // comparing a field that was never meant to be compared exactly.
-    let path = nanofix_conformance::script::definitions_dir()
+    let path = fixbolt_conformance::script::definitions_dir()
         .parent()
         .and_then(|p| p.parent())
         .map(|p| p.join("fields.fmt"))
@@ -210,7 +210,7 @@ fn the_loose_tag_list_is_read_off_fields_fmt_not_believed() {
         .filter(|t| !t.is_empty())
         .filter_map(|t| t.parse().ok())
         .collect();
-    assert_eq!(tags, nanofix_conformance::compare::LOOSE_TAGS);
+    assert_eq!(tags, fixbolt_conformance::compare::LOOSE_TAGS);
 
     // And the patterns are the two shapes this comparator implements.
     for l in text.lines().filter(|l| !l.is_empty()) {

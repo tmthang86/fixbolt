@@ -1,5 +1,5 @@
 [package]
-name = "nanofix-codec"
+name = "fixbolt-codec"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
@@ -7,16 +7,21 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 description = "FIX 4.4 parse and serialise in place, no allocation on the hot path"
+# benches/harness.rs is a module the bench targets include by #[path], not a
+# bench. Cargo's autodiscovery made it a target of its own: `cargo bench --bench
+# harness` reported "0 measured" and exited 0 — a green result from a target
+# that measures nothing. Every real bench is declared below, so discovery is off.
+autobenches = false
 
 [dev-dependencies]
 # A dev-dependency cycle: dict depends on codec, and codec's TESTS depend on
 # dict. Cargo permits exactly this shape, and it is the only way to test the
 # parser against the real generated dictionary without duplicating the loader.
-nanofix-dict = { path = "../dict" }
+fixbolt-dict = { path = "../dict" }
 # A dev-dependency cycle, which cargo permits: conformance depends on codec.
 # The codec's tests read the `.def` corpus through conformance's loader, because
 # a second loader would be a second place for a rule that has one.
-nanofix-conformance = { path = "../conformance" }
+fixbolt-conformance = { path = "../conformance" }
 
 [[bench]]
 name = "parse"

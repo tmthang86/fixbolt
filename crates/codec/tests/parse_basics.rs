@@ -2,7 +2,7 @@
 //! `tests/defs.rs`; these are the boundaries that corpus does not contain.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
-use nanofix_codec::{FieldIndex, NoDict, ParseError, Parsed, Validation, parse_into};
+use fixbolt_codec::{FieldIndex, NoDict, ParseError, Parsed, Validation, parse_into};
 
 #[test]
 fn parses_a_complete_heartbeat() {
@@ -130,11 +130,11 @@ fn wrong_checksum_is_caught_when_validation_is_on() {
 #[test]
 fn message_view_is_twenty_four_bytes() {
     assert_eq!(
-        core::mem::size_of::<nanofix_codec::MessageView<'static, 64>>(),
+        core::mem::size_of::<fixbolt_codec::MessageView<'static, 64>>(),
         24
     );
-    assert_eq!(core::mem::size_of::<nanofix_codec::FieldEntry>(), 12);
-    assert_eq!(core::mem::align_of::<nanofix_codec::FieldEntry>(), 4);
+    assert_eq!(core::mem::size_of::<fixbolt_codec::FieldEntry>(), 12);
+    assert_eq!(core::mem::align_of::<fixbolt_codec::FieldEntry>(), 4);
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn a_negative_tag_still_lets_the_session_answer() {
         panic!("expected BadTag")
     };
     assert_eq!(
-        nanofix_codec::tag_text_at(msg, at as usize),
+        fixbolt_codec::tag_text_at(msg, at as usize),
         Some(&b"-1"[..])
     );
 

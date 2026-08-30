@@ -8,14 +8,14 @@
 
 use std::ops::Range;
 
-use nanofix_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
-use nanofix_engine::clock::ManualClock;
-use nanofix_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
-use nanofix_engine::journal::Store;
-use nanofix_engine::ring;
-use nanofix_engine::transport::{Io, Loopback, Transport};
-use nanofix_engine::wait::Park;
-use nanofix_engine::{Application, Config, Engine};
+use fixbolt_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
+use fixbolt_engine::clock::ManualClock;
+use fixbolt_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
+use fixbolt_engine::journal::Store;
+use fixbolt_engine::ring;
+use fixbolt_engine::transport::{Io, Loopback, Transport};
+use fixbolt_engine::wait::Park;
+use fixbolt_engine::{Application, Config, Engine};
 
 const M: usize = 512;
 
@@ -31,7 +31,7 @@ impl Application for Echo {
         stamp: &[u8],
         out: &mut [u8],
     ) -> Option<Range<usize>> {
-        nanofix_conformance::echo::echo(msg, out, seq, stamp).ok()
+        fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
     }
 }
 
@@ -150,7 +150,7 @@ fn drain(peer: &mut Loopback) -> Vec<u8> {
 }
 
 type Wired<D> =
-    Engine<Loopback, nanofix_session::Acceptor, D, ManualClock, Park, Store, 256, 4096, 8192>;
+    Engine<Loopback, fixbolt_session::Acceptor, D, ManualClock, Park, Store, 256, 4096, 8192>;
 
 fn engine<D: Dispatch>(dispatch: D) -> (Loopback, Wired<D>) {
     let (peer, side) = Loopback::pair();

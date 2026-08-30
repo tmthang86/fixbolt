@@ -6,9 +6,9 @@
 
 ## Context
 
-nanofixengine is a FIX 4.4 engine in Rust targeting HFT-grade latency. QuickFIX C++ is the
+fixbolt is a FIX 4.4 engine in Rust targeting HFT-grade latency. QuickFIX C++ is the
 reference open-source FIX engine: 20+ years old, deployed widely, with complete spec
-coverage. The question put to this ADR is whether nanofixengine should be a **port** of it.
+coverage. The question put to this ADR is whether fixbolt should be a **port** of it.
 
 Three things were established before deciding.
 
@@ -48,7 +48,7 @@ into a gate that either passes or fails.
 **Do not port the QuickFIX C++ source. Clean-room the engine; adopt three QuickFIX assets
 as data and as a test oracle.**
 
-1. **Vendor `spec/*.xml`** as the input to nanofixengine's code generator. Fetched by script into
+1. **Vendor `spec/*.xml`** as the input to fixbolt's code generator. Fetched by script into
    `vendor/`, which is gitignored; not redistributed inside this repository.
 2. **Vendor `test/definitions/server/fix44/`** and build a runner for the `.def` format.
    A session-layer change is not done until these pass.
@@ -56,20 +56,20 @@ as data and as a test oracle.**
    same acceptance tests. No line-by-line transliteration.
 4. **Codec design follows `hffix`** (FreeBSD licence), not QuickFIX: parse and serialise in
    place at the I/O buffer, expose fields as byte ranges into that buffer, no heap
-   allocation on the hot path. `hffix` deliberately omits the session layer; nanofixengine
+   allocation on the hot path. `hffix` deliberately omits the session layer; fixbolt
    supplies it.
-5. If any QuickFIX-derived text or data ever ships inside a nanofixengine artifact, the
+5. If any QuickFIX-derived text or data ever ships inside a fixbolt artifact, the
    attribution clause above is honoured in `NOTICE`, and the name "QuickFIX" is never used
-   in nanofixengine's own name or marketing.
+   in fixbolt's own name or marketing.
 
 ## Consequences
 
 **Good**
 
-- Latency is bounded by nanofixengine's own design, not inherited from a port.
+- Latency is bounded by fixbolt's own design, not inherited from a port.
 - The acceptance suite exists on day one, so the session layer — the part most likely to
   produce subtle, expensive bugs — has a real gate rather than a reviewer's opinion.
-- No attribution or naming obligations attach to nanofixengine's own source, because none of it
+- No attribution or naming obligations attach to fixbolt's own source, because none of it
   is derived from QuickFIX source.
 - The data dictionaries remove the largest source of transcription error.
 
@@ -79,7 +79,7 @@ as data and as a test oracle.**
   whether it is right; they do not write it. Estimated 3–6 weeks for a complete FIX 4.4
   session layer that passes them.
 - **Spec coverage will lag QuickFIX for a long time.** QuickFIX handles FIX 4.0–5.0 SP2 and
-  every edge case accumulated over two decades. nanofixengine will handle FIX 4.4 and whatever
+  every edge case accumulated over two decades. fixbolt will handle FIX 4.4 and whatever
   the tests force it to handle. Anything outside that is unknown territory.
 - **The `.def` runner is itself work**, and it is a prerequisite, not a nice-to-have.
   The format has since been read and written up in
@@ -88,7 +88,7 @@ as data and as a test oracle.**
   days.** That page also records the trap it carries — the comparator comes with a hidden
   constraint on serialiser field ordering.
 - **No production track record.** QuickFIX's real value is that thousands of counterparties
-  have already found its bugs. nanofixengine starts with that value at zero, and no amount of
+  have already found its bugs. fixbolt starts with that value at zero, and no amount of
   test coverage substitutes for it.
 - Reading `Session.cpp` while writing Rust carries a genuine risk of accidental
   transliteration, which would drag the attribution obligation back in. Mitigation: write

@@ -10,7 +10,7 @@
 mod common;
 
 use common::Direction;
-use nanofix_codec::{FieldIndex, NoDict, Parsed, Validation, parse_into};
+use fixbolt_codec::{FieldIndex, NoDict, Parsed, Validation, parse_into};
 
 /// Lines the parser must refuse, and why.
 ///
@@ -91,7 +91,7 @@ const BAD_BODY_LENGTH: &[(&str, usize, &str)] = &[
     ),
 ];
 
-fn kind(e: &nanofix_codec::ParseError) -> String {
+fn kind(e: &fixbolt_codec::ParseError) -> String {
     let s = format!("{e:?}");
     s.split(['(', ' ', '{']).next().unwrap_or("").to_string()
 }
@@ -182,7 +182,7 @@ fn body_length_is_checked_where_the_corpus_declares_one() {
         }
         checked += 1;
         if parse_into::<NoDict, 64>(&l.wire, &mut idx, v)
-            == Err(nanofix_codec::ParseError::BadBodyLength)
+            == Err(fixbolt_codec::ParseError::BadBodyLength)
         {
             wrong.push((l.file.clone(), l.line_no));
         }

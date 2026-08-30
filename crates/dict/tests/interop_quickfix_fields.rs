@@ -32,7 +32,7 @@ use common::{
     quickfix_field_types, quickfix_msg_types, quickfix_tag_numbers, xml_field_names,
     xml_field_types,
 };
-use nanofix_dict::{FieldType, Fix44};
+use fixbolt_dict::{FieldType, Fix44};
 
 /// Tags QuickFIX names differently in a later version but numbers the same.
 ///
@@ -130,7 +130,7 @@ fn the_message_types_agree_exactly_in_both_directions() {
     let alphabet: Vec<u8> = (b'0'..=b'9')
         .chain(b'A'..=b'Z')
         .chain(b'a'..=b'z')
-        .chain([b'*', b'?', b'!'])
+        .chain(*b"*?!")
         .collect();
     let mut rejected = 0usize;
     for &a in &alphabet {

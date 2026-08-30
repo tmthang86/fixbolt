@@ -294,7 +294,7 @@ Theo bảng đồng bộ `CLAUDE.md` §4. *(Ghi chú: `_template.md` chỉ sai s
 
 ### Bước 1 — bảng group, đóng ngày 2026-08-28
 
-**Xanh:** `cargo test -p nanofix-dict --test group_tables` — 6/6.
+**Xanh:** `cargo test -p fixbolt-dict --test group_tables` — 6/6.
 
 **Lỗi thứ hai của plan này, sửa theo dữ liệu.** Plan ghi **1028 vị trí group**. Không
 đếm được ra con số đó bằng bất kỳ cách nào. Đo lại, bằng chính `build.rs` đang sinh bảng:
@@ -337,7 +337,7 @@ lần trong một bản tin với danh sách thành viên khác nhau, và một 
 
 ### Bước 2 và 3 — gộp làm một, đóng ngày 2026-08-28
 
-**Xanh:** `cargo test -p nanofix-codec --test groups` — 10/10.
+**Xanh:** `cargo test -p fixbolt-codec --test groups` — 10/10.
 `cargo bench --bench alloc` — `allocations: group 0`.
 
 **Lỗi thứ ba của plan, và lần này là lỗi chia việc.** Plan tách bước 2 ("`GroupIter` một
@@ -379,7 +379,7 @@ capture nào để dùng. Nói rõ ở đầu `tests/groups.rs`. Ca `14i` thì l
 
 ### Bước 4 — ghi group, đóng ngày 2026-08-28
 
-**Xanh:** `cargo test -p nanofix-codec --test group_roundtrip` — 2/2.
+**Xanh:** `cargo test -p fixbolt-codec --test group_roundtrip` — 2/2.
 `round-tripped 357 top-level positions, 59 counters`. Alloc bench vẫn `group 0`.
 `benches/serialize.rs`: encode 93.3 ns/op (trần 190) — không đụng vào bản tin không có group.
 
@@ -421,7 +421,7 @@ bảng giống thứ tự một đối tác thật ghi. Việc đó là `tools/i
 
 ### Bước 5 — đối chiếu thứ tự, bench, đóng plan, ngày 2026-08-28
 
-**Xanh:** `cargo test -p nanofix-dict --test interop_quickfix_order` — 2/2,
+**Xanh:** `cargo test -p fixbolt-dict --test interop_quickfix_order` — 2/2,
 `agreed on 730 groups; 7 nested-counter extras`.
 
 **Không cần build libquickfix, và cách này mạnh hơn.** Plan viết `tools/interop` dựng

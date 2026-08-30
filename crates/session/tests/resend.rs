@@ -11,8 +11,8 @@
 //! kind of failure a score cannot show.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
-use nanofix_session::{Acceptor, Config, Link, Session};
+use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_session::{Acceptor, Config, Link, Session};
 
 fn acceptor() -> Session<Acceptor, 256> {
     Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"))

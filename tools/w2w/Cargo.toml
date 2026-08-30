@@ -1,0 +1,19 @@
+[package]
+name = "fixbolt-w2w"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+fixbolt-engine = { path = "../../crates/engine" }
+fixbolt-session = { path = "../../crates/session" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "w2w"
+path = "src/main.rs"

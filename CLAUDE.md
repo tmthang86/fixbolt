@@ -1,4 +1,4 @@
-# nanofixengine — Engineering Rules
+# fixbolt — Engineering Rules
 
 A FIX 4.4 engine in **Rust**, acceptor-first, positioned as **the fastest acceptor that can
 run on kernel TCP**. Not a port of QuickFIX ([ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md)).
@@ -11,8 +11,11 @@ read it before picking up work, update it when a plan phase closes.
 > no counterparty configuration, nothing from `shadow-exchange`. `.gitignore` is a safety
 > net, not the control. **The control is you, before `git add`.**
 >
-> **`nanofixengine` is a placeholder name.** Shortlist in STATUS.md. Rename before the first
-> crates.io publish, never after.
+> **The name is `fixbolt`, decided 2026-08-30.** It replaced the placeholder
+> `nanofixengine`, which sat one word from `matthart1983/nanofix` — the reference project
+> this repository measures itself against. Verified free on crates.io and GitHub before
+> adoption, on **both**: a free global registry says nothing about who already owns the
+> name in the reader's mind. Nothing is published yet, so nothing is locked in.
 >
 > **Editing this file mid-session does not affect that session.** Say out loud which rule
 > you changed. **One rule, one place** — a rule restated in two places is two rules that
@@ -67,8 +70,15 @@ list by hand. Each names the decision it enforces.
 
 **Machine-checked today:** 7 — `scripts/check-lint-config.sh`, run by CI, proves by reversal
 that the workspace lints actually deny `unwrap`/`expect`/`panic`. 6 — the
-`no-default-features` CI job. **Will be, once code exists:** 1 (`benches/alloc.rs`), 3 (the
-conformance runner). **The rest are hand-checks** on every relevant PR until a lint or test
+`no-default-features` CI job. 1 — `benches/alloc.rs`, each case asserting its own path is
+live, run by the `bench` CI job through `scripts/bench.sh`; **`[measured 2026-08-30]` this
+entry was false until that job existed** — `cargo test --all` does not run a `harness = false`
+bench target and nothing else invoked `cargo bench`, so the list named a check nothing ran.
+3 — the conformance runner, in process and over a socket. 4 —
+`scripts/check-no-kernel-sleep.sh`, which traces `tools/w2w` on Linux and attributes syscalls
+to the engine thread by tid; **it runs the binary a second time with `wait::Park` and requires
+that run to trip the check**, because two earlier attempts at this rule reported success with
+a `sleep` present. **The rest are hand-checks** on every relevant PR until a lint or test
 exists — say explicitly that you walked the list.
 
 ## 3. Read before you touch the code
@@ -103,6 +113,7 @@ describes. **A stale document is worse than no document.**
 | Anything that moves a row of the latency budget | `DESIGN.md` §8, with the measurement that moved it |
 | Discover a protocol trap, a wrong assumption, or a measured surprise | `docs/reference/` ← **highest priority** |
 | Pick a dependency, change technique, reverse a decision | New ADR in `docs/decisions/` |
+| The surprise was about **testing**, not about FIX | the same `docs/reference/` entry, marked `[to testing-skills]` — §11 |
 
 **No row here is machine-checked.** Every one is walked by hand before a plan is closed.
 
@@ -200,6 +211,11 @@ Done only when **all** hold. Any unchecked box → report it as **not done**, an
 - [ ] An ADR exists if an architectural decision was made
 - [ ] Every performance claim names its benchmark, its machine, and its §9 settings
 - [ ] **Hot-path changes were measured on Linux**, not only on the development laptop
+- [ ] **A green CI run is named, by id, for the commit being closed.** `[measured 2026-08-30]`
+      the `engine` plan closed and merged with its gates reported green from an Apple M5 —
+      truthfully — while GitHub Actions failed on the same commit within the minute and nobody
+      read it. Four documents carried the laptop's number for a day. A laptop says the gates
+      pass *for you*; only CI says they pass *for the commit*
 
 ## 10. Evidence, not promises
 
@@ -220,6 +236,12 @@ unit of work owes this evidence:
 - A timestamp formatted from scratch per message instead of patched from the cache.
 - A `mod` behind a feature in `Cargo.toml` but not behind `#[cfg]` in `lib.rs`.
 - A number quoted from the laptop as though it were from the Linux box.
+- A plan closed, or a branch merged, while CI was red on that commit and nobody looked. §9's
+  last box exists because this already happened.
+- A cause accepted because a knob moved with it. A score that responds to a timeout says
+  something is being waited on and **nothing about what** — `[measured 2026-08-30]` a wire
+  gate whose score walked 39 → 43 → 59 with its own timeout was failing on Nagle, and the
+  wrong answer reached five documents before a one-variable experiment refuted it.
 - Docs not updated in the same commit as the code, per §4.
 
 **The trap that outlives every process change: a check proves nothing until something reads
@@ -227,3 +249,64 @@ it.** Any green result that was *inferred* rather than *observed* is not a resul
 
 **Review of a diff catches almost nothing.** Bugs get caught by running something and
 reading the output. Do not use review as the primary safety net.
+
+
+## 11. Contributing back to `testing-skills`
+
+**[`tmthang86/testing-skills`](https://github.com/tmthang86/testing-skills)** is the owner's
+other project: two Claude Code skills — `e2e-testing` and `design-conformance-testing` — plus
+the tooling that keeps them honest. **Its own roadmap names its biggest gap: nothing in it has
+been proven against a real system.** Everything measured in it so far came from one Tauri
+desktop app, through a UI.
+
+**This repository is the other half of that evidence, and it is the half that has no UI at
+all.** A FIX acceptor is tested end-to-end by driving real bytes through a real socket and
+reading what comes back — the same loop, with a wire protocol where the skills have a screen.
+That makes fixbolt the place where the *protocol* side of e2e testing gets found out,
+and what is found here is owed back.
+
+### What goes back
+
+Only material that this repository **measured**. A case is contributed when the command was
+run here, the output was read, and the numbers are the observed ones — never from reasoning
+about what would probably happen. That is §10 applied to somebody else's repository.
+
+| Found here | Goes to |
+|---|---|
+| A check that passed, or failed, for a reason other than the thing under test | `references/false-greens.md` |
+| A gate whose result depends on the machine, the timeout, or the load | `references/false-greens.md` |
+| A reversal that turned out to be a no-op, or that passed and exposed a hole in the test | `references/false-greens.md` |
+| How an e2e loop is driven against a **protocol** rather than a UI — settling, framing, a corpus as oracle, an injected clock as the only test double | the protocol reference the roadmap does not yet have |
+| A tool that claimed to prove something and could not — `dtruss` under SIP, `nm -u` over generic code | `references/false-greens.md` |
+
+**Strip it to the testing lesson.** The upstream repository is **public today**, and this one
+is written as though it already were. A case goes back as *the shape, the measurement, the
+fix* — legible to somebody who has never heard of FIX. **No message bytes, no counterparty
+anything, no exchange specification, nothing from `shadow-exchange`, no `vendor/` content.**
+If a case cannot be told without one of those, it does not go back; it stays in
+`docs/reference/` here.
+
+### When
+
+**A case is written into `docs/reference/` here first** — §4's row, unchanged, and it is what
+makes the case real. **The queue is that write-up itself**: a contributable case carries the
+literal marker **`[to testing-skills]`** on its own line, so `grep -rn '\[to testing-skills\]'
+docs/` is the whole backlog and there is no second list to go stale. The marker is replaced by
+the pull-request link when it lands.
+
+**The upstream pull request is opened when the plan that found the case closes**, so that a
+case which turns out to be a misunderstanding is corrected here before it is published
+somewhere else. One pull request per plan, however many cases it carries; the generalised
+paragraph in the local write-up is the draft of the upstream one.
+
+### What does not happen
+
+- **Nothing here depends on `testing-skills` to build, test or run.** No crate links it, no
+  script fetches it, no gate needs it installed. It is read by the person or the agent doing
+  the work, and the workspace must stay buildable by somebody who has never heard of it.
+- **The skills are not a substitute for this file.** Where the two disagree about this
+  repository, `CLAUDE.md` wins — §2's ten non-negotiables in particular are not up for
+  revision by an installed skill.
+- **Nothing flows the other way as a rule.** A useful idea from upstream is adopted here on
+  its merits, in a plan, like any other technique — not because it arrived from the sibling
+  project.

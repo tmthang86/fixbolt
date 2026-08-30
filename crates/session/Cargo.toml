@@ -1,5 +1,5 @@
 [package]
-name = "nanofix-session"
+name = "fixbolt-session"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
@@ -9,22 +9,22 @@ publish = false
 description = "The FIX 4.4 session state machine. Pure: no socket, no clock, no allocation"
 
 [dependencies]
-nanofix-codec = { path = "../codec" }
-nanofix-dict = { path = "../dict" }
+fixbolt-codec = { path = "../codec" }
+fixbolt-dict = { path = "../dict" }
 
 # The 59 acceptance definitions are this crate's gate (CLAUDE.md §2 rule 3), so
 # the runner is a dev-dependency and the score is a test. conformance does not
 # depend on session, so there is no cycle.
 [dev-dependencies]
-nanofix-conformance = { path = "../conformance" }
+fixbolt-conformance = { path = "../conformance" }
 # Framing belongs to the engine (DESIGN §2 L3). The score adapter stands in for
 # an engine, so it calls the real one rather than keeping a second copy.
 #
 # `engine` depends on `session`, so this is a cycle — allowed, because a
 # dev-dependency is not part of the library build. `cargo build -p
-# nanofix-session` does not compile `engine`; `cargo test -p nanofix-session`
+# fixbolt-session` does not compile `engine`; `cargo test -p fixbolt-session`
 # does.
-nanofix-engine = { path = "../engine" }
+fixbolt-engine = { path = "../engine" }
 
 [lints]
 workspace = true

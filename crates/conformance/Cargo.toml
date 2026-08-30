@@ -1,5 +1,5 @@
 [package]
-name = "nanofix-conformance"
+name = "fixbolt-conformance"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
@@ -12,8 +12,8 @@ description = "Runs the QuickFIX FIX 4.4 session acceptance definitions in-proce
 # needs one: the five loosely-matched tags are shape checks over ASCII digits,
 # not a regex language.
 [dependencies]
-nanofix-codec = { path = "../codec" }
-nanofix-dict = { path = "../dict" }
+fixbolt-codec = { path = "../codec" }
+fixbolt-dict = { path = "../dict" }
 
 [lints]
 workspace = true

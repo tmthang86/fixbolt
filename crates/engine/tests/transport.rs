@@ -11,8 +11,8 @@
 
 use std::net::{TcpListener, TcpStream};
 
-use nanofix_engine::transport::{Io, Loopback, TcpTransport, Transport};
-use nanofix_engine::wait::{Park, Spin, Waiting};
+use fixbolt_engine::transport::{Io, Loopback, TcpTransport, Transport};
+use fixbolt_engine::wait::{Park, Spin, Waiting};
 
 #[test]
 fn a_quiet_socket_is_idle_a_closed_one_is_closed_and_neither_is_an_error() {

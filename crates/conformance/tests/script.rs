@@ -5,7 +5,7 @@
 //! transcript, so the counts are the gate — not "it parsed".
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::script::{Kind, Step, scenarios};
+use fixbolt_conformance::script::{Kind, Step, scenarios};
 
 /// The corpus, or a loud failure. `LoadError` carries the fetch instruction.
 fn steps() -> Vec<Step> {
@@ -50,7 +50,7 @@ fn concatenating_the_files_corrupts_the_corpus() {
     // That is two lines from two files. This test exists because the claim
     // reached this crate's plan as a measured fact and was wrong — the tool was
     // wrong, not the corpus. Reproduced here so nobody re-derives it.
-    let dir = nanofix_conformance::script::definitions_dir();
+    let dir = fixbolt_conformance::script::definitions_dir();
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .filter_map(Result::ok)

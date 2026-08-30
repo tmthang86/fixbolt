@@ -11,8 +11,8 @@
 
 mod common;
 
-use nanofix_codec::{FieldIndex, Parsed, Validation, parse_into};
-use nanofix_dict::Fix44;
+use fixbolt_codec::{FieldIndex, Parsed, Validation, parse_into};
+use fixbolt_dict::Fix44;
 
 struct Xorshift(u64);
 

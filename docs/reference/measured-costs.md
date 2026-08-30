@@ -105,6 +105,9 @@ The target was written as a comment. Nothing read it, nothing failed when it was
 [DESIGN.md §6](../DESIGN.md#6-gates) names a committed benchmark, and the benchmark asserts
 the bound. A target that only a human can check is not a gate.
 
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *a target written as a comment is not a gate.* One measured instance,
+7× off, unnoticed. Nothing FIX-specific in it.
+
 ---
 
 ## 3. A feature flag that does not gate its module makes a crate unbuildable
@@ -158,7 +161,7 @@ code**; this section is the first row of the table that is ours.
 |---|---|
 | Machine | Apple M5, macOS |
 | Core pinning | **none** — `DESIGN.md` §9 settings are Linux-only and none is in force |
-| Build | `cargo bench`, release profile, `nanofix-codec` at `886daa8`'s successor |
+| Build | `cargo bench`, release profile, `fixbolt-codec` at `886daa8`'s successor |
 | Estimator | **best of 7 runs × 200,000 iterations**, not the mean |
 | Harness | `crates/codec/benches/harness.rs`, 24 lines, no dependencies |
 
@@ -254,6 +257,10 @@ reports "still zero" is a reversal that did not run.** `CLAUDE.md` §7 already
 says a guard is proven by reversal and that the reversal must be confirmed to
 have changed something. This is what that sentence costs when it is skipped.
 
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *the optimiser deleted the reversal.* `false-greens.md` §5 already has
+"a reversal can itself be a no-op" from a search-and-replace that missed; this is the same
+shape produced by the compiler instead, which no amount of grepping the diff would catch.
+
 ## `nm -u` on an rlib proves nothing about generic code
 
 `[cost 2026-08-30]` Non-negotiable 4 — *the engine thread never sleeps in the
@@ -281,6 +288,10 @@ Two things follow, and the second is the general one:
   checking.** For a generic-heavy crate that is a binary that actually uses it,
   not the library.
 
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *two instruments that cannot see what they were pointed at*: a syscall
+tracer the OS refuses to run, and a symbol check that passes with the violation present. Both
+were deleted rather than shipped, which is the part worth contributing.
+
 ## A benchmark that replays one message measures a dropped connection
 
 `[cost 2026-08-30]` The engine's allocation bench had a case called `busy`: a
@@ -304,6 +315,10 @@ assert_eq!(engine.connections(), 1, "not dropped at message two");
 
 and traffic with increasing sequence numbers, rendered before the count starts
 so the harness's own `format!` is not charged to the engine.
+
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *the benchmark measured a torn-down system.* Sibling of "the vacuous
+wait": an assertion whose expected value is *nothing* passed because the thing under test was
+no longer there. Contribute the fix — every case asserts its own path is live.
 
 **Generalised:** a zero from a counting allocator means *did not allocate* only
 if something separately proves *did run*. Every case in these benches now
@@ -361,3 +376,414 @@ The inline figure moved between 2.5 and 4.9 ns across runs of the same binary. A
 the loop is a handful of instructions and the harness's own overhead is the same order, so the
 ceiling is set at 15 ns rather than at 2×. **A ceiling tighter than the measurement's own
 spread is a gate that goes red at random**, and DESIGN §6 already says what happens to those.
+
+## The score followed the timeout, and the timeout was not the cause
+
+`[measured 2026-08-30]` Linux 6.18 x86_64, 4 vCPU container, `cargo 1.98.0`.
+
+`crates/engine/tests/wire.rs` runs the 59 acceptance definitions through kernel TCP. It was
+recorded as **59 / 59**. On this machine it scored **39 / 59**, first run, working tree
+unchanged. Changing one constant and nothing else — the `quiet` bound in `Wire::pump`, the
+number of consecutive `Engine::turn` calls that moved nothing before the harness declared the
+exchange settled — walked the score:
+
+| `quiet` bound | Score |
+|---|---|
+| 200 — as committed | 39 / 59 |
+| 2 000 | 43 / 59 |
+| 20 000 | 59 / 59 |
+
+**That table is real and its obvious reading is wrong.** A score that climbs with a timeout
+does say the harness is waiting for something. It does *not* say the timeout is the defect,
+and the first write-up here concluded that it did: *"a spin count is not a settle criterion"*.
+That went into `STATUS.md`, `README.md`, `DESIGN.md` §6, `PRD.md` and a pull request before it
+was checked.
+
+### What it actually was
+
+**Nagle's algorithm, on the test harness's own client socket.**
+
+`2m_BodyLengthValueNotCorrect.def` is the one file that fails, and its own comment says why it
+is unusual: *"Send a message with a length that is too long, it will combine with the next
+message and be ignored."* An over-long `9=` produces **no reply** — an incomplete frame has
+nothing to answer. No outbound segment therefore carries a piggybacked ACK, the peer's delayed
+ACK holds for tens of milliseconds, and Nagle keeps every subsequent small write queued behind
+the unacknowledged one. Four `I` lines then arrive as **one 477-byte read**, and the framer
+discards all four — the correct answer to a question the corpus never asked.
+
+Traced, rather than reasoned:
+
+```
+DBG recv 120        DBG cut=Need len=120     <- the over-long frame, correctly held
+   write ok                                  <- the next I line, into the kernel
+DBG recv idle       DBG cut=Need len=120     <- and again, and again, for milliseconds
+   write ok            write ok
+DBG cut=Garbage(477)                         <- all four, at once
+```
+
+The engine already sets `TCP_NODELAY` on the sockets it accepts (`transport.rs:68`). The
+harness did not set it on the client, which made the test rig the only Nagle-enabled peer in
+the exchange. **One line fixes it**, and the longer timeouts were merely outwaiting the
+delayed ACK.
+
+### The 2 × 2 that settles it
+
+| | Nagle on (as committed) | `set_nodelay(true)` |
+|---|---|---|
+| Spin count, 200 | **39 / 59** | **59 / 59** |
+| Wall-clock bound | **39 / 59** | **59 / 59** |
+
+The spin count moves nothing in either direction. `set_nodelay` moves everything in both.
+Removing that one line from the finished fix returns the score to exactly **39 / 59** — the
+original number, which is what makes this a reversal and not a story.
+
+### What was kept anyway, and labelled
+
+`Wire::pump` now bounds itself in wall time rather than in turns, and **the gate scores
+59 / 59 at both 1 ms and 20 ms** — only the run time moves, 0.8 s against 14.5 s. That
+flatness is the whole justification: a bound in turns is a bound on a machine. But nothing
+measured here shows it mattering, and the code comment says so rather than implying otherwise.
+An earlier draft of this fix also added a `settle` hook to `fixbolt_conformance`'s public
+trait; **the reversal that was supposed to prove it showed the gate stayed at 59 / 59 with it
+disabled**, so it was deleted rather than shipped. Machinery that cannot be shown to matter is
+machinery that will be believed later.
+
+### What this cost, and the rule that comes out of it
+
+Two things, and the second is the expensive one.
+
+- **A number that moves with a knob invites the conclusion that the knob is the cause.** It is
+  evidence that something is being waited on, and nothing more. The next question is *what*,
+  and the way to answer it is a trace, not a third value of the knob.
+- **A wrong diagnosis published confidently is worse than an open question.** This one reached
+  five documents and a pull request in the same hour it was formed, each restating it as
+  settled. What it lacked was a single-variable experiment — the 2 × 2 above took one run per
+  cell and would have refuted it before any of that was written.
+
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — two cases, both legible without FIX. *The knob that correlates with
+the fix and is not the cause* — a monotonic response to a timeout, a plausible mechanism, and
+a completely different real cause. And *the test rig as the only misconfigured peer*: the
+system under test had `TCP_NODELAY` set and the harness did not, so the harness measured a
+network condition the product never has.
+
+## CI had been red for both of these before either was noticed
+
+`[measured 2026-08-30]` The section above was written as though running the suite on Linux
+was what found the wire gate. It was not the first thing to find it. **GitHub Actions had
+already been failing on the same assertion, on `main`, since the engine merged** — run
+`33291318638`, commit `9986890`, job *Builds with nothing optional installed*:
+
+```
+failures:
+    the_fifty_nine_definitions_pass_through_a_real_socket
+test result: FAILED. 0 passed; 1 failed
+```
+
+The merge commit's own message reports the gates green on an Apple M5 with `cargo 1.95.0`,
+and that report is true. CI disagreed with it within a minute and **nothing read the
+disagreement**. `CLAUDE.md` §10 already names this in its own words — *a check proves nothing
+until something reads it* — and here it cost the repository a status page, a `README` blurb,
+a `DESIGN.md` §6 row and a `PRD.md` exit criterion that all said 59 / 59 while the machine
+that runs on every push said otherwise. **The gate was not missing and was not wrong. It was
+unread.**
+
+The same run was red for a second, independent reason, and that one has a different cause:
+
+```
+error: can be more succinctly written as a byte str
+   --> crates/dict/tests/interop_quickfix_fields.rs:133:16
+133 |         .chain([b'*', b'?', b'!'])
+    |                ^^^^^^^^^^^^^^^^^^ help: try: `*b"*?!"`
+    = note: `-D clippy::byte-char-slices` implied by `-D warnings`
+```
+
+`clippy::byte_char_slices` does not exist in the toolchains this repository is developed on —
+`clippy 0.1.94` here and `1.95.0` on the M5 both pass that file. The runner's help URL says
+`rust-1.98.0`. **CI installs whatever stable is on the day it runs, and there is no
+`rust-toolchain.toml`**, so `-D warnings` means *deny every lint any future clippy invents*.
+A repository can go red with no commit, and the person who reads it first will be looking for
+what they broke.
+
+Two rules, and neither is about FIX:
+
+- **A gate on a machine you do not sit at has to report to somewhere you look.** A red run
+  that only exists in a tab is the same as no run. The cheapest fix is that a plan cannot
+  close on a laptop's word: the closing evidence names the CI run.
+- **`-D warnings` with an unpinned toolchain is a scheduled outage.** Either pin the
+  toolchain and upgrade deliberately, or deny a named list rather than the category.
+
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — two cases. *A red check nobody read*, which is the mirror of
+`false-greens.md` §7 "the report that only speaks when it fails": here it spoke and there was
+no one on the channel. And *`-D warnings` against a rolling toolchain*, where the failing
+build is caused by a release rather than by a change. The second is not a false green at all
+and may belong in a section of its own upstream.
+
+## A ceiling tuned on one machine, red on another, and not in CI so nobody saw it
+
+`[measured 2026-08-30]` `crates/engine/benches/dispatch.rs` **fails on Linux**:
+
+```
+inline deliver + reply                  5.4 ns/op   ceiling 15
+ring, one way                         332.5 ns/op   ceiling 260
+panicked: ring, one way: 332.5 ns/op exceeds the 260 ns regression ceiling
+```
+
+The ceilings were set from the M5 figures published above — inline 2.7 ns, ring one way
+128.0 ns — with roughly 2× of headroom. On a shared 4 vCPU container the inline case is
+comfortably inside its ceiling and **the ring hop is 2.6× the M5's**, which puts it outside.
+
+**Nothing is regressing.** A cross-thread hand-off over two atomics is dominated by
+inter-core latency, and inter-core latency on a virtualised shared host is not the M5's. The
+gate is measuring the machine, which `DESIGN.md` §6 already says these numbers do — *they rank
+designs against each other on one machine, they are not an SLA*. What it does not say is what
+happens when the gate itself is then asserted on a different one.
+
+**Three things went wrong at once, and the third is the one that matters.**
+
+1. `CLAUDE.md` §7 says a hot-path change runs the Criterion suite **and** `benches/alloc.rs`.
+   Working on the ring, `alloc` was run and `dispatch` was not — the two are named together in
+   the table and only one was read.
+2. The commit that closed that work stated its gates and did not include this one, because it
+   had not been run. That is the `§9` box's failure mode inside a single commit rather than
+   across a merge.
+3. **The bench is not in CI.** `cargo test --all` does not run a `harness = false` bench, and no
+   job runs `cargo bench`. So a ceiling that has been red on every Linux machine since it was
+   written has never once been reported by anything. It was found by running it by hand while
+   doing something else.
+
+The third is the general shape and it is not about benchmarks: **an assertion that no automated
+thing executes is a comment.** This repository already has that written down — *a check proves
+nothing until something reads it* — and had already paid for it once, when CI was red on `main`
+for a day. This is the same defect one layer down: not a check nobody read, but a check nobody
+ran.
+
+**Not fixed here, deliberately.** Raising the ceiling makes it stop catching a real regression
+on the machine it was tuned for; deleting it throws away a real guard; making it relative to a
+per-machine baseline is a design change to how a `DESIGN.md` §6 gate is measured, which the §4
+sync table says needs its own plan. `STATUS.md` open item 20.
+
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — two cases. *A threshold calibrated on one machine and asserted on
+another*: the number is honest, the comparison is not, and the failure looks exactly like a
+regression. And *the assertion nothing runs* — a guard outside the command CI actually invokes,
+which is a false green that never even had to lie, because nobody asked it.
+
+## One run is not a measurement: the ceiling that was "red on Linux" flips both ways
+
+The section above recorded, on one run, that `benches/dispatch.rs` was **red on Linux — ring
+one way 332.5 ns against a 260 ns ceiling**. That went into `STATUS.md` as open item 20 and
+into a pull-request description as a property of the machine.
+
+`[measured 2026-08-30]` Five runs of every timing case, same container — Linux 6.18.44
+x86_64, Intel Xeon 2.10GHz, 4 vCPU shared, `rustc 1.98.0`, `cargo bench` release profile,
+each figure already a best-of-7 over 200 000 iterations:
+
+| Case | Ceiling | min | max | Spread | Over the ceiling |
+|---|---|---|---|---|---|
+| `parse NewOrderSingle (validated)` | 150 | 102.0 | 107.5 | 5% | 0 / 5 |
+| `parse NewOrderSingle (no checks)` | 145 | 97.3 | 102.0 | 5% | 0 / 5 |
+| `parse Heartbeat (validated)` | 70 | 52.4 | 54.4 | 4% | 0 / 5 |
+| `encode ExecutionReport (template)` | 190 | 177.6 | 199.4 | 12% | **2 / 5** |
+| `SendingTime from the cache` | 5 | 3.4 | 3.7 | 9% | 0 / 5 |
+| `walk 1 group, 2 entries` | 60 | 50.8 | 56.8 | 12% | 0 / 5 |
+| `walk 4 levels, 61-tag member list` | 300 | 285.0 | 314.8 | 10% | **3 / 5** |
+| `group_members contains, 61 tags` | 12 | 8.9 | 10.1 | 13% | 0 / 5 |
+| `encode 1 group, 2 entries` | 75 | 72.8 | 88.5 | 22% | **4 / 5** |
+| `inline deliver + reply` | 15 | 3.4 | 11.3 | **232%** | 0 / 5 |
+| `ring, one way` | 260 | 188.5 | 233.2 | 24% | 0 / 5 |
+| `ring, round trip` | 500 | 339.4 | 447.3 | 32% | 0 / 5 |
+
+**On this container `ring, one way` never exceeded its ceiling in five runs**, and `parse`
+moved between 102.0 and 136.3 ns across sessions — the whole machine gets slower and faster
+over minutes, and every case moves together. Three cases flip colour between runs; not one is
+over in all five.
+
+### Then the same benchmarks ran on a second shared machine and disagreed
+
+`[measured 2026-08-30]` CI run 33304774414, GitHub Actions `ubuntu-latest`: **AMD EPYC 7763,
+2 cores**, Linux 6.17.0-1022-azure, same commit, same `rustc 1.98.0`.
+
+| Case | Ceiling | 4 vCPU Xeon, 5 runs | 2-core EPYC, CI |
+|---|---|---|---|
+| `parse NewOrderSingle (validated)` | 150 | 102.0–107.5 | 127.6 |
+| `walk 1 group, 2 entries` | 60 | 50.8–56.8 | **62.9** |
+| `walk 4 levels` | 300 | 285.0–314.8 | **319.7** |
+| `encode 1 group, 2 entries` | 75 | 72.8–88.5 | **101.4** |
+| `encode ExecutionReport (template)` | 190 | 177.6–199.4 | **261.0** |
+| `inline deliver + reply` | 15 | 3.4–11.3 | 6.4 |
+| `ring, one way` | 260 | 188.5–233.2 | **328.3** |
+| `ring, round trip` | 500 | 339.4–447.3 | **622.9** |
+
+**Six of twelve cases are over the ceiling on the CI runner and zero were on the container.**
+And `ring, one way` came in at 328.3 ns — within 1.3% of the 332.5 ns that originally named
+open item 20. So the first correction written here was itself half wrong: the 332.5 ns was not
+only a noisy moment, it is close to what that *class* of machine actually does.
+
+Both statements are needed and neither alone is true:
+
+* **Run to run on one machine**, the spread is 5–232% and three cases change colour.
+* **Machine to machine**, the same case differs by up to **1.7×** (`ring, one way`: 188.5 to
+  328.3), and the ceiling sits between the two.
+
+The `ring` figures have a visible cause rather than a mysterious one: the benchmark moves a
+message between two threads, and the runner has exactly two cores — the worst case for a
+cross-thread hop, with nothing left over for anything else on the box.
+
+### And the noise itself is a property of the machine
+
+A second CI run on the next commit (`bf7fe48`, run 33304926978) repeated the figures on the
+same runner class:
+
+| Case | Run 1 | Run 2 | Difference |
+|---|---|---|---|
+| `ring, one way` | 328.3 | 331.1 | **0.9%** |
+| `ring, round trip` | 622.9 | 623.5 | **0.1%** |
+| `ring_full`, ns per message | 194 | 195 | 0.5% |
+
+A third run (`db5d8b1`, run 33304998832) held: `ring, one way` 327.2, `ring, round trip` 622.2.
+Across three runs those are **1.2%** and **0.2%** apart.
+
+**But the same three runs disagree by 83% about something else, and that is the real lesson.**
+`ring_full` is the one measurement in this repository that does *not* go through the bench
+harness — it fills the ring once and times the fill:
+
+| Run | messages accepted | time to fill | ns per message |
+|---|---|---|---|
+| 33304774414 | 352 | 68.518 µs | 194 |
+| 33304926978 | 352 | 68.889 µs | 195 |
+| 33304998832 | 352 | **125.595 µs** | **356** |
+
+The **count is identical to the message** in all three. The **duration nearly doubles.**
+
+So the correction written above — *the runner is a stable instrument that happens to be
+calibrated wrong* — is itself too strong, and this is the third time this one finding has had
+to be narrowed. **The stability belongs to the measurement method, not to the machine.** The
+harness takes the best of 7 runs of 200 000 iterations, which is what discards the scheduler's
+interference; the one figure gathered as a single shot of 352 operations swings 83% on the same
+box in the same ten minutes.
+
+Two consequences, one for each half:
+
+* **A per-machine baseline is a live option for the ceilings**, because the harness-mediated
+  figures reproduce to ~1% on this runner — there is room for a real regression to show.
+* **Any single-shot duration is not a measurement**, wherever it appears. What survives from
+  `ring_full` is the count (352 messages, exact three times); the microseconds are one sample
+  of a distribution nobody has characterised.
+
+### It was two CPUs all along
+
+A fifth run resolved it, and the thing that resolved it was a line added to
+`scripts/check-machine.sh` one commit earlier: **the CPU model, printed with every set of
+figures.**
+
+| Run | CPU | `ring, one way` | `ring, round trip` | `ring_full` ns/msg | `parse` |
+|---|---|---|---|---|---|
+| 33304774414 | **EPYC 7763** | 328.3 | 622.9 | 194 | 127.6 |
+| 33304926978 | (7763) | 331.1 | 623.5 | 195 | — |
+| 33304998832 | (7763) | 327.2 | 622.2 | 356 | — |
+| 33307245558 | (9V74) | 270.7 | 514.7 | 139 | 124.0 |
+| 33307366947 | **EPYC 9V74** | 272.9 | 517.7 | 139 | 123.3 |
+
+The GitHub runner pool is **not one machine**. It has at least two CPU generations, and the
+five samples are not one noisy distribution — they are **two tight ones**:
+
+| | within EPYC 7763 | within EPYC 9V74 | between them |
+|---|---|---|---|
+| `ring, one way` | 327.2–331.1, **1.2%** | 270.7–272.9, **0.8%** | **21%** |
+| `ring, round trip` | 622.2–623.5, **0.2%** | 514.7–517.7, **0.6%** | **20%** |
+| `parse NewOrderSingle` | 127.6 | 123.3–124.0 | **3%** |
+
+And the mechanism is visible rather than assumed: the gap is **21% on the cross-thread cases
+and 3% on the single-threaded ones**. `ring` moves a message between two cores; Zen 3 and the
+later generation differ in inter-core latency far more than in single-core throughput. The
+figure that moved is exactly the figure that should move.
+
+So the run of corrections resolves like this, and the last one is an explanation rather than a
+description:
+
+| # | Claim | n | Refuted by |
+|---|---|---|---|
+| 1 | red on Linux | 1 run | 5 runs |
+| 2 | noise on Linux, 3 of 12 flap | 5 runs, 1 machine | a second machine |
+| 3 | 1.7× between machines; the runner is stable | 2 machines | a single-shot timing |
+| 4 | the stability is the harness's | 3 CI runs | a fourth CI run |
+| 5 | cross-thread is unstable | 4 CI runs | **a fifth, once the CPU was labelled** |
+| 6 | **the pool is two CPUs; each is stable to ~1%; they differ 21% cross-thread and 3% single-threaded** | 5 CI runs, 2 labelled | *nothing yet* |
+
+**Every one of the first five treated a pooled sample from an unlabelled fleet as a
+measurement of one thing.** More samples never fixed that and could not: averaging over a
+mixture converges on a number that describes neither component. What fixed it was one line of
+metadata per sample.
+
+The rule, and it is the whole lesson of this entry: **before calling a spread "noise", label
+each sample with the machine that produced it.** A bimodal result from a heterogeneous fleet is
+indistinguishable from a noisy result on one box until you write down which box.
+
+### And with the CPU controlled, the earlier correction turns out to have been right
+
+`ring_full` was left open above: 194, 195, then **356** on the same 7763. A sixth run put the
+same shape on the *other* CPU — 139, 139, then **263** on the 9V74 — so it is not one bad
+sample on one box:
+
+| CPU | `ring, one way` (harness) | `ring_full` ns/msg (single shot) |
+|---|---|---|
+| EPYC 7763 | 328.3, 331.1, 327.2 — **1.2%** | 194, 195, **356** — **83%** |
+| EPYC 9V74 | 270.7, 272.9, 271.4 — **0.8%** | 139, 139, **263** — **89%** |
+
+**Two measurements of the same cross-thread hop, on the same machine, in the same run** — and
+one holds to ~1% while the other roughly doubles. The only difference between them is that one
+takes the best of 7 runs of 200 000 iterations and the other times 352 operations once.
+
+So correction 4 — *the stability is the harness's, not the machine's* — was **true**, and the
+fourth sample never refuted it. That sample changed the CPU, and with CPU uncontrolled the two
+effects were indistinguishable. Labelling the machine separated them:
+
+| Effect | Size | Visible in |
+|---|---|---|
+| CPU generation | **21%** cross-thread, 3% single-threaded | between clusters |
+| single shot vs best-of-7 | **~2×**, on both CPUs | within a cluster |
+
+The confound was never in the data; it was in not recording which machine each number came
+from. **Two real effects of similar magnitude, one uncontrolled variable, and a sequence of
+corrections that each explained the whole of the spread by one of them.** That is what makes a
+finding oscillate rather than converge.
+
+ADR-0011 leans on the count, which is exactly right and now for a measured reason: 352 messages
+on every run of both CPUs, and a fill duration that spans 139–356 ns per message.
+
+The rules that generalise: **a threshold whose margin is smaller than the spread of the
+machines it will run on reports the infrastructure, not the code** — and **before crediting a
+machine with being quiet, check whether the quiet came from the machine or from the averaging
+in your harness.** Two figures from the same box in the same minutes, one repeating to 0.2%
+and one swinging 83%, differ only in how they were gathered. Measure the spread on more
+than one machine before believing any verdict from such a gate — and note that the first
+correction is as likely to be wrong as the first reading was. Here the sequence was: *red on
+Linux* (one run), then *noise on Linux* (five runs, one machine), then *1.7× between machines*
+(two machines). Only the third survived contact with more data.
+
+`inline deliver + reply` is the extreme and it was predicted in writing. `harness.rs` said in
+its own doc comment: *"Baseline 2.5–4.9 ns across runs. The spread is the measurement's, not
+the code's."* The ceiling was set at 15 ns anyway. Observed: 3.4–11.3 ns over five runs, and
+17.8 ns on a sixth — a 232% spread against a ceiling 3× the baseline.
+
+### Two things found only because the benchmarks were finally run
+
+**A bench target that measured nothing and passed.** Cargo auto-discovers `benches/*.rs`.
+`benches/harness.rs` is a module included by `#[path]`, not a benchmark, and Cargo made it a
+target of its own: `cargo bench --bench harness` printed `running 0 tests … 0 measured` and
+exited 0. Fixed with `autobenches = false`, and it is now the injection that proves
+`scripts/bench.sh`'s liveness check can fail.
+
+**A failing case nobody had ever seen.** The harness asserted inside each case, so the first
+case over its ceiling ended the process. `groups` has four cases; it died at the second, and
+the fourth — `encode 1 group, 2 entries`, over its ceiling on 4 of 5 runs — had never once
+been executed. A benchmark exists to produce numbers, and one that stops at the first bad
+number hides exactly the ones worth having. The harness now measures and prints every case,
+then asserts at the end; the assertion is reachable only through `suite()`, so a bench cannot
+report figures without being checked.
+
+`[to testing-skills]` — two cases. *One run is not a measurement, and its direction is not
+evidence of its sign*: a gate whose spread exceeds its margin was read once, in each
+direction, and both readings reached documents. The fix is not a better threshold but
+measuring the spread before believing any verdict. And *the fail-fast assertion that hides its
+own evidence*: a check that aborts at the first failure suppresses the results after it, so
+the run that most needed reading produces the least. Report every case, then fail.

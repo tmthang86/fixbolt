@@ -3,47 +3,55 @@
 version = 4
 
 [[package]]
-name = "nanofix-codec"
+name = "fixbolt-codec"
 version = "0.0.0"
 dependencies = [
- "nanofix-conformance",
- "nanofix-dict",
+ "fixbolt-conformance",
+ "fixbolt-dict",
 ]
 
 [[package]]
-name = "nanofix-conformance"
+name = "fixbolt-conformance"
 version = "0.0.0"
 dependencies = [
- "nanofix-codec",
- "nanofix-dict",
+ "fixbolt-codec",
+ "fixbolt-dict",
 ]
 
 [[package]]
-name = "nanofix-dict"
+name = "fixbolt-dict"
 version = "0.0.0"
 dependencies = [
- "nanofix-codec",
+ "fixbolt-codec",
  "roxmltree",
 ]
 
 [[package]]
-name = "nanofix-engine"
+name = "fixbolt-engine"
 version = "0.0.0"
 dependencies = [
- "nanofix-codec",
- "nanofix-conformance",
- "nanofix-dict",
- "nanofix-session",
+ "fixbolt-codec",
+ "fixbolt-conformance",
+ "fixbolt-dict",
+ "fixbolt-session",
 ]
 
 [[package]]
-name = "nanofix-session"
+name = "fixbolt-session"
 version = "0.0.0"
 dependencies = [
- "nanofix-codec",
- "nanofix-conformance",
- "nanofix-dict",
- "nanofix-engine",
+ "fixbolt-codec",
+ "fixbolt-conformance",
+ "fixbolt-dict",
+ "fixbolt-engine",
+]
+
+[[package]]
+name = "fixbolt-w2w"
+version = "0.0.0"
+dependencies = [
+ "fixbolt-engine",
+ "fixbolt-session",
 ]
 
 [[package]]

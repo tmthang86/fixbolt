@@ -1,18 +1,18 @@
 //! `DESIGN.md` D10: what a connection does when the counterparty stops reading.
 //!
-//! Driven against [`Connection`] rather than [`nanofix_engine::Engine`], on
+//! Driven against [`Connection`] rather than [`fixbolt_engine::Engine`], on
 //! purpose: the policy is a per-connection property and the test wants to hold
 //! the socket still, which is easier one connection at a time.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::VecDeque;
 
-use nanofix_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
-use nanofix_engine::backpressure::Backpressure;
-use nanofix_engine::conn::{Connection, Turn};
-use nanofix_engine::journal::Store;
-use nanofix_engine::transport::{Io, Transport};
-use nanofix_session::{Acceptor, Config, Session, Silent};
+use fixbolt_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
+use fixbolt_engine::backpressure::Backpressure;
+use fixbolt_engine::conn::{Connection, Turn};
+use fixbolt_engine::journal::Store;
+use fixbolt_engine::transport::{Io, Transport};
+use fixbolt_session::{Acceptor, Config, Session, Silent};
 
 const N: usize = 256;
 const RX: usize = 4096;

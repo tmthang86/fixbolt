@@ -9,8 +9,8 @@ off the project's own README or licence file on the date above, not inferred.
 28 ns serialize, 2.25M msg/s"*, MIT, 18 stars. Same name, same language, same stated purpose.
 
 This is not a legal problem — MIT, and no trademark is claimed — but it is a real one:
-`cargo add nanofixengine`, a web search, or a GitHub search will surface both. The name is
-already committed to at `github.com/tmthang86/nanofixengine`; changing it later costs more the
+`cargo add fixbolt`, a web search, or a GitHub search will surface both. The name is
+already committed to at `github.com/tmthang86/fixbolt`; changing it later costs more the
 longer it waits. Decide deliberately rather than by default.
 
 ## Rust
@@ -25,7 +25,7 @@ longer it waits. Decide deliberately rather than by default.
 | **`hotfix`** | — | **No** — initiator / buy-side only | — |
 
 **Reading:** as of this date there is no production-proven, pure-Rust FIX acceptor. That is
-the gap nanofixengine exists to fill, and also the reason nobody has filled it cheaply.
+the gap fixbolt exists to fill, and also the reason nobody has filled it cheaply.
 
 ## C++
 
@@ -39,7 +39,7 @@ the gap nanofixengine exists to fill, and also the reason nobody has filled it c
 
 Collected from the sources above and from the shadow-exchange performance research on the
 same date. **None of these were reproduced locally.** Treat every one as a claim until a
-nanofixengine benchmark produces its own.
+fixbolt benchmark produces its own.
 
 | Claim | Source | Note |
 |---|---|---|

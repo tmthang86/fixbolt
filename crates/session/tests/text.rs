@@ -11,8 +11,8 @@
 
 use std::collections::BTreeMap;
 
-use nanofix_conformance::script::{Kind, Step, scenarios};
-use nanofix_session::text::SessionText;
+use fixbolt_conformance::script::{Kind, Step, scenarios};
+use fixbolt_session::text::SessionText;
 
 /// Every `(58=text)` in the corpus, with its `373=` code and `35=` type.
 fn corpus() -> BTreeMap<String, (Option<u32>, String, usize)> {

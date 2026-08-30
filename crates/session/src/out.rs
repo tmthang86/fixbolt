@@ -6,8 +6,8 @@
 //! The acceptance comparator is positional; a hand-ordered message would pass
 //! review and fail the gate.
 
-use nanofix_codec::{Template, TemplateBuilder};
-use nanofix_dict::Fix44;
+use fixbolt_codec::{Template, TemplateBuilder};
+use fixbolt_dict::Fix44;
 
 /// Parts and scratch bytes a session message needs.
 ///

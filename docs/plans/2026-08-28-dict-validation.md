@@ -163,12 +163,12 @@ và phải thấy được. Kiểm tra kiểu (`FieldType::accepts(&[u8]) -> boo
 
 | Bước | Lệnh | Đạt khi |
 |---|---|---|
-| 1 | `scripts/fetch-quickfix-assets.sh && cargo test -p nanofix-dict` | Bốn file có mặt; xoá một file thì test đỏ |
-| 2 | `cargo test -p nanofix-dict --test interop_quickfix_fields` | **912/912** số hiệu khớp `FixFieldNumbers.h` |
+| 1 | `scripts/fetch-quickfix-assets.sh && cargo test -p fixbolt-dict` | Bốn file có mặt; xoá một file thì test đỏ |
+| 2 | `cargo test -p fixbolt-dict --test interop_quickfix_fields` | **912/912** số hiệu khớp `FixFieldNumbers.h` |
 | 3 | cùng test | **898/912** khớp kiểu, **14** lệch và đúng 14 tag đã liệt kê ở trên — danh sách viết trong test, lệch thêm một tag là đỏ |
-| 4 | `cargo test -p nanofix-dict --test interop_quickfix_messages` | **12 524/12 524** cặp khớp `FIELD_SET` |
-| 5 | `cargo test -p nanofix-dict --test validation` | 245 trường enum, 1 708 giá trị nhận; mọi ca corpus (`21=4`, `167=BOO`, `40=w`, `123=N`) đúng chiều |
-| 6 | `cargo bench -p nanofix-codec --bench alloc` | in `0`; đảo ngược (một `String` trong `enum_allows`) in khác 0 |
+| 4 | `cargo test -p fixbolt-dict --test interop_quickfix_messages` | **12 524/12 524** cặp khớp `FIELD_SET` |
+| 5 | `cargo test -p fixbolt-dict --test validation` | 245 trường enum, 1 708 giá trị nhận; mọi ca corpus (`21=4`, `167=BOO`, `40=w`, `123=N`) đúng chiều |
+| 6 | `cargo bench -p fixbolt-codec --bench alloc` | in `0`; đảo ngược (một `String` trong `enum_allows`) in khác 0 |
 
 **Không có bước nào đóng bằng "test pass".** Mỗi cổng nêu con số, và con số ấy đối chiếu với một
 bộ sinh khác — trừ bước 5, nơi oracle yếu và điều đó được nói thẳng.
@@ -255,7 +255,7 @@ dùng `#[path = "src/field_type.rs"] mod field_type;` — một file, hai đơn 
 | 3 | `interop_quickfix_fields` + `field_types` | **898/912** kiểu khớp, **14** lệch có tên đủ; 23 kiểu, mỗi kiểu ít nhất một nhận một từ chối |
 | 4 | `interop_quickfix_messages` | **12 524/12 524** cặp, kiểm bằng **84 816** câu trả lời — mọi bản tin × mọi tag, cả hai chiều |
 | 5 | `enums` | **245** trường, **1 708** giá trị khớp XML; và **245/245, 1 708/1 708** đều là giá trị QuickFIX cũng biết |
-| 6 | `cargo bench -p nanofix-codec --bench alloc` | `validate 0`. Đảo ngược (một `format!` trong `accepts`) cho `validate 80000` |
+| 6 | `cargo bench -p fixbolt-codec --bench alloc` | `validate 0`. Đảo ngược (một `format!` trong `accepts`) cho `validate 80000` |
 
 **Đảo ngược, 9 lần, cả 9 đỏ**: file oracle biến mất; `is_defined_tag` luôn đúng; `is_msg_type`
 luôn đúng; tag cao nhất (956) rơi khỏi bitset; `field_type` luôn trả `STRING`; `accepts` nhận

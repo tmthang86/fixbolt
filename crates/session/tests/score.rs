@@ -7,20 +7,20 @@
 //! understood.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use nanofix_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
-use nanofix_conformance::script::FIXED_TIME_MILLIS;
-use nanofix_engine::frame::{Cut, Framer};
-use nanofix_engine::journal::Store;
-use nanofix_session::{Acceptor, Config, Session};
+use fixbolt_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
+use fixbolt_conformance::script::FIXED_TIME_MILLIS;
+use fixbolt_engine::frame::{Cut, Framer};
+use fixbolt_engine::journal::Store;
+use fixbolt_session::{Acceptor, Config, Session};
 
 /// `session` cannot depend on `conformance` — that is the dev-dependency
 /// direction, and reversing it is a cycle. So the two crates each own a `Link`
 /// and this maps between them. Two names for one idea, and the alternative is
 /// worse.
-fn link(l: nanofix_session::Link) -> Link {
+fn link(l: fixbolt_session::Link) -> Link {
     match l {
-        nanofix_session::Link::Up => Link::Up,
-        nanofix_session::Link::Dropped => Link::Dropped,
+        fixbolt_session::Link::Up => Link::Up,
+        fixbolt_session::Link::Dropped => Link::Dropped,
     }
 }
 
@@ -43,7 +43,7 @@ fn link(l: nanofix_session::Link) -> Link {
 ///   message, and one that promises too many **swallows the next**. See
 ///   [`frame`].
 /// * **the application.** [`EchoApp`] is the acceptance server's own behaviour,
-///   wired in through [`nanofix_session::Application`].
+///   wired in through [`fixbolt_session::Application`].
 ///
 /// When `engine` exists, the first two move into it. Until then they are here,
 /// in the open, rather than smuggled into `Session`.
@@ -101,7 +101,7 @@ impl SessionUnderTest for Adapter {
             });
         };
 
-        // TCP delivers bytes, not messages. `nanofix_engine::frame` is the
+        // TCP delivers bytes, not messages. `fixbolt_engine::frame` is the
         // real thing an engine uses; this adapter is standing in for an engine,
         // so it calls it rather than keeping a second copy of the rule.
         {
@@ -157,7 +157,7 @@ impl SessionUnderTest for Adapter {
 
 /// The application the acceptance corpus assumes, wired to the session.
 ///
-/// `conformance` cannot implement [`nanofix_session::Application`] — it does not
+/// `conformance` cannot implement [`fixbolt_session::Application`] — it does not
 /// depend on `session`, and reversing that is a cycle — so the trait is
 /// implemented here over the two functions that crate does provide.
 ///
@@ -171,7 +171,7 @@ struct EchoApp {
     seen: Vec<Vec<u8>>,
 }
 
-impl nanofix_session::Application for EchoApp {
+impl fixbolt_session::Application for EchoApp {
     fn on_message(
         &mut self,
         msg: &[u8],
@@ -184,7 +184,7 @@ impl nanofix_session::Application for EchoApp {
         // nothing else. `2r_UnregisteredMsgType.def` sends `35=8`, which FIX 4.4
         // defines and this application does not want.
         if msg_type != b"D" && msg_type != b"d" {
-            return nanofix_conformance::echo::business_reject(msg, out, seq, stamp).ok();
+            return fixbolt_conformance::echo::business_reject(msg, out, seq, stamp).ok();
         }
         if let Some(id) = field(msg, 11) {
             let already = self.seen.iter().any(|s| s == id);
@@ -195,7 +195,7 @@ impl nanofix_session::Application for EchoApp {
                 self.seen.push(id.to_vec());
             }
         }
-        nanofix_conformance::echo::echo(msg, out, seq, stamp).ok()
+        fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
     }
 }
 
@@ -212,15 +212,15 @@ fn acceptor() -> Adapter {
 /// only place that sees both.
 #[test]
 fn the_harness_clock_and_the_corpus_agree() {
-    use nanofix_conformance::script::{FIXED_TIME_IN, FIXED_TIME_MILLIS, FIXED_TIME_OUT};
+    use fixbolt_conformance::script::{FIXED_TIME_IN, FIXED_TIME_MILLIS, FIXED_TIME_OUT};
 
     assert_eq!(
-        nanofix_session::clock::parse_utc(FIXED_TIME_IN.as_bytes()),
+        fixbolt_session::clock::parse_utc(FIXED_TIME_IN.as_bytes()),
         Some(FIXED_TIME_MILLIS),
         "the runner would tick to an instant the corpus never writes"
     );
     assert_eq!(
-        nanofix_session::clock::parse_utc(FIXED_TIME_OUT.as_bytes()),
+        fixbolt_session::clock::parse_utc(FIXED_TIME_OUT.as_bytes()),
         Some(FIXED_TIME_MILLIS),
         "the two widths must name the same instant"
     );
@@ -320,7 +320,7 @@ fn step_six_b_replays_what_it_sent_and_scores_fifty_nine() {
 /// and checks each distinct `373` value is produced somewhere.
 #[test]
 fn all_twelve_session_reject_reasons_are_produced() {
-    use nanofix_conformance::script::{Kind, scenarios};
+    use fixbolt_conformance::script::{Kind, scenarios};
 
     let mut wanted: Vec<u32> = Vec::new();
     for s in scenarios().unwrap_or_else(|e| panic!("{e}")) {

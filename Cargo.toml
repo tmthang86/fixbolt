@@ -6,6 +6,7 @@ members = [
     "crates/dict",
     "crates/engine",
     "crates/session",
+    "tools/w2w",
 ]
 # fuzz/ needs nightly and is its own workspace. Excluded so `cargo build` at the
 # root, and CI's --no-default-features job, never try to build it on stable.
@@ -17,7 +18,7 @@ exclude = ["fuzz"]
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/tmthang86/nanofixengine"
+repository = "https://github.com/tmthang86/fixbolt"
 rust-version = "1.85"
 
 [workspace.lints.rust]

@@ -10,7 +10,7 @@
 //! `15_HeaderAndBodyFieldsOrderedDifferently.def` sends the same `NewOrderSingle`
 //! twice — once in order, once with header and body fields shuffled — and
 //! expects the **same bytes** back both times. So the echo cannot copy the
-//! input's layout. It rebuilds the message through [`nanofix_codec::Template`],
+//! input's layout. It rebuilds the message through [`fixbolt_codec::Template`],
 //! which sorts from the dictionary: `35`, then header tags ascending, then body
 //! tags ascending. That is `CLAUDE.md` §2 non-negotiable 5, seen from the
 //! application side.
@@ -33,8 +33,8 @@
 
 use core::ops::Range;
 
-use nanofix_codec::{EncodeError, FieldIndex, ParseError, TemplateBuilder, Validation, parse_into};
-use nanofix_dict::Fix44;
+use fixbolt_codec::{EncodeError, FieldIndex, ParseError, TemplateBuilder, Validation, parse_into};
+use fixbolt_dict::Fix44;
 
 /// Fields the acceptor writes itself rather than echoing.
 ///
@@ -137,7 +137,7 @@ fn render(mut v: u32, buf: &mut [u8; 10]) -> &[u8] {
 
 /// The text `2r_UnregisteredMsgType.def` expects, byte for byte.
 ///
-/// It belongs to the application, not to the session: `nanofix_session::text`
+/// It belongs to the application, not to the session: `fixbolt_session::text`
 /// holds the seventeen strings a *session* says, and "unsupported message type"
 /// is a statement about what this end trades, not about the protocol.
 const UNSUPPORTED: &[u8] = b"Unsupported Message Type";

@@ -5,7 +5,7 @@
 //! The reversal is recorded in the ADR — the first draft had it the other way
 //! round, on reasoning that turned out to be about the JVM.
 //!
-//! [ADR-0002]: https://github.com/nanofixengine/docs/decisions/ADR-0002-engine-library-split.md
+//! [ADR-0002]: ../../../docs/decisions/ADR-0002-engine-library-split.md
 //!
 //! # The two shapes
 //!
@@ -20,7 +20,7 @@
 
 use core::ops::Range;
 
-use nanofix_session::Application;
+use fixbolt_session::Application;
 
 use crate::ring::{Consumer, Producer};
 
@@ -44,7 +44,7 @@ pub trait Dispatch {
 
     /// One message for the application.
     ///
-    /// The contract is [`nanofix_session::Application::on_message`]'s: write a
+    /// The contract is [`fixbolt_session::Application::on_message`]'s: write a
     /// whole FIX message into `out` and return its range to have it sent on
     /// this connection now. `None` says nothing — which for [`RingDispatch`]
     /// is *always* the answer, because the application is not on this thread.

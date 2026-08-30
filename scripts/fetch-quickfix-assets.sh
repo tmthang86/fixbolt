@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the QuickFIX assets nanofixengine uses as data and as a test oracle.
+# Fetch the QuickFIX assets fixbolt uses as data and as a test oracle.
 #
 # These land in vendor/, which is gitignored. They are NEVER committed: doing so would
 # pull the QuickFIX Software License's attribution clause into this repository.
@@ -8,19 +8,39 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR="${REPO_ROOT}/vendor/quickfix"
-REF="${QUICKFIX_REF:-master}"
+
+# STATUS.md open item 7. This used to default to `master`, which meant every
+# number this repository has measured off the corpus — 59 files, 539 message
+# lines, 244 expected lines carrying `10=` — could change upstream with no
+# commit here and no warning. A test oracle that moves is not an oracle.
+#
+# Pinned to a commit. Upgrading is deliberate: set QUICKFIX_REF, read what the
+# counts below print, and change this default in the same commit that updates
+# whatever the new corpus breaks.
+PINNED_SHA="386ce46e917ae494ab6e90b1be90fd421cdbe3f9"   # 2026-05-20
+REF="${QUICKFIX_REF:-${PINNED_SHA}}"
+
+# What the pinned corpus contains. Checked below, not trusted: if a future ref
+# disagrees with these, the fetch fails here rather than three layers away in a
+# test whose message will be about a field count.
+WANT_DEFS=59
+WANT_MSG_LINES=539
+WANT_CHECKSUM_LINES=244
 
 command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
 
-if [[ -d "${VENDOR}/.git" ]]; then
-  echo "vendor/quickfix already present; fetching ${REF}"
-  git -C "${VENDOR}" fetch --depth 1 origin "${REF}"
-  git -C "${VENDOR}" checkout -q FETCH_HEAD
-else
-  mkdir -p "$(dirname "${VENDOR}")"
-  git clone --depth 1 --branch "${REF}" --filter=blob:none --sparse \
-    https://github.com/quickfix/quickfix.git "${VENDOR}"
+if [[ ! -d "${VENDOR}/.git" ]]; then
+  mkdir -p "${VENDOR}"
+  git -C "${VENDOR}" init -q
+  git -C "${VENDOR}" remote add origin https://github.com/quickfix/quickfix.git
+  git -C "${VENDOR}" config core.sparseCheckout true
 fi
+
+# `fetch <sha>` rather than `clone --branch`: a branch name is a moving target
+# and a commit is not.
+echo "fetching quickfix at ${REF}"
+git -C "${VENDOR}" fetch -q --depth 1 --filter=blob:none origin "${REF}"
+git -C "${VENDOR}" checkout -q --detach FETCH_HEAD
 
 # Set unconditionally, not only on a fresh clone: an existing checkout was made
 # by an older version of this script with a narrower list, and `fetch` alone
@@ -41,7 +61,38 @@ echo "  src/C++/FixFields.h + FixCommonFields.h — field types, read ONLY as an
 echo "  src/C++/FixValues.h               — enum values, a PARTIAL oracle (see the plan)"
 echo "  LICENSE                           — read it before using anything else here"
 echo
-ls "${VENDOR}/test/definitions/server/fix44" | wc -l | xargs echo "acceptance definitions:"
+# --- the corpus is what this project measured, or the fetch fails -------------
+#
+# Every one of these appears in docs/ as a measured fact. Checking them here is
+# what makes "the corpus is pinned" mean something: a pin nobody verifies is a
+# comment.
+got_defs=$(find "${VENDOR}/test/definitions/server/fix44" -name '*.def' | wc -l | tr -d ' ')
+got_msg=$(cat "${VENDOR}"/test/definitions/server/fix44/*.def | grep -cE '^[IE]' || true)
+# `$'\001'` and not '\x01': grep -E takes the pattern literally, so the escape
+# form silently matches nothing and this check would pass at zero for ever.
+got_ck=$(cat "${VENDOR}"/test/definitions/server/fix44/*.def | grep -c $'^E.*\00110=' || true)
+
+fail=0
+check() {
+  if [[ "$2" != "$3" ]]; then
+    echo "CORPUS MISMATCH: $1 is $2, this project measured $3" >&2
+    fail=1
+  fi
+}
+check "acceptance definitions" "${got_defs}" "${WANT_DEFS}"
+check "message lines (I/E)"    "${got_msg}"  "${WANT_MSG_LINES}"
+check "E lines carrying 10="   "${got_ck}"   "${WANT_CHECKSUM_LINES}"
+if [[ "${fail}" -ne 0 ]]; then
+  cat >&2 <<'EOMSG'
+
+The corpus at this ref is not the one this project's numbers were measured on.
+That is not automatically wrong — it is unreviewed. Read what changed, update
+the documents that quote these counts, and move PINNED_SHA in the same commit.
+EOMSG
+  exit 1
+fi
+echo "corpus verified: ${got_defs} definitions, ${got_msg} message lines, ${got_ck} with a checksum field"
+
 ls "${VENDOR}/src/C++/fix44" | wc -l | xargs echo "generated headers:"
 for f in FixFieldNumbers.h FixFields.h FixCommonFields.h FixValues.h; do
   [[ -f "${VENDOR}/src/C++/${f}" ]] || { echo "MISSING ${f}" >&2; exit 1; }

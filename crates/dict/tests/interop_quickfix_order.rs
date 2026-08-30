@@ -40,8 +40,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use nanofix_codec::Dictionary;
-use nanofix_dict::{Fix44, GROUP_KEYS};
+use fixbolt_codec::Dictionary;
+use fixbolt_dict::{Fix44, GROUP_KEYS};
 
 fn headers_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/quickfix/src/C++/fix44")

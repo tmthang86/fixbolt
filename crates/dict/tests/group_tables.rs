@@ -8,8 +8,8 @@
 //! message type there is.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use nanofix_codec::Dictionary;
-use nanofix_dict::Fix44;
+use fixbolt_codec::Dictionary;
+use fixbolt_dict::Fix44;
 
 #[test]
 fn the_four_ambiguous_counters_resolve_by_message() {
@@ -94,6 +94,6 @@ fn the_tables_cover_what_the_dictionary_declares() {
     // The plan said 1028 positions and could not be reproduced by any counting
     // method tried on 2026-08-28; 731 is what the file contains. See the
     // delivery log.
-    assert_eq!(nanofix_dict::GROUP_COUNTERS, 59);
-    assert_eq!(nanofix_dict::GROUP_POSITIONS, 731);
+    assert_eq!(fixbolt_dict::GROUP_COUNTERS, 59);
+    assert_eq!(fixbolt_dict::GROUP_POSITIONS, 731);
 }
