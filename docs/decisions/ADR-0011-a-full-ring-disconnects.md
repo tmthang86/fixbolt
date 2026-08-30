@@ -1,6 +1,6 @@
 # ADR-0011 — A full ring ends the connection, and the ring is sized so that is rare
 
-- **Status**: Proposed — 2026-08-30
+- **Status**: **Accepted — 2026-08-30**, signed by the owner. Proposed the same day; the revisions recorded below were made while it was `Proposed`, per `CLAUDE.md` §5. **Its substance is now fixed — changing it takes a new ADR that supersedes it.**
 - **Date**: 2026-08-30
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0002](ADR-0002-engine-library-split.md),

@@ -1,7 +1,13 @@
 # Engine tự quản thread và ghim core, theo nếp HFT
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Đã duyệt 2026-08-30**
 > **Phạm vi:** `engine` — public API, mô hình thread. Không đụng `codec`, `session`.
+>
+> **Sửa 2026-08-30, ghi tại chỗ vì plan vừa được duyệt cùng ngày:** mọi thứ trong plan này
+> thuộc về **`hft` mode** của [ADR-0013](../decisions/ADR-0013-two-modes-standard-and-hft.md),
+> không phải mặc định của engine. `standard` mode — chặn trên readiness, chạy mọi nền tảng,
+> không ghim core — là một plan riêng và là **mặc định mới**. Việc ghim core do đó là
+> **opt-in**, và các phép từ chối ở nguyên tắc 4 chỉ áp trong `hft`.
 
 ## Bối cảnh
 
@@ -212,4 +218,4 @@ Từng bước, và **đọc output chứ không đọc exit code**.
 
 ## Nhật ký giao hàng
 
-*(chưa bắt đầu — plan đang chờ duyệt)*
+*(được duyệt 2026-08-30 cùng lúc với ADR-0010, 0011 và 0012. Chưa bắt đầu bước nào.)*

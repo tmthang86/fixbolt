@@ -149,7 +149,9 @@ A message the ring refuses is one the session has already **accepted, numbered, 
 acknowledged by sequence number**, and that your application never saw. For order flow that is
 not backpressure, it is silent loss —
 [ADR-0011](decisions/ADR-0011-a-full-ring-disconnects.md) is the decision about what to do
-instead, and it is still `Proposed`.
+instead — **`Accepted` 2026-08-30**: a full ring ends the connection, the refusal is never
+silent, and the default capacity rises to 4 MiB. **Not yet implemented**; until it is, the
+behaviour you get is the counter described above.
 
 **What you must do:**
 
@@ -259,7 +261,7 @@ Stated so you do not discover it in production:
   makes business sense is yours.
 - **It does not resume sequence numbers across a restart yet.** `connect` resets
   unconditionally; [ADR-0010](decisions/ADR-0010-a-reconnect-is-not-a-restart.md) is the
-  decision to change that and is still `Proposed`.
+  decision to change that — **`Accepted` 2026-08-30, not yet implemented**.
 - **It has no session schedule.** Start time, end time and weekday resets are a known gap
   (`PRD.md`), so nothing ends a session on a clock.
 - **It does not pin its own threads.** `DESIGN.md` D8 says the engine thread is pinned to an
