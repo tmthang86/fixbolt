@@ -7,8 +7,11 @@ Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire
 
 ## Start here — 2026-08-30, end of session
 
-**Four decisions were signed and one plan approved on 2026-08-30. Nothing is blocked on a
-signature any more; everything below is blocked on work.**
+**Four decisions were signed and two plans approved on 2026-08-30.** The sentence that stood here
+earlier the same day — *"nothing is blocked on a signature any more"* — **stopped being true when
+[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md) was written**: it is
+`Proposed`, and `standard-mode` step 2 writes no code until it is signed. Everything else below
+is blocked on work.
 
 | | |
 |---|---|
@@ -16,18 +19,22 @@ signature any more; everything below is blocked on work.**
 | **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md)** `Accepted` | a full ring disconnects, the refusal is never silent, capacity → 4 MiB. Unblocks `ring-full-policy` steps 3–4. **Not implemented** |
 | **[ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)** `Accepted` | latency beats density; every figure names its `N`. Decisions 1–2 re-scoped to `hft` by ADR-0013 |
 | **[ADR-0013](docs/decisions/ADR-0013-two-modes-standard-and-hft.md)** `Accepted` | **two modes.** `standard` blocks and runs anywhere and **is the default**; `hft` spins, pins and burns a core. **Amended `CLAUDE.md` §2 rule 4** — it is now mode-scoped and its `standard` half **has no machine check yet** |
-| **[threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md)** approved | 6 steps, `hft`-scoped. Step 1 is ADR-0014, the affinity API |
+| **[threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md)** approved | 6 steps, `hft`-scoped. Step 1 is the affinity API ADR — **it is ADR-0015, not 0014**: `standard-mode` wrote its ADR first and §5 forbids reusing a number. That plan's own text still says 0014 |
+| **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** approved | 8 steps, `standard`-scoped, **step 1 done**. Builds the default mode and the missing half of rule 4's machine check |
+| **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)** **`Proposed`** | `poll(2)` through `libc` behind a default-on `standard` feature; Windows refused with a typed error, never a silent spin; `Waiting` is given the sources and `Transport` names its own; `Park` → `Yield`, neither mode, **fails both gates**. Answers **all four** of ADR-0013's open questions. **Awaiting signature — step 2 does not start without it** |
 
 **The next session's three obvious starting points, in the order that costs least:**
 
-1. ~~**A plan for `standard` mode**~~ — **written 2026-08-30, awaiting approval**:
-   [standard-mode](docs/plans/2026-08-30-standard-mode.md), 8 steps. It answers **all four** of
-   ADR-0013's open questions rather than only the first: `poll(2)` through `libc` behind a
-   default-on `standard` feature (so `--no-default-features` still yields a zero-dependency,
-   spin-only engine), **Windows out of scope and refused with a typed error rather than a silent
-   fallback to spinning**, `hft` stays the default for `w2w` and the benchmarks, and `density` is
-   a shape within `standard` rather than a third mode. **Nothing is built yet — this is a plan,
-   not code.**
+1. ~~**A plan for `standard` mode**~~ — **approved 2026-08-30, and its step 1 is done**:
+   [standard-mode](docs/plans/2026-08-30-standard-mode.md), 8 steps, and
+   **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**, `Proposed`. It
+   answers **all four** of ADR-0013's open questions rather than only the first: `poll(2)`
+   through `libc` behind a default-on `standard` feature (so `--no-default-features` still
+   yields a zero-dependency, zero-`unsafe`, spin-only engine), **Windows out of scope and
+   refused with a typed error rather than a silent fallback to spinning**, `hft` stays the
+   default for `w2w` and the benchmarks, and `density` is a shape within `standard` rather than
+   a third mode. **The next thing this blocks on is a signature**: step 2 writes no code until
+   ADR-0014 is `Accepted`.
 2. **The `standard` half of rule 4 has no gate.** ADR-0013 decision 6 specifies it — CPU time
    over a wall-clock window, not read off the code. Until it exists, rule 4 is half-enforced
    and `CLAUDE.md`'s own machine-checked list says so. It is **step 7** of the plan above, and
@@ -51,8 +58,8 @@ refuted hypotheses about a 324 ns mode that is still unexplained.
 
 **Next, and each needs its own plan before any code (Rule Zero):**
 
-**Six plans were written and approved on 2026-08-30**, and a seventh — `standard-mode` — was
-written the same day and **is awaiting approval**. All of it comes with the owner's standing permission to
+**Seven plans were written and approved on 2026-08-30**, the seventh being `standard-mode`,
+**whose step 1 is also already done**. All of it comes with the owner's standing permission to
 revise a plan mid-flight when reality disagrees with it — each revision recorded in that plan's
 delivery log. In dependency order:
 
@@ -78,12 +85,12 @@ delivery log. In dependency order:
 6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5. **Steps 1–2 done
    2026-08-30**; steps 3–4 wait on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md),
    which is **`Accepted` 2026-08-30** and awaits implementation, not a signature.
-7. **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** — **written 2026-08-30, awaiting
-   approval.** 8 steps. Builds the mode ADR-0013 made the *default* and nobody has written, and
-   with it the missing half of non-negotiable 4's machine check. Its step 1 is an ADR, and
-   **that ADR competes for number 0014 with `threads-and-affinity`'s step 1** — whichever is
-   written first takes 0014, the other takes 0015; §5 forbids reusing a number, so check
-   `ls docs/decisions/` rather than trusting either plan's text.
+7. **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** — **approved 2026-08-30, step 1
+   done the same day.** 8 steps. Builds the mode ADR-0013 made the *default* and nobody has
+   written, and with it the missing half of non-negotiable 4's machine check. Step 1 is
+   **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md), `Proposed`** — it took
+   0014, so `threads-and-affinity`'s step 1 takes **0015**. **Step 2 does not start until
+   ADR-0014 is signed**; nothing here is code yet.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus

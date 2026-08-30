@@ -1,6 +1,6 @@
 # `standard` mode — engine chặn khi rỗi và trả core lại
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Chờ duyệt**
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Đã duyệt 2026-08-30**
 > **Phạm vi:** `engine` — public API, vòng lặp rỗi, `Transport`, `Waiting`. Không đụng `codec`,
 > không đụng `session`.
 
@@ -207,13 +207,17 @@ Cái tên `density` vẫn dùng được như một **nhãn cho con số**, cạ
 - `scripts/check-standard-gives-the-core-back.sh` — mới
 - `scripts/check-no-kernel-sleep.sh` — nửa đỏ đổi sang `--mode standard`
 - `.github/workflows/ci.yml` — job mới
-- `docs/decisions/ADR-00NN-…` — bước 1, xem ghi chú về số hiệu bên dưới
+- `docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md` — bước 1, **đã viết 2026-08-30**
 - `docs/DESIGN.md` D8, D5, §3, §6, §8 · `docs/GUIDE.md` §0 · `CHANGELOG.md` · `STATUS.md` · `CLAUDE.md` §2
 
-> **Số hiệu ADR.** Plan [threads-and-affinity](2026-08-30-threads-and-affinity.md) cũng có bước 1 là
-> một ADR, và `STATUS.md` gọi nó là ADR-0014. `CLAUDE.md` §5: số hiệu **không bao giờ dùng lại**.
-> Nên plan nào viết ADR trước thì lấy 0014, plan kia lấy 0015. Kiểm bằng `ls docs/decisions/` ngay
-> trước khi tạo file, đừng tin con số ghi ở đây.
+> **Số hiệu ADR — đã giải quyết 2026-08-30.** Plan này viết ADR trước, nên nó lấy **0014**;
+> [threads-and-affinity](2026-08-30-threads-and-affinity.md) lấy **0015** khi tới lượt. Và
+> `ls docs/decisions/` phát hiện thêm một thứ đáng ghi: **không có ADR-0009**, và đó là **khoảng
+> trống có chủ ý chứ không phải file bị mất** — plan
+> [gates-that-can-be-trusted](2026-08-30-gates-that-can-be-trusted.md) đã xin số đó cho một thay
+> đổi API của `SessionUnderTest::step`, rồi bỏ thiết kế và xoá hook thay vì ship. `CLAUDE.md` §5
+> cấm dùng lại số, nên 0009 để trống vĩnh viễn. Ghi ở đây và trong ADR-0014 vì người đọc sau sẽ đi
+> tìm một file không tồn tại.
 
 ## Bất biến bị đụng tới
 
@@ -234,8 +238,8 @@ Cái tên `density` vẫn dùng được như một **nhãn cho con số**, cạ
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| 1 | **ADR** — cơ chế readiness và dependency (`poll(2)` + `libc`), phạm vi Windows, số phận của `Park`, mặc định của `w2w`/bench, `density`. Trả lời cả bốn câu hỏi mở của ADR-0013. Chốt hình dạng API | ADR-0013 (đã ký) |
-| 2 | `Source`, `Transport::source()`, `POLLABLE`; `Waiting` đổi chữ ký; `Spin` giữ nguyên hành vi; `Park` → `Yield` với rustdoc nói nó trượt cả hai cổng. **Chưa có `Block`** — bước này chỉ mở chỗ nối và phải giữ mọi test xanh | 1 |
+| 1 | ~~**ADR**~~ — **xong 2026-08-30**: [ADR-0014](../decisions/ADR-0014-standard-mode-blocks-on-poll.md), `Proposed`. Cơ chế readiness và dependency (`poll(2)` + `libc`), phạm vi Windows, số phận của `Park`, mặc định của `w2w`/bench, `density`. Trả lời cả bốn câu hỏi mở của ADR-0013. Chốt hình dạng API | ADR-0013 (đã ký) |
+| 2 | `Source`, `Transport::source()`, `POLLABLE`; `Waiting` đổi chữ ký; `Spin` giữ nguyên hành vi; `Park` → `Yield` với rustdoc nói nó trượt cả hai cổng. **Chưa có `Block`** — bước này chỉ mở chỗ nối và phải giữ mọi test xanh | **1 được ký** |
 | 3 | `wait::Block` sau feature `standard`: `poll(2)` với timeout, một khối `unsafe`, `EINTR` là quay lại chờ, lỗi có kiểu. `libc` chỉ trong feature | 2 |
 | 4 | Engine dựng tập interest: readable luôn, **writable khi `has_pending_output()`**. `Acceptor::source()`, và `serve()` đăng ký listener. Const-assert từ chối transport không chờ được | 3 |
 | 5 | Waker: self-pipe trong tập poll, `RingDispatch` đánh thức khi push | 4 |
@@ -292,7 +296,7 @@ Từng bước, và **đọc output chứ không đọc exit code**.
 
 Theo bảng đồng bộ `CLAUDE.md` §4.
 
-- [ ] `docs/decisions/ADR-00NN-…` — bước 1 (dependency mới + đảo một câu hỏi mở → ADR bắt buộc)
+- [x] [`ADR-0014`](../decisions/ADR-0014-standard-mode-blocks-on-poll.md) — bước 1, **viết 2026-08-30**, `Proposed`
 - [ ] `docs/DESIGN.md` D8 — bỏ câu *"not built yet"*, ghi cơ chế và timeout thật
 - [ ] `docs/DESIGN.md` D5 — `Transport` có `source()`, và feature `standard` gate cái gì
 - [ ] `docs/DESIGN.md` §3 — module mới trong `engine`
@@ -349,4 +353,47 @@ Theo bảng đồng bộ `CLAUDE.md` §4.
 
 ## Nhật ký giao hàng
 
-*(chưa duyệt, chưa bắt đầu bước nào)*
+### 2026-08-30 — plan được duyệt, bước 1 xong
+
+**Duyệt 2026-08-30.** Bước 1 làm ngay sau đó.
+
+**Đã dựng:** [`ADR-0014 — standard blocks on poll(2), and the waiter is given the sockets`](../decisions/ADR-0014-standard-mode-blocks-on-poll.md),
+trạng thái **`Proposed`**. Chín quyết định, trả lời **cả bốn** câu hỏi mở của ADR-0013 đúng như
+plan hứa. Hình dạng API đã chốt trong đó: `Source`, `Interest`, `Waiting::NEEDS_SOURCES`,
+`Transport::POLLABLE` + `source()`, và const-assert trong thân `Engine::run`.
+
+**Hai thứ tìm ra khi làm, không có trong plan lúc viết:**
+
+1. **Không có `dyn Transport` / `dyn Waiting` / `dyn Dispatch` nào trong repo** —
+   `grep -rn 'dyn ' crates/ tools/` trả về rỗng. Đây là điều kiện mà cả quyết định 3 lẫn 4 dựa
+   vào: associated const làm trait mất object safety, và ở đây **không có gì đang dùng object
+   safety để mà mất**. Nếu grep ra kết quả thì cả hai quyết định đã phải khác. Nó đã được kiểm,
+   không phải được giả định — và hệ quả xấu của nó đã ghi vào mục Consequences của ADR.
+2. **`docs/decisions/` không có ADR-0009, và đó là khoảng trống có chủ ý.** Plan
+   `gates-that-can-be-trusted` xin số đó cho một thay đổi API của `SessionUnderTest::step`, rồi
+   bỏ thiết kế và xoá hook thay vì ship — nhật ký của chính plan đó nói vậy. Nhưng lời giải thích
+   chỉ nằm trong một plan tiếng Việt, còn người đi tìm sẽ tìm ở `docs/decisions/`. Ghi vào cả
+   ADR-0014 lẫn plan này.
+
+**Chưa làm, và vì sao:** **bước 2 chưa bắt đầu.** ADR-0014 là `Proposed`, và `CLAUDE.md` §5 nói
+`Proposed` → `Accepted` là chữ ký của chủ dự án. Không có dòng code nào được viết cho tới lúc đó.
+Cùng nếp mà ADR-0013 đã đi: đề xuất ở một commit, ký ở commit sau.
+
+**Gate của commit này** — chỉ có tài liệu, **không đo gì mới**:
+
+```
+scripts/check-links.py  → 125 files, 284 internal links, no dead internal links
+cargo test --all        → 48 test-result lines, 210 passed, 0 failed
+```
+
+`[đo 2026-08-30]` **Con số test ở commit trước là sai, và nó sai theo đúng kiểu §10 cảnh báo.**
+Commit `fa87192` ghi *"30 test binaries"* — đó không phải số đo, đó là `head -30` cắt output rồi
+người đọc đếm số dòng còn lại. Số thật ở cùng cây code là **48 dòng `test result`, 210 test
+passed, 0 failed**. Không có gì hỏng, và đó mới là chỗ đáng sợ: **một con số bịa ra bởi chính lệnh
+đi kiểm tra nó vẫn nói "xanh", nên không có gì mâu thuẫn để ai đó nhận ra.** Bài học đi vào
+`docs/reference/` khi bước 7 đóng — cổng ở bước đó đọc `/proc` bằng shell và cắt output là rủi ro
+y hệt. `[to testing-skills]`
+
+Mọi con số trích trong ADR đều dẫn nguồn tới file hoặc lần chạy sinh ra nó. Giá một lần thức của
+`standard` **vẫn mang nhãn "lấy từ tài liệu"** trong `DESIGN.md` §8 và là câu hỏi mở số 1 của
+ADR-0014 — không có gì ở bước này đo được nó.
