@@ -15,6 +15,13 @@ of roughly **10–20 µs** wire-to-wire that no codec can move — the figure §
 only one this repository uses. The job is to make everything *above* that floor disappear, and
 to measure the floor honestly.
 
+**The shape that positioning assumes is one session on one isolated polling thread**
+([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). Latency
+beats session density here, and the tie-breaker has teeth: a change trading per-session latency
+for sessions-per-core needs its own ADR to reverse it. Many sessions on a thread is supported
+and named **`density`**; it carries `N × 703 ns` of polling and **does not inherit the latency
+figures on this page**. Every figure here names its `N`.
+
 What must be built and in which phase is [PRD.md](PRD.md); this document is *how*.
 
 > **The name is `fixbolt`**, decided 2026-08-30. It replaced the placeholder
@@ -47,6 +54,17 @@ A second principle, learned from reviewing the first draft of this document: **t
 ~1% of the wire-to-wire budget on kernel TCP.** A design that optimises the codec and says
 nothing about I/O strategy, outbound encoding, or the OS underneath has optimised the wrong
 1%. §4 D8–D10, §8 and §9 exist because of that review.
+
+**A third principle, and it is the second one turning on its author.** `[measured 2026-08-30]`
+the I/O strategy §4 D8 chose — one non-blocking `read` per connection per turn — costs
+**703 ns per socket**, flat from 1 to 256 sockets, of which **353.8 ns is kernel entry and exit
+doing nothing**. This document's own `parse NewOrderSingle` is **125.5 ns**. *The syscall that
+discovers there is nothing to parse costs 5.6× the parse.* So the second principle was right and
+incompletely applied: the codec was priced, the I/O strategy was chosen and **never priced**, and
+§8's budget was written for "the user-space path" — the half that was already cheap.
+[ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) is the
+consequence: **latency wins over session density, the budget is stated end to end including
+syscalls, and every figure names its session count `N`.**
 
 ## 2. Layers
 
@@ -380,17 +398,38 @@ unconditionally, so recovered numbers are wiped before anything can use them.
 is a decision rather than an oversight: the acceptance corpus resets on every connect, FIX
 numbers a session rather than a connection, and one entry point cannot serve both.
 
-### D8 — The engine thread busy-polls; it never sleeps in the kernel
+### D8 — In `hft` the engine thread busy-polls; in `standard` it blocks
 
-The engine thread is pinned to an isolated core and spins on non-blocking sockets. No
-`epoll_wait`, no condition variables, no futex on the hot path.
+`[amended 2026-08-30, ADR-0013]` **This decision is mode-scoped, and `standard` is the
+default.**
+
+| | `standard` — the default | `hft` — opt-in, Linux only |
+|---|---|---|
+| Idle behaviour | **blocks on readiness** with a timeout, and gives the core back | spins on non-blocking sockets, never enters the kernel |
+| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-30]` one `read` at 703 ns per socket |
+| Pinning | none | the polling thread is pinned to an isolated core |
+| Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
+| Rule 4 says | it **must** block | it must **not** sleep |
+
+**In `hft`,** the engine thread is pinned to an isolated core and spins on non-blocking
+sockets. No `epoll_wait`, no condition variables, no futex on the hot path.
 
 **Why:** an `epoll` wakeup costs 2–5 µs *and* brings scheduler jitter with it. On a design
 whose entire user-space path is under 1 µs, a blocking wait is the single largest cost the
-engine controls. It burns a core — that is the price, and it is the standard price.
+engine controls. It burns a core — that is the price, and in `hft` it is worth paying.
 
-A `Waiting` strategy is a trait so tests and low-priority deployments can use a blocking
-variant. The default ships as spin.
+**Why `standard` exists, and why it is the default:** an engine whose out-of-the-box
+configuration pins a core at 100% is one most people cannot evaluate — it looks broken. And
+`[measured 2026-08-30]` the spin is not free even in `hft`: the poll it replaces `epoll` with
+costs **703 ns per socket per turn**, so the trade **wins at N = 1 and loses by N = 8**.
+`standard` is the honest default for everything that is not one session on an isolated core.
+
+`Waiting` is a trait and is the right seam, but **`wait::Park` is not `standard`**: it is
+`std::thread::yield_now()`, which yields the scheduler and **does not block**, so it still
+burns its core. A real `standard` mode blocks on readiness, which is a `Transport` concern
+because the poller must know the sockets — D5 already makes that a trait. `[2026-08-30]` **not
+built yet**; ADR-0013 open question 1 is which mechanism and which dependency, and `std`
+exposes none.
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is
 queued, **tick the clock**, read once, cut whole messages out, judge them, flush again — and
@@ -701,14 +740,33 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 |---|---|---|
 | NIC → kernel → socket buffer | 3–8 µs | Kernel, IRQ affinity, driver |
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
-| Wakeup — `epoll` **vs** busy-poll (D8) | 2–5 µs **vs** ~0 | **This design** |
+| Wakeup — **`standard`** blocks on readiness | 2–5 µs, `epoll`-class, **and the core is given back** | **This design**, D8 |
+| Wakeup — **`hft`** busy-polls | `[measured 2026-08-30]` **703 ns × N**, N = sockets on the thread, **and a core is burned** | **This design**, D8 |
 | Parse (D2) | ~0.14 µs | This design |
 | Session machine (D1) | ~0.1 µs | This design |
 | Dispatch — inline **vs** ring (D4) | ~0 **vs** 0.2–0.5 µs | Application's choice |
 | Serialise — template (D9) | ~0.05 µs | This design |
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
-| **Everything this design controls** | **< 1 µs** | |
+| **User-space work only** | **< 1 µs** | The half that was always cheap |
+| **Everything this design controls, N = 1** | **~1.7 µs** — the row above plus one 703 ns poll | |
+| **Everything this design controls, N sessions** | **`< 1 µs + N × 703 ns`** | |
+
+**Which mode the table is about: `hft`.** `[amended 2026-08-30, ADR-0013]` `standard` is the
+default and its wakeup row is the 2–5 µs one, so **its bottom line is `epoll`-class and this
+table does not describe it**. A `standard` figure and an `hft` figure are not comparable and
+must not be quoted as if they were — ADR-0013 decision 4. `standard`'s own budget has **not been
+measured**; the row above is the literature figure, as the header of this section says of every
+row.
+
+`[measured 2026-08-30]` **the last two rows are the honest bottom line and the "< 1 µs" line
+alone was not.** It counted user-space work and excluded the syscall that reaches the socket —
+which this design chose, and can change by batching it, removing it, or carrying fewer sockets.
+**At N = 2 the polling sweep alone exceeds the whole user-space budget.**
+[ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) settles what
+follows from that: one session per polling thread is the shape this table describes, `density`
+is a labelled mode carrying the `N × 703 ns` term, and **no latency figure is published without
+its `N`**.
 
 The TLS row has no number in it on purpose: none has been measured here, and none is quoted
 from elsewhere either. It gets filled in when `tools/w2w` runs the same load three ways — TLS
@@ -717,7 +775,9 @@ off, kTLS, userspace `rustls` — on the same Linux box (ADR-0005 decision 5).
 Two readings of this table:
 
 1. On kernel TCP, this engine's user-space path is **under 5% of the total**. The design
-   makes that 5% as small as it can be, and — through D8 — removes the one kernel cost it can.
+   makes that 5% as small as it can be, and — through D8 — trades `epoll`'s 2–5 µs wakeup for a
+   703 ns poll. `[measured 2026-08-30]` **that trade wins at N = 1 and loses by N = 8**, which
+   is the sentence this table did not contain until the poll was measured.
 2. Going below the floor means kernel bypass (OpenOnload, DPDK, `ef_vi`). That is L0's
    job, behind a feature flag that actually gates (D5), and it is **not v1**.
 
@@ -729,6 +789,8 @@ anything:
 
 | Setting | Why |
 |---|---|
+| **The machine is not a guest** | Four rows below — governor, turbo, C-states, SMT — plus NIC IRQ affinity are **host** properties. A VM cannot set them, and does not fail them loudly: the `/sys` files are simply absent, so a guest collects `unknown` and reads as under-configured rather than as structurally unable to comply. So this is a row of its own, and it decides whether the rest can mean anything. `check-machine.sh` reports `systemd-detect-virt` and steal time over the same window as the row below; a guest is a **FAIL**, and steal on bare metal is reported as unexplained rather than resolved either way. **Development may move to a cloud VM; measurement cannot.** Bare metal, or nothing but counts and same-machine A/B |
+| **Nothing else is running on the machine** | `[measured 2026-08-30]` **the row that was missing, and it dominates every other row here.** On the project's Ryzen 7 3700X, all six tuning rows below move the `ring, one way` median by **0.8%** — 260.6 ns untuned to 259.7 ns tuned, both on a quiet box. Competing CPU load moves it by **71%**, 262 ns to 449 ns, and takes the rate of a second mode near 324 ns from ~5% to **92%**. A machine can satisfy every other line in this table and still be useless to measure on. `scripts/check-machine.sh` now reads CPU busy over a one-second window and **FAILs above 3%**, naming the processes by their delta in that window |
 | `isolcpus` + `nohz_full` for the engine core | No scheduler ticks, no other tenants |
 | IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt |
 | `mlockall` + pre-faulted buffers | No page fault on the hot path. The reference project's `pool.rs` touches every page at startup — copy that |

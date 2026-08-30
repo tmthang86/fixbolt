@@ -50,8 +50,15 @@ list by hand. Each names the decision it enforces.
    arrives as `Input::Tick`. Errors are fieldless enums. (D1)
 3. **The 59 QuickFIX acceptance definitions are the session layer's gate.** A session change
    that has not run them to 59/59 is not done. (D1, ADR-0001)
-4. **The engine thread never sleeps in the kernel on the hot path.** No `epoll_wait`, no
-   futex, no blocking `read`. A blocking call on that thread is a bug, not a style choice. (D8)
+4. **Mode-scoped, and both halves are rules.** `[amended 2026-08-30, ADR-0013]`
+   **In `hft` mode the engine thread never sleeps in the kernel on the hot path** — no
+   `epoll_wait`, no futex, no blocking `read`; a blocking call on that thread is a bug, not a
+   style choice. **In `standard` mode the engine thread MUST block when idle** — an engine
+   that spins by default is unusable on shared hardware, and `standard` is the default.
+   **The second half is not the weaker half**: a `standard` engine that spins is as much a
+   defect as an `hft` engine that sleeps, and each has its own machine check. Any measurement,
+   claim or gate that does not name which mode it is about is incomplete. (D8, ADR-0012,
+   ADR-0013)
 5. **Field ordering comes from generated tables, never from a call site.** The acceptance
    comparator is positional; a hand-ordered message is a latent conformance failure. (D3)
 6. **A feature flag gates the `mod` declaration itself**, and `build.rs` invokes no external
@@ -74,11 +81,13 @@ that the workspace lints actually deny `unwrap`/`expect`/`panic`. 6 — the
 live, run by the `bench` CI job through `scripts/bench.sh`; **`[measured 2026-08-30]` this
 entry was false until that job existed** — `cargo test --all` does not run a `harness = false`
 bench target and nothing else invoked `cargo bench`, so the list named a check nothing ran.
-3 — the conformance runner, in process and over a socket. 4 —
-`scripts/check-no-kernel-sleep.sh`, which traces `tools/w2w` on Linux and attributes syscalls
+3 — the conformance runner, in process and over a socket. 4 — **half of it.**
+`scripts/check-no-kernel-sleep.sh` traces `tools/w2w` on Linux and attributes syscalls
 to the engine thread by tid; **it runs the binary a second time with `wait::Park` and requires
 that run to trip the check**, because two earlier attempts at this rule reported success with
-a `sleep` present. **The rest are hand-checks** on every relevant PR until a lint or test
+a `sleep` present. **That gate proves the `hft` half only. The `standard` half — that an idle
+engine gives the core back — has no machine check yet**, and until it does, rule 4 is
+half-enforced and this list says so rather than implying otherwise (ADR-0013 decision 6). **The rest are hand-checks** on every relevant PR until a lint or test
 exists — say explicitly that you walked the list.
 
 ## 3. Read before you touch the code
@@ -98,6 +107,7 @@ describes. **A stale document is worse than no document.**
 | Directory | Answers |
 |---|---|
 | `docs/PRD.md` | what the product must do, in which phase, and how far it is from QuickFIX |
+| `docs/GUIDE.md` | **how to embed this engine without losing latency or messages** — written for a user of the framework, not a builder of it. Every constraint it names is one the type system cannot enforce |
 | `docs/DESIGN.md` | how the system is built, and the latency budget it is built against |
 | `docs/reference/` | what this thing is — protocol facts, prior art, measured costs, traps |
 | `docs/decisions/` | who decided what, why, at what cost (ADRs) |
@@ -108,6 +118,7 @@ describes. **A stale document is worse than no document.**
 | Move work between phases, or change what a phase must deliver | `PRD.md` §2, and the ADR that moved it |
 | Add / remove / rename a crate | `DESIGN.md` §3 + `README.md` layout + `Cargo.toml` members |
 | The public API of any crate | `DESIGN.md`, the crate's rustdoc, `CHANGELOG.md` |
+| A constraint a user of the engine must honour and the compiler cannot check | `GUIDE.md` |
 | Codec, session, dispatch, transport or backpressure behaviour | `DESIGN.md` §4, and re-walk §2 above |
 | A gate's target, or how it is measured | `DESIGN.md` §6 — and the benchmark that asserts it, in the same commit |
 | Anything that moves a row of the latency budget | `DESIGN.md` §8, with the measurement that moved it |
@@ -185,6 +196,7 @@ never reused. `Proposed` → `Accepted` → (`Superseded by ADR-NNNN` | `Depreca
 | Any session-layer change | The 59 acceptance definitions |
 | Any hot-path change | The Criterion suite **and** `benches/alloc.rs` |
 | Any dispatch, transport, or engine-thread change | `benches/dispatch.rs`, then `tools/w2w` on Linux |
+| Any change to the wait strategy, the transport's readiness, or the mode split | **Both modes.** A change proven in one mode and not the other is proven in neither — ADR-0013 |
 | Closing a plan, before merging `main` | All of the above, with the §9 settings recorded |
 
 Widening scope means **naming more cases**, never "run everything because it feels risky".

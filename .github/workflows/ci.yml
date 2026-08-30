@@ -40,6 +40,27 @@ jobs:
       - run: rustup component add clippy
       - run: scripts/check-lint-config.sh
 
+  # `[measured 2026-08-30]` scripts/check-ktls-available.sh printed
+  # `config: CONFIG_TLS=m` and then "it was built without CONFIG_TLS" in the SAME
+  # run, and STATUS.md open item 10 stayed blocked on that sentence for a day.
+  # Nothing could have caught it: the script was a gate nothing gated. The
+  # classification is pure logic, so it is checked here on every push, on a runner
+  # whose own kernel state is irrelevant to the result.
+  #
+  # check-machine-verdicts.sh is here for the same reason and a sharper one: its
+  # `not virtualised` row decides whether the OTHER §9 rows can mean anything, and
+  # this repository has no VM to test it against. A guest does not fail governor,
+  # turbo, C-states or SMT loudly — the files are simply absent — so it reads as
+  # under-configured rather than as structurally unable. THIS RUNNER IS A GUEST,
+  # so the bench job's machine block now says so on every run.
+  script-logic:
+    name: The machine probes reach the right verdicts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/check-ktls-classify.sh
+      - run: scripts/check-machine-verdicts.sh
+
   # Also meaningful today: this repository is 17 markdown files and has already
   # shipped dead links twice, both found by hand.
   links:

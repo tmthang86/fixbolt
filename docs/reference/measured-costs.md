@@ -787,3 +787,587 @@ direction, and both readings reached documents. The fix is not a better threshol
 measuring the spread before believing any verdict. And *the fail-fast assertion that hides its
 own evidence*: a check that aborts at the first failure suppresses the results after it, so
 the run that most needed reading produces the least. Report every case, then fail.
+
+### And on a machine whose settings we control, tuning moves the median by 0.5%
+
+`[measured 2026-08-30]` The owner's Linux desktop — AMD Ryzen 7 3700X (Zen 2, 8 cores,
+2 × 4-core L3 domains), Linux 7.0.0-30-generic, rustc 1.98.0 — is the first machine in
+this thread whose `DESIGN.md` §9 state could be **changed and changed back at will**, so
+the question "how much of the ceiling problem is the machine" finally has a same-machine
+A/B rather than a comparison between two rented CPUs.
+
+`scripts/check-machine.sh` goes `pass 1 fail 7` → `pass 6 fail 2` with five settings —
+governor `performance`, boost off, SMT off, THP `never`, `busy_poll=50`. The two that
+remain need a kernel command line and a reboot.
+
+**15 full `scripts/bench.sh` runs in each state.** Medians, and how often each case cleared
+its own ceiling:
+
+| case | ceiling | tuned med | over | untuned med | over |
+|---|---|---|---|---|---|
+| `walk 4 levels, 61-tag member list` | 300 | 347.6 | **15/15** | 354.2 | **15/15** |
+| `encode 1 group, 2 entries` | 75 | 104.7 | **15/15** | 103.5 | **15/15** |
+| `encode ExecutionReport (template)` | 190 | 241.4 | **15/15** | 236.7 | **15/15** |
+| `ring, one way` | 260 | 259.6 | 5/15 | 260.4 | 9/15 |
+| `ring, round trip` | 500 | 499.1 | 7/15 | 500.4 | 8/15 |
+| `parse NewOrderSingle (validated)` | 150 | 122.2 | 0/15 | 122.9 | 0/15 |
+| `parse Heartbeat (validated)` | 70 | 55.3 | 0/15 | 56.2 | 0/15 |
+
+**Every median moves less than 2%.** Tuning a machine to §9 is not what makes these numbers
+what they are.
+
+The table separates the cases into two kinds, and the distinction is the useful part:
+
+- **Three cases are over on every single run in both states**, by 16%, 40% and 27%. No
+  amount of machine state explains those. They are real gaps between the code and the
+  ceiling somebody wrote, and they are the only rows here that a §6 gate can honestly fail
+  on today.
+- **The two ring cases are coin flips.** 5/15 and 9/15, 7/15 and 8/15 — the ceiling sits
+  *at the median*, so the verdict is decided by which side of its own noise a run lands on.
+  A gate that reports red 33% of the time on unchanged code is not measuring the code.
+
+### The 0.5% that decides a ceiling
+
+Run the `dispatch` bench **alone** — not through `bench.sh` — 15 times in each state, and
+the ring case is well behaved:
+
+```
+TUNED    n=15  min=257.2  med=259.6  max=260.4  spread=1.2%  stdev=0.89  over 260:  1/15
+UNTUNED  n=15  min=259.2  med=260.9  max=264.7  spread=2.1%  stdev=1.32  over 260: 14/15
+```
+
+**That paragraph was written here, and it was wrong.** It said the median moves 0.5%, the
+ceiling is inside that 0.5%, and unchanged code therefore "goes from failing 14 of 15 runs
+to passing 14 of 15". The first half survives. **The verdict does not.**
+
+`[measured 2026-08-30]` The owner asked whether the machine had been idling with its screen
+off during that sample, so the identical command was run again — and the second sample
+disagrees with the first:
+
+```
+TUNED    sample 1  n=15  med=259.6  min=257.2  max=260.4   over 260:  1/15
+TUNED    sample 2  n=15  med=260.3  min=256.7  max=325.1   over 260:  9/15
+UNTUNED  sample 1  n=15  med=260.9  min=259.2  max=264.7   over 260: 14/15
+UNTUNED  sample 2  n=15  med=262.3  min=258.8  max=265.5   over 260: 14/15
+```
+
+**The medians reproduce to within 1.4 ns. The pass rate does not reproduce at all** — 1/15
+became 9/15 on the same machine, same command, same binary. Pooled over 30 runs per state:
+
+| | median | over the 260 ceiling | second mode ≥300 |
+|---|---|---|---|
+| tuned | 259.7 | **10 / 30 — 33%** | 2 / 30 |
+| untuned | 261.8 | **28 / 30 — 93%** | 0 / 30 |
+
+So the honest statement is the weaker one: the governor moves the median **0.8%**, the
+ceiling sits between the two medians, and the case fails **93% of the time untuned and 33%
+tuned**. Tuning helps and does not rescue it. **Neither state produces a stable verdict, and
+that is the finding** — a gate that answers differently a third of the time on unchanged
+code is not a gate, whichever way the machine is set.
+
+`[to testing-skills]` — *the median reproduced and the verdict did not.* Fifteen runs looked
+like plenty: the spread was 1.2%, the distribution looked tight, and one sample was written
+up as a result. What made it wrong was not noise in the numbers, it was that **the statistic
+being reported was a threshold crossing** — and a threshold sitting near the median converts
+a small, well-behaved shift into a coin flip, so the pass rate needs far more samples than
+the median does. The check that would have caught it costs one command: **run the sample
+twice before writing down a rate.** A second reason this one slipped: it was found by a
+question from outside — *"was the machine idling?"* — not by the person holding the data.
+
+The screen-off hypothesis itself was refuted while testing it. CPU frequency was sampled
+throughout both re-runs and held **3793–3814 MHz** in each state, `sleep-inactive-ac-timeout`
+is `0` so the box never suspends on AC, and `power-profiles-daemon` at `balanced` was watched
+for 40 s and **did not** revert the `performance` governor. None of the three could have
+produced the difference, and the difference turned out not to need producing: it was sampling.
+
+That the same case is stable at 1.2% in one sample and swings 26% in the next, and 26–38%
+inside `bench.sh`, is the same lesson from a third angle: what the harness measures depends
+on what ran before it and on nothing you can see in the number.
+
+### A second mode near 324 ns, five sightings, all in one machine state
+
+`ring, one way` occasionally returns **323.7, 323.9, 323.7, 324.9, 325.1 ns** instead of
+~259 — five values inside 1.4 ns of each other, which is not jitter but a second mode. It
+is **not explained**, and it is recorded here rather than in a commit message because the
+next person to see 324 should know it is not new.
+
+The paragraph that stood here said **"all five sightings are in the §9-tuned state; none in
+roughly 45 untuned runs"**, and named SMT-off as the suspect. That was the third hypothesis
+about this mode, and like the two before it, it was wrong — and wrong the same way: an
+association read off a sample too small for a 5% event.
+
+## Three hypotheses about one 324 ns mode, all refuted by measurement
+
+### 1. Zen-2 L3 placement — refuted
+
+The 3700X has two 4-core L3 domains, so the guess was that a run straddling them pays
+Infinity Fabric latency. The first check was a **bad experiment**: `taskset -c 0-3` against
+`-c 0,4` changes the CPU *count* as well as the L3 relationship, and can attribute nothing.
+Redone with the count held at two:
+
+```
+2 CPUs, same L3 (0,1):   323.7  259.7  259.8  259.9  259.8
+2 CPUs, cross L3 (0,4):  259.6  260.0  256.6  257.4  259.8
+8 CPUs, free    (0-7):   256.2  259.9  259.9  257.3  259.6
+```
+
+**No L3 effect** — ~259 in all three arms — and the outlier landed in the arm the hypothesis
+favoured least.
+
+### 2. SMT off — refuted by a 2 × 2
+
+A verb was added to the machine helper so SMT could be varied **independently** of the other
+four settings, which is the only way to attribute anything. 50 runs in each of four states:
+
+| | governor / boost | SMT | mode ≥300 |
+|---|---|---|---|
+| A | powersave / on | on | 2 / 50 |
+| B | performance / off | **off** | 3 / 50 |
+| C | performance / off | on | 3 / 50 |
+| D | powersave / on | **off** | 5 / 50 |
+
+**All four.** Not SMT, not the governor, not boost. The earlier "all five sightings were
+tuned" was the sample, not the machine — the second time in one afternoon that a rate
+computed from a handful of runs pointed at the wrong cause.
+
+### 3. Thermal throttling — refuted
+
+Asked whether a hot CPU was stepping down mid-run. It gets genuinely hot: **91 °C** under
+load, against the 3700X's 95 °C Tctl limit. But throttling means **frequency falls**, and it
+did not:
+
+```
+quiet      1/30 over 300   med 262.4 ns   65-77 °C   min freq across all cores 3789 MHz
++8 spinners  30/30         med 449.5 ns   76-91 °C   min freq across all cores 3786 MHz
+```
+
+At 91 °C every core was still at ~3790 MHz. No step-down, so no throttle. (The first attempt
+at this measurement sampled only the **maximum** frequency across cores — which cannot see
+one core dropping — and its sampler's wait loop was a **busy spin**, so the "quiet" arm was
+never quiet. Both fixed before the numbers above were taken.)
+
+## What it actually is: the row that was not on the checklist
+
+```
+quiet machine, 60 runs           mode ≥300:  0-3 / 60   (~5%)
++ 8 spinners,  60 runs           mode ≥300:     55 / 60   (92%)
+median under load                262 ns -> 449 ns        (+71%)
+```
+
+**Competing CPU load.** Against **0.8%** for every `DESIGN.md` §9 tuning row combined — the
+checklist was reading governor, SMT, THP and C-states, and had **no row at all** for whether
+anything else was running. The box reported `pass 6` while an LLM, an editor and two Electron
+apps shared it.
+
+`scripts/check-machine.sh` now carries **`machine is quiet`**: CPU busy over a one-second
+window from `/proc/stat`, FAIL above 3%, with the top processes attributed by their own delta
+over the same window. Proven by reversal — eight spinners take it from `PASS 1%` to
+`FAIL 26%`, naming each spinner at exactly 100% of a core.
+
+`[to testing-skills]` — *three causes proposed, three refuted, and the real one was not on
+the checklist.* The generalisable part is not "check CPU load"; it is that **a tuning
+checklist enumerates what somebody thought of, and the largest term can simply be absent from
+it** — here by a factor of ninety, 71% against 0.8%. Two supporting rules, both paid for:
+**an association from a handful of samples of a rare event will point at whatever varied
+most recently** (L3, then SMT, then thermal — each fitted the data available when proposed),
+and **the instrument must be checked before the hypothesis**: one sampler here spun a whole
+core while measuring quietness, and another read `ps %CPU` — a **lifetime average**, which
+reported an idle process at 19% on a machine `/proc/stat` measured as 1% busy, and that
+number reached the owner as fact before the two were compared.
+
+**What is still unexplained, and a fifth hypothesis refuted.** The mode does not vanish on a
+quiet machine, so the obvious next step was to stop measuring load *before* a batch and
+measure it *per run* — `/proc/stat` either side of each individual execution, so every
+outlier carries the busy figure for its own 1.1 s. Sixty runs, then sixty more with the
+desktop's LLM shut down:
+
+```
+                 mode >=300   median (normal runs)   busy% on the outliers
+LLM resident        6 / 60          259.5 ns         13 13 13 17 13 13
+LLM shut down       6 / 60          259.3 ns         14 13 13 14 14 13
+```
+
+`13%` is the benchmark itself — one core of eight. **The outliers carry the same background
+load as every other run, and closing the LLM changed nothing: 6/60 either way.** So load is
+**sufficient** to produce the mode — eight spinners take it to 92% — and is **not what
+produces the naturally occurring ones**. Sufficient is not necessary, and the intervention
+that proved the first had been quietly answering the second.
+
+Five hypotheses have now been proposed and measured away: L3 placement, SMT, governor/boost,
+thermal, and background load. Three more followed, and so did a proper characterisation.
+
+### Eight hypotheses, and what the thing actually looks like
+
+`[measured 2026-08-30]` on the desk box with `DESIGN.md` §9 **satisfied** — `check-machine.sh`
+`pass 10 fail 0 unknown 1` — after `isolcpus=6,7,14,15 nohz_full=6,7,14,15 rcu_nocbs=6,7,14,15
+processor.max_cstate=1` and the five runtime rows.
+
+| # | Hypothesis | Test | Result |
+|---|---|---|---|
+| 1 | Zen-2 L3 placement | `taskset`, CPU count held at 2 | **Refuted** — ~259 ns in all three arms |
+| 2 | SMT off | 2 × 2 over (governor·boost) × SMT, 50 runs a cell | **Refuted** — present in all four |
+| 3 | governor / boost | same 2 × 2 | **Refuted** |
+| 4 | Thermal throttling | temp + per-core frequency under load | **Refuted** — 91 °C, no step-down |
+| 5 | Background CPU load | `/proc/stat` per run; LLM shut down | **Refuted** — 6/60 either way, outliers carry the same busy % |
+| 6 | The scheduler | pinned to isolated cores, tick off, RCU elsewhere | **Refuted** — 5/60 vs 4/60 unpinned |
+| 7 | Interrupts on the core | `/proc/interrupts` per run on the pinned pair | **Refuted** — 2 outliers with ~1300, **3 with exactly 0**, a normal run with 1085 |
+| 8 | Memory layout / ASLR | 250 runs `setarch --addr-no-randomize`, 250 with | **Refuted** — **14/250 vs 14/250**, z = 0.00 |
+
+Hypothesis 8 refutes itself twice over, and the second way is stronger than the statistics:
+**with ASLR off the layout is fixed across runs, so a layout-dependent effect would have to be
+0% or 100% — not 5.6%.**
+
+### What it is, precisely, even though the cause is unknown
+
+Pooling those 500 runs — one process each, `ring, one way`:
+
+```
+250-254 ns  #######                                                        7
+255-259 ns  ############################################################ 455
+260-264 ns  #########                                                      9
+290-294 ns  #                                                              1
+320-324 ns  ########################                                      24
+325-329 ns  ####                                                           4
+
+  main mode    n=472   median 258.4   stdev 1.98
+  second mode  n= 28   median 323.7   stdev 1.25     5.6% of runs
+  ratio of medians                    1.2527
+```
+
+**The gap is empty**: one value out of 500 lies between the two clusters. Both clusters are
+equally tight, which rules out "a slow run" — a run perturbed by something external would
+smear, and these do not. **A process picks one of two states at startup and stays in it for
+its whole life**, and the two states differ by a factor of **1.2527**, near enough 5/4 to be
+worth saying out loud.
+
+That is worth more than another guess at the cause. "Sometimes slow" cannot be designed
+against; "5.6% of processes run in a second state 25% slower, decided at startup, invariant
+to machine tuning, isolation, load, interrupts and address layout" is a specific thing to go
+looking for — and it says plainly that **any single benchmark run of this case has a 5.6%
+chance of being 25% wrong**, which is the practical consequence for every ceiling in
+`DESIGN.md` §6.
+
+`[to testing-skills]` — *characterise before you attribute.* Eight hypotheses were proposed
+and eight refuted, three of them from associations in samples of 5 to 60 runs that dissolved
+when the sample grew — the ASLR difference read 8.3% against 3.3% at n=60 and 5.6% against
+5.6% at n=250. What finally produced something usable was not a ninth hypothesis but 500 runs
+and a histogram: an empty gap between two tight clusters says "two states", and that is a
+fact about the system that survives every wrong guess about why. **The rate needs a large
+sample; the shape needs only an honest plot, and the shape is what was actionable.**
+
+### Clean baselines, quiet machine, `dispatch` run directly
+
+Not through `cargo`, which is itself a competing process — via `cargo bench` the same box
+gives ~5% where the bare binary gives 0/60.
+
+```
+untuned + quiet   n=60  min 257.4  med 260.6  max 326.1   over 260: 43/60   mode: 3/60
+tuned   + quiet   n=60  min 256.6  med 259.7  max 323.9   over 260: 13/60   mode: 1/60
+```
+
+The medians are 0.3% apart and the pass rates are 72% and 22%, which is the same lesson this
+file records twice above: **the ceiling sits at the median, so the rate is not a measurement
+of the code in any machine state.**
+
+**A hypothesis was tested and refuted.** Zen 2 puts 4 cores per L3 domain, so the obvious
+guess was that a run straddling the two domains pays Infinity Fabric latency. The first
+attempt to check it was a bad experiment — `taskset -c 0-3` against `-c 0,4` changes the
+CPU **count** as well as the L3 relationship, so it could not attribute anything. Repeated
+with the count held at two:
+
+```
+2 CPUs, same L3 (0,1):   323.7  259.7  259.8  259.9  259.8
+2 CPUs, cross L3 (0,4):  259.6  260.0  256.6  257.4  259.8
+8 CPUs, free    (0-7):   256.2  259.9  259.9  257.3  259.6
+```
+
+**No L3 effect** — all three arms sit at ~259 — and the outlier appeared in the *same*-L3
+arm, which is where the hypothesis predicted it least. Inter-CCX distance is not the
+mechanism. What is, is unknown.
+
+### What this says about the ceilings
+
+`STATUS.md` open item 20 asked whether a per-machine baseline is viable. On the evidence
+here, keyed on the CPU model it is — the single-threaded cases hold to 3% or better across
+all 30 runs — but **the two ring ceilings cannot be rescued by tuning a box**. They sit
+inside the harness's own run-to-run variation, and closing that needs pinning (`isolcpus`,
+still unset here) or a different measurement, not a better governor.
+
+## `scaling_cur_freq` is frozen on a `nohz_full` core, and reads 41% low
+
+`[measured 2026-08-30]` After the desk box was booted with
+`isolcpus=6,7,14,15 nohz_full=6,7,14,15`, a thermal sample taken while the benchmark ran
+pinned to those cores reported:
+
+```
+xung lõi 6: min 2240 med 2240 max 2240 MHz      (governor: performance)
+```
+
+**2240 MHz is this CPU's `scaling_min_freq`.** Taken at face value it says every measurement
+pinned to an isolated core ran at 59% clock — while producing **the same 259 ns** as an
+unpinned run at 3790 MHz. Both cannot be true, so one of the two instruments was lying.
+
+The one that lies is the sysfs file. Counting work actually executed, one second each:
+
+```
+cpu6 (isolated, nohz_full):  7,895,418 loops/s
+cpu0 (ordinary):             7,958,092 loops/s      0.8% apart
+```
+
+The isolated core runs at full speed. The driver is **`amd-pstate-epp`**, which refreshes
+`scaling_cur_freq` from a periodic tick — and `nohz_full` **stops that tick on exactly the
+cores being measured**. The hardware is fine; the file is frozen at whatever it held when the
+tick stopped.
+
+The trap is sharper than a stale number: **the isolation that makes a core worth measuring on
+is what breaks the instrument pointed at it**, so the reading is wrong precisely where
+somebody would think to take it, and it is wrong in the direction that invites a wrong story
+— a benchmark "running at minimum clock" is a tidy explanation for almost anything.
+
+**Use it only on cores without `nohz_full`.** On an isolated core, measure work done per unit
+time — or `aperf`/`mperf` via `turbostat`, which reads the counters rather than the governor's
+opinion. `scripts/check-machine.sh` is unaffected: it reads the governor and the boost flag,
+never a per-core current frequency.
+
+`[to testing-skills]` — *the fourth instrument in one day that could not see what it was
+pointed at*, after `ps %CPU` (a lifetime average), a per-process sampler slow enough to
+distort its own window, and a `quietness` sampler whose wait loop was a busy spin. The pattern
+across all four is one rule: **check the instrument against a known state before believing a
+surprising reading.** Here the known state was free — an ordinary core, measured the same way,
+one second of work.
+
+## The SFF case, the fan profile, and GNOME's power mode: three non-effects, measured
+
+The desk box is a Mini-ITX / small-form-factor build, its BIOS fan profile is `silent`, and
+GNOME's Power Mode is `Balanced`. Each was raised as a possible source of instability. All
+three were measured rather than reasoned about, and none of them moves anything.
+
+### Thermal drift over a 7-minute soak: none
+
+`[measured 2026-08-30]` §9 satisfied, `ring, one way` run continuously pinned to the isolated
+cores, 379 runs in 420 s, temperature sampled alongside every run:
+
+| window (s) | n | median ns | Tctl |
+|---|---|---|---|
+| 1–84 | 75 | 259.0 | 64 °C |
+| 85–167 | 75 | 258.8 | 64 °C |
+| 168–250 | 75 | 258.5 | 64 °C |
+| 251–332 | 75 | 258.8 | 64 °C |
+| 333–416 | 75 | 258.9 | 64 °C |
+
+**0.5 ns — 0.2% — between the first window and the last.** Temperature rises 59 → 64 °C in the
+first minute and then sits there for the remaining six. Correlation of temperature against
+per-run time, main mode only: **r = +0.060**, which is nothing.
+
+The 3700X throttles at 95 °C Tctl. The workload that matters reaches **64 °C**, leaving 31 °C
+of headroom, so the `silent` fan profile does not constrain it. The 91 °C recorded earlier came
+from an artificial eight-spinner stress test, not from anything this project measures — and
+even there the frequency never stepped down.
+
+**This is what makes the box publishable, more than the tuning is:** a machine whose numbers
+drift as it warms cannot carry a latency figure however well configured, and this one does not
+drift.
+
+### GNOME Power Mode `Balanced`: no effect, for a reason worth knowing
+
+The driver is **`amd-pstate-epp`**, where `power-profiles-daemon` sets an EPP hint separately
+from the governor. An earlier check here only watched the governor, which would have missed it.
+Reading both:
+
+```
+tuning off:  PPD=balanced  governor=powersave    epp=performance  max=4426 MHz  boost=1
+tuning on:   PPD=balanced  governor=performance  epp=performance  max=3600 MHz  boost=0
+```
+
+**EPP is already `performance` under `Balanced`** — on this machine PPD's balanced profile does
+not ask for a conservative preference. And setting `governor=performance` for a measurement
+collapses `energy_performance_available_preferences` to `performance` alone, so the desktop
+setting cannot reach the measurement even in principle.
+
+**The A/B intended to prove this failed, and is recorded as failed.** `powerprofilesctl set
+performance` returned `Failed to activate CPU driver 'amd_pstate': ... policy11 ... Device or
+resource busy`, so both arms ran under `balanced` — two samples of one condition, not a
+comparison. They agreed (258.5 and 258.8, 4/100 and 7/100 in the second mode), which measures
+reproducibility and answers nothing about PPD. The state readings above are what answer it.
+
+### And a side effect of the tuning, found by that failure
+
+`[measured 2026-08-30]` **`SMT off` breaks `power-profiles-daemon`'s mode switching.** Proven
+by reversal:
+
+```
+SMT on  (CPU 0-15):  performance -> balanced      succeeds
+SMT off (CPU 0-7 ):  policy11: Device or resource busy    fails
+```
+
+`policy11` belongs to a CPU that is offline while SMT is off, and PPD writes every policy. It
+is harmless and reverts when SMT comes back, but anyone measuring on this box will see the
+desktop's Power Mode selector throw an error and should know why. It also cost a working A/B,
+which is the more expensive half: **a failed intervention that still produces two clean-looking
+arms is exactly the shape of a false green.**
+
+## The engine is syscall-bound, and the §8 budget is spent before FIX begins
+
+`[measured 2026-08-30]` desk box, §9 satisfied, pinned to an isolated core. **Not a measurement
+of `Engine::turn`** — a C program issuing the syscall that `turn` issues, on connected loopback
+sockets, which makes it a **floor** for the engine rather than a reading of it.
+
+D8 defines the model: *"`Engine::turn` is one non-blocking pass over every connection … read
+once … a counterparty that writes faster than this end processes must not be able to starve the
+other connections on the thread."* So an idle turn is **one `read` per connection**, and each
+returns `EAGAIN`.
+
+```
+N=1      703.2 ns/read      703.2 ns/turn
+N=2      705.1 ns/read     1410.1 ns/turn
+N=4      704.1 ns/read     2816.5 ns/turn
+N=16     702.3 ns/read    11237.5 ns/turn
+N=64     703.6 ns/read    45033.0 ns/turn
+N=256    707.0 ns/read   180988.1 ns/turn
+```
+
+**Flat to N=256** — 703 ns is a fixed per-socket cost and the sweep is exactly linear. A message
+that arrives just after its socket was polled waits up to one whole turn to be seen, so this
+table is *added latency per session*, not throughput.
+
+### Where the 703 ns goes
+
+```
+clock_gettime (vDSO, no kernel entry)    22.9 ns
+syscall(getpid) — enters and leaves, does nothing   353.8 ns
+read(/dev/null)                         452.2 ns
+read(socket) -> EAGAIN                  703.0 ns
+```
+
+**354 ns of every socket poll is kernel entry and exit doing nothing at all.** Set against this
+project's own numbers: `parse NewOrderSingle (validated)` is **125.5 ns**. *The syscall that
+discovers there is nothing to parse costs 5.6× the parse.*
+
+`DESIGN.md` §8 budgets *"an entire user-space path under 1 µs"*. The user-space path is not the
+problem — the vDSO line shows user space doing work in tens of nanoseconds. **The budget is
+spent crossing into the kernel, before any FIX work starts.**
+
+### What this says about "many sessions on one core"
+
+`PRD.md` names the target as *"an acceptor that holds **many sessions on one core** and does not
+stall"*. Against the table above, "many" has a cost that can be stated exactly:
+
+| Sessions on one polling thread | Idle sweep | Against §8's 1 µs |
+|---|---|---|
+| 1 | 703 ns | 70% of it, spent finding nothing |
+| **2** | **1.41 µs** | **the whole budget, exceeded, before parsing anything** |
+| 16 | 11.2 µs | 11× |
+| 128 | 90 µs | 90× |
+
+**Two sessions on one core exhausts the design's entire user-space latency budget in polling
+alone.** That is not a tuning problem; it is the arithmetic of one syscall per socket per turn.
+It is also why HFT practice dedicates a core to a latency-critical gateway rather than sharing
+one — a point the outside literature makes in general terms and this table makes in nanoseconds
+for this codebase.
+
+The PRD's target is not thereby wrong: a broker gateway carrying many client sessions is a real
+product, and 90 µs is unremarkable for one. **But it is a different product from "the fastest
+acceptor that can run on kernel TCP", and the two cannot share a polling thread.** That is a
+decision for `PRD.md` and it has not been made.
+
+### It also reprioritises the open items, by an order of magnitude
+
+Open item 12 defers SIMD on the grounds that it would win *"20–40 ns per message on a 10–20 µs
+floor — under 0.5%"*. That reasoning stands and this measurement sharpens it: **the syscall is
+703 ns per socket per turn**, so anything that removes syscalls is worth roughly **20× what
+SIMD is worth**, and the ordering follows from measurement rather than taste:
+
+1. **Fewer sessions per polling thread.** Free, and the largest single factor.
+2. **`mitigations=off`.** Full mitigations are in force — `retbleed` untrained return thunk,
+   `spec_rstack_overflow` Safe RET, `spectre_v2` retpolines with STIBP always-on, and
+   `vmscape: IBPB before exit to userspace`, an IBPB on **every** syscall return. Zen 2 pays
+   heavily for these. **`[unproven]` — this has NOT been measured here**, it needs a reboot,
+   and it is a security decision on a machine somebody also uses as a desktop.
+3. **Batch the syscall** — `recvmmsg`, or `io_uring` with `SQPOLL`, which removes the per-socket
+   entry entirely.
+4. **Kernel bypass**, open item 14, which removes the kernel from the path. Its own entry
+   already says the first measurement is `tools/w2w` twice on one box, kernel versus Onload.
+
+`[to testing-skills]` — *the budget was being checked against the wrong half of the system.*
+Every measurement in this file until now timed **user-space work**: parse, encode, ring hop,
+allocation counts, all in the 5–500 ns range and all carefully guarded. The path they sit on
+crosses into the kernel once per socket per turn at 703 ns, and **nothing measured that until
+somebody asked a question about deployment shape**. A latency budget stated for "the user-space
+path" invites exactly this: the measured part is optimised to a fraction of the unmeasured part.
+The cheap defence is to measure one whole turn end to end, including the syscalls, before
+tuning anything inside it.
+
+## Kernel bypass removes the largest term and leaves two behind
+
+Asked whether kernel bypass — no syscall — makes many sessions on one core a non-issue. It
+removes the term that dominates today and **does not remove the shape of the problem**. Three
+terms, measured where they can be.
+
+### Term 1 — the polling sweep stays linear in N
+
+Bypass replaces `read()` with a userspace descriptor poll. The syscall's **703 ns** goes; what
+replaces it is a memory read of a descriptor the NIC wrote by DMA, so it costs what a memory
+access costs — see the curve below, **1 to 80 ns** depending on where it lands. That is a
+9–70× improvement and it is still `N ×`. At N=128 and 50 ns a sweep is **6.4 µs**, six times
+`DESIGN.md` §8's whole user-space budget.
+
+### Term 2 — cache, which bypass does not touch at all
+
+`[measured 2026-08-30]` `size_of::<Connection<Loopback, Acceptor, MemJournal<64,512>, 64, 4096,
+8192>>()` = **54 600 bytes, 53.3 KiB**. `Session<Acceptor,64>` is 8 960 B and
+`MemJournal<64,512>` is 33 288 B of it. **`L1d` on this machine is 32 KiB — one connection does
+not fit in L1.**
+
+Random-access latency by working-set size, pointer-chase, §9 machine, isolated core:
+
+| Working set | ns per access | Tier |
+|---|---|---|
+| 16–32 KiB | **1.05** | L1d |
+| 64 KiB | 2.58 | |
+| 256 KiB | 3.11 | L2 |
+| 512 KiB | 5.53 | L2 edge |
+| 1 MiB | 9.65 | |
+| 4–8 MiB | 11.5–12.0 | L3 |
+| 16 MiB | 31.0 | L3 edge |
+| 32–64 MiB | 68–79 | RAM |
+
+**L1 to RAM is 75×**, and it applies to *every* memory access the engine makes — parse, session
+step, template patch — not to the polling alone. Adding sessions walks the whole engine down
+that table.
+
+**What is not known, and it decides where the wall is:** how much of the 53.3 KiB a connection
+touches per message. The structure size is measured; the *touched* set is not. The two bounds
+are far apart and both are stated rather than one being picked:
+
+- If a message touched all of it, the L2 edge arrives at **N ≈ 9**.
+- If it touched 4 KiB — a framer head, the live part of the field index, the hot session
+  fields, a template — the L2 edge arrives at **N ≈ 128**.
+
+Measuring that fraction is worth more than any further guess about the 324 ns mode.
+
+### Term 3 — head-of-line blocking, which nothing removes
+
+One thread and N sessions serialise by construction. The per-message work is measured on this
+machine: `parse NewOrderSingle` 125.5 ns, `encode ExecutionReport` 240.0 ns, plus the session
+step — call it ~465 ns of work per message. With `k` sessions holding a message at the same
+instant, the last one served waits `(k-1) × 465 ns` before its own processing begins.
+
+Bypass does not touch this. Neither does a faster codec. **It is the cost of sharing a thread**,
+and the only fix is fewer sessions on it — which is
+[ADR-0012](../decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)'s
+decision, arrived at from a different direction.
+
+### So: does bypass make density free?
+
+**No.** It removes 703 ns per socket, which is the largest single term today and worth doing
+for that reason alone — open item 14 already ranks Onload first. What is left afterwards is a
+sweep still linear in N, a cache hierarchy that punishes N by up to 75×, and serialisation that
+is linear in *active* sessions. **A latency-first engine wants few sessions per thread whether
+or not the kernel is in the path**, which is the conclusion ADR-0012 reached before this
+measurement existed and which this measurement did not overturn.
+
+`[to testing-skills]` — *removing the dominant term promotes the next one, and it is rarely the
+one that was being discussed.* The instinct "no syscall, therefore no problem" is right about
+the term it names and silent about the two behind it. The cheap defence is to write down every
+term you can name **before** removing any of them, so that the second-largest is already
+measured when it becomes the largest.

@@ -3,7 +3,38 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17.
+Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+
+## Start here — 2026-08-30, end of session
+
+**Four decisions were signed and one plan approved on 2026-08-30. Nothing is blocked on a
+signature any more; everything below is blocked on work.**
+
+| | |
+|---|---|
+| **[ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)** `Accepted` | a reconnect resumes, `141=Y` resets. Unblocks `session-recovery` steps 4–5. **Not implemented** |
+| **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md)** `Accepted` | a full ring disconnects, the refusal is never silent, capacity → 4 MiB. Unblocks `ring-full-policy` steps 3–4. **Not implemented** |
+| **[ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)** `Accepted` | latency beats density; every figure names its `N`. Decisions 1–2 re-scoped to `hft` by ADR-0013 |
+| **[ADR-0013](docs/decisions/ADR-0013-two-modes-standard-and-hft.md)** `Accepted` | **two modes.** `standard` blocks and runs anywhere and **is the default**; `hft` spins, pins and burns a core. **Amended `CLAUDE.md` §2 rule 4** — it is now mode-scoped and its `standard` half **has no machine check yet** |
+| **[threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md)** approved | 6 steps, `hft`-scoped. Step 1 is ADR-0014, the affinity API |
+
+**The next session's three obvious starting points, in the order that costs least:**
+
+1. **A plan for `standard` mode** — it does not exist and it is now the *default* mode, so the
+   documented default is unbuilt. ADR-0013's open question 1 must be answered first: which
+   readiness mechanism, and which dependency, given that `engine` has **zero external
+   dependencies** today and `std` exposes no readiness API. Windows in scope or not is also
+   undecided.
+2. **The `standard` half of rule 4 has no gate.** ADR-0013 decision 6 specifies it — CPU time
+   over a wall-clock window, not read off the code. Until it exists, rule 4 is half-enforced
+   and `CLAUDE.md`'s own machine-checked list says so.
+3. **`wait::Park` belongs to neither mode** — it yields without blocking, and **every test in
+   the repository uses it**. ADR-0013 open question 3.
+
+**Read before touching the engine:** [GUIDE.md](docs/GUIDE.md) §0 for the mode split, and
+[reference/measured-costs.md](docs/reference/measured-costs.md) for why the numbers are what
+they are — including four instruments that could not see what they were pointed at, and eight
+refuted hypotheses about a 324 ns mode that is still unexplained.
 
 ## Where the work is
 
@@ -20,17 +51,21 @@ delivery log. In dependency order:
    `tools/w2w` runs and **item 15 is closed**. Items 6, 11, 13 and the decision on 12 are
    **blocked on a machine matching `DESIGN.md` §9**, and the plan stops there rather than
    lowering the bar to close.
-3. **[ktls-spike](docs/plans/2026-08-30-ktls-spike.md)** — item 10. **Paused 2026-08-30 after
-   step 1.** It needed Linux rather than a §9 machine, which was right — but it needs a kernel
-   built with `CONFIG_TLS`, which this one is not. Nothing about `ktls-core` or ADR-0005 was
-   concluded, because the experiment never reached the library.
+3. **[ktls-spike](docs/plans/2026-08-30-ktls-spike.md)** — item 10. **Unpaused 2026-08-30.**
+   It needed Linux rather than a §9 machine, which was right; it then needed a kernel built
+   with `CONFIG_TLS`, which was also right — and the machine that has one was already on the
+   desk. `[measured 2026-08-30]` the owner's desktop **accepts `setsockopt(TCP_ULP, "tls")`**.
+   What kept it shut for a day was `scripts/check-ktls-available.sh` reporting `CONFIG_TLS=m`
+   and *"it was built without CONFIG_TLS"* in the same run — now fixed and guarded, see
+   [reference/ktls-on-a-plain-socket.md](docs/reference/ktls-on-a-plain-socket.md). **Steps 2–5
+   are still to do**, and nothing about `ktls-core` or ADR-0005 is concluded yet.
 4. ~~**data-fields**~~ — **closed 2026-08-30**, items 8 and 9.
 5. **[session-recovery](docs/plans/2026-08-30-session-recovery.md)** — item 16. **Steps 1–3 done
    2026-08-30**: the journal reads back. Steps 4–5 wait on
    [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md), `Proposed`.
 6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5. **Steps 1–2 done
    2026-08-30**; steps 3–4 wait on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md),
-   which is `Proposed` and needs the owner's signature.
+   which is **`Accepted` 2026-08-30** and awaits implementation, not a signature.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
@@ -38,10 +73,10 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 
 | | |
 |---|---|
-| Branch | **`claude/project-status-irgurb`**, PR #1. `[measured 2026-08-30]` CI green on `a52a954` — runs `33295128793` and `33295130319`. First green since `engine` merged: `1013a30` |
+| Branch | **`main`.** PR #1 (`claude/project-status-irgurb`) merged 2026-08-30 as `76d6989`, no-ff. `[measured 2026-08-30]` **CI green on the merge commit itself**, run `33307963879`, all seven jobs — the first green `main` has had; the run before it, `9986890`, failed. In flight: **`plan/ktls-unblocked`** |
 | Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p fixbolt-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
-| Plan in flight | **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — measured, blocked on ADR-0011. `gates-that-can-be-trusted` **closed** (7, 17, 18, 19); `w2w-and-linux-numbers` **half A done** (15), half B needs a §9 machine; `ktls-spike` **paused** (10) needing a `CONFIG_TLS` kernel. Three plans approved and not started: `data-fields`, `session-recovery`, `ring-full-policy` |
+| Plan in flight | **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — measured, blocked on ADR-0011. `gates-that-can-be-trusted` **closed** (7, 17, 18, 19); `w2w-and-linux-numbers` **half A done** (15), half B needs the desktop tuned to §9; `ktls-spike` **unpaused** (10) — the desktop has `CONFIG_TLS`. Three plans approved and not started: `data-fields`, `session-recovery`, `ring-full-policy` |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
@@ -53,6 +88,120 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 
 ## Proven — the command was run and its output read
 
+- **The whole suite runs on the owner's desktop, 2026-08-30 — the first time any of it has.**
+  `[measured]` rustc 1.98.0 on AMD Ryzen 7 3700X / Linux 7.0.0-30: `cargo fmt --check`,
+  `cargo clippy --all-targets -D warnings`, `cargo test --all` and
+  `cargo test --all --no-default-features` all exit 0, **0 failed**. The two gates that carry a
+  number: `-p fixbolt-session --test score` 4 passed, and **`-p fixbolt-engine --test wire`
+  passed** — the same 59 definitions through a real socket. That last one is the point:
+  open item 17 recorded this gate at **39 / 59 on Linux**, and it is now green on a *second,
+  unrelated* Linux machine. The fix from `gates-that-can-be-trusted` holds off the CI runner.
+- **`benches/alloc.rs` holds on x86_64, not only on the M5.** `[measured 2026-08-30]`
+  `scripts/bench.sh` on the desktop: **8 of 8 targets measuring, 0 silent, invariant failures
+  0** — `codec` 6 paths, `session` 13 paths, `engine` 7 paths, every one **0 allocations**.
+  Non-negotiable 1 is machine-checked on two architectures now. Three timing groups are over
+  their ceilings on this untuned box — see open item 20, where the interesting part is *which
+  direction* they miss in.
+- **`§9 satisfied`, for the first time in this project — 2026-08-30.** `[measured]` after
+  `isolcpus=6,7,14,15 nohz_full=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1` on the
+  kernel command line plus the five runtime rows, `scripts/check-machine.sh` reports
+  **`pass 10  fail 0  unknown 1`** and `scripts/bench.sh --strict` **ran for the first time**
+  rather than refusing. These are the first figures this repository has that non-negotiable 10
+  permits publishing. `EXIT=1`, on three ceilings and one marginal:
+  `walk 4 levels` **354.6** vs 300, `encode 1 group` **103.5** vs 75,
+  `encode ExecutionReport` **240.0** vs 190, `ring, round trip` **500.5** vs 500;
+  `ring, one way` **259.6** came in *under* its 260. Clean: `parse NewOrderSingle` 125.5 / 150,
+  `parse Heartbeat` 55.6 / 70, `SendingTime from the cache` 4.9 / 5,
+  `inline deliver + reply` 6.3 / 15. All eight targets measured, **0 invariant failures**.
+  The three over-ceiling cases are the same three that were over in every machine state
+  measured that day, which is what makes them real rather than noise.
+  **A prediction failed here and is recorded rather than quietly dropped**: `fail 2` was
+  predicted after the reboot and the answer was **`fail 5`** — governor, turbo, SMT, THP and
+  `busy_poll` are all *runtime* settings that do not survive a reboot, and only the two
+  command-line rows do.
+- **Isolating a core does not remove the 324 ns mode — hypotheses six and seven.** `[measured
+  2026-08-30]` pinned to cores 6,7 under `isolcpus` + `nohz_full` + `rcu_nocbs`, where the
+  scheduler places nothing else and the tick is off: **5/60 against 4/60 unpinned**, medians
+  259.0 and 259.4. Not the scheduler. Interrupts do still reach an isolated core (15.7k on
+  each of 6 and 7 against 512k on CPU0), so those were counted per run too — **two outliers
+  carried ~1300 interrupts and three carried exactly zero**, while a normal run carried 1085.
+  Not interrupts either. **Hypothesis eight, ASLR, went the same way and refutes itself twice:**
+  250 runs with `setarch --addr-no-randomize` against 250 without gave **14/250 vs 14/250,
+  z = 0.00** — and with ASLR off the layout is *fixed* across runs, so a layout-dependent
+  effect would have to be 0% or 100%, not 5.6%. At n=60 the same comparison had read 8.3%
+  against 3.3%; **the third time in one day a small-sample rate difference dissolved.**
+- **The box does not drift, which is what makes it publishable.** `[measured 2026-08-30]` a
+  7-minute soak — 379 runs of `ring, one way`, §9 satisfied, pinned to the isolated cores, with
+  temperature sampled per run — moves the median from **259.0 to 258.9 ns**, 0.2% between the
+  first window and the last, while Tctl rises 59 → 64 °C in the first minute and then sits
+  there. `r(temp, ns) = +0.060`. The 3700X throttles at 95 °C, so the **31 °C of headroom**
+  means the Mini-ITX case and its `silent` fan profile constrain nothing at this load; the
+  91 °C seen earlier came from an eight-spinner stress test, and even there the frequency never
+  stepped down. Also settled: **GNOME Power Mode `Balanced` does not reach the measurement** —
+  the driver is `amd-pstate-epp` and EPP already reads `performance` under `Balanced`, while a
+  measurement's `governor=performance` collapses the available preferences to `performance`
+  alone. The A/B meant to prove that **failed and is recorded as failed** (`powerprofilesctl`
+  errored, so both arms ran `balanced`); the state readings are what answer it. And the failure
+  found a real side effect: **`SMT off` breaks `power-profiles-daemon`**, which writes
+  `policy11` — a CPU that is offline while SMT is off. Harmless, reverts, worth knowing.
+- **`scaling_cur_freq` is frozen on a `nohz_full` core and reads 41% low.** `[measured
+  2026-08-30]` it reported the isolated core at **2240 MHz** — exactly `scaling_min_freq` —
+  while that core executed **7,895,418 loops/s against an ordinary core's 7,958,092, 0.8%
+  apart**. `amd-pstate-epp` refreshes that file from a periodic tick and `nohz_full` stops the
+  tick on precisely the cores worth measuring on. **The isolation that makes a core worth
+  measuring is what breaks the instrument pointed at it.** Measure work per unit time, or
+  `aperf`/`mperf`; `check-machine.sh` is unaffected, it never reads a per-core current
+  frequency. Fourth instrument in one day that could not see what it was pointed at.
+- **The 324 ns mode is now characterised, even though eight hypotheses about its cause have
+  all failed.** `[measured 2026-08-30]` pooling those 500 §9-satisfied runs of
+  `ring, one way`: **two discrete states with an empty gap** — main mode n=472, median
+  **258.4**, stdev 1.98; second mode n=**28** (5.6%), median **323.7**, stdev **1.25**; and
+  **exactly one value out of 500 lies between them**. Both clusters are equally tight, so this
+  is not a perturbed run — **a process picks one of two states at startup and keeps it for
+  life**, the two differing by a factor of **1.2527**, near 5/4. The practical consequence,
+  which is what makes this worth having without a cause: **any single run of this case has a
+  5.6% chance of being 25% wrong**, and every `DESIGN.md` §6 ceiling is read off single runs.
+  [reference/measured-costs.md](docs/reference/measured-costs.md).
+- **A cloud VM cannot be the §9 machine, and the checklist could not say so.**
+  `[measured 2026-08-30]` `governor`, `turbo`, `C-states`, `SMT` and NIC IRQ affinity are
+  **host** properties. A guest does not fail those rows loudly — the `/sys` files are absent,
+  so it collects `unknown` and reads as under-configured rather than structurally unable.
+  `check-machine.sh` gained a **`not virtualised`** row (`systemd-detect-virt` + steal over
+  the same window), guarded by `scripts/check-machine-verdicts.sh` — 11 cases, no VM and no
+  root needed, in CI. **The GitHub runner is itself a guest**, so the bench job's machine
+  block now says so on every run — `[measured 2026-08-30]` run `33314721411` prints
+  `FAIL not virtualised  guest under 'microsoft', 0% steal` and
+  `FAIL machine is quiet  6% CPU busy — Runner.Worker 11% of a core`. That closes the
+  commit's own "not proven": the GUEST path had been tested as logic only and has now run on
+  a real guest, correctly naming Hyper-V and attributing the load to the Actions worker.
+  **Every bench figure CI has ever produced came from a machine that is both a guest and not
+  quiet, and from this commit the output says so.** Consequence for the plan: **development can move to cloud;
+  measurement stays on the desk.** The first version of the row reported this bare-metal box
+  as a guest — `systemd-detect-virt` **exits 1 when the answer is `none`**, so
+  `$(... || echo unknown)` ran both halves and set the variable to two lines. The verdict test
+  could not catch it, because it feeds the function directly and never sees how the argument
+  is obtained; running the real script did.
+- **Tuning a machine to §9 moves every bench median by under 2%.** `[measured 2026-08-30]`
+  30 full `scripts/bench.sh` runs on the desktop, 15 with §9 tuning on and 15 with it off —
+  the first time any machine in this project could be measured **in both states**. Three cases
+  are over their ceiling on **15 of 15 runs in both**; the two ring cases are **coin flips**
+  with the ceiling at the median. **The first write-up of this overstated it and a repeat
+  sample caught that** — see the entry, which is kept with its correction rather than
+  rewritten: `over 260` went `1/15` → `9/15` between two samples of the same command, so the
+  supportable numbers are the pooled **33% tuned vs 93% untuned**, not a flip from red to
+  green. The median moves **0.8%** and reproduces; the pass rate does not. A second mode near
+  **324 ns** — five sightings, **all tuned**, none in ~45 untuned runs — is **unexplained**;
+  the Zen-2 L3 hypothesis was **tested and refuted** (~259 ns in all three arms), and SMT-off
+  is a suspect that has **not** been isolated.
+  [reference/measured-costs.md](docs/reference/measured-costs.md).
+- **The kTLS blocker was the diagnostic, not the kernel.** `[measured 2026-08-30]`
+  `setsockopt(TCP_ULP, "tls")` is **ACCEPTED** on the owner's desktop; open item 10 is
+  unblocked and `ktls-spike` is unpaused. The script had been reporting `CONFIG_TLS=m` and
+  "it was built without CONFIG_TLS" in the same run. Both that and a second defect found while
+  fixing it — `lsmod | grep -q` under `set -o pipefail` reporting **failure on the run where
+  the module is found**, because `grep -q` SIGPIPEs `lsmod` — are written up in
+  [reference/ktls-on-a-plain-socket.md](docs/reference/ktls-on-a-plain-socket.md) and guarded
+  by `scripts/check-ktls-classify.sh`, 8 cases, which scores 3 / 8 against the old logic.
 - **The 512-entry inline field array in `matthart1983/nanofix` costs 4–6× the parse time.**
   Changing `MAX_FIELDS` 512 → 64 took the heartbeat from 565.0 ns to **95.4 ns** and
   `NewOrderSingle` from 605.1 ns to **138.8 ns**, on an Apple M5 on 2026-08-27. Method and
@@ -564,7 +713,7 @@ plans are **approved**; the first is in progress.
 | [ktls-spike](docs/plans/2026-08-30-ktls-spike.md) | 10 — **paused 2026-08-30**, blocked on a kernel with `CONFIG_TLS` |
 | ~~[data-fields](docs/plans/2026-08-30-data-fields.md)~~ | **CLOSED 2026-08-30** — 8, 9 |
 | [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 — **journal read-back done 2026-08-30; blocked on [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)** |
-| [ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) | 5 — **measured 2026-08-30; blocked on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md) being accepted** |
+| [ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) | 5 — **measured 2026-08-30; **ADR-0011 accepted 2026-08-30; steps 3–4 are now work, not a decision** |
 
 **The two with no plan, and why.** **1** (the final name) is a decision for the owner, not a
 piece of work — when it is made it is an ADR and a rename, and neither can be planned around
@@ -574,15 +723,20 @@ against hardware that does not exist.
 
 | # | Item | Blocks |
 |---|---|---|
-| 1 | ~~**Final name**~~ — **closed 2026-08-30: `fixbolt`.** The placeholder `nanofixengine` was not merely undecided, it was **a near-collision with the project this repository measures itself against**: `matthart1983/nanofix` is *"Ultra-low-latency FIX protocol engine in Rust"* (item 12; `CLAUDE.md` §2 rule 7's "276 unwraps"), and `LMAX-Exchange/nanofix` is a Java FIX test client with 40 stars in the same domain. `DESIGN.md` had said so since it was written and the rename kept being deferred. `fixbolt` was checked free on crates.io **and** GitHub — checking only the global registry is how `nanofix` itself nearly got re-adopted. Rejected, with reasons: `rustfix` (taken — the crate behind `cargo fix`, and literally a repair tool), `tesla-fix` (TSLA is a ticker; the engine would be named after an instrument it carries), `swiftfix` (SWIFT is the interbank network), `flashfix` ("flash crash"), `fixarc` (`Arc<T>`), `fleetfix` (37 fleet-repair apps), and the whole `<speed-word>fix` family, because *quick fix* is an English idiom for a shoddy repair — putting FIX **first** is what makes it read as the protocol. **One step remains and it is the owner's: rename the GitHub repository**, after this branch is pushed; GitHub redirects the old URL afterwards | Nothing. Publishing to crates.io is unblocked |
-| 5 | **Ring-buffer policy when the application behind the ring falls behind: block, drop, or disconnect?** Not `DESIGN.md` D10, which answered the socket side. `[measured 2026-08-30]` the ring holds **352 messages / 56.7 µs** at its current 64 KiB, against the "milliseconds" ADR-0002 assumed — so capacity is part of the decision. **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md) proposes disconnect + a 4 MiB default and needs signing** | ADR-0002; steps 3–4 of the ring plan |
-| 20 | **The bench ceilings are tuned to a machine no gate runs on.** The half of this item that said *nothing runs them* is closed: `scripts/bench.sh` and the `bench` CI job run all eight targets on every push, and `benches/alloc.rs` — non-negotiable 1's machine check — now runs automatically for the first time. What is left is the ceilings themselves. `[measured 2026-08-30]` five runs of each of the twelve timing cases on a shared 4 vCPU Linux container: run-to-run spread is **5–232%**, three cases flip colour between runs (`encode ExecutionReport` 2/5, `walk 4 levels` 3/5, `encode 1 group` 4/5) and **not one case is over its ceiling in all five**. So there is no regression here to fix — the ceilings are simply inside this machine's noise. Then the same commit ran on the CI runner — AMD EPYC 7763, **2 cores**, run 33304774414 — and put **six of the twelve over**, with `ring, one way` at **328.3 ns**, within 1.3% of the 332.5 ns that originally named this item. So the spread is both kinds at once: 5–232% run to run on one machine, and up to **1.7× between two shared machines**, with the ceiling sitting between them. `[measured 2026-08-30]` **The CI runner pool is two CPU generations**, and once each sample carries its CPU the five runs are two tight distributions, not one noisy one: EPYC 7763 gives `ring, one way` 327.2–331.1 (**1.2%**), EPYC 9V74 gives 270.7–272.9 (**0.8%**), and they differ **21%** — against **3%** on the single-threaded cases, because the ring crosses cores and Zen generations differ in inter-core latency. So **a per-machine baseline is viable**, keyed on the CPU model that `scripts/check-machine.sh` now prints with every figure; a single absolute ceiling across the pool is not. **Re-tuning needs the §9 machine of item 6**; re-tuning from a shared container would trade one wrong number for another | `DESIGN.md` §6 ceilings; item 6 |
-| 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number. **`[2026-08-30]` the owner has a Linux desktop.** Start with `scripts/check-machine.sh`: it reads the §9 checklist off the box and names the command that fixes each failing row. Then `scripts/bench.sh --strict`, which refuses to publish a latency figure until that script is clean. | Every gate in §6 that matters |
+| 1 | ~~**Final name**~~ — **closed 2026-08-30: `fixbolt`.** The placeholder `nanofixengine` was not merely undecided, it was **a near-collision with the project this repository measures itself against**: `matthart1983/nanofix` is *"Ultra-low-latency FIX protocol engine in Rust"* (item 12; `CLAUDE.md` §2 rule 7's "276 unwraps"), and `LMAX-Exchange/nanofix` is a Java FIX test client with 40 stars in the same domain. `DESIGN.md` had said so since it was written and the rename kept being deferred. `fixbolt` was checked free on crates.io **and** GitHub — checking only the global registry is how `nanofix` itself nearly got re-adopted. Rejected, with reasons: `rustfix` (taken — the crate behind `cargo fix`, and literally a repair tool), `tesla-fix` (TSLA is a ticker; the engine would be named after an instrument it carries), `swiftfix` (SWIFT is the interbank network), `flashfix` ("flash crash"), `fixarc` (`Arc<T>`), `fleetfix` (37 fleet-repair apps), and the whole `<speed-word>fix` family, because *quick fix* is an English idiom for a shoddy repair — putting FIX **first** is what makes it read as the protocol. **Fully closed 2026-08-30**: the GitHub repository is renamed, `github.com/tmthang86/fixbolt`, verified by `git ls-remote` returning the merge commit through the new URL. `Cargo.toml`'s `repository` field had pointed at `.../fixbolt` since the rename commit and was **wrong until this happened**. GitHub redirects the old URL. The five surviving occurrences of `nanofixengine` in the tree are deliberate history — *"the old name was X"* — not leftovers | Nothing. Publishing to crates.io is unblocked |
+| 5 | **Ring-buffer policy when the application behind the ring falls behind: block, drop, or disconnect?** Not `DESIGN.md` D10, which answered the socket side. `[measured 2026-08-30]` the ring holds **352 messages / 56.7 µs** at its current 64 KiB, against the "milliseconds" ADR-0002 assumed — so capacity is part of the decision. **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md) is `Accepted` 2026-08-30**: disconnect, a refusal that is never silent, and a 4 MiB default. **Not implemented** | ADR-0002; steps 3–4 of the ring plan |
+| 20 | **The bench ceilings are tuned to a machine no gate runs on.** The half of this item that said *nothing runs them* is closed: `scripts/bench.sh` and the `bench` CI job run all eight targets on every push, and `benches/alloc.rs` — non-negotiable 1's machine check — now runs automatically for the first time. What is left is the ceilings themselves. `[measured 2026-08-30]` five runs of each of the twelve timing cases on a shared 4 vCPU Linux container: run-to-run spread is **5–232%**, three cases flip colour between runs (`encode ExecutionReport` 2/5, `walk 4 levels` 3/5, `encode 1 group` 4/5) and **not one case is over its ceiling in all five**. So there is no regression here to fix — the ceilings are simply inside this machine's noise. Then the same commit ran on the CI runner — AMD EPYC 7763, **2 cores**, run 33304774414 — and put **six of the twelve over**, with `ring, one way` at **328.3 ns**, within 1.3% of the 332.5 ns that originally named this item. So the spread is both kinds at once: 5–232% run to run on one machine, and up to **1.7× between two shared machines**, with the ceiling sitting between them. `[measured 2026-08-30]` **The CI runner pool is two CPU generations**, and once each sample carries its CPU the five runs are two tight distributions, not one noisy one: EPYC 7763 gives `ring, one way` 327.2–331.1 (**1.2%**), EPYC 9V74 gives 270.7–272.9 (**0.8%**), and they differ **21%** — against **3%** on the single-threaded cases, because the ring crosses cores and Zen generations differ in inter-core latency. So **a per-machine baseline is viable**, keyed on the CPU model that `scripts/check-machine.sh` now prints with every figure; a single absolute ceiling across the pool is not. `[measured 2026-08-30]` **a third machine, and it straddles the ceiling from the other side**: on the owner's Ryzen 7 3700X — **untuned, governor `powersave`, SMT on** — `ring, one way` is **260.9 ns** against a 260 ns ceiling, and `ring, round trip` **502.7 ns** against 500. So the three machines read 260.9 / 270.7–272.9 / 327.2–331.1, and **the ceiling now sits 0.3% below the fastest of them** — that is a ceiling no machine passes, which is a ceiling that has stopped saying anything. Note the Ryzen is the *untuned* number; tuning it to §9 can only move it down. `[measured 2026-08-30]` **and then the same machine was measured in both states, 15 full `bench.sh` runs each — the first same-machine A/B in this whole thread.** It splits the cases in two. **Three are over their ceiling on 15 of 15 runs in BOTH states** — `walk 4 levels` 347.6 vs 300, `encode 1 group` 104.7 vs 75, `encode ExecutionReport` 241.4 vs 190 — real gaps that no machine state explains, and the only rows a §6 gate can honestly fail on today. **The two ring cases are coin flips**: 5/15 and 9/15 over, 7/15 and 8/15, with the ceiling sitting *at* the median. **`[measured 2026-08-30]` and then that sample was repeated, and corrected the entry that had just been written.** Running `dispatch` alone, sample 1 gave tuned `over 260: 1/15` against untuned `14/15`, and this file said a 0.5% median shift flipped unchanged code from red to green. Sample 2, same command same binary, gave tuned **9/15**. **The medians reproduce to 1.4 ns; the pass rate does not reproduce at all.** Pooled 30 runs per state: median 259.7 vs 261.8 (**−0.8%**), over the ceiling **10/30 (33%) tuned vs 28/30 (93%) untuned**. Tuning helps and does not rescue it — **neither state gives a stable verdict**, which is the actual finding. **`[measured 2026-08-30]` and then the cause was found, and it is not on this checklist at all.** The second mode near **324 ns** was blamed in turn on Zen-2 L3 placement, on SMT-off, and on thermal throttling; **all three were tested and all three refuted** — a 2 × 2 over (governor·boost) × SMT put the mode in **all four** machine states at 2–5 per 50, and at 91 °C the frequency never moved off ~3790 MHz. What does move it is **competing CPU load**: on a quiet box the mode runs ~5%, and with eight spinners added it runs **92%**, with the median going 262 → **449 ns (+71%)**. Against **0.8%** for every §9 tuning row combined. So `check-machine.sh` gained the row that was missing — **`machine is quiet`**, CPU busy over a one-second window, FAIL above 3%, processes attributed by delta — and `DESIGN.md` §9 now leads with it. Clean baselines, quiet box, 60 runs each: untuned **med 260.6, over 43/60**; tuned **med 259.7, over 13/60**. The ceiling still decides nothing — it sits at the median in every configuration measured — but **the load row is now visible to the gate**, and a residual **5–10%** rate on a quiet machine remains **unexplained**: measuring load *per run* rather than per batch shows the outliers carry the **same** busy figure as every other run (13% — the benchmark itself), and shutting the desktop's LLM down left it at **6/60 either way**. Load is *sufficient* to produce the mode and is **not** what produces the natural ones. Five hypotheses measured away: L3, SMT, governor/boost, thermal, load | `DESIGN.md` §6 ceilings; item 6 |
+| 22 | **`[2026-08-30]` decided by [ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md), `Accepted`, and **re-scoped to `hft` by [ADR-0013](docs/decisions/ADR-0013-two-modes-standard-and-hft.md)** — in `standard` mode the engine blocks instead of sweeping, so this whole term is replaced by an `epoll`-class wakeup and is **unmeasured**. The tension is resolved in favour of latency: one session per polling thread is the shape the design is optimised, budgeted and measured for; many-per-thread is supported as a labelled **`density`** mode carrying `N × 703 ns` instead of the latency figures; and **every published latency number names its `N`**. `PRD.md` §1, `DESIGN.md` §1 and §8, `README.md` and the new **[GUIDE.md](docs/GUIDE.md)** follow from it. `DESIGN.md` §8 priced busy-poll at **`~0`** and that row is now **703 ns × N**; its bottom line said `< 1 µs` for "everything this design controls" while measuring only user space, and now reads `< 1 µs + N × 703 ns`. **The trade D8 makes — `epoll`'s 2–5 µs wakeup for a 703 ns poll — wins at N=1 and loses by N=8**, a sentence the table did not contain until the poll was measured. What remains open is the measuring, not the deciding. The original finding: |
+| 22 | **The engine is syscall-bound, and "many sessions on one core" costs 703 ns each.** `[measured 2026-08-30]` D8 makes an idle turn one non-blocking `read` per connection. On the §9 box that read costs **703 ns and is flat from N=1 to N=256**, so a turn is exactly `N × 703 ns` and a session's added latency is one whole turn. Of that, **353.8 ns is kernel entry and exit doing nothing** — `syscall(getpid)` measured beside it — against `parse NewOrderSingle` at **125.5 ns** and a vDSO `clock_gettime` at **22.9 ns**. *The syscall that discovers there is nothing to parse costs 5.6× the parse.* `DESIGN.md` §8 budgets the whole user-space path under 1 µs; **two sessions on one polling thread exceed that budget in polling alone**, and `PRD.md` targets *"many sessions on one core"*. Both can be true of different products, but **not of one polling thread**, and that choice has not been made. It also reorders the open items: item 12 defers SIMD for 20–40 ns, while removing a syscall is worth **703**. Levers in measured order — fewer sessions per thread (free); `mitigations=off` (**`[unproven]`**, full mitigations are on, `vmscape` alone does an IBPB on every syscall return, needs a reboot and is a security decision); `recvmmsg` or `io_uring` with `SQPOLL`; then item 14. Write-up: [reference/measured-costs.md](docs/reference/measured-costs.md) | `DESIGN.md` §8 budget; `PRD.md`'s deployment shape; the priority of items 11, 12, 14 |
+| 21 | `[2026-08-30]` **plan viết xong, chờ duyệt**: [threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md) — engine tự quản thread và ghim core, id core tường minh, ghim từ trong thread rồi **đọc lại xác nhận**, và **từ chối** cấu hình sai (core không online, hai shard trên hai SMT sibling, core không nằm trong `isolcpus`). Nó **không hứa nhanh hơn** và nói thẳng vì sao: `[đo 2026-08-30]` ghim vào lõi cô lập không đổi median lẫn mode 324 ns. Cái nó làm là biến một khẳng định trong tài liệu thành sự thật kiểm được. Vấn đề gốc: |
+| 21 | **`DESIGN.md` D8 says "the engine thread is pinned to an isolated core". Nothing pins it.** `[measured 2026-08-30]` `grep` for `sched_setaffinity`, `affinity`, `core_affinity` or `libc` across `crates/` and `tools/` returns **nothing**: no dependency, no call, no test. §8's latency budget and §9's `isolcpus` row both assume a pinned engine thread, so the design's central jitter defence is **asserted in prose and absent from the code** — `CLAUDE.md` §4's "prose does not hold a constraint", on the one claim it would cost most. Either the engine pins and something proves it, or D8's sentence is wrong and must say so. Cheap to settle, and it is the mechanism the 324 ns mode most plausibly needs, since load amplifies that mode 5% → 92% and pinning is what isolates a thread from load. **NUMA is deliberately NOT part of this**: this machine reports **1 NUMA node**, cross-L3 placement was measured and had **no effect** (~259 ns in all three `taskset` arms), and topology-aware allocation would be designing against hardware nobody here has — the same reason item 14 keeps kernel bypass out. Revisit if the box ever becomes multi-socket | `DESIGN.md` D8 and §8; every jitter claim; item 20 |
+| 6 | A Linux box for `tools/w2w`. The design's own §9 says a latency number from a macOS laptop is not a number. **`[measured 2026-08-30]` the desktop exists, has a toolchain, and has been read: AMD Ryzen 7 3700X, 16 logical cores, Linux 7.0.0-30-generic, rustc 1.98.0 — `check-machine.sh` says `pass 1  fail 7  unknown 1`.** The seven are `isolcpus`/`nohz_full`, governor `powersave`, turbo on, C-states uncapped, SMT on, THP `madvise`, `net.core.busy_poll=0`. **The gap is configuration, not hardware.** `[measured 2026-08-30]` five of the seven were applied and the box now reads **`pass 6  fail 2`**; the two left — `isolcpus`/`nohz_full` and capped C-states — need a kernel command line and a reboot, so `--strict` still refuses and **nothing here is publishable yet**. Toggling is no longer a per-run password prompt: `/usr/local/sbin/fixbolt-machine on|off|tls|status`, root-owned, reachable through a `NOPASSWD` rule scoped to those five verbs, which is what made the same-machine A/B in [measured-costs.md](docs/reference/measured-costs.md) possible at all. **The A/B says the tuning is worth little**: every bench median moves under 2%. | Every gate in §6 that matters |
 | 7 | **`scripts/fetch-quickfix-assets.sh` tracks mutable `master`.** Every acceptance number in the codec plan (539 lines, 247 with `9=`, 244 with `10=`, 8 tag-set patterns for `35=3`) can change silently upstream. Pin a commit and verify it | Reproducibility of every step-1 gate |
-| 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **`[measured 2026-08-30]` the blocker was recorded wrongly and is now known**: it needs a kernel built with **`CONFIG_TLS`**, *not* the §9 machine of item 6 — kTLS is a kernel feature, not a latency property. This box refuses `setsockopt(TCP_ULP, "tls")` with `ENOENT` and its config says `# CONFIG_TLS is not set`. `scripts/check-ktls-available.sh` answers "can I start?" in one command; [reference/ktls-on-a-plain-socket.md](docs/reference/ktls-on-a-plain-socket.md) records what was and was not concluded. `[measured 2026-08-30]` **the GitHub runner has it**: `check-machine.sh` reports `PASS kTLS (CONFIG_TLS)` in CI run 33307245558, so this can be investigated on CI without waiting for any hardware. **Start with `scripts/check-ktls-available.sh`** — one command, answers "can I start?". `scripts/check-machine.sh` also reports the `tls` module as its own row. | The TLS plan; ADR-0005 acceptance |
+| 10 | **Can `ktls-core` be driven from a plain non-blocking socket with no async runtime?** Its documented usage is `tokio-rustls`-shaped. If not, ADR-0005's central claim collapses to "userspace rustls only" and the hot-path guarantee goes with it. **`[measured 2026-08-30]` the blocker was recorded wrongly and is now known**: it needs a kernel built with **`CONFIG_TLS`**, *not* the §9 machine of item 6 — kTLS is a kernel feature, not a latency property. The container it was first tried on genuinely lacks it (`# CONFIG_TLS is not set`), and the GitHub runner has it (CI run 33307245558). **`[measured 2026-08-30]` so does the owner's desktop, and this item is UNBLOCKED**: `CONFIG_TLS=m`, `setsockopt(TCP_ULP, "tls")` **ACCEPTED**, `check-ktls-available.sh` exits 0. **It was unblocked all along and the diagnostic said otherwise.** The script printed `config: CONFIG_TLS=m` and, four lines later, *"the kernel has no `tls` ULP at all: it was built without CONFIG_TLS"* — both from one run — because it emitted that fixed paragraph for every `errno` and never re-read the config it had just printed. `ENOENT` from `TCP_ULP` means no ULP is **registered**, and the kernel autoloads one only for a caller with `CAP_NET_ADMIN`; an unprivileged probe sees `ENOENT` with `tls.ko` sitting on disk. Fixed, and now guarded by `scripts/check-ktls-classify.sh` (CI job `script-logic`), which fails 5 of 8 against the old logic. Proven by reversal on the desktop: module unloaded → `LOADABLE`, exit 2; after `modprobe tls` → `READY`, exit 0. Write-up: [reference/ktls-on-a-plain-socket.md](docs/reference/ktls-on-a-plain-socket.md). **Steps 2–5 of the spike are still to do; nothing about `ktls-core` or ADR-0005 is concluded.** | The TLS plan; ADR-0005 acceptance |
 | 11 | **Serialise misses its gate: 93.8 ns against 60 ns** on the M5, and `[measured 2026-08-30]` **177.6–199.4 ns across five runs on Linux x86_64** — a 3.0–3.3× miss there, not 1.6×. (DESIGN §6). Cause is known — `Template::encode` finds each slot by a linear scan of the caller's list, so cost is slots × parts. Fix candidates: index slots by tag at template build, or require the caller to hand slots in parts order. The only red gate that does not need the Linux box. **Start with `scripts/bench.sh --strict`** on the §9 box: the number to optimise against is the one from that machine, not the 93.8 ns or the 177.6-199.4 ns above. | DESIGN §6 serialise row; the `engine` step, where the number is re-measured |
 | 12 | **SIMD / SWAR for SOH scan and checksum — deliberately not done.** `matthart1983/nanofix` has NEON/SSE2 SOH scanning and still parsed 4–6× slower than this codec, because its 512-entry index blew L1 ([measured-costs.md](docs/reference/measured-costs.md)). Layout won; SIMD did not. Estimated gain here is 20–40 ns per message on a 10–20 µs floor — under 0.5%. **Do it only when `benches/parse.rs` on the Linux box shows parse on the critical path.** If done: 8-byte SWAR in `codec`, no `memchr` (zero-dependency rule), `core::arch` only behind a measurement. **Start with `scripts/bench.sh --strict`**: this is a same-machine A/B, so it needs the box to be quiet, not to be a particular box. | Nothing until open item 6 is answered |
 | 13 | **Release profile is default.** No `lto = "fat"`, no `codegen-units = 1`, no PGO, no `#[cold]` on error paths. Cheap, but each is a number to be measured before and after, not a setting to be assumed. **Start with `scripts/bench.sh --strict`**, once before any profile change and once after — same machine, same settings, or the comparison means nothing. | The `engine` step; every §6 number published from Linux |
+| 14 | `[measured 2026-08-30]` **and it is not a cure for session density, which was the reason most often given for wanting it.** Bypass removes the 703 ns syscall — the largest single term, and worth doing for that alone — leaving a sweep still linear in N, a cache hierarchy that costs **1.05 ns in L1 against 78.5 ns from RAM (75×)** on a `Connection` measured at **53.3 KiB** when `L1d` is 32 KiB, and head-of-line blocking of `(k-1) × ~465 ns` that nothing removes but fewer sessions. **What is unmeasured and decides the cache wall is how much of that 53.3 KiB a message touches** — the wall is at N≈9 if all of it and N≈128 if 4 KiB. Worth more than another guess at the 324 ns mode. [reference/measured-costs.md](docs/reference/measured-costs.md). The original entry: |
 | 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what fixbolt claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |
-| 16 | **A journal is written and never read back** — *half closed 2026-08-30*. It now reads back: length-prefixed records, `Journal::highest()`, a torn tail dropped. What remains is the session: `connect` resets unconditionally, so a resumed session's numbers are wiped before they can be used. **[ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md) needs signing** | A restart that resumes a session rather than starting one |
+| 16 | **A journal is written and never read back** — *half closed 2026-08-30*. It now reads back: length-prefixed records, `Journal::highest()`, a torn tail dropped. What remains is the session: `connect` resets unconditionally, so a resumed session's numbers are wiped before they can be used. **[ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md) is `Accepted` 2026-08-30 and awaits implementation**, and `[2026-08-30]` its three open questions now have prior art — [reference/session-lifecycle-prior-art.md](docs/reference/session-lifecycle-prior-art.md), read off QuickFIX's own session implementation plus the FIX session-layer material. The headline: **FIX 4.4's `NextExpectedMsgSeqNum` (789) answers question 2 and is absent from the ADR**; the session-end predicate is *same range as the creation time*, not *past the end time*; and a third durability class exists between the ADR's two — flush without `fsync`, which is what QuickFIX ships for the inbound number and what this journal already calls `Async` | A restart that resumes a session rather than starting one |
 | 18 | **A plan can close on a laptop's word while CI is red.** The engine plan closed and merged with its gates reported green from an Apple M5; the GitHub run on that same commit failed and was not read, and four documents carried the laptop's number for a day. Nothing in `CLAUDE.md` §9 requires the closing evidence to name a CI run | Every "gates green" claim in a merge commit |

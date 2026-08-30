@@ -1,6 +1,6 @@
 # ADR-0011 — A full ring ends the connection, and the ring is sized so that is rare
 
-- **Status**: Proposed — 2026-08-30
+- **Status**: **Accepted — 2026-08-30**, signed by the owner. Proposed the same day; the revisions recorded below were made while it was `Proposed`, per `CLAUDE.md` §5. **Its substance is now fixed — changing it takes a new ADR that supersedes it.**
 - **Date**: 2026-08-30
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0002](ADR-0002-engine-library-split.md),
@@ -75,6 +75,17 @@ Nothing in the decision changes. What changes is the weight the two halves carry
 
 The `[measured 2026-08-30]` table earlier in this document is left as written: it records what
 that run measured, and correcting it in place would hide that the spread exists.
+
+**Revision, 2026-08-30 — an unresolved input to decision 3, recorded before signing.** In
+place, per `CLAUDE.md` §5. Decision 3 sets a 4 MiB default *per session*, and `PRD.md` states
+the target as an acceptor that "holds many sessions on one core" **without ever quantifying
+"many"**. 4 MiB is unremarkable at ten sessions and decides the deployment at a thousand, so the
+default cannot be checked against anything. Three ways out — quantify it in `PRD.md`, make
+capacity per-session configuration with 4 MiB as the default, or state the capacity as a
+*duration of slack* rather than a byte count — are set out in
+[reference/session-lifecycle-prior-art.md](../reference/session-lifecycle-prior-art.md) §4.
+**Decisions 1, 2 and 4 are unaffected**: they rest on the count and the argument, not on the
+capacity.
 
 ## Decision
 
