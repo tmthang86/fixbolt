@@ -1,6 +1,6 @@
 # Đổi tên sang `fixbolt`, và mở đường cho máy Linux
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Xong
 > **Phạm vi:** open item 1; và mở khoá item 6, 10, 11, 12, 13
 
 ## Bối cảnh
@@ -167,7 +167,17 @@ GREEN ok / RED ok       scripts/check-no-kernel-sleep.sh
 links OK                scripts/check-links.py
 ```
 
-**Chưa chứng minh:** CI chưa chạy với tên mới. Không đóng plan cho tới khi đọc log CI.
+**CI đã đọc.** Commit `17e6824`, run **33307245558**, 7/7 job xanh. Log job `99245842128` xác
+nhận bench chạy dưới tên mới — `fixbolt-codec`, `fixbolt-engine`, `fixbolt-session` — và
+`targets measuring 8 of 8`, `invariant failures 0`.
+
+**`check-machine.sh` chạy trong CI và cho hai thứ ngoài dự tính:**
+
+- **Runner GitHub có `CONFIG_TLS`** — `PASS kTLS`. Item 10 điều tra được trên CI, không cần đợi
+  phần cứng. Đã ghi vào item 10.
+- **Mẫu thứ tư bác kết luận "runner lặp lại 1.2%"** mà tôi công bố ba giờ trước từ ba lần chạy.
+  `ring, one way` = 270.7 ns so với 327.2–331.1. Xem `measured-costs.md` — hoá ra độ ổn định
+  theo **cái được đo** (một luồng ~3%, chéo luồng 17–22%), không theo máy hay theo harness.
 
 **Việc còn lại của chủ dự án, một bước:** đổi tên repo trên GitHub thành `fixbolt` — **sau** khi
 nhánh này đã push. GitHub tự chuyển hướng URL cũ nên PR và nhánh không gãy.

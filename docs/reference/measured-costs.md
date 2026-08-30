@@ -669,6 +669,47 @@ Two consequences, one for each half:
   `ring_full` is the count (352 messages, exact three times); the microseconds are one sample
   of a distribution nobody has characterised.
 
+### The fourth sample broke the third correction
+
+A fourth CI run (`17e6824`, run 33307245558) does not agree with the three above:
+
+| Case | Run 1 | Run 2 | Run 3 | **Run 4** | Spread |
+|---|---|---|---|---|---|
+| `ring, one way` | 328.3 | 331.1 | 327.2 | **270.7** | **22%** |
+| `ring, round trip` | 622.9 | 623.5 | 622.2 | **514.7** | **21%** |
+| `ring_full`, ns per message | 194 | 195 | 356 | **139** | **156%** |
+| `parse NewOrderSingle` | 127.6 | — | — | 124.0 | 3% |
+| `encode 1 group, 2 entries` | 101.4 | — | — | 98.5 | 3% |
+
+**"The runner reproduces to 1.2%" was written from three consecutive runs and did not survive a
+fourth.** Three agreeing samples are not evidence of stability — they are three samples.
+
+What the four runs do support is a split the earlier readings could not see: the
+**single-threaded** cases move ~3% and the **cross-thread** cases move 17–22%. `ring` and
+`ring_full` both carry a message between two threads on a 2-core runner with SMT on; `parse`
+and `encode` stay on one. Stability is a property of **what is measured**, not only of the
+machine or of the averaging.
+
+What the data cannot distinguish, and this is stated rather than guessed: whether run 4 landed
+on different hardware or on the same hardware under different load. Four samples with no
+machine identity recorded per run cannot separate those.
+
+### The shape of the mistake, five times over
+
+| # | Claim | n behind it | Refuted by |
+|---|---|---|---|
+| 1 | red on Linux | 1 run | 5 runs |
+| 2 | noise on Linux, 3 of 12 flap | 5 runs, 1 machine | a second machine |
+| 3 | 1.7× between machines; the runner is stable | 2 machines | a single-shot timing on the same box |
+| 4 | the stability is the harness's | 3 CI runs | a fourth CI run |
+| 5 | single-thread stable, cross-thread not | 4 CI runs + 5 local | *nothing yet* |
+
+Each correction was made from more data than the one before, and each was published as settled.
+**The error was never the reasoning — it was treating the sample in hand as the population.**
+The rule that would have prevented all five: before publishing a number as a property, state
+how many samples it rests on and what would change it. Claim 5 rests on four runs and would be
+refuted by a cross-thread case that stays put across ten.
+
 The rules that generalise: **a threshold whose margin is smaller than the spread of the
 machines it will run on reports the infrastructure, not the code** — and **before crediting a
 machine with being quiet, check whether the quiet came from the machine or from the averaging
