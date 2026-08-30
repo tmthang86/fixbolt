@@ -91,6 +91,7 @@ Added one at a time, each behind an approved plan.
 | `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised. Time enters as `Tick`, in **milliseconds since 0000-01-01** — see D13 | `codec`, `dict` |
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
 | `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport` |
+| | | `[2026-08-30]` step 1 of six exists: `Transport`, `TcpTransport`, `Loopback`, `Waiting`. `transport` is a module here rather than its own crate until something needs it to be otherwise | |
 | `library` | L4 | The application-facing API | `engine` |
 | `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
 
@@ -141,12 +142,13 @@ clock — writes its reply into a buffer the session lends it, and returns the r
 calls `received_with` with an application that never answers, so a session used as a pure
 protocol machine is unchanged.
 
-**`Store` did not become anything, and that is a debt.** `[measured 2026-08-29]` a resend has to
-replay application messages this end already sent, so the session keeps them — a ring of eight
-512-byte slots inside its own `Outbound`, `pub(crate)`, no API change. It is enough for the
-corpus and it is not enough for a real acceptor: a journal has to survive a restart, and this
-one does not. The sketch above had the session *emit* a `Store` action and the engine hold the
-journal, and that is still the answer; `engine` is where it lands.
+**`Store` became a trait, and the debt is paid.** `[measured 2026-08-30]` a resend has to
+replay application messages this end already sent. The session no longer keeps them: it is
+handed a `journal::Journal` — `put(seq, bytes)` and `get(seq)` — exactly as it is handed an
+`Application`, and `Session::received` supplies `NoJournal` so a pure protocol machine is
+unchanged. An emitted `Action::Store` could not have worked, because a resend has to *read*
+and an action is one-way; [ADR-0008](decisions/ADR-0008-journal-is-a-trait.md) records that
+and what else differs from the sketch. The three D7 tiers are three types in `engine`.
 
 **One machine, both roles.** The acceptor waits for `Logon` and answers; the initiator sends
 `Logon` and waits. Sequence handling, resend, heartbeat, test-request and logout are the same
@@ -283,6 +285,23 @@ A gateway that answers in nanoseconds wants inline. Both are the same engine.
 process isolation contains GC pauses. Rust has no GC, so half the motivation does not
 transfer, and what remains is a property some applications need and others pay for.
 
+**As built.** `Dispatch` carries a `const OUT_OF_BAND: bool`, and it is `false` for
+`InlineDispatch` — so the engine's "collect what the other thread produced" block is behind a
+constant and compiles away entirely on the default engine. A reply from the ring comes back
+through `Session::send_application`, which means the sequence number and `SendingTime` are the
+session's own: an application on another thread cannot get either wrong, because it is never
+told them.
+
+A reply is routed by a **connection id, never an index** — the engine drops a dead connection
+with `swap_remove`, so an index is stale the moment anything hangs up, and a reply for a
+connection that has gone is dropped rather than delivered to whoever took its slot.
+`crates/engine/tests/dispatch.rs` asserts that, and asserts the thing that makes the whole
+trait worth having: **the same message produces the same bytes on the wire under either
+dispatch.** The dispatch chooses a thread, not a protocol.
+
+The ring itself is `Box<[AtomicU8]>` — safe Rust, no dependency, and a byte-at-a-time copy
+whose price is published rather than hidden. [ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md).
+
 ### D5 — Transport is a trait; TCP is the only implementation that ships by default
 
 ```rust
@@ -316,6 +335,24 @@ satisfied. The engine appends to a memory-mapped journal under a policy the user
 | `Async` | Appended and flushed by a background thread | **The default** |
 | `Fsync` | `fsync` before the message is acknowledged | Regulated deployments that require it |
 
+**As built.** Three types rather than three branches:
+`nanofix_session::journal::NoJournal` is `None`, `engine::journal::MemJournal` is a ring that
+keeps but does not persist, and `engine::journal::FileJournal` carries
+`Durability::{Async, Fsync}`. A `FileJournal` **also** keeps the ring and answers `get` from
+it: reading a replay back off disk would be a blocking `read` on the thread non-negotiable 4
+protects.
+
+Two deviations from the paragraph above, both in
+[ADR-0008](decisions/ADR-0008-journal-is-a-trait.md). The journal is **a trait the session is
+handed**, not an action it emits — a resend has to *read*, and an action cannot answer. And
+the file is **appended, not memory-mapped**: `mmap` means a dependency or `unsafe`, and the
+engine plan authorises neither, the same fork [ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)
+documents for the dispatch ring.
+
+**A journal is written and never read back.** Nothing recovers a session from the log on
+startup, so `Fsync` today is an audit trail rather than a recovery mechanism. That needs a
+session constructible *from* a journal, which is its own plan — STATUS open item 16.
+
 ### D8 — The engine thread busy-polls; it never sleeps in the kernel
 
 The engine thread is pinned to an isolated core and spins on non-blocking sockets. No
@@ -327,6 +364,30 @@ engine controls. It burns a core — that is the price, and it is the standard p
 
 A `Waiting` strategy is a trait so tests and low-priority deployments can use a blocking
 variant. The default ships as spin.
+
+**As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is
+queued, **tick the clock**, read once, cut whole messages out, judge them, flush again — and
+`Engine::run` is `loop { if !turn() { wait.idle() } }` and nothing else. Reading *once* per
+turn rather than until the socket is empty is deliberate: a counterparty that writes faster
+than this end processes must not be able to starve the other connections on the thread.
+
+**The tick comes before the read, and that is a correctness ordering rather than a taste.**
+`Session::received_with` takes no clock — D1 — so it judges `SendingTime` against the last
+instant a `tick` gave it, and a session that has never ticked holds zero. Reading first means
+the very first message on a connection is judged against 0000-01-01 and refused for skew.
+`[measured 2026-08-30]` moving the tick left the wire gate at 59 / 59.
+
+Keeping the pass separate from the loop is what lets the 59 acceptance definitions run
+**through a real socket** with no background thread, no sleep and no timing window —
+`crates/engine/tests/wire.rs` drives `turn` by hand and is as deterministic as the in-process
+gate.
+
+**Non-negotiable 4 has no machine check yet, and that is stated rather than glossed.**
+`dtruss` is refused by macOS SIP, and the substitute — reading undefined symbols out of the
+compiled rlib — fails its own reversal, because `Engine` and `serve` are generic and are
+therefore never code-generated into the library at all. It is a hand-check until `tools/w2w`
+runs on Linux and a syscall trace can be taken. See
+[reference/measured-costs.md](reference/measured-costs.md).
 
 ### D9 — Outbound messages are templates: a pre-sorted parts list, patched, not built
 
@@ -376,6 +437,24 @@ Policy, per session, chosen in configuration:
 The queue is its own storage. It is tempting to say the queued bytes are the ones the journal
 (D7) already holds — but under `JournalPolicy::None` the journal holds nothing, and that is the
 policy simulators and tests run. The queue owns a per-session buffer, sized at startup.
+
+**As built.** `Backpressure` on `Engine` or on a single `Connection`; the queue is the
+connection's `TX` buffer and `Queue { max_bytes }` only tightens the bound. Three rules the
+code makes explicit and `crates/engine/tests/backpressure.rs` holds:
+
+- **A message goes in whole or not at all.** The session emits one message per `emit` call, so
+  a refusal is always at a message boundary; a queue that wrote as much as would fit would put
+  a frame on the wire that the counterparty cannot recover from.
+- **The Logout that says `58=slow consumer` is not subject to `max_bytes`.** It is written into
+  the whole `TX` buffer after the queue is discarded — the queued messages are for a
+  counterparty that stopped reading, and the one message that matters must not be the one that
+  cannot be sent.
+- **A socket that has died ends the connection even with bytes queued.** `[measured 2026-08-30]`
+  before this, killing the socket mid-write left the connection `Up` for as long as it was
+  turned, because "finished" was defined as *closing and the queue is empty*.
+
+`Block` spins rather than sleeping, so D8 still holds for the thread — but one slow
+counterparty then stops every other session on it, which is why it is never a default.
 
 ### D11 — TLS is a transport implementation, and the guarantee is stated per mode
 
@@ -456,12 +535,15 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 |---|---|---|
 | Parse `NewOrderSingle` | ≤ 150 ns **published**. `[measured]` **77.0 ns**, 2026-08-28 | `benches/parse.rs`, asserting a 150 ns regression ceiling |
 | Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**. `[measured]` **93.8 ns — the target is NOT met** | `benches/serialize.rs`, asserting a 190 ns regression ceiling |
-| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is | `benches/dispatch.rs` |
+| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is. `[measured 2026-08-30]` inline **2.7 ns**; ring **128.0 ns** one way and **242.5 ns** round trip, on a 163-byte `NewOrderSingle`, Apple M5, macOS 25.6, unpinned — **the ring hop is ~50x the inline call**, and ~0.8 ns of every byte of it is the `AtomicU8` copy ([ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)) | `crates/engine/benches/dispatch.rs`, asserting ceilings of 15 / 260 / 500 ns |
 | Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
-| Allocations on the hot path — session | **0**, counted separately on nine paths: accept, refuse, tick, beat, answer, gap, fill, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
+| Allocations on the hot path — session | **0**, counted separately on thirteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
 | The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`, `tests/reject.rs` and `tests/heartbeat.rs`. `[measured]` seven so far. Three from steps 1–3: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged, because `52` is one of the five tags `fields.fmt` matches by shape; a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet. Four from step 4: all three heartbeat thresholds, which the harness's whole-interval ticks cannot see; and that a garbled frame is fatal only when it claims to be a Logon, which the corpus states once from each side in different files. Five from step 5, in `tests/resend.rs`: every file that opens a gap ends before opening a second one, so closing a filled gap, replaying held messages in sequence order, and what happens when there is no room to hold one are all invisible to the score |
 | Session conformance, acceptor | **59 / 59** | `cargo test -p nanofix-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
+| The journal keeps what a resend needs, under each D7 policy | `None` fills over everything; `MemJournal` and `FileJournal` replay; a message longer than a slot is refused rather than truncated | `crates/engine/tests/journal.rs`, seven tests. Reversal: making `put` keep nothing turns four of them red **and drops the acceptance score**, which is what proves the score depends on the journal |
+| Session conformance, acceptor, **through a real socket** | **59 / 59** | `cargo test -p nanofix-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59** |
+| Allocations on the hot path — engine | **0**, counted separately on seven paths: idle, send, recv, frame, turn, busy, ring | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |
@@ -477,7 +559,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
 | Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job |
-| No documentation link points at a missing file | 102 internal links resolve | `scripts/check-links.py`, run in CI |
+| No documentation link points at a missing file | 155 internal links resolve | `scripts/check-links.py`, run in CI |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every

@@ -226,3 +226,138 @@ just the absence of a panic: `consumed` never exceeds the input, and every field
 reports lies inside the consumed prefix. The second is what makes `LengthOutOfBounds`
 load-bearing — a DATA length is supplied by the counterparty.
 
+
+## An injected allocation the optimiser can delete proves nothing
+
+`[cost 2026-08-30]` The counting-allocator benches are proven by *reversal*: put
+an allocation on the path, see the number move. The first injection into
+`crates/engine/benches/alloc.rs` was
+
+```rust
+let _leak = std::vec![0u8; 4];
+```
+
+and it reported **0**, exactly as if the guard were working. It was not — the
+`Vec` is never read, the bench builds in release, and LLVM deleted the
+allocation before it happened.
+
+```rust
+let leak = std::vec![0u8; 4];
+core::hint::black_box(&leak);   // now it reports 10000
+```
+
+Earlier injections in `codec` and `session` survived by luck: they used the
+allocated value (`msg.to_vec()` then passed on), so nothing could remove them.
+
+**The rule: an injection must be observed, not assumed, and a reversal that
+reports "still zero" is a reversal that did not run.** `CLAUDE.md` §7 already
+says a guard is proven by reversal and that the reversal must be confirmed to
+have changed something. This is what that sentence costs when it is skipped.
+
+## `nm -u` on an rlib proves nothing about generic code
+
+`[cost 2026-08-30]` Non-negotiable 4 — *the engine thread never sleeps in the
+kernel* — has no machine check, and this is the attempt that failed.
+
+`dtruss` is the right tool and macOS System Integrity Protection refuses it
+without disabling SIP. The substitute tried was to read the compiled rlib's
+undefined symbols: a blocking primitive the linker never has to resolve cannot
+be called.
+
+It reported clean. It also reported clean with `std::thread::sleep` added to the
+middle of the loop, which is the reversal that should have failed it.
+
+**The reason is monomorphisation.** `Engine` is generic in six parameters and
+`serve` is generic in its application type, so neither is code-generated into
+the rlib at all — there is nothing for `nm` to see. Adding one concrete type
+alias did not help: the *function bodies* are still generic.
+
+Two things follow, and the second is the general one:
+
+* **Non-negotiable 4 is a hand-check** until `tools/w2w` runs on Linux, where a
+  syscall trace can be taken. `CLAUDE.md` §2's table of what is machine-checked
+  says so; it is not claimed anywhere else.
+* **A check over compiled artefacts has to be told which instantiation it is
+  checking.** For a generic-heavy crate that is a binary that actually uses it,
+  not the library.
+
+## A benchmark that replays one message measures a dropped connection
+
+`[cost 2026-08-30]` The engine's allocation bench had a case called `busy`: a
+Logon sent into `Loopback` a thousand times, one `Engine::turn` per send. It
+reported **1 allocation per 1000 iterations** — close enough to zero to look
+like a rounding artefact, and stable across consecutive runs, which made it look
+real.
+
+It was measuring nothing. The session refuses the second Logon as a sequence
+number already used and drops the link, so from iteration three on the engine
+held **no connections** and the loop was `send into a queue nobody reads`. The
+one allocation was that `VecDeque` reaching a doubling boundary. Two hours went
+into looking for it in `Engine::turn`, which never ran.
+
+The fix is not a bigger warm-up. It is an **assertion that the path is still
+alive at the end of the count**:
+
+```rust
+assert_eq!(engine.connections(), 1, "not dropped at message two");
+```
+
+and traffic with increasing sequence numbers, rendered before the count starts
+so the harness's own `format!` is not charged to the engine.
+
+**Generalised:** a zero from a counting allocator means *did not allocate* only
+if something separately proves *did run*. Every case in these benches now
+asserts its own path — `the send path sends`, `the framing path must actually
+cut a message`, `must still hold a live session`. Injection proves the counter
+sees the path; the assertion proves the path was taken.
+
+## `received_with` judges `SendingTime` against the last `tick`, not the wall
+
+`[cost 2026-08-30]` Found while fixing the above. `Session::received_with` takes
+no clock — by design, D1: the session layer has none, and time arrives only as
+`Input::Tick`. So the 120-second `SendingTime` skew check compares against the
+last instant a `tick` supplied, and **a session that has never ticked holds
+zero**.
+
+A Logon is then 2026 years of skew and is refused silently. The first engine in
+the bench accepted the identical Logon only because an earlier case had already
+ticked it ten thousand times.
+
+It bit three times — an allocation bench, a dispatch test and a backpressure
+test — before it was fixed rather than worked around. **The fix is the order
+inside `Connection::turn`: tick first, then read.** A session then always has a
+time before it judges anything, and the hole closes for every caller at once
+rather than for whichever one last tripped over it.
+
+`[measured 2026-08-30]` moving the tick left the wire gate at 59 / 59, so the
+corpus does not care which side of the read it falls on. The three workarounds
+were deleted in the same commit — **a workaround left in place after the cause
+is fixed is a comment that will be believed later.**
+
+## What a thread hop costs when the ring may not use `unsafe`
+
+`[measured 2026-08-30]` Apple M5, macOS 25.6, unpinned, best-of-7 × 200 000 iterations,
+`crates/engine/benches/dispatch.rs`. A 163-byte `NewOrderSingle` — the same message every
+other benchmark here is measured on.
+
+| Path | ns/op |
+|---|---|
+| `InlineDispatch::deliver` + reply | **2.7** |
+| Ring, one way (engine → application) | **128.0** |
+| Ring, round trip (→ handler → back) | **242.5** |
+
+**The hop is ~50× the inline call**, and the one-way figure is ~0.8 ns per byte, which is
+almost exactly the cost of copying with `AtomicU8` loads and stores instead of `memcpy`. The
+reason it is built that way, and what would reverse it, is
+[ADR-0007](../decisions/ADR-0007-spsc-ring-without-unsafe.md).
+
+Two things this number is *not*:
+
+- **Not the cost of the option.** An application that chose the ring did so because it may
+  stall for milliseconds. 240 ns against 40 ms is not the trade it is making.
+- **Not a Linux number.** Nothing here was measured on the machine `DESIGN.md` §9 describes.
+
+The inline figure moved between 2.5 and 4.9 ns across runs of the same binary. At that size
+the loop is a handful of instructions and the harness's own overhead is the same order, so the
+ceiling is set at 15 ns rather than at 2×. **A ceiling tighter than the measurement's own
+spread is a gate that goes red at random**, and DESIGN §6 already says what happens to those.

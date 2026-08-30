@@ -28,6 +28,12 @@ below describe what a first release would contain.
   - `clock::parse_utc` and `clock::MILLIS_YEAR_ZERO_TO_EPOCH` — `Tick` counts milliseconds
     from **0000-01-01**, not from 1970, so every year `SendingTime` can name is a non-negative
     `u64` and the skew cannot wrap. See `DESIGN.md` D13.
+  - `journal::{Journal, NoJournal}` — the session no longer keeps the messages it has sent. It
+    is handed a journal, exactly as it is handed an `Application`, and asks two questions:
+    *keep `34=n`, these are its bytes*, and *do you still have `34=n`?*
+    **`received_with` and `send_application` therefore take one more argument**, and `received`
+    supplies `NoJournal` so a pure protocol machine is unchanged.
+    [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md).
   - `text::SessionText` — the 17 expected `58=` values and their `373=` codes, rendered with
     no `format!` and no allocation. **Moved here from `nanofix-conformance`**, where it lived
     only because the session did not exist yet.
@@ -80,6 +86,73 @@ below describe what a first release would contain.
     a later resend, and lets `Fix44` order the fields.
   - `[measured 2026-08-30]` **0 / 50** on the mirrored corpus. Every mirrored Logon is
     accepted; what the files ask for next is a message only an operator can order.
+
+- **`nanofix-engine`** — the crate that touches the socket. **All six steps.**
+  - `Transport`, with `TcpTransport` (non-blocking, `TCP_NODELAY`) and `Loopback` (in memory,
+    for tests that must not depend on a free port).
+  - **`Io::{Ready, Idle, Closed, Failed}` rather than `io::Result<usize>`.** On a stream socket
+    `Ok(0)` already means end-of-stream, so reporting `WouldBlock` the same way hands the caller
+    one value for two opposite facts — a session dropped because the counterparty was quiet, or
+    a loop spinning forever on a socket that closed. Same answer the codec reached for
+    `Parsed::Incomplete`.
+  - `Waiting`, with `Spin` (the default, D8) and `Park` (every test in this repository).
+  - `Framer<N>` — one fixed buffer per connection, no allocation, no parsing. It reads one
+    field, `9=`, and answers `Cut::{Message, Garbage, Need}`. **Rubbish is handed to the session
+    once** rather than dropped, so "a bad frame is fatal only if it claims to be a Logon" stays
+    in `nanofix-session` and is not duplicated. A message bigger than the buffer is `Garbage`
+    too: a buffer that fills and never empties is a connection wedged by a number the
+    counterparty chose.
+  - `crates/session/tests/score.rs` now calls that framer instead of keeping its own copy, and
+    still scores **59 / 59**.
+  - `Clock`, with `SystemClock` and `ManualClock`. A seam that exists for the corpus rather
+    than for tidiness: every `I` line carries a fixed instant, so an engine wired to the wall
+    clock cannot be driven by the acceptance files at all.
+  - `Connection<T, R, N, RX, TX>` — one socket, one framer, one session, and an outbound
+    queue of `TX` bytes. `Turn::{Up(bool), Gone}` says whether anything moved.
+  - `Engine<T, R, A, C, W, N, RX, TX>` — `turn()` is one non-blocking pass over every
+    connection; `run()` is `loop { if !turn() { wait.idle() } }` and nothing else. It reads
+    **once** per connection per turn, so a counterparty that writes faster than this end
+    processes cannot starve the others.
+  - `Acceptor::{bind, local_addr, accept}`, `connect(addr)`, and `serve(addr, cfg, app,
+    capacity)` — the whole loop written once, with `TcpAcceptorEngine<A>` naming the shape a
+    deployment runs.
+  - **The 59 acceptance definitions now pass through a real socket**: `cargo test -p
+    nanofix-engine --test wire` → **59 / 59**, kernel TCP, no background thread and no sleep.
+  - `Dispatch`, with `InlineDispatch<H>` (the default, D4 / ADR-0002) and `RingDispatch<M>`
+    plus its `RingApp<M>` on the far side. The trait carries `const OUT_OF_BAND: bool`, so the
+    engine's out-of-band collection compiles away entirely on the inline engine.
+  - **A reply is routed by `ConnId`, never by index.** `swap_remove` reuses indices the moment
+    anything hangs up; a reply for a connection that has gone is dropped.
+  - `ring::pair(capacity)` — a single-producer single-consumer **record** queue built from
+    `Box<[AtomicU8]>`: no `unsafe`, no dependency, allocated once. A push is one whole message
+    or none, and a record too long for the reader is dropped rather than wedging the queue.
+    [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) carries the price.
+  - `Engine::new` now takes a `Dispatch` rather than an `Application`; `serve` still takes an
+    application and wraps it inline, so the deployment shape is unchanged. `application()`
+    became `dispatch_mut()`.
+  - `benches/dispatch.rs`: inline **2.7 ns**, ring **128.0 ns** one way, **242.5 ns** round
+    trip, each asserting its own ceiling.
+  - `Backpressure` (D10), on an engine or on one connection: `Disconnect` (the default),
+    `Queue { max_bytes }`, `Block`. A message is queued whole or refused whole; a refusal ends
+    the session with `Logout(58=slow consumer)`, written after the queue is discarded so that
+    a bound smaller than one Logout cannot end a session in silence.
+  - **`Connection::turn` now ticks before it reads.** `Session::received_with` has no clock
+    (D1) and judges `SendingTime` against the last tick, so a session that has never ticked
+    refused the first message on every connection. The wire gate is unchanged at 59 / 59.
+  - A connection whose socket has died is finished even with bytes queued. It previously
+    stayed up for as long as it was turned.
+  - `nanofix-session`: `Session::logout_now(text, emit)` — send a `Logout` carrying `58=text`
+    and give up the link. Additive, for the engine's D10 policy; the session cannot see a full
+    queue and the engine cannot build a message.
+  - `journal::{MemJournal, FileJournal, Durability, Store}` (D7). `FileJournal` appends to a
+    file — `Fsync` writes and syncs inline, `Async` hands the bytes to a writer thread over the
+    ADR-0007 ring — and answers a resend from its in-memory ring rather than from disk, because
+    reading it back would be a blocking `read` on the engine thread.
+    [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md).
+  - `Engine::add_with_journal`, for a journal the caller built. `Engine::add` uses
+    `J::default()`.
+  - `benches/alloc.rs`: **0** on seven paths — idle, send, receive, framing, an idle turn, a
+    turn carrying a message in and a reply out, and a full ring round trip.
 
 - **`nanofix-conformance`** — the mirrored corpus, for the initiator role.
   - `script::scenarios_mirrored()` reads the same 59 files from the other side: `I` lines

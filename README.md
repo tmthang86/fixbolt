@@ -14,10 +14,13 @@ has a floor of roughly **10–20 µs** wire-to-wire that no codec can move; this
 to make everything above that floor vanish, and to measure the floor honestly
 ([DESIGN.md §8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp)).
 
-> **Status: design. No engine code exists yet.** The repository holds the decisions that
-> come before it. **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is
-> from QuickFIX; **[docs/DESIGN.md](docs/DESIGN.md)** says how it is built;
-> [STATUS.md](STATUS.md) says where the work stands.
+> **Status: it speaks FIX over a socket.** `[measured 2026-08-30]` the 59 QuickFIX acceptance
+> definitions pass **59 / 59 through kernel TCP**. `codec`, `dict`, `session` and `engine`
+> exist, with dispatch, backpressure and the journal built; `tools/w2w` and the
+> application-facing `library` do not.
+> **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;
+> **[docs/DESIGN.md](docs/DESIGN.md)** says how it is built; [STATUS.md](STATUS.md) says
+> where the work stands.
 >
 > **`nanofixengine` is a placeholder name**, taken to clear a collision. See STATUS.md.
 
@@ -71,6 +74,7 @@ crates/
   dict/          FIX 4.4 tables generated from the QuickFIX XML at build time
   conformance/   runs the 59 acceptance definitions in process, no socket
   session/       the FIX session state machine — pure, no I/O, role-parameterised
+  engine/        TCP acceptor and connector; a thread that never sleeps in the kernel
                  (more crates are added one at a time, each behind an approved plan)
 fuzz/            cargo-fuzz targets — nightly, outside the workspace
 docs/

@@ -27,12 +27,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanofix-engine"
+version = "0.0.0"
+dependencies = [
+ "nanofix-codec",
+ "nanofix-conformance",
+ "nanofix-dict",
+ "nanofix-session",
+]
+
+[[package]]
 name = "nanofix-session"
 version = "0.0.0"
 dependencies = [
  "nanofix-codec",
  "nanofix-conformance",
  "nanofix-dict",
+ "nanofix-engine",
 ]
 
 [[package]]

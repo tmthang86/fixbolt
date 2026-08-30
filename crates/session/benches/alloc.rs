@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nanofix_conformance::echo::echo;
 use nanofix_conformance::script::{Kind, scenarios};
+use nanofix_engine::journal::Store;
 use nanofix_session::text::SessionText;
 use nanofix_session::{Acceptor, Application, Config, Initiator, Link, Session, clock};
 
@@ -280,21 +281,23 @@ fn main() {
     let (order_logon, order) = (&ordered[0], &ordered[1]);
     {
         let mut s = acceptor();
+        let mut journal = Store::new();
         s.connect(|_| ());
         s.tick(now, |_| ());
         s.received(order_logon, |_| ());
         let mut echoed = 0usize;
-        s.received_with(order, &mut EchoApp, |_| echoed += 1);
+        s.received_with(order, &mut EchoApp, &mut journal, |_| echoed += 1);
         assert_eq!(echoed, 1, "the delivery path must actually deliver");
     }
 
     let deliver_allocs = count(|| {
         for _ in 0..10_000 {
             let mut s = acceptor();
+            let mut journal = Store::new();
             s.connect(|_| ());
             s.tick(now, |_| ());
             s.received(order_logon, |_| ());
-            s.received_with(order, &mut EchoApp, |_| ());
+            s.received_with(order, &mut EchoApp, &mut journal, |_| ());
         }
     });
 
@@ -303,23 +306,25 @@ fn main() {
     let only_app = inputs("8_OnlyApplicationMessages.def");
     {
         let mut s = acceptor();
+        let mut journal = Store::new();
         s.connect(|_| ());
         s.tick(now, |_| ());
         for wire in &only_app[..4] {
-            s.received_with(wire, &mut EchoApp, |_| ());
+            s.received_with(wire, &mut EchoApp, &mut journal, |_| ());
         }
         let mut replayed = 0usize;
-        s.received_with(&only_app[4], &mut EchoApp, |_| replayed += 1);
+        s.received_with(&only_app[4], &mut EchoApp, &mut journal, |_| replayed += 1);
         assert_eq!(replayed, 3, "the resend path must actually resend");
     }
 
     let resend_allocs = count(|| {
         for _ in 0..10_000 {
             let mut s = acceptor();
+            let mut journal = Store::new();
             s.connect(|_| ());
             s.tick(now, |_| ());
             for wire in &only_app[..5] {
-                s.received_with(wire, &mut EchoApp, |_| ());
+                s.received_with(wire, &mut EchoApp, &mut journal, |_| ());
             }
         }
     });
@@ -351,21 +356,23 @@ fn main() {
     // acceptor is the side this corpus can log on in one step.
     {
         let mut s = acceptor();
+        let mut journal = Store::new();
         s.connect(|_| ());
         s.tick(now, |_| ());
         s.received(&logon_reply, |_| ());
         let mut sent = 0usize;
-        s.send_application(&order, |_| sent += 1);
+        s.send_application(&order, &mut journal, |_| sent += 1);
         assert_eq!(sent, 1, "the origination path must actually originate");
     }
 
     let originate_allocs = count(|| {
         for _ in 0..10_000 {
             let mut s = acceptor();
+            let mut journal = Store::new();
             s.connect(|_| ());
             s.tick(now, |_| ());
             s.received(&logon_reply, |_| ());
-            s.send_application(&order, |_| ());
+            s.send_application(&order, &mut journal, |_| ());
         }
     });
 

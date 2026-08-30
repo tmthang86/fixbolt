@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 pub mod clock;
+pub mod journal;
 mod out;
 pub mod text;
 
@@ -27,6 +28,7 @@ use nanofix_codec::{
 };
 use nanofix_dict::{FieldType, Fix44};
 
+use crate::journal::{Journal, NoJournal};
 use crate::out::Outbound;
 use crate::text::SessionText;
 
@@ -576,16 +578,17 @@ impl<R: Role, const N: usize> Session<R, N> {
 
     /// One whole message arrived. Framing is the transport's job.
     pub fn received<F: FnMut(&[u8])>(&mut self, bytes: &[u8], emit: F) -> Link {
-        self.received_with(bytes, &mut Silent, emit)
+        self.received_with(bytes, &mut Silent, &mut NoJournal, emit)
     }
 
     /// One whole message arrived, with an [`Application`] to hand it to.
     ///
     /// The same as [`Self::received`] in every other respect.
-    pub fn received_with<A: Application, F: FnMut(&[u8])>(
+    pub fn received_with<A: Application, J: Journal, F: FnMut(&[u8])>(
         &mut self,
         bytes: &[u8],
         app: &mut A,
+        journal: &mut J,
         mut emit: F,
     ) -> Link {
         // Once the link is down, bytes still arrive — the counterparty's own
@@ -595,7 +598,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         if matches!(self.state, State::Disconnected | State::AwaitingLogout) {
             return Link::Dropped;
         }
-        let link = match self.judge(bytes, app, &mut emit) {
+        let link = match self.judge(bytes, app, journal, &mut emit) {
             Ok(link) => link,
             Err(_) => {
                 self.state = State::Disconnected;
@@ -611,11 +614,16 @@ impl<R: Role, const N: usize> Session<R, N> {
         // Draining here rather than inside `judge` keeps the recursion out:
         // `judge` never calls this, so a held message that queues another
         // cannot nest.
-        self.drain(app, &mut emit)
+        self.drain(app, journal, &mut emit)
     }
 
     /// Judge every held message the count has caught up with.
-    fn drain<A: Application, F: FnMut(&[u8])>(&mut self, app: &mut A, emit: &mut F) -> Link {
+    fn drain<A: Application, J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        app: &mut A,
+        journal: &mut J,
+        emit: &mut F,
+    ) -> Link {
         // Bounded by the queue itself, and every round empties one slot.
         for _ in 0..QUEUED {
             let Some(i) = (0..QUEUED).find(|&i| self.queue[i].seq == self.next_in) else {
@@ -628,7 +636,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             let mut held = [0u8; QUEUED_LEN];
             held[..len].copy_from_slice(&self.queue[i].buf[..len]);
             self.queue[i].seq = 0;
-            match self.judge(&held[..len], app, emit) {
+            match self.judge(&held[..len], app, journal, emit) {
                 Ok(Link::Up) => {}
                 Ok(Link::Dropped) => return Link::Dropped,
                 Err(_) => {
@@ -723,6 +731,25 @@ impl<R: Role, const N: usize> Session<R, N> {
         // A text that would not render is a bug in the table, not a reason to
         // keep the connection: either way this end is finished.
         let _ = sent;
+        self.state = State::AwaitingLogout;
+        Link::Dropped
+    }
+
+    /// Send a `Logout` carrying `58=text`, then give up the link.
+    ///
+    /// **For the engine, and for one policy: `DESIGN.md` D10.** A queue that
+    /// has filled because the counterparty stopped reading is not something a
+    /// pure state machine can see — there is no socket here — so the decision
+    /// belongs to the engine. The *message* still belongs to the session, which
+    /// owns the sequence number, the timestamp and the field order.
+    ///
+    /// `text` is written straight into `58=`; the caller supplies a literal, so
+    /// nothing here allocates or formats.
+    pub fn logout_now<F: FnMut(&[u8])>(&mut self, text: &[u8], mut emit: F) -> Link {
+        if matches!(self.state, State::Disconnected | State::AwaitingLogout) {
+            return Link::Dropped;
+        }
+        let _ = self.send(Which::Logout, &[(tag::TEXT, text)], &mut emit);
         self.state = State::AwaitingLogout;
         Link::Dropped
     }
@@ -841,7 +868,6 @@ impl<R: Role, const N: usize> Session<R, N> {
             gap_fill,
             buf,
             app: _,
-            journal: _,
         } = o;
         let template = match which {
             Which::Logon => &*logon,
@@ -878,7 +904,12 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// same fail-closed answer the rest of this layer gives. `Refusal` is
     /// private on purpose: nothing a caller can do about it differs from doing
     /// nothing.
-    pub fn send_application<F: FnMut(&[u8])>(&mut self, msg: &[u8], mut emit: F) -> Link {
+    pub fn send_application<J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        msg: &[u8],
+        journal: &mut J,
+        mut emit: F,
+    ) -> Link {
         // Nothing to say before the Logon is agreed, and nothing after the
         // Logout. Silence rather than an error: an application that offers a
         // message to a session that is not up has not done anything wrong.
@@ -894,9 +925,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         let Some(o) = self.out.as_mut() else {
             return Link::Up;
         };
-        let out::Outbound {
-            app: buf, journal, ..
-        } = o;
+        let out::Outbound { app: buf, .. } = o;
         let Some(r) = rebuild(msg, Some(seq), &now, false, buf) else {
             return Link::Up;
         };
@@ -909,10 +938,8 @@ impl<R: Role, const N: usize> Session<R, N> {
     }
 
     /// Is `seq` still in the journal?
-    fn kept(&self, seq: u32) -> bool {
-        self.out
-            .as_ref()
-            .is_some_and(|o| o.journal.get(seq).is_some())
+    fn kept<J: Journal>(journal: &J, seq: u32) -> bool {
+        journal.get(seq).is_some()
     }
 
     /// Send the kept message numbered `seq` again, as a resend of itself.
@@ -920,16 +947,19 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// `false` if it is not in the journal — the caller then fills over it.
     /// A replay **spends no sequence number**: it carries the one it was sent
     /// with, which is the whole point of a resend.
-    fn replay<F: FnMut(&[u8])>(&mut self, seq: u32, emit: &mut F) -> Result<bool, Refusal> {
+    fn replay<J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        seq: u32,
+        journal: &J,
+        emit: &mut F,
+    ) -> Result<bool, Refusal> {
         let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
         let now = *self.stamp.format(unix);
-        let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
-        let out::Outbound {
-            app: buf, journal, ..
-        } = o;
         let Some(kept) = journal.get(seq) else {
             return Ok(false);
         };
+        let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
+        let out::Outbound { app: buf, .. } = o;
         let r = as_resend(kept, &now, buf).ok_or(Refusal::CannotSend)?;
         emit(&buf[r]);
         self.last_sent_ms = self.now_ms;
@@ -959,10 +989,11 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// the order QuickFIX applies them, and it is load-bearing: two rules that
     /// share an outcome are indistinguishable to the corpus, so which one fires
     /// first is only visible to `tests/logon.rs`.
-    fn judge<A: Application, F: FnMut(&[u8])>(
+    fn judge<A: Application, J: Journal, F: FnMut(&[u8])>(
         &mut self,
         bytes: &[u8],
         app: &mut A,
+        journal: &mut J,
         emit: &mut F,
     ) -> Result<Link, Refusal> {
         match parse_into::<Fix44, N>(bytes, &mut self.idx, Validation::ALL) {
@@ -1333,7 +1364,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             if let Some(begin) = begin_seq_no.filter(|b| *b <= end) {
                 let mut n = begin;
                 while n <= end {
-                    if self.replay(n, emit)? {
+                    if self.replay(n, journal, emit)? {
                         n += 1;
                         continue;
                     }
@@ -1348,7 +1379,7 @@ impl<R: Role, const N: usize> Session<R, N> {
                     // disagree about a number.
                     let from = n;
                     n += 1;
-                    while n <= end && !self.kept(n) {
+                    while n <= end && !Self::kept(journal, n) {
                         n += 1;
                     }
                     self.fill(from, n, emit)?;
@@ -1385,9 +1416,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             let seq_out = self.next_out;
             let sent = {
                 let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
-                let out::Outbound {
-                    app: buf, journal, ..
-                } = o;
+                let out::Outbound { app: buf, .. } = o;
                 match app.on_message(bytes, seq_out, &stamp, buf) {
                     Some(r) => {
                         // Kept before it is sent, and only application messages

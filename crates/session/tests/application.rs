@@ -12,6 +12,7 @@
 use std::ops::Range;
 
 use nanofix_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use nanofix_engine::journal::Store;
 use nanofix_session::{Acceptor, Application, Config, Link, Session};
 
 fn acceptor() -> Session<Acceptor, 256> {
@@ -100,6 +101,7 @@ fn logged_on() -> Session<Acceptor, 256> {
 /// test.
 #[test]
 fn the_application_is_given_the_clock_the_session_was_ticked_to() {
+    let mut journal = Store::new();
     let mut s = logged_on();
     let mut app = Recorder::default();
     let order = inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[1].clone();
@@ -114,7 +116,7 @@ fn the_application_is_given_the_clock_the_session_was_ticked_to() {
             &format!("\u{1}34={seq}\u{1}"),
         ));
         let mut out = Vec::new();
-        let link = s.received_with(&wire, &mut app, |b| {
+        let link = s.received_with(&wire, &mut app, &mut journal, |b| {
             out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
         });
         assert_eq!(link, Link::Up, "the order was accepted: {out:?}");
@@ -144,10 +146,11 @@ fn the_application_is_given_the_clock_the_session_was_ticked_to() {
 /// Logout numbered three lines later. This says it in one assertion.
 #[test]
 fn an_application_that_says_nothing_spends_no_sequence_number() {
+    let mut journal = Store::new();
     let order = inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[1].clone();
     let mut s = logged_on();
     let mut app = Recorder::default();
-    s.received_with(&order, &mut app, |_| {});
+    s.received_with(&order, &mut app, &mut journal, |_| {});
 
     // The next message the session sends itself must still be 2.
     let logout = inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[3].clone();

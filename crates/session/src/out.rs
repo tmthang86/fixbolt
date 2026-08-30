@@ -42,75 +42,6 @@ pub(crate) struct Outbound {
     /// longest reply in the corpus is `21_RepeatingGroupSpecifierWithValueOfZero`'s
     /// `35=d` at 177 body bytes, against 101 for the longest `35=D`.
     pub(crate) app: [u8; 1024],
-    /// The application messages this end has sent, for replay.
-    pub(crate) journal: Journal,
-}
-
-/// How many outbound application messages are kept for replay.
-///
-/// `[measured 2026-08-29]` the corpus never asks for more than three:
-/// `8_AdminAndApplicationMessages.def` stores `34=5`, `34=6` and `34=9` and
-/// asks for all of them four times over. Eight is the smallest power of two
-/// above that with room to spare.
-///
-/// **This is a stopgap and it is meant to be replaced.** `DESIGN.md` §2 puts
-/// the journal in `engine`, and D1's sketch has the session emit a `Store`
-/// action rather than keep one. A real acceptor needs a journal that survives a
-/// restart; a ring of eight in memory does not.
-pub(crate) const STORED: usize = 8;
-
-/// The widest message a slot holds. The longest in the corpus is
-/// `21_RepeatingGroupSpecifierWithValueOfZero`'s `35=d` reply, 177 body bytes.
-pub(crate) const STORED_LEN: usize = 512;
-
-/// One kept message. `len == 0` means the slot has never been written.
-pub(crate) struct Stored {
-    pub(crate) seq: u32,
-    pub(crate) len: u16,
-    pub(crate) buf: [u8; STORED_LEN],
-}
-
-/// A ring of [`STORED`] slots, oldest overwritten first.
-pub(crate) struct Journal {
-    pub(crate) slots: [Stored; STORED],
-    pub(crate) at: usize,
-}
-
-impl Journal {
-    pub(crate) fn new() -> Self {
-        Self {
-            slots: [const {
-                Stored {
-                    seq: 0,
-                    len: 0,
-                    buf: [0; STORED_LEN],
-                }
-            }; STORED],
-            at: 0,
-        }
-    }
-
-    /// Keep `bytes` under `seq`. A message too long for a slot is **not kept**
-    /// — a resend then fills over it, which is what a counterparty that asks
-    /// for a message this end no longer has must get anyway.
-    pub(crate) fn put(&mut self, seq: u32, bytes: &[u8]) {
-        if bytes.len() > STORED_LEN {
-            return;
-        }
-        let slot = &mut self.slots[self.at % STORED];
-        slot.seq = seq;
-        slot.len = u16::try_from(bytes.len()).unwrap_or(0);
-        slot.buf[..bytes.len()].copy_from_slice(bytes);
-        self.at = self.at.wrapping_add(1);
-    }
-
-    /// The bytes kept under `seq`, if they are still here.
-    pub(crate) fn get(&self, seq: u32) -> Option<&[u8]> {
-        self.slots
-            .iter()
-            .find(|s| s.len > 0 && s.seq == seq)
-            .map(|s| &s.buf[..usize::from(s.len)])
-    }
 }
 
 impl Outbound {
@@ -214,7 +145,6 @@ impl Outbound {
                 .ok()?,
             buf: [0; 512],
             app: [0; 1024],
-            journal: Journal::new(),
         })
     }
 }

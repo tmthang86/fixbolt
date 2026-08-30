@@ -1,4 +1,8 @@
-//! What the outbound store does that the corpus cannot see.
+//! What the journal does that the corpus cannot see. `DESIGN.md` D7.
+//!
+//! **This file used to live in `crates/session/`**, because the store did.
+//! It moved with the store: the session now says *keep this* and asks *do you
+//! still have it*, and holds nothing.
 //!
 //! Three files ask this end to replay what it sent, and between them they pin
 //! the shape of a replay almost completely. Three things they do not pin:
@@ -15,6 +19,8 @@
 use std::ops::Range;
 
 use nanofix_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use nanofix_engine::journal::{Durability, FileJournal, SLOT_LEN, Store};
+use nanofix_session::journal::{Journal, NoJournal};
 use nanofix_session::{Acceptor, Application, Config, Link, Session};
 
 /// The acceptance server's own application: echo every order back.
@@ -90,18 +96,18 @@ fn resend_request(seq: u32, from: u32, to: u32) -> Vec<u8> {
 
 /// A session logged on at [`FIXED_TIME_MILLIS`] with `108=30`. Inbound count 2,
 /// outbound count 2.
-fn logged_on() -> Session<Acceptor, 256> {
+fn logged_on() -> (Session<Acceptor, 256>, Store) {
     let mut s = Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"));
     s.connect(|_| {});
     s.tick(FIXED_TIME_MILLIS, |_| {});
     let link = s.received(&inputs("4b_ReceivedTestRequest.def")[0], |_| {});
     assert_eq!(link, Link::Up, "the Logon should have been accepted");
-    s
+    (s, Store::new())
 }
 
-fn feed(s: &mut Session<Acceptor, 256>, wire: &[u8]) -> Vec<String> {
+fn feed(s: &mut Session<Acceptor, 256>, j: &mut Store, wire: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
-    s.received_with(wire, &mut EchoApp, |b| {
+    s.received_with(wire, &mut EchoApp, j, |b| {
         out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
     });
     out
@@ -137,13 +143,17 @@ fn seq_nums(replies: &[String]) -> Vec<String> {
 /// the bytes went out, and these bytes are going out now.
 #[test]
 fn a_replay_says_when_it_is_being_sent_and_when_it_first_was() {
-    let mut s = logged_on();
-    assert_eq!(msg_types(&feed(&mut s, &order(2))), ["D"], "the echo");
+    let (mut s, mut j) = logged_on();
+    assert_eq!(
+        msg_types(&feed(&mut s, &mut j, &order(2))),
+        ["D"],
+        "the echo"
+    );
 
     // Twenty-five seconds later, which is inside `108=30` so the session says
     // nothing of its own and spends no number.
     s.tick(FIXED_TIME_MILLIS + 25_000, |_| {});
-    let out = feed(&mut s, &resend_request(3, 2, 0));
+    let out = feed(&mut s, &mut j, &resend_request(3, 2, 0));
 
     assert_eq!(
         msg_types(&out),
@@ -164,7 +174,7 @@ fn a_replay_says_when_it_is_being_sent_and_when_it_first_was() {
 
     // A replay spends no number, so the next message this end originates is
     // still 3.
-    let out = feed(&mut s, &order(4));
+    let out = feed(&mut s, &mut j, &order(4));
     assert_eq!(seq_nums(&out), ["3"], "the replay spent nothing: {out:?}");
 }
 
@@ -184,12 +194,12 @@ fn a_reply_too_long_to_keep_is_filled_over_rather_than_replayed() {
         "11=ID\u{1}",
         &format!("11={}\u{1}", "X".repeat(500)),
     ));
-    let mut s = logged_on();
-    let out = feed(&mut s, &long);
+    let (mut s, mut j) = logged_on();
+    let out = feed(&mut s, &mut j, &long);
     assert_eq!(msg_types(&out), ["D"], "the echo still goes out: {out:?}");
     assert!(out[0].len() > 512, "and it is too big to keep");
 
-    let out = feed(&mut s, &resend_request(3, 2, 0));
+    let out = feed(&mut s, &mut j, &resend_request(3, 2, 0));
     assert_eq!(
         msg_types(&out),
         ["4"],
@@ -206,13 +216,17 @@ fn a_reply_too_long_to_keep_is_filled_over_rather_than_replayed() {
 /// waiting on those numbers and will wait forever.
 #[test]
 fn what_no_longer_fits_in_the_ring_is_filled_over_not_skipped() {
-    let mut s = logged_on();
+    let (mut s, mut j) = logged_on();
     for seq in 2..=10 {
-        assert_eq!(msg_types(&feed(&mut s, &order(seq))), ["D"], "echo {seq}");
+        assert_eq!(
+            msg_types(&feed(&mut s, &mut j, &order(seq))),
+            ["D"],
+            "echo {seq}"
+        );
     }
 
     // Nine kept in eight slots: `34=2` is the one that went.
-    let out = feed(&mut s, &resend_request(11, 2, 0));
+    let out = feed(&mut s, &mut j, &resend_request(11, 2, 0));
     assert_eq!(
         msg_types(&out),
         ["4", "D", "D", "D", "D", "D", "D", "D", "D"],
@@ -224,4 +238,134 @@ fn what_no_longer_fits_in_the_ring_is_filled_over_not_skipped() {
         ["3", "4", "5", "6", "7", "8", "9", "10"],
         "every number the counterparty asked for is answered: {out:?}"
     );
+}
+
+// ------------------------------------------------------- the three policies
+
+/// D7's `None`: nothing is kept, and a `ResendRequest` is answered entirely
+/// with gap fills.
+///
+/// **This is a legal answer, not a degraded one.** A journal that does not
+/// survive a restart could not have replayed after one either, so a simulator
+/// loses nothing by keeping nothing.
+#[test]
+fn none_keeps_nothing_and_fills_over_everything() {
+    let (mut s, _) = logged_on();
+    let mut none = NoJournal;
+
+    let mut out = Vec::new();
+    s.received_with(&order(2), &mut EchoApp, &mut none, |b| {
+        out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+    });
+    assert_eq!(msg_types(&out), ["D"], "the echo still goes out");
+
+    let mut out = Vec::new();
+    s.received_with(&resend_request(3, 2, 0), &mut EchoApp, &mut none, |b| {
+        out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+    });
+    assert_eq!(
+        msg_types(&out),
+        ["4"],
+        "one SequenceReset gap fill and no replay: {out:?}"
+    );
+    assert!(
+        out.iter().any(|m| m.contains("|123=Y|")),
+        "and it says it is a gap fill: {out:?}"
+    );
+}
+
+/// The session says *keep this*, and the journal is what decides where it
+/// goes. Here: a file, `fsync`ed before `put` returns.
+#[test]
+fn fsync_puts_the_message_on_disk_before_it_returns() {
+    let path =
+        std::env::temp_dir().join(format!("nanofix-journal-fsync-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+
+    let (mut s, _) = logged_on();
+    let mut j: FileJournal<8, SLOT_LEN> =
+        FileJournal::open(&path, Durability::Fsync).expect("open");
+    s.received_with(&order(2), &mut EchoApp, &mut j, |_| {});
+
+    // Nothing has been closed and nothing has been flushed by hand: `Fsync`
+    // means the bytes are already there.
+    let on_disk = std::fs::read(&path).expect("read");
+    assert!(
+        find(&on_disk, b"35=D").is_some(),
+        "the echoed order is on disk: {} bytes",
+        on_disk.len()
+    );
+    assert!(
+        j.get(2).is_some(),
+        "and it can still be replayed without reading the file back"
+    );
+    drop(j);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `Async` is D7's default: the engine thread hands the bytes over and returns.
+/// They reach the disk when the writer thread gets there.
+#[test]
+fn async_reaches_the_disk_once_the_writer_has_caught_up() {
+    let path =
+        std::env::temp_dir().join(format!("nanofix-journal-async-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+
+    let (mut s, _) = logged_on();
+    let mut j: FileJournal<8, SLOT_LEN> =
+        FileJournal::open(&path, Durability::Async).expect("open");
+    for seq in 2..=4u32 {
+        s.received_with(&order(seq), &mut EchoApp, &mut j, |_| {});
+    }
+    assert!(
+        j.get(2).is_some() && j.get(4).is_some(),
+        "a resend is answered from memory, not from the file"
+    );
+
+    // `close` is the only synchronisation there is, and that is the trade:
+    // nothing blocks the engine thread, so nothing knows when the disk has it.
+    j.close();
+    let on_disk = std::fs::read(&path).expect("read");
+    assert_eq!(
+        count_of(&on_disk, b"35=D"),
+        3,
+        "all three reached the writer thread: {} bytes",
+        on_disk.len()
+    );
+    drop(j);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A message longer than a slot is refused rather than truncated, whichever
+/// journal is fitted — a truncated replay is a message that does not checksum.
+#[test]
+fn a_message_too_long_for_a_slot_is_refused_by_every_journal() {
+    let long = vec![b'x'; SLOT_LEN + 1];
+    let mut mem = Store::new();
+    mem.put(9, &long);
+    assert!(mem.get(9).is_none(), "the ring refused it");
+
+    let path =
+        std::env::temp_dir().join(format!("nanofix-journal-long-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let mut file: FileJournal<8, SLOT_LEN> =
+        FileJournal::open(&path, Durability::Fsync).expect("open");
+    file.put(9, &long);
+    assert!(
+        file.get(9).is_none(),
+        "and so did the one that also writes to disk"
+    );
+    drop(file);
+    let _ = std::fs::remove_file(&path);
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn count_of(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|w| *w == needle)
+        .count()
 }
