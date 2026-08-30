@@ -15,13 +15,31 @@ Decisions live in [decisions/](decisions/); what is about to be built lives in [
 
 ## 1. Who this is for
 
+**This is a low-latency FIX engine, and that is a tie-breaker rather than an adjective.**
+[ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md): when
+latency and session density conflict, **latency wins**, and a change that trades per-session
+latency for sessions-per-core needs its own ADR to reverse that. The shape the engine is
+optimised for, budgeted for and measured at is **one session on an isolated polling thread**.
+
+`[measured 2026-08-30]` the reason is arithmetic, not preference. An idle turn is one
+non-blocking `read` per connection and that syscall costs **703 ns**, flat from 1 to 256
+sockets — so a sweep is `N × 703 ns` and a message waits up to one whole sweep to be seen.
+**Two sessions on one polling thread exceed `DESIGN.md` §8's entire budget in polling alone.**
+[reference/measured-costs.md](reference/measured-costs.md).
+
 | User | What they need | Served in |
 |---|---|---|
-| A venue or broker running a FIX gateway for its clients | An **acceptor** that holds many sessions on one core and does not stall | Phase 1 |
+| A firm on a latency-critical path to a venue | An **acceptor or initiator** on a dedicated polling thread, budgeted end to end | Phase 1 — **the shape this engine is built for** |
+| A venue or broker running a FIX gateway for its clients | Many sessions per core, in the **`density`** shape — supported, and carrying its own budget of `N × 703 ns` plus the per-message path rather than the latency figures above | Phase 1, [ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) |
 | A firm connecting out to venues | An **initiator** with reconnect, schedules and sequence persistence | Phase 1 ([ADR-0004](decisions/ADR-0004-bidirectional-engine.md)) |
 | A team building a simulator or a QA exchange | Both sides, plus a dispatch mode that survives an application that blocks | Phase 1 ([ADR-0002](decisions/ADR-0002-engine-library-split.md)) |
 | A market-data consumer | Binary encodings — SBE today, FAST for legacy feeds | Phase 2 |
 | A post-trade / clearing integration | FIXML | Phase 2, explicitly outside the hot-path guarantee |
+
+**Every latency figure this project publishes names its session count**, exactly as
+non-negotiable 10 already requires it to name its machine and its §9 settings. A figure without
+`N` is not a figure. `[2026-08-30]` every number published before that date was taken at **N=1**
+in benches that hold no socket at all — the best case, and it was never labelled as one.
 
 **The differentiator is the acceptor.** `[documented]` As of 2026-08-27 the Rust ecosystem has
 no production-proven FIX acceptor: `hotfix` and `IronFix` are initiator-only, `ferrumfix`

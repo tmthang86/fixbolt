@@ -14,6 +14,15 @@ has a floor of roughly **10–20 µs** wire-to-wire that no codec can move; this
 to make everything above that floor vanish, and to measure the floor honestly
 ([DESIGN.md §8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp)).
 
+**Latency beats session density, and that is a rule rather than a preference**
+([ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). The
+shape this engine is built for is **one session on one isolated polling thread**. `[measured
+2026-08-30]` an idle turn is one non-blocking `read` per connection at **703 ns**, flat from 1
+to 256 sockets, so a sweep costs `N × 703 ns` — **two sessions on a thread exceed the whole
+user-space budget in polling alone**. Many sessions per thread is supported, is named
+`density`, and carries that term instead of these figures. **Every latency number here names
+its session count.**
+
 > **Status: it speaks FIX over a socket.** `[measured 2026-08-30]` the 59 QuickFIX acceptance
 > definitions pass **59 / 59 through kernel TCP**, on an Apple M5 and on a Linux x86_64 box.
 > It scored 39 / 59 on the second machine until 2026-08-30, and the cause turned out to be
@@ -24,6 +33,8 @@ to make everything above that floor vanish, and to measure the floor honestly
 > now runs — which is what finally gave *the engine thread never sleeps in the kernel* a
 > machine check (`scripts/check-no-kernel-sleep.sh`). The application-facing `library` does
 > not exist.
+> **[docs/GUIDE.md](docs/GUIDE.md)** is for embedding the engine — the constraints that
+> show up as latency or lost messages rather than as compile errors.
 > **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;
 > **[docs/DESIGN.md](docs/DESIGN.md)** says how it is built; [STATUS.md](STATUS.md) says
 > where the work stands.
@@ -85,6 +96,7 @@ crates/
                  (more crates are added one at a time, each behind an approved plan)
 fuzz/            cargo-fuzz targets — nightly, outside the workspace
 docs/
+  GUIDE.md       how to embed the engine without losing latency or messages
   PRD.md         what must be built, in which phase, and the distance from QuickFIX
   DESIGN.md      how the system is built, and the latency budget it is built against
   decisions/     ADRs — expensive or hard-to-reverse decisions

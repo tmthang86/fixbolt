@@ -98,6 +98,7 @@ describes. **A stale document is worse than no document.**
 | Directory | Answers |
 |---|---|
 | `docs/PRD.md` | what the product must do, in which phase, and how far it is from QuickFIX |
+| `docs/GUIDE.md` | **how to embed this engine without losing latency or messages** — written for a user of the framework, not a builder of it. Every constraint it names is one the type system cannot enforce |
 | `docs/DESIGN.md` | how the system is built, and the latency budget it is built against |
 | `docs/reference/` | what this thing is — protocol facts, prior art, measured costs, traps |
 | `docs/decisions/` | who decided what, why, at what cost (ADRs) |
@@ -108,6 +109,7 @@ describes. **A stale document is worse than no document.**
 | Move work between phases, or change what a phase must deliver | `PRD.md` §2, and the ADR that moved it |
 | Add / remove / rename a crate | `DESIGN.md` §3 + `README.md` layout + `Cargo.toml` members |
 | The public API of any crate | `DESIGN.md`, the crate's rustdoc, `CHANGELOG.md` |
+| A constraint a user of the engine must honour and the compiler cannot check | `GUIDE.md` |
 | Codec, session, dispatch, transport or backpressure behaviour | `DESIGN.md` §4, and re-walk §2 above |
 | A gate's target, or how it is measured | `DESIGN.md` §6 — and the benchmark that asserts it, in the same commit |
 | Anything that moves a row of the latency budget | `DESIGN.md` §8, with the measurement that moved it |

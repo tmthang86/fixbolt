@@ -15,6 +15,13 @@ of roughly **10–20 µs** wire-to-wire that no codec can move — the figure §
 only one this repository uses. The job is to make everything *above* that floor disappear, and
 to measure the floor honestly.
 
+**The shape that positioning assumes is one session on one isolated polling thread**
+([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). Latency
+beats session density here, and the tie-breaker has teeth: a change trading per-session latency
+for sessions-per-core needs its own ADR to reverse it. Many sessions on a thread is supported
+and named **`density`**; it carries `N × 703 ns` of polling and **does not inherit the latency
+figures on this page**. Every figure here names its `N`.
+
 What must be built and in which phase is [PRD.md](PRD.md); this document is *how*.
 
 > **The name is `fixbolt`**, decided 2026-08-30. It replaced the placeholder
@@ -47,6 +54,17 @@ A second principle, learned from reviewing the first draft of this document: **t
 ~1% of the wire-to-wire budget on kernel TCP.** A design that optimises the codec and says
 nothing about I/O strategy, outbound encoding, or the OS underneath has optimised the wrong
 1%. §4 D8–D10, §8 and §9 exist because of that review.
+
+**A third principle, and it is the second one turning on its author.** `[measured 2026-08-30]`
+the I/O strategy §4 D8 chose — one non-blocking `read` per connection per turn — costs
+**703 ns per socket**, flat from 1 to 256 sockets, of which **353.8 ns is kernel entry and exit
+doing nothing**. This document's own `parse NewOrderSingle` is **125.5 ns**. *The syscall that
+discovers there is nothing to parse costs 5.6× the parse.* So the second principle was right and
+incompletely applied: the codec was priced, the I/O strategy was chosen and **never priced**, and
+§8's budget was written for "the user-space path" — the half that was already cheap.
+[ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) is the
+consequence: **latency wins over session density, the budget is stated end to end including
+syscalls, and every figure names its session count `N`.**
 
 ## 2. Layers
 
@@ -701,14 +719,25 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 |---|---|---|
 | NIC → kernel → socket buffer | 3–8 µs | Kernel, IRQ affinity, driver |
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
-| Wakeup — `epoll` **vs** busy-poll (D8) | 2–5 µs **vs** ~0 | **This design** |
+| Wakeup — `epoll` **vs** busy-poll (D8) | 2–5 µs **vs** `[measured 2026-08-30]` **703 ns × N**, N = sockets on the thread | **This design** |
 | Parse (D2) | ~0.14 µs | This design |
 | Session machine (D1) | ~0.1 µs | This design |
 | Dispatch — inline **vs** ring (D4) | ~0 **vs** 0.2–0.5 µs | Application's choice |
 | Serialise — template (D9) | ~0.05 µs | This design |
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
-| **Everything this design controls** | **< 1 µs** | |
+| **User-space work only** | **< 1 µs** | The half that was always cheap |
+| **Everything this design controls, N = 1** | **~1.7 µs** — the row above plus one 703 ns poll | |
+| **Everything this design controls, N sessions** | **`< 1 µs + N × 703 ns`** | |
+
+`[measured 2026-08-30]` **the last two rows are the honest bottom line and the "< 1 µs" line
+alone was not.** It counted user-space work and excluded the syscall that reaches the socket —
+which this design chose, and can change by batching it, removing it, or carrying fewer sockets.
+**At N = 2 the polling sweep alone exceeds the whole user-space budget.**
+[ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) settles what
+follows from that: one session per polling thread is the shape this table describes, `density`
+is a labelled mode carrying the `N × 703 ns` term, and **no latency figure is published without
+its `N`**.
 
 The TLS row has no number in it on purpose: none has been measured here, and none is quoted
 from elsewhere either. It gets filled in when `tools/w2w` runs the same load three ways — TLS
@@ -717,7 +746,9 @@ off, kTLS, userspace `rustls` — on the same Linux box (ADR-0005 decision 5).
 Two readings of this table:
 
 1. On kernel TCP, this engine's user-space path is **under 5% of the total**. The design
-   makes that 5% as small as it can be, and — through D8 — removes the one kernel cost it can.
+   makes that 5% as small as it can be, and — through D8 — trades `epoll`'s 2–5 µs wakeup for a
+   703 ns poll. `[measured 2026-08-30]` **that trade wins at N = 1 and loses by N = 8**, which
+   is the sentence this table did not contain until the poll was measured.
 2. Going below the floor means kernel bypass (OpenOnload, DPDK, `ef_vi`). That is L0's
    job, behind a feature flag that actually gates (D5), and it is **not v1**.
 
