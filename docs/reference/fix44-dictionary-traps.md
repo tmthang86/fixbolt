@@ -356,7 +356,7 @@ stopped a caller stating a wrong length. `group_roundtrip.rs` now writes **508 D
 each with a `0x01` inside its value — a DATA value without one is indistinguishable from an
 ordinary field and would make the whole case vanish.
 
-`[to testing-skills]` — *fifteen out of sixteen is what a lucky fixture looks like.* A rule
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *fifteen out of sixteen is what a lucky fixture looks like.* A rule
 derived from a set where almost every member satisfies it by coincidence will pass every
 example anyone writes. The defence is to enumerate the set and check the rule against all of
 it — which took one script here and would have found this on day one.

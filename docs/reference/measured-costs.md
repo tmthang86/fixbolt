@@ -105,7 +105,7 @@ The target was written as a comment. Nothing read it, nothing failed when it was
 [DESIGN.md §6](../DESIGN.md#6-gates) names a committed benchmark, and the benchmark asserts
 the bound. A target that only a human can check is not a gate.
 
-`[to testing-skills]` — *a target written as a comment is not a gate.* One measured instance,
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *a target written as a comment is not a gate.* One measured instance,
 7× off, unnoticed. Nothing FIX-specific in it.
 
 ---
@@ -257,7 +257,7 @@ reports "still zero" is a reversal that did not run.** `CLAUDE.md` §7 already
 says a guard is proven by reversal and that the reversal must be confirmed to
 have changed something. This is what that sentence costs when it is skipped.
 
-`[to testing-skills]` — *the optimiser deleted the reversal.* `false-greens.md` §5 already has
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *the optimiser deleted the reversal.* `false-greens.md` §5 already has
 "a reversal can itself be a no-op" from a search-and-replace that missed; this is the same
 shape produced by the compiler instead, which no amount of grepping the diff would catch.
 
@@ -288,7 +288,7 @@ Two things follow, and the second is the general one:
   checking.** For a generic-heavy crate that is a binary that actually uses it,
   not the library.
 
-`[to testing-skills]` — *two instruments that cannot see what they were pointed at*: a syscall
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *two instruments that cannot see what they were pointed at*: a syscall
 tracer the OS refuses to run, and a symbol check that passes with the violation present. Both
 were deleted rather than shipped, which is the part worth contributing.
 
@@ -316,7 +316,7 @@ assert_eq!(engine.connections(), 1, "not dropped at message two");
 and traffic with increasing sequence numbers, rendered before the count starts
 so the harness's own `format!` is not charged to the engine.
 
-`[to testing-skills]` — *the benchmark measured a torn-down system.* Sibling of "the vacuous
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *the benchmark measured a torn-down system.* Sibling of "the vacuous
 wait": an assertion whose expected value is *nothing* passed because the thing under test was
 no longer there. Contribute the fix — every case asserts its own path is live.
 
@@ -460,7 +460,7 @@ Two things, and the second is the expensive one.
   settled. What it lacked was a single-variable experiment — the 2 × 2 above took one run per
   cell and would have refuted it before any of that was written.
 
-`[to testing-skills]` — two cases, both legible without FIX. *The knob that correlates with
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — two cases, both legible without FIX. *The knob that correlates with
 the fix and is not the cause* — a monotonic response to a timeout, a plausible mechanism, and
 a completely different real cause. And *the test rig as the only misconfigured peer*: the
 system under test had `TCP_NODELAY` set and the harness did not, so the harness measured a
@@ -512,7 +512,7 @@ Two rules, and neither is about FIX:
 - **`-D warnings` with an unpinned toolchain is a scheduled outage.** Either pin the
   toolchain and upgrade deliberately, or deny a named list rather than the category.
 
-`[to testing-skills]` — two cases. *A red check nobody read*, which is the mirror of
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — two cases. *A red check nobody read*, which is the mirror of
 `false-greens.md` §7 "the report that only speaks when it fails": here it spoke and there was
 no one on the channel. And *`-D warnings` against a rolling toolchain*, where the failing
 build is caused by a release rather than by a change. The second is not a false green at all
@@ -562,7 +562,7 @@ on the machine it was tuned for; deleting it throws away a real guard; making it
 per-machine baseline is a design change to how a `DESIGN.md` §6 gate is measured, which the §4
 sync table says needs its own plan. `STATUS.md` open item 20.
 
-`[to testing-skills]` — two cases. *A threshold calibrated on one machine and asserted on
+`[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — two cases. *A threshold calibrated on one machine and asserted on
 another*: the number is honest, the comparison is not, and the failure looks exactly like a
 regression. And *the assertion nothing runs* — a guard outside the command CI actually invokes,
 which is a false green that never even had to lie, because nobody asked it.

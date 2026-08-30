@@ -485,6 +485,22 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
   clean store. **The corpus and a real deployment want opposite behaviour, and `connect` cannot
   tell which it is in.** [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)
   proposes separating the two and is `Proposed`.
+- **Seven cases went back to `testing-skills`, and the queue now matches the rule.**
+  [PR #2](https://github.com/tmthang86/testing-skills/pull/2), draft, on branch
+  `claude/false-greens-from-a-protocol-engine`: three new numbered cases in `false-greens.md`
+  (the knob that moved with the fix and was not the cause; the check nobody ran; fifteen out of
+  sixteen), a fourth on instruments that cannot see what they were aimed at, two more ways a
+  reversal inserts nothing added to its §5, and two foldings into its §2 and §11. **The first
+  commit contributed four of the seven due and the second fixed that** — `CLAUDE.md` §11 says a
+  case goes back when the plan that found it closes, and three came from closed plans.
+  `[measured]` upstream's own checks on the branch: `validate-repo.mjs` 0 errors 0 warnings,
+  `compare-design.mjs --self-test` 33/33, `check-theme-contract.mjs --self-test` all passed.
+  **One case is correctly still held**: the `ktls` blocker case, because that plan is paused
+  rather than closed.
+- **The contribution is evidence upstream could not previously have.** Its roadmap names its
+  biggest gap as *nothing proven against a real system*, with everything measured on one Tauri
+  app through a UI. These came from a system with **no UI at all** — no browser, no locators, no
+  screenshots — and the same shapes appear, which is what makes them not browser problems.
 
 ## Not proven — claimed, researched, or simply not yet run
 
