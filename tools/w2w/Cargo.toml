@@ -7,6 +7,18 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+# `[measured 2026-08-30]` THIS BLOCK IS NOT DECORATION. Without it,
+# `#[cfg(feature = "standard")]` in `src/main.rs` refers to a feature **this**
+# crate does not have — features are per-crate, and a `cfg` never reaches into a
+# dependency's. Every such branch silently took its `else`, so `--mode standard`
+# was accepted, printed its banner, and ran nothing. The binary worked; the mode
+# did not exist. `CLAUDE.md` §2 rule 6 guards the mirror image of this — a
+# feature in the manifest whose `mod` is not behind `#[cfg]` — and this is the
+# same mistake from the other side.
+[features]
+default = ["standard"]
+standard = ["fixbolt-engine/standard"]
+
 [dependencies]
 fixbolt-engine = { path = "../../crates/engine" }
 fixbolt-session = { path = "../../crates/session" }

@@ -109,8 +109,9 @@ Added one at a time, each behind an approved plan.
 | `dict` | build | Code generation from FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the four validation tables — defined tags, message types, per-message tag sets, field types and enum values | `codec` — it implements `codec::Dictionary` |
 | `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised. Time enters as `Tick`, in **milliseconds since 0000-01-01** — see D13 | `codec`, `dict` |
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
-| `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport` |
+| `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport`, and **`libc` only under the `standard` feature** |
 | | | `[2026-08-30]` step 1 of six exists: `Transport`, `TcpTransport`, `Loopback`, `Waiting`. `transport` is a module here rather than its own crate until something needs it to be otherwise | |
+| | | `[2026-08-30]` modules `poll`, `block` and `waker` — `poll(2)` and `standard`'s idle turn, behind `#[cfg(all(feature = "standard", unix))]`. **The crate's first external dependency and first `unsafe`, both behind that feature**: `--no-default-features` builds it with neither (ADR-0014) | |
 | `library` | L4 | The application-facing API | `engine` |
 | `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
 
@@ -424,12 +425,66 @@ configuration pins a core at 100% is one most people cannot evaluate — it look
 costs **703 ns per socket per turn**, so the trade **wins at N = 1 and loses by N = 8**.
 `standard` is the honest default for everything that is not one session on an isolated core.
 
-`Waiting` is a trait and is the right seam, but **`wait::Park` is not `standard`**: it is
+`Waiting` is a trait and is the right seam, but **`wait::Yield` is not `standard`**: it is
 `std::thread::yield_now()`, which yields the scheduler and **does not block**, so it still
-burns its core. A real `standard` mode blocks on readiness, which is a `Transport` concern
-because the poller must know the sockets — D5 already makes that a trait. `[2026-08-30]` **not
-built yet**; ADR-0013 open question 1 is which mechanism and which dependency, and `std`
-exposes none.
+burns its core. It is `[renamed 2026-08-30]` from `Park` for exactly that reason, and its
+rustdoc now says it fails **both** gates rather than sitting beside `Spin` as a peer.
+
+A real `standard` mode blocks on readiness, which needs the sockets — so
+[ADR-0014](decisions/ADR-0014-standard-mode-blocks-on-poll.md) hands the source list to
+`Waiting::idle` and has `Transport` name its own descriptor, rather than splitting idling
+across two traits. The mechanism is **`poll(2)` through `libc`, behind a default-on `standard`
+feature**; `epoll` is O(1) where this is O(N) and is a later ADR **with numbers**, because the
+difference at `standard`'s shape is unmeasured. On a target with no poller `wait::Block` does
+not exist, so the refusal is a compile error rather than a startup one.
+
+`[2026-08-30]` **The seam and the blocking strategy are built; the wiring is not.** `Source`,
+`Interest`, `Transport::POLLABLE`/`source()`, `poll::Poller` and `block::Block` exist and are
+tested. `Block` blocks on readiness at a **100 ms** timeout — which is a correctness parameter,
+not a knob, because a session with no clock sees time only through `Input::Tick` and in
+`standard` that timeout is what delivers it.
+
+**The source list is built too.** One interest per connection — readable always, writable only
+while that connection still has bytes queued, because a socket is almost always ready to accept
+bytes and asking unconditionally would wake the engine continuously. It is rebuilt every turn,
+never cached: a `Source` borrows a descriptor, and one kept across a turn can name a socket that
+has since closed and been reissued. `serve` hands the listener over, so a connection is accepted
+on the connect rather than on the next timeout. Pairing a blocking strategy with a transport
+that cannot name a source — `Loopback` — **does not compile**.
+
+**And the waker.** `poll` wakes for descriptors and not for a ring buffer, so a reply produced
+on the application's thread would wait out the whole timeout; a self-pipe closes that. The
+engine holds the read end itself and **drains it after every wait**, because a pipe with an
+unread byte stays readable and an undrained one makes every subsequent `poll` return instantly
+— a working engine, burning a core, which is the single thing this mode exists to avoid.
+
+**Both modes are now reachable end to end.** `serve` is `standard` and `serve_hft` spins, both
+over one shared loop; `tools/w2w --mode hft|standard|yield` prints the mode it ran and
+`scripts/check-no-kernel-sleep.sh` reads that back rather than trusting the flag it passed. Its
+red half is now `standard`'s real `poll`, because nobody writes `sched_yield` into an engine by
+accident and somebody might well reach for `poll`.
+
+`[measured 2026-08-30]` first figures, on a **shared 4-vCPU container that is not a §9 machine**:
+`hft` p50 17.7 µs, `standard` p50 29.0 µs, `yield` p50 18.2 µs. Not publishable, and one thing in
+them is worth reading anyway — **`standard`'s p50 is three orders of magnitude below its 100 ms
+timeout**, so it is woken by the data and not by its own clock. The §8 row below keeps its "from
+the literature" label until a §9 machine says otherwise.
+
+**And rule 4's second half is now machine-checked.**
+`scripts/check-standard-gives-the-core-back.sh` asserts four things at once, because CPU near
+zero is passable by three different broken engines: the mode the binary reports, its CPU over a
+wall-clock window, its scheduler state sampled to tell sleeping from dead, and the round-trip p50
+against the poll timeout. `[measured 2026-08-30]` an engine made to ignore readiness reads **0%
+CPU**, is found sleeping **20 of 20 samples**, and has a p50 of **99 046 599 ns** — one whole
+timeout. Only the fourth assertion sees it.
+
+`[measured 2026-08-30]` **The 59 definitions pass in `standard` too**, with the engine blocking
+between steps — `cargo test -p fixbolt-engine --test wire`, second case.
+
+**What is left needs a machine this repository does not have running.** The `standard` wakeup
+cost has to be measured where `scripts/check-machine.sh` says `pass 10 fail 0`, and the row in §8
+below keeps its *from the literature* label until then. It joins open items 6, 11 and 13, which
+are waiting on the same desk.
 
 **As built.** `Engine::turn` is one non-blocking pass over every connection — flush what is
 queued, **tick the clock**, read once, cut whole messages out, judge them, flush again — and
@@ -610,6 +665,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Session conformance, acceptor | **59 / 59** | `cargo test -p fixbolt-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
 | The journal keeps what a resend needs, under each D7 policy | `None` fills over everything; `MemJournal` and `FileJournal` replay; a message longer than a slot is refused rather than truncated | `crates/engine/tests/journal.rs`, seven tests. Reversal: making `put` keep nothing turns four of them red **and drops the acceptance score**, which is what proves the score depends on the journal |
 | Session conformance, acceptor, **through a real socket** | **59 / 59, on every machine** | `cargo test -p fixbolt-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59 on the M5 and on Linux x86_64** — **met**. It read 39 / 59 on Linux until the harness's client socket was given `TCP_NODELAY`, which the engine's own sockets have always had; the gate is now flat across a 20× span of its timing bounds, which is what makes the figure mean something |
+| **A `standard` engine gives the core back** | engine-thread CPU under 5% over a wall-clock window, found sleeping rather than running, **and** a round-trip p50 far below the poll timeout | `scripts/check-standard-gives-the-core-back.sh`, non-negotiable 4's second half. Four assertions, because CPU near zero is also what a dead thread, a run that never reached the mode, and an engine woken by its own timeout all report. `[measured 2026-08-30]` a `Block` made to ignore readiness reads **0% CPU**, sleeping **20/20**, p50 **99 046 599 ns** — only the p50 catches it. Requires **`hft` and `yield`** to trip it, and separates *failed the policy* from *could not be measured* so a broken harness cannot pass as a red half |
+| Session conformance, acceptor, **in `standard` mode** | **59 / 59** with the engine blocking between steps | `cargo test -p fixbolt-engine --test wire`, second case. ADR-0013's stated cost — *two modes is two things to test, for ever* — and the only place the corpus meets `standard`, since every other line of that file drives `turn` by hand where the idle strategy is never reached. **It proves the protocol, not the wiring**: `[measured 2026-08-30]` with `Block` made to ignore readiness, and again with the listener removed from the poll set, the run took 3.30 s and 3.34 s against a 3.28 s baseline — the settle criterion is 1 ms and the timeout 5 ms, so one block satisfies it either way |
 | **The engine thread never sleeps in the kernel** | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`. Traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid — the client blocks on purpose and would mask everything. `[measured 2026-08-30]` Linux 6.18 x86_64: `accept4`, `recvfrom`, `sendto` and **zero** of `epoll_wait`/`poll`/`select`/`futex`/`nanosleep`/`sched_yield`. **The script runs the binary again with `wait::Park` and fails if that run does *not* trip it** — non-negotiable 4 had two machine checks before this one and both were green with a sleep present |
 | Allocations on the hot path — engine | **0**, counted separately on seven paths: idle, send, recv, frame, turn, busy, ring | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
@@ -626,7 +683,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |
 | `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
-| Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job |
+| Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job. **`[measured 2026-08-30]` the workspace-wide command alone is not enough**: `cargo test --all --no-default-features` still built `libc`, because `tools/w2w` depends on `fixbolt-engine` with defaults and cargo unifies features across one invocation — the flag under test was switched back on by a sibling crate. See [reference/feature-flags-unify-across-a-workspace.md](reference/feature-flags-unify-across-a-workspace.md) |
+| An optional dependency is really optional | absent from the crate's graph with no features on, **and** the crate still builds and tests that way | `scripts/check-no-optional-deps.sh`, run by the same CI job, **per crate** — the only scope where `--no-default-features` means what it reads as. Reversal: removing `optional = true` from `libc` turns it red with the graph printed |
 | No documentation link points at a missing file | 155 internal links resolve | `scripts/check-links.py`, run in CI |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |
 

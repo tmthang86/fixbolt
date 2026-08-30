@@ -35,9 +35,15 @@ enjoy diagnosing — it is the engine doing exactly what you asked.
 
 **A `standard` number and an `hft` number are not comparable.** When you publish one, say which.
 
-`[2026-08-30]` **`standard` is not built yet.** The decision is accepted and the code is not
-written; today the engine spins. Everything below describes the design both modes share, and
-says where a mode changes it.
+`[2026-08-30]` **`standard` is built.** `serve(addr, cfg, app, capacity)` is `standard` and is
+what you get if you say nothing; `serve_hft` is the spinning one. Everything below describes the
+design both modes share, and says where a mode changes it.
+
+**The `hft` figures on this page have not moved and none of them describes `standard`**, whose
+own numbers do not exist yet on a machine worth quoting — `[measured 2026-08-30]` a shared
+container gave `standard` p50 29.0 µs against `hft` 17.7 µs, which is a ratio on one untuned box
+and not a figure. What that run does establish is that `standard` is woken by the data rather
+than by its own 100 ms timeout, three orders of magnitude apart.
 
 ---
 

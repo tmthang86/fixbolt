@@ -14,10 +14,16 @@
 # syscalls to the engine thread by tid rather than to the process, because the
 # client on the main thread blocks on purpose and would mask everything.
 #
-# **It runs the binary twice and REQUIRES THE SECOND RUN TO FAIL.** `--park`
-# swaps `wait::Spin` for `wait::Park`, which is `sched_yield`. A guard that has
-# only ever been seen passing is not known to work, and this one has two
+# **It runs the binary twice and REQUIRES THE SECOND RUN TO FAIL.** A guard that
+# has only ever been seen passing is not known to work, and this one has two
 # predecessors that were exactly that.
+#
+# `[2026-08-30]` The red half is now `--mode standard`, and it used to be
+# `--park` (`sched_yield`). The reason for moving it: **nobody writes
+# `sched_yield` into an engine by accident.** A blocking readiness call is what
+# an actual regression looks like — somebody reaches for `poll` because it is
+# the obvious way to wait — so the red half now trips on the syscall a real
+# mistake would make rather than on one nothing would.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,14 +47,25 @@ engine_syscalls() {
   local out="${TMP}/out.$1" tr="${TMP}/tr.$1" tid
   strace -f -o "${tr}" "${BIN}" --messages 300 --warmup 50 --hold-ms 400 ${2:-} \
     > "${out}" 2>&1 || { echo "w2w failed:" >&2; tail -5 "${out}" >&2; return 1; }
+  # **Read the mode back rather than trusting the flag.** `[measured
+  # 2026-08-30]` `--mode standard` was once accepted, printed its banner, and
+  # ran hft anyway, because the `#[cfg(feature = ...)]` selecting it named a
+  # feature the binary's own manifest did not declare. A gate that assumes its
+  # own arm ran is a gate that can be green about the wrong binary.
+  local ran_mode
+  ran_mode="$(grep -oE '^mode: [a-z]+' "${out}" | head -1 | cut -d' ' -f2)"
+  if [[ "${ran_mode}" != "$1" ]]; then
+    echo "w2w ran mode '${ran_mode}' when '$1' was asked for" >&2
+    return 1
+  fi
   tid="$(grep -oE 'engine-tid: [0-9]+' "${out}" | head -1 | grep -oE '[0-9]+')"
   [[ -n "${tid}" ]] || { echo "no engine-tid in output" >&2; return 1; }
   echo "${tid}" > "${TMP}/tid.$1"
   awk -v t="${tid}" '$1==t {print $2}' "${tr}" | grep -oE '^[a-z_0-9]+' | sort | uniq -c | sort -rn
 }
 
-echo "== GREEN half: wait::Spin, which is what a deployment runs =="
-spin="$(engine_syscalls spin)" || exit 1
+echo "== GREEN half: hft mode, which is what DESIGN.md D8 describes =="
+spin="$(engine_syscalls hft "--mode hft")" || exit 1
 echo "${spin}" | head -8
 found="$(echo "${spin}" | grep -cE " (${SLEEPERS})$" || true)"
 
@@ -57,8 +74,8 @@ found="$(echo "${spin}" | grep -cE " (${SLEEPERS})$" || true)"
 ran="$(echo "${spin}" | grep -cE ' (recvfrom|sendto)$' || true)"
 
 echo
-echo "== RED half: wait::Park, the same loop with sched_yield in it =="
-park="$(engine_syscalls park --park)" || exit 1
+echo "== RED half: standard mode, the same loop blocking on readiness =="
+park="$(engine_syscalls standard "--mode standard")" || exit 1
 echo "${park}" | head -8
 park_found="$(echo "${park}" | grep -cE " (${SLEEPERS})$" || true)"
 
@@ -76,9 +93,9 @@ else
 fi
 
 if [[ "${park_found}" -eq 0 ]]; then
-  echo "FAIL: --park did NOT trip the check, so the check cannot fail and means nothing" >&2
+  echo "FAIL: --mode standard did NOT trip the check, so the check cannot fail and means nothing" >&2
   rc=1
 else
-  echo "RED   ok — --park trips it: $(echo "${park}" | grep -E " (${SLEEPERS})$" | tr -s ' ' | paste -sd' ' -)"
+  echo "RED   ok — --mode standard trips it: $(echo "${park}" | grep -E " (${SLEEPERS})$" | tr -s ' ' | paste -sd' ' -)"
 fi
 exit "${rc}"

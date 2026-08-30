@@ -35,9 +35,32 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fixbolt_engine::dispatch::InlineDispatch;
-use fixbolt_engine::wait::{Park, Spin, Waiting};
+use fixbolt_engine::transport::Interest;
+use fixbolt_engine::wait::{Spin, Waiting, Yield};
 use fixbolt_engine::{Acceptor, Engine};
 use fixbolt_session::{Application, Config};
+
+/// Which idle strategy the engine thread runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Spin. `DESIGN.md` D8's `hft` half, and this tool's default.
+    Hft,
+    /// Block on readiness. The engine's default, and not this tool's.
+    Standard,
+    /// `sched_yield`. **Neither mode**, and it is here to be seen failing both
+    /// gates rather than described as failing them.
+    Yield,
+}
+
+impl Mode {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Hft => "hft",
+            Self::Standard => "standard",
+            Self::Yield => "yield",
+        }
+    }
+}
 
 /// The application that is never called.
 ///
@@ -69,7 +92,24 @@ fn main() -> std::io::Result<()> {
     let acceptor = Acceptor::bind("127.0.0.1:0")?;
     let addr = acceptor.local_addr()?.to_string();
 
-    let park = args.iter().any(|a| a == "--park");
+    // ADR-0013 decision 4: every published figure names its mode. `hft` stays
+    // the default here even though `standard` is the engine's, because these
+    // numbers exist to describe `hft` and changing the default would silently
+    // change every figure this project has published (ADR-0014 decision 8).
+    let mode = match arg::<String>(&args, "--mode").as_deref() {
+        None | Some("hft") => Mode::Hft,
+        Some("standard") => Mode::Standard,
+        Some("yield") => Mode::Yield,
+        Some(other) => {
+            eprintln!("w2w: unknown --mode {other}; expected hft, standard or yield");
+            return Ok(());
+        }
+    };
+    // Printed before anything else, on its own line, because
+    // `scripts/check-no-kernel-sleep.sh` and
+    // `scripts/check-standard-gives-the-core-back.sh` both read it back to
+    // prove they ran the arm they meant to.
+    println!("mode: {}", mode.name());
 
     let stop = Arc::new(AtomicBool::new(false));
     let engine_stop = Arc::clone(&stop);
@@ -77,11 +117,17 @@ fn main() -> std::io::Result<()> {
     // The engine thread, in the shape a deployment runs: `Spin` +
     // `InlineDispatch` + `SystemClock`, which is what `TcpAcceptorEngine` names.
     //
-    // `--park` swaps `Spin` for `Park`, and it exists for exactly one reason:
-    // **`scripts/check-no-kernel-sleep.sh` runs this binary both ways and
-    // requires the second one to fail.** Non-negotiable 4 has had two machine
-    // checks before this and both were green with a `sleep` present, so a guard
-    // here that cannot be shown to go red is worth nothing.
+    // `--mode` swaps the idle strategy and nothing else, which is what lets one
+    // binary serve as both halves of two gates:
+    //
+    //   * `check-no-kernel-sleep.sh` runs `hft` and requires **`standard`** to
+    //     trip it, on a real `poll`/`ppoll`. Non-negotiable 4 has had two
+    //     machine checks before this and both were green with a `sleep`
+    //     present, so a guard that cannot be shown to go red is worth nothing.
+    //   * the `standard` gate runs `standard` and requires `hft` to trip it.
+    //
+    // `yield` is neither mode and is here to demonstrate it: it must fail both
+    // gates. Until this flag existed that claim was only prose.
     let engine = std::thread::Builder::new()
         .name("w2w-engine".into())
         .spawn(move || {
@@ -95,10 +141,19 @@ fn main() -> std::io::Result<()> {
             {
                 println!("engine-tid: {tid}");
             }
-            if park {
-                pump(acceptor, &engine_stop, Park);
-            } else {
-                pump(acceptor, &engine_stop, Spin);
+            match mode {
+                Mode::Hft => pump(acceptor, &engine_stop, Spin),
+                Mode::Yield => pump(acceptor, &engine_stop, Yield),
+                #[cfg(all(feature = "standard", unix))]
+                Mode::Standard => pump(
+                    acceptor,
+                    &engine_stop,
+                    fixbolt_engine::block::Block::new(16),
+                ),
+                #[cfg(not(all(feature = "standard", unix)))]
+                Mode::Standard => {
+                    eprintln!("w2w: this build has no standard mode");
+                }
             }
         })
         // `?`, not `expect`: CLAUDE.md §2 rule 7 denies unwrap/expect/panic
@@ -157,6 +212,7 @@ fn main() -> std::io::Result<()> {
     samples.sort_unstable();
     let pick = |q: f64| samples[((samples.len() as f64 - 1.0) * q) as usize];
     println!("w2w: TestRequest -> Heartbeat, over kernel TCP on loopback");
+    println!("     mode   {:>9}", mode.name());
     println!("     {} samples after {} warmup", samples.len(), warmup);
     println!("     min    {:>9} ns", samples[0]);
     println!("     p50    {:>9} ns", pick(0.50));
@@ -166,6 +222,7 @@ fn main() -> std::io::Result<()> {
     println!("NOT A LATENCY NUMBER FOR PUBLICATION unless this machine matches");
     println!("DESIGN.md §9 — isolated cores, no frequency scaling, pinned threads.");
     println!("CLAUDE.md §2 rule 10: a number without its machine is someone else's claim.");
+    println!("ADR-0013 decision 4: and a standard figure is not an hft figure.");
     Ok(())
 }
 
@@ -191,12 +248,14 @@ fn pump<W: Waiting>(acceptor: Acceptor, stop: &AtomicBool, wait: W) {
         wait,
         8,
     );
+    let listener = acceptor.source().map(Interest::readable);
+    let extra: &[Interest] = listener.as_slice();
     while !stop.load(Ordering::Relaxed) {
         while let Some(t) = acceptor.accept() {
             let _ = engine.add(t);
         }
         if !engine.turn() {
-            engine.idle();
+            engine.idle_with(extra);
         }
     }
 }

@@ -28,8 +28,8 @@ use fixbolt_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
 use fixbolt_engine::frame::{Cut, Framer};
 use fixbolt_engine::journal::Store;
 use fixbolt_engine::ring;
-use fixbolt_engine::transport::{Io, Loopback, TcpTransport, Transport};
-use fixbolt_engine::wait::Park;
+use fixbolt_engine::transport::{Interest, Io, Loopback, TcpTransport, Transport};
+use fixbolt_engine::wait::Yield;
 use fixbolt_engine::{Application, Config, Engine};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -184,7 +184,7 @@ fn main() {
         fixbolt_session::Acceptor,
         InlineDispatch<Silent>,
         ManualClock,
-        Park,
+        Yield,
         Store,
         256,
         4096,
@@ -193,7 +193,7 @@ fn main() {
         Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
         InlineDispatch::new(Silent),
         ManualClock::at(FIXED_TIME_MILLIS),
-        Park,
+        Yield,
         4,
     );
     let _ = engine.add(engine_side);
@@ -251,7 +251,7 @@ fn main() {
         fixbolt_session::Acceptor,
         InlineDispatch<Silent>,
         ManualClock,
-        Park,
+        Yield,
         Store,
         256,
         4096,
@@ -260,7 +260,7 @@ fn main() {
         Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
         InlineDispatch::new(Silent),
         ManualClock::at(FIXED_TIME_MILLIS),
-        Park,
+        Yield,
         4,
     );
     let _ = engine2.add(engine_side2);
@@ -314,9 +314,72 @@ fn main() {
     });
     assert_eq!(ringed.refused(), 0, "no case above met a full ring");
 
+    // `standard`'s idle turn rebuilds the list of sources to wait on, every
+    // time — a `Source` borrows a descriptor, so one cached across a turn can
+    // name a socket that has since closed and been reissued. Rebuilding is
+    // therefore not optional, and it is on the idle path, which is the one the
+    // engine spends nearly all its turns on.
+    //
+    // Real sockets, because `Loopback` has no descriptor and would contribute
+    // nothing to measure. The listener is passed as the `extra` source, so the
+    // measured path is exactly what `serve` calls.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = listener.local_addr().expect("bound");
+    let acceptor = fixbolt_engine::Acceptor::bind("127.0.0.1:0").expect("a free port");
+    let extra: Vec<Interest> = acceptor
+        .source()
+        .map(Interest::readable)
+        .into_iter()
+        .collect();
+    let mut tcp: Engine<
+        TcpTransport,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    for _ in 0..4 {
+        let client = TcpStream::connect(addr).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        core::mem::forget(client);
+        tcp.add(TcpTransport::new(server).expect("non-blocking"));
+    }
+    assert_eq!(
+        tcp.connections(),
+        4,
+        "the interest path must have connections"
+    );
+    assert_eq!(
+        tcp.refresh_interests_with(&extra).len(),
+        4 + extra.len(),
+        "and the list it builds must not be empty"
+    );
+
+    let interests_allocs = count(|| {
+        for _ in 0..10_000 {
+            core::hint::black_box(tcp.refresh_interests_with(&extra));
+        }
+    });
+    assert_eq!(
+        tcp.sources_missing(),
+        0,
+        "every connection named its socket"
+    );
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
-         frame {frame_allocs} turn {turn_allocs} busy {busy_allocs} ring {ring_allocs}"
+         frame {frame_allocs} turn {turn_allocs} busy {busy_allocs} ring {ring_allocs} \
+         interests {interests_allocs}"
     );
     assert_eq!(
         [
@@ -326,9 +389,10 @@ fn main() {
             frame_allocs,
             turn_allocs,
             busy_allocs,
-            ring_allocs
+            ring_allocs,
+            interests_allocs
         ],
-        [0; 7],
+        [0; 8],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

@@ -95,7 +95,64 @@ below describe what a first release would contain.
     one value for two opposite facts — a session dropped because the counterparty was quiet, or
     a loop spinning forever on a socket that closed. Same answer the codec reached for
     `Parsed::Incomplete`.
-  - `Waiting`, with `Spin` (the default, D8) and `Park` (every test in this repository).
+  - `Waiting`, with `Spin` (`hft`, D8) and `Yield` (every test in this repository).
+    **`Waiting::idle` takes the source list**, and `Waiting::NEEDS_SOURCES` says whether a
+    strategy actually needs it — blocking on readiness requires knowing the sockets, and
+    splitting idling across two traits to express that would have been worse than showing the
+    sources to a waiter that ignores them. `Spin` drops the slice and the call disappears at
+    `-O2`. [ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md) decision 3.
+  - `Transport::POLLABLE` and `Transport::source()`, with `Source` and `Interest`.
+    `source()` has a default body returning `None`, so a transport written elsewhere keeps
+    compiling; what it cannot do is join a `standard` engine. `Source::from_raw_fd` is public
+    because without it no transport outside this crate could ever be pollable — **and it
+    borrows rather than owns**: a `Source` outliving its socket silently starts naming whichever
+    socket the kernel gave that number to next.
+  - `poll::{Poller, PollError, Ready}`, behind the **`standard` feature (on by default)** and
+    `cfg(unix)`. The crate's first external dependency (`libc`) and first `unsafe`, both
+    arriving behind that feature: `--no-default-features` still builds an engine with **no
+    dependency and no `unsafe` at all**. `POLLNVAL` is `PollError::BadSource`, never counted as
+    readiness — `poll(2)` includes it in its return value, so trusting that number would report
+    an unknown descriptor as a ready one.
+  - `block::Block` — `standard` mode's idle turn, behind the same feature and `cfg(unix)`.
+    Blocks on readiness with a **100 ms default timeout**, floored at 5 ms because a timeout
+    short enough to be indistinguishable from a spin defeats the mode. The timeout is a
+    correctness parameter rather than a knob: `Session` takes no clock, so in `standard` it is
+    the coarsest grain of time the session can see. `EINTR` goes back and waits out **what is
+    left**, never the full timeout again. A `poll` that fails is recorded in `Block::last_error`
+    **and still gives the core back** — an error `idle` cannot return must at least be
+    observable.
+  - `Engine::refresh_interests`, `refresh_interests_with` and `idle_with` — the list of sources
+    an idle turn waits on. **Readable always; writable only while that connection still has
+    bytes queued**, because a socket is almost always ready to accept bytes and asking
+    unconditionally would wake the engine continuously and turn `standard` back into a spin.
+    Rebuilt every turn rather than cached: a `Source` borrows a descriptor, and one kept across
+    a turn can name a socket that has since closed and been reissued. For a strategy that does
+    not need the sources the whole rebuild compiles away.
+  - `Acceptor::source()`, and `serve` now hands the listener to `idle_with`. Without it a new
+    connection is accepted on the next timeout rather than on the connect.
+  - `Engine::sources_missing()` — connections that claimed to be pollable and produced no
+    source. Zero on a healthy engine; anything else is traffic arriving one timeout late, and
+    the count is the only thing that would say so.
+  - `waker::{Waker, WakeHandle}`, `Engine::with_waker` and `RingApp::with_waker` — a self-pipe,
+    so a thread that is not the engine can say *look again*. `poll` wakes for descriptors, not
+    for a ring buffer, so without it a reply produced by `RingApp` waits out the engine's whole
+    timeout. The engine puts the read end in its **own** poll set and **drains it after every
+    wait**: a pipe holding an unread byte stays readable, so an undrained one makes every
+    subsequent `poll` return instantly and turns `standard` back into a spin. `wake()` never
+    blocks, and a write refused because the pipe is full is not lost work — a full pipe is
+    already readable, which is the entire signal.
+  - **A `WakeHandle` outliving its `Waker` is safe.** Both pipe ends are held jointly, so
+    dropping the engine while an application thread still holds a handle cannot leave a write
+    without a reader. `[measured 2026-08-30]` before this it raised `SIGPIPE` and killed the
+    process — invisible from an ordinary Rust binary, because the runtime sets `SIG_IGN` before
+    `main`, and a library cannot assume its host does the same.
+  - **Pairing `Block` with a transport that cannot be waited on does not compile.** `Loopback`
+    is the case that matters: an engine there would answer every message, pass all 59
+    definitions, read 0% CPU, and be 100 ms slower per message. A `compile_fail,E0080` doctest
+    on `Block` keeps it refused.
+  - `Park` is renamed **`Yield`**. It is neither mode and its rustdoc says so: it fails the
+    `hft` gate (`sched_yield`) and fails the `standard` gate (it burns the core). Nothing about
+    its behaviour changed.
   - `Framer<N>` — one fixed buffer per connection, no allocation, no parsing. It reads one
     field, `9=`, and answers `Cut::{Message, Garbage, Need}`. **Rubbish is handed to the session
     once** rather than dropped, so "a bad frame is fatal only if it claims to be a Logon" stays
@@ -114,8 +171,16 @@ below describe what a first release would contain.
     **once** per connection per turn, so a counterparty that writes faster than this end
     processes cannot starve the others.
   - `Acceptor::{bind, local_addr, accept}`, `connect(addr)`, and `serve(addr, cfg, app,
-    capacity)` — the whole loop written once, with `TcpAcceptorEngine<A>` naming the shape a
-    deployment runs.
+    capacity)` — the whole loop written once.
+  - **`serve` is `standard` and blocks; `serve_hft` spins.** `[2026-08-30]` `serve` used to
+    spin. An engine whose out-of-the-box configuration pins a core at 100% is one most people
+    cannot evaluate — it looks broken — so ADR-0013 reversed the default and this is where the
+    reversal lands. `TcpAcceptorEngine<A, W>` is now parameterised by the mode, with
+    `HftAcceptorEngine` and `StandardAcceptorEngine` naming the two, and both `serve` functions
+    run **one** shared loop so they can differ in exactly one type and nothing else.
+  - **The 59 acceptance definitions pass in both modes**: the same corpus, once with the engine
+    yielding and once with it blocking between steps, 59 / 59 each way. ADR-0013 named this cost
+    when it accepted two modes.
   - **The 59 acceptance definitions now pass through a real socket**: `cargo test -p
     fixbolt-engine --test wire` → **59 / 59**, kernel TCP, no background thread and no sleep.
   - `Dispatch`, with `InlineDispatch<H>` (the default, D4 / ADR-0002) and `RingDispatch<M>`

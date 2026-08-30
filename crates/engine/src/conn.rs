@@ -161,6 +161,17 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
         self.tx_len > 0
     }
 
+    /// What a poller can wait on for this connection, if anything.
+    ///
+    /// Read from the live transport every time rather than cached: a
+    /// [`crate::transport::Source`] borrows a descriptor it does not own, and a
+    /// cached one outliving its socket would quietly name whichever socket the
+    /// kernel handed that number to next.
+    #[must_use]
+    pub fn source(&self) -> Option<crate::transport::Source> {
+        self.transport.source()
+    }
+
     /// One pass: push what is queued, read what has arrived, judge it, and let
     /// the clock move.
     ///

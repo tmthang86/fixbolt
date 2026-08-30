@@ -77,17 +77,30 @@ list by hand. Each names the decision it enforces.
 
 **Machine-checked today:** 7 — `scripts/check-lint-config.sh`, run by CI, proves by reversal
 that the workspace lints actually deny `unwrap`/`expect`/`panic`. 6 — the
-`no-default-features` CI job. 1 — `benches/alloc.rs`, each case asserting its own path is
+`no-default-features` CI job **plus `scripts/check-no-optional-deps.sh`, and the second is not
+a nicety**: `[measured 2026-08-30]` the CI job alone was green about a build that never
+happened. `cargo test --all --no-default-features` still compiled `libc`, because `tools/w2w`
+depends on `fixbolt-engine` with defaults and cargo unifies features across one invocation —
+the flag under test was switched back on by a sibling crate. It was noticed by a **test count**,
+not by the gate, and a module with no tests of its own would have hidden it entirely. The
+script asks per crate, which is the only scope where the flag means what it reads as
+(`docs/reference/feature-flags-unify-across-a-workspace.md`). 1 — `benches/alloc.rs`, each case asserting its own path is
 live, run by the `bench` CI job through `scripts/bench.sh`; **`[measured 2026-08-30]` this
 entry was false until that job existed** — `cargo test --all` does not run a `harness = false`
 bench target and nothing else invoked `cargo bench`, so the list named a check nothing ran.
-3 — the conformance runner, in process and over a socket. 4 — **half of it.**
-`scripts/check-no-kernel-sleep.sh` traces `tools/w2w` on Linux and attributes syscalls
-to the engine thread by tid; **it runs the binary a second time with `wait::Park` and requires
-that run to trip the check**, because two earlier attempts at this rule reported success with
-a `sleep` present. **That gate proves the `hft` half only. The `standard` half — that an idle
-engine gives the core back — has no machine check yet**, and until it does, rule 4 is
-half-enforced and this list says so rather than implying otherwise (ADR-0013 decision 6). **The rest are hand-checks** on every relevant PR until a lint or test
+3 — the conformance runner, in process and over a socket. 4 — **both halves, since
+2026-08-30.** `scripts/check-no-kernel-sleep.sh` traces `tools/w2w` on Linux and attributes
+syscalls to the engine thread by tid; **it runs the binary a second time in `standard` mode and
+requires that run to trip the check**, because two earlier attempts at this rule reported success
+with a `sleep` present. `scripts/check-standard-gives-the-core-back.sh` is the other half:
+engine-thread CPU over a wall-clock window, the thread's scheduler state sampled to prove it is
+sleeping rather than dead, the mode read back from the binary rather than assumed, and the
+round-trip p50 against the poll timeout — **four assertions, because CPU near zero is passable by
+three different broken engines**. `[measured 2026-08-30]` an engine that ignores readiness and
+waits out its timeout reads 0% CPU, is found sleeping 20 times out of 20, and has a p50 of
+99 046 599 ns; only the fourth assertion sees it. It requires `hft` **and** `yield` to trip it,
+which is also the first thing in this repository to *demonstrate* rather than assert that
+`wait::Yield` fails both gates. **The rest are hand-checks** on every relevant PR until a lint or test
 exists — say explicitly that you walked the list.
 
 ## 3. Read before you touch the code

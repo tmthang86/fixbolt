@@ -14,7 +14,7 @@ use fixbolt_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
 use fixbolt_engine::journal::Store;
 use fixbolt_engine::ring;
 use fixbolt_engine::transport::{Io, Loopback, Transport};
-use fixbolt_engine::wait::Park;
+use fixbolt_engine::wait::Yield;
 use fixbolt_engine::{Application, Config, Engine};
 
 const M: usize = 512;
@@ -150,7 +150,7 @@ fn drain(peer: &mut Loopback) -> Vec<u8> {
 }
 
 type Wired<D> =
-    Engine<Loopback, fixbolt_session::Acceptor, D, ManualClock, Park, Store, 256, 4096, 8192>;
+    Engine<Loopback, fixbolt_session::Acceptor, D, ManualClock, Yield, Store, 256, 4096, 8192>;
 
 fn engine<D: Dispatch>(dispatch: D) -> (Loopback, Wired<D>) {
     let (peer, side) = Loopback::pair();
@@ -158,7 +158,7 @@ fn engine<D: Dispatch>(dispatch: D) -> (Loopback, Wired<D>) {
         Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
         dispatch,
         ManualClock::at(FIXED_TIME_MILLIS),
-        Park,
+        Yield,
         4,
     );
     let _ = engine.add(side);

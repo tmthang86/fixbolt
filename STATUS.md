@@ -7,8 +7,11 @@ Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire
 
 ## Start here — 2026-08-30, end of session
 
-**Four decisions were signed and one plan approved on 2026-08-30. Nothing is blocked on a
-signature any more; everything below is blocked on work.**
+**Five decisions signed and two plans approved on 2026-08-30, and from that day the owner
+delegated plan-writing and plan approval to the agent working here.** Nothing is blocked on a
+signature; everything below is blocked on work. **What the delegation did not change is
+`CLAUDE.md` §10** — it removed a signature, not the evidence each unit of work owes, and the
+approval gate was never the safety net here in the first place.
 
 | | |
 |---|---|
@@ -16,20 +19,35 @@ signature any more; everything below is blocked on work.**
 | **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md)** `Accepted` | a full ring disconnects, the refusal is never silent, capacity → 4 MiB. Unblocks `ring-full-policy` steps 3–4. **Not implemented** |
 | **[ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)** `Accepted` | latency beats density; every figure names its `N`. Decisions 1–2 re-scoped to `hft` by ADR-0013 |
 | **[ADR-0013](docs/decisions/ADR-0013-two-modes-standard-and-hft.md)** `Accepted` | **two modes.** `standard` blocks and runs anywhere and **is the default**; `hft` spins, pins and burns a core. **Amended `CLAUDE.md` §2 rule 4** — it is now mode-scoped and its `standard` half **has no machine check yet** |
-| **[threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md)** approved | 6 steps, `hft`-scoped. Step 1 is ADR-0014, the affinity API |
+| **[threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md)** approved | 6 steps, `hft`-scoped. Step 1 is the affinity API ADR — **it is ADR-0015, not 0014**: `standard-mode` wrote its ADR first and §5 forbids reusing a number. That plan's own text still says 0014 |
+| **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** **closed** | 8 steps, `standard`-scoped. Built the default mode and closed rule 4's unenforced half. One thing deferred to a §9 machine, deliberately |
+| **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)** `Accepted`, **implemented** | `poll(2)` through `libc` behind a default-on `standard` feature; **Windows refused at compile time**, never a silent spin; `Waiting` is given the sources and `Transport` names its own; `Park` → `Yield`, neither mode, **fails both gates**. Answers **all four** of ADR-0013's open questions. Accepted **by standing delegation** — the owner delegated plan-writing and approval on 2026-08-30, so nobody read these nine decisions on their behalf; the ADR says so in its own header |
 
-**The next session's three obvious starting points, in the order that costs least:**
+**The next session's starting points, in the order that costs least:**
 
-1. **A plan for `standard` mode** — it does not exist and it is now the *default* mode, so the
-   documented default is unbuilt. ADR-0013's open question 1 must be answered first: which
-   readiness mechanism, and which dependency, given that `engine` has **zero external
-   dependencies** today and `std` exposes no readiness API. Windows in scope or not is also
-   undecided.
-2. **The `standard` half of rule 4 has no gate.** ADR-0013 decision 6 specifies it — CPU time
-   over a wall-clock window, not read off the code. Until it exists, rule 4 is half-enforced
-   and `CLAUDE.md`'s own machine-checked list says so.
-3. **`wait::Park` belongs to neither mode** — it yields without blocking, and **every test in
-   the repository uses it**. ADR-0013 open question 3.
+1. ~~**A plan for `standard` mode**~~ — **CLOSED 2026-08-30.**
+   [standard-mode](docs/plans/2026-08-30-standard-mode.md), 8 steps, and
+   **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**. `standard` exists,
+   **is the default** (`serve` blocks, `serve_hft` spins), and passes the 59 definitions.
+   **One thing was left and it is not a slip**: the `standard` wakeup cost needs a §9 machine,
+   and the plan's risk table said from the start it would keep `DESIGN.md` §8's *from the
+   literature* label rather than close on a number from the wrong box.
+2. ~~**The `standard` half of rule 4 has no gate**~~ — **CLOSED.**
+   `scripts/check-standard-gives-the-core-back.sh`, four assertions, red halves `hft` **and**
+   `yield`. `CLAUDE.md`'s machine-checked list now reads rule 4 as both halves.
+3. ~~**`wait::Park` belongs to neither mode**~~ — **CLOSED.** It is `wait::Yield` now, and
+   `[measured 2026-08-30]` it is **shown** to fail both gates rather than said to: 99.7% CPU,
+   sleeping 0 of 20 samples.
+
+**What is next, and it is a choice rather than a queue:** `threads-and-affinity` (approved,
+`hft`-scoped, its step 1 is **ADR-0015**), `session-recovery` steps 4–5, `ring-full-policy`
+steps 3–4, and `ktls-spike` steps 2–5. All four are work, not decisions. **The `standard`-mode
+measurements and open items 6, 11 and 13 all wait on the same thing: the desktop tuned to §9.**
+
+**One thing needs the owner, not the agent:** `CLAUDE.md` §11 says the upstream
+`testing-skills` pull request opens when the plan that found the cases closes. This plan found
+**seven** false greens and one false claim. That PR would push content to a **public**
+repository, so it is not covered by the standing delegation and has not been opened.
 
 **Read before touching the engine:** [GUIDE.md](docs/GUIDE.md) §0 for the mode split, and
 [reference/measured-costs.md](docs/reference/measured-costs.md) for why the numbers are what
@@ -40,7 +58,8 @@ refuted hypotheses about a 324 ns mode that is still unexplained.
 
 **Next, and each needs its own plan before any code (Rule Zero):**
 
-**Six plans were written and approved on 2026-08-30**, with the owner's standing permission to
+**Seven plans were written and approved on 2026-08-30**, and the seventh — `standard-mode` — is
+**closed**. All of it comes with the owner's standing permission to
 revise a plan mid-flight when reality disagrees with it — each revision recorded in that plan's
 delivery log. In dependency order:
 
@@ -66,6 +85,12 @@ delivery log. In dependency order:
 6. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — item 5. **Steps 1–2 done
    2026-08-30**; steps 3–4 wait on [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md),
    which is **`Accepted` 2026-08-30** and awaits implementation, not a signature.
+7. ~~**[standard-mode](docs/plans/2026-08-30-standard-mode.md)**~~ — **CLOSED 2026-08-30**, 8
+   steps, plus **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)**. Built
+   the mode ADR-0013 made the default and nobody had written, and closed non-negotiable 4's
+   unenforced half. `serve` blocks and `serve_hft` spins; the 59 definitions pass in both modes;
+   all four of ADR-0014 decision 6's latency cliffs are shut. **Left open on purpose**: the
+   wakeup cost, which needs a §9 machine.
 
 Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
 initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
@@ -73,7 +98,7 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 
 | | |
 |---|---|
-| Branch | **`main`.** PR #1 (`claude/project-status-irgurb`) merged 2026-08-30 as `76d6989`, no-ff. `[measured 2026-08-30]` **CI green on the merge commit itself**, run `33307963879`, all seven jobs — the first green `main` has had; the run before it, `9986890`, failed. In flight: **`plan/ktls-unblocked`** |
+| Branch | **`claude/project-status-hdx7k1`**, PR #2, 10 commits — `standard-mode` closed. `[measured 2026-08-30]` **CI green on `59d048a`, the closing commit: run [`33325120775`](https://github.com/tmthang86/fixbolt/actions/runs/33325120775), 9 / 9 jobs**, including the new `standard-blocks` job on its first run against a GitHub runner. Not merged — that is the owner's. Previously: **`main`.** PR #1 (`claude/project-status-irgurb`) merged 2026-08-30 as `76d6989`, no-ff. `[measured 2026-08-30]` **CI green on the merge commit itself**, run `33307963879`, all seven jobs — the first green `main` has had; the run before it, `9986890`, failed. In flight: **`plan/ktls-unblocked`** |
 | Milestone | **M3 — the engine, closed, with one gate now known to be machine-dependent.** `[measured 2026-08-30]` the same 59 definitions pass **through a real socket** on the M5: `cargo test -p fixbolt-engine --test wire` → **59 / 59**. **On Linux the same command scores 39 / 59** — the harness's settle criterion is a spin count, not the engine. Open item 17; the in-process gate is 59 / 59 on both machines. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: step 7 `tools/w2w`, step 8 `library` |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted) but no plan — blocked on open item 10** |
 | Plan in flight | **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md)** — measured, blocked on ADR-0011. `gates-that-can-be-trusted` **closed** (7, 17, 18, 19); `w2w-and-linux-numbers` **half A done** (15), half B needs the desktop tuned to §9; `ktls-spike` **unpaused** (10) — the desktop has `CONFIG_TLS`. Three plans approved and not started: `data-fields`, `session-recovery`, `ring-full-policy` |
@@ -87,6 +112,113 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
+
+**`[measured 2026-08-30]` A review bot found a real one, and it killed the process.** If the
+engine is dropped while another thread still holds a `WakeHandle`, the self-pipe's read end
+closes and the write end does not; `libc::write` into it raises `SIGPIPE`, whose default action
+terminates. Reproduced before fixing — `signal: 13, SIGPIPE: write on a pipe with no one to
+read` — and it is **invisible from any ordinary Rust test**, because the runtime sets `SIG_IGN`
+before `main` and the ignored return value swallows the `EPIPE`. A library cannot assume its host
+does that. Fixed by holding both ends jointly, so a writer always has a reader. The test lives in
+its own binary because it changes a process-global disposition.
+
+The `unsafe` block's SAFETY comment was **correct and insufficient**: it proved memory safety —
+live pointer, right length, nothing retained — and said nothing about the signal contract.
+`CLAUDE.md` §2 rule 8 asks for "a comment naming what proves it sound", and what was proven was
+the wrong kind of soundness.
+
+
+**`[measured 2026-08-30]` The `standard` gate agrees with itself on two different machines, with
+two orders of magnitude of headroom.** Its ceilings are not the marginal kind open item 20 is
+about. Same commit, same script:
+
+| | this session's container | GitHub runner (`33324622355`) |
+|---|---|---|
+| `standard` | 0.00% CPU, sleeping 20/20, p50 **10 917 ns** | 0% CPU, sleeping 20/20, p50 **24 848 ns** |
+| `hft` | 98.81% CPU, sleeping 0/20 | 98.83% CPU, sleeping 0/20 |
+| `yield` | 99.70% CPU, sleeping 0/20 | 99.74% CPU, sleeping 0/20 |
+
+The p50 ceiling is 1 000 000 ns and the two machines differ by 2.3× while sitting **40× and 100×
+below it**; the CPU figures differ by hundredths of a percent. `DESIGN.md` §6's *timing* ceilings
+swing 5–232% run to run on one box and 1.7× between two — this gate is measuring a different kind
+of thing, a ratio and a count, and it is worth saying which kind before somebody assumes the
+worst about both.
+
+
+**`[measured 2026-08-30]` The 59 acceptance definitions pass with the engine actually blocking.**
+`cargo test -p fixbolt-engine --test wire` now runs the corpus twice, once per idle strategy, and
+scores **59 / 59** both ways — ADR-0013's *"two modes is two things to test, for ever"*, paid.
+The blocking run takes 3.00 s of wall time and **0.25 s of user time**, which is the mode doing
+what it says.
+
+**`[measured 2026-08-30]` And a claim written into that test's own documentation was refuted by
+reversal.** It said a wiring failure — the listener left out, writability never asked for, the
+waker undrained — would show up as the run taking minutes instead of seconds. It does not: with
+`Block` made to ignore readiness entirely the run took **3.30 s**, with the listener removed from
+the poll set **3.34 s**, against a baseline of **3.28 s**. The settle criterion is 1 ms and the
+blocking timeout is 5 ms, so **one block satisfies it whether it was woken by data or by its own
+timeout**, and the harness cannot tell those apart. The test proves the protocol is unchanged
+under blocking, which is real and worth having; the wiring is proven by `tests/standard.rs`
+reading the interest list directly and by the p50 assertion in the `standard` gate. The comment
+now says so.
+
+
+**`[measured 2026-08-30]` Non-negotiable 4's second half is machine-checked, and it took four
+assertions rather than the one ADR-0013 asked for.** CPU near zero is also what a **dead** thread
+reports, what a run that **never reached the mode** reports, and what an engine woken by its own
+100 ms timeout reports. The last is not hypothetical: with `Block` made to ignore readiness,
+`scripts/check-standard-gives-the-core-back.sh` measured **0% CPU**, found the thread sleeping in
+**20 of 20 samples** — assertions 2 and 3 both green — and a round-trip p50 of **99 046 599 ns**,
+one whole timeout. Only the fourth assertion saw it. On this shared container: `standard` 0.00%
+CPU / 20-of-20 sleeping / p50 10 917 ns; `hft` 98.81% / 0-of-20 / 19 909 ns; `yield` 99.70% /
+0-of-20 / 18 096 ns — **the first time `wait::Yield` has been shown to fail both gates rather
+than said to.**
+
+**`[measured 2026-08-30]` And that gate was green for the wrong reason twice before it was
+believed.** A missing pair of braces (`$12` is `${1}2`) broke every measurement, and because
+*failed the policy* and *could not be measured* shared one exit code, **both red halves reported
+`RED ok`** while nothing had been measured at all — a red half that is red because the harness is
+broken proves as much as a green half that is green because nothing ran. And the p50 was read
+with `grep -oE '[0-9]+' | head -1`, which returned **50** every time: the digits in the *label*
+`p50`. The assertion that is the only thing able to distinguish "woken by the data" from "woken
+by the clock" was comparing a constant against its ceiling, and passing in all three arms, which
+is exactly why nothing looked wrong.
+
+
+**`[measured 2026-08-30]` A tool that accepted a mode, announced it, and did not run it.**
+`tools/w2w --mode standard` printed `mode: standard`, exited 0, and never entered its timed loop:
+the branch selecting the blocking strategy sat behind `#[cfg(feature = "standard")]`, and
+**features are per-crate** — `w2w` declared none of its own, so the condition was false and every
+such branch took its `else`. The engine's feature being on by default did not reach it. `cargo
+build` had warned on that exact line the whole time (`unexpected_cfg_condition_value`); what
+found it was running the tool and noticing the latency block was missing. This is `CLAUDE.md` §2
+rule 6 **inverted** — that rule guards a feature in the manifest with no `#[cfg]`, which makes a
+crate unbuildable; this is a `#[cfg]` with no feature in the manifest, and everything builds
+while a code path disappears. `scripts/check-no-kernel-sleep.sh` would have been green about two
+runs of the same mode, so `w2w` now states the mode it took and the script **reads it back**
+(reversal: `w2w ran mode 'yield' when 'hft' was asked for`, exit 1). Write-up:
+[reference/feature-flags-unify-across-a-workspace.md](docs/reference/feature-flags-unify-across-a-workspace.md).
+
+
+**`[measured 2026-08-30]` A CI job was green about a build that never happened.**
+`cargo test --all --no-default-features`, the machine check for non-negotiable 6, **still built
+`libc`**: `tools/w2w` is a workspace member depending on `fixbolt-engine` with defaults, and
+cargo unifies features across one invocation, so the flag under test was switched back on by a
+sibling crate. `cargo tree --workspace --no-default-features -i libc` prints the edge. It was
+caught by a **test count** — the run should have reported 210 and reported 214, the four tests
+of a `cfg`-gated file that should have vanished — and **a module carrying no tests of its own
+would have hidden it completely**. Fixed by `scripts/check-no-optional-deps.sh`, which asks per
+crate and is proven by reversal (drop `optional = true` → red, with the graph printed).
+Write-up: [reference/feature-flags-unify-across-a-workspace.md](docs/reference/feature-flags-unify-across-a-workspace.md).
+
+**`[measured 2026-08-30]` A test that was green because another thread had not reused a file
+descriptor yet.** `crates/engine/tests/standard.rs` closed a socket and asserted that `poll`
+called its descriptor unknown. It went red on the first cold run and then passed **30 runs in a
+row**; the panic site named the `Ok(count == 0)` branch, which says what happened — another test
+thread in the same binary had been handed that number, so the descriptor was live and quiet, and
+quiet is indistinguishable from closed at that layer. Asking about `i32::MAX` instead is
+deterministic: **0 failures in 40 runs**. A retry would have buried it.
+
 
 - **The whole suite runs on the owner's desktop, 2026-08-30 — the first time any of it has.**
   `[measured]` rustc 1.98.0 on AMD Ryzen 7 3700X / Linux 7.0.0-30: `cargo fmt --check`,
