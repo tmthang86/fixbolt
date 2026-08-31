@@ -325,6 +325,12 @@ giải thích được: 449 + ~45 (thuế toàn cục) + ~155 (thuế trên lõi
 trình — **chính phần tinh chỉnh của §9 chiếm khoảng một phần ba con số mà thiết kế này lấy
 làm ngân sách.**
 
+**CI xanh, gọi tên theo §9 hộp cuối.** Run
+[`33404799598`](https://github.com/tmthang86/fixbolt/actions/runs/33404799598), commit
+`a750592`, **9/9 job success**, tổng 2 phút 31 giây (14:48:35Z → 14:51:06Z, đọc từ timestamp
+của API chứ không suy từ hoạt động của chính tôi — bài học đã trả giá ngày 2026-08-31).
+Hai run trên cùng SHA, cả hai success.
+
 **Chưa xong, nói rõ ra:**
 
 - **~~Chưa reboot vào dòng mới.~~** `check-machine.sh` phải đọc lại `pass 11 fail 0` sau đó, và
