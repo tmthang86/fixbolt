@@ -320,6 +320,15 @@ const STEP_DEADLINE: Duration = Duration::from_millis(500);
 /// * GitHub runner, **two vCPUs that are two threads of one physical core** —
 ///   **58 at 1 ms**, losing part of one file's replies.
 ///
+/// `[2026-08-31]` **A correction, kept because getting it wrong was the more
+/// instructive half.** This test briefly required two physical cores and skipped
+/// where there were none, on the strength of a CI job that appeared to run for
+/// 35 minutes without finishing. It had not: GitHub's job API served
+/// `in_progress` for nearly an hour after the job completed, and the step had
+/// actually taken **19 seconds**. A run was cancelled on that reading. The
+/// requirement is gone; what survives is the 1 ms figure above, which came from
+/// a real failed run's log rather than from a status field.
+///
 /// The two bounds below are set well above that floor and 5× apart. **This is
 /// not the move `tests/wire.rs` warns against.** That warning is about raising a
 /// bound until a *protocol* failure disappears — `[measured 2026-08-30]` a wire
@@ -330,27 +339,6 @@ const STEP_DEADLINE: Duration = Duration::from_millis(500);
 #[test]
 fn one_shard_passes_all_fifty_nine_at_any_settle_bound() {
     let _alone = alone();
-    // **Two physical cores, or this measures contention rather than FIX.**
-    //
-    // The engine spins on its own thread and this thread waits on the wire. Put
-    // both on one physical core and neither is measuring the protocol.
-    // `[measured 2026-08-31]` on a GitHub runner — two vCPUs, one physical core
-    // — this test ran for **35 minutes without finishing** and was cancelled;
-    // at a 1 ms bound, before the bounds were raised, it scored 58 / 59.
-    //
-    // Skipping is the wrong word for what happens next and the message says so.
-    // The protocol itself is gated deterministically on every machine by
-    // `tests/wire.rs`, which drives `turn` by hand and has no bound at all; what
-    // does not run here is the check that the SHARD PATH carries it.
-    if ShardWire::plan_for(2).is_none() {
-        println!(
-            "SKIPPED, NOT PASSED: this machine has one physical core, so the engine thread \
-             and this thread would share it and the settle would measure contention. \
-             The shard path is unchecked on this machine; tests/wire.rs still gates the \
-             protocol. CLAUDE.md §10."
-        );
-        return;
-    }
     let plan = ShardWire::plan_for(1).expect("every machine has one physical core");
     for quiet in [Duration::from_millis(10), Duration::from_millis(50)] {
         let report = run(|_| ShardWire::with(&plan, quiet, STEP_DEADLINE))

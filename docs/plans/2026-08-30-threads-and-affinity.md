@@ -658,18 +658,25 @@ theo timeout của chính nó thật ra đang hỏng vì Nagle. Giao thức ở 
 ngay bên cạnh: `tests/wire.rs`, 59/59, hai chế độ, **không có bound nào cả**. Cái tránh được ở
 đây là một test báo cáo về bộ lập lịch của runner rồi gọi đó là FIX.
 
-#### Và cổng corpus qua shard **không chạy được trên runner của CI**
+#### Một chẩn đoán sai của tôi, và nó là phần đáng học hơn
 
-`[đo 2026-08-31]` sau khi nâng bound lên 10/50 ms, job CI chạy **35 phút không xong** và bị huỷ.
-Runner có hai vCPU là hai luồng của **một** lõi vật lý: luồng engine spin trên lõi đó, luồng
-test đợi trên dây cùng lõi đó, và thứ được đo là sự tranh chấp chứ không phải FIX.
+`[2026-08-31]` Tôi kết luận cổng corpus qua shard **treo trên CI 35 phút** và đã (a) huỷ một
+lần chạy, (b) bắt test đòi hai lõi vật lý và bỏ qua ở nơi không có, (c) định thêm `timeout` vào
+job CI. **Cả ba dựa trên một quan sát sai.**
 
-Nên test này giờ **đòi hai lõi vật lý**, và ở nơi không có thì in ra
-`SKIPPED, NOT PASSED: …` kèm lý do rồi trả về. Đây là một **lỗ có thật, ghi ra chứ không giấu**:
-trên runner CI, đường shard không được kiểm. Giao thức thì vẫn được kiểm tất định ở mọi máy bởi
-`tests/wire.rs`, cái lái `turn` bằng tay và không có bound nào.
+Sự thật: job đó **xong sau 69 giây**, bước affinity mất **19 giây**, và CI **xanh 9/9**. Cái tôi
+đọc là trường `status` của GitHub API, và nó trả `in_progress` **gần một tiếng sau khi job đã
+hoàn tất**. Tôi đọc lại nó bảy lần và bảy lần tin nó.
 
-`cargo test` không có khái niệm "skip mà không phải pass" — các script gate của repo này dùng
-`exit 2` cho đúng việc đó (`check-ktls-on-a-plain-socket.sh`). Một `#[test]` trả về sớm vẫn báo
-`ok`. Cách duy nhất giữ được sự thật ở đây là dòng chữ, và nó được viết đúng bằng ngôn từ mà
-§10 dùng.
+Đã lùi: bỏ yêu cầu hai lõi vật lý, bỏ `timeout`. **Cái còn lại là con số 58/59 ở 1 ms**, vì nó
+đến từ **log của một lần chạy hỏng thật**, không phải từ một trường trạng thái.
+
+`[to testing-skills]` — **một trường trạng thái không phải một quan sát.** Cùng một API, cùng
+một câu hỏi, hai câu trả lời khác nhau: `status: in_progress` sai suốt một tiếng, trong khi
+`steps[].completed_at` của chính job đó nói chính xác 12:53:52. Log thì luôn đúng. Quy tắc rút
+ra: **khi một hệ thống cho cả một trạng thái tóm tắt lẫn dữ liệu thô, tin dữ liệu thô** — và khi
+định làm một hành động không lùi được (huỷ một lần chạy, tắt một test), hãy lấy xác nhận từ
+nguồn thứ hai trước. Ở đây nguồn thứ hai nằm trong cùng một lời gọi API và tôi không hỏi nó.
+
+Đây là biến thể của cái đã ghi ở `reference/ktls-on-a-plain-socket.md`: **một chẩn đoán mâu
+thuẫn với chính dữ liệu của nó, và không có gì kiểm chẩn đoán đó.**
