@@ -87,12 +87,24 @@ pub struct Consumer {
 /// an application that "can pause for milliseconds" — **one millisecond
 /// overruns 65 536 bytes about eighteen times over.**
 ///
-/// At the same measured rate 4 MiB is roughly **3.6 ms** of slack. Two costs,
-/// both real: 4 MiB resident per ring, which multiplies if a deployment ever
-/// gives each connection its own; and the fill rate on a faster machine is
-/// faster, so 3.6 ms is an upper estimate rather than a promise. ADR-0011's own
-/// open question 3 is whether it is enough, and nobody has yet measured a real
-/// application's worst pause.
+/// `[measured 2026-08-31]` At 4 MiB the same benchmark gives **5.05–5.36 ms**
+/// over four runs on the §9 desktop — **22 550 messages**, not the 352 that
+/// 64 KiB holds.
+///
+/// **That is not 64 times the 64 KiB figure, and the difference is the point.**
+/// ADR-0011 derived "roughly 3.6 ms" by scaling the 64 KiB fill rate, and put
+/// the true value somewhere in 1.6–3.6 ms. The measurement lands **outside that
+/// range on the high side**, because filling 4 MiB costs **135 → ~230 ns per
+/// message**: the working set no longer fits in cache, each write is slower, and
+/// a ring that fills more slowly gives the application *more* slack, not less.
+/// The extrapolation was wrong by about 48% in the direction that made the
+/// design look worse than it is.
+///
+/// Two costs, both real and neither changed by the correction: 4 MiB resident
+/// per ring, which multiplies if a deployment ever gives each connection its
+/// own; and **nobody has yet measured a real application's worst pause**, so
+/// ADR-0011's open question 3 — is it enough — is still open. What is settled is
+/// that the answer is a measurement rather than a multiplication.
 ///
 /// **The benchmarks deliberately do not use this.** `benches/dispatch.rs` and
 /// `benches/ring_full.rs` stay at `1 << 16`, because `DESIGN.md` §6's recorded

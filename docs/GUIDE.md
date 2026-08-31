@@ -190,10 +190,11 @@ about a message they were told had arrived.
 
 - **A stall is now an outage, not a lag.** An application that pauses under GC or a lock for
   longer than the ring holds drops the session. `[measured 2026-08-30]` at 4 MiB —
-  `ring::DEFAULT_CAPACITY`, and the default since ADR-0011 — that is roughly **3.6 ms** of
-  slack at the measured fill rate, against **56.7 µs** at the old 64 KiB. **Nobody has measured
-  a real application's worst pause**, so 3.6 ms is a judgement, not a guarantee, and the fill
-  rate on a faster machine is faster.
+  `ring::DEFAULT_CAPACITY`, and the default since ADR-0011 — `[measured 2026-08-31]` that is
+  **5.05–5.36 ms** over four runs on one tuned Linux desktop, against **47.7 µs** at the old
+  64 KiB. **Nobody has measured a real application's worst pause**, so that is a budget, not a
+  guarantee, and it is one machine's number: a faster box fills the ring faster and has less
+  slack, not more.
 - **The `Logout` is queued, not sent, on the turn the ring refuses.** It goes out on the next
   flush, exactly as D10's path does. If you drive `turn()` yourself and stop the moment a
   connection looks doomed, **you never send it** and the counterparty learns nothing. Keep

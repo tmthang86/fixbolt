@@ -630,12 +630,21 @@ branch folds away like `Dispatch::OUT_OF_BAND` already does — the commonest en
 
 **Two costs, stated rather than discovered later.** 4 MiB resident per ring, which multiplies if
 a deployment ever gives each connection its own; and an application that pauses longer than the
-ring holds now drops the session rather than lagging. `[measured 2026-08-30]` 4 MiB is roughly
-**3.6 ms** of slack at the measured fill rate, against 56.7 µs at the old 64 KiB — but **no real
-application has ever stalled against this ring**, so both the policy and the capacity come from
-one synthetic saturation run plus reasoning about order flow. ADR-0011's open questions 1 and 3
-— whether the ring should be per-connection, and whether 3.6 ms is enough — are still open and
-need an application nobody has yet.
+ring holds now drops the session rather than lagging. `[measured 2026-08-31]` 4 MiB gives **5.05–5.36 ms**
+of slack over four runs on the §9 desktop — 22 550 messages — against 47.7 µs at the old 64 KiB.
+
+**That figure replaces a multiplication, and the two disagree by 48%.** ADR-0011 derived
+"roughly 3.6 ms" by scaling the 64 KiB rate and said in its own revision note that the true
+value lay somewhere in 1.6–3.6 ms and should be read as an order of magnitude. Measuring it
+puts it **above** that whole range, because the per-message cost goes **135 → ~230 ns** once the
+buffer stops fitting in cache: a ring that fills more slowly gives the application *more* time,
+not less. The decision is unaffected and its margin is larger than it claimed —
+[reference/measured-costs.md](reference/measured-costs.md).
+
+Still true: **no real application has ever stalled against this ring**, so both the policy and
+the capacity come from one synthetic saturation run plus reasoning about order flow. ADR-0011's
+open questions 1 and 3 — whether the ring should be per-connection, and whether the slack is
+enough — are still open and need an application nobody has yet.
 
 ### D11 — TLS is a transport implementation, and the guarantee is stated per mode
 

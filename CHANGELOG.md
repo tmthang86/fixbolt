@@ -108,8 +108,10 @@ below describe what a first release would contain.
 
     Two costs, stated rather than found later: 4 MiB resident per ring, and an application that
     pauses longer than the ring holds now drops the session instead of lagging.
-    `[measured 2026-08-30]` 4 MiB is roughly **3.6 ms** of slack against **56.7 µs** at the old
-    64 KiB — but **no real application has ever stalled against this ring**.
+    `[measured 2026-08-31]` 4 MiB gives **5.05–5.36 ms** of slack against **47.7 µs** at the old
+    64 KiB — but **no real application has ever stalled against this ring**. That figure is
+    measured at 4 MiB rather than extrapolated from 64 KiB, and the two differ by 48%: see
+    `docs/reference/measured-costs.md`.
 
     One behaviour an embedder must know and the compiler cannot enforce: **the `Logout` is
     queued on the turn the refusal happens and goes out on the next flush**, exactly as D10's
