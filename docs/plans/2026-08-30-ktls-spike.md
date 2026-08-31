@@ -281,5 +281,11 @@ lành. Transcript gọi tên triệu chứng và giấu nguyên nhân. Cả hai 
 vẫn trống), key update dưới kTLS, TLS 1.2, mutual TLS, sàn kernel/bộ mã, và cổng trả lời "chế độ
 nào đang chạy". Bốn thứ đầu là câu hỏi mở 2, 4, 5, 6 của ADR-0005; cái cuối là câu hỏi 3.
 
+**CI xanh trên đúng commit đang đóng**, `CLAUDE.md` §9 ô cuối: `1b9b356`, run
+[`33386125577`](https://github.com/tmthang86/fixbolt/actions/runs/33386125577), **9/9 job**,
+gồm cả `Lint config enforces non-negotiable 7` — job mà trên máy này vừa đỏ vì lý do môi trường
+và đã sửa. Cổng kTLS mới **không** chạy trong CI: runner không có `CONFIG_TLS` đảm bảo, và
+script thoát 2 (bỏ qua) thay vì xanh giả.
+
 **Plan đóng.** Item 10 đóng theo. Việc tiếp theo về TLS là một plan riêng và chưa được viết —
 đúng như phần "Ngoài phạm vi" của plan này yêu cầu.
