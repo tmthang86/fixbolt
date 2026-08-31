@@ -3,7 +3,10 @@
 - **Status**: Accepted — 2026-08-27
 - **Date**: 2026-08-27
 - **Deciders**: Tran Manh Thang
-- **Related**: [ADR-0001](ADR-0001-relationship-to-quickfix.md)
+- **Related**: [ADR-0001](ADR-0001-relationship-to-quickfix.md),
+  [ADR-0011](ADR-0011-a-full-ring-disconnects.md) — *what happens when the ring this ADR
+  introduced fills up.* Added as a cross-reference on 2026-08-31; **nothing in the text
+  below is changed**, per `CLAUDE.md` §5.
 
 ## Context
 

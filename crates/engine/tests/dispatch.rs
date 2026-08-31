@@ -301,3 +301,106 @@ fn a_reply_for_a_connection_that_has_gone_is_dropped_not_misrouted() {
         String::from_utf8_lossy(&out)
     );
 }
+
+// ------------------------------------------- a full ring ends the connection
+
+/// [ADR-0011](../../../docs/decisions/ADR-0011-a-full-ring-disconnects.md)
+/// decision 1: the engine does not go on serving a counterparty whose messages
+/// the application is no longer receiving.
+///
+/// The ring here is far too small for one order, so the very first application
+/// message is refused. What must NOT happen is the old behaviour — a counter
+/// goes up, the session acknowledges the message by sequence number, and the
+/// counterparty never learns that nobody read it.
+#[test]
+fn a_full_ring_ends_the_connection_and_says_why() {
+    let (logon, order) = traffic();
+    // 64 bytes cannot hold one order plus its 37-byte header.
+    let (to_app, from_engine) = ring::pair(64);
+    let (to_engine, from_app) = ring::pair(8192);
+    let (mut peer, mut e) = engine(RingDispatch::<M>::new(to_app, from_app));
+    let _app: RingApp<M> = RingApp::new(from_engine, to_engine);
+
+    let _ = peer.send(&logon);
+    e.turn();
+    assert_eq!(
+        e.connections(),
+        1,
+        "the Logon is fine; the ring is not used"
+    );
+    let _ = drain(&mut peer);
+
+    let _ = peer.send(&order);
+    e.turn();
+    assert_eq!(
+        e.dispatch_mut().refused(),
+        1,
+        "the ring turned the order away on this turn"
+    );
+    assert!(
+        drain(&mut peer).is_empty(),
+        "and the Logout is only QUEUED here: like D10's slow_consumer, it goes \
+         out on the next flush. An embedder that stops turning the engine the \
+         moment a connection is doomed never sends it"
+    );
+
+    // The turn that flushes it and then drops the connection.
+    e.turn();
+    let out = drain(&mut peer);
+    assert!(
+        out.windows(4).any(|w| w == b"35=5"),
+        "the counterparty is sent a Logout, not left guessing: {}",
+        String::from_utf8_lossy(&out)
+    );
+    assert!(
+        out.windows(21).any(|w| w == b"\x0158=slow application\x01"),
+        "and the Logout names the reason, which is the application and not the \
+         wire consumer: {}",
+        String::from_utf8_lossy(&out)
+    );
+    assert_eq!(
+        e.refused_connections(),
+        1,
+        "and the engine counts the connection it ended because of it"
+    );
+    assert_eq!(e.connections(), 0, "the connection is gone");
+}
+
+/// The other half, and the one that stops the check above passing for the wrong
+/// reason: with a ring big enough, nothing ends and nothing is counted.
+#[test]
+fn a_ring_with_room_ends_nothing() {
+    let (logon, order) = traffic();
+    let (to_app, from_engine) = ring::pair(8192);
+    let (to_engine, from_app) = ring::pair(8192);
+    let (mut peer, mut e) = engine(RingDispatch::<M>::new(to_app, from_app));
+    let mut app: RingApp<M> = RingApp::new(from_engine, to_engine);
+
+    let _ = peer.send(&logon);
+    e.turn();
+    let _ = drain(&mut peer);
+    let _ = peer.send(&order);
+    e.turn();
+
+    assert_eq!(app.pump(&mut Echo), 1, "the application got it");
+    assert_eq!(e.dispatch_mut().refused(), 0);
+    assert_eq!(e.refused_connections(), 0);
+    assert_eq!(e.connections(), 1, "and the connection is still up");
+}
+
+/// `InlineDispatch` cannot refuse — the handler is on this thread — so the
+/// engine must never end a connection on its account. Without the defaulted
+/// `take_refusal` returning `false`, this is where that would show.
+#[test]
+fn inline_dispatch_never_ends_a_connection() {
+    let (logon, order) = traffic();
+    let (mut peer, mut e) = engine(InlineDispatch::new(Echo));
+
+    let _ = peer.send(&logon);
+    e.turn();
+    let _ = peer.send(&order);
+    e.turn();
+
+    assert_eq!(e.refused_connections(), 0);
+    assert_eq!(e.connections(), 1);
+}

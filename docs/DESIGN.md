@@ -548,6 +548,12 @@ what was wrong was borrowing somebody else's number to grade it against.
 
 ### D10 — TCP send backpressure has a stated policy
 
+**Two ends fall behind, and they are different questions with different answers.** D10 is about
+*the counterparty on the wire*; **D10b below is about our own application behind the ring**, and
+conflating them is what left the second one unanswered from ADR-0002 until ADR-0011. The tell is
+whose fault it is: on the wire, a counterparty that cannot keep up is broken; behind the ring,
+the counterparty is faultless and we are the ones who stopped reading.
+
 A slow counterparty fills the socket send buffer, and `send` returns `EAGAIN`. At 50,000
 `ExecutionReport`/s against a QA application this **will** happen. The engine must not block
 the session machine and must not drop protocol messages silently.
@@ -581,6 +587,55 @@ code makes explicit and `crates/engine/tests/backpressure.rs` holds:
 
 `Block` spins rather than sleeping, so D8 still holds for the thread — but one slow
 counterparty then stops every other session on it, which is why it is never a default.
+
+### D10b — a full ring to the application ends the connection
+
+The other end of D10, and
+[ADR-0011](decisions/ADR-0011-a-full-ring-disconnects.md) is the decision.
+
+Under `RingDispatch` (D4) the application is on another thread. If it stops draining, the ring
+fills, and until 2026-08-31 the answer was a counter: `RingDispatch::refused()` went up and
+nothing read it. **A message counted there is one the session accepted, numbered, journalled and
+acknowledged by sequence number, that the application never saw** — for order flow that is not
+backpressure, it is silent loss.
+
+**As built**, and it is D10's shape with one deliberate difference in each direction:
+
+| | D10, the wire | D10b, the ring |
+|---|---|---|
+| Whose fault | the counterparty's | ours |
+| `58=` text | `slow consumer` | **`slow application`** — a different constant on purpose, so neither the counterparty nor an operator reading two logs is told the wrong side is at fault |
+| The queue | **discarded first**, so the Logout has room | **kept**, because the socket is draining perfectly and those messages will go out |
+| `Block` offered | yes, for tests | **no** — see below |
+| Default capacity | `TX`, the caller's | `ring::DEFAULT_CAPACITY`, **4 MiB** |
+
+**`Block` is not offered on this side.** On the socket, spinning until there is room is
+defensible because the peer is draining. Spinning until an *application thread* drains makes the
+engine thread's progress depend on code the engine does not control, and non-negotiable 4's gate
+(`scripts/check-no-kernel-sleep.sh`) cannot tell a spin that finishes from one that does not.
+
+**How the dispatch says so, since the session layer's `Application` trait cannot.** `deliver` is
+reached through `fixbolt_session::Application::on_message`, which returns
+`Option<Range<usize>>` and belongs to the pure session layer (D1, non-negotiable 2). So the
+signal is a separate, defaulted method on `Dispatch`:
+
+```rust
+fn take_refusal(&mut self) -> bool { false }
+```
+
+The engine asks **immediately after one connection's turn**, and a `true` belongs to that
+connection because the adapter that called `deliver` was built for its id and nothing else ran
+in between. No id is carried and nothing is stored. `InlineDispatch` takes the default, so the
+branch folds away like `Dispatch::OUT_OF_BAND` already does — the commonest engine pays nothing.
+
+**Two costs, stated rather than discovered later.** 4 MiB resident per ring, which multiplies if
+a deployment ever gives each connection its own; and an application that pauses longer than the
+ring holds now drops the session rather than lagging. `[measured 2026-08-30]` 4 MiB is roughly
+**3.6 ms** of slack at the measured fill rate, against 56.7 µs at the old 64 KiB — but **no real
+application has ever stalled against this ring**, so both the policy and the capacity come from
+one synthetic saturation run plus reasoning about order flow. ADR-0011's open questions 1 and 3
+— whether the ring should be per-connection, and whether 3.6 ms is enough — are still open and
+need an application nobody has yet.
 
 ### D11 — TLS is a transport implementation, and the guarantee is stated per mode
 

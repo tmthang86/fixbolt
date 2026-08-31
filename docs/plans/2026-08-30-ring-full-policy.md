@@ -211,3 +211,47 @@ cầu. Bench giữ hằng số của riêng chúng, có chú thích nói vì sao
 
 **Ngoài phạm vi, thêm vào:** không đụng ADR-0011 câu hỏi mở 1 (ring dùng chung hay theo từng
 kết nối) và 3 (3,6 ms có đủ không). Cả hai cần một ứng dụng thật, và chưa có.
+
+---
+
+### Bước 3 và 4 xong 2026-08-31. Plan đóng.
+
+**Bước 3 — chính sách đã cài.** `Dispatch::take_refusal()` (mặc định `false`), `RingDispatch`
+dựng cờ khi từ chối, engine hỏi ngay sau `conns[i].turn(...)` và gọi `Connection::slow_application()`
+— cùng hình dạng với `slow_consumer()` của D10, khác hai chỗ có chủ ý: text là
+`SLOW_APPLICATION = b"slow application"`, và **hàng đợi được giữ lại** chứ không vứt đi, vì
+socket ở đây đang rút bình thường và những message đó sẽ ra được dây.
+
+**Bước 4 — lời từ chối tới được bên ngoài, ở hai chỗ.** `Engine::refused_connections()` cho
+người nhúng, và `58=` cho counterparty. ADR-0011 câu hỏi mở 2 do đó có câu trả lời.
+
+**Chứng minh bằng đảo ngược, ba lần, mỗi lần đỏ vì đúng lý do rồi khôi phục xanh:**
+
+| Đảo ngược | Kết quả |
+|---|---|
+| Engine bỏ qua lời từ chối (hành vi cũ) | `a_full_ring_ends_the_connection_and_says_why` **FAILED**, hai test kia vẫn xanh |
+| `Logout` mang text của D10 (`slow consumer`) | **FAILED** đúng ở assert *"names the reason"*, và output in ra `58=slow consumer` |
+| `RingDispatch::take_refusal` trả `false` như mặc định | **FAILED** |
+
+Ba test mới: `a_full_ring_ends_the_connection_and_says_why`, `a_ring_with_room_ends_nothing`,
+`inline_dispatch_never_ends_a_connection`. Test thứ hai và thứ ba tồn tại để test thứ nhất không
+xanh vì lý do sai — một engine ngắt mọi kết nối cũng làm test thứ nhất xanh.
+
+**Một tính chất phát hiện khi test đỏ, và nó là thứ `GUIDE.md` phải nói:** `Logout` chỉ được
+**xếp hàng** ở lượt xảy ra từ chối, và ra dây ở lần `flush` kế tiếp — đúng như đường của D10.
+Người nhúng nào dừng quay engine ngay khi thấy một kết nối sắp chết thì **không bao giờ gửi
+được nó**, và counterparty không biết gì. Đã ghi ở `GUIDE.md` §4 như một ràng buộc kiểu hệ thống
+không kiểm được.
+
+**Một chỗ khác plan không lường:** rustdoc mới trỏ tới ADR bằng URL tuyệt đối GitHub, và
+`scripts/check-links.py` **đỏ** — repo cấm URL tuyệt đối trỏ vào file của chính nó. Đã đổi sang
+đường dẫn tương đối theo lệ sẵn có (`crates/codec/src/index.rs` làm thế từ đầu). Cổng bắt được,
+không phải người.
+
+**`benches/dispatch.rs` và `benches/ring_full.rs` giữ nguyên `1 << 16`** — baseline `DESIGN.md`
+§6 ghi sáng nay đo ở dung lượng đó. `ring::DEFAULT_CAPACITY` là 4 MiB và có chú thích nói rõ vì
+sao bench không dùng nó.
+
+**Ngoài phạm vi, giữ nguyên:** ADR-0011 câu hỏi mở **1** (ring dùng chung hay theo từng kết nối)
+và **3** (3,6 ms có đủ không). Cả hai cần một ứng dụng thật đang chạy tải thật, và chưa có cái
+nào. Ghi ra đây để lần sau không ai tưởng chúng đã được trả lời cùng với item 5.

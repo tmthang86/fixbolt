@@ -63,6 +63,34 @@ pub trait Dispatch {
     /// sequence number and `SendingTime` are the session's own — the
     /// application does not have to know either, and cannot get them wrong.
     fn collect<F: FnMut(ConnId, &[u8])>(&mut self, emit: F);
+
+    /// Whether this dispatch turned a message away since it was last asked.
+    ///
+    /// The engine asks **immediately after one connection's turn**, and a
+    /// `true` therefore belongs to *that* connection: [`deliver`] is reached
+    /// through an adapter built for one connection id and nothing else runs in
+    /// between. That is why no id is carried here and why nothing is stored.
+    ///
+    /// A `true` ends the connection with a `Logout` naming the reason —
+    /// [ADR-0011](../../../docs/decisions/ADR-0011-a-full-ring-disconnects.md)
+    /// decision 1. A message the session has already accepted, numbered,
+    /// journalled and acknowledged, which the application never sees, is not
+    /// backpressure; it is silent loss, and for order flow the counterparty
+    /// must be told.
+    ///
+    /// Defaults to `false`, which is the whole truth for [`InlineDispatch`]:
+    /// the handler is on this thread, so there is nothing to refuse. The branch
+    /// then folds away like [`Dispatch::OUT_OF_BAND`] does.
+    ///
+    /// Proven by `crates/engine/tests/dispatch.rs`:
+    /// `a_full_ring_ends_the_connection_and_says_why`, with
+    /// `a_ring_with_room_ends_nothing` and
+    /// `inline_dispatch_never_ends_a_connection` as its other halves.
+    ///
+    /// [`deliver`]: Dispatch::deliver
+    fn take_refusal(&mut self) -> bool {
+        false
+    }
 }
 
 /// The handler runs on the engine thread. The default (ADR-0002).
@@ -109,6 +137,9 @@ pub struct RingDispatch<const M: usize> {
     from_app: Consumer,
     scratch: [u8; M],
     refused: usize,
+    /// Set by `deliver`, taken by the engine after this connection's turn.
+    /// A `bool` rather than a list of ids: see [`Dispatch::take_refusal`].
+    refused_since: bool,
     dropped: usize,
 }
 
@@ -132,6 +163,7 @@ impl<const M: usize> RingDispatch<M> {
             from_app,
             scratch: [0; M],
             refused: 0,
+            refused_since: false,
             dropped: 0,
         }
     }
@@ -139,9 +171,11 @@ impl<const M: usize> RingDispatch<M> {
     /// Messages the ring would not take, because it was full or the message was
     /// longer than `M`.
     ///
-    /// **Not zero in a healthy system under load**, which is why it is a
-    /// counter and not a panic. What to do about a full ring is `DESIGN.md`
-    /// D10's question and step 5's work.
+    /// **Zero on a healthy engine.** Since ADR-0011 each one of these also ends
+    /// the connection it happened on, so this counter is a diagnosis rather
+    /// than a running toll: it says how many sessions were dropped because the
+    /// application could not keep up. `Engine::refused_connections` counts the
+    /// same events from the engine's side.
     #[must_use]
     pub const fn refused(&self) -> usize {
         self.refused
@@ -172,6 +206,7 @@ impl<const M: usize> Dispatch for RingDispatch<M> {
         fixed[12..12 + n].copy_from_slice(&stamp[..n]);
         if msg.len() > M || !self.to_app.push(&[&fixed, msg]) {
             self.refused += 1;
+            self.refused_since = true;
         }
         // Never a reply on this call. The application is elsewhere.
         None
@@ -192,6 +227,10 @@ impl<const M: usize> Dispatch for RingDispatch<M> {
             id.copy_from_slice(&self.scratch[..8]);
             emit(ConnId::from_le_bytes(id), &self.scratch[BACK_HEADER..n]);
         }
+    }
+
+    fn take_refusal(&mut self) -> bool {
+        core::mem::replace(&mut self.refused_since, false)
     }
 }
 

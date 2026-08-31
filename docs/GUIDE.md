@@ -174,26 +174,36 @@ The view handed to your handler points into the engine's own read buffer. It is 
 
 ## 4. When the ring fills, you lose the connection
 
-Under `RingDispatch`, if your thread stops draining, the ring fills. `[measured 2026-08-30]`
-at the current 64 KiB default that takes **352 messages**, which at full rate is **tens of
-microseconds** — not the milliseconds the design originally assumed.
+Under `RingDispatch`, if your thread stops draining, the ring fills — and **the connection is
+then ended, deliberately**. `[2026-08-31]`
+[ADR-0011](decisions/ADR-0011-a-full-ring-disconnects.md) is implemented.
 
 A message the ring refuses is one the session has already **accepted, numbered, journalled and
 acknowledged by sequence number**, and that your application never saw. For order flow that is
-not backpressure, it is silent loss —
-[ADR-0011](decisions/ADR-0011-a-full-ring-disconnects.md) is the decision about what to do
-instead — **`Accepted` 2026-08-30**: a full ring ends the connection, the refusal is never
-silent, and the default capacity rises to 4 MiB. **Not yet implemented**; until it is, the
-behaviour you get is the counter described above.
+not backpressure, it is silent loss. So the engine does not carry on: it sends the counterparty
+a `Logout` whose `58=` reads **`slow application`** — deliberately not D10's `slow consumer`,
+because your counterparty is behaving perfectly and the fault is on this side — and drops the
+session. They can reconnect and reconcile by sequence number, which is something they cannot do
+about a message they were told had arrived.
 
-**What you must do:**
+**Three things follow, and the compiler cannot enforce any of them.**
 
-- **Drain continuously.** Whatever your consumer thread does per message, it must be faster
-  than the wire, with margin. Tens of microseconds of slack is not a lot.
-- **Watch `refused()`.** If it is ever non-zero, you have already lost messages. It must be
-  wired to something that a human sees — a metric, an alert, a log on the *cold* path.
-- **Size the ring for your stall, not for your throughput.** The question is not "how many
-  messages per second" but "what is the longest my consumer can be away".
+- **A stall is now an outage, not a lag.** An application that pauses under GC or a lock for
+  longer than the ring holds drops the session. `[measured 2026-08-30]` at 4 MiB —
+  `ring::DEFAULT_CAPACITY`, and the default since ADR-0011 — that is roughly **3.6 ms** of
+  slack at the measured fill rate, against **56.7 µs** at the old 64 KiB. **Nobody has measured
+  a real application's worst pause**, so 3.6 ms is a judgement, not a guarantee, and the fill
+  rate on a faster machine is faster.
+- **The `Logout` is queued, not sent, on the turn the ring refuses.** It goes out on the next
+  flush, exactly as D10's path does. If you drive `turn()` yourself and stop the moment a
+  connection looks doomed, **you never send it** and the counterparty learns nothing. Keep
+  turning until `connections()` drops.
+- **Watch `Engine::refused_connections()`.** Non-zero means sessions were dropped because your
+  side could not keep up. Wire it to something a human sees — a metric, an alert, a log on the
+  *cold* path. `RingDispatch::refused()` counts the same events from the dispatch's side.
+
+And still: **size the ring for your stall, not your throughput.** The question is not "how many
+messages per second" but "what is the longest my consumer can be away".
 
 ---
 

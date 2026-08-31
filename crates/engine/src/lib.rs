@@ -66,6 +66,14 @@ pub struct Engine<T, R: Role, D, C, W, J, const N: usize, const RX: usize, const
     /// messages arriving up to one whole timeout late. Counted so the failure is
     /// visible rather than merely slow. See [`Self::sources_missing`].
     sources_missing: usize,
+    /// Connections ended because the dispatch would not take a message.
+    ///
+    /// **Zero on a healthy engine.** Non-zero means the application behind the
+    /// ring fell far enough behind that ADR-0011's policy fired and the session
+    /// was dropped. The counterparty was told why — see
+    /// [`crate::backpressure::SLOW_APPLICATION`] — so this counter is the same
+    /// event seen from the inside. See [`Self::refused_connections`].
+    refused_connections: usize,
     cfg: Config,
     dispatch: D,
     clock: C,
@@ -131,6 +139,7 @@ where
             // sizing mistake rather than a steady state.
             interests: Vec::with_capacity(capacity + 2),
             sources_missing: 0,
+            refused_connections: 0,
             cfg,
             dispatch,
             clock,
@@ -243,12 +252,28 @@ where
             let outcome = self.conns[i].turn(now, &mut deliver, |msg| {
                 others_on > 0 && msg_type_is_logon(msg)
             });
+            // Asked here and nowhere else. `Deliver` above was built for this
+            // connection's id and nothing else has run since, so a refusal
+            // belongs to `conns[i]` — ADR-0011 decision 1, and the reason the
+            // signal needs no id. `InlineDispatch` takes the default `false`
+            // and this whole arm folds away.
+            let refused = self.dispatch.take_refusal();
             match outcome {
                 Turn::Up(m) => {
                     moved |= m;
+                    if refused {
+                        self.refused_connections += 1;
+                        self.conns[i].slow_application();
+                        moved = true;
+                    }
                     i += 1;
                 }
                 Turn::Gone => {
+                    // Already going; a Logout would have nowhere to go, but the
+                    // count is still the truth about why.
+                    if refused {
+                        self.refused_connections += 1;
+                    }
                     self.conns.swap_remove(i);
                     moved = true;
                 }
@@ -333,6 +358,20 @@ where
     #[must_use]
     pub const fn sources_missing(&self) -> usize {
         self.sources_missing
+    }
+
+    /// Connections ended because the dispatch refused a message.
+    ///
+    /// **Zero on a healthy engine.** ADR-0011 decision 2 says the refusal is
+    /// never silent, and it is visible in two places: here, for whoever embeds
+    /// the engine, and in the `58=` of the `Logout` the counterparty receives.
+    /// A counter alone would be a struct field nobody reads, which is the
+    /// failure that ADR exists to end.
+    ///
+    /// Proven by `crates/engine/tests/dispatch.rs`.
+    #[must_use]
+    pub const fn refused_connections(&self) -> usize {
+        self.refused_connections
     }
 
     fn rebuild(

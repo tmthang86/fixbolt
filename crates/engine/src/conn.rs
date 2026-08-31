@@ -4,7 +4,7 @@
 use fixbolt_session::journal::Journal as SessionJournal;
 use fixbolt_session::{Application, Link, Role, Session};
 
-use crate::backpressure::{Backpressure, SLOW_CONSUMER};
+use crate::backpressure::{Backpressure, SLOW_APPLICATION, SLOW_CONSUMER};
 use crate::dispatch::ConnId;
 use crate::frame::{Cut, Framer};
 use crate::transport::{Io, Transport};
@@ -310,6 +310,37 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             return Turn::Gone;
         }
         Turn::Up(moved)
+    }
+
+    /// End the session because the ring to the application filled.
+    ///
+    /// ADR-0011 decision 1. The counterparty did nothing wrong, so it is told
+    /// why in the `58=` — see [`SLOW_APPLICATION`]. Everything queued is still
+    /// sent: unlike the `slow_consumer` path above, the socket here is draining
+    /// perfectly and there is no reason to throw away messages that will go
+    /// out.
+    pub fn slow_application(&mut self) {
+        let bound = TX;
+        let Self {
+            session,
+            transport,
+            tx,
+            tx_len,
+            overflow,
+            dead,
+            ..
+        } = self;
+        let mut out = Out {
+            transport,
+            tx,
+            tx_len,
+            bound,
+            blocks: false,
+            overflow,
+            failed: dead,
+        };
+        let _ = session.logout_now(SLOW_APPLICATION, |b| out.push(b));
+        self.closing = true;
     }
 
     /// End the session because its outbound queue filled. `DESIGN.md` D10.
