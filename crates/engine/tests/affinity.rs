@@ -124,3 +124,171 @@ fn the_error_type_names_the_core_that_was_refused() {
         "the message must name the core; got {text:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Step 3 — the refusals
+// ---------------------------------------------------------------------------
+
+use fixbolt_engine::affinity::{ShardPlan, Topology};
+
+/// The §9 desktop as it actually reads, `[measured 2026-08-31]`, tuned and
+/// scoring `pass 10 fail 0`.
+///
+/// Committed as a fixture because of what it contains: `isolated` names 14 and
+/// 15, and `online` does not. A validator that read `isolated` alone would
+/// accept a core that cannot run anything, and this is the machine where that
+/// would have happened.
+fn tuned_desktop() -> Topology {
+    Topology::from_sysfs("0-15", "0-7", "6-7,14-15", &[(6, "6"), (7, "7")])
+        .expect("the fixture parses")
+}
+
+/// The same machine before §9 turned SMT off, `[measured 2026-08-30]`.
+/// `cpu6`↔`cpu14` and `cpu7`↔`cpu15` were sibling pairs then.
+fn desktop_with_smt_on() -> Topology {
+    Topology::from_sysfs(
+        "0-15",
+        "0-15",
+        "6-7,14-15",
+        &[(6, "6,14"), (7, "7,15"), (14, "6,14"), (15, "7,15")],
+    )
+    .expect("the fixture parses")
+}
+
+#[test]
+fn a_cpu_list_parses_the_shapes_sysfs_actually_writes() {
+    let t = Topology::from_sysfs("0-15", "0-3,7", "", &[]).expect("parses");
+    assert_eq!(t.online().len(), 5, "0,1,2,3,7");
+    assert!(t.isolated().is_empty(), "an empty isolated file means none");
+    assert_eq!(t.present().len(), 16);
+}
+
+#[test]
+fn a_core_that_is_not_present_at_all_is_refused() {
+    let plan = ShardPlan::new(vec![CoreId(99)]);
+    assert_eq!(
+        tuned_desktop().validate(&plan),
+        Err(AffinityError::NoSuchCore(CoreId(99)))
+    );
+}
+
+#[test]
+fn an_isolated_core_that_is_offline_is_still_refused() {
+    // The trap this fixture exists for. cpu14 IS in isolcpus; it is also
+    // offline, because §9 turns SMT off. Reading `isolated` alone would accept
+    // it.
+    let plan = ShardPlan::new(vec![CoreId(14)]);
+    assert_eq!(
+        tuned_desktop().validate(&plan),
+        Err(AffinityError::NotOnline(CoreId(14))),
+        "an isolated but offline core must be refused, not accepted"
+    );
+}
+
+#[test]
+fn a_core_outside_isolcpus_is_refused_by_default() {
+    let plan = ShardPlan::new(vec![CoreId(0)]);
+    assert_eq!(
+        tuned_desktop().validate(&plan),
+        Err(AffinityError::NotIsolated(CoreId(0)))
+    );
+}
+
+#[test]
+fn allow_unisolated_lifts_exactly_one_rule_and_no_other() {
+    let ok = ShardPlan::new(vec![CoreId(0)]).allow_unisolated();
+    assert_eq!(tuned_desktop().validate(&ok), Ok(()));
+
+    let still_bad = ShardPlan::new(vec![CoreId(99)]).allow_unisolated();
+    assert_eq!(
+        tuned_desktop().validate(&still_bad),
+        Err(AffinityError::NoSuchCore(CoreId(99))),
+        "allow_unisolated must not become allow_anything"
+    );
+
+    let also_bad = ShardPlan::new(vec![CoreId(14)]).allow_unisolated();
+    assert_eq!(
+        tuned_desktop().validate(&also_bad),
+        Err(AffinityError::NotOnline(CoreId(14)))
+    );
+}
+
+#[test]
+fn an_isolated_online_core_is_accepted() {
+    // Without this the whole file could pass by refusing everything.
+    let plan = ShardPlan::new(vec![CoreId(6), CoreId(7)]);
+    assert_eq!(tuned_desktop().validate(&plan), Ok(()));
+}
+
+#[test]
+fn two_shards_on_smt_siblings_are_refused() {
+    let plan = ShardPlan::new(vec![CoreId(6), CoreId(14)]);
+    assert_eq!(
+        desktop_with_smt_on().validate(&plan),
+        Err(AffinityError::SmtSiblingOf(CoreId(6), CoreId(14)))
+    );
+}
+
+#[test]
+fn the_same_core_named_twice_is_refused() {
+    let plan = ShardPlan::new(vec![CoreId(6), CoreId(6)]);
+    assert_eq!(
+        tuned_desktop().validate(&plan),
+        Err(AffinityError::DuplicateCore(CoreId(6)))
+    );
+}
+
+#[test]
+fn a_support_thread_may_not_sit_on_a_shard_core() {
+    // ADR-0015 decision 8: pinning the engine and letting the journal writer
+    // float defeats the isolation. Naming the engine's own core defeats it
+    // harder.
+    let plan = ShardPlan::new(vec![CoreId(6)]).with_journal_core(CoreId(6));
+    assert_eq!(
+        tuned_desktop().validate(&plan),
+        Err(AffinityError::DuplicateCore(CoreId(6)))
+    );
+}
+
+#[test]
+fn a_support_thread_on_an_smt_sibling_of_a_shard_is_refused() {
+    let plan = ShardPlan::new(vec![CoreId(6)]).with_journal_core(CoreId(14));
+    assert_eq!(
+        desktop_with_smt_on().validate(&plan),
+        Err(AffinityError::SmtSiblingOf(CoreId(6), CoreId(14))),
+        "a support thread sharing a physical core with a shard contends with it"
+    );
+}
+
+#[test]
+fn a_support_thread_need_not_be_isolated() {
+    // It is not the engine thread. Requiring isolation for it would push it onto
+    // the cores this design is trying to keep clear.
+    let plan = ShardPlan::new(vec![CoreId(6)]).with_journal_core(CoreId(0));
+    assert_eq!(tuned_desktop().validate(&plan), Ok(()));
+}
+
+#[test]
+fn a_plan_with_no_shards_is_refused() {
+    assert_eq!(
+        tuned_desktop().validate(&ShardPlan::new(vec![])),
+        Err(AffinityError::EmptyPlan)
+    );
+}
+
+#[test]
+fn this_machine_reads_back_consistently() {
+    let t = Topology::read().expect("reading /sys on Linux");
+    assert!(!t.present().is_empty(), "some CPU is present");
+    for core in t.online() {
+        assert!(
+            t.present().contains(core),
+            "{core} is online but not present, which cannot be true"
+        );
+    }
+    // The plan a caller would actually write on this machine must be accepted
+    // by the machine's own reading, not only by the fixture.
+    if let Some(core) = t.isolated().iter().find(|c| t.online().contains(c)) {
+        assert_eq!(t.validate(&ShardPlan::new(vec![*core])), Ok(()));
+    }
+}

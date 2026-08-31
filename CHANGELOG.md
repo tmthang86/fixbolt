@@ -140,9 +140,26 @@ below describe what a first release would contain.
     - **The feature adds no dependency**: it reuses the `libc` that `standard` already made
       optional. `--no-default-features` still builds with no dependency and no `unsafe` at all,
       and that build is what proves the `#[cfg]` gates the `mod` and not just the manifest.
-    - **Not yet**: refusing an offline, unisolated or SMT-sibling core, sharding, and affinity
-      for the journal writer and the ring consumer. `GUIDE.md` §1a says which of those are still
-      the caller's problem.
+    - `Topology` and `ShardPlan` — **the engine refuses a plan it knows is wrong, before a
+      single thread exists.** `ShardPlan::new(vec![CoreId(6), CoreId(7)])`, optionally
+      `.with_journal_core(..)`, `.with_consumer_cores(..)`, `.allow_unisolated()`, then
+      `validate()`. Four refusals, each naming the core: `NoSuchCore`, `NotOnline`,
+      `SmtSiblingOf`, `DuplicateCore`, plus `NotIsolated` for shard cores unless waived, and
+      `EmptyPlan`.
+      - **Isolation is required of shard cores only.** A journal writer or ring consumer on an
+        isolated core would be taking back the very core this design isolates. They are still
+        checked for existence and for SMT contention with a shard.
+      - `allow_unisolated()` **lifts exactly one rule.** An absent or offline core is still
+        refused, and there is a test that says so, because an escape hatch that quietly becomes
+        allow-anything is worse than no rule.
+      - `Topology::from_sysfs(present, online, isolated, siblings)` is public so the refusals can
+        be tested against a machine this one is not. `[measured 2026-08-31]` the §9 desktop reads
+        `present 0-15`, `online 0-7`, `isolated 6-7,14-15` — **`isolated` names two cores that
+        are offline**, because §9 turns SMT off. A validator reading `isolated` alone would
+        accept a core that cannot run anything; that exact reading is committed as a fixture.
+    - **Not yet**: sharding, and affinity for the journal writer and the ring consumer —
+      `ShardPlan` can express where they go and nothing puts them there yet. `GUIDE.md` §1a says
+      which parts are still the caller's problem.
   - **A full ring to the application ends the connection** —
     [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md), `DESIGN.md` D10b. Under
     `RingDispatch`, a message the ring will not take is one the session already accepted,

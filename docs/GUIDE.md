@@ -131,9 +131,26 @@ as the API.
   never picks a core for you, and it never will — the OS's idea of a free core does not know
   about `isolcpus`, your NIC's interrupts, or SMT siblings
   ([ADR-0015](decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md)).
-  **Refusing bad core choices, and pinning the journal writer and the ring consumer, are not
-  built yet** — steps 3 and 5 of that plan. Until they are, a floating journal writer can still
-  land on the core you isolated.
+  **Say which cores you mean before you start any thread**, and let the engine refuse the plan:
+
+  ```rust
+  use fixbolt_engine::affinity::{CoreId, ShardPlan};
+  ShardPlan::new(vec![CoreId(6), CoreId(7)])
+      .with_journal_core(CoreId(0))
+      .validate()?;                       // before a single thread exists
+  ```
+
+  It refuses a core that is absent, offline, named twice, or an SMT sibling of another core in
+  the plan, and — for shard cores — one that is not in `isolcpus`. `allow_unisolated()` waives
+  **only** that last rule; a development box needs it and CI needs it. `[measured 2026-08-31]`
+  the reason `NotOnline` is a rule of its own: on the tuned reference machine
+  `/sys/devices/system/cpu/isolated` reads `6-7,14-15` while `online` reads `0-7`, because
+  turning SMT off took 8–15 offline. A plan that trusted `isolcpus` alone would have pinned a
+  shard to a CPU the kernel will not schedule.
+
+  **Pinning the journal writer and the ring consumer is not built yet** — `ShardPlan` can say
+  where they go and step 5 of that plan is what puts them there. Until then a floating writer
+  can still land on the core you isolated.
 - **Isolating those cores.** `isolcpus` plus `nohz_full`, or the scheduler will put other work
   on them.
 

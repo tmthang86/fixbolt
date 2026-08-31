@@ -336,3 +336,74 @@ biên dịch. Không phải suy luận, là kết quả của một lệnh đã 
 **Bước 3 chưa bắt đầu.** Item 21 **vẫn mở**: ghim đã có, nhưng các phép từ chối (core offline,
 không cô lập, SMT sibling) và affinity cho writer/consumer chưa có, nên câu của D8 mới đúng một
 nửa và `DESIGN.md` nói đúng như vậy.
+
+### Bước 3 — các phép từ chối, và một cái bẫy chỉ máy thật mới chỉ ra. 2026-08-31.
+
+**Xong.** `Topology` + `ShardPlan::validate()`, chạy **trước khi tạo thread nào** (ADR-0015
+quyết định 6). Năm phép từ chối, mỗi cái gọi tên core: `NoSuchCore`, `NotOnline`,
+`DuplicateCore`, `SmtSiblingOf`, `NotIsolated`, cộng `EmptyPlan`.
+
+**Test đỏ trước:**
+
+```
+error[E0432]: unresolved imports `fixbolt_engine::affinity::ShardPlan`,
+              `fixbolt_engine::affinity::Topology`
+error[E0599]: no variant ... named `EmptyPlan`
+```
+
+Rồi 18 test xanh, và **đảo ngược cả ba luật cùng lúc** — bỏ kiểm `online`, bỏ kiểm cô lập, bỏ
+kiểm SMT sibling. Đúng 5 test đỏ và đúng 5 cái phải đỏ:
+
+```
+a_core_outside_isolcpus_is_refused_by_default            FAILED
+allow_unisolated_lifts_exactly_one_rule_and_no_other     FAILED
+an_isolated_core_that_is_offline_is_still_refused        FAILED
+a_support_thread_on_an_smt_sibling_of_a_shard_is_refused FAILED
+two_shards_on_smt_siblings_are_refused                   FAILED
+13 passed
+```
+
+Quan trọng không kém: **các test "chấp nhận" vẫn xanh** (`an_isolated_online_core_is_accepted`,
+`a_support_thread_need_not_be_isolated`). Nếu chúng cũng đỏ thì bộ test chỉ đang từ chối mọi thứ.
+
+**`Topology::from_sysfs` là public, và đó là một quyết định chứ không phải tiện tay.** ADR-0015
+đã nói: §9 bắt tắt SMT, nên trên máy đúng chuẩn luật SMT sibling **không bao giờ nổ được**. Cách
+duy nhất để kiểm nó là dựng topology giả. Hai fixture được commit, cả hai là số đọc thật của
+chính máy này:
+
+- `tuned_desktop()` — `present 0-15`, `online 0-7`, `isolated 6-7,14-15`, siblings đơn.
+  **Đây là cái bẫy**: `isolated` gọi tên cpu14 và cpu15, mà cả hai đang offline. Validator chỉ
+  đọc `isolated` sẽ nhận một core kernel không xếp lịch lên được.
+- `desktop_with_smt_on()` — cùng máy trước khi §9 tắt SMT, `[đo 2026-08-30]`, cặp 6↔14 và 7↔15.
+
+**Hai lựa chọn thiết kế, nói rõ vì sao:**
+
+1. **Cô lập chỉ bắt buộc với core của shard.** Bắt writer của journal hay consumer của ring phải
+   nằm trong `isolcpus` là đẩy chúng lên đúng những core mà thiết kế này đang cố giữ sạch. Chúng
+   vẫn bị kiểm tồn tại, online, trùng lặp và **SMT sibling với một shard** — vì chia lõi vật lý
+   với engine là đúng cái hại cần chặn.
+2. **`allow_unisolated()` nới đúng một luật.** Core không tồn tại hoặc offline vẫn bị từ chối,
+   và có một test nói đúng điều đó — một cửa thoát lặng lẽ biến thành "cho qua tất" còn tệ hơn
+   không có luật.
+
+**Thêm một variant:** `EmptyPlan`. ADR-0019 quyết định 5 đã lường trước chuyện này khi làm enum
+`#[non_exhaustive]`, nên không cần ADR mới.
+
+**Cổng đã chạy và đọc output:**
+
+```
+cargo test -p fixbolt-engine --features affinity --test affinity   18 passed
+cargo test --all                                                   0 failures
+cargo test -p fixbolt-engine --no-default-features --features affinity   ok
+cargo clippy --all-targets --features affinity -- -D warnings      clean
+cargo fmt --all -- --check                                         clean
+scripts/check-links.py                                             394 link, không link chết
+```
+
+CI xanh trên commit của bước 2: `407d72c`, run
+[`33387225861`](https://github.com/tmthang86/fixbolt/actions/runs/33387225861) — **và đó là lần
+đầu bước CI mới thật sự biên dịch `--features affinity`**; trước khi thêm nó, cả module lẫn 5
+test của bước 2 là một cổng không có gì chạy.
+
+**Bước 4 chưa bắt đầu.** Item 21 vẫn mở: `ShardPlan` **nói được** writer và consumer nằm đâu,
+nhưng chưa có gì đặt chúng vào đó, và engine vẫn chưa shard.
