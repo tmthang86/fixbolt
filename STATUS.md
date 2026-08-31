@@ -15,8 +15,8 @@ approval gate was never the safety net here in the first place.
 
 | | |
 |---|---|
-| **[ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)** `Accepted` | a reconnect resumes, `141=Y` resets. Unblocks `session-recovery` steps 4–5. **Not implemented** |
-| **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md)** `Accepted` | a full ring disconnects, the refusal is never silent, capacity → 4 MiB. Unblocks `ring-full-policy` steps 3–4. **Not implemented** |
+| **[ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)** `Accepted`, **implemented 2026-08-31** | a reconnect resumes, `141=Y` resets. `Session::resume(cfg, next_out, next_in)` carries numbers across a restart; a session from `Session::new` still resets. **[session-recovery](docs/plans/2026-08-30-session-recovery.md) is CLOSED** — all six steps, and [ADR-0017](docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md) came out of step 5 |
+| **[ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md)** `Accepted`, **implemented 2026-08-31** | a full ring disconnects, the refusal is never silent, capacity → 4 MiB. The engine sends `58=slow application` — deliberately **not** D10's `slow consumer`, because here the counterparty is faultless. **[ring-full-policy](docs/plans/2026-08-30-ring-full-policy.md) is CLOSED**, and open item 5 with it |
 | **[ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)** `Accepted` | latency beats density; every figure names its `N`. Decisions 1–2 re-scoped to `hft` by ADR-0013 |
 | **[ADR-0013](docs/decisions/ADR-0013-two-modes-standard-and-hft.md)** `Accepted` | **two modes.** `standard` blocks and runs anywhere and **is the default**; `hft` spins, pins and burns a core. **Amended `CLAUDE.md` §2 rule 4** — it is now mode-scoped and its `standard` half **has no machine check yet** |
 | **[threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md)** approved | 6 steps, `hft`-scoped. Step 1 is the affinity API ADR — **it is ADR-0015, not 0014**: `standard-mode` wrote its ADR first and §5 forbids reusing a number. That plan's own text still says 0014 |
@@ -67,10 +67,16 @@ rows do not survive a reboot.
   per `CLAUDE.md` §8; a remote session is handed a single designated branch. They disagree and
   the repo should say which wins.
 
-**What is next, and it is a choice rather than a queue:** `threads-and-affinity` (approved,
-`hft`-scoped, its step 1 is **ADR-0015**), `session-recovery` steps 4–5, `ring-full-policy`
-steps 3–4, and `ktls-spike` steps 2–5. **Serialise steps 5–6 are done** — the §9 re-measurement
-is 239.1 ns and the 60 ns question is answered by ADR-0016. All are work, not decisions. **The `standard`-mode
+**What is next, and it is a choice rather than a queue.** `[2026-08-31]` four of the six plans
+that were open this morning are now **closed**: `standard-mode`, `serialise-and-the-60ns-target`
+(steps 5–6 done, §9 re-measurement **239.1 ns**, and ADR-0016 answers the target question),
+**`session-recovery`** (all six steps) and **`ring-full-policy`** (steps 3–4, closing open item 5).
+
+What is left: **`threads-and-affinity`** (approved, `hft`-scoped, its step 1 is **ADR-0015**) and
+**`ktls-spike` steps 2–5**. Both are work, not decisions. `threads-and-affinity` is the one that
+closes a **contradiction rather than adding a feature** — `DESIGN.md` D8 says the engine thread is
+pinned to an isolated core and `[measured 2026-08-30]` nothing in `crates/` or `tools/` pins
+anything, which is open item 21. **The `standard`-mode
 measurements and open items 6, 11 and 13 all want the same machine — **and it already exists.**
 `[measured 2026-08-30]` the desktop reached **`pass 10  fail 0  unknown 1`** and
 `scripts/bench.sh --strict` **ran rather than refusing**, which is recorded under **Proven**.

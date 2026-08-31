@@ -1,6 +1,6 @@
 # Khởi động lại mà phiên vẫn tiếp tục
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đang chờ ADR-0010 được duyệt (2026-08-30)
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Xong — đóng 2026-08-31** (cả 6 bước; ADR-0010 `Accepted`, ADR-0017 sinh ra từ bước 5)
 > **Phạm vi:** open item 16 — `session` và `engine`
 
 ## Bối cảnh

@@ -1,6 +1,6 @@
 # Ring đầy thì làm gì
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đang chờ ADR-0011 được duyệt (2026-08-30)
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Xong — đóng 2026-08-31** (bước 3–4; ADR-0011 `Accepted`, đóng open item 5)
 > **Phạm vi:** open item 5 — `engine`, và một ADR
 
 ## Bối cảnh
