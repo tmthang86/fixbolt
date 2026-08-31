@@ -162,6 +162,42 @@ clock — writes its reply into a buffer the session lends it, and returns the r
 calls `received_with` with an application that never answers, so a session used as a pure
 protocol machine is unchanged.
 
+**A connection and a session became different things.** `[2026-08-31]`
+[ADR-0010](decisions/ADR-0010-a-reconnect-is-not-a-restart.md). `connect` used to reset both
+sequence numbers unconditionally, and that is wrong for a real deployment: FIX 4.4 numbers a
+**session**, not a connection, so a session that outlives its process must keep counting.
+`Session::resume(cfg, next_out, next_in)` builds one that already carries numbers, and
+`connect` leaves those alone; a session from `Session::new` has persisted nothing, so it still
+resets on every connection.
+
+**The acceptance corpus keeps its meaning by construction, not by exemption.** All seven
+`iCONNECT`s across the three files that reconnect expect `34=1` back, because the runner builds
+a session per scenario with `new` and a second connection is therefore a second connection to a
+session that never persisted anything. **No file is exempted and none needed to be** — the
+score is 59/59 unchanged. `[measured 2026-08-31]` forcing `connect` to *never* reset drops it
+to **56/59**, which is what proves the corpus exercises that branch rather than tolerating it.
+
+Recovering the numbers is the engine's job; this layer does no I/O and takes them as arguments.
+`Session::next_out()` and `next_in()` exist so the engine can persist them, and are not
+hot-path accessors.
+
+**Both counts now survive, and the inbound one is written after delivery.** `[2026-08-31]`
+[ADR-0017](decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md). `Journal` gains
+`mark_in(seq)` and `highest_in()`, so one file carries both directions: outbound from the
+highest record, inbound from the highest mark. The session calls `mark_in` at the end of
+`received_with`, after `judge` and after the held-message drain, so it covers a message
+delivered directly and one released when a gap closed.
+
+**The ordering is the decision, not an implementation detail.** Writing the mark *before*
+delivery would mean an ill-timed crash loses the message — this end has counted it and will
+never ask for a resend, while the counterparty believes it arrived. Writing it *after* means the
+message is delivered twice, and the second copy carries `43=Y` because it comes from a
+`ResendRequest` this end issued. **FIX has a flag for that failure and nothing for the other**,
+and QuickFIX advances its target sequence number after delivery too. The cost is named in
+ADR-0017: under `Durability::Fsync` the inbound path now pays a `sync_data` per message, and an
+application behind this engine must be **idempotent per sequence number** — `GUIDE.md` §6
+carries that, because the type system cannot.
+
 **`Store` became a trait, and the debt is paid.** `[measured 2026-08-30]` a resend has to
 replay application messages this end already sent. The session no longer keeps them: it is
 handed a `journal::Journal` — `put(seq, bytes)` and `get(seq)` — exactly as it is handed an

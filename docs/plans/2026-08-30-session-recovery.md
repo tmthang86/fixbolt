@@ -197,3 +197,123 @@ test, không phải phát biểu về nghĩa vụ của một acceptor.
 
 [ADR-0010](../decisions/ADR-0010-a-reconnect-is-not-a-restart.md) đặt đúng câu hỏi đó, trạng
 thái **Proposed**. Bước 4 và 5 chờ chữ ký.
+
+---
+
+### Bước 4 xong 2026-08-31. Bước 5 dừng lại vì một câu hỏi plan trả lời chưa đủ.
+
+**Bước 4 — `Session::resume`, và `connect` thôi reset vô điều kiện.** ADR-0010 quyết định 1 và
+3. Một bit: `resumed`. `new()` → `false` → reset mọi lần connect, đúng thứ corpus chờ đợi.
+`resume(cfg, next_out, next_in)` → `true` → connect không đụng vào số. Tầng session vẫn **không
+có I/O**: số được truyền vào như tham số, việc đọc journal nằm ở `engine`. Thêm `next_out()` và
+`next_in()` để engine ghi bền được.
+
+Quyết định 2 (`141=Y` là đường duy nhất reset từ dây) **đã có sẵn** — chỗ xử lý Logon reset cả
+hai count vô điều kiện, nên nó đúng luôn cho session resumed. Không phải viết gì thêm; đã kiểm.
+
+**Đã chạy, đọc output:**
+
+```
+7 / 7    cargo test -p fixbolt-engine --test recovery
+59 / 59  cargo test -p fixbolt-session --test score
+59 / 59  cargo test -p fixbolt-engine  --test wire   (cả hai chế độ)
+0 failed cargo test --all · --no-default-features
+0 allocations   benches/alloc.rs của session
+clean    fmt --check · clippy -D warnings · check-links.py
+git diff score.rs wire.rs — rỗng
+```
+
+**Đảo ngược cả hai nhánh, và lần đầu nó bắt được một khuyết tật trong chính test của tôi.**
+
+| Nhánh ép | recovery | score |
+|---|---|---|
+| `if true` (luôn reset, hành vi cũ) | 2 test đỏ | 59 |
+| `if false` (không bao giờ reset) | 1 test đỏ | **56** |
+
+`[cost 2026-08-31]` **Bản đầu của `a_new_session_still_restarts_on_every_connect` vô giá trị.**
+Nó connect một session mới hai lần rồi assert `(1, 1)` — mà một session mới **vốn đã** ở `(1,1)`,
+nên nó xanh dù `connect` có reset hay không làm gì cả. Nó **xanh** dưới `if false`, và thứ duy
+nhất bắt được là điểm số tụt 59 → 56. Đây đúng `false-greens.md` §17: *test khẳng định về trạng
+thái do chính nó dựng*. Đã sửa: đẩy count rời khỏi 1 bằng `logout_now` trước khi reconnect, và
+thêm `a_resumed_session_keeps_counting_across_a_reconnect` cho nhánh kia. Giờ mỗi nhánh có test
+riêng bắt nó, không để điểm số phải làm thay.
+
+**Điểm số tụt 59 → 56 là kết quả tốt, không phải rủi ro.** Nó chứng minh corpus *thật sự đi qua*
+nhánh reset chứ không chỉ dung thứ nó — và đó là điều ADR-0010 quyết định 3 hứa mà chưa ai kiểm.
+
+### Sửa 1 — `[2026-08-31]` bước 5 có một quyết định plan chưa nêu, và nó có giá
+
+Plan viết: *"`next_in` bền, cập nhật **trước khi** ứng dụng thấy message"*, lý do là *"nếu không,
+một lần chết đúng lúc sẽ xử lý lại một message đã xử lý."*
+
+Lý do đó đúng nhưng **chỉ nêu một nửa**. Hai thứ tự cho hai chế độ hỏng ngược nhau:
+
+| Ghi `next_in` | Chết đúng lúc thì | Counterparty thấy gì |
+|---|---|---|
+| **trước** khi ứng dụng thấy | message **mất hẳn** — ta không xin resend vì đã đếm nó rồi | không thấy gì; nó tưởng ta đã nhận |
+| **sau** khi ứng dụng thấy | message **xử lý hai lần** sau khi khởi động lại | nó thấy ta xin resend, và FIX có `43=Y` cho đúng chuyện này |
+
+Với order flow, **mất một lệnh và xử lý hai lần một lệnh không cùng mức tệ**, và giao thức có
+sẵn cơ chế cho cái thứ hai (`PossDupFlag`) mà không có cho cái thứ nhất. QuickFIX tăng target
+seq num **sau** khi ứng dụng nhận message.
+
+Cộng thêm một cái giá plan không nêu: ghi `next_in` mỗi message inbound đưa một lần ghi bền vào
+**hot path nhận**, và với `Durability::Fsync` là một `sync_data` mỗi message vào.
+
+Đây là quyết định giao thức đắt và khó đảo → `CLAUDE.md` §5 đòi ADR. **Bước 5 dừng ở đây**, đúng
+như bước 4 đã dừng chờ ADR-0010. Bước 4 đóng và merge được độc lập.
+
+### Bước 5 và 6 xong 2026-08-31. Plan đóng.
+
+**Sửa 1 được giải quyết bằng
+[ADR-0017](../decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md), chủ dự án
+chọn: ghi `next_in` **sau** khi ứng dụng thấy message.** Ngược với chữ trong plan, và lý do là
+cái nửa plan không nêu — ghi trước thì một lần chết đúng lúc làm **mất** message, ghi sau thì
+**lặp** message, mà FIX có `43=Y` cho cái thứ hai và không có gì cho cái thứ nhất. QuickFIX cũng
+tăng target seq num sau khi ứng dụng nhận.
+
+**Đã làm:**
+
+- `Journal::mark_in(seq)` và `highest_in()`, **không có default** — cùng lý do `highest()` không
+  có. `NoJournal` no-op, `MemJournal` giữ một `Option<u32>`, `FileJournal` ghi xuống đĩa.
+- **Mã hoá trên đĩa: một bản ghi có `len == 0` là một inbound mark.** Message FIX không bao giờ
+  rỗng nên không nhầm được. Format không đổi, reader dài thêm một nhánh — rẻ hơn thêm một byte
+  kiểu vào mọi bản ghi đã có.
+- Session gọi `mark_in` ở **cuối `received_with`**, sau `judge` và sau `drain`, để phủ cả message
+  giao thẳng lẫn message được thả ra khi một gap đóng.
+
+**Đã chạy, đọc output:**
+
+```
+10 / 10  cargo test -p fixbolt-engine  --test recovery
+6 / 6    cargo test -p fixbolt-session --test application
+59 / 59  cargo test -p fixbolt-session --test score
+59 / 59  cargo test -p fixbolt-engine  --test wire   (cả hai chế độ)
+0 failed cargo test --all · --no-default-features
+0 allocations   benches/alloc.rs của session VÀ của engine
+clean    fmt --check · clippy -D warnings · check-links.py
+git diff score.rs wire.rs — rỗng
+```
+
+**Đảo ngược ba lần:**
+
+| Đảo ngược | Kết quả |
+|---|---|
+| Ghi mark **trước** khi giao (thứ tự ADR-0017 loại) | **chỉ** test thứ tự đỏ |
+| Session không mark gì cả | 2 test đỏ |
+| `FileJournal` ghi mark nhưng không đọc lại | 2 test đỏ |
+
+**Phép đảo ngược thứ nhất là lý do test thứ tự phải tồn tại.** Ghi mark trước khi giao vẫn cho
+đúng con số, nên `the_session_marks_the_inbound_count_it_has_consumed` **xanh** — cùng hình dạng
+với khuyết tật ở bước 4. Test bắt được nó phải đặt ứng dụng và journal lên **một sổ chung** rồi
+đọc lại thứ tự, chứ không đọc con số. *Khi quyết định là thứ tự thì test phải đo thứ tự.*
+
+**Bước 6 — 59/59 cả hai đường, không sửa một dòng nào trong `score.rs` hay `wire.rs`.**
+
+**Hai thứ KHÔNG chứng minh, nêu tên chứ không để ngầm:**
+
+1. **Chưa đo `sync_data` thêm trên đường nhận tốn bao nhiêu.** ADR-0017 nêu cái giá đó và không
+   ai lấy số. Nó thuộc về `reference/measured-costs.md` khi có người đo.
+2. **Không file `.def` nào khởi động lại một tiến trình.** Mọi test ở đây là do dự án này bịa ra.
+   Thứ giữ chúng khỏi thành *một phỏng đoán viết hai lần* là kỷ luật đảo ngược, và việc thứ tự
+   này trùng với một triển khai bên ngoài — **không phải** việc chúng xanh.

@@ -12,6 +12,11 @@
 
 use fixbolt_engine::journal::{Durability, FileJournal};
 use fixbolt_session::journal::Journal;
+use fixbolt_session::{Acceptor, Config, Session};
+
+fn cfg() -> Config {
+    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+}
 
 fn tmp(name: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
@@ -95,4 +100,160 @@ fn a_truncated_record_is_dropped_not_guessed() {
     assert_eq!(j.get(7), Some(A), "and is readable");
     assert_eq!(j.get(8), None, "the torn one is gone, not half-read");
     let _ = std::fs::remove_file(&path);
+}
+
+// ------------------------------------- a reconnect is not a restart (ADR-0010)
+
+/// [ADR-0010](../../../docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)
+/// decision 1: a session built from what a journal reports keeps its numbers,
+/// where a genuinely new one starts at 1.
+///
+/// **This is the test the corpus cannot write.** FIX 4.4 numbers a *session*,
+/// not a *connection*, but all seven `iCONNECT`s across the three files that
+/// reconnect expect `34=1` back — because the harness starts each one from a
+/// clean store. That is a property of how the tests are run, not a statement
+/// about what an acceptor owes a counterparty.
+#[test]
+fn a_session_resumed_from_a_journal_keeps_counting() {
+    let path = tmp("resume");
+    {
+        let mut j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("open");
+        j.put(7, A);
+        j.put(8, B);
+    }
+    // The restart. Everything above is gone; only the file is left.
+    let j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
+    let highest = j.highest().expect("the journal held something");
+
+    let mut s: Session<Acceptor, 64> = Session::resume(cfg(), highest + 1, 12);
+    assert_eq!(s.next_out(), 9, "carried in from the journal");
+    assert_eq!(s.next_in(), 12);
+
+    // And the connection that follows the restart must NOT wipe them.
+    s.connect(|_| {});
+    assert_eq!(
+        (s.next_out(), s.next_in()),
+        (9, 12),
+        "connect on a resumed session keeps the count — a reconnect is not a \
+         restart, and this is the whole of ADR-0010"
+    );
+}
+
+/// The other half, and the one that keeps the acceptance gate meaning what it
+/// means: a session nobody resumed still resets on every connect, so the corpus
+/// needs no exemption and none is granted (ADR-0010 decision 3).
+///
+/// **The counters are moved off 1 before the reconnect, and that is the whole
+/// test.** `[cost 2026-08-31]` the first version of this simply connected a
+/// fresh session twice and asserted `(1, 1)` — which is true whether `connect`
+/// resets or does nothing at all, because a new session is already there. It
+/// passed against a deliberately broken `connect` that never reset, and only
+/// the acceptance score noticed, dropping 59 → 56. That is `false-greens.md`
+/// §17: a test asserting about state it assembled itself.
+#[test]
+fn a_new_session_still_restarts_on_every_connect() {
+    let mut fresh: Session<Acceptor, 64> = Session::new(cfg());
+    fresh.connect(|_| {});
+    // Move it off 1 the only way this layer offers without a whole handshake.
+    fresh.logout_now(b"bye", |_| {});
+    assert!(
+        fresh.next_out() > 1,
+        "the reconnect below proves nothing unless the count actually moved"
+    );
+
+    fresh.connect(|_| {});
+    assert_eq!(
+        (fresh.next_out(), fresh.next_in()),
+        (1, 1),
+        "a second connection to a session that never persisted anything resets, \
+         which is exactly what every iCONNECT in the corpus expects"
+    );
+}
+
+/// And the same again from the resumed side: numbers that have moved stay
+/// moved. Together with the test above this pins both arms of the branch, so
+/// neither `if true` nor `if false` can pass.
+#[test]
+fn a_resumed_session_keeps_counting_across_a_reconnect() {
+    let mut s: Session<Acceptor, 64> = Session::resume(cfg(), 40, 50);
+    s.connect(|_| {});
+    s.logout_now(b"bye", |_| {});
+    let after = (s.next_out(), s.next_in());
+    assert_eq!(after, (41, 50), "logout consumed one outbound number");
+
+    s.connect(|_| {});
+    assert_eq!(
+        (s.next_out(), s.next_in()),
+        after,
+        "reconnecting a resumed session touches neither count"
+    );
+}
+
+// ------------------------------- the inbound count survives too (ADR-0017)
+
+/// [ADR-0017](../../../docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md):
+/// the journal records which inbound sequence numbers have been consumed, so a
+/// resumed session knows what it has already seen.
+///
+/// Without this, `Session::resume` has nothing to pass as `next_in` and a
+/// restart re-requests everything the counterparty ever sent.
+#[test]
+fn a_reopened_journal_knows_the_inbound_count_it_reached() {
+    let path = tmp("inbound");
+    {
+        let mut j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("open");
+        j.put(7, A);
+        j.mark_in(11);
+        j.mark_in(12);
+        assert_eq!(j.highest_in(), Some(12), "before the restart");
+    }
+    let j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
+    assert_eq!(
+        j.highest_in(),
+        Some(12),
+        "the inbound count came back off the disk"
+    );
+    assert_eq!(
+        j.highest(),
+        Some(7),
+        "and the two counts do not overwrite each other"
+    );
+}
+
+/// The whole loop, end to end: run a session, lose the process, resume from
+/// nothing but the file, and continue on both counts.
+#[test]
+fn a_session_resumes_both_counts_from_one_file() {
+    let path = tmp("bothcounts");
+    {
+        let mut j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("open");
+        j.put(4, A);
+        j.put(5, B);
+        j.mark_in(30);
+    }
+    // Everything above is gone. This is the restart.
+    let j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
+    let s: Session<Acceptor, 64> = Session::resume(
+        cfg(),
+        j.highest().map_or(1, |h| h + 1),
+        j.highest_in().map_or(1, |h| h + 1),
+    );
+    assert_eq!(
+        (s.next_out(), s.next_in()),
+        (6, 31),
+        "outbound from the last record, inbound from the last mark"
+    );
+}
+
+/// A journal that has never marked an inbound message must say so, not guess.
+#[test]
+fn an_unmarked_journal_has_no_inbound_count() {
+    let path = tmp("noinbound");
+    let mut j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("open");
+    j.put(1, A);
+    assert_eq!(
+        j.highest_in(),
+        None,
+        "writing an outbound message says nothing about what was received"
+    );
 }
