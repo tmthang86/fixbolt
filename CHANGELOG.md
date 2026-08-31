@@ -113,6 +113,87 @@ below describe what a first release would contain.
     accepted; what the files ask for next is a message only an operator can order.
 
 - **`fixbolt-engine`** — the crate that touches the socket. **All six steps.**
+  - **`affinity` — pinning a thread to a core, and proving it happened.** New module, new
+    optional feature of the same name, **off by default**, Linux only.
+    [ADR-0015](docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md) and
+    [ADR-0019](docs/decisions/ADR-0019-two-unsafe-blocks-and-an-error-the-enum-can-hold.md).
+    - `CoreId(pub usize)` — a logical CPU as the kernel numbers it. **The caller names it; the
+      engine never picks one**, because the OS's idea of a free core knows nothing about
+      `isolcpus`, NIC interrupt placement or SMT siblings.
+    - `pin_current_thread(CoreId) -> Result<(), AffinityError>` — call it **from inside the
+      thread, as its first act**. It sets the affinity and then asks the kernel back with
+      `sched_getaffinity`, returning `ReadbackMismatch` when the two disagree: a call returning
+      `Ok` is not evidence.
+    - `current_mask() -> Result<Vec<CoreId>, AffinityError>` and
+      `running_on() -> Result<CoreId, AffinityError>`. The second reads the `processor` field of
+      `/proc/thread-self/stat`, which the scheduler writes and this crate does not.
+      `scaling_cur_freq` is deliberately not used — `[measured 2026-08-30]` it freezes on a
+      `nohz_full` core, so a check built on it cannot fail.
+    - `AffinityError` **carries the offending core**. Elsewhere in this workspace errors are
+      fieldless; that rule is about hot paths, and this one is raised once at startup where
+      `NotIsolated(cpu3)` tells an operator what to change and `NotIsolated` does not. It is
+      `#[non_exhaustive]`: the topology rejections are not implemented yet.
+    - `[measured 2026-08-31]` proven by reversal rather than by passing: with the
+      `sched_setaffinity` call removed **and** the read-back disabled, the same thread was
+      observed on **cpu0, cpu4 and cpu5** during one run of the residency test — so the test is
+      not vacuous, and pinning is what stops the movement.
+    - **The feature adds no dependency**: it reuses the `libc` that `standard` already made
+      optional. `--no-default-features` still builds with no dependency and no `unsafe` at all,
+      and that build is what proves the `#[cfg]` gates the `mod` and not just the manifest.
+    - `Topology` and `ShardPlan` — **the engine refuses a plan it knows is wrong, before a
+      single thread exists.** `ShardPlan::new(vec![CoreId(6), CoreId(7)])`, optionally
+      `.with_journal_core(..)`, `.with_consumer_cores(..)`, `.allow_unisolated()`, then
+      `validate()`. Four refusals, each naming the core: `NoSuchCore`, `NotOnline`,
+      `SmtSiblingOf`, `DuplicateCore`, plus `NotIsolated` for shard cores unless waived, and
+      `EmptyPlan`.
+      - **Isolation is required of shard cores only.** A journal writer or ring consumer on an
+        isolated core would be taking back the very core this design isolates. They are still
+        checked for existence and for SMT contention with a shard.
+      - `allow_unisolated()` **lifts exactly one rule.** An absent or offline core is still
+        refused, and there is a test that says so, because an escape hatch that quietly becomes
+        allow-anything is worse than no rule.
+      - `Topology::from_sysfs(present, online, isolated, siblings)` is public so the refusals can
+        be tested against a machine this one is not. `[measured 2026-08-31]` the §9 desktop reads
+        `present 0-15`, `online 0-7`, `isolated 6-7,14-15` — **`isolated` names two cores that
+        are offline**, because §9 turns SMT off. A validator reading `isolated` alone would
+        accept a core that cannot run anything; that exact reading is committed as a fixture.
+  - **`shard` — many engines, one per pinned core.** New module behind the same `affinity`
+    feature. `Shards::start(&plan, make)` validates the plan, starts one thread per shard, and
+    **waits for every thread to confirm its own pin before any of them serves** — so a plan that
+    fails on shard 3 does not leave shards 0 to 2 already taking connections. `make` runs on the
+    pinned thread, so a connection's buffers are allocated by the core that will touch them.
+    - `Shardable` — the three methods the runtime needs from an engine (`add`, `turn`, `idle`),
+      so `Shards` carries none of `Engine`'s nine type parameters and a test can hand it
+      something that is not an engine at all.
+    - `Assign` and `RoundRobin` — which shard takes the next connection. An index outside the
+      range is **refused**, not taken modulo: silently rewriting a caller's answer hides the bug.
+    - `serve_sharded_hft` — bind, start, and hand connections over. The acceptor thread uses a
+      **blocking** `accept` (new: `Acceptor::bind_blocking`, `Acceptor::accept_blocking`),
+      because it is not an engine thread and spinning would burn a core to wait for something
+      that happens once per session.
+    - Dropping `Shards` ends every thread; there is no other shutdown.
+    - `[measured 2026-08-31]` the channel makes **no syscall** (`try_recv`, two million calls)
+      and **no allocation** (`benches/alloc.rs`, new `shard-turn` case, 0).
+    - **Known defect, and it is why this is documented rather than recommended.** With more than
+      one shard the single-logon rule stops working: an `Engine` serves one identity and answers
+      *"already logged on"* by counting the other connections it holds, and sharding splits
+      those across engines. The acceptance corpus scores **59 through one shard and 57 through
+      two**. `STATUS.md` open item 24.
+  - **The threads that are not engine threads now have homes too.**
+    - `affinity::spawn_pinned(name, core, work)` — starts a thread that pins itself before doing
+      anything and **does not return until that thread has confirmed it**, so a failed pin
+      reaches the caller who can stop startup rather than dying quietly on the new thread. It
+      returns the core the thread was *observed* on.
+    - `FileJournal::open_pinned(path, Durability::Async, core)` and `writer_core()`. Only
+      `Async` has a writer thread; asking to pin a `Fsync` journal is **refused** rather than
+      accepted and ignored, because a constructor that silently drops an argument is how a
+      deployment ends up believing it pinned something.
+    - `Topology::siblings_of` is public: the engine never picks a core, so a caller has to, and
+      `CoreId(0), CoreId(1)` is wrong on any machine with SMT on.
+    - **The ring consumer is still yours to pin** — it is whatever thread calls `RingApp::pump`
+      and this crate never spawns one. `ShardPlan::with_consumer_cores` validates the choice
+      (a consumer sharing a physical core with a shard is refused before startup) and
+      `spawn_pinned` is how you put it there.
   - **A full ring to the application ends the connection** —
     [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md), `DESIGN.md` D10b. Under
     `RingDispatch`, a message the ring will not take is one the session already accepted,

@@ -38,15 +38,17 @@ const N: usize = 256;
 const RX: usize = 4096;
 const TX: usize = 8192;
 
-/// The acceptance server's own application, wired through the engine.
+/// The acceptance server's own application.
 ///
-/// The same one `crates/session/tests/score.rs` uses, for the same reason: 42
-/// of the corpus's 250 `E` lines carry `35=D`, so a session layer alone cannot
-/// pass. See `fixbolt_conformance::echo`.
+/// `[2026-08-31]` **this used to be written out here, and identically in
+/// `crates/session/tests/score.rs`.** Two copies of a test oracle are two
+/// oracles that will eventually disagree, and the one that disagrees is the one
+/// nobody is looking at. It now lives once, in
+/// `fixbolt_conformance::echo::Echo`; this is the five-line impl that forwards
+/// to it. The score is unchanged — 59 / 59 before and after, which is what
+/// makes the move a refactor rather than an edit.
 #[derive(Default)]
-struct EchoApp {
-    seen: Vec<Vec<u8>>,
-}
+struct EchoApp(fixbolt_conformance::echo::Echo);
 
 impl Application for EchoApp {
     fn on_message(
@@ -56,34 +58,8 @@ impl Application for EchoApp {
         stamp: &[u8],
         out: &mut [u8],
     ) -> Option<Range<usize>> {
-        let msg_type = field(msg, 35)?;
-        if msg_type != b"D" && msg_type != b"d" {
-            return fixbolt_conformance::echo::business_reject(msg, out, seq, stamp).ok();
-        }
-        if let Some(id) = field(msg, 11) {
-            let already = self.seen.iter().any(|s| s == id);
-            if field(msg, 97) == Some(b"Y") && already {
-                return None;
-            }
-            if !already {
-                self.seen.push(id.to_vec());
-            }
-        }
-        fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
+        self.0.reply(msg, seq, stamp, out)
     }
-}
-
-fn field(wire: &[u8], tag: u32) -> Option<&[u8]> {
-    let needle = format!("{tag}=").into_bytes();
-    let mut at = 0;
-    while at < wire.len() {
-        let end = wire[at..].iter().position(|b| *b == 1)? + at;
-        if wire[at..end].starts_with(&needle) {
-            return Some(&wire[at + needle.len()..end]);
-        }
-        at = end + 1;
-    }
-    None
 }
 
 /// The counterparty: one client socket per `Conn`, and the engine on the other

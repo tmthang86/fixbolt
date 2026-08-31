@@ -17,6 +17,12 @@ description = "TCP acceptor and connector, a thread that never sleeps in the ker
 default = ["standard"]
 standard = ["dep:libc"]
 
+# ADR-0015. Off by default: pinning is opt-in, and a build with no features must
+# stay dependency-free and `unsafe`-free. It reuses the SAME optional `libc`
+# that `standard` takes rather than adding a second FFI crate — one tree, which
+# is what the comment on that dependency below already promised.
+affinity = ["dep:libc"]
+
 [dependencies]
 fixbolt-codec = { path = "../codec" }
 fixbolt-dict = { path = "../dict" }
@@ -64,4 +70,8 @@ harness = false
 
 [[bench]]
 name = "ring_full"
+harness = false
+
+[[bench]]
+name = "turn"
 harness = false

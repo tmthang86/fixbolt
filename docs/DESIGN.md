@@ -19,7 +19,8 @@ to measure the floor honestly.
 ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). Latency
 beats session density here, and the tie-breaker has teeth: a change trading per-session latency
 for sessions-per-core needs its own ADR to reverse it. Many sessions on a thread is supported
-and named **`density`**; it carries `N × 703 ns` of polling and **does not inherit the latency
+and named **`density`**; it carries `[measured 2026-08-31]` **`N × 675 ns`** of polling on the
+isolated core §9 asks for — 505 ns on an ordinary one — and **does not inherit the latency
 figures on this page**. Every figure here names its `N`.
 
 What must be built and in which phase is [PRD.md](PRD.md); this document is *how*.
@@ -55,11 +56,13 @@ A second principle, learned from reviewing the first draft of this document: **t
 nothing about I/O strategy, outbound encoding, or the OS underneath has optimised the wrong
 1%. §4 D8–D10, §8 and §9 exist because of that review.
 
-**A third principle, and it is the second one turning on its author.** `[measured 2026-08-30]`
-the I/O strategy §4 D8 chose — one non-blocking `read` per connection per turn — costs
-**703 ns per socket**, flat from 1 to 256 sockets, of which **353.8 ns is kernel entry and exit
-doing nothing**. This document's own `parse NewOrderSingle` is **125.5 ns**. *The syscall that
-discovers there is nothing to parse costs 5.6× the parse.* So the second principle was right and
+**A third principle, and it is the second one turning on its author.** `[measured 2026-08-31]`
+the I/O strategy §4 D8 chose — one non-blocking `read` per connection per turn — costs a whole
+`Engine::turn` of **505 ns per session on an ordinary core and 675 ns on an isolated one**, flat
+from 1 to 16 sessions within 2%. **Of the 505, 471 ns is the syscall and about 30 ns is
+everything the engine itself does.** This document's own `parse NewOrderSingle` is **122.6 ns**
+on the same machine. *The syscall that discovers there is nothing to parse costs 3.8× the
+parse — and on the core §9 recommends, more.* So the second principle was right and
 incompletely applied: the codec was priced, the I/O strategy was chosen and **never priced**, and
 §8's budget was written for "the user-space path" — the half that was already cheap.
 [ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) is the
@@ -112,6 +115,9 @@ Added one at a time, each behind an approved plan.
 | `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport`, and **`libc` only under the `standard` feature** |
 | | | `[2026-08-30]` step 1 of six exists: `Transport`, `TcpTransport`, `Loopback`, `Waiting`. `transport` is a module here rather than its own crate until something needs it to be otherwise | |
 | | | `[2026-08-30]` modules `poll`, `block` and `waker` — `poll(2)` and `standard`'s idle turn, behind `#[cfg(all(feature = "standard", unix))]`. **The crate's first external dependency and first `unsafe`, both behind that feature**: `--no-default-features` builds it with neither (ADR-0014) | |
+| | | `[2026-08-31]` module `affinity` — `CoreId`, `AffinityError`, `pin_current_thread` (which reads the mask back) and `running_on` (which reads the scheduler's own answer out of `/proc/thread-self/stat`). Behind `#[cfg(all(feature = "affinity", target_os = "linux"))]`, **off by default**, reusing the same optional `libc`. Two `unsafe` blocks, each naming its test ([ADR-0015](decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md), [ADR-0019](decisions/ADR-0019-two-unsafe-blocks-and-an-error-the-enum-can-hold.md)). Also `Topology` and `ShardPlan`: the engine refuses a core that is absent, offline, duplicated, an SMT sibling of another in the plan, or — for shard cores — outside `isolcpus`, **before any thread is created** | |
+| | | `[2026-08-31]` module `shard` — `Shards`, `Shardable`, `Assign`, `RoundRobin`, `serve_sharded_hft`. One pinned thread per shard, each confirming its own pin before any of them serves; the acceptor thread blocks, because it is not an engine thread. **Sound for one shard and a known defect for more**: the single-logon rule is per-engine and sharding splits the connections it looks at — 59 through one shard, **57 through two**, `STATUS.md` open item 24 | |
+| | | `[2026-08-31]` `affinity::spawn_pinned` and `journal::FileJournal::open_pinned` — the one thread this crate spawns has a home, and the confirmation reaches the caller who can stop startup. The `RingDispatch` consumer is the caller's own thread and is validated rather than pinned | |
 | `library` | L4 | The application-facing API | `engine` |
 | `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
 
@@ -443,10 +449,21 @@ default.**
 | | `standard` — the default | `hft` — opt-in, Linux only |
 |---|---|---|
 | Idle behaviour | **blocks on readiness** with a timeout, and gives the core back | spins on non-blocking sockets, never enters the kernel |
-| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-30]` one `read` at 703 ns per socket |
+| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` one turn at **675 ns per session** on an isolated core, 505 on an ordinary one |
 | Pinning | none | the polling thread is pinned to an isolated core |
 | Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
 | Rule 4 says | it **must** block | it must **not** sleep |
+
+`[2026-08-31]` **"pinned" is now something the code can do rather than something this
+paragraph asserts.** `fixbolt_engine::affinity::pin_current_thread` pins the calling thread and
+confirms it with `sched_getaffinity`, and `tests/affinity.rs` watches the scheduler's own
+`processor` field while the thread works — reversal: with the pin removed the same thread was
+observed on **cpu0, cpu4 and cpu5** in one run. **What is not built yet** is refusing a bad core
+(offline, unisolated, an SMT sibling of another shard) and pinning the journal writer and the
+ring consumer; those are steps 3 and 5 of
+[threads-and-affinity](plans/2026-08-30-threads-and-affinity.md), and until they land `STATUS.md`
+open item 21 stays open. The engine also still does not shard — one `Engine` per core is the
+caller's arrangement (`GUIDE.md` §1a).
 
 **In `hft`,** the engine thread is pinned to an isolated core and spins on non-blocking
 sockets. No `epoll_wait`, no condition variables, no futex on the hot path.
@@ -458,7 +475,9 @@ engine controls. It burns a core — that is the price, and in `hft` it is worth
 **Why `standard` exists, and why it is the default:** an engine whose out-of-the-box
 configuration pins a core at 100% is one most people cannot evaluate — it looks broken. And
 `[measured 2026-08-30]` the spin is not free even in `hft`: the poll it replaces `epoll` with
-costs **703 ns per socket per turn**, so the trade **wins at N = 1 and loses by N = 8**.
+costs `[measured 2026-08-31]` **675 ns per session per turn** on the isolated core it asks for,
+so the trade **wins at N = 1 and loses by N = 8** — a conclusion the re-measurement did not
+move, because 8 × 675 ns is 5.4 µs and still clears the top of `epoll`'s range.
 `standard` is the honest default for everything that is not one session on an isolated core.
 
 `Waiting` is a trait and is the right seam, but **`wait::Yield` is not `standard`**: it is
@@ -971,7 +990,7 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | NIC → kernel → socket buffer | 3–8 µs | Kernel, IRQ affinity, driver |
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
 | Wakeup — **`standard`** blocks on readiness | 2–5 µs, `epoll`-class, **and the core is given back** | **This design**, D8 |
-| Wakeup — **`hft`** busy-polls | `[measured 2026-08-30]` **703 ns × N**, N = sockets on the thread, **and a core is burned** | **This design**, D8 |
+| Wakeup — **`hft`** busy-polls | `[measured 2026-08-31]` **`Engine::turn` itself: ~505 ns × N on an ordinary core, ~675 ns × N on an isolated one**, N = sockets on the thread, **and a core is burned**. The 2026-08-30 figure of 703 ns was a C program's bare `read`, pinned to an isolated core; matched for placement the two agree to 4%. **§9's isolation costs 36% of this row** — [measured-costs.md](reference/measured-costs.md) | **This design**, D8, `benches/turn.rs` |
 | Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.6 ns) | This design |
 | Session machine (D1) | ~0.1 µs | This design |
 | Dispatch — inline **vs** ring (D4) | `[measured 2026-08-31]` **0.0013 µs** inline **vs** **0.27 µs** ring one way (§9 desktop) | Application's choice |
@@ -979,8 +998,21 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
 | **User-space work only** | `[measured 2026-08-31]` **~0.46 µs**, inline dispatch, N = 1 | The half that was always cheap |
-| **Everything this design controls, N = 1** | **~1.7 µs** — the row above plus one 703 ns poll | |
-| **Everything this design controls, N sessions** | **`< 1 µs + N × 703 ns`** | |
+| **Everything this design controls, N = 1** | **~0.97 µs** on an ordinary core, **~1.14 µs** on an isolated one — the row above plus one turn | |
+| **Everything this design controls, N sessions** | **`~0.46 µs + N × 505 ns`** ordinary, **`+ N × 675 ns`** isolated | |
+
+`[measured 2026-08-31]` **The poll row is now `Engine::turn` rather than a floor, and it
+carries a number nobody expected.** `crates/engine/benches/turn.rs` measures the real sweep over
+real sockets: **505 ns per session**, flat from 1 to 16 to within 2%, of which **~475 ns is the
+`recv` syscall and ~30 ns is everything else the engine does** — measured in the same run, so
+the subtraction is not across programs.
+
+**And the same benchmark under `taskset` reversed a piece of §9's advice.** The isolated core
+this design recommends for the engine thread is **36% slower** at that syscall: 680 ns against
+498 ns, with `cpu5` and `cpu6` in the *same* L3 domain to show it is not cache placement. §9
+buys jitter isolation and pays a third of the dominant term for it; whether that is worth it is
+a question about a tail this measurement does not touch, and it is now a trade that is stated
+rather than assumed. [measured-costs.md](reference/measured-costs.md) carries the four arms.
 
 `[measured 2026-08-31]` **Four rows stopped being literature figures, and one of them got
 4.8× worse in the process.** Serialise was carried here as **~0.05 µs**, which was the 60 ns
@@ -1012,7 +1044,7 @@ which this design chose, and can change by batching it, removing it, or carrying
 **At N = 2 the polling sweep alone exceeds the whole user-space budget.**
 [ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) settles what
 follows from that: one session per polling thread is the shape this table describes, `density`
-is a labelled mode carrying the `N × 703 ns` term, and **no latency figure is published without
+is a labelled mode carrying the `N × 675 ns` term, and **no latency figure is published without
 its `N`**.
 
 The TLS row has no number in it on purpose: none has been measured here, and none is quoted
@@ -1023,8 +1055,9 @@ Two readings of this table:
 
 1. On kernel TCP, this engine's user-space path is **under 5% of the total**. The design
    makes that 5% as small as it can be, and — through D8 — trades `epoll`'s 2–5 µs wakeup for a
-   703 ns poll. `[measured 2026-08-30]` **that trade wins at N = 1 and loses by N = 8**, which
-   is the sentence this table did not contain until the poll was measured.
+   675 ns poll. `[measured 2026-08-31]` **that trade wins at N = 1 and loses by N = 8**, which
+   is the sentence this table did not contain until the poll was measured — and which survived
+   the poll being re-measured against the engine rather than against a C floor.
 2. Going below the floor means kernel bypass (OpenOnload, DPDK, `ef_vi`). That is L0's
    job, behind a feature flag that actually gates (D5), and it is **not v1**.
 
@@ -1038,7 +1071,7 @@ anything:
 |---|---|
 | **The machine is not a guest** | Four rows below — governor, turbo, C-states, SMT — plus NIC IRQ affinity are **host** properties. A VM cannot set them, and does not fail them loudly: the `/sys` files are simply absent, so a guest collects `unknown` and reads as under-configured rather than as structurally unable to comply. So this is a row of its own, and it decides whether the rest can mean anything. `check-machine.sh` reports `systemd-detect-virt` and steal time over the same window as the row below; a guest is a **FAIL**, and steal on bare metal is reported as unexplained rather than resolved either way. **Development may move to a cloud VM; measurement cannot.** Bare metal, or nothing but counts and same-machine A/B |
 | **Nothing else is running on the machine** | `[measured 2026-08-30]` **the row that was missing, and it dominates every other row here.** On the project's Ryzen 7 3700X, all six tuning rows below move the `ring, one way` median by **0.8%** — 260.6 ns untuned to 259.7 ns tuned, both on a quiet box. Competing CPU load moves it by **71%**, 262 ns to 449 ns, and takes the rate of a second mode near 324 ns from ~5% to **92%**. A machine can satisfy every other line in this table and still be useless to measure on. `scripts/check-machine.sh` now reads CPU busy over a one-second window and **FAILs above 3%**, naming the processes by their delta in that window |
-| `isolcpus` + `nohz_full` for the engine core | No scheduler ticks, no other tenants |
+| `isolcpus` + `nohz_full` for the engine core | No scheduler ticks, no other tenants — **and `[measured 2026-08-31]` a 36% tax on the syscall §8 says dominates**: `Engine::turn` costs 680 ns per session on `cpu6` against 498 ns on `cpu5`, which is in the same L3 domain and differs only in isolation. Take it for the tail it removes, not because it is free; the tail itself is **unmeasured**. [measured-costs.md](reference/measured-costs.md) |
 | IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt |
 | `mlockall` + pre-faulted buffers | No page fault on the hot path. The reference project's `pool.rs` touches every page at startup — copy that |
 | Transparent huge pages **off** | THP compaction stalls are multi-millisecond |

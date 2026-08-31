@@ -210,6 +210,70 @@ fn main() {
         }
     });
 
+    // The shard runtime's loop, minus the thread it runs on: drain the channel
+    // of newly accepted connections, then turn. `try_recv` on an empty channel
+    // is the only thing `shard.rs` adds to a quiet turn, and it runs once per
+    // turn per shard for as long as the process lives.
+    //
+    // `[measured 2026-08-31]` the syscall half of this question is already
+    // answered — two million `try_recv` calls make none
+    // (`reference/measured-costs.md`). This is the other half.
+    //
+    // Its own engine, not the one above: adding a connection to that one would
+    // break its later assertion that it still holds exactly the session it
+    // started with, and a bench case that quietly changes another case's
+    // premise is how a suite starts lying.
+    let mut sharded: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    let (shard_tx, shard_rx) = std::sync::mpsc::channel::<Loopback>();
+    {
+        // Prove the drain path is the path before counting a zero from it. The
+        // same rule as everywhere else in this file: a zero must mean "did not
+        // allocate", never "did not run".
+        let (_peer3, engine_side3) = Loopback::pair();
+        shard_tx.send(engine_side3).expect("the receiver is alive");
+        while let Ok(t) = shard_rx.try_recv() {
+            sharded.add(t);
+        }
+        assert_eq!(
+            sharded.connections(),
+            1,
+            "the shard drain must actually hand a connection to the engine"
+        );
+        sharded.turn();
+    }
+    // `shard_tx` stays alive, so `try_recv` below reports Empty rather than
+    // Disconnected — the state a running shard is actually in.
+    let shard_turn_allocs = count(|| {
+        for _ in 0..10_000 {
+            while let Ok(t) = shard_rx.try_recv() {
+                sharded.add(t);
+            }
+            sharded.turn();
+        }
+    });
+    assert_eq!(
+        sharded.connections(),
+        1,
+        "and it must still hold that connection after the count"
+    );
+    drop(shard_tx);
+
     // And turns that actually carry messages: a Logon, then a thousand
     // Heartbeats with sequence numbers that keep going up.
     //
@@ -378,8 +442,8 @@ fn main() {
 
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
-         frame {frame_allocs} turn {turn_allocs} busy {busy_allocs} ring {ring_allocs} \
-         interests {interests_allocs}"
+         frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
+         busy {busy_allocs} ring {ring_allocs} interests {interests_allocs}"
     );
     assert_eq!(
         [
@@ -388,11 +452,12 @@ fn main() {
             recv_allocs,
             frame_allocs,
             turn_allocs,
+            shard_turn_allocs,
             busy_allocs,
             ring_allocs,
             interests_allocs
         ],
-        [0; 8],
+        [0; 9],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

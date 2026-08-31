@@ -63,3 +63,14 @@ AMD Ryzen 7 3700X 8-Core Processor	encode 1 group, 2 entries	108.4	1.10	24	2026-
 AMD Ryzen 7 3700X 8-Core Processor	inline deliver + reply	1.3	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	ring, one way	267.4	1.30	24	2026-08-31	pass 10 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	ring, round trip	515.7	1.20	24	2026-08-31	pass 10 fail 0 unknown 1
+
+# `[measured 2026-08-31]` the four `turn` cases below came from a sample of 26
+# whole bench.sh runs of which 21 read `pass 10 fail 0`; the five that did not
+# were discarded, and the largest single source of the disqualifications was the
+# agent's own polling of the machine while the sample ran. They are the tightest
+# cases in this file — max/median between 1.011 and 1.021, against 1.30 for
+# `ring, one way` — so every margin is the ladder's floor.
+AMD Ryzen 7 3700X 8-Core Processor	recv on a quiet socket	470.9	1.10	21	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 idle sessions	500.3	1.10	21	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 idle sessions	2002.9	1.10	21	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 idle sessions	8139.4	1.10	21	2026-08-31	pass 10 fail 0 unknown 1

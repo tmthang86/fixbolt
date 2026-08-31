@@ -14,12 +14,24 @@
 //! a timing window — `crates/engine/tests/wire.rs` drives `turn` by hand and is
 //! as deterministic as the in-process gate.
 
+// ADR-0015 decision 9, and non-negotiable 6 again: the feature gates the `mod`
+// declaration, not only the manifest. `cfg(target_os = "linux")` on top of it
+// because `sched_setaffinity` is a Linux interface — on anything else the
+// module does not exist, so code written against it fails to compile rather
+// than failing at startup. Same shape as `standard` above.
+#[cfg(all(feature = "affinity", target_os = "linux"))]
+pub mod affinity;
+// Step 4 of threads-and-affinity. Gated with `affinity` because a shard without
+// a pinned core is just an engine, and the whole point of the runtime is that
+// each one has a core of its own.
 pub mod backpressure;
 pub mod clock;
 pub mod conn;
 pub mod dispatch;
 pub mod frame;
 pub mod journal;
+#[cfg(all(feature = "affinity", target_os = "linux"))]
+pub mod shard;
 // ADR-0014 decision 1 and 2. The feature gates the `mod` declaration itself,
 // not only the manifest — non-negotiable 6, and `CLAUDE.md` §10 lists getting
 // this wrong as a standing trap. `cfg(unix)` on top of it is decision 2: on a
@@ -654,6 +666,39 @@ impl Acceptor {
         {
             None
         }
+    }
+
+    /// Listen on `addr` and **block** in `accept`.
+    ///
+    /// For a thread that is not an engine thread. `crates/engine/src/shard.rs`
+    /// runs its acceptor on one: accepting is not the hot path, it happens once
+    /// per session, and a thread that spins to wait for it burns a core to do
+    /// nothing. `CLAUDE.md` §2 non-negotiable 4 is about the **engine** thread,
+    /// and `scripts/check-no-kernel-sleep.sh` attributes syscalls by tid for
+    /// exactly this reason.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `bind` returns.
+    pub fn bind_blocking(addr: &str) -> std::io::Result<Self> {
+        Ok(Self {
+            listener: TcpListener::bind(addr)?,
+        })
+    }
+
+    /// Wait for a connection. **Blocks** — see [`bind_blocking`](Self::bind_blocking).
+    ///
+    /// On an [`Acceptor`] built by [`bind`](Self::bind) this does not block; it
+    /// returns `WouldBlock` when nothing is waiting, which is the answer that
+    /// constructor promised.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `accept` returns, and whatever making the socket non-blocking
+    /// returns.
+    pub fn accept_blocking(&self) -> std::io::Result<TcpTransport> {
+        let (sock, _) = self.listener.accept()?;
+        TcpTransport::new(sock)
     }
 
     /// One connection, if one is waiting. Never blocks.

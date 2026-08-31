@@ -155,21 +155,14 @@ impl SessionUnderTest for Adapter {
     }
 }
 
-/// The application the acceptance corpus assumes, wired to the session.
+/// The acceptance server's own application.
 ///
-/// `conformance` cannot implement [`fixbolt_session::Application`] — it does not
-/// depend on `session`, and reversing that is a cycle — so the trait is
-/// implemented here over the two functions that crate does provide.
-///
-/// The state is the interesting part. `19a` and `19b` are the same file twice
-/// with one difference: whether the `11=` on a `97=Y` message has been seen
-/// before on this session. **That is not something a session layer can answer**
-/// — a sequence number says nothing about an order ID — and the two files exist
-/// to say so.
+/// `[2026-08-31]` shared with `crates/engine/tests/wire.rs` and
+/// `tests/shard_wire.rs` rather than written out three times — it lives in
+/// `fixbolt_conformance::echo::Echo`, which is where the corpus's other
+/// fixtures already were. 59 / 59 before and after.
 #[derive(Default)]
-struct EchoApp {
-    seen: Vec<Vec<u8>>,
-}
+struct EchoApp(fixbolt_conformance::echo::Echo);
 
 impl fixbolt_session::Application for EchoApp {
     fn on_message(
@@ -179,23 +172,7 @@ impl fixbolt_session::Application for EchoApp {
         stamp: &[u8],
         out: &mut [u8],
     ) -> Option<std::ops::Range<usize>> {
-        let msg_type = field(msg, 35)?;
-        // The acceptance server trades orders and security definitions and
-        // nothing else. `2r_UnregisteredMsgType.def` sends `35=8`, which FIX 4.4
-        // defines and this application does not want.
-        if msg_type != b"D" && msg_type != b"d" {
-            return fixbolt_conformance::echo::business_reject(msg, out, seq, stamp).ok();
-        }
-        if let Some(id) = field(msg, 11) {
-            let already = self.seen.iter().any(|s| s == id);
-            if field(msg, 97) == Some(b"Y") && already {
-                return None;
-            }
-            if !already {
-                self.seen.push(id.to_vec());
-            }
-        }
-        fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
+        self.0.reply(msg, seq, stamp, out)
     }
 }
 

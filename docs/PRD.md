@@ -35,16 +35,23 @@ that. The shape `hft` is optimised for, budgeted for and measured at is **one se
 isolated polling thread**. Inside `standard` the tie-breaker is **portability, then the core
 back** — many sessions on one blocked thread is simply how it is run.
 
-`[measured 2026-08-30]` the reason is arithmetic, not preference. An idle turn is one
-non-blocking `read` per connection and that syscall costs **703 ns**, flat from 1 to 256
-sockets — so a sweep is `N × 703 ns` and a message waits up to one whole sweep to be seen.
-**Two sessions on one polling thread exceed `DESIGN.md` §8's entire budget in polling alone.**
-[reference/measured-costs.md](reference/measured-costs.md).
+`[measured 2026-08-31]` the reason is arithmetic, not preference. An idle turn is one
+non-blocking `read` per connection, and `Engine::turn` costs **675 ns per session on the
+isolated core `DESIGN.md` §9 recommends** — 505 ns on an ordinary one — flat from 1 to 16
+sessions within 2%. A message waits up to one whole sweep to be seen. **Two sessions on one
+polling thread exceed `DESIGN.md` §8's entire budget in polling alone.**
+
+The figure published here is the **isolated-core** one, because that is the machine this
+engine tells people to run on. It is also the more expensive one: the isolation §9 asks for
+costs **36%** on this exact operation, and what it buys — a shorter tail — is not measured yet.
+The `703 ns` this paragraph carried until 2026-08-31 was a **C program's bare `read`**, not this
+engine's turn. [reference/measured-costs.md](reference/measured-costs.md),
+`crates/engine/benches/turn.rs`.
 
 | User | What they need | Served in |
 |---|---|---|
 | A firm on a latency-critical path to a venue | An **acceptor or initiator** on a dedicated polling thread, budgeted end to end | Phase 1 — **the shape this engine is built for** |
-| A venue or broker running a FIX gateway for its clients | Many sessions per core, in the **`density`** shape — supported, and carrying its own budget of `N × 703 ns` plus the per-message path rather than the latency figures above | Phase 1, [ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) |
+| A venue or broker running a FIX gateway for its clients | Many sessions per core, in the **`density`** shape — supported, and carrying its own budget of `[measured 2026-08-31]` **`N × 675 ns`** per polling thread plus the per-message path, rather than the latency figures above. `[2026-08-31]` **the shape is now concrete**: `fixbolt_engine::shard` gives M pinned threads of N sessions each, so a gateway budgets `N × 675 ns` where N is sessions **per shard** rather than in total — `GUIDE.md` §1a does that arithmetic. **What it cannot do yet is route by counterparty**, and until it can, more than one shard breaks the single-logon rule: `STATUS.md` open item 24 | Phase 1, [ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) |
 | A firm connecting out to venues | An **initiator** with reconnect, schedules and sequence persistence | Phase 1 ([ADR-0004](decisions/ADR-0004-bidirectional-engine.md)) |
 | A team building a simulator or a QA exchange | Both sides, plus a dispatch mode that survives an application that blocks | Phase 1 ([ADR-0002](decisions/ADR-0002-engine-library-split.md)) |
 | A market-data consumer | Binary encodings — SBE today, FAST for legacy feeds | Phase 2 |
