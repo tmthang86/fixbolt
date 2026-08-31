@@ -113,6 +113,36 @@ below describe what a first release would contain.
     accepted; what the files ask for next is a message only an operator can order.
 
 - **`fixbolt-engine`** — the crate that touches the socket. **All six steps.**
+  - **`affinity` — pinning a thread to a core, and proving it happened.** New module, new
+    optional feature of the same name, **off by default**, Linux only.
+    [ADR-0015](docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md) and
+    [ADR-0019](docs/decisions/ADR-0019-two-unsafe-blocks-and-an-error-the-enum-can-hold.md).
+    - `CoreId(pub usize)` — a logical CPU as the kernel numbers it. **The caller names it; the
+      engine never picks one**, because the OS's idea of a free core knows nothing about
+      `isolcpus`, NIC interrupt placement or SMT siblings.
+    - `pin_current_thread(CoreId) -> Result<(), AffinityError>` — call it **from inside the
+      thread, as its first act**. It sets the affinity and then asks the kernel back with
+      `sched_getaffinity`, returning `ReadbackMismatch` when the two disagree: a call returning
+      `Ok` is not evidence.
+    - `current_mask() -> Result<Vec<CoreId>, AffinityError>` and
+      `running_on() -> Result<CoreId, AffinityError>`. The second reads the `processor` field of
+      `/proc/thread-self/stat`, which the scheduler writes and this crate does not.
+      `scaling_cur_freq` is deliberately not used — `[measured 2026-08-30]` it freezes on a
+      `nohz_full` core, so a check built on it cannot fail.
+    - `AffinityError` **carries the offending core**. Elsewhere in this workspace errors are
+      fieldless; that rule is about hot paths, and this one is raised once at startup where
+      `NotIsolated(cpu3)` tells an operator what to change and `NotIsolated` does not. It is
+      `#[non_exhaustive]`: the topology rejections are not implemented yet.
+    - `[measured 2026-08-31]` proven by reversal rather than by passing: with the
+      `sched_setaffinity` call removed **and** the read-back disabled, the same thread was
+      observed on **cpu0, cpu4 and cpu5** during one run of the residency test — so the test is
+      not vacuous, and pinning is what stops the movement.
+    - **The feature adds no dependency**: it reuses the `libc` that `standard` already made
+      optional. `--no-default-features` still builds with no dependency and no `unsafe` at all,
+      and that build is what proves the `#[cfg]` gates the `mod` and not just the manifest.
+    - **Not yet**: refusing an offline, unisolated or SMT-sibling core, sharding, and affinity
+      for the journal writer and the ring consumer. `GUIDE.md` §1a says which of those are still
+      the caller's problem.
   - **A full ring to the application ends the connection** —
     [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md), `DESIGN.md` D10b. Under
     `RingDispatch`, a message the ring will not take is one the session already accepted,

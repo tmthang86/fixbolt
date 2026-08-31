@@ -100,6 +100,24 @@ jobs:
       - if: steps.ws.outputs.count != '0'
         run: cargo test --all
 
+      # `affinity` is off by default and Linux-only (ADR-0015 decision 9), so
+      # the two steps above never compile a line of it. Without this the module
+      # and its five tests would be a gate nothing gates — the shape this
+      # repository keeps paying for: see the kTLS diagnostic that contradicted
+      # its own output for a day, and check-lint-config.sh, which was red on the
+      # developer machine and green here.
+      #
+      # The second command is the combination nothing else covers: `affinity`
+      # WITHOUT `standard`. Both take the same optional `libc`, so a mistake in
+      # how that dependency is shared only shows up when one feature is on and
+      # the other is off.
+      - if: steps.ws.outputs.count != '0'
+        name: The affinity feature builds, lints and passes on its own
+        run: |
+          cargo clippy --all-targets --features affinity -- -D warnings
+          cargo test -p fixbolt-engine --features affinity
+          cargo test -p fixbolt-engine --no-default-features --features affinity
+
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —
   # `[measured 2026-08-30]` clippy::byte_char_slices did exactly that. Pinning

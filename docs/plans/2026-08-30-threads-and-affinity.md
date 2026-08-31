@@ -176,11 +176,11 @@ Từng bước, và **đọc output chứ không đọc exit code**.
 ## Tài liệu phải cập nhật
 
 - [x] `docs/decisions/ADR-0015-…` — bước 1, **xong 2026-08-31**
-- [ ] `docs/DESIGN.md` D8 (câu "pinned to an isolated core" thành có thật), §3 (crate/mod mới)
+- [x] `docs/DESIGN.md` D8 (câu "pinned to an isolated core" thành có thật), §3 (crate/mod mới) — **bước 2, 2026-08-31**
 - [ ] `docs/DESIGN.md` §8 — số của `Engine::turn` thật thay cho sàn từ chương trình C
-- [ ] `docs/GUIDE.md` §1a — từ "anh tự lo" thành "engine làm, đây là cách khai báo"
+- [~] `docs/GUIDE.md` §1a — **nửa chừng 2026-08-31**: mục "Pinning" đã đổi; shard, từ chối core sai và affinity cho thread phụ vẫn là của người dùng
 - [ ] `docs/PRD.md` — `density` có hình dạng cụ thể
-- [ ] `CHANGELOG.md` — public API đổi
+- [x] `CHANGELOG.md` — public API đổi — **bước 2, 2026-08-31**
 - [ ] `STATUS.md` — item 21 đóng, item 22 cập nhật
 - [ ] `crates/engine` rustdoc
 
@@ -265,3 +265,74 @@ nhất: `check-no-kernel-sleep.sh` quy syscall theo tid và lấy `engine-tid` *
 với M shard nó chỉ kiểm một trong M. Đó là việc của bước 4 và đã được gọi tên.
 
 **Bước 2 chưa bắt đầu.**
+
+### Bước 2 — `affinity.rs`: ghim, rồi hỏi lại kernel. 2026-08-31.
+
+**Xong.** `crates/engine/src/affinity.rs` sau `#[cfg(all(feature = "affinity", target_os =
+"linux"))]`, feature `affinity` **tắt mặc định**, dùng lại đúng `libc` optional mà `standard`
+đã có. API: `CoreId`, `AffinityError`, `pin_current_thread`, `current_mask`, `running_on`.
+
+**Test đỏ trước, trên code chưa viết:**
+
+```
+error[E0583]: file not found for module `affinity`
+  --> crates/engine/src/lib.rs:23:1
+```
+
+Rồi 5 test xanh. Nhưng xanh chưa chứng minh gì, nên **hai lần đảo ngược**:
+
+1. Bỏ lời gọi `sched_setaffinity` → 2/5 đỏ. Nhưng chúng đỏ ở **guard read-back**
+   (`ReadbackMismatch`), không phải ở khẳng định về cư trú. Đúng theo nghĩa "guard bắt được",
+   nhưng chưa chứng minh được khẳng định kia có giá trị.
+2. Bỏ **cả** read-back → khẳng định cư trú mới là thứ phải bắt, và nó bắt:
+
+```
+assertion `left == right` failed: a pinned thread must be observed on exactly one core, CoreId(0)
+  left: [CoreId(0), CoreId(4), CoreId(5)]
+ right: [CoreId(0)]
+```
+
+Đây là điều đáng giá nhất của bước này: **không ghim thì thread thật sự bị scheduler dời**, ba
+core khác nhau trong một lần chạy. Test không rỗng, và việc ghim đúng là thứ chặn nó lại. Nếu
+chỉ làm đảo ngược thứ nhất thì vẫn không biết điều đó.
+
+**Ba chỗ ADR-0015 sai, và viết code là thứ tìm ra:**
+[ADR-0019](../decisions/ADR-0019-two-unsafe-blocks-and-an-error-the-enum-can-hold.md) sửa hai
+quyết định, phần còn lại của ADR-0015 giữ nguyên.
+
+1. **"Đúng một khối `unsafe`" mâu thuẫn với chính quyết định 2 của nó.** Read-back là
+   `sched_getaffinity` — một lời gọi FFI thứ hai, tức là một khối thứ hai. Luật thật:
+   *không có `unsafe` ngoài `affinity.rs`, mỗi lời gọi FFI một khối, mỗi khối nêu tên test
+   chứng minh nó.* Hôm nay là **hai**. Đếm số khối là luật dễ lách bằng cách gộp khối lại — tệ
+   hơn mà vẫn từng ấy `unsafe`.
+2. **Khối thứ ba có sẵn và đã từ chối.** `sched_getcpu()` trả lời "thread đang ở core nào";
+   `/proc/thread-self/stat` trường `processor` trả lời y hệt, **không FFI**, và là câu trả lời
+   *tốt hơn* vì scheduler viết nó chứ không phải crate này. `[đo 2026-08-31]` chỉ số trường được
+   kiểm bằng `taskset -c 3` chứ không đếm theo tài liệu.
+3. **`NotSupported` không dựng được.** ADR-0015 cho nó nghĩa "không phải Linux, hoặc feature
+   tắt" — nhưng `mod` bị gate đúng bằng hai điều kiện đó, nên nếu một trong hai sai thì enum
+   không tồn tại để chứa variant. Bỏ. Thêm `Failed(i32)` và `Unreadable(&'static str)`: không có
+   chúng, một `errno` ngoài dự kiến buộc phải bị xếp vào một nguyên nhân đã mô hình hoá — đúng
+   hình dạng lỗi repo này đã trả giá một lần ở `check-ktls-available.sh`.
+
+**Cổng đã chạy và đọc output, không suy ra:**
+
+```
+cargo test -p fixbolt-engine --features affinity --test affinity   5 passed
+cargo test -p fixbolt-engine --no-default-features --features affinity  ok  (tổ hợp CI không chạy)
+cargo test --all                                   52 target, 0 fail
+cargo fmt --all -- --check                         clean
+cargo clippy --all-targets --all-features          clean
+scripts/check-no-optional-deps.sh                  ok, per crate
+scripts/check-no-kernel-sleep.sh                   GREEN ok / RED ok (7 poll)
+scripts/check-standard-gives-the-core-back.sh      GREEN ok / RED ok (yield 95.52% CPU)
+scripts/check-links.py                             389 link, không link chết
+```
+
+`--no-default-features` xanh **chính là** bằng chứng cho bất biến 6: nếu `mod affinity` không có
+`#[cfg]`, file đó sẽ được biên dịch, nó dùng `libc`, và `libc` không có trong build đó — hỏng
+biên dịch. Không phải suy luận, là kết quả của một lệnh đã chạy.
+
+**Bước 3 chưa bắt đầu.** Item 21 **vẫn mở**: ghim đã có, nhưng các phép từ chối (core offline,
+không cô lập, SMT sibling) và affinity cho writer/consumer chưa có, nên câu của D8 mới đúng một
+nửa và `DESIGN.md` nói đúng như vậy.

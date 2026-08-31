@@ -116,16 +116,24 @@ pieces are there because `Acceptor` and `Engine` are separate:
 starting point and the wrong production shape for a gateway; read it as an example rather than
 as the API.
 
-**What you own once you shard**, and none of it is provided:
+**What you own once you shard.** One of these is now partly provided; the rest are not.
 
 - **Which shard a session lands on.** Round-robin is fine until sessions are unequal; there is
   no rebalancing, and a `ConnId` never moves between engines.
 - **Handing the socket across the thread boundary.** `Engine::add` takes `&mut self`, so the
   owning thread must make the call — a channel from the accept loop, and a `TcpTransport` that
   crosses it.
-- **Pinning.** `DESIGN.md` D8 assumes a pinned engine thread and `[2026-08-30]` nothing in the
-  code pins one (`STATUS.md` open item 21). One `Engine` per core is only true if you make it
-  true.
+- **Pinning — the engine now does the pinning, you still choose the core.** `[2026-08-31]`
+  `fixbolt_engine::affinity` is behind the `affinity` feature, Linux only. Call
+  `pin_current_thread(CoreId(6))` **from inside the thread, as its first act**, and check the
+  `Result`: it asks the kernel back with `sched_getaffinity` and returns
+  `ReadbackMismatch` if the answer disagrees, so a success really is a success. The engine
+  never picks a core for you, and it never will — the OS's idea of a free core does not know
+  about `isolcpus`, your NIC's interrupts, or SMT siblings
+  ([ADR-0015](decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md)).
+  **Refusing bad core choices, and pinning the journal writer and the ring consumer, are not
+  built yet** — steps 3 and 5 of that plan. Until they are, a floating journal writer can still
+  land on the core you isolated.
 - **Isolating those cores.** `isolcpus` plus `nohz_full`, or the scheduler will put other work
   on them.
 

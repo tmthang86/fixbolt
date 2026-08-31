@@ -14,6 +14,13 @@
 //! a timing window — `crates/engine/tests/wire.rs` drives `turn` by hand and is
 //! as deterministic as the in-process gate.
 
+// ADR-0015 decision 9, and non-negotiable 6 again: the feature gates the `mod`
+// declaration, not only the manifest. `cfg(target_os = "linux")` on top of it
+// because `sched_setaffinity` is a Linux interface — on anything else the
+// module does not exist, so code written against it fails to compile rather
+// than failing at startup. Same shape as `standard` above.
+#[cfg(all(feature = "affinity", target_os = "linux"))]
+pub mod affinity;
 pub mod backpressure;
 pub mod clock;
 pub mod conn;

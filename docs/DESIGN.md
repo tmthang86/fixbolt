@@ -112,6 +112,7 @@ Added one at a time, each behind an approved plan.
 | `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport`, and **`libc` only under the `standard` feature** |
 | | | `[2026-08-30]` step 1 of six exists: `Transport`, `TcpTransport`, `Loopback`, `Waiting`. `transport` is a module here rather than its own crate until something needs it to be otherwise | |
 | | | `[2026-08-30]` modules `poll`, `block` and `waker` — `poll(2)` and `standard`'s idle turn, behind `#[cfg(all(feature = "standard", unix))]`. **The crate's first external dependency and first `unsafe`, both behind that feature**: `--no-default-features` builds it with neither (ADR-0014) | |
+| | | `[2026-08-31]` module `affinity` — `CoreId`, `AffinityError`, `pin_current_thread` (which reads the mask back) and `running_on` (which reads the scheduler's own answer out of `/proc/thread-self/stat`). Behind `#[cfg(all(feature = "affinity", target_os = "linux"))]`, **off by default**, reusing the same optional `libc`. Two `unsafe` blocks, each naming its test ([ADR-0015](decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md), [ADR-0019](decisions/ADR-0019-two-unsafe-blocks-and-an-error-the-enum-can-hold.md)) | |
 | `library` | L4 | The application-facing API | `engine` |
 | `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
 
@@ -447,6 +448,17 @@ default.**
 | Pinning | none | the polling thread is pinned to an isolated core |
 | Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
 | Rule 4 says | it **must** block | it must **not** sleep |
+
+`[2026-08-31]` **"pinned" is now something the code can do rather than something this
+paragraph asserts.** `fixbolt_engine::affinity::pin_current_thread` pins the calling thread and
+confirms it with `sched_getaffinity`, and `tests/affinity.rs` watches the scheduler's own
+`processor` field while the thread works — reversal: with the pin removed the same thread was
+observed on **cpu0, cpu4 and cpu5** in one run. **What is not built yet** is refusing a bad core
+(offline, unisolated, an SMT sibling of another shard) and pinning the journal writer and the
+ring consumer; those are steps 3 and 5 of
+[threads-and-affinity](plans/2026-08-30-threads-and-affinity.md), and until they land `STATUS.md`
+open item 21 stays open. The engine also still does not shard — one `Engine` per core is the
+caller's arrangement (`GUIDE.md` §1a).
 
 **In `hft`,** the engine thread is pinned to an isolated core and spins on non-blocking
 sockets. No `epoll_wait`, no condition variables, no futex on the hot path.
