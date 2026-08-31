@@ -46,7 +46,8 @@ Số đo, đọc từ code, và ràng buộc. Không có phỏng đoán ở mụ
 | `Acceptor` tách rời `Engine`; `Engine::add(transport) -> ConnId` | `crates/engine/src/lib.rs` |
 | `engine` **không có dependency ngoài nào** hôm nay | `crates/engine/Cargo.toml` |
 | Máy §9 đang cô lập `6,7,14,15`; `/sys/devices/system/cpu/isolated` đọc được không cần quyền | `[đo 2026-08-30]` |
-| `cpu6` ↔ `cpu14`, `cpu7` ↔ `cpu15` là cặp SMT sibling; đọc được ở `topology/thread_siblings_list` | `[đo 2026-08-30]` |
+| **`isolated` liệt kê cả core không online.** Sau khi §9 tắt SMT: `present 0-15`, `online 0-7`, `offline 8-15`, `isolated 6-7,14-15`. Phải giao với `online` | `[đo 2026-08-31]` — xem nhật ký bước 1 |
+| ~~`cpu6` ↔ `cpu14`, `cpu7` ↔ `cpu15` là cặp SMT sibling~~ — **đúng lúc SMT còn bật**. `[đo 2026-08-31]` §9 tắt SMT, nên trên máy đã tune mọi CPU online có `thread_siblings_list` **một phần tử** và luật SMT không bao giờ nổ được ở đây | `[đo 2026-08-30]`, sửa `[đo 2026-08-31]` |
 | `scaling_cur_freq` **đóng băng** trên lõi `nohz_full` — không dùng để kiểm chứng ghim | `[đo 2026-08-30]` |
 | `scripts/check-no-kernel-sleep.sh` quy syscall theo **tid**, nên thread phụ không làm nó đỏ nhầm | đọc script |
 
@@ -124,7 +125,7 @@ chia theo đối tác chứ không chia đều, và engine không biết đối 
 - `crates/engine/src/journal.rs` — affinity cho writer thread
 - `crates/engine/Cargo.toml` — feature `affinity`, dep `libc` chỉ trong feature đó
 - `crates/engine/tests/affinity.rs` — mới
-- `docs/decisions/ADR-0013-…` — mới, bước 1
+- `docs/decisions/ADR-0015-…` — mới, bước 1
 - `docs/DESIGN.md` D8, §3 · `docs/GUIDE.md` §1a · `docs/PRD.md` · `STATUS.md` item 21
 - `CHANGELOG.md` — public API đổi
 
@@ -143,7 +144,7 @@ chia theo đối tác chứ không chia đều, và engine không biết đối 
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| 1 | **ADR-0013** — mô hình thread và affinity: id tường minh, ghim từ trong thread, đọc lại xác nhận, từ chối khi sai, ai sở hữu việc gán shard. Chốt hình dạng API | ADR-0012 được ký |
+| 1 | **ADR-0015** — mô hình thread và affinity: id tường minh, ghim từ trong thread, đọc lại xác nhận, từ chối khi sai, ai sở hữu việc gán shard. Chốt hình dạng API | ADR-0012 được ký |
 | 2 | `affinity.rs` sau feature: `CoreId`, `AffinityError`, đặt + **đọc lại**, `libc` chỉ trong feature. Test: đặt rồi đọc lại khớp; core sai trả `Err` chứ không panic | 1 |
 | 3 | Các phép từ chối: không online, SMT sibling, không cô lập (+ `allow_unisolated`). `ShardPlan::validate()` chạy **trước khi tạo thread nào** | 2 |
 | 4 | `shard.rs`: M engine, M thread, mỗi thread ghim rồi `run()`. Gán session mặc định round-robin, thay thế được. Accept ở một chỗ, socket chuyển qua channel | 3 |
@@ -174,7 +175,7 @@ Từng bước, và **đọc output chứ không đọc exit code**.
 
 ## Tài liệu phải cập nhật
 
-- [ ] `docs/decisions/ADR-0013-…` — bước 1
+- [x] `docs/decisions/ADR-0015-…` — bước 1, **xong 2026-08-31**
 - [ ] `docs/DESIGN.md` D8 (câu "pinned to an isolated core" thành có thật), §3 (crate/mod mới)
 - [ ] `docs/DESIGN.md` §8 — số của `Engine::turn` thật thay cho sàn từ chương trình C
 - [ ] `docs/GUIDE.md` §1a — từ "anh tự lo" thành "engine làm, đây là cách khai báo"
@@ -199,7 +200,7 @@ Từng bước, và **đọc output chứ không đọc exit code**.
 
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
-| `libc` là dependency ngoài **đầu tiên** của `engine` | Trung bình | Chỉ trong feature `affinity`; `no-default-features` không kéo nó. `libc` không có transitive dep. Ghi lý do trong ADR-0013 |
+| `libc` là dependency ngoài **đầu tiên** của `engine` | Trung bình | Chỉ trong feature `affinity`; `no-default-features` không kéo nó. `libc` không có transitive dep. Ghi lý do trong ADR-0015 |
 | `unsafe` đầu tiên trong crate | Trung bình | Một khối duy nhất, quanh đúng một lời gọi, kèm bình luận nêu tên test. `unsafe_code = "warn"` sẽ kêu và điều đó là đúng |
 | API shard làm hỏng người dùng hiện tại của `serve()` | Thấp | `serve()` giữ nguyên, không đổi chữ ký. Shard là đường thứ hai |
 | Từ chối core không cô lập làm CI không chạy được | Trung bình | `allow_unisolated` mặc định **bật** trong test, **tắt** trong ví dụ và tài liệu |
@@ -219,3 +220,48 @@ Từng bước, và **đọc output chứ không đọc exit code**.
 ## Nhật ký giao hàng
 
 *(được duyệt 2026-08-30 cùng lúc với ADR-0010, 0011 và 0012. Chưa bắt đầu bước nào.)*
+
+### Bước 1 — ADR-0015, và hai luật đổi vì đọc máy thật. 2026-08-31.
+
+**Xong.** [ADR-0015](../decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md)
+chốt: id core tường minh do người gọi nêu; ghim **từ trong thread**, việc đầu tiên, rồi
+`sched_getaffinity` **đọc lại và so**; hỏng thì dừng ở khởi động; lỗi **có trường** (không phải
+hot path, và `NotIsolated(CoreId(3))` nói được điều `NotIsolated` không nói); `validate()` chạy
+trước khi tạo thread nào; gán session vào shard là của người gọi; mọi thread crate tạo đều có
+chỗ; feature `affinity` gate chính `mod`, dùng lại `libc` mà `standard` đã làm optional; **đúng
+một khối `unsafe`**.
+
+**Sửa 1 — số ADR.** Plan này viết "ADR-0013" ở bốn chỗ. Nó được viết trước khi `standard-mode`
+lấy 0013 và 0014, và §5 cấm dùng lại số. **Số đúng là 0015**, đã được giữ chỗ trong header của
+ADR-0018. Bốn chỗ đó sửa trong cùng commit này; dòng ở đầu plan **giữ nguyên** vì nó trỏ đúng
+tới ADR-0013 thật (hai chế độ).
+
+**Sửa 2 — hai luật từ chối đổi, vì đọc máy chứ không suy.** `[đo 2026-08-31]` trên máy §9 đã
+tune, `check-machine.sh` đọc `pass 10 fail 0`:
+
+```
+present   0-15        online    0-7         offline   8-15
+isolated  6-7,14-15   nohz_full 6-7,14-15   smt/control off
+cpu6 thread_siblings_list  6     cpu7 thread_siblings_list  7
+```
+
+- **`isolated` gọi tên core không chạy được.** `isolcpus=6,7,14,15` đến từ dòng lệnh kernel;
+  §9 sau đó tắt SMT, đưa 8–15 offline. File `isolated` vẫn liệt kê 14 và 15. Một validator chỉ
+  đọc `isolated` sẽ nhận core 14 và ghim thread lên một CPU không tồn tại với scheduler.
+  **Phải giao `isolated` với `online`, và `online` thắng.** Plan chỉ nói "đọc
+  `/sys/devices/system/cpu/isolated`" — thế là chưa đủ. Thêm luôn `NoSuchCore` (đọc `present`)
+  tách khỏi `NotOnline` (đọc `online`): trên máy này chúng là hai trạng thái khác nhau và
+  `NotOnline` mới là cái thật sự gặp.
+- **Luật SMT sibling không bao giờ nổ được trên máy đúng chuẩn.** §9 bắt tắt SMT, nên mọi CPU
+  online có `thread_siblings_list` một phần tử. Đó **không** phải lý do bỏ luật — nó nổ trên máy
+  *chưa* đúng chuẩn, tức là đúng chỗ người ta mắc lỗi. Nhưng nó có nghĩa là **cái đọc được test,
+  còn cái thật thì không**, và ADR ghi thẳng đó là một lỗ chứ không phải thủ tục.
+
+**Thêm một biến thể lỗi ngoài phác thảo của plan:** `DuplicateCore` — hai shard nêu cùng một id
+là đúng lời nói dối mà `SmtSiblingOf` chặn, và là lỗi dễ mắc hơn.
+
+**Bốn câu hỏi mở** được ghi trong ADR thay vì để chúng thành bất ngờ ở bước sau; câu đáng chú ý
+nhất: `check-no-kernel-sleep.sh` quy syscall theo tid và lấy `engine-tid` **đầu tiên** nó thấy —
+với M shard nó chỉ kiểm một trong M. Đó là việc của bước 4 và đã được gọi tên.
+
+**Bước 2 chưa bắt đầu.**
