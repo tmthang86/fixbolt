@@ -257,3 +257,31 @@ field**. Guard sống lâu hơn cái thay đổi đã sinh ra nó.
 Ghi chép: [measured-costs.md](../reference/measured-costs.md). Bench tạm đã xoá, cây làm việc
 sạch. Số đo trên container `pass 2 fail 6 unknown 3` — **tỷ lệ dùng được, con số tuyệt đối
 không công bố được**, và bước 5 trên desktop §9 vẫn còn nguyên đó.
+
+**Bước 5 — xong 2026-08-31, trên desktop §9.** `check-machine.sh` = **`pass 10 fail 0
+unknown 1`**, §9 thoả mãn. `encode ExecutionReport (template)` = **236.2 ns**, median của **27
+lần chạy đạt chuẩn** (3 lần bị loại vì máy đọc 7–9% busy, trên ngưỡng 3%). Con số này tái lập
+240.0 ns đo ngày 2026-08-30 trong vòng **1.6%**. So với target 60 ns: **trượt 3.9×**.
+
+**Bước 6 — xong 2026-08-31. Kết cục là số 3, đúng như bước 2 đã dự đoán, và nó lớn hơn dòng
+serialise.** Chủ dự án chọn hướng trực tiếp: *"hạ mục tiêu xuống mức với tới được, theo baseline
+từng máy"*, phạm vi **cả bảng §6** chứ không riêng dòng này, và **bỏ hẳn cột target tuyệt đối**
+chứ không chỉ hạ nó.
+
+Việc đó được làm ở một plan riêng —
+[per-machine-baselines](2026-08-31-per-machine-baselines.md) — vì nó chạm cả 12 case timing chứ
+không một case, và nó sinh ra
+**[ADR-0016](../decisions/ADR-0016-per-machine-baselines-replace-absolute-targets.md)**.
+
+**Thứ tìm được ở bước 6 mà plan này không đi tìm:** gốc của 60 ns. `DESIGN.md` §4 D9 nói ra
+bằng chính lời nó — *"This is how the fastest commercial engines reach tens of nanoseconds per
+serialise, and it is why the published serialise target in §6 is 60 ns, not 150."* **60 ns là
+một con số đọc được về phần mềm của người khác, chưa bao giờ là phép đo của engine này.** Khác
+hẳn 150 ns của parse, vốn neo vào 139 ns đo tại đây. Suốt bốn tháng §6 để hai loại số đó dưới
+cùng một cột, và chỉ loại thứ hai mới gate được cái gì.
+
+**Plan này đóng.** Sáu bước, sáu kết quả: cái quét không phải thủ phạm (bước 1), 152.5 ns tách
+được thành ~31 ns cố định + ~8.7 ns mỗi slot (bước 2), bản sửa được viết và bị phép đo huỷ
+(bước 3–4), số §9 là 236.2 ns (bước 5), và target 60 ns bị rút (bước 6). **Thứ ở lại lâu nhất
+có lẽ là `crates/codec/tests/slot_order.rs`** — guard cho điều 5 mà đường body chưa từng có,
+sinh ra từ một thay đổi đã bị revert.

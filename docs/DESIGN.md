@@ -857,15 +857,32 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
 | Wakeup — **`standard`** blocks on readiness | 2–5 µs, `epoll`-class, **and the core is given back** | **This design**, D8 |
 | Wakeup — **`hft`** busy-polls | `[measured 2026-08-30]` **703 ns × N**, N = sockets on the thread, **and a core is burned** | **This design**, D8 |
-| Parse (D2) | ~0.14 µs | This design |
+| Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.8 ns) | This design |
 | Session machine (D1) | ~0.1 µs | This design |
-| Dispatch — inline **vs** ring (D4) | ~0 **vs** 0.2–0.5 µs | Application's choice |
-| Serialise — template (D9) | ~0.05 µs | This design |
+| Dispatch — inline **vs** ring (D4) | `[measured 2026-08-31]` **0.0013 µs** inline **vs** **0.27 µs** ring one way (§9 desktop) | Application's choice |
+| Serialise — template (D9) | `[measured 2026-08-31]` **0.24 µs** (§9 desktop, 236.2 ns) — **was ~0.05 µs from the literature; see below** | This design |
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
-| **User-space work only** | **< 1 µs** | The half that was always cheap |
+| **User-space work only** | `[measured 2026-08-31]` **~0.7 µs**, inline dispatch, N = 1 | The half that was always cheap |
 | **Everything this design controls, N = 1** | **~1.7 µs** — the row above plus one 703 ns poll | |
 | **Everything this design controls, N sessions** | **`< 1 µs + N × 703 ns`** | |
+
+`[measured 2026-08-31]` **Four rows stopped being literature figures, and one of them got
+4.8× worse in the process.** Serialise was carried here as **~0.05 µs**, which was the 60 ns
+target of §6 — a figure describing how the fastest commercial engines are *reported* to
+perform, not this engine.
+[ADR-0016](decisions/ADR-0016-per-machine-baselines-replace-absolute-targets.md) withdrew it,
+and the measured number on the §9 desktop is **236.2 ns**, the median of 27 qualifying runs.
+Parse and inline dispatch moved the other way or barely at all. The user-space total below is
+recomputed from the measured rows rather than the borrowed ones.
+
+**What this does to the bottom line: nothing that matters, and that is the point.** The
+user-space rows now total **~0.7 µs** at N = 1 with the inline dispatcher — parse 0.12 +
+session ~0.1 + dispatch ~0.001 + serialise 0.24 — against a kernel floor of **10–20 µs**. So
+serialise costing 236 ns rather than 60 ns moves the wire-to-wire figure by under **2%** of the
+floor, which is why §6 was able to withdraw the target without the design changing. **The ring
+dispatcher is the row worth reading**: at 0.27 µs one way it is larger than parse and serialise
+put together.
 
 **Which mode the table is about: `hft`.** `[amended 2026-08-30, ADR-0013]` `standard` is the
 default and its wakeup row is the 2–5 µs one, so **its bottom line is `epoll`-class and this

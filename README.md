@@ -102,6 +102,8 @@ crates/
   session/       the FIX session state machine — pure, no I/O, role-parameterised
   engine/        TCP acceptor and connector; a thread that never sleeps in the kernel
                  (more crates are added one at a time, each behind an approved plan)
+benches/         baselines.tsv — one recorded timing baseline per (CPU model, case);
+                 DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets — nightly, outside the workspace
 docs/
   GUIDE.md       how to embed the engine without losing latency or messages

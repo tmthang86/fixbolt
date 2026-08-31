@@ -274,4 +274,48 @@ cách lấy mẫu chứ không phải nống `MARGIN` lên tới lúc nó xanh. 
 
 ## Nhật ký giao hàng
 
-*(điền khi đóng từng bước)*
+**Bước 1 — xong 2026-08-31, và nó bác bỏ giả định trung tâm của plan.** Xem *Sửa 1* ở đầu file:
+không tồn tại một `MARGIN` chung nào cho 0/N, và cái chặn là **hai mode rời rạc chọn một lần
+cho mỗi tiến trình**, không phải nhiễu. Biên chuyển thành một cột của TSV, theo từng (máy, case).
+
+**Bước 2 và 3 — xong 2026-08-31.** `benches/baselines.tsv`, `cpu_model()`, `Suite::bench` không
+còn tham số ceiling, bốn file bench bỏ hằng `CEILING_*` — **giữ lại phát hiện thiết kế trong
+chú thích của chúng**, gắn vào đúng case thay vì vào một hằng số đã xoá (5.6 ns của
+`group_members contains` là câu trả lời cho một open question cũ; ~0.8 ns/byte của ring là giá
+ADR-0007 trả để không dùng `unsafe`). `bench.sh` đếm và in `cases w/o a baseline`, `--strict` đỏ
+khi > 0.
+
+**Bước 2 tìm ra một khiếm khuyết thật, và nó không nằm ở chỗ plan nhìn.** Bỏ tham số `ceiling_ns`
+khỏi `Suite::bench` làm `inline deliver + reply` đi từ **6.3 → 1.3 ns**, vòng lặp đo **y hệt
+từng byte**. Kiểm tra khả năng trình tối ưu xoá việc bằng cách gọi `deliver` **hai lần** mỗi
+vòng: **2.6 ns, đúng gấp đôi, 3/3 lần**. Việc là thật; **~5 trong 6.3 ns cũ là của chính
+harness**. Ba cụm rời 6.3/7.4/8.2 mà case đó cho qua 21 lần chạy là mode của thiết bị đo — 30
+lần chạy bằng harness mới cho **1.3 ns mọi lần, tán 1.000**. Chú thích của chính hằng số bị xoá
+đã nói điều này ngày 2026-08-30 mà không ai đo. Ghi tại
+[measured-costs.md](../reference/measured-costs.md), kèm `[to testing-skills]`.
+
+**Bước 4 — xong 2026-08-31, ba phép đảo ngược, cả ba đỏ vì đúng lý do:**
+
+1. Hạ baseline `encode ExecutionReport` 236.2 → 1.0: case đó `OVER BASELINE` và fail; case còn
+   lại **vẫn in số trước khi tiến trình chết**.
+2. Xoá dòng TSV của `walk 4 levels`: case đó `NO BASELINE` kèm dòng dán sẵn,
+   `cases without a baseline: 1`, `bench.sh` **không đỏ**, `bench.sh --strict` **đỏ**.
+3. `cpu_model()` trả `"NOT A REAL CPU MODEL"`: **12/12** case thành `NO BASELINE`, không phải 12
+   pass, và `--strict` đỏ. Đây là phép chứng minh một máy lạ không im lặng qua cửa.
+
+**Bước 5 — xong 2026-08-31.** `DESIGN.md` §6 đổi hình + bảng baseline + dòng Stretch không phải
+gate; §4 D9 dòng 543 và đoạn *"published target and asserted ceiling"* đã sửa theo; ADR-0016;
+STATUS items 11 và 20 đóng; CHANGELOG; `measured-costs.md`; plan serialise bước 5–6 đóng.
+
+**Bước 1 phải làm hai lần, và lần thứ hai chưa xong.** Mẫu 27 lần sinh ra baseline đã ghi được
+đo bằng cách chạy **bốn** target timing trực tiếp. Nhưng cổng thật là `bench.sh`, chạy **tám**
+target, và `encode ExecutionReport` vượt trần 1.10 ngay lần `bench.sh` đầu tiên trong khi 27 lần
+kia chưa lần nào tới gần. **Baseline phải được đo qua đúng đường sẽ phán xử nó.** Lần đo lại qua
+`bench.sh` chạy được **6 lần đạt chuẩn** — tất cả nhất quán với baseline đã ghi, không case nào
+vượt trần — rồi desktop khởi động `llama-server` ở **97.5% CPU** và mọi lần sau đọc 59–63% busy,
+tức bị loại theo điều 10. **N ≥ 20 qua đường `bench.sh` là việc còn nợ**, và plan **không đóng**
+khi thiếu nó.
+
+Cũng phát hiện trong lúc đó: chạy `bench.sh` **liên tiếp không nghỉ** làm chính
+`check-machine.sh` của lần sau đọc **25–36% busy**, vì suite trước còn nằm trong cửa sổ lấy mẫu
+một giây của nó. Vòng lặp đo tự làm bẩn máy nó đang đo. Đã ghi, kèm `[to testing-skills]`.
