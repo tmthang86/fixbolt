@@ -262,3 +262,58 @@ Cộng thêm một cái giá plan không nêu: ghi `next_in` mỗi message inbou
 
 Đây là quyết định giao thức đắt và khó đảo → `CLAUDE.md` §5 đòi ADR. **Bước 5 dừng ở đây**, đúng
 như bước 4 đã dừng chờ ADR-0010. Bước 4 đóng và merge được độc lập.
+
+### Bước 5 và 6 xong 2026-08-31. Plan đóng.
+
+**Sửa 1 được giải quyết bằng
+[ADR-0017](../decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md), chủ dự án
+chọn: ghi `next_in` **sau** khi ứng dụng thấy message.** Ngược với chữ trong plan, và lý do là
+cái nửa plan không nêu — ghi trước thì một lần chết đúng lúc làm **mất** message, ghi sau thì
+**lặp** message, mà FIX có `43=Y` cho cái thứ hai và không có gì cho cái thứ nhất. QuickFIX cũng
+tăng target seq num sau khi ứng dụng nhận.
+
+**Đã làm:**
+
+- `Journal::mark_in(seq)` và `highest_in()`, **không có default** — cùng lý do `highest()` không
+  có. `NoJournal` no-op, `MemJournal` giữ một `Option<u32>`, `FileJournal` ghi xuống đĩa.
+- **Mã hoá trên đĩa: một bản ghi có `len == 0` là một inbound mark.** Message FIX không bao giờ
+  rỗng nên không nhầm được. Format không đổi, reader dài thêm một nhánh — rẻ hơn thêm một byte
+  kiểu vào mọi bản ghi đã có.
+- Session gọi `mark_in` ở **cuối `received_with`**, sau `judge` và sau `drain`, để phủ cả message
+  giao thẳng lẫn message được thả ra khi một gap đóng.
+
+**Đã chạy, đọc output:**
+
+```
+10 / 10  cargo test -p fixbolt-engine  --test recovery
+6 / 6    cargo test -p fixbolt-session --test application
+59 / 59  cargo test -p fixbolt-session --test score
+59 / 59  cargo test -p fixbolt-engine  --test wire   (cả hai chế độ)
+0 failed cargo test --all · --no-default-features
+0 allocations   benches/alloc.rs của session VÀ của engine
+clean    fmt --check · clippy -D warnings · check-links.py
+git diff score.rs wire.rs — rỗng
+```
+
+**Đảo ngược ba lần:**
+
+| Đảo ngược | Kết quả |
+|---|---|
+| Ghi mark **trước** khi giao (thứ tự ADR-0017 loại) | **chỉ** test thứ tự đỏ |
+| Session không mark gì cả | 2 test đỏ |
+| `FileJournal` ghi mark nhưng không đọc lại | 2 test đỏ |
+
+**Phép đảo ngược thứ nhất là lý do test thứ tự phải tồn tại.** Ghi mark trước khi giao vẫn cho
+đúng con số, nên `the_session_marks_the_inbound_count_it_has_consumed` **xanh** — cùng hình dạng
+với khuyết tật ở bước 4. Test bắt được nó phải đặt ứng dụng và journal lên **một sổ chung** rồi
+đọc lại thứ tự, chứ không đọc con số. *Khi quyết định là thứ tự thì test phải đo thứ tự.*
+
+**Bước 6 — 59/59 cả hai đường, không sửa một dòng nào trong `score.rs` hay `wire.rs`.**
+
+**Hai thứ KHÔNG chứng minh, nêu tên chứ không để ngầm:**
+
+1. **Chưa đo `sync_data` thêm trên đường nhận tốn bao nhiêu.** ADR-0017 nêu cái giá đó và không
+   ai lấy số. Nó thuộc về `reference/measured-costs.md` khi có người đo.
+2. **Không file `.def` nào khởi động lại một tiến trình.** Mọi test ở đây là do dự án này bịa ra.
+   Thứ giữ chúng khỏi thành *một phỏng đoán viết hai lần* là kỷ luật đảo ngược, và việc thứ tự
+   này trùng với một triển khai bên ngoài — **không phải** việc chúng xanh.

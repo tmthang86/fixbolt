@@ -29,6 +29,21 @@ below describe what a first release would contain.
     `[measured 2026-08-31]` **59/59 unchanged, with no corpus file exempted**; forcing `connect`
     to never reset drops the score to **56/59**, which is what proves the corpus exercises the
     branch.
+  - **`Journal::mark_in(seq)` and `Journal::highest_in()`** —
+    [ADR-0017](docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md). One
+    file now carries both directions, so a resumed session takes `next_out` from the highest
+    record and `next_in` from the highest mark. **Neither has a default implementation**, for
+    the reason `highest` has none: a default would let a journal holding state report that it
+    holds none, and a session resumed from it would silently start again at 1. `FileJournal`
+    encodes a mark as a record of length zero — a FIX message is never zero bytes, so the format
+    is unchanged and the reader is one branch longer.
+
+    **The session writes the mark after the application has seen the message, not before**, and
+    that ordering is the decision rather than a detail. Writing first loses the message on an
+    ill-timed crash; writing after repeats it, and the repeat arrives with `43=Y`. **Your
+    application must be idempotent per sequence number** — `GUIDE.md` §6a. Under
+    `Durability::Fsync` the inbound path now pays a `sync_data` per message, which it did not
+    before.
   - `Session<R: Role, N>` with `connect` / `disconnect` / `received` / `tick`, each taking an
     `emit` closure and returning `Link`. `Role` is a sealed marker — `Acceptor` and
     `Initiator` — so the two ends differ at compile time rather than on a branch per message.

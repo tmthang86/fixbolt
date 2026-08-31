@@ -674,7 +674,27 @@ impl<R: Role, const N: usize> Session<R, N> {
         // Draining here rather than inside `judge` keeps the recursion out:
         // `judge` never calls this, so a held message that queues another
         // cannot nest.
-        self.drain(app, journal, &mut emit)
+        let link = self.drain(app, journal, &mut emit);
+
+        // **After delivery, never before** — ADR-0017. Here rather than inside
+        // `judge` because it must cover both a message delivered directly and
+        // one released when a gap closed, and because `judge` has early returns
+        // that would each need their own copy of this.
+        //
+        // Writing it before the application ran would mean an ill-timed crash
+        // *loses* the message: this end has counted it, so it never asks for a
+        // resend and the counterparty believes it arrived. Writing it after
+        // means the message is delivered twice, and the second copy carries
+        // `43=Y` because it comes from a `ResendRequest` this end issued. FIX
+        // has a flag for that failure and none for the other.
+        //
+        // `next_in` is the *next* expected number, so the highest consumed is
+        // one below — and nothing is marked before the first message, when the
+        // count is still 1.
+        if self.next_in > 1 {
+            journal.mark_in(self.next_in - 1);
+        }
+        link
     }
 
     /// Judge every held message the count has caught up with.

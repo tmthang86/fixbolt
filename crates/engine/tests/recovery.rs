@@ -188,3 +188,72 @@ fn a_resumed_session_keeps_counting_across_a_reconnect() {
         "reconnecting a resumed session touches neither count"
     );
 }
+
+// ------------------------------- the inbound count survives too (ADR-0017)
+
+/// [ADR-0017](../../../docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md):
+/// the journal records which inbound sequence numbers have been consumed, so a
+/// resumed session knows what it has already seen.
+///
+/// Without this, `Session::resume` has nothing to pass as `next_in` and a
+/// restart re-requests everything the counterparty ever sent.
+#[test]
+fn a_reopened_journal_knows_the_inbound_count_it_reached() {
+    let path = tmp("inbound");
+    {
+        let mut j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("open");
+        j.put(7, A);
+        j.mark_in(11);
+        j.mark_in(12);
+        assert_eq!(j.highest_in(), Some(12), "before the restart");
+    }
+    let j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
+    assert_eq!(
+        j.highest_in(),
+        Some(12),
+        "the inbound count came back off the disk"
+    );
+    assert_eq!(
+        j.highest(),
+        Some(7),
+        "and the two counts do not overwrite each other"
+    );
+}
+
+/// The whole loop, end to end: run a session, lose the process, resume from
+/// nothing but the file, and continue on both counts.
+#[test]
+fn a_session_resumes_both_counts_from_one_file() {
+    let path = tmp("bothcounts");
+    {
+        let mut j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("open");
+        j.put(4, A);
+        j.put(5, B);
+        j.mark_in(30);
+    }
+    // Everything above is gone. This is the restart.
+    let j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
+    let s: Session<Acceptor, 64> = Session::resume(
+        cfg(),
+        j.highest().map_or(1, |h| h + 1),
+        j.highest_in().map_or(1, |h| h + 1),
+    );
+    assert_eq!(
+        (s.next_out(), s.next_in()),
+        (6, 31),
+        "outbound from the last record, inbound from the last mark"
+    );
+}
+
+/// A journal that has never marked an inbound message must say so, not guess.
+#[test]
+fn an_unmarked_journal_has_no_inbound_count() {
+    let path = tmp("noinbound");
+    let mut j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("open");
+    j.put(1, A);
+    assert_eq!(
+        j.highest_in(),
+        None,
+        "writing an outbound message says nothing about what was received"
+    );
+}

@@ -238,7 +238,37 @@ class is `Async`, in both directions. See
 [reference/session-lifecycle-prior-art.md](reference/session-lifecycle-prior-art.md).
 
 **`Fsync` puts a disk on your hot path.** That is a deliberate trade and sometimes the right
-one; it is not a default to reach for without measuring what it costs you.
+one; it is not a default to reach for without measuring what it costs you. `[2026-08-31]` it now
+costs on **both** directions: since ADR-0017 the journal also records which inbound sequence
+numbers have been consumed, so under `Fsync` receiving a message pays a `sync_data` too.
+Nothing here has measured that yet, and it is stated so you are not surprised by it rather than
+because a number exists.
+
+### 6a. Your application must be idempotent per sequence number
+
+**The engine can deliver the same message twice, and after a restart it sometimes will.**
+[ADR-0017](decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md): the inbound
+count is written down **after** your handler has seen a message, not before. A crash in that
+window means the count on disk is behind what your handler actually processed, so on restart the
+session asks for a resend and your handler sees it again.
+
+That is the deliberate choice, and the alternative is worse. Writing the count first would close
+that window by opening a bigger one: the message would be **lost** instead — this end would have
+counted it, so it would never ask for a resend, and your counterparty would believe it arrived.
+FIX gives you a way to detect the duplicate and none at all to detect the loss.
+
+**What you must do:**
+
+- **Key on the sequence number, not on arrival.** The `seq` your handler is given is the
+  counterparty's, and it is stable across a replay. Deduplicate on it if a repeat would be
+  harmful — a duplicate order, a duplicate cancel.
+- **A replayed message carries `43=Y`.** If you only need to *notice* a repeat rather than
+  suppress it, that flag is the signal, because the second copy arrives in answer to a
+  `ResendRequest` this engine issued.
+- **The window is moved, not closed, and no engine can close it.** Nothing spans your handler's
+  side effects and this engine's disk atomically. Anyone who tells you otherwise has moved the
+  problem into your database's transaction, which is a fine place for it — but it is your
+  transaction, not the engine's.
 
 ---
 

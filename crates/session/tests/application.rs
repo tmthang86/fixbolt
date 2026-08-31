@@ -13,6 +13,7 @@ use std::ops::Range;
 
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
 use fixbolt_engine::journal::Store;
+use fixbolt_session::journal::Journal;
 use fixbolt_session::{Acceptor, Application, Config, Link, Session};
 
 fn acceptor() -> Session<Acceptor, 256> {
@@ -200,5 +201,138 @@ fn a_gap_fill_behind_the_count_is_not_asked_for_an_orig_sending_time() {
     assert!(
         out.is_empty(),
         "a gap fill has no original send time to be missing: {out:?}"
+    );
+}
+
+// ----------------------------- the inbound count is written down (ADR-0017)
+
+/// [ADR-0017](../../../docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md):
+/// the session records which inbound sequence numbers it has consumed, so a
+/// restart knows what it has already seen.
+///
+/// **The journal tests next door prove only that a journal can store it.** They
+/// would all still pass with a session that never calls `mark_in` — this is the
+/// test that says the session does, and the one below says *when*.
+#[test]
+fn the_session_marks_the_inbound_count_it_has_consumed() {
+    let mut s = logged_on();
+    let mut j: Store = Store::new();
+    let mut app = Recorder::default();
+
+    assert_eq!(
+        j.highest_in(),
+        None,
+        "nothing consumed through this journal yet"
+    );
+
+    let msg = reframe(&inputs("4b_ReceivedTestRequest.def")[1]);
+    let link = s.received_with(&msg, &mut app, &mut j, |_| {});
+    assert_eq!(link, Link::Up);
+
+    assert_eq!(
+        j.highest_in(),
+        Some(2),
+        "the count the session reached is on record, not just in memory"
+    );
+    assert_eq!(s.next_in(), 3, "and it is one below what it expects next");
+}
+
+/// **The ordering is the decision, so the ordering is what is tested.**
+///
+/// ADR-0017 chose *after delivery* over *before*, and every assertion above
+/// passes under either. This one puts the application and the journal on one
+/// shared log and reads the order back: if the mark were written first, an
+/// ill-timed crash would lose the message instead of repeating it, and no
+/// count-based assertion anywhere would notice.
+#[test]
+fn the_mark_is_written_after_the_application_has_seen_the_message() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Event {
+        Delivered(u32),
+        Marked(u32),
+    }
+
+    struct Watcher(Rc<RefCell<Vec<Event>>>);
+    impl Application for Watcher {
+        fn on_message(
+            &mut self,
+            _msg: &[u8],
+            seq: u32,
+            _stamp: &[u8],
+            _out: &mut [u8],
+        ) -> Option<Range<usize>> {
+            self.0.borrow_mut().push(Event::Delivered(seq));
+            None
+        }
+    }
+
+    struct Watched {
+        inner: Store,
+        log: Rc<RefCell<Vec<Event>>>,
+    }
+    impl Journal for Watched {
+        fn put(&mut self, seq: u32, bytes: &[u8]) {
+            self.inner.put(seq, bytes);
+        }
+        fn get(&self, seq: u32) -> Option<&[u8]> {
+            self.inner.get(seq)
+        }
+        fn highest(&self) -> Option<u32> {
+            self.inner.highest()
+        }
+        fn mark_in(&mut self, seq: u32) {
+            self.log.borrow_mut().push(Event::Marked(seq));
+            self.inner.mark_in(seq);
+        }
+        fn highest_in(&self) -> Option<u32> {
+            self.inner.highest_in()
+        }
+    }
+
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let mut s = logged_on();
+    let mut app = Watcher(Rc::clone(&log));
+    let mut j = Watched {
+        inner: Store::new(),
+        log: Rc::clone(&log),
+    };
+
+    // An application message — `35=D` — so the application is genuinely called.
+    // The order out of `15_HeaderAndBodyFieldsOrderedDifferently.def`, which is
+    // the message the test above already relies on reaching the application.
+    let msg = inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[1].clone();
+    s.received_with(&msg, &mut app, &mut j, |_| {});
+
+    let seen = log.borrow().clone();
+    let delivered = seen.iter().position(|e| matches!(e, Event::Delivered(_)));
+    let marked = seen.iter().position(|e| matches!(e, Event::Marked(_)));
+    assert!(
+        delivered.is_some(),
+        "the message must reach the application at all, or this proves nothing: {seen:?}"
+    );
+    assert!(
+        marked.is_some(),
+        "and it must be marked, or there is no recovery: {seen:?}"
+    );
+    assert!(
+        delivered < marked,
+        "ADR-0017: the mark comes AFTER delivery. Order was {seen:?}"
+    );
+}
+
+/// The mark never goes backwards, which matters because a gap closing releases
+/// held messages after the count has already moved past them.
+#[test]
+fn the_inbound_mark_never_goes_backwards() {
+    let mut j: Store = Store::new();
+    j.mark_in(9);
+    j.mark_in(4);
+    assert_eq!(
+        j.highest_in(),
+        Some(9),
+        "a later, lower mark must not undo an earlier, higher one"
     );
 }

@@ -46,6 +46,33 @@ pub trait Journal {
     /// `None` would let a journal that does hold messages report that it holds
     /// none, and a session resuming from it would silently start again at 1.
     fn highest(&self) -> Option<u32>;
+
+    /// Record that inbound sequence number `seq` has been consumed.
+    ///
+    /// **Called after the application has seen the message, never before** —
+    /// [ADR-0017](../../../docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md).
+    /// Writing it first would mean an ill-timed crash *loses* the message, since
+    /// this end has already counted it and will not ask for a resend; writing it
+    /// afterwards means the message is delivered twice, and the second copy
+    /// arrives with `43=Y` because it comes from a `ResendRequest` this end
+    /// issued. FIX has a flag for the second failure and nothing for the first.
+    ///
+    /// The window is moved, not closed: a crash between the application seeing
+    /// the message and this call still reprocesses. There is no atomic step
+    /// spanning an external application's side effects and this engine's disk,
+    /// and **an application behind this engine must be idempotent per sequence
+    /// number** — `GUIDE.md` carries that, because the type system cannot.
+    ///
+    /// No return value, for the same reason [`Self::put`] has none.
+    fn mark_in(&mut self, seq: u32);
+
+    /// The highest inbound sequence number this journal has been told about, or
+    /// `None` if it has been told about none.
+    ///
+    /// A resumed session's `next_in` is this plus one. **No default**, for the
+    /// reason [`Self::highest`] has none: a journal holding state must not be
+    /// able to report that it holds none.
+    fn highest_in(&self) -> Option<u32>;
 }
 
 /// A journal that keeps nothing. `DESIGN.md` D7's `None`.
@@ -62,6 +89,12 @@ impl Journal for NoJournal {
     fn put(&mut self, _seq: u32, _bytes: &[u8]) {}
 
     fn highest(&self) -> Option<u32> {
+        None
+    }
+
+    fn mark_in(&mut self, _seq: u32) {}
+
+    fn highest_in(&self) -> Option<u32> {
         None
     }
 

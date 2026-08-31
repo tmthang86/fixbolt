@@ -181,6 +181,23 @@ Recovering the numbers is the engine's job; this layer does no I/O and takes the
 `Session::next_out()` and `next_in()` exist so the engine can persist them, and are not
 hot-path accessors.
 
+**Both counts now survive, and the inbound one is written after delivery.** `[2026-08-31]`
+[ADR-0017](decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md). `Journal` gains
+`mark_in(seq)` and `highest_in()`, so one file carries both directions: outbound from the
+highest record, inbound from the highest mark. The session calls `mark_in` at the end of
+`received_with`, after `judge` and after the held-message drain, so it covers a message
+delivered directly and one released when a gap closed.
+
+**The ordering is the decision, not an implementation detail.** Writing the mark *before*
+delivery would mean an ill-timed crash loses the message — this end has counted it and will
+never ask for a resend, while the counterparty believes it arrived. Writing it *after* means the
+message is delivered twice, and the second copy carries `43=Y` because it comes from a
+`ResendRequest` this end issued. **FIX has a flag for that failure and nothing for the other**,
+and QuickFIX advances its target sequence number after delivery too. The cost is named in
+ADR-0017: under `Durability::Fsync` the inbound path now pays a `sync_data` per message, and an
+application behind this engine must be **idempotent per sequence number** — `GUIDE.md` §6
+carries that, because the type system cannot.
+
 **`Store` became a trait, and the debt is paid.** `[measured 2026-08-30]` a resend has to
 replay application messages this end already sent. The session no longer keeps them: it is
 handed a `journal::Journal` — `put(seq, bytes)` and `get(seq)` — exactly as it is handed an

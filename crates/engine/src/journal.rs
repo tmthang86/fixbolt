@@ -60,6 +60,11 @@ struct Slot<const LEN: usize> {
 pub struct MemJournal<const N: usize, const LEN: usize> {
     slots: [Slot<LEN>; N],
     at: usize,
+    /// The highest inbound sequence number delivered to the application.
+    ///
+    /// Not a slot: nothing is kept about an inbound message except that it was
+    /// consumed, so one number is the whole of it. ADR-0017.
+    highest_in: Option<u32>,
 }
 
 impl<const N: usize, const LEN: usize> Default for MemJournal<N, LEN> {
@@ -84,6 +89,7 @@ impl<const N: usize, const LEN: usize> MemJournal<N, LEN> {
                 }
             }; N],
             at: 0,
+            highest_in: None,
         }
     }
 }
@@ -112,6 +118,17 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
 
     fn highest(&self) -> Option<u32> {
         self.slots.iter().filter(|s| s.len > 0).map(|s| s.seq).max()
+    }
+
+    fn mark_in(&mut self, seq: u32) {
+        // `max`, not assignment: `drain` releases held messages in sequence
+        // order but `judge` may have already moved the count past them, and a
+        // mark must never go backwards.
+        self.highest_in = Some(self.highest_in.map_or(seq, |h| h.max(seq)));
+    }
+
+    fn highest_in(&self) -> Option<u32> {
+        self.highest_in
     }
 }
 
@@ -166,6 +183,15 @@ const RECORD_SEQ: usize = 4;
 const RECORD_LEN: usize = 4;
 const RECORD_HEADER: usize = RECORD_SEQ + RECORD_LEN;
 
+/// A record whose length is zero is an **inbound mark**, not a message.
+///
+/// ADR-0017 needs the inbound count on disk beside the outbound messages, and
+/// this is the whole of the encoding: a FIX message is never zero bytes, so a
+/// zero length cannot be confused with one. It keeps the format unchanged and
+/// the reader one branch longer, rather than adding a record-type byte that
+/// every existing record would have to grow.
+const INBOUND_MARK: usize = 0;
+
 impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
     /// Append to `path`, creating it if it is not there.
     ///
@@ -197,7 +223,11 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                     torn += 1;
                     break;
                 }
-                mem_recovered.put(seq, &bytes[at + RECORD_HEADER..end]);
+                if len == INBOUND_MARK {
+                    mem_recovered.mark_in(seq);
+                } else {
+                    mem_recovered.put(seq, &bytes[at + RECORD_HEADER..end]);
+                }
                 at = end;
             }
         }
@@ -306,5 +336,34 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
 
     fn highest(&self) -> Option<u32> {
         self.mem.highest()
+    }
+
+    fn mark_in(&mut self, seq: u32) {
+        self.mem.mark_in(seq);
+        // The same two tiers as `put`, and the same reasoning: `Async` must not
+        // put a disk on the engine thread, `Fsync` must be on disk before the
+        // call returns. **This is the cost ADR-0017 names**: under `Fsync` the
+        // inbound path now pays a `sync_data` per message where it used to pay
+        // nothing.
+        match self.how {
+            Durability::Async => {
+                if let Some(p) = self.to_writer.as_mut() {
+                    let _ = p.push(&[&seq.to_le_bytes(), &0u32.to_le_bytes()]);
+                }
+            }
+            Durability::Fsync => {
+                if let Some(f) = self.file.as_mut() {
+                    let mut rec = [0u8; RECORD_HEADER];
+                    rec[..RECORD_SEQ].copy_from_slice(&seq.to_le_bytes());
+                    rec[RECORD_SEQ..].copy_from_slice(&0u32.to_le_bytes());
+                    let _ = f.write_all(&rec);
+                    let _ = f.sync_data();
+                }
+            }
+        }
+    }
+
+    fn highest_in(&self) -> Option<u32> {
+        self.mem.highest_in()
     }
 }
