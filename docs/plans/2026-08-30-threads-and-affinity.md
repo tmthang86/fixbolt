@@ -407,3 +407,22 @@ test của bước 2 là một cổng không có gì chạy.
 
 **Bước 4 chưa bắt đầu.** Item 21 vẫn mở: `ShardPlan` **nói được** writer và consumer nằm đâu,
 nhưng chưa có gì đặt chúng vào đó, và engine vẫn chưa shard.
+
+### Trước bước 4 — kênh chuyển socket không được chặn, và đã đo. 2026-08-31.
+
+Bước 4 phải chuyển một socket vừa accept từ luồng acceptor sang luồng engine sẽ sở hữu nó. Vật
+mang hiển nhiên là `std::sync::mpsc`, và nỗi lo hiển nhiên là `try_recv` lấy khoá — trên luồng
+engine thì đó là một `futex`, tức là vi phạm bất biến 4.
+
+`[đo 2026-08-31]` Ryzen 7 3700X, Linux 7.0.0-30-generic, rustc 1.98.0, `--release`. Một luồng
+spin `try_recv` **2 000 000 lần** trong khi luồng kia gửi 5 giá trị; `strace -f`, quy syscall
+theo tid, giữa hai mốc do chính nó in ra: **không một syscall nào**. Cùng luồng đó trên **toàn
+bộ** lần chạy có 19 syscall — tất cả đều là khởi tạo/kết thúc thread và đều nằm ngoài vùng đo.
+
+Con số thứ hai mới là thứ làm con số thứ nhất có nghĩa: "không có sự kiện nào" và "máy đo không
+chạy" in ra giống hệt nhau. Ghi ở
+[measured-costs.md](../reference/measured-costs.md), kèm dấu `[to testing-skills]`.
+
+**Kết luận cho bước 4:** dùng `std::sync::mpsc` + `try_recv` trên luồng engine là được. Phía
+**gửi** chạy trên luồng acceptor và được phép chặn — luồng đó không phải luồng engine, nên nó
+nên dùng `accept` chặn thay vì spin, và như thế không tốn thêm một core cho việc ngồi chờ.

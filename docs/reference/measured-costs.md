@@ -1659,3 +1659,50 @@ boundary in the machine rather than in the code — a scan short enough for the 
 buffer small enough for the cache. **When the parameter you are scaling is also the thing that
 decides which hardware regime you are in, the scaling factor is not a factor.** And both were
 settled the same cheap way: measure the second point instead of computing it.
+
+---
+
+## `std::sync::mpsc::try_recv` makes no syscall at all — 2026-08-31
+
+Step 4 of [threads-and-affinity](../plans/2026-08-30-threads-and-affinity.md) has to move an
+accepted socket from an acceptor thread to the engine thread that will own it. The obvious
+carrier is `std::sync::mpsc`, and the obvious worry is that `Receiver::try_recv` takes a lock —
+which on the engine thread would be a `futex`, and `CLAUDE.md` §2 non-negotiable 4 makes that a
+bug rather than a slow path.
+
+**Measured rather than reasoned about**, because the answer decides a design and the source is
+not the evidence the rule asks for. AMD Ryzen 7 3700X, Linux 7.0.0-30-generic, rustc 1.98.0,
+`--release`. One thread spins on `try_recv` two million times while another sends five values;
+`strace -f`, syscalls attributed by tid to the spinning thread, between two markers it writes
+itself:
+
+```
+syscalls between the markers:   (none)
+
+the same thread over the WHOLE run, setup and teardown included:
+  3 sigaltstack   2 write   2 rt_sigprocmask   2 munmap   2 mprotect
+  2 mmap          1 set_robust_list  1 sched_getaffinity  1 rseq
+  1 madvise       1 gettid  1 exit
+```
+
+Two million calls on the empty path, five on the non-empty path, **zero syscalls**. Every entry
+in the second list is thread start-up or exit and every one of them falls outside the marked
+region.
+
+**Why the second list is in this note.** An empty result is exactly what a broken measurement
+also produces: a marker that never matched, a tid read wrongly, a trace that captured the wrong
+process. The whole-run count is what separates *the thread made no syscalls here* from *the awk
+matched nothing* — and it was checked, not assumed. `CLAUDE.md` §10: a green result that was
+inferred rather than observed is not a result.
+
+**What it settles:** the shard runtime can hand sockets to engine threads over
+`std::sync::mpsc` and drain them with `try_recv` without a blocking call. **What it does not
+settle:** the *sending* side, which runs on the acceptor thread and is allowed to block anyway;
+and whether this holds on another libstd version, since none of it is a documented guarantee.
+
+`[to testing-skills]` — **"no events were recorded" and "the recorder was not running" look
+identical.** Any measurement whose success case is an *absence* — no syscalls, no allocations,
+no queries, no log lines — needs a second count from the same instrument that is expected to be
+non-zero. Here the same `strace` output, the same tid filter, over a wider window: 19 syscalls,
+so the filter demonstrably works and the empty window is a fact about the code. Without it the
+transcript reads the same whether the code is clean or the trace is empty.
