@@ -11,6 +11,64 @@
 > baseline từng máy"*, phạm vi **cả bảng §6**, và **bỏ hẳn cột target tuyệt đối** cho các dòng
 > timing. Plan này thực hiện đúng hai câu đó.
 
+## Sửa 1 — `[2026-08-31]` một `MARGIN` chung là bất khả, và phép đo nói vì sao
+
+**Bước 1 đã chạy và nó bác bỏ mục 3 của *Cách làm*.** Plan viết: *"`MARGIN` được chọn bằng cách
+chạy suite N ≥ 20 lần và lấy con số nhỏ nhất mà số lần nhấp nháy là 0/N"*, với giả định ngầm là
+tồn tại một con số như vậy. **Không tồn tại**, và cái chặn không phải nhiễu.
+
+`[đo 2026-08-31]` 21 lần chạy, máy §9, `check-machine.sh` = **`pass 10 fail 0 unknown 1`**,
+tải theo *từng* lần chạy 0–2% trừ một lần 4%. Tỷ lệ max/median của 12 case:
+
+| Case | med | min | max | max/med |
+|---|---|---|---|---|
+| inline deliver + reply | 6.3 | 6.3 | 8.3 | **1.317** |
+| ring, one way | 270.0 | 267.2 | 335.7 | **1.243** |
+| ring, round trip | 522.4 | 514.9 | 579.2 | **1.109** |
+| encode ExecutionReport (template) | 241.6 | 235.2 | 259.9 | 1.076 |
+| encode 1 group, 2 entries | 105.0 | 98.1 | 110.5 | 1.052 |
+| group_members contains, 61 tags | 9.4 | 9.1 | 9.8 | 1.043 |
+| parse Heartbeat (validated) | 56.1 | 54.8 | 58.2 | 1.037 |
+| walk 4 levels, 61-tag member list | 350.5 | 339.2 | 359.5 | 1.026 |
+| walk 1 group, 2 entries, 2 members | 58.3 | 58.2 | 59.7 | 1.024 |
+| parse NewOrderSingle (no checks) | 115.3 | 113.7 | 117.8 | 1.022 |
+| parse NewOrderSingle (validated) | 122.5 | 120.0 | 124.9 | 1.020 |
+| SendingTime from the cache | 4.9 | 4.8 | 4.9 | 1.000 |
+
+Một `MARGIN` chung phải ≥ **1.35** để 0/21. Áp 1.35 cho `encode ExecutionReport` nghĩa là nó
+được phép đi từ 241.6 lên **326 ns** mà không ai đỏ — trong khi case đó tán thật chỉ 7.6%. **Một
+biên chung đủ rộng cho case hẹp nhất là một biên vô dụng cho chín case còn lại.**
+
+**Và nhìn vào phân bố thì rõ đây không phải nhiễu, mà là hai mode rời rạc chọn một lần cho mỗi
+tiến trình:**
+
+- `inline deliver + reply` — 21 giá trị rơi vào **ba** cụm rời: `6.3–6.4` (13 lần), `7.4`
+  (4 lần), `8.1–8.3` (4 lần). Không có giá trị nào ở giữa. Trên một case 6.3 ns, lượng tử 2 ns.
+- `ring, one way` — **19/21 nằm trong 267.2–272.8** (tán 2.1%), rồi **2 lần nhảy thẳng sang
+  334.5 và 335.7**. Đây đúng là mode thứ hai ~324 ns mà open item 20 đã loại **năm** giả thuyết
+  (L3, SMT, governor/boost, nhiệt, tải) mà vẫn không giải thích được. Tần suất 2/21 = **9.5%**,
+  khớp con số *5–10% trên máy yên* item 20 ghi.
+
+**Hệ quả kỹ thuật, và nó là lý do không nống biên lên 1.35:** harness lấy `best` của 7 mẫu
+**bên trong một tiến trình**. Một mode được chọn **cho cả tiến trình** thì bảy mẫu đều nằm trong
+cùng mode đó, nên tăng số mẫu không dập được nó. Đây là thứ mới, và nó thuộc về
+`docs/reference/measured-costs.md`.
+
+**Thay đổi:** `MARGIN` **không** còn là một hằng số chung trong `harness.rs`. Nó thành **một cột
+của `benches/baselines.tsv`, theo từng (máy, case)**, và được suy ra bằng một quy tắc ghi rõ:
+*bậc nhỏ nhất trong thang `1.10 · 1.15 · 1.20 · 1.25 · 1.30 · 1.35` mà ≥ max/median đo được*,
+sàn là 1.10. Ba case cần biên rộng hơn thì mang biên rộng hơn **kèm lý do đã đo**, chín case còn
+lại giữ 1.10.
+
+Vì sao vẫn an toàn trước cái bẫy *"nống biên cho tới khi hết đỏ"*: biên nằm trong file dữ liệu
+cạnh `n`, ngày và verdict của lần đo sinh ra nó, nên sửa biên mà không kèm phép đo mới **là một
+dòng diff nhìn thấy được**, và một biên lệch khỏi thang là lệch rõ ràng chứ không lẫn vào đâu.
+
+**Bước 1 dừng ở 21 lần chứ không 30, và lý do được ghi ra đây thay vì làm tròn thành 30:** lần
+chạy thứ 22 gặp `harness.rs` đã bị sửa dưới chân nó nên không biên dịch. 21 ≥ 20, đủ theo chính
+plan này. Mẫu 30 lần **với cơ chế thật** là bước 4, và baseline ghi vào TSV lấy từ mẫu đó, không
+từ mẫu 21 lần này — mẫu này chỉ dùng để **chọn biên**.
+
 ## Bối cảnh
 
 `DESIGN.md` §6 công bố các target timing tuyệt đối tính bằng nano giây. Hai trong số đó không

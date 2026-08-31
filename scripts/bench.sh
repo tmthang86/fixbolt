@@ -12,7 +12,10 @@
 #   INVARIANT  counts allocations, or counts messages. The answer is the same on
 #              every machine, so a failure is a real defect and this script
 #              exits non-zero.
-#   TIMING     nanoseconds per operation. The ceilings are tuned to an Apple M5.
+#   TIMING     nanoseconds per operation, compared against THIS machine's own
+#              recorded baseline in benches/baselines.tsv (ADR-0016). A CPU with
+#              no line in that file gets NO BASELINE, which is counted on its own
+#              row of the summary and is not a pass.
 #              `[measured 2026-08-30]` on a shared 4 vCPU Linux container the
 #              same case swings 5-232% run to run and three of twelve flip
 #              colour between runs, so a timing failure HERE proves nothing and
@@ -67,6 +70,12 @@ ran=0
 silent=()
 invariant_failed=()
 timing_over=()
+# Cases the harness could find no baseline for on THIS machine. Counted because
+# "not red" must never read as "green": ADR-0016 made the comparison per-machine,
+# so an unknown CPU has nothing to compare against and every one of its cases
+# would otherwise print a figure and pass. See harness.rs.
+no_baseline=0
+no_baseline_targets=()
 
 for entry in "${TARGETS[@]}"; do
   pkg=${entry% *}
@@ -86,6 +95,12 @@ for entry in "${TARGETS[@]}"; do
   else
     [ -n "${out//[[:space:]]/}" ] && ran=$((ran + 1)) || silent+=("$pkg/$name")
   fi
+  # The harness prints one `cases without a baseline: N ...` line per target.
+  nb=$(echo "$out" | sed -n 's/^cases without a baseline: \([0-9]*\).*/\1/p' | head -1)
+  if [ -n "${nb:-}" ] && [ "$nb" -gt 0 ]; then
+    no_baseline=$((no_baseline + nb))
+    no_baseline_targets+=("$pkg/$name")
+  fi
   if [ "$code" -ne 0 ]; then
     if [ "$kind" = INVARIANT ]; then
       invariant_failed+=("$pkg/$name")
@@ -100,7 +115,8 @@ echo "=== summary"
 echo "targets measuring    $ran of $EXPECTED"
 echo "targets silent       ${#silent[@]}  ${silent[*]:-}"
 echo "invariant failures   ${#invariant_failed[@]}  ${invariant_failed[*]:-}"
-echo "timing over ceiling  ${#timing_over[@]}  ${timing_over[*]:-}"
+echo "timing over baseline ${#timing_over[@]}  ${timing_over[*]:-}"
+echo "cases w/o a baseline $no_baseline  ${no_baseline_targets[*]:-}"
 
 # Liveness. A green result from a run that executed nothing is the failure this
 # whole script exists to end, so it is checked rather than assumed.
@@ -126,12 +142,28 @@ if [ "$STRICT" -eq 1 ] && [ "$MACHINE_NOT_TUNED" -ne 0 ]; then
   exit 1
 fi
 
-if [ "${#timing_over[@]}" -ne 0 ]; then
+# A machine with no recorded baseline is not a machine that passed. Without
+# --strict this is reported rather than fatal, because CI runs on a shared pool
+# whose CPUs deliberately have no baseline and a red CI on that is a red CI
+# nobody reads. With --strict -- what a DESIGN.md §9 machine runs -- one is fatal:
+# on the box whose numbers get published, an uncompared case is a hole.
+if [ "$no_baseline" -ne 0 ]; then
   if [ "$STRICT" -eq 1 ]; then
-    echo "FAIL: --strict, and a timing ceiling was exceeded" >&2
+    echo "FAIL: --strict, and $no_baseline case(s) had no baseline for this CPU" >&2
+    echo "      Record them in benches/baselines.tsv; the harness printed the" >&2
+    echo "      line to paste for each. CLAUDE.md non-negotiable 10." >&2
     exit 1
   fi
-  echo "Timing ceilings were exceeded. Not fatal without --strict: see the header."
+  echo "$no_baseline case(s) have no baseline on this CPU: they were measured and"
+  echo "printed but compared against nothing. Not fatal without --strict."
+fi
+
+if [ "${#timing_over[@]}" -ne 0 ]; then
+  if [ "$STRICT" -eq 1 ]; then
+    echo "FAIL: --strict, and a timing baseline was exceeded" >&2
+    exit 1
+  fi
+  echo "Timing baselines were exceeded. Not fatal without --strict: see the header."
 fi
 
 echo "OK"

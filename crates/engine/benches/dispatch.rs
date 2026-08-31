@@ -60,7 +60,7 @@ fn main() {
         let mut out = [0u8; 1024];
 
         let mut inline = InlineDispatch::new(Bounce);
-        b.bench("inline deliver + reply", CEILING_INLINE, || {
+        b.bench("inline deliver + reply", || {
             let r = inline.deliver(0, black_box(msg), 2, stamp, &mut out);
             black_box(r);
         });
@@ -75,7 +75,10 @@ fn main() {
         // One way only: the engine pushes, the application takes it and says
         // nothing. This is the byte-at-a-time copy on its own, which is what the
         // `AtomicU8` buffer buys the absence of `unsafe` with.
-        b.bench("ring, one way", CEILING_RING_ONE_WAY, || {
+        // `[measured 2026-08-30]` 128.9 ns for a 163-byte message on an Apple
+        // M5: ~0.8 ns per byte, which is the `AtomicU8` copy and nothing else.
+        // That per-byte figure is the price ADR-0007 pays to keep `unsafe` out.
+        b.bench("ring, one way", || {
             let r = ringed.deliver(0, black_box(msg), 2, stamp, &mut out);
             black_box(r);
             // Drained by a handler that answers nothing, so nothing comes back and
@@ -84,7 +87,8 @@ fn main() {
             black_box(n);
         });
 
-        b.bench("ring, round trip", CEILING_RING_TRIP, || {
+        // Two copies and a handler. `[measured 2026-08-30]` 247.6 ns on an M5.
+        b.bench("ring, round trip", || {
             ringed.deliver(0, black_box(msg), 2, stamp, &mut out);
             let n = app.pump(&mut Bounce);
             black_box(n);
@@ -98,17 +102,3 @@ fn main() {
         assert_eq!(app.dropped(), 0);
     });
 }
-
-// Regression ceilings, roughly 2x the baseline measured on this machine.
-// NOT published targets — see harness.rs and DESIGN.md §6. Every figure is
-// best-of-7 x 200,000 iterations on an Apple M5, macOS 25.6, unpinned,
-// 2026-08-30.
-/// Baseline 2.5–4.9 ns across runs. The spread is the measurement's, not the
-/// code's: at this size the loop is a handful of instructions and the harness's
-/// own overhead is the same order.
-const CEILING_INLINE: f64 = 15.0;
-/// Baseline 128.9 ns for a 163-byte message: ~0.8 ns per byte, which is the
-/// `AtomicU8` copy and nothing else.
-const CEILING_RING_ONE_WAY: f64 = 260.0;
-/// Baseline 247.6 ns — two copies and a handler.
-const CEILING_RING_TRIP: f64 = 500.0;

@@ -539,8 +539,12 @@ Three properties that are not obvious, and that the first sketch of this decisio
   parse. The `YYYYMMDD-HH:MM` prefix is cached and re-derived once a minute; only `SS.sss` is
   formatted per message.
 
-This is how the fastest commercial engines reach tens of nanoseconds per serialise, and it is
-why the published serialise target in §6 is 60 ns, not 150.
+This is how the fastest commercial engines are reported to reach tens of nanoseconds per
+serialise. **That figure was once §6's published serialise target, 60 ns, and ADR-0016
+withdrew it** — it described other people's software, no machine here came within 1.5× of it,
+and `[measured 2026-08-31]` the measured floor of this `Part` shape is ~116 ns even with the
+slot scan removed entirely. The cached-timestamp design above is still right and still cheap;
+what was wrong was borrowing somebody else's number to grade it against.
 
 ### D10 — TCP send backpressure has a stated policy
 
@@ -655,9 +659,9 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 
 | Gate | Target | Proven by |
 |---|---|---|
-| Parse `NewOrderSingle` | ≤ 150 ns **published**. `[measured]` **77.0 ns**, 2026-08-28 | `benches/parse.rs`, asserting a 150 ns regression ceiling |
-| Serialise `ExecutionReport` (template, D9) | ≤ 60 ns **published**. `[measured]` **93.8 ns — the target is NOT met** | `benches/serialize.rs`, asserting a 190 ns regression ceiling |
-| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is. `[measured 2026-08-30]` inline **2.7 ns**; ring **128.0 ns** one way and **242.5 ns** round trip, on a 163-byte `NewOrderSingle`, Apple M5, macOS 25.6, unpinned — **the ring hop is ~50x the inline call**, and ~0.8 ns of every byte of it is the `AtomicU8` copy ([ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)) | `crates/engine/benches/dispatch.rs`, asserting ceilings of 15 / 260 / 500 ns |
+| Parse `NewOrderSingle` | **no regression past this machine's baseline** (ADR-0016). `[measured 2026-08-31]` §9 desktop: **122.8 ns** validated, **116.4 ns** raw, **57.0 ns** `Heartbeat`, medians of 27 qualifying runs | `benches/parse.rs`, against `benches/baselines.tsv` |
+| Serialise `ExecutionReport` (template, D9) | **no regression past this machine's baseline** (ADR-0016). `[measured 2026-08-31]` §9 desktop **236.2 ns**, median of 27 qualifying runs. **The 60 ns absolute target is withdrawn** — it was never a measurement of this engine, only of what the fastest commercial engines are reported to reach (§4 D9), and no machine ever came close: 93.8 (M5) · 177.6–199.4 (container) · 236.2 (§9 desktop) | `benches/serialize.rs`, against `benches/baselines.tsv` |
+| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is, per machine (ADR-0016). `[measured 2026-08-31]` §9 desktop: inline **1.3 ns**, ring **270.4 ns** one way and **519.1 ns** round trip, on a 163-byte `NewOrderSingle`, medians of 27 qualifying runs — **the ring hop is ~208x the inline call**, and ~1.7 ns of every byte of it is the `AtomicU8` copy ([ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)). **The inline figure fell from 6.3 to 1.3 ns when the harness lost one function parameter**, so ~5 ns of the previous reading was the instrument; see [reference/measured-costs.md](reference/measured-costs.md) | `crates/engine/benches/dispatch.rs`, against `benches/baselines.tsv` |
 | Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
 | Allocations on the hot path — session | **0**, counted separately on thirteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
@@ -696,23 +700,66 @@ no crates, so `fmt`, `clippy` and `test` have nothing to check — the CI job em
 annotation saying it *skipped* rather than passing, because a green tick that means "there was
 nothing to look at" is the exact failure `CLAUDE.md` §10 names.
 
-The 150 ns targets are anchored to a real measurement — 139 ns for a `NewOrderSingle` on an
-Apple M5 on 2026-08-27, in the harness described in
-[reference/measured-costs.md](reference/measured-costs.md). They are **a reference point on
-one machine, not a promise about any other.**
+### Timing gates are per machine, not absolute — ADR-0016
 
-`[measured]` **The serialise target is missed by 56%.** 93.8 ns against a published 60 ns, on
-an `ExecutionReport` with 3 fixed fields and 14 slots. The cause is visible rather than
-mysterious: `encode` looks each slot up with a linear scan of the supplied list, so the cost
-grows with slots × parts. It is recorded here rather than optimised, because
-`reference/measured-costs.md` exists to stop exactly the reverse — optimising before
-measuring on the machine that matters. The number to beat is the Linux one, at the `engine`
-step.
+**There is no single published nanosecond target any more, and that is a decision rather than
+an omission.** Every timing row above is judged against the figure *this project measured for
+that case on the CPU it is running on*, times that case's own margin. Both live in
+[`benches/baselines.tsv`](../benches/baselines.tsv), each line carrying its sample size, its
+date, and the `scripts/check-machine.sh` verdict of the run that produced it.
 
-`[measured 2026-08-30]` **The Linux number now exists, and it is worse.** Five runs on a
-shared 4 vCPU Xeon container, `rustc 1.98.0`: 177.6–199.4 ns, a 3.0–3.3× miss rather than the
-M5's 1.6×. Still recorded rather than optimised, and for the same reason — a shared container
-is not §9 either.
+Two findings retired the absolute column.
+
+**The 60 ns serialise target was never a measurement of this engine.** §4 D9 says where it
+came from: it is how the fastest commercial engines are *reported* to perform. That is a
+different kind of number from the 150 ns parse target, which was anchored to 139 ns measured
+here on an Apple M5 on 2026-08-27. One column held both, and only the second kind can gate
+anything. No machine came close to 60: **93.8** (M5) · **177.6–199.4** (shared Xeon
+container) · **236.2** (§9 desktop). The plan that went looking for the missing time found
+that ~31 ns is spent before the first variable field is written — 51% of the whole target on
+a message carrying nothing — and that removing the slot scan *entirely* still leaves ~116 ns.
+
+**The ceilings had the same disease from the other side.** `STATUS.md` open item 20 measured
+`ring, one way` at 260.9 ns on a Ryzen 7 3700X, 270.7–272.9 on an EPYC 9V74 and 327.2–331.1 on
+an EPYC 7763 — 21% between two machines of one vendor, against ~1% within either. The single
+260 ns ceiling sat 0.3% *below the fastest of the three*: a ceiling no machine passes is a
+ceiling somebody switches off.
+
+**Recorded baselines**, medians of 27 qualifying runs, `[measured 2026-08-31]`:
+
+| Case | AMD Ryzen 7 3700X (§9, `pass 10 fail 0`) | margin |
+|---|---|---|
+| parse `NewOrderSingle` (validated) | 122.8 ns | 1.10 |
+| parse `NewOrderSingle` (no checks) | 116.4 ns | 1.15 |
+| parse `Heartbeat` (validated) | 57.0 ns | 1.10 |
+| encode `ExecutionReport` (template) | 236.2 ns | 1.10 |
+| `SendingTime` from the cache | 4.9 ns | 1.10 |
+| walk 1 group, 2 entries | 58.5 ns | 1.10 |
+| walk 4 levels, 61-tag member list | 350.1 ns | 1.10 |
+| `group_members` contains, 61 tags | 9.7 ns | 1.10 |
+| encode 1 group, 2 entries | 108.9 ns | 1.10 |
+| inline deliver + reply | 1.3 ns | 1.10 |
+| ring, one way | 270.4 ns | 1.25 |
+| ring, round trip | 519.1 ns | 1.20 |
+
+**No other machine has a baseline, and none is invented for it.** The Apple M5 and the two CI
+EPYCs have figures scattered through this file and `STATUS.md`, but none was taken by the
+procedure above — N ≥ 20 whole runs on a box reading `pass 10 fail 0` — so none is written
+into the file. Those machines report `NO BASELINE`, which is counted on its own summary row
+and is **not** a pass.
+
+**The margin is per case because one margin cannot work.** `[measured 2026-08-31]` nine of the
+twelve cases hold inside 7.6% of their own median across a run set, while `ring, one way`
+draws a second mode at **+24%** on roughly 1 run in 15 — the mode open item 20 could not
+explain after refuting five hypotheses, and which appeared here on the *quietest* runs of the
+set rather than the loaded ones. A single margin wide enough for that case would let `encode
+ExecutionReport` drift 236 → 319 ns unnoticed.
+
+**Stretch, and it is NOT a gate:** serialise at **~116 ns** on the §9 desktop. That is the
+measured floor of the current `Part` shape — what remains after removing the slot scan
+completely — and reaching it needs the ~31 ns fixed prefix cost and the ~7 ns per field in
+`put` attacked, not the scan. It is written here as an ambition with a measurement behind it,
+in place of a target with somebody else's product behind it.
 
 ### How the benchmarks are run
 
@@ -752,12 +799,22 @@ outlier on a 3.7 ns baseline threw away both `ring` figures on that run, and `gr
 fourth case — `encode 1 group, 2 entries`, over its ceiling — that **nobody had ever seen**,
 because the process died two cases earlier.
 
-**Published target and asserted ceiling are deliberately different numbers.** The benchmark
-asserts a regression ceiling of roughly 1.5–2× the baseline measured on the machine at hand,
-not 150 / 60 ns. The reason is arithmetic: 139 ns sits 8% under 150 ns, and an unpinned laptop
-varies by more than 8%, so a hard assert would go red at random — and a gate that goes red at
-random is a gate somebody switches off, which is worse than having none. The 150 / 60 ns
-figures stay as the published targets, to be confirmed on Linux at the `engine` step.
+**There is no published target distinct from the asserted limit any more** — ADR-0016
+collapsed the two into one per-machine number, for the reason this paragraph used to describe
+from the other end. The old arrangement existed because 139 ns sat 8% under a 150 ns target
+while the laptop it ran on varied by more than 8%, so asserting the target would have gone red
+at random; the fix was to assert something looser and publish the target anyway. That kept a
+number in the table that nothing checked. Now the limit is `baseline × margin` for the CPU at
+hand, both recorded from measurement, and the table publishes exactly what the benchmark
+asserts.
+
+`[measured 2026-08-31]` **A baseline must be taken through the path that will judge it.** The
+first attempt recorded medians from running the four timing targets directly; `encode
+ExecutionReport` then went over its 1.10 limit on the first `scripts/bench.sh` run, because
+`bench.sh` runs eight targets and the case is not measured in the same state. The recorded
+figures come from 20 full `bench.sh` runs. A related trap sits next to it: back-to-back runs
+leave the previous suite inside `check-machine.sh`'s own one-second window, so an unspaced loop
+reads 25–36% busy and disqualifies its own measurements.
 
 ## 7. Build order
 
