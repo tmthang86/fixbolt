@@ -179,9 +179,21 @@ below describe what a first release would contain.
       *"already logged on"* by counting the other connections it holds, and sharding splits
       those across engines. The acceptance corpus scores **59 through one shard and 57 through
       two**. `STATUS.md` open item 24.
-    - **Not yet**: affinity for the journal writer and the ring consumer — `ShardPlan` can
-      express where they go and nothing puts them there yet. `GUIDE.md` §1a says which parts are
-      still the caller's problem.
+  - **The threads that are not engine threads now have homes too.**
+    - `affinity::spawn_pinned(name, core, work)` — starts a thread that pins itself before doing
+      anything and **does not return until that thread has confirmed it**, so a failed pin
+      reaches the caller who can stop startup rather than dying quietly on the new thread. It
+      returns the core the thread was *observed* on.
+    - `FileJournal::open_pinned(path, Durability::Async, core)` and `writer_core()`. Only
+      `Async` has a writer thread; asking to pin a `Fsync` journal is **refused** rather than
+      accepted and ignored, because a constructor that silently drops an argument is how a
+      deployment ends up believing it pinned something.
+    - `Topology::siblings_of` is public: the engine never picks a core, so a caller has to, and
+      `CoreId(0), CoreId(1)` is wrong on any machine with SMT on.
+    - **The ring consumer is still yours to pin** — it is whatever thread calls `RingApp::pump`
+      and this crate never spawns one. `ShardPlan::with_consumer_cores` validates the choice
+      (a consumer sharing a physical core with a shard is refused before startup) and
+      `spawn_pinned` is how you put it there.
   - **A full ring to the application ends the connection** —
     [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md), `DESIGN.md` D10b. Under
     `RingDispatch`, a message the ring will not take is one the session already accepted,

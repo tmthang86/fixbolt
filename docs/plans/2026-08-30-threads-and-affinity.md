@@ -503,3 +503,56 @@ scripts/check-links.py                                  402 link, không link ch
 
 **Bước 5 và 6 chưa bắt đầu.** Item 21 vẫn mở, và giờ có thêm item 24 — bước 4 không đóng được
 cho tới khi luật single-logon có chỗ ở qua nhiều shard.
+
+### Bước 5 — thread nào cũng có chỗ, và CI làm nổ luật mà máy §9 không thể. 2026-08-31.
+
+**Xong.** `affinity::spawn_pinned(name, core, work)` khởi thread, ghim **từ bên trong** trước
+khi làm gì, và **không trả về cho tới khi thread đó xác nhận** — nên một lần ghim hỏng đi tới
+đúng luồng có thể dừng khởi động, thay vì chết lặng trên thread mới. Nó trả về core **quan sát
+được**, không phải core đã yêu cầu.
+
+`FileJournal::open_pinned(path, Durability::Async, core)` + `writer_core()`. Chỉ `Async` có
+writer thread; xin ghim một journal `Fsync` bị **từ chối** chứ không nhận rồi lờ đi — một hàm
+dựng lặng lẽ bỏ qua một tham số là cách một triển khai tin rằng nó đã ghim thứ gì đó.
+
+**Consumer của `RingDispatch` vẫn là thread của người dùng** — nó là bất kỳ luồng nào gọi
+`RingApp::pump`, và crate này không bao giờ tạo một luồng như vậy. `[đọc code]` cả crate chỉ
+`spawn` đúng **một** thread: writer của journal. Nên `with_consumer_cores` **kiểm** chứ không
+ghim, và điều đó được nói thẳng trong rustdoc: cái nó mua được là một consumer chia lõi vật lý
+với một shard sẽ bị từ chối **trước khi** khởi động.
+
+**Đảo ngược:** bỏ lời gọi ghim trong `spawn_pinned` → đúng 3 test đỏ, mỗi cái ở khẳng định của
+nó (*"the thread reported a core it was not asked for"*, *"the writer thread is not on the core
+the caller named"*). Chọn core cố ý **khác** core hiện tại của luồng test, vì một thread mới hay
+bắt đầu trên core của cha nó — nếu chọn cùng core thì bản đảo ngược sẽ xanh do trùng hợp.
+
+#### Luật SMT nổ thật, ở lần chạy CI đầu tiên
+
+`[đo 2026-08-31]` CI đỏ trên commit bước 4, và **không phải flaky**: runner của GitHub báo
+`cpu0` và `cpu1` là **hai luồng của một lõi vật lý**, nên `ShardPlan::new(vec![cpu0, cpu1])` bị
+từ chối:
+
+```
+a plan this machine accepts: Affinity(SmtSiblingOf(CoreId(0), CoreId(1)))
+```
+
+ADR-0015 đã viết rằng luật này **không bao giờ nổ được** trên máy đúng chuẩn §9 (SMT tắt), rằng
+nó nổ trên máy *chưa* đúng chuẩn, và rằng vì thế *"cái đọc được test, còn cái thật thì không"*.
+Lần chạy CI đầu tiên biến "cái thật" thành đã test. Fixture `desktop_with_smt_on()` là dựng
+tay; runner là thật, và cả hai cho cùng một câu trả lời.
+
+**Sửa: test tự chọn một id mỗi lõi vật lý**, bằng `Topology::siblings_of` — nay là public, vì
+engine không bao giờ tự chọn core (quyết định 1) nên người gọi phải chọn, và `cpu0, cpu1` là
+phỏng đoán tự nhiên và sai. `GUIDE.md` §1a có đoạn code đúng.
+
+**Cổng đã chạy và đọc output:**
+
+```
+cargo test -p fixbolt-engine --features affinity   22 + 6 + 2 ... tất cả xanh
+cargo test --all                                   0 failure
+cargo build -p fixbolt-engine --no-default-features   ok (WriterCore alias giữ một thân hàm)
+cargo clippy --all-targets --features affinity -D warnings   clean
+scripts/check-links.py                             405 link, không link chết
+```
+
+**Bước 6 chưa bắt đầu**, và bước 4 vẫn không đóng được vì item 24.

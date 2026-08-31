@@ -157,16 +157,36 @@ as the API.
   ```
 
   It refuses a core that is absent, offline, named twice, or an SMT sibling of another core in
-  the plan, and — for shard cores — one that is not in `isolcpus`. `allow_unisolated()` waives
+  the plan, and — for shard cores — one that is not in `isolcpus`.
+
+  **`CoreId(0), CoreId(1)` is the natural first guess and it is wrong on any machine with SMT
+  on.** `[measured 2026-08-31]` a GitHub runner reports `cpu0` and `cpu1` as two threads of one
+  physical core, and that plan was refused — correctly, on the first machine that could show it,
+  since `DESIGN.md` §9 requires SMT off and the reference desktop never can. Use
+  `Topology::siblings_of` to take one id per physical core:
+
+  ```rust
+  let t = Topology::read()?;
+  let mut cores = Vec::new();
+  for c in t.online() {
+      if cores.iter().any(|taken| t.siblings_of(*taken).contains(c)) { continue; }
+      cores.push(*c);
+  }
+  ``` `allow_unisolated()` waives
   **only** that last rule; a development box needs it and CI needs it. `[measured 2026-08-31]`
   the reason `NotOnline` is a rule of its own: on the tuned reference machine
   `/sys/devices/system/cpu/isolated` reads `6-7,14-15` while `online` reads `0-7`, because
   turning SMT off took 8–15 offline. A plan that trusted `isolcpus` alone would have pinned a
   shard to a CPU the kernel will not schedule.
 
-  **Pinning the journal writer and the ring consumer is not built yet** — `ShardPlan` can say
-  where they go and step 5 of that plan is what puts them there. Until then a floating writer
-  can still land on the core you isolated.
+  **The threads that are not engine threads.** `[2026-08-31]` `ShardPlan` validates their cores
+  — a journal writer or ring consumer sharing a core, or a physical core, with a shard is
+  refused before anything starts. Putting them there is split:
+  `FileJournal::open_pinned(path, Durability::Async, core)` pins the journal's writer and reads
+  back the core it landed on (`writer_core()`); the ring consumer is **your** thread — the one
+  that calls `RingApp::pump` — so pin it with `affinity::spawn_pinned` or, from inside it,
+  `affinity::pin_current_thread`. `Durability::Fsync` has no writer thread and `open_pinned`
+  refuses it rather than accepting a core it would ignore.
 - **Isolating those cores.** `isolcpus` plus `nohz_full`, or the scheduler will put other work
   on them.
 

@@ -292,3 +292,86 @@ fn this_machine_reads_back_consistently() {
         assert_eq!(t.validate(&ShardPlan::new(vec![*core])), Ok(()));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Step 5 — the threads that are not engine threads
+// ---------------------------------------------------------------------------
+
+use fixbolt_engine::journal::{Durability, FileJournal};
+
+/// A core this thread is **not** on.
+///
+/// Using the current one would make the reversal below useless: a spawned thread
+/// often starts on its parent's core, so an unpinned thread would read the right
+/// answer by accident and the test would pass with the pin removed.
+fn a_core_we_are_not_on() -> CoreId {
+    let here = affinity::running_on().expect("this thread is somewhere");
+    let mask = affinity::current_mask().expect("reading this thread's own mask");
+    mask.into_iter()
+        .find(|c| *c != here)
+        .expect("this machine has more than one usable core")
+}
+
+#[test]
+fn spawn_pinned_reports_the_core_the_thread_was_observed_on() {
+    let core = a_core_we_are_not_on();
+    let (handle, on) =
+        affinity::spawn_pinned("test-pinned", core, std::thread::yield_now).expect("pinned");
+    assert_eq!(on, core, "the thread reported a core it was not asked for");
+    handle.join().expect("the thread did not panic");
+}
+
+#[test]
+fn spawn_pinned_reports_a_bad_core_to_the_caller_that_asked() {
+    // Decision 3: the failure reaches the thread that can stop startup, rather
+    // than dying quietly on the new thread.
+    let err = affinity::spawn_pinned("test-doomed", CoreId(9999), || {})
+        .expect_err("cpu9999 does not exist");
+    assert!(
+        err.to_string().contains("9999"),
+        "the message must name the core; got {err}"
+    );
+}
+
+#[test]
+fn the_journal_writer_runs_on_the_core_it_was_given() {
+    let dir = std::env::temp_dir().join(format!(
+        "fixbolt-journal-affinity-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("a temp directory");
+    let path = dir.join("journal.bin");
+
+    let core = a_core_we_are_not_on();
+    let Ok(journal) = FileJournal::<8, 256>::open_pinned(&path, Durability::Async, core) else {
+        panic!("opening a pinned journal on {core}");
+    };
+
+    assert_eq!(
+        journal.writer_core(),
+        Some(core),
+        "the writer thread is not on the core the caller named"
+    );
+
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pinning_a_journal_that_has_no_writer_thread_is_refused() {
+    // `Fsync` writes on the engine thread. Accepting a core here and ignoring
+    // it is how a deployment ends up believing it pinned something.
+    let dir = std::env::temp_dir().join(format!("fixbolt-journal-fsync-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a temp directory");
+    let path = dir.join("journal.bin");
+
+    let Err(err) = FileJournal::<8, 256>::open_pinned(&path, Durability::Fsync, CoreId(0)) else {
+        panic!("Fsync has no writer thread, so pinning one must be refused");
+    };
+    assert!(
+        err.to_string().contains("no writer thread"),
+        "the refusal must say why; got {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -168,6 +168,9 @@ pub struct FileJournal<const N: usize, const LEN: usize> {
     to_writer: Option<Producer>,
     /// The writer thread, joined on drop so a test can read the file after.
     writer: Option<std::thread::JoinHandle<()>>,
+    /// Where that thread was observed running, if it was pinned.
+    #[cfg(all(feature = "affinity", target_os = "linux"))]
+    writer_core: Option<crate::affinity::CoreId>,
 }
 
 /// The header a `FileJournal` appends before each message: the sequence number
@@ -192,6 +195,17 @@ const RECORD_HEADER: usize = RECORD_SEQ + RECORD_LEN;
 /// every existing record would have to grow.
 const INBOUND_MARK: usize = 0;
 
+/// Where the writer thread should be pinned, if anywhere.
+///
+/// Two aliases rather than two copies of `open_with`: without the `affinity`
+/// feature there is no `CoreId` to name, and `Infallible` makes the `Some` arm
+/// uninhabited so the one body compiles either way.
+#[cfg(all(feature = "affinity", target_os = "linux"))]
+type WriterCore = Option<crate::affinity::CoreId>;
+/// See the other [`WriterCore`].
+#[cfg(not(all(feature = "affinity", target_os = "linux")))]
+type WriterCore = Option<core::convert::Infallible>;
+
 impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
     /// Append to `path`, creating it if it is not there.
     ///
@@ -199,6 +213,60 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
     ///
     /// Whatever opening the file returns.
     pub fn open(path: &Path, how: Durability) -> std::io::Result<Self> {
+        Self::open_with(path, how, None)
+    }
+
+    /// As [`open`](Self::open), with the writer thread **pinned to `core`**.
+    ///
+    /// [ADR-0015] decision 8: every thread gets a home, including the ones that
+    /// are not the engine. Pinning the engine to an isolated core and leaving
+    /// the journal's writer to float defeats the isolation, because the writer
+    /// can land on that very core.
+    ///
+    /// Only [`Durability::Async`] has a writer thread. Asking to pin a `Fsync`
+    /// journal is refused rather than accepted and ignored: a constructor that
+    /// silently drops an argument is how a deployment ends up believing it
+    /// pinned something.
+    ///
+    /// # Errors
+    ///
+    /// Whatever opening the file returns; if `how` is [`Durability::Fsync`]; or
+    /// if the writer thread cannot pin itself, with the affinity error's own
+    /// words.
+    ///
+    /// [ADR-0015]: ../../../docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md
+    #[cfg(all(feature = "affinity", target_os = "linux"))]
+    pub fn open_pinned(
+        path: &Path,
+        how: Durability,
+        core: crate::affinity::CoreId,
+    ) -> std::io::Result<Self> {
+        if how == Durability::Fsync {
+            return Err(std::io::Error::other(
+                "Durability::Fsync has no writer thread, so there is nothing to pin",
+            ));
+        }
+        Self::open_with(path, how, Some(core))
+    }
+
+    /// The core the writer thread was **observed on**, if it was pinned.
+    ///
+    /// Read back from the scheduler by that thread, not copied from the request.
+    #[cfg(all(feature = "affinity", target_os = "linux"))]
+    #[must_use]
+    pub const fn writer_core(&self) -> Option<crate::affinity::CoreId> {
+        self.writer_core
+    }
+
+    #[cfg_attr(
+        not(all(feature = "affinity", target_os = "linux")),
+        expect(
+            unused_variables,
+            reason = "`core` has no meaning without the affinity feature, and the \
+                      parameter stays so the two constructors share one body"
+        )
+    )]
+    fn open_with(path: &Path, how: Durability, core: WriterCore) -> std::io::Result<Self> {
         // **Read before appending.** Everything already in the file is put back
         // into the in-memory ring, so `get` and `highest` answer for messages
         // this process never sent. That is the difference between an audit trail
@@ -241,6 +309,8 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 file: None,
                 to_writer: None,
                 writer: None,
+                #[cfg(all(feature = "affinity", target_os = "linux"))]
+                writer_core: None,
             },
         );
         this.mem = mem;
@@ -251,6 +321,16 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 // not journalled, which becomes a gap fill rather than a lie.
                 let (to_writer, from_engine) = crate::ring::pair(1 << 20);
                 this.to_writer = Some(to_writer);
+                #[cfg(all(feature = "affinity", target_os = "linux"))]
+                if let Some(core) = core {
+                    let (handle, on) =
+                        crate::affinity::spawn_pinned("fixbolt-journal", core, move || {
+                            write_loop(file, from_engine)
+                        })?;
+                    this.writer = Some(handle);
+                    this.writer_core = Some(on);
+                    return Ok(this);
+                }
                 this.writer = Some(std::thread::spawn(move || write_loop(file, from_engine)));
             }
         }

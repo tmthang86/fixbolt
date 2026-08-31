@@ -368,12 +368,25 @@ impl Topology {
         &self.isolated
     }
 
-    /// The cores sharing a physical core with this one.
+    /// The cores sharing a physical core with this one, as
+    /// `topology/thread_siblings_list` reports it.
     ///
     /// Empty when the core has no entry: a core absent from the table is its own
     /// only sibling, and the only question ever asked of this list is whether it
     /// contains some *other* core — which for a lone core is always no.
-    fn siblings_of(&self, core: CoreId) -> &[CoreId] {
+    ///
+    /// **Public because a caller choosing cores needs it.** The engine never
+    /// picks a core ([ADR-0015] decision 1), so somebody has to, and "cpu0 and
+    /// cpu1" is a natural first guess that is wrong on any machine with SMT on.
+    /// `[measured 2026-08-31]` it was wrong on the first CI run of the shard
+    /// tests: a GitHub runner reports `cpu0` and `cpu1` as **two threads of one
+    /// physical core**, and the plan was refused — correctly, and on the first
+    /// machine that could show it, since `DESIGN.md` §9 requires SMT off and the
+    /// reference desktop therefore never can.
+    ///
+    /// [ADR-0015]: ../../../docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md
+    #[must_use]
+    pub fn siblings_of(&self, core: CoreId) -> &[CoreId] {
         self.siblings
             .iter()
             .find(|(c, _)| *c == core)
@@ -476,13 +489,29 @@ impl ShardPlan {
     ///
     /// Leaving it unset is a **choice**, not a harmless default: an unpinned
     /// writer can land on the very core a shard was pinned to.
+    ///
+    /// **This runtime validates the core; it does not pin the thread.** Only
+    /// [`Durability::Async`](crate::journal::Durability::Async) has a writer
+    /// thread at all, and the journal is the caller's to build —
+    /// [`FileJournal::open_pinned`](crate::journal::FileJournal::open_pinned) is
+    /// what puts it there. What naming it here buys is that
+    /// [`Topology::validate`] refuses a plan where the writer would share a core,
+    /// or a physical core, with a shard — **before** anything starts.
     #[must_use]
     pub fn with_journal_core(mut self, core: CoreId) -> Self {
         self.journal_core = Some(core);
         self
     }
 
-    /// Where `RingDispatch`'s consumer threads run. Same caveat as the journal.
+    /// Where `RingDispatch`'s consumer threads run.
+    ///
+    /// **Validated, not pinned, and here the crate could not pin them if it
+    /// wanted to**: the consumer is whatever thread calls `RingApp::pump`, and
+    /// this crate never spawns one. Pin it yourself with
+    /// [`spawn_pinned`] or, from inside it, [`pin_current_thread`]. Naming the
+    /// cores here is what makes the whole arrangement checkable at once —
+    /// a consumer sharing a physical core with a shard is refused before
+    /// startup rather than discovered as jitter.
     #[must_use]
     pub fn with_consumer_cores(mut self, cores: Vec<CoreId>) -> Self {
         self.consumer_cores = cores;
@@ -557,4 +586,61 @@ fn parse_cpu_list(text: &str) -> Option<Vec<CoreId>> {
 fn read_cpu_list(path: &'static str) -> Result<Vec<CoreId>, AffinityError> {
     let text = std::fs::read_to_string(path).map_err(|_| AffinityError::Unreadable(path))?;
     parse_cpu_list(text.trim()).ok_or(AffinityError::Unreadable(path))
+}
+
+/// Start a thread that pins itself to `core` before doing anything, and do not
+/// return until it has confirmed that.
+///
+/// The confirmation is what makes this different from spawning and calling
+/// [`pin_current_thread`] yourself and hoping: if the pin fails, this returns
+/// the failure to the caller that asked for it, on the caller's thread, where
+/// it can stop startup — [ADR-0015] decisions 2 and 3.
+///
+/// Returns the thread and **the core it was observed on**, which is read back
+/// from the scheduler rather than echoed from the argument.
+///
+/// Errors are `io::Error` rather than [`AffinityError`] so that this composes
+/// with the `io::Result` constructors that use it; the message carries the
+/// affinity error's own words, which name the core. Anyone who needs the typed
+/// error should pin with [`pin_current_thread`] inside their own thread.
+///
+/// # Errors
+///
+/// If the thread cannot be spawned, or if it cannot pin itself.
+///
+/// [ADR-0015]: ../../../docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md
+pub fn spawn_pinned<F>(
+    name: &str,
+    core: CoreId,
+    work: F,
+) -> std::io::Result<(std::thread::JoinHandle<()>, CoreId)>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel::<Result<CoreId, AffinityError>>();
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            // First act, before `work` gets a chance to allocate anything.
+            let confirmed = pin_current_thread(core).and_then(|()| running_on());
+            let pinned = confirmed.is_ok();
+            let _ = tx.send(confirmed);
+            if pinned {
+                work();
+            }
+        })?;
+
+    match rx.recv() {
+        Ok(Ok(on)) => Ok((handle, on)),
+        Ok(Err(e)) => {
+            drop(handle.join());
+            Err(std::io::Error::other(e))
+        }
+        Err(_) => {
+            drop(handle.join());
+            Err(std::io::Error::other(
+                "the thread ended before it reported its affinity",
+            ))
+        }
+    }
 }

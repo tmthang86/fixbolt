@@ -31,8 +31,29 @@ use fixbolt_engine::transport::TcpTransport;
 /// below say so out loud rather than being quietly exempt.
 fn plan_for(shards: usize) -> ShardPlan {
     let topology = Topology::read().expect("reading /sys on Linux");
-    let cores: Vec<CoreId> = topology.online().iter().copied().take(shards).collect();
-    assert_eq!(cores.len(), shards, "this machine has too few online cores");
+    // **One core per PHYSICAL core.** `[measured 2026-08-31]` taking the first
+    // `shards` online ids was refused on a GitHub runner, which reports cpu0 and
+    // cpu1 as two threads of one physical core — the rule working, on the first
+    // machine that could show it. `DESIGN.md` §9 requires SMT off, so the
+    // reference desktop never can.
+    let mut cores: Vec<CoreId> = Vec::new();
+    for candidate in topology.online() {
+        if cores
+            .iter()
+            .any(|taken| topology.siblings_of(*taken).contains(candidate))
+        {
+            continue;
+        }
+        cores.push(*candidate);
+        if cores.len() == shards {
+            break;
+        }
+    }
+    assert_eq!(
+        cores.len(),
+        shards,
+        "this machine has too few physical cores"
+    );
     ShardPlan::new(cores).allow_unisolated()
 }
 
