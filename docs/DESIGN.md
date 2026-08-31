@@ -19,8 +19,8 @@ to measure the floor honestly.
 ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). Latency
 beats session density here, and the tie-breaker has teeth: a change trading per-session latency
 for sessions-per-core needs its own ADR to reverse it. Many sessions on a thread is supported
-and named **`density`**; it carries `[measured 2026-08-31]` **`N × 505 ns`** of polling on a
-core set up to §9 — and `N × 675 ns` if that core has `nohz_full`, which
+and named **`density`**; it carries `[measured 2026-08-31]` **`N × 449 ns`** of polling on a
+core set up to §9 — and `N × 670 ns` if that core has `nohz_full`, which
 [ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md) took out of §9 for exactly this
 reason — and **does not inherit the latency figures on this page**. Every figure here names its `N`.
 
@@ -59,9 +59,9 @@ nothing about I/O strategy, outbound encoding, or the OS underneath has optimise
 
 **A third principle, and it is the second one turning on its author.** `[measured 2026-08-31]`
 the I/O strategy §4 D8 chose — one non-blocking `read` per connection per turn — costs a whole
-`Engine::turn` of **505 ns per session**, flat from 1 to 16 sessions within 2%. (**675 ns** on a
-core carrying `nohz_full`; that is the whole of the 36% §9 used to ask for and no longer does —
-[ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md).) **Of the 505, 471 ns is the syscall and about 30 ns is
+`Engine::turn` of **449 ns per session**, flat from 1 to 16 sessions within 2%. (**~670 ns** on a
+core carrying `nohz_full`, which is why §9 no longer asks for it —
+[ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md).) **Of the 449, ~420 ns is the syscall and about 30 ns is
 everything the engine itself does.** This document's own `parse NewOrderSingle` is **122.6 ns**
 on the same machine. *The syscall that discovers there is nothing to parse costs 3.8× the
 parse — and on the core §9 recommends, more.* So the second principle was right and
@@ -451,7 +451,7 @@ default.**
 | | `standard` — the default | `hft` — opt-in, Linux only |
 |---|---|---|
 | Idle behaviour | **blocks on readiness** with a timeout, and gives the core back | spins on non-blocking sockets, never enters the kernel |
-| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` one turn at **675 ns per session** on an isolated core, 505 on an ordinary one |
+| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` one turn at **449 ns per session** on a §9 core — ~670 on one carrying `nohz_full`, which [ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md) removed from §9 |
 | Pinning | none | the polling thread is pinned to an isolated core |
 | Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
 | Rule 4 says | it **must** block | it must **not** sleep |
@@ -477,9 +477,9 @@ engine controls. It burns a core — that is the price, and in `hft` it is worth
 **Why `standard` exists, and why it is the default:** an engine whose out-of-the-box
 configuration pins a core at 100% is one most people cannot evaluate — it looks broken. And
 `[measured 2026-08-30]` the spin is not free even in `hft`: the poll it replaces `epoll` with
-costs `[measured 2026-08-31]` **675 ns per session per turn** on the isolated core it asks for,
+costs `[measured 2026-08-31]` **449 ns per session per turn** on a core set up to §9,
 so the trade **wins at N = 1 and loses by N = 8** — a conclusion the re-measurement did not
-move, because 8 × 675 ns is 5.4 µs and still clears the top of `epoll`'s range.
+move, because 8 × 449 ns is 3.6 µs and still clears the top of `epoll`'s range.
 `standard` is the honest default for everything that is not one session on an isolated core.
 
 `Waiting` is a trait and is the right seam, but **`wait::Yield` is not `standard`**: it is
@@ -992,7 +992,7 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | NIC → kernel → socket buffer | 3–8 µs | Kernel, IRQ affinity, driver |
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
 | Wakeup — **`standard`** blocks on readiness | 2–5 µs, `epoll`-class, **and the core is given back** | **This design**, D8 |
-| Wakeup — **`hft`** busy-polls | `[measured 2026-08-31]` **`Engine::turn` itself: ~505 ns × N**, N = sockets on the thread, **and a core is burned**. The 2026-08-30 figure of 703 ns was a C program's bare `read` on a `nohz_full` core; matched for placement the two agree to 4%. **`nohz_full` — and only `nohz_full`, not `isolcpus` or `rcu_nocbs` — adds 160 ns to every kernel entry and takes this row to ~675 ns**, which is why §9 no longer asks for it ([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md), [measured-costs.md](reference/measured-costs.md)) | **This design**, D8, `benches/turn.rs` |
+| Wakeup — **`hft`** busy-polls | `[measured 2026-08-31]` **`Engine::turn` itself: ~449 ns × N**, N = sockets on the thread, **and a core is burned**. The 2026-08-30 figure of 703 ns was a C program's bare `read` on a `nohz_full` core; matched for placement the two agree to 4%. **`nohz_full` — and only `nohz_full`, not `isolcpus` or `rcu_nocbs` — adds ~200 ns to every kernel entry on the core that has it and ~45 ns on every core that does not, taking this row to ~670 ns**, which is why §9 no longer asks for it ([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md), [measured-costs.md](reference/measured-costs.md)) | **This design**, D8, `benches/turn.rs` |
 | Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.6 ns) | This design |
 | Session machine (D1) | ~0.1 µs | This design |
 | Dispatch — inline **vs** ring (D4) | `[measured 2026-08-31]` **0.0013 µs** inline **vs** **0.27 µs** ring one way (§9 desktop) | Application's choice |
@@ -1000,12 +1000,12 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
 | **User-space work only** | `[measured 2026-08-31]` **~0.46 µs**, inline dispatch, N = 1 | The half that was always cheap |
-| **Everything this design controls, N = 1** | **~0.97 µs** — the row above plus one turn (**~1.14 µs** if the core carries `nohz_full`) | |
-| **Everything this design controls, N sessions** | **`~0.46 µs + N × 505 ns`** (`+ N × 675 ns` with `nohz_full`) | |
+| **Everything this design controls, N = 1** | **~0.91 µs** — the row above plus one turn (**~1.13 µs** if the core carries `nohz_full`) | |
+| **Everything this design controls, N sessions** | **`~0.46 µs + N × 449 ns`** (`+ N × 670 ns` with `nohz_full`) | |
 
 `[measured 2026-08-31]` **The poll row is now `Engine::turn` rather than a floor, and it
 carries a number nobody expected.** `crates/engine/benches/turn.rs` measures the real sweep over
-real sockets: **505 ns per session**, flat from 1 to 16 to within 2%, of which **~475 ns is the
+real sockets: **449 ns per session**, flat from 1 to 16 to within 2%, of which **~420 ns is the
 `recv` syscall and ~30 ns is everything else the engine does** — measured in the same run, so
 the subtraction is not across programs.
 
@@ -1016,7 +1016,11 @@ document used to recommend was **36% slower** at that syscall: 680 ns against 49
 carries all of it** — `isolcpus` 494.8 ns, `rcu_nocbs` 498.2 ns, untouched 501.8 ns,
 `nohz_full` 670.7 ns — and measured what it buys: it is worse at p50, p99 **and p99.9**, and
 ahead only from p99.99. §9 now keeps the two that are free and prices the one that is not
-([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md)). It was a trade that is stated
+([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md)). **Rebooting without it then
+moved the untouched cores too**: naming any CPU in `nohz_full` costs ~45 ns per kernel entry on
+*every* CPU, so the four figures above each carry that as well and the row settled at 449 ns
+with 24 fresh baseline runs — `[measured 2026-08-31]`, [measured-costs.md](reference/measured-costs.md).
+It was a trade that is stated
 rather than assumed. [measured-costs.md](reference/measured-costs.md) carries the four arms.
 
 `[measured 2026-08-31]` **Four rows stopped being literature figures, and one of them got
@@ -1049,7 +1053,7 @@ which this design chose, and can change by batching it, removing it, or carrying
 **At N = 2 the polling sweep alone exceeds the whole user-space budget.**
 [ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) settles what
 follows from that: one session per polling thread is the shape this table describes, `density`
-is a labelled mode carrying the `N × 675 ns` term, and **no latency figure is published without
+is a labelled mode carrying the `N × 449 ns` term, and **no latency figure is published without
 its `N`**.
 
 The TLS row has no number in it on purpose: none has been measured here, and none is quoted
@@ -1060,7 +1064,7 @@ Two readings of this table:
 
 1. On kernel TCP, this engine's user-space path is **under 5% of the total**. The design
    makes that 5% as small as it can be, and — through D8 — trades `epoll`'s 2–5 µs wakeup for a
-   675 ns poll. `[measured 2026-08-31]` **that trade wins at N = 1 and loses by N = 8**, which
+   449 ns poll. `[measured 2026-08-31]` **that trade wins at N = 1 and loses by N = 11**, which
    is the sentence this table did not contain until the poll was measured — and which survived
    the poll being re-measured against the engine rather than against a C floor.
 2. Going below the floor means kernel bypass (OpenOnload, DPDK, `ef_vi`). That is L0's

@@ -3,6 +3,18 @@
 > **Status:** **Accepted — 2026-08-31**, by the owner, on the four-arm table and the
 > tail table below.
 >
+> **Addendum, same day, and it does not revise a decision.** Rebooting into the §9
+> line this ADR chose found that `nohz_full` also costs **~45 ns per kernel entry on
+> every CPU that is NOT in its list** — `cpu5` carried no flag in any boot and went
+> from 501.8 ns per turn to 455.7. Every figure in the tables below therefore carries
+> that tax as well, in all four arms equally, so the comparisons and the decision are
+> unchanged and the true price of `nohz_full` on the core that has it is **~200 ns per
+> kernel entry, not 155**. §5 forbids editing an accepted ADR's substance; this note
+> strengthens the case it already made and changes none of it, and the measurement
+> itself lives in [measured-costs.md](../reference/measured-costs.md) where a
+> measurement belongs. `DESIGN.md` §8's dominant row is now **449 ns**, from 24 fresh
+> baseline runs.
+>
 > Reverses one row of `DESIGN.md` §9 and the gate that checks it. §9 has told
 > every reader of this repository to give the engine thread a core with
 > `isolcpus`, `nohz_full` and `rcu_nocbs` since the checklist was written, and

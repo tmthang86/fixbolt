@@ -1,6 +1,6 @@
 # Cái nào trong ba tuỳ chọn cô lập lấy mất 36%
 
-> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** Đang làm — còn bước 5 và duyệt ADR-0021 · **Sửa 2026-08-31** — thêm bước 4b (jitter), chủ dự án duyệt sau khi bước 4 ra kết quả
+> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** **Xong** — ADR-0021 `Accepted`, máy ở dòng §9 mới, `bench.sh --strict` OK · **Sửa 2026-08-31** — thêm bước 4b (jitter), chủ dự án duyệt sau khi bước 4 ra kết quả
 > **Phạm vi:** open item 22 — phần còn lại sau khi `threads-and-affinity` đóng
 
 ## Bối cảnh
@@ -272,9 +272,62 @@ quiet splash isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1
 
 Bản lưu dòng cũ (có `nohz_full`) vẫn nằm ở `/etc/default/grub.fixbolt-s9`.
 
+**Bước 5 xong, và nó tìm ra thêm một thứ không ai đi tìm.** Sau reboot,
+`check-machine.sh` đọc **`pass 11 fail 0 unknown 1`** và `bench.sh --strict` **OK** —
+9/9 target, 0 vượt baseline, 0 thiếu baseline. Nhưng:
+
+| Lần boot | `nohz_full` | `cpu5` `getpid` | `cpu5` `Engine::turn` |
+|---|---|---|---|
+| §9 cũ | `6,7,14,15` | 198.36–199.04 ns | ~501 ns |
+| thí nghiệm | `4,12` | 198.87 ns | 501.8 ns |
+| §9 mới (ADR-0021) | **không có** | **154.62 ns** | **455.7 ns** |
+
+**`cpu5` không mang cờ nào trong cả ba lần boot.** `nohz_full` có một cái giá **toàn cục**,
+không chỉ trên lõi mang nó: ~44 ns mỗi lần vào kernel cho **mọi** CPU, cộng thêm ~155 ns nữa
+cho những CPU thực sự mang nó. Ba phép đo độc lập cho cùng một hằng số: `getpid` +44,
+`recv` +47, `turn` +46 — hình dạng của *một chi phí cố định mỗi lần vào kernel*, không phải
+hình dạng của khối lượng công việc. `user_loop` không đổi (1.0577 so với 1.0578), nên lại
+một lần nữa không phải xung nhịp.
+
+Cơ chế đã biết: `NO_HZ_FULL` bật context tracking và `VIRT_CPU_ACCOUNTING_GEN` ở mức **toàn
+hệ thống** khi có bất kỳ CPU nào dùng nó. **Cơ chế đó không được kiểm chứng ở đây** — nó là
+lời giải thích, con số mới là phép đo.
+
+### Bước 6b — ghi lại baseline, và dự đoán ghi trước
+
+`benches/baselines.tsv` được ghi trên máy **có** `nohz_full`, cột verdict của nó nói
+`pass 10 fail 0 unknown 1` — một checklist không còn tồn tại. `DESIGN.md` §8 mang 505 ns,
+máy giờ chạy 456. Baseline là **trần** nên không gate nào đỏ, nhưng con số thì đã cũ.
+
+**Dự đoán, ghi trước khi chạy 25 lượt:** chỉ những case **chạm syscall** giảm (~9%) —
+`recv on a quiet socket` và ba dòng `engine turn`. Những case thuần user space —
+`parse`, `encode`, `ring`, `groups`, `deliver` — **không được nhúc nhích** ngoài biên độ
+sẵn có của chúng.
+
+**Nếu `parse` cũng giảm 9% thì lời giải thích trên là sai** và cái đổi không phải
+`nohz_full`. Đó là chỗ dự đoán này bác bỏ được chính nó.
+
+**Bước 6b xong, và dự đoán trúng theo cách bác bỏ được nó.** 24/25 lượt hợp lệ — lượt duy nhất
+bị loại là **lượt đầu tiên sau reboot**, gnome-shell còn 29% một lõi. Mười hai case thuần user
+space nhúc nhích −1.7% đến +4.8% **không theo hướng nào** (`parse` −0.7%, `ring, one way` −1.7%,
+`encode 1 group` +4.8% — sai dấu cho bất kỳ hiệu ứng hệ thống nào và chỉ vừa ra khỏi biên độ
+3.8% của chính nó). Bốn case chạm syscall giảm cùng nhau: **470.9→420.5, 500.3→448.9,
+2002.9→1807.1, 8139.4→7333.5**. Nếu `parse` cũng giảm 10% thì lời giải thích đã sai.
+
+`benches/baselines.tsv` lấy bốn số mới, n=24, margin 1.10 (max/median 1.007–1.013), verdict
+`pass 11 fail 0 unknown 1`; **chứng minh bằng reversal** — đặt một dòng về 400.0 thì đúng
+**một trong bốn** case đỏ, đúng case và đúng giới hạn của nó. Mười hai dòng kia giữ nguyên số
+và giữ verdict `pass 10` cũ, và file ghi rõ vì sao.
+
+`DESIGN.md` §8 dòng chủ đạo **505 → 449 ns**; §9, `GUIDE.md`, `PRD.md` và ngưỡng N của D8
+(thắng ở N=1, thua từ **N=11**, trước là N=8) đi theo. Con số **703 ns** của 2026-08-30 giờ
+giải thích được: 449 + ~45 (thuế toàn cục) + ~155 (thuế trên lõi) + chênh giữa hai chương
+trình — **chính phần tinh chỉnh của §9 chiếm khoảng một phần ba con số mà thiết kế này lấy
+làm ngân sách.**
+
 **Chưa xong, nói rõ ra:**
 
-- **Chưa reboot vào dòng mới.** `check-machine.sh` phải đọc lại `pass 11 fail 0` sau đó, và
+- **~~Chưa reboot vào dòng mới.~~** `check-machine.sh` phải đọc lại `pass 11 fail 0` sau đó, và
   `bench.sh --strict` phải xanh với đúng `baselines.tsv` hiện có — chúng vốn được ghi trên
   những lõi **không** `nohz_full`, nên nếu ADR đúng thì các số cũ không đổi nghĩa. Đó là phép
   kiểm chứng cuối cùng và nó **chưa chạy**.
