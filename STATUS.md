@@ -91,7 +91,7 @@ was correct and insufficient: it proved memory safety and said nothing about the
 #6, carrying the three cases the `per-machine-baselines` plan found — all about a **benchmark** rather
 than a test: the instrument that was 80% of its own smallest reading, a baseline recorded through a
 shorter path than the gate that judges it, and a measuring loop that was part of what it measured. It
-adds §20, §21 and §21a and renumbers the checklist's red half to 25–32. **Opened without running
+adds §20, §21, §21a and **§22** and renumbers the checklist's red half to 26–33. `[2026-08-31]` **Revised after review**: the owner's note is that `testing-skills` is a *general* testing skill, so a case must read as a shape any project can recognise — this project's case names, constant names and Rust-only mechanism talk were stripped, every measured number kept. §22 was added in that pass and is the strongest of the four, because it happened **twice through two different hardware mechanisms** — a rate carried across a branch-prediction boundary and one carried across a cache boundary — which is what makes it a shape rather than an anecdote. **Opened without running
 `npm run validate`** — this machine has no Node — and the PR says so and lists what was checked by
 hand instead. See the
 contribution entry below for why they are stacked and what was deliberately left out.
