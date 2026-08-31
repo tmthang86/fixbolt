@@ -307,15 +307,44 @@ lần chạy bằng harness mới cho **1.3 ns mọi lần, tán 1.000**. Chú t
 gate; §4 D9 dòng 543 và đoạn *"published target and asserted ceiling"* đã sửa theo; ADR-0016;
 STATUS items 11 và 20 đóng; CHANGELOG; `measured-costs.md`; plan serialise bước 5–6 đóng.
 
-**Bước 1 phải làm hai lần, và lần thứ hai chưa xong.** Mẫu 27 lần sinh ra baseline đã ghi được
-đo bằng cách chạy **bốn** target timing trực tiếp. Nhưng cổng thật là `bench.sh`, chạy **tám**
-target, và `encode ExecutionReport` vượt trần 1.10 ngay lần `bench.sh` đầu tiên trong khi 27 lần
-kia chưa lần nào tới gần. **Baseline phải được đo qua đúng đường sẽ phán xử nó.** Lần đo lại qua
-`bench.sh` chạy được **6 lần đạt chuẩn** — tất cả nhất quán với baseline đã ghi, không case nào
-vượt trần — rồi desktop khởi động `llama-server` ở **97.5% CPU** và mọi lần sau đọc 59–63% busy,
-tức bị loại theo điều 10. **N ≥ 20 qua đường `bench.sh` là việc còn nợ**, và plan **không đóng**
-khi thiếu nó.
+**Bước 1 phải làm hai lần, và lần thứ hai xong ngày 2026-08-31 sau khi chủ dự án tắt LM
+Studio.** Mẫu 27 lần đầu đo bằng cách chạy **bốn** target timing trực tiếp. Nhưng cổng thật là
+`bench.sh`, chạy **tám** target, và `encode ExecutionReport` vượt trần 1.10 ngay lần `bench.sh`
+đầu tiên trong khi 27 lần kia chưa lần nào tới gần. **Baseline phải được đo qua đúng đường sẽ
+phán xử nó**, nên toàn bộ mẫu được đo lại.
 
-Cũng phát hiện trong lúc đó: chạy `bench.sh` **liên tiếp không nghỉ** làm chính
-`check-machine.sh` của lần sau đọc **25–36% busy**, vì suite trước còn nằm trong cửa sổ lấy mẫu
-một giây của nó. Vòng lặp đo tự làm bẩn máy nó đang đo. Đã ghi, kèm `[to testing-skills]`.
+`[đo 2026-08-31]` **26 lần chạy `bench.sh`, 24 lần đạt `pass 10 fail 0`** (2 lần đọc 4% busy,
+trên ngưỡng 3%, bị loại). Baseline đã ghi là median của 24 lần đó, và **0 trên 288 phép đo vượt
+trần** — đúng chứng minh 0/N mà bước 1 đòi. `bench.sh --strict` trên máy §9 **exit 0**:
+`timing over baseline 0`, `cases w/o a baseline 0`. Đây là lần đầu cổng nghiêm ngặt qua được
+với baseline thật.
+
+**Lần đo cuối bắt được một cái bẫy mà mẫu trước giấu.** Neo lại median vào đường `bench.sh`,
+`ring, one way` từ 270.4 xuống **267.4**, và biên 1.25 cũ cho trần **334.3** — **thấp hơn** mode
++24% đã quan sát ở **336.3** trong các mẫu trước. Nó sẽ đỏ oan trên một mode đã biết, đã ghi, và
+không phải hồi quy. Nên quy tắc suy biên được nói rõ ra và ghi vào đầu file TSV: **biên phủ
+excursion rộng nhất từng thấy trong bất kỳ lần chạy đạt chuẩn nào trên máy này**, không chỉ mẫu
+sinh ra median. `ring, one way` thành **1.30**.
+
+**Một ngoại lệ cố ý, ghi ra để nó không ngầm:** `inline deliver + reply` đọc 6.3–8.3 ns dưới
+harness **cũ**, và các lần đó **không** được tính vào biên của nó — ~5 trong 6.3 ns đó là chính
+harness, và thiết bị ấy không còn tồn tại. Mọi case khác lệch dưới 1% giữa hai harness nên không
+cần phán đoán nào.
+
+**Một lỗi hiển thị được sửa cùng lúc:** trần in bằng `{:.0}` làm `inline deliver + reply` hiện
+`1.3 ns/op ... = 1`, đọc như đang vượt trong khi phép so thật là 1.43. Đổi sang `{:.1}`.
+
+**Cái chặn nó một lúc, ghi lại vì nó sẽ lặp:** lần đo lại đầu tiên chạy được 8 lần thì desktop
+khởi động `llama-server` ở **97.5% CPU** (rồi 207%), và mọi lần sau đọc 59–63% busy, tức bị loại
+theo điều 10. LM Studio tưởng đã tắt nhưng tiến trình cha vẫn sống và vừa sinh server mới. Chủ
+dự án tắt hẳn thì mẫu chạy trọn trong một lần.
+
+Và một cái nữa cùng loại: chạy `bench.sh` **liên tiếp không nghỉ** làm chính `check-machine.sh`
+của lần sau đọc **25–36% busy**, vì suite trước còn nằm trong cửa sổ lấy mẫu một giây của nó.
+Vòng lặp đo tự làm bẩn máy nó đang đo. 8 giây nghỉ giữa các lần là đủ. Cả hai đã ghi ở
+[measured-costs.md](../reference/measured-costs.md), kèm `[to testing-skills]`.
+
+**Plan này đóng.** Sáu bước, và hai trong số đó bị chính phép đo viết lại: biên phải theo từng
+case chứ không một hằng số (*Sửa 1*), và baseline phải đo qua `bench.sh` chứ không qua từng
+target. Thứ tìm được ngoài kế hoạch — harness chiếm 80% số đọc nhỏ nhất của chính nó — có lẽ là
+kết quả đáng giá nhất của plan, và nó không nằm trong bất kỳ bước nào.

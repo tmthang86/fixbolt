@@ -355,8 +355,8 @@ below describe what a first release would contain.
   carries a DATA message, so every frame in `tests/data_encode.rs` is built to the FIX 4.4
   specification. Two implementations agreeing about a spec is not a counterparty accepting the
   bytes.
-- `[measured 2026-08-31]` Encoding an `ExecutionReport` costs **236.2 ns** on the §9 desktop
-  (AMD Ryzen 7 3700X, median of 27 qualifying runs), 93.8 ns on an Apple M5, and
+- `[measured 2026-08-31]` Encoding an `ExecutionReport` costs **239.1 ns** on the §9 desktop
+  (AMD Ryzen 7 3700X, median of 24 qualifying `scripts/bench.sh` runs), 93.8 ns on an Apple M5, and
   177.6–199.4 ns on a shared Xeon container. **There is no absolute published target any
   more**: [ADR-0016](docs/decisions/ADR-0016-per-machine-baselines-replace-absolute-targets.md)
   withdrew the 60 ns figure — it described other engines rather than this one — and the gate

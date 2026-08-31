@@ -189,12 +189,12 @@ impl Suite {
                 let over = best > limit;
                 let mark = if over { "  OVER BASELINE" } else { "" };
                 println!(
-                    "{name:<34} {best:>8.1} ns/op   baseline {:.1} x{:.2} = {limit:.0}{mark}",
+                    "{name:<34} {best:>8.1} ns/op   baseline {:.1} x{:.2} = {limit:.1}{mark}",
                     b.ns, b.margin
                 );
                 if over {
                     self.over.push(format!(
-                        "{name}: {best:.1} ns/op exceeds {limit:.0} ns \
+                        "{name}: {best:.1} ns/op exceeds {limit:.1} ns \
                          (baseline {:.1} x {:.2})",
                         b.ns, b.margin
                     ));

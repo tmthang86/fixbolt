@@ -659,9 +659,9 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 
 | Gate | Target | Proven by |
 |---|---|---|
-| Parse `NewOrderSingle` | **no regression past this machine's baseline** (ADR-0016). `[measured 2026-08-31]` §9 desktop: **122.8 ns** validated, **116.4 ns** raw, **57.0 ns** `Heartbeat`, medians of 27 qualifying runs | `benches/parse.rs`, against `benches/baselines.tsv` |
-| Serialise `ExecutionReport` (template, D9) | **no regression past this machine's baseline** (ADR-0016). `[measured 2026-08-31]` §9 desktop **236.2 ns**, median of 27 qualifying runs. **The 60 ns absolute target is withdrawn** — it was never a measurement of this engine, only of what the fastest commercial engines are reported to reach (§4 D9), and no machine ever came close: 93.8 (M5) · 177.6–199.4 (container) · 236.2 (§9 desktop) | `benches/serialize.rs`, against `benches/baselines.tsv` |
-| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is, per machine (ADR-0016). `[measured 2026-08-31]` §9 desktop: inline **1.3 ns**, ring **270.4 ns** one way and **519.1 ns** round trip, on a 163-byte `NewOrderSingle`, medians of 27 qualifying runs — **the ring hop is ~208x the inline call**, and ~1.7 ns of every byte of it is the `AtomicU8` copy ([ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)). **The inline figure fell from 6.3 to 1.3 ns when the harness lost one function parameter**, so ~5 ns of the previous reading was the instrument; see [reference/measured-costs.md](reference/measured-costs.md) | `crates/engine/benches/dispatch.rs`, against `benches/baselines.tsv` |
+| Parse `NewOrderSingle` | **no regression past this machine's baseline** (ADR-0016). `[measured 2026-08-31]` §9 desktop: **122.6 ns** validated, **117.0 ns** raw, **57.3 ns** `Heartbeat`, medians of 24 qualifying runs | `benches/parse.rs`, against `benches/baselines.tsv` |
+| Serialise `ExecutionReport` (template, D9) | **no regression past this machine's baseline** (ADR-0016). `[measured 2026-08-31]` §9 desktop **239.1 ns**, median of 24 qualifying runs. **The 60 ns absolute target is withdrawn** — it was never a measurement of this engine, only of what the fastest commercial engines are reported to reach (§4 D9), and no machine ever came close: 93.8 (M5) · 177.6–199.4 (container) · 239.1 (§9 desktop) | `benches/serialize.rs`, against `benches/baselines.tsv` |
+| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is, per machine (ADR-0016). `[measured 2026-08-31]` §9 desktop: inline **1.3 ns**, ring **267.4 ns** one way and **515.7 ns** round trip, on a 163-byte `NewOrderSingle`, medians of 24 qualifying runs — **the ring hop is ~206x the inline call**, and ~1.7 ns of every byte of it is the `AtomicU8` copy ([ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)). **The inline figure fell from 6.3 to 1.3 ns when the harness lost one function parameter**, so ~5 ns of the previous reading was the instrument; see [reference/measured-costs.md](reference/measured-costs.md) | `crates/engine/benches/dispatch.rs`, against `benches/baselines.tsv` |
 | Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
 | Allocations on the hot path — session | **0**, counted separately on thirteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
@@ -715,7 +715,7 @@ came from: it is how the fastest commercial engines are *reported* to perform. T
 different kind of number from the 150 ns parse target, which was anchored to 139 ns measured
 here on an Apple M5 on 2026-08-27. One column held both, and only the second kind can gate
 anything. No machine came close to 60: **93.8** (M5) · **177.6–199.4** (shared Xeon
-container) · **236.2** (§9 desktop). The plan that went looking for the missing time found
+container) · **239.1** (§9 desktop). The plan that went looking for the missing time found
 that ~31 ns is spent before the first variable field is written — 51% of the whole target on
 a message carrying nothing — and that removing the slot scan *entirely* still leaves ~116 ns.
 
@@ -725,22 +725,22 @@ an EPYC 7763 — 21% between two machines of one vendor, against ~1% within eith
 260 ns ceiling sat 0.3% *below the fastest of the three*: a ceiling no machine passes is a
 ceiling somebody switches off.
 
-**Recorded baselines**, medians of 27 qualifying runs, `[measured 2026-08-31]`:
+**Recorded baselines**, medians of **24 qualifying `scripts/bench.sh` runs**, `[measured 2026-08-31]` — measured through the whole invocation that judges them, on a box reading `pass 10 fail 0` for every run counted:
 
 | Case | AMD Ryzen 7 3700X (§9, `pass 10 fail 0`) | margin |
 |---|---|---|
-| parse `NewOrderSingle` (validated) | 122.8 ns | 1.10 |
-| parse `NewOrderSingle` (no checks) | 116.4 ns | 1.15 |
-| parse `Heartbeat` (validated) | 57.0 ns | 1.10 |
-| encode `ExecutionReport` (template) | 236.2 ns | 1.10 |
+| parse `NewOrderSingle` (validated) | 122.6 ns | 1.10 |
+| parse `NewOrderSingle` (no checks) | 117.0 ns | 1.15 |
+| parse `Heartbeat` (validated) | 57.3 ns | 1.10 |
+| encode `ExecutionReport` (template) | 239.1 ns | 1.10 |
 | `SendingTime` from the cache | 4.9 ns | 1.10 |
-| walk 1 group, 2 entries | 58.5 ns | 1.10 |
-| walk 4 levels, 61-tag member list | 350.1 ns | 1.10 |
+| walk 1 group, 2 entries | 58.7 ns | 1.10 |
+| walk 4 levels, 61-tag member list | 352.9 ns | 1.10 |
 | `group_members` contains, 61 tags | 9.7 ns | 1.10 |
-| encode 1 group, 2 entries | 108.9 ns | 1.10 |
+| encode 1 group, 2 entries | 108.4 ns | 1.10 |
 | inline deliver + reply | 1.3 ns | 1.10 |
-| ring, one way | 270.4 ns | 1.25 |
-| ring, round trip | 519.1 ns | 1.20 |
+| ring, one way | 267.4 ns | 1.30 |
+| ring, round trip | 515.7 ns | 1.20 |
 
 **No other machine has a baseline, and none is invented for it.** The Apple M5 and the two CI
 EPYCs have figures scattered through this file and `STATUS.md`, but none was taken by the
@@ -857,13 +857,13 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
 | Wakeup — **`standard`** blocks on readiness | 2–5 µs, `epoll`-class, **and the core is given back** | **This design**, D8 |
 | Wakeup — **`hft`** busy-polls | `[measured 2026-08-30]` **703 ns × N**, N = sockets on the thread, **and a core is burned** | **This design**, D8 |
-| Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.8 ns) | This design |
+| Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.6 ns) | This design |
 | Session machine (D1) | ~0.1 µs | This design |
 | Dispatch — inline **vs** ring (D4) | `[measured 2026-08-31]` **0.0013 µs** inline **vs** **0.27 µs** ring one way (§9 desktop) | Application's choice |
-| Serialise — template (D9) | `[measured 2026-08-31]` **0.24 µs** (§9 desktop, 236.2 ns) — **was ~0.05 µs from the literature; see below** | This design |
+| Serialise — template (D9) | `[measured 2026-08-31]` **0.24 µs** (§9 desktop, 239.1 ns) — **was ~0.05 µs from the literature; see below** | This design |
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
-| **User-space work only** | `[measured 2026-08-31]` **~0.7 µs**, inline dispatch, N = 1 | The half that was always cheap |
+| **User-space work only** | `[measured 2026-08-31]` **~0.46 µs**, inline dispatch, N = 1 | The half that was always cheap |
 | **Everything this design controls, N = 1** | **~1.7 µs** — the row above plus one 703 ns poll | |
 | **Everything this design controls, N sessions** | **`< 1 µs + N × 703 ns`** | |
 
@@ -872,17 +872,17 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 target of §6 — a figure describing how the fastest commercial engines are *reported* to
 perform, not this engine.
 [ADR-0016](decisions/ADR-0016-per-machine-baselines-replace-absolute-targets.md) withdrew it,
-and the measured number on the §9 desktop is **236.2 ns**, the median of 27 qualifying runs.
+and the measured number on the §9 desktop is **239.1 ns**, the median of 24 qualifying runs.
 Parse and inline dispatch moved the other way or barely at all. The user-space total below is
 recomputed from the measured rows rather than the borrowed ones.
 
 **What this does to the bottom line: nothing that matters, and that is the point.** The
-user-space rows now total **~0.7 µs** at N = 1 with the inline dispatcher — parse 0.12 +
-session ~0.1 + dispatch ~0.001 + serialise 0.24 — against a kernel floor of **10–20 µs**. So
-serialise costing 236 ns rather than 60 ns moves the wire-to-wire figure by under **2%** of the
-floor, which is why §6 was able to withdraw the target without the design changing. **The ring
-dispatcher is the row worth reading**: at 0.27 µs one way it is larger than parse and serialise
-put together.
+user-space rows total **~0.46 µs** at N = 1 with the inline dispatcher — parse 0.123 + session
+~0.1 + dispatch 0.0013 + serialise 0.239 — against a kernel floor of **10–20 µs**. So serialise
+costing 239 ns rather than 60 ns moves the wire-to-wire figure by under **2%** of the floor,
+which is why §6 was able to withdraw the target without the design changing. **The ring
+dispatcher is the row worth reading**: at 0.27 µs one way it is more than parse and serialise
+put together, and it is the application's choice rather than this design's.
 
 **Which mode the table is about: `hft`.** `[amended 2026-08-30, ADR-0013]` `standard` is the
 default and its wakeup row is the 2–5 µs one, so **its bottom line is `epoll`-class and this

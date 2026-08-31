@@ -259,9 +259,10 @@ sạch. Số đo trên container `pass 2 fail 6 unknown 3` — **tỷ lệ dùng
 không công bố được**, và bước 5 trên desktop §9 vẫn còn nguyên đó.
 
 **Bước 5 — xong 2026-08-31, trên desktop §9.** `check-machine.sh` = **`pass 10 fail 0
-unknown 1`**, §9 thoả mãn. `encode ExecutionReport (template)` = **236.2 ns**, median của **27
-lần chạy đạt chuẩn** (3 lần bị loại vì máy đọc 7–9% busy, trên ngưỡng 3%). Con số này tái lập
-240.0 ns đo ngày 2026-08-30 trong vòng **1.6%**. So với target 60 ns: **trượt 3.9×**.
+unknown 1`**, §9 thoả mãn. `encode ExecutionReport (template)` = **239.1 ns**, median của **24
+lần chạy `bench.sh` đạt chuẩn** — đo qua đúng đường mà cổng sẽ phán xử nó, mỗi lần đều đọc
+`pass 10 fail 0`. Con số này tái lập 240.0 ns đo ngày 2026-08-30 trong vòng **0.4%**. So với
+target 60 ns: **trượt 4.0×**.
 
 **Bước 6 — xong 2026-08-31. Kết cục là số 3, đúng như bước 2 đã dự đoán, và nó lớn hơn dòng
 serialise.** Chủ dự án chọn hướng trực tiếp: *"hạ mục tiêu xuống mức với tới được, theo baseline
@@ -282,6 +283,6 @@ cùng một cột, và chỉ loại thứ hai mới gate được cái gì.
 
 **Plan này đóng.** Sáu bước, sáu kết quả: cái quét không phải thủ phạm (bước 1), 152.5 ns tách
 được thành ~31 ns cố định + ~8.7 ns mỗi slot (bước 2), bản sửa được viết và bị phép đo huỷ
-(bước 3–4), số §9 là 236.2 ns (bước 5), và target 60 ns bị rút (bước 6). **Thứ ở lại lâu nhất
+(bước 3–4), số §9 là 239.1 ns (bước 5), và target 60 ns bị rút (bước 6). **Thứ ở lại lâu nhất
 có lẽ là `crates/codec/tests/slot_order.rs`** — guard cho điều 5 mà đường body chưa từng có,
 sinh ra từ một thay đổi đã bị revert.

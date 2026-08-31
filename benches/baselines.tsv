@@ -24,21 +24,42 @@
 # `pass 10 fail 0`, then N >= 20 more times, and paste the medians. The harness
 # prints a paste-ready line for every case it has no baseline for.
 #
+# Measure through `scripts/bench.sh`, not through the bench targets directly.
+# `[measured 2026-08-31]` a baseline taken by running the four timing targets on
+# their own put `encode ExecutionReport` over its limit on the first bench.sh run
+# it met: bench.sh runs eight targets and the case is not measured in the same
+# state. Leave a gap between runs, too -- back-to-back, the previous suite is
+# still inside check-machine.sh's one-second window and the run reads 25-36% busy
+# and disqualifies itself.
+#
+# The margin covers the widest excursion seen in ANY qualifying run on this
+# machine, not just the sample the median came from. `ring, one way` never drew
+# its second mode across these 24 runs, but earlier samples reached 336.3 ns; a
+# margin fitted to this sample alone would sit below that and go red on a mode
+# that is known, documented and not a regression.
+#
+# One deliberate exclusion, stated so it is not silent: `inline deliver + reply`
+# read 6.3-8.3 ns under the PREVIOUS harness, and those runs are not counted
+# towards its margin. `[measured 2026-08-31]` about 5 of those 6.3 ns were the
+# harness itself -- the instrument was replaced, so its readings describe an
+# apparatus that no longer exists. Every other case is within 1% across the two
+# harnesses and needs no such judgement.
+#
 # Three cases carry a margin wider than the 1.10 floor, and it is not slop:
 # `[measured 2026-08-31]` they are bimodal or trimodal PER PROCESS, so the
 # harness's best-of-7 samples all land inside whichever mode that process drew.
 # See docs/reference/measured-costs.md.
 #
 # cpu	case	baseline	margin	n	date	verdict
-AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (validated)	122.8	1.10	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (no checks)	116.4	1.15	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	parse Heartbeat (validated)	57.0	1.10	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	encode ExecutionReport (template)	236.2	1.10	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache	4.9	1.10	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	walk 1 group, 2 entries, 2 members	58.5	1.10	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	walk 4 levels, 61-tag member list	350.1	1.10	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	group_members contains, 61 tags	9.7	1.10	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	encode 1 group, 2 entries	108.9	1.10	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	inline deliver + reply	1.3	1.10	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	ring, one way	270.4	1.25	27	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	ring, round trip	519.1	1.20	27	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (validated)	122.6	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (no checks)	117.0	1.15	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	parse Heartbeat (validated)	57.3	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	encode ExecutionReport (template)	239.1	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache	4.9	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	walk 1 group, 2 entries, 2 members	58.7	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	walk 4 levels, 61-tag member list	352.9	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	group_members contains, 61 tags	9.7	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	encode 1 group, 2 entries	108.4	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	inline deliver + reply	1.3	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	ring, one way	267.4	1.30	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	ring, round trip	515.7	1.20	24	2026-08-31	pass 10 fail 0 unknown 1
