@@ -232,6 +232,28 @@ loại*, không để treo.
   cái quét, và ba đòn bẩy theo thứ tự đo được là **chi phí cố định → `put` → quét**. Đổi target
   cần **ADR**, không phải sửa số lặng lẽ.
 
+**Bước 3 — làm xong, đo, và ĐẢO NGƯỢC 2026-08-31. Đây là kết quả, không phải hỏng.**
+Con trỏ tiến có đường lui đã được viết, qua **mọi** cổng đúng đắn — 6/6 test thứ tự, 59/59 cả
+hai chế độ, `alloc` vẫn 0, nhóm lặp byte y hệt, fmt/clippy sạch. Rồi đo A/B cùng máy, **30 lần
+mỗi nhánh**: baseline median **154.6**, cursor **159.8** — **chậm hơn 5.2 ns (+3.4%)**. Máy này
+lưỡng mode nên so **trong từng mode**: **+4.5** và **+4.4 ns**, khớp nhau tới 0.1 ns và cùng dấu
+với median gộp. Hồi quy lặp lại được, không phải nhiễu. **Đã revert.**
+
+**Và nó sửa chính con số của bước 1.** 0.4 ns mỗi phép so được đo trên scan **78 phần tử** rồi
+ngoại suy xuống 14 — ngoại suy đó không đúng. Scan ngắn trên dữ liệu nóng, đoán nhánh chuẩn, rẻ
+hơn nhiều mỗi phần tử; con trỏ thay nó bằng một nhánh phụ thuộc dữ liệu và một `usize` mang qua
+vòng lặp, trình tối ưu có ít thứ để làm hơn chứ không nhiều hơn. **Nên "~42 ns là cái quét" là
+ước tính cao**, và phép đo này là thứ nói ra điều đó. Kết luận của bước 1 **vẫn đứng và mạnh
+hơn**: cái quét không phải chỗ mất 60 ns.
+
+**Giữ lại từ lần thử này:** `crates/codec/tests/slot_order.rs`, 6 ca giữ cho thứ tự người gọi
+không bao giờ ra tới dây. Đường body **trước đây không có guard nào** cho điều 5 — chỉ nhóm lặp
+có, trong `group_roundtrip.rs`. Chứng minh bằng đảo ngược **hai lần**: lấy slot theo thứ tự
+người gọi → 4/6 đỏ vì **sai bytes**; xoá đường lui của con trỏ → cũng 4 ca đó đỏ vì **mất
+field**. Guard sống lâu hơn cái thay đổi đã sinh ra nó.
+
+**Bước 4 do đó cũng đóng, và nó huỷ bước 3** — đúng thẩm quyền plan đã trao cho phép đo.
+
 Ghi chép: [measured-costs.md](../reference/measured-costs.md). Bench tạm đã xoá, cây làm việc
 sạch. Số đo trên container `pass 2 fail 6 unknown 3` — **tỷ lệ dùng được, con số tuyệt đối
 không công bố được**, và bước 5 trên desktop §9 vẫn còn nguyên đó.
