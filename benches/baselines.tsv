@@ -1,0 +1,65 @@
+# Per-machine timing baselines — DESIGN.md §6, ADR-0016.
+#
+# Tab-separated. Columns:
+#
+#   cpu       the CPU model, in the exact spelling `scripts/check-machine.sh`
+#             prints and `harness.rs` reads back. STATUS.md open item 20 measured
+#             that this is the key that works: two EPYC generations in one CI
+#             pool differ 21% on `ring, one way` while either one holds to ~1%.
+#   case      the case name passed to `Suite::bench`, exactly.
+#   baseline  ns/op, the MEDIAN over `n` whole runs of the suite. Not one run:
+#             the same box gives 267.2-335.7 for `ring, one way`.
+#   margin    what this case is allowed to drift on THIS machine before it counts
+#             as a regression. Smallest step of 1.10 / 1.15 / 1.20 / 1.25 / 1.30 /
+#             1.35 that is >= the max/median measured over those `n` runs; 1.10 is
+#             the floor. A margin off that ladder, or changed without a new `n`
+#             and date beside it, is a hand-nudge and shows up as one in the diff.
+#   n         how many whole suite runs the two numbers above came from.
+#   date      when.
+#   verdict   what `scripts/check-machine.sh` said for that run. A line whose
+#             verdict is not `pass 10 fail 0` is NOT a publishable latency figure
+#             — CLAUDE.md §2 non-negotiable 10 — and DESIGN.md §6 marks it so.
+#
+# To add a machine: run `scripts/bench.sh` until check-machine.sh reads
+# `pass 10 fail 0`, then N >= 20 more times, and paste the medians. The harness
+# prints a paste-ready line for every case it has no baseline for.
+#
+# Measure through `scripts/bench.sh`, not through the bench targets directly.
+# `[measured 2026-08-31]` a baseline taken by running the four timing targets on
+# their own put `encode ExecutionReport` over its limit on the first bench.sh run
+# it met: bench.sh runs eight targets and the case is not measured in the same
+# state. Leave a gap between runs, too -- back-to-back, the previous suite is
+# still inside check-machine.sh's one-second window and the run reads 25-36% busy
+# and disqualifies itself.
+#
+# The margin covers the widest excursion seen in ANY qualifying run on this
+# machine, not just the sample the median came from. `ring, one way` never drew
+# its second mode across these 24 runs, but earlier samples reached 336.3 ns; a
+# margin fitted to this sample alone would sit below that and go red on a mode
+# that is known, documented and not a regression.
+#
+# One deliberate exclusion, stated so it is not silent: `inline deliver + reply`
+# read 6.3-8.3 ns under the PREVIOUS harness, and those runs are not counted
+# towards its margin. `[measured 2026-08-31]` about 5 of those 6.3 ns were the
+# harness itself -- the instrument was replaced, so its readings describe an
+# apparatus that no longer exists. Every other case is within 1% across the two
+# harnesses and needs no such judgement.
+#
+# Three cases carry a margin wider than the 1.10 floor, and it is not slop:
+# `[measured 2026-08-31]` they are bimodal or trimodal PER PROCESS, so the
+# harness's best-of-7 samples all land inside whichever mode that process drew.
+# See docs/reference/measured-costs.md.
+#
+# cpu	case	baseline	margin	n	date	verdict
+AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (validated)	122.6	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (no checks)	117.0	1.15	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	parse Heartbeat (validated)	57.3	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	encode ExecutionReport (template)	239.1	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache	4.9	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	walk 1 group, 2 entries, 2 members	58.7	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	walk 4 levels, 61-tag member list	352.9	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	group_members contains, 61 tags	9.7	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	encode 1 group, 2 entries	108.4	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	inline deliver + reply	1.3	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	ring, one way	267.4	1.30	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	ring, round trip	515.7	1.20	24	2026-08-31	pass 10 fail 0 unknown 1

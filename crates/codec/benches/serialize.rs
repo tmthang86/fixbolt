@@ -33,7 +33,7 @@ fn main() {
         let mut clock = TimestampCache::new();
         let stamp = *clock.format(1_787_000_000_000);
 
-        b.bench("encode ExecutionReport (template)", CEILING_ENCODE, || {
+        b.bench("encode ExecutionReport (template)", || {
             let r = t.encode(
                 black_box(&mut out),
                 &[
@@ -57,14 +57,9 @@ fn main() {
         });
 
         let mut ms = 1_787_000_000_000u64;
-        b.bench("SendingTime from the cache", CEILING_TIMESTAMP, || {
+        b.bench("SendingTime from the cache", || {
             ms += 1;
             black_box(clock.format(black_box(ms)));
         });
     });
 }
-
-/// Baseline 90.3 ns on an Apple M5, macOS, unpinned, 2026-08-28.
-const CEILING_ENCODE: f64 = 190.0;
-/// Baseline 1.7 ns on an Apple M5, macOS, unpinned, 2026-08-28.
-const CEILING_TIMESTAMP: f64 = 5.0;

@@ -1510,3 +1510,96 @@ behaves differently. The cheap defence is to state the range your rate was measu
 to the rate itself, and to treat any use outside that range as a prediction to be tested rather
 than a figure to be quoted. Here the prediction was −36 ns and the measurement was +5, and
 **only building the thing found it** — no amount of re-reading the estimate would have.
+
+## The instrument was 80% of its own smallest reading — 2026-08-31
+
+`DESIGN.md` §6's timing gates were moved from absolute targets to per-machine baselines
+([ADR-0016](../decisions/ADR-0016-per-machine-baselines-replace-absolute-targets.md)). The
+change to `crates/codec/benches/harness.rs` was mechanical: `Suite::bench` lost its
+`ceiling_ns: f64` parameter, because the limit now comes from `benches/baselines.tsv` instead
+of from a constant at the call site. **The timed loop was not touched — not one byte.**
+
+`inline deliver + reply` then read **1.3 ns** where the same case had read **6.3 ns** minutes
+earlier, reproducibly, three runs each side.
+
+### The check that mattered
+
+A benchmark that gets 5× faster when a function signature changes has, on the face of it,
+stopped measuring. The obvious suspicion is that the optimiser deleted the work. That was
+tested rather than argued about: the closure was made to call `deliver` **twice** per
+iteration, changing nothing else.
+
+| | ns/op |
+|---|---|
+| one `deliver` per iteration | 1.3 · 1.3 · 1.3 |
+| two `deliver` per iteration | 2.6 · 2.6 · 2.6 |
+
+An exact factor of two, three times running. The work is real and the 1.3 ns is real. What had
+been wrong was the **6.3 ns**.
+
+### What the old number was made of
+
+So roughly **5 of the old 6.3 ns were the harness**, not the engine — the instrument was about
+80% of its own smallest reading. The most likely mechanism is inlining: `Suite::bench` is
+generic over the closure and monomorphised per call site, and the three-argument shape left the
+closure behind an indirect call in a loop whose body is a handful of instructions.
+
+The evidence for that reading is not the mechanism, which was not confirmed, but a side effect
+that was. Across 21 runs the old harness put this case in **three discrete clusters** —
+6.3–6.4 (13 runs), 7.4 (4 runs), 8.1–8.3 (4 runs), with **nothing in between**. Across 30 runs
+of the new harness it reads **1.3 ns on every single run**, spread 1.000. The trimodality
+belonged to the measuring apparatus and vanished with it.
+
+**The two ring cases did not change.** `ring, one way` still draws its unexplained second mode
+at +24% — 2 runs in 21 with the old harness, 2 in 30 with the new. So the harness was hiding a
+small case entirely while leaving a large one alone, which is what an additive overhead does.
+
+### It was written down before it was measured
+
+The constant that was deleted carried this doc comment, added 2026-08-30:
+
+> Baseline 2.5–4.9 ns across runs. The spread is the measurement's, not the code's: at this
+> size the loop is a handful of instructions and **the harness's own overhead is the same
+> order.**
+
+That is the finding, stated correctly, a day early, by somebody who did not then measure it.
+`CLAUDE.md` §4 already says prose does not hold a constraint and a comment asserting runtime
+behaviour must name the thing that proves it. This is what happens when it does not: the
+sentence sat beside the number it invalidated, and the number went into `DESIGN.md` §6 anyway.
+
+`[to testing-skills]` — *the instrument was most of the measurement, and a comment beside it
+said so and was never checked.* Two transferable parts. **First**, when a figure moves sharply
+after a change that should not have touched it, the question is not "which change caused this"
+but "does this case still measure its own work" — and that is answered by **scaling the work
+and checking the response is proportional**, which costs one edit and settles it in one run.
+**Second**, a benchmark whose readings fall into discrete clusters with nothing between them is
+reporting a property of the *harness or the environment*, not a distribution of the code's
+cost; continuous noise is noise, quantised noise is a mode, and a mode has a cause worth
+finding. Here the cause was the instrument, and finding it removed 80% of the reading.
+
+## Two ways a benchmark loop poisons its own machine check — 2026-08-31
+
+Both found while recording the ADR-0016 baselines, and both produced numbers that looked fine.
+
+**A baseline must be taken through the path that will judge it.** The first characterisation
+ran the four timing bench targets directly, 30 times, and `encode ExecutionReport (template)`
+never came within 3% of its 1.10 limit. The very next `scripts/bench.sh` run put it **over**.
+`bench.sh` runs eight targets rather than four, so the case is not measured in the same machine
+state that will grade it. A baseline recorded through a shorter path is a baseline for a
+different experiment.
+
+**Back-to-back runs make the machine dirty for the next run's own quietness check.** With no
+gap between iterations, `scripts/check-machine.sh` — which samples CPU over one second at the
+start of `bench.sh` — read **25%, 36%, 19%, 31%** busy, against 0–2% for the same box measured
+by hand. The previous suite was still inside the sampling window. Every one of those runs
+correctly disqualified itself under non-negotiable 10, so nothing false was published; but a
+loop that reports its own load rather than the machine's will disqualify **all** its runs, and
+if the gate had merely warned instead of failing, all of them would have been kept.
+
+`[to testing-skills]` — *the measurement loop was part of the system under measurement.* The
+general shape: any harness that samples the environment to decide whether a run is valid must
+leave the environment enough time to return to the state it is sampling for, and any baseline
+must be recorded through the **whole** invocation path that will later judge it, not a
+convenient subset of it. Both failures are invisible in the numbers themselves — the figures
+look ordinary — and are only visible in the *validity* column beside them, which is an argument
+for having one.

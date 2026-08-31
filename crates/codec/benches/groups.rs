@@ -38,7 +38,7 @@ fn main() {
         let mut di: FieldIndex<64> = FieldIndex::new();
         parse_into::<Fix44, 64>(deep, &mut di, Validation::NONE).expect("deep parses");
 
-        b.bench("walk 1 group, 2 entries, 2 members", CEILING_SMALL, || {
+        b.bench("walk 1 group, 2 entries, 2 members", || {
             let v = si.view(black_box(small));
             let mut n = 0u32;
             for e in v.group::<Fix44>(b"D", 386).expect("386") {
@@ -47,7 +47,7 @@ fn main() {
             black_box(n);
         });
 
-        b.bench("walk 4 levels, 61-tag member list", CEILING_DEEP, || {
+        b.bench("walk 4 levels, 61-tag member list", || {
             let v = di.view(black_box(deep));
             let mut n = 0u32;
             for side in v.group::<Fix44>(b"AE", 552).expect("552") {
@@ -64,8 +64,11 @@ fn main() {
 
         // Membership alone, with no scanning around it: the cost the plan asked
         // about, isolated. 80 is the last member of the 6-tag list; 591 sits deep
-        // in the 61-tag one.
-        b.bench("group_members contains, 61 tags", CEILING_CONTAINS, || {
+        // in the 61-tag one. `[measured 2026-08-28]` 5.6 ns on an Apple M5 — this
+        // is the answer to the plan's open question: a linear scan of the longest
+        // member list FIX 4.4 has is cheap enough that no second sorted table is
+        // bought.
+        b.bench("group_members contains, 61 tags", || {
             let m = Fix44::group_members(black_box(b"AE"), black_box(552));
             black_box(m.contains(&black_box(591)));
         });
@@ -94,26 +97,9 @@ fn main() {
             counter: 386,
             entries: &entries,
         }];
-        b.bench("encode 1 group, 2 entries", CEILING_ENCODE, || {
+        b.bench("encode 1 group, 2 entries", || {
             let r = t.encode_with::<Fix44>(&mut out, &[], black_box(&g));
             black_box(r).ok();
         });
     });
 }
-
-// Regression ceilings, roughly 2x the baseline measured on this machine on
-// 2026-08-28. NOT published targets — see harness.rs and DESIGN.md §6. Every
-// figure is best-of-7 x 200,000 iterations.
-//
-// darwin 25.5.0, laptop, none of the §9 settings in force. A number from here
-// is never quoted as the engine's number.
-/// Baseline 29.6 ns on an Apple M5, macOS, unpinned, 2026-08-28.
-const CEILING_SMALL: f64 = 60.0;
-/// Baseline 149.0 ns on an Apple M5, macOS, unpinned, 2026-08-28.
-const CEILING_DEEP: f64 = 300.0;
-/// Baseline 5.6 ns on an Apple M5, macOS, unpinned, 2026-08-28. This is the
-/// answer to the plan's open question: a linear scan of the longest member list
-/// FIX 4.4 has costs 5.6 ns, so no second sorted table is bought.
-const CEILING_CONTAINS: f64 = 12.0;
-/// Baseline 35.4 ns on an Apple M5, macOS, unpinned, 2026-08-28.
-const CEILING_ENCODE: f64 = 75.0;
