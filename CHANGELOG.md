@@ -19,6 +19,16 @@ below describe what a first release would contain.
 
 - **`fixbolt-session`** — the FIX session state machine. Pure: no socket, no clock, no
   allocation, no `format!` on any path. Depends on `codec` and `dict`.
+  - **`Session::resume(cfg, next_out, next_in)`, and `connect` no longer resets
+    unconditionally** — [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md).
+    FIX 4.4 numbers a session, not a connection, so a session that outlived its process keeps
+    counting across the connection that follows; one built with `Session::new` has persisted
+    nothing and still resets, which is what every `iCONNECT` in the acceptance corpus expects.
+    `Session::next_out()` and `next_in()` are new, for an engine that must persist them. This
+    layer still does no I/O: recovery is the engine's job and the numbers arrive as arguments.
+    `[measured 2026-08-31]` **59/59 unchanged, with no corpus file exempted**; forcing `connect`
+    to never reset drops the score to **56/59**, which is what proves the corpus exercises the
+    branch.
   - `Session<R: Role, N>` with `connect` / `disconnect` / `received` / `tick`, each taking an
     `emit` closure and returning `Link`. `Role` is a sealed marker — `Acceptor` and
     `Initiator` — so the two ends differ at compile time rather than on a branch per message.

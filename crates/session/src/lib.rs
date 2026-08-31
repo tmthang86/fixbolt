@@ -401,6 +401,16 @@ pub struct Session<R: Role, const N: usize> {
     /// a gap already being filled.
     resend_from: u32,
     resend_to: u32,
+    /// Whether this session was built from persisted state.
+    ///
+    /// **The one bit that separates a reconnect from a restart.** `false` for a
+    /// session from [`Session::new`], which has never persisted anything and so
+    /// starts a new count on every connection — that is what all seven
+    /// `iCONNECT`s in the acceptance corpus expect. `true` for one from
+    /// [`Session::resume`], which is continuing a session that outlived a
+    /// process, and whose numbers a new connection must not touch.
+    /// [ADR-0010](../../../docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md).
+    resumed: bool,
     /// Messages that arrived ahead of [`Self::next_in`], held until the gap in
     /// front of them closes.
     queue: [Queued; QUEUED],
@@ -427,6 +437,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             stamp: TimestampCache::new(),
             next_out: 1,
             next_in: 1,
+            resumed: false,
             beat_ms: 0,
             last_sent_ms: 0,
             last_recv_ms: 0,
@@ -444,6 +455,46 @@ impl<R: Role, const N: usize> Session<R, N> {
         }
     }
 
+    /// A session continuing from numbers that outlived the process.
+    ///
+    /// `next_out` and `next_in` are what the caller recovered — from a
+    /// [`Journal`](crate::journal::Journal) for the outbound side, and from
+    /// whatever made the inbound side durable. **This layer does no I/O and
+    /// never will** (D1, non-negotiable 2): recovering the numbers is the
+    /// engine's job, and this is where it hands them over.
+    ///
+    /// Intended to be called **once, at startup**. Calling it per connection
+    /// would defeat its purpose — see [`Self::connect`], which keeps the count
+    /// for a session built this way precisely so that a reconnect does not have
+    /// to be one.
+    ///
+    /// [ADR-0010](../../../docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md).
+    /// Proven by `crates/engine/tests/recovery.rs`:
+    /// `a_session_resumed_from_a_journal_keeps_counting`, with
+    /// `a_new_session_still_restarts_on_every_connect` as its other half.
+    #[must_use]
+    pub fn resume(cfg: Config, next_out: u32, next_in: u32) -> Self {
+        let mut s = Self::new(cfg);
+        s.next_out = next_out;
+        s.next_in = next_in;
+        s.resumed = true;
+        s
+    }
+
+    /// The sequence number the next outbound message will carry.
+    ///
+    /// For an engine that must persist it. Not a hot-path accessor.
+    #[must_use]
+    pub const fn next_out(&self) -> u32 {
+        self.next_out
+    }
+
+    /// The sequence number this session next expects to receive.
+    #[must_use]
+    pub const fn next_in(&self) -> u32 {
+        self.next_in
+    }
+
     /// True once a Logon has been accepted.
     #[must_use]
     pub const fn is_logged_on(&self) -> bool {
@@ -454,12 +505,21 @@ impl<R: Role, const N: usize> Session<R, N> {
     pub fn connect<F: FnMut(&[u8])>(&mut self, emit: F) -> Link {
         let _ = emit;
         self.state = State::AwaitingLogon;
-        // A new connection starts a new count. Persisting sequence numbers
-        // across a reconnect is the journal's job, and the journal belongs to
-        // `engine`; `2i_BeginStringValueUnexpected.def` logs on twice and
-        // expects `34=1` back both times.
-        self.next_out = 1;
-        self.next_in = 1;
+        // **A new connection starts a new count; a resumed session does not.**
+        // ADR-0010: FIX 4.4 numbers a session, not a connection, so a session
+        // that outlived its process must keep counting — but a session that
+        // never persisted anything has nothing to continue, and
+        // `2i_BeginStringValueUnexpected.def` logs on twice expecting `34=1`
+        // back both times. The corpus builds every session with
+        // [`Self::new`], so it takes this branch and needs no exemption.
+        //
+        // The counterparty can still force a reset from the wire, and that is
+        // what `141=Y` is for — the only thing that restarts a resumed
+        // session's numbers. See the Logon path.
+        if !self.resumed {
+            self.next_out = 1;
+            self.next_in = 1;
+        }
         // The heartbeat clock is deliberately **not** reset here. Every field
         // it uses is written again before it can be read: `beat_ms`,
         // `last_recv_ms` and `test_requests` by the Logon this connection must

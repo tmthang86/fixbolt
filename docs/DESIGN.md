@@ -162,6 +162,25 @@ clock — writes its reply into a buffer the session lends it, and returns the r
 calls `received_with` with an application that never answers, so a session used as a pure
 protocol machine is unchanged.
 
+**A connection and a session became different things.** `[2026-08-31]`
+[ADR-0010](decisions/ADR-0010-a-reconnect-is-not-a-restart.md). `connect` used to reset both
+sequence numbers unconditionally, and that is wrong for a real deployment: FIX 4.4 numbers a
+**session**, not a connection, so a session that outlives its process must keep counting.
+`Session::resume(cfg, next_out, next_in)` builds one that already carries numbers, and
+`connect` leaves those alone; a session from `Session::new` has persisted nothing, so it still
+resets on every connection.
+
+**The acceptance corpus keeps its meaning by construction, not by exemption.** All seven
+`iCONNECT`s across the three files that reconnect expect `34=1` back, because the runner builds
+a session per scenario with `new` and a second connection is therefore a second connection to a
+session that never persisted anything. **No file is exempted and none needed to be** — the
+score is 59/59 unchanged. `[measured 2026-08-31]` forcing `connect` to *never* reset drops it
+to **56/59**, which is what proves the corpus exercises that branch rather than tolerating it.
+
+Recovering the numbers is the engine's job; this layer does no I/O and takes them as arguments.
+`Session::next_out()` and `next_in()` exist so the engine can persist them, and are not
+hot-path accessors.
+
 **`Store` became a trait, and the debt is paid.** `[measured 2026-08-30]` a resend has to
 replay application messages this end already sent. The session no longer keeps them: it is
 handed a `journal::Journal` — `put(seq, bytes)` and `get(seq)` — exactly as it is handed an
