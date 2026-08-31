@@ -158,3 +158,56 @@ dung lượng đều chọn từ một lần chạy bão hoà tổng hợp cộn
 **Dừng ở đây.** Bước 3 và 4 (cài chính sách, làm bộ đếm quan sát được) **chờ ADR-0011 được
 duyệt** — `CLAUDE.md` §5 nói một quyết định đắt, khó đảo thì cần ADR, và "Accepted" là chữ ký
 của chủ dự án chứ không phải của tôi.
+
+---
+
+### Sửa 2 — `[2026-08-31]` plan không nói cơ chế, và có hai chỗ phải chọn
+
+ADR-0011 đã `Accepted` nên bước 3–4 hết bị chặn. Nhưng đọc code thì plan thiếu hai thứ, và cả
+hai đều là **API công khai**, không phải chi tiết cài đặt.
+
+**Chỗ thứ nhất: dispatcher không có đường nào nói "ngắt kết nối này".** `deliver` được gọi
+xuyên qua `fixbolt_session::Application::on_message`, trả `Option<Range<usize>>`, và **trait đó
+thuộc tầng session — không được đổi** (điều 2: tầng session thuần khiết, và đổi nó thì lan sang
+`conformance` lẫn 59 định nghĩa).
+
+Cách chọn: thêm vào trait `Dispatch` một phương thức có mặc định.
+
+```rust
+fn take_refusal(&mut self) -> bool { false }
+```
+
+Engine hỏi nó **ngay sau `conns[i].turn(...)`**, và câu trả lời `true` **thuộc về đúng kết nối
+đó** — vì `Deliver` được dựng gắn với `conn: self.conns[i].id` cho riêng lượt ấy. Nên không cần
+lưu id, không cần mảng, không cấp phát. `InlineDispatch` nhận mặc định `false` và cả nhánh biến
+mất lúc biên dịch, đúng như `OUT_OF_BAND` đang làm.
+
+**Chỗ thứ hai: ADR-0011 câu hỏi mở 2 — *"làm sao lời từ chối tới được bên ngoài"* — cố ý để
+ngỏ**, và bước 4 chính là nó. Ba khả năng ADR nêu: bộ đếm, callback, log sau feature `tracing`.
+
+Chọn: **không cái nào là mới cả — dùng lại cơ chế đã có, ở cả hai phía.**
+
+- **Ra ngoài dây:** `Logout` mang lý do trong tag 58, đúng cách `slow_consumer()` đã làm cho
+  D10 với `SLOW_CONSUMER = b"slow consumer"`. Ring đầy là *ứng dụng* chậm chứ không phải người
+  nhận trên dây chậm, nên nó là một hằng số khác: `SLOW_APPLICATION = b"slow application"`.
+  **Counterparty biết lý do, không chỉ biết là mất kết nối** — đó là "không im lặng" theo nghĩa
+  mạnh nhất, và nó là thứ duy nhất trong ba khả năng mà bên kia dây nhìn thấy được.
+- **Vào trong cho người nhúng:** một bộ đếm trên `Engine` kèm accessor, theo đúng tiền lệ
+  `sources_missing()` — *"Counted so the failure is visible rather than merely slow."*
+
+Vì sao **không** viết ADR-0017 cho việc này, nói ra để khỏi bị đọc thành bỏ sót: `CLAUDE.md` §5
+đòi ADR cho quyết định **đắt, khó đảo hoặc gây tranh cãi**. Đây không phải cái nào — nó tái dùng
+hai cơ chế đã có trong repo, thêm một phương thức trait **có mặc định** (nên không phá ai), và
+đảo lại trước khi publish thì gần như miễn phí. Nó được ghi ở đây, ở `DESIGN.md` D10 và ở
+rustdoc, và STATUS ghi câu hỏi mở 2 của ADR-0011 đã có câu trả lời.
+
+**Chỗ thứ ba, nhỏ hơn: "dung lượng mặc định lên `1 << 22`" chưa có chỗ nào để mà mặc định.**
+Hôm nay người gọi tự chọn qua `ring::pair(1 << 16)` ở bench, test và `GUIDE.md`; engine không
+biết gì về con số đó. Nên quyết định 3 của ADR thành **một hằng số công khai có tên**,
+`ring::DEFAULT_CAPACITY`, và các chỗ gọi trong tài liệu trỏ vào nó. Bench **không** đổi sang
+dung lượng mới — `benches/dispatch.rs` và `benches/ring_full.rs` đo ở `1 << 16` và baseline
+`DESIGN.md` §6 vừa ghi hôm nay là ở dung lượng đó; đổi nó sẽ làm hỏng phép so mà không ai yêu
+cầu. Bench giữ hằng số của riêng chúng, có chú thích nói vì sao khác mặc định.
+
+**Ngoài phạm vi, thêm vào:** không đụng ADR-0011 câu hỏi mở 1 (ring dùng chung hay theo từng
+kết nối) và 3 (3,6 ms có đủ không). Cả hai cần một ứng dụng thật, và chưa có.
