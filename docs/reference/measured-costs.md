@@ -1371,3 +1371,85 @@ one that was being discussed.* The instinct "no syscall, therefore no problem" i
 the term it names and silent about the two behind it. The cheap defence is to write down every
 term you can name **before** removing any of them, so that the second-largest is already
 measured when it becomes the largest.
+
+## The serialise target is missed by the fixed cost, not by the scan it was blamed on
+
+`[measured 2026-08-31]` Intel Xeon @ 2.10GHz, 4 cores, **`check-machine.sh` = `pass 2 fail 6
+unknown 3`, guest under docker**. Every absolute figure below is therefore a same-machine A/B
+and **not publishable** (non-negotiable 10); the *ratios* are what transfer.
+
+`DESIGN.md` §6 publishes **≤ 60 ns** for template serialisation and records **93.8 ns** as not
+meeting it. STATUS open item 11 named the cause: `Template::encode` finds each slot by a linear
+scan of the caller's list, so cost is slots × parts. That cause is **real and is about a
+quarter of the total**, and the open item's framing — fix the scan and the gate is met — does
+not survive measurement.
+
+### First, an experiment that measured nothing, because it varied nothing
+
+To show the scan was expensive, the 14 slots the caller supplies were **reversed** and the
+encode re-measured: **145.0 → 153.5 ns**, 6%, which reads as *the scan does not matter*.
+
+The conclusion is wrong because the experiment is. Forward, part *i* matches at position *i*:
+1+2+…+14 = **105** comparisons. Reversed, it matches at 14−*i*: 14+13+…+1 = **105**. Reversing
+the caller's order does not change the comparison count at all. The 6% is branch prediction.
+
+**The variable that actually moves the scan is padding, not order.** Put *k* slots the template
+never declares in **front** of the real ones and every `find()` walks past them: comparisons go
+105 → 105 + 14*k*, while the output stays byte-identical — verified, 169 bytes and the same
+byte sum in all four arms.
+
+| pad | comparisons | ns (median of 5) | ns per added comparison |
+|---:|---:|---:|---:|
+| 0 | 105 | 178.5 | — |
+| 8 | 217 | 209.3 | 0.28 |
+| 32 | 553 | 407.9 | 0.51 |
+| 64 | 1001 | 575.7 | 0.44 |
+
+**A tag comparison costs ~0.4 ns**, so the 105 of them are worth **~42 ns** — about **24%** of
+the whole operation, not the bulk of it.
+
+### Where the rest goes: a sweep over the number of slots
+
+Same template shape, *N* slots declared and *N* supplied, five runs each, medians:
+
+| slots | message | ns | Δ per slot |
+|---:|---:|---:|---:|
+| 0 | 43 B | 30.8 | — |
+| 1 | | 46.9 | |
+| 2 | | 55.2 | |
+| 4 | | 77.5 | |
+| 8 | | 111.3 | |
+| 14 | 169 B | 152.5 | **8.7** |
+
+The curve is **linear in the number of slots**, not quadratic in the comparison count: a
+straight line through *N* predicts every point within noise, while a line through comparisons
+under-predicts the middle badly. That alone refutes "the scan dominates".
+
+**30.8 ns is spent before a single variable field is written** — prefix assembly, three static
+fields, the body-length render, the trailer. That is **51% of the entire 60 ns target**, on a
+message carrying nothing.
+
+### The checksum was suspected and cleared
+
+`checksum()` runs over the whole message, so the 0-slot figure is not a constant: it covers 43
+bytes at *N*=0 and 169 at *N*=14. Measured on its own at both lengths: **2.3 ns** and **3.2
+ns**. It is vectorised and nearly flat — **~0.9 ns of the 122 ns difference**. Not the cause,
+and worth recording as cleared rather than left as an open suspicion.
+
+### What this means for the gate
+
+Removing the scan **completely** — a perfect O(1) slot lookup — leaves
+`152.5 − 42 + ~6 ≈ **116 ns**` on this box, against a published target of **60**.
+
+So the three levers in order: **the ~31 ns fixed cost** (largest single term, and it is paid by
+every message however small), **~7 ns per field in `put`**, and **~0.4 ns per tag comparison**.
+Item 11 named the third.
+
+`[to testing-skills]` — *an experiment that varies the label instead of the variable.* Reversing
+an ordered search looks like the obvious way to make it expensive and is exactly symmetric:
+the total work is identical, so the measurement can only report noise, and the noise reads as
+a negative result about the hypothesis. The cheap defence is to **write down the quantity you
+believe you are changing, and its value in each arm, before running it** — 105 and 105 on the
+same line would have stopped this one before the compiler did. The experiment that does work
+adds unmatched elements in front, where the count provably moves and the output provably does
+not.

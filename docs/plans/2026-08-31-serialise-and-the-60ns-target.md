@@ -208,4 +208,30 @@ dừng ở bước 2, và **cái được giao là câu trả lời đúng về 
 
 ## Nhật ký giao hàng
 
-*(điền khi từng bước đóng)*
+**Bước 1 — xong 2026-08-31. Nó bác bỏ cách item 11 đóng khung vấn đề, đúng như plan cho phép.**
+Quét theo *N* = 0, 1, 2, 4, 8, 14, năm lần mỗi mức, median: **30.8 / 46.9 / 55.2 / 77.5 / 111.3
+/ 152.5 ns**. Đường **thẳng theo số slot**, không cong theo số phép so. Phép đo riêng cho cái
+quét — chèn *k* slot không khớp vào **đầu** danh sách, output byte y hệt ở cả bốn nhánh (169
+byte, cùng tổng byte) — cho **~0.4 ns mỗi phép so tag**, tức 105 phép so đáng **~42 ns trên
+~152**, khoảng **24%**. Thật, nhưng không phải phần lớn.
+
+**Bước 2 — xong 2026-08-31.** 152.5 ns tách thành: **~31 ns cố định** trả trước khi ghi field
+biến đầu tiên (prefix, 3 field tĩnh, render body length, trailer) — **51% của cả cái target 60
+ns**, trên một message không mang gì; cộng **~8.7 ns mỗi slot**, trong đó `put` ~7 ns và quét
+~3 ns.
+
+**`checksum` bị nghi rồi được loại.** Nó chạy trên toàn message nên "chi phí cố định" không
+thật sự cố định — 43 byte ở *N*=0, 169 byte ở *N*=14. Đo riêng: **2.3 ns** và **3.2 ns**. Đã
+vector hoá, gần như phẳng, **~0.9 ns trong chênh lệch 122 ns**. Ghi lại như một nghi vấn *đã
+loại*, không để treo.
+
+**Hệ quả cho bước 3 và bước 6.** Gỡ sạch cái quét còn **~116 ns** so với target **60**. Nên:
+- bước 3 (con trỏ tiến) vẫn đáng làm — **~24%, không đổi API** — nhưng nó **không** đóng được
+  item 11, và plan không được để nó trông như đóng;
+- **kết cục 3 ở mục C là kết cục nhiều khả năng nhất**: 60 ns không đạt được chỉ bằng việc sửa
+  cái quét, và ba đòn bẩy theo thứ tự đo được là **chi phí cố định → `put` → quét**. Đổi target
+  cần **ADR**, không phải sửa số lặng lẽ.
+
+Ghi chép: [measured-costs.md](../reference/measured-costs.md). Bench tạm đã xoá, cây làm việc
+sạch. Số đo trên container `pass 2 fail 6 unknown 3` — **tỷ lệ dùng được, con số tuyệt đối
+không công bố được**, và bước 5 trên desktop §9 vẫn còn nguyên đó.
