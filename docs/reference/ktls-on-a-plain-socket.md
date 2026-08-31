@@ -2,11 +2,16 @@
 
 > **What this page is:** the record of a spike that was **blocked for two
 > different wrong reasons in a row**, the second of which was a defect in the very
-> script written to diagnose the first. `[measured 2026-08-30]` the blocker is now
-> **gone**: the owner's Linux desktop accepts `setsockopt(TCP_ULP, "tls")`, so
-> `STATUS.md` open item 10 can be answered. Nothing about `ktls-core` or ADR-0005
-> is concluded here — the spike's steps 2–5 still have to happen.
-> `docs/plans/2026-08-30-ktls-spike.md` is the plan; this is its result so far.
+> script written to diagnose the first — and then, once unblocked, the answer it
+> was written to get.
+>
+> **The answer is yes, with conditions**, and the conditions are the valuable
+> part. `[measured 2026-08-31]` `ktls-core` drives a plain non-blocking socket
+> with no async runtime, and the data path afterwards is `read(2)` and `write(2)`
+> with no blocking call at all. `STATUS.md` open item 10 is **closed** and
+> [ADR-0018](../decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md)
+> supplements ADR-0005 with what was found.
+> `docs/plans/2026-08-30-ktls-spike.md` is the plan; this is its result.
 
 ## The question, and why it is load-bearing
 
@@ -21,6 +26,99 @@ Its documented usage is `tokio-rustls`-shaped. If the answer is **no**, ADR-0005
 central claim collapses to *userspace rustls only*, and the hot-path guarantee
 goes with it — every TLS byte would be encrypted in this process rather than by
 the kernel, on a path `DESIGN.md` D8 spends a core to keep clear.
+
+## The answer
+
+`[measured 2026-08-31]` **Yes, with conditions.** AMD Ryzen 7 3700X, Linux
+7.0.0-30-generic, `CONFIG_TLS=m` loaded; `ktls-core` 0.0.5, `rustls` 0.23.43 with
+the `ring` provider, `rcgen` 0.14.10; TLS 1.3, `TLS13_AES_128_GCM_SHA256`.
+
+The program is [`spikes/ktls`](../../spikes/ktls) and the gate that runs it is
+`scripts/check-ktls-on-a-plain-socket.sh`. **15 assertions, `fail 0`.**
+
+```
+PASS handshake-no-runtime-server — rustls handshake on a non-blocking socket: 2 reads, 0 bytes left unprocessed
+PASS negotiated — TLSv1_3 / TLS13_AES_128_GCM_SHA256
+PASS plaintext-round-trip-server — wrote plaintext with write(2), read plaintext back with read(2)
+PASS steady-state — 1000 plaintext round trips over an offloaded socket
+PASS wouldblock-unchanged — read(2) on an empty offloaded socket returns EAGAIN
+PASS session-tickets-survived — 1 kernel EIO seen on the client, 1 recovered
+PASS kernel-counts-the-sockets — /proc/net/tls_stat TlsTxSw went 9 -> 11, expected +2
+PASS wire-is-a-tls-record — first bytes off the wire: [17, 03, 03, 00, 34, ...]; 57 bytes total, record declares 52, needle+type+tag is 52
+PASS wire-carries-no-plaintext — 57 bytes read raw off the socket; the plaintext needle is absent
+PASS reversal-breaks-it — sender did not hand its keys to the kernel; receiver: read failed with errno Some(90)
+PASS hand-draining-desyncs-the-kernel — 346 bytes read by hand before the handover; the next record then: read failed with errno Some(74)
+SPIKE pass 15 fail 0
+```
+
+**The `tokio` impression came from the wrong crate.** ADR-0005 cited two
+families at once. `ktls` 6.0.2, under the rustls organisation, genuinely is
+`tokio-rustls`-specific. `ktls-core` 0.0.5, which is the one open question 1
+names, depends on `bitfield-struct`, `libc`, `nix` and `zeroize` and **has no
+async feature at all** — the `tokio` dependency lives one crate up, in
+`ktls-stream`, behind its default `async-io-tokio` feature. Every entry point
+`ktls-core` exposes is synchronous and generic over `AsFd`:
+
+```rust
+ktls_core::setup_ulp<S: AsFd>(&S) -> Result<()>
+ktls_core::TlsCryptoInfoTx::set<S: AsFd>(&self, &S) -> Result<()>
+ktls_core::Context::handle_io_error<S: AsFd>(&mut self, &S, io::Error) -> io::Result<()>
+```
+
+`handle_io_error` in particular is exactly the shape a spin loop wants: call
+`read`, and when it fails, hand the error back and try again. Nothing asks for a
+readiness API, a waker or an executor.
+
+**The data path has no blocking call.** `strace -f`, syscalls attributed to the
+thread that wrote the steady-state marker, over 1000 round trips:
+
+| Arm | Syscalls in the region |
+|---|---|
+| the spin loop the engine uses | `recvfrom` 3033, `sendto` 1000 — **nothing else** |
+| the same loop with `poll(2)` in front of the read | `recvfrom` 1000, `sendto` 1000, `poll` 1000 |
+
+The second row is the gate's red half, and it exists because a check nobody has
+seen fail is not known to work. It also priced the trade in passing: **spinning
+costs about 3.0 `recvfrom` per message where blocking costs 1.0** — two `EAGAIN`
+returns per message paying for never leaving user space. That is
+[ADR-0013](../decisions/ADR-0013-two-modes-standard-and-hft.md)'s bargain,
+unchanged by TLS being on.
+
+### The conditions
+
+Each was measured, not reasoned. They are the reason the answer is "yes, with
+conditions" rather than "yes".
+
+| # | Condition | What happens if you ignore it |
+|---|---|---|
+| 1 | **Hand every `read` error to `ktls_core::Context`.** The kernel refuses to decode TLS control records and returns `EIO` instead | `[measured]` one `EIO` per connection with rustls's default session tickets. A read loop that treats an error as fatal kills the session seconds after the handshake |
+| 2 | **Never drain the socket by hand before the handover** | `[measured]` `EBADMSG` (errno 74) on the very next record, and `/proc/net/tls_stat` `TlsDecryptError` 0 → 1. The kernel starts at the sequence number rustls hands it, and that number counts only the records *rustls* processed |
+| 3 | **No unprocessed bytes may be left in your own buffer at the handover** | Those bytes are ciphertext the kernel will never see, and its receive sequence number has already counted past them. The spike asserts `leftover == 0`; what a non-zero value does was not tested |
+| 4 | **`setup_ulp` needs the socket `ESTABLISHED`** | `ENOTCONN` (errno 107), which reads like a kTLS problem and is not one — see the testing note below |
+| 5 | **`TLS_RX` was accepted with a ticket record already queued** on 7.0.0-30. Observed, not guaranteed | Unknown on other kernels. `ktls-core`'s own compatibility table starts at 5.4 |
+
+Two failure modes are worth telling apart because they look alike from the
+outside and are not:
+
+- **Sender never offloaded, receiver did** — `EMSGSIZE` (errno 90), and
+  `TlsDecryptError` does **not** move. The kernel rejected the framing before it
+  ever tried to decrypt.
+- **Both offloaded, receive sequence desynchronised** — `EBADMSG` (errno 74), and
+  `TlsDecryptError` **does** move.
+
+### What this still does not answer
+
+None of these were touched, and none may be inferred from the above.
+
+- **No latency number.** The spike publishes none, deliberately: `DESIGN.md` §8's
+  TLS row stays empty until `tools/w2w` runs the same load three ways on one box.
+- **Key update / rekey under kTLS.** ADR-0005 open question 6. `ktls-core` has a
+  `tls13-key-update` feature and `Context::refresh_traffic_keys`; neither ran here.
+- **TLS 1.2, mutual TLS, SNI, multiple certificates.** ADR-0005 open questions 4
+  and 5.
+- **The cipher-suite and kernel floor.** ADR-0005 open question 2. This spike
+  pinned one suite on one kernel *so that* the result would be attributable.
+- **What asserts which mode is live.** ADR-0005 open question 3 — still no gate.
 
 ## What was wrong with how this was blocked
 
@@ -61,9 +159,10 @@ kernel exposes no `/proc/net/tls_stat`.
 was compiled; it does not say what a container is permitted to do. The syscall
 says both, which is why the check makes the call rather than grepping.
 
-## What this does and does not conclude
+## What step 1 did and did not conclude, on the day it ran
 
-**It does not conclude anything about `ktls-core` or about ADR-0005.** No
+**It concluded nothing about `ktls-core` or about ADR-0005** — that came a day
+later, above. No
 conclusion about a library can be drawn from a kernel that has no kernel TLS: the
 experiment never got as far as the library. Recording "probably fine" or
 "probably broken" here would be exactly the kind of claim `CLAUDE.md` §10 forbids.
@@ -78,9 +177,9 @@ described wrongly:
 | `rustls` for the handshake, and the key material it exposes | A load generator, or a second machine |
 
 `scripts/check-ktls-available.sh` answers "can I start?" in one command, and
-exits non-zero with the reason when the answer is no. Run it first on any machine
-before picking this spike back up; the rest of the plan is unchanged and its
-steps 2–5 are still what has to happen.
+exits non-zero with the reason when the answer is no. Run it first on any machine;
+`scripts/check-ktls-on-a-plain-socket.sh` calls it before doing anything else, and
+skips with exit 2 rather than reporting a green it did not earn.
 
 ## The third blocker was the diagnostic script itself
 
@@ -179,3 +278,35 @@ The second defect is the same shape one level down: `lsmod | grep -q` under
 path that reports failure is invisible until something reads its answer against a
 known state — here, unloading the module on purpose and requiring the answer to
 change.
+
+### Two more, from writing the spike itself
+
+`[to testing-skills]` — **an assertion on a message's *shape* passes for any
+message of that shape, including one your test never caused.** The wire check
+started as *"the first bytes are a TLS 1.3 application-data header"*, and it went
+green while reading a **session-ticket record the test had not sent**: the sender's
+key handover had failed outright, and the receiver was looking at leftover
+handshake traffic that has the identical header. Two things were wrong at once and
+the transcript showed one `PASS`.
+
+The fix was to assert the size the payload *implies* rather than the type it
+*is* — 35 bytes of plaintext, one inner content-type byte, a 16-byte tag, so the
+record must declare exactly 52. Proven by reversal: put the tickets back and the
+strengthened check reads `record declares 341, needle+type+tag is 52` and fails,
+where the shape check had passed. Note what did **not** save it — the companion
+assertion *"the plaintext is absent from these bytes"* stayed green throughout,
+because a payload that was never sent is trivially absent. **A negative assertion
+cannot detect that the thing under test never happened**; it needs a positive one
+beside it that only the real event can satisfy.
+
+`[to testing-skills]` — **when two halves cooperate, join both before propagating
+either.** The spike runs a peer on a second thread. The first version used `?` on
+the main half, so when the worker failed, its error was discarded *and* the socket
+it owned was closed — and the main half then reported `ENOTCONN` from
+`setsockopt`, a syscall that was entirely healthy. The transcript named the
+symptom and hid the cause, and the obvious next move — reading kernel source about
+when `TCP_ULP` returns `ENOTCONN` — was research into the wrong question. Joining
+first turned one misleading line into the worker's actual error on the next run.
+This generalises past threads to any fixture with a peer process, a container, or
+a mock server: **the half that fails first is usually not the half that reports.**
+

@@ -698,11 +698,25 @@ in place.** Userspace TLS reintroduces exactly the copy
 `cargo build --no-default-features` produces a binary with no TLS code and no crypto
 dependency at all (D5, and CI proves it on a machine with neither installed).
 
-**Unverified and load-bearing:** whether `ktls-core` can be driven from a plain non-blocking
-socket with no async runtime. Its documented usage is `tokio-rustls`-shaped, this engine has no
-runtime and will not acquire one, and the question cannot be answered on a macOS laptop. It is
-[STATUS.md](../STATUS.md) open item 10. **No TLS plan is written until it is answered**, and if
-the answer is no, ADR-0005 is superseded rather than patched.
+**Verified 2026-08-31, and it was load-bearing.** `ktls-core` *can* be driven from a plain
+non-blocking socket with no async runtime, so the kTLS row above is measured rather than
+reasoned. The `tokio`-shaped documentation belongs to `ktls`, a different crate; `ktls-core`
+0.0.5 has no async feature and every entry point is generic over `AsFd`. `strace -f` over 1000
+round trips, attributed to the thread driving the socket, shows `recvfrom` and `sendto` and
+nothing else. **It costs four conditions** — every read error goes to
+`ktls_core::Context::handle_io_error`, the transport never reads the socket outside the offload,
+the handshake hands over with an empty buffer, and `setup_ulp` needs an `ESTABLISHED` socket.
+Written up in [reference/ktls-on-a-plain-socket.md](reference/ktls-on-a-plain-socket.md),
+decided in [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md), gated by
+`scripts/check-ktls-on-a-plain-socket.sh` with a red arm. **A TLS plan is now unblocked and is
+still not written.**
+
+**Still unverified:** which kernel version and which cipher suites are the floor (ADR-0005 open
+question 2), whether a session survives a TLS 1.3 key update under kTLS (open question 6), and
+what asserts which of the three modes above is actually live (open question 3). The spike pinned
+one kernel and one suite *so that* its answer would be attributable, and that pinning is exactly
+the limit of what it covers. **The §8 TLS row stays empty**: the spike published no latency
+number, and one is not to be inferred from the syscalls being the same ones.
 
 ### D13 — `Tick` counts milliseconds from year zero, not from the Unix epoch
 
@@ -786,6 +800,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | **Wire-to-wire, NIC to NIC** | p50 / p99 / p99.9 published; p99 ≤ 50 µs on kernel TCP | `tools/w2w` — `SO_TIMESTAMPING`, HdrHistogram, load generator on a **separate machine** |
 | Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |
 | `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |
+| **kTLS can be driven from a plain non-blocking socket** | 15 assertions green, **and** the offloaded data path makes no blocking syscall | `scripts/check-ktls-on-a-plain-socket.sh`, D11 and [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md). Runs `spikes/ktls`, then traces it and attributes syscalls to the thread that drove the socket by the tid that wrote the marker. `[measured 2026-08-31]` `recvfrom` 3033 + `sendto` 1000 over 1000 round trips and **nothing else**. **Runs a second time with `poll(2)` in the same loop and fails if that run does not trip it.** Skips with exit 2, not a pass, on a kernel that cannot offload TLS |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
 | Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job. **`[measured 2026-08-30]` the workspace-wide command alone is not enough**: `cargo test --all --no-default-features` still built `libc`, because `tools/w2w` depends on `fixbolt-engine` with defaults and cargo unifies features across one invocation — the flag under test was switched back on by a sibling crate. See [reference/feature-flags-unify-across-a-workspace.md](reference/feature-flags-unify-across-a-workspace.md) |
 | An optional dependency is really optional | absent from the crate's graph with no features on, **and** the crate still builds and tests that way | `scripts/check-no-optional-deps.sh`, run by the same CI job, **per crate** — the only scope where `--no-default-features` means what it reads as. Reversal: removing `optional = true` from `libc` turns it red with the graph printed |

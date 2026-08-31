@@ -39,3 +39,9 @@ KRX-Specs/
 /fuzz/target/
 /fuzz/artifacts/
 /fuzz/Cargo.lock
+
+# Spike build output. The spike's Cargo.lock IS committed, unlike fuzz's: the
+# spike's answer is about specific versions of rustls and ktls-core, and a
+# re-run that silently resolves different ones is re-answering a different
+# question. spikes/ktls/README.md says which versions the answer is about.
+/spikes/*/target/

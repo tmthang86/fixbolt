@@ -10,7 +10,14 @@ members = [
 ]
 # fuzz/ needs nightly and is its own workspace. Excluded so `cargo build` at the
 # root, and CI's --no-default-features job, never try to build it on stable.
-exclude = ["fuzz"]
+#
+# spikes/ is excluded for the same shape of reason and a sharper one: a spike
+# answers a question and is not shipped, and CLAUDE.md §2 rule 6 requires the
+# --no-default-features job to run on a machine with nothing optional installed.
+# spikes/ktls pulls rustls and ring; cargo unifies features across one
+# invocation, and this repository has already been burned once by exactly that
+# (docs/reference/feature-flags-unify-across-a-workspace.md).
+exclude = ["fuzz", "spikes/ktls"]
 
 # Crates are added one at a time, each behind an approved plan in docs/plans/.
 # See CLAUDE.md §1 — Rule Zero.
