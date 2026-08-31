@@ -657,3 +657,19 @@ tới khi một lỗi giao thức biến mất** — `[đo 2026-08-30]` một c�
 theo timeout của chính nó thật ra đang hỏng vì Nagle. Giao thức ở đây đã có cổng **tất định**
 ngay bên cạnh: `tests/wire.rs`, 59/59, hai chế độ, **không có bound nào cả**. Cái tránh được ở
 đây là một test báo cáo về bộ lập lịch của runner rồi gọi đó là FIX.
+
+#### Và cổng corpus qua shard **không chạy được trên runner của CI**
+
+`[đo 2026-08-31]` sau khi nâng bound lên 10/50 ms, job CI chạy **35 phút không xong** và bị huỷ.
+Runner có hai vCPU là hai luồng của **một** lõi vật lý: luồng engine spin trên lõi đó, luồng
+test đợi trên dây cùng lõi đó, và thứ được đo là sự tranh chấp chứ không phải FIX.
+
+Nên test này giờ **đòi hai lõi vật lý**, và ở nơi không có thì in ra
+`SKIPPED, NOT PASSED: …` kèm lý do rồi trả về. Đây là một **lỗ có thật, ghi ra chứ không giấu**:
+trên runner CI, đường shard không được kiểm. Giao thức thì vẫn được kiểm tất định ở mọi máy bởi
+`tests/wire.rs`, cái lái `turn` bằng tay và không có bound nào.
+
+`cargo test` không có khái niệm "skip mà không phải pass" — các script gate của repo này dùng
+`exit 2` cho đúng việc đó (`check-ktls-on-a-plain-socket.sh`). Một `#[test]` trả về sớm vẫn báo
+`ok`. Cách duy nhất giữ được sự thật ở đây là dòng chữ, và nó được viết đúng bằng ngôn từ mà
+§10 dùng.
