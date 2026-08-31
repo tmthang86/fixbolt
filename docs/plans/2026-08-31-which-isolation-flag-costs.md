@@ -263,10 +263,20 @@ canh chống false green tự nó là false green**: `awk '/^LOC:/'` không kh�
 căn phải cột đầu, in delta 0 cho cả bốn lõi trên đúng lần boot mà hai lõi tick ba triệu lần. Cả
 hai thành `[to testing-skills]` trong `measured-costs.md`.
 
+**Bước 5 — và nó không còn là "khôi phục".** Chủ dự án duyệt ADR-0021, nên máy **không** quay
+về dòng cũ: nó boot vào dòng §9 **mới**, đúng cái ADR vừa quyết định.
+
+```
+quiet splash isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1
+```
+
+Bản lưu dòng cũ (có `nohz_full`) vẫn nằm ở `/etc/default/grub.fixbolt-s9`.
+
 **Chưa xong, nói rõ ra:**
 
-- **Bước 5.** Máy vẫn đang ở dòng lệnh thí nghiệm. `check-machine.sh` đọc `pass 10 fail 1`, và
-  cái FAIL là dòng `no nohz_full` mới — gate đang làm đúng việc của nó.
-- **ADR-0021 là `Proposed`.** Nó đảo một dòng §9 đã công bố và một gate; chưa `Accepted`.
+- **Chưa reboot vào dòng mới.** `check-machine.sh` phải đọc lại `pass 11 fail 0` sau đó, và
+  `bench.sh --strict` phải xanh với đúng `baselines.tsv` hiện có — chúng vốn được ghi trên
+  những lõi **không** `nohz_full`, nên nếu ADR đúng thì các số cũ không đổi nghĩa. Đó là phép
+  kiểm chứng cuối cùng và nó **chưa chạy**.
 - **`isolcpus` dưới tải** không đo. Giữ vì nó miễn phí, không phải vì đo được lợi ích.
 - **Item 22 thu hẹp, không đóng**: `mitigations=off`, `recvmmsg`/`io_uring` vẫn nguyên.

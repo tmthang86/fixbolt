@@ -1,6 +1,7 @@
 # ADR-0021 — `nohz_full` leaves the §9 checklist; `isolcpus` and `rcu_nocbs` stay
 
-> **Status:** **Proposed — 2026-08-31**
+> **Status:** **Accepted — 2026-08-31**, by the owner, on the four-arm table and the
+> tail table below.
 >
 > Reverses one row of `DESIGN.md` §9 and the gate that checks it. §9 has told
 > every reader of this repository to give the engine thread a core with
