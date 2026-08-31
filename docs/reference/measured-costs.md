@@ -1800,3 +1800,215 @@ The cheap defence is the one used here: **when you adopt a setting for performan
 single operation your design says dominates, with and without it, changing nothing else.** One
 variable, two arms, and a third arm that differs in the *other* plausible way — here `cpu0`
 against `cpu5`, which is what makes "it is not the cache" a measurement rather than a claim.
+
+---
+
+## The answer: it is `nohz_full`, and it loses until p99.99 — 2026-08-31
+
+The section above could not say which of `isolcpus`, `nohz_full` and `rcu_nocbs` cost 36%,
+because one kernel command line applied all three to the same CPUs. This is the reboot that
+separated them, and the second half — what the setting *buys* — which had never been measured
+either.
+
+### The design: three flags, three CPUs, one boot
+
+Not one flag per boot. **Different CPUs get different flags in the same boot**, so the arms
+share the kernel, the temperature, the load and the session, and the subtraction between them
+is not a subtraction across two days:
+
+```
+isolcpus=4,6,12,14  rcu_nocbs=7,15  nohz_full=4,12  processor.max_cstate=1
+```
+
+`cpu4` also takes `isolcpus`, deliberately. `nohz_full` only stops the tick on a CPU with **at
+most one runnable task**; without `isolcpus` the scheduler keeps putting work there, adaptive
+tick flickers, and the arm can read *free* because the mechanism never engaged rather than
+because it costs nothing. That is a false green with a plausible story attached, and
+`isolcpus` is what holds the precondition still.
+
+`nohz_full` cannot be tested alone at all — the kernel adds `rcu_nocbs` to any CPU that has it —
+so it is reached by subtracting the two arms that turn out to be free. Four arms, not two, for
+that reason.
+
+### What it costs
+
+`[measured 2026-08-31]` AMD Ryzen 7 3700X, Linux 7.0.0-30-generic, SMT off, `performance`,
+turbo off, `check-machine.sh` `pass 10 fail 0`, machine quiet at 0%.
+`scripts/measure-isolation-cost.sh`, and `crates/engine/benches/turn.rs` under `taskset`:
+
+| Core | Flags | user-space loop | bare `getpid` | `Engine::turn`, 1 session |
+|---|---|---|---|---|
+| `cpu5` | none | 1.0578 ns/iter | 198.87 ns | 501.8 ns |
+| `cpu6` | `isolcpus` | 1.0574 | 198.94 ns | **494.8 ns** |
+| `cpu7` | `rcu_nocbs` | 1.0578 | 198.86 ns | 498.2 ns |
+| `cpu4` | `isolcpus` + `nohz_full` | 1.0546 | **354.76 ns** | **670.7 ns** |
+
+**`nohz_full` is the whole 36%.** `isolcpus` and `rcu_nocbs` are free, and the `isolcpus`-only
+core is the fastest of the four. Four interleaved repetitions: `cpu4` held 352.96–354.76 and
+the other three 198.86–199.04.
+
+Two things it is **not**, and each is ruled out by a reading in the same run:
+
+- **Not the clock.** The user-space loop — a dependent multiply-add chain that never enters the
+  kernel — agrees across all four cores to 0.3%, and the `nohz_full` core is the *faster* one.
+- **Not interrupts.** The `nohz_full` core takes **3743 fewer** local timer interrupts per
+  second than the others and is still 78% slower per kernel entry. The sign is the argument.
+
+What remains is the kernel entry and exit path, which is where full dynticks runs its context
+tracking — `CONFIG_CONTEXT_TRACKING_USER=y`, `CONFIG_VIRT_CPU_ACCOUNTING_GEN=y` in this kernel.
+The mechanism named as a hypothesis in the section above is the one that survived.
+
+### What it buys
+
+`nohz_full` is bought for jitter, so stopping at the median would repeat the error this page
+was written to record. Every call timed individually, 5 000 000 per core,
+`measure-isolation-cost.sh --jitter`:
+
+| Core | Flags | p50 | p99 | p99.9 | p99.99 | calls > 1 µs | timer ticks |
+|---|---|---|---|---|---|---|---|
+| `cpu5` | none | 216 | 224 | 240 | 3720 | 1130 | 1283 |
+| `cpu6` | `isolcpus` | 216 | 224 | **224** | 2848 | 1078 | 1281 |
+| `cpu7` | `rcu_nocbs` | 216 | 224 | 240 | 3440 | 1120 | 1281 |
+| `cpu4` | `isolcpus` + `nohz_full` | 376 | 376 | 384 | **504** | **2** | **2** |
+
+**The count of calls over 1 µs tracks the timer interrupt count call for call** — 1130/1283,
+1078/1281, 1120/1281, and 2/2. The tail is not merely *correlated with* a knob that moved
+alongside it; it is the tick, and the two counters say so independently.
+
+**And then the row reads left to right.** `nohz_full` is worse at p50, worse at p99, and
+**worse at p99.9** — 384 ns against 224. It wins from **p99.99 outward**, where it is genuinely
+good: 504 ns against 2848. `max` does not follow it — over four runs `cpu4`'s worst call was
+852, 2966, 11582 and 14107 ns — so the rare large excursion is not what it removes.
+
+### The arithmetic that decided it
+
+> A turn is ~500 ns, so a busy `hft` engine performs ~2 000 000 kernel entries per second per
+> core. `nohz_full` taxes **every one** of them 160 ns and removes **~1100 excursions of 3 µs**.
+> 0.32 s of tax per second against 0.0033 s of tail: **a hundred to one against.**
+
+[ADR-0021](../decisions/ADR-0021-nohz-full-leaves-section-9.md) takes `nohz_full` out of §9's
+recommendation and prices it instead. `isolcpus` and `rcu_nocbs` stay — free, and kept for a
+mechanism about *other tenants* that a quiet machine cannot exercise. That last point is
+labelled rather than implied: on this box `isolcpus` removed 1078 excursions against 1130, which
+is nothing, because there was nothing there to remove.
+
+### Two near-misses, both worth more than the result
+
+**`scaling_cur_freq` lies on a `nohz_full` core.** It read **2 240 000 kHz** for `cpu6` — exactly
+that core's `scaling_min_freq` — while `cpu6` was at 100% load and `cpu5` read 3 792 929. The
+ratio, 1.69, is a tidy and completely wrong explanation for a 1.36 slowdown, and it was the first
+thing found. `amd-pstate-epp` updates that value from a path tied to the tick, and `nohz_full`
+had stopped the tick. **The user-space loop is what refuted it**: the same core, the same run,
+the same speed as everyone else.
+
+`[to testing-skills]` — **an instrument that reports a plausible cause can be downstream of the
+thing under test.** The frequency counter was not merely inaccurate; it was inaccurate *because
+of the setting being investigated*, and it failed toward an explanation that fit. The defence is
+a second reading through a different mechanism — here, wall-clock time for a fixed amount of
+work, which needs no cooperation from the kernel at all.
+
+**The guard against a false green was itself a false green.** The tick counter was added
+specifically so a `nohz_full` arm that failed to engage could not read as *isolation is free*.
+Its first version used `awk '/^LOC:/'`, and `/proc/interrupts` right-aligns its first column, so
+the line begins with a space and the pattern matched nothing: it printed a delta of **0 for every
+core**, on a boot where two cores were ticking three million times a run. A constant-zero column
+reads as *everything is tickless* — the reassuring answer — and means *nothing was read*.
+
+`[to testing-skills]` — **a guard reporting the same value everywhere is reporting nothing, and
+"all clear" is the disguise it wears.** It was caught only because the value was *expected to
+differ between arms*: a guard whose readings must vary is falsifiable, one that only ever prints
+"fine" is not. The fix was `$1 == "LOC:"`, and the corrected column reads 1281 against 2.
+
+---
+
+## `nohz_full` taxes the cores that do NOT have it — 2026-08-31
+
+The section above measured `nohz_full` at +155 ns per kernel entry **on the core carrying it**,
+and [ADR-0021](../decisions/ADR-0021-nohz-full-leaves-section-9.md) took it out of §9 on that
+basis. Rebooting into the new §9 line found the cost is bigger than that, and lands somewhere
+nobody was looking.
+
+`[measured 2026-08-31]` `cpu5` carried **no isolation flag in any of the three boots**:
+
+| Boot | `nohz_full` | `cpu5` bare `getpid` | `cpu5` `Engine::turn`, 1 session |
+|---|---|---|---|
+| §9 as it was | `6,7,14,15` | 198.36–199.04 ns | ~501 ns |
+| the four-arm experiment | `4,12` | 198.87 ns | 501.8 ns |
+| §9 after ADR-0021 | **none** | **154.62 ns** | **455.7 ns** |
+
+**Naming any CPU in `nohz_full` costs ~44 ns per kernel entry on *every* CPU**, on top of the
+~155 ns paid by the CPUs that are actually in the list. Three independent readings agree on the
+size of it: bare `getpid` +44 ns, `recv on a quiet socket` +47 ns, `Engine::turn` +46 ns. That
+is the shape of **one fixed cost per kernel entry**, not the shape of a workload. And
+`user_loop` did not move — 1.0577 against 1.0578 — so once again it is not the clock.
+
+The documented mechanism is that `NO_HZ_FULL` switches the kernel to context tracking and
+`VIRT_CPU_ACCOUNTING_GEN` **system-wide** as soon as any CPU uses it, changing the user↔kernel
+transition path for all of them. **That mechanism is not verified here.** It is the explanation;
+the numbers are the measurement.
+
+### The prediction that made it falsifiable
+
+Re-recording the baselines was the chance to test the explanation rather than illustrate it, so
+the prediction went into the plan **before** the runs: only the four syscall-bound cases should
+move; the twelve pure user-space cases should not. **If `parse NewOrderSingle` had moved 10% as
+well, the explanation was wrong** and something other than `nohz_full` had changed between the
+boots.
+
+24 qualifying runs of `scripts/bench.sh --strict`, one machine, one boot:
+
+| Case | old baseline | new median | change |
+|---|---|---|---|
+| `walk 1 group, 2 entries, 2 members` | 58.7 | 59.2 | +0.8% |
+| `walk 4 levels, 61-tag member list` | 352.9 | 350.1 | −0.8% |
+| `group_members contains, 61 tags` | 9.7 | 9.6 | −1.0% |
+| `encode 1 group, 2 entries` | 108.4 | 113.6 | +4.8% |
+| `parse NewOrderSingle (validated)` | 122.6 | 121.8 | −0.7% |
+| `parse NewOrderSingle (no checks)` | 117.0 | 115.3 | −1.5% |
+| `parse Heartbeat (validated)` | 57.3 | 57.9 | +1.0% |
+| `encode ExecutionReport (template)` | 239.1 | 237.6 | −0.6% |
+| `SendingTime from the cache` | 4.9 | 4.9 | 0.0% |
+| `inline deliver + reply` | 1.3 | 1.3 | 0.0% |
+| `ring, one way` | 267.4 | 262.8 | −1.7% |
+| `ring, round trip` | 515.7 | 513.0 | −0.5% |
+| **`recv on a quiet socket`** | 470.9 | **420.5** | **−10.7%** |
+| **`engine turn, 1 idle sessions`** | 500.3 | **448.9** | **−10.3%** |
+| **`engine turn, 4 idle sessions`** | 2002.9 | **1807.1** | **−9.8%** |
+| **`engine turn, 16 idle sessions`** | 8139.4 | **7333.5** | **−9.9%** |
+
+**Twelve cases inside their own noise with no direction; four cases down together by a tenth.**
+The largest non-syscall move, `encode 1 group` at +4.8%, is the wrong sign for anything
+systematic and sits barely outside that case's own 3.8% spread.
+
+`benches/baselines.tsv` takes the four new figures at n=24, margin 1.10 (max/median 1.007–1.013),
+verdict `pass 11 fail 0 unknown 1`. The twelve keep theirs, and the file says why. Proven by
+reversal: setting `engine turn, 1 idle sessions` to 400.0 turns exactly **one of four** cases
+red, naming that case and its own limit.
+
+### What it changes
+
+`DESIGN.md` §8's dominant row was **505 ns per session** and is now **449 ns**, of which
+**~420 ns is the syscall**. The 2026-08-30 figure of **703 ns** — a C program's bare `read`, on
+an isolated core, on a machine with `nohz_full` — is now explicable as 449 + ~45 (the global
+tax) + ~155 (the per-core tax) + the difference between two programs. **§9's tuning was
+responsible for roughly a third of the number this design was budgeted against.**
+
+Everything in the section above was measured in a boot where `nohz_full` existed on *some*
+core, so its four-arm figures (501.8 / 494.8 / 498.2 / 670.7) each carry the ~45 ns global tax.
+The comparison between them is unaffected — same boot, one variable — and the conclusion is
+strengthened, not weakened: the full price of `nohz_full` on the core that has it is **~200 ns
+per kernel entry**, not 155.
+
+### The generalisation
+
+`[to testing-skills]` — **a setting scoped to a subset can charge the whole system, and the
+control group is inside the blast radius.** The four-arm experiment was carefully built to move
+one variable per CPU, and every arm of it — including the untouched control — was sitting in the
+tax. Nothing in that design could have seen it, because the thing being varied per-CPU had an
+effect that was not per-CPU. It was found only by measuring the *control* again after the
+setting was removed everywhere.
+
+The cheap defence is not a better experiment; it is one extra reading. **After you remove the
+setting for good, re-measure the arm you were treating as the baseline.** If the baseline moved,
+the setting was never as scoped as its interface suggested — and everything measured before it
+was removed carries the difference.

@@ -24,7 +24,7 @@ the type system or a test, this page says so.**
 | | **`standard`** — the default | **`hft`** — opt-in |
 |---|---|---|
 | When idle | **blocks on readiness, gives the core back** | spins; **burns a core, permanently, per polling thread** |
-| Wakeup cost | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` **675 ns per session per turn on an isolated core**, 505 ns on an ordinary one |
+| Wakeup cost | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` **449 ns per session per turn** — ~670 ns if the core carries `nohz_full`, which §9 no longer asks for |
 | Runs on | any OS, any hardware, a container, a shared box | Linux, on a machine that satisfies `DESIGN.md` §9 |
 | Core pinning | none | required, and it refuses to start without it |
 | Choose it when | you are not counting microseconds, or you share the machine | one session matters more than the core it costs |
@@ -54,8 +54,10 @@ comes close for that mode. In `standard` the thread blocks rather than sweeping,
 below is replaced by the wakeup — different arithmetic, and **unmeasured**.
 
 An idle turn of the engine is one non-blocking `read` per connection. `[measured 2026-08-31]`
-a whole `Engine::turn` costs **675 ns per session on the isolated core `DESIGN.md` §9 asks for**
-and **505 ns on an ordinary one**, flat from 1 to 16 sessions within 2%. Of the 505, **471 ns is
+a whole `Engine::turn` costs **449 ns per session on a core set up to `DESIGN.md` §9**
+and **~670 ns if that core carries `nohz_full`**, which §9 no longer asks for
+([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md)), flat from 1 to 16 sessions
+within 2%. Of the 449, **~420 ns is
 the `recv` syscall and about 30 ns is everything the engine itself does** — measured in the same
 run, so that subtraction is not across two programs. So the sweep is `N ×` that figure, and a
 message arriving just after its socket was polled waits a whole sweep before anyone looks at it.
@@ -73,14 +75,14 @@ recommends. It is a trade against a tail nobody has measured yet, not a free win
 
 **If you care about latency, run one session per thread and pin that thread to an isolated
 core.** If you are building a gateway for many clients, you are in the `density` shape — that
-is supported and reasonable, and you should plan against `N × 675 ns` on an isolated core
+is supported and reasonable, and you should plan against `N × 449 ns` on a §9 core
 rather than against this project's headline figures ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)).
 
 **Nothing enforces this.** The engine will happily carry 500 sessions on one thread and will
 not warn you.
 
 **And kernel bypass does not rescue it.** `[measured 2026-08-31]` removing the syscall — Onload,
-`ef_vi`, DPDK — takes **471 ns of the 505** down to the cost of a memory read, which is real and
+`ef_vi`, DPDK — takes **~420 ns of the 449** down to the cost of a memory read, which is real and
 worth having.
 Two terms survive it:
 
@@ -103,8 +105,8 @@ architectures and the difference is the whole of §1:
 
 | Shape | 100 sessions | Sweep |
 |---|---|---|
-| **Stack** — one engine, one thread | 100 on one thread | `100 × 675 ns` = **68 µs** |
-| **Shard** — 8 engines, 8 pinned threads | ~13 each | `13 × 675 ns` = **8.8 µs** |
+| **Stack** — one engine, one thread | 100 on one thread | `100 × 449 ns` = **45 µs** |
+| **Shard** — 8 engines, 8 pinned threads | ~13 each | `13 × 449 ns` = **5.8 µs** |
 
 Nine microseconds sits under the 10–20 µs kernel-TCP floor, so for a gateway it is not the
 dominant term any more. Sharding is what makes "many sessions" reasonable — **not the core
@@ -195,13 +197,26 @@ as the API.
   that calls `RingApp::pump` — so pin it with `affinity::spawn_pinned` or, from inside it,
   `affinity::pin_current_thread`. `Durability::Fsync` has no writer thread and `open_pinned`
   refuses it rather than accepting a core it would ignore.
-- **Isolating those cores.** `isolcpus` plus `nohz_full`, or the scheduler will put other work
-  on them — **and it is not free.** `[measured 2026-08-31]` on the reference machine a turn of
-  the engine costs **680 ns per session on an isolated core against 498 ns on an ordinary one**,
-  a 36% tax on the syscall that dominates this design; `cpu5` and `cpu6` are in the same L3
-  domain, so it is the isolation and not the cache. Take it for the tail it removes. **What that
-  tail is worth has not been measured here**, so this is a trade to make deliberately rather than
-  a setting to copy. [measured-costs.md](reference/measured-costs.md).
+- **Isolating those cores: `isolcpus` and `rcu_nocbs` — and NOT `nohz_full`.** The first two keep
+  other tenants and RCU callbacks off your engine cores and `[measured 2026-08-31]` cost nothing:
+  a turn is 494.8 ns per session on an `isolcpus` core, 498.2 on an `rcu_nocbs` one and 501.8 on
+  an untouched one.
+
+  **`nohz_full` is the one to leave off, and this is the number to leave it off by.** It adds
+  **160 ns to every kernel entry**, which takes a turn to **670.7 ns** — and this engine's idle
+  turn is one non-blocking `read` per session, so it is nothing but kernel entries. It is behind
+  at p50 (376 ns against 216), at p99 (376 against 224) **and at p99.9** (384 against 224). It
+  pulls ahead only from **p99.99** outward, where it is genuinely good: 504 ns against 2848,
+  because what it removes is the timer tick and nothing else.
+
+  So: take `nohz_full` **only** if your objective is stated at p99.99 or beyond. If your target
+  is a p99 — as this project's own §6 gate is — it costs you on every message to protect one in
+  two thousand. [ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md),
+  [measured-costs.md](reference/measured-costs.md).
+
+  One thing this does **not** tell you: what `isolcpus` buys under load. It was measured on a
+  quiet machine, where there was nothing for it to keep away. Keep it — it is free — but do not
+  read a benefit into it that nobody here has measured.
 
 ---
 
@@ -393,7 +408,7 @@ Everything in this section was paid for here, on this repository, in one day.
    setting against itself because the command that was supposed to change it had errored. The
    arms agreed beautifully. Check that the variable actually moved.
 5. **Measure a whole turn, including its syscalls.** Timing only the user-space part is how
-   §8's budget came to exclude the syscall that dominates it — 471 ns of a 505 ns turn.
+   §8's budget came to exclude the syscall that dominates it — ~420 ns of a 449 ns turn.
 
 Longer versions of all five, with the numbers:
 [reference/measured-costs.md](reference/measured-costs.md).

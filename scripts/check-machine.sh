@@ -110,17 +110,39 @@ CMDLINE=$(r /proc/cmdline)
 
 echo "=== DESIGN.md §9"
 
-# --- isolcpus + nohz_full -----------------------------------------------------
+# --- isolcpus + rcu_nocbs -----------------------------------------------------
+#
+# This row used to demand `nohz_full` as well, and ADR-0021 reversed that.
+# [measured 2026-08-31] `nohz_full` is the whole of the 36% the isolated core was
+# costing: 670.7 ns per `Engine::turn` against 494.8 on an `isolcpus`-only core,
+# because full dynticks runs context tracking on every kernel entry and this
+# engine is nothing but kernel entries. `isolcpus` and `rcu_nocbs` are free.
+#
+# So this gate now FAILS a machine for HAVING nohz_full, where it used to fail
+# one for lacking it. That reversal is the point and not an accident: the
+# baselines in benches/baselines.tsv were recorded without it, and a machine
+# carrying it reads 35% over on all four `turn` cases.
 iso=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^isolcpus=' || true)
+nocb=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^rcu_nocbs=' || true)
 nohz=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^nohz_full=' || true)
-if [ -n "$iso" ] && [ -n "$nohz" ]; then
-  row PASS "isolcpus + nohz_full" "$iso $nohz"
-elif [ -z "$CMDLINE" ]; then
-  row UNKNOWN "isolcpus + nohz_full" "/proc/cmdline not readable" \
+if [ -z "$CMDLINE" ]; then
+  row UNKNOWN "isolcpus + rcu_nocbs" "/proc/cmdline not readable" \
     "run outside a restricted container"
+elif [ -n "$iso" ] && [ -n "$nocb" ]; then
+  row PASS "isolcpus + rcu_nocbs" "$iso $nocb"
 else
-  row FAIL "isolcpus + nohz_full" "${iso:-no isolcpus}${nohz:+ $nohz}" \
-    "add 'isolcpus=N nohz_full=N rcu_nocbs=N' to the kernel command line, then reboot"
+  row FAIL "isolcpus + rcu_nocbs" "${iso:-no isolcpus}${nocb:+ $nocb}" \
+    "add 'isolcpus=N rcu_nocbs=N' to the kernel command line, then reboot"
+fi
+
+# --- nohz_full, which §9 no longer asks for -----------------------------------
+if [ -z "$CMDLINE" ]; then
+  : # already reported unknown above; one unreadable file is one row
+elif [ -z "$nohz" ]; then
+  row PASS "no nohz_full" "absent — ADR-0021"
+else
+  row FAIL "no nohz_full" "$nohz" \
+    "REMOVE nohz_full from the kernel command line: it adds 160 ns to every kernel entry (+36% on Engine::turn) and is behind at p50, p99 AND p99.9 — see ADR-0021"
 fi
 
 # --- CPU frequency governor ---------------------------------------------------

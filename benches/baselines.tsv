@@ -17,11 +17,14 @@
 #   n         how many whole suite runs the two numbers above came from.
 #   date      when.
 #   verdict   what `scripts/check-machine.sh` said for that run. A line whose
-#             verdict is not `pass 10 fail 0` is NOT a publishable latency figure
+#             verdict does not say `fail 0` is NOT a publishable latency figure
 #             — CLAUDE.md §2 non-negotiable 10 — and DESIGN.md §6 marks it so.
+#             The pass COUNT is part of the record and not a constant: it was
+#             `pass 10` until ADR-0021 split §9's isolation row in two, and a row
+#             carrying the older count was measured against the older checklist.
 #
 # To add a machine: run `scripts/bench.sh` until check-machine.sh reads
-# `pass 10 fail 0`, then N >= 20 more times, and paste the medians. The harness
+# `fail 0`, then N >= 20 more times, and paste the medians. The harness
 # prints a paste-ready line for every case it has no baseline for.
 #
 # Measure through `scripts/bench.sh`, not through the bench targets directly.
@@ -64,13 +67,28 @@ AMD Ryzen 7 3700X 8-Core Processor	inline deliver + reply	1.3	1.10	24	2026-08-31
 AMD Ryzen 7 3700X 8-Core Processor	ring, one way	267.4	1.30	24	2026-08-31	pass 10 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	ring, round trip	515.7	1.20	24	2026-08-31	pass 10 fail 0 unknown 1
 
+# `[measured 2026-08-31]` the four rows below were re-measured after
+# [ADR-0021](../docs/decisions/ADR-0021-nohz-full-leaves-section-9.md) took
+# `nohz_full` off the §9 kernel command line, and they moved ~10%: 470.9 -> 420.5,
+# 500.3 -> 448.9, 2002.9 -> 1807.1, 8139.4 -> 7333.5. 24 qualifying runs of 25;
+# the one that did not qualify was the FIRST after the reboot, with gnome-shell
+# still at 29% of a core, which is worth knowing about any reboot.
+#
+# The other twelve rows keep their older figures and their `pass 10` verdict on
+# purpose. Over the SAME 24 runs they moved -1.7% to +4.8%, which is inside their
+# own spread and has no direction: `parse NewOrderSingle` -0.7%, `ring, one way`
+# -1.7%, `encode 1 group` +4.8% (that case's own spread is 3.8%, and the sign is
+# the wrong way round for anything systematic). Only the syscall-bound cases moved,
+# and they moved together -- which is the prediction that was written down before
+# the runs, and the thing that would have refuted the explanation if `parse` had
+# moved with them.
 # `[measured 2026-08-31]` the four `turn` cases below came from a sample of 26
 # whole bench.sh runs of which 21 read `pass 10 fail 0`; the five that did not
 # were discarded, and the largest single source of the disqualifications was the
 # agent's own polling of the machine while the sample ran. They are the tightest
 # cases in this file — max/median between 1.011 and 1.021, against 1.30 for
 # `ring, one way` — so every margin is the ladder's floor.
-AMD Ryzen 7 3700X 8-Core Processor	recv on a quiet socket	470.9	1.10	21	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 idle sessions	500.3	1.10	21	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 idle sessions	2002.9	1.10	21	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 idle sessions	8139.4	1.10	21	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	recv on a quiet socket	420.5	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 idle sessions	448.9	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 idle sessions	1807.1	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 idle sessions	7333.5	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
