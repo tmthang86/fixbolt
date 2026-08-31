@@ -25,15 +25,57 @@ const M: usize = 512;
 /// describe the same ring.
 const CAPACITY: usize = 1 << 16;
 
+/// Both capacities are measured, and that is the point of the pair.
+///
+/// `[cost 2026-08-31]` ADR-0011 raised the default to 4 MiB and every document
+/// that mentions it — this file's own output included — reported **3.6 ms** of
+/// slack. Nothing ever measured 3.6 ms. It was 56.7 µs, measured at 64 KiB,
+/// multiplied by 64, and it was written down under a `[measured]` tag. The
+/// multiplication assumes the fill rate does not change with capacity, which is
+/// exactly the kind of assumption a 4 MiB buffer is likely to break: 64 KiB fits
+/// in L2 on the machines here and 4 MiB does not.
+///
+/// So the extrapolation is not repaired, it is replaced. Both capacities are
+/// filled and both are reported, and whether the second is 64 times the first is
+/// something the reader can now see rather than infer.
 fn main() {
+    let a = fill(CAPACITY);
+    println!();
+    let b = fill(ring::DEFAULT_CAPACITY);
+
+    println!();
+    println!("ns per message     {} at 64 KiB, {} at 4 MiB", a.1, b.1);
+    let ratio = b.0.as_secs_f64() / a.0.as_secs_f64();
+    println!(
+        "slack ratio        {ratio:.1}x for {}x the capacity — {} the naive 64x",
+        ring::DEFAULT_CAPACITY / CAPACITY,
+        if ratio > 70.0 {
+            "MORE than"
+        } else if ratio < 58.0 {
+            "LESS than"
+        } else {
+            "about"
+        }
+    );
+    println!();
+    println!("NOT a latency number, on any machine: what it bounds is a COUNT and");
+    println!("a duration under saturation, which is what ADR-0011 needs and which");
+    println!("does not need an isolated core. Whether this box meets DESIGN.md §9");
+    println!("is scripts/check-machine.sh's answer, printed above by bench.sh.");
+}
+
+/// Fill one ring from a stalled application and report how long it took.
+///
+/// Returns the duration and the nanoseconds per message.
+fn fill(capacity: usize) -> (std::time::Duration, u128) {
     let msg: &[u8] = b"8=FIX.4.4\x019=126\x0135=D\x0134=2\x0149=TW44\x01\
 52=00000000-00:00:00.000\x0156=ISLD\x0111=ID\x0121=1\x0138=002000.00\x0140=1\x01\
 54=1\x0155=INTC\x0160=00000000-00:00:00.000\x01167=BOO\x0110=098\x01";
     let stamp = b"20260828-12:00:00.000";
     let mut out = [0u8; 1024];
 
-    let (to_app, _from_engine) = ring::pair(CAPACITY);
-    let (to_engine, from_app) = ring::pair(CAPACITY);
+    let (to_app, _from_engine) = ring::pair(capacity);
+    let (to_engine, from_app) = ring::pair(capacity);
     // `_from_engine` is held and never drained: that IS the stalled application.
     let mut ringed: RingDispatch<M> = RingDispatch::new(to_app, from_app);
     drop(to_engine);
@@ -49,7 +91,7 @@ fn main() {
             accepted += 1;
         }
         assert!(
-            pushes < 1_000_000,
+            pushes < 100_000_000,
             "the ring never filled; it must be bounded"
         );
     }
@@ -69,7 +111,7 @@ fn main() {
     );
 
     let per = fill.as_nanos() / accepted.max(1) as u128;
-    println!("ring capacity      {CAPACITY} bytes");
+    println!("ring capacity      {capacity} bytes");
     println!("message            {} bytes + header", msg.len());
     println!("messages accepted  {accepted}");
     println!("refused at         message {pushes}");
@@ -81,14 +123,10 @@ fn main() {
     );
     println!("this end's full rate before the engine starts dropping messages the");
     println!("session has already accepted, numbered and journalled.");
-    println!();
     // `[measured 2026-08-30]` this said "this machine is not DESIGN.md §9" — a
     // claim about the machine, hard-coded into a file that cannot see one. It
     // became false the day the desk box was tuned and `check-machine.sh` first
     // printed `§9 satisfied`. What is true whatever the machine is said instead,
     // and the machine question is left to the thing that actually answers it.
-    println!("NOT a latency number, on any machine: what it bounds is a COUNT and");
-    println!("a duration under saturation, which is what ADR-0011 needs and which");
-    println!("does not need an isolated core. Whether this box meets DESIGN.md §9");
-    println!("is scripts/check-machine.sh's answer, printed above by bench.sh.");
+    (fill, per)
 }

@@ -1603,3 +1603,59 @@ must be recorded through the **whole** invocation path that will later judge it,
 convenient subset of it. Both failures are invisible in the numbers themselves — the figures
 look ordinary — and are only visible in the *validity* column beside them, which is an argument
 for having one.
+
+## A rate extrapolated across a cache boundary, and the second time this shape appeared — 2026-08-31
+
+ADR-0011 raised the ring's default capacity from 64 KiB to 4 MiB and stated the resulting slack
+as **"roughly 3.6 ms"**. Nothing had measured 3.6 ms. It was **47.7 µs, measured at 64 KiB,
+multiplied by 64.**
+
+The ADR was honest about it — a revision note put the true value somewhere in **1.6–3.6 ms** and
+said it should be read as an order of magnitude rather than a measurement. What then happened is
+the ordinary way a caveat dies: four other documents picked the number up, and one of them
+(this author, the same day) attached a **`[measured]`** tag to it. A figure that had been
+carefully labelled as derived became, three files later, a measurement.
+
+### Measuring it
+
+`crates/engine/benches/ring_full.rs` now fills **both** capacities and prints both, so the
+scaling is visible rather than assumed. Four runs, §9 desktop, `check-machine.sh` `pass 10
+fail 0 unknown 1`:
+
+| Capacity | Messages held | Time to fill | Per message |
+|---|---|---|---|
+| 64 KiB | 352 | 47.7–48.2 µs | 135–136 ns |
+| 4 MiB | 22 550 | **5.05–5.36 ms** | **223–237 ns** |
+
+The real figure is **above the entire 1.6–3.6 ms range** the ADR allowed for — about **48% more
+slack** than the headline extrapolation, and the ratio is **106–112×** for 64× the capacity.
+
+### Why, and it is the interesting half
+
+**The per-message cost nearly doubles: 135 → ~230 ns.** 64 KiB fits in L2 on this machine and
+4 MiB does not, so every write to the larger ring goes further out in the hierarchy. A ring that
+fills *more slowly* takes *longer* to overflow, so the application gets *more* time, not less.
+
+The extrapolation assumed the rate was a property of the code. It is a property of the code
+**and the working set**, and the capacity change moved the working set across a cache boundary —
+which is precisely the thing the multiplication could not see.
+
+**Nothing in ADR-0011's decision changes**, and its margin is larger than it claimed. That is
+worth stating plainly: this correction found the design in better shape than the document said,
+which is the direction people do not check.
+
+### The same shape, twice in one day
+
+This is the second instance in this file of **a rate measured in one regime and carried into
+another**. The first was the serialise slot scan: 0.4 ns per tag comparison, measured over a
+78-element scan and extrapolated down to a 14-element one, where short scans on hot data behave
+differently — it predicted −36 ns and measured **+5.2**. Here the extrapolation went the other
+way across a cache boundary instead of a branch-prediction one, and was wrong by 48%.
+
+`[to testing-skills]` — this reinforces the existing case rather than adding one: *state the
+range a rate was measured over, next to the rate*, and treat any use outside that range as a
+prediction to be tested. The addition worth making is the **tell**: both failures crossed a
+boundary in the machine rather than in the code — a scan short enough for the predictor, a
+buffer small enough for the cache. **When the parameter you are scaling is also the thing that
+decides which hardware regime you are in, the scaling factor is not a factor.** And both were
+settled the same cheap way: measure the second point instead of computing it.
