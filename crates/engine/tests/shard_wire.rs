@@ -105,13 +105,14 @@ struct ShardWire {
 }
 
 impl ShardWire {
-    fn with(shards: usize, quiet: Duration, deadline: Duration) -> Self {
+    /// `None` when this machine has fewer physical cores than `shards`.
+    ///
+    /// `[measured 2026-08-31]` a GitHub runner has two vCPUs that are two
+    /// threads of one physical core, so it cannot host two shards — and
+    /// `ShardPlan::validate` refuses that plan, correctly. The caller asserts
+    /// the refusal rather than skipping; see `tests/shard.rs`.
+    fn plan_for(shards: usize) -> Option<ShardPlan> {
         let topology = Topology::read().expect("reading /sys on Linux");
-        // **One core per PHYSICAL core.** `[measured 2026-08-31]` taking the first
-        // `shards` online ids was refused on a GitHub runner, which reports cpu0 and
-        // cpu1 as two threads of one physical core — the rule working, on the first
-        // machine that could show it. `DESIGN.md` §9 requires SMT off, so the
-        // reference desktop never can.
         let mut cores: Vec<CoreId> = Vec::new();
         for candidate in topology.online() {
             if cores
@@ -125,18 +126,15 @@ impl ShardWire {
                 break;
             }
         }
-        assert_eq!(
-            cores.len(),
-            shards,
-            "this machine has too few physical cores"
-        );
         // CI has no isolcpus and neither does a laptop. Said out loud rather
         // than quietly exempt.
-        let plan = ShardPlan::new(cores).allow_unisolated();
+        (cores.len() == shards).then(|| ShardPlan::new(cores).allow_unisolated())
+    }
 
+    fn with(plan: &ShardPlan, quiet: Duration, deadline: Duration) -> Self {
         let clock = Arc::new(AtomicU64::new(FIXED_TIME_MILLIS));
         let for_shards = Arc::clone(&clock);
-        let shards = Shards::start(&plan, move |_| -> ShardEngine {
+        let shards = Shards::start(plan, move |_| -> ShardEngine {
             Engine::new(
                 Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
                 InlineDispatch::new(EchoApp::default()),
@@ -275,6 +273,27 @@ impl SessionUnderTest for ShardWire {
 
 /// Well above a loopback round trip between two yielding threads.
 const STEP_QUIET: Duration = Duration::from_millis(4);
+
+/// The two tests in this file must not run at the same time.
+///
+/// Cargo runs the tests inside one binary in parallel, and each of these starts
+/// **real engine threads**. `[measured 2026-08-31]` with them concurrent, the
+/// one-shard run scored **58 / 59** once, losing part of a reply at
+/// `quiet = 1 ms`; run alone it scored 59 eighteen times out of eighteen, at
+/// 1, 2 and 4 ms.
+///
+/// **The bound was not the fault and was not the fix.** Raising it until the
+/// red went away would have been tuning a number rather than removing the
+/// interference — `tests/wire.rs` carries the incident that lesson comes from,
+/// where a gate whose score walked 39 → 43 → 59 with its own timeout was
+/// failing on Nagle the whole time. The bound is left where it was.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the lock, ignoring poisoning: a panic in the other test is that test's
+/// failure to report, not a reason to turn this one into a different one.
+fn alone() -> std::sync::MutexGuard<'static, ()> {
+    ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner())
+}
 /// Lifeline for one step. Reaching it is a failure, not a settle.
 const STEP_DEADLINE: Duration = Duration::from_millis(200);
 
@@ -288,8 +307,10 @@ const STEP_DEADLINE: Duration = Duration::from_millis(200);
 /// score walked 39 → 43 → 59 with its own bound was failing on Nagle).
 #[test]
 fn one_shard_passes_all_fifty_nine_at_any_settle_bound() {
+    let _alone = alone();
+    let plan = ShardWire::plan_for(1).expect("every machine has one physical core");
     for quiet in [Duration::from_millis(1), Duration::from_millis(20)] {
-        let report = run(|_| ShardWire::with(1, quiet, STEP_DEADLINE))
+        let report = run(|_| ShardWire::with(&plan, quiet, STEP_DEADLINE))
             .unwrap_or_else(|e| panic!("at quiet={quiet:?}: {e}"));
         assert_eq!(
             report.passed, 59,
@@ -329,8 +350,15 @@ fn one_shard_passes_all_fifty_nine_at_any_settle_bound() {
 /// rewritten to 59 — which is the point. It is not a target.
 #[test]
 fn two_shards_break_the_single_logon_rule_and_this_records_it() {
-    let report =
-        run(|_| ShardWire::with(2, STEP_QUIET, STEP_DEADLINE)).unwrap_or_else(|e| panic!("{e}"));
+    let _alone = alone();
+    let Some(plan) = ShardWire::plan_for(2) else {
+        // One physical core: two shards cannot be hosted here at all, and
+        // `tests/shard.rs` asserts that the runtime refuses to try. There is no
+        // defect to characterise on a machine that cannot reach it.
+        return;
+    };
+    let report = run(|_| ShardWire::with(&plan, STEP_QUIET, STEP_DEADLINE))
+        .unwrap_or_else(|e| panic!("{e}"));
 
     assert_eq!(
         report.passed, 57,

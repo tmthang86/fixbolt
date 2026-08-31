@@ -25,17 +25,24 @@ use fixbolt_engine::affinity::{AffinityError, CoreId, ShardPlan, Topology};
 use fixbolt_engine::shard::{Assign, ShardError, Shardable, Shards};
 use fixbolt_engine::transport::TcpTransport;
 
-/// Cores this machine will actually accept, with isolation waived.
+/// What this machine can host.
 ///
-/// CI has no `isolcpus` and neither does a development laptop, so the plans
-/// below say so out loud rather than being quietly exempt.
-fn plan_for(shards: usize) -> ShardPlan {
+/// `[measured 2026-08-31]` a GitHub runner has **two vCPUs that are two threads
+/// of one physical core**, so it cannot host two shards at all — and the runtime
+/// is right to refuse, which is what the second arm asserts. Neither arm is a
+/// skip: on a machine with room the test runs, and on one without it the test
+/// checks the refusal. A `#[test]` that returns early reports `ok`, and a green
+/// nobody earned is exactly what `CLAUDE.md` §10 is about.
+enum Hosting {
+    /// Cores this machine accepts, one per physical core, isolation waived —
+    /// CI has no `isolcpus` and neither does a laptop.
+    Room(ShardPlan),
+    /// Fewer physical cores than shards asked for, and the ids that collide.
+    NoRoom { plan: ShardPlan, wanted: usize },
+}
+
+fn hosting_for(shards: usize) -> Hosting {
     let topology = Topology::read().expect("reading /sys on Linux");
-    // **One core per PHYSICAL core.** `[measured 2026-08-31]` taking the first
-    // `shards` online ids was refused on a GitHub runner, which reports cpu0 and
-    // cpu1 as two threads of one physical core — the rule working, on the first
-    // machine that could show it. `DESIGN.md` §9 requires SMT off, so the
-    // reference desktop never can.
     let mut cores: Vec<CoreId> = Vec::new();
     for candidate in topology.online() {
         if cores
@@ -49,12 +56,44 @@ fn plan_for(shards: usize) -> ShardPlan {
             break;
         }
     }
-    assert_eq!(
-        cores.len(),
-        shards,
-        "this machine has too few physical cores"
-    );
-    ShardPlan::new(cores).allow_unisolated()
+    if cores.len() == shards {
+        return Hosting::Room(ShardPlan::new(cores).allow_unisolated());
+    }
+    // Not enough physical cores. Build the plan somebody would write anyway —
+    // the first `shards` online ids — so the refusal can be asserted.
+    let naive: Vec<CoreId> = topology.online().iter().copied().take(shards).collect();
+    Hosting::NoRoom {
+        plan: ShardPlan::new(naive).allow_unisolated(),
+        wanted: shards,
+    }
+}
+
+/// The plan for `shards` shards, or `None` with the refusal already asserted.
+fn plan_for(shards: usize) -> Option<ShardPlan> {
+    match hosting_for(shards) {
+        Hosting::Room(plan) => Some(plan),
+        Hosting::NoRoom { plan, wanted } => {
+            let dropped = Arc::new(AtomicUsize::new(0));
+            let d = Arc::clone(&dropped);
+            let refused = Shards::start(&plan, move |_| Counter {
+                added: Arc::new(AtomicUsize::new(0)),
+                dropped: Arc::clone(&d),
+                held: Vec::new(),
+            });
+            match refused.err() {
+                Some(ShardError::Affinity(AffinityError::SmtSiblingOf(_, _))) => {}
+                Some(other) => panic!(
+                    "this machine has fewer than {wanted} physical cores, so the plan must be \
+                     refused as SMT siblings; got {other:?}"
+                ),
+                None => panic!(
+                    "this machine has fewer than {wanted} physical cores and the runtime \
+                     started {wanted} shards on them anyway"
+                ),
+            }
+            None
+        }
+    }
 }
 
 /// A shard that counts what it is given and records that it was dropped.
@@ -112,7 +151,7 @@ fn spin_until(mut done: impl FnMut() -> bool, within: Duration) -> bool {
 
 #[test]
 fn every_shard_thread_confirms_the_core_it_was_given() {
-    let plan = plan_for(2);
+    let Some(plan) = plan_for(2) else { return };
     let added = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
     let (a, d) = (Arc::clone(&added), Arc::clone(&dropped));
@@ -208,7 +247,7 @@ fn a_plan_the_machine_refuses_starts_nothing_at_all() {
 
 #[test]
 fn round_robin_spreads_connections_across_shards() {
-    let plan = plan_for(2);
+    let Some(plan) = plan_for(2) else { return };
     let counts: Vec<Arc<AtomicUsize>> = (0..2).map(|_| Arc::new(AtomicUsize::new(0))).collect();
     let per_shard = counts.clone();
     let dropped = Arc::new(AtomicUsize::new(0));
@@ -250,7 +289,7 @@ fn an_assignment_outside_the_range_is_refused_and_not_clamped() {
         }
     }
 
-    let plan = plan_for(1);
+    let Some(plan) = plan_for(1) else { return };
     let dropped = Arc::new(AtomicUsize::new(0));
     let d = Arc::clone(&dropped);
     let mut shards = Shards::start(&plan, move |_| Counter {
@@ -271,7 +310,7 @@ fn an_assignment_outside_the_range_is_refused_and_not_clamped() {
 
 #[test]
 fn dropping_the_runtime_ends_every_thread() {
-    let plan = plan_for(2);
+    let Some(plan) = plan_for(2) else { return };
     let dropped = Arc::new(AtomicUsize::new(0));
     let d = Arc::clone(&dropped);
 
