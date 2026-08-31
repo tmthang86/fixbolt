@@ -1,6 +1,6 @@
 # Cái nào trong ba tuỳ chọn cô lập lấy mất 36%
 
-> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** Đang làm · **Sửa 2026-08-31** — thêm bước 4b (jitter), chủ dự án duyệt sau khi bước 4 ra kết quả
 > **Phạm vi:** open item 22 — phần còn lại sau khi `threads-and-affinity` đóng
 
 ## Bối cảnh
@@ -130,7 +130,8 @@ thay đổi. Hai điều vẫn liên quan:
 | 2 | Ghi **dự đoán** vào plan này trước khi reboot, kèm cái gì sẽ bác bỏ nó | 1 |
 | 3 | Chủ máy sửa `/etc/default/grub`, `update-grub`, reboot vào dòng thí nghiệm | 2 |
 | 4 | Chạy script, đọc bảng bốn nhánh | 3 |
-| 5 | Chủ máy khôi phục dòng §9, reboot, `check-machine.sh` đọc lại `pass … fail 0` | 4 |
+| 4b | Đo **đuôi** trên `cpu4` (`nohz_full`) và `cpu6` (chỉ `isolcpus`) — cả hai đều `isolcpus`, khác nhau đúng một biến. Thêm chế độ `--jitter` vào `measure-isolation-cost.c` | 4 |
+| 5 | Chủ máy khôi phục dòng §9, reboot, `check-machine.sh` đọc lại `pass … fail 0` | 4b |
 | 6 | Viết vào `measured-costs.md`; sửa §9 và ADR nếu khuyến nghị đổi; đóng item 22 | 4, 5 |
 
 ## Dự đoán, ghi trước bước 3
@@ -149,6 +150,22 @@ và bài viết trong `measured-costs.md` phải nói vậy bằng đúng số c
 
 **Cái làm hỏng phép đo chứ không bác bỏ nó:** `cpu4` đọc ~199 **kèm** `ticks(LOC)` hàng nghìn —
 nghĩa là tick không dừng và `nohz_full` chưa từng chạy.
+
+## Dự đoán cho bước 4b, ghi trước khi chạy
+
+`nohz_full` được mua để đổi lấy jitter, nên câu hỏi là: nó cắt được cái đuôi nào, và cái
+đuôi đó có đáng 155 ns trung vị không?
+
+`cpu6` chỉ có `isolcpus`: không tác vụ nào khác chạy lên đó, nhưng **tick vẫn chạy**
+— `[đo]` ~3745 lần/giây. `cpu4` có `nohz_full`: `[đo]` 2–4 tick trong cùng cửa sổ.
+
+Dự đoán: `cpu6` sẽ có những lần vọt hình dạng-tick ở đuôi xa mà `cpu4` không có, vào
+khoảng **p99.85** (3745 tick trên ~5 triệu lần gọi ≈ 0.075%). **Tôi KHÔNG dự đoán được
+chúng có đủ lớn để bù 155 ns trung vị hay không** — đó chính là lý do phải đo, và nếu tôi
+đoán được thì không cần đo.
+
+**Cái làm hỏng phép đo:** p50 của một trong hai lõi không khớp với bảng ở bước 4 cộng
+thêm phụ phí đọc đồng hồ. Khi đó cái được đo không phải cái tưởng là đang đo.
 
 ## Cách kiểm chứng
 
@@ -172,7 +189,7 @@ Máy phải được trả về nguyên trạng, và điều đó phải đượ
 
 ## Tài liệu phải cập nhật
 
-- [ ] `docs/reference/measured-costs.md` — phần trả lời, nối vào mục 36%
+- [ ] `docs/reference/measured-costs.md` — phần trả lời, nối vào mục 36%, và phần đuôi từ bước 4b
 - [ ] `docs/DESIGN.md` §9 — dòng cô lập, nếu khuyến nghị đổi
 - [ ] `docs/DESIGN.md` §8 — nếu con số 505/680 ns được thay bằng một cặp khác
 - [ ] `docs/decisions/ADR-00NN` — nếu §9 đổi (đảo một quyết định ⇒ ADR mới, §5)
@@ -203,9 +220,13 @@ Máy phải được trả về nguyên trạng, và điều đó phải đượ
 
 ## Ngoài phạm vi
 
-- **Đo jitter mà cô lập mua được.** Đây vẫn là nửa còn thiếu của phép đánh đổi và
-  `measured-costs.md` đã nói vậy. Một trung vị đắt hơn 162 ns hoàn toàn có thể đáng giá
-  nếu nó cắt được đuôi; bài này không nói gì về chuyện đó và không được đọc như thể có.
+- ~~**Đo jitter mà cô lập mua được.**~~ **Chuyển VÀO phạm vi, 2026-08-31, sau bước 4.**
+  Lý do của việc sửa plan: bước 4 cho ra kết quả `nohz_full` là toàn bộ cái giá, và câu
+  hỏi tiếp theo lập tức là *có nên bỏ nó khỏi §9 không*. Đảo một dòng §9 chỉ dựa trên
+  trung vị là **đúng cái sai mà bài viết cũ đã cảnh báo** — nó viết rằng một cái đuôi mà
+  cô lập cắt được "hoàn toàn có thể đáng giá 175 ns trung vị". Quyết định cần cả hai nửa.
+  Và lần boot này là **cấu hình duy nhất** có `cpu4` với `cpu6` chỉ khác nhau đúng một
+  biến `nohz_full`, cả hai đều `isolcpus`: đo sau này tốn thêm hai lần reboot nữa.
 - **`mitigations=off`.** Cũng cần reboot, cũng ảnh hưởng đúng đường vào/ra kernel này,
   và là một **quyết định bảo mật** chứ không phải một phép đo. Nó ở item 22 từ đầu và
   ở nguyên đó.

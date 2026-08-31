@@ -25,13 +25,23 @@
 # It READS ONLY and needs no privilege. Changing the kernel command line is root,
 # is a reboot, and belongs to the person at the machine.
 #
-# Usage: scripts/measure-isolation-cost.sh [core ...]     (default: 4 5 6 7)
+# `--jitter` runs the tail mode instead: every call timed individually, with the
+# core's own timer-tick count across the same window beside it. That pairing is
+# the point — `[measured 2026-08-31]` the number of calls over 1 us and the number
+# of ticks came out at 1146/1282, 1136/1275 and 2/2 on three cores, which is how
+# the tail was shown to BE the tick rather than merely to correlate with a knob
+# that moved at the same time (CLAUDE.md §10).
+#
+# Usage: scripts/measure-isolation-cost.sh [--jitter] [core ...]   (default: 4 5 6 7)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/scripts/measure-isolation-cost.c"
 BIN="$(mktemp -t measure-isolation-cost.XXXXXX)"
 trap 'rm -f "$BIN"' EXIT
+
+MODE=median
+if [ "${1:-}" = "--jitter" ]; then MODE=jitter; shift; fi
 
 CORES=("${@:-}")
 [ -z "${CORES[0]:-}" ] && CORES=(4 5 6 7)
@@ -84,6 +94,7 @@ echo
 
 printf "%-6s %-9s %-10s %-10s %-12s %s\n" \
        core isolcpus nohz_full rcu_nocbs "ticks(LOC)" "measurement"
+ARGS=(); [ "$MODE" = jitter ] && ARGS=(--jitter)
 for c in "${CORES[@]}"; do
   in_list "$c" "$ISOLATED" && iso=yes || iso=no
   in_list "$c" "$NOHZ"     && nz=yes  || nz=no
@@ -91,7 +102,7 @@ for c in "${CORES[@]}"; do
   if in_list "$c" "$NOCBS" || [ "$nz" = yes ]; then nocb=yes; else nocb=no; fi
 
   before="$(loc_of "$c")"
-  out="$(taskset -c "$c" "$BIN")"
+  out="$(taskset -c "$c" "$BIN" "${ARGS[@]}")"
   after="$(loc_of "$c")"
   ticks=$(( ${after:-0} - ${before:-0} ))
 
@@ -99,5 +110,10 @@ for c in "${CORES[@]}"; do
 done
 
 echo
-echo "user_loop must agree across every core above. Where it does not, that core's"
-echo "syscall_loop says nothing about isolation — CLAUDE.md §10."
+if [ "$MODE" = jitter ]; then
+  echo "over_1us should track ticks(LOC) call for call. Where it does not, the tail has"
+  echo "a second source and this run has not identified it."
+else
+  echo "user_loop must agree across every core above. Where it does not, that core's"
+  echo "syscall_loop says nothing about isolation — CLAUDE.md §10."
+fi
