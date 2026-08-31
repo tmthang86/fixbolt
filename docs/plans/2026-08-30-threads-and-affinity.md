@@ -556,3 +556,104 @@ scripts/check-links.py                             405 link, không link chết
 ```
 
 **Bước 6 chưa bắt đầu**, và bước 4 vẫn không đóng được vì item 24.
+
+### Bước 6 — đo, và phép đo lật ngược một dòng lời khuyên của chính §9. 2026-08-31.
+
+`crates/engine/benches/turn.rs`, bốn case, qua socket TCP thật (`Loopback` không có kernel
+trong nó và sẽ đo cái sweep mà thiếu đúng thứ chi phối nó).
+
+**Con số thật của `Engine::turn`**, đo trong cùng một binary một lần chạy nên phép trừ không
+bắc qua hai chương trình:
+
+```
+recv on a quiet socket                474.6 ns
+engine turn, 1 idle session           505.2 ns
+engine turn, 4 idle sessions         2012.0 ns   (503.0 mỗi session)
+engine turn, 16 idle sessions        8162.3 ns   (510.1 mỗi session)
+```
+
+**Engine tự nó tốn ~30 ns mỗi session mỗi lượt; syscall là 94% còn lại.** Phẳng từ 1 tới 16
+trong vòng 2% — đúng tính chất mà 703 ns từng được công bố kèm, giờ đúng cho engine chứ không
+phải cho một cái sàn.
+
+#### Và rồi cùng benchmark đó dưới `taskset` lật ngược một dòng của §9
+
+| Core | `isolcpus`? | miền L3 | turn, 1 session | mỗi session ở N=16 |
+|---|---|---|---|---|
+| `cpu0` | không | 0 | **498.5 ns** | 509.0 ns |
+| `cpu5` | không | 1 | **497.4 ns** | 505.2 ns |
+| `cpu6` | **có** | 1 | **680.1 ns** | 679.7 ns |
+| `cpu7` | **có** | 1 | **671.6 ns** | 672.0 ns |
+
+**Lõi cô lập chậm hơn 36%** ở đúng cái syscall mà §8 nói là chi phí lớn nhất. Và **không phải
+miền L3**: `cpu5` với `cpu6` cùng miền mà lệch 36.7%; `cpu0` với `cpu5` khác miền mà lệch 0.2%.
+Ba tuỳ chọn cô lập (`isolcpus`, `nohz_full`, `rcu_nocbs`) do cùng một dòng lệnh kernel áp lên
+cùng một tập CPU nên **chưa tách được cái nào**; cơ chế có tên là `nohz_full` — context tracking
+chạy ở **mọi** lần vào/ra kernel, mà workload này không là gì khác ngoài vào/ra kernel. Đó là
+một giả thuyết có cơ chế, và được ghi đúng như vậy.
+
+Con số 703 ns cũ đo bằng chương trình C **ghim trên lõi cô lập** — chính nó ghi thế. Khớp chỗ
+đặt lại thì hai số đồng ý trong 4%.
+
+**Điều phép đo này KHÔNG nói:** cô lập mua được bao nhiêu jitter. Một cái đuôi bị nó cắt đi rất
+có thể đáng hơn 175 ns median. Cái nó bỏ đi là giả định rằng cô lập là miễn phí. `DESIGN.md` §8
+và §9, `GUIDE.md` §1a và item 22 đều nói lại điều đó.
+
+`[to testing-skills]` — **một cấu hình được nhận vì hiệu năng, chưa bao giờ đo với chính thao
+tác mà nó thay đổi.** Cả lời khuyên lẫn thao tác nóng đều nằm trong cùng một tài liệu ở đây,
+suốt một ngày, và không ai bấm giờ hai thứ cùng nhau. Ghi ở `reference/measured-costs.md`.
+
+#### Cái không đo ở đây
+
+**Tổng theo số shard.** `N` ở trên là số session trên **một** engine, tức là những gì một shard
+giữ; tổng cho M shard là M thread mỗi cái làm đúng thế, và đó là câu hỏi wire-to-wire của
+`tools/w2w` chứ không phải của một microbench — mà `w2w` chưa shard. Phép tính mà `GUIDE.md`
+§1a phát biểu (8 shard × 13 session thay vì 1 × 104) chính là phép tính lấy những con số này
+làm đầu vào.
+
+#### Baseline cho bốn case mới, theo đúng thủ tục ADR-0016
+
+`[đo 2026-08-31]` **26 lần chạy `bench.sh` trọn vẹn, 21 lần đọc `pass 10 fail 0`**, cách nhau
+8 giây, đo **qua `bench.sh`** chứ không phải chạy thẳng target — đúng cái bẫy `baselines.tsv`
+ghi ở đầu file.
+
+| case | median | max/median | margin |
+|---|---|---|---|
+| `recv on a quiet socket` | 470.9 ns | 1.016 | 1.10 |
+| `engine turn, 1 idle sessions` | 500.3 ns | 1.012 | 1.10 |
+| `engine turn, 4 idle sessions` | 2002.9 ns | 1.021 | 1.10 |
+| `engine turn, 16 idle sessions` | 8139.4 ns | 1.017 | 1.10 |
+
+Đây là những case **chặt nhất** trong file — max/median 1.011–1.021, so với 1.30 của
+`ring, one way` — nên cả bốn đều lấy bậc thấp nhất của thang.
+
+**Năm lần bị loại, và nguồn lớn nhất là chính tôi.** Mỗi lần tôi hỏi thăm tiến độ bằng `ps`,
+`grep`, `python3` là một lần thêm tải lên đúng cái máy đang đo. `check-machine.sh` bắt được:
+`FAIL machine is quiet — 15% CPU busy over 1s`. Ghi lại vì nó là một biến thể của điều đã có
+trong `desktop-load-invalidates-benchmarks`: **người quan sát phép đo là một phần của phép đo**.
+
+```
+scripts/bench.sh --strict
+  targets measuring    9 of 9
+  timing over baseline 0
+  cases w/o a baseline 0
+  OK                                   EXIT=0
+```
+
+#### Cổng corpus qua shard có một sàn, và sàn đó là của máy
+
+`[đo 2026-08-31]` CI đỏ hai lần liên tiếp ở `quiet = 1 ms`, và lần thứ hai không phải do hai
+test giẫm chân nhau — đã sửa rồi. Runner của GitHub có **hai vCPU là hai luồng của một lõi vật
+lý**, nên luồng engine và luồng test chia nhau một lõi và một khoảng trống *bên trong* chuỗi
+trả lời dài hơn 1 ms sẽ kết thúc bước sớm và mất phần còn lại: **58/59**.
+
+Trên desktop tham chiếu (8 lõi vật lý) thì 59 ở 1, 2, 4, 8 và 20 ms — 18 lần chạy ở ba mức đầu.
+
+**Vậy `quiet` có một sàn do khả năng lập lịch của máy quyết định, không phải do giao thức.** Hai
+mức mới là **10 ms và 50 ms**, cách nhau 5×, đặt hẳn trên sàn đó.
+
+**Đây không phải nước đi mà `tests/wire.rs` cảnh báo.** Cảnh báo đó nói về việc **nâng bound cho
+tới khi một lỗi giao thức biến mất** — `[đo 2026-08-30]` một cổng wire có điểm đi 39 → 43 → 59
+theo timeout của chính nó thật ra đang hỏng vì Nagle. Giao thức ở đây đã có cổng **tất định**
+ngay bên cạnh: `tests/wire.rs`, 59/59, hai chế độ, **không có bound nào cả**. Cái tránh được ở
+đây là một test báo cáo về bộ lập lịch của runner rồi gọi đó là FIX.

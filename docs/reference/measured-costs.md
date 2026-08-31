@@ -1706,3 +1706,97 @@ no queries, no log lines — needs a second count from the same instrument that 
 non-zero. Here the same `strace` output, the same tid filter, over a wider window: 19 syscalls,
 so the filter demonstrably works and the empty window is a fact about the code. Without it the
 transcript reads the same whether the code is clean or the trace is empty.
+
+---
+
+## The isolated core is 36% slower at the one thing the engine does most — 2026-08-31
+
+`DESIGN.md` §9 tells you to give the engine an isolated core: `isolcpus`, `nohz_full`,
+`rcu_nocbs`. D8's model is one non-blocking `read` per connection per turn, and the section
+above measured that syscall at **703 ns**, calling it the largest single term in the design.
+
+**Nobody had measured the two against each other.**
+
+`[measured 2026-08-31]` AMD Ryzen 7 3700X, Linux 7.0.0-30-generic, `check-machine.sh` reading
+`pass 10 fail 0`, `crates/engine/benches/turn.rs`, `Engine::turn` over real TCP sockets:
+
+| Core | `isolcpus`? | L3 domain | turn, 1 session | turn, 16 sessions | per session |
+|---|---|---|---|---|---|
+| `cpu0` | no | 0 | **498.5 ns** | 8143.2 ns | 509.0 ns |
+| `cpu5` | no | 1 | **497.4 ns** | 8083.4 ns | 505.2 ns |
+| `cpu6` | **yes** | 1 | **680.1 ns** | 10875.6 ns | 679.7 ns |
+| `cpu7` | **yes** | 1 | **671.6 ns** | 10752.2 ns | 672.0 ns |
+
+**+36% on the isolated cores.**
+
+### It is not the L3 domain, and that is the point of the table
+
+This CPU has two L3 domains, `cpu0-3` and `cpu4-7`. `cpu5` and `cpu6` are **in the same one**
+and differ by 36.7%; `cpu0` and `cpu5` are in **different** ones and differ by 0.2%. The
+placement variable is isolation, not cache. `CLAUDE.md` §10: *a cause accepted because a knob
+moved with it* is the failure this table is built to avoid, so the arms were chosen to move one
+thing.
+
+**Which of the three isolation options it is was not separated**, and this page does not guess.
+They were applied to the same set of CPUs by one kernel command line, and separating them needs
+a reboot with a different one. The documented mechanism is `nohz_full`: full dynticks turns on
+kernel context tracking, which runs on **every** kernel entry and exit — and this workload is
+nothing but kernel entries and exits. That is a hypothesis with a named mechanism, not a
+measurement, and it is labelled as one.
+
+### What it does to §8's number, and to §9's advice
+
+The **703 ns** in the section above was measured *pinned to an isolated core* — its own text
+says so. Matched for placement, the two readings agree: 672–680 ns here for a whole
+`Engine::turn`, against 703 ns there for a bare C `read`. The remaining gap is 4%, between two
+different programs on two different days, and its sign is the wrong way round by 31 ns, which
+is unexplained and is smaller than anything this page can currently resolve.
+
+So the honest statement is not *"the engine got faster"*. It is:
+
+> **On an ordinary core this engine turns a session in ~500 ns. On the core `DESIGN.md` §9
+> recommends, it takes ~675 ns.** §9 buys jitter isolation and pays 36% of the dominant term for
+> it, and until 2026-08-31 the trade was neither measured nor stated.
+
+Whether that trade is worth it is a question about **jitter, which this table does not
+measure**. A tail that isolation removes could easily be worth 175 ns of median. Nothing here
+argues either way; what it removes is the assumption that isolation is free.
+
+### What a turn costs beyond the syscall it is made of
+
+Measured in the same binary and the same run, so the subtraction is not across programs:
+
+```
+recv on a quiet socket                474.6 ns        469.4 ns      (two runs)
+engine turn, 1 idle session           505.2 ns        497.9 ns
+engine turn, 4 idle sessions         2012.0 ns       1994.2 ns      (503.0 / 498.6 per session)
+engine turn, 16 idle sessions        8162.3 ns       8064.2 ns      (510.1 / 504.0 per session)
+```
+
+**`Engine::turn` adds about 30 ns per session over the `read` it is made of**, and the syscall
+is **94%** of it. Flat from 1 to 16 sessions to within 2%, which is the property 703 ns was
+published with and which now holds for the engine rather than for a floor.
+
+Set against this project's own numbers: `parse NewOrderSingle (validated)` is 122.6 ns on this
+machine. **The sweep's own work is a quarter of a parse; the syscall that discovers there is
+nothing to parse is four of them.**
+
+### The generalisation
+
+`[to testing-skills]` — **a setting recommended for performance, never measured against the
+operation it changes.** The recommendation and the hot operation were both written down here,
+in the same document, for a day: §9 says isolate the core, §8 says the dominant cost is a
+syscall, and nothing had put a stopwatch on the two together. The measurement took four runs of
+an existing benchmark under `taskset` and reversed a piece of advice.
+
+The shape is not specific to CPUs. It appears wherever a configuration is adopted for a *class*
+of benefit — isolation, a bigger cache, a stricter isolation level, a safer allocator, a
+retry-heavy client — and the cost lands on a *specific* operation nobody re-times afterwards.
+Two properties make it survivable: the setting is applied once and lives in an environment
+rather than in code, so no diff shows it; and the benefit it buys is real, so questioning it
+feels like questioning the goal.
+
+The cheap defence is the one used here: **when you adopt a setting for performance, measure the
+single operation your design says dominates, with and without it, changing nothing else.** One
+variable, two arms, and a third arm that differs in the *other* plausible way — here `cpu0`
+against `cpu5`, which is what makes "it is not the cache" a measurement rather than a claim.

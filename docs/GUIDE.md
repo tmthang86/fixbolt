@@ -188,7 +188,12 @@ as the API.
   `affinity::pin_current_thread`. `Durability::Fsync` has no writer thread and `open_pinned`
   refuses it rather than accepting a core it would ignore.
 - **Isolating those cores.** `isolcpus` plus `nohz_full`, or the scheduler will put other work
-  on them.
+  on them — **and it is not free.** `[measured 2026-08-31]` on the reference machine a turn of
+  the engine costs **680 ns per session on an isolated core against 498 ns on an ordinary one**,
+  a 36% tax on the syscall that dominates this design; `cpu5` and `cpu6` are in the same L3
+  domain, so it is the isolation and not the cache. Take it for the tail it removes. **What that
+  tail is worth has not been measured here**, so this is a trade to make deliberately rather than
+  a setting to copy. [measured-costs.md](reference/measured-costs.md).
 
 ---
 

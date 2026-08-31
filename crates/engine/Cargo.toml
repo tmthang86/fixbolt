@@ -71,3 +71,7 @@ harness = false
 [[bench]]
 name = "ring_full"
 harness = false
+
+[[bench]]
+name = "turn"
+harness = false

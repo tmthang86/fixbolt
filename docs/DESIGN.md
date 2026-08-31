@@ -985,7 +985,7 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | NIC → kernel → socket buffer | 3–8 µs | Kernel, IRQ affinity, driver |
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
 | Wakeup — **`standard`** blocks on readiness | 2–5 µs, `epoll`-class, **and the core is given back** | **This design**, D8 |
-| Wakeup — **`hft`** busy-polls | `[measured 2026-08-30]` **703 ns × N**, N = sockets on the thread, **and a core is burned** | **This design**, D8 |
+| Wakeup — **`hft`** busy-polls | `[measured 2026-08-31]` **`Engine::turn` itself: ~505 ns × N on an ordinary core, ~675 ns × N on an isolated one**, N = sockets on the thread, **and a core is burned**. The 2026-08-30 figure of 703 ns was a C program's bare `read`, pinned to an isolated core; matched for placement the two agree to 4%. **§9's isolation costs 36% of this row** — [measured-costs.md](reference/measured-costs.md) | **This design**, D8, `benches/turn.rs` |
 | Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.6 ns) | This design |
 | Session machine (D1) | ~0.1 µs | This design |
 | Dispatch — inline **vs** ring (D4) | `[measured 2026-08-31]` **0.0013 µs** inline **vs** **0.27 µs** ring one way (§9 desktop) | Application's choice |
@@ -993,8 +993,21 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
 | **User-space work only** | `[measured 2026-08-31]` **~0.46 µs**, inline dispatch, N = 1 | The half that was always cheap |
-| **Everything this design controls, N = 1** | **~1.7 µs** — the row above plus one 703 ns poll | |
-| **Everything this design controls, N sessions** | **`< 1 µs + N × 703 ns`** | |
+| **Everything this design controls, N = 1** | **~0.97 µs** on an ordinary core, **~1.14 µs** on an isolated one — the row above plus one turn | |
+| **Everything this design controls, N sessions** | **`~0.46 µs + N × 505 ns`** ordinary, **`+ N × 675 ns`** isolated | |
+
+`[measured 2026-08-31]` **The poll row is now `Engine::turn` rather than a floor, and it
+carries a number nobody expected.** `crates/engine/benches/turn.rs` measures the real sweep over
+real sockets: **505 ns per session**, flat from 1 to 16 to within 2%, of which **~475 ns is the
+`recv` syscall and ~30 ns is everything else the engine does** — measured in the same run, so
+the subtraction is not across programs.
+
+**And the same benchmark under `taskset` reversed a piece of §9's advice.** The isolated core
+this design recommends for the engine thread is **36% slower** at that syscall: 680 ns against
+498 ns, with `cpu5` and `cpu6` in the *same* L3 domain to show it is not cache placement. §9
+buys jitter isolation and pays a third of the dominant term for it; whether that is worth it is
+a question about a tail this measurement does not touch, and it is now a trade that is stated
+rather than assumed. [measured-costs.md](reference/measured-costs.md) carries the four arms.
 
 `[measured 2026-08-31]` **Four rows stopped being literature figures, and one of them got
 4.8× worse in the process.** Serialise was carried here as **~0.05 µs**, which was the 60 ns
@@ -1052,7 +1065,7 @@ anything:
 |---|---|
 | **The machine is not a guest** | Four rows below — governor, turbo, C-states, SMT — plus NIC IRQ affinity are **host** properties. A VM cannot set them, and does not fail them loudly: the `/sys` files are simply absent, so a guest collects `unknown` and reads as under-configured rather than as structurally unable to comply. So this is a row of its own, and it decides whether the rest can mean anything. `check-machine.sh` reports `systemd-detect-virt` and steal time over the same window as the row below; a guest is a **FAIL**, and steal on bare metal is reported as unexplained rather than resolved either way. **Development may move to a cloud VM; measurement cannot.** Bare metal, or nothing but counts and same-machine A/B |
 | **Nothing else is running on the machine** | `[measured 2026-08-30]` **the row that was missing, and it dominates every other row here.** On the project's Ryzen 7 3700X, all six tuning rows below move the `ring, one way` median by **0.8%** — 260.6 ns untuned to 259.7 ns tuned, both on a quiet box. Competing CPU load moves it by **71%**, 262 ns to 449 ns, and takes the rate of a second mode near 324 ns from ~5% to **92%**. A machine can satisfy every other line in this table and still be useless to measure on. `scripts/check-machine.sh` now reads CPU busy over a one-second window and **FAILs above 3%**, naming the processes by their delta in that window |
-| `isolcpus` + `nohz_full` for the engine core | No scheduler ticks, no other tenants |
+| `isolcpus` + `nohz_full` for the engine core | No scheduler ticks, no other tenants — **and `[measured 2026-08-31]` a 36% tax on the syscall §8 says dominates**: `Engine::turn` costs 680 ns per session on `cpu6` against 498 ns on `cpu5`, which is in the same L3 domain and differs only in isolation. Take it for the tail it removes, not because it is free; the tail itself is **unmeasured**. [measured-costs.md](reference/measured-costs.md) |
 | IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt |
 | `mlockall` + pre-faulted buffers | No page fault on the hot path. The reference project's `pool.rs` touches every page at startup — copy that |
 | Transparent huge pages **off** | THP compaction stalls are multi-millisecond |
