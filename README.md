@@ -105,6 +105,8 @@ crates/
 benches/         baselines.tsv — one recorded timing baseline per (CPU model, case);
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets — nightly, outside the workspace
+spikes/ktls/     answers ADR-0005's kTLS question and stops — outside the workspace,
+                 nothing depends on it, no code from it is merged
 docs/
   GUIDE.md       how to embed the engine without losing latency or messages
   PRD.md         what must be built, in which phase, and the distance from QuickFIX

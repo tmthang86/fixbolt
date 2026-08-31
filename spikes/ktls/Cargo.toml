@@ -1,0 +1,35 @@
+# Deliberately OUTSIDE the workspace, for the same reason fuzz/ is: an empty
+# [workspace] table detaches this crate, so `cargo build` at the root — and CI's
+# --no-default-features job, which must run on a machine with nothing optional
+# installed — never sees rustls, ring or ktls-core.
+#
+# This is a spike. docs/plans/2026-08-30-ktls-spike.md says in its own scope
+# section that no TLS code is merged into the engine from it: the deliverable is
+# docs/reference/ktls-on-a-plain-socket.md, and this program is what that
+# document's "how to check it again" points at.
+[package]
+name = "fixbolt-ktls-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+# The crate STATUS.md open item 10 is actually about. `shim-rustls` is what
+# turns a rustls KernelConnection into something ktls-core::Context can drive.
+ktls-core = { version = "0.0.5", features = ["shim-rustls"] }
+
+# `ring` rather than the default `aws_lc_rs`: this machine has cc and perl but
+# no cmake, and aws-lc-sys needs cmake. Nothing here depends on which provider
+# it is — kTLS takes raw AES-GCM keys, whoever derived them.
+rustls = { version = "0.23.43", default-features = false, features = [
+    "std",
+    "ring",
+] }
+rcgen = "0.14"
+libc = "0.2"
+
+[[bin]]
+name = "ktls-spike"
+path = "src/main.rs"

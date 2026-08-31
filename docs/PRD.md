@@ -149,7 +149,7 @@ find them whether or not this page does.
 | Session schedules — start/end time, weekday | Yes `[documented]` | Entered scope with ADR-0004; unspecified | P1, gap |
 | Message stores | File, memory, and SQL backends `[documented]` | mmap journal, 3 policies (`None`/`Async`/`Fsync`) | P1, by design narrower |
 | Logging | File, screen, SQL backends `[documented]` | `tracing` behind a feature flag; **never on the hot path** | P1, by design narrower |
-| SSL / TLS | Yes `[documented]` | [ADR-0005](decisions/ADR-0005-tls.md) **Proposed** — `rustls` handshake, kTLS steady state on Linux. No plan yet: it is blocked on verifying kTLS works without an async runtime | **P1, gap** |
+| SSL / TLS | Yes `[documented]` | [ADR-0005](decisions/ADR-0005-tls.md) **Accepted** — `rustls` handshake, kTLS steady state on Linux — supplemented by [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md). `[measured 2026-08-31]` kTLS **is** drivable from a plain non-blocking socket with no async runtime, so the blocker is gone. **Still no plan**, and the phase does not move on the strength of a spike | **P1, gap** |
 | Configuration file format | Yes `[documented]` | Nothing specified | P1, gap |
 | Typed message classes / cracker | Generated per message `[documented]` | Borrowed `MessageView` over the wire buffer | Deliberate — [ADR-0003](decisions/ADR-0003-message-representation.md) |
 | Code generation targets | C++, Python, Ruby `[measured]` | Rust only | Not a goal |
@@ -209,5 +209,5 @@ Not "later" — these are out unless a new ADR reverses them.
 | 2 | ~~Repeating groups — which plan owns them?~~ **Answered:** [their own plan](plans/2026-08-27-repeating-groups.md), starting after `codec` step 1. Only the `Dictionary` trait shape lands in step 1, because the trait is public API | Phase 1 exit criterion 2 |
 | 3 | Does SBE ride a tag=value session, or does FIXP enter scope? | The size of phase 2, by roughly 5× |
 | 4 | One view type or several, once encodings stop having tags on the wire? | Every phase-2 line, and possibly `codec`'s public API today |
-| 5 | ~~TLS — own implementation, `rustls`, or terminate outside the process?~~ **Answered by [ADR-0005](decisions/ADR-0005-tls.md)**, which raises six of its own. The blocking one: can `ktls-core` be driven from a non-blocking socket with no async runtime? | Phase 1 deployability |
+| 5 | ~~TLS — own implementation, `rustls`, or terminate outside the process?~~ **Answered by [ADR-0005](decisions/ADR-0005-tls.md)**, which raised six of its own. The blocking one — can `ktls-core` be driven from a non-blocking socket with no async runtime? — is **answered 2026-08-31: yes, with four conditions**, [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md). Five remain open, and question 2 (which kernel and which cipher suites are the floor) is the one that decides how deployable this actually is | Phase 1 deployability |
 | 6 | ~~Final name~~ — **decided 2026-08-30: `fixbolt`**. Was blocking any crates.io publish |

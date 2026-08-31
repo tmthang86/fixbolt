@@ -34,6 +34,19 @@ mkdir -p "$CRATE/src"
   ' "$ROOT/Cargo.toml"
 } > "$CRATE/Cargo.toml"
 
+# The scratch crate lives outside the repository, so `rust-toolchain.toml` does
+# not reach it. Copy it in. `[measured 2026-08-31]` without this the script is a
+# **false red** on a machine with no `rustup default` set: `cargo clippy` never
+# runs at all, both halves report failure, and the transcript says the workspace
+# lints are broken. It is green in CI, which installs a default toolchain — so
+# the gate disagreed with itself depending on where it ran.
+#
+# It also closes a quieter hole. rust-toolchain.toml's own comment says the
+# pinned toolchain is load-bearing because `-D warnings` denies every lint the
+# installed clippy knows. A scratch crate on whatever clippy happened to be
+# default was testing a different compiler from the one the workspace uses.
+cp "$ROOT/rust-toolchain.toml" "$CRATE/rust-toolchain.toml"
+
 if ! grep -q '^\[lints\.clippy\]' "$CRATE/Cargo.toml"; then
   echo "FAIL: Cargo.toml has no [workspace.lints.clippy] block at all." >&2
   exit 1

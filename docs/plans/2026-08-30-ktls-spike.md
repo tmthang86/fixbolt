@@ -1,6 +1,6 @@
 # `ktls-core` có lái được từ một socket non-blocking trần không?
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Tạm dừng (2026-08-30) — chặn ở kernel có `CONFIG_TLS`
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Xong — đóng 2026-08-31**
 > **Phạm vi:** open item 10 — một spike, kết quả là một phát hiện chứ không phải code
 
 ## Bối cảnh
@@ -209,3 +209,83 @@ lệnh cần chạy. Nạp lại → `READY`, `EXIT=0`.
 
 **Vẫn không kết luận gì về `ktls-core` hay ADR-0005.** Thí nghiệm vẫn chưa chạm tới thư viện.
 Cái thay đổi duy nhất là bây giờ nó chạm được.
+
+### Bước 2–5 — trả lời được, và câu trả lời là "được, kèm điều kiện". 2026-08-31.
+
+`[đo 2026-08-31]` trên desktop của chủ dự án — AMD Ryzen 7 3700X, Linux 7.0.0-30-generic,
+`CONFIG_TLS=m` đã nạp. Thư viện: `ktls-core` 0.0.5, `rustls` 0.23.43 (provider `ring`),
+`rcgen` 0.14.10. TLS 1.3, một bộ mã duy nhất `TLS13_AES_128_GCM_SHA256`.
+
+Chương trình: [`spikes/ktls`](../../spikes/ktls). Cổng chạy nó:
+`scripts/check-ktls-on-a-plain-socket.sh`. **15 khẳng định, `fail 0`.**
+
+**Kết luận, chọn đúng một trong ba nhánh bước 4 bắt buộc: *được nhưng có điều kiện*.**
+Nên ADR-0005 **không** bị lật; nó được bổ sung bằng
+[ADR-0018](../decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md).
+`DESIGN.md` D11 giữ nguyên hình dạng, chỉ đổi từ "chưa kiểm được" sang "đã đo".
+
+**Cái làm ADR-0005 tưởng là khó, hoá ra là nhầm crate.** ADR-0005 dẫn ba crate cùng lúc.
+`ktls` 6.0.2 (dưới tổ chức rustls) đúng là chỉ dùng được với `tokio-rustls`; `ktls-stream`
+mặc định bật feature `tokio`. Nhưng `ktls-core` — đúng cái mà câu hỏi mở số 1 gọi tên — phụ
+thuộc `bitfield-struct`, `libc`, `nix`, `zeroize`, **không có feature async nào cả**, và mọi
+điểm vào đều đồng bộ và generic trên `AsFd`. `Context::handle_io_error` chính là hình dạng một
+vòng spin cần: gọi `read`, hỏng thì đưa lỗi lại cho session rồi thử lại.
+
+**Đường dữ liệu không có lệnh chặn nào.** `strace -f`, quy syscall về đúng luồng đã in mốc, qua
+1000 lượt đi-về: `recvfrom` 3033, `sendto` 1000, **không gì khác**. Nhánh đỏ — cùng vòng lặp đó
+với `poll(2)` đặt trước `read` — cho `poll` 1000, và đó là thứ chứng minh nhánh xanh **có thể**
+đỏ. Tiện thể đo được luôn cái giá: spin tốn ~3.0 `recvfrom` mỗi bản tin, chặn tốn 1.0.
+
+**Bốn điều kiện, mỗi cái đều đo chứ không suy:**
+
+| # | Điều kiện | Bỏ qua thì |
+|---|---|---|
+| 1 | Mọi lỗi `read` phải đưa cho `ktls_core::Context` | `[đo]` 1 `EIO` mỗi kết nối với số session ticket mặc định của rustls. Vòng đọc coi lỗi là chết sẽ giết session ngay sau bắt tay |
+| 2 | **Không bao giờ tự đọc socket ngoài đường offload** | `[đo]` `EBADMSG` (errno 74) ở bản ghi kế tiếp, và `/proc/net/tls_stat` `TlsDecryptError` 0 → 1 |
+| 3 | Lúc giao khoá, buffer userspace phải trống | Số byte còn lại là ciphertext kernel sẽ không bao giờ thấy |
+| 4 | `setup_ulp` cần socket đang `ESTABLISHED` | `ENOTCONN` (errno 107), đọc lên như lỗi kTLS mà không phải |
+
+**Sửa 1 — bằng chứng "ngoài tiến trình" làm theo cách khác plan viết.** Plan nói *"bắt gói ngoài
+tiến trình"*. `tcpdump` trên `lo` cần `CAP_NET_RAW`, tức là một hộp thoại pkexec trên máy chủ dự
+án, cho một thứ không cần đến quyền đó. Thay bằng hai quan sát độc lập với code của chính spike:
+(a) đầu nhận **không** bật kTLS và đọc socket thô — đó vẫn là byte trên dây, chỉ đọc ở đầu kia;
+(b) `/proc/net/tls_stat`, con số của kernel. Mục tiêu của plan — "không suy ra từ một exit code"
+— giữ nguyên; công cụ thì không.
+
+**Sửa 2 — code nằm ở `spikes/ktls`, ngoài workspace.** Plan không nói để đâu. Đặt ngoài
+workspace vì `CLAUDE.md` §2 điều 6: job `--no-default-features` phải build trên máy không cài gì,
+mà cargo hợp nhất feature trong một lần gọi — repo này **đã** dính đúng bẫy đó một lần
+(`docs/reference/feature-flags-unify-across-a-workspace.md`). `Cargo.lock` của spike **được
+commit**, khác `fuzz/`: câu trả lời gắn với phiên bản cụ thể, chạy lại mà tự giải ra phiên bản
+khác là trả lời một câu hỏi khác.
+
+**Bẫy tự mình dính, và nó là thứ đáng giá nhất trong buổi làm.** Phép kiểm dây lúc đầu khẳng
+định *"5 byte đầu là header application-data của TLS 1.3"*. Nó **xanh trong khi đọc nhầm một bản
+ghi session ticket mà bài test chưa hề gửi** — việc giao khoá của bên gửi đã hỏng hẳn, và
+ticket có header y hệt. Hai thứ sai cùng lúc, transcript in ra một dòng `PASS`.
+
+Sửa bằng cách khẳng định **kích thước mà payload bắt buộc phải có** thay vì *hình dạng*: 35 byte
+plaintext + 1 byte content-type + 16 byte tag = bản ghi phải khai đúng 52. Chứng minh bằng đảo
+ngược: bật lại ticket thì phép kiểm mới đọc `record declares 341, needle+type+tag is 52` và
+**đỏ**, đúng chỗ phép kiểm cũ xanh. Đáng chú ý là cái **không** cứu được: khẳng định đi kèm
+*"không có plaintext trong đám byte này"* xanh suốt, vì một payload chưa từng gửi thì hiển
+nhiên là không có. **Một khẳng định phủ định không phát hiện được việc thứ cần đo chưa hề xảy
+ra.**
+
+Bẫy thứ hai: bản đầu dùng `?` trên nửa chạy ở luồng chính, nên khi luồng phụ hỏng thì lỗi của nó
+bị bỏ đi *và* socket nó giữ bị đóng — rồi nửa chính báo `ENOTCONN` từ một `setsockopt` hoàn toàn
+lành. Transcript gọi tên triệu chứng và giấu nguyên nhân. Cả hai đều đã ghi vào
+`docs/reference/ktls-on-a-plain-socket.md` kèm dấu `[to testing-skills]`.
+
+**Không kết luận gì về:** số latency (spike cố ý không công bố cái nào, `DESIGN.md` §8 hàng TLS
+vẫn trống), key update dưới kTLS, TLS 1.2, mutual TLS, sàn kernel/bộ mã, và cổng trả lời "chế độ
+nào đang chạy". Bốn thứ đầu là câu hỏi mở 2, 4, 5, 6 của ADR-0005; cái cuối là câu hỏi 3.
+
+**CI xanh trên đúng commit đang đóng**, `CLAUDE.md` §9 ô cuối: `1b9b356`, run
+[`33386125577`](https://github.com/tmthang86/fixbolt/actions/runs/33386125577), **9/9 job**,
+gồm cả `Lint config enforces non-negotiable 7` — job mà trên máy này vừa đỏ vì lý do môi trường
+và đã sửa. Cổng kTLS mới **không** chạy trong CI: runner không có `CONFIG_TLS` đảm bảo, và
+script thoát 2 (bỏ qua) thay vì xanh giả.
+
+**Plan đóng.** Item 10 đóng theo. Việc tiếp theo về TLS là một plan riêng và chưa được viết —
+đúng như phần "Ngoài phạm vi" của plan này yêu cầu.
