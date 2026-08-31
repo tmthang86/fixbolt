@@ -5,7 +5,7 @@ One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 
 Last updated: **2026-08-30**. Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
 
-## Start here — 2026-08-30, end of session
+## Start here — 2026-08-31, end of session
 
 **Five decisions signed and two plans approved on 2026-08-30, and from that day the owner
 delegated plan-writing and plan approval to the agent working here.** Nothing is blocked on a
@@ -23,6 +23,12 @@ approval gate was never the safety net here in the first place.
 | **[standard-mode](docs/plans/2026-08-30-standard-mode.md)** **closed** | 8 steps, `standard`-scoped. Built the default mode and closed rule 4's unenforced half. One thing deferred to a §9 machine, deliberately |
 | **[ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)** `Accepted`, **implemented** | `poll(2)` through `libc` behind a default-on `standard` feature; **Windows refused at compile time**, never a silent spin; `Waiting` is given the sources and `Transport` names its own; `Park` → `Yield`, neither mode, **fails both gates**. Answers **all four** of ADR-0013's open questions. Accepted **by standing delegation** — the owner delegated plan-writing and approval on 2026-08-30, so nobody read these nine decisions on their behalf; the ADR says so in its own header |
 
+**On a fresh clone, before anything else:** `scripts/fetch-quickfix-assets.sh`. `vendor/` is
+gitignored (`CLAUDE.md` §8) and the 59 acceptance definitions live there, so without it the
+gate that decides every session-layer change cannot run at all. Then, on a machine you intend
+to *measure* on: `fixbolt-machine on` and read `scripts/check-machine.sh` — five of its ten
+rows do not survive a reboot.
+
 **The next session's starting points, in the order that costs least:**
 
 1. ~~**A plan for `standard` mode**~~ — **CLOSED and MERGED 2026-08-30** (`6d35b75`).
@@ -39,9 +45,32 @@ approval gate was never the safety net here in the first place.
    `[measured 2026-08-30]` it is **shown** to fail both gates rather than said to: 99.7% CPU,
    sleeping 0 of 20 samples.
 
+4. ~~**Serialise misses its published 60 ns target and item 11 says why**~~ — **the "why" was
+   wrong, and steps 1–4 of
+   [serialise-and-the-60ns-target](docs/plans/2026-08-31-serialise-and-the-60ns-target.md)
+   closed 2026-08-31** (`314d2b1`, `ebff188`). The linear slot scan is **~24% at most**, not
+   the bulk. **~31 ns is spent before a single variable field is written** — 51% of the whole
+   target on a message carrying nothing — plus **~7 ns per field in `put`**. The fix item 11
+   proposed was then **written, measured and reverted**: predicted −36 ns, measured **+5.2 ns
+   (+3.4%)** over 30 runs per arm. Kept from it: `crates/codec/tests/slot_order.rs`, the
+   guard the body path never had for non-negotiable 5.
+
+**Two things need the owner, and neither is blocked on work:**
+
+- **Is 60 ns the right target?** `DESIGN.md` §6 anchors it to one Apple M5 measurement and
+  **no machine has ever come close** — 93.8 (M5) · ~152 (container) · 240.0 (desktop §9). A
+  perfect O(1) slot lookup still leaves ~116 ns. Three ways out: keep it and record the new
+  number; lower it to something reachable; or drop the absolute target for a **per-machine
+  baseline**, which is what open item 20 already concluded for the ceilings. **Changing it is
+  an ADR** — the next number would be ADR-0016 — not a quiet edit, so nothing was changed.
+- **Branch convention for an agent session.** Work here has been going on one branch per plan
+  per `CLAUDE.md` §8; a remote session is handed a single designated branch. They disagree and
+  the repo should say which wins.
+
 **What is next, and it is a choice rather than a queue:** `threads-and-affinity` (approved,
 `hft`-scoped, its step 1 is **ADR-0015**), `session-recovery` steps 4–5, `ring-full-policy`
-steps 3–4, and `ktls-spike` steps 2–5. All four are work, not decisions. **The `standard`-mode
+steps 3–4, `ktls-spike` steps 2–5, and **serialise steps 5–6** (re-measure on the §9 box, then
+answer the 60 ns question). All four are work, not decisions. **The `standard`-mode
 measurements and open items 6, 11 and 13 all want the same machine — **and it already exists.**
 `[measured 2026-08-30]` the desktop reached **`pass 10  fail 0  unknown 1`** and
 `scripts/bench.sh --strict` **ran rather than refusing**, which is recorded under **Proven**.
