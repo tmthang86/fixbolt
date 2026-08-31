@@ -88,6 +88,33 @@ below describe what a first release would contain.
     accepted; what the files ask for next is a message only an operator can order.
 
 - **`fixbolt-engine`** — the crate that touches the socket. **All six steps.**
+  - **A full ring to the application ends the connection** —
+    [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md), `DESIGN.md` D10b. Under
+    `RingDispatch`, a message the ring will not take is one the session already accepted,
+    numbered, journalled and acknowledged, that the application never saw. The engine now sends
+    the counterparty a `Logout` reading **`58=slow application`** and drops the session, rather
+    than incrementing a counter nobody reads. Three additions to the public API:
+    - `Dispatch::take_refusal() -> bool`, **defaulted to `false`**, so every existing `Dispatch`
+      implementation keeps compiling and `InlineDispatch` — which has nothing to refuse, its
+      handler being on the engine thread — pays nothing: the branch folds away like
+      `Dispatch::OUT_OF_BAND`. It carries no connection id because it needs none; the engine
+      asks immediately after one connection's turn, and the adapter that reached `deliver` was
+      built for that connection and nothing else ran in between.
+    - `Engine::refused_connections()`, the same events counted from the engine's side.
+    - `ring::DEFAULT_CAPACITY`, **4 MiB**, and `backpressure::SLOW_APPLICATION`. The text is
+      deliberately not D10's `slow consumer`: on the wire the counterparty is at fault, here it
+      is faultless and we are the ones who stopped reading. **The benchmarks stay at `1 << 16`**
+      so that `DESIGN.md` §6's recorded baselines still compare against what produced them.
+
+    Two costs, stated rather than found later: 4 MiB resident per ring, and an application that
+    pauses longer than the ring holds now drops the session instead of lagging.
+    `[measured 2026-08-30]` 4 MiB is roughly **3.6 ms** of slack against **56.7 µs** at the old
+    64 KiB — but **no real application has ever stalled against this ring**.
+
+    One behaviour an embedder must know and the compiler cannot enforce: **the `Logout` is
+    queued on the turn the refusal happens and goes out on the next flush**, exactly as D10's
+    path does. Stop turning the engine when a connection looks doomed and it is never sent.
+    `GUIDE.md` §4.
   - `Transport`, with `TcpTransport` (non-blocking, `TCP_NODELAY`) and `Loopback` (in memory,
     for tests that must not depend on a free port).
   - **`Io::{Ready, Idle, Closed, Failed}` rather than `io::Result<usize>`.** On a stream socket

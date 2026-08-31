@@ -75,6 +75,32 @@ pub struct Consumer {
 ///
 /// The buffer is allocated here, once, and never again — the engine thread must
 /// not allocate (non-negotiable 1).
+/// What to pass [`pair`] unless you have measured a reason not to. 4 MiB.
+///
+/// [ADR-0011](../../../docs/decisions/ADR-0011-a-full-ring-disconnects.md)
+/// decision 3, and it exists because the previous working figure did not buy
+/// what the ring was chosen to buy. `[measured 2026-08-30]`
+/// `crates/engine/benches/ring_full.rs`, Linux 6.18 x86_64, 4 vCPU container:
+/// at `1 << 16` a stalled application fills the ring after **352 messages**, in
+/// **56.7 µs**. ADR-0002 justified the ring on the argument that the session
+/// layer should not stall when the application does, and priced its hop against
+/// an application that "can pause for milliseconds" — **one millisecond
+/// overruns 65 536 bytes about eighteen times over.**
+///
+/// At the same measured rate 4 MiB is roughly **3.6 ms** of slack. Two costs,
+/// both real: 4 MiB resident per ring, which multiplies if a deployment ever
+/// gives each connection its own; and the fill rate on a faster machine is
+/// faster, so 3.6 ms is an upper estimate rather than a promise. ADR-0011's own
+/// open question 3 is whether it is enough, and nobody has yet measured a real
+/// application's worst pause.
+///
+/// **The benchmarks deliberately do not use this.** `benches/dispatch.rs` and
+/// `benches/ring_full.rs` stay at `1 << 16`, because `DESIGN.md` §6's recorded
+/// baselines were measured at that capacity and moving it would break a
+/// comparison rather than improve one.
+pub const DEFAULT_CAPACITY: usize = 1 << 22;
+
+/// A ring, as a producer and a consumer that share one buffer.
 #[must_use]
 pub fn pair(capacity: usize) -> (Producer, Consumer) {
     let cap = capacity.next_power_of_two().max(1);

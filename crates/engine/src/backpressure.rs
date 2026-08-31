@@ -66,3 +66,17 @@ impl Backpressure {
 
 /// The `58=` a session ends with when its queue filled. D10 names this text.
 pub const SLOW_CONSUMER: &[u8] = b"slow consumer";
+
+/// The `58=` a session ends with when the ring to the application filled.
+///
+/// **Deliberately not [`SLOW_CONSUMER`]**, though both end the session the same
+/// way. That one means *the counterparty stopped reading the socket*; this one
+/// means *our own application stopped reading the ring*, and the counterparty
+/// is behaving perfectly. Sending the same text for both would tell the other
+/// end their side is at fault when it is not, and an operator reading two logs
+/// could not tell the two failures apart.
+///
+/// [ADR-0011](../../../docs/decisions/ADR-0011-a-full-ring-disconnects.md)
+/// decision 2 — the refusal is never silent — and this is the half of it the
+/// counterparty can see.
+pub const SLOW_APPLICATION: &[u8] = b"slow application";
