@@ -44,13 +44,15 @@ approval gate was never the safety net here in the first place.
 steps 3–4, and `ktls-spike` steps 2–5. All four are work, not decisions. **The `standard`-mode
 measurements and open items 6, 11 and 13 all wait on the same thing: the desktop tuned to §9.**
 
-**One thing needs the owner, not the agent:** `CLAUDE.md` §11 says the upstream
-`testing-skills` pull request opens when the plan that found the cases closes. This plan found
-**eight** cases — seven where the evidence broke while the code was right, and one real bug (a
-wake after shutdown raising `SIGPIPE`, found by a review bot) whose `unsafe` block had a SAFETY
-comment that was correct and insufficient: it proved memory safety and said nothing about the
-signal contract. That PR would push content to a **public** repository, so it is not covered by
-the standing delegation and **has not been opened**.
+**The upstream contribution is open.** `[2026-08-31]` the owner authorised it explicitly — *"PR
+ngược lên testing skill"* — and it went up as **two** stacked draft pull requests rather than one,
+because two pull requests were already open upstream and the obvious single PR would have clobbered
+both. [PR #6](https://github.com/tmthang86/testing-skills/pull/6) carries the eight cases this plan
+found — seven where the evidence broke while the code was right, and one real bug (a wake after
+shutdown raising `SIGPIPE`, found by a review bot) whose `unsafe` block had a SAFETY comment that
+was correct and insufficient: it proved memory safety and said nothing about the signal contract.
+[PR #7](https://github.com/tmthang86/testing-skills/pull/7) carries the protocol reference. See the
+contribution entry below for why they are stacked and what was deliberately left out.
 
 **On the delegation itself, recorded so it is not inferred later.** `[2026-08-30]` the owner
 delegated plan-writing and plan approval — *"tự lên plan và tự duyệt, tự chạy"* — and then, on
@@ -787,6 +789,33 @@ deterministic: **0 failures in 40 runs**. A retry would have buried it.
   `compare-design.mjs --self-test` 33/33, `check-theme-contract.mjs --self-test` all passed.
   **One case is correctly still held**: the `ktls` blocker case, because that plan is paused
   rather than closed.
+- **The rest went back as two stacked pull requests, because a third would have collided with
+  two that were already open.** `[2026-08-31]` the obvious move — one branch off `main` with
+  everything on it — was written first and **rejected on push**: upstream already had
+  `claude/false-greens-from-a-protocol-engine` at PR #2, the exact branch name, with §10–13 of
+  `false-greens.md` already occupied. So:
+  [**PR #6**](https://github.com/tmthang86/testing-skills/pull/6) is based on **PR #2's branch,
+  not `main`**, and renumbers this plan's six cases to **§14–19** — the negative result that was
+  negative for the wrong reason (and the gate whose own red halves both printed `RED ok`); the
+  configuration under test that was never built (and the A/B harness that verified the result but
+  not the selection); the number parsed from the label `p50`; the test that assembled what it
+  checked (and the doc comment refuted by reversal); the identifier already given back; and green
+  because the runtime was masking it. The checklist gains a **second half**, 22–29, for red
+  results and for gates that contain their own red half.
+  [**PR #7**](https://github.com/tmthang86/testing-skills/pull/7) is based on **PR #1's branch**
+  and carries the protocol reference into `docs/drafts/`, **not** into the skill's `references/`.
+  **That placement is the point.** PR #1 proposes `protocol-e2e-testing` as a *sibling* skill and
+  states the design decision *"one skill owns one medium"*; the first draft here had added a sixth
+  row to the `e2e-testing` router, which would have answered an open design question by accident.
+  A draft in `docs/`, linked only from the roadmap item, lands the measurement and leaves the
+  decision where it belongs. `[measured]` on both branches: `validate-repo.mjs` 0 errors 0
+  warnings, `test:unit` all passed, TOC anchors 24/24 and section numbers `1..19` and `1..29` each
+  exactly once. `test:integration` was **not run** — it wants a Playwright browser build the
+  container does not have, and both diffs are markdown-only.
+- **The markers stay until the pull requests merge.** `CLAUDE.md` §11 says
+  `[to testing-skills]` is replaced by the pull-request link *when it lands*; #2, #6 and #7 are
+  all open drafts, so `grep -rn '\[to testing-skills\]' docs/` is still the backlog and still
+  reads honestly.
 - **The contribution is evidence upstream could not previously have.** Its roadmap names its
   biggest gap as *nothing proven against a real system*, with everything measured on one Tauri
   app through a UI. These came from a system with **no UI at all** — no browser, no locators, no
