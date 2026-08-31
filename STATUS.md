@@ -86,7 +86,14 @@ both. [PR #6](https://github.com/tmthang86/testing-skills/pull/6) carries the ei
 found — seven where the evidence broke while the code was right, and one real bug (a wake after
 shutdown raising `SIGPIPE`, found by a review bot) whose `unsafe` block had a SAFETY comment that
 was correct and insufficient: it proved memory safety and said nothing about the signal contract.
-[PR #7](https://github.com/tmthang86/testing-skills/pull/7) carries the protocol reference. See the
+[PR #7](https://github.com/tmthang86/testing-skills/pull/7) carries the protocol reference.
+**`[2026-08-31]` [PR #8](https://github.com/tmthang86/testing-skills/pull/8) is the third**, stacked on
+#6, carrying the three cases the `per-machine-baselines` plan found — all about a **benchmark** rather
+than a test: the instrument that was 80% of its own smallest reading, a baseline recorded through a
+shorter path than the gate that judges it, and a measuring loop that was part of what it measured. It
+adds §20, §21 and §21a and renumbers the checklist's red half to 25–32. **Opened without running
+`npm run validate`** — this machine has no Node — and the PR says so and lists what was checked by
+hand instead. See the
 contribution entry below for why they are stacked and what was deliberately left out.
 
 **On the delegation itself, recorded so it is not inferred later.** `[2026-08-30]` the owner
