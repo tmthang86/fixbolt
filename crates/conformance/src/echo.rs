@@ -187,3 +187,80 @@ pub fn business_reject(
     t.encode_with::<Fix44>(out, &[], &[])
         .map_err(EchoError::Encode)
 }
+
+/// The acceptance server's application logic, in one place.
+///
+/// `[2026-08-31]` **This existed twice before this type did** — identically, in
+/// `crates/session/tests/score.rs` and `crates/engine/tests/wire.rs` — and step
+/// 4 of `plans/2026-08-30-threads-and-affinity.md` was about to make it three.
+/// Two copies of a test oracle are two oracles that will eventually disagree,
+/// and the one that disagrees is the one nobody is looking at.
+///
+/// It is deliberately **not** an `Application` impl. That trait belongs to
+/// `fixbolt_session`, and this crate does not depend on it — `DESIGN.md` §3 has
+/// `conformance` depending on `codec` and `dict` only, and a shared test
+/// fixture is not a reason to change a crate's dependency graph. Each caller
+/// writes the five-line impl that forwards to [`Echo::reply`].
+#[derive(Debug, Default)]
+pub struct Echo {
+    seen: Vec<Vec<u8>>,
+}
+
+impl Echo {
+    /// What the acceptance server answers with, if anything.
+    ///
+    /// Orders and security definitions are echoed; everything else gets a
+    /// business reject, because `2r_UnregisteredMsgType.def` sends `35=8`, which
+    /// FIX 4.4 defines and this application does not want.
+    ///
+    /// A `35=D` carrying `97=Y` whose `11=` has been seen before is a
+    /// **possible duplicate the application has already processed**, and it is
+    /// answered with silence. That is the only place this fixture remembers
+    /// anything.
+    pub fn reply(
+        &mut self,
+        msg: &[u8],
+        seq: u32,
+        stamp: &[u8],
+        out: &mut [u8],
+    ) -> Option<Range<usize>> {
+        let msg_type = tag(msg, 35)?;
+        if msg_type != b"D" && msg_type != b"d" {
+            return business_reject(msg, out, seq, stamp).ok();
+        }
+        if let Some(id) = tag(msg, 11) {
+            let already = self.seen.iter().any(|s| s == id);
+            if tag(msg, 97) == Some(b"Y") && already {
+                return None;
+            }
+            if !already {
+                self.seen.push(id.to_vec());
+            }
+        }
+        echo(msg, out, seq, stamp).ok()
+    }
+}
+
+/// One field off the wire, without a dictionary.
+///
+/// The two copies this replaces both built the needle with `format!`. This one
+/// does not allocate, which matters only because it makes the fixture usable
+/// from a test that is also watching allocations.
+fn tag(wire: &[u8], want: u32) -> Option<&[u8]> {
+    let mut at = 0;
+    while at < wire.len() {
+        let end = wire[at..].iter().position(|b| *b == 1)? + at;
+        let field = &wire[at..end];
+        if let Some(eq) = field.iter().position(|b| *b == b'=') {
+            if core::str::from_utf8(&field[..eq])
+                .ok()
+                .and_then(|t| t.parse::<u32>().ok())
+                == Some(want)
+            {
+                return Some(&field[eq + 1..]);
+            }
+        }
+        at = end + 1;
+    }
+    None
+}

@@ -103,6 +103,22 @@ Nine microseconds sits under the 10–20 µs kernel-TCP floor, so for a gateway 
 dominant term any more. Sharding is what makes "many sessions" reasonable — **not the core
 count by itself**, because a session only benefits from a core its own polling thread is on.
 
+`[2026-08-31]` **`fixbolt_engine::shard` now does some of this**, behind the
+`affinity` feature: `Shards::start` validates a `ShardPlan`, starts one pinned thread per core,
+waits for every one of them to confirm its own pin, and hands accepted connections across a
+channel. `serve_sharded_hft` is the whole loop.
+
+> **Read this before you use it with more than one shard.** An `Engine` carries one `Config`,
+> so it serves **one FIX identity**, and it enforces *"that identity is already logged on"* by
+> looking at the other connections **it** holds. Split those across engines and the rule has
+> nothing to look at: both `Logon`s are accepted. `[measured 2026-08-31]` the acceptance corpus
+> scores **59 through one shard and 57 through two**, failing exactly
+> `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def`. The assignment policy cannot fix it —
+> it is asked at accept time and the `Logon` has not arrived, so nothing then knows which
+> identity the socket carries. `STATUS.md` open item 24 is where this gets decided.
+
+**Everything below is what the engine still does not do for you.**
+
 **The engine does not shard for you.** `[2026-08-30]` `Engine` holds a flat
 `Vec<Connection>`, `turn()` sweeps all of them and `run()` is `loop { turn() }`. The only
 thread the crate spawns is the journal's async writer. **You build the sharding**, and the

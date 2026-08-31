@@ -426,3 +426,80 @@ chạy" in ra giống hệt nhau. Ghi ở
 **Kết luận cho bước 4:** dùng `std::sync::mpsc` + `try_recv` trên luồng engine là được. Phía
 **gửi** chạy trên luồng acceptor và được phép chặn — luồng đó không phải luồng engine, nên nó
 nên dùng `accept` chặn thay vì spin, và như thế không tốn thêm một core cho việc ngồi chờ.
+
+### Bước 4 — runtime chạy được, và corpus tìm ra một khiếm khuyết thiết kế. 2026-08-31.
+
+**Xong phần code.** `crates/engine/src/shard.rs`: `Shardable`, `Assign`, `RoundRobin`,
+`ShardError`, `Shards`, `serve_sharded_hft`. Một thread mỗi shard, mỗi thread **tự ghim trước
+tiên**, xác nhận, rồi mới dựng engine — nên buffer của một kết nối được cấp phát bởi đúng core
+sẽ chạm vào nó. Luồng acceptor dùng `accept` **chặn** (`Acceptor::bind_blocking`,
+`accept_blocking`), vì nó không phải luồng engine và spin ở đó là đốt một core để ngồi chờ.
+
+**Nhưng bước 4 KHÔNG đóng**, và lý do là điều đáng giá nhất trong cả plan này.
+
+#### Corpus qua shard: 59 với một shard, **57 với hai**
+
+`[đo 2026-08-31]` `crates/engine/tests/shard_wire.rs`. Hỏng đúng hai file —
+`1b_DuplicateIdentity.def` và `AlreadyLoggedOn.def` — và **hỏng ở cả hai settle bound (1 ms và
+20 ms)**, nên không phải timing. Một shard thì 59/59, cũng ở cả hai bound: đường đi của runtime
+(channel, clock chia sẻ, thread đã ghim, settle theo wall time, không có `turn` nào do test gọi)
+là đúng.
+
+**Vì sao.** Một `Engine` mang **đúng một `Config`**, tức phục vụ **một identity FIX**. Nhờ thế
+nó trả lời được câu *"identity này đã logon chưa"* bằng cách đếm những kết nối **nó đang giữ**
+mà đang logon. Chia các kết nối đó ra nhiều engine thì không còn gì để đếm, và cả hai `Logon`
+đều được nhận. **Luật vốn đúng; shard làm sai tiền đề của nó.**
+
+**`Assign` không sửa được.** Nó được hỏi lúc accept, mà `Logon` — thứ nói identity là gì — chưa
+tới. Một acceptor thật đọc `Logon` trước rồi mới định tuyến, tức là cần một tầng "pre-session"
+giữ socket cho tới lúc đó. Đó là một quyết định, không phải một bản vá, và chưa có ADR.
+
+**Điều cố ý KHÔNG làm:** cho test một chính sách gán giữ cả hai kết nối trên một shard. Nó sẽ
+xanh và **chứng minh không gì cả** — đúng cái nước đi `CLAUDE.md` §10 gọi tên. Thay vào đó
+`two_shards_break_the_single_logon_rule_and_this_records_it` ghim khiếm khuyết cùng hai tên file,
+và **sẽ đỏ khi khiếm khuyết được sửa** — đó là mục đích của nó. Ghi ở `STATUS.md` open item 24,
+và nói thẳng trong rustdoc của `Shards`, trong `serve_sharded_hft`, `GUIDE.md` §1a và
+`DESIGN.md` §3.
+
+#### Gộp một fixture bị trùng, trước khi nó thành ba bản
+
+`EchoApp` được viết y hệt ở `crates/session/tests/score.rs` và `crates/engine/tests/wire.rs`, và
+bước này sắp làm nó thành ba. Chuyển về một chỗ: `fixbolt_conformance::echo::Echo`. Cố ý
+**không** phải một impl `Application` — trait đó thuộc `fixbolt_session`, và `DESIGN.md` §3 cho
+`conformance` chỉ phụ thuộc `codec` và `dict`; một fixture dùng chung không phải lý do để đổi đồ
+thị phụ thuộc của một crate. Mỗi nơi gọi viết năm dòng chuyển tiếp.
+
+**Cả hai cổng 59 chạy lại và không đổi** — `wire` 2/2, `score` 4/4. Đó là thứ làm việc này thành
+refactor chứ không phải sửa fixture cho code mới đi qua.
+
+#### Cổng đã chạy và đọc output
+
+```
+cargo test -p fixbolt-engine --features affinity        18+6+2 ... tất cả xanh
+  shard.rs         6 test   shard_wire.rs   2 test (một shard 59/59 ở 1ms và 20ms)
+cargo test --all                                        0 failure
+cargo test -p fixbolt-engine --test wire                2 passed   (59/59, hai chế độ)
+cargo test -p fixbolt-session --test score              4 passed   (59/59)
+cargo bench -p fixbolt-engine --bench alloc
+  allocations: idle 0 send 0 recv 0 frame 0 turn 0 shard-turn 0 busy 0 ring 0 interests 0
+cargo clippy --all-targets --features affinity -D warnings   clean
+scripts/check-no-kernel-sleep.sh                        GREEN ok / RED ok (6 poll)
+scripts/check-standard-gives-the-core-back.sh           GREEN ok / RED ok
+scripts/check-links.py                                  402 link, không link chết
+```
+
+**Đảo ngược, ba lần, và lần thứ ba mới là lần đáng kể:**
+
+1. Bỏ lời gọi ghim → `every_shard_thread_confirms_the_core_it_was_given` đỏ đúng ở khẳng định
+   *"the threads are not on the cores the plan named"*.
+2. Bỏ xử lý `Disconnected` → `dropping_the_runtime_ends_every_thread` đỏ.
+3. Bỏ `plan.validate()` **mà giữ nguyên phần ghim** → `a_plan_the_machine_refuses_starts_nothing_at_all`
+   **vẫn xanh**. Nó chưa bao giờ kiểm điều tên nó nói: `pin_current_thread(CoreId(9999))` hỏng
+   ngay trong thread, cùng một `NoSuchCore` quay về, và không engine nào được dựng — cả hai
+   khẳng định của nó đúng dù ADR-0015 quyết định 6 có được tôn trọng hay không. Thêm
+   `validation_is_what_refuses_and_not_the_pin_behind_it`: dùng một core **online** (nên ghim sẽ
+   thành công) nhưng **ngoài `isolcpus`** (nên chỉ `validate()` từ chối). Bỏ `validate()` thì
+   đúng test đó đỏ và test cũ vẫn xanh.
+
+**Bước 5 và 6 chưa bắt đầu.** Item 21 vẫn mở, và giờ có thêm item 24 — bước 4 không đóng được
+cho tới khi luật single-logon có chỗ ở qua nhiều shard.

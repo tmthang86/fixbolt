@@ -157,9 +157,31 @@ below describe what a first release would contain.
         `present 0-15`, `online 0-7`, `isolated 6-7,14-15` — **`isolated` names two cores that
         are offline**, because §9 turns SMT off. A validator reading `isolated` alone would
         accept a core that cannot run anything; that exact reading is committed as a fixture.
-    - **Not yet**: sharding, and affinity for the journal writer and the ring consumer —
-      `ShardPlan` can express where they go and nothing puts them there yet. `GUIDE.md` §1a says
-      which parts are still the caller's problem.
+  - **`shard` — many engines, one per pinned core.** New module behind the same `affinity`
+    feature. `Shards::start(&plan, make)` validates the plan, starts one thread per shard, and
+    **waits for every thread to confirm its own pin before any of them serves** — so a plan that
+    fails on shard 3 does not leave shards 0 to 2 already taking connections. `make` runs on the
+    pinned thread, so a connection's buffers are allocated by the core that will touch them.
+    - `Shardable` — the three methods the runtime needs from an engine (`add`, `turn`, `idle`),
+      so `Shards` carries none of `Engine`'s nine type parameters and a test can hand it
+      something that is not an engine at all.
+    - `Assign` and `RoundRobin` — which shard takes the next connection. An index outside the
+      range is **refused**, not taken modulo: silently rewriting a caller's answer hides the bug.
+    - `serve_sharded_hft` — bind, start, and hand connections over. The acceptor thread uses a
+      **blocking** `accept` (new: `Acceptor::bind_blocking`, `Acceptor::accept_blocking`),
+      because it is not an engine thread and spinning would burn a core to wait for something
+      that happens once per session.
+    - Dropping `Shards` ends every thread; there is no other shutdown.
+    - `[measured 2026-08-31]` the channel makes **no syscall** (`try_recv`, two million calls)
+      and **no allocation** (`benches/alloc.rs`, new `shard-turn` case, 0).
+    - **Known defect, and it is why this is documented rather than recommended.** With more than
+      one shard the single-logon rule stops working: an `Engine` serves one identity and answers
+      *"already logged on"* by counting the other connections it holds, and sharding splits
+      those across engines. The acceptance corpus scores **59 through one shard and 57 through
+      two**. `STATUS.md` open item 24.
+    - **Not yet**: affinity for the journal writer and the ring consumer — `ShardPlan` can
+      express where they go and nothing puts them there yet. `GUIDE.md` §1a says which parts are
+      still the caller's problem.
   - **A full ring to the application ends the connection** —
     [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md), `DESIGN.md` D10b. Under
     `RingDispatch`, a message the ring will not take is one the session already accepted,
