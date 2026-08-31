@@ -658,25 +658,42 @@ theo timeout của chính nó thật ra đang hỏng vì Nagle. Giao thức ở 
 ngay bên cạnh: `tests/wire.rs`, 59/59, hai chế độ, **không có bound nào cả**. Cái tránh được ở
 đây là một test báo cáo về bộ lập lịch của runner rồi gọi đó là FIX.
 
-#### Một chẩn đoán sai của tôi, và nó là phần đáng học hơn
+#### Hai chẩn đoán sai liên tiếp của tôi, cùng một gốc
 
-`[2026-08-31]` Tôi kết luận cổng corpus qua shard **treo trên CI 35 phút** và đã (a) huỷ một
-lần chạy, (b) bắt test đòi hai lõi vật lý và bỏ qua ở nơi không có, (c) định thêm `timeout` vào
-job CI. **Cả ba dựa trên một quan sát sai.**
+`[2026-08-31]` Tôi kết luận cổng corpus qua shard **treo trên CI 35 phút**, rồi (a) huỷ một lần
+chạy, (b) bắt test đòi hai lõi vật lý và bỏ qua ở nơi không có, (c) thêm `timeout` vào job CI.
+Sau đó tôi "sửa" bằng cách nói API của GitHub trả trạng thái cũ suốt một tiếng.
 
-Sự thật: job đó **xong sau 69 giây**, bước affinity mất **19 giây**, và CI **xanh 9/9**. Cái tôi
-đọc là trường `status` của GitHub API, và nó trả `in_progress` **gần một tiếng sau khi job đã
-hoàn tất**. Tôi đọc lại nó bảy lần và bảy lần tin nó.
+**Cả hai đều sai.** Dấu thời gian của chính các lần chạy nói hết:
 
-Đã lùi: bỏ yêu cầu hai lõi vật lý, bỏ `timeout`. **Cái còn lại là con số 58/59 ở 1 ms**, vì nó
-đến từ **log của một lần chạy hỏng thật**, không phải từ một trường trạng thái.
+```
+33393632071  created 12:48:47Z  cancelled 12:50:59Z   chạy 2m12s
+33393962624  created 12:52:43Z  completed 12:53:55Z   chạy 1m12s, success
+```
 
-`[to testing-skills]` — **một trường trạng thái không phải một quan sát.** Cùng một API, cùng
-một câu hỏi, hai câu trả lời khác nhau: `status: in_progress` sai suốt một tiếng, trong khi
-`steps[].completed_at` của chính job đó nói chính xác 12:53:52. Log thì luôn đúng. Quy tắc rút
-ra: **khi một hệ thống cho cả một trạng thái tóm tắt lẫn dữ liệu thô, tin dữ liệu thô** — và khi
-định làm một hành động không lùi được (huỷ một lần chạy, tắt một test), hãy lấy xác nhận từ
-nguồn thứ hai trước. Ở đây nguồn thứ hai nằm trong cùng một lời gọi API và tôi không hỏi nó.
+Lần chạy tôi huỷ mới đi được **2 phút 12 giây**. API **không** cũ; nó đúng suốt.
 
-Đây là biến thể của cái đã ghi ở `reference/ktls-on-a-plain-socket.md`: **một chẩn đoán mâu
-thuẫn với chính dữ liệu của nó, và không có gì kiểm chẩn đoán đó.**
+**Gốc rễ chỉ có một: tôi chưa từng đọc đồng hồ.** Thời gian trôi được tôi suy ra từ chuỗi lệnh
+`sleep` của chính mình — phần lớn chạy nền và chồng lên nhau, nên cảm giác về thời gian bị thổi
+lên nhiều lần. Mọi kết luận phía sau thừa hưởng sai số đó, kể cả bản "sửa" đầu tiên, thứ đổ lỗi
+cho một hệ thống hoàn toàn không có lỗi.
+
+Đã lùi cả (b) và (c). **Cái còn lại là 58/59 ở 1 ms**, vì nó đến từ **log của một lần chạy hỏng
+thật** — một khẳng định và một điểm số — chứ không phải từ thứ tôi suy ra.
+
+`[to testing-skills]` — **thời gian trôi mà bạn suy ra từ hoạt động của chính mình không phải
+một phép đo.** Nó có mọi tính chất của một phép đo tồi: không đơn vị kiểm được, không nguồn thứ
+hai, và nó lệch về đúng hướng khiến người ta hành động. Ở đây nó khiến tôi huỷ một lần chạy
+khoẻ mạnh, tắt một test, rồi viết một bản sửa buộc tội một API. Lệnh cần gõ là `date`, và câu
+hỏi trước mọi hành động không lùi được là *"tôi biết điều này bằng cách nào — đọc được hay suy
+ra?"*. `CLAUDE.md` §10 hỏi đúng câu đó về một kết quả xanh; nó áp dụng y hệt cho một kết quả đỏ.
+
+**Điều đáng chú ý thứ hai: bản sửa đầu tiên nghe rất thuyết phục.** Nó có một cơ chế ("API trả
+trạng thái cũ"), một con số đúng ("19 giây"), và một lời tự phê. Nó vẫn sai. **Một lời tự phê
+không làm cho lời giải thích đi kèm nó đúng hơn** — và đó là thứ dễ bỏ lọt nhất, vì nó đọc lên
+như sự trung thực.
+
+**Và với phần bỏ qua đã gỡ, cổng đó chạy thật trên runner CI và xanh**: run
+[`33394373832`](https://github.com/tmthang86/fixbolt/actions/runs/33394373832), commit `7e8ee1f`,
+**9/9 job**, `one_shard_passes_all_fifty_nine_at_any_settle_bound ... ok`, cả lần chạy hết
+**2 phút 26 giây**. Chưa từng có lỗ nào cả.

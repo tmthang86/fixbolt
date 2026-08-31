@@ -320,14 +320,24 @@ const STEP_DEADLINE: Duration = Duration::from_millis(500);
 /// * GitHub runner, **two vCPUs that are two threads of one physical core** —
 ///   **58 at 1 ms**, losing part of one file's replies.
 ///
-/// `[2026-08-31]` **A correction, kept because getting it wrong was the more
-/// instructive half.** This test briefly required two physical cores and skipped
-/// where there were none, on the strength of a CI job that appeared to run for
-/// 35 minutes without finishing. It had not: GitHub's job API served
-/// `in_progress` for nearly an hour after the job completed, and the step had
-/// actually taken **19 seconds**. A run was cancelled on that reading. The
-/// requirement is gone; what survives is the 1 ms figure above, which came from
-/// a real failed run's log rather than from a status field.
+/// `[2026-08-31]` **Two corrections, kept because the second one is the finding.**
+/// This test briefly required two physical cores and skipped where there were
+/// none, because a CI job *appeared* to be hung. It was not. Nor, as the first
+/// correction claimed, was GitHub's API stale. The run timestamps settle it:
+///
+/// ```text
+/// 33393632071  created 12:48:47Z  cancelled 12:50:59Z   ran 2m12s
+/// 33393962624  created 12:52:43Z  completed 12:53:55Z   ran 1m12s, success
+/// ```
+///
+/// **I cancelled a healthy run after two minutes believing it had been going for
+/// thirty-five**, because I never read a clock — elapsed time was inferred from
+/// how long my own sequence of waits *felt*, and those waits overlapped. Every
+/// conclusion downstream inherited that. The requirement and the CI timeout are
+/// both gone.
+///
+/// What survives is the 1 ms figure above, which came from a real failed run's
+/// **log** — an assertion and a score — rather than from anything I inferred.
 ///
 /// The two bounds below are set well above that floor and 5× apart. **This is
 /// not the move `tests/wire.rs` warns against.** That warning is about raising a
