@@ -1453,3 +1453,60 @@ believe you are changing, and its value in each arm, before running it** — 105
 same line would have stopped this one before the compiler did. The experiment that does work
 adds unmatched elements in front, where the count provably moves and the output provably does
 not.
+
+## The slot cursor: predicted −36 ns, measured +5, and the rate that did not extrapolate
+
+`[measured 2026-08-31]` Same container as the section above, `pass 2 fail 6 unknown 3`.
+Same-machine A/B, **30 runs per arm**, medians.
+
+The section above put a tag comparison at **~0.4 ns** and the 105 of them at **~42 ns**, and
+concluded that a forward cursor — try the position after the previous hit, fall back to the
+full scan — would remove ~91 of those comparisons and save **~36 ns**.
+
+It was written, it passed every correctness gate, and it is **slower**:
+
+| arm | median | low mode (n) | high mode (n) |
+|---|---:|---:|---:|
+| `find` (baseline) | **154.6** | 151.3 (16) | 183.4 (14) |
+| forward cursor | **159.8** | 155.8 (17) | 187.8 (13) |
+| **delta** | **+5.2 ns (+3.4%)** | **+4.5** | **+4.4** |
+
+This box is bimodal — the same shape as the 324 ns mode elsewhere in this file — so the
+comparison is made **within each mode as well as on the pooled median**. The two within-mode
+deltas agree to **0.1 ns** and both agree in sign with the pooled one. It is a reproducible
+regression, not noise.
+
+### Why, and the correction it forces
+
+**The 0.4 ns per comparison was measured on scans of 78 elements and extrapolated down to 14.
+That extrapolation does not hold.** The padding arms ran 217 to 1001 comparisons; the rate at
+which a long scan burns time says nothing about a 14-element scan over data that is hot,
+16 bytes per element, and perfectly predicted. A short scan is superscalar; the cursor replaces
+it with a data-dependent branch and a loop-carried `usize`, and the optimiser has less to work
+with, not more.
+
+**So the "~42 ns is the scan" figure in the section above is an over-estimate, and this is the
+measurement that says so.** The honest reading of both together: the scan's true share at 14
+slots is **smaller than 42 ns and is not separable by the instruments used here** — what *is*
+established is that removing it by this method costs 3.4% rather than saving 24%.
+
+The section above's conclusion survives and is strengthened: **the scan is not where the 60 ns
+target is lost.** The fixed cost (~31 ns before a single variable field is written) and `put`
+(~7 ns per field) are still the terms that matter, and neither was touched.
+
+### What was kept
+
+`crates/codec/tests/slot_order.rs` — six cases holding that the caller's ordering never reaches
+the wire, which the body path had **no** guard for before this. `tests/group_roundtrip.rs` had
+it for fields inside a group and nothing had it for the body. Proven by reversal twice: taking
+the caller's slots in supplied order turns four of six red on wrong bytes; deleting the
+cursor's fallback scan turned the same four red on dropped fields. The guard outlives the
+change that prompted it.
+
+`[to testing-skills]` — *a rate measured in one regime and extrapolated into another.* The
+padding experiment was sound and its number was right **for the regime it measured**; the error
+was carrying 0.4 ns/comparison down to a scan an order of magnitude shorter, where the hardware
+behaves differently. The cheap defence is to state the range your rate was measured over next
+to the rate itself, and to treat any use outside that range as a prediction to be tested rather
+than a figure to be quoted. Here the prediction was −36 ns and the measurement was +5, and
+**only building the thing found it** — no amount of re-reading the estimate would have.
