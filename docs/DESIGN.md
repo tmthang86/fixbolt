@@ -19,9 +19,10 @@ to measure the floor honestly.
 ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). Latency
 beats session density here, and the tie-breaker has teeth: a change trading per-session latency
 for sessions-per-core needs its own ADR to reverse it. Many sessions on a thread is supported
-and named **`density`**; it carries `[measured 2026-08-31]` **`N × 675 ns`** of polling on the
-isolated core §9 asks for — 505 ns on an ordinary one — and **does not inherit the latency
-figures on this page**. Every figure here names its `N`.
+and named **`density`**; it carries `[measured 2026-08-31]` **`N × 505 ns`** of polling on a
+core set up to §9 — and `N × 675 ns` if that core has `nohz_full`, which
+[ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md) took out of §9 for exactly this
+reason — and **does not inherit the latency figures on this page**. Every figure here names its `N`.
 
 What must be built and in which phase is [PRD.md](PRD.md); this document is *how*.
 
@@ -58,8 +59,9 @@ nothing about I/O strategy, outbound encoding, or the OS underneath has optimise
 
 **A third principle, and it is the second one turning on its author.** `[measured 2026-08-31]`
 the I/O strategy §4 D8 chose — one non-blocking `read` per connection per turn — costs a whole
-`Engine::turn` of **505 ns per session on an ordinary core and 675 ns on an isolated one**, flat
-from 1 to 16 sessions within 2%. **Of the 505, 471 ns is the syscall and about 30 ns is
+`Engine::turn` of **505 ns per session**, flat from 1 to 16 sessions within 2%. (**675 ns** on a
+core carrying `nohz_full`; that is the whole of the 36% §9 used to ask for and no longer does —
+[ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md).) **Of the 505, 471 ns is the syscall and about 30 ns is
 everything the engine itself does.** This document's own `parse NewOrderSingle` is **122.6 ns**
 on the same machine. *The syscall that discovers there is nothing to parse costs 3.8× the
 parse — and on the core §9 recommends, more.* So the second principle was right and
@@ -990,7 +992,7 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | NIC → kernel → socket buffer | 3–8 µs | Kernel, IRQ affinity, driver |
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
 | Wakeup — **`standard`** blocks on readiness | 2–5 µs, `epoll`-class, **and the core is given back** | **This design**, D8 |
-| Wakeup — **`hft`** busy-polls | `[measured 2026-08-31]` **`Engine::turn` itself: ~505 ns × N on an ordinary core, ~675 ns × N on an isolated one**, N = sockets on the thread, **and a core is burned**. The 2026-08-30 figure of 703 ns was a C program's bare `read`, pinned to an isolated core; matched for placement the two agree to 4%. **§9's isolation costs 36% of this row** — [measured-costs.md](reference/measured-costs.md) | **This design**, D8, `benches/turn.rs` |
+| Wakeup — **`hft`** busy-polls | `[measured 2026-08-31]` **`Engine::turn` itself: ~505 ns × N**, N = sockets on the thread, **and a core is burned**. The 2026-08-30 figure of 703 ns was a C program's bare `read` on a `nohz_full` core; matched for placement the two agree to 4%. **`nohz_full` — and only `nohz_full`, not `isolcpus` or `rcu_nocbs` — adds 160 ns to every kernel entry and takes this row to ~675 ns**, which is why §9 no longer asks for it ([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md), [measured-costs.md](reference/measured-costs.md)) | **This design**, D8, `benches/turn.rs` |
 | Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.6 ns) | This design |
 | Session machine (D1) | ~0.1 µs | This design |
 | Dispatch — inline **vs** ring (D4) | `[measured 2026-08-31]` **0.0013 µs** inline **vs** **0.27 µs** ring one way (§9 desktop) | Application's choice |
@@ -998,8 +1000,8 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
 | **User-space work only** | `[measured 2026-08-31]` **~0.46 µs**, inline dispatch, N = 1 | The half that was always cheap |
-| **Everything this design controls, N = 1** | **~0.97 µs** on an ordinary core, **~1.14 µs** on an isolated one — the row above plus one turn | |
-| **Everything this design controls, N sessions** | **`~0.46 µs + N × 505 ns`** ordinary, **`+ N × 675 ns`** isolated | |
+| **Everything this design controls, N = 1** | **~0.97 µs** — the row above plus one turn (**~1.14 µs** if the core carries `nohz_full`) | |
+| **Everything this design controls, N sessions** | **`~0.46 µs + N × 505 ns`** (`+ N × 675 ns` with `nohz_full`) | |
 
 `[measured 2026-08-31]` **The poll row is now `Engine::turn` rather than a floor, and it
 carries a number nobody expected.** `crates/engine/benches/turn.rs` measures the real sweep over
@@ -1007,11 +1009,14 @@ real sockets: **505 ns per session**, flat from 1 to 16 to within 2%, of which *
 `recv` syscall and ~30 ns is everything else the engine does** — measured in the same run, so
 the subtraction is not across programs.
 
-**And the same benchmark under `taskset` reversed a piece of §9's advice.** The isolated core
-this design recommends for the engine thread is **36% slower** at that syscall: 680 ns against
-498 ns, with `cpu5` and `cpu6` in the *same* L3 domain to show it is not cache placement. §9
-buys jitter isolation and pays a third of the dominant term for it; whether that is worth it is
-a question about a tail this measurement does not touch, and it is now a trade that is stated
+**And the same benchmark under `taskset` reversed a piece of §9's advice.** The core this
+document used to recommend was **36% slower** at that syscall: 680 ns against 498 ns, with
+`cpu5` and `cpu6` in the *same* L3 domain to show it is not cache placement. `[measured
+2026-08-31]` a second boot then separated the three isolation options and found **`nohz_full`
+carries all of it** — `isolcpus` 494.8 ns, `rcu_nocbs` 498.2 ns, untouched 501.8 ns,
+`nohz_full` 670.7 ns — and measured what it buys: it is worse at p50, p99 **and p99.9**, and
+ahead only from p99.99. §9 now keeps the two that are free and prices the one that is not
+([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md)). It was a trade that is stated
 rather than assumed. [measured-costs.md](reference/measured-costs.md) carries the four arms.
 
 `[measured 2026-08-31]` **Four rows stopped being literature figures, and one of them got
@@ -1071,7 +1076,8 @@ anything:
 |---|---|
 | **The machine is not a guest** | Four rows below — governor, turbo, C-states, SMT — plus NIC IRQ affinity are **host** properties. A VM cannot set them, and does not fail them loudly: the `/sys` files are simply absent, so a guest collects `unknown` and reads as under-configured rather than as structurally unable to comply. So this is a row of its own, and it decides whether the rest can mean anything. `check-machine.sh` reports `systemd-detect-virt` and steal time over the same window as the row below; a guest is a **FAIL**, and steal on bare metal is reported as unexplained rather than resolved either way. **Development may move to a cloud VM; measurement cannot.** Bare metal, or nothing but counts and same-machine A/B |
 | **Nothing else is running on the machine** | `[measured 2026-08-30]` **the row that was missing, and it dominates every other row here.** On the project's Ryzen 7 3700X, all six tuning rows below move the `ring, one way` median by **0.8%** — 260.6 ns untuned to 259.7 ns tuned, both on a quiet box. Competing CPU load moves it by **71%**, 262 ns to 449 ns, and takes the rate of a second mode near 324 ns from ~5% to **92%**. A machine can satisfy every other line in this table and still be useless to measure on. `scripts/check-machine.sh` now reads CPU busy over a one-second window and **FAILs above 3%**, naming the processes by their delta in that window |
-| `isolcpus` + `nohz_full` for the engine core | No scheduler ticks, no other tenants — **and `[measured 2026-08-31]` a 36% tax on the syscall §8 says dominates**: `Engine::turn` costs 680 ns per session on `cpu6` against 498 ns on `cpu5`, which is in the same L3 domain and differs only in isolation. Take it for the tail it removes, not because it is free; the tail itself is **unmeasured**. [measured-costs.md](reference/measured-costs.md) |
+| `isolcpus` + `rcu_nocbs` for the engine core | No other tenants, and no RCU callbacks on the engine core. `[measured 2026-08-31]` **free**: `Engine::turn` reads 494.8 ns on an `isolcpus` core and 498.2 ns on an `rcu_nocbs` core against 501.8 ns on an untouched one. Kept for a mechanism about *other tenants* that a quiet machine cannot exercise — on this box `isolcpus` removed 1078 tail excursions against 1130, which is nothing, because there was nothing there to remove. **That benefit is unmeasured and the row says so** |
+| `nohz_full` — **NOT recommended**, and this row is the price rather than the instruction | `[measured 2026-08-31]` **it costs 160 ns on every kernel entry and it is the whole of the 36%** the row above used to carry: 670.7 ns per turn against 494.8. What it buys is the far tail, and only the far tail — p50 376 against 216, p99 376 against 224, **p99.9 384 against 224**, and it wins from p99.99 outward (504 against 2848). A busy `hft` engine makes ~2 000 000 kernel entries per second and this removes ~1100 excursions of 3 µs: **0.32 s of tax against 0.0033 s of tail, a hundred to one against**. Take it only for a p99.99 objective, which §6 does not have. [ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md), [measured-costs.md](reference/measured-costs.md) |
 | IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt |
 | `mlockall` + pre-faulted buffers | No page fault on the hot path. The reference project's `pool.rs` touches every page at startup — copy that |
 | Transparent huge pages **off** | THP compaction stalls are multi-millisecond |

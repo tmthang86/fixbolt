@@ -1800,3 +1800,121 @@ The cheap defence is the one used here: **when you adopt a setting for performan
 single operation your design says dominates, with and without it, changing nothing else.** One
 variable, two arms, and a third arm that differs in the *other* plausible way — here `cpu0`
 against `cpu5`, which is what makes "it is not the cache" a measurement rather than a claim.
+
+---
+
+## The answer: it is `nohz_full`, and it loses until p99.99 — 2026-08-31
+
+The section above could not say which of `isolcpus`, `nohz_full` and `rcu_nocbs` cost 36%,
+because one kernel command line applied all three to the same CPUs. This is the reboot that
+separated them, and the second half — what the setting *buys* — which had never been measured
+either.
+
+### The design: three flags, three CPUs, one boot
+
+Not one flag per boot. **Different CPUs get different flags in the same boot**, so the arms
+share the kernel, the temperature, the load and the session, and the subtraction between them
+is not a subtraction across two days:
+
+```
+isolcpus=4,6,12,14  rcu_nocbs=7,15  nohz_full=4,12  processor.max_cstate=1
+```
+
+`cpu4` also takes `isolcpus`, deliberately. `nohz_full` only stops the tick on a CPU with **at
+most one runnable task**; without `isolcpus` the scheduler keeps putting work there, adaptive
+tick flickers, and the arm can read *free* because the mechanism never engaged rather than
+because it costs nothing. That is a false green with a plausible story attached, and
+`isolcpus` is what holds the precondition still.
+
+`nohz_full` cannot be tested alone at all — the kernel adds `rcu_nocbs` to any CPU that has it —
+so it is reached by subtracting the two arms that turn out to be free. Four arms, not two, for
+that reason.
+
+### What it costs
+
+`[measured 2026-08-31]` AMD Ryzen 7 3700X, Linux 7.0.0-30-generic, SMT off, `performance`,
+turbo off, `check-machine.sh` `pass 10 fail 0`, machine quiet at 0%.
+`scripts/measure-isolation-cost.sh`, and `crates/engine/benches/turn.rs` under `taskset`:
+
+| Core | Flags | user-space loop | bare `getpid` | `Engine::turn`, 1 session |
+|---|---|---|---|---|
+| `cpu5` | none | 1.0578 ns/iter | 198.87 ns | 501.8 ns |
+| `cpu6` | `isolcpus` | 1.0574 | 198.94 ns | **494.8 ns** |
+| `cpu7` | `rcu_nocbs` | 1.0578 | 198.86 ns | 498.2 ns |
+| `cpu4` | `isolcpus` + `nohz_full` | 1.0546 | **354.76 ns** | **670.7 ns** |
+
+**`nohz_full` is the whole 36%.** `isolcpus` and `rcu_nocbs` are free, and the `isolcpus`-only
+core is the fastest of the four. Four interleaved repetitions: `cpu4` held 352.96–354.76 and
+the other three 198.86–199.04.
+
+Two things it is **not**, and each is ruled out by a reading in the same run:
+
+- **Not the clock.** The user-space loop — a dependent multiply-add chain that never enters the
+  kernel — agrees across all four cores to 0.3%, and the `nohz_full` core is the *faster* one.
+- **Not interrupts.** The `nohz_full` core takes **3743 fewer** local timer interrupts per
+  second than the others and is still 78% slower per kernel entry. The sign is the argument.
+
+What remains is the kernel entry and exit path, which is where full dynticks runs its context
+tracking — `CONFIG_CONTEXT_TRACKING_USER=y`, `CONFIG_VIRT_CPU_ACCOUNTING_GEN=y` in this kernel.
+The mechanism named as a hypothesis in the section above is the one that survived.
+
+### What it buys
+
+`nohz_full` is bought for jitter, so stopping at the median would repeat the error this page
+was written to record. Every call timed individually, 5 000 000 per core,
+`measure-isolation-cost.sh --jitter`:
+
+| Core | Flags | p50 | p99 | p99.9 | p99.99 | calls > 1 µs | timer ticks |
+|---|---|---|---|---|---|---|---|
+| `cpu5` | none | 216 | 224 | 240 | 3720 | 1130 | 1283 |
+| `cpu6` | `isolcpus` | 216 | 224 | **224** | 2848 | 1078 | 1281 |
+| `cpu7` | `rcu_nocbs` | 216 | 224 | 240 | 3440 | 1120 | 1281 |
+| `cpu4` | `isolcpus` + `nohz_full` | 376 | 376 | 384 | **504** | **2** | **2** |
+
+**The count of calls over 1 µs tracks the timer interrupt count call for call** — 1130/1283,
+1078/1281, 1120/1281, and 2/2. The tail is not merely *correlated with* a knob that moved
+alongside it; it is the tick, and the two counters say so independently.
+
+**And then the row reads left to right.** `nohz_full` is worse at p50, worse at p99, and
+**worse at p99.9** — 384 ns against 224. It wins from **p99.99 outward**, where it is genuinely
+good: 504 ns against 2848. `max` does not follow it — over four runs `cpu4`'s worst call was
+852, 2966, 11582 and 14107 ns — so the rare large excursion is not what it removes.
+
+### The arithmetic that decided it
+
+> A turn is ~500 ns, so a busy `hft` engine performs ~2 000 000 kernel entries per second per
+> core. `nohz_full` taxes **every one** of them 160 ns and removes **~1100 excursions of 3 µs**.
+> 0.32 s of tax per second against 0.0033 s of tail: **a hundred to one against.**
+
+[ADR-0021](../decisions/ADR-0021-nohz-full-leaves-section-9.md) takes `nohz_full` out of §9's
+recommendation and prices it instead. `isolcpus` and `rcu_nocbs` stay — free, and kept for a
+mechanism about *other tenants* that a quiet machine cannot exercise. That last point is
+labelled rather than implied: on this box `isolcpus` removed 1078 excursions against 1130, which
+is nothing, because there was nothing there to remove.
+
+### Two near-misses, both worth more than the result
+
+**`scaling_cur_freq` lies on a `nohz_full` core.** It read **2 240 000 kHz** for `cpu6` — exactly
+that core's `scaling_min_freq` — while `cpu6` was at 100% load and `cpu5` read 3 792 929. The
+ratio, 1.69, is a tidy and completely wrong explanation for a 1.36 slowdown, and it was the first
+thing found. `amd-pstate-epp` updates that value from a path tied to the tick, and `nohz_full`
+had stopped the tick. **The user-space loop is what refuted it**: the same core, the same run,
+the same speed as everyone else.
+
+`[to testing-skills]` — **an instrument that reports a plausible cause can be downstream of the
+thing under test.** The frequency counter was not merely inaccurate; it was inaccurate *because
+of the setting being investigated*, and it failed toward an explanation that fit. The defence is
+a second reading through a different mechanism — here, wall-clock time for a fixed amount of
+work, which needs no cooperation from the kernel at all.
+
+**The guard against a false green was itself a false green.** The tick counter was added
+specifically so a `nohz_full` arm that failed to engage could not read as *isolation is free*.
+Its first version used `awk '/^LOC:/'`, and `/proc/interrupts` right-aligns its first column, so
+the line begins with a space and the pattern matched nothing: it printed a delta of **0 for every
+core**, on a boot where two cores were ticking three million times a run. A constant-zero column
+reads as *everything is tickless* — the reassuring answer — and means *nothing was read*.
+
+`[to testing-skills]` — **a guard reporting the same value everywhere is reporting nothing, and
+"all clear" is the disguise it wears.** It was caught only because the value was *expected to
+differ between arms*: a guard whose readings must vary is falsifiable, one that only ever prints
+"fine" is not. The fix was `$1 == "LOC:"`, and the corrected column reads 1281 against 2.

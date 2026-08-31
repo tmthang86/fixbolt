@@ -195,13 +195,26 @@ as the API.
   that calls `RingApp::pump` — so pin it with `affinity::spawn_pinned` or, from inside it,
   `affinity::pin_current_thread`. `Durability::Fsync` has no writer thread and `open_pinned`
   refuses it rather than accepting a core it would ignore.
-- **Isolating those cores.** `isolcpus` plus `nohz_full`, or the scheduler will put other work
-  on them — **and it is not free.** `[measured 2026-08-31]` on the reference machine a turn of
-  the engine costs **680 ns per session on an isolated core against 498 ns on an ordinary one**,
-  a 36% tax on the syscall that dominates this design; `cpu5` and `cpu6` are in the same L3
-  domain, so it is the isolation and not the cache. Take it for the tail it removes. **What that
-  tail is worth has not been measured here**, so this is a trade to make deliberately rather than
-  a setting to copy. [measured-costs.md](reference/measured-costs.md).
+- **Isolating those cores: `isolcpus` and `rcu_nocbs` — and NOT `nohz_full`.** The first two keep
+  other tenants and RCU callbacks off your engine cores and `[measured 2026-08-31]` cost nothing:
+  a turn is 494.8 ns per session on an `isolcpus` core, 498.2 on an `rcu_nocbs` one and 501.8 on
+  an untouched one.
+
+  **`nohz_full` is the one to leave off, and this is the number to leave it off by.** It adds
+  **160 ns to every kernel entry**, which takes a turn to **670.7 ns** — and this engine's idle
+  turn is one non-blocking `read` per session, so it is nothing but kernel entries. It is behind
+  at p50 (376 ns against 216), at p99 (376 against 224) **and at p99.9** (384 against 224). It
+  pulls ahead only from **p99.99** outward, where it is genuinely good: 504 ns against 2848,
+  because what it removes is the timer tick and nothing else.
+
+  So: take `nohz_full` **only** if your objective is stated at p99.99 or beyond. If your target
+  is a p99 — as this project's own §6 gate is — it costs you on every message to protect one in
+  two thousand. [ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md),
+  [measured-costs.md](reference/measured-costs.md).
+
+  One thing this does **not** tell you: what `isolcpus` buys under load. It was measured on a
+  quiet machine, where there was nothing for it to keep away. Keep it — it is free — but do not
+  read a benefit into it that nobody here has measured.
 
 ---
 

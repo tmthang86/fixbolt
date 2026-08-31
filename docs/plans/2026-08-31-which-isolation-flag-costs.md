@@ -1,6 +1,6 @@
 # Cái nào trong ba tuỳ chọn cô lập lấy mất 36%
 
-> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** Đang làm · **Sửa 2026-08-31** — thêm bước 4b (jitter), chủ dự án duyệt sau khi bước 4 ra kết quả
+> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** Đang làm — còn bước 5 và duyệt ADR-0021 · **Sửa 2026-08-31** — thêm bước 4b (jitter), chủ dự án duyệt sau khi bước 4 ra kết quả
 > **Phạm vi:** open item 22 — phần còn lại sau khi `threads-and-affinity` đóng
 
 ## Bối cảnh
@@ -190,12 +190,15 @@ Máy phải được trả về nguyên trạng, và điều đó phải đượ
 ## Tài liệu phải cập nhật
 
 - [ ] `docs/reference/measured-costs.md` — phần trả lời, nối vào mục 36%, và phần đuôi từ bước 4b
-- [ ] `docs/DESIGN.md` §9 — dòng cô lập, nếu khuyến nghị đổi
-- [ ] `docs/DESIGN.md` §8 — nếu con số 505/680 ns được thay bằng một cặp khác
-- [ ] `docs/decisions/ADR-00NN` — nếu §9 đổi (đảo một quyết định ⇒ ADR mới, §5)
-- [ ] `STATUS.md` — item 22
-- [ ] `CHANGELOG.md`
-- [ ] `[to testing-skills]` — xem mục Bẫy, hai cái đầu
+- [x] `docs/DESIGN.md` §9 — dòng cô lập tách làm hai: `isolcpus`+`rcu_nocbs` giữ, `nohz_full` bị gỡ và được **định giá**
+- [x] `docs/DESIGN.md` §8 — bốn dòng ngân sách bỏ hậu tố "isolated"; 675 ns giờ gắn với `nohz_full` chứ không với "lõi cô lập"
+- [x] `docs/DESIGN.md` §1 và §2 — hai câu mở đầu mang con số 675 ns
+- [x] `docs/GUIDE.md` §1 — dòng khuyến nghị cho người triển khai, kèm ngưỡng p99.99
+- [x] `docs/decisions/ADR-0021-nohz-full-leaves-section-9.md` — **0020 đã bị plan `pre-session-routing` đặt trước**, nên lấy 0021 (§5: số không dùng lại)
+- [x] `scripts/check-machine.sh` — dòng gate **đảo chiều**, chứng minh cả bốn nhánh
+- [x] `STATUS.md` — item 22, thu hẹp chứ không đóng
+- [ ] ~~`CHANGELOG.md`~~ — **không.** Phạm vi tự khai của file đó là *"thay đổi public API và hành vi quan sát được của crate đã phát hành"*; việc này không đụng dòng code thư viện nào. Ô này trong plan là thừa và ghi lại ở đây thay vì lặng lẽ bỏ
+- [x] `[to testing-skills]` — hai case, cả hai trong `measured-costs.md`
 
 ## Bẫy đã lường trước
 
@@ -235,4 +238,35 @@ Máy phải được trả về nguyên trạng, và điều đó phải đượ
 
 ## Nhật ký giao hàng
 
-Chưa mở.
+**2026-08-31 — xong bước 1, 2, 4, 4b. Còn bước 5 (chủ máy reboot) và duyệt ADR-0021.**
+
+**Bước 1–2, không tốn reboot** (`7eb9a53`). `scripts/measure-isolation-cost.{c,sh}` vào repo và
+tái lập đúng bảng: 199 ns trên lõi thường, 361 trên lõi cô lập, `user_loop` bằng nhau. Ba điều
+chốt được ngay ở đây: **không phải xung nhịp**, **toàn bộ nằm ở vào/ra kernel** (+81% trên một
+`getpid` trần), **không phải ngắt** — lõi cô lập nhận ít hơn 3757 ngắt timer mà vẫn chậm hơn.
+Dự đoán được ghi vào plan trước khi reboot.
+
+**Bước 4, một lần reboot** (`d0c5634`). `isolcpus=4,6,12,14 rcu_nocbs=7,15 nohz_full=4,12`.
+`cpu5` không gì 501.8 ns · `cpu6` `isolcpus` **494.8** · `cpu7` `rcu_nocbs` 498.2 ·
+`cpu4` +`nohz_full` **670.7**. Dự đoán **trúng cả bốn nhánh**. `bench.sh` gate tự bắt được:
+bốn case `turn` đỏ `OVER BASELINE` trên `cpu4`, xanh trên ba lõi kia, mà không được cho biết gì
+về cô lập.
+
+**Bước 4b — plan được sửa và duyệt lại giữa chừng**, vì bước 4 làm nảy ra câu hỏi *có nên bỏ
+`nohz_full` khỏi §9 không*, và trả lời câu đó chỉ bằng trung vị là đúng cái sai bài viết cũ đã
+cảnh báo. `nohz_full` **thua ở p50, p99 và cả p99.9**, chỉ thắng từ p99.99. `over_1us` khớp
+`LOC` một-một: 1130/1283, 1078/1281, 1120/1281, **2/2**.
+
+**Hai lần suýt sai, và chúng đáng hơn kết quả.** `scaling_cur_freq` đọc 2.24 GHz cho một lõi
+đang chạy hết công suất — một lời giải thích gọn gàng và sai — bị `user_loop` bác bỏ. Và **cái
+canh chống false green tự nó là false green**: `awk '/^LOC:/'` không khớp gì vì `/proc/interrupts`
+căn phải cột đầu, in delta 0 cho cả bốn lõi trên đúng lần boot mà hai lõi tick ba triệu lần. Cả
+hai thành `[to testing-skills]` trong `measured-costs.md`.
+
+**Chưa xong, nói rõ ra:**
+
+- **Bước 5.** Máy vẫn đang ở dòng lệnh thí nghiệm. `check-machine.sh` đọc `pass 10 fail 1`, và
+  cái FAIL là dòng `no nohz_full` mới — gate đang làm đúng việc của nó.
+- **ADR-0021 là `Proposed`.** Nó đảo một dòng §9 đã công bố và một gate; chưa `Accepted`.
+- **`isolcpus` dưới tải** không đo. Giữ vì nó miễn phí, không phải vì đo được lợi ích.
+- **Item 22 thu hẹp, không đóng**: `mitigations=off`, `recvmmsg`/`io_uring` vẫn nguyên.
