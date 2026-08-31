@@ -19,7 +19,8 @@ to measure the floor honestly.
 ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). Latency
 beats session density here, and the tie-breaker has teeth: a change trading per-session latency
 for sessions-per-core needs its own ADR to reverse it. Many sessions on a thread is supported
-and named **`density`**; it carries `N × 703 ns` of polling and **does not inherit the latency
+and named **`density`**; it carries `[measured 2026-08-31]` **`N × 675 ns`** of polling on the
+isolated core §9 asks for — 505 ns on an ordinary one — and **does not inherit the latency
 figures on this page**. Every figure here names its `N`.
 
 What must be built and in which phase is [PRD.md](PRD.md); this document is *how*.
@@ -55,11 +56,13 @@ A second principle, learned from reviewing the first draft of this document: **t
 nothing about I/O strategy, outbound encoding, or the OS underneath has optimised the wrong
 1%. §4 D8–D10, §8 and §9 exist because of that review.
 
-**A third principle, and it is the second one turning on its author.** `[measured 2026-08-30]`
-the I/O strategy §4 D8 chose — one non-blocking `read` per connection per turn — costs
-**703 ns per socket**, flat from 1 to 256 sockets, of which **353.8 ns is kernel entry and exit
-doing nothing**. This document's own `parse NewOrderSingle` is **125.5 ns**. *The syscall that
-discovers there is nothing to parse costs 5.6× the parse.* So the second principle was right and
+**A third principle, and it is the second one turning on its author.** `[measured 2026-08-31]`
+the I/O strategy §4 D8 chose — one non-blocking `read` per connection per turn — costs a whole
+`Engine::turn` of **505 ns per session on an ordinary core and 675 ns on an isolated one**, flat
+from 1 to 16 sessions within 2%. **Of the 505, 471 ns is the syscall and about 30 ns is
+everything the engine itself does.** This document's own `parse NewOrderSingle` is **122.6 ns**
+on the same machine. *The syscall that discovers there is nothing to parse costs 3.8× the
+parse — and on the core §9 recommends, more.* So the second principle was right and
 incompletely applied: the codec was priced, the I/O strategy was chosen and **never priced**, and
 §8's budget was written for "the user-space path" — the half that was already cheap.
 [ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) is the
@@ -446,7 +449,7 @@ default.**
 | | `standard` — the default | `hft` — opt-in, Linux only |
 |---|---|---|
 | Idle behaviour | **blocks on readiness** with a timeout, and gives the core back | spins on non-blocking sockets, never enters the kernel |
-| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-30]` one `read` at 703 ns per socket |
+| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` one turn at **675 ns per session** on an isolated core, 505 on an ordinary one |
 | Pinning | none | the polling thread is pinned to an isolated core |
 | Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
 | Rule 4 says | it **must** block | it must **not** sleep |
@@ -472,7 +475,9 @@ engine controls. It burns a core — that is the price, and in `hft` it is worth
 **Why `standard` exists, and why it is the default:** an engine whose out-of-the-box
 configuration pins a core at 100% is one most people cannot evaluate — it looks broken. And
 `[measured 2026-08-30]` the spin is not free even in `hft`: the poll it replaces `epoll` with
-costs **703 ns per socket per turn**, so the trade **wins at N = 1 and loses by N = 8**.
+costs `[measured 2026-08-31]` **675 ns per session per turn** on the isolated core it asks for,
+so the trade **wins at N = 1 and loses by N = 8** — a conclusion the re-measurement did not
+move, because 8 × 675 ns is 5.4 µs and still clears the top of `epoll`'s range.
 `standard` is the honest default for everything that is not one session on an isolated core.
 
 `Waiting` is a trait and is the right seam, but **`wait::Yield` is not `standard`**: it is
@@ -1039,7 +1044,7 @@ which this design chose, and can change by batching it, removing it, or carrying
 **At N = 2 the polling sweep alone exceeds the whole user-space budget.**
 [ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md) settles what
 follows from that: one session per polling thread is the shape this table describes, `density`
-is a labelled mode carrying the `N × 703 ns` term, and **no latency figure is published without
+is a labelled mode carrying the `N × 675 ns` term, and **no latency figure is published without
 its `N`**.
 
 The TLS row has no number in it on purpose: none has been measured here, and none is quoted
@@ -1050,8 +1055,9 @@ Two readings of this table:
 
 1. On kernel TCP, this engine's user-space path is **under 5% of the total**. The design
    makes that 5% as small as it can be, and — through D8 — trades `epoll`'s 2–5 µs wakeup for a
-   703 ns poll. `[measured 2026-08-30]` **that trade wins at N = 1 and loses by N = 8**, which
-   is the sentence this table did not contain until the poll was measured.
+   675 ns poll. `[measured 2026-08-31]` **that trade wins at N = 1 and loses by N = 8**, which
+   is the sentence this table did not contain until the poll was measured — and which survived
+   the poll being re-measured against the engine rather than against a C floor.
 2. Going below the floor means kernel bypass (OpenOnload, DPDK, `ef_vi`). That is L0's
    job, behind a feature flag that actually gates (D5), and it is **not v1**.
 

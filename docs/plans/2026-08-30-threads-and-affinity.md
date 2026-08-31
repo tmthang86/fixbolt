@@ -1,6 +1,6 @@
 # Engine tự quản thread và ghim core, theo nếp HFT
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Đã duyệt 2026-08-30**
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Xong — đóng 2026-08-31**
 > **Phạm vi:** `engine` — public API, mô hình thread. Không đụng `codec`, `session`.
 >
 > **Sửa 2026-08-30, ghi tại chỗ vì plan vừa được duyệt cùng ngày:** mọi thứ trong plan này
@@ -177,12 +177,12 @@ Từng bước, và **đọc output chứ không đọc exit code**.
 
 - [x] `docs/decisions/ADR-0015-…` — bước 1, **xong 2026-08-31**
 - [x] `docs/DESIGN.md` D8 (câu "pinned to an isolated core" thành có thật), §3 (crate/mod mới) — **bước 2, 2026-08-31**
-- [ ] `docs/DESIGN.md` §8 — số của `Engine::turn` thật thay cho sàn từ chương trình C
-- [~] `docs/GUIDE.md` §1a — **nửa chừng 2026-08-31**: mục "Pinning" đã đổi; shard, từ chối core sai và affinity cho thread phụ vẫn là của người dùng
-- [ ] `docs/PRD.md` — `density` có hình dạng cụ thể
+- [x] `docs/DESIGN.md` §8 — số của `Engine::turn` thật thay cho sàn từ chương trình C — **bước 6, 2026-08-31**
+- [x] `docs/GUIDE.md` §1a — **xong 2026-08-31**: ghim, chọn core, từ chối, chuyển socket qua thread và cái giá 36% của lõi cô lập đều đã viết; cái còn lại của người dùng là *shard nào* và ghim consumer của ring
+- [x] `docs/PRD.md` — `density` có hình dạng cụ thể (M shard × N session) và số đo thật thay cho 703 ns — **2026-08-31**
 - [x] `CHANGELOG.md` — public API đổi — **bước 2, 2026-08-31**
-- [ ] `STATUS.md` — item 21 đóng, item 22 cập nhật
-- [ ] `crates/engine` rustdoc
+- [~] `STATUS.md` — item 22 cập nhật ✓; **item 21 KHÔNG đóng**, xem nhật ký đóng plan
+- [x] `crates/engine` rustdoc — `affinity`, `shard`, `journal::open_pinned` — **2026-08-31**
 
 ## Bẫy đã lường trước
 
@@ -697,3 +697,31 @@ như sự trung thực.
 [`33394373832`](https://github.com/tmthang86/fixbolt/actions/runs/33394373832), commit `7e8ee1f`,
 **9/9 job**, `one_shard_passes_all_fifty_nine_at_any_settle_bound ... ok`, cả lần chạy hết
 **2 phút 26 giây**. Chưa từng có lỗ nào cả.
+
+## Đóng plan — 2026-08-31
+
+**Sáu bước xong.** ADR-0015 (hình dạng) và ADR-0019 (ba chỗ ADR-0015 sai mà viết code mới tìm
+ra); `affinity` ghim và hỏi lại kernel; `Topology`/`ShardPlan` từ chối trước khi có thread;
+`shard` chạy M engine trên M lõi; `spawn_pinned` và `FileJournal::open_pinned` cho thread phụ;
+`benches/turn.rs` đo thật, có baseline, `bench.sh --strict` exit 0.
+
+**CI xanh 9/9** trên `d60c090`, run
+[`33394684357`](https://github.com/tmthang86/fixbolt/actions/runs/33394684357) — `CLAUDE.md` §9
+ô cuối.
+
+### Hai thứ KHÔNG đóng theo, và nói rõ từng cái
+
+**Item 24 — luật single-logon qua nhiều shard.** Corpus qua shard: **59 với một shard, 57 với
+hai**. `Engine` mang một `Config` = một identity, nên nó đếm kết nối nó giữ để trả lời *"identity
+này đã logon chưa"*; shard chia các kết nối đó ra nhiều engine và câu hỏi hết chỗ để hỏi. Chủ dự
+án chọn **cách A** ngày 2026-08-31: **một tầng pre-session** — acceptor giữ socket, đọc `Logon`,
+rồi mới định tuyến theo identity, đúng cách các engine thật làm. Đó là
+[docs/plans/2026-08-31-pre-session-routing.md](2026-08-31-pre-session-routing.md), không phải
+plan này: nó là **định tuyến phiên**, không phải thread và affinity.
+
+**Item 21 — vẫn mở, và hẹp hơn trước.** Câu của D8 giờ **đúng cho đường shard**: mỗi engine
+thread tự ghim và đọc lại xác nhận. Nhưng `serve_hft` — đường một engine — **vẫn không ghim gì**,
+vì ADR-0015 quyết định 1 cấm engine tự chọn core và hàm đó không nhận core nào. Nên D8 vẫn mô tả
+một hành vi mà một trong hai đường vào không có. Việc còn lại nhỏ (một `serve_hft` nhận `CoreId`)
+và **cố ý không làm ở đây**: thêm public API ngoài phạm vi một plan đang đóng là đúng cái kiểu
+trôi mà `CLAUDE.md` §1 chặn.

@@ -24,7 +24,7 @@ the type system or a test, this page says so.**
 | | **`standard`** — the default | **`hft`** — opt-in |
 |---|---|---|
 | When idle | **blocks on readiness, gives the core back** | spins; **burns a core, permanently, per polling thread** |
-| Wakeup cost | `epoll`-class, 2–5 µs | `[measured 2026-08-30]` 703 ns per socket per turn |
+| Wakeup cost | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` **675 ns per session per turn on an isolated core**, 505 ns on an ordinary one |
 | Runs on | any OS, any hardware, a container, a shared box | Linux, on a machine that satisfies `DESIGN.md` §9 |
 | Core pinning | none | required, and it refuses to start without it |
 | Choose it when | you are not counting microseconds, or you share the machine | one session matters more than the core it costs |
@@ -53,10 +53,16 @@ than by its own 100 ms timeout, three orders of magnitude apart.
 comes close for that mode. In `standard` the thread blocks rather than sweeping, so the term
 below is replaced by the wakeup — different arithmetic, and **unmeasured**.
 
-An idle turn of the engine is one non-blocking `read` per connection. `[measured 2026-08-30]`
-that syscall costs **703 ns**, flat from 1 to 256 sockets, and **353.8 ns of it is kernel entry
-and exit doing nothing at all**. So the sweep is `N × 703 ns`, and a message that arrives just
-after its socket was polled waits a whole sweep before anyone looks at it.
+An idle turn of the engine is one non-blocking `read` per connection. `[measured 2026-08-31]`
+a whole `Engine::turn` costs **675 ns per session on the isolated core `DESIGN.md` §9 asks for**
+and **505 ns on an ordinary one**, flat from 1 to 16 sessions within 2%. Of the 505, **471 ns is
+the `recv` syscall and about 30 ns is everything the engine itself does** — measured in the same
+run, so that subtraction is not across two programs. So the sweep is `N ×` that figure, and a
+message arriving just after its socket was polled waits a whole sweep before anyone looks at it.
+
+**The isolated core is the expensive one**, by 36%, and that is the machine this engine
+recommends. It is a trade against a tail nobody has measured yet, not a free win —
+[measured-costs.md](reference/measured-costs.md).
 
 | Sessions on one thread | Added latency, worst case | Against the engine's own parse at 125.5 ns |
 |---|---|---|
@@ -67,14 +73,15 @@ after its socket was polled waits a whole sweep before anyone looks at it.
 
 **If you care about latency, run one session per thread and pin that thread to an isolated
 core.** If you are building a gateway for many clients, you are in the `density` shape — that
-is supported and reasonable, and you should plan against `N × 703 ns` rather than against this
-project's headline figures ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)).
+is supported and reasonable, and you should plan against `N × 675 ns` on an isolated core
+rather than against this project's headline figures ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)).
 
 **Nothing enforces this.** The engine will happily carry 500 sessions on one thread and will
 not warn you.
 
-**And kernel bypass does not rescue it.** `[measured 2026-08-30]` removing the syscall — Onload,
-`ef_vi`, DPDK — takes 703 ns down to the cost of a memory read, which is real and worth having.
+**And kernel bypass does not rescue it.** `[measured 2026-08-31]` removing the syscall — Onload,
+`ef_vi`, DPDK — takes **471 ns of the 505** down to the cost of a memory read, which is real and
+worth having.
 Two terms survive it:
 
 - **Cache.** One `Connection` is **53.3 KiB**; `L1d` on the test machine is 32 KiB, so *one
@@ -96,8 +103,8 @@ architectures and the difference is the whole of §1:
 
 | Shape | 100 sessions | Sweep |
 |---|---|---|
-| **Stack** — one engine, one thread | 100 on one thread | `100 × 703 ns` = **70 µs** |
-| **Shard** — 8 engines, 8 pinned threads | ~13 each | `13 × 703 ns` = **9 µs** |
+| **Stack** — one engine, one thread | 100 on one thread | `100 × 675 ns` = **68 µs** |
+| **Shard** — 8 engines, 8 pinned threads | ~13 each | `13 × 675 ns` = **8.8 µs** |
 
 Nine microseconds sits under the 10–20 µs kernel-TCP floor, so for a gateway it is not the
 dominant term any more. Sharding is what makes "many sessions" reasonable — **not the core
@@ -136,9 +143,10 @@ as the API.
 
 - **Which shard a session lands on.** Round-robin is fine until sessions are unequal; there is
   no rebalancing, and a `ConnId` never moves between engines.
-- **Handing the socket across the thread boundary.** `Engine::add` takes `&mut self`, so the
-  owning thread must make the call — a channel from the accept loop, and a `TcpTransport` that
-  crosses it.
+- ~~**Handing the socket across the thread boundary.**~~ `[2026-08-31]` **the runtime does this
+  now**: `Shards::hand` sends the `TcpTransport` to the owning thread over a channel that
+  `[measured]` makes no syscall and no allocation, and `serve_sharded_hft` is the whole accept
+  loop. What is still yours is the line above it — *which* shard.
 - **Pinning — the engine now does the pinning, you still choose the core.** `[2026-08-31]`
   `fixbolt_engine::affinity` is behind the `affinity` feature, Linux only. Call
   `pin_current_thread(CoreId(6))` **from inside the thread, as its first act**, and check the
@@ -385,7 +393,7 @@ Everything in this section was paid for here, on this repository, in one day.
    setting against itself because the command that was supposed to change it had errored. The
    arms agreed beautifully. Check that the variable actually moved.
 5. **Measure a whole turn, including its syscalls.** Timing only the user-space part is how
-   §8's budget came to exclude the 703 ns that dominates it.
+   §8's budget came to exclude the syscall that dominates it — 471 ns of a 505 ns turn.
 
 Longer versions of all five, with the numbers:
 [reference/measured-costs.md](reference/measured-costs.md).
