@@ -41,12 +41,27 @@
 # margin fitted to this sample alone would sit below that and go red on a mode
 # that is known, documented and not a regression.
 #
-# One deliberate exclusion, stated so it is not silent: `inline deliver + reply`
-# read 6.3-8.3 ns under the PREVIOUS harness, and those runs are not counted
-# towards its margin. `[measured 2026-08-31]` about 5 of those 6.3 ns were the
-# harness itself -- the instrument was replaced, so its readings describe an
-# apparatus that no longer exists. Every other case is within 1% across the two
-# harnesses and needs no such judgement.
+# `[measured 2026-09-01]` THE PARAGRAPH THAT USED TO BE HERE WAS WRONG, and it is
+# replaced rather than deleted so the correction is visible. It said that
+# `inline deliver + reply` read 6.3-8.3 ns under the previous harness, that
+# "about 5 of those 6.3 ns were the harness itself", and that the 1.3 ns reading
+# was the honest one.
+#
+# The 1.3 ns was the optimiser deleting a 163-byte copy. `out` was written by
+# every iteration and read by nobody, and only the returned Range escaped, so
+# the stores were dead. Adding `black_box(&out)` -- at the SAME harness and the
+# SAME default profile -- takes the case from 1.3 ns to 8.5. 163 bytes in 1.3 ns
+# is 125 GB/s from one core, which was the thing to notice and nobody did.
+#
+# The old harness was not adding 5 ns. It was PREVENTING the elision, and its
+# 6.3-8.3 ns range is the same range this file now records honestly.
+#
+# `[measured 2026-09-01]` 62 process draws: 7.7 ns and 8.5 ns in roughly equal
+# numbers -- the per-process bimodality this file already documents -- plus two
+# rare high draws, 13.5 and 19.3, which are not a stable mode and are NOT
+# covered by the margin. A run drawing one will read OVER BASELINE about 3% of
+# the time. Widening the margin to hide it would need 2.3x, which is a ceiling
+# that sees nothing.
 #
 # Three cases carry a margin wider than the 1.10 floor, and it is not slop:
 # `[measured 2026-08-31]` they are bimodal or trimodal PER PROCESS, so the
@@ -63,7 +78,7 @@ AMD Ryzen 7 3700X 8-Core Processor	walk 1 group, 2 entries, 2 members	58.7	1.10	
 AMD Ryzen 7 3700X 8-Core Processor	walk 4 levels, 61-tag member list	352.9	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	group_members contains, 61 tags	9.7	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	encode 1 group, 2 entries	108.4	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	inline deliver + reply	1.3	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	inline deliver + reply	8.5	1.10	22	2026-09-01	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	ring, one way	267.4	1.30	24	2026-08-31	pass 10 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	ring, round trip	515.7	1.20	24	2026-08-31	pass 10 fail 0 unknown 1
 

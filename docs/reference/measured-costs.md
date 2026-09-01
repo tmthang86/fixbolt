@@ -1513,6 +1513,14 @@ than a figure to be quoted. Here the prediction was −36 ns and the measurement
 
 ## The instrument was 80% of its own smallest reading — 2026-08-31
 
+> **`[corrected 2026-09-01]` THIS SECTION'S CONCLUSION IS WRONG.** The 1.3 ns was the
+> optimiser deleting a 163-byte copy, not a faster instrument, and the doubling test below
+> passes either way because doubling the calls doubles whatever fraction survives. The old
+> harness was **preventing** the elision, not adding overhead. Kept unedited because the
+> reasoning is the point —
+> [a-benchmark-can-delete-its-own-work.md](a-benchmark-can-delete-its-own-work.md) has the
+> refutation and the corrected numbers.
+
 `DESIGN.md` §6's timing gates were moved from absolute targets to per-machine baselines
 ([ADR-0016](../decisions/ADR-0016-per-machine-baselines-replace-absolute-targets.md)). The
 change to `crates/codec/benches/harness.rs` was mechanical: `Suite::bench` lost its

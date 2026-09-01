@@ -100,6 +100,11 @@ fn main() {
         b.bench("encode 1 group, 2 entries", || {
             let r = t.encode_with::<Fix44>(&mut out, &[], black_box(&g));
             black_box(r).ok();
+            // Audited 2026-09-01 alongside `dispatch.rs`'s deleted copy: this
+            // case did NOT move (107.4 -> 104.9, inside its own spread), so
+            // nothing was being elided. Kept so that stays true by construction
+            // rather than by the optimiser's current mood.
+            black_box(&out);
         });
     });
 }
