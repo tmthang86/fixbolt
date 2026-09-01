@@ -84,21 +84,18 @@ jobs:
           echo "count=$n" >> "$GITHUB_OUTPUT"
           echo "Workspace members: $n"
           if [ "$n" -eq 0 ]; then
-            echo "::warning title=Gates skipped, not passed::The workspace has no crates yet, so fmt, clippy and test did not run. This job is green because there is nothing to check — CLAUDE.md §10: a green result that was inferred rather than observed is not a result."
+            echo "::error title=Nothing to check::cargo metadata reports 0 workspace members. This workspace holds six crates, so zero means a broken checkout or a broken manifest — not an empty repository. Failing rather than passing on nothing: CLAUDE.md §10, a green result that was inferred rather than observed is not a result. STATUS.md open item 26."
+            exit 1
           fi
 
       # fixbolt-dict generates its tables from the QuickFIX XML at build time and
       # fails the build when it is absent — deliberately, see crates/dict/build.rs.
       # vendor/ is gitignored (ADR-0001), so CI fetches it before anything builds.
-      - if: steps.ws.outputs.count != '0'
-        run: scripts/fetch-quickfix-assets.sh
+      - run: scripts/fetch-quickfix-assets.sh
 
-      - if: steps.ws.outputs.count != '0'
-        run: cargo fmt --all -- --check
-      - if: steps.ws.outputs.count != '0'
-        run: cargo clippy --all-targets -- -D warnings
-      - if: steps.ws.outputs.count != '0'
-        run: cargo test --all
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all
 
       # `affinity` is off by default and Linux-only (ADR-0015 decision 9), so
       # the two steps above never compile a line of it. Without this the module
@@ -111,8 +108,7 @@ jobs:
       # WITHOUT `standard`. Both take the same optional `libc`, so a mistake in
       # how that dependency is shared only shows up when one feature is on and
       # the other is off.
-      - if: steps.ws.outputs.count != '0'
-        name: The affinity feature builds, lints and passes on its own
+      - name: The affinity feature builds, lints and passes on its own
         run: |
           cargo clippy --all-targets --features affinity -- -D warnings
           cargo test -p fixbolt-engine --features affinity
@@ -138,18 +134,15 @@ jobs:
           n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
           echo "count=$n" >> "$GITHUB_OUTPUT"
           if [ "$n" -eq 0 ]; then
-            echo "::warning title=Skipped, not passed::No crates yet, so the advisory clippy run did not run."
+            echo "::error title=Nothing to check::cargo metadata reports 0 workspace members — a broken checkout or manifest. STATUS.md open item 26."
+            exit 1
           fi
-      - if: steps.ws.outputs.count != '0'
-        run: rustup toolchain install stable --profile minimal --component clippy
-      - if: steps.ws.outputs.count != '0'
-        run: |
+      - run: rustup toolchain install stable --profile minimal --component clippy
+      - run: |
           echo "pinned:  $(cargo --version)"
           echo "newest:  $(cargo +stable --version)"
-      - if: steps.ws.outputs.count != '0'
-        run: scripts/fetch-quickfix-assets.sh
-      - if: steps.ws.outputs.count != '0'
-        run: cargo +stable clippy --all-targets -- -D warnings
+      - run: scripts/fetch-quickfix-assets.sh
+      - run: cargo +stable clippy --all-targets -- -D warnings
 
   # CLAUDE.md §2 non-negotiable 4: the engine thread never sleeps in the kernel.
   # STATUS.md open item 15, which had no machine check at all until 2026-08-30 —
@@ -167,16 +160,13 @@ jobs:
           n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
           echo "count=$n" >> "$GITHUB_OUTPUT"
           if [ "$n" -eq 0 ]; then
-            echo "::warning title=Skipped, not passed::No crates yet, so the syscall trace did not run."
+            echo "::error title=Nothing to check::cargo metadata reports 0 workspace members — a broken checkout or manifest. STATUS.md open item 26."
+            exit 1
           fi
-      - if: steps.ws.outputs.count != '0'
-        run: sudo apt-get update && sudo apt-get install -y strace
-      - if: steps.ws.outputs.count != '0'
-        run: scripts/fetch-quickfix-assets.sh
-      - if: steps.ws.outputs.count != '0'
-        run: cargo build -p fixbolt-w2w --release
-      - if: steps.ws.outputs.count != '0'
-        run: scripts/check-no-kernel-sleep.sh
+      - run: sudo apt-get update && sudo apt-get install -y strace
+      - run: scripts/fetch-quickfix-assets.sh
+      - run: cargo build -p fixbolt-w2w --release
+      - run: scripts/check-no-kernel-sleep.sh
 
   # CLAUDE.md §2 non-negotiable 4, SECOND HALF: in `standard` mode the engine
   # thread must block when idle and give the core back. ADR-0013 decision 6
@@ -204,14 +194,12 @@ jobs:
           n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
           echo "count=$n" >> "$GITHUB_OUTPUT"
           if [ "$n" -eq 0 ]; then
-            echo "::warning title=Skipped, not passed::No crates yet, so the CPU measurement did not run."
+            echo "::error title=Nothing to check::cargo metadata reports 0 workspace members — a broken checkout or manifest. STATUS.md open item 26."
+            exit 1
           fi
-      - if: steps.ws.outputs.count != '0'
-        run: scripts/fetch-quickfix-assets.sh
-      - if: steps.ws.outputs.count != '0'
-        run: cargo build -p fixbolt-w2w --release
-      - if: steps.ws.outputs.count != '0'
-        run: scripts/check-standard-gives-the-core-back.sh
+      - run: scripts/fetch-quickfix-assets.sh
+      - run: cargo build -p fixbolt-w2w --release
+      - run: scripts/check-standard-gives-the-core-back.sh
 
   # CLAUDE.md §2 non-negotiable 6: this must build on a machine with nothing
   # optional installed. Its own runner, so it cannot inherit anything a
@@ -226,12 +214,11 @@ jobs:
           n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
           echo "count=$n" >> "$GITHUB_OUTPUT"
           if [ "$n" -eq 0 ]; then
-            echo "::warning title=Skipped, not passed::No crates yet, so --no-default-features did not run."
+            echo "::error title=Nothing to check::cargo metadata reports 0 workspace members — a broken checkout or manifest. STATUS.md open item 26."
+            exit 1
           fi
-      - if: steps.ws.outputs.count != '0'
-        run: scripts/fetch-quickfix-assets.sh
-      - if: steps.ws.outputs.count != '0'
-        run: cargo test --all --no-default-features
+      - run: scripts/fetch-quickfix-assets.sh
+      - run: cargo test --all --no-default-features
 
       # `[measured 2026-08-30]` THE STEP ABOVE DOES NOT PROVE WHAT IT READS AS,
       # and on its own this job was green about a build that never happened.
@@ -243,8 +230,7 @@ jobs:
       #
       # Asking per crate is the only scope where the flag means what it says.
       # See docs/reference/feature-flags-unify-across-a-workspace.md.
-      - if: steps.ws.outputs.count != '0'
-        run: scripts/check-no-optional-deps.sh
+      - run: scripts/check-no-optional-deps.sh
 
   # STATUS.md open item 20. Eight bench targets asserted ceilings and counts —
   # and a ninth that Cargo had auto-discovered from benches/harness.rs, which
@@ -274,12 +260,11 @@ jobs:
           n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
           echo "count=$n" >> "$GITHUB_OUTPUT"
           if [ "$n" -eq 0 ]; then
-            echo "::warning title=Skipped, not passed::No crates yet, so no benchmark ran."
+            echo "::error title=Nothing to check::cargo metadata reports 0 workspace members — a broken checkout or manifest. STATUS.md open item 26."
+            exit 1
           fi
-      - if: steps.ws.outputs.count != '0'
-        run: scripts/fetch-quickfix-assets.sh
-      - if: steps.ws.outputs.count != '0'
-        name: Run every benchmark
+      - run: scripts/fetch-quickfix-assets.sh
+      - name: Run every benchmark
         run: |
           set -o pipefail
           scripts/bench.sh 2>&1 | tee "$RUNNER_TEMP/bench.log"
@@ -289,7 +274,7 @@ jobs:
       # reads it, and an advisory number nobody reads is the defect this job is
       # fixing, one layer up. always(), because a failed run is exactly when the
       # numbers are worth reading.
-      - if: always() && steps.ws.outputs.count != '0'
+      - if: always()
         name: Publish the figures on the run page
         run: |
           {
