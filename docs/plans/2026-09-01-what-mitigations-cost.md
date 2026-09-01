@@ -269,3 +269,41 @@ Nhánh C: `retbleed=off spec_rstack_overflow=off`, mọi thứ khác giữ nguy�
 
 **Cái bác bỏ nó:** `getpid` vẫn ~154. Khi đó cái tốn tiền là `spectre_v2` (retpoline / STIBP /
 RSB filling) và phải có nhánh D.
+
+**2026-09-01 — nhánh C xong. Giả thuyết mới đúng, và đúng toàn phần.**
+
+`retbleed=off spec_rstack_overflow=off`. `/sys` xác nhận: `retbleed: Vulnerable`,
+`spec_rstack_overflow: Vulnerable`, **`vmscape: Mitigation: IBPB before exit to userspace`
+bật lại**, `spectre_v2: Retpolines; IBPB: conditional; RSB filling` vẫn nguyên.
+`user_loop` 1.0563–1.0571, khớp baseline.
+
+| Case | mitigation đầy đủ | A: tắt hết | **C: chỉ return-thunk tắt** | C so với đầy đủ |
+|---|---|---|---|---|
+| `getpid` trần | 154.5 | 59.45 | **59.46** | **−61.5%** |
+| `recv on a quiet socket` | 420.5 | 156.9 | **158.2** | −62.4% |
+| `engine turn, 1 idle sessions` | 448.9 | 175.2 | **176.0** | −60.8% |
+| `engine turn, 4 idle sessions` | 1807.1 | 712.3 | 713.1 | −60.5% |
+| `engine turn, 16 idle sessions` | 7333.5 | 2985.6 | 3001.8 | −59.1% |
+| `presession sweep, 1 quiet sockets` | 435.9 | 165.4 | 165.3 | −62.1% |
+| `presession sweep, 16 quiet sockets` | 6819.5 | 2610.3 | 2602.2 | −61.8% |
+
+**Nhánh C thu về trong 0.5% của nhánh A ở mọi dòng.** Nghĩa là **toàn bộ 61% là họ
+return-thunk của AMD** — `retbleed` và `spec_rstack_overflow` — với `vmscape` vẫn làm IBPB
+mỗi lần ra khỏi kernel và retpoline vẫn bật. Hai thứ đó cộng lại tốn **dưới 1%**.
+
+Nhóm đối chứng: 13 case user space, −3.1% đến +1.4%, không hướng.
+
+**Và nó giải thích được cái nhánh A không giải thích nổi.** Tiết kiệm không đều — `getpid`
+95 ns, `recv` 264 ns — vì đây **không** phải chi phí cố định mỗi syscall: return thunk và
+Safe RET thêm việc vào **mọi lần return trong kernel**, nên nó tỉ lệ với lượng code kernel
+mà syscall đó chạy. `getpid` là syscall lá; `recv` đi qua cả chuỗi dispatch.
+
+**Không tách được `retbleed` khỏi `spec_rstack_overflow`, và nói rõ vì sao không làm:** chúng
+là **cùng một lớp cơ chế** — cả hai viết lại đường return của kernel — nên tách ra cho hai con
+số nhỏ hơn chứ không cho một kết luận khác. Hai lần reboot nữa không mua thêm được quyết định
+nào.
+
+**Một thứ nhánh C tắt nhiều hơn tên gọi, ghi lại thay vì giấu:** `retbleed=off` cũng bỏ luôn
+`STIBP: always-on` khỏi dòng `spectre_v2` (nhánh B còn, nhánh C không). STIBP bảo vệ giữa hai
+luồng của một lõi, và **SMT đang tắt** theo §9, nên gần như chắc chắn nó không tốn gì ở đây —
+nhưng "gần như chắc chắn" không phải phép đo, nên nó nằm ở đây.
