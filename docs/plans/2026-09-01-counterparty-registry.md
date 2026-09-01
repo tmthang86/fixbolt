@@ -1,6 +1,6 @@
 # Nhiều counterparty trên một acceptor — registry trong `presession`
 
-> **Loại:** Plan · **Ngày:** 2026-09-01 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-01 · **Trạng thái:** **ĐÃ ĐÓNG 2026-09-01**
 > **Phạm vi:** `STATUS.md` open item 28. Chạm `engine` (`presession`, `shard`, các entry point)
 > và **API công khai** — không chạm `codec`, không chạm `session` trừ một chỗ đọc `Config`.
 
@@ -431,3 +431,37 @@ ADR-0030), ADR-0022 (header trỏ tới ADR-0029), ADR-0029, ADR-0030, và hai g
 2. **`check-no-kernel-sleep.sh` và `check-standard-gives-the-core-back.sh`** Linux-only, không
    chạy được ở đây. CI chạy cả hai và chúng xanh ở đó.
 3. **File cấu hình** vẫn chưa có — `Table` dựng bằng code. Là gap riêng trong `PRD.md`.
+
+---
+
+### Plan đóng · 2026-09-01
+
+**CI xanh, gọi tên bằng id, cho đúng commit đang đóng** — `CLAUDE.md` §9:
+run [`33521010564`](https://github.com/tmthang86/fixbolt/actions/runs/33521010564), commit
+`61e5cd7`, **success**. Nó chạy cả phần Linux-only mà máy này không compile được:
+
+```
+test one_shard_passes_all_fifty_nine_at_any_settle_bound ... ok
+test two_shards_pass_all_fifty_nine_because_identity_decides_the_shard ... ok
+test the_same_identity_always_lands_on_the_same_shard ... ok
+```
+
+**Sáu bước, tất cả đóng, trừ hai thứ được nói rõ là không đóng:**
+
+| Bước | Trạng thái |
+|---|---|
+| 1 test đặc tả đỏ trước | đóng — CI 33508641705 đỏ đúng hai test, trên Linux |
+| 2 `Entry`/`Registry`/`Table` | đóng — và sinh ra ADR-0029 |
+| 3 `Identity` mang `50=`/`57=` | đóng |
+| 4 entry point đổi chữ ký | đóng — và sinh ra ADR-0030, siêu việt ADR-0026 quyết định 5 |
+| 5 giá của `lookup` | **nửa đóng**: 0 cấp phát, có đảo ngược. Nửa ns để lại cho máy §9 |
+| 6 đóng plan, docs §4 | đóng |
+
+**Ba lần CI phản bác cái laptop tin:** (1) bước 1 đỏ trên Linux đúng như trên Mac; (2) run
+33509748294 xanh **và không phải bằng chứng**, vì ô đếm mù; (3) run 33520447994 đỏ vì `pump`
+bị gắn cờ `standard` mà `serve_hft` không cần cờ đó — lỗi của tôi, do không chạy
+`--no-default-features` sau bước 4.
+
+**Món nợ mới, ghi vào mục *Not proven* của STATUS.md:** phép so identity là O(n²) theo số kết
+nối trên đường `turn` (câu hỏi mở 1 của ADR-0030), và chưa có counterparty nào được thêm vào
+một acceptor đang chạy hay đọc từ file.
