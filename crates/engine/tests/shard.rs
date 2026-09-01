@@ -112,8 +112,14 @@ struct Counter {
 }
 
 impl Shardable for Counter {
-    fn add(&mut self, transport: TcpTransport, prefix: &[u8]) -> bool {
+    fn add(&mut self, transport: TcpTransport, cfg: Config, prefix: &[u8]) -> bool {
         assert!(!prefix.is_empty(), "a routed connection carries its Logon");
+        // The registry chose it before the connection was handed over — a shard
+        // never guesses whose socket it has (ADR-0030).
+        assert!(
+            cfg.serves(b"TW44", b"ISLD"),
+            "the configuration travels with the connection"
+        );
         self.held.push(transport);
         self.added.fetch_add(1, Ordering::Release);
         true
@@ -431,7 +437,7 @@ fn dropping_the_runtime_ends_every_thread() {
 fn the_route_is_written_down_and_not_merely_deterministic_today() {
     use fixbolt_engine::shard::HashRoute;
     fn at(sender: &[u8], target: &[u8], shards: usize) -> usize {
-        HashRoute.shard_for(Identity { sender, target }, shards)
+        HashRoute.shard_for(Identity::comp_ids(sender, target), shards)
     }
 
     assert_eq!(at(b"TW44", b"ISLD", 2), PINNED[0]);

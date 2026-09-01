@@ -46,6 +46,45 @@ pub struct Identity<'a> {
     pub sender: &'a [u8],
     /// `56=`, the TargetCompID as it appears on the wire.
     pub target: &'a [u8],
+    /// `50=`, the SenderSubID, when the message carries one.
+    ///
+    /// [ADR-0026] decision 2. **A real counterparty may distinguish itself by
+    /// this and nothing else**, and until it was carried here such a
+    /// counterparty could not be served at all: Artio's `SessionIdStrategy`
+    /// *"may"* include SubID and LocationID, and QuickFIX carries a
+    /// `SessionQualifier` for the same reason.
+    ///
+    /// Optional because most messages have neither, and a stand-in — an empty
+    /// slice, say — would make *"absent"* and *"present and empty"* the same
+    /// value. **How much of an `Identity` forms a key is the [`Registry`]
+    /// implementation's business**: [`Table`] ignores these two, and a
+    /// deployment that needs them writes eight lines.
+    ///
+    /// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+    pub sender_sub: Option<&'a [u8]>,
+    /// `57=`, the TargetSubID, when the message carries one. See
+    /// [`Self::sender_sub`].
+    pub target_sub: Option<&'a [u8]>,
+}
+
+impl<'a> Identity<'a> {
+    /// The comp-ID pair alone, with no sub-IDs.
+    ///
+    /// What an `Identity` was before [ADR-0026] decision 2, kept as a
+    /// constructor so a caller building one by hand — a test, a router — says
+    /// *"comp IDs only"* rather than writing `None` twice and leaving a reader
+    /// to guess whether that was a decision.
+    ///
+    /// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+    #[must_use]
+    pub const fn comp_ids(sender: &'a [u8], target: &'a [u8]) -> Self {
+        Self {
+            sender,
+            target,
+            sender_sub: None,
+            target_sub: None,
+        }
+    }
 }
 
 /// The value of the first field whose tag is `tag`, which must include the `=`.
@@ -84,6 +123,11 @@ pub fn identity_of(msg: &[u8]) -> Option<Identity<'_>> {
     Some(Identity {
         sender: field_value(msg, b"49=")?,
         target: field_value(msg, b"56=")?,
+        // Optional, so a message without them is still an identity — which is
+        // every message the acceptance corpus sends. `?` here would have made
+        // the sub-IDs mandatory and taken the corpus from 59 to nothing.
+        sender_sub: field_value(msg, b"50="),
+        target_sub: field_value(msg, b"57="),
     })
 }
 
@@ -171,6 +215,18 @@ pub trait Registry {
     fn lookup(&self, id: Identity<'_>) -> Option<&Entry>;
 }
 
+/// A shared registry is a registry.
+///
+/// One table can sit behind every shard's [`PendingSet`] without being cloned
+/// into each — the lookup only ever borrows, so there is nothing to own. It also
+/// lets a test hand the same registry to several sets without a `Clone` bound
+/// that the trait does not otherwise need.
+impl<R: Registry + ?Sized> Registry for &R {
+    fn lookup(&self, id: Identity<'_>) -> Option<&Entry> {
+        (*self).lookup(id)
+    }
+}
+
 /// The default [`Registry`]: a table built once, at startup, and read-only after.
 ///
 /// **Empty refuses everything, and that is the point.** [ADR-0026] decision 6
@@ -194,6 +250,12 @@ pub trait Registry {
 /// counterparty to somebody else's session — so the match is
 /// [`Config::serves`], the same comparison the session's own `Logon` check
 /// makes, asked one field earlier.
+///
+/// **It therefore ignores `50=` and `57=`.** `Config` has no room for them, and
+/// inventing a place would be inventing a second configuration format. A
+/// deployment whose counterparties are told apart by a sub-ID writes its own
+/// [`Registry`] — the whole reason ADR-0026 decision 1 made this a trait — and
+/// `crates/engine/tests/registry.rs` has a worked one, in eight lines.
 ///
 /// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
 /// [counterparty-registry]: ../../../docs/plans/2026-09-01-counterparty-registry.md
@@ -242,6 +304,19 @@ impl Table {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// The first entry, if there is one.
+    ///
+    /// Not a lookup and not a default: an [`Engine`](crate::Engine) is built
+    /// before any connection arrives and needs *a* `Config` for
+    /// [`Engine::add`](crate::Engine::add), which the serving loops never call —
+    /// every connection there arrives from the pre-session stage carrying the
+    /// configuration the registry chose. This is how the entry points get one
+    /// without inventing it.
+    #[must_use]
+    pub fn first(&self) -> Option<&Entry> {
+        self.entries.first()
     }
 }
 
@@ -692,6 +767,19 @@ pub trait Route: Send {
 /// binary would route the same counterparty differently, and the rule would
 /// hold within a run and break across a restart — the worst shape a bug can
 /// have, because every test passes.
+///
+/// # It hashes the comp IDs only, and the sub-IDs deliberately do not enter
+///
+/// [ADR-0026] decision 2 widened [`Identity`] with `50=`/`57=`, and this was
+/// **not** widened with it. Routing and identity answer different questions: a
+/// shard exists to hold every connection belonging to one counterparty so the
+/// single-logon rule can count them, and two connections from one counterparty
+/// that differ in `50=` must still land together. Folding the sub-IDs in would
+/// scatter them, which is the defect ADR-0020 was written to repair.
+///
+/// A deployment for which the sub-ID *is* the counterparty writes its own
+/// [`Route`]. That is the seam, and it is the same seam
+/// [`Registry`] offers one field earlier.
 ///
 /// Hashing is the sensible default and explicitly not the final answer. A real
 /// deployment shards by counterparty deliberately; [`Route`] is the seam.

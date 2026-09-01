@@ -316,6 +316,25 @@ impl Config {
         self.sender_comp_id.matches(comp_id)
     }
 
+    /// Do these two configurations name the **same FIX session identity**?
+    ///
+    /// BeginString and both comp IDs, and deliberately nothing else: two entries
+    /// for one counterparty that differ only in `HeartBtInt` or `MaxLatency` are
+    /// still that one counterparty, and *"is this identity already logged on"*
+    /// must say yes.
+    ///
+    /// `1b_DuplicateIdentity.def` is what this exists for, and its own comment
+    /// is the specification: *"If two logons with the same
+    /// SenderCompID/TargetCompID combination logon the second one must be
+    /// disconnected"* — **per identity, not per acceptor**
+    /// ([ADR-0030](../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md)).
+    #[must_use]
+    pub fn same_identity_as(&self, other: &Self) -> bool {
+        self.begin_string == other.begin_string
+            && self.sender_comp_id == other.sender_comp_id
+            && self.target_comp_id == other.target_comp_id
+    }
+
     /// Both halves at once: is this the configuration for a connection whose
     /// `Logon` carries `49=sender` and `56=target`?
     ///
@@ -512,6 +531,16 @@ impl<R: Role, const N: usize> Session<R, N> {
         s.next_in = next_in;
         s.resumed = true;
         s
+    }
+
+    /// The configuration this session was built with.
+    ///
+    /// `Copy`, so it hands back a value rather than a borrow — an engine holding
+    /// many counterparties reads it to answer *"is this identity already logged
+    /// on"* while another connection is borrowed mutably.
+    #[must_use]
+    pub const fn config(&self) -> Config {
+        self.cfg
     }
 
     /// The sequence number the next outbound message will carry.

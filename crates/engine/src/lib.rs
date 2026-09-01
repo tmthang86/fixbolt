@@ -237,6 +237,35 @@ where
     where
         J: Default,
     {
+        self.add_with_prefix_and_config(transport, self.cfg, prefix)
+    }
+
+    /// As [`Self::add_with_prefix`], for a counterparty this engine's own
+    /// `Config` does not name.
+    ///
+    /// **This is what makes one engine an acceptor rather than a link.** The
+    /// pre-session stage asked a [`presession::Registry`] which configuration
+    /// serves the identity on the `Logon`; that configuration arrives here, and
+    /// the connection's `Session` is built with it rather than with the
+    /// engine's default —
+    /// [ADR-0030](../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md).
+    ///
+    /// `Engine::new`'s `Config` remains the default for [`Self::add`], which is
+    /// what an engine driven without a pre-session stage still uses — the
+    /// acceptance corpus runs that way in `tests/wire.rs`.
+    ///
+    /// # Errors
+    ///
+    /// [`PrefixTooLong`] when the bytes exceed this engine's `RX`.
+    pub fn add_with_prefix_and_config(
+        &mut self,
+        transport: T,
+        cfg: Config,
+        prefix: &[u8],
+    ) -> Result<ConnId, PrefixTooLong>
+    where
+        J: Default,
+    {
         if prefix.len() > RX {
             return Err(PrefixTooLong {
                 got: prefix.len(),
@@ -245,7 +274,7 @@ where
         }
         let id = self.next_id;
         self.next_id += 1;
-        let mut conn = Connection::new(id, transport, Session::new(self.cfg), J::default())
+        let mut conn = Connection::new(id, transport, Session::new(cfg), J::default())
             .with_backpressure(self.backpressure);
         if !conn.prime(prefix) {
             self.next_id -= 1;
@@ -294,11 +323,29 @@ where
             // `AlreadyLoggedOn.def` both expect no reply at all on the second.
             // Counted first so the immutable borrow ends before the mutable
             // one begins.
+            //
+            // `[2026-09-01]` **the comparison is the identity, not merely the
+            // count.** This used to be `c.session.is_logged_on()` with nothing
+            // else, which was right only while an `Engine` held one `Config` and
+            // therefore one identity. It now holds as many as the pre-session
+            // stage's registry has entries ([ADR-0030]), and
+            // `1b_DuplicateIdentity.def`'s own comment says which rule this is:
+            // *"If two logons with the same SenderCompID/TargetCompID
+            // combination logon the second one must be disconnected."* Counting
+            // without comparing refused the second **counterparty** as though it
+            // were the second **connection**.
+            //
+            // [ADR-0030]: ../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md
+            let mine = self.conns[i].session.config();
             let others_on = self
                 .conns
                 .iter()
                 .enumerate()
-                .filter(|(j, c)| *j != i && c.session.is_logged_on())
+                .filter(|(j, c)| {
+                    *j != i
+                        && c.session.is_logged_on()
+                        && c.session.config().same_identity_as(&mine)
+                })
                 .count();
 
             let mut deliver = Deliver {
@@ -565,27 +612,38 @@ pub type StandardAcceptorEngine<A> = TcpAcceptorEngine<A, crate::block::Block>;
 /// looks broken. ADR-0013 reversed that default and this is where the reversal
 /// lands.
 ///
+/// `[2026-09-01]` **It used to take one `Config` and therefore serve one
+/// counterparty.** It takes a [`presession::Table`] now — one entry per
+/// counterparty — and a socket is held until its `Logon` says who it is
+/// ([ADR-0026], [ADR-0030]).
+///
 /// # Errors
 ///
-/// Whatever binding the listener returns.
+/// [`ServeError::NoCounterparties`] for an empty table, [`ServeError::Io`] from
+/// binding.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+/// [ADR-0030]: ../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md
 #[cfg(all(feature = "standard", unix))]
 pub fn serve<A: Application>(
     addr: &str,
-    cfg: Config,
+    table: presession::Table,
     app: A,
     capacity: usize,
-) -> std::io::Result<core::convert::Infallible> {
-    let acceptor = Acceptor::bind(addr)?;
+    limits: presession::Limits,
+) -> Result<core::convert::Infallible, ServeError> {
+    let cfg = default_config(&table)?;
+    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
     let engine: StandardAcceptorEngine<A> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
-        // Sized for the connections, the listener and the waker. An inline
-        // dispatch has no waker, so this is one spare.
-        crate::block::Block::new(capacity + 2),
+        // Sized for the connections, the listener, the waker and the sockets
+        // still waiting to identify themselves.
+        crate::block::Block::new(capacity + limits.pending() + 2),
         capacity,
     );
-    pump(acceptor, engine)
+    pump(acceptor, engine, table, limits)
 }
 
 /// As [`serve`], in `hft` mode: **spins, and burns a core for as long as the
@@ -597,14 +655,17 @@ pub fn serve<A: Application>(
 ///
 /// # Errors
 ///
-/// Whatever binding the listener returns.
+/// [`ServeError::NoCounterparties`] for an empty table, [`ServeError::Io`] from
+/// binding.
 pub fn serve_hft<A: Application>(
     addr: &str,
-    cfg: Config,
+    table: presession::Table,
     app: A,
     capacity: usize,
-) -> std::io::Result<core::convert::Infallible> {
-    let acceptor = Acceptor::bind(addr)?;
+    limits: presession::Limits,
+) -> Result<core::convert::Infallible, ServeError> {
+    let cfg = default_config(&table)?;
+    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
     let engine: HftAcceptorEngine<A> = Engine::new(
         cfg,
         InlineDispatch::new(app),
@@ -612,34 +673,124 @@ pub fn serve_hft<A: Application>(
         crate::wait::Spin,
         capacity,
     );
-    pump(acceptor, engine)
+    pump(acceptor, engine, table, limits)
 }
 
-/// The loop both `serve` functions run: accept what is waiting, turn every
-/// connection, and idle when nothing moved.
+/// Why a serving loop never started.
+///
+/// Fielded and `std::error::Error`, because it is returned once at startup and
+/// never from a hot path — `CLAUDE.md` §6.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ServeError {
+    /// The registry serves nobody, so this acceptor would refuse every
+    /// connection for as long as the process lived.
+    ///
+    /// **Refused loudly at startup rather than quietly forever.** An empty
+    /// [`presession::Table`] is a valid registry and
+    /// [ADR-0026](../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md)
+    /// decision 6 is what makes it refuse everything — but a *serving loop*
+    /// built on one is a configuration mistake, and the same reasoning that
+    /// gives [`presession::Limits`] no defaults says so here.
+    NoCounterparties,
+    /// Binding the listener failed.
+    Io(std::io::Error),
+}
+
+impl core::fmt::Display for ServeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoCounterparties => write!(
+                f,
+                "the registry serves no counterparty, so this acceptor would refuse every connection"
+            ),
+            Self::Io(e) => write!(f, "binding the listener: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ServeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NoCounterparties => None,
+            Self::Io(e) => Some(e),
+        }
+    }
+}
+
+/// The `Config` an engine is built with when a registry decides the rest.
+///
+/// It is the default for [`Engine::add`], which the serving loops never call:
+/// every connection they take on arrives from the pre-session stage carrying the
+/// configuration the registry chose for its identity. Taking the first entry is
+/// therefore a way of having *a* valid one rather than a decision about which —
+/// and an empty table has none, which is why that is refused.
+fn default_config(table: &presession::Table) -> Result<Config, ServeError> {
+    table
+        .first()
+        .map(presession::Entry::config)
+        .ok_or(ServeError::NoCounterparties)
+}
+
+/// The loop both `serve` functions run: hold new sockets until they say who
+/// they are, hand on the ones a registry serves, turn every connection, and idle
+/// when nothing moved.
 ///
 /// One function so the two modes differ in **exactly one type** and in nothing
 /// else. A loop written twice is two loops that will drift, and the listener
 /// being registered in one and not the other is precisely the kind of drift
 /// that costs a whole timeout and shows up as nothing at all.
+///
+/// `[2026-09-01]` **it no longer hands a raw socket to the engine.** A
+/// `PendingSet` owns each one until its first whole message, so the engine is
+/// only ever given a connection whose counterparty is known — ADR-0020,
+/// ADR-0026.
+#[cfg(all(feature = "standard", unix))]
 fn pump<A: Application, W: Waiting>(
     acceptor: Acceptor,
     mut engine: TcpAcceptorEngine<A, W>,
-) -> std::io::Result<core::convert::Infallible> {
-    // The listener, so an idle turn waits on "somebody connected" as well as on
-    // "somebody sent something". Leave it out and a new connection waits up to
-    // a whole timeout to be accepted.
+    table: presession::Table,
+    limits: presession::Limits,
+) -> Result<core::convert::Infallible, ServeError> {
+    // Matches the engine's RX, so a prefix can never be too long for the
+    // connection it is handed to.
+    const PRE: usize = 4096;
+
+    let mut set: presession::PendingSet<TcpTransport, presession::Table, PRE> =
+        presession::PendingSet::new(limits, table);
+    let mut clock = crate::clock::SystemClock;
     let listener = acceptor.source().map(Interest::readable);
-    let extra: &[Interest] = listener.as_slice();
+    let mut extra: Vec<Interest> = Vec::with_capacity(limits.pending() + 1);
     loop {
         let mut moved = false;
-        while let Some(t) = acceptor.accept() {
-            engine.add(t);
+        while set.len() < limits.pending() {
+            let Some(t) = acceptor.accept() else { break };
+            // Dropping the refusal closes the socket, which is what a caller
+            // with nowhere to put a connection should do.
+            drop(set.admit(t, crate::clock::Clock::now_ms(&mut clock)));
+            moved = true;
+        }
+        let now = crate::clock::Clock::now_ms(&mut clock);
+        let p = set.turn(now);
+        moved |= p != presession::Progress::default();
+        while let Some(i) = set.settled() {
+            let Some(pending) = set.take(i) else { break };
+            let Some(cfg) = pending.config() else {
+                continue;
+            };
+            let (t, buf, len) = pending.into_parts();
+            // A prefix that will not fit the engine's RX closes the socket
+            // (dropping the transport). It cannot be a message this engine could
+            // have read either way, and there is no session yet to tell.
+            let _ = engine.add_with_prefix_and_config(t, cfg, &buf[..len]);
             moved = true;
         }
         moved |= engine.turn();
         if !moved {
-            engine.idle_with(extra);
+            extra.clear();
+            extra.extend(listener);
+            set.interests(&mut extra);
+            engine.idle_with(&extra);
         }
     }
 }

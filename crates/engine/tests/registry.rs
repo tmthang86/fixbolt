@@ -152,6 +152,16 @@ fn contains_field(msg: &[u8], field: &[u8]) -> bool {
 /// rewriting `TW44` to `TW44` must give back the corpus bytes exactly,
 /// including the `BodyLength` and `CheckSum` the loader computed.
 fn relabel(wire: &[u8], sender: &[u8]) -> Vec<u8> {
+    relabel_full(wire, sender, None)
+}
+
+/// As [`relabel`], and also sets `57=` — the TargetSubID — to `target_sub`.
+///
+/// Nothing in the acceptance corpus sends a `Logon` with a sub-ID, so a
+/// counterparty told apart by one has to be built. It is still the corpus's
+/// bytes with fields edited, and the byte-exactness of the machinery is proven
+/// by the same round-trip test.
+fn relabel_full(wire: &[u8], sender: &[u8], target_sub: Option<&[u8]>) -> Vec<u8> {
     let mut head = Vec::new();
     let mut body = Vec::new();
     for field in wire.split(|b| *b == 1).filter(|f| !f.is_empty()) {
@@ -166,6 +176,11 @@ fn relabel(wire: &[u8], sender: &[u8]) -> Vec<u8> {
         } else {
             &mut body
         };
+        // A message never carries `57=` here, so replacing it would be dead
+        // code; it is appended after `56=`, where FIX's header order puts it.
+        if field.starts_with(b"57=") {
+            continue;
+        }
         if field.starts_with(b"49=") {
             out.extend_from_slice(b"49=");
             out.extend_from_slice(sender);
@@ -173,6 +188,13 @@ fn relabel(wire: &[u8], sender: &[u8]) -> Vec<u8> {
             out.extend_from_slice(field);
         }
         out.push(1);
+        if field.starts_with(b"56=") {
+            if let Some(sub) = target_sub {
+                out.extend_from_slice(b"57=");
+                out.extend_from_slice(sub);
+                out.push(1);
+            }
+        }
     }
     let mut msg = head;
     msg.extend_from_slice(b"9=");
@@ -192,12 +214,17 @@ fn relabel(wire: &[u8], sender: &[u8]) -> Vec<u8> {
 /// counterparty.
 struct Gateway {
     set: PendingSet<Loopback, Table, PRE>,
-    /// One engine per configured counterparty, and the `Config` each was built
-    /// with — ADR-0026 decision 5: the registry decides *which engine* a
-    /// connection belongs to, it does not make one engine multi-identity. That
-    /// is what keeps the single-logon rule answerable by counting the
-    /// connections one engine holds.
-    engines: Vec<(Config, Acceptor)>,
+    /// **One** engine, holding every counterparty — [ADR-0030], which supersedes
+    /// ADR-0026 decision 5's one-engine-per-counterparty.
+    ///
+    /// `1b_DuplicateIdentity.def`'s own comment is the specification: *"If two
+    /// logons with the same SenderCompID/TargetCompID combination logon the
+    /// second one must be disconnected"* — **per identity**. An engine that held
+    /// one identity could answer that by counting any logged-on connection; one
+    /// that holds several must compare.
+    ///
+    /// [ADR-0030]: ../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md
+    engine: Acceptor,
     /// The counterparty ends of the wires, in the order they connected.
     peers: Vec<Loopback>,
     /// Sockets that settled and had nowhere to go. Distinct from a session
@@ -220,24 +247,23 @@ struct Gateway {
 ///
 /// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
 fn gateway(configs: &[Config]) -> Gateway {
+    assert!(!configs.is_empty(), "an acceptor with no configuration");
     let mut table = Table::with_capacity(configs.len());
-    let mut engines = Vec::with_capacity(configs.len());
     for cfg in configs {
         table = table.serving(*cfg);
-        engines.push((
-            *cfg,
-            Engine::new(
-                *cfg,
-                InlineDispatch::new(EchoApp::default()),
-                ManualClock::at(T0),
-                Yield,
-                4,
-            ),
-        ));
     }
     Gateway {
         set: PendingSet::new(Limits::new(8, 30_000).expect("both above zero"), table),
-        engines,
+        // The engine's own `Config` is only a default for `add`; every
+        // connection here arrives through the pre-session stage carrying the one
+        // the registry chose.
+        engine: Engine::new(
+            configs[0],
+            InlineDispatch::new(EchoApp::default()),
+            ManualClock::at(T0),
+            Yield,
+            8,
+        ),
         peers: Vec::new(),
         unrouted: 0,
     }
@@ -272,16 +298,11 @@ impl Gateway {
                 let Some(p) = self.set.take(i) else { break };
                 self.hand(p);
             }
-            let mut moved = false;
-            for (_, e) in &mut self.engines {
-                moved |= e.turn();
-            }
+            let moved = self.engine.turn();
             if !moved && self.set.is_empty() {
-                // One more pass: an engine may have queued a reply the peer has
+                // One more pass: the engine may have queued a reply the peer has
                 // not been given a chance to read.
-                for (_, e) in &mut self.engines {
-                    e.turn();
-                }
+                self.engine.turn();
                 return;
             }
         }
@@ -298,12 +319,12 @@ impl Gateway {
             self.unrouted += 1;
             return;
         };
-        let Some((_, engine)) = self.engines.iter_mut().find(|(c, _)| *c == cfg) else {
-            self.unrouted += 1;
-            return;
-        };
         let (t, buf, len) = p.into_parts();
-        if engine.add_with_prefix(t, &buf[..len]).is_err() {
+        if self
+            .engine
+            .add_with_prefix_and_config(t, cfg, &buf[..len])
+            .is_err()
+        {
             self.unrouted += 1;
         }
     }
@@ -427,6 +448,56 @@ fn two_counterparties_log_on_to_one_acceptor() {
     let (a, b) = (gw.reply(first), gw.reply(second));
     assert_logon_back(&a, US, CORPUS_SENDER, "TW44");
     assert_logon_back(&b, US, OTHER_SENDER, "BETA");
+}
+
+/// **One identity, one connection — and two identities, two connections.**
+///
+/// The rule `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def` gate, asked of
+/// an engine that holds more than one counterparty. Both definitions run through
+/// one engine with one `Config` and cannot tell *"already logged on"* from
+/// *"somebody is logged on"*; here the difference is the whole test.
+///
+/// **This is what stops the fix from being a deletion.** Removing the rule
+/// altogether also makes `two_counterparties_log_on_to_one_acceptor` green, and
+/// the corpus would still pass every definition through `tests/wire.rs`. Only a
+/// second connection from an identity already on the engine separates *compared*
+/// from *not asked* — [ADR-0030].
+///
+/// [ADR-0030]: ../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md
+#[test]
+fn a_duplicate_of_one_counterparty_is_refused_and_the_other_is_not() {
+    let logon = corpus_logon();
+    let mut gw = gateway(&[
+        Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER),
+        Config::acceptor(b"FIX.4.4", US, OTHER_SENDER),
+    ]);
+
+    let first = gw.connect(&relabel(&logon, CORPUS_SENDER));
+    gw.settle();
+    assert_logon_back(&gw.reply(first), US, CORPUS_SENDER, "TW44");
+
+    // A different counterparty, while TW44 is logged on. Served.
+    let other = gw.connect(&relabel(&logon, OTHER_SENDER));
+    gw.settle();
+    assert_logon_back(&gw.reply(other), US, OTHER_SENDER, "BETA");
+
+    // A second TW44, while the first is still logged on. Refused in silence,
+    // which is exactly what 1b_DuplicateIdentity.def expects.
+    let dup = gw.connect(&relabel(&logon, CORPUS_SENDER));
+    gw.settle();
+    assert!(
+        gw.reply(dup).is_empty(),
+        "a second connection from an identity already logged on gets no reply — \
+         1b_DuplicateIdentity.def, whose own comment says `if two logons with the \
+         same SenderCompID/TargetCompID combination logon the second one must be \
+         disconnected`"
+    );
+
+    // And BETA is undisturbed by TW44's duplicate.
+    assert!(
+        gw.reply(other).is_empty(),
+        "BETA was already answered; nothing more should have arrived for it"
+    );
 }
 
 /// The same refusal with the single-logon rule taken out of the picture.
@@ -567,7 +638,7 @@ fn a_table_serves_each_entry_and_nobody_else() {
 
     let served = |sender: &[u8], target: &[u8]| {
         table
-            .lookup(Identity { sender, target })
+            .lookup(Identity::comp_ids(sender, target))
             .map(fixbolt_engine::presession::Entry::config)
     };
 
@@ -576,4 +647,138 @@ fn a_table_serves_each_entry_and_nobody_else() {
     // Reversed comp IDs are a real corpus case — `2k_CompIDDoesNotMatchProfile`.
     assert_eq!(served(US, CORPUS_SENDER), None, "reversed is not a match");
     assert_eq!(served(b"NOBODY", US), None, "and a stranger is nobody");
+}
+
+// --- sub-IDs, and who owns the key -------------------------------------------
+
+/// A message the corpus sends that carries `150=` and no `50=`.
+///
+/// `2r_UnregisteredMsgType.def` sends an `ExecutionReport` with `150=0`
+/// (ExecType). A scan for `50=` that matched anywhere inside a message would
+/// read `0` as a SenderSubID from it — and `150=` is not an edge case somebody
+/// invented, it is on the wire of a definition this project already runs.
+fn a_message_carrying_150() -> Vec<u8> {
+    load_all()
+        .expect("the corpus is fetched")
+        .into_iter()
+        .find_map(|s| match s.kind {
+            Kind::Send(m) if contains_field(&m.wire, b"150=0") => Some(m.wire),
+            _ => None,
+        })
+        .expect("2r_UnregisteredMsgType.def sends 150=0")
+}
+
+/// `150=` is not `50=`, and the corpus is what says so.
+///
+/// The guard is `field_value`'s field-start scan, which already had a test for
+/// `49=` hidden in a value. This is the same trap reached by a different route:
+/// a **legitimate tag** whose decimal representation ends in the tag being
+/// looked for. Nothing had to be invented to hit it.
+#[test]
+fn a_tag_ending_in_fifty_is_not_a_sender_sub_id() {
+    let msg = a_message_carrying_150();
+    let id = fixbolt_engine::presession::identity_of(&msg).expect("it names both sides");
+    assert_eq!(
+        id.sender_sub,
+        None,
+        "150=0 is ExecType, not a SenderSubID: {}",
+        String::from_utf8_lossy(&msg).replace('\u{1}', "|")
+    );
+    assert_eq!(id.target_sub, None, "and there is no 57= either");
+}
+
+/// Both states of the optional fields, on real bytes.
+#[test]
+fn an_identity_carries_the_sub_ids_only_when_the_message_does() {
+    let logon = corpus_logon();
+
+    let without = relabel(&logon, CORPUS_SENDER);
+    let id = fixbolt_engine::presession::identity_of(&without).expect("both sides");
+    assert_eq!((id.sender, id.target), (CORPUS_SENDER, US));
+    assert_eq!(id.target_sub, None, "the corpus Logon carries no 57=");
+
+    let with = relabel_full(&logon, CORPUS_SENDER, Some(b"DESK1"));
+    let id = fixbolt_engine::presession::identity_of(&with).expect("both sides");
+    assert_eq!(
+        (id.sender, id.target),
+        (CORPUS_SENDER, US),
+        "the comp IDs are unchanged"
+    );
+    assert_eq!(id.target_sub, Some(&b"DESK1"[..]), "and the sub-ID is read");
+}
+
+/// A `Registry` that tells counterparties apart by `57=`, in eight lines.
+///
+/// [ADR-0026] decision 2: **how much of an `Identity` forms the key is the
+/// implementation's business.** `Table` uses the comp IDs, because that is what
+/// a `Config` holds; a deployment whose counterparties share a comp-ID pair and
+/// differ by desk writes this instead. It is the whole reason ADR-0026 made
+/// `Registry` a trait rather than a map.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+struct ByDesk {
+    desks: Vec<(Vec<u8>, fixbolt_engine::presession::Entry)>,
+}
+
+impl Registry for ByDesk {
+    fn lookup(&self, id: Identity<'_>) -> Option<&fixbolt_engine::presession::Entry> {
+        let sub = id.target_sub?;
+        self.desks
+            .iter()
+            .find(|(desk, e)| desk == sub && e.config().serves(id.sender, id.target))
+            .map(|(_, e)| e)
+    }
+}
+
+/// Two counterparties sharing `(49, 56)` and differing only by `57=`.
+///
+/// **Same code, two behaviours, and the implementation is what decides which.**
+/// `ByDesk` serves both. The default `Table` cannot tell them apart — it keys on
+/// what `Config` holds, and `Config` has no room for a sub-ID — so both resolve
+/// to the same entry, which is the honest answer rather than a silent one.
+#[test]
+fn a_registry_may_key_on_a_sub_id_and_the_default_one_does_not() {
+    let logon = corpus_logon();
+    let cfg = Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER);
+    let desk_one = relabel_full(&logon, CORPUS_SENDER, Some(b"DESK1"));
+    let desk_two = relabel_full(&logon, CORPUS_SENDER, Some(b"DESK2"));
+
+    let by_desk = ByDesk {
+        desks: vec![
+            (
+                b"DESK1".to_vec(),
+                fixbolt_engine::presession::Entry::new(cfg),
+            ),
+            (
+                b"DESK2".to_vec(),
+                fixbolt_engine::presession::Entry::new(cfg),
+            ),
+        ],
+    };
+    for (wire, desk) in [(&desk_one, "DESK1"), (&desk_two, "DESK2")] {
+        let (mut set, _peer) = one_socket(&by_desk, wire);
+        let p = set.turn(T0);
+        assert_eq!(p.settled, 1, "ByDesk serves {desk}: {p:?}");
+        assert_eq!(p.unknown, 0);
+    }
+    // And it refuses a connection with no desk at all, because its key needs one.
+    let (mut set, _peer) = one_socket(&by_desk, &relabel(&logon, CORPUS_SENDER));
+    let p = set.turn(T0);
+    assert_eq!(p.settled, 0, "no 57= is not a desk");
+    assert_eq!(p.unknown, 1, "{p:?}");
+
+    // The default Table ignores the sub-ID, so both desks are the same
+    // counterparty to it — one entry answers for both.
+    let table = Table::new().serving(cfg);
+    let entry = |wire: &[u8]| {
+        table
+            .lookup(fixbolt_engine::presession::identity_of(wire).expect("both sides"))
+            .map(fixbolt_engine::presession::Entry::config)
+    };
+    assert_eq!(entry(&desk_one), Some(cfg));
+    assert_eq!(
+        entry(&desk_two),
+        Some(cfg),
+        "Table keys on the comp IDs, so DESK2 is the same counterparty to it"
+    );
 }
