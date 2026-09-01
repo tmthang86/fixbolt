@@ -43,7 +43,7 @@ use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, load_all};
 use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::InlineDispatch;
 use fixbolt_engine::journal::Store;
-use fixbolt_engine::presession::{Limits, PendingSet, is_logon};
+use fixbolt_engine::presession::{Identity, Limits, PendingSet, Registry, Table, is_logon};
 use fixbolt_engine::transport::{Io, Loopback, Transport};
 use fixbolt_engine::wait::Yield;
 use fixbolt_engine::{Application, Config, Engine};
@@ -191,8 +191,13 @@ fn relabel(wire: &[u8], sender: &[u8]) -> Vec<u8> {
 /// One acceptor, a pre-session stage in front of it, and one client socket per
 /// counterparty.
 struct Gateway {
-    set: PendingSet<Loopback, PRE>,
-    engines: Vec<Acceptor>,
+    set: PendingSet<Loopback, Table, PRE>,
+    /// One engine per configured counterparty, and the `Config` each was built
+    /// with — ADR-0026 decision 5: the registry decides *which engine* a
+    /// connection belongs to, it does not make one engine multi-identity. That
+    /// is what keeps the single-logon rule answerable by counting the
+    /// connections one engine holds.
+    engines: Vec<(Config, Acceptor)>,
     /// The counterparty ends of the wires, in the order they connected.
     peers: Vec<Loopback>,
     /// Sockets that settled and had nowhere to go. Distinct from a session
@@ -203,31 +208,35 @@ struct Gateway {
 
 /// Build an acceptor that serves `configs`.
 ///
-/// **This function is the whole of step 1's redness, and the whole of what step
-/// 2 replaces.** Today an acceptor carries one `Config`: `serve` and
-/// `serve_hft` each take one (`crates/engine/src/lib.rs:572`, `:601`), and
-/// `serve_sharded_hft` takes one and hands the *same* one to every shard
-/// (`crates/engine/src/shard.rs:410`, `:431`). There is nowhere to put
-/// `configs[1]`, so it is dropped here — visibly, rather than by a signature
-/// that never let the caller mention it.
+/// **This is the only thing step 2 changed**, and it is where the redness was.
+/// Before [ADR-0026] it read `vec![Engine::new(configs[0], …)]` and dropped
+/// everything after the first: an acceptor carried one `Config`, so it could be
+/// *told about* two counterparties and only *hold* one. The two specification
+/// tests below did not move.
 ///
-/// After [ADR-0026] this builds a `presession::Table` from every entry and the
-/// pre-session stage looks the identity up. The two `#[test]` functions below
-/// do not change.
+/// Now the configurations go into a `presession::Table`, the pre-session stage
+/// looks the identity up before a session exists, and there is one engine per
+/// entry — ADR-0026 decision 5.
 ///
 /// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
 fn gateway(configs: &[Config]) -> Gateway {
-    assert!(!configs.is_empty(), "an acceptor with no configuration");
-    let engines = vec![Engine::new(
-        // ── the line that cannot hold a second counterparty ──────────────────
-        configs[0],
-        InlineDispatch::new(EchoApp::default()),
-        ManualClock::at(T0),
-        Yield,
-        4,
-    )];
+    let mut table = Table::with_capacity(configs.len());
+    let mut engines = Vec::with_capacity(configs.len());
+    for cfg in configs {
+        table = table.serving(*cfg);
+        engines.push((
+            *cfg,
+            Engine::new(
+                *cfg,
+                InlineDispatch::new(EchoApp::default()),
+                ManualClock::at(T0),
+                Yield,
+                4,
+            ),
+        ));
+    }
     Gateway {
-        set: PendingSet::new(Limits::new(8, 30_000).expect("both above zero")),
+        set: PendingSet::new(Limits::new(8, 30_000).expect("both above zero"), table),
         engines,
         peers: Vec::new(),
         unrouted: 0,
@@ -264,13 +273,13 @@ impl Gateway {
                 self.hand(p);
             }
             let mut moved = false;
-            for e in &mut self.engines {
+            for (_, e) in &mut self.engines {
                 moved |= e.turn();
             }
             if !moved && self.set.is_empty() {
                 // One more pass: an engine may have queued a reply the peer has
                 // not been given a chance to read.
-                for e in &mut self.engines {
+                for (_, e) in &mut self.engines {
                     e.turn();
                 }
                 return;
@@ -280,13 +289,16 @@ impl Gateway {
 
     /// Give one settled socket to the engine that serves its identity.
     ///
-    /// Today there is one engine and it serves one identity, so every
-    /// connection goes to it and the ones it does not serve are refused by the
-    /// session — silently, before a reply, which is exactly what
-    /// `1c_InvalidLogonBadSenderCompID.def` expects and exactly what makes a
-    /// second counterparty indistinguishable from an impostor.
+    /// The pre-session stage has already asked the registry, so the `Config` is
+    /// on the `Pending` — this only has to find the engine holding it. A socket
+    /// whose identity the registry refused never reaches here: `PendingSet::turn`
+    /// let go of it and counted it in `Progress::unknown`.
     fn hand(&mut self, p: fixbolt_engine::presession::Pending<Loopback, PRE>) {
-        let Some(engine) = self.engines.first_mut() else {
+        let Some(cfg) = p.config() else {
+            self.unrouted += 1;
+            return;
+        };
+        let Some((_, engine)) = self.engines.iter_mut().find(|(c, _)| *c == cfg) else {
             self.unrouted += 1;
             return;
         };
@@ -439,4 +451,129 @@ fn the_second_configured_counterparty_is_served_when_it_connects_alone() {
 
     assert_eq!(gw.unrouted, 0, "the settled socket reached an engine");
     assert_logon_back(&gw.reply(only), US, OTHER_SENDER, "BETA");
+}
+
+// --- the registry itself -----------------------------------------------------
+
+/// A set holding one socket that has already sent `first`, in front of
+/// `registry`.
+fn one_socket<R: Registry>(registry: R, first: &[u8]) -> (PendingSet<Loopback, R, PRE>, Loopback) {
+    let mut set = PendingSet::new(Limits::new(4, 30_000).expect("both above zero"), registry);
+    let (near, mut far) = Loopback::pair();
+    assert!(set.admit(near, T0).is_ok(), "the ceiling is four");
+    assert!(
+        matches!(far.send(first), Io::Ready(_)),
+        "the message is on the wire"
+    );
+    (set, far)
+}
+
+/// Did the acceptor say anything back?
+fn said_anything(peer: &mut Loopback) -> bool {
+    let mut buf = [0u8; 64];
+    matches!(peer.recv(&mut buf), Io::Ready(_))
+}
+
+/// **An acceptor that admits an identity nobody configured is an open port.**
+///
+/// [ADR-0026] decision 6 gives the registry no default, and this is the test
+/// that says what "no default" costs: a `Table::new()` refuses every
+/// connection there will ever be. If somebody ever makes an empty registry mean
+/// *accept anything* — QuickFIX/J's wildcard `ANY_SESSION` template, which this
+/// design deliberately does not offer — this goes red.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+#[test]
+fn an_empty_registry_refuses_every_connection() {
+    let logon = corpus_logon();
+    let (mut set, mut peer) = one_socket(Table::new(), &relabel(&logon, CORPUS_SENDER));
+
+    let p = set.turn(T0);
+
+    assert_eq!(p.settled, 0, "an empty registry settles nobody");
+    assert_eq!(p.unknown, 1, "and counts the refusal: {p:?}");
+    assert!(set.is_empty(), "the socket was let go of, not held");
+    assert!(
+        !said_anything(&mut peer),
+        "a refused counterparty is told nothing — ADR-0026 decision 3 refuses it \
+         exactly as an invalid identity is refused, and the corpus expects silence"
+    );
+}
+
+/// A counterparty the registry does not serve never reaches a session.
+///
+/// The refusal moves one stage earlier than it used to: before ADR-0026 the
+/// pre-session stage let every identity through and `Session` refused the wrong
+/// ones with `Refusal::WrongSenderCompId`. Now the stage answers first, and the
+/// socket is gone before an engine has seen it. **The observable is unchanged**
+/// — silence, then a disconnect — which is why `tests/wire.rs` still scores 59.
+#[test]
+fn an_identity_nobody_configured_is_refused_before_a_session_exists() {
+    let logon = corpus_logon();
+    let table = Table::new().serving(Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER));
+    let (mut set, mut peer) = one_socket(table, &relabel(&logon, OTHER_SENDER));
+
+    let p = set.turn(T0);
+
+    assert_eq!(p.settled, 0, "BETA is not served by this table");
+    assert_eq!(p.unknown, 1, "and the refusal is counted: {p:?}");
+    assert_eq!(
+        p.not_logon, 0,
+        "it was a perfectly good Logon — a different fault"
+    );
+    assert!(!said_anything(&mut peer), "refused in silence");
+}
+
+/// The control for the two above, and the reason both can be trusted.
+///
+/// Same table, same harness, the identity it **does** serve: the socket settles
+/// and carries the configuration the registry chose. Without this, a
+/// `PendingSet` that had stopped settling anything at all would make both
+/// refusal tests pass — the lesson written up in
+/// `docs/reference/silence-before-a-logon-has-many-causes.md`.
+#[test]
+fn a_configured_identity_settles_and_carries_its_configuration() {
+    let logon = corpus_logon();
+    let cfg = Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER);
+    let (mut set, _peer) = one_socket(Table::new().serving(cfg), &relabel(&logon, CORPUS_SENDER));
+
+    let p = set.turn(T0);
+
+    assert_eq!(p.settled, 1, "TW44 is served: {p:?}");
+    assert_eq!(p.unknown, 0, "and nothing was refused");
+    let i = set.settled().expect("a settled socket");
+    assert_eq!(
+        set.identity_at(i)
+            .map(|id: Identity<'_>| (id.sender.to_vec(), id.target.to_vec())),
+        Some((CORPUS_SENDER.to_vec(), US.to_vec())),
+        "the identity the stage read"
+    );
+    assert_eq!(
+        set.take(i).and_then(|p| p.config()),
+        Some(cfg),
+        "and the configuration the registry chose for it"
+    );
+}
+
+/// `Table` keys on the entry's own `Config`, so two counterparties are two
+/// entries and neither can answer for the other.
+#[test]
+fn a_table_serves_each_entry_and_nobody_else() {
+    let alpha = Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER);
+    let beta = Config::acceptor(b"FIX.4.4", US, OTHER_SENDER);
+    let table = Table::new().serving(alpha).serving(beta);
+    assert_eq!(table.len(), 2);
+    assert!(!table.is_empty());
+
+    let served = |sender: &[u8], target: &[u8]| {
+        table
+            .lookup(Identity { sender, target })
+            .map(fixbolt_engine::presession::Entry::config)
+    };
+
+    assert_eq!(served(CORPUS_SENDER, US), Some(alpha));
+    assert_eq!(served(OTHER_SENDER, US), Some(beta));
+    // Reversed comp IDs are a real corpus case — `2k_CompIDDoesNotMatchProfile`.
+    assert_eq!(served(US, CORPUS_SENDER), None, "reversed is not a match");
+    assert_eq!(served(b"NOBODY", US), None, "and a stranger is nobody");
 }

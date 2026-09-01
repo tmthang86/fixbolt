@@ -436,7 +436,12 @@ where
         )
     })?;
 
-    let mut set: PendingSet<crate::transport::TcpTransport, PRE> = PendingSet::new(limits);
+    // A registry of exactly one, because that is what this signature can say.
+    // ADR-0026 puts a `Registry` here; step 4 of the plan is what lets a caller
+    // name more than one, and until then the pre-session stage asks the same
+    // question about the same single `Config` it always did.
+    let mut set: PendingSet<crate::transport::TcpTransport, crate::presession::One, PRE> =
+        PendingSet::new(limits, crate::presession::One::new(cfg));
     let mut poller = crate::poll::Poller::with_capacity(limits.pending() + 1);
     let mut interests: Vec<Interest> = Vec::with_capacity(limits.pending() + 1);
     let mut clock = SystemClock;

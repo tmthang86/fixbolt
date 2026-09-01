@@ -27,11 +27,17 @@ use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
 use fixbolt_engine::frame::{Cut, Framer};
 use fixbolt_engine::journal::Store;
-use fixbolt_engine::presession::{Limits, PendingSet};
+use fixbolt_engine::presession::{Limits, One, PendingSet};
 use fixbolt_engine::ring;
 use fixbolt_engine::transport::{Interest, Io, Loopback, TcpTransport, Transport};
 use fixbolt_engine::wait::Yield;
 use fixbolt_engine::{Application, Config, Engine};
+
+/// The counterparty the acceptance corpus logs on as. The registry the sweep
+/// runs in front of serves exactly it — ADR-0026.
+fn cfg() -> Config {
+    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+}
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
@@ -449,8 +455,10 @@ fn main() {
     //
     // Two cases, because the empty sweep alone would pass a `PendingSet` that
     // allocated on every `admit`: the second holds live sockets and turns them.
-    let mut idle_set: PendingSet<Loopback, 1024> =
-        PendingSet::new(Limits::new(64, 30_000).expect("both above zero"));
+    let mut idle_set: PendingSet<Loopback, One, 1024> = PendingSet::new(
+        Limits::new(64, 30_000).expect("both above zero"),
+        One::new(cfg()),
+    );
     assert!(idle_set.is_empty(), "the empty sweep must really be empty");
     let pending_idle_allocs = count(|| {
         for _ in 0..100_000 {
@@ -458,8 +466,10 @@ fn main() {
         }
     });
 
-    let mut busy_set: PendingSet<Loopback, 1024> =
-        PendingSet::new(Limits::new(64, 30_000).expect("both above zero"));
+    let mut busy_set: PendingSet<Loopback, One, 1024> = PendingSet::new(
+        Limits::new(64, 30_000).expect("both above zero"),
+        One::new(cfg()),
+    );
     let mut peers = Vec::new();
     for _ in 0..8 {
         let (near, far) = Loopback::pair();
@@ -490,8 +500,10 @@ fn main() {
     //
     // The far ends are kept alive so the only allocations in the window are the
     // set's own.
-    let mut cycle_set: PendingSet<Loopback, 1024> =
-        PendingSet::new(Limits::new(64, 30_000).expect("both above zero"));
+    let mut cycle_set: PendingSet<Loopback, One, 1024> = PendingSet::new(
+        Limits::new(64, 30_000).expect("both above zero"),
+        One::new(cfg()),
+    );
     let mut kept = Vec::with_capacity(64);
     for _ in 0..64 {
         let (near, far) = Loopback::pair();

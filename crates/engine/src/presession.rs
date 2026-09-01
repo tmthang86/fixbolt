@@ -97,6 +97,189 @@ pub fn is_logon(msg: &[u8]) -> bool {
     field_value(msg, b"35=") == Some(b"A")
 }
 
+// --- who this acceptor serves ------------------------------------------------
+
+use fixbolt_session::Config;
+
+/// Everything an acceptor holds about one counterparty.
+///
+/// [ADR-0026] decision 1. Today it is the session `Config` and nothing else; a
+/// journal handle, a credential to check against `553`/`554` and a per-
+/// counterparty policy are what it is *shaped* to grow, and each is deliberately
+/// out of this step's scope — a field added before something reads it is a field
+/// nothing tests. **Per-counterparty journals are ADR-0026's open question 2**
+/// and are not answered by putting a handle here early.
+///
+/// It is a struct rather than a bare `Config` for that reason alone: the day a
+/// second field arrives, no signature moves.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Entry {
+    cfg: Config,
+}
+
+impl Entry {
+    /// One counterparty, named by the configuration that serves it.
+    #[must_use]
+    pub const fn new(cfg: Config) -> Self {
+        Self { cfg }
+    }
+
+    /// The configuration a connection matching this entry gets.
+    #[must_use]
+    pub const fn config(&self) -> Config {
+        self.cfg
+    }
+}
+
+/// Which configuration a `Logon` belongs to, or nobody.
+///
+/// [ADR-0026] decision 1: **a trait, not a map.** A table is one implementation
+/// of it — see [`Table`] — and the trait is what lets a deployment answer from a
+/// file, from a snapshot of a database, or from a policy covering a class of
+/// identities, without any of that reaching this crate.
+///
+/// # Three properties this signature is chosen for
+///
+/// * **It returns `Option`, not `Result`.** There is nothing to `unwrap`
+///   (non-negotiable 7), and *"no"* is an ordinary answer here rather than a
+///   failure: an unknown counterparty is refused exactly as an invalid identity
+///   already is.
+/// * **Refusing is authenticating.** ADR-0026 decision 3: `lookup` returning
+///   `None` is the whole authentication hook, and there will be no second
+///   `AuthStrategy` beside it. Two hooks answering *"may this counterparty in"*
+///   are two rules that will disagree.
+/// * **It answers immediately.** ADR-0026 decision 4, and this is where the
+///   design parts from Artio's `authenticateAsync`: `lookup` runs on the
+///   acceptor thread, and an accept path that can await a network call is a
+///   denial-of-service surface no logon deadline closes. A deployment whose
+///   entitlements live elsewhere snapshots them out of band.
+///
+/// # It must not allocate
+///
+/// `lookup` is on the connection path, once per socket. `benches/alloc.rs`
+/// proves the pre-session stage allocates nothing, and an implementation that
+/// builds a key, formats a string or collects into a `Vec` puts an allocation
+/// on a path that currently counts zero — the easiest invariant in this design
+/// to break. Borrow from what the implementation already owns; the `&Entry` it
+/// returns is what makes that possible.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+pub trait Registry {
+    /// The entry serving `id`, or `None` to refuse the connection.
+    fn lookup(&self, id: Identity<'_>) -> Option<&Entry>;
+}
+
+/// The default [`Registry`]: a table built once, at startup, and read-only after.
+///
+/// **Empty refuses everything, and that is the point.** [ADR-0026] decision 6
+/// gives nothing a default — an acceptor that admits an identity nobody
+/// configured is an open port, which is precisely what QuickFIX/J's wildcard
+/// `ANY_SESSION` template is and precisely what is not offered here. See
+/// [`Table::new`].
+///
+/// # Linear, and on purpose until something measures it
+///
+/// A scan over a `Vec`. Forty counterparties compared on two short byte strings
+/// is very likely cheaper than hashing one, and *"very likely"* is why step 5 of
+/// [counterparty-registry] measures it beside the 426.2 ns the pre-session sweep
+/// already costs rather than guessing. **No optimisation before the number** —
+/// and the [`Registry`] trait means replacing this costs a caller one type.
+///
+/// # The key is the entry's own `Config`
+///
+/// Not a separate key argument the caller repeats. A table whose key could
+/// disagree with the `Config` it points at is a table that eventually admits a
+/// counterparty to somebody else's session — so the match is
+/// [`Config::serves`], the same comparison the session's own `Logon` check
+/// makes, asked one field earlier.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+/// [counterparty-registry]: ../../../docs/plans/2026-09-01-counterparty-registry.md
+#[derive(Debug, Default, Clone)]
+pub struct Table {
+    entries: Vec<Entry>,
+}
+
+impl Table {
+    /// A registry serving nobody. Every connection is refused until an entry is
+    /// added — [ADR-0026] decision 6.
+    ///
+    /// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Room for `n` counterparties, taken once.
+    ///
+    /// Allocation happens **here**, not in [`Registry::lookup`]. A table built
+    /// with this and then filled to `n` never grows on the connection path.
+    #[must_use]
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(n),
+        }
+    }
+
+    /// Add one counterparty. Builder-shaped, so a table reads as a list.
+    #[must_use]
+    pub fn serving(mut self, cfg: Config) -> Self {
+        self.entries.push(Entry::new(cfg));
+        self
+    }
+
+    /// How many counterparties this table serves.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether it serves none — in which case it refuses every connection.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl Registry for Table {
+    fn lookup(&self, id: Identity<'_>) -> Option<&Entry> {
+        // Borrowed comparison against bytes the table already owns. Nothing is
+        // built, so nothing is allocated — `benches/alloc.rs` asserts it.
+        self.entries
+            .iter()
+            .find(|e| e.cfg.serves(id.sender, id.target))
+    }
+}
+
+/// A registry that serves exactly one counterparty.
+///
+/// What every entry point took before [ADR-0026], kept as a named type so the
+/// single-counterparty deployment does not have to build a table to say
+/// something this small — and so the migration from a `Config` to a `Registry`
+/// is one word at the call site.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct One(Entry);
+
+impl One {
+    /// The one counterparty this acceptor serves.
+    #[must_use]
+    pub const fn new(cfg: Config) -> Self {
+        Self(Entry::new(cfg))
+    }
+}
+
+impl Registry for One {
+    fn lookup(&self, id: Identity<'_>) -> Option<&Entry> {
+        self.0.cfg.serves(id.sender, id.target).then_some(&self.0)
+    }
+}
+
 // --- holding the socket ------------------------------------------------------
 
 use crate::frame::{Cut, Framer};
@@ -184,6 +367,15 @@ pub struct Progress {
     pub timed_out: usize,
     /// Connections dropped because their first whole message was not a `Logon`.
     pub not_logon: usize,
+    /// Connections dropped because the [`Registry`] serves nobody by that
+    /// identity.
+    ///
+    /// Its own count, not folded into [`Self::not_logon`]: a counterparty that
+    /// sent a perfectly good `Logon` nobody configured is an operational fact —
+    /// a typo in a comp ID, or a stranger — and one this acceptor is otherwise
+    /// **silent** about, because ADR-0026 decision 3 refuses it exactly as an
+    /// invalid identity is refused. A number is the only trace it leaves.
+    pub unknown: usize,
     /// Connections dropped because the peer left or sent a frame that can never
     /// be a message.
     pub gone: usize,
@@ -194,8 +386,14 @@ pub struct Pending<T, const PRE: usize> {
     transport: T,
     rx: Framer<PRE>,
     deadline_ms: u64,
-    /// Length of the whole `Logon` at the front, once there is one.
-    settled: Option<usize>,
+    /// Length of the whole `Logon` at the front and the configuration that
+    /// serves it, once the [`Registry`] has said there is one.
+    ///
+    /// One `Option` rather than two fields, because *settled* and *known* are
+    /// the same moment: [`PendingSet::turn`] lets go of a socket whose identity
+    /// the registry refuses, so a settled slot always has an entry behind it and
+    /// no caller can reach one that does not.
+    settled: Option<(usize, Config)>,
 }
 
 impl<T, const PRE: usize> Pending<T, PRE> {
@@ -213,6 +411,15 @@ impl<T, const PRE: usize> Pending<T, PRE> {
     /// The socket, for handing to an engine.
     pub fn into_transport(self) -> T {
         self.transport
+    }
+
+    /// The configuration the [`Registry`] chose for this counterparty.
+    ///
+    /// `None` only on a socket that has not settled — and a caller reaches a
+    /// `Pending` through [`PendingSet::take`], which hands out settled ones.
+    #[must_use]
+    pub fn config(&self) -> Option<Config> {
+        self.settled.map(|(_, cfg)| cfg)
     }
 
     /// The socket and the bytes, for moving both across a channel.
@@ -242,19 +449,33 @@ impl<T, const PRE: usize> Pending<T, PRE> {
 /// to be used together, without a `turn` in between.
 ///
 /// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
-pub struct PendingSet<T, const PRE: usize> {
+pub struct PendingSet<T, R, const PRE: usize> {
     slots: Vec<Pending<T, PRE>>,
     limits: Limits,
+    registry: R,
 }
 
-impl<T: Transport, const PRE: usize> PendingSet<T, PRE> {
-    /// Room for `limits.pending()` sockets, taken once and never grown.
+impl<T: Transport, R: Registry, const PRE: usize> PendingSet<T, R, PRE> {
+    /// Room for `limits.pending()` sockets, taken once and never grown, in
+    /// front of the counterparties `registry` serves.
+    ///
+    /// **A [`Table::new`] here refuses every connection**, which is
+    /// [ADR-0026] decision 6 and not a degenerate case to be smoothed over: an
+    /// acceptor that admits an identity nobody configured is an open port.
+    ///
+    /// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
     #[must_use]
-    pub fn new(limits: Limits) -> Self {
+    pub fn new(limits: Limits, registry: R) -> Self {
         Self {
             slots: Vec::with_capacity(limits.pending()),
             limits,
+            registry,
         }
+    }
+
+    /// The registry this set asks.
+    pub const fn registry(&self) -> &R {
+        &self.registry
     }
 
     /// How many sockets are waiting.
@@ -308,7 +529,7 @@ impl<T: Transport, const PRE: usize> PendingSet<T, PRE> {
                 i += 1;
                 continue;
             }
-            match Self::advance(slot, now_ms) {
+            match Self::advance(slot, now_ms, &self.registry) {
                 Step::Waiting => i += 1,
                 Step::Settled => {
                     p.settled += 1;
@@ -322,6 +543,10 @@ impl<T: Transport, const PRE: usize> PendingSet<T, PRE> {
                     p.not_logon += 1;
                     self.slots.swap_remove(i);
                 }
+                Step::Unknown => {
+                    p.unknown += 1;
+                    self.slots.swap_remove(i);
+                }
                 Step::Gone => {
                     p.gone += 1;
                     self.slots.swap_remove(i);
@@ -332,7 +557,7 @@ impl<T: Transport, const PRE: usize> PendingSet<T, PRE> {
     }
 
     /// One socket: read what is there, then decide what it has become.
-    fn advance(slot: &mut Pending<T, PRE>, now_ms: u64) -> Step {
+    fn advance(slot: &mut Pending<T, PRE>, now_ms: u64, registry: &R) -> Step {
         let spare = slot.rx.spare();
         if !spare.is_empty() {
             match slot.transport.recv(spare) {
@@ -345,12 +570,19 @@ impl<T: Transport, const PRE: usize> PendingSet<T, PRE> {
         }
         match slot.rx.cut() {
             Cut::Message(n) => {
-                if is_logon(slot.rx.bytes(n)) {
-                    slot.settled = Some(n);
-                    Step::Settled
-                } else {
-                    Step::NotLogon
+                let msg = slot.rx.bytes(n);
+                if !is_logon(msg) {
+                    return Step::NotLogon;
                 }
+                // A `Logon` naming only one side reaches the registry as no
+                // identity at all, and is refused for the same reason an
+                // unconfigured one is: there is nothing to look up. `14b_
+                // RequiredFieldMissing.def` is a real message of that shape.
+                let Some(entry) = identity_of(msg).and_then(|id| registry.lookup(id)) else {
+                    return Step::Unknown;
+                };
+                slot.settled = Some((n, entry.config()));
+                Step::Settled
             }
             // Unreadable, and this stage has no session to hand it to. The
             // session's own rule about a garbled *Logon* still applies to
@@ -410,7 +642,8 @@ impl<T: Transport, const PRE: usize> PendingSet<T, PRE> {
     #[must_use]
     pub fn identity_at(&self, i: usize) -> Option<Identity<'_>> {
         let slot = self.slots.get(i)?;
-        identity_of(slot.rx.bytes(slot.settled?))
+        let (n, _) = slot.settled?;
+        identity_of(slot.rx.bytes(n))
     }
 
     /// Take the socket at `i` out, with everything read off it.
@@ -425,6 +658,7 @@ enum Step {
     Settled,
     TimedOut,
     NotLogon,
+    Unknown,
     Gone,
 }
 

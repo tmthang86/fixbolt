@@ -44,13 +44,27 @@ use fixbolt_engine::affinity::{CoreId, ShardPlan, Topology};
 use fixbolt_engine::clock::Clock;
 use fixbolt_engine::dispatch::InlineDispatch;
 use fixbolt_engine::journal::Store;
-use fixbolt_engine::presession::{Limits, PendingSet};
+use fixbolt_engine::presession::{Limits, One, PendingSet};
 use fixbolt_engine::shard::Shards;
 use fixbolt_engine::transport::TcpTransport;
 use fixbolt_engine::wait::Yield;
 use fixbolt_session::{Application, Config};
 
 const PRE: usize = 4096;
+
+/// The counterparty the acceptance corpus logs on as: `49=TW44` in, `56=ISLD`
+/// in, so this end is `ISLD` and the counterparty is `TW44`.
+///
+/// Before [ADR-0026] the pre-session stage let every identity through and the
+/// session refused the wrong ones. Now the stage asks a [`Registry`] first, so
+/// these tests have to say who this acceptor serves — and it is the same
+/// counterparty the corpus was always logging on as.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+/// [`Registry`]: fixbolt_engine::presession::Registry
+fn cfg() -> Config {
+    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+}
 
 /// How the pre-session stage disposed of every socket, across a whole run:
 /// `[settled, timed_out, not_logon, gone, unrouted]`.
@@ -139,7 +153,7 @@ struct ShardWire {
     /// is under test here** and a deadline that could fire would make this gate
     /// depend on how fast the machine is. `tests/pending.rs` is where the
     /// limits are exercised, with a clock the test moves by hand.
-    pending: PendingSet<TcpTransport, PRE>,
+    pending: PendingSet<TcpTransport, One, PRE>,
 
     clock: Arc<AtomicU64>,
     clients: Vec<(Conn, Option<TcpStream>)>,
@@ -196,7 +210,10 @@ impl ShardWire {
             // and every accept here follows a connect this test just made.
             listener: TcpListener::bind("127.0.0.1:0").expect("a free port"),
             shards,
-            pending: PendingSet::new(Limits::new(64, u64::MAX).expect("both above zero")),
+            pending: PendingSet::new(
+                Limits::new(64, u64::MAX).expect("both above zero"),
+                One::new(cfg()),
+            ),
 
             clock,
             clients: Vec::new(),

@@ -299,6 +299,39 @@ impl Config {
         self.max_skew_ms = ms;
         self
     }
+
+    /// Does an inbound `49=` name the counterparty this configuration serves?
+    ///
+    /// For an acceptor the incoming `SenderCompID` is *theirs*, so it is
+    /// checked against [`Self::acceptor`]'s `target_comp_id`. Fail-closed: a
+    /// configured value too long to fit matches nothing at all.
+    #[must_use]
+    pub fn inbound_sender_matches(&self, comp_id: &[u8]) -> bool {
+        self.target_comp_id.matches(comp_id)
+    }
+
+    /// Does an inbound `56=` name **us**?
+    #[must_use]
+    pub fn inbound_target_matches(&self, comp_id: &[u8]) -> bool {
+        self.sender_comp_id.matches(comp_id)
+    }
+
+    /// Both halves at once: is this the configuration for a connection whose
+    /// `Logon` carries `49=sender` and `56=target`?
+    ///
+    /// The question a counterparty registry asks
+    /// ([ADR-0026](../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md)),
+    /// and it is composed from the two predicates the session's own `Logon`
+    /// check uses rather than written a second time. The session keeps them
+    /// apart because each has its own refusal — `1c_InvalidLogonBadSenderCompID`
+    /// and `2k_CompIDDoesNotMatchProfile` are different definitions — and a
+    /// registry only needs the conjunction. **Two copies of this comparison
+    /// would be two rules that disagree**, and the one that disagreed would be
+    /// the one deciding whether to let a stranger in.
+    #[must_use]
+    pub fn serves(&self, sender: &[u8], target: &[u8]) -> bool {
+        self.inbound_sender_matches(sender) && self.inbound_target_matches(target)
+    }
 }
 
 /// Where the session is in its life.
@@ -1151,10 +1184,10 @@ impl<R: Role, const N: usize> Session<R, N> {
 
         let sender_ok = view
             .get(tag::SENDER_COMP_ID)
-            .is_some_and(|v| cfg.target_comp_id.matches(v));
+            .is_some_and(|v| cfg.inbound_sender_matches(v));
         let target_ok = view
             .get(tag::TARGET_COMP_ID)
-            .is_some_and(|v| cfg.sender_comp_id.matches(v));
+            .is_some_and(|v| cfg.inbound_target_matches(v));
         let time_ok = view
             .get(tag::SENDING_TIME)
             .and_then(clock::parse_utc)

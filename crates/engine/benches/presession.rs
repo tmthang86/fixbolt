@@ -32,8 +32,17 @@ mod harness;
 use std::hint::black_box;
 use std::net::{TcpListener, TcpStream};
 
-use fixbolt_engine::presession::{HashRoute, Limits, PendingSet, Route, identity_of, is_logon};
+use fixbolt_engine::presession::{
+    HashRoute, Limits, One, PendingSet, Route, identity_of, is_logon,
+};
 use fixbolt_engine::transport::TcpTransport;
+use fixbolt_session::Config;
+
+/// The counterparty the acceptance corpus logs on as. The registry the sweep
+/// runs in front of serves exactly it — ADR-0026.
+fn cfg() -> Config {
+    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+}
 
 const PRE: usize = 4096;
 
@@ -54,10 +63,13 @@ fn a_logon() -> Vec<u8> {
 /// The client ends are leaked deliberately: closing one would make the next
 /// sweep see end-of-stream and drop it, and the bench would measure a table
 /// emptying itself.
-fn set_with(n: usize) -> PendingSet<TcpTransport, PRE> {
+fn set_with(n: usize) -> PendingSet<TcpTransport, One, PRE> {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
     let addr = listener.local_addr().expect("bound");
-    let mut set = PendingSet::new(Limits::new(n.max(1), u64::MAX).expect("both above zero"));
+    let mut set = PendingSet::new(
+        Limits::new(n.max(1), u64::MAX).expect("both above zero"),
+        One::new(cfg()),
+    );
     for _ in 0..n {
         let client = TcpStream::connect(addr).expect("connect");
         let (server, _) = listener.accept().expect("accept");
