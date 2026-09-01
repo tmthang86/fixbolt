@@ -1,6 +1,8 @@
 # ADR-0016 — Per-machine baselines replace the absolute timing targets
 
 > **Status:** Accepted · **Date:** 2026-08-31
+>
+> **Decision 1's comparison is amended by [ADR-0031](ADR-0031-a-baseline-is-a-band.md): it is a band, not a ceiling.** A figure below `baseline / margin` is reported and counted rather than passed — a case that stops measuring reads far under its limit and a ceiling passes it forever. Everything else here stands.
 > **Supersedes:** the absolute timing targets published in `DESIGN.md` §6. It does not
 > supersede any earlier ADR.
 > **Amends:** nothing in `CLAUDE.md` §2. This decision *enforces* non-negotiable 10; it does

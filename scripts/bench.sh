@@ -55,7 +55,18 @@ echo
 # The set of targets comes from cargo, not from a list in this file: a bench
 # renamed or added must not quietly stop being run. Compared against what
 # actually ran, at the end.
-mapfile -t TARGETS < <(
+#
+# `while read` rather than `mapfile`: `[measured 2026-09-01]` mapfile is bash 4+
+# and macOS ships bash 3.2, so this script had never run on a development
+# laptop at all -- it died at this line with `mapfile: command not found`
+# before measuring anything. Not a §9 machine, so its NUMBERS are still
+# worthless here (check-machine.sh says so on its own line); its BEHAVIOUR --
+# does every target run, does a case fall outside its band -- is machine
+# independent and was unverifiable for no good reason.
+TARGETS=()
+while IFS= read -r line; do
+  [ -n "$line" ] && TARGETS+=("$line")
+done < <(
   cargo metadata --no-deps --format-version 1 |
     jq -r '.packages[] | .name as $p | .targets[] | select(.kind[]=="bench") | "\($p) \(.name)"' |
     sort
@@ -76,6 +87,8 @@ timing_over=()
 # would otherwise print a figure and pass. See harness.rs.
 no_baseline=0
 no_baseline_targets=()
+under_baseline=0
+under_baseline_targets=()
 
 for entry in "${TARGETS[@]}"; do
   pkg=${entry% *}
@@ -101,6 +114,14 @@ for entry in "${TARGETS[@]}"; do
     no_baseline=$((no_baseline + nb))
     no_baseline_targets+=("$pkg/$name")
   fi
+  # And one `cases under their baseline: N ...` line when any case came in below
+  # `baseline / margin`. STATUS.md open item 25: a ceiling alone passes a
+  # benchmark that stopped measuring, forever, and more comfortably every day.
+  ub=$(echo "$out" | sed -n 's/^cases under their baseline: \([0-9]*\).*/\1/p' | head -1)
+  if [ -n "${ub:-}" ] && [ "$ub" -gt 0 ]; then
+    under_baseline=$((under_baseline + ub))
+    under_baseline_targets+=("$pkg/$name")
+  fi
   if [ "$code" -ne 0 ]; then
     if [ "$kind" = INVARIANT ]; then
       invariant_failed+=("$pkg/$name")
@@ -117,6 +138,7 @@ echo "targets silent       ${#silent[@]}  ${silent[*]:-}"
 echo "invariant failures   ${#invariant_failed[@]}  ${invariant_failed[*]:-}"
 echo "timing over baseline ${#timing_over[@]}  ${timing_over[*]:-}"
 echo "cases w/o a baseline $no_baseline  ${no_baseline_targets[*]:-}"
+echo "cases under the band $under_baseline  ${under_baseline_targets[*]:-}"
 
 # Liveness. A green result from a run that executed nothing is the failure this
 # whole script exists to end, so it is checked rather than assumed.
@@ -156,6 +178,25 @@ if [ "$no_baseline" -ne 0 ]; then
   fi
   echo "$no_baseline case(s) have no baseline on this CPU: they were measured and"
   echo "printed but compared against nothing. Not fatal without --strict."
+fi
+
+# A figure BELOW its band. Two causes, and both need the same thing from a
+# person: a real optimisation, in which case the baseline must be re-recorded or
+# the ceiling above it guards nothing; or a benchmark that stopped measuring.
+# Never fatal without --strict, because a genuine speed-up must not break the
+# build before it can be merged -- what people would learn from that is to widen
+# the margin. With --strict, on a DESIGN.md §9 box during a deliberate
+# measurement session, it must be resolved.
+if [ "$under_baseline" -ne 0 ]; then
+  if [ "$STRICT" -eq 1 ]; then
+    echo "FAIL: --strict, and $under_baseline case(s) came in UNDER their baseline" >&2
+    echo "      Either re-record the baseline (a real speed-up leaves the ceiling" >&2
+    echo "      wider than the truth) or fix the benchmark: STATUS.md item 25," >&2
+    echo "      where a case published 1.3 ns while doing 8.5 ns of work." >&2
+    exit 1
+  fi
+  echo "$under_baseline case(s) came in under their baseline: either re-record it,"
+  echo "or the benchmark stopped measuring. Not fatal without --strict."
 fi
 
 if [ "${#timing_over[@]}" -ne 0 ]; then

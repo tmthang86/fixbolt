@@ -945,7 +945,7 @@ cannot share an exit code:
 | | What it measures | On a failure |
 |---|---|---|
 | **Invariant** — `alloc` × 3, `ring_full` | allocation counts, message counts | **CI red.** The answer is the same on every machine, so a failure is a defect |
-| **Timing** — `parse`, `serialize`, `groups`, `dispatch`, `turn`, `presession` | ns/op against **this machine's own baseline** (ADR-0016) | **Reported, never red on a shared runner.** `bench.sh --strict`, which a §9 machine runs, treats a case with no baseline for its CPU as fatal |
+| **Timing** — `parse`, `serialize`, `groups`, `dispatch`, `turn`, `presession` | ns/op against **this machine's own band**, `[baseline / margin, baseline * margin]` ([ADR-0016](decisions/ADR-0016-per-machine-baselines-replace-absolute-targets.md), [ADR-0031](decisions/ADR-0031-a-baseline-is-a-band.md)) | **Reported, never red on a shared runner.** `bench.sh --strict`, which a §9 machine runs, is fatal on a case with no baseline for its CPU **and on one that came in under its floor** — a benchmark that stops measuring reads far under its limit, and a ceiling alone passes it forever |
 
 `--strict` makes a timing failure fatal too; that is what a §9 machine should use. The script
 also fails when a target produces **no** measurement, which is not hypothetical: Cargo had
@@ -973,7 +973,8 @@ collapsed the two into one per-machine number, for the reason this paragraph use
 from the other end. The old arrangement existed because 139 ns sat 8% under a 150 ns target
 while the laptop it ran on varied by more than 8%, so asserting the target would have gone red
 at random; the fix was to assert something looser and publish the target anyway. That kept a
-number in the table that nothing checked. Now the limit is `baseline × margin` for the CPU at
+number in the table that nothing checked. Now the limit is the band `baseline / margin` to
+`baseline × margin` for the CPU at
 hand, both recorded from measurement, and the table publishes exactly what the benchmark
 asserts.
 
