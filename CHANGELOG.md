@@ -175,6 +175,23 @@ below describe what a first release would contain.
       a `Text` value.
       [reference/a-conformance-corpus-is-not-an-adversarial-one.md](docs/reference/a-conformance-corpus-is-not-an-adversarial-one.md).
 
+  - **`presession`, part two — the socket has a deadline and the table has a ceiling.**
+    `Limits` (a named struct, because two `usize`-shaped limits as positional arguments
+    would transpose silently), `LimitError`, `PendingSet`, `Pending`, `Refused`,
+    `Progress`. **Neither limit has a default and zero is refused for both**
+    ([ADR-0020](docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)
+    decision 4) — a connection that opens and says nothing costs a slot forever, and a
+    table with no ceiling costs memory forever.
+    - A full table refuses **immediately** and hands the socket back in `Refused::Full`,
+      so closing it is something the caller does on purpose.
+    - Everything read off the socket is handed on, `Logon` **and anything pipelined
+      behind it** — `Framer` gains `all()` for it. A stage that passed on only the
+      message it routed by would lose the rest in silence.
+    - `[measured 2026-09-01]` 12 tests, four reversals — no timeout, no ceiling, hand on
+      only the message, let a non-`Logon` through — each red on the case that names it.
+      Allocation: three cases in `benches/alloc.rs`, all 0, and the third proven to go
+      red at 7 allocations when the one-time reservation is removed.
+
   - **`shard` — many engines, one per pinned core.** New module behind the same `affinity`
     feature. `Shards::start(&plan, make)` validates the plan, starts one thread per shard, and
     **waits for every thread to confirm its own pin before any of them serves** — so a plan that

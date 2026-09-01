@@ -106,7 +106,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 |---|---|---|
 | 1 | ✅ [ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md) — tầng pre-session: ai sở hữu socket trước `Logon`, hai giới hạn cứng, `Route` thay `Assign`, băm ổn định là mặc định, `RoundRobin` bị bỏ | — |
 | 2 | ✅ `presession.rs`: đọc `49`/`56` khỏi message trọn vẹn đầu tiên. Test: message đủ, message thiếu, message không phải `35=A`, message rác | 1 |
-| 3 | `PendingSet`: trần số lượng, logon timeout, vứt kết nối im lặng. Mỗi giới hạn một ca hỏng, so **biến thể lỗi** chứ không `is_err()` | 2 |
+| 3 | ✅ `PendingSet`: trần số lượng, logon timeout, vứt kết nối im lặng. Mỗi giới hạn một ca hỏng, so **biến thể lỗi** chứ không `is_err()` | 2 |
 | 4 | `Route` + băm ổn định; `Shards::hand` nhận identity; `serve_sharded_hft` nối tầng mới | 3 |
 | 5 | **`shard_wire.rs` lên 59 với hai shard**, và test đặc tả cũ được viết lại | 4 |
 | 6 | Đo: `Logon` mất thêm bao lâu vì đi qua tầng này, kèm `N` và khối machine của `check-machine.sh` | 5, máy §9 |
@@ -223,3 +223,46 @@ chính nó bắt được giả định sai của test.
 **258 pass 0 fail**, `--no-default-features` **258 pass 0 fail**, `--features affinity`
 **107 pass 0 fail** · `bench.sh --strict` **OK**, mọi dòng `allocations:` đều 0 (đường
 `Engine::turn` có đổi, nên bất biến 1 được chạy lại chứ không suy).
+
+**2026-09-01 — bước 3 xong.** `Limits`, `LimitError`, `PendingSet`, `Pending`, `Refused`,
+`Progress` trong `presession.rs`; `crates/engine/tests/pending.rs`, **12 test**. `Limits` là
+struct có tên chứ không phải hai tham số vị trí: cả hai đều là số, và `(30_000, 8)` — bảng ba
+mươi nghìn chỗ hết hạn sau tám mili giây — sẽ biên dịch trót lọt. Số 0 bị từ chối ở cả hai
+chiều.
+
+**Bốn reversal, mỗi cái đỏ đúng ca đặt tên nó:**
+
+| Bẻ cái gì | Đỏ |
+|---|---|
+| bỏ logon timeout | 4/12 |
+| bỏ trần số lượng | 3/12 |
+| chỉ giao lại **message**, không giao mọi byte đã đọc | **1/12** |
+| cho message đầu không phải `Logon` đi qua | 1/12 |
+
+**Reversal thứ ba là lý do phải thêm một test trước khi đảo ngược.** Khi viết xong 11 test tôi
+nhận ra không cái nào bắt được nó: mọi ca đều gửi đúng một message, nên "cả buffer" và "message
+đó" là cùng một slice. `whatever_arrives_behind_the_logon_is_handed_on_with_it` gửi `Logon` cộng
+một message nữa trong một lần `send`, và nó là **test duy nhất** đỏ khi bẻ. Đúng cái bẫy mà plan
+gọi là nguy hiểm nhất, và nó suýt không có gì canh.
+
+**`Loopback` không mô hình hoá đóng-khi-drop**, nên ba assertion `Io::Closed` đầu tiên đỏ trong
+khi code đúng. Không sửa `Loopback` — nó là transport mà 59 định nghĩa chạy trên đó, và sửa một
+test double đang gánh cổng để test mới xanh đúng là hình dạng §10 cảnh báo. Thay vào đó: đếm và
+thời gian đo trên `Loopback` (tất định), còn **EOF đo một lần trên socket thật**, nơi nó là sự
+thật về thứ sẽ ship chứ không phải về một cái double.
+
+**Và một false green của chính tôi, đã viết lại:** hai case cấp phát đầu tiên đọc 0 và **vẫn đọc
+0** khi tôi bỏ `Vec::with_capacity` để mỗi `admit` phải cấp phát lại — vì `admit` nằm **ngoài**
+cửa sổ `count()`. Case thứ hai được thêm vào đúng để chống chuyện đó, và nó thừa hưởng luôn cái
+lỗ nó sinh ra để bịt. Case thứ ba bọc cả chu trình `admit`→`turn`→`take`: xanh 0, và **đỏ ở 7**
+khi bỏ đặt chỗ một lần. Viết ở
+[the-guard-measured-a-window-that-excluded-the-thing.md](../reference/the-guard-measured-a-window-that-excluded-the-thing.md),
+`[to testing-skills]`.
+
+**Cố tình chưa làm, nói rõ:** `GUIDE.md` chưa nói gì về hai giới hạn này, vì `serve_sharded_hft`
+chưa nhận `Limits` — người dùng chưa với tới được. Nó đi cùng phần viết lại §1a ở bước 4/5.
+
+**Gate cho bước 3:** `fmt` sạch · `clippy --all-targets -D warnings` sạch · `cargo test --all`
+**270 pass 0 fail**, `--no-default-features` **270**, `--features affinity` **119** ·
+`bench.sh --strict` **OK**, mười hai dòng `allocations:` đều 0 · `check-machine.sh`
+`pass 11 fail 0`.

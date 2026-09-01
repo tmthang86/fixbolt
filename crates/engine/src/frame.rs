@@ -87,6 +87,17 @@ impl<const N: usize> Framer<N> {
         &self.buf[..n]
     }
 
+    /// Everything in the buffer, whether or not it is a whole message.
+    ///
+    /// [`Self::bytes`] answers *"the message you just cut"*; this answers
+    /// *"everything that has arrived"*. The pre-session stage needs the second:
+    /// a counterparty may pipeline behind its `Logon`, and those bytes belong to
+    /// the session too — handing on only the message would lose them silently.
+    #[must_use]
+    pub fn all(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+
     /// Drop the first `n` bytes and shuffle the rest down.
     ///
     /// The shuffle is a `copy_within` of whatever is left, which after a whole

@@ -27,6 +27,7 @@ use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
 use fixbolt_engine::frame::{Cut, Framer};
 use fixbolt_engine::journal::Store;
+use fixbolt_engine::presession::{Limits, PendingSet};
 use fixbolt_engine::ring;
 use fixbolt_engine::transport::{Interest, Io, Loopback, TcpTransport, Transport};
 use fixbolt_engine::wait::Yield;
@@ -440,10 +441,86 @@ fn main() {
         "every connection named its socket"
     );
 
+    // --- the pre-session stage ---------------------------------------------
+    //
+    // ADR-0020 decision 1 puts this on the acceptor thread, which is allowed to
+    // block — but it is NOT allowed to allocate per connection or per turn.
+    // Everything comes from the ceiling the caller named, once, in `new`.
+    //
+    // Two cases, because the empty sweep alone would pass a `PendingSet` that
+    // allocated on every `admit`: the second holds live sockets and turns them.
+    let mut idle_set: PendingSet<Loopback, 1024> =
+        PendingSet::new(Limits::new(64, 30_000).expect("both above zero"));
+    assert!(idle_set.is_empty(), "the empty sweep must really be empty");
+    let pending_idle_allocs = count(|| {
+        for _ in 0..100_000 {
+            core::hint::black_box(idle_set.turn(FIXED_TIME_MILLIS));
+        }
+    });
+
+    let mut busy_set: PendingSet<Loopback, 1024> =
+        PendingSet::new(Limits::new(64, 30_000).expect("both above zero"));
+    let mut peers = Vec::new();
+    for _ in 0..8 {
+        let (near, far) = Loopback::pair();
+        assert!(
+            busy_set.admit(near, FIXED_TIME_MILLIS).is_ok(),
+            "the ceiling is 64"
+        );
+        peers.push(far);
+    }
+    assert_eq!(busy_set.len(), 8, "the busy sweep must have sockets");
+    let pending_busy_allocs = count(|| {
+        for _ in 0..10_000 {
+            core::hint::black_box(busy_set.turn(FIXED_TIME_MILLIS));
+        }
+    });
+    assert_eq!(
+        busy_set.len(),
+        8,
+        "and must still have them — a sweep that dropped them measured nothing"
+    );
+
+    // The whole per-connection cycle, and it is here because the two cases
+    // above could NOT fail. `[measured 2026-09-01]` replacing
+    // `Vec::with_capacity(ceiling)` with `Vec::new()` — so every `admit` grows
+    // the table — left both of them reading 0, because `admit` ran outside
+    // `count`. A guard that cannot go red is not a guard; this one goes red on
+    // exactly that change.
+    //
+    // The far ends are kept alive so the only allocations in the window are the
+    // set's own.
+    let mut cycle_set: PendingSet<Loopback, 1024> =
+        PendingSet::new(Limits::new(64, 30_000).expect("both above zero"));
+    let mut kept = Vec::with_capacity(64);
+    for _ in 0..64 {
+        let (near, far) = Loopback::pair();
+        kept.push((Some(near), far));
+    }
+    let cycle_allocs = count(|| {
+        for slot in &mut kept {
+            let Some(near) = slot.0.take() else { continue };
+            if cycle_set.admit(near, FIXED_TIME_MILLIS).is_err() {
+                continue;
+            }
+            core::hint::black_box(cycle_set.turn(FIXED_TIME_MILLIS));
+        }
+        while let Some(i) = cycle_set.settled() {
+            core::hint::black_box(cycle_set.take(i));
+        }
+    });
+    assert_eq!(
+        cycle_set.len(),
+        64,
+        "64 admitted, none settled, none expired — the window did the work"
+    );
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
-         busy {busy_allocs} ring {ring_allocs} interests {interests_allocs}"
+         busy {busy_allocs} ring {ring_allocs} interests {interests_allocs} \
+         pending-idle {pending_idle_allocs} pending-busy {pending_busy_allocs} \
+         pending-cycle {cycle_allocs}"
     );
     assert_eq!(
         [
@@ -455,9 +532,12 @@ fn main() {
             shard_turn_allocs,
             busy_allocs,
             ring_allocs,
-            interests_allocs
+            interests_allocs,
+            pending_idle_allocs,
+            pending_busy_allocs,
+            cycle_allocs
         ],
-        [0; 9],
+        [0; 12],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }
