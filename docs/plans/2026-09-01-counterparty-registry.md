@@ -180,3 +180,77 @@ người sau tưởng con số đã có.
 
 **Và bất biến cuối, từ §9:** plan chỉ đóng khi **một CI run xanh được gọi tên bằng id, cho đúng
 commit đang đóng.** Laptop nói gate xanh *cho anh*; chỉ CI nói nó xanh *cho commit*.
+
+---
+
+### Bước 1 — test đặc tả, đỏ trước · 2026-09-01
+
+**Dựng gì.** `crates/engine/tests/registry.rs`, 4 test. Hai cái là *đặc tả* và phải đỏ; hai
+cái là *chốt chặn* và xanh ngay hôm nay — chúng tồn tại để cái đỏ kia không đổ tội nhầm chỗ.
+
+| Test | Hôm nay | Nó khẳng định điều gì |
+|---|---|---|
+| `two_counterparties_log_on_to_one_acceptor` | **đỏ** | một acceptor, hai counterparty, mỗi bên thấy comp ID của chính mình |
+| `the_second_configured_counterparty_is_served_when_it_connects_alone` | **đỏ** | cùng chuyện đó, nhưng `BETA` kết nối **một mình** — luật single-logon bị loại khỏi bức tranh |
+| `the_corpus_counterparty_still_logs_on` | xanh | counterparty mà acceptor **có** cấu hình vẫn logon được |
+| `relabelling_to_the_same_sender_reproduces_the_corpus_bytes` | xanh | bộ đổi nhãn `49=` là byte-exact, gồm cả `9=` và `10=` |
+
+`BETA` không có trong corpus — không file `.def` nào cho hai counterparty nói chuyện với một
+acceptor. Nên nó là `Logon` thật của corpus (`8=FIX.4.4|9=59|35=A|34=1|49=TW44|52=…|56=ISLD|98=0|
+108=30|10=116|`) với đúng **một trường** bị viết lại, `9=`/`10=` tính lại — dẫn xuất từ bản thật
+chứ không bịa (§7). Bộ đổi nhãn đó tự nó có test đảo ngược: `TW44` → `TW44` phải trả về đúng từng
+byte của corpus.
+
+**Output đỏ, nguyên văn:**
+
+```
+running 4 tests
+test relabelling_to_the_same_sender_reproduces_the_corpus_bytes ... ok
+test the_corpus_counterparty_still_logs_on ... ok
+test the_second_configured_counterparty_is_served_when_it_connects_alone ... FAILED
+test two_counterparties_log_on_to_one_acceptor ... FAILED
+
+failures:
+
+---- the_second_configured_counterparty_is_served_when_it_connects_alone stdout ----
+
+thread 'the_second_configured_counterparty_is_served_when_it_connects_alone' (1212180) panicked at crates/engine/tests/registry.rs:441:5:
+BETA was refused in silence: the acceptor sent it nothing.
+An acceptor holds one `Config` and therefore one `target_comp_id`, so it can serve one counterparty. This is what ADR-0026's registry is for.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- two_counterparties_log_on_to_one_acceptor stdout ----
+
+thread 'two_counterparties_log_on_to_one_acceptor' (1212181) panicked at crates/engine/tests/registry.rs:417:5:
+BETA was refused in silence: the acceptor sent it nothing.
+An acceptor holds one `Config` and therefore one `target_comp_id`, so it can serve one counterparty. This is what ADR-0026's registry is for.
+
+
+failures:
+    the_second_configured_counterparty_is_served_when_it_connects_alone
+    two_counterparties_log_on_to_one_acceptor
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+**Đỏ vì đúng lý do — và bản nháp đầu KHÔNG đỏ vì đúng lý do.** `[measured 2026-09-01]` lần chạy
+đầu tiên đỏ ở **`TW44`**, cái mà acceptor hôm nay phải phục vụ được. Nguyên nhân: `N = 8` trong
+chữ ký `Engine`, mà một `Logon` mang chín trường — parse hỏng, session từ chối trong im lặng, và
+thông điệp lỗi vẫn đổ tội cho registry còn thiếu. Một cái đỏ gọi sai nguyên nhân tệ hơn không có
+test. Sửa `N = 256` như `tests/wire.rs`, và **`the_corpus_counterparty_still_logs_on` được thêm
+vào để lần sau máy nói ra điều đó thay vì tôi**. Ghi lại thành
+[silence-before-a-logon-has-many-causes.md](../reference/silence-before-a-logon-has-many-causes.md)
+— §4 nói dòng `docs/reference/` là ưu tiên cao nhất, và mọi bẫy đã ghi phải có test canh.
+
+**Nền không xê dịch.** `cargo test --all --no-fail-fast` → **57 binary, 274 passed, 2 failed**.
+Nền 2026-09-01 là 56 / 272 / 0 — và `[measured 2026-09-01]` nó được **chạy lại trên chiếc Mac
+này trước khi viết dòng code nào** và ra đúng `56 binary, 272 passed, 0 failed`. Chênh lệch là
+đúng file test mới: +1 binary, +2 xanh (hai chốt chặn), +2 đỏ (hai đặc tả). **Không một test cũ
+nào bị sửa.**
+
+**Gate đã chạy:** `cargo fmt --all -- --check` sạch; `cargo clippy --all-targets -- -D warnings`
+sạch.
+
+**Chưa làm, và vì sao.** Chưa đụng `presession.rs` — đó là bước 2. Hai script Linux-only chưa
+chạy được ở đây; **chúng không chạy ≠ chúng xanh**. Chưa có con số nanosecond nào, và sẽ không
+có từ máy này.
