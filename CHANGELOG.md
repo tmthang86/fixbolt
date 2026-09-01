@@ -219,8 +219,31 @@ below describe what a first release would contain.
       an unknown identity held rather than dropped — each red on the assertion naming it.
       Allocation: `benches/alloc.rs` still reports 0 for all three pre-session cases with
       `lookup` on the path.
-    - `serve`, `serve_hft` and `serve_sharded_hft` still take a single `Config`; lifting a
-      registry into them is the next step and will be its own entry.
+  - **`presession`, part five — one engine holds many counterparties, and it is BREAKING.**
+    [ADR-0030](docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md), superseding
+    ADR-0026 decision 5.
+    - **`serve`, `serve_hft` and `serve_sharded_hft` take a `presession::Table` and a
+      `presession::Limits`** instead of a `Config`, and return `ServeError` /
+      `ShardError::NoCounterparties`. **An empty registry is refused at startup**, not at
+      every connection for as long as the process lives.
+    - `Engine::add_with_prefix_and_config`, `Session::config()`,
+      `Config::same_identity_as`, `Table::first()` are new. `Shardable::add` gains the
+      `Config`. `Engine::new`'s `Config` is now only the default for `Engine::add`.
+    - **The single-logon rule compares identities.** It counted logged-on connections,
+      which was the same answer only while an engine held one identity.
+      `1b_DuplicateIdentity.def`'s own comment is the specification: *"If two logons with
+      the same SenderCompID/TargetCompID combination logon the second one must be
+      disconnected."*
+    - **`Identity` gains `sender_sub` (`50=`) and `target_sub` (`57=`)**, and
+      `Identity::comp_ids` builds one without them. `HashRoute` ignores them on purpose:
+      two connections from one counterparty that differ in `50=` must still land on one
+      shard. `Table` ignores them too — a deployment told apart by sub-ID writes its own
+      `Registry`, which is what the trait is for.
+    - `[measured 2026-09-01]` a new test puts two counterparties on one engine and a
+      duplicate of one behind them. Reverting the rule to a count makes it red; **deleting
+      the rule entirely also makes it red, while the corpus alone would not notice** —
+      `tests/wire.rs` catches deletion and only this test catches the failure to compare.
+
 
   - **`presession`, part three, and it is a BREAKING change to `shard`.** `Assign`,
     `RoundRobin` and `Shards::with_assign` are **removed**, replaced by `Route`,

@@ -27,7 +27,7 @@ use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
 use fixbolt_engine::frame::{Cut, Framer};
 use fixbolt_engine::journal::Store;
-use fixbolt_engine::presession::{Limits, One, PendingSet};
+use fixbolt_engine::presession::{Limits, One, PendingSet, Registry, Table};
 use fixbolt_engine::ring;
 use fixbolt_engine::transport::{Interest, Io, Loopback, TcpTransport, Transport};
 use fixbolt_engine::wait::Yield;
@@ -491,6 +491,38 @@ fn main() {
         "and must still have them — a sweep that dropped them measured nothing"
     );
 
+    // A `Table` lookup, on the connection path. ADR-0026's own Consequences
+    // name this as the easiest invariant in that design to break: "an
+    // implementation that allocates puts an allocation on a path
+    // `benches/alloc.rs` currently proves is zero". The three cases above use
+    // `One`, which compares and returns; this is the default `Table`, with forty
+    // entries, scanned linearly.
+    //
+    // Forty because that is the order of a broker gateway's counterparty list
+    // and because a one-entry table would find its answer first every time,
+    // which is the shape that cannot fail.
+    let mut forty = Table::with_capacity(40);
+    for i in 0..40u8 {
+        let mut them = *b"CP00";
+        them[2] = b'0' + i / 10;
+        them[3] = b'0' + i % 10;
+        forty = forty.serving(Config::acceptor(b"FIX.4.4", b"ISLD", &them));
+    }
+    forty = forty.serving(cfg());
+    let logon = wire("35=A\x0134=1\x0198=0\x01108=30\x01");
+    let looked_up = {
+        let id = fixbolt_engine::presession::identity_of(&logon).expect("names both sides");
+        forty.lookup(id).is_some()
+    };
+    assert!(looked_up, "the table serves the corpus counterparty");
+    let registry_lookup_allocs = count(|| {
+        for _ in 0..100_000 {
+            let id =
+                fixbolt_engine::presession::identity_of(core::hint::black_box(&logon)).expect("id");
+            core::hint::black_box(forty.lookup(id).is_some());
+        }
+    });
+
     // The whole per-connection cycle, and it is here because the two cases
     // above could NOT fail. `[measured 2026-09-01]` replacing
     // `Vec::with_capacity(ceiling)` with `Vec::new()` — so every `admit` grows
@@ -532,7 +564,7 @@ fn main() {
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
          busy {busy_allocs} ring {ring_allocs} interests {interests_allocs} \
          pending-idle {pending_idle_allocs} pending-busy {pending_busy_allocs} \
-         pending-cycle {cycle_allocs}"
+         pending-cycle {cycle_allocs} registry-lookup {registry_lookup_allocs}"
     );
     assert_eq!(
         [
@@ -547,9 +579,10 @@ fn main() {
             interests_allocs,
             pending_idle_allocs,
             pending_busy_allocs,
-            cycle_allocs
+            cycle_allocs,
+            registry_lookup_allocs
         ],
-        [0; 12],
+        [0; 13],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

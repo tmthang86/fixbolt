@@ -336,3 +336,98 @@ three), `CHANGELOG.md` (mục BREAKING), ADR-0029, ADR-0022 (header trỏ tới 
 **Chưa làm.** `GUIDE.md` §1a, `PRD.md` §3, `STATUS.md` item 28 — chờ bước 4 chốt chữ ký
 entry point, rồi đóng ở bước 6. Chưa có con số ns nào. Hai script Linux-only vẫn chưa chạy
 được ở đây.
+
+---
+
+### Bước 3–6 — sub-ID, entry point, giá của `lookup`, và đóng plan · 2026-09-01
+
+#### Bước 3 — `Identity` mang `50=`/`57=`
+
+`Identity` thêm `sender_sub`/`target_sub`, `identity_of` đọc khi có, và `Identity::comp_ids`
+cho người dựng tay. **`HashRoute` cố ý KHÔNG băm chúng**: hai kết nối của cùng một
+counterparty khác nhau ở `50=` vẫn phải về cùng một shard — đó chính là lỗi ADR-0020 sinh ra
+để sửa. `Table` cũng bỏ qua, vì `Config` không có chỗ chứa; ai cần thì viết `Registry` riêng,
+và `tests/registry.rs` có một cái tám dòng (`ByDesk`).
+
+**Corpus cho không một cái bẫy:** `2r_UnregisteredMsgType.def` mang `150=0` (ExecType). Một
+phép quét `50=` khớp bất kỳ đâu sẽ đọc ra SenderSubID từ một định nghĩa thật. Cái chặn là
+phép quét theo đầu-trường của `field_value`, và test là
+`a_tag_ending_in_fifty_is_not_a_sender_sub_id` — **không phải bịa ra**.
+
+#### Bước 4 — và đây là chỗ ADR-0026 quyết định 5 sụp
+
+Quyết định 5 nói *một `Engine` mang một `Config`, registry chọn **engine nào***. Không dựng
+được: entry point phải dựng engine **trước khi** có kết nối nào, mà `Registry` là trait —
+không liệt kê được, nên `serve()` không biết dựng bao nhiêu engine. Và sharding **đã** chọn
+engine rồi, nên engine sẽ phải là một-cho-mỗi-*(shard × counterparty)* mà không có gì bắt hai
+quyết định đó khớp nhau.
+
+`1b_DuplicateIdentity.def` giải quyết bằng chính dòng đầu của nó: *"If two logons with the
+**same SenderCompID/TargetCompID combination** logon the second one must be disconnected"* —
+**theo identity**. Engine này cài nó thành *"có kết nối nào khác đang logon không"*, chỉ đúng
+khi một engine giữ một identity. Và **không định nghĩa nào bắt được**, vì cả `1b` lẫn
+`AlreadyLoggedOn` đều nối hai lần **cùng một counterparty**.
+
+Bảng prior-art của chính ADR-0026 đã chỉ đúng hướng và bị đọc cho câu hỏi khác: QuickFIX,
+QuickFIX/J và Artio đều giữ nhiều session trong **một** tiến trình accept. Không cái nào dựng
+một engine cho một counterparty. → [ADR-0030](../decisions/ADR-0030-one-engine-holds-many-counterparties.md).
+
+#### Bước 5 — giá của `lookup`
+
+**Nửa cấp phát, đóng ở đây.** `benches/alloc.rs` thêm case `registry-lookup`: một `Table` 41
+mục, mục được phục vụ nằm **cuối** để phép quét chạy hết chiều dài.
+
+```
+allocations: idle 0 send 0 recv 0 frame 0 turn 0 shard-turn 0 busy 0 ring 0
+             interests 0 pending-idle 0 pending-busy 0 pending-cycle 0 registry-lookup 0
+```
+
+Đảo ngược (`Table::lookup` dựng khoá bằng `to_vec()`): đọc ra **100000** và assertion nổ. Bẫy
+này bắt được thật.
+
+**Nửa nanosecond, KHÔNG đóng ở đây.** `benches/presession.rs` thêm hai case
+(`registry lookup of 1`, `registry lookup of 40`). Chúng chạy trên Mac và harness tự nói:
+
+```
+presession, registry lookup of 40      45.2 ns/op   NO BASELINE for 'Apple M5'
+```
+
+`benches/baselines.tsv` khoá theo CPU model, và một CPU lạ đọc ra `NO BASELINE`. **Không con
+số ns nào ở đây được công bố** — chúng chờ một buổi ở desktop §9. Bất biến 10, và đúng cái
+`CLAUDE.md` §10 gọi tên.
+
+#### CI bắt được thứ tôi bỏ sót
+
+`[measured 2026-09-01]` run [33520447994](https://github.com/tmthang86/fixbolt/actions/runs/33520447994)
+**đỏ**: `pump` bị tôi gắn `#[cfg(feature = "standard")]`, mà `serve_hft` là entry point của
+`hft` và tồn tại không cần feature đó — `--no-default-features` không tìm thấy `pump`. **Tôi
+đã không chạy `--no-default-features` sau bước 4**, dù §7 bảo chạy mỗi bước. Đã sửa; giờ cả ba
+cấu hình đều sạch:
+
+| Cấu hình | `cargo test --all` | clippy `-D warnings` |
+|---|---|---|
+| mặc định | 57 binary, **284 passed, 0 failed** | sạch |
+| `--all-features` | — | sạch |
+| `--no-default-features` | 57 binary, **284 passed, 0 failed** | sạch |
+
+`scripts/check-no-optional-deps.sh` ok cả hai khẳng định. `check-links.py` 653 link, không
+link chết.
+
+#### Bước 6 — tài liệu, và cái gì chưa đóng
+
+Đã cập nhật cùng dải commit: `DESIGN.md` §3 (hai dòng `presession` part three và part four),
+`CHANGELOG.md` (hai mục BREAKING), `GUIDE.md` **§1a0 mới** (viết lại cách dựng acceptor nhiều
+counterparty, và ba thứ là *quyết định* chứ không phải mặc định), `PRD.md` §2 (dòng *many
+counterparties* → DONE, và nói rõ **chưa có file cấu hình**), ADR-0026 (header trỏ tới
+ADR-0030), ADR-0022 (header trỏ tới ADR-0029), ADR-0029, ADR-0030, và hai ghi chép
+`docs/reference/`.
+
+**Chưa đóng, và không nhận là đã đóng:**
+
+1. **Không con số ns nào từ máy này.** Câu hỏi mở 1 của ADR-0030 là món nợ mới: phép so
+   identity giờ là O(n²) theo số kết nối trên đường `turn`, nhiều nhất mười hai phép so dưới
+   trần 4 của `hft`, **không chặn** dưới `standard`, và `benches/turn.rs` chưa chạy lại trên
+   máy §9.
+2. **`check-no-kernel-sleep.sh` và `check-standard-gives-the-core-back.sh`** Linux-only, không
+   chạy được ở đây. CI chạy cả hai và chúng xanh ở đó.
+3. **File cấu hình** vẫn chưa có — `Table` dựng bằng code. Là gap riêng trong `PRD.md`.

@@ -745,7 +745,15 @@ fn default_config(table: &presession::Table) -> Result<Config, ServeError> {
 /// `PendingSet` owns each one until its first whole message, so the engine is
 /// only ever given a connection whose counterparty is known — ADR-0020,
 /// ADR-0026.
-#[cfg(all(feature = "standard", unix))]
+///
+/// **Not behind `standard`, and it was for one commit.** `[measured 2026-09-01]`
+/// CI run 33520447994 could not find it from `serve_hft` under
+/// `--no-default-features`: `serve_hft` is the `hft` entry point and exists
+/// without that feature, so a helper both modes share cannot be gated on one of
+/// them. `CLAUDE.md` §10 lists this trap as *a `mod` behind a feature in
+/// `Cargo.toml` but not behind `#[cfg]` in `lib.rs`*; this is the same mistake
+/// from the other side, and `cargo check --no-default-features` is what catches
+/// it.
 fn pump<A: Application, W: Waiting>(
     acceptor: Acceptor,
     mut engine: TcpAcceptorEngine<A, W>,
