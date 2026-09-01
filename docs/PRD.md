@@ -78,6 +78,7 @@ Phase 1 — a FIX 4.4 engine you can actually deploy          ← all current wo
   ├── session (Role-parameterised)  ← acceptor done 2026-08-29; initiator steps 3-4 paused
   ├── engine (accept + connect drivers, journal, dispatch, backpressure)  ← done 2026-08-30
   ├── tools/w2w             ← wire-to-wire, on Linux — NEXT, and needs a Linux box
+  ├── machine probe + advice ← detect and recommend, never apply (ADR-0025, Proposed)
   └── library               ← not started
 
 Phase 2 — the encoding axis, and the version axis
@@ -219,3 +220,4 @@ Not "later" — these are out unless a new ADR reverses them.
 | 4 | One view type or several, once encodings stop having tags on the wire? | Every phase-2 line, and possibly `codec`'s public API today |
 | 5 | ~~TLS — own implementation, `rustls`, or terminate outside the process?~~ **Answered by [ADR-0005](decisions/ADR-0005-tls.md)**, which raised six of its own. The blocking one — can `ktls-core` be driven from a non-blocking socket with no async runtime? — is **answered 2026-08-31: yes, with four conditions**, [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md). Five remain open, and question 2 (which kernel and which cipher suites are the floor) is the one that decides how deployable this actually is | Phase 1 deployability |
 | 6 | ~~Final name~~ — **decided 2026-08-30: `fixbolt`**. Was blocking any crates.io publish |
+| 7 | **Can the engine configure itself from the machine — mode, cores, bypass — instead of making the caller do it?** `[2026-09-01]` **proposed answer: it detects and advises, it never applies**, plus a hard ceiling of four sessions per `hft` engine that **refuses** the fifth rather than degrading to `standard`. Four is not a round number: `2000 / 448.9 = 4.46`, so it is the largest N that beats an `epoll`-class wakeup under **both** ends of the 2–5 µs literature range, and it sits below the pessimistic bound of the cache wall as well — which is what lets the feature exist without first measuring either. **The remaining uncertainty runs one way only**: 448.9 ns is an *idle* turn, so a busy-path measurement can only lower the ceiling, never raise it. [ADR-0025](decisions/ADR-0025-hft-has-a-hard-session-ceiling-and-the-engine-advises-rather-than-applies.md), **`Proposed`** — deliberately not self-accepted, because its number rests on a run nobody has taken. Bypass detection stays in phase 3 and needs nothing built: `onload ./engine` runs this engine unchanged | `GUIDE.md` §1a's shard arithmetic; the rest of `STATUS.md` open item 21 |

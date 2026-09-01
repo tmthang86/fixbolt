@@ -29,6 +29,28 @@ false, one for three days — including *"32 of the 59 definitions still fail"* 
 on the tuned desktop, so this project has **no wire-to-wire number at all** — open item 6, and
 every §8 row the kernel owns is still a literature figure because of it.
 
+`[2026-09-01, later]` **One decision was proposed and deliberately not self-accepted:**
+**[ADR-0025](docs/decisions/ADR-0025-hft-has-a-hard-session-ceiling-and-the-engine-advises-rather-than-applies.md)**
+`Proposed` — the engine **detects and advises, never applies**, and `hft` carries a **hard
+ceiling of four sessions per engine that refuses the fifth** rather than degrading to
+`standard`. The question behind it was whether the engine could configure itself from the
+machine; four of the five parts of that answer were already decided, in ADR-0013, ADR-0014,
+ADR-0015 and ADR-0020, and this ADR is mostly the work of saying which.
+
+**Why four, and why it unblocks something:** an auto-tuner needed two numbers this project does
+not have — the `hft`/`standard` crossover (N ≈ 4…11, half of it literature) and the L2 cache
+wall (N ≈ 9…128, unmeasured). `2000 / 448.9 = 4.46`, so **four is the largest N that wins under
+every reading of both**, and the argument becomes *stay where the curve's shape cannot change
+the answer* rather than *tune along it*. **The remaining uncertainty runs one way only**: 448.9
+is an *idle* turn, so the busy-path measurement can only lower the ceiling. That is exactly why
+it is `Proposed` and not accepted — accepting it today would be accepting a number ahead of the
+run that settles it.
+
+**What it also names:** `[2026-09-01]` `serve_hft` takes **no plan, pins nothing and reads no
+machine row**. It will spin on a laptop — slower than `standard`, burning a core — and nothing
+says so. That is the rest of open item 21, and the ceiling plus a machine probe is what makes
+refusing it possible.
+
 ---
 
 ### The session that came before — 2026-08-31
