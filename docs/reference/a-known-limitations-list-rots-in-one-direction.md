@@ -57,6 +57,57 @@ too-modest account — and it degrades *fastest* exactly when the project is goi
 - **Nobody re-reads a page that says nothing is finished.** It is the section a reader skims to
   feel reassured about the project's honesty, which is the opposite of reading it.
 
+## The ninth bullet, found by walking into the trap this page describes
+
+`[measured 2026-09-01]` **Eight bullets were struck. There were nine.**
+
+Hours after this page was written, a feature review of the same repository produced a new
+finding: *"the application-message resend path is implemented and has never run."* It was filed
+as an open item, put in a product document, and written into a pull request. Its whole basis was
+**another bullet of the same rotten list** — *"No application message has ever been replayed. The
+inbound `ResendRequest` path answers with a gap fill because everything this session has sent so
+far is administrative."*
+
+It is false, and one command settles it:
+
+```
+$ cargo test -p fixbolt-engine --test journal
+running 7 tests
+test a_replay_says_when_it_is_being_sent_and_when_it_first_was ... ok
+...
+test result: ok. 7 passed; 0 failed
+```
+
+That test feeds a real application message, takes the reply, sends a resend request, and asserts
+**a replay and not a gap fill** — the exact behaviour the bullet said had never happened. Three
+sibling tests do the same under the other durability policies, and a fourth is the arm that *does*
+gap-fill, so the two outcomes are distinguished rather than assumed.
+
+**What makes this worth a section rather than an edit** is what was and was not checked. The
+implementation *was* verified — the function exists, it reads the store, it re-emits the message,
+and the file and line were quoted. **Whether any test reached it was not.** The claim *"has never
+run"* was carried over whole from the stale list, wearing the credibility of the checking done
+beside it.
+
+And the person doing it had, that same day, in that same session, written this page.
+
+> **A written-down failure mode is not a checked one.** Documenting a trap does not install a
+> guard against it; it produces a document. The author of a warning about stale claims is not
+> thereby immune to stale claims — and being *mid-way through* writing that warning is not
+> immunity either, it is just a stronger feeling of immunity.
+>
+> **What actually settled it was running something**, which is the same lesson at a different
+> altitude: *a check proves nothing until something reads it*, and *a claim proves nothing until
+> something runs it*. The cost of the run was one command and six seconds. The cost of not running
+> it was a false item in a tracker, a false row in a product document, and a false paragraph in a
+> pull request — each of which would have been quoted by the next person as established fact.
+>
+> **The practical rule, and it is narrow enough to follow:** when a finding's basis is *"X has
+> never happened"*, that is not a code-reading claim and cannot be settled by reading code. Find
+> the thing that would happen if it had, and run it. Verifying the *implementation* of X while
+> inheriting the *history* of X is the specific move that fails here, and it feels like diligence
+> because half of it is.
+
 ## Generalised
 
 > **A project's list of known limitations decays in exactly one direction, and a green board is

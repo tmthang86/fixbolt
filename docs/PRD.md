@@ -217,12 +217,14 @@ find them whether or not this page does.
   have them echoed back unchanged. Nothing in it asks what an order *means*.
 - **Reconnect, backoff, session schedules: untested** — zero definitions, on either side.
 - **Field types, enum values, decimal precision: untested.**
-- **Application-message resend: implemented and never exercised.** `[verified 2026-09-01]`
-  `Session::replay` (`session/src/lib.rs:1030`) reads the journal and re-emits the real message
-  with `43=Y` and `122=`, so the code is there. But every message the corpus sends is
-  administrative, so **the branch has never run carrying a business message**. A real
-  counterparty asking to resend real orders is the first thing that will exercise it, and a
-  `ResendRequest` answered wrongly is a protocol violation visible from outside. Open item 29.
+- ~~**Application-message resend: implemented and never exercised.**~~ — **written here on
+  2026-09-01 and refuted the same day, by running it.** `[measured 2026-09-01]`
+  `cargo test -p fixbolt-engine --test journal` → **7 passed**;
+  `a_replay_says_when_it_is_being_sent_and_when_it_first_was` feeds a real `35=D` from
+  `8_OnlyApplicationMessages.def` and asserts **one replay, not a gap fill**, with `43=Y`, a fresh
+  `52=` and the original as `122=`. **What was wrong was a `STATUS.md` bullet that had gone stale
+  and was believed**; kept here struck rather than deleted, because a blind-spot list that
+  quietly drops its own errors is the failure this section exists to name. Open item 29, closed.
 
 59/59 means the session state machine is right. It does not mean the engine is usable. Phase 1
 exit criterion 2 and 3 exist because of this paragraph.
