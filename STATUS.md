@@ -68,7 +68,21 @@ have**, and the first is the largest gap in the project:
   observable surface is `connections() -> usize`, and there is no shutdown, drain or signal
   handling anywhere in `crates/*/src`.
 
-**None of the three is a plan yet**, and two of them want a decision first —
+`[2026-09-01, and this is the last thing that happened]` **All three decisions were taken**, on
+the owner's explicit instruction to consult other engines and settle them — *"tham khảo các
+engine khác rồi chốt các quyết định cho tôi luôn"*. Prior art is written up in
+[prior-art.md](docs/reference/prior-art.md); every figure and API name there is **someone else's
+claim**, nothing was run.
+
+| | |
+|---|---|
+| **[ADR-0026](docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md)** `Accepted` | the registry lives in **`presession`**, and it is a **trait, not a table**. `[documented]` QuickFIX, QuickFIX/J's `DynamicAcceptorSessionProvider` and Artio's `AuthenticationStrategy` all decide **at the `Logon`, in the accepting stage**, and all three do it through a provider rather than a fixed map — **ADR-0020 put this project there already, from a conformance failure rather than an operational need, which is two independent roads to one shape**. Authentication is `lookup` returning `None`, never a second hook. **Parts from Artio deliberately**: `lookup` is synchronous, because an accept path that can await a network call is a denial-of-service surface no logon deadline closes. **The survey also found a defect nobody had noticed**: `Identity` is `(49, 56)` only, so a counterparty disambiguating by `50=`/`57=` cannot be served — Artio's `SessionIdStrategy` and QuickFIX's `SessionQualifier` both exist for exactly that |
+| **[ADR-0027](docs/decisions/ADR-0027-the-engine-owes-a-byte-stream-not-an-archive.md)** `Accepted` | the engine owes **a faithful, ordered, timestamped copy of both directions at a boundary, off the hot path — and nothing past it**. Retention, immutability, tamper evidence and search become **permanent non-goals** (`PRD.md` §5): `[documented]` MiFID II wants 5–7 years in a tamper-evident archive, and every one of those is a storage-system property. The journal stays what D7 made it — `[verified]` `SLOTS = 8` — and the tap **does not share its store**, because merging them is how an audit requirement lands on the hot path. A slow audit consumer gets [ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md)'s policy like any other |
+| **[ADR-0028](docs/decisions/ADR-0028-a-decimal-is-a-copy-value-parsed-on-demand.md)** `Accepted` | **`Decimal { value: i64, scale: u8 }`** — `Copy`, `no_std`, parsed **on demand**, scale preserved exactly as it came off the wire, **no `f64` in the public API on either path**. **This one overturned the guess that raised it**: open decision 10 suspected *decimal / price types* was mislabelled and that ADR-0003 had answered it. `[documented]` Artio ships exactly this shape as `DecimalFloat`, under the same constraints — because **what D2 forbids is the 8 224-byte owned `MessageView` that cost 5.9×, not 16 bytes of `Copy` produced when a caller asks**. The gap is real; the objection was to a design nobody proposed. Kept in the ADR rather than tidied away |
+
+**So items 28, 29 and 30 are now work rather than questions.** The old text follows.
+
+**None of the three is a plan yet**, and two of them wanted a decision first —
 [PRD.md](docs/PRD.md) open decisions **8** (where the counterparty registry lives, which decides
 whether a counterparty can ever be added without a restart) and **9** (how much this engine owes
 an auditor, because an audit tap is not a message store). **Open decision 10 is different in
