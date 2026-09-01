@@ -30,6 +30,7 @@ pub mod conn;
 pub mod dispatch;
 pub mod frame;
 pub mod journal;
+pub mod presession;
 #[cfg(all(feature = "affinity", target_os = "linux"))]
 pub mod shard;
 // ADR-0014 decision 1 and 2. The feature gates the `mod` declaration itself,
@@ -215,6 +216,49 @@ where
         id
     }
 
+    /// As [`Self::add`], with bytes that were read off the socket before the
+    /// engine took it on.
+    ///
+    /// The pre-session stage ([`presession`]) owns a socket until a `Logon`
+    /// arrives, so by the time the engine sees it those bytes are already gone
+    /// from the kernel. They go straight into the connection's receive buffer,
+    /// and the first `turn` frames them exactly as if this engine had read
+    /// them.
+    ///
+    /// **Everything the stage read**, not just the `Logon` it routed by: a
+    /// counterparty may pipeline behind its `Logon`, and those bytes belong to
+    /// the session too.
+    ///
+    /// # Errors
+    ///
+    /// [`PrefixTooLong`] when the bytes exceed this engine's `RX`. Refused
+    /// rather than truncated — see [`conn::Connection::prime`].
+    pub fn add_with_prefix(&mut self, transport: T, prefix: &[u8]) -> Result<ConnId, PrefixTooLong>
+    where
+        J: Default,
+    {
+        if prefix.len() > RX {
+            return Err(PrefixTooLong {
+                got: prefix.len(),
+                capacity: RX,
+            });
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut conn = Connection::new(id, transport, Session::new(self.cfg), J::default())
+            .with_backpressure(self.backpressure);
+        if !conn.prime(prefix) {
+            self.next_id -= 1;
+            return Err(PrefixTooLong {
+                got: prefix.len(),
+                capacity: RX,
+            });
+        }
+        conn.opened();
+        self.conns.push(conn);
+        Ok(id)
+    }
+
     /// How many connections are live.
     #[must_use]
     pub fn connections(&self) -> usize {
@@ -262,7 +306,7 @@ where
                 conn: self.conns[i].id,
             };
             let outcome = self.conns[i].turn(now, &mut deliver, |msg| {
-                others_on > 0 && msg_type_is_logon(msg)
+                others_on > 0 && presession::is_logon(msg)
             });
             // Asked here and nowhere else. `Deliver` above was built for this
             // connection's id and nothing else has run since, so a refusal
@@ -600,24 +644,29 @@ fn pump<A: Application, W: Waiting>(
     }
 }
 
-/// Is this message a `Logon`?
+/// Bytes read before a connection existed did not fit its receive buffer.
 ///
-/// Read off the raw bytes rather than parsed: the engine has no dictionary and
-/// wants none. `35=` is the third field of a well-formed message and the
-/// session refuses anything else, so a scan for it is enough here.
-fn msg_type_is_logon(msg: &[u8]) -> bool {
-    let mut at = 0;
-    while at < msg.len() {
-        let Some(end) = msg[at..].iter().position(|b| *b == 1).map(|e| e + at) else {
-            return false;
-        };
-        if msg[at..end] == *b"35=A" {
-            return true;
-        }
-        at = end + 1;
-    }
-    false
+/// Fielded rather than fieldless: it is not on a hot path, and both numbers are
+/// what tells a caller whether to raise `RX` or lower the pre-session buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrefixTooLong {
+    /// How many bytes the pre-session stage had.
+    pub got: usize,
+    /// How many the connection can hold — the engine's `RX`.
+    pub capacity: usize,
 }
+
+impl core::fmt::Display for PrefixTooLong {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{} bytes read before the connection existed, but RX is {}",
+            self.got, self.capacity
+        )
+    }
+}
+
+impl std::error::Error for PrefixTooLong {}
 
 /// A non-blocking TCP listener that hands out [`TcpTransport`]s.
 ///

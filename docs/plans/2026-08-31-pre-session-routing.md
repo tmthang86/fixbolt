@@ -1,6 +1,6 @@
 # Đọc `Logon` trước, rồi mới giao socket cho shard
 
-> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** **Đã duyệt 2026-08-31**
+> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** **Xong 2026-09-01** — cả sáu bước
 > **Phạm vi:** `engine` — một tầng mới giữa acceptor và shard. Không đụng `codec`, `session`.
 >
 > **Chủ dự án chọn cách A ngày 2026-08-31**, sau khi được nêu hai đường: tầng pre-session, hay
@@ -87,7 +87,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
   `serve_sharded_hft` chạy tầng mới trên luồng acceptor
 - `crates/engine/tests/presession.rs` — mới
 - `crates/engine/tests/shard.rs`, `shard_wire.rs` — theo API mới
-- `docs/decisions/ADR-0020-…` — bước 1
+- `docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md` — bước 1
 - `docs/DESIGN.md` §3 và D8 · `docs/GUIDE.md` §1a · `CHANGELOG.md` · `STATUS.md` item 24
 
 ## Bất biến bị đụng tới
@@ -104,12 +104,12 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| 1 | **ADR-0020** — tầng pre-session: ai sở hữu socket trước `Logon`, hai giới hạn cứng, `Route` thay `Assign`, băm ổn định là mặc định, `RoundRobin` bị bỏ | — |
-| 2 | `presession.rs`: đọc `49`/`56` khỏi message trọn vẻ đầu tiên. Test: message đủ, message thiếu, message không phải `35=A`, message rác | 1 |
-| 3 | `PendingSet`: trần số lượng, logon timeout, vứt kết nối im lặng. Mỗi giới hạn một ca hỏng, so **biến thể lỗi** chứ không `is_err()` | 2 |
-| 4 | `Route` + băm ổn định; `Shards::hand` nhận identity; `serve_sharded_hft` nối tầng mới | 3 |
-| 5 | **`shard_wire.rs` lên 59 với hai shard**, và test đặc tả cũ được viết lại | 4 |
-| 6 | Đo: `Logon` mất thêm bao lâu vì đi qua tầng này, kèm `N` và khối machine của `check-machine.sh` | 5, máy §9 |
+| 1 | ✅ [ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md) — tầng pre-session: ai sở hữu socket trước `Logon`, hai giới hạn cứng, `Route` thay `Assign`, băm ổn định là mặc định, `RoundRobin` bị bỏ | — |
+| 2 | ✅ `presession.rs`: đọc `49`/`56` khỏi message trọn vẹn đầu tiên. Test: message đủ, message thiếu, message không phải `35=A`, message rác | 1 |
+| 3 | ✅ `PendingSet`: trần số lượng, logon timeout, vứt kết nối im lặng. Mỗi giới hạn một ca hỏng, so **biến thể lỗi** chứ không `is_err()` | 2 |
+| 4 | ✅ `Route` + băm ổn định; `Shards::hand` nhận identity; `serve_sharded_hft` nối tầng mới | 3 |
+| 5 | ✅ **`shard_wire.rs` lên 59 với hai shard**, và test đặc tả cũ được viết lại | 4 |
+| 6 | ✅ Đo: `Logon` mất thêm bao lâu vì đi qua tầng này, kèm `N` và khối machine của `check-machine.sh` | 5, máy §9 |
 
 ## Cách kiểm chứng
 
@@ -129,7 +129,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 
 ## Tài liệu phải cập nhật
 
-- [ ] `docs/decisions/ADR-0020-…` — bước 1
+- [x] [ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md) — bước 1, **Accepted 2026-09-01**
 - [ ] `docs/DESIGN.md` §3 (mod mới), D8 (luật single-logon ở đâu)
 - [ ] `docs/GUIDE.md` §1a — *"shard nào là việc của anh"* thành *"identity quyết định, đây là
       cách thay chính sách"*, cộng hai giới hạn cứng mà người gọi phải nêu
@@ -151,7 +151,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
-| Tầng mới đọc mất `Logon` | **Cao** | `Engine::add` cần một đường nhận "socket + byte đã đọc sẵn". Đó là thay đổi API và phải nằm trong ADR-0020 |
+| Tầng mới đọc mất `Logon` | **Cao** | `Engine::add` cần một đường nhận "socket + byte đã đọc sẵn". Đó là thay đổi API và nằm trong ADR-0020 quyết định 3: `Engine::add_with_prefix`, dựng trên `Framer::spare()`/`filled()` đã có sẵn, và **từ chối** prefix dài hơn `RX` chứ không cắt bớt |
 | `Route` là breaking change | Trung bình | Không có người dùng ngoài; `Assign` mới ra đời cùng ngày. Ghi ở `CHANGELOG.md` |
 | Logon timeout thành một cái đồng hồ nữa | Trung bình | Dùng chính `Clock` của engine, không dựng nguồn thời gian thứ hai |
 | Hai giới hạn cứng có mặc định "hợp lý" rồi không ai nêu | Trung bình | **Không có mặc định.** Người gọi phải nêu, như `ShardPlan` bắt nêu core |
@@ -168,5 +168,177 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 
 ## Nhật ký giao hàng
 
-*(duyệt 2026-08-31 theo uỷ quyền thường trực; chủ dự án chọn cách A cùng ngày. Chưa bắt đầu bước
-nào.)*
+*(duyệt 2026-08-31 theo uỷ quyền thường trực; chủ dự án chọn cách A cùng ngày.)*
+
+**2026-09-01 — bước 1 xong.**
+[ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md),
+`Accepted`, mười quyết định. Ba trong số đó không có trong plan và đến từ việc đọc code
+trước khi viết:
+
+- **Quyết định 3 có đường giải rồi, không cần API mới ở tầng dưới.** `Framer` đã có
+  `spare()` và `filled(n)` — đúng nghĩa *"đây là byte đã tới trước khi anh nhìn"*. Nên
+  `Engine::add_with_prefix` chỉ là một lớp mỏng, và nó **từ chối** prefix dài hơn `RX` chứ
+  không cắt: cắt thì session nhận nửa message và framer sẽ báo `Garbage` về những byte vốn
+  lành lặn — một khiếm khuyết mà bằng chứng đã bị chính đoạn code gây ra nó xoá mất.
+- **Quyết định 5, và nó là hệ quả plan chưa nói ra.** Hai giới hạn cứng ở bước 3 vô nghĩa
+  nếu luồng acceptor đỗ trong `accept_blocking`: một luồng đang đỗ ở đó **không hết hạn
+  được** kết nối im lặng, nên logon timeout chỉ nổ khi tình cờ có người khác kết nối. Đó
+  đúng là kiểu hành vi-phụ-thuộc-tải mà `CLAUDE.md` §10 gọi tên. `Poller::wait` có timeout
+  và đã tồn tại; `serve_sharded_hft` thôi gọi `accept_blocking`.
+- **Quyết định 7 nêu rõ vì sao `DefaultHasher` bị cấm** ở đây: nó có seed theo tiến trình,
+  nên hai lần chạy cùng một binary sẽ định tuyến cùng một đối tác đi hai nơi — luật
+  single-logon đúng trong một lần chạy và sai sau khi restart. Test khẳng định **một
+  identity cụ thể ra một shard cụ thể**, không phải chỉ "ổn định trong tiến trình này".
+
+**2026-09-01 — bước 2 xong.** `crates/engine/src/presession.rs` (`Identity`, `identity_of`,
+`is_logon`) và `crates/engine/tests/presession.rs`, 8 test. Test viết trước và **đỏ đúng chỗ**:
+`unresolved import fixbolt_engine::presession`. `Engine` bỏ hàm `msg_type_is_logon` riêng và
+gọi sang đây, nên luật `35=A` chỉ còn một chỗ. Không nhân đôi luật khung: `Framer` vẫn là nơi
+duy nhất cắt stream.
+
+**Corpus bác bỏ giả định của chính test, và đó là điều tốt.** Bản đầu khẳng định mọi `Logon`
+trong corpus là `49=TW44`/`56=ISLD`; nó đỏ trên byte thật, vì corpus **cố tình** gửi `49=WT`
+(`1c_InvalidSenderCompID.def`) và `56=DLSI` (`2k_CompIDDoesNotMatchProfile.def`), cùng một
+`56=` **rỗng**. Test giờ khẳng định phân bố thật: 289 message gửi đi, đúng **5** cái không đọc
+được identity, và đúng ba file — `14b_RequiredFieldMissing`, `2d_` và `3c_GarbledMessage`.
+
+**Ba reversal, cả ba đỏ đúng assertion:**
+
+| Bẻ cái gì | Kết quả |
+|---|---|
+| khớp tag ở **bất kỳ đâu trong một field** | 1/8 đỏ — `a_field_value_that_looks_like_an_identity_is_not_one` |
+| bỏ hẳn ranh giới field, quét cả message | 1/8 đỏ — cùng test đó |
+| `is_logon` luôn trả `true` | 2/8 đỏ — hai test đếm |
+
+**Và đây là phát hiện đáng giá hơn code:** hai reversal đầu để **289/289 message thật của
+corpus xanh**. Chỉ một message *tự dựng* bắt được, và nó chỉ chèn một field `58=49=EVIL` vào
+một `Logon` thật. Corpus conformance mã hoá *cái mà spec nói về lỗi* — hỏng cấu trúc; nó không
+mã hoá *cái mà một bên không đáng tin sẽ chọn* — một message hoàn toàn hợp lệ mà **giá trị**
+được chọn để bị đọc sai. Viết ở
+[a-conformance-corpus-is-not-an-adversarial-one.md](../reference/a-conformance-corpus-is-not-an-adversarial-one.md),
+đánh dấu `[to testing-skills]`. Nó **không** làm yếu §7: corpus thật vẫn là cổng chính, và
+chính nó bắt được giả định sai của test.
+
+**Gate cho bước 2:** `fmt` sạch · `clippy --all-targets -D warnings` sạch · `cargo test --all`
+**258 pass 0 fail**, `--no-default-features` **258 pass 0 fail**, `--features affinity`
+**107 pass 0 fail** · `bench.sh --strict` **OK**, mọi dòng `allocations:` đều 0 (đường
+`Engine::turn` có đổi, nên bất biến 1 được chạy lại chứ không suy).
+
+**2026-09-01 — bước 3 xong.** `Limits`, `LimitError`, `PendingSet`, `Pending`, `Refused`,
+`Progress` trong `presession.rs`; `crates/engine/tests/pending.rs`, **12 test**. `Limits` là
+struct có tên chứ không phải hai tham số vị trí: cả hai đều là số, và `(30_000, 8)` — bảng ba
+mươi nghìn chỗ hết hạn sau tám mili giây — sẽ biên dịch trót lọt. Số 0 bị từ chối ở cả hai
+chiều.
+
+**Bốn reversal, mỗi cái đỏ đúng ca đặt tên nó:**
+
+| Bẻ cái gì | Đỏ |
+|---|---|
+| bỏ logon timeout | 4/12 |
+| bỏ trần số lượng | 3/12 |
+| chỉ giao lại **message**, không giao mọi byte đã đọc | **1/12** |
+| cho message đầu không phải `Logon` đi qua | 1/12 |
+
+**Reversal thứ ba là lý do phải thêm một test trước khi đảo ngược.** Khi viết xong 11 test tôi
+nhận ra không cái nào bắt được nó: mọi ca đều gửi đúng một message, nên "cả buffer" và "message
+đó" là cùng một slice. `whatever_arrives_behind_the_logon_is_handed_on_with_it` gửi `Logon` cộng
+một message nữa trong một lần `send`, và nó là **test duy nhất** đỏ khi bẻ. Đúng cái bẫy mà plan
+gọi là nguy hiểm nhất, và nó suýt không có gì canh.
+
+**`Loopback` không mô hình hoá đóng-khi-drop**, nên ba assertion `Io::Closed` đầu tiên đỏ trong
+khi code đúng. Không sửa `Loopback` — nó là transport mà 59 định nghĩa chạy trên đó, và sửa một
+test double đang gánh cổng để test mới xanh đúng là hình dạng §10 cảnh báo. Thay vào đó: đếm và
+thời gian đo trên `Loopback` (tất định), còn **EOF đo một lần trên socket thật**, nơi nó là sự
+thật về thứ sẽ ship chứ không phải về một cái double.
+
+**Và một false green của chính tôi, đã viết lại:** hai case cấp phát đầu tiên đọc 0 và **vẫn đọc
+0** khi tôi bỏ `Vec::with_capacity` để mỗi `admit` phải cấp phát lại — vì `admit` nằm **ngoài**
+cửa sổ `count()`. Case thứ hai được thêm vào đúng để chống chuyện đó, và nó thừa hưởng luôn cái
+lỗ nó sinh ra để bịt. Case thứ ba bọc cả chu trình `admit`→`turn`→`take`: xanh 0, và **đỏ ở 7**
+khi bỏ đặt chỗ một lần. Viết ở
+[the-guard-measured-a-window-that-excluded-the-thing.md](../reference/the-guard-measured-a-window-that-excluded-the-thing.md),
+`[to testing-skills]`.
+
+**Cố tình chưa làm, nói rõ:** `GUIDE.md` chưa nói gì về hai giới hạn này, vì `serve_sharded_hft`
+chưa nhận `Limits` — người dùng chưa với tới được. Nó đi cùng phần viết lại §1a ở bước 4/5.
+
+**Gate cho bước 3:** `fmt` sạch · `clippy --all-targets -D warnings` sạch · `cargo test --all`
+**270 pass 0 fail**, `--no-default-features` **270**, `--features affinity` **119** ·
+`bench.sh --strict` **OK**, mười hai dòng `allocations:` đều 0 · `check-machine.sh`
+`pass 11 fail 0`.
+
+**2026-09-01 — bước 4 và 5 xong. `shard_wire.rs` đọc 59 với hai shard.**
+
+`Engine::add_with_prefix` + `Connection::prime` + `Framer::all` giao lại **mọi byte đã đọc**;
+`Route`/`HashRoute` thay `Assign`/`RoundRobin`; `Shards<PRE>` mang `Pending` qua kênh (mảng
+di chuyển, không cấp phát); `serve_sharded_hft` chạy `PendingSet` + `Poller` trên luồng
+acceptor, chờ **đúng tới deadline sớm nhất** chứ không theo một chu kỳ ai đó tự chọn.
+
+**Test đặc tả đỏ trước, đúng như plan bắt:** `59 != 57`. Nếu nó còn xanh thì khiếm khuyết mới
+bị đi vòng chứ chưa sửa.
+
+**Băm được ghim vào giá trị cụ thể**, không chỉ "tất định trong tiến trình này":
+`(TW44,ISLD)` → shard 1 của 2 và shard 3 của 8; `(WT,DLSI)` → shard 1 của 8. Một `DefaultHasher`
+có seed theo tiến trình không thể tái lập bốn hằng số đó — đấy là điều test này mua được, và
+`a_route_outside_the_range_is_refused_and_not_clamped` canh việc không lấy dư.
+
+**Và 59/59 không được nhận nguyên xi.** `1b_DuplicateIdentity.def` với `AlreadyLoggedOn.def`
+đều chờ **không có hồi đáp nào** ở kết nối thứ hai — mà một socket bị tầng mới vứt đi cũng cho
+ra đúng thế. Thêm bộ đếm mọi cách tầng này thải socket, khẳng định bằng 0, và `[đo 2026-09-01]`
+**nó đỏ ở `[0, 1, 1, 0]`**: hai kết nối chưa từng tới engine nào.
+
+Cả hai hợp lệ, và cả hai giờ được ghim **theo tên và theo số**:
+
+| File | Comment của chính nó | Tầng mới làm gì |
+|---|---|---|
+| `1e_NotLogonMessage.def` | *"if first message is not a Logon, we must disconnect"* | message trọn vẹn đầu tiên là `35=0` → vứt, không trả lời |
+| `1d_InvalidLogonLengthInvalid.def` | *"if the length of a logon message is invalid, we must disconnect"* | `9=40` nói dối; `Framer` tin `9=` → `Garbage` → vứt |
+
+Một cái **thứ ba** biến mất ở đây sẽ là khiếm khuyết mới đội cùng màu xanh 59/59.
+
+Việc đó đẩy luật garbage sang **nhà thứ hai**, đúng cái mà `frame.rs` đã viết ra là sẽ không
+xảy ra. Sửa comment trong cùng commit, và quyết định ở
+[ADR-0022](../decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md) thay vì để
+người sau đọc `frame.rs` tự phát hiện.
+
+**Gate cho bước 4–5:** `fmt` sạch · `clippy --all-targets` và `--features affinity` đều sạch ·
+`cargo test --all` **272 pass 0 fail**, `--no-default-features` **272**, `--features affinity`
+**122**, `--no-default-features --features affinity` **100** · hai cổng 59 cũ xanh và
+`git diff main -- crates/conformance crates/session tests/wire.rs` **rỗng** — không sửa fixture
+nào · `bench.sh --strict` **OK**, mười hai dòng `allocations:` đều 0 ·
+`check-no-kernel-sleep.sh`, `check-standard-gives-the-core-back.sh`, `check-lint-config.sh`,
+`check-no-optional-deps.sh` đều exit 0 với nửa đỏ của chúng vẫn trượt.
+
+**Còn lại: bước 6** — đo `Logon` mất thêm bao lâu vì đi qua tầng này, kèm `N` và khối machine.
+
+**2026-09-01 — bước 6 xong, plan đóng.**
+
+`crates/engine/benches/presession.rs`, ba case, baseline từ **20 lượt `bench.sh` hợp lệ** trên
+dòng §9 của ADR-0021, `check-machine.sh` đọc `pass 11 fail 0 unknown 1`, max/median 1.006–1.011:
+
+| Case | ns/op | mỗi socket |
+|---|---|---|
+| `presession sweep, 1 quiet sockets` | 435.9 | 435.9 |
+| `presession sweep, 16 quiet sockets` | 6819.5 | **426.2** |
+| `presession, read and route an identity` | **84.0** | một lần cho cả đời kết nối |
+
+Quét của tầng này **rẻ hơn** một lượt `Engine::turn` cho mỗi socket (426.2 so với 458.3) — đúng
+hình dạng phải có, vì nó không có session machine, không journal, không dispatch. Phần việc
+riêng của nó trên `recv` là **~15 ns**, so với ~28 ns của engine. Quyết định định tuyến tốn
+**84 ns, một lần** — một phần năm của một `recv`.
+
+`HashRoute`/`Route` được **chuyển từ `shard.rs` sang `presession.rs`** trong bước này, vì
+`bench.sh` chạy `cargo bench` **không kèm feature** và `shard` nằm sau `affinity`. Đó cũng là
+chỗ đúng hơn: định tuyến theo identity chẳng liên quan gì tới ghim lõi. `shard` re-export.
+
+**Cái KHÔNG đo được, và nói thẳng ra:** độ trễ thực tế mà một `Logon` phải trả thêm. Bảng trên
+là giá của *công việc*; đường kết nối còn thêm một chặng kênh và một lần **bàn giao qua luồng**
+— socket đọc ở luồng acceptor, phục vụ ở luồng shard — và không dòng nào ở đây nói gì về nó.
+Một bench hình dạng này không đo được: setup mỗi vòng lặp sẽ phải mở socket mới **bên trong**
+cửa sổ đo, tức là đo `TcpStream::connect`. Thứ đo được nó là `tools/w2w`, tức **open item 6**,
+và nó chưa từng chạy.
+
+**Gate đóng plan:** `fmt` sạch · `clippy` sạch ở cả hai feature set · `cargo test --all`
+**272/0**, `--no-default-features` **272/0**, `--features affinity` **122/0** ·
+`bench.sh --strict` **OK** với 12 target, 0 vượt baseline, 0 thiếu baseline ·
+`check-machine.sh` `pass 11 fail 0 unknown 1`.

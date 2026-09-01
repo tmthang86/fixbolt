@@ -207,7 +207,7 @@ impl Suite {
                 let cpu = self.cpu.as_deref().unwrap_or("UNKNOWN");
                 println!("{name:<34} {best:>8.1} ns/op   NO BASELINE for '{cpu}'");
                 println!(
-                    "    to record, after check-machine.sh reads pass 10 fail 0, \
+                    "    to record, after check-machine.sh reads fail 0, \
                      append to benches/baselines.tsv (median of N>=20 runs, \
                      margin from the ladder in that file's header):"
                 );

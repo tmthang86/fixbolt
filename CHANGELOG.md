@@ -157,6 +157,73 @@ below describe what a first release would contain.
         `present 0-15`, `online 0-7`, `isolated 6-7,14-15` — **`isolated` names two cores that
         are offline**, because §9 turns SMT off. A validator reading `isolated` alone would
         accept a core that cannot run anything; that exact reading is committed as a fixture.
+  - **`presession` — who is on the other end, before there is a session to ask.** New
+    module, no feature gate: `Identity<'a>` (borrowed `49=` and `56=`, in wire order),
+    `identity_of` and `is_logon`. It reads bytes by field scan and nothing else — no
+    dictionary, no parse, and nothing from `fixbolt-session` but `Config`
+    ([ADR-0020](docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)).
+    Framing stays in `frame::Framer`; `Engine`'s own private `Logon` check is gone and calls
+    this instead, so the rule has one home.
+    - `[measured 2026-09-01]` proven against **289 real messages** from the acceptance
+      corpus, asserting the identities it actually carries — including `49=WT`, `56=DLSI`
+      and an empty `56=`, all of which the corpus sends on purpose — and the exact **five**
+      that name no identity. The first draft of that test asserted every corpus `Logon` is
+      `TW44`/`ISLD` and went red on the real bytes.
+    - `[measured 2026-09-01]` and the corpus was **not enough**: two leniency reversals —
+      matching the tag anywhere inside a field, and ignoring field boundaries entirely —
+      left all 289 green, and were caught only by one hand-built message with `49=` inside
+      a `Text` value.
+      [reference/a-conformance-corpus-is-not-an-adversarial-one.md](docs/reference/a-conformance-corpus-is-not-an-adversarial-one.md).
+
+  - **`presession`, part two — the socket has a deadline and the table has a ceiling.**
+    `Limits` (a named struct, because two `usize`-shaped limits as positional arguments
+    would transpose silently), `LimitError`, `PendingSet`, `Pending`, `Refused`,
+    `Progress`. **Neither limit has a default and zero is refused for both**
+    ([ADR-0020](docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)
+    decision 4) — a connection that opens and says nothing costs a slot forever, and a
+    table with no ceiling costs memory forever.
+    - A full table refuses **immediately** and hands the socket back in `Refused::Full`,
+      so closing it is something the caller does on purpose.
+    - Everything read off the socket is handed on, `Logon` **and anything pipelined
+      behind it** — `Framer` gains `all()` for it. A stage that passed on only the
+      message it routed by would lose the rest in silence.
+    - `[measured 2026-09-01]` 12 tests, four reversals — no timeout, no ceiling, hand on
+      only the message, let a non-`Logon` through — each red on the case that names it.
+      Allocation: three cases in `benches/alloc.rs`, all 0, and the third proven to go
+      red at 7 allocations when the one-time reservation is removed.
+
+  - **`presession`, part three, and it is a BREAKING change to `shard`.** `Assign`,
+    `RoundRobin` and `Shards::with_assign` are **removed**, replaced by `Route`,
+    `HashRoute` and `Shards::with_route`; `ShardError::BadAssignment` becomes `BadRoute`
+    and `NoIdentity` joins it; `Shards` gains a `PRE` const parameter; `Shards::hand`
+    takes a `Pending` rather than a `TcpTransport`; `Shardable::add` takes the bytes
+    already read and returns whether they fit; `serve_sharded_hft` takes a `Limits`.
+    `Engine::add_with_prefix` and `Connection::prime` are new, as is `Framer::all`.
+    - **`Assign` could not have worked however it was written.** It was asked at accept
+      time, when the `Logon` that names the counterparty had not arrived. `Route` is
+      asked after it, which is the only moment the question has an answer.
+    - **`RoundRobin` is deleted with no shim.** It is the policy that produced the
+      defect; keeping it would leave a documented trap in a public API.
+    - `[measured 2026-09-01]` **the acceptance corpus scores 59 through two shards**,
+      where `[measured 2026-08-31]` it scored 57 and failed exactly
+      `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def`. The characterisation test
+      that pinned the defect went red first, as it was written to.
+    - `[measured 2026-09-01]` and it passes for the right reason: the test counts how
+      the pre-session stage disposed of every socket, because a connection it threw away
+      is indistinguishable from a duplicate the session refused. Exactly two are
+      disposed of — `1e_NotLogonMessage.def` and `1d_InvalidLogonLengthInvalid.def`,
+      both definitions whose subject is that the link must be dropped
+      ([ADR-0022](docs/decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md)).
+    - `Route` and `HashRoute` are exported from `presession`, and re-exported from `shard`.
+      Routing by identity has nothing to do with pinning a core, and `scripts/bench.sh` runs
+      `cargo bench` with no features — a benchmark could not have reached them behind
+      `affinity`.
+    - `[measured 2026-09-01]` what it costs, 20 qualifying runs on the §9 machine: the
+      stage's sweep is **426.2 ns per socket** against `Engine::turn`'s 458.3, its own work
+      over the bare `recv` is **~15 ns** against the engine's ~28, and reading both comp IDs
+      and choosing a shard is **84.0 ns once per connection**. `DESIGN.md` §8 does not move:
+      none of it is on the message path.
+
   - **`shard` — many engines, one per pinned core.** New module behind the same `affinity`
     feature. `Shards::start(&plan, make)` validates the plan, starts one thread per shard, and
     **waits for every thread to confirm its own pin before any of them serves** — so a plan that

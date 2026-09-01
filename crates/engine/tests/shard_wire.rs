@@ -33,7 +33,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use fixbolt_conformance::echo::Echo;
@@ -44,11 +44,45 @@ use fixbolt_engine::affinity::{CoreId, ShardPlan, Topology};
 use fixbolt_engine::clock::Clock;
 use fixbolt_engine::dispatch::InlineDispatch;
 use fixbolt_engine::journal::Store;
+use fixbolt_engine::presession::{Limits, PendingSet};
 use fixbolt_engine::shard::Shards;
 use fixbolt_engine::transport::TcpTransport;
 use fixbolt_engine::wait::Yield;
 use fixbolt_session::{Application, Config};
 
+const PRE: usize = 4096;
+
+/// How the pre-session stage disposed of every socket, across a whole run:
+/// `[settled, timed_out, not_logon, gone, unrouted]`.
+///
+/// **Not decoration, and this is the reason.** `1b_DuplicateIdentity.def` and
+/// `AlreadyLoggedOn.def` both expect *no response at all* on the second
+/// connection — and a socket this stage quietly threw away produces exactly
+/// that. Without these counts, **59/59 could mean "the session refused the
+/// duplicate" or "the stage dropped it before the session ever saw it"**, and
+/// the two are indistinguishable from the wire. `CLAUDE.md` §10: a check that
+/// passed for a reason other than the thing under test.
+///
+/// Static because `run` builds a fresh `ShardWire` per scenario and there is
+/// nowhere else that outlives them; [`alone`] serialises the two tests that
+/// read it.
+static DISPOSAL: [AtomicUsize; 5] = [
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+];
+
+fn disposal_reset() {
+    for c in &DISPOSAL {
+        c.store(0, Ordering::Relaxed);
+    }
+}
+
+fn disposal_read() -> [usize; 5] {
+    core::array::from_fn(|i| DISPOSAL[i].load(Ordering::Relaxed))
+}
 const N: usize = 256;
 const RX: usize = 4096;
 const TX: usize = 8192;
@@ -97,7 +131,16 @@ type ShardEngine = Engine<
 
 struct ShardWire {
     listener: TcpListener,
-    shards: Shards,
+    shards: Shards<PRE>,
+    /// The pre-session stage, on this thread — which is the acceptor thread.
+    ///
+    /// The limits are deliberately unreachable: `u64::MAX` milliseconds to log
+    /// on, and room for far more connections than the corpus opens. **Neither
+    /// is under test here** and a deadline that could fire would make this gate
+    /// depend on how fast the machine is. `tests/pending.rs` is where the
+    /// limits are exercised, with a clock the test moves by hand.
+    pending: PendingSet<TcpTransport, PRE>,
+
     clock: Arc<AtomicU64>,
     clients: Vec<(Conn, Option<TcpStream>)>,
     quiet: Duration,
@@ -134,7 +177,7 @@ impl ShardWire {
     fn with(plan: &ShardPlan, quiet: Duration, deadline: Duration) -> Self {
         let clock = Arc::new(AtomicU64::new(FIXED_TIME_MILLIS));
         let for_shards = Arc::clone(&clock);
-        let shards = Shards::start(plan, move |_| -> ShardEngine {
+        let shards = Shards::<PRE>::start(plan, move |_| -> ShardEngine {
             Engine::new(
                 Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
                 InlineDispatch::new(EchoApp::default()),
@@ -153,6 +196,8 @@ impl ShardWire {
             // and every accept here follows a connect this test just made.
             listener: TcpListener::bind("127.0.0.1:0").expect("a free port"),
             shards,
+            pending: PendingSet::new(Limits::new(64, u64::MAX).expect("both above zero")),
+
             clock,
             clients: Vec::new(),
             quiet,
@@ -175,6 +220,25 @@ impl ShardWire {
     /// statement about the wire and has to be measured in the unit the wire is
     /// measured in. `deadline` is a lifeline: reaching it means the engine never
     /// went quiet, which the comparator will report as a missing reply.
+    /// Advance the pre-session stage and route whatever has identified itself.
+    ///
+    /// On the acceptor thread, which is this one. A `Logon` that names nobody,
+    /// or a route naming a shard that does not exist, drops the connection —
+    /// there is no session yet with which to say anything about it.
+    fn pump(&mut self) {
+        let p = self.pending.turn(0);
+        DISPOSAL[0].fetch_add(p.settled, Ordering::Relaxed);
+        DISPOSAL[1].fetch_add(p.timed_out, Ordering::Relaxed);
+        DISPOSAL[2].fetch_add(p.not_logon, Ordering::Relaxed);
+        DISPOSAL[3].fetch_add(p.gone, Ordering::Relaxed);
+        while let Some(k) = self.pending.settled() {
+            let Some(p) = self.pending.take(k) else { break };
+            if self.shards.hand(p).is_err() {
+                DISPOSAL[4].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     fn settle(&mut self, i: usize, emit: &mut impl FnMut(&[u8])) -> bool {
         let mut buf = [0u8; 16384];
         let mut held: Vec<u8> = Vec::new();
@@ -183,6 +247,7 @@ impl ShardWire {
         let mut last = start;
 
         loop {
+            self.pump();
             let mut got = false;
             if let Some(sock) = self.clients[i].1.as_mut() {
                 loop {
@@ -247,7 +312,13 @@ impl SessionUnderTest for ShardWire {
                 sock.set_nodelay(true).expect("nodelay");
                 let (accepted, _) = self.listener.accept().expect("the connect we just made");
                 let transport = TcpTransport::new(accepted).expect("non-blocking");
-                self.shards.hand(transport).expect("a shard took it");
+                // NOT handed to a shard yet. Nothing here knows whose socket
+                // this is until its `Logon` arrives, which is the whole point of
+                // the pre-session stage — and what `Assign` could never do.
+                assert!(
+                    self.pending.admit(transport, 0).is_ok(),
+                    "the pending table is sized well above what the corpus opens"
+                );
                 self.clients[i].1 = Some(sock);
             }
             Input::Disconnect => {
@@ -360,63 +431,91 @@ fn one_shard_passes_all_fifty_nine_at_any_settle_bound() {
     }
 }
 
-/// **Two shards: 57. This is a defect in the design, and the corpus found it.**
+/// **Two shards: 59. The defect this test used to record is fixed.**
 ///
-/// `[measured 2026-08-31]` running the same 59 files across two engines fails
-/// exactly two, at **both** settle bounds, so it is not timing:
+/// `[measured 2026-08-31]` this file asserted **57**, and named the two that
+/// failed — `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def` — at both
+/// settle bounds, so it was not timing.
 ///
-/// ```text
-/// 1b_DuplicateIdentity.def:16  unexpected output: 35=A ...
-/// AlreadyLoggedOn.def:13       FieldCount { expected: 8, actual: 10 }
-/// ```
-///
-/// **Why, and it is not a sloppy rule.** An `Engine` carries exactly one
-/// `Config`, so every connection it serves is the **same** FIX identity. That
-/// is why `Engine::turn` can enforce "the identity is already logged on" by
-/// counting *the other connections in this engine* that are up: with one
+/// **Why it failed, and it was not a sloppy rule.** An `Engine` carries exactly
+/// one `Config`, so every connection it serves is the **same** FIX identity.
+/// That is why `Engine::turn` can enforce "this identity is already logged on"
+/// by counting *the other connections in this engine* that are up: with one
 /// identity per engine, "any other" and "this identity" are the same question.
+/// Sharding split the connections for that one identity across engines that
+/// cannot see each other, and the question stopped being answerable where it
+/// was asked. **The rule was right; sharding invalidated its premise.**
 ///
-/// Sharding splits the connections for that one identity across engines that
-/// cannot see each other, and the question stops being answerable where it is
-/// asked. **The rule was right and sharding is what invalidated its premise.**
+/// **Why it passes now.** `presession::PendingSet` holds each socket until its
+/// `Logon` arrives, and `Shards::hand` routes on the identity in it through a
+/// **stable** hash — so both connections claiming one identity reach the same
+/// engine, and `others_on` can see them both again
+/// ([ADR-0020](../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)).
 ///
-/// **What is deliberately not done here.** Giving this test an assignment policy
-/// that keeps both connections on one shard would turn it green and prove
-/// nothing — `CLAUDE.md` §10 names that exact move as the failure to watch for.
-/// The rule is per-engine state, and sharding is what breaks it; the fix is a
-/// decision about where that state lives, not a test parameter.
-///
-/// So this is a **characterisation test**: it pins the defect and its two files.
-/// When the rule is made to span shards, this test goes red and has to be
-/// rewritten to 59 — which is the point. It is not a target.
+/// **What was deliberately not done, then and now.** The 2026-08-31 version
+/// could have been made green with an assignment policy that kept both
+/// connections on one shard, and it would have proved nothing —
+/// `CLAUDE.md` §10 names that exact move. Instead it stayed red-in-waiting: a
+/// characterisation test that would fail when the defect was fixed, and had to
+/// be rewritten. `[measured 2026-09-01]` **it did fail, on 59 against 57**, and
+/// this is the rewrite.
 #[test]
-fn two_shards_break_the_single_logon_rule_and_this_records_it() {
+fn two_shards_pass_all_fifty_nine_because_identity_decides_the_shard() {
     let _alone = alone();
     let Some(plan) = ShardWire::plan_for(2) else {
         // One physical core: two shards cannot be hosted here at all, and
-        // `tests/shard.rs` asserts that the runtime refuses to try. There is no
-        // defect to characterise on a machine that cannot reach it.
+        // `tests/shard.rs` asserts that the runtime refuses to try.
         return;
     };
+    disposal_reset();
     let report = run(|_| ShardWire::with(&plan, STEP_QUIET, STEP_DEADLINE))
         .unwrap_or_else(|e| panic!("{e}"));
 
     assert_eq!(
-        report.passed, 57,
-        "the shape of this defect changed; re-read it rather than moving the number:\n{report}"
+        report.passed, 59,
+        "sharding must not cost a single definition:\n{report}"
+    );
+    assert!(
+        report.failures.is_empty(),
+        "and nothing may fail for a new reason:\n{report}"
     );
 
-    let failed: Vec<&str> = report.failures.iter().map(|f| f.file.as_str()).collect();
-    for expected in ["1b_DuplicateIdentity.def", "AlreadyLoggedOn.def"] {
-        assert!(
-            failed.iter().any(|f| f.contains(expected)),
-            "expected {expected} to fail for the single-logon reason; failures were {failed:?}"
-        );
-    }
+    // And it passed for the right reason.
+    //
+    // `[measured 2026-09-01]` this assertion started as `[0; 4]` and went red at
+    // `[0, 1, 1, 0]`, which is exactly what it was written to catch: two
+    // connections never reached an engine, and a socket the stage throws away
+    // is indistinguishable from a duplicate the SESSION refused. Both turned
+    // out to be legitimate and are named below — but "legitimate" is a thing
+    // you find out, not a thing you assume, and 59/59 said nothing about it.
+    //
+    // Pinned rather than relaxed to a range: a THIRD connection disappearing
+    // here would be a new defect wearing the same green.
+    let [settled, timed_out, not_logon, gone, unrouted] = disposal_read();
     assert!(
-        failed.iter().all(|f| {
-            f.contains("1b_DuplicateIdentity.def") || f.contains("AlreadyLoggedOn.def")
-        }),
-        "something ELSE broke under sharding, which is a different bug:\n{report}"
+        settled > 59,
+        "every scenario connects at least once: {settled}"
     );
+    assert_eq!(
+        [timed_out, unrouted],
+        [0, 0],
+        "no connection may expire or fail to route: [timed_out, unrouted]"
+    );
+    assert_eq!(
+        not_logon, 1,
+        "exactly one: 1e_NotLogonMessage.def, whose first message is 35=0 and \
+         whose own comment says `if first message is not a Logon, we must \
+         disconnect` — ADR-0022"
+    );
+    assert_eq!(
+        gone, 1,
+        "exactly one: 1d_InvalidLogonLengthInvalid.def, whose 9=40 is a lie the \
+         framer takes at its word, leaving a frame that can never be a message \
+         — ADR-0022"
+    );
+
+    // Which leaves the two that mattered. `1b_DuplicateIdentity.def` and
+    // `AlreadyLoggedOn.def` both connect twice, both settled, both reached an
+    // engine — so their second Logon was refused by the SESSION, which is the
+    // rule this whole plan existed to make true again under sharding.
 }
