@@ -87,7 +87,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
   `serve_sharded_hft` chạy tầng mới trên luồng acceptor
 - `crates/engine/tests/presession.rs` — mới
 - `crates/engine/tests/shard.rs`, `shard_wire.rs` — theo API mới
-- `docs/decisions/ADR-0020-…` — bước 1
+- `docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md` — bước 1
 - `docs/DESIGN.md` §3 và D8 · `docs/GUIDE.md` §1a · `CHANGELOG.md` · `STATUS.md` item 24
 
 ## Bất biến bị đụng tới
@@ -104,7 +104,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| 1 | **ADR-0020** — tầng pre-session: ai sở hữu socket trước `Logon`, hai giới hạn cứng, `Route` thay `Assign`, băm ổn định là mặc định, `RoundRobin` bị bỏ | — |
+| 1 | ✅ [ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md) — tầng pre-session: ai sở hữu socket trước `Logon`, hai giới hạn cứng, `Route` thay `Assign`, băm ổn định là mặc định, `RoundRobin` bị bỏ | — |
 | 2 | `presession.rs`: đọc `49`/`56` khỏi message trọn vẻ đầu tiên. Test: message đủ, message thiếu, message không phải `35=A`, message rác | 1 |
 | 3 | `PendingSet`: trần số lượng, logon timeout, vứt kết nối im lặng. Mỗi giới hạn một ca hỏng, so **biến thể lỗi** chứ không `is_err()` | 2 |
 | 4 | `Route` + băm ổn định; `Shards::hand` nhận identity; `serve_sharded_hft` nối tầng mới | 3 |
@@ -129,7 +129,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 
 ## Tài liệu phải cập nhật
 
-- [ ] `docs/decisions/ADR-0020-…` — bước 1
+- [x] [ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md) — bước 1, **Accepted 2026-09-01**
 - [ ] `docs/DESIGN.md` §3 (mod mới), D8 (luật single-logon ở đâu)
 - [ ] `docs/GUIDE.md` §1a — *"shard nào là việc của anh"* thành *"identity quyết định, đây là
       cách thay chính sách"*, cộng hai giới hạn cứng mà người gọi phải nêu
@@ -151,7 +151,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
-| Tầng mới đọc mất `Logon` | **Cao** | `Engine::add` cần một đường nhận "socket + byte đã đọc sẵn". Đó là thay đổi API và phải nằm trong ADR-0020 |
+| Tầng mới đọc mất `Logon` | **Cao** | `Engine::add` cần một đường nhận "socket + byte đã đọc sẵn". Đó là thay đổi API và nằm trong ADR-0020 quyết định 3: `Engine::add_with_prefix`, dựng trên `Framer::spare()`/`filled()` đã có sẵn, và **từ chối** prefix dài hơn `RX` chứ không cắt bớt |
 | `Route` là breaking change | Trung bình | Không có người dùng ngoài; `Assign` mới ra đời cùng ngày. Ghi ở `CHANGELOG.md` |
 | Logon timeout thành một cái đồng hồ nữa | Trung bình | Dùng chính `Clock` của engine, không dựng nguồn thời gian thứ hai |
 | Hai giới hạn cứng có mặc định "hợp lý" rồi không ai nêu | Trung bình | **Không có mặc định.** Người gọi phải nêu, như `ShardPlan` bắt nêu core |
@@ -168,5 +168,24 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 
 ## Nhật ký giao hàng
 
-*(duyệt 2026-08-31 theo uỷ quyền thường trực; chủ dự án chọn cách A cùng ngày. Chưa bắt đầu bước
-nào.)*
+*(duyệt 2026-08-31 theo uỷ quyền thường trực; chủ dự án chọn cách A cùng ngày.)*
+
+**2026-09-01 — bước 1 xong.**
+[ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md),
+`Accepted`, mười quyết định. Ba trong số đó không có trong plan và đến từ việc đọc code
+trước khi viết:
+
+- **Quyết định 3 có đường giải rồi, không cần API mới ở tầng dưới.** `Framer` đã có
+  `spare()` và `filled(n)` — đúng nghĩa *"đây là byte đã tới trước khi anh nhìn"*. Nên
+  `Engine::add_with_prefix` chỉ là một lớp mỏng, và nó **từ chối** prefix dài hơn `RX` chứ
+  không cắt: cắt thì session nhận nửa message và framer sẽ báo `Garbage` về những byte vốn
+  lành lặn — một khiếm khuyết mà bằng chứng đã bị chính đoạn code gây ra nó xoá mất.
+- **Quyết định 5, và nó là hệ quả plan chưa nói ra.** Hai giới hạn cứng ở bước 3 vô nghĩa
+  nếu luồng acceptor đỗ trong `accept_blocking`: một luồng đang đỗ ở đó **không hết hạn
+  được** kết nối im lặng, nên logon timeout chỉ nổ khi tình cờ có người khác kết nối. Đó
+  đúng là kiểu hành vi-phụ-thuộc-tải mà `CLAUDE.md` §10 gọi tên. `Poller::wait` có timeout
+  và đã tồn tại; `serve_sharded_hft` thôi gọi `accept_blocking`.
+- **Quyết định 7 nêu rõ vì sao `DefaultHasher` bị cấm** ở đây: nó có seed theo tiến trình,
+  nên hai lần chạy cùng một binary sẽ định tuyến cùng một đối tác đi hai nơi — luật
+  single-logon đúng trong một lần chạy và sai sau khi restart. Test khẳng định **một
+  identity cụ thể ra một shard cụ thể**, không phải chỉ "ổn định trong tiến trình này".
