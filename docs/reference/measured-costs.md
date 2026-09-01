@@ -2064,3 +2064,118 @@ inside the timed window, which would measure `TcpStream::connect`. **The thing t
 Stated plainly rather than estimated: **the stage's own work is priced; the handoff it introduces
 is not.** What is known is where it lands — on the connection path, once per counterparty, and
 **not** on `DESIGN.md` §8's message budget, which is why §8 does not move.
+
+---
+
+## CPU mitigations cost 61% of every syscall, and it is not the one that was named — 2026-09-01
+
+`STATUS.md` open item 22 has carried this since 2026-08-30, marked **`[unproven]`**:
+
+> *"`mitigations=off` — full mitigations are on, `vmscape` alone does an IBPB on every syscall
+> return, needs a reboot and is a security decision."*
+
+One sentence, one named mechanism, entirely plausible. **The mechanism was wrong**, and the
+number is larger than anything else this page records.
+
+`[measured 2026-09-01]` AMD Ryzen 7 3700X, Linux 7.0.0-30-generic, the
+[ADR-0021](../decisions/ADR-0021-nohz-full-leaves-section-9.md) §9 line, SMT off, performance
+governor, turbo off, machine quiet. Three boots, one variable each.
+
+| Arm | Kernel command line adds | bare `getpid` | `engine turn, 1` |
+|---|---|---|---|
+| — | *nothing* (§9 as shipped) | 154.5 ns | 448.9 ns |
+| **A** | `mitigations=off` | **59.45** | **175.2** |
+| **B** | `vmscape=off` | 154.5 — **nothing** | 443.8 |
+| **C** | `retbleed=off spec_rstack_overflow=off` | **59.46** | **176.0** |
+
+Every syscall-bound case, arm A against the shipped configuration:
+
+| Case | mitigated | `mitigations=off` | change |
+|---|---|---|---|
+| `recv on a quiet socket` | 420.5 | 156.9 | **−62.7%** |
+| `engine turn, 1 idle sessions` | 448.9 | 175.2 | **−61.0%** |
+| `engine turn, 4 idle sessions` | 1807.1 | 712.3 | −60.6% |
+| `engine turn, 16 idle sessions` | 7333.5 | 2985.6 | −59.3% |
+| `presession sweep, 1 quiet sockets` | 435.9 | 165.4 | −62.0% |
+| `presession sweep, 16 quiet sockets` | 6819.5 | 2610.3 | −61.7% |
+
+The tail follows: 5 000 000 timed calls, **p50 216 → 80 ns** and **p99.99 2848 → 88** — flat
+all the way out, because what used to dominate the tail is now smaller than a timer tick.
+
+### The control group is what makes it a measurement
+
+Thirteen pure user-space cases, over the same runs: **−4.1% to +4.1%, with no direction.**
+`parse NewOrderSingle` +2.0%, `ring, one way` +0.3%, `encode ExecutionReport` −0.3%,
+`SendingTime` and `inline deliver + reply` exactly 0.0%. `presession, read and route an
+identity` — pure bytes, no syscall — sat still at −0.2%.
+
+And the anchor held: `user_loop`, a dependent multiply-add chain that never enters the kernel,
+read 1.0563–1.0585 ns/iter across **all three boots** against the baseline's 1.0577–1.0581.
+This is a cross-boot A/B, the shape this page has been burned by before; that agreement to
+0.1% is what makes the three boots comparable at all.
+
+### Which mitigation, and the one that was named is not it
+
+**Arm B turned off exactly `vmscape` and nothing moved.** `getpid` read 154.5 ns — unchanged to
+the digit — while `/sys` confirmed `vmscape: Vulnerable` and everything else still mitigated.
+Across the benches it gave back 0.5–1.1%, which is noise.
+
+**Arm C turned off `retbleed`'s untrained return thunk and `spec_rstack_overflow`'s Safe RET,
+put `vmscape`'s IBPB back on, and left the retpolines on — and recovered arm A to within
+0.5% on every row.**
+
+So the whole of it is the **AMD return-thunk family**. `vmscape`'s IBPB on every kernel exit
+and `spectre_v2`'s retpolines, STIBP and RSB filling cost, together, **under 1%**.
+
+### It also explains what arm A could not
+
+Arm A's saving was **not equal across syscalls**: `getpid` gave back 95 ns, `recv` gave back
+264. A fixed IBPB per kernel exit would give back the same in both, and that mismatch was
+recorded as unexplained before arm C ran.
+
+A return thunk and a Safe RET are not a fixed per-syscall cost. They add work to **every
+return inside the kernel**, so the bill scales with how much kernel code the syscall runs.
+`getpid` is a leaf. `recv` walks a dispatch chain. **The unequal saving was evidence for the
+mechanism that turned out to be right, and against the one that had been named** — and nobody
+read it that way until the arm that could settle it was run.
+
+### What was not separated, and what was turned off beyond its name
+
+- **`retbleed` and `spec_rstack_overflow` were not separated from each other.** They are the
+  same class of mechanism — both rewrite the kernel's return path — so splitting them yields
+  two smaller numbers and no different decision. Two more reboots buy nothing.
+- **Arm C turned off slightly more than its two names suggest**: `retbleed=off` also drops
+  `STIBP: always-on` from `spectre_v2`'s line. STIBP protects between two threads of one core
+  and SMT is off under §9, so it almost certainly costs nothing here. *Almost certainly* is not
+  a measurement, which is why this sentence exists.
+
+### The finding that changes §9, and it is not the 61%
+
+**`scripts/check-machine.sh` read `pass 11 fail 0 unknown 1` in all three arms**, including the
+one with every CPU mitigation disabled. §9 had no row for them.
+
+So two machines could both satisfy §9, both be called publishable under non-negotiable 10, and
+**differ by 61% on the operation §8 says dominates the design**. That is the same hole
+[ADR-0021](../decisions/ADR-0021-nohz-full-leaves-section-9.md) closed for `nohz_full`, in the
+same checklist, found the same way — by measuring a setting the checklist never mentioned.
+[ADR-0023](../decisions/ADR-0023-section-9-records-the-cpu-mitigations.md) adds the row.
+
+### The generalisation
+
+`[to testing-skills]` — **turning the exact knob you named and watching nothing move is the
+cheapest way to learn that the mechanism you named is wrong.**
+
+This page already records the other face of that coin: *a cause accepted because a knob moved
+alongside it*. This is the cheaper face, and it is the one people skip. A named mechanism that
+explains the data feels finished — it has a name, a story, and a number that fits — so the
+experiment that would refute it looks like a formality and gets dropped for the one that would
+confirm it.
+
+The refutation cost one boot and one reading, and it killed a sentence that had stood for two
+days and would otherwise have shipped in a public document. **The confirming arm ran later and
+was worth less**: by then the answer was already narrowed to what was left.
+
+The rule that follows: **when a write-up names a mechanism, the next experiment is the one that
+turns off exactly that mechanism** — not the one that turns off everything and shows a big
+number. A big number tells you there is something to find. Only the named knob tells you
+whether you have found it.

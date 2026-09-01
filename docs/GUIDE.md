@@ -222,6 +222,24 @@ as the API.
   that calls `RingApp::pump` — so pin it with `affinity::spawn_pinned` or, from inside it,
   `affinity::pin_current_thread`. `Durability::Fsync` has no writer thread and `open_pinned`
   refuses it rather than accepting a core it would ignore.
+- **The biggest number on this page is not one you can tune, and you should know it exists.**
+  `[measured 2026-09-01]` **the CPU speculation mitigations cost 59–63% of every syscall this
+  engine performs.** A turn is **448.9 ns** on a mitigated machine and **175.2 ns** on the same
+  machine with them off; thirteen pure user-space benchmarks do not move at all. On this AMD
+  Zen 2 box all of it is `retbleed`'s untrained return thunk plus `spec_rstack_overflow`'s Safe
+  RET — not `vmscape`, and not the retpolines, which together cost under 1%.
+
+  **This is stated so you can plan against it, not so you turn them off.** Whether a given
+  deployment runs mitigated is a security decision for whoever owns the machine and its threat
+  model, and this project makes no recommendation about it. What it does say is that a latency
+  figure from an unmitigated machine is **not comparable** to any figure in this repository,
+  and `scripts/check-machine.sh` will refuse to call such a machine §9-satisfied
+  ([ADR-0023](decisions/ADR-0023-section-9-records-the-cpu-mitigations.md)).
+
+  The practical consequence for you: **whichever way your machines are configured, keep them
+  the same as the machine your baselines came from.** A fleet that is mixed will show a 2.5×
+  spread in syscall cost that has nothing to do with your code.
+
 - **Isolating those cores: `isolcpus` and `rcu_nocbs` — and NOT `nohz_full`.** The first two keep
   other tenants and RCU callbacks off your engine cores and `[measured 2026-08-31]` cost nothing:
   a turn is 494.8 ns per session on an `isolcpus` core, 498.2 on an `rcu_nocbs` one and 501.8 on

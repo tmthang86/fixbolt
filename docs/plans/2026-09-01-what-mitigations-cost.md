@@ -97,8 +97,8 @@ Không có dòng code thư viện nào thay đổi. Hai điều vẫn liên quan
 | 2 | ✅ Chủ máy boot vào nhánh A (`mitigations=off`) | 1 |
 | 3 | ✅ Đo: `measure-isolation-cost.sh`, `bench.sh` (không `--strict`), `--jitter` | 2 |
 | 4 | ✅ Nhánh B (`vmscape=off`) — **bác bỏ cơ chế được nêu tên** | 3 |
-| 5 | Chủ máy khôi phục dòng §9; `check-machine.sh` và `bench.sh --strict` phải đọc lại đúng như trước | 3 hoặc 4 |
-| 6 | Viết `measured-costs.md`; §9 và ADR nếu cần; đóng item 22 | 5 |
+| 5 | ✅ Chủ máy khôi phục dòng §9; `check-machine.sh` và `bench.sh --strict` phải đọc lại đúng như trước | 3 hoặc 4 |
+| 6 | ✅ Viết `measured-costs.md`; §9 và ADR nếu cần; đóng item 22 | 5 |
 
 ## Dự đoán, ghi trước bước 2
 
@@ -132,11 +132,14 @@ user space; nếu chúng động thì cái đổi giữa hai lần boot không p
 
 ## Tài liệu phải cập nhật
 
-- [ ] `docs/reference/measured-costs.md`
-- [ ] `docs/DESIGN.md` §9 — một dòng cho mitigation, kể cả khi câu trả lời là "không đáng đổi"
-- [ ] `docs/decisions/ADR-00NN` — chỉ nếu §9 đổi khuyến nghị
-- [ ] `STATUS.md` item 22
-- [ ] `[to testing-skills]` nếu có bài học chung
+- [x] `docs/reference/measured-costs.md` — ba nhánh, nhóm đối chứng, và bài học chung
+- [x] `docs/DESIGN.md` §9 — dòng mới, **yêu cầu mitigation BẬT**
+- [x] `docs/decisions/ADR-0023-section-9-records-the-cpu-mitigations.md`
+- [x] `scripts/check-machine.sh` — dòng gate, cả ba nhánh đã chứng minh
+- [x] `docs/GUIDE.md` — người triển khai cần biết con số này tồn tại
+- [x] `benches/baselines.tsv` — ghi chú vì sao các dòng cũ giữ `pass 11`
+- [x] `STATUS.md` item 22 — **đóng**
+- [x] `[to testing-skills]` — một case, trong `measured-costs.md`
 
 ## Bẫy đã lường trước
 
@@ -307,3 +310,28 @@ nào.
 `STIBP: always-on` khỏi dòng `spectre_v2` (nhánh B còn, nhánh C không). STIBP bảo vệ giữa hai
 luồng của một lõi, và **SMT đang tắt** theo §9, nên gần như chắc chắn nó không tốn gì ở đây —
 nhưng "gần như chắc chắn" không phải phép đo, nên nó nằm ở đây.
+
+**2026-09-01 — bước 5 và 6 xong, plan đóng.**
+
+**Bước 5, và nó được *đọc* chứ không giả định.** Máy boot lại vào dòng §9 của ADR-0021, mọi
+mitigation bật lại (`/sys` xác nhận `vmscape: IBPB`, `spec_rstack_overflow: Safe RET`,
+`retbleed: untrained return thunk; SMT disabled`). Baseline vốn ghi khi mitigation **bật**, nên
+chúng là phép thử máy đã về nguyên trạng hay chưa: `recv on a quiet socket` **419.6** so với
+baseline 420.5, `engine turn, 1` **443.7** so với 448.9, `presession, read and route an
+identity` **84.0** so với 84.0. `bench.sh --strict` **OK**.
+
+**Bước 6.** [ADR-0023](../decisions/ADR-0023-section-9-records-the-cpu-mitigations.md) thêm một
+dòng vào §9 và vào `check-machine.sh`. Dòng đó **PASS khi mitigation BẬT** — hướng này là chủ ý
+và **không phải khuyến nghị bảo mật**: baseline được ghi ở trạng thái đó, và một máy tắt
+mitigation đọc **thấp hơn** mọi baseline chạm syscall khoảng 60%, tức là **qua**, vì baseline là
+trần. Cổng bench không nhìn thấy được; phải có thứ khác nhìn.
+
+Nó đọc `/sys` chứ không đọc `/proc/cmdline`, vì `[đo]` hai cái khác nhau — `retbleed=off` còn
+bỏ luôn `STIBP: always-on` khỏi dòng `spectre_v2`, điều mà không cách đọc command line nào thấy.
+
+Cả ba nhánh của dòng gate đã chứng minh bằng sysfs giả: `mitigated → PASS`,
+`vulnerable → FAIL disabled: retbleed spec_rstack_overflow`, `missing → UNKNOWN`. Máy hiện đọc
+**`pass 12 fail 0 unknown 1`**.
+
+**Item 22 đóng.** Còn lại của nó là `recvmmsg`/`io_uring` với `SQPOLL` và item 14 — tức là
+chính cái syscall, giờ đã biết phụ phí mitigation của nó.

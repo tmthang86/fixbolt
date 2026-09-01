@@ -145,6 +145,39 @@ else
     "REMOVE nohz_full from the kernel command line: it adds 160 ns to every kernel entry (+36% on Engine::turn) and is behind at p50, p99 AND p99.9 — see ADR-0021"
 fi
 
+# --- CPU speculation mitigations ----------------------------------------------
+#
+# ADR-0023. [measured 2026-09-01] disabling these makes every syscall this
+# engine performs 59-63% cheaper: `engine turn, 1 idle sessions` goes from
+# 448.9 ns to 175.2, while thirteen pure user-space benchmarks move -4.1% to
+# +4.1% with no direction. All of it is `retbleed`s untrained return thunk plus
+# `spec_rstack_overflow`s Safe RET; `vmscape` — the mechanism STATUS.md had
+# named for two days — costs nothing.
+#
+# This row PASSES when the machine IS mitigated, which is the default, the safe
+# state, and the state `benches/baselines.tsv` was recorded in. It is NOT advice
+# to turn them off. A machine with them off reads ~60% UNDER every syscall-bound
+# baseline, which passes — a baseline is a ceiling — so the bench gate cannot
+# catch it and something else must.
+#
+# Read from /sys rather than /proc/cmdline: the command line says what was asked
+# for and sysfs says what the kernel is doing, and [measured 2026-09-01] they
+# differ — `retbleed=off` also removed `STIBP: always-on` from spectre_v2s line,
+# which no reading of the command line would show.
+vuln_dir=/sys/devices/system/cpu/vulnerabilities
+if [ ! -d "$vuln_dir" ]; then
+  row UNKNOWN "CPU mitigations" "$vuln_dir not readable" \
+    "run outside a restricted container"
+else
+  off=$(grep -l '^Vulnerable' "$vuln_dir"/* 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')
+  if [ -z "$off" ]; then
+    row PASS "CPU mitigations" "all in force"
+  else
+    row FAIL "CPU mitigations" "disabled: ${off% }" \
+      "these are worth 61% of every syscall here (ADR-0023), so numbers from this machine are NOT comparable to benches/baselines.tsv — remove the mitigation overrides from the kernel command line and reboot"
+  fi
+fi
+
 # --- CPU frequency governor ---------------------------------------------------
 gov=$(r /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)
 if [ -z "$gov" ]; then
