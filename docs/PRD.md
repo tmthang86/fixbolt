@@ -79,6 +79,11 @@ Phase 1 — a FIX 4.4 engine you can actually deploy          ← all current wo
   ├── engine (accept + connect drivers, journal, dispatch, backpressure)  ← done 2026-08-30
   ├── tools/w2w             ← wire-to-wire, on Linux — NEXT, and needs a Linux box
   ├── machine probe + advice ← detect and recommend, never apply (ADR-0025, Proposed)
+  ├── many counterparties   ← a registry: identity -> Config, journal, policy. NOT STARTED,
+  │                            and until it exists this is a link, not an acceptor (item 28)
+  ├── session schedules     ← start/end/weekday reset. Named a gap three times, never planned
+  ├── operability           ← ordered shutdown · operator snapshot · sequence-number admin ·
+  │                            event stream · offline journal reader · health probe (item 30)
   └── library               ← not started
 
 Phase 2 — the encoding axis, and the version axis
@@ -164,9 +169,17 @@ find them whether or not this page does.
 | Code generation targets | C++, Python, Ruby `[measured]` | Rust only | Not a goal |
 | SBE / FAST / FIXML | **None** `[measured]` | Phase 2 | P2 — *ahead* of QuickFIX |
 | Throughput | 6,000–8,000 msg/s per session `[documented]` | Target: an order of magnitude more `[unproven]` | P1 |
+| **Many counterparties on one acceptor** | Yes — a `SessionSettings` file holds one block per session `[documented]` | **No.** `[verified 2026-09-01]` `Config` pins `target_comp_id` (`session/src/lib.rs:259`) and `Logon` requires the inbound `49=`/`56=` to match it (`:1154`–`:1157`); `serve_sharded_hft` takes **one** `cfg` and hands the same one to every shard (`shard.rs:410`, `:431`). The whole public API serves exactly **one** counterparty | **P1, gap — and the largest one** |
+| Logon authentication — `553`/`554`, per-counterparty credentials, IP allowlist | Yes `[documented]` | **Nothing.** Anything presenting the configured comp-ID pair is admitted | P1, gap |
+| Ordered shutdown — `Logout`, journal flush, drain | Yes `[documented]` | **Nothing.** `[verified 2026-09-01]` no `shutdown`, `drain` or signal handling anywhere in `crates/*/src`. Dropping the engine while a `WakeHandle` lives was a `SIGPIPE` kill until 2026-08-30 | P1, gap |
+| Operator visibility — session state, sequence numbers, counters | Session state via the `Application` callbacks and a log backend `[documented]` | **`Engine::connections() -> usize`, and nothing else.** `[verified 2026-09-01]` that is the entire observable surface: no session state, no `next_out`/`next_in`, no refusal count, no ring depth | P1, gap |
+| Sequence-number administration while running | Yes — reset and set, from config or the store `[documented]` | `Session::resume` exists as a **constructor**; there is no path to it on a live engine | P1, gap |
+| Reading the message store offline | File and SQL stores are plain, readable formats `[documented]` | mmap journal with **no reader outside the process** | P1, gap |
+| Health / readiness probe | n/a — not a library concern for QuickFIX | **Nothing** | P1, gap |
 | Production track record | Thousands of counterparties `[documented]` | **Zero** | — |
 
-**The two that matter most:**
+**The three that matter most:**
+
 
 1. **Repeating groups — closed 2026-08-28, and here is what closed it.** `[measured]` FIX 4.4
    defines 93 of them, and the 59 acceptance definitions populate exactly one — `386=3` in
@@ -181,6 +194,18 @@ find them whether or not this page does.
    found its bugs. No amount of test coverage substitutes. This gap does not close by writing
    code; it closes by being deployed.
 
+3. **Many counterparties on one acceptor — `[verified 2026-09-01]` and it is the gap that
+   decides whether this is an *acceptor* or a *link*.** A broker's FIX gateway is
+   multi-counterparty by definition. This one is not: `Config` carries a single
+   `target_comp_id`, the session refuses any `Logon` whose `49=` does not match it, and every
+   entry point — `serve`, `serve_hft`, `serve_sharded_hft` — takes one `Config`. **The routing
+   machinery for the opposite already exists and has nowhere to send anything**:
+   `presession::identity_of` reads `(49, 56)` off the `Logon` and `HashRoute` spreads distinct
+   identities across shards, but every shard rejects all identities but one. Until a registry
+   maps an identity to its own `Config`, journal and policy, sharding by identity is routing
+   between engines that all say no. It was named once, in the *Blocks* column of `STATUS.md`
+   open item 24, and never given a home; it is **open item 28** now.
+
 ## 4. What "done" does not mean
 
 `[measured]` The acceptance suite is the primary gate and it has a stated blind spot. Of the
@@ -192,6 +217,12 @@ find them whether or not this page does.
   have them echoed back unchanged. Nothing in it asks what an order *means*.
 - **Reconnect, backoff, session schedules: untested** — zero definitions, on either side.
 - **Field types, enum values, decimal precision: untested.**
+- **Application-message resend: implemented and never exercised.** `[verified 2026-09-01]`
+  `Session::replay` (`session/src/lib.rs:1030`) reads the journal and re-emits the real message
+  with `43=Y` and `122=`, so the code is there. But every message the corpus sends is
+  administrative, so **the branch has never run carrying a business message**. A real
+  counterparty asking to resend real orders is the first thing that will exercise it, and a
+  `ResendRequest` answered wrongly is a protocol violation visible from outside. Open item 29.
 
 59/59 means the session state machine is right. It does not mean the engine is usable. Phase 1
 exit criterion 2 and 3 exist because of this paragraph.
@@ -221,3 +252,6 @@ Not "later" — these are out unless a new ADR reverses them.
 | 5 | ~~TLS — own implementation, `rustls`, or terminate outside the process?~~ **Answered by [ADR-0005](decisions/ADR-0005-tls.md)**, which raised six of its own. The blocking one — can `ktls-core` be driven from a non-blocking socket with no async runtime? — is **answered 2026-08-31: yes, with four conditions**, [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md). Five remain open, and question 2 (which kernel and which cipher suites are the floor) is the one that decides how deployable this actually is | Phase 1 deployability |
 | 6 | ~~Final name~~ — **decided 2026-08-30: `fixbolt`**. Was blocking any crates.io publish |
 | 7 | **Can the engine configure itself from the machine — mode, cores, bypass — instead of making the caller do it?** `[2026-09-01]` **proposed answer: it detects and advises, it never applies**, plus a hard ceiling of four sessions per `hft` engine that **refuses** the fifth rather than degrading to `standard`. Four is not a round number: `2000 / 448.9 = 4.46`, so it is the largest N that beats an `epoll`-class wakeup under **both** ends of the 2–5 µs literature range, and it sits below the pessimistic bound of the cache wall as well — which is what lets the feature exist without first measuring either. **The remaining uncertainty runs one way only**: 448.9 ns is an *idle* turn, so a busy-path measurement can only lower the ceiling, never raise it. [ADR-0025](decisions/ADR-0025-hft-has-a-hard-session-ceiling-and-the-engine-advises-rather-than-applies.md), **`Proposed`** — deliberately not self-accepted, because its number rests on a run nobody has taken. Bypass detection stays in phase 3 and needs nothing built: `onload ./engine` runs this engine unchanged | `GUIDE.md` §1a's shard arithmetic; the rest of `STATUS.md` open item 21 |
+| 8 | **Where does the counterparty registry live — `presession`, `engine`, or `library`?** `[2026-09-01]` `presession` already reads the identity off the `Logon` and is the only layer that sees a socket before a session exists, which argues for it; but a registry owns a `Config`, a journal and a credential per counterparty, which is `library`-shaped. **The choice decides whether a counterparty can be added without a restart**, so it is not a placement detail. First step of the plan that closes open item 28, and it wants an ADR before any code | Every entry point's signature; `GUIDE.md` §1a; hot reload, for ever |
+| 9 | **How much does this engine owe an auditor?** A FIX acceptor is usually required to answer *"what exactly did we send that counterparty, and when"* years later. The journal keeps what a **resend** needs — [D7](DESIGN.md) — which is not the same question. **An audit tap (a byte-for-byte copy of both directions, off the hot path via the ring) is a different feature from a message store**, and conflating them is how one ends up on the hot path. Decide the scope before either is built | The journal's format; open item 30's offline reader |
+| 10 | **Does the application get bytes, or typed values?** `PRD` §3 lists *decimal / price types* as a phase-1 gap, but [ADR-0003](decisions/ADR-0003-message-representation.md) hands the application a borrowed view on purpose and a typed decimal is exactly the owned, per-message object D2 exists to avoid. **This may already be answered and mislabelled as a gap.** It needs a decision, not an implementation | `codec`'s public API; the phase-1 gap list's honesty |
