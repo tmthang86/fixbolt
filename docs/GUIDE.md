@@ -222,6 +222,30 @@ as the API.
   that calls `RingApp::pump` — so pin it with `affinity::spawn_pinned` or, from inside it,
   `affinity::pin_current_thread`. `Durability::Fsync` has no writer thread and `open_pinned`
   refuses it rather than accepting a core it would ignore.
+- **Your `[profile.release]`, not ours.** Cargo honours a profile only from the top-level
+  package being built, so **this project's profile does not reach you** — it is cargo's default
+  and `benches/baselines.tsv` describes a default build
+  ([ADR-0024](decisions/ADR-0024-the-workspace-keeps-the-default-release-profile.md)). Yours
+  does reach your binary, and `[measured 2026-09-01]` on the §9 desktop it is worth:
+
+  | Setting | syscall-bound path | pure computation | clean build |
+  |---|---|---|---|
+  | `lto = "thin"` | −2 … −3% | −8% … +1% | 5.2 s → 17.1 s |
+  | `lto = "fat"` | **−3 … −5%** | −31% … +12% | → 15.9 s |
+  | `codegen-units = 1` | −0 … −2% | −17% … +2% | → 5.2 s |
+  | both | **−3 … −6%** | −30% … +12% | → 16.3 s |
+
+  **Read the caveat before you plan against those numbers.** A benchmark is a separate crate
+  calling into the library, so LTO inlines library internals into the *benchmark loop*; some of
+  the win above is that boundary, and your application may not have it in the same place. The
+  30% case is a small pure function that production already calls from within its own crate.
+  **How much survives into a real application was not measured**, and this project will not
+  claim a figure it does not have. The syscall-bound row is the more trustworthy half, because
+  kernel time cannot be inlined away.
+
+  Note also the two regressions in that table — `SendingTime from the cache` is **+12%** under
+  fat LTO. Whole-program optimisation is not free in one direction.
+
 - **The biggest number on this page is not one you can tune, and you should know it exists.**
   `[measured 2026-09-01]` **the CPU speculation mitigations cost 59–63% of every syscall this
   engine performs.** A turn is **448.9 ns** on a mitigated machine and **175.2 ns** on the same

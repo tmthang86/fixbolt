@@ -83,10 +83,10 @@ cải thiện một lượng như nhau — khi đó cái đổi không phải pr
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| 1 | Ghi dự đoán (mục trên), đo lại nhánh 0 để có nền cùng phiên | — |
-| 2 | Chạy bốn nhánh A–D, mỗi nhánh 10 lượt + một lần build sạch có bấm giờ | 1 |
-| 3 | Chọn, hoặc không chọn. Nếu đổi profile ⇒ **ADR**, và **ghi lại toàn bộ baseline** vì mọi số cũ được đo ở nhánh 0 | 2 |
-| 4 | Viết `measured-costs.md`; `STATUS.md` item 13 | 3 |
+| 1 | ✅ Ghi dự đoán (mục trên), đo lại nhánh 0 để có nền cùng phiên | — |
+| 2 | ✅ Chạy bốn nhánh A–D, mỗi nhánh 10 lượt + một lần build sạch có bấm giờ | 1 |
+| 3 | ✅ Chọn, hoặc không chọn. Nếu đổi profile ⇒ **ADR**, và **ghi lại toàn bộ baseline** vì mọi số cũ được đo ở nhánh 0 | 2 |
+| 4 | ✅ Viết `measured-costs.md`; `STATUS.md` item 13 | 3 |
 
 ## Cách kiểm chứng
 
@@ -132,4 +132,36 @@ cải thiện một lượng như nhau — khi đó cái đổi không phải pr
 
 ## Nhật ký giao hàng
 
-Chưa mở.
+**2026-09-01 — xong, và câu trả lời là *giữ nguyên mặc định*.**
+
+Bốn nhánh, 10 lượt mỗi nhánh, không reboot nào. `lto="fat"`: **−2.9% đến −5.6%** trên nhóm
+chạm syscall, tới **−31%** trên một hàm thuần. `codegen-units=1`: −0.1% đến −16.6%. Build sạch
+**5.2 s → ~16 s**. Dự đoán ghi trước đúng hướng và **nói nhẹ phần syscall** — 3–6% chứ không
+phải "gần như không đổi".
+
+**Rồi quyết định đi ngược lại bảng số**, vì hai điều bảng không cho thấy:
+
+1. **Cargo chỉ đọc `[profile.*]` từ package cấp cao nhất đang được build.** Profile ở đây chạm
+   tới benchmark của chính workspace này và `tools/w2w`, **không** chạm tới ai phụ thuộc vào
+   các crate này. Đặt nó vào là làm số công bố đẹp hơn mà không làm chương trình của ai nhanh
+   hơn — đúng hình dạng mà non-negotiable 10 sinh ra để chặn. (Đây là hành vi có tài liệu của
+   cargo, **không phải phép đo ở đây**, và ADR dán nhãn đúng như vậy.)
+2. **Một phần mức lợi là hiện vật của việc đo.** Benchmark là một crate riêng, nên LTO nội
+   tuyến ruột thư viện vào **vòng lặp benchmark**. `presession, read and route` giảm 83.4 →
+   57.7 ns, nhưng ở production `Shards::hand` gọi `identity_of` trong cùng crate, vốn đã nội
+   tuyến được. `recv` giảm 2.9% trên một case 94% thời gian nằm trong kernel — 12 ns trên
+   khoảng 25 ns công việc user space.
+
+[ADR-0024](../decisions/ADR-0024-the-workspace-keeps-the-default-release-profile.md) giữ mặc
+định và đưa dải số vào `GUIDE.md`, nơi profile của **người đọc** thực sự có tác dụng.
+
+**Và bài này là thứ tìm ra open item 25.** `inline deliver + reply` đọc 1.3 ns ở ba nhánh và
+7.4–8.6 ở hai nhánh; đọc thô thì đó là *"`codegen-units=1` làm chậm dispatch 6 lần"* — hợp lý,
+đáng báo động, và hoàn toàn sai. **1.3 ns không copy nổi 163 byte** (125 GB/s từ một lõi), và
+phép chia đó là thứ tìm ra nó, chứ không phải cổng nào cả.
+
+**Bẫy "một profile nhanh hơn ở case này, chậm hơn ở case khác" đã xảy ra thật:**
+`SendingTime from the cache` **+12.2%** dưới fat LTO. Bảng in cả 18 case, không lọc.
+
+**Gate:** `fmt` sạch · `clippy` sạch · `cargo test --all` **272/0** · `bench.sh --strict`
+**OK** · `check-machine.sh` `pass 12 fail 0 unknown 1` · `benches/alloc.rs` ra 0 ở mọi nhánh.
