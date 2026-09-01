@@ -440,6 +440,19 @@ pub struct Session<R: Role, const N: usize> {
     /// otherwise, and zero means no heartbeats at all — which is what FIX 4.4
     /// says `108=0` means.
     beat_ms: u64,
+    /// The engine's clock minus the `SendingTime` of the last message whose
+    /// `52=` could be read, in milliseconds. Positive: their stamp is behind
+    /// ours.
+    ///
+    /// **Recorded whether the message was accepted or refused**, because the
+    /// case an operator needs it for is exactly the refused one: `max_skew_ms`
+    /// drops a message in silence, and on a box whose NTP has drifted a
+    /// counterparty simply stops working with nothing anywhere saying why.
+    /// `STATUS.md` open item 30 (b).
+    ///
+    /// Pure — an `Option<i64>` on the struct, no clock read, no allocation. D1
+    /// stands.
+    last_skew_ms: Option<i64>,
     /// When this session last put a message on the wire, and last accepted one.
     /// Both are read only by [`Session::tick`].
     last_sent_ms: u64,
@@ -496,6 +509,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             test_requests: 0,
             resend_from: 0,
             resend_to: 0,
+            last_skew_ms: None,
             queue: [const {
                 Queued {
                     seq: 0,
@@ -531,6 +545,16 @@ impl<R: Role, const N: usize> Session<R, N> {
         s.next_in = next_in;
         s.resumed = true;
         s
+    }
+
+    /// The engine's clock minus the last readable `SendingTime`, in ms.
+    ///
+    /// `None` until a message carrying a parseable `52=` has arrived. See the
+    /// field's own note: it is recorded even when the message was refused,
+    /// because that is the case it answers.
+    #[must_use]
+    pub const fn last_skew_ms(&self) -> Option<i64> {
+        self.last_skew_ms
     }
 
     /// The configuration this session was built with.
@@ -1217,10 +1241,17 @@ impl<R: Role, const N: usize> Session<R, N> {
         let target_ok = view
             .get(tag::TARGET_COMP_ID)
             .is_some_and(|v| cfg.inbound_target_matches(v));
-        let time_ok = view
-            .get(tag::SENDING_TIME)
-            .and_then(clock::parse_utc)
-            .is_some_and(|t| t.abs_diff(self.now_ms) <= cfg.max_skew_ms);
+        let stamp = view.get(tag::SENDING_TIME).and_then(clock::parse_utc);
+        // Recorded before the verdict, not after: the refusal is the case this
+        // number exists to explain.
+        if let Some(t) = stamp {
+            self.last_skew_ms = Some(if self.now_ms >= t {
+                i64::try_from(self.now_ms - t).unwrap_or(i64::MAX)
+            } else {
+                i64::try_from(t - self.now_ms).map_or(i64::MIN, i64::wrapping_neg)
+            });
+        }
+        let time_ok = stamp.is_some_and(|t| t.abs_diff(self.now_ms) <= cfg.max_skew_ms);
 
         // Before a Logon there is no session to answer with, so these are all
         // one thing: hang up in silence (`1c`, `1d`). Afterwards each has its
