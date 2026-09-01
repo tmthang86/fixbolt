@@ -96,7 +96,7 @@ Không có dòng code thư viện nào thay đổi. Hai điều vẫn liên quan
 | 1 | Ghi **dự đoán** và ngưỡng quyết định chạy nhánh B, trước khi reboot | — |
 | 2 | ✅ Chủ máy boot vào nhánh A (`mitigations=off`) | 1 |
 | 3 | ✅ Đo: `measure-isolation-cost.sh`, `bench.sh` (không `--strict`), `--jitter` | 2 |
-| 4 | Nếu vượt ngưỡng: chủ máy boot vào nhánh B (`vmscape=off`), đo lại | 3 |
+| 4 | ✅ Nhánh B (`vmscape=off`) — **bác bỏ cơ chế được nêu tên** | 3 |
 | 5 | Chủ máy khôi phục dòng §9; `check-machine.sh` và `bench.sh --strict` phải đọc lại đúng như trước | 3 hoặc 4 |
 | 6 | Viết `measured-costs.md`; §9 và ADR nếu cần; đóng item 22 | 5 |
 
@@ -201,3 +201,71 @@ nhánh gián tiếp của chính nó. **Đó là giả thuyết, không phải p
 `vmscape=off` một mình để lại retpoline bật.
 
 Ngưỡng ghi trước là ≥20 ns; đo được 95. **Nhánh B chạy.**
+
+### Dự đoán cho nhánh B, ghi trước khi chạy
+
+Trạng thái nhánh B, đọc từ `/sys`: `vmscape: Vulnerable`, `spectre_v2: Retpolines; IBPB:
+conditional; STIBP: always-on; RSB filling`, `retbleed: untrained return thunk; SMT disabled`,
+`spec_rstack_overflow: Safe RET`. Chỉ đúng một thứ bị tắt.
+
+Nếu giả thuyết đúng — IBPB là **chi phí cố định mỗi lần ra khỏi kernel**, còn phần dư của
+`recv` là retpoline theo số nhánh gián tiếp của chính nó — thì:
+
+| Đại lượng | Dự đoán |
+|---|---|
+| `getpid` | thu về **~95 ns**, tức về gần **59** ns của nhánh A |
+| `recv` | thu về **cùng ~95 ns tuyệt đối**, tức **~325** ns, **không** phải 157 |
+| `engine turn, 1` | ~354 ns |
+| 13 case user space | không đổi, như nhánh A |
+
+**Cái bác bỏ giả thuyết:** `recv` về thẳng ~157 ns. Khi đó `vmscape` giải thích toàn bộ và
+"retpoline theo số nhánh gián tiếp" là sai — cái chênh giữa `getpid` và `recv` phải tìm lời
+giải khác.
+
+**Cái làm hỏng phép đo:** `user_loop` lệch quá 0.5% so với 1.0577.
+
+**2026-09-01 — nhánh B xong, và nó bác bỏ cơ chế mà item 22 nêu tên từ 2026-08-30.**
+
+`vmscape=off` một mình. `/sys` xác nhận đúng một thứ bị tắt: `vmscape: Vulnerable`, còn
+`spectre_v2: Retpolines; IBPB: conditional; STIBP: always-on; RSB filling`,
+`retbleed: untrained return thunk; SMT disabled`, `spec_rstack_overflow: Safe RET` vẫn bật.
+`user_loop` 1.0577–1.0585, khớp baseline.
+
+| Case | mitigation đầy đủ | `vmscape=off` | đổi |
+|---|---|---|---|
+| `getpid` trần | 154.5 ns | **154.5** | **0.0%** |
+| `recv on a quiet socket` | 420.5 | 418.4 | −0.5% |
+| `engine turn, 1 idle sessions` | 448.9 | 443.8 | −1.1% |
+| `engine turn, 16 idle sessions` | 7333.5 | 7264.4 | −0.9% |
+| `presession sweep, 16 quiet sockets` | 6819.5 | 6767.8 | −0.8% |
+
+**`vmscape` thu về số không.** `getpid` đọc đúng 154.5 ns, không đổi một chữ số.
+
+`STATUS.md` item 22 viết từ 2026-08-30: *"riêng `vmscape` làm một IBPB ở mỗi lần trả về từ
+syscall"*. Câu đó có một cơ chế, có tên, đọc rất hợp lý — **và nó sai**. 61% nằm ở chỗ khác
+trong bộ mitigation.
+
+`[to testing-skills]` — **vặn đúng cái núm được nêu tên và không có gì nhúc nhích là cách rẻ
+nhất để biết cơ chế mình đặt tên là sai.** Repo này đã ghi mặt kia của đồng xu — *một nguyên
+nhân được chấp nhận vì có cái núm nhúc nhích cùng nó*. Đây là mặt còn lại, và nó rẻ hơn: một
+lần boot, một phép đo, và một giả thuyết sống suốt hai ngày bị giết.
+
+### Giả thuyết mới, và dự đoán cho nhánh C — ghi trước khi chạy
+
+Còn lại trên Zen 2, theo thứ tự khả năng: `retbleed` (**untrained return thunk**) và
+`spec_rstack_overflow` (**Safe RET**). Cả hai thêm việc vào **mọi lần return trong kernel**,
+chứ không phải một lần cố định mỗi syscall — và **đó chính là thứ giải thích được cái mà
+"IBPB cố định" không giải thích được**: `recv` chạy nhiều code kernel hơn `getpid`, nên nó
+trả nhiều hơn. Tiết kiệm không đều (95 so với 264) là **bằng chứng ủng hộ họ return-thunk**
+chứ không phải ủng hộ IBPB.
+
+Nhánh C: `retbleed=off spec_rstack_overflow=off`, mọi thứ khác giữ nguyên.
+
+| Đại lượng | Dự đoán |
+|---|---|
+| `getpid` | về gần **59–90 ns**, tức thu về phần lớn của 95 ns |
+| `recv` | thu về **nhiều hơn** `getpid` tính bằng ns tuyệt đối |
+| 13 case user space | không đổi |
+
+**Cái bác bỏ nó:** `getpid` vẫn ~154. Khi đó cái tốn tiền là `spectre_v2` (retpoline / STIBP /
+RSB filling) và phải có nhánh D.
