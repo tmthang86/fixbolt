@@ -9,8 +9,13 @@
 #   case      the case name passed to `Suite::bench`, exactly.
 #   baseline  ns/op, the MEDIAN over `n` whole runs of the suite. Not one run:
 #             the same box gives 267.2-335.7 for `ring, one way`.
-#   margin    what this case is allowed to drift on THIS machine before it counts
-#             as a regression. Smallest step of 1.10 / 1.15 / 1.20 / 1.25 / 1.30 /
+#   margin    what this case is allowed to drift on THIS machine, in BOTH
+#             directions, before somebody has to look. ADR-0031: the comparison
+#             is the band [baseline / margin, baseline * margin]. Over the
+#             ceiling is a regression and is red; under the floor is reported and
+#             counted, and fatal only under `bench.sh --strict` -- because a real
+#             optimisation lands there too, and both causes need the same thing
+#             from a person: re-record this line, or fix the benchmark. Smallest step of 1.10 / 1.15 / 1.20 / 1.25 / 1.30 /
 #             1.35 that is >= the max/median measured over those `n` runs; 1.10 is
 #             the floor. A margin off that ladder, or changed without a new `n`
 #             and date beside it, is a hand-nudge and shows up as one in the diff.

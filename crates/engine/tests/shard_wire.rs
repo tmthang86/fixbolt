@@ -44,7 +44,7 @@ use fixbolt_engine::affinity::{CoreId, ShardPlan, Topology};
 use fixbolt_engine::clock::Clock;
 use fixbolt_engine::dispatch::InlineDispatch;
 use fixbolt_engine::journal::Store;
-use fixbolt_engine::presession::{Limits, PendingSet};
+use fixbolt_engine::presession::{Limits, One, PendingSet, Progress};
 use fixbolt_engine::shard::Shards;
 use fixbolt_engine::transport::TcpTransport;
 use fixbolt_engine::wait::Yield;
@@ -52,8 +52,22 @@ use fixbolt_session::{Application, Config};
 
 const PRE: usize = 4096;
 
+/// The counterparty the acceptance corpus logs on as: `49=TW44` in, `56=ISLD`
+/// in, so this end is `ISLD` and the counterparty is `TW44`.
+///
+/// Before [ADR-0026] the pre-session stage let every identity through and the
+/// session refused the wrong ones. Now the stage asks a [`Registry`] first, so
+/// these tests have to say who this acceptor serves — and it is the same
+/// counterparty the corpus was always logging on as.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+/// [`Registry`]: fixbolt_engine::presession::Registry
+fn cfg() -> Config {
+    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+}
+
 /// How the pre-session stage disposed of every socket, across a whole run:
-/// `[settled, timed_out, not_logon, gone, unrouted]`.
+/// `[settled, timed_out, not_logon, gone, unrouted, unknown]`.
 ///
 /// **Not decoration, and this is the reason.** `1b_DuplicateIdentity.def` and
 /// `AlreadyLoggedOn.def` both expect *no response at all* on the second
@@ -66,7 +80,8 @@ const PRE: usize = 4096;
 /// Static because `run` builds a fresh `ShardWire` per scenario and there is
 /// nowhere else that outlives them; [`alone`] serialises the two tests that
 /// read it.
-static DISPOSAL: [AtomicUsize; 5] = [
+static DISPOSAL: [AtomicUsize; 6] = [
+    AtomicUsize::new(0),
     AtomicUsize::new(0),
     AtomicUsize::new(0),
     AtomicUsize::new(0),
@@ -80,7 +95,7 @@ fn disposal_reset() {
     }
 }
 
-fn disposal_read() -> [usize; 5] {
+fn disposal_read() -> [usize; 6] {
     core::array::from_fn(|i| DISPOSAL[i].load(Ordering::Relaxed))
 }
 const N: usize = 256;
@@ -139,7 +154,7 @@ struct ShardWire {
     /// is under test here** and a deadline that could fire would make this gate
     /// depend on how fast the machine is. `tests/pending.rs` is where the
     /// limits are exercised, with a clock the test moves by hand.
-    pending: PendingSet<TcpTransport, PRE>,
+    pending: PendingSet<TcpTransport, One, PRE>,
 
     clock: Arc<AtomicU64>,
     clients: Vec<(Conn, Option<TcpStream>)>,
@@ -196,7 +211,10 @@ impl ShardWire {
             // and every accept here follows a connect this test just made.
             listener: TcpListener::bind("127.0.0.1:0").expect("a free port"),
             shards,
-            pending: PendingSet::new(Limits::new(64, u64::MAX).expect("both above zero")),
+            pending: PendingSet::new(
+                Limits::new(64, u64::MAX).expect("both above zero"),
+                One::new(cfg()),
+            ),
 
             clock,
             clients: Vec::new(),
@@ -226,11 +244,30 @@ impl ShardWire {
     /// or a route naming a shard that does not exist, drops the connection —
     /// there is no session yet with which to say anything about it.
     fn pump(&mut self) {
-        let p = self.pending.turn(0);
-        DISPOSAL[0].fetch_add(p.settled, Ordering::Relaxed);
-        DISPOSAL[1].fetch_add(p.timed_out, Ordering::Relaxed);
-        DISPOSAL[2].fetch_add(p.not_logon, Ordering::Relaxed);
-        DISPOSAL[3].fetch_add(p.gone, Ordering::Relaxed);
+        // Destructured field by field and **without `..`**, so a new way for
+        // this stage to dispose of a socket breaks the build here rather than
+        // disappearing.
+        //
+        // `[measured 2026-09-01]` that is not a precaution, it is a repair.
+        // ADR-0026's registry added `Progress::unknown`, this function read
+        // four fields and not the fifth, and **two connections vanished with
+        // every assertion below still green** — CI run 33509748294. The comment
+        // at the bottom of this file says a third disappearance would be *"a
+        // new defect wearing the same green"*, and it was right about the shape
+        // and blind to the instance. A counter that has to be remembered is not
+        // a counter.
+        let Progress {
+            settled,
+            timed_out,
+            not_logon,
+            unknown,
+            gone,
+        } = self.pending.turn(0);
+        DISPOSAL[0].fetch_add(settled, Ordering::Relaxed);
+        DISPOSAL[1].fetch_add(timed_out, Ordering::Relaxed);
+        DISPOSAL[2].fetch_add(not_logon, Ordering::Relaxed);
+        DISPOSAL[3].fetch_add(gone, Ordering::Relaxed);
+        DISPOSAL[5].fetch_add(unknown, Ordering::Relaxed);
         while let Some(k) = self.pending.settled() {
             let Some(p) = self.pending.take(k) else { break };
             if self.shards.hand(p).is_err() {
@@ -491,7 +528,7 @@ fn two_shards_pass_all_fifty_nine_because_identity_decides_the_shard() {
     //
     // Pinned rather than relaxed to a range: a THIRD connection disappearing
     // here would be a new defect wearing the same green.
-    let [settled, timed_out, not_logon, gone, unrouted] = disposal_read();
+    let [settled, timed_out, not_logon, gone, unrouted, unknown] = disposal_read();
     assert!(
         settled > 59,
         "every scenario connects at least once: {settled}"
@@ -512,6 +549,18 @@ fn two_shards_pass_all_fifty_nine_because_identity_decides_the_shard() {
         "exactly one: 1d_InvalidLogonLengthInvalid.def, whose 9=40 is a lie the \
          framer takes at its word, leaving a frame that can never be a message \
          — ADR-0022"
+    );
+    // Pinned, `[measured 2026-09-01]` by CI run 33512983304 on Linux with
+    // `--features affinity`. ADR-0026's registry refuses an identity it does not
+    // serve, one stage earlier than the session used to, and these two are the
+    // only Logons in the corpus a one-counterparty registry does not recognise.
+    // ADR-0029 is the amendment that made ADR-0022's count four.
+    assert_eq!(
+        unknown, 2,
+        "exactly two: 1c_InvalidSenderCompID.def (49=WT) and \
+         1c_InvalidTargetCompID.def (56=DLSI), both of whose own comments say the \
+         link must be dropped, and both of which the registry now refuses before \
+         a session exists — ADR-0029"
     );
 
     // Which leaves the two that mattered. `1b_DuplicateIdentity.def` and

@@ -79,8 +79,9 @@ Phase 1 — a FIX 4.4 engine you can actually deploy          ← all current wo
   ├── engine (accept + connect drivers, journal, dispatch, backpressure)  ← done 2026-08-30
   ├── tools/w2w             ← wire-to-wire, on Linux — NEXT, and needs a Linux box
   ├── machine probe + advice ← detect and recommend, never apply (ADR-0025, Proposed)
-  ├── many counterparties   ← a registry: identity -> Config, journal, policy. NOT STARTED,
-  │                            and until it exists this is a link, not an acceptor (item 28)
+  ├── many counterparties   ← DONE 2026-09-01. presession::Registry/Table: identity -> Config.
+  │                            ADR-0026 + ADR-0030. Still missing: a CONFIG FILE (built in
+  │                            code today), and per-counterparty journal/credential/schedule
   ├── session schedules     ← start/end/weekday reset. Named a gap three times, never planned
   ├── operability           ← ordered shutdown · operator snapshot · sequence-number admin ·
   │                            event stream · offline journal reader · health probe (item 30)

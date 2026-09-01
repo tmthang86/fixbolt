@@ -192,6 +192,59 @@ below describe what a first release would contain.
       Allocation: three cases in `benches/alloc.rs`, all 0, and the third proven to go
       red at 7 allocations when the one-time reservation is removed.
 
+  - **`presession`, part four — a counterparty registry, and it is BREAKING.** `Registry`,
+    `Entry`, `Table` and `One` are new; `PendingSet<T, PRE>` becomes
+    `PendingSet<T, R, PRE>` and `PendingSet::new` takes the registry; `Progress` gains
+    `unknown`; `Pending` gains `config()`. On `fixbolt-session`, `Config` gains
+    `serves`, `inbound_sender_matches` and `inbound_target_matches`.
+    [ADR-0026](docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md).
+    - **A trait, not a map.** `lookup(Identity) -> Option<&Entry>`, and `Table` is one
+      implementation of it. `Option` rather than `Result`, so there is nothing to
+      `unwrap`; **synchronous**, so an accept path cannot await a network call, which is
+      where this deliberately parts from Artio's `authenticateAsync`; and returning `None`
+      **is** the authentication hook — there will be no second `AuthStrategy` beside it.
+    - **An empty registry refuses every connection**, and there is no wildcard. An
+      acceptor that admits an identity nobody configured is an open port.
+    - **`Config::serves` is the only comparison.** The registry and the session do not
+      each own a copy — the session's `Logon` check calls the same two predicates
+      `serves` is composed from.
+    - `[measured 2026-09-01]` the refusal for an unknown identity moves one stage
+      earlier, so `1c_InvalidSenderCompID.def` and `1c_InvalidTargetCompID.def` are now
+      scored by the pre-session stage. **The corpus is unmoved: 59 through one shard and
+      through two**, CI run
+      [33512983304](https://github.com/tmthang86/fixbolt/actions/runs/33512983304) —
+      [ADR-0029](docs/decisions/ADR-0029-the-pre-session-stage-enforces-four-definitions.md),
+      which amends ADR-0022's count of two to four.
+    - `[measured 2026-09-01]` 8 tests, two reversals — `lookup` ignoring the identity, and
+      an unknown identity held rather than dropped — each red on the assertion naming it.
+      Allocation: `benches/alloc.rs` still reports 0 for all three pre-session cases with
+      `lookup` on the path.
+  - **`presession`, part five — one engine holds many counterparties, and it is BREAKING.**
+    [ADR-0030](docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md), superseding
+    ADR-0026 decision 5.
+    - **`serve`, `serve_hft` and `serve_sharded_hft` take a `presession::Table` and a
+      `presession::Limits`** instead of a `Config`, and return `ServeError` /
+      `ShardError::NoCounterparties`. **An empty registry is refused at startup**, not at
+      every connection for as long as the process lives.
+    - `Engine::add_with_prefix_and_config`, `Session::config()`,
+      `Config::same_identity_as`, `Table::first()` are new. `Shardable::add` gains the
+      `Config`. `Engine::new`'s `Config` is now only the default for `Engine::add`.
+    - **The single-logon rule compares identities.** It counted logged-on connections,
+      which was the same answer only while an engine held one identity.
+      `1b_DuplicateIdentity.def`'s own comment is the specification: *"If two logons with
+      the same SenderCompID/TargetCompID combination logon the second one must be
+      disconnected."*
+    - **`Identity` gains `sender_sub` (`50=`) and `target_sub` (`57=`)**, and
+      `Identity::comp_ids` builds one without them. `HashRoute` ignores them on purpose:
+      two connections from one counterparty that differ in `50=` must still land on one
+      shard. `Table` ignores them too — a deployment told apart by sub-ID writes its own
+      `Registry`, which is what the trait is for.
+    - `[measured 2026-09-01]` a new test puts two counterparties on one engine and a
+      duplicate of one behind them. Reverting the rule to a count makes it red; **deleting
+      the rule entirely also makes it red, while the corpus alone would not notice** —
+      `tests/wire.rs` catches deletion and only this test catches the failure to compare.
+
+
   - **`presession`, part three, and it is a BREAKING change to `shard`.** `Assign`,
     `RoundRobin` and `Shards::with_assign` are **removed**, replaced by `Route`,
     `HashRoute` and `Shards::with_route`; `ShardError::BadAssignment` becomes `BadRoute`

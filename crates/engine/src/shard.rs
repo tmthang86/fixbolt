@@ -56,10 +56,17 @@ pub trait Shardable: Send {
     /// Take ownership of a connection this shard has been given, with the
     /// bytes the pre-session stage already read off it.
     ///
+    /// `cfg` is the configuration the pre-session stage's registry chose for
+    /// this counterparty — [ADR-0030]. It is **not** the engine's own: one shard
+    /// engine holds as many counterparties as reach it.
+    ///
     /// `false` if those bytes do not fit the engine's receive buffer, in which
     /// case the connection is dropped rather than served with part of its first
     /// message missing. A caller keeps `PRE <= RX` and this never happens.
-    fn add(&mut self, transport: TcpTransport, prefix: &[u8]) -> bool;
+    ///
+    /// [ADR-0030]: ../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md
+    fn add(&mut self, transport: TcpTransport, cfg: fixbolt_session::Config, prefix: &[u8])
+    -> bool;
     /// One non-blocking pass. `true` if anything moved.
     fn turn(&mut self) -> bool;
     /// Nothing moved. Whatever this shard's mode does about that.
@@ -81,8 +88,13 @@ where
     // something an accept loop can supply.
     J: SessionJournal + Default,
 {
-    fn add(&mut self, transport: TcpTransport, prefix: &[u8]) -> bool {
-        crate::Engine::add_with_prefix(self, transport, prefix).is_ok()
+    fn add(
+        &mut self,
+        transport: TcpTransport,
+        cfg: fixbolt_session::Config,
+        prefix: &[u8],
+    ) -> bool {
+        crate::Engine::add_with_prefix_and_config(self, transport, cfg, prefix).is_ok()
     }
     fn turn(&mut self) -> bool {
         crate::Engine::turn(self)
@@ -115,6 +127,14 @@ pub enum ShardError {
     BadRoute { shard: usize, of: usize },
     /// The first message named no identity, so there is nothing to route by.
     NoIdentity,
+    /// The registry serves no counterparty, so every shard would refuse every
+    /// connection for as long as the process lived.
+    ///
+    /// The same refusal [`crate::ServeError::NoCounterparties`] makes, for the
+    /// same reason: an empty registry is a valid one
+    /// ([ADR-0026](../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md)
+    /// decision 6) and a *serving loop* built on one is a configuration mistake.
+    NoCounterparties,
 }
 
 impl core::fmt::Display for ShardError {
@@ -127,6 +147,10 @@ impl core::fmt::Display for ShardError {
                 write!(f, "route chose shard {shard} of {of}")
             }
             Self::NoIdentity => write!(f, "the first message named no identity"),
+            Self::NoCounterparties => write!(
+                f,
+                "the registry serves no counterparty, so every shard would refuse every connection"
+            ),
         }
     }
 }
@@ -249,8 +273,14 @@ impl<const PRE: usize> Shards<PRE> {
                                 Ok(p) => {
                                     // The array moves; nothing is allocated to
                                     // carry a connection across the channel.
+                                    // A `Pending` that reached a shard has
+                                    // settled, so the registry has already
+                                    // chosen its configuration. `None` here
+                                    // cannot happen and drops the socket rather
+                                    // than inventing an identity for it.
+                                    let Some(cfg) = p.config() else { continue };
                                     let (t, buf, len) = p.into_parts();
-                                    let _ = engine.add(t, buf.get(..len).unwrap_or(&[]));
+                                    let _ = engine.add(t, cfg, buf.get(..len).unwrap_or(&[]));
                                     moved = true;
                                 }
                                 Err(TryRecvError::Empty) => break,
@@ -407,7 +437,7 @@ impl<const PRE: usize> Shards<PRE> {
 #[cfg(feature = "standard")]
 pub fn serve_sharded_hft<A, F>(
     addr: &str,
-    cfg: fixbolt_session::Config,
+    table: crate::presession::Table,
     plan: &ShardPlan,
     capacity: usize,
     limits: crate::presession::Limits,
@@ -420,6 +450,18 @@ where
     use crate::clock::{Clock, SystemClock};
     use crate::presession::PendingSet;
     use crate::transport::Interest;
+
+    // The engine's own `Config` is the default for `Engine::add`, which this
+    // loop never calls: every connection arrives from the pre-session stage
+    // carrying the one the registry chose ([ADR-0030]). An empty table has none,
+    // and an acceptor that would refuse every connection forever is refused here
+    // instead.
+    //
+    // [ADR-0030]: ../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md
+    let cfg = table
+        .first()
+        .map(crate::presession::Entry::config)
+        .ok_or(ShardError::NoCounterparties)?;
 
     // The pre-session buffer matches `TcpAcceptorEngine`'s RX, so a prefix can
     // never be too long for the connection it is handed to.
@@ -436,7 +478,8 @@ where
         )
     })?;
 
-    let mut set: PendingSet<crate::transport::TcpTransport, PRE> = PendingSet::new(limits);
+    let mut set: PendingSet<crate::transport::TcpTransport, crate::presession::Table, PRE> =
+        PendingSet::new(limits, table);
     let mut poller = crate::poll::Poller::with_capacity(limits.pending() + 1);
     let mut interests: Vec<Interest> = Vec::with_capacity(limits.pending() + 1);
     let mut clock = SystemClock;

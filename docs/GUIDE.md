@@ -97,6 +97,63 @@ Full working: [reference/measured-costs.md](reference/measured-costs.md).
 
 ---
 
+## 1a0. Many counterparties: one registry, and nothing has a default
+
+`[2026-09-01]` **This acceptor used to serve exactly one counterparty**, because every entry
+point took one `Config` and a `Config` pins one `TargetCompID`. It takes a
+**`presession::Table`** now — one entry per counterparty — and a socket is held until its
+`Logon` says who it is
+([ADR-0026](decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md),
+[ADR-0030](decisions/ADR-0030-one-engine-holds-many-counterparties.md)).
+
+```rust
+use fixbolt_engine::presession::{Limits, Table};
+use fixbolt_session::Config;
+
+let table = Table::with_capacity(2)
+    .serving(Config::acceptor(b"FIX.4.4", b"US", b"ALPHA"))
+    .serving(Config::acceptor(b"FIX.4.4", b"US", b"BETA"));
+
+fixbolt_engine::serve(
+    "0.0.0.0:9876",
+    table,
+    MyApp::default(),
+    64,                                    // connection capacity
+    Limits::new(64, 30_000).expect("neither is zero"),
+)?;
+```
+
+**Three things about this that are decisions, not defaults.**
+
+| | |
+|---|---|
+| **An empty table refuses every connection** | And `serve` refuses to start on one — `ServeError::NoCounterparties`. There is no wildcard entry and none is planned: an acceptor that admits an identity nobody configured is an open port, which is exactly what QuickFIX/J's `ANY_SESSION` template is |
+| **A refused identity is told nothing** | The socket closes with no `Logout` and no `Reject`, which is what `1c_InvalidSenderCompID.def` and `1c_InvalidTargetCompID.def` expect. It is indistinguishable from a wrong password on purpose |
+| **The refusal *is* the authentication hook** | There is no separate `AuthStrategy`. When a credential check on `553`/`554` arrives it goes in the `Entry`, behind the same `lookup` — two hooks answering *"may this counterparty in"* are two rules that will disagree |
+
+**`Table` keys on the comp IDs, and that is one implementation of a trait.**
+`Registry::lookup(Identity) -> Option<&Entry>` is the seam. If your counterparties are told
+apart by `50=`/`57=`, or live in a file, or in a snapshot of a database, write your own — it
+is about eight lines, and `crates/engine/tests/registry.rs` has a worked one. Two rules for
+whatever you write:
+
+- **It must not allocate.** `lookup` is on the connection path and `benches/alloc.rs` asserts
+  the whole pre-session stage is zero. Borrow from what your registry already owns.
+- **It must answer immediately.** It runs on the acceptor thread. A remote entitlements
+  service is a denial-of-service surface no logon deadline closes; snapshot it out of band.
+  This is where the design deliberately parts from Artio's `authenticateAsync`.
+
+**One engine holds all of them.** The registry decides which *configuration* a connection
+gets, not which engine — and *"this identity is already logged on"* is answered by comparing
+identities, not by counting connections
+([ADR-0030](decisions/ADR-0030-one-engine-holds-many-counterparties.md)). Two counterparties
+on one engine are two sessions; two connections claiming one counterparty are one session and
+a disconnect.
+
+**What is still missing, and you will notice:** there is **no configuration file**. A `Table`
+is built in code. There is also no per-counterparty journal, schedule or credential yet —
+`Entry` is the place they go and today it holds a `Config` and nothing else.
+
 ## 1a. Running many sessions: shard across threads, do not stack on one
 
 A gateway with a hundred sessions on a sixteen-core server is a perfectly good deployment, and
@@ -159,7 +216,9 @@ flat `Vec<Connection>`, `turn()` sweeps all of them and `run()` is `loop { turn(
 `Engine` is one shard. The pieces are separate on purpose:
 
 - `Acceptor::bind(addr)` / `accept() -> Option<TcpTransport>` — one listener
-- `Engine::add(transport) -> ConnId` — hand a socket to whichever engine owns that shard
+- `Engine::add(transport) -> ConnId` — the engine's own `Config`, for a link with one
+  counterparty. For an acceptor, `Engine::add_with_prefix_and_config(transport, cfg, prefix)`:
+  the configuration the registry chose, and the bytes the pre-session stage already read
 - one `Engine` per thread, each pinned to its own core, each running `turn()` in its own loop
 
 **If you do compose them yourself, you inherit the defect `serve_sharded_hft` was changed to

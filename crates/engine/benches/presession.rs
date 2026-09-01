@@ -32,8 +32,17 @@ mod harness;
 use std::hint::black_box;
 use std::net::{TcpListener, TcpStream};
 
-use fixbolt_engine::presession::{HashRoute, Limits, PendingSet, Route, identity_of, is_logon};
+use fixbolt_engine::presession::{
+    HashRoute, Limits, One, PendingSet, Registry, Route, Table, identity_of, is_logon,
+};
 use fixbolt_engine::transport::TcpTransport;
+use fixbolt_session::Config;
+
+/// The counterparty the acceptance corpus logs on as. The registry the sweep
+/// runs in front of serves exactly it — ADR-0026.
+fn cfg() -> Config {
+    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+}
 
 const PRE: usize = 4096;
 
@@ -54,10 +63,13 @@ fn a_logon() -> Vec<u8> {
 /// The client ends are leaked deliberately: closing one would make the next
 /// sweep see end-of-stream and drop it, and the bench would measure a table
 /// emptying itself.
-fn set_with(n: usize) -> PendingSet<TcpTransport, PRE> {
+fn set_with(n: usize) -> PendingSet<TcpTransport, One, PRE> {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
     let addr = listener.local_addr().expect("bound");
-    let mut set = PendingSet::new(Limits::new(n.max(1), u64::MAX).expect("both above zero"));
+    let mut set = PendingSet::new(
+        Limits::new(n.max(1), u64::MAX).expect("both above zero"),
+        One::new(cfg()),
+    );
     for _ in 0..n {
         let client = TcpStream::connect(addr).expect("connect");
         let (server, _) = listener.accept().expect("accept");
@@ -85,6 +97,33 @@ fn main() {
             b.bench(&format!("presession sweep, {n} quiet sockets"), || {
                 black_box(set.turn(black_box(0)));
             });
+        }
+
+        // What a `Registry` lookup costs, beside the sweep it sits next to.
+        // ADR-0026's Consequences: "a registry lookup must be measured against
+        // that, not assumed cheap". Two sizes, because `Table` scans linearly
+        // and a one-entry table finds its answer first every time — the shape
+        // that cannot show a cost.
+        {
+            let wire = a_logon();
+            let id = identity_of(&wire).expect("the corpus Logon names both sides");
+            for n in [1usize, 40] {
+                let mut table = Table::with_capacity(n);
+                // The served entry goes LAST, so the scan runs its whole length.
+                // Putting it first would measure a table of one however large it
+                // was.
+                for i in 0..n.saturating_sub(1) {
+                    let mut them = *b"CP000";
+                    them[3] = b'0' + u8::try_from(i / 10).unwrap_or(0);
+                    them[4] = b'0' + u8::try_from(i % 10).unwrap_or(0);
+                    table = table.serving(Config::acceptor(b"FIX.4.4", b"ISLD", &them));
+                }
+                table = table.serving(cfg());
+                assert!(table.lookup(id).is_some(), "the last entry is found");
+                b.bench(&format!("presession, registry lookup of {n}"), || {
+                    black_box(table.lookup(black_box(id)).is_some());
+                });
+            }
         }
 
         // The whole per-connection decision, with no socket in it: read both

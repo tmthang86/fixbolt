@@ -23,9 +23,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use fixbolt_engine::affinity::{AffinityError, CoreId, ShardPlan, Topology};
-use fixbolt_engine::presession::{Identity, Limits, Pending, PendingSet};
+use fixbolt_engine::presession::{Identity, Limits, One, Pending, PendingSet};
 use fixbolt_engine::shard::{Route, ShardError, Shardable, Shards};
 use fixbolt_engine::transport::TcpTransport;
+use fixbolt_session::Config;
 
 /// What this machine can host.
 ///
@@ -111,8 +112,14 @@ struct Counter {
 }
 
 impl Shardable for Counter {
-    fn add(&mut self, transport: TcpTransport, prefix: &[u8]) -> bool {
+    fn add(&mut self, transport: TcpTransport, cfg: Config, prefix: &[u8]) -> bool {
         assert!(!prefix.is_empty(), "a routed connection carries its Logon");
+        // The registry chose it before the connection was handed over — a shard
+        // never guesses whose socket it has (ADR-0030).
+        assert!(
+            cfg.serves(b"TW44", b"ISLD"),
+            "the configuration travels with the connection"
+        );
         self.held.push(transport);
         self.added.fetch_add(1, Ordering::Release);
         true
@@ -157,6 +164,20 @@ fn logon_from(sender: &str) -> Vec<u8> {
 /// A connection that has already said who it is, the way the acceptor loop
 /// hands one over.
 ///
+/// The counterparty the acceptance corpus logs on as: `49=TW44` in, `56=ISLD`
+/// in, so this end is `ISLD` and the counterparty is `TW44`.
+///
+/// Before [ADR-0026] the pre-session stage let every identity through and the
+/// session refused the wrong ones. Now the stage asks a [`Registry`] first, so
+/// these tests have to say who this acceptor serves — and it is the same
+/// counterparty the corpus was always logging on as.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+/// [`Registry`]: fixbolt_engine::presession::Registry
+fn cfg() -> Config {
+    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+}
+
 /// It goes through a real `PendingSet` rather than being built by hand: the
 /// only way to make a `Pending` is to have read a whole `Logon` off a socket,
 /// and a test that could shortcut that would be testing a different thing.
@@ -171,8 +192,10 @@ fn a_connection_from(listener: &TcpListener, sender: &str) -> Pending<TcpTranspo
     // Leak the client end: these tests care about where a connection lands.
     core::mem::forget(client);
 
-    let mut set: PendingSet<TcpTransport, PRE> =
-        PendingSet::new(Limits::new(1, 30_000).expect("both above zero"));
+    let mut set: PendingSet<TcpTransport, One, PRE> = PendingSet::new(
+        Limits::new(1, 30_000).expect("both above zero"),
+        One::new(cfg()),
+    );
     let t = TcpTransport::new(sock).expect("non-blocking");
     assert!(set.admit(t, 0).is_ok(), "room for one");
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -414,7 +437,7 @@ fn dropping_the_runtime_ends_every_thread() {
 fn the_route_is_written_down_and_not_merely_deterministic_today() {
     use fixbolt_engine::shard::HashRoute;
     fn at(sender: &[u8], target: &[u8], shards: usize) -> usize {
-        HashRoute.shard_for(Identity { sender, target }, shards)
+        HashRoute.shard_for(Identity::comp_ids(sender, target), shards)
     }
 
     assert_eq!(at(b"TW44", b"ISLD", 2), PINNED[0]);

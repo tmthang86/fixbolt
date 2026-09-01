@@ -40,13 +40,27 @@ use fixbolt_conformance::script::{Kind, load_all};
 use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::InlineDispatch;
 use fixbolt_engine::journal::Store;
-use fixbolt_engine::presession::{LimitError, Limits, PendingSet, Refused, is_logon};
+use fixbolt_engine::presession::{LimitError, Limits, One, PendingSet, Refused, is_logon};
 use fixbolt_engine::transport::{Io, Loopback, TcpTransport, Transport};
 use fixbolt_engine::wait::Yield;
 use fixbolt_engine::{Application, Config, Engine};
 
 const PRE: usize = 1024;
 const T0: u64 = 1_000_000;
+
+/// The counterparty the acceptance corpus logs on as: `49=TW44` in, `56=ISLD`
+/// in, so this end is `ISLD` and the counterparty is `TW44`.
+///
+/// Before [ADR-0026] the pre-session stage let every identity through and the
+/// session refused the wrong ones. Now the stage asks a [`Registry`] first, so
+/// these tests have to say who this acceptor serves — and it is the same
+/// counterparty the corpus was always logging on as.
+///
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+/// [`Registry`]: fixbolt_engine::presession::Registry
+fn cfg() -> Config {
+    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+}
 
 /// A real `Logon` from the acceptance corpus.
 fn a_logon() -> Vec<u8> {
@@ -90,7 +104,8 @@ fn neither_limit_has_a_default_and_zero_is_refused() {
 
 #[test]
 fn a_full_table_refuses_the_next_connection_immediately() {
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(2, 30_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(2, 30_000), One::new(cfg()));
     let mut ends = Vec::new();
     for _ in 0..2 {
         let (near, far) = Loopback::pair();
@@ -118,7 +133,8 @@ fn a_full_table_refuses_the_next_connection_immediately() {
 
 #[test]
 fn a_connection_that_never_says_anything_is_dropped_at_the_deadline() {
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 30_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 30_000), One::new(cfg()));
     let (near, far) = Loopback::pair();
     assert!(matches!(set.admit(near, T0), Ok(())), "room");
 
@@ -137,7 +153,8 @@ fn a_connection_that_never_says_anything_is_dropped_at_the_deadline() {
 
 #[test]
 fn the_deadline_belongs_to_the_connection_not_to_the_set() {
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 1_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 1_000), One::new(cfg()));
     let (early, _e) = Loopback::pair();
     assert!(matches!(set.admit(early, T0), Ok(())), "room");
     let (late, _l) = Loopback::pair();
@@ -156,7 +173,8 @@ fn the_deadline_belongs_to_the_connection_not_to_the_set() {
 #[test]
 fn a_logon_settles_and_the_bytes_come_with_it() {
     let wire = a_logon();
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 30_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 30_000), One::new(cfg()));
     let (near, mut far) = Loopback::pair();
     assert!(matches!(set.admit(near, T0), Ok(())), "room");
     assert_eq!(far.send(&wire), Io::Ready(wire.len()));
@@ -196,7 +214,8 @@ fn whatever_arrives_behind_the_logon_is_handed_on_with_it() {
     let mut both = logon.clone();
     both.extend_from_slice(&behind);
 
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 30_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 30_000), One::new(cfg()));
     let (near, mut far) = Loopback::pair();
     assert!(matches!(set.admit(near, T0), Ok(())), "room");
     assert_eq!(far.send(&both), Io::Ready(both.len()));
@@ -227,7 +246,8 @@ fn whatever_arrives_behind_the_logon_is_handed_on_with_it() {
 #[test]
 fn a_logon_that_arrives_in_pieces_still_settles() {
     let wire = a_logon();
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 30_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 30_000), One::new(cfg()));
     let (near, mut far) = Loopback::pair();
     assert!(matches!(set.admit(near, T0), Ok(())), "room");
 
@@ -253,7 +273,8 @@ fn a_logon_that_arrives_in_pieces_still_settles() {
 #[test]
 fn a_first_message_that_is_not_a_logon_is_dropped_in_silence() {
     let wire = not_a_logon();
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 30_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 30_000), One::new(cfg()));
     let (near, mut far) = Loopback::pair();
     assert!(matches!(set.admit(near, T0), Ok(())), "room");
     assert_eq!(far.send(&wire), Io::Ready(wire.len()));
@@ -273,7 +294,8 @@ fn a_first_message_that_is_not_a_logon_is_dropped_in_silence() {
 
 #[test]
 fn a_peer_that_hangs_up_before_saying_anything_is_dropped() {
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 30_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 30_000), One::new(cfg()));
     let (near, mut far) = Loopback::pair();
     assert!(matches!(set.admit(near, T0), Ok(())), "room");
     far.close();
@@ -286,7 +308,8 @@ fn a_peer_that_hangs_up_before_saying_anything_is_dropped() {
 
 #[test]
 fn a_frame_that_can_never_be_a_message_is_dropped() {
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 30_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 30_000), One::new(cfg()));
     let (near, mut far) = Loopback::pair();
     assert!(matches!(set.admit(near, T0), Ok(())), "room");
     // A body length that is not a number: Framer calls this Garbage, and this
@@ -303,7 +326,8 @@ fn a_frame_that_can_never_be_a_message_is_dropped() {
 
 #[test]
 fn a_slot_freed_by_a_timeout_is_usable_again() {
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(1, 1_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(1, 1_000), One::new(cfg()));
     let (a, _a) = Loopback::pair();
     assert!(matches!(set.admit(a, T0), Ok(())), "room");
     let (b, _b) = Loopback::pair();
@@ -332,7 +356,8 @@ fn a_refused_connection_sees_eof_on_a_real_socket() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
     let addr = listener.local_addr().expect("bound");
 
-    let mut set: PendingSet<TcpTransport, PRE> = PendingSet::new(limits(1, 30_000));
+    let mut set: PendingSet<TcpTransport, One, PRE> =
+        PendingSet::new(limits(1, 30_000), One::new(cfg()));
 
     // One in, filling the table.
     let _first_peer = TcpStream::connect(addr).expect("connect");
@@ -426,7 +451,8 @@ fn heard(far: &mut Loopback) -> String {
 #[test]
 fn a_session_primed_with_a_logon_answers_it() {
     let wire = a_logon();
-    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 30_000));
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 30_000), One::new(cfg()));
     let (near, mut far) = Loopback::pair();
     assert!(matches!(set.admit(near, T0), Ok(())), "room");
     assert_eq!(far.send(&wire), Io::Ready(wire.len()));

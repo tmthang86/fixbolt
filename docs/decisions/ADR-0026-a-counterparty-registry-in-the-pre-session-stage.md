@@ -1,6 +1,18 @@
 # ADR-0026 — The counterparty registry lives in the pre-session stage, and identity is pluggable
 
-> **Status:** **Accepted — 2026-09-01.** Answers `PRD.md` open decision 8. Closes nothing on its
+> **Status:** **Accepted — 2026-09-01.** Answers `PRD.md` open decision 8.
+>
+> **Decision 5 is superseded by
+> [ADR-0030](ADR-0030-one-engine-holds-many-counterparties.md) — an engine holds many
+> counterparties, and the single-logon rule compares identities rather than counting
+> connections.** Decisions 1–4 and 6 stand: the registry is a trait in `presession`,
+> `lookup` is synchronous, refusing is authenticating, and an empty registry refuses
+> everything. **The prior-art table below is what overturned decision 5** — none of the
+> three engines surveyed builds one engine per counterparty, and this ADR did not read its
+> own table for that question.
+>
+> Decision 5 also had no implementation: an entry point must build its engine before any
+> connection arrives, and a `Registry` trait yields no `Config` to build it with. Closes nothing on its
 > own: `STATUS.md` open item 28 is the work, and this is the decision it was waiting on.
 >
 > **Decided by the owner, explicitly, on 2026-09-01** — *"tham khảo các engine khác rồi chốt các

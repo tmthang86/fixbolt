@@ -33,9 +33,19 @@
 //!
 //! | Outcome | Printed | `finish` |
 //! |---|---|---|
-//! | baseline found, under `baseline * margin` | the figure and the limit | green |
-//! | baseline found, over | `OVER BASELINE` | **red** |
+//! | baseline found, inside the band | the figure and both limits | green |
+//! | baseline found, over `baseline * margin` | `OVER BASELINE` | **red** |
+//! | baseline found, under `baseline / margin` | `UNDER BASELINE` | **not red**, counted |
 //! | **no baseline for this CPU** | `NO BASELINE`, plus the line to paste | **not red** |
+//!
+//! **The floor is not decoration.** `[measured 2026-09-01]` `inline deliver +
+//! reply` published 1.3 ns for a day while doing 8.5 ns of work, because the
+//! optimiser deleted a copy nobody read — and a ceiling passes that forever,
+//! more comfortably every day. `UNDER BASELINE` is reported rather than failed
+//! because a real optimisation lands there too, and both causes need the same
+//! thing from a person: re-record, or fix the benchmark. `scripts/bench.sh
+//! --strict` is where it becomes fatal. `STATUS.md` open item 25, and see
+//! `verdict.rs` for the whole argument.
 //!
 //! The third outcome is how every case on an unknown machine could go quietly
 //! green, so it is guarded three ways: it prints as its own state rather than as
@@ -59,6 +69,12 @@
 
 use std::hint::black_box;
 use std::time::Instant;
+
+// The comparison rule, on its own so that `crates/codec/tests/bench_verdict.rs`
+// can test it: a `harness = false` bench target is a `main()` that `cargo test`
+// never runs, so this was the one piece of logic in the repository deciding
+// every timing gate with nothing testing it. One source, two consumers.
+include!("verdict.rs");
 
 /// The recorded baselines, compiled in rather than read at runtime: a missing
 /// file is then a build failure and not a silently unchecked run.
@@ -145,6 +161,7 @@ pub fn suite<F: FnOnce(&mut Suite)>(f: F) {
     let mut suite = Suite {
         cpu,
         over: Vec::new(),
+        under: Vec::new(),
         missing: Vec::new(),
         cases: 0,
     };
@@ -156,6 +173,10 @@ pub fn suite<F: FnOnce(&mut Suite)>(f: F) {
 pub struct Suite {
     cpu: Option<String>,
     over: Vec<String>,
+    /// Cases below `baseline / margin`. **Not merged into `over`**: `finish`
+    /// asserts on that one, and a real optimisation lands here too — see
+    /// `verdict.rs`. Counted, printed, and made fatal by `bench.sh --strict`.
+    under: Vec<String>,
     missing: Vec<String>,
     cases: usize,
 }
@@ -185,19 +206,36 @@ impl Suite {
 
         match baseline {
             Some(b) => {
-                let limit = b.ns * b.margin;
-                let over = best > limit;
-                let mark = if over { "  OVER BASELINE" } else { "" };
+                let ceiling = b.ns * b.margin;
+                let floor = b.ns / b.margin;
+                let v = verdict(best, b.ns, b.margin);
+                let mark = match v {
+                    Verdict::InBand => "",
+                    Verdict::Over => "  OVER BASELINE",
+                    Verdict::Under => "  UNDER BASELINE",
+                };
                 println!(
-                    "{name:<34} {best:>8.1} ns/op   baseline {:.1} x{:.2} = {limit:.1}{mark}",
+                    "{name:<34} {best:>8.1} ns/op   baseline {:.1} x{:.2} = \
+                     [{floor:.1}, {ceiling:.1}]{mark}",
                     b.ns, b.margin
                 );
-                if over {
-                    self.over.push(format!(
-                        "{name}: {best:.1} ns/op exceeds {limit:.1} ns \
+                match v {
+                    Verdict::InBand => {}
+                    Verdict::Over => self.over.push(format!(
+                        "{name}: {best:.1} ns/op exceeds {ceiling:.1} ns \
                          (baseline {:.1} x {:.2})",
                         b.ns, b.margin
-                    ));
+                    )),
+                    // Not pushed into `over`: `finish` asserts on that, and a
+                    // genuine speed-up must not break the build before it can
+                    // be merged. Counted, printed, and fatal only under
+                    // `bench.sh --strict`.
+                    Verdict::Under => self.under.push(format!(
+                        "{name}: {best:.1} ns/op is below {floor:.1} ns \
+                         (baseline {:.1} / {:.2}) — re-record the baseline, or \
+                         the benchmark stopped measuring",
+                        b.ns, b.margin
+                    )),
                 }
             }
             None => {
@@ -230,6 +268,17 @@ impl Suite {
                 "cases without a baseline: {}  {}",
                 self.missing.len(),
                 self.missing.join(", ")
+            );
+        }
+
+        // Its own grep-able line, for the same reason as the one above: "not
+        // red" must never be allowed to read as "green". `scripts/bench.sh`
+        // reads this and `--strict` makes it fatal.
+        if !self.under.is_empty() {
+            println!(
+                "cases under their baseline: {}  {}",
+                self.under.len(),
+                self.under.join(" | ")
             );
         }
 
