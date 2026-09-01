@@ -799,7 +799,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 |---|---|---|
 | Parse `NewOrderSingle` | **no regression past this machine's baseline** (ADR-0016). `[measured 2026-08-31]` §9 desktop: **122.6 ns** validated, **117.0 ns** raw, **57.3 ns** `Heartbeat`, medians of 24 qualifying runs | `benches/parse.rs`, against `benches/baselines.tsv` |
 | Serialise `ExecutionReport` (template, D9) | **no regression past this machine's baseline** (ADR-0016). `[measured 2026-08-31]` §9 desktop **239.1 ns**, median of 24 qualifying runs. **The 60 ns absolute target is withdrawn** — it was never a measurement of this engine, only of what the fastest commercial engines are reported to reach (§4 D9), and no machine ever came close: 93.8 (M5) · 177.6–199.4 (container) · 239.1 (§9 desktop) | `benches/serialize.rs`, against `benches/baselines.tsv` |
-| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is, per machine (ADR-0016). `[measured 2026-08-31]` §9 desktop: inline **1.3 ns**, ring **267.4 ns** one way and **515.7 ns** round trip, on a 163-byte `NewOrderSingle`, medians of 24 qualifying runs — **the ring hop is ~206x the inline call**, and ~1.7 ns of every byte of it is the `AtomicU8` copy ([ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)). **The inline figure fell from 6.3 to 1.3 ns when the harness lost one function parameter**, so ~5 ns of the previous reading was the instrument; see [reference/measured-costs.md](reference/measured-costs.md) | `crates/engine/benches/dispatch.rs`, against `benches/baselines.tsv` |
+| `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is, per machine (ADR-0016). `[measured 2026-09-01]` §9 desktop: inline **8.5 ns** (median of 22 qualifying runs), ring **267.4 ns** one way and **515.7 ns** round trip (24 runs), on a 163-byte `NewOrderSingle` — **the ring hop is ~31x the inline call**, and ~1.7 ns of every byte of it is the `AtomicU8` copy ([ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)). **The inline figure was published as 1.3 ns for a day and that number was the optimiser deleting the 163-byte copy** — `out` was written every iteration and read by nobody. 163 bytes in 1.3 ns is 125 GB/s from one core, which is the arithmetic that found it; the earlier reading of 6.3 ns was the honest one all along, and the harness change that "sped it up" had removed the indirect call that was keeping the stores alive. [a-benchmark-can-delete-its-own-work.md](reference/a-benchmark-can-delete-its-own-work.md) | `crates/engine/benches/dispatch.rs`, against `benches/baselines.tsv` |
 | Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
 | Allocations on the hot path — session | **0**, counted separately on thirteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
@@ -878,7 +878,7 @@ ceiling somebody switches off.
 | walk 4 levels, 61-tag member list | 352.9 ns | 1.10 |
 | `group_members` contains, 61 tags | 9.7 ns | 1.10 |
 | encode 1 group, 2 entries | 108.4 ns | 1.10 |
-| inline deliver + reply | 1.3 ns | 1.10 |
+| inline deliver + reply | 8.5 ns | 1.10 |
 | ring, one way | 267.4 ns | 1.30 |
 | ring, round trip | 515.7 ns | 1.20 |
 | recv on a quiet socket | 420.5 ns | 1.10 |
@@ -1006,7 +1006,7 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | Wakeup — **`hft`** busy-polls | `[measured 2026-08-31]` **`Engine::turn` itself: ~449 ns × N**, N = sockets on the thread, **and a core is burned**. The 2026-08-30 figure of 703 ns was a C program's bare `read` on a `nohz_full` core; matched for placement the two agree to 4%. **`nohz_full` — and only `nohz_full`, not `isolcpus` or `rcu_nocbs` — adds ~200 ns to every kernel entry on the core that has it and ~45 ns on every core that does not, taking this row to ~670 ns**, which is why §9 no longer asks for it ([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md), [measured-costs.md](reference/measured-costs.md)) | **This design**, D8, `benches/turn.rs` |
 | Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.6 ns) | This design |
 | Session machine (D1) | ~0.1 µs | This design |
-| Dispatch — inline **vs** ring (D4) | `[measured 2026-08-31]` **0.0013 µs** inline **vs** **0.27 µs** ring one way (§9 desktop) | Application's choice |
+| Dispatch — inline **vs** ring (D4) | `[measured 2026-09-01]` **0.0085 µs** inline **vs** **0.27 µs** ring one way (§9 desktop) — **was published as 0.0013 µs until the benchmark was found to be deleting a 163-byte copy** ([a-benchmark-can-delete-its-own-work.md](reference/a-benchmark-can-delete-its-own-work.md)); D4 is unaffected, 31× is still an enormous gap | Application's choice |
 | Serialise — template (D9) | `[measured 2026-08-31]` **0.24 µs** (§9 desktop, 239.1 ns) — **was ~0.05 µs from the literature; see below** | This design |
 | `send` syscall → NIC | 3–10 µs | Kernel |
 | **Floor** | **~10–20 µs** | Kernel |
@@ -1045,7 +1045,7 @@ recomputed from the measured rows rather than the borrowed ones.
 
 **What this does to the bottom line: nothing that matters, and that is the point.** The
 user-space rows total **~0.46 µs** at N = 1 with the inline dispatcher — parse 0.123 + session
-~0.1 + dispatch 0.0013 + serialise 0.239 — against a kernel floor of **10–20 µs**. So serialise
+~0.1 + dispatch 0.0085 + serialise 0.239 — against a kernel floor of **10–20 µs**. So serialise
 costing 239 ns rather than 60 ns moves the wire-to-wire figure by under **2%** of the floor,
 which is why §6 was able to withdraw the target without the design changing. **The ring
 dispatcher is the row worth reading**: at 0.27 µs one way it is more than parse and serialise

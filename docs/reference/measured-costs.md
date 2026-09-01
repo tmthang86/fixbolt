@@ -1513,6 +1513,14 @@ than a figure to be quoted. Here the prediction was −36 ns and the measurement
 
 ## The instrument was 80% of its own smallest reading — 2026-08-31
 
+> **`[corrected 2026-09-01]` THIS SECTION'S CONCLUSION IS WRONG.** The 1.3 ns was the
+> optimiser deleting a 163-byte copy, not a faster instrument, and the doubling test below
+> passes either way because doubling the calls doubles whatever fraction survives. The old
+> harness was **preventing** the elision, not adding overhead. Kept unedited because the
+> reasoning is the point —
+> [a-benchmark-can-delete-its-own-work.md](a-benchmark-can-delete-its-own-work.md) has the
+> refutation and the corrected numbers.
+
 `DESIGN.md` §6's timing gates were moved from absolute targets to per-machine baselines
 ([ADR-0016](../decisions/ADR-0016-per-machine-baselines-replace-absolute-targets.md)). The
 change to `crates/codec/benches/harness.rs` was mechanical: `Suite::bench` lost its
@@ -2179,3 +2187,81 @@ The rule that follows: **when a write-up names a mechanism, the next experiment 
 turns off exactly that mechanism** — not the one that turns off everything and shows a big
 number. A big number tells you there is something to find. Only the named knob tells you
 whether you have found it.
+
+---
+
+## What LTO and `codegen-units` are worth here, and who actually gets it — 2026-09-01
+
+`STATUS.md` open item 13 since the project began: *"Release profile is default. No `lto`, no
+`codegen-units = 1`, no PGO. Cheap, but each is a number to be measured before and after, not
+a setting to be assumed."*
+
+`[measured 2026-09-01]` AMD Ryzen 7 3700X, the ADR-0021 §9 line with mitigations in force,
+`check-machine.sh` reading `pass 12 fail 0 unknown 1` for every run counted. Four arms plus the
+default, **ten `scripts/bench.sh` runs each**, medians. No reboots — this is the only lever in
+item 13's family that needs none.
+
+| Case | default | `lto="thin"` | `lto="fat"` | `cgu=1` | both |
+|---|---|---|---|---|---|
+| `walk 1 group, 2 entries` | 58.6 | −3.4% | +5.3% | **−16.6%** | −11.0% |
+| `walk 4 levels, 61-tag` | 348.8 | −7.1% | −0.6% | +1.1% | −1.9% |
+| `group_members contains` | 9.7 | −3.1% | −7.2% | −10.3% | −3.1% |
+| `encode 1 group` | 109.5 | −2.8% | −13.1% | −11.4% | −14.2% |
+| `parse NewOrderSingle (validated)` | 125.4 | −3.7% | −1.6% | −0.8% | −2.0% |
+| `parse NewOrderSingle (no checks)` | 116.7 | −2.0% | −0.2% | +1.8% | −0.7% |
+| `parse Heartbeat` | 59.2 | −3.5% | −6.3% | −1.4% | −4.6% |
+| `encode ExecutionReport` | 237.2 | +1.3% | −0.3% | **−8.8%** | −6.3% |
+| `SendingTime from the cache` | 4.9 | 0.0% | **+12.2%** | 0.0% | **+12.2%** |
+| `ring, one way` | 267.7 | −0.1% | −5.9% | −4.0% | −6.3% |
+| `ring, round trip` | 513.4 | +0.9% | −7.9% | −3.8% | −5.2% |
+| `presession, read and route` | 83.4 | −8.4% | **−30.8%** | −0.4% | **−30.1%** |
+| `presession sweep, 1` | 434.4 | −2.7% | −5.3% | −0.2% | −5.5% |
+| `presession sweep, 16` | 6795.9 | −2.7% | −5.4% | −0.1% | −5.6% |
+| `recv on a quiet socket` | 418.7 | −3.0% | −2.9% | +0.1% | −2.9% |
+| `engine turn, 1` | 444.8 | −2.8% | −3.8% | −0.8% | −3.9% |
+| `engine turn, 4` | 1782.0 | −2.7% | −4.7% | −2.1% | −5.0% |
+| `engine turn, 16` | 7241.6 | −2.2% | −4.8% | −2.2% | **−4.8%** |
+| **clean build** | **5.2 s** | 17.1 s | 15.9 s | 5.2 s | 16.3 s |
+
+`inline deliver + reply` is **absent from this table on purpose**: it read 1.3 ns in three arms
+and 7.4–8.6 in the two with `codegen-units = 1`, and that turned out to be the benchmark
+deleting its own work rather than a profile effect —
+[a-benchmark-can-delete-its-own-work.md](a-benchmark-can-delete-its-own-work.md). With the fix
+it reads **8.5 ns in every arm**, and `codegen-units = 1` is exonerated.
+
+The prediction, written before the runs: user-space improves, syscall-bound barely moves. It
+was **directionally right and understated the syscall side** — 3–6% is more than "barely".
+
+### And then the decision went the other way
+
+The naive read is *"adopt `lto = "fat"`, it is 3–6% on the dominant path and 30% on one hot
+function"*. Two things stop it, and neither is visible in the table.
+
+**Cargo honours `[profile.*]` only from the top-level package being built.** A profile in a
+*dependency* is ignored. So `[profile.release]` here would apply to this workspace's own
+benchmarks and `tools/w2w`, and **not to anybody who depends on these crates**. It would make
+the published numbers better and no consumer's program faster. That is documented cargo
+behaviour and is labelled as such — it was not tested here.
+
+**And part of the gain is an artifact of measuring.** A benchmark is a separate crate calling
+into the library, so LTO inlines library internals into the benchmark loop.
+`presession, read and route an identity` fell **83.4 → 57.7 ns**, but in production
+`Shards::hand` calls `identity_of` from inside the same crate, where it is already inlinable.
+`recv on a quiet socket` fell 2.9% on a case that is ~94% kernel time — 12 ns off roughly 25 ns
+of user-space work, which is an inlining effect at the bench boundary and not a kernel one.
+
+[ADR-0024](../decisions/ADR-0024-the-workspace-keeps-the-default-release-profile.md) keeps the
+default profile and puts the range in `GUIDE.md`, where a consumer — whose profile *does* apply
+to their own binary — can decide with the caveat attached.
+
+### The generalisation
+
+`[to testing-skills]` — **a benchmark measures the library inlined into the benchmark, and a
+whole-program optimisation flatters that arrangement specifically.** The bigger the measured
+win from LTO on a micro-benchmark, the more of it is likely to be the call boundary between the
+harness and the code, which production may not have in the same place.
+
+The cheap check is not a better benchmark. It is a question asked before adopting: **does this
+setting reach the thing that ships, and is the boundary it optimises the boundary production
+has?** Here the answer to the first was no, on documented behaviour, and it settled the
+decision without needing the second.

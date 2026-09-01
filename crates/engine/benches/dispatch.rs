@@ -63,6 +63,17 @@ fn main() {
         b.bench("inline deliver + reply", || {
             let r = inline.deliver(0, black_box(msg), 2, stamp, &mut out);
             black_box(r);
+            // `[measured 2026-09-01]` WITHOUT this line the case reads 1.3 ns
+            // instead of 8.5, because `out` is written every iteration and read
+            // by nobody: only the returned `Range` escaped, so the 163-byte copy
+            // was dead and the optimiser removed it. 163 bytes in 1.3 ns is
+            // 125 GB/s from one core.
+            //
+            // It survived a doubling test — two `deliver` per iteration gave
+            // exactly 2.6 — because doubling the calls doubles whatever fraction
+            // survives, so that test passes either way. See
+            // docs/reference/a-benchmark-can-delete-its-own-work.md.
+            black_box(&out);
         });
 
         // A ring big enough that the round trip below never meets a full queue —
