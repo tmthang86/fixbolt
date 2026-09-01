@@ -810,7 +810,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | **A `standard` engine gives the core back** | engine-thread CPU under 5% over a wall-clock window, found sleeping rather than running, **and** a round-trip p50 far below the poll timeout | `scripts/check-standard-gives-the-core-back.sh`, non-negotiable 4's second half. Four assertions, because CPU near zero is also what a dead thread, a run that never reached the mode, and an engine woken by its own timeout all report. `[measured 2026-08-30]` a `Block` made to ignore readiness reads **0% CPU**, sleeping **20/20**, p50 **99 046 599 ns** — only the p50 catches it. Requires **`hft` and `yield`** to trip it, and separates *failed the policy* from *could not be measured* so a broken harness cannot pass as a red half |
 | Session conformance, acceptor, **in `standard` mode** | **59 / 59** with the engine blocking between steps | `cargo test -p fixbolt-engine --test wire`, second case. ADR-0013's stated cost — *two modes is two things to test, for ever* — and the only place the corpus meets `standard`, since every other line of that file drives `turn` by hand where the idle strategy is never reached. **It proves the protocol, not the wiring**: `[measured 2026-08-30]` with `Block` made to ignore readiness, and again with the listener removed from the poll set, the run took 3.30 s and 3.34 s against a 3.28 s baseline — the settle criterion is 1 ms and the timeout 5 ms, so one block satisfies it either way |
 | **The engine thread never sleeps in the kernel** | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`. Traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid — the client blocks on purpose and would mask everything. `[measured 2026-08-30]` Linux 6.18 x86_64: `accept4`, `recvfrom`, `sendto` and **zero** of `epoll_wait`/`poll`/`select`/`futex`/`nanosleep`/`sched_yield`. **The script runs the binary again with `wait::Park` and fails if that run does *not* trip it** — non-negotiable 4 had two machine checks before this one and both were green with a sleep present |
-| Allocations on the hot path — engine | **0**, counted separately on seven paths: idle, send, recv, frame, turn, busy, ring | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
+| Session conformance, acceptor, **through the shard runtime** | **59 / 59 through one shard and through two** | `cargo test -p fixbolt-engine --features affinity --test shard_wire`. Two pinned threads, two engines, connections routed by the identity in their `Logon`. `[measured 2026-08-31]` it read **57 through two** and the two failures were named and pinned; `[measured 2026-09-01]` **59 / 59** — [ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md). **And the score is not the whole gate**: the test also counts how the pre-session stage disposed of every socket, because a connection it dropped is indistinguishable from a duplicate the session refused. Exactly two are, by name — [ADR-0022](decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md) |
+| Allocations on the hot path — engine | **0**, counted separately on **twelve** paths: idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
 | Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |
@@ -866,7 +867,7 @@ ceiling somebody switches off.
 
 **Recorded baselines**, medians of **24 qualifying `scripts/bench.sh` runs**, `[measured 2026-08-31]` — measured through the whole invocation that judges them, on a box reading `pass 10 fail 0` for every run counted:
 
-| Case | AMD Ryzen 7 3700X (§9, `pass 10 fail 0`) | margin |
+| Case | AMD Ryzen 7 3700X (§9, `pass 11 fail 0` — ADR-0021) | margin |
 |---|---|---|
 | parse `NewOrderSingle` (validated) | 122.6 ns | 1.10 |
 | parse `NewOrderSingle` (no checks) | 117.0 ns | 1.15 |
@@ -880,6 +881,13 @@ ceiling somebody switches off.
 | inline deliver + reply | 1.3 ns | 1.10 |
 | ring, one way | 267.4 ns | 1.30 |
 | ring, round trip | 515.7 ns | 1.20 |
+| recv on a quiet socket | 420.5 ns | 1.10 |
+| engine turn, 1 idle sessions | 448.9 ns | 1.10 |
+| engine turn, 4 idle sessions | 1807.1 ns | 1.10 |
+| engine turn, 16 idle sessions | 7333.5 ns | 1.10 |
+| presession sweep, 1 quiet sockets | 435.9 ns | 1.10 |
+| presession sweep, 16 quiet sockets | 6819.5 ns | 1.10 |
+| presession, read and route an identity | 84.0 ns | 1.10 |
 
 **No other machine has a baseline, and none is invented for it.** The Apple M5 and the two CI
 EPYCs have figures scattered through this file and `STATUS.md`, but none was taken by the
@@ -915,7 +923,7 @@ cannot share an exit code:
 | | What it measures | On a failure |
 |---|---|---|
 | **Invariant** — `alloc` × 3, `ring_full` | allocation counts, message counts | **CI red.** The answer is the same on every machine, so a failure is a defect |
-| **Timing** — `parse`, `serialize`, `groups`, `dispatch` | ns/op against a ceiling | **Reported, never red.** The ceilings are M5-tuned and the runner is shared |
+| **Timing** — `parse`, `serialize`, `groups`, `dispatch`, `turn`, `presession` | ns/op against **this machine's own baseline** (ADR-0016) | **Reported, never red on a shared runner.** `bench.sh --strict`, which a §9 machine runs, treats a case with no baseline for its CPU as fatal |
 
 `--strict` makes a timing failure fatal too; that is what a §9 machine should use. The script
 also fails when a target produces **no** measurement, which is not hypothetical: Cargo had

@@ -319,10 +319,18 @@ literal marker **`[to testing-skills]`** on its own line, so `grep -rn '\[to tes
 docs/` is the whole backlog and there is no second list to go stale. The marker is replaced by
 the pull-request link when it lands.
 
-**The upstream pull request is opened when the plan that found the case closes**, so that a
-case which turns out to be a misunderstanding is corrected here before it is published
-somewhere else. One pull request per plan, however many cases it carries; the generalised
-paragraph in the local write-up is the draft of the upstream one.
+**The upstream pull request is opened when this project is implemented** — not when a plan
+closes. `[decided 2026-09-01]` the earlier rule was one pull request per plan, and it was
+changed for a reason worth keeping: **a case is only worth publishing once it has survived the
+work that came after it.** Two of the cases already written here were revised by a later plan
+that hit the same shape again, and a per-plan pull request would have published the first
+version of both.
+
+So the marker accumulates and the backlog is allowed to grow. `grep -rn '\[to testing-skills\]'
+docs/` is still the whole queue, and the generalised paragraph in each local write-up is still
+the draft of the upstream one — what moves is *when* they go, not what goes or how it is
+written. **A case that turns out to be a misunderstanding gets corrected here, for free, by
+never having left.**
 
 ### What does not happen
 
