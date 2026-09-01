@@ -214,6 +214,16 @@ impl<T, const PRE: usize> Pending<T, PRE> {
     pub fn into_transport(self) -> T {
         self.transport
     }
+
+    /// The socket and the bytes, for moving both across a channel.
+    ///
+    /// The buffer moves as an array rather than as a `Vec`, so handing a
+    /// connection to a shard thread allocates nothing — non-negotiable 1, and
+    /// `benches/alloc.rs` asserts it.
+    pub fn into_parts(self) -> (T, [u8; PRE], usize) {
+        let (buf, len) = self.rx.into_parts();
+        (self.transport, buf, len)
+    }
 }
 
 /// Sockets waiting to say who they are.
@@ -354,6 +364,36 @@ impl<T: Transport, const PRE: usize> PendingSet<T, PRE> {
                 }
             }
         }
+    }
+
+    /// The soonest deadline any waiting socket has, if any.
+    ///
+    /// It is what a caller waits **until**: an acceptor that slept on a fixed
+    /// interval would either wake for nothing or let a deadline slip past by up
+    /// to that interval, and neither is a number anybody chose. Sockets that
+    /// have already settled are not counted — they are not waiting for
+    /// anything.
+    #[must_use]
+    pub fn earliest_deadline(&self) -> Option<u64> {
+        self.slots
+            .iter()
+            .filter(|s| s.settled.is_none())
+            .map(|s| s.deadline_ms)
+            .min()
+    }
+
+    /// Append one readable interest per waiting socket.
+    ///
+    /// Appends rather than returns, so the caller reuses one buffer and this
+    /// allocates nothing. A socket with no descriptor contributes none, the way
+    /// [`crate::Engine`]'s own interest list does.
+    pub fn interests(&self, out: &mut Vec<crate::transport::Interest>) {
+        out.extend(
+            self.slots
+                .iter()
+                .filter_map(|s| s.transport.source())
+                .map(crate::transport::Interest::readable),
+        );
     }
 
     /// The first socket that has produced a whole `Logon`, if any.

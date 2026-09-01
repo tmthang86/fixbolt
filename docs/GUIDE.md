@@ -117,14 +117,39 @@ count by itself**, because a session only benefits from a core its own polling t
 waits for every one of them to confirm its own pin, and hands accepted connections across a
 channel. `serve_sharded_hft` is the whole loop.
 
-> **Read this before you use it with more than one shard.** An `Engine` carries one `Config`,
-> so it serves **one FIX identity**, and it enforces *"that identity is already logged on"* by
-> looking at the other connections **it** holds. Split those across engines and the rule has
-> nothing to look at: both `Logon`s are accepted. `[measured 2026-08-31]` the acceptance corpus
-> scores **59 through one shard and 57 through two**, failing exactly
-> `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def`. The assignment policy cannot fix it —
-> it is asked at accept time and the `Logon` has not arrived, so nothing then knows which
-> identity the socket carries. `STATUS.md` open item 24 is where this gets decided.
+`[2026-09-01]` **the shard you land on is decided by your identity, not by accept order.**
+`serve_sharded_hft` holds each socket until its `Logon` arrives, reads `49=`/`56=` off it, and
+routes on a **stable** hash of the pair — so both connections claiming one identity reach the
+same engine and the single-logon rule can see them both.
+
+> **This was a defect until 2026-09-01, and the fix is why the API changed.** An `Engine`
+> carries one `Config`, so it serves **one FIX identity**, and it enforces *"that identity is
+> already logged on"* by looking at the other connections **it** holds. Splitting those across
+> engines left the rule nothing to look at: `[measured 2026-08-31]` the acceptance corpus
+> scored **59 through one shard and 57 through two**, failing exactly
+> `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def`. `[measured 2026-09-01]` it is **59
+> through two** — [ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md).
+> `Assign` and `RoundRobin` are **gone**: `Assign` was asked at accept time, when nothing knew
+> whose socket it was, and round-robin is the policy that produced the defect.
+
+**Two limits you must choose, because there is no default for either.**
+`serve_sharded_hft` takes a `presession::Limits`, and `Limits::new(pending, logon_ms)` refuses
+a zero in both places:
+
+| Limit | What happens without a sensible one |
+|---|---|
+| `logon_ms` — how long a connection has to send its `Logon` | A counterparty that opens a socket and says nothing holds a slot until you restart. This is a denial-of-service hole, not a tuning knob |
+| `pending` — how many may wait at once | The table has no ceiling and neither does the memory behind it. When it is full the **next** connection is refused immediately rather than queued, which is the behaviour you want under attack |
+
+Neither number can be picked by somebody who has not seen your deployment, which is why the
+API will not pick one for you — the same reason `ShardPlan` makes you name your cores.
+
+**Replacing the routing policy.** `Shards::with_route(Box<dyn Route>)` takes an
+`Identity<'_>` and the shard count. Real deployments shard by counterparty deliberately; the
+hash is a sensible default and not the final answer. Whatever you write must be **stable
+across processes** — the same counterparty has to reach the same shard after a restart, or the
+single-logon rule breaks again in a way that every test passes. `DefaultHasher` is seeded per
+process and is the trap here.
 
 **Everything below is what the engine still does not do for you.**
 

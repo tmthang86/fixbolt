@@ -192,6 +192,29 @@ below describe what a first release would contain.
       Allocation: three cases in `benches/alloc.rs`, all 0, and the third proven to go
       red at 7 allocations when the one-time reservation is removed.
 
+  - **`presession`, part three, and it is a BREAKING change to `shard`.** `Assign`,
+    `RoundRobin` and `Shards::with_assign` are **removed**, replaced by `Route`,
+    `HashRoute` and `Shards::with_route`; `ShardError::BadAssignment` becomes `BadRoute`
+    and `NoIdentity` joins it; `Shards` gains a `PRE` const parameter; `Shards::hand`
+    takes a `Pending` rather than a `TcpTransport`; `Shardable::add` takes the bytes
+    already read and returns whether they fit; `serve_sharded_hft` takes a `Limits`.
+    `Engine::add_with_prefix` and `Connection::prime` are new, as is `Framer::all`.
+    - **`Assign` could not have worked however it was written.** It was asked at accept
+      time, when the `Logon` that names the counterparty had not arrived. `Route` is
+      asked after it, which is the only moment the question has an answer.
+    - **`RoundRobin` is deleted with no shim.** It is the policy that produced the
+      defect; keeping it would leave a documented trap in a public API.
+    - `[measured 2026-09-01]` **the acceptance corpus scores 59 through two shards**,
+      where `[measured 2026-08-31]` it scored 57 and failed exactly
+      `1b_DuplicateIdentity.def` and `AlreadyLoggedOn.def`. The characterisation test
+      that pinned the defect went red first, as it was written to.
+    - `[measured 2026-09-01]` and it passes for the right reason: the test counts how
+      the pre-session stage disposed of every socket, because a connection it threw away
+      is indistinguishable from a duplicate the session refused. Exactly two are
+      disposed of — `1e_NotLogonMessage.def` and `1d_InvalidLogonLengthInvalid.def`,
+      both definitions whose subject is that the link must be dropped
+      ([ADR-0022](docs/decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md)).
+
   - **`shard` — many engines, one per pinned core.** New module behind the same `affinity`
     feature. `Shards::start(&plan, make)` validates the plan, starts one thread per shard, and
     **waits for every thread to confirm its own pin before any of them serves** — so a plan that

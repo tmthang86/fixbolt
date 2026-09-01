@@ -40,6 +40,7 @@ use std::thread::JoinHandle;
 use crate::affinity::{self, AffinityError, CoreId, ShardPlan};
 use crate::clock::Clock;
 use crate::dispatch::Dispatch;
+use crate::presession::{Identity, Pending, identity_of};
 use crate::transport::{TcpTransport, Transport};
 use crate::wait::Waiting;
 use fixbolt_session::Role;
@@ -52,8 +53,13 @@ use fixbolt_session::journal::Journal as SessionJournal;
 /// hand it something that is not an engine at all — which is how the assignment
 /// policy is tested without a socket in sight.
 pub trait Shardable: Send {
-    /// Take ownership of a connection this shard has been given.
-    fn add(&mut self, transport: TcpTransport);
+    /// Take ownership of a connection this shard has been given, with the
+    /// bytes the pre-session stage already read off it.
+    ///
+    /// `false` if those bytes do not fit the engine's receive buffer, in which
+    /// case the connection is dropped rather than served with part of its first
+    /// message missing. A caller keeps `PRE <= RX` and this never happens.
+    fn add(&mut self, transport: TcpTransport, prefix: &[u8]) -> bool;
     /// One non-blocking pass. `true` if anything moved.
     fn turn(&mut self) -> bool;
     /// Nothing moved. Whatever this shard's mode does about that.
@@ -75,8 +81,8 @@ where
     // something an accept loop can supply.
     J: SessionJournal + Default,
 {
-    fn add(&mut self, transport: TcpTransport) {
-        let _ = crate::Engine::add(self, transport);
+    fn add(&mut self, transport: TcpTransport, prefix: &[u8]) -> bool {
+        crate::Engine::add_with_prefix(self, transport, prefix).is_ok()
     }
     fn turn(&mut self) -> bool {
         crate::Engine::turn(self)
@@ -89,31 +95,74 @@ where
 /// Which shard takes the next connection.
 ///
 /// [ADR-0015] decision 7: this belongs to the caller. Real deployments shard by
-/// counterparty, and the engine does not know which counterparty matters — nor,
-/// at accept time, which counterparty this even is. That is the honest limit of
-/// what this trait can be given: the `Logon` has not arrived yet.
+/// counterparty, and the engine does not know which counterparty matters.
+///
+/// It is asked **after** the `Logon`, not at accept time — which is the whole
+/// reason the pre-session stage exists ([ADR-0020]). Its predecessor `Assign`
+/// was asked at accept, when nothing knew whose socket it was, and could not
+/// have answered this question however it was written.
 ///
 /// [ADR-0015]: ../../../docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md
-pub trait Assign: Send {
+/// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
+pub trait Route: Send {
     /// A shard index in `0..shards`. Out of range is refused, not clamped.
-    fn shard_for(&mut self, shards: usize) -> usize;
+    fn shard_for(&mut self, id: Identity<'_>, shards: usize) -> usize;
 }
 
-/// Even spread, in accept order. The default, and rarely the right answer past
-/// the point where sessions stop being interchangeable.
+/// The default: a stable hash of `(sender, target)`.
+///
+/// **Stable is the requirement, not fast.** The single-logon rule can only
+/// count connections one engine holds, so the same counterparty has to reach
+/// the same shard on this run, on the next run, and after a reconnect.
+///
+/// `std::collections::hash_map::DefaultHasher` is therefore not usable here and
+/// [ADR-0020] decision 7 says so: it is seeded per process, so two runs of one
+/// binary would route the same counterparty differently, and the rule would
+/// hold within a run and break across a restart — the worst shape a bug can
+/// have, because every test passes.
+///
+/// Hashing is the sensible default and explicitly not the final answer. A real
+/// deployment shards by counterparty deliberately; [`Route`] is the seam.
+///
+/// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
 #[derive(Debug, Default, Clone, Copy)]
-pub struct RoundRobin {
-    next: usize,
+pub struct HashRoute;
+
+/// FNV-1a, 64-bit, written out rather than borrowed from `std`.
+///
+/// The separator between the two halves is not decoration: without it
+/// `("AB", "C")` and `("A", "BC")` hash alike, and two different counterparties
+/// would share a shard for a reason nobody could see.
+const fn fnv1a(sender: &[u8], target: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = OFFSET;
+    let mut i = 0;
+    while i < sender.len() {
+        h = (h ^ sender[i] as u64).wrapping_mul(PRIME);
+        i += 1;
+    }
+    // SOH, the separator FIX itself uses, and a byte no comp ID may contain.
+    h = (h ^ 1u64).wrapping_mul(PRIME);
+    let mut j = 0;
+    while j < target.len() {
+        h = (h ^ target[j] as u64).wrapping_mul(PRIME);
+        j += 1;
+    }
+    h
 }
 
-impl Assign for RoundRobin {
-    fn shard_for(&mut self, shards: usize) -> usize {
+impl Route for HashRoute {
+    fn shard_for(&mut self, id: Identity<'_>, shards: usize) -> usize {
         if shards == 0 {
             return 0;
         }
-        let i = self.next % shards;
-        self.next = self.next.wrapping_add(1);
-        i
+        // `as u64` on a usize is lossless on every target this builds for, and
+        // the remainder is then in range by construction.
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            (fnv1a(id.sender, id.target) % shards as u64) as usize
+        }
     }
 }
 
@@ -130,11 +179,14 @@ pub enum ShardError {
     /// A shard thread is gone. Its engine, and every connection it owned, went
     /// with it.
     ThreadGone(usize),
-    /// An [`Assign`] returned an index outside `0..shards`.
+    /// A [`Route`] returned an index outside `0..shards`.
     ///
     /// Refused rather than taken modulo: silently rewriting a caller's answer
-    /// hides the bug and puts the connection somewhere nobody asked for.
-    BadAssignment { shard: usize, of: usize },
+    /// hides the bug and puts the connection somewhere nobody asked for — and
+    /// somewhere is exactly where the single-logon rule breaks again.
+    BadRoute { shard: usize, of: usize },
+    /// The first message named no identity, so there is nothing to route by.
+    NoIdentity,
 }
 
 impl core::fmt::Display for ShardError {
@@ -143,9 +195,10 @@ impl core::fmt::Display for ShardError {
             Self::Affinity(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
             Self::ThreadGone(i) => write!(f, "shard {i} is no longer running"),
-            Self::BadAssignment { shard, of } => {
-                write!(f, "assignment chose shard {shard} of {of}")
+            Self::BadRoute { shard, of } => {
+                write!(f, "route chose shard {shard} of {of}")
             }
+            Self::NoIdentity => write!(f, "the first message named no identity"),
         }
     }
 }
@@ -194,14 +247,14 @@ const ABORT: u8 = 2;
 /// disconnects, which happens when the last [`Shards`] holding the sender is
 /// dropped; the engine goes with it, and so do the connections it owned. That
 /// is process shutdown, and it is the only shutdown this offers.
-pub struct Shards {
-    senders: Vec<Sender<TcpTransport>>,
+pub struct Shards<const PRE: usize = 4096> {
+    senders: Vec<Sender<Pending<TcpTransport, PRE>>>,
     cores: Vec<CoreId>,
-    assign: Box<dyn Assign>,
+    route: Box<dyn Route>,
     threads: Vec<JoinHandle<()>>,
 }
 
-impl Shards {
+impl<const PRE: usize> Shards<PRE> {
     /// Validate the plan, start one pinned thread per shard, and wait for every
     /// one of them to confirm its pin before any of them serves.
     ///
@@ -229,7 +282,7 @@ impl Shards {
         let mut threads = Vec::with_capacity(plan.shards().len());
 
         for (i, core) in plan.shards().iter().copied().enumerate() {
-            let (tx, rx) = mpsc::channel::<TcpTransport>();
+            let (tx, rx) = mpsc::channel::<Pending<TcpTransport, PRE>>();
             senders.push(tx);
 
             let make = Arc::clone(&make);
@@ -265,8 +318,11 @@ impl Shards {
                         let mut moved = false;
                         loop {
                             match rx.try_recv() {
-                                Ok(t) => {
-                                    engine.add(t);
+                                Ok(p) => {
+                                    // The array moves; nothing is allocated to
+                                    // carry a connection across the channel.
+                                    let (t, buf, len) = p.into_parts();
+                                    let _ = engine.add(t, buf.get(..len).unwrap_or(&[]));
                                     moved = true;
                                 }
                                 Err(TryRecvError::Empty) => break,
@@ -317,33 +373,41 @@ impl Shards {
         Ok(Self {
             senders,
             cores,
-            assign: Box::new(RoundRobin::default()),
+            route: Box::new(HashRoute),
             threads,
         })
     }
 
-    /// Replace the assignment policy. Round-robin until told otherwise.
+    /// Replace the routing policy. A stable hash of the identity until told
+    /// otherwise — see [`HashRoute`].
     #[must_use]
-    pub fn with_assign(mut self, assign: Box<dyn Assign>) -> Self {
-        self.assign = assign;
+    pub fn with_route(mut self, route: Box<dyn Route>) -> Self {
+        self.route = route;
         self
     }
 
-    /// Give a connection to whichever shard the policy names.
+    /// Give a connection to whichever shard the route names for its identity.
+    ///
+    /// The identity is read from the bytes the pre-session stage already
+    /// collected, so this asks the route the question it can actually answer.
     ///
     /// # Errors
     ///
-    /// [`ShardError::BadAssignment`] if the policy names a shard that does not
+    /// [`ShardError::NoIdentity`] if the first message named no `49=`/`56=`,
+    /// [`ShardError::BadRoute`] if the policy names a shard that does not
     /// exist, [`ShardError::ThreadGone`] if that shard's thread has ended.
-    pub fn hand(&mut self, transport: TcpTransport) -> Result<usize, ShardError> {
+    pub fn hand(&mut self, pending: Pending<TcpTransport, PRE>) -> Result<usize, ShardError> {
         let of = self.senders.len();
-        let shard = self.assign.shard_for(of);
+        let shard = {
+            let id = identity_of(pending.bytes()).ok_or(ShardError::NoIdentity)?;
+            self.route.shard_for(id, of)
+        };
         let sender = self
             .senders
             .get(shard)
-            .ok_or(ShardError::BadAssignment { shard, of })?;
+            .ok_or(ShardError::BadRoute { shard, of })?;
         sender
-            .send(transport)
+            .send(pending)
             .map_err(|_| ShardError::ThreadGone(shard))?;
         Ok(shard)
     }
@@ -378,50 +442,114 @@ impl Shards {
     }
 }
 
-/// Accept on `addr` and serve it from one pinned engine per core. **`hft` mode:
-/// every shard spins and burns its core for as long as the process lives.**
+/// Accept on `addr` and serve it from one pinned engine per core, routing each
+/// connection by the identity in its `Logon`. **`hft` mode: every shard spins
+/// and burns its core for as long as the process lives.**
 ///
 /// `plan` is checked before a thread exists, every thread confirms its own pin
-/// before any of them serves, and the acceptor runs on this thread — blocking,
-/// because it is not an engine thread.
+/// before any of them serves, and the pre-session stage runs on **this** thread
+/// — which blocks, because it is not an engine thread.
 ///
 /// `make_app` runs on the shard's own thread, once, after that thread is pinned.
 /// Each shard gets its own application: they are on different threads and share
 /// nothing, which is the point.
 ///
-/// **Read [`Shards`]'s limit before using this.** Every shard here is built from
-/// the same `cfg`, so every shard serves the same identity — which is exactly
-/// the arrangement in which the single-logon rule stops working. This function
-/// is honest for one shard and is a known defect for more than one.
+/// # The two limits are yours to choose
+///
+/// [`Limits`] has no defaults ([ADR-0020] decision 4). A connection that opens
+/// and never sends a `Logon` costs a slot until its deadline, and a table with
+/// no ceiling costs memory without one — so the deadline and the ceiling are
+/// arguments, and there is no value here that somebody who has not seen your
+/// deployment picked for you.
+///
+/// # How it waits
+///
+/// Not in `accept`. A thread parked there cannot expire a silent connection, so
+/// a logon deadline would fire only when somebody else happened to connect —
+/// load-dependent behaviour, and the wrong kind. It waits on the listener **and
+/// every pending socket**, for exactly as long as the soonest deadline allows.
 ///
 /// # Errors
 ///
 /// [`ShardError::Affinity`] if the plan is refused or a pin fails,
-/// [`ShardError::Io`] from binding or accepting, [`ShardError::ThreadGone`] if a
-/// shard dies under it.
+/// [`ShardError::Io`] from binding, [`ShardError::ThreadGone`] if a shard dies
+/// under it.
+///
+/// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
+#[cfg(feature = "standard")]
 pub fn serve_sharded_hft<A, F>(
     addr: &str,
     cfg: fixbolt_session::Config,
     plan: &ShardPlan,
     capacity: usize,
+    limits: crate::presession::Limits,
     make_app: F,
 ) -> Result<core::convert::Infallible, ShardError>
 where
     A: fixbolt_session::Application + Send + 'static,
     F: Fn(usize) -> A + Send + Sync + 'static,
 {
-    let acceptor = crate::Acceptor::bind_blocking(addr)?;
-    let mut shards = Shards::start(plan, move |i| -> crate::HftAcceptorEngine<A> {
+    use crate::clock::{Clock, SystemClock};
+    use crate::presession::PendingSet;
+    use crate::transport::Interest;
+
+    // The pre-session buffer matches `TcpAcceptorEngine`'s RX, so a prefix can
+    // never be too long for the connection it is handed to.
+    const PRE: usize = 4096;
+
+    let acceptor = crate::Acceptor::bind(addr).map_err(ShardError::Io)?;
+    let mut shards = Shards::<PRE>::start(plan, move |i| -> crate::HftAcceptorEngine<A> {
         crate::Engine::new(
             cfg,
             crate::dispatch::InlineDispatch::new(make_app(i)),
-            crate::clock::SystemClock,
+            SystemClock,
             crate::wait::Spin,
             capacity,
         )
     })?;
+
+    let mut set: PendingSet<crate::transport::TcpTransport, PRE> = PendingSet::new(limits);
+    let mut poller = crate::poll::Poller::with_capacity(limits.pending() + 1);
+    let mut interests: Vec<Interest> = Vec::with_capacity(limits.pending() + 1);
+    let mut clock = SystemClock;
+
     loop {
-        let transport = acceptor.accept_blocking()?;
-        shards.hand(transport)?;
+        // Take on whatever is waiting. `admit` refuses when full, and the
+        // refusal closes the socket rather than queueing it.
+        while set.len() < limits.pending() {
+            let Some(t) = acceptor.accept() else { break };
+            // Dropping the refusal closes the socket, which is what a caller
+            // with nowhere to put a connection should do.
+            drop(set.admit(t, clock.now_ms()));
+        }
+
+        let now = clock.now_ms();
+        set.turn(now);
+        while let Some(i) = set.settled() {
+            let Some(p) = set.take(i) else { break };
+            match shards.hand(p) {
+                Ok(_) => {}
+                // A `Logon` that named nobody, or a route that named a shard
+                // that does not exist: the connection is dropped. A dead shard
+                // thread is different — nothing here can recover from it.
+                Err(ShardError::ThreadGone(n)) => return Err(ShardError::ThreadGone(n)),
+                Err(_) => {}
+            }
+        }
+
+        // Wait until something happens or the soonest deadline arrives —
+        // derived, so there is no polling interval anybody had to choose.
+        interests.clear();
+        if let Some(s) = acceptor.source() {
+            interests.push(Interest::readable(s));
+        }
+        set.interests(&mut interests);
+        let timeout = set.earliest_deadline().map_or(1_000, |d| {
+            i32::try_from(d.saturating_sub(now)).unwrap_or(i32::MAX)
+        });
+        // Whatever it says, the loop above re-reads every socket anyway; a
+        // failed wait costs one extra pass, and a poller that refused to
+        // continue would be a hung acceptor.
+        let _ = poller.wait(&interests, timeout);
     }
 }

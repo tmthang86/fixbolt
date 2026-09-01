@@ -216,6 +216,49 @@ where
         id
     }
 
+    /// As [`Self::add`], with bytes that were read off the socket before the
+    /// engine took it on.
+    ///
+    /// The pre-session stage ([`presession`]) owns a socket until a `Logon`
+    /// arrives, so by the time the engine sees it those bytes are already gone
+    /// from the kernel. They go straight into the connection's receive buffer,
+    /// and the first `turn` frames them exactly as if this engine had read
+    /// them.
+    ///
+    /// **Everything the stage read**, not just the `Logon` it routed by: a
+    /// counterparty may pipeline behind its `Logon`, and those bytes belong to
+    /// the session too.
+    ///
+    /// # Errors
+    ///
+    /// [`PrefixTooLong`] when the bytes exceed this engine's `RX`. Refused
+    /// rather than truncated — see [`conn::Connection::prime`].
+    pub fn add_with_prefix(&mut self, transport: T, prefix: &[u8]) -> Result<ConnId, PrefixTooLong>
+    where
+        J: Default,
+    {
+        if prefix.len() > RX {
+            return Err(PrefixTooLong {
+                got: prefix.len(),
+                capacity: RX,
+            });
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut conn = Connection::new(id, transport, Session::new(self.cfg), J::default())
+            .with_backpressure(self.backpressure);
+        if !conn.prime(prefix) {
+            self.next_id -= 1;
+            return Err(PrefixTooLong {
+                got: prefix.len(),
+                capacity: RX,
+            });
+        }
+        conn.opened();
+        self.conns.push(conn);
+        Ok(id)
+    }
+
     /// How many connections are live.
     #[must_use]
     pub fn connections(&self) -> usize {
@@ -600,6 +643,30 @@ fn pump<A: Application, W: Waiting>(
         }
     }
 }
+
+/// Bytes read before a connection existed did not fit its receive buffer.
+///
+/// Fielded rather than fieldless: it is not on a hot path, and both numbers are
+/// what tells a caller whether to raise `RX` or lower the pre-session buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrefixTooLong {
+    /// How many bytes the pre-session stage had.
+    pub got: usize,
+    /// How many the connection can hold — the engine's `RX`.
+    pub capacity: usize,
+}
+
+impl core::fmt::Display for PrefixTooLong {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{} bytes read before the connection existed, but RX is {}",
+            self.got, self.capacity
+        )
+    }
+}
+
+impl std::error::Error for PrefixTooLong {}
 
 /// A non-blocking TCP listener that hands out [`TcpTransport`]s.
 ///

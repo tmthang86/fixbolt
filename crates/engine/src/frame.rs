@@ -17,13 +17,21 @@
 //! body ends; if a `10=` trailer is not there, the whole buffer is rubbish —
 //! which is why a length that is too long takes the message after it with it.
 //!
-//! # The rubbish still goes to the session
+//! # The rubbish still goes to the session — on every frame but the first
 //!
 //! Dropping it here would lose `1d_InvalidLogonLengthInvalid.def`, which wants
 //! the link dropped because the unreadable frame *claims to be a Logon*. That
-//! rule lives in `fixbolt_session` and is not duplicated here: the engine hands
-//! the bytes over once and lets the session decide. [`Cut::Garbage`] is how it
-//! says so.
+//! rule lives in `fixbolt_session`: the engine hands the bytes over once and
+//! lets the session decide. [`Cut::Garbage`] is how it says so.
+//!
+//! **`[2026-09-01]` with one boundary, and it is written down rather than
+//! discovered.** [`crate::presession`] sits in front of the session and owns a
+//! socket until its first whole message. A **first** frame that can never be a
+//! message has no readable identity, so there is no shard to route it to and no
+//! session to hand it to — it is dropped there, which is what `1d` asks for and
+//! is enforced one layer earlier than this comment used to promise. Everything
+//! after a connection has logged on still reaches the session, unchanged.
+//! [ADR-0022](../../../docs/decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md).
 
 /// What the front of the buffer holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +104,16 @@ impl<const N: usize> Framer<N> {
     #[must_use]
     pub fn all(&self) -> &[u8] {
         &self.buf[..self.len]
+    }
+
+    /// The buffer and how much of it is used, for moving the whole thing.
+    ///
+    /// Used to carry bytes across a channel to a shard thread without a heap
+    /// allocation per connection: the array moves, and nothing is copied that
+    /// a `Vec` would not have copied anyway.
+    #[must_use]
+    pub const fn into_parts(self) -> ([u8; N], usize) {
+        (self.buf, self.len)
     }
 
     /// Drop the first `n` bytes and shuffle the rest down.

@@ -74,6 +74,30 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
         }
     }
 
+    /// Bytes that arrived on this socket **before this connection existed**.
+    ///
+    /// The pre-session stage reads a `Logon` to decide where the socket goes
+    /// ([ADR-0020]), and the session must still see it. This is how it gets
+    /// there: straight into the receive buffer, so the very first `turn` frames
+    /// it exactly as if the engine had read it itself.
+    ///
+    /// `false` when the bytes do not fit, and the caller must then refuse the
+    /// connection. **Not truncated**: half a message would be framed as
+    /// `Garbage` about bytes that were fine when they arrived, which destroys
+    /// the evidence for the defect that caused it.
+    ///
+    /// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
+    #[must_use]
+    pub fn prime(&mut self, bytes: &[u8]) -> bool {
+        let spare = self.rx.spare();
+        if bytes.len() > spare.len() {
+            return false;
+        }
+        spare[..bytes.len()].copy_from_slice(bytes);
+        self.rx.filled(bytes.len());
+        true
+    }
+
     /// The same connection under a different backpressure policy (D10).
     #[must_use]
     pub const fn with_backpressure(mut self, policy: Backpressure) -> Self {

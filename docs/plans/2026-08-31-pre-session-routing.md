@@ -107,8 +107,8 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 | 1 | ✅ [ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md) — tầng pre-session: ai sở hữu socket trước `Logon`, hai giới hạn cứng, `Route` thay `Assign`, băm ổn định là mặc định, `RoundRobin` bị bỏ | — |
 | 2 | ✅ `presession.rs`: đọc `49`/`56` khỏi message trọn vẹn đầu tiên. Test: message đủ, message thiếu, message không phải `35=A`, message rác | 1 |
 | 3 | ✅ `PendingSet`: trần số lượng, logon timeout, vứt kết nối im lặng. Mỗi giới hạn một ca hỏng, so **biến thể lỗi** chứ không `is_err()` | 2 |
-| 4 | `Route` + băm ổn định; `Shards::hand` nhận identity; `serve_sharded_hft` nối tầng mới | 3 |
-| 5 | **`shard_wire.rs` lên 59 với hai shard**, và test đặc tả cũ được viết lại | 4 |
+| 4 | ✅ `Route` + băm ổn định; `Shards::hand` nhận identity; `serve_sharded_hft` nối tầng mới | 3 |
+| 5 | ✅ **`shard_wire.rs` lên 59 với hai shard**, và test đặc tả cũ được viết lại | 4 |
 | 6 | Đo: `Logon` mất thêm bao lâu vì đi qua tầng này, kèm `N` và khối machine của `check-machine.sh` | 5, máy §9 |
 
 ## Cách kiểm chứng
@@ -266,3 +266,47 @@ chưa nhận `Limits` — người dùng chưa với tới được. Nó đi cù
 **270 pass 0 fail**, `--no-default-features` **270**, `--features affinity` **119** ·
 `bench.sh --strict` **OK**, mười hai dòng `allocations:` đều 0 · `check-machine.sh`
 `pass 11 fail 0`.
+
+**2026-09-01 — bước 4 và 5 xong. `shard_wire.rs` đọc 59 với hai shard.**
+
+`Engine::add_with_prefix` + `Connection::prime` + `Framer::all` giao lại **mọi byte đã đọc**;
+`Route`/`HashRoute` thay `Assign`/`RoundRobin`; `Shards<PRE>` mang `Pending` qua kênh (mảng
+di chuyển, không cấp phát); `serve_sharded_hft` chạy `PendingSet` + `Poller` trên luồng
+acceptor, chờ **đúng tới deadline sớm nhất** chứ không theo một chu kỳ ai đó tự chọn.
+
+**Test đặc tả đỏ trước, đúng như plan bắt:** `59 != 57`. Nếu nó còn xanh thì khiếm khuyết mới
+bị đi vòng chứ chưa sửa.
+
+**Băm được ghim vào giá trị cụ thể**, không chỉ "tất định trong tiến trình này":
+`(TW44,ISLD)` → shard 1 của 2 và shard 3 của 8; `(WT,DLSI)` → shard 1 của 8. Một `DefaultHasher`
+có seed theo tiến trình không thể tái lập bốn hằng số đó — đấy là điều test này mua được, và
+`a_route_outside_the_range_is_refused_and_not_clamped` canh việc không lấy dư.
+
+**Và 59/59 không được nhận nguyên xi.** `1b_DuplicateIdentity.def` với `AlreadyLoggedOn.def`
+đều chờ **không có hồi đáp nào** ở kết nối thứ hai — mà một socket bị tầng mới vứt đi cũng cho
+ra đúng thế. Thêm bộ đếm mọi cách tầng này thải socket, khẳng định bằng 0, và `[đo 2026-09-01]`
+**nó đỏ ở `[0, 1, 1, 0]`**: hai kết nối chưa từng tới engine nào.
+
+Cả hai hợp lệ, và cả hai giờ được ghim **theo tên và theo số**:
+
+| File | Comment của chính nó | Tầng mới làm gì |
+|---|---|---|
+| `1e_NotLogonMessage.def` | *"if first message is not a Logon, we must disconnect"* | message trọn vẹn đầu tiên là `35=0` → vứt, không trả lời |
+| `1d_InvalidLogonLengthInvalid.def` | *"if the length of a logon message is invalid, we must disconnect"* | `9=40` nói dối; `Framer` tin `9=` → `Garbage` → vứt |
+
+Một cái **thứ ba** biến mất ở đây sẽ là khiếm khuyết mới đội cùng màu xanh 59/59.
+
+Việc đó đẩy luật garbage sang **nhà thứ hai**, đúng cái mà `frame.rs` đã viết ra là sẽ không
+xảy ra. Sửa comment trong cùng commit, và quyết định ở
+[ADR-0022](../decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md) thay vì để
+người sau đọc `frame.rs` tự phát hiện.
+
+**Gate cho bước 4–5:** `fmt` sạch · `clippy --all-targets` và `--features affinity` đều sạch ·
+`cargo test --all` **272 pass 0 fail**, `--no-default-features` **272**, `--features affinity`
+**122**, `--no-default-features --features affinity` **100** · hai cổng 59 cũ xanh và
+`git diff main -- crates/conformance crates/session tests/wire.rs` **rỗng** — không sửa fixture
+nào · `bench.sh --strict` **OK**, mười hai dòng `allocations:` đều 0 ·
+`check-no-kernel-sleep.sh`, `check-standard-gives-the-core-back.sh`, `check-lint-config.sh`,
+`check-no-optional-deps.sh` đều exit 0 với nửa đỏ của chúng vẫn trượt.
+
+**Còn lại: bước 6** — đo `Logon` mất thêm bao lâu vì đi qua tầng này, kèm `N` và khối machine.

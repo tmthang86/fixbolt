@@ -37,8 +37,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use fixbolt_conformance::script::{Kind, load_all};
+use fixbolt_engine::clock::ManualClock;
+use fixbolt_engine::dispatch::InlineDispatch;
+use fixbolt_engine::journal::Store;
 use fixbolt_engine::presession::{LimitError, Limits, PendingSet, Refused, is_logon};
 use fixbolt_engine::transport::{Io, Loopback, TcpTransport, Transport};
+use fixbolt_engine::wait::Yield;
+use fixbolt_engine::{Application, Config, Engine};
 
 const PRE: usize = 1024;
 const T0: u64 = 1_000_000;
@@ -360,5 +365,102 @@ fn a_refused_connection_sees_eof_on_a_real_socket() {
         first_peer.read(&mut buf).expect("read"),
         0,
         "an expired peer reads end-of-stream too"
+    );
+}
+
+// --- the handover: the session must SEE the Logon the stage read -------------
+
+/// A handler that answers nothing, so what comes back is the session's own.
+struct Silent;
+
+impl Application for Silent {
+    fn on_message(
+        &mut self,
+        _: &[u8],
+        _: u32,
+        _: &[u8],
+        _: &mut [u8],
+    ) -> Option<std::ops::Range<usize>> {
+        None
+    }
+}
+
+type Eng = Engine<
+    Loopback,
+    fixbolt_session::Acceptor,
+    InlineDispatch<Silent>,
+    ManualClock,
+    Yield,
+    Store,
+    256,
+    4096,
+    8192,
+>;
+
+fn engine() -> Eng {
+    Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+        InlineDispatch::new(Silent),
+        ManualClock::at(fixbolt_conformance::script::FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    )
+}
+
+/// What the far end can read back, as text.
+fn heard(far: &mut Loopback) -> String {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    while let Io::Ready(n) = far.recv(&mut buf) {
+        out.extend_from_slice(&buf[..n]);
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The whole point of the stage, end to end: it reads the `Logon`, hands the
+/// socket on, and the session answers as if nothing had happened.
+///
+/// A stage that ate the message it routed by produces an acceptor that accepts
+/// connections and answers nothing, and the symptom is a hung counterparty
+/// rather than an error anywhere.
+#[test]
+fn a_session_primed_with_a_logon_answers_it() {
+    let wire = a_logon();
+    let mut set: PendingSet<Loopback, PRE> = PendingSet::new(limits(4, 30_000));
+    let (near, mut far) = Loopback::pair();
+    assert!(matches!(set.admit(near, T0), Ok(())), "room");
+    assert_eq!(far.send(&wire), Io::Ready(wire.len()));
+    assert_eq!(set.turn(T0 + 1).settled, 1);
+
+    let i = set.settled().expect("settled");
+    let taken = set.take(i).expect("out");
+    let prefix = taken.bytes().to_vec();
+    let mut eng = engine();
+    eng.add_with_prefix(taken.into_transport(), &prefix)
+        .expect("a Logon fits in RX");
+
+    eng.turn();
+    let out = heard(&mut far);
+    assert!(
+        out.contains("35=A\u{1}"),
+        "the session answered the Logon the STAGE read: {out}"
+    );
+    assert!(!out.contains("58="), "and refused nothing: {out}");
+}
+
+#[test]
+fn a_prefix_bigger_than_rx_is_refused_and_not_truncated() {
+    let (near, _far) = Loopback::pair();
+    let mut eng = engine();
+    let huge = vec![b'x'; 4097]; // RX is 4096
+    let err = eng
+        .add_with_prefix(near, &huge)
+        .expect_err("4097 does not fit 4096");
+    assert_eq!(err.got, 4097);
+    assert_eq!(err.capacity, 4096);
+    assert_eq!(
+        eng.connections(),
+        0,
+        "a refused connection must not be half-added"
     );
 }
