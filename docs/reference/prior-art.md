@@ -49,6 +49,52 @@ fixbolt benchmark produces its own.
 | exchange-core (Java, LMAX Disruptor): ~5M ops/s, single order book | project site | Decade-old hardware. Matching is not the bottleneck at any realistic FIX rate |
 | Go channel 4.9–9.4M ops/s; lock-free ring buffer 12–15M ops/s | Go ring-buffer benchmarks | Relevant only as an order-of-magnitude reference for queue handoff cost |
 
+## How other engines admit a counterparty
+
+`[documented 2026-09-01]` Read for [ADR-0026](../decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md).
+**Every figure and API name here is someone else's claim** — nothing in this section was run.
+
+| Engine | How a `Logon` reaches its configuration |
+|---|---|
+| **QuickFIX** | Session identity is `(BeginString, SenderCompID, TargetCompID)`, plus an optional **`SessionQualifier`** to separate otherwise-identical sessions. `SessionSettings` holds one block per session; the incoming triple is matched against them |
+| **QuickFIX/J dynamic acceptors** | `DynamicAcceptorSessionProvider` — a **provider**, not a table. `AcceptorTemplate=Y` marks a block as a template rather than a registered session; `TemplateMapping` maps a sessionID *pattern* (`*` wildcards, `ANY_SESSION`) to a template and the session is materialised on demand |
+| **Artio** | Identity comes from a pluggable **`SessionIdStrategy`** which *may* include **SubID and LocationID**, not only the comp-ID pair. On a `Logon` an **`AuthenticationStrategy`** runs: `authenticateAsync`, then `AuthenticationProxy.accept(…)` — **choosing the FIX dictionary at that moment** — under `authenticationTimeoutInMs`. The accepting process (`FixEngine`) then raises `SessionExistsHandler`, and a `FixLibrary` takes ownership via `requestSession(surrogateSessionId)`; until it does, the engine itself processes heartbeats, gap fills and resend requests |
+
+**What transferred, and it is three things.**
+
+1. **All three decide at the `Logon`, in the accepting stage** — none routes at accept time.
+   [ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md) reached
+   that here from a *conformance* failure (`1b_DuplicateIdentity.def`, 57/59), and the industry is
+   already there for an operational reason. **Two independent roads to one shape is the strongest
+   evidence this document holds about anything.**
+2. **All three are a callback or a provider, not a fixed table.** A static map is the degenerate
+   case. This is what makes authentication, per-counterparty policy and eventual hot reload
+   possible at all, and it is why ADR-0026 chose a trait.
+3. **Identity is not always `(49, 56)`** — Artio's `SessionIdStrategy` may take SubID and
+   LocationID; QuickFIX has `SessionQualifier` for the same need. `presession::Identity` reads the
+   comp-ID pair only, so **a counterparty disambiguating by `50=`/`57=` cannot be served today**.
+   That was found by reading other engines, not by reading FIX.
+
+**Where this design deliberately parts from Artio:** `authenticateAsync` lets an application
+consult a remote service during logon. ADR-0026 decision 4 refuses that — `lookup` is synchronous,
+because the acceptor thread must not block in `hft` and an accept path that awaits the network is
+a denial-of-service surface no logon deadline closes.
+
+## How other engines represent a price
+
+`[documented 2026-09-01]` Read for [ADR-0028](../decisions/ADR-0028-a-decimal-is-a-copy-value-parsed-on-demand.md).
+
+- **Artio** — `DecimalFloat`: the significant digits in a **value** field, the position of the
+  point in a **scale** field. Two integers, `Copy`, no heap, produced on demand.
+- **QuickFIX/Go** — `FIXDecimal`, an arbitrary-precision fixed-point value.
+- **QuickFIX/J** — `double`, and it has been argued about for years.
+
+**This refuted a guess made here.** `PRD.md` open decision 10 suspected that *decimal / price
+types* was mislabelled as a gap — that a typed decimal would be the owned per-message object D2
+forbids. Artio, whose constraints are the same as this project's, has one anyway, **because 16
+bytes of `Copy` is not what D2 forbids**: what D2 forbids is the 8 224-byte `MessageView` that cost
+5.9×. The gap is real and the objection was to a design nobody proposed.
+
 ## Sources
 
 - <https://github.com/matthart1983/nanofix>
@@ -59,3 +105,11 @@ fixbolt benchmark produces its own.
 - <https://github.com/quickfix/quickfix>
 - <https://jamesdbrock.github.io/hffix/>
 - <https://github.com/quickfix/quickfix/issues/38>
+- <https://github.com/artiofix/artio/wiki/Session-Management>
+- <https://javadoc.io/static/uk.co.real-logic/artio-core/0.121/uk/co/real_logic/artio/engine/EngineConfiguration.html>
+- <https://github.com/artiofix/artio/blob/master/artio-codecs/src/main/java/uk/co/real_logic/artio/fields/DecimalFloat.java>
+- <https://javadoc.io/static/org.quickfixj/quickfixj-core/2.3.0/quickfix/mina/acceptor/DynamicAcceptorSessionProvider.html>
+- <https://www.quickfixj.org/usermanual/2.3.0/usage/acceptor_dynamic.html>
+- <https://quickfixengine.org/c/documentation/getting-started/configuration.html>
+- <https://github.com/quickfixgo/quickfix/blob/main/fix_decimal.go>
+- <https://www.onixs.biz/insights/understanding-fix-drop-copy.html> — drop copy as an audit topology (ADR-0027)

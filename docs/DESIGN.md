@@ -463,12 +463,21 @@ default.**
 paragraph asserts.** `fixbolt_engine::affinity::pin_current_thread` pins the calling thread and
 confirms it with `sched_getaffinity`, and `tests/affinity.rs` watches the scheduler's own
 `processor` field while the thread works — reversal: with the pin removed the same thread was
-observed on **cpu0, cpu4 and cpu5** in one run. **What is not built yet** is refusing a bad core
-(offline, unisolated, an SMT sibling of another shard) and pinning the journal writer and the
-ring consumer; those are steps 3 and 5 of
-[threads-and-affinity](plans/2026-08-30-threads-and-affinity.md), and until they land `STATUS.md`
-open item 21 stays open. The engine also still does not shard — one `Engine` per core is the
-caller's arrangement (`GUIDE.md` §1a).
+observed on **cpu0, cpu4 and cpu5** in one run.
+
+`[2026-08-31]` **the rest of that plan landed, and it closed all six steps.** `Topology` and
+`ShardPlan::validate()` refuse a core that is absent, offline, named twice, an SMT sibling of
+another in the plan, or — for shard cores — outside `isolcpus`, **before any thread exists**;
+`affinity::spawn_pinned` and `journal::FileJournal::open_pinned` give the threads this crate
+starts a home and report back the core they landed on. **And the engine shards**:
+`shard::Shards` runs one pinned engine per core and `[2026-09-01]` routes each socket by the
+identity in its `Logon` rather than by accept order
+([ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)), which is
+what makes the acceptance corpus score 59 through two shards.
+
+**What is left of open item 21 is one entry point**: `serve_hft` pins nothing. It is the
+single-threaded convenience and it spawns no engine thread of its own, so the thread that calls
+it is the caller's to pin — stated in `GUIDE.md` §9 rather than left for a reader to discover.
 
 **In `hft`,** the engine thread is pinned to an isolated core and spins on non-blocking
 sockets. No `epoll_wait`, no condition variables, no futex on the hot path.
@@ -829,16 +838,27 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
 | Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job. **`[measured 2026-08-30]` the workspace-wide command alone is not enough**: `cargo test --all --no-default-features` still built `libc`, because `tools/w2w` depends on `fixbolt-engine` with defaults and cargo unifies features across one invocation — the flag under test was switched back on by a sibling crate. See [reference/feature-flags-unify-across-a-workspace.md](reference/feature-flags-unify-across-a-workspace.md) |
 | An optional dependency is really optional | absent from the crate's graph with no features on, **and** the crate still builds and tests that way | `scripts/check-no-optional-deps.sh`, run by the same CI job, **per crate** — the only scope where `--no-default-features` means what it reads as. Reversal: removing `optional = true` from `libc` turns it red with the graph printed |
-| No documentation link points at a missing file | 155 internal links resolve | `scripts/check-links.py`, run in CI |
+| No documentation link points at a missing file | `[measured 2026-09-01]` **581 internal links** across 173 files resolve | `scripts/check-links.py`, run in CI |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every
 other row is an internal number; without this one they are unfalsifiable.
 
-**Most of these rows run today. The rest cannot, and CI says so out loud.** The workspace has
-no crates, so `fmt`, `clippy` and `test` have nothing to check — the CI job emits a warning
-annotation saying it *skipped* rather than passing, because a green tick that means "there was
-nothing to look at" is the exact failure `CLAUDE.md` §10 names.
+**Most of these rows run today.** The ones that do not are named in the table itself — the
+initiator interop job, the wire-to-wire figures, and the TLS-mode gate that does not exist.
+
+`[2026-09-01]` **and one thing in CI is worth reading as a hazard rather than as a feature.**
+Every crate-dependent job in `.github/workflows/ci.yml` is still guarded by
+`if: steps.ws.outputs.count != '0'`, with a warning annotation for the case where the workspace
+holds no crates. That guard was written when it held none. **It now holds six**, so the only
+way that branch can be taken is a broken checkout or a broken manifest — and if it ever is, the
+job goes *green* having run `fmt`, `clippy` and `test` on nothing, behind an annotation nobody
+reads. That is the shape `STATUS.md` open item 25 names — **a check that passes because it
+measured nothing** — and it is the fourth instance, after a benchmark whose work the optimiser
+deleted, an allocation guard whose window excluded the operation, and a machine setting outside
+§9 that made every number faster. It has not fired and it is **not** fixed here; it is item 26,
+written down so the next person to touch that file makes `count == 0` fatal instead of
+advisory, and proves it by emptying the workspace members and watching CI go red.
 
 ### Timing gates are per machine, not absolute — ADR-0016
 

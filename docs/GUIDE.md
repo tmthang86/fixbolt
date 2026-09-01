@@ -151,29 +151,37 @@ across processes** — the same counterparty has to reach the same shard after a
 single-logon rule breaks again in a way that every test passes. `DefaultHasher` is seeded per
 process and is the trap here.
 
-**Everything below is what the engine still does not do for you.**
+**Everything below is what is still yours to decide, and what the engine will not decide
+for you.**
 
-**The engine does not shard for you.** `[2026-08-30]` `Engine` holds a flat
-`Vec<Connection>`, `turn()` sweeps all of them and `run()` is `loop { turn() }`. The only
-thread the crate spawns is the journal's async writer. **You build the sharding**, and the
-pieces are there because `Acceptor` and `Engine` are separate:
+**Building it by hand, if `serve_sharded_hft` is not the shape you want.** `Engine` holds a
+flat `Vec<Connection>`, `turn()` sweeps all of them and `run()` is `loop { turn() }`, so one
+`Engine` is one shard. The pieces are separate on purpose:
 
 - `Acceptor::bind(addr)` / `accept() -> Option<TcpTransport>` — one listener
 - `Engine::add(transport) -> ConnId` — hand a socket to whichever engine owns that shard
 - one `Engine` per thread, each pinned to its own core, each running `turn()` in its own loop
 
+**If you do compose them yourself, you inherit the defect `serve_sharded_hft` was changed to
+fix**: routing a socket before its `Logon` is read cannot keep one identity on one engine, and
+the acceptance corpus scores 57 rather than 59 when it does. Read `presession::identity_of`
+and `Route` before writing an accept loop of your own.
+
 `serve()` is the single-threaded convenience that composes those three. It is the right
 starting point and the wrong production shape for a gateway; read it as an example rather than
 as the API.
 
-**What you own once you shard.** One of these is now partly provided; the rest are not.
+**What you still own once you shard.**
 
-- **Which shard a session lands on.** Round-robin is fine until sessions are unequal; there is
-  no rebalancing, and a `ConnId` never moves between engines.
+- **Which shard a session lands on, if the default hash is not what you want.** `HashRoute` is
+  stable across processes and spreads by identity; it does **not** rebalance, it does not know
+  that one counterparty sends a hundred times more than another, and a `ConnId` never moves
+  between engines. `[2026-09-01]` **round-robin is not an option any more** — it is the policy
+  that produced the single-logon defect above, and it was deleted rather than documented.
 - ~~**Handing the socket across the thread boundary.**~~ `[2026-08-31]` **the runtime does this
   now**: `Shards::hand` sends the `TcpTransport` to the owning thread over a channel that
   `[measured]` makes no syscall and no allocation, and `serve_sharded_hft` is the whole accept
-  loop. What is still yours is the line above it — *which* shard.
+  loop.
 - **Pinning — the engine now does the pinning, you still choose the core.** `[2026-08-31]`
   `fixbolt_engine::affinity` is behind the `affinity` feature, Linux only. Call
   `pin_current_thread(CoreId(6))` **from inside the thread, as its first act**, and check the
@@ -489,13 +497,25 @@ Stated so you do not discover it in production:
 - **It does not validate application-message semantics.** The dictionary validation is
   session-layer: required fields, types, enum values, structure. Whether a `NewOrderSingle`
   makes business sense is yours.
-- **It does not resume sequence numbers across a restart yet.** `connect` resets
-  unconditionally; [ADR-0010](decisions/ADR-0010-a-reconnect-is-not-a-restart.md) is the
-  decision to change that — **`Accepted` 2026-08-30, not yet implemented**.
+- **It does not decide *when* to resume sequence numbers — you do.** `[2026-08-31]` the
+  mechanism exists: `Session::resume(cfg, next_out, next_in)` carries numbers across a restart
+  and `Session::next_out()` / `next_in()` are what you persist
+  ([ADR-0010](decisions/ADR-0010-a-reconnect-is-not-a-restart.md)). What the engine will never
+  do is guess: a session built with `Session::new` has persisted nothing and resets, so
+  **reading the journal back and choosing `new` or `resume` is your call**, and getting it
+  wrong is a sequence-number dispute with your counterparty rather than a compile error.
 - **It has no session schedule.** Start time, end time and weekday resets are a known gap
   (`PRD.md`), so nothing ends a session on a clock.
-- **It does not pin its own threads.** `DESIGN.md` D8 says the engine thread is pinned to an
-  isolated core; `[2026-08-30]` nothing in the code does that — `STATUS.md` open item 21.
-  **Pin it yourself**, with `taskset` or `sched_setaffinity`, or D8's premise does not hold.
-- **It is not TLS-complete.** ADR-0005 is accepted on reasoning; the kTLS question is only now
-  answerable.
+- **`serve_hft` pins nothing, and it is the one entry point that does not.** `[2026-08-31]`
+  `fixbolt_engine::affinity` pins a thread and reads the core back, and `serve_sharded_hft`
+  pins **every engine thread it starts** (§1a). `serve_hft` starts no thread at all — it runs
+  the engine on the thread that called it — so **that thread is yours to pin**, with
+  `affinity::pin_current_thread` before the call or `taskset` around the process. Skip it and
+  D8's premise does not hold for that deployment, and §8's budget is not about your process.
+  `STATUS.md` open item 21, narrowed to exactly this.
+- **It is not TLS-complete.** `[2026-08-31]` ADR-0005's load-bearing question is **answered**:
+  `ktls-core` can be driven from a plain non-blocking socket with no async runtime, under four
+  conditions ([ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md)). That
+  is a spike, not a feature — **no TLS code is merged, no TLS latency number is published, and
+  there is no plan yet**. Which kernel and which cipher suites are the floor, and what tells
+  you a session fell back to the userspace path, are both still open.
