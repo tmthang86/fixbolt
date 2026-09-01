@@ -254,3 +254,85 @@ sạch.
 **Chưa làm, và vì sao.** Chưa đụng `presession.rs` — đó là bước 2. Hai script Linux-only chưa
 chạy được ở đây; **chúng không chạy ≠ chúng xanh**. Chưa có con số nanosecond nào, và sẽ không
 có từ máy này.
+
+---
+
+### Bước 2 — `Entry`, `Registry`, `Table`, và `lookup` từ `PendingSet` · 2026-09-01
+
+**Dựng gì.** `presession::Entry`, `Registry` (trait), `Table` (mặc định, quét tuyến tính,
+**rỗng từ chối tất cả**) và `One` (registry đúng một counterparty). `PendingSet<T, PRE>` →
+`PendingSet<T, R, PRE>`; `Progress` thêm `unknown`; `Pending` thêm `config()`. Trên
+`session`: `Config` thêm `serves`, `inbound_sender_matches`, `inbound_target_matches` — và
+**chỗ kiểm tra `Logon` của session gọi đúng hai predicate đó**, nên phép so comp ID chỉ có
+một nhà. `serve_sharded_hft` giữ nguyên chữ ký và tự dựng `One` bên trong; nâng registry lên
+chữ ký công khai là bước 4.
+
+**Hai test đặc tả của bước 1 xanh mà không bị sửa một dòng nào** — chỉ `gateway()` đổi. Đó
+là hình dạng bước 1 được viết ra để chứng minh được điều này.
+
+**Gate đã chạy, trên máy Mac:**
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo test --all --no-fail-fast` | **57 binary, 280 passed, 0 failed** (nền 272 + 8 test mới) |
+| `cargo test --all --no-default-features --no-fail-fast` | **280 passed, 0 failed** |
+| `cargo bench --bench alloc` | `pending-idle 0 pending-busy 0 pending-cycle 0` — vẫn 0 với `lookup` trên đường |
+| `scripts/check-no-optional-deps.sh` | ok, cả hai khẳng định |
+| `cargo fmt`, `cargo clippy --all-targets --all-features -D warnings` | sạch |
+
+**Hai phép đảo ngược, mỗi cái đỏ đúng chỗ định chứng minh:**
+
+- `Table::lookup` bỏ qua identity, trả `entries.first()` → 4 test đỏ, gồm cả hai test đặc
+  tả. `an_empty_registry_refuses_every_connection` vẫn xanh — **đúng**, vì bảng rỗng không
+  có phần tử đầu; nó cần phép đảo riêng.
+- `Step::Unknown` giữ socket thay vì bỏ → `an_empty_registry_refuses_every_connection` đỏ
+  đúng dòng `"the socket was let go of, not held"`.
+
+Khôi phục, 8/8 xanh.
+
+#### Chỗ plan sai, và nó tốn hai vòng CI để thấy
+
+Plan viết gate bước 2 là *"số socket bị loại vẫn đúng **2**, đúng tên"*. **Sai.** Registry
+từ chối identity lạ ở tầng pre-session, sớm hơn một tầng so với session, nên
+`1c_InvalidSenderCompID.def` (`49=WT`) và `1c_InvalidTargetCompID.def` (`56=DLSI`) chuyển
+sang bị loại ở đây. Con số đúng là **4**, và đó là
+[ADR-0029](../decisions/ADR-0029-the-pre-session-stage-enforces-four-definitions.md), sửa
+số của ADR-0022.
+
+**Vòng CI thứ nhất nói ngược lại, và nó không phải bằng chứng.** `[measured 2026-09-01]` run
+[33509748294](https://github.com/tmthang86/fixbolt/actions/runs/33509748294) **xanh** trên
+Linux, có `--features affinity`, tức `shard_wire.rs` thật sự chạy. Nhưng `pump()` đọc bốn
+trường của `Progress` và registry vừa thêm trường thứ năm — **hai kết nối biến mất vào một ô
+đếm không ai đọc**, trong khi `not_logon == 1`, `gone == 1`, `[timed_out, unrouted] == [0,0]`
+và 59/59 đều vẫn đúng. Comment ngay dưới đó viết *"a THIRD connection disappearing here
+would be a new defect wearing the same green"*: đúng về hình dạng, mù về thực thể, vì cái
+bẫy phụ thuộc vào **có người nhớ nới nó ra**.
+
+Sửa bằng máy chứ không bằng thói quen — `pump()` giờ phá cấu trúc `Progress` từng trường,
+**không có `..`**, nên lý do loại bỏ tiếp theo sẽ làm gãy build tại đó. Ghi lại thành
+[a-counter-that-must-be-remembered-is-not-a-counter.md](../reference/a-counter-that-must-be-remembered-is-not-a-counter.md).
+
+**Vòng CI thứ hai là phép đo.** `[measured 2026-09-01]` run
+[33512983304](https://github.com/tmthang86/fixbolt/actions/runs/33512983304), Linux,
+`cargo test -p fixbolt-engine --features affinity`:
+
+```
+test one_shard_passes_all_fifty_nine_at_any_settle_bound ... ok
+test two_shards_pass_all_fifty_nine_because_identity_decides_the_shard ... ok
+```
+
+`unknown == 2`, và **corpus vẫn 59 qua một shard và qua hai**. Quan sát được từ dây không
+đổi; chỉ tầng sinh ra nó dời đi.
+
+**Vì sao `shard_wire` không chạy được ở đây.** Nó là
+`#![cfg(all(feature = "affinity", target_os = "linux"))]`. Trên Mac nó không compile, không
+chạy, và clippy không đọc nó. Plan nói mọi gate của nó chạy được trên macOS — **điều đó sai
+với gate này**, và đó là lý do hai commit được đẩy lên đỏ/chưa-chắc có chủ đích thay vì đoán.
+
+**Tài liệu đã cập nhật trong cùng dải commit này:** `DESIGN.md` §3 (dòng `presession` part
+three), `CHANGELOG.md` (mục BREAKING), ADR-0029, ADR-0022 (header trỏ tới ADR-0029),
+`reference/a-counter-that-must-be-remembered-is-not-a-counter.md`.
+
+**Chưa làm.** `GUIDE.md` §1a, `PRD.md` §3, `STATUS.md` item 28 — chờ bước 4 chốt chữ ký
+entry point, rồi đóng ở bước 6. Chưa có con số ns nào. Hai script Linux-only vẫn chưa chạy
+được ở đây.

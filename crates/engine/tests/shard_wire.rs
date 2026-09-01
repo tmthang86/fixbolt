@@ -550,18 +550,17 @@ fn two_shards_pass_all_fifty_nine_because_identity_decides_the_shard() {
          framer takes at its word, leaving a frame that can never be a message \
          — ADR-0022"
     );
-    // MEASURING, NOT YET PINNED. ADR-0026's registry refuses an identity it does
-    // not serve, one stage earlier than the session used to. A probe over the
-    // corpus on a laptop says exactly two Logons are refused that way —
-    // `1c_InvalidSenderCompID.def` (49=WT) and `1c_InvalidTargetCompID.def`
-    // (56=DLSI), both of whose entire subject is that the link must be dropped.
-    // **A probe is not this test.** The number is asserted here so CI reports
-    // it; if it is 2, ADR-0022 is amended to say four definitions and this
-    // comment becomes a pin like the two above.
+    // Pinned, `[measured 2026-09-01]` by CI run 33512983304 on Linux with
+    // `--features affinity`. ADR-0026's registry refuses an identity it does not
+    // serve, one stage earlier than the session used to, and these two are the
+    // only Logons in the corpus a one-counterparty registry does not recognise.
+    // ADR-0029 is the amendment that made ADR-0022's count four.
     assert_eq!(
         unknown, 2,
-        "the registry refuses exactly the two 1c definitions — if this is not 2, \
-         the prediction was wrong and the design question reopens"
+        "exactly two: 1c_InvalidSenderCompID.def (49=WT) and \
+         1c_InvalidTargetCompID.def (56=DLSI), both of whose own comments say the \
+         link must be dropped, and both of which the registry now refuses before \
+         a session exists — ADR-0029"
     );
 
     // Which leaves the two that mattered. `1b_DuplicateIdentity.def` and

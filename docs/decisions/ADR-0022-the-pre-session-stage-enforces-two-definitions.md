@@ -4,6 +4,12 @@
 > [ADR-0020](ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)
 > decision 9.** Everything else in ADR-0020 stands.
 >
+> **The count of two is superseded by
+> [ADR-0029](ADR-0029-the-pre-session-stage-enforces-four-definitions.md) — it is four.**
+> The counterparty registry ([ADR-0026](ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md))
+> moved `1c_InvalidSenderCompID.def` and `1c_InvalidTargetCompID.def` onto this stage too.
+> The argument below is unchanged and ADR-0029 reuses it; only the number is wrong.
+>
 > §5 forbids editing an accepted ADR's substance, so this arrives as its own
 > decision. **It exists because a test found it, not because anyone predicted
 > it** — which is the part worth keeping in the record.

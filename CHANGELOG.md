@@ -192,6 +192,36 @@ below describe what a first release would contain.
       Allocation: three cases in `benches/alloc.rs`, all 0, and the third proven to go
       red at 7 allocations when the one-time reservation is removed.
 
+  - **`presession`, part four — a counterparty registry, and it is BREAKING.** `Registry`,
+    `Entry`, `Table` and `One` are new; `PendingSet<T, PRE>` becomes
+    `PendingSet<T, R, PRE>` and `PendingSet::new` takes the registry; `Progress` gains
+    `unknown`; `Pending` gains `config()`. On `fixbolt-session`, `Config` gains
+    `serves`, `inbound_sender_matches` and `inbound_target_matches`.
+    [ADR-0026](docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md).
+    - **A trait, not a map.** `lookup(Identity) -> Option<&Entry>`, and `Table` is one
+      implementation of it. `Option` rather than `Result`, so there is nothing to
+      `unwrap`; **synchronous**, so an accept path cannot await a network call, which is
+      where this deliberately parts from Artio's `authenticateAsync`; and returning `None`
+      **is** the authentication hook — there will be no second `AuthStrategy` beside it.
+    - **An empty registry refuses every connection**, and there is no wildcard. An
+      acceptor that admits an identity nobody configured is an open port.
+    - **`Config::serves` is the only comparison.** The registry and the session do not
+      each own a copy — the session's `Logon` check calls the same two predicates
+      `serves` is composed from.
+    - `[measured 2026-09-01]` the refusal for an unknown identity moves one stage
+      earlier, so `1c_InvalidSenderCompID.def` and `1c_InvalidTargetCompID.def` are now
+      scored by the pre-session stage. **The corpus is unmoved: 59 through one shard and
+      through two**, CI run
+      [33512983304](https://github.com/tmthang86/fixbolt/actions/runs/33512983304) —
+      [ADR-0029](docs/decisions/ADR-0029-the-pre-session-stage-enforces-four-definitions.md),
+      which amends ADR-0022's count of two to four.
+    - `[measured 2026-09-01]` 8 tests, two reversals — `lookup` ignoring the identity, and
+      an unknown identity held rather than dropped — each red on the assertion naming it.
+      Allocation: `benches/alloc.rs` still reports 0 for all three pre-session cases with
+      `lookup` on the path.
+    - `serve`, `serve_hft` and `serve_sharded_hft` still take a single `Config`; lifting a
+      registry into them is the next step and will be its own entry.
+
   - **`presession`, part three, and it is a BREAKING change to `shard`.** `Assign`,
     `RoundRobin` and `Shards::with_assign` are **removed**, replaced by `Route`,
     `HashRoute` and `Shards::with_route`; `ShardError::BadAssignment` becomes `BadRoute`
