@@ -94,8 +94,8 @@ Không có dòng code thư viện nào thay đổi. Hai điều vẫn liên quan
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
 | 1 | Ghi **dự đoán** và ngưỡng quyết định chạy nhánh B, trước khi reboot | — |
-| 2 | Chủ máy boot vào nhánh A (`mitigations=off`) | 1 |
-| 3 | Đo: `measure-isolation-cost.sh`, `bench.sh` (không `--strict`), `--jitter` | 2 |
+| 2 | ✅ Chủ máy boot vào nhánh A (`mitigations=off`) | 1 |
+| 3 | ✅ Đo: `measure-isolation-cost.sh`, `bench.sh` (không `--strict`), `--jitter` | 2 |
 | 4 | Nếu vượt ngưỡng: chủ máy boot vào nhánh B (`vmscape=off`), đo lại | 3 |
 | 5 | Chủ máy khôi phục dòng §9; `check-machine.sh` và `bench.sh --strict` phải đọc lại đúng như trước | 3 hoặc 4 |
 | 6 | Viết `measured-costs.md`; §9 và ADR nếu cần; đóng item 22 | 5 |
@@ -165,4 +165,39 @@ user space; nếu chúng động thì cái đổi giữa hai lần boot không p
 
 ## Nhật ký giao hàng
 
-Chưa mở.
+**2026-09-01 — nhánh A xong. Con số lớn hơn mọi thứ đã đo trong repo này.**
+
+`mitigations=off`, `check-machine.sh` đọc **`pass 11 fail 0 unknown 1`** — đúng như plan ghi
+trước: checklist không phân biệt được. Mọi số dưới đây mang nhãn `mitigations=off`.
+
+**Mỏ neo giữ:** `user_loop` 1.0566–1.0569 ns/iter so với 1.0577–1.0581 khi mitigation bật —
+lệch **0.1%**, trong ngưỡng 0.5%. Hai lần boot so được với nhau.
+
+| Case | mitigation BẬT | mitigation TẮT | đổi |
+|---|---|---|---|
+| `getpid` trần | 154.5 ns | **59.45 ns** | **−61.5%** |
+| `recv on a quiet socket` | 420.5 | **156.9** | **−62.7%** |
+| `engine turn, 1 idle sessions` | 448.9 | **175.2** | **−61.0%** |
+| `engine turn, 4 idle sessions` | 1807.1 | 712.3 | −60.6% |
+| `engine turn, 16 idle sessions` | 7333.5 | 2985.6 | −59.3% |
+| `presession sweep, 1 quiet sockets` | 435.9 | 165.4 | −62.0% |
+| `presession sweep, 16 quiet sockets` | 6819.5 | 2610.3 | −61.7% |
+
+**Nhóm đối chứng — 13 case thuần user space:** −4.1% đến +4.1%, **không theo hướng nào**.
+`parse NewOrderSingle` +2.0%, `ring, one way` +0.3%, `encode ExecutionReport` −0.3%,
+`SendingTime` và `inline deliver` đúng bằng 0.0%. Kể cả
+`presession, read and route an identity` — thuần byte, không syscall — đứng yên ở −0.2%.
+Đây là điều bác bỏ được lời giải thích, và nó không bị bác bỏ.
+
+**Đuôi cũng đi theo.** `--jitter`, 5 triệu lần gọi: p50 **216 → 80 ns**, và **p99.99 đi từ
+2848 xuống 88** — phẳng hết ra tới p99.99, vì cái từng chi phối đuôi giờ nhỏ hơn tick.
+
+**Và một điều chưa giải thích được, nên nó thành lý do chạy nhánh B.** Tiết kiệm tuyệt đối
+**không bằng nhau giữa các syscall**: `getpid` bớt **95 ns**, `recv` bớt **264 ns**. Nếu cái
+giá chỉ là một IBPB cố định mỗi lần ra khỏi kernel thì cả hai phải bớt như nhau. Giả thuyết có
+tên: `getpid` là syscall lá, gần như không có nhánh gián tiếp; `recv` đi qua
+`sock->ops->recvmsg` và chuỗi dispatch của giao thức, nên nó trả thêm **retpoline** theo số
+nhánh gián tiếp của chính nó. **Đó là giả thuyết, không phải phép đo**, và nhánh B tách được:
+`vmscape=off` một mình để lại retpoline bật.
+
+Ngưỡng ghi trước là ≥20 ns; đo được 95. **Nhánh B chạy.**
