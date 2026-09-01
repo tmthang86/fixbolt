@@ -1,6 +1,6 @@
 # Đọc `Logon` trước, rồi mới giao socket cho shard
 
-> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** **Đã duyệt 2026-08-31**
+> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** **Xong 2026-09-01** — cả sáu bước
 > **Phạm vi:** `engine` — một tầng mới giữa acceptor và shard. Không đụng `codec`, `session`.
 >
 > **Chủ dự án chọn cách A ngày 2026-08-31**, sau khi được nêu hai đường: tầng pre-session, hay
@@ -109,7 +109,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 | 3 | ✅ `PendingSet`: trần số lượng, logon timeout, vứt kết nối im lặng. Mỗi giới hạn một ca hỏng, so **biến thể lỗi** chứ không `is_err()` | 2 |
 | 4 | ✅ `Route` + băm ổn định; `Shards::hand` nhận identity; `serve_sharded_hft` nối tầng mới | 3 |
 | 5 | ✅ **`shard_wire.rs` lên 59 với hai shard**, và test đặc tả cũ được viết lại | 4 |
-| 6 | Đo: `Logon` mất thêm bao lâu vì đi qua tầng này, kèm `N` và khối machine của `check-machine.sh` | 5, máy §9 |
+| 6 | ✅ Đo: `Logon` mất thêm bao lâu vì đi qua tầng này, kèm `N` và khối machine của `check-machine.sh` | 5, máy §9 |
 
 ## Cách kiểm chứng
 
@@ -310,3 +310,35 @@ nào · `bench.sh --strict` **OK**, mười hai dòng `allocations:` đều 0 ·
 `check-no-optional-deps.sh` đều exit 0 với nửa đỏ của chúng vẫn trượt.
 
 **Còn lại: bước 6** — đo `Logon` mất thêm bao lâu vì đi qua tầng này, kèm `N` và khối machine.
+
+**2026-09-01 — bước 6 xong, plan đóng.**
+
+`crates/engine/benches/presession.rs`, ba case, baseline từ **20 lượt `bench.sh` hợp lệ** trên
+dòng §9 của ADR-0021, `check-machine.sh` đọc `pass 11 fail 0 unknown 1`, max/median 1.006–1.011:
+
+| Case | ns/op | mỗi socket |
+|---|---|---|
+| `presession sweep, 1 quiet sockets` | 435.9 | 435.9 |
+| `presession sweep, 16 quiet sockets` | 6819.5 | **426.2** |
+| `presession, read and route an identity` | **84.0** | một lần cho cả đời kết nối |
+
+Quét của tầng này **rẻ hơn** một lượt `Engine::turn` cho mỗi socket (426.2 so với 458.3) — đúng
+hình dạng phải có, vì nó không có session machine, không journal, không dispatch. Phần việc
+riêng của nó trên `recv` là **~15 ns**, so với ~28 ns của engine. Quyết định định tuyến tốn
+**84 ns, một lần** — một phần năm của một `recv`.
+
+`HashRoute`/`Route` được **chuyển từ `shard.rs` sang `presession.rs`** trong bước này, vì
+`bench.sh` chạy `cargo bench` **không kèm feature** và `shard` nằm sau `affinity`. Đó cũng là
+chỗ đúng hơn: định tuyến theo identity chẳng liên quan gì tới ghim lõi. `shard` re-export.
+
+**Cái KHÔNG đo được, và nói thẳng ra:** độ trễ thực tế mà một `Logon` phải trả thêm. Bảng trên
+là giá của *công việc*; đường kết nối còn thêm một chặng kênh và một lần **bàn giao qua luồng**
+— socket đọc ở luồng acceptor, phục vụ ở luồng shard — và không dòng nào ở đây nói gì về nó.
+Một bench hình dạng này không đo được: setup mỗi vòng lặp sẽ phải mở socket mới **bên trong**
+cửa sổ đo, tức là đo `TcpStream::connect`. Thứ đo được nó là `tools/w2w`, tức **open item 6**,
+và nó chưa từng chạy.
+
+**Gate đóng plan:** `fmt` sạch · `clippy` sạch ở cả hai feature set · `cargo test --all`
+**272/0**, `--no-default-features` **272/0**, `--features affinity` **122/0** ·
+`bench.sh --strict` **OK** với 12 target, 0 vượt baseline, 0 thiếu baseline ·
+`check-machine.sh` `pass 11 fail 0 unknown 1`.

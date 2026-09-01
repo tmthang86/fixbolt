@@ -427,3 +427,79 @@ enum Step {
     NotLogon,
     Gone,
 }
+
+// --- choosing a shard --------------------------------------------------------
+
+/// Which shard takes a connection, once it has said who it is.
+///
+/// [ADR-0015] decision 7: this belongs to the caller. Real deployments shard by
+/// counterparty, and the engine does not know which counterparty matters.
+///
+/// It is asked **after** the `Logon`, not at accept time — which is the whole
+/// reason the pre-session stage exists ([ADR-0020]). Its predecessor `Assign`
+/// was asked at accept, when nothing knew whose socket it was, and could not
+/// have answered this question however it was written.
+///
+/// [ADR-0015]: ../../../docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md
+/// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
+pub trait Route: Send {
+    /// A shard index in `0..shards`. Out of range is refused, not clamped.
+    fn shard_for(&mut self, id: Identity<'_>, shards: usize) -> usize;
+}
+
+/// The default: a stable hash of `(sender, target)`.
+///
+/// **Stable is the requirement, not fast.** The single-logon rule can only
+/// count connections one engine holds, so the same counterparty has to reach
+/// the same shard on this run, on the next run, and after a reconnect.
+///
+/// `std::collections::hash_map::DefaultHasher` is therefore not usable here and
+/// [ADR-0020] decision 7 says so: it is seeded per process, so two runs of one
+/// binary would route the same counterparty differently, and the rule would
+/// hold within a run and break across a restart — the worst shape a bug can
+/// have, because every test passes.
+///
+/// Hashing is the sensible default and explicitly not the final answer. A real
+/// deployment shards by counterparty deliberately; [`Route`] is the seam.
+///
+/// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HashRoute;
+
+/// FNV-1a, 64-bit, written out rather than borrowed from `std`.
+///
+/// The separator between the two halves is not decoration: without it
+/// `("AB", "C")` and `("A", "BC")` hash alike, and two different counterparties
+/// would share a shard for a reason nobody could see.
+const fn fnv1a(sender: &[u8], target: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = OFFSET;
+    let mut i = 0;
+    while i < sender.len() {
+        h = (h ^ sender[i] as u64).wrapping_mul(PRIME);
+        i += 1;
+    }
+    // SOH, the separator FIX itself uses, and a byte no comp ID may contain.
+    h = (h ^ 1u64).wrapping_mul(PRIME);
+    let mut j = 0;
+    while j < target.len() {
+        h = (h ^ target[j] as u64).wrapping_mul(PRIME);
+        j += 1;
+    }
+    h
+}
+
+impl Route for HashRoute {
+    fn shard_for(&mut self, id: Identity<'_>, shards: usize) -> usize {
+        if shards == 0 {
+            return 0;
+        }
+        // `as u64` on a usize is lossless on every target this builds for, and
+        // the remainder is then in range by construction.
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            (fnv1a(id.sender, id.target) % shards as u64) as usize
+        }
+    }
+}

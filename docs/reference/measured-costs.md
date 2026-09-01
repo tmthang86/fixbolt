@@ -2012,3 +2012,55 @@ The cheap defence is not a better experiment; it is one extra reading. **After y
 setting for good, re-measure the arm you were treating as the baseline.** If the baseline moved,
 the setting was never as scoped as its interface suggested — and everything measured before it
 was removed carries the difference.
+
+---
+
+## What the pre-session stage costs a connection — 2026-09-01
+
+`[measured 2026-08-31]` sharding took the acceptance corpus from **59 to 57**, and
+`[measured 2026-09-01]` a stage that holds each socket until its `Logon` arrives puts it back
+to **59 through two shards** ([ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)).
+This is what that stage costs. **A fix nobody has priced is a fix that gets quietly reverted
+the first time somebody measures the connection path.**
+
+`[measured 2026-09-01]` AMD Ryzen 7 3700X, Linux 7.0.0-30-generic, `check-machine.sh` reading
+**`pass 11 fail 0 unknown 1`** on the [ADR-0021](../decisions/ADR-0021-nohz-full-leaves-section-9.md)
+§9 kernel command line, `crates/engine/benches/presession.rs`, medians of **20 qualifying
+`scripts/bench.sh` runs**, max/median 1.006–1.011:
+
+| Case | ns/op | per socket |
+|---|---|---|
+| `recv on a quiet socket` | 420.5 | — |
+| **`presession sweep, 1 quiet sockets`** | **435.9** | 435.9 |
+| **`presession sweep, 16 quiet sockets`** | **6819.5** | **426.2** |
+| `engine turn, 1 idle sessions` | 448.9 | 448.9 |
+| `engine turn, 16 idle sessions` | 7333.5 | 458.3 |
+| **`presession, read and route an identity`** | **84.0** | once per connection |
+
+### Reading it
+
+**The sweep is the syscall, again.** The stage's own work over the bare `recv` it is made of is
+**~15 ns per socket**, against the engine's **~28 ns** for a session it actually owns — which is
+the right shape, because the stage has no session machine, no journal and no dispatch. Waiting
+for a `Logon` is measurably *cheaper* per socket than serving one.
+
+**The decision costs 84 ns, once.** Reading `49=` and `56=` off the bytes and hashing them to a
+shard is **a fifth of one `recv`**, and it happens once in the life of a connection. Set against
+this project's own numbers, it is two thirds of a `parse NewOrderSingle` (121.8 ns) — for
+something a session does not do at all.
+
+### What this does NOT measure, and it is the number somebody will want
+
+**The wall-clock latency a `Logon` gains by going through the stage.** These are the costs of the
+*work*; the connection path also gains a channel hop and a **cross-thread handoff** — the socket
+is read on the acceptor thread and served on a shard thread — and neither is in this table.
+Nothing here says whether that is 2 µs or 20.
+
+It is not measurable by a bench of this shape: per-iteration setup would need a fresh socket pair
+inside the timed window, which would measure `TcpStream::connect`. **The thing that measures it is
+`tools/w2w`** — a load generator on a separate machine, timestamping the wire — which is
+`STATUS.md` open item 6 and has never been run.
+
+Stated plainly rather than estimated: **the stage's own work is priced; the handoff it introduces
+is not.** What is known is where it lands — on the connection path, once per counterparty, and
+**not** on `DESIGN.md` §8's message budget, which is why §8 does not move.

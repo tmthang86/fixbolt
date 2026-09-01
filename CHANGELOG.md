@@ -214,6 +214,15 @@ below describe what a first release would contain.
       disposed of — `1e_NotLogonMessage.def` and `1d_InvalidLogonLengthInvalid.def`,
       both definitions whose subject is that the link must be dropped
       ([ADR-0022](docs/decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md)).
+    - `Route` and `HashRoute` are exported from `presession`, and re-exported from `shard`.
+      Routing by identity has nothing to do with pinning a core, and `scripts/bench.sh` runs
+      `cargo bench` with no features — a benchmark could not have reached them behind
+      `affinity`.
+    - `[measured 2026-09-01]` what it costs, 20 qualifying runs on the §9 machine: the
+      stage's sweep is **426.2 ns per socket** against `Engine::turn`'s 458.3, its own work
+      over the bare `recv` is **~15 ns** against the engine's ~28, and reading both comp IDs
+      and choosing a shard is **84.0 ns once per connection**. `DESIGN.md` §8 does not move:
+      none of it is on the message path.
 
   - **`shard` — many engines, one per pinned core.** New module behind the same `affinity`
     feature. `Shards::start(&plan, make)` validates the plan, starts one thread per shard, and
