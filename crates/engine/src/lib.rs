@@ -30,6 +30,7 @@ pub mod conn;
 pub mod dispatch;
 pub mod frame;
 pub mod journal;
+pub mod presession;
 #[cfg(all(feature = "affinity", target_os = "linux"))]
 pub mod shard;
 // ADR-0014 decision 1 and 2. The feature gates the `mod` declaration itself,
@@ -262,7 +263,7 @@ where
                 conn: self.conns[i].id,
             };
             let outcome = self.conns[i].turn(now, &mut deliver, |msg| {
-                others_on > 0 && msg_type_is_logon(msg)
+                others_on > 0 && presession::is_logon(msg)
             });
             // Asked here and nowhere else. `Deliver` above was built for this
             // connection's id and nothing else has run since, so a refusal
@@ -598,25 +599,6 @@ fn pump<A: Application, W: Waiting>(
             engine.idle_with(extra);
         }
     }
-}
-
-/// Is this message a `Logon`?
-///
-/// Read off the raw bytes rather than parsed: the engine has no dictionary and
-/// wants none. `35=` is the third field of a well-formed message and the
-/// session refuses anything else, so a scan for it is enough here.
-fn msg_type_is_logon(msg: &[u8]) -> bool {
-    let mut at = 0;
-    while at < msg.len() {
-        let Some(end) = msg[at..].iter().position(|b| *b == 1).map(|e| e + at) else {
-            return false;
-        };
-        if msg[at..end] == *b"35=A" {
-            return true;
-        }
-        at = end + 1;
-    }
-    false
 }
 
 /// A non-blocking TCP listener that hands out [`TcpTransport`]s.

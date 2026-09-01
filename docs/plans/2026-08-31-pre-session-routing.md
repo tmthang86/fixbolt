@@ -105,7 +105,7 @@ khuyết. Giữ nó lại sau khi biết điều đó là để sẵn một cái
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
 | 1 | ✅ [ADR-0020](../decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md) — tầng pre-session: ai sở hữu socket trước `Logon`, hai giới hạn cứng, `Route` thay `Assign`, băm ổn định là mặc định, `RoundRobin` bị bỏ | — |
-| 2 | `presession.rs`: đọc `49`/`56` khỏi message trọn vẻ đầu tiên. Test: message đủ, message thiếu, message không phải `35=A`, message rác | 1 |
+| 2 | ✅ `presession.rs`: đọc `49`/`56` khỏi message trọn vẹn đầu tiên. Test: message đủ, message thiếu, message không phải `35=A`, message rác | 1 |
 | 3 | `PendingSet`: trần số lượng, logon timeout, vứt kết nối im lặng. Mỗi giới hạn một ca hỏng, so **biến thể lỗi** chứ không `is_err()` | 2 |
 | 4 | `Route` + băm ổn định; `Shards::hand` nhận identity; `serve_sharded_hft` nối tầng mới | 3 |
 | 5 | **`shard_wire.rs` lên 59 với hai shard**, và test đặc tả cũ được viết lại | 4 |
@@ -189,3 +189,37 @@ trước khi viết:
   nên hai lần chạy cùng một binary sẽ định tuyến cùng một đối tác đi hai nơi — luật
   single-logon đúng trong một lần chạy và sai sau khi restart. Test khẳng định **một
   identity cụ thể ra một shard cụ thể**, không phải chỉ "ổn định trong tiến trình này".
+
+**2026-09-01 — bước 2 xong.** `crates/engine/src/presession.rs` (`Identity`, `identity_of`,
+`is_logon`) và `crates/engine/tests/presession.rs`, 8 test. Test viết trước và **đỏ đúng chỗ**:
+`unresolved import fixbolt_engine::presession`. `Engine` bỏ hàm `msg_type_is_logon` riêng và
+gọi sang đây, nên luật `35=A` chỉ còn một chỗ. Không nhân đôi luật khung: `Framer` vẫn là nơi
+duy nhất cắt stream.
+
+**Corpus bác bỏ giả định của chính test, và đó là điều tốt.** Bản đầu khẳng định mọi `Logon`
+trong corpus là `49=TW44`/`56=ISLD`; nó đỏ trên byte thật, vì corpus **cố tình** gửi `49=WT`
+(`1c_InvalidSenderCompID.def`) và `56=DLSI` (`2k_CompIDDoesNotMatchProfile.def`), cùng một
+`56=` **rỗng**. Test giờ khẳng định phân bố thật: 289 message gửi đi, đúng **5** cái không đọc
+được identity, và đúng ba file — `14b_RequiredFieldMissing`, `2d_` và `3c_GarbledMessage`.
+
+**Ba reversal, cả ba đỏ đúng assertion:**
+
+| Bẻ cái gì | Kết quả |
+|---|---|
+| khớp tag ở **bất kỳ đâu trong một field** | 1/8 đỏ — `a_field_value_that_looks_like_an_identity_is_not_one` |
+| bỏ hẳn ranh giới field, quét cả message | 1/8 đỏ — cùng test đó |
+| `is_logon` luôn trả `true` | 2/8 đỏ — hai test đếm |
+
+**Và đây là phát hiện đáng giá hơn code:** hai reversal đầu để **289/289 message thật của
+corpus xanh**. Chỉ một message *tự dựng* bắt được, và nó chỉ chèn một field `58=49=EVIL` vào
+một `Logon` thật. Corpus conformance mã hoá *cái mà spec nói về lỗi* — hỏng cấu trúc; nó không
+mã hoá *cái mà một bên không đáng tin sẽ chọn* — một message hoàn toàn hợp lệ mà **giá trị**
+được chọn để bị đọc sai. Viết ở
+[a-conformance-corpus-is-not-an-adversarial-one.md](../reference/a-conformance-corpus-is-not-an-adversarial-one.md),
+đánh dấu `[to testing-skills]`. Nó **không** làm yếu §7: corpus thật vẫn là cổng chính, và
+chính nó bắt được giả định sai của test.
+
+**Gate cho bước 2:** `fmt` sạch · `clippy --all-targets -D warnings` sạch · `cargo test --all`
+**258 pass 0 fail**, `--no-default-features` **258 pass 0 fail**, `--features affinity`
+**107 pass 0 fail** · `bench.sh --strict` **OK**, mọi dòng `allocations:` đều 0 (đường
+`Engine::turn` có đổi, nên bất biến 1 được chạy lại chứ không suy).

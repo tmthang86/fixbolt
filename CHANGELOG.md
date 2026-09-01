@@ -157,6 +157,24 @@ below describe what a first release would contain.
         `present 0-15`, `online 0-7`, `isolated 6-7,14-15` — **`isolated` names two cores that
         are offline**, because §9 turns SMT off. A validator reading `isolated` alone would
         accept a core that cannot run anything; that exact reading is committed as a fixture.
+  - **`presession` — who is on the other end, before there is a session to ask.** New
+    module, no feature gate: `Identity<'a>` (borrowed `49=` and `56=`, in wire order),
+    `identity_of` and `is_logon`. It reads bytes by field scan and nothing else — no
+    dictionary, no parse, and nothing from `fixbolt-session` but `Config`
+    ([ADR-0020](docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)).
+    Framing stays in `frame::Framer`; `Engine`'s own private `Logon` check is gone and calls
+    this instead, so the rule has one home.
+    - `[measured 2026-09-01]` proven against **289 real messages** from the acceptance
+      corpus, asserting the identities it actually carries — including `49=WT`, `56=DLSI`
+      and an empty `56=`, all of which the corpus sends on purpose — and the exact **five**
+      that name no identity. The first draft of that test asserted every corpus `Logon` is
+      `TW44`/`ISLD` and went red on the real bytes.
+    - `[measured 2026-09-01]` and the corpus was **not enough**: two leniency reversals —
+      matching the tag anywhere inside a field, and ignoring field boundaries entirely —
+      left all 289 green, and were caught only by one hand-built message with `49=` inside
+      a `Text` value.
+      [reference/a-conformance-corpus-is-not-an-adversarial-one.md](docs/reference/a-conformance-corpus-is-not-an-adversarial-one.md).
+
   - **`shard` — many engines, one per pinned core.** New module behind the same `affinity`
     feature. `Shards::start(&plan, make)` validates the plan, starts one thread per shard, and
     **waits for every thread to confirm its own pin before any of them serves** — so a plan that
