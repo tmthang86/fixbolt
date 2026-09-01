@@ -92,6 +92,16 @@ AMD Ryzen 7 3700X 8-Core Processor	recv on a quiet socket	420.5	1.10	24	2026-08-
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 idle sessions	448.9	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 idle sessions	1807.1	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 idle sessions	7333.5	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
+# `[2026-09-01]` every row in this file was recorded with the CPU speculation
+# mitigations IN FORCE, and carries a `pass 11` verdict from the checklist as it
+# stood before ADR-0023 added a row for them. Only the checklist's arithmetic
+# changed; the machine's behaviour did not. New rows record `pass 12`.
+#
+# This matters more than a version bump: `[measured 2026-09-01]` a machine with
+# mitigations off reads ~60% UNDER every syscall-bound row here, which PASSES,
+# because a baseline is a ceiling. The bench gate cannot see it. ADR-0023's
+# check-machine.sh row is what does.
+#
 # `[measured 2026-09-01]` the three `presession` rows below came from 20
 # qualifying `scripts/bench.sh` runs on the ADR-0021 §9 line, max/median 1.006 to
 # 1.011, so the margin is the 1.10 floor. They price a CONNECTION, not a message:
