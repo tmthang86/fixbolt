@@ -133,8 +133,10 @@ QuickFIX/J's wildcard `ANY_SESSION` template is, and it is not offered here.
   and nothing is published, so the price is a `CHANGELOG.md` entry and this repository's own call
   sites.
 - **`lookup` is on the connection path** — once per connection, not per message, and the
-  pre-session sweep is already priced at 426.2 ns per socket against `Engine::turn`'s 458.3. A
-  registry lookup must be measured against that, not assumed cheap, and **an implementation that
+  pre-session sweep is already priced at **426.2 ns per socket against `Engine::turn`'s 458.3** —
+  `[measured 2026-09-01]` `crates/engine/benches/presession.rs`, both arms **in the same run** so
+  the comparison is not across programs, AMD Ryzen 7 3700X, ADR-0021 §9 line, `check-machine.sh` **pass 11 fail 0 unknown 1**, 20 qualifying runs. A registry lookup must be measured against
+  that, not assumed cheap, and **an implementation that
   allocates puts an allocation on a path `benches/alloc.rs` currently proves is zero.**
 - **Synchronous refusal is a real limitation**, not a simplification. A deployment whose
   entitlements live in a remote service must snapshot them. Artio can do what this cannot.
@@ -143,7 +145,8 @@ QuickFIX/J's wildcard `ANY_SESSION` template is, and it is not offered here.
 
 ## Open questions
 
-1. **What does `lookup` cost?** It sits beside a 426.2 ns sweep and must be measured there, with
+1. **What does `lookup` cost?** It sits beside that 426.2 ns sweep and must be measured on the
+   same machine and the same §9 line, with
    `benches/presession.rs` gaining a case and `benches/alloc.rs` gaining a count.
 2. **Does a per-counterparty journal change `Durability`?** `Entry` holds a journal handle; forty
    counterparties is forty journals, forty mmaps and forty writer threads under

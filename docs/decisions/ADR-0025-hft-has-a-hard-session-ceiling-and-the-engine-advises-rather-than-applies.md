@@ -32,8 +32,8 @@ An `advise(sessions)` has to compute from two numbers this project does not have
 
 | | Range | Why it is a range |
 |---|---|---|
-| the `hft` / `standard` crossover | **N ≈ 4 … 11** | `[measured 2026-08-31]` `Engine::turn` is **448.9 ns**; the `epoll`-class wakeup it is weighed against is **2–5 µs from the literature**, never measured here — ADR-0014 open question 1 |
-| the L2 cache wall | **N ≈ 9 … 128** | `[measured 2026-08-30]` `Connection` is 53.3 KiB against a 32 KiB `L1d`; **how much of it a message touches is unmeasured**, and the two bounds are 14× apart |
+| the `hft` / `standard` crossover | **N ≈ 4 … 11** | `[measured 2026-08-31]` `Engine::turn` is **448.9 ns** — `crates/engine/benches/turn.rs`, AMD Ryzen 7 3700X, ADR-0021 §9 line, `check-machine.sh` **pass 11 fail 0 unknown 1**, median of 24 qualifying runs; the `epoll`-class wakeup it is weighed against is **2–5 µs from the literature**, never measured here — ADR-0014 open question 1 |
+| the L2 cache wall | **N ≈ 9 … 128** | `[measured 2026-08-30]` `Connection` is 53.3 KiB against a 32 KiB `L1d` — `size_of` and a pointer-chase curve on the same AMD Ryzen 7 3700X, [measured-costs.md](../reference/measured-costs.md); **how much of it a message touches is unmeasured**, and the two bounds are 14× apart |
 
 Encoding either range behind an API would ship a guess wearing an authoritative signature — and
 once it is `advise(100)` rather than a sentence in `GUIDE.md`, a reader can no longer tell a
@@ -53,7 +53,7 @@ is below the pessimistic bound of the cache wall as well. The argument stops bei
 a curve* and becomes *stay in the region where the curve's shape cannot change the answer* —
 which needs no measurement to be sound.
 
-**The remaining uncertainty runs one way only.** 448.9 ns is an **idle** turn: it is one `recv`
+**The remaining uncertainty runs one way only.** That 448.9 ns is an **idle** turn: it is one `recv`
 that finds nothing and never touches the session, the journal or the template. If a busy turn
 costs more per session, the true crossover is **below** 4.46, never above. So four is *the
 largest ceiling defensible from what is known*, not a proven optimum, and the measurement that

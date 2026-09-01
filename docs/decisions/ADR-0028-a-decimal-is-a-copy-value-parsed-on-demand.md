@@ -99,8 +99,11 @@ untouched.
 
 ## Open questions
 
-1. **What does a `Decimal` parse cost against the 122.6 ns parse baseline?** Unmeasured, and it
-   goes into `benches/parse.rs` with its own case rather than being folded into an existing one.
+1. **What does a `Decimal` parse cost against the 122.6 ns parse baseline?** `[measured
+   2026-08-31]` that baseline is `parse NewOrderSingle (validated)` from
+   `crates/codec/benches/parse.rs`, AMD Ryzen 7 3700X, `check-machine.sh` **pass 10 fail 0
+   unknown 1**, median of 24 qualifying runs. The `Decimal` cost is unmeasured, and it goes into
+   the same benchmark with its own case rather than being folded into an existing one.
 2. **Does `dict` know which tags are `float`-typed?** It tabulates 23 field types already, so a
    typed accessor could refuse `view.decimal(35)` at runtime — or the type table could make it a
    compile-time error for generated constants. Not decided.
