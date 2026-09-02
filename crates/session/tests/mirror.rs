@@ -5,6 +5,16 @@
 //! corrects: the same files read from the other side, with `I` lines as this
 //! engine's output.
 //!
+//! # A gate asserting zero cannot report anything
+//!
+//! `[measured 2026-09-02]` this file asserts `passed == 0`, which proves the
+//! harness runs and **nothing about the code under it**. While it stood at
+//! zero, an initiator that answered a `Logon` with a `Logon` — a defect that
+//! made the role unusable against any real counterparty — passed here, passed
+//! `tests/score.rs` at 59 / 59, and passed 430 other tests. It was found by
+//! `scripts/interop.sh` on that script's first run.
+//! `docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md`.
+//!
 //! **What this gate cannot do is check its own reading.** Mirroring is this
 //! project's interpretation of a suite written for the other direction; a wrong
 //! interpretation stays green here. Interop against `libquickfix` — step 4 of

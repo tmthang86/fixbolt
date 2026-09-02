@@ -76,6 +76,48 @@ fn logged_on() -> (Session<Initiator, 256>, Vec<String>) {
     (s, out)
 }
 
+/// **An initiator does not answer a Logon with a Logon.**
+///
+/// `[measured 2026-09-02]` it did, and no gate in this repository could see it:
+/// the acceptor corpus scores 59 / 59 because for an *acceptor* answering is
+/// correct, and the mirrored corpus was 0 / 50 and never read past the line
+/// that carries the first Logon. What found it was `scripts/interop.sh` —
+/// `libquickfix` took the second Logon, dropped the connection without a word,
+/// and five of this project's seven interop steps failed at once with nothing
+/// on the wire to explain why.
+///
+/// The reply is the **acceptor's** half of the handshake. The side that speaks
+/// first has already had its say.
+///
+/// See `docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md`.
+#[test]
+fn an_initiator_does_not_answer_a_logon_with_a_logon() {
+    let mut s: Session<Initiator, 256> = Session::new(cfg());
+    let mut out: Vec<String> = Vec::new();
+    s.connect(|b| out.push(readable(b)));
+    s.tick(FIXED_TIME_MILLIS, |b| out.push(readable(b)));
+    assert_eq!(out.len(), 1, "the premise: our own Logon, and only it");
+    let after_ours = s.next_out();
+
+    assert_eq!(
+        s.received(&peer_logon(1), |b| out.push(readable(b))),
+        Link::Up
+    );
+
+    assert_eq!(
+        out.len(),
+        1,
+        "the acceptor's Logon completes the handshake; answering it starts a \
+         second one: {out:?}"
+    );
+    assert_eq!(
+        s.next_out(),
+        after_ours,
+        "and no sequence number was spent on a message that should not exist"
+    );
+    assert!(s.is_logged_on(), "the handshake still completed");
+}
+
 /// One `send_heartbeat` is one `35=0`, at this session's next number.
 #[test]
 fn a_heartbeat_can_be_originated_and_is_one_message() {
@@ -163,9 +205,21 @@ fn nothing_can_be_originated_before_the_session_is_logged_on() {
     assert!(!s.is_logged_on(), "the premise");
     out.clear();
 
-    assert!(!s.send_heartbeat(|b| out.push(readable(b))));
-    assert!(!s.send_test_request(b"OPERATOR-7", |b| out.push(readable(b))));
-    assert!(!s.send_resend_request(4, 9, |b| out.push(readable(b))));
+    // Collected, not asserted one at a time. Three `assert!`s in a row stop at
+    // the first, so a reversal that removed the guard from all three would show
+    // exactly the same failure as one that removed it from one — and
+    // `[measured 2026-09-02]` that is what the first run of this reversal did.
+    // The repository has the shape already: a sentinel read by two decoders,
+    // reversed in only one, read `5 passed; 1 failed` and looked discriminating.
+    let refused = [
+        s.send_heartbeat(|b| out.push(readable(b))),
+        s.send_test_request(b"OPERATOR-7", |b| out.push(readable(b))),
+        s.send_resend_request(4, 9, |b| out.push(readable(b))),
+    ];
+    assert_eq!(
+        refused, [false; 3],
+        "heartbeat, test request, resend request — in that order"
+    );
 
     assert!(
         out.is_empty(),

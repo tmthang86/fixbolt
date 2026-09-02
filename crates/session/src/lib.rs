@@ -2014,7 +2014,24 @@ impl<R: Role, const N: usize> Session<R, N> {
             } else {
                 2
             };
-            self.send(Which::Logon, &extra[..n], emit)?;
+            // **Only the side that did not speak first answers.** A Logon is
+            // one exchange: the initiator asks and the acceptor agrees. An
+            // initiator that answers has started a second handshake on a
+            // session that already has one.
+            //
+            // `[measured 2026-09-02]` this line was unconditional, and no gate
+            // in this repository could see it. `tests/score.rs` is 59 / 59
+            // because for an **acceptor** the reply is correct;
+            // `tests/mirror.rs` was 0 / 50 and never read past the first Logon.
+            // `scripts/interop.sh` found it on its first run: `libquickfix`
+            // took the second Logon, dropped the connection without a word, and
+            // five interop steps failed at once with nothing on the wire to say
+            // why. `tests/initiator.rs` holds the regression, and
+            // `docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md`
+            // holds why it survived so long.
+            if !R::SPEAKS_FIRST {
+                self.send(Which::Logon, &extra[..n], emit)?;
+            }
             // **After the reply, not before.** A Logon that runs ahead is still
             // a Logon: `1a_ValidLogonMsgSeqNumTooHigh.def` sends `34=5` to an
             // empty session and expects the Logon answered first and the

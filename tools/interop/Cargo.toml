@@ -1,0 +1,26 @@
+[package]
+name = "fixbolt-interop"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+# **No C++ here, and that is the point.** `CLAUDE.md` §2 rule 6 and ADR-0004
+# decision 7 both say the same thing: `libquickfix` lives in CI and in
+# `scripts/`, never in a `Cargo.toml` and never on a user's machine. This crate
+# is ordinary Rust that opens a socket; `scripts/interop.sh` is what builds the
+# C++ acceptor on the other end of it.
+#
+# So `cargo test --all --no-default-features` on a machine with no CMake still
+# builds this, and `scripts/check-no-optional-deps.sh` has nothing new to say.
+[dependencies]
+fixbolt-session = { path = "../../crates/session" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "interop"
+path = "src/main.rs"
