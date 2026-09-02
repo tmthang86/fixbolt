@@ -335,9 +335,13 @@ thái thật, không phải một số xanh không ai dựng lại được.
 
 **Cái plan này KHÔNG chứng minh, nói thẳng:**
 
-- **Chưa có lần chạy CI xanh nào được gọi tên theo id cho commit đóng** — ô cuối `CLAUDE.md`
-  §9. Phải lấy sau khi push và mở PR, và cho tới lúc đó **plan này chưa đóng theo đúng nghĩa
-  §9**.
+- ~~Chưa có lần chạy CI xanh nào được gọi tên theo id cho commit đóng.~~ **Có rồi, 2026-09-02:**
+  PR [#29](https://github.com/tmthang86/fixbolt/pull/29), **CI xanh trên đúng commit đóng
+  `4108881`**, hai lần chạy
+  [`33618980677`](https://github.com/tmthang86/fixbolt/actions/runs/33618980677) (push) và
+  [`33619043496`](https://github.com/tmthang86/fixbolt/actions/runs/33619043496) (pull_request),
+  **18 job / 18**. Đọc `conclusion: success` của từng lần chạy chứ không suy ra từ việc không
+  thấy job nào đỏ. Ô cuối `CLAUDE.md` §9 **đã đóng**.
 - Mọi con số nano-giây ở đây từ một VM 4 vCPU dùng chung, **không đạt §9**. Tỉ lệ chuyển được,
   số tuyệt đối thì không. Không dòng nào được ghi vào `benches/baselines.tsv`.
 - `main` của `examples/acceptor.rs` được biên dịch chứ không được chạy.
