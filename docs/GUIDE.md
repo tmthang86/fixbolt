@@ -519,9 +519,12 @@ So persist `Session::last_active_ms()` beside the sequence numbers and hand it b
 resumed without it will not reset, ever — which is correct for `Schedule::always()` and wrong
 for everything else.
 
-`[2026-09-02]` **the engine does not do this for you yet.** It calls `Session::resume`, so a
-process that restarts across a boundary keeps yesterday's numbers. `STATUS.md` names it; until
-it is done, an embedder that cares must resume its sessions itself.
+`[verified 2026-09-02]` **and today an `Engine` cannot do any of this.** Both of its `add`
+methods build `Session::new`, which resets; there is no public way to hand it a resumed
+session. So a restart starts every session at `34=1` whatever your journal holds, and
+`Session::resume`, `resume_at` and `Durability::Fsync` are reachable only if you drive a
+`Session` yourself rather than using `Engine`. `STATUS.md` item 31, and it blocks recovery
+generally rather than schedules in particular.
 
 ### What the reset is decided by
 
