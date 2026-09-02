@@ -102,10 +102,11 @@ fn logon_stamped(at: u64) -> Vec<u8> {
     with_real_checksum(restamped.as_bytes())
 }
 
-/// The configuration a venue open 08:00–17:00 UTC would want. **Today it can
-/// only say who it is**, which is the gap.
+/// The configuration a venue open 08:00–17:00 UTC wants.
+///
+/// `[step 1]` this could only say who it is; the schedule is step 3.
 fn cfg() -> Config {
-    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+    Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_schedule(eight_to_five())
 }
 
 /// Drive a session to `now_ms` and offer it a real Logon. Returns whether the
@@ -150,14 +151,31 @@ fn a_logon_inside_the_trading_day_is_accepted() {
 /// carries `34=1`, even for a session resumed holding higher numbers.
 #[test]
 fn the_first_logon_of_a_new_trading_day_is_numbered_one() {
-    // Yesterday this session reached 34=41 in each direction and it was
-    // persisted; `Session::resume` is what carries that across a restart.
-    let mut session: Session<Acceptor, 256> = Session::resume(cfg(), 41, 41);
+    // Yesterday this session reached 34=41 in each direction, and **the engine
+    // persisted when it was last active as well as the numbers**. Without that
+    // instant no reset can be decided at all — `Session::resume` is the version
+    // that was not told, and it deliberately never resets.
+    let yesterday = midnight() + 16 * HOUR_MS;
+    let mut session: Session<Acceptor, 256> = Session::resume_at(cfg(), 41, 41, yesterday);
     let mut out = Vec::new();
     session.connect(|_| {});
     // A whole day later, inside today's window.
     let tomorrow = midnight() + DAY_MS + 12 * HOUR_MS;
     session.tick(tomorrow, |_| {});
+
+    // **Asserted here, before any message is judged.** Without this the only
+    // evidence of a reset is that the Logon below was accepted — and a session
+    // that did not reset refuses `34=1` as too low, so the failure would read
+    // as a dropped link and point at the wrong rule. `[measured 2026-09-02]`
+    // suppressing the reset with this line absent turned exactly one test red,
+    // on `a new trading day accepts a Logon`, which is a connection assertion.
+    assert_eq!(
+        session.next_out(),
+        1,
+        "the boundary passed on the tick, so the counts restarted before anything was numbered"
+    );
+    assert_eq!(session.next_in(), 1, "and the inbound count with it");
+
     let link = session.received(&logon_stamped(tomorrow), |b| {
         out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
     });
