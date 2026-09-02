@@ -625,6 +625,51 @@ FIX gives you a way to detect the duplicate and none at all to detect the loss.
   problem into your database's transaction, which is a fine place for it — but it is your
   transaction, not the engine's.
 
+### 6b. A journal on disk, through the serving loop
+
+`[2026-09-02]` `serve_with_recovery` is generic over the journal, so one `FileJournal` per
+counterparty is reachable without giving up the serving loop
+([ADR-0039](decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md)).
+
+```rust
+impl Recovery<FileJournal<64, 4096>> for OnDisk {
+    // Called when the counterparty left nothing. THIS is why it exists: the
+    // engine cannot build a FileJournal for you — only you know the path.
+    fn fresh(&mut self, cfg: &Config) -> FileJournal<64, 4096> { /* open it */ }
+
+    fn recover(&mut self, cfg: &Config) -> Option<Resumed<FileJournal<64, 4096>>> {
+        let journal = self.fresh(cfg);
+        let next_out = journal.highest().map_or(1, |h| h + 1);
+        Some(Resumed {
+            next_in: journal.highest_in().unwrap_or(1),
+            last_active_ms: journal.last_active(),   // ← the boundary question
+            journal,
+            next_out,
+        })
+    }
+}
+```
+
+**`last_active()` is the field people skip, and it is the one that matters after a weekend.**
+`next_out = 4812` says nothing about whether a trading day ended since 4812 was reached, so
+without it §5a's boundary reset has nothing to compare against and your session silently keeps
+yesterday's numbering. The engine records the instant when a session logs on and when an
+ordered shutdown says goodbye — **not per message**, because that would be a disk write on the
+hot path.
+
+**Four things to know.**
+
+1. **`None` from `last_active()` means *"this journal does not know"***, not *"the session was
+   never active"*. An in-memory journal answers `None`, and so does a file written before this
+   existed. Treating them alike restarts a session's numbering without meaning to.
+2. **A process killed between logon and shutdown reports the logon instant**, which after a
+   long session may be a day stale. There is no periodic mark.
+3. **Nothing stops two processes opening the same file.** Both append and the records
+   interleave. There is no lock; one journal, one process.
+4. **`NoRecovery` and `FromFn` require `J: Default`**, so neither can carry a `FileJournal`.
+   A file-backed deployment writes a named type — which it has to anyway, since only it knows
+   which path belongs to which counterparty.
+
 ---
 
 ## 7. The machine is part of your latency, and mostly it is not the tuning

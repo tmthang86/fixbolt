@@ -174,6 +174,8 @@ pub struct FileJournal<const N: usize, const LEN: usize> {
     /// Bytes at the end of the file that did not form a whole record when it
     /// was opened. See [`FileJournal::torn_tail_bytes`].
     torn: usize,
+    /// The latest activity mark, read back on open and updated on write.
+    last_active: Option<u64>,
 }
 
 /// The header a `FileJournal` appends before each message: the sequence number
@@ -197,6 +199,19 @@ const RECORD_HEADER: usize = RECORD_SEQ + RECORD_LEN;
 /// the reader one branch longer, rather than adding a record-type byte that
 /// every existing record would have to grow.
 const INBOUND_MARK: usize = 0;
+
+/// A record whose **sequence number** is zero is an *activity mark* — eight
+/// little-endian bytes saying when the session was last alive.
+///
+/// `34=0` is not a sequence number FIX has, so a zero here cannot be confused
+/// with a message, exactly as a zero *length* cannot. `[2026-09-02]` that
+/// symmetry is why the format did not have to change to carry this: the reader
+/// is one branch longer and every file written before it still parses.
+/// `STATUS.md` item 32 (c).
+const ACTIVITY_MARK: u32 = 0;
+
+/// How many bytes an activity mark carries: one `u64` of milliseconds.
+const ACTIVITY_LEN: usize = 8;
 
 /// Where the writer thread should be pinned, if anywhere.
 ///
@@ -276,6 +291,7 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
         // and a recovery mechanism.
         let mut mem_recovered: MemJournal<N, LEN> = MemJournal::new();
         let mut torn = 0usize;
+        let mut last_active: Option<u64> = None;
         if let Ok(bytes) = std::fs::read(path) {
             let mut at = 0usize;
             while at + RECORD_HEADER <= bytes.len() {
@@ -300,7 +316,14 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                     torn = bytes.len() - at;
                     break;
                 }
-                if len == INBOUND_MARK {
+                if seq == ACTIVITY_MARK && len == ACTIVITY_LEN {
+                    let mut t = [0u8; ACTIVITY_LEN];
+                    t.copy_from_slice(&bytes[at + RECORD_HEADER..end]);
+                    // **The latest wins, not the first.** They are appended in
+                    // order, so the last one is the one that describes the
+                    // session at the moment it stopped.
+                    last_active = Some(u64::from_le_bytes(t));
+                } else if len == INBOUND_MARK {
                     mem_recovered.mark_in(seq);
                 } else {
                     mem_recovered.put(seq, &bytes[at + RECORD_HEADER..end]);
@@ -324,6 +347,7 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 #[cfg(all(feature = "affinity", target_os = "linux"))]
                 writer_core: None,
                 torn,
+                last_active,
             },
         );
         this.mem = mem;
@@ -448,6 +472,41 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
         self.mem.highest()
     }
 
+    fn mark_active(&mut self, at_ms: u64) {
+        self.last_active = Some(at_ms);
+        // The same two tiers as everything else here. This is written at logon
+        // and at an ordered shutdown, **never per message**, so even `Fsync`'s
+        // `sync_data` is paid twice in a session's life rather than per
+        // message — which is what makes it affordable at all.
+        match self.how {
+            Durability::Async => {
+                if let Some(p) = self.to_writer.as_mut() {
+                    let n = u32::try_from(ACTIVITY_LEN).unwrap_or(0);
+                    let _ = p.push(&[
+                        &ACTIVITY_MARK.to_le_bytes(),
+                        &n.to_le_bytes(),
+                        &at_ms.to_le_bytes(),
+                    ]);
+                }
+            }
+            Durability::Fsync => {
+                if let Some(f) = self.file.as_mut() {
+                    let mut rec = [0u8; RECORD_HEADER + ACTIVITY_LEN];
+                    rec[..RECORD_SEQ].copy_from_slice(&ACTIVITY_MARK.to_le_bytes());
+                    let n = u32::try_from(ACTIVITY_LEN).unwrap_or(0);
+                    rec[RECORD_SEQ..RECORD_HEADER].copy_from_slice(&n.to_le_bytes());
+                    rec[RECORD_HEADER..].copy_from_slice(&at_ms.to_le_bytes());
+                    let _ = f.write_all(&rec);
+                    let _ = f.sync_data();
+                }
+            }
+        }
+    }
+
+    fn last_active(&self) -> Option<u64> {
+        self.last_active
+    }
+
     fn mark_in(&mut self, seq: u32) {
         self.mem.mark_in(seq);
         // The same two tiers as `put`, and the same reasoning: `Async` must not
@@ -503,14 +562,28 @@ pub enum Record<'a> {
         /// The inbound number recorded.
         seq: u32,
     },
+    /// When the session was last known to be alive, in milliseconds on the
+    /// engine's clock.
+    ///
+    /// Encoded as a record whose **sequence number** is zero — see
+    /// [`ACTIVITY_MARK`]. A file written before this existed simply has none,
+    /// and reads exactly as it always did.
+    ActivityMark {
+        /// The instant recorded.
+        at_ms: u64,
+    },
 }
 
 impl Record<'_> {
     /// The sequence number, whichever shape this is.
+    ///
+    /// An [`Record::ActivityMark`] answers `0`, which is the number it is
+    /// written under and is not a sequence number FIX has.
     #[must_use]
     pub const fn seq(&self) -> u32 {
         match *self {
             Self::Message { seq, .. } | Self::InboundMark { seq } => seq,
+            Self::ActivityMark { .. } => ACTIVITY_MARK,
         }
     }
 }
@@ -630,7 +703,13 @@ impl<'a> Iterator for Records<'a> {
             return None;
         }
         self.at = end;
-        if len == INBOUND_MARK {
+        if seq == ACTIVITY_MARK && len == ACTIVITY_LEN {
+            let mut t = [0u8; ACTIVITY_LEN];
+            t.copy_from_slice(self.bytes.get(at + RECORD_HEADER..end)?);
+            Some(Record::ActivityMark {
+                at_ms: u64::from_le_bytes(t),
+            })
+        } else if len == INBOUND_MARK {
             Some(Record::InboundMark { seq })
         } else {
             Some(Record::Message {

@@ -25,6 +25,18 @@ below describe what a first release would contain.
   a `let _ =` or a match, and buys the ability to stop at all.
 - **`serve_sharded_hft` is unchanged and still cannot be stopped.** It is Linux-only; see
   `STATUS.md` *Not proven*.
+- **`Recovery` gained a required method, `fresh(&Config) -> J`**, and `pump`,
+  `serve_with_recovery` and `serve_hft_with_recovery` became **generic over the journal**.
+  [ADR-0039](docs/decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md). The
+  engine used to build an empty journal with `J::default()`, which put `J: Default` on the
+  whole serving loop — and a `FileJournal` has no honest `Default`, so no deployment could
+  use a journal on disk. Implementors of `Recovery` must now supply `fresh`; `NoRecovery` and
+  `FromFn` provide it for any `J: Default`, so a `journal::Store` deployment is unaffected.
+- **`journal::Record` gained `ActivityMark`.** It is `#[non_exhaustive]`-free on purpose, so
+  a `match` over it will not compile until the new shape is handled — which is how three
+  places, `tools/jrnl` included, were found rather than silently skipped.
+- **`TcpAcceptorEngine` takes a third type parameter, `J`, defaulting to `journal::Store`.**
+  Existing uses compile unchanged.
 
 ### Added
 
@@ -72,6 +84,16 @@ below describe what a first release would contain.
       A reset that cannot be built does not move the number either.
     - A reset **downwards** is permitted. It is a last resort and a test asserts the
       permission, so it reads as deliberate rather than as an oversight.
+  - **`Journal::mark_active(at_ms)` and `Journal::last_active()`** — when the session was
+    last alive, on a journal that survives a restart.
+    [ADR-0039](docs/decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md).
+    - **Default bodies are empty**, so a journal that cannot outlive the process is not
+      obliged to pretend. `None` means *"this journal does not know"* — **not** *"the session
+      was never active"*, and a caller that confuses the two silently restarts its numbering.
+    - The sequence numbers cannot imply it: `next_out = 9` says nothing about whether a
+      trading day has ended since 9 was reached, which is what
+      [ADR-0033](docs/decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md)'s
+      boundary reset needs after a restart.
   - **`Session::begin_logout`, `State::LoggingOut`, `DropReason::EngineShutdown`** — saying
     goodbye and **waiting to be answered**.
     [ADR-0038](docs/decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md).
@@ -252,6 +274,15 @@ below describe what a first release would contain.
     - `FileJournal::torn_tail_bytes()` reports bytes at the end that did not form a whole
       record — a process killed mid-write. Those bytes are **not** replayed, which is
       correct; `[2026-09-02]` they were also **not reported**, which was not.
+  - **`journal::Record::ActivityMark` and `FileJournal`'s activity marks** — a record whose
+    **sequence number** is zero, carrying eight little-endian bytes of milliseconds.
+    [ADR-0039](docs/decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md).
+    - `34=0` is not a sequence number FIX has, so it cannot be confused with a message —
+      the mirror of the `len == 0` inbound mark. **The file format did not change**: every
+      file written before this parses exactly as it did, and the reader is one branch longer.
+    - Written when a session logs on and when an ordered shutdown says goodbye. **Never per
+      message** — that is a disk write on the hot path, which D8 forbids.
+    - `tools/jrnl --count` reports `last-alive`, and a full dump shows `live <ms>`.
   - **`observe` — what an operator can see, from another thread, while the engine runs.** New
     module, no feature flag, no dependency.
     [ADR-0032](docs/decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md).
