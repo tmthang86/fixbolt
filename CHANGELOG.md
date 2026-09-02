@@ -15,6 +15,17 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 **Nothing has been released.** Four crates now exist and none is published; the entries
 below describe what a first release would contain.
 
+### Changed
+
+- **`Engine::run`, `serve`, `serve_hft` and `serve_with_recovery` return instead of never
+  returning.** `run()` was `-> !` and the `serve*` family was
+  `Result<core::convert::Infallible, ServeError>`; they now hand back a
+  [`Shutdown`](docs/decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md). Nothing
+  in the repository called `run()`, so the break costs no caller here — it costs an embedder
+  a `let _ =` or a match, and buys the ability to stop at all.
+- **`serve_sharded_hft` is unchanged and still cannot be stopped.** It is Linux-only; see
+  `STATUS.md` *Not proven*.
+
 ### Added
 
 - **`fixbolt-session`** — the FIX session state machine. Pure: no socket, no clock, no
@@ -61,6 +72,19 @@ below describe what a first release would contain.
       A reset that cannot be built does not move the number either.
     - A reset **downwards** is permitted. It is a last resort and a test asserts the
       permission, so it reads as deliberate rather than as an oversight.
+  - **`Session::begin_logout`, `State::LoggingOut`, `DropReason::EngineShutdown`** — saying
+    goodbye and **waiting to be answered**.
+    [ADR-0038](docs/decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md).
+    - `begin_logout` sends the `Logout` and returns `Link::Up`, so the caller keeps turning
+      until the counterparty's own `Logout` arrives — reported as `DropReason::PeerLogout` —
+      or until the caller gives up. **`logout_now` is unchanged**: it is D10's path, where
+      cutting immediately is right, and one function serving both is how both go wrong.
+    - `State::LoggingOut` is separate from `AwaitingLogout` on purpose. The latter reports the
+      link **down at once** and ignores what follows; `[measured 2026-09-02]` reusing it made
+      every wait vacuous — *they answered* and *they never answered* became one observable.
+    - Only a logged-on session is told. FIX has no `Logout` before a `Logon`, so a connection
+      that never got that far is **ended with `EngineShutdown`** rather than sent a message it
+      must not receive — a reason, because an anonymous close reads as `EndedWithoutReason`.
   - **`DropReason`, `Session::last_drop_reason()`, `disconnect_with`, `note_drop_reason`** —
     why a connection ended, instead of one bit.
     [ADR-0035](docs/decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md).
@@ -301,6 +325,20 @@ below describe what a first release would contain.
         lock every turn and every content assertion stayed green.
       - `[measured 2026-09-02]` `benches/alloc.rs` cases `admin-idle` and `admin-busy` both
         read **0**, the second asserting the stream recorded something inside the window.
+    - **`Admin::shutdown(grace_ms)`, `Engine::shutdown_finished()`, `Shutdown`** — stopping
+      the engine without lying to the counterparty.
+      [ADR-0038](docs/decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md).
+      - Not a `Command`: every command is about one connection, and this is the engine's own
+        life. Same `Arc`, same capability split — an `Observer` cannot stop it, an `Admin`
+        can. Asking twice is harmless and **the first grace period stands**.
+      - `Shutdown` reports `sessions`, `said_goodbye`, `acked`, `timed_out` and `clean()`.
+        *"We stopped"* and *"we stopped while two counterparties never answered"* are
+        different facts, and only the second needs a human before restarting.
+      - Sessions still present at the deadline are closed, given `EngineShutdown`, and
+        **emit an `Ended` event first** — clearing the vector would take them away without a
+        word.
+      - `[measured 2026-09-02]` `benches/alloc.rs` case `shutdown` reads **0**, with a
+        control asserting every session was told and that the goodbye reached the wire.
   - **`affinity` — pinning a thread to a core, and proving it happened.** New module, new
     optional feature of the same name, **off by default**, Linux only.
     [ADR-0015](docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md) and

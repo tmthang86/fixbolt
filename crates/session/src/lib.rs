@@ -403,6 +403,22 @@ enum State {
     /// either way. So the link is reported down at once and anything that
     /// arrives afterwards is read and ignored.
     AwaitingLogout,
+    /// This end sent a `Logout` **as part of an ordered shutdown** and is still
+    /// listening.
+    ///
+    /// Distinct from [`State::AwaitingLogout`], and the difference is the
+    /// reason this state exists: `AwaitingLogout` reports the link **down at
+    /// once** and ignores everything after, which is right for D10's paths
+    /// where the point is to cut. An ordered shutdown is the healthy case — we
+    /// are the ones leaving — so the link stays up, the heartbeat keeps
+    /// running, and the counterparty's own `Logout` is read and answered as
+    /// [`DropReason::PeerLogout`] rather than discarded.
+    ///
+    /// `[measured 2026-09-02]` folding this into `AwaitingLogout` was tried
+    /// first and made every wait vacuous: the next `tick` returned `Dropped`
+    /// from the state check with no reason recorded, so *"they answered"* and
+    /// *"they never answered"* were the same observable.
+    LoggingOut,
 }
 
 /// Why a message was refused.
@@ -502,6 +518,14 @@ pub enum DropReason {
     SlowApplication,
     /// Output backed up further than the policy allows — `DESIGN.md` D10.
     SlowConsumer,
+    /// The engine was asked to stop.
+    ///
+    /// Recorded for a connection that had **nothing to say goodbye to** — one
+    /// that never logged on — and for one still there when the shutdown's
+    /// deadline passed. A session that answered our `Logout` reports
+    /// [`DropReason::PeerLogout`] instead, and telling those two apart is the
+    /// difference between a clean shutdown and one to reconcile by hand.
+    EngineShutdown,
 }
 
 impl From<Refusal> for DropReason {
@@ -990,6 +1014,9 @@ impl<R: Role, const N: usize> Session<R, N> {
         }
         match self.state {
             State::Disconnected | State::AwaitingLogout => return Link::Dropped,
+            // `LoggingOut` deliberately falls through to the heartbeat rules
+            // below: a counterparty that never answers our `Logout` must not
+            // hold the connection open for ever.
             // Before a Logon there is no agreed interval, so there is nothing
             // to measure — and this is the **only** thing that says so, which
             // is why `connect` no longer clears the clock as well. A logon
@@ -1010,7 +1037,7 @@ impl<R: Role, const N: usize> Session<R, N> {
                 );
                 return Link::Up;
             }
-            State::LoggedOn => {}
+            State::LoggedOn | State::LoggingOut => {}
         }
         // `108=0` means the counterparty asked for no heartbeats at all.
         if self.beat_ms == 0 {
@@ -1251,6 +1278,51 @@ impl<R: Role, const N: usize> Session<R, N> {
     ///
     /// `text` is written straight into `58=`; the caller supplies a literal, so
     /// nothing here allocates or formats.
+    /// Say goodbye and **wait to be answered**.
+    ///
+    /// The ordered-shutdown counterpart of [`Session::logout_now`], and the
+    /// difference is the whole point: this returns [`Link::Up`], so the caller
+    /// keeps turning until the counterparty's own `Logout` arrives — at which
+    /// point the ordinary path ends the session with
+    /// [`DropReason::PeerLogout`] — or until the caller gives up.
+    ///
+    /// `logout_now` is left alone rather than given a flag. It is D10's path,
+    /// where cutting immediately is the right answer, and one function serving
+    /// both is how both come to be wrong.
+    ///
+    /// **The caller owns the deadline.** A counterparty that has already died
+    /// never answers, and nothing here can tell that apart from one that is
+    /// merely slow.
+    ///
+    /// Returns [`Link::Dropped`] and sends nothing if this session has already
+    /// gone, or is already waiting for a `Logout` it asked for.
+    pub fn begin_logout<F: FnMut(&[u8])>(&mut self, text: &[u8], mut emit: F) -> Link {
+        // **Only a logged-on session has anything to say goodbye to.** FIX has
+        // no `Logout` before a `Logon`, so a connection that never got that far
+        // is ended here rather than sent a message it should not receive — and
+        // it is ended with a reason, because a shutdown that closed sockets
+        // anonymously would show up on the event stream as
+        // `EndedWithoutReason`.
+        if self.state != State::LoggedOn {
+            if self.state != State::Disconnected {
+                self.end(DropReason::EngineShutdown);
+            }
+            return Link::Dropped;
+        }
+        if self
+            .send(Which::Logout, &[(tag::TEXT, text)], &mut emit)
+            .is_err()
+        {
+            // Nothing went out, so there is nothing to wait for. Ending here
+            // is honest; pretending to wait would hang the shutdown on a
+            // message that was never sent.
+            self.end(DropReason::CannotSend);
+            return Link::Dropped;
+        }
+        self.state = State::LoggingOut;
+        Link::Up
+    }
+
     pub fn logout_now<F: FnMut(&[u8])>(&mut self, text: &[u8], mut emit: F) -> Link {
         if matches!(self.state, State::Disconnected | State::AwaitingLogout) {
             return Link::Dropped;

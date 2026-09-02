@@ -263,6 +263,13 @@ pub(crate) struct Shared {
     /// different capability**: [`Observer`] cannot reach this and [`Admin`]
     /// can.
     pub(crate) commands: Commands,
+    /// Somebody asked the engine to stop, and how long they will wait.
+    ///
+    /// Two atomics rather than one: the grace period is stored **before** the
+    /// flag is set, and the flag is `Release`, so a turn that sees the flag is
+    /// guaranteed to see the number that goes with it.
+    stop: AtomicBool,
+    stop_grace_ms: AtomicU64,
 }
 
 impl Shared {
@@ -273,6 +280,8 @@ impl Shared {
             cell: Mutex::new(Snapshot::default()),
             events: Events::new(),
             commands: Commands::new(),
+            stop: AtomicBool::new(false),
+            stop_grace_ms: AtomicU64::new(0),
         }
     }
 
@@ -286,6 +295,16 @@ impl Shared {
     /// counted rather than waited on.
     pub(crate) fn emit(&self, id: ConnId, at_ms: u64, kind: EventKind) {
         self.events.push(Event { id, at_ms, kind });
+    }
+
+    /// Has somebody asked the engine to stop, and with how long a grace?
+    ///
+    /// **One relaxed load** on a turn where nobody has, which is the entire
+    /// cost of an engine being stoppable.
+    pub(crate) fn stop_asked(&self) -> Option<u64> {
+        self.stop
+            .load(Ordering::Acquire)
+            .then(|| self.stop_grace_ms.load(Ordering::Relaxed))
     }
 
     /// Publish, unless the reader holds the cell right now.
@@ -824,6 +843,29 @@ impl Admin {
     #[must_use]
     pub fn drains(&self) -> u64 {
         self.0.commands.drains()
+    }
+
+    /// Ask the engine to stop, and say how long it may wait for goodbyes.
+    ///
+    /// Not a [`Command`], because it is not about one connection: it is the
+    /// engine's own life. It rides the same `Arc` and the same capability
+    /// split — an [`Observer`] cannot do this and an `Admin` can.
+    ///
+    /// **This returns immediately.** The engine says goodbye to every session
+    /// on its next turn and then waits, up to `grace_ms` on **its own clock**,
+    /// for each counterparty to answer. What it managed comes back from
+    /// `Engine::run`, `serve` or `serve_hft` as a [`crate::Shutdown`].
+    ///
+    /// Asking twice is harmless; the first grace period stands, because a
+    /// second call must not be able to extend a shutdown already under way.
+    pub fn shutdown(&self, grace_ms: u64) {
+        if self.0.stop.load(Ordering::Acquire) {
+            return;
+        }
+        // The number first, then the flag, and the flag is `Release`: a turn
+        // that sees the flag is guaranteed to see this.
+        self.0.stop_grace_ms.store(grace_ms, Ordering::Relaxed);
+        self.0.stop.store(true, Ordering::Release);
     }
 
     /// The same events [`Observer::events`] gives, so a thread that

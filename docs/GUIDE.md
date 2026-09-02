@@ -869,12 +869,53 @@ your own tooling
 to `grep`. Interpreting a message needs the dictionary, and a program that reads a file has no
 business pulling one in.
 
+### Stopping without lying to the counterparty
+
+`[2026-09-02]` Killing the process is not a shutdown. To the other end it is a **dead line**,
+so they reconnect — and any bytes still in `tx` are lost having already spent their sequence
+numbers, so your next session shows a gap for messages that never went on the wire.
+
+```rust
+let admin = engine.admin();
+std::thread::spawn(move || {
+    wait_for_sigterm();
+    admin.shutdown(30_000);     // 30 s of grace, on the engine's clock
+});
+
+let done = engine.run();        // returns when the shutdown finishes
+if !done.clean() {
+    eprintln!(
+        "{} of {} never answered — check their sequence numbers before restarting",
+        done.timed_out(), done.sessions(),
+    );
+}
+```
+
+**Read the report.** *"We stopped"* and *"we stopped while two counterparties never
+answered"* are different facts
+([ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md)), and only the
+second means you may have to reconcile sequence numbers by hand.
+
+**Five things the compiler cannot tell you.**
+
+1. **`grace_ms` is on the engine's clock.** With `SystemClock` that is wall time. With a clock
+   of your own that stops advancing, the deadline never arrives and the shutdown never ends.
+2. **Drop the engine after `run` returns, before the process exits.** A
+   `Durability::Async` journal joins its writer thread on `Drop`; exiting without that can
+   leave the tail of the file unwritten — which `jrnl` will then report as torn.
+3. **Nothing catches `SIGTERM` for you.** The engine is a library. Wiring a signal to
+   `Admin::shutdown` is yours.
+4. **`serve_sharded_hft` cannot be stopped.** It has no shutdown path at all.
+5. **Your application is not consulted.** There is no *"let the dispatcher drain"* phase, so
+   an out-of-band dispatcher can lose work it had already accepted.
+
 ### What is still not here
 
-Ordered shutdown, and that is all. `STATUS.md` open item 30 keeps the list; this section
-covers everything in it except (a). **Nothing authenticates the holder of an `Admin`** — the
-engine has no idea who is on the phone, and who you pass that handle to is the whole of the
-access control.
+`STATUS.md` open item 30 is **closed** — this section covers all of it. What remains is in
+that file's *Not proven*, and two entries matter to you here: **nothing authenticates the
+holder of an `Admin`** — the engine has no idea who is on the phone, and who you pass that
+handle to is the whole of the access control — and **nothing stops accepting during a
+shutdown**, so a socket arriving in the grace period is dropped rather than told anything.
 
 ## 9. What this engine does not do for you
 

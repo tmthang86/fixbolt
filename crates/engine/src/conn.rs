@@ -5,6 +5,11 @@ use fixbolt_session::journal::Journal as SessionJournal;
 use fixbolt_session::{Application, Link, Role, Session};
 
 use crate::backpressure::{Backpressure, SLOW_APPLICATION, SLOW_CONSUMER};
+
+/// The `58=` on a shutdown `Logout`. A literal, so nothing formats or
+/// allocates on this path either — and it is **not** one of D10's two texts,
+/// because this is the healthy case and the counterparty is faultless.
+const SHUTTING_DOWN: &[u8] = b"shutting down";
 use crate::dispatch::ConnId;
 use crate::frame::{Cut, Framer};
 use crate::transport::{Io, Transport};
@@ -441,6 +446,46 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 }
             }
         }
+    }
+
+    /// Say goodbye as part of an ordered shutdown. `true` if a `Logout` was
+    /// actually written.
+    ///
+    /// `false` means there is nothing to wait for — the session had not logged
+    /// on, or could not build the message — and the connection is marked
+    /// closing so it leaves on this turn rather than holding the shutdown open
+    /// for an answer to a message that was never sent.
+    pub fn begin_logout(&mut self) -> bool {
+        let bound = self.bound();
+        let blocks = self.policy.blocks();
+        let said = {
+            let Self {
+                session,
+                transport,
+                tx,
+                tx_len,
+                overflow,
+                dead,
+                ..
+            } = self;
+            let mut out = Out {
+                transport,
+                tx,
+                tx_len,
+                bound,
+                blocks,
+                overflow,
+                failed: dead,
+            };
+            session.begin_logout(SHUTTING_DOWN, |b| out.push(b)) == Link::Up
+        };
+        if self.overflow {
+            self.slow_consumer();
+        }
+        if !said {
+            self.closing = true;
+        }
+        said
     }
 
     /// **The queue is thrown away first, and that is deliberate.** It holds
