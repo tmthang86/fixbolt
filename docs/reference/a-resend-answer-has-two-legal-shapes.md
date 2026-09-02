@@ -74,6 +74,11 @@ interop: FAIL 6/7
 **6 / 7, and the one that fell is the one the reversal aimed at.** The previous reading gave
 7 / 7 for the same code.
 
+**A second instance of this shape turned up the same day**, on unrelated code and by a different
+mechanism — two checks whose order only matters in part of the input space. The pattern the two
+share is written up in
+[a-reversal-needs-an-input-where-the-answers-differ.md](a-reversal-needs-an-input-where-the-answers-differ.md).
+
 ## The lesson, stated without FIX
 
 **When a protocol allows a fallback answer, a test that accepts "an answer" accepts the

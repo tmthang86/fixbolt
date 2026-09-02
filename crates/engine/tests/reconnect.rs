@@ -149,27 +149,49 @@ fn a_closed_schedule_refuses_to_connect_and_asks_again_later() {
     );
 }
 
-/// **The schedule is asked before the ladder**, so a closed venue never
-/// advances the backoff.
+/// **The schedule is asked before the ladder**, so a closed venue never gets
+/// the shorter of the two answers.
 ///
-/// A policy that checked the ladder first would answer `At(ladder)` while shut,
-/// and the two are only distinguishable when the ladder is *shorter* than the
-/// ceiling — which is exactly the case this pins.
+/// # The instant this asserts at is the whole test
+///
+/// `[measured 2026-09-02]` the first version of this asked at an instant where
+/// the ladder had **already come due**, and swapping the two checks was a
+/// **no-op** — with the ladder due, both orderings reach the schedule and both
+/// answer `At(now + ceiling)`. The reversal passed and proved nothing.
+///
+/// The orderings only disagree while the ladder is **still pending**:
+///
+/// | at `three_am + 500 ms`, ladder due at `+1 s`, venue shut | answer |
+/// |---|---|
+/// | schedule first — what this engine does | `At(now + 30 s)` |
+/// | ladder first | `At(+1 s)` — a dial into a shut venue, 29 s early |
+///
+/// Both instants are asserted, because the due one is the case a reader
+/// expects and the pending one is the case that discriminates.
+/// `docs/reference/a-reversal-needs-an-input-where-the-answers-differ.md`.
 #[test]
-fn a_closed_schedule_outranks_a_wait_that_has_come_due() {
+fn a_closed_schedule_outranks_the_ladder_including_before_it_is_due() {
     let hours = Schedule::daily(8 * 3_600, 17 * 3_600).expect("legal hours");
     let mut p = policy().with_schedule(hours);
 
     let day = 86_400_000u64;
     let three_am = day * 20_000 + 3 * 3_600_000;
 
-    // One drop: the ladder alone would say "wait 1 s, then go".
+    // One drop: the ladder says "wait 1 s".
     p.dropped(three_am);
+
+    assert_eq!(
+        p.next(three_am + 500),
+        Next::At(three_am + 500 + 30 * SECOND),
+        "**the discriminating one.** The ladder is not due for another 500 ms; \
+         a policy that consulted it first would answer At(+1 s) and dial into a \
+         venue that is shut"
+    );
     assert_eq!(
         p.next(three_am + 2 * SECOND),
         Next::At(three_am + 2 * SECOND + 30 * SECOND),
-        "the ladder came due two seconds ago and the venue is still shut, so \
-         the answer is the schedule's and not the ladder's"
+        "and once the ladder has come due the schedule still decides — the case \
+         both orderings agree on, kept because it is the one a reader expects"
     );
 }
 
