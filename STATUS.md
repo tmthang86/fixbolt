@@ -3,36 +3,60 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-02** — [operability](docs/plans/2026-09-01-operability.md) steps 1–2 merged (PR #18, `9062f52`; CI [`33525312007`](https://github.com/tmthang86/fixbolt/actions/runs/33525312007) green on `dd1eaa8`), item 30 narrowed to (a)(c)(d)(e). Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+Last updated: **2026-09-02** — **four plans closed and merged today, across five PRs**: [operability](docs/plans/2026-09-01-operability.md) steps 1–2 (PR #18), [session-schedules](docs/plans/2026-09-02-session-schedules.md) (PR #19), [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) (PR #20 and #21) and [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) (PR #22, merge `abe612b`; **CI green on the commit closed, `3643263`, runs [`33592460125`](https://github.com/tmthang86/fixbolt/actions/runs/33592460125) and [`33592486920`](https://github.com/tmthang86/fixbolt/actions/runs/33592486920), 18 checks of 18**). Items **16**, **31** and **30 (d)** are closed; item 30 is now **(a)(c)(e)**, and item **32** was opened by the work that closed 31. Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
 
 ## Start here — 2026-09-02
 
-`[2026-09-02]` **[operability](docs/plans/2026-09-01-operability.md) steps 1–2 are merged** —
-PR #18, merge commit `9062f52`, **CI green on the commit that was closed, `dd1eaa8`, run
-[`33525312007`](https://github.com/tmthang86/fixbolt/actions/runs/33525312007), 9 jobs of 9.**
-`STATUS.md` item 30 is **narrowed to (a)(c)(d)(e)**, not closed.
+**Four plans closed and merged today, across five PRs.** The engine went from *observable* to
+*operable*: it can be watched, it can say why a connection ended, it knows what hours it keeps,
+and it can pick up a session that outlived the process.
 
-The engine is observable now: `Engine::observer()` → a `Snapshot`, **on request only**, read
-from another thread while it turns — per session, logged-on state, both sequence numbers,
-whether output is backed up, and **the measured clock skew**.
-[ADR-0032](docs/decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md); `GUIDE.md`
-§8a is the operations section that did not exist before it.
+| Plan | PR | What it closed |
+|---|---|---|
+| [operability](docs/plans/2026-09-01-operability.md) steps 1–2 | #18 | item 30 (b) and (f) — [ADR-0032](docs/decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md) |
+| [session-schedules](docs/plans/2026-09-02-session-schedules.md) | #19 | item 33 — [ADR-0033](docs/decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md) |
+| [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) | #20, #21 | items 16 and 31 — [ADR-0034](docs/decisions/ADR-0034-recovery-is-asked-once-the-counterparty-is-known.md); **opened item 32** |
+| [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) | #22 | item 30 (d) — [ADR-0035](docs/decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md) |
 
-**Two reversals are worth carrying forward, and both are about a green that was not evidence:**
+`[measured 2026-09-02]` the last of them merged as `abe612b`, **CI green on the commit that was
+closed, `3643263`, runs [`33592460125`](https://github.com/tmthang86/fixbolt/actions/runs/33592460125)
+and [`33592486920`](https://github.com/tmthang86/fixbolt/actions/runs/33592486920) — 18 checks of
+18.** Item 30 is now **(a) ordered shutdown, (c) sequence-number administration, (e) an offline
+journal reader**, and nothing else.
+
+### The four findings worth carrying forward, all of them about a green that was not evidence
 
 | | |
 |---|---|
-| **Removing the `wanted` flag** | the engine built **84 555 snapshots in 50 ms** with nobody asking, and every content assertion stayed green. The plan had predicted this gap had no guard. `Observer::published()` is the guard now |
-| **Flipping the skew's sign** | `crates/engine/tests/observe.rs` stayed **green at `Some(0)`** — the corpus's own instant is what its engine's clock reads, so `now - stamp` and `stamp - now` are indistinguishable there. Three tests in `crates/session/tests/skew.rs` went red. **A test whose only fixture is the corpus cannot see a sign** |
+| **A schedule test passed on the wrong rule.** The corpus `Logon` is stamped 12:00:00; ticking to 03:00 is nine hours of skew against a 120-second bound, so `max_skew_ms` refused it and the schedule was never consulted. The existing midday control was green **honestly** and could not disambiguate | [two-time-rules-share-one-observable](docs/reference/two-time-rules-share-one-observable.md) |
+| **Item 16 closed on a mechanism nothing could reach.** `crates/engine/tests/recovery.rs` proves the journal, `Session::resume` and ADR-0017 — with **zero occurrences of `Engine` in the file**. A layer was finished and the seam above it was never asked about, by a plan whose exit criteria were all satisfiable one layer down | [ADR-0034](docs/decisions/ADR-0034-recovery-is-asked-once-the-counterparty-is-known.md) context |
+| **A benchmark measured its own fixture, three times.** `events-busy` read 30 000 → 6 000 → 2 000 → 0 and **no wrong number came from the code under test**. Its own diagnostic was a false green too: a loop that skipped every iteration reported zero | [a-benchmark-measured-its-own-fixture](docs/reference/a-benchmark-measured-its-own-fixture.md) |
+| **CI caught what `--no-default-features` could not.** `serve_with_recovery` was ungated; `cargo test --all --no-default-features` passed locally at 321, because cargo unifies features across one invocation and `tools/w2w` switches them back on. `scripts/check-no-optional-deps.sh` reproduced it instantly — the second gate is **not** a nicety | [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md) |
 
-**Built on a Mac again, and the two Linux-only mode checks were adjudicated by CI, not
-assumed**: *the engine thread never sleeps in the kernel* and *a standard engine gives the core
-back* both passed on `dd1eaa8`. No nanosecond number was published — `benches/baselines.tsv`
-keys on CPU model and this CPU has no line.
+### The process rules that came out of the day
 
-**What this work did not do, recorded in *Not proven*:** the cost of a turn that *does*
-publish (needs the §9 machine), ring depth and pending-set occupancy in the snapshot, and the
-sign convention's invisibility to the corpus.
+1. **A step-1 red must be red at an assertion, using only today's API.** It was written red at
+   the *compiler* three separate times, and a test that does not compile says nothing about what
+   the code does today — only that you have not written the new thing yet.
+2. **Commit before running a reversal.** `git checkout <file>` was used twice to undo a scratch
+   edit and destroyed uncommitted work in the same file both times, the second time a whole
+   benchmark case. The reversal loop and the undo share a target.
+3. **A zero from a counting benchmark needs a positive control inside the same window.** Without
+   it, *"nothing allocated"* and *"nothing executed"* are the same output.
+
+### Built on a Mac, and what that leaves to CI
+
+Every line of today's work was written on an Apple M5. **No nanosecond number was published** —
+`benches/baselines.tsv` keys on CPU model and this CPU has no row. The two Linux-only mode checks
+(*the engine thread never sleeps in the kernel*, *a standard engine gives the core back*) and the
+per-crate feature gate were **adjudicated by CI, not assumed**: not-runnable is not green.
+
+**What the day did not prove is in *Not proven*, and eight of its entries were written or
+corrected today.** Among them: the `try_lock` choice on the event path, `EVENT_CAPACITY`'s size,
+the three event kinds that were planned and not built, a sharded deployment that still cannot
+resume, `last_active_ms` that nothing persists, and a `Schedule` in a DST zone that is wrong for
+half the year with nothing able to detect it. **Two were corrections to bullets that had drifted**
+— which is the point of re-reading the section line by line rather than only appending to it.
 
 ## Start here — 2026-09-01, end of session
 

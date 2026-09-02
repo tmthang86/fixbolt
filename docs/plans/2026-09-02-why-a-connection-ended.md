@@ -1,6 +1,6 @@
 # Vì sao một kết nối kết thúc
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Xong
 > *(tự viết, tự duyệt theo uỷ quyền thường trực 2026-09-01.)*
 >
 > **Phạm vi:** `STATUS.md` item 30 (d). Chạm `session` (một accessor đọc, không đổi hành vi)
