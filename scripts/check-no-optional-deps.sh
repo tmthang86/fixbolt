@@ -30,6 +30,14 @@ cd "${ROOT}" || exit 2
 # crate:dependency that must be absent when the crate is built with no features.
 CASES=(
   "fixbolt-engine:libc"
+  # `[2026-09-02]` crates/library. It re-exports `serve`, which is `standard`
+  # only, so it declares a `standard` feature of its own that forwards to
+  # `fixbolt-engine/standard` — and a forwarding feature is exactly the shape
+  # that puts an optional dependency back into a build that asked for nothing.
+  # Asked per crate for the same reason `fixbolt-engine` is: at workspace scope
+  # a sibling switches the flag back on and the question stops meaning what it
+  # reads as.
+  "fixbolt:libc"
 )
 
 rc=0

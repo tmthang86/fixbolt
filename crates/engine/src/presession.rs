@@ -384,6 +384,31 @@ pub enum LimitError {
     NoTimeToLogOn,
 }
 
+// `[2026-09-02]` these two impls arrived with `crates/library`, and the facade
+// is what found the gap: `ServeError` and `SettingsError` are both
+// `std::error::Error` and this one was not, so the first line of the library
+// crate's own worked example — `Limits::new(64, 30_000)?` into a
+// `Box<dyn Error>` — did not compile. A startup error that cannot join the
+// error type every other startup error joins is a hole in the API, not a
+// property of this enum. `CLAUDE.md` §6: fieldless on a hot path, an `Error`
+// everywhere else, and this is read once at startup.
+impl core::fmt::Display for LimitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoPendingAllowed => write!(
+                f,
+                "a pending ceiling of zero refuses every connection there will ever be"
+            ),
+            Self::NoTimeToLogOn => write!(
+                f,
+                "a logon deadline of zero expires every connection before it can answer"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LimitError {}
+
 impl Limits {
     /// How many connections may wait at once, and how long each has to log on.
     ///

@@ -12,8 +12,48 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 
 ## [Unreleased]
 
-**Nothing has been released.** Four crates now exist and none is published; the entries
+**Nothing has been released.** Six crates now exist and none is published; the entries
 below describe what a first release would contain.
+
+### Added
+
+- **A new crate, `fixbolt` (`crates/library`) — the application-facing API.**
+  `DESIGN.md` §3 L4 and §7 step 8. It adds no capability: every byte still goes through
+  `fixbolt-engine` and `fixbolt-session`. What it adds is one crate to depend on and a
+  handler that does not have to know the session's job.
+  - `Handler<N = 256, P = 64, S = 1024>` — `on_message(&Incoming<'_, N>, Reply<'_, P, S>)
+    -> Answer`. Runs **on the engine thread**, inline, like any other application.
+  - `Incoming` — the message already parsed: `msg_type`, `get`, `seq`, `sender`, `target`,
+    `view`.
+  - `Reply` / `Message` / `Answer` / `ReplyError` — a reply that writes `8`, `9`, `10`, `34`,
+    `49`, `52` and `56` itself, with `49`/`56` **reversed**, and sorts every field the handler
+    names through the generated tables. A handler naming one of the four session-owned tags is
+    ignored rather than merged. `Answer::Failed` when the reply does not fit — never a partial
+    message.
+  - `App<H>` and `app(h)` — adapt a `Handler` onto the existing `fixbolt_session::Application`
+    seam, plus `App::unparsable()` and `App::failed_replies()`, because an uncounted silence
+    is one nobody can explain.
+  - A curated re-export surface: `serve`, `serve_hft`, `serve_with_recovery`,
+    `serve_hft_with_recovery`, `ServeError`, `Shutdown`, `Config`, `Role`, `Link`,
+    `DropReason`, `Schedule`, `Table`, `Limits`, `LimitError`, `Entry`, `Identity`,
+    `Registry`, `Settings`, `Observer`, `Admin`, `Event`, `Snapshot`, `Recovery`,
+    `FileJournal`, `MessageView` and the rest of what an application needs — and **nothing
+    else**. `Engine`, `Dispatch`, `Transport`, `wait`, `shard`, `affinity`, `frame` and `ring`
+    are deliberately absent.
+  - Feature `standard`, on by default, forwarding to `fixbolt-engine/standard`. The `#[cfg]`
+    is on the `pub use serve` itself and not only in the manifest, and
+    `scripts/check-no-optional-deps.sh` has a `fixbolt:libc` case.
+  - **What it costs, published rather than discovered:** `[measured 2026-09-02, Intel Xeon @
+    2.80GHz, a machine that does NOT meet `DESIGN.md` §9]` a twelve-field reply through
+    `App::on_message` is **~2.1 µs**, against **40 ns** to encode a `Template` built once —
+    about **50×**. The second parse is ~190 ns of it; building a template per message is the
+    rest. `fixbolt_session::Application` is untouched and remains the way to write a handler
+    that cares.
+    [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md).
+- **`presession::LimitError` implements `Display` and `std::error::Error`.** `ServeError` and
+  `SettingsError` already did; this one did not, so `Limits::new(64, 30_000)?` into a
+  `Box<dyn Error>` — the first line of the new crate's own worked example — did not compile.
+  Additive; no behaviour change.
 
 ### Changed
 

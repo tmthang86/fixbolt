@@ -5,6 +5,7 @@ members = [
     "crates/conformance",
     "crates/dict",
     "crates/engine",
+    "crates/library",
     "crates/session",
     "tools/jrnl",
     "tools/w2w",

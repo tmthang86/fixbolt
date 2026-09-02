@@ -39,8 +39,15 @@ its session count.**
 > [reference/measured-costs.md](docs/reference/measured-costs.md). `codec`, `dict`, `session`
 > and `engine` exist, with dispatch, backpressure and the journal built, and **`tools/w2w`**
 > now runs — which is what finally gave *the engine thread never sleeps in the kernel* a
-> machine check (`scripts/check-no-kernel-sleep.sh`). The application-facing `library` does
-> not exist.
+> machine check (`scripts/check-no-kernel-sleep.sh`). `[2026-09-02]` **the application-facing
+> `library` exists**: `crates/library`, package `fixbolt`, with a worked acceptor in
+> `examples/` that the end-to-end test drives through a real socket. It is a **convenience
+> layer and not the `hft` path** — `[measured 2026-09-02, on a machine that fails §9]` a reply
+> through it costs ~2.1 µs against 40 ns for a template built once, and
+> [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)
+> is that number, why it is accepted, and what would remove it. The raw
+> `fixbolt_session::Application` seam is untouched and stays the way to write a handler that
+> cares.
 > **[docs/GUIDE.md](docs/GUIDE.md)** is for embedding the engine — the constraints that
 > show up as latency or lost messages rather than as compile errors.
 > **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;
@@ -81,7 +88,7 @@ serialises in place at the I/O buffer with no allocation. `session` is the FIX s
 protocol as a **pure state machine with no I/O** — which is what makes the 59 QuickFIX
 acceptance definitions run as unit tests — and it takes `Role { Acceptor, Initiator }` as a
 parameter rather than being written twice. `engine` opens and accepts the TCP connections and
-drives those machines; `library` is where the application's `SessionHandler` lives — called
+drives those machines; `library` is where the application's `Handler` lives — called
 **inline on the engine thread by default** (zero hops), or behind a ring buffer on its own
 thread for applications that may block. The engine thread busy-polls and never sleeps in the
 kernel; outbound messages are pre-encoded templates patched per send. TLS, when enabled, is a
@@ -101,6 +108,9 @@ crates/
   conformance/   runs the 59 acceptance definitions in process, no socket
   session/       the FIX session state machine — pure, no I/O, role-parameterised
   engine/        TCP acceptor and connector; a thread that never sleeps in the kernel
+  library/       package `fixbolt` — the application-facing API: one crate to depend
+                 on, a Handler that receives a parsed message and answers through a
+                 Reply that writes the seven fields an application does not own
                  (more crates are added one at a time, each behind an approved plan)
 tools/
   w2w/           wire-to-wire harness — NIC to NIC, and the binary the mode checks trace

@@ -3,7 +3,63 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-02** — **`STATUS.md` item 30 is CLOSED, all six parts**, by **six plans across eight PRs today**: [operability](docs/plans/2026-09-01-operability.md) steps 1–2 (PR #18), [session-schedules](docs/plans/2026-09-02-session-schedules.md) (PR #19), [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) (PR #20, #21), [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) (PR #22), [three-in-the-morning](docs/plans/2026-09-02-sequence-numbers-at-three-in-the-morning.md) (PR #23), [what-the-journal-can-answer](docs/plans/2026-09-02-what-the-journal-can-answer.md) (PR #24) and [an-ordered-shutdown](docs/plans/2026-09-02-an-ordered-shutdown.md) (PR #25; **CI green on the commit closed, `ca9ae49`, runs [`33597576154`](https://github.com/tmthang86/fixbolt/actions/runs/33597576154) and [`33597580522`](https://github.com/tmthang86/fixbolt/actions/runs/33597580522), 18 checks of 18**). Items **16**, **30** and **31** are closed; item **32** was opened by the work that closed 31 and **(b) and (c) of it closed the same day** — [recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md), PR [#26](https://github.com/tmthang86/fixbolt/pull/26), **CI green on the commit closed, `88f4473`, runs [`33600110468`](https://github.com/tmthang86/fixbolt/actions/runs/33600110468) and [`33600141705`](https://github.com/tmthang86/fixbolt/actions/runs/33600141705)**. ADRs **0032–0040**. `[2026-09-02]` **`PRD.md`'s last open line under `many counterparties` is closed too** — [a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md), PR [#27](https://github.com/tmthang86/fixbolt/pull/27), **CI green on `826b672`, runs [`33602482251`](https://github.com/tmthang86/fixbolt/actions/runs/33602482251) and [`33602486701`](https://github.com/tmthang86/fixbolt/actions/runs/33602486701)** — so a counterparty is an edit to a file rather than a rebuild. **Everything reachable from a Mac is now done; what is left needs Linux**: items 6, 11, 12, 14, 21, 22, 24 and **32 (a)**. Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+Last updated: **2026-09-02, later** — **`DESIGN.md` §7's build order is COMPLETE**: step 8 `library` was the last unbuilt box and it is built — [the-library-layer](docs/plans/2026-09-02-the-library-layer.md), crate `crates/library`, package `fixbolt`, [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md). PR [#29](https://github.com/tmthang86/fixbolt/pull/29), **CI green on the commit closed, `4108881`, runs [`33618980677`](https://github.com/tmthang86/fixbolt/actions/runs/33618980677) and [`33619043496`](https://github.com/tmthang86/fixbolt/actions/runs/33619043496), 18 checks of 18**. So **phase 1 now has no unbuilt component and two open exit criteria**: 4 (initiator interop against `libquickfix` in CI — a job, deliberately left for another session) and 6 (wire-to-wire on a machine matching §9 — hardware). `tools/w2w` was run here in both modes and its figures are in *Not proven* under the machine that produced them; **they do not close criterion 6 and open item 6 stays open.** New open item **34**: the library's reply path is ~50x the D9 template shape, measured, published, and not yet fixed. Before that — **`STATUS.md` item 30 is CLOSED, all six parts**, by **six plans across eight PRs today**: [operability](docs/plans/2026-09-01-operability.md) steps 1–2 (PR #18), [session-schedules](docs/plans/2026-09-02-session-schedules.md) (PR #19), [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) (PR #20, #21), [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) (PR #22), [three-in-the-morning](docs/plans/2026-09-02-sequence-numbers-at-three-in-the-morning.md) (PR #23), [what-the-journal-can-answer](docs/plans/2026-09-02-what-the-journal-can-answer.md) (PR #24) and [an-ordered-shutdown](docs/plans/2026-09-02-an-ordered-shutdown.md) (PR #25; **CI green on the commit closed, `ca9ae49`, runs [`33597576154`](https://github.com/tmthang86/fixbolt/actions/runs/33597576154) and [`33597580522`](https://github.com/tmthang86/fixbolt/actions/runs/33597580522), 18 checks of 18**). Items **16**, **30** and **31** are closed; item **32** was opened by the work that closed 31 and **(b) and (c) of it closed the same day** — [recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md), PR [#26](https://github.com/tmthang86/fixbolt/pull/26), **CI green on the commit closed, `88f4473`, runs [`33600110468`](https://github.com/tmthang86/fixbolt/actions/runs/33600110468) and [`33600141705`](https://github.com/tmthang86/fixbolt/actions/runs/33600141705)**. ADRs **0032–0040**. `[2026-09-02]` **`PRD.md`'s last open line under `many counterparties` is closed too** — [a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md), PR [#27](https://github.com/tmthang86/fixbolt/pull/27), **CI green on `826b672`, runs [`33602482251`](https://github.com/tmthang86/fixbolt/actions/runs/33602482251) and [`33602486701`](https://github.com/tmthang86/fixbolt/actions/runs/33602486701)** — so a counterparty is an edit to a file rather than a rebuild. **Everything reachable from a Mac is now done; what is left needs Linux**: items 6, 11, 12, 14, 21, 22, 24 and **32 (a)**. Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+
+## Start here — 2026-09-02, later: the build order is finished
+
+**`DESIGN.md` §7 step 8 is done, and it was the last box.** `crates/library`, package
+**`fixbolt`** — one crate to depend on, and a `Handler` that receives a parsed message and
+answers through a `Reply` that writes the seven fields an application does not own.
+`examples/acceptor.rs` is the first end-to-end example; `examples/shared/order_handler.rs` is
+the handler it runs; `tests/end_to_end.rs` pulls in **that same file** with `#[path]` and
+drives it through a kernel socket. One file, two readers.
+
+**Nothing in `session` or `engine` changed for it**, which was the design: `App` cabinets onto
+the `fixbolt_session::Application` seam that has been there since 2026-08-28. The one engine
+edit is additive and was found *by* the facade — `presession::LimitError` implemented neither
+`Display` nor `std::error::Error`, so the crate's own worked example did not compile on its
+first line.
+
+### The finding, and it is the reverse of what the plan assumed
+
+`[measured 2026-09-02, Intel Xeon @ 2.80GHz, a shared 4-vCPU VM — **NOT** a §9 machine]`
+
+| | ns/op |
+|---|---|
+| Encode a `Template` built **once** — D9's shape | **40** |
+| `App::on_message` — parse, build a template, encode | **2 062 – 2 131** |
+| …of which the second parse | 188 – 195 |
+
+The plan named the second parse as the cost. It is **~9%**. Building a `Template` per message
+is the other 91%, and the whole convenience layer is **~50× the fast path**. That is now
+open item **34**, [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md),
+and it is written into `README.md`, `GUIDE.md` §1b and the crate's own rustdoc rather than
+left for somebody to discover with a profiler. `fixbolt_session::Application` is untouched, so
+the 40 ns path is still there and `GUIDE.md` §1b tells an `hft` deployment to take it.
+
+`[measured 2026-09-02]` the plan closed on `4108881`, **CI green on the commit closed, `4108881`, runs [`33618980677`](https://github.com/tmthang86/fixbolt/actions/runs/33618980677) and [`33619043496`](https://github.com/tmthang86/fixbolt/actions/runs/33619043496), 18 checks of 18** — `CLAUDE.md` §9's last
+box, named by id against the commit rather than against the branch.
+
+**The machine was measured before its numbers were trusted:** ±3–4% over five whole runs. That
+is what makes a 50:1 ratio mean something on a box that fails §9 — and it is why the ratio is
+published and the absolutes are not recorded in `benches/baselines.tsv`.
+
+### Two things that were nearly false greens
+
+| | |
+|---|---|
+| **A checksum and a body length are blind to a swap.** Reversing `49`/`56` the wrong way round leaves `9=111` and `10=137` **identical**, because a swap moves the same bytes and a checksum is a sum. A test asserting "well formed" via the frame would have been green on a message addressed to itself. What caught it was a whole-message byte comparison against a hand-written literal | [a-frame-that-cannot-see-a-swap](docs/reference/a-frame-that-cannot-see-a-swap.md), `[to testing-skills]` |
+| **The silence test was measuring the wrong silence until a reversal said so.** `an_order_the_desk_refuses_puts_nothing_on_the_wire` passed on the first run — and *the handler declined* and *the session never delivered the message* are the same observable. Making the desk fill a priceless order turned it red, which is what proves the message reaches the handler. **Fifth instance of this exact shape in this repository** | `two-time-rules-share-one-observable`, and the reversal is in the commit body |
+
+### Where phase 1 stands now
+
+**No unbuilt component, two open exit criteria.**
+
+| Criterion | State |
+|---|---|
+| 1 session conformance, 2 groups, 3 dictionary, 5 allocations, 7 clean build | **met**, and re-run for this change: `score` and `wire` both still assert 59 |
+| **4 — initiator interop against `libquickfix` in CI** | **not met.** A CI job, not a decision. Deliberately out of this session's scope, by the owner's choice |
+| **6 — wire-to-wire on a §9 machine** | **not met, and blocked on hardware.** `tools/w2w` ran here in both modes; the figures are in *Not proven* with the machine that produced them. Open item 6 stays open |
 
 ## Start here — 2026-09-02
 
@@ -393,14 +449,20 @@ delivery log. In dependency order:
    all four of ADR-0014 decision 6's latency cliffs are shut. **Left open on purpose**: the
    wakeup cost, which needs a §9 machine.
 
-Still unplanned, and deliberately: **`library`** (§7 step 8) and **steps 3–4 of the paused
-initiator plan**, whose gate is interop against `libquickfix` rather than the mirrored corpus
-(ADR-0004, ADR-0006).
+`[2026-09-02]` **`library` (§7 step 8) is built** —
+[the-library-layer](docs/plans/2026-09-02-the-library-layer.md), closed the same day. **So
+`DESIGN.md` §7 has no unbuilt step left.**
+
+Still unplanned, and deliberately: **steps 3–4 of the paused initiator plan**, whose gate is
+interop against `libquickfix` rather than the mirrored corpus (ADR-0004, ADR-0006) — phase 1
+exit criterion 4, and the plan's own risk table says step 4 needs the owner to nod again,
+because C++ and CMake in CI is a standing maintenance cost rather than a one-off. And
+**open item 34**, the library's per-message template build, which needs a `codec` change.
 
 | | |
 |---|---|
 | Branch | `[2026-09-01]` **`claude/linux-desktop-testing-review-pgpaw1`**, and it **is** `origin/main` — the last five plans were merged onto it through PRs [#11](https://github.com/tmthang86/fixbolt/pull/11)–[#15](https://github.com/tmthang86/fixbolt/pull/15) and the remote's default branch now points at the same commit, `73e48c6`. **CI green there, run [`33473213210`](https://github.com/tmthang86/fixbolt/actions/runs/33473213210).** A local `main` ref left over from before that will read 83 commits behind; `git fetch origin main` settles it. **This is the branch-convention question below, answered by practice rather than by decision, and it should still be written down.** Before that: **`ktls-spike-steps-2-5`** — PR [#10](https://github.com/tmthang86/fixbolt/pull/10), `ktls-spike` closed. `[measured 2026-08-31]` **CI green on the commit being closed, `1b9b356`, run [`33386125577`](https://github.com/tmthang86/fixbolt/actions/runs/33386125577), 9 / 9 jobs.** Before that: **`main`.** PR #2 (`claude/project-status-hdx7k1`) merged 2026-08-30 as **`6d35b75`**, no-ff, 12 commits — `standard-mode` closed. `[measured 2026-08-30]` **CI green on the merge commit itself, run [`33326803468`](https://github.com/tmthang86/fixbolt/actions/runs/33326803468)**, and on the merged head `ae3d78a` before it, run `33325530208`, 9 / 9 jobs. `git diff ae3d78a 6d35b75` is **empty**, so the branch's green transfers to the merge exactly rather than by assumption. Before that: PR #1 merged as `76d6989`, run `33307963879` |
-| Milestone | **M3 — the engine, closed, and the corpus now passes through four different paths.** `[measured 2026-08-30]` **59 / 59** in process, and through a real socket, on the M5 **and** on Linux x86_64 — the 39/59 this row used to carry was open item 17, the harness's settle criterion rather than the engine, and it is **closed**. `[measured 2026-08-30]` **59 / 59 in `standard` mode**, `[measured 2026-09-01]` **59 / 59 through two shards**. `codec`, `dict`, `conformance` and `session` are closed behind it. What remains of `DESIGN.md` §7: **step 7 `tools/w2w` — the binary exists and has never been run on the §9 desktop (open item 6)** — and step 8 `library`, unplanned |
+| Milestone | **M3 — the engine, closed, and the corpus now passes through four different paths.** `[measured 2026-08-30]` **59 / 59** in process, and through a real socket, on the M5 **and** on Linux x86_64 — the 39/59 this row used to carry was open item 17, the harness's settle criterion rather than the engine, and it is **closed**. `[measured 2026-08-30]` **59 / 59 in `standard` mode**, `[measured 2026-09-01]` **59 / 59 through two shards**. `codec`, `dict`, `conformance` and `session` are closed behind it. `[2026-09-02]` **`DESIGN.md` §7 is complete**: step 8 `library` is built, and the corpus is untouched by it — `score` and `wire` both still assert 59. What is left of §7 step 7 is not a step but a **machine**: `tools/w2w` runs, and has never been run on a §9 desktop (open item 6) |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted), now supplemented by [ADR-0018](docs/decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md), and still no plan — but it is no longer blocked**: open item 10 closed 2026-08-31 |
 | Plan in flight | **[counterparty-registry](docs/plans/2026-09-01-counterparty-registry.md)**, approved 2026-09-01, six steps, not started — item 28, the largest gap in the project. `[measured 2026-09-01]` its green baseline is **`cargo test --all` 272 passed, 0 failed, 56 binaries**. Before that: **none, and for the first time nothing was approved-and-not-started either.** `[2026-09-01]` three closed that day — `pre-session-routing`, `what-mitigations-cost`, `release-profile`; `[2026-08-31]` six before them — `threads-and-affinity`, `standard-mode`, `serialise-and-the-60ns-target`, `session-recovery`, `ring-full-policy`, `ktls-spike`; `[2026-08-30]` `gates-that-can-be-trusted` and `data-fields`. **Two are neither closed nor in flight and both say why**: `w2w-and-linux-numbers` is **half done** (15 closed, half B is open item 6 and wants time at the desktop, not a decision), and the initiator plan is **paused** on ADR-0006. **So the next unit of work starts with writing a plan, not with picking one up** |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
@@ -413,6 +475,22 @@ initiator plan**, whose gate is interop against `libquickfix` rather than the mi
 | Last closed | Design reviewed against the HFT latency budget and revised: positioning fixed to "fastest acceptor on kernel TCP", ADR-0002 default reversed (inline dispatch, ring optional), D8 busy-poll, D9 template encoder, D10 send backpressure, §8 latency budget, §9 OS checklist, wire-to-wire gate added |
 
 ## Proven — the command was run and its output read
+
+`[measured 2026-09-02]` **the library layer, end to end through a kernel socket.**
+`cargo test -p fixbolt` — 4 `reply` cases comparing whole messages byte for byte against
+hand-written literals, 3 `end_to_end` cases driving the example's own handler over TCP, and
+the crate doctest. `cargo test --all` reads **425 passed, 0 failed, 79 binaries**, against
+417/75 before the crate existed. `cargo bench -p fixbolt --bench alloc` reads
+`handler-reply 0 handler-silent 0 unparsable 0 control-injected 1000` — the control is in the
+same run and each case also asserts it took the path it names, so a zero means *did not
+allocate* rather than *did not execute*. Six reversals, each discriminating: dropping `52`
+(2 of 4 red), not reversing `49`/`56` (2 of 4, and 1 of 3 end-to-end), dropping the
+session-owned skip (1 of 4 — which is what shows the two byte-comparison tests are not one
+test twice), writing `34` as a constant (2 of 3 end-to-end), making the desk fill a priceless
+order (the silence control red), and an allocation inside `Reply` (the bench reads 1000 and
+exits 101). `scripts/check-no-optional-deps.sh` gained a `fixbolt:libc` case and it too was
+proven by reversal — `default-features = true` on the engine dependency makes it exit 1.
+
 
 **`[measured 2026-08-30]` A review bot found a real one, and it killed the process.** If the
 engine is dropped while another thread still holds a `WakeHandle`, the self-pipe's read end
@@ -1121,6 +1199,27 @@ has been read line by line**, not only until its own open item is struck. The fa
 kept with a strike-through and their closing date rather than deleted, so the failure is legible
 instead of tidied away.
 
+- **`tools/w2w` was run on 2026-09-02 and none of its figures is a latency number.** On an
+  **Intel(R) Xeon(R) Processor @ 2.80GHz**, a shared 4-vCPU cloud VM running Linux 6.18.44 —
+  no isolated cores, no `nohz_full`, no frequency pinning, so `DESIGN.md` §9 is **not** met.
+  `hft`: min 15 915 / p50 34 087 / p99 98 492 / max 2 208 306 ns. `standard`: min 13 640 /
+  p50 54 787 / p99 131 276 / max 851 716 ns. Both over 20 000 samples after 2 000 warmup, over
+  kernel TCP on loopback, `TestRequest` → `Heartbeat` with no application involved. **The
+  binary prints its own refusal on every run and this bullet repeats it**: these do not close
+  phase 1 exit criterion 6, do not go in `DESIGN.md` §8, and are recorded only so that a §9
+  run has something to be compared against. Open item **6** is unchanged.
+- **Every figure for `crates/library` is from that same machine**, including the 40 ns for a
+  prebuilt template and the ~2.1 µs for `App::on_message`. `benches/baselines.tsv` has no row
+  for this CPU and none was added — `cost.rs` prints `NO BASELINE`, which is the honest state.
+  The **ratio** is what open item 34 and ADR-0041 rest on; a §9 run could move the absolutes
+  in either direction and nothing here predicts by how much.
+- **`examples/acceptor.rs`'s `main` is compiled and not run.** Its two command-line arguments
+  and two `println!` lines are the only part of that example `tests/end_to_end.rs` does not
+  drive; every other line of it does run, because the test loads the same handler file.
+- **The three `cost.rs` cases do not add up and nobody knows why.** parse 190 + reply 2140 =
+  2330, `on_message` reads 2062–2131 — about 200 ns *less* than the sum, against a 3%
+  run-to-run spread. Recorded in the bench's own module comment and in ADR-0041's open
+  questions rather than smoothed over.
 - **Every figure in [prior-art.md](docs/reference/prior-art.md) is someone else's claim**,
   including all of fix8's and Artio's. Nothing from those projects was run here.
 - ~~The **150 ns gates** in `DESIGN.md` §6~~ — **gone since 2026-08-31.**
@@ -1424,3 +1523,4 @@ against hardware that does not exist.
 | 14 | **Kernel bypass path, if PRD §5 is ever reversed: Onload first, `ef_vi` second, DPDK never.** Onload runs the engine unchanged (`onload ./engine`, socket API, TCP in userspace) — D8 spin already fits it; the first measurement is `tools/w2w` twice on the same box, kernel vs `onload`, and that difference decides whether an `ef_vi` L0 is worth writing. `ef_vi`/TCPDirect is a second `impl Transport` behind a real feature flag (D5). DPDK ships no TCP stack — it means writing or embedding one (smoltcp, F-Stack), which is what fixbolt claims and does not do. Any bypass path is plaintext: it and D11 exclude each other. Needs a Solarflare/AMD X2-class NIC — none available | Phase 3, and open item 6 before it |
 | 16 | ~~**The journal is written and never read back**~~ — **CLOSED 2026-08-31, and its closure is narrower than it reads.** `[2026-09-02]` everything below was true and **none of it was reachable from an `Engine`** for five days: `crates/engine/tests/recovery.rs` proves the whole mechanism with **zero occurrences of `Engine` in the file**, and both of the engine's `add` methods built `Session::new`, which resets. A layer was finished and the seam above it was never asked about, by a plan whose exit criteria were all satisfiable one layer down. `Engine::add_resumed` is the join — item 31. The original entry: All six steps of [session-recovery](docs/plans/2026-08-30-session-recovery.md) are done. Steps 1–3 made the journal readable; step 4 is [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md) — `Session::resume`, and `connect` keeps the count for a session that persisted something; step 5 is **[ADR-0017](docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md)** — `Journal::mark_in`/`highest_in`, written **after** the application sees the message. `Durability::Fsync` is now a recovery mechanism rather than an audit trail, in both directions. **59/59 unchanged and no corpus file exempted**; forcing `connect` to never reset drops it to **56/59**, which proves the corpus exercises that branch. Six reversals across the two steps, and one of them found a worthless test of mine — see the plan's log. **Two things are NOT proven and are named rather than implied**: nothing has measured what the extra `sync_data` costs the inbound path, and no `.def` file restarts a process, so every test here is one this project invented. | closed |
 | 18 | ~~**A plan can close on a laptop's word while CI is red.**~~ — **CLOSED.** The engine plan closed and merged with its gates reported green from an Apple M5; the GitHub run on that same commit failed and was not read, and four documents carried the laptop's number for a day. **`CLAUDE.md` §9 now carries the box** — *a green CI run is named, by id, for the commit being closed* — and every plan closed since has named one: `33394684357`, `33386125577`, `33473213210`. The rule that was missing exists; **what no gate does is check that the named run is green, or is for that commit at all**, so this stays a hand-check on the §9 list | Every "gates green" claim in a merge commit |
+| 34 | **The library layer builds a `Template` per message, and that is ~50x the fast path.** `[measured 2026-09-02, Intel Xeon @ 2.80GHz, a shared 4-vCPU VM that does NOT meet §9]` a twelve-field reply through `App::on_message` costs **2 062 - 2 131 ns**; encoding a `Template` built **once** — `DESIGN.md` D9's own shape — costs **40 ns**. The second parse everybody expected to be the problem is **188 - 195 ns, about 9%**; building the template is the other 91%. `P` and `S` are both on the clock because `TemplateBuilder::field` takes `self` by value, so an `S`-byte struct is copied per field: 128/4096 reads 3 841 - 4 008 ns, 64/1024 reads 1 992 - 2 197, 32/512 reads 1 447 - 1 552, and below 512 the curve flattens. Defaults are 64/1024 on that evidence. **Accepted and published rather than hidden** — [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md), `crates/library/benches/cost.rs`, `README.md`, `GUIDE.md` §1b and the crate's own rustdoc all carry the figure, and `fixbolt_session::Application` is untouched so the 40 ns path is not taken away. **What would remove it needs `codec` to gain something it does not have**: a way to sort and encode straight out of a builder without materialising a `Template<P, S>` value, or a builder that can be cleared and reused across messages. Its own plan, its own ADR, and its own reversal — a per-`(MsgType, field set)` cache is the obvious shape and the cache key is chosen by the handler per message, so getting it wrong emits a message with the wrong fields. **Not started.** The numbers above are the baseline it must beat, and they are from a machine that fails §9, so the ratio transfers and the absolutes do not | A `Handler` that is fast enough for `hft`. Today `GUIDE.md` §1b tells an `hft` deployment to use `Application` instead, which is honest and is not the same as solved |

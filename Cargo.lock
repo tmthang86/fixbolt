@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "fixbolt"
+version = "0.0.0"
+dependencies = [
+ "fixbolt-codec",
+ "fixbolt-dict",
+ "fixbolt-engine",
+ "fixbolt-session",
+]
+
+[[package]]
 name = "fixbolt-codec"
 version = "0.0.0"
 dependencies = [
