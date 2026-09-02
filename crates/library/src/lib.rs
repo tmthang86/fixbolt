@@ -60,13 +60,21 @@
 //!
 //! # What it costs, and the door that stays open
 //!
-//! [`App`] parses the message a second time — the session parsed it already and
-//! does not hand the index out — and builds one template per reply.
-//! [ADR-0041](../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-parse.md)
-//! is that decision, with the measurement. If you want neither, implement
-//! [`fixbolt_session::Application`] yourself and hand *that* to [`serve`]: the
-//! raw seam is not taken away, and `crates/conformance/src/echo.rs` is a worked
-//! example of using it.
+//! `[measured 2026-09-02, Intel Xeon @ 2.80GHz, NOT a `DESIGN.md` §9 machine]`
+//! one twelve-field reply through [`App::on_message`] costs **~2.1 µs**, of
+//! which the second parse is **~190 ns** and building a `Template` per message
+//! is the rest. Encoding a template that was built **once** — `DESIGN.md` D9's
+//! shape — costs **40 ns**. So this layer is roughly **50× the fast path**, and
+//! that is a fact about the convenience rather than about the engine.
+//!
+//! For a great many FIX applications two microseconds is nothing. For an `hft`
+//! deployment it is more than the rest of the message costs put together. If
+//! you are the second, implement [`fixbolt_session::Application`] yourself and
+//! hand *that* to [`serve`] — the raw seam is not taken away, and
+//! `crates/conformance/src/echo.rs` is a worked example of using it.
+//!
+//! [ADR-0041](../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)
+//! is the decision, the measurement and the follow-up it names.
 //!
 //! # The rule this crate cannot enforce
 //!

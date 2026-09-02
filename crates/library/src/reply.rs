@@ -92,8 +92,31 @@ impl Answer {
 /// Built by [`crate::App`] once per application message and consumed by the
 /// handler. `P` is how many fields a reply may carry and `S` how many bytes of
 /// them — the caller picks both, as `CLAUDE.md` §6 requires of every size in
-/// this workspace, and [`crate::Handler`]'s defaults are 128 and 4096.
-pub struct Reply<'a, const P: usize = 128, const S: usize = 4096> {
+/// this workspace.
+///
+/// **The defaults are 64 and 1024, and they were measured rather than chosen.**
+/// `[measured 2026-09-02, Intel Xeon @ 2.80GHz, NOT a `DESIGN.md` §9 machine]`
+/// one twelve-field reply through this type:
+///
+/// | `P` | `S` | ns/op |
+/// |---|---|---|
+/// | 128 | 4096 | 3841 – 4008 |
+/// | **64** | **1024** | **1992 – 2197** |
+/// | 32 | 512 | 1447 – 1552 |
+/// | 32 | 256 | 1421 – 1504 |
+///
+/// Both numbers are copied on every `.field()` call, so both are on the clock;
+/// below `S = 512` the curve flattens and what is left is the parts array and
+/// the sort. 64 and 1024 hold a realistic `ExecutionReport` with a small
+/// repeating group and leave room, which is what a default is for. A caller who
+/// knows their message writes `Handler<256, 32, 512>` and takes the rest.
+///
+/// **Every one of these is far above the 40 ns it costs to encode a template
+/// that was built once** — see
+/// [ADR-0041](../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md),
+/// which is the decision this table belongs to. `crates/library/benches/cost.rs`
+/// is the committed benchmark.
+pub struct Reply<'a, const P: usize = 64, const S: usize = 1024> {
     begin_string: &'a [u8],
     seq: u32,
     stamp: &'a [u8],
@@ -154,7 +177,7 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
             .field(56, self.target);
         Message {
             out: self.out,
-            b: Some(b),
+            b,
             err: None,
         }
     }
@@ -164,9 +187,15 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
 /// for.
 pub struct Message<'a, const P: usize, const S: usize> {
     out: &'a mut [u8],
-    /// `Option` only so that [`Self::send`] can take the builder by value out
-    /// of `&mut self`-free code; it is `Some` for the whole of this type's life.
-    b: Option<TemplateBuilder<P, S>>,
+    /// Held by value, **not** behind an `Option`.
+    ///
+    /// `[measured 2026-09-02]` the first version wrapped it so that `send`
+    /// could take it out of `&mut self`-free code, and the `take`/put pair cost
+    /// two extra moves of an `S`-byte struct on **every** `.field()` call:
+    /// `library, reply only` read 5653 ns/op with it and 2300 ns/op for the
+    /// same fifteen fields written straight against `TemplateBuilder`. A
+    /// convenience that costs more than the thing it wraps is not one.
+    b: TemplateBuilder<P, S>,
     /// The first failure, kept so that a chain of `.field()` calls does not
     /// need a `?` on every line. Reported once by [`Self::send`].
     err: Option<ReplyError>,
@@ -183,9 +212,7 @@ impl<const P: usize, const S: usize> Message<'_, P, S> {
         if SESSION_OWNED.contains(&tag) {
             return self;
         }
-        if let Some(b) = self.b.take() {
-            self.b = Some(b.field(tag, value));
-        }
+        self.b = self.b.field(tag, value);
         self
     }
 
@@ -196,9 +223,7 @@ impl<const P: usize, const S: usize> Message<'_, P, S> {
     /// the two cannot disagree.
     #[must_use]
     pub fn group(mut self, counter: u32) -> Self {
-        if let Some(b) = self.b.take() {
-            self.b = Some(b.group(counter));
-        }
+        self.b = self.b.group(counter);
         self
     }
 
@@ -214,14 +239,11 @@ impl<const P: usize, const S: usize> Message<'_, P, S> {
     /// Groups are passed at the call rather than stored, so nothing here
     /// borrows a caller's stack for longer than one statement.
     #[must_use]
-    pub fn send_with_groups(mut self, groups: &[GroupData<'_>]) -> Answer {
+    pub fn send_with_groups(self, groups: &[GroupData<'_>]) -> Answer {
         if let Some(e) = self.err {
             return Answer::Failed(e);
         }
-        let Some(b) = self.b.take() else {
-            return Answer::Silent;
-        };
-        match b.build::<Fix44>() {
+        match self.b.build::<Fix44>() {
             Ok(t) => match t.encode_with::<Fix44>(self.out, &[], groups) {
                 Ok(r) => Answer::Sent(r),
                 Err(e) => Answer::Failed(ReplyError::Encode(e)),

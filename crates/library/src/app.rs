@@ -18,11 +18,16 @@
 //!
 //! The session already parsed this message — it had to, to decide the message
 //! was the application's at all — and its index is private. So this is the
-//! second parse of the same bytes, and it is a real cost on the engine thread,
-//! named and measured in
-//! [ADR-0041](../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-parse.md).
-//! It is **not** an allocation: the index lives in [`App`] and is reused,
-//! which `benches/alloc.rs` asserts.
+//! second parse of the same bytes.
+//!
+//! `[measured 2026-09-02]` **it is the small half of what this layer costs**:
+//! ~190 ns of a ~2.1 µs path, where building a `Template` per reply is the
+//! other ~91%. That is the reverse of what the plan for this crate assumed, and
+//! it is why [ADR-0041] does not propose removing the parse. It is **not** an
+//! allocation either: the index lives in [`App`] and is reused, which
+//! `benches/alloc.rs` asserts.
+//!
+//! [ADR-0041]: ../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md
 
 use core::ops::Range;
 
@@ -104,7 +109,7 @@ impl<'a, const N: usize> Incoming<'a, N> {
 /// `crates/conformance/src/echo.rs` has been running the acceptance corpus with
 /// since 2026-08-28: `N` fields in the inbound index, `P` fields in a reply and
 /// `S` bytes of them.
-pub trait Handler<const N: usize = 256, const P: usize = 128, const S: usize = 4096> {
+pub trait Handler<const N: usize = 256, const P: usize = 64, const S: usize = 1024> {
     /// One application message, and the right to answer it once.
     ///
     /// Return `reply.silent()` to say nothing. The session's outbound sequence
@@ -115,7 +120,7 @@ pub trait Handler<const N: usize = 256, const P: usize = 128, const S: usize = 4
 /// A [`Handler`] wearing the [`fixbolt_session::Application`] the engine wants.
 ///
 /// Build one with [`app`] and hand it to [`crate::serve`].
-pub struct App<H, const N: usize = 256, const P: usize = 128, const S: usize = 4096> {
+pub struct App<H, const N: usize = 256, const P: usize = 64, const S: usize = 1024> {
     handler: H,
     /// Reused across messages. Allocating one per message would be
     /// non-negotiable 1 broken on the busiest path this crate has.

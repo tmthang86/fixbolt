@@ -408,6 +408,101 @@ as the API.
 
 ---
 
+## 1b. Two ways to write a handler, and the fast one is not the pretty one
+
+`[2026-09-02]` there are now two, and **choosing between them is a latency decision, so make
+it deliberately.**
+
+### The short way: `fixbolt::Handler`
+
+One crate in your `Cargo.toml`, a message already parsed, and a reply that writes the seven
+fields you do not own:
+
+```rust
+use fixbolt::{Answer, Handler, Incoming, Reply};
+
+struct Desk;
+
+impl Handler for Desk {
+    fn on_message(&mut self, msg: &Incoming<'_>, reply: Reply<'_>) -> Answer {
+        if msg.msg_type() != b"D" {
+            return reply.silent();
+        }
+        reply
+            .message(b"8")
+            .field(37, b"EXEC-1")
+            .field(150, b"F")
+            .field(11, msg.get(11).unwrap_or(b""))
+            .send()
+    }
+}
+
+fixbolt::serve(addr, table, fixbolt::app(Desk), 64, limits)?;
+```
+
+**What you did not write, and cannot get wrong.** `8`, `9` and `10` are the frame. `34` and
+`52` are the session's — an application that regenerates `52` moves the body four bytes and
+fails a test that says nothing about time. `49` and `56` are **reversed**: your sender is
+their target. None of the seven is reachable from the API above, which is the point; naming
+one anyway is ignored rather than merged, because two `34=` in one message is two sequence
+numbers.
+
+**And the order is not yours.** Everything you name goes through the generated tables:
+`MsgType`, then header tags ascending, then body tags ascending. Name them in any order you
+like.
+
+### The fast way: `fixbolt::Application`
+
+The raw seam. Bytes in, a `Range<usize>` out, and everything above is yours to do:
+
+```rust
+impl Application for Desk {
+    fn on_message(&mut self, msg: &[u8], seq: u32, stamp: &[u8], out: &mut [u8])
+        -> Option<Range<usize>> { /* ... */ }
+}
+```
+
+`crates/conformance/src/echo.rs` is a worked example, and the comment at the top of it is the
+list of traps you are now responsible for.
+
+### What the short way costs
+
+`[measured 2026-09-02]` on an **Intel Xeon @ 2.80GHz — a shared cloud VM that does NOT meet
+§9**, so read the ratio and not the figure. One twelve-field `ExecutionReport`:
+
+| | ns/op |
+|---|---|
+| Encode a `Template` you built **once** — [D9](DESIGN.md)'s shape | **40** |
+| `App::on_message`: parse, build a template, encode | **2 062 – 2 131** |
+| …of which the second parse is | 188 – 195 |
+
+**About 50×.** The parse is the small half; building a `Template` per message is ~91% of it.
+`crates/library/benches/cost.rs` is the benchmark and
+[ADR-0041](decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md) is
+the decision, including what would remove it.
+
+**So:**
+
+| If your deployment is | Use |
+|---|---|
+| `standard` mode, order entry, a few thousand messages a second | `Handler`. Two microseconds is not your problem |
+| `hft` mode, one session on an isolated core | **`Application`**, with your own `Template` per message type, built at logon. Two microseconds is more than the rest of the message costs put together |
+
+There is no third option where you get both, and pretending otherwise is what this section
+exists to prevent.
+
+### The two sizes, and the cliff
+
+`Handler<N, P, S>` defaults to `256, 64, 1024`: `N` fields in the inbound index, `P` fields in
+a reply, `S` bytes of them. A reply that exceeds `P` or `S` is **`Answer::Failed`, not a
+slower success** — nothing goes on the wire, and `App::failed_replies()` counts it. That
+counter is the only way you will find out, so read it.
+
+The defaults were measured rather than picked: 128/4096 costs 1.9× as much, and below `S=512`
+the curve flattens. If you know your message, say so — `impl Handler<256, 32, 512> for Desk`.
+
+---
+
 ## 2. The engine calls you on its hot path
 
 `InlineDispatch` — the default — runs your handler **on the engine thread**, between the read

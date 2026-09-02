@@ -1,6 +1,6 @@
 # Tầng library — API cho ứng dụng, và ví dụ chạy được đầu tiên
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt 2026-09-02
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** **Xong 2026-09-02**
 > **Phạm vi:** `DESIGN.md` §7 bước 8 — ô cuối cùng chưa dựng của cây phase 1 trong `PRD.md` §2
 
 ## Bối cảnh
@@ -263,6 +263,84 @@ chạy trên thread engine.
 - **Publish lên crates.io.** Không có `publish = true` nào ở PR này.
 - **TLS**, **reload cấu hình khi đang chạy**, **credentials** — đều đã có lý do riêng ở nơi khác.
 
+## Sửa plan giữa chừng
+
+### Sửa 1 — crate mới **phải** có `[features]`, ngược lại điều plan viết
+
+Plan §"Bất biến bị đụng tới" hàng 6 viết: *crate mới **không khai `[features]`**, như
+`tools/jrnl`*. **Sai, và phát hiện ngay khi biên dịch lần đầu.** `fixbolt_engine::serve` là
+`#[cfg(all(feature = "standard", unix))]`, nên một mặt tiền xuất lại `serve` **buộc** phải có
+cờ `standard` của riêng nó. `jrnl` không cần vì nó chỉ đọc file và không rẽ nhánh theo cờ nào.
+
+Cái quan trọng là điều này **không làm yếu** bất biến 6 mà làm nó có việc để làm:
+`#[cfg]` nằm trên chính dòng `pub use serve`, chứ không chỉ trong manifest, và
+`scripts/check-no-optional-deps.sh` có thêm case `fixbolt:libc` — **đã chứng minh bằng đảo
+ngược**: đổi `default-features = false` thành `true` cho dependency `engine` thì script exit 1.
+
+### Sửa 2 — cái đắt là **dựng template**, không phải lần parse thứ hai
+
+Plan §Rủi ro xếp *"parse hai lần"* mức **Cao** và *"`TemplateBuilder::new` zero `S` byte"* cũng
+**Cao**, rồi ADR dự kiến tên là *"buys an api with a parse"*. **Đo xong thì ngược lại.**
+
+`[đo 2026-09-02, Intel Xeon @ 2.80GHz, máy KHÔNG đạt §9]` parse **188–195 ns**, cả đường
+`App::on_message` **2 062–2 131 ns**, encode một `Template` dựng sẵn **40 ns**. Parse chiếm
+**~9%**; dựng template chiếm 91% còn lại; cả tầng đắt hơn đường nhanh **~50 lần**.
+
+Ba việc theo sau, đều đã làm:
+
+1. ADR đổi tên thành
+   [ADR-0041 — the library layer buys its API with a **template per message**](../decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md).
+2. Mặc định `P`/`S` chọn **bằng số quét** chứ không bằng cảm tính: 128/4096 đọc 3 841–4 008 ns,
+   **64/1024 đọc 1 992–2 197**, 32/512 đọc 1 447–1 552, dưới 512 thì đường cong phẳng ra. Lấy
+   **64/1024**.
+3. Việc sửa thật sự — `codec` cần encode thẳng từ builder, không tạo giá trị `Template<P, S>` —
+   **ngoài phạm vi plan này**, thành `STATUS.md` open item **34** với đúng những con số trên
+   làm mốc phải vượt.
+
+Cũng ghi lại một sai lầm của chính tầng này: bản đầu giữ builder trong `Option` để `send` lấy
+ra được, và cặp `take`/gán thêm hai lần chép một struct `S` byte vào **mọi** lần `.field()` —
+5 653 ns/op. Bỏ `Option` đi. Một tiện ích tốn hơn thứ nó bọc thì không phải tiện ích.
+
+### Sửa 3 — thêm `benches/cost.rs`, ngoài `benches/alloc.rs` plan đã nêu
+
+Bất biến 10 cấm mọi con số không có benchmark đã commit đứng sau. Sửa 2 sinh ra bốn con số, nên
+sinh luôn một bench target thứ hai. Nó là loại TIMING, máy này không có dòng trong
+`benches/baselines.tsv`, nên nó in `NO BASELINE` và `scripts/bench.sh` đếm riêng — đúng trạng
+thái thật, không phải một số xanh không ai dựng lại được.
+
 ## Nhật ký giao hàng
 
-*(điền khi đóng từng bước)*
+**Xong cả sáu bước, 2026-09-02.** Nhánh `claude/hoang-thanh-phase-1-7km9hn`.
+
+| Bước | Kết quả | Bằng chứng |
+|---|---|---|
+| 1 | Khung crate + test **đỏ ở assertion** | in ra hai dãy byte, `9=66` so với `9=111`; không phải lỗi biên dịch |
+| 2 | `Reply` ghi phần đầu | 4/4 xanh; ba lần đảo ngược: bỏ `52` (2/4 đỏ), không đảo `49`/`56` (2/4 đỏ), bỏ chốt `SESSION_OWNED` (1/4 đỏ) |
+| 3 | `Incoming`, `Handler`, `Answer`, `App`, mặt tiền | `cargo test -p fixbolt` xanh, kể cả doctest, cả có và không có `--no-default-features` |
+| 4 | Ví dụ + test end-to-end qua socket thật | 3/3 xanh; ba lần đảo ngược, trong đó cái đáng giá nhất là *bắt desk khớp lệnh không có giá* — nó chứng minh bản tin **đến được** handler, nên im lặng là quyết định của handler chứ không phải session đánh rơi |
+| 5 | `benches/alloc.rs` | `handler-reply 0 handler-silent 0 unparsable 0 control-injected 1000`; tiêm một cấp phát vào `Reply` thì đọc 1000 và exit 101 |
+| 6 | ADR-0041, `benches/cost.rs`, đồng bộ 8 tài liệu, chạy `w2w` | xem dưới |
+
+**Gate, chạy trên máy này và đọc bằng mắt:**
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo test --all` | **425 passed, 0 failed, 79 binaries** (nền trước đó 417/75) |
+| `cargo test --all --no-default-features` | 422 passed, 0 failed |
+| `scripts/check-no-optional-deps.sh` | exit 0, có case `fixbolt:libc` mới |
+| `cargo test -p fixbolt-session --test score` | xanh — file assert `report.passed == 59` |
+| `cargo test -p fixbolt-engine --test wire` | xanh — file assert `report.passed == 59` |
+| `cargo bench -p fixbolt --bench alloc` | 0 / 0 / 0, control 1000 |
+| `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` | sạch |
+
+**Cái plan này KHÔNG chứng minh, nói thẳng:**
+
+- **Chưa có lần chạy CI xanh nào được gọi tên theo id cho commit đóng** — ô cuối `CLAUDE.md`
+  §9. Phải lấy sau khi push và mở PR, và cho tới lúc đó **plan này chưa đóng theo đúng nghĩa
+  §9**.
+- Mọi con số nano-giây ở đây từ một VM 4 vCPU dùng chung, **không đạt §9**. Tỉ lệ chuyển được,
+  số tuyệt đối thì không. Không dòng nào được ghi vào `benches/baselines.tsv`.
+- `main` của `examples/acceptor.rs` được biên dịch chứ không được chạy.
+- Ba case của `cost.rs` **không cộng lại đúng** và không ai biết vì sao — ghi trong module
+  comment của chính nó và trong mục câu hỏi mở của ADR-0041.
+- Tiêu chí thoát 4 và 6 của phase 1 **vẫn mở**, đúng như phạm vi chủ dự án đã chọn.
