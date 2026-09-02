@@ -1,6 +1,6 @@
 # Initiator: cái để tự nói, và một ý kiến không phải của mình
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** **Bước 1–3 XONG 2026-09-02** · bước 4 chưa làm (mục mở 36)
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** **Bước 1–3 XONG 2026-09-02** · bước 4 làm một nửa (0 → 2 / 50), phần còn lại là mục mở 36
 > **Phạm vi:** **Tiêu chí thoát số 4 của phase 1** — bước 3 và bước 4 của
 > [session-initiator](2026-08-29-session-initiator.md), đang tạm dừng từ 2026-08-30
 
@@ -255,11 +255,50 @@ interop: PASS 7/7
 
 **Tiêu chí thoát số 4 của phase 1: ĐẠT.**
 
-### Bước 4 — cổng soi gương 45 / 50 · **CHƯA LÀM**
+### Bước 4 — cổng soi gương · **LÀM MỘT NỬA**, commit `a9a68c4`
 
-Không bị chặn bởi gì cả — API tự phát mà nó thiếu giờ đã có. Còn lại là nửa harness
-(`Input::Originate(Intent)` + bảng đếm lần lái) và một ADR hạ trần 50 → 45 kèm năm tên.
-Chuyển thành **mục mở 36** trong `STATUS.md` thay vì để nằm trong một plan đã đóng ba bước.
+**Đạt được: 0 → 2 / 50, và quan trọng hơn là nó *rớt được*.** Trước đó nó chốt `passed == 0`,
+mà một cổng chốt hằng số thì không báo được gì — trong lúc nó nằm ở 0, một initiator trả lời
+Logon bằng Logon đã đi qua nó.
 
-**Nói thẳng cái chưa làm:** cổng soi gương vẫn **0 / 50**, và một cổng chốt hằng số thì không
-báo được gì — trong lúc nó nằm ở 0, một initiator trả lời Logon bằng Logon đã đi qua nó.
+`Input::Originate(Intent)` xong, chỉ dùng ở chế độ soi gương. `Intent` **không** mang
+`8`, `9`, `34`, `49`, `52`, `56`, `10`. `Report::driven` đếm mọi lần lái theo `MsgType` và test
+chốt bằng **số cụ thể**, không phải `<=`.
+
+**Chưa đạt: 45 / 50.** Chuyển thành mục mở 36 trong `STATUS.md`, kèm cả hai thứ đã học được.
+
+### Sửa 1 — thứ tự lái: **lái trước, tick sau**, và đó là số đo chứ không phải thẩm mỹ
+
+Plan viết *"tick trước đúng như hôm nay, chỉ khi tick xong vẫn im mới lái"*. Viết đúng như thế
+thì **0 / 50**: mỗi lần chờ đẩy đồng hồ lên một `HeartBtInt`, ba lần là 2.4 khoảng — đúng ngưỡng
+một session buông một liên kết đã im. **Harness đang tự làm timeout cái session nó đang chờ**,
+ở mọi dòng, trước khi kịp hỏi.
+
+Nên: dòng nào người vận hành sở hữu thì lái trước; dòng nào harness không có ý định cho nó —
+một `Logon`, mà `intent_of` cố tình trả `None` — mới rơi xuống đồng hồ. **Giá phải trả nói ra
+chứ không giấu:** heartbeat theo đồng hồ của initiator không được kiểm ở đây;
+`tests/heartbeat.rs` kiểm nó trong process với đồng hồ tiêm vào, và đó mới là chỗ của một luật
+thời gian.
+
+### Sửa 2 — plan bỏ sót cái đã chặn thật, và nó nằm ở loader
+
+**Không phải máy trạng thái.** Một dòng `E` mang `52=00000000-00:00:00.000` và `10=0`, vì
+`Comparator.rb` khớp hai tag ấy theo *hình dạng* — chúng chưa bao giờ phải thật. Soi gương, một
+dòng `E` là **đầu vào**, và một mốc thời gian năm 0 là 2 026 năm lệch đồng hồ. Session từ chối
+Logon của đối tác rồi buông, nên mọi dòng sau đó của mọi file đọc ra *"expected a message, got
+silence"* — 196 lỗi giống hệt nhau, không cái nào nêu nguyên nhân.
+
+**Cái chỉ ra nguyên nhân là bộ đếm của chính harness**, `harness originated: 0×1` — được hỏi
+đúng một lần trong năm mươi file. Ghi ở
+`docs/reference/expected-output-is-not-valid-input.md`, **`[to testing-skills]`**.
+
+`make_receivable` thay **đúng hai** trường. Một bản tin có `52=` sai *có chủ đích* —
+`1d_InvalidLogonBadSendingTime` gửi một cái từ năm 2001 — giữ nguyên, vì nó không phải
+placeholder. Sửa cả cái đó nữa là xoá mất chính ca mà file ấy tồn tại để kiểm.
+
+### Sửa 3 — dừng ở 2 / 50 thay vì đi tiếp
+
+Những lỗi còn lại giờ là **bất đồng giao thức có giá trị cụ thể**, không còn là một sự im lặng
+lặp lại. Nhưng vài cái cần API session **chưa có**: một `SequenceReset` `123=Y` do người vận
+hành ra lệnh, trong khi `send_sequence_reset` viết `123=N`. Thêm API công khai là việc của một
+plan, không phải của giữa chừng một bước — `CLAUDE.md` §1. **Dừng, và nói ra.**
