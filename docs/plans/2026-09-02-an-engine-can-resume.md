@@ -132,13 +132,17 @@ item 31 **thu hẹp**, không đóng, và `STATUS.md` phải nói đúng như v�
 
 ## Tài liệu phải cập nhật
 
-- [ ] ADR mới — engine hỏi ai đó chứ không đoán; `Recovery` đối xứng với `Registry`
-- [ ] `DESIGN.md` §3 và §4 D7
-- [ ] `CHANGELOG.md` — API công khai
-- [ ] `GUIDE.md` — mục phục hồi, và sửa §5a lẫn §6
-- [ ] `STATUS.md` item 31, và item 16 phải nói rõ phạm vi đóng của nó hẹp hơn nó đọc ra
-- [ ] `PRD.md` §2
-- [ ] Đi lại bảng §4 từng dòng, và đọc lại *Not proven* từng dòng
+- [x] ~~ADR mới~~ — **không viết, và đây là lý do.** `add_resumed` không quyết định gì mới:
+      ADR-0010 đã nói engine không đoán và người gọi là người chọn, còn cái này chỉ là chỗ họ
+      nói ở tầng engine. **`Recovery` trait thì đúng là cần một ADR** — nó thêm một điểm mở
+      rộng công khai và một mặc định phải chứng minh là trung tính — nhưng nó là bước 3 và
+      bước 3 chưa làm. Viết ADR cho một thiết kế chưa dựng là viết một lời hứa
+- [x] `DESIGN.md` §3
+- [x] `CHANGELOG.md` — API công khai
+- [x] `GUIDE.md` §6a mới, và §9 sửa lại
+- [x] `STATUS.md` item 31 thu hẹp; **item 16 nói rõ phạm vi đóng của nó hẹp hơn nó đọc ra**
+- [x] `PRD.md` §2
+- [x] Đi lại bảng §4 từng dòng, và đọc lại *Not proven* từng dòng
 
 ## Ngoài phạm vi
 
