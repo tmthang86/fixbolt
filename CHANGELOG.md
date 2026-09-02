@@ -87,6 +87,16 @@ below describe what a first release would contain.
 
 ### Fixed
 
+- **A session that says goodbye first no longer answers the acknowledgement.** A `Logout`
+  exchange is one message each way; this engine sent a third. QuickFIX's `nextLogout` replies
+  only when it did not begin the exchange, and now so does this. Nothing could see it: the 59
+  acceptance definitions never have the acceptor start a logout, `their_answer_ends_the_session`
+  passed an `emit` that counted nothing, and `scripts/interop.sh` stops reading once it has seen
+  the counterparty's `35=5`. The **mirrored** corpus found it. A `Logout` this end did not start
+  is still answered — both halves are in `crates/session/tests/goodbye.rs`.
+- **`Session::begin_logout(b"")` no longer writes an empty `58=`.** No words means no field, not
+  a field with nothing in it. Found the same way, on the same file.
+
 - **An initiator no longer answers a `Logon` with a `Logon`.** The inbound-Logon handler
   replied for **both** roles; for an acceptor that is the handshake, for an initiator — which
   sent the first one — it starts a second handshake on a session that already has one. A real

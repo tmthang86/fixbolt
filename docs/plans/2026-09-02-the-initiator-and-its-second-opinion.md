@@ -300,6 +300,36 @@ silence"* — 196 lỗi giống hệt nhau, không cái nào nêu nguyên nhân.
 `1d_InvalidLogonBadSendingTime` gửi một cái từ năm 2001 — giữ nguyên, vì nó không phải
 placeholder. Sửa cả cái đó nữa là xoá mất chính ca mà file ấy tồn tại để kiểm.
 
+### Sửa 4 — quay lại và đi tiếp tới 10 / 50, vì cổng bắt được lỗi thật
+
+`[đo 2026-09-02, cùng ngày]` chủ dự án yêu cầu làm hết những item làm được trên máy này, nên
+bước 4 được mở lại. **0 → 2 → 10**, và cú nhảy thứ hai **không phải việc của harness**: cổng
+soi gương tìm ra hai lỗi thật.
+
+| Lỗi | Vì sao không cổng nào thấy |
+|---|---|
+| Session tự chào tạm biệt trước, rồi **trả lời lại** lời đáp bằng một `Logout` thứ ba | 59 file không bao giờ để acceptor mở màn logout, nên mọi `35=5` trong đó là một câu trả lời **đúng** phải gửi. `their_answer_ends_the_session` truyền `emit` là `\|_\| {}` nên không đếm gì. `scripts/interop.sh` ngừng đọc ngay khi thấy `35=5` của đối tác |
+| `begin_logout(b"")` viết `58=` rỗng | cùng lý do |
+
+**Cùng họ với lỗi Logon echo**: một chỗ hai vai không đối xứng, mà bộ acceptor không thể thấy
+vì acceptor luôn là bên trả lời. Đây là lỗi thứ hai thuộc họ ấy trong một ngày.
+
+**Bảng đếm lần lái vẫn nguyên 141** — đó chính là cái nói rằng tám file mới xanh là do session,
+không phải do harness lái nhiều hơn. Nếu bảng đếm ấy không nằm cạnh điểm số thì câu này không
+kiểm chứng được.
+
+### Sửa 5 — trần 45 có lẽ sai, và **chưa ai đo trần thật**
+
+`[đo 2026-09-02]` ít nhất **sáu** file còn lại đòi phát một `SequenceReset` ở hình dạng mà
+**không API người vận hành nào nên có**: ba file muốn `34=0` (cách QuickFIX nói *không đánh
+số*, tức là harness đọc chính số thứ tự — đúng cái cửa sau ADR-0042 quyết định 1 từ chối), ba
+file muốn `123=Y`, mà gap fill **không phải hành động của người vận hành**: nó là câu trả lời
+của chính session cho một `ResendRequest`, và session đã làm rồi.
+
+**34 file còn lại chưa phân loại, và mục 36 không giả vờ là đã.** Nên `ADR-0006` chốt trần 45
+có lẽ sai, sửa nó cần một ADR mới (ADR đã Accepted không sửa ruột), và trước đó cần một bảng
+phân loại từng file. **Bảng ấy đáng giá hơn điểm số.**
+
 ### Sửa 3 — dừng ở 2 / 50 thay vì đi tiếp
 
 Những lỗi còn lại giờ là **bất đồng giao thức có giá trị cụ thể**, không còn là một sự im lặng
