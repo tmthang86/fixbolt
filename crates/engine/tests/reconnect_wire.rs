@@ -233,17 +233,43 @@ fn a_policy_that_says_stop_never_dials_at_all() {
     let mut policy = Policy::new(50, 200).expect("a legal pair");
     policy.stop();
 
-    let done = fixbolt_engine::connect_and_serve::<Never, fixbolt_engine::journal::Store, _>(
-        &addr,
-        cfg(),
-        Never,
-        policy,
-        fixbolt_engine::recovery::NoRecovery,
-    );
+    // **On a thread, with a deadline, and that is not caution.**
+    // `[measured 2026-09-02]` the reversal for this test — the loop ignoring
+    // the policy — does not make it fail. It makes it **hang**: a loop that
+    // never sees `Stop` never returns, and `cargo test` was killed at ten
+    // minutes with no output at all. This repository already has that shape
+    // written down (`docs/reference/a-reversal-can-fail-by-hanging.md`) and
+    // this is the second instance of it.
+    //
+    // So the deadline is the assertion. A hang becomes a failure with a
+    // sentence attached, which is the difference between a suite that reports
+    // and one that has to be killed.
+    let returned = Arc::new(AtomicUsize::new(0));
+    let flag = Arc::clone(&returned);
+    let dialled = addr.clone();
+    std::thread::spawn(move || {
+        let done = fixbolt_engine::connect_and_serve::<Never, fixbolt_engine::journal::Store, _>(
+            &dialled,
+            cfg(),
+            Never,
+            policy,
+            fixbolt_engine::recovery::NoRecovery,
+        );
+        if done.is_ok() {
+            flag.fetch_add(1, Ordering::Release);
+        }
+    });
 
-    assert!(
-        done.is_ok(),
-        "a stopped policy returns rather than erroring"
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while returned.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        returned.load(Ordering::Acquire),
+        1,
+        "a stopped policy must return, and quickly. Still running after ten \
+         seconds means the loop is not consulting the policy at all — which is \
+         a hang rather than a wrong answer, and is why this has a deadline"
     );
     assert!(
         listener.accept().is_err(),
