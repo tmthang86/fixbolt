@@ -1412,10 +1412,17 @@ impl<R: Role, const N: usize> Session<R, N> {
             }
             return Link::Dropped;
         }
-        if self
-            .send(Which::Logout, &[(tag::TEXT, text)], &mut emit)
-            .is_err()
-        {
+        // **No words means no field, not an empty one.** `[measured 2026-09-02]`
+        // `begin_logout(b"")` wrote `58=` with nothing after it — a field on
+        // the wire that says nothing, and a field count no counterparty
+        // expects. An unset slot is simply not written (`out.rs`), so the fix
+        // is to pass no slot rather than an empty value.
+        let extra: &[(u32, &[u8])] = if text.is_empty() {
+            &[]
+        } else {
+            &[(tag::TEXT, text)]
+        };
+        if self.send(Which::Logout, extra, &mut emit).is_err() {
             // Nothing went out, so there is nothing to wait for. Ending here
             // is honest; pretending to wait would hang the shutdown on a
             // message that was never sent.
@@ -2045,7 +2052,28 @@ impl<R: Role, const N: usize> Session<R, N> {
         }
 
         if is_logout {
-            self.send(Which::Logout, &[], emit)?;
+            // **Only answer a goodbye we did not start.** A `Logout` exchange
+            // is one message each way; a third is wrong on the wire, and
+            // QuickFIX's `nextLogout` replies only when it did not begin the
+            // exchange either.
+            //
+            // `[measured 2026-09-02]` this was unconditional, and nothing could
+            // see it. The acceptor corpus never has the acceptor start a
+            // logout, so every `35=5` in those 59 files is a reply that
+            // *should* go out; `tests/goodbye.rs::their_answer_ends_the_session`
+            // passed an `emit` of `|_| {}` and counted nothing; and
+            // `scripts/interop.sh` stops reading once it has seen the
+            // counterparty's `35=5`, so the extra message arrived after it was
+            // looking. The **mirrored** corpus found it, as "unexpected
+            // output" on `10_MsgSeqNumEqual.def` — which is what a gate that
+            // can fall is for.
+            //
+            // Same family as the `Logon` echo: an asymmetry the acceptor
+            // corpus cannot show, because an acceptor is always the responder.
+            // `crates/session/tests/goodbye.rs` holds both halves.
+            if self.state != State::LoggingOut {
+                self.send(Which::Logout, &[], emit)?;
+            }
             self.end(DropReason::PeerLogout);
             return Ok(Link::Dropped);
         }

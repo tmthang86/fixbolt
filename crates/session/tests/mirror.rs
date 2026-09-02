@@ -170,9 +170,9 @@ impl SessionUnderTest for Adapter {
 ///
 /// # What the number means, and what the second assertion is for
 ///
-/// `[measured 2026-09-02]` **2 / 50**, up from a score that had been pinned at
-/// 0 since 2026-08-30. Two things moved it, and only one of them was in the
-/// session:
+/// `[measured 2026-09-02]` **10 / 50**, up from a score pinned at 0 since
+/// 2026-08-30. Three things moved it, and the third is the point of having a
+/// gate that can fall at all:
 ///
 /// 1. **The harness can now originate** — `Input::Originate(Intent)`, fed only
 ///    to a mirrored scenario. 46 of these 50 files need a message nothing on
@@ -184,7 +184,13 @@ impl SessionUnderTest for Adapter {
 ///    *input*, and a timestamp in the year 0 is 2 026 years of clock skew — so
 ///    the session refused the counterparty's Logon and dropped, and every later
 ///    line of every file read *"expected a message, got silence"*. See
-///    `fixbolt_conformance::script::make_receivable`.
+///    `fixbolt_conformance::script::make_receivable`. That took it to **2**.
+/// 3. **It then found two real defects, and 2 became 10.** A session that said
+///    goodbye first answered the counterparty's acknowledgement with a *third*
+///    `Logout`; and `begin_logout(b"")` wrote an empty `58=`. Neither was
+///    visible to the acceptor corpus — an acceptor never starts a logout — and
+///    `crates/session/tests/goodbye.rs` now holds both, with the pair that says
+///    a goodbye we did **not** start is still answered.
 ///
 /// **A score a harness can raise by driving harder is not a score**, so the
 /// second assertion pins how much the harness drove, by `MsgType`, as exact
@@ -206,10 +212,18 @@ fn the_mirrored_corpus_with_an_operator_at_the_keyboard() {
     assert_eq!(
         report.passed_files,
         [
+            "13b_UnsolicitedLogoutMessage.def",
+            "1a_ValidLogonWithCorrectMsgSeqNum.def",
+            "2a_MsgSeqNumCorrect.def",
             "2k_CompIDDoesNotMatchProfile.def",
-            "2o_SendingTimeValueOutOfRange.def"
+            "2o_SendingTimeValueOutOfRange.def",
+            "2q_MsgTypeNotValid.def",
+            "4a_NoDataSentDuringHeartBtInt.def",
+            "4b_ReceivedTestRequest.def",
+            "AlreadyLoggedOn.def",
+            "ReverseRoute.def",
         ],
-        "by name, not by count — a different two passing is a different result:\n{report}"
+        "by name, not by count — a different ten passing is a different result:\n{report}"
     );
 
     // **How much the harness drove.** Exact numbers, not `<=`: the whole risk
