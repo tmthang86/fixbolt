@@ -2433,3 +2433,191 @@ The rule that follows is cheap to apply: **when a setting is claimed to help the
 instrument must be at least as long-lived as the stall it is supposed to catch.** Ask what the
 mechanism's timescale is before choosing the measurement, not after. A 20 µs end-to-end round
 trip can see a 250 µs stall as a 12× percentile; a 500 ns loop cannot see it at all.
+
+## Two cases over their band, and only one of them is about the code — 2026-09-02
+
+`scripts/bench.sh --strict` went red the first time it ran on the §9 desktop after phase 1
+closed. Two cases were over their band and **the two have nothing in common**: one is a
+documented decision whose cost was never re-recorded, and the other is the benchmark harness
+changing the number it reports.
+
+Neither was caused by the branch that found them: `git diff origin/main -- crates/` was empty.
+
+### 1. `presession, read and route an identity`: 84 → 202 ns, and it is ADR-0026's price
+
+`[measured 2026-09-02]` six consecutive runs on a box reading 0–1% busy: **201.3 · 197.9 ·
+201.6 · 202.2 · 209.3 · 205.7 ns** against a baseline of 84.0 × 1.10 = 92.4. **2.4×.**
+
+**Found by reading, not by measuring.** The baseline was recorded at `f15c82d` when
+`identity_of` was two scans:
+
+```rust
+sender: field_value(msg, b"49=")?,
+target: field_value(msg, b"56=")?,
+```
+
+[ADR-0026](../decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md) decision 2
+widened `Identity` with the sub-IDs, so it is now **four**:
+
+```rust
+sender_sub: field_value(msg, b"50="),
+target_sub: field_value(msg, b"57="),
+```
+
+`field_value` is a linear scan from byte 0, and **a tag that is absent scans the whole message
+before returning `None`**. `50=` and `57=` do not appear in the acceptance corpus's `Logon` —
+checked, zero occurrences — so the two new calls are each a full traversal. Two short scans
+became two short scans plus two full ones.
+
+**Proven by reversal, one variable.** Replacing the two new calls with `None` and changing
+nothing else:
+
+```
+presession, read and route an identity     83.2 ns/op   baseline 84.0 x1.10 = [76.4, 92.4]
+presession, read and route an identity     83.1 ns/op
+presession, read and route an identity     83.1 ns/op
+```
+
+Three consecutive runs, in band, within 1 ns of a baseline recorded on a different day. There is
+no ambiguity left in this one.
+
+**And the leading hypothesis was wrong.** Before reading the code, the suspicion was *suite
+composition*: two `presession, registry lookup of N` cases were added by `61e5cd7`, **after**
+this baseline was recorded, and a case that runs before another changes the cache state it
+starts from. That was a reasonable guess and it was not the answer. **Reading the diff of the
+function cost five minutes and was decisive; the measurement that would have tested the wrong
+hypothesis would have cost twenty and produced a number nobody could interpret.**
+
+**What it is not: a regression to revert.** ADR-0026 widened the identity on purpose, and
+`identity_of` runs **once per connection**, not once per message — beside a 426 ns pre-session
+sweep, a TCP handshake and a 16 µs `Logon` round trip, 119 ns is 0.7% of connecting. The item is
+a **baseline that was never re-recorded when a decision changed the code under it**, which is a
+different defect from a slow function and needs a different fix.
+
+### 2. `encode ExecutionReport (template)`: 242 → 277 ns, and the code under test never changed
+
+`[measured 2026-09-02]` six runs: **274.2 · 279.6 · 275.5 · 283.3 · 275.0 · 279.4 ns** against
+239.1 × 1.10 = 263.0. **+16%.**
+
+`Template::encode` has not been touched since the baseline. `crates/codec/benches/serialize.rs`
+is **byte-identical** to its state at the commit that recorded the baseline. The only change to
+`crates/codec/src/` in the whole range is **4 insertions and 4 deletions** in `template.rs` —
+[ADR-0044](../decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md) making `field`,
+`slot`, `group` and `build` take `&mut self`. And **`struct Template` is byte-identical across
+it**, which was the one mechanism by which that commit could have reached `encode` at all.
+
+**So the first thing measured was the machine, by rebuilding the old binary.** A worktree at
+`bf798ea` — the commit that recorded 239.1 — built and run **today, on this box, on this
+toolchain**:
+
+```
+encode ExecutionReport (template)   239.5 · 240.2 · 241.9 · 242.3 · 244.7 ns   median ~242
+```
+
+Right on its baseline. **The machine and the toolchain are innocent**, and that was worth two
+minutes to establish before blaming anything else — the box has been rebooted, retuned and had
+its `§9` checklist extended twice since that number was written down.
+
+**Then the bisect, and it lands on two commits rather than one:**
+
+| Commit | `encode`, five runs | median |
+|---|---|---|
+| `bf798ea` — where 239.1 was recorded | 239.5 · 240.2 · 241.9 · 242.3 · 244.7 | **242** |
+| `f15c82d` | 231.1 · 231.2 · 232.2 · 237.7 · 238.0 | 232 |
+| `54eebe9` | 234.2 · 235.2 · 241.8 · 241.9 · 243.4 | 241 |
+| **`4396d6d`** — *"a baseline is a band"* | 260.1 · 260.3 · 263.1 · 263.7 · 267.1 | **263** |
+| `576f924` — ADR-0044 | 273.5 · 273.9 · 276.5 · 276.9 · 280.4 | **277** |
+
+**ADR-0044 is +11 ns of the +35. The other +22 belongs to `4396d6d`, which is the commit that
+built the gate to catch a benchmark measuring nothing.**
+
+### And `4396d6d` did not change the measurement. It changed what happens after it.
+
+`Suite::bench` is byte-identical across that commit:
+
+```rust
+pub fn bench<F: FnMut()>(&mut self, name: &str, mut f: F) {
+    for _ in 0..10_000 { f(); }              // warmup
+    let mut best = f64::INFINITY;
+    for _ in 0..7 {
+        let iters = 200_000u32;
+        let t = Instant::now();
+        for _ in 0..iters { f(); }           // the timed loop
+        best = best.min(t.elapsed().as_nanos() as f64 / f64::from(iters));
+    }
+    ...                                       // <- everything 4396d6d changed is here
+```
+
+Everything the commit touched — `verdict()`, the `[floor, ceiling]` format string, a
+`Vec<String>` field, the `Verdict::Under` arm — runs **strictly after `best` is computed**.
+**Code that executes after a measurement moved that measurement by 9%.**
+
+`bench` is generic and monomorphised per closure, so each case gets its **own copy** of it, and
+growing the body grows the copy the timed loop sits inside. That is the mechanism named, and it
+is a hypothesis rather than a demonstration: the plausible route is the inliner's budget for
+that copy changing whether `f` is inlined into the timed loop, or the loop's alignment inside
+the enlarged function.
+
+**One hypothesis was tested and refuted.** If the cause were where the case's two 512-byte stack
+objects land — `Template<32, 512>`'s scratch and the 512-byte `out` — then padding the frame
+would move the figure back. It does not:
+
+```
+PAD=0    285.8 · 271.7 · 285.8      PAD=32   266.5 · 277.2 · 263.2
+PAD=8    274.1 · 266.8 · 272.5      PAD=64   265.2 · 274.3 · 276.7
+PAD=16   272.8 · 274.3 · 269.1      PAD=512  269.4 · 270.8 · 273.0
+```
+
+Every arm sits in the same ~270 band and none recovers 242. **It is code layout, not data
+placement.**
+
+**And it is case-specific, which rules out a blanket effect.** In the **same binary**, across
+the same commit:
+
+| | `54eebe9` | `4396d6d` |
+|---|---|---|
+| `encode ExecutionReport (template)` | 245.2 · 242.2 · 242.9 | 265.0 · 270.4 · 262.8 |
+| `SendingTime from the cache` | 4.9 · 4.9 · 4.9 | 4.9 · 4.9 · 4.9 |
+
+One case moved 9%; the other did not move at all, to the printed precision.
+
+### What this means for the gate, and it is worse than one red case
+
+**239.1 was never a property of `Template::encode`.** It was a property of `encode` *plus the
+size of the harness function it was measured inside*, and nothing in `benches/baselines.tsv`
+records the second term. Any future edit to `harness.rs` — including one that only prints
+differently — can move this case again, and the margin ladder in that file's header has no
+column for it.
+
+`4396d6d`'s own commit message is where this was already written down, by the person who wrote
+it, on the day:
+
+> **NOT PROVEN, and not claimed: the `--strict` half of this decision has not run.**
+> `bench.sh --strict` exits 1 at the §9 machine check before reaching the under-baseline branch,
+> and CI does not run `--strict` at all. **It needs a §9 Linux box.**
+
+It got one 32 days of commits later, and the first thing it said was that the commit which
+wrote that sentence had cost 9%.
+
+### The generalisation
+
+`[to testing-skills]` — **the harness is part of the measurement, and "my change only affects
+reporting" is not a reason to skip re-measuring.** A generic timing function is monomorphised
+per case, so the code you add to print a result lands in the same function body as the loop you
+are timing. The edit that moved this number by 9% adds a struct field and a `match` and runs
+after the clock is read.
+
+Two cheap things follow, and neither is "write a better benchmark":
+
+1. **When the harness changes, re-run the baselines** — treat an edit to the measuring code the
+   way you treat an edit to the measured code. Here nothing did, for a month, because the gate
+   that would have said so could not run on the machine that had the baselines.
+2. **Ask what a figure is a property of.** This project's file records the CPU, the case, the
+   margin, the run count, the date and the machine verdict — six columns, and the seventh term
+   turned out to be the size of the function doing the timing. A baseline that moves when the
+   printing changes is measuring two things and naming one.
+
+And a third that is about the order of work rather than about benchmarks: **for case 1 above,
+reading the diff of the function was decisive in five minutes and the measurement everyone
+reaches for first would have tested the wrong hypothesis.** Locate before you measure, when
+locating is a `git log -S` away.
