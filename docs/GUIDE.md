@@ -150,9 +150,63 @@ identities, not by counting connections
 on one engine are two sessions; two connections claiming one counterparty are one session and
 a disconnect.
 
-**What is still missing, and you will notice:** there is **no configuration file**. A `Table`
-is built in code. There is also no per-counterparty journal, schedule or credential yet —
-`Entry` is the place they go and today it holds a `Config` and nothing else.
+### The configuration file
+
+`[2026-09-02]` you do not have to build the table in code
+([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)):
+
+```ini
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=US
+StartTime=08:00:00
+EndTime=17:00:00
+Weekdays=Mon,Tue,Wed,Thu,Fri
+
+[SESSION]
+TargetCompID=ALPHA
+
+[SESSION]
+TargetCompID=BETA
+HeartBtInt=60
+StartTime=00:00:00
+EndTime=23:59:59
+```
+
+```rust
+let table = fixbolt_engine::settings::Settings::load("acceptor.cfg")?.into_table();
+```
+
+`[DEFAULT]` supplies every `[SESSION]` after it; a `[SESSION]` overrides its own. The shape is
+QuickFIX's, on purpose. **The behaviour differs from QuickFIX's in three ways, and each is
+deliberate:**
+
+| | |
+|---|---|
+| **An unrecognised key is an error** | QuickFIX ignores what it does not know. Here a mistyped `Starttime` would fall back to `Schedule::always()`, and a session that should close at five would stay open all night with nothing saying so |
+| **A file naming no counterparty is an error** | An empty `Table` refuses every connection, so a mistyped path behaves exactly like a firewall dropping your port |
+| **A half-written schedule is an error** | `StartTime` with no `EndTime` is refused rather than completed with midnight. So is a `StartDay` with no hours — a key spelled correctly that has no effect |
+
+Every error carries the line it is on and quotes what was written, because the person editing
+this file does not read Rust:
+
+```text
+line 14: unknown key: Starttime
+```
+
+**A value longer than a `Config` can hold is refused, not truncated.** `Config` records an
+over-long name as *not fitting*, and a name that does not fit matches nothing — so truncation
+would give you an acceptor that starts cleanly and serves nobody. The limits are
+`fixbolt_session::MAX_BEGIN_STRING_LEN` and `MAX_COMP_ID_LEN` if you need to check a value
+before writing it.
+
+**What the file still cannot say, and you will notice:** no credential (ADR-0026 decision 3
+makes `lookup` the only authentication hook, and a password field would be a second one), no
+per-counterparty journal path (that belongs to `Recovery` —
+[ADR-0039](decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md) — not to the
+registry), no `50=`/`57=`, and no reload while running: the table is read-only after startup.
+There is also no `UtcOffsetMillis` key, deliberately — see §5a, where the reason is that a
+fixed offset put in a settings file looks like a setting rather than like the hazard it is.
 
 ## 1a. Running many sessions: shard across threads, do not stack on one
 

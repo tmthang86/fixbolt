@@ -40,6 +40,19 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`fixbolt-engine::settings` — who this acceptor serves, read from a file.**
+  [ADR-0040](docs/decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md).
+  `Settings::load` / `Settings::parse` read a `[DEFAULT]` plus `[SESSION]` INI shaped like
+  QuickFIX's and `Settings::into_table` builds a `presession::Table`, so adding a counterparty
+  is an edit and a restart rather than a release. **No new dependency.** Keys:
+  `BeginString`, `SenderCompID`, `TargetCompID`, `HeartBtInt`, `MaxSkewMillis`, `StartTime`,
+  `EndTime`, `StartDay`, `EndDay`, `Weekdays`. Three behaviours differ from QuickFIX on
+  purpose — an **unrecognised key is an error**, a file with **no `[SESSION]` is an error**,
+  and every `SettingsError` carries its **line number** and quotes what was written.
+- **`fixbolt-session::MAX_BEGIN_STRING_LEN` and `MAX_COMP_ID_LEN`.** The sizes `Config` stores
+  names in, published so a caller building a `Config` from text can refuse an over-long value
+  instead of truncating it into one that matches nothing.
+
 - **`fixbolt-session`** — the FIX session state machine. Pure: no socket, no clock, no
   allocation, no `format!` on any path. Depends on `codec` and `dict`.
   - **`schedule` — when a session is open, and when both ends start again at `34=1`.**

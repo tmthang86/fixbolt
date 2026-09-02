@@ -122,3 +122,50 @@ See also
 that one is an enumerating assertion with no compiler behind it, this one is a
 discriminating assertion with no way to see which cause fired. Both were green. Neither was
 evidence.
+
+## And a fourth time, where the second cause was not in the code under test at all
+
+> `[measured 2026-09-02]` — found while building a registry from a configuration file,
+> [plans/2026-09-02-a-registry-from-a-file.md](../plans/2026-09-02-a-registry-from-a-file.md).
+
+The three cases above all share a mechanism: two conditions inside the system funnel into one
+state, one error, one bit. This one has no shared mechanism. **The two causes are in different
+layers, and the test could not see either.**
+
+The test drives a real acceptor and asserts that a counterparty whose trading window closed two
+hours ago gets no reply. It passed. Then a reversal that had nothing to do with schedules —
+keeping only the **first** entry when the file's counterparties are loaded into the registry —
+was tried as a spot-check, and the test **still passed**.
+
+Of course it did. A counterparty the registry does not serve is refused in silence
+([ADR-0026](../decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md) decision
+3), and a counterparty outside its hours is refused in silence
+([ADR-0033](../decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md)).
+The test named the second and was measuring the first for free.
+
+### The near-fix that was not one
+
+The obvious repair was to assert, before serving, that the second counterparty is in the parsed
+configuration. That was done, the reversal was re-run, and **the test passed again** — because
+the loss was one step further along, in the conversion from parsed configuration to registry.
+An assertion on the input of a two-step pipeline says nothing about its output.
+
+The assertion that works is on the object actually handed to the acceptor: the registry's own
+length, checked at the moment it is passed in. Under the same reversal, two of the three tests
+then go red.
+
+### What to take from it
+
+- **A passing reversal is a result.** It was run as a throwaway spot-check on an unrelated part
+  of the change, and it is the only reason the hole was found. A reversal table lists the
+  reversals you expect to be informative; the ones you try on a hunch are free and are not
+  always less informative.
+- **Assert on the thing you hand over, not on the thing you built it from.** Every step between
+  the two is a place a value can be dropped, and each step you leave unasserted is a second cause
+  for the same silence.
+- **Silence is the observable most likely to have more than one cause**, because every layer in
+  a protocol stack can produce it and none of them has to say so. A test whose expected result is
+  *nothing happens* needs a positive control in the same run — here, a counterparty that **is**
+  served and **is** inside its hours, answering on the same acceptor.
+
+**`[to testing-skills]`**

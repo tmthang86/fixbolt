@@ -161,3 +161,92 @@ Khoá được nhận: `BeginString`, `SenderCompID`, `TargetCompID`, `HeartBtIn
   quyết định về đồng bộ hoá trên đường kết nối, không phải về format file.
 - **`50=` / `57=` trong file.** `Config` không có chỗ chứa; ADR-0026 đã nói một deployment cần
   chúng thì viết `Registry` của riêng nó.
+
+## Sửa plan giữa chừng, ghi lại tại đây
+
+**Thêm hai hằng số công khai vào `fixbolt-session`:** `MAX_BEGIN_STRING_LEN` và
+`MAX_COMP_ID_LEN`. Plan viết rằng parser phải từ chối một giá trị quá dài, nhưng không nói
+parser **lấy giới hạn ở đâu**. Viết `32` trong `engine` là một luật thứ hai, và cái sai sẽ là
+cái quyết định một đối tác có được phục vụ hay không. `Config` khai báo các trường theo hai hằng
+số này, nên chỉ có một chỗ định nghĩa. Đây là thay đổi API công khai của một crate, nên nó phải
+đi kèm `DESIGN.md` và `CHANGELOG.md` — đã làm.
+
+## Nhật ký giao hàng
+
+### Bước 1 — test đặc tả, đỏ ở assertion
+
+`crates/engine/tests/settings.rs`, chạy trước khi có `settings.rs`:
+
+```
+---- two_counterparties_named_only_in_a_file_are_both_served stdout ----
+assertion `left == right` failed: the file names two counterparties and the acceptor must serve
+exactly those two — adding one is an operator's edit, not a release
+  left: 0
+ right: 2
+```
+
+`table_from_file` là **cái mối nối**, và ở bước 1 nó trả `Table::new()`. Đó không phải một hàm
+giả thay cho hàm còn thiếu: nó là **câu trả lời đúng của hôm nay** — crate không dựng được gì từ
+file — và ADR-0026 quyết định 6 làm cho câu trả lời đó chính xác: bảng rỗng từ chối mọi kết nối.
+
+Hai tiền đề được **khẳng định** chứ không giả định, vì cả hai đều có thể làm test đỏ vì lý do
+khác: đổi tên `TW44` thành `TW44` phải cho lại đúng từng byte của corpus, và file với corpus phải
+đồng ý acceptor này là `ISLD`. Sai `SenderCompID` và không biết đối tác bị từ chối **giống hệt
+nhau**.
+
+### Bước 2 — parser, và những gì nó từ chối
+
+18 test. Ba luật khác QuickFIX, mỗi luật một test, và mỗi luật một lý do cụ thể chứ không phải
+"chặt chẽ hơn cho chắc".
+
+### Bước 3 — giờ giao dịch từ file
+
+30 test. **Các test của bước này viết sau code, không phải đỏ trước** — nói thẳng ra ở đây, và
+thứ thay thế cho red-first là đảo ngược số 4 dưới đây.
+
+Assertion so sánh **cả `Config`** với một `Schedule` dựng bằng tay, chứ không dò qua `contains`:
+số học là của ADR-0033 và đã có test riêng; việc của parser là truyền đúng hai con số vào đó.
+Mỗi test giờ giấc kèm một `assert_ne!` với chính `Config` đó nhưng không lịch — đúng thứ mà một
+`StartTime` bị bỏ qua sẽ để lại.
+
+### Bước 4 — một file thật, một socket thật
+
+3 test qua `serve`: hai đối tác chỉ có tên trong file cùng logon; một danh tính file không nêu
+không nhận được gì; một đối tác có cửa sổ giao dịch **đã đóng hai tiếng trước** bị từ chối trong
+khi một đối tác đang mở được phục vụ. Cửa sổ được **tính từ đồng hồ** chứ không viết cứng, vì
+vòng lặp phục vụ dùng đồng hồ thật và một hằng số sẽ xanh buổi sáng, đỏ lúc sáu giờ chiều.
+
+### Đảo ngược, đã chạy, output nguyên văn
+
+| # | Phá cái gì | Kết quả |
+|---|---|---|
+| 1 | khoá lạ bị bỏ qua thay vì báo lỗi | **17 passed; 1 failed** — đúng `a_mistyped_key_is_refused_and_not_ignored` |
+| 2 | `[DEFAULT]` không thừa kế xuống `[SESSION]` | **9 passed; 9 failed** |
+| 2b | `[DEFAULT]` **thắng** `[SESSION]` | **17 passed; 1 failed** — đúng `a_session_overrides_the_default_block` |
+| 3 | file không có `[SESSION]` trả bảng rỗng | **16 passed; 2 failed** |
+| 4 | lịch phân tích xong bị vứt đi | **25 passed; 5 failed**, và `a_file_with_no_hours_leaves_the_neutral_schedule` **vẫn xanh** |
+
+**Đảo ngược 2 không phân biệt được như plan đã dự đoán.** Plan viết rằng test ghi đè `HeartBtInt`
+sẽ vẫn xanh vì nó "không dựa vào thừa kế". Sai: mọi khối `[SESSION]` trong mọi fixture đều lấy
+`BeginString` và `SenderCompID` từ `[DEFAULT]`, nên bỏ thừa kế làm gần như tất cả đỏ. Nó chứng
+minh **thừa kế có tồn tại** và **không nói gì về thứ tự ưu tiên**. Đảo ngược 2b là nửa còn thiếu,
+và nó mới là cái tách được đúng một test.
+
+### Bẫy thứ năm cùng hình dạng, và lần này hai nguyên nhân không nằm cùng một tầng
+
+Một đảo ngược **không có trong plan**, chạy như một phép thử vu vơ — chỉ giữ lại đối tác **đầu
+tiên** khi đổ `Settings` vào `Table` — làm cả ba test bước 4 **vẫn xanh**.
+
+Đương nhiên. Một danh tính registry không phục vụ bị từ chối trong im lặng (ADR-0026 quyết định
+3), và một đối tác ngoài giờ cũng bị từ chối trong im lặng (ADR-0033). Test đặt tên cho nguyên
+nhân thứ hai và đang đo nguyên nhân thứ nhất.
+
+**Bản vá đầu tiên cũng không vá được gì**: khẳng định rằng `Settings` đã phân tích có đủ hai đối
+tác — chạy lại, **vẫn xanh**, vì chỗ mất mát nằm ở bước sau, trong `into_table`. Một khẳng định
+đặt ở *đầu vào* của một đường ống hai chặng không nói gì về *đầu ra* của nó.
+
+Khẳng định đúng là trên chính vật được trao cho acceptor: độ dài của `Table`, kiểm ngay tại thời
+điểm truyền vào. Với cùng đảo ngược đó, **hai trong ba test đỏ**.
+
+Viết đầy đủ ở [two-time-rules-share-one-observable](../reference/two-time-rules-share-one-observable.md),
+mục thứ tư, gắn `[to testing-skills]`.
