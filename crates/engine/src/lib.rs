@@ -223,6 +223,60 @@ where
         id
     }
 
+    /// As [`Self::add_with_journal`], continuing a session that outlived the
+    /// process.
+    ///
+    /// **This is the only way an `Engine` resumes anything.** `[verified
+    /// 2026-09-02]` before it existed, every `add` built `Session::new`, which
+    /// resets — so `Journal::highest`, `Session::resume`,
+    /// [ADR-0010](../../../docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md),
+    /// [ADR-0017](../../../docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md)
+    /// and `Durability::Fsync` were all real, all tested, and all unreachable
+    /// through this type. `STATUS.md` item 31.
+    ///
+    /// **The engine does not guess, and it does not read the journal for you.**
+    /// ADR-0010's whole point is that choosing between a restart and a
+    /// continuation is the caller's; this is where they say. `next_out` is
+    /// usually `journal.highest() + 1` and `next_in` `journal.highest_in() + 1`,
+    /// but *usually* is not *always* and the engine has no business deciding
+    /// which.
+    ///
+    /// **The journal is taken as well as the numbers, and that is not a
+    /// convenience.** Correct counts over an empty journal answer the first
+    /// `ResendRequest` with a `SequenceReset` gap fill — legal, and a silent
+    /// loss of everything the counterparty is asking for.
+    /// `tests/engine_recovery.rs::a_resumed_session_replays_what_it_sent_before_the_restart`
+    /// is what holds that.
+    ///
+    /// `last_active_ms` is the instant this session was last known to be
+    /// active, on the scale [`crate::clock::Clock`] uses. Supply it and a
+    /// schedule boundary crossed since then restarts both counts
+    /// ([ADR-0033](../../../docs/decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md));
+    /// pass `None` and no boundary is ever noticed, which is right under
+    /// [`Schedule::always`](fixbolt_session::schedule::Schedule::always) and
+    /// wrong under anything else. `Session::last_active_ms` is what to persist.
+    pub fn add_resumed(
+        &mut self,
+        transport: T,
+        cfg: Config,
+        journal: J,
+        next_out: u32,
+        next_in: u32,
+        last_active_ms: Option<u64>,
+    ) -> ConnId {
+        let id = self.next_id;
+        self.next_id += 1;
+        let session = match last_active_ms {
+            Some(at) => Session::resume_at(cfg, next_out, next_in, at),
+            None => Session::resume(cfg, next_out, next_in),
+        };
+        let mut conn =
+            Connection::new(id, transport, session, journal).with_backpressure(self.backpressure);
+        conn.opened();
+        self.conns.push(conn);
+        id
+    }
+
     /// As [`Self::add`], with bytes that were read off the socket before the
     /// engine took it on.
     ///

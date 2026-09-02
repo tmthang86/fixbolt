@@ -519,12 +519,24 @@ So persist `Session::last_active_ms()` beside the sequence numbers and hand it b
 resumed without it will not reset, ever — which is correct for `Schedule::always()` and wrong
 for everything else.
 
-`[verified 2026-09-02]` **and today an `Engine` cannot do any of this.** Both of its `add`
-methods build `Session::new`, which resets; there is no public way to hand it a resumed
-session. So a restart starts every session at `34=1` whatever your journal holds, and
-`Session::resume`, `resume_at` and `Durability::Fsync` are reachable only if you drive a
-`Session` yourself rather than using `Engine`. `STATUS.md` item 31, and it blocks recovery
-generally rather than schedules in particular.
+`[2026-09-02]` **`Engine::add_resumed` is how you hand it over**, and it takes the journal
+too:
+
+```rust
+let next_out = journal.highest().map_or(1, |h| h + 1);
+let next_in  = journal.highest_in().map_or(1, |h| h + 1);
+engine.add_resumed(transport, cfg, journal, next_out, next_in, Some(last_active_ms));
+```
+
+Pass `None` for the last argument and no boundary is ever noticed — right under
+`Schedule::always`, wrong under anything else.
+
+**Two limits, and they are the difference between this working and looking like it works.**
+`serve`, `serve_hft` and `serve_sharded_hft` accept connections themselves, so you never see a
+transport to call `add_resumed` with: a deployment using those cannot resume yet
+(`STATUS.md` item 31). And **nothing persists `last_active_ms` for you** — save
+`Session::last_active_ms()` beside your sequence numbers, or the instant is gone with the
+process and the boundary becomes undecidable.
 
 ### What the reset is decided by
 
@@ -734,6 +746,10 @@ Stated so you do not discover it in production:
   do is guess: a session built with `Session::new` has persisted nothing and resets, so
   **reading the journal back and choosing `new` or `resume` is your call**, and getting it
   wrong is a sequence-number dispute with your counterparty rather than a compile error.
+- **Recovery works through `Engine::add_resumed` and not through `serve*`.** `[2026-09-02]`
+  the entry points that accept connections for you hand them to the engine themselves, so
+  there is no seam to resume at. Driving `Engine::add*` by hand is the only path today —
+  `STATUS.md` item 31.
 - **Its session schedule stops at the timezone.** `[2026-09-02]` §5a: the hours, the weekday
   filter, the week-long window and the sequence-number reset all work, and they are **UTC**.
   Resolving a venue's local time — and rebuilding the `Schedule` when daylight saving moves
