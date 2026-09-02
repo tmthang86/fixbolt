@@ -148,6 +148,25 @@ below describe what a first release would contain.
     accepted; what the files ask for next is a message only an operator can order.
 
 - **`fixbolt-engine`** — the crate that touches the socket. **All six steps.**
+  - **`recovery` — what a counterparty left behind, asked when its identity is known.** New
+    module. [ADR-0034](docs/decisions/ADR-0034-recovery-is-asked-once-the-counterparty-is-known.md).
+    - `Recovery<J>` with `recover(&mut self, &Config) -> Option<Resumed<J>>`, `Resumed<J>`
+      (`journal`, `next_out`, `next_in`, `last_active_ms`), `NoRecovery`, and `FromFn` for a
+      closure.
+    - **`serve_with_recovery` and `serve_hft_with_recovery`.** `serve` and `serve_hft` are
+      unchanged and delegate through `NoRecovery`. New functions rather than new parameters,
+      so `tools/w2w` and the Linux-only shard path are untouched.
+    - Asked **once per connection, after the registry names the counterparty**, on the
+      acceptor thread — before the `Logon` there is no identity to look a journal up by
+      (ADR-0020, ADR-0026), and that thread is the one allowed to block, so an implementation
+      may read a file.
+    - `[measured 2026-09-02]` proven by two reversals that fail on **opposite** tests: making
+      `pump` discard the answer reddens only the resuming test, and making `NoRecovery`
+      fabricate a session reddens only the plain-`serve` control. 59/59 green through both.
+    - **`serve_sharded_hft` has no recovery variant**, and `pump` fixes `J = journal::Store`,
+      so a per-counterparty `FileJournal` through the serving loop is not yet possible.
+  - **`Engine::add_with_prefix_config_and_state`** — as `add_with_prefix_and_config`, taking
+    what `Recovery` answered. The seam the serving loop needs.
   - **`Engine::add_resumed(transport, cfg, journal, next_out, next_in, last_active_ms)`** —
     **the only way an `Engine` continues a session that outlived the process.**
     `[verified 2026-09-02]` before it existed every `add` built `Session::new`, which resets,

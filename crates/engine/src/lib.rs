@@ -32,6 +32,7 @@ pub mod frame;
 pub mod journal;
 pub mod observe;
 pub mod presession;
+pub mod recovery;
 #[cfg(all(feature = "affinity", target_os = "linux"))]
 pub mod shard;
 // ADR-0014 decision 1 and 2. The feature gates the `mod` declaration itself,
@@ -327,6 +328,34 @@ where
     where
         J: Default,
     {
+        self.add_with_prefix_config_and_state(transport, cfg, prefix, None)
+    }
+
+    /// As [`Self::add_with_prefix_and_config`], optionally continuing a session
+    /// that outlived the process.
+    ///
+    /// `state` is what [`crate::recovery::Recovery`] answered: `None` starts
+    /// fresh, which is what the serving loop did before recovery existed and
+    /// what [`crate::recovery::NoRecovery`] still means.
+    ///
+    /// **This is the seam `serve_with_recovery` needs.** The pre-session stage
+    /// owns the socket until a `Logon` names the counterparty, so the engine is
+    /// handed a transport, a `Config` and some bytes all at once — and a
+    /// journal, if the caller found one.
+    ///
+    /// # Errors
+    ///
+    /// [`PrefixTooLong`] if the bytes already read will not fit `RX`.
+    pub fn add_with_prefix_config_and_state(
+        &mut self,
+        transport: T,
+        cfg: Config,
+        prefix: &[u8],
+        state: Option<crate::recovery::Resumed<J>>,
+    ) -> Result<ConnId, PrefixTooLong>
+    where
+        J: Default,
+    {
         if prefix.len() > RX {
             return Err(PrefixTooLong {
                 got: prefix.len(),
@@ -335,8 +364,18 @@ where
         }
         let id = self.next_id;
         self.next_id += 1;
-        let mut conn = Connection::new(id, transport, Session::new(cfg), J::default())
-            .with_backpressure(self.backpressure);
+        let (session, journal) = match state {
+            Some(r) => {
+                let s = match r.last_active_ms {
+                    Some(at) => Session::resume_at(cfg, r.next_out, r.next_in, at),
+                    None => Session::resume(cfg, r.next_out, r.next_in),
+                };
+                (s, r.journal)
+            }
+            None => (Session::new(cfg), J::default()),
+        };
+        let mut conn =
+            Connection::new(id, transport, session, journal).with_backpressure(self.backpressure);
         if !conn.prime(prefix) {
             self.next_id -= 1;
             return Err(PrefixTooLong {
@@ -758,7 +797,46 @@ pub fn serve<A: Application>(
         crate::block::Block::new(capacity + limits.pending() + 2),
         capacity,
     );
-    pump(acceptor, engine, table, limits)
+    pump(acceptor, engine, table, limits, crate::recovery::NoRecovery)
+}
+
+/// As [`serve`], asking `recovery` what each counterparty left behind.
+///
+/// `[2026-09-02]` **the seam that makes recovery reachable without giving up
+/// the serving loop.** [`Engine::add_resumed`] could always continue a session,
+/// but `serve` accepts connections itself, so an embedder never saw a transport
+/// to call it with — `STATUS.md` item 31.
+///
+/// [`Recovery::recover`](crate::recovery::Recovery::recover) is called once per
+/// connection, **after** the registry has named the counterparty and before the
+/// connection reaches the engine, on the acceptor thread. Returning `None`
+/// starts that session fresh, which is exactly what [`serve`] does.
+///
+/// # Errors
+///
+/// As [`serve`].
+/// **`standard` only**, like [`serve`] — it builds the blocking engine, and
+/// `crate::block` does not exist without that feature. Non-negotiable 6: the
+/// `#[cfg]` is on the item, not only in `Cargo.toml`.
+#[cfg(all(feature = "standard", unix))]
+pub fn serve_with_recovery<A: Application, V: crate::recovery::Recovery<crate::journal::Store>>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    recovery: V,
+) -> Result<core::convert::Infallible, ServeError> {
+    let cfg = default_config(&table)?;
+    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
+    let engine: StandardAcceptorEngine<A> = Engine::new(
+        cfg,
+        InlineDispatch::new(app),
+        crate::clock::SystemClock,
+        crate::block::Block::new(capacity + limits.pending() + 2),
+        capacity,
+    );
+    pump(acceptor, engine, table, limits, recovery)
 }
 
 /// As [`serve`], in `hft` mode: **spins, and burns a core for as long as the
@@ -788,7 +866,36 @@ pub fn serve_hft<A: Application>(
         crate::wait::Spin,
         capacity,
     );
-    pump(acceptor, engine, table, limits)
+    pump(acceptor, engine, table, limits, crate::recovery::NoRecovery)
+}
+
+/// As [`serve_hft`], asking `recovery` what each counterparty left behind. See
+/// [`serve_with_recovery`].
+///
+/// # Errors
+///
+/// As [`serve_hft`].
+pub fn serve_hft_with_recovery<
+    A: Application,
+    V: crate::recovery::Recovery<crate::journal::Store>,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    recovery: V,
+) -> Result<core::convert::Infallible, ServeError> {
+    let cfg = default_config(&table)?;
+    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
+    let engine: HftAcceptorEngine<A> = Engine::new(
+        cfg,
+        InlineDispatch::new(app),
+        crate::clock::SystemClock,
+        crate::wait::Spin,
+        capacity,
+    );
+    pump(acceptor, engine, table, limits, recovery)
 }
 
 /// Why a serving loop never started.
@@ -869,11 +976,12 @@ fn default_config(table: &presession::Table) -> Result<Config, ServeError> {
 /// `Cargo.toml` but not behind `#[cfg]` in `lib.rs`*; this is the same mistake
 /// from the other side, and `cargo check --no-default-features` is what catches
 /// it.
-fn pump<A: Application, W: Waiting>(
+fn pump<A: Application, W: Waiting, V: crate::recovery::Recovery<crate::journal::Store>>(
     acceptor: Acceptor,
     mut engine: TcpAcceptorEngine<A, W>,
     table: presession::Table,
     limits: presession::Limits,
+    mut recovery: V,
 ) -> Result<core::convert::Infallible, ServeError> {
     // Matches the engine's RX, so a prefix can never be too long for the
     // connection it is handed to.
@@ -901,11 +1009,17 @@ fn pump<A: Application, W: Waiting>(
             let Some(cfg) = pending.config() else {
                 continue;
             };
+            // **The one place recovery is asked.** The identity is known now
+            // and was not a moment ago — before the `Logon` there is nothing to
+            // look a journal up by (ADR-0020, ADR-0026). This is the acceptor
+            // thread, which is allowed to block, so an implementation may read
+            // a file; it is not the engine thread and this is not a turn.
+            let state = recovery.recover(&cfg);
             let (t, buf, len) = pending.into_parts();
             // A prefix that will not fit the engine's RX closes the socket
             // (dropping the transport). It cannot be a message this engine could
             // have read either way, and there is no session yet to tell.
-            let _ = engine.add_with_prefix_and_config(t, cfg, &buf[..len]);
+            let _ = engine.add_with_prefix_config_and_state(t, cfg, &buf[..len], state);
             moved = true;
         }
         moved |= engine.turn();

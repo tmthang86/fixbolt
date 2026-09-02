@@ -531,12 +531,34 @@ engine.add_resumed(transport, cfg, journal, next_out, next_in, Some(last_active_
 Pass `None` for the last argument and no boundary is ever noticed — right under
 `Schedule::always`, wrong under anything else.
 
-**Two limits, and they are the difference between this working and looking like it works.**
-`serve`, `serve_hft` and `serve_sharded_hft` accept connections themselves, so you never see a
-transport to call `add_resumed` with: a deployment using those cannot resume yet
-(`STATUS.md` item 31). And **nothing persists `last_active_ms` for you** — save
-`Session::last_active_ms()` beside your sequence numbers, or the instant is gone with the
-process and the boundary becomes undecidable.
+**If you use `serve` rather than driving the engine yourself**, hand it a `Recovery` instead:
+
+```rust
+use fixbolt_engine::recovery::{FromFn, Resumed};
+
+let recovery = FromFn::new(|cfg: &Config| Some(Resumed {
+    journal:        my_journal_for(cfg),          // yours to open
+    next_out:       my_next_out_for(cfg),
+    next_in:        my_next_in_for(cfg),
+    last_active_ms: my_last_active_for(cfg),
+}));
+fixbolt_engine::serve_with_recovery(addr, table, app, capacity, limits, recovery)?;
+```
+
+It is asked **once per connection, after the registry has named the counterparty** — before
+the `Logon` there is no identity to look anything up by. That happens on the acceptor thread,
+which is allowed to block, so reading a file there is fine. **A network round trip is not**:
+every connection behind it waits, and the only backstop is the pending deadline, which refuses
+the socket without saying why.
+
+Returning `None` starts that session fresh, which is exactly what plain `serve` does.
+
+**Three limits, and they are the difference between this working and looking like it works.**
+`serve_sharded_hft` has **no** recovery variant, so a sharded deployment cannot resume. The
+serving loop fixes the journal type as `journal::Store`, so a per-counterparty `FileJournal`
+through `serve_with_recovery` is not yet possible. And **nothing persists `last_active_ms` for
+you** — save `Session::last_active_ms()` beside your sequence numbers, or the instant is gone
+with the process and the boundary becomes undecidable.
 
 ### What the reset is decided by
 
@@ -746,10 +768,9 @@ Stated so you do not discover it in production:
   do is guess: a session built with `Session::new` has persisted nothing and resets, so
   **reading the journal back and choosing `new` or `resume` is your call**, and getting it
   wrong is a sequence-number dispute with your counterparty rather than a compile error.
-- **Recovery works through `Engine::add_resumed` and not through `serve*`.** `[2026-09-02]`
-  the entry points that accept connections for you hand them to the engine themselves, so
-  there is no seam to resume at. Driving `Engine::add*` by hand is the only path today —
-  `STATUS.md` item 31.
+- **Recovery does not reach the sharded runtime.** `[2026-09-02]` `serve_with_recovery` and
+  `serve_hft_with_recovery` exist; `serve_sharded_hft` has no variant, and the serving loop
+  fixes the journal type. `STATUS.md` item 31.
 - **Its session schedule stops at the timezone.** `[2026-09-02]` §5a: the hours, the weekday
   filter, the week-long window and the sequence-number reset all work, and they are **UTC**.
   Resolving a venue's local time — and rebuilding the `Schedule` when daylight saving moves
