@@ -236,6 +236,21 @@ impl<const N: usize> Name<N> {
     }
 }
 
+/// The most bytes a [`Config`] can hold for a `BeginString`.
+///
+/// Public because a caller that builds a [`Config`] from text — a configuration
+/// file, say — has to refuse a value that would not fit, and **a second copy of
+/// this number is a second rule that will disagree with this one**. An
+/// over-long value is not shortened into something workable: the name keeps its
+/// truncation and matches nothing at all, so it configures an acceptor that
+/// silently serves nobody.
+pub const MAX_BEGIN_STRING_LEN: usize = 16;
+
+/// The most bytes a [`Config`] can hold for either CompID. See
+/// [`MAX_BEGIN_STRING_LEN`] for why it is public and what an over-long value
+/// costs.
+pub const MAX_COMP_ID_LEN: usize = 32;
+
 /// QuickFIX's default `MaxLatency`, in milliseconds.
 ///
 /// `[documented]` 120 seconds is what `libquickfix` applies to `SendingTime`,
@@ -253,12 +268,12 @@ pub const DEFAULT_HEART_BT_INT: u32 = 30;
 /// Everything a session needs to know that is not on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
-    begin_string: Name<16>,
+    begin_string: Name<MAX_BEGIN_STRING_LEN>,
     /// Ours. Appears as `49=` on the way out and must appear as `56=` on the
     /// way in.
-    sender_comp_id: Name<32>,
+    sender_comp_id: Name<MAX_COMP_ID_LEN>,
     /// Theirs. `56=` out, `49=` in.
-    target_comp_id: Name<32>,
+    target_comp_id: Name<MAX_COMP_ID_LEN>,
     max_skew_ms: u64,
     /// `108=`, in seconds. An acceptor never reads it — it throws the
     /// counterparty's back. An initiator proposes it.

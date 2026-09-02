@@ -80,9 +80,10 @@ Phase 1 — a FIX 4.4 engine you can actually deploy          ← all current wo
   ├── tools/w2w             ← wire-to-wire, on Linux — NEXT, and needs a Linux box
   ├── machine probe + advice ← detect and recommend, never apply (ADR-0025, Proposed)
   ├── many counterparties   ← DONE 2026-09-01. presession::Registry/Table: identity -> Config.
-  │                            ADR-0026 + ADR-0030. Still missing: a CONFIG FILE (built in
-  │                            code today) and per-counterparty credential/schedule. A
-  │                            per-counterparty JOURNAL is reachable since 2026-09-02, ADR-0039
+  │                            ADR-0026 + ADR-0030. [2026-09-02] the CONFIG FILE landed too —
+  │                            engine::settings, ADR-0040, with per-counterparty schedule.
+  │                            Still missing: credentials (deliberately — ADR-0026 decision 3
+  │                            makes lookup the only auth hook) and reload while running
   ├── session schedules     ← DONE 2026-09-02 in `session`. Schedule: daily/weekly/weekday,
   │                            crosses midnight, reset by same_session. ADR-0033. UTC only —
   │                            timezone names are the caller's. last_active_ms is persisted

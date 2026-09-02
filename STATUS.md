@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-02** — **`STATUS.md` item 30 is CLOSED, all six parts**, by **six plans across eight PRs today**: [operability](docs/plans/2026-09-01-operability.md) steps 1–2 (PR #18), [session-schedules](docs/plans/2026-09-02-session-schedules.md) (PR #19), [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) (PR #20, #21), [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) (PR #22), [three-in-the-morning](docs/plans/2026-09-02-sequence-numbers-at-three-in-the-morning.md) (PR #23), [what-the-journal-can-answer](docs/plans/2026-09-02-what-the-journal-can-answer.md) (PR #24) and [an-ordered-shutdown](docs/plans/2026-09-02-an-ordered-shutdown.md) (PR #25; **CI green on the commit closed, `ca9ae49`, runs [`33597576154`](https://github.com/tmthang86/fixbolt/actions/runs/33597576154) and [`33597580522`](https://github.com/tmthang86/fixbolt/actions/runs/33597580522), 18 checks of 18**). Items **16**, **30** and **31** are closed; item **32** was opened by the work that closed 31. ADRs **0032–0038**. Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+Last updated: **2026-09-02** — **`STATUS.md` item 30 is CLOSED, all six parts**, by **six plans across eight PRs today**: [operability](docs/plans/2026-09-01-operability.md) steps 1–2 (PR #18), [session-schedules](docs/plans/2026-09-02-session-schedules.md) (PR #19), [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) (PR #20, #21), [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) (PR #22), [three-in-the-morning](docs/plans/2026-09-02-sequence-numbers-at-three-in-the-morning.md) (PR #23), [what-the-journal-can-answer](docs/plans/2026-09-02-what-the-journal-can-answer.md) (PR #24) and [an-ordered-shutdown](docs/plans/2026-09-02-an-ordered-shutdown.md) (PR #25; **CI green on the commit closed, `ca9ae49`, runs [`33597576154`](https://github.com/tmthang86/fixbolt/actions/runs/33597576154) and [`33597580522`](https://github.com/tmthang86/fixbolt/actions/runs/33597580522), 18 checks of 18**). Items **16**, **30** and **31** are closed; item **32** was opened by the work that closed 31 and **(b) and (c) of it closed the same day** — [recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md), PR [#26](https://github.com/tmthang86/fixbolt/pull/26), **CI green on the commit closed, `88f4473`, runs [`33600110468`](https://github.com/tmthang86/fixbolt/actions/runs/33600110468) and [`33600141705`](https://github.com/tmthang86/fixbolt/actions/runs/33600141705)**. ADRs **0032–0039**. Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
 
 ## Start here — 2026-09-02
 
@@ -41,6 +41,7 @@ box and the one that had already been missed once.
 | **A reversal that failed by hanging.** Removing an ordered shutdown's deadline does not turn a test red — it makes the thing the deadline prevents happen for ever. The suite was killed at 600 s. Every reversal table written here had assumed a broken guard produces a *failing test* | [a-reversal-can-fail-by-hanging](docs/reference/a-reversal-can-fail-by-hanging.md) |
 | **The same shape a third time, and this one was not about clocks.** An ordered shutdown reusing `AwaitingLogout` made every wait vacuous, because that state reports the link down *at once*: *they answered* and *they never answered* became one observable. Caught by a test asserting the **reason** rather than the outcome — which exists only because of the first two | [two-time-rules-share-one-observable](docs/reference/two-time-rules-share-one-observable.md) |
 | **A reversal that had to fail at the compiler, and one that half-failed.** *"The serving loop no longer needs `J: Default`"* is a claim about what the type system permits, and **no runnable test can falsify it** — both versions behave identically for every type a test can name. Beside it, a sentinel value read by **two** decoders was reversed in only one: `5 passed; 1 failed` looked discriminating, and flipping both read `3 passed; 3 failed` | [a-reversal-that-must-not-compile](docs/reference/a-reversal-that-must-not-compile.md) |
+| **A wire test could not tell which silence it was seeing.** An acceptor refuses an unconfigured identity in silence and a counterparty outside its trading hours in silence. A test named for the second passed while measuring the first, and **the near-fix missed too**: asserting on the parsed configuration says nothing about what a later step hands to the registry. `[measured 2026-09-02]` found by a reversal nobody planned | [two-time-rules-share-one-observable](docs/reference/two-time-rules-share-one-observable.md), fourth case |
 | **CI caught what `--no-default-features` could not.** `serve_with_recovery` was ungated; `cargo test --all --no-default-features` passed locally at 321, because cargo unifies features across one invocation and `tools/w2w` switches them back on. `scripts/check-no-optional-deps.sh` reproduced it instantly — the second gate is **not** a nicety | [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md) |
 
 ### The process rules that came out of the day
@@ -1312,20 +1313,31 @@ instead of tidied away.
   `with_utc_offset_ms` is a fixed offset. A venue on `America/New_York` is `-5h` in winter and
   `-4h` in summer; whoever deploys must rebuild the schedule twice a year, and `GUIDE.md` §5a
   is the only thing that says so.
-- **No counterparty has ever been added to a running acceptor, and none was read from a file.**
-  A `presession::Table` is built in code before `serve` is called. ADR-0026 made `Registry` a
-  trait so a hot-reloading or file-backed implementation is possible; **nothing has written
-  one**, so *"hot reload stays possible"* in that ADR's Consequences is an argument, not a
-  demonstration.
+- **No counterparty has ever been added to a *running* acceptor.** `[2026-09-02]` reading them
+  from a file is done — `engine::settings`,
+  [ADR-0040](docs/decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)
+  — but the table is still read-only after startup, so a new counterparty costs a restart.
+  ADR-0026 made `Registry` a trait so a hot-reloading implementation is possible; **nothing has
+  written one**, and *"hot reload stays possible"* in that ADR's Consequences is still an
+  argument rather than a demonstration.
+- **A configuration file has never been read by anything but a test.** `[2026-09-02]` no binary
+  in this repository takes a `--config` path: `tools/w2w` builds its table in code. The parser
+  is exercised end to end through `serve` and real sockets, which is the property that matters,
+  but *an operator edited a file and the acceptor came up* has not happened.
+- **Two ways to describe a counterparty now exist**, `Table::serving` and a settings file, and
+  nothing reconciles them. A deployment may use both, and two ways to say one thing is the
+  shape that eventually disagrees.
 - The ADRs are accepted on the strength of the reasoning in them, **not on measurement** — see the §8 caveat above.
 
 ## Open items
 
-Every one of these is either inside a plan or has a stated reason for not being in one. All six
-plans are **approved**; the first is in progress.
+Every one of these is either inside a plan or has a stated reason for not being in one. Every
+plan below is **approved**; the topmost is the one in progress.
 
 | Plan | Closes |
 |---|---|
+| ~~[a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md)~~ | **CLOSED 2026-09-02, all four steps** — `PRD.md`'s last open line under `many counterparties`, [ADR-0040](docs/decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md). `engine::settings` reads a QuickFIX-shaped INI with no new dependency; 33 tests, five reversals. **The plan's own reversal 2 was wrong** — it predicted one test would stay green and nine went red, because every fixture inherits its required keys; 2b is the half that discriminates. And a reversal *not* in the plan found that all three wire tests were blind to which of two silences they were seeing |
+| ~~[recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md)~~ | **CLOSED 2026-09-02** — item 32 (b) and (c), [ADR-0039](docs/decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md). Merged PR [#26](https://github.com/tmthang86/fixbolt/pull/26), CI green on `88f4473`, runs [`33600110468`](https://github.com/tmthang86/fixbolt/actions/runs/33600110468) and [`33600141705`](https://github.com/tmthang86/fixbolt/actions/runs/33600141705) |
 | ~~[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)~~ | **CLOSED 2026-08-30** — 7, 17, 18, 19 |
 | [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | **15 closed 2026-08-30**; 6, 11, 13 blocked on a §9 machine; **decides** 12 |
 | ~~[threads-and-affinity](docs/plans/2026-08-30-threads-and-affinity.md)~~ | **CLOSED 2026-08-31** — all six steps. Item 21 stays open, narrowed; item 24 is new |
