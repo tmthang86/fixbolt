@@ -92,7 +92,7 @@ tiến trình không chạy vào đúng lúc đó — và đó là lúc reset **
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| 1 | **Test đặc tả, đỏ trước.** `crates/session/tests/schedule.rs`: hai mốc cách nhau qua nửa đêm phải **khác phiên**; hai mốc trong cùng ngày phải **cùng phiên**; một `Logon` đến ngoài giờ phải bị từ chối. Đỏ vì hôm nay không có kiểu nào để hỏi | — |
+| 1 | **Test đặc tả, đỏ trước — và đỏ ở một assertion, không ở trình biên dịch.** `crates/session/tests/schedule.rs` chỉ dùng API **hôm nay đã có**: dựng session, đẩy đồng hồ tới 03:00, đưa vào một `Logon` thật, và khẳng định nó **bị từ chối**. Hôm nay nó được **chấp nhận**, nên test đỏ vì hành vi | — |
 | 2 | `Schedule`: `daily`, `weekly`, `always`, `with_utc_offset_ms`; `contains(t)`, `same_session(a, b)`. Thuần, `Copy`, `Option` ở mọi hàm dựng. **Chưa nối vào `Session`.** Bước 1 xanh phần số học | 1 |
 | 3 | Nối vào `Session`: `Config::with_schedule`. `tick` ngoài giờ → `Logout` rồi `Disconnected`; `Logon` đến ngoài giờ → từ chối im lặng; sang phiên mới → **reset cả hai số trước** `Logon` kế tiếp. 59/59 không đổi | 2 |
 | 4 | `Engine`: mốc "phiên lần cuối" đi vào journal cạnh số thứ tự, để một tiến trình khởi động lại vẫn trả lời được `same_session`. Không có nó thì bước 3 chỉ đúng khi tiến trình không bao giờ chết | 3 |
@@ -105,7 +105,7 @@ nó lớn hơn dự tính** — quy tắc §1 của `CLAUDE.md`: plan sai giữa
 
 | Bước | Lệnh | Đạt khi |
 |---|---|---|
-| 1 | `cargo test -p fixbolt-session --test schedule` | **đỏ**, và đỏ vì *không có `Schedule`*, không phải vì không compile |
+| 1 | `cargo test -p fixbolt-session --test schedule` | **đỏ ở một assertion**: engine chấp nhận một `Logon` lúc 03:00. Không đỏ vì thiếu ký hiệu |
 | 2 | như trên | phần số học xanh |
 | 3 | như trên, và `cargo test -p fixbolt-session --test score` | `step_six_b_replays_what_it_sent_and_scores_fifty_nine` **ok** |
 | 3 | `cargo test -p fixbolt-engine --test wire` | **59/59, cả hai mode** |
@@ -156,3 +156,66 @@ nó lớn hơn dự tính** — quy tắc §1 của `CLAUDE.md`: plan sai giữa
 ## Nhật ký giao hàng
 
 > Điền khi đóng từng bước.
+
+### Sửa plan trước khi bắt đầu (2026-09-02)
+
+**Bước 1 như viết ban đầu là không làm được, và nó tự mâu thuẫn.** Nó đòi test đỏ *"vì không
+có `Schedule`, không phải vì không compile"* — nhưng một test gọi tên một kiểu chưa tồn tại
+thì **chỉ có thể** đỏ ở trình biên dịch. Đó chính là loại đỏ mà chỉ thị của chủ sở hữu ngày
+2026-09-01 đã loại bỏ cho plan registry, và lý do vẫn đúng: một test không compile chưa đo
+được gì cả.
+
+Sửa: **bước 1 chỉ dùng API hôm nay đã có.** Nó khẳng định điều engine phải làm — từ chối một
+`Logon` lúc 03:00 — và đỏ vì engine **chấp nhận**. Phần số học của `Schedule` (`contains`,
+`same_session`, phiên vắt nửa đêm, `always()` trung tính) đến ở **bước 2** cùng lúc với kiểu
+đó, vì trước khi kiểu tồn tại thì không có gì để hỏi.
+
+Ghi lại đây theo `CLAUDE.md` §1: plan sai giữa chừng thì dừng, sửa plan, duyệt lại. Đã tự
+duyệt lại.
+
+### Bước 1 — đỏ, và cái đỏ đầu tiên là một cái xanh giả (2026-09-02)
+
+**Lần chạy đầu: test đặc tả XANH.** Nó khẳng định engine phải từ chối `Logon` lúc 03:00, và
+engine từ chối thật — **nhưng vì `max_skew_ms`, không vì lịch phiên.** `Logon` của corpus đóng
+dấu `20260828-12:00:00`; đẩy đồng hồ tới 03:00 là tạo ra chín tiếng lệch, quá 120 giây, và
+message bị từ chối vì đồng hồ. Test đọc được "bị từ chối" — đúng thứ nó hỏi — và báo rằng một
+cái lịch engine không có đang hoạt động.
+
+Test bên cạnh hỏng theo chiều ngược lại: session `resume` ở `34=41`, tick sang hôm sau, cũng
+bị từ chối vì **một ngày** lệch đồng hồ, nên nhánh reset số thứ tự chưa bao giờ được chạm tới.
+
+**Chốt chặn thông thường không bắt được.** File đã có đúng cái control mà
+[silence-before-a-logon-has-many-causes](../reference/silence-before-a-logon-has-many-causes.md)
+yêu cầu — cùng message, cùng harness, lúc giữa trưa, khẳng định `Logon` quay về — và nó xanh
+một cách trung thực, vì giữa trưa dấu thời gian và đồng hồ trùng nhau. **Một control chứng minh
+harness chạy được; nó không chứng minh case âm đỏ vì đúng lý do**, vì thứ làm case thành âm
+(dịch đồng hồ) chính là thứ chạm vào quy tắc bên cạnh.
+
+Sửa: đóng dấu lại `52=` theo đúng mốc đang test, nên biến duy nhất thay đổi giữa 03:00 và
+12:00 là giờ. Viết lại thành
+[two-time-rules-share-one-observable](../reference/two-time-rules-share-one-observable.md).
+
+**Đỏ sau khi sửa, và đỏ đúng chỗ:**
+
+```
+test a_logon_outside_the_trading_day_is_refused ... FAILED
+  assertion `left == right` failed: 3 a.m. is not inside a venue's 08:00-17:00 session
+    left: Up
+   right: Dropped
+
+test the_first_logon_of_a_new_trading_day_is_numbered_one ... FAILED
+  assertion `left == right` failed: a new trading day accepts a Logon
+    left: Dropped
+   right: Up
+
+test result: FAILED. 2 passed; 2 failed
+```
+
+Hai control xanh trong cùng lần chạy: `a_logon_inside_the_trading_day_is_accepted` và
+`a_reconnect_inside_the_same_trading_day_keeps_its_numbers`. Cái thứ hai chính là ADR-0010, và
+nó phải **vẫn xanh** sau bước 3 — nếu không thì lịch phiên đã reset cả những lần reconnect
+trong ngày.
+
+`Dropped` ở test thứ hai là hành vi đúng của hôm nay và là đúng lỗ hổng: một session `resume`
+giữ `34=41` không thể nhận `34=1` của ngày mới, vì không có gì nói cho nó biết hôm nay là một
+phiên khác.
