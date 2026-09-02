@@ -1,6 +1,6 @@
 # Cuốn nhật ký trả lời được câu hỏi gì
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Xong
 > *(tự viết, tự duyệt theo uỷ quyền thường trực 2026-09-01.)*
 >
 > **Phạm vi:** `STATUS.md` item 30 (e). Chạm `engine` (module `journal`) và thêm **một crate
@@ -97,10 +97,11 @@ Diễn giải cần dictionary, và dictionary là một dependency mà một c�
 
 ## Tài liệu phải cập nhật
 
-- [ ] ADR mới — đọc offline là iterator không phải ring; đuôi rách được báo
-- [ ] `DESIGN.md` §3 **+ `README.md` layout + `Cargo.toml` members** (crate mới)
-- [ ] `CHANGELOG.md`; `GUIDE.md`; `STATUS.md` item 30; `PRD.md`
-- [ ] Đi lại bảng §4, đọc lại *Not proven*
+- [x] ADR mới — [ADR-0037](../decisions/ADR-0037-reading-a-journal-is-not-recovering-from-one.md)
+- [x] `DESIGN.md` §3 (hai dòng: `tools/w2w` **cũng chưa từng có dòng nào**, và `tools/jrnl`) + `README.md` layout (mục `tools/` trước đó không tồn tại) + `Cargo.toml` members
+- [x] `CHANGELOG.md`; `GUIDE.md`; `STATUS.md` item 30; `PRD.md`
+- [x] Đi lại bảng §4, đọc lại *Not proven* — thêm bốn mục
+- [x] `docs/reference/` — [the-strongest-knob-is-not-the-settle-point](../reference/the-strongest-knob-is-not-the-settle-point.md), gắn `[to testing-skills]`
 
 ## Ngoài phạm vi
 

@@ -836,12 +836,45 @@ Nothing stops you, because at 3 a.m. that is sometimes the instruction.
    submit in a loop you cannot tell the outcomes apart. Submit one at a time and read the
    outcome.
 
+### Answering "did you receive it?"
+
+`[2026-09-02]` The counterparty asks about an order from three weeks ago. **Do not reach for
+`FileJournal`** — it reloads the file into a ring of `N` messages, because its job is the next
+`ResendRequest`, and the message being asked about left that ring long ago.
+
+```
+$ jrnl /var/lib/fixbolt/ISLD.journal --seq 4812
+msg  4812  8=FIX.4.4|35=D|34=4812|11=ORDER-4812|...
+
+$ jrnl /var/lib/fixbolt/ISLD.journal --count
+messages 2000  inbound-marks 1  seq 1..2000  bytes 87794
+```
+
+`journal::Reader` is the same thing as a library, if you would rather build the answer into
+your own tooling
+([ADR-0037](decisions/ADR-0037-reading-a-journal-is-not-recovering-from-one.md)).
+
+**Three things to know before you trust the answer.**
+
+1. **Check the exit code, or read stderr.** A file whose tail is torn — a process killed
+   mid-write — makes `jrnl` warn and exit **2**. Those bytes are not shown and not replayed,
+   so *"no, we never received it"* drawn from a torn file **might be wrong**.
+   `Reader::torn_tail_bytes()` is the same fact for a program.
+2. **The whole file is read into memory.** Fine for a tool, and a real limit for a very large
+   journal; there is no streaming reader.
+3. **Do not read a file the engine is still appending to.** You will see a consistent prefix
+   and probably a torn-tail warning. Nothing about that case is promised or tested.
+
+`jrnl` does not decode FIX — it prints the bytes with `SOH` shown as `|` and leaves the rest
+to `grep`. Interpreting a message needs the dictionary, and a program that reads a file has no
+business pulling one in.
+
 ### What is still not here
 
-Ordered shutdown and an offline journal reader. `STATUS.md` open item 30 keeps the list; this
-section covers (b), (c), (d) and (f) of it and nothing else. **Nothing authenticates the
-holder of an `Admin`** — the engine has no idea who is on the phone, and who you pass that
-handle to is the whole of the access control.
+Ordered shutdown, and that is all. `STATUS.md` open item 30 keeps the list; this section
+covers everything in it except (a). **Nothing authenticates the holder of an `Admin`** — the
+engine has no idea who is on the phone, and who you pass that handle to is the whole of the
+access control.
 
 ## 9. What this engine does not do for you
 
