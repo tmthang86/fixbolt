@@ -32,6 +32,18 @@ interop: logout       ok    35=5 out, 35=5 back
 interop: PASS 7/7
 ```
 
+`[measured 2026-09-02]` **and the branch tip is green too**: `1000ca8`, runs
+[`33625608818`](https://github.com/tmthang86/fixbolt/actions/runs/33625608818) and
+[`33625613624`](https://github.com/tmthang86/fixbolt/actions/runs/33625613624), **10 checks of
+10**, `interop: PASS 7/7` read out of job
+[`100232658943`](https://github.com/tmthang86/fixbolt/actions/runs/33625608818/job/100232658943).
+Two commits in between were **red**, and both for the same reason, which is worth more than the
+green: `crates/engine/tests/shard_wire.rs` sits behind `--features affinity`, so
+`cargo test --all` never compiles it, and adding a variant to the conformance runner's `Input`
+made its `match` non-exhaustive. **CI found it and no local command could** — which is exactly
+what the `affinity` step's own comment in `ci.yml` says that step exists for. It earned its keep
+on the first change that touched a shared type.
+
 ### The finding, and it is why this gate exists
 
 `[measured 2026-09-02]` **on its first run, before it had ever been green**, it found that this
