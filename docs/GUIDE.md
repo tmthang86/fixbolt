@@ -746,13 +746,59 @@ process; there is no second mechanism to disagree with it.
 `truncated()` is deliberately **not** unhealthy: `MAX_SESSIONS` is 64 and `standard` has no
 session ceiling, so it means *"there were more than I can list"*, not *"something is wrong"*.
 
+### Why a connection ended
+
+`[2026-09-02]` A snapshot tells you what **is**. It cannot tell you what **happened** — by
+the time you ask, the session that ended is gone from it. So endings are **pushed**: the
+engine records one when a session's state changes, whether or not anybody is reading
+([ADR-0035](decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md)).
+
+```rust
+let mut events = Vec::new();            // yours, on your thread; it may allocate
+loop {
+    watch.events(&mut events);          // appends; returns how many were added
+    for e in events.drain(..) {
+        match e.kind() {
+            EventKind::LoggedOn        => println!("conn {} on", e.id()),
+            EventKind::Ended(why)      => println!("conn {} ended: {why:?}", e.id()),
+            EventKind::EndedWithoutReason => println!("conn {} ended, cause unrecorded", e.id()),
+        }
+    }
+    if watch.events_lost() > 0 { /* you fell behind — see below */ }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+}
+```
+
+**`DropReason` is the point of this.** On the wire, a `Logon` refused for a bad clock and a
+`Logon` refused because the venue is shut are the *same observable*: silence. They are also
+different people's problems on different days — `SendingTimeOutOfRange` is your NTP,
+`OutsideSchedule` is your venue calendar. Six of the 59 acceptance definitions expect no
+response at all, so the conformance gate is blind to the difference and only this stream is
+not.
+
+**Three things to hold onto.**
+
+1. **Read often enough.** The ring holds `EVENT_CAPACITY` (256) events and the engine never
+   waits for you. When it overflows, `events_lost()` goes up — **check it**, because an
+   event stream that loses silently is a source you would keep trusting. A mass reconnect is
+   both the moment it can overflow and the moment you need it.
+2. **`ConnId` is not an identity.** An event names the connection, not the counterparty. If
+   you need to know *who*, take a snapshot while the session is up and keep the mapping;
+   after the disconnect it is gone.
+3. **`EndedWithoutReason` means the cause was not recorded**, not that there wasn't one.
+   It is a variant rather than a guess on purpose — a diagnostic that invents the most likely
+   answer is worse than one that admits it does not know.
+
+Only three kinds exist today: logon, ended, ended-without-reason. Gap detected, resend
+issued and reject sent are **not** here — they are message-rate, and D8 forbids anything
+message-rate on the hot path until the cost has been measured.
+
 ### What is still not here
 
-Ordered shutdown, live sequence-number administration, a structured event stream with the
-**reason** a connection ended, and an offline journal reader. `STATUS.md` open item 30 keeps
-the list; this section covers (b) and (f) of it and nothing else. Until (c) exists, changing
-a sequence number on a live engine means restarting it and choosing `Session::resume` — see
-§9.
+Ordered shutdown, live sequence-number administration, and an offline journal reader.
+`STATUS.md` open item 30 keeps the list; this section covers (b), (d) and (f) of it and
+nothing else. Until (c) exists, changing a sequence number on a live engine means restarting
+it and choosing `Session::resume` — see §9 and §6a.
 
 ## 9. What this engine does not do for you
 

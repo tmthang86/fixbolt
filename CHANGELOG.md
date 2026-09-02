@@ -48,6 +48,23 @@ below describe what a first release would contain.
       was last active **restarts both counts at the top of the tick**, ahead of the numbering.
     - `[measured 2026-09-02]` `crates/session/benches/alloc.rs` cases `schedule-open` and
       `schedule-shut` both read **0**.
+  - **`DropReason`, `Session::last_drop_reason()`, `disconnect_with`, `note_drop_reason`** —
+    why a connection ended, instead of one bit.
+    [ADR-0035](docs/decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md).
+    - `Link::Dropped` is returned from **eighteen** places, and nothing at the other end told
+      them apart. On the wire a bad clock and a shut venue are the same observable — silence —
+      and six acceptance definitions expect no response at all, so 59/59 is blind to the
+      difference. Different people fix them, on different days.
+    - `DropReason` is a **fieldless** `#[non_exhaustive]` enum, so the session stays pure: no
+      clock, no allocation, no `format!`. `Link`'s signature is unchanged.
+    - Recorded at every refusal **and** on the paths a refusal never reaches — a heartbeat
+      that timed out, the counterparty's own `Logout`, a window that closed. `From<Refusal>`
+      is exhaustive with **no `_` arm**, so a new refusal that is not named will not compile.
+    - `connect()` clears it: a live session has nothing to explain, and a stale reason read as
+      a current one is worse than none.
+    - `disconnect_with(why, emit)` and `note_drop_reason(why)` let the **engine** name a cause
+      the session cannot know. **A cause already known is never replaced** — before that rule,
+      `disconnect()` overwrote every specific reason with the transport's.
   - **`Session::last_skew_ms() -> Option<i64>`** — the engine's clock minus the
     `SendingTime` of the last inbound message whose `52=` could be read, in milliseconds.
     Recorded **whether that message was accepted or refused**, because a `max_skew_ms`
@@ -206,6 +223,30 @@ below describe what a first release would contain.
       both read **0**: being watched allocates nothing, and being watched on every single turn
       allocates nothing. The **nanosecond** cost of a turn that publishes is **not measured** —
       it needs the §9 machine.
+    - **`Event`, `EventKind`, `EVENT_CAPACITY`, `Observer::events(&mut Vec<Event>) -> usize`,
+      `Observer::events_lost() -> u64`** — endings, **pushed** rather than asked for.
+      [ADR-0035](docs/decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md).
+      - A snapshot tells you what **is**; by the time you ask, a session that ended is gone
+        from it. So the engine records an `Event` when a session's state changes, whether or
+        not anybody is reading.
+      - `EventKind` is `LoggedOn`, `Ended(DropReason)` or `EndedWithoutReason`. The third is a
+        variant and not a guess: a diagnostic that invents the most likely cause is worse than
+        one that admits it does not know.
+      - One `try_lock` per **state change** — logon, logout, disconnect — and never per
+        message; D8 forbids anything message-rate on the hot path. A refused lock, or a ring
+        with no room, bumps `events_lost()` and the turn continues: an observer may never drop
+        a session ([ADR-0011](docs/decisions/ADR-0011-a-full-ring-disconnects.md)).
+      - `EVENT_CAPACITY` is 256 and **losses are counted, not swallowed** — a stream that
+        loses silently is a source an operator would keep trusting. The counter has its own
+        test, which drives the ring past full on purpose.
+      - The engine names three endings the session cannot see: `DuplicateIdentity`
+        (ADR-0030's single-logon rule, which `[measured 2026-09-02]` reported itself as
+        `TransportClosed` — the network blamed for a policy decision), `SlowApplication` and
+        `SlowConsumer` (D10).
+      - `[measured 2026-09-02]` `benches/alloc.rs` cases `events-idle` and `events-busy` both
+        read **0**, the second asserting the stream recorded something **inside** the counted
+        window — three earlier readings of that case measured its own fixture
+        ([reference](docs/reference/a-benchmark-measured-its-own-fixture.md)).
   - **`affinity` — pinning a thread to a core, and proving it happened.** New module, new
     optional feature of the same name, **off by default**, Linux only.
     [ADR-0015](docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md) and

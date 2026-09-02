@@ -101,9 +101,10 @@ kiện — và sự kiện là chuyện hiếm (logon, logout, gap, disconnect),
 
 ## Tài liệu phải cập nhật
 
-- [ ] ADR mới — sự kiện đẩy, mất mát phải đếm, dùng lại cơ chế ADR-0032
-- [ ] `DESIGN.md` §3; `CHANGELOG.md`; `GUIDE.md` §8a; `STATUS.md` item 30; `PRD.md`
-- [ ] Đi lại bảng §4, đọc lại *Not proven*
+- [x] ADR mới — [ADR-0035](../decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md)
+- [x] `DESIGN.md` §3; `CHANGELOG.md`; `GUIDE.md` §8a; `STATUS.md` item 30; `PRD.md`
+- [x] Đi lại bảng §4, đọc lại *Not proven* — thêm ba mục mới, sửa hai mục cũ đã hơi lệch
+- [x] `docs/reference/` — [a-benchmark-measured-its-own-fixture](../reference/a-benchmark-measured-its-own-fixture.md), gắn `[to testing-skills]`
 
 ## Ngoài phạm vi
 
@@ -113,4 +114,107 @@ kiện — và sự kiện là chuyện hiếm (logon, logout, gap, disconnect),
 
 ## Nhật ký giao hàng
 
-> Điền khi đóng từng bước.
+### Bước 1 — test đặc tả, đỏ ở assertion
+
+`crates/session/tests/drop_reason.rs`, chạy trước khi có `DropReason`. Đỏ ở **assertion**, không
+phải ở compiler — dùng đúng API hôm nay (`(Link, Vec<String>)`: link và các byte đi ra, tức là
+**toàn bộ** những gì quan sát được):
+
+```
+---- two_connections_that_end_for_different_reasons_are_distinguishable stdout ----
+assertion `left != right` failed: and they are different faults with different fixes, so
+nothing that reports on this session may describe them identically
+  left: (Dropped, [])
+ right: (Dropped, [])
+```
+
+Hai lỗi hoàn toàn khác nhau — sai phiên bản FIX và trỏ nhầm đối tác — đọc ra **giống hệt nhau**.
+Đó là đặc tả.
+
+**Lần viết đầu bước 1 đã sai và phải viết lại.** Nó gọi `last_drop_reason()`, một hàm chưa tồn
+tại → đỏ ở compiler. Đỏ vì không biên dịch được thì không chứng minh gì cả: nó không nói lỗi hiện
+tại là gì, chỉ nói mình chưa viết code. Đây là lần thứ ba trong ngày mắc đúng lỗi này.
+
+### Bước 2 — mỗi lý do tự xưng tên
+
+`DropReason` (enum không trường, `#[non_exhaustive]`), `Session::last_drop_reason()`, và một hàm
+`end(why)` duy nhất — mọi chỗ đặt `Disconnected` đều đi qua nó. `From<Refusal>` liệt kê đủ, **không
+có nhánh `_`**: thêm một `Refusal` mà quên đặt tên thì **không biên dịch được**.
+
+Xanh: 8 test trong `drop_reason.rs`, `cargo test --all` 329 passed. Commit `61689e6`.
+
+**Hai bẫy trong bảng đã bắt được thật:**
+
+| Bẫy | Đã xảy ra |
+|---|---|
+| Chỉ ghi ở đường `Refusal`, quên `tick` | `a_timeout_and_a_peer_logout_are_named_too` — hai lý do này đến từ chỗ khác hẳn |
+| Ghi **sau** khi state đổi → đọc ra lý do cũ | `a_second_fault_replaces_the_first` |
+
+Một bẫy **không** lường trước: một `Logon` khoác `35=5` vẫn mang `98=`/`108=`, hai tag không hợp lệ
+cho `Logout` → nhận Reject chứ không phải lời chào tạm biệt. Phải gỡ hai tag đó đi.
+
+### Bước 3 — sự kiện rời khỏi luồng engine
+
+`observe::Event` / `EventKind` / `EVENT_CAPACITY` / `Observer::events` / `events_lost`, phát trong
+`turn()`. Xanh: 4 test trong `crates/engine/tests/events.rs`, đọc **trong khi** engine đang quay.
+Commit `ac9d220`.
+
+**Ba lý do engine tự biết mà session không thể biết** phải thêm vào — và việc phát hiện ra chúng là
+do một test **hỏng vì lý do không liên quan đến tên nó**:
+
+- `DuplicateIdentity` — luật một-logon của ADR-0030 từ chối socket **trước khi** session xét bất cứ
+  điều gì, và engine báo `TransportClosed`. Nó **đổ lỗi cho mạng vì một quyết định của chính nó**,
+  và người trực đêm sẽ đi soi nhầm tầng.
+- `SlowApplication` / `SlowConsumer` — đường backpressure của D10 tự gửi `Logout`, nên dùng
+  `note_drop_reason` chứ không đi qua phễu disconnect.
+
+Và `disconnect()` **không còn ghi đè lên một lý do đã biết** — chỉ riêng chỗ đó đã che mọi lý do
+sau chữ `TransportClosed`.
+
+**Đảo ngược đã chạy:**
+
+| # | Kết quả |
+|---|---|
+| 1 — `last_drop_reason` trả hằng số | test phân biệt **đỏ**, `--test wire` **59/59 vẫn xanh**. Đúng như dự đoán: corpus không nhìn thấy lý do |
+| 2 — bỏ bộ đếm `lost`, ring đầy thì ghi đè im lặng | `a_reader_that_falls_behind_is_told_how_much_it_missed` **đỏ** |
+| 3 — `lock` thay `try_lock` | **không test nào đỏ.** Đúng như plan đã lường. Vào *Not proven*, không nhận là đã chứng minh |
+
+### Bẫy thứ tư, không có trong bảng: benchmark đo chính đồ nghề của nó
+
+Case `events-busy` đọc **30 000 → 6 000 → 2 000 → 0**, và **không con số sai nào đến từ đoạn code
+đang được đo**. Cả ba đều là fixture: `Loopback::pair()` gọi trong cửa sổ đếm, rồi vẫn tạo pair
+trong cửa sổ, rồi `VecDeque` của mỗi pair mới cấp phát ở lần `send` **đầu tiên** — nên "dựng ngoài
+cửa sổ" và "làm nóng ngoài cửa sổ" là hai lời khẳng định khác nhau, và chỉ cái thứ hai mới đúng.
+
+Giữa chừng còn có một **false green của chính công cụ chẩn đoán**: tách cửa sổ làm hai vòng, vòng
+sau đọc 0 — nhưng chỉ vì vòng trước đã lấy hết `Option` ra khỏi vector, nên vòng sau `continue` mọi
+lần lặp. **Một guard không thể đỏ thì luôn báo xanh.**
+
+Cách sửa, và phần đáng mang đi chỗ khác: dựng **và làm nóng** fixture ngoài cửa sổ, cấp đủ sức chứa
+cho engine, và **khẳng định ngay trong cửa sổ rằng đường code cần đo có chạy thật** — ở đây là
+stream phải ghi được nhiều hơn 0 sự kiện. Chỉ điều thứ ba biến số 0 từ *"không cấp phát"* thành
+*"không cấp phát trong lúc chuyện đó xảy ra"*.
+
+Viết đầy đủ ở [a-benchmark-measured-its-own-fixture](../reference/a-benchmark-measured-its-own-fixture.md),
+có gắn `[to testing-skills]`.
+
+**Và một bài học về quy trình, lần thứ hai trong ngày:** `git checkout <file>` để bỏ một sửa đổi
+nháp đã **xoá luôn phần việc chưa commit** trong cùng file đó — lần này là toàn bộ case benchmark
+vừa nói. **Commit trước khi chạy bất kỳ đảo ngược nào**, nếu không thì vòng lặp đảo ngược và lệnh
+undo dùng chung một mục tiêu.
+
+### Cổng đã chạy — Apple M5, macOS 15 (máy phát triển)
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo test --all` | **333 passed, 0 failed** |
+| `cargo test -p fixbolt-engine --test wire` | **59/59**, mặc định và `--no-default-features --features standard` |
+| `cargo bench -p fixbolt-engine --bench alloc` | `events-idle 0`, `events-busy 0`, và 15 case cũ vẫn 0 |
+| `cargo clippy --all-targets --all-features -D warnings` | sạch |
+| `scripts/check-no-optional-deps.sh` | sạch |
+| `python3 scripts/check-links.py` | 781 liên kết, 0 hỏng |
+
+**Không công bố con số nanosecond nào từ máy này** — `benches/baselines.tsv` khoá theo CPU model và
+CPU này không có dòng nào. **Hai check chỉ chạy trên Linux** (`check-no-kernel-sleep.sh`,
+`check-standard-gives-the-core-back.sh`) **không chạy được ở đây, và không-chạy-được ≠ xanh** — CI
+là thứ duy nhất phán xử chúng.
