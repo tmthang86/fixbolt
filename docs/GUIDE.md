@@ -446,6 +446,101 @@ The session layer takes no clock (D1). Time arrives as `Input::Tick`, in millise
 
 ---
 
+## 5a. Session schedules, and the timezone trap
+
+`[2026-09-02]` A FIX session is not open all the time, and when it closes **both ends start
+again at `34=1` the next morning**. That is protocol, not housekeeping: get it wrong and you
+spend the morning arguing sequence numbers with your counterparty.
+
+```rust
+use fixbolt_session::schedule::{Schedule, Weekdays};
+
+let hours = Schedule::daily(8 * 3_600, 17 * 3_600)   // seconds since midnight, UTC
+    .expect("08:00 is before 17:00")
+    .with_weekdays(Weekdays::WEEKDAYS)
+    .expect("Monday to Friday");
+
+let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_schedule(hours);
+```
+
+Without `with_schedule` a session is open forever and never resets, which is what every
+session did before this existed. That default is deliberate and exactly neutral.
+
+### The trap: these are UTC, and a fixed offset is not daylight saving
+
+**`fixbolt` has no timezone database and never will** —
+[ADR-0033](decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md).
+The session layer is pure (D1), and an IANA database is a dependency that allocates.
+
+So if your venue says *"17:00 America/New_York"*:
+
+1. Resolve that to a UTC offset **with your own zone library**, for the date in question.
+2. Build the `Schedule` with `with_utc_offset_ms`.
+3. **Rebuild it when the offset changes.** New York is `-5h` in winter and `-4h` in summer.
+
+```rust
+// A venue seven hours east of UTC, which does not observe DST.
+let jakarta = Schedule::daily(9 * 3_600, 16 * 3_600)
+    .expect("legal")
+    .with_utc_offset_ms(7 * 3_600 * 1_000)
+    .expect("inside a day");
+```
+
+**A `Schedule` built from one DST offset is wrong for half the year**, and the failure is not
+loud: it resets sequence numbers an hour early or an hour late, on exactly the two days a
+counterparty is least forgiving. Nothing in the type system can catch it. If your venue
+observes DST, something in your deployment must rebuild the `Schedule` twice a year, and that
+something is yours.
+
+### A session may run past midnight
+
+`open > close` wraps and is legal — 22:00 to 06:00 is **one** session, so nothing resets at
+midnight in the middle of it. A weekday filter selects the day a session **opens** on, so a
+Friday-night window under `Weekdays::WEEKDAYS` runs into Saturday morning as it should.
+
+For a week-long window use `Schedule::weekly`: Sunday 21:00 to Friday 21:00 is one interval,
+and Tuesday night is inside it.
+
+### You must persist *when*, not only *what*
+
+This is the part that is easy to get half-right.
+
+```rust
+// Wrong across a boundary: carries the numbers, says nothing about the calendar,
+// and therefore NEVER resets.
+let s = Session::resume(cfg, next_out, next_in);
+
+// Right: carries the numbers AND when they were last touched.
+let s = Session::resume_at(cfg, next_out, next_in, last_active_ms);
+```
+
+`next_out = 41` tells you nothing about whether a trading day has ended since 41 was reached.
+So persist `Session::last_active_ms()` beside the sequence numbers and hand it back. A session
+resumed without it will not reset, ever — which is correct for `Schedule::always()` and wrong
+for everything else.
+
+`[2026-09-02]` **the engine does not do this for you yet.** It calls `Session::resume`, so a
+process that restarts across a boundary keeps yesterday's numbers. `STATUS.md` names it; until
+it is done, an embedder that cares must resume its sessions itself.
+
+### What the reset is decided by
+
+A comparison, not a clock alarm: *do the last instant I remember and now fall in the same
+interval?* That is the only question an engine which was asleep at midnight, or started at
+06:00, can still answer — and those are precisely the times a reset matters.
+
+An instant your schedule cannot place is **never** the same session as anything, so an engine
+that cannot tell resets rather than carrying numbers across a boundary it could not see.
+Resetting when your counterparty did not is a `Logon` argument you see at once; not resetting
+when they did is a silent divergence you find much later.
+
+### What is not here
+
+No `ResetSeqTime` — the reset is tied to the interval boundary, not to a separate hour. No
+timezone names. And the `Logout` sent when your window closes carries **no `58=` text**, so
+your counterparty learns that you went away and not why; FIX makes the text optional and
+QuickFIX sends none here either.
+
 ## 6. Journalling: pick the policy deliberately
 
 Three policies — `None`, `Async`, `Fsync` — and the difference is which failure they survive:
@@ -636,8 +731,12 @@ Stated so you do not discover it in production:
   do is guess: a session built with `Session::new` has persisted nothing and resets, so
   **reading the journal back and choosing `new` or `resume` is your call**, and getting it
   wrong is a sequence-number dispute with your counterparty rather than a compile error.
-- **It has no session schedule.** Start time, end time and weekday resets are a known gap
-  (`PRD.md`), so nothing ends a session on a clock.
+- **Its session schedule stops at the timezone.** `[2026-09-02]` §5a: the hours, the weekday
+  filter, the week-long window and the sequence-number reset all work, and they are **UTC**.
+  Resolving a venue's local time — and rebuilding the `Schedule` when daylight saving moves
+  it — is yours. **And the engine does not yet persist when a session was last active**, so a
+  process restarting across a boundary keeps yesterday's numbers unless you resume the session
+  yourself with `Session::resume_at`.
 - **`serve_hft` pins nothing, and it is the one entry point that does not.** `[2026-08-31]`
   `fixbolt_engine::affinity` pins a thread and reads the core back, and `serve_sharded_hft`
   pins **every engine thread it starts** (§1a). `serve_hft` starts no thread at all — it runs

@@ -82,7 +82,11 @@ Phase 1 — a FIX 4.4 engine you can actually deploy          ← all current wo
   ├── many counterparties   ← DONE 2026-09-01. presession::Registry/Table: identity -> Config.
   │                            ADR-0026 + ADR-0030. Still missing: a CONFIG FILE (built in
   │                            code today), and per-counterparty journal/credential/schedule
-  ├── session schedules     ← start/end/weekday reset. Named a gap three times, never planned
+  ├── session schedules     ← DONE 2026-09-02 in `session`. Schedule: daily/weekly/weekday,
+  │                            crosses midnight, reset by same_session. ADR-0033. UTC only —
+  │                            timezone names are the caller's. STILL MISSING: the engine
+  │                            persisting last_active_ms, so a restart across a boundary
+  │                            keeps yesterday's numbers
   ├── operability           ← ordered shutdown · operator snapshot · sequence-number admin ·
   │                            event stream · offline journal reader · health probe (item 30)
   └── library               ← not started
@@ -161,7 +165,7 @@ find them whether or not this page does.
 | **Repeating groups** | Full — **93 groups in FIX 4.4** `[measured]` | Read and written, nested to depth 4. Field order agreed with QuickFIX's generated C++ on **730/730** groups `[measured]` | P1, **closed** |
 | **Dictionary validation** — types, enums, structure | Full `[documented]` | 10 generated tables with `<component>` recursion. `[measured 2026-08-28]` types and enum values **are** now tabulated and agreed with QuickFIX's own generated C++ on 912/912 tag numbers, 898/912 type names (14 named differences), 12 524/12 524 message-tag pairs and 1 708/1 708 enum values. Applied by the session's `Reject (35=3)` | P1, **closed for the session layer**; application-message validation is phase 2 |
 | Decimal / price types | Yes `[documented]` | Bytes and integers only | P1, gap |
-| Session schedules — start/end time, weekday | Yes `[documented]` | Entered scope with ADR-0004; unspecified | P1, gap |
+| Session schedules — start/end time, weekday | Yes `[documented]` | **`Schedule` in `session`, done 2026-09-02** — daily, weekly, weekday filter, a window that crosses midnight, and the sequence-number reset decided by `same_session` ([ADR-0033](decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md)). **Two things are deliberately not here:** timezone names, because an IANA database cannot live in a pure layer — the caller resolves the offset and rebuilds; and **persistence of `last_active_ms`**, so a process restarting across a boundary still keeps yesterday's numbers unless the embedder resumes with `Session::resume_at` | P1, narrowed |
 | Message stores | File, memory, and SQL backends `[documented]` | mmap journal, 3 policies (`None`/`Async`/`Fsync`) | P1, by design narrower |
 | Logging | File, screen, SQL backends `[documented]` | `tracing` behind a feature flag; **never on the hot path** | P1, by design narrower |
 | SSL / TLS | Yes `[documented]` | [ADR-0005](decisions/ADR-0005-tls.md) **Accepted** — `rustls` handshake, kTLS steady state on Linux — supplemented by [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md). `[measured 2026-08-31]` kTLS **is** drivable from a plain non-blocking socket with no async runtime, so the blocker is gone. **Still no plan**, and the phase does not move on the strength of a spike | **P1, gap** |
@@ -216,7 +220,7 @@ find them whether or not this page does.
 - **Application-message semantics: untested.** The suite is a *session-layer* suite.
   `[measured 2026-08-29]` it does hand 42 application messages to an application — and only to
   have them echoed back unchanged. Nothing in it asks what an order *means*.
-- **Reconnect, backoff, session schedules: untested** — zero definitions, on either side.
+- **Reconnect, backoff, session schedules: no acceptance definition covers any of them** — all 59 run inside one interval, so the primary gate is blind to every schedule rule. `[2026-09-02]` schedules are now built and tested, but by `crates/session/tests/schedule.rs` alone.
 - **Field types, enum values, decimal precision: untested.**
 - ~~**Application-message resend: implemented and never exercised.**~~ — **written here on
   2026-09-01 and refuted the same day, by running it.** `[measured 2026-09-01]`

@@ -1,6 +1,6 @@
 # Lịch phiên: khi nào session mở, khi nào số thứ tự về 1
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** BƯỚC 1–3 ĐÓNG 2026-09-02; bước 4 là open item 31
 > *(tự viết và tự duyệt theo uỷ quyền thường trực của chủ sở hữu, 2026-09-01.)*
 >
 > **Phạm vi:** `PRD.md` §2 dòng *Session schedules* — một lỗ hổng Phase 1 **được gọi tên ba
@@ -134,15 +134,15 @@ nó lớn hơn dự tính** — quy tắc §1 của `CLAUDE.md`: plan sai giữa
 
 ## Tài liệu phải cập nhật
 
-- [ ] ADR mới — lịch phiên là số học UTC thuần; múi giờ ở ngoài workspace; reset quyết bằng
+- [x] ADR mới — lịch phiên là số học UTC thuần; múi giờ ở ngoài workspace; reset quyết bằng
       `same_session` chứ không bằng chuông
-- [ ] `DESIGN.md` §4 — hành vi session đổi
-- [ ] `CHANGELOG.md` — API công khai (`Schedule`, `Config::with_schedule`)
-- [ ] `GUIDE.md` — mục múi giờ và DST, **viết như một cảnh báo chứ không như một tính năng**
-- [ ] `GUIDE.md` §9 — bỏ dòng *"It has no session schedule"*
-- [ ] `PRD.md` §2 dòng *Session schedules*, và bản đồ Phase 1 ở §1
-- [ ] `STATUS.md` — item mới cho phần chưa làm, và một dòng *Not proven*
-- [ ] Đi lại bảng §4 từng dòng, và đọc lại *Not proven* từng dòng
+- [x] `DESIGN.md` §4 — hành vi session đổi
+- [x] `CHANGELOG.md` — API công khai (`Schedule`, `Config::with_schedule`)
+- [x] `GUIDE.md` — mục múi giờ và DST, **viết như một cảnh báo chứ không như một tính năng**
+- [x] `GUIDE.md` §9 — bỏ dòng *"It has no session schedule"*
+- [x] `PRD.md` §2 dòng *Session schedules*, và bản đồ Phase 1 ở §1
+- [x] `STATUS.md` — item mới cho phần chưa làm, và một dòng *Not proven*
+- [x] Đi lại bảng §4 từng dòng, và đọc lại *Not proven* từng dòng
 
 ## Ngoài phạm vi
 
@@ -257,3 +257,60 @@ ngay chỗ hằng số.
 **ok**; `fix44` `a_session_that_answers_correctly_scores_fifty_nine` **ok**; clippy
 `-D warnings` sạch; `fmt` sạch. **59 định nghĩa không nhúc nhích** — đúng như một module chưa
 được nối vào phải thế.
+
+### Bước 3 — nối vào `Session` (2026-09-02)
+
+`Config::with_schedule`, `Session::resume_at`, `Session::last_active_ms`. Ba quy tắc:
+
+1. Message đến khi lịch nói đang đóng → **từ chối im lặng**, và nó đứng trên mọi kiểm tra danh
+   tính lẫn số thứ tự, vì không kiểm tra nào trong số đó có ý nghĩa với một phiên chưa mở.
+2. Cửa sổ đóng lại trên một phiên đang sống → `Logout` **không có `58=`**, rồi bỏ link. FIX cho
+   phép bỏ text và QuickFIX ở chỗ này cũng không gửi. **Đối tác không biết vì sao** — đó là
+   việc của item 30 (d), không phải của bước này.
+3. Có ranh giới đi qua kể từ lần cuối phiên hoạt động → **reset cả hai số, ở đầu `tick`**, tức
+   là trước khi bất cứ thứ gì được đánh số.
+
+**`resume_at` tồn tại vì không thể quyết định reset chỉ từ các con số.** `next_out = 41` không
+nói gì về việc đã có ngày giao dịch nào kết thúc kể từ khi đạt 41 hay chưa. `Session::resume`
+mang số và không khẳng định gì về lịch, nên **không bao giờ reset** — ADR-0010 giữ nguyên.
+
+**Ba phép đảo ngược của plan, và cái thứ ba buộc phải làm chặt test lại:**
+
+| Đảo | Kết quả |
+|---|---|
+| `same_session` luôn `true` | **5 test đỏ, và 59/59 vẫn xanh.** Đây chính là điều kiện plan đặt ra: nó chứng minh `always()` trung tính, vì corpus không nhìn thấy lịch phiên chút nào |
+| `contains` luôn `true` | **7 test đỏ**, gồm cả `a_logon_outside_the_trading_day_is_refused`. 59/59 xanh |
+| Có ranh giới thì bỏ link nhưng **không** reset | **Đúng một test đỏ** — nhưng nó đỏ ở assertion *"a new trading day accepts a Logon"*, tức là một khẳng định về **kết nối**. Phiên không reset thì từ chối `34=1` vì quá thấp, nên thông điệp lỗi chỉ vào sai quy tắc |
+
+Plan đã yêu cầu trước: *"phải có một test đỏ về số thứ tự, không phải một test đỏ về kết nối"*.
+Sửa bằng cách khẳng định `next_out() == 1` **ngay sau `tick`, trước khi bất kỳ message nào được
+xét**. Chạy lại cùng phép đảo:
+
+```
+assertion `left == right` failed: the boundary passed on the tick, so the counts restarted
+before anything was numbered
+  left: 41
+ right: 1
+```
+
+**Một sai lầm về quy trình, ghi lại vì nó tốn thời gian thật:** vòng lặp đảo ngược dùng
+`git checkout <file>` để hoàn tác, và bước 3 lúc đó **chưa commit**, nên lệnh đó xoá luôn phần
+việc chứ không chỉ xoá phép đảo. Phải làm lại từ đầu. **Commit trước khi đảo ngược**, hoặc sao
+lưu file — `git checkout` không phân biệt được thay đổi nào là của ai.
+
+**Cổng, macOS 2026-09-02:**
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo test --all` | **312 passed, 0 failed** |
+| `cargo test --all --no-default-features` | **312 passed, 0 failed** |
+| `cargo test -p fixbolt-session --test schedule` | **13 passed** |
+| `cargo test -p fixbolt-engine --test wire` | **59/59 cả hai mode** |
+| `cargo test -p fixbolt-conformance --test fix44`, `-p fixbolt-session --test score` | 59/59 trong tiến trình |
+| `cargo bench -p fixbolt-session --bench alloc` | `schedule-open 0 schedule-shut 0`, cả 15 case đều 0 |
+| `cargo bench -p fixbolt-engine --bench alloc` | 15 case đều 0 |
+| clippy `-D warnings`, `fmt`, `check-links.py` | sạch |
+
+**Trạng thái plan: bước 1–3 ĐÓNG. Bước 4 là open item 31** — journal phải nhớ
+`last_active_ms`, nếu không thì reset đúng trong lý thuyết và sai sau mỗi lần khởi động lại.
+Bước 5 đã làm gộp vào đây (hai case `alloc`, `GUIDE.md` §5a, ADR-0033).
