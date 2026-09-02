@@ -21,12 +21,19 @@
 //! [an-engine-can-resume]: ../../../docs/plans/2026-09-02-an-engine-can-resume.md
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::ops::Range;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use fixbolt_conformance::script::FIXED_TIME_MILLIS;
 use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::InlineDispatch;
 use fixbolt_engine::journal::Store;
+use fixbolt_engine::presession::{Limits, Table};
+use fixbolt_engine::recovery::Resumed;
 use fixbolt_engine::transport::{Io, Loopback, Transport};
 use fixbolt_engine::wait::Yield;
 use fixbolt_engine::{Application, Config, Engine};
@@ -330,4 +337,147 @@ fn a_resumed_session_with_an_empty_journal_fills_the_gap_instead() {
         !answer.contains("|35=D|"),
         "and definitely not the messages, which this journal never held: {answer}"
     );
+}
+
+// --- through the serving loop --------------------------------------------
+//
+// Everything above drives `Engine::add*` directly. **A deployment does not.**
+// It calls `serve`, which accepts connections itself — so these two go through
+// the real listener, a real socket, and `serve_with_recovery`, which is the only
+// way to find out whether the seam is actually wired.
+
+/// A `Recovery` that hands back one counterparty's history, and records how many
+/// times it was asked.
+struct OneCounterparty {
+    asked: Arc<AtomicUsize>,
+}
+
+impl fixbolt_engine::recovery::Recovery<Store> for OneCounterparty {
+    fn recover(&mut self, cfg: &Config) -> Option<Resumed<Store>> {
+        self.asked.fetch_add(1, Ordering::Relaxed);
+        // Only for the counterparty this test is about, so "it answered for
+        // everybody" and "it answered for the right one" are different results.
+        if !cfg.serves(b"TW44", b"ISLD") {
+            return None;
+        }
+        Some(Resumed {
+            journal: a_journal_with_history(),
+            next_out: 9,
+            next_in: 12,
+            last_active_ms: None,
+        })
+    }
+}
+
+/// **The specification for step 3.** A connection accepted by the serving loop
+/// resumes, without the embedder ever seeing the transport.
+#[test]
+fn a_connection_through_the_serving_loop_resumes() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = listener.local_addr().expect("bound").to_string();
+    drop(listener);
+
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&asked);
+    let serving = addr.clone();
+    std::thread::spawn(move || {
+        let table = Table::with_capacity(1).serving(cfg());
+        let _ = fixbolt_engine::serve_with_recovery(
+            &serving,
+            table,
+            EchoApp::default(),
+            4,
+            Limits::new(8, 30_000).expect("both above zero"),
+            OneCounterparty { asked: counter },
+        );
+    });
+
+    let mut client = connect(&addr);
+    // The engine's clock is the real one here, so the Logon has to be stamped
+    // now rather than at the corpus's fixed instant — `max_skew_ms` would
+    // refuse it otherwise, and this test would go green or red on the clock
+    // rather than on recovery. See
+    // docs/reference/two-time-rules-share-one-observable.md.
+    client.write_all(&logon_now(12)).expect("send the Logon");
+
+    let reply = read_one(&mut client);
+    assert!(
+        reply.contains("|35=A|"),
+        "the acceptor answered the Logon: {reply}"
+    );
+    assert!(
+        reply.contains("|34=9|"),
+        "and it resumed at nine rather than starting at one: {reply}"
+    );
+    assert!(
+        asked.load(Ordering::Relaxed) >= 1,
+        "the serving loop asked the Recovery at all"
+    );
+}
+
+/// The control. **`serve` itself must be unchanged** — it passes `NoRecovery`,
+/// and a session nobody resumed still starts at one.
+#[test]
+fn the_plain_serving_loop_still_starts_at_one() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = listener.local_addr().expect("bound").to_string();
+    drop(listener);
+
+    let serving = addr.clone();
+    std::thread::spawn(move || {
+        let table = Table::with_capacity(1).serving(cfg());
+        let _ = fixbolt_engine::serve(
+            &serving,
+            table,
+            EchoApp::default(),
+            4,
+            Limits::new(8, 30_000).expect("both above zero"),
+        );
+    });
+
+    let mut client = connect(&addr);
+    client.write_all(&logon_now(1)).expect("send the Logon");
+
+    let reply = read_one(&mut client);
+    assert!(
+        reply.contains("|34=1|"),
+        "no recovery, so the session starts at one: {reply}"
+    );
+}
+
+/// Connect, retrying while the serving thread gets to its `bind`.
+fn connect(addr: &str) -> TcpStream {
+    for _ in 0..500 {
+        if let Ok(s) = TcpStream::connect(addr) {
+            s.set_nodelay(true).expect("nodelay");
+            s.set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("timeout");
+            return s;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("the serving loop never bound {addr}");
+}
+
+fn read_one(client: &mut TcpStream) -> String {
+    let mut buf = [0u8; 4096];
+    let n = client.read(&mut buf).expect("a reply");
+    String::from_utf8_lossy(&buf[..n]).replace('\u{1}', "|")
+}
+
+/// A `Logon` stamped at the wall clock, for the tests that run against a real
+/// `SystemClock` rather than a `ManualClock`.
+fn logon_now(seq: u32) -> Vec<u8> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after 1970")
+        .as_millis() as u64;
+    let mut cache = fixbolt_codec::timestamp::TimestampCache::new();
+    let full = *cache.format(now);
+    let stamp = core::str::from_utf8(&full[..17]).expect("ascii");
+    let inner = format!(
+        "35=A\u{1}34={seq}\u{1}49=TW44\u{1}52={stamp}\u{1}56=ISLD\u{1}98=0\u{1}108=30\u{1}"
+    );
+    let framed = format!("8=FIX.4.4\u{1}9={}\u{1}{inner}10=0\u{1}", inner.len());
+    fixbolt_conformance::script::with_real_checksum(framed.as_bytes())
 }
