@@ -369,6 +369,20 @@ impl SessionUnderTest for ShardWire {
             Input::Tick(ms) => {
                 self.clock.store(ms, Ordering::Release);
             }
+            // This file runs the **acceptor** corpus through the shard runtime,
+            // and `Input::Originate` is fed only to a mirrored scenario. In the
+            // acceptor direction every `E` line is an answer, and a harness that
+            // could speak would be able to make a broken session look correct —
+            // so this fails loudly rather than quietly doing nothing.
+            //
+            // `[measured 2026-09-02]` **this arm was added because CI found it
+            // and `cargo test --all` could not**: `shard_wire` is behind
+            // `--features affinity`, which is off by default and Linux-only, so
+            // nothing local compiled it. Same shape as the `affinity` step's own
+            // comment in `.github/workflows/ci.yml`, from the other side.
+            Input::Originate(intent) => {
+                panic!("the acceptor corpus must not be driven: {intent:?}")
+            }
         }
         let closed = self.settle(i, &mut emit);
         if closed {
