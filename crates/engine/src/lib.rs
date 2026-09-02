@@ -33,6 +33,7 @@ pub mod journal;
 pub mod observe;
 pub mod presession;
 pub mod recovery;
+pub mod settings;
 #[cfg(all(feature = "affinity", target_os = "linux"))]
 pub mod shard;
 // ADR-0014 decision 1 and 2. The feature gates the `mod` declaration itself,

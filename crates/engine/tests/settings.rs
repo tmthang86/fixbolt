@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, load_all};
 use fixbolt_engine::presession::{Limits, PendingSet, Registry, Table, is_logon};
+use fixbolt_engine::settings::{Problem, Settings};
 use fixbolt_engine::transport::{Io, Loopback, Transport};
+use fixbolt_session::Config;
 
 const PRE: usize = 1024;
 const T0: u64 = FIXED_TIME_MILLIS;
@@ -88,8 +90,9 @@ fn write(name: &str, text: &str) -> PathBuf {
 /// can build from this file is an empty table — every connection refused,
 /// ADR-0026 decision 6.
 fn table_from_file(path: &Path) -> Table {
-    let _ = std::fs::read_to_string(path).expect("the file is there");
-    Table::new()
+    Settings::load(path)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .into_table()
 }
 
 /// A correct FIX.4.4 `Logon` from `TW44`, taken out of the acceptance corpus.
@@ -254,5 +257,215 @@ fn the_file_and_the_corpus_agree_on_who_this_acceptor_is() {
     assert!(
         contains_field(&corpus_logon(), b"56=ISLD"),
         "and the corpus Logon is addressed to ISLD"
+    );
+}
+
+// --- step 2: the parser, and what it refuses ---------------------------------
+
+/// Parse and expect a failure, returning it.
+fn refused(text: &str) -> fixbolt_engine::settings::SettingsError {
+    match Settings::parse(text) {
+        Ok(s) => panic!(
+            "this should not have parsed; it produced {} configuration(s)",
+            s.configs().len()
+        ),
+        Err(e) => e,
+    }
+}
+
+/// **The most important refusal in this module.** A key this engine does not
+/// know is an error, not a shrug.
+///
+/// QuickFIX ignores settings it does not recognise. Here the cost of that is
+/// specific: a mistyped `Starttime` falls back to `Schedule::always()`, so a
+/// session that should close at five stays open all night and nothing says so.
+#[test]
+fn a_mistyped_key_is_refused_and_not_ignored() {
+    let e = refused(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nStarttime=08:00:00\n",
+    );
+    assert_eq!(*e.problem(), Problem::UnknownKey);
+    assert_eq!(e.line(), 6, "and it points at the line: {e}");
+    assert!(
+        e.to_string().contains("Starttime"),
+        "the message quotes what was written: {e}"
+    );
+}
+
+/// A file naming no counterparty is refused, because an empty table refuses
+/// every connection — indistinguishable from a firewall dropping the port.
+#[test]
+fn a_file_with_no_session_block_is_refused() {
+    let e = refused("[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n");
+    assert_eq!(*e.problem(), Problem::NoSessions);
+}
+
+/// So is an empty file, for the same reason and by the same path.
+#[test]
+fn an_empty_file_is_refused() {
+    assert_eq!(*refused("").problem(), Problem::NoSessions);
+}
+
+/// A setting above the first header has no block to belong to, and guessing
+/// `[DEFAULT]` would apply it to counterparties the writer never looked at.
+#[test]
+fn a_setting_before_the_first_section_is_refused() {
+    let e = refused("BeginString=FIX.4.4\n[SESSION]\nTargetCompID=TW44\n");
+    assert_eq!(*e.problem(), Problem::KeyOutsideSection);
+    assert_eq!(e.line(), 1);
+}
+
+/// The same key twice in one block has no meaning to give it, and picking one
+/// silently means half the file is a comment.
+#[test]
+fn the_same_key_twice_in_one_block_is_refused() {
+    let e = refused(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nTargetCompID=BETA\n",
+    );
+    assert_eq!(*e.problem(), Problem::RepeatedKey);
+    assert_eq!(e.line(), 6);
+}
+
+/// **A value too long is refused, not truncated.**
+///
+/// `Config` keeps names in a fixed buffer and records an over-long one as *not
+/// fitting*, which matches nothing — so truncating here would produce an
+/// acceptor that starts cleanly and serves nobody. One byte over the limit is
+/// the case, because a test with a wildly long value would also pass against an
+/// implementation that got the boundary wrong.
+#[test]
+fn a_comp_id_one_byte_over_the_limit_is_refused() {
+    let long = "X".repeat(fixbolt_session::MAX_COMP_ID_LEN + 1);
+    let e = refused(&format!(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n[SESSION]\nTargetCompID={long}\n"
+    ));
+    assert_eq!(*e.problem(), Problem::ValueTooLong);
+
+    let exact = "X".repeat(fixbolt_session::MAX_COMP_ID_LEN);
+    let ok = Settings::parse(&format!(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n[SESSION]\nTargetCompID={exact}\n"
+    ))
+    .expect("exactly the limit fits");
+    assert!(
+        ok.configs()[0].serves(exact.as_bytes(), US),
+        "and the configuration it built really does serve that identity"
+    );
+}
+
+/// A missing required key names itself, so the fix is one line rather than a
+/// hunt.
+#[test]
+fn a_missing_required_key_names_itself() {
+    let e = refused("[DEFAULT]\nBeginString=FIX.4.4\n[SESSION]\nTargetCompID=TW44\n");
+    assert_eq!(*e.problem(), Problem::MissingKey);
+    assert!(
+        e.to_string().contains("SenderCompID"),
+        "it says which one: {e}"
+    );
+}
+
+/// Two blocks naming one identity is a mistake in the file, not a precedence
+/// rule to invent. A table holding both would answer from the first and leave
+/// the second as dead configuration nobody notices.
+#[test]
+fn two_sessions_naming_the_same_identity_are_refused() {
+    let e = refused(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\n\
+         [SESSION]\nTargetCompID=TW44\nHeartBtInt=60\n",
+    );
+    assert_eq!(*e.problem(), Problem::DuplicateSession);
+}
+
+/// A number that is not one is refused where it is written.
+#[test]
+fn a_setting_that_wants_a_number_says_so() {
+    let e = refused(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nHeartBtInt=thirty\n",
+    );
+    assert_eq!(*e.problem(), Problem::NotANumber);
+    assert_eq!(e.line(), 6);
+}
+
+/// An unknown section is refused rather than skipped: `[SESSIONS]` with an `s`
+/// would otherwise take every counterparty in the file with it.
+#[test]
+fn an_unknown_section_is_refused() {
+    let e = refused("[SESSIONS]\nTargetCompID=TW44\n");
+    assert_eq!(*e.problem(), Problem::UnknownSection);
+    assert_eq!(e.line(), 1);
+}
+
+/// **A file edited on Windows parses.** `lines()` keeps the `\r`, and a CompID
+/// carrying one matches nothing — a configuration that looks right in an editor
+/// and serves nobody.
+#[test]
+fn a_file_with_crlf_line_endings_parses() {
+    let text = TWO_COUNTERPARTIES.replace('\n', "\r\n");
+    let s = Settings::parse(&text).expect("CRLF is a text file too");
+    assert_eq!(s.configs().len(), 2);
+    assert!(
+        s.configs()[0].serves(CORPUS_SENDER, US),
+        "and the names carry no carriage return"
+    );
+}
+
+/// `[DEFAULT]` supplies, `[SESSION]` overrides, and the two are distinguishable.
+///
+/// One counterparty takes the default `HeartBtInt` and the other sets its own,
+/// so an implementation that ignored either half fails this.
+#[test]
+fn a_session_overrides_the_default_block() {
+    let s = Settings::parse(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\nHeartBtInt=30\n\
+         [SESSION]\nTargetCompID=TW44\n\
+         [SESSION]\nTargetCompID=BETA\nHeartBtInt=60\n",
+    )
+    .expect("a legal file");
+
+    // Compared as whole `Config`s rather than through a getter: it asserts
+    // every field at once, including the ones this file never mentions.
+    assert_eq!(s.configs().len(), 2);
+    assert_eq!(
+        s.configs()[0],
+        Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER).with_heart_bt_int(30),
+        "TW44 inherits the default block's HeartBtInt"
+    );
+    assert_eq!(
+        s.configs()[1],
+        Config::acceptor(b"FIX.4.4", US, OTHER_SENDER).with_heart_bt_int(60),
+        "BETA overrides it"
+    );
+    assert_ne!(
+        s.configs()[0],
+        s.configs()[1],
+        "and the two are distinguishable, which is what says either assertion \
+         above could have failed"
+    );
+}
+
+/// Comments and blank lines are not settings.
+#[test]
+fn comments_and_blank_lines_are_skipped() {
+    let s = Settings::parse(
+        "# our UAT acceptor\n\n[DEFAULT]\nBeginString=FIX.4.4\n; theirs\n\
+         SenderCompID=ISLD\n\n[SESSION]\nTargetCompID=TW44\n",
+    )
+    .expect("a legal file");
+    assert_eq!(s.configs().len(), 1);
+}
+
+/// A file that cannot be read says so, with the path in the message.
+#[test]
+fn a_missing_file_says_which_one() {
+    let e = Settings::load(tmp("never-written")).expect_err("no such file");
+    assert_eq!(*e.problem(), Problem::Unreadable);
+    assert_eq!(e.line(), 0, "a problem about the file, not about a line");
+    assert!(
+        e.to_string().contains("never-written"),
+        "and it names the path: {e}"
     );
 }
