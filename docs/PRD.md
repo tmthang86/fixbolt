@@ -75,7 +75,10 @@ Phase 1 — a FIX 4.4 engine you can actually deploy          ← all current wo
   tag=value · both sides · 59/59 · repeating groups · full dictionary validation
   ├── codec + dict          ← done 2026-08-28
   ├── conformance runner    ← done 2026-08-28
-  ├── session (Role-parameterised)  ← acceptor done 2026-08-29; initiator steps 3-4 paused
+  ├── session (Role-parameterised)  ← acceptor done 2026-08-29; initiator DONE 2026-09-02:
+  │                            six things an operator can order, and interop-green against
+  │                            libquickfix. ADR-0042. The mirrored corpus stays at 0/50 and
+  │                            is now the secondary gate, ceiling 45
   ├── engine (accept + connect drivers, journal, dispatch, backpressure)  ← done 2026-08-30
   ├── tools/w2w             ← wire-to-wire, on Linux — NEXT, and needs a Linux box
   ├── machine probe + advice ← detect and recommend, never apply (ADR-0025, Proposed)
@@ -95,13 +98,17 @@ Phase 1 — a FIX 4.4 engine you can actually deploy          ← all current wo
   ├── recovery on disk      ← [2026-09-02] FileJournal through serve_with_recovery, and the
   │                            instant a session was last alive (item 32 b, c) ✓ — sharded
   │                            recovery remains (item 32 a, needs Linux)
-  └── library               ← DONE 2026-09-02. crates/library, package `fixbolt`:
+  ├── library               ← DONE 2026-09-02. crates/library, package `fixbolt`:
                                Handler/Incoming/Reply/App over the existing Application
                                seam, a curated re-export facade, and a worked acceptor in
                                examples/ that the end-to-end test drives through a real
                                socket. ADR-0041 publishes what the convenience costs —
                                ~2.1 us a reply against 40 ns for a template built once —
                                and the raw Application seam is untouched
+  └── interop               ← DONE 2026-09-02. tools/interop + scripts/interop.sh + a blocking
+                               CI job: this engine's initiator against a real libquickfix,
+                               7/7. EXIT CRITERION 4. ADR-0042. Its first run found a defect
+                               six green gates could not see
 
 Phase 2 — the encoding axis, and the version axis
   ├── Encoding trait        ← the architectural gate for everything below
@@ -125,24 +132,28 @@ Every one is a command that either passes or fails. A criterion nobody can run i
 | 1 | Session conformance | **59 / 59** — `cargo test -p fixbolt-session --test score`, in-process, no socket. **Met** `[measured 2026-08-29]`, re-run 59 / 59 on a second machine 2026-08-30. Through a real socket, `cargo test -p fixbolt-engine --test wire`: `[measured 2026-08-30]` **59 / 59 on both machines — met.** It read 39 / 59 on Linux until the harness's own client socket was given `TCP_NODELAY` |
 | 2 | Repeating groups | **Met 2026-08-28.** Read and written for all **93** groups `[measured]`; order agreed with QuickFIX's generated C++ on 730/730. **The 59 definitions do not test this** — see §4 |
 | 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion. `[measured 2026-08-28]` **the tables exist**: 912 tags, 93 message types, 12 524 (message, tag) pairs, 23 field types, 1 708 enum values. **Applied by the session as of step 3** — all twelve `373` codes are produced, and a test asserts that rather than inferring it from the file count. `[2026-08-29]` one type rule was wrong and the corpus caught it: `SEQNUM` refused `0`, on a rule this project invented and an invented test that agreed with it |
-| 4 | Both sides | Acceptor 59/59 — **met**. Initiator interop-green against `libquickfix` in CI — **not met, and deferred behind `engine` on 2026-08-30**. `[measured]` the initiator speaks first and can originate; the mirrored corpus scores 0/50 and tops out at 45 for reasons in `STATUS.md` |
+| 4 | Both sides | Acceptor 59/59 — **met**. Initiator interop-green against `libquickfix` in CI — **MET 2026-09-02**, [ADR-0042](decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md). `scripts/interop.sh` builds QuickFIX at the pinned commit, runs it as an acceptor, and drives this engine's initiator through logon → application messages in → an unprompted heartbeat → a `TestRequest` with our own `112=` → a `ResendRequest` answered by replay → a gap this end opens and gap-fills → logout: **7 / 7**, blocking in CI. `[measured 2026-09-02]` **its first run found that the initiator answered a `Logon` with a `Logon`** — green in `--test score` at 59/59, in `--test mirror` at 0/50 as asserted, and in 430 other tests. The mirrored corpus stays open at 0/50 and is now the *secondary* gate; its ceiling of 45 and the five files that put it there are in `STATUS.md` |
 | 5 | Allocations on the hot path | **0**, proven by `benches/alloc.rs`. `[measured 2026-08-30]` **met on every crate that has a hot path**: codec 3 cases, session 13, engine 7, each proven by injection |
 | 6 | Wire-to-wire | p50 / p99 / p99.9 published from `tools/w2w` on Linux with the §9 settings stated. **NOT MET, and the only criterion blocked on hardware.** `[measured 2026-09-02]` the tool was run on a shared 4-vCPU cloud VM (Intel Xeon @ 2.80GHz, Linux 6.18.44): `hft` p50 34 087 ns / p99 98 492 ns, `standard` p50 54 787 ns / p99 131 276 ns, 20 000 samples after 2 000 warmup. **Those are not the figures this row asks for and do not close it** — no isolated cores, no `nohz_full`, no frequency pinning, and `w2w` prints that refusal itself on every run. They are recorded in `STATUS.md`'s *Not proven*, with the machine, so that the next §9 run has something to be compared against and not so that anybody can quote them |
 | 7 | Builds clean | `cargo clippy -D warnings`, `--no-default-features`, no `unwrap`/`expect`/`panic` in a library crate |
 
-**Where the criteria stand on 2026-09-02, after the `library` plan closed.** 1, 2, 3, 5 and 7
-are met. **4 and 6 are not**, and neither is blocked on a decision:
+**Where the criteria stand on 2026-09-02, after the interop gate closed.** 1, 2, 3, **4**, 5
+and 7 are met. **6 is not, and it is the only one left:**
 
-- **4 — the initiator's interop gate** needs a CI job that builds `libquickfix` and drives this
-  engine's initiator into it (ADR-0004). Steps 3–4 of the paused initiator plan.
 - **6 — wire-to-wire** needs `tools/w2w` and **a Linux box matching §9**, which is not the
-  same thing as a Linux box. `[measured 2026-09-02]` the binary now runs in both modes on an
+  same thing as a Linux box. `[measured 2026-09-02]` the binary runs in both modes on an
   ordinary shared VM and prints figures; §9 is what makes a figure publishable, and this row
   stays open until one is. Open item 6.
 
-**`DESIGN.md` §7's build order is complete as of 2026-09-02** — step 8 `library` was the last
-box, and steps 1–7 closed before it. So what remains of phase 1 is **two exit criteria and no
-unbuilt component**: criterion 4 wants a CI job, criterion 6 wants a machine.
+**`DESIGN.md` §7's build order is complete as of 2026-09-02**, and criterion 4 closed the same
+day. So what remains of phase 1 is **one exit criterion, no unbuilt component, and no open
+decision**: criterion 6 wants a machine, and nothing that can be typed here will produce one.
+
+**What criterion 4 did NOT buy**, stated here so it is not read into the tick: the interop gate
+is *one scenario against one counterparty*, not a second conformance corpus. It does not cover
+the engine's polling loop (the tool drives the session directly), reconnect, backoff, or
+session schedules for an initiator — and neither do the `.def` files, which ADR-0004 already
+recorded as debt. `STATUS.md` carries it as an open item rather than as a footnote.
 
 ### Phase 2 — the architectural gate that comes first
 

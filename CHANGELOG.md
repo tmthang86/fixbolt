@@ -17,6 +17,22 @@ below describe what a first release would contain.
 
 ### Added
 
+- **Three things an operator can order a session to say**, on `fixbolt_session::Session<R, N>`,
+  alongside the three that already existed:
+  - `send_heartbeat(emit) -> bool` — `35=0`, carrying no `112=`. Not the heartbeat rule; this
+    is a keepalive through a device that times a connection out faster than the session does.
+  - `send_test_request(id, emit) -> bool` — `35=1` with **the caller's** `112=`. Nothing is
+    remembered: matching the answer is the caller's, because waiting for it would need a clock
+    this layer does not own.
+  - `send_resend_request(from, to, emit) -> bool` — `35=2` with the caller's `7=` and `16=`.
+    `to == 0` is *"and everything after"* and is passed through, not refused.
+
+  All three are silent — `false`, and nothing on the wire — unless the session is logged on.
+  **None of them takes whole message bytes**: the session builds the message from its own
+  `Template` and keeps `8`, `9`, `34`, `49`, `52`, `56` and `10`
+  ([ADR-0042](docs/decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md)).
+  Zero allocations, proven by injection.
+
 - **A new crate, `fixbolt` (`crates/library`) — the application-facing API.**
   `DESIGN.md` §3 L4 and §7 step 8. It adds no capability: every byte still goes through
   `fixbolt-engine` and `fixbolt-session`. What it adds is one crate to depend on and a
@@ -54,6 +70,19 @@ below describe what a first release would contain.
   `SettingsError` already did; this one did not, so `Limits::new(64, 30_000)?` into a
   `Box<dyn Error>` — the first line of the new crate's own worked example — did not compile.
   Additive; no behaviour change.
+
+### Fixed
+
+- **An initiator no longer answers a `Logon` with a `Logon`.** The inbound-Logon handler
+  replied for **both** roles; for an acceptor that is the handshake, for an initiator — which
+  sent the first one — it starts a second handshake on a session that already has one. A real
+  counterparty drops the connection for it without a word, so the whole role was unusable
+  against anything but this repository's own tests.
+  `[measured 2026-09-02]` the defect was green in the 59 / 59 acceptance score (for an
+  *acceptor* the reply is correct), in the mirrored corpus at its asserted 0 / 50, and in 430
+  other tests. It was found on the first run of `scripts/interop.sh` against `libquickfix` —
+  [reference](docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md). The reply is
+  now behind `!R::SPEAKS_FIRST`; acceptor behaviour is unchanged.
 
 ### Changed
 

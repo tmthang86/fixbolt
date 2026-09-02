@@ -188,6 +188,37 @@ clock — writes its reply into a buffer the session lends it, and returns the r
 calls `received_with` with an application that never answers, so a session used as a pure
 protocol machine is unchanged.
 
+**The initiator needs one thing a pure machine cannot give it, and it is not a state.**
+`[measured 2026-08-30]` 46 of the 50 mirrorable acceptance definitions require this end to send
+a message nothing on the wire asks for and no clock produces — 42 of them a `Logout`. Neither a
+`tick` nor an inbound message can produce one. So the layer grew **six functions that take an
+operator's intent**, three of which arrived on 2026-09-02:
+
+```rust
+send_heartbeat(emit)                  // 35=0, carrying no 112=
+send_test_request(id, emit)           // 35=1, the caller's 112=
+send_resend_request(from, to, emit)   // 35=2, the caller's 7= and 16=
+send_sequence_reset(n, emit)          // 35=4 with 123=N, and become n
+begin_logout(text, emit)              // 35=5, then wait for theirs
+send_application(msg, journal, emit)  // anything the session does not own
+```
+
+**None of them takes whole message bytes**, and that boundary is a decision rather than a
+convenience — [ADR-0042](decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md).
+A caller supplies the fields it owns; the session builds the message from its own `Template` and
+keeps `8`, `9`, `34`, `49`, `52`, `56` and `10`. The purity above is untouched: every one is a
+patch through the single code path that writes `34=` and `52=`, and `benches/alloc.rs` reads
+`ordered 0`.
+
+**And the two roles are not symmetric in one place the corpus could never show.**
+`[measured 2026-09-02]` the inbound-`Logon` handler answered with a `Logon` for **both** roles.
+For an acceptor that is the handshake; for an initiator, which sent the first one, it starts a
+second handshake on a session that already has one. The reply is now behind `!R::SPEAKS_FIRST`.
+Nothing in this repository could see it — `tests/score.rs` was 59 / 59 because for an acceptor
+the line is *correct* — and it was found on the first run of `scripts/interop.sh`, by
+`libquickfix` dropping the connection without a word.
+[reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md](reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md).
+
 **A connection and a session became different things.** `[2026-08-31]`
 [ADR-0010](decisions/ADR-0010-a-reconnect-is-not-a-restart.md). `connect` used to reset both
 sequence numbers unconditionally, and that is wrong for a real deployment: FIX 4.4 numbers a
@@ -829,7 +860,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Serialise `ExecutionReport` (template, D9) | **no regression past this machine's baseline** (ADR-0016). `[measured 2026-08-31]` §9 desktop **239.1 ns**, median of 24 qualifying runs. **The 60 ns absolute target is withdrawn** — it was never a measurement of this engine, only of what the fastest commercial engines are reported to reach (§4 D9), and no machine ever came close: 93.8 (M5) · 177.6–199.4 (container) · 239.1 (§9 desktop) | `benches/serialize.rs`, against `benches/baselines.tsv` |
 | `RingDispatch` hop vs `InlineDispatch` | measured and published, whatever it is, per machine (ADR-0016). `[measured 2026-09-01]` §9 desktop: inline **8.5 ns** (median of 22 qualifying runs), ring **267.4 ns** one way and **515.7 ns** round trip (24 runs), on a 163-byte `NewOrderSingle` — **the ring hop is ~31x the inline call**, and ~1.7 ns of every byte of it is the `AtomicU8` copy ([ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md)). **The inline figure was published as 1.3 ns for a day and that number was the optimiser deleting the 163-byte copy** — `out` was written every iteration and read by nobody. 163 bytes in 1.3 ns is 125 GB/s from one core, which is the arithmetic that found it; the earlier reading of 6.3 ns was the honest one all along, and the harness change that "sped it up" had removed the indirect call that was keeping the stores alive. [a-benchmark-can-delete-its-own-work.md](reference/a-benchmark-can-delete-its-own-work.md) | `crates/engine/benches/dispatch.rs`, against `benches/baselines.tsv` |
 | Allocations on the hot path — codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
-| Allocations on the hot path — session | **0**, counted separately on thirteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, clock, text | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session *originates* — a heartbeat nothing asked for, and a reply to a `TestRequest` |
+| Allocations on the hot path — session | **0**, counted separately on **sixteen** paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, ordered, clock, text, schedule-open, schedule-shut | `crates/session/benches/alloc.rs`. The refusal path is counted apart because it is the one a hostile counterparty controls, and it is where a `format!` is easiest to reach for. `beat` and `answer` are the two the session decides on by itself — a heartbeat that came due, and a reply to a `TestRequest`. `ordered` is the three an **operator** orders: `send_heartbeat`, `send_test_request` and `send_resend_request`, all three taking a value from outside the session, which is the shape that tempts a `to_vec()`. `[measured 2026-09-02]` injecting one reads `ordered 10000` |
 | Every `373` code the corpus asks for is actually produced | **12 / 12**, read out of the corpus's own `E` lines | `crates/session/tests/score.rs`. The file count cannot say this: `14a_BadField.def` holds four cases and a session answering all four with the same code still passes the file |
 | The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`, `tests/reject.rs` and `tests/heartbeat.rs`. `[measured]` seven so far. Three from steps 1–3: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged, because `52` is one of the five tags `fields.fmt` matches by shape; a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet. Four from step 4: all three heartbeat thresholds, which the harness's whole-interval ticks cannot see; and that a garbled frame is fatal only when it claims to be a Logon, which the corpus states once from each side in different files. Five from step 5, in `tests/resend.rs`: every file that opens a gap ends before opening a second one, so closing a filled gap, replaying held messages in sequence order, and what happens when there is no room to hold one are all invisible to the score |
 | Session conformance, acceptor | **59 / 59** | `cargo test -p fixbolt-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
@@ -844,7 +875,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | **The serving loop does not require the journal to have a `Default`** | putting the bound back **must not compile** | `crates/engine/tests/on_disk.rs::serving`, which uses a `FileJournal` — a type that has no honest `Default`. `[measured 2026-09-02]` restoring `J::default()` in `pump` gives `error[E0599]`. **No runnable test can hold this claim**: both versions behave identically for every type a test can name |
 | **Counterparties come out of a configuration file** | two named only in a file both log on **through a real socket**; one the file does not name gets nothing; one whose window closed two hours ago is refused while one open now is served | `crates/engine/tests/settings.rs` (30 tests) and `tests/settings_wire.rs` (4, one of them a `#[should_panic]` control proving the harness can tell a **closed** socket from a **hung** one — without it a hung acceptor reads as a refusal, which is the same defect the row below records). Reversals: ignoring an unknown key turns **1** red, accepting a file with no `[SESSION]` turns **2**, letting `[DEFAULT]` win over `[SESSION]` turns **1**, and dropping the parsed schedule turns **5** with the no-hours control green. `[measured 2026-09-02]` a reversal *not* in the plan — keeping only the file's first counterparty — left all three wire tests green, because an unserved identity and a closed window are the same silence; the fix asserts the **registry's** length at the moment it is handed to the acceptor, and two of the three then go red ([two-time-rules-share-one-observable](reference/two-time-rules-share-one-observable.md)) |
 | The conformance runner can tell right from wrong | a fake that replays each file's own expected output scores **59 / 59** | `crates/conformance/tests/fix44.rs`. Without it `0 / 59` would also be what a broken runner reports |
-| Session conformance, initiator | **51 / 51** mirrored definitions, **plus** interop green against `libquickfix` | `conformance` runner + a CI interop job (ADR-0004) |
+| **The initiator, against a real `libquickfix`** | **7 / 7** — logon · application messages in · an unprompted heartbeat · a `TestRequest` with this end's own `112=` · a `ResendRequest` answered by replay at the numbers asked for · a gap this end opens and gap-fills · logout | `scripts/interop.sh` and the blocking `interop` CI job. **Phase 1 exit criterion 4**, [ADR-0042](decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md). Builds QuickFIX from source at the same commit `fetch-quickfix-assets.sh` pins, and refuses to run if the two pins have drifted. **It reads the transcript, not the exit code** — a binary that dies before printing and one that prints seven failures both exit non-zero. `[measured 2026-09-02]` its **first** run found that this engine's initiator answered a `Logon` with a `Logon`, a defect green in `--test score` at 59/59, in `--test mirror` at 0/50 as asserted, and in 430 other tests ([a-role-can-be-wrong-in-a-direction-no-gate-runs](reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md)). Reversal 1 red at 2/7; **reversal 2 was a no-op** until the resend step stopped accepting any `43=Y` and started naming the sequence numbers it wanted back ([a-resend-answer-has-two-legal-shapes](reference/a-resend-answer-has-two-legal-shapes.md)) |
+| Session conformance, initiator, mirrored corpus | **0 / 50** today, ceiling **45** | `cargo test -p fixbolt-session --test mirror`. **The secondary gate, and it cannot check its own reading** — mirroring is this project's interpretation of a suite written for the other direction, and its ceiling moved 51 → 50 → 45 across two readings before a line of it was green. A gate asserting a constant cannot fall, so it reports nothing about the code under it; the row above is what stands in front of that |
 | Repeating groups — read | every group **found**, to the full nesting depth of 4, at all **731** positions the dictionary declares | `crates/codec/tests/groups.rs` — reading is done; writing is not |
 | Repeating groups — written | parse → encode **byte-identical** at all **357** top-level positions, exercising all **59** counters and nesting to depth 4 | `crates/codec/tests/group_roundtrip.rs` |
 | Every tag number matches another implementation | **912 / 912** against QuickFIX's `FixFieldNumbers.h`, **and** 5 168 field names whose tag FIX 4.4 does not define are refused | `crates/dict/tests/interop_quickfix_fields.rs`. The negative half is what stops `is_defined_tag` being `true` for everything |
@@ -860,14 +892,16 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, run in CI on every push |
 | Builds with nothing optional installed | `--no-default-features` on a clean runner (non-negotiable 6) | `.github/workflows/ci.yml`, its own job. **`[measured 2026-08-30]` the workspace-wide command alone is not enough**: `cargo test --all --no-default-features` still built `libc`, because `tools/w2w` depends on `fixbolt-engine` with defaults and cargo unifies features across one invocation — the flag under test was switched back on by a sibling crate. See [reference/feature-flags-unify-across-a-workspace.md](reference/feature-flags-unify-across-a-workspace.md) |
 | An optional dependency is really optional | absent from the crate's graph with no features on, **and** the crate still builds and tests that way | `scripts/check-no-optional-deps.sh`, run by the same CI job, **per crate** — the only scope where `--no-default-features` means what it reads as. Reversal: removing `optional = true` from `libc` turns it red with the graph printed |
-| No documentation link points at a missing file | `[measured 2026-09-01]` **581 internal links** across 173 files resolve | `scripts/check-links.py`, run in CI |
+| No documentation link points at a missing file | `[measured 2026-09-02]` **971 internal links** across 244 files resolve | `scripts/check-links.py`, run in CI |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every
 other row is an internal number; without this one they are unfalsifiable.
 
-**Most of these rows run today.** The ones that do not are named in the table itself — the
-initiator interop job, the wire-to-wire figures, and the TLS-mode gate that does not exist.
+**Most of these rows run today.** `[2026-09-02]` the initiator interop job now does — it is
+blocking in CI and it is the only row in this table whose opinion did not come from this
+repository. The ones that still do not are the wire-to-wire figures, which need a machine
+matching §9, and the TLS-mode gate, which does not exist.
 
 `[2026-09-01]` **and one thing in CI is worth reading as a hazard rather than as a feature.**
 Every crate-dependent job in `.github/workflows/ci.yml` is still guarded by

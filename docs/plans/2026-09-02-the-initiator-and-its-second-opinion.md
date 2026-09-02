@@ -1,6 +1,6 @@
 # Initiator: cái để tự nói, và một ý kiến không phải của mình
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt (nối tiếp phần đã duyệt 2026-08-30)
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** **Bước 1–3 XONG 2026-09-02** · bước 4 chưa làm (mục mở 36)
 > **Phạm vi:** **Tiêu chí thoát số 4 của phase 1** — bước 3 và bước 4 của
 > [session-initiator](2026-08-29-session-initiator.md), đang tạm dừng từ 2026-08-30
 
@@ -196,4 +196,70 @@ phải nói ra cái nào. `[2026-09-02]` và theo luật rút ra hôm nay: **com
 
 ## Nhật ký giao hàng
 
-*(điền khi đóng từng bước)*
+### Bước 1 — ba hàm ý định · **XONG 2026-09-02**, commit `1a86b4d`
+
+`send_heartbeat`, `send_test_request(id)`, `send_resend_request(from, to)` trên
+`Session<R, N>`. Không hàm nào nhận nguyên byte.
+
+Đỏ trước, **tại assertion**, với stub trả `false`: `4 failed; 1 passed`. Cái xanh là test im
+lặng — nó xanh **rỗng** với stub, và đó chính là lý do đảo ngược 1 tồn tại.
+
+Bốn đảo ngược, cả bốn đều phân biệt được:
+
+| Đảo | Kết quả |
+|---|---|
+| Bỏ điều kiện `state != LoggedOn` ở cả ba | test im lặng đỏ, `left: [true, true, true]` |
+| `send_test_request` dùng `OWN_TEST_REQ_ID` | **chỉ** case test-request đỏ |
+| Heartbeat tự phát mang `112=` | **chỉ** case heartbeat đỏ |
+| `to_vec()` trên đường ordered | `benches/alloc.rs`: `ordered 0` → `ordered 10000` |
+
+**Đảo ngược 1 lần đầu tiên tìm ra lỗ trong chính test.** Ba `assert!` liền nhau dừng ở cái đầu,
+nên đảo ngược bỏ cả ba guard **nhìn giống hệt** đảo ngược bỏ một. Test đổi sang gom ba kết quả
+rồi so một lần — đúng hình dạng `a-reversal-that-must-not-compile.md` đã ghi.
+
+### Bước 2 — cổng interop · **XONG 2026-09-02**, commit `571844f` và `cdd6fba`
+
+`tools/interop` (driver Rust + `acceptor.cpp` viết bằng API công khai của libquickfix),
+`scripts/interop.sh`. **7 / 7.**
+
+**Lần chạy đầu tiên, trước khi cổng từng xanh, tìm ra một lỗi thật:** initiator trả lời `Logon`
+bằng một `Logon`. Một dòng dùng chung cho hai vai, đúng cho acceptor, không có điều kiện.
+libquickfix nhận cái Logon thứ hai rồi **cắt kết nối không nói một lời**, và năm trong bảy bước
+đỏ cùng lúc — không bước nào là bước hỏng.
+
+**Sáu cổng đang xanh trên lỗi đó**: `--test score` 59/59, `--test mirror` 0/50 đúng như chốt,
+430 test khác, clippy, fmt, `benches/alloc.rs`. Ghi lại ở
+`docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md`, **`[to testing-skills]`**.
+
+**Đảo ngược 2 là một no-op**, và đó là phát hiện thứ hai. Đổi chỗ `7=` và `16=` — hỏi "3 đến 2"
+— vẫn `PASS 7/7`, vì đối tác không replay được dải ngược nên trả gap fill, mà gap fill cũng mang
+`43=Y`, đúng thứ test đang đọc. Bước resend giờ chốt **số thứ tự** của cái quay về, và cùng đảo
+ngược ấy đọc `FAIL 6/7`. Ghi ở `docs/reference/a-resend-answer-has-two-legal-shapes.md`,
+**`[to testing-skills]`**.
+
+### Bước 3 — job CI · **XONG 2026-09-02**
+
+Job `interop` trên `ubuntu-latest`, **blocking**, in cả hai bản ghi lên trang run.
+
+`[đo 2026-09-02]` **CI xanh trên commit đóng, `cdd6fba`**, runs
+[`33623429649`](https://github.com/tmthang86/fixbolt/actions/runs/33623429649) và
+[`33623385882`](https://github.com/tmthang86/fixbolt/actions/runs/33623385882), **10 / 10 check**.
+Log của job `100225508548` đã **đọc lại**, không đọc dấu tick:
+
+```
+interop: logon ok / news ok / heartbeat ok / testrequest ok
+interop: resend ok  35=B with 43=Y replayed at 34=[2, 3], wanted [2, 3]
+interop: gapfill ok / logout ok
+interop: PASS 7/7
+```
+
+**Tiêu chí thoát số 4 của phase 1: ĐẠT.**
+
+### Bước 4 — cổng soi gương 45 / 50 · **CHƯA LÀM**
+
+Không bị chặn bởi gì cả — API tự phát mà nó thiếu giờ đã có. Còn lại là nửa harness
+(`Input::Originate(Intent)` + bảng đếm lần lái) và một ADR hạ trần 50 → 45 kèm năm tên.
+Chuyển thành **mục mở 36** trong `STATUS.md` thay vì để nằm trong một plan đã đóng ba bước.
+
+**Nói thẳng cái chưa làm:** cổng soi gương vẫn **0 / 50**, và một cổng chốt hằng số thì không
+báo được gì — trong lúc nó nằm ở 0, một initiator trả lời Logon bằng Logon đã đi qua nó.

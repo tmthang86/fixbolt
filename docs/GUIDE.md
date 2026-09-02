@@ -987,6 +987,45 @@ Only three kinds exist today: logon, ended, ended-without-reason. Gap detected, 
 issued and reject sent are **not** here — they are message-rate, and D8 forbids anything
 message-rate on the hot path until the cost has been measured.
 
+## 8b. Speaking first: what an initiator can be told to say
+
+`[2026-09-02]` An acceptor answers. **An initiator has to start things**, and six of the things
+it starts cannot come from the protocol — nothing on the wire asks for a `Logout`, and no timer
+produces one. So they are calls you make:
+
+```rust
+session.send_heartbeat(emit);                    // 35=0, keepalive
+session.send_test_request(b"OPS-7", emit);       // 35=1, your 112=
+session.send_resend_request(4, 9, emit);         // 35=2, your 7= and 16=
+session.send_sequence_reset(4812, emit);         // 35=4, and become 4812
+session.begin_logout(b"end of day", emit);       // 35=5, then wait for theirs
+session.send_application(&msg, &mut journal, emit);
+```
+
+**Four constraints the compiler cannot hold for you:**
+
+1. **They are silent before the Logon is agreed and after the Logout.** Each returns `false`
+   (or `Link::Dropped`) and sends **nothing**. That is deliberate — a message offered to a
+   session that is not up has not done anything wrong — but it means *"I called it"* is not
+   *"it went out"*. **Read the return value.**
+2. **You never write `34=`, `52=`, `49=`, `56=`, `8=`, `9=` or `10=`.** There is no function
+   that takes whole message bytes, on purpose
+   ([ADR-0042](decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md)).
+   If you find yourself wanting one, the thing you want is `send_application`.
+3. **`send_test_request` remembers nothing.** The counterparty answers with a `Heartbeat`
+   echoing your `112=`, and **matching the answer is yours** — a session that waited for it
+   would need a timeout, and a timeout is a clock this layer does not own (D1). Choose a
+   `112=` you can recognise; the session has one of its own for the request it raises after
+   silence, and yours must not collide with it.
+4. **`16=0` means *and everything after*.** It is passed through, not refused. Asking for a
+   range that runs backwards — `from` greater than `to` — is not refused either, and
+   `[measured 2026-09-02]` a real counterparty answers it with a gap fill rather than an
+   error, so a mistake there is **silent on both sides**. Check your own arithmetic.
+
+**Reconnect, backoff and a schedule for an initiator are not here.** They are the engine's, and
+no part of them is covered by the acceptance corpus or by the interop gate. `STATUS.md` carries
+that as an open item.
+
 ### The 3 a.m. phone call
 
 `[2026-09-02]` The counterparty rings and says their next number is 4812. `Engine::admin()`
