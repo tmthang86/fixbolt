@@ -250,3 +250,17 @@ Khẳng định đúng là trên chính vật được trao cho acceptor: độ 
 
 Viết đầy đủ ở [two-time-rules-share-one-observable](../reference/two-time-rules-share-one-observable.md),
 mục thứ tư, gắn `[to testing-skills]`.
+
+### Cùng hình dạng đó, lần thứ hai trong chính plan này, và lần này ở trong bộ đồ nghề
+
+Sau khi vá xong, `reply_to` của harness vẫn gộp **read timeout** vào cùng một chuỗi rỗng với
+**socket đã đóng**. Nghĩa là một acceptor giữ kết nối mở rồi im lặng sẽ đọc ra *"đã từ chối"* —
+đúng cái khiếm khuyết mà bộ test này sinh ra để bắt, nằm ngay trong bộ test.
+
+Timeout bây giờ làm test đỏ và nói rõ. Và có một **positive control** chứng minh nhánh đó chạy
+được thật: một listener chấp nhận kết nối rồi giữ im phải làm `reply_to` panic, khẳng định bằng
+`#[should_panic]`. Không có nó thì nhánh mới là một nhánh không ai với tới, và ba test kia quay
+lại xanh trước một acceptor treo.
+
+Nó cũng biến một *quan sát* thành một *khẳng định*: các lần từ chối trong file này thật sự là
+socket đóng, không phải socket chậm.
