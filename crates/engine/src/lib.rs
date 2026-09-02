@@ -404,6 +404,65 @@ where
         crate::observe::Observer(std::sync::Arc::clone(shared))
     }
 
+    /// A handle that can **change** this engine, as [`Self::observer`] is the
+    /// one that can only look.
+    ///
+    /// Same `Arc`, same mechanism, **a different capability**: hand out
+    /// `Observer` to everything that watches and `Admin` only to what
+    /// administers. `STATUS.md` item 30 (c).
+    ///
+    /// One allocation, here, never on a turn — and none at all if this is
+    /// called after [`Self::observer`], because they share the cell.
+    pub fn admin(&mut self) -> crate::observe::Admin {
+        let shared = self
+            .observe
+            .get_or_insert_with(|| std::sync::Arc::new(crate::observe::Shared::new()));
+        crate::observe::Admin(std::sync::Arc::clone(shared))
+    }
+
+    /// Take whatever an operator queued and apply it, on this thread.
+    ///
+    /// **`try_lock`, never `lock`** — non-negotiable 4. A refused lock takes
+    /// nothing and **loses nothing**: unlike an event, a command that vanished
+    /// is an action that silently did not happen, so the queue is left exactly
+    /// as it was and the next turn tries again.
+    ///
+    /// No allocation: the landing area is a fixed array on the stack, and it is
+    /// only touched on a turn where something was actually queued.
+    /// `benches/alloc.rs` cases `admin-idle` and `admin-busy` are what prove
+    /// it.
+    fn administer(&mut self) {
+        let Some(shared) = self.observe.as_ref() else {
+            return;
+        };
+        let mut taken: [Option<crate::observe::Command>; crate::observe::COMMAND_CAPACITY] =
+            [None; crate::observe::COMMAND_CAPACITY];
+        let n = shared.commands.drain(&mut taken);
+        if n == 0 {
+            return;
+        }
+        let now = self.clock.now_ms();
+        for c in taken.iter().take(n).flatten() {
+            let outcome = match self.conns.iter_mut().find(|x| x.id == c.id()) {
+                Some(conn) => conn.administer(*c),
+                None => crate::observe::Outcome::NoSuchConnection,
+            };
+            // Re-borrowed rather than held across the loop: `administer` takes
+            // `&mut self.conns` and the emit takes `&self.observe`.
+            if let Some(shared) = self.observe.as_ref() {
+                shared.emit(
+                    c.id(),
+                    now,
+                    crate::observe::EventKind::Administered {
+                        change: c.change(),
+                        to: c.to(),
+                        outcome,
+                    },
+                );
+            }
+        }
+    }
+
     /// Describe every connection this engine holds, for [`Self::observer`].
     ///
     /// An associated function taking the slice rather than a method, so the
@@ -469,6 +528,10 @@ where
             let snap = Self::snapshot(&self.conns, self.refused_connections, self.sources_missing);
             shared.publish(&snap);
         }
+        // **Before anything is judged or numbered.** A command applied after
+        // the messages of this turn would be setting a number that has already
+        // gone out — `crates/engine/tests/admin.rs` holds the order.
+        self.administer();
         let mut moved = false;
         let mut i = 0;
         while i < self.conns.len() {

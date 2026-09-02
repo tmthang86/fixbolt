@@ -259,6 +259,10 @@ pub(crate) struct Shared {
     /// an event nobody asked for at the right moment is an event lost, and the
     /// whole point is that they are not.
     pub(crate) events: Events,
+    /// Commands going the other way. Same `Arc`, same fixed shapes, **a
+    /// different capability**: [`Observer`] cannot reach this and [`Admin`]
+    /// can.
+    pub(crate) commands: Commands,
 }
 
 impl Shared {
@@ -268,6 +272,7 @@ impl Shared {
             published: AtomicU64::new(0),
             cell: Mutex::new(Snapshot::default()),
             events: Events::new(),
+            commands: Commands::new(),
         }
     }
 
@@ -459,6 +464,20 @@ pub enum EventKind {
     /// through `Session::end`, which is a gap in this engine rather than a
     /// fault of the counterparty.
     EndedWithoutReason,
+    /// An operator's [`Command`] was applied, or was not.
+    ///
+    /// **The audit trail is the same channel as everything else**, so one
+    /// stream records both what the engine did by itself and what it did
+    /// because somebody asked. An operator reading only their own outcomes
+    /// would not see the disconnect that raced their command.
+    Administered {
+        /// Which number was aimed at.
+        change: Change,
+        /// The number requested.
+        to: u32,
+        /// What became of it.
+        outcome: Outcome,
+    },
 }
 
 /// One event, with enough context to act on it.
@@ -559,5 +578,216 @@ impl Events {
             r.len -= 1;
         }
         n
+    }
+}
+
+// --- administration ------------------------------------------------------
+//
+// The other direction. Everything above carries facts from the engine thread
+// outwards; everything below carries instructions inwards, through the same
+// `Arc` and the same fixed shapes.
+
+/// How many commands may wait for the engine's next turn.
+///
+/// Small on purpose. A command is a human action — somebody on the phone at
+/// 3 a.m. — not a data stream, and a full queue means something is submitting
+/// in a loop rather than that the engine is behind.
+pub const COMMAND_CAPACITY: usize = 32;
+
+/// Which number an [`Command`] moved, for the record it leaves behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Change {
+    /// The number the next outbound message will carry.
+    NextOut,
+    /// The number the session next expects to receive.
+    NextIn,
+    /// A `SequenceReset` was sent and the outbound number followed it.
+    SequenceReset,
+}
+
+/// What became of a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Outcome {
+    /// It was applied to the session named.
+    Applied,
+    /// No connection with that [`ConnId`] is on this engine any more. **The
+    /// ordinary answer for a command that raced a disconnect**, and the reason
+    /// commands report an outcome rather than returning one at submit time.
+    NoSuchConnection,
+    /// The session refused it — `n == 0`, or a `SequenceReset` that could not
+    /// be built.
+    Refused,
+}
+
+/// An instruction for one session, applied on the engine's next turn.
+///
+/// **Sequence-number administration is the whole of it today.** `STATUS.md`
+/// item 30 (c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Command {
+    /// Set the next outbound number. **Says nothing on the wire** — see
+    /// [`fixbolt_session::Session::set_next_out`], which this calls.
+    SetNextOut {
+        /// The connection to administer.
+        id: ConnId,
+        /// The number to set.
+        n: u32,
+    },
+    /// Set the number the session next expects. Local, and not a lie.
+    SetNextIn {
+        /// The connection to administer.
+        id: ConnId,
+        /// The number to set.
+        n: u32,
+    },
+    /// Send `35=4` with `123=N` and `36=n`, then become `n`. **The honest way
+    /// to change an outbound number.**
+    SendSequenceReset {
+        /// The connection to administer.
+        id: ConnId,
+        /// The number the next message will carry.
+        n: u32,
+    },
+}
+
+impl Command {
+    /// Which connection this is aimed at.
+    #[must_use]
+    pub const fn id(&self) -> ConnId {
+        match *self {
+            Self::SetNextOut { id, .. }
+            | Self::SetNextIn { id, .. }
+            | Self::SendSequenceReset { id, .. } => id,
+        }
+    }
+
+    /// Which number it moves, for the event it leaves behind.
+    #[must_use]
+    pub const fn change(&self) -> Change {
+        match *self {
+            Self::SetNextOut { .. } => Change::NextOut,
+            Self::SetNextIn { .. } => Change::NextIn,
+            Self::SendSequenceReset { .. } => Change::SequenceReset,
+        }
+    }
+
+    /// The number requested.
+    #[must_use]
+    pub const fn to(&self) -> u32 {
+        match *self {
+            Self::SetNextOut { n, .. }
+            | Self::SetNextIn { n, .. }
+            | Self::SendSequenceReset { n, .. } => n,
+        }
+    }
+}
+
+/// A fixed queue of commands waiting for the engine's next turn.
+///
+/// # Why this one may not drop and [`Events`] may
+///
+/// An event that is lost is a fact an operator did not learn, and the loss is
+/// counted so they learn *that* instead. **A command that is lost is an action
+/// that silently did not happen**, and there is no counter that makes that
+/// acceptable. So the engine's `try_lock` failing leaves the queue exactly as
+/// it was, for the next turn.
+///
+/// The asymmetry that makes it work: **the submitting thread is allowed to
+/// block and the engine thread is not** (non-negotiable 4). So the operator
+/// takes the lock and the engine tries.
+#[derive(Debug)]
+pub(crate) struct Commands {
+    queue: Mutex<CommandQueue>,
+}
+
+#[derive(Debug)]
+struct CommandQueue {
+    slots: [Option<Command>; COMMAND_CAPACITY],
+    head: usize,
+    len: usize,
+}
+
+impl Commands {
+    pub(crate) const fn new() -> Self {
+        Self {
+            queue: Mutex::new(CommandQueue {
+                slots: [None; COMMAND_CAPACITY],
+                head: 0,
+                len: 0,
+            }),
+        }
+    }
+
+    /// Called from the operator's thread, which may block.
+    ///
+    /// `false` means the queue is full — the operator learns it **now**, at the
+    /// call, rather than by the command quietly never happening.
+    fn submit(&self, c: Command) -> bool {
+        let Ok(mut q) = self.queue.lock() else {
+            return false;
+        };
+        if q.len == COMMAND_CAPACITY {
+            return false;
+        }
+        let at = (q.head + q.len) % COMMAND_CAPACITY;
+        q.slots[at] = Some(c);
+        q.len += 1;
+        true
+    }
+
+    /// Called on the engine thread. `try_lock`, never `lock`.
+    ///
+    /// Fills `out` and returns how many were taken. **A refused lock takes
+    /// nothing and loses nothing**: the queue is untouched and the next turn
+    /// tries again.
+    pub(crate) fn drain(&self, out: &mut [Option<Command>; COMMAND_CAPACITY]) -> usize {
+        let Ok(mut q) = self.queue.try_lock() else {
+            return 0;
+        };
+        let n = q.len;
+        for slot in out.iter_mut().take(n) {
+            let head = q.head;
+            *slot = q.slots[head].take();
+            q.head = (head + 1) % COMMAND_CAPACITY;
+        }
+        q.len = 0;
+        n
+    }
+}
+
+/// The handle that can **change** a running engine, as [`Observer`] is the one
+/// that can only look.
+///
+/// Two handles over one `Arc` and one mechanism. What is separated is the
+/// capability: everything that watches can hold an `Observer`, and only what
+/// administers needs this.
+///
+/// `Send + Sync`. Hold it on whatever thread takes the 3 a.m. phone call.
+#[derive(Debug, Clone)]
+pub struct Admin(pub(crate) std::sync::Arc<Shared>);
+
+impl Admin {
+    /// Queue a command for the engine's next turn.
+    ///
+    /// **`true` means queued, not done.** The engine applies it on its next
+    /// turn and the outcome arrives on the event stream as
+    /// [`EventKind::Administered`] — which is where a command that named a
+    /// connection that no longer exists reports itself, and there is no way to
+    /// know that at submit time.
+    ///
+    /// `false` means the queue is full ([`COMMAND_CAPACITY`]) and **nothing was
+    /// taken**. Unlike a lost event, a lost command is never silent.
+    pub fn submit(&self, c: Command) -> bool {
+        self.0.commands.submit(c)
+    }
+
+    /// The same events [`Observer::events`] gives, so a thread that
+    /// administers can read the outcome of what it did without holding a second
+    /// handle.
+    pub fn events(&self, out: &mut Vec<Event>) -> usize {
+        self.0.events.drain(out)
     }
 }
