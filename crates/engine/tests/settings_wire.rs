@@ -18,7 +18,7 @@
 #![cfg(all(feature = "standard", unix))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -134,14 +134,25 @@ fn serving(name: &str, text: &str, counterparties: usize) -> String {
 }
 
 /// What the acceptor said back, as a readable string. Empty means it said
-/// nothing and closed.
+/// nothing and **closed the socket**.
+///
+/// A read timeout is not folded into that empty string. The acceptor holding a
+/// socket open and saying nothing is a different fault from refusing it, and
+/// this whole change is about two causes that share one silence — collapsing
+/// them here would put the same defect in the harness that the tests exist to
+/// catch.
 fn reply_to(addr: &str, who: &str) -> String {
     let mut c = connect(addr);
     c.write_all(&logon_now(who)).expect("send");
     let mut buf = [0u8; 4096];
     match c.read(&mut buf) {
-        Ok(0) | Err(_) => String::new(),
+        Ok(0) => String::new(),
         Ok(n) => String::from_utf8_lossy(&buf[..n]).replace('\u{1}', "|"),
+        Err(e) if matches!(e.kind(), ErrorKind::ConnectionReset) => String::new(),
+        Err(e) => panic!(
+            "{who}: the acceptor neither answered nor closed the socket within \
+             the read timeout — that is a hung connection, not a refusal: {e}"
+        ),
     }
 }
 
@@ -240,4 +251,26 @@ fn a_window_that_has_already_closed_refuses_the_logon() {
         "its window closed two hours ago and the file is the only place that \
          was ever said"
     );
+}
+
+/// **The harness's own guard, proven able to fire.**
+///
+/// [`reply_to`] treats an empty answer as *"refused"* only when the socket was
+/// closed. A listener that accepts and then says nothing for ever must make it
+/// fail rather than read as a refusal — otherwise a hung acceptor would pass
+/// every test in this file.
+#[test]
+#[should_panic(expected = "neither answered nor closed")]
+fn a_socket_that_is_held_open_and_silent_is_not_read_as_a_refusal() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = listener.local_addr().expect("bound").to_string();
+    std::thread::spawn(move || {
+        // Accept and hold. Dropping the stream would close it, which is the
+        // observable this test exists to distinguish from.
+        let mut held = Vec::new();
+        while let Ok((s, _)) = listener.accept() {
+            held.push(s);
+        }
+    });
+    let _ = reply_to(&addr, "TW44");
 }
