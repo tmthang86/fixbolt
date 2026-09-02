@@ -352,7 +352,9 @@ as the API.
       if cores.iter().any(|taken| t.siblings_of(*taken).contains(c)) { continue; }
       cores.push(*c);
   }
-  ``` `allow_unisolated()` waives
+  ```
+
+  `allow_unisolated()` waives
   **only** that last rule; a development box needs it and CI needs it. `[measured 2026-08-31]`
   the reason `NotOnline` is a rule of its own: on the tuned reference machine
   `/sys/devices/system/cpu/isolated` reads `6-7,14-15` while `online` reads `0-7`, because
