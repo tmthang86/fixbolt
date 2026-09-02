@@ -17,6 +17,20 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`fixbolt_engine::connect_and_serve` — an initiator that comes back.**
+  [ADR-0043](docs/decisions/ADR-0043-backoff-without-jitter-and-a-reconnect-asks-recovery-every-time.md).
+  `connect` opened a socket and nothing decided when to open it again. One session, one
+  socket, `standard` mode.
+  - `reconnect::Policy` — exponential backoff to a ceiling, reset by a `Logon` and not by a
+    socket, an optional `Schedule` that outranks it, and `stop()`. It **answers a question and
+    never sleeps**: `Next::At(instant)`, with the caller's own wait strategy doing the waiting.
+  - `recovery` is asked on **every** attempt, not only the first — a reconnect is not a restart
+    ([ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)). **With `NoRecovery`
+    every reconnect starts at `34=1`**; a deployment that needs continuity passes a `Recovery`
+    backed by a journal on disk. `GUIDE.md` §8c.
+  - No jitter, and no `hft` entry point. Both named in the ADR's consequences.
+  - `TcpInitiatorEngine<A, W, J>`, the dialling counterpart of `TcpAcceptorEngine`.
+
 - **Three things an operator can order a session to say**, on `fixbolt_session::Session<R, N>`,
   alongside the three that already existed:
   - `send_heartbeat(emit) -> bool` — `35=0`, carrying no `112=`. Not the heartbeat rule; this

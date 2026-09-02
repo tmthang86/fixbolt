@@ -1026,6 +1026,46 @@ session.send_application(&msg, &mut journal, emit);
 no part of them is covered by the acceptance corpus or by the interop gate. `STATUS.md` carries
 that as an open item.
 
+## 8c. Dialling out, and coming back
+
+`[2026-09-02]` `connect_and_serve` runs **one initiator session** and does not give up when the
+connection ends:
+
+```rust
+use fixbolt_engine::reconnect::Policy;
+
+let policy = Policy::new(1_000, 30_000)?;   // 1 s, doubling, capped at 30 s
+fixbolt_engine::connect_and_serve::<MyApp, fixbolt_engine::journal::Store, _>(
+    "venue.example:9823",
+    Config::initiator(b"FIX.4.4", b"ME", b"VENUE").with_heart_bt_int(30),
+    MyApp::new(),
+    policy,
+    fixbolt_engine::recovery::NoRecovery,   // ← read the next paragraph before shipping this
+)?;
+```
+
+**Four things it will not do for you**
+([ADR-0043](decisions/ADR-0043-backoff-without-jitter-and-a-reconnect-asks-recovery-every-time.md)):
+
+1. **`NoRecovery` restarts your sequence numbers on every reconnect.** It is correct for an
+   in-memory journal — that journal could not have replayed anything anyway — and it is **wrong
+   for a counterparty that expects continuity**, which is most of them. If a reconnect must
+   carry on from `34=N`, pass a `Recovery` backed by a journal on disk, the same one
+   `serve_with_recovery` takes. This is the single easiest mistake to make here, because
+   "reconnect" sounds like it implies continuity and the type system will not stop you.
+2. **There is no jitter.** If you run many initiators against the same venue they will all come
+   back at the same millisecond, at every rung of the ladder. One session per process is the
+   shape this engine is built for; a fleet needs jitter, and it is not here.
+3. **A schedule does not know when it next opens.** Give the policy `with_schedule(...)` and
+   outside those hours it will not dial — it re-asks once a ceiling. It cannot wake exactly at
+   the open.
+4. **`standard` only.** There is no `connect_and_serve_hft`. An `hft` deployment that dials out
+   drives `Engine` itself, as it did before this existed.
+
+**Set the ceiling deliberately.** Without one, a long outage turns into an hour of silence and
+your first sign of recovery is a phone call. 30 s is a reasonable default; the venue's own
+reconnect guidance beats any default here.
+
 ### The 3 a.m. phone call
 
 `[2026-09-02]` The counterparty rings and says their next number is 4812. `Engine::admin()`
