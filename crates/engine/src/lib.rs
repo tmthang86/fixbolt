@@ -815,6 +815,10 @@ pub fn serve<A: Application>(
 /// # Errors
 ///
 /// As [`serve`].
+/// **`standard` only**, like [`serve`] — it builds the blocking engine, and
+/// `crate::block` does not exist without that feature. Non-negotiable 6: the
+/// `#[cfg]` is on the item, not only in `Cargo.toml`.
+#[cfg(all(feature = "standard", unix))]
 pub fn serve_with_recovery<A: Application, V: crate::recovery::Recovery<crate::journal::Store>>(
     addr: &str,
     table: presession::Table,

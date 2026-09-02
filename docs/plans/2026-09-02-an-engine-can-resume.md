@@ -240,6 +240,16 @@ cặp thực sự phân biệt được hai trạng thái, chứ không phải h
 quyết định kết quả, đúng cái bẫy đã ghi ở
 [two-time-rules-share-one-observable](../reference/two-time-rules-share-one-observable.md).
 
+**CI đỏ ở lần đẩy đầu, và nó bắt đúng thứ máy này không bắt được.**
+`serve_with_recovery` dựng engine chặn, mà `crate::block` không tồn tại nếu không có feature
+`standard` — thiếu `#[cfg]` trên chính hàm đó và trên module test dùng nó. **Bất biến 6, và
+`cargo test --all --no-default-features` ở máy vẫn xanh 321** vì `tools/w2w` phụ thuộc
+`fixbolt-engine` với default và cargo hợp nhất feature trong một lần gọi — đúng cái bẫy
+`docs/reference/feature-flags-unify-across-a-workspace.md` đã ghi, và đúng lý do
+`scripts/check-no-optional-deps.sh` hỏi theo **từng crate**. Chạy script đó tại máy tái hiện
+lỗi ngay; sau khi thêm hai `#[cfg]` thì nó xanh. **Bài học lặp lại: `--no-default-features` trên
+cả workspace không phải là cổng cho bất biến 6; script mới là.**
+
 **Cổng:** `cargo test --all` **321 passed, 0 failed**; `--no-default-features` như vậy; 59/59
 cả hai mode; `alloc` 15 case đều 0; clippy `-D warnings`, `fmt`, links sạch.
 
