@@ -19,6 +19,35 @@ below describe what a first release would contain.
 
 - **`fixbolt-session`** — the FIX session state machine. Pure: no socket, no clock, no
   allocation, no `format!` on any path. Depends on `codec` and `dict`.
+  - **`schedule` — when a session is open, and when both ends start again at `34=1`.**
+    New module, no dependency, no feature flag.
+    [ADR-0033](docs/decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md).
+    - `Schedule` — `always()`, `daily(open_sod, close_sod)`, `weekly(day, sod, day, sod)`,
+      `with_weekdays(Weekdays)`, `with_utc_offset_ms(i64)`; `contains(t)` and
+      `same_session(a, b)`. `Copy`, and **every constructor returns `Option`**: a schedule
+      that cannot be honoured is refused where it is written, not discovered at 3 a.m.
+    - `Weekday` and `Weekdays` — a seven-bit mask, so nothing allocates and `Schedule` stays
+      `Copy`. `ALL`, `WEEKDAYS`, `WEEKEND`, `NONE`, `only`, `and`.
+    - **Times are UTC. There is no timezone database and no daylight saving.** Resolving
+      *"17:00 America/New_York"* is the caller's job, with their own zone library, rebuilding
+      the `Schedule` when the offset changes. `with_utc_offset_ms` is a **fixed** offset and
+      is not DST support — `GUIDE.md` §5a carries the warning.
+    - `open > close` wraps: 22:00–06:00 is **one** session, and every instant in it belongs to
+      the same one.
+    - `Config::with_schedule` / `Config::schedule`. The default is `Schedule::always()` and it
+      is exactly neutral — `[measured 2026-09-02]` 59/59 unmoved, in process, through a real
+      socket, and in `standard` mode.
+    - **`Session::resume_at(cfg, next_out, next_in, last_active_ms)`**, and
+      `Session::last_active_ms()`. `Session::resume` carries the numbers and asserts nothing
+      about the calendar, so it **never** resets on a boundary — ADR-0010 unchanged. A reset
+      cannot be decided from the numbers alone: `next_out = 41` says nothing about whether a
+      boundary has passed since 41 was reached, so the instant is a separate input.
+    - Behaviour: a message arriving while the schedule says shut is **refused in silence**,
+      outranking every identity and sequence check; the window closing on a live session sends
+      a `Logout` **with no `58=`** and gives up the link; a boundary crossed since the session
+      was last active **restarts both counts at the top of the tick**, ahead of the numbering.
+    - `[measured 2026-09-02]` `crates/session/benches/alloc.rs` cases `schedule-open` and
+      `schedule-shut` both read **0**.
   - **`Session::last_skew_ms() -> Option<i64>`** — the engine's clock minus the
     `SendingTime` of the last inbound message whose `52=` could be read, in milliseconds.
     Recorded **whether that message was accepted or refused**, because a `max_skew_ms`

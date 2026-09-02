@@ -18,6 +18,7 @@
 pub mod clock;
 pub mod journal;
 mod out;
+pub mod schedule;
 pub mod text;
 
 use core::marker::PhantomData;
@@ -30,6 +31,7 @@ use fixbolt_dict::{FieldType, Fix44};
 
 use crate::journal::{Journal, NoJournal};
 use crate::out::Outbound;
+use crate::schedule::Schedule;
 use crate::text::SessionText;
 
 /// FIX tags this layer reads by number. Named so a call site never carries a
@@ -261,6 +263,10 @@ pub struct Config {
     /// `108=`, in seconds. An acceptor never reads it — it throws the
     /// counterparty's back. An initiator proposes it.
     heart_bt_int: u32,
+    /// When this session is open, and which instants belong to the same one.
+    /// [`Schedule::always`] unless the caller says otherwise, and that default
+    /// is **exactly neutral** — the 59 acceptance definitions run under it.
+    schedule: Schedule,
 }
 
 impl Config {
@@ -273,6 +279,7 @@ impl Config {
             target_comp_id: Name::new(target_comp_id),
             max_skew_ms: DEFAULT_MAX_SKEW_MS,
             heart_bt_int: DEFAULT_HEART_BT_INT,
+            schedule: Schedule::always(),
         }
     }
 
@@ -291,6 +298,24 @@ impl Config {
     pub const fn with_heart_bt_int(mut self, secs: u32) -> Self {
         self.heart_bt_int = secs;
         self
+    }
+
+    /// When this session is open, and when both ends start again at `34=1`.
+    ///
+    /// Without this a session is open forever and never resets, which is what
+    /// every session built before schedules existed does. See
+    /// [`schedule`](crate::schedule) — in particular that the times are
+    /// **UTC**, and that a fixed offset is not daylight saving.
+    #[must_use]
+    pub const fn with_schedule(mut self, schedule: Schedule) -> Self {
+        self.schedule = schedule;
+        self
+    }
+
+    /// The schedule this session keeps.
+    #[must_use]
+    pub const fn schedule(&self) -> Schedule {
+        self.schedule
     }
 
     /// Override [`DEFAULT_MAX_SKEW_MS`].
@@ -403,6 +428,10 @@ enum Refusal {
     /// `34=` is absent, unreadable, or lower than the one expected. FIX has no
     /// way back from a sequence number that has already been used.
     BadSeqNum,
+    /// A message arrived while the schedule says this session is shut. Like
+    /// every other pre-Logon fault it is answered with silence — there is no
+    /// session to answer with, and `1c`/`1d`/`1e` establish the shape.
+    OutsideSchedule,
     /// A message the session could not put on the wire: the configuration does
     /// not fit its own templates, or the output buffer is too small. A bug, and
     /// the session fails closed rather than sending something malformed.
@@ -440,6 +469,15 @@ pub struct Session<R: Role, const N: usize> {
     /// otherwise, and zero means no heartbeats at all — which is what FIX 4.4
     /// says `108=0` means.
     beat_ms: u64,
+    /// The last instant this session is known to have been active at, if the
+    /// caller supplied one. `None` means *nobody said*, and a session that was
+    /// never told cannot be told a boundary has passed — see
+    /// [`Session::resume_at`].
+    ///
+    /// It is compared, never counted from: [`Schedule::same_session`] answers
+    /// *did a boundary pass between then and now*, which is the only question
+    /// an engine that slept through midnight can still answer.
+    session_mark: Option<u64>,
     /// The engine's clock minus the `SendingTime` of the last message whose
     /// `52=` could be read, in milliseconds. Positive: their stamp is behind
     /// ours.
@@ -509,6 +547,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             test_requests: 0,
             resend_from: 0,
             resend_to: 0,
+            session_mark: None,
             last_skew_ms: None,
             queue: [const {
                 Queued {
@@ -545,6 +584,66 @@ impl<R: Role, const N: usize> Session<R, N> {
         s.next_in = next_in;
         s.resumed = true;
         s
+    }
+
+    /// A session continuing from numbers **and from when they were last
+    /// touched**.
+    ///
+    /// [`Self::resume`] carries the numbers and asserts nothing about the
+    /// calendar, so a session resumed that way never resets on a boundary: it
+    /// was not told when it was last active, and **a reset cannot be decided
+    /// without that**. This is where a caller says.
+    ///
+    /// `last_active_ms` is on the scale [`Self::tick`] uses. On the first tick
+    /// afterwards, if [`Schedule::same_session`] says a boundary has passed,
+    /// both counts restart at 1 — **before** the message that follows is
+    /// numbered, so the first `Logon` of a new trading day really carries
+    /// `34=1`.
+    ///
+    /// Under [`Schedule::always`] this is identical to [`Self::resume`]: one
+    /// session, no boundary, nothing to notice.
+    #[must_use]
+    pub fn resume_at(cfg: Config, next_out: u32, next_in: u32, last_active_ms: u64) -> Self {
+        let mut s = Self::resume(cfg, next_out, next_in);
+        s.session_mark = Some(last_active_ms);
+        s
+    }
+
+    /// The last instant this session was told, or observed, that it was active.
+    ///
+    /// What an engine persists so the session it builds after a restart can be
+    /// given it back through [`Self::resume_at`]. `None` until either a tick
+    /// has landed or the caller supplied one.
+    #[must_use]
+    pub const fn last_active_ms(&self) -> Option<u64> {
+        self.session_mark
+    }
+
+    /// Has a schedule boundary passed since this session was last active? If
+    /// so, restart both counts.
+    ///
+    /// **Called at the top of every tick**, so the reset lands ahead of the
+    /// numbering rather than behind it. Returns nothing: a boundary is not an
+    /// error and there is nobody to tell — the observable effect is that the
+    /// next message out is `34=1`.
+    ///
+    /// Pure, like everything else here. `now_ms` came from a tick.
+    fn roll_if_a_boundary_passed(&mut self, now_ms: u64) {
+        let Some(mark) = self.session_mark else {
+            // Nobody said when this session was last active, so nothing can be
+            // concluded. `resume` deliberately lands here — ADR-0010 says a
+            // reconnect is not a restart, and inventing a boundary would make
+            // it one.
+            self.session_mark = Some(now_ms);
+            return;
+        };
+        if !self.cfg.schedule.same_session(mark, now_ms) {
+            self.next_out = 1;
+            self.next_in = 1;
+            self.resend_from = 0;
+            self.resend_to = 0;
+        }
+        self.session_mark = Some(now_ms);
     }
 
     /// The engine's clock minus the last readable `SendingTime`, in ms.
@@ -648,6 +747,20 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// heartbeat would put two where the file allows one.
     pub fn tick<F: FnMut(&[u8])>(&mut self, now_ms: u64, mut emit: F) -> Link {
         self.now_ms = now_ms;
+        // Before anything else, because a boundary that passed while this end
+        // was asleep must land **ahead** of the numbering, not behind it.
+        // Neutral under `Schedule::always`, which is the default.
+        self.roll_if_a_boundary_passed(now_ms);
+        // The window shut on a live session. A `Logout` with no `58=`: FIX
+        // makes the text optional and QuickFIX sends none here either, and
+        // there is no session-level text for *"we are closed"* that would not
+        // be inventing one. **The counterparty learns nothing about why**, and
+        // that is `STATUS.md` item 30 (d)'s job, not this one's.
+        if self.state == State::LoggedOn && !self.cfg.schedule.contains(now_ms) {
+            let _ = self.send(Which::Logout, &[], &mut emit);
+            self.state = State::AwaitingLogout;
+            return Link::Dropped;
+        }
         match self.state {
             State::Disconnected | State::AwaitingLogout => return Link::Dropped,
             // Before a Logon there is no agreed interval, so there is nothing
@@ -1226,6 +1339,14 @@ impl<R: Role, const N: usize> Session<R, N> {
                 return Ok(self.logout_with(SessionText::IncorrectBeginString, emit));
             }
             return Err(Refusal::WrongBeginString);
+        }
+
+        // Outside its hours an acceptor is not a FIX endpoint at all, so this
+        // outranks every identity and sequence rule below — none of them is
+        // meaningful about a session that is shut. Neutral under
+        // `Schedule::always`, which is what every existing caller has.
+        if !self.cfg.schedule.contains(self.now_ms) {
+            return Err(Refusal::OutsideSchedule);
         }
 
         // "The first message must be a Logon" outranks the identity checks:

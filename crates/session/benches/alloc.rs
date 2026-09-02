@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use fixbolt_conformance::echo::echo;
 use fixbolt_conformance::script::{Kind, scenarios};
 use fixbolt_engine::journal::Store;
+use fixbolt_session::schedule::{Schedule, Weekdays};
 use fixbolt_session::text::SessionText;
 use fixbolt_session::{Acceptor, Application, Config, Initiator, Link, Session, clock};
 
@@ -401,12 +402,86 @@ fn main() {
         }
     });
 
+    // --- the schedule -------------------------------------------------------
+    //
+    // `tick` now consults a `Schedule` on **every** turn, so the arithmetic is
+    // on the path non-negotiable 1 is about. Two cases, because the branches
+    // differ: inside its hours a session ticks on, outside them it sends a
+    // `Logout` and gives up the link, and only the second walks the send path.
+    //
+    // A weekly window with a weekday filter, not the cheapest shape: a `daily`
+    // window with `Weekdays::ALL` skips the day lookup entirely, and a zero
+    // from the case that cannot allocate proves nothing about the one that
+    // might.
+    let filtered = Schedule::daily(8 * 3_600, 17 * 3_600)
+        .expect("legal")
+        .with_weekdays(Weekdays::WEEKDAYS)
+        .expect("Monday to Friday");
+    let day = 86_400_000u64;
+    let open_at = {
+        // The corpus's own instant may fall on a weekend; find an open one.
+        let mut t = now;
+        while !filtered.contains(t) {
+            t += day;
+        }
+        t
+    };
+    let shut_at = open_at + 20 * 3_600_000;
+    assert!(
+        filtered.contains(open_at),
+        "the open case must really be open"
+    );
+    assert!(!filtered.contains(shut_at), "and the shut case really shut");
+
+    let mut open_session: Session<Acceptor, 256> =
+        Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_schedule(filtered));
+    open_session.connect(|_| ());
+    open_session.tick(open_at, |_| ());
+    assert_eq!(
+        open_session.tick(open_at, |_| ()),
+        Link::Up,
+        "an open session ticks on"
+    );
+    let schedule_open_allocs = count(|| {
+        for i in 0..10_000u64 {
+            open_session.tick(open_at + i % 1_000, |_| ());
+        }
+    });
+
+    // The closing turn, built fresh each time because it ends the link.
+    {
+        let mut s: Session<Acceptor, 256> =
+            Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_schedule(filtered));
+        s.connect(|_| ());
+        s.tick(open_at, |_| ());
+        s.received(&logon_reply, |_| ());
+        let mut sent = 0usize;
+        assert_eq!(
+            s.tick(shut_at, |_| sent += 1),
+            Link::Dropped,
+            "the window shut on a live session"
+        );
+        assert_eq!(sent, 1, "and the closing path must really send the Logout");
+    }
+    let schedule_shut_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s: Session<Acceptor, 256> = Session::new(
+                Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_schedule(filtered),
+            );
+            s.connect(|_| ());
+            s.tick(open_at, |_| ());
+            s.received(&logon_reply, |_| ());
+            s.tick(shut_at, |_| ());
+        }
+    });
+
     println!(
         "allocations: accept {accept_allocs} refuse {refuse_allocs} \
          tick {tick_allocs} beat {beat_allocs} answer {answer_allocs} \
          gap {gap_allocs} fill {fill_allocs} deliver {deliver_allocs} \
          resend {resend_allocs} logon_out {logon_out_allocs} \
-         originate {originate_allocs} clock {clock_allocs} text {text_allocs}"
+         originate {originate_allocs} clock {clock_allocs} text {text_allocs} \
+         schedule-open {schedule_open_allocs} schedule-shut {schedule_shut_allocs}"
     );
     // An array, not a tuple: `Debug` and `PartialEq` stop at twelve.
     assert_eq!(
@@ -423,9 +498,11 @@ fn main() {
             logon_out_allocs,
             originate_allocs,
             clock_allocs,
-            text_allocs
+            text_allocs,
+            schedule_open_allocs,
+            schedule_shut_allocs
         ],
-        [0; 13],
+        [0; 15],
         "non-negotiable 1: the session layer allocates nothing, on any path"
     );
 }
