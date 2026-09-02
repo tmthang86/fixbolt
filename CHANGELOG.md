@@ -17,6 +17,36 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`fixbolt_engine::connect_and_serve` — an initiator that comes back.**
+  [ADR-0043](docs/decisions/ADR-0043-backoff-without-jitter-and-a-reconnect-asks-recovery-every-time.md).
+  `connect` opened a socket and nothing decided when to open it again. One session, one
+  socket, `standard` mode.
+  - `reconnect::Policy` — exponential backoff to a ceiling, reset by a `Logon` and not by a
+    socket, an optional `Schedule` that outranks it, and `stop()`. It **answers a question and
+    never sleeps**: `Next::At(instant)`, with the caller's own wait strategy doing the waiting.
+  - `recovery` is asked on **every** attempt, not only the first — a reconnect is not a restart
+    ([ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)). **With `NoRecovery`
+    every reconnect starts at `34=1`**; a deployment that needs continuity passes a `Recovery`
+    backed by a journal on disk. `GUIDE.md` §8c.
+  - No jitter, and no `hft` entry point. Both named in the ADR's consequences.
+  - `TcpInitiatorEngine<A, W, J>`, the dialling counterpart of `TcpAcceptorEngine`.
+
+- **Three things an operator can order a session to say**, on `fixbolt_session::Session<R, N>`,
+  alongside the three that already existed:
+  - `send_heartbeat(emit) -> bool` — `35=0`, carrying no `112=`. Not the heartbeat rule; this
+    is a keepalive through a device that times a connection out faster than the session does.
+  - `send_test_request(id, emit) -> bool` — `35=1` with **the caller's** `112=`. Nothing is
+    remembered: matching the answer is the caller's, because waiting for it would need a clock
+    this layer does not own.
+  - `send_resend_request(from, to, emit) -> bool` — `35=2` with the caller's `7=` and `16=`.
+    `to == 0` is *"and everything after"* and is passed through, not refused.
+
+  All three are silent — `false`, and nothing on the wire — unless the session is logged on.
+  **None of them takes whole message bytes**: the session builds the message from its own
+  `Template` and keeps `8`, `9`, `34`, `49`, `52`, `56` and `10`
+  ([ADR-0042](docs/decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md)).
+  Zero allocations, proven by injection.
+
 - **A new crate, `fixbolt` (`crates/library`) — the application-facing API.**
   `DESIGN.md` §3 L4 and §7 step 8. It adds no capability: every byte still goes through
   `fixbolt-engine` and `fixbolt-session`. What it adds is one crate to depend on and a
@@ -55,7 +85,45 @@ below describe what a first release would contain.
   `Box<dyn Error>` — the first line of the new crate's own worked example — did not compile.
   Additive; no behaviour change.
 
+### Fixed
+
+- **A session that says goodbye first no longer answers the acknowledgement.** A `Logout`
+  exchange is one message each way; this engine sent a third. QuickFIX's `nextLogout` replies
+  only when it did not begin the exchange, and now so does this. Nothing could see it: the 59
+  acceptance definitions never have the acceptor start a logout, `their_answer_ends_the_session`
+  passed an `emit` that counted nothing, and `scripts/interop.sh` stops reading once it has seen
+  the counterparty's `35=5`. The **mirrored** corpus found it. A `Logout` this end did not start
+  is still answered — both halves are in `crates/session/tests/goodbye.rs`.
+- **`Session::begin_logout(b"")` no longer writes an empty `58=`.** No words means no field, not
+  a field with nothing in it. Found the same way, on the same file.
+
+- **An initiator no longer answers a `Logon` with a `Logon`.** The inbound-Logon handler
+  replied for **both** roles; for an acceptor that is the handshake, for an initiator — which
+  sent the first one — it starts a second handshake on a session that already has one. A real
+  counterparty drops the connection for it without a word, so the whole role was unusable
+  against anything but this repository's own tests.
+  `[measured 2026-09-02]` the defect was green in the 59 / 59 acceptance score (for an
+  *acceptor* the reply is correct), in the mirrored corpus at its asserted 0 / 50, and in 430
+  other tests. It was found on the first run of `scripts/interop.sh` against `libquickfix` —
+  [reference](docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md). The reply is
+  now behind `!R::SPEAKS_FIRST`; acceptor behaviour is unchanged.
+
 ### Changed
+
+- **`fixbolt_codec::TemplateBuilder`'s `field`, `slot`, `group` and `build` take `&mut self`.**
+  [ADR-0044](docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md). They took `self`
+  by value, so an `S`-byte struct was copied **once per field** — with `S = 1024` that is
+  kilobytes of memcpy to add a few bytes. `[measured 2026-09-02, on a machine that fails §9]`
+  `library, reply only` **1 549 → 766 ns/op (−51%)**, `library, on_message` **1 594 → 956 ns
+  (−40%)**, with `library, parse only` unmoved at 144 → 146 ns as the control.
+  **Chaining is unchanged where the chain starts from a temporary** — Rust auto-refs it — so
+  `crates/session/src/out.rs` and its ~70 chained calls did not change at all. A call site that
+  binds the chain to a variable now binds first and mutates after.
+- **`fixbolt::Message`'s `field`, `group`, `send` and `send_with_groups` follow**, which keeps
+  the handler shape identical: `reply.message(b"8").field(37, id).send()`.
+  ADR-0041's published ratio moves from ~50× the 40 ns template path to **~24×**; the rest is
+  the `Template` still being materialised per message, and `STATUS.md` item 34 stays open with
+  766 ns as the number to beat.
 
 - **`Engine::run`, `serve`, `serve_hft` and `serve_with_recovery` return instead of never
   returning.** `run()` was `-> !` and the `serve*` family was

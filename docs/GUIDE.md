@@ -473,13 +473,16 @@ list of traps you are now responsible for.
 | | ns/op |
 |---|---|
 | Encode a `Template` you built **once** — [D9](DESIGN.md)'s shape | **40** |
-| `App::on_message`: parse, build a template, encode | **2 062 – 2 131** |
-| …of which the second parse is | 188 – 195 |
+| `App::on_message`: parse, build a template, encode | `[2026-09-02]` **956**, and it was 2 062 – 2 131 until `TemplateBuilder` stopped moving itself once per field ([ADR-0044](decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)) |
+| …of which the second parse is | **146** |
 
-**About 50×.** The parse is the small half; building a `Template` per message is ~91% of it.
+**About 24×, and it was 50× this morning.** The parse is the small half. What is left is that a
+`Template` is **materialised per message** — sorted, and its scratch laid out — where D9's shape
+builds it once; `TemplateBuilder` no longer copies itself once per field, which was the other
+half ([ADR-0044](decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)).
 `crates/library/benches/cost.rs` is the benchmark and
 [ADR-0041](decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md) is
-the decision, including what would remove it.
+the decision that published the original ratio, including what would remove the rest.
 
 **So:**
 
@@ -986,6 +989,85 @@ not.
 Only three kinds exist today: logon, ended, ended-without-reason. Gap detected, resend
 issued and reject sent are **not** here — they are message-rate, and D8 forbids anything
 message-rate on the hot path until the cost has been measured.
+
+## 8b. Speaking first: what an initiator can be told to say
+
+`[2026-09-02]` An acceptor answers. **An initiator has to start things**, and six of the things
+it starts cannot come from the protocol — nothing on the wire asks for a `Logout`, and no timer
+produces one. So they are calls you make:
+
+```rust
+session.send_heartbeat(emit);                    // 35=0, keepalive
+session.send_test_request(b"OPS-7", emit);       // 35=1, your 112=
+session.send_resend_request(4, 9, emit);         // 35=2, your 7= and 16=
+session.send_sequence_reset(4812, emit);         // 35=4, and become 4812
+session.begin_logout(b"end of day", emit);       // 35=5, then wait for theirs
+session.send_application(&msg, &mut journal, emit);
+```
+
+**Four constraints the compiler cannot hold for you:**
+
+1. **They are silent before the Logon is agreed and after the Logout.** Each returns `false`
+   (or `Link::Dropped`) and sends **nothing**. That is deliberate — a message offered to a
+   session that is not up has not done anything wrong — but it means *"I called it"* is not
+   *"it went out"*. **Read the return value.**
+2. **You never write `34=`, `52=`, `49=`, `56=`, `8=`, `9=` or `10=`.** There is no function
+   that takes whole message bytes, on purpose
+   ([ADR-0042](decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md)).
+   If you find yourself wanting one, the thing you want is `send_application`.
+3. **`send_test_request` remembers nothing.** The counterparty answers with a `Heartbeat`
+   echoing your `112=`, and **matching the answer is yours** — a session that waited for it
+   would need a timeout, and a timeout is a clock this layer does not own (D1). Choose a
+   `112=` you can recognise; the session has one of its own for the request it raises after
+   silence, and yours must not collide with it.
+4. **`16=0` means *and everything after*.** It is passed through, not refused. Asking for a
+   range that runs backwards — `from` greater than `to` — is not refused either, and
+   `[measured 2026-09-02]` a real counterparty answers it with a gap fill rather than an
+   error, so a mistake there is **silent on both sides**. Check your own arithmetic.
+
+**Reconnect, backoff and a schedule for an initiator are not here.** They are the engine's, and
+no part of them is covered by the acceptance corpus or by the interop gate. `STATUS.md` carries
+that as an open item.
+
+## 8c. Dialling out, and coming back
+
+`[2026-09-02]` `connect_and_serve` runs **one initiator session** and does not give up when the
+connection ends:
+
+```rust
+use fixbolt_engine::reconnect::Policy;
+
+let policy = Policy::new(1_000, 30_000)?;   // 1 s, doubling, capped at 30 s
+fixbolt_engine::connect_and_serve::<MyApp, fixbolt_engine::journal::Store, _>(
+    "venue.example:9823",
+    Config::initiator(b"FIX.4.4", b"ME", b"VENUE").with_heart_bt_int(30),
+    MyApp::new(),
+    policy,
+    fixbolt_engine::recovery::NoRecovery,   // ← read the next paragraph before shipping this
+)?;
+```
+
+**Four things it will not do for you**
+([ADR-0043](decisions/ADR-0043-backoff-without-jitter-and-a-reconnect-asks-recovery-every-time.md)):
+
+1. **`NoRecovery` restarts your sequence numbers on every reconnect.** It is correct for an
+   in-memory journal — that journal could not have replayed anything anyway — and it is **wrong
+   for a counterparty that expects continuity**, which is most of them. If a reconnect must
+   carry on from `34=N`, pass a `Recovery` backed by a journal on disk, the same one
+   `serve_with_recovery` takes. This is the single easiest mistake to make here, because
+   "reconnect" sounds like it implies continuity and the type system will not stop you.
+2. **There is no jitter.** If you run many initiators against the same venue they will all come
+   back at the same millisecond, at every rung of the ladder. One session per process is the
+   shape this engine is built for; a fleet needs jitter, and it is not here.
+3. **A schedule does not know when it next opens.** Give the policy `with_schedule(...)` and
+   outside those hours it will not dial — it re-asks once a ceiling. It cannot wake exactly at
+   the open.
+4. **`standard` only.** There is no `connect_and_serve_hft`. An `hft` deployment that dials out
+   drives `Engine` itself, as it did before this existed.
+
+**Set the ceiling deliberately.** Without one, a long outage turns into an hour of silence and
+your first sign of recovery is a phone call. 30 s is a reasonable default; the venue's own
+reconnect guidance beats any default here.
 
 ### The 3 a.m. phone call
 

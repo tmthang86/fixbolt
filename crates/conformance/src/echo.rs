@@ -97,8 +97,8 @@ pub fn echo(
     let mut seq_buf = [0u8; 10];
     let seq_bytes = render(seq, &mut seq_buf);
 
-    let mut b = TemplateBuilder::<128, 4096>::new(b"FIX.4.4")
-        .field(35, msg_type)
+    let mut b = TemplateBuilder::<128, 4096>::new(b"FIX.4.4");
+    b.field(35, msg_type)
         .field(34, seq_bytes)
         // Routed back: this side's sender is the other side's target.
         .field(49, target)
@@ -112,7 +112,7 @@ pub fn echo(
         if REGENERATED.contains(&tag) {
             continue;
         }
-        b = b.field(tag, value);
+        b.field(tag, value);
     }
 
     let t = b.build::<Fix44>().map_err(EchoError::Encode)?;

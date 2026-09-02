@@ -43,11 +43,19 @@ its session count.**
 > `library` exists**: `crates/library`, package `fixbolt`, with a worked acceptor in
 > `examples/` that the end-to-end test drives through a real socket. It is a **convenience
 > layer and not the `hft` path** — `[measured 2026-09-02, on a machine that fails §9]` a reply
-> through it costs ~2.1 µs against 40 ns for a template built once, and
+> through it costs **~956 ns** against 40 ns for a template built once — it was ~2.1 µs until
+> [ADR-0044](docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md) stopped
+> `TemplateBuilder` copying itself once per field — and
 > [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)
 > is that number, why it is accepted, and what would remove it. The raw
 > `fixbolt_session::Application` seam is untouched and stays the way to write a handler that
-> cares.
+> cares. `[2026-09-02]` **the initiator is interop-green against a real `libquickfix`** — seven
+> steps over a kernel socket, blocking in CI, which closes **phase 1 exit criterion 4**
+> ([ADR-0042](docs/decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md)).
+> Its first run found that the initiator answered a `Logon` with a `Logon`, a defect green in
+> the 59 / 59 acceptance score and in 430 other tests. **One exit criterion is left**, and it
+> is criterion 6 — wire-to-wire on a machine matching `DESIGN.md` §9, which is hardware and not
+> code.
 > **[docs/GUIDE.md](docs/GUIDE.md)** is for embedding the engine — the constraints that
 > show up as latency or lost messages rather than as compile errors.
 > **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;
@@ -115,6 +123,9 @@ crates/
 tools/
   w2w/           wire-to-wire harness — NIC to NIC, and the binary the mode checks trace
   jrnl/          reads a journal file from outside the process that wrote it
+  interop/       drives this engine's initiator into a real libquickfix acceptor —
+                 phase 1 exit criterion 4. Rust; the C++ counterparty is built by
+                 scripts/interop.sh and by CI, never by cargo
 benches/         baselines.tsv — one recorded timing baseline per (CPU model, case);
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets — nightly, outside the workspace

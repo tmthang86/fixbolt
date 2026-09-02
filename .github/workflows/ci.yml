@@ -232,6 +232,69 @@ jobs:
       # See docs/reference/feature-flags-unify-across-a-workspace.md.
       - run: scripts/check-no-optional-deps.sh
 
+  # PHASE 1 EXIT CRITERION 4, and the only gate in this file with an opinion
+  # that did not come from this repository.
+  #
+  # ADR-0004 decision 5 asked for it before any of the mirroring existed, and
+  # named the reason: the mirrored corpus is this project's own reading of a
+  # suite written for the other direction, so a wrong reading stays green in it.
+  #
+  # `[measured 2026-09-02]` on its FIRST run, before it had ever been green,
+  # it found that this engine's initiator answered a Logon with a Logon —
+  # a defect that made the whole role unusable, and that was green in
+  # `--test score` (59/59), in `--test mirror` (0/50, as asserted), in 430 other
+  # tests, in clippy, in fmt and in benches/alloc.rs. Six green gates.
+  # docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md.
+  #
+  # This job is the only place C++ enters CI. ADR-0004 decision 7 and
+  # CLAUDE.md §2 rule 6 both put the bound in the same place: libquickfix lives
+  # in CI and in scripts/, never in a Cargo.toml and never on a user's machine.
+  # `tools/interop` is ordinary Rust; the no-default-features job runs on its own
+  # runner with nothing optional installed and is unaffected by this one.
+  #
+  # It is BLOCKING. A criterion nobody can fail is not a criterion — PRD.md §2.
+  interop:
+    name: The initiator, against a real libquickfix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: ws
+        run: |
+          n=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -eq 0 ]; then
+            echo "::error title=Nothing to check::cargo metadata reports 0 workspace members — a broken checkout or manifest. STATUS.md open item 26."
+            exit 1
+          fi
+      - run: cmake --version && g++ --version
+      - run: scripts/fetch-quickfix-assets.sh
+      - name: Build libquickfix, run both ends, read the output
+        run: |
+          set -o pipefail
+          scripts/interop.sh 2>&1 | tee "$RUNNER_TEMP/interop.log"
+
+      # The transcript on the run page, not only in a log somebody has to open.
+      # A failure here is five steps failing at once with the cause upstream of
+      # all of them — which is exactly what happened the first time — so what is
+      # worth reading is BOTH ends, side by side. always(), because a red run is
+      # when that matters.
+      - if: always()
+        name: Publish both transcripts on the run page
+        run: |
+          {
+            echo '## Interop against libquickfix'
+            echo
+            echo '### This engine'\''s initiator'
+            echo '```'
+            cat "$RUNNER_TEMP/interop.log" 2>/dev/null || echo '(no output)'
+            echo '```'
+            echo
+            echo '### What the counterparty saw'
+            echo '```'
+            cat vendor/interop-run/acceptor.log 2>/dev/null || echo '(no output)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # STATUS.md open item 20. Eight bench targets asserted ceilings and counts —
   # and a ninth that Cargo had auto-discovered from benches/harness.rs, which
   # contains no case and reported "0 measured", exit 0. NOTHING RAN ANY OF THEM: `cargo test --all` does not run a `harness = false` bench

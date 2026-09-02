@@ -98,6 +98,10 @@ impl SessionUnderTest for Adapter {
                 Input::Disconnect => s.disconnect(emit),
                 Input::Tick(ms) => s.tick(ms, emit),
                 Input::Bytes(_) => unreachable!("handled below"),
+                // The acceptor corpus is never driven — see `tests/mirror.rs`
+                // for the direction that is, and why the runner refuses to do
+                // it here.
+                Input::Originate(i) => panic!("the acceptor corpus must not be driven: {i:?}"),
             });
         };
 

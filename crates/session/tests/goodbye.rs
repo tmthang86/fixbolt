@@ -137,6 +137,99 @@ fn their_answer_ends_the_session() {
     assert_eq!(s.last_drop_reason(), Some(DropReason::PeerLogout));
 }
 
+/// **The answer to our goodbye is not answered again.**
+///
+/// A `Logout` exchange is one message each way: we say it, they say it back,
+/// the link goes down. A third one is wrong on the wire and QuickFIX does not
+/// send it — `nextLogout` replies only when *it* did not start the exchange.
+///
+/// `[measured 2026-09-02]` **this engine sent the third one**, and nothing
+/// could see it: the acceptor corpus never has the acceptor start a logout, so
+/// every `35=5` in those 59 files is a reply that *should* be sent;
+/// `their_answer_ends_the_session` above passes an `emit` of `|_| {}` and so
+/// counts nothing; and `scripts/interop.sh` stops reading once it has seen the
+/// counterparty's `35=5`, so the extra message left after it. It was found by
+/// the mirrored corpus, on `10_MsgSeqNumEqual.def`, as *"unexpected output"*.
+///
+/// **Same family as the `Logon` echo** — an asymmetry the acceptor corpus
+/// cannot show, because an acceptor is always the responder.
+#[test]
+fn the_answer_to_our_own_goodbye_is_not_answered_again() {
+    let (mut s, _) = logged_on();
+    let mut out: Vec<String> = Vec::new();
+
+    assert_eq!(
+        s.begin_logout(b"bye", |b| out
+            .push(String::from_utf8_lossy(b).replace('\u{1}', "|"))),
+        Link::Up
+    );
+    assert_eq!(out.len(), 1, "the premise: our goodbye went out");
+    assert!(out[0].contains("|35=5|"), "and it is a Logout: {out:?}");
+
+    assert_eq!(
+        s.received(&their_logout(2), |b| out
+            .push(String::from_utf8_lossy(b).replace('\u{1}', "|"))),
+        Link::Dropped
+    );
+
+    assert_eq!(
+        out.len(),
+        1,
+        "their answer is the end of the exchange, not a message to answer: {out:?}"
+    );
+    assert_eq!(s.last_drop_reason(), Some(DropReason::PeerLogout));
+}
+
+/// A `Logout` **we did not start** is still answered, which is the other half.
+///
+/// Without this the fix above could be "never reply to a Logout", and the 59
+/// acceptance definitions would catch that — but only because they happen to
+/// contain the case. Asserting it here means the pair is stated rather than
+/// inherited.
+#[test]
+fn a_goodbye_we_did_not_start_is_still_answered() {
+    let (mut s, _) = logged_on();
+    let mut out: Vec<String> = Vec::new();
+
+    assert_eq!(
+        s.received(&their_logout(2), |b| out
+            .push(String::from_utf8_lossy(b).replace('\u{1}', "|"))),
+        Link::Dropped
+    );
+
+    assert_eq!(
+        out.len(),
+        1,
+        "they said goodbye first, so we answer: {out:?}"
+    );
+    assert!(out[0].contains("|35=5|"), "{out:?}");
+}
+
+/// **A goodbye with no words carries no `58=`.**
+///
+/// `[measured 2026-09-02]` `begin_logout(b"")` wrote an empty `58=`, which is a
+/// field on the wire that says nothing and a field count the corpus does not
+/// expect. Found the same way: `10_MsgSeqNumEqual.def` line 13 wanted 8 fields
+/// and got 9.
+#[test]
+fn a_goodbye_with_no_text_carries_no_text_field() {
+    let (mut s, _) = logged_on();
+    let mut out: Vec<String> = Vec::new();
+
+    assert_eq!(
+        s.begin_logout(b"", |b| out
+            .push(String::from_utf8_lossy(b).replace('\u{1}', "|"))),
+        Link::Up
+    );
+
+    assert_eq!(out.len(), 1);
+    assert!(out[0].contains("|35=5|"), "{out:?}");
+    assert!(
+        !out[0].contains("|58="),
+        "no words means no field, not an empty one: {out:?}"
+    );
+}
+
 /// **A silent counterparty does not keep the link up for ever by itself** — the
 /// heartbeat still runs while we wait, so even without a caller's deadline the
 /// session is not immortal.

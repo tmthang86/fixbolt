@@ -32,6 +32,7 @@ use fixbolt_engine::ring;
 use fixbolt_engine::transport::{Interest, Io, Loopback, TcpTransport, Transport};
 use fixbolt_engine::wait::Yield;
 use fixbolt_engine::{Application, Config, Engine};
+use fixbolt_session::schedule::Schedule;
 
 /// The counterparty the acceptance corpus logs on as. The registry the sweep
 /// runs in front of serves exactly it — ADR-0026.
@@ -920,6 +921,37 @@ fn main() {
         "and the goodbye reached the wire"
     );
 
+    // The reconnect policy, on the path a disconnected initiator walks every
+    // turn: ask what to do, and record an ending when one happens. All `u64`
+    // arithmetic and a `Schedule` that is `Copy`, so a zero here is a claim
+    // about the schedule lookup as much as about the ladder.
+    {
+        let hours = Schedule::daily(8 * 3_600, 17 * 3_600).expect("legal hours");
+        let mut p = fixbolt_engine::reconnect::Policy::new(1_000, 30_000)
+            .expect("a legal pair")
+            .with_schedule(hours);
+        p.dropped(0);
+        assert!(
+            matches!(p.next(0), fixbolt_engine::reconnect::Next::At(_)),
+            "the waiting path must actually wait, or the count below is of nothing"
+        );
+    }
+    let reconnect_allocs = count(|| {
+        let hours = Schedule::daily(8 * 3_600, 17 * 3_600).expect("legal hours");
+        let mut p = fixbolt_engine::reconnect::Policy::new(1_000, 30_000)
+            .expect("a legal pair")
+            .with_schedule(hours);
+        for i in 0..10_000u64 {
+            let _ = p.next(i);
+            if i % 100 == 0 {
+                p.dropped(i);
+            }
+            if i % 500 == 0 {
+                p.logged_on();
+            }
+        }
+    });
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
@@ -929,7 +961,7 @@ fn main() {
          observe-idle {observe_idle_allocs} observe-asked {observe_asked_allocs} \
          events-idle {events_idle_allocs} events-busy {events_busy_allocs} \
          admin-idle {admin_idle_allocs} admin-busy {admin_busy_allocs} \
-         shutdown {shutdown_allocs}"
+         shutdown {shutdown_allocs} reconnect {reconnect_allocs}"
     );
     assert_eq!(
         [
@@ -952,9 +984,10 @@ fn main() {
             events_busy_allocs,
             admin_idle_allocs,
             admin_busy_allocs,
-            shutdown_allocs
+            shutdown_allocs,
+            reconnect_allocs
         ],
-        [0; 20],
+        [0; 21],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

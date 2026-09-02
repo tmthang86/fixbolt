@@ -50,6 +50,97 @@ pub enum Input<'a> {
     Bytes(&'a [u8]),
     /// Milliseconds since an arbitrary epoch. The only way time enters.
     Tick(u64),
+    /// **The operator speaks.** Only ever fed to a mirrored scenario, and only
+    /// when ticking has already produced nothing — see [`Intent`].
+    Originate(Intent<'a>),
+}
+
+/// A message the harness orders this end to send, and **only the fields whose
+/// value an operator would choose**.
+///
+/// # Why this exists
+///
+/// `[measured 2026-08-30]` 46 of the 50 mirrorable definitions need this end to
+/// send a message nothing on the wire asks for and no clock produces — 42 of
+/// them a `Logout`. A pure state machine cannot invent one, so somebody has to
+/// play the operator, and in the mirrored corpus that somebody is the harness.
+///
+/// # Why it is not the expected message
+///
+/// **`8`, `9`, `34`, `49`, `52`, `56` and `10` never travel through here.** If
+/// they did, this gate would hand the session the very bytes it is about to
+/// compare against, and would then be measuring the file against itself. What
+/// crosses this boundary is the part a `.def` file records that an operator
+/// really would have chosen: a `TestReqID`, a resend range, a new sequence
+/// number, some `Text`, an application message's body.
+///
+/// [`Intent::Application`] is the widest and is still not a back door: it is
+/// exactly what `fixbolt_session::Session::send_application` takes from a real
+/// application, and the session rewrites the header and reorders the body
+/// through `Fix44` regardless of what arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intent<'a> {
+    /// `35=0`, unprompted.
+    Heartbeat,
+    /// `35=1` with this `112=`.
+    TestRequest(&'a [u8]),
+    /// `35=2` for this range. `0` as the end means *and everything after*.
+    ResendRequest(u32, u32),
+    /// `35=4` with this `36=`, and `123=` as given.
+    SequenceReset {
+        /// `36=`.
+        new_seq: u32,
+        /// `123=Y` rather than `123=N`.
+        gap_fill: bool,
+    },
+    /// `35=5` with this `58=`.
+    Logout(&'a [u8]),
+    /// Anything the session does not own, as whole message bytes.
+    Application(&'a [u8]),
+}
+
+impl Intent<'_> {
+    /// The `MsgType` this intent produces, for the harness's own bookkeeping.
+    #[must_use]
+    pub const fn msg_type(&self) -> &'static str {
+        match self {
+            Self::Heartbeat => "0",
+            Self::TestRequest(_) => "1",
+            Self::ResendRequest(..) => "2",
+            Self::SequenceReset { .. } => "4",
+            Self::Logout(_) => "5",
+            Self::Application(_) => "app",
+        }
+    }
+}
+
+/// Read an [`Intent`] out of a message the file says this end should send.
+///
+/// Returns `None` for a `35=A` — a Logon is the one originated message the
+/// session produces by itself, from `connect` plus a tick, and handing it one
+/// would take the handshake away from the code under test.
+#[must_use]
+pub fn intent_of(wire: &[u8]) -> Option<Intent<'_>> {
+    match field(wire, 35)? {
+        b"A" => None,
+        b"0" => Some(Intent::Heartbeat),
+        b"1" => Some(Intent::TestRequest(field(wire, 112).unwrap_or(b""))),
+        b"2" => Some(Intent::ResendRequest(
+            as_u32(field(wire, 7)?)?,
+            as_u32(field(wire, 16)?)?,
+        )),
+        b"4" => Some(Intent::SequenceReset {
+            new_seq: as_u32(field(wire, 36)?)?,
+            gap_fill: field(wire, 123) == Some(b"Y"),
+        }),
+        b"5" => Some(Intent::Logout(field(wire, 58).unwrap_or(b""))),
+        b"3" => None,
+        _ => Some(Intent::Application(wire)),
+    }
+}
+
+fn as_u32(v: &[u8]) -> Option<u32> {
+    core::str::from_utf8(v).ok()?.parse().ok()
 }
 
 /// Whether the connection survived the input.
@@ -123,6 +214,12 @@ pub struct Report {
     /// Files with no failures, in corpus order.
     pub passed_files: Vec<String>,
     pub failures: Vec<Failure>,
+    /// **Every time the harness played the operator**, by `MsgType`, sorted.
+    ///
+    /// Mirrored runs only, and it is here so that *how much the harness drove*
+    /// is a number a test asserts rather than a thing nobody counted. A gate
+    /// whose score can be raised by driving more is not measuring the session.
+    pub driven: Vec<(String, usize)>,
 }
 
 impl Report {
@@ -141,6 +238,13 @@ impl fmt::Display for Report {
         }
         if self.failures.len() > 20 {
             writeln!(f, "  … and {} more", self.failures.len() - 20)?;
+        }
+        if !self.driven.is_empty() {
+            write!(f, "  harness originated:")?;
+            for (t, n) in &self.driven {
+                write!(f, " {t}×{n}")?;
+            }
+            writeln!(f)?;
         }
         Ok(())
     }
@@ -168,15 +272,24 @@ pub fn run_mirrored<S: SessionUnderTest>(
         scenarios: all.len(),
         ..Report::default()
     };
+    let mut driven: Vec<(String, usize)> = Vec::new();
     for s in &all {
         let mut session = make(s);
-        let failures = run_scenario(s, &mut session);
+        let (failures, drove) = run_scenario_counting(s, &mut session);
         if failures.is_empty() {
             report.passed += 1;
             report.passed_files.push(s.file.clone());
         }
         report.failures.extend(failures);
+        for (t, n) in drove {
+            match driven.iter_mut().find(|(k, _)| k == t) {
+                Some((_, total)) => *total += n,
+                None => driven.push((t.to_owned(), n)),
+            }
+        }
     }
+    driven.sort();
+    report.driven = driven;
     Ok(report)
 }
 
@@ -213,6 +326,20 @@ const WAITS: usize = 3;
 
 /// Drive one file. Returns every failure in it, in line order.
 pub fn run_scenario<S: SessionUnderTest>(s: &Scenario, session: &mut S) -> Vec<Failure> {
+    run_scenario_counting(s, session).0
+}
+
+/// As [`run_scenario`], and also **how many times the harness had to play the
+/// operator**, by `MsgType`.
+///
+/// Non-mirrored runs never drive and the second half is always empty. In a
+/// mirrored run it is the honest half of the score: a file can be turned green
+/// by driving more, so the count is reported next to the number it produced.
+pub fn run_scenario_counting<S: SessionUnderTest>(
+    s: &Scenario,
+    session: &mut S,
+) -> (Vec<Failure>, Vec<(&'static str, usize)>) {
+    let mut driven: Vec<(&'static str, usize)> = Vec::new();
     let mut failures = Vec::new();
     // Outbound messages the session has produced and no `E` line has claimed.
     let mut pending: Vec<Vec<u8>> = Vec::new();
@@ -254,6 +381,56 @@ pub fn run_scenario<S: SessionUnderTest>(s: &Scenario, session: &mut S) -> Vec<F
                 // line. They are the engine speaking on its own — a heartbeat
                 // that came due, a test request after silence — so the only
                 // thing that can produce them is time passing.
+                // **Mirrored: the harness speaks before the clock does, and
+                // the reason is measurable rather than aesthetic.**
+                //
+                // The obvious order — tick up to `WAITS` times, then drive if
+                // still silent — was written first and **scored 0 / 50**.
+                // `[measured 2026-09-02]` each wait advances the clock a whole
+                // `HeartBtInt`, three of them is 2.4 intervals, and 2.4 is
+                // exactly the threshold at which a session gives up a link that
+                // has gone quiet. The harness was timing out the session it was
+                // waiting for, on every line, before it ever got to ask.
+                //
+                // So a line the operator owns is driven **first**, and only a
+                // line the harness has no intent for — a `Logon`, which
+                // `intent_of` deliberately declines — falls through to the
+                // clock. **The cost of that is stated rather than hidden**: an
+                // initiator's own timer-driven heartbeat is not exercised here,
+                // because the harness supplies one before the clock could. It
+                // is covered by `crates/session/tests/heartbeat.rs`, in-process
+                // and with an injected clock, which is where a timing rule
+                // belongs.
+                //
+                // Acceptor runs never take this branch. Every `E` line there is
+                // an answer, and a harness able to originate would be able to
+                // make a broken session look correct.
+                //
+                // `pending.is_empty()` is not decoration either: `[measured
+                // 2026-09-02]` without it the harness drove **179** times
+                // instead of 141, 38 of them while the session had already
+                // answered — an extra message on the wire that no line asked
+                // for. The score was the same either way, which is what makes
+                // the drive count worth asserting: two harnesses can reach
+                // `2 / 50` and one of them is talking over the session.
+                if s.mirrored
+                    && pending.is_empty()
+                    && !dropped.contains(&conn)
+                    && let Some(intent) = intent_of(&m.wire)
+                {
+                    let t = intent.msg_type();
+                    match driven.iter_mut().find(|(k, _)| *k == t) {
+                        Some((_, n)) => *n += 1,
+                        None => driven.push((t, 1)),
+                    }
+                    feed(
+                        session,
+                        conn,
+                        Input::Originate(intent),
+                        &mut pending,
+                        &mut dropped,
+                    );
+                }
                 for _ in 0..WAITS {
                     if !pending.is_empty() {
                         break;
@@ -297,7 +474,7 @@ pub fn run_scenario<S: SessionUnderTest>(s: &Scenario, session: &mut S) -> Vec<F
             reason: Reason::Unexpected(extra),
         });
     }
-    failures
+    (failures, driven)
 }
 
 fn feed<S: SessionUnderTest>(

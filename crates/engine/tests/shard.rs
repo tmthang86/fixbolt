@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use fixbolt_engine::affinity::{AffinityError, CoreId, ShardPlan, Topology};
-use fixbolt_engine::presession::{Identity, Limits, One, Pending, PendingSet};
+use fixbolt_engine::presession::{Identity, Limits, Pending, PendingSet, Progress, Table};
 use fixbolt_engine::shard::{Route, ShardError, Shardable, Shards};
 use fixbolt_engine::transport::TcpTransport;
 use fixbolt_session::Config;
@@ -72,7 +72,34 @@ fn hosting_for(shards: usize) -> Hosting {
 }
 
 /// The plan for `shards` shards, or `None` with the refusal already asserted.
+/// A plan this machine will accept, or `None` — **and it says so out loud.**
+///
+/// `[measured 2026-09-02]` the caller of `None` is a `return`, and a `#[test]`
+/// that returns early reports `ok`. That is how
+/// `the_same_identity_always_lands_on_the_same_shard` stayed green for a day and
+/// a half while it was broken: **every machine that ran it skipped it.** GitHub's
+/// runner has too few physical cores, and the reference desktop last ran the
+/// whole suite before the change that broke it landed.
+///
+/// The `NoRoom` arm was already honest about *why* it refuses — it asserts the
+/// runtime really does refuse the plan, so the skip is not a guess. What it did
+/// not do is tell anybody reading `cargo test` output that a test had not run.
+/// Now it does, on stderr, naming what did not happen. Rust has no "skipped"
+/// verdict, so a line is what there is; any failing run, or `--nocapture`,
+/// shows it.
 fn plan_for(shards: usize) -> Option<ShardPlan> {
+    let plan = plan_or_none(shards);
+    if plan.is_none() {
+        eprintln!(
+            "SKIPPED: this machine cannot host {shards} shards (fewer than {shards} \
+             physical cores), so the test asking for them DID NOT RUN. A green from \
+             this file is a green about the tests that could."
+        );
+    }
+    plan
+}
+
+fn plan_or_none(shards: usize) -> Option<ShardPlan> {
     match hosting_for(shards) {
         Hosting::Room(plan) => Some(plan),
         Hosting::NoRoom { plan, wanted } => {
@@ -116,9 +143,20 @@ impl Shardable for Counter {
         assert!(!prefix.is_empty(), "a routed connection carries its Logon");
         // The registry chose it before the connection was handed over — a shard
         // never guesses whose socket it has (ADR-0030).
+        //
+        // **Against the identity on this connection's own wire, not against a
+        // constant.** `[measured 2026-09-02]` this read `cfg.serves(b"TW44", …)`,
+        // which is true of the only configuration a one-counterparty registry
+        // can hand out — so it held for every connection whether or not the
+        // config had travelled with it, and it went red the moment a second
+        // identity became reachable. Reading `49=` back out of the prefix is
+        // what makes it a claim about *this* connection.
+        let sender = field(prefix, b"49=").expect("a Logon carries a SenderCompID");
         assert!(
-            cfg.serves(b"TW44", b"ISLD"),
-            "the configuration travels with the connection"
+            cfg.serves(sender, b"ISLD"),
+            "the configuration travels with the connection: {} got a config that \
+             does not serve it",
+            String::from_utf8_lossy(sender)
         );
         self.held.push(transport);
         self.added.fetch_add(1, Ordering::Release);
@@ -147,6 +185,23 @@ const PRE: usize = 4096;
 /// refactor. See
 /// [`the_route_is_written_down_and_not_merely_deterministic_today`].
 const PINNED: [usize; 4] = [1, 0, 3, 1];
+
+/// One field's value out of a wire message, by its `tag=` prefix.
+///
+/// Small and local on purpose: this file is about the shard runtime, and a
+/// dependency on the codec here would mean a routing failure could arrive
+/// looking like a parsing failure.
+fn field<'a>(wire: &'a [u8], tag: &[u8]) -> Option<&'a [u8]> {
+    let mut at = 0;
+    while at < wire.len() {
+        let end = wire[at..].iter().position(|b| *b == 1)? + at;
+        if wire[at..end].starts_with(tag) {
+            return Some(&wire[at + tag.len()..end]);
+        }
+        at = end + 1;
+    }
+    None
+}
 
 /// A `Logon` from `sender` to ISLD, with a real body length and checksum.
 fn logon_from(sender: &str) -> Vec<u8> {
@@ -178,6 +233,26 @@ fn cfg() -> Config {
     Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
 }
 
+/// The registry the pre-session stage asks, and it serves **both** identities
+/// these tests use.
+///
+/// `[measured 2026-09-02]` **this is the fix for a test that had been failing
+/// since 2026-09-01 and could not be seen failing.** The helper below used
+/// `One::new(cfg())`, which serves `TW44` and nothing else — so
+/// `the_same_identity_always_lands_on_the_same_shard`, the one test that needs a
+/// **second** identity, handed the stage a `TW45` the registry was right to
+/// refuse. The connection never settled, and the helper's five-second deadline
+/// then made a refusal that took microseconds look like a slow socket.
+///
+/// It went unseen because **every machine that ran it skipped it** — see
+/// [`plan_for`] and
+/// `docs/reference/a-test-that-skipped-itself-on-every-machine-that-ran-it.md`.
+fn registry() -> Table {
+    Table::with_capacity(2)
+        .serving(cfg())
+        .serving(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW45"))
+}
+
 /// It goes through a real `PendingSet` rather than being built by hand: the
 /// only way to make a `Pending` is to have read a whole `Logon` off a socket,
 /// and a test that could shortcut that would be testing a different thing.
@@ -192,17 +267,34 @@ fn a_connection_from(listener: &TcpListener, sender: &str) -> Pending<TcpTranspo
     // Leak the client end: these tests care about where a connection lands.
     core::mem::forget(client);
 
-    let mut set: PendingSet<TcpTransport, One, PRE> = PendingSet::new(
-        Limits::new(1, 30_000).expect("both above zero"),
-        One::new(cfg()),
-    );
+    let mut set: PendingSet<TcpTransport, Table, PRE> =
+        PendingSet::new(Limits::new(1, 30_000).expect("both above zero"), registry());
     let t = TcpTransport::new(sock).expect("non-blocking");
     assert!(set.admit(t, 0).is_ok(), "room for one");
+    // **Every outcome is counted, and the failure names which one happened.**
+    // `[measured 2026-09-02]` the previous version said only *"the Logon arrived
+    // over loopback"*, which sent the first reader of this failure looking at the
+    // socket — and the socket was fine. The connection had been **refused by the
+    // registry** in microseconds, and the five seconds were spent waiting for
+    // something that was never coming. A deadline turns a refusal into what
+    // looks like a slow machine.
     let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = Progress::default();
     while set.settled().is_none() && Instant::now() < deadline {
-        set.turn(0);
+        let p = set.turn(0);
+        seen.settled += p.settled;
+        seen.timed_out += p.timed_out;
+        seen.not_logon += p.not_logon;
+        seen.unknown += p.unknown;
+        seen.gone += p.gone;
     }
-    let i = set.settled().expect("the Logon arrived over loopback");
+    let i = set.settled().unwrap_or_else(|| {
+        panic!(
+            "the pre-session stage never settled a Logon from {sender}. What it did \
+             instead, over the whole wait: {seen:?}. `unknown` means the registry \
+             refused the identity — look at `registry()` above, not at the socket."
+        )
+    });
     set.take(i).expect("out")
 }
 

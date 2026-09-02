@@ -214,6 +214,17 @@ impl<W: Waiting> SessionUnderTest for Wire<W> {
     fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, input: Input<'_>, mut emit: F) -> Link {
         let i = self.at(conn);
         match input {
+            // **This file runs the acceptor corpus, which never originates.**
+            // `Input::Originate` is fed only to a mirrored scenario, and every
+            // scenario here comes from `scenarios()`, whose `mirrored` flag is
+            // false. Reaching this arm would mean the runner had started
+            // driving the acceptor direction, where every `E` line is an answer
+            // and a harness that could speak would be able to make a broken
+            // session look correct. So it fails loudly rather than quietly
+            // doing nothing.
+            Input::Originate(intent) => {
+                panic!("the acceptor corpus must never be driven: {intent:?}")
+            }
             Input::Connect => {
                 let addr = self.acceptor.local_addr().expect("bound");
                 let sock = TcpStream::connect(addr).expect("loopback");

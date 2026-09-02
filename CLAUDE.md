@@ -138,8 +138,17 @@ describes. **A stale document is worse than no document.**
 | Discover a protocol trap, a wrong assumption, or a measured surprise | `docs/reference/` ← **highest priority** |
 | Pick a dependency, change technique, reverse a decision | New ADR in `docs/decisions/` |
 | The surprise was about **testing**, not about FIX | the same `docs/reference/` entry, marked `[to testing-skills]` — §11 |
+| **Prove something this repository listed as unproven** | **`STATUS.md`'s *Not proven* section — strike the bullet in the same commit** |
 
 **No row here is machine-checked.** Every one is walked by hand before a plan is closed.
+
+`[added 2026-09-02]` **the last row exists because the list of things not yet proven is the one
+document nothing pointed at.** Every closing plan walked this table and struck its own *open
+item*; no row sent anybody to *Not proven*, so bullets stayed there after they stopped being
+true — **eight of them were false when the section was read on 2026-09-01, and an eleventh on
+2026-09-02**. A section whose whole job is honesty rots in exactly one direction: it keeps
+claiming the project is *less* proven than it is, which reads as modesty and is simply wrong.
+`STATUS.md` open item 27.
 
 **"If it cost you, write it down."** An hour lost to a protocol trap or a wrong assumption
 goes into `docs/reference/` or an ADR immediately. **Every recorded trap gets a regression

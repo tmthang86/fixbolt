@@ -906,6 +906,94 @@ impl<R: Role, const N: usize> Session<R, N> {
         true
     }
 
+    // ---- what an operator can order this session to say --------------------
+    //
+    // Three functions with one shape, and the shape is the point. Each takes an
+    // **intent** and never bytes: the session builds the message from its own
+    // `Template` and keeps `8`, `9`, `34`, `49`, `52`, `56` and `10` for itself.
+    //
+    // A back door taking whole message bytes would have been less code and is
+    // the reason these exist instead. `crates/session/tests/mirror.rs` drives
+    // them from the mirrored corpus, and a back door there would have made that
+    // gate compare the corpus with itself.
+    //
+    // `[measured 2026-08-30]` 46 of the 50 mirrorable definitions need at least
+    // one message that nothing on the wire asks for and no clock produces. That
+    // is the whole reason a pure state machine is not enough for an initiator —
+    // see the `session-initiator` plan, Sửa 2.
+
+    /// Send a `Heartbeat (35=0)` nobody asked for.
+    ///
+    /// **Not the heartbeat rule.** [`Self::tick`] sends one when `HeartBtInt`
+    /// has elapsed and this is the operator asking for one anyway — a keepalive
+    /// through a device that times a connection out faster than the session
+    /// does. It carries no `112=`, because it answers nothing.
+    ///
+    /// Returns `false` and sends nothing unless the session is logged on, or if
+    /// the message cannot be laid out.
+    pub fn send_heartbeat<F: FnMut(&[u8])>(&mut self, mut emit: F) -> bool {
+        if self.state != State::LoggedOn {
+            return false;
+        }
+        self.send(Which::Heartbeat, &[], &mut emit).is_ok()
+    }
+
+    /// Send a `TestRequest (35=1)` carrying `id` as `112=`.
+    ///
+    /// **The `id` is the caller's and is written through unchanged.** The
+    /// session has a `TestReqID` of its own for the request [`Self::tick`]
+    /// raises after silence; this one is not it. A counterparty answers with a
+    /// `Heartbeat` echoing `112=`, so an operator who chose the string can tell
+    /// their own answer from a heartbeat that was merely due.
+    ///
+    /// Nothing is remembered: matching the answer is the caller's, because a
+    /// session that waited for it would need a timeout, and a timeout is a
+    /// clock this layer does not own. `GUIDE.md` carries that.
+    ///
+    /// Returns `false` and sends nothing unless the session is logged on, or if
+    /// the message cannot be laid out — an `id` too long for the buffer, for
+    /// one.
+    pub fn send_test_request<F: FnMut(&[u8])>(&mut self, id: &[u8], mut emit: F) -> bool {
+        if self.state != State::LoggedOn {
+            return false;
+        }
+        self.send(Which::TestRequest, &[(tag::TEST_REQ_ID, id)], &mut emit)
+            .is_ok()
+    }
+
+    /// Send a `ResendRequest (35=2)` asking for `from` through `to`.
+    ///
+    /// **`to == 0` is not an empty range** — FIX 4.4 spells *"and everything
+    /// after"* as `16=0`, and it is the form a session recovering from a gap
+    /// needs. It is passed through rather than rejected.
+    ///
+    /// This end's own gap detection already sends one of these by itself; this
+    /// is the operator asking for a range nothing detected, which is what a
+    /// counterparty's *"we lost your 40 through 60"* phone call turns into.
+    ///
+    /// Returns `false` and sends nothing unless the session is logged on, or if
+    /// the message cannot be laid out.
+    pub fn send_resend_request<F: FnMut(&[u8])>(
+        &mut self,
+        from: u32,
+        to: u32,
+        mut emit: F,
+    ) -> bool {
+        if self.state != State::LoggedOn {
+            return false;
+        }
+        let mut a = [0u8; 10];
+        let mut b = [0u8; 10];
+        let begin = digits(from, &mut a);
+        let end = digits(to, &mut b);
+        self.send(
+            Which::ResendRequest,
+            &[(tag::BEGIN_SEQ_NO, begin), (tag::END_SEQ_NO, end)],
+            &mut emit,
+        )
+        .is_ok()
+    }
+
     /// True once a Logon has been accepted.
     #[must_use]
     pub const fn is_logged_on(&self) -> bool {
@@ -1324,10 +1412,17 @@ impl<R: Role, const N: usize> Session<R, N> {
             }
             return Link::Dropped;
         }
-        if self
-            .send(Which::Logout, &[(tag::TEXT, text)], &mut emit)
-            .is_err()
-        {
+        // **No words means no field, not an empty one.** `[measured 2026-09-02]`
+        // `begin_logout(b"")` wrote `58=` with nothing after it — a field on
+        // the wire that says nothing, and a field count no counterparty
+        // expects. An unset slot is simply not written (`out.rs`), so the fix
+        // is to pass no slot rather than an empty value.
+        let extra: &[(u32, &[u8])] = if text.is_empty() {
+            &[]
+        } else {
+            &[(tag::TEXT, text)]
+        };
+        if self.send(Which::Logout, extra, &mut emit).is_err() {
             // Nothing went out, so there is nothing to wait for. Ending here
             // is honest; pretending to wait would hang the shutdown on a
             // message that was never sent.
@@ -1926,7 +2021,24 @@ impl<R: Role, const N: usize> Session<R, N> {
             } else {
                 2
             };
-            self.send(Which::Logon, &extra[..n], emit)?;
+            // **Only the side that did not speak first answers.** A Logon is
+            // one exchange: the initiator asks and the acceptor agrees. An
+            // initiator that answers has started a second handshake on a
+            // session that already has one.
+            //
+            // `[measured 2026-09-02]` this line was unconditional, and no gate
+            // in this repository could see it. `tests/score.rs` is 59 / 59
+            // because for an **acceptor** the reply is correct;
+            // `tests/mirror.rs` was 0 / 50 and never read past the first Logon.
+            // `scripts/interop.sh` found it on its first run: `libquickfix`
+            // took the second Logon, dropped the connection without a word, and
+            // five interop steps failed at once with nothing on the wire to say
+            // why. `tests/initiator.rs` holds the regression, and
+            // `docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md`
+            // holds why it survived so long.
+            if !R::SPEAKS_FIRST {
+                self.send(Which::Logon, &extra[..n], emit)?;
+            }
             // **After the reply, not before.** A Logon that runs ahead is still
             // a Logon: `1a_ValidLogonMsgSeqNumTooHigh.def` sends `34=5` to an
             // empty session and expects the Logon answered first and the
@@ -1940,7 +2052,28 @@ impl<R: Role, const N: usize> Session<R, N> {
         }
 
         if is_logout {
-            self.send(Which::Logout, &[], emit)?;
+            // **Only answer a goodbye we did not start.** A `Logout` exchange
+            // is one message each way; a third is wrong on the wire, and
+            // QuickFIX's `nextLogout` replies only when it did not begin the
+            // exchange either.
+            //
+            // `[measured 2026-09-02]` this was unconditional, and nothing could
+            // see it. The acceptor corpus never has the acceptor start a
+            // logout, so every `35=5` in those 59 files is a reply that
+            // *should* go out; `tests/goodbye.rs::their_answer_ends_the_session`
+            // passed an `emit` of `|_| {}` and counted nothing; and
+            // `scripts/interop.sh` stops reading once it has seen the
+            // counterparty's `35=5`, so the extra message arrived after it was
+            // looking. The **mirrored** corpus found it, as "unexpected
+            // output" on `10_MsgSeqNumEqual.def` — which is what a gate that
+            // can fall is for.
+            //
+            // Same family as the `Logon` echo: an asymmetry the acceptor
+            // corpus cannot show, because an acceptor is always the responder.
+            // `crates/session/tests/goodbye.rs` holds both halves.
+            if self.state != State::LoggingOut {
+                self.send(Which::Logout, &[], emit)?;
+            }
             self.end(DropReason::PeerLogout);
             return Ok(Link::Dropped);
         }
@@ -2269,12 +2402,19 @@ fn rebuild(
     let begin_end = src.iter().position(|b| *b == SOH)?;
     let begin = src.get(2..begin_end)?;
 
-    let mut b = TemplateBuilder::<128, 1024>::new(begin).field(tag::SENDING_TIME, now);
+    // **Bound first, then mutated in place.** `TemplateBuilder`'s methods take
+    // `&mut self` since 2026-09-02 — moving an `S`-byte struct per field was
+    // 48% of a reply, and `S` here is 1024
+    // ([ADR-0044](../../../docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)).
+    // This path rebuilds a template **per resent message**, so it is one of the
+    // two that pays for it.
+    let mut b = TemplateBuilder::<128, 1024>::new(begin);
+    b.field(tag::SENDING_TIME, now);
     if resend {
-        b = b.field(tag::POSS_DUP_FLAG, b"Y");
+        b.field(tag::POSS_DUP_FLAG, b"Y");
     }
     if let Some(n) = seq {
-        b = b.field(tag::MSG_SEQ_NUM, n);
+        b.field(tag::MSG_SEQ_NUM, n);
     }
 
     for f in src.get(at_35..at_10)?.split(|c| *c == SOH) {
@@ -2291,9 +2431,13 @@ fn rebuild(
             tag::MSG_SEQ_NUM if seq.is_some() => {}
             // The clock the message first went out on becomes `122=`, and the
             // one above stands as `52=`.
-            tag::SENDING_TIME if resend => b = b.field(tag::ORIG_SENDING_TIME, value),
+            tag::SENDING_TIME if resend => {
+                b.field(tag::ORIG_SENDING_TIME, value);
+            }
             tag::SENDING_TIME => {}
-            _ => b = b.field(tag, value),
+            _ => {
+                b.field(tag, value);
+            }
         }
     }
 
