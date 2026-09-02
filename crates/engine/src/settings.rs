@@ -63,6 +63,7 @@
 use std::fmt;
 use std::path::Path;
 
+use fixbolt_session::schedule::{Schedule, Weekday, Weekdays};
 use fixbolt_session::{Config, MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN};
 
 use crate::presession::Table;
@@ -80,6 +81,11 @@ enum Key {
     TargetCompId,
     HeartBtInt,
     MaxSkewMillis,
+    StartTime,
+    EndTime,
+    StartDay,
+    EndDay,
+    Weekdays,
 }
 
 impl Key {
@@ -91,6 +97,11 @@ impl Key {
             "TargetCompID" => Some(Self::TargetCompId),
             "HeartBtInt" => Some(Self::HeartBtInt),
             "MaxSkewMillis" => Some(Self::MaxSkewMillis),
+            "StartTime" => Some(Self::StartTime),
+            "EndTime" => Some(Self::EndTime),
+            "StartDay" => Some(Self::StartDay),
+            "EndDay" => Some(Self::EndDay),
+            "Weekdays" => Some(Self::Weekdays),
             _ => None,
         }
     }
@@ -102,6 +113,11 @@ impl Key {
             Self::TargetCompId => "TargetCompID",
             Self::HeartBtInt => "HeartBtInt",
             Self::MaxSkewMillis => "MaxSkewMillis",
+            Self::StartTime => "StartTime",
+            Self::EndTime => "EndTime",
+            Self::StartDay => "StartDay",
+            Self::EndDay => "EndDay",
+            Self::Weekdays => "Weekdays",
         }
     }
 }
@@ -136,6 +152,13 @@ pub enum Problem {
     NoSessions,
     /// Two `[SESSION]` blocks naming the same FIX identity.
     DuplicateSession,
+    /// A time that is not `HH:MM:SS`, or not a time of day.
+    BadTime,
+    /// A day name this parser does not know.
+    BadWeekday,
+    /// Times and days that name no schedule the session layer will build — a
+    /// zero-length window, or weekdays on a weekly one.
+    ImpossibleSchedule,
 }
 
 impl fmt::Display for Problem {
@@ -152,6 +175,9 @@ impl fmt::Display for Problem {
             Self::NotANumber => "expected a number",
             Self::NoSessions => "no [SESSION] block — this acceptor would serve nobody",
             Self::DuplicateSession => "two [SESSION] blocks name the same FIX identity",
+            Self::BadTime => "expected a time of day as HH:MM:SS",
+            Self::BadWeekday => "expected a weekday, e.g. Monday or Mon",
+            Self::ImpossibleSchedule => "these times and days describe no session",
         };
         f.write_str(s)
     }
@@ -214,6 +240,11 @@ struct Block<'a> {
     target: Option<(usize, &'a str)>,
     heart_bt_int: Option<(usize, &'a str)>,
     max_skew: Option<(usize, &'a str)>,
+    start_time: Option<(usize, &'a str)>,
+    end_time: Option<(usize, &'a str)>,
+    start_day: Option<(usize, &'a str)>,
+    end_day: Option<(usize, &'a str)>,
+    weekdays: Option<(usize, &'a str)>,
 }
 
 impl<'a> Block<'a> {
@@ -228,6 +259,11 @@ impl<'a> Block<'a> {
             Key::TargetCompId => &mut self.target,
             Key::HeartBtInt => &mut self.heart_bt_int,
             Key::MaxSkewMillis => &mut self.max_skew,
+            Key::StartTime => &mut self.start_time,
+            Key::EndTime => &mut self.end_time,
+            Key::StartDay => &mut self.start_day,
+            Key::EndDay => &mut self.end_day,
+            Key::Weekdays => &mut self.weekdays,
         };
         if slot.is_some() {
             return Err(SettingsError::at(line, Problem::RepeatedKey, key.name()));
@@ -244,6 +280,11 @@ impl<'a> Block<'a> {
             target: self.target.or(base.target),
             heart_bt_int: self.heart_bt_int.or(base.heart_bt_int),
             max_skew: self.max_skew.or(base.max_skew),
+            start_time: self.start_time.or(base.start_time),
+            end_time: self.end_time.or(base.end_time),
+            start_day: self.start_day.or(base.start_day),
+            end_day: self.end_day.or(base.end_day),
+            weekdays: self.weekdays.or(base.weekdays),
         }
     }
 }
@@ -432,5 +473,168 @@ fn build(block: Block<'_>) -> Result<Config, SettingsError> {
     if let Some(v) = block.max_skew {
         cfg = cfg.with_max_skew_ms(number(v, Key::MaxSkewMillis)?);
     }
+    if let Some(schedule) = schedule(block)? {
+        cfg = cfg.with_schedule(schedule);
+    }
     Ok(cfg)
+}
+
+/// Seconds since midnight, from `HH:MM:SS`.
+///
+/// Strict on shape as well as on range: `8:00:00` and `08:00` are refused
+/// rather than guessed at, because a file that is nearly right in two places is
+/// how a session ends up open at the wrong hour.
+fn time_of_day((line, value): (usize, &str), key: Key) -> Result<u32, SettingsError> {
+    let bad = || SettingsError::at(line, Problem::BadTime, format!("{}={value}", key.name()));
+    let mut parts = value.split(':');
+    let (Some(h), Some(m), Some(s), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(bad());
+    };
+    if h.len() != 2 || m.len() != 2 || s.len() != 2 {
+        return Err(bad());
+    }
+    let (Ok(h), Ok(m), Ok(s)) = (h.parse::<u32>(), m.parse::<u32>(), s.parse::<u32>()) else {
+        return Err(bad());
+    };
+    if h > 23 || m > 59 || s > 59 {
+        return Err(bad());
+    }
+    Ok(h * 3_600 + m * 60 + s)
+}
+
+/// One weekday, by full name or by the usual three letters.
+///
+/// Case-sensitive, and the error says what was expected. Accepting `monday`
+/// too would mean accepting `MONDAY` and `Monday ` next, and each of those is a
+/// file that reads as correct to a person and differently to the parser.
+fn weekday(name: &str) -> Option<Weekday> {
+    match name {
+        "Monday" | "Mon" => Some(Weekday::Monday),
+        "Tuesday" | "Tue" => Some(Weekday::Tuesday),
+        "Wednesday" | "Wed" => Some(Weekday::Wednesday),
+        "Thursday" | "Thu" => Some(Weekday::Thursday),
+        "Friday" | "Fri" => Some(Weekday::Friday),
+        "Saturday" | "Sat" => Some(Weekday::Saturday),
+        "Sunday" | "Sun" => Some(Weekday::Sunday),
+        _ => None,
+    }
+}
+
+/// One day name, or a [`Problem::BadWeekday`] quoting what was written.
+fn one_day((line, value): (usize, &str), key: Key) -> Result<Weekday, SettingsError> {
+    weekday(value).ok_or_else(|| {
+        SettingsError::at(line, Problem::BadWeekday, format!("{}={value}", key.name()))
+    })
+}
+
+/// The schedule a block describes, or [`None`] for one that says nothing about
+/// hours — which means [`Schedule::always`] and is the default the 59
+/// acceptance definitions run under.
+///
+/// # The four shapes, and why a half-written one is refused
+///
+/// * nothing → `None`
+/// * `StartTime` + `EndTime` → [`Schedule::daily`]
+/// * those plus `StartDay` + `EndDay` → [`Schedule::weekly`]
+/// * those plus `Weekdays` → [`Schedule::with_weekdays`]
+///
+/// A block with `StartTime` and no `EndTime` is refused rather than completed
+/// with midnight: the writer meant something, and the parser does not know
+/// what.
+fn schedule(block: Block<'_>) -> Result<Option<Schedule>, SettingsError> {
+    let at = line_of(block);
+    let (start, end) = match (block.start_time, block.end_time) {
+        (None, None) => {
+            // A day without an hour describes nothing, and silently ignoring it
+            // is exactly the failure `Problem::UnknownKey` exists to prevent.
+            for (slot, key) in [
+                (block.start_day, Key::StartDay),
+                (block.end_day, Key::EndDay),
+                (block.weekdays, Key::Weekdays),
+            ] {
+                if let Some((line, _)) = slot {
+                    return Err(SettingsError::at(
+                        line,
+                        Problem::MissingKey,
+                        format!("{} needs StartTime and EndTime", key.name()),
+                    ));
+                }
+            }
+            return Ok(None);
+        }
+        (Some(s), Some(e)) => (
+            time_of_day(s, Key::StartTime)?,
+            time_of_day(e, Key::EndTime)?,
+        ),
+        (Some(_), None) => {
+            return Err(SettingsError::at(
+                at,
+                Problem::MissingKey,
+                Key::EndTime.name(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(SettingsError::at(
+                at,
+                Problem::MissingKey,
+                Key::StartTime.name(),
+            ));
+        }
+    };
+
+    let impossible =
+        |line: usize, why: &str| SettingsError::at(line, Problem::ImpossibleSchedule, why);
+
+    let built = match (block.start_day, block.end_day) {
+        (None, None) => Schedule::daily(start, end)
+            .ok_or_else(|| impossible(at, "StartTime and EndTime are the same instant"))?,
+        (Some(sd), Some(ed)) => {
+            if let Some((line, _)) = block.weekdays {
+                return Err(impossible(
+                    line,
+                    "Weekdays cannot narrow a weekly window — StartDay and EndDay already choose the days",
+                ));
+            }
+            Schedule::weekly(
+                one_day(sd, Key::StartDay)?,
+                start,
+                one_day(ed, Key::EndDay)?,
+                end,
+            )
+            .ok_or_else(|| {
+                impossible(
+                    at,
+                    "StartDay/StartTime and EndDay/EndTime are the same instant",
+                )
+            })?
+        }
+        (Some(_), None) => {
+            return Err(SettingsError::at(
+                at,
+                Problem::MissingKey,
+                Key::EndDay.name(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(SettingsError::at(
+                at,
+                Problem::MissingKey,
+                Key::StartDay.name(),
+            ));
+        }
+    };
+
+    let Some((line, list)) = block.weekdays else {
+        return Ok(Some(built));
+    };
+    let mut days = Weekdays::NONE;
+    for name in list.split(',') {
+        days = days.and(one_day((line, name.trim()), Key::Weekdays)?);
+    }
+    built
+        .with_weekdays(days)
+        .map(Some)
+        .ok_or_else(|| impossible(line, "Weekdays is empty"))
 }

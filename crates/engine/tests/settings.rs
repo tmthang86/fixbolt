@@ -37,6 +37,7 @@ use fixbolt_engine::presession::{Limits, PendingSet, Registry, Table, is_logon};
 use fixbolt_engine::settings::{Problem, Settings};
 use fixbolt_engine::transport::{Io, Loopback, Transport};
 use fixbolt_session::Config;
+use fixbolt_session::schedule::{Schedule, Weekday, Weekdays};
 
 const PRE: usize = 1024;
 const T0: u64 = FIXED_TIME_MILLIS;
@@ -467,5 +468,220 @@ fn a_missing_file_says_which_one() {
     assert!(
         e.to_string().contains("never-written"),
         "and it names the path: {e}"
+    );
+}
+
+// --- step 3: hours out of the file -------------------------------------------
+
+/// **The specification for step 3.** A counterparty's trading hours come out of
+/// the file, and the session layer gets the schedule it would have been given
+/// by hand.
+///
+/// Compared against a `Schedule` built directly rather than probed through
+/// `contains`: the arithmetic is ADR-0033's and already has its own tests, and
+/// what this file is responsible for is passing the right two numbers into it.
+#[test]
+fn trading_hours_come_out_of_the_file() {
+    let s = Settings::parse(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nStartTime=08:00:00\nEndTime=17:00:00\n",
+    )
+    .expect("a legal file");
+
+    let want = Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER)
+        .with_schedule(Schedule::daily(8 * 3_600, 17 * 3_600).expect("legal hours"));
+    assert_eq!(s.configs()[0], want);
+    assert_ne!(
+        s.configs()[0],
+        Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER),
+        "and it is not simply the default schedule, which is what an ignored \
+         StartTime would leave behind"
+    );
+}
+
+/// A session that opens in the evening and closes in the morning is **one**
+/// session, and the file must carry that rather than flattening it.
+#[test]
+fn a_session_that_crosses_midnight_survives_the_file() {
+    let s = Settings::parse(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nStartTime=22:00:00\nEndTime=06:00:00\n",
+    )
+    .expect("a legal file");
+    assert_eq!(
+        s.configs()[0],
+        Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER)
+            .with_schedule(Schedule::daily(22 * 3_600, 6 * 3_600).expect("legal"))
+    );
+}
+
+/// A week-long session — Sunday evening to Friday evening — is one interval,
+/// and nothing resets on Tuesday night.
+#[test]
+fn a_weekly_window_comes_out_of_the_file() {
+    let s = Settings::parse(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\n\
+         StartDay=Sunday\nStartTime=21:00:00\nEndDay=Fri\nEndTime=21:00:00\n",
+    )
+    .expect("a legal file");
+    assert_eq!(
+        s.configs()[0],
+        Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER).with_schedule(
+            Schedule::weekly(Weekday::Sunday, 21 * 3_600, Weekday::Friday, 21 * 3_600)
+                .expect("legal")
+        ),
+        "full names and three-letter ones name the same day"
+    );
+}
+
+/// Weekdays narrow a daily window.
+#[test]
+fn weekdays_narrow_a_daily_window() {
+    let s = Settings::parse(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nStartTime=08:00:00\nEndTime=17:00:00\n\
+         Weekdays=Mon,Tue,Wed,Thu,Fri\n",
+    )
+    .expect("a legal file");
+
+    let days = Weekdays::NONE
+        .and(Weekday::Monday)
+        .and(Weekday::Tuesday)
+        .and(Weekday::Wednesday)
+        .and(Weekday::Thursday)
+        .and(Weekday::Friday);
+    assert_eq!(
+        s.configs()[0],
+        Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER).with_schedule(
+            Schedule::daily(8 * 3_600, 17 * 3_600)
+                .and_then(|s| s.with_weekdays(days))
+                .expect("legal")
+        )
+    );
+}
+
+/// **A half-written schedule is refused, not completed.** `StartTime` with no
+/// `EndTime` means the writer meant something and the parser does not know
+/// what; filling in midnight would be a guess that reads as a decision.
+#[test]
+fn half_a_schedule_is_refused() {
+    for (text, missing) in [
+        ("StartTime=08:00:00\n", "EndTime"),
+        ("EndTime=17:00:00\n", "StartTime"),
+    ] {
+        let e = refused(&format!(
+            "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+             [SESSION]\nTargetCompID=TW44\n{text}"
+        ));
+        assert_eq!(*e.problem(), Problem::MissingKey, "{text}");
+        assert!(e.to_string().contains(missing), "it names it: {e}");
+    }
+}
+
+/// A day with no hours describes nothing, and ignoring it is the failure
+/// `UnknownKey` exists to prevent — the key is spelled correctly and still has
+/// no effect.
+#[test]
+fn a_day_without_hours_is_refused() {
+    let e = refused(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nStartDay=Monday\n",
+    );
+    assert_eq!(*e.problem(), Problem::MissingKey);
+    assert_eq!(e.line(), 6, "it points at the day, not at the block: {e}");
+}
+
+/// A time that is nearly right is refused rather than guessed at.
+#[test]
+fn a_time_that_is_not_hh_mm_ss_is_refused() {
+    for bad in [
+        "8:00:00",
+        "08:00",
+        "08:00:00.000",
+        "24:00:00",
+        "08:60:00",
+        "morning",
+    ] {
+        let e = refused(&format!(
+            "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+             [SESSION]\nTargetCompID=TW44\nStartTime={bad}\nEndTime=17:00:00\n"
+        ));
+        assert_eq!(*e.problem(), Problem::BadTime, "StartTime={bad}");
+        assert_eq!(e.line(), 6, "StartTime={bad}: {e}");
+    }
+}
+
+/// A window of zero length is open never, which is not what anyone means by
+/// writing the same time twice.
+#[test]
+fn a_zero_length_window_is_refused() {
+    let e = refused(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nStartTime=08:00:00\nEndTime=08:00:00\n",
+    );
+    assert_eq!(*e.problem(), Problem::ImpossibleSchedule);
+}
+
+/// A day name this parser does not know says so, and quotes what was written.
+#[test]
+fn an_unknown_day_name_is_refused() {
+    let e = refused(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\n\
+         StartDay=Sunnday\nStartTime=21:00:00\nEndDay=Friday\nEndTime=21:00:00\n",
+    );
+    assert_eq!(*e.problem(), Problem::BadWeekday);
+    assert!(e.to_string().contains("Sunnday"), "{e}");
+}
+
+/// `Weekdays` on a weekly window is refused rather than silently dropped: the
+/// weekly period already chooses its days, and the session layer answers `None`
+/// to the combination.
+#[test]
+fn weekdays_on_a_weekly_window_is_refused() {
+    let e = refused(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\n\
+         StartDay=Sunday\nStartTime=21:00:00\nEndDay=Friday\nEndTime=21:00:00\n\
+         Weekdays=Mon,Tue\n",
+    );
+    assert_eq!(*e.problem(), Problem::ImpossibleSchedule);
+}
+
+/// The default block can carry the hours, and each `[SESSION]` inherits them —
+/// which is the ordinary case: one venue, one calendar, many counterparties.
+#[test]
+fn hours_in_the_default_block_reach_every_session() {
+    let s = Settings::parse(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         StartTime=08:00:00\nEndTime=17:00:00\n\
+         [SESSION]\nTargetCompID=TW44\n\
+         [SESSION]\nTargetCompID=BETA\nStartTime=00:00:00\nEndTime=23:59:59\n",
+    )
+    .expect("a legal file");
+
+    let venue = Schedule::daily(8 * 3_600, 17 * 3_600).expect("legal");
+    assert_eq!(
+        s.configs()[0],
+        Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER).with_schedule(venue),
+        "TW44 inherits the venue calendar"
+    );
+    assert_ne!(
+        s.configs()[1],
+        Config::acceptor(b"FIX.4.4", US, OTHER_SENDER).with_schedule(venue),
+        "BETA does not — it set its own hours"
+    );
+}
+
+/// A file that says nothing about hours leaves `Schedule::always`, which is the
+/// default the 59 acceptance definitions run under.
+#[test]
+fn a_file_with_no_hours_leaves_the_neutral_schedule() {
+    let s = Settings::parse(TWO_COUNTERPARTIES).expect("a legal file");
+    assert_eq!(
+        s.configs()[0],
+        Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER),
+        "exactly what Config::acceptor builds, schedule included"
     );
 }
