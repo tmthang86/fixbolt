@@ -983,6 +983,19 @@ pub type TcpAcceptorEngine<A, W, J = crate::journal::Store> = Engine<
 /// `DESIGN.md` §9.
 pub type HftAcceptorEngine<A> = TcpAcceptorEngine<A, crate::wait::Spin>;
 
+/// The same shape, dialling out. `STATUS.md` item 35.
+pub type TcpInitiatorEngine<A, W, J = crate::journal::Store> = Engine<
+    TcpTransport,
+    fixbolt_session::Initiator,
+    InlineDispatch<A>,
+    crate::clock::SystemClock,
+    W,
+    J,
+    256,
+    4096,
+    8192,
+>;
+
 /// The `standard` shape, and **the default**: blocks on readiness and gives the
 /// core back.
 #[cfg(all(feature = "standard", unix))]
@@ -1034,6 +1047,153 @@ pub fn serve<A: Application>(
         capacity,
     );
     pump(acceptor, engine, table, limits, crate::recovery::NoRecovery)
+}
+
+/// Dial `addr`, run one initiator session on it, and **come back when it
+/// ends**. **`standard` mode.**
+///
+/// `STATUS.md` item 35, and the gap it closes is not subtle:
+/// [`connect`] opens a socket and nothing decided when to open it again. An
+/// initiator that lost its connection was on its own, and no corpus here
+/// covered that — the 59 acceptance definitions are written for an acceptor and
+/// never reconnect one, and `scripts/interop.sh` connects once.
+///
+/// # What it does on each ending
+///
+/// [`reconnect::Policy`] decides, and it decides for **every** ending including
+/// a clean logout — see [`reconnect::Policy::dropped`]. This loop never sleeps
+/// waiting for the next attempt: it idles on the engine's own wait strategy,
+/// which has a bounded timeout, and re-asks. Non-negotiable 4.
+///
+/// # Sequence numbers across a reconnect
+///
+/// [ADR-0010](../../../docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md):
+/// FIX 4.4 numbers a **session**, not a connection. So `recovery` is asked on
+/// **every** attempt, not only the first, and its answer is what decides
+/// whether the new connection continues or restarts.
+///
+/// With [`recovery::NoRecovery`] every connection starts at `34=1`, which is
+/// right for an in-memory journal — it could not have replayed anything anyway
+/// — and **wrong for a counterparty that expects continuity**. A deployment
+/// that wants numbers to survive a reconnect passes a `Recovery` backed by a
+/// journal on disk, exactly as [`serve_with_recovery`] does. `GUIDE.md` carries
+/// that, because the type system cannot.
+///
+/// # Errors
+///
+/// [`ServeError`] if the engine cannot be built. **A connection that cannot be
+/// made is not an error** — it is the case this function exists for, and it
+/// goes to the policy.
+#[cfg(all(feature = "standard", unix))]
+pub fn connect_and_serve<A: Application, J: SessionJournal, V: crate::recovery::Recovery<J>>(
+    addr: &str,
+    cfg: Config,
+    app: A,
+    policy: crate::reconnect::Policy,
+    recovery: V,
+) -> Result<Shutdown, ServeError> {
+    let engine: TcpInitiatorEngine<A, crate::block::Block, J> = Engine::new(
+        cfg,
+        InlineDispatch::new(app),
+        crate::clock::SystemClock,
+        // One connection, one waker. An initiator holds a single session; many
+        // of them is `shard`'s problem and is deliberately not this function's.
+        crate::block::Block::new(2),
+        1,
+    );
+    dial(addr, cfg, engine, policy, recovery)
+}
+
+/// The loop [`connect_and_serve`] runs, generic over the wait strategy so a
+/// test can drive it without a real clock.
+#[cfg(all(feature = "standard", unix))]
+fn dial<A: Application, W: Waiting, J: SessionJournal, V: crate::recovery::Recovery<J>>(
+    addr: &str,
+    cfg: Config,
+    mut engine: TcpInitiatorEngine<A, W, J>,
+    mut policy: crate::reconnect::Policy,
+    mut recovery: V,
+) -> Result<Shutdown, ServeError> {
+    let observer = engine.observer();
+    let mut events: Vec<crate::observe::Event> = Vec::new();
+    let mut clock = crate::clock::SystemClock;
+    let mut up = false;
+    loop {
+        let now = crate::clock::Clock::now_ms(&mut clock);
+
+        if engine.connections() == 0 {
+            // **The ending is recorded once, on the turn the connection goes.**
+            // `dropped` climbs the ladder, so calling it every idle turn would
+            // walk to the ceiling in milliseconds.
+            if up {
+                policy.dropped(now);
+                up = false;
+            }
+            match policy.next(now) {
+                // Nothing is connected, so there is nothing to say goodbye
+                // to. A `Shutdown` reporting zero sessions is the truth here,
+                // not a placeholder.
+                crate::reconnect::Next::Stop => return Ok(Shutdown::default()),
+                crate::reconnect::Next::At(_) => {
+                    // Nothing to wait on but the clock. The wait strategy's own
+                    // timeout bounds it — this does not sleep on a deadline it
+                    // chose, which is what non-negotiable 4 is about.
+                    engine.idle_with(&[]);
+                    continue;
+                }
+                crate::reconnect::Next::Now => match connect(addr) {
+                    Ok(t) => {
+                        // **Asked on every attempt, not only the first.** A
+                        // reconnect is not a restart (ADR-0010), and whether
+                        // this one continues is the recovery's answer, not this
+                        // loop's guess.
+                        match recovery.recover(&cfg) {
+                            Some(r) => {
+                                engine.add_resumed(
+                                    t,
+                                    cfg,
+                                    r.journal,
+                                    r.next_out,
+                                    r.next_in,
+                                    r.last_active_ms,
+                                );
+                            }
+                            None => {
+                                engine.add_with_journal(t, recovery.fresh(&cfg));
+                            }
+                        }
+                    }
+                    // A refused dial is an ending like any other. It is the
+                    // commonest one there is, and treating it as an error would
+                    // end the loop the first time a venue was slow to come up.
+                    Err(_) => policy.dropped(now),
+                },
+            }
+        }
+
+        let moved = engine.turn();
+        if engine.connections() > 0 {
+            up = true;
+        }
+        // `LoggedOn` is what resets the ladder, and it is not "a socket
+        // connected": a connection refused its `Logon` and dropped is a
+        // failure, and counting it as success is how a policy hammers a
+        // counterparty that is up but refusing.
+        observer.events(&mut events);
+        for e in &events {
+            if matches!(e.kind(), crate::observe::EventKind::LoggedOn) {
+                policy.logged_on();
+            }
+        }
+        events.clear();
+
+        if let Some(done) = engine.shutdown_finished() {
+            return Ok(done);
+        }
+        if !moved && engine.connections() > 0 {
+            engine.idle();
+        }
+    }
 }
 
 /// As [`serve`], asking `recovery` what each counterparty left behind.
