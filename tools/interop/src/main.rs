@@ -331,26 +331,41 @@ fn run(w: &mut Wire, score: &mut Score) -> Option<()> {
 
     // ---- 5. ResendRequest, and what comes back ------------------------------
     //
-    // Ask for the two News. A conforming counterparty replays them with
-    // `43=Y`; one that has dropped them gap-fills. Either is legal, so both
-    // count — what is under test is that this end asked properly and survived
-    // the answer.
-    let mut resent = String::new();
+    // Ask for the two News — `34=2` and `34=3`, which the acceptor sent on
+    // logon. A counterparty that still holds them replays **those two**, as
+    // `35=B` with `43=Y` and their original `52=` carried as `122=`.
+    //
+    // **The assertion is the two numbered messages, not "something with
+    // `43=Y`".** `[measured 2026-09-02]` the first version of this step asked
+    // only for a `43=Y` and a deliberate reversal — swapping `7=` and `16=` so
+    // this end asked for `3` through `2` — **left it green**: QuickFIX answered
+    // the inverted range with a `SequenceReset` gap fill, which also carries
+    // `43=Y`. A legal answer to a question nobody asked passed a test named for
+    // the question. See
+    // `docs/reference/a-resend-answer-has-two-legal-shapes.md`.
+    let mut replayed: Vec<u32> = Vec::new();
     if w.session.send_resend_request(2, 3, |b| {
         let _ = w.sock.write_all(b);
     }) {
-        if let Some(m) = w.read_until(8, |m| m.contains("|43=Y|")) {
-            resent = m;
+        for _ in 0..8 {
+            let Some(m) = w.read_one() else { break };
+            if m.contains("|35=B|") && m.contains("|43=Y|") {
+                if m.contains("|34=2|") {
+                    replayed.push(2);
+                } else if m.contains("|34=3|") {
+                    replayed.push(3);
+                }
+            }
+            if replayed.len() == 2 {
+                break;
+            }
         }
     }
+    replayed.sort_unstable();
     score.step(
         "resend",
-        !resent.is_empty(),
-        if resent.is_empty() {
-            "nothing carrying 43=Y came back".to_owned()
-        } else {
-            "a message came back with 43=Y".to_owned()
-        },
+        replayed == [2, 3],
+        format!("35=B with 43=Y replayed at 34={replayed:?}, wanted [2, 3]"),
     );
 
     // ---- 6. A gap this end opens, and the gap fill it answers with ----------
