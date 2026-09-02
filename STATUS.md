@@ -3,7 +3,36 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-01** — four plans closed that day (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+Last updated: **2026-09-02** — [operability](docs/plans/2026-09-01-operability.md) steps 1–2 merged (PR #18, `9062f52`; CI [`33525312007`](https://github.com/tmthang86/fixbolt/actions/runs/33525312007) green on `dd1eaa8`), item 30 narrowed to (a)(c)(d)(e). Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+
+## Start here — 2026-09-02
+
+`[2026-09-02]` **[operability](docs/plans/2026-09-01-operability.md) steps 1–2 are merged** —
+PR #18, merge commit `9062f52`, **CI green on the commit that was closed, `dd1eaa8`, run
+[`33525312007`](https://github.com/tmthang86/fixbolt/actions/runs/33525312007), 9 jobs of 9.**
+`STATUS.md` item 30 is **narrowed to (a)(c)(d)(e)**, not closed.
+
+The engine is observable now: `Engine::observer()` → a `Snapshot`, **on request only**, read
+from another thread while it turns — per session, logged-on state, both sequence numbers,
+whether output is backed up, and **the measured clock skew**.
+[ADR-0032](docs/decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md); `GUIDE.md`
+§8a is the operations section that did not exist before it.
+
+**Two reversals are worth carrying forward, and both are about a green that was not evidence:**
+
+| | |
+|---|---|
+| **Removing the `wanted` flag** | the engine built **84 555 snapshots in 50 ms** with nobody asking, and every content assertion stayed green. The plan had predicted this gap had no guard. `Observer::published()` is the guard now |
+| **Flipping the skew's sign** | `crates/engine/tests/observe.rs` stayed **green at `Some(0)`** — the corpus's own instant is what its engine's clock reads, so `now - stamp` and `stamp - now` are indistinguishable there. Three tests in `crates/session/tests/skew.rs` went red. **A test whose only fixture is the corpus cannot see a sign** |
+
+**Built on a Mac again, and the two Linux-only mode checks were adjudicated by CI, not
+assumed**: *the engine thread never sleeps in the kernel* and *a standard engine gives the core
+back* both passed on `dd1eaa8`. No nanosecond number was published — `benches/baselines.tsv`
+keys on CPU model and this CPU has no line.
+
+**What this work did not do, recorded in *Not proven*:** the cost of a turn that *does*
+publish (needs the §9 machine), ring depth and pending-set occupancy in the snapshot, and the
+sign convention's invisibility to the corpus.
 
 ## Start here — 2026-09-01, end of session
 
@@ -1139,6 +1168,7 @@ plans are **approved**; the first is in progress.
 | ~~[what-mitigations-cost](docs/plans/2026-09-01-what-mitigations-cost.md)~~ | **CLOSED 2026-09-01** — 22, and [ADR-0023](docs/decisions/ADR-0023-section-9-records-the-cpu-mitigations.md) gives §9 the row it was missing |
 | ~~[release-profile](docs/plans/2026-09-01-release-profile.md)~~ | **CLOSED 2026-09-01** — 13, on *keep the default* ([ADR-0024](docs/decisions/ADR-0024-the-workspace-keeps-the-default-release-profile.md)). It is also what found **25** |
 | ~~[ktls-spike](docs/plans/2026-08-30-ktls-spike.md)~~ | **CLOSED 2026-08-31** — 10 |
+| ~~[operability](docs/plans/2026-09-01-operability.md)~~ | **STEPS 1–2 CLOSED 2026-09-02** — item 30 (b) and (f), [ADR-0032](docs/decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md). Steps 3–6 (ordered shutdown, sequence-number admin, event stream, journal reader) are **not started**, and the plan said up front that stopping here is a whole result |
 | **[counterparty-registry](docs/plans/2026-09-01-counterparty-registry.md)** | 28 — **approved 2026-09-01**, six steps. Shape decided by [ADR-0026](docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md). **Chosen to be closable on macOS**: every gate is a test, and the plan names the two things that are not |
 | ~~[data-fields](docs/plans/2026-08-30-data-fields.md)~~ | **CLOSED 2026-08-30** — 8, 9 |
 | [session-recovery](docs/plans/2026-08-30-session-recovery.md) | 16 — **journal read-back done 2026-08-30; blocked on [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md)** |
