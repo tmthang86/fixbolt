@@ -1,6 +1,6 @@
 # Engine phải mở lại được một phiên đã có lịch sử
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** BƯỚC 1, 2, 4 ĐÓNG 2026-09-02; bước 3 chưa làm
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** ĐÓNG 2026-09-02 (cả bốn bước)
 > *(tự viết và tự duyệt theo uỷ quyền thường trực của chủ sở hữu, 2026-09-01.)*
 >
 > **Phạm vi:** `STATUS.md` open item 31. Chạm `engine` (API công khai, `presession`). Không
@@ -132,7 +132,9 @@ item 31 **thu hẹp**, không đóng, và `STATUS.md` phải nói đúng như v�
 
 ## Tài liệu phải cập nhật
 
-- [x] ~~ADR mới~~ — **không viết, và đây là lý do.** `add_resumed` không quyết định gì mới:
+- [x] **[ADR-0034](../decisions/ADR-0034-recovery-is-asked-once-the-counterparty-is-known.md)**,
+      viết khi bước 3 đã dựng xong chứ không trước đó. Ghi chú lúc đóng bước 2 vẫn đúng và giữ
+      lại: ~~không viết, và đây là lý do.~~ `add_resumed` không quyết định gì mới:
       ADR-0010 đã nói engine không đoán và người gọi là người chọn, còn cái này chỉ là chỗ họ
       nói ở tầng engine. **`Recovery` trait thì đúng là cần một ADR** — nó thêm một điểm mở
       rộng công khai và một mặc định phải chứng minh là trung tính — nhưng nó là bước 3 và
@@ -203,3 +205,44 @@ case đều 0; clippy `-D warnings`, `fmt`, `check-links.py` sạch.
 **Trạng thái: bước 1, 2, 4 ĐÓNG. Bước 3 CHƯA LÀM** — `Recovery` trait cho `serve*`. Item 31
 **thu hẹp, không đóng**, và `STATUS.md` nói đúng như vậy: một deployment dùng `serve*` vẫn
 chưa mở lại được phiên nào.
+
+### Bước 3 — `Recovery`, và cái khớp nằm ở chỗ biết được danh tính (2026-09-02)
+
+`crates/engine/src/recovery.rs`: `Recovery<J>`, `Resumed<J>`, `NoRecovery`, `FromFn`. Cộng
+`Engine::add_with_prefix_config_and_state` và hai đường vào mới,
+**`serve_with_recovery`** và **`serve_hft_with_recovery`**.
+[ADR-0034](../decisions/ADR-0034-recovery-is-asked-once-the-counterparty-is-known.md).
+
+**Hỏi ở đúng một chỗ:** trong `pump`, giữa `Registry::lookup` và lúc connection tới engine.
+Trước `Logon` **không có danh tính**, nên không có gì để tra journal. Chỗ đó là luồng acceptor,
+thứ mà ADR-0020 cho phép block — nên một triển khai đọc file là hợp lệ ở đó, và nó **không**
+phải luồng engine, cũng không phải một turn.
+
+**Thêm hàm mới thay vì đổi chữ ký**, và lý do đáng ghi: đổi chữ ký `serve` sẽ lan sang
+`tools/w2w` và `shard.rs`, mà `shard.rs` là Linux-only và **không chạy được trên máy đang
+viết nó**. Một thay đổi có bán kính ảnh hưởng chạm vào code mà người viết không chạy được thì
+nên làm nhỏ lại.
+
+**Hai phép đảo ngược, và chúng đỏ ở hai test *khác nhau* — đó mới là điều đáng nói:**
+
+| Đảo | Đỏ |
+|---|---|
+| `pump` vứt đi thứ `Recovery` trả về | **chỉ** `a_connection_through_the_serving_loop_resumes`; control `serve` thường vẫn xanh |
+| `NoRecovery` bịa ra một phiên (`next_out: 77`) | **chỉ** `the_plain_serving_loop_still_starts_at_one`; test mở lại vẫn xanh |
+
+59/59 xanh qua cả hai. Một cặp test mà hai phép đảo ngược làm đỏ **hai cái khác nhau** là một
+cặp thực sự phân biệt được hai trạng thái, chứ không phải hai cách viết của cùng một khẳng
+định.
+
+**Hai test mới đi qua listener thật và socket thật**, không phải `Loopback`, vì gọi thẳng
+`Engine::add*` chính là thứ đã che lỗ hổng này suốt năm ngày. `Logon` của chúng đóng dấu theo
+đồng hồ tường chứ không theo mốc cố định của corpus — nếu không thì `max_skew_ms` sẽ là thứ
+quyết định kết quả, đúng cái bẫy đã ghi ở
+[two-time-rules-share-one-observable](../reference/two-time-rules-share-one-observable.md).
+
+**Cổng:** `cargo test --all` **321 passed, 0 failed**; `--no-default-features` như vậy; 59/59
+cả hai mode; `alloc` 15 case đều 0; clippy `-D warnings`, `fmt`, links sạch.
+
+**Trạng thái plan: ĐÓNG.** Item 31 đóng. Ba thứ nó không làm thành **item 32** — `serve_sharded_hft`
+chưa có biến thể (cần Linux), `pump` cố định `J = journal::Store` nên `FileJournal` theo từng
+counterparty chưa với tới được, và **không gì lưu `last_active_ms`**.
