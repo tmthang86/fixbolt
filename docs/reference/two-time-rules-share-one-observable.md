@@ -87,9 +87,35 @@ just moved?*
 - Any "this is rejected" assertion where the rejection reason is not in the output.
 
 The cheapest structural defence is to make the reason observable. `[2026-09-02]` this engine
-cannot yet: `STATUS.md` item 30 (d) — *a structured event stream carrying the reason a
-connection ended* — is unbuilt, and had it existed this would have been a one-line read
-instead of an hour.
+could not, and now can: `STATUS.md` item 30 (d) is closed —
+[ADR-0035](../decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md) — and the case
+above would today be a one-line read of `DropReason` instead of an hour.
+
+## It happened twice more the same week, and the second time was not about time at all
+
+`[measured 2026-09-02]` **the shape is not a property of clocks.** Two more instances landed
+within days:
+
+| Where | The two rules | The one observable |
+|---|---|---|
+| A `Logon` refused before a session existed | a `FieldIndex` too small, and a counterparty registry | silence, plus an error message that blamed the registry ([silence-before-a-logon-has-many-causes](silence-before-a-logon-has-many-causes.md)) |
+| An ordered shutdown | *the counterparty answered our `Logout`*, and *the counterparty never answered* | `Link::Dropped` on the next tick, because both went through a state that reports the link down at once |
+
+The third is the sharpest, because **it was created on purpose and caught immediately.** An
+ordered shutdown needs to wait for a reply, and there was an existing state — `AwaitingLogout`
+— that looked like exactly the right one. It was not: it reports the link down **at once** and
+ignores what arrives afterwards, which is correct for the paths it already served. Reusing it
+made every wait vacuous, and *they answered* and *they never answered* produced identical
+observables.
+
+The fix was a separate state, and the test that caught it was one asserting the **reason**
+rather than the outcome — which only existed because of the first two cases in this file.
+
+**So the generalisation is not "watch out for clocks".** It is: *when two conditions with
+different remedies pass through one code path, they will end up with one observable unless
+something forces them apart.* A shared enum variant, a shared error type, a shared state, a
+shared `bool` — the mechanism varies and the failure does not. Ask, of any state you are about
+to reuse: **what does this state already promise, and does my new case want that promise?**
 
 See also
 [a-counter-that-must-be-remembered-is-not-a-counter.md](a-counter-that-must-be-remembered-is-not-a-counter.md):

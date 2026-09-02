@@ -1,6 +1,6 @@
 # Tắt máy có thứ tự
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Xong
 > *(tự viết, tự duyệt theo uỷ quyền thường trực 2026-09-01.)*
 >
 > **Phạm vi:** `STATUS.md` item 30 (a) — **mục cuối cùng của item 30**. Chạm `session` (một
@@ -105,9 +105,10 @@ vận hành phải phân biệt được trước khi khởi động lại.
 
 ## Tài liệu phải cập nhật
 
-- [ ] ADR mới — tắt máy là một lệnh; `begin_logout` tách khỏi `logout_now`; báo cáo nói ra cái nó không làm được
-- [ ] `DESIGN.md` §3; `CHANGELOG.md`; `GUIDE.md`; `STATUS.md` item 30 **(đóng hẳn)**; `PRD.md`
-- [ ] Đi lại bảng §4, đọc lại *Not proven*
+- [x] ADR mới — [ADR-0038](../decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md)
+- [x] `DESIGN.md` §3; `CHANGELOG.md` (**có mục `Changed` đầu tiên của file**); `GUIDE.md`; `STATUS.md` item 30 **đóng hẳn**; `PRD.md`
+- [x] Đi lại bảng §4, đọc lại *Not proven* — thêm năm mục
+- [x] `docs/reference/` — [a-reversal-can-fail-by-hanging](../reference/a-reversal-can-fail-by-hanging.md) mới, và [two-time-rules-share-one-observable](../reference/two-time-rules-share-one-observable.md) được mở rộng vì đây là **lần thứ ba** cùng một hình dạng. Cả hai gắn `[to testing-skills]`
 
 ## Ngoài phạm vi
 
