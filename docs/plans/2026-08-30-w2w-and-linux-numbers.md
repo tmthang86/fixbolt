@@ -247,3 +247,141 @@ chạy trên runner GitHub (cài `strace` qua apt) và xanh ở đó, không ch�
 
 **Còn lại:** nửa B (item 6, 11, 13, và quyết định 12) — **chặn ở một máy đúng §9**, và plan
 dừng ở đó chứ không hạ tiêu chuẩn để đóng.
+
+---
+
+### Nửa B — bước 5, 8, 9, xong 2026-09-02. **Item 6, 11, 13 và quyết định 12 đóng. Phase 1 đóng.**
+
+**Máy:** AMD Ryzen 7 3700X, Linux 7.0.0-30-generic, **máy thật, không phải máy ảo**.
+`scripts/check-machine.sh` đọc **`pass 12  fail 0  unknown 1`** — dòng `unknown` là NIC IRQ
+affinity, và phép đo này chạy qua loopback nên **không có NIC nào để lái**. Dòng lệnh kernel:
+`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, **không `nohz_full`**
+(ADR-0021), **mitigations bật** (ADR-0023). Sáu dòng bật lúc chạy bằng
+`sudo -n fixbolt-machine on` và `smtoff`.
+
+**Sửa plan — ba chỗ, và cả ba là chuyện của *dụng cụ đo*, không phải của engine.** Bước 5 nói
+"đo baseline wire-to-wire" như thể chỉ cần chạy. Không phải:
+
+1. **`tools/w2w` không ghim luồng nào.** §9 đòi *pinned threads*, và chính lời từ chối mà
+   `w2w` in ra mỗi lần chạy cũng gọi tên nó — nhưng binary không có cách nào để ghim. Nghĩa là
+   **một lần chạy trên cái máy hoàn hảo vẫn không phải một lần chạy §9**, và điều đó đúng suốt
+   ba ngày mà không ai thấy. Nay có `--engine-core` / `--client-core`, đi qua
+   `fixbolt_engine::affinity` (ADR-0015: ghim từ bên trong luồng, đọc lại từ scheduler), và
+   **từ chối một core mà `isolcpus` không gọi tên** trừ khi được bảo `--allow-unisolated`.
+   `[đo 2026-09-02]` ghim vào `cpu2` không cô lập **thành công** và in `engine-core: cpu2` —
+   đọc lên như một lần chạy §9, mà không phải.
+2. **`w2w` in p50, p99, `max` — không in p99.9**, đúng cái phân vị mà tiêu chí 6 gọi tên.
+3. **Chỉ đo vòng hành chính.** Chỗ này plan đã tự ghi từ 2026-08-30 rằng echo ứng dụng thuộc
+   nửa B, nên đây là làm đúng plan chứ không phải sửa nó. `--path app` lái
+   **`NewOrderSingle` → `ExecutionReport`** qua một application giữ `Template` dựng **một lần**
+   lúc khởi động — hình dạng D9 mô tả. Nó **không phải** `crates/library/examples/shared/order_handler.rs`
+   (bản `Desk` duy nhất), vì bản đó viết trên API `Handler`/`Reply` của tầng library, và
+   template mỗi message của tầng đó **chính là open item 34** — đo qua nó là đo item 34, không
+   phải đo §8.
+
+**Bước 5 — con số.** Trung vị của **20 lần chạy nguyên** mỗi arm, mỗi lần 20 000 vòng khứ hồi
+sau 2 000 warmup, `scripts/w2w-baseline.sh` (script mới, cam kết vào repo — rule 10 đòi
+benchmark đi kèm con số, và một trung vị 20 lần cần một cái runner chứ không cần một đoạn văn
+kể lại ai đã gõ gì):
+
+| Mode | Path | min | p50 | p99 | p99.9 | run hợp lệ | spread |
+|---|---|---|---|---|---|---|---|
+| `hft` | admin | 15 810 | **16 010** | **20 589** | **22 127** | 20 / 20 | 1.006 |
+| `hft` | app | 17 288 | **19 908** | **24 657** | **26 150** | 20 / 20 | 1.005 |
+| `standard` | admin | 16 020 | **19 447** | **24 106** | **25 609** | 16 / 20 | 1.003 |
+| `standard` | app | 17 624 | **20 920** | **25 618** | **27 092** | 19 / 20 | 1.005 |
+
+**Năm lần chạy bị loại, và bị loại bởi đúng cái guard tồn tại để loại chúng**: Chrome thức dậy
+trên các core housekeeping, `w2w-baseline.sh` đọc lại CPU busy **trước từng lần chạy**. Sau đó
+`standard / admin` được đo lại 10 lần, **0 bị loại**, đọc **19 451** so với 19 447 — lệch 0,02%.
+Đây là quy tắc *"một lần chạy không phải một phép đo"* áp cho chính phép đo này.
+
+**Bốn phát hiện.** Chi tiết ở [measured-costs.md](../reference/measured-costs.md):
+
+1. **Thiết kế này sở hữu 2,9% vòng khứ hồi**, và lần đầu tiên **cả hai nửa của phép chia đều
+   được đo**. §8 nói "dưới 5%" từ ngày nó được viết, trên một mẫu số đi vay.
+2. **`hft` hơn `standard` 3 437 ns — 17,7%** trên đúng cùng một đường. Đó là toàn bộ lý lẽ của
+   D8, và nó cũng định giá dòng wakeup của §8 ở **~3,9 µs** (hiệu số cộng với vòng quét 449 ns
+   mà nó thay thế) — nằm trong khoảng 2–5 µs mà §8 vay từ tài liệu.
+3. **Ghim vào core cô lập không mua được gì ở p50 và mua 11× ở p99.9.** Một biến, hai arm cùng
+   một CCD: p50 **19 968 so với 19 407** — core cô lập **chậm hơn 2,9%** — còn p99.9
+   **26 300 so với 266 887**, và **293 749** khi không ghim gì. §9 từng ghi rằng lợi ích của
+   `isolcpus` là **chưa đo được**; thứ không thấy được nó là **cái dụng cụ đo**. Một benchmark
+   500 ns không có p99.9 nào đọc được, mà cái stall nó ngăn dài 250 µs. **Ngược hẳn với
+   `nohz_full`**, cái tệ hơn ở p50, p99 *và* p99.9 và chỉ thắng từ p99.99.
+4. **Dòng parse của §8 không mô tả việc engine làm với một message vào.** Vòng app cao hơn vòng
+   admin **3 898 ns**, và tất cả benchmark đã cam kết cộng lại chỉ giải thích được **~320 ns**.
+   Ứng viên lớn nhất: **lượt kiểm tra dictionary của session** — mỗi field bị hỏi
+   `is_defined_tag`, `field_type`, `allows`, `enum_allows`, cộng `view.get` một lần cho mỗi tag
+   bắt buộc — và **không benchmark nào đo nó**, vì `benches/parse.rs` parse với `NoDict`. **Ghi
+   là một khoảng trống, không suy thành nguyên nhân**: `[đo 2026-08-30]` dự án này đã từng công
+   bố một nguyên nhân sai suốt một ngày trên đúng dạng số học này. Open item **39**.
+
+**Bước 8 — item 12 đóng bằng dữ liệu, và đó là [ADR-0045](../decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md).**
+Điều kiện của chính item 12 là *"chỉ làm khi `benches/parse.rs` trên máy Linux cho thấy parse
+nằm trên đường găng"*. `[đo 2026-09-02]` parse là **0,62%** vòng app và **0,36%** vòng admin;
+mức lợi 20–40 ns mà item tự ước lượng là **0,10–0,20%**, **nhỏ hơn spread 0,5% của chính cái
+dụng cụ phải nhìn thấy nó**. ADR nói rõ **con số 20–40 ns cũng không phải một phép đo** — không
+ai viết SWAR nào — chỉ mẫu số là được đo. Và ADR gọi tên **một** điều mở lại nó: một transport
+bỏ được số hạng kernel (item 14).
+
+**Bước 9 — tài liệu.** `DESIGN.md` §6 tách thành **hai** dòng wire-to-wire: dòng loopback,
+**đạt**, và dòng NIC-to-NIC, **mở** (open item **40**) — loopback không có driver, không có
+interrupt, không có dây. §8 có bảng khứ hồi đo được ở đầu mục và dòng parse nói rõ nó **không**
+bao gồm lượt dictionary. §9 dòng `isolcpus` thay câu "lợi ích chưa đo được" bằng phép đo. `PRD.md`
+§2 tiêu chí 6 **đạt**. `GUIDE.md` §1 và §7 có ràng buộc mới (*ghim vào core cô lập, và trình
+biên dịch không kiểm được*) — **và bảng §1 được sửa: nó vẫn đang dựng trên 703 ns**, con số mà
+ADR-0021 đã thay bằng 449 từ 2026-08-31, cùng với câu *"core cô lập là cái đắt, 36%"* mà thực ra
+là của `nohz_full`. Đó là hai đoạn cũ, không phải do lần này gây ra, và sửa vì `CLAUDE.md` §4:
+tài liệu cũ tệ hơn không có tài liệu.
+
+**Cổng, chạy và đọc chứ không suy:**
+
+```
+445 passed / 0 failed   cargo test --all
+442 passed / 0 failed   cargo test --all --no-default-features
+clean                   cargo clippy --all-targets -- -D warnings
+clean                   cargo clippy --all-targets --features affinity -- -D warnings
+clean                   cargo fmt --all --check
+GREEN + RED ok          scripts/check-no-kernel-sleep.sh          (standard trips it: 7 poll)
+GREEN + 2 RED ok        scripts/check-standard-gives-the-core-back.sh  (hft 99.59%, yield 100.04%)
+ok                      scripts/check-no-optional-deps.sh
+RED + GREEN ok          scripts/check-lint-config.sh
+no dead internal links  scripts/check-links.py
+RED                     scripts/bench.sh --strict   <-- xem dưới
+```
+
+**`bench.sh --strict` ĐỎ, và phải nói ra chứ không được im.** Nó đỏ **trước** phiên này:
+`git diff origin/main -- crates/` **rỗng** cho nhánh đóng phase 1. Hai case vượt band và
+**lặp lại 6 trên 6 lần chạy** trên máy đọc 0–1% busy: `encode ExecutionReport (template)`
+**274,2 · 279,6 · 275,5 · 283,3 · 275,0 · 279,4 ns** so với trần 263,0 (**+16%**), và
+`presession, read and route an identity` **201,3 · 197,9 · 201,6 · 202,2 · 209,3 · 205,7 ns**
+so với 92,4 (**+140%**). Năm case **không có baseline cho CPU này**, và đó là thứ làm `--strict`
+thoát khác 0. **Mọi case còn lại trong band**, kể cả `parse NewOrderSingle (validated)` ở
+119,8–121,7 so với 122,6 — chính là con số ADR-0045 dựa vào. **Không sửa ở đây**: Rule Zero, một
+bản sửa cần plan riêng. Open item **41**.
+
+**Một lỗi cùng loại, tìm ra sau khi commit đầu đã push, và sửa ngay.** `--mode` không hợp lệ
+**thoát 0**: nó in lời phàn nàn ra stderr rồi `return Ok(())`, nên `w2w --mode standrad` báo
+thành công và không đo gì. Đúng hình dạng của cái bug `--mode standard` mà comment trong
+`Cargo.toml` được viết ra vì nó, và đúng hình dạng của một `--engine-core` ghim-mà-không-ghim.
+Nay là `Err`. Và `w2w-baseline.sh` **đọc lại `mode:` và `path:` từ chính output của binary**,
+giống việc `check-no-kernel-sleep.sh` đã học làm — một lỗi chính tả trong `ARMS` không được
+lặng lẽ sinh ra một cột số cho arm khác. **Đảo ngược, chạy thật:** cho `Mode::Standard::name()`
+trả về `"hft"` → runner đỏ với `ran a mode other than 'standard'`; bỏ ra → xanh.
+
+**Và mẻ đo chính đã chạy *trước khi* cổng đọc-lại đó tồn tại**, nên bốn arm được đo lại 3 lần
+mỗi arm với cổng bật, để chứng minh chúng đúng là arm chúng khai. Mọi p50 khớp trung vị đã
+công bố trong **0,35%**: 16 020 / 19 978 / 19 477 / 20 940 so với 16 010 / 19 908 / 19 447 /
+20 920. Ba bằng chứng độc lập nữa nói cùng điều: hai mode lệch 17,7% nên chúng chạy code khác
+nhau; `check-standard-gives-the-core-back.sh` đọc `standard` ở 0,31% CPU và `hft` ở 99,59%; và
+ba assertion trong binary (`35=8`, `ClOrdID`, `150=F`) chỉ xanh trên đường app.
+
+**CI xanh cho đúng commit được đóng** — `31623fe`, PR
+[#31](https://github.com/tmthang86/fixbolt/pull/31), runs [`33644573232`](https://github.com/tmthang86/fixbolt/actions/runs/33644573232) and [`33644576288`](https://github.com/tmthang86/fixbolt/actions/runs/33644576288), **20 check trên 20**.
+Đây là hộp cuối của §9, và nó tồn tại vì một cái laptop chỉ nói cổng xanh *với mình*, còn CI
+mới nói cổng xanh *với commit*.
+
+**Còn lại:** không còn gì của plan này. **Phase 1 hết tiêu chí mở, hết cấu phần chưa dựng, hết
+quyết định treo.** Những gì mở trong `STATUS.md` là việc phase 1 chưa từng đòi: item 39, 40, 41,
+34, 36, 38.

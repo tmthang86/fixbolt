@@ -135,20 +135,34 @@ Every one is a command that either passes or fails. A criterion nobody can run i
 | 3 | Dictionary validation | Required fields, field types, enum values, unknown tags, group structure — generated from XML, with `<component>` recursion. `[measured 2026-08-28]` **the tables exist**: 912 tags, 93 message types, 12 524 (message, tag) pairs, 23 field types, 1 708 enum values. **Applied by the session as of step 3** — all twelve `373` codes are produced, and a test asserts that rather than inferring it from the file count. `[2026-08-29]` one type rule was wrong and the corpus caught it: `SEQNUM` refused `0`, on a rule this project invented and an invented test that agreed with it |
 | 4 | Both sides | Acceptor 59/59 — **met**. Initiator interop-green against `libquickfix` in CI — **MET 2026-09-02**, [ADR-0042](decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md). `scripts/interop.sh` builds QuickFIX at the pinned commit, runs it as an acceptor, and drives this engine's initiator through logon → application messages in → an unprompted heartbeat → a `TestRequest` with our own `112=` → a `ResendRequest` answered by replay → a gap this end opens and gap-fills → logout: **7 / 7**, blocking in CI. `[measured 2026-09-02]` **its first run found that the initiator answered a `Logon` with a `Logon`** — green in `--test score` at 59/59, in `--test mirror` at 0/50 as asserted, and in 430 other tests. The mirrored corpus is now the *secondary* gate and reads **2 / 50** with its ceiling at 45 — five files ask this end to send a message a correct engine cannot; `STATUS.md` open item 36 names them and what getting to 45 needs |
 | 5 | Allocations on the hot path | **0**, proven by `benches/alloc.rs`. `[measured 2026-08-30]` **met on every crate that has a hot path**: codec 3 cases, session 13, engine 7, each proven by injection |
-| 6 | Wire-to-wire | p50 / p99 / p99.9 published from `tools/w2w` on Linux with the §9 settings stated. **NOT MET, and the only criterion blocked on hardware.** `[measured 2026-09-02]` the tool was run on a shared 4-vCPU cloud VM (Intel Xeon @ 2.80GHz, Linux 6.18.44): `hft` p50 34 087 ns / p99 98 492 ns, `standard` p50 54 787 ns / p99 131 276 ns, 20 000 samples after 2 000 warmup. **Those are not the figures this row asks for and do not close it** — no isolated cores, no `nohz_full`, no frequency pinning, and `w2w` prints that refusal itself on every run. They are recorded in `STATUS.md`'s *Not proven*, with the machine, so that the next §9 run has something to be compared against and not so that anybody can quote them |
+| 6 | Wire-to-wire | p50 / p99 / p99.9 published from `tools/w2w` on Linux with the §9 settings stated. **MET 2026-09-02.** §9 desktop — AMD Ryzen 7 3700X, Linux 7.0.0-30-generic, bare metal, `scripts/check-machine.sh` **`pass 12  fail 0  unknown 1`**, `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, no `nohz_full` (ADR-0021), mitigations in force (ADR-0023) — engine pinned to isolated `cpu6` and the client to `cpu7`, medians of **20 whole runs of 20 000 timed round trips** each, over loopback: `hft` **16 010 / 20 589 / 22 127 ns** administrative and **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. Run-to-run spread of the p50 is **0.3–0.6%** across those runs, and `standard / admin` reproduced at **19 451** on an independent 10-run pass. Allocations inside the timed window **0**, counted by the binary on both threads and proven by reversal. `scripts/w2w-baseline.sh` is the procedure; [measured-costs.md](reference/measured-costs.md) is the reading. **What this does NOT close**: `DESIGN.md` §6's *NIC to NIC* row — loopback has no driver, no interrupt and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure here. That is `STATUS.md` open item **40** |
 | 7 | Builds clean | `cargo clippy -D warnings`, `--no-default-features`, no `unwrap`/`expect`/`panic` in a library crate |
 
-**Where the criteria stand on 2026-09-02, after the interop gate closed.** 1, 2, 3, **4**, 5
-and 7 are met. **6 is not, and it is the only one left:**
+**Where the criteria stand on 2026-09-02, after the wire-to-wire measurement. PHASE 1'S EXIT
+CRITERIA ARE ALL MET — 1 through 7.** Criterion 6 was the last, and it closed the way it was
+always going to: not by a decision and not by code, but by taking the binary to a machine that
+matches §9 and reading what it said.
 
-- **6 — wire-to-wire** needs `tools/w2w` and **a Linux box matching §9**, which is not the
-  same thing as a Linux box. `[measured 2026-09-02]` the binary runs in both modes on an
-  ordinary shared VM and prints figures; §9 is what makes a figure publishable, and this row
-  stays open until one is. Open item 6.
+Two things the tick does **not** buy, stated here so they are not read into it:
 
-**`DESIGN.md` §7's build order is complete as of 2026-09-02**, and criterion 4 closed the same
-day. So what remains of phase 1 is **one exit criterion, no unbuilt component, and no open
-decision**: criterion 6 wants a machine, and nothing that can be typed here will produce one.
+- **The figures are loopback.** `DESIGN.md` §6 carries a second, stricter wire-to-wire row —
+  NIC to NIC, `SO_TIMESTAMPING`, a load generator on a separate machine — and that row is
+  **open**, as open item 40. A round trip with no NIC in it is a real measurement of everything
+  except the NIC.
+- **`tools/w2w` needed work to be able to satisfy §9 at all**, and that is worth saying rather
+  than hiding in a commit. Until 2026-09-02 the binary **pinned no threads**, so no run of it
+  could have met a checklist row that asks for pinned threads however well the box was tuned —
+  and it printed p50, p99 and `max` but **not p99.9**, which is the one percentile this
+  criterion names. Both are fixed; the flag that pins **refuses** rather than shrugs when the
+  build cannot ([ADR-0015](decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md)),
+  and CI has a step whose only job is to see that refusal happen.
+
+**`DESIGN.md` §7's build order is complete as of 2026-09-02**, criterion 4 closed the same day,
+and criterion 6 closed that evening on the owner's §9 desktop. So **phase 1 has no unbuilt
+component, no open exit criterion and no open decision.** What is left in `STATUS.md` is work
+that phase 1 never asked for: the NIC-to-NIC row (item 40), the dictionary pass the wire
+measurement found nobody had ever timed (item 39), the library layer's per-message template
+(item 34), and the mirrored corpus's ceiling (item 36).
 
 **What criterion 4 did NOT buy**, stated here so it is not read into the tick: the interop gate
 is *one scenario against one counterparty*, not a second conformance corpus. It does not cover
