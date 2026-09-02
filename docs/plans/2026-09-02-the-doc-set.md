@@ -408,4 +408,32 @@ Cố ý **không** làm:
 
 ## Nhật ký giao hàng
 
-*(điền khi đóng từng phase)*
+### Phase A — đóng 2026-09-02
+
+**Đã dựng gì.**
+
+- **A0** — `STATUS.md`: **item 33** vào bảng đánh số, một dòng vào bảng *Plan → Closes*, và hai ô
+  *Where the work is* + *Plan in flight* nay nêu tên plan. Item viết theo giọng các item khác:
+  nêu cái **đã đo**, không nêu ý định.
+- **A1** — `README.md:23` nói `standard` *"decided and not yet built"*; nó là mặc định từ
+  2026-08-30. Và `GUIDE.md:331` đóng fence có chữ trên cùng dòng, nên CommonMark giữ block mở và
+  câu về `allow_unisolated()` render thành code.
+- **A2** — `README.md` có mục **Where to start**: bootstrap, rồi thứ tự đọc theo lý do người đọc
+  có mặt. Các con trỏ tài liệu đang chôn trong khối Status được gỡ, để thứ tự đọc có **một** chỗ.
+
+**Gate nào xanh.** `scripts/check-links.py` exit 0, **947 link**. `cargo fmt --all -- --check`
+exit 0. `cargo test` và `cargo clippy` **không chạy và không áp dụng**: `git diff --name-only`
+ra ba file `.md`, không có Rust nào đổi. **CI xanh trên đúng commit được đóng, `37cb3c5`, run
+[`33608929249`](https://github.com/tmthang86/fixbolt/actions/runs/33608929249), 9 job / 9.**
+
+**Đảo ngược đã chạy.** Trước khi commit plan, một link chết được thêm vào chính file plan:
+`check-links.py` đỏ và nêu đúng `docs/plans/2026-09-02-the-doc-set.md:413`; gỡ ra, xanh lại, và
+file `diff` giống bản backup. Nên gate **có đọc** file mới, chứ không phải xanh vì bỏ qua nó.
+
+**Một khẳng định được kiểm chứ không đoán.** Mục Where-to-start nói *"skip the script and the
+build fails"*. Đã mở `crates/dict/build.rs:37` đọc: nó `die` khi
+`vendor/quickfix/spec/FIX44.xml` vắng và **tự nêu tên script**. Nếu không đọc thì đó là một câu
+văn xuôi khẳng định hành vi runtime mà không có gì chứng minh — đúng thứ §4 cấm.
+
+**Cái gì chưa làm và vì sao.** B, C, D chưa bắt đầu. E vẫn chặn trên `library`
+(`DESIGN.md` §7 bước 8, chưa có plan). **Không có số đo mới nào** được sinh ra ở phase này.
