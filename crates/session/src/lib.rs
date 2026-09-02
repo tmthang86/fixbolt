@@ -2402,12 +2402,19 @@ fn rebuild(
     let begin_end = src.iter().position(|b| *b == SOH)?;
     let begin = src.get(2..begin_end)?;
 
-    let mut b = TemplateBuilder::<128, 1024>::new(begin).field(tag::SENDING_TIME, now);
+    // **Bound first, then mutated in place.** `TemplateBuilder`'s methods take
+    // `&mut self` since 2026-09-02 — moving an `S`-byte struct per field was
+    // 48% of a reply, and `S` here is 1024
+    // ([ADR-0044](../../../docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)).
+    // This path rebuilds a template **per resent message**, so it is one of the
+    // two that pays for it.
+    let mut b = TemplateBuilder::<128, 1024>::new(begin);
+    b.field(tag::SENDING_TIME, now);
     if resend {
-        b = b.field(tag::POSS_DUP_FLAG, b"Y");
+        b.field(tag::POSS_DUP_FLAG, b"Y");
     }
     if let Some(n) = seq {
-        b = b.field(tag::MSG_SEQ_NUM, n);
+        b.field(tag::MSG_SEQ_NUM, n);
     }
 
     for f in src.get(at_35..at_10)?.split(|c| *c == SOH) {
@@ -2424,9 +2431,13 @@ fn rebuild(
             tag::MSG_SEQ_NUM if seq.is_some() => {}
             // The clock the message first went out on becomes `122=`, and the
             // one above stands as `52=`.
-            tag::SENDING_TIME if resend => b = b.field(tag::ORIG_SENDING_TIME, value),
+            tag::SENDING_TIME if resend => {
+                b.field(tag::ORIG_SENDING_TIME, value);
+            }
             tag::SENDING_TIME => {}
-            _ => b = b.field(tag, value),
+            _ => {
+                b.field(tag, value);
+            }
         }
     }
 

@@ -33,12 +33,13 @@ impl Dictionary for D {
 }
 
 fn base() -> TemplateBuilder<16, 256> {
-    TemplateBuilder::new(b"FIX.4.4")
-        .field(35, b"D")
+    let mut b = TemplateBuilder::new(b"FIX.4.4");
+    b.field(35, b"D")
         .field(49, b"ME")
         .field(56, b"YOU")
         .slot(34)
-        .slot(52)
+        .slot(52);
+    b
 }
 
 fn positions(wire: &[u8], tag: u32) -> Vec<usize> {

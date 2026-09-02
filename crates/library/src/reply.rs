@@ -169,8 +169,8 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
     pub fn message(self, msg_type: &[u8]) -> Message<'a, P, S> {
         let mut seq = [0u8; 10];
         let seq = render_u32(self.seq, &mut seq);
-        let b = TemplateBuilder::<P, S>::new(self.begin_string)
-            .field(35, msg_type)
+        let mut b = TemplateBuilder::<P, S>::new(self.begin_string);
+        b.field(35, msg_type)
             .field(34, seq)
             .field(49, self.sender)
             .field(52, self.stamp)
@@ -207,12 +207,11 @@ impl<const P: usize, const S: usize> Message<'_, P, S> {
     /// A tag the session owns (`34`, `49`, `52`, `56`) is **ignored**: the
     /// session's value is already in the message and writing a second copy
     /// would put two of the same tag on the wire.
-    #[must_use]
-    pub fn field(mut self, tag: u32, value: &[u8]) -> Self {
+    pub fn field(&mut self, tag: u32, value: &[u8]) -> &mut Self {
         if SESSION_OWNED.contains(&tag) {
             return self;
         }
-        self.b = self.b.field(tag, value);
+        self.b.field(tag, value);
         self
     }
 
@@ -221,15 +220,14 @@ impl<const P: usize, const S: usize> Message<'_, P, S> {
     ///
     /// The counter's *value* is never stated: it is the number of entries, so
     /// the two cannot disagree.
-    #[must_use]
-    pub fn group(mut self, counter: u32) -> Self {
-        self.b = self.b.group(counter);
+    pub fn group(&mut self, counter: u32) -> &mut Self {
+        self.b.group(counter);
         self
     }
 
     /// Write the message. The answer is what [`crate::Handler`] returns.
     #[must_use]
-    pub fn send(self) -> Answer {
+    pub fn send(&mut self) -> Answer {
         self.send_with_groups(&[])
     }
 
@@ -239,12 +237,12 @@ impl<const P: usize, const S: usize> Message<'_, P, S> {
     /// Groups are passed at the call rather than stored, so nothing here
     /// borrows a caller's stack for longer than one statement.
     #[must_use]
-    pub fn send_with_groups(self, groups: &[GroupData<'_>]) -> Answer {
+    pub fn send_with_groups(&mut self, groups: &[GroupData<'_>]) -> Answer {
         if let Some(e) = self.err {
             return Answer::Failed(e);
         }
         match self.b.build::<Fix44>() {
-            Ok(t) => match t.encode_with::<Fix44>(self.out, &[], groups) {
+            Ok(t) => match t.encode_with::<Fix44>(&mut self.out[..], &[], groups) {
                 Ok(r) => Answer::Sent(r),
                 Err(e) => Answer::Failed(ReplyError::Encode(e)),
             },

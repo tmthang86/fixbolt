@@ -110,6 +110,21 @@ below describe what a first release would contain.
 
 ### Changed
 
+- **`fixbolt_codec::TemplateBuilder`'s `field`, `slot`, `group` and `build` take `&mut self`.**
+  [ADR-0044](docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md). They took `self`
+  by value, so an `S`-byte struct was copied **once per field** — with `S = 1024` that is
+  kilobytes of memcpy to add a few bytes. `[measured 2026-09-02, on a machine that fails §9]`
+  `library, reply only` **1 549 → 766 ns/op (−51%)**, `library, on_message` **1 594 → 956 ns
+  (−40%)**, with `library, parse only` unmoved at 144 → 146 ns as the control.
+  **Chaining is unchanged where the chain starts from a temporary** — Rust auto-refs it — so
+  `crates/session/src/out.rs` and its ~70 chained calls did not change at all. A call site that
+  binds the chain to a variable now binds first and mutates after.
+- **`fixbolt::Message`'s `field`, `group`, `send` and `send_with_groups` follow**, which keeps
+  the handler shape identical: `reply.message(b"8").field(37, id).send()`.
+  ADR-0041's published ratio moves from ~50× the 40 ns template path to **~24×**; the rest is
+  the `Template` still being materialised per message, and `STATUS.md` item 34 stays open with
+  766 ns as the number to beat.
+
 - **`Engine::run`, `serve`, `serve_hft` and `serve_with_recovery` return instead of never
   returning.** `run()` was `-> !` and the `serve*` family was
   `Result<core::convert::Infallible, ServeError>`; they now hand back a

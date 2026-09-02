@@ -55,7 +55,7 @@ fn template_of(view: &MessageView<'_, 64>) -> Option<Template<64, 2048>> {
         if matches!(tag, 8..=10) {
             continue;
         }
-        b = b.field(tag, value);
+        b.field(tag, value);
     }
     b.build::<Fix44>().ok()
 }

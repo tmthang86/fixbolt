@@ -51,12 +51,10 @@ const VALS: [&[u8]; 14] = [
 ];
 
 fn template() -> fixbolt_codec::Template<32, 512> {
-    let mut tb = TemplateBuilder::<32, 512>::new(b"FIX.4.4")
-        .field(35, b"8")
-        .field(49, b"ISLD")
-        .field(56, b"TW44");
+    let mut tb = TemplateBuilder::<32, 512>::new(b"FIX.4.4");
+    tb.field(35, b"8").field(49, b"ISLD").field(56, b"TW44");
     for tag in TAGS {
-        tb = tb.slot(tag);
+        tb.slot(tag);
     }
     tb.build::<NoDict>().expect("template builds")
 }
@@ -194,5 +192,51 @@ fn data_length_survives_any_order() {
         wire.windows(needle.len()).any(|w| w == needle),
         "expected 95=5 immediately in front of 96, got {:?}",
         String::from_utf8_lossy(&wire)
+    );
+}
+
+/// **Building twice gives the same template.**
+///
+/// `[measured 2026-09-02]` `TemplateBuilder::build` took `self` by value until
+/// today, so this question could not be asked. It takes `&mut self` now — the
+/// per-field moves of an `S`-byte struct were 48% of a `fixbolt::Reply`
+/// ([ADR-0044](../../../docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md))
+/// — and a method that mutates in place and is callable twice owes an answer
+/// about the second call.
+///
+/// It sorts `entries` in place, and sorting an already-sorted list is the same
+/// list. That is an argument; this is the test.
+#[test]
+fn building_twice_gives_the_same_template() {
+    let mut buf_a = [0u8; 256];
+    let mut buf_b = [0u8; 256];
+
+    let mut b = TemplateBuilder::<16, 128>::new(b"FIX.4.4");
+    b.field(35, b"D")
+        .field(49, b"ME")
+        .field(56, b"YOU")
+        .slot(34)
+        .slot(52)
+        .field(11, b"ORD-1");
+
+    let first = b.build::<NoDict>().expect("a legal template");
+    let second = b.build::<NoDict>().expect("and again");
+
+    let ra = first
+        .encode(&mut buf_a, &[(34, b"7"), (52, b"20260828-12:00:00.000")])
+        .expect("encodes");
+    let rb = second
+        .encode(&mut buf_b, &[(34, b"7"), (52, b"20260828-12:00:00.000")])
+        .expect("encodes");
+
+    assert_eq!(
+        buf_a[ra.clone()],
+        buf_b[rb],
+        "a builder that mutates in place must be idempotent, or the second \
+         message a caller sends is not the one they wrote"
+    );
+    assert!(
+        String::from_utf8_lossy(&buf_a[ra]).contains("35=D"),
+        "and the premise: it really did build something"
     );
 }

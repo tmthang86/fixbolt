@@ -473,13 +473,16 @@ list of traps you are now responsible for.
 | | ns/op |
 |---|---|
 | Encode a `Template` you built **once** — [D9](DESIGN.md)'s shape | **40** |
-| `App::on_message`: parse, build a template, encode | **2 062 – 2 131** |
-| …of which the second parse is | 188 – 195 |
+| `App::on_message`: parse, build a template, encode | `[2026-09-02]` **956**, and it was 2 062 – 2 131 until `TemplateBuilder` stopped moving itself once per field ([ADR-0044](decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)) |
+| …of which the second parse is | **146** |
 
-**About 50×.** The parse is the small half; building a `Template` per message is ~91% of it.
+**About 24×, and it was 50× this morning.** The parse is the small half. What is left is that a
+`Template` is **materialised per message** — sorted, and its scratch laid out — where D9's shape
+builds it once; `TemplateBuilder` no longer copies itself once per field, which was the other
+half ([ADR-0044](decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)).
 `crates/library/benches/cost.rs` is the benchmark and
 [ADR-0041](decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md) is
-the decision, including what would remove it.
+the decision that published the original ratio, including what would remove the rest.
 
 **So:**
 

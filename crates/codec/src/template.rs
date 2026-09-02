@@ -192,7 +192,7 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
     }
 
     /// A field whose value never changes for this session and message type.
-    pub fn field(mut self, tag: u32, value: &[u8]) -> Self {
+    pub fn field(&mut self, tag: u32, value: &[u8]) -> &mut Self {
         if let Err(e) = self.push_field(tag, value) {
             self.err.get_or_insert(e);
         }
@@ -202,7 +202,7 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
     /// A field supplied at send time. Absent from `slots` means the field is
     /// simply not written — `35=3` alone takes eight different field sets in the
     /// acceptance corpus, so one rigid template could not serve it.
-    pub fn slot(mut self, tag: u32) -> Self {
+    pub fn slot(&mut self, tag: u32) -> &mut Self {
         if let Err(e) = self.push_slot(tag) {
             self.err.get_or_insert(e);
         }
@@ -212,7 +212,7 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
     /// A repeating group hole. The counter tag takes its ordinary ascending
     /// place among the body tags; the entries after it are ordered by the
     /// dictionary, not by this call.
-    pub fn group(mut self, counter: u32) -> Self {
+    pub fn group(&mut self, counter: u32) -> &mut Self {
         if let Err(e) = self.push_group(counter) {
             self.err.get_or_insert(e);
         }
@@ -223,7 +223,7 @@ impl<const P: usize, const S: usize> TemplateBuilder<P, S> {
     ///
     /// The dictionary decides header from body. No call site ever chooses an
     /// order, which is what non-negotiable 5 asks for.
-    pub fn build<D: Dictionary>(mut self) -> Result<Template<P, S>, EncodeError> {
+    pub fn build<D: Dictionary>(&mut self) -> Result<Template<P, S>, EncodeError> {
         if let Some(e) = self.err {
             return Err(e);
         }

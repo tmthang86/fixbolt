@@ -103,7 +103,8 @@ Phase 1 — a FIX 4.4 engine you can actually deploy          ← all current wo
                                seam, a curated re-export facade, and a worked acceptor in
                                examples/ that the end-to-end test drives through a real
                                socket. ADR-0041 publishes what the convenience costs —
-                               ~2.1 us a reply against 40 ns for a template built once —
+                               956 ns a reply against 40 ns for a template built once (it
+                               was ~2.1 us until ADR-0044) —
                                and the raw Application seam is untouched
   └── interop               ← DONE 2026-09-02. tools/interop + scripts/interop.sh + a blocking
                                CI job: this engine's initiator against a real libquickfix,

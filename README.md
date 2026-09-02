@@ -43,7 +43,9 @@ its session count.**
 > `library` exists**: `crates/library`, package `fixbolt`, with a worked acceptor in
 > `examples/` that the end-to-end test drives through a real socket. It is a **convenience
 > layer and not the `hft` path** — `[measured 2026-09-02, on a machine that fails §9]` a reply
-> through it costs ~2.1 µs against 40 ns for a template built once, and
+> through it costs **~956 ns** against 40 ns for a template built once — it was ~2.1 µs until
+> [ADR-0044](docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md) stopped
+> `TemplateBuilder` copying itself once per field — and
 > [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)
 > is that number, why it is accepted, and what would remove it. The raw
 > `fixbolt_session::Application` seam is untouched and stays the way to write a handler that
