@@ -405,7 +405,16 @@ pub fn run_scenario_counting<S: SessionUnderTest>(
                 // Acceptor runs never take this branch. Every `E` line there is
                 // an answer, and a harness able to originate would be able to
                 // make a broken session look correct.
+                //
+                // `pending.is_empty()` is not decoration either: `[measured
+                // 2026-09-02]` without it the harness drove **179** times
+                // instead of 141, 38 of them while the session had already
+                // answered — an extra message on the wire that no line asked
+                // for. The score was the same either way, which is what makes
+                // the drive count worth asserting: two harnesses can reach
+                // `2 / 50` and one of them is talking over the session.
                 if s.mirrored
+                    && pending.is_empty()
                     && !dropped.contains(&conn)
                     && let Some(intent) = intent_of(&m.wire)
                 {

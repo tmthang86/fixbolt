@@ -55,11 +55,17 @@ With the two fields made real — nothing else changed, no session code touched 
   10_MsgSeqNumEqual.def:8   FieldCount { expected: 10, actual: 8 }
   10_MsgSeqNumEqual.def:9   Value { at: 1, tag: 9, expected: 62, actual: 61 }
   …
-  harness originated: 0×48 1×24 2×10 4×10 5×38 app×49
+  harness originated: 0×42 1×21 2×3 4×10 5×30 app×35
 ```
 
-179 originations instead of 1, and the failures are now **protocol disagreements with values in
+141 originations instead of 1, and the failures are now **protocol disagreements with values in
 them** instead of one silence repeated.
+
+**A footnote worth its own line.** The first working version drove **179** times, not 141: 38 of
+those were the harness speaking while the session had *already answered*, putting a message on
+the wire no line asked for. **The score was 2 / 50 either way.** That is the argument for
+asserting the drive count next to the score rather than instead of trusting it — two harnesses
+can reach the same number and one of them is talking over the thing it is measuring.
 
 ## The lesson, stated without FIX
 
@@ -85,7 +91,7 @@ The three parts worth keeping:
 
 `fixbolt_conformance::script::make_receivable`, whose doc comment names both fields and says why
 each is substituted. The reversal: removing it takes the mirrored score from 2 / 50 back to
-0 / 50 and the drive counts from 179 back to 1 — and `crates/session/tests/mirror.rs` asserts
+0 / 50 and the drive counts from 141 back to 1 — and `crates/session/tests/mirror.rs` asserts
 both numbers, so it goes red on either.
 
 **It substitutes exactly two fields and nothing else.** A message whose `52=` is a *deliberately*

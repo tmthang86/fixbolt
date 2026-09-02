@@ -216,18 +216,24 @@ fn the_mirrored_corpus_with_an_operator_at_the_keyboard() {
     // of an operator-driven gate is that somebody raises the score by driving
     // more, and a bound would let them.
     //
-    // `app×49` is the widest and is still not a back door — it is what
+    // `app×35` is the widest and is still not a back door — it is what
     // `send_application` takes from a real application, and the session rewrites
     // the header and reorders the body through `Fix44` regardless.
+    //
+    // `[measured 2026-09-02]` **141, and it was 179 before the harness learned
+    // not to speak over a session that had already answered.** The score was
+    // `2 / 50` either way — which is exactly why this table is asserted next to
+    // it. Two harnesses can reach the same number and one of them is talking
+    // over the code under test.
     assert_eq!(
         report.driven,
         [
-            ("0".to_owned(), 48),
-            ("1".to_owned(), 24),
-            ("2".to_owned(), 10),
+            ("0".to_owned(), 42),
+            ("1".to_owned(), 21),
+            ("2".to_owned(), 3),
             ("4".to_owned(), 10),
-            ("5".to_owned(), 38),
-            ("app".to_owned(), 49),
+            ("5".to_owned(), 30),
+            ("app".to_owned(), 35),
         ],
         "the harness originated something it did not before:\n{report}"
     );

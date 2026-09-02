@@ -263,7 +263,11 @@ Logon bằng Logon đã đi qua nó.
 
 `Input::Originate(Intent)` xong, chỉ dùng ở chế độ soi gương. `Intent` **không** mang
 `8`, `9`, `34`, `49`, `52`, `56`, `10`. `Report::driven` đếm mọi lần lái theo `MsgType` và test
-chốt bằng **số cụ thể**, không phải `<=`.
+chốt bằng **số cụ thể**, không phải `<=`. `[đo 2026-09-02]` **và bảng đếm ấy đã bắt được một
+lỗi ngay lập tức**: bản chạy được đầu tiên lái **179** lần, 38 trong số đó là harness nói đè lên
+một session **đã trả lời rồi**. Điểm vẫn là 2 / 50 ở cả hai bản. Đó chính là lý do bảng đếm nằm
+cạnh điểm chứ không phải thay cho nó — hai harness cùng ra một con số, và một trong hai đang nói
+đè lên thứ nó đang đo. Bản đúng lái **141** lần.
 
 **Chưa đạt: 45 / 50.** Chuyển thành mục mở 36 trong `STATUS.md`, kèm cả hai thứ đã học được.
 
