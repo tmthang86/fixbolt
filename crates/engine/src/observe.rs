@@ -255,6 +255,10 @@ pub(crate) struct Shared {
     /// content assertion and fails this one.
     published: AtomicU64,
     cell: Mutex<Snapshot>,
+    /// Events, which unlike a snapshot are **pushed** rather than requested:
+    /// an event nobody asked for at the right moment is an event lost, and the
+    /// whole point is that they are not.
+    pub(crate) events: Events,
 }
 
 impl Shared {
@@ -263,6 +267,7 @@ impl Shared {
             wanted: AtomicBool::new(false),
             published: AtomicU64::new(0),
             cell: Mutex::new(Snapshot::default()),
+            events: Events::new(),
         }
     }
 
@@ -270,6 +275,12 @@ impl Shared {
     /// observable while nobody is observing.
     pub(crate) fn wanted(&self) -> bool {
         self.wanted.load(Ordering::Relaxed)
+    }
+
+    /// Record one event. See [`Events::push`] — `try_lock`, and a refusal is
+    /// counted rather than waited on.
+    pub(crate) fn emit(&self, id: ConnId, at_ms: u64, kind: EventKind) {
+        self.events.push(Event { id, at_ms, kind });
     }
 
     /// Publish, unless the reader holds the cell right now.
@@ -307,6 +318,33 @@ impl Observer {
             return None;
         }
         self.0.cell.lock().ok().map(|s| *s)
+    }
+
+    /// Append every event the engine has recorded, oldest first, and remove
+    /// them from the ring. Returns how many were appended.
+    ///
+    /// **A `Vec` on purpose.** The reader is not the engine thread and may
+    /// allocate; the engine's side of this is a fixed ring and allocates
+    /// nothing, which is what non-negotiable 1 is about. Reusing one `Vec`
+    /// across calls costs nothing after the first.
+    ///
+    /// Whatever it could not keep is counted by [`Self::events_lost`], which is
+    /// **not** implied by the return value — a drain of zero with a rising loss
+    /// count means the reader is being starved by its own timing, not that
+    /// nothing happened.
+    pub fn events(&self, out: &mut Vec<Event>) -> usize {
+        self.0.events.drain(out)
+    }
+
+    /// How many events were never delivered — the ring was full, or the engine
+    /// could not take the lock without blocking.
+    ///
+    /// **Monotonic, and it is the number that makes this stream honest.** A
+    /// stream that loses silently is a source an operator will trust and should
+    /// not. Non-zero means read more often, or with a bigger buffer.
+    #[must_use]
+    pub fn events_lost(&self) -> u64 {
+        self.0.events.lost.load(Ordering::Relaxed)
     }
 
     /// How many snapshots the engine has built since it started.
@@ -392,5 +430,134 @@ mod tests {
             full.healthy(),
             "more sessions than we can list is not unhealthy"
         );
+    }
+}
+
+/// How many events the buffer holds before the oldest are lost.
+///
+/// Events are **rare** — a logon, a logout, a gap, a disconnect — not one per
+/// message, which D8 would forbid. A reader polling once a second has room for
+/// a burst; one that stops reading loses the oldest and
+/// [`Observer::events_lost`] says how many.
+pub const EVENT_CAPACITY: usize = 256;
+
+/// Something worth telling an operator about.
+///
+/// Deliberately **not** one per message: that is the hot path and `DESIGN.md`
+/// D8 forbids work there for an observer who may not exist. These are the state
+/// changes — a session came up, a session went away and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EventKind {
+    /// A session finished its `Logon` exchange.
+    LoggedOn,
+    /// A connection ended. **The reason is the point of this whole module** —
+    /// see [`fixbolt_session::DropReason`].
+    Ended(fixbolt_session::DropReason),
+    /// A connection ended and the session had no reason to give. **Zero on a
+    /// healthy engine**: it means something ended the link without going
+    /// through `Session::end`, which is a gap in this engine rather than a
+    /// fault of the counterparty.
+    EndedWithoutReason,
+}
+
+/// One event, with enough context to act on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Event {
+    id: ConnId,
+    at_ms: u64,
+    kind: EventKind,
+}
+
+impl Event {
+    /// Which connection.
+    #[must_use]
+    pub const fn id(&self) -> ConnId {
+        self.id
+    }
+
+    /// When, on the engine's clock.
+    #[must_use]
+    pub const fn at_ms(&self) -> u64 {
+        self.at_ms
+    }
+
+    /// What happened.
+    #[must_use]
+    pub const fn kind(&self) -> EventKind {
+        self.kind
+    }
+}
+
+/// A fixed ring of events plus a count of what it could not keep.
+///
+/// **The count is not optional.** An event stream that loses silently is worse
+/// than no event stream: it is a source an operator will trust and should not.
+#[derive(Debug)]
+pub(crate) struct Events {
+    ring: Mutex<EventRing>,
+    /// Bumped when the engine could not take the lock, or when the ring was
+    /// full. Read without the lock, so a reader can always learn it has missed
+    /// something even while the engine holds the cell.
+    lost: AtomicU64,
+}
+
+#[derive(Debug)]
+struct EventRing {
+    slots: [Option<Event>; EVENT_CAPACITY],
+    head: usize,
+    len: usize,
+}
+
+impl Events {
+    pub(crate) fn new() -> Self {
+        Self {
+            ring: Mutex::new(EventRing {
+                slots: [None; EVENT_CAPACITY],
+                head: 0,
+                len: 0,
+            }),
+            lost: AtomicU64::new(0),
+        }
+    }
+
+    /// Record an event, unless the reader holds the ring right now.
+    ///
+    /// `try_lock`, never `lock` — non-negotiable 4. A refusal counts as a loss
+    /// rather than blocking the engine thread, which is the trade this design
+    /// makes and states.
+    pub(crate) fn push(&self, e: Event) {
+        let Ok(mut r) = self.ring.try_lock() else {
+            self.lost.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        if r.len == EVENT_CAPACITY {
+            // Full: drop the oldest, and say so.
+            let head = r.head;
+            r.slots[head] = Some(e);
+            r.head = (head + 1) % EVENT_CAPACITY;
+            self.lost.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let at = (r.head + r.len) % EVENT_CAPACITY;
+        r.slots[at] = Some(e);
+        r.len += 1;
+    }
+
+    fn drain(&self, out: &mut Vec<Event>) -> usize {
+        let Ok(mut r) = self.ring.lock() else {
+            return 0;
+        };
+        let mut n = 0;
+        while r.len > 0 {
+            let head = r.head;
+            if let Some(e) = r.slots[head].take() {
+                out.push(e);
+                n += 1;
+            }
+            r.head = (head + 1) % EVENT_CAPACITY;
+            r.len -= 1;
+        }
+        n
     }
 }

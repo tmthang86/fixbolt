@@ -506,9 +506,31 @@ where
                 dispatch: &mut self.dispatch,
                 conn: self.conns[i].id,
             };
+            // Before the turn, so a session that logs on during it is seen as
+            // a change rather than as the state it started in.
+            let was_on = self.conns[i].session.is_logged_on();
             let outcome = self.conns[i].turn(now, &mut deliver, |msg| {
                 others_on > 0 && presession::is_logon(msg)
             });
+            // Events cost one `Option` test per connection per turn while
+            // nobody is observing, and nothing at all on an engine whose
+            // `observer()` was never called.
+            if let Some(shared) = self.observe.as_ref() {
+                let id = self.conns[i].id;
+                if !was_on && self.conns[i].session.is_logged_on() {
+                    shared.emit(id, now, crate::observe::EventKind::LoggedOn);
+                }
+                if matches!(outcome, Turn::Gone) {
+                    // `EndedWithoutReason` is not decoration: it is how a new
+                    // way of ending a link that skipped `Session::end` becomes
+                    // visible instead of silently reading as a normal close.
+                    let kind = self.conns[i].session.last_drop_reason().map_or(
+                        crate::observe::EventKind::EndedWithoutReason,
+                        crate::observe::EventKind::Ended,
+                    );
+                    shared.emit(id, now, kind);
+                }
+            }
             // Asked here and nowhere else. `Deliver` above was built for this
             // connection's id and nothing else has run since, so a refusal
             // belongs to `conns[i]` — ADR-0011 decision 1, and the reason the

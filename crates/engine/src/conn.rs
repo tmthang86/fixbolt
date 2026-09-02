@@ -271,7 +271,12 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             moved = true;
             if refuse(self.rx.bytes(taken)) {
                 self.rx.take(taken);
-                let _ = self.session.disconnect(|_| {});
+                // **Named, not merely closed.** ADR-0030's single-logon rule is
+                // a policy decision this engine made; reporting it as a
+                // transport close sends whoever is on call to the wrong layer.
+                let _ = self
+                    .session
+                    .disconnect_with(fixbolt_session::DropReason::DuplicateIdentity, |_| {});
                 return Turn::Gone;
             }
             let bound = self.bound();
@@ -364,6 +369,9 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             failed: dead,
         };
         let _ = session.logout_now(SLOW_APPLICATION, |b| out.push(b));
+        // The `58=` tells the counterparty; this tells the operator, who is the
+        // only one who can do anything about it. ADR-0011.
+        session.note_drop_reason(fixbolt_session::DropReason::SlowApplication);
         self.closing = true;
     }
 
@@ -402,6 +410,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             failed: dead,
         };
         let _ = session.logout_now(SLOW_CONSUMER, |b| out.push(b));
+        session.note_drop_reason(fixbolt_session::DropReason::SlowConsumer);
         self.overflow = false;
         self.closing = true;
     }

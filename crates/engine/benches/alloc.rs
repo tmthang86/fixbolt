@@ -638,13 +638,127 @@ fn main() {
         watcher.published()
     );
 
+    // --- events -------------------------------------------------------------
+    //
+    // Unlike a snapshot, an event is **pushed**: the engine records it when it
+    // happens, whether or not anybody is reading. The cost lands on the turn
+    // that changes a session's state, so a `Vec` or a `String` there would be an
+    // allocation on the engine thread. The reader's side allocates, on its own
+    // thread, on purpose; this measures the engine's.
+    let (mut ev_peer, ev_side) = Loopback::pair();
+    let mut evented: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        cfg(),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    let watcher2 = evented.observer();
+    evented.add(ev_side);
+    let _ = ev_peer.send(&traffic[0]);
+    evented.turn();
+    let _ = ev_peer.recv(&mut sink);
+    let mut drained = Vec::new();
+    assert!(
+        watcher2.events(&mut drained) > 0,
+        "the event path must actually record something"
+    );
+
+    // A quiet turn on an observed engine: nothing changed, nothing recorded.
+    let events_idle_allocs = count(|| {
+        for _ in 0..10_000 {
+            evented.turn();
+        }
+    });
+
+    // And turns that really do produce events: a session logs on, twice over.
+    //
+    // **Everything that is not the event path is built and warmed outside the
+    // window.** `[measured 2026-09-02]` two earlier versions of this case read
+    // 30 000 and then 2 000 — three per iteration and then one per iteration —
+    // and every one of those allocations was the fixture: `Loopback::pair`
+    // builds its queues, and a `VecDeque` allocates on its first push. Warming
+    // each pair before the count is what makes the number the engine's.
+    let rounds = 2_000usize;
+    let logon = traffic[0].clone();
+    let mut pairs: Vec<(Loopback, Option<Loopback>)> = Vec::with_capacity(rounds);
+    for _ in 0..rounds {
+        let (mut near, mut far) = Loopback::pair();
+        // Warm both queues so the first push inside the window does not grow one.
+        let _ = near.send(&logon);
+        let _ = far.recv(&mut sink);
+        let _ = far.send(&logon);
+        let _ = near.recv(&mut sink);
+        pairs.push((near, Some(far)));
+    }
+    let mut busy_engine: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        cfg(),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        rounds + 8,
+    );
+    let watcher3 = busy_engine.observer();
+    {
+        // Prove the path is the path before counting a zero from it.
+        let (mut p, e) = Loopback::pair();
+        busy_engine.add(e);
+        let _ = p.send(&logon);
+        busy_engine.turn();
+        let _ = p.recv(&mut sink);
+        let mut v = Vec::new();
+        assert!(
+            watcher3.events(&mut v) > 0,
+            "the busy event path must record something"
+        );
+    }
+    let events_busy_allocs = count(|| {
+        for (peer, engine_side) in &mut pairs {
+            let Some(e) = engine_side.take() else {
+                continue;
+            };
+            busy_engine.add(e);
+            let _ = peer.send(&logon);
+            busy_engine.turn();
+            let _ = peer.recv(&mut sink);
+        }
+    });
+    let mut after = Vec::new();
+    let recorded = watcher3.events(&mut after);
+    assert!(
+        recorded > 0,
+        "{rounds} sessions logged on inside the window and the stream recorded \
+         none — a zero above would be measuring nothing"
+    );
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
          busy {busy_allocs} ring {ring_allocs} interests {interests_allocs} \
          pending-idle {pending_idle_allocs} pending-busy {pending_busy_allocs} \
          pending-cycle {cycle_allocs} registry-lookup {registry_lookup_allocs} \
-         observe-idle {observe_idle_allocs} observe-asked {observe_asked_allocs}"
+         observe-idle {observe_idle_allocs} observe-asked {observe_asked_allocs} \
+         events-idle {events_idle_allocs} events-busy {events_busy_allocs}"
     );
     assert_eq!(
         [
@@ -662,9 +776,11 @@ fn main() {
             cycle_allocs,
             registry_lookup_allocs,
             observe_idle_allocs,
-            observe_asked_allocs
+            observe_asked_allocs,
+            events_idle_allocs,
+            events_busy_allocs
         ],
-        [0; 15],
+        [0; 17],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

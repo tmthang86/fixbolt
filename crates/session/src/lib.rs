@@ -489,6 +489,19 @@ pub enum DropReason {
     ScheduleClosed,
     /// The transport reported the connection gone.
     TransportClosed,
+    /// This counterparty is already logged on somewhere else, so the engine
+    /// refused the second connection — [ADR-0030](../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md).
+    ///
+    /// **An engine reason, not a session one.** The pre-session stage never
+    /// hands the message to a session at all, which is why it arrives through
+    /// [`Session::disconnect_with`] rather than from a refusal.
+    DuplicateIdentity,
+    /// The application behind the ring would not take a message, so the engine
+    /// ended the connection — [ADR-0011](../../../docs/decisions/ADR-0011-a-full-ring-disconnects.md).
+    /// **The counterparty is faultless.**
+    SlowApplication,
+    /// Output backed up further than the policy allows — `DESIGN.md` D10.
+    SlowConsumer,
 }
 
 impl From<Refusal> for DropReason {
@@ -826,8 +839,44 @@ impl<R: Role, const N: usize> Session<R, N> {
 
     /// A counterparty closed the connection.
     pub fn disconnect<F: FnMut(&[u8])>(&mut self, emit: F) -> Link {
+        self.disconnect_with(DropReason::TransportClosed, emit)
+    }
+
+    /// Record why the **engine** is ending this session, without ending it here.
+    ///
+    /// For the backpressure paths, which send their own `Logout` and then let
+    /// the connection close on the next turn: the reason has to be recorded
+    /// while it is known, and the state change happens elsewhere. Like
+    /// [`Self::disconnect_with`], a cause already known is not replaced.
+    pub const fn note_drop_reason(&mut self, why: DropReason) {
+        if self.last_drop_reason.is_none() {
+            self.last_drop_reason = Some(why);
+        }
+    }
+
+    /// As [`Self::disconnect`], naming a reason the **engine** knows and this
+    /// layer cannot.
+    ///
+    /// A duplicate identity, a full application ring, output backed up past the
+    /// policy — none of those is a protocol fault and none of them reaches a
+    /// session, so without this the engine would have to report them as *"the
+    /// socket went away"*.
+    ///
+    /// `[measured 2026-09-02]` **that is exactly what it did**, and
+    /// `tests/events.rs` caught it: three connections refused by the
+    /// single-logon rule all reported `TransportClosed`, blaming the network
+    /// for a policy decision. An operator reading that would have gone looking
+    /// at the wrong layer.
+    pub fn disconnect_with<F: FnMut(&[u8])>(&mut self, why: DropReason, emit: F) -> Link {
         let _ = emit;
-        self.end(DropReason::TransportClosed);
+        // **A cause already known is not replaced.** A session that refused a
+        // `Logon` closes its socket immediately afterwards, and the close would
+        // otherwise overwrite the reason it was refused for.
+        if self.last_drop_reason.is_none() {
+            self.end(why);
+        } else {
+            self.state = State::Disconnected;
+        }
         Link::Dropped
     }
 
