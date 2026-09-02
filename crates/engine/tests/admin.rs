@@ -486,3 +486,39 @@ fn a_full_command_queue_refuses_at_the_call() {
     engine.turn();
     assert!(admin.submit(Command::SetNextIn { id, n: 2 }));
 }
+
+/// **"One relaxed load" made falsifiable.**
+///
+/// An engine that reaches for the command mutex on every turn behaves exactly
+/// like this one in every other respect: the same commands are applied, the
+/// same outcomes are reported, every test above stays green. The only thing
+/// that notices is a count of how often the lock was attempted.
+///
+/// `[2026-09-01]` this guard exists because the *same* gap was already found
+/// once here — `Observer::published()` was added when removing the snapshot's
+/// `wanted` flag left every content assertion green while the engine built
+/// 84 555 snapshots nobody had asked for.
+#[test]
+fn an_engine_nobody_is_administering_does_not_reach_for_the_lock() {
+    let (mut engine, mut peer) = local();
+    let id = log_on(&mut engine, &mut peer);
+    let admin = engine.admin();
+
+    let before = admin.drains();
+    for _ in 0..1_000 {
+        engine.turn();
+    }
+    assert_eq!(
+        admin.drains(),
+        before,
+        "a thousand turns with an empty queue must not touch the mutex once"
+    );
+
+    // And the counter is not simply stuck: a real command moves it.
+    assert!(admin.submit(Command::SetNextIn { id, n: 3 }));
+    engine.turn();
+    assert!(
+        admin.drains() > before,
+        "a queued command must actually be reached for"
+    );
+}

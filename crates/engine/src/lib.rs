@@ -435,6 +435,14 @@ where
         let Some(shared) = self.observe.as_ref() else {
             return;
         };
+        // One relaxed load, and it is the entire cost of being administrable
+        // while nobody is administering — the same bargain `wanted` makes for
+        // snapshots. Without it every turn on an observed engine would attempt
+        // a mutex, which is a worse deal than ADR-0032 claims for this
+        // mechanism.
+        if !shared.commands.waiting() {
+            return;
+        }
         let mut taken: [Option<crate::observe::Command>; crate::observe::COMMAND_CAPACITY] =
             [None; crate::observe::COMMAND_CAPACITY];
         let n = shared.commands.drain(&mut taken);

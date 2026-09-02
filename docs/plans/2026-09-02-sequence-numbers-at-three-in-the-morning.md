@@ -1,6 +1,6 @@
 # Số thứ tự lúc ba giờ sáng
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Xong
 > *(tự viết, tự duyệt theo uỷ quyền thường trực 2026-09-01.)*
 >
 > **Phạm vi:** `STATUS.md` item 30 (c). Chạm `session` (hai hàm đặt số, thuần) và `engine`
@@ -101,9 +101,10 @@ chuyện tự xảy ra lẫn chuyện mình gây ra** — đó chính là audit 
 
 ## Tài liệu phải cập nhật
 
-- [ ] ADR mới — một cơ chế hai quyền; lệnh áp trước khi đánh số; ba lệnh và lệnh nào nói với đối tác
-- [ ] `DESIGN.md` §3; `CHANGELOG.md`; `GUIDE.md` §8a; `STATUS.md` item 30; `PRD.md`
-- [ ] Đi lại bảng §4, đọc lại *Not proven*
+- [x] ADR mới — [ADR-0036](../decisions/ADR-0036-one-mechanism-two-capabilities.md)
+- [x] `DESIGN.md` §3; `CHANGELOG.md`; `GUIDE.md` §8a; `STATUS.md` item 30; `PRD.md`
+- [x] Đi lại bảng §4, đọc lại *Not proven* — thêm năm mục
+- [x] `docs/reference/` — [a-cost-claim-needs-its-own-counter](../reference/a-cost-claim-needs-its-own-counter.md), gắn `[to testing-skills]`
 
 ## Ngoài phạm vi
 

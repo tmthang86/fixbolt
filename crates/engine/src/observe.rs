@@ -44,7 +44,7 @@
 //! report, not a case to fail on.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::ConnId;
 
@@ -701,6 +701,16 @@ impl Command {
 #[derive(Debug)]
 pub(crate) struct Commands {
     queue: Mutex<CommandQueue>,
+    /// How many are waiting. **Read before the lock is even attempted**, so a
+    /// turn on an engine nobody is administering costs one relaxed load and not
+    /// a `try_lock` — the same bargain [`Shared::wanted`] makes for snapshots.
+    waiting: AtomicUsize,
+    /// How many times the engine has reached for the lock. **The number that
+    /// keeps *"one relaxed load"* honest** — an implementation that attempts a
+    /// mutex every turn passes every content assertion and fails this one.
+    /// Exactly the role [`Shared::published`] plays for snapshots, and it
+    /// exists because that gap has already been found once here.
+    drains: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -718,6 +728,8 @@ impl Commands {
                 head: 0,
                 len: 0,
             }),
+            waiting: AtomicUsize::new(0),
+            drains: AtomicU64::new(0),
         }
     }
 
@@ -735,6 +747,9 @@ impl Commands {
         let at = (q.head + q.len) % COMMAND_CAPACITY;
         q.slots[at] = Some(c);
         q.len += 1;
+        // Release, and inside the lock: the engine's relaxed load may be stale
+        // by one turn, which costs a turn's delay and never a lost command.
+        self.waiting.store(q.len, Ordering::Release);
         true
     }
 
@@ -744,9 +759,13 @@ impl Commands {
     /// nothing and loses nothing**: the queue is untouched and the next turn
     /// tries again.
     pub(crate) fn drain(&self, out: &mut [Option<Command>; COMMAND_CAPACITY]) -> usize {
+        self.drains.fetch_add(1, Ordering::Relaxed);
         let Ok(mut q) = self.queue.try_lock() else {
             return 0;
         };
+        // Cleared inside the lock so a submit racing this one cannot be lost:
+        // the submit takes the lock, so it either lands before this read or
+        // after this store.
         let n = q.len;
         for slot in out.iter_mut().take(n) {
             let head = q.head;
@@ -754,7 +773,18 @@ impl Commands {
             q.head = (head + 1) % COMMAND_CAPACITY;
         }
         q.len = 0;
+        self.waiting.store(0, Ordering::Release);
         n
+    }
+
+    /// Is there anything to take? **One relaxed load**, and the whole cost of
+    /// an engine that is administrable while nobody is administering it.
+    pub(crate) fn waiting(&self) -> bool {
+        self.waiting.load(Ordering::Relaxed) != 0
+    }
+
+    fn drains(&self) -> u64 {
+        self.drains.load(Ordering::Relaxed)
     }
 }
 
@@ -782,6 +812,18 @@ impl Admin {
     /// taken**. Unlike a lost event, a lost command is never silent.
     pub fn submit(&self, c: Command) -> bool {
         self.0.commands.submit(c)
+    }
+
+    /// How many times the engine has reached for the command queue.
+    ///
+    /// **This is what keeps *"a turn costs one relaxed load"* falsifiable.** An
+    /// engine that attempts the lock every turn behaves identically in every
+    /// other respect and is a different bargain entirely;
+    /// `crates/engine/tests/admin.rs::an_engine_nobody_is_administering_does_not_reach_for_the_lock`
+    /// is what notices.
+    #[must_use]
+    pub fn drains(&self) -> u64 {
+        self.0.commands.drains()
     }
 
     /// The same events [`Observer::events`] gives, so a thread that
