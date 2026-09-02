@@ -1,6 +1,7 @@
 # A reversal is only a test if the input is one the two versions disagree about
 
-> `[measured 2026-09-02]` — twice in one session, on unrelated code.
+> `[measured 2026-09-02]` — **three times in one session**, on unrelated code, with a
+> different mechanism each time.
 > **`[to testing-skills]`**
 
 ## The shape
@@ -9,7 +10,7 @@ Break the code, expect red. When it stays green the instinct is *"the guard was 
 Sometimes it is. More often the **input** was chosen from the region where the broken version
 and the correct one give the same answer — so the reversal never asked the question.
 
-Two instances, same day, different mechanisms.
+Three instances, same day, different mechanisms.
 
 ## Instance 1 — a protocol with a second legal answer
 
@@ -41,6 +42,30 @@ the backoff is still pending:
 
 Move the assertion 1.5 seconds earlier and the same reversal reads `left: At(…801000)`,
 `right: At(…830500)`.
+
+## Instance 3 — the code under test normalises, so upstream damage is invisible
+
+`TemplateBuilder::build` changed from `self` to `&mut self`, which made a new question askable:
+does building **twice** give the same template? A test was written for it, and then two
+reversals in a row failed to break it:
+
+| Reversal | Result | Why |
+|---|---|---|
+| sort descending before the real sort | **green** | the real sort runs afterwards and undoes it |
+| swap two entries before the sort | **green** | a total order sorts any permutation to the same list |
+| `self.n = 0` **after** building | **red** | the second build sees an empty builder |
+
+**`build` sorts, so every mutation of the thing it sorts is erased by the thing that erases
+it.** Only a mutation of state the sort does not touch — the count — could show.
+
+The third one is also the only realistic bug: it is exactly the mistake a future *"make the
+builder reusable"* change would make, and the second build then produced
+`8=FIX.4.4|9=0|10=200|` instead of the message.
+
+**The general form: where the code under test normalises its input, reversals applied upstream
+of the normalisation are invisible by construction.** Sorting, canonicalising, clamping,
+deduplicating, re-encoding — anything idempotent swallows damage done before it. Reverse
+*downstream* of the normaliser, or reverse the normaliser itself.
 
 ## The lesson, stated generally
 
