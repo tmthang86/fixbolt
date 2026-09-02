@@ -793,12 +793,55 @@ Only three kinds exist today: logon, ended, ended-without-reason. Gap detected, 
 issued and reject sent are **not** here — they are message-rate, and D8 forbids anything
 message-rate on the hot path until the cost has been measured.
 
+### The 3 a.m. phone call
+
+`[2026-09-02]` The counterparty rings and says their next number is 4812. `Engine::admin()`
+hands you a second handle over the same mechanism — `Observer` looks, `Admin` changes
+([ADR-0036](decisions/ADR-0036-one-mechanism-two-capabilities.md)). Give an `Observer` to
+everything that watches and an `Admin` only to whatever takes that call.
+
+```rust
+let admin = engine.admin();     // Send + Sync, like the Observer
+// `id` comes from a snapshot: SessionSnapshot::id().
+admin.submit(Command::SetNextOut { id, n: 4812 });
+```
+
+**Pick the right one of the three, because two of them are silent:**
+
+| | What goes on the wire | When you want it |
+|---|---|---|
+| `SetNextIn { id, n }` | nothing | You decide what you expect. Never a lie |
+| `SetNextOut { id, n }` | **nothing** | The counterparty has **already told you** their number. Same behaviour as QuickFIX's `setNextSenderMsgSeqNum` |
+| `SendSequenceReset { id, n }` | `35=4`, `123=N`, `36=n` | **You** are the one changing the number. The only honest form |
+
+**`SetNextOut` is a lie until the counterparty is told.** They still expect the old number,
+so the next message you send draws a `ResendRequest`, or is refused as too low. Reach for it
+only when they have told you what to set; otherwise `SendSequenceReset` is the one you mean.
+
+A reset that moves the number **down** is allowed and is a last resort: the counterparty will
+accept numbers it has already seen, so anything it kept for a resend is now ambiguous.
+Nothing stops you, because at 3 a.m. that is sometimes the instruction.
+
+**Four things about `submit`.**
+
+1. **`true` means queued, not done.** The engine applies it on its next turn, and the outcome
+   arrives on the event stream as `EventKind::Administered { change, to, outcome }`.
+2. **`Outcome::NoSuchConnection` is ordinary, not an error.** A command can race a
+   disconnect, and that is knowable only on the engine thread — which is why `submit` cannot
+   tell you the outcome itself.
+3. **`false` means the queue is full and nothing was taken.** Unlike a dropped event, a
+   dropped command is never silent. `COMMAND_CAPACITY` is 32, sized for a person rather than
+   for a loop.
+4. **Two identical commands produce two identical events.** There is no command id, so if you
+   submit in a loop you cannot tell the outcomes apart. Submit one at a time and read the
+   outcome.
+
 ### What is still not here
 
-Ordered shutdown, live sequence-number administration, and an offline journal reader.
-`STATUS.md` open item 30 keeps the list; this section covers (b), (d) and (f) of it and
-nothing else. Until (c) exists, changing a sequence number on a live engine means restarting
-it and choosing `Session::resume` — see §9 and §6a.
+Ordered shutdown and an offline journal reader. `STATUS.md` open item 30 keeps the list; this
+section covers (b), (c), (d) and (f) of it and nothing else. **Nothing authenticates the
+holder of an `Admin`** — the engine has no idea who is on the phone, and who you pass that
+handle to is the whole of the access control.
 
 ## 9. What this engine does not do for you
 

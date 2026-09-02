@@ -377,6 +377,72 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
 
     /// End the session because its outbound queue filled. `DESIGN.md` D10.
     ///
+    /// Apply one operator command to this connection.
+    ///
+    /// Called from the engine's turn, before any message is judged and before
+    /// anything is numbered — a command applied afterwards would be setting a
+    /// number that has already been used.
+    ///
+    /// A `SequenceReset` goes out through the same bounded writer as every
+    /// other message, so D10's backpressure applies to it too: an operator
+    /// cannot push past a consumer that has stopped reading.
+    ///
+    /// **No `_` arm**, deliberately, and the same reason ADR-0035 gives for
+    /// `From<Refusal> for DropReason`: a command added to the enum and not
+    /// given behaviour here will not compile. `Command` is `#[non_exhaustive]`
+    /// for callers outside this crate and exhaustive inside it, which is
+    /// exactly the pair of properties wanted.
+    pub fn administer(&mut self, c: crate::observe::Command) -> crate::observe::Outcome {
+        use crate::observe::{Command, Outcome};
+        match c {
+            Command::SetNextOut { n, .. } => {
+                if self.session.set_next_out(n) {
+                    Outcome::Applied
+                } else {
+                    Outcome::Refused
+                }
+            }
+            Command::SetNextIn { n, .. } => {
+                if self.session.set_next_in(n) {
+                    Outcome::Applied
+                } else {
+                    Outcome::Refused
+                }
+            }
+            Command::SendSequenceReset { n, .. } => {
+                let bound = self.bound();
+                let blocks = self.policy.blocks();
+                let Self {
+                    session,
+                    transport,
+                    tx,
+                    tx_len,
+                    overflow,
+                    dead,
+                    ..
+                } = self;
+                let mut out = Out {
+                    transport,
+                    tx,
+                    tx_len,
+                    bound,
+                    blocks,
+                    overflow,
+                    failed: dead,
+                };
+                let sent = session.send_sequence_reset(n, |b| out.push(b));
+                if self.overflow {
+                    self.slow_consumer();
+                }
+                if sent {
+                    Outcome::Applied
+                } else {
+                    Outcome::Refused
+                }
+            }
+        }
+    }
+
     /// **The queue is thrown away first, and that is deliberate.** It holds
     /// messages for a counterparty that has stopped reading, and the Logout
     /// that says so has to fit somewhere. Keeping them would mean the one

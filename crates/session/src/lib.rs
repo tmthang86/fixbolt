@@ -791,6 +791,82 @@ impl<R: Role, const N: usize> Session<R, N> {
         self.next_in
     }
 
+    /// Set the number the next outbound message will carry. **Local only —
+    /// nothing goes on the wire.**
+    ///
+    /// This is the 3 a.m. operation, and it is a lie until the counterparty is
+    /// told: they still expect the old number and will answer the next message
+    /// with a `ResendRequest`, or refuse it as too low. Use it when the
+    /// counterparty has *already* told you what they expect —
+    /// *"our next is 4812"* — which is the case it exists for. When **you** are
+    /// the one changing the number, [`Session::send_sequence_reset`] is the
+    /// honest form.
+    ///
+    /// QuickFIX's `setNextSenderMsgSeqNum` behaves the same way, and this is
+    /// named to match rather than to improve on it.
+    ///
+    /// Returns `false` and changes nothing for `n == 0`: there is no `34=0`.
+    pub const fn set_next_out(&mut self, n: u32) -> bool {
+        if n == 0 {
+            return false;
+        }
+        self.next_out = n;
+        true
+    }
+
+    /// Set the number this session next expects to receive. **Local only, and
+    /// unlike [`Session::set_next_out`] it is not a lie** — what you expect is
+    /// your own business, and the counterparty never learns it except by
+    /// whether you accept what they send.
+    ///
+    /// Lowering it invites a duplicate; raising it skips messages without a
+    /// `ResendRequest` and they are gone. Both are sometimes what the operator
+    /// means.
+    ///
+    /// Returns `false` and changes nothing for `n == 0`.
+    pub const fn set_next_in(&mut self, n: u32) -> bool {
+        if n == 0 {
+            return false;
+        }
+        self.next_in = n;
+        true
+    }
+
+    /// Tell the counterparty that the next message will carry `n`, and make it
+    /// so — `35=4` with `123=N`.
+    ///
+    /// **The honest way to change an outbound number.** The reset itself goes
+    /// out at the current number, and `next_out` becomes `n` after it, which is
+    /// what `36=n` promises.
+    ///
+    /// A reset that moves the number **down** is legal and is a last resort:
+    /// the counterparty will accept numbers it has already seen, so anything
+    /// it kept for a resend is now ambiguous. Nothing here prevents it, because
+    /// an operator on the phone at 3 a.m. sometimes needs exactly that.
+    ///
+    /// Returns `false` and sends nothing for `n == 0`, or if the session has no
+    /// output buffer to build the message in.
+    pub fn send_sequence_reset<F: FnMut(&[u8])>(&mut self, n: u32, mut emit: F) -> bool {
+        if n == 0 {
+            return false;
+        }
+        let mut new_seq = [0u8; 10];
+        let new_seq = digits(n, &mut new_seq);
+        if self
+            .send_as(
+                Which::GapFill,
+                None,
+                &[(tag::NEW_SEQ_NO, new_seq), (tag::GAP_FILL_FLAG, b"N")],
+                &mut emit,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        self.next_out = n;
+        true
+    }
+
     /// True once a Logon has been accepted.
     #[must_use]
     pub const fn is_logged_on(&self) -> bool {

@@ -48,6 +48,19 @@ below describe what a first release would contain.
       was last active **restarts both counts at the top of the tick**, ahead of the numbering.
     - `[measured 2026-09-02]` `crates/session/benches/alloc.rs` cases `schedule-open` and
       `schedule-shut` both read **0**.
+  - **`Session::set_next_out`, `set_next_in`, `send_sequence_reset`** — moving a sequence
+    number by hand, on a session that is already running.
+    [ADR-0036](docs/decisions/ADR-0036-one-mechanism-two-capabilities.md).
+    - `set_next_out(n)` and `set_next_in(n)` are **local and silent**. The first is a lie
+      until the counterparty is told, and is named after QuickFIX's
+      `setNextSenderMsgSeqNum` rather than improved on: an operator who knows that name
+      knows what it does. The second is not a lie — what you expect is your own business.
+    - `send_sequence_reset(n, emit)` is the **honest** form: `35=4` with `123=N` and `36=n`,
+      sent at the current number, and `next_out` becomes `n` only after it.
+    - All three refuse `n == 0` and **change nothing when they do** — there is no `34=0`.
+      A reset that cannot be built does not move the number either.
+    - A reset **downwards** is permitted. It is a last resort and a test asserts the
+      permission, so it reads as deliberate rather than as an oversight.
   - **`DropReason`, `Session::last_drop_reason()`, `disconnect_with`, `note_drop_reason`** —
     why a connection ended, instead of one bit.
     [ADR-0035](docs/decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md).
@@ -247,6 +260,31 @@ below describe what a first release would contain.
         read **0**, the second asserting the stream recorded something **inside** the counted
         window — three earlier readings of that case measured its own fixture
         ([reference](docs/reference/a-benchmark-measured-its-own-fixture.md)).
+    - **`Command`, `Admin`, `Engine::admin()`, `COMMAND_CAPACITY`, `Change`, `Outcome`, and
+      `EventKind::Administered`** — changing a running engine, not only watching it.
+      [ADR-0036](docs/decisions/ADR-0036-one-mechanism-two-capabilities.md).
+      - **One mechanism, two capabilities.** Commands share `observe`'s `Arc` and its fixed
+        shapes; the engine hands out `Observer` (reads) and `Admin` (writes). Give an
+        `Observer` to everything that watches and an `Admin` only to what administers.
+      - `Command::{SetNextOut, SetNextIn, SendSequenceReset}`, applied at the **top of a
+        turn, before anything is judged or numbered**. Applied afterwards, an operator's
+        change misses by exactly one message.
+      - **The lock asymmetry is the design.** `Admin::submit` takes `lock()` because the
+        operator's thread may block; the engine's drain takes `try_lock()` because its own
+        may not. A refused lock takes nothing and **loses nothing** — unlike an event, a
+        lost command is an action that silently did not happen.
+      - A full queue (`COMMAND_CAPACITY` = 32) **refuses at the call**, so a command is
+        never silently swallowed.
+      - `submit` answers *queued or not*; the outcome arrives as
+        `EventKind::Administered { change, to, outcome }`. It cannot be otherwise:
+        `Outcome::NoSuchConnection` is the ordinary answer for a command that raced a
+        disconnect, and is unknowable at submit time.
+      - `Admin::drains()` counts how often the engine reached for the queue. **A turn on an
+        engine nobody is administering costs one relaxed load and does not touch the mutex**,
+        and this counter is what keeps that falsifiable — the first version attempted the
+        lock every turn and every content assertion stayed green.
+      - `[measured 2026-09-02]` `benches/alloc.rs` cases `admin-idle` and `admin-busy` both
+        read **0**, the second asserting the stream recorded something inside the window.
   - **`affinity` — pinning a thread to a core, and proving it happened.** New module, new
     optional feature of the same name, **off by default**, Linux only.
     [ADR-0015](docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md) and

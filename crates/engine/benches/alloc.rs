@@ -751,6 +751,77 @@ fn main() {
          none — a zero above would be measuring nothing"
     );
 
+    // --- administration ------------------------------------------------------
+    //
+    // The other direction: an operator's command crosses into the engine
+    // thread. The engine's side is a `try_lock` and a fixed landing array on
+    // the stack, and neither may allocate. The submitting side is measured too,
+    // because the bench holds both handles on one thread — a real operator
+    // holds `Admin` on their own.
+    let (mut ad_peer, ad_side) = Loopback::pair();
+    let mut administered: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        cfg(),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    let commander = administered.admin();
+    let ad_watch = administered.observer();
+    administered.add(ad_side);
+    let _ = ad_peer.send(&traffic[0]);
+    administered.turn();
+    let _ = ad_peer.recv(&mut sink);
+    let _ = ad_watch.request();
+    administered.turn();
+    let ad_id = ad_watch
+        .request()
+        .and_then(|s| s.sessions().iter().find(|x| x.logged_on()).map(|x| x.id()))
+        .expect("a logged-on session to administer");
+    // Warm both sides once, outside the window: the first `submit` grows
+    // nothing but the first event push does, and this bench is about neither.
+    assert!(commander.submit(fixbolt_engine::observe::Command::SetNextIn { id: ad_id, n: 2 }));
+    administered.turn();
+    let mut drained = Vec::with_capacity(64);
+    assert!(
+        commander.events(&mut drained) > 0,
+        "the administration path must actually record something"
+    );
+    drained.clear();
+
+    // Nobody is administering anything: the queue is empty and a turn must not
+    // pay for the capability existing.
+    let admin_idle_allocs = count(|| {
+        for _ in 0..10_000 {
+            administered.turn();
+        }
+    });
+
+    // And turns that really do apply a command.
+    let admin_rounds = 2_000usize;
+    let admin_busy_allocs = count(|| {
+        for k in 0..admin_rounds {
+            let n = u32::try_from(k % 1000).unwrap_or(1) + 1;
+            let _ = commander.submit(fixbolt_engine::observe::Command::SetNextIn { id: ad_id, n });
+            administered.turn();
+        }
+    });
+    assert!(
+        commander.events(&mut drained) > 0,
+        "{admin_rounds} commands were applied inside the window and the stream \
+         recorded none — a zero above would be measuring nothing"
+    );
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
@@ -758,7 +829,8 @@ fn main() {
          pending-idle {pending_idle_allocs} pending-busy {pending_busy_allocs} \
          pending-cycle {cycle_allocs} registry-lookup {registry_lookup_allocs} \
          observe-idle {observe_idle_allocs} observe-asked {observe_asked_allocs} \
-         events-idle {events_idle_allocs} events-busy {events_busy_allocs}"
+         events-idle {events_idle_allocs} events-busy {events_busy_allocs} \
+         admin-idle {admin_idle_allocs} admin-busy {admin_busy_allocs}"
     );
     assert_eq!(
         [
@@ -778,9 +850,11 @@ fn main() {
             observe_idle_allocs,
             observe_asked_allocs,
             events_idle_allocs,
-            events_busy_allocs
+            events_busy_allocs,
+            admin_idle_allocs,
+            admin_busy_allocs
         ],
-        [0; 17],
+        [0; 19],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }
