@@ -81,6 +81,31 @@ pub trait Recovery<J> {
     /// implementation may read a file. It is **not** called on the engine
     /// thread and never on a turn.
     fn recover(&mut self, cfg: &Config) -> Option<Resumed<J>>;
+
+    /// A journal for a counterparty with no history.
+    ///
+    /// # Why this exists at all
+    ///
+    /// `[verified 2026-09-02]` the engine used to build one with `J::default()`
+    /// when [`Recovery::recover`] answered [`None`], which put a `J: Default`
+    /// bound on the whole serving loop. **A `FileJournal` has no honest
+    /// `Default`** — it needs a path — so that bound, and nothing else, was
+    /// what stopped `serve_with_recovery` from ever using a journal on disk.
+    /// `STATUS.md` item 32 (b).
+    ///
+    /// # Why it has no default body
+    ///
+    /// `fn fresh(&mut self, cfg: &Config) -> J where J: Default` was written
+    /// first, and it does not work: the `where` clause lands on **callers**,
+    /// so the serving loop needed `J: Default` to call it at all and the bound
+    /// had simply moved. Requiring the method puts the constraint where it
+    /// belongs — on the implementations that want it.
+    ///
+    /// [`NoRecovery`] and [`FromFn`] implement it for any `J: Default`, so a
+    /// `journal::Store` deployment writes nothing extra. A `FileJournal`
+    /// deployment writes its own type, which it has to anyway: only it knows
+    /// which path belongs to which counterparty.
+    fn fresh(&mut self, cfg: &Config) -> J;
 }
 
 /// Every session starts fresh. The default, and it must be **exactly neutral**.
@@ -91,9 +116,13 @@ pub trait Recovery<J> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoRecovery;
 
-impl<J> Recovery<J> for NoRecovery {
+impl<J: Default> Recovery<J> for NoRecovery {
     fn recover(&mut self, _cfg: &Config) -> Option<Resumed<J>> {
         None
+    }
+
+    fn fresh(&mut self, _cfg: &Config) -> J {
+        J::default()
     }
 }
 
@@ -119,8 +148,12 @@ impl<F> FromFn<F> {
     }
 }
 
-impl<J, F: FnMut(&Config) -> Option<Resumed<J>>> Recovery<J> for FromFn<F> {
+impl<J: Default, F: FnMut(&Config) -> Option<Resumed<J>>> Recovery<J> for FromFn<F> {
     fn recover(&mut self, cfg: &Config) -> Option<Resumed<J>> {
         (self.0)(cfg)
+    }
+
+    fn fresh(&mut self, _cfg: &Config) -> J {
+        J::default()
     }
 }

@@ -370,6 +370,13 @@ mod serving {
     }
 
     impl fixbolt_engine::recovery::Recovery<Store> for OneCounterparty {
+        // `[2026-09-02]` `fresh` became a required method when `J: Default` had
+        // to leave the serving loop — a `where` clause on a default body lands
+        // on callers, so it had only moved. Item 32 (b).
+        fn fresh(&mut self, _cfg: &Config) -> Store {
+            Store::default()
+        }
+
         fn recover(&mut self, cfg: &Config) -> Option<Resumed<Store>> {
             self.asked.fetch_add(1, Ordering::Relaxed);
             // Only for the counterparty this test is about, so "it answered for

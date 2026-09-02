@@ -105,12 +105,107 @@ một sự thật đọc được; biến nó thành `Resumed::last_active_ms` v
 
 ## Tài liệu phải cập nhật
 
-- [ ] ADR mới — `seq == 0` là dấu thời gian; `Recovery::fresh` thay cho `J: Default`
-- [ ] `DESIGN.md` §3; `CHANGELOG.md`; `GUIDE.md` §6a; `STATUS.md` item 32; `PRD.md`
-- [ ] Đi lại bảng §4, đọc lại *Not proven*
+- [x] [ADR-0039](../decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md) — `seq == 0` là dấu thời gian; `Recovery::fresh` thay cho `J: Default`
+- [x] `DESIGN.md` §3; `CHANGELOG.md`; `GUIDE.md` §6b; `STATUS.md` item 32; `PRD.md`
+- [x] `docs/reference/` — [a-reversal-that-must-not-compile](../reference/a-reversal-that-must-not-compile.md) mới, gắn `[to testing-skills]`
+- [x] Đi lại bảng §4, đọc lại *Not proven* — ba mục mới: dấu thời gian **không** ghi theo chu kỳ, không có khoá file, và file không tự nói thang thời gian của nó là gì
 
 ## Ngoài phạm vi
 
 - **(a) `serve_sharded_hft`** — Linux-only. Ở lại *Not proven*.
 - **Ghi dấu thời gian theo chu kỳ** — cần một chính sách về tần suất, và tần suất là chuyện đo đạc.
 - **Chống va chạm khi hai tiến trình mở cùng một file** — đó là một plan về khoá file.
+
+## Nhật ký giao hàng
+
+### Bước 1 — test đặc tả, đỏ ở assertion
+
+`crates/engine/tests/on_disk.rs::a_journal_on_disk_remembers_when_its_session_was_last_alive`.
+
+**Bản viết đầu đỏ ở compiler** — nó gọi `mark_active`, một hàm chưa tồn tại. Đó là lần thứ tư
+trong hai ngày mắc đúng lỗi này, và nó không chứng minh gì: đỏ vì không biên dịch được chỉ nói
+rằng mình chưa viết code, không nói hệ thống hôm nay làm gì.
+
+Viết lại để hỏi bằng đúng thứ hôm nay có: **chính các byte của file**. Sau tất cả những gì một
+session có thể ghi được — `put`, `mark_in` — tám byte của thời điểm ấy có nằm đâu đó trong file
+không? Không. Đó là đặc tả, và nó đỏ ở assertion.
+
+Test đối chứng `the_sequence_numbers_already_survive_a_restart` xanh ngay từ đầu: các **con số**
+vốn đã sống sót qua restart. Nên thứ đang thiếu là *thời điểm*, không phải là *file*.
+
+### Bước 2 — `Reader`, và `seq == 0` là dấu thời gian
+
+`ACTIVITY_MARK = 0` dùng được vì `34=` của FIX bắt đầu từ 1, nên số 0 chưa từng là một bản ghi
+hợp lệ. Format **không đổi**: một file cũ không có dấu nào đọc y như trước, và
+`a_file_with_no_activity_mark_reads_as_it_always_did` khẳng định điều đó thay vì giả định.
+
+### Bước 3 — `Recovery::fresh`, và engine ghi dấu ở hai thời điểm
+
+`fn fresh(&mut self, cfg: &Config) -> J` **không có thân mặc định**. Bản viết đầu là
+`fn fresh(...) -> J where J: Default { J::default() }`, và nó **không giải quyết được gì**:
+mệnh đề `where` trên một thân mặc định rơi xuống **phía người gọi**, nên vòng lặp phục vụ vẫn cần
+`J: Default` để gọi được — ràng buộc chỉ đơn giản là chuyển chỗ. Bắt buộc phải cài đặt method là
+cách duy nhất đặt ràng buộc lên đúng nơi cần nó.
+
+Engine ghi dấu ở **lúc logon** và **lúc tắt máy có trật tự**, không ghi theo chu kỳ — xem
+*Ngoài phạm vi*, và nó nằm trong *Not proven* của `STATUS.md`.
+
+Commit `33d1793`. `cargo test --all` **383 passed, 0 failed**; `--test wire` **59/59** ở cả
+default lẫn `--no-default-features --features standard`; `cargo bench --bench alloc` **20 case,
+tất cả 0**; clippy `--all-targets --all-features` sạch; `check-no-optional-deps.sh` sạch;
+`check-links.py` sạch. Máy: Apple M5, macOS 15 — **không có con số nanosecond nào từ máy này**.
+
+### Đảo ngược, đã chạy, output nguyên văn
+
+**1 — `mark_active` không ghi gì** (`let _ = at_ms;`, không đặt field, không ghi file):
+
+```
+test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.99s
+
+---- a_journal_on_disk_remembers_when_its_session_was_last_alive stdout ----
+assertion `left == right` failed: and a Recovery must be able to ask for it without parsing the file
+  left: None
+ right: Some(63849600000000)
+
+---- serving::a_file_journal_runs_through_the_serving_loop_and_records_when_it_lived stdout ----
+the file must say when this session was alive; without it a restart cannot tell whether a trading
+day ended in between — saw None
+```
+
+Ba test đỏ, và một trong ba đi qua **socket thật** — nên cái được canh là đường đi trọn vẹn, không
+phải chỉ là một field trong bộ nhớ.
+
+**2 — bản ghi `seq == 0` đọc thành một message bình thường.** Có **hai** bộ giải mã, và chỉ khi
+lật cả hai thì đảo ngược mới đầy đủ. Lật riêng cái lười (`Records::next`):
+
+```
+test result: FAILED. 5 passed; 1 failed
+    serving::a_file_journal_runs_through_the_serving_loop_and_records_when_it_lived
+```
+
+Lật cả hai (thêm vòng quét lúc `open`):
+
+```
+test result: FAILED. 3 passed; 3 failed
+    a_journal_on_disk_remembers_when_its_session_was_last_alive
+    serving::a_file_journal_runs_through_the_serving_loop_and_records_when_it_lived
+    the_latest_activity_mark_is_the_one_that_answers
+```
+
+**Và `a_file_with_no_activity_mark_reads_as_it_always_did` xanh trong cả hai lần** — đó là nửa
+thứ hai của yêu cầu: không được sửa bằng cách bắt mọi file phải có dấu.
+
+Điều rút ra, và nó không có trong bảng bẫy: **một hằng số phân biệt được đọc ở hai chỗ thì phải
+đảo ngược ở cả hai chỗ.** Lật một chỗ đọc ra "1 test đỏ" và nghe như đã đủ.
+
+**3 — `pump` quay về `J::default()`:**
+
+```
+error[E0599]: no associated function or constant named `default` found for type parameter `J`
+    --> crates/engine/src/lib.rs:1264:23
+error: could not compile `fixbolt-engine` (lib) due to 1 previous error
+```
+
+**Đảo ngược này đỏ ở compiler, và lần này đó chính là điều cần chứng minh** — ngược hẳn với bước
+1. Câu hỏi là *"ràng buộc `J: Default` có còn không?"*, và câu trả lời duy nhất thuyết phục là
+trình biên dịch nói không. Một test chạy được sẽ không phân biệt nổi hai phiên bản.

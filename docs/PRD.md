@@ -81,15 +81,19 @@ Phase 1 — a FIX 4.4 engine you can actually deploy          ← all current wo
   ├── machine probe + advice ← detect and recommend, never apply (ADR-0025, Proposed)
   ├── many counterparties   ← DONE 2026-09-01. presession::Registry/Table: identity -> Config.
   │                            ADR-0026 + ADR-0030. Still missing: a CONFIG FILE (built in
-  │                            code today), and per-counterparty journal/credential/schedule
+  │                            code today) and per-counterparty credential/schedule. A
+  │                            per-counterparty JOURNAL is reachable since 2026-09-02, ADR-0039
   ├── session schedules     ← DONE 2026-09-02 in `session`. Schedule: daily/weekly/weekday,
   │                            crosses midnight, reset by same_session. ADR-0033. UTC only —
-  │                            timezone names are the caller's. STILL MISSING: the engine
-  │                            persisting last_active_ms, so a restart across a boundary
-  │                            keeps yesterday's numbers
+  │                            timezone names are the caller's. last_active_ms is persisted
+  │                            since 2026-09-02 (ADR-0039), so a restart across a boundary
+  │                            can now see it — for a journal that survives one
   ├── operability           ← operator snapshot ✓ · health probe ✓ · event stream with the
   │                            reason ✓ · sequence-number admin ✓ · offline journal reader ✓
   │                            · ordered shutdown ✓ — item 30 CLOSED 2026-09-02
+  ├── recovery on disk      ← [2026-09-02] FileJournal through serve_with_recovery, and the
+  │                            instant a session was last alive (item 32 b, c) ✓ — sharded
+  │                            recovery remains (item 32 a, needs Linux)
   └── library               ← not started
 
 Phase 2 — the encoding axis, and the version axis

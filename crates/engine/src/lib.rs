@@ -360,6 +360,33 @@ where
     where
         J: Default,
     {
+        self.add_with_prefix_config_and_journal(transport, cfg, prefix, state, J::default)
+    }
+
+    /// As [`Self::add_with_prefix_config_and_state`], with the empty journal
+    /// **supplied by the caller** instead of taken from [`Default`].
+    ///
+    /// `[2026-09-02]` this exists because `J: Default` was the single thing
+    /// keeping a journal on disk out of the serving loop: a `FileJournal` needs
+    /// a path, so it has no honest `Default`, and a dishonest one would have
+    /// been an in-memory journal wearing a durable journal's name.
+    /// `STATUS.md` item 32 (b).
+    ///
+    /// `fresh` is called **only** when `state` is [`None`], and only after the
+    /// prefix has been checked — so a connection that is about to be refused
+    /// does not open a file.
+    ///
+    /// # Errors
+    ///
+    /// [`PrefixTooLong`] if the bytes already read will not fit `RX`.
+    pub fn add_with_prefix_config_and_journal<F: FnOnce() -> J>(
+        &mut self,
+        transport: T,
+        cfg: Config,
+        prefix: &[u8],
+        state: Option<crate::recovery::Resumed<J>>,
+        fresh: F,
+    ) -> Result<ConnId, PrefixTooLong> {
         if prefix.len() > RX {
             return Err(PrefixTooLong {
                 got: prefix.len(),
@@ -376,7 +403,7 @@ where
                 };
                 (s, r.journal)
             }
-            None => (Session::new(cfg), J::default()),
+            None => (Session::new(cfg), fresh()),
         };
         let mut conn =
             Connection::new(id, transport, session, journal).with_backpressure(self.backpressure);
@@ -500,6 +527,10 @@ where
         };
         for c in &mut self.conns {
             st.sessions += 1;
+            // **The moment that matters.** A planned restart wants to know when
+            // the session was last alive, and this is that instant. Recorded
+            // before the goodbye, because the goodbye may not go out.
+            c.journal.mark_active(now);
             // `begin_logout` returns `Up` only when the goodbye actually went
             // into the buffer. A session that never logged on, or that cannot
             // build the message, answers `Dropped` and is simply closed —
@@ -666,6 +697,13 @@ where
             let outcome = self.conns[i].turn(now, &mut deliver, |msg| {
                 others_on > 0 && presession::is_logon(msg)
             });
+            // **When the session came up, on disk.** Not per message: that is
+            // the hot path and D8 forbids a write there. A durable journal
+            // records it; everything else ignores it, because the trait's
+            // default body is empty. `STATUS.md` item 32 (c).
+            if !was_on && self.conns[i].session.is_logged_on() {
+                self.conns[i].journal.mark_active(now);
+            }
             // Events cost one `Option` test per connection per turn while
             // nobody is observing, and nothing at all on an engine whose
             // `observer()` was never called.
@@ -927,13 +965,13 @@ where
 ///
 /// `W` is the mode: [`wait::Spin`] for `hft`, `block::Block` for `standard`.
 /// [`HftAcceptorEngine`] and [`StandardAcceptorEngine`] name the two.
-pub type TcpAcceptorEngine<A, W> = Engine<
+pub type TcpAcceptorEngine<A, W, J = crate::journal::Store> = Engine<
     TcpTransport,
     fixbolt_session::Acceptor,
     InlineDispatch<A>,
     crate::clock::SystemClock,
     W,
-    crate::journal::Store,
+    J,
     256,
     4096,
     8192,
@@ -1015,7 +1053,7 @@ pub fn serve<A: Application>(
 /// `crate::block` does not exist without that feature. Non-negotiable 6: the
 /// `#[cfg]` is on the item, not only in `Cargo.toml`.
 #[cfg(all(feature = "standard", unix))]
-pub fn serve_with_recovery<A: Application, V: crate::recovery::Recovery<crate::journal::Store>>(
+pub fn serve_with_recovery<A: Application, J: SessionJournal, V: crate::recovery::Recovery<J>>(
     addr: &str,
     table: presession::Table,
     app: A,
@@ -1025,7 +1063,7 @@ pub fn serve_with_recovery<A: Application, V: crate::recovery::Recovery<crate::j
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: StandardAcceptorEngine<A> = Engine::new(
+    let engine: TcpAcceptorEngine<A, crate::block::Block, J> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
@@ -1073,7 +1111,8 @@ pub fn serve_hft<A: Application>(
 /// As [`serve_hft`].
 pub fn serve_hft_with_recovery<
     A: Application,
-    V: crate::recovery::Recovery<crate::journal::Store>,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
 >(
     addr: &str,
     table: presession::Table,
@@ -1084,7 +1123,7 @@ pub fn serve_hft_with_recovery<
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: HftAcceptorEngine<A> = Engine::new(
+    let engine: TcpAcceptorEngine<A, crate::wait::Spin, J> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
@@ -1172,9 +1211,9 @@ fn default_config(table: &presession::Table) -> Result<Config, ServeError> {
 /// `Cargo.toml` but not behind `#[cfg]` in `lib.rs`*; this is the same mistake
 /// from the other side, and `cargo check --no-default-features` is what catches
 /// it.
-fn pump<A: Application, W: Waiting, V: crate::recovery::Recovery<crate::journal::Store>>(
+fn pump<A: Application, W: Waiting, J: SessionJournal, V: crate::recovery::Recovery<J>>(
     acceptor: Acceptor,
-    mut engine: TcpAcceptorEngine<A, W>,
+    mut engine: TcpAcceptorEngine<A, W, J>,
     table: presession::Table,
     limits: presession::Limits,
     mut recovery: V,
@@ -1215,7 +1254,11 @@ fn pump<A: Application, W: Waiting, V: crate::recovery::Recovery<crate::journal:
             // A prefix that will not fit the engine's RX closes the socket
             // (dropping the transport). It cannot be a message this engine could
             // have read either way, and there is no session yet to tell.
-            let _ = engine.add_with_prefix_config_and_state(t, cfg, &buf[..len], state);
+            // `fresh` is a closure rather than `J::default`, which is the
+            // whole of item 32 (b): a `FileJournal` has no honest `Default`.
+            let _ = engine.add_with_prefix_config_and_journal(t, cfg, &buf[..len], state, || {
+                recovery.fresh(&cfg)
+            });
             moved = true;
         }
         moved |= engine.turn();

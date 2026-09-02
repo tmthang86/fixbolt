@@ -111,7 +111,7 @@ fn the_whole_history_reads_back_in_order() {
         .records()
         .filter_map(|r| match r {
             Record::Message { seq, bytes } => Some((seq, bytes.to_vec())),
-            Record::InboundMark { .. } => None,
+            Record::InboundMark { .. } | Record::ActivityMark { .. } => None,
         })
         .collect();
     let _ = std::fs::remove_file(&path);
@@ -138,7 +138,7 @@ fn an_inbound_mark_is_read_as_a_mark() {
         .records()
         .filter_map(|r| match r {
             Record::InboundMark { seq } => Some(seq),
-            Record::Message { .. } => None,
+            Record::Message { .. } | Record::ActivityMark { .. } => None,
         })
         .collect();
     let empties = reader

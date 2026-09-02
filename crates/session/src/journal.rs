@@ -66,6 +66,38 @@ pub trait Journal {
     /// No return value, for the same reason [`Self::put`] has none.
     fn mark_in(&mut self, seq: u32);
 
+    /// Record that the session was alive at `at_ms`, on the engine's clock.
+    ///
+    /// **A default no-op, so a journal that does not survive a restart is not
+    /// obliged to pretend.** Only a durable journal has anything useful to do
+    /// here.
+    ///
+    /// It exists because the sequence numbers cannot imply it: `next_out = 9`
+    /// says nothing about whether a trading day has ended since 9 was reached,
+    /// and [ADR-0033]'s boundary reset needs that instant to compare against
+    /// after a restart. `[2026-09-02]` before this, the caller had to keep it
+    /// somewhere of its own — `STATUS.md` item 32 (c).
+    ///
+    /// **Not called per message.** The engine records it when a session logs on
+    /// and when an ordered shutdown says goodbye; anything more frequent is a
+    /// write on the hot path, which D8 forbids.
+    ///
+    /// [ADR-0033]: ../../../docs/decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md
+    fn mark_active(&mut self, at_ms: u64) {
+        let _ = at_ms;
+    }
+
+    /// The latest instant [`Self::mark_active`] was given, if any.
+    ///
+    /// [`None`] means *"this journal does not know"* — an in-memory journal, or
+    /// a durable one written before this existed. It is **not** the same as
+    /// *"the session was never active"*, and a caller must treat it as the
+    /// former: guessing a boundary from an absent instant is how a session
+    /// silently restarts its numbering.
+    fn last_active(&self) -> Option<u64> {
+        None
+    }
+
     /// The highest inbound sequence number this journal has been told about, or
     /// `None` if it has been told about none.
     ///

@@ -80,7 +80,8 @@ fn main() -> ExitCode {
             }
         }
         What::Count => {
-            let (mut messages, mut marks) = (0usize, 0usize);
+            let (mut messages, mut marks, mut activity) = (0usize, 0usize, 0usize);
+            let mut last_alive: Option<u64> = None;
             let (mut lowest, mut highest) = (None::<u32>, None::<u32>);
             for r in reader.records() {
                 match r {
@@ -90,12 +91,18 @@ fn main() -> ExitCode {
                         highest = Some(highest.map_or(seq, |h| h.max(seq)));
                     }
                     Record::InboundMark { .. } => marks += 1,
+                    Record::ActivityMark { at_ms } => {
+                        activity += 1;
+                        last_alive = Some(at_ms);
+                    }
                 }
             }
             println!(
-                "messages {messages}  inbound-marks {marks}  seq {}..{}  bytes {}",
+                "messages {messages}  inbound-marks {marks}  activity-marks {activity}  \
+                 seq {}..{}  last-alive {}  bytes {}",
                 lowest.map_or_else(|| "-".to_owned(), |v| v.to_string()),
                 highest.map_or_else(|| "-".to_owned(), |v| v.to_string()),
+                last_alive.map_or_else(|| "-".to_owned(), |v| v.to_string()),
                 reader.len(),
             );
         }
@@ -128,5 +135,8 @@ fn line(r: &Record<'_>) -> String {
             )
         }
         Record::InboundMark { seq } => format!("in   {seq}"),
+        // Milliseconds on the engine's clock, printed raw: turning them into a
+        // calendar needs a timezone, and ADR-0033 keeps the calendar outside.
+        Record::ActivityMark { at_ms } => format!("live {at_ms}"),
     }
 }
