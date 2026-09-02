@@ -1,0 +1,29 @@
+[package]
+name = "fixbolt-jrnl"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+# **No `[features]` block, deliberately.** `tools/w2w` needs one because it
+# branches on `#[cfg(feature = "standard")]` and a `cfg` never reaches into a
+# dependency's features. Nothing here branches on a feature, so declaring one
+# would be a lie the compiler cannot catch. And `default-features = false`
+# below is what keeps `scripts/check-no-optional-deps.sh` honest: this tool
+# reads a file and must not drag `libc` into a build that asked for nothing
+# optional.
+[dependencies]
+fixbolt-engine = { path = "../../crates/engine", default-features = false }
+
+# Only the CLI tests need these: the binary itself depends on `engine` alone.
+[dev-dependencies]
+fixbolt-session = { path = "../../crates/session" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "jrnl"
+path = "src/main.rs"

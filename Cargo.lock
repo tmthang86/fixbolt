@@ -38,6 +38,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fixbolt-jrnl"
+version = "0.0.0"
+dependencies = [
+ "fixbolt-engine",
+ "fixbolt-session",
+]
+
+[[package]]
 name = "fixbolt-session"
 version = "0.0.0"
 dependencies = [

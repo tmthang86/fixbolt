@@ -171,6 +171,9 @@ pub struct FileJournal<const N: usize, const LEN: usize> {
     /// Where that thread was observed running, if it was pinned.
     #[cfg(all(feature = "affinity", target_os = "linux"))]
     writer_core: Option<crate::affinity::CoreId>,
+    /// Bytes at the end of the file that did not form a whole record when it
+    /// was opened. See [`FileJournal::torn_tail_bytes`].
+    torn: usize,
 }
 
 /// The header a `FileJournal` appends before each message: the sequence number
@@ -288,7 +291,13 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                     // than half-read: replaying bytes that never went on the
                     // wire is worse than replaying nothing, because a gap fill
                     // is a legal answer and a corrupt message is not.
-                    torn += 1;
+                    //
+                    // **Dropped, but not hidden.** `[2026-09-02]` this count
+                    // used to end at `let _ = torn;`, so a process that had
+                    // been killed mid-write left no trace an operator could
+                    // find. Skipping it is a recovery decision; being silent
+                    // about it was a defect.
+                    torn = bytes.len() - at;
                     break;
                 }
                 if len == INBOUND_MARK {
@@ -298,8 +307,11 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 }
                 at = end;
             }
+            if at + RECORD_HEADER > bytes.len() && at < bytes.len() {
+                // A tail too short to even hold a header is torn too.
+                torn = bytes.len() - at;
+            }
         }
-        let _ = torn;
         let file = File::options().create(true).append(true).open(path)?;
         let (mem, mut this) = (
             mem_recovered,
@@ -311,6 +323,7 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 writer: None,
                 #[cfg(all(feature = "affinity", target_os = "linux"))]
                 writer_core: None,
+                torn,
             },
         );
         this.mem = mem;
@@ -342,6 +355,23 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
     ///
     /// Called by `Drop`; public because a test that wants to read the file
     /// needs to say when.
+    /// Bytes at the end of the file that did not form a whole record when this
+    /// journal was opened. **Zero on a file written by a process that exited
+    /// cleanly.**
+    ///
+    /// Anything else means a process was killed mid-write. Those bytes are
+    /// **not** replayed — a gap fill is a legal answer to a `ResendRequest` and
+    /// a corrupt message is not — but they are not hidden either.
+    /// `[2026-09-02]` this count was computed and then discarded, so a killed
+    /// process left no trace an operator could find.
+    ///
+    /// It describes the file **as it was opened**. Appending does not change
+    /// it.
+    #[must_use]
+    pub const fn torn_tail_bytes(&self) -> usize {
+        self.torn
+    }
+
     pub fn close(&mut self) {
         // An empty record is the stop signal: `push(&[])` writes a zero length,
         // which `write_loop` recognises and nothing else produces.
@@ -445,5 +475,168 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
 
     fn highest_in(&self) -> Option<u32> {
         self.mem.highest_in()
+    }
+}
+
+// --- reading the file from outside the engine ----------------------------
+
+/// One record in a journal file.
+///
+/// The two shapes the format has: a message, and ADR-0017's inbound mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Record<'a> {
+    /// A message this session sent, with the number it went out under.
+    Message {
+        /// `34=` on the message.
+        seq: u32,
+        /// The bytes exactly as they went on the wire.
+        bytes: &'a [u8],
+    },
+    /// The highest inbound sequence number seen at that point.
+    ///
+    /// Encoded as a record of length zero, which a FIX message can never be —
+    /// see [`INBOUND_MARK`]. [ADR-0017] needs this beside the outbound
+    /// messages rather than in a file of its own.
+    ///
+    /// [ADR-0017]: ../../../docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md
+    InboundMark {
+        /// The inbound number recorded.
+        seq: u32,
+    },
+}
+
+impl Record<'_> {
+    /// The sequence number, whichever shape this is.
+    #[must_use]
+    pub const fn seq(&self) -> u32 {
+        match *self {
+            Self::Message { seq, .. } | Self::InboundMark { seq } => seq,
+        }
+    }
+}
+
+/// Reads a journal file from outside the process that wrote it.
+///
+/// # Why this is not [`FileJournal`]
+///
+/// `FileJournal` exists for **recovery**: it reloads the file into a fixed ring
+/// of `N` messages, because what it has to answer is the next `ResendRequest`,
+/// and that is about recent traffic. This exists for the other question — *"we
+/// sent order X at 10:32, did you receive it?"* — which is about a message that
+/// may be very old, and which the ring dropped long ago. No `N`, no `LEN`, no
+/// bound.
+///
+/// # It allocates, and that is allowed
+///
+/// The whole file is read into memory. **Nothing here runs on the engine
+/// thread or on any hot path** — non-negotiable 1 is about the engine, and this
+/// is a tool. A file too large to hold is a real limit and it is named in
+/// `GUIDE.md` rather than worked around.
+///
+/// # It does not interpret FIX
+///
+/// Records come back as bytes. Interpreting them needs a dictionary, and a
+/// program that reads a file has no business pulling one in.
+#[derive(Debug)]
+pub struct Reader {
+    bytes: Vec<u8>,
+    torn: usize,
+}
+
+impl Reader {
+    /// Read the whole file.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the file returns.
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        let bytes = std::fs::read(path)?;
+        let mut at = 0usize;
+        while at + RECORD_HEADER <= bytes.len() {
+            let mut l4 = [0u8; 4];
+            l4.copy_from_slice(&bytes[at + RECORD_SEQ..at + RECORD_HEADER]);
+            let len = u32::from_le_bytes(l4) as usize;
+            match at
+                .checked_add(RECORD_HEADER)
+                .and_then(|x| x.checked_add(len))
+            {
+                Some(end) if end <= bytes.len() => at = end,
+                _ => break,
+            }
+        }
+        let torn = bytes.len() - at;
+        Ok(Self { bytes, torn })
+    }
+
+    /// Every whole record, in the order they were written.
+    #[must_use]
+    pub fn records(&self) -> Records<'_> {
+        Records {
+            bytes: &self.bytes,
+            at: 0,
+        }
+    }
+
+    /// Bytes at the end that do not form a whole record.
+    ///
+    /// **Zero on a file written by a process that exited cleanly.** Anything
+    /// else is a process killed mid-write, and an audit that does not mention
+    /// it is an audit that quietly lost something.
+    #[must_use]
+    pub const fn torn_tail_bytes(&self) -> usize {
+        self.torn
+    }
+
+    /// How many bytes the file holds, torn tail included.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Whether the file holds nothing at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
+/// Every whole record in a [`Reader`]'s file. See [`Reader::records`].
+#[derive(Debug, Clone)]
+pub struct Records<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Iterator for Records<'a> {
+    type Item = Record<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let at = self.at;
+        if at + RECORD_HEADER > self.bytes.len() {
+            return None;
+        }
+        let mut s4 = [0u8; 4];
+        let mut l4 = [0u8; 4];
+        s4.copy_from_slice(self.bytes.get(at..at + RECORD_SEQ)?);
+        l4.copy_from_slice(self.bytes.get(at + RECORD_SEQ..at + RECORD_HEADER)?);
+        let seq = u32::from_le_bytes(s4);
+        let len = u32::from_le_bytes(l4) as usize;
+        let end = at.checked_add(RECORD_HEADER)?.checked_add(len)?;
+        if end > self.bytes.len() {
+            // The torn tail. `Reader::torn_tail_bytes` is where it is reported;
+            // stopping here without saying so is the defect this whole type
+            // exists to avoid, and the reader carries the count for exactly
+            // that reason.
+            return None;
+        }
+        self.at = end;
+        if len == INBOUND_MARK {
+            Some(Record::InboundMark { seq })
+        } else {
+            Some(Record::Message {
+                seq,
+                bytes: self.bytes.get(at + RECORD_HEADER..end)?,
+            })
+        }
     }
 }

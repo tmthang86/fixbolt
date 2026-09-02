@@ -6,6 +6,7 @@ members = [
     "crates/dict",
     "crates/engine",
     "crates/session",
+    "tools/jrnl",
     "tools/w2w",
 ]
 # fuzz/ needs nightly and is its own workspace. Excluded so `cargo build` at the
