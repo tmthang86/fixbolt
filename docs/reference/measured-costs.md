@@ -2265,3 +2265,171 @@ The cheap check is not a better benchmark. It is a question asked before adoptin
 setting reach the thing that ships, and is the boundary it optimises the boundary production
 has?** Here the answer to the first was no, on documented behaviour, and it settled the
 decision without needing the second.
+
+## The wire, at last: 16 µs a round trip, and pinning buys only the tail — 2026-09-02
+
+**Phase 1 exit criterion 6, and the first end-to-end number this project has ever been
+entitled to publish.** Every figure in `DESIGN.md` §8 until today was either a micro-benchmark
+of one stage or somebody else's literature; the ratio that decides which of them matter — *how
+much of a round trip is this design's to lose* — had no denominator, because `tools/w2w` had
+never run on a machine matching §9.
+
+### The machine, and the command
+
+AMD Ryzen 7 3700X (Zen 2, 8 cores, 2 CCDs), Linux 7.0.0-30-generic, rustc 1.98.0, bare metal.
+`scripts/check-machine.sh` reads **`pass 12  fail 0  unknown 1`** — the unknown is NIC IRQ
+affinity, and this measurement is over loopback, where there is no NIC to steer. Kernel command
+line `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, **no `nohz_full`**
+([ADR-0021](../decisions/ADR-0021-nohz-full-leaves-section-9.md)), **CPU speculation
+mitigations in force** ([ADR-0023](../decisions/ADR-0023-section-9-records-the-cpu-mitigations.md)).
+
+```
+cargo build --release -p fixbolt-w2w --features affinity
+scripts/w2w-baseline.sh                    # RUNS=20, 20 000 messages each, engine cpu6 / client cpu7
+```
+
+Every figure below is the **median over 20 whole runs** of 20 000 timed round trips after
+2 000 warmup, with the quiet row re-read before each run and any run over 3% busy discarded.
+The client is the only clock: `Instant::now()` before `write_all`, read after the whole reply
+is in. **Allocations inside the timed window: 0**, counted by the binary itself on both threads
+and asserted — a reversal that puts one `to_vec()` in the loop reads `allocs 2000` over 2 000
+messages.
+
+### The figures
+
+| Mode | Path | min | **p50** | **p99** | **p99.9** | qualifying runs | spread |
+|---|---|---|---|---|---|---|---|
+| `hft` | `TestRequest` → `Heartbeat` | 15 810 | **16 010** | **20 589** | **22 127** | 20 / 20 | 1.006 |
+| `hft` | `NewOrderSingle` → `ExecutionReport` | 17 288 | **19 908** | **24 657** | **26 150** | 20 / 20 | 1.005 |
+| `standard` | `TestRequest` → `Heartbeat` | 16 020 | **19 447** | **24 106** | **25 609** | 16 / 20 | 1.003 |
+| `standard` | `NewOrderSingle` → `ExecutionReport` | 17 624 | **20 920** | **25 618** | **27 092** | 19 / 20 | 1.005 |
+
+All in nanoseconds. `spread` is the largest per-run p50 over the median of them, the same
+quantity `benches/baselines.tsv`'s margin column is built from — and at 1.003–1.006 this is the
+tightest measurement this repository has ever taken, against 1.10–1.30 for the micro-benchmarks
+on the same box. **A round trip through two kernel sockets is a more reproducible thing to
+measure than 250 ns of user-space work**, which is not the direction anybody expects.
+
+### 1. The design owns 2.9% of the round trip, measured on both ends of the division
+
+`DESIGN.md` §8's user-space rows total **~0.46 µs** at N = 1 — parse 0.123 + session ~0.1 +
+inline dispatch 0.0085 + serialise 0.239. Against the measured `hft` admin round trip of
+**16.0 µs** that is **2.9%**.
+
+That number was §8's second reading — *"on kernel TCP, this engine's user-space path is under 5%
+of the total"* — and it was arithmetic over a **borrowed** denominator. It is now arithmetic
+over a measured one, and it came out where the literature said it would. **This is the only
+figure in this file that confirms rather than corrects a literature number.**
+
+### 2. `hft` is worth 3.44 µs against `standard`, and D8's whole case is that number
+
+`hft` p50 **16 010** against `standard` p50 **19 447** on the identical path: **3 437 ns, 17.7%**.
+
+`standard` blocks in `poll` and is woken; `hft` sweeps its sockets at
+`[measured 2026-08-31]` ~449 ns a turn. So the wakeup this trade buys out is
+**~3.9 µs** — the delta plus the sweep it replaces — and §8 has carried
+*"2–5 µs, `epoll`-class"* from the literature since it was written.
+**`[measured 2026-09-02]` it is 3.9 µs on this box, inside that band, and that row is no longer
+borrowed.** [ADR-0013](../decisions/ADR-0013-two-modes-standard-and-hft.md) decision 4 said a
+`standard` figure and an `hft` figure are not comparable and must not be quoted as one; they are
+comparable *as a difference*, which is the one thing that difference is for.
+
+**And it is 17.7%, not 10×.** An `hft` engine burns a whole core, permanently, per polling
+thread to buy it. `GUIDE.md` §0's *"do not choose `hft` because it sounds better"* now has the
+exchange rate printed next to it.
+
+### 3. Pinning to an isolated core buys **nothing** at p50 and **11×** at p99.9
+
+Three arms, `hft` / app path, 9 qualifying runs each, one variable between A and B — whether
+`isolcpus` names the core. cpu4–cpu7 are one CCD and share one L3, so cache placement is held
+constant across A and B.
+
+| Arm | p50 | p99 | **p99.9** |
+|---|---|---|---|
+| A — pinned to isolated `cpu6` / `cpu7` | 19 968 | 24 807 | **26 300** |
+| B — pinned to `cpu4` / `cpu5`, which `isolcpus` does not name | 19 407 | 25 478 | **266 887** |
+| C — not pinned at all | 19 607 | 27 241 | **293 749** |
+
+**p50 moves 2.9% across all three and B is the *fastest* of them.** p99.9 moves **10.1× between
+A and B and 11.2× between A and C** — from 26 µs to 267 and 294 µs, which is the shape of a
+scheduler putting something else on the core for a quarter of a millisecond.
+
+This closes a gap `DESIGN.md` §9 had marked open in its own words. The `isolcpus` row said the
+option was **free** — `[measured 2026-08-31]` `Engine::turn` reads 494.8 ns on an `isolcpus`
+core against 501.8 on an untouched one — and then said the *benefit* was **unmeasured**, kept on
+a mechanism about other tenants "that a quiet machine cannot exercise". **A quiet machine
+exercises it fine**; what could not see it was the instrument. A 20 000-sample micro-benchmark
+of a 500 ns operation has no p99.9 worth reading, and the excursion this finds is 250 µs long —
+five hundred times the thing being measured. It took an end-to-end measurement to make the
+excursion visible at all.
+
+**It is also the exact opposite shape to `nohz_full`.** That option costs 160 ns on every kernel
+entry and is worse at p50, p99 **and p99.9**, winning only from p99.99
+([ADR-0021](../decisions/ADR-0021-nohz-full-leaves-section-9.md)). `isolcpus` costs nothing
+measurable and wins by an order of magnitude at p99.9. **Two isolation knobs, opposite verdicts,
+and neither is derivable from the other's name.**
+
+### 4. The application path costs 3.9 µs and the micro-benchmarks account for 320 ns of it
+
+`hft` app p50 **19 908** against admin **16 010**: **+3 898 ns**. At the minimum, where
+queueing is least, still **+1 478 ns**.
+
+What the committed benchmarks predict for the extra work, all on this box:
+
+| Extra work in the app path | ns |
+|---|---|
+| session parses a `NewOrderSingle` (122.6) rather than a `Heartbeat` (57.3) | +65 |
+| the desk parses it a second time, unvalidated (117.0) | +117 |
+| the desk encodes a 14-slot `ExecutionReport` from a prebuilt template (239.1) | +239 |
+| the `Heartbeat` the session would have built instead | ~−100 |
+| **predicted** | **~+320** |
+
+**Measured is 4.6× the prediction at the minimum and 12× at p50, and this is not explained.**
+Recorded as a gap rather than reasoned into one, because `[measured 2026-08-30]` this repository
+has already published a cause that turned out to be wrong for a whole day on exactly this kind
+of arithmetic — [the-score-followed-the-timeout](measured-costs.md).
+
+**The largest named candidate, and it is not in any benchmark**: the session validates every
+inbound message against the FIX 4.4 dictionary in a pass of its own, and **no benchmark measures
+that pass.** `crates/session/src/lib.rs` walks every field asking `is_header`, `is_defined_tag`,
+`field_type`, `allows(msg_type, tag)`, `enum_allows` and `field_type().accepts()`, then walks
+`required_header()` and `required(msg_type)` calling `view.get(tag)` — a linear scan of the field
+index — once per required tag. A `NewOrderSingle` carries 14 fields and ~13 required tags where a
+`Heartbeat` carries 6 and ~8; the work is per-field and per-required-tag, and none of it is in
+`benches/parse.rs`, which parses with **`NoDict`**.
+
+So **`DESIGN.md` §8's `Parse (D2) 0.12 µs` row does not describe what the engine does to an
+inbound message.** It describes framing, field indexing, `9=` and `10=` — with the dictionary
+parameter set to a type whose every answer is a no-op. That is a documentation defect found by
+reading the code the wire figure pointed at, and it is now `STATUS.md` open item **39**. The
+figure is not withdrawn: it is correctly labelled for what it measures and §8 now says what it
+excludes.
+
+### 5. Four runs of twenty were discarded, by the guard, for the reason the guard exists
+
+The `standard` arms ran while Chrome woke up on the housekeeping cores — three renderers at
+~10% of a core each. `scripts/w2w-baseline.sh` re-reads CPU busy **before every run** and
+discarded four at 3–4% against the 3% ceiling.
+
+**And the sixteen that qualified read a spread of 1.003** — tighter than the `hft` arms, which
+ran on an idle box. That is `isolcpus` again, from the other direction: the load could not be
+scheduled onto cpu6 or cpu7 and therefore could not reach the measurement. The guard discarded
+runs it did not have to. **That is the correct trade and the guard stays**: the alternative is a
+guard that has to be right about *which* load matters, and `[measured 2026-08-31]` the last time
+this project trusted a start-of-sample machine check, a model loaded mid-sample and ruined
+twelve runs of twenty.
+
+### The generalisation
+
+`[to testing-skills]` — **a percentile is a property of the instrument as much as of the system,
+and a micro-benchmark has no far tail to report.** The isolation setting in §3 above was
+measured as *free and unproven* for two days by a benchmark timing a 500 ns operation. The
+excursion it prevents is 250 µs long. No amount of resampling that benchmark would have found
+it, because a 250 µs stall inside a 500 ns measurement does not appear as a slow p99.9 — it
+appears as one absurd outlier in a distribution nobody reads to the end, or gets thrown out as
+an artifact.
+
+The rule that follows is cheap to apply: **when a setting is claimed to help the tail, the
+instrument must be at least as long-lived as the stall it is supposed to catch.** Ask what the
+mechanism's timescale is before choosing the measurement, not after. A 20 µs end-to-end round
+trip can see a 250 µs stall as a 12× percentile; a 500 ns loop cannot see it at all.

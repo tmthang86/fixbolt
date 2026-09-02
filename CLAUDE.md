@@ -88,7 +88,12 @@ script asks per crate, which is the only scope where the flag means what it read
 live, run by the `bench` CI job through `scripts/bench.sh`; **`[measured 2026-08-30]` this
 entry was false until that job existed** — `cargo test --all` does not run a `harness = false`
 bench target and nothing else invoked `cargo bench`, so the list named a check nothing ran.
-3 — the conformance runner, in process and over a socket. 4 — **both halves, since
+3 — the conformance runner, in process and over a socket. **1 also, for `tools/w2w` itself,
+since 2026-09-02**: `benches/alloc.rs` is a bench target in a library crate and cannot see a
+binary — the same blindness that made `dtruss` and `nm -u` useless for rule 4 — so `w2w` counts
+allocations on **both** threads over exactly the window it times, prints the count beside every
+figure it publishes, and asserts zero. `[measured 2026-09-02]` one `to_vec()` inside the timed
+loop reads `allocs 2000` over 2 000 messages. 4 — **both halves, since
 2026-08-30.** `scripts/check-no-kernel-sleep.sh` traces `tools/w2w` on Linux and attributes
 syscalls to the engine thread by tid; **it runs the binary a second time in `standard` mode and
 requires that run to trip the check**, because two earlier attempts at this rule reported success

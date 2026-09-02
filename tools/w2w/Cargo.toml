@@ -19,9 +19,26 @@ publish = false
 default = ["standard"]
 standard = ["fixbolt-engine/standard"]
 
+# ADR-0015 keeps pinning opt-in, and the same reasoning applies here: a build
+# with no features must stay dependency-free. It is NOT in `default` on purpose
+# — putting it there would turn on `fixbolt-engine/affinity` for every
+# `cargo test --all`, because cargo unifies features across one invocation
+# (`docs/reference/feature-flags-unify-across-a-workspace.md`), and the engine's
+# affinity tests want a box with isolated cores rather than any CI runner.
+#
+# `src/main.rs` refuses `--engine-core` without it rather than ignoring the
+# flag, which is the lesson the `standard` block above was written for.
+affinity = ["fixbolt-engine/affinity"]
+
 [dependencies]
 fixbolt-engine = { path = "../../crates/engine" }
 fixbolt-session = { path = "../../crates/session" }
+
+# `--path app` builds an `ExecutionReport` template once and patches it per
+# message, which is D9's shape. Neither crate has a runtime dependency of its
+# own, so this adds nothing to the tree.
+fixbolt-codec = { path = "../../crates/codec" }
+fixbolt-dict = { path = "../../crates/dict" }
 
 [lints]
 workspace = true

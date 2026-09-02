@@ -10,7 +10,9 @@ against the same gates. The acceptor stays the headline because that is where th
 not because the engine only runs one direction.
 
 It is not an HFT client and does not do kernel bypass. FIX tag=value over the kernel stack
-has a floor of roughly **10–20 µs** wire-to-wire that no codec can move; this engine's job is
+has a floor of roughly **10–20 µs** wire-to-wire that no codec can move — `[measured
+2026-09-02]` **16.0 µs for a round trip over loopback on an isolated core**, of which this
+design's own user-space work is **2.9%**; this engine's job is
 to make everything above that floor vanish, and to measure the floor honestly
 ([DESIGN.md §8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp)).
 
@@ -25,9 +27,12 @@ the front door. `[2026-08-30]` **`standard` is decided and not yet built.**
 **Inside `hft`, latency beats session density, and that is a rule rather than a preference**
 ([ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). The
 shape this engine is built for is **one session on one isolated polling thread**. `[measured
-2026-08-30]` an idle turn is one non-blocking `read` per connection at **703 ns**, flat from 1
-to 256 sockets, so a sweep costs `N × 703 ns` — **two sessions on a thread exceed the whole
-user-space budget in polling alone**. Many sessions per thread is supported, is named
+2026-08-31]` an idle turn is one non-blocking `read` per connection at **449 ns** on the line
+`DESIGN.md` §9 now describes, flat from 1 to 16 sockets within 2%, so a sweep costs
+`N × 449 ns` — **two sessions on a thread exceed the whole user-space budget in polling
+alone**. (This line read 703 ns until 2026-08-31; that figure was a C program's bare `read` on
+a `nohz_full` core, and §9 stopped asking for `nohz_full` —
+[ADR-0021](docs/decisions/ADR-0021-nohz-full-leaves-section-9.md).) Many sessions per thread is supported, is named
 `density`, and carries that term instead of these figures. **Every latency number here names
 its session count.**
 
@@ -53,9 +58,14 @@ its session count.**
 > steps over a kernel socket, blocking in CI, which closes **phase 1 exit criterion 4**
 > ([ADR-0042](docs/decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md)).
 > Its first run found that the initiator answered a `Logon` with a `Logon`, a defect green in
-> the 59 / 59 acceptance score and in 430 other tests. **One exit criterion is left**, and it
-> is criterion 6 — wire-to-wire on a machine matching `DESIGN.md` §9, which is hardware and not
-> code.
+> the 59 / 59 acceptance score and in 430 other tests. `[2026-09-02]` **and criterion 6 closed
+> that evening, so PHASE 1'S SEVEN EXIT CRITERIA ARE ALL MET.** `tools/w2w` ran on a bare-metal
+> Ryzen 3700X reading `pass 12  fail 0  unknown 1` against §9, engine pinned to an isolated
+> core: `hft` **p50 16 010 / p99 20 589 / p99.9 22 127 ns** for an administrative round trip and
+> **19 908 / 24 657 / 26 150** through an application, medians of 20 runs of 20 000 round trips,
+> **zero allocations in the timed window**. `hft` is worth **17.7%** over `standard` end to end,
+> and pinning to an isolated core is worth **nothing at p50 and 11× at p99.9**. **Loopback, not
+> NIC to NIC** — `DESIGN.md` §6 keeps the stricter row open, and says so.
 > **[docs/GUIDE.md](docs/GUIDE.md)** is for embedding the engine — the constraints that
 > show up as latency or lost messages rather than as compile errors.
 > **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;

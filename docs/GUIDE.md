@@ -62,21 +62,45 @@ the `recv` syscall and about 30 ns is everything the engine itself does** — me
 run, so that subtraction is not across two programs. So the sweep is `N ×` that figure, and a
 message arriving just after its socket was polled waits a whole sweep before anyone looks at it.
 
-**The isolated core is the expensive one**, by 36%, and that is the machine this engine
-recommends. It is a trade against a tail nobody has measured yet, not a free win —
-[measured-costs.md](reference/measured-costs.md).
-
-| Sessions on one thread | Added latency, worst case | Against the engine's own parse at 125.5 ns |
+| Sessions on one thread | Added latency, worst case | Against a measured 16.0 µs round trip |
 |---|---|---|
-| 1 | 0.70 µs | 5.6× the parse, just to find the message |
-| 2 | 1.41 µs | exceeds `DESIGN.md` §8's entire user-space budget |
-| 16 | 11.2 µs | comparable to the whole kernel-TCP floor |
-| 128 | 90 µs | |
+| 1 | 0.45 µs | 2.8% |
+| 2 | 0.90 µs | exceeds `DESIGN.md` §8's entire user-space budget (~0.46 µs) |
+| 16 | 7.2 µs | **45%** |
+| 128 | 57 µs | 3.6× the whole round trip |
+
+`[2026-09-02]` **This table used to be built on 703 ns and is now built on 449.** The older
+figure was a C program's bare `read` on a `nohz_full` core; §9 stopped asking for `nohz_full`
+([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md)) and `Engine::turn` on the line
+§9 now describes is **449 ns**. **The isolated core is not the expensive one** — that 36% was
+`nohz_full`'s and only `nohz_full`'s: `isolcpus` reads 494.8 ns against 501.8 on an untouched
+core, which is nothing.
 
 **If you care about latency, run one session per thread and pin that thread to an isolated
 core.** If you are building a gateway for many clients, you are in the `density` shape — that
 is supported and reasonable, and you should plan against `N × 449 ns` on a §9 core
 rather than against this project's headline figures ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)).
+
+### And the pinning is the one thing here that only shows up in the tail
+
+`[measured 2026-09-02]` **whether the engine thread sits on an `isolcpus` core is worth nothing
+at p50 and 11× at p99.9**, measured wire-to-wire on a §9 desktop with one variable between the
+arms:
+
+| Where the engine thread ran | p50 | **p99.9** |
+|---|---|---|
+| pinned to an isolated core | 19 968 ns | **26 300 ns** |
+| pinned to an ordinary core | 19 407 ns | **266 887 ns** |
+| not pinned at all | 19 607 ns | **293 749 ns** |
+
+The p50 column is why this is easy to get wrong: the isolated core is 2.9% **slower** at the
+median, so a benchmark reporting medians says the tuning is pointless. What it prevents is the
+scheduler putting something else on your core for a quarter of a millisecond, and **you will
+only ever see that in a percentile long enough to contain it.**
+
+**Nothing enforces this either.** `pin_current_thread` will pin you to a core the scheduler
+shares and return `Ok` — it proves your thread went where you said, not that the core is yours.
+Check `/proc/cmdline` for `isolcpus`, or run `scripts/check-machine.sh`.
 
 **Nothing enforces this.** The engine will happily carry 500 sessions on one thread and will
 not warn you.
@@ -89,9 +113,9 @@ Two terms survive it:
 - **Cache.** One `Connection` is **53.3 KiB**; `L1d` on the test machine is 32 KiB, so *one
   connection does not fit in L1*. Random access costs **1.05 ns** in L1 and **78.5 ns** from
   RAM — **75×** — and that applies to every access the engine makes, not just to polling.
-- **Head-of-line blocking.** One thread serialises. Per-message work here is ~465 ns
-  (`parse` 125.5 + `encode` 240.0 + the session step), so `k` sessions holding a message at
-  once make the last one wait `(k-1) × 465 ns`. Nothing removes this except fewer sessions.
+- **Head-of-line blocking.** One thread serialises. Per-message work here is ~460 ns
+  (`parse` 122.6 + `encode` 239.1 + the session step), so `k` sessions holding a message at
+  once make the last one wait `(k-1) × 460 ns`. Nothing removes this except fewer sessions.
 
 Full working: [reference/measured-costs.md](reference/measured-costs.md).
 
@@ -831,7 +855,7 @@ are not in force. Run it before you believe any number, yours or ours.
 
 `[measured 2026-08-30]`, in order of how much they actually moved a benchmark here:
 
-| Factor | Effect on the ring-hop median |
+| Factor | Effect on the ring-hop **median** |
 |---|---|
 | **Anything else running on the machine** | **+71%** — 262 ns to 449 ns |
 | Every §9 tuning row combined — governor, boost, SMT, THP, `busy_poll` | **0.8%** |
@@ -839,6 +863,13 @@ are not in force. Run it before you believe any number, yours or ours.
 **The biggest one is not on the checklist by default and is free: make the machine quiet.**
 A box that satisfies every tuning row and shares a core with a build is worse than an untuned
 idle one.
+
+`[measured 2026-09-02]` **And one row moves nothing in that column and 11× in the one beside
+it.** Pinning the engine thread to an `isolcpus` core is worth **−2.9% at p50** — it is
+*slower* — and **10× at p99.9**, 26 µs against 267. So the table above, which is about medians,
+cannot rank it at all; §1 has the figures. **If you tune for the tail, do not rank your
+settings by their effect on the median**, which is the mistake this project made about
+`isolcpus` for two days and about `nohz_full` in the opposite direction for one.
 
 Two more, both traps rather than settings:
 
@@ -854,6 +885,15 @@ Two more, both traps rather than settings:
 ## 8. How to benchmark this engine without fooling yourself
 
 Everything in this section was paid for here, on this repository, in one day.
+
+0. **Match the instrument's timescale to the mechanism you are asking about.**
+   `[measured 2026-09-02]` this project measured an isolation setting as *free, with an
+   unproven benefit* for two days, using a benchmark that timed a **500 ns** operation. The
+   stall that setting prevents is **250 µs** long. It does not appear in that benchmark as a bad
+   p99.9; it appears as one absurd sample in a distribution nobody reads to the end, or it gets
+   discarded as an artifact. **A percentile is a property of the instrument as much as of the
+   system**, and a micro-benchmark has no far tail to report. Ask how long the mechanism's
+   stall is before choosing what to measure with.
 
 1. **Run your sample twice before you write down a rate.** `[measured 2026-08-30]` a
    pass-rate comparison read 8.3% against 3.3% at n=60 and **5.6% against 5.6% at n=250**.

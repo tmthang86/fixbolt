@@ -168,6 +168,33 @@ jobs:
       - run: cargo build -p fixbolt-w2w --release
       - run: scripts/check-no-kernel-sleep.sh
 
+      # `[2026-09-02]` `--path app` — `NewOrderSingle` -> `ExecutionReport`,
+      # the path DESIGN.md §8's table is actually about — is new, and the gate
+      # above drives only `--path admin`. So it is run here once, small, for its
+      # own three assertions rather than for a timing figure: the reply must be
+      # a `35=8`, it must carry the ClOrdID that was just sent, and the timed
+      # window must allocate nothing. All three are inside the binary and fire
+      # per message, so a runner with no isolated cores is a perfectly good
+      # place to check them; only the nanoseconds need §9, and this step reads
+      # none.
+      - name: The app path's own oracle, on every message
+        run: |
+          ./target/release/w2w --path app --messages 500 --warmup 100 | tee /tmp/app.txt
+          grep -q 'allocs *0 ' /tmp/app.txt
+          grep -q 'NewOrderSingle -> ExecutionReport' /tmp/app.txt
+
+      # The mirror of the `standard` lesson in tools/w2w/Cargo.toml: a flag that
+      # is accepted and does nothing is worse than one that is refused. Without
+      # `--features affinity` this build CANNOT pin, so `--engine-core` must be
+      # an error — and a green here is the only thing standing between a future
+      # run and a figure labelled §9 that never pinned a thread.
+      - name: A build that cannot pin refuses --engine-core
+        run: |
+          if ./target/release/w2w --engine-core 0 --messages 10 --warmup 2; then
+            echo "::error title=A flag that does nothing::--engine-core was accepted by a build with no affinity feature"
+            exit 1
+          fi
+
   # CLAUDE.md §2 non-negotiable 4, SECOND HALF: in `standard` mode the engine
   # thread must block when idle and give the core back. ADR-0013 decision 6
   # asked for it; until this job existed rule 4 was half-enforced and

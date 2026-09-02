@@ -138,7 +138,7 @@ Added one at a time, each behind an approved plan.
 | `library` | L4 | The application-facing API. Package name **`fixbolt`** — the one a user names in their own `Cargo.toml` | `engine` |
 | | | `[2026-09-02]` **built.** `Handler`, `Incoming`, `Reply`, `Message`, `Answer`, `ReplyError`, `App`, `app()`, plus a curated re-export surface — `serve`, `Config`, `Table`, `Limits`, `Settings`, `Observer`, `Admin`, `Recovery`, `FileJournal` and the rest of what an application needs, and **nothing else**: `Engine`, `Dispatch`, `Transport`, `wait`, `shard`, `affinity`, `frame` and `ring` are deliberately absent, so reaching for one means naming `fixbolt-engine` yourself. `Reply` writes the seven fields an application does not own — `8`, `9`, `10` from the frame, `34`, `49`, `52`, `56` from the session, with `49`/`56` **reversed** — and every field a handler names is sorted by `TemplateBuilder::build::<Fix44>()`, which is non-negotiable 5 seen from the application side. Nothing in `session` or `engine` changed for it: `App` cabinets onto the existing `Application` seam. **It is a convenience layer and not the `hft` path** — `[measured 2026-09-02, Intel Xeon @ 2.80GHz, a machine that fails §9]` a twelve-field reply cost **~2.1 µs** against **40 ns** to encode a template built once (D9's shape) — ~50×, published rather than discovered ([ADR-0041](decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)). `[measured 2026-09-02, same machine]` **half of that is gone**: `TemplateBuilder` no longer moves an `S`-byte struct once per field, and `library, reply only` reads **766 ns** against 1 549, `on_message` **956** against 1 594, with `parse only` unmoved at 146 as the control ([ADR-0044](decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)). **~24×, and the rest is the `Template` still being materialised per message** — `STATUS.md` item 34, with 766 as the number to beat. `crates/library/benches/cost.rs`. Defaults `P = 64, S = 1024` were chosen off a sweep, not off taste. `benches/alloc.rs` reads **0** on all three paths with an injected control reading 1000 in the same run | |
 | `conformance` | dev | The `.def` acceptance runner, both roles. Also owns the corpus loader and the echo application the corpus assumes — **built before `session`**, so the gate exists before the thing it gates | `codec`, `dict` |
-| `tools/w2w` | tool | The wire-to-wire harness, and the concrete binary `check-no-kernel-sleep.sh` and `check-standard-gives-the-core-back.sh` trace. **Has its own `[features]` block**, because a `cfg` never reaches into a dependency's features — `[measured 2026-08-30]` without it `--mode standard` printed its banner and ran nothing | `engine`, `session` |
+| `tools/w2w` | tool | The wire-to-wire harness, and the concrete binary `check-no-kernel-sleep.sh` and `check-standard-gives-the-core-back.sh` trace. **Has its own `[features]` block**, because a `cfg` never reaches into a dependency's features — `[measured 2026-08-30]` without it `--mode standard` printed its banner and ran nothing. `[2026-09-02]` **it is the instrument phase 1 exit criterion 6 is read off**, and closing that criterion took three additions to it: `--path app` (`NewOrderSingle` → `ExecutionReport` through an application holding a template built once, which is what §8's table is about), `--engine-core` / `--client-core` behind an `affinity` feature that **refuses** rather than shrugs when the build cannot pin, and p99.9 in the output. It counts its own allocations on both threads over the timed window and asserts zero, because a bench target in a library crate cannot see a binary. `scripts/w2w-baseline.sh` is the committed 20-run procedure | `engine`, `session`, `codec`, `dict` |
 | `tools/jrnl` | tool | `[2026-09-02]` Reads a journal file **from outside the process that wrote it** — `STATUS.md` item 30 (e). Prints records, filters by sequence number, counts, and **warns on a torn tail with exit code 2**. Takes `engine` with `default-features = false`, so `check-no-optional-deps.sh` cannot be quietly defeated by a sibling crate the way `[measured 2026-08-30]` it once was. **No `[features]` block, deliberately**: nothing here branches on one, and declaring one would be a lie the compiler cannot catch | `engine` |
 
 ## 4. The decisions that shape it
@@ -887,7 +887,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Every enum value is one QuickFIX also knows | **245 / 245** fields, **1 708 / 1 708** values, zero exceptions | `crates/dict/tests/enums.rs`. One-directional by construction: QuickFIX lists every version's values, so it can only confirm, never forbid |
 | What each of the 23 field types accepts | at least one accepted and one refused value per type | `crates/dict/tests/field_types.rs`. **These cases are invented** — the corpus supplies two, and 23 types with 2 real cases is not coverage |
 | In-group field order matches another implementation | delimiter exact on all **730** groups, and QuickFIX's `message_order` an exact subsequence of this crate's member list on all 730 | `crates/dict/tests/interop_quickfix_order.rs`, read out of QuickFIX's generated C++. Exists because the round-trip test reads the same table the encoder does and is blind to a wrong order |
-| **Wire-to-wire, NIC to NIC** | p50 / p99 / p99.9 published; p99 ≤ 50 µs on kernel TCP | `tools/w2w` — `SO_TIMESTAMPING`, HdrHistogram, load generator on a **separate machine** |
+| **Wire-to-wire, over loopback, on a §9 box** | p50 / p99 / p99.9 published with the machine and its settings. `[measured 2026-09-02]` **MET** — §9 desktop, `pass 12  fail 0  unknown 1`, engine pinned to isolated `cpu6` and client to `cpu7`, medians of 20 whole runs of 20 000 round trips: `hft` **16 010 / 20 589 / 22 127 ns** administrative, **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. **p99 ≤ 50 µs holds in all four arms.** Allocations in the timed window **0**, asserted by the binary on both threads | `tools/w2w --features affinity`, driven by `scripts/w2w-baseline.sh`. Phase 1 exit criterion 6 |
+| **Wire-to-wire, NIC to NIC** | the same three percentiles with a **real NIC** in the path | `tools/w2w` — `SO_TIMESTAMPING`, HdrHistogram, load generator on a **separate machine**. **NOT met, and the row above does not close it**: loopback has no driver, no IRQ, and no wire, which is why §9's NIC IRQ affinity row reads `unknown` for every figure quoted above. `STATUS.md` open item **40** |
 | Which TLS mode is actually in force | a session that fell back to the userspace path is **detected**, not assumed | ADR-0005 open question 3 — **no gate exists yet, and that is a known hole** |
 | `parse_into` never panics on hostile input | `[measured]` 304,230,294 executions, 0 crashes, 2026-08-28 | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |
 | **kTLS can be driven from a plain non-blocking socket** | 15 assertions green, **and** the offloaded data path makes no blocking syscall | `scripts/check-ktls-on-a-plain-socket.sh`, D11 and [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md). Runs `spikes/ktls`, then traces it and attributes syscalls to the thread that drove the socket by the tid that wrote the marker. `[measured 2026-08-31]` `recvfrom` 3033 + `sendto` 1000 over 1000 round trips and **nothing else**. **Runs a second time with `poll(2)` in the same loop and fails if that run does not trip it.** Skips with exit 2, not a pass, on a kernel that cannot offload TLS |
@@ -1080,8 +1081,30 @@ question 1. When it lands it belongs beside step 6, in `transport`.
 ## 8. Latency budget on kernel TCP
 
 Where the time goes for one inbound `NewOrderSingle` → outbound `ExecutionReport`, Linux,
-kernel TCP, no bypass. **Typical figures from the literature, not measured here** — the
-`tools/w2w` harness replaces this table with real numbers.
+kernel TCP, no bypass.
+
+`[measured 2026-09-02]` **The bottom line is no longer arithmetic over a borrowed
+denominator.** `tools/w2w` has run on a machine matching §9 and the round trip is measured;
+what is still from the literature is labelled row by row, and the four rows the kernel owns are
+the ones that still are.
+
+| Round trip, measured | `hft` | `standard` |
+|---|---|---|
+| `TestRequest` → `Heartbeat` (no application) | p50 **16 010** · p99 **20 589** · p99.9 **22 127** ns | p50 **19 447** · p99 **24 106** · p99.9 **25 609** ns |
+| `NewOrderSingle` → `ExecutionReport` (through an application) | p50 **19 908** · p99 **24 657** · p99.9 **26 150** ns | p50 **20 920** · p99 **25 618** · p99.9 **27 092** ns |
+
+§9 desktop, `check-machine.sh` `pass 12  fail 0  unknown 1`, engine pinned to isolated `cpu6`
+and the client to `cpu7`, medians of 20 whole runs of 20 000 timed round trips each, **over
+loopback**. `scripts/w2w-baseline.sh` is the procedure and
+[measured-costs.md](reference/measured-costs.md) carries the whole reading. **Loopback is not a
+NIC**: §6's NIC-to-NIC row stays open, and these figures contain no driver and no interrupt.
+
+**`hft` is worth 3 437 ns — 17.7% — against `standard` on the identical path**, and that
+difference is D8's entire case. It also prices the wakeup row below at **~3.9 µs** (the delta
+plus the ~449 ns sweep it replaces), which lands inside the 2–5 µs this table has carried from
+the literature since it was written.
+
+Stage by stage:
 
 | Stage | Typical | Who controls it |
 |---|---|---|
@@ -1089,7 +1112,7 @@ kernel TCP, no bypass. **Typical figures from the literature, not measured here*
 | TLS record decrypt, **if enabled** — kTLS **vs** userspace (D11) | in-kernel with AES-NI, no extra copy **vs** one copy each way plus allocation | **This design**, and the kernel |
 | Wakeup — **`standard`** blocks on readiness | 2–5 µs, `epoll`-class, **and the core is given back** | **This design**, D8 |
 | Wakeup — **`hft`** busy-polls | `[measured 2026-08-31]` **`Engine::turn` itself: ~449 ns × N**, N = sockets on the thread, **and a core is burned**. The 2026-08-30 figure of 703 ns was a C program's bare `read` on a `nohz_full` core; matched for placement the two agree to 4%. **`nohz_full` — and only `nohz_full`, not `isolcpus` or `rcu_nocbs` — adds ~200 ns to every kernel entry on the core that has it and ~45 ns on every core that does not, taking this row to ~670 ns**, which is why §9 no longer asks for it ([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md), [measured-costs.md](reference/measured-costs.md)) | **This design**, D8, `benches/turn.rs` |
-| Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.6 ns) | This design |
+| Parse (D2) | `[measured 2026-08-31]` **0.12 µs** (§9 desktop, 122.6 ns) — **framing, field indexing, `9=` and `10=` only.** `benches/parse.rs` parses with **`NoDict`**, so this row does **not** include the dictionary pass the session runs on every inbound message: required fields, field types, enum values, unknown tags, group structure, once per field and once per required tag. **That pass has no benchmark** — `STATUS.md` open item **39**, found by the wire measurement below | This design |
 | Session machine (D1) | ~0.1 µs | This design |
 | Dispatch — inline **vs** ring (D4) | `[measured 2026-09-01]` **0.0085 µs** inline **vs** **0.27 µs** ring one way (§9 desktop) — **was published as 0.0013 µs until the benchmark was found to be deleting a 163-byte copy** ([a-benchmark-can-delete-its-own-work.md](reference/a-benchmark-can-delete-its-own-work.md)); D4 is unaffected, 31× is still an enormous gap | Application's choice |
 | Serialise — template (D9) | `[measured 2026-08-31]` **0.24 µs** (§9 desktop, 239.1 ns) — **was ~0.05 µs from the literature; see below** | This design |
@@ -1132,16 +1155,30 @@ recomputed from the measured rows rather than the borrowed ones.
 user-space rows total **~0.46 µs** at N = 1 with the inline dispatcher — parse 0.123 + session
 ~0.1 + dispatch 0.0085 + serialise 0.239 — against a kernel floor of **10–20 µs**. So serialise
 costing 239 ns rather than 60 ns moves the wire-to-wire figure by under **2%** of the floor,
-which is why §6 was able to withdraw the target without the design changing. **The ring
+which is why §6 was able to withdraw the target without the design changing.
+
+`[measured 2026-09-02]` **and that division now has a measured denominator: 0.46 µs against a
+16.0 µs `hft` round trip is 2.9%.** The sentence above was arithmetic over a literature floor
+for as long as this document has existed, and the measurement agrees with it. **It is also the
+whole of [ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)**,
+which declines SIMD/SWAR on it: parse is **0.62%** of the application round trip, and the 20–40 ns
+such work was estimated to save is **0.10–0.20%** — smaller than the 0.5% run-to-run spread of the
+instrument that would have to see it. **The measured app round trip is 3 898 ns above the
+administrative one and the committed benchmarks account for ~320 ns of that**; the gap is
+recorded as a gap, with the dictionary pass named as the largest untested candidate — open
+item 39. **The ring
 dispatcher is the row worth reading**: at 0.27 µs one way it is more than parse and serialise
 put together, and it is the application's choice rather than this design's.
 
-**Which mode the table is about: `hft`.** `[amended 2026-08-30, ADR-0013]` `standard` is the
-default and its wakeup row is the 2–5 µs one, so **its bottom line is `epoll`-class and this
-table does not describe it**. A `standard` figure and an `hft` figure are not comparable and
-must not be quoted as if they were — ADR-0013 decision 4. `standard`'s own budget has **not been
-measured**; the row above is the literature figure, as the header of this section says of every
-row.
+**Which mode the stage-by-stage table is about: `hft`.** `[amended 2026-08-30, ADR-0013]`
+`standard` is the default and its wakeup row is the 2–5 µs one, so **its bottom line is
+`epoll`-class and the stage table does not describe it**. A `standard` figure and an `hft`
+figure are not comparable and must not be quoted as if they were — ADR-0013 decision 4.
+`[measured 2026-09-02]` **`standard`'s wire-to-wire round trip is measured and is in the table
+at the top of this section**; what is still unmeasured is its *stage breakdown*, because the
+wakeup is one opaque term and nothing here decomposes it. The two modes **are** comparable as a
+difference, which is the one thing a difference is for: **3 437 ns, 17.7%**, for a whole core
+burned permanently per polling thread.
 
 `[measured 2026-08-30]` **the last two rows are the honest bottom line and the "< 1 µs" line
 alone was not.** It counted user-space work and excluded the syscall that reaches the socket —
@@ -1158,9 +1195,11 @@ off, kTLS, userspace `rustls` — on the same Linux box (ADR-0005 decision 5).
 
 Two readings of this table:
 
-1. On kernel TCP, this engine's user-space path is **under 5% of the total**. The design
-   makes that 5% as small as it can be, and — through D8 — trades `epoll`'s 2–5 µs wakeup for a
-   449 ns poll. `[measured 2026-08-31]` **that trade wins at N = 1 and loses by N = 11**, which
+1. On kernel TCP, this engine's user-space path is **2.9% of the total** — `[measured
+   2026-09-02]` 0.46 µs of a 16.0 µs `hft` round trip, and until that day this line said
+   "under 5%" on a literature floor. The design makes that 2.9% as small as it can be, and —
+   through D8 — trades `epoll`'s wakeup for a 449 ns poll, **which is measured end to end at
+   3 437 ns, 17.7%**. `[measured 2026-08-31]` **that trade wins at N = 1 and loses by N = 11**, which
    is the sentence this table did not contain until the poll was measured — and which survived
    the poll being re-measured against the engine rather than against a C floor.
 2. Going below the floor means kernel bypass (OpenOnload, DPDK, `ef_vi`). That is L0's
@@ -1176,7 +1215,7 @@ anything:
 |---|---|
 | **The machine is not a guest** | Four rows below — governor, turbo, C-states, SMT — plus NIC IRQ affinity are **host** properties. A VM cannot set them, and does not fail them loudly: the `/sys` files are simply absent, so a guest collects `unknown` and reads as under-configured rather than as structurally unable to comply. So this is a row of its own, and it decides whether the rest can mean anything. `check-machine.sh` reports `systemd-detect-virt` and steal time over the same window as the row below; a guest is a **FAIL**, and steal on bare metal is reported as unexplained rather than resolved either way. **Development may move to a cloud VM; measurement cannot.** Bare metal, or nothing but counts and same-machine A/B |
 | **Nothing else is running on the machine** | `[measured 2026-08-30]` **the row that was missing, and it dominates every other row here.** On the project's Ryzen 7 3700X, all six tuning rows below move the `ring, one way` median by **0.8%** — 260.6 ns untuned to 259.7 ns tuned, both on a quiet box. Competing CPU load moves it by **71%**, 262 ns to 449 ns, and takes the rate of a second mode near 324 ns from ~5% to **92%**. A machine can satisfy every other line in this table and still be useless to measure on. `scripts/check-machine.sh` now reads CPU busy over a one-second window and **FAILs above 3%**, naming the processes by their delta in that window |
-| `isolcpus` + `rcu_nocbs` for the engine core | No other tenants, and no RCU callbacks on the engine core. `[measured 2026-08-31]` **free**: `Engine::turn` reads 494.8 ns on an `isolcpus` core and 498.2 ns on an `rcu_nocbs` core against 501.8 ns on an untouched one. Kept for a mechanism about *other tenants* that a quiet machine cannot exercise — on this box `isolcpus` removed 1078 tail excursions against 1130, which is nothing, because there was nothing there to remove. **That benefit is unmeasured and the row says so** |
+| `isolcpus` + `rcu_nocbs` for the engine core, **and the engine thread pinned to it** | No other tenants, and no RCU callbacks on the engine core. `[measured 2026-08-31]` **free**: `Engine::turn` reads 494.8 ns on an `isolcpus` core and 498.2 ns on an `rcu_nocbs` core against 501.8 ns on an untouched one. `[measured 2026-09-02]` **and no longer free of a benefit either: it is worth 11× at p99.9 and nothing at p50.** Wire-to-wire, `hft`, application path, one variable — whether `isolcpus` names the core, with both arms inside one CCD so L3 placement is held: p50 **19 968 against 19 407** (the isolated core is 2.9% *slower*), p99.9 **26 300 against 266 887**, and **293 749** with no pinning at all. This row used to say the benefit was unmeasured; what could not see it was the instrument — a 20 000-sample benchmark of a 500 ns operation has no readable p99.9, and the excursion is 250 µs long. [measured-costs.md](reference/measured-costs.md), and **the opposite verdict to `nohz_full` below** |
 | **CPU speculation mitigations IN FORCE** | `[measured 2026-09-01]` **the single largest term in this design's budget, and it is not the syscall.** Turning them off makes every syscall this engine performs **59–63%** cheaper: `Engine::turn` goes from **448.9 ns to 175.2**, `recv` from 420.5 to 156.9, while thirteen pure user-space benchmarks move −4.1% to +4.1% with no direction. All of it is `retbleed`'s untrained return thunk plus `spec_rstack_overflow`'s Safe RET — `vmscape`, the mechanism `STATUS.md` had named for two days, costs **nothing**. **This row requires them ON**, because that is what `benches/baselines.tsv` was recorded with and a machine without them is not comparable; it is **not** advice to disable them. [ADR-0023](decisions/ADR-0023-section-9-records-the-cpu-mitigations.md), [measured-costs.md](reference/measured-costs.md) |
 | `nohz_full` — **NOT recommended**, and this row is the price rather than the instruction | `[measured 2026-08-31]` **it costs 160 ns on every kernel entry and it is the whole of the 36%** the row above used to carry: 670.7 ns per turn against 494.8. What it buys is the far tail, and only the far tail — p50 376 against 216, p99 376 against 224, **p99.9 384 against 224**, and it wins from p99.99 outward (504 against 2848). A busy `hft` engine makes ~2 000 000 kernel entries per second and this removes ~1100 excursions of 3 µs: **0.32 s of tax against 0.0033 s of tail, a hundred to one against**. Take it only for a p99.99 objective, which §6 does not have. [ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md), [measured-costs.md](reference/measured-costs.md) |
 | IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt |
