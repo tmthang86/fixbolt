@@ -212,6 +212,22 @@ below describe what a first release would contain.
       `Schedule::always` and wrong under anything else.
     - The engine still does not read the journal for you and does not guess. ADR-0010's point
       is that choosing between a restart and a continuation is the caller's.
+  - **`journal::Reader`, `Records`, `Record`, and `FileJournal::torn_tail_bytes()`** —
+    reading the file from outside the process that wrote it.
+    [ADR-0037](docs/decisions/ADR-0037-reading-a-journal-is-not-recovering-from-one.md).
+    - `FileJournal` reloads into a fixed ring of `N`, because its job is the next
+      `ResendRequest`. The operations question — *"we sent order X at 10:32, did you receive
+      it?"* — is about a message the ring dropped long ago. `Reader` is an `Iterator` over
+      the whole file: no `N`, no `LEN`, no bound.
+    - `Record::{Message, InboundMark}`. The mark is [ADR-0017](docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md)'s
+      zero-length record and comes back **as a mark**, not as an empty message.
+    - **It allocates**, and the rustdoc says why that is allowed: nothing here runs on the
+      engine thread. A file too large to hold in memory is a real limit, named in `GUIDE.md`.
+    - **It does not interpret FIX.** That needs a dictionary, and a file reader has no
+      business pulling one in.
+    - `FileJournal::torn_tail_bytes()` reports bytes at the end that did not form a whole
+      record — a process killed mid-write. Those bytes are **not** replayed, which is
+      correct; `[2026-09-02]` they were also **not reported**, which was not.
   - **`observe` — what an operator can see, from another thread, while the engine runs.** New
     module, no feature flag, no dependency.
     [ADR-0032](docs/decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md).

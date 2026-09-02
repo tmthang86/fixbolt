@@ -102,6 +102,9 @@ crates/
   session/       the FIX session state machine — pure, no I/O, role-parameterised
   engine/        TCP acceptor and connector; a thread that never sleeps in the kernel
                  (more crates are added one at a time, each behind an approved plan)
+tools/
+  w2w/           wire-to-wire harness — NIC to NIC, and the binary the mode checks trace
+  jrnl/          reads a journal file from outside the process that wrote it
 benches/         baselines.tsv — one recorded timing baseline per (CPU model, case);
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets — nightly, outside the workspace
