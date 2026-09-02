@@ -377,6 +377,45 @@ fn main() {
         }
     });
 
+    // The three the operator orders: a heartbeat nobody asked for, a
+    // `TestRequest` with a caller's `112=`, and a `ResendRequest` with a
+    // caller's range. All three send, all three are new send paths, and all
+    // three take a `&[u8]` or a `u32` from outside the session — which is the
+    // shape that tempts a `to_vec()`.
+    //
+    // The acceptor is the side this corpus can log on in one step; the
+    // functions themselves are role-blind, and `tests/initiator.rs` drives them
+    // from the initiator.
+    {
+        let mut s = acceptor();
+        s.connect(|_| ());
+        s.tick(now, |_| ());
+        s.received(&logon_reply, |_| ());
+        let mut sent = 0usize;
+        assert!(s.send_heartbeat(|_| sent += 1), "the beat must go out");
+        assert!(
+            s.send_test_request(b"OPERATOR-7", |_| sent += 1),
+            "the test request must go out"
+        );
+        assert!(
+            s.send_resend_request(4, 9, |_| sent += 1),
+            "the resend request must go out"
+        );
+        assert_eq!(sent, 3, "three ordered paths, three messages");
+    }
+
+    let ordered_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s = acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            s.received(&logon_reply, |_| ());
+            s.send_heartbeat(|_| ());
+            s.send_test_request(b"OPERATOR-7", |_| ());
+            s.send_resend_request(4, 9, |_| ());
+        }
+    });
+
     let clock_allocs = count(|| {
         for _ in 0..10_000 {
             let _ = clock::parse_utc(b"20260828-12:00:00.123");
@@ -480,7 +519,8 @@ fn main() {
          tick {tick_allocs} beat {beat_allocs} answer {answer_allocs} \
          gap {gap_allocs} fill {fill_allocs} deliver {deliver_allocs} \
          resend {resend_allocs} logon_out {logon_out_allocs} \
-         originate {originate_allocs} clock {clock_allocs} text {text_allocs} \
+         originate {originate_allocs} ordered {ordered_allocs} \
+         clock {clock_allocs} text {text_allocs} \
          schedule-open {schedule_open_allocs} schedule-shut {schedule_shut_allocs}"
     );
     // An array, not a tuple: `Debug` and `PartialEq` stop at twelve.
@@ -497,12 +537,13 @@ fn main() {
             resend_allocs,
             logon_out_allocs,
             originate_allocs,
+            ordered_allocs,
             clock_allocs,
             text_allocs,
             schedule_open_allocs,
             schedule_shut_allocs
         ],
-        [0; 15],
+        [0; 16],
         "non-negotiable 1: the session layer allocates nothing, on any path"
     );
 }

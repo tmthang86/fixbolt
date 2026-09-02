@@ -906,6 +906,94 @@ impl<R: Role, const N: usize> Session<R, N> {
         true
     }
 
+    // ---- what an operator can order this session to say --------------------
+    //
+    // Three functions with one shape, and the shape is the point. Each takes an
+    // **intent** and never bytes: the session builds the message from its own
+    // `Template` and keeps `8`, `9`, `34`, `49`, `52`, `56` and `10` for itself.
+    //
+    // A back door taking whole message bytes would have been less code and is
+    // the reason these exist instead. `crates/session/tests/mirror.rs` drives
+    // them from the mirrored corpus, and a back door there would have made that
+    // gate compare the corpus with itself.
+    //
+    // `[measured 2026-08-30]` 46 of the 50 mirrorable definitions need at least
+    // one message that nothing on the wire asks for and no clock produces. That
+    // is the whole reason a pure state machine is not enough for an initiator —
+    // see the `session-initiator` plan, Sửa 2.
+
+    /// Send a `Heartbeat (35=0)` nobody asked for.
+    ///
+    /// **Not the heartbeat rule.** [`Self::tick`] sends one when `HeartBtInt`
+    /// has elapsed and this is the operator asking for one anyway — a keepalive
+    /// through a device that times a connection out faster than the session
+    /// does. It carries no `112=`, because it answers nothing.
+    ///
+    /// Returns `false` and sends nothing unless the session is logged on, or if
+    /// the message cannot be laid out.
+    pub fn send_heartbeat<F: FnMut(&[u8])>(&mut self, mut emit: F) -> bool {
+        if self.state != State::LoggedOn {
+            return false;
+        }
+        self.send(Which::Heartbeat, &[], &mut emit).is_ok()
+    }
+
+    /// Send a `TestRequest (35=1)` carrying `id` as `112=`.
+    ///
+    /// **The `id` is the caller's and is written through unchanged.** The
+    /// session has a `TestReqID` of its own for the request [`Self::tick`]
+    /// raises after silence; this one is not it. A counterparty answers with a
+    /// `Heartbeat` echoing `112=`, so an operator who chose the string can tell
+    /// their own answer from a heartbeat that was merely due.
+    ///
+    /// Nothing is remembered: matching the answer is the caller's, because a
+    /// session that waited for it would need a timeout, and a timeout is a
+    /// clock this layer does not own. `GUIDE.md` carries that.
+    ///
+    /// Returns `false` and sends nothing unless the session is logged on, or if
+    /// the message cannot be laid out — an `id` too long for the buffer, for
+    /// one.
+    pub fn send_test_request<F: FnMut(&[u8])>(&mut self, id: &[u8], mut emit: F) -> bool {
+        if self.state != State::LoggedOn {
+            return false;
+        }
+        self.send(Which::TestRequest, &[(tag::TEST_REQ_ID, id)], &mut emit)
+            .is_ok()
+    }
+
+    /// Send a `ResendRequest (35=2)` asking for `from` through `to`.
+    ///
+    /// **`to == 0` is not an empty range** — FIX 4.4 spells *"and everything
+    /// after"* as `16=0`, and it is the form a session recovering from a gap
+    /// needs. It is passed through rather than rejected.
+    ///
+    /// This end's own gap detection already sends one of these by itself; this
+    /// is the operator asking for a range nothing detected, which is what a
+    /// counterparty's *"we lost your 40 through 60"* phone call turns into.
+    ///
+    /// Returns `false` and sends nothing unless the session is logged on, or if
+    /// the message cannot be laid out.
+    pub fn send_resend_request<F: FnMut(&[u8])>(
+        &mut self,
+        from: u32,
+        to: u32,
+        mut emit: F,
+    ) -> bool {
+        if self.state != State::LoggedOn {
+            return false;
+        }
+        let mut a = [0u8; 10];
+        let mut b = [0u8; 10];
+        let begin = digits(from, &mut a);
+        let end = digits(to, &mut b);
+        self.send(
+            Which::ResendRequest,
+            &[(tag::BEGIN_SEQ_NO, begin), (tag::END_SEQ_NO, end)],
+            &mut emit,
+        )
+        .is_ok()
+    }
+
     /// True once a Logon has been accepted.
     #[must_use]
     pub const fn is_logged_on(&self) -> bool {
