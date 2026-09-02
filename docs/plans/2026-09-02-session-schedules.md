@@ -219,3 +219,41 @@ trong ngày.
 `Dropped` ở test thứ hai là hành vi đúng của hôm nay và là đúng lỗ hổng: một session `resume`
 giữ `34=41` không thể nhận `34=1` của ngày mới, vì không có gì nói cho nó biết hôm nay là một
 phiên khác.
+
+### Bước 2 — `Schedule`, số học thuần (2026-09-02)
+
+`crates/session/src/schedule.rs`: `Weekday`, `Weekdays` (mặt nạ 7 bit, không cấp phát),
+`Schedule` với `always` / `daily` / `weekly` / `with_weekdays` / `with_utc_offset_ms`, và
+`contains` / `same_session`. `Copy`, không dependency, `Option` ở mọi hàm dựng.
+
+Toàn bộ kiểu này đứng trên **một** hàm riêng tư, `session_start(t) -> Option<u64>` — mốc bắt
+đầu của khoảng chứa `t`. `contains` là `is_some()`, `same_session` là *cả hai là `Some` và
+bằng nhau*. Chỉ một chỗ phải suy nghĩ về việc vắt qua nửa đêm.
+
+**Chín test số học xanh; hai test hành vi vẫn đỏ, đúng như dự kiến — chúng thuộc bước 3.**
+
+**Một test được thêm vì đi tìm mới thấy nó thiếu.** Rustdoc của `same_session` đã hứa một
+hành vi an toàn — một mốc không nằm trong khoảng nào thì **không** cùng phiên với bất cứ thứ
+gì, kể cả một mốc cũng ngoài giờ — nhưng không có test nào canh. Lý do hứa như vậy: reset khi
+đối tác không reset là một cuộc tranh cãi ở `Logon`, thấy ngay; **không** reset khi đối tác có
+reset là một sai lệch âm thầm, chỉ lộ ra ở những message sau đó.
+
+**Ba phép đảo ngược:**
+
+| Đảo | Kết quả |
+|---|---|
+| Coi mọi khoảng là `open < close` (bỏ nhánh vắt nửa đêm) | **3 test đỏ**: vắt-nửa-đêm, weekly, weekdays |
+| `same_session` so sánh `Option` trực tiếp, nên hai mốc ngoài giờ thành "cùng phiên" | **đúng một test đỏ** — chính cái vừa thêm ở trên |
+| Lệch hằng số thứ trong tuần, `+5` thành `+6` | `the_weekday_offset_is_derived_not_recalled` đỏ, và **không gì khác** |
+
+**Cái đảo thứ ba là cái đáng ghi lại.** Mọi test weekday trong `tests/schedule.rs` vẫn xanh,
+vì chúng **dò** ra thứ Hai bằng cách thử bảy ngày chứ không gọi tên một ngày — cố ý, để không
+phụ thuộc vào việc corpus rơi vào thứ mấy. Cái giá của sự độc lập đó là chúng **không nhìn
+thấy hằng số này chút nào**, nên nó chỉ được canh bởi đúng một unit test. Đã ghi vào rustdoc
+ngay chỗ hằng số.
+
+**Cổng:** `cargo test -p fixbolt-session --lib schedule` 2/2; `--test schedule` 11 xanh 2 đỏ
+(hai cái đỏ là bước 3); `--test score` `step_six_b_replays_what_it_sent_and_scores_fifty_nine`
+**ok**; `fix44` `a_session_that_answers_correctly_scores_fifty_nine` **ok**; clippy
+`-D warnings` sạch; `fmt` sạch. **59 định nghĩa không nhúc nhích** — đúng như một module chưa
+được nối vào phải thế.

@@ -18,6 +18,7 @@
 pub mod clock;
 pub mod journal;
 mod out;
+pub mod schedule;
 pub mod text;
 
 use core::marker::PhantomData;
