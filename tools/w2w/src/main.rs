@@ -341,7 +341,14 @@ fn main() -> std::io::Result<()> {
         Some("yield") => Mode::Yield,
         Some(other) => {
             eprintln!("w2w: unknown --mode {other}; expected hft, standard or yield");
-            return Ok(());
+            // `Err`, not `Ok(())`. `[2026-09-02]` this branch exited **0** on a
+            // typo, printing its complaint to stderr and measuring nothing —
+            // the same shape as the `--mode standard` bug in `Cargo.toml`'s
+            // comment and as a `--engine-core` that pins nothing. A script that
+            // reads the exit code of `w2w --mode standrad` must not see
+            // success. `--path` below has always been an error and this is now
+            // consistent with it.
+            return Err(std::io::Error::other("unknown --mode"));
         }
     };
     let path = match arg::<String>(&args, "--path").as_deref() {

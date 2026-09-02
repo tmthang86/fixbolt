@@ -361,6 +361,22 @@ thoát khác 0. **Mọi case còn lại trong band**, kể cả `parse NewOrderS
 119,8–121,7 so với 122,6 — chính là con số ADR-0045 dựa vào. **Không sửa ở đây**: Rule Zero, một
 bản sửa cần plan riêng. Open item **41**.
 
+**Một lỗi cùng loại, tìm ra sau khi commit đầu đã push, và sửa ngay.** `--mode` không hợp lệ
+**thoát 0**: nó in lời phàn nàn ra stderr rồi `return Ok(())`, nên `w2w --mode standrad` báo
+thành công và không đo gì. Đúng hình dạng của cái bug `--mode standard` mà comment trong
+`Cargo.toml` được viết ra vì nó, và đúng hình dạng của một `--engine-core` ghim-mà-không-ghim.
+Nay là `Err`. Và `w2w-baseline.sh` **đọc lại `mode:` và `path:` từ chính output của binary**,
+giống việc `check-no-kernel-sleep.sh` đã học làm — một lỗi chính tả trong `ARMS` không được
+lặng lẽ sinh ra một cột số cho arm khác. **Đảo ngược, chạy thật:** cho `Mode::Standard::name()`
+trả về `"hft"` → runner đỏ với `ran a mode other than 'standard'`; bỏ ra → xanh.
+
+**Và mẻ đo chính đã chạy *trước khi* cổng đọc-lại đó tồn tại**, nên bốn arm được đo lại 3 lần
+mỗi arm với cổng bật, để chứng minh chúng đúng là arm chúng khai. Mọi p50 khớp trung vị đã
+công bố trong **0,35%**: 16 020 / 19 978 / 19 477 / 20 940 so với 16 010 / 19 908 / 19 447 /
+20 920. Ba bằng chứng độc lập nữa nói cùng điều: hai mode lệch 17,7% nên chúng chạy code khác
+nhau; `check-standard-gives-the-core-back.sh` đọc `standard` ở 0,31% CPU và `hft` ở 99,59%; và
+ba assertion trong binary (`35=8`, `ClOrdID`, `150=F`) chỉ xanh trên đường app.
+
 **Còn lại:** không còn gì của plan này. **Phase 1 hết tiêu chí mở, hết cấu phần chưa dựng, hết
 quyết định treo.** Những gì mở trong `STATUS.md` là việc phase 1 chưa từng đòi: item 39, 40, 41,
 34, 36, 38.

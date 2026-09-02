@@ -715,11 +715,21 @@ woke up on the housekeeping cores and `w2w-baseline.sh` re-reads CPU busy before
 read **19 451** against 19 447 — 0.02%. **p99 ≤ 50 µs holds in all four arms**, which is §6's
 only absolute in that row.
 
-**Three reversals, all run, all red on the assertion meant:** the app path's reply is checked
+`[measured 2026-09-02]` **and the four arms were re-measured 3 runs each with the runner's
+mode/path read-back active**, because the publishing batch ran before that guard existed. Every
+p50 matches its published median within **0.35%**: 16 020 / 19 978 / 19 477 / 20 940 against
+16 010 / 19 908 / 19 447 / 20 920. Three independent things say the same: the two modes differ
+17.7% so they ran different code; `check-standard-gives-the-core-back.sh` reads `standard` at
+0.31% CPU and `hft` at 99.59%; and the app path's three in-binary assertions only pass on the
+app path.
+
+**Four reversals, all run, all red on the assertion meant:** the app path's reply is checked
 for the `ClOrdID` that was just sent (`(11, b"WRONG")` → red, naming both values) and for
 `150=F` (`(150, b"0")` → red, *"the template did not patch its slots"*); and the binary's own
 allocation counter goes from **0 to 2 000 over 2 000 messages** when one `to_vec()` is put inside
-the timed loop. A zero that has never been seen to be non-zero is not a measurement.
+the timed loop. A zero that has never been seen to be non-zero is not a measurement. And making
+`Mode::Standard::name()` return `"hft"` reddens the runner's own read-back with
+`ran a mode other than 'standard'`.
 
 `[measured 2026-09-02]` **both mode gates run on the §9 desktop for the first time**, and both
 halves of each: `check-no-kernel-sleep.sh` reads `accept4 8009 · recvfrom 8008 · sendto 351` and

@@ -116,6 +116,12 @@ for arm in $ARMS; do
     # engine, and the binary already asserts it; this is the second reader,
     # because a `set -e` that never looked would be a green nobody read.
     echo "$out" | grep -qE '^ *allocs +0 ' || { echo "$out"; echo "allocs != 0"; exit 1; }
+    # And the mode and path are READ BACK rather than assumed, which is what
+    # `check-no-kernel-sleep.sh` learned to do after `--mode standard` printed
+    # its banner and ran nothing. A typo in ARMS must not quietly produce a
+    # column of figures for the wrong arm.
+    echo "$out" | grep -qx "mode: $mode" || { echo "$out"; echo "ran a mode other than '$mode'"; exit 1; }
+    echo "$out" | grep -qx "path: $path" || { echo "$out"; echo "ran a path other than '$path'"; exit 1; }
     g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
     mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
     printf '  %-8s %-5s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s\n' \
