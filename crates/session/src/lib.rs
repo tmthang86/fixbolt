@@ -438,6 +438,79 @@ enum Refusal {
     CannotSend,
 }
 
+/// Why a connection ended.
+///
+/// `Link::Dropped` is one bit and this session returns it from **eighteen**
+/// places. A wrong `BeginString` means somebody is on the wrong FIX version; a
+/// wrong `SenderCompID` means somebody is pointed at the wrong counterparty; a
+/// `SendingTime` out of range means NTP; an hour outside the schedule means a
+/// venue calendar. Different people fix them, on different days, and **before
+/// this existed the engine said exactly the same thing about all four**.
+///
+/// `[measured 2026-09-02]` that cost hours twice in one week — a schedule test
+/// that passed on the clock rule
+/// (`docs/reference/two-time-rules-share-one-observable.md`) and a `Logon`
+/// refused for a `FieldIndex` too small while the message blamed a missing
+/// registry (`docs/reference/silence-before-a-logon-has-many-causes.md`). Both
+/// write-ups end on the same sentence: make the reason observable.
+///
+/// **Fieldless**, so it sits on the error path of a pure layer with nothing to
+/// allocate — non-negotiable 2. Read it with [`Session::last_drop_reason`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DropReason {
+    /// `8=` is not the configured `BeginString`.
+    WrongBeginString,
+    /// The first message on the connection was not a `Logon`.
+    NotALogon,
+    /// A `Logon` without `98=` or `108=`, both required by FIX 4.4.
+    LogonIncomplete,
+    /// `49=` is not the configured counterparty.
+    WrongSenderCompId,
+    /// `56=` is not us.
+    WrongTargetCompId,
+    /// `52=` is absent, unreadable, or further from this engine's clock than
+    /// `max_skew_ms`. **Check NTP** — [`Session::last_skew_ms`] says by how much.
+    SendingTimeOutOfRange,
+    /// `34=` is absent, unreadable, or already used.
+    SequenceNumberTooLow,
+    /// A message arrived while the schedule says this session is shut. **Check
+    /// the venue calendar**, not the clock.
+    OutsideSchedule,
+    /// The session could not put a message on the wire. A bug, and it fails
+    /// closed rather than sending something malformed.
+    CannotSend,
+    /// Nothing arrived for long enough that the session gave up, after an
+    /// unanswered `TestRequest`.
+    HeartbeatTimeout,
+    /// The counterparty sent a `Logout`.
+    PeerLogout,
+    /// The schedule's window closed on a live session. **Not a fault.**
+    ScheduleClosed,
+    /// The transport reported the connection gone.
+    TransportClosed,
+}
+
+impl From<Refusal> for DropReason {
+    /// Exhaustive, with **no `_` arm**: a new [`Refusal`] must be given a public
+    /// name here or the build stops. The rule
+    /// `docs/reference/a-counter-that-must-be-remembered-is-not-a-counter.md`
+    /// arrived at, applied to an enum instead of a struct of counts.
+    fn from(r: Refusal) -> Self {
+        match r {
+            Refusal::WrongBeginString => Self::WrongBeginString,
+            Refusal::NotALogon => Self::NotALogon,
+            Refusal::LogonIncomplete => Self::LogonIncomplete,
+            Refusal::WrongSenderCompId => Self::WrongSenderCompId,
+            Refusal::WrongTargetCompId => Self::WrongTargetCompId,
+            Refusal::BadSendingTime => Self::SendingTimeOutOfRange,
+            Refusal::BadSeqNum => Self::SequenceNumberTooLow,
+            Refusal::OutsideSchedule => Self::OutsideSchedule,
+            Refusal::CannotSend => Self::CannotSend,
+        }
+    }
+}
+
 /// One FIX session, parameterised by role.
 ///
 /// `N` is the [`FieldIndex`] capacity — the caller picks it, per `CLAUDE.md`
@@ -478,6 +551,10 @@ pub struct Session<R: Role, const N: usize> {
     /// *did a boundary pass between then and now*, which is the only question
     /// an engine that slept through midnight can still answer.
     session_mark: Option<u64>,
+    /// Why this session last ended, if it has. Cleared by [`Session::connect`],
+    /// so a live session reports `None` rather than the previous connection's
+    /// cause.
+    last_drop_reason: Option<DropReason>,
     /// The engine's clock minus the `SendingTime` of the last message whose
     /// `52=` could be read, in milliseconds. Positive: their stamp is behind
     /// ours.
@@ -548,6 +625,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             resend_from: 0,
             resend_to: 0,
             session_mark: None,
+            last_drop_reason: None,
             last_skew_ms: None,
             queue: [const {
                 Queued {
@@ -646,6 +724,26 @@ impl<R: Role, const N: usize> Session<R, N> {
         self.session_mark = Some(now_ms);
     }
 
+    /// Why this session last ended, or `None` while it is up.
+    ///
+    /// The **latest** cause: a session that ends twice reports the second, and
+    /// [`Self::connect`] clears it.
+    /// `tests/drop_reason.rs::a_second_fault_replaces_the_first` holds that,
+    /// because a field written after the state change would report the one
+    /// before.
+    #[must_use]
+    pub const fn last_drop_reason(&self) -> Option<DropReason> {
+        self.last_drop_reason
+    }
+
+    /// End the session, recording why.
+    ///
+    /// **One place, so a new way to end cannot forget to say why.**
+    fn end(&mut self, why: DropReason) {
+        self.last_drop_reason = Some(why);
+        self.state = State::Disconnected;
+    }
+
     /// The engine's clock minus the last readable `SendingTime`, in ms.
     ///
     /// `None` until a message carrying a parseable `52=` has arrived. See the
@@ -690,6 +788,9 @@ impl<R: Role, const N: usize> Session<R, N> {
     pub fn connect<F: FnMut(&[u8])>(&mut self, emit: F) -> Link {
         let _ = emit;
         self.state = State::AwaitingLogon;
+        // A live session has nothing to explain, and a stale cause read as a
+        // current one is worse than no cause at all.
+        self.last_drop_reason = None;
         // **A new connection starts a new count; a resumed session does not.**
         // ADR-0010: FIX 4.4 numbers a session, not a connection, so a session
         // that outlived its process must keep counting — but a session that
@@ -726,7 +827,7 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// A counterparty closed the connection.
     pub fn disconnect<F: FnMut(&[u8])>(&mut self, emit: F) -> Link {
         let _ = emit;
-        self.state = State::Disconnected;
+        self.end(DropReason::TransportClosed);
         Link::Dropped
     }
 
@@ -758,6 +859,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         // that is `STATUS.md` item 30 (d)'s job, not this one's.
         if self.state == State::LoggedOn && !self.cfg.schedule.contains(now_ms) {
             let _ = self.send(Which::Logout, &[], &mut emit);
+            self.last_drop_reason = Some(DropReason::ScheduleClosed);
             self.state = State::AwaitingLogout;
             return Link::Dropped;
         }
@@ -793,7 +895,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         let silent = now_ms.saturating_sub(self.last_sent_ms);
 
         if quiet >= self.beat_ms * 24 / 10 {
-            self.state = State::Disconnected;
+            self.end(DropReason::HeartbeatTimeout);
             return Link::Dropped;
         }
         if quiet >= self.beat_ms * 12 * u64::from(self.test_requests + 1) / 10 {
@@ -829,7 +931,7 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// following message must be read as though the garbled one never arrived.
     fn garbled(&mut self, bytes: &[u8]) -> Link {
         if msg_type_of(bytes) == Some(msg::LOGON) {
-            self.state = State::Disconnected;
+            self.end(DropReason::LogonIncomplete);
             return Link::Dropped;
         }
         Link::Up
@@ -859,8 +961,8 @@ impl<R: Role, const N: usize> Session<R, N> {
         }
         let link = match self.judge(bytes, app, journal, &mut emit) {
             Ok(link) => link,
-            Err(_) => {
-                self.state = State::Disconnected;
+            Err(why) => {
+                self.end(why.into());
                 Link::Dropped
             }
         };
@@ -918,8 +1020,8 @@ impl<R: Role, const N: usize> Session<R, N> {
             match self.judge(&held[..len], app, journal, emit) {
                 Ok(Link::Up) => {}
                 Ok(Link::Dropped) => return Link::Dropped,
-                Err(_) => {
-                    self.state = State::Disconnected;
+                Err(why) => {
+                    self.end(why.into());
                     return Link::Dropped;
                 }
             }
@@ -985,7 +1087,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             )
             .is_err()
         {
-            self.state = State::Disconnected;
+            self.end(DropReason::CannotSend);
             return Link::Dropped;
         }
         Link::Up
@@ -1053,7 +1155,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         let Some(len) = r.text.render(&mut text) else {
             // A text that will not render is a bug in the table, not a reason
             // to answer with a malformed Reject.
-            self.state = State::Disconnected;
+            self.end(DropReason::CannotSend);
             return Link::Dropped;
         };
         extra[n] = (tag::TEXT, &text[..len]);
@@ -1073,7 +1175,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         }
 
         if self.send(Which::Reject, &extra[..n], emit).is_err() {
-            self.state = State::Disconnected;
+            self.end(DropReason::CannotSend);
             return Link::Dropped;
         }
 
@@ -1627,7 +1729,7 @@ impl<R: Role, const N: usize> Session<R, N> {
 
         if is_logout {
             self.send(Which::Logout, &[], emit)?;
-            self.state = State::Disconnected;
+            self.end(DropReason::PeerLogout);
             return Ok(Link::Dropped);
         }
 
