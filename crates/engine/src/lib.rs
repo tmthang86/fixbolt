@@ -32,6 +32,7 @@ pub mod frame;
 pub mod journal;
 pub mod observe;
 pub mod presession;
+pub mod reconnect;
 pub mod recovery;
 pub mod settings;
 #[cfg(all(feature = "affinity", target_os = "linux"))]
