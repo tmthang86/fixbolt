@@ -206,6 +206,14 @@ impl Step {
 pub struct Scenario {
     pub file: String,
     pub steps: Vec<Step>,
+    /// True when the file has been read from the **other** side — `I` lines are
+    /// this engine's output.
+    ///
+    /// The runner needs it because a mirrored file asks this end to originate
+    /// messages nothing on the wire requests, and driving that is a thing the
+    /// harness must do **only** in that direction. Carried on the scenario
+    /// rather than passed alongside it so the two cannot come apart.
+    pub mirrored: bool,
 }
 
 /// Where the 59 FIX 4.4 acceptance definitions live.
@@ -250,7 +258,10 @@ pub fn scenarios_mirrored() -> Result<Vec<Scenario>, LoadError> {
         for step in &mut s.steps {
             step.kind = match core::mem::replace(&mut step.kind, Kind::Connect) {
                 Kind::Send(m) => Kind::Expect(m),
-                Kind::Expect(m) => Kind::Send(m),
+                // An `E` line becomes an **input**, and an input has to be a
+                // message a correct session would accept. Two of its fields
+                // were never meant to be real — see [`make_receivable`].
+                Kind::Expect(m) => Kind::Send(make_receivable(m)),
                 Kind::Disconnect => Kind::ExpectDisconnect,
                 Kind::ExpectDisconnect => Kind::Disconnect,
                 Kind::Connect => Kind::Connect,
@@ -258,6 +269,45 @@ pub fn scenarios_mirrored() -> Result<Vec<Scenario>, LoadError> {
         }
     }
     Ok(all)
+}
+
+/// Turn an `E` line into bytes a session will accept, without changing what it
+/// says.
+///
+/// `[measured 2026-09-02]` **this is why the mirrored corpus could not move off
+/// zero, and it is not a session defect.** An `E` line is *expected output*,
+/// and `Comparator.rb` matches `52=` and `10=` by shape rather than by value —
+/// so 238 of the corpus's 244 expected checksums are the literal `10=0`, and
+/// every expected `SendingTime` is the placeholder
+/// `00000000-00:00:00.000`. Nobody ever had to make them real.
+///
+/// Mirrored, those lines are what the **counterparty sends us**, and a correct
+/// session refuses both: a timestamp in the year 0 is 2 026 years of clock skew,
+/// and it is refused before anything else in the message is looked at. The
+/// session then drops the link, so every later line of the file reads *"expected
+/// a message, got silence"* — 196 failures whose cause was in the loader.
+///
+/// Two substitutions, and **only these two**:
+///
+/// | Field | Becomes | Why it is not a change of meaning |
+/// |---|---|---|
+/// | `52=00000000-00:00:00.000` | [`FIXED_TIME_OUT`] | Same 21 bytes, so `9=` still holds. It is the instant the runner ticks to, which is what every `I` line already carries |
+/// | `10=` | the real checksum | Recomputed from the bytes as they now stand, exactly as [`with_real_checksum`] does for the runner's own fake session |
+///
+/// Nothing else is touched. A message whose `52=` is a *deliberately* wrong
+/// real value — `1d_InvalidLogonBadSendingTime` sends one from 2001 — keeps it,
+/// because it is not the placeholder.
+fn make_receivable(m: Message) -> Message {
+    const PLACEHOLDER: &str = "52=00000000-00:00:00.000";
+    let text = String::from_utf8_lossy(&m.wire).into_owned();
+    if !text.contains(PLACEHOLDER) {
+        return m;
+    }
+    let patched = text.replace(PLACEHOLDER, &format!("52={FIXED_TIME_OUT}"));
+    Message {
+        wire: with_real_checksum(patched.as_bytes()),
+        ..m
+    }
 }
 
 /// Can this engine play the other side of this file?
@@ -338,7 +388,11 @@ fn load(mirrored: bool) -> Result<Vec<Scenario>, LoadError> {
                 steps.push(step);
             }
         }
-        out.push(Scenario { file: name, steps });
+        out.push(Scenario {
+            file: name,
+            steps,
+            mirrored,
+        });
     }
     Ok(out)
 }

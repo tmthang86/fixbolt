@@ -5,15 +5,16 @@
 //! corrects: the same files read from the other side, with `I` lines as this
 //! engine's output.
 //!
-//! # A gate asserting zero cannot report anything
+//! # This gate was pinned at zero, and a pinned gate reports nothing
 //!
-//! `[measured 2026-09-02]` this file asserts `passed == 0`, which proves the
-//! harness runs and **nothing about the code under it**. While it stood at
-//! zero, an initiator that answered a `Logon` with a `Logon` — a defect that
-//! made the role unusable against any real counterparty — passed here, passed
-//! `tests/score.rs` at 59 / 59, and passed 430 other tests. It was found by
-//! `scripts/interop.sh` on that script's first run.
-//! `docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md`.
+//! `[measured 2026-09-02]` it asserted `passed == 0` from 2026-08-30 to
+//! 2026-09-02. While it stood there, an initiator that answered a `Logon` with
+//! a `Logon` — a defect that made the role unusable against any real
+//! counterparty — passed here, passed `tests/score.rs` at 59 / 59, and passed
+//! 430 other tests. It was found by `scripts/interop.sh` on that script's first
+//! run. `docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md`.
+//!
+//! It now reads **2 / 50** and can fall, which is the whole difference.
 //!
 //! **What this gate cannot do is check its own reading.** Mirroring is this
 //! project's interpretation of a suite written for the other direction; a wrong
@@ -21,8 +22,9 @@
 //! the plan — is what stands in front of that.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use fixbolt_conformance::runner::{Conn, Input, Link, SessionUnderTest, run_mirrored};
+use fixbolt_conformance::runner::{Conn, Input, Intent, Link, SessionUnderTest, run_mirrored};
 use fixbolt_conformance::script::{Kind, Scenario};
+use fixbolt_engine::journal::Store;
 use fixbolt_session::{Config, Initiator, Session};
 
 fn link(l: fixbolt_session::Link) -> Link {
@@ -37,7 +39,7 @@ fn link(l: fixbolt_session::Link) -> Link {
 /// Mirrored, the CompIDs swap: the files are written from `ISLD`'s side and
 /// this engine is `TW44`.
 struct Adapter {
-    conns: Vec<(Conn, Session<Initiator, 256>)>,
+    conns: Vec<(Conn, Session<Initiator, 256>, Store)>,
     heart_bt_int: u32,
 }
 
@@ -50,7 +52,7 @@ impl Adapter {
     }
 
     fn at(&mut self, conn: Conn) -> usize {
-        if let Some(i) = self.conns.iter().position(|(c, _)| *c == conn) {
+        if let Some(i) = self.conns.iter().position(|(c, _, _)| *c == conn) {
             return i;
         }
         self.conns.push((
@@ -59,6 +61,7 @@ impl Adapter {
                 Config::initiator(b"FIX.4.4", b"TW44", b"ISLD")
                     .with_heart_bt_int(self.heart_bt_int),
             ),
+            Store::new(),
         ));
         self.conns.len() - 1
     }
@@ -118,52 +121,123 @@ fn field(wire: &[u8], tag: u32) -> Option<&[u8]> {
 }
 
 impl SessionUnderTest for Adapter {
-    fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, input: Input<'_>, emit: F) -> Link {
+    fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, input: Input<'_>, mut emit: F) -> Link {
         let i = self.at(conn);
-        let s = &mut self.conns[i].1;
+        let (_, s, journal) = &mut self.conns[i];
+        // **The harness plays the operator, and this is the whole of what that
+        // means.** Each arm is one of the six calls a real application makes;
+        // none of them takes the expected message. What the runner hands over
+        // is the value an operator would have chosen, and the session builds
+        // the message from its own `Template` — so the header, the ordering and
+        // the sequence number are still the code under test.
+        //
+        // A refused call (`false`) emits nothing, and the file then fails on
+        // `NoOutput` for that line, which is the honest reading: the session
+        // declined and the corpus expected a message.
+        if let Input::Originate(intent) = input {
+            let sent = match intent {
+                Intent::Heartbeat => s.send_heartbeat(&mut emit),
+                Intent::TestRequest(id) => s.send_test_request(id, &mut emit),
+                Intent::ResendRequest(from, to) => s.send_resend_request(from, to, &mut emit),
+                Intent::SequenceReset { new_seq, gap_fill } => {
+                    // `123=Y` is a gap fill and stands in for messages this end
+                    // will not replay; `123=N` is the honest reset. The session
+                    // owns the first as an answer to a `ResendRequest`, so only
+                    // the second is something an operator orders.
+                    !gap_fill && s.send_sequence_reset(new_seq, &mut emit)
+                }
+                Intent::Logout(text) => {
+                    s.begin_logout(text, &mut emit) == fixbolt_session::Link::Up
+                }
+                Intent::Application(msg) => {
+                    s.send_application(msg, journal, &mut emit) == fixbolt_session::Link::Up
+                }
+            };
+            let _ = sent;
+            return Link::Up;
+        }
         link(match input {
             Input::Connect => s.connect(emit),
             Input::Disconnect => s.disconnect(emit),
             Input::Bytes(b) => s.received(b, emit),
             Input::Tick(ms) => s.tick(ms, emit),
+            Input::Originate(_) => unreachable!("handled above"),
         })
     }
 }
 
-/// Step 2: the initiator speaks first, and **that is all it can do alone**.
+/// The mirrored corpus, with the harness playing the operator.
 ///
-/// `[measured 2026-08-30]` **0 / 50**, and the reason is worth more than the
-/// number. Every mirrored Logon this engine sends is accepted — the failures in
-/// every file start at the line *after* it. What they ask for next is a message
-/// only an operator can order:
+/// # What the number means, and what the second assertion is for
 ///
-/// | Must be originated | Files |
-/// |---|---|
-/// | `5` Logout | 42 |
-/// | `D` / `d` / `8` application | 19 |
-/// | `0` Heartbeat, unprompted | 14 |
-/// | `1` TestRequest, with a chosen `112=` | 13 |
-/// | `4` SequenceReset | 6 |
-/// | `2` ResendRequest | 4 |
+/// `[measured 2026-09-02]` **2 / 50**, up from a score that had been pinned at
+/// 0 since 2026-08-30. Two things moved it, and only one of them was in the
+/// session:
 ///
-/// 46 of the 50 need at least one. A session state machine cannot invent any of
-/// them: nothing on the wire asks for them, and no timer produces a Logout.
-/// Step 3 is where the API an initiator actually needs gets written.
+/// 1. **The harness can now originate** — `Input::Originate(Intent)`, fed only
+///    to a mirrored scenario. 46 of these 50 files need a message nothing on
+///    the wire asks for and no clock produces, and a pure state machine cannot
+///    invent one.
+/// 2. **The loader was feeding messages no session would accept.** An `E` line
+///    carries `52=00000000-00:00:00.000`, because `Comparator.rb` matches that
+///    tag by shape and it never had to be real. Mirrored, an `E` line is an
+///    *input*, and a timestamp in the year 0 is 2 026 years of clock skew — so
+///    the session refused the counterparty's Logon and dropped, and every later
+///    line of every file read *"expected a message, got silence"*. See
+///    `fixbolt_conformance::script::make_receivable`.
+///
+/// **A score a harness can raise by driving harder is not a score**, so the
+/// second assertion pins how much the harness drove, by `MsgType`, as exact
+/// numbers rather than as a bound. Raising the first number by driving more
+/// turns the second one red.
+///
+/// # What this gate still does not do
+///
+/// It does not check its own reading, and it never will — mirroring is this
+/// project's interpretation of a suite written for the other direction, and its
+/// ceiling has already moved 51 → 50 → 45 across two readings.
+/// `scripts/interop.sh` is what stands in front of that, and it is the gate
+/// phase 1 exit criterion 4 is about.
 #[test]
-fn step_two_speaks_first_and_can_do_nothing_else_alone() {
+fn the_mirrored_corpus_with_an_operator_at_the_keyboard() {
     let report = run_mirrored(Adapter::new).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(report.scenarios, 50, "50 mirrorable files:\n{report}");
-    assert_eq!(report.passed, 0, "step 2 of the initiator plan:\n{report}");
 
-    // The Logon this engine sends is right, and the proof is which files do
-    // **not** fail on the line that carries it: 45 of the 50.
+    assert_eq!(
+        report.passed_files,
+        [
+            "2k_CompIDDoesNotMatchProfile.def",
+            "2o_SendingTimeValueOutOfRange.def"
+        ],
+        "by name, not by count — a different two passing is a different result:\n{report}"
+    );
+
+    // **How much the harness drove.** Exact numbers, not `<=`: the whole risk
+    // of an operator-driven gate is that somebody raises the score by driving
+    // more, and a bound would let them.
     //
-    // The five that do are the ones whose first `I` line is wrong **on
-    // purpose** — a CompID that does not match, a `SendingTime` 2001 years
-    // out, a `9=` that is 23 bytes short, and one that is not a Logon at all.
-    // Mirrored, they ask this engine to send those, and a correct engine
-    // cannot. `sendable()` cannot see it either: every one of them is
-    // syntactically perfect, which is exactly what makes them interesting.
+    // `app×49` is the widest and is still not a back door — it is what
+    // `send_application` takes from a real application, and the session rewrites
+    // the header and reorders the body through `Fix44` regardless.
+    assert_eq!(
+        report.driven,
+        [
+            ("0".to_owned(), 48),
+            ("1".to_owned(), 24),
+            ("2".to_owned(), 10),
+            ("4".to_owned(), 10),
+            ("5".to_owned(), 38),
+            ("app".to_owned(), 49),
+        ],
+        "the harness originated something it did not before:\n{report}"
+    );
+
+    // The five whose first `I` line is wrong **on purpose** — a CompID that
+    // does not match, a `SendingTime` 2001 years out, a `9=` 23 bytes short,
+    // and one that is not a Logon at all. Mirrored, they ask this engine to
+    // send those, and a correct engine cannot. That is what makes the ceiling
+    // **45 and not 50**, and it is why those five are named here rather than
+    // counted.
     let mut early: Vec<&str> = report
         .failures
         .iter()
