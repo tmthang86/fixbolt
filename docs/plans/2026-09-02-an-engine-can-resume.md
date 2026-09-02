@@ -1,6 +1,6 @@
 # Engine phải mở lại được một phiên đã có lịch sử
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** BƯỚC 1, 2, 4 ĐÓNG 2026-09-02; bước 3 chưa làm
 > *(tự viết và tự duyệt theo uỷ quyền thường trực của chủ sở hữu, 2026-09-01.)*
 >
 > **Phạm vi:** `STATUS.md` open item 31. Chạm `engine` (API công khai, `presession`). Không
@@ -150,3 +150,52 @@ item 31 **thu hẹp**, không đóng, và `STATUS.md` phải nói đúng như v�
 ## Nhật ký giao hàng
 
 > Điền khi đóng từng bước.
+
+### Bước 1, 2 và 4 (2026-09-02)
+
+**Bước 1 — đỏ ở assertion, dùng API hôm nay.** Lần viết đầu gọi `add_resumed`, tức là đỏ ở
+trình biên dịch — đúng cái sai đã mắc ở plan lịch phiên hôm qua và đã ghi lại. Sửa ngay: dùng
+`add_with_journal`, thứ **đã** nhận một journal và chỉ đơn giản là bỏ qua mọi con số trong đó.
+
+```
+and it answered as message 9, not as message 1:
+8=FIX.4.4|9=63|35=A|34=1|49=ISLD|...|108=30|10=045|
+8=FIX.4.4|9=60|35=2|34=2|49=ISLD|...|7=1|16=0|10=126|
+```
+
+Engine trả lời `34=1` **rồi gửi `ResendRequest 7=1 16=0`** — nó reset, xong đòi đối tác gửi lại
+đúng những thứ chính nó vừa quên. Đây là dạng rõ nhất của lỗ hổng.
+
+**Bước 2 — `Engine::add_resumed`.** Nhận journal **cùng với** hai con số, và đó không phải tiện
+nghi: số đúng trên một journal rỗng sẽ trả lời `ResendRequest` đầu tiên bằng gap fill — hợp lệ,
+và mất im lặng đúng thứ đối tác đang hỏi.
+
+**Bước 4 gộp vào đây** vì nó chỉ là một tham số: `last_active_ms`. Hai test hai chiều — qua
+ranh giới về `34=1`, trong cùng ngày giữ `34=9`.
+
+**Đảo ngược:**
+
+| Đảo | Kết quả |
+|---|---|
+| `add_resumed` bỏ qua `next_out` | **3 test đỏ**, 59/59 vẫn xanh |
+| `last_active_ms` bị vứt, luôn `None` | **đúng một test đỏ** — cái về ranh giới. 59/59 xanh |
+| Vứt journal, chỉ mang số | **không diễn đạt được**: chữ ký bắt buộc phải có journal và `J` không có `Default`, nên không tồn tại phiên bản engine nào quên truyền nó |
+
+**Cái thứ ba không được tính là một phép đảo ngược đã chạy, và nói thẳng ra như vậy.** Thay
+vào đó thêm một test vĩnh viễn làm việc mạnh hơn: `a_resumed_session_with_an_empty_journal_
+fills_the_gap_instead` — cùng số, journal rỗng, và đòi `35=4` chứ không phải `35=D`. Hai kết
+cục đều hợp lệ FIX; phân biệt được chúng mới là bằng chứng, đúng lối
+`none_keeps_nothing_and_fills_over_everything` đã dùng ở `journal.rs`.
+
+**Bẫy số một của plan đã được canh bằng cấu trúc:** mọi test trong
+`crates/engine/tests/engine_recovery.rs` đều dựng `Engine` và đi qua API công khai của nó.
+Chính vì `crates/engine/tests/recovery.rs` **không có chữ `Engine` nào** mà item 16 đóng năm
+ngày trước trong khi không engine nào với tới được cơ chế đó.
+
+**Cổng, macOS 2026-09-02:** `cargo test --all` và `--no-default-features` đều **318 passed, 0
+failed**; `--test wire` 59/59 cả hai mode; `cargo bench -p fixbolt-engine --bench alloc` 15
+case đều 0; clippy `-D warnings`, `fmt`, `check-links.py` sạch.
+
+**Trạng thái: bước 1, 2, 4 ĐÓNG. Bước 3 CHƯA LÀM** — `Recovery` trait cho `serve*`. Item 31
+**thu hẹp, không đóng**, và `STATUS.md` nói đúng như vậy: một deployment dùng `serve*` vẫn
+chưa mở lại được phiên nào.

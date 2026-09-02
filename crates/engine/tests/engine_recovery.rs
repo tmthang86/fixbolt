@@ -289,3 +289,45 @@ fn a_resumed_session_inside_the_same_trading_day_keeps_its_numbers() {
         "the same trading day keeps counting: {reply}"
     );
 }
+
+/// **The discriminator.** A resumed session whose journal holds *nothing*
+/// answers the same `ResendRequest` with a gap fill.
+///
+/// Without this, `a_resumed_session_replays_what_it_sent_before_the_restart`
+/// proves only that *something* came back. The two outcomes are both legal FIX
+/// and they are the difference between recovering a session and quietly losing
+/// everything the counterparty asked for — so they are told apart here rather
+/// than assumed.
+///
+/// It is also the closest thing to a reversal that the journal argument admits:
+/// `add_resumed` **requires** a journal, so there is no version of the engine
+/// that forgets to pass one. What can be varied is what the journal holds, and
+/// this varies it.
+#[test]
+fn a_resumed_session_with_an_empty_journal_fills_the_gap_instead() {
+    let mut e = engine();
+    let (mut peer, engine_side) = Loopback::pair();
+
+    // The numbers of a session with history; the journal of one without.
+    let mut empty = Store::new();
+    empty.mark_in(11);
+    assert_eq!(empty.highest(), None, "the premise: it holds no messages");
+    e.add_resumed(engine_side, cfg(), empty, 9, 12, None);
+
+    let _ = peer.send(&logon(12));
+    e.turn();
+    let _ = drain(&mut peer);
+
+    let _ = peer.send(&wire("35=2\u{1}34=13\u{1}7=7\u{1}16=8\u{1}"));
+    e.turn();
+    let answer = drain(&mut peer);
+
+    assert!(
+        answer.contains("|35=4|"),
+        "nothing to replay, so a SequenceReset gap fill: {answer}"
+    );
+    assert!(
+        !answer.contains("|35=D|"),
+        "and definitely not the messages, which this journal never held: {answer}"
+    );
+}

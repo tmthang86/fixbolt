@@ -148,6 +148,21 @@ below describe what a first release would contain.
     accepted; what the files ask for next is a message only an operator can order.
 
 - **`fixbolt-engine`** — the crate that touches the socket. **All six steps.**
+  - **`Engine::add_resumed(transport, cfg, journal, next_out, next_in, last_active_ms)`** —
+    **the only way an `Engine` continues a session that outlived the process.**
+    `[verified 2026-09-02]` before it existed every `add` built `Session::new`, which resets,
+    so `Journal::highest`, `Session::resume`, ADR-0010, ADR-0017 and `Durability::Fsync` were
+    all real, all tested, and all unreachable through this type (`STATUS.md` item 31).
+    - **The journal is taken as well as the counts.** Correct numbers over an empty journal
+      answer the first `ResendRequest` with a `SequenceReset` gap fill — legal, and a silent
+      loss of everything the counterparty asked for. Two tests tell the outcomes apart.
+    - **`last_active_ms` is what makes a schedule boundary decidable**, and it is a separate
+      argument because the numbers cannot imply it: `next_out = 9` says nothing about whether
+      a trading day has ended since 9 was reached. Supplied, ADR-0033's reset is reachable
+      from an engine; `None` means no boundary is ever noticed, which is right under
+      `Schedule::always` and wrong under anything else.
+    - The engine still does not read the journal for you and does not guess. ADR-0010's point
+      is that choosing between a restart and a continuation is the caller's.
   - **`observe` — what an operator can see, from another thread, while the engine runs.** New
     module, no feature flag, no dependency.
     [ADR-0032](docs/decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md).
