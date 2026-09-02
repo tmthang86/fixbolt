@@ -19,6 +19,12 @@ below describe what a first release would contain.
 
 - **`fixbolt-session`** — the FIX session state machine. Pure: no socket, no clock, no
   allocation, no `format!` on any path. Depends on `codec` and `dict`.
+  - **`Session::last_skew_ms() -> Option<i64>`** — the engine's clock minus the
+    `SendingTime` of the last inbound message whose `52=` could be read, in milliseconds.
+    Recorded **whether that message was accepted or refused**, because a `max_skew_ms`
+    refusal is silent by protocol and is exactly the case this number exists to explain.
+    Still pure: an `Option<i64>` on the struct, computed from the `now_ms` that already
+    arrives as a tick.
   - **`Session::resume(cfg, next_out, next_in)`, and `connect` no longer resets
     unconditionally** — [ADR-0010](docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md).
     FIX 4.4 numbers a session, not a connection, so a session that outlived its process keeps
@@ -113,6 +119,30 @@ below describe what a first release would contain.
     accepted; what the files ask for next is a message only an operator can order.
 
 - **`fixbolt-engine`** — the crate that touches the socket. **All six steps.**
+  - **`observe` — what an operator can see, from another thread, while the engine runs.** New
+    module, no feature flag, no dependency.
+    [ADR-0032](docs/decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md).
+    - `Engine::observer() -> Observer` — hands out a `Send + Sync` handle. **Calling it is
+      what makes the engine observable at all**: until then the engine does nothing about it,
+      and afterwards a turn does one relaxed load. One allocation, here, never on a turn.
+    - `Observer::request() -> Option<Snapshot>` — takes the most recent snapshot the engine
+      published and **asks for a fresh one**. It does not wait, in either direction; `None`
+      before the engine has published anything. `Observer::published() -> u64` counts the
+      snapshots built, which is what keeps *"on request"* falsifiable.
+    - `Snapshot` — `sessions()`, `truncated()`, `connections()`, `refused_connections()`,
+      `sources_missing()`, and `healthy()`. Plain `Copy` data, a fixed `[SessionSnapshot;
+      MAX_SESSIONS]` with `MAX_SESSIONS = 64`, because non-negotiable 1 forbids the `Vec` and
+      `standard` has no session ceiling — beyond it `truncated()` is set and the fact is
+      reported rather than failed on.
+    - `SessionSnapshot` — `id()`, `logged_on()`, `next_out()`, `next_in()`,
+      `last_skew_ms()`, `has_pending_output()`.
+    - `Snapshot::healthy()` is a **pure function on that data** — at least one session, all
+      logged on, neither should-be-zero counter non-zero — so a health probe and an
+      operator's print cannot disagree. Truncation is not unhealthy.
+    - `[measured 2026-09-01]` `benches/alloc.rs` cases `observe-idle` and `observe-asked`
+      both read **0**: being watched allocates nothing, and being watched on every single turn
+      allocates nothing. The **nanosecond** cost of a turn that publishes is **not measured** —
+      it needs the §9 machine.
   - **`affinity` — pinning a thread to a core, and proving it happened.** New module, new
     optional feature of the same name, **off by default**, Linux only.
     [ADR-0015](docs/decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md) and

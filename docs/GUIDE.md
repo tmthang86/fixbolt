@@ -549,6 +549,79 @@ Longer versions of all five, with the numbers:
 
 ---
 
+## 8a. Watching a running engine
+
+`[2026-09-01]` The engine tells you what it is doing **only when you ask**, and what asking
+costs while nobody is asking is one relaxed load per turn. That is the whole shape
+([ADR-0032](decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md)).
+
+```rust
+let mut engine = /* ... */;
+let watch = engine.observer();          // the one allocation this mechanism makes
+
+std::thread::spawn(move || {
+    loop {
+        if let Some(s) = watch.request() {
+            for sess in s.sessions() {
+                println!(
+                    "conn {} logged_on={} out={} in={} skew={:?}ms pending={}",
+                    sess.id(), sess.logged_on(), sess.next_out(),
+                    sess.next_in(), sess.last_skew_ms(), sess.has_pending_output(),
+                );
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+});
+```
+
+**Four things about `request()` that will otherwise surprise you.**
+
+1. **It never blocks, in either direction.** It hands back the most recent snapshot the
+   engine published and asks for a fresh one. A snapshot is therefore always a moment old.
+   If you need one taken *after* your call, call twice.
+2. **It returns `None` until the engine has published at least once.** On an idle engine
+   that is one turn away; on a stopped one it is forever. `None` means *"not yet"*, never
+   *"no sessions"* — an engine with no sessions publishes a `Snapshot` whose `sessions()` is
+   empty.
+3. **The engine may skip a publish** if you happen to hold the cell at that instant. It does
+   not wait for you (non-negotiable 4), and your request stays standing, so the next turn
+   does it.
+4. **Do not poll it in a tight loop.** Every call makes the engine build a snapshot on its
+   next turn. Once a second is an operator; ten thousand times a second is a load generator
+   pointed at your own hot path.
+
+### The one field people forget, and it is the one that saves you
+
+`SessionSnapshot::last_skew_ms()` is **your clock minus theirs**, in milliseconds, from the
+last inbound message whose `52=` could be read — **whether that message was accepted or
+refused**.
+
+`Config::max_skew_ms` refuses a message whose `SendingTime` is too far from your clock, and
+before a `Logon` the protocol says to refuse **in silence**. So a box whose NTP has drifted
+does not produce an error: the counterparty simply stops working, and nothing else in this
+engine would ever tell you why. Watch this number, and alert on it long before it reaches
+`max_skew_ms`.
+
+### Health
+
+`Snapshot::healthy()` is a pure function on the same data: at least one session, every one
+of them logged on, and both should-be-zero counters at zero
+(`refused_connections()` — a full ring dropped a session, ADR-0011 — and
+`sources_missing()` — a `Transport` broke its own contract). Wire it to whatever probes your
+process; there is no second mechanism to disagree with it.
+
+`truncated()` is deliberately **not** unhealthy: `MAX_SESSIONS` is 64 and `standard` has no
+session ceiling, so it means *"there were more than I can list"*, not *"something is wrong"*.
+
+### What is still not here
+
+Ordered shutdown, live sequence-number administration, a structured event stream with the
+**reason** a connection ended, and an offline journal reader. `STATUS.md` open item 30 keeps
+the list; this section covers (b) and (f) of it and nothing else. Until (c) exists, changing
+a sequence number on a live engine means restarting it and choosing `Session::resume` — see
+§9.
+
 ## 9. What this engine does not do for you
 
 Stated so you do not discover it in production:

@@ -559,12 +559,92 @@ fn main() {
         "64 admitted, none settled, none expired — the window did the work"
     );
 
+    // --- being observable ---------------------------------------------------
+    //
+    // `observe`'s central claim is that an engine nobody is watching pays one
+    // relaxed load per turn, and that an engine somebody *is* watching still
+    // allocates nothing. Both halves are counted, because only the second one
+    // would catch a `Snapshot` that grew a `Vec` of sessions.
+    //
+    // Its own engine, with a live session, so `observe-asked` really walks a
+    // connection rather than describing an empty list.
+    let (mut watched_peer, watched_side) = Loopback::pair();
+    let mut watched: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        cfg(),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    let watcher = watched.observer();
+    watched.add(watched_side);
+    let _ = watched_peer.send(&traffic[0]);
+    watched.turn();
+    let _ = watched_peer.recv(&mut sink);
+    assert_eq!(
+        watched.connections(),
+        1,
+        "the observed engine must hold a session to describe"
+    );
+
+    // Nobody asking: the flag is false and `snapshot` never runs.
+    let observe_idle_allocs = count(|| {
+        for _ in 0..10_000 {
+            watched.turn();
+        }
+    });
+    assert_eq!(
+        watcher.published(),
+        0,
+        "nobody asked, so nothing should have been published"
+    );
+
+    // Somebody asking on every turn — the worst case an operator can create,
+    // and the one that would expose an allocating `Snapshot`.
+    let first = {
+        let _ = watcher.request();
+        watched.turn();
+        watcher.request().expect("the engine published on request")
+    };
+    assert_eq!(
+        first.sessions().len(),
+        1,
+        "and the snapshot must describe that session, not an empty list"
+    );
+    assert!(
+        first.healthy(),
+        "a logged-on session with no refusals: {first:?}"
+    );
+    let observe_asked_allocs = count(|| {
+        for _ in 0..10_000 {
+            let _ = watcher.request();
+            watched.turn();
+            core::hint::black_box(watcher.request());
+        }
+    });
+    assert!(
+        watcher.published() >= 10_000,
+        "asked ten thousand times, published {} — the window must have done the work",
+        watcher.published()
+    );
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
          busy {busy_allocs} ring {ring_allocs} interests {interests_allocs} \
          pending-idle {pending_idle_allocs} pending-busy {pending_busy_allocs} \
-         pending-cycle {cycle_allocs} registry-lookup {registry_lookup_allocs}"
+         pending-cycle {cycle_allocs} registry-lookup {registry_lookup_allocs} \
+         observe-idle {observe_idle_allocs} observe-asked {observe_asked_allocs}"
     );
     assert_eq!(
         [
@@ -580,9 +660,11 @@ fn main() {
             pending_idle_allocs,
             pending_busy_allocs,
             cycle_allocs,
-            registry_lookup_allocs
+            registry_lookup_allocs,
+            observe_idle_allocs,
+            observe_asked_allocs
         ],
-        [0; 13],
+        [0; 15],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

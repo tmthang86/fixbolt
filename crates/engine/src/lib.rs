@@ -30,6 +30,7 @@ pub mod conn;
 pub mod dispatch;
 pub mod frame;
 pub mod journal;
+pub mod observe;
 pub mod presession;
 #[cfg(all(feature = "affinity", target_os = "linux"))]
 pub mod shard;
@@ -97,6 +98,11 @@ pub struct Engine<T, R: Role, D, C, W, J, const N: usize, const RX: usize, const
     /// What every connection this engine takes on does when its outbound queue
     /// fills. `DESIGN.md` D10.
     backpressure: Backpressure,
+    /// What an operator reads, when there is one. `None` until
+    /// [`Self::observer`] is called, so an engine nobody watches carries a
+    /// null-pointer-sized field and does no work at all — `observe`'s whole
+    /// design.
+    observe: Option<std::sync::Arc<crate::observe::Shared>>,
     /// The self-pipe another thread writes to when it has produced work.
     ///
     /// `None` unless [`Self::with_waker`] was called. Only `standard` needs
@@ -159,6 +165,7 @@ where
             wait,
             next_id: 0,
             backpressure: Backpressure::Disconnect,
+            observe: None,
             #[cfg(all(feature = "standard", unix))]
             waker: None,
         }
@@ -288,6 +295,51 @@ where
         Ok(id)
     }
 
+    /// A handle another thread reads this engine's state through.
+    ///
+    /// **Calling this is what makes the engine observable at all.** Until then
+    /// the field is `None` and a turn does nothing about it; afterwards a turn
+    /// does one relaxed load, and builds a snapshot only when somebody has
+    /// asked. `STATUS.md` open item 30 (b).
+    ///
+    /// One allocation, here, never on a turn. Calling it twice hands out two
+    /// handles onto the same shared cell rather than two cells.
+    pub fn observer(&mut self) -> crate::observe::Observer {
+        let shared = self
+            .observe
+            .get_or_insert_with(|| std::sync::Arc::new(crate::observe::Shared::new()));
+        crate::observe::Observer(std::sync::Arc::clone(shared))
+    }
+
+    /// Describe every connection this engine holds, for [`Self::observer`].
+    ///
+    /// An associated function taking the slice rather than a method, so the
+    /// borrow of `conns` ends before `turn` takes its mutable one.
+    ///
+    /// **No allocation**: `Snapshot` is a fixed array on the stack, and the one
+    /// `Arc` this mechanism needs was allocated in [`Self::observer`].
+    /// `benches/alloc.rs` cases `observe-idle` and `observe-asked` are what
+    /// prove it, not this comment.
+    fn snapshot(
+        conns: &[Connection<T, R, J, N, RX, TX>],
+        refused_connections: usize,
+        sources_missing: usize,
+    ) -> crate::observe::Snapshot {
+        let mut snap = crate::observe::Snapshot::default();
+        for c in conns {
+            snap.push(crate::observe::SessionSnapshot::describe(
+                c.id,
+                c.session.is_logged_on(),
+                c.session.next_out(),
+                c.session.next_in(),
+                c.session.last_skew_ms(),
+                c.has_pending_output(),
+            ));
+        }
+        snap.set_counters(conns.len(), refused_connections, sources_missing);
+        snap
+    }
+
     /// How many connections are live.
     #[must_use]
     pub fn connections(&self) -> usize {
@@ -315,6 +367,15 @@ where
     /// every "nothing yet" is [`transport::Io::Idle`].
     pub fn turn(&mut self) -> bool {
         let now = self.clock.now_ms();
+        // Being observable costs this, and only this, while nobody is
+        // observing: one relaxed load through an `Option` that is `None` on an
+        // engine whose `observer()` was never called. See `observe`.
+        if let Some(shared) = self.observe.as_ref()
+            && shared.wanted()
+        {
+            let snap = Self::snapshot(&self.conns, self.refused_connections, self.sources_missing);
+            shared.publish(&snap);
+        }
         let mut moved = false;
         let mut i = 0;
         while i < self.conns.len() {
