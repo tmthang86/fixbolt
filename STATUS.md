@@ -17,7 +17,10 @@ out of the same measurement: 39, 40 and 41.** See the section immediately below.
 
 **Exit criterion 6 was the last one open and it is met.** It closed the way it was always going
 to: not by a decision and not by new engine code, but by taking `tools/w2w` to a machine that
-matches `DESIGN.md` §9 and reading what it said. Plan:
+matches `DESIGN.md` §9 and reading what it said. PR [#31](https://github.com/tmthang86/fixbolt/pull/31),
+**CI green on the commit closed, `31623fe`, runs [`33644573232`](https://github.com/tmthang86/fixbolt/actions/runs/33644573232) and [`33644576288`](https://github.com/tmthang86/fixbolt/actions/runs/33644576288), 20 checks of 20** — §9's last box,
+which exists because a laptop says the gates pass *for you* and only CI says they pass *for the
+commit*. Plan:
 [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md), **half B, steps 5, 8
 and 9 — the plan is now closed in full**.
 

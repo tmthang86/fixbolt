@@ -377,6 +377,11 @@ công bố trong **0,35%**: 16 020 / 19 978 / 19 477 / 20 940 so với 16 010 / 
 nhau; `check-standard-gives-the-core-back.sh` đọc `standard` ở 0,31% CPU và `hft` ở 99,59%; và
 ba assertion trong binary (`35=8`, `ClOrdID`, `150=F`) chỉ xanh trên đường app.
 
+**CI xanh cho đúng commit được đóng** — `31623fe`, PR
+[#31](https://github.com/tmthang86/fixbolt/pull/31), runs [`33644573232`](https://github.com/tmthang86/fixbolt/actions/runs/33644573232) and [`33644576288`](https://github.com/tmthang86/fixbolt/actions/runs/33644576288), **20 check trên 20**.
+Đây là hộp cuối của §9, và nó tồn tại vì một cái laptop chỉ nói cổng xanh *với mình*, còn CI
+mới nói cổng xanh *với commit*.
+
 **Còn lại:** không còn gì của plan này. **Phase 1 hết tiêu chí mở, hết cấu phần chưa dựng, hết
 quyết định treo.** Những gì mở trong `STATUS.md` là việc phase 1 chưa từng đòi: item 39, 40, 41,
 34, 36, 38.
