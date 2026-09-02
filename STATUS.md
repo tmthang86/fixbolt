@@ -3,16 +3,22 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-02** — **`STATUS.md` item 30 is CLOSED, all six parts**, by **six plans across eight PRs today**: [operability](docs/plans/2026-09-01-operability.md) steps 1–2 (PR #18), [session-schedules](docs/plans/2026-09-02-session-schedules.md) (PR #19), [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) (PR #20, #21), [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) (PR #22), [three-in-the-morning](docs/plans/2026-09-02-sequence-numbers-at-three-in-the-morning.md) (PR #23), [what-the-journal-can-answer](docs/plans/2026-09-02-what-the-journal-can-answer.md) (PR #24) and [an-ordered-shutdown](docs/plans/2026-09-02-an-ordered-shutdown.md) (PR #25; **CI green on the commit closed, `ca9ae49`, runs [`33597576154`](https://github.com/tmthang86/fixbolt/actions/runs/33597576154) and [`33597580522`](https://github.com/tmthang86/fixbolt/actions/runs/33597580522), 18 checks of 18**). Items **16**, **30** and **31** are closed; item **32** was opened by the work that closed 31 and **(b) and (c) of it closed the same day** — [recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md), PR [#26](https://github.com/tmthang86/fixbolt/pull/26), **CI green on the commit closed, `88f4473`, runs [`33600110468`](https://github.com/tmthang86/fixbolt/actions/runs/33600110468) and [`33600141705`](https://github.com/tmthang86/fixbolt/actions/runs/33600141705)**. ADRs **0032–0039**. Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+Last updated: **2026-09-02** — **`STATUS.md` item 30 is CLOSED, all six parts**, by **six plans across eight PRs today**: [operability](docs/plans/2026-09-01-operability.md) steps 1–2 (PR #18), [session-schedules](docs/plans/2026-09-02-session-schedules.md) (PR #19), [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) (PR #20, #21), [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) (PR #22), [three-in-the-morning](docs/plans/2026-09-02-sequence-numbers-at-three-in-the-morning.md) (PR #23), [what-the-journal-can-answer](docs/plans/2026-09-02-what-the-journal-can-answer.md) (PR #24) and [an-ordered-shutdown](docs/plans/2026-09-02-an-ordered-shutdown.md) (PR #25; **CI green on the commit closed, `ca9ae49`, runs [`33597576154`](https://github.com/tmthang86/fixbolt/actions/runs/33597576154) and [`33597580522`](https://github.com/tmthang86/fixbolt/actions/runs/33597580522), 18 checks of 18**). Items **16**, **30** and **31** are closed; item **32** was opened by the work that closed 31 and **(b) and (c) of it closed the same day** — [recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md), PR [#26](https://github.com/tmthang86/fixbolt/pull/26), **CI green on the commit closed, `88f4473`, runs [`33600110468`](https://github.com/tmthang86/fixbolt/actions/runs/33600110468) and [`33600141705`](https://github.com/tmthang86/fixbolt/actions/runs/33600141705)**. ADRs **0032–0040**. `[2026-09-02]` **`PRD.md`'s last open line under `many counterparties` is closed too** — [a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md), PR [#27](https://github.com/tmthang86/fixbolt/pull/27), **CI green on `826b672`, runs [`33602482251`](https://github.com/tmthang86/fixbolt/actions/runs/33602482251) and [`33602486701`](https://github.com/tmthang86/fixbolt/actions/runs/33602486701)** — so a counterparty is an edit to a file rather than a rebuild. **Everything reachable from a Mac is now done; what is left needs Linux**: items 6, 11, 12, 14, 21, 22, 24 and **32 (a)**. Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
 
 ## Start here — 2026-09-02
 
-**Six plans closed and merged today, across eight PRs, and `STATUS.md` item 30 is closed with
-them — all six parts.** The engine went from *observable* to *operable*: it can be watched, it
-says why a connection ended, it knows what hours it keeps, it resumes a session that outlived
-the process, its sequence numbers can be changed at 3 a.m. without stopping it, its journal can
-be read by somebody who has never seen Rust, and **it can be stopped without lying to the
-counterparty**.
+**Eight plans closed and merged today, across ten PRs.** `STATUS.md` item 30 is closed — all six
+parts — and so are item 32 (b) and (c) and `PRD.md`'s last open line under `many counterparties`.
+The engine went from *observable* to *operable*: it can be watched, it says why a connection
+ended, it knows what hours it keeps, it resumes a session that outlived the process **from a
+journal on disk**, its sequence numbers can be changed at 3 a.m. without stopping it, its journal
+can be read by somebody who has never seen Rust, **it can be stopped without lying to the
+counterparty**, and **who it serves comes out of a configuration file rather than out of a
+rebuild**.
+
+**Everything reachable from this Mac is now done.** What is left — items 6, 11, 12, 14, 21, 22,
+24 and 32 (a) — needs a Linux box, and two of the four machine checks for non-negotiable 4
+cannot run here at all. *They could not run* is not *they were green*.
 
 | Plan | PR | What it closed |
 |---|---|---|
@@ -23,14 +29,18 @@ counterparty**.
 | [three-in-the-morning](docs/plans/2026-09-02-sequence-numbers-at-three-in-the-morning.md) | #23 | item 30 (c) — [ADR-0036](docs/decisions/ADR-0036-one-mechanism-two-capabilities.md) |
 | [what-the-journal-can-answer](docs/plans/2026-09-02-what-the-journal-can-answer.md) | #24 | item 30 (e) — [ADR-0037](docs/decisions/ADR-0037-reading-a-journal-is-not-recovering-from-one.md) |
 | [an-ordered-shutdown](docs/plans/2026-09-02-an-ordered-shutdown.md) | #25 | item 30 (a) — **item 30 closes** — [ADR-0038](docs/decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md) |
+| [recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md) | #26 | item 32 (b) and (c) — [ADR-0039](docs/decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md) |
+| [a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md) | #27 | `PRD.md`'s config-file gap — [ADR-0040](docs/decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md) |
 
-`[measured 2026-09-02]` the last of them closed on `ca9ae49`, **CI green on that commit, runs
-[`33597576154`](https://github.com/tmthang86/fixbolt/actions/runs/33597576154) and
-[`33597580522`](https://github.com/tmthang86/fixbolt/actions/runs/33597580522) — 18 checks of 18.**
+`[measured 2026-09-02]` the last of them closed on `826b672`, **CI green on that commit, runs
+[`33602482251`](https://github.com/tmthang86/fixbolt/actions/runs/33602482251) and
+[`33602486701`](https://github.com/tmthang86/fixbolt/actions/runs/33602486701).**
 **Every PR today was named by id against the commit it closed**, which is `CLAUDE.md` §9's last
-box and the one that had already been missed once.
+box and the one that had already been missed once. `[measured 2026-09-02]` it earned its keep
+again on PR #26: the commit was ready to push and **was not `cargo fmt` clean**, which CI would
+have caught and the local run had not, because `fmt --check` had been run before the last edit.
 
-### The seven findings worth carrying forward, all of them about a green that was not evidence
+### The nine findings worth carrying forward, all of them about a green that was not evidence
 
 | | |
 |---|---|
@@ -220,6 +230,26 @@ to *measure* on: `fixbolt-machine on` and read `scripts/check-machine.sh` — fi
 rows do not survive a reboot.
 
 **The next session's starting points, in the order that costs least:**
+
+`[2026-09-02]` **the list below is history; this is the live one.** Everything reachable from a
+Mac is done, so every item here needs the Linux desktop (AMD Ryzen 7 3700X), tuned to
+[ADR-0021](docs/decisions/ADR-0021-nohz-full-leaves-section-9.md) §9 where a
+number is wanted:
+
+| # | What | Why it needs Linux |
+|---|---|---|
+| **first** | Run the two machine checks for non-negotiable 4 — `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh` — on the current `main` | They have not run since PR #17. Six plans have landed on the engine loop since, and *"they could not run"* has been recorded honestly each time and is still not *"they were green"* |
+| 32 (a) | `serve_sharded_hft` has no `_with_recovery` variant and cannot be stopped | `shard.rs` is Linux-only and was deliberately not edited from a Mac — [ADR-0034](docs/decisions/ADR-0034-recovery-is-asked-once-the-counterparty-is-known.md) decision 3 |
+| 21 | `serve_hft` pins nothing; the refusals D8 promises do not exist for it | `sched_setaffinity` |
+| 22, 6, 11 | Any latency number at all | `benches/baselines.tsv` keys on the CPU model, and this Mac reads `NO BASELINE` — no nanosecond figure from it has been published, and none should be |
+| 24 | Sharding and the single-logon rule, re-measured | The shard runtime |
+| 12, 13, 14 | SIMD/SWAR, release profile, kernel bypass | All three are *measure before deciding*, and the measurement is Linux's |
+
+**And one thing needs the owner, not a machine:** open item 27 wants `CLAUDE.md` §4 to gain a
+row — *close a plan → re-read this file's **Not proven** section line by line*. §4 is not one of
+the ten non-negotiables but the file is the owner's, so it has not been edited.
+
+The historical list follows.
 
 1. ~~**A plan for `standard` mode**~~ — **CLOSED and MERGED 2026-08-30** (`6d35b75`).
    [standard-mode](docs/plans/2026-08-30-standard-mode.md), 8 steps, and
@@ -1336,7 +1366,7 @@ plan below is **approved**; the topmost is the one in progress.
 
 | Plan | Closes |
 |---|---|
-| ~~[a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md)~~ | **CLOSED 2026-09-02, all four steps** — `PRD.md`'s last open line under `many counterparties`, [ADR-0040](docs/decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md). `engine::settings` reads a QuickFIX-shaped INI with no new dependency; 33 tests, five reversals. **The plan's own reversal 2 was wrong** — it predicted one test would stay green and nine went red, because every fixture inherits its required keys; 2b is the half that discriminates. And a reversal *not* in the plan found that all three wire tests were blind to which of two silences they were seeing |
+| ~~[a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md)~~ | **CLOSED 2026-09-02, all four steps** — `PRD.md`'s last open line under `many counterparties`, [ADR-0040](docs/decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md). Merged PR [#27](https://github.com/tmthang86/fixbolt/pull/27), CI green on `826b672`, runs [`33602482251`](https://github.com/tmthang86/fixbolt/actions/runs/33602482251) and [`33602486701`](https://github.com/tmthang86/fixbolt/actions/runs/33602486701). `engine::settings` reads a QuickFIX-shaped INI with no new dependency; 34 tests, five reversals. **The plan's own reversal 2 was wrong** — it predicted one test would stay green and nine went red, because every fixture inherits its required keys; 2b is the half that discriminates. And a reversal *not* in the plan found that all three wire tests were blind to which of two silences they were seeing |
 | ~~[recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md)~~ | **CLOSED 2026-09-02** — item 32 (b) and (c), [ADR-0039](docs/decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md). Merged PR [#26](https://github.com/tmthang86/fixbolt/pull/26), CI green on `88f4473`, runs [`33600110468`](https://github.com/tmthang86/fixbolt/actions/runs/33600110468) and [`33600141705`](https://github.com/tmthang86/fixbolt/actions/runs/33600141705) |
 | ~~[gates-that-can-be-trusted](docs/plans/2026-08-30-gates-that-can-be-trusted.md)~~ | **CLOSED 2026-08-30** — 7, 17, 18, 19 |
 | [w2w-and-linux-numbers](docs/plans/2026-08-30-w2w-and-linux-numbers.md) | **15 closed 2026-08-30**; 6, 11, 13 blocked on a §9 machine; **decides** 12 |
