@@ -822,6 +822,104 @@ fn main() {
          recorded none — a zero above would be measuring nothing"
     );
 
+    // --- shutdown ------------------------------------------------------------
+    //
+    // A shutdown says goodbye to every session and then waits. It happens once
+    // in a process's life, so the number here is not about throughput — it is
+    // about the path being made of the same fixed shapes as everything else,
+    // rather than reaching for a `Vec` because "it only runs once".
+    let shutdown_rounds = 500usize;
+    let logon = traffic[0].clone();
+    let mut stops: Vec<(Loopback, Option<Loopback>)> = Vec::with_capacity(shutdown_rounds);
+    for _ in 0..shutdown_rounds {
+        let (mut near, mut far) = Loopback::pair();
+        // Warmed outside the window, for the reason
+        // `reference/a-benchmark-measured-its-own-fixture.md` records — and
+        // warmed **generously**. `[measured 2026-09-02]` warming with one
+        // `Logon` left this case reading exactly 1 per round, because the
+        // shutdown `Logout` carrying `58=shutting down` is a few bytes longer
+        // than the `Logon` reply that had sized the queue, so the fixture's
+        // `VecDeque` grew once inside the window. The bench was measuring its
+        // own pipe, again.
+        let roomy = [b'.'; 4096];
+        let _ = near.send(&roomy);
+        let _ = far.recv(&mut sink);
+        let _ = far.send(&roomy);
+        let _ = near.recv(&mut sink);
+        stops.push((near, Some(far)));
+    }
+    let mut engines: Vec<
+        Engine<
+            Loopback,
+            fixbolt_session::Acceptor,
+            InlineDispatch<Silent>,
+            ManualClock,
+            Yield,
+            Store,
+            256,
+            4096,
+            8192,
+        >,
+    > = Vec::with_capacity(shutdown_rounds);
+    let mut stoppers = Vec::with_capacity(shutdown_rounds);
+    for _ in 0..shutdown_rounds {
+        let mut e = Engine::new(
+            cfg(),
+            InlineDispatch::new(Silent),
+            ManualClock::at(FIXED_TIME_MILLIS),
+            Yield,
+            2,
+        );
+        stoppers.push(e.admin());
+        engines.push(e);
+    }
+    // **Every connection is logged on before the window opens.** `add` builds a
+    // journal and `Engine::new` builds its `conns`; measuring those would be
+    // measuring the fixture, which
+    // `reference/a-benchmark-measured-its-own-fixture.md` is about.
+    for (k, e) in engines.iter_mut().enumerate() {
+        if let Some((peer, side)) = stops.get_mut(k)
+            && let Some(t) = side.take()
+        {
+            e.add(t);
+            let _ = peer.send(&logon);
+            e.turn();
+            let _ = peer.recv(&mut sink);
+        }
+    }
+    let shutdown_allocs = count(|| {
+        for (k, e) in engines.iter_mut().enumerate() {
+            if let Some(a) = stoppers.get(k) {
+                a.shutdown(0);
+            }
+            e.turn();
+            let _ = e.shutdown_finished();
+        }
+    });
+    // **The positive control.** A zero above is worth nothing unless the path
+    // ran: every engine must report that it said goodbye to its session, and
+    // the peer must have the `Logout` to show for it.
+    let said_goodbye: usize = engines
+        .iter_mut()
+        .filter_map(fixbolt_engine::Engine::shutdown_finished)
+        .map(|s| s.said_goodbye())
+        .sum();
+    assert_eq!(
+        said_goodbye, shutdown_rounds,
+        "every session should have been told; a zero above would otherwise be \
+         measuring nothing"
+    );
+    let n = stops
+        .first_mut()
+        .map_or(0, |(peer, _)| match peer.recv(&mut sink) {
+            Io::Ready(n) => n,
+            _ => 0,
+        });
+    assert!(
+        String::from_utf8_lossy(&sink[..n]).contains("35=5"),
+        "and the goodbye reached the wire"
+    );
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
@@ -830,7 +928,8 @@ fn main() {
          pending-cycle {cycle_allocs} registry-lookup {registry_lookup_allocs} \
          observe-idle {observe_idle_allocs} observe-asked {observe_asked_allocs} \
          events-idle {events_idle_allocs} events-busy {events_busy_allocs} \
-         admin-idle {admin_idle_allocs} admin-busy {admin_busy_allocs}"
+         admin-idle {admin_idle_allocs} admin-busy {admin_busy_allocs} \
+         shutdown {shutdown_allocs}"
     );
     assert_eq!(
         [
@@ -852,9 +951,10 @@ fn main() {
             events_idle_allocs,
             events_busy_allocs,
             admin_idle_allocs,
-            admin_busy_allocs
+            admin_busy_allocs,
+            shutdown_allocs
         ],
-        [0; 19],
+        [0; 20],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

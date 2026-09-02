@@ -104,6 +104,9 @@ pub struct Engine<T, R: Role, D, C, W, J, const N: usize, const RX: usize, const
     /// null-pointer-sized field and does no work at all — `observe`'s whole
     /// design.
     observe: Option<std::sync::Arc<crate::observe::Shared>>,
+    /// Set the first turn after an operator asked to stop. `None` while the
+    /// engine is simply running, which is the whole cost of being stoppable.
+    stopping: Option<Stopping>,
     /// The self-pipe another thread writes to when it has produced work.
     ///
     /// `None` unless [`Self::with_waker`] was called. Only `standard` needs
@@ -167,6 +170,7 @@ where
             next_id: 0,
             backpressure: Backpressure::Disconnect,
             observe: None,
+            stopping: None,
             #[cfg(all(feature = "standard", unix))]
             waker: None,
         }
@@ -471,6 +475,84 @@ where
         }
     }
 
+    /// Say goodbye to everyone, once, on the first turn after somebody asked.
+    ///
+    /// **One relaxed load while nobody has asked** — the same bargain
+    /// `wanted` and the command queue make, and
+    /// `crates/engine/tests/shutdown.rs::an_engine_nobody_stopped_pays_one_load`
+    /// is what keeps it falsifiable rather than asserted.
+    fn begin_shutdown_if_asked(&mut self, now: u64) {
+        if self.stopping.is_some() {
+            return;
+        }
+        let Some(shared) = self.observe.as_ref() else {
+            return;
+        };
+        let Some(grace_ms) = shared.stop_asked() else {
+            return;
+        };
+        let mut st = Stopping {
+            deadline_ms: now.saturating_add(grace_ms),
+            sessions: 0,
+            said_goodbye: 0,
+            acked: 0,
+            timed_out: 0,
+        };
+        for c in &mut self.conns {
+            st.sessions += 1;
+            // `begin_logout` returns `Up` only when the goodbye actually went
+            // into the buffer. A session that never logged on, or that cannot
+            // build the message, answers `Dropped` and is simply closed —
+            // waiting for an answer to a message that was not sent is how a
+            // shutdown hangs.
+            if c.begin_logout() {
+                st.said_goodbye += 1;
+            }
+        }
+        self.stopping = Some(st);
+    }
+
+    /// Has the shutdown finished, and what did it manage?
+    ///
+    /// [`Some`] once every connection has gone, or once the deadline has
+    /// passed — at which point whatever is left is closed and **counted as
+    /// having timed out**, because *"we stopped"* and *"we stopped while two
+    /// counterparties never answered"* are different facts and an operator must
+    /// be able to tell them apart before restarting.
+    pub fn shutdown_finished(&mut self) -> Option<Shutdown> {
+        let st = self.stopping.as_mut()?;
+        let now = self.clock.now_ms();
+        if !self.conns.is_empty() && now < st.deadline_ms {
+            return None;
+        }
+        st.timed_out = self.conns.len();
+        // **Each one still says why it ended.** Clearing the vector would take
+        // them away without a word, and an operator reading the event stream
+        // would see connections vanish with no cause — exactly the hole
+        // ADR-0035 exists to close.
+        for c in &mut self.conns {
+            c.session
+                .note_drop_reason(fixbolt_session::DropReason::EngineShutdown);
+        }
+        if let Some(shared) = self.observe.as_ref() {
+            for c in &self.conns {
+                shared.emit(
+                    c.id,
+                    now,
+                    crate::observe::EventKind::Ended(fixbolt_session::DropReason::EngineShutdown),
+                );
+            }
+        }
+        self.conns.clear();
+        let done = Shutdown {
+            sessions: st.sessions,
+            said_goodbye: st.said_goodbye,
+            acked: st.acked,
+            timed_out: st.timed_out,
+        };
+        Some(done)
+    }
+
     /// Describe every connection this engine holds, for [`Self::observer`].
     ///
     /// An associated function taking the slice rather than a method, so the
@@ -540,6 +622,7 @@ where
         // the messages of this turn would be setting a number that has already
         // gone out — `crates/engine/tests/admin.rs` holds the order.
         self.administer();
+        self.begin_shutdown_if_asked(now);
         let mut moved = false;
         let mut i = 0;
         while i < self.conns.len() {
@@ -623,6 +706,17 @@ where
                     // count is still the truth about why.
                     if refused {
                         self.refused_connections += 1;
+                    }
+                    // **Counted here rather than at the deadline**: by then the
+                    // connection is gone and the reason with it. A shutdown
+                    // that reports "all clear" without checking *why* each
+                    // session left would count a heartbeat timeout as an
+                    // orderly goodbye.
+                    if let Some(st) = self.stopping.as_mut()
+                        && self.conns[i].session.last_drop_reason()
+                            == Some(fixbolt_session::DropReason::PeerLogout)
+                    {
+                        st.acked += 1;
                     }
                     self.conns.swap_remove(i);
                     moved = true;
@@ -803,17 +897,26 @@ where
         }
     }
 
-    /// Turn forever, idling by the chosen [`Waiting`] strategy.
+    /// Turn until somebody stops it, idling by the chosen [`Waiting`] strategy.
+    ///
+    /// `[2026-09-02]` this used to return `!`. Nothing could stop this engine
+    /// except killing the process, which tells the counterparty nothing, loses
+    /// bytes that had already spent their sequence numbers, and can leave the
+    /// journal with a torn tail. `Admin::shutdown` is how it is asked;
+    /// [`Shutdown`] says what it managed.
     ///
     /// The default strategy is [`wait::Spin`], which is D8's `hft` half: no
     /// `epoll_wait`, no futex, no blocking read.
     ///
     /// See [`Self::idle`] for why the source list is empty today and what fills
     /// it.
-    pub fn run(&mut self) -> ! {
+    pub fn run(&mut self) -> Shutdown {
         loop {
             if !self.turn() {
                 self.idle();
+            }
+            if let Some(done) = self.shutdown_finished() {
+                return done;
             }
         }
     }
@@ -878,7 +981,7 @@ pub fn serve<A: Application>(
     app: A,
     capacity: usize,
     limits: presession::Limits,
-) -> Result<core::convert::Infallible, ServeError> {
+) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
     let engine: StandardAcceptorEngine<A> = Engine::new(
@@ -919,7 +1022,7 @@ pub fn serve_with_recovery<A: Application, V: crate::recovery::Recovery<crate::j
     capacity: usize,
     limits: presession::Limits,
     recovery: V,
-) -> Result<core::convert::Infallible, ServeError> {
+) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
     let engine: StandardAcceptorEngine<A> = Engine::new(
@@ -949,7 +1052,7 @@ pub fn serve_hft<A: Application>(
     app: A,
     capacity: usize,
     limits: presession::Limits,
-) -> Result<core::convert::Infallible, ServeError> {
+) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
     let engine: HftAcceptorEngine<A> = Engine::new(
@@ -978,7 +1081,7 @@ pub fn serve_hft_with_recovery<
     capacity: usize,
     limits: presession::Limits,
     recovery: V,
-) -> Result<core::convert::Infallible, ServeError> {
+) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
     let engine: HftAcceptorEngine<A> = Engine::new(
@@ -1075,7 +1178,7 @@ fn pump<A: Application, W: Waiting, V: crate::recovery::Recovery<crate::journal:
     table: presession::Table,
     limits: presession::Limits,
     mut recovery: V,
-) -> Result<core::convert::Infallible, ServeError> {
+) -> Result<Shutdown, ServeError> {
     // Matches the engine's RX, so a prefix can never be too long for the
     // connection it is handed to.
     const PRE: usize = 4096;
@@ -1116,6 +1219,12 @@ fn pump<A: Application, W: Waiting, V: crate::recovery::Recovery<crate::journal:
             moved = true;
         }
         moved |= engine.turn();
+        if let Some(done) = engine.shutdown_finished() {
+            // **Sockets still waiting to identify themselves are dropped, not
+            // logged out.** There is no session on them and nothing to say
+            // goodbye to; `PendingSet`'s own drop closes them.
+            return Ok(done);
+        }
         if !moved {
             extra.clear();
             extra.extend(listener);
@@ -1252,4 +1361,63 @@ impl Acceptor {
 /// Whatever `connect` or `set_nonblocking` returns.
 pub fn connect(addr: &str) -> std::io::Result<TcpTransport> {
     TcpTransport::new(TcpStream::connect(addr)?)
+}
+
+/// The engine's own record of a shutdown in progress.
+#[derive(Debug, Clone, Copy)]
+struct Stopping {
+    deadline_ms: u64,
+    sessions: usize,
+    said_goodbye: usize,
+    acked: usize,
+    timed_out: usize,
+}
+
+/// What an ordered shutdown managed, and what it did not.
+///
+/// **`sessions == acked` is the clean case and nothing else is.** An operator
+/// restarting after `timed_out > 0` is restarting against counterparties that
+/// never acknowledged, and may have to reconcile sequence numbers by hand — so
+/// the two outcomes are reported apart rather than folded into "stopped".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Shutdown {
+    sessions: usize,
+    said_goodbye: usize,
+    acked: usize,
+    timed_out: usize,
+}
+
+impl Shutdown {
+    /// Connections the engine held when the shutdown began.
+    #[must_use]
+    pub const fn sessions(&self) -> usize {
+        self.sessions
+    }
+
+    /// How many of them actually had a `Logout` written for them.
+    ///
+    /// Lower than [`Self::sessions`] when a connection had not logged on, or
+    /// could not build the message.
+    #[must_use]
+    pub const fn said_goodbye(&self) -> usize {
+        self.said_goodbye
+    }
+
+    /// How many answered with a `Logout` of their own before the deadline.
+    #[must_use]
+    pub const fn acked(&self) -> usize {
+        self.acked
+    }
+
+    /// How many were still there when the deadline passed, and were closed.
+    #[must_use]
+    pub const fn timed_out(&self) -> usize {
+        self.timed_out
+    }
+
+    /// Every session that was told, answered.
+    #[must_use]
+    pub const fn clean(&self) -> bool {
+        self.timed_out == 0 && self.acked == self.said_goodbye
+    }
 }
