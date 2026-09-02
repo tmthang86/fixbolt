@@ -1,0 +1,38 @@
+[package]
+name = "fixbolt"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "The application-facing API: a handler, a reply, and one place to depend on"
+
+# `DESIGN.md` §3 L4. This crate has a `[features]` block and `tools/jrnl` does
+# not, and the difference is the rule rather than an inconsistency: `jrnl` reads
+# a file and branches on nothing, while this crate re-exports `serve`, which is
+# `#[cfg(all(feature = "standard", unix))]` in `engine`. A `cfg` never reaches
+# into a dependency's features, so the mode has to be named here too — and
+# non-negotiable 6 then requires the `#[cfg]` on the `pub use` itself, not only
+# in this manifest. `crates/library/src/lib.rs` carries it.
+#
+# The consequence is the same one ADR-0014 gave `engine`, and it is worth
+# having: `--no-default-features` builds this crate with NO dependency on `libc`
+# and no `unsafe` anywhere in the tree. `scripts/check-no-optional-deps.sh` has
+# a case for it.
+[features]
+default = ["standard"]
+standard = ["fixbolt-engine/standard"]
+
+[dependencies]
+fixbolt-codec = { path = "../codec" }
+fixbolt-dict = { path = "../dict" }
+fixbolt-engine = { path = "../engine", default-features = false }
+fixbolt-session = { path = "../session" }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "alloc"
+harness = false
