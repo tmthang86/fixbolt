@@ -527,3 +527,34 @@ văn xuôi khẳng định hành vi runtime mà không có gì chứng minh — 
 **Cái gì chưa làm và vì sao.** B, C, D chưa bắt đầu. E vẫn chặn trên `library`
 (`DESIGN.md` §7 bước 8) — `[Sửa 2]` **và nó hết chặn trong cùng ngày**, xem Sửa 2.
 **Không có số đo mới nào** được sinh ra ở phase này.
+
+### Phase E — đóng 2026-09-03
+
+**Đã dựng gì.**
+
+- **E1** — `docs/GETTING-STARTED.md` (hình dạng QuickFIX/J: config → application → bootstrap)
+  và `docs/TUTORIAL.md` (hướng dẫn xây acceptor từng bước từ đầu). Mọi snippet code đều trỏ
+  trực tiếp vào code đã có test: `crates/library/examples/acceptor.rs`, `acceptor.cfg`,
+  `examples/shared/order_handler.rs`, và `tests/end_to_end.rs`. Không có snippet minh hoạ rời rạc.
+- **E2** — `#![warn(missing_docs)]` được kích hoạt trên `crates/library/src/lib.rs`. Crate-level doc
+  được tách ra `crates/library/README.md` và nhúng lại qua `#![doc = include_str!("../README.md")]`.
+  Khối code `no_run` chuyển sang `README.md` và được doctest biên dịch tự động. Mọi link trỏ vào repo
+  trong README dùng URL GitHub tuyệt đối để docs.rs không bị vỡ link; `scripts/check-links.py` được
+  cập nhật để cho phép URL tuyệt đối với `crates/library/README.md` sau khi đã xác thực file tồn tại.
+
+**Gate nào xanh.** `scripts/check-links.py` exit 0, **1103 internal links checked**.
+`cargo fmt --all -- --check` exit 0. `cargo clippy --all-targets -- -D warnings` exit 0.
+`cargo test -p fixbolt --doc` exit 0 (`1 passed`).
+
+**Đảo ngược đã chạy.**
+- **Doctest README.md**: Đổi `.send()` thành `.send_nonexistent()` trong khối code `README.md`,
+  chạy `cargo test -p fixbolt --doc`, thấy đỏ và báo lỗi `E0599 (no method named send_nonexistent)`.
+  Sửa lại, xanh. Chứng minh doctest thực sự biên dịch khối code trong `README.md`.
+- **`missing_docs`**: Xoá doc comment của struct `Incoming` trong `crates/library/src/app.rs`, chạy
+  `cargo clippy -p fixbolt --all-targets -- -D warnings`, thấy đỏ và báo đúng `error: missing documentation for a struct Incoming`.
+  Trả lại, xanh.
+- **`check-links.py`**: Thêm một link chết `nonexistent-file.md` vào `docs/TUTORIAL.md`, thấy đỏ và
+  báo đúng `docs/TUTORIAL.md:12`; gỡ ra, xanh lại.
+
+**Cái gì chưa làm và vì sao.** Phase B và D chưa bắt đầu; phase C hoãn theo Sửa 3.
+Không có số đo mới nào được sinh ra ở phase này.
