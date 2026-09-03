@@ -22,7 +22,7 @@ readiness, gives the core back and runs on any OS and any hardware — it is wha
 say nothing. **`hft`** is opt-in, Linux-only, pins its polling threads to isolated cores and
 **burns a core per thread** to buy the microsecond. An engine whose out-of-the-box configuration
 pins a core at 100% is one most people cannot evaluate, so `hft` is the claim and `standard` is
-the front door. `[2026-08-30]` **`standard` is decided and not yet built.**
+the front door. `[2026-08-30]` **`standard` is built and is the default** — `serve` blocks, `serve_hft` spins ([ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)).
 
 **Inside `hft`, latency beats session density, and that is a rule rather than a preference**
 ([ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)). The
@@ -66,14 +66,49 @@ its session count.**
 > **zero allocations in the timed window**. `hft` is worth **17.7%** over `standard` end to end,
 > and pinning to an isolated core is worth **nothing at p50 and 11× at p99.9**. **Loopback, not
 > NIC to NIC** — `DESIGN.md` §6 keeps the stricter row open, and says so.
-> **[docs/GUIDE.md](docs/GUIDE.md)** is for embedding the engine — the constraints that
-> show up as latency or lost messages rather than as compile errors.
-> **[docs/PRD.md](docs/PRD.md)** says what must be built and how far it is from QuickFIX;
-> **[docs/DESIGN.md](docs/DESIGN.md)** says how it is built; [STATUS.md](STATUS.md) says
-> where the work stands.
+> **Where to read what, and in which order, is below.**
 >
 > **The name is `fixbolt`**, decided 2026-08-30 — it replaced the placeholder
 > `nanofixengine`, which collided with `matthart1983/nanofix`. See STATUS.md.
+
+## Where to start
+
+**Nothing is published yet.** Every crate is `version = "0.0.0"` and `publish = false`, so there
+is no `cargo add`. Clone it, and **run the bootstrap first**:
+
+```sh
+scripts/fetch-quickfix-assets.sh    # required — nothing builds without it
+cargo test --all
+```
+
+`vendor/` is gitignored ([CLAUDE.md](CLAUDE.md) §8) and holds the FIX 4.4 XML that
+`crates/dict/build.rs` generates its tables from, plus the 59 acceptance definitions that gate
+every session-layer change. **Skip the script and the build fails**, because the dictionary has
+nothing to generate from.
+
+On a machine you intend to *measure* on, read `scripts/check-machine.sh` as well —
+[DESIGN.md §9](docs/DESIGN.md#9-deployment--the-os-is-part-of-the-design) is part of the design,
+and five of its rows do not survive a reboot.
+
+**Then read in this order, depending on why you are here.**
+
+| You are… | Read |
+|---|---|
+| **embedding the engine** | **[docs/GUIDE.md](docs/GUIDE.md)** — the constraints that show up as latency or lost messages rather than as compile errors, and the one document written for a user of this framework rather than a builder of it |
+| **deciding whether to use it** | [docs/PRD.md](docs/PRD.md) — what it must do, in which phase, and how far it is from QuickFIX. Then [docs/reference/prior-art.md](docs/reference/prior-art.md) for the alternatives, **including a name collision worth reading before anything else** |
+| **changing the code** | [docs/DESIGN.md](docs/DESIGN.md) — §4's D1–D10 are the decisions, §8 the latency budget, §9 the OS checklist. Then [CLAUDE.md](CLAUDE.md) §1 and §2: no code without an approved plan, and ten non-negotiables. [docs/decisions/](docs/decisions/) says why each was chosen and at what cost |
+| **looking for where the work stands** | [STATUS.md](STATUS.md) — a pointer, not a store, and the open-items table is the backlog |
+| **wondering what a measurement here means** | [docs/reference/measured-costs.md](docs/reference/measured-costs.md) — every figure this project quotes, with the machine and the command. No number here is published without its benchmark, its machine and its §9 settings |
+
+**The shortest working code is `crates/library/examples/acceptor.rs`**, with its
+`acceptor.cfg` beside it — a counterparty is a stanza in that file rather than a rebuild. Below
+it, `crates/engine/tests/` shows the raw seam, and `crates/conformance/src/echo.rs` is a real
+`Application` that rebuilds every reply through the dictionary rather than echoing bytes.
+
+**What is still missing is the prose around them.** There is no getting-started page, no
+tutorial, and no configuration reference — `engine::settings` accepts ten keys and two of them,
+`EndDay` and `MaxSkewMillis`, are named in no document at all. That is
+[STATUS.md](STATUS.md) open item 33, and it is tracked rather than unnoticed.
 
 ## Why this exists
 

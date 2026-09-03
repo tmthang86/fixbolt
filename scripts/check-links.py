@@ -101,6 +101,12 @@ def main():
             if target.startswith(URL):
                 tail = names_a_repo_file(root, target)
                 if tail:
+                    # crates/library/README.md is included into rustdoc via include_str!
+                    # and published to crates.io and docs.rs, where relative paths into docs/
+                    # break. It must use absolute GitHub URLs.
+                    if rel == "crates/library/README.md":
+                        checked += 1
+                        continue
                     line = text[: match.start()].count("\n") + 1
                     absolute.append((rel, line, target, tail))
                 continue
