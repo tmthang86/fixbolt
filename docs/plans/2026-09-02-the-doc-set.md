@@ -1,6 +1,6 @@
 # Bộ tài liệu: người dùng, người contribute, và người làm HFT
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt 2026-09-02; **Sửa 3 được chủ repo duyệt 2026-09-03**
 > **Phạm vi:** tài liệu. Không đụng code sản phẩm.
 
 > **Sửa 1 — 2026-09-02, trước khi bắt đầu.** Bản đầu được soạn trên `73e48c6`. Kéo source về
@@ -29,6 +29,36 @@
 >    thôi đúng. Chỉ chạy lại đúng những lệnh đã chạy mới thấy. Đó là lý do bảng **Bẫy đã lường
 >    trước** có dòng *đo lại trước mỗi phase* — dòng đó được viết sau Sửa 1 và **Sửa 2 là lần nó
 >    chứng minh mình đáng có**.
+
+> **Sửa 3 — 2026-09-03, sau khi chủ repo review lại.** Ba câu hỏi được đặt ra, và trả lời bằng
+> số đo trên `ce14417` chứ không bằng ý kiến:
+>
+> 1. **Có chờ phase 2 của `PRD.md` rồi mới viết không? Không — nhưng phase C thì có.** `PRD.md`
+>    §2 nói phase 2 *bắt đầu bằng một ADR* quyết định `MessageView` có tổng quát hoá được hay
+>    không; ADR đó chưa có, chưa có plan, chưa có ngày. Phase 1 đã đóng đủ bảy tiêu chí (PR #31).
+>    Tutorial và bảng tra cứu mô tả bề mặt mà phase 2 **thêm vào** chứ không thay; còn thứ phase 2
+>    nói rõ *có thể đổi* — `MessageView`, `FieldEntry`, `parse_into` — là đúng cái `docs/internals/`
+>    sẽ mô tả. Nên **C hoãn tới khi ADR đầu tiên của phase 2 được chấp nhận**, bảy trang của nó rời
+>    khỏi phạm vi plan này, và bảng ở mục Phase C ở lại làm bản nháp cho plan đó. Còn **10 file**,
+>    không phải 17. Thứ tự: **A → E → B → D**.
+> 2. **Bộ tài liệu thiếu trụ nào?** Đối chiếu Diátaxis (tutorial · how-to · reference ·
+>    explanation): plan phủ cả bốn, trừ một góc của *reference* — **rustdoc, tức docs.rs, là cửa
+>    trước thật của một crate Rust**, và bản trước xếp nó vào "ngoài phạm vi, cần API ổn định".
+>    Đo lại: `crates/library` có **0 pub item thiếu doc**
+>    (`RUSTFLAGS="-W missing_docs" cargo check -p fixbolt`, lọc theo `crates/library/`), và
+>    `lib.rs:24–59` đã có **một doctest `no_run`** mà `cargo test -p fixbolt --doc` chạy
+>    (`1 passed`). Việc còn lại là **khoá cái đã có lại**, gần như miễn phí: `#![warn(missing_docs)]`
+>    trên `library` — CI chạy `clippy -D warnings` nên nó thành gate — và crate-level doc lấy từ
+>    `crates/library/README.md` qua `#![doc = include_str!(...)]`, để **một file** vừa là README
+>    trên GitHub và crates.io, vừa là trang đầu docs.rs, và khối code trong nó **được biên dịch**.
+>    Cả hai vào phase E, bước E2.
+> 3. **GitHub Pages hay `docs/`?** `docs/`. Repo đang private (`has_pages: false`); Pages trên
+>    repo private cá nhân **cần GitHub Pro**, và site publish ra **luôn public** — lộ tài liệu của
+>    một dự án chưa công bố. Hai lý do cùng nói không. Giữ Markdown phẳng trong `docs/` nhưng
+>    **sẵn sàng cho mdBook**: nó đọc đúng thư mục này cộng một `SUMMARY.md`, nên file mới **không
+>    dùng cú pháp chỉ GitHub render** (`> [!NOTE]`). Khi open-source: publish lên crates.io thì
+>    docs.rs build API doc tự động; thêm `book.toml` và một workflow Pages cho phần guide. Đó là
+>    stack ba tầng tokio dùng.
 
 ## Bối cảnh
 
@@ -151,7 +181,9 @@ việc không crate Rust nào có nổi một bảng config.
 ## Cách làm
 
 **Markdown trong `docs/`, không thêm toolchain.** Không mdBook, không job build site.
-`scripts/check-links.py` đã là gate và sẽ phủ file mới.
+`scripts/check-links.py` đã là gate và sẽ phủ file mới. `[Sửa 3]` Lý do, và điều kiện để chuyển
+sang mdBook + Pages sau này: Sửa 3 mục 3. Quy tắc rút ra cho mọi file mới: **không dùng cú pháp
+chỉ GitHub render**, để mdBook đọc lại được nguyên vẹn.
 
 **Nguyên tắc: mỗi file một charter, không chồng lấn** — §4 "một luật, một chỗ".
 `GUIDE.md` **giữ nguyên tên và charter**; `DESIGN.md` §9 vẫn là bảng OS chuẩn duy nhất. Cái mới
@@ -207,7 +239,11 @@ Kèm **củng cố gate tài liệu**, rẻ và máy kiểm được:
 - Mở rộng `scripts/check-links.py`: báo lỗi **link trống path** (`https://github.com/`) — đúng
   loại placeholder rustdoc đang mang mà rule hiện tại không bắt.
 
-### Phase C — tuyến contribute, `docs/internals/`
+### Phase C — tuyến contribute, `docs/internals/` — `[Sửa 3]` HOÃN
+
+`[Sửa 3]` **Rời khỏi phạm vi plan này, chờ ADR đầu tiên của phase 2** (`PRD.md` §2: một view
+type hay nhiều). Bảng dưới **giữ nguyên làm bản nháp** cho plan sẽ viết nó; không bước nào của C
+được bắt đầu trong plan này.
 
 **Đây là chỗ dễ vỡ "một luật, một chỗ" nhất.** `DESIGN.md` §4 nói **đã quyết định gì và vì sao**;
 ADR nói **giá phải trả**; `docs/internals/` nói **code hôm nay chạy ra sao**. Mỗi trang mở đầu
@@ -269,24 +305,40 @@ thứ tốn nhiều người đọc nhất. Và nó có nền sẵn: `crates/lib
 `acceptor.cfg` (22 dòng), `tests/end_to_end.rs` — **tutorial viết quanh code đã có test**, chứ
 không phải snippet mới không ai chạy.
 
+`[Sửa 3]` **E nhận thêm bước E2 — khoá rustdoc của `library` lại**, vì đó là trụ *reference* mà
+bản trước bỏ sót (Sửa 3 mục 2). Hai việc, cả hai đo trước khi hứa:
+
+- `#![warn(missing_docs)]` trong `crates/library/src/lib.rs`. `[measured 2026-09-03, ce14417]`
+  hôm nay **0** pub item thiếu doc, nên đây là **cái chốt giữ số 0**, không phải việc viết doc.
+  CI chạy `cargo clippy --all-targets -- -D warnings`, nên một pub item mới không có doc là CI đỏ.
+- Crate-level doc = `crates/library/README.md`, qua `#![doc = include_str!("../README.md")]`.
+  Khối `no_run` đang ở `lib.rs:24–59` chuyển sang đó. Một file, ba nơi đọc (GitHub, crates.io,
+  docs.rs), và `cargo test -p fixbolt --doc` **biên dịch** khối code của nó. **Bẫy đã biết của
+  pattern này:** link tương đối trong README đó vỡ trên docs.rs vì docs.rs không có cây repo —
+  mọi link trong file đó là **URL tuyệt đối tới GitHub**.
+
 ### Sửa luật — phải nói rõ
 
 `CLAUDE.md` §4 nhận thêm **9 dòng bảng directory** (4 file người dùng + `docs/internals/` +
-2 best-practice + playbook + thư mục tutorial của phase E) và **8 dòng bảng sync**:
+2 best-practice + playbook + thư mục tutorial của phase E) và **8 dòng bảng sync** —
+`[Sửa 3]` **trừ phần internals: còn 8 dòng directory và 5 dòng sync.** Ba dòng gạch dưới đây đi
+cùng phase C sang plan phase 2:
 
 | Khi đổi… | Phải cập nhật |
 |---|---|
 | Một hằng số, mặc định, hay key file cấu hình người dùng thấy được | `CONFIGURATION.md` |
 | Hành vi tầng session ở biên (reset, resend, gap fill, từ chối, `DropReason`) | `SESSION-BEHAVIOUR.md`, **kèm `.def` hoặc test giữ nó** |
 | Một con số conformance, hoặc một gate đổi kết quả | `CONFORMANCE.md`, **kèm lệnh, máy và run id CI** |
-| Cơ chế bên trong một module | trang `docs/internals/` của module đó, **cùng commit** |
-| Một kỹ thuật mới, hoặc bỏ một kỹ thuật đang dùng | `internals/05-patterns.md` |
-| Một gate mới, hoặc đổi cách một gate chứng minh | `internals/06-testing.md` |
+| ~~Cơ chế bên trong một module~~ `[Sửa 3, hoãn cùng C]` | ~~trang `docs/internals/` của module đó, **cùng commit**~~ |
+| ~~Một kỹ thuật mới, hoặc bỏ một kỹ thuật đang dùng~~ `[Sửa 3, hoãn cùng C]` | ~~`internals/05-patterns.md`~~ |
+| ~~Một gate mới, hoặc đổi cách một gate chứng minh~~ `[Sửa 3, hoãn cùng C]` | ~~`internals/06-testing.md`~~ |
 | Một khuyến nghị vận hành theo mode | `best-practices-<mode>.md` — **và nêu rõ mode** |
 | Một dòng phần cứng / BIOS / kernel / NIC | `hft-playbook.md`; nếu là row OS thì **`DESIGN.md` §9 trước**, playbook chỉ trỏ |
 
-`CLAUDE.md` §3 thêm `docs/internals/` làm lối vào cho người sửa code.
-Charter `GUIDE.md` **không đổi một chữ**; §9 vẫn là bảng OS chuẩn duy nhất.
+~~`CLAUDE.md` §3 thêm `docs/internals/` làm lối vào cho người sửa code.~~ `[Sửa 3]` đi cùng C.
+Charter `GUIDE.md` **không đổi một chữ**; §9 vẫn là bảng OS chuẩn duy nhất. Rustdoc của
+`library` (E2) **không cần dòng §4 mới**: dòng *"The public API of any crate → the crate's
+rustdoc"* đã có sẵn.
 
 ## Bất biến bị đụng tới
 
@@ -308,25 +360,23 @@ vì tài liệu **trích lại** thứ chúng canh:
 | **A0** | `STATUS.md`: **item 33**, dòng *Plan → Closes*, *Where the work is*, ô *Plan in flight* | — |
 | **A1** | `README.md:23` + fence `GUIDE.md:331` | A0 |
 | **A2** | `README.md`: thứ tự đọc, bước bootstrap | A1 |
-| **B1** | `CLAUDE.md` §4 (9 + 8 dòng) và §3. **Nói rõ đã sửa luật nào.** Một commit riêng | A2 |
+| **B1** | `CLAUDE.md` §4 (`[Sửa 3]` 8 + 5 dòng). **Nói rõ đã sửa luật nào.** Một commit riêng | E |
 | **B2** | `docs/INTRODUCTION.md` | B1 |
 | **B3** | `docs/CONFIGURATION.md` — cả 10 key, mỗi hàng ghi `file:dòng` | B1 |
 | **B4** | `docs/SESSION-BEHAVIOUR.md` — mỗi hàng trỏ `.def` hoặc test | B1 |
 | **B5** | `docs/CONFORMANCE.md` — chỉ số có trong `STATUS.md` "Proven" | B1 |
 | **B6** | Job CI `cargo doc`, `deny(rustdoc::broken_intra_doc_links)`, mở rộng `check-links.py` | B2–B5 |
-| **C1** | `internals/README.md` — bản đồ + đường đi end-to-end | B1 |
-| **C2** | `01-codec.md`, `02-dict.md` | C1 |
-| **C3** | `03-session.md` | C1 |
-| **C4** | `04-engine.md` — theo thứ tự `Engine::turn` gọi | C1 |
-| **C5** | `05-patterns.md` — chỉ kỹ thuật ≥2 nơi | C2, C3, C4 |
-| **C6** | `06-testing.md`, `07-contributing.md` | C5 |
+| ~~**C1–C6**~~ | `docs/internals/` — `[Sửa 3]` **hoãn**, rời plan này; bảng ở mục Phase C là bản nháp cho plan sau | ADR đầu tiên của phase 2 |
 | **D1** | `best-practices-standard.md` | B3 |
 | **D2** | `best-practices-hft.md` | B3 |
 | **D3** | `hft-playbook.md` — 7 mục, trỏ §9 | D2 |
-| **E** | `GETTING-STARTED.md`, `TUTORIAL.md`, viết quanh `crates/library/examples/acceptor.rs` đã có test | A. `[Sửa 2]` **hết chặn — chạy ngay sau A** |
+| **E1** | `GETTING-STARTED.md`, `TUTORIAL.md`, viết quanh `crates/library/examples/acceptor.rs` đã có test | A. `[Sửa 2]` **hết chặn — chạy ngay sau A** |
+| **E2** | `[Sửa 3]` `#![warn(missing_docs)]` trên `library`; crate doc từ `crates/library/README.md` qua `include_str!`, khối `no_run` chuyển sang đó | A |
 
-**Mỗi bước C và D là một commit riêng.** Một trang internals sai còn tệ hơn không có, nên chúng
-qua gate từng cái chứ không gộp.
+`[Sửa 3]` **Thứ tự chạy: A → E → B → D.** C không chạy trong plan này.
+
+**Mỗi bước D là một commit riêng.** Một trang sai còn tệ hơn không có, nên chúng qua gate từng
+cái chứ không gộp.
 
 ## Cách kiểm chứng
 
@@ -348,7 +398,15 @@ qua gate từng cái chứ không gộp.
   trang**, và tên nó chuyển sang mục "chưa được chứng minh".
 - **B6** — `cargo doc --workspace --no-deps` sạch; đảo ngược bằng một intra-doc link sai, thấy
   build đỏ. `check-links.py`: cho nó một `https://github.com/` trống path, thấy đỏ.
-- **C1–C6** — mỗi khẳng định về cơ chế **trích `file:dòng`**, và người viết **mở đúng dòng đó ra
+- **E1** — `check-links.py` xanh kèm đảo ngược, như B2–B5. Mỗi snippet trong tutorial **trỏ về
+  dòng trong `examples/acceptor.rs` hoặc `tests/end_to_end.rs`**; snippet không có nguồn thì xoá,
+  không giữ lại làm "minh hoạ".
+- **E2** — `cargo test -p fixbolt --doc` đọc `1 passed` trở lên **sau khi** khối code đã chuyển
+  sang `README.md`; **đảo ngược**: đổi một tên hàm trong khối đó, thấy đỏ, sửa lại, thấy xanh —
+  không đảo ngược thì không biết `include_str!` có thật sự đưa khối code vào doctest hay nó
+  thành văn bản. `missing_docs`: xoá doc comment của một pub item, `cargo clippy -p fixbolt
+  --all-targets -- -D warnings` đỏ và nêu đúng item; trả lại, xanh.
+- ~~**C1–C6**~~ `[Sửa 3]` hoãn cùng C; giữ lại nguyên văn cho plan phase 2 — mỗi khẳng định về cơ chế **trích `file:dòng`**, và người viết **mở đúng dòng đó ra
   đọc**. Quy tắc đóng bước: **một câu không truy được về code là một câu bị xoá.** Thêm:
   - `05-patterns.md` — mỗi kỹ thuật liệt kê **≥2 nơi dùng thật**; một chỗ thì chưa phải pattern.
   - `06-testing.md` — mỗi gate nêu **lệnh chạy** và **nhánh đỏ**. Gate nào không nêu được cách làm
@@ -362,8 +420,8 @@ qua gate từng cái chứ không gộp.
   `nohz_full` và `mitigations` trong playbook, **đọc lại tay**, xác nhận đúng chiều đã đo —
   **`nohz_full` không khuyến nghị**, **mitigations bật**. Đây là hai chỗ một trang HFT viết theo
   thói quen ngành sẽ nói **ngược** sự thật đo được ở repo này.
-- **Toàn C/D** — `check-links.py` xanh, kèm **một lần đảo ngược cho `docs/internals/`** để chứng
-  minh gate có đi vào thư mục mới.
+- **Toàn D** — `check-links.py` xanh. ~~Kèm một lần đảo ngược cho `docs/internals/`~~ `[Sửa 3]`
+  đi cùng C; plan này không tạo thư mục mới nào, nên đảo ngược ở A2/B2–B5/E1 là đủ.
 - **Đóng plan** — `cargo test --all`, `cargo test --all --no-default-features`,
   `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, và **một run CI xanh
   nêu đích danh bằng id cho commit được đóng** (§9 ô cuối).
@@ -371,8 +429,10 @@ qua gate từng cái chứ không gộp.
 ## Tài liệu phải cập nhật
 
 - [ ] `STATUS.md` — **A0**: item 33, *Plan → Closes*, *Where the work is*, *Plan in flight*.
-      Cập nhật lại mỗi lần đóng một phase; đánh dấu item 33 đóng khi D3 xong (**E ở lại, gắn với
-      `library`**)
+      Cập nhật lại mỗi lần đóng một phase; đánh dấu item 33 đóng khi D3 xong. `[Sửa 3]` **C rời
+      phạm vi** — phần "engine không có bản đồ" của item 33 chuyển sang plan phase 2, nói rõ khi đóng
+- [ ] `crates/library/src/lib.rs` và `crates/library/README.md` — `[Sửa 3]` E2; `CHANGELOG.md`
+      **vẫn không đổi**: không API nào đổi, chỉ nơi doc sống
 - [ ] `CLAUDE.md` §4 (hai bảng) và §3 — **nói rõ đã sửa luật nào**; một commit riêng, trước mọi
       bước viết
 - [ ] `README.md` — thứ tự đọc, bootstrap, dòng 23
@@ -403,11 +463,11 @@ qua gate từng cái chứ không gộp.
 
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
-| **17 file mới trở thành 17 file cũ** — §4: "tài liệu cũ tệ hơn không có" | **Cao nhất** | Tám dòng bảng sync là cơ chế duy nhất giữ chúng sống; đó là lý do B1 đứng trước mọi bước viết. `file:dòng` khiến trang sai **thấy được**, không sai âm thầm |
+| **File mới trở thành file cũ** — §4: "tài liệu cũ tệ hơn không có". `[Sửa 3]` **10** file, không còn 17: bảy trang internals — loại chết nhanh nhất — đã hoãn | **Cao nhất** | Năm dòng bảng sync là cơ chế duy nhất giữ chúng sống; đó là lý do B1 đứng trước B2–B5. `file:dòng` khiến trang sai **thấy được**, không sai âm thầm |
 | Repo đi nhanh hơn tài liệu — 73 commit trong ~1 ngày | **Cao** | Phase nhỏ, mỗi bước một commit, đo lại trước mỗi phase. Trang mô tả **cơ chế** già chậm hơn trang mô tả **API** |
 | Phạm vi phình: làm một lượt thì không cái nào xong tử tế | Cao | 5 phase độc lập; A merge ngay; **dừng sau bất kỳ phase nào mà phần đã làm vẫn đứng vững** |
 | `[Sửa 2]` Tutorial viết quanh `library` mà API còn đang đổi — ADR-0041/0044 vừa sửa nó | Trung bình | Tutorial chỉ bám `examples/acceptor.rs` và `tests/end_to_end.rs`, tức code **đã có test**; API đổi thì test đỏ trước tài liệu |
-| Trang internals thành bản dịch của code — đọc code còn nhanh hơn | Trung bình | Charter là **cơ chế và vì sao**, không phải chú giải từng dòng. `internals/README.md` (đường đi end-to-end) và `05-patterns.md` là hai trang mang giá trị mà đọc code không có |
+| `[Sửa 3, hoãn cùng C]` Trang internals thành bản dịch của code — đọc code còn nhanh hơn | Trung bình | Charter là **cơ chế và vì sao**, không phải chú giải từng dòng. `internals/README.md` (đường đi end-to-end) và `05-patterns.md` là hai trang mang giá trị mà đọc code không có |
 | `hft-playbook.md` bị đọc như lời hứa hiệu năng | Trung bình | Mục 7 nằm **trong cùng trang**, cùng khuôn `CONFORMANCE.md` |
 | `SESSION-BEHAVIOUR.md` viết hành vi mà 59 `.def` **không** kiểm, tưởng là có | Trung bình | Quy tắc B4: hàng không nêu được `.def`/test thì xoá. `reference/a-conformance-corpus-is-not-an-adversarial-one.md` đã ghi corpus không phải bộ đối kháng |
 | README phình thành tài liệu thứ hai | Thấp | README chỉ thêm thứ tự đọc và bootstrap |
@@ -417,7 +477,10 @@ qua gate từng cái chứ không gộp.
 
 Cố ý **không** làm:
 
-- **mdBook, GitHub Pages, bất kỳ site nào** — đã chọn Markdown trong `docs/`.
+- **mdBook, GitHub Pages, bất kỳ site nào** — đã chọn Markdown trong `docs/`. `[Sửa 3]` Lý do đo
+  được và điều kiện mở lại: Sửa 3 mục 3.
+- **`docs/internals/` — phase C.** `[Sửa 3]` Hoãn tới ADR đầu tiên của phase 2, vì nó sẽ mô tả
+  đúng thứ ADR đó có thể đổi. Bảng ở mục Phase C là bản nháp, không phải việc.
 - **`docs/OPERATIONS.md`** — `GUIDE.md` §8a đã làm; viết thêm là tạo bản thứ hai để trôi.
 - **`examples/` mới.** Phase E viết prose quanh `crates/library/examples/acceptor.rs` đã có; thêm example mới là việc khác.
 - **Tách `docs/GUIDE.md`** — nhiều nơi trỏ vào nó; lợi ích không bù rủi ro.
@@ -426,7 +489,8 @@ Cố ý **không** làm:
 - **Đo mới.** Mọi dòng phần cứng/BIOS/NIC chưa đo ở đây được **dán nhãn là chưa đo**. Biến một
   dòng thành số là plan khác, cần máy §9.
 - **Sửa `DESIGN.md` §9.** Playbook trỏ vào nó; §9 thiếu row thì đó là thay đổi của §9, đi riêng.
-- **Doctest / `# Examples` trong rustdoc** — thuộc E, cần API ổn định.
+- **Doctest / `# Examples` trong rustdoc ngoài `crates/library`** — `[Sửa 3]` `library` vào E2
+  vì đã đo được là gần miễn phí; `engine`, `session`, `codec` chờ API ổn định.
 - **Tài liệu TLS, SBE, FIX 5.0, FAST, FIXML** — phase 2 của `PRD.md`, chưa có code.
 - **Dịch tài liệu sang tiếng Việt** — §6: mô tả hệ thống thì tiếng Anh.
 - **Tài liệu initiator ngoài phần đã đúng hôm nay** — §7 bước 5 đang tạm dừng.
