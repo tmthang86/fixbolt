@@ -558,3 +558,36 @@ văn xuôi khẳng định hành vi runtime mà không có gì chứng minh — 
 
 **Cái gì chưa làm và vì sao.** Phase B và D chưa bắt đầu; phase C hoãn theo Sửa 3.
 Không có số đo mới nào được sinh ra ở phase này.
+
+### Phase B — B1–B3 đóng 2026-09-03 (B4–B6 còn lại)
+
+**Đã dựng gì.**
+
+- **B1** — `CLAUDE.md` §4: **9 dòng directory** (`GETTING-STARTED`, `TUTORIAL`, `INTRODUCTION`,
+  `CONFIGURATION`, `SESSION-BEHAVIOUR`, `CONFORMANCE`, hai `best-practices-*`, `hft-playbook`) và
+  **5 dòng sync**. Đúng Sửa 3: **không thêm dòng `docs/internals/`** — chúng đi cùng phase C sang
+  plan phase 2. Commit riêng `dde2d62`.
+- **B2** — `docs/INTRODUCTION.md` (130 dòng): từ vựng FIX 4.4 trước (connection vs session,
+  sequence number, admin vs application), vì sao phía acceptor khó, mục Prior Art rút gọn trỏ
+  `reference/prior-art.md`. Không số đo, không API — đúng charter.
+- **B3** — `docs/CONFIGURATION.md` (80 dòng): bảng tra cứu, **cả 10 key** của `settings.rs`
+  (gồm `EndDay` và `MaxSkewMillis` trước nay không tài liệu nào nêu), cộng `Limits`, const generic,
+  timeout, feature flag. **17 trích dẫn `file:dòng`.**
+
+**Gate nào xanh.** `scripts/check-links.py` exit 0, **1133 internal links checked**.
+`cargo fmt --all -- --check` exit 0. `cargo test`/`cargo clippy` **không áp dụng cho B2/B3**:
+`git diff` ra hai file `.md`, không Rust nào đổi.
+
+**Kiểm hai chiều B3 (không đọc từ trí nhớ).** Lấy danh sách key thật từ nhánh `from_str` của
+`settings.rs`: `BeginString, SenderCompID, TargetCompID, HeartBtInt, MaxSkewMillis, StartDay,
+EndDay, StartTime, EndTime, Weekdays` — **cả 10 đều có trong bảng**, và **không key nào trong
+bảng mà code không nhận** (chiều ngược). Spot-check ba trích dẫn: `block.rs:33` đúng là
+`DEFAULT_TIMEOUT_MS = 100`, `block.rs:41` đúng `MIN_TIMEOUT_MS = 5`, `journal.rs:45` đúng câu
+"no default implementation". Prior Art: `fefix` không bảo trì từ 2021, link `prior-art.md` tồn tại.
+
+**Markdown sạch cho mdBook (Sửa 3).** Không file nào dùng callout chỉ GitHub render (`> [!NOTE]`).
+
+**Cái gì chưa làm và vì sao.** **B4** (`SESSION-BEHAVIOUR.md`), **B5** (`CONFORMANCE.md`), **B6**
+(job CI `cargo doc --workspace --no-deps` với `deny(rustdoc::broken_intra_doc_links)`) chưa làm —
+phần mở rộng `check-links.py` cho `README.md` đã xong ở phase E. **D** chưa bắt đầu; **C** hoãn.
+Không có số đo mới nào được sinh ra ở B1–B3.
