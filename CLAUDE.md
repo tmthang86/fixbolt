@@ -126,6 +126,15 @@ describes. **A stale document is worse than no document.**
 |---|---|
 | `docs/PRD.md` | what the product must do, in which phase, and how far it is from QuickFIX |
 | `docs/GUIDE.md` | **how to embed this engine without losing latency or messages** — written for a user of the framework, not a builder of it. Every constraint it names is one the type system cannot enforce |
+| `docs/GETTING-STARTED.md` | 3-step quickstart (config → application → bootstrap) using the `fixbolt` library crate |
+| `docs/TUTORIAL.md` | step-by-step tutorial building a working acceptor around tested examples |
+| `docs/INTRODUCTION.md` | FIX 4.4 protocol concepts, vocabulary first, why the acceptor role is hard, prior art |
+| `docs/CONFIGURATION.md` | single lookup table for all settings (`settings.rs` keys, `Limits`, const generics, timeouts) |
+| `docs/SESSION-BEHAVIOUR.md` | session-layer boundary behaviour (logon, resend, gap fill, rejects, drop reasons) mapped to `.def`/tests |
+| `docs/CONFORMANCE.md` | published conformance results with commands, machines, and CI run IDs, plus unproven claims |
+| `docs/best-practices-standard.md` | operational recommendations for default `standard` mode (blocking, shared hosts) |
+| `docs/best-practices-hft.md` | operational recommendations for opt-in `hft` mode (spinning, core isolation) |
+| `docs/hft-playbook.md` | step-by-step tuning procedure: hardware, BIOS, kernel, NIC, app configuration, acceptance |
 | `docs/DESIGN.md` | how the system is built, and the latency budget it is built against |
 | `docs/reference/` | what this thing is — protocol facts, prior art, measured costs, traps |
 | `docs/decisions/` | who decided what, why, at what cost (ADRs) |
@@ -137,6 +146,11 @@ describes. **A stale document is worse than no document.**
 | Add / remove / rename a crate | `DESIGN.md` §3 + `README.md` layout + `Cargo.toml` members |
 | The public API of any crate | `DESIGN.md`, the crate's rustdoc, `CHANGELOG.md` |
 | A constraint a user of the engine must honour and the compiler cannot check | `GUIDE.md` |
+| A user-visible constant, default, or config file key | `docs/CONFIGURATION.md` |
+| Session-layer boundary behaviour (reset, resend, gap fill, reject codes, `DropReason`) | `docs/SESSION-BEHAVIOUR.md`, **naming the `.def` or test guarding it** |
+| A conformance number or gate result | `docs/CONFORMANCE.md`, **naming the command, machine, and CI run id** |
+| An operational recommendation for a mode | `docs/best-practices-<mode>.md` — **naming the mode explicitly** |
+| Hardware / BIOS / kernel / NIC tuning | `docs/hft-playbook.md`; if an OS row, update **`DESIGN.md` §9 first** |
 | Codec, session, dispatch, transport or backpressure behaviour | `DESIGN.md` §4, and re-walk §2 above |
 | A gate's target, or how it is measured | `DESIGN.md` §6 — and the benchmark that asserts it, in the same commit |
 | Anything that moves a row of the latency budget | `DESIGN.md` §8, with the measurement that moved it |
