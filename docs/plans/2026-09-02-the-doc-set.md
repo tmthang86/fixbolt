@@ -653,3 +653,32 @@ không xanh vì bỏ qua.
 **Cái gì chưa làm.** Mở rộng `check-links.py` cho link trống path (`https://github.com/`) — phần
 phụ của B6, chưa làm; ngoại lệ `README.md` (URL tuyệt đối) đã có từ phase E là phần chính. **D**
 (best-practices ×2 + playbook) chưa bắt đầu; **C** hoãn. Phase B đóng ở đây.
+
+### Phase D — đóng 2026-09-03; plan hoàn tất (trừ C hoãn)
+
+**Đã dựng gì.**
+
+- **D1** — `docs/best-practices-standard.md`: mode mặc định. Timeout `block` (100 ms mặc định,
+  min 5 raised-not-rejected), nhiều session một thread là bình thường ở mode này, `Durability`
+  ba chính sách, handler nên/không nên, khi nào `RingDispatch`, host dùng chung/container.
+  **Nói thẳng: phần lớn mode này chưa được đo** — số 449 ns / 16 µs là số `hft`, không áp cho standard.
+- **D2** — `docs/best-practices-hft.md`: một session một thread + số học `~449 ns × N`
+  (ADR-0012, DESIGN §8), vì sao `InlineDispatch` mặc định, ghim từ trong đọc lại (ADR-0015),
+  `ShardPlan` từ chối **SMT sibling**, ring theo stall dài nhất, `wait::Yield` hỏng cả hai gate.
+- **D3** — `docs/hft-playbook.md`: quy trình 7 mục theo thứ tự, **không chép bảng §9** (trỏ). Hai
+  kết quả ngược thói quen ngành, cả hai đo tại repo: **`nohz_full` KHÔNG khuyến nghị** (ADR-0021,
+  ~200 ns/kernel entry), **mitigations phải BẬT** (ADR-0023, tắt rẻ 59–63% nhưng máy không so
+  sánh được — không phải lời khuyên tắt). Profile build giữ mặc định, LTO là việc của người tiêu
+  thụ (ADR-0024).
+
+**Gate nào xanh.** `scripts/check-links.py` exit 0, **1175 internal links checked**.
+`cargo fmt --all -- --check` exit 0. Không Rust nào đổi ở D.
+
+**Kiểm bằng tay, không đoán.** Playbook **không chứa** bảng row §9 (`grep` 0). Trang `standard`
+không có số `hft` nào ngoài mục nói rõ chúng KHÔNG áp cho standard (nhãn mode đúng, §2.4). Chiều
+đo đúng ở cả hai file `hft`: `nohz_full` không khuyến nghị, mitigations bật. Cả 9 ADR được trích
+(0002, 0011, 0012, 0013, 0014, 0015, 0021, 0023, 0024) đều resolve.
+
+**Plan đóng.** Phạm vi đã duyệt sau Sửa 3 — **A, E, B, D** — hoàn tất. **C hoãn** sang plan phase 2
+(khi ADR đầu tiên của phase 2 được chấp nhận), mang theo phần "engine không có bản đồ" của item 33.
+Không có số đo mới nào được sinh ra ở phase này.
