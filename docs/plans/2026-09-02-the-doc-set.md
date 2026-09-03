@@ -11,34 +11,53 @@
 > `CONFIGURATION.md`** xuống đúng phần `GUIDE.md` không có, và đổi số open item 26 → **33**.
 > Ghi lại theo `CLAUDE.md` §1: plan sai giữa đường thì sửa plan, không âm thầm đi lệch.
 
+> **Sửa 2 — 2026-09-02, sau khi phase A đã đóng.** Kéo `main` lần nữa: nó đã đi từ `89c785b`
+> tới `ce14417`, và **`crates/library` tồn tại** (PR #29), package `fixbolt`, kèm
+> `examples/acceptor.rs` + `acceptor.cfg` và hai test — cộng **phase 1 đủ cả bảy tiêu chí** (PR #30,
+> #31). Ba hệ quả, và cái thứ ba là cái đắt:
+>
+> 1. **Phase E hết bị chặn.** Điều kiện chờ mà chủ repo đặt ra — *"chờ `library` rồi mới viết
+>    tutorial"* — **đã được đáp ứng**. E chuyển từ *bị chặn* sang *làm được ngay*, và vì nó là cửa
+>    trước nên nó lên **ưu tiên cao nhất sau A**.
+> 2. **Hai phát hiện của chính item 33 thành sai**: `examples/` **đã có**, và `serve` +
+>    `serve_with_recovery` **đã có test gọi qua**. Item 33 đã được viết lại theo số đo trên
+>    `ce14417`. Cái còn đúng và nay sắc hơn: **`serve_hft`, `serve_hft_with_recovery`,
+>    `serve_sharded_hft` vẫn 0 lần được gọi** — mode mà dự án này lấy làm tuyên bố **không có gate
+>    nào chạy qua cửa trước của nó**.
+> 3. **Bài học, và nó thuộc về `testing-skills`**: một bản kiểm kê *"cái gì đang thiếu"* là **một
+>    phép đo có hạn dùng, và nó hết hạn không kêu**. Không gate nào đỏ; các con số chỉ đơn giản
+>    thôi đúng. Chỉ chạy lại đúng những lệnh đã chạy mới thấy. Đó là lý do bảng **Bẫy đã lường
+>    trước** có dòng *đo lại trước mỗi phase* — dòng đó được viết sau Sửa 1 và **Sửa 2 là lần nó
+>    chứng minh mình đáng có**.
+
 ## Bối cảnh
 
-Repo có tài liệu **rất dày cho người xây engine**: `DESIGN.md` 1176 dòng, **39 ADR**,
-20 file `docs/reference/`, 35 plan, `STATUS.md` 1426 dòng. Và `docs/GUIDE.md` — sau đợt việc
+Repo có tài liệu **rất dày cho người xây engine**: `[Sửa 2, ce14417]` `DESIGN.md` 1258 dòng, **44 ADR**,
+26 file `docs/reference/`, 38 plan, `STATUS.md` 1852 dòng. Và `docs/GUIDE.md` — sau đợt việc
 vừa rồi — đã là một developer guide tốt thật cho **người nhúng engine**.
 
 Còn thiếu là hai loại người đọc khác, cộng cửa trước.
 
 | Người đọc | Có gì hôm nay | Thiếu gì |
 |---|---|---|
-| **Người dùng** — nhúng engine | `GUIDE.md` 1054 dòng, 14 ví dụ code | cửa trước; bảng tra cứu key cấu hình; kết quả conformance công bố |
-| **Người contribute** — sửa codebase | `DESIGN.md` nói **đã quyết định gì**; 39 ADR nói **giá phải trả** | **không có gì nói code hôm nay chạy ra sao** — 19 module trong `engine` mà không có bản đồ |
+| **Người dùng** — nhúng engine | `GUIDE.md` **1271 dòng**, ví dụ code thật | cửa trước; bảng tra cứu key cấu hình; kết quả conformance công bố |
+| **Người contribute** — sửa codebase | `DESIGN.md` nói **đã quyết định gì**; 39 ADR nói **giá phải trả** | **không có gì nói code hôm nay chạy ra sao** — `[Sửa 2]` **20 module** trong `engine` mà không có bản đồ |
 | **Người làm HFT** — muốn đạt chuẩn µs | `DESIGN.md` §9 (bảng OS có gate máy), `GUIDE.md` §1/§7 | **không có quy trình theo thứ tự**: phần cứng, BIOS, NIC, IRQ, config app, cách nghiệm thu |
 
 Đo được, trên `89c785b`:
 
 | Thứ | Con số |
 |---|---|
-| Thư mục `examples/` trong workspace | **0**, `find` không ra cái nào |
-| `serve` / `serve_hft` / `serve_with_recovery` / `serve_hft_with_recovery` được gọi trong test, bench hay tool | **0 lần**. Bốn cửa vào chính thức, không gate nào chạy qua |
+| Thư mục `examples/` trong workspace | `[Sửa 2]` **1** — `crates/library/examples/`, 63 dòng, có test lái |
+| Ba cửa vào `hft` — `serve_hft`, `serve_hft_with_recovery`, `serve_sharded_hft` — được gọi trong test, bench hay tool | **0 lần**. `[Sửa 2]` `serve` và `serve_with_recovery` nay có, nhờ `library`. **Mode làm nên tuyên bố của dự án vẫn không có gate qua cửa trước của nó** |
 | Khối ```` ```rust ```` trong `README.md` | **0** |
 | File nguồn có doc code fence | **5 / 42** |
 | Mục *Installation* / *Getting Started* / *Usage* / *Quickstart* trong README + `docs/` | **0**, `grep` không ra dòng nào |
-| Key mà `settings.rs` nhận | **10** — và `EndDay`, `MaxSkewMillis` **không được nêu tên ở đâu trong `GUIDE.md`** |
+| Key mà `settings.rs` nhận | **10** — và `EndDay`, `MaxSkewMillis` **không xuất hiện trong bất kỳ tài liệu nào**, `[Sửa 2]` vẫn đúng trên `ce14417` |
 | Bảng tra cứu `Setting / Valid values / Default` | **không có** |
 | Trang công bố kết quả conformance | **không có** |
-| Fence hỏng trong `GUIDE.md` | **1**, đã dời xuống dòng **331** |
-| Tuyên bố user-facing còn cũ | **1** — `README.md:23` |
+| Fence hỏng trong `GUIDE.md` | **1**. `[Sửa 2]` trên `main` nó ở dòng **355**; phase A đã đóng nó |
+| Tuyên bố user-facing còn cũ | **1** — `README.md` dòng 25 trên `main`; phase A đã sửa |
 
 Kết quả muốn đạt: người mới có cửa vào; người contribute có bản đồ code; người làm HFT có quy
 trình. Và **không ai bị hứa hẹn thứ chưa tồn tại**.
@@ -49,9 +68,10 @@ Mọi mục kèm nguồn. Phỏng đoán nằm ở mục Rủi ro.
 
 ### Ràng buộc từ repo
 
-**1. `library` (`DESIGN.md` §7 bước 8) chưa tồn tại và chưa có plan.** Hôm nay người dùng viết
-thẳng vào `fixbolt-engine`. **Chủ repo đã chọn: chờ `library` rồi mới viết tutorial/quickstart.**
-Đó là lý do phase E tồn tại và bị chặn.
+**1. `library` TỒN TẠI** `[Sửa 2, đo trên ce14417]` — `crates/library`, package `fixbolt`,
+re-export `App`/`Handler`/`Incoming`/`Reply` cộng toàn bộ seam của `engine`, kèm
+`examples/acceptor.rs`, `acceptor.cfg` và `tests/end_to_end.rs`. **Điều kiện chờ mà chủ repo đặt
+ra đã được đáp ứng**, nên phase E làm được ngay và chạy trước B/C/D.
 
 **2. Chưa crate nào publish.** `version = "0.0.0"`, `publish = false`.
 `CHANGELOG.md`: *"Nothing has been released."* **Không được viết `cargo add fixbolt`.**
@@ -155,7 +175,8 @@ Nội dung item 33, viết theo giọng các item khác — nêu cái đã đo, 
 > *"not yet built"*; `GUIDE.md:331` có một fence hỏng. Khảo sát ngoài: **không crate FIX Rust nào
 > có bảng cấu hình, hướng dẫn acceptor, kết quả conformance, hay số hiệu năng kèm phương pháp** —
 > binding C++ `quickfix` có ~345k lượt tải, gấp ~3,4× tổng mọi engine Rust thuần.
-> Đóng bởi [the-doc-set](2026-09-02-the-doc-set.md), 5 phase; **chỉ phase E chờ `library`**.
+> Đóng bởi [the-doc-set](2026-09-02-the-doc-set.md), 5 phase. `[Sửa 2]` **không phase nào còn bị
+> chặn** — `library` đã tồn tại.
 
 **Khiếm khuyết bốn `serve*` không có test được ghi trong item 33 nhưng KHÔNG do plan này sửa** —
 đó là code, cần plan riêng (Rule Zero). Ghi để nó không mất, đúng §10.
@@ -240,9 +261,13 @@ và **cả hai nửa đều là luật**.
 
 `docs/GETTING-STARTED.md` (config → application → bootstrap, hình dạng QuickFIX/J),
 `docs/TUTORIAL.md`, `examples/` với ít nhất một acceptor chạy được. **Phụ thuộc cứng:**
-`DESIGN.md` §7 bước 8, chưa có plan. Plan này **không viết chúng** và không hứa nội dung.
+`DESIGN.md` §7 bước 8 — `[Sửa 2]` **đã dựng xong**, nên phase này mở.
 
-**Chỉ E bị chặn.** C và D mô tả code đang có, nên chạy song song được với A và B.
+`[Sửa 2]` **E không còn bị chặn** — `crates/library` tồn tại. Nó giữ nguyên vị trí trong bảng
+Chia việc nhưng **đổi thứ tự ưu tiên: E chạy ngay sau A**, trước B/C/D, vì cửa trước trống là
+thứ tốn nhiều người đọc nhất. Và nó có nền sẵn: `crates/library/examples/acceptor.rs` (63 dòng),
+`acceptor.cfg` (22 dòng), `tests/end_to_end.rs` — **tutorial viết quanh code đã có test**, chứ
+không phải snippet mới không ai chạy.
 
 ### Sửa luật — phải nói rõ
 
@@ -298,7 +323,7 @@ vì tài liệu **trích lại** thứ chúng canh:
 | **D1** | `best-practices-standard.md` | B3 |
 | **D2** | `best-practices-hft.md` | B3 |
 | **D3** | `hft-playbook.md` — 7 mục, trỏ §9 | D2 |
-| **E** | `GETTING-STARTED.md`, `TUTORIAL.md`, `examples/` | **Chặn: `library`** |
+| **E** | `GETTING-STARTED.md`, `TUTORIAL.md`, viết quanh `crates/library/examples/acceptor.rs` đã có test | A. `[Sửa 2]` **hết chặn — chạy ngay sau A** |
 
 **Mỗi bước C và D là một commit riêng.** Một trang internals sai còn tệ hơn không có, nên chúng
 qua gate từng cái chứ không gộp.
@@ -381,7 +406,7 @@ qua gate từng cái chứ không gộp.
 | **17 file mới trở thành 17 file cũ** — §4: "tài liệu cũ tệ hơn không có" | **Cao nhất** | Tám dòng bảng sync là cơ chế duy nhất giữ chúng sống; đó là lý do B1 đứng trước mọi bước viết. `file:dòng` khiến trang sai **thấy được**, không sai âm thầm |
 | Repo đi nhanh hơn tài liệu — 73 commit trong ~1 ngày | **Cao** | Phase nhỏ, mỗi bước một commit, đo lại trước mỗi phase. Trang mô tả **cơ chế** già chậm hơn trang mô tả **API** |
 | Phạm vi phình: làm một lượt thì không cái nào xong tử tế | Cao | 5 phase độc lập; A merge ngay; **dừng sau bất kỳ phase nào mà phần đã làm vẫn đứng vững** |
-| Phase E chặn vô hạn vì `library` chưa có plan | Trung bình | A–D độc lập và có giá trị ngay; E ghi rõ phụ thuộc, không viết trước |
+| `[Sửa 2]` Tutorial viết quanh `library` mà API còn đang đổi — ADR-0041/0044 vừa sửa nó | Trung bình | Tutorial chỉ bám `examples/acceptor.rs` và `tests/end_to_end.rs`, tức code **đã có test**; API đổi thì test đỏ trước tài liệu |
 | Trang internals thành bản dịch của code — đọc code còn nhanh hơn | Trung bình | Charter là **cơ chế và vì sao**, không phải chú giải từng dòng. `internals/README.md` (đường đi end-to-end) và `05-patterns.md` là hai trang mang giá trị mà đọc code không có |
 | `hft-playbook.md` bị đọc như lời hứa hiệu năng | Trung bình | Mục 7 nằm **trong cùng trang**, cùng khuôn `CONFORMANCE.md` |
 | `SESSION-BEHAVIOUR.md` viết hành vi mà 59 `.def` **không** kiểm, tưởng là có | Trung bình | Quy tắc B4: hàng không nêu được `.def`/test thì xoá. `reference/a-conformance-corpus-is-not-an-adversarial-one.md` đã ghi corpus không phải bộ đối kháng |
@@ -394,7 +419,7 @@ Cố ý **không** làm:
 
 - **mdBook, GitHub Pages, bất kỳ site nào** — đã chọn Markdown trong `docs/`.
 - **`docs/OPERATIONS.md`** — `GUIDE.md` §8a đã làm; viết thêm là tạo bản thứ hai để trôi.
-- **Tutorial, getting-started, `examples/`** — chờ `library` (phase E).
+- **`examples/` mới.** Phase E viết prose quanh `crates/library/examples/acceptor.rs` đã có; thêm example mới là việc khác.
 - **Tách `docs/GUIDE.md`** — nhiều nơi trỏ vào nó; lợi ích không bù rủi ro.
 - **Sửa việc bốn `serve*` không có test.** **Khiếm khuyết code, không phải tài liệu**; cần plan
   riêng (Rule Zero). Plan này chỉ **ghi nhận** ở item 33.
@@ -436,4 +461,5 @@ build fails"*. Đã mở `crates/dict/build.rs:37` đọc: nó `die` khi
 văn xuôi khẳng định hành vi runtime mà không có gì chứng minh — đúng thứ §4 cấm.
 
 **Cái gì chưa làm và vì sao.** B, C, D chưa bắt đầu. E vẫn chặn trên `library`
-(`DESIGN.md` §7 bước 8, chưa có plan). **Không có số đo mới nào** được sinh ra ở phase này.
+(`DESIGN.md` §7 bước 8) — `[Sửa 2]` **và nó hết chặn trong cùng ngày**, xem Sửa 2.
+**Không có số đo mới nào** được sinh ra ở phase này.
