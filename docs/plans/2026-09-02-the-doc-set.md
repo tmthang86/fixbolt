@@ -591,3 +591,33 @@ bảng mà code không nhận** (chiều ngược). Spot-check ba trích dẫn: 
 (job CI `cargo doc --workspace --no-deps` với `deny(rustdoc::broken_intra_doc_links)`) chưa làm —
 phần mở rộng `check-links.py` cho `README.md` đã xong ở phase E. **D** chưa bắt đầu; **C** hoãn.
 Không có số đo mới nào được sinh ra ở B1–B3.
+
+### Phase B — B4–B5 đóng 2026-09-03; B6 có phát hiện
+
+**Đã dựng gì.**
+
+- **B4** — `docs/SESSION-BEHAVIOUR.md`: hành vi tầng session ở biên, dạng bảng —
+  12 biến thể `DropReason`, bảy message engine tự trả lời (`enum Which`), sáu mã `373` với
+  file `.def` giữ chúng, gap/resend/`123=`/`141=Y`, PossDup/PossResend/`122`. **Mỗi hàng trỏ
+  `.def` hoặc test.**
+- **B5** — `docs/CONFORMANCE.md`: 59/59 qua bốn đường, khớp dictionary 912/898/12524/1708,
+  730/730 group, 0 allocation (codec 6 / session 13 / engine 7 path), micro codec (nhãn rõ **máy
+  M5, không phải §9**). Mục "chưa chứng minh" **cùng trang**: không có số latency ở đây, corpus
+  không phải bộ đối kháng, 14 field-type khác nhau là thật, initiator interop chỉ 7 ca.
+
+**Gate nào xanh.** `scripts/check-links.py` exit 0, **1141 internal links checked**.
+`cargo fmt --all -- --check` exit 0. Không Rust nào đổi ở B4/B5.
+
+**Kiểm không đọc từ trí nhớ.** Mọi file `.def` được nêu trong B4 được `find` trong `vendor/`
+và **đều tồn tại**: `2d_GarbledMessage`, `2g_PossDupNoOrigSendingTime`, `2m_BodyLengthValueNotCorrect`,
+`2r_UnregisteredMsgType`, `19b_PossResendMessageThatHasNotBeenSent`, `6_SendTestRequest`,
+`11a_NewSeqNoGreater`, `11b_NewSeqNoEqual`, `14d_TagSpecifiedWithoutValue`. Mọi số trong B5 truy
+về `STATUS.md` "Proven"; run id CI `33623429649` (commit `cdd6fba`) là run đã nêu ở đó.
+
+**B6 — phát hiện, chưa đóng.** `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc
+--workspace --no-deps` **đỏ hôm nay**, 9 cảnh báo có sẵn: `codec` 2, `engine` 4, `conformance` 3 —
+gồm doc công khai của `InboundMark`/`ActivityMark`/`wake` trỏ tới item **private**
+(`INBOUND_MARK`, `ACTIVITY_MARK`, `Pipe`) và một redundant explicit link. Tiền đề của B6 (cargo
+doc sạch) **sai**; job CI thêm vào sẽ đỏ ngay. Sửa 9 link này là **sửa doc-comment** (`CLAUDE.md`
+§1: không cần plan), và đi ở bước kế, một commit riêng vì nó đụng source ba crate — khác loại với
+B4/B5 chỉ thêm tài liệu.
