@@ -554,7 +554,7 @@ pub enum Record<'a> {
     /// The highest inbound sequence number seen at that point.
     ///
     /// Encoded as a record of length zero, which a FIX message can never be —
-    /// see [`INBOUND_MARK`]. [ADR-0017] needs this beside the outbound
+    /// see `INBOUND_MARK`. [ADR-0017] needs this beside the outbound
     /// messages rather than in a file of its own.
     ///
     /// [ADR-0017]: ../../../docs/decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md
@@ -566,7 +566,7 @@ pub enum Record<'a> {
     /// engine's clock.
     ///
     /// Encoded as a record whose **sequence number** is zero — see
-    /// [`ACTIVITY_MARK`]. A file written before this existed simply has none,
+    /// `ACTIVITY_MARK`. A file written before this existed simply has none,
     /// and reads exactly as it always did.
     ActivityMark {
         /// The instant recorded.

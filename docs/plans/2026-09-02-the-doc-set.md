@@ -621,3 +621,35 @@ gồm doc công khai của `InboundMark`/`ActivityMark`/`wake` trỏ tới item 
 doc sạch) **sai**; job CI thêm vào sẽ đỏ ngay. Sửa 9 link này là **sửa doc-comment** (`CLAUDE.md`
 §1: không cần plan), và đi ở bước kế, một commit riêng vì nó đụng source ba crate — khác loại với
 B4/B5 chỉ thêm tài liệu.
+
+### Phase B — B6 đóng 2026-09-03; phase B hoàn tất
+
+**Đã dựng gì.**
+
+- **Sửa 13 link intra-doc hỏng** mà `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links"` phát hiện:
+  6 doc công khai trỏ item **private** (`GroupTooDeep`→`MAX_DEPTH`, `LOOSE_TAGS`→`Shape::Timestamp`,
+  `DAYS_YEAR_ZERO_TO_EPOCH`→`days_from_civil`, `InboundMark`→`INBOUND_MARK`,
+  `ActivityMark`→`ACTIVITY_MARK`, `wake`→`Pipe`) sửa thành backtick thường; 5 redundant explicit
+  link bỏ target; và **2 link hỏng lộ ra sau khi sửa** (`[Input]` ở crate doc `session`,
+  `tests::...` trỏ hàm `#[cfg(test)]` vắng trong doc build). Chỉ doc-comment, không đổi hành vi.
+- **Job CI `docs`** — `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D redundant_explicit_links"
+  cargo doc --workspace --no-deps`, fetch `vendor/` trước vì `dict` sinh bảng từ XML lúc build.
+  **Chọn RUSTDOCFLAGS ở job thay vì `#![deny]` mỗi crate** như bản plan nói — cùng một gate,
+  ít churn hơn, và §9 coi CI là thẩm quyền. Ghi lại theo `CLAUDE.md` §1.
+
+**§2 đã walk bằng tay.** Thay đổi đụng `codec`/`session`/`engine` nhưng **chỉ doc-comment**:
+không cấp phát, không hot path, không đổi mode/field-order/feature-gate, không `unsafe`. `cargo
+test --all` vẫn xanh, các test conformance vẫn 59/59.
+
+**Gate nào xanh.** `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --workspace
+--no-deps` **Finished**, 0 cảnh báo (đỏ trước đó, 13 cảnh báo). `cargo clippy --all-targets --
+-D warnings` Finished. `cargo test --all` mọi dòng `ok`, 0 failed. `cargo fmt --all -- --check`
+exit 0.
+
+**Đảo ngược đã chạy.** Thêm `[NoSuchItemXyz]` vào crate doc `codec`: `cargo doc` đỏ, báo đúng
+`unresolved link to NoSuchItemXyz`; gỡ ra, xanh, `git diff --stat` sạch. Gate đọc doc-comment,
+không xanh vì bỏ qua.
+
+**Cái gì chưa làm.** Mở rộng `check-links.py` cho link trống path (`https://github.com/`) — phần
+phụ của B6, chưa làm; ngoại lệ `README.md` (URL tuyệt đối) đã có từ phase E là phần chính. **D**
+(best-practices ×2 + playbook) chưa bắt đầu; **C** hoãn. Phase B đóng ở đây.

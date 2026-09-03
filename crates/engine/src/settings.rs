@@ -3,7 +3,7 @@
 //! # The gap this closes
 //!
 //! `[verified 2026-09-02]` the only way to put a counterparty into a
-//! [`Table`](crate::presession::Table) was [`Table::serving`], which is Rust and
+//! [`Table`] was [`Table::serving`], which is Rust and
 //! therefore a recompilation. Adding a counterparty to a running acceptor is an
 //! operator's job, usually the evening before that counterparty reaches UAT.
 //! Behind a rebuild it needs a toolchain and the source, it makes changing a

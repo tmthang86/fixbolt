@@ -59,7 +59,7 @@ pub enum EncodeError {
     /// A template with a group hole has no `MsgType`, so the group tables
     /// cannot be looked up: they are keyed by `(msg_type, counter)`.
     MsgTypeMissing,
-    /// Groups nested deeper than [`MAX_DEPTH`](crate::group::MAX_DEPTH).
+    /// Groups nested deeper than `MAX_DEPTH`.
     GroupTooDeep,
     /// A DATA field was declared without the length field that must sit
     /// immediately in front of it.

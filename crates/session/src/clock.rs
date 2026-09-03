@@ -15,8 +15,8 @@
 
 /// Days from 0000-01-01 to 1970-01-01, proleptic Gregorian.
 ///
-/// Not a remembered constant: [`tests::the_epoch_offset_is_derived_not_recalled`]
-/// derives it from [`days_from_civil`] rather than trusting this line.
+/// Not a remembered constant: the test `the_epoch_offset_is_derived_not_recalled`
+/// derives it from `days_from_civil` rather than trusting this line.
 pub const DAYS_YEAR_ZERO_TO_EPOCH: i64 = 719_528;
 
 /// [`DAYS_YEAR_ZERO_TO_EPOCH`] in milliseconds. What the engine adds to a

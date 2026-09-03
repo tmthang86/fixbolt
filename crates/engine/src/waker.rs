@@ -162,7 +162,7 @@ impl WakeHandle {
     /// **Safe after the engine has gone**, which is a shutdown race that will
     /// happen: the application thread pushes one last reply while the engine is
     /// being dropped. The read end is held jointly with this handle (see
-    /// [`Pipe`]), so there is always a reader and the write can never raise
+    /// `Pipe`), so there is always a reader and the write can never raise
     /// `SIGPIPE`. Those wakes accumulate in a pipe nobody drains and then stop
     /// at `EAGAIN`, which is exactly right — nobody is listening.
     pub fn wake(&self) {

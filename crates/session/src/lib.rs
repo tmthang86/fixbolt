@@ -1,5 +1,5 @@
 //! The FIX 4.4 session layer: pure, allocation-free, and driven entirely by
-//! [`Input`]-shaped calls.
+//! `Input`-shaped calls.
 //!
 //! No socket, no clock, no `format!` — `CLAUDE.md` §2 non-negotiable 2. Time
 //! arrives through [`Session::tick`] on the scale [`clock`] documents. What
@@ -319,7 +319,7 @@ impl Config {
     ///
     /// Without this a session is open forever and never resets, which is what
     /// every session built before schedules existed does. See
-    /// [`schedule`](crate::schedule) — in particular that the times are
+    /// [`schedule`] — in particular that the times are
     /// **UTC**, and that a fixed offset is not daylight saving.
     #[must_use]
     pub const fn with_schedule(mut self, schedule: Schedule) -> Self {
@@ -693,7 +693,7 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// A session continuing from numbers that outlived the process.
     ///
     /// `next_out` and `next_in` are what the caller recovered — from a
-    /// [`Journal`](crate::journal::Journal) for the outbound side, and from
+    /// [`Journal`] for the outbound side, and from
     /// whatever made the inbound side durable. **This layer does no I/O and
     /// never will** (D1, non-negotiable 2): recovering the numbers is the
     /// engine's job, and this is where it hands them over.

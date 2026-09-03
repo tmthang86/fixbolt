@@ -253,9 +253,9 @@ impl fmt::Display for Report {
 /// Run the 50 mirrorable scenarios, this engine playing the **initiator**.
 ///
 /// The corpus is `crates/conformance/src/script.rs`'s
-/// [`scenarios_mirrored`](crate::script::scenarios_mirrored), and the eight
+/// [`scenarios_mirrored`], and the eight
 /// files that cannot mirror are dropped by
-/// [`mirrors`](crate::script::mirrors) rather than by name — `ADR-0004`
+/// [`mirrors`] rather than by name — `ADR-0004`
 /// decision 6 as amended by `ADR-0006`.
 ///
 /// `Report::scenarios` is 50, not 59: a score out of 59 here would be a score

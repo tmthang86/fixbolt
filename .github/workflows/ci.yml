@@ -70,6 +70,21 @@ jobs:
       - uses: actions/checkout@v5
       - run: scripts/check-links.py
 
+  # rustdoc is the front door of a Rust crate — docs.rs is where a user lands
+  # before the README. A broken intra-doc link there is a dead link the `links`
+  # job cannot see, because it is inside a doc comment, not a markdown file.
+  # `[measured 2026-09-03]` this job was red on arrival: 13 pre-existing warnings,
+  # including public docs linking to private items. The-doc-set plan, step B6.
+  docs:
+    name: rustdoc has no broken intra-doc links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # cargo doc compiles the crates, and fixbolt-dict generates its tables from
+      # the QuickFIX XML at build time, so vendor/ must be present first.
+      - run: scripts/fetch-quickfix-assets.sh
+      - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --workspace --no-deps
+
   gates:
     name: fmt · clippy · test
     runs-on: ubuntu-latest

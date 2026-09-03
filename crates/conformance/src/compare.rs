@@ -98,7 +98,7 @@ enum Shape {
 /// ```
 ///
 /// `52`'s second alternative is redundant under an unanchored match, which is
-/// why one [`Shape::Timestamp`] serves all four time tags.
+/// why one `Shape::Timestamp` serves all four time tags.
 ///
 /// `tests/compare.rs` reads that file and asserts this list against it, so the
 /// list is checked rather than believed.
