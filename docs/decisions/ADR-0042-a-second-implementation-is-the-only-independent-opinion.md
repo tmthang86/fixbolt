@@ -139,3 +139,12 @@ Six green gates, and one of the two roles could not complete a handshake with an
 - **Nothing about latency.** Interop is a correctness gate and prints no timing.
 - **Nothing about phase 1 exit criterion 6.** That needs a machine matching `DESIGN.md` §9 and
   is untouched by any of this.
+
+---
+
+`[2026-09-04]` **Consequence note, not a change to the decision.** The decision above is
+unchanged and stays `Accepted`. What is recorded here is that it applied to only half the
+engine for two days: the gate this ADR authorised drove this project's *initiator* into a
+`libquickfix` acceptor, and the **acceptor** — the role this repository is positioned on —
+had no second opinion at all. `scripts/interop.sh` runs both directions as of 2026-09-04,
+7 / 7 each, in the same blocking CI job. `STATUS.md` item 42, `docs/CONFORMANCE.md` §7.

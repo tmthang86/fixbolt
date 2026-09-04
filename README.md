@@ -54,11 +54,15 @@ its session count.**
 > [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)
 > is that number, why it is accepted, and what would remove it. The raw
 > `fixbolt_session::Application` seam is untouched and stays the way to write a handler that
-> cares. `[2026-09-02]` **the initiator is interop-green against a real `libquickfix`** — seven
-> steps over a kernel socket, blocking in CI, which closes **phase 1 exit criterion 4**
-> ([ADR-0042](docs/decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md)).
-> Its first run found that the initiator answered a `Logon` with a `Logon`, a defect green in
-> the 59 / 59 acceptance score and in 430 other tests. `[2026-09-02]` **and criterion 6 closed
+> cares. `[2026-09-04]` **both roles are interop-green against a real `libquickfix`** — seven
+> steps each way over a kernel socket, one script and one blocking CI job
+> ([ADR-0042](docs/decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md),
+> [CONFORMANCE.md §7](docs/CONFORMANCE.md)). The initiator direction closed **phase 1 exit
+> criterion 4** on 2026-09-02, and its first run found that the initiator answered a `Logon`
+> with a `Logon`, a defect green in the 59 / 59 acceptance score and in 430 other tests. The
+> acceptor direction — the product this repository is positioned on — got its first
+> independent opinion on 2026-09-04; before that its whole evidence was 59 `.def` files read
+> by this repository's own runner. `[2026-09-02]` **and criterion 6 closed
 > that evening, so PHASE 1'S SEVEN EXIT CRITERIA ARE ALL MET.** `tools/w2w` ran on a bare-metal
 > Ryzen 3700X reading `pass 12  fail 0  unknown 1` against §9, engine pinned to an isolated
 > core: `hft` **p50 16 010 / p99 20 589 / p99.9 22 127 ns** for an administrative round trip and
@@ -168,9 +172,11 @@ crates/
 tools/
   w2w/           wire-to-wire harness — NIC to NIC, and the binary the mode checks trace
   jrnl/          reads a journal file from outside the process that wrote it
-  interop/       drives this engine's initiator into a real libquickfix acceptor —
-                 phase 1 exit criterion 4. Rust; the C++ counterparty is built by
-                 scripts/interop.sh and by CI, never by cargo
+  interop/       both roles against a real libquickfix, over kernel TCP: --role
+                 initiator dials a C++ acceptor (phase 1 exit criterion 4), and
+                 --role acceptor serves a C++ initiator that scores it. Rust; the
+                 two C++ counterparties are built by scripts/interop.sh and by CI,
+                 never by cargo
 benches/         baselines.tsv — one recorded timing baseline per (CPU model, case);
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets — nightly, outside the workspace

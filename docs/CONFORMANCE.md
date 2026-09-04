@@ -101,10 +101,54 @@ On the same page, deliberately:
   wrote down.
 - **The 14 field-type differences are real.** They are named by tag in the dictionary
   reference, not smoothed over. Agreement is 898 / 912, not 912 / 912.
-- **The initiator's independent check is narrow.** `[measured]` It is interop-green
-  against a real `libquickfix`, 7 / 7, blocking in CI — a second implementation, which
-  is the only opinion this project does not write itself, but 7 cases, not 59.
-- **The acceptor has no independent check at all.** `[2026-09-03]` Every acceptor figure on
-  this page is this repository's runner reading QuickFIX's definitions; no other implementation
-  has ever logged on to this acceptor. `STATUS.md` item 42,
-  [plan](plans/2026-09-03-acceptor-interop.md).
+- **Both roles have an independent check, and both are narrow.** `[measured 2026-09-04]`
+  Each is interop-green against a real `libquickfix`, **7 / 7 and 7 / 7**, blocking in
+  CI — a second implementation, which is the only opinion this project does not write
+  itself, but **7 cases each, not 59**. See §7 below for the commands and the machine.
+  Everything else on this page is still this repository's runner reading QuickFIX's
+  definitions.
+
+---
+
+## 7. Interop against a real `libquickfix`, both directions
+
+`[measured 2026-09-04]` **The only evidence on this page that this repository did not
+write.** Everything above is this project's runner reading QuickFIX's `.def` files; this
+section is another engine, at the other end of a kernel socket, disagreeing or not.
+
+Both directions run in **one script and one CI job**, against `libquickfix` built from
+source at the pinned commit `386ce46e917ae494ab6e90b1be90fd421cdbe3f9` — the same commit
+`scripts/fetch-quickfix-assets.sh` pins for the acceptance corpus, checked by the script
+before anything else runs. Two pins that can drift apart would make a disagreement
+between the corpus and the counterparty unattributable.
+
+```
+scripts/interop.sh
+```
+
+| Direction | Driver | Under test | Score |
+|---|---|---|---|
+| `interop:` | this engine's `Session<Initiator, 256>` over a blocking socket | a `libquickfix` `SocketAcceptor` | **7 / 7** |
+| `interop-acceptor:` | a `libquickfix` `SocketInitiator` | **`fixbolt::serve` in `standard` mode** — the poller, the pre-session table, the settings file, the library `Handler`, and the session layer's acceptor under all of it | **7 / 7** |
+
+The seven steps of the acceptor direction: `logon` (including that `141=Y` is echoed),
+`order` (two `35=D`, two `35=8`, paired by `11=`), `heartbeat` (an unprompted `35=0`
+carrying **no** `112=`, within a deadline read from the `108=` on the wire), `testrequest`,
+`resend` (**the two original sequence numbers replayed with `43=Y`**, not merely something
+carrying `43=Y`), `gapfill` (the acceptor asks `35=2 7=n 16=0`, and a **fresh** `TestRequest`
+after the gap fill is answered), `logout`.
+
+**Machine and run.** Recorded on macOS 15 (Apple M5) and gated on `ubuntu-latest` in the
+`interop` CI job, which is blocking. CI run id: `PENDING`.
+
+### What these 14 cases do not buy
+
+- **They are not a second corpus.** 7 cases per direction against 59 definitions. A
+  `libquickfix` counterparty agreeing on seven exchanges says nothing about the other 52.
+- **`hft` mode is not covered.** `serve_hft` spins a core at 100%; a shared CI runner is
+  the wrong place for it, and the three `hft` entry points still have no gate.
+- **One counterparty, one identity, no TLS, no schedule, no shards.**
+- **The scoring reads raw wire strings**, not `libquickfix`'s application callbacks —
+  deliberately: QuickFIX drops a `PossDup` replay of a sequence number it has already seen
+  before the application sees it, and the `resend` step asks for exactly that. A judge
+  written on the callbacks would report a **correct** answer as a missing message.
