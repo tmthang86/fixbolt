@@ -1,6 +1,6 @@
 # Acceptor trước một `libquickfix` thật
 
-> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** Đã duyệt, **đã sửa một lần**
 > **Phạm vi:** `STATUS.md` item 42. Chạm `tools/interop`, `scripts/interop.sh`,
 > `.github/workflows/ci.yml`. **Không chạm** `codec`, `dict`, `session`, `engine`, `library` —
 > trừ khi gate mới tìm ra lỗi, khi đó lỗi đó có plan sửa riêng (xem *Bẫy* cuối bảng).
@@ -9,6 +9,35 @@
 > `interop` trên `ubuntu-latest`. Không cần máy §9.
 >
 > **Thời lượng dự kiến:** 1 ngày cho bước 1–4. Bước 5 là tuỳ chọn, thêm nửa ngày.
+
+## Sửa đổi `[2026-09-04]` — self-check không thể ra 7/7, và lý do đáng ghi
+
+**Bản đầu của bước 1 yêu cầu self-check fixbolt-với-fixbolt phải in `interop: PASS 7/7`. Nó
+không thể.** Chạy thử ngay khi vai acceptor build xong:
+
+```
+interop: fixbolt acceptor on 127.0.0.1:15699, 1 counterparties
+interop: listening on 127.0.0.1:15699
+interop: logon        FAIL  |8=FIX.4.4|9=67|35=A|34=1|49=FIXACC|52=…|56=FIXINI|98=0|108=30|10=123|
+interop: FAIL 0/1
+```
+
+Hai nguyên nhân, khác hẳn nhau:
+
+1. **Nhỏ, sửa được:** vai initiator so `|49=QFACC|` cứng trong code thay vì đọc `--target`. Sửa
+   một dòng, và bản thân nó là một gate đọc sai thứ nó tưởng đang đọc.
+2. **Không sửa được trong plan này:** bước `news` và `resend` cần counterparty **tự gửi** hai
+   `35=B` khi logon. `Handler::on_message` chỉ *trả lời* một message (`crates/library/src/app.rs:117`),
+   và `Admin::Command` chỉ có `SetNextOut`, `SetNextIn`, `SendSequenceReset`
+   (`crates/engine/src/observe.rs:649`). **Không có đường nào cho application chủ động gửi.**
+   Một acceptor chỉ biết trả lời không gửi được `35=8` khi lệnh khớp muộn, không gửi được
+   quote, không gửi được `35=j`. Đó là lỗ hổng sản phẩm, lớn hơn cái self-check này, và nó đi
+   ra `docs/reference/` + một open item mới — **không sửa ở đây**.
+
+**Bước 1 đổi thành:** self-check đòi năm bước `logon`, `heartbeat`, `testrequest`, `gapfill`,
+`logout` in `ok`; `news` và `resend` **được phép đỏ**, và lý do chúng đỏ được ghi lại. Đây vẫn
+là kiểm tra lắp ráp, không phải gate. Bảng *Chia việc* và mục *Cách kiểm chứng* bên dưới đã
+mang bản sửa này.
 
 ## Bối cảnh
 
@@ -122,7 +151,7 @@ initiator saw*). Vẫn blocking.
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| 1 | `tools/interop --role acceptor` chạy được, `Desk` trả `35=8` đúng field. **Tự kiểm bằng chính fixbolt**: chạy `--role acceptor` rồi `--role initiator --connect` vào nó, phải ra `interop: PASS 7/7` (fixbolt-với-fixbolt; đây là kiểm tra lắp ráp, **không phải** gate). `check-no-optional-deps.sh` xanh | — |
+| 1 | `tools/interop --role acceptor` chạy được, `Desk` trả `35=8` đúng field. **Tự kiểm bằng chính fixbolt** `[sửa 2026-09-04]`: chạy `--role acceptor` rồi `--role initiator --connect` vào nó, phải thấy `logon`, `heartbeat`, `testrequest`, `gapfill`, `logout` **ok**; `news` và `resend` đỏ vì library không gửi chủ động được (xem *Sửa đổi* trên). Kiểm tra lắp ráp, **không phải** gate. `check-no-optional-deps.sh` xanh, có case mới cho `fixbolt-interop` | — |
 | 2 | `initiator.cpp` với `RawLog` và 7 bước; build tay bằng `g++` như mục 2 của script; chạy tay vào acceptor bước 1 và đọc 7 dòng | 1 |
 | 3 | `scripts/interop.sh` chạy cả hai chiều, grep 14 dòng bước + 2 dòng PASS; **ba reversal** ở mục *Cách kiểm chứng* được chạy và output dán vào nhật ký giao hàng | 2 |
 | 4 | CI job cập nhật, **CI xanh trên commit đóng plan, ghi run id**; docs theo bảng dưới; `STATUS.md` item 42 gạch, mục *Not proven* đọc lại từng dòng | 3 |

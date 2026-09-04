@@ -15,7 +15,21 @@ publish = false
 #
 # So `cargo test --all --no-default-features` on a machine with no CMake still
 # builds this, and `scripts/check-no-optional-deps.sh` has nothing new to say.
+# `[2026-09-04]` **This tool has a `[features]` block now, and it is not
+# decoration.** The acceptor role calls `fixbolt::serve`, which exists only
+# behind `standard` on unix. A tool that switches a library feature on without
+# declaring it is the trap `tools/w2w` already paid for: cargo unifies features
+# across one invocation, so `cargo test --all --no-default-features` compiled
+# `libc` anyway and the gate was green about a build that never happened
+# (`docs/reference/feature-flags-unify-across-a-workspace.md`). Declared here,
+# `#[cfg]`-gated on the item in `src/main.rs`, and asked per crate by
+# `scripts/check-no-optional-deps.sh` — non-negotiable 6.
+[features]
+default = ["standard"]
+standard = ["fixbolt/standard"]
+
 [dependencies]
+fixbolt = { path = "../../crates/library", default-features = false }
 fixbolt-session = { path = "../../crates/session" }
 
 [lints]
