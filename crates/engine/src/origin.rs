@@ -92,10 +92,7 @@ impl core::fmt::Debug for Origin {
         f.debug_struct("Origin")
             .field("waiting", &self.waiting.load(Ordering::Relaxed))
             .field("drains", &self.drains.load(Ordering::Relaxed))
-            .field(
-                "undeliverable",
-                &self.undeliverable.load(Ordering::Relaxed),
-            )
+            .field("undeliverable", &self.undeliverable.load(Ordering::Relaxed))
             .finish()
     }
 }

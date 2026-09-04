@@ -141,7 +141,12 @@ pub trait Application {
     /// is where the application seam is declared —
     /// [ADR-0048](../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md)
     /// pays for that in its *Consequences*.
-    fn on_logon(&mut self, _nth: u32, _peer: Peer<'_>, _out: &mut [u8]) -> Option<core::ops::Range<usize>> {
+    fn on_logon(
+        &mut self,
+        _nth: u32,
+        _peer: Peer<'_>,
+        _out: &mut [u8],
+    ) -> Option<core::ops::Range<usize>> {
         None
     }
 }

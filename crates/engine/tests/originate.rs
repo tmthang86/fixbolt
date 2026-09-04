@@ -362,7 +362,10 @@ fn a_message_longer_than_a_slot_is_refused_and_an_empty_one_too() {
     e.turn();
 
     assert!(!sender.send(id, &vec![b'x'; ORIGIN_LEN + 1]), "too long");
-    assert!(sender.send(id, &vec![b'x'; ORIGIN_LEN]), "exactly full fits");
+    assert!(
+        sender.send(id, &vec![b'x'; ORIGIN_LEN]),
+        "exactly full fits"
+    );
     assert!(!sender.send(id, b""), "and nothing is not a message");
 }
 
@@ -439,6 +442,10 @@ fn an_origination_and_a_reply_in_one_turn_do_not_corrupt_each_other() {
          turn — and the reply followed, each whole: {}",
         String::from_utf8_lossy(&out)
     );
-    assert_eq!(count(&out, b"\x01148=queued\x01"), 1, "the origination is intact");
+    assert_eq!(
+        count(&out, b"\x01148=queued\x01"),
+        1,
+        "the origination is intact"
+    );
     assert_eq!(count(&out, b"\x0111=ID-1\x01"), 1, "and so is the echo");
 }

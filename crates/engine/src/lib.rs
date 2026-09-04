@@ -697,8 +697,9 @@ where
         }
         let mut sent = 0usize;
         let mut gone = 0u64;
-        shared.origin.drain(|id, msg| {
-            match conns.iter_mut().find(|c| c.id == id) {
+        shared
+            .origin
+            .drain(|id, msg| match conns.iter_mut().find(|c| c.id == id) {
                 Some(c) => {
                     c.send_application(msg, now, log);
                     sent += 1;
@@ -708,8 +709,7 @@ where
                     gone += 1;
                     false
                 }
-            }
-        });
+            });
         if gone > 0 {
             shared.emit(
                 ConnId::MAX,
