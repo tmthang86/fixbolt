@@ -1,7 +1,8 @@
 # Nhật ký message hai chiều
 
-> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** **Duyệt có điều kiện** `[2026-09-04]`
-> — bước 0 (điều tra một-đường-hay-hai) phải xong và được duyệt trước khi viết dòng code nào.
+> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** **Đã duyệt** `[2026-09-04]`
+> — bước 0 đã đóng cùng ngày, kết luận **giữ hai đường ghi**, không đổi thiết kế:
+> [why-the-message-log-is-not-the-journal](../reference/why-the-message-log-is-not-the-journal.md).
 > **Phạm vi:** `STATUS.md` item 44. Chạm `engine` (module mới `msglog`, hai điểm móc trong
 > `conn.rs`, tham số generic mới trên `Engine`, **mọi** entry point, `shard.rs`, `settings`,
 > `observe`, `journal.rs` ở bước 4), `library` (re-export), `tools/jrnl` (bước 4), docs.
@@ -104,6 +105,19 @@ path, bật bằng một key trong file cấu hình, và **đếm được** khi
 **Một trait trong `engine`, không phải trong `session`.** Session không biết byte nào bị pre-session
 từ chối và không được biết đến file (D1). Điểm móc nằm ở `conn.rs`, nơi đã có byte và có `now_ms`.
 
+**Hai đường ghi, không phải một — và đây là lý do, đã viết ra và đã bị phản biện.**
+`[đóng bước 0, 2026-09-04]` Journal không giữ được thứ log tồn tại để giữ, vì **khoá của nó là
+`seq`**: cả tám phương thức của trait `Journal` (`crates/session/src/journal.rs`) nhận hoặc trả
+`seq: u32`, và `MemJournal` địa chỉ hoá `slots[(seq as usize) % N]` (`journal.rs:149`). Ba thứ
+log phải giữ — frame vào chưa được phán, frame rác, frame bị từ chối trước session — **không có
+`seq` nào cả**. Định dạng trên đĩa cũng đã tiêu hết hai giá trị khoá dự phòng vào sentinel
+(`len == 0` inbound mark `:288`, `seq == 0` activity mark `:298`). Thêm nữa, `Journal` là trait
+của **session**, mà bytes bị từ chối theo định nghĩa là bytes session không thấy — gộp là bắt
+session biết thứ D1 cấm nó biết. Và `Durability::Fsync` chặn engine thread có chủ đích, còn log
+thì không bao giờ được `fsync`: một file không phục vụ được hai chính sách durability mà không
+rẽ nhánh theo loại record ngay trên hot path. Chi tiết và số đo:
+[why-the-message-log-is-not-the-journal](../reference/why-the-message-log-is-not-the-journal.md).
+
 **Log là "đã đưa vào buffer gửi", không phải "đã lên dây" — và khoảng cách giữa hai điều đó
 được đếm.** `Out::push` thành công thì ghi; push bị từ chối thì không ghi, vì `SlowConsumer` đã
 là sự kiện có tên cho chuyện đó (ADR-0035). Chiều vào: ghi **trước** `refuse` và trước session —
@@ -151,6 +165,29 @@ quyết định kiến trúc thì §5 đòi ADR. Nếu kết luận là giữ ha
 *Quyết định trung tâm* của plan này và không cần ADR (mẫu ring→writer đã có ADR-0007/0008).
 
 **Không viết dòng code nào trước khi bước 0 được duyệt.** Đây là Rule Zero áp cho chính plan này.
+
+### Đóng `[2026-09-04]` — giữ hai đường, không cần ADR
+
+[why-the-message-log-is-not-the-journal](../reference/why-the-message-log-is-not-the-journal.md).
+Bốn câu hỏi trả lời bằng code, không bằng ý định:
+
+1. **Khoá.** Không có khoá nào cho một frame không có `seq`. Trait `Journal` khoá bằng `seq` ở cả
+   tám phương thức; `MemJournal` địa chỉ hoá `seq % N`; hai giá trị khoá dự phòng đã bị hai
+   sentinel tiêu hết. Gộp là hai cấu trúc trong một file.
+2. **Ranh giới.** `Journal` là trait của `session`; frame bị từ chối là frame `conn.rs` chặn
+   **trước** `session.received_with`. Gộp thì hoặc session biết thứ D1 cấm, hoặc engine ghi lén
+   vào trait mà session sở hữu.
+3. **Durability.** `Fsync` chặn engine thread có chủ đích (`journal.rs:555, 599, 628`); log
+   không bao giờ được `fsync`. Một file thì phải chọn một, hoặc rẽ nhánh theo loại record ngay
+   trên vòng lặp không được phép rẽ nhánh.
+4. **Chi phí.** Hai đường: một module dùng lại `ring.rs` (212 dòng, đã chia với `RingDispatch`,
+   đã đo 0 alloc). Một đường: hằng số định dạng bị chạm ở **31 chỗ chỉ trong `journal.rs`**, cộng
+   `Reader`/`Record`/`Records`/`tools/jrnl` — sáu loại record thay vì ba, và exit code của `jrnl`
+   là hợp đồng đã công bố. **Gộp đắt hơn, không rẻ hơn.**
+
+Nửa đúng của outside voice #4 được nhận: hai file có kiểu hỏng khác nhau nên cần hai câu trả lời
+khác nhau — journal sợ byte lật (CRC, bước 4), log sợ `kill -9` cắt dòng (vá đuôi rách, bước 1).
+**Bước 4 ở nguyên chỗ cũ.**
 
 ## Cách làm
 
@@ -450,10 +487,13 @@ người vận hành không phải đoán. Dòng bắt đầu bằng `#` là ch�
 - **VERDICT:** ENG REVIEW COMPLETE, PLAN CONDITIONALLY APPROVED — implementation is blocked on
   step 0. Fourteen findings are folded in; one is an open investigation.
 
-**UNRESOLVED DECISIONS:**
-- **One write path or two.** The plan builds a second ring → writer-thread → file stack beside
-  `journal.rs`, which was extended this week (ADR-0046) and is extended again by step 4 of this
-  same plan. The argument for keeping them separate — the journal is outbound, per-session, and
-  keyed by `seq`, while the log must hold inbound bytes, garbage, and frames refused before a
-  `seq` exists — is sound but was never written down, so it was never challenged. Step 0 must
-  answer it in writing, and an ADR is required if the answer is "merge". No code until then.
+**Step 0 closed the same day** — `docs/reference/why-the-message-log-is-not-the-journal.md`.
+The answer is *keep two*, so no ADR was needed and the design is unchanged: the journal's key is
+`seq`, and the three things the log exists for have no `seq`; `Journal` is a session-layer trait
+while refused frames are stopped before the session sees them; `Durability::Fsync` blocks the
+engine thread deliberately and the log must never fsync; and the merge touches the record
+constants in 31 places plus `Reader`/`Record`/`Records`/`tools/jrnl`, so it is the more expensive
+option. Half of outside voice #4 was accepted: the two files have different failure modes, so the
+journal keeps CRC (step 4) and the log gets a marked torn tail (step 1) instead.
+
+NO UNRESOLVED DECISIONS
