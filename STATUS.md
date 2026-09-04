@@ -1741,6 +1741,18 @@ deterministic: **0 failures in 40 runs**. A retry would have buried it.
 
 ## Not proven — claimed, researched, or simply not yet run
 
+`[2026-09-05]` **The four buffer defaults have never been checked against a real counterparty.**
+`N = 256`, `RX = 4096`, `TX = 8192`, `APP = 1024` are now parameters rather than literals
+([plan](docs/plans/2026-09-05-buffers-the-caller-can-size.md)), so a deployment can name its own
+— but **the defaults themselves rest on no measurement.** The acceptance corpus never exceeds
+200 bytes and its longest reply is 177 body bytes, so it cannot speak to any of them. Artio, the
+closest engine in philosophy, defaults its receive buffer to **16 KiB, four times this one**;
+QuickFIX C++ has no ceiling at all and grows a `std::string` until the process dies
+(`docs/reference/prior-art.md`). Raising `RX` costs `[measured 2026-09-04]` **+0.57%** per
+connection against the ~2 MiB journal ring, so memory is not the obstacle — **`benches/turn.rs`
+at two values of `RX` on the §9 desktop is**, and it belongs to wave C with the
+defaults-for-a-PROD-server ADR (`SLOTS`, `SLOT_LEN`, `TX`, `RingDispatch`).
+
 `[2026-09-01]` **eight of these bullets were false when this section was read, and one had been
 false for three days.** This is the section whose entire job is honesty, and it is the one that
 rotted — because every closing plan updated the item it closed and nobody re-read the list of

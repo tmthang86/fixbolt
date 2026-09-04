@@ -28,7 +28,7 @@ pub(crate) type Skeleton = Template<24, 320>;
 /// ample for a session message — the longest in the corpus is 101 — and a
 /// resend replays stored bytes rather than re-encoding, so it does not size
 /// this.
-pub(crate) struct Outbound {
+pub(crate) struct Outbound<const APP: usize = { crate::DEFAULT_APP_SCRATCH }> {
     pub(crate) logon: Skeleton,
     pub(crate) logout: Skeleton,
     pub(crate) reject: Skeleton,
@@ -41,10 +41,18 @@ pub(crate) struct Outbound {
     /// because an application message is bigger than a session one: the
     /// longest reply in the corpus is `21_RepeatingGroupSpecifierWithValueOfZero`'s
     /// `35=d` at 177 body bytes, against 101 for the longest `35=D`.
-    pub(crate) app: [u8; 1024],
+    ///
+    /// `[2026-09-05]` **`APP` is the caller's, and it used to be `[u8; 1024]`.**
+    /// That literal was the tightest ceiling in the engine and the least
+    /// visible: an acceptor could receive 4 KiB and not answer with 1 KiB, and
+    /// the symptom was **silence**, because an application that cannot lay out
+    /// its reply returns `None` and that is a legal answer. Found by a size
+    /// sweep, not by reading —
+    /// `docs/reference/a-ceiling-has-more-than-one-floor.md`.
+    pub(crate) app: [u8; APP],
 }
 
-impl Outbound {
+impl<const APP: usize> Outbound<APP> {
     /// `None` if any template cannot be built.
     ///
     /// The only ways that happens are a `BeginString` or CompID too long for
@@ -144,7 +152,7 @@ impl Outbound {
                 .build::<Fix44>()
                 .ok()?,
             buf: [0; 512],
-            app: [0; 1024],
+            app: [0; APP],
         })
     }
 }
@@ -167,12 +175,21 @@ mod tests {
         // user is entitled to. This is the assertion that keeps `Skeleton`'s
         // second parameter honest.
         let wide = [b'X'; 32];
-        assert!(Outbound::new(b"FIX.4.4", &wide, &wide).is_some());
+        assert!(
+            Outbound::<{ crate::DEFAULT_APP_SCRATCH }>::new(b"FIX.4.4", &wide, &wide).is_some()
+        );
     }
 
     #[test]
     fn a_comp_id_wider_than_the_scratch_is_refused_not_truncated() {
         let far_too_wide = [b'X'; 250];
-        assert!(Outbound::new(b"FIX.4.4", &far_too_wide, &far_too_wide).is_none());
+        assert!(
+            Outbound::<{ crate::DEFAULT_APP_SCRATCH }>::new(
+                b"FIX.4.4",
+                &far_too_wide,
+                &far_too_wide
+            )
+            .is_none()
+        );
     }
 }

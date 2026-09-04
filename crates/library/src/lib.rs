@@ -26,6 +26,15 @@ pub use fixbolt_session::{MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN};
 /// Starting, stopping, and why a connection ended.
 pub use fixbolt_engine::{ServeError, Shutdown, serve_hft};
 
+/// The `*_with` forms, for a deployment that must name `N`, `RX` and `TX`.
+///
+/// `[2026-09-05]` **`docs/CONFIGURATION.md` used to tell a reader to
+/// "instantiate `Engine<..., N, RX, TX>` directly", and from this crate that was
+/// not possible** — `Engine` is deliberately not re-exported, so the only way to
+/// a 16 KiB receive buffer was to depend on `fixbolt-engine` and rewrite the
+/// serving loop. These are the way. See [`fixbolt_engine::serve_with`].
+pub use fixbolt_engine::serve_hft_with;
+
 /// `serve` blocks when idle and is the default mode, so it is the one an
 /// example reaches for — and it exists only under `standard`.
 ///
@@ -35,11 +44,11 @@ pub use fixbolt_engine::{ServeError, Shutdown, serve_hft};
 /// anywhere else, so on such a target this name does not exist rather than
 /// failing at startup.
 #[cfg(all(feature = "standard", unix))]
-pub use fixbolt_engine::{serve, serve_with_recovery};
+pub use fixbolt_engine::{serve, serve_with, serve_with_recovery, serve_with_recovery_with};
 
 /// `hft` has no `standard` to depend on, so its recovery entry point is always
 /// present.
-pub use fixbolt_engine::serve_hft_with_recovery;
+pub use fixbolt_engine::{serve_hft_with_recovery, serve_hft_with_recovery_with};
 
 /// Which counterparty a connection is, decided before a session exists.
 pub use fixbolt_engine::presession::{Entry, Identity, LimitError, Limits, Registry, Table};

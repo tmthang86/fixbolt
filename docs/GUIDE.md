@@ -726,12 +726,21 @@ So the size is yours to choose:
 
 `Store` is `MemJournal<4096, 512>` and costs `N × (SLOT_LEN + 8)`, about **2 MiB per session**.
 A gateway holding hundreds of sessions should pick a smaller `N` through the const generic
-(§1a). The messages a resend cannot reach are not lost quietly:
+(§1a).
+
+**That 2 MiB is the number to hold in mind when sizing anything else.** `[measured 2026-09-04]`
+one `Connection` is 23 752 bytes at the default `RX = 4096`, and 36 040 at `RX = 16 384` — so
+quadrupling the receive buffer is **0.57%** of what a session already costs. The four sizes in
+[CONFIGURATION.md](CONFIGURATION.md) are rarely worth economising on; the journal ring is where
+the memory actually goes.
+
+The messages a resend cannot reach are not lost quietly:
 
 | What you see | What it means | What to do |
 |---|---|---|
 | `SessionSnapshot::resend_beyond_journal` non-zero, or `EventKind::ResendBeyondJournal { filled, oldest }` | a counterparty asked for `filled` messages the ring no longer held and got gap fills; `oldest` is how far back it reached | raise `N`, or accept that disconnections longer than `N` messages lose data |
 | `SessionSnapshot::puts_refused` non-zero, or `EventKind::JournalRefused { count }` | your replies are longer than `SLOT_LEN`. They went out; they can never be replayed | raise `SLOT_LEN`, and re-check `resend_batch × SLOT_LEN < TX` |
+| **Nothing at all** — a counterparty says you never answered, and no counter moved | your reply did not fit `APP`, the application's layout scratch. `Application::on_message` returning `None` means *"nothing to say"*, so this is indistinguishable from silence by design | raise `APP` through `serve_with`; `[measured 2026-09-05]` the default is 1 KiB and it is the tightest ceiling here — [a-ceiling-has-more-than-one-floor](reference/a-ceiling-has-more-than-one-floor.md) |
 
 **`tools/jrnl` is how you get a message older than the ring**: by hand, from the file, off the
 engine thread (§8c).
