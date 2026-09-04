@@ -282,7 +282,18 @@ pub struct Config {
     /// [`Schedule::always`] unless the caller says otherwise, and that default
     /// is **exactly neutral** — the 59 acceptance definitions run under it.
     schedule: Schedule,
+    /// How many messages one call may put on the wire while answering a
+    /// `ResendRequest`. See [`Self::with_resend_batch`].
+    resend_batch: u16,
 }
+
+/// The default for [`Config::with_resend_batch`].
+///
+/// Eight, because the constraint that matters is
+/// `resend_batch × SLOT_LEN < TX`: 8 × 512 = 4 KiB against an 8 KiB transmit
+/// buffer. [ADR-0046](../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
+/// decision 4.
+pub const DEFAULT_RESEND_BATCH: u16 = 8;
 
 impl Config {
     /// An acceptor's configuration. `sender_comp_id` is *this* end.
@@ -295,6 +306,7 @@ impl Config {
             max_skew_ms: DEFAULT_MAX_SKEW_MS,
             heart_bt_int: DEFAULT_HEART_BT_INT,
             schedule: Schedule::always(),
+            resend_batch: DEFAULT_RESEND_BATCH,
         }
     }
 
@@ -313,6 +325,36 @@ impl Config {
     pub const fn with_heart_bt_int(mut self, secs: u32) -> Self {
         self.heart_bt_int = secs;
         self
+    }
+
+    /// How many messages one call may put on the wire answering a
+    /// `ResendRequest`. The rest go out on later calls.
+    ///
+    /// **This is what stops a resend ending the session it is answering.**
+    /// `[2026-09-04]` before it existed the replay loop emitted the whole range
+    /// in one call; a transmit buffer that could not hold it set `overflow`,
+    /// and D10's `Disconnect` answered a counterparty's `ResendRequest` with
+    /// `Logout 58=slow consumer` while that counterparty's own socket was
+    /// empty. Fifty messages of 200 bytes was enough.
+    ///
+    /// **Choose it against the transmit buffer**: `n × SLOT_LEN` must stay
+    /// under `TX`. The default is 8 against 8 KiB, and `GUIDE.md` §6 has the
+    /// arithmetic.
+    ///
+    /// **Zero is read as one.** A batch of nothing would leave every resend
+    /// permanently unfinished, which is worse than any reading of what the
+    /// caller meant; the builders here are infallible and this one stays that
+    /// way. `a_batch_of_zero_is_read_as_one` is the test.
+    #[must_use]
+    pub const fn with_resend_batch(mut self, n: u16) -> Self {
+        self.resend_batch = if n == 0 { 1 } else { n };
+        self
+    }
+
+    /// The batch size a resend is answered in.
+    #[must_use]
+    pub const fn resend_batch(&self) -> u16 {
+        self.resend_batch
     }
 
     /// When this session is open, and when both ends start again at `34=1`.
@@ -646,6 +688,13 @@ pub struct Session<R: Role, const N: usize> {
     /// Messages that arrived ahead of [`Self::next_in`], held until the gap in
     /// front of them closes.
     queue: [Queued; QUEUED],
+    /// A `ResendRequest` this end is still answering, and how far it has got.
+    ///
+    /// `None` when nothing is owed. **Deliberately not named `resend_*`**: the
+    /// two fields above are the gap *this* end asked the counterparty to fill,
+    /// and this is the one it owes them. Confusing the directions is how a
+    /// session answers its own question.
+    owed: Option<Replay>,
     /// Application messages the journal would not keep.
     ///
     /// See [`Self::puts_refused`].
@@ -694,6 +743,7 @@ impl<R: Role, const N: usize> Session<R, N> {
                     buf: [0; QUEUED_LEN],
                 }
             }; QUEUED],
+            owed: None,
             puts_refused: 0,
             resend_beyond_journal: 0,
             _role: PhantomData,
@@ -782,6 +832,9 @@ impl<R: Role, const N: usize> Session<R, N> {
             self.next_in = 1;
             self.resend_from = 0;
             self.resend_to = 0;
+            // The numbers just restarted, so an outstanding replay is owed on
+            // numbers that no longer mean anything.
+            self.owed = None;
         }
         self.session_mark = Some(now_ms);
     }
@@ -804,6 +857,11 @@ impl<R: Role, const N: usize> Session<R, N> {
     fn end(&mut self, why: DropReason) {
         self.last_drop_reason = Some(why);
         self.state = State::Disconnected;
+        // **A replay does not survive the connection it was owed on.** The
+        // numbers belong to a session that has ended; carrying the cursor into
+        // the next connection would push that session's `43=Y` messages onto
+        // it on the first tick.
+        self.owed = None;
     }
 
     /// The engine's clock minus the last readable `SendingTime`, in ms.
@@ -1145,7 +1203,45 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// readable: `6_SendTestRequest.def` expects exactly one `E` line per
     /// interval of waiting, and a tick that sent both a test request and a
     /// heartbeat would put two where the file allows one.
+    /// **`[2026-09-04]` A resend in progress continues here**, which is why
+    /// [`Self::tick_with`] exists beside this: answering a `ResendRequest` is
+    /// now spread over several calls, and time is the only thing that reaches
+    /// a session with nothing arriving on it. This form passes
+    /// [`NoJournal`](journal::NoJournal), so a caller with no journal keeps the
+    /// signature it had.
     pub fn tick<F: FnMut(&[u8])>(&mut self, now_ms: u64, mut emit: F) -> Link {
+        // **It does not advance a replay, and must not.** Continuing one
+        // through [`NoJournal`](journal::NoJournal) would answer every
+        // remaining number with a gap fill — one `SequenceReset` covering the
+        // lot — and the counterparty would lose messages this end still holds,
+        // because the caller happened to use the journal-less form of a
+        // timer tick. Stalling is recoverable; filling is not.
+        // `a_replay_stalls_on_the_journal_less_tick_and_says_nothing_wrong`.
+        self.tick_inner(now_ms, &mut emit)
+    }
+
+    /// [`Self::tick`], with the journal an outstanding replay reads from.
+    ///
+    /// The same in every other respect. A caller that answers `ResendRequest`s
+    /// from a real journal must use this one, or a replay longer than one batch
+    /// stalls until the next inbound message.
+    pub fn tick_with<J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        now_ms: u64,
+        journal: &J,
+        mut emit: F,
+    ) -> Link {
+        let link = self.tick_inner(now_ms, &mut emit);
+        if link == Link::Up && self.owed.is_some() {
+            if let Err(why) = self.continue_replay(journal, &mut emit) {
+                self.end(why.into());
+                return Link::Dropped;
+            }
+        }
+        link
+    }
+
+    fn tick_inner<F: FnMut(&[u8])>(&mut self, now_ms: u64, emit: &mut F) -> Link {
         self.now_ms = now_ms;
         // Before anything else, because a boundary that passed while this end
         // was asleep must land **ahead** of the numbering, not behind it.
@@ -1157,7 +1253,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         // be inventing one. **The counterparty learns nothing about why**, and
         // that is `STATUS.md` item 30 (d)'s job, not this one's.
         if self.state == State::LoggedOn && !self.cfg.schedule.contains(now_ms) {
-            let _ = self.send(Which::Logout, &[], &mut emit);
+            let _ = self.send(Which::Logout, &[], &mut *emit);
             self.last_drop_reason = Some(DropReason::ScheduleClosed);
             self.state = State::AwaitingLogout;
             return Link::Dropped;
@@ -1183,7 +1279,7 @@ impl<R: Role, const N: usize> Session<R, N> {
                 let _ = self.send(
                     Which::Logon,
                     &[(tag::ENCRYPT_METHOD, b"0"), (tag::HEART_BT_INT, beat)],
-                    &mut emit,
+                    &mut *emit,
                 );
                 return Link::Up;
             }
@@ -1205,7 +1301,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             let _ = self.send(
                 Which::TestRequest,
                 &[(tag::TEST_REQ_ID, OWN_TEST_REQ_ID)],
-                &mut emit,
+                &mut *emit,
             );
         }
         // An unanswered `TestRequest` silences the heartbeat until it is
@@ -1218,7 +1314,7 @@ impl<R: Role, const N: usize> Session<R, N> {
         // consecutive ticks with nothing in between. `tests/heartbeat.rs` ticks
         // by the millisecond and is what holds it.
         if self.test_requests == 0 && silent >= self.beat_ms {
-            let _ = self.send(Which::Heartbeat, &[], &mut emit);
+            let _ = self.send(Which::Heartbeat, &[], &mut *emit);
         }
         Link::Up
     }
@@ -1296,6 +1392,17 @@ impl<R: Role, const N: usize> Session<R, N> {
         // count is still 1.
         if self.next_in > 1 {
             journal.mark_in(self.next_in - 1);
+        }
+        // **A resend in progress moves forward on every message too**, not
+        // only on ticks. A counterparty that keeps talking gets its replay at
+        // the rate its own traffic drives, and one that goes quiet gets it from
+        // `tick_with`. Placed after `drain` so a held message that closes a gap
+        // is delivered before the replay it may have been waiting behind.
+        if link != Link::Dropped && self.owed.is_some() {
+            if let Err(why) = self.continue_replay(journal, &mut emit) {
+                self.end(why.into());
+                return Link::Dropped;
+            }
         }
         link
     }
@@ -1701,6 +1808,71 @@ impl<R: Role, const N: usize> Session<R, N> {
         emit(&buf[r]);
         self.last_sent_ms = self.now_ms;
         Ok(true)
+    }
+
+    /// Put up to one batch of the outstanding `ResendRequest` on the wire.
+    ///
+    /// **Bounded by messages, not by numbers.** A replay is one message and a
+    /// gap fill is one message however many numbers it covers, so the batch is
+    /// a count of what reaches the transmit buffer — which is the thing that
+    /// overflows. [ADR-0046](../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
+    /// decision 4.
+    ///
+    /// Called after every judged message and every tick while anything is
+    /// owed. Interleaving a replay with new traffic is legal and unambiguous:
+    /// a replayed message carries its **original** `34=` and `43=Y`, and a new
+    /// one carries the next new number.
+    fn continue_replay<J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        journal: &J,
+        emit: &mut F,
+    ) -> Result<(), Refusal> {
+        let Some(mut r) = self.owed else {
+            return Ok(());
+        };
+        let budget = u32::from(self.cfg.resend_batch.max(1));
+        let mut spent = 0;
+        while spent < budget && r.next <= r.end {
+            if self.replay(r.next, journal, emit)? {
+                r.next += 1;
+                spent += 1;
+                continue;
+            }
+            // A run this end cannot replay — every administrative message is
+            // one — is covered by a single gap fill.
+            // `8_AdminAndApplicationMessages.def` asks for 2..=8 and expects
+            // fill(2..5), 5, 6, fill(7..9): the runs are found, not assumed.
+            let from = r.next;
+            // **The part below the journal's floor needs no search.** Every
+            // number under it is certainly gone, so the run jumps straight
+            // there instead of asking the ring once per number — which at
+            // 4096 slots and a `7=1` resend is the difference between one
+            // comparison and thousands, on the engine thread.
+            let floor = journal.oldest().unwrap_or(u32::MAX);
+            let mut n = if from < floor {
+                floor.min(r.end.saturating_add(1))
+            } else {
+                from.saturating_add(1)
+            };
+            // Above the floor the misses are administrative messages, which
+            // are few and adjacent. `from` itself could not be replayed, so
+            // the run is at least one long and this cannot stand still.
+            while n <= r.end && !Self::kept(journal, n) {
+                n += 1;
+            }
+            // **What this fill cost, counted before it is sent.** Only the
+            // part below the floor: a number above it that `get` could not
+            // answer was an administrative message, never replayed by anybody,
+            // and not a loss. ADR-0046 decision 1.
+            if journal.oldest().is_some() {
+                self.resend_beyond_journal += n.min(floor).saturating_sub(from);
+            }
+            self.fill(from, n, emit)?;
+            r.next = n;
+            spent += 1;
+        }
+        self.owed = (r.next <= r.end).then_some(r);
+        Ok(())
     }
 
     /// One `SequenceReset` gap fill covering `from..upto`, numbered `from`.
@@ -2152,36 +2324,17 @@ impl<R: Role, const N: usize> Session<R, N> {
                 _ => last,
             };
             if let Some(begin) = begin_seq_no.filter(|b| *b <= end) {
-                let mut n = begin;
-                while n <= end {
-                    if self.replay(n, journal, emit)? {
-                        n += 1;
-                        continue;
-                    }
-                    // A run this end cannot replay — every administrative
-                    // message is one — is covered by a single gap fill.
-                    // `8_AdminAndApplicationMessages.def` asks for 2..=8 and
-                    // expects fill(2..5), 5, 6, fill(7..9): the runs are found,
-                    // not assumed.
-                    // `n` itself could not be replayed, so the run starts
-                    // there and is at least one long — the loop cannot stand
-                    // still even if [`Self::kept`] and [`Self::replay`] ever
-                    // disagree about a number.
-                    let from = n;
-                    n += 1;
-                    while n <= end && !Self::kept(journal, n) {
-                        n += 1;
-                    }
-                    // **What this fill cost, counted before it is sent.**
-                    // Only the part of the run below the journal's floor: a
-                    // number above it that `get` could not answer was an
-                    // administrative message, which is never replayed by
-                    // anybody, and is not a loss. ADR-0046 decision 1.
-                    if let Some(floor) = journal.oldest() {
-                        self.resend_beyond_journal += n.min(floor).saturating_sub(from);
-                    }
-                    self.fill(from, n, emit)?;
-                }
+                // **A new question replaces the one in progress; it does not
+                // queue behind it.** A counterparty that asks twice wants the
+                // second answer, and two cursors would interleave two replays
+                // on one wire.
+                // **Recorded here, sent from the tail of `received_with`.**
+                // Answering it here as well would put two batches on the wire
+                // for one question, and `resend_batch × SLOT_LEN < TX` is the
+                // whole constraint. `a_long_resend_is_replayed_over_several_
+                // ticks_in_order` read 16 where it wanted 8 when this line
+                // sent as well as recorded.
+                self.owed = Some(Replay { next: begin, end });
             }
             return Ok(Link::Up);
         }
@@ -2567,6 +2720,18 @@ const QUEUED: usize = 4;
 /// The longest held message. The same 512 as the outbound buffer, and for the
 /// same reason: the longest message in the corpus is 101 bytes.
 const QUEUED_LEN: usize = 512;
+
+/// How far through a `ResendRequest` this end has got.
+///
+/// Two numbers and nothing else: **the journal is not copied and nothing is
+/// buffered.** What is owed is a range, and the ring already holds the bytes.
+#[derive(Debug, Clone, Copy)]
+struct Replay {
+    /// The next number to answer, replayed or filled over.
+    next: u32,
+    /// The last number the counterparty asked for, inclusive.
+    end: u32,
+}
 
 /// One message held until the count catches up. `seq == 0` means the slot is
 /// free — FIX counts from 1, so no real message can claim it.

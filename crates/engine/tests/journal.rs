@@ -236,7 +236,23 @@ fn what_no_longer_fits_in_the_ring_is_filled_over_not_skipped() {
     }
 
     // Nine kept in eight slots: `34=2` is the one that went.
-    let out = feed(&mut s, &mut j, &resend_request(11, 2, 0));
+    //
+    // `[2026-09-04]` **and it takes two calls now.** A resend goes out in
+    // batches of `Config::resend_batch` messages — 8 by default — and a fill
+    // plus eight replays is nine. The assertion is unchanged in substance: the
+    // whole answer, in order, nothing skipped. ADR-0046 decision 4.
+    let mut out = feed(&mut s, &mut j, &resend_request(11, 2, 0));
+    while out.len() < 9 {
+        let before = out.len();
+        s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+            out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+        });
+        assert!(
+            out.len() > before,
+            "the replay stalled at {} of 9",
+            out.len()
+        );
+    }
     assert_eq!(
         msg_types(&out),
         ["4", "D", "D", "D", "D", "D", "D", "D", "D"],
@@ -564,7 +580,19 @@ fn a_resend_that_reaches_below_the_ring_counts_every_number_it_filled() {
         );
     }
 
-    let out = feed(&mut s, &mut j, &resend_request(22, 1, 0));
+    // One fill and eight replays is nine messages, which is two batches.
+    let mut out = feed(&mut s, &mut j, &resend_request(22, 1, 0));
+    while out.len() < 9 {
+        let before = out.len();
+        s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+            out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+        });
+        assert!(
+            out.len() > before,
+            "the replay stalled at {} of 9",
+            out.len()
+        );
+    }
     assert_eq!(
         msg_types(&out),
         ["4", "D", "D", "D", "D", "D", "D", "D", "D"],
@@ -642,6 +670,254 @@ fn a_put_the_journal_refuses_is_counted() {
         "three refusals, counted — the ring is silent about this and the \
          session is not"
     );
+}
+
+// ------------------------------------------- a replay that takes several turns
+//
+// ADR-0046 decision 4. The wire half of this is
+// `crates/engine/tests/backpressure.rs::a_resend_larger_than_tx_does_not_end_
+// the_session`, which is the one that proves the session survives it. These are
+// the session's own rules about the cursor.
+
+/// A logged-on acceptor with a ring big enough to keep everything.
+fn logged_on_deep(batch: u16) -> (Session<Acceptor, 256>, Store) {
+    let mut s =
+        Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_resend_batch(batch));
+    s.connect(|_| {});
+    s.tick(FIXED_TIME_MILLIS, |_| {});
+    let link = s.received(&inputs("4b_ReceivedTestRequest.def")[0], |_| {});
+    assert_eq!(link, Link::Up, "the Logon should have been accepted");
+    (s, Store::new())
+}
+
+/// The `34=` of every reply carrying `43=Y`, in the order they came out.
+fn replayed(replies: &[String]) -> Vec<u32> {
+    replies
+        .iter()
+        .filter(|r| r.contains("|43=Y|"))
+        .filter_map(|r| {
+            let at = r.find("|34=")? + 4;
+            let end = r[at..].find('|')? + at;
+            r[at..end].parse().ok()
+        })
+        .collect()
+}
+
+/// A hundred messages come back over several calls, in order, none missing and
+/// none twice.
+#[test]
+fn a_long_resend_is_replayed_over_several_ticks_in_order() {
+    let (mut s, mut j) = logged_on_deep(8);
+    for seq in 2..=101 {
+        assert_eq!(
+            msg_types(&feed(&mut s, &mut j, &order(seq))),
+            ["D"],
+            "{seq}"
+        );
+    }
+
+    let mut out = feed(&mut s, &mut j, &resend_request(102, 2, 0));
+    let first = replayed(&out).len();
+    assert_eq!(first, 8, "one batch on the call that asked, not a hundred");
+
+    let mut calls = 1;
+    while replayed(&out).len() < 100 {
+        calls += 1;
+        assert!(
+            calls < 100,
+            "still {} of 100 after {calls} calls",
+            replayed(&out).len()
+        );
+        s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+            out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+        });
+    }
+    assert_eq!(calls, 13, "a hundred at eight a call is thirteen calls");
+    assert_eq!(
+        replayed(&out),
+        (2..=101).collect::<Vec<u32>>(),
+        "in order, none missing, none twice"
+    );
+
+    // And it stops when it is done: a fourteenth call says nothing.
+    let mut after = Vec::new();
+    s.tick_with(FIXED_TIME_MILLIS, &j, |b| after.push(b.len()));
+    assert!(after.is_empty(), "nothing is owed any more: {after:?}");
+}
+
+/// `tick`, without a journal, cannot continue a replay — and the plain form is
+/// still there for every caller that has no journal at all.
+///
+/// This is the trap the split exists for: an engine that kept calling `tick`
+/// would answer the first batch and then go quiet for ever, and every gate in
+/// this repository would stay green because none of them asks for more than
+/// three messages.
+#[test]
+fn a_replay_stalls_on_the_journal_less_tick_and_says_nothing_wrong() {
+    let (mut s, mut j) = logged_on_deep(8);
+    for seq in 2..=21 {
+        feed(&mut s, &mut j, &order(seq));
+    }
+    let out = feed(&mut s, &mut j, &resend_request(22, 2, 0));
+    assert_eq!(replayed(&out).len(), 8, "the first batch went out");
+
+    let mut after = Vec::new();
+    for _ in 0..5 {
+        s.tick(FIXED_TIME_MILLIS, |b| {
+            after.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+        });
+    }
+    assert!(
+        replayed(&after).is_empty(),
+        "`tick` has no journal to replay from: {after:?}"
+    );
+    // And `tick_with` picks it up where it was left.
+    let mut resumed = Vec::new();
+    s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+        resumed.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+    });
+    assert_eq!(replayed(&resumed), (10..=17).collect::<Vec<u32>>());
+}
+
+/// A replay does not outlive the connection it was owed on.
+///
+/// Without this the first tick of the **next** connection pushes the previous
+/// session's `43=Y` messages onto it, numbered for a session that has ended.
+#[test]
+fn a_disconnect_cancels_a_resend_in_progress() {
+    let (mut s, mut j) = logged_on_deep(8);
+    for seq in 2..=101 {
+        feed(&mut s, &mut j, &order(seq));
+    }
+    let out = feed(&mut s, &mut j, &resend_request(102, 2, 0));
+    assert_eq!(replayed(&out).len(), 8, "a replay is in progress");
+
+    s.disconnect(|_| {});
+    s.connect(|_| {});
+    let mut after = Vec::new();
+    s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+        after.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+    });
+    assert!(
+        replayed(&after).is_empty(),
+        "the new connection owes nothing: {after:?}"
+    );
+}
+
+/// A second `ResendRequest` replaces the first; it does not queue behind it.
+///
+/// A counterparty that asks twice wants the second answer. Two cursors would
+/// interleave two replays on one wire, and the numbers would look like a
+/// session that had lost count.
+#[test]
+fn a_new_resend_request_replaces_the_one_in_progress() {
+    let (mut s, mut j) = logged_on_deep(4);
+    for seq in 2..=101 {
+        feed(&mut s, &mut j, &order(seq));
+    }
+    let first = feed(&mut s, &mut j, &resend_request(102, 2, 0));
+    assert_eq!(replayed(&first), vec![2, 3, 4, 5], "four, then the cursor");
+
+    let second = feed(&mut s, &mut j, &resend_request(103, 50, 53));
+    assert_eq!(
+        replayed(&second),
+        vec![50, 51, 52, 53],
+        "the new question, answered whole: {second:?}"
+    );
+    let mut after = Vec::new();
+    s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+        after.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+    });
+    assert!(
+        replayed(&after).is_empty(),
+        "and the first question is not resumed: {after:?}"
+    );
+}
+
+/// A new message sent while a replay is in flight carries the **next new**
+/// number, not one from the range being replayed.
+#[test]
+fn a_message_sent_during_a_resend_carries_the_next_new_number() {
+    let (mut s, mut j) = logged_on_deep(4);
+    for seq in 2..=101 {
+        feed(&mut s, &mut j, &order(seq));
+    }
+    let before = s.next_out();
+    let out = feed(&mut s, &mut j, &resend_request(102, 2, 0));
+    assert_eq!(replayed(&out).len(), 4, "a replay is in progress");
+    assert_eq!(
+        s.next_out(),
+        before,
+        "a replay spends no sequence number: that is what a resend is"
+    );
+
+    // A new order arrives mid-replay and is answered with the next new number.
+    let answered = feed(&mut s, &mut j, &order(103));
+    let fresh: Vec<u32> = answered
+        .iter()
+        .filter(|r| !r.contains("|43=Y|"))
+        .filter_map(|r| {
+            let at = r.find("|34=")? + 4;
+            let end = r[at..].find('|')? + at;
+            r[at..end].parse().ok()
+        })
+        .collect();
+    assert_eq!(fresh, vec![before], "the new echo carries {before}");
+}
+
+/// A schedule boundary restarts both counts, so a replay owed on the old
+/// numbers is owed on numbers that no longer mean anything.
+#[test]
+fn a_schedule_reset_cancels_a_resend_in_progress() {
+    use fixbolt_session::schedule::Schedule;
+
+    let day: u64 = 24 * 60 * 60 * 1000;
+    // Open all day, closed for the last second: two instants a day apart are
+    // inside the window and belong to different sessions, which is the only
+    // thing this test needs from a schedule.
+    let mut s = Session::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+            .with_resend_batch(4)
+            .with_schedule(
+                Schedule::daily(0, 23 * 3_600 + 59 * 60 + 59).expect("00:00:00 to 23:59:59"),
+            ),
+    );
+    let mut j = Store::new();
+    s.connect(|_| {});
+    s.tick(FIXED_TIME_MILLIS, |_| {});
+    s.received(&inputs("4b_ReceivedTestRequest.def")[0], |_| {});
+    for seq in 2..=101 {
+        feed(&mut s, &mut j, &order(seq));
+    }
+    let out = feed(&mut s, &mut j, &resend_request(102, 2, 0));
+    assert_eq!(replayed(&out).len(), 4, "a replay is in progress");
+
+    // A day later: the same wall-clock window, a different session.
+    let mut after = Vec::new();
+    s.tick_with(FIXED_TIME_MILLIS + day, &j, |b| {
+        after.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+    });
+    assert!(
+        replayed(&after).is_empty(),
+        "the numbers restarted, so nothing is owed on the old ones: {after:?}"
+    );
+}
+
+/// A batch of zero is read as one.
+///
+/// Zero would leave every resend permanently unfinished, which is worse than
+/// any reading of what the caller meant, and the builders here are infallible.
+#[test]
+fn a_batch_of_zero_is_read_as_one() {
+    let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_resend_batch(0);
+    assert_eq!(cfg.resend_batch(), 1);
+
+    let (mut s, mut j) = logged_on_deep(0);
+    for seq in 2..=11 {
+        feed(&mut s, &mut j, &order(seq));
+    }
+    let out = feed(&mut s, &mut j, &resend_request(12, 2, 0));
+    assert_eq!(replayed(&out), vec![2], "one message a call, not none");
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

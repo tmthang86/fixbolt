@@ -233,6 +233,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 tx_len,
                 overflow,
                 dead,
+                journal,
                 ..
             } = self;
             let mut out = Out {
@@ -244,7 +245,10 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 overflow,
                 failed: dead,
             };
-            if session.tick(now_ms, |b| out.push(b)) == Link::Dropped {
+            // `tick_with`, not `tick`: an outstanding replay continues on a
+            // tick, and a session with nothing arriving on it would otherwise
+            // stall a resend longer than one batch. ADR-0046 decision 4.
+            if session.tick_with(now_ms, journal, |b| out.push(b)) == Link::Dropped {
                 self.closing = true;
             }
             if self.overflow {
