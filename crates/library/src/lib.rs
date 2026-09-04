@@ -58,5 +58,12 @@ pub use fixbolt_engine::recovery::{FromFn, NoRecovery, Recovery, Resumed};
 /// The journal: in memory, on disk, and read back from outside.
 pub use fixbolt_engine::journal::{FileJournal, Reader, Record, Records, Store};
 
+/// The message log: every message this engine saw or sent, one line each.
+///
+/// [`NoLog`] is what an engine that wants none passes, and it compiles away
+/// entirely. [`FileLog`] writes a text file — `docs/GUIDE.md` §6a says how to
+/// read one, what `lost` means, and why rotation is the operator's job.
+pub use fixbolt_engine::msglog::{Direction, FileLog, MessageLog, NoLog};
+
 /// Why a connection ended.
 pub use fixbolt_session::DropReason;

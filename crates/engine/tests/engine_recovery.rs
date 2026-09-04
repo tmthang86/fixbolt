@@ -413,6 +413,7 @@ mod serving {
                 4,
                 Limits::new(8, 30_000).expect("both above zero"),
                 OneCounterparty { asked: counter },
+                fixbolt_engine::msglog::NoLog,
             );
         });
 
@@ -456,6 +457,7 @@ mod serving {
                 EchoApp::default(),
                 4,
                 Limits::new(8, 30_000).expect("both above zero"),
+                fixbolt_engine::msglog::NoLog,
             );
         });
 

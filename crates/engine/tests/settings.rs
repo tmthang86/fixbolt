@@ -685,3 +685,96 @@ fn a_file_with_no_hours_leaves_the_neutral_schedule() {
         "exactly what Config::acceptor builds, schedule included"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `FileLogPath` — the key that turns the message log on.
+//
+// It is `[DEFAULT]`-only on purpose: an engine writes **one** log, and two
+// `[SESSION]` blocks asking for two files is a configuration that cannot be
+// honoured. Refusing beats resolving it by picking one, because the operator
+// would never learn which.
+// ---------------------------------------------------------------------------
+
+/// The key is read, and a misspelling next to it is still an error.
+///
+/// Both halves matter. ADR-0040's whole rule is that an unknown key is a
+/// **failure with a line number**, and a new key added carelessly is exactly
+/// how a parser starts shrugging at the ones it does not know.
+#[test]
+fn file_log_path_is_read_and_an_unknown_key_beside_it_is_still_an_error() {
+    let good = "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+FileLogPath=/tmp/fixbolt-messages.log
+
+[SESSION]
+TargetCompID=TW44
+";
+    let s = Settings::parse(good).expect("a legal file");
+    assert_eq!(
+        s.log().map(std::path::Path::to_path_buf),
+        Some(std::path::PathBuf::from("/tmp/fixbolt-messages.log")),
+    );
+    assert_eq!(s.configs().len(), 1, "the session is still built");
+
+    let typo = good.replace("FileLogPath=", "FileLogPth=");
+    let e = Settings::parse(&typo).expect_err("a misspelled key is a failure");
+    assert_eq!(e.problem(), &Problem::UnknownKey, "left: {e}");
+    assert_eq!(e.line(), 4, "and it names the line: {e}");
+}
+
+/// A file that names no log asks for none. `None` is not a default path.
+#[test]
+fn no_file_log_path_means_no_log_rather_than_a_guessed_one() {
+    let s = Settings::parse(
+        "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+
+[SESSION]
+TargetCompID=TW44
+",
+    )
+    .expect("a legal file");
+    assert!(s.log().is_none());
+}
+
+/// One engine, one log. A `[SESSION]` asking for its own is refused, by name.
+#[test]
+fn file_log_path_in_a_session_block_is_refused_rather_than_quietly_ignored() {
+    let e = Settings::parse(
+        "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+
+[SESSION]
+TargetCompID=TW44
+FileLogPath=/tmp/one-counterparty.log
+",
+    )
+    .expect_err("a per-session log cannot be honoured");
+    assert_eq!(e.problem(), &Problem::SessionOnly, "left: {e}");
+    assert_eq!(e.line(), 7, "and it names the line: {e}");
+}
+
+/// The same key twice is meaningless, and it is meaningless here too.
+#[test]
+fn file_log_path_twice_is_the_same_error_as_any_other_repeat() {
+    let e = Settings::parse(
+        "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+FileLogPath=/tmp/a.log
+FileLogPath=/tmp/b.log
+
+[SESSION]
+TargetCompID=TW44
+",
+    )
+    .expect_err("two paths name no file");
+    assert_eq!(e.problem(), &Problem::RepeatedKey, "left: {e}");
+}

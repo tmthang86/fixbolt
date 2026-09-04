@@ -185,6 +185,7 @@ pub struct Snapshot {
     connections: usize,
     refused_connections: usize,
     sources_missing: usize,
+    log_lost: u64,
 }
 
 impl Default for Snapshot {
@@ -196,6 +197,7 @@ impl Default for Snapshot {
             connections: 0,
             refused_connections: 0,
             sources_missing: 0,
+            log_lost: 0,
         }
     }
 }
@@ -264,10 +266,22 @@ impl Snapshot {
         connections: usize,
         refused_connections: usize,
         sources_missing: usize,
+        log_lost: u64,
     ) {
         self.connections = connections;
         self.refused_connections = refused_connections;
         self.sources_missing = sources_missing;
+        self.log_lost = log_lost;
+    }
+
+    /// Messages the message log never wrote. **Zero on a healthy engine.**
+    ///
+    /// The running total since the log was opened. See
+    /// [`EventKind::MessageLogLost`] for the per-turn event, and `GUIDE.md` §6a
+    /// for what to do about a number that climbs.
+    #[must_use]
+    pub const fn log_lost(&self) -> u64 {
+        self.log_lost
     }
 
     /// Connections that claimed to be pollable and produced no descriptor.
@@ -479,12 +493,12 @@ mod tests {
 
         let mut refused = Snapshot::default();
         refused.push(session(1, true));
-        refused.set_counters(1, 1, 0);
+        refused.set_counters(1, 1, 0, 0);
         assert!(!refused.healthy(), "ADR-0011 dropped a session");
 
         let mut missing = Snapshot::default();
         missing.push(session(1, true));
-        missing.set_counters(1, 0, 1);
+        missing.set_counters(1, 0, 1, 0);
         assert!(
             !missing.healthy(),
             "a transport broke its own contract; the symptom is lateness"
@@ -572,6 +586,23 @@ pub enum EventKind {
     JournalRefused {
         /// How many were refused on this turn.
         count: u32,
+    },
+    /// Messages the message log did not manage to write.
+    ///
+    /// **Zero on a healthy engine, and it is not a session's fault.** A full
+    /// ring means the writer thread is behind the engine thread — a slow disk,
+    /// a log on a network mount, or a burst the ring was sized too small for.
+    /// The log drops rather than waits, because a log that blocks the engine is
+    /// worse than a log with a hole (ADR-0011's rule, pointed the other way),
+    /// but the hole is **counted** so nobody reads the file believing it is
+    /// complete.
+    ///
+    /// It counts both losses the log can suffer: a `push` the ring refused, and
+    /// a record the writer's buffer could not take.
+    MessageLogLost {
+        /// How many records were lost since the previous turn that reported
+        /// any. Not the running total — [`Snapshot::log_lost`] is that.
+        count: u64,
     },
 }
 

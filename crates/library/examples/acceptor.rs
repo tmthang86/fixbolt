@@ -45,6 +45,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fixbolt::app(order_handler::Desk::default()),
         64,                       // connections held at once
         Limits::new(64, 30_000)?, // sockets waiting to log on, and how long each has
+        // No message log. `fixbolt::FileLog::open(path)` here writes every
+        // message this acceptor sees or sends, both directions, one line each.
+        fixbolt::NoLog,
     )?;
 
     // `serve` returns when an operator asks it to stop, and says what it could

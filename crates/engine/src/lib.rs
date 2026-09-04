@@ -91,6 +91,10 @@ pub struct Engine<
     /// parameter — there is no half-configured engine, because an engine
     /// without a log is a *different type* from one with it.
     log: L,
+    /// What [`msglog::MessageLog::lost`] read the last time an event was
+    /// emitted for it, so the event carries **this turn's** loss rather than
+    /// the running total. Same shape as the journal counters above.
+    log_lost_reported: u64,
     /// Which shard this engine is, for a log line to name.
     ///
     /// Zero unless `shard::serve_sharded_hft` says otherwise. `ConnId` restarts
@@ -191,6 +195,7 @@ where
         Engine {
             conns: self.conns,
             log,
+            log_lost_reported: self.log_lost_reported,
             shard: self.shard,
             interests: self.interests,
             sources_missing: self.sources_missing,
@@ -232,6 +237,7 @@ where
         Self {
             conns: Vec::with_capacity(capacity),
             log: L::default(),
+            log_lost_reported: 0,
             shard: 0,
             // Two more than the connections: `serve` adds the listener, and the
             // out-of-band waker is one more. Going over is not fatal — it costs
@@ -682,6 +688,7 @@ where
         conns: &[Connection<T, R, J, N, RX, TX>],
         refused_connections: usize,
         sources_missing: usize,
+        log_lost: u64,
     ) -> crate::observe::Snapshot {
         let mut snap = crate::observe::Snapshot::default();
         for c in conns {
@@ -698,7 +705,7 @@ where
                 },
             ));
         }
-        snap.set_counters(conns.len(), refused_connections, sources_missing);
+        snap.set_counters(conns.len(), refused_connections, sources_missing, log_lost);
         snap
     }
 
@@ -735,7 +742,12 @@ where
         if let Some(shared) = self.observe.as_ref()
             && shared.wanted()
         {
-            let snap = Self::snapshot(&self.conns, self.refused_connections, self.sources_missing);
+            let snap = Self::snapshot(
+                &self.conns,
+                self.refused_connections,
+                self.sources_missing,
+                self.log.lost(),
+            );
             shared.publish(&snap);
         }
         // **Before anything is judged or numbered.** A command applied after
@@ -892,6 +904,30 @@ where
                     self.conns.swap_remove(i);
                     moved = true;
                 }
+            }
+        }
+
+        // **Once per turn, not per connection.** A record the ring refused is
+        // gone before anything knows which session it belonged to, so there is
+        // no honest id to attribute it to — `ConnId::MAX` says *the engine*,
+        // and the whole point of the event is that the file has a hole in it.
+        //
+        // `L::LOGS` is a constant, so an engine with `NoLog` compiles this
+        // block away rather than paying a comparison for a counter that can
+        // never move.
+        if L::LOGS {
+            let lost = self.log.lost();
+            if lost != self.log_lost_reported
+                && let Some(shared) = self.observe.as_ref()
+            {
+                shared.emit(
+                    ConnId::MAX,
+                    now,
+                    crate::observe::EventKind::MessageLogLost {
+                        count: lost.saturating_sub(self.log_lost_reported),
+                    },
+                );
+                self.log_lost_reported = lost;
             }
         }
 
@@ -1101,7 +1137,7 @@ where
 ///
 /// `W` is the mode: [`wait::Spin`] for `hft`, `block::Block` for `standard`.
 /// [`HftAcceptorEngine`] and [`StandardAcceptorEngine`] name the two.
-pub type TcpAcceptorEngine<A, W, J = crate::journal::Store> = Engine<
+pub type TcpAcceptorEngine<A, W, J = crate::journal::Store, L = NoLog> = Engine<
     TcpTransport,
     fixbolt_session::Acceptor,
     InlineDispatch<A>,
@@ -1111,14 +1147,16 @@ pub type TcpAcceptorEngine<A, W, J = crate::journal::Store> = Engine<
     256,
     4096,
     8192,
+    L,
 >;
 
 /// The `hft` shape: spins, burns a core, and needs a machine that satisfies
 /// `DESIGN.md` §9.
-pub type HftAcceptorEngine<A> = TcpAcceptorEngine<A, crate::wait::Spin>;
+pub type HftAcceptorEngine<A, L = NoLog> =
+    TcpAcceptorEngine<A, crate::wait::Spin, crate::journal::Store, L>;
 
 /// The same shape, dialling out. `STATUS.md` item 35.
-pub type TcpInitiatorEngine<A, W, J = crate::journal::Store> = Engine<
+pub type TcpInitiatorEngine<A, W, J = crate::journal::Store, L = NoLog> = Engine<
     TcpTransport,
     fixbolt_session::Initiator,
     InlineDispatch<A>,
@@ -1128,12 +1166,14 @@ pub type TcpInitiatorEngine<A, W, J = crate::journal::Store> = Engine<
     256,
     4096,
     8192,
+    L,
 >;
 
 /// The `standard` shape, and **the default**: blocks on readiness and gives the
 /// core back.
 #[cfg(all(feature = "standard", unix))]
-pub type StandardAcceptorEngine<A> = TcpAcceptorEngine<A, crate::block::Block>;
+pub type StandardAcceptorEngine<A, L = NoLog> =
+    TcpAcceptorEngine<A, crate::block::Block, crate::journal::Store, L>;
 
 /// Accept FIX connections on `addr` and never return. **`standard` mode.**
 ///
@@ -1162,12 +1202,13 @@ pub type StandardAcceptorEngine<A> = TcpAcceptorEngine<A, crate::block::Block>;
 /// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
 /// [ADR-0030]: ../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md
 #[cfg(all(feature = "standard", unix))]
-pub fn serve<A: Application>(
+pub fn serve<A: Application, L: MessageLog>(
     addr: &str,
     table: presession::Table,
     app: A,
     capacity: usize,
     limits: presession::Limits,
+    log: L,
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
@@ -1180,7 +1221,13 @@ pub fn serve<A: Application>(
         crate::block::Block::new(capacity + limits.pending() + 2),
         capacity,
     );
-    pump(acceptor, engine, table, limits, crate::recovery::NoRecovery)
+    pump(
+        acceptor,
+        engine.with_log(log),
+        table,
+        limits,
+        crate::recovery::NoRecovery,
+    )
 }
 
 /// Dial `addr`, run one initiator session on it, and **come back when it
@@ -1219,12 +1266,18 @@ pub fn serve<A: Application>(
 /// made is not an error** — it is the case this function exists for, and it
 /// goes to the policy.
 #[cfg(all(feature = "standard", unix))]
-pub fn connect_and_serve<A: Application, J: SessionJournal, V: crate::recovery::Recovery<J>>(
+pub fn connect_and_serve<
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
     addr: &str,
     cfg: Config,
     app: A,
     policy: crate::reconnect::Policy,
     recovery: V,
+    log: L,
 ) -> Result<Shutdown, ServeError> {
     let engine: TcpInitiatorEngine<A, crate::block::Block, J> = Engine::new(
         cfg,
@@ -1235,16 +1288,22 @@ pub fn connect_and_serve<A: Application, J: SessionJournal, V: crate::recovery::
         crate::block::Block::new(2),
         1,
     );
-    dial(addr, cfg, engine, policy, recovery)
+    dial(addr, cfg, engine.with_log(log), policy, recovery)
 }
 
 /// The loop [`connect_and_serve`] runs, generic over the wait strategy so a
 /// test can drive it without a real clock.
 #[cfg(all(feature = "standard", unix))]
-fn dial<A: Application, W: Waiting, J: SessionJournal, V: crate::recovery::Recovery<J>>(
+fn dial<
+    A: Application,
+    W: Waiting,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
     addr: &str,
     cfg: Config,
-    mut engine: TcpInitiatorEngine<A, W, J>,
+    mut engine: TcpInitiatorEngine<A, W, J, L>,
     mut policy: crate::reconnect::Policy,
     mut recovery: V,
 ) -> Result<Shutdown, ServeError> {
@@ -1349,13 +1408,19 @@ fn dial<A: Application, W: Waiting, J: SessionJournal, V: crate::recovery::Recov
 /// `crate::block` does not exist without that feature. Non-negotiable 6: the
 /// `#[cfg]` is on the item, not only in `Cargo.toml`.
 #[cfg(all(feature = "standard", unix))]
-pub fn serve_with_recovery<A: Application, J: SessionJournal, V: crate::recovery::Recovery<J>>(
+pub fn serve_with_recovery<
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
     addr: &str,
     table: presession::Table,
     app: A,
     capacity: usize,
     limits: presession::Limits,
     recovery: V,
+    log: L,
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
@@ -1366,7 +1431,7 @@ pub fn serve_with_recovery<A: Application, J: SessionJournal, V: crate::recovery
         crate::block::Block::new(capacity + limits.pending() + 2),
         capacity,
     );
-    pump(acceptor, engine, table, limits, recovery)
+    pump(acceptor, engine.with_log(log), table, limits, recovery)
 }
 
 /// As [`serve`], in `hft` mode: **spins, and burns a core for as long as the
@@ -1380,12 +1445,13 @@ pub fn serve_with_recovery<A: Application, J: SessionJournal, V: crate::recovery
 ///
 /// [`ServeError::NoCounterparties`] for an empty table, [`ServeError::Io`] from
 /// binding.
-pub fn serve_hft<A: Application>(
+pub fn serve_hft<A: Application, L: MessageLog>(
     addr: &str,
     table: presession::Table,
     app: A,
     capacity: usize,
     limits: presession::Limits,
+    log: L,
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
@@ -1396,7 +1462,13 @@ pub fn serve_hft<A: Application>(
         crate::wait::Spin,
         capacity,
     );
-    pump(acceptor, engine, table, limits, crate::recovery::NoRecovery)
+    pump(
+        acceptor,
+        engine.with_log(log),
+        table,
+        limits,
+        crate::recovery::NoRecovery,
+    )
 }
 
 /// As [`serve_hft`], asking `recovery` what each counterparty left behind. See
@@ -1409,6 +1481,7 @@ pub fn serve_hft_with_recovery<
     A: Application,
     J: SessionJournal,
     V: crate::recovery::Recovery<J>,
+    L: MessageLog,
 >(
     addr: &str,
     table: presession::Table,
@@ -1416,6 +1489,7 @@ pub fn serve_hft_with_recovery<
     capacity: usize,
     limits: presession::Limits,
     recovery: V,
+    log: L,
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
@@ -1426,7 +1500,7 @@ pub fn serve_hft_with_recovery<
         crate::wait::Spin,
         capacity,
     );
-    pump(acceptor, engine, table, limits, recovery)
+    pump(acceptor, engine.with_log(log), table, limits, recovery)
 }
 
 /// Why a serving loop never started.
@@ -1448,6 +1522,12 @@ pub enum ServeError {
     NoCounterparties,
     /// Binding the listener failed.
     Io(std::io::Error),
+    /// `FileLogPath` named somewhere this process cannot append to.
+    ///
+    /// **Its own variant, not [`Self::Io`].** A missing directory and a port
+    /// already in use send an operator to two different places, and one variant
+    /// covering both sends them to the wrong one first.
+    LogPath(std::io::Error),
 }
 
 impl core::fmt::Display for ServeError {
@@ -1458,6 +1538,7 @@ impl core::fmt::Display for ServeError {
                 "the registry serves no counterparty, so this acceptor would refuse every connection"
             ),
             Self::Io(e) => write!(f, "binding the listener: {e}"),
+            Self::LogPath(e) => write!(f, "opening the message log named by FileLogPath: {e}"),
         }
     }
 }
@@ -1466,7 +1547,7 @@ impl std::error::Error for ServeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::NoCounterparties => None,
-            Self::Io(e) => Some(e),
+            Self::Io(e) | Self::LogPath(e) => Some(e),
         }
     }
 }
@@ -1507,9 +1588,15 @@ fn default_config(table: &presession::Table) -> Result<Config, ServeError> {
 /// `Cargo.toml` but not behind `#[cfg]` in `lib.rs`*; this is the same mistake
 /// from the other side, and `cargo check --no-default-features` is what catches
 /// it.
-fn pump<A: Application, W: Waiting, J: SessionJournal, V: crate::recovery::Recovery<J>>(
+fn pump<
+    A: Application,
+    W: Waiting,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
     acceptor: Acceptor,
-    mut engine: TcpAcceptorEngine<A, W, J>,
+    mut engine: TcpAcceptorEngine<A, W, J, L>,
     table: presession::Table,
     limits: presession::Limits,
     mut recovery: V,

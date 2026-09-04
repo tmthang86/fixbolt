@@ -128,6 +128,7 @@ fn serving(name: &str, text: &str, counterparties: usize) -> String {
             EchoApp::default(),
             4,
             Limits::new(8, 30_000).expect("both above zero"),
+            fixbolt_engine::msglog::NoLog,
         );
     });
     addr
@@ -273,4 +274,91 @@ fn a_socket_that_is_held_open_and_silent_is_not_read_as_a_refusal() {
         }
     });
     let _ = reply_to(&addr, "TW44");
+}
+
+/// `FileLogPath` in the file, `serve` on the socket, lines on the disk.
+///
+/// **This is the test the review was about.** `serve` is the entry point
+/// `docs/GETTING-STARTED.md` teaches, and the plan originally wired the log
+/// into `serve_with_recovery` only — so an operator could put `FileLogPath` in
+/// a configuration file, start an acceptor, take a logon, and find an empty
+/// file with nothing anywhere saying why. Every entry point takes a log for
+/// that reason, and this is the path walked end to end: file on disk, parsed
+/// `Settings`, `Settings::log`, `FileLog`, `serve`, a kernel socket, a real
+/// logon, and the file read back.
+#[test]
+fn a_file_log_path_in_the_config_reaches_serve_and_the_file_fills() {
+    let cfg_path = scratch("with-log");
+    let log_path = scratch("with-log-messages");
+    let _ = std::fs::remove_file(&log_path);
+    std::fs::write(
+        &cfg_path,
+        format!(
+            "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\nFileLogPath={}\n\
+             [SESSION]\nTargetCompID=TW44\n",
+            log_path.display()
+        ),
+    )
+    .expect("the scratch directory is writable");
+
+    let settings = Settings::load(&cfg_path).unwrap_or_else(|e| panic!("{e}"));
+    let named = settings.log().expect("the file names a log").to_path_buf();
+    assert_eq!(
+        named, log_path,
+        "the path comes from the file, not a default"
+    );
+    let log = fixbolt_engine::msglog::FileLog::open(&named).expect("a writable path");
+    let table = settings.into_table();
+    let _ = std::fs::remove_file(&cfg_path);
+
+    let addr = free_port();
+    let serving = addr.clone();
+    std::thread::spawn(move || {
+        let _ = fixbolt_engine::serve(
+            &serving,
+            table,
+            EchoApp::default(),
+            4,
+            Limits::new(8, 30_000).expect("both above zero"),
+            log,
+        );
+    });
+
+    let reply = reply_to(&addr, "TW44");
+    assert!(
+        reply.contains("|35=A|"),
+        "the logon was answered: {reply:?}"
+    );
+
+    // The writer flushes when the ring runs dry, so a moment after the reply is
+    // on the wire the file is complete. Bounded rather than slept through: a
+    // fixed sleep is how a test that measures nothing looks like one that does.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut text = String::new();
+    while std::time::Instant::now() < deadline {
+        text = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if text.lines().filter(|l| !l.starts_with('#')).count() >= 2 {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let lines: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+    let _ = std::fs::remove_file(&log_path);
+
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(" IN  ") && l.contains("35=A")),
+        "the logon that arrived is not in the file: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(" OUT ") && l.contains("35=A")),
+        "the logon that went back is not in the file: {lines:?}"
+    );
+    assert!(
+        lines.iter().all(|l| l.contains("shard=0 conn=")),
+        "every line names its shard and connection: {lines:?}"
+    );
 }

@@ -341,6 +341,7 @@ fn acceptor(args: &[String]) -> std::process::ExitCode {
         fixbolt::app(desk::Desk::default()),
         CAPACITY,
         limits,
+        fixbolt::NoLog,
     ) {
         Ok(shutdown) => {
             println!("interop: acceptor stopped: {shutdown:?}");

@@ -372,6 +372,7 @@ mod serving {
                     dir: home,
                     opened: counter,
                 },
+                fixbolt_engine::msglog::NoLog,
             );
         });
 
