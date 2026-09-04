@@ -1,6 +1,6 @@
 # Một engine biết nói trước
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **Xong** (2026-09-05) — xem *Nhật ký giao hàng*
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **Xong, đã merge** (2026-09-05, `52a2895`) — xem *Nhật ký giao hàng*
 > **Phạm vi:** `STATUS.md` item 46. Chạm `engine` (`dispatch`, `observe`, `conn`, entry point),
 > `library` (`Handler`, `Reply`), **`session` — ba chỗ cộng thêm, xem Sửa 1**, docs, một ADR mới.
 > **Không chạm** `codec`, `dict`.
@@ -321,7 +321,10 @@ có marker `[to testing-skills]`.
   đóng plan, `c3f0d98`**, run
   [`33899463805`](https://github.com/tmthang86/fixbolt/actions/runs/33899463805) và
   [`33899468700`](https://github.com/tmthang86/fixbolt/actions/runs/33899468700) — hộp cuối §9
-  đã tick. PR [#38](https://github.com/tmthang86/fixbolt/pull/38), **chưa merge.**
+  đã tick. **ĐÃ MERGE**: PR [#38](https://github.com/tmthang86/fixbolt/pull/38), merge commit
+  `52a2895`, và **CI xanh 11 job / 11 trên chính `main` sau khi merge**, run
+  [`33900849768`](https://github.com/tmthang86/fixbolt/actions/runs/33900849768) — đây mới là
+  run đáng kể, vì một branch xanh không nói gì về commit nơi nó gặp `main`.
 - **Hai lần đỏ trên CI mà máy này không thấy**, cả hai đều là cờ gate mà tay quen không chạy:
   job `docs` thêm `-D rustdoc::redundant_explicit_links` (local `cargo doc` chỉ warn rồi exit 0),
   và `cargo fmt --check` chưa hề được chạy trước lần push đầu. Đọc cờ job dùng, không đọc cờ

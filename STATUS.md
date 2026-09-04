@@ -28,16 +28,17 @@ out of the same measurement: 39, 40 and 41.** See the section immediately below.
 [an-engine-that-can-speak-first](docs/plans/2026-09-05-an-engine-that-can-speak-first.md) is
 **Xong**, all five steps; [ADR-0048](docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md),
 `DESIGN.md` **D15**. `cargo test --all` 495 → **506**.
-**CI green 22 checks of 22 on `bb1d0fe`, the last commit on this branch carrying code**, runs
-[`33899038804`](https://github.com/tmthang86/fixbolt/actions/runs/33899038804) and
-[`33899048688`](https://github.com/tmthang86/fixbolt/actions/runs/33899048688).
-Every commit after it is this section recording that fact, and each is green too —
-`c3f0d98` (`33899463805`, `33899468700`) and the one that names them. **A commit that names its
-own CI run cannot exist**, which is the one thing §9's last box cannot ask for; naming the last
-code commit, and saying that the documentation commits behind it are green as well, is the
-closest true statement.
+**MERGED**, PR [#38](https://github.com/tmthang86/fixbolt/pull/38), merge commit `52a2895`.
+**CI green 11 jobs of 11 on the merged `main` itself, `52a2895`, run
+[`33900849768`](https://github.com/tmthang86/fixbolt/actions/runs/33900849768)** — which is the
+run that matters, because a branch being green says nothing about the commit where it meets
+`main`. The branch tip was also green, 22 of 22, run
+[`33900339333`](https://github.com/tmthang86/fixbolt/actions/runs/33900339333).
 
-PR [#38](https://github.com/tmthang86/fixbolt/pull/38), **not merged**.
+`[2026-09-05]` **Naming the run for "the commit being closed" is not quite possible on a
+branch**, and three commits here chased their own tail proving it: each one that wrote a run id
+became a newer commit that the id did not cover. **The merge commit ends that**, because nothing
+is appended after it — which is the answer §9's last box was always reaching for.
 
 **The `interop` job is green, so `libquickfix` itself has now judged this.** That is the
 sentence the *What is not done* list below could not carry an hour ago, and it is the one that
@@ -100,7 +101,7 @@ marked `[to testing-skills]`.
   through the front door only door 1 is reachable. **This is older than item 46 and was found
   by fixing it. New open item 47**, deliberately not fixed inside this plan.
 - ~~**`libquickfix` has not judged this yet on this machine.**~~ — it has. The `interop` job is
-  green on every commit of this branch, `bb1d0fe` included, and **§9's last box is ticked.**
+  green on the merged `main` itself, run `33900849768`, and **§9's last box is ticked.**
 - **No §9 machine has seen it.** `benches/turn.rs` gains one `Option` check per turn and nobody
   has re-measured it against a baseline.
 
