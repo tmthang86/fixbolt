@@ -1,7 +1,39 @@
 # Ba con số trên máy §9: cổng đang đỏ, lượt kiểm chưa ai đo, và template mỗi message
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt (2026-09-02)
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt (2026-09-02), **đang làm**
 > **Phạm vi:** open item 41 → 39 → 34, đúng thứ tự chủ dự án chọn
+> **Máy chạy:** **bắt buộc máy §9** — `benches/baselines.tsv` khoá theo CPU model, không máy nào khác phát biểu được.
+
+> **Sửa 1 `[2026-09-04]` — plan này sống trên một nhánh riêng hai ngày, và đó là vấn đề.**
+> `plan/baselines-and-the-untimed-pass` là plan **duy nhất** của repo không nhìn thấy từ `main`,
+> trong khi bảy draft wave B/C/D chưa ai bắt đầu thì nằm sẵn đó. Hệ quả không phải là bất tiện:
+> vòng đi bảng đồng bộ §4 không với tới nó, `grep -rn '\[to testing-skills\]' docs/` không thấy
+> nó, và `STATUS.md` là thứ duy nhất đứng giữa công việc này với việc bị quên. Merge rồi
+> (`ffe7a31`); plan **vẫn mở**, chỉ là nhìn thấy được.
+>
+> **Bước 1 (chẩn đoán) đã xong** — commit `0e845f5`, và kết luận của nó vẫn đúng, đã kiểm lại
+> hôm nay chứ không tin theo:
+>
+> | Kiểm lại `[2026-09-04]` | |
+> |---|---|
+> | `crates/engine/src/presession.rs` | **không đổi** kể từ `0e845f5^` — nên `identity_of` vẫn quét bốn lần `field_value` |
+> | `crates/engine/benches/presession.rs` | **không đổi**, hai case `registry lookup` vẫn ở đúng vị trí cũ trong suite |
+> | `benches/baselines.tsv` | **không đổi** — năm case vẫn thiếu baseline cho CPU này |
+>
+> Nghĩa là **bước 1a chạy lại được nguyên văn**, không phải viết lại.
+>
+> **Cái đã đổi quanh nó, và không cái nào chạm vào giả thuyết của plan:** `SLOTS` 8 → 4096 với
+> `MemJournal` đóng hộp (ADR-0046), `Journal::put -> bool` và `oldest`, module `msglog` với
+> tham số kiểu thứ mười trên `Engine`, key thứ 11 trong `settings`. Hai cái đầu **có** chạm
+> `benches/alloc.rs`, là bench *đếm cấp phát*, không phải bench *đo thời gian*, nên `--strict`
+> không nhìn vào chúng.
+>
+> **Một hệ quả mới đáng ghi vào bước 1d:** `benches/alloc.rs` của `engine` giờ là **24 case**,
+> không phải 21, và ba case mới (`log-record`, `log-idle`, `log-busy`) mất bốn lần đo mới ra 0 —
+> hai lần đầu là harness và writer thread chứ không phải engine
+> ([a-benchmark-measured-its-own-fixture](../reference/a-benchmark-measured-its-own-fixture.md)).
+> Bước 1d ghi baseline cho **năm case đo thời gian**, và cùng một cách tự lừa áp dụng: một con số
+> ổn định không có nghĩa là nó đo đúng thứ mình nghĩ.
 
 ## Bối cảnh
 
@@ -223,4 +255,12 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 
 ## Nhật ký giao hàng
 
-*(chưa bắt đầu — chờ duyệt)*
+| Bước | Ngày | Kết quả |
+|---|---|---|
+| 1 (chẩn đoán) | 2026-09-02 | **Xong**, commit `0e845f5`. `read and route` +140% **không phải hồi quy**: ADR-0026 quyết định 2 nới `Identity` thêm `50=`/`57=`, nên `identity_of` quét bốn lần `field_value` thay vì hai, và `field_value` quét hết message trước khi trả `None` — đúng việc hai lời gọi mới làm, vì `Logon` của corpus không mang cả hai tag (đã đếm: 0 lần xuất hiện). Reversal một biến: thay hai lời gọi bằng `None` đọc **83.2 / 83.1 / 83.1 ns** so với baseline **84.0**, ba lần chạy. Kết luận: **baseline chưa ai ghi lại**, không phải code chậm đi, và không revert ADR-0026. `encode ExecutionReport (template)` +16% **chưa chẩn đoán** — hai giả thuyết trong *Cách làm*, cả hai chưa thử |
+| 1a | — | **Chưa.** Kiểm lại `[2026-09-04]`: `presession.rs`, bench suite của nó và `baselines.tsv` đều không đổi từ `0e845f5^`, nên bước này chạy được nguyên văn. **Đừng dừng ở nửa đầu** — *Cách kiểm chứng* đòi thêm một chiều: đặt lại hai case ở vị trí khác và xem con số đi theo *vị trí* hay theo *sự có mặt* |
+| 1b–1e, 2, 3 | — | Chưa bắt đầu |
+
+**Trạng thái một câu:** item 41 hiểu được một nửa, chưa sửa gì, và `bench.sh --strict` vẫn đỏ
+trên máy §9 — nên trong lúc đó **không con số §6 nào của dự án có cổng canh**, kể cả bốn con số
+wire-to-wire đã công bố. Đó là lý do plan này đi trước 39 và 34.
