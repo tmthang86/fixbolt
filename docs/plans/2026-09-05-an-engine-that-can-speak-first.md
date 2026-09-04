@@ -1,12 +1,48 @@
 # Một engine biết nói trước
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **Chờ duyệt**
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **Đã duyệt** (2026-09-05), đang làm
 > **Phạm vi:** `STATUS.md` item 46. Chạm `engine` (`dispatch`, `observe`, `conn`, entry point),
-> `library` (`Handler`, `Reply`), docs, một ADR mới. **Không chạm** `codec`, `dict`, `session`
-> — `Session::send_application` đã có sẵn và đúng, plan này chỉ mở đường tới nó.
+> `library` (`Handler`, `Reply`), **`session` — ba chỗ cộng thêm, xem Sửa 1**, docs, một ADR mới.
+> **Không chạm** `codec`, `dict`.
 >
 > **Máy chạy:** macOS đủ cho toàn bộ test; gate quyết định là job `interop` trong CI.
 > **Thời lượng dự kiến:** 2–3 ngày.
+
+> ## Sửa 1 `[2026-09-05]` — cửa 1 không thể mở mà không chạm `session`, và đây là ba chỗ
+>
+> **Ghi trước khi viết dòng code nào.** Dòng phạm vi ở trên nói *"không chạm `session`"* và nêu
+> lý do: `Session::send_application` đã có sẵn. Lý do đó vẫn đúng — **không một dòng logic nào
+> của session machine đổi** — nhưng nó trả lời sai câu hỏi. Câu hỏi là *engine gọi tới ứng dụng
+> bằng đường nào*, và đường đó đi qua trait `Application`, trait này **ở trong `crates/session`**.
+>
+> Đọc code 2026-09-05 mới thấy:
+>
+> | Chỗ | Sự thật | Vì sao chặn cửa 1 |
+> |---|---|---|
+> | `serve_with` (`engine/src/lib.rs:1336`) | nhận `A: Application` rồi **tự** bọc `InlineDispatch::new(app)` | `library` không cấy được một `Dispatch` của riêng nó vào; sáu entry point `*_with` vừa chốt xong sẽ phải đổi hết nếu muốn |
+> | `InlineDispatch<H>` (`engine/src/dispatch.rs:114`) | `impl<H: Application> Dispatch for InlineDispatch<H>` | muốn `Dispatch::on_logon` chạy tới `App` thì `Application` phải mang được method đó; Rust không có specialization để cấy một mặc định cho mọi `H` |
+> | `Config` (`session/src/lib.rs:285`) | có `inbound_sender_matches` / `serves` / `same_identity_as` — **toàn predicate, không có getter** | `Counterparty` mà `on_logon` nhận cần đọc `begin_string`, `sender_comp_id`, `target_comp_id` |
+>
+> **Ba thứ được cộng vào `crates/session`, tất cả đều cộng thêm và trơ:**
+>
+> 1. `Application::on_logon(...) -> Option<Range<usize>>` với **thân mặc định trả `None`** — mọi
+>    `impl Application` đang tồn tại vẫn biên dịch không sửa một chữ.
+> 2. Ba getter trên `Config`: `begin_string()`, `sender_comp_id()`, `target_comp_id()`.
+> 3. Không có gì nữa.
+>
+> **`Session` không gọi `on_logon`. Engine gọi.** Nên bất di bất dịch 2 không bị đụng: không
+> socket, không clock, không cấp phát, không `format!` nào được thêm vào session layer, và
+> `--test score` 59/59 là thứ chứng minh chuyện đó chứ không phải đoạn văn này.
+>
+> **Ba phương án đã loại, để lần sau khỏi mở lại:** (a) đổi sáu entry point thành generic trên
+> `D: Dispatch` — phá API vừa chốt hôm qua, đắt hơn nhiều lần thứ nó mua; (b) specialization —
+> không có trên stable; (c) bỏ cửa 1, để `tools/interop` dùng `Sender` từ thread khác sau khi
+> đọc `EventKind::LoggedOn` — **chạy được**, không chạm `session` dòng nào, nhưng bắt mọi người
+> dùng phải dựng một thread quan sát chỉ để nói câu đầu tiên, và biến thứ acceptor C++ làm bằng
+> ba dòng `onLogon` thành một bài tập về đồng bộ.
+>
+> **Chủ repo đảo được quyết định này bằng cách chọn (c)**: bỏ bước 2, giữ nguyên bước 3, và cửa 1
+> biến mất khỏi plan. Nếu vậy thì hai bước interop đỏ vẫn xanh được, chỉ là xanh theo cách khác.
 
 > **Vì sao plan này đứng trước đợt B**, dù item 45 xếp nó *trong* đợt B cạnh
 > `settings-for-both-roles`. `[quyết định 2026-09-05]` Một acceptor chỉ biết trả lời thì không
