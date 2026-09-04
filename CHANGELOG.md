@@ -27,6 +27,12 @@ below describe what a first release would contain.
   first two are records the log never wrote; the third is bytes the log called `OUT` that the
   socket never took, because a line is written when a message reaches the outbound queue and a
   dying socket discards that queue.
+- **The journal's on-disk format is version 1: a `FXBJ\x01` header and a CRC32 after every
+  record.** A record whose checksum does not match is treated exactly as a torn tail — the read
+  stops there, everything before it stands, and `FileJournal::corrupt_records` /
+  `Reader::corrupt_records` say so; `jrnl` warns and exits 2. **A file without the header is
+  version 0, read exactly as before, and stays version 0 as it is appended to.** Note at the
+  end of [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md).
 - **`Settings::log`**, and `Problem::SessionOnly` for a `FileLogPath` found in a `[SESSION]`
   block. One engine writes one file.
 - **`Engine::with_log`, `Engine::with_shard`, `Engine::shard`, `Engine::log_mut`** and
@@ -45,6 +51,9 @@ below describe what a first release would contain.
 - **`ServeError::LogPath`.** *(breaking: the enum is `#[non_exhaustive]`, but a `match` naming
   every variant will need it.)* A `FileLogPath` that cannot be opened is its own startup error,
   not `Io` — a missing directory and a busy port send an operator to two different places.
+- **`Reader::is_empty` means *no records and no torn tail*, not *zero bytes*.** A version-1
+  journal opened and never written to is five bytes of header, and a session that has sent
+  nothing must not read as a file with something in it.
 - **`Journal::put` returns `bool`, and `Journal::oldest` is new.** *(breaking)*
   [ADR-0046](docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
   Neither gets a default implementation, for the reason `highest` has none: a default that lies

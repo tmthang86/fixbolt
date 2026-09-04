@@ -263,6 +263,13 @@ pub struct FileJournal<const N: usize, const LEN: usize> {
     torn: usize,
     /// The latest activity mark, read back on open and updated on write.
     last_active: Option<u64>,
+    /// Which on-disk format this file is in. Decided at open, never changed.
+    format: Format,
+    /// Records whose CRC did not match what was stored beside them.
+    ///
+    /// **Zero on a version-0 file, always**, because that format carries no
+    /// checksums and cannot report one. See [`FileJournal::corrupt_records`].
+    corrupt: usize,
 }
 
 /// The header a `FileJournal` appends before each message: the sequence number
@@ -277,6 +284,78 @@ pub struct FileJournal<const N: usize, const LEN: usize> {
 const RECORD_SEQ: usize = 4;
 const RECORD_LEN: usize = 4;
 const RECORD_HEADER: usize = RECORD_SEQ + RECORD_LEN;
+
+/// The five bytes a version-1 journal starts with.
+///
+/// **A file without it is version 0 and is read exactly as it always was.**
+/// That is the whole compatibility rule: no byte of the old format changed, and
+/// the marker is the only thing that says a file has checksums. `FXBJ` is the
+/// project, `\x01` is the version.
+const HEADER_V1: &[u8; 5] = b"FXBJ\x01";
+
+/// Bytes a version-1 record carries after its payload: one CRC32.
+const RECORD_CRC: usize = 4;
+
+/// Which format a file is in.
+///
+/// **Decided when the file is opened and never changed afterwards.** A file
+/// whose first half has no checksums and whose second half does is a file no
+/// reader can parse without guessing where the change happened, so a version-0
+/// journal stays version 0 for as long as it is appended to. Only a file that
+/// did not exist gets a header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Format {
+    /// No header, no checksums. Everything written before 2026-09-04.
+    V0,
+    /// `FXBJ\x01`, and a CRC32 after every record's payload.
+    V1,
+}
+
+/// CRC32, IEEE polynomial, from a table built at compile time.
+///
+/// **Zero dependency, deliberately.** `codec` has none and this crate justifies
+/// each of its own; a 256-entry table is thirty lines and a `const fn`, and a
+/// crate for it would be a dependency in the dependency tree of a FIX engine
+/// for the rest of its life.
+const fn crc_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 == 1 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+            k += 1;
+        }
+        table[i] = c;
+        i += 1;
+    }
+    table
+}
+
+/// The table, built once at compile time.
+static CRC_TABLE: [u32; 256] = crc_table();
+
+/// CRC32 over `parts` laid end to end.
+///
+/// Takes the pieces rather than one slice so the caller never has to join
+/// `seq`, `len` and the payload into a buffer first — on the `Fsync` path that
+/// would be an allocation on the engine thread, which is the one thing this
+/// module may not do.
+fn crc32(parts: &[&[u8]]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for part in parts {
+        for b in *part {
+            let idx = ((crc ^ u32::from(*b)) & 0xFF) as usize;
+            crc = CRC_TABLE[idx] ^ (crc >> 8);
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
 
 /// A record whose length is zero is an **inbound mark**, not a message.
 ///
@@ -378,9 +457,29 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
         // and a recovery mechanism.
         let mut mem_recovered: MemJournal<N, LEN> = MemJournal::new();
         let mut torn = 0usize;
+        let mut corrupt = 0usize;
         let mut last_active: Option<u64> = None;
-        if let Ok(bytes) = std::fs::read(path) {
-            let mut at = 0usize;
+        // **The file decides the format, not this process.** A file that
+        // already exists is read in whatever it is, and appended to in the
+        // same, for ever. Only a file that is not there yet — or one that is
+        // there and empty — gets a header.
+        let existing = std::fs::read(path).unwrap_or_default();
+        // A file that is not there yet is version 1; one that is there is
+        // whatever its first five bytes say, for ever.
+        let has_header =
+            existing.len() >= HEADER_V1.len() && &existing[..HEADER_V1.len()] == HEADER_V1;
+        let format = if existing.is_empty() || has_header {
+            Format::V1
+        } else {
+            Format::V0
+        };
+        {
+            let bytes = &existing;
+            let mut at = if format == Format::V1 && !bytes.is_empty() {
+                HEADER_V1.len()
+            } else {
+                0
+            };
             while at + RECORD_HEADER <= bytes.len() {
                 let mut s4 = [0u8; 4];
                 let mut l4 = [0u8; 4];
@@ -389,7 +488,14 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 let seq = u32::from_le_bytes(s4);
                 let len = u32::from_le_bytes(l4) as usize;
                 let end = at + RECORD_HEADER + len;
-                if end > bytes.len() {
+                // A version-1 record carries its checksum after the payload, so
+                // "the whole record" is four bytes longer.
+                let whole = if format == Format::V1 {
+                    end + RECORD_CRC
+                } else {
+                    end
+                };
+                if whole > bytes.len() {
                     // A process killed mid-write. The tail is dropped rather
                     // than half-read: replaying bytes that never went on the
                     // wire is worse than replaying nothing, because a gap fill
@@ -403,6 +509,23 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                     torn = bytes.len() - at;
                     break;
                 }
+                // **A bad checksum is treated exactly as a torn tail is.** The
+                // reasoning is the one already written above and it does not
+                // change with the cause: a gap fill is a legal answer to a
+                // `ResendRequest` and a corrupt message is not, so the read
+                // stops here and everything before it stands. The difference
+                // from a tear is that this one is *detected* — before version 1
+                // a flipped byte was replayed as a real message, correctly
+                // framed and correctly numbered.
+                if format == Format::V1 {
+                    let mut c4 = [0u8; RECORD_CRC];
+                    c4.copy_from_slice(&bytes[end..whole]);
+                    if u32::from_le_bytes(c4) != crc32(&[&bytes[at..end]]) {
+                        corrupt = 1;
+                        torn = bytes.len() - at;
+                        break;
+                    }
+                }
                 if seq == ACTIVITY_MARK && len == ACTIVITY_LEN {
                     let mut t = [0u8; ACTIVITY_LEN];
                     t.copy_from_slice(&bytes[at + RECORD_HEADER..end]);
@@ -415,14 +538,20 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 } else {
                     mem_recovered.put(seq, &bytes[at + RECORD_HEADER..end]);
                 }
-                at = end;
+                at = whole;
             }
             if at + RECORD_HEADER > bytes.len() && at < bytes.len() {
                 // A tail too short to even hold a header is torn too.
                 torn = bytes.len() - at;
             }
         }
-        let file = File::options().create(true).append(true).open(path)?;
+        let mut file = File::options().create(true).append(true).open(path)?;
+        // The header goes on a file that had nothing in it. Written before any
+        // record, so a reader never sees a record without one.
+        if format == Format::V1 && existing.is_empty() {
+            file.write_all(HEADER_V1)?;
+            file.flush()?;
+        }
         let (mem, mut this) = (
             mem_recovered,
             Self {
@@ -434,6 +563,8 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 #[cfg(all(feature = "affinity", target_os = "linux"))]
                 writer_core: None,
                 torn,
+                format,
+                corrupt,
                 last_active,
             },
         );
@@ -449,13 +580,15 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 if let Some(core) = core {
                     let (handle, on) =
                         crate::affinity::spawn_pinned("fixbolt-journal", core, move || {
-                            write_loop(file, from_engine)
+                            write_loop(file, from_engine, format)
                         })?;
                     this.writer = Some(handle);
                     this.writer_core = Some(on);
                     return Ok(this);
                 }
-                this.writer = Some(std::thread::spawn(move || write_loop(file, from_engine)));
+                this.writer = Some(std::thread::spawn(move || {
+                    write_loop(file, from_engine, format)
+                }));
             }
         }
         Ok(this)
@@ -483,6 +616,23 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
         self.torn
     }
 
+    /// Records whose stored checksum did not match their bytes.
+    ///
+    /// **Zero or one**: the read stops at the first one, exactly as it stops at
+    /// a torn tail, so this says *whether* the file was corrupt rather than how
+    /// often. Everything before it is held and answerable; nothing after it is
+    /// trusted.
+    ///
+    /// **Always zero on a version-0 file** — one written before 2026-09-04, or
+    /// one that has been appended to since. That format has no checksums, so a
+    /// flipped byte in it is still replayed as though it were a real message.
+    /// That is what version 1 buys, and `crates/engine/tests/on_disk.rs` asserts
+    /// both halves so the second cannot quietly stop being true.
+    #[must_use]
+    pub const fn corrupt_records(&self) -> usize {
+        self.corrupt
+    }
+
     pub fn close(&mut self) {
         // An empty record is the stop signal: `push(&[])` writes a zero length,
         // which `write_loop` recognises and nothing else produces.
@@ -505,7 +655,7 @@ impl<const N: usize, const LEN: usize> Drop for FileJournal<N, LEN> {
 }
 
 /// The writer thread: everything the ring hands over, appended in order.
-fn write_loop(mut file: File, mut from_engine: Consumer) {
+fn write_loop(mut file: File, mut from_engine: Consumer, format: Format) {
     let mut buf = [0u8; 4096];
     loop {
         match from_engine.pop(&mut buf) {
@@ -517,6 +667,14 @@ fn write_loop(mut file: File, mut from_engine: Consumer) {
             }
             Some(n) => {
                 let _ = file.write_all(&buf[..n]);
+                // **The checksum is computed here, not on the engine thread.**
+                // `Async` exists to keep work off that thread, and a CRC over a
+                // 200-byte record is ~100 ns of it. `Fsync` has no writer to
+                // hand it to and pays it inline, which is the smaller half of
+                // what that mode already costs.
+                if format == Format::V1 {
+                    let _ = file.write_all(&crc32(&[&buf[..n]]).to_le_bytes());
+                }
             }
             None => std::hint::spin_loop(),
         }
@@ -552,6 +710,12 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
                     rec[RECORD_SEQ..].copy_from_slice(&n.to_le_bytes());
                     let _ = f.write_all(&rec);
                     let _ = f.write_all(bytes);
+                    if self.format == Format::V1 {
+                        // Over the pieces, never over a joined buffer: joining
+                        // them here would allocate on the engine thread, which
+                        // is the one thing this module may not do.
+                        let _ = f.write_all(&crc32(&[&rec, bytes]).to_le_bytes());
+                    }
                     let _ = f.sync_data();
                 }
             }
@@ -596,6 +760,9 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
                     rec[RECORD_SEQ..RECORD_HEADER].copy_from_slice(&n.to_le_bytes());
                     rec[RECORD_HEADER..].copy_from_slice(&at_ms.to_le_bytes());
                     let _ = f.write_all(&rec);
+                    if self.format == Format::V1 {
+                        let _ = f.write_all(&crc32(&[&rec]).to_le_bytes());
+                    }
                     let _ = f.sync_data();
                 }
             }
@@ -625,6 +792,9 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
                     rec[..RECORD_SEQ].copy_from_slice(&seq.to_le_bytes());
                     rec[RECORD_SEQ..].copy_from_slice(&0u32.to_le_bytes());
                     let _ = f.write_all(&rec);
+                    if self.format == Format::V1 {
+                        let _ = f.write_all(&crc32(&[&rec]).to_le_bytes());
+                    }
                     let _ = f.sync_data();
                 }
             }
@@ -713,6 +883,8 @@ impl Record<'_> {
 pub struct Reader {
     bytes: Vec<u8>,
     torn: usize,
+    format: Format,
+    corrupt: usize,
 }
 
 impl Reader {
@@ -723,21 +895,66 @@ impl Reader {
     /// Whatever reading the file returns.
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
-        let mut at = 0usize;
+        let format = if bytes.len() >= HEADER_V1.len() && &bytes[..HEADER_V1.len()] == HEADER_V1 {
+            Format::V1
+        } else {
+            Format::V0
+        };
+        let mut at = if format == Format::V1 {
+            HEADER_V1.len()
+        } else {
+            0
+        };
+        let mut corrupt = 0usize;
         while at + RECORD_HEADER <= bytes.len() {
             let mut l4 = [0u8; 4];
             l4.copy_from_slice(&bytes[at + RECORD_SEQ..at + RECORD_HEADER]);
             let len = u32::from_le_bytes(l4) as usize;
-            match at
+            let Some(end) = at
                 .checked_add(RECORD_HEADER)
                 .and_then(|x| x.checked_add(len))
-            {
-                Some(end) if end <= bytes.len() => at = end,
-                _ => break,
+            else {
+                break;
+            };
+            let whole = if format == Format::V1 {
+                match end.checked_add(RECORD_CRC) {
+                    Some(w) => w,
+                    None => break,
+                }
+            } else {
+                end
+            };
+            if whole > bytes.len() {
+                break;
             }
+            if format == Format::V1 {
+                let mut c4 = [0u8; RECORD_CRC];
+                c4.copy_from_slice(&bytes[end..whole]);
+                if u32::from_le_bytes(c4) != crc32(&[&bytes[at..end]]) {
+                    corrupt = 1;
+                    break;
+                }
+            }
+            at = whole;
         }
         let torn = bytes.len() - at;
-        Ok(Self { bytes, torn })
+        Ok(Self {
+            bytes,
+            torn,
+            format,
+            corrupt,
+        })
+    }
+
+    /// Records whose stored checksum did not match their bytes.
+    ///
+    /// **Zero or one**, and always zero on a version-0 file — see
+    /// [`FileJournal::corrupt_records`], which says the same thing for the
+    /// writing side. Non-zero means everything after that point is not shown
+    /// and not to be trusted, exactly as a torn tail is not.
+    #[must_use]
+    pub const fn corrupt_records(&self) -> usize {
+        self.corrupt
     }
 
     /// Every whole record, in the order they were written.
@@ -745,7 +962,12 @@ impl Reader {
     pub fn records(&self) -> Records<'_> {
         Records {
             bytes: &self.bytes,
-            at: 0,
+            at: if self.format == Format::V1 {
+                HEADER_V1.len()
+            } else {
+                0
+            },
+            format: self.format,
         }
     }
 
@@ -765,10 +987,25 @@ impl Reader {
         self.bytes.len()
     }
 
-    /// Whether the file holds nothing at all.
+    /// Whether the file holds nothing to read.
+    ///
+    /// `[changed 2026-09-04]` **This is "no records and no torn tail", not
+    /// "zero bytes".** A version-1 journal opened and never written to is five
+    /// bytes of header, and a session that has sent nothing must not read as a
+    /// file with something in it — the distinction the caller actually wants is
+    /// *is there anything here to look at*, and the header is not.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.bytes.len() <= self.header_len() && self.torn == 0
+    }
+
+    /// How many bytes precede the first record. Five for version 1, zero for
+    /// version 0.
+    const fn header_len(&self) -> usize {
+        match self.format {
+            Format::V1 => HEADER_V1.len(),
+            Format::V0 => 0,
+        }
     }
 }
 
@@ -777,6 +1014,7 @@ impl Reader {
 pub struct Records<'a> {
     bytes: &'a [u8],
     at: usize,
+    format: Format,
 }
 
 impl<'a> Iterator for Records<'a> {
@@ -794,14 +1032,29 @@ impl<'a> Iterator for Records<'a> {
         let seq = u32::from_le_bytes(s4);
         let len = u32::from_le_bytes(l4) as usize;
         let end = at.checked_add(RECORD_HEADER)?.checked_add(len)?;
-        if end > self.bytes.len() {
+        let whole = if self.format == Format::V1 {
+            end.checked_add(RECORD_CRC)?
+        } else {
+            end
+        };
+        if whole > self.bytes.len() {
             // The torn tail. `Reader::torn_tail_bytes` is where it is reported;
             // stopping here without saying so is the defect this whole type
             // exists to avoid, and the reader carries the count for exactly
             // that reason.
             return None;
         }
-        self.at = end;
+        if self.format == Format::V1 {
+            let mut c4 = [0u8; RECORD_CRC];
+            c4.copy_from_slice(self.bytes.get(end..whole)?);
+            if u32::from_le_bytes(c4) != crc32(&[self.bytes.get(at..end)?]) {
+                // Same rule as `FileJournal::open_with`: stop, and let
+                // `Reader::corrupt_records` be what says why. `tools/jrnl`
+                // turns that into a warning and exit 2, the same as a tear.
+                return None;
+            }
+        }
+        self.at = whole;
         if seq == ACTIVITY_MARK && len == ACTIVITY_LEN {
             let mut t = [0u8; ACTIVITY_LEN];
             t.copy_from_slice(self.bytes.get(at + RECORD_HEADER..end)?);

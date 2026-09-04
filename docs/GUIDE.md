@@ -1209,13 +1209,22 @@ your own tooling
 **Three things to know before you trust the answer.**
 
 1. **Check the exit code, or read stderr.** A file whose tail is torn — a process killed
-   mid-write — makes `jrnl` warn and exit **2**. Those bytes are not shown and not replayed,
+   mid-write — **or one whose checksum does not match `[2026-09-04]`** makes `jrnl` warn and
+   exit **2**. Those bytes are not shown and not replayed,
    so *"no, we never received it"* drawn from a torn file **might be wrong**.
    `Reader::torn_tail_bytes()` is the same fact for a program.
 2. **The whole file is read into memory.** Fine for a tool, and a real limit for a very large
    journal; there is no streaming reader.
 3. **Do not read a file the engine is still appending to.** You will see a consistent prefix
    and probably a torn-tail warning. Nothing about that case is promised or tested.
+
+`[2026-09-04]` **A journal written from this version on carries a CRC32 per record**, and a
+record that does not match its checksum stops the read exactly as a torn tail does —
+`corrupt_records()` is the count, on `Reader` and on `FileJournal` alike. A file written
+before, or any file that already existed when this version first opened it, has **no**
+checksums and never will: one file, one format, so a reader never has to guess where the format
+changed. So *"the file is clean"* means different things for the two, and the exit code is
+still the thing to check.
 
 `jrnl` does not decode FIX — it prints the bytes with `SOH` shown as `|` and leaves the rest
 to `grep`. Interpreting a message needs the dictionary, and a program that reads a file has no

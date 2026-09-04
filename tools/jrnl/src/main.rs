@@ -112,7 +112,21 @@ fn main() -> ExitCode {
     // process was killed mid-write; an answer of "no, we never received it"
     // given from a file with a torn tail is an answer that might be wrong, and
     // whoever is reading must be told rather than having to ask.
+    // **A bad checksum is reported first, because it is the worse news.** A
+    // torn tail is a process that was killed; a record whose CRC does not match
+    // is a file that was *changed* after it was written, and everything after
+    // that point is not shown for the same reason a torn tail is not.
+    let corrupt = reader.corrupt_records();
     let torn = reader.torn_tail_bytes();
+    if corrupt > 0 {
+        eprintln!(
+            "warning: a record in {} does not match its checksum — the file has been \
+             damaged or changed since it was written, and nothing from that record \
+             onwards ({torn} byte(s)) is shown above",
+            path.display()
+        );
+        return ExitCode::from(2);
+    }
     if torn > 0 {
         eprintln!(
             "warning: {torn} byte(s) at the end of {} do not form a whole record — \
