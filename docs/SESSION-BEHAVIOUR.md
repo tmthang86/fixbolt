@@ -1,161 +1,160 @@
 # Session Behaviour at the Boundary
 
-What the FIX 4.4 session layer does with a message before your application ever
-sees it: which messages it answers itself, which it rejects, and when it drops the
-connection. This page is a reference, not a tutorial — for how to embed the engine
-see [GUIDE.md](GUIDE.md), and for the vocabulary see [INTRODUCTION.md](INTRODUCTION.md).
+What the session layer does with a message before your application sees it: which messages
+it answers itself, which it rejects, and when it drops the connection.
 
-**Every row names the `.def` file or the test that holds it.** The `.def` files are
-the QuickFIX acceptance definitions, fetched into gitignored `vendor/` by
-`scripts/fetch-quickfix-assets.sh`; the 59 the session layer is gated against are its
-primary conformance gate. A behaviour with nothing to point at is not on this page —
-if you find one missing, it is missing because nothing proves it, which is the point.
+This page is a reference. For how to embed the engine see [GUIDE.md](GUIDE.md); for the
+vocabulary see [INTRODUCTION.md](INTRODUCTION.md).
 
-The pure session machine lives in `crates/session/src/lib.rs`. It has no socket and
-no clock: time arrives as `Input::Tick`, and every decision below is taken without
-allocating.
+**Every row names the `.def` file or the test that holds it.** The `.def` files are the
+QuickFIX acceptance definitions, fetched into gitignored `vendor/` by
+`scripts/fetch-quickfix-assets.sh`. A behaviour with nothing to point at is deliberately not
+on this page: if it is not proven, it is not documented as if it were.
+
+The session machine lives in `crates/session/src/lib.rs`. It has no socket and no clock. Time
+arrives as `Input::Tick`, and nothing below allocates.
 
 ---
 
-## 1. The Logon handshake, and why a connection is dropped
+## 1. Logon, and why a connection is dropped
 
-The first message on a connection must be a `Logon` (`35=A`) carrying both `98=`
-(EncryptMethod) and `108=` (HeartBtInt). Anything else, and the session drops the
-connection rather than replying — a refused Logon gets silence, not a Reject.
+The first message on a connection must be a Logon (`35=A`) carrying `98=` (EncryptMethod)
+and `108=` (HeartBtInt). Anything else drops the connection without a reply. **A refused
+Logon gets silence, not a Reject.**
 
-Every reason the session drops is a variant of `DropReason` (`crates/session/src/lib.rs`,
-`pub enum DropReason`), and each variant names the exact wire condition:
+Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.rs`:
 
 | `DropReason` | Wire condition |
 |---|---|
 | `WrongBeginString` | `8=` is not the configured `BeginString` |
-| `NotALogon` | the first message on the connection was not a `Logon` |
-| `LogonIncomplete` | a `Logon` missing `98=` or `108=`, both required by FIX 4.4 |
+| `NotALogon` | the first message was not a Logon |
+| `LogonIncomplete` | a Logon missing `98=` or `108=` |
 | `WrongSenderCompId` | `49=` is not the configured counterparty |
 | `WrongTargetCompId` | `56=` is not us |
-| `SendingTimeOutOfRange` | `52=` is absent, unreadable, or further from the engine's clock than `max_skew_ms` — check NTP; `Session::last_skew_ms` says by how much |
+| `SendingTimeOutOfRange` | `52=` is absent, unreadable, or further from the engine's clock than `max_skew_ms`. Check NTP; `Session::last_skew_ms` says by how much |
 | `SequenceNumberTooLow` | `34=` is absent, unreadable, or already used |
 | `OutsideSchedule` | a message arrived while the schedule says the session is shut |
-| `CannotSend` | the session could not put a message on the wire; it fails closed rather than send something malformed |
-| `HeartbeatTimeout` | nothing arrived for long enough that the session gave up, after an unanswered `TestRequest` |
-| `PeerLogout` | the counterparty sent a `Logout` |
-| `ScheduleClosed` | the schedule's window closed on a live session — **not a fault** |
+| `CannotSend` | the session could not put a message on the wire and fails closed rather than send something malformed |
+| `HeartbeatTimeout` | nothing arrived for long enough, after an unanswered TestRequest |
+| `PeerLogout` | the counterparty sent a Logout |
+| `ScheduleClosed` | the schedule's window closed on a live session; **not a fault** |
+| `TransportClosed` | the socket closed |
+| `DuplicateIdentity` | a second connection claimed an identity that is already logged on ([ADR-0030](decisions/ADR-0030-one-engine-holds-many-counterparties.md)) |
+| `SlowApplication` | the ring to the application filled ([ADR-0011](decisions/ADR-0011-a-full-ring-disconnects.md)) |
+| `SlowConsumer` | the counterparty stopped reading and the send queue filled (DESIGN.md D10) |
+| `EngineShutdown` | an ordered shutdown closed it at the deadline ([ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md)) |
 
-`DropReason` is `#[non_exhaustive]`: match it with a `_` arm. It is surfaced to the
-operator through the event stream (see [GUIDE.md](GUIDE.md) §8a, *Why a connection
-ended*).
+`DropReason` is `#[non_exhaustive]`; match it with a `_` arm. The engine pushes it to the
+operator on the event stream ([GUIDE.md §8a](GUIDE.md), *Why a connection ended*).
 
 ---
 
 ## 2. The seven messages the session answers itself
 
-Administrative traffic never reaches your application. The session emits these seven
-message shapes on its own (`crates/session/src/lib.rs`, `enum Which`):
+Administrative traffic never reaches your application. The session emits these on its own
+(`enum Which` in `crates/session/src/lib.rs`):
 
 | Emitted | When |
 |---|---|
-| `Logon` (`35=A`) | to accept a valid counterparty Logon, or to initiate one |
-| `Logout` (`35=5`) | to end the session, and in reply to a peer `Logout` |
-| `Heartbeat` (`35=0`) | on the `HeartBtInt` interval, and in reply to a `TestRequest` |
-| `TestRequest` (`35=1`) | when the interval passes with nothing heard — one unanswered `TestRequest` then drops (`HeartbeatTimeout`) |
-| `Reject` (`35=3`) | a session-level reject; see §3 |
-| `ResendRequest` (`35=2`) | when an inbound sequence number is higher than expected — a gap |
-| `SequenceReset` gap fill (`35=4`, `123=Y`) | to fill a gap in the outbound stream during a resend |
+| Logon (`35=A`) | to accept a valid counterparty Logon, or to open a session as initiator |
+| Logout (`35=5`) | to end the session, and in reply to a peer Logout |
+| Heartbeat (`35=0`) | every `HeartBtInt`, and in reply to a TestRequest |
+| TestRequest (`35=1`) | when the interval passes with nothing heard; one unanswered TestRequest, then `HeartbeatTimeout` |
+| Reject (`35=3`) | a session-level reject; see §3 |
+| ResendRequest (`35=2`) | when an inbound sequence number is higher than expected |
+| SequenceReset gap fill (`35=4`, `123=Y`) | to fill a gap in the outbound stream during a resend |
 
-The `TestRequest` id (`112`) is a fixed constant, because the oracle makes it one:
-`6_SendTestRequest.def` writes `112=TEST` and nothing in FIX 4.4 fixes its value.
+The TestRequest id (`112=`) is a fixed constant, because the oracle makes it one:
+`6_SendTestRequest.def` writes `112=TEST`, and FIX 4.4 does not fix its value.
 
 ---
 
-## 3. Session-level rejects — which `373` comes back
+## 3. Session-level rejects: which `373=` comes back
 
-A malformed but well-framed message earns a `Reject` (`35=3`) naming
-`SessionRejectReason` (`373`). The message is walked once in wire order and the **first
-fault wins** — the corpus depends on this ordering. The mapping below is held by the
-`.def` files named:
+A well-framed but malformed message earns a Reject (`35=3`) naming `SessionRejectReason`
+(`373=`). The message is walked once in wire order and the **first fault wins**; the corpus
+depends on that order.
 
 | `373=` | Meaning | Held by |
 |---|---|---|
 | `0` | invalid tag / garbled | `2d_GarbledMessage.def` |
 | `1` | required field missing | `2g_PossDupNoOrigSendingTime.def` (names `122`) |
-| `4` | tag specified without a value | `14d` (`56=` empty, which beats the CompID mismatch) |
+| `4` | tag specified without a value | `14d` (`56=` empty, which wins over the CompID mismatch) |
 | `9` | CompID problem | the `14*` family |
 | `10` | SendingTime accuracy | `2m_BodyLengthValueNotCorrect.def` (via `122` OrigSendingTime) |
 | `11` | invalid MsgType | `2r_UnregisteredMsgType.def` |
 
-Ordering is itself tested: `14d` proves required-field runs before CompID, and the
-`14h` family proves MsgType-not-defined runs after required-field. Break the order and
-those files change which `373` they see.
+The order itself is tested: `14d` proves the required-field check runs before the CompID
+check, and the `14h` family proves the MsgType check runs after the required-field check.
 
-**A session reject is not a business reject.** `2r_UnregisteredMsgType.def` sends
-`35=8` (an application message of an unsupported type), and the engine answers with a
-*business* reject, not a `373`. Unsupported application types are the application's
-concern; malformed session plumbing is the session's.
+**A session reject is not a business reject.** `2r_UnregisteredMsgType.def` sends `35=8` as
+an application message of an unsupported type, and the engine answers with a *business*
+reject, not a `373=`. Unsupported application types are the application's concern; malformed
+session plumbing is the session's.
 
 ---
 
-## 4. Sequence numbers, gaps, and resend
+## 4. Sequence numbers, gaps and resends
 
-- **A gap triggers a `ResendRequest`.** An inbound `34=` higher than expected means
-  messages were missed; the session asks for them and holds newer messages until the
-  gap fills.
-- **Gap fill defaults to `123=N`.** A `SequenceReset` with `123=` absent is treated as
-  `N` — `11a` and `11b` leave it out and the session must default it.
-- **A `SequenceReset-Reset` (`123=N`) versus gap fill (`123=Y`)** reset the expected
-  number differently; the table in `crates/session/src/lib.rs` around the resend logic
-  records which of the two restarts the counts and which does not.
-- **`141=Y` on a Logon resets both sequence counts** before the Logon's own numbers are
-  applied — the only thing that restarts a resumed session's counters.
-- **`16=0` and a range past what was sent are both clamped** to the last number this end
-  actually sent. Guarded by `crates/engine/tests/journal.rs::what_no_longer_fits_in_the_ring_is_filled_over_not_skipped`.
-- `[2026-09-04]` **An answer goes out in batches**, `Config::resend_batch` messages per call —
-  a replay is one message and a gap fill is one message however many numbers it covers.
-  The rest follow on later calls, interleaved with new traffic: a replayed message carries its
-  original `34=` with `43=Y`, a new one carries the next new number. Continued by
-  `Session::tick_with` and by each judged message; **plain `Session::tick` does not continue
-  one**, because it has no journal and would gap-fill the remainder. Guarded by
+- **A gap triggers a ResendRequest.** An inbound `34=` above the expected number means
+  messages were missed. The session asks for them and holds newer messages until the gap
+  fills.
+- **Gap fill defaults to `123=N`.** A SequenceReset with no `123=` is read as `N`; `11a` and
+  `11b` leave it out.
+- **Reset versus gap fill.** A SequenceReset with `123=N` and one with `123=Y` move the
+  expected number differently. The table beside the resend logic in
+  `crates/session/src/lib.rs` records which restarts the counts.
+- **`141=Y` on a Logon resets both counts** before the Logon's own numbers are applied. It is
+  the only thing that restarts a resumed session's counters.
+- **`16=0` and a range past what was sent are clamped** to the last number this end actually
+  sent. Guarded by
+  `crates/engine/tests/journal.rs::what_no_longer_fits_in_the_ring_is_filled_over_not_skipped`.
+- **A resend is answered in batches** `[2026-09-04]` of `Config::resend_batch` messages per
+  call; a replayed message and a gap fill each count as one, whatever range the gap fill
+  covers. The rest follow on later calls, interleaved with new traffic: a replay carries its
+  original `34=` with `43=Y`, a new message carries the next new number. `Session::tick_with`
+  and each judged message continue a replay; **plain `Session::tick` does not**, because it
+  has no journal and would gap-fill the remainder. Guarded by
   `crates/engine/tests/journal.rs::a_long_resend_is_replayed_over_several_ticks_in_order`,
   `::a_replay_stalls_on_the_journal_less_tick_and_says_nothing_wrong` and
-  `crates/engine/tests/backpressure.rs::a_resend_larger_than_tx_does_not_end_the_session`.
-  [ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
-- `[2026-09-04]` **A replay in progress is cancelled** by a disconnect, by a schedule boundary
-  that restarts the counts, and by a newer `ResendRequest` — which replaces it rather than
+  `crates/engine/tests/backpressure.rs::a_resend_larger_than_tx_does_not_end_the_session`
+  ([ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)).
+- **A replay in progress is cancelled** `[2026-09-04]` by a disconnect, by a schedule boundary
+  that restarts the counts, and by a newer ResendRequest, which replaces it rather than
   queueing behind it. Guarded by `::a_disconnect_cancels_a_resend_in_progress`,
   `::a_schedule_reset_cancels_a_resend_in_progress` and
   `::a_new_resend_request_replaces_the_one_in_progress`.
-- `[2026-09-04]` **Numbers below the journal's floor are gap-filled and counted.** Legal on the
-  wire and otherwise invisible; `SessionSnapshot::resend_beyond_journal` and
-  `EventKind::ResendBeyondJournal { filled, oldest }` say how many messages, not how many
-  times. A fill over an administrative message is **not** counted — none was ever replayable.
-  Guarded by `::a_resend_that_reaches_below_the_ring_counts_every_number_it_filled` and
+- **Numbers older than the journal ring are gap-filled and counted** `[2026-09-04]`.
+  `SessionSnapshot::resend_beyond_journal` and
+  `EventKind::ResendBeyondJournal { filled, oldest }` count messages, not occurrences. A fill
+  over an administrative message is not counted, because none was ever replayable. Guarded by
+  `::a_resend_that_reaches_below_the_ring_counts_every_number_it_filled` and
   `::a_fill_over_messages_the_ring_never_held_is_not_counted`.
 
 ---
 
-## 5. PossDup, PossResend, and OrigSendingTime
+## 5. PossDup, PossResend and OrigSendingTime
 
-- **`43=Y` PossDup** marks a possibly-duplicate retransmission; it requires `122`
-  OrigSendingTime. `2g_PossDupNoOrigSendingTime.def` omits it and earns `373=1`.
-- **`97=Y` PossResend** marks a message the sender may have sent before.
+- **`43=Y` (PossDup)** marks a possible duplicate and requires `122=` OrigSendingTime.
+  `2g_PossDupNoOrigSendingTime.def` omits it and earns `373=1`.
+- **`97=Y` (PossResend)** marks a message the sender may have sent before.
   `19b_PossResendMessageThatHasNotBeenSent.def` sends one the receiver has not seen.
-- **`122` OrigSendingTime** is checked against SendingTime; `2m_BodyLengthValueNotCorrect.def`
-  exercises the `122` path.
+- **`122=` OrigSendingTime** is checked against SendingTime; `2m_BodyLengthValueNotCorrect.def`
+  exercises that path.
 
 ---
 
 ## 6. What this page does not claim
 
-The 59 `.def` files are a conformance corpus, not an adversarial one — see
-[reference/a-conformance-corpus-is-not-an-adversarial-one.md](reference/a-conformance-corpus-is-not-an-adversarial-one.md).
-A behaviour with no `.def` file and no test behind it is not documented here as though
-it were proven. Where a boundary decision matters to you and you do not find it above,
-read the code — `crates/session/src/lib.rs` — rather than assume the behaviour, and if
-it is real and untested, that is a gap worth a test before it is worth a doc row.
+The 59 `.def` files are a conformance corpus, not an adversarial one
+([reference/a-conformance-corpus-is-not-an-adversarial-one.md](reference/a-conformance-corpus-is-not-an-adversarial-one.md)).
+A behaviour with no `.def` file and no test behind it is not listed here. If a boundary
+decision matters to you and is missing, read `crates/session/src/lib.rs` rather than assume,
+and if the behaviour is real and untested, it deserves a test before it deserves a row here.
 
-`[2026-09-04]` **Reading the code is no longer the only way to see what actually happened.**
-Setting `FileLogPath` writes every message this engine saw or sent to a text file, one line
-each, **including the frames it refused before the session ever judged them** — which is
-exactly the class this page cannot document, because a refusal that never reaches the session
-has no session behaviour to describe. `GUIDE.md` §6c, `DESIGN.md` D14. **No session behaviour
-changes because the log is on**: it is written at the engine's edges, and the session neither
-knows about it nor can.
+**To see what actually happened on a connection**, turn on the message log with
+`FileLogPath` `[2026-09-04]`. It writes every message the engine saw or sent, one line each,
+**including frames refused before the session judged them**, which is exactly the class this
+page cannot describe because a refusal that never reaches the session has no session
+behaviour. The log is written at the engine's edges; the session neither knows about it nor
+changes because of it ([GUIDE.md §6c](GUIDE.md), [DESIGN.md](DESIGN.md) D14).

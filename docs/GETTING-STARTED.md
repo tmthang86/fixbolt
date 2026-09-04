@@ -1,25 +1,29 @@
 # Getting Started with fixbolt
 
-A concise guide to embedding `fixbolt` as a FIX 4.4 acceptor in three steps:
-configuration, application handler, and engine bootstrap.
+Run a FIX 4.4 acceptor in three steps: a configuration file, a handler, and one call to start
+the engine. Every snippet here is taken from code the test suite runs:
 
-This guide follows the QuickFIX/J pattern (config → application → bootstrap)
-and is grounded entirely in tested code from [`crates/library/examples/acceptor.rs`](../crates/library/examples/acceptor.rs),
-[`crates/library/examples/acceptor.cfg`](../crates/library/examples/acceptor.cfg), and
-[`crates/library/tests/end_to_end.rs`](../crates/library/tests/end_to_end.rs).
+- [`crates/library/examples/acceptor.cfg`](../crates/library/examples/acceptor.cfg) — the configuration
+- [`crates/library/examples/shared/order_handler.rs`](../crates/library/examples/shared/order_handler.rs) — the handler
+- [`crates/library/examples/acceptor.rs`](../crates/library/examples/acceptor.rs) — the entry point
+- [`crates/library/tests/end_to_end.rs`](../crates/library/tests/end_to_end.rs) — drives the example through a real socket
 
-> Note on availability: `fixbolt` is not yet published to crates.io (`version = "0.0.0"`).
-> Depend on it via path in this workspace or via git dependency in your `Cargo.toml`.
-> Do not use `cargo add fixbolt`.
+> **Not on crates.io yet.** Every crate is `version = "0.0.0"` and `publish = false`. Depend
+> on `fixbolt` by path inside this workspace or as a git dependency. `cargo add fixbolt` will
+> not work.
+
+Before anything else, fetch the FIX dictionary the build needs:
+
+```sh
+scripts/fetch-quickfix-assets.sh
+```
 
 ---
 
-## 1. Configuration: `acceptor.cfg`
+## Step 1: the configuration file
 
-`fixbolt` loads counterparties and session parameters from an INI file formatted
-like QuickFIX's configuration, with explicit sections for `[DEFAULT]` and each `[SESSION]`.
-
-Here is [`crates/library/examples/acceptor.cfg`](../crates/library/examples/acceptor.cfg):
+`fixbolt` reads counterparties and session settings from an INI-style file in the same shape
+as QuickFIX's, so an existing QuickFIX configuration will look familiar.
 
 ```ini
 [DEFAULT]
@@ -35,22 +39,31 @@ TargetCompID=BANZAI
 HeartBtInt=30
 ```
 
-### Key Differences from QuickFIX (ADR-0040)
-* **Strict keys:** An unrecognised key is an error that halts startup, never silently ignored.
-* **Explicit sessions:** A file with no `[SESSION]` section fails immediately rather than silently listening for nobody.
-* **Strict schedules:** Specifying a `StartTime` without an `EndTime` fails instead of defaulting to midnight.
-* **UTC only:** All times are UTC; there is no timezone name or offset parsing in the settings file.
+`[DEFAULT]` holds values shared by every session. Each `[SESSION]` names one counterparty
+that is allowed to log on. A socket whose Logon names any other `TargetCompID` is closed
+without a reply.
+
+Four things differ from QuickFIX, each on purpose
+([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)):
+
+- **An unknown key is an error.** A mistyped `Starttime` stops startup instead of being
+  ignored.
+- **A file with no `[SESSION]` is an error.** An acceptor that serves nobody looks exactly like
+  a firewall dropping the port.
+- **A half-written schedule is an error.** `StartTime` without `EndTime` is refused, not
+  completed with midnight.
+- **Times are UTC.** There is no timezone name and no offset key.
+
+Every key is described in [CONFIGURATION.md](CONFIGURATION.md).
 
 ---
 
-## 2. The Application Handler: `Handler`
+## Step 2: the handler
 
-Your application implements the [`Handler`](../crates/library/src/app.rs) trait.
-Incoming messages are already framed, indexed, and validated.
-Administrative messages (`35=0, 1, 2, 3, 4, 5, A`) are handled automatically
-by the session state machine; only application messages reach your handler.
-
-Here is the worked order handler from [`crates/library/examples/shared/order_handler.rs`](../crates/library/examples/shared/order_handler.rs):
+Your code implements the [`Handler`](../crates/library/src/app.rs) trait. By the time
+`on_message` is called, the message has been framed, indexed and validated, and every
+administrative message (`35=0, 1, 2, 3, 4, 5, A`) has already been answered by the session
+layer. Only application messages reach you.
 
 ```rust
 use fixbolt::{Answer, Handler, Incoming, Reply};
@@ -62,13 +75,12 @@ pub struct Desk {
 
 impl Handler for Desk {
     fn on_message(&mut self, msg: &Incoming<'_>, reply: Reply<'_>) -> Answer {
-        // Administrative messages were already answered by the session layer.
-        // Ignore any non-order messages:
+        // Only NewOrderSingle (35=D) gets a reply; everything else is ignored.
         if msg.msg_type() != b"D" {
             return reply.silent();
         }
 
-        // Extract fields directly from the engine's read buffer (zero copy):
+        // Fields are borrowed straight out of the engine's read buffer.
         let (Some(qty), Some(price), Some(cl_ord_id)) = (msg.get(38), msg.get(44), msg.get(11))
         else {
             return reply.silent();
@@ -78,14 +90,14 @@ impl Handler for Desk {
         let mut buf = [0u8; 16];
         let exec_id = format_exec_id(self.fills, &mut buf);
 
-        // Build the outbound ExecutionReport (35=8):
+        // Build an ExecutionReport (35=8) that fills the order.
         reply
             .message(b"8")
             .field(37, exec_id)                  // OrderID
             .field(17, exec_id)                  // ExecID
-            .field(150, b"F")                    // ExecType (Trade)
-            .field(39, b"2")                     // OrdStatus (Filled)
-            .field(11, cl_ord_id)                // ClOrdID (borrowed echo)
+            .field(150, b"F")                    // ExecType = Trade
+            .field(39, b"2")                     // OrdStatus = Filled
+            .field(11, cl_ord_id)                // ClOrdID, echoed
             .field(55, msg.get(55).unwrap_or(b"")) // Symbol
             .field(54, msg.get(54).unwrap_or(b"")) // Side
             .field(38, qty)                      // OrderQty
@@ -118,20 +130,20 @@ fn format_exec_id(n: u32, buf: &mut [u8; 16]) -> &[u8] {
 }
 ```
 
-### Handler Invariants
-* **Header & trailer fields are automatic:** Fields `8`, `9`, `10`, `34`, `49`, `52`, and `56` are
-  managed by [`Reply`](../crates/library/src/reply.rs). Outbound fields are emitted in canonical
-  dictionary order regardless of the order you chain `.field(...)` calls.
-* **The engine thread is inline:** `Handler::on_message` runs directly on the engine thread ([ADR-0002](../docs/decisions/ADR-0002-engine-library-split.md)).
-  **Do not block**, perform synchronous database queries, or await network calls in this method.
-  Blocking the handler blocks heartbeat generation and all other sessions on the core.
+Two things to know about the handler:
+
+- **You never write the header or trailer.** Tags `8`, `9`, `10`, `34`, `49`, `52` and `56`
+  are written by [`Reply`](../crates/library/src/reply.rs). Fields you name are emitted in the
+  dictionary's order no matter which order you call `.field(...)` in.
+- **It runs on the engine thread.** Do not block, query a database, or wait on the network
+  inside `on_message`. A stalled handler stalls heartbeats and every other session on that
+  thread ([GUIDE.md §2](GUIDE.md)).
 
 ---
 
-## 3. Bootstrap: `serve`
+## Step 3: start the engine
 
-To start the engine, load the configuration table and call `fixbolt::serve`.
-Here is `main` from [`crates/library/examples/acceptor.rs`](../crates/library/examples/acceptor.rs):
+Load the settings into a table and call `fixbolt::serve`:
 
 ```rust
 use fixbolt::{Limits, Settings};
@@ -140,43 +152,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = "crates/library/examples/acceptor.cfg";
     let addr = "127.0.0.1:9876";
 
-    // 1. Load configuration table:
+    // 1. Load the configuration into a table of counterparties.
     let table = Settings::load(cfg)?.into_table();
     println!("serving {} counterparties on {addr}", table.len());
 
-    // 2. Start the acceptor engine:
+    // 2. Start the acceptor.
     let shutdown = fixbolt::serve(
         addr,
         table,
         fixbolt::app(Desk::default()),
-        64,                       // Maximum concurrent connections
-        Limits::new(64, 30_000)?, // Pending logon sockets (max 64, timeout 30s)
+        64,                       // connections held at once
+        Limits::new(64, 30_000)?, // sockets waiting to log on, and how long each has (ms)
+        fixbolt::NoLog,           // no message log; FileLog::open(path) turns one on
     )?;
 
-    println!("Acceptor stopped cleanly: {shutdown:?}");
+    println!("stopped: {shutdown:?}");
     Ok(())
 }
 ```
 
-### Modes: `standard` vs `hft`
-* **`standard` (default):** Blocks in the OS poller (`epoll` / `kqueue`) when idle, yielding CPU back
-  to the scheduler. Ideal for development, shared servers, containerized workloads, and desks
-  handling multiple concurrent connections per core.
-* **`hft` (opt-in):** Calls `fixbolt::serve_hft`. Pins one thread per session and busy-spins
-  with zero kernel sleeps on the hot path ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md),
-  [ADR-0013](decisions/ADR-0013-two-modes-standard-and-hft.md)). Requires dedicated, isolated CPU cores
-  configured according to [`docs/DESIGN.md`](DESIGN.md) §9.
+The two numbers after the handler are yours to choose; there are no defaults for them:
+
+- **Capacity** is how many logged-on connections the engine holds at once.
+- **`Limits::new(pending, logon_ms)`** bounds the pre-session stage: how many sockets may wait
+  for their Logon at the same time, and how long each may take. A socket that opens and says
+  nothing is dropped after `logon_ms`
+  ([ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)).
+
+The last argument is the message log. `fixbolt::NoLog` writes nothing;
+`fixbolt::FileLog::open(path)` writes every message seen or sent to a text file
+([GUIDE.md §6c](GUIDE.md)).
+
+`serve` returns when an operator stops the engine through `Admin::shutdown`, and the
+`Shutdown` it returns says whether every counterparty answered the Logout
+([ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md)).
+
+### `standard` or `hft`
+
+- **`standard`** is what `serve` gives you. The engine blocks in the OS poller when idle, so it
+  is right for development, shared servers, containers and gateways with many sessions.
+- **`hft`** is `fixbolt::serve_hft`. The engine spins on the calling thread and never sleeps
+  in the kernel. It needs a Linux machine set up as [DESIGN.md §9](DESIGN.md) describes and a
+  core you pin the thread to yourself
+  ([ADR-0012](decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md),
+  [ADR-0013](decisions/ADR-0013-two-modes-standard-and-hft.md)). Read
+  [GUIDE.md §0](GUIDE.md) before choosing it.
 
 ---
 
-## Running the Example
+## Run the example
 
-Run the acceptor example included in the repository:
-
-```bash
+```sh
 cargo run --example acceptor -- crates/library/examples/acceptor.cfg 127.0.0.1:9876
 ```
 
-The example will bind to `127.0.0.1:9876`, load `TW44` and `BANZAI`, and await FIX connections.
-This exact flow is exercised over a live TCP socket by the test suite in
-[`crates/library/tests/end_to_end.rs`](../crates/library/tests/end_to_end.rs).
+The acceptor binds to `127.0.0.1:9876`, loads `TW44` and `BANZAI`, and waits for a FIX
+client. [`crates/library/tests/end_to_end.rs`](../crates/library/tests/end_to_end.rs) runs
+exactly this over a real TCP socket, so the example is tested rather than merely compiled.
+
+Next: [TUTORIAL.md](TUTORIAL.md) walks through the same code in more detail and shows the
+bytes on the wire.
