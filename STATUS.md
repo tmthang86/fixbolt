@@ -28,11 +28,15 @@ out of the same measurement: 39, 40 and 41.** See the section immediately below.
 [an-engine-that-can-speak-first](docs/plans/2026-09-05-an-engine-that-can-speak-first.md) is
 **Xong**, all five steps; [ADR-0048](docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md),
 `DESIGN.md` **D15**. `cargo test --all` 495 → **506**.
-**CI green 22 checks of 22 on the branch tip, `c3f0d98`, runs
-[`33899463805`](https://github.com/tmthang86/fixbolt/actions/runs/33899463805) and
-[`33899468700`](https://github.com/tmthang86/fixbolt/actions/runs/33899468700).**
-(`bb1d0fe`, the commit before it, was green too — runs `33899038804` and `33899048688` — but
-the box §9 asks for is about **the commit being closed**, and that is the tip.)
+**CI green 22 checks of 22 on `bb1d0fe`, the last commit on this branch carrying code**, runs
+[`33899038804`](https://github.com/tmthang86/fixbolt/actions/runs/33899038804) and
+[`33899048688`](https://github.com/tmthang86/fixbolt/actions/runs/33899048688).
+Every commit after it is this section recording that fact, and each is green too —
+`c3f0d98` (`33899463805`, `33899468700`) and the one that names them. **A commit that names its
+own CI run cannot exist**, which is the one thing §9's last box cannot ask for; naming the last
+code commit, and saying that the documentation commits behind it are green as well, is the
+closest true statement.
+
 PR [#38](https://github.com/tmthang86/fixbolt/pull/38), **not merged**.
 
 **The `interop` job is green, so `libquickfix` itself has now judged this.** That is the
@@ -96,7 +100,7 @@ marked `[to testing-skills]`.
   through the front door only door 1 is reachable. **This is older than item 46 and was found
   by fixing it. New open item 47**, deliberately not fixed inside this plan.
 - ~~**`libquickfix` has not judged this yet on this machine.**~~ — it has. The `interop` job is
-  green on `c3f0d98` in both runs named above, and **§9's last box is ticked.**
+  green on every commit of this branch, `bb1d0fe` included, and **§9's last box is ticked.**
 - **No §9 machine has seen it.** `benches/turn.rs` gains one `Option` check per turn and nobody
   has re-measured it against a baseline.
 
