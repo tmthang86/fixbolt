@@ -107,3 +107,36 @@ REVERSAL PRE>RX: logon answered = false
 **A reversal has a direction, and an inequality has two.** Flipping a constant to a smaller value
 tests nothing when the guard is `>`. Read the guard before choosing the direction — the comment
 above it said "matches", which is what sent two reversals the wrong way.
+
+
+## Postscript: two samples of a flake are not a comparison
+
+`[measured 2026-09-05]` while closing this work, the allocation gate read non-zero on the
+development machine. To decide whether the change had caused it, the branch was stashed, `main`
+checked out, and the gate re-run: **same array, same index, same value.** Reported as
+*"pre-existing, not caused by this change"*.
+
+Run three more times, the same command on the same machine:
+
+```
+[… index 21 = 1 …]
+[… index 21 = 2 …]
+[… index 21 = 2 …]
+```
+
+The value is not deterministic. The counter is a relaxed atomic shared with a background writer
+thread, and on this platform the writer's own allocation sometimes lands inside the measured
+window. **Two agreeing samples of a varying quantity carried no information about causation** —
+the conclusion was right and the argument for it was luck.
+
+What actually settled it was CI: the same gate on Linux read **0 for all 24 cases** on the very
+commit under test. So the finding is *red on the development machine, green on the machine the
+gate runs on* — the mirror image of the more familiar failure, and it needs the same treatment.
+
+**Before comparing a measurement across two versions, sample it twice on one of them.** If the
+two samples disagree, a cross-version comparison of single samples cannot establish anything, and
+the honest move is to find a deterministic observable or defer to the machine that owns the gate.
+
+The same run also caught a smaller thing worth naming: the failing case was reported by **name**
+from memory rather than read from the output, and the name was wrong — index 21 was `log-record`,
+not `log-busy`. A result that was recalled rather than observed is not a result.

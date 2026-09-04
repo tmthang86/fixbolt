@@ -245,6 +245,37 @@ không được suy ra ở vị trí biểu thức, kể cả khi struct có def
 không đổi. Mọi file trong `crates/*/tests/` và `tools/` **không bị chạm** — `git diff --stat`
 trên chúng rỗng.
 
+## Sửa 3 `[2026-09-05]` — hai điều tôi báo sai về alloc bench, CI bắt được
+
+**1. Tên case sai.** Tôi báo *"case 21 `log-busy`"*. Đếm lại danh sách 24 case, **index 21 là
+`log-record`**. Tên đó là tôi đoán từ trí nhớ chứ không đọc từ output — đúng dạng sai mà
+`CLAUDE.md` §10 gọi là *một kết quả được suy ra chứ không được quan sát*. Commit `f3fca4c` đã
+push mang tên sai này trong thông điệp; không sửa lại lịch sử đã push, đính chính ở đây.
+
+**2. "Có sẵn, cùng giá trị" là kết luận may hơn là đúng.** Tôi so **một mẫu** trên nhánh với
+**một mẫu** trên `main`, thấy cả hai đọc `2`, và kết luận nguyên nhân. Chạy ba lần liên tiếp trên
+macOS:
+
+```
+lần 1: [… index 21 = 1 …]
+lần 2: [… index 21 = 2 …]
+lần 3: [… index 21 = 2 …]
+```
+
+**Nó không tất định.** Hai mẫu trùng nhau của một đại lượng dao động không chứng minh gì về
+nguyên nhân — đúng cái bẫy `CLAUDE.md` §10 tên là *"một nguyên nhân được chấp nhận vì có một
+knob nhúc nhích cùng nó"*. Kết luận *"không phải do thay đổi này"* vẫn đứng, nhưng thứ chứng minh
+nó là **CI xanh trên chính commit này**, không phải phép so sánh kia.
+
+**3. Và trên máy chạy gate thật thì nó xanh.** CI run `33891879514`, job *"Benchmarks run, and the
+machine-independent ones must pass"*: cả 24 case đọc **0**, `log-record` trong đó. Nên đây là
+**đỏ chỉ trên macOS**, hình dạng đã biết —
+[a-benchmark-measured-its-own-fixture](../reference/a-benchmark-measured-its-own-fixture.md) ghi
+rằng ba case log mất bốn lần đo mới ra 0 vì hai lần đầu đo harness và writer thread. Bộ đếm là
+một atomic `Relaxed` dùng chung với writer thread; trên macOS cấp phát của writer đôi khi rơi vào
+cửa sổ đo. **Nó là một flake của phép đo, không phải một cấp phát trên hot path** — và
+`STATUS.md` item 23 đã có hình dạng ngược lại (*xanh ở CI, đỏ ở máy đang làm*).
+
 **Gate đã chạy `[2026-09-05, macOS, không phải máy §9 — plan này không công bố số hiệu năng nào]`:**
 
 | Gate | Kết quả |
@@ -253,4 +284,4 @@ trên chúng rỗng.
 | `cargo test --no-default-features`, **từng crate** | codec 69, session 94, engine 209, fixbolt 5 — **0 failed** |
 | `cargo clippy --all-targets -- -D warnings` | sạch |
 | `cargo check --all-features --target x86_64-unknown-linux-gnu` | **Finished** — `shard.rs` biên dịch, và nó không bao giờ biên dịch trong một `cargo check` local |
-| `benches/alloc.rs` | **ĐỎ, case 21 `log-busy` đọc 2.** **Không phải do thay đổi này**: `git stash` + `git checkout main` cho **cùng một mảng, cùng index, cùng giá trị**. Có sẵn từ plan 3 |
+| `benches/alloc.rs` | **ĐỎ trên macOS — xem Sửa 3, hai điều tôi báo sai.** **Xanh trên CI Linux**, cả 24 case đọc 0 |
