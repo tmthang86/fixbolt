@@ -59,6 +59,27 @@ Set in code when the engine is built or started.
 | `SLOT_LEN` | Largest message the journal ring can keep | bytes | `512` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`journal.rs:56`](../crates/engine/src/journal.rs#L56) |
 | `resend_batch` | Messages put on the wire per call when answering a `ResendRequest` | `u16`; zero is read as one | `8` | `Config::with_resend_batch` | [`session/src/lib.rs`](../crates/session/src/lib.rs) |
 | `Durability` | What a `FileJournal` guarantees | `Async` (background writer), `Fsync` (blocks the engine thread) | `Async` | `FileJournal::open(path, durability)` | [`journal.rs`](../crates/engine/src/journal.rs) |
+| `MAX_ON_LOGON` | Most messages one session may originate from `Handler::on_logon` | `u32`, not configurable | `16` | compile-time constant | [`engine/src/lib.rs`](../crates/engine/src/lib.rs) |
+| `ORIGIN_CAPACITY` | Originated messages a `Sender` may have waiting for the engine's next turn | `usize`, not configurable | `64` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
+| `ORIGIN_LEN` | Largest message `Sender::send` will take | bytes, not configurable | `512` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
+
+### The three origination numbers
+
+`[added 2026-09-05]` All three come with [ADR-0048](decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md)
+and **none of them is a knob today** — they are constants, not const generics, and making them
+the caller's is work nobody has asked for yet.
+
+- **`MAX_ON_LOGON` is a guard, not a quota.** It stops a handler that never answers
+  `reply.silent()` from holding the engine thread. There is no measurement behind 16 and the
+  ADR says so. Reaching it emits `EventKind::SpokeFirstToTheBound`, so an application that
+  genuinely needs more will say so on the event stream rather than quietly opening a session a
+  few messages short.
+- **`ORIGIN_CAPACITY × ORIGIN_LEN` is 32 KiB, allocated once** when the engine is built, per
+  engine and not per session.
+- **`ORIGIN_LEN` matches `SLOT_LEN`** on purpose: a message too long for the journal to keep
+  for a resend is a message that should not go out. A message over it is refused at
+  `Sender::send`, which answers `false` — unlike the reply scratch, this ceiling does not fail
+  as silence.
 
 ### Sizing the resend ring
 

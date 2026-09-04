@@ -79,6 +79,27 @@ impl Application for Silent {
     }
 }
 
+/// Speaks first all the way to `MAX_ON_LOGON`, so the `logon-first` case
+/// measures the whole loop rather than one call through it. ADR-0048.
+struct SpeaksToTheBound;
+
+impl Application for SpeaksToTheBound {
+    fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], _: &mut [u8]) -> Option<Range<usize>> {
+        None
+    }
+
+    fn on_logon(
+        &mut self,
+        _nth: u32,
+        _: fixbolt_session::Peer<'_>,
+        out: &mut [u8],
+    ) -> Option<Range<usize>> {
+        let msg = b"8=FIX.4.4\x019=0\x0135=B\x0149=ISLD\x0156=TW44\x01148=x\x0110=000\x01";
+        out.get_mut(..msg.len())?.copy_from_slice(msg);
+        Some(0..msg.len())
+    }
+}
+
 /// A whole message from its body: `8=`, `9=`, the identity fields and `10=`
 /// supplied around it.
 ///
@@ -845,6 +866,112 @@ fn main() {
          recorded none — a zero above would be measuring nothing"
     );
 
+    // --- origination ---------------------------------------------------------
+    //
+    // ADR-0048 door 2. The queue is fixed slots filled at construction, the
+    // engine drains with `try_lock`, and neither end may allocate — the
+    // submitting side is measured with it, because an application holds
+    // `Sender` on its own thread and would pay there.
+    let originator = administered.sender();
+    let news = b"8=FIX.4.4\x019=0\x0135=B\x0149=ISLD\x0156=TW44\x01148=x\x0110=000\x01";
+    // Warm both sides once, outside the window, and **prove the path is live**:
+    // a zero below must mean "did not allocate", never "did not send".
+    assert!(originator.send(ad_id, news), "the queue took it");
+    administered.turn();
+    let sent_before = ad_peer.recv(&mut sink);
+    assert!(
+        matches!(sent_before, Io::Ready(n) if n > 0),
+        "the origination path must actually put bytes on the wire,          or the two numbers below measure nothing"
+    );
+
+    // Nobody is sending: one relaxed load, and a turn must not pay for the
+    // capability existing.
+    let origin_idle_allocs = count(|| {
+        for _ in 0..10_000 {
+            administered.turn();
+        }
+    });
+
+    // And turns that really do carry a message across.
+    let origin_rounds = 2_000usize;
+    let origin_busy_allocs = count(|| {
+        for _ in 0..origin_rounds {
+            let _ = originator.send(ad_id, news);
+            administered.turn();
+            let _ = ad_peer.recv(&mut sink);
+        }
+    });
+    assert_eq!(
+        originator.undeliverable(),
+        0,
+        "every one of the {origin_rounds} went to a live connection — a drop          would mean the window measured a lookup miss rather than a send"
+    );
+    assert!(
+        originator.drains() > 0,
+        "and the engine really did drain inside the window"
+    );
+
+    // --- speaking first ------------------------------------------------------
+    //
+    // ADR-0048 door 1: one session, and the handler speaks the whole way to
+    // `MAX_ON_LOGON`. Sixteen calls rather than sixteen thousand because
+    // `speak_first` runs **once per session**, and two facts make many sessions
+    // the wrong fixture — both found by building it that way first:
+    //
+    // * `Engine::add` allocates once per connection. That is setup, and it is
+    //   the only thing a per-session loop would end up counting.
+    // * **One identity, one connection.** Every connection here shares one
+    //   `Config`, so a second concurrent session is refused as a duplicate and
+    //   the counter read `1 sends over 500 sessions`. Dropping the `Loopback`
+    //   peer does not free the slot either — an in-memory pipe signals no EOF —
+    //   so the sessions cannot be cycled.
+    //
+    // Sixteen exact calls against a counting allocator is not a small sample:
+    // the allocator counts, it does not estimate, and the loop, the `Peer` copy
+    // and sixteen `send_application` calls are the whole of what is new here.
+    // `origin-busy` above puts 2 000 messages through the same
+    // `send_application`, so the volume question is answered there.
+    let (mut talk_peer, mut talk_side) = Loopback::pair();
+    {
+        // Both directions, outside the window, for the reason
+        // `reference/a-benchmark-measured-its-own-fixture.md` records: the pipe
+        // is a `VecDeque` and its first growth is not the engine's.
+        let roomy = [b'.'; 4096];
+        let _ = talk_peer.send(&roomy);
+        let _ = talk_side.recv(&mut sink);
+        let _ = talk_side.send(&roomy);
+        let _ = talk_peer.recv(&mut sink);
+    }
+    let mut talkative: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<SpeaksToTheBound>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        cfg(),
+        InlineDispatch::new(SpeaksToTheBound),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    talkative.add(talk_side);
+    let _ = talk_peer.send(&traffic[0]);
+    let logon_first_allocs = count(|| {
+        talkative.turn();
+    });
+    while let Io::Ready(_) = talk_peer.recv(&mut sink) {}
+    assert_eq!(
+        talkative.speak_first_sends(),
+        u64::from(fixbolt_engine::MAX_ON_LOGON),
+        "the door opened all the way to the bound inside the window — a zero \
+         above must mean it did not allocate, never that it did not run"
+    );
+
     // --- shutdown ------------------------------------------------------------
     //
     // A shutdown says goodbye to every session and then waits. It happens once
@@ -1158,7 +1285,8 @@ fn main() {
          admin-idle {admin_idle_allocs} admin-busy {admin_busy_allocs} \
          shutdown {shutdown_allocs} reconnect {reconnect_allocs} \
          log-record {log_record_allocs} log-idle {log_idle_allocs} \
-         log-busy {log_busy_allocs}"
+         log-busy {log_busy_allocs} origin-idle {origin_idle_allocs} \
+         origin-busy {origin_busy_allocs} logon-first {logon_first_allocs}"
     );
     assert_eq!(
         [
@@ -1185,9 +1313,12 @@ fn main() {
             log_record_allocs,
             log_idle_allocs,
             log_busy_allocs,
-            reconnect_allocs
+            reconnect_allocs,
+            origin_idle_allocs,
+            origin_busy_allocs,
+            logon_first_allocs
         ],
-        [0; 24],
+        [0; 27],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

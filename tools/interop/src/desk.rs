@@ -25,7 +25,7 @@
 //! Nothing here is ordered by hand — non-negotiable 5. The fields go out in the
 //! dictionary's order because [`fixbolt::Reply`] puts them there.
 
-use fixbolt::{Answer, Handler, Incoming, Reply};
+use fixbolt::{Answer, GroupData, GroupEntryData, Handler, Incoming, Peer, Reply};
 
 /// Fills every `NewOrderSingle` at the quantity it was sent with.
 ///
@@ -38,6 +38,46 @@ pub struct Desk {
 }
 
 impl Handler for Desk {
+    /// Two `35=B` News the moment a session comes up, which is what steps 2 and
+    /// 5 of `--role initiator` have been asking this engine for.
+    ///
+    /// **This is the whole of `STATUS.md` item 46 as a user sees it**, and it is
+    /// three lines — the same three the C++ acceptor spends in `onLogon`. Until
+    /// [ADR-0048] there was no method to put them in:
+    /// `fixbolt::serve` could only answer.
+    ///
+    /// **`FIX44.xml` requires two things of a `35=B`, not one**: `148`
+    /// Headline **and** `LinesOfTextGrp` — the `33` NoLinesOfText group with a
+    /// `58` Text in each entry (`spec/FIX44.xml:294`, `required='Y'`). A News
+    /// carrying only `148=` is refused by the counterparty's dictionary and
+    /// never reaches its application, which is
+    /// [a-message-on-the-wire-is-not-a-message-delivered] — found here, by this
+    /// step going red while the resend step behind it went green on the very
+    /// same two messages.
+    ///
+    /// [ADR-0048]: ../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md
+    /// [a-message-on-the-wire-is-not-a-message-delivered]: ../../../docs/reference/a-message-on-the-wire-is-not-a-message-delivered.md
+    fn on_logon(&mut self, _who: Peer<'_>, nth: u32, reply: Reply<'_>) -> Answer {
+        let headline: &[u8] = match nth {
+            0 => b"fixbolt desk is up",
+            1 => b"and open for orders",
+            _ => return reply.silent(),
+        };
+        let text: [(u32, &[u8]); 1] = [(58, headline)];
+        let entries = [GroupEntryData {
+            fields: &text,
+            groups: &[],
+        }];
+        reply
+            .message(b"B")
+            .field(148, headline)
+            .group(33)
+            .send_with_groups(&[GroupData {
+                counter: 33,
+                entries: &entries,
+            }])
+    }
+
     fn on_message(&mut self, msg: &Incoming<'_>, reply: Reply<'_>) -> Answer {
         if msg.msg_type() != b"D" {
             return reply.silent();

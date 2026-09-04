@@ -28,7 +28,7 @@ one thread is supported and named **`density`**; it costs `[measured 2026-08-31]
 figures on this page. Every figure here names its `N`.
 
 **Sections.** §1 the finding the architecture is built around · §2 layers · §3 crates ·
-§4 decisions D1–D14 · §5 non-goals · §6 gates · §7 build order · §8 latency budget · §9 the
+§4 decisions D1–D15 · §5 non-goals · §6 gates · §7 build order · §8 latency budget · §9 the
 OS checklist.
 
 ---
@@ -126,6 +126,7 @@ The crate is the largest, and its modules are the record of what was built when:
 | `reconnect` | `Policy`: doubling backoff to a ceiling, no jitter; `connect_and_serve` | [ADR-0043](decisions/ADR-0043-backoff-without-jitter-and-a-reconnect-asks-recovery-every-time.md) |
 | shutdown | `Admin::shutdown`, `Shutdown`, `Session::begin_logout`, `State::LoggingOut`, `DropReason::EngineShutdown`; `run`, `serve` and `serve_hft` **return** | [ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md) |
 | `msglog` | `MessageLog`, `NoLog` (compiles away), `FileLog`, `FileLog::open_pinned`: both directions, refusals included, one line per message | D14 |
+| `origin` | `Sender` (`Send + Sync`, a third capability on `observe`'s `Arc`), the fixed origination queue, `ORIGIN_CAPACITY` and `ORIGIN_LEN`. Drained at the top of a turn beside `Command`; `Engine::speak_first` is the other door and lives in `lib.rs` | D15, [ADR-0048](decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md) |
 | `ring`, `dispatch` | `RingDispatch` over an SPSC ring of `AtomicU8`, safe Rust, no dependency; `InlineDispatch` | D4, [ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md), [ADR-0011](decisions/ADR-0011-a-full-ring-disconnects.md) |
 
 ## 4. The decisions that shape it
@@ -624,6 +625,56 @@ than waited for. The writer is allowed to allocate, for the reason `journal::Rea
 **`NoLog` is the default and it compiles away.** `MessageLog::LOGS` is an associated
 constant, so an engine never given a log carries no branch, no field and no cost.
 
+### D15 — An application can speak first, through two doors, and neither is told a sequence number
+
+`[added 2026-09-05]` Until this decision **every application message this engine could send was
+a reply.** `Handler::on_message` answered one inbound message; `Admin::Command` moved sequence
+numbers. So there was no `ExecutionReport` for a fill that lands a second after the order, no
+quote stream, no out-of-band `35=j`, and nothing to say to a counterparty that is connected and
+quiet ([ADR-0048](decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md),
+`STATUS.md` item 46).
+
+**The primitive already existed.** `Session::send_application` takes a whole message, rewrites
+`8=`, `9=`, `34=`, `52=` and `10=`, orders the rest from the generated tables, journals it and
+spends the number. Its only caller was D4's `OUT_OF_BAND` block, which is `false` for
+`InlineDispatch` — so it was reachable only by an application that had already moved to another
+thread. What was missing was not a mechanism but a door.
+
+| Door | Where the application is | For |
+|---|---|---|
+| `Handler::on_logon` | the engine thread, once per session | anything that must be said *as the session opens* — a subscription, a state dump, the two `35=B` the interop gate wants |
+| `Sender` | any thread, any time | a fill that lands later, a quote stream, an out-of-band `35=j` |
+
+**Neither door is told a sequence number or a clock**, so an application cannot get either
+wrong: the session writes both on the way out and ignores whatever was there. That is `Reply`'s
+existing rule extended to the message nobody asked for.
+
+**`on_logon` is asked repeatedly and the engine owns the loop**: `nth = 0, 1, 2, …` until the
+application answers `None`, each message sent as it comes, bounded by `MAX_ON_LOGON` (16) so a
+handler that never stops cannot hold the engine thread. Reaching the bound emits
+`EventKind::SpokeFirstToTheBound` rather than passing in silence.
+
+**`Sender` rides the `Arc` that `Observer` and `Admin` already ride**, with a third capability
+and its own fixed queue — `ORIGIN_CAPACITY` (64) slots of `ORIGIN_LEN` (512) bytes, filled once.
+It copies `Commands` where `Commands` was right: `send` answers `false` at the call when the
+queue is full or the message is too long, so a loss is never silent; the engine drains with
+`try_lock` and never `lock`; and a relaxed load comes before the lock is attempted, so an engine
+nobody sends through pays one load per turn. `Sender::drains()` is what keeps that falsifiable —
+`[measured 2026-09-05]` removing the load makes it read 20 over 20 turns instead of 0.
+
+**The gate is deliberately not one of this repository's own runners.** `scripts/interop.sh`'s
+acceptor role has two steps, `news` and `resend`, that were red **by design** because the
+acceptor could not originate; the tool said so in a comment. Both are green now, and the
+exemption is gone from the code, so a red there is a red. `[measured 2026-09-05]` the two roles
+pointed at each other read `PASS 7/7`, up from 5/7 before this work and 6/7 with the door open
+but the message malformed — see
+[reference/a-message-on-the-wire-is-not-a-message-delivered.md](reference/a-message-on-the-wire-is-not-a-message-delivered.md).
+
+**What it costs**, and the ADR prices all of it: `crates/session` gains an
+`Application::on_logon` with a default body that nothing in that crate calls, plus three `Config`
+getters; there is a second bounded queue and a fifth buffer ceiling; and `MAX_ON_LOGON` is a
+number with no measurement behind it, labelled as a guard rather than a knob.
+
 **What it costs the engine thread is not measured yet**: one ring copy per message per
 direction, about 1.7 ns/byte, so about 340 ns for a 200-byte message and 680 ns for a
 request/reply pair, `[unproven]`, arithmetic from §6's dispatch row. What is measured is that
@@ -686,6 +737,7 @@ below).
 | An initiator comes back after its counterparty hangs up | the loop dials again; a policy that says stop opens no socket | `crates/engine/tests/reconnect_wire.rs`, over a real listener that answers one Logon and closes. Two orthogonal reversals. `[measured 2026-09-02]` the first originally made the suite hang, so the control now runs on a thread with a deadline ([a-reversal-can-fail-by-hanging](reference/a-reversal-can-fail-by-hanging.md)) |
 | The reconnect ladder, no I/O, no clock | doubling to a ceiling that holds; `logged_on` resets it; a shut venue outranks it | `crates/engine/tests/reconnect.rs`, 8 cases ([ADR-0043](decisions/ADR-0043-backoff-without-jitter-and-a-reconnect-asks-recovery-every-time.md)). **Every case is invented**: no corpus here covers reconnect. The ordering reversal was a no-op until the assertion moved to an instant where the two orderings disagree ([a-reversal-needs-an-input-where-the-answers-differ](reference/a-reversal-needs-an-input-where-the-answers-differ.md)) |
 | The initiator, against a real `libquickfix` | **7 / 7**: logon · application messages in · an unprompted heartbeat · a TestRequest with this end's own `112=` · a ResendRequest answered by replay at the numbers asked for · a gap this end opens and gap-fills · logout | `scripts/interop.sh` and the blocking `interop` CI job. Phase 1 exit criterion 4 ([ADR-0042](decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md)). Builds QuickFIX at the same commit `fetch-quickfix-assets.sh` pins and refuses to run if the pins drift. Reads the transcript, not the exit code. `[measured 2026-09-02]` its first run found the initiator answering a Logon with a Logon. Reversal 2 was a no-op until the resend step named the sequence numbers it wanted ([a-resend-answer-has-two-legal-shapes](reference/a-resend-answer-has-two-legal-shapes.md)) |
+| The acceptor can originate, and a second implementation says so | `news` and `resend` in the acceptor role of `scripts/interop.sh`, **red by design until 2026-09-05** and green now, with the exemption removed from `tools/interop` so a red is a red | D15, [ADR-0048](decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md). `[measured 2026-09-05]` this repository's two roles pointed at each other read **PASS 7/7**, from 5/7. The step in between, 6/7, is its own lesson: the door was open and the message was still refused, for a required group nobody had read off the XML ([a-message-on-the-wire-is-not-a-message-delivered](reference/a-message-on-the-wire-is-not-a-message-delivered.md)) |
 | The acceptor, against a real `libquickfix` | **7 / 7**: logon with `141=Y` echoed · two `35=D` answered by two `35=8` paired on `11=` · an unprompted heartbeat with no `112=` · a TestRequest · a ResendRequest answered by replay at the two numbers asked for · a gap the counterparty opens · logout | the same script and CI job. **The differentiator's first independent opinion**: until 2026-09-04 the acceptor's whole evidence was 59 `.def` files read by this repository's own runner. Under test is the whole stack: `fixbolt::serve`, the poller, the pre-session table, the settings file, the library `Handler`. `[measured 2026-09-04]` its first run was red on `gapfill`, and the red was the test's ([a-gap-fill-can-swallow-the-question](reference/a-gap-fill-can-swallow-the-question.md)) |
 | Repeating groups, read | every group found, to depth 4, at all **731** positions | `crates/codec/tests/groups.rs` |
 | Repeating groups, written | parse → encode byte-identical at all **357** top-level positions, all 59 counters, depth 4 | `crates/codec/tests/group_roundtrip.rs` |
@@ -703,7 +755,7 @@ below).
 |---|---|---|
 | Allocations on the hot path, codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
 | Allocations on the hot path, session | **0** on sixteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, ordered, clock, text, schedule-open, schedule-shut | `crates/session/benches/alloc.rs`. The refusal path is counted apart because a hostile counterparty controls it and a `format!` is easiest to reach for there. `[measured 2026-09-02]` injecting one into `ordered` reads 10 000 |
-| Allocations on the hot path, engine | **0** on twenty-four paths: idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle, registry-lookup, observe-idle, observe-asked, events-idle, events-busy, admin-idle, admin-busy, shutdown, reconnect, log-record, log-idle, log-busy | `crates/engine/benches/alloc.rs`. `busy` asserts the session is still logged on at the end of the count, because an earlier version measured a connection dropped at message two. `log-record` calls `MessageLog::record` a thousand times with no engine in the window; `[measured 2026-09-04]` making it allocate once reads 1000. What no bench here proves is that the writer thread allocates nothing while the engine runs; `tools/w2w` is where a both-threads number belongs |
+| Allocations on the hot path, engine | **0** on twenty-seven paths: idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle, registry-lookup, observe-idle, observe-asked, events-idle, events-busy, admin-idle, admin-busy, shutdown, reconnect, log-record, log-idle, log-busy, **origin-idle, origin-busy, logon-first** | `crates/engine/benches/alloc.rs`. `busy` asserts the session is still logged on at the end of the count, because an earlier version measured a connection dropped at message two. `log-record` calls `MessageLog::record` a thousand times with no engine in the window; `[measured 2026-09-04]` making it allocate once reads 1000. `[measured 2026-09-05]` the two ADR-0048 cases read **2000** and **16** under an injected `format!`; `logon-first` is sixteen exact calls rather than thousands because `speak_first` runs once per session and the fixture cannot cycle sessions — one `Config` means a second concurrent session is refused as a duplicate, and a dropped `Loopback` peer signals no EOF, so an early version of that case read `1 sends over 500 sessions`. What no bench here proves is that the writer thread allocates nothing while the engine runs; `tools/w2w` is where a both-threads number belongs |
 
 ### Mode and machine
 

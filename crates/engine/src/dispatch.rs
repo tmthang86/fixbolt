@@ -57,6 +57,31 @@ pub trait Dispatch {
         out: &mut [u8],
     ) -> Option<Range<usize>>;
 
+    /// The application's chance to **speak first**, once per session.
+    ///
+    /// Forwards [`fixbolt_session::Application::on_logon`], which carries the
+    /// contract: asked with `nth = 0, 1, 2, …` until it answers `None`, one
+    /// whole FIX message per call, `34=` and `52=` written by the session and
+    /// not by the caller.
+    ///
+    /// **The engine bounds the loop at [`crate::MAX_ON_LOGON`]**, so a handler
+    /// with a bug cannot hold the engine thread.
+    ///
+    /// Defaults to `None`. [`RingDispatch`] keeps that default and does **not**
+    /// forward: the application is on another thread, so it has a [`Sender`]
+    /// and does not need this door.
+    ///
+    /// [`Sender`]: crate::origin::Sender
+    fn on_logon(
+        &mut self,
+        _conn: ConnId,
+        _nth: u32,
+        _peer: fixbolt_session::Peer<'_>,
+        _out: &mut [u8],
+    ) -> Option<Range<usize>> {
+        None
+    }
+
     /// Whatever the application produced somewhere else since the last turn.
     ///
     /// The engine sends each one through `Session::send_application`, so the
@@ -122,6 +147,16 @@ impl<H: Application> Dispatch for InlineDispatch<H> {
         out: &mut [u8],
     ) -> Option<Range<usize>> {
         self.handler.on_message(msg, seq, stamp, out)
+    }
+
+    fn on_logon(
+        &mut self,
+        _conn: ConnId,
+        nth: u32,
+        peer: fixbolt_session::Peer<'_>,
+        out: &mut [u8],
+    ) -> Option<Range<usize>> {
+        self.handler.on_logon(nth, peer, out)
     }
 
     fn collect<F: FnMut(ConnId, &[u8])>(&mut self, _emit: F) {}

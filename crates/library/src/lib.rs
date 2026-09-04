@@ -21,7 +21,7 @@ pub use fixbolt_session::{
     Application, Config, Link, Role,
     schedule::{Schedule, Weekday, Weekdays},
 };
-pub use fixbolt_session::{MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN};
+pub use fixbolt_session::{MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN, Peer};
 
 /// Starting, stopping, and why a connection ended.
 pub use fixbolt_engine::{ServeError, Shutdown, serve_hft};
@@ -56,10 +56,12 @@ pub use fixbolt_engine::presession::{Entry, Identity, LimitError, Limits, Regist
 /// Who this acceptor serves, out of a file rather than out of a rebuild.
 pub use fixbolt_engine::settings::{Problem, Settings, SettingsError};
 
-/// What an operator can see and change while the engine runs.
+pub use fixbolt_engine::MAX_ON_LOGON;
 pub use fixbolt_engine::observe::{
     Admin, Command, Event, EventKind, Observer, SessionSnapshot, Snapshot,
 };
+/// What an operator can see and change while the engine runs.
+pub use fixbolt_engine::origin::{ORIGIN_CAPACITY, ORIGIN_LEN, Sender};
 
 /// What a session left behind, and how it is asked for.
 pub use fixbolt_engine::recovery::{FromFn, NoRecovery, Recovery, Resumed};

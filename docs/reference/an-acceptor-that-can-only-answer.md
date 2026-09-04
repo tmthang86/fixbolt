@@ -67,3 +67,22 @@ Nothing, in the plan that found it. It is a public-API change in two crates and 
 its own — fixing it inside a plan scoped to a test tool is how a branch stops being reviewable.
 It is `STATUS.md` open item 46, and the plan's step-1 self-check now **expects those two steps
 red** and says why, so the expectation is written down rather than remembered.
+
+## And then it was fixed
+
+`[2026-09-05]` [ADR-0048](../decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md)
+and [an-engine-that-can-speak-first](../plans/2026-09-05-an-engine-that-can-speak-first.md).
+Two doors: `Handler::on_logon` on the engine thread, and a `Sender` from any thread. The two
+red steps are green and **the exemption is gone from `tools/interop`**, so a red there is a red
+again.
+
+**What that does not change is the lesson above**, which is why this page keeps its marker: the
+capability was missing for as long as the test estate was shaped the way it was, and the shape
+is the finding. The fix took a day; noticing was the expensive part, and it happened by
+accident — the assembly check was run to see whether a new role was wired up, not to look for
+this.
+
+One more thing arrived with the fix and is written up separately, because it is a different
+mistake: the door opened and the first two messages through it were **still** refused, by the
+counterparty's dictionary, while a neighbouring step in the same gate went green on those very
+bytes — [a-message-on-the-wire-is-not-a-message-delivered](a-message-on-the-wire-is-not-a-message-delivered.md).
