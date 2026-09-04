@@ -257,6 +257,21 @@ pub const MAX_COMP_ID_LEN: usize = 32;
 /// and `1d_InvalidLogonBadSendingTime` is 2001 years out, so nothing in the
 /// corpus distinguishes this number from any other. It is the documented
 /// default, labelled as such.
+/// The default size of an [`Application`]'s reply scratch.
+///
+/// `[measured 2026-09-05]` **1 KiB, and it is the tightest ceiling in the
+/// engine.** The longest reply in the acceptance corpus is 177 body bytes, so
+/// the corpus can say nothing about it — a sweep against a real acceptor found
+/// the wall between 200 and 1000 bytes while the receive buffer was 16 KiB.
+/// An application that cannot lay out its reply returns `None`, which is legal,
+/// so exceeding this is **silence** rather than an error:
+/// `docs/reference/a-ceiling-has-more-than-one-floor.md`.
+///
+/// Raise it with the `APP` parameter — `fixbolt_engine::serve_with`. It must not
+/// exceed the connection's `TX`, which is the queue the reply is then copied
+/// into.
+pub const DEFAULT_APP_SCRATCH: usize = 1024;
+
 pub const DEFAULT_MAX_SKEW_MS: u64 = 120_000;
 
 /// The `HeartBtInt` an initiator proposes unless told otherwise, in seconds.
@@ -612,7 +627,7 @@ impl From<Refusal> for DropReason {
 ///
 /// Not `Debug`: `FieldIndex` is not, and it is 3 KiB of offsets that no one
 /// would read anyway.
-pub struct Session<R: Role, const N: usize> {
+pub struct Session<R: Role, const N: usize, const APP: usize = DEFAULT_APP_SCRATCH> {
     cfg: Config,
     state: State,
     /// Milliseconds since 0000-01-01, from the last [`Session::tick`].
@@ -625,7 +640,7 @@ pub struct Session<R: Role, const N: usize> {
     idx: FieldIndex<N>,
     /// `None` when the configuration cannot be turned into templates. The
     /// session then refuses everything — see [`out::Outbound::new`].
-    out: Option<Outbound>,
+    out: Option<Outbound<APP>>,
     /// `SendingTime`, formatted once a minute rather than once a message (D9).
     stamp: TimestampCache,
     /// `34=` on the next message this session sends. FIX counts from 1.
@@ -706,7 +721,7 @@ pub struct Session<R: Role, const N: usize> {
     _role: PhantomData<R>,
 }
 
-impl<R: Role, const N: usize> Session<R, N> {
+impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
     /// A session that has not yet been connected.
     #[must_use]
     pub fn new(cfg: Config) -> Self {

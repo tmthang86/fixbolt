@@ -30,7 +30,15 @@ pub enum Turn {
 /// `N` sizes the session's field index, `RX` its receive buffer and `TX` the
 /// bytes it has written but the socket has not taken. All three are the
 /// caller's choice and none is a hidden constant — `CLAUDE.md` §6.
-pub struct Connection<T, R: Role, J, const N: usize, const RX: usize, const TX: usize> {
+pub struct Connection<
+    T,
+    R: Role,
+    J,
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize = 1024,
+> {
     /// Which connection this is, for routing a reply that comes back from
     /// another thread. Never reused: the engine only ever counts up.
     pub id: ConnId,
@@ -50,7 +58,7 @@ pub struct Connection<T, R: Role, J, const N: usize, const RX: usize, const TX: 
     shard: u16,
     /// The socket. `None` once it has been given up.
     pub transport: T,
-    pub session: Session<R, N>,
+    pub session: Session<R, N, APP>,
     /// What this connection has already sent, for a `ResendRequest` to be
     /// answered from. `DESIGN.md` D7 — the session says *keep this*, the
     /// journal decides how and whether it survives a restart.
@@ -74,11 +82,18 @@ pub struct Connection<T, R: Role, J, const N: usize, const RX: usize, const TX: 
     overflow: bool,
 }
 
-impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, const TX: usize>
-    Connection<T, R, J, N, RX, TX>
+impl<
+    T: Transport,
+    R: Role,
+    J: SessionJournal,
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+> Connection<T, R, J, N, RX, TX, APP>
 {
     /// Wrap a socket and a session that has not been told about it yet.
-    pub const fn new(id: ConnId, transport: T, session: Session<R, N>, journal: J) -> Self {
+    pub const fn new(id: ConnId, transport: T, session: Session<R, N, APP>, journal: J) -> Self {
         Self {
             id,
             unsent: 0,

@@ -74,8 +74,8 @@ pub trait Shardable: Send {
     fn idle(&mut self);
 }
 
-impl<R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L> Shardable
-    for crate::Engine<TcpTransport, R, D, C, W, J, N, RX, TX, L>
+impl<R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L, const APP: usize> Shardable
+    for crate::Engine<TcpTransport, R, D, C, W, J, N, RX, TX, L, APP>
 where
     Self: Send,
     TcpTransport: Transport,
@@ -450,6 +450,42 @@ where
     A: fixbolt_session::Application + Send + 'static,
     F: Fn(usize) -> A + Send + Sync + 'static,
 {
+    serve_sharded_hft_with::<256, 4096, 8192, 1024, A, F>(
+        addr, table, plan, capacity, limits, make_app, log_path,
+    )
+}
+
+/// The same, with the three buffer sizes named by the caller. See
+/// [`crate::serve_with`] for what `N`, `RX` and `TX` mean and what they cost.
+///
+/// `RX` sizes **both** the pre-session buffer here and each shard engine's
+/// receive buffer, which is the invariant the two used to state in a comment
+/// apiece — see the note on [`Shards`].
+///
+/// # Errors
+///
+/// As [`serve_sharded_hft`].
+#[cfg(feature = "standard")]
+pub fn serve_sharded_hft_with<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A,
+    F,
+>(
+    addr: &str,
+    table: crate::presession::Table,
+    plan: &ShardPlan,
+    capacity: usize,
+    limits: crate::presession::Limits,
+    make_app: F,
+    log_path: Option<&std::path::Path>,
+) -> Result<core::convert::Infallible, ShardError>
+where
+    A: fixbolt_session::Application + Send + 'static,
+    F: Fn(usize) -> A + Send + Sync + 'static,
+{
     use crate::clock::{Clock, SystemClock};
     use crate::presession::PendingSet;
     use crate::transport::Interest;
@@ -465,10 +501,6 @@ where
         .first()
         .map(crate::presession::Entry::config)
         .ok_or(ShardError::NoCounterparties)?;
-
-    // The pre-session buffer matches `TcpAcceptorEngine`'s RX, so a prefix can
-    // never be too long for the connection it is handed to.
-    const PRE: usize = 4096;
 
     let acceptor = crate::Acceptor::bind(addr).map_err(ShardError::Io)?;
 
@@ -497,8 +529,9 @@ where
     }
     let logs = std::sync::Mutex::new(opened);
 
-    let mut shards =
-        Shards::<PRE>::start(plan, move |i| -> crate::HftAcceptorEngine<A, MaybeLog> {
+    let mut shards = Shards::<RX>::start(
+        plan,
+        move |i| -> crate::HftAcceptorEngine<A, MaybeLog, N, RX, TX, APP> {
             let taken = logs
                 .lock()
                 .ok()
@@ -509,18 +542,20 @@ where
             // only on the path this `#[cfg]` compiles, which is why it reached
             // CI rather than a local build. `[measured 2026-09-04]` run
             // 33859821622, the `affinity` job, E0283.
-            let bare: crate::HftAcceptorEngine<A> = crate::Engine::new(
-                cfg,
-                crate::dispatch::InlineDispatch::new(make_app(i)),
-                SystemClock,
-                crate::wait::Spin,
-                capacity,
-            );
+            let bare: crate::HftAcceptorEngine<A, crate::msglog::NoLog, N, RX, TX, APP> =
+                crate::Engine::new(
+                    cfg,
+                    crate::dispatch::InlineDispatch::new(make_app(i)),
+                    SystemClock,
+                    crate::wait::Spin,
+                    capacity,
+                );
             bare.with_shard(u16::try_from(i).unwrap_or(u16::MAX))
                 .with_log(MaybeLog(taken))
-        })?;
+        },
+    )?;
 
-    let mut set: PendingSet<crate::transport::TcpTransport, crate::presession::Table, PRE> =
+    let mut set: PendingSet<crate::transport::TcpTransport, crate::presession::Table, RX> =
         PendingSet::new(limits, table);
     let mut poller = crate::poll::Poller::with_capacity(limits.pending() + 1);
     let mut interests: Vec<Interest> = Vec::with_capacity(limits.pending() + 1);

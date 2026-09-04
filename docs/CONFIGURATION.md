@@ -92,25 +92,50 @@ Two constraints go with it:
 
 The alias [`TcpAcceptorEngine`](../crates/engine/src/lib.rs#L970) fixes three capacities:
 
+**Four sizes, and every entry point takes them.** `[changed 2026-09-05]` these used to be
+literals inside a type alias, and the only advice this page could give was *"instantiate
+`Engine<...>` directly"* — which a user of the `fixbolt` crate could not do, because `Engine` is
+not re-exported. Each `serve*` function now has a `*_with` twin that takes all four:
+
 ```rust
-pub type TcpAcceptorEngine<A, W, J = crate::journal::Store> = Engine<
-    TcpTransport,
-    fixbolt_session::Acceptor,
-    InlineDispatch<A>,
-    crate::clock::SystemClock,
-    W,
-    J,
-    256,  // N:  fields indexed per message
-    4096, // RX: read buffer per connection, bytes
-    8192, // TX: write buffer per connection, bytes
->;
+// the defaults, spelled out — this is exactly what `serve` calls
+serve_with::<256, 4096, 8192, 1024, _, _>(addr, table, app, capacity, limits, log)?;
+
+// a counterparty that sends 16 KiB messages and expects 8 KiB answers
+serve_with::<256, 16_384, 16_384, 8_192, _, _>(addr, table, app, capacity, limits, log)?;
 ```
 
-| Parameter | Meaning | Alias default | To change it |
+The two `_` are the language's, not this API's: a turbofish must supply **every** generic
+argument, and `A` and `L` are inferred from the arguments you pass. Const parameters cannot
+carry defaults on a function, which is why `serve_with` is a second function rather than four
+more parameters on `serve`.
+
+| Parameter | Meaning | Default | Raise it when |
 |---|---|---|---|
-| `N` | Maximum fields in one `MessageView<N>`; a message with more is `ParseError::TooManyFields` | `256` | Instantiate `Engine<..., N, RX, TX>` directly |
-| `RX` | Read buffer per connection | 4 KiB | same |
-| `TX` | Write buffer per connection; also the queue for a slow counterparty | 8 KiB | same |
+| `N` | Maximum fields in one `MessageView<N>`; more is `ParseError::TooManyFields` | `256` | a counterparty sends messages with many repeating-group members |
+| `RX` | Read buffer per connection — **the largest message this end can frame**. Also sizes the pre-session buffer | 4 KiB | a counterparty sends messages larger than 4 KiB |
+| `TX` | Write buffer per connection; also the queue for a slow counterparty | 8 KiB | replies are large, or a counterparty reads slowly |
+| `APP` | Scratch an `Application` lays one reply out in | 1 KiB | **this end must answer with more than ~1 KiB** |
+
+**`APP` must not exceed `TX`**, which is the queue the reply is copied into after it is laid
+out. Nothing checks this: an `APP` larger than `TX` simply wastes the difference.
+
+**A message too large for `RX` is not a silent drop.** The framer reads `9=` and, when the
+message cannot fit, reports the bytes as garbage: after logon the session decides what an
+unreadable frame means, and before logon the connection is closed. A prefix longer than `RX`
+handed over by the pre-session stage is refused with `PrefixTooLong`.
+
+**`APP` is the ceiling most likely to surprise you, and it fails as silence.** `[measured
+2026-09-05]` an `Application` that cannot lay out its reply returns `None`, which is a legal
+answer meaning *"nothing to say"* — so exceeding `APP` looks exactly like an application that
+chose not to reply. A size sweep against a real acceptor found the wall between 200 and 1000
+bytes while `RX` was 16 KiB:
+[a-ceiling-has-more-than-one-floor](reference/a-ceiling-has-more-than-one-floor.md).
+
+**What they cost.** `[measured 2026-09-04]` one `Connection` is **23 752 bytes** at `RX = 4096`
+and **36 040** at `RX = 16 384` — the difference is exactly the buffer. Against that, each
+session carries a **~2 MiB** journal ring on the heap (`SLOTS × (SLOT_LEN + 8)`), so quadrupling
+the receive buffer is **+0.57%** per connection. Memory is rarely the reason not to raise these.
 
 The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbound index,
 `P = 64` fields in a reply, `S = 1024` bytes for them. A reply that does not fit is

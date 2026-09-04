@@ -69,7 +69,11 @@ use fixbolt_session::journal::Journal as SessionJournal;
 /// A running engine: the connections it holds, and what drives them.
 ///
 /// Every size is the caller's: `N` the session's field index, `RX` a
-/// connection's receive buffer, `TX` its outbound queue.
+/// connection's receive buffer, `TX` its outbound queue, `APP` the scratch an
+/// [`Application`] lays its reply out in.
+///
+/// `[2026-09-05]` **`APP` is here because it was the tightest of the four and
+/// the only one with no name** — `docs/reference/a-ceiling-has-more-than-one-floor.md`.
 pub struct Engine<
     T,
     R: Role,
@@ -81,8 +85,9 @@ pub struct Engine<
     const RX: usize,
     const TX: usize,
     L = NoLog,
+    const APP: usize = 1024,
 > {
-    conns: Vec<Connection<T, R, J, N, RX, TX>>,
+    conns: Vec<Connection<T, R, J, N, RX, TX, APP>>,
     /// Every message this engine sees or sends, if anybody asked for them.
     ///
     /// [`NoLog`] by default and it compiles away: `MessageLog::LOGS` is a
@@ -172,8 +177,8 @@ impl<D: Dispatch> Application for Deliver<'_, D> {
     }
 }
 
-impl<T, R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L>
-    Engine<T, R, D, C, W, J, N, RX, TX, L>
+impl<T, R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L, const APP: usize>
+    Engine<T, R, D, C, W, J, N, RX, TX, L, APP>
 where
     T: Transport,
     R: Role,
@@ -191,7 +196,7 @@ where
     /// every one of this repository's 38 `Engine::new` call sites keeps
     /// compiling, and the ones that never wanted a log never mention it.
     #[must_use]
-    pub fn with_log<L2: MessageLog>(self, log: L2) -> Engine<T, R, D, C, W, J, N, RX, TX, L2> {
+    pub fn with_log<L2: MessageLog>(self, log: L2) -> Engine<T, R, D, C, W, J, N, RX, TX, L2, APP> {
         Engine {
             conns: self.conns,
             log,
@@ -695,7 +700,7 @@ where
     /// `benches/alloc.rs` cases `observe-idle` and `observe-asked` are what
     /// prove it, not this comment.
     fn snapshot(
-        conns: &[Connection<T, R, J, N, RX, TX>],
+        conns: &[Connection<T, R, J, N, RX, TX, APP>],
         refused_connections: usize,
         sources_missing: usize,
         log_lost: u64,
@@ -1058,7 +1063,7 @@ where
     }
 
     fn rebuild(
-        conns: &[Connection<T, R, J, N, RX, TX>],
+        conns: &[Connection<T, R, J, N, RX, TX, APP>],
         interests: &mut Vec<Interest>,
         missing: &mut usize,
         own: &[Interest],
@@ -1166,43 +1171,83 @@ where
 ///
 /// `W` is the mode: [`wait::Spin`] for `hft`, `block::Block` for `standard`.
 /// [`HftAcceptorEngine`] and [`StandardAcceptorEngine`] name the two.
-pub type TcpAcceptorEngine<A, W, J = crate::journal::Store, L = NoLog> = Engine<
+///
+/// `[2026-09-05]` **`N`, `RX` and `TX` are parameters with defaults, not
+/// literals.** They read the same at every existing call site — a default is
+/// applied where nothing is written — but they can now be named, which is what
+/// [`crate::serve_with`] exists to pass on. Before this they were spelled out
+/// here as `256, 4096, 8192`, and an alias is exactly as much of a hidden
+/// constant as a `const` when nothing above it can say otherwise
+/// (`CLAUDE.md` §6).
+pub type TcpAcceptorEngine<
+    A,
+    W,
+    J = crate::journal::Store,
+    L = NoLog,
+    const N: usize = 256,
+    const RX: usize = 4096,
+    const TX: usize = 8192,
+    const APP: usize = 1024,
+> = Engine<
     TcpTransport,
     fixbolt_session::Acceptor,
     InlineDispatch<A>,
     crate::clock::SystemClock,
     W,
     J,
-    256,
-    4096,
-    8192,
+    N,
+    RX,
+    TX,
     L,
+    APP,
 >;
 
 /// The `hft` shape: spins, burns a core, and needs a machine that satisfies
 /// `DESIGN.md` §9.
-pub type HftAcceptorEngine<A, L = NoLog> =
-    TcpAcceptorEngine<A, crate::wait::Spin, crate::journal::Store, L>;
+pub type HftAcceptorEngine<
+    A,
+    L = NoLog,
+    const N: usize = 256,
+    const RX: usize = 4096,
+    const TX: usize = 8192,
+    const APP: usize = 1024,
+> = TcpAcceptorEngine<A, crate::wait::Spin, crate::journal::Store, L, N, RX, TX, APP>;
 
 /// The same shape, dialling out. `STATUS.md` item 35.
-pub type TcpInitiatorEngine<A, W, J = crate::journal::Store, L = NoLog> = Engine<
+pub type TcpInitiatorEngine<
+    A,
+    W,
+    J = crate::journal::Store,
+    L = NoLog,
+    const N: usize = 256,
+    const RX: usize = 4096,
+    const TX: usize = 8192,
+    const APP: usize = 1024,
+> = Engine<
     TcpTransport,
     fixbolt_session::Initiator,
     InlineDispatch<A>,
     crate::clock::SystemClock,
     W,
     J,
-    256,
-    4096,
-    8192,
+    N,
+    RX,
+    TX,
     L,
+    APP,
 >;
 
 /// The `standard` shape, and **the default**: blocks on readiness and gives the
 /// core back.
 #[cfg(all(feature = "standard", unix))]
-pub type StandardAcceptorEngine<A, L = NoLog> =
-    TcpAcceptorEngine<A, crate::block::Block, crate::journal::Store, L>;
+pub type StandardAcceptorEngine<
+    A,
+    L = NoLog,
+    const N: usize = 256,
+    const RX: usize = 4096,
+    const TX: usize = 8192,
+    const APP: usize = 1024,
+> = TcpAcceptorEngine<A, crate::block::Block, crate::journal::Store, L, N, RX, TX, APP>;
 
 /// Accept FIX connections on `addr` and never return. **`standard` mode.**
 ///
@@ -1239,9 +1284,54 @@ pub fn serve<A: Application, L: MessageLog>(
     limits: presession::Limits,
     log: L,
 ) -> Result<Shutdown, ServeError> {
+    serve_with::<256, 4096, 8192, 1024, A, L>(addr, table, app, capacity, limits, log)
+}
+
+/// The same, with the three buffer sizes named by the caller.
+///
+/// `N` is the field index, `RX` the receive buffer — **the largest message this
+/// acceptor can frame** — and `TX` the write queue. [`serve`] is this function
+/// with the defaults `256, 4096, 8192`, and is what to call unless a
+/// counterparty needs something else.
+///
+/// ```ignore
+/// // a counterparty that sends messages up to 16 KiB
+/// serve_with::<256, 16_384, 8_192, _, _>(addr, table, app, 64, limits, NoLog)?;
+/// ```
+///
+/// The two `_` are the language's, not this API's: a turbofish must supply
+/// every generic argument, and `A` and `L` are inferred from the arguments.
+/// Const parameters cannot carry defaults on a function, which is why this is a
+/// second function rather than two more parameters on the first.
+///
+/// **`RX` also sizes the pre-session buffer**, so a counterparty may pipeline
+/// behind its `Logon` up to the same bound. See `docs/CONFIGURATION.md` for what
+/// each costs: `[measured 2026-09-04]` one connection is 23 752 bytes at
+/// `RX = 4096` and 36 040 at 16 384, against ~2 MiB of journal per session — so
+/// four times the buffer is 0.57% more memory per connection.
+///
+/// # Errors
+///
+/// As [`serve`].
+#[cfg(all(feature = "standard", unix))]
+pub fn serve_with<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    L: MessageLog,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    log: L,
+) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: StandardAcceptorEngine<A> = Engine::new(
+    let engine: StandardAcceptorEngine<A, NoLog, N, RX, TX, APP> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
@@ -1308,7 +1398,40 @@ pub fn connect_and_serve<
     recovery: V,
     log: L,
 ) -> Result<Shutdown, ServeError> {
-    let engine: TcpInitiatorEngine<A, crate::block::Block, J> = Engine::new(
+    connect_and_serve_with::<256, 4096, 8192, 1024, A, J, V, L>(
+        addr, cfg, app, policy, recovery, log,
+    )
+}
+
+/// The same, with the three buffer sizes named by the caller. See
+/// [`serve_with`] for what `N`, `RX` and `TX` mean and what they cost.
+///
+/// An initiator sizes `RX` for what the **venue** sends, which is usually the
+/// larger direction: a `SecurityList` or a mass quote can dwarf anything this
+/// end originates.
+///
+/// # Errors
+///
+/// As [`connect_and_serve`].
+#[cfg(all(feature = "standard", unix))]
+pub fn connect_and_serve_with<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    addr: &str,
+    cfg: Config,
+    app: A,
+    policy: crate::reconnect::Policy,
+    recovery: V,
+    log: L,
+) -> Result<Shutdown, ServeError> {
+    let engine: TcpInitiatorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
@@ -1324,6 +1447,10 @@ pub fn connect_and_serve<
 /// test can drive it without a real clock.
 #[cfg(all(feature = "standard", unix))]
 fn dial<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
     A: Application,
     W: Waiting,
     J: SessionJournal,
@@ -1332,7 +1459,7 @@ fn dial<
 >(
     addr: &str,
     cfg: Config,
-    mut engine: TcpInitiatorEngine<A, W, J, L>,
+    mut engine: TcpInitiatorEngine<A, W, J, L, N, RX, TX, APP>,
     mut policy: crate::reconnect::Policy,
     mut recovery: V,
 ) -> Result<Shutdown, ServeError> {
@@ -1451,9 +1578,39 @@ pub fn serve_with_recovery<
     recovery: V,
     log: L,
 ) -> Result<Shutdown, ServeError> {
+    serve_with_recovery_with::<256, 4096, 8192, 1024, A, J, V, L>(
+        addr, table, app, capacity, limits, recovery, log,
+    )
+}
+
+/// The same, with the three buffer sizes named by the caller. See
+/// [`serve_with`] for what `N`, `RX` and `TX` mean and what they cost.
+///
+/// # Errors
+///
+/// As [`serve_with_recovery`].
+#[cfg(all(feature = "standard", unix))]
+pub fn serve_with_recovery_with<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    recovery: V,
+    log: L,
+) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: TcpAcceptorEngine<A, crate::block::Block, J> = Engine::new(
+    let engine: TcpAcceptorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
@@ -1482,9 +1639,33 @@ pub fn serve_hft<A: Application, L: MessageLog>(
     limits: presession::Limits,
     log: L,
 ) -> Result<Shutdown, ServeError> {
+    serve_hft_with::<256, 4096, 8192, 1024, A, L>(addr, table, app, capacity, limits, log)
+}
+
+/// The same, with the three buffer sizes named by the caller. See
+/// [`serve_with`] for what `N`, `RX` and `TX` mean and what they cost.
+///
+/// # Errors
+///
+/// As [`serve_hft`].
+pub fn serve_hft_with<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    L: MessageLog,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    log: L,
+) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: HftAcceptorEngine<A> = Engine::new(
+    let engine: HftAcceptorEngine<A, NoLog, N, RX, TX, APP> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
@@ -1520,9 +1701,38 @@ pub fn serve_hft_with_recovery<
     recovery: V,
     log: L,
 ) -> Result<Shutdown, ServeError> {
+    serve_hft_with_recovery_with::<256, 4096, 8192, 1024, A, J, V, L>(
+        addr, table, app, capacity, limits, recovery, log,
+    )
+}
+
+/// The same, with the three buffer sizes named by the caller. See
+/// [`serve_with`] for what `N`, `RX` and `TX` mean and what they cost.
+///
+/// # Errors
+///
+/// As [`serve_hft_with_recovery`].
+pub fn serve_hft_with_recovery_with<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    recovery: V,
+    log: L,
+) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: TcpAcceptorEngine<A, crate::wait::Spin, J> = Engine::new(
+    let engine: TcpAcceptorEngine<A, crate::wait::Spin, J, NoLog, N, RX, TX, APP> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
@@ -1618,6 +1828,10 @@ fn default_config(table: &presession::Table) -> Result<Config, ServeError> {
 /// from the other side, and `cargo check --no-default-features` is what catches
 /// it.
 fn pump<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
     A: Application,
     W: Waiting,
     J: SessionJournal,
@@ -1625,16 +1839,19 @@ fn pump<
     L: MessageLog,
 >(
     acceptor: Acceptor,
-    mut engine: TcpAcceptorEngine<A, W, J, L>,
+    mut engine: TcpAcceptorEngine<A, W, J, L, N, RX, TX, APP>,
     table: presession::Table,
     limits: presession::Limits,
     mut recovery: V,
 ) -> Result<Shutdown, ServeError> {
-    // Matches the engine's RX, so a prefix can never be too long for the
-    // connection it is handed to.
-    const PRE: usize = 4096;
-
-    let mut set: presession::PendingSet<TcpTransport, presession::Table, PRE> =
+    // `[2026-09-05]` **The pre-session buffer IS the engine's `RX`, and that is
+    // now a type rather than a promise.** It used to read
+    // `const PRE: usize = 4096;` under a comment saying it matched the engine —
+    // in this function and again in `shard.rs`, two copies of one invariant with
+    // nothing checking either. A prefix longer than the connection's buffer is
+    // unframeable the instant it is handed over, so the two cannot drift; now
+    // they cannot be written apart.
+    let mut set: presession::PendingSet<TcpTransport, presession::Table, RX> =
         presession::PendingSet::new(limits, table);
     let mut clock = crate::clock::SystemClock;
     let listener = acceptor.source().map(Interest::readable);

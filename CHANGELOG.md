@@ -17,6 +17,22 @@ below describe what a first release would contain.
 
 ### Added
 
+- **The four buffer sizes are the caller's, through the front door.** Every serving entry point
+  has a `*_with` twin taking `N`, `RX`, `TX` and `APP` as const parameters —
+  `serve_with`, `serve_hft_with`, `serve_with_recovery_with`, `serve_hft_with_recovery_with`,
+  `connect_and_serve_with`, `shard::serve_sharded_hft_with`. The originals keep their exact
+  signatures and delegate with `256, 4096, 8192, 1024`, so **no existing call changes**.
+
+  Before this the sizes were literals inside type aliases and `Engine` was not re-exported from
+  `fixbolt`, so a deployment whose counterparty sends messages larger than 4 KiB had to fork the
+  serving loop. `docs/CONFIGURATION.md` had been telling readers to *"instantiate `Engine<...>`
+  directly"*, which that audience could not do.
+
+  `APP` is new as a name: the scratch an `Application` lays one reply out in was a hard-coded
+  `[u8; 1024]` in the session layer — the tightest ceiling in the engine, and the only one that
+  failed as **silence**, because an application that cannot lay out its reply returns `None` and
+  that is a legal answer. `fixbolt_session::DEFAULT_APP_SCRATCH` names the default.
+
 - **A two-directional message log.** `msglog::{MessageLog, NoLog, FileLog, MaybeLog, Direction}`
   and the `FileLogPath` settings key. One text file, one line per message, **both directions
   including frames refused before the session saw them** — the class the journal cannot hold,
