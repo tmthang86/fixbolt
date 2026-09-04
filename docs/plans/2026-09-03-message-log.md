@@ -458,7 +458,41 @@ người vận hành không phải đoán. Dòng bắt đầu bằng `#` là ch�
 
 ## Nhật ký giao hàng
 
-*(trống — chưa bắt đầu; bước 0 chưa đóng)*
+| Bước | Ngày | Kết quả |
+|---|---|---|
+| 0 | 2026-09-04 | **Đóng.** Giữ hai đường ghi, không cần ADR — [why-the-message-log-is-not-the-journal](../reference/why-the-message-log-is-not-the-journal.md) |
+| 1 | 2026-09-04 | **Xong.** `crates/engine/src/msglog.rs`, `crates/engine/tests/msglog.rs` 12 test. `cargo test --all` 463 → **475**; `--no-default-features` 471. `fmt`/`clippy -D warnings` sạch; `check-no-optional-deps.sh` 6/6; `scripts/bench.sh` — 21 case alloc cũ vẫn **0**, không đổi. **Sáu reversal chạy, sáu lần đỏ, đỏ đúng assertion.** Máy: Apple M5, macOS 25.6.0 — **chưa có CI run cho commit này** |
+
+**Reversal đã chạy `[2026-09-04]`**, output đọc chứ không suy:
+
+| Reversal | Thấy |
+|---|---|
+| bỏ nhánh `\n` trong `escape_into` | `a_data_field_with_a_newline_stays_on_one_line` đỏ, `left: 3` (một message thành hai dòng) |
+| bỏ nhánh `\\` | `a_backslash_in_a_data_field_round_trips` đỏ — `96=a\nb` giải mã ra newline thật `10` thay vì hai byte `92, 110` |
+| `record` `write_all` thẳng vào file | `record_touches_no_file_until_the_writer_runs` đỏ, `left: 22 right: 0` |
+| `open` không vá đuôi rách | `a_torn_last_line_is_marked_not_merged_with_the_next` đỏ |
+| bỏ `impl Drop for FileLog` | **lần đầu XANH** — false green, xem dưới. Sau khi sửa test: đỏ, `left: 2 right: 1` |
+| `pop → Some(0)` không cộng `lost` | `a_record_longer_than_the_writer_buffer…` đỏ, `left: 0 right: 1` |
+
+**Hai thứ bước 1 tìm ra mà plan không đặt tên**, cả hai đã vào
+[a-background-thread-wins-the-race-your-test-was-measuring](../reference/a-background-thread-wins-the-race-your-test-was-measuring.md)
+với dấu `[to testing-skills]`:
+
+1. **Test `Drop` đầu tiên là false green.** Nó assert dòng có trong file — mà writer thread
+   detached vẫn drain và flush dù `Drop` bị xoá, nên nó đo một cuộc đua chứ không đo `Drop`.
+   Thứ chỉ `close()` làm được là **kết thúc writer**, nên assertion đổi sang
+   `Arc::strong_count` của counter chia sẻ: 3 khi log còn sống, 1 sau khi drop. Không còn timing.
+   `FileLog::counter()` sinh ra từ đó, và bước 3 cần đúng cái `Arc` ấy cho `Snapshot`.
+2. **Reversal đầu tiên là no-op.** Regex xoá luật escape khớp nhầm hàm `unescape` cách đó vài
+   trăm dòng. Test xanh, và ghi lại thành "reversal xác nhận" thì đã là một lời nói dối do một
+   pattern sai sinh ra. Mọi reversal giờ **assert patch của chính nó đã áp** trước khi chạy test.
+
+**Khác plan một chỗ, có lý do:** record trong ring là `dir(1) ‖ at_ms(8) ‖ shard(2) ‖ conn(8)`
+= **19 byte**, không phải 21 — `ring::push` đã mang `len` trong header 4 byte của nó rồi, nên
+plan đếm thừa một `len` nữa. Buffer writer là `19 + MAX_RECORD`. Và **tín hiệu dừng là một tag
+`0xFF`, không phải record rỗng**: `FileJournal` dùng `push(&[])` được vì record của nó không bao
+giờ vượt buffer, còn ở đây `pop` báo *"bỏ vì quá dài"* cũng bằng `Some(0)` — hai sự kiện khác
+nhau không được mang cùng một giá trị.
 
 ## GSTACK REVIEW REPORT
 

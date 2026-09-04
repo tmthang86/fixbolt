@@ -30,6 +30,7 @@ pub mod conn;
 pub mod dispatch;
 pub mod frame;
 pub mod journal;
+pub mod msglog;
 pub mod observe;
 pub mod presession;
 pub mod reconnect;
