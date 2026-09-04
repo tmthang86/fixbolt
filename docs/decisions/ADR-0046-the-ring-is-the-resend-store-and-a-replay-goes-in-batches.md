@@ -1,6 +1,6 @@
 # ADR-0046 — The in-memory ring is the whole resend store, and a replay goes out in batches
 
-- **Status**: Proposed — 2026-09-04
+- **Status**: Accepted — 2026-09-04
 - **Date**: 2026-09-04
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0008](ADR-0008-journal-is-a-trait.md) — why the journal is a trait the
@@ -9,7 +9,7 @@
   what the journal records ·
   [ADR-0039](ADR-0039-a-fresh-journal-is-the-deployments-to-build.md) — the journal on disk,
   and what it is for ·
-  [ADR-0035](ADR-0035-an-observer-is-asked-once-per-turn.md) — how a counter becomes an event ·
+  [ADR-0035](ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md) — how a counter becomes an event ·
   [DESIGN.md](../DESIGN.md) §4 D7 (the journal), D8 (the engine thread), D10 (backpressure) ·
   `STATUS.md` item 43 · [plan](../plans/2026-09-03-resend-from-the-journal.md)
 
@@ -141,7 +141,12 @@ describes.
 
 ### Bad, and each is a real cost
 
-- **+2 MiB of resident memory per session at the default.** A gateway with 200 sessions pays
+- **+2 MiB of resident memory per session at the default.** `[measured 2026-09-04, Apple M5,
+  macOS 15]` `tools/w2w --mode standard --messages 2000` under `/usr/bin/time -l` reads a
+  maximum resident set of **4 702 208 bytes** at `SLOTS = 4096` against **2 506 752** at
+  `SLOTS = 8` — **+2 195 456 bytes, 2.09 MiB**, against the 4096 × 520 = 2.03 MiB the
+  arithmetic predicts, the rest being allocator overhead. Not a latency figure and not from a
+  §9 machine; it is here because a memory claim needs a reading like any other. A gateway with 200 sessions pays
   400 MiB it did not pay before. The const generic is the answer, and `GUIDE.md` §6 has to say
   so where somebody will read it.
 - **A long resend now takes many turns instead of one.** 100 messages at batch 8 is 13 turns. In

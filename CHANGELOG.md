@@ -15,7 +15,42 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 **Nothing has been released.** Six crates now exist and none is published; the entries
 below describe what a first release would contain.
 
+### Changed
+
+- **`Journal::put` returns `bool`, and `Journal::oldest` is new.** *(breaking)*
+  [ADR-0046](docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+  Neither gets a default implementation, for the reason `highest` has none: a default that lies
+  is worse than a compile error. `put` reporting a refusal is what lets the session count it;
+  `oldest` is the floor that separates *"never sent"* from *"fell out of the ring"*.
+- **`journal::SLOTS` is 4096, was 8.** ≈ 2 MiB per session at `SLOT_LEN` 512
+  (`[measured 2026-09-04, Apple M5]` `tools/w2w` reads +2 195 456 bytes of RSS). Eight was
+  chosen for the acceptance corpus; an acceptor that had sent a hundred `ExecutionReport`s
+  replayed eight of them and gap-filled the rest, with nothing on this side saying so.
+  `docs/CONFIGURATION.md` has the formula for choosing your own.
+- **`MemJournal` stores its slots in a `Box<[Slot]>` and `new` is no longer `const fn`.**
+  An inline `MemJournal<4096, 512>` builds 2 MiB on the stack; at 65 536 slots that is a
+  SIGSEGV rather than a failing test. `Engine::add` therefore allocates once per connection —
+  use `add_with_journal` with pre-built journals in `hft`.
+- **`MemJournal::get` is addressed by `seq % N`.** *(bug fix)* The scan it replaced returned
+  the **first** slot carrying a number, so after `Admin::SetNextOut` wound the outbound count
+  back, a replay returned the **stale** message: correctly numbered, correctly checksummed,
+  wrong content.
+- **A `ResendRequest` is answered in batches** of `Config::resend_batch` messages, default 8.
+  *(behaviour)* The whole range used to go out in one call; more than `TX` would fit set
+  `overflow`, and backpressure answered a resend with `Logout 58=slow consumer`. A replay now
+  continues across calls, and **`Session::tick_with` is the tick that advances one** — plain
+  `Session::tick` deliberately does not, because it has no journal and would gap-fill the
+  remainder.
+
 ### Added
+
+- **`Config::with_resend_batch` / `Config::resend_batch`**, and `DEFAULT_RESEND_BATCH` = 8.
+  Zero is read as one. The constraint is `resend_batch × SLOT_LEN < TX`.
+- **`Session::tick_with`**, `Session::puts_refused`, `Session::resend_beyond_journal`.
+- **`observe::EventKind::ResendBeyondJournal { filled, oldest }`** and
+  **`JournalRefused { count }`**, plus the matching `SessionSnapshot` accessors. Both count
+  **messages**, not occurrences, and a fill over an administrative message is not counted —
+  none was ever replayable.
 
 - **`fixbolt_engine::connect_and_serve` — an initiator that comes back.**
   [ADR-0043](docs/decisions/ADR-0043-backoff-without-jitter-and-a-reconnect-asks-recovery-every-time.md).

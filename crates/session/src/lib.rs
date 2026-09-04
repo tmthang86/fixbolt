@@ -291,7 +291,7 @@ pub struct Config {
 ///
 /// Eight, because the constraint that matters is
 /// `resend_batch × SLOT_LEN < TX`: 8 × 512 = 4 KiB against an 8 KiB transmit
-/// buffer. [ADR-0046](../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
+/// buffer. [ADR-0046](../../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
 /// decision 4.
 pub const DEFAULT_RESEND_BATCH: u16 = 8;
 
@@ -901,7 +901,7 @@ impl<R: Role, const N: usize> Session<R, N> {
     ///
     /// Monotonic within a connection, and reset by a new one, like every other
     /// per-connection count here. Not a hot-path accessor.
-    /// [ADR-0046](../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+    /// [ADR-0046](../../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
     #[must_use]
     pub const fn puts_refused(&self) -> u32 {
         self.puts_refused
@@ -919,7 +919,7 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// administrative message, or over a number below anything the journal ever
     /// held, is not counted — none of those was ever resendable, and a counter
     /// that rose on every ordinary reconnect would be an alarm nobody reads.
-    /// [`Journal::oldest`](journal::Journal::oldest) is the floor.
+    /// [`journal::Journal::oldest`] is the floor.
     ///
     /// Non-zero means **the ring is too small for this counterparty's
     /// disconnections** — `GUIDE.md` §6 has the arithmetic for choosing a
@@ -1207,7 +1207,7 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// [`Self::tick_with`] exists beside this: answering a `ResendRequest` is
     /// now spread over several calls, and time is the only thing that reaches
     /// a session with nothing arriving on it. This form passes
-    /// [`NoJournal`](journal::NoJournal), so a caller with no journal keeps the
+    /// [`journal::NoJournal`], so a caller with no journal keeps the
     /// signature it had.
     pub fn tick<F: FnMut(&[u8])>(&mut self, now_ms: u64, mut emit: F) -> Link {
         // **It does not advance a replay, and must not.** Continuing one
@@ -1815,7 +1815,7 @@ impl<R: Role, const N: usize> Session<R, N> {
     /// **Bounded by messages, not by numbers.** A replay is one message and a
     /// gap fill is one message however many numbers it covers, so the batch is
     /// a count of what reaches the transmit buffer — which is the thing that
-    /// overflows. [ADR-0046](../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
+    /// overflows. [ADR-0046](../../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
     /// decision 4.
     ///
     /// Called after every judged message and every tick while anything is

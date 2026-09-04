@@ -84,3 +84,25 @@ gentler `hft`; it is a defect in both.
   floor kernel TCP imposes, not a promise your box will hit. Run
   `scripts/check-machine.sh` and `bench.sh --strict`, and read the
   [HFT playbook](hft-playbook.md), before quoting a number as yours.
+
+---
+
+## 6. The resend ring, in `hft` mode
+
+`[2026-09-04]` [ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+
+**`Engine::add` allocates, and in this mode that matters.** The ring is a `Box<[Slot]>` built
+in `MemJournal::new`, so accepting a connection costs one ~2 MiB allocation and 512 first-touch
+page faults **on the engine thread** — the thread this mode exists to keep out of the kernel.
+
+- **Pre-build the journals at startup and call `add_with_journal`.** It does everything `add`
+  does except construct the journal, and startup is where D8 already wants every buffer
+  pre-faulted. `benches/alloc.rs` measures it that way for the same reason.
+- **A resend answers in batches** of `Config::resend_batch` messages per turn, default 8. In
+  `hft` a turn is ~449 ns, so a hundred-message replay is thirteen turns and under a
+  millisecond — and the alternative it replaced was one turn followed by
+  `Logout 58=slow consumer`.
+- **Nothing on the replay path allocates or reads a file.** The cursor is two `u32`s, the ring
+  answers `get` in one index and one comparison, and disk is never read to answer a
+  `ResendRequest` — non-negotiable 4, and ADR-0046 decision 5 (a) is why that is a decision
+  rather than an omission.

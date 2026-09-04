@@ -85,7 +85,7 @@ pub struct MemJournal<const N: usize, const LEN: usize> {
     /// ([ADR-0036]) must not lower the floor, because the messages above it are
     /// still in the ring.
     ///
-    /// [ADR-0036]: ../../../docs/decisions/ADR-0036-an-operator-can-move-a-sequence-number.md
+    /// [ADR-0036]: ../../../docs/decisions/ADR-0036-one-mechanism-two-capabilities.md
     high_water: Option<u32>,
     /// The highest inbound sequence number delivered to the application.
     ///

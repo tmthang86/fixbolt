@@ -1,6 +1,6 @@
 # Resend trả lại đúng message, không phải gap fill
 
-> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** **ĐÓNG 2026-09-04**, sáu bước
 > **Phạm vi:** `STATUS.md` item 43. Chạm `session` (trait `Journal`, vòng resend, hai bộ đếm,
 > một trường `Config`), `engine` (`MemJournal`, `FileJournal`, `observe`, `Store`), `library`
 > (re-export), docs. **Không chạm** `codec`, `dict`, `transport`.
@@ -227,4 +227,74 @@ scripts/interop.sh                                # bước resend cả hai chi�
 
 ## Nhật ký giao hàng
 
-*(trống — chưa bắt đầu)*
+**Đóng 2026-09-04, cả sáu bước.** ADR-0046 `Accepted`. `cargo test --all` 446 → 463.
+
+### Số đã đo
+
+| | |
+|---|---|
+| RSS `tools/w2w --mode standard --messages 2000`, `SLOTS = 4096` | **4 702 208 byte** |
+| cùng lệnh, `SLOTS = 8` | **2 506 752 byte** |
+| chênh lệch | **+2 195 456 byte = 2.09 MiB** (phép tính 4096 × 520 = 2.03 MiB; phần dư là allocator) |
+
+Máy: Apple M5, macOS 15. **Không phải máy §9 và không có số latency nào ở đây.**
+
+### Ba thứ tìm ra mà plan không nêu
+
+1. **`get` cũ trả bytes sai.** `slots.iter().find()` lấy slot **đầu tiên** mang số đó; sau khi
+   `Admin::SetNextOut` lùi số (ADR-0036), replay trả **message cũ** — đúng số, đúng checksum,
+   sai nội dung. Địa chỉ hoá `seq % N` chữa. Test đỏ trước:
+   `left: Some("the first nine")  right: Some("the second nine")`.
+2. **`tick` không journal sẽ gap-fill đè lên replay dở.** `NoJournal` trả "không giữ" cho mọi
+   số → một `SequenceReset` nuốt toàn bộ phần còn lại, đối tác mất message mình vẫn đang giữ.
+   `tick` giờ đứng yên; `tick_with` mới chạy tiếp. Đứng yên thì cứu được, fill thì không.
+3. **`Engine::add` cấp phát ~2 MiB trên engine thread.** `benches/alloc.rs` bắt được:
+   `events-busy` 0 → 2000, session `deliver`/`resend`/`originate` 0 → 10000 mỗi cái. Plan đã
+   lường ("startup, ngoài cửa sổ đếm") nhưng không truy ra hệ quả này. Sửa theo plan **và**
+   không bằng cách xoá call khỏi cửa sổ: engine bench dựng journal ngoài rồi gọi
+   `add_with_journal` trong cửa sổ, nên một allocation xuất hiện trong accept **vì lý do khác**
+   vẫn bị bắt. Ghi vào ADR-0046 *Consequences*, `GUIDE.md` §6a0, `best-practices-hft.md` §6.
+
+### Hai chỗ khác plan, đều nhỏ
+
+- **`oldest` là một phép đọc một slot, không phải một trường được duy trì** — sửa đổi ghi trong
+  ADR khi còn `Proposed`. Chỉ application message được journal nên số trong ring **thưa**, và
+  "số vừa rời đi + 1" gọi tên một message chưa từng gửi. Nó là **sàn**, không phải lời hứa số
+  đó có mặt — rustdoc nói rõ, và đó chính là nửa mà bộ đếm cần.
+- **`highest` vẫn quét.** Nó chỉ được hỏi một lần mỗi connection lúc recovery, không nằm trên
+  đường message; làm O(1) buộc phải chọn giữa *max trên các slot* và *số ghi sau cùng*, hai thứ
+  khác nhau sau một lần lùi số, và không có phép đo nào nói rủi ro đó đáng.
+- **Test bộ đếm nằm ở `crates/engine/tests/journal.rs`**, không phải `crates/session/tests/resend.rs`:
+  helper dựng order và `ResendRequest` thật đã ở đó, và bản sao thứ hai là hai fixture rồi sẽ lệch nhau.
+- **Số trong test bước 3 là 13, không phải 12** như plan viết: `34=1` là Logon nên dải lấp là
+  1..=13. Con số minh hoạ của plan giả định app message bắt đầu từ 1.
+
+### Reversal
+
+| Reversal | Thấy gì |
+|---|---|
+| `continue_replay` không giới hạn lô (`with_resend_batch(10_000)`) | `the session ended on turn 1 while answering a resend`. **`--test score` vẫn 4 passed và `--test wire` vẫn 2 passed** — corpus mù, đúng bẫy 1 |
+| Bỏ dòng tăng `resend_beyond_journal` | `left: 0  right: 13`, 1 failed / 14 filtered out — chỉ đúng case nhắm tới |
+| `oldest` trả `None` luôn | 5 failed / 10 passed: hai test bước 1, hai test ring bước 2, và test bộ đếm |
+| `slots` về mảng inline | `error[E0080]: evaluation panicked: assertion failed: core::mem::size_of::<Store>() <= 64` — **lỗi compile**, không phải test |
+| Chặn emit `ResendBeyondJournal` | `timed out waiting for a resend past the ring; saw: []` |
+
+### Gate
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo test --all` | **463 passed, 0 failed** (446 lúc bắt đầu) |
+| `cargo test --all --no-default-features` | sạch |
+| `cargo test -p fixbolt-session --test score` | 59 / 59 |
+| `cargo test -p fixbolt-engine --test wire` | 59 / 59 hai mode |
+| `cargo bench -p fixbolt-session --bench alloc` | 16 / 16 số 0 |
+| `cargo bench -p fixbolt-engine --bench alloc` | 21 / 21 số 0 |
+| `cargo clippy --all-targets --all-features -D warnings` | sạch |
+| `scripts/check-links.py` | 1256 link, 0 chết |
+
+### Không làm, nói rõ
+
+- **Resend từ đĩa**: loại theo ADR-0046 quyết định 5, hoãn cho `standard` nếu có deployment thật.
+- **`FileJournal` `Async` ring đầy thì bỏ record trong im lặng**: cùng hình một tầng dưới, ghi
+  vào ADR-0046 *Consequences* là nợ, đợt C đo trước.
+- **Số latency**: không có. Chỉ có một số bộ nhớ, từ laptop, và nói rõ là từ laptop.

@@ -95,3 +95,24 @@ Named plainly, because a page of advice that hides its uncertainty is worse than
 - **Durability policy costs are not benchmarked here.** The table above is directional.
   Measure `Fsync` against your storage before you commit to it on a latency-sensitive
   `standard` session.
+
+---
+
+## 7. The resend ring, in `standard` mode
+
+`[2026-09-04]` [ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+
+**`standard` mode is where session density lives**, and the resend ring is now the largest
+per-session allocation: `SLOTS × (SLOT_LEN + 8)` ≈ **2 MiB** at the defaults.
+`[measured 2026-09-04, Apple M5, macOS 15]` `tools/w2w --mode standard` reads
+**+2 195 456 bytes** of maximum resident set against the old `SLOTS = 8`.
+
+- **Two hundred sessions is 400 MiB of ring.** If that is your shape, set a smaller `N`
+  through the const generic — `docs/CONFIGURATION.md` has the formula, and it is about how long
+  a disconnection you are willing to replay across, not about how much memory you have.
+- **`Engine::add` builds the journal on the engine thread**, which in this mode is a thread
+  that is about to block anyway. Accepting a connection is not on the message path, so the
+  allocation is affordable here in a way it is not in `hft` — see the other page.
+- **Watch `resend_beyond_journal`.** Non-zero means a counterparty asked for messages the ring
+  no longer held and got gap fills instead. `SessionSnapshot` carries the running total and
+  `EventKind::ResendBeyondJournal` carries each change, with how far back the ring reached.

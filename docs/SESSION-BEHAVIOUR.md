@@ -106,6 +106,29 @@ concern; malformed session plumbing is the session's.
   records which of the two restarts the counts and which does not.
 - **`141=Y` on a Logon resets both sequence counts** before the Logon's own numbers are
   applied — the only thing that restarts a resumed session's counters.
+- **`16=0` and a range past what was sent are both clamped** to the last number this end
+  actually sent. Guarded by `crates/engine/tests/journal.rs::what_no_longer_fits_in_the_ring_is_filled_over_not_skipped`.
+- `[2026-09-04]` **An answer goes out in batches**, `Config::resend_batch` messages per call —
+  a replay is one message and a gap fill is one message however many numbers it covers.
+  The rest follow on later calls, interleaved with new traffic: a replayed message carries its
+  original `34=` with `43=Y`, a new one carries the next new number. Continued by
+  `Session::tick_with` and by each judged message; **plain `Session::tick` does not continue
+  one**, because it has no journal and would gap-fill the remainder. Guarded by
+  `crates/engine/tests/journal.rs::a_long_resend_is_replayed_over_several_ticks_in_order`,
+  `::a_replay_stalls_on_the_journal_less_tick_and_says_nothing_wrong` and
+  `crates/engine/tests/backpressure.rs::a_resend_larger_than_tx_does_not_end_the_session`.
+  [ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+- `[2026-09-04]` **A replay in progress is cancelled** by a disconnect, by a schedule boundary
+  that restarts the counts, and by a newer `ResendRequest` — which replaces it rather than
+  queueing behind it. Guarded by `::a_disconnect_cancels_a_resend_in_progress`,
+  `::a_schedule_reset_cancels_a_resend_in_progress` and
+  `::a_new_resend_request_replaces_the_one_in_progress`.
+- `[2026-09-04]` **Numbers below the journal's floor are gap-filled and counted.** Legal on the
+  wire and otherwise invisible; `SessionSnapshot::resend_beyond_journal` and
+  `EventKind::ResendBeyondJournal { filled, oldest }` say how many messages, not how many
+  times. A fill over an administrative message is **not** counted — none was ever replayable.
+  Guarded by `::a_resend_that_reaches_below_the_ring_counts_every_number_it_filled` and
+  `::a_fill_over_messages_the_ring_never_held_is_not_counted`.
 
 ---
 

@@ -467,6 +467,28 @@ keeps but does not persist, and `engine::journal::FileJournal` carries
 it: reading a replay back off disk would be a blocking `read` on the thread non-negotiable 4
 protects.
 
+**As built `[2026-09-04]`, and this is what a resend actually costs.**
+[ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
+made the sentence above a decision rather than an implementation detail, and fixed what it was
+hiding:
+
+- **The ring is the whole resend store.** Anything older is gap-filled — legal, invisible to the
+  counterparty's engine, and now **counted and emitted**:
+  `EventKind::ResendBeyondJournal { filled, oldest }`, in messages rather than occurrences. The
+  other silence gets one too: `JournalRefused { count }`, for a reply longer than a slot.
+- **`SLOTS` is 4096, not 8.** Eight was the smallest power of two above what the corpus asks
+  for; an acceptor that had sent a hundred `ExecutionReport`s replayed eight of them.
+  `N × (LEN + 8)` ≈ 2 MiB per session — `[measured 2026-09-04]` `tools/w2w` reads
+  **+2 195 456 bytes** of RSS against `SLOTS = 8`. `GUIDE.md` §6 has the formula for choosing.
+- **`get` is one index and one comparison**, addressed by `seq % N`. The scan it replaced
+  returned the *first* slot carrying a number, which after `Admin::SetNextOut` wound the count
+  back was the **stale** copy — correctly numbered, correctly checksummed, wrong message.
+- **A replay goes out in batches** of `Config::resend_batch` messages, default 8, continued from
+  `Session::tick_with` and from each judged message. Before this the whole range went out in one
+  call, `Out::push` refused what did not fit, and D10 answered a `ResendRequest` with
+  `Logout 58=slow consumer` — **the corpus cannot see it**, because no definition asks for more
+  than three messages. `crates/engine/tests/backpressure.rs` is what does.
+
 Two deviations from the paragraph above, both in
 [ADR-0008](decisions/ADR-0008-journal-is-a-trait.md). The journal is **a trait the session is
 handed**, not an action it emits — a resend has to *read*, and an action cannot answer. And
@@ -879,6 +901,8 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | The session rules the corpus cannot tell apart | each has a test of its own | `crates/session/tests/logon.rs`, `tests/reject.rs` and `tests/heartbeat.rs`. `[measured]` seven so far. Three from steps 1–3: deleting the "first message must be a Logon" check leaves the score unchanged, because `1e_NotLogonMessage.def` also carries a wrong `56=`; stamping `52=` from a constant leaves it unchanged, because `52` is one of the five tags `fields.fmt` matches by shape; a Reject that gives the inbound sequence number back leaves it unchanged, because the *too high* branch does not exist yet. Four from step 4: all three heartbeat thresholds, which the harness's whole-interval ticks cannot see; and that a garbled frame is fatal only when it claims to be a Logon, which the corpus states once from each side in different files. Five from step 5, in `tests/resend.rs`: every file that opens a gap ends before opening a second one, so closing a filled gap, replaying held messages in sequence order, and what happens when there is no room to hold one are all invisible to the score |
 | Session conformance, acceptor | **59 / 59** | `cargo test -p fixbolt-session --test score`, in-process, no socket. `[measured 2026-08-29]` **59 / 59** — the session plan is closed |
 | The journal keeps what a resend needs, under each D7 policy | `None` fills over everything; `MemJournal` and `FileJournal` replay; a message longer than a slot is refused rather than truncated | `crates/engine/tests/journal.rs`, seven tests. Reversal: making `put` keep nothing turns four of them red **and drops the acceptance score**, which is what proves the score depends on the journal |
+| **A resend larger than the transmit buffer does not end the session** | 100 messages of ~200 bytes, `TX` 8 KiB, `Backpressure::Disconnect`: all 100 come back with `43=Y`, in order, and no `58=slow consumer` | `crates/engine/tests/backpressure.rs::a_resend_larger_than_tx_does_not_end_the_session`, ADR-0046. Reversal: `with_resend_batch(10_000)` reads *"the session ended on turn 1 while answering a resend"* — **and `--test score` stays 59 / 59 through it**, which is what says the corpus is blind to this |
+| **A resend past the ring is counted, and reaches an operator** | 20 orders through an 8-slot ring, `7=2 16=0`: one `ResendBeyondJournal { filled: 12, oldest: Some(14) }`, and `events_lost() == 0` | `crates/engine/tests/events.rs::a_resend_past_the_ring_is_an_event_with_the_numbers`. One event per turn that changed, not one per message — ADR-0035 |
 | Session conformance, acceptor, **through a real socket** | **59 / 59, on every machine** | `cargo test -p fixbolt-engine --test wire`. The same files over TCP: kernel sockets, the real framer, the real session, the real application. The only injected part is the clock, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` **59 / 59 on the M5 and on Linux x86_64** — **met**. It read 39 / 59 on Linux until the harness's client socket was given `TCP_NODELAY`, which the engine's own sockets have always had; the gate is now flat across a 20× span of its timing bounds, which is what makes the figure mean something |
 | **A `standard` engine gives the core back** | engine-thread CPU under 5% over a wall-clock window, found sleeping rather than running, **and** a round-trip p50 far below the poll timeout | `scripts/check-standard-gives-the-core-back.sh`, non-negotiable 4's second half. Four assertions, because CPU near zero is also what a dead thread, a run that never reached the mode, and an engine woken by its own timeout all report. `[measured 2026-08-30]` a `Block` made to ignore readiness reads **0% CPU**, sleeping **20/20**, p50 **99 046 599 ns** — only the p50 catches it. Requires **`hft` and `yield`** to trip it, and separates *failed the policy* from *could not be measured* so a broken harness cannot pass as a red half |
 | Session conformance, acceptor, **in `standard` mode** | **59 / 59** with the engine blocking between steps | `cargo test -p fixbolt-engine --test wire`, second case. ADR-0013's stated cost — *two modes is two things to test, for ever* — and the only place the corpus meets `standard`, since every other line of that file drives `turn` by hand where the idle strategy is never reached. **It proves the protocol, not the wiring**: `[measured 2026-08-30]` with `Block` made to ignore readiness, and again with the listener removed from the poll set, the run took 3.30 s and 3.34 s against a 3.28 s baseline — the settle criterion is 1 ms and the timeout 5 ms, so one block satisfies it either way |

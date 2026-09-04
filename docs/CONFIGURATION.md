@@ -39,7 +39,8 @@ Parameters that are configured programmatically when instantiating or starting t
 | `DEFAULT_CAPACITY` | Size of the outbound dispatch ring buffer in bytes | Power of two (`usize`) | `4194304` (4 MiB = `1 << 22`) | `RingDispatch::new(capacity)` | [`crates/engine/src/ring.rs:113`](../crates/engine/src/ring.rs#L113) |
 | `DEFAULT_TIMEOUT_MS` | Idle poll timeout for `standard` mode in milliseconds | Whole milliseconds (`u32`) | `100` | `Block::new(capacity)` or `Block::with_timeout_ms` | [`crates/engine/src/block.rs:33`](../crates/engine/src/block.rs#L33) |
 | `MIN_TIMEOUT_MS` | Minimum poll timeout enforced by `Block` | Whole milliseconds (`u32`) | `5` | Enforced internally by `Block::with_timeout_ms` | [`crates/engine/src/block.rs:41`](../crates/engine/src/block.rs#L41) |
-| `SLOTS` | Outbound messages retained in journal for resend replies | Power of two (`usize`) | `8` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`crates/engine/src/journal.rs:40`](../crates/engine/src/journal.rs#L40) |
+| `SLOTS` | Outbound messages retained in journal for resend replies | Power of two (`usize`) | `4096` `[changed 2026-09-04, was 8]` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`crates/engine/src/journal.rs:51`](../crates/engine/src/journal.rs#L51) |
+| `resend_batch` | Messages one call may put on the wire answering a `ResendRequest` | `u16`, zero is read as one | `8` | `Config::with_resend_batch` | [`crates/session/src/lib.rs`](../crates/session/src/lib.rs) |
 | `SLOT_LEN` | Maximum message size stored in journal slot | Bytes (`usize`) | `512` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`crates/engine/src/journal.rs:45`](../crates/engine/src/journal.rs#L45) |
 | `Durability` | Persistence guarantee for on-disk file journaling | `Durability::Async` (non-blocking writer), `Durability::Fsync` (blocks engine thread) | `Durability::Async` | `FileJournal::open(path, durability)` | [`crates/engine/src/journal.rs:144`](../crates/engine/src/journal.rs#L144) |
 
@@ -78,3 +79,33 @@ pub type TcpAcceptorEngine<A, W, J = crate::journal::Store> = Engine<
 |---|---|---|---|
 | `standard` | `engine`, `library` | Enables blocking engine poller via `kqueue`/`epoll` (`block.rs`, `serve`, `StandardAcceptorEngine`). | **Yes** |
 | `affinity` | `engine` | Enables CPU core pinning and thread affinity checks via `libc` on Linux. | No |
+
+---
+
+## `SLOTS` and `resend_batch`, and why both moved on 2026-09-04
+
+[ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+
+**`SLOTS` was 8.** That was the smallest power of two above what the acceptance corpus asks
+for, and the rustdoc said *"a real acceptor sets its own"* — but nothing forced one to, nothing
+counted what the default cost, and an acceptor that had sent a hundred `ExecutionReport`s
+answered `7=1 16=0` by replaying eight and gap-filling ninety-two. That is legal on the wire
+and ninety-two messages gone to the counterparty.
+
+**Choosing your own N:**
+
+> **N ≥ the number of application messages you send during the longest disconnection you are
+> willing to replay across** — for most desks, one trading day.
+
+Memory is `N × (SLOT_LEN + 8)`. At the defaults that is ≈ **2 MiB per session** —
+`[measured 2026-09-04, Apple M5]` `tools/w2w` reads **+2 195 456 bytes** of maximum resident
+set against `SLOTS = 8`. A gateway holding hundreds of sessions should pick a smaller N through
+the const generic; `GUIDE.md` §1a is about that trade.
+
+**`resend_batch` is bounded by the transmit buffer**, not by taste: `resend_batch × SLOT_LEN`
+must stay under `TX`. The default is 8 × 512 = 4 KiB against 8 KiB. Raise `SLOT_LEN` or lower
+`TX` and this is the number to re-check.
+
+**Two counters say when either is wrong**, on `SessionSnapshot` and as events:
+`resend_beyond_journal` (the ring is too small — messages the counterparty asked for and did
+not get) and `puts_refused` (replies longer than `SLOT_LEN`, which will never be replayable).
