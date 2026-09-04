@@ -61,6 +61,7 @@ use crate::backpressure::Backpressure;
 use crate::clock::Clock;
 use crate::conn::{Connection, Turn};
 use crate::dispatch::{ConnId, Dispatch, InlineDispatch};
+use crate::msglog::{MessageLog, NoLog};
 use crate::transport::{Interest, Source, TcpTransport, Transport};
 use crate::wait::Waiting;
 use fixbolt_session::journal::Journal as SessionJournal;
@@ -69,8 +70,33 @@ use fixbolt_session::journal::Journal as SessionJournal;
 ///
 /// Every size is the caller's: `N` the session's field index, `RX` a
 /// connection's receive buffer, `TX` its outbound queue.
-pub struct Engine<T, R: Role, D, C, W, J, const N: usize, const RX: usize, const TX: usize> {
+pub struct Engine<
+    T,
+    R: Role,
+    D,
+    C,
+    W,
+    J,
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    L = NoLog,
+> {
     conns: Vec<Connection<T, R, J, N, RX, TX>>,
+    /// Every message this engine sees or sends, if anybody asked for them.
+    ///
+    /// [`NoLog`] by default and it compiles away: `MessageLog::LOGS` is a
+    /// constant, so every hook folds out of an engine that was not given one.
+    /// [`Self::with_log`] is how a log arrives, and it changes this type
+    /// parameter — there is no half-configured engine, because an engine
+    /// without a log is a *different type* from one with it.
+    log: L,
+    /// Which shard this engine is, for a log line to name.
+    ///
+    /// Zero unless `shard::serve_sharded_hft` says otherwise. `ConnId` restarts
+    /// at zero in every engine, so without this two shards write `conn=0` for
+    /// two different sockets.
+    shard: u16,
     /// What an idle turn waits on, rebuilt in place every time it is needed.
     ///
     /// A [`Source`] borrows a descriptor rather than owning one, so this list is
@@ -142,8 +168,8 @@ impl<D: Dispatch> Application for Deliver<'_, D> {
     }
 }
 
-impl<T, R, D, C, W, J, const N: usize, const RX: usize, const TX: usize>
-    Engine<T, R, D, C, W, J, N, RX, TX>
+impl<T, R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L>
+    Engine<T, R, D, C, W, J, N, RX, TX, L>
 where
     T: Transport,
     R: Role,
@@ -151,14 +177,62 @@ where
     C: Clock,
     W: Waiting,
     J: SessionJournal,
+    L: MessageLog,
 {
+    /// The same engine, recording every message it sees or sends into `log`.
+    ///
+    /// **This changes the engine's type**, from `Engine<…, NoLog>` to
+    /// `Engine<…, L2>`, which is why there is no window in which an engine
+    /// exists with a log half-attached. It is also why `new` does not take one:
+    /// every one of this repository's 38 `Engine::new` call sites keeps
+    /// compiling, and the ones that never wanted a log never mention it.
+    #[must_use]
+    pub fn with_log<L2: MessageLog>(self, log: L2) -> Engine<T, R, D, C, W, J, N, RX, TX, L2> {
+        Engine {
+            conns: self.conns,
+            log,
+            shard: self.shard,
+            interests: self.interests,
+            sources_missing: self.sources_missing,
+            refused_connections: self.refused_connections,
+            cfg: self.cfg,
+            dispatch: self.dispatch,
+            clock: self.clock,
+            wait: self.wait,
+            next_id: self.next_id,
+            backpressure: self.backpressure,
+            observe: self.observe,
+            stopping: self.stopping,
+            #[cfg(all(feature = "standard", unix))]
+            waker: self.waker,
+        }
+    }
+
+    /// The same engine, told which shard it is. See [`Self::shard`].
+    #[must_use]
+    pub const fn with_shard(mut self, shard: u16) -> Self {
+        self.shard = shard;
+        self
+    }
+
+    /// Which shard this engine is. Zero unless it was told otherwise.
+    #[must_use]
+    pub const fn shard(&self) -> u16 {
+        self.shard
+    }
+
     /// An engine with no connections yet.
     ///
     /// `capacity` is reserved once, here, so that adding a connection later
     /// does not allocate on a thread that must not — non-negotiable 1.
-    pub fn new(cfg: Config, dispatch: D, clock: C, wait: W, capacity: usize) -> Self {
+    pub fn new(cfg: Config, dispatch: D, clock: C, wait: W, capacity: usize) -> Self
+    where
+        L: Default,
+    {
         Self {
             conns: Vec::with_capacity(capacity),
+            log: L::default(),
+            shard: 0,
             // Two more than the connections: `serve` adds the listener, and the
             // out-of-band waker is one more. Going over is not fatal — it costs
             // one allocation on a path that must not have any, which is a
@@ -225,8 +299,10 @@ where
         let id = self.next_id;
         self.next_id += 1;
         let mut conn = Connection::new(id, transport, Session::new(self.cfg), journal)
-            .with_backpressure(self.backpressure);
-        conn.opened();
+            .with_backpressure(self.backpressure)
+            .with_shard(self.shard);
+        let at = self.clock.now_ms();
+        conn.opened(at, &mut self.log);
         self.conns.push(conn);
         id
     }
@@ -278,9 +354,11 @@ where
             Some(at) => Session::resume_at(cfg, next_out, next_in, at),
             None => Session::resume(cfg, next_out, next_in),
         };
-        let mut conn =
-            Connection::new(id, transport, session, journal).with_backpressure(self.backpressure);
-        conn.opened();
+        let mut conn = Connection::new(id, transport, session, journal)
+            .with_backpressure(self.backpressure)
+            .with_shard(self.shard);
+        let at = self.clock.now_ms();
+        conn.opened(at, &mut self.log);
         self.conns.push(conn);
         id
     }
@@ -408,8 +486,9 @@ where
             }
             None => (Session::new(cfg), fresh()),
         };
-        let mut conn =
-            Connection::new(id, transport, session, journal).with_backpressure(self.backpressure);
+        let mut conn = Connection::new(id, transport, session, journal)
+            .with_backpressure(self.backpressure)
+            .with_shard(self.shard);
         if !conn.prime(prefix) {
             self.next_id -= 1;
             return Err(PrefixTooLong {
@@ -417,7 +496,8 @@ where
                 capacity: RX,
             });
         }
-        conn.opened();
+        let at = self.clock.now_ms();
+        conn.opened(at, &mut self.log);
         self.conns.push(conn);
         Ok(id)
     }
@@ -484,9 +564,10 @@ where
             return;
         }
         let now = self.clock.now_ms();
+        let log = &mut self.log;
         for c in taken.iter().take(n).flatten() {
             let outcome = match self.conns.iter_mut().find(|x| x.id == c.id()) {
-                Some(conn) => conn.administer(*c),
+                Some(conn) => conn.administer(*c, now, log),
                 None => crate::observe::Outcome::NoSuchConnection,
             };
             // Re-borrowed rather than held across the loop: `administer` takes
@@ -528,6 +609,7 @@ where
             acked: 0,
             timed_out: 0,
         };
+        let log = &mut self.log;
         for c in &mut self.conns {
             st.sessions += 1;
             // **The moment that matters.** A planned restart wants to know when
@@ -539,7 +621,7 @@ where
             // build the message, answers `Dropped` and is simply closed —
             // waiting for an answer to a message that was not sent is how a
             // shutdown hangs.
-            if c.begin_logout() {
+            if c.begin_logout(now, log) {
                 st.said_goodbye += 1;
             }
         }
@@ -713,9 +795,15 @@ where
             } else {
                 (0, 0)
             };
-            let outcome = self.conns[i].turn(now, &mut deliver, |msg| {
-                others_on > 0 && presession::is_logon(msg)
-            });
+            let shard = self.shard;
+            let Self { conns, log, .. } = self;
+            let outcome = conns[i].turn(
+                now,
+                &mut deliver,
+                |msg| others_on > 0 && presession::is_logon(msg),
+                shard,
+                log,
+            );
             // **When the session came up, on disk.** Not per message: that is
             // the hot path and D8 forbids a write there. A durable journal
             // records it; everything else ignores it, because the trait's
@@ -777,7 +865,9 @@ where
                     moved |= m;
                     if refused {
                         self.refused_connections += 1;
-                        self.conns[i].slow_application();
+                        let now_for_log = now;
+                        let Self { conns, log, .. } = self;
+                        conns[i].slow_application(now_for_log, log);
                         moved = true;
                     }
                     i += 1;
@@ -809,12 +899,15 @@ where
         // `false` for `InlineDispatch`, so this whole block compiles away
         // rather than costing a branch on the commonest engine there is.
         if D::OUT_OF_BAND {
-            let conns = &mut self.conns;
+            // One clock read for the whole collected batch: every reply this
+            // block queues is part of the same turn, and shares its instant.
+            let at_for_log = now;
+            let Self { conns, log, .. } = self;
             let mut any = false;
             self.dispatch.collect(|id, msg| {
                 any = true;
                 if let Some(c) = conns.iter_mut().find(|c| c.id == id) {
-                    c.send_application(msg);
+                    c.send_application(msg, at_for_log, log);
                 }
                 // A reply for a connection that has gone is dropped, on
                 // purpose: the session that owned its sequence numbers is gone

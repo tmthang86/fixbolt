@@ -12,6 +12,7 @@ use crate::backpressure::{Backpressure, SLOW_APPLICATION, SLOW_CONSUMER};
 const SHUTTING_DOWN: &[u8] = b"shutting down";
 use crate::dispatch::ConnId;
 use crate::frame::{Cut, Framer};
+use crate::msglog::{Direction, MessageLog};
 use crate::transport::{Io, Transport};
 
 /// What happened to a connection on one turn of the loop.
@@ -33,6 +34,12 @@ pub struct Connection<T, R: Role, J, const N: usize, const RX: usize, const TX: 
     /// Which connection this is, for routing a reply that comes back from
     /// another thread. Never reused: the engine only ever counts up.
     pub id: ConnId,
+    /// Which engine thread this connection lives on, for the log line.
+    ///
+    /// `ConnId` restarts at zero in every engine, so a sharded deployment has
+    /// several `conn=0`. Zero for an unsharded engine, which is every engine
+    /// that does not go through `serve_sharded_hft`.
+    shard: u16,
     /// The socket. `None` once it has been given up.
     pub transport: T,
     pub session: Session<R, N>,
@@ -66,6 +73,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
     pub const fn new(id: ConnId, transport: T, session: Session<R, N>, journal: J) -> Self {
         Self {
             id,
+            shard: 0,
             transport,
             session,
             journal,
@@ -103,6 +111,13 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
         true
     }
 
+    /// The same connection, told which shard it belongs to.
+    #[must_use]
+    pub const fn with_shard(mut self, shard: u16) -> Self {
+        self.shard = shard;
+        self
+    }
+
     /// The same connection under a different backpressure policy (D10).
     #[must_use]
     pub const fn with_backpressure(mut self, policy: Backpressure) -> Self {
@@ -119,7 +134,8 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
     ///
     /// An initiator answers with a Logon on its first `tick`; an acceptor says
     /// nothing until one arrives.
-    pub fn opened(&mut self) {
+    pub fn opened<L: MessageLog>(&mut self, at_ms: u64, log: &mut L) {
+        let (self_id, self_shard) = (self.id, self.shard);
         let bound = self.bound();
         let blocks = self.policy.blocks();
         let Self {
@@ -132,6 +148,10 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             ..
         } = self;
         let mut out = Out {
+            log: &mut *log,
+            at_ms,
+            shard: self_shard,
+            id: self_id,
             transport,
             tx,
             tx_len,
@@ -149,7 +169,8 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
     /// The session decides everything about it that matters — sequence number,
     /// `SendingTime`, whether the link is even up — so an application that
     /// hands over a stale or half-formed header cannot corrupt the stream.
-    pub fn send_application(&mut self, msg: &[u8]) {
+    pub fn send_application<L: MessageLog>(&mut self, msg: &[u8], at_ms: u64, log: &mut L) {
+        let (self_id, self_shard) = (self.id, self.shard);
         let bound = self.bound();
         let blocks = self.policy.blocks();
         let Self {
@@ -163,6 +184,10 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             ..
         } = self;
         let mut out = Out {
+            log: &mut *log,
+            at_ms,
+            shard: self_shard,
+            id: self_id,
             transport,
             tx,
             tx_len,
@@ -175,7 +200,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             self.closing = true;
         }
         if self.overflow {
-            self.slow_consumer();
+            self.slow_consumer(at_ms, log);
         }
         // Push it now rather than next turn. `turn` has already flushed by the
         // time the engine collects out-of-band replies, so without this every
@@ -215,15 +240,22 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
     /// first holds the identity. `1b_DuplicateIdentity.def` and
     /// `AlreadyLoggedOn.def` both expect **no reply at all** on the second, so
     /// the question has to be asked before the message is judged, not after.
-    pub fn turn<A: Application, G: FnMut(&[u8]) -> bool>(
+    pub fn turn<A: Application, G: FnMut(&[u8]) -> bool, L: MessageLog>(
         &mut self,
         now_ms: u64,
         app: &mut A,
         mut refuse: G,
+        shard: u16,
+        log: &mut L,
     ) -> Turn {
+        // One clock read per turn, so every line written on this pass carries
+        // the same millisecond. Order is the order of the lines.
+        let at_ms = now_ms;
+        self.shard = shard;
         let mut moved = self.flush();
 
         if !self.closing {
+            let (self_id, self_shard) = (self.id, self.shard);
             let bound = self.bound();
             let blocks = self.policy.blocks();
             let Self {
@@ -237,6 +269,10 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 ..
             } = self;
             let mut out = Out {
+                log: &mut *log,
+                at_ms,
+                shard: self_shard,
+                id: self_id,
                 transport,
                 tx,
                 tx_len,
@@ -252,7 +288,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 self.closing = true;
             }
             if self.overflow {
-                self.slow_consumer();
+                self.slow_consumer(at_ms, log);
             }
         }
 
@@ -288,6 +324,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                     .disconnect_with(fixbolt_session::DropReason::DuplicateIdentity, |_| {});
                 return Turn::Gone;
             }
+            let (self_id, self_shard) = (self.id, self.shard);
             let bound = self.bound();
             let blocks = self.policy.blocks();
             let Self {
@@ -302,6 +339,10 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 ..
             } = self;
             let mut out = Out {
+                log: &mut *log,
+                at_ms,
+                shard: self_shard,
+                id: self_id,
                 transport,
                 tx,
                 tx_len,
@@ -319,7 +360,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             if self.overflow {
                 // Stop reading: every further message would answer into a
                 // queue that is already full.
-                self.slow_consumer();
+                self.slow_consumer(at_ms, log);
                 break;
             }
         }
@@ -357,7 +398,8 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
     /// sent: unlike the `slow_consumer` path above, the socket here is draining
     /// perfectly and there is no reason to throw away messages that will go
     /// out.
-    pub fn slow_application(&mut self) {
+    pub fn slow_application<L: MessageLog>(&mut self, at_ms: u64, log: &mut L) {
+        let (self_id, self_shard) = (self.id, self.shard);
         let bound = TX;
         let Self {
             session,
@@ -369,6 +411,10 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             ..
         } = self;
         let mut out = Out {
+            log: &mut *log,
+            at_ms,
+            shard: self_shard,
+            id: self_id,
             transport,
             tx,
             tx_len,
@@ -401,7 +447,12 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
     /// given behaviour here will not compile. `Command` is `#[non_exhaustive]`
     /// for callers outside this crate and exhaustive inside it, which is
     /// exactly the pair of properties wanted.
-    pub fn administer(&mut self, c: crate::observe::Command) -> crate::observe::Outcome {
+    pub fn administer<L: MessageLog>(
+        &mut self,
+        c: crate::observe::Command,
+        at_ms: u64,
+        log: &mut L,
+    ) -> crate::observe::Outcome {
         use crate::observe::{Command, Outcome};
         match c {
             Command::SetNextOut { n, .. } => {
@@ -419,6 +470,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 }
             }
             Command::SendSequenceReset { n, .. } => {
+                let (self_id, self_shard) = (self.id, self.shard);
                 let bound = self.bound();
                 let blocks = self.policy.blocks();
                 let Self {
@@ -431,6 +483,10 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                     ..
                 } = self;
                 let mut out = Out {
+                    log: &mut *log,
+                    at_ms,
+                    shard: self_shard,
+                    id: self_id,
                     transport,
                     tx,
                     tx_len,
@@ -441,7 +497,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 };
                 let sent = session.send_sequence_reset(n, |b| out.push(b));
                 if self.overflow {
-                    self.slow_consumer();
+                    self.slow_consumer(at_ms, log);
                 }
                 if sent {
                     Outcome::Applied
@@ -459,7 +515,8 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
     /// on, or could not build the message — and the connection is marked
     /// closing so it leaves on this turn rather than holding the shutdown open
     /// for an answer to a message that was never sent.
-    pub fn begin_logout(&mut self) -> bool {
+    pub fn begin_logout<L: MessageLog>(&mut self, at_ms: u64, log: &mut L) -> bool {
+        let (self_id, self_shard) = (self.id, self.shard);
         let bound = self.bound();
         let blocks = self.policy.blocks();
         let said = {
@@ -473,6 +530,10 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 ..
             } = self;
             let mut out = Out {
+                log: &mut *log,
+                at_ms,
+                shard: self_shard,
+                id: self_id,
                 transport,
                 tx,
                 tx_len,
@@ -484,7 +545,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             session.begin_logout(SHUTTING_DOWN, |b| out.push(b)) == Link::Up
         };
         if self.overflow {
-            self.slow_consumer();
+            self.slow_consumer(at_ms, log);
         }
         if !said {
             self.closing = true;
@@ -496,13 +557,14 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
     /// messages for a counterparty that has stopped reading, and the Logout
     /// that says so has to fit somewhere. Keeping them would mean the one
     /// message that matters is the one that cannot be sent.
-    fn slow_consumer(&mut self) {
+    fn slow_consumer<L: MessageLog>(&mut self, at_ms: u64, log: &mut L) {
         self.tx_len = 0;
         self.overflow = false;
         // **`TX`, not the policy's bound.** `Queue { max_bytes }` bounds how
         // much traffic may wait; it does not bound the message that says the
         // waiting is over. A bound smaller than one Logout would otherwise end
         // the session in silence, which is the one thing D10 forbids.
+        let (self_id, self_shard) = (self.id, self.shard);
         let bound = TX;
         let Self {
             session,
@@ -514,6 +576,10 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             ..
         } = self;
         let mut out = Out {
+            log: &mut *log,
+            at_ms,
+            shard: self_shard,
+            id: self_id,
             transport,
             tx,
             tx_len,
@@ -564,7 +630,17 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
 /// `[measured]` `TX` is 8 KiB against a longest corpus message of 200 bytes and
 /// a longest burst of five, so nothing in the acceptance suite comes near the
 /// bound. A real slow consumer does, which is why D10 exists.
-struct Out<'a, T> {
+struct Out<'a, T, L> {
+    /// Where a sent message is recorded, and everything needed to name it.
+    ///
+    /// **`Out` had none of this**: it knew the socket and the buffer and
+    /// nothing about which connection it belonged to. A log line has to say
+    /// which, so the identity travels with the writer rather than being looked
+    /// up afterwards.
+    log: &'a mut L,
+    at_ms: u64,
+    shard: u16,
+    id: ConnId,
     transport: &'a mut T,
     tx: &'a mut [u8],
     tx_len: &'a mut usize,
@@ -576,7 +652,7 @@ struct Out<'a, T> {
     failed: &'a mut bool,
 }
 
-impl<T: Transport> Out<'_, T> {
+impl<T: Transport, L: MessageLog> Out<'_, T, L> {
     /// One whole message, or none of it.
     ///
     /// **Never a partial write.** Half a FIX message on the wire is a frame the
@@ -608,5 +684,14 @@ impl<T: Transport> Out<'_, T> {
         }
         self.tx[*self.tx_len..*self.tx_len + bytes.len()].copy_from_slice(bytes);
         *self.tx_len += bytes.len();
+        // **After the copy, not before.** A message that did not fit is
+        // refused above and never reaches here, so the log never claims a send
+        // the queue rejected. What it *can* still claim is a send the socket
+        // never took, because a dying socket discards whatever is queued —
+        // that gap is counted where it happens, not hidden here.
+        if L::LOGS {
+            self.log
+                .record(Direction::Out, self.at_ms, self.shard, self.id, bytes);
+        }
     }
 }
