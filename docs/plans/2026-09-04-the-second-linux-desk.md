@@ -37,6 +37,8 @@ những gì phase 1 không hỏi, và đo giá của những gì đợt A thêm 
 | `FileJournal` `Async` push qua ring 1 MiB — **không có case alloc**; `FileLog` (sau plan message-log) cùng hình | plan 2026-09-03-message-log |
 | NAPI busy poll chỉ có ý nghĩa với NIC thật; loopback không có NAPI | `prior-art.md` 2026-09-03 |
 | Đợt B `timestamp-micros` để lại một hàng *unmeasured* nếu chưa có máy | plan đó |
+| `matthart1983/nanofix` HEAD 2026-07-05: thread-per-connection (`server.rs:117`), `recv` chặn với `set_read_timeout(100ms)` và `TCP_NODELAY` bật (`transport_tcp.rs:23–37`), **không có** code pin core | đọc source 2026-09-05 |
+| `nanofix` `build.rs` gọi cmake/Aeron vô điều kiện, có đường dẫn `/Users/matt/...` (`build.rs:81`); `src/lib.rs` **0** `#[cfg(feature)]`; `ResendRequest` luôn trả GapFill (`engine.rs:612–629`) | đọc source 2026-09-05 |
 
 ## Cách làm — thứ tự trong hai ngày
 
@@ -75,6 +77,7 @@ những gì phase 1 không hỏi, và đo giá của những gì đợt A thêm 
    `FileLog` bật, so với không — điền hàng §8 "if a journal/log is on" mà plan message-log để
    *unmeasured*.
 6. Nếu đợt B để lại hàng `SendingTime` micro *unmeasured*: `bench.sh` arm đó.
+7. **Đối chứng với `matthart1983/nanofix`, cùng máy, cùng harness, cùng §9** — xem mục dưới.
 
 **Ngày 2 tại máy — NIC thật (item 40):**
 
@@ -86,6 +89,34 @@ những gì phase 1 không hỏi, và đo giá của những gì đợt A thêm 
    switch, model NIC, driver, `ethtool -c` (coalescing **tắt** — thêm hàng §9), MTU.
 9. `check-no-kernel-sleep.sh` một lần với `--busy-poll`: `SO_BUSY_POLL` **không** đưa thêm
    syscall nào lên engine thread (nó thay đổi việc kernel làm trong `recv`, không thêm call).
+
+### Bước 7 — đối chứng với `matthart1983/nanofix`
+
+`[thêm 2026-09-05]` **Mọi số fixbolt công bố đều là fixbolt tự đo.** Con số duy nhất của một
+engine Rust khác mà repo này đang mang là README của `nanofix` — Apple Silicon, Criterion, máy
+khác, phương pháp khác — và `prior-art.md` gọi đúng nó là *claim của người khác*. Một lần ngồi ở
+máy §9 là dịp rẻ nhất để biến nó thành **một phép đo**, vì harness, máy và các hàng §9 đã sẵn.
+
+**Cách:** `tools/w2w` ở vai client, đối diện là `FixServer` của `nanofix` thay cho engine fixbolt;
+cùng máy, cùng `check-machine.sh` output, cùng shape message, cùng số vòng, medians of 20 runs.
+Ghi commit của `nanofix` đã dùng.
+
+**So với `standard`, không so với `hft`, và lý do là điều 4.** `nanofix` là thread-per-connection
+với `recv` chặn, `set_read_timeout(100ms)`, `TCP_NODELAY` bật (`src/server.rs:117`,
+`src/transport_tcp.rs:23–37`) — hình dáng đó là `standard`, không phải `hft`. Một phép so `hft`
+với nó là phép so hai mode, mà điều 4 nói thẳng là không đầy đủ. Nếu vẫn muốn in số `hft`, in
+thành **hàng riêng** kèm câu nói rõ nó so cái gì với cái gì.
+
+**Ba điều phải nói ra cạnh mọi con số, nếu không con số là bẫy:**
+
+| Điều | Vì sao |
+|---|---|
+| `build.rs` của `nanofix` gọi cmake/Aeron **vô điều kiện** và có đường dẫn máy tác giả (`build.rs:81`); `src/lib.rs` có **0** `#[cfg(feature)]` | phải vá mới link được — nên số đo là của **một bản đã vá**, và bản vá phải được ghi lại. `measured-costs.md` §1 đã làm đúng việc này một lần |
+| `nanofix` trả lời `ResendRequest` bằng GapFill **luôn luôn**, journal mmap không nối vào engine (`src/engine.rs:612–629`) | arm resend **không so được**. Đo arm nào thì nói arm đó |
+| Journal và message log của fixbolt bật hay tắt | hai engine phải làm cùng lượng việc, hoặc phải nói ra là không |
+
+**Kết quả đi đâu:** `measured-costs.md` — đây là số của repo này, đo bằng tay repo này. Hàng
+claim trong `prior-art.md` **giữ nguyên là claim** và trỏ sang; không được sửa nó thành số đo.
 
 ## Bất biến bị đụng tới
 
@@ -103,7 +134,8 @@ pass; hàng journal/log), §8 (bốn hàng), §9 (hàng IRQ từ `unknown`; hàn
 `SO_BUSY_POLL` với số; hàng `mlockall` giờ là code), `hft-playbook.md` (bước IRQ và coalescing
 với lệnh), `best-practices-hft.md` (nêu mode), `measured-costs.md` (mọi số), `CONFORMANCE.md` §6
 (dòng "no latency figure lives here" không đổi), `STATUS.md` (40, 39, 41 và *Not proven*),
-`benches/baselines.tsv`.
+`benches/baselines.tsv`, `prior-art.md` (hàng claim của `nanofix` **giữ nguyên là claim**, thêm
+đường trỏ sang số đo ở `measured-costs.md` — bước 7).
 
 ## Bẫy đã lường trước
 
@@ -115,10 +147,13 @@ với lệnh), `best-practices-hft.md` (nêu mode), `measured-costs.md` (mọi s
 | Hardware timestamp không có nhưng software timestamp im lặng thay vào | cột riêng, `unsupported` là chữ, không phải số |
 | Đo `mlockall` khi máy còn RAM trống → không thấy gì | ghi là "không thấy khác biệt trên máy rảnh", giữ hàng §9 vì lý do khác (page fault không xác định) |
 | Một buổi đo lại chấm baseline cho một case mà suite đã đổi thành phần (item 41) | baseline mới ghi kèm hash của danh sách case |
+| Đem `hft` so với một engine chặn rồi công bố tỉ số — điều 4 gọi đó là phép so không đầy đủ | bước 7: arm chính là `standard`; số `hft` nếu in thì thành hàng riêng, tự khai so cái gì |
+| Số của một bản `nanofix` đã vá được đọc như số của `nanofix` | bản vá ghi lại nguyên văn cạnh con số, như `measured-costs.md` §1 đã làm |
 
 ## Ngoài phạm vi
 
 Kernel bypass (item 14); `io_uring` (ADR riêng sau khi có số NIC); NIC 100G; đo trên máy cloud.
+Sửa hay gửi PR ngược cho `nanofix`: bước 7 chỉ đo, và bản vá để link được là của riêng buổi đo.
 
 ## Nhật ký giao hàng
 
