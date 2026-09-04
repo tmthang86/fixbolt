@@ -170,6 +170,13 @@ the engine's polling loop (the tool drives the session directly), reconnect, bac
 session schedules for an initiator — and neither do the `.def` files, which ADR-0004 already
 recorded as debt. `STATUS.md` carries it as an open item rather than as a footnote.
 
+`[2026-09-03]` **And it bought nothing for the acceptor.** Criterion 4's second implementation
+has only ever been on the *accepting* end of the wire; no `libquickfix` initiator has logged on
+to this engine. The acceptor's evidence is the 59 definitions read by this repository's own
+runner — `STATUS.md` item 42, [plan](plans/2026-09-03-acceptor-interop.md). Two more gaps found
+in the same review are items 43 and 44; none of the three moves work between phases, and the
+order of what follows them is item 45.
+
 ### Phase 2 — the architectural gate that comes first
 
 **`MessageView` as designed does not generalise, and that is the finding phase 2 turns on.**

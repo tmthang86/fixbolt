@@ -113,3 +113,43 @@ bytes of `Copy` is not what D2 forbids**: what D2 forbids is the 8 224-byte `Mes
 - <https://quickfixengine.org/c/documentation/getting-started/configuration.html>
 - <https://github.com/quickfixgo/quickfix/blob/main/fix_decimal.go>
 - <https://www.onixs.biz/insights/understanding-fix-drop-copy.html> — drop copy as an audit topology (ADR-0027)
+
+## Re-read 2026-09-03 — the field, seven days later
+
+`[documented 2026-09-03]` **Every line here is somebody else's claim, read off a README, a
+docs page or a vendor page by a research pass; nothing was run.** Kept because two of the
+findings changed what this repository plans next (`STATUS.md` item 45).
+
+**Rust.** No pure-Rust acceptor with a production track record has appeared. `easyfix`
+(`ldanko/easyfix`, v0.14.10, pushed 2026-08-26) is the most recently active project and ships an
+`examples/acceptor`, self-labelled work in progress. `ForgeFIX` is initiator-only, FIX 4.2, Tokio.
+`hotfix` v0.12.1 (2026-05) is initiator-only, sync, rustls TLS, no latency claim beyond "on par
+with QuickFIX". `quickfix-rs` (`arthurlm`, v0.2.1, 2026-02) remains the only acceptor-capable
+crate, by being the C++ engine behind an FFI. `matthart1983/nanofix` was created 2026-03-21, 21
+stars, 16 commits, all figures self-reported on Apple Silicon.
+
+**Numbers the field publishes, so this repository's own can be read against them.** Chronicle
+FIX: under 4 µs p99.9 for a `NewOrderSingle` round trip, JVM, no bypass named. OnixS C++: 0.99–1.29 µs
+send on 144-byte messages. B2BITS FIX Antenna C++: p50 5.7 µs tick-to-trade. CoralFIX: ~4.8 µs
+one-way over loopback. Rapid Addition: under 13 µs p99.9 wire-to-wire. None of these headline
+numbers is attributed to Onload or `ef_vi` on the vendor's own page, and none states its
+mitigations, isolation or IRQ layout the way `DESIGN.md` §9 requires — which is why they are
+listed here and quoted nowhere else in this repository.
+
+**What a QuickFIX-family engine carries that this one does not, as of this date** — read off
+QuickFIX/J's configuration reference: `NextExpectedMsgSeqNum(789)` and
+`LastMsgSeqNumProcessed(369)`; `ResetOnLogon`/`ResetOnLogout`/`ResetOnDisconnect`;
+`LogonTimeout`/`LogoutTimeout`; `TimestampPrecision` beyond milliseconds;
+`ValidateFieldsOutOfOrder`, `ValidateUserDefinedFields`, `MaxMessageSize` as per-session knobs;
+initiator connection settings in the file; a message log. Each is placed in `STATUS.md` item 45's
+waves, or named there as deliberately declined (`SendRedundantResendRequests`, `RefreshOnLogon`,
+a database store).
+
+**Testing oracles.** No public FIX fuzzing corpus and no public FIX capture set was found;
+QuickFIX/J's acceptance suite spans more versions and both roles by directory structure, its
+exact file count unconfirmed. The 59-file gate stays the only free oracle for FIX 4.4 acceptors.
+
+**Kernel TCP knobs this engine has not tried**, from the same pass and unmeasured here:
+`SO_BUSY_POLL` / `SO_PREFER_BUSY_POLL` / `SO_INCOMING_NAPI_ID` (only meaningful with a real NIC —
+loopback has no NAPI), and `io_uring` with `IORING_REGISTER_NAPI` as a `standard`-mode poller.
+Both are wave C of item 45, after the NIC-to-NIC number exists to compare against.

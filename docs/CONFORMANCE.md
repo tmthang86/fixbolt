@@ -104,3 +104,7 @@ On the same page, deliberately:
 - **The initiator's independent check is narrow.** `[measured]` It is interop-green
   against a real `libquickfix`, 7 / 7, blocking in CI — a second implementation, which
   is the only opinion this project does not write itself, but 7 cases, not 59.
+- **The acceptor has no independent check at all.** `[2026-09-03]` Every acceptor figure on
+  this page is this repository's runner reading QuickFIX's definitions; no other implementation
+  has ever logged on to this acceptor. `STATUS.md` item 42,
+  [plan](plans/2026-09-03-acceptor-interop.md).

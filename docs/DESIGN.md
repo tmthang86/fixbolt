@@ -496,6 +496,20 @@ unconditionally, so recovered numbers are wiped before anything can use them.
 is a decision rather than an oversight: the acceptance corpus resets on every connect, FIX
 numbers a session rather than a connection, and one entry point cannot serve both.
 
+`[2026-09-03]` **The ring is the whole resend store, and eight is its default — read, not yet
+fixed.** `Store = MemJournal<8, 512>`, and `FileJournal` answers `get` from its own ring only
+(`journal.rs:440–470`), which is the right choice for non-negotiable 4 and the wrong default for
+an acceptor: a `ResendRequest` reaching past the ring is answered with a gap fill over
+application messages, legally and silently. The same loop emits a whole resend in one call, so a
+resend larger than `TX` trips D10 and ends the session as a *slow consumer*. `STATUS.md` item 43,
+[plan](plans/2026-09-03-resend-from-the-journal.md), and ADR-0046 is that plan's step 0. Nothing
+in this section is changed by the finding yet; it is recorded here so this page does not describe
+a default as though it were sized for a deployment.
+
+**And the journal is not a message log.** It keeps outbound application messages for resend and
+one inbound number (ADR-0017). Neither direction's administrative traffic, and no refused frame,
+is written anywhere — `STATUS.md` item 44, [plan](plans/2026-09-03-message-log.md).
+
 ### D8 — In `hft` the engine thread busy-polls; in `standard` it blocks
 
 `[amended 2026-08-30, ADR-0013]` **This decision is mode-scoped, and `standard` is the
