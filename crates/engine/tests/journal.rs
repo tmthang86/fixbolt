@@ -115,7 +115,7 @@ fn logged_on() -> (Session<Acceptor, 256>, Ring8) {
     (s, Ring8::new())
 }
 
-fn feed(s: &mut Session<Acceptor, 256>, j: &mut Ring8, wire: &[u8]) -> Vec<String> {
+fn feed<J: Journal>(s: &mut Session<Acceptor, 256>, j: &mut J, wire: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     s.received_with(wire, &mut EchoApp, j, |b| {
         out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
@@ -530,6 +530,118 @@ fn a_number_reused_after_an_admin_reset_does_not_return_the_old_bytes() {
     // And a number whose slot is occupied by somebody else is absent, not
     // somebody else's bytes: 17 % 8 == 1, and slot 1 holds the second nine.
     assert_eq!(j.get(17), None, "17 was never sent");
+}
+
+// --------------------------------------------- what a gap fill costs, counted
+//
+// ADR-0046 decision 1. A `ResendRequest` reaching past the ring is answered
+// with a gap fill, which is legal and **silent**, and the silence is the whole
+// problem. These three are about the counters that end it.
+//
+// They live here rather than in `crates/session/tests/` — where the counters
+// themselves are — because the helpers that build a real corpus order and a
+// real `ResendRequest` are here, and a second copy of them is two fixtures that
+// will eventually disagree.
+
+/// The counter names **how many messages** may have been lost, not how many
+/// times it happened.
+///
+/// One resend that fills over thirteen numbers is thirteen messages the
+/// counterparty asked for and did not get. A counter reading `1` would say the
+/// ring is fine.
+#[test]
+fn a_resend_that_reaches_below_the_ring_counts_every_number_it_filled() {
+    let (mut s, mut j) = logged_on();
+    assert_eq!(s.resend_beyond_journal(), 0, "nothing has been filled yet");
+
+    // Twenty orders echoed back: outbound 34=2..=21, of which the eight-slot
+    // ring keeps 14..=21. `34=1` was the Logon and was never journalled.
+    for seq in 2..=21 {
+        assert_eq!(
+            msg_types(&feed(&mut s, &mut j, &order(seq))),
+            ["D"],
+            "{seq}"
+        );
+    }
+
+    let out = feed(&mut s, &mut j, &resend_request(22, 1, 0));
+    assert_eq!(
+        msg_types(&out),
+        ["4", "D", "D", "D", "D", "D", "D", "D", "D"],
+        "one fill for everything gone, then the eight still here: {out:?}"
+    );
+    assert!(
+        out[0].contains("|34=1|") && out[0].contains("|36=14|"),
+        "the fill covers 1 through 13: {}",
+        out[0]
+    );
+    assert_eq!(
+        s.resend_beyond_journal(),
+        13,
+        "thirteen numbers were filled below the ring's floor, and the counter \
+         says thirteen rather than one"
+    );
+}
+
+/// A ring whose floor is still 1 has lost nothing, and says so.
+///
+/// **This is the half that stops the counter being an alarm that is always
+/// on.** A session gap-fills over its own administrative messages on every
+/// reconnect that asks `7=1`; none of those was ever resendable by anybody, and
+/// none of them is a loss.
+#[test]
+fn a_fill_over_messages_the_ring_never_held_is_not_counted() {
+    let (mut s, mut j) = logged_on();
+    for seq in 2..=3 {
+        assert_eq!(
+            msg_types(&feed(&mut s, &mut j, &order(seq))),
+            ["D"],
+            "{seq}"
+        );
+    }
+
+    let out = feed(&mut s, &mut j, &resend_request(4, 1, 0));
+    assert_eq!(
+        msg_types(&out),
+        ["4", "D", "D"],
+        "a fill for the Logon, then both orders replayed: {out:?}"
+    );
+    assert_eq!(
+        s.resend_beyond_journal(),
+        0,
+        "the ring's floor is still 1, so nothing has fallen out of it"
+    );
+}
+
+/// A message the journal refuses is counted, so an acceptor whose replies are
+/// longer than its slots finds out from a counter rather than from a
+/// counterparty.
+#[test]
+fn a_put_the_journal_refuses_is_counted() {
+    let mut s = Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"));
+    let mut j: MemJournal<8, 64> = MemJournal::new();
+    s.connect(|_| {});
+    s.tick(FIXED_TIME_MILLIS, |_| {});
+    s.received(&inputs("8_OnlyApplicationMessages.def")[0], |_| {});
+    assert_eq!(s.puts_refused(), 0);
+
+    // The echo of a corpus order is well over 64 bytes, so every one of these
+    // is refused by the ring — and sent anyway. Declining to keep a message is
+    // not declining to send it.
+    for seq in 2..=4 {
+        assert_eq!(
+            msg_types(&feed(&mut s, &mut j, &order(seq))),
+            ["D"],
+            "{seq}"
+        );
+    }
+    assert_eq!(j.get(2), None, "and none of them was kept");
+    assert_eq!(
+        s.puts_refused(),
+        3,
+        "three refusals, counted — the ring is silent about this and the \
+         session is not"
+    );
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

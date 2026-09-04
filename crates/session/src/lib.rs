@@ -646,6 +646,14 @@ pub struct Session<R: Role, const N: usize> {
     /// Messages that arrived ahead of [`Self::next_in`], held until the gap in
     /// front of them closes.
     queue: [Queued; QUEUED],
+    /// Application messages the journal would not keep.
+    ///
+    /// See [`Self::puts_refused`].
+    puts_refused: u32,
+    /// Numbers a `ResendRequest` asked for that had fallen out of the journal.
+    ///
+    /// See [`Self::resend_beyond_journal`].
+    resend_beyond_journal: u32,
     _role: PhantomData<R>,
 }
 
@@ -686,6 +694,8 @@ impl<R: Role, const N: usize> Session<R, N> {
                     buf: [0; QUEUED_LEN],
                 }
             }; QUEUED],
+            puts_refused: 0,
+            resend_beyond_journal: 0,
             _role: PhantomData,
         }
     }
@@ -822,6 +832,43 @@ impl<R: Role, const N: usize> Session<R, N> {
     #[must_use]
     pub const fn next_out(&self) -> u32 {
         self.next_out
+    }
+
+    /// Application messages this session sent that the journal would not keep.
+    ///
+    /// **Zero on a healthy acceptor.** Anything else means replies are longer
+    /// than a journal slot, and every `ResendRequest` covering one of them is
+    /// answered with a gap fill for the rest of this session's life. The
+    /// message still went out; what is lost is the ability to send it again.
+    ///
+    /// Monotonic within a connection, and reset by a new one, like every other
+    /// per-connection count here. Not a hot-path accessor.
+    /// [ADR-0046](../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+    #[must_use]
+    pub const fn puts_refused(&self) -> u32 {
+        self.puts_refused
+    }
+
+    /// Sequence numbers a `ResendRequest` asked for that had already fallen out
+    /// of the journal, and were gap-filled instead of replayed.
+    ///
+    /// **It counts messages, not events.** One resend that fills over thirteen
+    /// numbers reads thirteen: the question an operator has is *how much did
+    /// the counterparty ask for and not get*, and a count of occurrences
+    /// answers a different one.
+    ///
+    /// **A number below the journal's floor only.** A gap fill over an
+    /// administrative message, or over a number below anything the journal ever
+    /// held, is not counted — none of those was ever resendable, and a counter
+    /// that rose on every ordinary reconnect would be an alarm nobody reads.
+    /// [`Journal::oldest`](journal::Journal::oldest) is the floor.
+    ///
+    /// Non-zero means **the ring is too small for this counterparty's
+    /// disconnections** — `GUIDE.md` §6 has the arithmetic for choosing a
+    /// bigger one.
+    #[must_use]
+    pub const fn resend_beyond_journal(&self) -> u32 {
+        self.resend_beyond_journal
     }
 
     /// The sequence number this session next expects to receive.
@@ -1617,7 +1664,9 @@ impl<R: Role, const N: usize> Session<R, N> {
         let Some(r) = rebuild(msg, Some(seq), &now, false, buf) else {
             return Link::Up;
         };
-        journal.put(seq_out, &buf[r.clone()]);
+        if !journal.put(seq_out, &buf[r.clone()]) {
+            self.puts_refused += 1;
+        }
         emit(&buf[r]);
 
         self.next_out += 1;
@@ -2123,6 +2172,14 @@ impl<R: Role, const N: usize> Session<R, N> {
                     while n <= end && !Self::kept(journal, n) {
                         n += 1;
                     }
+                    // **What this fill cost, counted before it is sent.**
+                    // Only the part of the run below the journal's floor: a
+                    // number above it that `get` could not answer was an
+                    // administrative message, which is never replayed by
+                    // anybody, and is not a loss. ADR-0046 decision 1.
+                    if let Some(floor) = journal.oldest() {
+                        self.resend_beyond_journal += n.min(floor).saturating_sub(from);
+                    }
                     self.fill(from, n, emit)?;
                 }
             }
@@ -2155,6 +2212,7 @@ impl<R: Role, const N: usize> Session<R, N> {
             let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
             let stamp = *self.stamp.format(unix);
             let seq_out = self.next_out;
+            let mut kept = true;
             let sent = {
                 let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
                 let out::Outbound { app: buf, .. } = o;
@@ -2163,7 +2221,14 @@ impl<R: Role, const N: usize> Session<R, N> {
                         // Kept before it is sent, and only application messages
                         // are kept: QuickFIX never replays an administrative
                         // message, it fills over it.
-                        journal.put(seq_out, &buf[r.clone()]);
+                        //
+                        // **A refusal is counted, not ignored.** The message
+                        // still goes out — declining to keep it is not
+                        // declining to send it — but every future
+                        // `ResendRequest` covering this number will gap-fill
+                        // over it, and without the counter nothing on this side
+                        // ever says so. ADR-0046.
+                        kept = journal.put(seq_out, &buf[r.clone()]);
                         emit(&buf[r]);
                         true
                     }
@@ -2171,6 +2236,9 @@ impl<R: Role, const N: usize> Session<R, N> {
                 }
             };
             if sent {
+                if !kept {
+                    self.puts_refused += 1;
+                }
                 self.next_out += 1;
                 self.last_sent_ms = self.now_ms;
             }
