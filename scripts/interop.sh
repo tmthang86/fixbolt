@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
-# Phase 1 exit criterion 4: drive this engine's initiator into a real
-# `libquickfix` acceptor and read what comes back.
+# Put this engine and a real `libquickfix` on opposite ends of a socket, in
+# BOTH DIRECTIONS, and read what comes back.
+#
+#   * `interop:` lines           — this engine's INITIATOR into a C++ acceptor.
+#                                  Phase 1 exit criterion 4.
+#   * `interop-acceptor:` lines  — a C++ INITIATOR into this engine's acceptor.
+#                                  `[2026-09-04]` The acceptor is the product
+#                                  this repository is positioned on and had
+#                                  never been driven by another implementation:
+#                                  its whole evidence was 59 `.def` files read
+#                                  by this repository's own runner.
+#
+# ONE SCRIPT, BOTH DIRECTIONS, ON PURPOSE. Two scripts are two `PINNED_SHA`s,
+# and two pins that can drift apart make a disagreement between the directions
+# unattributable — the same argument the pin check below already makes about
+# the corpus and the counterparty.
 #
 # Builds QuickFIX from source at the SAME pinned commit
 # `scripts/fetch-quickfix-assets.sh` uses, compiles `tools/interop/acceptor.cpp`
-# against it, starts it, runs `tools/interop`, and READS THE OUTPUT.
+# and `tools/interop/initiator.cpp` against it, and READS THE OUTPUT of both.
 #
 # CLAUDE.md §10: "a check proves nothing until something reads it". This script
 # greps for the `interop: PASS n/n` line and for every step name; a run that
@@ -37,6 +51,9 @@ fi
 BEFORE="$(cd "${REPO_ROOT}" && git status --porcelain --untracked-files=all | sort)"
 
 PORT="${INTEROP_PORT:-15644}"
+# A second port, because the two directions each stand up a listener and a
+# collision would look exactly like a protocol failure.
+PORT2="${INTEROP_PORT2:-15645}"
 JOBS="${INTEROP_JOBS:-$(nproc 2>/dev/null || echo 2)}"
 
 for tool in cmake g++ git cargo; do
@@ -100,9 +117,13 @@ CFG
 echo "==> starting the acceptor on ${PORT}"
 "${WORK}/acceptor" "${WORK}/acceptor.cfg" > "${WORK}/acceptor.log" 2>&1 &
 ACCEPTOR_PID=$!
+FIXBOLT_PID=""
 cleanup() {
-  kill "${ACCEPTOR_PID}" 2>/dev/null || true
-  wait "${ACCEPTOR_PID}" 2>/dev/null || true
+  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}"; do
+    [[ -n "${pid}" ]] || continue
+    kill "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+  done
 }
 trap cleanup EXIT
 
@@ -150,6 +171,103 @@ if [[ "${fail}" -ne 0 ]]; then
   exit 1
 fi
 
+# ---- 4b. The other direction: a C++ initiator into THIS engine's acceptor ---
+#
+# The C++ acceptor from the first direction is done; stopping it now keeps the
+# two runs from sharing anything but the library they were both built against.
+kill "${ACCEPTOR_PID}" 2>/dev/null || true
+wait "${ACCEPTOR_PID}" 2>/dev/null || true
+ACCEPTOR_PID=""
+
+echo
+echo "==> building the C++ initiator"
+g++ -std=c++17 -O1 -I "${SRC}/include" \
+  "${REPO_ROOT}/tools/interop/initiator.cpp" \
+  -o "${WORK}/initiator" "${SRC}/lib/libquickfix.a" -lpthread
+
+mkdir -p "${WORK}/store2"
+cat > "${WORK}/fixbolt.cfg" <<CFG
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=FIXBOLT
+
+[SESSION]
+TargetCompID=QFINI
+HeartBtInt=2
+CFG
+
+cat > "${WORK}/initiator.cfg" <<CFG
+[DEFAULT]
+ConnectionType=initiator
+SocketConnectHost=127.0.0.1
+SocketConnectPort=${PORT2}
+HeartBtInt=2
+ReconnectInterval=1
+ResetOnLogon=Y
+ResetOnLogout=Y
+ResetOnDisconnect=Y
+StartTime=00:00:00
+EndTime=00:00:00
+UseDataDictionary=Y
+DataDictionary=${SRC}/spec/FIX44.xml
+FileStorePath=${WORK}/store2
+
+[SESSION]
+BeginString=FIX.4.4
+SenderCompID=QFINI
+TargetCompID=FIXBOLT
+CFG
+
+echo "==> starting this engine's acceptor on ${PORT2}"
+"${REPO_ROOT}/target/debug/interop" --role acceptor \
+  --listen "127.0.0.1:${PORT2}" --cfg "${WORK}/fixbolt.cfg" \
+  > "${WORK}/fixbolt-acceptor.log" 2>&1 &
+FIXBOLT_PID=$!
+
+# The line it waits for is printed by a thread that CONNECTED to the port, not
+# by the thread that is about to call `serve`. A readiness line printed before
+# the bind is a claim; this one is an observation. CLAUDE.md §10.
+for _ in $(seq 1 200); do
+  grep -q "interop: listening" "${WORK}/fixbolt-acceptor.log" && break
+  sleep 0.1
+done
+if ! grep -q "interop: listening" "${WORK}/fixbolt-acceptor.log"; then
+  echo "this engine's acceptor never became ready:" >&2
+  cat "${WORK}/fixbolt-acceptor.log" >&2
+  exit 1
+fi
+
+echo "==> driving the C++ initiator"
+set +e
+"${WORK}/initiator" "${WORK}/initiator.cfg" ${INTEROP_INITIATOR_ARGS:-} \
+  2>&1 | tee "${WORK}/interop-acceptor.log"
+set -e
+kill "${FIXBOLT_PID}" 2>/dev/null || true
+wait "${FIXBOLT_PID}" 2>/dev/null || true
+FIXBOLT_PID=""
+
+# ---- 4c. Read that output too. Every step, not only the PASS line. ---------
+fail=0
+for step in logon order heartbeat testrequest resend gapfill logout; do
+  if grep -qE "^interop-acceptor: ${step} +ok" "${WORK}/interop-acceptor.log"; then
+    :
+  else
+    echo "MISSING OR FAILED STEP: ${step}" >&2
+    fail=1
+  fi
+done
+if ! grep -q "^interop-acceptor: PASS 7/7" "${WORK}/interop-acceptor.log"; then
+  echo "no 'interop-acceptor: PASS 7/7' line" >&2
+  fail=1
+fi
+
+if [[ "${fail}" -ne 0 ]]; then
+  echo >&2
+  echo "---- what this engine's acceptor said ----" >&2
+  cat "${WORK}/fixbolt-acceptor.log" >&2
+  exit 1
+fi
+
 # ---- 5. Nothing of QuickFIX's entered the repository ------------------------
 #
 # The question is what THIS SCRIPT added, not whether the tree was clean when it
@@ -171,5 +289,5 @@ fi
 echo "==> the run added nothing git can see"
 
 echo
-echo "interop: 7 / 7 against libquickfix @ ${PINNED_SHA}"
-echo "phase 1 exit criterion 4 — the initiator, checked by somebody else's engine"
+echo "interop: 7 / 7 + 7 / 7 against libquickfix @ ${PINNED_SHA}"
+echo "both roles, each checked by somebody else's engine"

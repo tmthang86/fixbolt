@@ -1,6 +1,6 @@
 # Acceptor trước một `libquickfix` thật
 
-> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** Đã duyệt, **đã sửa một lần**
+> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** Đã duyệt, **đã sửa hai lần**
 > **Phạm vi:** `STATUS.md` item 42. Chạm `tools/interop`, `scripts/interop.sh`,
 > `.github/workflows/ci.yml`. **Không chạm** `codec`, `dict`, `session`, `engine`, `library` —
 > trừ khi gate mới tìm ra lỗi, khi đó lỗi đó có plan sửa riêng (xem *Bẫy* cuối bảng).
@@ -38,6 +38,26 @@ Hai nguyên nhân, khác hẳn nhau:
 `logout` in `ok`; `news` và `resend` **được phép đỏ**, và lý do chúng đỏ được ghi lại. Đây vẫn
 là kiểm tra lắp ráp, không phải gate. Bảng *Chia việc* và mục *Cách kiểm chứng* bên dưới đã
 mang bản sửa này.
+
+## Sửa đổi 2 `[2026-09-04]` — bước 6 hỏi một câu mà gap fill được phép xoá
+
+**Bản đầu của bước 6 đòi `35=0 112=QF-TR-2` quay về, và nó không thể.** Lần chạy **đầu tiên** của
+`initiator.cpp` ra `FAIL 6/7`, và bước đỏ là hành vi **đúng ở cả hai phía**:
+
+```
+out 35=1 34=10 112=QF-TR-2               TestRequest gây gap
+in  35=2 34=6  7=7 16=0                  fixbolt hỏi lại từ 7 — đúng
+out 35=4 34=7 43=Y 36=11 123=Y           QuickFIX gap fill 7 ĐẾN 10
+```
+
+`36=11` phủ luôn số 10, tức chính cái `TestRequest` đó. QuickFIX tự bảo đối phương bỏ qua câu
+hỏi mà bài test đang chờ trả lời; fixbolt vứt message đã queue ở 34=10 là điều **duy nhất đúng**.
+Transcript sau đó cho thấy session vẫn sống: heartbeat hai chiều thêm 8 giây, logout sạch.
+
+**Bước 6 đổi thành:** message gây gap là `112=QF-TR-2` và **coi như đã tiêu**; sống sót được
+chứng minh bằng một `TestRequest` **mới**, `112=QF-TR-3`, gửi *sau* khi gap fill xong. Hai khẳng
+định, không cái nào bị recovery thu hồi được. Dòng kỳ vọng của bước 6 ở mục *Cách kiểm chứng* đổi
+theo. Ghi lại ở [a-gap-fill-can-swallow-the-question](../reference/a-gap-fill-can-swallow-the-question.md).
 
 ## Bối cảnh
 
@@ -112,7 +132,7 @@ chặn CI.
 | 3 | `heartbeat` | không làm gì | một `35=0` đến **không có `112=`**, trước khi hết `2 × HeartBtInt + 1` giây. `HeartBtInt` lấy từ **`108=` trong `35=A` fixbolt trả về ở bước 1**, không lấy từ file cấu hình của initiator (bẫy 2) | tính từ 108= |
 | 4 | `testrequest` | `Session::sendToTarget(TestRequest 112=QF-TR-1)` | `35=0` đến, có `112=QF-TR-1` | 5 s |
 | 5 | `resend` | `Session::sendToTarget(ResendRequest 7=a 16=b)` với `a`, `b` là hai số `34=` ghi ở bước 2 | **đúng hai** `35=8` đến với `43=Y`, `122=`, và `34=a`, `34=b`; không phải "có gì đó `43=Y`" | 5 s |
-| 6 | `gapfill` | `Session::lookupSession(id)->setNextSenderMsgSeqNum(n + 3)` rồi gửi một TestRequest `112=QF-TR-2` | fixbolt gửi `35=2` với `7=<số nó chờ>` và `16=0`; QuickFIX tự trả `35=4 123=Y`; sau đó `35=0 112=QF-TR-2` vẫn về — **session sống sót là điều được kiểm**, không chỉ "có `35=2`" | 8 s |
+| 6 | `gapfill` | `Session::lookupSession(id)->setNextSenderMsgSeqNum(n + 3)` rồi gửi TestRequest `112=QF-TR-2`, và **sau khi thấy `35=2`, gửi tiếp `112=QF-TR-3`** `[sửa 2026-09-04]` | fixbolt gửi `35=2` với `7=<số nó chờ>` và `16=0`; QuickFIX tự trả `35=4 123=Y` — **và gap fill đó nuốt luôn `QF-TR-2`**, nên sống sót đo bằng `35=0 112=QF-TR-3`, một câu recovery không thu hồi được | 8 s |
 | 7 | `logout` | `Session::logout()` | `35=5` đến | 5 s |
 
 Cấu hình initiator (script sinh ra trong `vendor/interop-run/`): `ConnectionType=initiator`,
@@ -170,7 +190,7 @@ interop-acceptor: order        ok  35=8 at 34=2 and 34=3, 11= matched
 interop-acceptor: heartbeat    ok  35=0 without 112= within 5 s
 interop-acceptor: testrequest  ok  35=0 112=QF-TR-1
 interop-acceptor: resend       ok  35=8 43=Y replayed at 34=[2, 3], wanted [2, 3]
-interop-acceptor: gapfill      ok  35=2 7=… 16=0 in, then 35=0 112=QF-TR-2
+interop-acceptor: gapfill      ok  35=2 7=… 16=0 in: yes, then 35=0 112=QF-TR-3: yes
 interop-acceptor: logout       ok  35=5
 interop-acceptor: PASS 7/7
 ==> the run added nothing git can see
