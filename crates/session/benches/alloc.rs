@@ -291,14 +291,22 @@ fn main() {
         assert_eq!(echoed, 1, "the delivery path must actually deliver");
     }
 
+    // **One journal, built before the window and reused.** `[measured
+    // 2026-09-04]` `SLOTS` went from 8 to 4096 and the ring stopped fitting
+    // inline, so `Store::new()` allocates — and it was being called 10 000
+    // times inside this window, which read `10000` and had nothing to do with
+    // the session. ADR-0046 decision 3 calls that construction startup work.
+    // Reuse is sound here because each iteration builds a fresh session that
+    // starts at `34=1` and overwrites the same slots before reading them back.
+    let mut shared = Store::new();
     let deliver_allocs = count(|| {
         for _ in 0..10_000 {
             let mut s = acceptor();
-            let mut journal = Store::new();
+            let journal = &mut shared;
             s.connect(|_| ());
             s.tick(now, |_| ());
             s.received(order_logon, |_| ());
-            s.received_with(order, &mut EchoApp, &mut journal, |_| ());
+            s.received_with(order, &mut EchoApp, journal, |_| ());
         }
     });
 
@@ -321,11 +329,11 @@ fn main() {
     let resend_allocs = count(|| {
         for _ in 0..10_000 {
             let mut s = acceptor();
-            let mut journal = Store::new();
+            let journal = &mut shared;
             s.connect(|_| ());
             s.tick(now, |_| ());
             for wire in &only_app[..5] {
-                s.received_with(wire, &mut EchoApp, &mut journal, |_| ());
+                s.received_with(wire, &mut EchoApp, journal, |_| ());
             }
         }
     });
@@ -369,11 +377,11 @@ fn main() {
     let originate_allocs = count(|| {
         for _ in 0..10_000 {
             let mut s = acceptor();
-            let mut journal = Store::new();
+            let journal = &mut shared;
             s.connect(|_| ());
             s.tick(now, |_| ());
             s.received(&logon_reply, |_| ());
-            s.send_application(&order, &mut journal, |_| ());
+            s.send_application(&order, journal, |_| ());
         }
     });
 

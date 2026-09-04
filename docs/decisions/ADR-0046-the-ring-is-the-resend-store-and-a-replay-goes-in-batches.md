@@ -148,6 +148,15 @@ describes.
   `hft` a turn is ~449 ns; in `standard` it is one poll wakeup. Under a millisecond either way,
   and it is still slower than it was — the old behaviour was "one turn, then the session ends",
   which is faster and useless.
+- **`Engine::add` now allocates, once per connection.** `[measured 2026-09-04]` the ring
+  stopped fitting inline, so `J::default()` on the engine thread is a 2 MiB allocation and 512
+  first-touch page faults. `benches/alloc.rs` found it — the `events-busy` case went `0` → `2000`
+  over 2000 accepts — which is what that bench is for. It is **not** on the message path and
+  non-negotiable 1 names the parse, serialise, session and dispatch paths; it *is* on the engine
+  thread, and `hft` deployments that accept connections while trading should pre-build journals
+  and call `add_with_journal`. `GUIDE.md` §6 carries that, because the type system cannot. The
+  bench keeps calling `add_with_journal` inside its window rather than dropping the accept
+  entirely, so an allocation appearing in accept for any *other* reason is still caught.
 - **`Journal` gains two required methods**, `oldest` and a `bool` from `put`. Every
   implementation in the tree changes in the same commit; nothing is published, so nobody else's
   code breaks. Neither gets a default, for the reason `highest` has none: a default that lies is

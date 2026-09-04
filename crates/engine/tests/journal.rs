@@ -96,16 +96,26 @@ fn resend_request(seq: u32, from: u32, to: u32) -> Vec<u8> {
 
 /// A session logged on at [`FIXED_TIME_MILLIS`] with `108=30`. Inbound count 2,
 /// outbound count 2.
-fn logged_on() -> (Session<Acceptor, 256>, Store) {
+/// The ring the wrapping tests below are about.
+///
+/// **Eight on purpose, and not `Store`.** `Store`'s `SLOTS` is a deployment
+/// default and moved from 8 to 4096 on 2026-09-04 (ADR-0046 decision 2). A test
+/// that asks *"what happens when the ring wraps"* through the default stops
+/// asking anything the moment the default is larger than the test's own
+/// message count — it goes green by never wrapping, which is the failure mode
+/// `docs/reference/` keeps collecting. So the size is named here.
+type Ring8 = MemJournal<8, SLOT_LEN>;
+
+fn logged_on() -> (Session<Acceptor, 256>, Ring8) {
     let mut s = Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"));
     s.connect(|_| {});
     s.tick(FIXED_TIME_MILLIS, |_| {});
     let link = s.received(&inputs("4b_ReceivedTestRequest.def")[0], |_| {});
     assert_eq!(link, Link::Up, "the Logon should have been accepted");
-    (s, Store::new())
+    (s, Ring8::new())
 }
 
-fn feed(s: &mut Session<Acceptor, 256>, j: &mut Store, wire: &[u8]) -> Vec<String> {
+fn feed(s: &mut Session<Acceptor, 256>, j: &mut Ring8, wire: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     s.received_with(wire, &mut EchoApp, j, |b| {
         out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
@@ -439,6 +449,87 @@ fn a_put_that_is_refused_says_so() {
     assert_eq!(file.oldest(), Some(1));
     drop(file);
     let _ = std::fs::remove_file(&path);
+}
+
+// ----------------------------------------- the ring at the size it now ships
+//
+// ADR-0046 decision 2. These three run against `Store` deliberately: they are
+// the tests that would notice if the default went back to something a trading
+// day overflows, and the point of them is the default rather than the ring.
+
+/// Four thousand and one hundred puts, 4096 kept, and `oldest` moved with them.
+#[test]
+fn four_thousand_puts_keep_the_last_4096_and_oldest_moves_with_them() {
+    let mut j = Store::new();
+    for seq in 1..=4096 {
+        assert!(j.put(seq, b"body"), "the ring took {seq}");
+    }
+    assert_eq!(j.oldest(), Some(1), "4096 in 4096 slots: nothing has gone");
+    assert_eq!(j.highest(), Some(4096));
+
+    for seq in 4097..=4196 {
+        assert!(j.put(seq, b"body"));
+    }
+    assert_eq!(j.oldest(), Some(101), "a hundred more pushed a hundred out");
+    assert_eq!(j.highest(), Some(4196));
+    assert_eq!(j.get(100), None);
+    assert!(j.get(101).is_some());
+}
+
+/// Ten thousand messages through a 4096-slot ring, and **every** number is
+/// answered correctly — the ones still there and the ones gone.
+///
+/// The second half is the half worth having: a `get` that returned the wrong
+/// slot's bytes would still be `Some`, and a resend built on it would replay a
+/// message under somebody else's sequence number.
+#[test]
+fn get_finds_by_number_after_the_ring_wraps() {
+    let mut j = Store::new();
+    for seq in 1..=10_000u32 {
+        let body = format!("msg-{seq}");
+        assert!(j.put(seq, body.as_bytes()));
+    }
+
+    // 10 000 put, 4096 kept: 5905..=10 000.
+    for seq in 5905..=10_000u32 {
+        let want = format!("msg-{seq}");
+        assert_eq!(
+            j.get(seq).map(|b| String::from_utf8_lossy(b).into_owned()),
+            Some(want),
+            "{seq} is still here and is itself"
+        );
+    }
+    for seq in [1u32, 2, 4095, 4096, 5903, 5904] {
+        assert_eq!(j.get(seq), None, "{seq} fell out and does not come back");
+    }
+    assert_eq!(j.oldest(), Some(5905));
+    assert_eq!(j.highest(), Some(10_000));
+}
+
+/// A slot indexed by `seq % N` holds one number at a time, and it is checked.
+///
+/// `Admin::SetNextOut` moves an outbound number **backwards** (ADR-0036), so a
+/// number already in the ring can be sent again with different bytes. A `get`
+/// that trusted the index without comparing the number would hand back the
+/// previous message — under the right sequence number, with a valid checksum,
+/// and wrong.
+#[test]
+fn a_number_reused_after_an_admin_reset_does_not_return_the_old_bytes() {
+    let mut j: Ring8 = Ring8::new();
+    assert!(j.put(9, b"the first nine"));
+    assert_eq!(j.get(9), Some(&b"the first nine"[..]));
+
+    // An operator winds the count back and the session sends 9 again.
+    assert!(j.put(9, b"the second nine"));
+    assert_eq!(
+        j.get(9),
+        Some(&b"the second nine"[..]),
+        "the newer message under that number"
+    );
+
+    // And a number whose slot is occupied by somebody else is absent, not
+    // somebody else's bytes: 17 % 8 == 1, and slot 1 holds the second nine.
+    assert_eq!(j.get(17), None, "17 was never sent");
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

@@ -733,12 +733,33 @@ fn main() {
             "the busy event path must record something"
         );
     }
+    // **The journals are built here, and `add_with_journal` is what the window
+    // calls.** `[measured 2026-09-04]` when `SLOTS` went from 8 to 4096 the
+    // ring stopped fitting inline and became a `Box<[Slot]>`, so `Engine::add`
+    // — which builds `J::default()` — started allocating once per connection,
+    // and this case went from `0` to `2000`. ADR-0046 decision 3 calls that
+    // construction startup work, in the same class as the pre-faulted buffers
+    // D8 asks for.
+    //
+    // **So it is moved out of the window rather than tolerated inside it, and
+    // the window still calls `add`.** Moving a whole call out would be
+    // `reference/the-guard-measured-a-window-that-excluded-the-thing.md`
+    // happening again: `add_with_journal` does everything `add` does except
+    // build the journal, so an allocation that appears in accept for any
+    // *other* reason is still caught here.
+    //
+    // What this does NOT prove, and `GUIDE.md` §6 carries it: a deployment that
+    // calls plain `add` on a live engine thread pays that allocation there.
+    let mut ready: Vec<Store> = Vec::with_capacity(rounds);
+    for _ in 0..rounds {
+        ready.push(Store::new());
+    }
     let events_busy_allocs = count(|| {
         for (peer, engine_side) in &mut pairs {
-            let Some(e) = engine_side.take() else {
+            let (Some(e), Some(j)) = (engine_side.take(), ready.pop()) else {
                 continue;
             };
-            busy_engine.add(e);
+            busy_engine.add_with_journal(e, j);
             let _ = peer.send(&logon);
             busy_engine.turn();
             let _ = peer.recv(&mut sink);
