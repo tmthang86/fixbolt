@@ -68,6 +68,8 @@ pub struct SessionSnapshot {
     next_in: u32,
     last_skew_ms: Option<i64>,
     has_pending_output: bool,
+    puts_refused: u32,
+    resend_beyond_journal: u32,
 }
 
 impl SessionSnapshot {
@@ -118,6 +120,36 @@ impl SessionSnapshot {
     pub const fn has_pending_output(&self) -> bool {
         self.has_pending_output
     }
+
+    /// Application messages this session sent that the journal would not keep.
+    ///
+    /// The running total for this connection. The event
+    /// [`EventKind::JournalRefused`] carries the change; this carries where it
+    /// got to, for an operator who started reading late.
+    #[must_use]
+    pub const fn puts_refused(&self) -> u32 {
+        self.puts_refused
+    }
+
+    /// Numbers a `ResendRequest` asked for that had already fallen out of the
+    /// journal, and were gap-filled instead of replayed.
+    ///
+    /// Counted in **messages**. See [`EventKind::ResendBeyondJournal`].
+    #[must_use]
+    pub const fn resend_beyond_journal(&self) -> u32 {
+        self.resend_beyond_journal
+    }
+}
+
+/// What a session's journal has cost it, for [`SessionSnapshot::describe`].
+///
+/// A struct rather than two more parameters: eight positional arguments of
+/// which four are `u32` is a call nobody can read, and two of them swapped is a
+/// silent wrong answer rather than a compile error.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct JournalHealth {
+    pub refused: u32,
+    pub beyond: u32,
 }
 
 impl SessionSnapshot {
@@ -129,6 +161,7 @@ impl SessionSnapshot {
         next_in: u32,
         last_skew_ms: Option<i64>,
         has_pending_output: bool,
+        journal: JournalHealth,
     ) -> Self {
         Self {
             id,
@@ -137,6 +170,8 @@ impl SessionSnapshot {
             next_in,
             last_skew_ms,
             has_pending_output,
+            puts_refused: journal.refused,
+            resend_beyond_journal: journal.beyond,
         }
     }
 }
@@ -388,7 +423,18 @@ mod tests {
     use super::{MAX_SESSIONS, SessionSnapshot, Snapshot};
 
     fn session(id: u64, logged_on: bool) -> SessionSnapshot {
-        SessionSnapshot::describe(id, logged_on, 1, 1, None, false)
+        SessionSnapshot::describe(
+            id,
+            logged_on,
+            1,
+            1,
+            None,
+            false,
+            super::JournalHealth {
+                refused: 0,
+                beyond: 0,
+            },
+        )
     }
 
     /// More sessions than the array holds is a **reported fact**, not a panic
@@ -496,6 +542,36 @@ pub enum EventKind {
         to: u32,
         /// What became of it.
         outcome: Outcome,
+    },
+    /// A `ResendRequest` reached past what the journal still holds, and the
+    /// missing numbers were gap-filled instead of replayed.
+    ///
+    /// **This is the event `docs/plans/2026-09-03-resend-from-the-journal.md`
+    /// exists for.** Filling is legal on the wire and invisible to the
+    /// counterparty's engine, which sees a `SequenceReset` and moves on; what
+    /// it loses is the messages themselves. Before this, an acceptor that
+    /// replayed eight of a hundred said nothing at all.
+    ///
+    /// Non-zero means **the ring is too small for this counterparty's
+    /// disconnections** — `GUIDE.md` §6 has the arithmetic for choosing a
+    /// bigger one.
+    /// [ADR-0046](../../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+    ResendBeyondJournal {
+        /// How many **messages** were filled over rather than replayed, on this
+        /// turn. Not how many times it happened.
+        filled: u32,
+        /// The lowest number the journal could still answer for, or `None` if
+        /// it holds nothing. What the ring would have had to reach back to.
+        oldest: Option<u32>,
+    },
+    /// Application messages the journal would not keep.
+    ///
+    /// **Zero on a healthy acceptor.** Anything else means replies are longer
+    /// than a journal slot: they went out on the wire, and every future
+    /// `ResendRequest` covering one of them is answered with a gap fill.
+    JournalRefused {
+        /// How many were refused on this turn.
+        count: u32,
     },
 }
 

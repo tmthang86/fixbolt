@@ -609,6 +609,10 @@ where
                 c.session.next_in(),
                 c.session.last_skew_ms(),
                 c.has_pending_output(),
+                crate::observe::JournalHealth {
+                    refused: c.session.puts_refused(),
+                    beyond: c.session.resend_beyond_journal(),
+                },
             ));
         }
         snap.set_counters(conns.len(), refused_connections, sources_missing);
@@ -696,6 +700,18 @@ where
             // Before the turn, so a session that logs on during it is seen as
             // a change rather than as the state it started in.
             let was_on = self.conns[i].session.is_logged_on();
+            // The two journal counters, read before the turn so the event
+            // carries what **this turn** did rather than the running total.
+            // Only when somebody is observing: on an engine whose `observer()`
+            // was never called this is two reads that never happen.
+            let (was_refused, was_beyond) = if self.observe.is_some() {
+                (
+                    self.conns[i].session.puts_refused(),
+                    self.conns[i].session.resend_beyond_journal(),
+                )
+            } else {
+                (0, 0)
+            };
             let outcome = self.conns[i].turn(now, &mut deliver, |msg| {
                 others_on > 0 && presession::is_logon(msg)
             });
@@ -713,6 +729,30 @@ where
                 let id = self.conns[i].id;
                 if !was_on && self.conns[i].session.is_logged_on() {
                     shared.emit(id, now, crate::observe::EventKind::LoggedOn);
+                }
+                // **One event per turn that changed, not one per message.**
+                // ADR-0035: the observer is asked once per turn, and a
+                // `try_lock` per message would put a lock on the hot path.
+                let refused_now = self.conns[i].session.puts_refused();
+                if refused_now != was_refused {
+                    shared.emit(
+                        id,
+                        now,
+                        crate::observe::EventKind::JournalRefused {
+                            count: refused_now.saturating_sub(was_refused),
+                        },
+                    );
+                }
+                let beyond_now = self.conns[i].session.resend_beyond_journal();
+                if beyond_now != was_beyond {
+                    shared.emit(
+                        id,
+                        now,
+                        crate::observe::EventKind::ResendBeyondJournal {
+                            filled: beyond_now.saturating_sub(was_beyond),
+                            oldest: self.conns[i].journal.oldest(),
+                        },
+                    );
                 }
                 if matches!(outcome, Turn::Gone) {
                     // `EndedWithoutReason` is not decoration: it is how a new
