@@ -3,7 +3,16 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-04**, later still — **WAVE A IS MERGED.** Items 42, 43 and 44 are closed and on `main`: PR [#35](https://github.com/tmthang86/fixbolt/pull/35) (acceptor-interop and resend-from-the-journal, merge commit `148256a`) and PR [#34](https://github.com/tmthang86/fixbolt/pull/34) (message-log, merge commit `0d11559`), **CI green 12 jobs of 12 on the merged `main` itself, `0d11559`, run [`33862385218`](https://github.com/tmthang86/fixbolt/actions/runs/33862385218)**. That last run is the point: each branch was green on its own, and neither said anything about the commit where they meet. **Wave B is next — item 45 holds the order**, and every one of its drafts is re-verified against the code of the day before it becomes a plan. `settings-for-both-roles` in particular now reads against an eleventh settings key and five entry points that take a message log. Before that — **an acceptor can say what it received, and a journal notices a flipped byte**. [message-log](docs/plans/2026-09-03-message-log.md) is closed, all five steps: `FileLogPath` writes both directions including frames refused before the session judged them, and the journal's on-disk format is version 1 with a CRC32 per record. **Item 44 closed.** Before that — **a resend answers with the messages now, not with gap fills**. [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md) is closed: the ring is 4096 slots and O(1), a replay goes out in batches so a large resend no longer ends the session it is answering, and the two silences are counters and events. **Item 43 closed.** Before that — **the acceptor has a second opinion, and it is 7 / 7**. [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md) is closed: a `libquickfix` `SocketInitiator` drives `fixbolt::serve` over kernel TCP, `scripts/interop.sh` runs both directions in one invocation, and the `interop` CI job is blocking on both. **Item 42 closed, item 46 opened** — this engine cannot originate an application message, found by pointing the tool's two roles at each other. Before that — **drafts for waves B, C and D written** (seven files, all *Draft*, each re-verified before it becomes a plan — item 45). Before that, 2026-09-03 — **an architecture review found three gaps phase 1 closed over, and three plans are written, none started, all *Chờ duyệt***: [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md) (item 42), [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md) (item 43), [message-log](docs/plans/2026-09-03-message-log.md) (item 44). **Item 45 is the order of everything after them.** See the section immediately below. Before that — **`the-doc-set` IS CLOSED AND MERGED**, phases A, E, B and D, PR [#32](https://github.com/tmthang86/fixbolt/pull/32), merge commit `16ad9b6`, **CI green on the branch tip closed, `86c3913`, run [`33742995012`](https://github.com/tmthang86/fixbolt/actions/runs/33742995012), 11 jobs of 11**. Ten new documents: the user track (`INTRODUCTION`, `GETTING-STARTED`, `TUTORIAL`, `CONFIGURATION`, `SESSION-BEHAVIOUR`, `CONFORMANCE`) and the operator track (`best-practices-standard`, `best-practices-hft`, `hft-playbook`), plus `crates/library/README.md` as the crate's rustdoc front page. **Open item 33 is closed for that scope**; phase C (`docs/internals/`) is **deferred to phase 2's first ADR** by Sửa 3 and carries the *engine-has-no-map* half of item 33 with it. **A new CI gate came out of it**: `docs` — `cargo doc --workspace --no-deps` under `-D rustdoc::broken_intra_doc_links`, which was **red on arrival with 13 pre-existing warnings**, six of them public documentation linking to private items. CI is 11 jobs now, not 10. Before that — **2026-09-02, PHASE 1 IS COMPLETE.** Exit criterion 6 is met and **PHASE 1 IS COMPLETE. Exit criterion 6 is met and `[2026-09-02]` **Open item 33 is new, and it is about this repository's documentation rather than its code**: `README.md` has **0 `rust` blocks**, there is **no *Getting Started* heading anywhere** in `README.md` or `docs/`, `engine::settings` accepts **10 keys** of which **`EndDay` and `MaxSkewMillis` are named in no document at all**, no page publishes the conformance results, and `engine`'s **20 modules** have no map. Planned by [the-doc-set](docs/plans/2026-09-02-the-doc-set.md); **phase A is closed**.
+Last updated: **2026-09-05** — **the four buffer sizes are the caller's.**
+[buffers-the-caller-can-size](docs/plans/2026-09-05-buffers-the-caller-can-size.md) is closed and
+merged: PR [#37](https://github.com/tmthang86/fixbolt/pull/37), merge commit `ca25571`, **CI green
+11 of 11 on the merge point, run
+[`33893054026`](https://github.com/tmthang86/fixbolt/actions/runs/33893054026)**. Six `*_with`
+entry points take `N`, `RX`, `TX` and `APP`; no default changed and no existing call did either.
+The build found a **fourth** buffer constant that had no name and failed as silence
+(`Outbound::app`, 1 KiB), and four testing traps now in
+[a-ceiling-has-more-than-one-floor](docs/reference/a-ceiling-has-more-than-one-floor.md).
+**Wave B is next and its first plan is ready.** Before that — **WAVE A IS MERGED.** Items 42, 43 and 44 are closed and on `main`: PR [#35](https://github.com/tmthang86/fixbolt/pull/35) (acceptor-interop and resend-from-the-journal, merge commit `148256a`) and PR [#34](https://github.com/tmthang86/fixbolt/pull/34) (message-log, merge commit `0d11559`), **CI green 12 jobs of 12 on the merged `main` itself, `0d11559`, run [`33862385218`](https://github.com/tmthang86/fixbolt/actions/runs/33862385218)**. That last run is the point: each branch was green on its own, and neither said anything about the commit where they meet. **Wave B is next — item 45 holds the order**, and every one of its drafts is re-verified against the code of the day before it becomes a plan. `settings-for-both-roles` in particular now reads against an eleventh settings key and five entry points that take a message log. Before that — **an acceptor can say what it received, and a journal notices a flipped byte**. [message-log](docs/plans/2026-09-03-message-log.md) is closed, all five steps: `FileLogPath` writes both directions including frames refused before the session judged them, and the journal's on-disk format is version 1 with a CRC32 per record. **Item 44 closed.** Before that — **a resend answers with the messages now, not with gap fills**. [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md) is closed: the ring is 4096 slots and O(1), a replay goes out in batches so a large resend no longer ends the session it is answering, and the two silences are counters and events. **Item 43 closed.** Before that — **the acceptor has a second opinion, and it is 7 / 7**. [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md) is closed: a `libquickfix` `SocketInitiator` drives `fixbolt::serve` over kernel TCP, `scripts/interop.sh` runs both directions in one invocation, and the `interop` CI job is blocking on both. **Item 42 closed, item 46 opened** — this engine cannot originate an application message, found by pointing the tool's two roles at each other. Before that — **drafts for waves B, C and D written** (seven files, all *Draft*, each re-verified before it becomes a plan — item 45). Before that, 2026-09-03 — **an architecture review found three gaps phase 1 closed over, and three plans are written, none started, all *Chờ duyệt***: [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md) (item 42), [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md) (item 43), [message-log](docs/plans/2026-09-03-message-log.md) (item 44). **Item 45 is the order of everything after them.** See the section immediately below. Before that — **`the-doc-set` IS CLOSED AND MERGED**, phases A, E, B and D, PR [#32](https://github.com/tmthang86/fixbolt/pull/32), merge commit `16ad9b6`, **CI green on the branch tip closed, `86c3913`, run [`33742995012`](https://github.com/tmthang86/fixbolt/actions/runs/33742995012), 11 jobs of 11**. Ten new documents: the user track (`INTRODUCTION`, `GETTING-STARTED`, `TUTORIAL`, `CONFIGURATION`, `SESSION-BEHAVIOUR`, `CONFORMANCE`) and the operator track (`best-practices-standard`, `best-practices-hft`, `hft-playbook`), plus `crates/library/README.md` as the crate's rustdoc front page. **Open item 33 is closed for that scope**; phase C (`docs/internals/`) is **deferred to phase 2's first ADR** by Sửa 3 and carries the *engine-has-no-map* half of item 33 with it. **A new CI gate came out of it**: `docs` — `cargo doc --workspace --no-deps` under `-D rustdoc::broken_intra_doc_links`, which was **red on arrival with 13 pre-existing warnings**, six of them public documentation linking to private items. CI is 11 jobs now, not 10. Before that — **2026-09-02, PHASE 1 IS COMPLETE.** Exit criterion 6 is met and **PHASE 1 IS COMPLETE. Exit criterion 6 is met and `[2026-09-02]` **Open item 33 is new, and it is about this repository's documentation rather than its code**: `README.md` has **0 `rust` blocks**, there is **no *Getting Started* heading anywhere** in `README.md` or `docs/`, `engine::settings` accepts **10 keys** of which **`EndDay` and `MaxSkewMillis` are named in no document at all**, no page publishes the conformance results, and `engine`'s **20 modules** have no map. Planned by [the-doc-set](docs/plans/2026-09-02-the-doc-set.md); **phase A is closed**.
 every one of the seven is.** `tools/w2w` ran on the owner's §9 desktop, pinned, and the wire-to-wire
 figures are published: `hft` **p50 16 010 / p99 20 589 / p99.9 22 127 ns** administrative and
 **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and
@@ -12,6 +21,81 @@ figures are published: `hft` **p50 16 010 / p99 20 589 / p99.9 22 127 ns** admin
 which declines SIMD/SWAR because parse is **0.62%** of a round trip. **Three new open items came
 out of the same measurement: 39, 40 and 41.** See the section immediately below. Before that —
 **items 27, 35, 37 and phase 1 exit criterion 4 closed; 34 halved and 36 moved 0 → 10; criterion 6 is the only exit criterion left and it wants a machine.** Before that — **PHASE 1 EXIT CRITERION 4 IS MET**: the initiator is interop-green against a real `libquickfix`, 7 / 7, blocking in CI — [plan](docs/plans/2026-09-02-the-initiator-and-its-second-opinion.md), [ADR-0042](docs/decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md), PR [#30](https://github.com/tmthang86/fixbolt/pull/30), **CI green on the commit closed, `cdd6fba`, runs [`33623429649`](https://github.com/tmthang86/fixbolt/actions/runs/33623429649) and [`33623385882`](https://github.com/tmthang86/fixbolt/actions/runs/33623385882), 10 checks of 10**. Its first run found that the initiator answered a `Logon` with a `Logon` — a defect six green gates could not see. **So phase 1 now has ONE open exit criterion, 6, and it is blocked on hardware.** Before that — **`DESIGN.md` §7's build order is COMPLETE**: step 8 `library` was the last unbuilt box and it is built — [the-library-layer](docs/plans/2026-09-02-the-library-layer.md), crate `crates/library`, package `fixbolt`, [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md). PR [#29](https://github.com/tmthang86/fixbolt/pull/29), **CI green on the commit closed, `4108881`, runs [`33618980677`](https://github.com/tmthang86/fixbolt/actions/runs/33618980677) and [`33619043496`](https://github.com/tmthang86/fixbolt/actions/runs/33619043496), 18 checks of 18**. So **phase 1 now has no unbuilt component and two open exit criteria**: 4 (initiator interop against `libquickfix` in CI — a job, deliberately left for another session) and 6 (wire-to-wire on a machine matching §9 — hardware). `tools/w2w` was run here in both modes and its figures are in *Not proven* under the machine that produced them; **they do not close criterion 6 and open item 6 stays open.** New open item **34**: the library's reply path is ~50x the D9 template shape, measured, published, and not yet fixed. Before that — **`STATUS.md` item 30 is CLOSED, all six parts**, by **six plans across eight PRs today**: [operability](docs/plans/2026-09-01-operability.md) steps 1–2 (PR #18), [session-schedules](docs/plans/2026-09-02-session-schedules.md) (PR #19), [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) (PR #20, #21), [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) (PR #22), [three-in-the-morning](docs/plans/2026-09-02-sequence-numbers-at-three-in-the-morning.md) (PR #23), [what-the-journal-can-answer](docs/plans/2026-09-02-what-the-journal-can-answer.md) (PR #24) and [an-ordered-shutdown](docs/plans/2026-09-02-an-ordered-shutdown.md) (PR #25; **CI green on the commit closed, `ca9ae49`, runs [`33597576154`](https://github.com/tmthang86/fixbolt/actions/runs/33597576154) and [`33597580522`](https://github.com/tmthang86/fixbolt/actions/runs/33597580522), 18 checks of 18**). Items **16**, **30** and **31** are closed; item **32** was opened by the work that closed 31 and **(b) and (c) of it closed the same day** — [recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md), PR [#26](https://github.com/tmthang86/fixbolt/pull/26), **CI green on the commit closed, `88f4473`, runs [`33600110468`](https://github.com/tmthang86/fixbolt/actions/runs/33600110468) and [`33600141705`](https://github.com/tmthang86/fixbolt/actions/runs/33600141705)**. ADRs **0032–0040**. `[2026-09-02]` **`PRD.md`'s last open line under `many counterparties` is closed too** — [a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md), PR [#27](https://github.com/tmthang86/fixbolt/pull/27), **CI green on `826b672`, runs [`33602482251`](https://github.com/tmthang86/fixbolt/actions/runs/33602482251) and [`33602486701`](https://github.com/tmthang86/fixbolt/actions/runs/33602486701)** — so a counterparty is an edit to a file rather than a rebuild. **Everything reachable from a Mac is now done; what is left needs Linux**: items 6, 11, 12, 14, 21, 22, 24 and **32 (a)**. Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+
+## Start here — 2026-09-05: the four buffer sizes are the caller's
+
+**A plan outside the wave order, and it earned its place by being cheap and by blocking the one
+after it.** [buffers-the-caller-can-size](docs/plans/2026-09-05-buffers-the-caller-can-size.md),
+[ADR-0047](docs/decisions/ADR-0047-the-four-buffer-sizes-are-the-callers-through-a-second-function.md),
+PR [#37](https://github.com/tmthang86/fixbolt/pull/37), merge commit `ca25571`.
+**CI green 11 jobs of 11 on the commit closed, `21d6d68`, run
+[`33892489952`](https://github.com/tmthang86/fixbolt/actions/runs/33892489952) — and green again
+on the merge point itself, `ca25571`, run
+[`33893054026`](https://github.com/tmthang86/fixbolt/actions/runs/33893054026), which is the run
+wave A's closing taught this file to name: a branch green on its own says nothing about the commit
+where it meets `main`.**
+`cargo test --all` 492 → **495**.
+
+### What a deployment could not do before this, and can now
+
+`CLAUDE.md` §6 says *"the caller picks `N` … **no hidden constant**"* and `CONFIGURATION.md` told
+readers to instantiate `Engine<..., N, RX, TX>` directly. **Neither was true through the front
+door.** All six serving entry points went via type aliases pinning `256, 4096, 8192`, and the
+`fixbolt` crate does not re-export `Engine` — so a counterparty sending messages larger than 4 KiB
+meant forking the serving loop, pre-session stage included. An alias is as much a hidden constant
+as a `const` when nothing above it can say otherwise.
+
+```rust
+serve_with::<256, 16_384, 16_384, 8_192, _, _>(addr, table, app, capacity, limits, log)?;
+```
+
+Six `*_with` twins; the originals keep their exact signatures and delegate. **No existing call
+changed and no file under `crates/*/tests/` was touched.**
+
+### The fourth constant, which had no name and failed as silence
+
+`Outbound::app` was a hard-coded `[u8; 1024]` — **the tightest ceiling in the engine.** An
+acceptor could receive 4 KiB and be unable to answer with 1 KiB, and nothing said so:
+`Application::on_message` returning `None` means *"nothing to say"*, which is legal, so exceeding
+it is indistinguishable from an application declining to reply. `fixbolt_session::DEFAULT_APP_SCRATCH`
+names the default now, and `GUIDE.md` §6 has a row whose symptom column reads *"nothing at all"*.
+
+`RX` also sizes the pre-session buffer structurally: **both** copies of `const PRE = 4096` are
+gone, each having sat under a comment promising it matched the engine — one invariant, two copies,
+nothing checking either.
+
+### Four things went wrong during the build, and all four are written down
+
+[a-ceiling-has-more-than-one-floor](docs/reference/a-ceiling-has-more-than-one-floor.md), marked
+`[to testing-skills]`:
+
+1. **A test that spans N constants and names one measures `min` over all N.** The obvious
+   observable — *"did the echo come back?"* — read false at every size above ~900 bytes **through a
+   16 KiB buffer**. Believed, it would have confirmed a 4 KiB inbound ceiling by measuring a 1 KiB
+   outbound one. A size sweep costs thirty seconds and finds where the answer actually flips.
+2. **The third sweep found a ceiling belonging to the *test oracle*** — `TemplateBuilder::<128, 4096>`
+   in `fixbolt_conformance::echo`. Check the instrument's range before believing a ceiling.
+3. **A reversal has a direction, and an inequality has two.** The `PRE == RX` reversal came back
+   green twice — flipped in one place, then in both, which was the right technique — because the
+   invariant is `PRE ≤ RX` and both flips were toward the safe side.
+4. **Two agreeing samples of a flaky measurement are not a comparison.** The allocation gate was
+   reported pre-existing on one sample per branch; three runs read **1, 2, 2**. CI settled it — 0
+   for all 24 cases. The gate is red only on the development machine, the mirror of item 23.
+
+### What this did NOT do
+
+**No default changed.** `256, 4096, 8192, 1024` are exactly what they were. Raising them needs the
+§9 desktop and belongs to wave C, with the defaults-for-a-PROD-server ADR (`SLOTS`, `SLOT_LEN`,
+`TX`, `RingDispatch`). See *Not proven*.
+
+### Next
+
+**Wave B, unchanged, and its first plan is ready.**
+[settings-for-both-roles](docs/plans/2026-09-04-settings-for-both-roles.md) is *Chờ duyệt*: it was
+re-verified against the code of the day, six of its stated facts were stale, and it now reads
+correctly against this change too.
+
+---
 
 ## Start here — 2026-09-04, later still: a resend gives back the messages
 
