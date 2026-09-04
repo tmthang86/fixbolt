@@ -525,3 +525,44 @@ pub fn unescape(line: &str) -> Vec<u8> {
     }
     out
 }
+
+/// Where shard `i`'s log lives, given the path the operator named.
+///
+/// `messages.log` becomes `messages.log.0`, `messages.log.1`, and so on.
+///
+/// **One file per shard is not a tidiness preference.** Every engine numbers
+/// its connections from zero, so N shards sharing a path write `conn=0` for N
+/// different sockets, and N writer threads interleave into one descriptor. The
+/// suffix is what keeps a line's `conn=` meaningful, and `shard=` on the line
+/// is what lets somebody who concatenated the files put them back in order.
+#[must_use]
+pub fn shard_path(base: &Path, shard: usize) -> std::path::PathBuf {
+    let mut p = base.as_os_str().to_os_string();
+    p.push(format!(".{shard}"));
+    std::path::PathBuf::from(p)
+}
+
+/// A log that may or may not be there, decided at run time.
+///
+/// **`Option<FileLog>` cannot implement [`MessageLog`] usefully**: `LOGS` is a
+/// constant, so an `Option` would have to claim either that it always logs or
+/// that it never does. This claims it always might, which is the truth for a
+/// runtime-configured engine — `FileLogPath` present or absent — and costs one
+/// branch per message on an engine that turned it off.
+///
+/// A deployment that will never log should use [`NoLog`] and pay nothing at
+/// all; this exists for the paths where the answer is only known once a
+/// configuration file has been read.
+pub struct MaybeLog(pub Option<FileLog>);
+
+impl MessageLog for MaybeLog {
+    fn record(&mut self, dir: Direction, at_ms: u64, shard: u16, id: ConnId, bytes: &[u8]) {
+        if let Some(l) = self.0.as_mut() {
+            l.record(dir, at_ms, shard, id, bytes);
+        }
+    }
+
+    fn lost(&self) -> u64 {
+        self.0.as_ref().map_or(0, FileLog::lost)
+    }
+}

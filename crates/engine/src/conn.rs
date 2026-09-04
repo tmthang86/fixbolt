@@ -34,6 +34,14 @@ pub struct Connection<T, R: Role, J, const N: usize, const RX: usize, const TX: 
     /// Which connection this is, for routing a reply that comes back from
     /// another thread. Never reused: the engine only ever counts up.
     pub id: ConnId,
+    /// Bytes that were in `tx` when the socket died, and were discarded.
+    ///
+    /// **Zero on every healthy ending.** Non-zero means the message log has
+    /// `OUT` lines for bytes that never left this machine: `Out::push` records
+    /// a message when it reaches the queue, and a dying socket takes the queue
+    /// with it. The line cannot be un-written, so the count is how much of the
+    /// tail is wrong — [`crate::observe::EventKind::MessageLogUnsent`].
+    unsent: usize,
     /// Which engine thread this connection lives on, for the log line.
     ///
     /// `ConnId` restarts at zero in every engine, so a sharded deployment has
@@ -73,6 +81,7 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
     pub const fn new(id: ConnId, transport: T, session: Session<R, N>, journal: J) -> Self {
         Self {
             id,
+            unsent: 0,
             shard: 0,
             transport,
             session,
@@ -109,6 +118,15 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
         spare[..bytes.len()].copy_from_slice(bytes);
         self.rx.filled(bytes.len());
         true
+    }
+
+    /// Bytes discarded because the socket died with them still queued.
+    ///
+    /// See [`Self::unsent`]. Read by the engine after a [`Turn::Gone`], which
+    /// is the only moment it can be non-zero.
+    #[must_use]
+    pub const fn unsent_bytes(&self) -> usize {
+        self.unsent
     }
 
     /// The same connection, told which shard it belongs to.
@@ -392,6 +410,13 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
             // waiting for ever — `[measured 2026-08-30]` found by a test that
             // killed the socket with bytes still queued and watched the
             // connection stay `Up` for as long as it was turned.
+            //
+            // **Counted before it is thrown away.** These bytes already have
+            // `OUT` lines in the message log, written when they reached the
+            // queue, and nothing can un-write them. Saying how many there were
+            // is the difference between a log with a known-wrong tail and a log
+            // that lies quietly.
+            self.unsent = self.tx_len;
             let _ = self.session.disconnect(|_| {});
             return Turn::Gone;
         }

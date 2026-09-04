@@ -604,6 +604,22 @@ pub enum EventKind {
         /// any. Not the running total — [`Snapshot::log_lost`] is that.
         count: u64,
     },
+    /// Bytes the message log called `OUT` that never reached the wire.
+    ///
+    /// **Zero on every healthy ending.** `Out::push` writes the `OUT` line when
+    /// a message reaches the outbound queue, which is the only moment the
+    /// engine can name it; a socket that dies takes the queue with it. The
+    /// lines cannot be un-written, so this says how many bytes at the tail of
+    /// that connection's output the file is wrong about.
+    ///
+    /// It is deliberately **not** the same event as a slow consumer
+    /// (ADR-0035): that one is a queue the engine refused to grow, and nothing
+    /// was ever logged for it. This one is a queue the engine had already
+    /// promised.
+    MessageLogUnsent {
+        /// How many bytes were discarded.
+        bytes: usize,
+    },
 }
 
 /// One event, with enough context to act on it.

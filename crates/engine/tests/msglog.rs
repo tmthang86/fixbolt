@@ -558,3 +558,243 @@ fn the_shard_the_engine_names_is_the_shard_on_the_line() {
         "left: {lines:?}"
     );
 }
+
+/// A socket that queues, then dies.
+///
+/// `Io::Idle` first, so bytes sit in `tx` and the log has already written the
+/// `OUT` line for them; then `Io::Closed`, which is a dying counterparty and
+/// makes the engine discard everything still queued.
+#[derive(Default)]
+struct Dying {
+    inbox: VecDeque<u8>,
+    dead: bool,
+}
+
+impl Transport for Dying {
+    fn recv(&mut self, buf: &mut [u8]) -> Io {
+        let n = buf.len().min(self.inbox.len());
+        if n == 0 {
+            return Io::Idle;
+        }
+        for slot in buf.iter_mut().take(n) {
+            *slot = self.inbox.pop_front().unwrap_or(0);
+        }
+        Io::Ready(n)
+    }
+
+    fn send(&mut self, _buf: &[u8]) -> Io {
+        if self.dead { Io::Closed } else { Io::Idle }
+    }
+}
+
+/// `OUT` means queued, and what was queued and never sent is counted.
+///
+/// **The log errs in the worst direction without this.** `Out::push` writes the
+/// `OUT` line when the bytes reach `tx`, and `conn.rs` discards whatever is
+/// still in `tx` when the socket dies — so the file claims a send that never
+/// left the machine, which is precisely the claim a counterparty disputes.
+/// Nothing can un-write the line; what the engine can do is say how many bytes
+/// the tail of the file is wrong about.
+#[test]
+fn bytes_still_queued_when_the_socket_dies_are_counted_not_claimed_as_sent() {
+    let tmp = Tmp::new("unsent");
+    let mut log = FileLog::open(tmp.path()).unwrap();
+    let mut c: Connection<Dying, Acceptor, Store, 256, 4096, 8192> = Connection::new(
+        1,
+        Dying {
+            inbox: logon().iter().copied().collect(),
+            dead: false,
+        },
+        Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+        Store::new(),
+    );
+
+    // The engine tells the session the link is up before anything is judged;
+    // without it an acceptor ignores what arrives, and the test would be
+    // measuring a session that was never opened.
+    c.opened(FIXED_TIME_MILLIS, &mut log);
+    // The logon is read and answered; the answer cannot go out, so it stays in
+    // `tx` — and the log has already called it `OUT`.
+    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 0, &mut log);
+    assert!(
+        c.unsent_bytes() == 0,
+        "nothing has been discarded yet: {}",
+        c.unsent_bytes()
+    );
+
+    c.transport.dead = true;
+    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 0, &mut log);
+    log.close();
+
+    let outs = tmp.lines().iter().filter(|l| l.contains(" OUT ")).count();
+    assert_eq!(outs, 1, "the log claimed a send: {:?}", tmp.lines());
+    assert!(
+        c.unsent_bytes() > 0,
+        "and nothing counted what never left: {}",
+        c.unsent_bytes()
+    );
+}
+
+/// A socket that takes nothing and then hangs up, on its own schedule.
+///
+/// The engine owns its connections and hands out no mutable reference to one,
+/// which is right — a test that reached in could hold a connection in a state
+/// the engine never produces. So the dying is the transport's own business:
+/// `Idle` on the first `send`, so the answer sits in `tx` with an `OUT` line
+/// already written for it, and `Closed` after.
+#[derive(Default)]
+struct DiesAfterOneSend {
+    inbox: VecDeque<u8>,
+    sends: usize,
+}
+
+impl Transport for DiesAfterOneSend {
+    fn recv(&mut self, buf: &mut [u8]) -> Io {
+        let n = buf.len().min(self.inbox.len());
+        if n == 0 {
+            return Io::Idle;
+        }
+        for slot in buf.iter_mut().take(n) {
+            *slot = self.inbox.pop_front().unwrap_or(0);
+        }
+        Io::Ready(n)
+    }
+
+    fn send(&mut self, _buf: &[u8]) -> Io {
+        self.sends += 1;
+        if self.sends > 1 { Io::Closed } else { Io::Idle }
+    }
+}
+
+/// The discarded bytes reach an operator, not just a field on a connection.
+///
+/// **Written because the last hook shipped without one.** A count nothing reads
+/// is the same as no count, and `EventKind::MessageLogUnsent` is only useful if
+/// it actually arrives in the event stream. Driven against a real `Engine` with
+/// a transport that queues and then dies, so the whole path is exercised: the
+/// connection sets the number, the engine reads it on `Turn::Gone`, and the
+/// observer sees it before the connection is dropped.
+#[test]
+fn what_the_log_promised_and_the_socket_never_took_reaches_the_observer() {
+    use fixbolt_engine::clock::ManualClock;
+    use fixbolt_engine::dispatch::InlineDispatch;
+    use fixbolt_engine::observe::EventKind;
+    use fixbolt_engine::wait::Yield;
+
+    let tmp = Tmp::new("unsent-event");
+    let log = FileLog::open(tmp.path()).unwrap();
+    // Annotated before `with_log`, not after: `Engine::new` builds its own `L`
+    // from `Default`, so naming only the final type leaves `new`'s parameter
+    // ambiguous. Written out as the two steps it is.
+    type Bare = fixbolt_engine::Engine<
+        DiesAfterOneSend,
+        Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    >;
+    let bare: Bare = fixbolt_engine::Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    let mut engine = bare.with_log(log);
+
+    let observer = engine.observer();
+    engine.add(DiesAfterOneSend {
+        inbox: logon().iter().copied().collect(),
+        sends: 0,
+    });
+
+    // The logon is answered into a queue the socket will not take.
+    engine.turn();
+    // And on the next turn the socket hangs up with that answer still in it.
+    engine.turn();
+
+    let mut events = Vec::new();
+    let _ = observer.events(&mut events);
+    let unsent: Vec<usize> = events
+        .iter()
+        .filter_map(|e| match e.kind() {
+            EventKind::MessageLogUnsent { bytes } => Some(bytes),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        unsent.len(),
+        1,
+        "an operator must be told the log's tail is wrong: {events:?}"
+    );
+    assert!(unsent[0] > 0, "and by how much: {unsent:?}");
+}
+
+/// One file per shard, named from the path the operator gave.
+#[test]
+fn each_shard_gets_its_own_file_beside_the_one_that_was_named() {
+    use fixbolt_engine::msglog::shard_path;
+    let base = std::path::Path::new("/var/log/fixbolt/messages.log");
+    assert_eq!(
+        shard_path(base, 0),
+        std::path::PathBuf::from("/var/log/fixbolt/messages.log.0")
+    );
+    assert_eq!(
+        shard_path(base, 11),
+        std::path::PathBuf::from("/var/log/fixbolt/messages.log.11")
+    );
+    assert_ne!(
+        shard_path(base, 0),
+        shard_path(base, 1),
+        "two shards sharing a path is the defect this exists to prevent"
+    );
+}
+
+/// Two shards, two connections that are both `conn=0`, and no ambiguity.
+///
+/// **This is the collision the review found.** `ConnId` restarts at zero in
+/// every engine, so a sharded acceptor writing one file has two `conn=0` rows
+/// for two different counterparties, and nothing in the line to tell them
+/// apart. Two files, and `shard=` on every line, are the two halves of the fix
+/// — and either one alone leaves an operator guessing.
+#[test]
+fn two_shards_write_two_files_and_conn_ids_do_not_collide() {
+    let a = Tmp::new("shard-a");
+    let b = Tmp::new("shard-b");
+    let mut log_a = FileLog::open(a.path()).unwrap();
+    let mut log_b = FileLog::open(b.path()).unwrap();
+
+    // The same connection number on two shards, which is what really happens.
+    let mut ca = wired(&logon());
+    let mut cb = wired(&logon());
+    let _ = ca.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 0, &mut log_a);
+    let _ = cb.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 1, &mut log_b);
+    log_a.close();
+    log_b.close();
+
+    let (la, lb) = (a.lines(), b.lines());
+    assert!(!la.is_empty() && !lb.is_empty(), "both files have lines");
+    assert!(
+        la.iter().all(|l| l.contains("shard=0 conn=1")),
+        "left: {la:?}"
+    );
+    assert!(
+        lb.iter().all(|l| l.contains("shard=1 conn=1")),
+        "left: {lb:?}"
+    );
+    // Concatenated, the way an operator would to see one timeline, the rows
+    // are still distinguishable — which is the whole point of `shard=`.
+    let both: Vec<&String> = la.iter().chain(lb.iter()).collect();
+    assert_eq!(
+        both.iter().filter(|l| l.contains("shard=0")).count(),
+        la.len()
+    );
+    assert_eq!(
+        both.iter().filter(|l| l.contains("shard=1")).count(),
+        lb.len()
+    );
+}

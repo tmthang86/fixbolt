@@ -890,6 +890,25 @@ where
                     if refused {
                         self.refused_connections += 1;
                     }
+                    // **Before the connection is dropped, because the count
+                    // goes with it.** The message log already wrote `OUT` for
+                    // these bytes; this is the engine saying how much of that
+                    // connection's tail is wrong. Behind `L::LOGS`, so an
+                    // engine with no log does not pay a comparison for a number
+                    // that describes a file nobody is writing.
+                    if L::LOGS {
+                        let who = self.conns[i].id;
+                        let unsent = self.conns[i].unsent_bytes();
+                        if unsent > 0
+                            && let Some(shared) = self.observe.as_ref()
+                        {
+                            shared.emit(
+                                who,
+                                now,
+                                crate::observe::EventKind::MessageLogUnsent { bytes: unsent },
+                            );
+                        }
+                    }
                     // **Counted here rather than at the deadline**: by then the
                     // connection is gone and the reason with it. A shutdown
                     // that reports "all clear" without checking *why* each

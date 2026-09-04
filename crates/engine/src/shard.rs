@@ -40,6 +40,7 @@ use std::thread::JoinHandle;
 use crate::affinity::{self, AffinityError, CoreId, ShardPlan};
 use crate::clock::Clock;
 use crate::dispatch::Dispatch;
+use crate::msglog::MaybeLog;
 use crate::presession::{Pending, identity_of};
 use crate::transport::{TcpTransport, Transport};
 use crate::wait::Waiting;
@@ -73,8 +74,8 @@ pub trait Shardable: Send {
     fn idle(&mut self);
 }
 
-impl<R, D, C, W, J, const N: usize, const RX: usize, const TX: usize> Shardable
-    for crate::Engine<TcpTransport, R, D, C, W, J, N, RX, TX>
+impl<R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L> Shardable
+    for crate::Engine<TcpTransport, R, D, C, W, J, N, RX, TX, L>
 where
     Self: Send,
     TcpTransport: Transport,
@@ -87,6 +88,7 @@ where
     // is the escape hatch and it needs a journal per connection, which is not
     // something an accept loop can supply.
     J: SessionJournal + Default,
+    L: crate::msglog::MessageLog,
 {
     fn add(
         &mut self,
@@ -442,6 +444,7 @@ pub fn serve_sharded_hft<A, F>(
     capacity: usize,
     limits: crate::presession::Limits,
     make_app: F,
+    log_path: Option<&std::path::Path>,
 ) -> Result<core::convert::Infallible, ShardError>
 where
     A: fixbolt_session::Application + Send + 'static,
@@ -468,15 +471,48 @@ where
     const PRE: usize = 4096;
 
     let acceptor = crate::Acceptor::bind(addr).map_err(ShardError::Io)?;
-    let mut shards = Shards::<PRE>::start(plan, move |i| -> crate::HftAcceptorEngine<A> {
-        crate::Engine::new(
-            cfg,
-            crate::dispatch::InlineDispatch::new(make_app(i)),
-            SystemClock,
-            crate::wait::Spin,
-            capacity,
-        )
-    })?;
+
+    // **One file per shard, opened here rather than on the shard thread.**
+    // Every engine numbers its own connections from zero, so N shards sharing
+    // one path would write `conn=0` for N different sockets and interleave N
+    // writer threads into one descriptor. `path.<i>` keeps them apart, and
+    // opening up front means a bad path is a startup error with a name rather
+    // than a shard thread that quietly has no log.
+    //
+    // Opened **once**: reopening on the shard thread would mark a torn tail
+    // twice for a file that was killed mid-write. The `Mutex<Vec<Option<_>>>`
+    // exists only so the `Fn` closure can take the `i`th one — it is touched
+    // once per shard at startup and never again, and no engine thread ever
+    // waits on it.
+    let mut opened: Vec<Option<crate::msglog::FileLog>> = Vec::with_capacity(plan.shards().len());
+    if let Some(base) = log_path {
+        for i in 0..plan.shards().len() {
+            opened.push(Some(
+                crate::msglog::FileLog::open(&crate::msglog::shard_path(base, i))
+                    .map_err(ShardError::Io)?,
+            ));
+        }
+    } else {
+        opened.resize_with(plan.shards().len(), || None);
+    }
+    let logs = std::sync::Mutex::new(opened);
+
+    let mut shards =
+        Shards::<PRE>::start(plan, move |i| -> crate::HftAcceptorEngine<A, MaybeLog> {
+            let taken = logs
+                .lock()
+                .ok()
+                .and_then(|mut v| v.get_mut(i).and_then(Option::take));
+            crate::Engine::new(
+                cfg,
+                crate::dispatch::InlineDispatch::new(make_app(i)),
+                SystemClock,
+                crate::wait::Spin,
+                capacity,
+            )
+            .with_shard(u16::try_from(i).unwrap_or(u16::MAX))
+            .with_log(MaybeLog(taken))
+        })?;
 
     let mut set: PendingSet<crate::transport::TcpTransport, crate::presession::Table, PRE> =
         PendingSet::new(limits, table);
