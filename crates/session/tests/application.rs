@@ -274,11 +274,14 @@ fn the_mark_is_written_after_the_application_has_seen_the_message() {
         log: Rc<RefCell<Vec<Event>>>,
     }
     impl Journal for Watched {
-        fn put(&mut self, seq: u32, bytes: &[u8]) {
-            self.inner.put(seq, bytes);
+        fn put(&mut self, seq: u32, bytes: &[u8]) -> bool {
+            self.inner.put(seq, bytes)
         }
         fn get(&self, seq: u32) -> Option<&[u8]> {
             self.inner.get(seq)
+        }
+        fn oldest(&self) -> Option<u32> {
+            self.inner.oldest()
         }
         fn highest(&self) -> Option<u32> {
             self.inner.highest()

@@ -95,18 +95,20 @@ impl<const N: usize, const LEN: usize> MemJournal<N, LEN> {
 }
 
 impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
-    fn put(&mut self, seq: u32, bytes: &[u8]) {
+    fn put(&mut self, seq: u32, bytes: &[u8]) -> bool {
         if bytes.len() > LEN || N == 0 {
             // Refused rather than truncated. A truncated replay is a message
             // that does not checksum; a refusal becomes a gap fill, which is
-            // legal.
-            return;
+            // legal. **And it is now reported**, so the session can count it —
+            // ADR-0046.
+            return false;
         }
         let slot = &mut self.slots[self.at % N];
         slot.seq = seq;
         slot.len = u16::try_from(bytes.len()).unwrap_or(0);
         slot.buf[..bytes.len()].copy_from_slice(bytes);
         self.at += 1;
+        true
     }
 
     fn get(&self, seq: u32) -> Option<&[u8]> {
@@ -114,6 +116,26 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
             .iter()
             .find(|s| s.seq == seq && s.len > 0)
             .map(|s| &s.buf[..usize::from(s.len)])
+    }
+
+    /// The lowest number still here, in one slot read.
+    ///
+    /// **Not `min` over the slots, and not `newest - N`.** Only *application*
+    /// messages are journalled, so the numbers in the ring are sparse — an
+    /// acceptor that answers one order in three keeps 2, 5, 8 — and arithmetic
+    /// on the newest number would name a slot that was never written. What is
+    /// true regardless is *which slot goes next*: once the ring has wrapped,
+    /// the slot about to be overwritten is the oldest one still standing.
+    fn oldest(&self) -> Option<u32> {
+        if N == 0 {
+            return None;
+        }
+        let slot = if self.at >= N {
+            &self.slots[self.at % N]
+        } else {
+            self.slots.first()?
+        };
+        (slot.len > 0).then_some(slot.seq)
     }
 
     fn highest(&self) -> Option<u32> {
@@ -437,8 +459,15 @@ fn write_loop(mut file: File, mut from_engine: Consumer) {
 }
 
 impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
-    fn put(&mut self, seq: u32, bytes: &[u8]) {
-        self.mem.put(seq, bytes);
+    fn put(&mut self, seq: u32, bytes: &[u8]) -> bool {
+        let kept = self.mem.put(seq, bytes);
+        if !kept {
+            // Refused by the ring is refused outright: a message this journal
+            // cannot answer `get` for must not reach the file either, or a
+            // recovery would read back a message the running engine could never
+            // have replayed.
+            return false;
+        }
         match self.how {
             Durability::Async => {
                 if let Some(p) = self.to_writer.as_mut() {
@@ -462,10 +491,15 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
                 }
             }
         }
+        true
     }
 
     fn get(&self, seq: u32) -> Option<&[u8]> {
         self.mem.get(seq)
+    }
+
+    fn oldest(&self) -> Option<u32> {
+        self.mem.oldest()
     }
 
     fn highest(&self) -> Option<u32> {

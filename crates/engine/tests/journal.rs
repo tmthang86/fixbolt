@@ -19,7 +19,7 @@
 use std::ops::Range;
 
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
-use fixbolt_engine::journal::{Durability, FileJournal, SLOT_LEN, Store};
+use fixbolt_engine::journal::{Durability, FileJournal, MemJournal, SLOT_LEN, Store};
 use fixbolt_session::journal::{Journal, NoJournal};
 use fixbolt_session::{Acceptor, Application, Config, Link, Session};
 
@@ -355,6 +355,88 @@ fn a_message_too_long_for_a_slot_is_refused_by_every_journal() {
         file.get(9).is_none(),
         "and so did the one that also writes to disk"
     );
+    drop(file);
+    let _ = std::fs::remove_file(&path);
+}
+
+// ------------------------------------------- what the ring will say about itself
+//
+// ADR-0046 decisions 1 and 3. Two questions the trait could not answer before,
+// and both are load-bearing for the counters the session grows in step 3: a
+// session cannot tell *"this number was never sent"* from *"this number fell
+// out of the ring"* without `oldest`, and only the second is worth an event.
+
+/// `oldest` names the lowest number still answerable, and it moves as the ring
+/// wraps.
+///
+/// `None` on an empty journal — **not** `Some(0)`, which would be a sequence
+/// number FIX never uses being handed back as if it were one.
+#[test]
+fn the_journal_says_what_its_oldest_kept_number_is() {
+    let mut j: MemJournal<8, SLOT_LEN> = MemJournal::new();
+    assert_eq!(j.oldest(), None, "an empty ring holds no oldest number");
+
+    for seq in 1..=8 {
+        assert!(j.put(seq, b"body"), "the ring took {seq}");
+    }
+    assert_eq!(
+        j.oldest(),
+        Some(1),
+        "eight in eight slots: nothing has gone"
+    );
+    assert_eq!(j.highest(), Some(8));
+
+    assert!(j.put(9, b"body"));
+    assert_eq!(j.oldest(), Some(2), "9 overwrote 1, so 2 is the oldest");
+    assert_eq!(j.highest(), Some(9));
+
+    for seq in 10..=20 {
+        assert!(j.put(seq, b"body"));
+    }
+    assert_eq!(j.oldest(), Some(13), "twenty put, eight kept: 13..=20");
+    assert_eq!(j.get(12), None, "and 12 really is gone");
+    assert!(j.get(13).is_some());
+}
+
+/// A `put` the journal refuses says so, rather than returning nothing and
+/// leaving the session to find out from a counterparty.
+///
+/// The refusal itself is not new — a message longer than `LEN` has always been
+/// dropped rather than truncated, because a truncated replay does not checksum.
+/// What is new is that the caller is told.
+#[test]
+fn a_put_that_is_refused_says_so() {
+    let mut j: MemJournal<8, SLOT_LEN> = MemJournal::new();
+    assert!(j.put(1, b"short enough"), "a message that fits is kept");
+
+    let long = vec![b'x'; SLOT_LEN + 1];
+    assert!(
+        !j.put(2, &long),
+        "one byte too long is refused, and says so"
+    );
+    assert_eq!(j.get(2), None, "and it really was not kept");
+    assert_eq!(j.oldest(), Some(1), "a refusal does not disturb the ring");
+
+    // The other two implementations answer the same way. `NoJournal` keeps
+    // nothing at all, so every `put` is a refusal — which is the honest answer
+    // and is what makes the session's counter meaningful for it too.
+    let mut none = NoJournal;
+    assert!(!none.put(1, b"short enough"));
+    assert_eq!(none.oldest(), None);
+
+    let path = std::env::temp_dir().join(format!(
+        "fixbolt-journal-refused-{}.log",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let mut file: FileJournal<8, SLOT_LEN> =
+        FileJournal::open(&path, Durability::Fsync).expect("open");
+    assert!(file.put(1, b"short enough"));
+    assert!(
+        !file.put(2, &long),
+        "the one that also writes to disk agrees"
+    );
+    assert_eq!(file.oldest(), Some(1));
     drop(file);
     let _ = std::fs::remove_file(&path);
 }

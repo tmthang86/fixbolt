@@ -128,8 +128,13 @@ struct Kept {
 }
 
 impl Journal for Kept {
-    fn put(&mut self, seq: u32, bytes: &[u8]) {
+    fn put(&mut self, seq: u32, bytes: &[u8]) -> bool {
         self.msgs.push((seq, bytes.to_vec()));
+        true
+    }
+
+    fn oldest(&self) -> Option<u32> {
+        self.msgs.first().map(|(n, _)| *n)
     }
 
     fn get(&self, seq: u32) -> Option<&[u8]> {
