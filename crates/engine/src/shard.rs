@@ -503,15 +503,21 @@ where
                 .lock()
                 .ok()
                 .and_then(|mut v| v.get_mut(i).and_then(Option::take));
-            crate::Engine::new(
+            // **Annotated before `with_log`, not after.** `Engine::new` builds
+            // its own `L` from `Default`, so naming only the closure's return
+            // type leaves `new`'s parameter ambiguous — and it is ambiguous
+            // only on the path this `#[cfg]` compiles, which is why it reached
+            // CI rather than a local build. `[measured 2026-09-04]` run
+            // 33859821622, the `affinity` job, E0283.
+            let bare: crate::HftAcceptorEngine<A> = crate::Engine::new(
                 cfg,
                 crate::dispatch::InlineDispatch::new(make_app(i)),
                 SystemClock,
                 crate::wait::Spin,
                 capacity,
-            )
-            .with_shard(u16::try_from(i).unwrap_or(u16::MAX))
-            .with_log(MaybeLog(taken))
+            );
+            bare.with_shard(u16::try_from(i).unwrap_or(u16::MAX))
+                .with_log(MaybeLog(taken))
         })?;
 
     let mut set: PendingSet<crate::transport::TcpTransport, crate::presession::Table, PRE> =
