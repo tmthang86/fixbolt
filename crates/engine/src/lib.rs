@@ -68,7 +68,7 @@ use crate::wait::Waiting;
 use fixbolt_session::journal::Journal as SessionJournal;
 
 /// The most messages one session may originate from
-/// [`Application::on_logon`](fixbolt_session::Application::on_logon).
+/// [`fixbolt_session::Application::on_logon`].
 ///
 /// **A guard against a handler that never answers `None`, not a tuning knob.**
 /// The engine asks `on_logon` in a loop and a handler that always answers would
@@ -138,7 +138,7 @@ pub struct Engine<
     /// visible rather than merely slow. See [`Self::sources_missing`].
     sources_missing: usize,
     /// Messages applications originated from
-    /// [`Application::on_logon`](fixbolt_session::Application::on_logon).
+    /// [`fixbolt_session::Application::on_logon`].
     ///
     /// **Exists so a benchmark can prove the door opened.** `benches/alloc.rs`
     /// case `logon-first` counts allocations across many sessions logging on,
@@ -570,7 +570,7 @@ where
     }
 
     /// Application messages this engine has sent from
-    /// [`Application::on_logon`](fixbolt_session::Application::on_logon).
+    /// [`fixbolt_session::Application::on_logon`].
     ///
     /// The running total since the engine was built. See the field's own note:
     /// it exists so `benches/alloc.rs` can tell *"allocated nothing"* from
