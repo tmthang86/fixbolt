@@ -316,7 +316,14 @@ có marker `[to testing-skills]`.
   trước plan này. Nên qua cửa trước chỉ với tới được cửa 1. **Mở thành item 47**, không sửa ở
   đây: bước 3 của plan nói `Engine::sender()` và chỉ thế, mở rộng tại chỗ là đúng thứ Rule Zero
   ngăn.
-- **Chưa chạy `scripts/interop.sh` với `libquickfix` thật** — cần build QuickFIX; job `interop`
-  trong CI là nơi nó chạy, và **CI trên đúng commit này là hộp cuối của §9 chưa tick.**
+- ~~**Chưa chạy `scripts/interop.sh` với `libquickfix` thật**~~ — **đã chạy, và xanh.** Job
+  `interop` (*Both roles, against a real libquickfix*) pass trên `bb1d0fe`. **CI xanh 22/22**,
+  run [`33899038804`](https://github.com/tmthang86/fixbolt/actions/runs/33899038804) và
+  [`33899048688`](https://github.com/tmthang86/fixbolt/actions/runs/33899048688) — hộp cuối §9
+  đã tick. PR [#38](https://github.com/tmthang86/fixbolt/pull/38), **chưa merge.**
+- **Hai lần đỏ trên CI mà máy này không thấy**, cả hai đều là cờ gate mà tay quen không chạy:
+  job `docs` thêm `-D rustdoc::redundant_explicit_links` (local `cargo doc` chỉ warn rồi exit 0),
+  và `cargo fmt --check` chưa hề được chạy trước lần push đầu. Đọc cờ job dùng, không đọc cờ
+  thói quen dùng.
 - **Chưa có số nào trên máy §9.** Không đụng hot path của byte, nhưng `benches/turn.rs` có thêm
   một `Option` check mỗi turn và **chưa ai đo lại nó trên máy có baseline**.
