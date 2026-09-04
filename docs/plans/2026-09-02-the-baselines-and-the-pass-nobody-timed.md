@@ -1,0 +1,226 @@
+# Ba con số trên máy §9: cổng đang đỏ, lượt kiểm chưa ai đo, và template mỗi message
+
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt (2026-09-02)
+> **Phạm vi:** open item 41 → 39 → 34, đúng thứ tự chủ dự án chọn
+
+## Bối cảnh
+
+Phase 1 vừa đóng, và buổi đo đóng nó để lại ba việc **trên cùng một cái máy**. Cả ba đều là
+chuyện *con số*, và cả ba chỉ trả lời được ở đây vì `benches/baselines.tsv` khoá theo **CPU
+model** — không máy nào khác có quyền phát biểu.
+
+**Item 41 đi trước, và nó không phải "dọn dẹp".** `scripts/bench.sh --strict` là cái cổng mà
+bất di bất dịch số 10 tựa vào: *không con số hiệu năng nào tồn tại nếu thiếu benchmark, máy, và
+cấu hình §9*. Cổng đó **đang đỏ trên chính máy §9**. Trong lúc nó đỏ, mọi con số §6 của dự án
+này không có cổng nào canh — kể cả bốn con số wire-to-wire vừa công bố.
+
+**Item 39 đi thứ hai vì nó cùng một buổi đo.** Vòng app cao hơn vòng admin **3 898 ns**, và
+mọi benchmark đã cam kết cộng lại chỉ giải thích **~320 ns**. Ứng viên lớn nhất là lượt kiểm
+dictionary của session, và **không benchmark nào đo nó** — nên `DESIGN.md` §8 có một dòng
+`Parse (D2)` đo bằng `NoDict` trong khi engine parse bằng `Fix44`.
+
+**Item 34 đi thứ ba** vì nó là item duy nhất trong ba cái mà *phần sửa code* làm ở đâu cũng
+được; chỉ *con số* mới cần máy này. Mọi figure của tầng library hiện là **từ một VM**.
+
+## Những gì đã biết chắc
+
+Tất cả đo/đọc trong phiên 2026-09-02 trên máy §9, `check-machine.sh` `pass 12 fail 0 unknown 1`.
+
+**Về item 41 — hai case vượt band, lặp 6/6 lần chạy, máy đọc 0–1% busy:**
+
+| Case | Đọc được | Baseline × 1.10 | Lệch |
+|---|---|---|---|
+| `encode ExecutionReport (template)` | 274,2 · 279,6 · 275,5 · 283,3 · 275,0 · 279,4 | 239,1 → trần 263,0 | **+16%** |
+| `presession, read and route an identity` | 201,3 · 197,9 · 201,6 · 202,2 · 209,3 · 205,7 | 84,0 → trần 92,4 | **+140%** |
+
+**Năm case không có baseline cho CPU này** — và đó là thứ làm `--strict` thoát khác 0:
+`library, parse only` 142,0 · `library, reply only` 797,0 · `library, on_message` 995,6 ·
+`presession, registry lookup of 1` 10,8 · `presession, registry lookup of 40` 102,6.
+
+**Mọi case còn lại trong band**, kể cả `parse NewOrderSingle (validated)` 119,8–121,7 so với
+122,6 — chính là con số ADR-0045 dựa vào.
+
+**Ba dữ kiện từ `git log`, và chúng thu hẹp cả hai nghi vấn xuống gần một commit:**
+
+1. **`crates/codec/src/template.rs` chỉ đổi đúng một lần** kể từ khi baseline 239,1 được ghi
+   (2026-08-31): **`576f924 perf(codec): a builder that is not moved once per field`** —
+   ADR-0044. Đây là một phép bisect **một commit**.
+2. **`crates/engine/src/presession.rs` chỉ đổi đúng một lần** kể từ khi baseline 84,0 được ghi
+   (2026-09-01), và thay đổi đó là **thêm `Display` + `std::error::Error` cho `LimitError`** —
+   `93675c2`. **Không thể** ảnh hưởng `identity_of`. Nên nguyên nhân **không nằm trong source
+   của case đó**.
+3. **Hai case `registry lookup of` được thêm bởi `61e5cd7`, tức là SAU khi baseline của
+   `read and route` được ghi.** Suite đổi thành phần. Đó là nghi vấn dẫn đầu, và nó kiểm được
+   bằng một bước.
+
+**Và một dữ kiện phủ định, quan trọng vì nó loại một nghi vấn hiển nhiên:**
+`4396d6d feat(bench)!: a baseline is a band` có sửa `crates/codec/benches/harness.rs`
+(+59/−10), nhưng đọc diff thì nó **chỉ đổi logic phán quyết và phần in ra** — `best` được đo y
+nguyên. **Dụng cụ đo không đổi.** Nên không thể giải thích cả hai case bằng "cái thước đã
+khác".
+
+**Về item 39 — lượt kiểm dictionary nằm ở đâu:** `crates/session/src/lib.rs` quanh dòng
+2245–2340. Mỗi field bị hỏi `Fix44::is_header`, `is_defined_tag`, `field_type`,
+`allows(msg_type, tag)`, `enum_allows`, `field_type().accepts()`, cộng kiểm group delimiter và
+member; rồi hai vòng `required_header()` và `required(msg_type)`, mỗi tag bắt buộc gọi
+**`view.get(tag)` — một lần quét tuyến tính danh sách field**. `NewOrderSingle` mang 14 field
+và ~13 tag bắt buộc; `Heartbeat` mang 6 và ~8. **Các hàm này ở trong `fn` private**, nên bước
+đầu của item 39 là câu hỏi *đo được từ đâu*, không phải câu hỏi *đo bao nhiêu*.
+
+**Về item 34:** ADR-0044 đã bỏ nửa chi phí (`TemplateBuilder` copy `self` mỗi field).
+`library, reply only` đọc **797,0 ns** ở đây so với **~956 ns** ghi từ VM, và `on_message`
+**995,6** so với ~2 100 → 956 trước/sau ADR-0044 trên VM. **Không có baseline nào cho CPU
+này**, nên ba case này chính là ba trong năm case làm `--strict` đỏ. Nghĩa là **item 34 và item
+41 gặp nhau ở đúng chỗ đó**: ghi baseline cho `fixbolt/cost` là việc của 41, còn *làm cho con
+số nhỏ đi* là việc của 34.
+
+## Cách làm
+
+Ba bước tách bạch, và **bước 1 không được sửa code nào của thư viện** — nó là bước *chẩn đoán*,
+và nếu nó kết luận cần sửa code thì đó là một plan mới.
+
+### Bước 1 — item 41: hỏi "cái gì đổi", không hỏi "làm sao cho xanh"
+
+**Cấm tuyệt đối một việc: ghi lại baseline để cổng xanh.** Đó là dạng thất bại `CLAUDE.md` §10
+gọi tên — *"một fixture bị sửa để việc mới đi qua được"* — và ở đây nó dễ hơn mọi chỗ khác vì
+`baselines.tsv` là một file text.
+
+1. **`presession, read and route an identity` trước**, vì nó lệch 140% và vì nghi vấn của nó
+   kiểm được bằng **một biến**: tạm **bỏ hai case `registry lookup of`** ra khỏi
+   `benches/presession.rs`, chạy lại, đọc `read and route`. Nếu nó về ~84 ns thì nguyên nhân là
+   *thành phần của suite*, không phải code — và câu trả lời đúng là **ADR về việc một case chỉ
+   có nghĩa trong suite nó được ghi baseline cùng**, chứ không phải sửa `identity_of`.
+   Nếu nó **vẫn** ~200 ns thì nghi vấn sai và bước 1b chạy.
+1b. **Nếu vẫn ~200 ns**: bisect. `f15c82d` (nơi ghi baseline) → `HEAD`, chạy case đó ở mỗi
+   commit ứng viên. Danh sách ứng viên là `git log f15c82d..HEAD -- crates/engine/`.
+2. **`encode ExecutionReport (template)`**: bisect **một commit** — dựng ở `576f924^` và ở
+   `576f924`, chạy case đó ≥ 5 lần mỗi bên, so trung vị. ADR-0044 đổi `TemplateBuilder`, còn
+   bench dựng template **ngoài** vòng đo, nên đường duy nhất nó chạm tới `encode` là **layout
+   của `Template`**. Nếu bisect chỉ vào đó thì đọc `struct Template` trước/sau và nói ra cái gì
+   đổi kích thước.
+3. **Năm case thiếu baseline**: ghi baseline cho CPU này theo **đúng quy trình đã có** —
+   ≥ 20 lần chạy `bench.sh` nguyên trên máy đọc `fail 0`, trung vị, margin là bậc nhỏ nhất của
+   thang 1.10/1.15/1.20/1.25/1.30/1.35 mà ≥ max/median, kèm `n` và ngày và verdict.
+   **Ba case `fixbolt/cost` được ghi baseline ở đây, không phải bị sửa cho nhanh hơn** — cái đó
+   là bước 3.
+4. Kết quả bước 1: `bench.sh --strict` **thoát 0**, hoặc một câu nói rõ case nào vẫn đỏ và vì
+   sao, kèm ADR nếu có quyết định.
+
+### Bước 2 — item 39: đo cái lượt kiểm, rồi để §8 nói thật
+
+1. **Trước hết là câu hỏi đo-từ-đâu.** Ba lựa chọn, chọn bằng cách đọc code chứ không đoán:
+   (a) một case trong `crates/session/benches/` gọi qua đường công khai đã có, nếu có đường nào
+   chạm được lượt kiểm mà không chạm phần khác; (b) mở một API `pub(crate)` + một bench trong
+   cùng crate; (c) đo **hiệu số** — cùng một message, một lần qua `Session` với dictionary và
+   một lần với một dictionary rỗng — nếu `Session` cho phép chọn. **(c) là hình dạng ưa hơn**
+   vì nó không thêm public API, nhưng chỉ dùng được nếu nó thật sự chỉ đổi một biến.
+2. Đo trên **`NewOrderSingle` và `Heartbeat`**, vì cả item 39 nói chi phí là *theo field* và
+   *theo tag bắt buộc*, và hai message đó là hai đầu của khoảng đó (14 field / ~13 tag so với
+   6 / ~8).
+3. Ghi baseline, ≥ 20 lần chạy, đúng quy trình bước 1.3.
+4. **`DESIGN.md` §8**: dòng `Parse (D2)` hiện đã ghi rõ nó **không** gồm lượt này; nay nó gồm
+   một dòng riêng có số. Và **3 898 ns của vòng app được cộng lại**: nếu lượt kiểm giải thích
+   phần lớn, nói ra bao nhiêu; nếu không, **nói ra là vẫn không giải thích được** và giữ item
+   39 mở với con số mới. **Không được suy nguyên nhân từ việc con số lớn.**
+
+### Bước 3 — item 34: con số ở máy này, rồi mới nói chuyện sửa
+
+1. Ba case `fixbolt/cost` đã có baseline từ bước 1.3, nên lần đầu tiên tầng library có figure
+   **§9** thay vì figure VM. Nói rõ tỉ lệ giữa `library, reply only` và
+   `encode ExecutionReport (template)` — ADR-0041 dựa vào tỉ lệ đó.
+2. **Rồi mới quyết định có sửa hay không**, và nếu sửa thì **đó là một plan riêng**: bỏ việc
+   materialise `Template` mỗi message là thay đổi public API của `fixbolt::Message`, tức là
+   Rule Zero.
+3. Nếu con số §9 cho thấy khoảng cách nhỏ hơn ADR-0041 tưởng, thì kết quả của bước này là
+   **một ADR nói item 34 nhỏ hơn nó từng được ghi**, chứ không phải một bản sửa.
+
+## Bất biến bị đụng tới
+
+- **Số 10** (không con số nào thiếu benchmark, máy, cấu hình §9) — **đây là điều luật trung tâm
+  của plan này**, và bước 1 là nó đang đỏ.
+- **Số 1** (không cấp phát trên hot path) — bước 2 có thể mở API để đo; một API mở ra để đo
+  không được cấp phát, và `benches/alloc.rs` phải vẫn đọc 0.
+- **Số 5** (thứ tự field từ bảng sinh ra) — bước 3 chạm `Template`; không được để một call site
+  nào quyết định thứ tự.
+- **Số 7** (không `panic!`/`unwrap()`/`expect()` trong library crate) — mọi API mới ở bước 2.
+
+## Chia việc
+
+| Bước | Kết quả | Phụ thuộc |
+|---|---|---|
+| 1a | Một biến: bỏ hai case `registry lookup`, đọc `read and route`. Kết luận *suite* hay *code* | — |
+| 1b | Nếu 1a phủ định: bisect `f15c82d..HEAD` trên `crates/engine/` | 1a |
+| 1c | Bisect một commit cho `encode ExecutionReport`: `576f924^` so với `576f924` | — |
+| 1d | Baseline cho 5 case thiếu, ≥ 20 lần chạy, đúng quy trình | 1a–1c xong (để không ghi baseline lên một hồi quy) |
+| 1e | `bench.sh --strict` thoát 0, **hoặc** một câu nói rõ cái gì còn đỏ. ADR nếu có quyết định. **Item 41 đóng** | 1a–1d |
+| 2a | Trả lời "đo lượt kiểm từ đâu" bằng cách đọc code, chọn (a)/(b)/(c) | — |
+| 2b | Bench cho lượt kiểm, `NewOrderSingle` và `Heartbeat`, đỏ trước | 2a |
+| 2c | Baseline ≥ 20 lần chạy | 2b, 1e |
+| 2d | `DESIGN.md` §8 có dòng riêng; 3 898 ns được cộng lại hoặc **vẫn ghi là chưa giải thích được**. **Item 39 đóng hoặc hẹp lại** | 2c |
+| 3a | Figure §9 cho ba case `fixbolt/cost`, và tỉ lệ mà ADR-0041 dựa vào | 1d |
+| 3b | ADR: hoặc item 34 nhỏ hơn nó từng được ghi, hoặc một plan riêng để sửa | 3a |
+
+## Cách kiểm chứng
+
+- **Bước 1a là bước dễ tự lừa nhất trong cả plan.** Nếu bỏ hai case đi mà `read and route` về
+  84 ns thì **cám dỗ là kết luận ngay**. Phải làm tiếp một chiều nữa: **thêm lại hai case ở một
+  vị trí khác trong suite** (trước/sau) và xem con số đi theo vị trí. Một con số đi theo *vị
+  trí* thì nguyên nhân là suite; một con số chỉ đi theo *sự có mặt* thì là chuyện khác.
+- **Mọi con số ở đây là trung vị của ≥ 5 lần chạy**, không phải một lần — quy tắc của chính dự
+  án này, và hôm nay nó vừa cứu một kết luận sai (200 mẫu so với 2 000 mẫu đọc p99.9 khác nhau
+  hoàn toàn).
+- **Bench mới ở bước 2 phải đỏ trước.** Một bench mới xanh ngay từ đầu chưa chứng minh nó đo gì.
+  Đảo ngược: cho lượt kiểm trả về ngay `None` và xem case rơi xuống.
+- **`bench.sh --strict` được đọc, không đọc exit code** — đọc từng dòng, vì đúng cổng này đã
+  từng xanh trong khi không đo gì (`inline deliver + reply` 1,3 ns suốt một ngày).
+- Mỗi bước: `cargo test --all`, `cargo test --all --no-default-features`, `benches/alloc.rs`.
+- **Máy phải im trước mỗi lần đo**: `ps -eo pcpu,comm --sort=-pcpu | head`, và Chrome là thứ
+  hôm nay làm rơi 5 lần chạy trên 20.
+
+## Tài liệu phải cập nhật
+
+- [ ] `benches/baselines.tsv` — 5 dòng mới (bước 1d), + 1–2 dòng (bước 2c), mỗi dòng kèm `n`,
+      ngày, verdict
+- [ ] `docs/DESIGN.md` §6 — nếu một ceiling hay cách đo nào đổi
+- [ ] `docs/DESIGN.md` §8 — dòng cho lượt kiểm dictionary; và **cộng lại 3 898 ns**
+- [ ] `docs/reference/measured-costs.md` — **ưu tiên cao nhất**: mọi phát hiện của bước 1, kể
+      cả nếu nó là "một case chỉ có nghĩa trong suite nó được ghi baseline cùng"
+- [ ] `docs/decisions/` — ADR mới nếu bước 1e hoặc 3b ra một quyết định
+- [ ] `STATUS.md` — item 41, 39, 34
+- [ ] `docs/GUIDE.md` §8 — nếu bước 1 tìm ra một cách benchmark tự lừa mình mới
+
+## Bẫy đã lường trước
+
+| Bẫy | Test canh |
+|---|---|
+| **Ghi lại baseline cho hai case đỏ để cổng xanh** | Bước 1d **phụ thuộc** 1a–1c; và không dòng nào của hai case đó được sửa trước khi có kết luận |
+| Bỏ hai case `registry lookup` rồi kết luận ngay | Chiều thứ hai ở "Cách kiểm chứng": đổi **vị trí** hai case, xem số có đi theo |
+| Bisect một commit rồi tin luôn, không đọc code | Nếu bisect chỉ vào `576f924`, phải đọc `struct Template` hai bên và **nói ra cái gì đổi kích thước** |
+| Bench mới ở bước 2 đo cả việc parse, rồi gọi đó là lượt kiểm | Đo **hiệu số** nếu được (lựa chọn c); nếu không thì phải nói rõ nó gồm những gì |
+| Kết luận lượt kiểm là nguyên nhân của 3 898 ns vì nó lớn | Bước 2d bắt buộc **cộng lại** và nói ra phần dư. Đây là bẫy đã làm dự án này công bố sai một ngày |
+| Mở public API chỉ để đo, rồi để nó ở đó | Lựa chọn (b) phải là `pub(crate)`, và nếu buộc phải `pub` thì cần ADR |
+| Đo trong lúc Chrome chạy | `ps` trước mỗi lần đo; và `bench.sh` tự đọc dòng quiet |
+
+## Rủi ro
+
+| Rủi ro | Mức | Cách xử lý |
+|---|---|---|
+| Bước 1a phủ định và bisect ra một commit không ai ngờ | Trung bình | Đó là kết quả. Ghi vào `measured-costs.md`, và nếu cần sửa code thì **plan mới** |
+| `encode` chậm 16% là thật và ADR-0044 là nguyên nhân | Trung bình | ADR-0044 mua nửa chi phí của tầng library; nếu nó bán 16% của `encode` thì **đó là một trao đổi phải nói ra**, có thể là một ADR đảo lại |
+| Lượt kiểm không đo được mà không mở public API | Trung bình | Lựa chọn (c) trước; nếu cả ba không được thì item 39 **hẹp lại thành "đo bằng hiệu số wire-to-wire"** và nói rõ đó là cận trên |
+| 3 898 ns vẫn không giải thích được sau bước 2 | Trung bình | Đó là kết quả, và item 39 giữ mở với một con số mới. **Không đoán tiếp** |
+| Đo 20 lần × nhiều case tốn cả buổi ở máy | Cao | Là cái giá của bất di bất dịch 10. Chạy nền, đọc sau |
+
+## Ngoài phạm vi
+
+- **Không** sửa `Template` để `encode` nhanh hơn — bước 1c chỉ *tìm ra*, không *sửa*.
+- **Không** bỏ việc materialise `Template` mỗi message ở tầng library — đó là plan riêng của
+  item 34 nếu bước 3 kết luận nên làm.
+- **Không** đụng item 40 (NIC-to-NIC) — cần một máy thứ hai trên cùng switch, xem câu trả lời
+  đã ghi trong `STATUS.md` item 40.
+- **Không** đụng item 21, 32(a), 36, 38.
+- **Không** làm SIMD/SWAR — ADR-0045 đã đóng item 12.
+
+## Nhật ký giao hàng
+
+*(chưa bắt đầu — chờ duyệt)*
