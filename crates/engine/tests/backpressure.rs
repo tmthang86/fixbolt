@@ -78,7 +78,7 @@ fn conn(policy: Backpressure, allow: usize) -> Conn {
         Store::new(),
     )
     .with_backpressure(policy);
-    c.opened();
+    c.opened(FIXED_TIME_MILLIS, &mut fixbolt_engine::msglog::NoLog);
     c
 }
 
@@ -106,7 +106,13 @@ fn feed<const T: usize>(c: &mut Connection<Choked, Acceptor, Store, N, RX, T>, b
 }
 
 fn turn(c: &mut Conn) -> Turn {
-    c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false)
+    c.turn(
+        FIXED_TIME_MILLIS,
+        &mut Silent,
+        |_| false,
+        0,
+        &mut fixbolt_engine::msglog::NoLog,
+    )
 }
 
 fn text<const T: usize>(c: &Connection<Choked, Acceptor, Store, N, RX, T>) -> String {
@@ -318,7 +324,7 @@ fn wide(policy: Backpressure, batch: u16) -> Wide {
         Store::new(),
     )
     .with_backpressure(policy);
-    c.opened();
+    c.opened(FIXED_TIME_MILLIS, &mut fixbolt_engine::msglog::NoLog);
     c
 }
 
@@ -350,7 +356,13 @@ fn turn_echo(c: &mut Wide) -> Turn {
             fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
         }
     }
-    c.turn(FIXED_TIME_MILLIS, &mut Echo, |_| false)
+    c.turn(
+        FIXED_TIME_MILLIS,
+        &mut Echo,
+        |_| false,
+        0,
+        &mut fixbolt_engine::msglog::NoLog,
+    )
 }
 
 /// A counterparty asks for a hundred messages back and **stays connected**.

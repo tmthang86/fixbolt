@@ -151,3 +151,11 @@ A behaviour with no `.def` file and no test behind it is not documented here as 
 it were proven. Where a boundary decision matters to you and you do not find it above,
 read the code — `crates/session/src/lib.rs` — rather than assume the behaviour, and if
 it is real and untested, that is a gap worth a test before it is worth a doc row.
+
+`[2026-09-04]` **Reading the code is no longer the only way to see what actually happened.**
+Setting `FileLogPath` writes every message this engine saw or sent to a text file, one line
+each, **including the frames it refused before the session ever judged them** — which is
+exactly the class this page cannot document, because a refusal that never reaches the session
+has no session behaviour to describe. `GUIDE.md` §6c, `DESIGN.md` D14. **No session behaviour
+changes because the log is on**: it is written at the engine's edges, and the session neither
+knows about it nor can.

@@ -27,6 +27,7 @@ use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::{Dispatch, InlineDispatch, RingApp, RingDispatch};
 use fixbolt_engine::frame::{Cut, Framer};
 use fixbolt_engine::journal::Store;
+use fixbolt_engine::msglog::{FileLog, MessageLog as _};
 use fixbolt_engine::presession::{Limits, One, PendingSet, Registry, Table};
 use fixbolt_engine::ring;
 use fixbolt_engine::transport::{Interest, Io, Loopback, TcpTransport, Transport};
@@ -973,6 +974,179 @@ fn main() {
         }
     });
 
+    // ------------------------------------------------- the message log, on
+    //
+    // **A real `FileLog`, not `NoLog`.** The hooks fold away entirely under
+    // `NoLog`, so a case measuring that would read zero for a reason that has
+    // nothing to do with whether the log allocates — the trap the plan named
+    // and `reference/a-background-thread-wins-the-race-your-test-was-measuring.md`
+    // is about. The file is read back after the window for the same reason: a
+    // case that cannot fail is a case that is not there.
+    //
+    // The journal is pre-built and handed to `add_with_journal`, as
+    // `events-busy` does and for the same measured reason.
+    // The hook on its own, with nothing else in the window: `record` is what
+    // every one of the eight `Out` sites and the inbound cut call, so if it
+    // allocates, everything does. Measured apart from the engine so a number
+    // here cannot be blamed on the harness.
+    let (mut bare_log, mut bare_consumer) = FileLog::deferred(
+        &std::env::temp_dir().join("fixbolt-alloc-bare.log"),
+        1 << 20,
+    )
+    .expect("the temp directory is writable");
+    let log_record_allocs = count(|| {
+        for i in 0..1_000u64 {
+            bare_log.record(
+                fixbolt_engine::msglog::Direction::In,
+                FIXED_TIME_MILLIS,
+                0,
+                i,
+                &logon,
+            );
+        }
+    });
+    let mut bare_sink = vec![0u8; 4096 + 32];
+    let mut bare_seen = 0;
+    while bare_consumer.pop(&mut bare_sink).is_some() {
+        bare_seen += 1;
+    }
+    assert_eq!(
+        bare_seen, 1_000,
+        "the log-record window recorded nothing, so its zero means nothing"
+    );
+
+    let mut held: Option<fixbolt_engine::ring::Consumer>;
+    let log_dir = std::env::temp_dir();
+    let log_at = log_dir.join(format!("fixbolt-alloc-log-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&log_at);
+
+    let mut idle_log_engine: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+        FileLog,
+    > = Engine::<_, _, _, _, _, Store, 256, 4096, 8192>::new(
+        cfg(),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        8,
+    )
+    .with_log(FileLog::open(&log_at).expect("the temp directory is writable"));
+    let log_idle_allocs = count(|| {
+        for _ in 0..rounds {
+            idle_log_engine.turn();
+        }
+    });
+    // **Stopped before the next window opens.** It is a live thread with
+    // buffers of its own and the counting allocator is global, so leaving it
+    // running would put its allocations into somebody else's number.
+    idle_log_engine.log_mut().close();
+
+    // **The writer is deliberately not running for this one, and that is the
+    // measurement.** The counting allocator is global: it cannot tell an
+    // engine-thread allocation from a writer-thread one, and ADR-0037 lets the
+    // writer allocate. `[measured 2026-09-04]` with a writer running this case
+    // read 4 over two messages — `id.to_string()` and `shard.to_string()`, one
+    // pair per line — which was worth fixing and was fixed (`msglog::push_num`),
+    // and then still read 9 over twenty rounds from the writer's own buffers.
+    // Holding the consumer here makes every allocation the window counts an
+    // engine-thread allocation by construction, which is what non-negotiable 1
+    // is a rule about.
+    //
+    // **What this does NOT prove**, and no bench in this file can: that the
+    // writer thread allocates nothing while the engine runs. It is allowed to,
+    // it does, and it is not on the hot path. `tools/w2w` is where a
+    // both-threads number belongs — wave C.
+    let mut busy_log_engine: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+        FileLog,
+    > = Engine::<_, _, _, _, _, Store, 256, 4096, 8192>::new(
+        cfg(),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        8,
+    )
+    .with_log({
+        let (l, c) = FileLog::deferred(&log_at, 1 << 20).expect("the temp directory is writable");
+        held = Some(c);
+        l
+    });
+    let (mut log_peer, log_side) = Loopback::pair();
+    busy_log_engine.add_with_journal(log_side, Store::new());
+    // **Prove the path, warm the harness, and only then count.**
+    // `reference/a-benchmark-measured-its-own-fixture.md` is what this block
+    // is: `Loopback`'s queue is a `VecDeque` that doubles, so the first
+    // exchange of each *size* allocates in the fake. `[measured 2026-09-04]`
+    // one warm round left this at 2 and three left it at 1 — and three rounds
+    // of `Logon` also drove the session off, because a second `Logon` on a
+    // logged-on session is a protocol error, so the counted window recorded
+    // nothing at all. `TestRequest` is the shape that repeats: one message in,
+    // one `Heartbeat` out, identical every time.
+    let probe: Vec<Vec<u8>> = (2..=40)
+        .map(|n| wire(&format!("35=1\x0134={n}\x01112=R\x01")))
+        .collect();
+    {
+        let mut warm = vec![0u8; 4096 + 32];
+        let _ = log_peer.send(&logon);
+        busy_log_engine.turn();
+        let _ = log_peer.recv(&mut warm);
+        for m in probe.iter().take(10) {
+            let _ = log_peer.send(m);
+            busy_log_engine.turn();
+            let _ = log_peer.recv(&mut warm);
+        }
+        let c = held
+            .as_mut()
+            .expect("the deferred log handed its consumer back");
+        let mut seen = 0;
+        while c.pop(&mut warm).is_some() {
+            seen += 1;
+        }
+        assert!(
+            seen >= 4,
+            "the log path recorded nothing while warming: {seen}"
+        );
+    }
+    let log_busy_allocs = count(|| {
+        for m in probe.iter().skip(10) {
+            let _ = log_peer.send(m);
+            busy_log_engine.turn();
+            let _ = log_peer.recv(&mut sink);
+        }
+    });
+
+    // **The window must have logged something, or its zero says nothing.**
+    // Counted out of the ring rather than read off the file: the file is the
+    // writer thread's business and this case is about the engine thread's.
+    busy_log_engine.log_mut().close();
+    let mut record = vec![0u8; 4096 + 32];
+    let mut recorded = 0;
+    let mut held = held.expect("the deferred log handed its consumer back");
+    while held.pop(&mut record).is_some() {
+        recorded += 1;
+    }
+    assert!(
+        recorded >= 2,
+        "the log-busy window put nothing in the ring, so its zero means \
+         nothing: {recorded} records"
+    );
+
     println!(
         "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
@@ -982,7 +1156,9 @@ fn main() {
          observe-idle {observe_idle_allocs} observe-asked {observe_asked_allocs} \
          events-idle {events_idle_allocs} events-busy {events_busy_allocs} \
          admin-idle {admin_idle_allocs} admin-busy {admin_busy_allocs} \
-         shutdown {shutdown_allocs} reconnect {reconnect_allocs}"
+         shutdown {shutdown_allocs} reconnect {reconnect_allocs} \
+         log-record {log_record_allocs} log-idle {log_idle_allocs} \
+         log-busy {log_busy_allocs}"
     );
     assert_eq!(
         [
@@ -1006,9 +1182,12 @@ fn main() {
             admin_idle_allocs,
             admin_busy_allocs,
             shutdown_allocs,
+            log_record_allocs,
+            log_idle_allocs,
+            log_busy_allocs,
             reconnect_allocs
         ],
-        [0; 21],
+        [0; 24],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

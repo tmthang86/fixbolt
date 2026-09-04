@@ -53,6 +53,9 @@ fixbolt::serve(
     fixbolt::app(Desk),
     64,
     Limits::new(64, 30_000)?,
+    // Every message in and out, one line each, in a file an operator can
+    // `grep` during a dispute. `fixbolt::NoLog` if you want none.
+    fixbolt::FileLog::open(std::path::Path::new("messages.log"))?,
 )?;
 # Ok(())
 # }

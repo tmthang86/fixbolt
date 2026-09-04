@@ -10,7 +10,7 @@ tuning parameters with their source locations.
 
 ## 1. Session Configuration File (`settings.rs`)
 
-Counterparties and session schedules are loaded via [`Settings::load`](../crates/engine/src/settings.rs#L344)
+**Eleven keys** `[changed 2026-09-04, was ten]`. Counterparties and session schedules are loaded via [`Settings::load`](../crates/engine/src/settings.rs#L344)
 from a QuickFIX-style INI file. Every recognised setting is validated strictly:
 an unrecognised key, misspelled value, or impossible schedule will fail startup immediately.
 
@@ -26,6 +26,7 @@ an unrecognised key, misspelled value, or impossible schedule will fail startup 
 | `StartDay` | Start day of the week for weekly sessions | `Monday`/`Mon` .. `Sunday`/`Sun` | *None* | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:102`](../crates/engine/src/settings.rs#L102), [`crates/engine/src/settings.rs:590`](../crates/engine/src/settings.rs#L590) |
 | `EndDay` | End day of the week for weekly sessions | `Monday`/`Mon` .. `Sunday`/`Sun` | *None* | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:103`](../crates/engine/src/settings.rs#L103), [`crates/engine/src/settings.rs:590`](../crates/engine/src/settings.rs#L590) |
 | `Weekdays` | Active weekdays for daily schedule | Comma-separated weekdays (e.g. `Mon,Tue,Wed,Thu,Fri`) | *None* (all 7 days if daily schedule) | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:104`](../crates/engine/src/settings.rs#L104), [`crates/engine/src/settings.rs:629`](../crates/engine/src/settings.rs#L629) |
+| `FileLogPath` | Path of the two-directional message log. One engine writes one file; `conn=` and `shard=` tell the counterparties apart inside it | Any path this process can append to | *None* (no log) | `[DEFAULT]` **only** — a `[SESSION]` carrying it is refused | [`crates/engine/src/settings.rs`](../crates/engine/src/settings.rs), [`crates/engine/src/msglog.rs`](../crates/engine/src/msglog.rs) |
 
 ---
 

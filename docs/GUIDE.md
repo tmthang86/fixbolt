@@ -1209,7 +1209,8 @@ your own tooling
 **Three things to know before you trust the answer.**
 
 1. **Check the exit code, or read stderr.** A file whose tail is torn — a process killed
-   mid-write — makes `jrnl` warn and exit **2**. Those bytes are not shown and not replayed,
+   mid-write — **or one whose checksum does not match `[2026-09-04]`** makes `jrnl` warn and
+   exit **2**. Those bytes are not shown and not replayed,
    so *"no, we never received it"* drawn from a torn file **might be wrong**.
    `Reader::torn_tail_bytes()` is the same fact for a program.
 2. **The whole file is read into memory.** Fine for a tool, and a real limit for a very large
@@ -1217,9 +1218,73 @@ your own tooling
 3. **Do not read a file the engine is still appending to.** You will see a consistent prefix
    and probably a torn-tail warning. Nothing about that case is promised or tested.
 
+`[2026-09-04]` **A journal written from this version on carries a CRC32 per record**, and a
+record that does not match its checksum stops the read exactly as a torn tail does —
+`corrupt_records()` is the count, on `Reader` and on `FileJournal` alike. A file written
+before, or any file that already existed when this version first opened it, has **no**
+checksums and never will: one file, one format, so a reader never has to guess where the format
+changed. So *"the file is clean"* means different things for the two, and the exit code is
+still the thing to check.
+
 `jrnl` does not decode FIX — it prints the bytes with `SOH` shown as `|` and leaves the rest
 to `grep`. Interpreting a message needs the dictionary, and a program that reads a file has no
 business pulling one in.
+
+### 6c. The message log: both directions, refusals included
+
+`[2026-09-04]` The journal answers *"what did we send, by sequence number"*. It cannot answer
+*"what did we receive at 10:32:07, and what did we turn away"* — it holds outbound application
+messages only, keyed by `seq`, and the frames that matter most in a dispute never got a `seq`.
+The message log is the other file.
+
+```
+FileLogPath=/var/log/fixbolt/messages.log
+```
+
+`[DEFAULT]` only. One engine writes one file; `conn=` and `shard=` tell the counterparties
+apart inside it. A `[SESSION]` block carrying the key is **refused at startup**, because two
+counterparties asking for two files is a configuration that cannot be honoured and picking one
+silently is worse.
+
+```
+# conn=1 shard=0 peer=10.4.2.9:51422 opened at 20260903-10:32:07.118
+20260903-10:32:07.120 IN  shard=0 conn=1 peer=10.4.2.9:51422 8=FIX.4.4␁…␁35=A␁…
+20260903-10:32:07.120 OUT shard=0 conn=1 peer=10.4.2.9:51422 8=FIX.4.4␁…␁35=A␁…
+```
+
+`grep -v '^#'` is the messages; lines starting with `#` are the writer's own notes.
+
+**Seven things the type system cannot tell you.**
+
+1. **`OUT` means *queued*, not *sent*.** The line is written when the message reaches the
+   outbound buffer, which is the only moment the engine can name it. A socket that dies takes
+   that buffer with it, and the log then claims a send that never left the machine.
+   `EventKind::MessageLogUnsent { bytes }` says how many bytes at the tail of that connection's
+   output are wrong. **Non-zero means read the end of that connection's lines with suspicion.**
+2. **Every `OUT` line written during one engine turn carries the same millisecond.** A turn
+   reads the clock once, on purpose — a second read on the hot path is not worth it. Order is
+   the order of the lines in the file, never the timestamp column.
+3. **Losses are dropped and counted, never waited for.** A full ring means the writer is behind
+   the engine — a slow disk, a log on a network mount, a burst the ring was sized too small
+   for. The log drops rather than block the engine. `Snapshot::log_lost` is the running total
+   and `EventKind::MessageLogLost { count }` arrives without being asked. **Non-zero means the
+   file has holes and is not a complete record.**
+4. **A killed process leaves a torn last line, and it is marked rather than merged.** Reopening
+   writes `# torn tail, N bytes, …` before appending, so two messages never become one line.
+   `FileLog::torn_tail_bytes()` is the same fact for a program.
+5. **`0x0A`, `0x0D` and `\` inside a DATA field are escaped** to `\n`, `\r` and `\\`, so one
+   message is always one line and the line still decodes back to the exact bytes.
+   `msglog::unescape` is the inverse.
+6. **Rotation is yours.** `logrotate` with `copytruncate`, or move the file and restart. The
+   engine never rotates, never compresses and never expires anything.
+7. **It costs the engine thread a ring copy per message per direction** — roughly 340 ns for a
+   200-byte message, so a request/reply pair pays it twice. `[unproven]` — that is arithmetic
+   from `DESIGN.md` §6, not a measurement of this module. What **is** measured is that it
+   allocates nothing: `benches/alloc.rs` cases `log-record`, `log-idle` and `log-busy`.
+
+In `hft`, give the writer thread a core that is not the engine's — `FileLog::open_pinned`.
+An unpinned writer can land on the very core the engine was isolated onto, which is the whole
+of ADR-0015 decision 8.
 
 ### Stopping without lying to the counterparty
 

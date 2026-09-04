@@ -174,12 +174,13 @@ fn an_initiator_whose_counterparty_hangs_up_comes_back() {
         // ladder; the ladder itself is `tests/reconnect.rs`'s subject, and this
         // file is about whether the loop uses it at all.
         let policy = Policy::new(50, 200).expect("a legal pair");
-        let _ = fixbolt_engine::connect_and_serve::<Never, fixbolt_engine::journal::Store, _>(
+        let _ = fixbolt_engine::connect_and_serve::<Never, fixbolt_engine::journal::Store, _, _>(
             &dialled,
             cfg(),
             Never,
             policy,
             fixbolt_engine::recovery::NoRecovery,
+            fixbolt_engine::msglog::NoLog,
         );
         watcher.fetch_add(1, Ordering::Release);
     });
@@ -248,12 +249,13 @@ fn a_policy_that_says_stop_never_dials_at_all() {
     let flag = Arc::clone(&returned);
     let dialled = addr.clone();
     std::thread::spawn(move || {
-        let done = fixbolt_engine::connect_and_serve::<Never, fixbolt_engine::journal::Store, _>(
+        let done = fixbolt_engine::connect_and_serve::<Never, fixbolt_engine::journal::Store, _, _>(
             &dialled,
             cfg(),
             Never,
             policy,
             fixbolt_engine::recovery::NoRecovery,
+            fixbolt_engine::msglog::NoLog,
         );
         if done.is_ok() {
             flag.fetch_add(1, Ordering::Release);

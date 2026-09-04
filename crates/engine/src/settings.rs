@@ -61,7 +61,7 @@
 //! nothing, and `benches/alloc.rs` case `registry-lookup` still reads 0.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fixbolt_session::schedule::{Schedule, Weekday, Weekdays};
 use fixbolt_session::{Config, MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN};
@@ -86,6 +86,10 @@ enum Key {
     StartDay,
     EndDay,
     Weekdays,
+    /// **`[DEFAULT]` only, and engine-wide.** One engine writes one log, and
+    /// `conn=` tells the counterparties apart inside it — see
+    /// [`Settings::log`].
+    FileLogPath,
 }
 
 impl Key {
@@ -102,6 +106,9 @@ impl Key {
             "StartDay" => Some(Self::StartDay),
             "EndDay" => Some(Self::EndDay),
             "Weekdays" => Some(Self::Weekdays),
+            // QuickFIX's own spelling, so somebody arriving with an existing
+            // configuration file recognises it without reading anything.
+            "FileLogPath" => Some(Self::FileLogPath),
             _ => None,
         }
     }
@@ -118,6 +125,7 @@ impl Key {
             Self::StartDay => "StartDay",
             Self::EndDay => "EndDay",
             Self::Weekdays => "Weekdays",
+            Self::FileLogPath => "FileLogPath",
         }
     }
 }
@@ -137,6 +145,13 @@ pub enum Problem {
     /// A key this engine does not recognise. **Not ignored** — see the module
     /// documentation.
     UnknownKey,
+    /// A key that belongs in `[DEFAULT]` and was found in a `[SESSION]`.
+    ///
+    /// `FileLogPath` is the only one: an engine writes **one** log, and two
+    /// counterparties asking for two files is a configuration that cannot be
+    /// honoured. Refused rather than resolved by picking one — the operator
+    /// would never learn which.
+    SessionOnly,
     /// The same key twice in one block, which has no meaning to give it.
     RepeatedKey,
     /// A required key is missing from both `[DEFAULT]` and the `[SESSION]`.
@@ -169,6 +184,7 @@ impl fmt::Display for Problem {
             Self::UnknownSection => "unknown section — expected [DEFAULT] or [SESSION]",
             Self::KeyOutsideSection => "a setting before the first [DEFAULT] or [SESSION]",
             Self::UnknownKey => "unknown key",
+            Self::SessionOnly => "this key belongs in [DEFAULT] — one engine writes one log",
             Self::RepeatedKey => "the same key twice in one block",
             Self::MissingKey => "a required key is missing",
             Self::ValueTooLong => "the value is longer than a session configuration can hold",
@@ -264,6 +280,11 @@ impl<'a> Block<'a> {
             Key::StartDay => &mut self.start_day,
             Key::EndDay => &mut self.end_day,
             Key::Weekdays => &mut self.weekdays,
+            // Handled before a block ever sees it. A `[SESSION]` carrying it
+            // is refused in `parse`, not here, so the error can say why.
+            Key::FileLogPath => {
+                return Err(SettingsError::at(line, Problem::SessionOnly, key.name()));
+            }
         };
         if slot.is_some() {
             return Err(SettingsError::at(line, Problem::RepeatedKey, key.name()));
@@ -332,6 +353,7 @@ fn number<T: std::str::FromStr>(
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     configs: Vec<Config>,
+    log: Option<PathBuf>,
 }
 
 impl Settings {
@@ -357,6 +379,7 @@ impl Settings {
     pub fn parse(text: &str) -> Result<Self, SettingsError> {
         let mut default = Block::default();
         let mut sessions: Vec<Block<'_>> = Vec::new();
+        let mut log: Option<(usize, &str)> = None;
         // Which block the next `Key=Value` belongs to. `None` until the first
         // header, so a setting above it is refused rather than silently landing
         // in `[DEFAULT]`.
@@ -395,6 +418,16 @@ impl Settings {
             let Some(key) = Key::parse(name) else {
                 return Err(SettingsError::at(line, Problem::UnknownKey, name));
             };
+            if key == Key::FileLogPath {
+                if !in_default {
+                    return Err(SettingsError::at(line, Problem::SessionOnly, name));
+                }
+                if log.is_some() {
+                    return Err(SettingsError::at(line, Problem::RepeatedKey, name));
+                }
+                log = Some((line, value));
+                continue;
+            }
             match current {
                 Some(i) => match sessions.get_mut(i) {
                     Some(b) => b.set(key, line, value)?,
@@ -429,10 +462,25 @@ impl Settings {
             }
             configs.push(cfg);
         }
-        Ok(Self { configs })
+        Ok(Self {
+            configs,
+            log: log.map(|(_, v)| PathBuf::from(v)),
+        })
     }
 
     /// The configurations, in file order.
+    /// Where `FileLogPath` pointed, if the file named one.
+    ///
+    /// **`None` is "the operator did not ask for a log", and it is the only
+    /// honest reading.** A caller that has a path here and an entry point that
+    /// cannot carry a log has a configuration it cannot honour, and every entry
+    /// point takes one for exactly that reason — a key that silently does
+    /// nothing is the failure mode `CLAUDE.md` §10 lists.
+    #[must_use]
+    pub fn log(&self) -> Option<&Path> {
+        self.log.as_deref()
+    }
+
     #[must_use]
     pub fn configs(&self) -> &[Config] {
         &self.configs

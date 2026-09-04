@@ -89,3 +89,50 @@ durable log — the shape every real engine uses.
   `J::default()`; a deployment that wants one file per session calls `add_with_journal`. A
   factory trait would be a fourth type parameter on an already eight-parameter type, and no
   caller has asked for one yet.
+
+---
+
+## `[sửa 2026-09-04]` — the on-disk format gains a header and a per-record checksum
+
+**A dated note, not a revision.** Nothing above is edited: every sentence of the accepted
+decision still holds, the trait is unchanged, and `Durability`'s two variants mean what they
+meant. What this adds is the shape of the bytes `Durability` writes, which the ADR never
+pinned down and which the *Consequences* above turn out to depend on.
+
+**The defect.** A record is `seq(4) ‖ len(4) ‖ bytes`, and there is nothing in it that a
+flipped byte disagrees with. `[2026-09-04]` a journal whose payload was changed after it was
+written read back as a whole, correctly framed, correctly numbered record and would be replayed
+to a counterparty as though it were the message that was sent. The torn-tail accounting the
+*Consequences* rely on catches a process **killed mid-write**; it cannot catch a file that was
+**changed**, because a changed record is still exactly as long as it says it is.
+
+**The change.** A file that does not exist yet is created with a five-byte header, `FXBJ\x01`,
+and every record in it carries a CRC32 (IEEE, from a 256-entry table built by a `const fn` —
+**no dependency**) over `seq ‖ len ‖ bytes`. A record whose checksum does not match is treated
+**exactly as a torn tail is**: the read stops there, everything before it stands, and the count
+is published as `FileJournal::corrupt_records` and `Reader::corrupt_records`. `tools/jrnl`
+warns and exits **2**, as it already did for a tear.
+
+**A file without the header is version 0 and is read exactly as it always was**, and it stays
+version 0 for as long as it is appended to. A file whose first half has no checksums and whose
+second half does is a file no reader can parse without guessing where the change happened. The
+compatibility guarantee is asserted against **bytes committed in the test**, produced by
+`df94c08` — the commit before this note — because a fixture regenerated with the new code would
+only assert that the new code agrees with itself.
+
+**Where the checksum is computed, and what it costs.** `Async` computes it on the **writer
+thread**, which is the whole point of that variant: a CRC over a 200-byte record is ~100 ns and
+that thread exists to hold work like it. `Fsync` computes it on the engine thread, over the
+pieces rather than a joined buffer, because joining would allocate where nothing may — and it
+is the smaller half of a cost that already includes `sync_data`. `[unmeasured]`: no benchmark
+here times the CRC, only that it allocates nothing.
+
+**What this does not change.** `Durability::Async` still has no way to say when the disk has
+it. A file journal is read back on startup — that changed in ADR-0034, not here. And a
+checksum says a record is **as it was written**; it says nothing about whether writing it was
+the right thing to do.
+
+**One behaviour changed for a reader**: `Reader::is_empty` now means *no records and no torn
+tail* rather than *zero bytes*, because a version-1 journal that was opened and never written
+to is five bytes of header, and a session that has sent nothing must not read as a file with
+something in it.

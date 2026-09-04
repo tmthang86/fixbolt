@@ -157,6 +157,7 @@ fn serving(name: &str) -> String {
             fixbolt::app(order_handler::Desk::default()),
             4,
             Limits::new(8, 30_000).expect("both above zero"),
+            fixbolt::NoLog,
         );
     });
     addr

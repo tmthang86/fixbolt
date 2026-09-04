@@ -15,8 +15,45 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 **Nothing has been released.** Six crates now exist and none is published; the entries
 below describe what a first release would contain.
 
+### Added
+
+- **A two-directional message log.** `msglog::{MessageLog, NoLog, FileLog, MaybeLog, Direction}`
+  and the `FileLogPath` settings key. One text file, one line per message, **both directions
+  including frames refused before the session saw them** — the class the journal cannot hold,
+  because its key is `seq` and those frames never got one. Written by a thread that is not the
+  engine's, through the ring `journal` already uses; a full ring drops and counts rather than
+  blocking the engine. `DESIGN.md` D14, `GUIDE.md` §6c.
+- **`Snapshot::log_lost`, `EventKind::MessageLogLost` and `EventKind::MessageLogUnsent`.** The
+  first two are records the log never wrote; the third is bytes the log called `OUT` that the
+  socket never took, because a line is written when a message reaches the outbound queue and a
+  dying socket discards that queue.
+- **The journal's on-disk format is version 1: a `FXBJ\x01` header and a CRC32 after every
+  record.** A record whose checksum does not match is treated exactly as a torn tail — the read
+  stops there, everything before it stands, and `FileJournal::corrupt_records` /
+  `Reader::corrupt_records` say so; `jrnl` warns and exits 2. **A file without the header is
+  version 0, read exactly as before, and stays version 0 as it is appended to.** Note at the
+  end of [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md).
+- **`Settings::log`**, and `Problem::SessionOnly` for a `FileLogPath` found in a `[SESSION]`
+  block. One engine writes one file.
+- **`Engine::with_log`, `Engine::with_shard`, `Engine::shard`, `Engine::log_mut`** and
+  `Connection::with_shard`, `Connection::unsent_bytes`.
+
 ### Changed
 
+- **Every entry point takes a message log.** *(breaking)* `serve`, `serve_hft`,
+  `connect_and_serve`, `serve_with_recovery` and `serve_hft_with_recovery` each gained a
+  trailing `log: L` parameter; pass `NoLog` for none, which compiles away entirely.
+  `serve_sharded_hft` gained `log_path: Option<&Path>` and opens one file per shard,
+  `messages.log.0`, `.1`, … — every engine numbers its connections from zero, so a shared file
+  would write `conn=0` for several different sockets.
+- **`Engine` has a tenth type parameter, `L = NoLog`.** *(breaking for anyone naming the type
+  in full; the aliases and `Engine::new` are unchanged.)*
+- **`ServeError::LogPath`.** *(breaking: the enum is `#[non_exhaustive]`, but a `match` naming
+  every variant will need it.)* A `FileLogPath` that cannot be opened is its own startup error,
+  not `Io` — a missing directory and a busy port send an operator to two different places.
+- **`Reader::is_empty` means *no records and no torn tail*, not *zero bytes*.** A version-1
+  journal opened and never written to is five bytes of header, and a session that has sent
+  nothing must not read as a file with something in it.
 - **`Journal::put` returns `bool`, and `Journal::oldest` is new.** *(breaking)*
   [ADR-0046](docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
   Neither gets a default implementation, for the reason `highest` has none: a default that lies
