@@ -18,7 +18,8 @@ out of the same measurement: 39, 40 and 41.** See the section immediately below.
 **Wave A's second plan is closed.** [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md),
 six steps, opened by
 [ADR-0046](docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
-`cargo test --all` 446 → **463**.
+`cargo test --all` 446 → **463**, and CI green on the closing commit:
+run [`33850311124`](https://github.com/tmthang86/fixbolt/actions/runs/33850311124), 11 jobs of 11.
 
 ### What an acceptor did before this, and does now
 
@@ -58,6 +59,12 @@ with_resend_batch(10_000)            # emit the whole range in one call, as befo
 
 **The corpus cannot see this defect and never could**: no acceptance definition asks for more
 than three messages. `crates/engine/tests/backpressure.rs` is what can.
+
+### The green run, by id
+
+Run [`33850311124`](https://github.com/tmthang86/fixbolt/actions/runs/33850311124), commit `75d5ec6`,
+**11 jobs of 11** on `ubuntu-latest` — §9's last box, and the reason it exists is that a plan
+once closed on a laptop's word while CI was red on the same commit.
 
 ### Next
 
@@ -2044,7 +2051,7 @@ plan below is **approved**; the topmost is the one in progress.
 | Plan | Closes |
 |---|---|
 | ~~[acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md)~~ | 42 — **CLOSED 2026-09-04**, steps 1–4 of 5. Both directions in one script, **7 / 7 + 7 / 7**, blocking in CI. Revised twice during the build, both times recorded in the plan before the code changed. Step 5 (item 38) not done |
-| ~~[resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md)~~ | 43 — **CLOSED 2026-09-04**, six steps, ADR-0046 accepted. Ring 4096 and O(1), two counters, two events, replay in batches. `cargo test --all` 446 → 463 |
+| ~~[resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md)~~ | 43 — **CLOSED 2026-09-04**, six steps, ADR-0046 accepted. Ring 4096 and O(1), two counters, two events, replay in batches. `cargo test --all` 446 → 463. CI run [`33850311124`](https://github.com/tmthang86/fixbolt/actions/runs/33850311124), 11 / 11 |
 | **[message-log](docs/plans/2026-09-03-message-log.md)** | 44 — **written 2026-09-03, *Chờ duyệt***, after the plan above. `MessageLog` trait in `engine`, `FileLog` on the journal's ring→writer pattern, both directions **including refused frames**, `FileLogPath` in the settings file; step 4 (journal CRC32, format v1) separable |
 | [settings-for-both-roles](docs/plans/2026-09-04-settings-for-both-roles.md) · [seq-resync-789-369](docs/plans/2026-09-04-seq-resync-789-369.md) · [timestamp-micros](docs/plans/2026-09-04-timestamp-micros.md) · [tls](docs/plans/2026-09-04-tls.md) | 45, wave B — **Draft 2026-09-04**, re-verified and revised before approval; see item 45 |
 | [the-second-linux-desk](docs/plans/2026-09-04-the-second-linux-desk.md) | 45, wave C, and items 39, 40, 41 — **Draft 2026-09-04**; needs the §9 desktop and a second machine with a NIC |

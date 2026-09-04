@@ -292,6 +292,8 @@ Máy: Apple M5, macOS 15. **Không phải máy §9 và không có số latency n
 | `cargo clippy --all-targets --all-features -D warnings` | sạch |
 | `scripts/check-links.py` | 1256 link, 0 chết |
 
+**CI xanh trên commit đóng plan**: run [`33850311124`](https://github.com/tmthang86/fixbolt/actions/runs/33850311124), commit `75d5ec6`, **11 job / 11**.
+
 ### Không làm, nói rõ
 
 - **Resend từ đĩa**: loại theo ADR-0046 quyết định 5, hoãn cho `standard` nếu có deployment thật.
