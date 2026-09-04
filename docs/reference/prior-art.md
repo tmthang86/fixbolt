@@ -140,10 +140,37 @@ listed here and quoted nowhere else in this repository.
 QuickFIX/J's configuration reference: `NextExpectedMsgSeqNum(789)` and
 `LastMsgSeqNumProcessed(369)`; `ResetOnLogon`/`ResetOnLogout`/`ResetOnDisconnect`;
 `LogonTimeout`/`LogoutTimeout`; `TimestampPrecision` beyond milliseconds;
-`ValidateFieldsOutOfOrder`, `ValidateUserDefinedFields`, `MaxMessageSize` as per-session knobs;
+`ValidateFieldsOutOfOrder`, `ValidateUserDefinedFields`;
 initiator connection settings in the file; a message log. Each is placed in `STATUS.md` item 45's
 waves, or named there as deliberately declined (`SendRedundantResendRequests`, `RefreshOnLogon`,
 a database store).
+
+**`[corrected 2026-09-04]` `MaxMessageSize` was on that list and did not belong on it.** It is
+not a configuration key in any engine surveyed. `SessionSettings.h` carries **113 config keys**
+and this is not one; `MaxMessageSize` is `FixFieldNumbers.h:61` — **tag 383, an optional field
+in the Logon message** (`spec/FIX44.xml:284`), by which the two ends *tell each other* their
+limit. QuickFIX/J's configuration reference has no such setting either. The error came from
+reading a tag name as a settings name, and it survived because nothing cross-checks a prior-art
+claim against the source sitting in `vendor/`.
+
+**How the four engines bound an inbound message, since the question is real even if the key is not:**
+
+| Engine | Read buffer | Ceiling | Set where | Over-long |
+|---|---|---|---|---|
+| QuickFIX C++ | `std::string`, appended to, grows on the heap | **none** | — | waits forever; the buffer grows on every read. `Parser::readFixMessage` takes an `int length` and checks only `< 0`, so `9=2000000000` is a denial-of-service surface |
+| QuickFIX/J | no message-size setting | **none** | — | — |
+| **Artio** | fixed `ByteBuffer`, **16 KiB** default | 16 KiB | `receiverBufferSize(int)` at engine construction, or `fix.core.receiver_buffer_size` | records the message and **disconnects**, naming the cause: *"Unable to frame message, receiver buffer too small"* |
+| **fixbolt** | `[u8; RX]`, **4 KiB** | 4 KiB | a type parameter, compile time | `Cut::Garbage`; the session decides, except pre-session, which closes **silently** |
+
+**Two things to take from it.** Artio is the closest engine in philosophy and it decides only
+once the buffer is genuinely full (`offset == 0 && byteBuffer.remaining() == 0`); fixbolt decides
+from `9=` alone and so is both earlier and more honest. But Artio *names the reason* and fixbolt
+does not — `presession.rs` answers `Step::Gone`, closing the socket with no reason and no event,
+which is the failure `conn.rs:348` already argues against for `DuplicateIdentity`.
+
+**And Artio's default is 16 KiB against fixbolt's 4 KiB.** That is a data point, not evidence:
+Artio allocates on the heap, so its ceiling is cheaper. `RX = 4096` here rests on no measurement
+— the acceptance corpus never exceeds 200 bytes, so it cannot speak to the question.
 
 **Testing oracles.** No public FIX fuzzing corpus and no public FIX capture set was found;
 QuickFIX/J's acceptance suite spans more versions and both roles by directory structure, its
