@@ -461,22 +461,27 @@ người vận hành không phải đoán. Dòng bắt đầu bằng `#` là ch�
 | Bước | Ngày | Kết quả |
 |---|---|---|
 | 0 | 2026-09-04 | **Đóng.** Giữ hai đường ghi, không cần ADR — [why-the-message-log-is-not-the-journal](../reference/why-the-message-log-is-not-the-journal.md) |
-| 1 | 2026-09-04 | **Xong.** `crates/engine/src/msglog.rs`, `crates/engine/tests/msglog.rs` 12 test. `cargo test --all` 463 → **475**; `--no-default-features` 471. `fmt`/`clippy -D warnings` sạch; `check-no-optional-deps.sh` 6/6; `scripts/bench.sh` — 21 case alloc cũ vẫn **0**, không đổi. **Sáu reversal chạy, sáu lần đỏ, đỏ đúng assertion.** Máy: Apple M5, macOS 25.6.0 — **KHÔNG CÓ CI RUN, VÀ KHÔNG LẤY ĐƯỢC** |
+| 1 | 2026-09-04 | **Xong.** `crates/engine/src/msglog.rs`, `crates/engine/tests/msglog.rs` 12 test. `cargo test --all` 463 → **475**; `--no-default-features` 471. `fmt`/`clippy -D warnings` sạch; `check-no-optional-deps.sh` 6/6; `scripts/bench.sh` — 21 case alloc cũ vẫn **0**, không đổi. **Sáu reversal chạy, sáu lần đỏ, đỏ đúng assertion.** Máy: Apple M5, macOS 25.6.0. **CI xanh 11/11 trên `2ff6a2a`, run [`33854304710`](https://github.com/tmthang86/fixbolt/actions/runs/33854304710)** |
 
-> **`[2026-09-04]` Bước 1 CHƯA ĐÓNG, và lý do không phải code.** GitHub Actions từ chối chạy:
-> cả 11 job của run [`33854207867`](https://github.com/tmthang86/fixbolt/actions/runs/33854207867)
-> đều *not started*, annotation là *"recent account payments have failed or your spending limit
-> needs to be increased"*. Run trước đó, [`33853041235`](https://github.com/tmthang86/fixbolt/actions/runs/33853041235),
-> hỏng y hệt trên một commit **chỉ có docs**.
+> **`[2026-09-04]` Bước 1 ĐÓNG. CI đứng hình nửa tiếng, và lý do không phải code.** GitHub
+> Actions từ chối chạy: cả 11 job của run
+> [`33854207867`](https://github.com/tmthang86/fixbolt/actions/runs/33854207867) đều *not
+> started*, annotation *"recent account payments have failed or your spending limit needs to be
+> increased"*. Run trước đó,
+> [`33853041235`](https://github.com/tmthang86/fixbolt/actions/runs/33853041235), hỏng y hệt
+> trên một commit **chỉ có docs** — nên không phải workflow, không phải code.
 >
-> **Ô cuối cùng của §9 chưa tick được**, nên theo đúng luật của chính repo này bước 1 là
-> *không xong*, dù mọi gate trên máy đều xanh. §9 tồn tại vì chuyện ngược lại đã xảy ra một
-> lần — bốn tài liệu mang số của laptop suốt một ngày. Ghi ở đây để lần đóng plan sau không
-> đọc bảng trên rồi tưởng đã có CI.
+> **Nguyên nhân: repo private trên tài khoản Free, hết 2.000 phút Actions của tháng.** Dấu vết
+> thời gian nói vậy: 07:51 UTC run xanh 11/11, 08:18 trở đi mọi job không khởi động — một cửa sổ
+> 27 phút, dạng hết hạn mức giữa ngày chứ không phải thẻ hỏng từ trước. Cả 11 job đều
+> `ubuntu-latest`, hệ số ×1, nên không có job nào ngốn bất thường.
 >
-> **Gỡ bằng cách nào:** sửa billing trong *Settings → Billing & plans* của `tmthang86`, rồi
-> `gh run rerun 33854207867`. Không có cách nào khác từ phía repo — không phải workflow hỏng,
-> không phải quota Actions của một job, mà là tài khoản.
+> **Gỡ bằng cách đổi repo sang public `[2026-09-04]`** — Actions miễn phí không giới hạn cho
+> public repo, và đó vốn là ý định đã ghi ở đầu `CLAUDE.md`. Run tiếp theo xanh 11/11.
+>
+> **Đoạn này giữ lại nguyên văn**, kể cả câu "bước 1 chưa đóng" đã sai sau đó nửa tiếng, vì nó
+> là ví dụ sống của §9: mọi gate trên laptop đều xanh trong khi commit **không có CI**, và nếu
+> không ai đọc trang Actions thì bảng trên đã đọc là "xong".
 
 **Reversal đã chạy `[2026-09-04]`**, output đọc chứ không suy:
 
