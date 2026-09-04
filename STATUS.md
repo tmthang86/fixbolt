@@ -929,9 +929,12 @@ same pinned QuickFIX, stands up `fixbolt::serve` in `standard` mode behind
 is a `FIX::Log`, not `fromApp`: QuickFIX drops a `PossDup` replay of a number it has already
 seen before the application sees it, and the resend step asks for exactly that.
 Unlike the initiator direction, **the whole stack is under test** — the poller, the pre-session
-table, the settings file, the library `Handler`. Green on macOS 15 (Apple M5); the blocking
-`interop` CI job on `ubuntu-latest` runs both directions in one invocation, run id
-`PENDING`. Three reversals, each red on its own step and each restored: dropping the `11=` echo
+table, the settings file, the library `Handler`. Green on macOS 15 (Apple M5) **and on `ubuntu-latest`**
+(cmake 3.31.6, g++ 13.3.0): the blocking `interop` CI job runs both directions in one
+invocation — job
+[`100900997589`](https://github.com/tmthang86/fixbolt/actions/runs/33833427382/job/100900997589) of run
+[`33833427382`](https://github.com/tmthang86/fixbolt/actions/runs/33833427382), commit `f94e36e`,
+**11 jobs of 11 green, and this job's own log read back** rather than its conclusion. Three reversals, each red on its own step and each restored: dropping the `11=` echo
 (`order FAIL`, and the initiator direction still `PASS 7/7`); inverting the resend range
 (`resend FAIL  replayed at 34=[], wanted [2, 3]` — **the reversal that was a no-op in the other
 direction**); renaming one grep'd step name, which failed the script while the binary printed

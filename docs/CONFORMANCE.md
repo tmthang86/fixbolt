@@ -138,8 +138,12 @@ carrying **no** `112=`, within a deadline read from the `108=` on the wire), `te
 carrying `43=Y`), `gapfill` (the acceptor asks `35=2 7=n 16=0`, and a **fresh** `TestRequest`
 after the gap fill is answered), `logout`.
 
-**Machine and run.** Recorded on macOS 15 (Apple M5) and gated on `ubuntu-latest` in the
-`interop` CI job, which is blocking. CI run id: `PENDING`.
+**Machine and run.** Recorded on macOS 15 (Apple M5) and gated on `ubuntu-latest`
+(cmake 3.31.6, g++ 13.3.0) in the blocking `interop` CI job — job
+[`100900997589`](https://github.com/tmthang86/fixbolt/actions/runs/33833427382/job/100900997589) of run
+[`33833427382`](https://github.com/tmthang86/fixbolt/actions/runs/33833427382), commit `f94e36e`,
+**and the job's own log was read back rather than its conclusion**: `interop: PASS 7/7`,
+`interop-acceptor: PASS 7/7`, `==> the run added nothing git can see`.
 
 ### What these 14 cases do not buy
 

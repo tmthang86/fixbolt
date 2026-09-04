@@ -1,6 +1,6 @@
 # Acceptor trước một `libquickfix` thật
 
-> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** Đã duyệt, **đã sửa hai lần**
+> **Loại:** Plan · **Ngày:** 2026-09-03 · **Trạng thái:** **ĐÓNG 2026-09-04** (bước 1–4 / 5), đã sửa hai lần
 > **Phạm vi:** `STATUS.md` item 42. Chạm `tools/interop`, `scripts/interop.sh`,
 > `.github/workflows/ci.yml`. **Không chạm** `codec`, `dict`, `session`, `engine`, `library` —
 > trừ khi gate mới tìm ra lỗi, khi đó lỗi đó có plan sửa riêng (xem *Bẫy* cuối bảng).
@@ -258,4 +258,71 @@ Theo `CLAUDE.md` §4:
 
 ## Nhật ký giao hàng
 
-*(trống — chưa bắt đầu)*
+**Đóng 2026-09-04, bước 1–4. Bước 5 tuỳ chọn: KHÔNG làm, nên item 38 vẫn mở.**
+Không file nào dưới `crates/` đổi.
+
+### Kết quả
+
+```
+scripts/interop.sh
+interop: PASS 7/7
+interop-acceptor: logon        ok  35=A |49=FIXBOLT| |56=QFINI| 141=Y
+interop-acceptor: order        ok  35=8 at 34=2 and 34=3, 11= matched
+interop-acceptor: heartbeat    ok  35=0 without 112= within 5 s (108=2)
+interop-acceptor: testrequest  ok  35=0 112=QF-TR-1
+interop-acceptor: resend       ok  35=8 43=Y replayed at 34=[2, 3], wanted [2, 3]
+interop-acceptor: gapfill      ok  35=2 7=7 16=0 in: yes, then 35=0 112=QF-TR-3: yes
+interop-acceptor: logout       ok  35=5
+interop-acceptor: PASS 7/7
+==> the run added nothing git can see
+interop: 7 / 7 + 7 / 7 against libquickfix @ 386ce46e...
+```
+
+**Acceptor đúng cả bảy bước ngay lần đầu**, kể cả hai chỗ dễ sai âm thầm: echo `141=Y`, và
+replay **đúng hai số** thay vì gap fill đè lên.
+
+### Ba reversal
+
+| Reversal | Thấy gì |
+|---|---|
+| A — bỏ echo `11=` trong `Desk` | `order FAIL  35=8 for QF-ORD-1: no, for QF-ORD-2: no`; `resend FAIL` theo sau đúng như plan lường trước. **Chiều initiator vẫn `PASS 7/7`**, tức reversal chỉ chạm đúng thứ nó nhắm |
+| B — đảo range resend (`--invert-resend`) | `resend FAIL  replayed at 34=[], wanted [2, 3]`. **Đây là reversal từng vô hiệu ở chiều kia**; ở đây nó cắn, vì bước 5 gọi tên hai số |
+| C — đổi tên bước grep `gapfill` → `gapfil` | binary in `interop-acceptor: PASS 7/7` mà script vẫn fail `MISSING OR FAILED STEP: gapfil`. Grep từng bước là load-bearing |
+
+Sau khôi phục: `desk.rs` giống hệt file đã commit, danh sách bước về `gapfill`, chạy lại xanh.
+
+### Gate
+
+| Lệnh | Kết quả |
+|---|---|
+| `scripts/interop.sh` | 7 / 7 + 7 / 7 |
+| `scripts/check-links.py` | 1 231 link, 0 chết |
+| `scripts/check-no-optional-deps.sh` | 3 crate (thêm `fixbolt-interop`), 6 check, ok |
+| `cargo fmt --all --check` | sạch |
+| `cargo clippy --all-targets --all-features -D warnings` | sạch |
+| `cargo doc --workspace --no-deps` | sạch |
+| `cargo test --all` | 446 passed, 0 failed |
+| `cargo test --all --no-default-features` | 83 suite, 0 failed |
+
+**CI xanh trên commit đóng plan**: run
+[`33833427382`](https://github.com/tmthang86/fixbolt/actions/runs/33833427382), job
+[`100900997589`](https://github.com/tmthang86/fixbolt/actions/runs/33833427382/job/100900997589),
+commit `f94e36e`, **11 job / 11**, `ubuntu-latest`, cmake 3.31.6, g++ 13.3.0 — và **log của
+chính job đó được đọc lại**, không phải kết luận của nó.
+
+### Ba thứ tìm ra, không cái nào là lỗi của session layer
+
+| Tìm ra | Ghi ở |
+|---|---|
+| Engine không gửi chủ động được message nào | STATUS item **46**, [an-acceptor-that-can-only-answer](../reference/an-acceptor-that-can-only-answer.md) |
+| Gap fill có quyền nuốt chính câu hỏi mà test đang chờ | [a-gap-fill-can-swallow-the-question](../reference/a-gap-fill-can-swallow-the-question.md) |
+| `interop` in `PASS 1/1` trên một kịch bản chạy 1/7 bước; và bước logon so `49=QFACC` cứng trong khi session dựng từ `--target` | [a-green-fraction-over-a-scenario-that-never-ran](../reference/a-green-fraction-over-a-scenario-that-never-ran.md) |
+
+Cả ba mang dấu `[to testing-skills]`.
+
+### Không làm, nói rõ
+
+- **Bước 5** (kịch bản reconnect, item 38): tuỳ chọn, không làm.
+- **`hft` mode**: `serve_hft` quay 100% một core; runner chia sẻ là chỗ sai để chạy. Ba entry
+  point `hft` vẫn không có gate nào đi qua.
+- **Sửa item 46**: đổi public API hai crate, cần ADR riêng, thuộc wave B.
