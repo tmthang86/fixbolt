@@ -1,56 +1,96 @@
 # Configuration Reference
 
-A complete, single-source lookup table for all configuration settings in `fixbolt`.
+Every setting in `fixbolt`, in one place: configuration-file keys, programmatic limits, const
+generics and Cargo features, each with its default and where it lives in the source.
 
-This document complements [`docs/GUIDE.md`](GUIDE.md) §1a0 by providing an exhaustive
-reference of configuration file keys, runtime constants, const generics, and code-level
-tuning parameters with their source locations.
+[GUIDE.md §1c](GUIDE.md) explains how the configuration file is used; this page only lists
+what it can say.
 
 ---
 
-## 1. Session Configuration File (`settings.rs`)
+## 1. Configuration file keys
 
-**Eleven keys** `[changed 2026-09-04, was ten]`. Counterparties and session schedules are loaded via [`Settings::load`](../crates/engine/src/settings.rs#L344)
-from a QuickFIX-style INI file. Every recognised setting is validated strictly:
-an unrecognised key, misspelled value, or impossible schedule will fail startup immediately.
+Counterparties and schedules are loaded by [`Settings::load`](../crates/engine/src/settings.rs)
+from a QuickFIX-style INI file: one `[DEFAULT]` block, then one `[SESSION]` block per
+counterparty. Values in `[DEFAULT]` apply to every session; a `[SESSION]` may override them.
 
-| Setting | Meaning | Valid Values | Default | Where Set | Source Location |
+Validation is strict. An unknown key, a malformed value or an impossible schedule stops
+startup with the line number and the text that was written
+([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)).
+
+**Eleven keys** are recognised `[changed 2026-09-04, was ten]`:
+
+| Key | Meaning | Values | Default | Where | Source |
 |---|---|---|---|---|---|
-| `BeginString` | FIX protocol version for the session | ASCII string (e.g. `FIX.4.4`), max 32 bytes | *None (Required)* | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:95`](../crates/engine/src/settings.rs#L95) |
-| `SenderCompID` | Identifier of this acceptor engine | ASCII string, max 32 bytes | *None (Required)* | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:96`](../crates/engine/src/settings.rs#L96) |
-| `TargetCompID` | Identifier of the remote counterparty | ASCII string, max 32 bytes | *None (Required in `[SESSION]`)* | `[SESSION]` (or `[DEFAULT]`) | [`crates/engine/src/settings.rs:97`](../crates/engine/src/settings.rs#L97) |
-| `HeartBtInt` | Heartbeat interval in seconds | Positive integer (`u32`) | `30` | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:98`](../crates/engine/src/settings.rs#L98), [`crates/session/src/lib.rs:266`](../crates/session/src/lib.rs#L266) |
-| `MaxSkewMillis` | Maximum allowed clock skew for incoming `SendingTime (52)` in milliseconds | Integer (`u64`) | `120000` (2 minutes) | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:99`](../crates/engine/src/settings.rs#L99), [`crates/session/src/lib.rs:260`](../crates/session/src/lib.rs#L260) |
-| `StartTime` | Session activation start time (UTC) | `HH:MM:SS` (24-hour format) | *None* (omitted with `EndTime` = continuous session) | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:100`](../crates/engine/src/settings.rs#L100), [`crates/engine/src/settings.rs:567`](../crates/engine/src/settings.rs#L567) |
-| `EndTime` | Session deactivation end time (UTC) | `HH:MM:SS` (24-hour format) | *None* | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:101`](../crates/engine/src/settings.rs#L101), [`crates/engine/src/settings.rs:567`](../crates/engine/src/settings.rs#L567) |
-| `StartDay` | Start day of the week for weekly sessions | `Monday`/`Mon` .. `Sunday`/`Sun` | *None* | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:102`](../crates/engine/src/settings.rs#L102), [`crates/engine/src/settings.rs:590`](../crates/engine/src/settings.rs#L590) |
-| `EndDay` | End day of the week for weekly sessions | `Monday`/`Mon` .. `Sunday`/`Sun` | *None* | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:103`](../crates/engine/src/settings.rs#L103), [`crates/engine/src/settings.rs:590`](../crates/engine/src/settings.rs#L590) |
-| `Weekdays` | Active weekdays for daily schedule | Comma-separated weekdays (e.g. `Mon,Tue,Wed,Thu,Fri`) | *None* (all 7 days if daily schedule) | `[DEFAULT]` or `[SESSION]` | [`crates/engine/src/settings.rs:104`](../crates/engine/src/settings.rs#L104), [`crates/engine/src/settings.rs:629`](../crates/engine/src/settings.rs#L629) |
-| `FileLogPath` | Path of the two-directional message log. One engine writes one file; `conn=` and `shard=` tell the counterparties apart inside it | Any path this process can append to | *None* (no log) | `[DEFAULT]` **only** — a `[SESSION]` carrying it is refused | [`crates/engine/src/settings.rs`](../crates/engine/src/settings.rs), [`crates/engine/src/msglog.rs`](../crates/engine/src/msglog.rs) |
+| `BeginString` | FIX version of the session | ASCII, max 32 bytes, e.g. `FIX.4.4` | required | `[DEFAULT]` or `[SESSION]` | [`settings.rs:95`](../crates/engine/src/settings.rs#L95) |
+| `SenderCompID` | This engine's identity | ASCII, max 32 bytes | required | `[DEFAULT]` or `[SESSION]` | [`settings.rs:96`](../crates/engine/src/settings.rs#L96) |
+| `TargetCompID` | The counterparty's identity | ASCII, max 32 bytes | required per `[SESSION]` | `[SESSION]` (or `[DEFAULT]`) | [`settings.rs:97`](../crates/engine/src/settings.rs#L97) |
+| `HeartBtInt` | Heartbeat interval | positive integer, seconds | `30` | `[DEFAULT]` or `[SESSION]` | [`settings.rs:98`](../crates/engine/src/settings.rs#L98), [`session/src/lib.rs:266`](../crates/session/src/lib.rs#L266) |
+| `MaxSkewMillis` | How far an inbound `SendingTime (52)` may differ from this engine's clock | integer, milliseconds | `120000` (2 minutes) | `[DEFAULT]` or `[SESSION]` | [`settings.rs:99`](../crates/engine/src/settings.rs#L99), [`session/src/lib.rs:260`](../crates/session/src/lib.rs#L260) |
+| `StartTime` | When the session opens each day, UTC | `HH:MM:SS` | none; with no `EndTime` the session is always open | `[DEFAULT]` or `[SESSION]` | [`settings.rs:100`](../crates/engine/src/settings.rs#L100), [`settings.rs:567`](../crates/engine/src/settings.rs#L567) |
+| `EndTime` | When the session closes each day, UTC | `HH:MM:SS` | none | `[DEFAULT]` or `[SESSION]` | [`settings.rs:101`](../crates/engine/src/settings.rs#L101), [`settings.rs:567`](../crates/engine/src/settings.rs#L567) |
+| `StartDay` | First day of a weekly session | `Monday`/`Mon` … `Sunday`/`Sun` | none | `[DEFAULT]` or `[SESSION]` | [`settings.rs:102`](../crates/engine/src/settings.rs#L102), [`settings.rs:590`](../crates/engine/src/settings.rs#L590) |
+| `EndDay` | Last day of a weekly session | `Monday`/`Mon` … `Sunday`/`Sun` | none | `[DEFAULT]` or `[SESSION]` | [`settings.rs:103`](../crates/engine/src/settings.rs#L103), [`settings.rs:590`](../crates/engine/src/settings.rs#L590) |
+| `Weekdays` | Days a daily session opens on | comma-separated, e.g. `Mon,Tue,Wed,Thu,Fri` | all seven days | `[DEFAULT]` or `[SESSION]` | [`settings.rs:104`](../crates/engine/src/settings.rs#L104), [`settings.rs:629`](../crates/engine/src/settings.rs#L629) |
+| `FileLogPath` | Path of the message log (both directions, one line per message). One engine writes one file; `conn=` and `shard=` tell counterparties apart inside it | any path the process can append to | none (no log) | `[DEFAULT]` **only**; a `[SESSION]` carrying it is refused | [`settings.rs`](../crates/engine/src/settings.rs), [`msglog.rs`](../crates/engine/src/msglog.rs) |
+
+Three rules the file enforces:
+
+- `StartTime` and `EndTime` go together. One without the other is an error.
+- `StartDay` and `EndDay` go together, and they need `StartTime`/`EndTime` as well. A
+  `StartDay` with no hours is a key that is spelled correctly and has no effect, so it is
+  refused.
+- A value longer than 32 bytes is refused rather than truncated. A truncated name would match
+  no counterparty and the acceptor would start cleanly and serve nobody.
 
 ---
 
-## 2. Code-Level Configuration & Limits
+## 2. Programmatic limits and defaults
 
-Parameters that are configured programmatically when instantiating or starting the engine.
+Set in code when the engine is built or started.
 
-| Parameter | Meaning | Valid Values | Default | Where Set | Source Location |
+| Parameter | Meaning | Values | Default | Where set | Source |
 |---|---|---|---|---|---|
-| `Limits` | Pre-session handshake limits protecting against slow-loris attacks | `pending > 0`, `logon_ms > 0` | **No default** ([ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)) | Argument to `serve` / `serve_hft` via `Limits::new(pending, logon_ms)` | [`crates/engine/src/presession.rs:372`](../crates/engine/src/presession.rs#L372), [`crates/engine/src/presession.rs:412`](../crates/engine/src/presession.rs#L412) |
-| `DEFAULT_CAPACITY` | Size of the outbound dispatch ring buffer in bytes | Power of two (`usize`) | `4194304` (4 MiB = `1 << 22`) | `RingDispatch::new(capacity)` | [`crates/engine/src/ring.rs:113`](../crates/engine/src/ring.rs#L113) |
-| `DEFAULT_TIMEOUT_MS` | Idle poll timeout for `standard` mode in milliseconds | Whole milliseconds (`u32`) | `100` | `Block::new(capacity)` or `Block::with_timeout_ms` | [`crates/engine/src/block.rs:33`](../crates/engine/src/block.rs#L33) |
-| `MIN_TIMEOUT_MS` | Minimum poll timeout enforced by `Block` | Whole milliseconds (`u32`) | `5` | Enforced internally by `Block::with_timeout_ms` | [`crates/engine/src/block.rs:41`](../crates/engine/src/block.rs#L41) |
-| `SLOTS` | Outbound messages retained in journal for resend replies | Power of two (`usize`) | `4096` `[changed 2026-09-04, was 8]` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`crates/engine/src/journal.rs:51`](../crates/engine/src/journal.rs#L51) |
-| `resend_batch` | Messages one call may put on the wire answering a `ResendRequest` | `u16`, zero is read as one | `8` | `Config::with_resend_batch` | [`crates/session/src/lib.rs`](../crates/session/src/lib.rs) |
-| `SLOT_LEN` | Maximum message size stored in journal slot | Bytes (`usize`) | `512` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`crates/engine/src/journal.rs:45`](../crates/engine/src/journal.rs#L45) |
-| `Durability` | Persistence guarantee for on-disk file journaling | `Durability::Async` (non-blocking writer), `Durability::Fsync` (blocks engine thread) | `Durability::Async` | `FileJournal::open(path, durability)` | [`crates/engine/src/journal.rs:144`](../crates/engine/src/journal.rs#L144) |
+| `Limits` | Pre-session bounds: how many sockets may wait for their Logon, and for how long | `pending > 0`, `logon_ms > 0` | **none** ([ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)) | `Limits::new(pending, logon_ms)`, passed to `serve` / `serve_hft` | [`presession.rs:372`](../crates/engine/src/presession.rs#L372), [`presession.rs:412`](../crates/engine/src/presession.rs#L412) |
+| `DEFAULT_CAPACITY` | Size of the ring between the engine and an out-of-band application | power of two, bytes | `4194304` (4 MiB) | `RingDispatch::new(capacity)` | [`ring.rs:113`](../crates/engine/src/ring.rs#L113) |
+| `DEFAULT_TIMEOUT_MS` | How long a `standard` engine blocks before waking to check timers | milliseconds | `100` | `Block::new(capacity)` or `Block::with_timeout_ms` | [`block.rs:33`](../crates/engine/src/block.rs#L33) |
+| `MIN_TIMEOUT_MS` | Smallest timeout `Block` accepts; a smaller one is raised to it | milliseconds | `5` | enforced by `Block::with_timeout_ms` | [`block.rs:41`](../crates/engine/src/block.rs#L41) |
+| `SLOTS` | Outbound messages the journal ring keeps for resends | power of two | `4096` `[changed 2026-09-04, was 8]` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`journal.rs:51`](../crates/engine/src/journal.rs#L51) |
+| `SLOT_LEN` | Largest message the journal ring can keep | bytes | `512` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`journal.rs:56`](../crates/engine/src/journal.rs#L56) |
+| `resend_batch` | Messages put on the wire per call when answering a `ResendRequest` | `u16`; zero is read as one | `8` | `Config::with_resend_batch` | [`session/src/lib.rs`](../crates/session/src/lib.rs) |
+| `Durability` | What a `FileJournal` guarantees | `Async` (background writer), `Fsync` (blocks the engine thread) | `Async` | `FileJournal::open(path, durability)` | [`journal.rs`](../crates/engine/src/journal.rs) |
+
+### Sizing the resend ring
+
+`SLOTS` used to be 8 — enough for the acceptance corpus and far too small for an acceptor. An
+acceptor that had sent a hundred ExecutionReports answered a resend request for all of them
+by replaying eight and gap-filling ninety-two, which is legal on the wire and lost ninety-two
+messages ([ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)).
+
+Choose `N` by this rule:
+
+> `N` ≥ the number of application messages you send during the longest disconnection you
+> are willing to replay across. For most desks that is one trading day.
+
+Memory per session is `N × (SLOT_LEN + 8)`, about **2 MiB** at the defaults.
+`[measured 2026-09-04, Apple M5]` `tools/w2w` reads **+2 195 456 bytes** of maximum resident
+set against the old `SLOTS = 8`. A gateway with hundreds of sessions should pick a smaller `N`
+through the const generic ([GUIDE.md §1a](GUIDE.md)).
+
+Two constraints go with it:
+
+- **`resend_batch × SLOT_LEN` must stay under `TX`.** The defaults are 8 × 512 = 4 KiB against
+  an 8 KiB `TX`. If you raise `SLOT_LEN` or lower `TX`, re-check this.
+- **Two counters tell you when either is wrong.** `resend_beyond_journal` on
+  `SessionSnapshot` (the ring was too small; messages were gap-filled instead of replayed)
+  and `puts_refused` (a reply was longer than `SLOT_LEN` and can never be replayed). Both also
+  arrive as events.
 
 ---
 
-## 3. Const Generics and Aliases
+## 3. Const generics
 
-The type alias [`TcpAcceptorEngine`](../crates/engine/src/lib.rs#L970) fixes buffer and indexing
-capacities for standard deployments:
+The alias [`TcpAcceptorEngine`](../crates/engine/src/lib.rs#L970) fixes three capacities:
 
 ```rust
 pub type TcpAcceptorEngine<A, W, J = crate::journal::Store> = Engine<
@@ -60,53 +100,30 @@ pub type TcpAcceptorEngine<A, W, J = crate::journal::Store> = Engine<
     crate::clock::SystemClock,
     W,
     J,
-    256,  // N: Maximum indexed fields in MessageView
-    4096, // RX: Read buffer capacity in bytes
-    8192, // TX: Write buffer capacity in bytes
+    256,  // N:  fields indexed per message
+    4096, // RX: read buffer per connection, bytes
+    8192, // TX: write buffer per connection, bytes
 >;
 ```
 
-| Const Parameter | Meaning | Alias Default | Customization |
+| Parameter | Meaning | Alias default | To change it |
 |---|---|---|---|
-| `N` | Maximum number of fields indexed in `MessageView<N>` | `256` | Instantiate `Engine<..., N, RX, TX>` directly |
-| `RX` | Per-connection read buffer capacity | `4096` bytes (4 KiB) | Instantiate `Engine<..., N, RX, TX>` directly |
-| `TX` | Per-connection write buffer capacity | `8192` bytes (8 KiB) | Instantiate `Engine<..., N, RX, TX>` directly |
+| `N` | Maximum fields in one `MessageView<N>`; a message with more is `ParseError::TooManyFields` | `256` | Instantiate `Engine<..., N, RX, TX>` directly |
+| `RX` | Read buffer per connection | 4 KiB | same |
+| `TX` | Write buffer per connection; also the queue for a slow counterparty | 8 KiB | same |
+
+The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbound index,
+`P = 64` fields in a reply, `S = 1024` bytes for them. A reply that does not fit is
+`Answer::Failed`, counted by `App::failed_replies()` ([GUIDE.md §1b](GUIDE.md)).
 
 ---
 
-## 4. Cargo Feature Flags
+## 4. Cargo features
 
-| Feature | Scope | Description | Default |
+| Feature | Crates | What it enables | Default |
 |---|---|---|---|
-| `standard` | `engine`, `library` | Enables blocking engine poller via `kqueue`/`epoll` (`block.rs`, `serve`, `StandardAcceptorEngine`). | **Yes** |
-| `affinity` | `engine` | Enables CPU core pinning and thread affinity checks via `libc` on Linux. | No |
+| `standard` | `engine`, `library` | The blocking poller (`block.rs`, `serve`, `StandardAcceptorEngine`), through `poll(2)` via `libc` | **on** |
+| `affinity` | `engine` | Core pinning and topology checks via `libc`, Linux only. Naming a core in a build without it is a hard error | off |
 
----
-
-## `SLOTS` and `resend_batch`, and why both moved on 2026-09-04
-
-[ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
-
-**`SLOTS` was 8.** That was the smallest power of two above what the acceptance corpus asks
-for, and the rustdoc said *"a real acceptor sets its own"* — but nothing forced one to, nothing
-counted what the default cost, and an acceptor that had sent a hundred `ExecutionReport`s
-answered `7=1 16=0` by replaying eight and gap-filling ninety-two. That is legal on the wire
-and ninety-two messages gone to the counterparty.
-
-**Choosing your own N:**
-
-> **N ≥ the number of application messages you send during the longest disconnection you are
-> willing to replay across** — for most desks, one trading day.
-
-Memory is `N × (SLOT_LEN + 8)`. At the defaults that is ≈ **2 MiB per session** —
-`[measured 2026-09-04, Apple M5]` `tools/w2w` reads **+2 195 456 bytes** of maximum resident
-set against `SLOTS = 8`. A gateway holding hundreds of sessions should pick a smaller N through
-the const generic; `GUIDE.md` §1a is about that trade.
-
-**`resend_batch` is bounded by the transmit buffer**, not by taste: `resend_batch × SLOT_LEN`
-must stay under `TX`. The default is 8 × 512 = 4 KiB against 8 KiB. Raise `SLOT_LEN` or lower
-`TX` and this is the number to re-check.
-
-**Two counters say when either is wrong**, on `SessionSnapshot` and as events:
-`resend_beyond_journal` (the ring is too small — messages the counterparty asked for and did
-not get) and `puts_refused` (replies longer than `SLOT_LEN`, which will never be replayable).
+`cargo build --no-default-features` builds with neither, and CI proves that on a runner with
+nothing optional installed.

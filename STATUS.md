@@ -47,7 +47,7 @@ run [`33850311124`](https://github.com/tmthang86/fixbolt/actions/runs/3385031112
    `events-busy` 0 → 2000, and the session bench's `deliver`, `resend` and `originate` 0 →
    10 000 each. Not fixed by deleting the call from the window: the engine bench pre-builds
    journals and calls `add_with_journal`, so an allocation appearing in accept for any *other*
-   reason is still caught. `GUIDE.md` §6a0 and `best-practices-hft.md` §6 carry the consequence.
+   reason is still caught. `GUIDE.md` §6 and `best-practices-hft.md` §6 carry the consequence.
 
 ### The reversal that matters
 
