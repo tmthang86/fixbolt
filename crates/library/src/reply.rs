@@ -118,7 +118,16 @@ impl Answer {
 /// is the committed benchmark.
 pub struct Reply<'a, const P: usize = 64, const S: usize = 1024> {
     begin_string: &'a [u8],
-    seq: u32,
+    /// `None` when this is an **origination** rather than a reply.
+    ///
+    /// A reply is written into the session's own outbound buffer and carries
+    /// the number the session already spent on it, so `34=` and `52=` go in
+    /// here. An origination is written *before* the session has looked at it —
+    /// `Session::send_application` assigns both on the way out — so writing
+    /// them here would be writing two values that are about to be replaced.
+    /// [ADR-0048](../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md)
+    /// decision 2.
+    seq: Option<u32>,
     stamp: &'a [u8],
     sender: &'a [u8],
     target: &'a [u8],
@@ -144,8 +153,38 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
     ) -> Self {
         Self {
             begin_string,
-            seq,
+            seq: Some(seq),
             stamp,
+            sender,
+            target,
+            out,
+        }
+    }
+
+    /// The same, for a message **nobody asked for**.
+    ///
+    /// There is no inbound message to take a sequence number or a `SendingTime`
+    /// from, and there does not need to be: `Session::send_application` writes
+    /// `8=`, `9=`, `34=`, `52=` and `10=` on the way out and ignores anything
+    /// this end put there. So an origination names its `MsgType` and its body,
+    /// and nothing else.
+    ///
+    /// `sender` is **this** end and `target` the counterparty — the same way
+    /// round [`fixbolt_session::Peer`] carries them, which is where a
+    /// [`crate::Handler`] gets them.
+    ///
+    /// [ADR-0048](../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md)
+    #[must_use]
+    pub fn originate(
+        begin_string: &'a [u8],
+        sender: &'a [u8],
+        target: &'a [u8],
+        out: &'a mut [u8],
+    ) -> Self {
+        Self {
+            begin_string,
+            seq: None,
+            stamp: b"",
             sender,
             target,
             out,
@@ -167,14 +206,17 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
     /// reversal wrong, because neither is reachable from the API it is given.
     #[must_use]
     pub fn message(self, msg_type: &[u8]) -> Message<'a, P, S> {
-        let mut seq = [0u8; 10];
-        let seq = render_u32(self.seq, &mut seq);
+        let mut digits = [0u8; 10];
         let mut b = TemplateBuilder::<P, S>::new(self.begin_string);
         b.field(35, msg_type)
-            .field(34, seq)
             .field(49, self.sender)
-            .field(52, self.stamp)
             .field(56, self.target);
+        // Only a reply carries these. An origination leaves them out and the
+        // session writes them — see the `seq` field's own note.
+        if let Some(n) = self.seq {
+            b.field(34, render_u32(n, &mut digits))
+                .field(52, self.stamp);
+        }
         Message {
             out: self.out,
             b,

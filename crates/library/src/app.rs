@@ -33,7 +33,7 @@ use core::ops::Range;
 
 use fixbolt_codec::{FieldIndex, MessageView, Validation, parse_into};
 use fixbolt_dict::Fix44;
-use fixbolt_session::Application;
+use fixbolt_session::{Application, Peer};
 
 use crate::reply::{Answer, Reply};
 
@@ -115,6 +115,39 @@ pub trait Handler<const N: usize = 256, const P: usize = 64, const S: usize = 10
     /// Return `reply.silent()` to say nothing. The session's outbound sequence
     /// number moves only when a message is actually written.
     fn on_message(&mut self, msg: &Incoming<'_, N>, reply: Reply<'_, P, S>) -> Answer;
+
+    /// The right to **speak first**, once per session.
+    ///
+    /// Asked with `nth = 0, 1, 2, …` the moment a session comes up, until it
+    /// answers `reply.silent()`. One message per call; the engine sends each as
+    /// it comes and stops at
+    /// [`fixbolt_engine::MAX_ON_LOGON`].
+    ///
+    /// ```ignore
+    /// fn on_logon(&mut self, _who: Peer<'_>, nth: u32, reply: Reply<'_, P, S>) -> Answer {
+    ///     match nth {
+    ///         0 => reply.message(b"B").field(148, b"desk is up").send(),
+    ///         _ => reply.silent(),
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// **`34=` and `52=` are not yours here either**, and unlike
+    /// [`Self::on_message`] they are not even written for you: the session
+    /// assigns both on the way out. Nothing about the message changes because
+    /// of that — [`Reply`] hides the difference.
+    ///
+    /// **The default says nothing**, which is why every handler written before
+    /// [ADR-0048] still compiles. An application that needs to speak *later*
+    /// rather than *first* wants
+    /// [`fixbolt_engine::origin::Sender`] instead —
+    /// this door runs on the engine thread and the same warning as
+    /// [`Self::on_message`] applies to it.
+    ///
+    /// [ADR-0048]: ../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md
+    fn on_logon(&mut self, _who: Peer<'_>, _nth: u32, reply: Reply<'_, P, S>) -> Answer {
+        reply.silent()
+    }
 }
 
 /// A [`Handler`] wearing the [`fixbolt_session::Application`] the engine wants.
@@ -216,6 +249,18 @@ impl<H: Handler<N, P, S>, const N: usize, const P: usize, const S: usize> Applic
         let incoming = Incoming { view };
 
         let answer = self.handler.on_message(&incoming, reply);
+        if matches!(answer, Answer::Failed(_)) {
+            self.failed += 1;
+        }
+        answer.range()
+    }
+
+    fn on_logon(&mut self, nth: u32, peer: Peer<'_>, out: &mut [u8]) -> Option<Range<usize>> {
+        // `Reply::originate` rather than `Reply::new`: there is no inbound
+        // message here, so there is no number and no stamp to carry, and the
+        // session writes both on the way out (ADR-0048 decision 2).
+        let reply = Reply::<P, S>::originate(peer.begin_string, peer.sender, peer.target, out);
+        let answer = self.handler.on_logon(peer, nth, reply);
         if matches!(answer, Answer::Failed(_)) {
             self.failed += 1;
         }

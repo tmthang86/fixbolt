@@ -116,6 +116,54 @@ pub trait Application {
         stamp: &[u8],
         out: &mut [u8],
     ) -> Option<core::ops::Range<usize>>;
+
+    /// The application's chance to **speak first**, once per session.
+    ///
+    /// Asked with `nth = 0, 1, 2, …` immediately after this session comes up,
+    /// until it answers `None`. Write one whole FIX message into `out` and
+    /// return its range to have it sent; the caller sends each one as it comes,
+    /// so nothing is accumulated and one buffer serves them all.
+    ///
+    /// **`34=` and `52=` are not yours and are not supplied.** Write the
+    /// message without them, or write them wrong — either way
+    /// [`Session::send_application`] rewrites both, along with `8=`, `9=` and
+    /// `10=`. [`Peer`] carries the three values that *are* the application's to
+    /// write, so a handler serving many counterparties can tell which session
+    /// it is being asked about.
+    ///
+    /// **The default answers `None`**, which is why adding this method broke no
+    /// existing implementation, and why an application with nothing to announce
+    /// writes nothing.
+    ///
+    /// **Nothing in this crate calls this.** `Session` has no opinion about
+    /// origination and never asks; `fixbolt_engine` does, at the turn where the
+    /// session goes up, and bounds the loop. It is declared here because this
+    /// is where the application seam is declared —
+    /// [ADR-0048](../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md)
+    /// pays for that in its *Consequences*.
+    fn on_logon(&mut self, _nth: u32, _peer: Peer<'_>, _out: &mut [u8]) -> Option<core::ops::Range<usize>> {
+        None
+    }
+}
+
+/// Which session an application is being asked to speak on.
+///
+/// A struct rather than three more positional arguments, for the reason
+/// `JournalHealth` is one: three `&[u8]` in a row is a call nobody can read,
+/// and two of them swapped addresses the message to yourself.
+///
+/// Everything here is **this session's configuration**, borrowed. `sender` is
+/// this end and `target` is the counterparty — already the right way round for
+/// `49=` and `56=` on a message going out, which is the one place that
+/// reversal can go wrong.
+#[derive(Debug, Clone, Copy)]
+pub struct Peer<'a> {
+    /// `8` **BeginString**, such as `b"FIX.4.4"`.
+    pub begin_string: &'a [u8],
+    /// `49` **SenderCompID** on the way out — **this** end.
+    pub sender: &'a [u8],
+    /// `56` **TargetCompID** on the way out — the **counterparty**.
+    pub target: &'a [u8],
 }
 
 /// An application that never answers.
@@ -411,6 +459,35 @@ impl Config {
     #[must_use]
     pub fn inbound_target_matches(&self, comp_id: &[u8]) -> bool {
         self.sender_comp_id.matches(comp_id)
+    }
+
+    /// `8` **BeginString**, as configured.
+    ///
+    /// This and the two below are the only way to *read* an identity rather
+    /// than test one. They exist for
+    /// [ADR-0048](../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md):
+    /// an application asked to speak first is told which session it is speaking
+    /// on, and a predicate cannot say that.
+    ///
+    /// **Empty when the configured value did not fit**, the same fail-closed
+    /// answer [`Self::inbound_sender_matches`] gives. Unreachable in practice:
+    /// a `Config` whose names did not fit matches no inbound message, so no
+    /// such session ever logs on to be asked.
+    #[must_use]
+    pub fn begin_string(&self) -> &[u8] {
+        self.begin_string.get().unwrap_or(b"")
+    }
+
+    /// `49` **SenderCompID** on the way out — **this** end.
+    #[must_use]
+    pub fn sender_comp_id(&self) -> &[u8] {
+        self.sender_comp_id.get().unwrap_or(b"")
+    }
+
+    /// `56` **TargetCompID** on the way out — the **counterparty**.
+    #[must_use]
+    pub fn target_comp_id(&self) -> &[u8] {
+        self.target_comp_id.get().unwrap_or(b"")
     }
 
     /// Do these two configurations name the **same FIX session identity**?

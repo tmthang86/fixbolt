@@ -1,6 +1,6 @@
 # Một engine biết nói trước
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **Đã duyệt** (2026-09-05), đang làm
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **Xong** (2026-09-05) — xem *Nhật ký giao hàng*
 > **Phạm vi:** `STATUS.md` item 46. Chạm `engine` (`dispatch`, `observe`, `conn`, entry point),
 > `library` (`Handler`, `Reply`), **`session` — ba chỗ cộng thêm, xem Sửa 1**, docs, một ADR mới.
 > **Không chạm** `codec`, `dict`.
@@ -43,6 +43,25 @@
 >
 > **Chủ repo đảo được quyết định này bằng cách chọn (c)**: bỏ bước 2, giữ nguyên bước 3, và cửa 1
 > biến mất khỏi plan. Nếu vậy thì hai bước interop đỏ vẫn xanh được, chỉ là xanh theo cách khác.
+
+> ## Sửa 2 `[2026-09-05]` — `Outbox` không tồn tại; `Reply::originate` và `Peer` thay chỗ nó
+>
+> Mục *Cách làm* dưới đây mô tả một type `Outbox` mượn, không bị nuốt sau một message, và một
+> `Counterparty`. **Dựng ra thì cả hai đều thừa**, và cái thay chúng nhỏ hơn:
+>
+> - **`Outbox` → `Reply::originate`.** `Reply` đã làm đúng mọi thứ `Outbox` cần làm; điểm khác
+>   duy nhất là một origination **không có** `34=`/`52=` để mang. Nên `Reply` giữ `seq:
+>   Option<u32>` và `message()` chỉ ghi hai tag đó khi có. Một type mới cho một `Option` là một
+>   type không đáng.
+> - **Engine sở hữu vòng lặp, không phải ứng dụng.** Plan viết `on_logon(..., out: &mut Outbox)`
+>   ghi N message. N message dài không biết trước cần một buffer cỡ tệ-nhất — một hằng số không
+>   ai chọn được — hoặc một cấp phát, mà bất di bất dịch 1 cấm. Nên engine hỏi lại: `nth = 0, 1,
+>   2, …` cho tới khi ứng dụng trả `silent()`, mỗi lần một message, một buffer dùng chung, chặn
+>   trên bằng `MAX_ON_LOGON`.
+> - **`Counterparty` → `fixbolt_session::Peer`.** Plan quên `begin_string`, và `App` không lấy
+>   được nó từ đâu khác vì `on_logon` không có message vào. Ba `&[u8]` liền nhau là đúng thứ
+>   `JournalHealth` đã tồn tại để tránh, nên gom thành struct và để nó ở `session` cạnh trait
+>   dùng nó.
 
 > **Vì sao plan này đứng trước đợt B**, dù item 45 xếp nó *trong* đợt B cạnh
 > `settings-for-both-roles`. `[quyết định 2026-09-05]` Một acceptor chỉ biết trả lời thì không
@@ -235,4 +254,69 @@ thread khác, và một callback trên hot path cần số đo riêng của nó.
 
 ## Nhật ký giao hàng
 
-*(chưa duyệt, chưa bắt đầu)*
+### `[2026-09-05]` Cả năm bước xong. Gate quyết định **PASS 7/7**.
+
+**Dựng gì, ở đâu**
+
+| Bước | Kết quả | File |
+|---|---|---|
+| 1 | ADR-0048 `Proposed` | `docs/decisions/ADR-0048-*.md` |
+| 2 | `Application::on_logon` (thân mặc định `None`) + `Peer` + ba getter `Config`; `Dispatch::on_logon`; `Engine::speak_first` + `MAX_ON_LOGON`; `Reply::originate`; `Handler::on_logon` | `session/src/lib.rs`, `engine/src/{lib,dispatch}.rs`, `library/src/{app,reply,lib}.rs` |
+| 3 | `Sender`, hàng đợi cố định 64 × 512 B, rút đầu turn, `Engine::sender()` | `engine/src/origin.rs` (mới), `engine/src/{lib,observe}.rs` |
+| 4 | `Desk::on_logon` gửi hai `35=B`; **bỏ dòng miễn trừ** trong `tools/interop` | `tools/interop/src/{desk,main}.rs` |
+| 5 | Ba case alloc, D15, và toàn bộ bảng §4 | `benches/alloc.rs`, `DESIGN.md`, `GUIDE.md`, `CONFIGURATION.md`, `SESSION-BEHAVIOUR.md`, `CHANGELOG.md`, `STATUS.md` |
+
+**Gate nào xanh** — máy: Apple M5, macOS, `cargo 1.95.0`. **Không phải máy §9**, nên ở đây không
+có số thời gian nào cả, chỉ có đếm và pass/fail.
+
+```
+cargo test --all                     506 passed  0 failed   (495 trước đó, +11)
+cargo test --all --no-default-features 502 passed  0 failed
+cargo clippy --all-targets -D warnings  sạch
+scripts/check-lint-config.sh         RED ok, GREEN ok
+scripts/check-no-optional-deps.sh    ok
+scripts/check-links.py               1385 link, 0 chết
+cargo bench -p fixbolt-engine --bench alloc
+    27 case, tất cả 0, gồm origin-idle origin-busy logon-first
+interop, hai vai chĩa vào nhau       PASS 7/7   (5/7 trước đó)
+```
+
+**Đảo ngược, cái nào đỏ ở đâu** — mỗi cái chạy rồi khôi phục:
+
+| Đảo | Kết quả |
+|---|---|
+| bịt `speak_first` trong `turn` | 3/5 test cửa 1 đỏ, **`--test score` vẫn 59/59** |
+| bịt `originate` trong `turn` | 5/6 test cửa 2 đỏ, hai test cửa 1 vẫn xanh |
+| bỏ relaxed-load trước `try_lock` | **đúng một** test đỏ: `drains()` đọc 20 thay vì 0 |
+| tiêm `format!` vào hai đường gửi | `origin-busy` 2000, `logon-first` 16 |
+
+**Ba thứ hoá ra không đúng như plan viết, đã ghi lại chứ không lặng lẽ đổi:**
+
+1. **Sửa 1** ở đầu file: cửa 1 không mở được nếu không chạm `crates/session`. Ba thứ cộng thêm,
+   đều trơ, và ba phương án đã loại được nêu tên.
+2. **`Peer` thay ba tham số rời.** Plan viết `on_logon(nth, sender, target, out)`; thiếu
+   `begin_string`, mà `App` không lấy được từ đâu khác vì không có message vào. Năm tham số vị
+   trí là thứ `JournalHealth` đã tồn tại để tránh, nên gom thành struct.
+3. **`logon-first` đo 16 lần gọi trên một session, không phải 500 session.** Hai lý do, cả hai
+   tìm ra bằng cách làm sai trước: `Engine::add` cấp phát một lần mỗi connection (là setup, và
+   không case nào khác trong file này đo nó), và **một identity chỉ được một connection**, nên
+   500 session cùng `Config` để lại 499 bị loại — bộ đếm đọc `1 sends over 500 sessions`. Thả
+   đầu `Loopback` cũng không giải phóng slot vì ống trong bộ nhớ không báo EOF.
+
+**Cái tìm được mà plan không lường:** `35=B` chỉ có `148=` **lên tới dây, replay đúng ở resend,
+và vẫn bị counterparty từ chối** — `FIX44.xml:294` bắt buộc cả `LinesOfTextGrp`. Hai bước của
+cùng một gate nhìn cùng hai message và trả lời ngược nhau, vì một bước khớp byte còn một bước
+đếm delivery. Ghi ở
+[a-message-on-the-wire-is-not-a-message-delivered](../reference/a-message-on-the-wire-is-not-a-message-delivered.md),
+có marker `[to testing-skills]`.
+
+**Cái gì chưa làm, và vì sao**
+
+- **`serve` không phát `Sender`** — cũng không phát `Observer` hay `Admin`, và chuyện đó có
+  trước plan này. Nên qua cửa trước chỉ với tới được cửa 1. **Mở thành item 47**, không sửa ở
+  đây: bước 3 của plan nói `Engine::sender()` và chỉ thế, mở rộng tại chỗ là đúng thứ Rule Zero
+  ngăn.
+- **Chưa chạy `scripts/interop.sh` với `libquickfix` thật** — cần build QuickFIX; job `interop`
+  trong CI là nơi nó chạy, và **CI trên đúng commit này là hộp cuối của §9 chưa tick.**
+- **Chưa có số nào trên máy §9.** Không đụng hot path của byte, nhưng `benches/turn.rs` có thêm
+  một `Option` check mỗi turn và **chưa ai đo lại nó trên máy có baseline**.

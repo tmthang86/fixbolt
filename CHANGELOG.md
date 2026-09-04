@@ -17,6 +17,30 @@ below describe what a first release would contain.
 
 ### Added
 
+- **An application can speak first.** Two new doors, and before them every application message
+  this engine could send was a *reply*
+  ([ADR-0048](docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md),
+  `DESIGN.md` D15, `GUIDE.md` §8d).
+  - `fixbolt::Handler::on_logon(&mut self, who: Peer<'_>, nth: u32, reply: Reply<'_, P, S>)
+    -> Answer` — **a default body that says nothing**, so every existing handler compiles
+    unchanged. Asked `nth = 0, 1, 2, …` on the engine thread until it answers
+    `reply.silent()`, bounded by `fixbolt::MAX_ON_LOGON` (16).
+  - `fixbolt_engine::Engine::sender() -> fixbolt::Sender` — `Send + Sync + Clone`, rides the
+    `Arc` that `Observer` and `Admin` already ride. `send(id, msg) -> bool`; `false` means
+    nothing was taken, because the queue was full (`ORIGIN_CAPACITY`, 64) or the message was
+    empty or over `ORIGIN_LEN` (512).
+  - `fixbolt::Reply::originate(begin_string, sender, target, out)` — a `Reply` with no
+    sequence number and no stamp, because the session writes both on the way out.
+  - `fixbolt_session::Peer<'_>` — `begin_string`, `sender`, `target` for the session being
+    spoken on; re-exported as `fixbolt::Peer`.
+  - New `EventKind` variants `SpokeFirstToTheBound { sent }` and
+    `OriginationUndeliverable { count }`, and `Engine::speak_first_sends()`.
+- **`fixbolt_session::Application::on_logon`**, with a default body returning `None`.
+  Nothing in `fixbolt-session` calls it — the engine does, at the turn a session comes up —
+  and it is declared there because that is where the application seam is declared. Adding it
+  breaks no existing implementation.
+- **`fixbolt_session::Config::begin_string()`, `sender_comp_id()`, `target_comp_id()`** — the
+  first way to *read* a configured identity rather than test one.
 - **The four buffer sizes are the caller's, through the front door.** Every serving entry point
   has a `*_with` twin taking `N`, `RX`, `TX` and `APP` as const parameters —
   `serve_with`, `serve_hft_with`, `serve_with_recovery_with`, `serve_hft_with_recovery_with`,

@@ -32,6 +32,7 @@ pub mod frame;
 pub mod journal;
 pub mod msglog;
 pub mod observe;
+pub mod origin;
 pub mod presession;
 pub mod reconnect;
 pub mod recovery;
@@ -65,6 +66,23 @@ use crate::msglog::{MessageLog, NoLog};
 use crate::transport::{Interest, Source, TcpTransport, Transport};
 use crate::wait::Waiting;
 use fixbolt_session::journal::Journal as SessionJournal;
+
+/// The most messages one session may originate from
+/// [`Application::on_logon`](fixbolt_session::Application::on_logon).
+///
+/// **A guard against a handler that never answers `None`, not a tuning knob.**
+/// The engine asks `on_logon` in a loop and a handler that always answers would
+/// otherwise hold the engine thread for good — which non-negotiable 4 forbids
+/// in `hft` and which is merely unusable everywhere else.
+///
+/// **There is no measurement behind the number** and
+/// [ADR-0048](../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md)
+/// says so: 16 is comfortably above the handful of messages a session opening
+/// has ever been observed to need, and far below anything that would matter to
+/// a turn. Hitting it emits
+/// [`EventKind::SpokeFirstToTheBound`](crate::observe::EventKind::SpokeFirstToTheBound)
+/// rather than passing in silence.
+pub const MAX_ON_LOGON: u32 = 16;
 
 /// A running engine: the connections it holds, and what drives them.
 ///
@@ -119,6 +137,16 @@ pub struct Engine<
     /// messages arriving up to one whole timeout late. Counted so the failure is
     /// visible rather than merely slow. See [`Self::sources_missing`].
     sources_missing: usize,
+    /// Messages applications originated from
+    /// [`Application::on_logon`](fixbolt_session::Application::on_logon).
+    ///
+    /// **Exists so a benchmark can prove the door opened.** `benches/alloc.rs`
+    /// case `logon-first` counts allocations across many sessions logging on,
+    /// and a zero there must mean *"did not allocate"* rather than *"did not
+    /// run"* — which nothing else on this engine could distinguish, because a
+    /// handler with nothing to say and a door that never opens look identical
+    /// from outside. See [`Self::speak_first_sends`].
+    speak_first_sends: u64,
     /// Connections ended because the dispatch would not take a message.
     ///
     /// **Zero on a healthy engine.** Non-zero means the application behind the
@@ -204,6 +232,7 @@ where
             shard: self.shard,
             interests: self.interests,
             sources_missing: self.sources_missing,
+            speak_first_sends: self.speak_first_sends,
             refused_connections: self.refused_connections,
             cfg: self.cfg,
             dispatch: self.dispatch,
@@ -260,6 +289,7 @@ where
             // sizing mistake rather than a steady state.
             interests: Vec::with_capacity(capacity + 2),
             sources_missing: 0,
+            speak_first_sends: 0,
             refused_connections: 0,
             cfg,
             dispatch,
@@ -539,6 +569,17 @@ where
         crate::observe::Observer(std::sync::Arc::clone(shared))
     }
 
+    /// Application messages this engine has sent from
+    /// [`Application::on_logon`](fixbolt_session::Application::on_logon).
+    ///
+    /// The running total since the engine was built. See the field's own note:
+    /// it exists so `benches/alloc.rs` can tell *"allocated nothing"* from
+    /// *"never ran"*.
+    #[must_use]
+    pub const fn speak_first_sends(&self) -> u64 {
+        self.speak_first_sends
+    }
+
     /// A handle that can **change** this engine, as [`Self::observer`] is the
     /// one that can only look.
     ///
@@ -553,6 +594,25 @@ where
             .observe
             .get_or_insert_with(|| std::sync::Arc::new(crate::observe::Shared::new()));
         crate::observe::Admin(std::sync::Arc::clone(shared))
+    }
+
+    /// A handle that can make this engine **say something it was not asked
+    /// for**, from any thread. [ADR-0048] door 2.
+    ///
+    /// Same `Arc` as [`Self::observer`] and [`Self::admin`], same mechanism,
+    /// **a third capability**: an `Observer` can only look, an `Admin` can move
+    /// sequence numbers, and a [`Sender`](crate::origin::Sender) can originate.
+    /// `STATUS.md` item 46.
+    ///
+    /// One allocation, here, never on a turn — and none at all if this is
+    /// called after either of the other two, because all three share the cell.
+    ///
+    /// [ADR-0048]: ../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md
+    pub fn sender(&mut self) -> crate::origin::Sender {
+        let shared = self
+            .observe
+            .get_or_insert_with(|| std::sync::Arc::new(crate::observe::Shared::new()));
+        crate::origin::Sender(std::sync::Arc::clone(shared))
     }
 
     /// Take whatever an operator queued and apply it, on this thread.
@@ -605,6 +665,59 @@ where
                 );
             }
         }
+    }
+
+    /// Send whatever a [`Sender`](crate::origin::Sender) queued from another
+    /// thread. [ADR-0048] door 2.
+    ///
+    /// **`try_lock`, never `lock`** — non-negotiable 4 — and one relaxed load
+    /// before the lock is even attempted, so an engine nobody sends through
+    /// pays a load per turn rather than a mutex.
+    /// `crates/engine/tests/originate.rs::an_engine_nobody_sends_through_does_not_reach_for_the_lock`
+    /// is what keeps that falsifiable.
+    ///
+    /// A message for a connection that has gone is **dropped**, deliberately:
+    /// the session that owned its sequence numbers went with it, and sending it
+    /// anywhere else would be worse. The drop is counted and emitted rather
+    /// than passed over in silence.
+    ///
+    /// [ADR-0048]: ../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md
+    fn originate(&mut self, now: u64) -> bool {
+        let Self {
+            conns,
+            log,
+            observe,
+            ..
+        } = self;
+        let Some(shared) = observe.as_ref() else {
+            return false;
+        };
+        if !shared.origin.waiting() {
+            return false;
+        }
+        let mut sent = 0usize;
+        let mut gone = 0u64;
+        shared.origin.drain(|id, msg| {
+            match conns.iter_mut().find(|c| c.id == id) {
+                Some(c) => {
+                    c.send_application(msg, now, log);
+                    sent += 1;
+                    true
+                }
+                None => {
+                    gone += 1;
+                    false
+                }
+            }
+        });
+        if gone > 0 {
+            shared.emit(
+                ConnId::MAX,
+                now,
+                crate::observe::EventKind::OriginationUndeliverable { count: gone },
+            );
+        }
+        sent > 0
     }
 
     /// Say goodbye to everyone, once, on the first turn after somebody asked.
@@ -771,6 +884,11 @@ where
         self.administer();
         self.begin_shutdown_if_asked(now);
         let mut moved = false;
+        // **Beside the commands, and before a byte is read.** A message an
+        // application queued has been waiting since the previous turn, so it
+        // goes out ahead of any reply this turn is about to produce
+        // (ADR-0048 decision 3's ordering; `tests/originate.rs` holds it).
+        moved |= self.originate(now);
         let mut i = 0;
         while i < self.conns.len() {
             // **One identity, one connection**, and it is asked before the
@@ -837,6 +955,11 @@ where
             // default body is empty. `STATUS.md` item 32 (c).
             if !was_on && self.conns[i].session.is_logged_on() {
                 self.conns[i].journal.mark_active(now);
+                // **The session may now speak first** (ADR-0048 door 1). Here
+                // and nowhere else: this is the one instant that is neither a
+                // reply nor a tick, and it is reached once per session rather
+                // than once per turn.
+                moved |= self.speak_first(i, now);
             }
             // Events cost one `Option` test per connection per turn while
             // nobody is observing, and nothing at all on an engine whose
@@ -986,6 +1109,84 @@ where
             moved |= any;
         }
         moved
+    }
+
+    /// Ask the application whether it has anything to say, now that this
+    /// session is up. [ADR-0048] door 1.
+    ///
+    /// `nth = 0, 1, 2, …` until the application answers `None`, each message
+    /// sent as it comes so nothing is accumulated and one buffer serves them
+    /// all. The buffer is a local rather than a field: this runs **once per
+    /// session**, never per turn, so its cost belongs to the connection that
+    /// caused it and not to every turn of an engine whose applications are
+    /// quiet.
+    ///
+    /// The three identity strings are copied out before the loop because the
+    /// application is reached through `&mut self` and the configuration through
+    /// `&self`. They are 32 bytes each at most.
+    ///
+    /// [ADR-0048]: ../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md
+    fn speak_first(&mut self, i: usize, now: u64) -> bool {
+        let id = self.conns[i].id;
+        let mut begin = [0u8; fixbolt_session::MAX_BEGIN_STRING_LEN];
+        let mut sender = [0u8; fixbolt_session::MAX_COMP_ID_LEN];
+        let mut target = [0u8; fixbolt_session::MAX_COMP_ID_LEN];
+        let (b_len, s_len, t_len) = {
+            let cfg = self.conns[i].session.config();
+            let (b, s, t) = (
+                cfg.begin_string(),
+                cfg.sender_comp_id(),
+                cfg.target_comp_id(),
+            );
+            if let Some(d) = begin.get_mut(..b.len()) {
+                d.copy_from_slice(b);
+            }
+            if let Some(d) = sender.get_mut(..s.len()) {
+                d.copy_from_slice(s);
+            }
+            if let Some(d) = target.get_mut(..t.len()) {
+                d.copy_from_slice(t);
+            }
+            (b.len(), s.len(), t.len())
+        };
+        let peer = fixbolt_session::Peer {
+            begin_string: begin.get(..b_len).unwrap_or(b""),
+            sender: sender.get(..s_len).unwrap_or(b""),
+            target: target.get(..t_len).unwrap_or(b""),
+        };
+        let mut buf = [0u8; APP];
+        let mut sent = 0u32;
+        for nth in 0..MAX_ON_LOGON {
+            let Self {
+                conns,
+                log,
+                dispatch,
+                ..
+            } = self;
+            let Some(r) = dispatch.on_logon(id, nth, peer, &mut buf) else {
+                return sent > 0;
+            };
+            let Some(msg) = buf.get(r) else {
+                // A range outside the buffer it was handed. The application is
+                // broken, and the honest answer is to stop asking it rather
+                // than to send something else.
+                return sent > 0;
+            };
+            conns[i].send_application(msg, now, log);
+            sent += 1;
+            self.speak_first_sends += 1;
+        }
+        // Reached the bound with the application still willing. Never silent:
+        // a session that opens a few messages short and says nothing is the
+        // failure this event exists to make visible.
+        if let Some(shared) = self.observe.as_ref() {
+            shared.emit(
+                id,
+                now,
+                crate::observe::EventKind::SpokeFirstToTheBound { sent },
+            );
+        }
+        sent > 0
     }
 
     /// Rebuild the list of sources an idle turn should wait on, and return it.

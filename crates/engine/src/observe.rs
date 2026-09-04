@@ -312,6 +312,11 @@ pub(crate) struct Shared {
     /// different capability**: [`Observer`] cannot reach this and [`Admin`]
     /// can.
     pub(crate) commands: Commands,
+    /// Messages an application originated on another thread, waiting for the
+    /// engine's next turn. **A third capability on one `Arc`**: an
+    /// [`Observer`] cannot reach it, an [`Admin`] cannot either, and a
+    /// [`Sender`](crate::origin::Sender) can — ADR-0048 decision 4.
+    pub(crate) origin: crate::origin::Origin,
     /// Somebody asked the engine to stop, and how long they will wait.
     ///
     /// Two atomics rather than one: the grace period is stored **before** the
@@ -329,6 +334,7 @@ impl Shared {
             cell: Mutex::new(Snapshot::default()),
             events: Events::new(),
             commands: Commands::new(),
+            origin: crate::origin::Origin::new(),
             stop: AtomicBool::new(false),
             stop_grace_ms: AtomicU64::new(0),
         }
@@ -602,6 +608,36 @@ pub enum EventKind {
     MessageLogLost {
         /// How many records were lost since the previous turn that reported
         /// any. Not the running total — [`Snapshot::log_lost`] is that.
+        count: u64,
+    },
+    /// An application still had something to say when
+    /// [`crate::MAX_ON_LOGON`] was reached, and the engine stopped asking.
+    ///
+    /// **Zero on a healthy engine.** The bound is a guard against a handler
+    /// that never answers `None`, not a quota, so reaching it means either a
+    /// bug in the handler or a session opening that genuinely needs more than
+    /// the bound — and the operator has to be able to tell which. It is an
+    /// event rather than a counter because the alternative is a session that
+    /// starts a few messages short and never says so
+    /// ([ADR-0048](../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md)
+    /// decision 3).
+    SpokeFirstToTheBound {
+        /// How many messages did go out. Always [`crate::MAX_ON_LOGON`].
+        sent: u32,
+    },
+    /// A message an application handed to a [`Sender`] never reached a
+    /// connection.
+    ///
+    /// **Zero on a healthy engine.** The connection had already gone by the
+    /// time the engine drained the queue, so the session that owned its
+    /// sequence numbers went with it and the message had nowhere legal to go
+    /// (ADR-0048 decision 5). A queue that was *full* is not this: that is
+    /// refused at [`Sender::send`], which answers `false`.
+    ///
+    /// [`Sender`]: crate::origin::Sender
+    /// [`Sender::send`]: crate::origin::Sender::send
+    OriginationUndeliverable {
+        /// How many were dropped since the previous turn that reported any.
         count: u64,
     },
     /// Bytes the message log called `OUT` that never reached the wire.

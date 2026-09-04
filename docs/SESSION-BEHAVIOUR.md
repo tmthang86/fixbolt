@@ -144,6 +144,30 @@ session plumbing is the session's.
 
 ---
 
+## 5a. A message the application originated
+
+`[added 2026-09-05]` An application can send a message no inbound message asked for, through
+`Handler::on_logon` or a `Sender` ([`GUIDE.md` §8d](GUIDE.md), `DESIGN.md` D15,
+[ADR-0048](decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md)). What the
+session does with it:
+
+| Rule | Behaviour | Guarded by |
+|---|---|---|
+| The number is the session's | `34=` is the session's `next_out`, and it is spent. Whatever the application wrote is ignored | `crates/engine/tests/originate.rs::what_an_application_writes_into_34_and_52_is_ignored` |
+| The clock is the session's | `52=` is stamped from the session's last tick, not from anything the application supplied | the same test |
+| The frame is rebuilt | `8=`, `9=` and `10=` are written by the session; body fields are reordered from the generated tables | `Session::send_application`, and non-negotiable 5 |
+| It is kept for a resend | an originated message goes into the journal ring like any other outbound application message, and replays with `43=Y` | `scripts/interop.sh` acceptor role, step `resend` |
+| Before Logon and after Logout, nothing happens | the session discards it and reports `Link::Up`. **Not an error**: an application that offers a message to a session that is not up has done nothing wrong | `Session::send_application`'s state check |
+| A full ring, a dead connection | a `Sender` message for a connection that has gone is dropped and counted (`EventKind::OriginationUndeliverable`); a full queue is refused at the call | `crates/engine/tests/originate.rs::a_message_for_a_connection_that_has_gone_is_dropped_and_counted`, `::a_full_queue_refuses_at_the_call_rather_than_losing_a_message` |
+| Ordering within a turn | a message queued from another thread goes out **before** any reply that turn produces, because it has been waiting since the previous turn | `crates/engine/tests/originate.rs::an_origination_and_a_reply_in_one_turn_do_not_corrupt_each_other` |
+
+**None of this is in the acceptance corpus.** Every `.def` file is stimulus-then-response, so a
+message needing no stimulus cannot be written in that format — `[measured 2026-09-05]` removing
+the door entirely leaves `--test score` at 59 / 59. The gate that holds it is
+`scripts/interop.sh`'s acceptor role, judged by `libquickfix`.
+
+---
+
 ## 6. What this page does not claim
 
 The 59 `.def` files are a conformance corpus, not an adversarial one

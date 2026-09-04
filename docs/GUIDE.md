@@ -1090,6 +1090,9 @@ session.send_application(&msg, &mut journal, emit);
 **Reconnect, backoff and a schedule for an initiator are the engine's** (§8c), and no part of
 them is covered by the acceptance corpus or the interop gate (STATUS item 38).
 
+**That list is the layer below.** If you are writing a `Handler` and using `serve`, §8d is
+your section: you never hold a `Session`.
+
 ---
 
 ## 8c. Dialling out, and coming back
@@ -1243,6 +1246,71 @@ Two more entries from STATUS's *Not proven* matter here: **nothing authenticates
 of an `Admin`** (who you pass that handle to is the whole of the access control), and
 **nothing stops accepting during a shutdown**, so a socket arriving in the grace period is
 dropped rather than told anything.
+
+---
+
+## 8d. Speaking first from an application: two doors
+
+`[added 2026-09-05]` Until this existed, **everything your application could send was an
+answer**. `Handler::on_message` replies to one inbound message and there was nothing else. So
+there was no way to send an `ExecutionReport` for a fill that lands a second after the order,
+no quote stream, and nothing to say to a counterparty that is connected and quiet
+([ADR-0048](decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md), `DESIGN.md`
+D15).
+
+**Door 1 — `Handler::on_logon`.** Anything that has to be said as the session opens.
+
+```rust
+fn on_logon(&mut self, who: Peer<'_>, nth: u32, reply: Reply<'_, P, S>) -> Answer {
+    match nth {
+        0 => reply.message(b"B").field(148, b"desk is up").send(),
+        _ => reply.silent(),   // this is how you stop
+    }
+}
+```
+
+**Door 2 — `Sender`.** Anything said later, from any thread.
+
+```rust
+let tx = engine.sender();          // Send + Sync + Clone
+std::thread::spawn(move || {
+    if !tx.send(conn_id, &bytes) { /* the queue was full, or it did not fit */ }
+});
+```
+
+**Six constraints the compiler cannot hold:**
+
+1. **`on_logon` runs on the engine thread**, exactly like `on_message`. Everything §2 says
+   applies to it: a lock, a database call or a log flush there stalls the session layer. If
+   the work is not instant, hand it to another thread and use `Sender`.
+2. **`nth` is how you stop.** The engine asks `0, 1, 2, …` until you answer `reply.silent()`,
+   and stops on its own at `MAX_ON_LOGON` (16). If you never say silent you get sixteen
+   messages, an `EventKind::SpokeFirstToTheBound` on the event stream, and no more.
+3. **`Sender::send` returning `true` means queued, not sent.** The engine takes it at the top
+   of its next turn. A `false` means **nothing was taken** — either the queue was full
+   (`ORIGIN_CAPACITY`, 64) or the message was empty or longer than `ORIGIN_LEN` (512). Read
+   the return value; this is the one loss that is reported at the call.
+4. **A `Sender` message for a connection that has gone is dropped**, on purpose: the session
+   that owned its sequence numbers went with it. Watch `Sender::undeliverable()` or
+   `EventKind::OriginationUndeliverable`, and route by an id you got from a `Snapshot`, not
+   by one you cached across a disconnect.
+5. **A session that is not logged on discards silently.** `Sender::send` answers `true` — it
+   queued — and the session then has nothing to do with it. Check `SessionSnapshot::logged_on`
+   if that matters to you.
+6. **You still never write `34=` or `52=`.** `Reply` leaves them out for an origination and
+   the session writes them on the way out. Writing them yourself is not an error and is not
+   respected either.
+
+**And one the compiler cannot hold that is not about this engine at all:** the message you
+originate is validated by the *counterparty's* dictionary. `[measured 2026-09-05]` a `35=B`
+News carrying only `148=` is legal-looking, reaches the wire, replays correctly on a resend —
+and is refused by the receiver, because `FIX44.xml` also requires the `33`/`58` group. Read
+the message definition before you originate a type you have not sent before
+([reference/a-message-on-the-wire-is-not-a-message-delivered.md](reference/a-message-on-the-wire-is-not-a-message-delivered.md)).
+
+**`serve` does not hand you a `Sender` yet.** Door 2 needs an `Engine` you drive yourself;
+through `fixbolt::serve` only door 1 is reachable. So is `Observer` and so is `Admin` —
+the gap is older than this feature and is `STATUS.md` item 47.
 
 ---
 

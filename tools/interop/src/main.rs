@@ -465,12 +465,18 @@ fn run(w: &mut Wire, score: &mut Score, target: &str) -> Option<()> {
     // `[2026-09-04]` **This step no longer ends the run when nothing arrives.**
     // It used to carry `?`, so a counterparty that sent no News aborted every
     // step after it and the binary printed `PASS 1/1` — a green fraction over a
-    // scenario that never ran. The trigger was the fixbolt-with-fixbolt
-    // assembly check in `--role acceptor`: `fixbolt::serve` has **no way for an
-    // application to originate a message** (`Handler::on_message` only answers;
-    // `Admin::Command` moves sequence numbers and nothing else), so this step
-    // is red there **by design** and the five steps after it still have to run.
-    // Against the C++ acceptor nothing changes.
+    // scenario that never ran. That stays: a step that cannot run must not be
+    // able to hide the ones behind it.
+    //
+    // `[2026-09-05]` **What no longer stays is the exemption.** The trigger was
+    // the fixbolt-with-fixbolt assembly check in `--role acceptor`, where
+    // `fixbolt::serve` had no way for an application to originate a message, so
+    // this step and step 5 were red there *by design* and said so.
+    // [ADR-0048] built the door and `desk::Desk::on_logon` walks through it, so
+    // **both steps are now expected green in both directions** and a red here
+    // is a red. `STATUS.md` item 46.
+    //
+    // [ADR-0048]: ../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md
     w.read_until(6, |m| m.contains("|35=B|"));
     w.read_until(6, |m| m.contains("|35=B|"));
     score.step(
