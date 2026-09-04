@@ -38,6 +38,12 @@ CASES=(
   # a sibling switches the flag back on and the question stops meaning what it
   # reads as.
   "fixbolt:libc"
+  # `[2026-09-04]` tools/interop. It grew a `--role acceptor` that calls
+  # `fixbolt::serve`, so it forwards `fixbolt/standard` — the same forwarding
+  # shape as the line above, in a crate whose whole reason for existing is that
+  # `cargo test --all --no-default-features` must build it on a machine with no
+  # CMake. Asked per crate, because at workspace scope a sibling answers for it.
+  "fixbolt-interop:libc"
 )
 
 rc=0

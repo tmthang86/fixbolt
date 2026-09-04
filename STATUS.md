@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-03** — **`the-doc-set` IS CLOSED AND MERGED**, phases A, E, B and D, PR [#32](https://github.com/tmthang86/fixbolt/pull/32), merge commit `16ad9b6`, **CI green on the branch tip closed, `86c3913`, run [`33742995012`](https://github.com/tmthang86/fixbolt/actions/runs/33742995012), 11 jobs of 11**. Ten new documents: the user track (`INTRODUCTION`, `GETTING-STARTED`, `TUTORIAL`, `CONFIGURATION`, `SESSION-BEHAVIOUR`, `CONFORMANCE`) and the operator track (`best-practices-standard`, `best-practices-hft`, `hft-playbook`), plus `crates/library/README.md` as the crate's rustdoc front page. **Open item 33 is closed for that scope**; phase C (`docs/internals/`) is **deferred to phase 2's first ADR** by Sửa 3 and carries the *engine-has-no-map* half of item 33 with it. **A new CI gate came out of it**: `docs` — `cargo doc --workspace --no-deps` under `-D rustdoc::broken_intra_doc_links`, which was **red on arrival with 13 pre-existing warnings**, six of them public documentation linking to private items. CI is 11 jobs now, not 10. Before that — **2026-09-02, PHASE 1 IS COMPLETE.** Exit criterion 6 is met and **PHASE 1 IS COMPLETE. Exit criterion 6 is met and `[2026-09-02]` **Open item 33 is new, and it is about this repository's documentation rather than its code**: `README.md` has **0 `rust` blocks**, there is **no *Getting Started* heading anywhere** in `README.md` or `docs/`, `engine::settings` accepts **10 keys** of which **`EndDay` and `MaxSkewMillis` are named in no document at all**, no page publishes the conformance results, and `engine`'s **20 modules** have no map. Planned by [the-doc-set](docs/plans/2026-09-02-the-doc-set.md); **phase A is closed**.
+Last updated: **2026-09-04**, later still — **a resend answers with the messages now, not with gap fills**. [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md) is closed: the ring is 4096 slots and O(1), a replay goes out in batches so a large resend no longer ends the session it is answering, and the two silences are counters and events. **Item 43 closed.** Before that — **the acceptor has a second opinion, and it is 7 / 7**. [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md) is closed: a `libquickfix` `SocketInitiator` drives `fixbolt::serve` over kernel TCP, `scripts/interop.sh` runs both directions in one invocation, and the `interop` CI job is blocking on both. **Item 42 closed, item 46 opened** — this engine cannot originate an application message, found by pointing the tool's two roles at each other. Before that — **drafts for waves B, C and D written** (seven files, all *Draft*, each re-verified before it becomes a plan — item 45). Before that, 2026-09-03 — **an architecture review found three gaps phase 1 closed over, and three plans are written, none started, all *Chờ duyệt***: [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md) (item 42), [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md) (item 43), [message-log](docs/plans/2026-09-03-message-log.md) (item 44). **Item 45 is the order of everything after them.** See the section immediately below. Before that — **`the-doc-set` IS CLOSED AND MERGED**, phases A, E, B and D, PR [#32](https://github.com/tmthang86/fixbolt/pull/32), merge commit `16ad9b6`, **CI green on the branch tip closed, `86c3913`, run [`33742995012`](https://github.com/tmthang86/fixbolt/actions/runs/33742995012), 11 jobs of 11**. Ten new documents: the user track (`INTRODUCTION`, `GETTING-STARTED`, `TUTORIAL`, `CONFIGURATION`, `SESSION-BEHAVIOUR`, `CONFORMANCE`) and the operator track (`best-practices-standard`, `best-practices-hft`, `hft-playbook`), plus `crates/library/README.md` as the crate's rustdoc front page. **Open item 33 is closed for that scope**; phase C (`docs/internals/`) is **deferred to phase 2's first ADR** by Sửa 3 and carries the *engine-has-no-map* half of item 33 with it. **A new CI gate came out of it**: `docs` — `cargo doc --workspace --no-deps` under `-D rustdoc::broken_intra_doc_links`, which was **red on arrival with 13 pre-existing warnings**, six of them public documentation linking to private items. CI is 11 jobs now, not 10. Before that — **2026-09-02, PHASE 1 IS COMPLETE.** Exit criterion 6 is met and **PHASE 1 IS COMPLETE. Exit criterion 6 is met and `[2026-09-02]` **Open item 33 is new, and it is about this repository's documentation rather than its code**: `README.md` has **0 `rust` blocks**, there is **no *Getting Started* heading anywhere** in `README.md` or `docs/`, `engine::settings` accepts **10 keys** of which **`EndDay` and `MaxSkewMillis` are named in no document at all**, no page publishes the conformance results, and `engine`'s **20 modules** have no map. Planned by [the-doc-set](docs/plans/2026-09-02-the-doc-set.md); **phase A is closed**.
 every one of the seven is.** `tools/w2w` ran on the owner's §9 desktop, pinned, and the wire-to-wire
 figures are published: `hft` **p50 16 010 / p99 20 589 / p99.9 22 127 ns** administrative and
 **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and
@@ -12,6 +12,193 @@ figures are published: `hft` **p50 16 010 / p99 20 589 / p99.9 22 127 ns** admin
 which declines SIMD/SWAR because parse is **0.62%** of a round trip. **Three new open items came
 out of the same measurement: 39, 40 and 41.** See the section immediately below. Before that —
 **items 27, 35, 37 and phase 1 exit criterion 4 closed; 34 halved and 36 moved 0 → 10; criterion 6 is the only exit criterion left and it wants a machine.** Before that — **PHASE 1 EXIT CRITERION 4 IS MET**: the initiator is interop-green against a real `libquickfix`, 7 / 7, blocking in CI — [plan](docs/plans/2026-09-02-the-initiator-and-its-second-opinion.md), [ADR-0042](docs/decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md), PR [#30](https://github.com/tmthang86/fixbolt/pull/30), **CI green on the commit closed, `cdd6fba`, runs [`33623429649`](https://github.com/tmthang86/fixbolt/actions/runs/33623429649) and [`33623385882`](https://github.com/tmthang86/fixbolt/actions/runs/33623385882), 10 checks of 10**. Its first run found that the initiator answered a `Logon` with a `Logon` — a defect six green gates could not see. **So phase 1 now has ONE open exit criterion, 6, and it is blocked on hardware.** Before that — **`DESIGN.md` §7's build order is COMPLETE**: step 8 `library` was the last unbuilt box and it is built — [the-library-layer](docs/plans/2026-09-02-the-library-layer.md), crate `crates/library`, package `fixbolt`, [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md). PR [#29](https://github.com/tmthang86/fixbolt/pull/29), **CI green on the commit closed, `4108881`, runs [`33618980677`](https://github.com/tmthang86/fixbolt/actions/runs/33618980677) and [`33619043496`](https://github.com/tmthang86/fixbolt/actions/runs/33619043496), 18 checks of 18**. So **phase 1 now has no unbuilt component and two open exit criteria**: 4 (initiator interop against `libquickfix` in CI — a job, deliberately left for another session) and 6 (wire-to-wire on a machine matching §9 — hardware). `tools/w2w` was run here in both modes and its figures are in *Not proven* under the machine that produced them; **they do not close criterion 6 and open item 6 stays open.** New open item **34**: the library's reply path is ~50x the D9 template shape, measured, published, and not yet fixed. Before that — **`STATUS.md` item 30 is CLOSED, all six parts**, by **six plans across eight PRs today**: [operability](docs/plans/2026-09-01-operability.md) steps 1–2 (PR #18), [session-schedules](docs/plans/2026-09-02-session-schedules.md) (PR #19), [an-engine-can-resume](docs/plans/2026-09-02-an-engine-can-resume.md) (PR #20, #21), [why-a-connection-ended](docs/plans/2026-09-02-why-a-connection-ended.md) (PR #22), [three-in-the-morning](docs/plans/2026-09-02-sequence-numbers-at-three-in-the-morning.md) (PR #23), [what-the-journal-can-answer](docs/plans/2026-09-02-what-the-journal-can-answer.md) (PR #24) and [an-ordered-shutdown](docs/plans/2026-09-02-an-ordered-shutdown.md) (PR #25; **CI green on the commit closed, `ca9ae49`, runs [`33597576154`](https://github.com/tmthang86/fixbolt/actions/runs/33597576154) and [`33597580522`](https://github.com/tmthang86/fixbolt/actions/runs/33597580522), 18 checks of 18**). Items **16**, **30** and **31** are closed; item **32** was opened by the work that closed 31 and **(b) and (c) of it closed the same day** — [recovery-reaches-the-disk](docs/plans/2026-09-02-recovery-reaches-the-disk.md), PR [#26](https://github.com/tmthang86/fixbolt/pull/26), **CI green on the commit closed, `88f4473`, runs [`33600110468`](https://github.com/tmthang86/fixbolt/actions/runs/33600110468) and [`33600141705`](https://github.com/tmthang86/fixbolt/actions/runs/33600141705)**. ADRs **0032–0040**. `[2026-09-02]` **`PRD.md`'s last open line under `many counterparties` is closed too** — [a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md), PR [#27](https://github.com/tmthang86/fixbolt/pull/27), **CI green on `826b672`, runs [`33602482251`](https://github.com/tmthang86/fixbolt/actions/runs/33602482251) and [`33602486701`](https://github.com/tmthang86/fixbolt/actions/runs/33602486701)** — so a counterparty is an edit to a file rather than a rebuild. **Everything reachable from a Mac is now done; what is left needs Linux**: items 6, 11, 12, 14, 21, 22, 24 and **32 (a)**. Before that: four plans closed 2026-09-01 (`pre-session-routing`, `what-mitigations-cost`, `release-profile`), and a doc-sync pass found **eight false bullets in this file's own *Not proven* section** plus four stale paragraphs in `DESIGN.md` and `GUIDE.md`. That pass is open items **26** and **27**. Before that: `ktls-spike` closed 2026-08-31, open item 10 answered. Before that: Re-verified on Linux the same day — see the wire-gate entry under **Proven** and open item 17. Later that day the whole suite ran for the first time on **the owner's own Linux desktop** (AMD Ryzen 7 3700X, Linux 7.0.0-30), which also **unblocked open item 10** and exposed two defects in the scripts that were supposed to be telling us so.
+
+## Start here — 2026-09-04, later still: a resend gives back the messages
+
+**Wave A's second plan is closed.** [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md),
+six steps, opened by
+[ADR-0046](docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+`cargo test --all` 446 → **463**, and CI green on the closing commit:
+run [`33850311124`](https://github.com/tmthang86/fixbolt/actions/runs/33850311124), 11 jobs of 11.
+
+### What an acceptor did before this, and does now
+
+| | before | now |
+|---|---|---|
+| 100 `ExecutionReport`s sent, counterparty asks `7=1 16=0` | replay 8, gap-fill 92, **no counter anywhere** | replay 100 |
+| a resend larger than `TX` | `Logout 58=slow consumer`, at a counterparty whose socket was empty | answered over as many turns as it takes |
+| messages older than the ring | filled, silently | filled, **counted in messages**, and `EventKind::ResendBeyondJournal { filled, oldest }` |
+| a reply longer than a slot | dropped from the journal, silently | `puts_refused`, and `EventKind::JournalRefused` |
+| `MemJournal::get` | scan of `N` | one index, one comparison |
+
+### Three things it found that the plan did not name
+
+1. **`get` returned the wrong message.** The scan took the **first** slot carrying a number, so
+   after `Admin::SetNextOut` wound the outbound count back and the number was sent again, a
+   replay returned the **stale** copy — correctly numbered, correctly checksummed, wrong
+   content. `seq % N` addressing fixes it. Red first:
+   `left: Some("the first nine")  right: Some("the second nine")`.
+2. **Plain `Session::tick` would have gap-filled the remainder of a replay.** It passes
+   `NoJournal`, which answers *"not held"* for everything, so continuing a batched replay
+   through it emits one `SequenceReset` over the lot — and the counterparty loses messages this
+   end is still holding, because the caller used the journal-less form of a timer tick. `tick`
+   stalls now; `tick_with` continues. **Stalling is recoverable; filling is not.**
+3. **`Engine::add` allocates ~2 MiB on the engine thread.** `benches/alloc.rs` found it —
+   `events-busy` 0 → 2000, and the session bench's `deliver`, `resend` and `originate` 0 →
+   10 000 each. Not fixed by deleting the call from the window: the engine bench pre-builds
+   journals and calls `add_with_journal`, so an allocation appearing in accept for any *other*
+   reason is still caught. `GUIDE.md` §6a0 and `best-practices-hft.md` §6 carry the consequence.
+
+### The reversal that matters
+
+```
+with_resend_batch(10_000)            # emit the whole range in one call, as before
+→ the session ended on turn 1 while answering a resend
+→ and --test score stays 4 passed, --test wire 2 passed
+```
+
+**The corpus cannot see this defect and never could**: no acceptance definition asks for more
+than three messages. `crates/engine/tests/backpressure.rs` is what can.
+
+### The green run, by id
+
+Run [`33850311124`](https://github.com/tmthang86/fixbolt/actions/runs/33850311124), commit `75d5ec6`,
+**11 jobs of 11** on `ubuntu-latest` — §9's last box, and the reason it exists is that a plan
+once closed on a laptop's word while CI was red on the same commit.
+
+### Next
+
+Wave A step 3: [message-log](docs/plans/2026-09-03-message-log.md) (item 44), still *Chờ duyệt*.
+It was written to follow this one because both touch `journal.rs`, and its
+*Những gì đã biết chắc* now needs re-reading against what this plan changed there.
+
+---
+
+## Start here — 2026-09-04, later: the acceptor was judged by somebody else, and passed
+
+**Wave A's first plan is closed.** [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md),
+steps 1–4 of 5. Nothing under `crates/` changed: this is a tool, a C++ counterparty, a script,
+a CI job and documentation.
+
+```
+scripts/interop.sh
+interop: PASS 7/7
+interop-acceptor: logon        ok  35=A |49=FIXBOLT| |56=QFINI| 141=Y
+interop-acceptor: order        ok  35=8 at 34=2 and 34=3, 11= matched
+interop-acceptor: heartbeat    ok  35=0 without 112= within 5 s (108=2)
+interop-acceptor: testrequest  ok  35=0 112=QF-TR-1
+interop-acceptor: resend       ok  35=8 43=Y replayed at 34=[2, 3], wanted [2, 3]
+interop-acceptor: gapfill      ok  35=2 7=7 16=0 in: yes, then 35=0 112=QF-TR-3: yes
+interop-acceptor: logout       ok  35=5
+interop-acceptor: PASS 7/7
+interop: 7 / 7 + 7 / 7 against libquickfix @ 386ce46e...
+```
+
+### The plan was revised twice, both times before the code moved
+
+**Neither revision was a detail.** `CLAUDE.md` §1's rule is that a plan found wrong mid-build
+stops the build; both of these did.
+
+1. **The self-check could not reach 7 / 7 and the reason is item 46.** Step 1 asked for a
+   fixbolt-with-fixbolt run scoring 7 / 7. Two of those steps need the counterparty to send two
+   unprompted `35=B`, and **this engine has no way to originate an application message** —
+   `Handler::on_message` answers, `Admin::Command` moves sequence numbers, nothing else writes.
+   Step 1 now expects those two steps red and says why.
+2. **The `gapfill` step asked a question the counterparty was entitled to erase.** The first
+   run of `initiator.cpp` read `FAIL 6/7` on behaviour that was **correct on both sides**:
+   QuickFIX's own gap fill covered the sequence number of the `TestRequest` that opened the
+   gap, so the answer this step waited for could never come. Survival is now proven by a fresh
+   `TestRequest` sent after the fill.
+
+### What it found, and none of it is a defect in the session layer
+
+| Finding | Where |
+|---|---|
+| This engine cannot originate an application message | item **46**, [an-acceptor-that-can-only-answer](docs/reference/an-acceptor-that-can-only-answer.md) |
+| A gap fill can swallow the question a test is waiting on | [a-gap-fill-can-swallow-the-question](docs/reference/a-gap-fill-can-swallow-the-question.md) |
+| `interop` printed `PASS 1/1` over a scenario in which one step of seven ran; and its logon step compared a hard-coded `49=QFACC` while the session was built from `--target` | [a-green-fraction-over-a-scenario-that-never-ran](docs/reference/a-green-fraction-over-a-scenario-that-never-ran.md) |
+
+**The acceptor itself was right on every one of the seven steps, first time.** Including the two
+that are easy to be quietly wrong about: it echoed `141=Y`, and it replayed **the two sequence
+numbers asked for** rather than gap-filling over them.
+
+### The three reversals, and which one mattered
+
+| Reversal | Result |
+|---|---|
+| Drop the `11=` echo from the acceptor's handler | `order FAIL`, `resend FAIL` behind it as the plan predicted — and the **initiator direction stayed 7 / 7**, so the reversal was scoped to what it aimed at |
+| Invert the resend range | `resend FAIL  replayed at 34=[], wanted [2, 3]`. **This is the reversal that was a no-op in the other direction** ([a-resend-answer-has-two-legal-shapes](docs/reference/a-resend-answer-has-two-legal-shapes.md)); it bites here because the step names the numbers |
+| Rename one grep'd step name in the script | the binary printed `interop-acceptor: PASS 7/7` and the script still failed with `MISSING OR FAILED STEP`. The per-step grep is load-bearing |
+
+### Next
+
+Wave A step 2: [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md)
+(item 43), still *Chờ duyệt*, with ADR-0046 as its step 0.
+
+---
+
+## Start here — 2026-09-03, later: three gaps phase 1 closed over, three plans written
+
+**No code changed, nothing was measured, and every number below is one this repository already
+had.** What changed is that the design was read end to end against what the code does, against
+the field, and against what an operator asks on the first day — and three things were found that
+`STATUS.md`'s *Not proven* section did not name, which is exactly the rot §4's last row exists for.
+
+### The three findings, each with the line that proves it
+
+1. **The acceptor — the headline product — has never been driven by another implementation.**
+   `scripts/interop.sh` drives this engine's *initiator* into a `libquickfix` acceptor
+   (`tools/interop/src/main.rs:1`, `scripts/interop.sh:2`). Nothing drives a `libquickfix`
+   initiator into this engine's acceptor. The 59 `.def` files are the whole of the acceptor's
+   evidence, and they are read by this repository's own runner. ADR-0042's sentence — *a second
+   implementation is the only independent opinion* — currently applies to half the engine, and
+   the half it applies to is the one that is not the differentiator. **Item 42.**
+2. **A resend gap-fills every application message older than the journal ring, and nothing
+   counts it.** `Store = MemJournal<8, 512>` (`crates/engine/src/journal.rs:40`); `FileJournal`
+   answers `get` from its ring only (`journal.rs:440–470`); the resend loop fills over whatever
+   `get` cannot find (`crates/session/src/lib.rs:2097–2130`). An acceptor that sent 100
+   `ExecutionReport`s and is asked `7=1 16=0` replays 8 and fills 92 — legal on the wire, 92
+   fills lost to the counterparty, zero on every counter. Beside it: a resend larger than `TX`
+   (8 KiB) trips D10's `Disconnect` and ends the session with `58=slow consumer`
+   (`conn.rs:581`), and `MemJournal::get` is a linear scan (`journal.rs:112`). **Item 43.**
+3. **There is no message log.** The journal keeps outbound application messages for resend;
+   inbound is `mark_in(seq)`, one number; refused frames are gone the moment they are refused;
+   `tracing` appears nowhere under `crates/*/src`. *"What did we receive at 10:32:07?"* has no
+   answer. **Item 44.**
+
+Three smaller things were confirmed on the way and are folded into the plans rather than
+itemised: `benches/alloc.rs` has **no case** for `FileJournal` (the `Async` push into a 1 MiB
+`AtomicU8` ring is on the engine thread and uncounted); `tools/w2w` measures back-to-back
+round trips only, so every published figure is the warm-cache best case; `mlockall` is in §9
+and in no line of code.
+
+### What the review did NOT find
+
+The approach is right for the positioning it states. Nothing below is reversed: the pure
+session, the corpus as unit tests, two modes with a machine check each, per-machine baselines,
+inline dispatch as the default, `MessageView` at 24 bytes, kernel bypass deferred. The
+landscape re-read (`docs/reference/prior-art.md`, 2026-09-03 section) still shows no pure-Rust
+acceptor with a production track record.
+
+### The order decided, and why it is this order
+
+**Fix before extend.** Phase 2 changes `MessageView` and `Dictionary`; every session or journal
+defect found after that is fixed twice. And *clear all open items first* is not an option: items
+32 (a), 40 and 41 wait on the §9 desktop, 14 is research. So:
+
+| Wave | Plans, in order | Why here |
+|---|---|---|
+| **A — phase 1 honest** (≈1 week) | [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md) → [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md) → [message-log](docs/plans/2026-09-03-message-log.md) | interop first because it is cheapest and may change the other two, as the initiator gate did on its first run; resend before log because both touch `journal.rs` |
+| **B — what the first user trips on** (≈1 week) | `settings-for-both-roles` (initiator keys, `ResetOn*`, `LogonTimeout`/`LogoutTimeout`, per-session validation knobs, `MaxMessageSize`, a credentials hook that sees the `Logon`, a `35=j` helper) → `seq-resync-789-369` → `timestamp-micros` | not plans yet: written when wave A closes, so they inherit what it finds |
+| **C — one visit to the §9 desktop** (2 days at the box) | `the-second-linux-desk`: NIC to NIC (40), `SO_BUSY_POLL`/`SO_PREFER_BUSY_POLL`, `w2w --interval` for cold-cache figures, `mlockall`, a `FileJournal` and `FileLog` alloc case, item 39, item 41 | everything that needs the machine, batched |
+| **D — debts phase 2 would double** (≈1 week) | `const-templates-in-dict` (item 34, and it shapes the encoding ADR) → `deterministic-simulation` (fault-injecting harness + a session fuzz target) | testing infrastructure pays twice once there are two encodings |
+| **Phase 2** | one opening ADR: the encoding trait, a dictionary chosen at `Logon` by the registry, and `docs/internals` (phase C of the doc set) | — |
+
+TLS has a plan slot after wave B (ADR-0018 unblocked it; 3–5 days). `io_uring` and kernel bypass
+are **not** planned: the first needs the NIC-to-NIC number to be worth an ADR, the second is
+item 14 unchanged. The mirrored corpus (36) stays open and blocks nothing. `[2026-09-04]` Drafts for B, C and D
+exist at the owner's request; each is re-verified and revised when its wave is reached, and
+none is approved — item 45 carries the rule and the links.
 
 ## Start here — 2026-09-02, this session: **phase 1 is complete**
 
@@ -711,7 +898,7 @@ because C++ and CMake in CI is a standing maintenance cost rather than a one-off
 | Branch | `[2026-09-03]` **`main`**, at **`16ad9b6`** — PR [#32](https://github.com/tmthang86/fixbolt/pull/32) merged `plan/the-doc-set` no-ff and the branch is deleted on both sides. **CI green on the tip that was merged, `86c3913`, run [`33742995012`](https://github.com/tmthang86/fixbolt/actions/runs/33742995012), 11 jobs of 11.** Before that: `[2026-09-01]` **`claude/linux-desktop-testing-review-pgpaw1`**, and it **is** `origin/main` — the last five plans were merged onto it through PRs [#11](https://github.com/tmthang86/fixbolt/pull/11)–[#15](https://github.com/tmthang86/fixbolt/pull/15) and the remote's default branch now points at the same commit, `73e48c6`. **CI green there, run [`33473213210`](https://github.com/tmthang86/fixbolt/actions/runs/33473213210).** A local `main` ref left over from before that will read 83 commits behind; `git fetch origin main` settles it. **This is the branch-convention question below, answered by practice rather than by decision, and it should still be written down.** Before that: **`ktls-spike-steps-2-5`** — PR [#10](https://github.com/tmthang86/fixbolt/pull/10), `ktls-spike` closed. `[measured 2026-08-31]` **CI green on the commit being closed, `1b9b356`, run [`33386125577`](https://github.com/tmthang86/fixbolt/actions/runs/33386125577), 9 / 9 jobs.** Before that: **`main`.** PR #2 (`claude/project-status-hdx7k1`) merged 2026-08-30 as **`6d35b75`**, no-ff, 12 commits — `standard-mode` closed. `[measured 2026-08-30]` **CI green on the merge commit itself, run [`33326803468`](https://github.com/tmthang86/fixbolt/actions/runs/33326803468)**, and on the merged head `ae3d78a` before it, run `33325530208`, 9 / 9 jobs. `git diff ae3d78a 6d35b75` is **empty**, so the branch's green transfers to the merge exactly rather than by assumption. Before that: PR #1 merged as `76d6989`, run `33307963879` |
 | Milestone | **M3 — the engine, closed, and the corpus now passes through four different paths.** `[measured 2026-08-30]` **59 / 59** in process, and through a real socket, on the M5 **and** on Linux x86_64 — the 39/59 this row used to carry was open item 17, the harness's settle criterion rather than the engine, and it is **closed**. `[measured 2026-08-30]` **59 / 59 in `standard` mode**, `[measured 2026-09-01]` **59 / 59 through two shards**. `codec`, `dict`, `conformance` and `session` are closed behind it. `[2026-09-02]` **`DESIGN.md` §7 is complete**: step 8 `library` is built, and the corpus is untouched by it — `score` and `wire` both still assert 59. `[2026-09-02]` **§7 step 7 is complete too, and so is phase 1**: `tools/w2w` ran on the §9 desktop, pinned, and criterion 6 is met — `hft` p50 **16 010 ns** administrative, **19 908** application; `standard` **19 447** and **20 920**. Open item 6 is closed |
 | Scope | **[PRD.md](docs/PRD.md)** — phase 1 = FIX 4.4 tag=value both sides; phase 2 = SBE / FAST / FIXML + FIX 5.0. **TLS has ADR-0005 (Accepted), now supplemented by [ADR-0018](docs/decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md), and still no plan — but it is no longer blocked**: open item 10 closed 2026-08-31 |
-| Plan in flight | **None, and nothing is approved-and-not-started either.** `[2026-09-03]` **[the-doc-set](docs/plans/2026-09-02-the-doc-set.md) closed and merged** (A, E, B, D; C deferred to phase 2) — PR [#32](https://github.com/tmthang86/fixbolt/pull/32). **[counterparty-registry](docs/plans/2026-09-01-counterparty-registry.md) is CLOSED, not pending** — this cell called it *approved and not started* for two days after item 28 had been struck; it closed 2026-09-01 with ADR-0029 and ADR-0030. **So the next unit of work starts with writing a plan, not with picking one up**, and the candidates are open items **34** (the library's reply path, machine-independent to fix), **39** (the dictionary pass has never been timed), **36 / 38** (the initiator, still paused on ADR-0006) and **phase 2's first ADR**, which is also what un-defers `docs/internals/`. Before that: `[2026-09-01]` three closed that day — `pre-session-routing`, `what-mitigations-cost`, `release-profile`; `[2026-08-31]` six before them — `threads-and-affinity`, `standard-mode`, `serialise-and-the-60ns-target`, `session-recovery`, `ring-full-policy`, `ktls-spike`; `[2026-08-30]` `gates-that-can-be-trusted` and `data-fields`. `[2026-09-02]` **`w2w-and-linux-numbers` is now closed in full** — half B ran at the desktop and closed items 6, 11, 13 and the decision on 12, which is what closed phase 1. **One plan is neither closed nor in flight and says why**: the initiator plan is **paused** on ADR-0006. **So the next unit of work starts with writing a plan, not with picking one up** |
+| Plan in flight | **None started. Three written 2026-09-03, all *Chờ duyệt*** — [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md), [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md), [message-log](docs/plans/2026-09-03-message-log.md), in that order; item 45 holds what follows them. Before that — **None, and nothing is approved-and-not-started either.** `[2026-09-03]` **[the-doc-set](docs/plans/2026-09-02-the-doc-set.md) closed and merged** (A, E, B, D; C deferred to phase 2) — PR [#32](https://github.com/tmthang86/fixbolt/pull/32). **[counterparty-registry](docs/plans/2026-09-01-counterparty-registry.md) is CLOSED, not pending** — this cell called it *approved and not started* for two days after item 28 had been struck; it closed 2026-09-01 with ADR-0029 and ADR-0030. **So the next unit of work starts with writing a plan, not with picking one up**, and the candidates are open items **34** (the library's reply path, machine-independent to fix), **39** (the dictionary pass has never been timed), **36 / 38** (the initiator, still paused on ADR-0006) and **phase 2's first ADR**, which is also what un-defers `docs/internals/`. Before that: `[2026-09-01]` three closed that day — `pre-session-routing`, `what-mitigations-cost`, `release-profile`; `[2026-08-31]` six before them — `threads-and-affinity`, `standard-mode`, `serialise-and-the-60ns-target`, `session-recovery`, `ring-full-policy`, `ktls-spike`; `[2026-08-30]` `gates-that-can-be-trusted` and `data-fields`. `[2026-09-02]` **`w2w-and-linux-numbers` is now closed in full** — half B ran at the desktop and closed items 6, 11, 13 and the decision on 12, which is what closed phase 1. **One plan is neither closed nor in flight and says why**: the initiator plan is **paused** on ADR-0006. **So the next unit of work starts with writing a plan, not with picking one up** |
 | Last closed | **[2026-08-30-engine.md](docs/plans/2026-08-30-engine.md)** — closed 2026-08-30. **All six steps done.** `DESIGN.md` §7 step 6, taken before step 5 by decision. The gate that matters — the same 59 definitions **through a real socket** — went green at step 3 and did not move afterwards. Two ADRs came out of it: [ADR-0007](docs/decisions/ADR-0007-spsc-ring-without-unsafe.md) and [ADR-0008](docs/decisions/ADR-0008-journal-is-a-trait.md) |
 | Paused | **[2026-08-29-session-initiator.md](docs/plans/2026-08-29-session-initiator.md)** — steps 1–2 done and merged 2026-08-30; steps 3–4 not started. Paused because the mirrored gate measures less than the plan assumed — see the two measurements below |
 | Last closed | **[2026-08-28-session-layer.md](docs/plans/2026-08-28-session-layer.md)** — closed 2026-08-29. **All six steps done: 59 / 59.** Steps 1, 3, 4, 5 and 6b hit their prediction; step 2 missed it low (18 predicted) and step 6a missed it high (52 predicted), both for reasons written down in the plan. Eleven revisions recorded there |
@@ -791,6 +978,28 @@ of run [`33623429649`](https://github.com/tmthang86/fixbolt/actions/runs/3362342
 `cdd6fba`, **and the job's own log was read back rather than its conclusion**. Two controls:
 reversing the Logon fix gives `FAIL 2/7`; swapping the resend range gives `FAIL 6/7` — and gave
 `PASS 7/7` until the step stopped accepting any `43=Y`.
+
+`[measured 2026-09-04]` **and the other direction: a real `libquickfix` initiator, into this
+engine's acceptor.** `scripts/interop.sh` compiles `tools/interop/initiator.cpp` against the
+same pinned QuickFIX, stands up `fixbolt::serve` in `standard` mode behind
+`tools/interop --role acceptor`, and scores **7 steps, 7 / 7**: `logon` (with `141=Y` echoed),
+`order` (two `35=D` → two `35=8`, paired on `11=`), `heartbeat` (unprompted `35=0` carrying no
+`112=`, on a deadline read from the `108=` on the wire rather than from a config file),
+`testrequest`, `resend` (**the two original numbers replayed with `43=Y`**), `gapfill`
+(`35=2 7=7 16=0`, then a **fresh** `TestRequest` answered after the fill), `logout`. The judge
+is a `FIX::Log`, not `fromApp`: QuickFIX drops a `PossDup` replay of a number it has already
+seen before the application sees it, and the resend step asks for exactly that.
+Unlike the initiator direction, **the whole stack is under test** — the poller, the pre-session
+table, the settings file, the library `Handler`. Green on macOS 15 (Apple M5) **and on `ubuntu-latest`**
+(cmake 3.31.6, g++ 13.3.0): the blocking `interop` CI job runs both directions in one
+invocation — job
+[`100900997589`](https://github.com/tmthang86/fixbolt/actions/runs/33833427382/job/100900997589) of run
+[`33833427382`](https://github.com/tmthang86/fixbolt/actions/runs/33833427382), commit `f94e36e`,
+**11 jobs of 11 green, and this job's own log read back** rather than its conclusion. Three reversals, each red on its own step and each restored: dropping the `11=` echo
+(`order FAIL`, and the initiator direction still `PASS 7/7`); inverting the resend range
+(`resend FAIL  replayed at 34=[], wanted [2, 3]` — **the reversal that was a no-op in the other
+direction**); renaming one grep'd step name, which failed the script while the binary printed
+`PASS 7/7`.
 
 `[measured 2026-09-02]` **the mirrored corpus moved off zero, and it can now fall.**
 `cargo test -p fixbolt-session --test mirror` reads **2 / 50** —
@@ -1815,6 +2024,25 @@ instead of tidied away.
   shape that eventually disagrees.
 - The ADRs are accepted on the strength of the reasoning in them, **not on measurement** — see the §8 caveat above.
 
+- ~~**The acceptor has never been driven by another implementation.**~~ — **CLOSED
+  2026-09-04**, and struck in the same commit as the code, which is the rule §4's last row
+  exists for. `scripts/interop.sh` now drives a `libquickfix` `SocketInitiator` into
+  `fixbolt::serve` and scores **7 / 7**, in the same blocking CI job as the other direction.
+  `docs/CONFORMANCE.md` §7. **What is still not proven and is not this bullet**: it is 7 cases,
+  not a second corpus; `hft` mode has no interop gate; one counterparty, no TLS, no schedule,
+  no shards. And every other acceptor result on this page — 59 / 59 in process, over a socket,
+  in `standard`, through two shards — is still this repository's runner reading QuickFIX's
+  definitions.
+- ~~**A resend that reaches past the journal ring is silent.**~~ — **CLOSED 2026-09-04**, and
+  struck in the same commit as the code. It is counted (`resend_beyond_journal`, in messages),
+  emitted (`EventKind::ResendBeyondJournal { filled, oldest }`), and the ring is 4096 slots
+  rather than 8. **What is still not proven**: no deployment has run with a 4096-slot ring
+  under load, the `+2 195 456` byte RSS reading is from a laptop and not a §9 machine, and the
+  `FileJournal` `Async` ring still drops records in silence when full — the same shape one
+  layer down, named in ADR-0046's *Consequences* as remaining debt and deferred to wave C.
+- **Nothing records what was received.** `[2026-09-03]` `grep -rn tracing crates/*/src` is
+  empty; the journal is outbound-only by design (D7). Item 44.
+
 ## Open items
 
 Every one of these is either inside a plan or has a stated reason for not being in one. Every
@@ -1822,6 +2050,12 @@ plan below is **approved**; the topmost is the one in progress.
 
 | Plan | Closes |
 |---|---|
+| ~~[acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md)~~ | 42 — **CLOSED 2026-09-04**, steps 1–4 of 5. Both directions in one script, **7 / 7 + 7 / 7**, blocking in CI. Revised twice during the build, both times recorded in the plan before the code changed. Step 5 (item 38) not done |
+| ~~[resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md)~~ | 43 — **CLOSED 2026-09-04**, six steps, ADR-0046 accepted. Ring 4096 and O(1), two counters, two events, replay in batches. `cargo test --all` 446 → 463. CI run [`33850311124`](https://github.com/tmthang86/fixbolt/actions/runs/33850311124), 11 / 11 |
+| **[message-log](docs/plans/2026-09-03-message-log.md)** | 44 — **written 2026-09-03, *Chờ duyệt***, after the plan above. `MessageLog` trait in `engine`, `FileLog` on the journal's ring→writer pattern, both directions **including refused frames**, `FileLogPath` in the settings file; step 4 (journal CRC32, format v1) separable |
+| [settings-for-both-roles](docs/plans/2026-09-04-settings-for-both-roles.md) · [seq-resync-789-369](docs/plans/2026-09-04-seq-resync-789-369.md) · [timestamp-micros](docs/plans/2026-09-04-timestamp-micros.md) · [tls](docs/plans/2026-09-04-tls.md) | 45, wave B — **Draft 2026-09-04**, re-verified and revised before approval; see item 45 |
+| [the-second-linux-desk](docs/plans/2026-09-04-the-second-linux-desk.md) | 45, wave C, and items 39, 40, 41 — **Draft 2026-09-04**; needs the §9 desktop and a second machine with a NIC |
+| [const-templates-in-dict](docs/plans/2026-09-04-const-templates-in-dict.md) · [deterministic-simulation](docs/plans/2026-09-04-deterministic-simulation.md) | 45, wave D, and item 34 — **Draft 2026-09-04**; both before phase 2's encoding ADR |
 | ~~[the-initiator-and-its-second-opinion](docs/plans/2026-09-02-the-initiator-and-its-second-opinion.md)~~ | **STEPS 1–3 CLOSED 2026-09-02** — **phase 1 exit criterion 4**, [ADR-0042](docs/decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md). Merged PR [#30](https://github.com/tmthang86/fixbolt/pull/30), CI green on `cdd6fba`, runs [`33623429649`](https://github.com/tmthang86/fixbolt/actions/runs/33623429649) and [`33623385882`](https://github.com/tmthang86/fixbolt/actions/runs/33623385882), 10 checks of 10. Three origination functions, an interop gate against a real `libquickfix` at 7 / 7, and a blocking CI job. **Its first run found a defect six green gates could not see**, and its second reversal was a no-op that exposed a hole in the gate itself — two `docs/reference/` entries, both `[to testing-skills]`. **Step 4 (the mirrored gate at 45 / 50) is not done** and became open item 36 |
 | ~~[the-doc-set](docs/plans/2026-09-02-the-doc-set.md)~~ | 33 — **CLOSED AND MERGED 2026-09-03**, phases A, E, B, D; **C deferred to phase 2's first ADR**. PR [#32](https://github.com/tmthang86/fixbolt/pull/32), merge `16ad9b6`, CI green on `86c3913`, run [`33742995012`](https://github.com/tmthang86/fixbolt/actions/runs/33742995012), 11 jobs of 11. **B6 was the one step that found a defect rather than a gap**: `cargo doc` under `-D rustdoc::broken_intra_doc_links` was red with 13 pre-existing warnings, six of them public docs linking to private items; all fixed, and the `docs` CI job now holds them, proven by reversal. **PHASE A CLOSED 2026-09-02**: item 33 registered, `README.md:23` corrected, `GUIDE.md:331`'s fence closed, and a **Where to start** section written — the bootstrap was not recorded anywhere a newcomer would look. CI green on the commit closed, `37cb3c5`, run [`33608929249`](https://github.com/tmthang86/fixbolt/actions/runs/33608929249), **9 jobs of 9**. **Written twice**: the first draft was measured against `73e48c6`, and 73 commits had landed by the time it was written down — `GUIDE.md` had already grown 501 → 1054 lines and absorbed operations, so `OPERATIONS.md` was dropped before it was written. Sửa 1 in the plan records it. **Sửa 3, 2026-09-03, owner-reviewed**: phase C (`docs/internals/`) is deferred until phase 2's first ADR decides whether `MessageView` generalises — those pages would describe exactly what that ADR may change; E gains `#![warn(missing_docs)]` on `library` (`[measured 2026-09-03]` **0** missing today, so it is a ratchet, not work) and crate docs served from `crates/library/README.md` so its snippet compiles under `cargo test -p fixbolt --doc`; order is A → E → B → D; **10 files, not 17**. Hosting stays `docs/`: the repository is private, Pages there needs GitHub Pro and publishes publicly; mdBook can read the directory as-is later, so new files avoid GitHub-only syntax |
 | ~~[a-registry-from-a-file](docs/plans/2026-09-02-a-registry-from-a-file.md)~~ | **CLOSED 2026-09-02, all four steps** — `PRD.md`'s last open line under `many counterparties`, [ADR-0040](docs/decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md). Merged PR [#27](https://github.com/tmthang86/fixbolt/pull/27), CI green on `826b672`, runs [`33602482251`](https://github.com/tmthang86/fixbolt/actions/runs/33602482251) and [`33602486701`](https://github.com/tmthang86/fixbolt/actions/runs/33602486701). `engine::settings` reads a QuickFIX-shaped INI with no new dependency; 34 tests, five reversals. **The plan's own reversal 2 was wrong** — it predicted one test would stay green and nine went red, because every fixture inherits its required keys; 2b is the half that discriminates. And a reversal *not* in the plan found that all three wire tests were blind to which of two silences they were seeing |
@@ -1891,3 +2125,8 @@ against hardware that does not exist.
 | 39 | **The dictionary pass on every inbound message has never been timed, and `DESIGN.md` §8's parse row is not it.** `[measured 2026-09-02]` found by the wire measurement, then confirmed by reading the code it pointed at. `benches/parse.rs` parses with **`NoDict`**, so its 122.6 ns is framing, field indexing, `9=` and `10=` — with the dictionary parameter set to a type whose every answer is a no-op. The session then runs a **separate pass**: for every field `is_header`, `is_defined_tag`, `field_type`, `allows(msg_type, tag)`, `enum_allows`, `field_type().accepts()`, plus group delimiter and member checks; then `required_header()` and `required(msg_type)`, calling `view.get(tag)` — **a linear scan of the field index** — once per required tag. A `NewOrderSingle` carries 14 fields and ~13 required tags against a `Heartbeat`'s 6 and ~8. **What makes this an item rather than a note**: the app round trip is **3 898 ns** above the admin one and every committed benchmark together accounts for **~320 ns** of that, so ~3.6 µs is unattributed and this is the largest candidate. **It is a candidate, not a cause** — `[measured 2026-08-30]` this repository has already published a wrong cause for a whole day on arithmetic of exactly this shape ([the score followed the timeout](docs/reference/measured-costs.md)), so nothing is claimed until a benchmark of the pass exists. **What it needs**: a case in `crates/session/benches/` timing the pass alone on a `NewOrderSingle` and on a `Heartbeat`, a baseline for it, and then §8 either gains a row or the 3.6 µs is still unexplained and says so | `DESIGN.md` §8's honesty about its own parse row |
 | 40 | **`DESIGN.md` §6's wire-to-wire row asks for NIC to NIC and item 6 closed over loopback.** The figures published on 2026-09-02 contain no driver, no interrupt and no wire — which is why §9's NIC IRQ affinity row reads `unknown` beside every one of them, correctly. §6 now carries **two** rows: the loopback one, met, and this one, open. **What it needs and does not have**: a second machine to run the load generator on, `SO_TIMESTAMPING` in `tools/w2w` so the timestamps come off the NIC rather than off `Instant::now()` in the client, and a switch between them. **Phase 1 did not ask for this** — `PRD.md` §2 criterion 6 asks for `tools/w2w` on Linux with the §9 settings stated, and that is what closed. This row exists so the stricter reading is not quietly retired by the weaker one being satisfied | §6's second wire-to-wire row |
 | 41 | **`scripts/bench.sh --strict` is red on the §9 desktop, and it was red before this session touched anything.** `[measured 2026-09-02]` `git diff origin/main -- crates/` is **empty** for the branch that closed phase 1, so nothing here caused it. Two cases are over their band and both reproduce across six consecutive runs on a quiet box: **`encode ExecutionReport (template)` 274.2 · 279.6 · 275.5 · 283.3 · 275.0 · 279.4 ns** against a baseline of 239.1 × 1.10 = 263.0 — **6 of 6 over, ~+16%**; and **`presession, read and route an identity` 201.3 · 197.9 · 201.6 · 202.2 · 209.3 · 205.7 ns** against 84.0 × 1.10 = 92.4 — **6 of 6 over, ~+140%**. Five cases have **no baseline for this CPU**, which is what makes `--strict` exit non-zero: the three `fixbolt/cost` cases (recorded on a cloud VM 2026-09-02, never on this box) and two new `presession, registry lookup` cases. **Everything else is in band**, including `parse NewOrderSingle (validated)` at 119.8–121.7 against 122.6, which is what [ADR-0045](docs/decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md) rests on. **Two hypotheses, neither tested**: for `encode`, [ADR-0044](docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md) changed `TemplateBuilder` on 2026-09-02 and the bench builds outside its timed loop, so only a layout change to `Template` itself could reach it; for `read and route`, two cases were **added to the same suite** after that baseline was recorded, and a suite's own composition changes what the case measures. **The 140% one is the priority** and it is not a hot path the message takes — it is once per connection | `bench.sh --strict`, which is the gate non-negotiable 10 leans on |
+| 42 | ~~**The acceptor has no second opinion.**~~ — **CLOSED 2026-09-04.** [acceptor-interop](docs/plans/2026-09-03-acceptor-interop.md), steps 1–4; step 5 was optional and is **not done**, so item 38 stays open. `tools/interop` grew `--role acceptor` (`fixbolt::serve` in `standard`, a `Desk` handler, a readiness line printed by a thread that actually connected); `tools/interop/initiator.cpp` is a `libquickfix` `SocketInitiator` that scores seven steps **on the raw wire strings**, because QuickFIX drops a `PossDup` replay before the application sees it and the resend step asks for exactly that. `scripts/interop.sh` runs both directions in one invocation — **7 / 7 + 7 / 7** — and the `interop` CI job publishes four transcripts. **Three reversals, each red on its own step**: dropping the `11=` echo reddened `order` while the initiator direction stayed 7 / 7; the inverted resend range that was a **no-op in the other direction** reddened `resend` here, because the step names the two sequence numbers it wants; and renaming one grep'd step name failed the script while the binary still printed `PASS 7/7`. **Two findings came out of it, neither a defect in this engine**: the first run was red on `gapfill` because QuickFIX's own gap fill swallowed the `TestRequest` the step was waiting on ([a-gap-fill-can-swallow-the-question](docs/reference/a-gap-fill-can-swallow-the-question.md)), and the assembly check found that **this engine cannot originate an application message** — new item 46, [an-acceptor-that-can-only-answer](docs/reference/an-acceptor-that-can-only-answer.md). Two false greens in `tools/interop` itself are at [a-green-fraction-over-a-scenario-that-never-ran](docs/reference/a-green-fraction-over-a-scenario-that-never-ran.md) | the honesty of *fastest acceptor* as a claim |
+| 43 | ~~**A resend gap-fills every application message older than the journal ring, silently, and a large resend ends the session.**~~ — **CLOSED 2026-09-04.** [resend-from-the-journal](docs/plans/2026-09-03-resend-from-the-journal.md), six steps, [ADR-0046](docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md) as step 0. **All five parts of the row are answered**: `SLOTS` 8 → 4096 (≈2 MiB a session, `[measured 2026-09-04]` +2 195 456 bytes of RSS); `Journal::put -> bool` and `Journal::oldest`, neither with a default; two counters and two events, in **messages** not occurrences, and a fill over an administrative message deliberately not counted; a replay in batches of `Config::resend_batch`, so a resend larger than `TX` no longer ends the session; and `get` is one index and one comparison. **Three things it found that the row did not name**: the old `get` returned the **stale** message for a number reused after `Admin::SetNextOut` — a scan that took the first matching slot; plain `Session::tick` would have gap-filled the remainder of a replay through `NoJournal`, so it now stalls and `tick_with` continues; and `Engine::add` now allocates ~2 MiB on the engine thread, which `benches/alloc.rs` caught at `events-busy` 0 → 2000 and which `GUIDE.md` §6a0 and `best-practices-hft.md` §6 carry. **The reversal that matters**: `with_resend_batch(10_000)` reads *"the session ended on turn 1 while answering a resend"* **while `--test score` stays 59 / 59** — the corpus never asks for more than three messages, so only `crates/engine/tests/backpressure.rs` can see it | deployability of the acceptor for order flow |
+| 44 | **There is no message log.** `[2026-09-03]` D7's journal is outbound application messages, for resend; inbound is one number (`mark_in`, ADR-0017); a refused `Logon` or a garbage frame is gone once the session answers; `tracing` is in no crate. *"What did we receive at 10:32:07?"* cannot be answered from this engine. **Plan: [message-log](docs/plans/2026-09-03-message-log.md)**, *Chờ duyệt*, after item 43's plan because both touch `journal.rs` | the first dispute with a counterparty |
+| 45 | **The order of everything after wave A, so it does not live only in a chat.** `[decided 2026-09-03]` **B** — `settings-for-both-roles` (initiator keys, `ResetOnLogon/Logout/Disconnect`, `LogonTimeout`/`LogoutTimeout`, per-session validation knobs, `MaxMessageSize`, a registry that sees the `Logon` for 553/554/96, a `35=j` helper on `Reply`), `seq-resync-789-369`, `timestamp-micros`; then TLS (ADR-0018 unblocked it). **C** — `the-second-linux-desk`: item 40, `SO_BUSY_POLL`/`SO_PREFER_BUSY_POLL`/`SO_INCOMING_NAPI_ID`, `w2w --interval` for cold-cache figures, `mlockall` read back from `/proc/self/status`, alloc cases for `FileJournal` and `FileLog`, items 39 and 41. **D** — `const-templates-in-dict` (item 34) and `deterministic-simulation` (fault-injecting harness plus a session fuzz target), both before phase 2 because two encodings pay for them twice. **Then phase 2**, opened by one ADR: the encoding trait, a dictionary chosen at `Logon` by the registry, `docs/internals` — **and the consolidation pass of `DESIGN.md`, deliberately not before.** `[decided 2026-09-04]` The review asked whether the design needs rewriting; it does not: no decision in D1–D13 is reversed, the findings are defaults, evidence and missing features, and each plan amends the section it touches. What the page does need is editorial — 1 258 lines that read as layered `[measured]` paragraphs, so D7 takes four *As built* passes to say what it is today. Doing that now would be redone by waves A–D; the encoding ADR is the one moment the architecture genuinely changes (D2, D3, D9 presuppose tags on the wire), so that is when §4 is restated to hold only the current decision, and the history moves to `measured-costs.md` and the ADRs. **Deliberately not planned**: `io_uring` (needs the NIC-to-NIC number first; ADR-0012 open question 3), kernel bypass (item 14), `SendRedundantResendRequests`, `RefreshOnLogon`, a database store, `DefaultApplVerID` before FIXT. `[2026-09-04]` **Drafts exist for all of B, C and D, at the owner's request, and every one carries the same rule in its header: it is not a plan until its turn comes.** When a wave is reached, the draft's *Những gì đã biết chắc* is re-verified against the code of that day (waves A and B change `journal.rs`, `observe`, `settings`, the resend loop), the plan is revised, and only then does it move to *Chờ duyệt* — a draft is a starting point, not an approval. B: [settings-for-both-roles](docs/plans/2026-09-04-settings-for-both-roles.md), [seq-resync-789-369](docs/plans/2026-09-04-seq-resync-789-369.md), [timestamp-micros](docs/plans/2026-09-04-timestamp-micros.md), then [tls](docs/plans/2026-09-04-tls.md). C: [the-second-linux-desk](docs/plans/2026-09-04-the-second-linux-desk.md). D: [const-templates-in-dict](docs/plans/2026-09-04-const-templates-in-dict.md), [deterministic-simulation](docs/plans/2026-09-04-deterministic-simulation.md). **One fact surfaced while drafting and is not yet a test**: `clock::parse_utc` accepts 17 and 21 bytes only (`crates/session/src/clock.rs:40`), so a counterparty's microsecond `52=` reads as `None` — what the session does next is the first step of the micros draft | nothing; it is the map |
+| 46 | **This engine cannot originate an application message.** `[measured 2026-09-04]` `Handler::on_message` returns one reply to one inbound message (`crates/library/src/app.rs:117`); `Admin::Command` has three variants and all three move sequence numbers (`crates/engine/src/observe.rs:649`); nothing else writes to a connection. So there is no `ExecutionReport` for a fill that lands a second after the order, no quote stream, no out-of-band `35=j`, and nothing to say to a counterparty that is connected and quiet. **Found by pointing this repository's two interop roles at each other**, before the C++ counterparty existed: the fixbolt acceptor could not send the two unprompted `35=B` the initiator role's steps 2 and 5 expect, so those steps are red against it by design and the plan's step-1 self-check now says so. Every gate is blind to this by construction — the 59 `.def` files, `end_to_end.rs`, `interop.sh` and `w2w` are all stimulus-then-response, so a capability needing no stimulus is outside their coordinate system. [an-acceptor-that-can-only-answer](docs/reference/an-acceptor-that-can-only-answer.md). **Not fixed in the plan that found it**: it is a public-API change in `library` and `engine` and needs its own ADR. Belongs in wave B beside `settings-for-both-roles`, which already carries the `35=j` helper | an acceptor that can only answer is not one a desk can run |

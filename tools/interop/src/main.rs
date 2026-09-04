@@ -1,7 +1,25 @@
-//! Drive this engine's **initiator** into a real `libquickfix` acceptor.
+//! Put this engine and a real `libquickfix` on opposite ends of a socket, in
+//! **both directions**.
 //!
-//! Phase 1 exit criterion 4, and [ADR-0004] decision 5 named it before any of
-//! the mirroring existed:
+//! ```text
+//! interop --role initiator --connect 127.0.0.1:15644   # this engine dials out
+//! interop --role acceptor  --listen  127.0.0.1:15645   # this engine listens
+//! ```
+//!
+//! `--role initiator` is phase 1 exit criterion 4 and is the whole of what this
+//! binary did until 2026-09-04: it drives `Session<Initiator, 256>` into a C++
+//! acceptor and scores seven steps itself.
+//!
+//! `--role acceptor` is the other half, and it is **the half that is the
+//! product**. It runs the real acceptor — `fixbolt::serve`, the engine loop,
+//! the pre-session registry — and scores nothing: the judge is
+//! `tools/interop/initiator.cpp`, on the other end of the socket. Until it
+//! existed, the acceptor's entire evidence was 59 `.def` files read by this
+//! repository's own runner, and ADR-0042's sentence — *a second implementation
+//! is the only independent opinion* — applied to the half of the engine that is
+//! not the differentiator.
+//!
+//! [ADR-0004] decision 5 named the risk before any of the mirroring existed:
 //!
 //! > the mirrored corpus is **this project's own reading** of a suite written
 //! > for the other direction, and a wrong reading stays green in it
@@ -14,26 +32,46 @@
 //!
 //! # What is under test, and what is not
 //!
-//! **Under test: the session layer's initiator, over kernel TCP.** Framing,
-//! sequence numbers, timestamps, the seven administrative types, the resend
-//! machinery in both directions, and the six things an operator can order.
+//! **`--role initiator`, under test: the session layer's initiator, over kernel
+//! TCP.** Framing, sequence numbers, timestamps, the seven administrative
+//! types, the resend machinery in both directions, and the six things an
+//! operator can order.
 //!
-//! **Not under test: the engine's polling loop.** This drives
+//! **`--role initiator`, not under test: the engine's polling loop.** It drives
 //! `Session<Initiator, 256>` over a blocking `TcpStream` rather than through
 //! `fixbolt_engine::Engine`, because criterion 4 is about the protocol and the
 //! engine loop already has `crates/engine/tests/wire.rs` and `tools/w2w` over
 //! the same kernel sockets. `STATUS.md` carries that limit rather than leaving
 //! it to be discovered.
 //!
+//! **`--role acceptor`, under test: everything the other role leaves out.**
+//! `fixbolt::serve` in `standard` mode — the poller, the pre-session table, the
+//! settings file, the library's `Handler` — with the session layer's acceptor
+//! underneath it. What is *not* under test here is `hft`: `serve_hft` spins a
+//! core at 100% and a shared CI runner is the wrong place for that. That debt
+//! stays named in `STATUS.md`.
+//!
 //! # Reading this binary's result
 //!
-//! **Read the lines, not the exit code.** Every step prints `ok` or `FAIL` with
-//! what it saw, and the last line is `interop: PASS n/n` or `interop: FAIL`.
-//! `scripts/interop.sh` greps for those. A binary that dies before printing
-//! anything and a binary that prints seven failures both exit non-zero, and
-//! they are not the same result.
+//! **Read the lines, not the exit code.** In `--role initiator` every step
+//! prints `ok` or `FAIL` with what it saw, and the last line is
+//! `interop: PASS n/n` or `interop: FAIL`. `scripts/interop.sh` greps for
+//! those. A binary that dies before printing anything and a binary that prints
+//! seven failures both exit non-zero, and they are not the same result.
+//!
+//! In `--role acceptor` this process prints only `interop: listening on <addr>`
+//! and then serves until it is killed. It has no verdict to give — the
+//! `interop-acceptor:` lines come from the C++ initiator, and a fixbolt
+//! acceptor scoring itself would be the mirrored corpus's mistake again.
 //!
 //! [ADR-0004]: ../../../docs/decisions/ADR-0004-bidirectional-engine.md
+
+// Non-negotiable 6: the feature gates the `mod` declaration itself, not only
+// the manifest entry. Without `standard` on a unix target `fixbolt::serve` does
+// not exist, so neither does the role that calls it, and this file still
+// compiles.
+#[cfg(all(feature = "standard", unix))]
+mod desk;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -90,8 +128,13 @@ struct Kept {
 }
 
 impl Journal for Kept {
-    fn put(&mut self, seq: u32, bytes: &[u8]) {
+    fn put(&mut self, seq: u32, bytes: &[u8]) -> bool {
         self.msgs.push((seq, bytes.to_vec()));
+        true
+    }
+
+    fn oldest(&self) -> Option<u32> {
+        self.msgs.first().map(|(n, _)| *n)
     }
 
     fn get(&self, seq: u32) -> Option<&[u8]> {
@@ -230,9 +273,127 @@ impl Score {
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    let addr = arg(&args, "--connect").unwrap_or_else(|| "127.0.0.1:15644".to_owned());
-    let sender = arg(&args, "--sender").unwrap_or_else(|| "FIXBOLT".to_owned());
-    let target = arg(&args, "--target").unwrap_or_else(|| "QFACC".to_owned());
+    // `initiator` by default: `scripts/interop.sh` called this binary with no
+    // `--role` for two weeks and that invocation still has to mean what it
+    // meant. A new flag that silently changes an old command is a gate that
+    // starts measuring something else.
+    match arg(&args, "--role")
+        .unwrap_or_else(|| "initiator".to_owned())
+        .as_str()
+    {
+        "initiator" => initiator(&args),
+        "acceptor" => acceptor(&args),
+        other => {
+            println!("interop: FAIL unknown --role {other} (initiator | acceptor)");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// **`--role acceptor`.** Serve until killed, and score nothing.
+///
+/// The judge is `tools/interop/initiator.cpp` at the other end of the socket.
+/// This side's only output is the readiness line the script waits on, and what
+/// `serve` says when it stops.
+#[cfg(all(feature = "standard", unix))]
+fn acceptor(args: &[String]) -> std::process::ExitCode {
+    use fixbolt::{Limits, Settings};
+
+    let addr = arg(args, "--listen").unwrap_or_else(|| "127.0.0.1:15645".to_owned());
+    let Some(cfg) = arg(args, "--cfg") else {
+        println!("interop: FAIL --role acceptor needs --cfg <settings file>");
+        return std::process::ExitCode::FAILURE;
+    };
+
+    // A mistyped key, a mistyped path or a file naming no counterparty all stop
+    // here with the line and what was written — ADR-0040. An acceptor that
+    // starts cleanly and serves nobody is indistinguishable from a firewall.
+    let table = match Settings::load(&cfg) {
+        Ok(s) => s.into_table(),
+        Err(e) => {
+            println!("interop: FAIL settings {cfg}: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let limits = match Limits::new(PENDING, 10_000) {
+        Ok(l) => l,
+        Err(e) => {
+            println!("interop: FAIL limits: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    println!(
+        "interop: fixbolt acceptor on {addr}, {} counterparties",
+        table.len()
+    );
+
+    // **The readiness line is printed by something that connected**, not by
+    // this thread before it calls `serve`. `serve` binds inside itself, so a
+    // line printed before the call would be a claim, and CLAUDE.md §10 is about
+    // exactly that: a green that was inferred rather than observed. The probe
+    // opens a socket, sees it accepted, and closes it — the pre-session stage
+    // reaps a peer that left as `Step::Gone` and the slot goes back.
+    announce_when_listening(addr.clone());
+
+    match fixbolt::serve(
+        &addr,
+        table,
+        fixbolt::app(desk::Desk::default()),
+        CAPACITY,
+        limits,
+    ) {
+        Ok(shutdown) => {
+            println!("interop: acceptor stopped: {shutdown:?}");
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            println!("interop: FAIL serve on {addr}: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Connections held at once, and sockets allowed to wait for a `Logon`.
+///
+/// Four rather than one: the readiness probe is a connection, a QuickFIX
+/// initiator that reconnects opens another before the old one is reaped, and a
+/// gate that fails on its own probe fails for a reason other than the thing
+/// under test.
+#[cfg(all(feature = "standard", unix))]
+const CAPACITY: usize = 4;
+#[cfg(all(feature = "standard", unix))]
+const PENDING: usize = 4;
+
+/// Print `interop: listening on <addr>` once a TCP connect to it succeeds.
+///
+/// On its own thread, because `serve` never returns.
+#[cfg(all(feature = "standard", unix))]
+fn announce_when_listening(addr: String) {
+    std::thread::spawn(move || {
+        for _ in 0..600 {
+            if let Ok(probe) = TcpStream::connect(&addr) {
+                drop(probe);
+                println!("interop: listening on {addr}");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        println!("interop: FAIL nothing accepted a connection on {addr}");
+    });
+}
+
+/// Without `standard` on unix there is no `serve`, so there is no role either.
+#[cfg(not(all(feature = "standard", unix)))]
+fn acceptor(_args: &[String]) -> std::process::ExitCode {
+    println!("interop: FAIL --role acceptor needs the `standard` feature on a unix target");
+    std::process::ExitCode::FAILURE
+}
+
+/// **`--role initiator`.** Phase 1 exit criterion 4, unchanged.
+fn initiator(args: &[String]) -> std::process::ExitCode {
+    let addr = arg(args, "--connect").unwrap_or_else(|| "127.0.0.1:15644".to_owned());
+    let sender = arg(args, "--sender").unwrap_or_else(|| "FIXBOLT".to_owned());
+    let target = arg(args, "--target").unwrap_or_else(|| "QFACC".to_owned());
 
     println!("interop: fixbolt initiator -> libquickfix acceptor at {addr}");
     println!("interop: {sender} -> {target}, FIX.4.4");
@@ -260,7 +421,7 @@ fn main() -> std::process::ExitCode {
     };
     let mut score = Score { steps: Vec::new() };
 
-    if run(&mut w, &mut score).is_none() {
+    if run(&mut w, &mut score, &target).is_none() {
         // A step that could not read is a failure of that step, not a crash:
         // the score below still prints, so the script sees which one.
         println!("interop: the counterparty stopped answering");
@@ -274,7 +435,7 @@ fn main() -> std::process::ExitCode {
 
 /// The scenario ADR-0004 named: logon, heartbeat, test request, resend, gap
 /// fill, logout. Each step judges itself on what came **back**.
-fn run(w: &mut Wire, score: &mut Score) -> Option<()> {
+fn run(w: &mut Wire, score: &mut Score, target: &str) -> Option<()> {
     // ---- 1. Logon -----------------------------------------------------------
     //
     // `connect` records whose turn it is; `tick` is what makes an initiator
@@ -282,9 +443,16 @@ fn run(w: &mut Wire, score: &mut Score) -> Option<()> {
     w.drive(What::Connect);
     w.drive(What::Tick);
     let reply = w.read_until(4, |m| m.contains("|35=A|"))?;
+    // `[2026-09-04]` **`49=` is compared against `--target`, not against a
+    // hard-coded `QFACC`.** The literal was invisible for as long as this
+    // binary had one counterparty; the moment `--role acceptor` gave it a
+    // second, the step went red on a Logon that was correct. A check that names
+    // its expectation in one place and reads it from another is the shape
+    // `docs/reference/` keeps collecting.
+    let from_them = format!("|49={target}|");
     score.step(
         "logon",
-        w.session.is_logged_on() && reply.contains("|49=QFACC|"),
+        w.session.is_logged_on() && reply.contains(&from_them),
         reply,
     );
 
@@ -292,8 +460,18 @@ fn run(w: &mut Wire, score: &mut Score) -> Option<()> {
     //
     // Two `35=B` News, sent by the C++ side on `onLogon`, so step 5 has real
     // messages to ask back for rather than only a gap to fill.
-    w.read_until(6, |m| m.contains("|35=B|"))?;
-    w.read_until(6, |m| m.contains("|35=B|"))?;
+    //
+    // `[2026-09-04]` **This step no longer ends the run when nothing arrives.**
+    // It used to carry `?`, so a counterparty that sent no News aborted every
+    // step after it and the binary printed `PASS 1/1` — a green fraction over a
+    // scenario that never ran. The trigger was the fixbolt-with-fixbolt
+    // assembly check in `--role acceptor`: `fixbolt::serve` has **no way for an
+    // application to originate a message** (`Handler::on_message` only answers;
+    // `Admin::Command` moves sequence numbers and nothing else), so this step
+    // is red there **by design** and the five steps after it still have to run.
+    // Against the C++ acceptor nothing changes.
+    w.read_until(6, |m| m.contains("|35=B|"));
+    w.read_until(6, |m| m.contains("|35=B|"));
     score.step(
         "news",
         w.app.app == 2,

@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
 use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::InlineDispatch;
-use fixbolt_engine::journal::Store;
+use fixbolt_engine::journal::{MemJournal, Store};
 use fixbolt_engine::observe::{EVENT_CAPACITY, Event, EventKind};
 use fixbolt_engine::transport::TcpTransport;
 use fixbolt_engine::wait::Yield;
@@ -92,7 +92,60 @@ struct Running {
     observer: fixbolt_engine::observe::Observer,
 }
 
+/// An engine whose ring holds eight messages, so a resend can reach past it
+/// without sending four thousand.
+type Small = MemJournal<8, 512>;
+
+type AccSmall = Engine<
+    TcpTransport,
+    fixbolt_session::Acceptor,
+    InlineDispatch<EchoApp>,
+    ManualClock,
+    Yield,
+    Small,
+    N,
+    RX,
+    TX,
+>;
+
 impl Running {
+    /// The same engine, with an eight-slot journal.
+    ///
+    /// **Not `Store`**, whose `SLOTS` is 4096 and is a deployment default: a
+    /// test that reaches past the ring through the default would have to send
+    /// four thousand messages, and would stop testing anything the day somebody
+    /// raised it.
+    fn start_small() -> Self {
+        let acceptor = Acceptor::bind("127.0.0.1:0").expect("a free port");
+        let addr = acceptor.local_addr().expect("bound").to_string();
+        let mut engine: AccSmall = Engine::new(
+            cfg(),
+            InlineDispatch::new(EchoApp::default()),
+            ManualClock::at(FIXED_TIME_MILLIS),
+            Yield,
+            8,
+        );
+        let observer = engine.observer();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                while let Some(t) = acceptor.accept() {
+                    engine.add(t);
+                }
+                if !engine.turn() {
+                    std::thread::yield_now();
+                }
+            }
+        });
+        Self {
+            addr,
+            stop,
+            handle: Some(handle),
+            observer,
+        }
+    }
+
     fn start() -> Self {
         let acceptor = Acceptor::bind("127.0.0.1:0").expect("a free port");
         let addr = acceptor.local_addr().expect("bound").to_string();
@@ -329,5 +382,92 @@ fn a_duplicate_identity_says_so_rather_than_blaming_the_socket() {
     assert!(
         !reasons.contains(&DropReason::TransportClosed),
         "and must not blame the network for it: {reasons:?}"
+    );
+}
+
+// ------------------------------- the two silences ADR-0046 turned into events
+
+fn order(seq: u32) -> Vec<u8> {
+    message(
+        "FIX.4.4",
+        &format!(
+            "35=D\u{1}34={seq}\u{1}11=ORD-{seq}\u{1}55=IBM\u{1}54=1\u{1}38=1\u{1}\
+             40=1\u{1}60=20260828-12:00:00\u{1}"
+        ),
+    )
+}
+
+fn resend_request(seq: u32, from: u32, to: u32) -> Vec<u8> {
+    message(
+        "FIX.4.4",
+        &format!("35=2\u{1}34={seq}\u{1}7={from}\u{1}16={to}\u{1}"),
+    )
+}
+
+/// A resend that reaches past the ring is an event, and it carries the numbers.
+///
+/// **This is the whole point of the plan this came from.** An acceptor that
+/// replayed eight of a hundred and gap-filled the rest said nothing at all: the
+/// answer is legal, the counterparty's engine sees a `SequenceReset` and moves
+/// on, and the messages are gone. Now an operator on another thread learns it,
+/// with how many and how far back the ring reached.
+#[test]
+fn a_resend_past_the_ring_is_an_event_with_the_numbers() {
+    let engine = Running::start_small();
+    let mut sock = TcpStream::connect(&engine.addr).expect("connect");
+    sock.write_all(&good_logon()).expect("logon");
+    engine.wait_for("the logon", |e| {
+        e.iter().any(|x| x.kind() == EventKind::LoggedOn)
+    });
+
+    // Twenty orders echoed: outbound 34=2..=21, of which eight are kept.
+    for seq in 2..=21 {
+        sock.write_all(&order(seq)).expect("order");
+    }
+    // "Send me everything from 2." Thirteen of those numbers are gone.
+    sock.write_all(&resend_request(22, 2, 0)).expect("resend");
+
+    let seen = engine.wait_for("a resend past the ring", |e| {
+        e.iter()
+            .any(|x| matches!(x.kind(), EventKind::ResendBeyondJournal { .. }))
+    });
+    let filled: u32 = seen
+        .iter()
+        .filter_map(|x| match x.kind() {
+            EventKind::ResendBeyondJournal { filled, .. } => Some(filled),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(
+        filled, 12,
+        "2 through 13 are the twelve that fell out: {seen:?}"
+    );
+    // **And twenty ordinary orders emitted no journal events at all.** The
+    // observer is asked once per turn, not once per message (ADR-0035), and a
+    // counter that had not moved must say nothing — an event stream that fires
+    // on every message is one nobody can read.
+    assert!(
+        !seen
+            .iter()
+            .any(|x| matches!(x.kind(), EventKind::JournalRefused { .. })),
+        "nothing was refused: {seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|x| matches!(x.kind(), EventKind::ResendBeyondJournal { .. }))
+            .count(),
+        1,
+        "one event for one resend, not one per number: {seen:?}"
+    );
+    assert_eq!(engine.observer.events_lost(), 0, "and none was dropped");
+
+    let oldest = seen.iter().find_map(|x| match x.kind() {
+        EventKind::ResendBeyondJournal { oldest, .. } => Some(oldest),
+        _ => None,
+    });
+    assert_eq!(
+        oldest,
+        Some(Some(14)),
+        "and it says how far back the ring reached: {seen:?}"
     );
 }

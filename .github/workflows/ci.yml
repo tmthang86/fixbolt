@@ -288,6 +288,11 @@ jobs:
   # tests, in clippy, in fmt and in benches/alloc.rs. Six green gates.
   # docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md.
   #
+  # `[2026-09-04]` It runs BOTH directions now. Until then the C++ counterparty
+  # only ever judged this engine's initiator, and the acceptor — the product
+  # this repository is positioned on — had no evidence but 59 `.def` files read
+  # by this repository's own runner. STATUS.md item 42.
+  #
   # This job is the only place C++ enters CI. ADR-0004 decision 7 and
   # CLAUDE.md §2 rule 6 both put the bound in the same place: libquickfix lives
   # in CI and in scripts/, never in a Cargo.toml and never on a user's machine.
@@ -296,7 +301,7 @@ jobs:
   #
   # It is BLOCKING. A criterion nobody can fail is not a criterion — PRD.md §2.
   interop:
-    name: The initiator, against a real libquickfix
+    name: Both roles, against a real libquickfix
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -324,16 +329,26 @@ jobs:
         name: Publish both transcripts on the run page
         run: |
           {
-            echo '## Interop against libquickfix'
+            echo '## Interop against libquickfix, both directions'
             echo
-            echo '### This engine'\''s initiator'
+            echo '### This engine'\''s initiator, and this engine'\''s acceptor'
             echo '```'
             cat "$RUNNER_TEMP/interop.log" 2>/dev/null || echo '(no output)'
             echo '```'
             echo
-            echo '### What the counterparty saw'
+            echo '### What the C++ acceptor saw'
             echo '```'
             cat vendor/interop-run/acceptor.log 2>/dev/null || echo '(no output)'
+            echo '```'
+            echo
+            echo '### This engine'\''s acceptor'
+            echo '```'
+            cat vendor/interop-run/fixbolt-acceptor.log 2>/dev/null || echo '(no output)'
+            echo '```'
+            echo
+            echo '### What the C++ initiator saw'
+            echo '```'
+            cat vendor/interop-run/interop-acceptor.log 2>/dev/null || echo '(no output)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

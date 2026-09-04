@@ -170,6 +170,21 @@ the engine's polling loop (the tool drives the session directly), reconnect, bac
 session schedules for an initiator — and neither do the `.def` files, which ADR-0004 already
 recorded as debt. `STATUS.md` carries it as an open item rather than as a footnote.
 
+`[2026-09-04]` **It covers the acceptor now, and the sentence above still holds for it.**
+`scripts/interop.sh` runs both directions in one script and one blocking CI job: a
+`libquickfix` initiator drives `fixbolt::serve` — the poller, the pre-session table, the
+settings file, the library `Handler` — and scores **7 / 7**, exactly as this engine's
+initiator scores 7 / 7 against a `libquickfix` acceptor. `STATUS.md` item 42 is closed,
+`docs/CONFORMANCE.md` §7 carries the commands and the machine.
+
+**It is 14 cases, not a second corpus**, and the acceptor direction does not cover `hft`
+mode, TLS, more than one counterparty, or session schedules. `[measured 2026-09-04]` the
+first run of it was red, and the red was the *test's*: it waited for a reply to the message
+that opened the gap, and the counterparty's own gap fill had covered that sequence number
+([a-gap-fill-can-swallow-the-question](reference/a-gap-fill-can-swallow-the-question.md)).
+Two more gaps found in the same review as item 42 are items 43 and 44; none of the three
+moves work between phases, and the order of what follows them is item 45.
+
 ### Phase 2 — the architectural gate that comes first
 
 **`MessageView` as designed does not generalise, and that is the finding phase 2 turns on.**

@@ -34,10 +34,21 @@ use crate::ring::{Consumer, Producer};
 /// How many messages a [`MemJournal`] keeps by default, and the ring inside a
 /// [`FileJournal`].
 ///
-/// `[measured]` the acceptance corpus never asks for more than three at once.
-/// Eight is the smallest power of two comfortably above that; a real acceptor
-/// sets its own.
-pub const SLOTS: usize = 8;
+/// `[2026-09-04]` **4096, and it used to be 8.** Eight was the smallest power
+/// of two above what the acceptance corpus asks for — *"a real acceptor sets
+/// its own"*, said the rustdoc — and nothing forced a real acceptor to set
+/// anything. An acceptor that sent 100 `ExecutionReport`s and was asked
+/// `7=1 16=0` replayed eight and gap-filled ninety-two: legal on the wire,
+/// ninety-two fills gone to the counterparty, and no counter on this side said
+/// so.
+///
+/// 4096 is chosen to hold a normal trading day for a desk, at
+/// `N × (LEN + 8)` ≈ **2 MiB per session**. A gateway holding hundreds of
+/// sessions picks a smaller `N` through the const generic — `GUIDE.md` §6 has
+/// the arithmetic.
+/// [ADR-0046](../../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
+/// decision 2.
+pub const SLOTS: usize = 4096;
 
 /// The longest message a slot holds, by default.
 ///
@@ -58,14 +69,37 @@ struct Slot<const LEN: usize> {
 /// under D1: the session says *keep this* and asks *do you still have it*, and
 /// owns neither the bytes nor the policy.
 pub struct MemJournal<const N: usize, const LEN: usize> {
-    slots: [Slot<LEN>; N],
-    at: usize,
+    /// **Boxed, and allocated once in [`Self::new`].**
+    ///
+    /// Not non-negotiable 1 broken: this is startup, in the same class as the
+    /// pre-faulted buffers D8 already asks for, and `benches/alloc.rs` counts a
+    /// window that excludes construction. It is also the only shape that is
+    /// *safe* — `MemJournal<4096, 512>` as an inline array builds 2 MiB on the
+    /// stack and moves it, and at 65 536 slots that is 32 MiB against an 8 MiB
+    /// default stack: a SIGSEGV, not a red test. The `const` assertion below
+    /// makes going back a compile error.
+    slots: Box<[Slot<LEN>]>,
+    /// The highest number ever kept, for [`Journal::oldest`]'s floor.
+    ///
+    /// Monotonic on purpose: an operator winding the outbound count backwards
+    /// ([ADR-0036]) must not lower the floor, because the messages above it are
+    /// still in the ring.
+    ///
+    /// [ADR-0036]: ../../../docs/decisions/ADR-0036-one-mechanism-two-capabilities.md
+    high_water: Option<u32>,
     /// The highest inbound sequence number delivered to the application.
     ///
     /// Not a slot: nothing is kept about an inbound message except that it was
     /// consumed, so one number is the whole of it. ADR-0017.
     highest_in: Option<u32>,
 }
+
+/// **Going back to an inline `[Slot<LEN>; N]` is a compile error, not a test.**
+///
+/// A test can be deleted, skipped, or quietly pass on a machine with a large
+/// stack. This cannot: the struct is a fat pointer and two options, and an
+/// inline 2 MiB array does not fit in 64 bytes.
+const _: () = assert!(core::mem::size_of::<Store>() <= 64);
 
 impl<const N: usize, const LEN: usize> Default for MemJournal<N, LEN> {
     fn default() -> Self {
@@ -74,48 +108,101 @@ impl<const N: usize, const LEN: usize> Default for MemJournal<N, LEN> {
 }
 
 impl<const N: usize, const LEN: usize> MemJournal<N, LEN> {
-    /// An empty journal.
+    /// An empty journal, with its slots allocated.
     ///
     /// Sequence number 0 is never used by FIX, so it is the empty marker and
     /// no separate `occupied` flag is needed.
+    ///
+    /// `[2026-09-04]` **No longer `const fn`**, because the slots are boxed —
+    /// see the field. Nothing in this repository built one in a `const`
+    /// context, and nothing published depends on it.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        let mut slots = Vec::with_capacity(N);
+        slots.resize_with(N, || Slot {
+            seq: 0,
+            len: 0,
+            buf: [0; LEN],
+        });
         Self {
-            slots: [const {
-                Slot {
-                    seq: 0,
-                    len: 0,
-                    buf: [0; LEN],
-                }
-            }; N],
-            at: 0,
+            slots: slots.into_boxed_slice(),
+            high_water: None,
             highest_in: None,
         }
     }
 }
 
 impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
-    fn put(&mut self, seq: u32, bytes: &[u8]) {
+    fn put(&mut self, seq: u32, bytes: &[u8]) -> bool {
         if bytes.len() > LEN || N == 0 {
             // Refused rather than truncated. A truncated replay is a message
             // that does not checksum; a refusal becomes a gap fill, which is
-            // legal.
-            return;
+            // legal. **And it is now reported**, so the session can count it —
+            // ADR-0046.
+            return false;
         }
-        let slot = &mut self.slots[self.at % N];
+        // **Addressed by the number, not by a write cursor.** One slot can
+        // hold one sequence number at a time, so `get` is an index and a
+        // comparison rather than a scan of all `N` — which at 4096 slots is
+        // what makes a 1000-message resend affordable instead of four million
+        // comparisons on the engine thread. ADR-0046 decision 3.
+        let slot = &mut self.slots[(seq as usize) % N];
         slot.seq = seq;
         slot.len = u16::try_from(bytes.len()).unwrap_or(0);
         slot.buf[..bytes.len()].copy_from_slice(bytes);
-        self.at += 1;
+        self.high_water = Some(self.high_water.map_or(seq, |h| h.max(seq)));
+        true
     }
 
+    /// One index and one comparison.
+    ///
+    /// **The comparison is not a formality.** `seq % N` collides every `N`
+    /// numbers, so a slot holding 9 is the slot 4105 would go in; without
+    /// `s.seq == seq` a resend for a number this end never sent would come back
+    /// as somebody else's message, correctly numbered and correctly checksummed.
+    /// `a_number_reused_after_an_admin_reset_does_not_return_the_old_bytes`
+    /// is the test, and **the scan this replaced failed it**: `find` returned
+    /// the *first* slot carrying the number, which after a wind-back was the
+    /// stale copy.
     fn get(&self, seq: u32) -> Option<&[u8]> {
-        self.slots
-            .iter()
-            .find(|s| s.seq == seq && s.len > 0)
-            .map(|s| &s.buf[..usize::from(s.len)])
+        if N == 0 {
+            return None;
+        }
+        let slot = &self.slots[(seq as usize) % N];
+        (slot.seq == seq && slot.len > 0).then(|| &slot.buf[..usize::from(slot.len)])
     }
 
+    /// The lowest number this ring can still answer for. **A floor, not a
+    /// promise that the number itself is here.**
+    ///
+    /// Exactness is not available in O(1) and is not what the caller needs.
+    /// Only *application* messages are journalled, so the numbers in the ring
+    /// are sparse — an acceptor answering one order in three keeps 2, 5, 8 —
+    /// and the smallest number actually present cannot be found without a scan.
+    /// What can be said in constant time is the useful half:
+    ///
+    /// > everything below this **certainly** fell out of the ring
+    ///
+    /// which is exactly the question a session asks before deciding whether a
+    /// gap fill is worth telling an operator about. A number *above* the floor
+    /// that `get` cannot answer was an administrative message or a refused one
+    /// — never resendable, so never a loss. ADR-0046 decision 1.
+    fn oldest(&self) -> Option<u32> {
+        if N == 0 {
+            return None;
+        }
+        let n = u32::try_from(N).unwrap_or(u32::MAX);
+        self.high_water
+            .map(|h| h.saturating_sub(n.saturating_sub(1)).max(1))
+    }
+
+    /// **Still a scan, deliberately.**
+    ///
+    /// It is asked once per connection, by recovery, and never on the message
+    /// path — `get` is the one the resend loop calls. Making this O(1) means
+    /// choosing between *max over the slots* and *the last number written*,
+    /// which differ after an operator winds the count back, and there is no
+    /// measurement saying the difference is worth the risk to a recovery path.
     fn highest(&self) -> Option<u32> {
         self.slots.iter().filter(|s| s.len > 0).map(|s| s.seq).max()
     }
@@ -437,8 +524,15 @@ fn write_loop(mut file: File, mut from_engine: Consumer) {
 }
 
 impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
-    fn put(&mut self, seq: u32, bytes: &[u8]) {
-        self.mem.put(seq, bytes);
+    fn put(&mut self, seq: u32, bytes: &[u8]) -> bool {
+        let kept = self.mem.put(seq, bytes);
+        if !kept {
+            // Refused by the ring is refused outright: a message this journal
+            // cannot answer `get` for must not reach the file either, or a
+            // recovery would read back a message the running engine could never
+            // have replayed.
+            return false;
+        }
         match self.how {
             Durability::Async => {
                 if let Some(p) = self.to_writer.as_mut() {
@@ -462,10 +556,15 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
                 }
             }
         }
+        true
     }
 
     fn get(&self, seq: u32) -> Option<&[u8]> {
         self.mem.get(seq)
+    }
+
+    fn oldest(&self) -> Option<u32> {
+        self.mem.oldest()
     }
 
     fn highest(&self) -> Option<u32> {

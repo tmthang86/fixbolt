@@ -777,6 +777,40 @@ numbers have been consumed, so under `Fsync` receiving a message pays a `sync_da
 Nothing here has measured that yet, and it is stated so you are not surprised by it rather than
 because a number exists.
 
+### 6a0. How big the resend ring has to be, and what it costs
+
+`[2026-09-04]` [ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md).
+**The in-memory ring is the whole resend store.** Disk is for restart and audit; the engine
+thread never reads a file to answer a `ResendRequest`, because that is a blocking `read` on the
+thread non-negotiable 4 protects. Anything older than the ring is gap-filled — legal on the
+wire, and gone as far as your counterparty is concerned.
+
+So the size is yours to choose, and this is the arithmetic:
+
+> **N ≥ the number of application messages you send during the longest disconnection you are
+> willing to replay across** — for most desks, one trading day.
+
+`Store` is `MemJournal<4096, 512>` and costs `N × (SLOT_LEN + 8)` ≈ **2 MiB per session**.
+A gateway holding hundreds of sessions should pick a smaller N through the const generic; §1a is
+about that trade. **The messages a resend cannot reach are not lost quietly:**
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `SessionSnapshot::resend_beyond_journal` non-zero, or `EventKind::ResendBeyondJournal { filled, oldest }` | a counterparty asked for `filled` messages the ring no longer held, and got gap fills. `oldest` is how far back it reached | raise N, or accept that disconnections longer than N messages lose data |
+| `SessionSnapshot::puts_refused` non-zero, or `EventKind::JournalRefused { count }` | your replies are longer than `SLOT_LEN`. They went out; they can never be replayed | raise `SLOT_LEN`, and re-check `resend_batch × SLOT_LEN < TX` |
+
+**`tools/jrnl` is how you get a message older than the ring** — by hand, from the file, off the
+engine thread. That is deliberate and it is the only way.
+
+**Two constraints the type system cannot hold for you:**
+
+- **`resend_batch × SLOT_LEN` must stay under `TX`.** The default is 8 × 512 = 4 KiB against
+  8 KiB. Raise `SLOT_LEN` or lower `TX` and this is the number to re-check — a batch that does
+  not fit is the defect ADR-0046 fixed, arriving again through configuration.
+- **In `hft`, pre-build journals and call `add_with_journal`.** Plain `Engine::add` builds
+  `J::default()`, which is a ~2 MiB allocation and 512 page faults **on the engine thread**.
+  `docs/best-practices-hft.md` §6.
+
 ### 6a. Your application must be idempotent per sequence number
 
 **The engine can deliver the same message twice, and after a restart it sometimes will.**

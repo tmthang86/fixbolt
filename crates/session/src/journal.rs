@@ -20,16 +20,25 @@
 
 /// The messages this end has sent, by sequence number.
 pub trait Journal {
-    /// Keep `bytes` as the message numbered `seq`.
+    /// Keep `bytes` as the message numbered `seq`. `true` if it was kept.
     ///
     /// **Only application messages are ever offered.** QuickFIX never replays
     /// an administrative message; it fills over it, and so does this session.
     ///
-    /// An implementation may refuse — there is no return value and no error,
-    /// because there is nothing the session could do about it. What a refusal
-    /// costs is a `SequenceReset` gap fill instead of a replay, which is a
-    /// legal answer to every `ResendRequest`.
-    fn put(&mut self, seq: u32, bytes: &[u8]);
+    /// An implementation may refuse — a message longer than a slot, a journal
+    /// that keeps nothing — and what a refusal costs is a `SequenceReset` gap
+    /// fill instead of a replay, which is a legal answer to every
+    /// `ResendRequest`. There is still no *error*: there is nothing the
+    /// session could do differently.
+    ///
+    /// `[2026-09-04]` **It used to return nothing, and the argument for that
+    /// was one step short.** The session can do nothing about a refusal and can
+    /// *count* it, which is
+    /// [ADR-0046](../../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
+    /// decision 5's second silence: without this, an acceptor whose replies are
+    /// longer than its slots gap-fills every resend for the rest of its life
+    /// and nothing on this side ever says so.
+    fn put(&mut self, seq: u32, bytes: &[u8]) -> bool;
 
     /// The message numbered `seq`, if it is still held.
     fn get(&self, seq: u32) -> Option<&[u8]>;
@@ -46,6 +55,21 @@ pub trait Journal {
     /// `None` would let a journal that does hold messages report that it holds
     /// none, and a session resuming from it would silently start again at 1.
     fn highest(&self) -> Option<u32>;
+
+    /// The lowest sequence number this journal can still answer [`Self::get`]
+    /// for, or `None` when it holds nothing.
+    ///
+    /// **This is what separates *"never sent"* from *"fell out of the ring"*,
+    /// and only the second is worth telling an operator about.** A session
+    /// answering a `ResendRequest` gap-fills both, identically and legally; with
+    /// this it can also count the second, which is
+    /// [ADR-0046](../../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)
+    /// decision 1.
+    ///
+    /// **No default**, for the reason [`Self::highest`] has none: a default
+    /// returning `None` would let a journal that does hold messages report that
+    /// it holds none, and the counter built on it would read zero forever.
+    fn oldest(&self) -> Option<u32>;
 
     /// Record that inbound sequence number `seq` has been consumed.
     ///
@@ -118,7 +142,15 @@ pub trait Journal {
 pub struct NoJournal;
 
 impl Journal for NoJournal {
-    fn put(&mut self, _seq: u32, _bytes: &[u8]) {}
+    /// Always `false`. A journal that keeps nothing refuses everything, and
+    /// saying so is more useful than a `true` that is not true.
+    fn put(&mut self, _seq: u32, _bytes: &[u8]) -> bool {
+        false
+    }
+
+    fn oldest(&self) -> Option<u32> {
+        None
+    }
 
     fn highest(&self) -> Option<u32> {
         None
