@@ -122,8 +122,9 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
 
     /// Bytes discarded because the socket died with them still queued.
     ///
-    /// See [`Self::unsent`]. Read by the engine after a [`Turn::Gone`], which
-    /// is the only moment it can be non-zero.
+    /// **Zero on every healthy ending.** Non-zero means the message log has
+    /// `OUT` lines for bytes that never left this machine. Read by the engine
+    /// after a [`Turn::Gone`], which is the only moment it can be non-zero.
     #[must_use]
     pub const fn unsent_bytes(&self) -> usize {
         self.unsent

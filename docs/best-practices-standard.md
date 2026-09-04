@@ -116,3 +116,18 @@ per-session allocation: `SLOTS × (SLOT_LEN + 8)` ≈ **2 MiB** at the defaults.
 - **Watch `resend_beyond_journal`.** Non-zero means a counterparty asked for messages the ring
   no longer held and got gap fills instead. `SessionSnapshot` carries the running total and
   `EventKind::ResendBeyondJournal` carries each change, with how far back the ring reached.
+
+## The message log
+
+`[2026-09-04]` **Turn it on.** `standard` already blocks when idle, so a writer thread that
+shares a core with the engine costs nothing anybody will notice, and the file is the first thing
+anyone asks for when a counterparty disputes a fill.
+
+```
+FileLogPath=/var/log/fixbolt/messages.log
+```
+
+`[DEFAULT]` only — one engine, one file, `conn=` and `shard=` inside it. Rotate with `logrotate`
+and `copytruncate`; the engine never rotates anything. Watch `Snapshot::log_lost` and
+`EventKind::MessageLogLost`: non-zero means the disk is behind the engine and the file has
+holes. `GUIDE.md` §6c has the seven things the type system cannot tell you.

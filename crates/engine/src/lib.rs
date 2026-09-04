@@ -226,6 +226,16 @@ where
         self.shard
     }
 
+    /// The message log this engine was given.
+    ///
+    /// For an orderly shutdown that wants the file complete before the process
+    /// leaves — `FileLog::close` joins the writer — and for a test or a bench
+    /// that has to read the file back and therefore has to say when. Dropping
+    /// the engine does the same thing; this is how to make it happen earlier.
+    pub const fn log_mut(&mut self) -> &mut L {
+        &mut self.log
+    }
+
     /// An engine with no connections yet.
     ///
     /// `capacity` is reserved once, here, so that adding a connection later

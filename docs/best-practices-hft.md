@@ -106,3 +106,20 @@ page faults **on the engine thread** — the thread this mode exists to keep out
   answers `get` in one index and one comparison, and disk is never read to answer a
   `ResendRequest` — non-negotiable 4, and ADR-0046 decision 5 (a) is why that is a decision
   rather than an omission.
+
+## The message log
+
+`[2026-09-04]` **Off by default, and that is the right default here.** In `hft` the log costs
+the engine thread a ring copy per message **per direction** — ~340 ns for a 200-byte message,
+so a request/reply pair pays twice `[unproven]`, `DESIGN.md` §8. That is real against a p50
+round trip of ~16 µs, and it is yours to decide.
+
+If you turn it on, **give the writer a core that is not the engine's** —
+`FileLog::open_pinned`, or `serve_sharded_hft`'s `log_path`, which opens one file per shard
+before any shard thread starts. An unpinned writer can land on the very core you isolated,
+which is the whole of ADR-0015 decision 8, and it will not look like a logging problem when it
+happens.
+
+Sharded deployments get `messages.log.0`, `.1`, … one per shard. Every engine numbers its
+connections from zero, so a single shared file would write `conn=0` for as many different
+sockets as you have shards.

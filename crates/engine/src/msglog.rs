@@ -440,9 +440,9 @@ fn write_loop(mut file: File, mut from_engine: Consumer, lost: &AtomicU64) {
                     let peer = String::from_utf8_lossy(payload).into_owned();
                     let stamp = clock.format(at_ms.saturating_sub(MILLIS_YEAR_ZERO_TO_EPOCH));
                     line.extend_from_slice(b"# conn=");
-                    line.extend_from_slice(id.to_string().as_bytes());
+                    push_num(id, &mut line);
                     line.extend_from_slice(b" shard=");
-                    line.extend_from_slice(shard.to_string().as_bytes());
+                    push_num(u64::from(shard), &mut line);
                     line.extend_from_slice(b" peer=");
                     line.extend_from_slice(peer.as_bytes());
                     line.extend_from_slice(b" opened at ");
@@ -454,9 +454,9 @@ fn write_loop(mut file: File, mut from_engine: Consumer, lost: &AtomicU64) {
                     line.push(b' ');
                     line.extend_from_slice(dir.label().as_bytes());
                     line.extend_from_slice(b" shard=");
-                    line.extend_from_slice(shard.to_string().as_bytes());
+                    push_num(u64::from(shard), &mut line);
                     line.extend_from_slice(b" conn=");
-                    line.extend_from_slice(id.to_string().as_bytes());
+                    push_num(id, &mut line);
                     line.push(b' ');
                     if let Some(peer) = peers.get(&(shard, id)) {
                         line.extend_from_slice(b"peer=");
@@ -476,6 +476,30 @@ fn write_loop(mut file: File, mut from_engine: Consumer, lost: &AtomicU64) {
             }
         }
     }
+}
+
+/// A `u64` written into `out` without allocating.
+///
+/// **`to_string()` allocates, once per number, once per line.**
+/// `[measured 2026-09-04]` the `log-busy` allocation case read **4** over two
+/// logged messages — the connection id and the shard id of each — and the
+/// counting allocator is global, so writer-thread allocations land in the same
+/// number as engine-thread ones. ADR-0037 permits the writer to allocate; it
+/// does not require it to, and two allocations per line on a busy log is a
+/// steady-state cost with a twenty-line fix.
+fn push_num(mut n: u64, out: &mut Vec<u8>) {
+    // 20 digits is `u64::MAX`, so the buffer can never be too small.
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + u8::try_from(n % 10).unwrap_or(0);
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(digits.get(at..).unwrap_or(b"0"));
 }
 
 /// `\` → `\\`, newline → `\n`, carriage return → `\r`. Everything else, and

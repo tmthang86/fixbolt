@@ -115,7 +115,7 @@ Added one at a time, each behind an approved plan.
 | `session` | L2 | The FIX session state machine. Pure. No I/O. `Role`-parameterised. Time enters as `Tick`, in **milliseconds since 0000-01-01** — see D13 | `codec`, `dict` |
 | | | `[2026-09-02]` module `schedule` — `Schedule`, `Weekday`, `Weekdays`. **When a session is open, and when both ends start again at `34=1`** ([ADR-0033](decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md)). Pure arithmetic on the millisecond timeline, **expressed in UTC**: no zone name, no IANA database, no daylight saving, because that database is a dependency that allocates in the layer non-negotiable 2 calls pure. `daily` / `weekly` / `always` / `with_weekdays` / `with_utc_offset_ms`, all returning `Option`. The whole type stands on one private `session_start(t) -> Option<u64>`, so the midnight wrap is reasoned about once. `Config::with_schedule`, `Session::resume_at` and `Session::last_active_ms` are the session-layer surface; `Schedule::always()` is the default and is **exactly neutral** — `[measured 2026-09-02]` forcing `same_session` to `true` turns five schedule tests red and leaves **59/59** green, which is what proves the corpus cannot see a schedule at all | |
 | `transport` | L0 | `Transport` trait + TCP implementation; TLS behind a feature flag (D11) | — |
-| `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal | `session`, `transport`, and **`libc` only under the `standard` feature** |
+| `engine` | L3 | TCP **acceptor and connector**, drives session machines, owns the journal, and — `[2026-09-04]` — the two-directional message log (module `msglog`, D14) | `session`, `transport`, and **`libc` only under the `standard` feature** |
 | | | `[2026-08-30]` step 1 of six exists: `Transport`, `TcpTransport`, `Loopback`, `Waiting`. `transport` is a module here rather than its own crate until something needs it to be otherwise | |
 | | | `[2026-08-30]` modules `poll`, `block` and `waker` — `poll(2)` and `standard`'s idle turn, behind `#[cfg(all(feature = "standard", unix))]`. **The crate's first external dependency and first `unsafe`, both behind that feature**: `--no-default-features` builds it with neither (ADR-0014) | |
 | | | `[2026-08-31]` module `affinity` — `CoreId`, `AffinityError`, `pin_current_thread` (which reads the mask back) and `running_on` (which reads the scheduler's own answer out of `/proc/thread-self/stat`). Behind `#[cfg(all(feature = "affinity", target_os = "linux"))]`, **off by default**, reusing the same optional `libc`. Two `unsafe` blocks, each naming its test ([ADR-0015](decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md), [ADR-0019](decisions/ADR-0019-two-unsafe-blocks-and-an-error-the-enum-can-hold.md)). Also `Topology` and `ShardPlan`: the engine refuses a core that is absent, offline, duplicated, an SMT sibling of another in the plan, or — for shard cores — outside `isolcpus`, **before any thread is created** | |
@@ -857,6 +857,47 @@ The cost is one added constant at the edge, and one asymmetry to remember:
 `codec::TimestampCache` still takes Unix milliseconds, because it is `no_std` and shared with
 callers that have no session. Bridging the two is the session's job, not the codec's.
 
+### D14 — the message log is a second file, written by the journal's pattern, and it records refusals
+
+`[2026-09-04]` The journal answers *"what did we send, numbered `seq`"*, which is what a
+`ResendRequest` needs and is D7's whole job. It cannot answer the first question a desk asks in
+a dispute: *"at 10:32:07, what did we receive, and what did we turn away?"* Inbound frames are
+kept as a number and no bytes (ADR-0017), and a frame refused before the session saw it —
+a wrong `56=`, a duplicate identity, a `Cut::Garbage` — disappears the moment the connection
+ends.
+
+**It is a second file and not an extension of the journal, because the journal's key is
+`seq`.** Every method of the session-layer `Journal` trait takes or returns one, `MemJournal`
+addresses `slots[seq % N]`, and the three things this file exists for have no sequence number
+at all. `Journal` is also a `session` trait, and a pre-session refusal is by construction bytes
+the session never sees, so merging would put in `session` something D1 forbids it to know.
+`Durability::Fsync` blocks the engine thread deliberately and a diagnostic must never; one file
+cannot serve two durability policies without branching on record kind inside the loop that is
+not allowed to branch. The full argument, with the cost counted both ways, is
+`reference/why-the-message-log-is-not-the-journal.md`.
+
+**The mechanism is ADR-0007's, unchanged**: one `Producer::push` per message per direction into
+a ring, a writer thread that formats and appends, and losses dropped and counted rather than
+waited for — ADR-0011's rule, pointed the other way, because a log that blocks the engine is
+worse than a log with a hole. The writer is allowed to allocate, for the reason
+`journal::Reader` is (ADR-0037).
+
+**`NoLog` is the default and it compiles away.** `MessageLog::LOGS` is an associated constant,
+so an engine that was never given a log carries no branch, no field and no cost — the same way
+`Dispatch::OUT_OF_BAND` folds out the out-of-band block.
+
+**What it costs the engine thread, and it is not measured yet**: one ring copy per message per
+**direction**, ~1.7 ns/byte, so ~340 ns for a 200-byte message and ~680 ns for a request/reply
+pair. `[unproven]` — arithmetic from §6's dispatch row, not a measurement of this module. §8
+carries the same caveat. What **is** measured is that it allocates nothing on that thread:
+`benches/alloc.rs` cases `log-record` (0 over a thousand records), `log-idle` and `log-busy`.
+
+**`OUT` means queued, not sent, and the gap is counted.** The line is written when a message
+reaches the outbound buffer, which is the only moment the engine can name it; a dying socket
+discards that buffer. `EventKind::MessageLogUnsent { bytes }` says how much of that
+connection's tail the file is wrong about — the line cannot be un-written, and a dispute
+artefact that overclaims sends is wrong in the worst direction.
+
 ## 5. Non-goals for v1
 
 Stated so that scope creep has to argue with a document. The full list with phases is
@@ -908,7 +949,7 @@ Each is a committed benchmark or test, named. **A target without a runnable gate
 | Session conformance, acceptor, **in `standard` mode** | **59 / 59** with the engine blocking between steps | `cargo test -p fixbolt-engine --test wire`, second case. ADR-0013's stated cost — *two modes is two things to test, for ever* — and the only place the corpus meets `standard`, since every other line of that file drives `turn` by hand where the idle strategy is never reached. **It proves the protocol, not the wiring**: `[measured 2026-08-30]` with `Block` made to ignore readiness, and again with the listener removed from the poll set, the run took 3.30 s and 3.34 s against a 3.28 s baseline — the settle criterion is 1 ms and the timeout 5 ms, so one block satisfies it either way |
 | **The engine thread never sleeps in the kernel** | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`. Traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid — the client blocks on purpose and would mask everything. `[measured 2026-08-30]` Linux 6.18 x86_64: `accept4`, `recvfrom`, `sendto` and **zero** of `epoll_wait`/`poll`/`select`/`futex`/`nanosleep`/`sched_yield`. **The script runs the binary again with `wait::Park` and fails if that run does *not* trip it** — non-negotiable 4 had two machine checks before this one and both were green with a sleep present |
 | Session conformance, acceptor, **through the shard runtime** | **59 / 59 through one shard and through two** | `cargo test -p fixbolt-engine --features affinity --test shard_wire`. Two pinned threads, two engines, connections routed by the identity in their `Logon`. `[measured 2026-08-31]` it read **57 through two** and the two failures were named and pinned; `[measured 2026-09-01]` **59 / 59** — [ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md). **And the score is not the whole gate**: the test also counts how the pre-session stage disposed of every socket, because a connection it dropped is indistinguishable from a duplicate the session refused. Exactly two are, by name — [ADR-0022](decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md) |
-| Allocations on the hot path — engine | **0**, counted separately on **twenty-one** paths: idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle, registry-lookup, observe-idle, observe-asked, events-idle, events-busy, admin-idle, admin-busy, shutdown, reconnect | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's |
+| Allocations on the hot path — engine | **0**, counted separately on **twenty-four** paths: idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle, registry-lookup, observe-idle, observe-asked, events-idle, events-busy, admin-idle, admin-busy, shutdown, reconnect, log-record, log-idle, log-busy `[added 2026-09-04]` | `crates/engine/benches/alloc.rs`, counting allocator. `busy` is a whole turn carrying a message in and a reply out, and it asserts the session is still logged on at the end of the count — `[cost]` an earlier version measured a connection that had been dropped at message two and reported the test double's queue growth as the engine's. **`log-record` is the targeted one**: it calls `MessageLog::record` a thousand times with no engine and no writer thread in the window, so a number there cannot be blamed on the harness or on the writer — `[measured 2026-09-04]` making `record` allocate once reads **1000**. `log-busy` drives a whole turn with a real `FileLog` attached, and its consumer is held rather than drained so every allocation it counts is an engine-thread one by construction; the writer thread is allowed to allocate (ADR-0037) and the counting allocator is global. **What no bench here proves** is that the writer allocates nothing while the engine runs — `tools/w2w` is where a both-threads number belongs |
 | **A journal on disk says when its session was last alive** | the instant survives the process that wrote it, the **latest** mark answers, and a file with no mark reads exactly as it did | `crates/engine/tests/on_disk.rs`, six tests, one of them through a **real socket** and the serving loop. Reversal: `mark_active` writing nothing turns **three** red. The sentinel is read by two decoders and reversing only one reads `5 passed; 1 failed` — flipping both reads `3 passed; 3 failed`, and the no-mark control stays green either way ([a-reversal-that-must-not-compile](reference/a-reversal-that-must-not-compile.md)) |
 | **The serving loop does not require the journal to have a `Default`** | putting the bound back **must not compile** | `crates/engine/tests/on_disk.rs::serving`, which uses a `FileJournal` — a type that has no honest `Default`. `[measured 2026-09-02]` restoring `J::default()` in `pump` gives `error[E0599]`. **No runnable test can hold this claim**: both versions behave identically for every type a test can name |
 | **Counterparties come out of a configuration file** | two named only in a file both log on **through a real socket**; one the file does not name gets nothing; one whose window closed two hours ago is refused while one open now is served | `crates/engine/tests/settings.rs` (30 tests) and `tests/settings_wire.rs` (4, one of them a `#[should_panic]` control proving the harness can tell a **closed** socket from a **hung** one — without it a hung acceptor reads as a refusal, which is the same defect the row below records). Reversals: ignoring an unknown key turns **1** red, accepting a file with no `[SESSION]` turns **2**, letting `[DEFAULT]` win over `[SESSION]` turns **1**, and dropping the parsed schedule turns **5** with the no-hours control green. `[measured 2026-09-02]` a reversal *not* in the plan — keeping only the file's first counterparty — left all three wire tests green, because an unserved identity and a closed window are the same silence; the fix asserts the **registry's** length at the moment it is handed to the acceptor, and two of the three then go red ([two-time-rules-share-one-observable](reference/two-time-rules-share-one-observable.md)) |
@@ -1131,6 +1172,7 @@ the ones that still are.
 |---|---|---|
 | `TestRequest` → `Heartbeat` (no application) | p50 **16 010** · p99 **20 589** · p99.9 **22 127** ns | p50 **19 447** · p99 **24 106** · p99.9 **25 609** ns |
 | `NewOrderSingle` → `ExecutionReport` (through an application) | p50 **19 908** · p99 **24 657** · p99.9 **26 150** ns | p50 **20 920** · p99 **25 618** · p99.9 **27 092** ns |
+| **if `FileLog` is on**, added per message **per direction** — a request/reply pair pays twice | ~340 ns *`[unmeasured]`* | ~340 ns *`[unmeasured]`* |
 
 §9 desktop, `check-machine.sh` `pass 12  fail 0  unknown 1`, engine pinned to isolated `cpu6`
 and the client to `cpu7`, medians of 20 whole runs of 20 000 timed round trips each, **over
