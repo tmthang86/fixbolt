@@ -317,9 +317,10 @@ có marker `[to testing-skills]`.
   đây: bước 3 của plan nói `Engine::sender()` và chỉ thế, mở rộng tại chỗ là đúng thứ Rule Zero
   ngăn.
 - ~~**Chưa chạy `scripts/interop.sh` với `libquickfix` thật**~~ — **đã chạy, và xanh.** Job
-  `interop` (*Both roles, against a real libquickfix*) pass trên `bb1d0fe`. **CI xanh 22/22**,
-  run [`33899038804`](https://github.com/tmthang86/fixbolt/actions/runs/33899038804) và
-  [`33899048688`](https://github.com/tmthang86/fixbolt/actions/runs/33899048688) — hộp cuối §9
+  `interop` (*Both roles, against a real libquickfix*) pass. **CI xanh 22/22 trên đúng commit
+  đóng plan, `c3f0d98`**, run
+  [`33899463805`](https://github.com/tmthang86/fixbolt/actions/runs/33899463805) và
+  [`33899468700`](https://github.com/tmthang86/fixbolt/actions/runs/33899468700) — hộp cuối §9
   đã tick. PR [#38](https://github.com/tmthang86/fixbolt/pull/38), **chưa merge.**
 - **Hai lần đỏ trên CI mà máy này không thấy**, cả hai đều là cờ gate mà tay quen không chạy:
   job `docs` thêm `-D rustdoc::redundant_explicit_links` (local `cargo doc` chỉ warn rồi exit 0),

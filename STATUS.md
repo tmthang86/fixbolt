@@ -28,9 +28,11 @@ out of the same measurement: 39, 40 and 41.** See the section immediately below.
 [an-engine-that-can-speak-first](docs/plans/2026-09-05-an-engine-that-can-speak-first.md) is
 **Xong**, all five steps; [ADR-0048](docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md),
 `DESIGN.md` **D15**. `cargo test --all` 495 → **506**.
-**CI green 22 checks of 22 on the branch tip, `bb1d0fe`, runs
-[`33899038804`](https://github.com/tmthang86/fixbolt/actions/runs/33899038804) and
-[`33899048688`](https://github.com/tmthang86/fixbolt/actions/runs/33899048688).**
+**CI green 22 checks of 22 on the branch tip, `c3f0d98`, runs
+[`33899463805`](https://github.com/tmthang86/fixbolt/actions/runs/33899463805) and
+[`33899468700`](https://github.com/tmthang86/fixbolt/actions/runs/33899468700).**
+(`bb1d0fe`, the commit before it, was green too — runs `33899038804` and `33899048688` — but
+the box §9 asks for is about **the commit being closed**, and that is the tip.)
 PR [#38](https://github.com/tmthang86/fixbolt/pull/38), **not merged**.
 
 **The `interop` job is green, so `libquickfix` itself has now judged this.** That is the
@@ -93,8 +95,8 @@ marked `[to testing-skills]`.
 - **`serve` hands out no handle** — not a `Sender`, not an `Observer`, not an `Admin`. So
   through the front door only door 1 is reachable. **This is older than item 46 and was found
   by fixing it. New open item 47**, deliberately not fixed inside this plan.
-- **`libquickfix` has not judged this yet on this machine.** The `interop` CI job is where that
-  runs, and **§9's last box — a green CI run named by id for this commit — is not ticked.**
+- ~~**`libquickfix` has not judged this yet on this machine.**~~ — it has. The `interop` job is
+  green on `c3f0d98` in both runs named above, and **§9's last box is ticked.**
 - **No §9 machine has seen it.** `benches/turn.rs` gains one `Option` check per turn and nobody
   has re-measured it against a baseline.
 
