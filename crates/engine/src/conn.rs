@@ -314,6 +314,16 @@ impl<T: Transport, R: Role, J: SessionJournal, const N: usize, const RX: usize, 
                 Cut::Message(n) | Cut::Garbage(n) => n,
             };
             moved = true;
+            // **Before `refuse`, and before the session.** A frame turned away
+            // pre-session — a wrong `56=`, a duplicate identity — is the one an
+            // operator most wants during a dispute, and it is the one that
+            // disappears fastest: `refuse` returning `true` ends the connection
+            // without a reply. Garbage is recorded too, because `Cut::Garbage`
+            // is bytes that arrived and a log that skipped them would be a log
+            // of what this engine *understood* rather than of what it *saw*.
+            if L::LOGS {
+                log.record(Direction::In, at_ms, shard, self.id, self.rx.bytes(taken));
+            }
             if refuse(self.rx.bytes(taken)) {
                 self.rx.take(taken);
                 // **Named, not merely closed.** ADR-0030's single-logon rule is

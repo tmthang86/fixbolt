@@ -403,3 +403,158 @@ fn no_log_holds_nothing_and_reports_nothing() {
 fn msg_time() -> u64 {
     1_788_431_527_120 + fixbolt_engine::msglog::MILLIS_YEAR_ZERO_TO_EPOCH
 }
+
+// ---------------------------------------------------------------------------
+// The hooks, driven against a real `Connection`.
+//
+// **These exist because their absence was not noticed.** The outbound hook went
+// in with the plumbing and the inbound one did not, and the commit that shipped
+// them said both were there. Nothing read the code and nothing ran it, because
+// every step-2 test had been deferred to a later commit — so "the hook is
+// present" was a claim with no observer, which `CLAUDE.md` §10 says is not a
+// result. One test per hook, and each one fails if its hook is removed.
+// ---------------------------------------------------------------------------
+
+use std::collections::VecDeque;
+
+use fixbolt_conformance::script::{FIXED_TIME_MILLIS, with_real_checksum};
+use fixbolt_engine::conn::Connection;
+use fixbolt_engine::journal::Store;
+use fixbolt_engine::transport::{Io, Transport};
+use fixbolt_session::{Acceptor, Config, Session, Silent};
+
+/// A socket that hands over whatever it was primed with and swallows the rest.
+#[derive(Default)]
+struct Wire {
+    inbox: VecDeque<u8>,
+    sent: Vec<u8>,
+}
+
+impl Transport for Wire {
+    fn recv(&mut self, buf: &mut [u8]) -> Io {
+        let n = buf.len().min(self.inbox.len());
+        if n == 0 {
+            return Io::Idle;
+        }
+        for slot in buf.iter_mut().take(n) {
+            *slot = self.inbox.pop_front().unwrap_or(0);
+        }
+        Io::Ready(n)
+    }
+
+    fn send(&mut self, buf: &[u8]) -> Io {
+        self.sent.extend_from_slice(buf);
+        Io::Ready(buf.len())
+    }
+}
+
+type Conn = Connection<Wire, Acceptor, Store, 256, 4096, 8192>;
+
+/// A whole message with a real body length and checksum, at the fixed instant
+/// the corpus uses — a `52=` more than 120 seconds away is refused for skew,
+/// and then there is nothing outbound to assert about.
+fn wire(msg_type: &str, seq: u32, body: &str) -> Vec<u8> {
+    let body = format!(
+        "35={msg_type}\x0134={seq}\x0149=TW44\x0152=20260828-12:00:00.000\x0156=ISLD\x01{body}"
+    );
+    with_real_checksum(format!("8=FIX.4.4\x019={}\x01{body}10=0\x01", body.len()).as_bytes())
+}
+
+fn logon() -> Vec<u8> {
+    wire("A", 1, "98=0\x01108=30\x01")
+}
+
+fn wired(inbox: &[u8]) -> Conn {
+    let transport = Wire {
+        inbox: inbox.iter().copied().collect(),
+        sent: Vec::new(),
+    };
+    Connection::new(
+        1,
+        transport,
+        Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+        Store::new(),
+    )
+}
+
+/// A logon arrives and is answered. Both halves are in the file.
+///
+/// **The inbound half is the one that was missing.** Deleting the `record` call
+/// before `refuse` leaves this red on the `IN` count while every other test in
+/// this file and all 475 others stay green.
+#[test]
+fn a_connection_logs_what_it_read_and_what_it_answered() {
+    let tmp = Tmp::new("both-ways");
+    let logon = logon();
+
+    let mut log = FileLog::open(tmp.path()).unwrap();
+    let mut c = wired(&logon);
+    c.opened(FIXED_TIME_MILLIS, &mut log);
+    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 0, &mut log);
+    log.close();
+
+    let lines = tmp.lines();
+    let ins = lines.iter().filter(|l| l.contains(" IN  ")).count();
+    let outs = lines.iter().filter(|l| l.contains(" OUT ")).count();
+    assert_eq!(
+        ins, 1,
+        "the logon that arrived is not in the log: {lines:?}"
+    );
+    assert_eq!(outs, 1, "the logon that went back is not either: {lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(" IN  ") && l.contains("35=A")),
+        "the inbound line is not the message that arrived: {lines:?}"
+    );
+}
+
+/// A frame the session never sees is still in the log.
+///
+/// This is the plan's headline case: `refuse` returning `true` ends the
+/// connection **without a reply**, so a log written after the session would
+/// hold nothing at all about the most disputed message there is.
+#[test]
+fn a_refused_frame_is_in_the_log_even_though_the_session_never_saw_it() {
+    let tmp = Tmp::new("refused");
+    let logon = logon();
+
+    let mut log = FileLog::open(tmp.path()).unwrap();
+    let mut c = wired(&logon);
+    c.opened(FIXED_TIME_MILLIS, &mut log);
+    // `true` is the engine's own rule, ADR-0030: a second Logon on a second
+    // connection is dropped in silence.
+    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| true, 0, &mut log);
+    log.close();
+
+    let lines = tmp.lines();
+    assert_eq!(
+        lines.iter().filter(|l| l.contains(" IN  ")).count(),
+        1,
+        "the refused frame vanished, which is the whole defect: {lines:?}"
+    );
+    assert_eq!(
+        lines.iter().filter(|l| l.contains(" OUT ")).count(),
+        0,
+        "a refusal is silent on the wire, and the log must not invent a reply"
+    );
+}
+
+/// `shard` reaches the line from the engine, not from the connection's guess.
+#[test]
+fn the_shard_the_engine_names_is_the_shard_on_the_line() {
+    let tmp = Tmp::new("shard-through");
+    let logon = logon();
+
+    let mut log = FileLog::open(tmp.path()).unwrap();
+    let mut c = wired(&logon);
+    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 5, &mut log);
+    log.close();
+
+    let lines = tmp.lines();
+    assert!(!lines.is_empty(), "nothing was logged at all");
+    assert!(
+        lines.iter().all(|l| l.contains("shard=5")),
+        "left: {lines:?}"
+    );
+}
