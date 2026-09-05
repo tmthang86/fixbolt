@@ -780,6 +780,9 @@ below).
 | Dictionary pass, per inbound message | `[measured 2026-09-05]` **897.3 ns** for the `NewOrderSingle` `tools/w2w` sends, **218.4 ns** for its `TestRequest`; 882.1 and 169.5 for the two shapes `parse.rs` uses. **Seven times the parse it follows**, and the largest single piece of user-space work in §8 | `crates/session/benches/validate.rs` through `fixbolt_session::validate` ([ADR-0050](decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md)), against `baselines.tsv`. Proven by reversal: `validate` returning `None` immediately reads 1.1 ns |
 | Serialise ExecutionReport (template, D9) | `[measured 2026-09-05]` **237.6 ns**, alignment pinned (ADR-0049); the 239.1 recorded 2026-08-31 was the same encoder at a different address. The 60 ns absolute target is withdrawn (ADR-0016): 93.8 (M5) · 177.6–199.4 (container) · 239.1 (desktop), and none came close | `benches/serialize.rs` against `baselines.tsv` |
 | `RingDispatch` hop vs `InlineDispatch` | `[measured 2026-09-01]` inline **8.5 ns**, ring **267.4 ns** one way, **515.7 ns** round trip, on a 163-byte NewOrderSingle: about 31×, and about 1.7 ns of every byte is the `AtomicU8` copy. The inline figure was published as 1.3 ns for a day; that was the optimiser deleting the 163-byte copy, found by the arithmetic that 163 bytes in 1.3 ns is 125 GB/s from one core ([a-benchmark-can-delete-its-own-work](reference/a-benchmark-can-delete-its-own-work.md)) | `crates/engine/benches/dispatch.rs` against `baselines.tsv` |
+| Per-message cost at N sessions on one thread | `[measured 2026-09-05]` **1 659.8 ns at N=1, 1 890.8 at N=64 — a ramp of 13.9%, and no step at the L2 edge.** That absence is the result: a message touching most of its 21 KiB connection would put a step at N ≈ 20. Converted through this machine's own latency-by-working-set table, a message touches **~2 to 4 KiB** | `crates/engine/benches/density.rs`, medians of 20 clean runs of 22, against `baselines.tsv`. Setup asserts each of the N sessions delivers exactly one order per turn, because a sweep whose sessions were dropped at logon is flat, fast and meaningless |
+| Keeping a message for resend | `[measured 2026-09-05]` **8.9 ns** for a 191-byte `ExecutionReport` into `MemJournal<4096,512>`, walking the ring as the engine does; **6.3 ns** pinned to one slot. A 2 MiB ring is not a cache cost — 191 bytes at a 512-byte stride is what a prefetcher is for | `crates/engine/benches/journal.rs` against `baselines.tsv`, every case reading back what it wrote before anything is timed |
+| What a bigger message costs the kernel | `[measured 2026-09-05]` **0.1443 ns per byte** written and read, from an 8 → 8192 byte lever. The two real `tools/w2w` sizes are cases of their own and **their difference is under this instrument's resolution**, which the module doc says where the number is | `crates/engine/benches/payload.rs` against `baselines.tsv`. Absolute figures here are environment-bound, not a round-trip claim — [a loopback write costs thirty-two syscalls](reference/a-loopback-write-costs-thirty-two-syscalls.md) |
 | Wire-to-wire, loopback | `[measured 2026-09-02]` **met**: `pass 12 fail 0 unknown 1`, engine pinned to isolated `cpu6`, client to `cpu7`, medians of 20 runs of 20 000 round trips. `hft` **16 010 / 20 589 / 22 127 ns** administrative, **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. p99 ≤ 50 µs holds in all four arms. Allocations in the timed window 0 on both threads | `tools/w2w --features affinity`, driven by `scripts/w2w-baseline.sh`. Phase 1 exit criterion 6 |
 | Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40 |
 
@@ -1015,22 +1018,30 @@ which is why nothing in the design moves, but it is three times what this page s
 | dispatch to the application | +9 | `inline deliver + reply` 8.5 |
 | the application's own parse | +114 | `parse NewOrderSingle (no checks)` 114.1 — `w2w`'s `Desk` re-parses with `Validation::NONE`, since the session already validated |
 | the application's template patch and encode | +233 | `encode ExecutionReport (template)` 232.8 |
-| **measured subtotal** | **~1 094** | **28% of the gap** |
+| **kernel copies of the bigger payload, both directions** | **+24.5** | `[measured 2026-09-05]` `TCP loopback` slope, `(14 890.9 − 12 528.8) / 16 368` = 0.1443 ns/byte, times the 170 extra bytes. **Read off the 8 → 8192 lever, not off the two real sizes** — those differ by tens of ns inside 12 600 and their direct difference read −4, +13 and +46 ns over three repetitions |
+| **`Journal::put` of the reply into the ring** | **+8.9** | `journal put, 191 bytes, walking`. The administrative path never does it, so the whole figure counts |
+| **measured subtotal** | **~1 128** | **28.9% of the gap** |
 | the session's own `Heartbeat` serialise, which the application path does *not* do | −? | **no committed case**, so it is not subtracted |
-| **still unattributed** | **~2 804** | **72%** |
+| **still unattributed** | **~2 770** | **71.1%** |
 
 **The largest candidate this page named turned out to be a sixth of the answer.** STATUS item
 39 wrote the dictionary pass down as the leading explanation for the 3 898 ns and it is
 **17.4%** of it. That is what the item asked for and it is not a cause; the arithmetic is here
 so that nobody has to take the size of a number for an explanation again.
 
-**What the remaining ~2.8 µs could be, none of it measured and none of it claimed:** two kernel
-copies of a larger payload in each direction (149 bytes in and ~200 out, against 79 and ~70);
-the engine's framing and read-buffer management, which no bench isolates; `Journal::put` of the
-outbound `ExecutionReport` into the in-memory ring, which the administrative path never does
-because a `Heartbeat` is not kept for resend; and the client's blocking `read` returning on a
-bigger message. **New open item**, and the next person to look at it starts by pricing one of
-those, not by reasoning about them.
+**Four candidates were named for the remainder. `[measured 2026-09-05]` two are now priced and
+both are noise, and the remainder barely moved — ~2 804 to ~2 770 ns.**
+
+| Candidate | Verdict |
+|---|---|
+| Two kernel copies of a larger payload each way, and the client's blocking `read` on a bigger message | **Dead: ~25 ns, 0.9%.** And three of the four byte counts this table used to quote were wrong — `strace` on the release binary reads **83/87** administrative and **149/191** application, not "79 and ~70" against "149 and ~200" |
+| `Journal::put` of the outbound `ExecutionReport` | **Dead: 8.9 ns.** Confirmed in situ as well: one session, identical work, the ring swept 8 → 64 → 512 → 4 096 slots (4 KiB to 2 MiB) reads 1 659.8 / 1 635.5 / 1 654.8 / 1 657.7 — a 1.5% spread that is **not monotone** |
+| The engine's framing and read-buffer management | **Open, and now holds almost all of it.** No benchmark isolates it |
+| The session's own `Heartbeat` serialise on the administrative side | **Open.** No committed case, so it is not subtracted in either direction |
+
+**Twice now the largest named candidate has not been the answer.** The dictionary pass is real,
+is the biggest single row on this page, and is 17.4% of what it was nominated to explain; the
+payload term was the intuitive one and is 0.9%. STATUS item 49.
 
 **Which mode the stage table is about: `hft`.** `standard`'s round trip is measured and is in
 the first table; what is unmeasured is its stage breakdown, because the wakeup is one opaque
