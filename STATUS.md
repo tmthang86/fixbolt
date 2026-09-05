@@ -92,6 +92,19 @@ no longer stop anything.
 allocation on the observed branch of `turn` — reads `adopt-idle 10000` while the unobserved
 `idle` and `turn` cases stay 0, which is what says the case is on the path it claims.
 
+**CI green on `ccf90a9`, 22 checks of 22**, runs
+[`33968467214`](https://github.com/tmthang86/fixbolt/actions/runs/33968467214) and
+[`33968465621`](https://github.com/tmthang86/fixbolt/actions/runs/33968465621) — §9's last box.
+The `interop` job's log was read rather than its conclusion: `PASS 7/7`, `PASS 7/7`,
+`shutdown ok Shutdown { … }`, three × `PASS 6/6` with `resumes: 1`, and
+`==> the run added nothing git can see`. **Two earlier commits on this branch were red for that
+job and are named rather than left in the run history**: `3b817d7` (the acceptor read a stdin
+the script did not yet supply) and `9a20562` (the `SIGTERM` venue's listener outlived its
+goodbye). **And the phrasing here used to be loose**: a PR job checks out GitHub's **merge ref**
+— `dd2aa12`, *"Merge `ccf90a9` into `2470f5f`"* — so it is this branch merged into `main` as of
+that base, not the branch tip alone, and still not the commit that will exist on `main`
+afterwards. That run is owed when this lands.
+
 **Three reversals, each red where it was aimed and green elsewhere:** an `adopt` that makes its
 own cell (`the pre-made handle never saw the session log on`); `dial` reading the ring again
 (`saw 0 LoggedOn event(s) of two`); and the interop stop disconnected, which fails the gate in

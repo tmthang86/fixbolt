@@ -199,24 +199,43 @@ of run [`33933972142`](https://github.com/tmthang86/fixbolt/actions/runs/3393397
 `c839854` — **the merge commit on `main`, not the branch tip**, because a branch being green
 says nothing about the commit where it meets `main`. 11 jobs of 11.
 
-**The 6 / 6 + 6 / 6 + 6 / 6 is CI's, on the commit that changed it.** `[measured 2026-09-05]`
-`ubuntu-latest`, cmake 3.31.6, g++ 13.3.0, libquickfix at the pinned `386ce46e`: job
-[`101302253512`](https://github.com/tmthang86/fixbolt/actions/runs/33964556891/job/101302253512)
-of run [`33964556891`](https://github.com/tmthang86/fixbolt/actions/runs/33964556891) on
-`3d16527`, **22 checks of 22 across that run and
-[`33964529347`](https://github.com/tmthang86/fixbolt/actions/runs/33964529347)**. The job's own
-log was read rather than its conclusion, and the lines that matter are byte-identical to the
-development run — which is what says they are not one machine's accident:
+**The 8 / 8 and the three 6 / 6 are CI's, on the commit that changed them.** `[measured
+2026-09-05]` runner image `ubuntu-24.04` (20260831.293.1), cmake 3.31.6, g++ 13.3.0, libquickfix
+built from the pinned `386ce46e` (3 262 136 bytes): job
+[`101312682472`](https://github.com/tmthang86/fixbolt/actions/runs/33968467214/job/101312682472)
+of run [`33968467214`](https://github.com/tmthang86/fixbolt/actions/runs/33968467214) on
+`ccf90a9`, **22 checks of 22 across that run and
+[`33968465621`](https://github.com/tmthang86/fixbolt/actions/runs/33968465621)**. The job's own
+log was read rather than its conclusion, and every line is the development run's:
 
 ```
+interop: PASS 7/7
+interop-acceptor: PASS 7/7
+interop-acceptor: shutdown ok Shutdown { sessions: 0, said_goodbye: 0, acked: 0, timed_out: 0 }
+interop-reconnect-logout: goodbye     ok    35=5 out: 1, answered by this engine: 1
 interop-reconnect-logout: next_out    ok    sent up to 34=3 before the kill, came back at 34=4, wanted 34=4
-interop-reconnect-logout: no_resend   ok    35=2: 0, 141=Y: 0, 'MsgSeqNum too low': 0
+interop-reconnect-logout: no_resend   ok    35=2: 0, 141=Y: 0, 'MsgSeqNum too low': 0, resumes: 1
 interop-reconnect-beat:   next_out    ok    sent up to 34=4 before the kill, came back at 34=5, wanted 34=5
+interop-reconnect-beat:   two_sources ok    journal vs Observer: ok 1 resume(s), journal never behind the live count
+==> the run added nothing git can see
 interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 against libquickfix @ 386ce46e…
 ```
 
-**This is a run on the PR branch, not on a merge commit on `main`**, which is the stronger thing
-and is owed when it merges.
+**Two earlier commits on this branch were red for this job, and are named rather than left in
+the run history.** `3b817d7`
+([`101308740830`](https://github.com/tmthang86/fixbolt/actions/runs/33966987593/job/101308740830))
+— the acceptor role read a stdin the script did not yet supply, and treated its end as a stop.
+`9a20562`
+([`101311876479`](https://github.com/tmthang86/fixbolt/actions/runs/33968159513/job/101311876479))
+— the `SIGTERM` venue's listener outlived its goodbye, the engine dialled into it mid-shutdown,
+and `no_resend` reported a correct exchange as a numbering failure. Both are fixed, and both are
+in the write-ups above. §8 asks for gates green **for the commit**, not for the branch tip.
+
+**What this run actually checked out**, since the phrasing here used to be loose: GitHub tests
+the **merge ref**, `dd2aa12` — *"Merge `ccf90a9` into `2470f5f`"* — so it is this branch merged
+into `main` as of that base, not the branch tip alone and not the commit that will exist on
+`main` after the merge button. **The run on that commit is the stronger thing and is still
+owed.**
 
 **These two scenarios are the first evidence for `connect_and_serve` that this repository did
 not write.** ADR-0043 said so in its own *Consequences*: *"every test of this is invented … only
