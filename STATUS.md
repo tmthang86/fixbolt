@@ -133,6 +133,15 @@ Written up in
 [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md),
 **`[to testing-skills]`**: *a guard only guards the configurations something compiles it in.*
 
+**§9's last box: CI green on `8cfa3b2`, run
+[`33980369287`](https://github.com/tmthang86/fixbolt/actions/runs/33980369287), **11 jobs of
+11**.** The `interop` job's log was read line by line rather than its conclusion: `PASS 7/7`
+(this engine's initiator against a C++ acceptor), `PASS 7/7` + `shutdown ok Shutdown { … }` (a
+C++ initiator against this engine's acceptor, stopped by asking), three × `PASS 6/6` with
+`resumes: 1` and `two_sources ok`, and `==> the run added nothing git can see`. **This is the
+branch tip, not the commit that lands on `main`** — that one gets its own run when the pull
+request merges, and §9's box is closed on it then.
+
 **Not done, and said rather than left implied.** The plan's verification list asks for
 `scripts/interop.sh` run twice, `ResetOnLogon=Y` and `N` at both ends. **It is not run that
 way**, and the reason is worth writing down rather than working around: an acceptor only takes

@@ -402,6 +402,14 @@ Sửa bằng cách **đếm** lý do mới chứ không bỏ qua nó. Bài học
 [feature-flags-unify-across-a-workspace](../reference/feature-flags-unify-across-a-workspace.md),
 **`[to testing-skills]`**.
 
+## Ô cuối §9
+
+**CI xanh trên `8cfa3b2`, run [`33980369287`](https://github.com/tmthang86/fixbolt/actions/runs/33980369287), 11 job trên 11.**
+Log job `interop` được **đọc từng dòng** chứ không đọc kết luận: `PASS 7/7`, `PASS 7/7` +
+`shutdown ok Shutdown { … }`, ba lần `PASS 6/6` kèm `resumes: 1` và `two_sources ok`, và
+`==> the run added nothing git can see`. Đây là **đầu nhánh, không phải commit sẽ nằm trên
+`main`** — commit ấy sẽ có run riêng khi PR merge, và ô §9 đóng trên nó lúc đó.
+
 ## Không làm, và nói rõ
 
 **`scripts/interop.sh` không được chạy hai lần với `ResetOnLogon=Y` rồi `N`.** Mục *Cách kiểm
