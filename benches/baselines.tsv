@@ -28,6 +28,34 @@
 #             `pass 10` until ADR-0021 split §9's isolation row in two, and a row
 #             carrying the older count was measured against the older checklist.
 #
+# `[measured 2026-09-05]` EVERY LINE BELOW WAS RE-RECORDED, and the reason is a
+# change to how the figures are produced rather than to any code. ADR-0049:
+# bench builds now pin function alignment, because `encode ExecutionReport
+# (template)` was a 16% measurement of WHERE THE COMPILER PUT THE CODE. Its
+# baseline read 239.1 and the same encoder read 280.4 four days later; the whole
+# jump is one commit that touches no `crates/*/src/` file, and adding inert
+# functions the encoder never calls walks the case across 236.5-292.4 ns. A
+# baseline recorded from an unpinned build cannot be compared against a pinned
+# one, so all nineteen went; this machine is the only one in this file, so
+# nothing else was invalidated.
+#
+# THE LADDER RULE HAS A HOLE AND THIS IS WHERE IT SHOWS. The rule fits the margin
+# to `max/median` over N runs -- and every one of those N runs executes the same
+# bytes at the same addresses, so the spread it sees is complete about scheduling
+# and cache and says NOTHING about the layout variance that appears the next time
+# somebody adds a function to the binary. The 20 pinned runs behind these numbers
+# put `encode ExecutionReport (template)` at max/median 1.037, which the ladder
+# reads as 1.10. It carries 1.15 anyway: pinning takes the layout term from 14.6%
+# to 4.0%, it does not remove it, and 1.10 sits inside what is left.
+# docs/reference/a-benchmark-that-measures-where-the-compiler-put-it.md
+#
+# NO MARGIN WAS NARROWED in this pass, even where the new sample would allow it.
+# `parse NewOrderSingle (no checks)` keeps 1.15, `ring, one way` 1.30 and
+# `ring, round trip` 1.20: the excursions those cover -- `ring, one way` has been
+# seen at 336.3 ns -- were not observed in these 20 runs and there is no evidence
+# they have gone. Narrowing on a quiet sample is how a gate gets widened again
+# later, by somebody who trusts it less each time.
+#
 # To add a machine: run `scripts/bench.sh` until check-machine.sh reads
 # `fail 0`, then N >= 20 more times, and paste the medians. The harness
 # prints a paste-ready line for every case it has no baseline for.
@@ -74,18 +102,18 @@
 # See docs/reference/measured-costs.md.
 #
 # cpu	case	baseline	margin	n	date	verdict
-AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (validated)	122.6	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (no checks)	117.0	1.15	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	parse Heartbeat (validated)	57.3	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	encode ExecutionReport (template)	239.1	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache	4.9	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	walk 1 group, 2 entries, 2 members	58.7	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	walk 4 levels, 61-tag member list	352.9	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	group_members contains, 61 tags	9.7	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	encode 1 group, 2 entries	108.4	1.10	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	inline deliver + reply	8.5	1.10	22	2026-09-01	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	ring, one way	267.4	1.30	24	2026-08-31	pass 10 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	ring, round trip	515.7	1.20	24	2026-08-31	pass 10 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (validated)	120.4	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (no checks)	113.5	1.15	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	parse Heartbeat (validated)	56.3	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	encode ExecutionReport (template)	237.6	1.15	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache	4.9	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	walk 1 group, 2 entries, 2 members	56.2	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	walk 4 levels, 61-tag member list	339.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	group_members contains, 61 tags	9.0	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	encode 1 group, 2 entries	108.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	inline deliver + reply	8.1	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	ring, one way	258.2	1.30	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	ring, round trip	496.0	1.20	20	2026-09-05	pass 12 fail 0 unknown 1
 
 # `[measured 2026-08-31]` the four rows below were re-measured after
 # [ADR-0021](../docs/decisions/ADR-0021-nohz-full-leaves-section-9.md) took
@@ -108,10 +136,10 @@ AMD Ryzen 7 3700X 8-Core Processor	ring, round trip	515.7	1.20	24	2026-08-31	pas
 # agent's own polling of the machine while the sample ran. They are the tightest
 # cases in this file — max/median between 1.011 and 1.021, against 1.30 for
 # `ring, one way` — so every margin is the ladder's floor.
-AMD Ryzen 7 3700X 8-Core Processor	recv on a quiet socket	420.5	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 idle sessions	448.9	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 idle sessions	1807.1	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 idle sessions	7333.5	1.10	24	2026-08-31	pass 11 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	recv on a quiet socket	418.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 idle sessions	481.0	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 idle sessions	1896.1	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 idle sessions	7694.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 # `[2026-09-01]` every row in this file was recorded with the CPU speculation
 # mitigations IN FORCE, and carries a `pass 11` verdict from the checklist as it
 # stood before ADR-0023 added a row for them. Only the checklist's arithmetic
@@ -127,6 +155,11 @@ AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 idle sessions	7333.5	1.10	24	
 # 1.011, so the margin is the 1.10 floor. They price a CONNECTION, not a message:
 # `DESIGN.md` §8's budget is what one message costs once a session is up, and
 # nothing here happens then.
-AMD Ryzen 7 3700X 8-Core Processor	presession sweep, 1 quiet sockets	435.9	1.10	20	2026-09-01	pass 11 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	presession sweep, 16 quiet sockets	6819.5	1.10	20	2026-09-01	pass 11 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	presession, read and route an identity	84.0	1.10	20	2026-09-01	pass 11 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	presession sweep, 1 quiet sockets	435.0	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	presession sweep, 16 quiet sockets	6819.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	presession, read and route an identity	186.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	presession, registry lookup of 1	10.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	presession, registry lookup of 40	100.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	library, parse only	159.6	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	library, reply only	804.1	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	library, on_message	1028.6	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
