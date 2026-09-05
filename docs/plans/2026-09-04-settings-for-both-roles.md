@@ -1,6 +1,6 @@
 # File cấu hình cho cả hai vai, và những knob một FIX desk mong có sẵn
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-05** (xác minh lại
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **ĐÓNG 2026-09-05** (xác minh lại
 > 2026-09-04, và **lần hai 2026-09-05** sau khi items 46, 48, 47 đóng — xem *Sửa 2*)
 > **Phạm vi:** `STATUS.md` item 45, đợt B, plan thứ nhất. Chạm `engine` (`settings`, `presession`,
 > `reconnect`, entry point), `session` (`Config`, vài rule reset), `library` (`Reply`), docs.
@@ -377,4 +377,30 @@ khi plan này đóng — nếu gộp vào đây thì bước 7 sẽ vừa sửa 
 | Xác minh lại draft | 2026-09-04 | **Xong.** Sáu dòng sai đã sửa, bốn dòng kiểm lại đứng nguyên, hai phát hiện mới (`MaxMessageSize` là `RX`; sáu entry point chứ không năm). Trạng thái Draft → **Chờ duyệt** |
 | Xác minh lại lần hai | 2026-09-05 | **Xong** (*Sửa 2*). Bảy dòng sai; bước 0 mất nửa sau, bước 6 mất nửa đầu — cả hai vì việc **đã được làm rồi**, một lần trong chính lần xác minh trước và một lần bởi ADR-0047. Mười dòng kiểm lại đứng nguyên. Baseline `cargo test --all` **524, 0 failed** `[đo 2026-09-05]`. Trạng thái → **Đã duyệt** |
 | 0 | 2026-09-05 | **Xong.** [ADR-0055](../decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md), năm quyết định: không có key `MaxMessageSize`; `RX` là câu trả lời và ADR-0047 đã đưa nó cho người gọi; tag 383 là mục riêng, chưa xếp lịch; **đóng vì frame quá dài phải có tên** (bước 6); `RX = 4096` không nâng, và lý do là **chưa đo** chứ không phải đắt. `113` config key của QuickFIX **chạy lại từ `vendor/`** chứ không chép lại. Số bộ nhớ đo lại: **23 760 / 36 048**, delta đúng 12 288. Thêm `connection_size.rs` (*Sửa 3*), reversal đỏ `left: 0, right: 12288`. Sửa `CONFIGURATION.md`, `GUIDE.md`, trỏ `prior-art.md` sang ADR |
-| 1–7 | — | Chưa bắt đầu |
+| 1 | 2026-09-05 | **Xong.** `ResetPolicy` ba cờ trong `Config`; `on_logon` ở `connect`, `on_logout`/`on_disconnect` ở `Session::end` — **sau khi message kết thúc phiên đã được đánh số**, vì một `Logout` đánh số lại trước khi ra dây sẽ tiêu `34=1` hai lần trong một phiên. Mặc định không reset gì. **Sáu test: ba cho cờ, ba cho việc không có cờ** — bộ thứ hai là cái nói rằng *cờ* làm việc chứ không phải nhánh code. Test logout chuyển từ `logon.rs` sang `goodbye.rs` sau **một false green của chính tôi**: `swap("35=A","35=5")` để lại `98=`/`108=` nên nhận về `Reject`, và assertion `\|34=2\|` xanh trên cái Reject ấy. **Một con số không phân biệt được lời tạm biệt với lời từ chối.** 59/59. 524 → 531 |
+| 2 | 2026-09-05 | **Xong.** `LogonTimeout` (của initiator — acceptor đã có `Limits.logon_ms` đứng trước) và `LogoutTimeout`, `DropReason::LogonTimedOut` và `LogoutTimedOut`. Cả hai **off mặc định**, đo từ `tick` đầu tiên sau sự kiện chúng chặn (D1), và **kết thúc mà không gửi gì**. Test thứ năm sinh ra từ một reversal không đổi gì: `connect` xoá mốc thời gian, bỏ hai dòng đó không làm đỏ test nào vì mọi test chỉ connect một lần. 531 → 536 |
+| 3 | 2026-09-05 | **Xong.** `DictionaryChecks` hai knob. **Chúng chi phối hai lỗi khác nhau và không cái nào tha lỗi của cái kia** — đó là nửa đáng có test. Bẫy trong plan đoán sai mã lỗi: `14a_BadField.def` toàn `373=0`, knob này quản `373=2`. `ValidateFieldsOutOfOrder` **không hỗ trợ và sẽ không**: index phẳng, một phép so sánh trong cùng vòng quét, không có pass nào để bỏ. 536 → 542 |
+| 4 | 2026-09-05 | **Xong.** Mười hai key mới, 11 → **23**. `into_table` trả `Result` và từ chối file initiator **theo dòng** — sai lầm đáng đổi chữ ký, vì bảng dựng ra hoàn toàn hợp lệ và acceptor sẽ ngồi đợi chính cái venue nó được bảo phải gọi. `serve_sharded_hft` nhận `Table` nên gặp đúng lời từ chối ấy: **một cơ chế, không phải hai**. `into_initiator` trả **địa chỉ dạng text** chứ không `SocketAddr` — trái với plan, và lý do là DNS failover. 39 test settings cũ xanh nguyên. 542 → 560 |
+| 5 | 2026-09-05 | **Xong.** `Registry::admit(id, logon)` với default gọi `lookup`; `field_value` công khai. `impl Registry for &R` **forward `admit` tường minh** — lấy default ở đó sẽ âm thầm bỏ mất credential check của mọi registry truyền qua tham chiếu, mà đó là cách mọi shard nhận registry. fixbolt vẫn **không lưu và không so sánh** credential nào. 560 → 563 |
+| 6 | 2026-09-05 | **Xong**, trừ nửa đầu mà ADR-0047 đã làm (*Sửa 2*). `Progress::unframeable` + `Snapshot::unframeable_prelogon` + `Engine::note_unframeable` — **một con số không ai công bố là con số không ai có**. `Reply::business_reject`, nhận `ref_seq` **dạng bytes** vì `Incoming::seq()` trả bytes và `app.rs` đã ghi lý do. Alloc case `reject` = 0, reversal đọc 1000. Literal `9=88`/`10=155` **tính độc lập** — bản đầu tôi ghi 93/016 và engine mới là bên đúng. 563 → 569 |
+| 7 | 2026-09-05 | **Xong.** Đi hết bảng đồng bộ §4: `CONFIGURATION.md`, `SESSION-BEHAVIOUR.md`, `GUIDE.md`, `DESIGN.md`, `CHANGELOG.md`, `prior-art.md` (**sáu gap đóng trong một ngày; gap thứ bảy rút khỏi danh sách chứ không phải được xây**), `STATUS.md`. Thêm một wire test đi qua đường nối *file → session đang chạy*, thứ mà cả `settings_roles.rs` lẫn `validation_knobs.rs` đều không đi qua. `scripts/interop.sh` **7/7 + 8/8 + 6/6 + 6/6 + 6/6 không đổi** |
+
+## Không làm, và nói rõ
+
+**`scripts/interop.sh` không được chạy hai lần với `ResetOnLogon=Y` rồi `N`.** Mục *Cách kiểm
+chứng* đòi điều đó, với lập luận đúng: chiều nào không đổi kết quả thì knob ấy chưa được kiểm.
+
+Lý do không làm là cấu trúc chứ không phải cho nhanh: **acceptor chỉ đi vào nhánh `ResetOnLogon`
+khi phiên của nó được `resume`**, nên kịch bản ấy cần entry point recovery nằm trong fixture
+interop — một thay đổi fixture lớn hơn chính cái knob, và sẽ được phán xử bởi một cổng chưa ai
+viết. Cái đã chứng minh được: hành vi session (sáu test, ba test đối chứng), key tới `Config`
+(`settings_roles.rs`), và **đường nối file → session sống trên socket thật**
+(`settings_wire.rs`, reversal là một key dừng lại trước `Config`). Cái chưa: engine của đối tác
+đồng ý về đánh số sau đó. Ghi thành **`STATUS.md` open item 53**, đi cùng các kịch bản recovery
+đã có ở `interop.sh` §4d/4e.
+
+**`RX` không được nâng**, và ADR-0055 nói vì sao: chưa đo, không phải vì đắt. Đợt C, máy §9.
+
+**14 trên 23 link `#Lnnn` trong `docs/` vẫn trỏ sai dòng.** Vẫn là plan riêng, như mục *Việc tách
+ra* đã đề nghị. Hai link bị chạm trong lúc làm thì đã sửa (`presession.rs#L412` → `#L420`, và tên
+file ADR-0010 trong rustdoc của `session`).

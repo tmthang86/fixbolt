@@ -138,12 +138,23 @@ listed here and quoted nowhere else in this repository.
 
 **What a QuickFIX-family engine carries that this one does not, as of this date** — read off
 QuickFIX/J's configuration reference: `NextExpectedMsgSeqNum(789)` and
-`LastMsgSeqNumProcessed(369)`; `ResetOnLogon`/`ResetOnLogout`/`ResetOnDisconnect`;
-`LogonTimeout`/`LogoutTimeout`; `TimestampPrecision` beyond milliseconds;
-`ValidateFieldsOutOfOrder`, `ValidateUserDefinedFields`;
-initiator connection settings in the file; a message log. Each is placed in `STATUS.md` item 45's
-waves, or named there as deliberately declined (`SendRedundantResendRequests`, `RefreshOnLogon`,
-a database store).
+`LastMsgSeqNumProcessed(369)`; `TimestampPrecision` beyond milliseconds. Each is placed in
+`STATUS.md` item 45's waves, or named there as deliberately declined
+(`SendRedundantResendRequests`, `RefreshOnLogon`, a database store).
+
+**`[2026-09-05]` Six of that list closed in one day**, with wave B's first plan:
+`ResetOnLogon`/`ResetOnLogout`/`ResetOnDisconnect`, `LogonTimeout`/`LogoutTimeout`,
+`ValidateUserDefinedFields`, `AllowUnknownMsgFields` and initiator connection settings in the
+file are all recognised keys now — twenty-three of them, against QuickFIX C++'s 113. A message
+log closed on 2026-09-04.
+
+**`ValidateFieldsOutOfOrder` came off the list rather than being built, and the reason is
+architectural.** QuickFIX switches off a separate ordering pass; this engine reads
+header-versus-body order out of a flat tag index with one comparison inside the scan that
+checks everything else, so there is no pass to skip. `docs/CONFIGURATION.md` says so where an
+operator looks, and writing the key gets *"unknown key"* with its line. **A missing feature and
+a feature that cannot exist in this shape are different facts**, and this list had been holding
+them as one.
 
 **`[corrected 2026-09-04]` `MaxMessageSize` was on that list and did not belong on it.** It is
 not a configuration key in any engine surveyed. `SessionSettings.h` carries **113 config keys**
