@@ -30,6 +30,17 @@
 //! messages `parse.rs` uses — so the two files' figures can be read side by
 //! side.
 //!
+//! # And the two messages `tools/w2w` actually sends
+//!
+//! The two cases above are the shapes `parse.rs` uses, so the two files read
+//! side by side. They are **not** the bytes the wire-to-wire figures are about:
+//! `tools/w2w` sends a `TestRequest` on `--path admin` and a `NewOrderSingle`
+//! with `44=Price` and `40=2` on `--path app`, and `DESIGN.md` §8's 3 898 ns is
+//! the difference between those two round trips. Subtracting one pass from the
+//! other only means something if both are the bytes that were sent, so both are
+//! cases here too, copied field for field from `tools/w2w/src/main.rs` with a
+//! fixed timestamp in place of the live one.
+//!
 //! # Fault-free messages only, on purpose
 //!
 //! `validate` returns on the first fault, so a faulty message measures a
@@ -85,6 +96,47 @@ fn main() {
         });
         b.bench("validate Heartbeat", || {
             let v = validate(black_box(&hb_view), black_box(b"0"));
+            black_box(v);
+        });
+
+        // The bytes `tools/w2w` sends, field for field — `test_request` and
+        // `new_order_single` in `tools/w2w/src/main.rs`, with a fixed timestamp
+        // in place of `stamp()`. These two are what `DESIGN.md` §8's 3 898 ns
+        // is a difference of, so these two are what may be subtracted.
+        let w_tr: &[u8] = b"8=FIX.4.4\x019=57\x0135=1\x0134=2\x0149=W2W\x01\
+52=20260905-12:00:00.000\x0156=ISLD\x01112=W1\x0110=043\x01";
+        let w_nos: &[u8] = b"8=FIX.4.4\x019=126\x0135=D\x0134=2\x0149=W2W\x01\
+52=20260905-12:00:00.000\x0156=ISLD\x0111=W1\x0121=1\x0138=002000.00\x0140=2\x01\
+44=20.15\x0154=1\x0155=INTC\x0160=20260905-12:00:00.000\x0110=064\x01";
+
+        let mut w_tr_idx: FieldIndex<64> = FieldIndex::new();
+        let r = parse_into::<Fix44, 64>(w_tr, &mut w_tr_idx, Validation::ALL);
+        assert!(
+            matches!(r, Ok(Parsed::Complete { .. })),
+            "w2w TestRequest {r:?}"
+        );
+        let mut w_nos_idx: FieldIndex<64> = FieldIndex::new();
+        let r = parse_into::<Fix44, 64>(w_nos, &mut w_nos_idx, Validation::ALL);
+        assert!(
+            matches!(r, Ok(Parsed::Complete { .. })),
+            "w2w NewOrderSingle {r:?}"
+        );
+
+        let w_tr_view = w_tr_idx.view(w_tr);
+        let w_nos_view = w_nos_idx.view(w_nos);
+        assert_eq!(validate(&w_tr_view, b"1"), None, "w2w TestRequest is clean");
+        assert_eq!(
+            validate(&w_nos_view, b"D"),
+            None,
+            "w2w NewOrderSingle is clean"
+        );
+
+        b.bench("validate TestRequest, w2w bytes", || {
+            let v = validate(black_box(&w_tr_view), black_box(b"1"));
+            black_box(v);
+        });
+        b.bench("validate NewOrderSingle, w2w bytes", || {
+            let v = validate(black_box(&w_nos_view), black_box(b"D"));
             black_box(v);
         });
     });

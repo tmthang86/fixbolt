@@ -382,15 +382,18 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 
 ## Tài liệu phải cập nhật
 
-- [ ] `benches/baselines.tsv` — 5 dòng mới (bước 1d), + 1–2 dòng (bước 2c), mỗi dòng kèm `n`,
-      ngày, verdict
-- [ ] `docs/DESIGN.md` §6 — nếu một ceiling hay cách đo nào đổi
-- [ ] `docs/DESIGN.md` §8 — dòng cho lượt kiểm dictionary; và **cộng lại 3 898 ns**
-- [ ] `docs/reference/measured-costs.md` — **ưu tiên cao nhất**: mọi phát hiện của bước 1, kể
+- [x] `benches/baselines.tsv` — 5 dòng mới (bước 1d) + **4 dòng `validate`** và một dòng sửa
+      (`parse Heartbeat`) ở bước 2c, mỗi dòng kèm `n`, ngày, verdict
+- [x] `docs/DESIGN.md` §6 — dòng gate mới cho lượt kiểm, bảng baseline, `parse Heartbeat` sửa
+- [x] `docs/DESIGN.md` §8 — dòng `Dictionary pass (D1)`, bảng cộng lại 3 898 ns, tổng
+      user-space sửa ~0.46 → ~1.36 µs
+- [x] `docs/reference/measured-costs.md` — **ưu tiên cao nhất**: mọi phát hiện của bước 1, kể
       cả nếu nó là "một case chỉ có nghĩa trong suite nó được ghi baseline cùng"
-- [ ] `docs/decisions/` — ADR mới nếu bước 1e hoặc 3b ra một quyết định
-- [ ] `STATUS.md` — item 41, 39, 34
-- [ ] `docs/GUIDE.md` §8 — nếu bước 1 tìm ra một cách benchmark tự lừa mình mới
+- [x] `docs/decisions/` — ADR-0049 (bước 1e), **ADR-0050** (bước 2b)
+- [x] `STATUS.md` — item 41, 39 đóng; **49 và 50 mới**; 34 còn mở
+- [x] `docs/GUIDE.md` §8 — không cần: hai cách tự lừa tìm được (layout, fixture sai) là
+      chuyện của người **viết** bench, không phải ràng buộc của người **dùng** engine; chúng vào
+      `docs/reference/` và `CLAUDE.md` §10 thay vì GUIDE
 
 ## Bẫy đã lường trước
 
@@ -435,11 +438,18 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 | 1d | 2026-09-05 | **Xong, phạm vi rộng hơn plan viết.** ADR-0049 đổi *cách đo*, nên **cả 19 dòng cũ được ghi lại** dưới build đã ghim, cộng **5 dòng mới** = 24, `n = 20`, `pass 12 fail 0 unknown 1`. Không margin nào bị **thu hẹp** dù mẫu mới cho phép: `ring, one way` giữ 1.30, `ring, round trip` 1.20, `parse (no checks)` 1.15 — các mode chúng che chưa xuất hiện trong 20 lần này và không có bằng chứng chúng đã biến mất. `encode ExecutionReport (template)` lên **1.15** theo ADR-0049, dù thang từ 20 lần chạy chỉ đòi 1.10 — đúng chỗ cái lỗ của thang lộ ra |
 | 1e | 2026-09-05 | **Xong. `bench.sh --strict` thoát 0, ba lần liên tiếp**, đọc từng dòng: `timing over baseline 0 · cases w/o a baseline 0 · cases under the band 0`. [ADR-0049](../decisions/ADR-0049-bench-builds-pin-function-alignment-and-the-flag-is-read-back.md), `scripts/check-bench-alignment.sh` (23/23 pinned, 5/23 unpinned, reversal đỏ 2/11), [write-up](../reference/a-benchmark-that-measures-where-the-compiler-put-it.md) mang `[to testing-skills]`. **Item 41 đóng** |
 | 2a | 2026-09-05 | **Xong, và hai trong ba lựa chọn của plan bị phủ định bằng đọc code.** (c) không tồn tại: `Fix44` viết thẳng vào thân ba hàm, `Session` không có tham số dictionary — khác `parse_into::<D, N>` của codec, vốn là lý do `benches/parse.rs` cắm được `NoDict`. (a) không tồn tại: cửa vào duy nhất là `received_with` → `judge` (private), làm thêm parse, CompID, lịch, số thứ tự, application, gửi. (b) làm được nhưng **`pub(crate)` vô hình từ một bench target** — bench là crate khác. Chốt: `pub fn validate(...) -> Option<SessionText>`, ba hàm cũ không sửa, **cần ADR-0050**. Xem Sửa 3 |
-| 2b, 2c, 2d, 3 | — | Chưa bắt đầu — chờ duyệt Sửa 3 và ADR-0050 |
+| 2b | 2026-09-05 | **Xong, và nó tìm ra lỗi ở chỗ khác ngay lần chạy đầu.** `pub fn validate` + [ADR-0050](../decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md) (chủ dự án duyệt), `crates/session/benches/validate.rs`. Đảo ngược: `validate` trả `None` ngay → **1.1 ns** cả hai case, đúng chữ ký "bench không đo gì" repo đã biết. Assert fixture của bench đỏ ngay trên byte của `parse.rs` → Sửa 4, item 50 |
+| 2c | 2026-09-05 | **Xong, `n = 21`.** Bốn dòng `validate`: NOS 882.1 · HB 169.5 · TestRequest w2w 218.4 · NOS w2w 897.3, margin 1.10, `pass 12 fail 0 unknown 1`, build đã ghim. `parse Heartbeat (validated)` **56.3 → 60.9** (sửa fixture, không phải drift); hai dòng `parse NewOrderSingle` đo lại trong band nên **không sửa**. `bench.sh --strict` thoát 0 **ba lần liên tiếp**. Hai dòng `validate` đầu **ghi lại một lần trong cùng buổi**: thêm hai case w2w vào cùng file làm chúng đi −2.3% và +3.6% ngược chiều nhau — đúng cái lỗ ADR-0049 vừa đặt tên, quay lại sau hai tiếng |
+| 2d | 2026-09-05 | **Xong, và câu trả lời là "không, nó không giải thích phần lớn".** §8 có dòng riêng cho lượt kiểm và một bảng cộng lại: lượt kiểm **678.9 ns = 17.4%** của 3 898; cộng parse vào (~+60), dispatch (+9), parse lần hai của application (+114), encode template (+233) → **~1 094 ns = 28%**; **còn ~2 804 ns chưa quy được cho ai — item 49 mới**, bốn ứng viên, không ứng viên nào được nhận. Tổng user-space của §8 đi **~0.46 → ~1.36 µs** vì `session ~0.1 µs` đã âm thầm đứng thay cho lượt kiểm này. **Item 39 đóng** |
+| 3 | — | Chưa bắt đầu — item 34. 3a coi như đã trả: ba figure `fixbolt/cost` ghi 2026-09-05 |
 
-**Trạng thái một câu `[2026-09-05]`:** **item 41 đóng** — `bench.sh --strict` xanh trên máy §9,
+**Trạng thái một câu `[2026-09-05]`, sau bước 2:** **item 39 đóng, và nó trả lời ngược với cái
+ai cũng chờ** — lượt kiểm dictionary tốn **897 ns**, gấp bảy lần parse, là dòng user-space lớn
+nhất của §8, và **vẫn chỉ giải thích 17.4%** của 3 898 ns; phần dư ~2 804 ns thành item 49 với
+một con số thay vì một cảm giác. Trên đường đi, bench mới bắt được **hai bench cũ đang đo một
+message mà parser từ chối** (item 50). Chỉ còn bước 3 (item 34).
+
+**Trạng thái một câu `[2026-09-05]`, sau bước 1:** **item 41 đóng** — `bench.sh --strict` xanh trên máy §9,
 nên mọi con số §6 lại có cổng canh; và cái đắt nhất tìm được không phải một hồi quy mà là
 **một benchmark đo chỗ trình biên dịch đặt nó**, thứ mà chính plan này đã loại trừ bằng cách đọc
-diff. Bước **2a xong** — lượt kiểm dictionary chỉ đo được qua một API `pub` mới, vì hai lựa chọn
-không-đụng-API của plan đều không tồn tại trong code (Sửa 3). Bước 2b trở đi và bước 3 (item 34)
-chưa bắt đầu.
+diff.

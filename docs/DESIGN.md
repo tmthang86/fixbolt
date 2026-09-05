@@ -776,7 +776,8 @@ below).
 
 | Gate | Result on the §9 desktop | Proven by |
 |---|---|---|
-| Parse NewOrderSingle | `[measured 2026-08-31]` **122.6 ns** validated, 117.0 raw, 57.3 for a Heartbeat | `benches/parse.rs` against `benches/baselines.tsv` |
+| Parse NewOrderSingle | `[measured 2026-09-05]` **120.4 ns** validated, 113.5 raw, **60.9** for a Heartbeat. The Heartbeat figure was 56.3 until its fixture was corrected — it declared `9=49` against a body of 51 and the parse returned before its own checksum ([a benchmark parsed a message the parser rejects](reference/a-benchmark-parsed-a-message-the-parser-rejects.md)) | `benches/parse.rs` against `benches/baselines.tsv`, and the fixture is asserted valid before anything is timed |
+| Dictionary pass, per inbound message | `[measured 2026-09-05]` **897.3 ns** for the `NewOrderSingle` `tools/w2w` sends, **218.4 ns** for its `TestRequest`; 882.1 and 169.5 for the two shapes `parse.rs` uses. **Seven times the parse it follows**, and the largest single piece of user-space work in §8 | `crates/session/benches/validate.rs` through `fixbolt_session::validate` ([ADR-0050](decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md)), against `baselines.tsv`. Proven by reversal: `validate` returning `None` immediately reads 1.1 ns |
 | Serialise ExecutionReport (template, D9) | `[measured 2026-09-05]` **237.6 ns**, alignment pinned (ADR-0049); the 239.1 recorded 2026-08-31 was the same encoder at a different address. The 60 ns absolute target is withdrawn (ADR-0016): 93.8 (M5) · 177.6–199.4 (container) · 239.1 (desktop), and none came close | `benches/serialize.rs` against `baselines.tsv` |
 | `RingDispatch` hop vs `InlineDispatch` | `[measured 2026-09-01]` inline **8.5 ns**, ring **267.4 ns** one way, **515.7 ns** round trip, on a 163-byte NewOrderSingle: about 31×, and about 1.7 ns of every byte is the `AtomicU8` copy. The inline figure was published as 1.3 ns for a day; that was the optimiser deleting the 163-byte copy, found by the arithmetic that 163 bytes in 1.3 ns is 125 GB/s from one core ([a-benchmark-can-delete-its-own-work](reference/a-benchmark-can-delete-its-own-work.md)) | `crates/engine/benches/dispatch.rs` against `baselines.tsv` |
 | Wire-to-wire, loopback | `[measured 2026-09-02]` **met**: `pass 12 fail 0 unknown 1`, engine pinned to isolated `cpu6`, client to `cpu7`, medians of 20 runs of 20 000 round trips. `hft` **16 010 / 20 589 / 22 127 ns** administrative, **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. p99 ≤ 50 µs holds in all four arms. Allocations in the timed window 0 on both threads | `tools/w2w --features affinity`, driven by `scripts/w2w-baseline.sh`. Phase 1 exit criterion 6 |
@@ -808,11 +809,20 @@ ceiling somebody switches off.
 measurement changed, so what it is compared against changed with it. This machine is the only
 one in `baselines.tsv`, so nothing else was invalidated.
 
+`[2026-09-05, later the same day]` **four `validate` lines were added at n = 21, and one older
+line was corrected rather than re-recorded.** `parse Heartbeat (validated)` goes **56.3 → 60.9
+ns**: its fixture declared `9=49` against a body of 51, so `parse_into` returned
+`Err(BadBodyLength)` on the line *before* the checksum block and the case had never summed its
+own 51 bytes ([a benchmark parsed a message the parser
+rejects](reference/a-benchmark-parsed-a-message-the-parser-rejects.md)). The two
+`parse NewOrderSingle` lines were re-measured in the same runs, came in at 120.0 and 114.1
+inside their bands, and **were not touched**.
+
 | Case | AMD Ryzen 7 3700X | margin |
 |---|---|---|
 | parse NewOrderSingle (validated) | 120.4 ns | 1.10 |
 | parse NewOrderSingle (no checks) | 113.5 ns | 1.15 |
-| parse Heartbeat (validated) | 56.3 ns | 1.10 |
+| parse Heartbeat (validated) | 60.9 ns | 1.10 |
 | encode ExecutionReport (template) | 237.6 ns | **1.15** |
 | SendingTime from the cache | 4.9 ns | 1.10 |
 | walk 1 group, 2 entries | 56.2 ns | 1.10 |
@@ -834,6 +844,10 @@ one in `baselines.tsv`, so nothing else was invalidated.
 | library, parse only | 159.6 ns | 1.10 |
 | library, reply only | 804.1 ns | 1.10 |
 | library, on_message | 1028.6 ns | 1.10 |
+| validate NewOrderSingle | 882.1 ns | 1.10 |
+| validate Heartbeat | 169.5 ns | 1.10 |
+| validate TestRequest, w2w bytes | 218.4 ns | 1.10 |
+| validate NewOrderSingle, w2w bytes | 897.3 ns | 1.10 |
 
 **No other machine has a baseline, and none is invented.** The Apple M5 and the CI EPYCs have
 figures scattered through this repository, but none was taken by the procedure above, so they
@@ -876,7 +890,7 @@ two kinds of benchmark by what decides their result:
 | | What it measures | On a failure |
 |---|---|---|
 | **Invariant**: `alloc` × 3, `ring_full` | allocation counts, message counts | **CI red.** The answer is the same on every machine |
-| **Timing**: `parse`, `serialize`, `groups`, `dispatch`, `turn`, `presession`, `cost` | ns/op against this machine's own band, from a build with **function alignment pinned and read back** (ADR-0049) | **Reported, never red on a shared runner.** `bench.sh --strict`, which a §9 machine runs, is fatal on a case with no baseline for its CPU and on one that came in under its floor, because a benchmark that stops measuring reads far under its limit |
+| **Timing**: `parse`, `serialize`, `groups`, `dispatch`, `turn`, `presession`, `validate`, `cost` | ns/op against this machine's own band, from a build with **function alignment pinned and read back** (ADR-0049) | **Reported, never red on a shared runner.** `bench.sh --strict`, which a §9 machine runs, is fatal on a case with no baseline for its CPU and on one that came in under its floor, because a benchmark that stops measuring reads far under its limit |
 
 Timing ceilings are not enforced on a shared runner because they cannot be: `[measured
 2026-08-30]` five runs on a 4 vCPU container gave a run-to-run spread of 5–232%, and on the
@@ -955,9 +969,10 @@ Three readings:
   trip. The design makes that 2.9% as small as it can be, and through D8 trades `epoll`'s
   wakeup for a 449 ns poll. That trade wins at N = 1 and loses by N = 11.
 - **The application round trip is 3 898 ns above the administrative one, and the committed
-  benchmarks account for about 320 ns of that.** The gap is recorded as a gap, with the
-  dictionary pass the session runs on every inbound message as the largest untimed candidate
-  (STATUS item 39). [ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)
+  benchmarks now account for about 1 094 ns of that — 28%.** `[measured 2026-09-05]` the
+  dictionary pass, which STATUS item 39 named as the largest untimed candidate, is **679 ns of
+  it, 17.4%**, and the gap is still **~2 804 ns unexplained**. The arithmetic is below the
+  stage table. [ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)
   declines SIMD on this basis: parse is 0.62% of the application round trip.
 
 ### Stage by stage (`hft`, N = 1)
@@ -968,15 +983,54 @@ Three readings:
 | TLS record decrypt, if enabled | kTLS: in-kernel with AES-NI, no extra copy. Userspace: one copy each way plus allocation (D11). **No number measured here** | this design, and the kernel |
 | Wakeup, `standard` | 2–5 µs, `epoll`-class, from the literature; the core is given back | this design, D8 |
 | Wakeup, `hft` | `[measured 2026-08-31]` `Engine::turn` **~449 ns × N**, N = sockets on the thread; a core is burned. ~670 ns on a core carrying `nohz_full`, which §9 no longer asks for (ADR-0021) | this design, D8, `benches/turn.rs` |
-| Parse (D2) | `[measured 2026-08-31]` **0.12 µs**: framing, field indexing, `9=` and `10=` only. `benches/parse.rs` parses with `NoDict`, so this row does **not** include the dictionary pass the session runs on every inbound message. That pass has no benchmark (STATUS item 39) | this design |
-| Session machine (D1) | ~0.1 µs | this design |
+| Parse (D2) | `[measured 2026-09-05]` **0.12 µs** for a `NewOrderSingle`, **0.06 µs** for a `Heartbeat`: framing, field indexing, `9=` and `10=` only. `benches/parse.rs` parses with `NoDict`, so this row is **not** the dictionary pass — that is the row below. `[measured 2026-09-05]` the `Heartbeat` figure was 56.3 ns until its fixture was corrected; it declared `9=49` against a body of 51, so the parse returned before its own checksum ([a benchmark parsed a message the parser rejects](reference/a-benchmark-parsed-a-message-the-parser-rejects.md)) | this design |
+| Dictionary pass (D1) | `[measured 2026-09-05]` **0.90 µs** for a `NewOrderSingle`, **0.22 µs** for a `TestRequest` — every field asked `is_defined_tag`, `field_type`, `allows`, `enum_allows` and `accepts`, a duplicate check that rescans the index, then `view.get(tag)` once per required header and body tag, each a linear scan. `crates/session/benches/validate.rs` through `fixbolt_session::validate` ([ADR-0050](decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md)). **This row is the single largest piece of user-space work in the table, and it is seven times the parse it follows** | this design |
+| Session machine (D1), everything else | ~0.1 µs `[unmeasured]` | this design |
 | Dispatch, inline vs ring (D4) | `[measured 2026-09-01]` **0.0085 µs** inline vs **0.27 µs** ring one way | the application's choice |
 | Serialise, template (D9) | `[measured 2026-08-31]` **0.24 µs** (239.1 ns); carried as ~0.05 µs from the literature until ADR-0016 | this design |
 | `send` syscall → NIC | 3–10 µs, from the literature | kernel |
 | **Floor** | **~10–20 µs** | kernel |
-| **User-space work only** | `[measured 2026-08-31]` **~0.46 µs** at N = 1, inline: parse 0.123 + session ~0.1 + dispatch 0.0085 + serialise 0.239 | the half that was always cheap |
-| **Everything this design controls, N = 1** | **~0.91 µs**: the row above plus one turn | |
-| **Everything this design controls, N sessions** | **~0.46 µs + N × 449 ns** | |
+| **User-space work only, application message** | `[measured 2026-09-05]` **~1.36 µs** at N = 1, inline: parse 0.120 + dictionary pass 0.897 + session ~0.1 + dispatch 0.0085 + serialise 0.233 | the half that was always cheap, and was not |
+| **User-space work only, administrative message** | `[measured 2026-09-05]` **~0.4 µs**: parse 0.060 + dictionary pass 0.218 + session ~0.1 + the `Heartbeat` serialise, which has no committed case | |
+| **Everything this design controls, N = 1** | **~1.81 µs** application, **~0.85 µs** administrative: the rows above plus one turn | |
+| **Everything this design controls, N sessions** | **~1.36 µs + N × 449 ns** application | |
+
+`[2026-09-05]` **The user-space total was ~0.46 µs on this page until the dictionary pass was
+timed, and it was wrong in two ways at once**: it added a `NewOrderSingle`'s parse to an
+`ExecutionReport`'s serialise and compared the sum against an *administrative* round trip, and
+its `session ~0.1 µs` silently stood in for a pass that costs 0.90 µs on an application
+message. The 2.9%-of-the-total reading above is the same arithmetic and now reads **8.5%** for
+an application message on the application round trip — still small against a 10–20 µs floor,
+which is why nothing in the design moves, but it is three times what this page said.
+
+### The 3 898 ns, added back
+
+`[measured 2026-09-05]` `--path app` costs 3 898 ns more than `--path admin` at p50. What
+`--path app` **adds**, from committed benchmarks on this box, `pass 12 fail 0 unknown 1`:
+
+| What the application path adds | ns | Case |
+|---|---|---|
+| inbound parse, a `NewOrderSingle` instead of a `TestRequest` | ~**+60** | `parse NewOrderSingle (validated)` 120.0 − `parse Heartbeat (validated)` 60.4. **Nearest committed cases, not `w2w`'s exact bytes** — 15 fields against 8, where `w2w` sends 16 against 9 |
+| **the dictionary pass, the same substitution** | **+679** | `validate NewOrderSingle, w2w bytes` 897.3 − `validate TestRequest, w2w bytes` 218.4. These two cases *are* `w2w`'s exact bytes, copied field for field, which is the only reason the subtraction is allowed |
+| dispatch to the application | +9 | `inline deliver + reply` 8.5 |
+| the application's own parse | +114 | `parse NewOrderSingle (no checks)` 114.1 — `w2w`'s `Desk` re-parses with `Validation::NONE`, since the session already validated |
+| the application's template patch and encode | +233 | `encode ExecutionReport (template)` 232.8 |
+| **measured subtotal** | **~1 094** | **28% of the gap** |
+| the session's own `Heartbeat` serialise, which the application path does *not* do | −? | **no committed case**, so it is not subtracted |
+| **still unattributed** | **~2 804** | **72%** |
+
+**The largest candidate this page named turned out to be a sixth of the answer.** STATUS item
+39 wrote the dictionary pass down as the leading explanation for the 3 898 ns and it is
+**17.4%** of it. That is what the item asked for and it is not a cause; the arithmetic is here
+so that nobody has to take the size of a number for an explanation again.
+
+**What the remaining ~2.8 µs could be, none of it measured and none of it claimed:** two kernel
+copies of a larger payload in each direction (149 bytes in and ~200 out, against 79 and ~70);
+the engine's framing and read-buffer management, which no bench isolates; `Journal::put` of the
+outbound `ExecutionReport` into the in-memory ring, which the administrative path never does
+because a `Heartbeat` is not kept for resend; and the client's blocking `read` returning on a
+bigger message. **New open item**, and the next person to look at it starts by pricing one of
+those, not by reasoning about them.
 
 **Which mode the stage table is about: `hft`.** `standard`'s round trip is measured and is in
 the first table; what is unmeasured is its stage breakdown, because the wakeup is one opaque
