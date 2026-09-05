@@ -17,6 +17,21 @@ below describe what a first release would contain.
 
 ### Added
 
+- **The registry can see the `Logon` it is deciding about.** **`Registry::admit(id, logon)`**,
+  with a default that forwards to `lookup`, and **`presession::field_value`** made public so an
+  implementation can read a field without allocating. Step 5 of `STATUS.md` item 45, wave B.
+
+  [ADR-0026](docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md) calls
+  `lookup` the authentication hook, and it was handed an `Identity` — `49`, `56`, `50`, `57` and
+  nothing else. `553=Username`, `554=Password` and `96=RawData` were on the message in front of
+  it and **no implementation could reach them**, so the hook the ADR named could not do the job
+  the ADR named it for.
+
+  **The default is what makes this not a breaking change**: `Table` and every registry written
+  before today keep working with nothing to change. **fixbolt still stores no credential and
+  compares none** — there is no `Password` key and no default policy, because a default that
+  accepted an empty password would be worse than no default at all.
+
 - **A configuration file can describe an initiator, and twelve new keys.**
   **`ConnectionType`**, **`SocketConnectHost`**, **`SocketConnectPort`**, **`ReconnectInterval`**,
   **`ReconnectCeiling`**, **`ResetOnLogon`**, **`ResetOnLogout`**, **`ResetOnDisconnect`**,

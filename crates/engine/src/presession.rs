@@ -99,7 +99,7 @@ impl<'a> Identity<'a> {
 /// [`crate::frame::Framer`] has already cut, so the last one is `10=…` and
 /// terminated; a caller passing something else gets the same answer for the
 /// same reason.
-fn field_value<'a>(msg: &'a [u8], tag: &[u8]) -> Option<&'a [u8]> {
+pub fn field_value<'a>(msg: &'a [u8], tag: &[u8]) -> Option<&'a [u8]> {
     let mut at = 0;
     while at < msg.len() {
         let end = msg[at..].iter().position(|b| *b == 1).map(|e| e + at)?;
@@ -213,6 +213,43 @@ impl Entry {
 pub trait Registry {
     /// The entry serving `id`, or `None` to refuse the connection.
     fn lookup(&self, id: Identity<'_>) -> Option<&Entry>;
+
+    /// The entry serving `id`, given the **whole `Logon`** it arrived on.
+    ///
+    /// `[added 2026-09-05]` [ADR-0026] calls [`Self::lookup`] the
+    /// authentication hook, and until now it was handed an [`Identity`] — `49`,
+    /// `56`, `50`, `57` and nothing else. `553=Username`, `554=Password` and
+    /// `96=RawData` were on the message in front of it and **no implementation
+    /// could reach them**, so the hook the ADR named could not do the job the
+    /// ADR named it for.
+    ///
+    /// This is the pre-session stage's only question now. The default forwards
+    /// to `lookup`, so every implementation written before today — [`Table`]
+    /// included — keeps working with nothing to change.
+    ///
+    /// # What this engine does not do
+    ///
+    /// **It stores no credential and compares none.** There is no
+    /// `Password` key in the configuration file and no default policy, because
+    /// a default that accepted an empty password would be worse than no default
+    /// at all — the argument [ADR-0026] decision 6 already made about an empty
+    /// table. Checking `553`/`554`/`96` means writing this method, and
+    /// `crates/engine/tests/registry.rs::a_registry_that_sees_the_logon_can_refuse_a_wrong_password`
+    /// is twelve lines that do.
+    ///
+    /// # The same allocation rule as `lookup`
+    ///
+    /// This runs once per socket, on the acceptor thread, and
+    /// `benches/alloc.rs` case `registry-lookup` counts zero through it. Read
+    /// the credential with [`field_value`], which borrows out of the caller's
+    /// buffer; building a `String` to compare puts an allocation on a path that
+    /// has never had one.
+    ///
+    /// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+    fn admit(&self, id: Identity<'_>, logon: &[u8]) -> Option<&Entry> {
+        let _ = logon;
+        self.lookup(id)
+    }
 }
 
 /// A shared registry is a registry.
@@ -224,6 +261,13 @@ pub trait Registry {
 impl<R: Registry + ?Sized> Registry for &R {
     fn lookup(&self, id: Identity<'_>) -> Option<&Entry> {
         (*self).lookup(id)
+    }
+
+    /// Forwarded explicitly. **Taking the default here would silently drop the
+    /// credential check** of any registry handed over by reference, which is
+    /// how every shard receives one.
+    fn admit(&self, id: Identity<'_>, logon: &[u8]) -> Option<&Entry> {
+        (*self).admit(id, logon)
     }
 }
 
@@ -678,7 +722,7 @@ impl<T: Transport, R: Registry, const PRE: usize> PendingSet<T, R, PRE> {
                 // identity at all, and is refused for the same reason an
                 // unconfigured one is: there is nothing to look up. `14b_
                 // RequiredFieldMissing.def` is a real message of that shape.
-                let Some(entry) = identity_of(msg).and_then(|id| registry.lookup(id)) else {
+                let Some(entry) = identity_of(msg).and_then(|id| registry.admit(id, msg)) else {
                     return Step::Unknown;
                 };
                 slot.settled = Some((n, entry.config()));

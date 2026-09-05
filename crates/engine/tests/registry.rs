@@ -782,3 +782,151 @@ fn a_registry_may_key_on_a_sub_id_and_the_default_one_does_not() {
         "Table keys on the comp IDs, so DESK2 is the same counterparty to it"
     );
 }
+
+// --- `admit`: the credential the registry could not see ----------------------
+
+/// A `Registry` that checks a password, in the twelve lines `lookup` could not
+/// hold.
+///
+/// **Step 5 of [settings-for-both-roles].** [ADR-0026] calls `lookup` the
+/// authentication hook, and `[verified 2026-09-05]` it was handed an
+/// [`Identity`] — `49`, `56`, `50`, `57` and nothing else. `553=Username`,
+/// `554=Password` and `96=RawData` are on the `Logon` in front of it and no
+/// implementation could reach them, so the hook the ADR named could not do the
+/// job the ADR named it for.
+///
+/// `admit` is given the whole `Logon`. The default calls `lookup`, so every
+/// existing implementation — `Table` included — keeps working untouched.
+///
+/// **The engine holds no password.** This implementation does, because it is
+/// one; nothing in `fixbolt` stores a credential or has an opinion about how
+/// one is compared. That is deliberate: a default that accepted an empty
+/// password would be worse than no default at all, which is the argument
+/// ADR-0026 decision 6 already made about an empty table.
+///
+/// [settings-for-both-roles]: ../../../docs/plans/2026-09-04-settings-for-both-roles.md
+/// [ADR-0026]: ../../../docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md
+struct WithPassword {
+    inner: Table,
+    password: &'static [u8],
+}
+
+impl Registry for WithPassword {
+    fn lookup(&self, id: Identity<'_>) -> Option<&fixbolt_engine::presession::Entry> {
+        self.inner.lookup(id)
+    }
+
+    fn admit(&self, id: Identity<'_>, logon: &[u8]) -> Option<&fixbolt_engine::presession::Entry> {
+        // Borrowed out of the caller's buffer, so the pre-session stage still
+        // allocates nothing — `benches/alloc.rs` case `registry-lookup`.
+        let given = fixbolt_engine::presession::field_value(logon, b"554=")?;
+        (given == self.password).then(|| self.lookup(id))?
+    }
+}
+
+/// The corpus `Logon` with `554=` added, `9=` and `10=` recomputed.
+///
+/// The same machinery as [`relabel_full`], for the same reason: a real message
+/// with one field changed rather than an invented packet (`CLAUDE.md` §7).
+fn logon_with_password(password: &str) -> Vec<u8> {
+    let wire = relabel(&corpus_logon(), CORPUS_SENDER);
+    let (mut head, mut body) = (Vec::new(), Vec::new());
+    for field in wire.split(|b| *b == 1).filter(|f| !f.is_empty()) {
+        if field.starts_with(b"9=") || field.starts_with(b"10=") {
+            continue;
+        }
+        let out = if field.starts_with(b"8=") {
+            &mut head
+        } else {
+            &mut body
+        };
+        out.extend_from_slice(field);
+        out.push(1);
+    }
+    body.extend_from_slice(b"554=");
+    body.extend_from_slice(password.as_bytes());
+    body.push(1);
+
+    let mut msg = head;
+    msg.extend_from_slice(b"9=");
+    msg.extend_from_slice(body.len().to_string().as_bytes());
+    msg.push(1);
+    msg.extend_from_slice(&body);
+    let sum = fixbolt_codec::checksum(&msg);
+    msg.extend_from_slice(b"10=");
+    msg.extend_from_slice(&fixbolt_codec::format_checksum(sum));
+    msg.push(1);
+    msg
+}
+
+#[test]
+fn a_registry_that_sees_the_logon_can_refuse_a_wrong_password() {
+    let cfg = Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER);
+    let registry = WithPassword {
+        inner: Table::new().serving(cfg),
+        password: b"correct horse",
+    };
+
+    let (mut set, mut peer) = one_socket(&registry, &logon_with_password("correct horse"));
+    let p = set.turn(T0);
+    assert_eq!(p.settled, 1, "the right password is admitted: {p:?}");
+    assert!(
+        !said_anything(&mut peer),
+        "and nothing is said before the session"
+    );
+
+    let (mut set, _peer) = one_socket(&registry, &logon_with_password("hunter2"));
+    let p = set.turn(T0);
+    assert_eq!(p.settled, 0, "the wrong one is not: {p:?}");
+    assert_eq!(p.unknown, 1, "and it is refused as an unknown counterparty");
+}
+
+#[test]
+fn a_registry_that_sees_the_logon_refuses_one_with_no_credential_at_all() {
+    // The comp IDs are right and `Table` alone would admit it. Only `admit`
+    // can tell the difference, which is the whole point of the method.
+    let cfg = Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER);
+    let registry = WithPassword {
+        inner: Table::new().serving(cfg),
+        password: b"correct horse",
+    };
+
+    let plain = relabel(&corpus_logon(), CORPUS_SENDER);
+    assert_eq!(
+        registry
+            .inner
+            .lookup(fixbolt_engine::presession::identity_of(&plain).expect("both sides")),
+        registry
+            .inner
+            .lookup(fixbolt_engine::presession::identity_of(&plain).expect("both sides")),
+        "the premise: the identity is one Table already serves"
+    );
+
+    let (mut set, _peer) = one_socket(&registry, &plain);
+    let p = set.turn(T0);
+    assert_eq!(p.settled, 0, "no 554= is not a credential: {p:?}");
+    assert_eq!(p.unknown, 1);
+}
+
+/// The default is not a formality: **every registry written before today keeps
+/// working**, and `Table` is one of them.
+#[test]
+fn the_default_admit_is_lookup_and_the_table_never_learned_a_new_method() {
+    let cfg = Config::acceptor(b"FIX.4.4", US, CORPUS_SENDER);
+    let table = Table::new().serving(cfg);
+    let logon = relabel(&corpus_logon(), CORPUS_SENDER);
+    let id = fixbolt_engine::presession::identity_of(&logon).expect("both sides");
+
+    assert_eq!(
+        table
+            .admit(id, &logon)
+            .map(fixbolt_engine::presession::Entry::config),
+        table
+            .lookup(id)
+            .map(fixbolt_engine::presession::Entry::config),
+        "the default forwards, so a Table answers the same either way"
+    );
+
+    let (mut set, _peer) = one_socket(&table, &logon);
+    assert_eq!(set.turn(T0).settled, 1, "and the pre-session stage agrees");
+}
