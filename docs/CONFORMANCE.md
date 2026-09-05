@@ -258,6 +258,17 @@ the branch tip and still not the commit that ends up on `main`. `edb0121` is tha
 is green. **11 jobs against the PR's 22** is not a smaller check: a PR fires the workflow twice,
 once per event, and `main` fires it once.
 
+**`[2026-09-05, later]` The same 33 assertions, unchanged, on `0f9585d`** — *"Merge pull request
+#46"*, wave B's first plan — run
+[`33998809034`](https://github.com/tmthang86/fixbolt/actions/runs/33998809034), **11 jobs of 11**,
+job
+[`101393895585`](https://github.com/tmthang86/fixbolt/actions/runs/33998809034/job/101393895585).
+That commit added twelve configuration keys, changed `Settings::into_table`'s signature and put a
+new question in the pre-session stage, and **the gate did not move**: `PASS 7/7`, `PASS 7/7` +
+`shutdown ok`, three × `PASS 6/6` each with `resumes: 1` and `two_sources ok`. A gate that reads
+the same before and after a change of this size is worth recording as such — it is the reason to
+believe the change was additive.
+
 **These two scenarios are the first evidence for `connect_and_serve` that this repository did
 not write.** ADR-0043 said so in its own *Consequences*: *"every test of this is invented … only
 an interop scenario driving a real counterparty through a disconnect would close that"*.
