@@ -114,6 +114,25 @@ stage calling `lookup` again fails exactly the two credential tests; one `to_vec
 `business_reject` reads `reject 1000` while every other alloc case stays 0; and a file key that
 never reaches the `Config` fails the wire test that crosses that seam.
 
+**And `16bd5a0` was RED for `fmt · clippy · test`, which is said here rather than left in the
+run history.** §8 asks for gates green *for that commit*, not for the branch tip.
+`crates/engine/tests/shard_wire.rs` destructures `presession::Progress` **field by field with no
+`..`**, and step 6's new `unframeable` field broke that pattern — `error[E0027]: pattern does not
+mention field`. **The guard fired exactly as it was designed to**, three days after its own
+comment predicted this shape: it is a repair for a counter that was added in 2026-09-01 and read
+by four fields out of five, losing two connections behind green assertions.
+
+It fired **in CI and nowhere else**. `cargo clippy --all-targets -- -D warnings` was clean on
+this machine, on three commits, because `shard_wire.rs` is behind `--features affinity` and
+**`--all-targets` is not `--all-configurations`**. CI's line is one flag longer. The change was
+semantic as well: that file asserted `gone == 1` for `1d_InvalidLogonLengthInvalid.def`, whose
+`9=40` is a lie the framer takes at its word — precisely the connection that is now
+`unframeable`, so a `..` would have moved a pinned count between columns in silence. Fixed by
+counting the new reason rather than ignoring it, and by running the two lines CI runs.
+Written up in
+[feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md),
+**`[to testing-skills]`**: *a guard only guards the configurations something compiles it in.*
+
 **Not done, and said rather than left implied.** The plan's verification list asks for
 `scripts/interop.sh` run twice, `ResetOnLogon=Y` and `N` at both ends. **It is not run that
 way**, and the reason is worth writing down rather than working around: an acceptor only takes

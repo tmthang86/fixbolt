@@ -385,6 +385,23 @@ khi plan này đóng — nếu gộp vào đây thì bước 7 sẽ vừa sửa 
 | 6 | 2026-09-05 | **Xong**, trừ nửa đầu mà ADR-0047 đã làm (*Sửa 2*). `Progress::unframeable` + `Snapshot::unframeable_prelogon` + `Engine::note_unframeable` — **một con số không ai công bố là con số không ai có**. `Reply::business_reject`, nhận `ref_seq` **dạng bytes** vì `Incoming::seq()` trả bytes và `app.rs` đã ghi lý do. Alloc case `reject` = 0, reversal đọc 1000. Literal `9=88`/`10=155` **tính độc lập** — bản đầu tôi ghi 93/016 và engine mới là bên đúng. 563 → 569 |
 | 7 | 2026-09-05 | **Xong.** Đi hết bảng đồng bộ §4: `CONFIGURATION.md`, `SESSION-BEHAVIOUR.md`, `GUIDE.md`, `DESIGN.md`, `CHANGELOG.md`, `prior-art.md` (**sáu gap đóng trong một ngày; gap thứ bảy rút khỏi danh sách chứ không phải được xây**), `STATUS.md`. Thêm một wire test đi qua đường nối *file → session đang chạy*, thứ mà cả `settings_roles.rs` lẫn `validation_knobs.rs` đều không đi qua. `scripts/interop.sh` **7/7 + 8/8 + 6/6 + 6/6 + 6/6 không đổi** |
 
+## Một commit trung gian đỏ, và nói ở đây
+
+**`16bd5a0` (bước 6) đỏ ở `fmt · clippy · test`.** `shard_wire.rs` destructure `Progress`
+**từng trường, không `..`**, nên trường `unframeable` mới làm vỡ pattern —
+`error[E0027]: pattern does not mention field`. **Cổng ấy nổ đúng như nó được thiết kế**, và
+comment của chính nó đã đoán trước hình dạng này: nó là bản sửa cho một counter thêm vào ngày
+2026-09-01 mà chỉ bốn trên năm trường được đọc, làm mất hai connection sau những assertion xanh.
+
+Nhưng nó chỉ nổ ở CI. `cargo clippy --all-targets -- -D warnings` xanh ở máy này, ba commit
+liền, vì `shard_wire.rs` nằm sau `--features affinity` — **`--all-targets` không phải
+`--all-configurations`**. Dòng của CI dài hơn đúng một cờ. Và thay đổi này còn có phần ngữ
+nghĩa: file ấy assert `gone == 1` cho `1d_InvalidLogonLengthInvalid.def`, đúng cái connection
+giờ thành `unframeable` — nên một `..` sẽ dời một con số đã ghim sang cột khác trong im lặng.
+Sửa bằng cách **đếm** lý do mới chứ không bỏ qua nó. Bài học viết vào
+[feature-flags-unify-across-a-workspace](../reference/feature-flags-unify-across-a-workspace.md),
+**`[to testing-skills]`**.
+
 ## Không làm, và nói rõ
 
 **`scripts/interop.sh` không được chạy hai lần với `ResetOnLogon=Y` rồi `N`.** Mục *Cách kiểm
