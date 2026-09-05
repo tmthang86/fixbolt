@@ -1,6 +1,6 @@
 # ADR-0041 — The library layer buys its API with a template per message, and says so
 
-- **Status**: Accepted — 2026-09-02
+- **Status**: Accepted — 2026-09-02 · **Amended by [ADR-0051](ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md)** (2026-09-05): the *40 ns* denominator below had no committed benchmark and is withdrawn; on a §9 machine the ratio is 3.4×, not 50×
 - **Date**: 2026-09-02
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0002](ADR-0002-engine-library-split.md) — the dispatch split this sits on ·

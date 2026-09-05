@@ -111,11 +111,15 @@ impl Answer {
 /// repeating group and leave room, which is what a default is for. A caller who
 /// knows their message writes `Handler<256, 32, 512>` and takes the rest.
 ///
-/// **Every one of these is far above the 40 ns it costs to encode a template
-/// that was built once** — see
-/// [ADR-0041](../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md),
-/// which is the decision this table belongs to. `crates/library/benches/cost.rs`
-/// is the committed benchmark.
+/// **The whole of it is about 3.4× a template built once** — `[measured
+/// 2026-09-05]` on the §9 desktop, `library, reply only` **804.1 ns** against
+/// `encode ExecutionReport (template)` **237.6 ns**, both in
+/// `benches/baselines.tsv`. This comment said *far above 40 ns* until then; the
+/// 40 had no committed benchmark
+/// ([ADR-0051](../../../docs/decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md)).
+/// [ADR-0041](../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)
+/// is the decision this table belongs to; `crates/library/benches/cost.rs` is
+/// the committed benchmark.
 pub struct Reply<'a, const P: usize = 64, const S: usize = 1024> {
     begin_string: &'a [u8],
     /// `None` when this is an **origination** rather than a reply.

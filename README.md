@@ -45,9 +45,10 @@ yet cover with anything production-proven.
 
 Two things those numbers do **not** say. They are loopback figures, so the NIC-to-NIC row in
 [DESIGN.md §6](docs/DESIGN.md) is still open. And the application-facing `fixbolt` crate is a
-convenience layer, not the `hft` path: a reply through it costs about **956 ns** against
-**40 ns** for a template built once
-([ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)).
+convenience layer, not the `hft` path: `[measured 2026-09-05]` on the §9 desktop a reply
+through it costs **804 ns** against **238 ns** for a template built once — about **3.4×**
+([ADR-0051](docs/decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md);
+the *50×* this line carried came from a denominator that had no committed benchmark).
 
 Where each piece of work stands, day by day, is in [STATUS.md](STATUS.md).
 
