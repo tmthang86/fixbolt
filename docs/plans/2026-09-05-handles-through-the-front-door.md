@@ -314,13 +314,23 @@ line; still serving`. Cả hai nửa đều được kiểm: `stop` vào fifo �
 [a-control-channel-the-launcher-already-closed](../reference/a-control-channel-the-launcher-already-closed.md),
 **`[to testing-skills]`**.
 
-**Bốn — commit giữa `3b817d7` đỏ ở job `interop`, và nói ra ở đây.** §8 đòi gate xanh **cho
+**Bốn — assertion `no_resend` có một tiền đề chưa ai viết ra, và CI đụng phải.** Nó đọc *"không
+có `35=2` nào trong transcript của venue khởi động lại"*, tức giả định engine nối lại **một
+lần**. `SIGTERM` khiến QuickFIX logout các session **rồi mới** tắt, nên socket lắng nghe của nó
+sống lâu hơn lời chào; nấc đầu 200 ms của thang backoff quay số vào một venue đang tắt, tiêu một
+số cho `Logon` không ai trả lời, và quay lại ở số cao hơn một so với venue mới. Venue xin resend.
+**Hai đầu đều đúng, mà gate đỏ với một thông điệp về đánh số không hề xảy ra.** Fixture nay lấy
+socket lắng nghe đi ngay khi lời chào được trả lời, và step in `resumes: 1`. Đây là **bài học
+`HeartBtInt=30` soi gương**: chỗ kia fixture xoá mất điều kiện đang kiểm và gate xanh sai lý do;
+chỗ này fixture tạo ra một điều kiện assertion không định phán, và gate đỏ sai lý do.
+
+**Năm — commit giữa `3b817d7` đỏ ở job `interop`, và nói ra ở đây.** §8 đòi gate xanh **cho
 commit đó**, không phải cho ngọn nhánh. Bước 3 đổi `tools/interop` còn bước 4 đổi
 `scripts/interop.sh`, nên ở giữa hai bước cái tool đọc một stdin mà script chưa cấp — đúng lỗi ở
 *Ba*. `d9a1cb9` xanh cả hai run, và bản sửa EOF làm cả lớp lỗi ấy không còn khả năng xảy ra, chứ
 không phải chỉ sửa thứ tự.
 
-**Năm — `DESIGN.md` §6 vẫn mang dòng reconnect của trước ADR-0053.** Nó còn đọc *"**3 / 3** sau
+**Sáu — `DESIGN.md` §6 vẫn mang dòng reconnect của trước ADR-0053.** Nó còn đọc *"**3 / 3** sau
 `SIGTERM` … refused by **exactly one**, which is the known gap item 48 names"*, trong khi
 `STATUS.md` và `CONFORMANCE.md` đều đã sửa. **Bảng đồng bộ §4 đi bằng tay, và một bàn tay bỏ sót
 đúng một dòng của nó.** Sửa trong plan này.

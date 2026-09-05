@@ -156,6 +156,22 @@ read. It also guaranteed the defect could not appear. Nothing about the assertio
 *setup* had quietly removed the case. When a gate passes, ask which of its inputs would have had
 to differ for it to fail — and whether any of them were chosen for convenience.
 
+**And the mirror of it: a fixture can just as easily create a condition the assertion never
+meant to judge.** `[measured 2026-09-05]` the `SIGTERM` scenario's `no_resend` step reads *"no
+`35=2` in the restarted venue's transcript"*, and it has a premise nobody had written down —
+that the engine reconnected **once**. `SIGTERM` makes QuickFIX log its sessions out and *then*
+shut down, so its listening socket outlives the goodbye; the reconnect ladder's first rung is
+200 ms, and on a loaded runner this engine dialled into a venue that was already stopping, spent
+a number on a `Logon` nobody would answer, and came back on the next attempt one higher than the
+restarted venue expected. The venue asked for a resend. **Both ends were correct and the gate
+went red** — with a message about numbering not carrying, which was not what happened. The
+fixture now takes the listener away as soon as the goodbye is answered, and the step prints
+`resumes: 1` so the premise is visible rather than assumed.
+
+So the same fixture question cuts both ways, and the second direction is the one that wastes an
+afternoon: *which of this gate's inputs would have had to differ for it to fail* — and *which
+would have had to differ for it to fail **for a reason other than the one in the message***.
+
 **A blocker written down as a fact outlives the assumption it rests on.** *"This cannot close
 before item 47"* was true of one imagined fix and false of the one that worked, and it stood for
 four days as though it were a property of the problem. A recorded dependency should name the fix

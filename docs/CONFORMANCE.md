@@ -143,7 +143,8 @@ this engine to send it** — `reconnect::Policy` did); `next_out` (**relational*
 `34=` is one past the last number this engine sent before the kill, read off the transcript
 rather than written as a literal); `next_in` (every `35=B` the restarted acceptor sends is
 *delivered to the application*, which a session whose inbound count had restarted would have
-gap-requested instead); `no_resend` (no `35=2`, no `141=Y`, no `MsgSeqNum too low`); and `two_sources`, which needs
+gap-requested instead); `no_resend` (no `35=2`, no `141=Y`, no `MsgSeqNum too low`, printed beside the number of times
+the engine resumed — see below); and `two_sources`, which needs
 ADR-0054's handles to exist at all — the number the journal resumes from is never **behind** a
 number an `Observer` already saw spent.
 
@@ -176,6 +177,15 @@ window — which is exactly the condition item 48 was about, chosen by the fixtu
 kill, so the last number spent belongs to a `Heartbeat`. It came back at `34=5` having sent up to
 `34=4`, which is what says the fix is about *every* administrative message rather than about
 `35=5`.
+
+**`no_resend` has a premise, and it is printed now.** `[measured 2026-09-05]` the step asserts
+no `35=2` in the restarted venue's transcript, which assumes the engine reconnected **once**.
+`SIGTERM` makes QuickFIX log its sessions out and *then* shut down, so its listening socket
+outlives the goodbye — and on a loaded runner the reconnect ladder's 200 ms first rung dialled
+into a venue that was already stopping, spent a number on a `Logon` nobody would answer, and came
+back one higher than the restarted venue expected. The venue asked for a resend: **both ends
+correct, and the gate red with a message about numbering that had not happened.** The fixture now
+takes the listener away as soon as the goodbye is answered, and the step prints `resumes: N`.
 
 **The `SIGTERM` scenario's `no_resend` step is what found a second defect**, in the inbound
 direction: the counterparty's `Logout` was consumed and never marked, so a resumed session

@@ -35,7 +35,7 @@ now; the reversal reads `the caller's Observer saw 0 LoggedOn event(s) of two`.
 
 **The interop gate is `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6`**, 33 assertions, up from 29.
 
-**Three things this closing found that the plan did not name, and one of them was CI's.**
+**Four things this closing found that the plan did not name, and two of them were CI's.**
 
 **One — `two_sources` cannot be an equality, and the reason was already written down.** The plan
 asked the gate to assert that the durable `next_out` and the live one *"are the same number"*.
@@ -65,6 +65,18 @@ and both halves are checked: `stop` into the fifo gives `stopping on "stop"` and
 `shutdown ok`; `< /dev/null` leaves the process alive with *still serving* in the log. Write-up:
 [a-control-channel-the-launcher-already-closed](docs/reference/a-control-channel-the-launcher-already-closed.md),
 **`[to testing-skills]`**.
+
+**Four — the `no_resend` assertion had a premise nobody had written down, and CI hit it.** It
+reads *"no `35=2` in the restarted venue's transcript"*, which assumes the engine reconnected
+**once**. `SIGTERM` makes QuickFIX log its sessions out and *then* shut down, so its listening
+socket outlives the goodbye; the ladder's 200 ms first rung dialled into a venue that was already
+stopping, spent a number on a `Logon` nobody would answer, and came back one higher than the
+restarted venue expected. It asked for a resend. **Both ends correct, and the gate red with a
+message about numbering that had not happened.** The fixture takes the listener away as soon as
+the goodbye is answered now, and the step prints `resumes: 1`. **This is the `HeartBtInt=30`
+lesson mirrored**: there a fixture removed the condition under test and the gate went green for
+the wrong reason; here a fixture created a condition the assertion never meant to judge and it
+went red for the wrong reason. Both are in the same write-up.
 
 **And the intermediate commit `3b817d7` was red for `interop`, which is said here rather than
 left in the run history.** §8 asks for gates green *for that commit*, not for the branch tip.

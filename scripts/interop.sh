@@ -463,13 +463,36 @@ run_reconnect() {
 
   echo "==> [${TAG}] the venue goes away (${signal})"
   kill "${signal}" "${QF1_PID}" 2>/dev/null || true
+
+  # **The goodbye, and then the listener, at once.** `[đo 2026-09-05]` waiting
+  # only for the process to be reaped left a window this engine can dial into:
+  # `SIGTERM` makes QuickFIX log its sessions out and *then* shut down, so its
+  # listening socket outlives the `35=5` by however long that takes. The
+  # reconnect ladder's first rung is 200 ms, so on a loaded runner this engine
+  # connects to a venue that is already stopping, spends a `34=` on a `Logon`
+  # nobody will ever answer, and comes back on the NEXT attempt one number
+  # higher than the restarted venue expects. The restarted venue then asks for a
+  # resend — correct on both sides, and nothing at all to do with what this
+  # scenario is about, but it reads as a `no_resend` failure.
+  #
+  # So: wait for the goodbye to be answered (two `35=5`, out and in — which is
+  # what assertion 1 reads), then take the process away immediately. **How the
+  # venue finally dies after saying goodbye is not the subject**; that it said
+  # goodbye is.
+  if [[ "${signal}" == "-TERM" ]]; then
+    rc_wait "${A1}" "35=5" 2 || true
+    kill -KILL "${QF1_PID}" 2>/dev/null || true
+  fi
   wait "${QF1_PID}" 2>/dev/null || true
   QF1_PID=""
 
-  # A goodbye needs a moment to be answered before the socket dies with it.
-  if [[ "${signal}" == "-TERM" ]]; then
-    rc_wait "${A1}" "35=5" 2 || true
-  fi
+  # And do not stand the venue back up until the port really refuses. A restart
+  # that raced the old listener would be the same window from the other end.
+  for _ in $(seq 1 100); do
+    if ! (exec 3<>"/dev/tcp/127.0.0.1/${PORT3}") 2>/dev/null; then break; fi
+    exec 3>&- 2>/dev/null || true
+    sleep 0.1
+  done
 
   echo "==> [${TAG}] the venue comes back, same store"
   "${WORK}/acceptor" "${WORK}/acceptor-reconnect.cfg" > "${A2}" 2>&1 &
@@ -562,9 +585,17 @@ rc_assert_continued() {
   resend="$(grep -c -F '|35=2|' "${A2}" || true)"
   reset="$(grep -c -F '|141=Y|' "${A2}" || true)"
   toolow="$(grep -c -F 'MsgSeqNum too low' "${A2}" || true)"
+  # `resumes` is not asserted on; it is printed because **this assertion has a
+  # premise** — that the engine reconnected once. Two resumes means a number was
+  # spent on an attempt the restarted venue never saw, so a `35=2` is the
+  # protocol working rather than the numbering failing, and a reader should not
+  # have to re-derive that from three transcripts. The premise is held by the
+  # kill above, not by this line.
+  local resumes
+  resumes="$(grep -c -F 'interop-reconnect: resuming next_out=' "${R}" || true)"
   rc_step "no_resend" \
     "$([[ "${resend}" -eq 0 && "${reset}" -eq 0 && "${toolow}" -eq 0 ]] && echo yes || echo no)" \
-    "35=2: ${resend}, 141=Y: ${reset}, 'MsgSeqNum too low': ${toolow}"
+    "35=2: ${resend}, 141=Y: ${reset}, 'MsgSeqNum too low': ${toolow}, resumes: ${resumes}"
 
   # 6. **Two sources for the same number, and the journal is never behind.**
   #    The durable one is the journal, read by `Resumed::from_journal` when the
