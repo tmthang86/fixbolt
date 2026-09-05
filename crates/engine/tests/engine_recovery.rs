@@ -147,7 +147,7 @@ fn an_engine_given_a_journal_with_history_continues_the_session() {
     let (mut peer, engine_side) = Loopback::pair();
     let journal = a_journal_with_history();
 
-    let next_out = journal.highest().expect("history") + 1;
+    let next_out = journal.highest_out().expect("history") + 1;
     let next_in = journal.highest_in().expect("history") + 1;
     e.add_resumed(engine_side, cfg(), journal, next_out, next_in, None);
 
@@ -198,7 +198,7 @@ fn a_resumed_session_replays_what_it_sent_before_the_restart() {
     let mut e = engine();
     let (mut peer, engine_side) = Loopback::pair();
     let journal = a_journal_with_history();
-    let next_out = journal.highest().expect("history") + 1;
+    let next_out = journal.highest_out().expect("history") + 1;
     let next_in = journal.highest_in().expect("history") + 1;
     e.add_resumed(engine_side, cfg(), journal, next_out, next_in, None);
 
@@ -350,6 +350,7 @@ mod serving {
     use std::time::Duration;
 
     use fixbolt_engine::journal::Store;
+    use fixbolt_engine::observe::Handles;
     use fixbolt_engine::presession::{Limits, Table};
     use fixbolt_engine::recovery::Resumed;
     use fixbolt_session::Config;
@@ -414,6 +415,7 @@ mod serving {
                 Limits::new(8, 30_000).expect("both above zero"),
                 OneCounterparty { asked: counter },
                 fixbolt_engine::msglog::NoLog,
+                Handles::new(),
             );
         });
 
@@ -458,6 +460,7 @@ mod serving {
                 4,
                 Limits::new(8, 30_000).expect("both above zero"),
                 fixbolt_engine::msglog::NoLog,
+                Handles::new(),
             );
         });
 

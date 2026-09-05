@@ -133,3 +133,38 @@ FileLogPath=/var/log/fixbolt/messages.log
 `EventKind::MessageLogLost`: non-zero means the disk fell behind the engine and the file has
 holes. [GUIDE.md §6c](GUIDE.md) lists the seven things about the log the type system cannot
 tell you.
+
+---
+
+## 9. Stopping it, in `standard` mode
+
+`[2026-09-05]` **Hold a `Handles` and stop through it.** `standard` is the mode that runs on
+shared hosts, in containers and under supervisors, so this is the mode where "stopped" most
+often means *"the orchestrator sent a signal"* — and a process that dies to a signal without
+saying `35=5` looks, to the counterparty, exactly like a dead line. They reconnect, and any
+bytes still queued are lost having already spent their sequence numbers.
+
+```rust
+let handles = fixbolt::Handles::new();
+let admin = handles.admin();
+std::thread::spawn(move || {
+    wait_for_your_shutdown_signal();
+    admin.shutdown(30_000);      // grace, on the engine's clock
+});
+let done = fixbolt::serve(addr, table, app, 64, limits, log, handles)?;
+if !done.clean() {
+    eprintln!("{} of {} never answered", done.timed_out(), done.sessions());
+}
+```
+
+**Two things that are specific to this mode.** The grace period is spent **blocking on
+readiness**, so an engine waiting for goodbyes gives the core back exactly as it does when
+idle — the wait is not a spin. And a `standard` engine is usually holding many sessions
+(§2), so `Shutdown::timed_out()` is the number to read: one counterparty that never answered
+is one whose sequence numbers may need reconciling by hand before the next start.
+
+**Set your supervisor's kill deadline above the grace you pass.** `SIGKILL` arriving during
+the grace is the shape this whole mechanism exists to avoid, and systemd's default
+`TimeoutStopSec` is 90 s.
+[ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md),
+[ADR-0054](decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md).

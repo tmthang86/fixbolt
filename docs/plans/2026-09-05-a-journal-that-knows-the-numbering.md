@@ -1,6 +1,6 @@
 # Một journal biết mình đã đếm tới đâu
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **ĐÓNG 2026-09-05**, cả năm bước
 > **Phạm vi:** `STATUS.md` item 48. Chạm `session` (trait `Journal`, hai chỗ tiêu số thứ tự),
 > `engine` (`MemJournal`, `FileJournal`, `Reader`, `Resumed`, hai chỗ gọi `mark_active`),
 > `tools/interop` + `scripts/interop.sh`, tài liệu, một ADR mới. **Không chạm** `codec`, `dict`,
@@ -23,6 +23,71 @@
 > `settings-for-both-roles` có `ResetOnLogon/Logout/Disconnect` — ba knob nói về **cách đánh số
 > lại** — nên viết chúng lên một journal chưa biết đánh số là viết hai lần. Item 45 được sửa cùng
 > commit với plan này, mục (c).
+
+## Sửa, ghi trước khi code dịch chuyển
+
+**Sửa 1 — ADR là 0053, không phải 0052.** `[2026-09-05]` Plan viết lúc `ADR-0052` còn trống.
+Công việc của item 49 và 52 đã lấy số đó (`ADR-0052-two-candidates-are-retired-with-numbers-…`)
+và đã merge. `CLAUDE.md` §5: số ADR không bao giờ dùng lại. Mọi chỗ trong plan này đọc *ADR-0052*
+nghĩa là **ADR-0053**.
+
+**Sửa 2 — `send_as` KHÔNG nhận journal; journal được kể *mốc cao nhất*, không phải từng số.**
+`[đo 2026-09-05]` Rủi ro *"`send_as` luồn journal xuống làm nhiều chữ ký nội bộ đổi"* đã xảy ra,
+và nó lớn hơn ngưỡng 6 hàm plan tự đặt — **đếm được 19 hàm**, trong đó có `tick`, `received`,
+`send_heartbeat`, `send_test_request`, `send_resend_request`, `connect`, `disconnect`,
+`disconnect_with`, `begin_logout`, `logout_now`, `send_sequence_reset` (public) và `send`,
+`send_reject`, `logout_with`, `too_high`, `fill`, `tick_inner`, `judge`, `drain` (private).
+Luồn journal xuống đó **phá chính API không-journal** mà 59 định nghĩa và phần lớn test đang
+dùng — tức là trả giá bất biến 3 để mua một chi tiết cài đặt.
+
+Nên đổi hình, theo đúng lối thoát plan đã cho phép:
+
+- `Session` không giữ thêm state. Số chiều ra cao nhất đã tiêu **đã có sẵn**: `next_out - 1`.
+- Một helper private `tell_journal(&self, journal)` gọi `journal.mark_out(self.next_out - 1)`
+  khi `next_out > 1`. Gọi từ những chỗ **đã** cầm journal: `tick_with`, `received_with`,
+  `send_application`.
+- `mark_out` là **mốc cao nhất (high-water mark), đơn điệu tăng**, không phải sự kiện một-số-một-lần.
+  Gọi lại với số cũ là no-op. `put(seq)` thành công cũng nâng `highest_out`, nên `mark_out(seq)`
+  ngay sau đó **không ghi gì** — đúng cái bẫy *"ghi số hai lần"* plan đã lường, nay được chặn
+  bằng cấu trúc chứ không bằng điều kiện ở chỗ gọi.
+- Câu bất biến đổi theo: từ *"mỗi số tiêu ra được journal nghe đúng một lần"* thành
+  **"journal luôn biết số chiều ra cao nhất đã tiêu"**. Yếu hơn về hình, đủ mạnh về việc: cái
+  `recover` cần là một con số, không phải một danh sách.
+
+**Sửa 3 — ba thứ đọc code hôm nay mới thấy, cả ba đổi việc phải làm.**
+
+1. **`connect` và `disconnect*` không tiêu số.** `Session::connect` có `let _ = emit;` — nó chỉ
+   đặt state, Logon của initiator đi ở `tick` kế tiếp (`crates/session/src/lib.rs:1206`);
+   `disconnect_with` cũng vậy (`:1275`). Nên chúng **không** cần bản `_with`. Plan viết
+   *"`logout_now` là ngoại lệ"* như thể chỉ có một; danh sách thật là **ba**, và đó là ba chỗ
+   engine tiêu số mà không cầm journal: `logout_now` (`conn.rs:477`, `:644`), `begin_logout`
+   (`conn.rs:596`), `send_sequence_reset` (`conn.rs:549`). Cả ba mọc bản `_with`.
+2. **`tick_with` đang nhận `journal: &J`, phải thành `&mut J`.** Một thay đổi **breaking** trên
+   API public mà plan không gọi tên. `CHANGELOG.md` phải ghi.
+3. **Chỗ xả không được đặt "ở cuối `received_with`".** Hàm này `return` sớm khi `judge` trả
+   `Link::Dropped` (`:1465`) — và **đó đúng là đường logout sạch**: đối phương gửi `35=5`,
+   session này trả lời `35=5` (tiêu một số) rồi drop. Xả ở cuối là bỏ sót đúng cái ca đang sửa.
+   Nên thân cũ của `received_with` và `tick_with` lùi thành `*_inner`, và bản public gọi inner →
+   `tell_journal` → trả kết quả. Không đường nào ra mà không đi qua chỗ xả.
+
+**Sửa 4 — chiều VÀO có đúng cái lỗ đó, trên đúng dòng đó, và gate interop tìm ra chứ không phải
+test của repo này.** `[đo 2026-09-05]` Sau khi nửa chiều ra xanh, kịch bản logout sạch đi đủ xa
+để đọc tới assertion `no_resend` và đọc được **`35=2: 1`** — engine này gửi một `ResendRequest`
+cho message nó đã có.
+
+Nguyên nhân: `received_with` `return` sớm khi `judge` trả `Link::Dropped`, và **`35=5` của đối
+phương được phán đúng kiểu đó**, nên `journal.mark_in` nằm sau chỗ đó không bao giờ chạy. Số
+`34=` mà `35=5` mang đã bị tiêu và không được ghi; session hồi phục chờ lại đúng số ấy, message
+kế tiếp của đối phương cao hơn một, mở gap, và engine hỏi lại.
+
+Là **ảnh gương chính xác** của lỗi item 48: cùng một dòng `return`, cùng một message, chiều
+ngược lại. Nên `mark_in` chuyển ra `received_with` nằm cạnh `tell_journal` — vẫn **sau** khi giao
+cho application (ADR-0017 giữ nguyên, chỉ muộn hơn), và `mark_in` lấy `max` nên những đường ra
+không tiêu gì chỉ nhắc lại một số journal đã biết.
+
+Test đỏ trước: `the_logout_that_ends_the_session_is_still_a_message_that_was_consumed`, đỏ ở
+`left: Some(1)` chống `right: Some(2)`. **Bước 5 sinh ra một mục của bước 2**, và đó là lý do
+gate ý-kiến-thứ-hai tồn tại.
 
 ## Bối cảnh
 
@@ -79,33 +144,42 @@ cũ, không đổi ý nghĩa của `highest()` (vẫn là *message cao nhất c�
 ### Trait `Journal` mọc thêm hai method, đối xứng với chiều vào
 
 ```rust
-/// Số `34=` này vừa được tiêu bởi một message KHÔNG nằm trong journal —
-/// hành chính, hoặc application mà `put` từ chối.
+/// Số chiều ra cao nhất đã tiêu tính đến lúc này — kể cả những message
+/// KHÔNG nằm trong journal (hành chính, hoặc application mà `put` từ chối).
+/// Đơn điệu tăng: một số nhỏ hơn cái đã biết không làm gì.
 fn mark_out(&mut self, seq: u32);
 /// Số chiều ra cao nhất đã tiêu, tính cả `put` lẫn `mark_out`. `None` nếu chưa gửi gì.
 fn highest_out(&self) -> Option<u32>;
 ```
 
-- **`mark_out` chỉ gọi khi bytes không vào journal.** Một application message được `put` giữ
-  thì `put` đã là bằng chứng nó tiêu số; gọi thêm `mark_out` là ghi hai lần một sự thật.
-  Quy tắc một câu: *mỗi số tiêu ra được journal nghe đúng một lần, qua `put` nếu giữ được,
-  qua `mark_out` nếu không.*
+- **`mark_out` là mốc, không phải sự kiện** (Sửa 2). Gọi nó với một số journal đã biết là no-op,
+  và `put(seq)` thành công cũng nâng `highest_out`, nên gọi `mark_out` sau một `put` giữ được
+  **không ghi thêm gì lên đĩa**. Quy tắc một câu: *journal luôn biết số chiều ra cao nhất đã tiêu.*
 - **`highest_out` không có thân mặc định**, cùng lý do `highest` và `highest_in` không có: một
   journal có giữ trạng thái không được phép nói mình không giữ. `NoJournal` trả `None`.
 - **`mark_out` có thân mặc định rỗng**, như `mark_active`: một journal không sống qua restart
   không phải giả vờ.
 
-### Session gọi `mark_out` ở đúng chỗ tiêu số, và cầm journal ở chỗ cần
+### Session kể cho journal ở những chỗ nó đã cầm journal
 
-- `send_as` (`lib.rs:1775`) nhận thêm `journal: &mut J`; sau `next_out += 1` gọi
-  `journal.mark_out(seq)`. Mọi caller nội bộ của `send_as` đều nằm trong `step`/`tick_with`/
-  `send_application`, vốn đã cầm journal — chỉ là luồn tham số xuống.
-- Đường application (`:2481`, `:1871`): khi `put` trả `false`, gọi `mark_out(seq_out)`.
-- **`logout_now` là ngoại lệ, và nó là đúng trường hợp `SIGTERM`.** Hàm này không có journal và
-  là API public. Chọn: **thêm `logout_now_with(text, journal, emit)`**, giữ `logout_now` cũ
-  nguyên nghĩa (không journal, cho caller không có gì để ghi). `Conn` đổi sang bản có journal
-  ở cả ba chỗ gọi. Đây là chỗ nhỏ nhất mà nếu bỏ sót thì gate `known_gap` vẫn đỏ — nên nó là một
-  mục riêng, không phải dọn dẹp.
+Số cao nhất đã tiêu **đã có sẵn** trong session: `next_out - 1`. Không thêm state.
+
+```rust
+fn tell_journal<J: Journal>(&self, journal: &mut J) {
+    if self.next_out > 1 { journal.mark_out(self.next_out - 1); }
+}
+```
+
+- `received_with` và `tick_with`: thân cũ lùi thành `received_inner` / `tick_after_inner`, bản
+  public gọi inner → `tell_journal` → trả kết quả, nên **không đường nào ra mà không xả** —
+  kể cả đường `return` sớm khi `judge` trả `Dropped`, vốn là chính đường logout sạch (Sửa 3.3).
+  `tick_with` đổi `&J` thành `&mut J` (breaking, Sửa 3.2).
+- `send_application`: gọi sau `next_out += 1`. Phủ cả ca `put` bị từ chối, không cần nhánh riêng.
+- **Ba entry point public engine dùng để tiêu số mà không cầm journal** mọc bản `_with`
+  (Sửa 3.1), giữ nguyên bản cũ cho caller không có gì để ghi:
+  `logout_now_with`, `begin_logout_with`, `send_sequence_reset_with`. `Conn` đổi sang bản `_with`
+  ở bốn chỗ gọi (`conn.rs:477`, `:549`, `:596`, `:644`). Bỏ sót `logout_now_with` thì gate
+  `known_gap` vẫn đỏ; bỏ sót `begin_logout_with` thì kịch bản `SIGTERM` vẫn đỏ.
 
 ### `MemJournal` và `FileJournal`
 
@@ -249,4 +323,52 @@ reconnect-interop, và plan này không đóng nó.
 
 ## Nhật ký giao hàng
 
-*(trống — chưa bắt đầu)*
+**2026-09-05 — cả năm bước xong.** Bốn Sửa, cả bốn ghi trước khi code dịch chuyển.
+
+| Bước | Kết quả |
+|---|---|
+| 1 | [ADR-0053](../decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md), `Accepted`. Số 0052 đã bị công việc item 49/52 lấy mất — Sửa 1 |
+| 2 | `Journal::mark_out` + `highest_out`; `tell_journal` gọi từ `received_with`, `tick_with`, `send_application`; ba bản `_with`; `Conn` đổi ở bốn chỗ. `crates/session/tests/numbering.rs` **đỏ trước**: `left: None` chống `right: Some(3)` |
+| 3 | `FileJournal` ghi/đọc outbound mark, `Record::OutboundMark`; sáu test mới trong `on_disk.rs`, gồm `Fsync`, `put` bị từ chối, và file cũ đọc y như cũ |
+| 4 | `Resumed::from_journal`; `on_disk.rs`, `tools/interop`, `engine_recovery.rs`, `recovery.rs` đổi sang dùng nó — `grep` cho `highest().{expect,map_or}` trong `crates/` và `tools/` **trống** |
+| 5 | `scripts/interop.sh`: `known_gap` xoá, `SIGTERM` về **5/5**, thêm kịch bản `interop-reconnect-beat` ở `HeartBtInt=1`. Hai case alloc mới. Tài liệu |
+
+**Số đo, đọc từng dòng chứ không đọc mã thoát:**
+
+- `cargo test --all` **507 → 519**, 0 fail. `--no-default-features` 514, 0 fail.
+- `cargo clippy --all-targets -- -D warnings` sạch; `cargo fmt` sạch.
+- 59 định nghĩa: **59/59**, không đổi — và đó chính là điều đáng nói, corpus mù với chuyện này.
+- `scripts/check-no-optional-deps.sh` ok; `scripts/check-lint-config.sh` ok, chứng minh bằng đảo ngược.
+- `benches/alloc.rs`: `mark-out-mem 0`, `mark-out-file-async 0`, 29/29 case bằng 0. **Đảo ngược**
+  (`vec![seq]` trong `mark_out`) đọc `mark-out-mem 10000 mark-out-file-async 10000` — và cũng làm
+  đỏ tám case khác (`observe-idle`, `events-idle`, `admin-idle`, `origin-idle`…), tức là
+  `tell_journal` thật sự nằm trên vòng lặp turn chứ không chỉ trên đường test.
+- **`scripts/interop.sh`: `7 / 7 + 7 / 7 + 5 / 5 + 5 / 5 + 5 / 5`**, 29 assertion, mỗi dòng đọc
+  riêng. `interop-reconnect-logout: next_out ok sent up to 34=3 before the kill, came back at
+  34=4, wanted 34=4` — chỗ trước đây là `known_gap`.
+
+**Bước 5 sinh ra một mục của bước 2 — Sửa 4.** Lần chạy interop đầu tiên sau khi nửa chiều ra
+xanh đọc `no_resend FAIL 35=2: 1`: chiều **vào** có đúng cái lỗ đó, trên đúng dòng `return` đó.
+Không test nào của repo này thấy được, vì chúng đều lái message để link còn sống, còn corpus so
+byte và mọi byte đều đúng.
+
+**CI xanh 22/22 trên `3d16527`**, run
+[`33964556891`](https://github.com/tmthang86/fixbolt/actions/runs/33964556891) và
+[`33964529347`](https://github.com/tmthang86/fixbolt/actions/runs/33964529347) — ô cuối §9, cho
+nhánh; run của merge commit là thứ còn nợ khi nó về `main`. Đọc log ba job chứ không đọc kết luận:
+
+- job interop in đúng những dòng máy dev in, từng chữ — nên con số không phải tai nạn của một máy.
+- **`scripts/check-no-kernel-sleep.sh` có chạy, cả hai nửa**: nửa `hft` chỉ có `accept4`,
+  `recvfrom`, `sendto`, **không `poll`**; nửa `standard` làm check đổ với `6 poll`.
+- job bench: `targets measuring 16 of 16`, `invariant failures 0`, `cases under the band 0`.
+- `tools/w2w --path app` trên runner in `allocs 0 (both threads, the timed window only)`.
+
+**Chưa làm, nói rõ ra:**
+
+- **`benches/turn.rs` không có con số nào.** Nó *có* chạy trong CI nhưng rơi vào 45 case
+  `cases w/o a baseline` — *đo và in ra, nhưng so với không gì cả*. Đây không phải máy §9 nên một
+  con số ở đây cũng không phải số của máy đó. **Mỗi turn nay thêm một lời gọi trait và giá của nó
+  chưa biết** — một mục mở, không phải một mục đã xong.
+- **Và một bullet trong *Not proven* sai ngay trong giờ nó được viết.** Nó nói
+  `check-no-kernel-sleep.sh` chưa chạy, vì *container này* không có `bpftrace` — và điều đó bị
+  nhầm thành "gate không chạy ở đâu cả". **CI cũng là một cái máy.** Đã gạch, kèm log.

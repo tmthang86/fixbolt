@@ -50,9 +50,18 @@ use fixbolt_session::Config;
 pub struct Resumed<J> {
     /// What this session already sent, and how far its inbound count reached.
     pub journal: J,
-    /// `34=` on the next message this session will send. Usually
-    /// `journal.highest() + 1`, and *usually* is why the engine does not
-    /// compute it.
+    /// `34=` on the next message this session will send.
+    ///
+    /// **`journal.highest_out() + 1`, and [`Resumed::from_journal`] computes
+    /// it.** `[measured 2026-09-05]` it was documented as *"usually
+    /// `journal.highest() + 1`"* and every worked example in this repository
+    /// took the *usually* as the rule. It is not: `highest` is the highest
+    /// message **held for a replay**, and a `Logon`, a `Heartbeat` and a
+    /// `Logout` spend numbers no journal holds bytes for, so the two differ by
+    /// every administrative message sent since the last application one. A real
+    /// `libquickfix` refused the resumed session over a difference of exactly
+    /// one. `STATUS.md` item 48,
+    /// [ADR-0053](../../../docs/decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md).
     pub next_out: u32,
     /// `34=` this session expects next from the counterparty.
     pub next_in: u32,
@@ -68,6 +77,45 @@ pub struct Resumed<J> {
     /// `next_out = 9` says nothing about whether a trading day has ended since
     /// 9 was reached.
     pub last_active_ms: Option<u64>,
+}
+
+impl<J: fixbolt_session::journal::Journal> Resumed<J> {
+    /// Everything this session left behind, read off the journal that holds it.
+    ///
+    /// `next_out = highest_out() + 1`, `next_in = highest_in() + 1`,
+    /// `last_active_ms = last_active()`. [`None`] when the journal knows
+    /// nothing at all — no message sent and none received — which is the
+    /// *"start fresh"* answer [`Recovery::recover`] gives.
+    ///
+    /// # Why this exists rather than three lines at each call site
+    ///
+    /// `[measured 2026-09-05]` because the three lines were written twice and
+    /// were wrong both times, in the same way: `journal.highest() + 1` for
+    /// `next_out`, which is short by every administrative message sent after
+    /// the last application one. A real `libquickfix` refused the resumed
+    /// session with *"MsgSeqNum too low, expecting 4 but received 3"*. The
+    /// arithmetic is the engine's to get right once. ADR-0053.
+    ///
+    /// **The engine still does not decide to resume.** ADR-0010 leaves that
+    /// with the caller; this only computes the numbers once the caller has
+    /// decided, which is the difference between a helper and a policy.
+    ///
+    /// A journal written before outbound marks existed answers from its kept
+    /// messages and is short by exactly as much as it was before this existed.
+    /// There is no number to recover that was never written.
+    pub fn from_journal(journal: J) -> Option<Self> {
+        let (out, inb) = (journal.highest_out(), journal.highest_in());
+        let last_active_ms = journal.last_active();
+        if out.is_none() && inb.is_none() && last_active_ms.is_none() {
+            return None;
+        }
+        Some(Self {
+            next_out: out.map_or(1, |h| h.saturating_add(1)),
+            next_in: inb.map_or(1, |h| h.saturating_add(1)),
+            last_active_ms,
+            journal,
+        })
+    }
 }
 
 /// Asked once per connection, after the registry has named the counterparty.

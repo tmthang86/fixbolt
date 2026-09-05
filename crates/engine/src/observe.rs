@@ -375,6 +375,78 @@ impl Shared {
     }
 }
 
+/// The three handles, **made before the engine they will watch**.
+///
+/// [`crate::Engine::observer`] and its two siblings need a `&mut Engine`, and a
+/// caller who came through [`crate::serve`] never holds one: the engine is built
+/// inside the function and only a [`crate::Shutdown`] comes back, after
+/// everything has already ended. So an engine reached through the front door was
+/// finished and unobservable at the same time — `STATUS.md` item 47.
+///
+/// This is the way round: the cell exists first, the caller takes whatever
+/// handles it wants off it, and the engine **adopts** it
+/// ([`crate::Engine::adopt`], which every front door calls for you). Nothing new
+/// is shared — this is [ADR-0036]'s single cell, handed out earlier.
+///
+/// ```no_run
+/// # #[cfg(all(feature = "standard", unix))] {
+/// let handles = fixbolt_engine::observe::Handles::new();
+/// let admin = handles.admin();
+/// std::thread::spawn(move || admin.shutdown(5_000));
+/// # }
+/// ```
+///
+/// **One allocation, here, and never on a turn.** An engine carrying a cell
+/// nobody reads costs one relaxed load per turn — `benches/alloc.rs` cases
+/// `admin-idle` and `origin-idle` are what prove it stays one.
+///
+/// Dropping every `Handles` and handle does **not** detach the engine: it holds
+/// its own `Arc`, keeps the cell alive, and keeps paying that load. There is no
+/// "stop observing" today.
+///
+/// [ADR-0036]: ../../../docs/decisions/ADR-0036-one-mechanism-two-capabilities.md
+#[derive(Debug, Clone)]
+pub struct Handles(pub(crate) std::sync::Arc<Shared>);
+
+impl Default for Handles {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Handles {
+    /// A cell for an engine that does not exist yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(std::sync::Arc::new(Shared::new()))
+    }
+
+    /// A handle that can only **look**. See [`crate::Engine::observer`].
+    #[must_use]
+    pub fn observer(&self) -> Observer {
+        Observer(std::sync::Arc::clone(&self.0))
+    }
+
+    /// A handle that can **change** the engine, and the only thing that can stop
+    /// one. See [`crate::Engine::admin`].
+    #[must_use]
+    pub fn admin(&self) -> Admin {
+        Admin(std::sync::Arc::clone(&self.0))
+    }
+
+    /// A handle that can make the engine **say something it was not asked for**
+    /// — [ADR-0048] door 2. See [`crate::Engine::sender`].
+    ///
+    /// [`crate::origin::Sender::send`] needs a [`crate::ConnId`], and the way to
+    /// learn one is [`Snapshot::sessions`] through [`Self::observer`].
+    ///
+    /// [ADR-0048]: ../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md
+    #[must_use]
+    pub fn sender(&self) -> crate::origin::Sender {
+        crate::origin::Sender(std::sync::Arc::clone(&self.0))
+    }
+}
+
 /// An operator's handle on a running engine. `Send + Sync`; hold it on whatever
 /// thread does the asking.
 #[derive(Debug, Clone)]

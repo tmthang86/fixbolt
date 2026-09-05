@@ -166,7 +166,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let table = Settings::load(cfg_path)?.into_table();
     println!("loaded {} counterparty sessions", table.len());
 
-    // 2. Start the engine in `standard` mode.
+    // 2. The handles, made before the engine — `serve` hands nothing back
+    //    until it has stopped, so this is where an operator's grip comes from.
+    let handles = fixbolt::Handles::new();
+    let admin = handles.admin();
+    std::thread::spawn(move || admin.shutdown(5_000));
+
+    // 3. Start the engine in `standard` mode.
     let shutdown = fixbolt::serve(
         listen_addr,
         table,
@@ -174,12 +180,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         64,                       // connections held at once
         Limits::new(64, 30_000)?, // up to 64 pending Logons, 30 s each
         fixbolt::NoLog,           // no message log
+        handles,                  // watch it, administer it, stop it
     )?;
 
     println!("engine stopped: {shutdown:?}");
     Ok(())
 }
 ```
+
+The `Handles` is where `Observer`, `Admin` and `Sender` come from, and it exists before the
+engine because `serve` runs the engine on **this** thread and returns only once it has stopped
+([ADR-0054](decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md)).
+[GUIDE.md §8a](GUIDE.md) is what to read next if you want to watch the session step 4 puts on
+the wire rather than only stop it.
 
 `Limits::new(pending, logon_ms)` protects the acceptor from sockets that connect and never
 log on. A socket that has not sent a valid Logon within `logon_ms` is closed and its slot

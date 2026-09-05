@@ -911,6 +911,62 @@ fn main() {
         "and the engine really did drain inside the window"
     );
 
+    // --- a cell the engine did not make --------------------------------------
+    //
+    // `STATUS.md` item 47: every front door adopts a `Handles` the caller made
+    // before the engine existed. That is the same `Arc<Shared>` the three
+    // methods above create lazily, so a turn must cost exactly what
+    // `admin-idle` and `origin-idle` already cost — **one relaxed load** — and
+    // `Engine::adopt` must add nothing of its own. A number here that differed
+    // from those two would say the front door pays for something the hand-built
+    // engine does not.
+    let handles = fixbolt_engine::observe::Handles::new();
+    let (mut ap_peer, ap_side) = Loopback::pair();
+    let mut adopted: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        cfg(),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    assert!(
+        adopted.adopt(&handles),
+        "a fresh engine takes the cell it is given"
+    );
+    let ap_watch = handles.observer();
+    adopted.add(ap_side);
+    let _ = ap_peer.send(&traffic[0]);
+    adopted.turn();
+    let _ = ap_peer.recv(&mut sink);
+    // **Live, and through the pre-made handle.** A zero below must mean "did
+    // not allocate", never "watched an engine that never came up".
+    let _ = ap_watch.request();
+    adopted.turn();
+    assert!(
+        ap_watch.request().is_some_and(|s| s
+            .sessions()
+            .iter()
+            .any(fixbolt_engine::observe::SessionSnapshot::logged_on)),
+        "the adopted cell must show a logged-on session, or the count below is \
+         about an engine with nothing in it"
+    );
+
+    let adopt_idle_allocs = count(|| {
+        for _ in 0..10_000 {
+            adopted.turn();
+        }
+    });
+
     // --- speaking first ------------------------------------------------------
     //
     // ADR-0048 door 1: one session, and the handler speaks the whole way to
@@ -1274,8 +1330,63 @@ fn main() {
          nothing: {recorded} records"
     );
 
+    // ---- the outbound mark, both journals ----------------------------------
+    //
+    // ADR-0053 puts a `Journal::mark_out` on every turn that sends anything,
+    // which for a busy session is every message and for a quiet one is every
+    // heartbeat. It is a comparison and, when the number has moved, one record.
+    // Neither may allocate.
+    //
+    // **Each case asserts its own path is live**, because a zero from a call
+    // that did nothing is the failure mode this whole file is built against.
+    let mut mark_mem = Store::new();
+    fixbolt_session::journal::Journal::mark_out(&mut mark_mem, 1);
+    let mark_mem_allocs = count(|| {
+        for seq in 2..10_002u32 {
+            fixbolt_session::journal::Journal::mark_out(&mut mark_mem, seq);
+        }
+    });
+    assert_eq!(
+        fixbolt_session::journal::Journal::highest_out(&mark_mem),
+        Some(10_001),
+        "the in-memory mark did not run, so its count says nothing"
+    );
+
+    let jrnl_at = std::env::temp_dir().join(format!(
+        "fixbolt-alloc-markout-{}.journal",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&jrnl_at);
+    let mut mark_file: fixbolt_engine::journal::FileJournal<64, 512> =
+        fixbolt_engine::journal::FileJournal::open(
+            &jrnl_at,
+            fixbolt_engine::journal::Durability::Async,
+        )
+        .expect("the temp directory is writable");
+    fixbolt_session::journal::Journal::mark_out(&mut mark_file, 1);
+    let mark_file_allocs = count(|| {
+        for seq in 2..10_002u32 {
+            fixbolt_session::journal::Journal::mark_out(&mut mark_file, seq);
+        }
+    });
+    assert_eq!(
+        fixbolt_session::journal::Journal::highest_out(&mark_file),
+        Some(10_001),
+        "the file journal's mark did not run, so its count says nothing"
+    );
+    drop(mark_file);
+    let wrote = std::fs::metadata(&jrnl_at).map(|m| m.len()).unwrap_or(0);
+    let _ = std::fs::remove_file(&jrnl_at);
+    assert!(
+        wrote > 0,
+        "the file journal wrote nothing, so `Async` never reached its writer \
+         thread and the zero above is about a path that did not happen"
+    );
+
     println!(
-        "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
+        "allocations: mark-out-mem {mark_mem_allocs} \
+         mark-out-file-async {mark_file_allocs} \
+         idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
          busy {busy_allocs} ring {ring_allocs} interests {interests_allocs} \
          pending-idle {pending_idle_allocs} pending-busy {pending_busy_allocs} \
@@ -1286,7 +1397,8 @@ fn main() {
          shutdown {shutdown_allocs} reconnect {reconnect_allocs} \
          log-record {log_record_allocs} log-idle {log_idle_allocs} \
          log-busy {log_busy_allocs} origin-idle {origin_idle_allocs} \
-         origin-busy {origin_busy_allocs} logon-first {logon_first_allocs}"
+         origin-busy {origin_busy_allocs} adopt-idle {adopt_idle_allocs} \
+         logon-first {logon_first_allocs}"
     );
     assert_eq!(
         [
@@ -1309,6 +1421,7 @@ fn main() {
             events_busy_allocs,
             admin_idle_allocs,
             admin_busy_allocs,
+            adopt_idle_allocs,
             shutdown_allocs,
             log_record_allocs,
             log_idle_allocs,
@@ -1316,9 +1429,11 @@ fn main() {
             reconnect_allocs,
             origin_idle_allocs,
             origin_busy_allocs,
-            logon_first_allocs
+            logon_first_allocs,
+            mark_mem_allocs,
+            mark_file_allocs
         ],
-        [0; 27],
+        [0; 30],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

@@ -156,7 +156,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let table = Settings::load(cfg)?.into_table();
     println!("serving {} counterparties on {addr}", table.len());
 
-    // 2. Start the acceptor.
+    // 2. The handles, made BEFORE the engine. `serve` returns nothing until it
+    //    has stopped, so this is the only moment a handle can be taken.
+    let handles = fixbolt::Handles::new();
+    let admin = handles.admin();
+    std::thread::spawn(move || {
+        // Wire this to whatever your deployment uses to say "shut down" — a
+        // signal handler, an admin socket, a message on a queue.
+        admin.shutdown(5_000);
+    });
+
+    // 3. Start the acceptor.
     let shutdown = fixbolt::serve(
         addr,
         table,
@@ -164,6 +174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         64,                       // connections held at once
         Limits::new(64, 30_000)?, // sockets waiting to log on, and how long each has (ms)
         fixbolt::NoLog,           // no message log; FileLog::open(path) turns one on
+        handles,                  // watch it, administer it, stop it
     )?;
 
     println!("stopped: {shutdown:?}");
@@ -179,13 +190,23 @@ The two numbers after the handler are yours to choose; there are no defaults for
   nothing is dropped after `logon_ms`
   ([ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)).
 
-The last argument is the message log. `fixbolt::NoLog` writes nothing;
+The message log comes next. `fixbolt::NoLog` writes nothing;
 `fixbolt::FileLog::open(path)` writes every message seen or sent to a text file
 ([GUIDE.md §6c](GUIDE.md)).
+
+The last argument is `Handles`, and everything an operator can do to a running engine comes off
+it: `handles.observer()` to watch, `handles.admin()` to change or stop, `handles.sender()` to
+originate. It is passed **into** `serve` rather than handed back by it, because `serve` does not
+return until the engine has stopped — so a handle taken afterwards would be a handle on nothing
+([ADR-0054](decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md)).
 
 `serve` returns when an operator stops the engine through `Admin::shutdown`, and the
 `Shutdown` it returns says whether every counterparty answered the Logout
 ([ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md)).
+`[2026-09-05]` **that sentence used to be unreachable through this page's own API** — an `Admin`
+came off an `Engine`, and nothing on this page ever holds one. `STATUS.md` item 47;
+`crates/library/tests/end_to_end.rs::an_operator_stops_the_front_door_and_serve_comes_back` is
+what keeps it true.
 
 ### `standard` or `hft`
 

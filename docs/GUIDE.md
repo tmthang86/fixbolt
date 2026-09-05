@@ -309,7 +309,7 @@ impl Handler for Desk {
     }
 }
 
-fixbolt::serve(addr, table, fixbolt::app(Desk), 64, limits, fixbolt::NoLog)?;
+fixbolt::serve(addr, table, fixbolt::app(Desk), 64, limits, fixbolt::NoLog, handles)?;
 ```
 
 **What you did not write, and cannot get wrong.** `8`, `9` and `10` are the frame. `34` and
@@ -400,6 +400,7 @@ fixbolt_engine::serve(
     64,                                    // connection capacity
     Limits::new(64, 30_000)?,              // pending sockets, and their deadline
     fixbolt_engine::msglog::NoLog,
+    handles,                               // §8a, §8c: watch it, administer it, stop it
 )?;
 ```
 
@@ -647,7 +648,8 @@ everything else.
 **`Engine::add_resumed` is how you hand it over**, and it takes the journal too:
 
 ```rust
-let next_out = journal.highest().map_or(1, |h| h + 1);
+// `highest_out`, NOT `highest` — see the box below.
+let next_out = journal.highest_out().map_or(1, |h| h + 1);
 let next_in  = journal.highest_in().map_or(1, |h| h + 1);
 engine.add_resumed(transport, cfg, journal, next_out, next_in, Some(last_active_ms));
 ```
@@ -665,7 +667,7 @@ let recovery = FromFn::new(|cfg: &Config| Some(Resumed {
     next_in:        my_next_in_for(cfg),
     last_active_ms: my_last_active_for(cfg),
 }));
-fixbolt_engine::serve_with_recovery(addr, table, app, capacity, limits, recovery, log)?;
+fixbolt_engine::serve_with_recovery(addr, table, app, capacity, limits, recovery, log, handles)?;
 ```
 
 It is asked **once per connection, after the registry has named the counterparty**, on the
@@ -794,14 +796,9 @@ impl Recovery<FileJournal<64, 4096>> for OnDisk {
     fn fresh(&mut self, cfg: &Config) -> FileJournal<64, 4096> { /* open it */ }
 
     fn recover(&mut self, cfg: &Config) -> Option<Resumed<FileJournal<64, 4096>>> {
-        let journal = self.fresh(cfg);
-        let next_out = journal.highest().map_or(1, |h| h + 1);
-        Some(Resumed {
-            next_in: journal.highest_in().unwrap_or(1),
-            last_active_ms: journal.last_active(),   // the boundary question, §5a
-            journal,
-            next_out,
-        })
+        // All three numbers, computed once, correctly. `None` means
+        // "this counterparty left nothing" — the engine then asks `fresh`.
+        Resumed::from_journal(self.fresh(cfg))
     }
 }
 ```
@@ -954,8 +951,15 @@ load per turn while nobody is asking
 ([ADR-0032](decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md)).
 
 ```rust
-let mut engine = /* ... */;
-let watch = engine.observer();          // the one allocation this mechanism makes
+// Through the front door: the handles exist before the engine, because `serve`
+// returns nothing until it has stopped (ADR-0054).
+let handles = fixbolt::Handles::new();
+let watch = handles.observer();         // the one allocation this mechanism makes
+// ... and then `serve(addr, table, app, capacity, limits, log, handles)`.
+//
+// Driving an `Engine` yourself instead? `engine.observer()` is the same handle
+// on the same cell, and the two cannot be mixed: an engine that already has a
+// cell refuses `adopt`.
 
 std::thread::spawn(move || {
     loop {
@@ -1115,6 +1119,7 @@ fixbolt_engine::connect_and_serve::<MyApp, fixbolt_engine::journal::Store, _, _>
     policy,
     fixbolt_engine::recovery::NoRecovery,   // read the next paragraph before shipping this
     fixbolt_engine::msglog::NoLog,
+    handles,                                // where Observer / Admin / Sender come from
 )?;
 ```
 
@@ -1133,18 +1138,34 @@ fixbolt_engine::connect_and_serve::<MyApp, fixbolt_engine::journal::Store, _, _>
    dial outside those hours; it re-asks once a ceiling. It cannot wake exactly at the open.
 4. **`standard` only.** There is no `connect_and_serve_hft`. An `hft` deployment that dials
    out drives `Engine` itself.
-5. **Do not derive `next_out` from the journal.** `[measured 2026-09-05]` this is the quiet
-   twin of mistake 1 and it is easier to make, because it looks careful. `journal.highest() + 1`
-   is short by every **administrative** message you sent after your last application one, and
-   `Journal::put` records application messages only — the journal is the resend store, not a
-   record of your numbering. A clean logout is enough to do it: you answer the venue's `35=5`,
-   that spends a number, and your next `Logon` is one too low. A real `libquickfix` acceptor
-   answers `MsgSeqNum too low, expecting 4 but received 3` and will not let you on.
-   **And the number that is right is not reachable through this function today** — it lives in
-   the live session, `Observer` can read it, and `connect_and_serve` hands out no `Observer`
-   (`STATUS.md` items 47 and 48). Until it does, persist your own outbound counter alongside
-   the journal, or accept that a reconnect after any administrative traffic needs a
-   `ResetOnLogon` agreement with the venue.
+5. **Use `Resumed::from_journal`, and never derive `next_out` from `Journal::highest`.**
+   `[measured 2026-09-05]` this is the quiet twin of mistake 1 and it is easier to make,
+   because it looks careful. `journal.highest() + 1` is short by every **administrative**
+   message you sent after your last application one: `Journal::put` is offered application
+   messages only — the journal is the resend store — while a `Logon`, a `Heartbeat` and a
+   `Logout` each spend a `34=` all the same. A clean logout is enough to do it: you answer the
+   venue's `35=5`, that spends a number, and your next `Logon` is one too low. A real
+   `libquickfix` acceptor answers `MsgSeqNum too low, expecting 4 but received 3` and will not
+   let you on.
+
+   Since 2026-09-05 the journal records that count itself (`highest_out`), and
+   `Resumed::from_journal` reads all three fields off it:
+
+   ```rust
+   fn recover(&mut self, cfg: &Config) -> Option<Resumed<MyJournal>> {
+       Resumed::from_journal(self.open_for(cfg))
+   }
+   ```
+
+   **You still have to give the engine a durable journal.** `from_journal` over an in-memory
+   one answers `None`, which is *start fresh* — correct, and not continuity.
+
+   **And do not reach for `Observer::request().next_out` instead**, now that §8a's handles work
+   through the front door too. An observer knows the number **when somebody asks**; a Heartbeat
+   between your last poll and the process dying leaves your recorded number short in exactly
+   the same way, with a smaller and less reproducible window. The journal is the only source
+   that is both durable and present when `recover` runs.
+   [ADR-0053](decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md),
    [a-journal-holds-messages-not-numbering](reference/a-journal-holds-messages-not-numbering.md)
 
 **Set the ceiling deliberately.** Without one, a long outage turns into an hour of silence and
@@ -1153,13 +1174,14 @@ any default.
 
 ### The 3 a.m. phone call
 
-The counterparty rings and says their next number is 4812. `Engine::admin()` hands you a
+The counterparty rings and says their next number is 4812. `Handles::admin()` hands you a
 second handle over the same mechanism as the observer: `Observer` looks, `Admin` changes
 ([ADR-0036](decisions/ADR-0036-one-mechanism-two-capabilities.md)). Give an `Observer` to
 everything that watches and an `Admin` only to whatever takes that call.
 
 ```rust
-let admin = engine.admin();     // Send + Sync, like the Observer
+let admin = handles.admin();    // Send + Sync, like the Observer; `engine.admin()`
+                                // is the same thing if you drive an Engine yourself
 // `id` comes from a snapshot: SessionSnapshot::id().
 admin.submit(Command::SetNextOut { id, n: 4812 });
 ```
@@ -1228,13 +1250,18 @@ and any bytes still in `tx` are lost having already spent their sequence numbers
 next session shows a gap for messages that never went on the wire.
 
 ```rust
-let admin = engine.admin();
+let handles = fixbolt::Handles::new();
+let admin = handles.admin();
 std::thread::spawn(move || {
     wait_for_sigterm();
     admin.shutdown(30_000);     // 30 s of grace, on the engine's clock
 });
 
-let done = engine.run();        // returns when the shutdown finishes
+// Through the front door — and this is the whole reason `Handles` is made
+// first: `serve` returns only once the shutdown has finished, so an `Admin`
+// taken afterwards would be an `Admin` on nothing (ADR-0054).
+let done = fixbolt::serve(addr, table, app, capacity, limits, log, handles)?;
+// Driving an `Engine` yourself: `engine.admin()` and then `engine.run()`.
 if !done.clean() {
     eprintln!(
         "{} of {} never answered — check their sequence numbers before restarting",
@@ -1289,7 +1316,8 @@ fn on_logon(&mut self, who: Peer<'_>, nth: u32, reply: Reply<'_, P, S>) -> Answe
 **Door 2 — `Sender`.** Anything said later, from any thread.
 
 ```rust
-let tx = engine.sender();          // Send + Sync + Clone
+let tx = handles.sender();         // Send + Sync + Clone; `engine.sender()` if you
+                                   // drive an Engine rather than calling `serve`
 std::thread::spawn(move || {
     if !tx.send(conn_id, &bytes) { /* the queue was full, or it did not fit */ }
 });

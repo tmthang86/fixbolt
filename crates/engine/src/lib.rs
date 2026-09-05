@@ -170,6 +170,10 @@ pub struct Engine<
     /// null-pointer-sized field and does no work at all — `observe`'s whole
     /// design.
     observe: Option<std::sync::Arc<crate::observe::Shared>>,
+    /// Sessions that have logged on since this engine was built. See
+    /// [`Self::logons`] — it exists because an event stream has exactly one
+    /// reader and `dial` used to be it.
+    logons: u64,
     /// Set the first turn after an operator asked to stop. `None` while the
     /// engine is simply running, which is the whole cost of being stoppable.
     stopping: Option<Stopping>,
@@ -241,6 +245,7 @@ where
             next_id: self.next_id,
             backpressure: self.backpressure,
             observe: self.observe,
+            logons: self.logons,
             stopping: self.stopping,
             #[cfg(all(feature = "standard", unix))]
             waker: self.waker,
@@ -298,6 +303,7 @@ where
             next_id: 0,
             backpressure: Backpressure::Disconnect,
             observe: None,
+            logons: 0,
             stopping: None,
             #[cfg(all(feature = "standard", unix))]
             waker: None,
@@ -371,10 +377,13 @@ where
     ///
     /// **The engine does not guess, and it does not read the journal for you.**
     /// ADR-0010's whole point is that choosing between a restart and a
-    /// continuation is the caller's; this is where they say. `next_out` is
-    /// usually `journal.highest() + 1` and `next_in` `journal.highest_in() + 1`,
-    /// but *usually* is not *always* and the engine has no business deciding
-    /// which.
+    /// continuation is the caller's; this is where they say. The numbers are
+    /// `journal.highest_out() + 1` and `journal.highest_in() + 1`, and
+    /// [`recovery::Resumed::from_journal`] computes both — **not `highest()`**, which is
+    /// the highest message held for a *replay* and is short by every
+    /// administrative message since the last application one
+    /// ([ADR-0053](../../../docs/decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md)).
+    /// Deciding *whether* to resume is still the caller's.
     ///
     /// **The journal is taken as well as the numbers, and that is not a
     /// convenience.** Correct counts over an empty journal answer the first
@@ -551,6 +560,43 @@ where
         conn.opened(at, &mut self.log);
         self.conns.push(conn);
         Ok(id)
+    }
+
+    /// Take the cell somebody made before this engine existed, so the handles
+    /// they already hold watch **this** engine.
+    ///
+    /// `true` if it was taken. **`false`, changing nothing, if this engine
+    /// already has a cell** — two cells on one engine are two truths: the engine
+    /// would publish into one and the operator read the other, and every symptom
+    /// of that is silence. An engine gets a cell from [`Self::observer`],
+    /// [`Self::admin`] or [`Self::sender`], so the refusal is for a caller who
+    /// asked the engine for a handle first and then tried to give it one.
+    ///
+    /// After this, those three methods hand out handles onto the adopted cell —
+    /// they find it already there. `STATUS.md` item 47; every front door calls
+    /// this for you, which is the whole point.
+    pub fn adopt(&mut self, handles: &crate::observe::Handles) -> bool {
+        if self.observe.is_some() {
+            return false;
+        }
+        self.observe = Some(std::sync::Arc::clone(&handles.0));
+        true
+    }
+
+    /// How many sessions have logged on since this engine was built.
+    ///
+    /// **A counter, because the event stream has one reader.**
+    /// [`crate::observe::Observer::events`] drains the ring, so two readers
+    /// share events rather than each seeing them — and [`connect_and_serve`]
+    /// used to be one of those readers, quietly taking every `LoggedOn` the
+    /// caller was waiting for. The reconnect loop compares this number across a
+    /// turn instead.
+    ///
+    /// It costs one increment, in the branch that already tests whether the
+    /// session just came up.
+    #[must_use]
+    pub const fn logons(&self) -> u64 {
+        self.logons
     }
 
     /// A handle another thread reads this engine's state through.
@@ -955,6 +1001,10 @@ where
             // default body is empty. `STATUS.md` item 32 (c).
             if !was_on && self.conns[i].session.is_logged_on() {
                 self.conns[i].journal.mark_active(now);
+                // **The same instant the `LoggedOn` event is emitted from**, and
+                // deliberately outside the `observe` test below: `dial` needs it
+                // whether or not anybody is watching. See [`Self::logons`].
+                self.logons = self.logons.saturating_add(1);
                 // **The session may now speak first** (ADR-0048 door 1). Here
                 // and nowhere else: this is the one instant that is neither a
                 // reply nor a tick, and it is reached once per session rather
@@ -1484,8 +1534,9 @@ pub fn serve<A: Application, L: MessageLog>(
     capacity: usize,
     limits: presession::Limits,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
-    serve_with::<256, 4096, 8192, 1024, A, L>(addr, table, app, capacity, limits, log)
+    serve_with::<256, 4096, 8192, 1024, A, L>(addr, table, app, capacity, limits, log, handles)
 }
 
 /// The same, with the three buffer sizes named by the caller.
@@ -1529,10 +1580,11 @@ pub fn serve_with<
     capacity: usize,
     limits: presession::Limits,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: StandardAcceptorEngine<A, NoLog, N, RX, TX, APP> = Engine::new(
+    let mut engine: StandardAcceptorEngine<A, NoLog, N, RX, TX, APP> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
@@ -1541,6 +1593,9 @@ pub fn serve_with<
         crate::block::Block::new(capacity + limits.pending() + 2),
         capacity,
     );
+    // A brand-new engine has no cell of its own, so this cannot refuse.
+    // `with_log` carries the cell across to the engine it returns.
+    let _ = engine.adopt(&handles);
     pump(
         acceptor,
         engine.with_log(log),
@@ -1598,9 +1653,10 @@ pub fn connect_and_serve<
     policy: crate::reconnect::Policy,
     recovery: V,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
     connect_and_serve_with::<256, 4096, 8192, 1024, A, J, V, L>(
-        addr, cfg, app, policy, recovery, log,
+        addr, cfg, app, policy, recovery, log, handles,
     )
 }
 
@@ -1631,16 +1687,19 @@ pub fn connect_and_serve_with<
     policy: crate::reconnect::Policy,
     recovery: V,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
-    let engine: TcpInitiatorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP> = Engine::new(
-        cfg,
-        InlineDispatch::new(app),
-        crate::clock::SystemClock,
-        // One connection, one waker. An initiator holds a single session; many
-        // of them is `shard`'s problem and is deliberately not this function's.
-        crate::block::Block::new(2),
-        1,
-    );
+    let mut engine: TcpInitiatorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP> =
+        Engine::new(
+            cfg,
+            InlineDispatch::new(app),
+            crate::clock::SystemClock,
+            // One connection, one waker. An initiator holds a single session; many
+            // of them is `shard`'s problem and is deliberately not this function's.
+            crate::block::Block::new(2),
+            1,
+        );
+    let _ = engine.adopt(&handles);
     dial(addr, cfg, engine.with_log(log), policy, recovery)
 }
 
@@ -1664,8 +1723,12 @@ fn dial<
     mut policy: crate::reconnect::Policy,
     mut recovery: V,
 ) -> Result<Shutdown, ServeError> {
-    let observer = engine.observer();
-    let mut events: Vec<crate::observe::Event> = Vec::new();
+    // **A counter, not the event stream.** `Observer::events` *drains* the
+    // ring, so this loop reading it would take every `LoggedOn` the caller's own
+    // `Observer` is waiting for — two readers on one cell share events rather
+    // than each seeing them. Before `Handles`, the caller had no cell and there
+    // was nobody to take them from. ADR-0054 decision 5.
+    let mut logons = engine.logons();
     let mut clock = crate::clock::SystemClock;
     let mut up = false;
     loop {
@@ -1729,13 +1792,11 @@ fn dial<
         // connected": a connection refused its `Logon` and dropped is a
         // failure, and counting it as success is how a policy hammers a
         // counterparty that is up but refusing.
-        observer.events(&mut events);
-        for e in &events {
-            if matches!(e.kind(), crate::observe::EventKind::LoggedOn) {
-                policy.logged_on();
-            }
+        let now_on = engine.logons();
+        if now_on != logons {
+            logons = now_on;
+            policy.logged_on();
         }
-        events.clear();
 
         if let Some(done) = engine.shutdown_finished() {
             return Ok(done);
@@ -1765,6 +1826,13 @@ fn dial<
 /// `crate::block` does not exist without that feature. Non-negotiable 6: the
 /// `#[cfg]` is on the item, not only in `Cargo.toml`.
 #[cfg(all(feature = "standard", unix))]
+// **Eight, and clippy's ceiling is seven.** ADR-0054 took the parameter
+// deliberately and recorded the alternative — a `Serve` builder — as deferred
+// with its reopening condition: *the first time an eleventh parameter is
+// wanted*. This lint is the language's opinion arriving early; it is noted in
+// that ADR's Consequences rather than silently muted, and the four entry points
+// it names are exactly the four that carry both a `Recovery` and a log.
+#[allow(clippy::too_many_arguments)]
 pub fn serve_with_recovery<
     A: Application,
     J: SessionJournal,
@@ -1778,9 +1846,10 @@ pub fn serve_with_recovery<
     limits: presession::Limits,
     recovery: V,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
     serve_with_recovery_with::<256, 4096, 8192, 1024, A, J, V, L>(
-        addr, table, app, capacity, limits, recovery, log,
+        addr, table, app, capacity, limits, recovery, log, handles,
     )
 }
 
@@ -1791,6 +1860,13 @@ pub fn serve_with_recovery<
 ///
 /// As [`serve_with_recovery`].
 #[cfg(all(feature = "standard", unix))]
+// **Eight, and clippy's ceiling is seven.** ADR-0054 took the parameter
+// deliberately and recorded the alternative — a `Serve` builder — as deferred
+// with its reopening condition: *the first time an eleventh parameter is
+// wanted*. This lint is the language's opinion arriving early; it is noted in
+// that ADR's Consequences rather than silently muted, and the four entry points
+// it names are exactly the four that carry both a `Recovery` and a log.
+#[allow(clippy::too_many_arguments)]
 pub fn serve_with_recovery_with<
     const N: usize,
     const RX: usize,
@@ -1808,16 +1884,19 @@ pub fn serve_with_recovery_with<
     limits: presession::Limits,
     recovery: V,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: TcpAcceptorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP> = Engine::new(
-        cfg,
-        InlineDispatch::new(app),
-        crate::clock::SystemClock,
-        crate::block::Block::new(capacity + limits.pending() + 2),
-        capacity,
-    );
+    let mut engine: TcpAcceptorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP> =
+        Engine::new(
+            cfg,
+            InlineDispatch::new(app),
+            crate::clock::SystemClock,
+            crate::block::Block::new(capacity + limits.pending() + 2),
+            capacity,
+        );
+    let _ = engine.adopt(&handles);
     pump(acceptor, engine.with_log(log), table, limits, recovery)
 }
 
@@ -1839,8 +1918,9 @@ pub fn serve_hft<A: Application, L: MessageLog>(
     capacity: usize,
     limits: presession::Limits,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
-    serve_hft_with::<256, 4096, 8192, 1024, A, L>(addr, table, app, capacity, limits, log)
+    serve_hft_with::<256, 4096, 8192, 1024, A, L>(addr, table, app, capacity, limits, log, handles)
 }
 
 /// The same, with the three buffer sizes named by the caller. See
@@ -1863,16 +1943,18 @@ pub fn serve_hft_with<
     capacity: usize,
     limits: presession::Limits,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: HftAcceptorEngine<A, NoLog, N, RX, TX, APP> = Engine::new(
+    let mut engine: HftAcceptorEngine<A, NoLog, N, RX, TX, APP> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
         crate::wait::Spin,
         capacity,
     );
+    let _ = engine.adopt(&handles);
     pump(
         acceptor,
         engine.with_log(log),
@@ -1888,6 +1970,13 @@ pub fn serve_hft_with<
 /// # Errors
 ///
 /// As [`serve_hft`].
+// **Eight, and clippy's ceiling is seven.** ADR-0054 took the parameter
+// deliberately and recorded the alternative — a `Serve` builder — as deferred
+// with its reopening condition: *the first time an eleventh parameter is
+// wanted*. This lint is the language's opinion arriving early; it is noted in
+// that ADR's Consequences rather than silently muted, and the four entry points
+// it names are exactly the four that carry both a `Recovery` and a log.
+#[allow(clippy::too_many_arguments)]
 pub fn serve_hft_with_recovery<
     A: Application,
     J: SessionJournal,
@@ -1901,9 +1990,10 @@ pub fn serve_hft_with_recovery<
     limits: presession::Limits,
     recovery: V,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
     serve_hft_with_recovery_with::<256, 4096, 8192, 1024, A, J, V, L>(
-        addr, table, app, capacity, limits, recovery, log,
+        addr, table, app, capacity, limits, recovery, log, handles,
     )
 }
 
@@ -1913,6 +2003,13 @@ pub fn serve_hft_with_recovery<
 /// # Errors
 ///
 /// As [`serve_hft_with_recovery`].
+// **Eight, and clippy's ceiling is seven.** ADR-0054 took the parameter
+// deliberately and recorded the alternative — a `Serve` builder — as deferred
+// with its reopening condition: *the first time an eleventh parameter is
+// wanted*. This lint is the language's opinion arriving early; it is noted in
+// that ADR's Consequences rather than silently muted, and the four entry points
+// it names are exactly the four that carry both a `Recovery` and a log.
+#[allow(clippy::too_many_arguments)]
 pub fn serve_hft_with_recovery_with<
     const N: usize,
     const RX: usize,
@@ -1930,16 +2027,18 @@ pub fn serve_hft_with_recovery_with<
     limits: presession::Limits,
     recovery: V,
     log: L,
+    handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let engine: TcpAcceptorEngine<A, crate::wait::Spin, J, NoLog, N, RX, TX, APP> = Engine::new(
+    let mut engine: TcpAcceptorEngine<A, crate::wait::Spin, J, NoLog, N, RX, TX, APP> = Engine::new(
         cfg,
         InlineDispatch::new(app),
         crate::clock::SystemClock,
         crate::wait::Spin,
         capacity,
     );
+    let _ = engine.adopt(&handles);
     pump(acceptor, engine.with_log(log), table, limits, recovery)
 }
 

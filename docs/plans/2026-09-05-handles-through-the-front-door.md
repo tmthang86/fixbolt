@@ -1,6 +1,6 @@
 # Cửa trước trả về tay cầm
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** ĐÓNG 2026-09-05
 > **Phạm vi:** `STATUS.md` item 47. Chạm `engine` (`Engine`, `observe`, `origin`, mười entry
 > point `serve*` / `connect_and_serve*`, vòng `dial`), `library` (re-export, `README`),
 > `tools/interop`, tài liệu, một ADR mới. **Không chạm** `codec`, `dict`, `session`, `transport`,
@@ -12,6 +12,37 @@
 > **Thứ tự:** sau [a-journal-that-knows-the-numbering](2026-09-05-a-journal-that-knows-the-numbering.md)
 > (item 48), trước đợt B — item 45 (c). Plan này **không** cần plan kia, nhưng plan kia nhỏ hơn
 > và đang ghim một gate đỏ, nên đi trước.
+
+## Sửa, ghi trước khi code dịch chuyển
+
+**Sửa 1 — số ADR là 0054, không phải 0053.** `[2026-09-05]` Plan này viết *"ADR-0053 mới"* vào
+buổi sáng, và plan item 48 đóng vào buổi chiều cùng ngày, lấy đúng số đó
+([ADR-0053](../decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md),
+`Accepted`). §5 không cho dùng lại số. Mọi chỗ trong plan này đọc *ADR-0053* nghĩa là
+**ADR-0054**; các mục tài liệu ở dưới đã sửa tên file.
+
+**Sửa 2 — con số nền của `cargo test --all` không còn là 506.** Item 48 thêm test; số nền đo
+lại ngay trước khi bắt đầu bước 2 và ghi vào nhật ký. Điều kiện *"phải tăng"* không đổi, chỉ có
+mốc so sánh đổi.
+
+**Sửa 3 — `GUIDE.md` §8c điểm 5 đã được item 48 sửa rồi.** Bảng *Tài liệu* dưới đây viết điều
+kiện *"cùng plan item 48 nếu plan đó chưa đóng"*; plan đó **đã đóng**, nên việc còn lại của plan
+này ở đoạn ấy chỉ là **đọc lại để hai plan không nói trái nhau**, không phải sửa lần nữa.
+
+**Sửa 4 — cú "dừng" của `tools/interop` đến từ stdin, không phải `SIGTERM`.** Plan viết *"cài
+`SIGTERM` → `admin.shutdown(2_000)`"*. Bắt tín hiệu trong Rust ở đây cần **hoặc** `libc` cộng một
+`unsafe extern "C"` — §2 rule 8 đòi một plan và một câu chứng minh tính đúng cho chỗ ấy — **hoặc**
+một dependency mới cho một tool. Cả hai đều không phải điều gate này nói tới. Thứ đang được kiểm
+là *"`serve` quay về **vì** `Admin::shutdown` được gọi"*; **ai bóp cò không phải chủ đề**. Nên vai
+acceptor đọc một dòng (hoặc EOF) trên stdin và gọi `admin.shutdown`, còn `scripts/interop.sh` giữ
+đầu ghi của một fifo và viết một dòng vào đó. `Admin::shutdown` là hai atomic store, không cần
+async-signal-safe gì cả.
+
+**Sửa 5 — test *"`serve` trả về vì `Admin::shutdown`"* nằm ở `crates/library/tests/end_to_end.rs`,
+không phải `crates/engine/tests/shutdown.rs`.** `shutdown.rs` lái một `Engine` trên `Loopback`,
+không có socket và không có `#![cfg(standard, unix)]`; `end_to_end.rs` đã có cả hai và đã gọi
+`fixbolt::serve` qua socket thật. Đặt test ở đó cũng đúng khán giả hơn: câu sai trong
+`GETTING-STARTED.md` là câu nói với **người dùng thư viện**.
 
 ## Bối cảnh
 
@@ -121,7 +152,7 @@ nối lại — hai nguồn phải bằng nhau, và đó là một assertion m�
 chữ ký, `dial`) · `crates/library/src/lib.rs` (re-export) · `crates/library/README.md` ·
 `crates/engine/tests/observe.rs`, `admin.rs`, `originate.rs`, `reconnect.rs`, `shutdown.rs`,
 `wire.rs` (mọi test gọi `serve*`) · `crates/library/tests/end_to_end.rs` · `tools/interop/src/*.rs`
-· `tools/w2w` nếu gọi `serve` · `scripts/interop.sh` · `docs/decisions/ADR-0053-*.md` (mới).
+· `tools/w2w` nếu gọi `serve` · `scripts/interop.sh` · `docs/decisions/ADR-0054-*.md` (mới).
 
 ## Bất biến bị đụng tới
 
@@ -137,7 +168,7 @@ chữ ký, `dial`) · `crates/library/src/lib.rs` (re-export) · `crates/library
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| 1 | **ADR-0053 `Proposed`**: cell dựng trước thay vì callback hay sinh đôi; vì sao đi ngược ADR-0047 quyết định 2 và ADR-0047 **không** bị supersede (bốn const vẫn đúng, chỉ có *"chữ ký gốc bất biến"* rơi); vì sao không `Option`; builder `Serve` được ghi là phương án *hoãn* với điều kiện mở lại | — |
+| 1 | **ADR-0054 `Proposed`**: cell dựng trước thay vì callback hay sinh đôi; vì sao đi ngược ADR-0047 quyết định 2 và ADR-0047 **không** bị supersede (bốn const vẫn đúng, chỉ có *"chữ ký gốc bất biến"* rơi); vì sao không `Option`; builder `Serve` được ghi là phương án *hoãn* với điều kiện mở lại | — |
 | 2 | `Handles`, `Engine::adopt`, `Engine::logons`. **Test đỏ trước**: `crates/engine/tests/observe.rs::a_handle_made_before_the_engine_sees_its_first_logon` — dựng `Handles`, dựng `Engine`, `adopt`, logon qua transport giả, `observer.request()` phải thấy một session; `adopt` lần hai trả `false` | 1 |
 | 3 | Mười chữ ký + `dial` không xả ring. Test: `reconnect.rs` — `Observer` của người gọi **vẫn nhận** `LoggedOn` sau khi `dial` đã thấy nó; `shutdown.rs` — `admin.shutdown` từ thread khác làm `serve` **trả về** với `Shutdown::clean()` | 2 |
 | 4 | `library` re-export, `README`, sáu ví dụ tài liệu; `tools/interop` dừng bằng `Admin`, `two_sources` trong `scripts/interop.sh`; `tools/w2w` | 3 |
@@ -163,7 +194,7 @@ chữ ký, `dial`) · `crates/library/src/lib.rs` (re-export) · `crates/library
 
 ## Tài liệu phải cập nhật
 
-- [ ] `docs/decisions/ADR-0053-*.md` — mới; ADR-0047 **không** sửa (đã Accepted), ADR mới nói
+- [ ] `docs/decisions/ADR-0054-*.md` — mới; ADR-0047 **không** sửa (đã Accepted), ADR mới nói
       rõ điều gì của nó còn đứng
 - [ ] `DESIGN.md` §3 (public API của `library`), §4 — D15 mọc đoạn *cửa 2 tới được qua cửa trước*;
       ADR-0036 *một cơ chế hai năng lực* nay là **ba năng lực, một cell dựng trước**; đi lại §2
@@ -197,7 +228,7 @@ chữ ký, `dial`) · `crates/library/src/lib.rs` (re-export) · `crates/library
 
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
-| ADR-0053 kết luận builder `Serve` thay vì tham số thứ bảy | trung bình | plan sửa bước 3 thành *builder + mười hàm thành shim*, ghi Sửa 1; các bước 2, 4, 5 không đổi |
+| ADR-0054 kết luận builder `Serve` thay vì tham số thứ bảy | trung bình | plan sửa bước 3 thành *builder + mười hàm thành shim*, ghi Sửa 1; các bước 2, 4, 5 không đổi |
 | Mười chữ ký đổi làm mọi test/tool/doc gọi `serve` đổi theo | chắc chắn | đó là bước 3–4, đếm trước bằng grep và ghi số vào nhật ký |
 | `shard` không có handle và plan này không chạm nó | thấp | ghi rõ ở *Ngoài phạm vi*; một `Handles` cho N shard là câu hỏi `ConnId` theo shard — ADR nêu là câu hỏi mở |
 
@@ -209,4 +240,97 @@ thiết kế riêng. Builder `Serve` (ghi trong ADR là phương án hoãn). M�
 
 ## Nhật ký giao hàng
 
-*(trống — chưa bắt đầu)*
+**Đóng 2026-09-05, cả năm bước.**
+[ADR-0054](../decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md)
+`Accepted`. `STATUS.md` item 47 gạch.
+
+### Làm được gì
+
+| Bước | Kết quả |
+|---|---|
+| 1 | ADR-0054, số sửa từ 0053 (Sửa 1). Chốt: cell dựng trước, `adopt`, **không** callback (bị tầng chặn), **không** sinh đôi; builder `Serve` ghi là *hoãn* kèm điều kiện mở lại |
+| 2 | `observe::Handles` (`new`/`observer`/`admin`/`sender`), `Engine::adopt` (từ chối cell thứ hai), `Engine::logons` |
+| 3 | Mười chữ ký nhận `handles: Handles`; `dial` thôi xả event ring, đọc `logons()` |
+| 4 | `library` re-export, `README`, `examples/acceptor.rs`, `GETTING-STARTED`, `TUTORIAL`, `GUIDE` §1b/§6b/§8a/§8c, `CONFIGURATION`, `PRD`; `tools/interop` dừng bằng `Admin`; `scripts/interop.sh` thêm `shutdown` và `two_sources` |
+| 5 | `benches/alloc.rs` case `adopt-idle`; `DESIGN.md` §3/§4 D15/§6; `CONFORMANCE.md`; `CHANGELOG.md`; `best-practices-standard.md` §9 và `best-practices-hft.md` §8; đi qua *Not proven* |
+
+### Số đo
+
+- `cargo test --all` **519 → 524**, 0 failed. `--no-default-features` **519**, sạch.
+- `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `check-lint-config.sh` (đảo ngược),
+  `check-no-optional-deps.sh`, `check-links.py` (1 556 link, 0 chết), `cargo doc` dưới
+  `-D rustdoc::broken_intra_doc_links` — tất cả sạch.
+- `benches/alloc.rs`: **0 trên 30 / 30 case**, có `adopt-idle` mới.
+- `scripts/interop.sh`: **7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6** = 33 assertion, exit 0.
+  `interop-acceptor: shutdown ok Shutdown { … }` — lần đầu một tiến trình trong repo này được
+  **hỏi** cho dừng thay vì bị `kill`.
+
+### Đảo ngược, mỗi cái đỏ đúng chỗ
+
+| Đảo | Đọc được gì |
+|---|---|
+| `adopt` bỏ cell được đưa, tự tạo cell mới | `the pre-made handle never saw the session log on; last snapshot: None` — hai test mới đỏ, hai test cũ vẫn xanh |
+| `dial` quay lại xả ring | `the caller's Observer saw 0 LoggedOn event(s) of two` — chỉ test mới đỏ |
+| `serve` không `adopt` | không có `35=5` nào quay lại, test đọc timeout ở đúng chỗ chờ lời chào |
+| `stop_on_stdin` không gọi `admin.shutdown` | gate **đỏ trong 29 giây**: *"did not return from serve within 10s"* — có chặn thời gian nên đảo ngược không treo |
+| một cấp phát trong nhánh `observe` của `turn` | `adopt-idle 10000`, còn `idle` và `turn` (engine không ai quan sát) vẫn 0 |
+| bỏ `mark_out` (đảo ngược của item 48) | `interop-reconnect-beat: two_sources BEHIND (resumed 3, already seen live 5)` — assertion mới có răng thật |
+
+### Không làm, và nói rõ
+
+- **`shard::serve_sharded_hft(_with)` không nhận `Handles`.** Ngoài phạm vi từ đầu, và nay bất
+  đối xứng ấy **nhìn thấy được** trong API công khai: mười hàm có, hai hàm không. ADR-0054 ghi
+  là câu hỏi mở, không phải sót.
+- **`benches/turn.rs` vẫn không có con số giá.** Nó chạy nhưng rơi vào `cases w/o a baseline`.
+  Plan này đóng trên container, không phải desktop §9.
+- **Assertion `two_sources` là bất đẳng thức, không phải đẳng thức** — xem *Điều tìm ra* dưới.
+
+### Điều tìm ra khi làm, plan không nói
+
+**Một — `two_sources` không thể là đẳng thức, và lý do đã nằm sẵn trong ADR-0053.** Plan viết
+*"hai nguồn phải bằng nhau"*. `[đo 2026-09-05]` bản đầu đòi `live == resumed + 1` và đọc
+`resumed 4, live 6`: ứng dụng còn nói trước lúc logon, nên hằng số cũng sai — và một gate dựa
+trên hằng số như thế sẽ vỡ khi **ứng dụng** đổi, chứ không phải khi giao thức đổi. Lý do sâu hơn
+là chính lập luận của ADR-0053, quay lại áp lên plan đi sau nó: observer biết con số **lúc có
+người hỏi**, nên một message gửi giữa lần hỏi cuối và lúc kết thúc là đã tiêu, đã bền, và **vô
+hình** ở phía ấy — và với một logout sạch thì **luôn luôn** như vậy, vì trả lời `35=5` và rớt
+link nằm trong cùng một turn. Nên assertion là **chiều**: thứ người vận hành thấy đã tiêu thì
+journal biết. Lấy mẫu chỉ có thể làm số live **thấp đi**, nên bất đẳng thức an toàn ở chỗ đẳng
+thức là một cuộc đua.
+
+**Hai — bốn entry point vượt ngưỡng `clippy::too_many_arguments` (8 / 7).** Chúng nhận `#[allow]`
+kèm comment trỏ về ADR-0054 — nơi builder `Serve` đã được ghi là *hoãn* với điều kiện mở lại.
+Lint chính là điều kiện ấy đến sớm và bị từ chối **một lần**, có chủ ý; ghi lại chứ không bịt,
+để tham số tiếp theo gặp một sự thật chứ không phải một thói quen.
+
+**Ba — cú dừng bằng stdin coi EOF là tín hiệu, và CI bác bỏ trong vòng một tiếng.** Bản đầu có
+comment: *"EOF cũng tính: một supervisor đóng pipe là đã thôi giám sát"*. Job `interop` đọc:
+`interop: stopping on ""` rồi `acceptor stopped: Shutdown { sessions: 0, … }` — acceptor dừng
+**trước khi** đối phương kịp nối. Tiến trình chạy nền trên runner không có terminal ở stdin, nên
+read trả về ngay. **Launcher đóng stdin là chuyện thường, không phải tín hiệu.** Nay chỉ một
+**dòng khác rỗng** mới dừng engine; EOF để engine phục vụ tiếp và in `stdin ended without a stop
+line; still serving`. Cả hai nửa đều được kiểm: `stop` vào fifo → `stopping on "stop"` và gate
+đọc `shutdown ok`; chạy với `< /dev/null` → tiến trình còn sống sau một giây. Write-up:
+[a-control-channel-the-launcher-already-closed](../reference/a-control-channel-the-launcher-already-closed.md),
+**`[to testing-skills]`**.
+
+**Bốn — assertion `no_resend` có một tiền đề chưa ai viết ra, và CI đụng phải.** Nó đọc *"không
+có `35=2` nào trong transcript của venue khởi động lại"*, tức giả định engine nối lại **một
+lần**. `SIGTERM` khiến QuickFIX logout các session **rồi mới** tắt, nên socket lắng nghe của nó
+sống lâu hơn lời chào; nấc đầu 200 ms của thang backoff quay số vào một venue đang tắt, tiêu một
+số cho `Logon` không ai trả lời, và quay lại ở số cao hơn một so với venue mới. Venue xin resend.
+**Hai đầu đều đúng, mà gate đỏ với một thông điệp về đánh số không hề xảy ra.** Fixture nay lấy
+socket lắng nghe đi ngay khi lời chào được trả lời, và step in `resumes: 1`. Đây là **bài học
+`HeartBtInt=30` soi gương**: chỗ kia fixture xoá mất điều kiện đang kiểm và gate xanh sai lý do;
+chỗ này fixture tạo ra một điều kiện assertion không định phán, và gate đỏ sai lý do.
+
+**Năm — commit giữa `3b817d7` đỏ ở job `interop`, và nói ra ở đây.** §8 đòi gate xanh **cho
+commit đó**, không phải cho ngọn nhánh. Bước 3 đổi `tools/interop` còn bước 4 đổi
+`scripts/interop.sh`, nên ở giữa hai bước cái tool đọc một stdin mà script chưa cấp — đúng lỗi ở
+*Ba*. `d9a1cb9` xanh cả hai run, và bản sửa EOF làm cả lớp lỗi ấy không còn khả năng xảy ra, chứ
+không phải chỉ sửa thứ tự.
+
+**Sáu — `DESIGN.md` §6 vẫn mang dòng reconnect của trước ADR-0053.** Nó còn đọc *"**3 / 3** sau
+`SIGTERM` … refused by **exactly one**, which is the known gap item 48 names"*, trong khi
+`STATUS.md` và `CONFORMANCE.md` đều đã sửa. **Bảng đồng bộ §4 đi bằng tay, và một bàn tay bỏ sót
+đúng một dòng của nó.** Sửa trong plan này.

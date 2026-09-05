@@ -39,6 +39,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let table = Settings::load(&cfg)?.into_table();
     println!("serving {} counterparties on {addr}", table.len());
 
+    // **Made before the engine, because `serve` never hands anything back
+    // until it has finished.** Everything an operator can do to a running
+    // engine — watch it, move a sequence number, stop it, send something it was
+    // not asked for — comes off this one object. ADR-0054.
+    let handles = fixbolt::Handles::new();
+
+    // The stop. Wire it to whatever your deployment uses to say "shut down";
+    // here it is a line on stdin, so the example needs no dependency to
+    // demonstrate the thing that matters — `serve` comes back on its own.
+    let admin = handles.admin();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
+        // Up to five seconds for counterparties to answer the goodbye.
+        admin.shutdown(5_000);
+    });
+
     let shutdown = fixbolt::serve(
         &addr,
         table,
@@ -48,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // No message log. `fixbolt::FileLog::open(path)` here writes every
         // message this acceptor sees or sends, both directions, one line each.
         fixbolt::NoLog,
+        handles,
     )?;
 
     // `serve` returns when an operator asks it to stop, and says what it could

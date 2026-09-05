@@ -81,8 +81,10 @@ fn main() -> ExitCode {
         }
         What::Count => {
             let (mut messages, mut marks, mut activity) = (0usize, 0usize, 0usize);
+            let mut out_marks = 0usize;
             let mut last_alive: Option<u64> = None;
             let (mut lowest, mut highest) = (None::<u32>, None::<u32>);
+            let mut spent = None::<u32>;
             for r in reader.records() {
                 match r {
                     Record::Message { seq, .. } => {
@@ -95,13 +97,21 @@ fn main() -> ExitCode {
                         activity += 1;
                         last_alive = Some(at_ms);
                     }
+                    // **Not counted as a message, and it does not move
+                    // `highest`.** That column answers *what can be replayed*,
+                    // and an outbound mark is the other question — ADR-0053.
+                    Record::OutboundMark { seq } => {
+                        out_marks += 1;
+                        spent = Some(spent.map_or(seq, |s: u32| s.max(seq)));
+                    }
                 }
             }
             println!(
                 "messages {messages}  inbound-marks {marks}  activity-marks {activity}  \
-                 seq {}..{}  last-alive {}  bytes {}",
+                 outbound-marks {out_marks}  seq {}..{}  spent {}  last-alive {}  bytes {}",
                 lowest.map_or_else(|| "-".to_owned(), |v| v.to_string()),
                 highest.map_or_else(|| "-".to_owned(), |v| v.to_string()),
+                spent.map_or_else(|| "-".to_owned(), |v| v.to_string()),
                 last_alive.map_or_else(|| "-".to_owned(), |v| v.to_string()),
                 reader.len(),
             );
@@ -152,5 +162,9 @@ fn line(r: &Record<'_>) -> String {
         // Milliseconds on the engine's clock, printed raw: turning them into a
         // calendar needs a timezone, and ADR-0033 keeps the calendar outside.
         Record::ActivityMark { at_ms } => format!("live {at_ms}"),
+        // The highest outbound number spent, which is not a message and cannot
+        // be replayed — ADR-0053. Printed so a `jrnl one N` that finds nothing
+        // but this says why the number was used.
+        Record::OutboundMark { seq } => format!("out  {seq}"),
     }
 }

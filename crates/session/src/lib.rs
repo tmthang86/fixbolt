@@ -1108,6 +1108,26 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         true
     }
 
+    /// [`Self::send_sequence_reset`], telling `journal` the number the reset
+    /// itself spent.
+    ///
+    /// **The reset goes out at the old number and `next_out` becomes the new
+    /// one**, so the journal is told the higher of the two — which is what a
+    /// restart must continue from. `mark_out` never goes backwards, so an
+    /// operator winding the count *down* does not lower what the journal knows;
+    /// that is deliberate, and it is the safe direction: the counterparty has
+    /// already seen the numbers above. ADR-0036, ADR-0053.
+    pub fn send_sequence_reset_with<J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        n: u32,
+        journal: &mut J,
+        emit: F,
+    ) -> bool {
+        let sent = self.send_sequence_reset(n, emit);
+        self.tell_journal(journal);
+        sent
+    }
+
     // ---- what an operator can order this session to say --------------------
     //
     // Three functions with one shape, and the shape is the point. Each takes an
@@ -1322,20 +1342,60 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
     /// The same in every other respect. A caller that answers `ResendRequest`s
     /// from a real journal must use this one, or a replay longer than one batch
     /// stalls until the next inbound message.
+    /// `[2026-09-05]` **The journal is `&mut` here, and it used to be `&`.** A
+    /// tick is where a `Heartbeat` and a `TestRequest` are born, and each one
+    /// spends a number the journal keeps no bytes for; telling it is a write.
+    /// ADR-0053.
     pub fn tick_with<J: Journal, F: FnMut(&[u8])>(
         &mut self,
         now_ms: u64,
-        journal: &J,
+        journal: &mut J,
         mut emit: F,
     ) -> Link {
-        let link = self.tick_inner(now_ms, &mut emit);
+        let link = self.tick_after_inner(now_ms, journal, &mut emit);
+        // **After every path out, not only this one** — see `tell_journal`.
+        self.tell_journal(journal);
+        link
+    }
+
+    fn tick_after_inner<J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        now_ms: u64,
+        journal: &J,
+        emit: &mut F,
+    ) -> Link {
+        let link = self.tick_inner(now_ms, emit);
         if link == Link::Up && self.owed.is_some() {
-            if let Err(why) = self.continue_replay(journal, &mut emit) {
+            if let Err(why) = self.continue_replay(journal, emit) {
                 self.end(why.into());
                 return Link::Dropped;
             }
         }
         link
+    }
+
+    /// Tell `journal` how far the outbound count has got.
+    ///
+    /// **The number is already here**: `next_out - 1` is the highest number
+    /// this session has spent, whether it went out on an `ExecutionReport` the
+    /// journal kept or on a `Heartbeat` it never heard about. So there is no
+    /// new state, and no way for a session's own count and the journal's to
+    /// drift — one is computed from the other.
+    ///
+    /// Called from every entry point that holds a journal, **on every path
+    /// out**. That last part is not a detail: `received_with` returns early
+    /// when the counterparty's `Logout` has been answered, and that is exactly
+    /// the message whose number went missing. ADR-0053.
+    ///
+    /// `mark_out` is a high-water mark, so calling this on a turn that sent
+    /// nothing is a comparison and no more — `FileJournal::mark_out` returns
+    /// before it touches a disk.
+    fn tell_journal<J: Journal>(&self, journal: &mut J) {
+        // `next_out` is the *next* number, so the highest spent is one below —
+        // and nothing has been spent before the first message, when it is 1.
+        if self.next_out > 1 {
+            journal.mark_out(self.next_out - 1);
+        }
     }
 
     fn tick_inner<F: FnMut(&[u8])>(&mut self, now_ms: u64, emit: &mut F) -> Link {
@@ -1447,6 +1507,50 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         journal: &mut J,
         mut emit: F,
     ) -> Link {
+        let link = self.received_inner(bytes, app, journal, &mut emit);
+
+        // **After delivery, never before** — ADR-0017. Writing it before the
+        // application ran would mean an ill-timed crash *loses* the message:
+        // this end has counted it, so it never asks for a resend and the
+        // counterparty believes it arrived. Writing it after means the message
+        // is delivered twice, and the second copy carries `43=Y` because it
+        // comes from a `ResendRequest` this end issued. FIX has a flag for the
+        // second failure and none for the first.
+        //
+        // **Out here rather than inside the body, and `[measured 2026-09-05]`
+        // that is a fix rather than a tidy-up.** It used to sit after the
+        // drain, which `judge` answering `Link::Dropped` returns before — and
+        // the counterparty's own `Logout` is judged exactly that way. So the
+        // number it arrived under was consumed and never marked; a resumed
+        // session expected it again, the counterparty's next message was one
+        // too high, and this end sent a `ResendRequest` for a message it
+        // already had. **The interop gate found it, not this repository's own
+        // tests**: with the outbound half of ADR-0053 fixed, the clean-logout
+        // scenario reached far enough to read `35=2: 1` where it wanted none.
+        // `crates/session/tests/numbering.rs` holds it now.
+        //
+        // `next_in` is the *next* expected number, so the highest consumed is
+        // one below — and nothing is marked before the first message, when the
+        // count is still 1. `mark_in` takes the max, so the paths that return
+        // without consuming anything re-state a number the journal has.
+        if self.next_in > 1 {
+            journal.mark_in(self.next_in - 1);
+        }
+        // The outbound twin, and it is here for the same reason: a `Logout`
+        // answered gives `Link::Dropped` straight out of `judge`, and the
+        // answer spent a number. That is the clean logout `STATUS.md` item 48
+        // is about. ADR-0053.
+        self.tell_journal(journal);
+        link
+    }
+
+    fn received_inner<A: Application, J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        bytes: &[u8],
+        app: &mut A,
+        journal: &mut J,
+        emit: &mut F,
+    ) -> Link {
         // Once the link is down, bytes still arrive — the counterparty's own
         // Logout crossing ours, or anything already in flight. Reading them is
         // free; answering them would put a message on a connection this end has
@@ -1454,7 +1558,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         if matches!(self.state, State::Disconnected | State::AwaitingLogout) {
             return Link::Dropped;
         }
-        let link = match self.judge(bytes, app, journal, &mut emit) {
+        let link = match self.judge(bytes, app, journal, emit) {
             Ok(link) => link,
             Err(why) => {
                 self.end(why.into());
@@ -1470,33 +1574,15 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // Draining here rather than inside `judge` keeps the recursion out:
         // `judge` never calls this, so a held message that queues another
         // cannot nest.
-        let link = self.drain(app, journal, &mut emit);
+        let link = self.drain(app, journal, emit);
 
-        // **After delivery, never before** — ADR-0017. Here rather than inside
-        // `judge` because it must cover both a message delivered directly and
-        // one released when a gap closed, and because `judge` has early returns
-        // that would each need their own copy of this.
-        //
-        // Writing it before the application ran would mean an ill-timed crash
-        // *loses* the message: this end has counted it, so it never asks for a
-        // resend and the counterparty believes it arrived. Writing it after
-        // means the message is delivered twice, and the second copy carries
-        // `43=Y` because it comes from a `ResendRequest` this end issued. FIX
-        // has a flag for that failure and none for the other.
-        //
-        // `next_in` is the *next* expected number, so the highest consumed is
-        // one below — and nothing is marked before the first message, when the
-        // count is still 1.
-        if self.next_in > 1 {
-            journal.mark_in(self.next_in - 1);
-        }
         // **A resend in progress moves forward on every message too**, not
         // only on ticks. A counterparty that keeps talking gets its replay at
         // the rate its own traffic drives, and one that goes quiet gets it from
         // `tick_with`. Placed after `drain` so a held message that closes a gap
         // is delivered before the replay it may have been waiting behind.
         if link != Link::Dropped && self.owed.is_some() {
-            if let Err(why) = self.continue_replay(journal, &mut emit) {
+            if let Err(why) = self.continue_replay(journal, emit) {
                 self.end(why.into());
                 return Link::Dropped;
             }
@@ -1684,6 +1770,24 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         Link::Up
     }
 
+    /// [`Self::begin_logout`], telling `journal` the number the goodbye spent.
+    ///
+    /// The ordered-shutdown twin of [`Self::logout_now_with`], and it matters
+    /// for the same reason: a process shutting down cleanly spends a number on
+    /// its way out, and a journal that never heard about it sends the next
+    /// process back one short — which is what a real `libquickfix` refused.
+    /// ADR-0053.
+    pub fn begin_logout_with<J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        text: &[u8],
+        journal: &mut J,
+        emit: F,
+    ) -> Link {
+        let link = self.begin_logout(text, emit);
+        self.tell_journal(journal);
+        link
+    }
+
     pub fn logout_now<F: FnMut(&[u8])>(&mut self, text: &[u8], mut emit: F) -> Link {
         if matches!(self.state, State::Disconnected | State::AwaitingLogout) {
             return Link::Dropped;
@@ -1691,6 +1795,25 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         let _ = self.send(Which::Logout, &[(tag::TEXT, text)], &mut emit);
         self.state = State::AwaitingLogout;
         Link::Dropped
+    }
+
+    /// [`Self::logout_now`], telling `journal` the number the goodbye spent.
+    ///
+    /// **The same message, and a different thing survives it.** This path is
+    /// the last thing a dying process does — D10's backpressure cut and the
+    /// engine's `SIGTERM` — so the number it spends is precisely the one a
+    /// restart needs and the one nothing else will record. A deployment that
+    /// calls the journal-less form and then restarts asks the counterparty to
+    /// accept a number it has already seen. ADR-0053.
+    pub fn logout_now_with<J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        text: &[u8],
+        journal: &mut J,
+        emit: F,
+    ) -> Link {
+        let link = self.logout_now(text, emit);
+        self.tell_journal(journal);
+        link
     }
 
     /// Write one `Reject (35=3)` and hand it to `emit`.
@@ -1875,6 +1998,12 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
 
         self.next_out += 1;
         self.last_sent_ms = self.now_ms;
+        // **Also when `put` was kept, and deliberately so.** A kept message
+        // raises the journal's own outbound mark, so this is a comparison that
+        // writes nothing — and when `put` refused, it is the only record that
+        // the number was spent at all. One line instead of a branch that could
+        // be got wrong. ADR-0053.
+        self.tell_journal(journal);
         Link::Up
     }
 

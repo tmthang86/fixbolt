@@ -47,7 +47,17 @@ impl Handler for Desk {
 # #[cfg(all(feature = "standard", unix))]
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 let table = Settings::load("acceptor.cfg")?.into_table();
-fixbolt::serve(
+
+// Everything an operator can do to a running engine comes off this, and it is
+// made **before** the engine: `serve` returns only once it has stopped.
+let handles = fixbolt::Handles::new();
+let admin = handles.admin();
+std::thread::spawn(move || {
+    // Wire this to whatever your deployment uses to say "shut down".
+    admin.shutdown(5_000);
+});
+
+let shutdown = fixbolt::serve(
     "0.0.0.0:9876",
     table,
     fixbolt::app(Desk),
@@ -56,7 +66,9 @@ fixbolt::serve(
     // Every message in and out, one line each, in a file an operator can
     // `grep` during a dispute. `fixbolt::NoLog` if you want none.
     fixbolt::FileLog::open(std::path::Path::new("messages.log"))?,
+    handles,
 )?;
+println!("stopped: {shutdown:?}");
 # Ok(())
 # }
 # #[cfg(not(all(feature = "standard", unix)))]

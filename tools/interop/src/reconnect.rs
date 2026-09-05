@@ -43,6 +43,7 @@
 //! [a-message-on-the-wire-is-not-a-message-delivered]: ../../../docs/reference/a-message-on-the-wire-is-not-a-message-delivered.md
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fixbolt::{Answer, GroupData, GroupEntryData, Handler, Incoming, Peer, Reply};
 use fixbolt_engine::journal::{Durability, FileJournal, Store};
@@ -50,7 +51,6 @@ use fixbolt_engine::msglog::NoLog;
 use fixbolt_engine::reconnect::Policy;
 use fixbolt_engine::recovery::{NoRecovery, Recovery, Resumed};
 use fixbolt_session::Config;
-use fixbolt_session::journal::Journal;
 
 /// The journal this role keeps on disk.
 ///
@@ -142,11 +142,12 @@ impl Handler for Watch {
 
 /// One `FileJournal` per counterparty, on a path this role was given.
 ///
-/// The shape `crates/engine/tests/on_disk.rs` uses, with **one deliberate
-/// difference**: `next_in` is `highest_in() + 1`, because
-/// [`Journal::highest_in`]'s own rustdoc says *"a resumed session's `next_in`
-/// is this plus one"*. That test writes `highest_in().unwrap_or(1)` without the
-/// `+ 1`; the plan's trap 3 carries it, and it is not this file's to fix.
+/// `[đo 2026-09-05]` **This used to derive all three numbers by hand, and two of
+/// the three were wrong in different ways** — `next_out` from `journal.highest()`
+/// (short by every administrative message since the last application one), and
+/// `on_disk.rs`'s copy of the same block dropped the `+ 1` on `next_in`. Both are
+/// now [`Resumed::from_journal`], which is why that function exists: arithmetic
+/// written twice was got wrong twice. ADR-0053.
 struct OnDisk {
     path: PathBuf,
     how: Durability,
@@ -191,24 +192,22 @@ impl Recovery<Disk> for OnDisk {
     }
 
     fn recover(&mut self, _cfg: &Config) -> Option<Resumed<Disk>> {
-        let journal = self.open();
-        let next_out = journal.highest().map_or(1, |h| h + 1);
-        // `+ 1`, per the trait's rustdoc. `highest_in` is the last number
-        // **seen**; the next one expected is the one after it.
-        let next_in = journal.highest_in().map_or(1, |h| h + 1);
-        let last_active_ms = journal.last_active();
-        if next_out == 1 && next_in == 1 && last_active_ms.is_none() {
-            // Nothing was left behind, which is the ordinary answer on the
-            // first attempt. The engine then asks `fresh` and starts at `34=1`.
-            return None;
-        }
-        println!("interop-reconnect: resuming next_out={next_out} next_in={next_in}");
-        Some(Resumed {
-            journal,
-            next_out,
-            next_in,
-            last_active_ms,
-        })
+        // **`from_journal`, not three lines of arithmetic.** `[đo 2026-09-05]`
+        // the three lines that used to be here derived `next_out` from
+        // `journal.highest()`, which is the highest message held for a
+        // *replay* — short by every administrative message since the last
+        // application one. A real `libquickfix` answered *"MsgSeqNum too low,
+        // expecting 4 but received 3"*. ADR-0053.
+        //
+        // `None` here is the ordinary answer on the first attempt: nothing was
+        // left behind, the engine asks `fresh`, and the session starts at
+        // `34=1`.
+        let resumed = Resumed::from_journal(self.open())?;
+        println!(
+            "interop-reconnect: resuming next_out={} next_in={}",
+            resumed.next_out, resumed.next_in
+        );
+        Some(resumed)
     }
 }
 
@@ -221,11 +220,26 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
     let first_ms = ms(args, "--first-ms", 200);
     let ceiling_ms = ms(args, "--ceiling-ms", 2_000);
 
-    // `30`, so no heartbeat falls inside the few seconds this scenario runs and
-    // the `34=` the script reads off the transcript stay the ones the protocol
-    // put there. The plan's trap 4.
+    // **`30` by default, and `--heart-bt-int` exists because that default used
+    // to be the reason a scenario passed.**
+    //
+    // `[đo 2026-09-05]` 30 was chosen so no Heartbeat falls inside the few
+    // seconds this scenario runs, keeping the `34=` on the transcript the ones
+    // the protocol put there (the reconnect plan's trap 4). It also meant the
+    // `SIGKILL` scenario was green **because no administrative message was sent
+    // after the last application one** — the exact condition item 48 was about.
+    // A gate that passes because of how its fixture is configured is not
+    // reporting on the engine.
+    //
+    // So the script now runs a second `SIGKILL` round at `--heart-bt-int 1`
+    // with a deliberate pause before the kill, which puts at least one
+    // Heartbeat between the `35=B` and the death. That round is what says the
+    // fix is about *every* administrative message rather than about `35=5`.
+    // ADR-0053.
+    let beat = u32::try_from(ms(args, "--heart-bt-int", 30)).unwrap_or(30);
     let cfg =
-        Config::initiator(b"FIX.4.4", sender.as_bytes(), target.as_bytes()).with_heart_bt_int(30);
+        Config::initiator(b"FIX.4.4", sender.as_bytes(), target.as_bytes()).with_heart_bt_int(beat);
+    println!("interop-reconnect: HeartBtInt={beat}");
 
     let policy = match Policy::new(first_ms, ceiling_ms) {
         Ok(p) => p,
@@ -248,6 +262,8 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
     if args.iter().any(|a| a == "--no-recovery") {
         println!("interop-reconnect: NoRecovery — every reconnect starts at 34=1");
         println!("interop-reconnect: dialing {addr}");
+        let handles = fixbolt::Handles::new();
+        watch_next_out(handles.observer());
         return match fixbolt_engine::connect_and_serve::<_, Store, NoRecovery, NoLog>(
             &addr,
             cfg,
@@ -255,6 +271,7 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
             policy,
             NoRecovery,
             NoLog,
+            handles,
         ) {
             Ok(s) => {
                 println!("interop-reconnect: stopped: {s:?}");
@@ -287,6 +304,11 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
     println!("interop-reconnect: journal {path}");
     println!("interop-reconnect: dialing {addr}");
 
+    // The handles are made before the engine, and the watcher takes an
+    // `Observer` off them before `connect_and_serve` is even called.
+    let handles = fixbolt::Handles::new();
+    watch_next_out(handles.observer());
+
     match fixbolt_engine::connect_and_serve::<_, Disk, OnDisk, NoLog>(
         &addr,
         cfg,
@@ -294,6 +316,7 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
         policy,
         recovery,
         NoLog,
+        handles,
     ) {
         Ok(s) => {
             println!("interop-reconnect: stopped: {s:?}");
@@ -304,6 +327,57 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// Print the **live** outbound number, every time it moves.
+///
+/// `[2026-09-05]` **this is the second source `STATUS.md` item 48 recorded as
+/// unreachable.** Its write-up has a table with a row reading *"`Observer` —
+/// reachable at `recover` time? **no**, `connect_and_serve` hands out no
+/// handle"*. It does now (item 47), so the durable number and the live one
+/// reach the same transcript and `scripts/interop.sh` can compare them.
+///
+/// # What the comparison can and cannot be
+///
+/// **Not equality.** An `Observer` *samples* and a journal *records*, and
+/// ADR-0053 already argued exactly why that gap cannot be closed: a message
+/// sent between the last poll and the connection ending is spent, durable, and
+/// invisible here. On a clean logout it always is — the answer to the
+/// counterparty's `35=5` and the drop happen inside one turn, so no snapshot is
+/// ever taken between them.
+///
+/// So the gate asserts the **direction**: what the operator saw spent, the
+/// journal knows about. Sampling can only make this side *low*, never high, so
+/// the inequality is safe where equality would be a race. A journal that
+/// forgot an administrative message — item 48's defect — makes the resumed
+/// number lower than a number that was printed here, and that is red.
+#[cfg(all(feature = "standard", unix))]
+fn watch_next_out(observer: fixbolt::Observer) {
+    std::thread::spawn(move || {
+        let mut last = None;
+        loop {
+            match observer.request().as_ref().and_then(|s| {
+                s.sessions()
+                    .first()
+                    .copied()
+                    .filter(fixbolt::SessionSnapshot::logged_on)
+            }) {
+                Some(sess) if last != Some(sess.next_out()) => {
+                    last = Some(sess.next_out());
+                    println!(
+                        "interop-reconnect: observer next_out={} next_in={}",
+                        sess.next_out(),
+                        sess.next_in()
+                    );
+                }
+                Some(_) => {}
+                // The connection went. The next one starts its own run of
+                // numbers, and the gate reads them per resume.
+                None => last = None,
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    });
 }
 
 /// A millisecond argument, or `default` if it is absent or unreadable.

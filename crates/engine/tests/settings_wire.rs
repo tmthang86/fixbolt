@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fixbolt_engine::Application;
+use fixbolt_engine::observe::Handles;
 use fixbolt_engine::presession::Limits;
 use fixbolt_engine::settings::Settings;
 
@@ -129,6 +130,7 @@ fn serving(name: &str, text: &str, counterparties: usize) -> String {
             4,
             Limits::new(8, 30_000).expect("both above zero"),
             fixbolt_engine::msglog::NoLog,
+            Handles::new(),
         );
     });
     addr
@@ -321,6 +323,7 @@ fn a_file_log_path_in_the_config_reaches_serve_and_the_file_fills() {
             4,
             Limits::new(8, 30_000).expect("both above zero"),
             log,
+            Handles::new(),
         );
     });
 

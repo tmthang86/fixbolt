@@ -58,7 +58,7 @@ Set in code when the engine is built or started.
 | `SLOTS` | Outbound messages the journal ring keeps for resends | power of two | `4096` `[changed 2026-09-04, was 8]` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`journal.rs:51`](../crates/engine/src/journal.rs#L51) |
 | `SLOT_LEN` | Largest message the journal ring can keep | bytes | `512` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`journal.rs:56`](../crates/engine/src/journal.rs#L56) |
 | `resend_batch` | Messages put on the wire per call when answering a `ResendRequest` | `u16`; zero is read as one | `8` | `Config::with_resend_batch` | [`session/src/lib.rs`](../crates/session/src/lib.rs) |
-| `Durability` | What a `FileJournal` guarantees | `Async` (background writer), `Fsync` (blocks the engine thread) | `Async` | `FileJournal::open(path, durability)` | [`journal.rs`](../crates/engine/src/journal.rs) |
+| `Durability` | What a `FileJournal` guarantees. **Under `Fsync` an *administrative* message costs a `sync_data` too**, since 2026-09-05: the outbound count is written when it moves, so a `Heartbeat` every second is a disk sync every second (ADR-0053, the price ADR-0017 already accepted inbound). `Async` — the default — keeps it off the engine thread | `Async` (background writer), `Fsync` (blocks the engine thread) | `Async` | `FileJournal::open(path, durability)` | [`journal.rs`](../crates/engine/src/journal.rs) |
 | `MAX_ON_LOGON` | Most messages one session may originate from `Handler::on_logon` | `u32`, not configurable | `16` | compile-time constant | [`engine/src/lib.rs`](../crates/engine/src/lib.rs) |
 | `ORIGIN_CAPACITY` | Originated messages a `Sender` may have waiting for the engine's next turn | `usize`, not configurable | `64` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
 | `ORIGIN_LEN` | Largest message `Sender::send` will take | bytes, not configurable | `512` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
@@ -120,10 +120,10 @@ not re-exported. Each `serve*` function now has a `*_with` twin that takes all f
 
 ```rust
 // the defaults, spelled out — this is exactly what `serve` calls
-serve_with::<256, 4096, 8192, 1024, _, _>(addr, table, app, capacity, limits, log)?;
+serve_with::<256, 4096, 8192, 1024, _, _>(addr, table, app, capacity, limits, log, handles)?;
 
 // a counterparty that sends 16 KiB messages and expects 8 KiB answers
-serve_with::<256, 16_384, 16_384, 8_192, _, _>(addr, table, app, capacity, limits, log)?;
+serve_with::<256, 16_384, 16_384, 8_192, _, _>(addr, table, app, capacity, limits, log, handles)?;
 ```
 
 The two `_` are the language's, not this API's: a turbofish must supply **every** generic

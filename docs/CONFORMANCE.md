@@ -113,39 +113,129 @@ scripts/interop.sh
 | Direction | Driver | Under test | Score |
 |---|---|---|---|
 | `interop:` | this engine's `Session<Initiator, 256>` over a blocking socket | a `libquickfix` `SocketAcceptor` | **7 / 7** |
-| `interop-acceptor:` | a `libquickfix` `SocketInitiator` | `fixbolt::serve` in `standard` mode: the poller, the pre-session table, the settings file, the library `Handler` and the session layer under all of it | **7 / 7** |
-| `interop-reconnect:` | a `libquickfix` `SocketAcceptor` **killed with `SIGKILL` and restarted on the same `FileStore`** | `fixbolt_engine::connect_and_serve`: the reconnect ladder, the `Recovery` seam, `add_resumed`, the engine turn | **5 / 5** |
-| `interop-reconnect-logout:` | the same, **stopped with `SIGTERM`** so it says goodbye first | the same, after a clean logout — ADR-0043 decision 5 | **3 / 3** |
+| `interop-acceptor:` | a `libquickfix` `SocketInitiator` | `fixbolt::serve` in `standard` mode: the poller, the pre-session table, the settings file, the library `Handler` and the session layer under all of it — **and, since 2026-09-05, `Admin::shutdown` through the front door**: the process is asked to stop rather than killed, and `serve` returns a `Shutdown` (ADR-0054, `STATUS.md` item 47) | **8 / 8** |
+| `interop-reconnect:` | a `libquickfix` `SocketAcceptor` **killed with `SIGKILL` and restarted on the same `FileStore`** | `fixbolt_engine::connect_and_serve`: the reconnect ladder, the `Recovery` seam, `add_resumed`, the engine turn, and — since ADR-0054 — the durable count against the live one read through an `Observer` | **6 / 6** |
+| `interop-reconnect-logout:` | the same, **stopped with `SIGTERM`** so it says goodbye first | the same, after a clean logout — ADR-0043 decision 5 | **6 / 6** |
+| `interop-reconnect-beat:` | the same as the `SIGKILL` row, at **`HeartBtInt=1` with a pause before the kill**, so a `Heartbeat` is guaranteed between the last application message and the death | the same, with the last number spent belonging to a message no journal holds bytes for — ADR-0053 | **6 / 6** |
 
 The seven steps of the acceptor direction: `logon` (with `141=Y` echoed); `order` (two
 `35=D`, two `35=8`, paired by `11=`); `heartbeat` (an unprompted `35=0` with **no** `112=`,
 within a deadline read from the `108=` on the wire); `testrequest`; `resend` (**the two
 original sequence numbers replayed with `43=Y`**, not merely something carrying `43=Y`);
 `gapfill` (the acceptor asks `35=2 7=n 16=0`, and a fresh TestRequest after the gap fill is
-answered); `logout`.
+answered); `logout`. The eighth is the script's own, not the C++ initiator's: `shutdown` — a
+line on stdin reaches `Admin::shutdown` through `fixbolt::serve`, and the process **returns**
+and prints its `Shutdown` instead of being killed. `[measured 2026-09-05]` removing the
+`admin.shutdown` call makes it read *"this engine's acceptor did not return from serve within
+10s"* and fail in 29 seconds — the bound is there because a reversal that hangs proves nothing
+([a-reversal-can-fail-by-hanging](reference/a-reversal-can-fail-by-hanging.md)).
 
-The five steps of the `SIGKILL` scenario: `dropped` (no `35=5` in the first transcript, so the
+**A stop line, and only a line.** `[measured 2026-09-05]` the first version of that trigger
+treated end-of-input as the signal too, and this job is what refuted it: a background process on
+a runner has no terminal on stdin, so it read `interop: stopping on ""` and the acceptor
+**stopped before the counterparty connected**. Only a non-empty line stops it now; `< /dev/null`
+leaves it serving and says so
+([a-control-channel-the-launcher-already-closed](reference/a-control-channel-the-launcher-already-closed.md)).
+
+The six steps of the `SIGKILL` scenario: `dropped` (no `35=5` in the first transcript, so the
 ending really was abrupt); `back` (a Logon reaches the restarted acceptor, and **nothing told
 this engine to send it** — `reconnect::Policy` did); `next_out` (**relational**: that Logon's
 `34=` is one past the last number this engine sent before the kill, read off the transcript
 rather than written as a literal); `next_in` (every `35=B` the restarted acceptor sends is
 *delivered to the application*, which a session whose inbound count had restarted would have
-gap-requested instead); `no_resend` (no `35=2`, no `141=Y`, no `MsgSeqNum too low`).
+gap-requested instead); `no_resend` (no `35=2`, no `141=Y`, no `MsgSeqNum too low`, printed beside the number of times
+the engine resumed — see below); and `two_sources`, which needs
+ADR-0054's handles to exist at all — the number the journal resumes from is never **behind** a
+number an `Observer` already saw spent.
 
-The three of the `SIGTERM` scenario: `goodbye`; `redialled`; and `known_gap`, which **pins a
-known limitation on purpose** — `STATUS.md` item 48. After a clean logout this engine answers
-the venue's `35=5`, spending an outbound number the journal does not record, so the resumed
-session is refused by exactly one. The assertion pins the *size* of the shortfall, so the day
-item 48 is fixed this line goes red and somebody has to come back and read it.
+**`two_sources` is an inequality, and that is not a weakened equality.** `[measured
+2026-09-05]` the first version demanded `live == resumed + 1` and read `resumed 4, live 6`: the
+application also speaks first on logon, so the constant was wrong, and a gate resting on a
+constant like that breaks when the *application* changes. The deeper reason is ADR-0053's own
+argument — an observer knows the number *when somebody asks*, so a message sent between the
+last poll and the ending is spent, durable and invisible on that side. On a clean logout it
+always is: answering the counterparty's `35=5` and dropping the link happen inside one turn.
+Sampling can only make the live number **low**, so the direction is safe where equality is a
+race. Its teeth are measured: with the outbound mark removed, `interop-reconnect-beat` reads
+`BEHIND (resumed 3, already seen live 5)` — and the logout scenario stays green, which is the
+limit above, stated by the gate itself.
 
-**Machine and run for these two.** Gated on `ubuntu-latest` in the same blocking `interop` job:
-job [`101218167551`](https://github.com/tmthang86/fixbolt/actions/runs/33933972142/job/101218167551)
+The `SIGTERM` scenario makes the **same five**, with `goodbye` in place of `dropped`, plus
+`two_sources`. `[measured
+2026-09-05]` **until this week it could only make three**, and the third was `known_gap`, which
+pinned a known limitation on purpose: after a clean logout this engine answered the venue's
+`35=5`, spending an outbound number the journal did not record, so the resumed session was
+refused by exactly one — `STATUS.md` item 48. The journal now records that count
+([ADR-0053](decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md)),
+so the assertion that pinned the gap is gone and the scenario asserts continuation like the
+other two.
+
+**And the third scenario exists because the first two were green for a reason that was not the
+engine.** Both ran at `HeartBtInt=30`, chosen so no `Heartbeat` could fall inside their few-second
+window — which is exactly the condition item 48 was about, chosen by the fixture. The
+`interop-reconnect-beat` round removes it: `HeartBtInt=1` and a deliberate 2.5 s pause before the
+kill, so the last number spent belongs to a `Heartbeat`. It came back at `34=5` having sent up to
+`34=4`, which is what says the fix is about *every* administrative message rather than about
+`35=5`.
+
+**`no_resend` has a premise, and it is printed now.** `[measured 2026-09-05]` the step asserts
+no `35=2` in the restarted venue's transcript, which assumes the engine reconnected **once**.
+`SIGTERM` makes QuickFIX log its sessions out and *then* shut down, so its listening socket
+outlives the goodbye — and on a loaded runner the reconnect ladder's 200 ms first rung dialled
+into a venue that was already stopping, spent a number on a `Logon` nobody would answer, and came
+back one higher than the restarted venue expected. The venue asked for a resend: **both ends
+correct, and the gate red with a message about numbering that had not happened.** The fixture now
+takes the listener away as soon as the goodbye is answered, and the step prints `resumes: N`.
+
+**The `SIGTERM` scenario's `no_resend` step is what found a second defect**, in the inbound
+direction: the counterparty's `Logout` was consumed and never marked, so a resumed session
+expected it again and sent a `ResendRequest` for a message it already had. `35=2: 1` where it
+wanted none. The gate found it; this repository's own tests did not.
+
+**Machine and run for these three.** The **3 / 3** the `SIGTERM` row used to carry was gated on
+`ubuntu-latest` in the blocking `interop` job: job
+[`101218167551`](https://github.com/tmthang86/fixbolt/actions/runs/33933972142/job/101218167551)
 of run [`33933972142`](https://github.com/tmthang86/fixbolt/actions/runs/33933972142), commit
 `c839854` — **the merge commit on `main`, not the branch tip**, because a branch being green
-says nothing about the commit where it meets `main`. 11 jobs of 11. The job's own log was read rather than its conclusion, and every
-assertion line — `next_out ok … came back at 34=3, wanted 34=3` and `known_gap ok expecting 4
-but received 3` — is byte-identical to the development run, so item 48 is not one machine's
-accident.
+says nothing about the commit where it meets `main`. 11 jobs of 11.
+
+**The 8 / 8 and the three 6 / 6 are CI's, on the commit that changed them.** `[measured
+2026-09-05]` runner image `ubuntu-24.04` (20260831.293.1), cmake 3.31.6, g++ 13.3.0, libquickfix
+built from the pinned `386ce46e` (3 262 136 bytes): job
+[`101312682472`](https://github.com/tmthang86/fixbolt/actions/runs/33968467214/job/101312682472)
+of run [`33968467214`](https://github.com/tmthang86/fixbolt/actions/runs/33968467214) on
+`ccf90a9`, **22 checks of 22 across that run and
+[`33968465621`](https://github.com/tmthang86/fixbolt/actions/runs/33968465621)**. The job's own
+log was read rather than its conclusion, and every line is the development run's:
+
+```
+interop: PASS 7/7
+interop-acceptor: PASS 7/7
+interop-acceptor: shutdown ok Shutdown { sessions: 0, said_goodbye: 0, acked: 0, timed_out: 0 }
+interop-reconnect-logout: goodbye     ok    35=5 out: 1, answered by this engine: 1
+interop-reconnect-logout: next_out    ok    sent up to 34=3 before the kill, came back at 34=4, wanted 34=4
+interop-reconnect-logout: no_resend   ok    35=2: 0, 141=Y: 0, 'MsgSeqNum too low': 0, resumes: 1
+interop-reconnect-beat:   next_out    ok    sent up to 34=4 before the kill, came back at 34=5, wanted 34=5
+interop-reconnect-beat:   two_sources ok    journal vs Observer: ok 1 resume(s), journal never behind the live count
+==> the run added nothing git can see
+interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 against libquickfix @ 386ce46e…
+```
+
+**Two earlier commits on this branch were red for this job, and are named rather than left in
+the run history.** `3b817d7`
+([`101308740830`](https://github.com/tmthang86/fixbolt/actions/runs/33966987593/job/101308740830))
+— the acceptor role read a stdin the script did not yet supply, and treated its end as a stop.
+`9a20562`
+([`101311876479`](https://github.com/tmthang86/fixbolt/actions/runs/33968159513/job/101311876479))
+— the `SIGTERM` venue's listener outlived its goodbye, the engine dialled into it mid-shutdown,
+and `no_resend` reported a correct exchange as a numbering failure. Both are fixed, and both are
+in the write-ups above. §8 asks for gates green **for the commit**, not for the branch tip.
+
+**What this run actually checked out**, since the phrasing here used to be loose: GitHub tests
+the **merge ref**, `dd2aa12` — *"Merge `ccf90a9` into `2470f5f`"* — so it is this branch merged
+into `main` as of that base, not the branch tip alone and not the commit that will exist on
+`main` after the merge button. **The run on that commit is the stronger thing and is still
+owed.**
 
 **These two scenarios are the first evidence for `connect_and_serve` that this repository did
 not write.** ADR-0043 said so in its own *Consequences*: *"every test of this is invented … only
@@ -158,10 +248,10 @@ of run [`33833427382`](https://github.com/tmthang86/fixbolt/actions/runs/3383342
 `f94e36e`. The job's own log was read rather than its conclusion: `interop: PASS 7/7`,
 `interop-acceptor: PASS 7/7`, `==> the run added nothing git can see`.
 
-### What these 22 cases do not buy
+### What these 33 cases do not buy
 
-- **They are not a second corpus.** Seven cases per direction, eight across the two reconnect
-  scenarios, against 59 definitions.
+- **They are not a second corpus.** Seven and eight cases in the two directions, eighteen
+  across the three reconnect scenarios, against 59 definitions.
 - **The reconnect scenarios do not cover a fixbolt process that restarts.** Only the venue
   dies; this engine stays up throughout. Recovery across *this* process ending is
   `crates/engine/tests/on_disk.rs`, and it has no independent opinion.
