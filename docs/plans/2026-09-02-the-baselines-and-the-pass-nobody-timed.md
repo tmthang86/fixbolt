@@ -1,6 +1,6 @@
 # Ba con số trên máy §9: cổng đang đỏ, lượt kiểm chưa ai đo, và template mỗi message
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt (2026-09-02), **đang làm**
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt (2026-09-02), **Xong (2026-09-05)** — ba bước, ba item, một ngày ở máy §9
 > **Phạm vi:** open item 41 → 39 → 34, đúng thứ tự chủ dự án chọn
 > **Máy chạy:** **bắt buộc máy §9** — `benches/baselines.tsv` khoá theo CPU model, không máy nào khác phát biểu được.
 
@@ -441,7 +441,14 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 | 2b | 2026-09-05 | **Xong, và nó tìm ra lỗi ở chỗ khác ngay lần chạy đầu.** `pub fn validate` + [ADR-0050](../decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md) (chủ dự án duyệt), `crates/session/benches/validate.rs`. Đảo ngược: `validate` trả `None` ngay → **1.1 ns** cả hai case, đúng chữ ký "bench không đo gì" repo đã biết. Assert fixture của bench đỏ ngay trên byte của `parse.rs` → Sửa 4, item 50 |
 | 2c | 2026-09-05 | **Xong, `n = 21`.** Bốn dòng `validate`: NOS 882.1 · HB 169.5 · TestRequest w2w 218.4 · NOS w2w 897.3, margin 1.10, `pass 12 fail 0 unknown 1`, build đã ghim. `parse Heartbeat (validated)` **56.3 → 60.9** (sửa fixture, không phải drift); hai dòng `parse NewOrderSingle` đo lại trong band nên **không sửa**. `bench.sh --strict` thoát 0 **ba lần liên tiếp**. Hai dòng `validate` đầu **ghi lại một lần trong cùng buổi**: thêm hai case w2w vào cùng file làm chúng đi −2.3% và +3.6% ngược chiều nhau — đúng cái lỗ ADR-0049 vừa đặt tên, quay lại sau hai tiếng |
 | 2d | 2026-09-05 | **Xong, và câu trả lời là "không, nó không giải thích phần lớn".** §8 có dòng riêng cho lượt kiểm và một bảng cộng lại: lượt kiểm **678.9 ns = 17.4%** của 3 898; cộng parse vào (~+60), dispatch (+9), parse lần hai của application (+114), encode template (+233) → **~1 094 ns = 28%**; **còn ~2 804 ns chưa quy được cho ai — item 49 mới**, bốn ứng viên, không ứng viên nào được nhận. Tổng user-space của §8 đi **~0.46 → ~1.36 µs** vì `session ~0.1 µs` đã âm thầm đứng thay cho lượt kiểm này. **Item 39 đóng** |
-| 3 | — | Chưa bắt đầu — item 34. 3a coi như đã trả: ba figure `fixbolt/cost` ghi 2026-09-05 |
+| 3a | 2026-09-05 | **Xong, và tỉ lệ không chuyển được — vì mẫu số chưa bao giờ được đo.** Ba figure `fixbolt/cost` trên §9 (n = 20): parse **159.6** · reply **804.1** · `on_message` **1028.6**, so với `encode ExecutionReport (template)` **237.6** → **3.4×**, không phải 24×/50×. *40 ns* của ADR-0041 đến từ thí nghiệm `attrib` **chưa bao giờ vào repo**; bench committed cùng shape đọc 177.6–199.4 trên cùng loại VM cùng tuần. Rút lại theo điều 10, không thay bằng đoán. Suy ra (ghi rõ là suy ra): materialise template mỗi message ≈ **570 ns = 2.9%** vòng w2w app. Câu hỏi mở 2 của ADR-0041 đóng: trên §9 ba case **cộng đúng** (+6.7%), cái VM "tổng nhỏ hơn các phần" là tại VM |
+| 3b | 2026-09-05 | **Xong: [ADR-0051](../decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md), chủ dự án chọn (A) — đóng item 34, đã đo và chấp nhận**, không đổi codec hot-path cho 2.9%. Sáu tài liệu sửa 40 ns/50×/24× trong cùng commit; draft `const-templates-in-dict` (đợt D) đổi phạm vi trước khi thành plan. **Item 34 đóng. Plan đóng** |
+
+**Trạng thái một câu `[2026-09-05]`, sau bước 3 — plan đóng:** cả ba item đóng trong một ngày ở
+máy §9, và **không item nào đóng theo cách nó được mở ra**: 41 không phải hồi quy mà là layout
+của binary; 39 là ứng viên lớn nhất và giải thích 17%; 34 là tỉ lệ 24× mà mẫu số chưa bao giờ
+được đo, thật ra là 3.4×. Ba lần, cái đắt nhất tìm được là **một con số đã công bố không đo cái
+tên nó nói**. Máy §9 có thể về bình thường.
 
 **Trạng thái một câu `[2026-09-05]`, sau bước 2:** **item 39 đóng, và nó trả lời ngược với cái
 ai cũng chờ** — lượt kiểm dictionary tốn **897 ns**, gấp bảy lần parse, là dòng user-space lớn

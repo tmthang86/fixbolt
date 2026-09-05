@@ -65,14 +65,17 @@ fixbolt::serve(
 
 ## What it costs, and the door that stays open
 
-`[measured 2026-09-02, Intel Xeon @ 2.80GHz, NOT a DESIGN.md §9 machine]`
-one twelve-field reply through `App::on_message` costs **~2.1 µs**, of
-which the second parse is **~190 ns** and building a `Template` per message
-is the rest. Encoding a template that was built **once** — `DESIGN.md` D9's
-shape — costs **40 ns**. So this layer is roughly **50× the fast path**, and
-that is a fact about the convenience rather than about the engine.
+`[measured 2026-09-05, AMD Ryzen 7 3700X, the DESIGN.md §9 desktop, pass 12
+fail 0 unknown 1]` one twelve-field reply through `App::on_message` costs
+**1 029 ns**, of which the second parse is **160 ns** and the reply — a
+`Template` built, sorted and encoded per message — is **804 ns**. Encoding a
+template that was built **once** — `DESIGN.md` D9's shape — costs **238 ns** on
+the same box. So this layer is about **3.4× the fast path**, roughly 570 ns
+more per reply, and that is a fact about the convenience rather than about
+the engine ([ADR-0051](../../docs/decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md);
+this paragraph said *50×* against a *40 ns* that had no committed benchmark).
 
-For a great many FIX applications two microseconds is nothing. For an `hft`
+For a great many FIX applications a microsecond is nothing. For an `hft`
 deployment it is more than the rest of the message costs put together. If
 you are the second, implement `fixbolt_session::Application` yourself and
 hand *that* to `serve` — the raw seam is not taken away, and

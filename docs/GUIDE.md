@@ -337,21 +337,25 @@ the traps you are now responsible for.
 
 ### What the short way costs
 
-`[measured 2026-09-02]` on an Intel Xeon @ 2.80 GHz, a shared cloud VM that does **not** meet
-§9, so read the ratio and not the figure. One twelve-field ExecutionReport:
+`[measured 2026-09-05]` on the §9 desktop, AMD Ryzen 7 3700X, `pass 12 fail 0 unknown 1`,
+medians of 20 `bench.sh` runs — committed benchmarks, all of them. One twelve-field
+ExecutionReport:
 
 | | ns/op |
 |---|---|
-| Encode a `Template` you built once (D9's shape) | **40** |
-| `App::on_message`: parse, build a template, encode | **956** |
-| …of which the second parse is | 146 |
+| Encode a `Template` you built once (D9's shape) — `encode ExecutionReport (template)` | **237.6** |
+| `library, reply only`: build a template, sort it, encode | **804.1** |
+| `library, on_message`: the parse, the handler, and the reply | **1 028.6** |
+| …of which the second parse is — `library, parse only` | 159.6 |
 
-About 24×. It was about 50× (2 062–2 131 ns) until `TemplateBuilder` stopped copying itself
-once per field ([ADR-0044](decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)). What
-is left is that a `Template` is built per message, sorted and laid out, where D9's shape
-builds it once. `crates/library/benches/cost.rs` is the benchmark;
-[ADR-0041](decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)
-is the decision that published the ratio and what would remove the rest.
+**About 3.4×, roughly 570 ns more per reply — 2.9% of a 19 908 ns application round trip on
+the same box.** This table said *24×* against a *40 ns* encode until 2026-09-05; that 40 ns
+came from an experiment that was never committed, and the committed benchmark for the same
+shape read 177–199 ns on the same VM class
+([ADR-0051](decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md)). What
+the 570 ns is: a `Template` built per message, sorted and laid out, where D9's shape builds it
+once. `crates/library/benches/cost.rs` is the benchmark; ADR-0051 is where the owner decided
+that 2.9% is not worth a codec hot-path change today.
 
 | If your deployment is | Use |
 |---|---|

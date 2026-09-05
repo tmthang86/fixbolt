@@ -222,10 +222,10 @@ whatever order the handler named them in; and `11`, `54` and `55` are copied fro
 
 ## Performance notes
 
-- **The `fixbolt` library is a convenience, not the fastest path.** A reply through `Handler`
-  costs about **956 ns** on a shared cloud VM, against **40 ns** to encode a template built
-  once ([ADR-0041](decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md),
-  [ADR-0044](decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)). For order entry at
+- **The `fixbolt` library is a convenience, not the fastest path.** `[measured 2026-09-05]` on
+  the §9 desktop a reply through `Handler` costs about **804 ns**, against **238 ns** to encode
+  a template built once — about 3.4×, roughly 570 ns
+  ([ADR-0051](decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md)). For order entry at
   a few thousand messages a second in `standard` mode, that is not your problem.
 - **For `hft`,** implement [`fixbolt::Application`](../crates/session/src/lib.rs) directly and
   build one `Template` per message type at logon. [`crates/conformance/src/echo.rs`](../crates/conformance/src/echo.rs)

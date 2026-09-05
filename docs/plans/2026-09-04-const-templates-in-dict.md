@@ -1,7 +1,16 @@
 # Template dựng lúc build: đóng item 34
 
 > **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** Draft
-> **Phạm vi:** `STATUS.md` item 45, đợt D, plan thứ nhất; đóng **item 34**. Chạm `codec`
+> **Sửa phạm vi `[2026-09-05]`, trước khi thành plan:** item 34 **đã đóng** bằng
+> [ADR-0051](../decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md) — trên
+> máy §9 `library, reply only` = **804.1 ns** so với `encode ExecutionReport (template)` =
+> **237.6 ns**, tỉ lệ **3.4×**, không phải 19–24×; con số *40 ns* draft này dựa vào **không có
+> benchmark committed** và bị rút lại. Phần materialise template mỗi message ≈ **570 ns = 2.9%**
+> vòng w2w app. Nên draft này, nếu còn làm, là *"một tối ưu đáng ≤ 570 ns mỗi reply"* chứ không
+> phải *"đóng item 34"*, và mọi mục tiêu bên dưới phải đo lại theo bốn số §9 đó. Chủ dự án chọn
+> không làm bây giờ.
+>
+> **Phạm vi (như viết 2026-09-04):** `STATUS.md` item 45, đợt D, plan thứ nhất; ~~đóng **item 34**~~. Chạm `codec`
 > (`Template`, `TemplateBuilder` — hot path), `dict` (sinh thêm bảng), `library` (`Reply`,
 > `App`), benches. **Không chạm** `session`, `engine`, `transport`.
 >

@@ -1,6 +1,6 @@
 # ADR-0044 — A builder that is not moved once per field
 
-- **Status**: Accepted — 2026-09-02
+- **Status**: Accepted — 2026-09-02 · **Amended by [ADR-0051](ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md)** (2026-09-05): the *~24×* below divides by a 40 ns that had no committed benchmark; on a §9 machine the ratio is 3.4×
 - **Date**: 2026-09-02
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0041](ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md) —

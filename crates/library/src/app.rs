@@ -20,14 +20,17 @@
 //! was the application's at all — and its index is private. So this is the
 //! second parse of the same bytes.
 //!
-//! `[measured 2026-09-02]` **it is the small half of what this layer costs**:
-//! ~190 ns of a ~2.1 µs path, where building a `Template` per reply is the
-//! other ~91%. That is the reverse of what the plan for this crate assumed, and
-//! it is why [ADR-0041] does not propose removing the parse. It is **not** an
-//! allocation either: the index lives in [`App`] and is reused, which
-//! `benches/alloc.rs` asserts.
+//! `[measured 2026-09-05]` **it is the small part of what this layer costs**:
+//! `library, parse only` **159.6 ns** of a **1 028.6 ns** `on_message` on the §9
+//! desktop, where the reply — a `Template` built per message — is **804.1**.
+//! That is the reverse of what the plan for this crate assumed, and it is why
+//! [ADR-0041] does not propose removing the parse; [ADR-0051] is where the
+//! reply's own cost was found to be 3.4× the D9 path rather than the 24× this
+//! crate's documents carried. It is **not** an allocation either: the index
+//! lives in [`App`] and is reused, which `benches/alloc.rs` asserts.
 //!
 //! [ADR-0041]: ../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md
+//! [ADR-0051]: ../../../docs/decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md
 
 use core::ops::Range;
 
