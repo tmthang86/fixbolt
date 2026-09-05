@@ -115,7 +115,25 @@ session plumbing is the session's.
   expected number differently. The table beside the resend logic in
   `crates/session/src/lib.rs` records which restarts the counts.
 - **`141=Y` on a Logon resets both counts** before the Logon's own numbers are applied. It is
-  the only thing that restarts a resumed session's counters.
+  the only thing *on the wire* that restarts a resumed session's counters.
+- **`ResetPolicy` restarts them from this end** `[2026-09-05]`, and is the only other thing
+  that does. `Config::with_reset(ResetPolicy::new().on_logon() / .on_logout() /
+  .on_disconnect())` — QuickFIX's `ResetOnLogon`, `ResetOnLogout` and `ResetOnDisconnect`.
+  **The default resets on nothing**, which is the behaviour the 59 definitions prove.
+  - `on_logon` restarts both counts in `Session::connect`, **including for a resumed session**,
+    which is the only case where it changes anything.
+  - `on_logout` and `on_disconnect` restart them in `Session::end` — **after** the message that
+    ends the session has been written, so a `Logout` still carries the number it was owed
+    rather than spending `34=1` twice.
+  - It is not the same choice as `Session::new` versus `Session::resume`: those say what the
+    journal still holds, this says what the session wants next time.
+  Guarded by `crates/session/tests/logon.rs::reset_on_logon_restarts_a_resumed_sessions_numbers`,
+  `::reset_on_disconnect_restarts_the_numbers`,
+  `crates/session/tests/goodbye.rs::reset_on_logout_restarts_the_numbers_only_after_the_goodbye_is_numbered`,
+  and their three neutral twins — `::the_default_reset_policy_leaves_a_resumed_session_counting`,
+  `::a_disconnect_without_the_policy_keeps_the_numbers`,
+  `::a_logout_without_the_policy_keeps_the_numbers` — which are what say the flag and not the
+  code path is doing the work.
 - **`16=0` and a range past what was sent are clamped** to the last number this end actually
   sent. Guarded by
   `crates/engine/tests/journal.rs::what_no_longer_fits_in_the_ring_is_filled_over_not_skipped`.

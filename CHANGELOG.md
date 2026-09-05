@@ -17,6 +17,26 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A session can be told to restart its numbering.** **`fixbolt::ResetPolicy`** — QuickFIX's
+  `ResetOnLogon`, `ResetOnLogout` and `ResetOnDisconnect`, under those names — reached through
+  **`Config::with_reset`** and read back through `Config::reset`. Step 1 of `STATUS.md` item 45,
+  wave B.
+
+  Until now the only thing that could restart a resumed session's counts was the counterparty
+  sending `141=Y`. `Session::new` versus `Session::resume` looks like the same choice and is
+  not: those say **what the journal still holds**, and a reset policy says **what this session
+  wants next time**. Collapsing them would leave `ResetOnLogon=Y` unrepresentable for exactly
+  the session that needs it — one that was resumed from a journal holding 500 messages, whose
+  counterparty starts each morning at `34=1`.
+
+  **The default resets on nothing**, which is the behaviour the 59 acceptance definitions
+  prove, so no existing session changes. `on_logon` restarts both counts in `Session::connect`;
+  `on_logout` and `on_disconnect` restart them in the one place that knows which ending
+  happened, **after** the message that ends the session has been written — a `Logout` still
+  carries the number it was owed rather than spending `34=1` twice.
+
+  The file keys that set these arrive with step 4; this is the API underneath them.
+
 - **The handles reach the front door.** **`fixbolt::Handles`** — one cell, made by the caller
   **before** the engine, with `observer()`, `admin()` and `sender()` on it — plus
   **`Engine::adopt(&Handles) -> bool`** and **`Engine::logons() -> u64`**

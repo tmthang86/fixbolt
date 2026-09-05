@@ -353,6 +353,105 @@ pub struct Config {
     /// How many messages one call may put on the wire while answering a
     /// `ResendRequest`. See [`Self::with_resend_batch`].
     resend_batch: u16,
+    /// When this session restarts its numbering of its own accord.
+    /// [`ResetPolicy::new`] is neutral and is the default.
+    reset: ResetPolicy,
+}
+
+/// When a session restarts both sequence numbers at 1 without being asked to
+/// on the wire.
+///
+/// QuickFIX's `ResetOnLogon`, `ResetOnLogout` and `ResetOnDisconnect`, with
+/// those names, because they mean the same three things — a desk arriving with
+/// an existing configuration file recognises them.
+///
+/// # This is not [`Session::new`] versus [`Session::resume`]
+///
+/// Those two say **what the journal still has**: `resume` continues a count
+/// that outlived a process, `new` starts one that never persisted anything
+/// ([ADR-0010]). A reset policy says **what this session wants to happen next
+/// time**, which is an operator's choice and lives in a file.
+///
+/// Collapsing the two would make `ResetOnLogon=Y` unrepresentable for exactly
+/// the session that needs it: one that *was* resumed, from a journal holding
+/// 500 messages, whose counterparty starts every morning at `34=1`.
+///
+/// # Neutral by default, in the same sense as [`Schedule::always`]
+///
+/// [`Self::new`] resets on nothing. The 59 acceptance definitions run under it
+/// and not one of them mentions `ResetOn*`, so the default has to be the
+/// behaviour they already prove — non-negotiable 3.
+///
+/// [ADR-0010]: ../../../docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ResetPolicy {
+    on_logon: bool,
+    on_logout: bool,
+    on_disconnect: bool,
+}
+
+impl ResetPolicy {
+    /// Reset on nothing. The default, and exactly today's behaviour.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            on_logon: false,
+            on_logout: false,
+            on_disconnect: false,
+        }
+    }
+
+    /// `ResetOnLogon=Y` — restart both counts as a connection is made, **even
+    /// for a resumed session**, which is the only case where this changes
+    /// anything.
+    #[must_use]
+    pub const fn on_logon(mut self) -> Self {
+        self.on_logon = true;
+        self
+    }
+
+    /// `ResetOnLogout=Y` — restart both counts once the `Logout` exchange is
+    /// over.
+    ///
+    /// **After the goodbye is numbered, never before.** A `Logout` that went
+    /// out as `34=1` because the reset ran first would put that number on the
+    /// wire twice in one session.
+    #[must_use]
+    pub const fn on_logout(mut self) -> Self {
+        self.on_logout = true;
+        self
+    }
+
+    /// `ResetOnDisconnect=Y` — restart both counts when the link goes down for
+    /// any other reason.
+    ///
+    /// **This is the one that loses messages**, and it is the one QuickFIX
+    /// deployments most often turn on. A counterparty that reconnects after a
+    /// network drop and asks for a resend gets numbers this end no longer
+    /// believes in.
+    #[must_use]
+    pub const fn on_disconnect(mut self) -> Self {
+        self.on_disconnect = true;
+        self
+    }
+
+    /// Does this policy reset as the connection is made?
+    #[must_use]
+    pub const fn resets_on_logon(self) -> bool {
+        self.on_logon
+    }
+
+    /// Does this policy reset after a `Logout`?
+    #[must_use]
+    pub const fn resets_on_logout(self) -> bool {
+        self.on_logout
+    }
+
+    /// Does this policy reset when the link drops?
+    #[must_use]
+    pub const fn resets_on_disconnect(self) -> bool {
+        self.on_disconnect
+    }
 }
 
 /// The default for [`Config::with_resend_batch`].
@@ -375,6 +474,7 @@ impl Config {
             heart_bt_int: DEFAULT_HEART_BT_INT,
             schedule: Schedule::always(),
             resend_batch: DEFAULT_RESEND_BATCH,
+            reset: ResetPolicy::new(),
         }
     }
 
@@ -423,6 +523,22 @@ impl Config {
     #[must_use]
     pub const fn resend_batch(&self) -> u16 {
         self.resend_batch
+    }
+
+    /// When this session restarts its numbering of its own accord.
+    ///
+    /// See [`ResetPolicy`], including why this is a configuration field rather
+    /// than a choice between [`Session::new`] and [`Session::resume`].
+    #[must_use]
+    pub const fn with_reset(mut self, reset: ResetPolicy) -> Self {
+        self.reset = reset;
+        self
+    }
+
+    /// The reset policy this session keeps.
+    #[must_use]
+    pub const fn reset(&self) -> ResetPolicy {
+        self.reset
     }
 
     /// When this session is open, and when both ends start again at `34=1`.
@@ -952,6 +1068,25 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
     ///
     /// **One place, so a new way to end cannot forget to say why.**
     fn end(&mut self, why: DropReason) {
+        // `ResetOnLogout` / `ResetOnDisconnect`, and this is the one place that
+        // knows which of the two happened — every ending funnels through here
+        // carrying its reason, which is what [`DropReason`] is for.
+        //
+        // **Called after the goodbye has been written, never before.** The
+        // `Logout` reply is emitted by the caller above and then this runs, so
+        // the message that ends the session still carries the number it was
+        // owed. Resetting first would spend `34=1` twice in one session, and
+        // the counterparty would refuse the second one as already used.
+        //
+        // A `Logout` in either direction is the logout case: this end sending
+        // one leaves the session in `LoggingOut` or `AwaitingLogout` and the
+        // counterparty's answer arrives here as `PeerLogout` too.
+        let by_logout = matches!(why, DropReason::PeerLogout);
+        let reset = self.cfg.reset;
+        if (by_logout && reset.resets_on_logout()) || (!by_logout && reset.resets_on_disconnect()) {
+            self.next_out = 1;
+            self.next_in = 1;
+        }
         self.last_drop_reason = Some(why);
         self.state = State::Disconnected;
         // **A replay does not survive the connection it was owed on.** The
@@ -1240,7 +1375,11 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // The counterparty can still force a reset from the wire, and that is
         // what `141=Y` is for — the only thing that restarts a resumed
         // session's numbers. See the Logon path.
-        if !self.resumed {
+        //
+        // `ResetOnLogon=Y` is the operator saying the resumed count is not
+        // wanted this morning, so it takes the same branch. That is the only
+        // case it changes: a session built with `new` restarts here anyway.
+        if !self.resumed || self.cfg.reset.resets_on_logon() {
             self.next_out = 1;
             self.next_in = 1;
         }

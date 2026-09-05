@@ -306,3 +306,55 @@ fn a_goodbye_that_cannot_be_built_does_not_leave_a_shutdown_waiting() {
     assert_eq!(sent, 0);
     assert_eq!(s.last_drop_reason(), Some(DropReason::CannotSend));
 }
+
+/// `ResetOnLogout=Y` — step 1 of `plans/2026-09-04-settings-for-both-roles.md`.
+///
+/// **Here rather than in `tests/logon.rs`, and the reason is a false green that
+/// happened.** This test was first written there, where the nearest thing to a
+/// counterparty `Logout` is `swap(&good_logon(), "35=A", "35=5")`. That is not
+/// a `Logout`: `98=` and `108=` stay on it and the session answers with a
+/// `Reject (35=3)`. The assertion guarding *"the goodbye keeps the number it
+/// was owed"* read `|34=2|` and **passed on the Reject**, because a Reject is
+/// also the second message this session sends. [`their_logout`] already existed
+/// here, with the trap written into its own doc comment.
+///
+/// So both halves are asserted now: the number **and** the `35=`. A number
+/// alone cannot tell a goodbye from a refusal.
+#[test]
+fn reset_on_logout_restarts_the_numbers_only_after_the_goodbye_is_numbered() {
+    let mut s: Session<Acceptor, 256> =
+        Session::new(cfg().with_reset(fixbolt_session::ResetPolicy::new().on_logout()));
+    s.connect(|_| ());
+    s.tick(FIXED_TIME_MILLIS, |_| ());
+    s.received(&good_logon(), |_| ());
+    assert_eq!(s.next_out(), 2, "the Logon reply spent 34=1");
+
+    let mut out = Vec::new();
+    let link = s.received(&their_logout(2), |b| {
+        out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"))
+    });
+
+    assert_eq!(link, Link::Dropped, "a goodbye ends the session");
+    assert_eq!(out.len(), 1, "answered with exactly one: {out:?}");
+    assert!(out[0].contains("|35=5|"), "and it is a Logout: {out:?}");
+    assert!(
+        out[0].contains("|34=2|"),
+        "the goodbye keeps the number it was owed — resetting before it is \
+         written would spend 34=1 twice in one session: {out:?}"
+    );
+    assert_eq!(s.next_out(), 1, "and only then does the count restart");
+    assert_eq!(s.next_in(), 1, "both directions");
+}
+
+/// The other half: without the policy nothing restarts.
+///
+/// If the reset in `end` were unconditional the test above would pass for a
+/// reason that has nothing to do with the flag it is named for.
+#[test]
+fn a_logout_without_the_policy_keeps_the_numbers() {
+    let (mut s, _) = logged_on();
+    s.received(&their_logout(2), |_| ());
+
+    assert_eq!(s.next_out(), 3, "no policy, no reset");
+    assert_eq!(s.next_in(), 3, "in either direction");
+}

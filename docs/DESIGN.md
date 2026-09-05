@@ -203,6 +203,17 @@ per scenario with `new`, so all seven reconnects in the corpus expect `34=1` and
 59, which proves the corpus exercises that branch. Recovering the numbers is the engine's job;
 `Session::next_out()` and `next_in()` exist so it can persist them.
 
+**And an operator can override all of that, in three places.** `[2026-09-05]`
+`Config::with_reset(ResetPolicy)` — QuickFIX's `ResetOnLogon`, `ResetOnLogout` and
+`ResetOnDisconnect` — restarts both counts at 1 from this end, where until now only the
+counterparty's `141=Y` could. **It is a different question from `new` versus `resume`**: those
+say what the journal still holds, this says what the session wants next time, and only the
+second one is a thing a desk writes in a file. The default resets on nothing, so the corpus is
+untouched. `on_logon` acts in `connect`; the other two act in `Session::end`, **after** the
+message that ends the session has been written, because a `Logout` renumbered before it goes
+out spends `34=1` twice in one session. `docs/SESSION-BEHAVIOUR.md` §4 names the six tests —
+three for the flags and three for their absence.
+
 **Both counts survive, and the inbound one is written after delivery.**
 [ADR-0017](decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md): the journal
 carries `mark_in(seq)` and `highest_in()`, so one file holds both directions. The session
