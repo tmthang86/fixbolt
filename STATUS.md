@@ -114,8 +114,10 @@ stage calling `lookup` again fails exactly the two credential tests; one `to_vec
 `business_reject` reads `reject 1000` while every other alloc case stays 0; and a file key that
 never reaches the `Config` fails the wire test that crosses that seam.
 
-**And `16bd5a0` was RED for `fmt · clippy · test`, which is said here rather than left in the
-run history.** §8 asks for gates green *for that commit*, not for the branch tip.
+**And `16bd5a0` and `588c902` were both RED for `fmt · clippy · test`, which is said here rather
+than left in the run history.** §8 asks for gates green *for that commit*, not for the branch
+tip; the second commit carried the same code as the first and failed for the same reason, and
+both were fixed by `8cfa3b2`.
 `crates/engine/tests/shard_wire.rs` destructures `presession::Progress` **field by field with no
 `..`**, and step 6's new `unframeable` field broke that pattern — `error[E0027]: pattern does not
 mention field`. **The guard fired exactly as it was designed to**, three days after its own
