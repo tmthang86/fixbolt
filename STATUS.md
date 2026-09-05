@@ -13,6 +13,8 @@ consecutive runs, read line by line rather than off the exit code:
 since 2026-09-02 — **no §6 figure this project publishes had a gate standing over it**,
 including the four wire-to-wire numbers.
 
+**CI green 11 jobs of 11 on the commit closed, `0a06000`, runs [`33940142610`](https://github.com/tmthang86/fixbolt/actions/runs/33940142610) (push) and [`33940157131`](https://github.com/tmthang86/fixbolt/actions/runs/33940157131) (pull request), 22 checks of 22** — and the `bench` job's own log was read rather than its conclusion: `=== alignment read-back (ADR-0049)`, 12 of 12 binaries PASS on a CPU that is not this one, `cases w/o a baseline 24` as it should be off the §9 box.
+
 **Neither of the two red cases was a regression, and the two answers are different.**
 
 `presession, read and route an identity` (+140%) is

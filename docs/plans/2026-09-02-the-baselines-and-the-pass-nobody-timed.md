@@ -243,7 +243,7 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 | 1b | Nếu 1a phủ định: bisect `f15c82d..HEAD` trên `crates/engine/` | 1a |
 | 1c | Bisect một commit cho `encode ExecutionReport`: `576f924^` so với `576f924` | — |
 | 1d | Baseline cho 5 case thiếu, ≥ 20 lần chạy, đúng quy trình | 1a–1c xong (để không ghi baseline lên một hồi quy) |
-| 1e | `bench.sh --strict` thoát 0, **hoặc** một câu nói rõ cái gì còn đỏ. ADR nếu có quyết định. **Item 41 đóng** | 1a–1d |
+| 1e | `bench.sh --strict` thoát 0, **hoặc** một câu nói rõ cái gì còn đỏ. ADR nếu có quyết định. **Item 41 đóng**. CI xanh 11/11 trên `0a06000`, run [`33940142610`](https://github.com/tmthang86/fixbolt/actions/runs/33940142610) — đọc log của job `bench`, không đọc kết luận: read-back căn lề PASS 12/12 trên một CPU khác | 1a–1d |
 | 2a | Trả lời "đo lượt kiểm từ đâu" bằng cách đọc code, chọn (a)/(b)/(c) | — |
 | 2b | Bench cho lượt kiểm, `NewOrderSingle` và `Heartbeat`, đỏ trước | 2a |
 | 2c | Baseline ≥ 20 lần chạy | 2b, 1e |
