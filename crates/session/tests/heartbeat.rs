@@ -266,3 +266,89 @@ fn a_session_awaiting_a_logon_never_speaks_first() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// `LogonTimeout`
+//
+// Step 2 of `plans/2026-09-04-settings-for-both-roles.md`, written to be red.
+//
+// The comment in `Session::tick` says it: *"before a Logon there is no agreed
+// interval, so there is nothing to measure"*, and it ends *"a logon timeout is
+// the engine's business, and no acceptance definition tests one"*. The first
+// half stays true — this is not measured against `HeartBtInt`, it is measured
+// against a deadline the caller states. The second half stops being true here,
+// and for an initiator it was never anybody's business but the session's: an
+// initiator that dials a venue which accepts the socket and then says nothing
+// has no `Limits.logon_ms` in front of it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_logon_that_never_arrives_times_out_at_the_stated_deadline() {
+    let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_logon_timeout_ms(5_000);
+    let mut s: Session<Acceptor, 256> = Session::new(cfg);
+    s.connect(|_| {});
+
+    // The deadline starts at the first tick after connecting: this layer has no
+    // clock of its own and `connect` is not given one (D1).
+    let (link, out) = at(&mut s, 0);
+    assert_eq!(link, Link::Up, "the clock has only just started");
+    assert!(out.is_empty(), "and nothing is said: {out:?}");
+
+    let (link, _) = at(&mut s, 4_999);
+    assert_eq!(link, Link::Up, "one millisecond short is not the deadline");
+
+    let (link, out) = at(&mut s, 5_000);
+    assert_eq!(link, Link::Dropped, "and at the deadline it ends");
+    assert_eq!(
+        s.last_drop_reason(),
+        Some(fixbolt_session::DropReason::LogonTimedOut),
+        "named, so an operator can tell it from a heartbeat timeout"
+    );
+    assert!(
+        out.is_empty(),
+        "there is no session to say anything with: {out:?}"
+    );
+}
+
+#[test]
+fn without_a_logon_timeout_a_silent_counterparty_waits_forever() {
+    // The other half, and the existing `a_session_awaiting_a_logon_never_speaks_first`
+    // is the same promise stated for the reconnect case. Default is off.
+    let mut s = acceptor();
+    s.connect(|_| {});
+    for after in [0, 60_000, 3_600_000] {
+        let (link, out) = at(&mut s, after);
+        assert_eq!(link, Link::Up, "no deadline was stated, at {after} ms");
+        assert!(out.is_empty(), "and nothing is said: {out:?}");
+    }
+}
+
+/// The deadline belongs to the connection, not to the session.
+///
+/// **This test exists because the line it guards had no guard.** `connect`
+/// clears the instant both deadlines are measured from; without this, removing
+/// that clearing changed no test — the second connection would inherit the
+/// first one's start and expire immediately, on a clock that only moves
+/// forward. `CLAUDE.md` §10: a line that cannot be broken is not a guard.
+#[test]
+fn a_reconnect_gets_a_whole_new_logon_deadline() {
+    let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_logon_timeout_ms(5_000);
+    let mut s: Session<Acceptor, 256> = Session::new(cfg);
+
+    s.connect(|_| {});
+    at(&mut s, 0);
+    assert_eq!(at(&mut s, 5_000).0, Link::Dropped, "the first one expires");
+
+    s.connect(|_| {});
+    assert_eq!(
+        at(&mut s, 6_000).0,
+        Link::Up,
+        "the second connection's clock starts here, not at the first one's start"
+    );
+    assert_eq!(
+        at(&mut s, 10_999).0,
+        Link::Up,
+        "one millisecond short of its own deadline"
+    );
+    assert_eq!(at(&mut s, 11_000).0, Link::Dropped, "and then its own");
+}

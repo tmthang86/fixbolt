@@ -92,8 +92,8 @@ fn write(name: &str, text: &str) -> PathBuf {
 /// ADR-0026 decision 6.
 fn table_from_file(path: &Path) -> Table {
     Settings::load(path)
+        .and_then(Settings::into_table)
         .unwrap_or_else(|e| panic!("{e}"))
-        .into_table()
 }
 
 /// A correct FIX.4.4 `Logon` from `TW44`, taken out of the acceptance corpus.
@@ -756,7 +756,7 @@ FileLogPath=/tmp/one-counterparty.log
 ",
     )
     .expect_err("a per-session log cannot be honoured");
-    assert_eq!(e.problem(), &Problem::SessionOnly, "left: {e}");
+    assert_eq!(e.problem(), &Problem::DefaultOnly, "left: {e}");
     assert_eq!(e.line(), 7, "and it names the line: {e}");
 }
 

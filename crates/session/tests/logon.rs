@@ -255,3 +255,80 @@ fn the_clock_moves_and_the_next_message_says_so() {
         second[0]
     );
 }
+
+// ---------------------------------------------------------------------------
+// `ResetOnLogon` / `ResetOnLogout` / `ResetOnDisconnect`
+//
+// Step 1 of `plans/2026-09-04-settings-for-both-roles.md`, written to be red.
+//
+// **Why these are a `Config` field and not `new` versus `resume`.** Choosing
+// between `Session::new` and `Session::resume` says *what the journal still
+// has*; a reset policy says *what this session wants to happen next time*. The
+// two answer different questions and a desk sets the second one in a file, so
+// collapsing them would make `ResetOnLogon=Y` unrepresentable for exactly the
+// session that needs it: one that was resumed.
+//
+// The default is **exactly neutral**, the same promise `Schedule::always()`
+// makes: the 59 acceptance definitions run under it and none of them says
+// `ResetOn*`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_default_reset_policy_leaves_a_resumed_session_counting() {
+    // The neutral half, and it must be red for the right reason if `connect`
+    // ever starts resetting a resumed session by itself.
+    let mut session: Session<Acceptor, 256> =
+        Session::resume(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"), 500, 400);
+    session.connect(|_| ());
+
+    assert_eq!(
+        session.next_out(),
+        500,
+        "a resumed session keeps counting out"
+    );
+    assert_eq!(session.next_in(), 400, "and keeps counting in");
+}
+
+#[test]
+fn reset_on_logon_restarts_a_resumed_sessions_numbers() {
+    let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+        .with_reset(fixbolt_session::ResetPolicy::new().on_logon());
+    let mut session: Session<Acceptor, 256> = Session::resume(cfg, 500, 400);
+    session.connect(|_| ());
+
+    assert_eq!(
+        session.next_out(),
+        1,
+        "ResetOnLogon restarts the outbound count on a resumed session"
+    );
+    assert_eq!(session.next_in(), 1, "and the inbound one");
+}
+
+#[test]
+fn reset_on_disconnect_restarts_the_numbers() {
+    let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+        .with_reset(fixbolt_session::ResetPolicy::new().on_disconnect());
+    let mut session: Session<Acceptor, 256> = Session::new(cfg);
+    session.connect(|_| ());
+    session.tick(FIXED_TIME_MILLIS, |_| ());
+    session.received(&good_logon(), |_| ());
+    assert_eq!(session.next_out(), 2);
+
+    session.disconnect(|_| ());
+
+    assert_eq!(session.next_out(), 1, "ResetOnDisconnect restarts out");
+    assert_eq!(session.next_in(), 1, "and in");
+}
+
+#[test]
+fn a_disconnect_without_the_policy_keeps_the_numbers() {
+    // The reversal's other half: if `disconnect` reset unconditionally, the
+    // test above would pass for a reason that has nothing to do with the flag.
+    let mut session = acceptor();
+    session.connect(|_| ());
+    session.tick(FIXED_TIME_MILLIS, |_| ());
+    session.received(&good_logon(), |_| ());
+    session.disconnect(|_| ());
+
+    assert_eq!(session.next_out(), 2, "no policy, no reset");
+}

@@ -331,8 +331,8 @@ fn acceptor(args: &[String]) -> std::process::ExitCode {
     // A mistyped key, a mistyped path or a file naming no counterparty all stop
     // here with the line and what was written — ADR-0040. An acceptor that
     // starts cleanly and serves nobody is indistinguishable from a firewall.
-    let table = match Settings::load(&cfg) {
-        Ok(s) => s.into_table(),
+    let table = match Settings::load(&cfg).and_then(Settings::into_table) {
+        Ok(t) => t,
         Err(e) => {
             println!("interop: FAIL settings {cfg}: {e}");
             return std::process::ExitCode::FAILURE;

@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // here, with the line number and what was written. An acceptor that starts
     // cleanly and serves nobody looks exactly like a firewall dropping the port
     // — ADR-0040.
-    let table = Settings::load(&cfg)?.into_table();
+    let table = Settings::load(&cfg)?.into_table()?;
     println!("serving {} counterparties on {addr}", table.len());
 
     // **Made before the engine, because `serve` never hands anything back

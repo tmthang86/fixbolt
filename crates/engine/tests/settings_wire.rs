@@ -110,8 +110,8 @@ fn serving(name: &str, text: &str, counterparties: usize) -> String {
     let path = scratch(name);
     std::fs::write(&path, text).expect("the scratch directory is writable");
     let table = Settings::load(&path)
-        .unwrap_or_else(|e| panic!("{e}"))
-        .into_table();
+        .and_then(Settings::into_table)
+        .unwrap_or_else(|e| panic!("{e}"));
     let _ = std::fs::remove_file(&path);
     assert_eq!(
         table.len(),
@@ -310,7 +310,7 @@ fn a_file_log_path_in_the_config_reaches_serve_and_the_file_fills() {
         "the path comes from the file, not a default"
     );
     let log = fixbolt_engine::msglog::FileLog::open(&named).expect("a writable path");
-    let table = settings.into_table();
+    let table = settings.into_table().expect("an acceptor file");
     let _ = std::fs::remove_file(&cfg_path);
 
     let addr = free_port();
@@ -364,4 +364,71 @@ fn a_file_log_path_in_the_config_reaches_serve_and_the_file_fills() {
         lines.iter().all(|l| l.contains("shard=0 conn=")),
         "every line names its shard and connection: {lines:?}"
     );
+}
+
+/// A key written in a file changes what a **live session on a real socket**
+/// does.
+///
+/// Step 4 of `plans/2026-09-04-settings-for-both-roles.md`, over the wire.
+/// `tests/settings_roles.rs` proves the key reaches a `Config` and
+/// `crates/session/tests/validation_knobs.rs` proves the `Config` changes the
+/// session's answer. **Neither of them crosses the seam between the two**:
+/// `into_table` builds `Entry`s, the pre-session stage hands a `Config` over,
+/// and `Engine::add` builds the session from it. A key that stopped anywhere
+/// along there would leave both of those files green.
+///
+/// `AllowUnknownMsgFields` is the one to test it with, because its effect is
+/// visible in a single message and needs no second connection: a `Logout`
+/// carrying `98=` and `108=` is a real FIX 4.4 field on a message that does not
+/// take it, so the default answers `35=3` with `373=2` and the knob makes the
+/// same bytes a goodbye.
+#[test]
+fn a_validation_knob_written_in_a_file_reaches_a_session_over_a_real_socket() {
+    let logout_with_logon_fields = |seq: u32| {
+        let mut cache = fixbolt_codec::timestamp::TimestampCache::new();
+        let full = *cache.format(now_ms());
+        let stamp = core::str::from_utf8(&full[..17]).expect("ascii");
+        let inner = format!(
+            "35=5\u{1}34={seq}\u{1}49=TW44\u{1}52={stamp}\u{1}56=ISLD\u{1}98=0\u{1}108=30\u{1}"
+        );
+        let framed = format!("8=FIX.4.4\u{1}9={}\u{1}{inner}10=0\u{1}", inner.len());
+        fixbolt_conformance::script::with_real_checksum(framed.as_bytes())
+    };
+
+    let answer_to_the_logout = |addr: &str| -> String {
+        let mut c = connect(addr);
+        c.write_all(&logon_now("TW44")).expect("send the logon");
+        let mut buf = [0u8; 4096];
+        let n = c.read(&mut buf).expect("the acceptor answers a good logon");
+        assert!(n > 0, "the logon must have been accepted");
+
+        c.write_all(&logout_with_logon_fields(2)).expect("send");
+        let mut buf = [0u8; 4096];
+        match c.read(&mut buf) {
+            Ok(0) => String::new(),
+            Ok(n) => String::from_utf8_lossy(&buf[..n]).replace('\u{1}', "|"),
+            Err(e) => panic!("neither answered nor closed: {e}"),
+        }
+    };
+
+    const BASE: &str = "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\n\
+                        [SESSION]\nTargetCompID=TW44\n";
+
+    let strict = answer_to_the_logout(&serving("knob-off", BASE, 1));
+    assert!(
+        strict.contains("|35=3|") && strict.contains("|373=2|"),
+        "with the default the acceptor rejects the field: {strict}"
+    );
+
+    let lenient = answer_to_the_logout(&serving(
+        "knob-on",
+        &format!("{BASE}AllowUnknownMsgFields=Y\n"),
+        1,
+    ));
+    assert!(
+        lenient.contains("|35=5|"),
+        "with AllowUnknownMsgFields=Y in the file the same bytes are a goodbye: \
+         {lenient}"
+    );
+    assert!(!lenient.contains("|35=3|"), "and not a reject: {lenient}");
 }

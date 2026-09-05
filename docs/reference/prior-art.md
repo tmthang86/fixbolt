@@ -138,12 +138,23 @@ listed here and quoted nowhere else in this repository.
 
 **What a QuickFIX-family engine carries that this one does not, as of this date** — read off
 QuickFIX/J's configuration reference: `NextExpectedMsgSeqNum(789)` and
-`LastMsgSeqNumProcessed(369)`; `ResetOnLogon`/`ResetOnLogout`/`ResetOnDisconnect`;
-`LogonTimeout`/`LogoutTimeout`; `TimestampPrecision` beyond milliseconds;
-`ValidateFieldsOutOfOrder`, `ValidateUserDefinedFields`;
-initiator connection settings in the file; a message log. Each is placed in `STATUS.md` item 45's
-waves, or named there as deliberately declined (`SendRedundantResendRequests`, `RefreshOnLogon`,
-a database store).
+`LastMsgSeqNumProcessed(369)`; `TimestampPrecision` beyond milliseconds. Each is placed in
+`STATUS.md` item 45's waves, or named there as deliberately declined
+(`SendRedundantResendRequests`, `RefreshOnLogon`, a database store).
+
+**`[2026-09-05]` Six of that list closed in one day**, with wave B's first plan:
+`ResetOnLogon`/`ResetOnLogout`/`ResetOnDisconnect`, `LogonTimeout`/`LogoutTimeout`,
+`ValidateUserDefinedFields`, `AllowUnknownMsgFields` and initiator connection settings in the
+file are all recognised keys now — twenty-three of them, against QuickFIX C++'s 113. A message
+log closed on 2026-09-04.
+
+**`ValidateFieldsOutOfOrder` came off the list rather than being built, and the reason is
+architectural.** QuickFIX switches off a separate ordering pass; this engine reads
+header-versus-body order out of a flat tag index with one comparison inside the scan that
+checks everything else, so there is no pass to skip. `docs/CONFIGURATION.md` says so where an
+operator looks, and writing the key gets *"unknown key"* with its line. **A missing feature and
+a feature that cannot exist in this shape are different facts**, and this list had been holding
+them as one.
 
 **`[corrected 2026-09-04]` `MaxMessageSize` was on that list and did not belong on it.** It is
 not a configuration key in any engine surveyed. `SessionSettings.h` carries **113 config keys**
@@ -151,7 +162,10 @@ and this is not one; `MaxMessageSize` is `FixFieldNumbers.h:61` — **tag 383, a
 in the Logon message** (`spec/FIX44.xml:284`), by which the two ends *tell each other* their
 limit. QuickFIX/J's configuration reference has no such setting either. The error came from
 reading a tag name as a settings name, and it survived because nothing cross-checks a prior-art
-claim against the source sitting in `vendor/`.
+claim against the source sitting in `vendor/`. `[2026-09-05]` the survey below, and the decision
+not to invent the key, are
+[ADR-0055](../decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md); its
+`113` was re-run from the checked-out tree rather than carried forward.
 
 **How the four engines bound an inbound message, since the question is real even if the key is not:**
 

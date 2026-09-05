@@ -17,6 +17,137 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A frame the pre-session stage can never read has a name.**
+  **`presession::Progress::unframeable`** and **`Snapshot::unframeable_prelogon`**, with
+  **`Engine::note_unframeable`** to carry the count from the stage to the only thing an operator
+  reads. It used to be counted as *gone*, beside a peer that simply left. Step 6 of `STATUS.md`
+  item 45, wave B, and
+  [ADR-0055](docs/decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md)
+  decision 4.
+
+  Two completely different operational facts shared one number: a counterparty closing a
+  socket, and a counterparty this acceptor **can never talk to**. `conn.rs` already argued the
+  point for `DuplicateIdentity` — *named, not merely closed* — and the argument had never been
+  applied here. The refusal stays silent on the wire, because there is no session to speak on,
+  so the number is the only trace it can leave. Not counted for `serve_sharded_hft`, whose
+  pre-session stage sits in front of a fan of engines rather than behind one.
+
+- **`Reply::business_reject`.** `35=j` with `45=`, `372=`, `380=` and `58=`, handed back as an
+  ordinary `Message` so a handler may add more fields. The application's *"I understood the
+  message and will not act on it"*, which is a different sentence from the session's
+  `Reject (35=3)`.
+
+  Both reference fields are **bytes**, matching `Incoming::seq()` and `Incoming::msg_type()`:
+  taking a `u32` would mean parsing on the way in and rendering on the way out, on the reply
+  path, to produce the bytes that arrived. `benches/alloc.rs` gains a `reject` case and reads
+  0 through it.
+
+- **The registry can see the `Logon` it is deciding about.** **`Registry::admit(id, logon)`**,
+  with a default that forwards to `lookup`, and **`presession::field_value`** made public so an
+  implementation can read a field without allocating. Step 5 of `STATUS.md` item 45, wave B.
+
+  [ADR-0026](docs/decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md) calls
+  `lookup` the authentication hook, and it was handed an `Identity` — `49`, `56`, `50`, `57` and
+  nothing else. `553=Username`, `554=Password` and `96=RawData` were on the message in front of
+  it and **no implementation could reach them**, so the hook the ADR named could not do the job
+  the ADR named it for.
+
+  **The default is what makes this not a breaking change**: `Table` and every registry written
+  before today keep working with nothing to change. **fixbolt still stores no credential and
+  compares none** — there is no `Password` key and no default policy, because a default that
+  accepted an empty password would be worse than no default at all.
+
+- **A configuration file can describe an initiator, and twelve new keys.**
+  **`ConnectionType`**, **`SocketConnectHost`**, **`SocketConnectPort`**, **`ReconnectInterval`**,
+  **`ReconnectCeiling`**, **`ResetOnLogon`**, **`ResetOnLogout`**, **`ResetOnDisconnect`**,
+  **`LogonTimeout`**, **`LogoutTimeout`**, **`AllowUnknownMsgFields`** and
+  **`ValidateUserDefinedFields`** — eleven recognised keys become twenty-three. With them,
+  **`fixbolt::ConnectionType`**, **`Settings::connection_type`** and
+  **`Settings::into_initiator`**. Step 4 of `STATUS.md` item 45, wave B.
+
+  Until now every key in the file was the acceptor's, so the one role that *dials* was the one
+  role that needed a rebuild to point somewhere else.
+
+  **`Settings::into_table` now returns `Result`**, and refuses an initiator file by line. That
+  is the mistake worth the signature change: the table would be perfectly well formed, and an
+  acceptor built from it would sit waiting for the venue it was told to dial, with nothing on
+  the wire to say so because nothing would happen on the wire. `serve_sharded_hft` takes a
+  `Table` and nothing else, so it meets the same refusal — one mechanism rather than a second
+  check to disagree with the first.
+
+  **`into_initiator` hands back the address as text, not a resolved `SocketAddr`.**
+  `TcpStream::connect` looks it up on every dial, so a venue whose DNS fails over keeps
+  working; resolving at parse time would pin the engine to one address chosen at startup and
+  put a nameserver in the path of reading a file.
+
+  Times in the file are **seconds**, because QuickFIX writes seconds and every operator who
+  will read this file has written those. Flags are **`Y` or `N` and nothing else**: reading
+  `true` as `Y` today is reading `1` as `N` tomorrow.
+
+  **`ValidateFieldsOutOfOrder` is not recognised and will not be** — see above.
+
+- **Renamed:** `Problem::SessionOnly` is now **`Problem::DefaultOnly`**, which is what it
+  always meant: a key that belongs in `[DEFAULT]` and was found in a `[SESSION]`. There are two
+  such keys now rather than one.
+
+- **Two of the dictionary's questions can be switched off.** **`fixbolt::DictionaryChecks`**,
+  reached through **`Config::with_validation`**, plus **`fixbolt_session::validate_with`** —
+  the public pass under a session's own settings. QuickFIX's `AllowUnknownMsgFields` and
+  `ValidateUserDefinedFields`. Step 3 of `STATUS.md` item 45, wave B. **Both checks stay on by
+  default**, so no existing session changes.
+
+  Real counterparties send fields that are not in the specification the two ends agreed on, and
+  an engine that drops the connection over one is an engine that cannot trade.
+
+  **They govern different faults, and neither forgives the other's.**
+  `.allowing_unknown_msg_fields()` forgives `373=2`, *tag not defined for this message type* —
+  a tag FIX 4.4 defines, on a message that does not carry it. `.skipping_user_defined_fields()`
+  passes over every tag at or above `FIRST_USER_DEFINED_TAG` (5000) and **nothing below it**:
+  `999`, `0` and `-1` stay `373=0`, so the setting means a range rather than an amnesty.
+
+  **`ValidateFieldsOutOfOrder` is not supported and will not be.** The parser builds a flat
+  index of tag positions, and header-versus-body order is one comparison inside the same scan
+  rather than a pass that can be skipped. Switching it off would be a different engine, not a
+  setting.
+
+- **Two deadlines a caller can state, and two reasons for them.**
+  **`Config::with_logon_timeout_ms`** and **`Config::with_logout_timeout_ms`** — QuickFIX's
+  `LogonTimeout` and `LogoutTimeout` — with **`DropReason::LogonTimedOut`** and
+  **`DropReason::LogoutTimedOut`** to say which one fired. Step 2 of `STATUS.md` item 45,
+  wave B. Both are **off by default**, so no existing session changes.
+
+  The logon deadline is the **initiator's**: an acceptor has `presession::Limits` holding the
+  socket before a `Session` exists, and an initiator dialling a venue that accepts the
+  connection and then says nothing has no such stage. The logout deadline bounds a wait that
+  nothing bounded: `begin_logout` leaves the link up so the caller can hear the answer, and
+  until now the only limit was 2.4 × `HeartBtInt` — 72 seconds on a default session, during
+  which a venue that took the goodbye and died holds the socket open.
+
+  Both are measured from the first `Session::tick` after the event they bound, because a pure
+  session layer is given time in no other way. Both end the connection **without sending
+  anything**: there is no agreed session to speak on before a Logon, and the goodbye has
+  already gone out after one.
+
+- **A session can be told to restart its numbering.** **`fixbolt::ResetPolicy`** — QuickFIX's
+  `ResetOnLogon`, `ResetOnLogout` and `ResetOnDisconnect`, under those names — reached through
+  **`Config::with_reset`** and read back through `Config::reset`. Step 1 of `STATUS.md` item 45,
+  wave B.
+
+  Until now the only thing that could restart a resumed session's counts was the counterparty
+  sending `141=Y`. `Session::new` versus `Session::resume` looks like the same choice and is
+  not: those say **what the journal still holds**, and a reset policy says **what this session
+  wants next time**. Collapsing them would leave `ResetOnLogon=Y` unrepresentable for exactly
+  the session that needs it — one that was resumed from a journal holding 500 messages, whose
+  counterparty starts each morning at `34=1`.
+
+  **The default resets on nothing**, which is the behaviour the 59 acceptance definitions
+  prove, so no existing session changes. `on_logon` restarts both counts in `Session::connect`;
+  `on_logout` and `on_disconnect` restart them in the one place that knows which ending
+  happened, **after** the message that ends the session has been written — a `Logout` still
+  carries the number it was owed rather than spending `34=1` twice.
+
+  The file keys that set these arrive with step 4; this is the API underneath them.
+
 - **The handles reach the front door.** **`fixbolt::Handles`** — one cell, made by the caller
   **before** the engine, with `observer()`, `admin()` and `sender()` on it — plus
   **`Engine::adopt(&Handles) -> bool`** and **`Engine::logons() -> u64`**

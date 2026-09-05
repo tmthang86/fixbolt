@@ -353,6 +353,204 @@ pub struct Config {
     /// How many messages one call may put on the wire while answering a
     /// `ResendRequest`. See [`Self::with_resend_batch`].
     resend_batch: u16,
+    /// When this session restarts its numbering of its own accord.
+    /// [`ResetPolicy::new`] is neutral and is the default.
+    reset: ResetPolicy,
+    /// How long a connection may sit without completing its `Logon`.
+    /// Zero is off, which is the default. [`Config::with_logon_timeout_ms`].
+    logon_timeout_ms: u64,
+    /// How long this end waits for a `Logout` it asked for.
+    /// Zero is off, which is the default. [`Config::with_logout_timeout_ms`].
+    logout_timeout_ms: u64,
+    /// Which of the dictionary's questions this session asks.
+    /// [`DictionaryChecks::new`] asks all of them and is the default.
+    validation: DictionaryChecks,
+}
+
+/// Which of the dictionary's questions a session asks about an inbound message.
+///
+/// QuickFIX's `AllowUnknownMsgFields` and `ValidateUserDefinedFields`, because
+/// real counterparties send fields that are not in the specification the two
+/// ends agreed on, and an engine that drops the connection over one is an
+/// engine that cannot trade.
+///
+/// **Both checks are on by default**, which is the behaviour the 59 acceptance
+/// definitions prove.
+///
+/// # `ValidateFieldsOutOfOrder` is not here, and will not be
+///
+/// QuickFIX's third setting of this family switches off *"a header field
+/// appeared after a body field"*, `373=14`. This engine has no such switch
+/// because it has no such concept to switch off: the parser builds a **flat
+/// index** of tag positions (D2), and header-versus-body order is read back out
+/// of the index by one comparison in the same scan that checks everything else.
+/// There is no separate pass to skip. Turning it off would mean deleting the
+/// comparison, which is not a setting, it is a different engine.
+/// `docs/CONFIGURATION.md` says the same thing where an operator will look.
+///
+/// # The two are not one setting
+///
+/// They govern different faults, and `14a_BadField.def` is the file that makes
+/// the difference easy to miss. `[verified 2026-09-05]` all four of that file's
+/// cases are `373=0`, *Invalid tag number* — a tag the dictionary does not
+/// define at all, `999`, `0`, `-1` and `5000`.
+/// [`Self::allowing_unknown_msg_fields`] governs `373=2`, *Tag not defined for
+/// this message type*: a tag FIX 4.4 **does** define, on a message that does
+/// not carry it. `crates/session/tests/validation_knobs.rs` holds both halves
+/// of that distinction, in both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DictionaryChecks {
+    allow_unknown_msg_fields: bool,
+    skip_user_defined_fields: bool,
+}
+
+/// The first tag QuickFIX's own header calls user-defined.
+///
+/// `FIELD::UserMin` in `FixFields.h`. FIX 4.4 defines nothing at or above it,
+/// and `14a_BadField.def` sends `5000=HI` expecting a refusal, with the file's
+/// own comment saying why: *"user defined is not implemented yet"*.
+pub const FIRST_USER_DEFINED_TAG: u32 = 5000;
+
+impl DictionaryChecks {
+    /// Ask every question. The default, and exactly today's behaviour.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            allow_unknown_msg_fields: false,
+            skip_user_defined_fields: false,
+        }
+    }
+
+    /// `AllowUnknownMsgFields=Y` — do not refuse a **defined** tag that this
+    /// `MsgType` does not carry (`373=2`).
+    ///
+    /// A tag the dictionary has never heard of is still refused: that is
+    /// `373=0` and a different question.
+    #[must_use]
+    pub const fn allowing_unknown_msg_fields(mut self) -> Self {
+        self.allow_unknown_msg_fields = true;
+        self
+    }
+
+    /// `ValidateUserDefinedFields=N` — do not ask anything about a tag at or
+    /// above [`FIRST_USER_DEFINED_TAG`].
+    ///
+    /// **A range, not an amnesty.** An undefined tag *below* 5000 — `999`, `0`,
+    /// a negative one — is still refused, or this would mean *"stop checking
+    /// tags"*.
+    #[must_use]
+    pub const fn skipping_user_defined_fields(mut self) -> Self {
+        self.skip_user_defined_fields = true;
+        self
+    }
+
+    /// Is a defined tag on the wrong message type forgiven?
+    #[must_use]
+    pub const fn allows_unknown_msg_fields(self) -> bool {
+        self.allow_unknown_msg_fields
+    }
+
+    /// Are tags at or above [`FIRST_USER_DEFINED_TAG`] passed through unasked?
+    #[must_use]
+    pub const fn skips_user_defined_fields(self) -> bool {
+        self.skip_user_defined_fields
+    }
+}
+
+/// When a session restarts both sequence numbers at 1 without being asked to
+/// on the wire.
+///
+/// QuickFIX's `ResetOnLogon`, `ResetOnLogout` and `ResetOnDisconnect`, with
+/// those names, because they mean the same three things — a desk arriving with
+/// an existing configuration file recognises them.
+///
+/// # This is not [`Session::new`] versus [`Session::resume`]
+///
+/// Those two say **what the journal still has**: `resume` continues a count
+/// that outlived a process, `new` starts one that never persisted anything
+/// ([ADR-0010]). A reset policy says **what this session wants to happen next
+/// time**, which is an operator's choice and lives in a file.
+///
+/// Collapsing the two would make `ResetOnLogon=Y` unrepresentable for exactly
+/// the session that needs it: one that *was* resumed, from a journal holding
+/// 500 messages, whose counterparty starts every morning at `34=1`.
+///
+/// # Neutral by default, in the same sense as [`Schedule::always`]
+///
+/// [`Self::new`] resets on nothing. The 59 acceptance definitions run under it
+/// and not one of them mentions `ResetOn*`, so the default has to be the
+/// behaviour they already prove — non-negotiable 3.
+///
+/// [ADR-0010]: ../../../docs/decisions/ADR-0010-a-reconnect-is-not-a-restart.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ResetPolicy {
+    on_logon: bool,
+    on_logout: bool,
+    on_disconnect: bool,
+}
+
+impl ResetPolicy {
+    /// Reset on nothing. The default, and exactly today's behaviour.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            on_logon: false,
+            on_logout: false,
+            on_disconnect: false,
+        }
+    }
+
+    /// `ResetOnLogon=Y` — restart both counts as a connection is made, **even
+    /// for a resumed session**, which is the only case where this changes
+    /// anything.
+    #[must_use]
+    pub const fn on_logon(mut self) -> Self {
+        self.on_logon = true;
+        self
+    }
+
+    /// `ResetOnLogout=Y` — restart both counts once the `Logout` exchange is
+    /// over.
+    ///
+    /// **After the goodbye is numbered, never before.** A `Logout` that went
+    /// out as `34=1` because the reset ran first would put that number on the
+    /// wire twice in one session.
+    #[must_use]
+    pub const fn on_logout(mut self) -> Self {
+        self.on_logout = true;
+        self
+    }
+
+    /// `ResetOnDisconnect=Y` — restart both counts when the link goes down for
+    /// any other reason.
+    ///
+    /// **This is the one that loses messages**, and it is the one QuickFIX
+    /// deployments most often turn on. A counterparty that reconnects after a
+    /// network drop and asks for a resend gets numbers this end no longer
+    /// believes in.
+    #[must_use]
+    pub const fn on_disconnect(mut self) -> Self {
+        self.on_disconnect = true;
+        self
+    }
+
+    /// Does this policy reset as the connection is made?
+    #[must_use]
+    pub const fn resets_on_logon(self) -> bool {
+        self.on_logon
+    }
+
+    /// Does this policy reset after a `Logout`?
+    #[must_use]
+    pub const fn resets_on_logout(self) -> bool {
+        self.on_logout
+    }
+
+    /// Does this policy reset when the link drops?
+    #[must_use]
+    pub const fn resets_on_disconnect(self) -> bool {
+        self.on_disconnect
+    }
 }
 
 /// The default for [`Config::with_resend_batch`].
@@ -375,6 +573,10 @@ impl Config {
             heart_bt_int: DEFAULT_HEART_BT_INT,
             schedule: Schedule::always(),
             resend_batch: DEFAULT_RESEND_BATCH,
+            reset: ResetPolicy::new(),
+            logon_timeout_ms: 0,
+            logout_timeout_ms: 0,
+            validation: DictionaryChecks::new(),
         }
     }
 
@@ -423,6 +625,91 @@ impl Config {
     #[must_use]
     pub const fn resend_batch(&self) -> u16 {
         self.resend_batch
+    }
+
+    /// When this session restarts its numbering of its own accord.
+    ///
+    /// See [`ResetPolicy`], including why this is a configuration field rather
+    /// than a choice between [`Session::new`] and [`Session::resume`].
+    #[must_use]
+    pub const fn with_reset(mut self, reset: ResetPolicy) -> Self {
+        self.reset = reset;
+        self
+    }
+
+    /// The reset policy this session keeps.
+    #[must_use]
+    pub const fn reset(&self) -> ResetPolicy {
+        self.reset
+    }
+
+    /// QuickFIX's `LogonTimeout`: how long a connection may sit without
+    /// completing its `Logon` before the session gives up, in **milliseconds**.
+    ///
+    /// **Zero is off**, and off is the default — the same reading `108=0`
+    /// already has one screen down, and the behaviour every session in this
+    /// repository had before 2026-09-05.
+    ///
+    /// **This is the initiator's, and it is nobody else's.** An acceptor has
+    /// `presession::Limits::new(pending, logon_ms)` in front of it, which holds
+    /// the socket before a `Session` exists at all; an initiator that dials a
+    /// venue which accepts the connection and then says nothing has no such
+    /// stage. Setting it on an acceptor is not an error and does the obvious
+    /// thing, but it is a second deadline behind a first one.
+    ///
+    /// The clock starts at the **first [`Session::tick`] after
+    /// [`Session::connect`]**, because a pure layer is given time in no other
+    /// way (D1).
+    #[must_use]
+    pub const fn with_logon_timeout_ms(mut self, ms: u64) -> Self {
+        self.logon_timeout_ms = ms;
+        self
+    }
+
+    /// The logon deadline in milliseconds, or zero for none.
+    #[must_use]
+    pub const fn logon_timeout_ms(&self) -> u64 {
+        self.logon_timeout_ms
+    }
+
+    /// QuickFIX's `LogoutTimeout`: how long this end waits for the `Logout` it
+    /// asked for, in **milliseconds**.
+    ///
+    /// **Zero is off**, and off is the default.
+    ///
+    /// [`Session::begin_logout`] leaves the link up on purpose so the caller
+    /// can wait for the answer, and until this existed nothing bounded that
+    /// wait except the heartbeat rules — 2.4 × `HeartBtInt`, which is 72
+    /// seconds on a default session. A venue that takes the goodbye and then
+    /// dies holds the socket open through the close.
+    ///
+    /// The clock starts at the **first [`Session::tick`] after
+    /// [`Session::begin_logout`]**, for the same reason as above.
+    #[must_use]
+    pub const fn with_logout_timeout_ms(mut self, ms: u64) -> Self {
+        self.logout_timeout_ms = ms;
+        self
+    }
+
+    /// The logout deadline in milliseconds, or zero for none.
+    #[must_use]
+    pub const fn logout_timeout_ms(&self) -> u64 {
+        self.logout_timeout_ms
+    }
+
+    /// Which of the dictionary's questions this session asks. See
+    /// [`DictionaryChecks`], including why `ValidateFieldsOutOfOrder` is not
+    /// one of them.
+    #[must_use]
+    pub const fn with_validation(mut self, validation: DictionaryChecks) -> Self {
+        self.validation = validation;
+        self
+    }
+
+    /// The dictionary checks this session runs.
+    #[must_use]
+    pub const fn validation(&self) -> DictionaryChecks {
+        self.validation
     }
 
     /// When this session is open, and when both ends start again at `34=1`.
@@ -653,6 +940,21 @@ pub enum DropReason {
     /// Nothing arrived for long enough that the session gave up, after an
     /// unanswered `TestRequest`.
     HeartbeatTimeout,
+    /// The connection was made and the `Logon` exchange never completed inside
+    /// [`Config::with_logon_timeout_ms`].
+    ///
+    /// **Not a heartbeat timeout, and telling them apart is the point.** A
+    /// heartbeat timeout means a session that was working stopped answering; on
+    /// an initiator this one usually means the venue is listening but not yet
+    /// open, or is refusing this end without saying so.
+    LogonTimedOut,
+    /// This end said `Logout` and the answer never came inside
+    /// [`Config::with_logout_timeout_ms`].
+    ///
+    /// **Not [`DropReason::PeerLogout`].** That one means the exchange
+    /// completed; this one means the goodbye went unanswered, which is the
+    /// difference between a clean shutdown and one to reconcile by hand.
+    LogoutTimedOut,
     /// The counterparty sent a `Logout`.
     PeerLogout,
     /// The schedule's window closed on a live session. **Not a fault.**
@@ -800,6 +1102,23 @@ pub struct Session<R: Role, const N: usize, const APP: usize = DEFAULT_APP_SCRAT
     ///
     /// See [`Self::resend_beyond_journal`].
     resend_beyond_journal: u32,
+    /// When the wait for a `Logon`, and the wait for an answer to our `Logout`,
+    /// started being measured. `None` until the first [`Session::tick`] in that
+    /// state.
+    ///
+    /// **Two fields and not one**, though the states never overlap: one field
+    /// would have to be cleared at every state change, and the states are
+    /// entered from more places than either deadline is read from. A stale
+    /// instant here is a session that ends early for a reason it names wrongly,
+    /// which is the failure this whole enum of reasons exists to prevent.
+    ///
+    /// Set on a tick rather than in `connect` / `begin_logout` because those
+    /// two are given no clock: time reaches this layer through `tick` and
+    /// nowhere else (D1). The cost is that a deadline is measured from the
+    /// caller's first turn rather than from the connection, which for any
+    /// engine in this repository is the same millisecond.
+    awaiting_logon_since_ms: Option<u64>,
+    logging_out_since_ms: Option<u64>,
     _role: PhantomData<R>,
 }
 
@@ -843,6 +1162,8 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             owed: None,
             puts_refused: 0,
             resend_beyond_journal: 0,
+            awaiting_logon_since_ms: None,
+            logging_out_since_ms: None,
             _role: PhantomData,
         }
     }
@@ -952,6 +1273,25 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
     ///
     /// **One place, so a new way to end cannot forget to say why.**
     fn end(&mut self, why: DropReason) {
+        // `ResetOnLogout` / `ResetOnDisconnect`, and this is the one place that
+        // knows which of the two happened — every ending funnels through here
+        // carrying its reason, which is what [`DropReason`] is for.
+        //
+        // **Called after the goodbye has been written, never before.** The
+        // `Logout` reply is emitted by the caller above and then this runs, so
+        // the message that ends the session still carries the number it was
+        // owed. Resetting first would spend `34=1` twice in one session, and
+        // the counterparty would refuse the second one as already used.
+        //
+        // A `Logout` in either direction is the logout case: this end sending
+        // one leaves the session in `LoggingOut` or `AwaitingLogout` and the
+        // counterparty's answer arrives here as `PeerLogout` too.
+        let by_logout = matches!(why, DropReason::PeerLogout);
+        let reset = self.cfg.reset;
+        if (by_logout && reset.resets_on_logout()) || (!by_logout && reset.resets_on_disconnect()) {
+            self.next_out = 1;
+            self.next_in = 1;
+        }
         self.last_drop_reason = Some(why);
         self.state = State::Disconnected;
         // **A replay does not survive the connection it was owed on.** The
@@ -1229,6 +1569,13 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // A live session has nothing to explain, and a stale cause read as a
         // current one is worse than no cause at all.
         self.last_drop_reason = None;
+        // Both deadlines belong to a connection, not to a session: an instant
+        // carried across a reconnect would expire the new connection on the old
+        // one's clock, which only moves forward. Guarded by
+        // `tests/heartbeat.rs::a_reconnect_gets_a_whole_new_logon_deadline`,
+        // written **because** removing these two lines broke nothing.
+        self.awaiting_logon_since_ms = None;
+        self.logging_out_since_ms = None;
         // **A new connection starts a new count; a resumed session does not.**
         // ADR-0010: FIX 4.4 numbers a session, not a connection, so a session
         // that outlived its process must keep counting — but a session that
@@ -1240,7 +1587,11 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // The counterparty can still force a reset from the wire, and that is
         // what `141=Y` is for — the only thing that restarts a resumed
         // session's numbers. See the Logon path.
-        if !self.resumed {
+        //
+        // `ResetOnLogon=Y` is the operator saying the resumed count is not
+        // wanted this morning, so it takes the same branch. That is the only
+        // case it changes: a session built with `new` restarts here anyway.
+        if !self.resumed || self.cfg.reset.resets_on_logon() {
             self.next_out = 1;
             self.next_in = 1;
         }
@@ -1420,12 +1771,28 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             // `LoggingOut` deliberately falls through to the heartbeat rules
             // below: a counterparty that never answers our `Logout` must not
             // hold the connection open for ever.
-            // Before a Logon there is no agreed interval, so there is nothing
-            // to measure — and this is the **only** thing that says so, which
-            // is why `connect` no longer clears the clock as well. A logon
-            // timeout is the engine's business, and no acceptance definition
-            // tests one. `tests/heartbeat.rs` holds this.
-            State::AwaitingLogon => return Link::Up,
+            // Before a Logon there is no agreed interval, so the heartbeat
+            // rules have nothing to measure — and this is the **only** thing
+            // that says so, which is why `connect` no longer clears the clock
+            // as well. No acceptance definition tests a logon timeout.
+            // `tests/heartbeat.rs` holds this.
+            //
+            // `[2026-09-05]` A deadline the caller *states* is a different
+            // thing from an interval the counterparty agreed to, and this is
+            // where it is measured. Off unless configured, which is why the
+            // sentence above still holds for every session the corpus builds.
+            State::AwaitingLogon => {
+                let since = *self.awaiting_logon_since_ms.get_or_insert(now_ms);
+                if self.cfg.logon_timeout_ms != 0
+                    && now_ms.saturating_sub(since) >= self.cfg.logon_timeout_ms
+                {
+                    // No message: there is no agreed session to say anything
+                    // on, and a `Logout` before a `Logon` is not FIX.
+                    self.end(DropReason::LogonTimedOut);
+                    return Link::Dropped;
+                }
+                return Link::Up;
+            }
             // This end owes the Logon, and now it has a clock to date it with.
             State::MustLogon => {
                 self.state = State::AwaitingLogon;
@@ -1441,6 +1808,23 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
                 return Link::Up;
             }
             State::LoggedOn | State::LoggingOut => {}
+        }
+        // The goodbye is out and the answer is owed. `[2026-09-05]` Until this
+        // existed the only bound was the heartbeat rules below — 2.4 ×
+        // `HeartBtInt`, 72 seconds on a default session — so a venue that took
+        // the `Logout` and then died held the socket through the close.
+        //
+        // Ends without saying anything: the `Logout` has already gone out, and
+        // a second one is wrong on the wire for the same reason the inbound
+        // path answers a goodbye only when it did not start the exchange.
+        if self.state == State::LoggingOut {
+            let since = *self.logging_out_since_ms.get_or_insert(now_ms);
+            if self.cfg.logout_timeout_ms != 0
+                && now_ms.saturating_sub(since) >= self.cfg.logout_timeout_ms
+            {
+                self.end(DropReason::LogoutTimedOut);
+                return Link::Dropped;
+            }
         }
         // `108=0` means the counterparty asked for no heartbeats at all.
         if self.beat_ms == 0 {
@@ -2279,7 +2663,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         } else if !Fix44::is_msg_type(mt) {
             Some((SessionText::InvalidMsgType, None))
         } else {
-            scan_fields(&view, mt)
+            scan_fields(&view, mt, self.cfg.validation)
                 .or_else(|| missing_required(&view, mt))
                 .or_else(|| bad_group_count(&view, mt))
                 // A CompID that is merely wrong, once there is a session to say
@@ -2712,7 +3096,21 @@ enum Which {
 /// assert_eq!(validate(&idx.view(msg), b"0"), None);
 /// ```
 pub fn validate<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8]) -> Option<SessionText> {
-    scan_fields(view, msg_type)
+    validate_with(view, msg_type, DictionaryChecks::new())
+}
+
+/// [`validate`], asking only the questions `checks` leaves on.
+///
+/// The form a [`Session`] itself uses, so a caller can reproduce what a
+/// configured session would have said about a message rather than what a
+/// default one would. See [`DictionaryChecks`] for what each setting forgives
+/// and, more usefully, what it does not.
+pub fn validate_with<const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+    checks: DictionaryChecks,
+) -> Option<SessionText> {
+    scan_fields(view, msg_type, checks)
         .or_else(|| missing_required(view, msg_type))
         .or_else(|| bad_group_count(view, msg_type))
         .map(|(text, _tag)| text)
@@ -2726,12 +3124,22 @@ pub fn validate<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8]) -> O
 fn scan_fields<const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
+    checks: DictionaryChecks,
 ) -> Option<(SessionText, Option<Held<12>>)> {
     let mut in_body = false;
     for i in 0..view.len() {
         let Some((tag, value)) = view.field_at(i) else {
             continue;
         };
+
+        // `ValidateUserDefinedFields=N`. **Before the header/body test as well
+        // as the rest**: a tag the dictionary knows nothing about cannot be a
+        // header field, so asking would answer `false` and put the tag in the
+        // body, which is an opinion about a field this session was told not to
+        // have opinions about.
+        if checks.skips_user_defined_fields() && tag >= FIRST_USER_DEFINED_TAG {
+            continue;
+        }
 
         // `373=14`: the header is over once a body tag has been seen.
         // `14g_HeaderBodyTrailerFieldsOutOfOrder.def` puts `34=` after `11=`
@@ -2753,7 +3161,11 @@ fn scan_fields<const N: usize>(
         if value.is_empty() && Fix44::field_type(tag) != Some(FieldType::Data) {
             return Some((SessionText::TagSpecifiedWithoutValue, tag_text(tag)));
         }
-        if !Fix44::allows(msg_type, tag) {
+        // `AllowUnknownMsgFields=Y` forgives exactly this one: a tag FIX 4.4
+        // defines, on a message that does not carry it. It is **not** the same
+        // question as `is_defined_tag` above, and a counterparty that sends a
+        // real field on the wrong message is the case it exists for.
+        if !checks.allows_unknown_msg_fields() && !Fix44::allows(msg_type, tag) {
             return Some((SessionText::TagNotDefinedForThisMessageType, tag_text(tag)));
         }
         // A repeat at the top level. Group members repeat by design, so a tag

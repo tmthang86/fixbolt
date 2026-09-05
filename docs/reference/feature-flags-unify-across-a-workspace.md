@@ -164,3 +164,51 @@ configuration under test was never built. The tell here was a test count that di
 a `cfg`-gated file should have vanished; the durable fix was to assert the *configuration*
 directly (is this dependency in the graph?) rather than to infer it from the fact that the tests
 passed.
+
+---
+
+## The other direction: a target the local command never compiles
+
+`[measured 2026-09-05]` The cases above are a feature that is **on** when the command said off.
+This is a feature that is **off** on the developer's machine and on in CI, and it cost a red
+build in wave B.
+
+`crates/engine/tests/shard_wire.rs` destructures `presession::Progress` **field by field, with
+no `..`**, and its comment says exactly why: *"a new way for this stage to dispose of a socket
+breaks the build here rather than disappearing"*. That guard is a repair, not a precaution — a
+counter added in 2026-09-01 was read by four fields out of five and two connections vanished
+with every assertion still green (CI run 33509748294).
+
+Wave B added a sixth field, `Progress::unframeable`. **The guard fired exactly as designed.** It
+fired in CI and nowhere else:
+
+```text
+error[E0027]: pattern does not mention field `unframeable`
+   --> crates/engine/tests/shard_wire.rs:259:13
+```
+
+`cargo clippy --all-targets -- -D warnings` was clean on the laptop, three times, on three
+commits. That command compiles every target of the **default feature set**, and `shard_wire.rs`
+is behind `--features affinity`. **`--all-targets` is not `--all-configurations`, and the two
+read as the same promise.** CI's own line is
+`cargo clippy --all-targets --features affinity -- -D warnings`, one flag longer, and that flag
+is the whole difference between a guard that ran and a guard that existed.
+
+The change was also *semantic* and not only a pattern: that file asserted `gone == 1` for
+`1d_InvalidLogonLengthInvalid.def`, whose `9=40` is a lie the framer takes at its word — which
+is precisely the connection that became `unframeable`. Left to `..`, the count would have moved
+columns silently, which is the third occurrence of the very failure the destructure was written
+to stop.
+
+`[to testing-skills]` **A guard only guards the configurations something compiles it in.** The
+strongest structural check in a codebase — an exhaustive pattern, a `#[non_exhaustive]` match, a
+compile-time assertion — is inert in every build that does not include the file it lives in, and
+nothing about running the usual local command reveals that. Two things follow:
+
+- **Know which of your checks are behind a feature**, and run that configuration before pushing
+  rather than after. Here: `cargo clippy --all-targets --features affinity` and
+  `cargo test -p fixbolt-engine --features affinity`, the two lines CI runs and a laptop does
+  not.
+- **Prefer to state the missing configuration rather than remember it.** The failure mode is not
+  that the guard is weak; it is that *"I ran the checks"* and *"CI runs the checks"* are
+  different sentences, and only one of them has the flag in it.
