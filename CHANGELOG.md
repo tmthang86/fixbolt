@@ -17,6 +17,26 @@ below describe what a first release would contain.
 
 ### Added
 
+- **Two of the dictionary's questions can be switched off.** **`fixbolt::DictionaryChecks`**,
+  reached through **`Config::with_validation`**, plus **`fixbolt_session::validate_with`** —
+  the public pass under a session's own settings. QuickFIX's `AllowUnknownMsgFields` and
+  `ValidateUserDefinedFields`. Step 3 of `STATUS.md` item 45, wave B. **Both checks stay on by
+  default**, so no existing session changes.
+
+  Real counterparties send fields that are not in the specification the two ends agreed on, and
+  an engine that drops the connection over one is an engine that cannot trade.
+
+  **They govern different faults, and neither forgives the other's.**
+  `.allowing_unknown_msg_fields()` forgives `373=2`, *tag not defined for this message type* —
+  a tag FIX 4.4 defines, on a message that does not carry it. `.skipping_user_defined_fields()`
+  passes over every tag at or above `FIRST_USER_DEFINED_TAG` (5000) and **nothing below it**:
+  `999`, `0` and `-1` stay `373=0`, so the setting means a range rather than an amnesty.
+
+  **`ValidateFieldsOutOfOrder` is not supported and will not be.** The parser builds a flat
+  index of tag positions, and header-versus-body order is one comparison inside the same scan
+  rather than a pass that can be skipped. Switching it off would be a different engine, not a
+  setting.
+
 - **Two deadlines a caller can state, and two reasons for them.**
   **`Config::with_logon_timeout_ms`** and **`Config::with_logout_timeout_ms`** — QuickFIX's
   `LogonTimeout` and `LogoutTimeout` — with **`DropReason::LogonTimedOut`** and

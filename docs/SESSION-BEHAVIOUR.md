@@ -114,7 +114,30 @@ first fault, without a session. It therefore answers `373=` 0, 1, 4 and the grou
 value-format faults; it does **not** answer 9, 10 or 11, which need CompIDs, a clock and a
 session state that a bare view does not carry. It was made public so the pass could be timed —
 `[measured 2026-09-05]` 897.3 ns on a `NewOrderSingle`, `DESIGN.md` §8 — and it is the same
-code path, not a copy of it.
+code path, not a copy of it. `validate_with(view, msg_type, checks)` `[added 2026-09-05]` is
+the same pass under a session's own settings.
+
+**Two of those questions can be switched off**, `[added 2026-09-05]`, through
+`Config::with_validation(DictionaryChecks::new()…)` — QuickFIX's `AllowUnknownMsgFields` and
+`ValidateUserDefinedFields`. **Both checks are on by default**, which is what the 59
+definitions prove.
+
+| Setting | Forgives | Does **not** forgive |
+|---|---|---|
+| `.allowing_unknown_msg_fields()` | `373=2`, *tag not defined for this message type* — a tag FIX 4.4 defines, on a message that does not carry it | `373=0`. A tag the dictionary has never heard of stays refused |
+| `.skipping_user_defined_fields()` | every question about a tag at or above `FIRST_USER_DEFINED_TAG` (5000) | anything below it. `999`, `0` and `-1` stay `373=0` — this is a range, not an amnesty |
+
+**`ValidateFieldsOutOfOrder` is deliberately absent**, and it is not an omission. QuickFIX's
+third setting of this family switches off `373=14`; here the parser builds a flat index (D2)
+and header-versus-body order is one comparison inside the same scan, with no separate pass to
+skip. Turning it off would mean deleting the comparison, which is a different engine rather
+than a setting.
+
+**The corpus is blind to both knobs, and `14a_BadField.def` is why that is easy to get wrong.**
+`[verified 2026-09-05]` all four of that file's faults are `373=0` — `999`, `0`, `-1` and
+`5000` — so it looks like the file that would move and it is not the fault either setting
+governs. `crates/session/tests/validation_knobs.rs` holds six cases: each knob's default, each
+knob's effect, and each knob **failing to forgive the other one's fault**.
 
 **A session reject is not a business reject.** `2r_UnregisteredMsgType.def` sends `35=8` as
 an application message of an unsupported type, and the engine answers with a *business*

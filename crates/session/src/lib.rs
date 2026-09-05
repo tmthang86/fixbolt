@@ -362,6 +362,99 @@ pub struct Config {
     /// How long this end waits for a `Logout` it asked for.
     /// Zero is off, which is the default. [`Config::with_logout_timeout_ms`].
     logout_timeout_ms: u64,
+    /// Which of the dictionary's questions this session asks.
+    /// [`DictionaryChecks::new`] asks all of them and is the default.
+    validation: DictionaryChecks,
+}
+
+/// Which of the dictionary's questions a session asks about an inbound message.
+///
+/// QuickFIX's `AllowUnknownMsgFields` and `ValidateUserDefinedFields`, because
+/// real counterparties send fields that are not in the specification the two
+/// ends agreed on, and an engine that drops the connection over one is an
+/// engine that cannot trade.
+///
+/// **Both checks are on by default**, which is the behaviour the 59 acceptance
+/// definitions prove.
+///
+/// # `ValidateFieldsOutOfOrder` is not here, and will not be
+///
+/// QuickFIX's third setting of this family switches off *"a header field
+/// appeared after a body field"*, `373=14`. This engine has no such switch
+/// because it has no such concept to switch off: the parser builds a **flat
+/// index** of tag positions (D2), and header-versus-body order is read back out
+/// of the index by one comparison in the same scan that checks everything else.
+/// There is no separate pass to skip. Turning it off would mean deleting the
+/// comparison, which is not a setting, it is a different engine.
+/// `docs/CONFIGURATION.md` says the same thing where an operator will look.
+///
+/// # The two are not one setting
+///
+/// They govern different faults, and `14a_BadField.def` is the file that makes
+/// the difference easy to miss. `[verified 2026-09-05]` all four of that file's
+/// cases are `373=0`, *Invalid tag number* — a tag the dictionary does not
+/// define at all, `999`, `0`, `-1` and `5000`.
+/// [`Self::allowing_unknown_msg_fields`] governs `373=2`, *Tag not defined for
+/// this message type*: a tag FIX 4.4 **does** define, on a message that does
+/// not carry it. `crates/session/tests/validation_knobs.rs` holds both halves
+/// of that distinction, in both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DictionaryChecks {
+    allow_unknown_msg_fields: bool,
+    skip_user_defined_fields: bool,
+}
+
+/// The first tag QuickFIX's own header calls user-defined.
+///
+/// `FIELD::UserMin` in `FixFields.h`. FIX 4.4 defines nothing at or above it,
+/// and `14a_BadField.def` sends `5000=HI` expecting a refusal, with the file's
+/// own comment saying why: *"user defined is not implemented yet"*.
+pub const FIRST_USER_DEFINED_TAG: u32 = 5000;
+
+impl DictionaryChecks {
+    /// Ask every question. The default, and exactly today's behaviour.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            allow_unknown_msg_fields: false,
+            skip_user_defined_fields: false,
+        }
+    }
+
+    /// `AllowUnknownMsgFields=Y` — do not refuse a **defined** tag that this
+    /// `MsgType` does not carry (`373=2`).
+    ///
+    /// A tag the dictionary has never heard of is still refused: that is
+    /// `373=0` and a different question.
+    #[must_use]
+    pub const fn allowing_unknown_msg_fields(mut self) -> Self {
+        self.allow_unknown_msg_fields = true;
+        self
+    }
+
+    /// `ValidateUserDefinedFields=N` — do not ask anything about a tag at or
+    /// above [`FIRST_USER_DEFINED_TAG`].
+    ///
+    /// **A range, not an amnesty.** An undefined tag *below* 5000 — `999`, `0`,
+    /// a negative one — is still refused, or this would mean *"stop checking
+    /// tags"*.
+    #[must_use]
+    pub const fn skipping_user_defined_fields(mut self) -> Self {
+        self.skip_user_defined_fields = true;
+        self
+    }
+
+    /// Is a defined tag on the wrong message type forgiven?
+    #[must_use]
+    pub const fn allows_unknown_msg_fields(self) -> bool {
+        self.allow_unknown_msg_fields
+    }
+
+    /// Are tags at or above [`FIRST_USER_DEFINED_TAG`] passed through unasked?
+    #[must_use]
+    pub const fn skips_user_defined_fields(self) -> bool {
+        self.skip_user_defined_fields
+    }
 }
 
 /// When a session restarts both sequence numbers at 1 without being asked to
@@ -483,6 +576,7 @@ impl Config {
             reset: ResetPolicy::new(),
             logon_timeout_ms: 0,
             logout_timeout_ms: 0,
+            validation: DictionaryChecks::new(),
         }
     }
 
@@ -601,6 +695,21 @@ impl Config {
     #[must_use]
     pub const fn logout_timeout_ms(&self) -> u64 {
         self.logout_timeout_ms
+    }
+
+    /// Which of the dictionary's questions this session asks. See
+    /// [`DictionaryChecks`], including why `ValidateFieldsOutOfOrder` is not
+    /// one of them.
+    #[must_use]
+    pub const fn with_validation(mut self, validation: DictionaryChecks) -> Self {
+        self.validation = validation;
+        self
+    }
+
+    /// The dictionary checks this session runs.
+    #[must_use]
+    pub const fn validation(&self) -> DictionaryChecks {
+        self.validation
     }
 
     /// When this session is open, and when both ends start again at `34=1`.
@@ -2554,7 +2663,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         } else if !Fix44::is_msg_type(mt) {
             Some((SessionText::InvalidMsgType, None))
         } else {
-            scan_fields(&view, mt)
+            scan_fields(&view, mt, self.cfg.validation)
                 .or_else(|| missing_required(&view, mt))
                 .or_else(|| bad_group_count(&view, mt))
                 // A CompID that is merely wrong, once there is a session to say
@@ -2987,7 +3096,21 @@ enum Which {
 /// assert_eq!(validate(&idx.view(msg), b"0"), None);
 /// ```
 pub fn validate<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8]) -> Option<SessionText> {
-    scan_fields(view, msg_type)
+    validate_with(view, msg_type, DictionaryChecks::new())
+}
+
+/// [`validate`], asking only the questions `checks` leaves on.
+///
+/// The form a [`Session`] itself uses, so a caller can reproduce what a
+/// configured session would have said about a message rather than what a
+/// default one would. See [`DictionaryChecks`] for what each setting forgives
+/// and, more usefully, what it does not.
+pub fn validate_with<const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+    checks: DictionaryChecks,
+) -> Option<SessionText> {
+    scan_fields(view, msg_type, checks)
         .or_else(|| missing_required(view, msg_type))
         .or_else(|| bad_group_count(view, msg_type))
         .map(|(text, _tag)| text)
@@ -3001,12 +3124,22 @@ pub fn validate<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8]) -> O
 fn scan_fields<const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
+    checks: DictionaryChecks,
 ) -> Option<(SessionText, Option<Held<12>>)> {
     let mut in_body = false;
     for i in 0..view.len() {
         let Some((tag, value)) = view.field_at(i) else {
             continue;
         };
+
+        // `ValidateUserDefinedFields=N`. **Before the header/body test as well
+        // as the rest**: a tag the dictionary knows nothing about cannot be a
+        // header field, so asking would answer `false` and put the tag in the
+        // body, which is an opinion about a field this session was told not to
+        // have opinions about.
+        if checks.skips_user_defined_fields() && tag >= FIRST_USER_DEFINED_TAG {
+            continue;
+        }
 
         // `373=14`: the header is over once a body tag has been seen.
         // `14g_HeaderBodyTrailerFieldsOutOfOrder.def` puts `34=` after `11=`
@@ -3028,7 +3161,11 @@ fn scan_fields<const N: usize>(
         if value.is_empty() && Fix44::field_type(tag) != Some(FieldType::Data) {
             return Some((SessionText::TagSpecifiedWithoutValue, tag_text(tag)));
         }
-        if !Fix44::allows(msg_type, tag) {
+        // `AllowUnknownMsgFields=Y` forgives exactly this one: a tag FIX 4.4
+        // defines, on a message that does not carry it. It is **not** the same
+        // question as `is_defined_tag` above, and a counterparty that sends a
+        // real field on the wrong message is the case it exists for.
+        if !checks.allows_unknown_msg_fields() && !Fix44::allows(msg_type, tag) {
             return Some((SessionText::TagNotDefinedForThisMessageType, tag_text(tag)));
         }
         // A repeat at the top level. Group members repeat by design, so a tag

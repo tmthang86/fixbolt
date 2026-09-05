@@ -18,7 +18,7 @@ pub use fixbolt_codec::{
 
 /// Who this acceptor serves, when, and under what numbers.
 pub use fixbolt_session::{
-    Application, Config, Link, ResetPolicy, Role,
+    Application, Config, DictionaryChecks, Link, ResetPolicy, Role,
     schedule::{Schedule, Weekday, Weekdays},
 };
 pub use fixbolt_session::{MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN, Peer};

@@ -332,7 +332,7 @@ engine **không** lưu mật khẩu; một `impl` tự viết là cách duy nh�
 | `ReconnectInterval` giây ở QuickFIX, ms trong `Policy` | `ReconnectInterval=2` → `first_ms == 2000` |
 | Một file khai initiator nhưng gọi `serve` | `into_table()` từ chối, thông báo chỉ sang `into_initiator()` |
 | **Một file khai initiator + `ShardPlan`** (*Phát hiện 2*) | lỗi có số dòng; `serve_sharded_hft` không nhận `Recovery` nên không có đường im lặng |
-| `AllowUnknownMsgFields=Y` làm corpus `14a_BadField.def` đổi kết quả | knob mặc định `N`; corpus chạy với mặc định; test riêng bật `Y` |
+| ~~`AllowUnknownMsgFields=Y` làm corpus `14a_BadField.def` đổi kết quả~~ — **bẫy đoán sai mã lỗi**. `[đo 2026-09-05]` cả bốn case của file ấy là `373=0` (`999`, `0`, `-1`, `5000`), mà knob này chi phối `373=2`. File **không** động đậy dưới knob này; cái động đậy dưới `ValidateUserDefinedFields=N` là case `5000=HI`, và corpus chạy với mặc định nên vẫn 59/59 | knob mặc định `N`; corpus chạy với mặc định; **sáu** test riêng, gồm hai test mỗi knob **không** tha lỗi của knob kia |
 | Thêm trường thứ tám vào `Config` làm `Config` hết `Copy` | `Config` đang được truyền by-value khắp nơi (`serve` dòng 1242, `dial`); `ResetPolicy` phải là kiểu `Copy` |
 | Đặt `MaxMessageSize` thành key rồi để nó không làm gì | bước 0 là ADR, và bảng key ghi rõ **không có key này** |
 
