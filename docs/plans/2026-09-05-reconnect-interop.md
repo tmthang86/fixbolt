@@ -404,11 +404,15 @@ hỏi lại bằng `35=2`.
 
 ### CI xanh, nêu theo id
 
-**CI xanh trên commit đóng plan**: run
-[`33932950725`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725), commit `d31db5e`,
-**11 job / 11**, `ubuntu-latest`. Job `interop`
-[`101215154156`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725/job/101215154156) —
-**log của chính job đó được đọc lại**, không phải kết luận của nó:
+**CI xanh trên chính điểm merge**: run
+[`33933972142`](https://github.com/tmthang86/fixbolt/actions/runs/33933972142), merge commit
+`c839854` (PR [#39](https://github.com/tmthang86/fixbolt/pull/39)), **11 job / 11**,
+`ubuntu-latest`. Đầu nhánh cũng xanh (`d31db5e`, run
+[`33932950725`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725)), nhưng
+**con số được nêu là của điểm merge** — nhánh xanh không nói gì về commit nơi nó gặp `main`.
+Trích dưới đây là từ run của nhánh, và job `interop` trên `main`
+[`101218167551`](https://github.com/tmthang86/fixbolt/actions/runs/33933972142/job/101218167551)
+in ra cùng những dòng ấy. **Log của chính job được đọc lại**, không phải kết luận của nó:
 
 ```
 interop-reconnect: dropped     ok    no 35=5 in the first transcript (saw 0)

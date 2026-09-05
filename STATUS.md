@@ -10,11 +10,14 @@ Last updated: **2026-09-05** — **the reconnect loop has been read by somebody 
 [reconnect-interop](docs/plans/2026-09-05-reconnect-interop.md) is closed, all six steps, and
 `STATUS.md` item 38 with it. `scripts/interop.sh` now kills a real `libquickfix` acceptor and
 starts it again on the same `FileStore`, twice, and reads its transcripts:
-`[đo 2026-09-05]` **7 / 7 + 7 / 7 + 5 / 5 + 3 / 3**, and **CI green 11 of 11 on the commit
-closed, `d31db5e`, run
-[`33932950725`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725)** — the `interop`
+`[đo 2026-09-05]` **7 / 7 + 7 / 7 + 5 / 5 + 3 / 3**, and **CI green 11 of 11 on the merged
+`main` itself, `c839854`, run
+[`33933972142`](https://github.com/tmthang86/fixbolt/actions/runs/33933972142)** — the `interop`
 job's own log read rather than its conclusion, every assertion line byte-identical to the
-development run.
+development run. The branch tip was green too (`d31db5e`, run
+[`33932950725`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725)), and **the
+merge point is the one named**: a branch being green says nothing about the commit where it meets
+`main`, and nothing is appended after a merge commit.
 
 Until today every test of `connect_and_serve` was this repository's own reading, and
 [ADR-0043](docs/decisions/ADR-0043-backoff-without-jitter-and-a-reconnect-asks-recovery-every-time.md)
