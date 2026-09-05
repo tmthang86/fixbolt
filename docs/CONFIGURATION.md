@@ -153,10 +153,18 @@ chose not to reply. A size sweep against a real acceptor found the wall between 
 bytes while `RX` was 16 KiB:
 [a-ceiling-has-more-than-one-floor](reference/a-ceiling-has-more-than-one-floor.md).
 
-**What they cost.** `[measured 2026-09-04]` one `Connection` is **23 752 bytes** at `RX = 4096`
-and **36 040** at `RX = 16 384` — the difference is exactly the buffer. Against that, each
-session carries a **~2 MiB** journal ring on the heap (`SLOTS × (SLOT_LEN + 8)`), so quadrupling
-the receive buffer is **+0.57%** per connection. Memory is rarely the reason not to raise these.
+**What they cost.** `[measured 2026-09-05]` one `Connection` is **23 760 bytes** at `RX = 4096`
+and **36 048** at `RX = 16 384` — the difference is exactly the buffer, which
+`crates/engine/tests/connection_size.rs` asserts rather than states. Against that, each session
+carries a **~2 MiB** journal ring on the heap (`SLOTS × (SLOT_LEN + 8)`), so quadrupling the
+receive buffer is **+0.57%** per connection. Memory is rarely the reason not to raise these —
+but a larger `RX` buys **capacity, not speed**, and `RX = 4096` is an unmeasured default:
+[ADR-0055](decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md).
+
+**There is no `MaxMessageSize` key, and there will not be one.** No engine surveyed has one —
+`MaxMessageSize` is FIX **tag 383**, an optional `Logon` field by which the two ends tell each
+other their limit, not a setting. `RX` is where this engine's ceiling is set, and it is set at
+compile time. ADR-0055.
 
 The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbound index,
 `P = 64` fields in a reply, `S = 1024` bytes for them. A reply that does not fit is

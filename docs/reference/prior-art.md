@@ -151,7 +151,10 @@ and this is not one; `MaxMessageSize` is `FixFieldNumbers.h:61` — **tag 383, a
 in the Logon message** (`spec/FIX44.xml:284`), by which the two ends *tell each other* their
 limit. QuickFIX/J's configuration reference has no such setting either. The error came from
 reading a tag name as a settings name, and it survived because nothing cross-checks a prior-art
-claim against the source sitting in `vendor/`.
+claim against the source sitting in `vendor/`. `[2026-09-05]` the survey below, and the decision
+not to invent the key, are
+[ADR-0055](../decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md); its
+`113` was re-run from the checked-out tree rather than carried forward.
 
 **How the four engines bound an inbound message, since the question is real even if the key is not:**
 

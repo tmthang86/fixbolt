@@ -734,11 +734,13 @@ So the size is yours to choose:
 A gateway holding hundreds of sessions should pick a smaller `N` through the const generic
 (§1a).
 
-**That 2 MiB is the number to hold in mind when sizing anything else.** `[measured 2026-09-04]`
-one `Connection` is 23 752 bytes at the default `RX = 4096`, and 36 040 at `RX = 16 384` — so
-quadrupling the receive buffer is **0.57%** of what a session already costs. The four sizes in
+**That 2 MiB is the number to hold in mind when sizing anything else.** `[measured 2026-09-05]`
+one `Connection` is 23 760 bytes at the default `RX = 4096`, and 36 048 at `RX = 16 384` — so
+quadrupling the receive buffer is **0.57%** of what a session already costs
+(`crates/engine/tests/connection_size.rs`). The four sizes in
 [CONFIGURATION.md](CONFIGURATION.md) are rarely worth economising on; the journal ring is where
-the memory actually goes.
+the memory actually goes. A larger `RX` buys capacity and not latency, and 4096 has never been
+measured: [ADR-0055](decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md).
 
 The messages a resend cannot reach are not lost quietly:
 

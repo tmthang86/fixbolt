@@ -90,6 +90,30 @@
 > trả về `Config` / `Limits` / `Policy` mà các chữ ký đó đã nhận sẵn. Ghi ở đây để người sau
 > không phải tự suy ra rằng điều kiện ấy đã hay chưa được kích hoạt: **chưa**.
 
+> ## Sửa 3 `[2026-09-05]` — bước 0 nói "không code", và nó cần đúng một file test
+>
+> Bước 0 định là ADR thuần tuý. Nhưng ADR ấy công bố cặp số 23 752 / 36 040 và phép tính
+> +0,57% dựa trên chúng, mà **không gì trong repo đọc hai con số đó**. Đo lại trên máy này:
+> **23 760 / 36 048** — lệch 8 byte, đợt A thêm vào, và cả `CONFIGURATION.md:156` lẫn
+> `GUIDE.md:738` đang mang con số cũ. Đây đúng là hình dạng §4 gọi là *prose does not hold a
+> constraint*, và lần trước cùng chỗ này đã đắt hơn: `measured-costs.md` tính tường cache từ
+> `size_of::<Connection<..>>() = 54 600` suốt **năm ngày** sau khi ADR-0046 làm nó thành
+> 21 456.
+>
+> Nên bước 0 thêm **`crates/engine/tests/connection_size.rs`**, một test: nâng `RX` tốn đúng
+> bằng buffer, không sinh padding. Số tuyệt đối chỉ **in ra**, không assert — pin nó lại sẽ làm
+> mọi lần thêm field đỏ một cái cổng không có ý kiến gì về việc thêm field, và cổng đó bị xoá ở
+> lần đỏ thứ ba.
+>
+> **Và một test thứ hai đã được viết rồi bị xoá, vì reversal của nó không đỏ — nó không biên
+> dịch.** Test ấy khẳng định ring resend nằm trên heap; `journal.rs:110` đã có
+> `const _: () = assert!(size_of::<Store>() <= 64);` kèm comment nói nguyên văn *"a compile
+> error, not a test"*. **Test đó không thể đỏ chừng nào crate còn tồn tại**, tức nó không phải
+> cổng yếu mà là không có cổng, và nó sẽ đọc như coverage mãi mãi. Bài học viết ở
+> [a-test-that-cannot-fail-reads-as-coverage](../reference/a-test-that-cannot-fail-reads-as-coverage.md),
+> **`[to testing-skills]`**: **reversal có ba kết quả chứ không hai** — đỏ đúng chỗ (test chạy),
+> xanh (test mù), **không build được** (thứ mạnh hơn đã canh, test thừa).
+
 ## Hai phát hiện mới, và chúng đổi việc phải làm
 
 ### Phát hiện 1 — `MaxMessageSize` không phải config key ở engine nào, và `RX` là câu trả lời
@@ -352,4 +376,5 @@ khi plan này đóng — nếu gộp vào đây thì bước 7 sẽ vừa sửa 
 |---|---|---|
 | Xác minh lại draft | 2026-09-04 | **Xong.** Sáu dòng sai đã sửa, bốn dòng kiểm lại đứng nguyên, hai phát hiện mới (`MaxMessageSize` là `RX`; sáu entry point chứ không năm). Trạng thái Draft → **Chờ duyệt** |
 | Xác minh lại lần hai | 2026-09-05 | **Xong** (*Sửa 2*). Bảy dòng sai; bước 0 mất nửa sau, bước 6 mất nửa đầu — cả hai vì việc **đã được làm rồi**, một lần trong chính lần xác minh trước và một lần bởi ADR-0047. Mười dòng kiểm lại đứng nguyên. Baseline `cargo test --all` **524, 0 failed** `[đo 2026-09-05]`. Trạng thái → **Đã duyệt** |
-| 0–7 | — | Chưa bắt đầu |
+| 0 | 2026-09-05 | **Xong.** [ADR-0055](../decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md), năm quyết định: không có key `MaxMessageSize`; `RX` là câu trả lời và ADR-0047 đã đưa nó cho người gọi; tag 383 là mục riêng, chưa xếp lịch; **đóng vì frame quá dài phải có tên** (bước 6); `RX = 4096` không nâng, và lý do là **chưa đo** chứ không phải đắt. `113` config key của QuickFIX **chạy lại từ `vendor/`** chứ không chép lại. Số bộ nhớ đo lại: **23 760 / 36 048**, delta đúng 12 288. Thêm `connection_size.rs` (*Sửa 3*), reversal đỏ `left: 0, right: 12288`. Sửa `CONFIGURATION.md`, `GUIDE.md`, trỏ `prior-art.md` sang ADR |
+| 1–7 | — | Chưa bắt đầu |
