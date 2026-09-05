@@ -1313,10 +1313,25 @@ access costs — see the curve below, **1 to 80 ns** depending on where it lands
 
 ### Term 2 — cache, which bypass does not touch at all
 
-`[measured 2026-08-30]` `size_of::<Connection<Loopback, Acceptor, MemJournal<64,512>, 64, 4096,
-8192>>()` = **54 600 bytes, 53.3 KiB**. `Session<Acceptor,64>` is 8 960 B and
-`MemJournal<64,512>` is 33 288 B of it. **`L1d` on this machine is 32 KiB — one connection does
-not fit in L1.**
+`[measured 2026-09-05]` `size_of::<Connection<Loopback, Acceptor, MemJournal<64,512>, 64, 4096,
+8192>>()` = **21 456 bytes, 20.95 KiB**, of which `Session<Acceptor,64>` is **9 064 B**. The
+shape `tools/w2w` actually runs — `Store`, `N = 256`, `RX = 4096`, `TX = 8192` — is
+**23 760 bytes, 23.2 KiB**. **`L1d` on this machine is 32 KiB, so one connection does fit in
+L1**, with room left over.
+
+> **This paragraph said something else for a day, and the something else was measured.**
+> `[measured 2026-08-30]` the same expression read **54 600 bytes, 53.3 KiB**, with
+> `MemJournal<64,512>` supplying 33 288 B of it, and this section was built on the sentence
+> *"one connection does not fit in L1"*. Both were true when they were written.
+> [ADR-0046](../decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md),
+> commit `6d02f3a` on **2026-09-04**, made the ring `Box<[Slot<LEN>]>` and raised its default to
+> 4 096 slots. `size_of::<MemJournal<64,512>>()` went from **33 288 to 32**, because the slots
+> left the struct — and nothing pointed at this paragraph to say so. A correct measurement
+> invalidated by a refactor a week later looks exactly like a correct measurement.
+>
+> **The memory did not go away, it moved.** `Store` is `MemJournal<4096, 512>` = **2 MiB per
+> connection, on the heap**, addressed by `seq % 4096` so consecutive messages walk it end to
+> end. What that costs is measured below rather than assumed.
 
 Random-access latency by working-set size, pointer-chase, §9 machine, isolated core:
 
@@ -1335,13 +1350,65 @@ Random-access latency by working-set size, pointer-chase, §9 machine, isolated 
 step, template patch — not to the polling alone. Adding sessions walks the whole engine down
 that table.
 
-**What is not known, and it decides where the wall is:** how much of the 53.3 KiB a connection
-touches per message. The structure size is measured; the *touched* set is not. The two bounds
-are far apart and both are stated rather than one being picked:
+### How much a message touches — measured, and it is a ramp rather than a wall
 
-- If a message touched all of it, the L2 edge arrives at **N ≈ 9**.
-- If it touched 4 KiB — a framer head, the live part of the field index, the hot session
-  fields, a template — the L2 edge arrives at **N ≈ 128**.
+`[measured 2026-09-05]` `crates/engine/benches/density.rs`, §9 desktop, median of 20 clean runs
+out of 22, `pass 12 fail 0 unknown 1`. N logged-on sessions on one engine, each handing over one
+`NewOrderSingle` per turn, the journal ring pinned small so it does not join in. Per message is
+per turn divided by N.
+
+| N | ns per turn | **ns per message** | vs N=1 | working set |
+|---|---|---|---|---|
+| 1 | 1 659.8 | 1 659.8 | 1.000 | 26 KiB |
+| 2 | 3 325.4 | 1 662.7 | 1.002 | 51 KiB |
+| 4 | 6 686.0 | 1 671.5 | 1.007 | 102 KiB |
+| 8 | 13 514.5 | 1 689.3 | 1.018 | 204 KiB |
+| 16 | 27 369.5 | 1 710.6 | 1.031 | 408 KiB |
+| 32 | 56 684.4 | 1 771.4 | 1.067 | 816 KiB, past the L2 edge |
+| 64 | 121 009.1 | 1 890.8 | **1.139** | 1.63 MiB |
+
+**There is no wall. There is a ramp, and the shape is the answer.** If a message touched most of
+its connection, the 512 KiB L2 edge would arrive at N ≈ 20 and put a **step** there. At N=16 the
+cost is up 3.1% and at N=32 up 6.7%, smoothly, with nothing at the edge. A smooth climb is what
+a **small** touched set inside a **large** allocation looks like: only the touched lines compete,
+so the miss rate rises gradually instead of falling off a cliff.
+
+Turning the excess into bytes, with the latency table above: at N=64 a message costs **231.0 ns**
+more than at N=1; about 69% of a 1.63 MiB working set cannot sit in a 512 KiB L2, and the L2-to-L3
+step on this machine is ~8.6 ns. That is ~39 lines, **~2.5 KiB**. The same arithmetic at N=32 gives
+~2.2 KiB. The model is rough — at N=16 it predicts no excess and 50.8 ns is measured, because L2
+is shared with code and stacks and is not fully associative — so the honest figure is **on the
+order of 2 to 4 KiB, and certainly not the 21 KiB of the structure**.
+
+**So the old lower bound is the one that survived.** This section used to offer two, from the
+withdrawn 53.3 KiB: the L2 edge at **N ≈ 9** if a message touched all of it, or **N ≈ 128** if it
+touched about 4 KiB. The first is refuted by the absence of a step. Recomputed on what is
+measured — ~2.5 KiB touched against a 512 KiB L2 — the edge is nearer **N ≈ 200**, and by N=64,
+which is already a dense engine, cache alone has added **13.9%** to every message.
+
+That 13.9% is the smallest of the three terms on this page. The linear sweep and the head-of-line
+blocking below are both larger, and neither is helped by knowing this.
+
+### And the ring, which is 2 MiB, costs nothing measurable
+
+`[measured 2026-09-05]` one session, identical work, the journal ring swept from 8 slots to
+4 096 — 4 KiB of heap to 2 MiB:
+
+| Ring | ns per turn |
+|---|---|
+| 8 slots (4 KiB) | 1 659.8 |
+| 64 slots | 1 635.5 |
+| 512 slots | 1 654.8 |
+| 4 096 slots (2 MiB) — `Store`, the default | 1 657.7 |
+
+A spread of 1.5% **and not monotone**, which is the signature of no effect at all rather than a
+small one. `crates/engine/benches/journal.rs` says the same from the other direction: a `put` of
+a 191-byte `ExecutionReport` walking the whole ring costs **8.9 ns**, and pinned to one slot
+**6.3 ns**.
+
+The reason is that a `put` writes 191 bytes into three cache lines at a perfectly predictable
+512-byte stride, and both the prefetcher and the store buffer are good at exactly that. **A large
+allocation is not a cache cost; a large *touched set* is.**
 
 Measuring that fraction is worth more than any further guess about the 324 ns mode.
 
@@ -2671,3 +2738,81 @@ discipline that costs nothing is to **finish the subtraction out loud**: put the
 pieces in a table, subtract, and write the remainder down as a number with its own name. Here
 the remainder is 72% and now has an open item; without the table it would have been a feeling
 that the gap was mostly explained.
+
+## The application round trip: what the extra 3 898 ns is, and mostly is not
+
+`[measured 2026-09-05]` `tools/w2w --path app` costs **3 898 ns** more per round trip at p50
+than `--path admin` on the §9 desktop. `STATUS.md` open item 49 named four candidates for the
+part no benchmark accounted for. Two of them are now priced and **both are noise**.
+
+### The bytes, measured rather than assumed
+
+`strace -f -e trace=sendto` on `./target/release/w2w` at its default flags, over the last 2 000
+sends of each direction — all 2 000 identical, so exact:
+
+| Path | in | out |
+|---|---|---|
+| `--path admin`, `35=1` then `35=0` | **83** | **87** |
+| `--path app`, `35=D` then `35=8` | **149** | **191** |
+
+Item 49 recorded these as "149 in and ~200 out against 79 and ~70" and **one of the four was
+right**. The sizes drift with the digit count of `34=` and `11=`/`112=`, so they mean nothing
+without a message count beside them: at `--messages 20` the same paths read 77/81 and 143/179.
+
+### Candidate 1 and 4 — the kernel copying more bytes: ~25 ns
+
+`crates/engine/benches/payload.rs`. **The two real sizes cannot be subtracted from each other**
+— they differ by 170 bytes, worth tens of nanoseconds inside a round trip of ~12 600, and across
+three repetitions their difference read −4, +13 and +46 ns, which is scatter with a sign change
+in it. The term is read off the outer pair instead, where the lever is 8 184 bytes each way:
+
+| Case | ns |
+|---|---|
+| `TCP loopback, 8 in 8 out` | 12 528.8 |
+| `TCP loopback, 83 in 87 out` | 12 608.5 |
+| `TCP loopback, 149 in 191 out` | 12 648.4 |
+| `TCP loopback, 8192 in 8192 out` | 14 890.9 |
+
+`(14 890.9 − 12 528.8) / 16 368` = **0.1443 ns per byte** written and read. The application path
+moves 66 more bytes in and 104 more out, so the term is `170 × 0.1443` = **24.5 ns** — **0.9%**
+of the 2 804 ns it was a candidate for.
+
+### Candidate 3 — journalling the reply: 8.9 ns
+
+`crates/engine/benches/journal.rs`. The administrative path never does this at all, so the whole
+figure counts: `MemJournal<4096,512>::put` of the 191-byte `ExecutionReport`, walking the ring as
+the engine does, is **8.9 ns**. The ring sweep above confirms it in situ.
+
+### The subtraction, out loud
+
+| Term | ns | Where from |
+|---|---|---|
+| inbound parse, larger message | ~60 | `parse NewOrderSingle` − `parse Heartbeat` |
+| **the dictionary pass** | **679** | `validate NewOrderSingle, w2w bytes` − `validate TestRequest, w2w bytes` |
+| dispatch | 9 | `inline deliver + reply` |
+| the application's own `Validation::NONE` re-parse | 114 | `library, parse only` |
+| its template encode | 233 | `encode ExecutionReport (template)` |
+| **kernel copies of the bigger payload** | **24.5** | `TCP loopback` slope, above |
+| **`Journal::put` of the reply** | **8.9** | `journal put, 191 bytes, walking` |
+| **accounted** | **1 128** | **28.9%** |
+| **unattributed** | **2 770** | **71.1%** |
+
+**Two of the four candidates are dead and the remainder barely moved**, from ~2 804 to ~2 770 ns.
+What is left is the engine's framing and read-buffer management, which no benchmark isolates, and
+the session's own `Heartbeat` serialise on the admin side, which has no committed case either.
+
+This is the second time on this page that the largest *named* candidate turned out not to be the
+answer. The first was the dictionary pass: 679 ns is real and is the biggest single row here, and
+it is still only **17.4%** of the thing it was nominated to explain.
+
+### One number on this page is about the machine and not about this engine
+
+`[measured 2026-09-05]` those `TCP loopback` figures are ~12.5 µs for **four syscalls**. A bare
+`getppid` on the same box in the same run is 170.5 ns, a pipe round trip 778.9 ns and a UNIX
+socketpair 1 924.9 ns. A loopback write of 8 bytes alone is 5 450 ns — thirty-two bare syscalls.
+
+The **differences** on this page are unaffected: both `tools/w2w` paths make 44 002 `sendto` calls
+each, so a per-syscall constant cancels. The **absolutes** are environment-bound and are not a
+round-trip claim about anything. See
+[a-loopback-write-costs-thirty-two-syscalls.md](a-loopback-write-costs-thirty-two-syscalls.md).
+

@@ -1,6 +1,6 @@
 # Phần còn lại của round trip, và một message chạm vào bao nhiêu
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** Đã duyệt (2026-09-05)
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** Xong (2026-09-05)
 > **Phạm vi:** hai open item cuối còn cần máy §9 và đã sẵn sàng đo — item 49 và nửa còn mở của item 14
 
 ## Bối cảnh
@@ -393,4 +393,54 @@ hiệu số phải về ~0; nếu không thì cái đang đo không phải kích
 
 ## Nhật ký giao hàng
 
-Chưa có. Điền khi đóng từng bước.
+**A1 — `crates/engine/benches/payload.rs`.** Bốn case. Trước khi viết một dòng code, `strace`
+lên chính release binary cho ra bốn kích thước thật (83/87 admin, 149/191 app) và **ba trong bốn
+con số của dòng item 49 là sai** → Sửa 1. Bản đầu dùng `read` blocking, đọc 12.5 µs cho bốn
+syscall; mồi sẵn hàng đợi không đổi gì, và đào tiếp thì ra chuyện lớn hơn ở A-ngoài-lề dưới đây.
+Hiệu hai case thật **không được trừ** — ba lần lặp cho −4, +13, +46 ns. Số dùng là độ dốc trên
+đòn bẩy 8 → 8192: **0.1443 ns/byte → 24.5 ns**.
+
+**A2 — `crates/engine/benches/journal.rs`.** Ba case. `size_of` chạy thật cho thấy
+`MemJournal<64,512>` là **32 byte** chứ không phải 33 288 và `Connection` là **21 456** chứ không
+phải 54 600 → Sửa 2, và ring 2 MiB nằm trên heap. `put` = **8.9 ns**. Case `one slot` là phép đảo
+ngược trong miền cache; module doc nói thẳng 8.9 là **sàn**, không phải con số, vì vòng lặp chặt
+với stride 512 byte là thứ prefetcher thích nhất — và giao việc thu hẹp cho B-ii.
+
+**A-ngoài-lề.** `[measured 2026-09-05]` một `write` TCP loopback 8 byte tốn **5 450 ns** trên máy
+này: 32 lần `getppid` (170.5), 7 lần một pipe (778.9), 2.8 lần một UNIX socketpair (1 924.9).
+Không phải `read` chờ (0.00 `EAGAIN`/op), không phải scheduler (`taskset` khớp 0.1%), không phải
+code của dự án. Netfilter (Tailscale + Docker) và mitigations của Zen 2 là ứng viên, **không cái
+nào được kiểm chứng nên không cái nào được nhận**. Không ảnh hưởng kết quả A: hằng số triệt tiêu
+trong phép trừ, và `strace` cho thấy hai đường gọi **44 002 `sendto` mỗi bên**. → item 51,
+`docs/reference/a-loopback-write-costs-thirty-two-syscalls.md`, `[to testing-skills]`.
+
+**B1–B3 — `crates/engine/benches/density.rs`.** `Loopback` bị thay bằng transport riêng `Feed`
+(Sửa 3): `VecDeque<u8>` cấp phát, tính tiền theo byte, và cho mỗi connection một vùng đệm heap
+riêng — tức đo đồ giả trong chính một phép đo cache. Ba lỗi harness, cả ba do assertion bắt:
+template phải bắt đầu ở seq 1; checksum FIX dừng **trước** `10=`; và **`Engine` chặn hai session
+cùng identity** — thêm hai connection thì `connections()` đọc 1, nên mỗi session phải có
+counterparty riêng qua `add_with_prefix_and_config`. `benches/turn.rs` chưa bao giờ gặp cái thứ
+ba vì session của nó rỗi. N=128 đo một lần rồi gỡ theo quyết định của chủ sở hữu (Sửa 4); con số
+ấy **không được trích ở đâu cả**.
+
+**Kết quả.** Item 14: dốc chứ không phải vách, **không có bậc ở N ≈ 20**, nên cận N≈9 chết bằng
+hình dạng; tập bị chạm **~2–4 KiB**; ở N=64 cache thêm **13.9%** mỗi message. Ring 2 MiB tốn
+**không gì đo được** (1.5%, không đơn điệu). Item 49: hai ứng viên chết với con số, phần dư
+2 804 → **2 770 ns**.
+
+**Chiến dịch baseline.** 22 lần chạy, **20 dùng được**; hai bị loại bằng verdict của chính chúng
+(`gnome-shell` 31% rồi 58% một core). Trước đó năm run nữa bị hỏng vì lỗi của tôi: `pgrep -x
+collect.sh` không thấy driver cũ (tên tiến trình của script bash là `bash`), nên hai chiến dịch
+chạy song song và một binary `payload` mồ côi quay TCP loopback ở 74% một core suốt 28 phút.
+`check-machine.sh` nêu đích danh nó trong mọi run nó chạm tới. **Không con số nhiễm nào lọt vào
+`baselines.tsv`.**
+
+**Và lần `--strict` đầu tiên đỏ**, ở `journal put, 191 bytes, one slot`: 8.2 ghi từ 20 run, rồi
+6.4. `baselines.tsv` được `include!` vào `harness.rs`, nên **ghi baseline làm đổi binary mà
+baseline được đo từ đó** — 23% cho một case nhỏ, alignment đã ghim mà vẫn không chặn được. Ghi
+lại **6.3 / 1.35 / n = 8**, cả ba trường đều cố ý khác hàng xóm. → item 52,
+`docs/reference/recording-a-baseline-changed-the-baseline.md`, `[to testing-skills]`.
+`bench.sh --strict` xanh: 16/16 target, 0 silent, 0 over, 0 under, 0 thiếu baseline.
+
+**Cái không làm.** Không tối ưu gì (đúng mục *Ngoài phạm vi*). Không đuổi theo bất thường
+loopback — nó cần đổi cấu hình máy của chủ sở hữu. Không đóng item 49.
