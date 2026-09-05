@@ -1,6 +1,6 @@
 # Release profile: LTO và codegen-units đáng bao nhiêu, và tốn bao nhiêu
 
-> **Loại:** Plan · **Ngày:** 2026-09-01 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-01 · **Trạng thái:** **Xong** — đóng 2026-09-01 trên *giữ mặc định*, item 13, ADR-0024
 > **Phạm vi:** open item 13. Không đụng dòng code thư viện nào — chỉ `Cargo.toml`
 
 ## Bối cảnh

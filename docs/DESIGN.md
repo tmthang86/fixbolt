@@ -777,7 +777,7 @@ below).
 | Gate | Result on the §9 desktop | Proven by |
 |---|---|---|
 | Parse NewOrderSingle | `[measured 2026-08-31]` **122.6 ns** validated, 117.0 raw, 57.3 for a Heartbeat | `benches/parse.rs` against `benches/baselines.tsv` |
-| Serialise ExecutionReport (template, D9) | `[measured 2026-08-31]` **239.1 ns**. The 60 ns absolute target is withdrawn (ADR-0016): 93.8 (M5) · 177.6–199.4 (container) · 239.1 (desktop), and none came close | `benches/serialize.rs` against `baselines.tsv` |
+| Serialise ExecutionReport (template, D9) | `[measured 2026-09-05]` **237.6 ns**, alignment pinned (ADR-0049); the 239.1 recorded 2026-08-31 was the same encoder at a different address. The 60 ns absolute target is withdrawn (ADR-0016): 93.8 (M5) · 177.6–199.4 (container) · 239.1 (desktop), and none came close | `benches/serialize.rs` against `baselines.tsv` |
 | `RingDispatch` hop vs `InlineDispatch` | `[measured 2026-09-01]` inline **8.5 ns**, ring **267.4 ns** one way, **515.7 ns** round trip, on a 163-byte NewOrderSingle: about 31×, and about 1.7 ns of every byte is the `AtomicU8` copy. The inline figure was published as 1.3 ns for a day; that was the optimiser deleting the 163-byte copy, found by the arithmetic that 163 bytes in 1.3 ns is 125 GB/s from one core ([a-benchmark-can-delete-its-own-work](reference/a-benchmark-can-delete-its-own-work.md)) | `crates/engine/benches/dispatch.rs` against `baselines.tsv` |
 | Wire-to-wire, loopback | `[measured 2026-09-02]` **met**: `pass 12 fail 0 unknown 1`, engine pinned to isolated `cpu6`, client to `cpu7`, medians of 20 runs of 20 000 round trips. `hft` **16 010 / 20 589 / 22 127 ns** administrative, **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. p99 ≤ 50 µs holds in all four arms. Allocations in the timed window 0 on both threads | `tools/w2w --features affinity`, driven by `scripts/w2w-baseline.sh`. Phase 1 exit criterion 6 |
 | Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40 |
@@ -802,30 +802,38 @@ measured 260.9 ns on a Ryzen 7 3700X, 270.7–272.9 on an EPYC 9V74 and 327.2–
 260 ns ceiling sat 0.3% *below the fastest of the three*. A ceiling no machine passes is a
 ceiling somebody switches off.
 
-**Recorded baselines**, medians of 24 qualifying `scripts/bench.sh` runs
-`[measured 2026-08-31]`, on a box reading `pass 11 fail 0` for every run counted:
+**Recorded baselines**, medians of **20** qualifying `scripts/bench.sh` runs
+`[measured 2026-09-05]`, on a box reading `pass 12 fail 0 unknown 1` for every run counted,
+**with function alignment pinned** (ADR-0049). Every line was re-recorded that day: the
+measurement changed, so what it is compared against changed with it. This machine is the only
+one in `baselines.tsv`, so nothing else was invalidated.
 
 | Case | AMD Ryzen 7 3700X | margin |
 |---|---|---|
-| parse NewOrderSingle (validated) | 122.6 ns | 1.10 |
-| parse NewOrderSingle (no checks) | 117.0 ns | 1.15 |
-| parse Heartbeat (validated) | 57.3 ns | 1.10 |
-| encode ExecutionReport (template) | 239.1 ns | 1.10 |
+| parse NewOrderSingle (validated) | 120.4 ns | 1.10 |
+| parse NewOrderSingle (no checks) | 113.5 ns | 1.15 |
+| parse Heartbeat (validated) | 56.3 ns | 1.10 |
+| encode ExecutionReport (template) | 237.6 ns | **1.15** |
 | SendingTime from the cache | 4.9 ns | 1.10 |
-| walk 1 group, 2 entries | 58.7 ns | 1.10 |
-| walk 4 levels, 61-tag member list | 352.9 ns | 1.10 |
-| `group_members` contains, 61 tags | 9.7 ns | 1.10 |
-| encode 1 group, 2 entries | 108.4 ns | 1.10 |
-| inline deliver + reply | 8.5 ns | 1.10 |
-| ring, one way | 267.4 ns | 1.30 |
-| ring, round trip | 515.7 ns | 1.20 |
-| recv on a quiet socket | 420.5 ns | 1.10 |
-| engine turn, 1 idle session | 448.9 ns | 1.10 |
-| engine turn, 4 idle sessions | 1807.1 ns | 1.10 |
-| engine turn, 16 idle sessions | 7333.5 ns | 1.10 |
-| presession sweep, 1 quiet socket | 435.9 ns | 1.10 |
+| walk 1 group, 2 entries | 56.2 ns | 1.10 |
+| walk 4 levels, 61-tag member list | 339.5 ns | 1.10 |
+| `group_members` contains, 61 tags | 9.0 ns | 1.10 |
+| encode 1 group, 2 entries | 108.8 ns | 1.10 |
+| inline deliver + reply | 8.1 ns | 1.10 |
+| ring, one way | 258.2 ns | 1.30 |
+| ring, round trip | 496.0 ns | 1.20 |
+| recv on a quiet socket | 418.5 ns | 1.10 |
+| engine turn, 1 idle session | 481.0 ns | 1.10 |
+| engine turn, 4 idle sessions | 1896.1 ns | 1.10 |
+| engine turn, 16 idle sessions | 7694.8 ns | 1.10 |
+| presession sweep, 1 quiet socket | 435.0 ns | 1.10 |
 | presession sweep, 16 quiet sockets | 6819.5 ns | 1.10 |
-| presession, read and route an identity | 84.0 ns | 1.10 |
+| presession, read and route an identity | 186.5 ns | 1.10 |
+| presession, registry lookup of 1 | 10.8 ns | 1.10 |
+| presession, registry lookup of 40 | 100.8 ns | 1.10 |
+| library, parse only | 159.6 ns | 1.10 |
+| library, reply only | 804.1 ns | 1.10 |
+| library, on_message | 1028.6 ns | 1.10 |
 
 **No other machine has a baseline, and none is invented.** The Apple M5 and the CI EPYCs have
 figures scattered through this repository, but none was taken by the procedure above, so they
@@ -835,6 +843,24 @@ report `NO BASELINE`, which is counted on its own summary row and is not a pass.
 7.6% of their own median across a run set, while `ring, one way` draws a second mode at +24%
 on roughly 1 run in 15. A single margin wide enough for that case would let `encode
 ExecutionReport` drift 236 → 319 ns unnoticed.
+
+**Bench builds pin function alignment, and the flag is read back**
+([ADR-0049](decisions/ADR-0049-bench-builds-pin-function-alignment-and-the-flag-is-read-back.md)).
+`scripts/bench.sh` exports `-C llvm-args=-align-all-functions=6` and then verifies, from the
+built binaries, that it took — `scripts/check-bench-alignment.sh`, `[measured 2026-09-05]`
+**23 of 23 own-crate text symbols on a 64-byte boundary pinned, 5 of 23 unpinned**.
+
+It exists because `encode ExecutionReport (template)` was a 16% measurement of *where the
+compiler put the code*. Its baseline was recorded at 239.1 ns and the same encoder read 280.4
+four days later; the whole jump is one commit that touches no `crates/*/src/` file, and adding
+inert functions the encoder never calls walks the case across 236.5–292.4 ns. Under the flag
+the same perturbation holds inside 4.0%, which is why that one case carries 1.15 rather than
+1.10 — pinning shrinks the layout term, it does not remove it.
+
+**The cost, stated:** these figures are of a binary that is not the one that ships. That is
+tolerable here because every §6 timing row is compared against *itself over time on one
+machine*; it would not be tolerable for a published absolute. `tools/w2w` and §8's budget do
+not come through `bench.sh` and are unaffected.
 
 **Stretch, and not a gate:** serialise at about 116 ns on the §9 desktop, the measured floor of
 the current `Part` shape. Reaching it needs the ~31 ns fixed prefix cost and the ~7 ns per
@@ -850,7 +876,7 @@ two kinds of benchmark by what decides their result:
 | | What it measures | On a failure |
 |---|---|---|
 | **Invariant**: `alloc` × 3, `ring_full` | allocation counts, message counts | **CI red.** The answer is the same on every machine |
-| **Timing**: `parse`, `serialize`, `groups`, `dispatch`, `turn`, `presession` | ns/op against this machine's own band | **Reported, never red on a shared runner.** `bench.sh --strict`, which a §9 machine runs, is fatal on a case with no baseline for its CPU and on one that came in under its floor, because a benchmark that stops measuring reads far under its limit |
+| **Timing**: `parse`, `serialize`, `groups`, `dispatch`, `turn`, `presession`, `cost` | ns/op against this machine's own band, from a build with **function alignment pinned and read back** (ADR-0049) | **Reported, never red on a shared runner.** `bench.sh --strict`, which a §9 machine runs, is fatal on a case with no baseline for its CPU and on one that came in under its floor, because a benchmark that stops measuring reads far under its limit |
 
 Timing ceilings are not enforced on a shared runner because they cannot be: `[measured
 2026-08-30]` five runs on a 4 vCPU container gave a run-to-run spread of 5–232%, and on the

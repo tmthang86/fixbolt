@@ -1,6 +1,6 @@
 # `tools/w2w`, và con số đầu tiên đo trên Linux
 
-> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** Đã duyệt (2026-08-30)
+> **Loại:** Plan · **Ngày:** 2026-08-30 · **Trạng thái:** **Xong** — item 15 đóng 2026-08-30, item 11 2026-08-31, item 13 2026-09-01, item 6 2026-09-02; *Nhật ký giao hàng* nói **không còn gì của plan này**
 > **Phạm vi:** open item 6, 11, 12, 13, 15 — `DESIGN.md` §7 bước 7
 
 ## Bối cảnh

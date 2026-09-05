@@ -1,6 +1,6 @@
 # Danh sách đối tác đến từ một file, không từ code
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** **Xong** — đóng 2026-09-02, cả bốn bước, item 28, ADR-0040, PR #27
 > **Phạm vi:** Phase 1 — `many counterparties`, phần còn thiếu
 
 ## Bối cảnh

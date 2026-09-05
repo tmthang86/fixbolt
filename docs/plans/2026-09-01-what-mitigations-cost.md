@@ -1,6 +1,6 @@
 # Các mitigation CPU lấy mất bao nhiêu của một syscall
 
-> **Loại:** Plan · **Ngày:** 2026-09-01 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-01 · **Trạng thái:** **Xong** — đóng 2026-09-01, item 22, ADR-0023
 > **Phạm vi:** open item 22 — đòn bẩy cuối cùng còn lại của nó
 
 ## Bối cảnh

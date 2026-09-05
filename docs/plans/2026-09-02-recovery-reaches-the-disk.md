@@ -1,6 +1,6 @@
 # Khôi phục chạm tới được đĩa
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** **Xong** — đóng 2026-09-02, item 32 (b) và (c), ADR-0039, PR #26
 > *(tự viết, tự duyệt theo uỷ quyền thường trực 2026-09-01.)*
 >
 > **Phạm vi:** `STATUS.md` item 32 **(b)** và **(c)**. Chạm `session` (trait `Journal`) và

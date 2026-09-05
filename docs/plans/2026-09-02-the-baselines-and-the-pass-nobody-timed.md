@@ -35,6 +35,65 @@
 > Bước 1d ghi baseline cho **năm case đo thời gian**, và cùng một cách tự lừa áp dụng: một con số
 > ổn định không có nghĩa là nó đo đúng thứ mình nghĩ.
 
+> **Sửa 2 `[2026-09-05]` — bước 1a sai giả thuyết, bước 1c sai commit, và một dữ kiện của plan
+> này sai hẳn. Ghi trước khi đổi một dòng nào.**
+>
+> **1a phủ định.** Bỏ hai case `registry lookup` ra khỏi suite: `read and route` đi từ **191.8
+> xuống 186.8 ns**, không về 84. Chiều thứ hai mà *Cách kiểm chứng* đòi cũng đã chạy — đưa hai
+> case lên **đầu** suite đọc 190.8. Vậy con số đi theo **sự có mặt** (−5 ns, −2.6%) chứ không
+> theo **vị trí** (<1 ns), tức là theo đúng cái phân biệt plan này viết ra thì nguyên nhân
+> **không phải thành phần suite**.
+>
+> **1b không cần bisect, vì phép đảo ngược mạnh hơn bisect và đã chạy lại.** Thay hai lời gọi
+> `field_value` mới bằng `None`: **83.5 · 84.1 · 84.7 · 84.3 · 84.0**, median **84.1** so với
+> baseline **84.0**. Kết luận của bước 1 đứng vững: ADR-0026 nới `Identity` thêm `50=`/`57=`,
+> `identity_of` quét bốn lần thay vì hai, và baseline chưa ai ghi lại.
+>
+> **Một dữ kiện của *Những gì đã biết chắc* sai, và chính nó đẻ ra giả thuyết 1a.** Gạch đầu
+> dòng 2 nói `presession.rs` *"chỉ đổi đúng một lần"* kể từ `f15c82d` và lần đó là `93675c2`.
+> `git log` nói nó đổi **ba lần**, và một trong ba là **`0cfa904`** — đúng commit ADR-0026 nới
+> `Identity`. Đọc diff `identity_of` ở `f15c82d` so với hôm nay thì thấy ngay hai lời gọi mới.
+> Dữ kiện sai ấy loại đúng thủ phạm ra khỏi danh sách, nên phần còn lại phải đi tìm nguyên nhân
+> ở chỗ khác — và đó là cả giả thuyết 1a.
+>
+> **1c: bisect một commit là đủ hẹp, và nó chỉ sai commit.** ADR-0044 (`576f924`) có thật nhưng
+> nhỏ: 267.5 → 279.4, **+4.5%**. Case đã **vượt trần trước nó**. Bisect rộng ra:
+>
+> | commit | là gì | median |
+> |---|---|---|
+> | `bf798ea` | ghi baseline 239.1 | **240.0** — máy và toolchain vô can |
+> | `54eebe9` | sửa một bench khác | 240.6 |
+> | **`4396d6d`** | **a baseline is a band — chỉ harness** | **268.0** |
+> | `576f924` | ADR-0044 | 279.4 |
+> | `HEAD` | hôm nay | 280.4 |
+>
+> **`4396d6d` không chạm một dòng `crates/codec/src/` nào** (`git show 4396d6d -- crates/codec/src/`
+> rỗng). Nó `include!("verdict.rs")` vào binary bench, và +11.4%. Và ở đây plan này sai lần thứ
+> hai: *Những gì đã biết chắc* gọi `4396d6d` là **dữ kiện phủ định** *"dụng cụ đo không đổi"* —
+> kết luận rút ra bằng **đọc diff**. Điều 10 nói thẳng review diff bắt được gần như không gì.
+>
+> **Nguyên nhân là layout của binary, và nó được chứng minh hai lần bằng hai đường khác nhau:**
+> ép `-C llvm-args=-align-all-functions=6` kéo `HEAD` từ 278.9 về **233.0**; và — vì một cái núm
+> nhúc nhích không phải là một nguyên nhân — chèn **code trơ** (N hàm encoder không bao giờ gọi)
+> làm con số đi **236.5 → 292.4** qua bốn layout, không đổi một dòng code bị đo. Cùng phép nhiễu
+> đó dưới căn lề ép: 229.6 · 238.9 · 235.8 · 230.9, spread **4.0%** so với **14.6%**.
+> [a-benchmark-that-measures-where-the-compiler-put-it](../reference/a-benchmark-that-measures-where-the-compiler-put-it.md),
+> **`[to testing-skills]`**.
+>
+> **Chủ dự án chọn *cả hai* (2026-09-05): ghim căn lề cho bench, VÀ nới margin case này lên
+> 1.15.** ADR-0049. Ba việc kèm theo, và việc thứ hai là bắt buộc chứ không phải trang trí:
+>
+> 1. `scripts/bench.sh` xuất `RUSTFLAGS` ghim căn lề — phạm vi đúng bằng cái script mà quy trình
+>    baseline đã bắt buộc dùng, không phải `.cargo/config.toml` (cái đó sẽ đổi cả bản ship).
+> 2. **Một gate đọc lại rằng cờ thật sự có tác dụng.** Một cờ LLVM im lặng ngừng ăn là đúng hình
+>    dạng false-green repo này gặp ba lần. Không có gate này thì quyết định 1 là một lời hứa.
+> 3. Baseline của **cả năm case thiếu và hai case đỏ** được ghi **dưới build đã ghim**, ≥ 20 lần
+>    chạy — 20 lần chạy chưa ghim thu lúc 09:30 bị **vứt bỏ**, không dùng.
+>
+> **Bước 1d đổi phạm vi**: từ *"5 case thiếu baseline"* thành *"5 case thiếu + `encode
+> ExecutionReport (template)` + `presession, read and route an identity`"*, vì hai case sau giờ
+> đã có kết luận và cả hai kết luận đều là *ghi lại baseline*, không phải *sửa code*.
+
 ## Bối cảnh
 
 Phase 1 vừa đóng, và buổi đo đóng nó để lại ba việc **trên cùng một cái máy**. Cả ba đều là
@@ -184,7 +243,7 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 | 1b | Nếu 1a phủ định: bisect `f15c82d..HEAD` trên `crates/engine/` | 1a |
 | 1c | Bisect một commit cho `encode ExecutionReport`: `576f924^` so với `576f924` | — |
 | 1d | Baseline cho 5 case thiếu, ≥ 20 lần chạy, đúng quy trình | 1a–1c xong (để không ghi baseline lên một hồi quy) |
-| 1e | `bench.sh --strict` thoát 0, **hoặc** một câu nói rõ cái gì còn đỏ. ADR nếu có quyết định. **Item 41 đóng** | 1a–1d |
+| 1e | `bench.sh --strict` thoát 0, **hoặc** một câu nói rõ cái gì còn đỏ. ADR nếu có quyết định. **Item 41 đóng**. CI xanh 11/11 trên `0a06000`, run [`33940142610`](https://github.com/tmthang86/fixbolt/actions/runs/33940142610) — đọc log của job `bench`, không đọc kết luận: read-back căn lề PASS 12/12 trên một CPU khác | 1a–1d |
 | 2a | Trả lời "đo lượt kiểm từ đâu" bằng cách đọc code, chọn (a)/(b)/(c) | — |
 | 2b | Bench cho lượt kiểm, `NewOrderSingle` và `Heartbeat`, đỏ trước | 2a |
 | 2c | Baseline ≥ 20 lần chạy | 2b, 1e |
@@ -258,9 +317,14 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 | Bước | Ngày | Kết quả |
 |---|---|---|
 | 1 (chẩn đoán) | 2026-09-02 | **Xong**, commit `0e845f5`. `read and route` +140% **không phải hồi quy**: ADR-0026 quyết định 2 nới `Identity` thêm `50=`/`57=`, nên `identity_of` quét bốn lần `field_value` thay vì hai, và `field_value` quét hết message trước khi trả `None` — đúng việc hai lời gọi mới làm, vì `Logon` của corpus không mang cả hai tag (đã đếm: 0 lần xuất hiện). Reversal một biến: thay hai lời gọi bằng `None` đọc **83.2 / 83.1 / 83.1 ns** so với baseline **84.0**, ba lần chạy. Kết luận: **baseline chưa ai ghi lại**, không phải code chậm đi, và không revert ADR-0026. `encode ExecutionReport (template)` +16% **chưa chẩn đoán** — hai giả thuyết trong *Cách làm*, cả hai chưa thử |
-| 1a | — | **Chưa.** Kiểm lại `[2026-09-04]`: `presession.rs`, bench suite của nó và `baselines.tsv` đều không đổi từ `0e845f5^`, nên bước này chạy được nguyên văn. **Đừng dừng ở nửa đầu** — *Cách kiểm chứng* đòi thêm một chiều: đặt lại hai case ở vị trí khác và xem con số đi theo *vị trí* hay theo *sự có mặt* |
-| 1b–1e, 2, 3 | — | Chưa bắt đầu |
+| 1a | 2026-09-05 | **Xong, và giả thuyết bị phủ định.** Bỏ hai case `registry lookup`: `read and route` 191.8 → **186.8**, không về 84. Chiều thứ hai cũng chạy — đưa hai case lên đầu suite đọc **190.8**. Số đi theo **sự có mặt** (−5 ns), không theo **vị trí** (<1 ns). Nguyên nhân **không phải thành phần suite** |
+| 1b | 2026-09-05 | **Không bisect, và lý do mạnh hơn bisect.** Đảo ngược một biến — thay hai lời gọi `field_value` của ADR-0026 bằng `None` — đọc **83.5 · 84.1 · 84.7 · 84.3 · 84.0**, median **84.1** so với baseline **84.0**. Đọc `git log` xác nhận `presession.rs` đổi **ba** lần từ `f15c82d`, một trong đó là `0cfa904` (ADR-0026) — dữ kiện *"chỉ đổi đúng một lần"* của plan sai, xem Sửa 2 |
+| 1c | 2026-09-05 | **Xong, và bisect một commit chỉ ra sai commit.** `bf798ea` (nơi ghi baseline) hôm nay vẫn đọc **240.0** → máy và toolchain vô can. Bisect: `54eebe9` 240.6 → **`4396d6d` 268.0** → `576f924` 279.4 → HEAD 280.4. `4396d6d` **không chạm `crates/codec/src/`**. Chứng minh hai đường: căn lề ép đưa HEAD 278.9 → **233.0**; chèn **code trơ** đưa con số **236.5 → 292.4** qua bốn layout (pinned: 4.0%, unpinned: 14.6%) |
+| 1d | 2026-09-05 | **Xong, phạm vi rộng hơn plan viết.** ADR-0049 đổi *cách đo*, nên **cả 19 dòng cũ được ghi lại** dưới build đã ghim, cộng **5 dòng mới** = 24, `n = 20`, `pass 12 fail 0 unknown 1`. Không margin nào bị **thu hẹp** dù mẫu mới cho phép: `ring, one way` giữ 1.30, `ring, round trip` 1.20, `parse (no checks)` 1.15 — các mode chúng che chưa xuất hiện trong 20 lần này và không có bằng chứng chúng đã biến mất. `encode ExecutionReport (template)` lên **1.15** theo ADR-0049, dù thang từ 20 lần chạy chỉ đòi 1.10 — đúng chỗ cái lỗ của thang lộ ra |
+| 1e | 2026-09-05 | **Xong. `bench.sh --strict` thoát 0, ba lần liên tiếp**, đọc từng dòng: `timing over baseline 0 · cases w/o a baseline 0 · cases under the band 0`. [ADR-0049](../decisions/ADR-0049-bench-builds-pin-function-alignment-and-the-flag-is-read-back.md), `scripts/check-bench-alignment.sh` (23/23 pinned, 5/23 unpinned, reversal đỏ 2/11), [write-up](../reference/a-benchmark-that-measures-where-the-compiler-put-it.md) mang `[to testing-skills]`. **Item 41 đóng** |
+| 2, 3 | — | Chưa bắt đầu — item 39 (lượt kiểm dictionary) và item 34 |
 
-**Trạng thái một câu:** item 41 hiểu được một nửa, chưa sửa gì, và `bench.sh --strict` vẫn đỏ
-trên máy §9 — nên trong lúc đó **không con số §6 nào của dự án có cổng canh**, kể cả bốn con số
-wire-to-wire đã công bố. Đó là lý do plan này đi trước 39 và 34.
+**Trạng thái một câu `[2026-09-05]`:** **item 41 đóng** — `bench.sh --strict` xanh trên máy §9,
+nên mọi con số §6 lại có cổng canh; và cái đắt nhất tìm được không phải một hồi quy mà là
+**một benchmark đo chỗ trình biên dịch đặt nó**, thứ mà chính plan này đã loại trừ bằng cách đọc
+diff. Bước 2 (item 39) và bước 3 (item 34) chưa bắt đầu.

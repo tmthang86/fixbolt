@@ -32,6 +32,21 @@ cd "$(dirname "$0")/.."
 STRICT=0
 [ "${1:-}" = "--strict" ] && STRICT=1
 
+# ADR-0049: bench builds pin function alignment, and the flag is READ BACK off
+# the binaries below rather than trusted.
+#
+# `[measured 2026-09-05]` without it, `encode ExecutionReport (template)` is a
+# 16% measurement of where the compiler put the code. Its baseline was recorded
+# at 239.1 ns and the same encoder read 280.4 four days later; the whole jump is
+# one commit that touches no `crates/*/src/` file, and adding INERT functions to
+# the bench binary walks the case across 236.5-292.4 ns. Under the flag the same
+# perturbation holds inside 4.0%.
+#
+# The string lives in ONE place. Two copies of a codegen flag are two different
+# builds, and the figures would then come from artifacts the check never saw.
+RUSTFLAGS="$(scripts/check-bench-alignment.sh --flags)"
+export RUSTFLAGS
+
 # Which targets are invariant rather than timing. An unlisted bench is a hard
 # error rather than a default, because either default is wrong: silently
 # advisory hides a real guard, silently blocking makes CI flap.
@@ -131,6 +146,23 @@ for entry in "${TARGETS[@]}"; do
   fi
   echo
 done
+
+# The flag above is a promise until something reads it. A `-C llvm-args=` string
+# is handed to LLVM verbatim: a typo dies at the build (rustc refuses an unknown
+# llvm-arg), but a flag that is ACCEPTED AND IGNORED by a later toolchain is
+# silent, and every figure printed above would quietly be layout-bound again.
+#
+# Run as a statement, not inside `$( ... | tail -1)`: a pipeline into `tail`
+# returns tail's status, so a FAILING check would have printed its complaint and
+# left this script green. That is the exact shape of the thing being guarded
+# against, one line away from the guard.
+echo "=== alignment read-back (ADR-0049)"
+if ! scripts/check-bench-alignment.sh; then
+  echo "FAIL: the bench binaries were not built with alignment pinned, so the" >&2
+  echo "      figures above carry up to 16% of binary layout — ADR-0049." >&2
+  exit 1
+fi
+echo
 
 echo "=== summary"
 echo "targets measuring    $ran of $EXPECTED"

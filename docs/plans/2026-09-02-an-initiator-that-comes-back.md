@@ -1,7 +1,8 @@
 # Initiator nối lại được sau khi rớt
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt (chủ dự án yêu cầu làm hết
-> những item làm được trên máy này, 2026-09-02)
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** **Xong** — đóng 2026-09-02, item 35, ADR-0043 (*Nhật ký giao hàng*
+> dưới đây không được điền; bằng chứng đóng nằm ở `STATUS.md` item 35). Duyệt 2026-09-02, khi
+> chủ dự án yêu cầu làm hết những item làm được trên máy này
 > **Phạm vi:** `STATUS.md` mục mở **35**. Không đụng tiêu chí thoát nào của phase 1 —
 > tiêu chí 4 đã đạt, tiêu chí 6 cần phần cứng.
 
