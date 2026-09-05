@@ -1129,6 +1129,19 @@ fixbolt_engine::connect_and_serve::<MyApp, fixbolt_engine::journal::Store, _, _>
    dial outside those hours; it re-asks once a ceiling. It cannot wake exactly at the open.
 4. **`standard` only.** There is no `connect_and_serve_hft`. An `hft` deployment that dials
    out drives `Engine` itself.
+5. **Do not derive `next_out` from the journal.** `[measured 2026-09-05]` this is the quiet
+   twin of mistake 1 and it is easier to make, because it looks careful. `journal.highest() + 1`
+   is short by every **administrative** message you sent after your last application one, and
+   `Journal::put` records application messages only — the journal is the resend store, not a
+   record of your numbering. A clean logout is enough to do it: you answer the venue's `35=5`,
+   that spends a number, and your next `Logon` is one too low. A real `libquickfix` acceptor
+   answers `MsgSeqNum too low, expecting 4 but received 3` and will not let you on.
+   **And the number that is right is not reachable through this function today** — it lives in
+   the live session, `Observer` can read it, and `connect_and_serve` hands out no `Observer`
+   (`STATUS.md` items 47 and 48). Until it does, persist your own outbound counter alongside
+   the journal, or accept that a reconnect after any administrative traffic needs a
+   `ResetOnLogon` agreement with the venue.
+   [a-journal-holds-messages-not-numbering](reference/a-journal-holds-messages-not-numbering.md)
 
 **Set the ceiling deliberately.** Without one, a long outage turns into an hour of silence and
 your first sign of recovery is a phone call. 30 s is reasonable; the venue's own guidance beats

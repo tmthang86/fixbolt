@@ -1,6 +1,6 @@
 # Vòng nối lại, trước một `libquickfix` thật
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **XONG 2026-09-05**, cả sáu bước, sửa ba lần
 > **Phạm vi:** `STATUS.md` item 38. Chạm `tools/interop`, `scripts/interop.sh`,
 > `.github/workflows/ci.yml`, và tài liệu. **Không chạm** `codec`, `dict`, `session`, `engine`,
 > `library` — nếu gate mới tìm ra lỗi ở đó, lỗi đó có plan sửa riêng (xem *Bẫy* cuối bảng).
@@ -10,6 +10,109 @@
 > phải về nano giây.
 >
 > **Thời lượng dự kiến:** nửa ngày cho bước 1–4, thêm nửa ngày cho bước 5 và tài liệu.
+
+## Sửa đổi `[2026-09-05]` — hai điều mục *Đã biết chắc* nói sai, cả hai đo được
+
+**Cả hai đều được phát hiện bằng cách chạy, không phải bằng cách đọc lại.** Bước 1 build xong,
+chạy tay vào acceptor C++, và transcript nói ngược lại plan ở hai chỗ.
+
+### Sửa 1 — `seq` trong `Application::on_message` là số **gửi ra**, không phải số nhận vào
+
+Điểm 9 của *Những gì đã biết chắc* viết: *"`Application::on_message` nhận `seq`, nên tool in được
+`34=` của từng application message đã giao tới ứng dụng"*. Sai. Rustdoc của chính trait đó nói:
+*"the session emits it and spends `seq`"* — đó là số của **câu trả lời**, không phải của message
+đến. `[đo 2026-09-05]` acceptor gửi News ở `34=2` và `34=3`; tool in:
+
+```
+interop-reconnect: delivered 34=2 35=B
+interop-reconnect: delivered 34=2 35=B
+```
+
+Hai lần cùng `34=2`, vì fixbolt mới gửi Logon ở `34=1` nên `next_out` là 2, và `Watch` trả `None`
+nên không tiêu số nào. **Một dòng log sai theo kiểu vẫn đọc được**: nó có đúng dạng, đúng số
+lượng, và nói sai điều nó tự nhận là đang nói.
+
+**Sửa:** đọc `34=` ra khỏi chính message, qua `Incoming::seq()` — cùng kỷ luật với bước `logon` của
+vai initiator đọc `49=` khỏi dây thay vì so hằng số.
+
+### Sửa 2 — journal chỉ giữ application message, nên `next_out` không suy ra được từ nó
+
+Điểm 4 của *Những gì đã biết chắc* chép `next_out = highest() + 1` từ `on_disk.rs`. Trong test đó
+session **có** gửi application message; ở đây `Watch` không gửi gì, nên `journal.highest()` là
+`None` và `next_out` ra **1**. `session.put` chỉ được gọi trên đường application
+(`crates/session/src/lib.rs:1871` và `:2481`).
+
+`[đo 2026-09-05]` kịch bản 4d chạy với `Watch` không tự phát:
+
+```
+interop-reconnect: resuming next_out=1 next_in=4
+acceptor: out 35=5 34=4 58=MsgSeqNum too low, expecting 2 but received 1
+```
+
+Lặp lại mười hai lần theo đúng thang backoff. **Đây là bằng chứng ngược đáng giá và nên đọc kỹ:**
+vòng `connect_and_serve` chạy đúng — nó quay lại, nó leo thang, nó hỏi `Recovery` mỗi lần — còn thứ
+sai là con số `Recovery` trả về. Và đối phương nói ra bằng lời của chính nó.
+
+**Sửa:** `Watch` trở thành một `fixbolt::Handler` và tự phát **một** `35=B` trong `on_logon` — cửa
+[ADR-0048](../decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md) vừa mở tuần này —
+rồi gói bằng `fixbolt::app(...)`. Journal khi đó có `34=2`, `next_out` ra 3, và đó là số QuickFIX
+đang chờ. Viết `35=B` bằng `Reply` chứ không bằng tay: bất biến 5, thứ tự field đến từ dictionary.
+
+### Điều Sửa 2 để lộ, và nó lớn hơn plan này
+
+**`highest() + 1` sai đúng bằng số message quản trị đã gửi sau application message cuối cùng.**
+Rustdoc của `Resumed::next_out` đã lường trước — *"usually `journal.highest() + 1`, and usually is
+why the engine does not compute it"* — nhưng không tài liệu nào nói người triển khai lấy con số
+đúng ở đâu, và ví dụ duy nhất trong repo này (`on_disk.rs`) làm cách ngây thơ.
+
+**Và cách duy nhất biết con số thật là `Observer` trên session đang sống, thứ `connect_and_serve`
+không phát ra** — `STATUS.md` item 47. Nên item 38 và item 47 chạm nhau ở đây, có bằng chứng.
+
+Hệ quả cho plan: kịch bản 4d sắp đặt sao cho cách ngây thơ **đúng** — `HeartBtInt=30`, và giết
+acceptor ngay sau khi News được giao, nên không message quản trị nào chen vào giữa. Điều đó phải
+nằm trong comment của code chứ không phải trong đầu người viết. **Kịch bản 4e thì không sắp đặt
+được như thế**: fixbolt trả lời `35=5` cho lời chào của QuickFIX, tiêu một số mà journal không
+ghi. Khẳng định `next_out` của 4e vì vậy **bị bỏ**, thay bằng những khẳng định 4e thật sự chứng
+minh được; bảng bước 3 bên dưới đã mang bản sửa này. Phát hiện đi vào `docs/reference/` và một
+open item mới.
+
+## Sửa đổi 3 `[2026-09-05]` — 4e khẳng định ba điều nó chứng minh được, không phải năm điều plan mong
+
+Sửa 2 dự đoán 4e không giữ được số thứ tự. **Chạy rồi mới biết dự đoán đúng, và đúng đến từng
+con số:**
+
+```
+acceptor: out 35=5 34=4                      QuickFIX chào
+acceptor: in  35=5 34=3                      fixbolt đáp — tiêu 34=3
+acceptor: out 35=5 58=MsgSeqNum too low, expecting 4 but received 3
+```
+
+Thiếu **đúng một**, đúng bằng một message quản trị gửi sau application message cuối. Ghi ở
+[a-journal-holds-messages-not-numbering](../reference/a-journal-holds-messages-not-numbering.md),
+và thành `STATUS.md` item 48.
+
+**4e đổi từ năm khẳng định xuống ba**, mỗi cái là điều nó thật sự chứng minh:
+
+| Tên | Khẳng định |
+|---|---|
+| `goodbye` | `A1` có `out 35=5` **và** `in 35=5` — lời chào được đáp |
+| `redialled` | một Logon tới được acceptor thứ hai sau lời chào sạch — ADR-0043 quyết định 5, do một engine chưa từng nghe tới ADR đó xác nhận |
+| `known_gap` | `expecting N but received N-1` — **ghim đúng kích thước lỗ hổng**, kèm số item |
+
+**`known_gap` cố tình ghim một khuyết điểm đã biết.** Ghim kích thước chứ không chỉ ghim "có
+lỗi": một lỗ hổng kích thước khác nghĩa là lời giải thích sai. Và ngày item 48 được sửa, dòng này
+đỏ — buộc người sửa phải quay lại đọc. Một giới hạn đã biết mà không có gì đọc nó thì mục *Not
+proven* của repo này đã cho thấy nó mục theo hướng nào.
+
+### Và `back` của 4e đọc sai chỗ, đây là bài học thứ hai
+
+Bản đầu tìm dòng `acceptor: in` chứa `35=A` trong `A2`. **Nó `FAIL` với chữ *"nothing reached the
+second acceptor"* trong khi Logon đã tới hai mươi hai lần.** QuickFIX từ chối message đó ở tầng
+session, nên `fromAdmin` không bao giờ chạy và transcript dựng trên callback ứng dụng **không
+nhìn thấy message bị từ chối** — đúng loại message mà một cổng về thất bại đang muốn thấy.
+Sửa bằng cách hợp hai điểm quan sát: *được nhận* hoặc *bị từ chối*. Ghi ở
+[a-refused-message-never-reaches-the-callback](../reference/a-refused-message-never-reaches-the-callback.md),
+**`[to testing-skills]`**.
 
 ## Bối cảnh
 
@@ -273,4 +376,73 @@ reversal, nguyên văn.
 
 ## Nhật ký giao hàng
 
-*(điền khi đóng từng bước)*
+**Đóng 2026-09-05, cả sáu bước. Không file nào dưới `crates/` đổi.**
+
+### Kết quả
+
+```
+scripts/interop.sh
+interop: PASS 7/7
+interop-acceptor: PASS 7/7
+interop-reconnect: dropped     ok    no 35=5 in the first transcript (saw 0)
+interop-reconnect: back        ok    acceptor: in  ...|35=A|34=3|49=FIXBOLT|...
+interop-reconnect: next_out    ok    sent up to 34=2 before the kill, came back at 34=3, wanted 34=3
+interop-reconnect: next_in     ok    35=B at 34=5 6 sent after the restart, each delivered to the application
+interop-reconnect: no_resend   ok    35=2: 0, 141=Y: 0, 'MsgSeqNum too low': 0
+interop-reconnect: PASS 5/5
+interop-reconnect-logout: goodbye     ok    35=5 out: 1, answered by this engine: 1
+interop-reconnect-logout: redialled   ok    a Logon reached the acceptor after a clean goodbye (22 lines say so)
+interop-reconnect-logout: known_gap   ok    expecting 4 but received 3 — short by exactly the one 35=5 ... (item 48)
+interop-reconnect-logout: PASS 3/3
+==> the run added nothing git can see
+interop: 7 / 7 + 7 / 7 + 5 / 5 + 3 / 3 against libquickfix @ 386ce46e...
+```
+
+**Vòng nối lại đúng ngay lần chạy đầu sau khi Sửa 2 được áp** — kể cả chỗ dễ sai âm thầm nhất:
+`34=` của Logon thứ hai, và hai News sau khi sàn sống lại được **giao tới ứng dụng** chứ không bị
+hỏi lại bằng `35=2`.
+
+### Ba reversal, mỗi cái cắn một chỗ khác nhau
+
+| Reversal | Thấy gì |
+|---|---|
+| A — `--no-recovery` | `next_out FAIL  came back at 34=none, wanted 34=3`; `no_resend FAIL  'MsgSeqNum too low': 22`; `known_gap FAIL  expecting 4 but received 1`. **`dropped` vẫn `ok`** — reversal chạm đúng thứ nó nhắm, không đỏ cả bảng. Script thoát 1 |
+| B — chính sách 600 000 ms, engine không kịp quay lại trong hạn | `back FAIL  nothing reached the second acceptor` **sau hạn, không treo**. Và `no_resend` vẫn **`ok`** (0 refusal) — **đó là chỗ B khác A**: "không quay lại" và "quay lại sai số" có hai chữ ký khác nhau trên transcript |
+| C — đổi tên một bước trong danh sách grep (`next_out` → `next_ou`) | scenario vẫn in `interop-reconnect: PASS 5/5` mà script thoát 1 với `MISSING OR FAILED ASSERTION: interop-reconnect next_ou`. Grep từng bước là load-bearing |
+
+Sau khôi phục: `scripts/interop.sh` giống hệt bản trước reversal, chạy lại xanh cả bốn.
+
+### Gate
+
+| Lệnh | Kết quả |
+|---|---|
+| `scripts/interop.sh` | **7 / 7 + 7 / 7 + 5 / 5 + 3 / 3**, thoát 0 |
+| `cargo test --all` | **506 passed, 0 failed**, thoát 0 — trong đó corpus 59 định nghĩa |
+| `cargo clippy --all-targets --all-features -D warnings` | sạch |
+| `cargo fmt --all --check` | sạch |
+| `cargo doc --workspace --no-deps` dưới `-D rustdoc::broken_intra_doc_links` | sạch — **đỏ một lần** vì doc link trỏ `Application::on_message` sau khi `Watch` đổi sang `Handler` |
+| `scripts/check-no-optional-deps.sh` | ok, gồm `fixbolt-interop` với `fixbolt-engine` mới thêm |
+| `scripts/check-lint-config.sh` | `RED ok` / `GREEN ok` |
+| `scripts/check-links.py` | 1 419 link, 0 chết |
+
+### Ba lần sửa plan, tất cả ghi trước khi code đổi
+
+Xem ba mục *Sửa đổi* đầu file. Ngắn gọn: `seq` không phải số nhận vào (Sửa 1); journal không giữ
+message quản trị nên `next_out` ra 1 và bị từ chối (Sửa 2, thành item 48); 4e còn ba khẳng định và
+`back` của nó đọc sai tầng (Sửa 3).
+
+### Hai thứ tìm ra, không cái nào là lỗi của session layer
+
+| Tìm ra | Ghi ở |
+|---|---|
+| Journal giữ message, không giữ cách đánh số; và số đúng thì không với tới được qua `connect_and_serve` | STATUS item **48**, [a-journal-holds-messages-not-numbering](../reference/a-journal-holds-messages-not-numbering.md) |
+| Một message bị từ chối ở tầng session không bao giờ tới callback ứng dụng, nên transcript dựng trên callback mù đúng chỗ cần nhìn | [a-refused-message-never-reaches-the-callback](../reference/a-refused-message-never-reaches-the-callback.md), **`[to testing-skills]`** |
+
+### Chưa làm, và nói rõ
+
+- **Không kịch bản nào giết tiến trình fixbolt.** Chỉ sàn chết. Recovery khi *phía này* chết vẫn là
+  `crates/engine/tests/on_disk.rs`, tức dự án tự đọc mình.
+- **Item 48 mở, và plan này cố ý không sửa** — nó cần ADR của item 47 trước. `CLAUDE.md` §1.
+- **`crates/engine/tests/on_disk.rs:288` vẫn thiếu `+ 1`** (Bẫy 3). Vai `reconnect` không chép dòng
+  đó; test kia có nhìn thấy sai lệch hay không thì **chưa kiểm**, vì kiểm nó là sửa file dưới
+  `crates/`, ngoài phạm vi. Đi kèm item 48.
