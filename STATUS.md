@@ -102,8 +102,14 @@ job and are named rather than left in the run history**: `3b817d7` (the acceptor
 the script did not yet supply) and `9a20562` (the `SIGTERM` venue's listener outlived its
 goodbye). **And the phrasing here used to be loose**: a PR job checks out GitHub's **merge ref**
 — `dd2aa12`, *"Merge `ccf90a9` into `2470f5f`"* — so it is this branch merged into `main` as of
-that base, not the branch tip alone, and still not the commit that will exist on `main`
-afterwards. That run is owed when this lands.
+that base, not the branch tip alone, and still not the commit that ends up on `main`.
+
+**`[2026-09-05]` That commit exists now and is green.** PR [#44](https://github.com/tmthang86/fixbolt/pull/44)
+merged as **`edb0121`**, run
+[`33973287134`](https://github.com/tmthang86/fixbolt/actions/runs/33973287134), **11 jobs of
+11** — §9's last box, closed on the commit it asks about rather than on the one before it. The
+`interop` job's log was read again on that run: `PASS 7/7`, `PASS 7/7`, `shutdown ok`, three ×
+`PASS 6/6` with `resumes: 1` and `two_sources ok`, `==> the run added nothing git can see`.
 
 **Three reversals, each red where it was aimed and green elsewhere:** an `adopt` that makes its
 own cell (`the pre-made handle never saw the session log on`); `dial` reading the ring again

@@ -231,11 +231,32 @@ the run history.** `3b817d7`
 and `no_resend` reported a correct exchange as a numbering failure. Both are fixed, and both are
 in the write-ups above. §8 asks for gates green **for the commit**, not for the branch tip.
 
-**What this run actually checked out**, since the phrasing here used to be loose: GitHub tests
-the **merge ref**, `dd2aa12` — *"Merge `ccf90a9` into `2470f5f`"* — so it is this branch merged
-into `main` as of that base, not the branch tip alone and not the commit that will exist on
-`main` after the merge button. **The run on that commit is the stronger thing and is still
-owed.**
+**And the merge commit's own run, which is what §9's last box actually asks for.**
+`[measured 2026-09-05]` `edb0121` on `main` — *"Merge pull request #44"* — run
+[`33973287134`](https://github.com/tmthang86/fixbolt/actions/runs/33973287134), **11 jobs of
+11**, job
+[`101325480975`](https://github.com/tmthang86/fixbolt/actions/runs/33973287134/job/101325480975)
+for this table. Its log, again read line by line:
+
+```
+interop: PASS 7/7
+interop-acceptor: PASS 7/7
+interop-acceptor: shutdown ok Shutdown { sessions: 0, said_goodbye: 0, acked: 0, timed_out: 0 }
+interop-reconnect-logout: goodbye     ok    35=5 out: 1, answered by this engine: 1
+interop-reconnect-logout: next_out    ok    sent up to 34=3 before the kill, came back at 34=4, wanted 34=4
+interop-reconnect-logout: no_resend   ok    35=2: 0, 141=Y: 0, 'MsgSeqNum too low': 0, resumes: 1
+interop-reconnect-beat:   next_out    ok    sent up to 34=4 before the kill, came back at 34=5, wanted 34=5
+interop-reconnect-beat:   two_sources ok    journal vs Observer: ok 1 resume(s), journal never behind the live count
+==> the run added nothing git can see
+interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 against libquickfix @ 386ce46e…
+```
+
+**Why the two are not the same run, since the phrasing here used to be loose.** A PR job checks
+out GitHub's **merge ref** — the `ccf90a9` log reads `HEAD is now at dd2aa12 Merge ccf90a9 into
+2470f5f` — so it tests the branch merged into `main` *as of that base*, which is stronger than
+the branch tip and still not the commit that ends up on `main`. `edb0121` is that commit, and it
+is green. **11 jobs against the PR's 22** is not a smaller check: a PR fires the workflow twice,
+once per event, and `main` fires it once.
 
 **These two scenarios are the first evidence for `connect_and_serve` that this repository did
 not write.** ADR-0043 said so in its own *Consequences*: *"every test of this is invented … only
