@@ -2552,7 +2552,7 @@ enum Which {
 ///
 /// # Why this is public
 ///
-/// [ADR-0050](https://github.com/tmthang86/fixbolt/blob/main/docs/decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md):
+/// [ADR-0050](../../../docs/decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md):
 /// `STATUS.md` open item 39 says this pass has never been timed, and it could
 /// not be — the three functions below are private, the dictionary is written
 /// into their bodies rather than passed to them, and every public route in
