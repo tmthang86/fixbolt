@@ -152,6 +152,41 @@ fn three_administrative_messages_and_the_journal_knows_the_count() {
     );
 }
 
+/// **The inbound count has the same hole, on the same line.**
+///
+/// `received_with` returns as soon as `judge` answers `Link::Dropped`, and the
+/// counterparty's own `Logout` is judged exactly that way — so the number it
+/// arrived under was consumed and never marked. A resumed session then expects
+/// it again, the counterparty's next message is one too high, and this end
+/// opens a gap and sends a `ResendRequest` for a message it already had.
+///
+/// `[measured 2026-09-05]` **found by the interop gate, not by this suite**:
+/// with the outbound half fixed, the clean-logout scenario got far enough to
+/// reach the inbound one and read `35=2: 1` where it wanted none. ADR-0053.
+#[test]
+fn the_logout_that_ends_the_session_is_still_a_message_that_was_consumed() {
+    let (mut s, mut j) = logged_on();
+    let mut app = Quiet;
+
+    assert_eq!(
+        s.received_with(&their_logout(2), &mut app, &mut j, |_| {}),
+        Link::Dropped,
+        "the premise: this is the path that returns early"
+    );
+
+    assert_eq!(
+        s.next_in(),
+        3,
+        "the premise: the session consumed 34=1 and 34=2"
+    );
+    assert_eq!(
+        j.highest_in(),
+        Some(2),
+        "and the journal must know it, or the resumed session asks for the \
+         Logout again and the counterparty's next message opens a gap"
+    );
+}
+
 /// The `Logon` alone is enough, and it is the smallest case that breaks a
 /// restart: a process that logs on and dies has spent `34=1` and journalled
 /// nothing.

@@ -115,7 +115,8 @@ scripts/interop.sh
 | `interop:` | this engine's `Session<Initiator, 256>` over a blocking socket | a `libquickfix` `SocketAcceptor` | **7 / 7** |
 | `interop-acceptor:` | a `libquickfix` `SocketInitiator` | `fixbolt::serve` in `standard` mode: the poller, the pre-session table, the settings file, the library `Handler` and the session layer under all of it | **7 / 7** |
 | `interop-reconnect:` | a `libquickfix` `SocketAcceptor` **killed with `SIGKILL` and restarted on the same `FileStore`** | `fixbolt_engine::connect_and_serve`: the reconnect ladder, the `Recovery` seam, `add_resumed`, the engine turn | **5 / 5** |
-| `interop-reconnect-logout:` | the same, **stopped with `SIGTERM`** so it says goodbye first | the same, after a clean logout — ADR-0043 decision 5 | **3 / 3** |
+| `interop-reconnect-logout:` | the same, **stopped with `SIGTERM`** so it says goodbye first | the same, after a clean logout — ADR-0043 decision 5 | **5 / 5** |
+| `interop-reconnect-beat:` | the same as the `SIGKILL` row, at **`HeartBtInt=1` with a pause before the kill**, so a `Heartbeat` is guaranteed between the last application message and the death | the same, with the last number spent belonging to a message no journal holds bytes for — ADR-0053 | **5 / 5** |
 
 The seven steps of the acceptor direction: `logon` (with `141=Y` echoed); `order` (two
 `35=D`, two `35=8`, paired by `11=`); `heartbeat` (an unprompted `35=0` with **no** `112=`,
@@ -132,20 +133,43 @@ rather than written as a literal); `next_in` (every `35=B` the restarted accepto
 *delivered to the application*, which a session whose inbound count had restarted would have
 gap-requested instead); `no_resend` (no `35=2`, no `141=Y`, no `MsgSeqNum too low`).
 
-The three of the `SIGTERM` scenario: `goodbye`; `redialled`; and `known_gap`, which **pins a
-known limitation on purpose** — `STATUS.md` item 48. After a clean logout this engine answers
-the venue's `35=5`, spending an outbound number the journal does not record, so the resumed
-session is refused by exactly one. The assertion pins the *size* of the shortfall, so the day
-item 48 is fixed this line goes red and somebody has to come back and read it.
+The `SIGTERM` scenario makes the **same five**, with `goodbye` in place of `dropped`. `[measured
+2026-09-05]` **until this week it could only make three**, and the third was `known_gap`, which
+pinned a known limitation on purpose: after a clean logout this engine answered the venue's
+`35=5`, spending an outbound number the journal did not record, so the resumed session was
+refused by exactly one — `STATUS.md` item 48. The journal now records that count
+([ADR-0053](decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md)),
+so the assertion that pinned the gap is gone and the scenario asserts continuation like the
+other two.
 
-**Machine and run for these two.** Gated on `ubuntu-latest` in the same blocking `interop` job:
-job [`101218167551`](https://github.com/tmthang86/fixbolt/actions/runs/33933972142/job/101218167551)
+**And the third scenario exists because the first two were green for a reason that was not the
+engine.** Both ran at `HeartBtInt=30`, chosen so no `Heartbeat` could fall inside their few-second
+window — which is exactly the condition item 48 was about, chosen by the fixture. The
+`interop-reconnect-beat` round removes it: `HeartBtInt=1` and a deliberate 2.5 s pause before the
+kill, so the last number spent belongs to a `Heartbeat`. It came back at `34=5` having sent up to
+`34=4`, which is what says the fix is about *every* administrative message rather than about
+`35=5`.
+
+**The `SIGTERM` scenario's `no_resend` step is what found a second defect**, in the inbound
+direction: the counterparty's `Logout` was consumed and never marked, so a resumed session
+expected it again and sent a `ResendRequest` for a message it already had. `35=2: 1` where it
+wanted none. The gate found it; this repository's own tests did not.
+
+**Machine and run for these three.** The **3 / 3** the `SIGTERM` row used to carry was gated on
+`ubuntu-latest` in the blocking `interop` job: job
+[`101218167551`](https://github.com/tmthang86/fixbolt/actions/runs/33933972142/job/101218167551)
 of run [`33933972142`](https://github.com/tmthang86/fixbolt/actions/runs/33933972142), commit
 `c839854` — **the merge commit on `main`, not the branch tip**, because a branch being green
-says nothing about the commit where it meets `main`. 11 jobs of 11. The job's own log was read rather than its conclusion, and every
-assertion line — `next_out ok … came back at 34=3, wanted 34=3` and `known_gap ok expecting 4
-but received 3` — is byte-identical to the development run, so item 48 is not one machine's
-accident.
+says nothing about the commit where it meets `main`. 11 jobs of 11.
+
+**The 5 / 5 + 5 / 5 + 5 / 5 above is `[measured 2026-09-05]` on a development machine only, and
+CI has not confirmed it for the commit that changed it.** Read line by line rather than off the
+exit code: `interop-reconnect-logout: next_out ok sent up to 34=3 before the kill, came back at
+34=4, wanted 34=4`, `no_resend ok 35=2: 0, 141=Y: 0, 'MsgSeqNum too low': 0`, and
+`interop-reconnect-beat: next_out ok sent up to 34=4 before the kill, came back at 34=5, wanted
+34=5`. Machine: Linux 6.18 container, 4 cores, cmake and g++ from the image, libquickfix at the
+pinned `386ce46e`. **A run id for the closing commit is owed here** — §9's last box — and until
+one is named this row is a laptop's word, not the commit's.
 
 **These two scenarios are the first evidence for `connect_and_serve` that this repository did
 not write.** ADR-0043 said so in its own *Consequences*: *"every test of this is invented … only
@@ -158,10 +182,10 @@ of run [`33833427382`](https://github.com/tmthang86/fixbolt/actions/runs/3383342
 `f94e36e`. The job's own log was read rather than its conclusion: `interop: PASS 7/7`,
 `interop-acceptor: PASS 7/7`, `==> the run added nothing git can see`.
 
-### What these 22 cases do not buy
+### What these 29 cases do not buy
 
-- **They are not a second corpus.** Seven cases per direction, eight across the two reconnect
-  scenarios, against 59 definitions.
+- **They are not a second corpus.** Seven cases per direction, fifteen across the three
+  reconnect scenarios, against 59 definitions.
 - **The reconnect scenarios do not cover a fixbolt process that restarts.** Only the venue
   dies; this engine stays up throughout. Recovery across *this* process ending is
   `crates/engine/tests/on_disk.rs`, and it has no independent opinion.

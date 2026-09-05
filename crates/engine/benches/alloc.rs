@@ -1274,8 +1274,63 @@ fn main() {
          nothing: {recorded} records"
     );
 
+    // ---- the outbound mark, both journals ----------------------------------
+    //
+    // ADR-0053 puts a `Journal::mark_out` on every turn that sends anything,
+    // which for a busy session is every message and for a quiet one is every
+    // heartbeat. It is a comparison and, when the number has moved, one record.
+    // Neither may allocate.
+    //
+    // **Each case asserts its own path is live**, because a zero from a call
+    // that did nothing is the failure mode this whole file is built against.
+    let mut mark_mem = Store::new();
+    fixbolt_session::journal::Journal::mark_out(&mut mark_mem, 1);
+    let mark_mem_allocs = count(|| {
+        for seq in 2..10_002u32 {
+            fixbolt_session::journal::Journal::mark_out(&mut mark_mem, seq);
+        }
+    });
+    assert_eq!(
+        fixbolt_session::journal::Journal::highest_out(&mark_mem),
+        Some(10_001),
+        "the in-memory mark did not run, so its count says nothing"
+    );
+
+    let jrnl_at = std::env::temp_dir().join(format!(
+        "fixbolt-alloc-markout-{}.journal",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&jrnl_at);
+    let mut mark_file: fixbolt_engine::journal::FileJournal<64, 512> =
+        fixbolt_engine::journal::FileJournal::open(
+            &jrnl_at,
+            fixbolt_engine::journal::Durability::Async,
+        )
+        .expect("the temp directory is writable");
+    fixbolt_session::journal::Journal::mark_out(&mut mark_file, 1);
+    let mark_file_allocs = count(|| {
+        for seq in 2..10_002u32 {
+            fixbolt_session::journal::Journal::mark_out(&mut mark_file, seq);
+        }
+    });
+    assert_eq!(
+        fixbolt_session::journal::Journal::highest_out(&mark_file),
+        Some(10_001),
+        "the file journal's mark did not run, so its count says nothing"
+    );
+    drop(mark_file);
+    let wrote = std::fs::metadata(&jrnl_at).map(|m| m.len()).unwrap_or(0);
+    let _ = std::fs::remove_file(&jrnl_at);
+    assert!(
+        wrote > 0,
+        "the file journal wrote nothing, so `Async` never reached its writer \
+         thread and the zero above is about a path that did not happen"
+    );
+
     println!(
-        "allocations: idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
+        "allocations: mark-out-mem {mark_mem_allocs} \
+         mark-out-file-async {mark_file_allocs} \
+         idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
          busy {busy_allocs} ring {ring_allocs} interests {interests_allocs} \
          pending-idle {pending_idle_allocs} pending-busy {pending_busy_allocs} \
@@ -1316,9 +1371,11 @@ fn main() {
             reconnect_allocs,
             origin_idle_allocs,
             origin_busy_allocs,
-            logon_first_allocs
+            logon_first_allocs,
+            mark_mem_allocs,
+            mark_file_allocs
         ],
-        [0; 27],
+        [0; 29],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

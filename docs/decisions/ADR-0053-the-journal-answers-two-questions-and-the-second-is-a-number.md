@@ -1,6 +1,6 @@
 # ADR-0053 — The journal answers two questions, and the second one is a number
 
-- **Status**: Proposed — 2026-09-05
+- **Status**: Accepted — 2026-09-05
 - **Date**: 2026-09-05
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0008](ADR-0008-journal-is-a-trait.md) — why the journal is a trait the
@@ -157,6 +157,21 @@ version to v2.
   reconstruct a number that was never written.
 - **A `Reader` from an older binary reads the new mark as `Message { seq: 0, bytes: [4 bytes] }`.**
   Acceptable only because nothing is published.
+
+**Found by building it, and neither was in the plan**
+
+- **The `SIGKILL` interop scenario had been green for a reason that was not the engine.** It ran
+  at `HeartBtInt=30`, chosen so no `Heartbeat` could fall inside its few-second window — which is
+  exactly the condition this ADR is about, removed by the fixture. A third scenario now runs at
+  `HeartBtInt=1` with a deliberate pause before the kill.
+- **The inbound direction had the same hole, on the same line.** `Session::received_with`
+  returned as soon as `judge` answered `Link::Dropped` — which is how the counterparty's own
+  `Logout` is judged — so `journal.mark_in`, sitting after that return, never ran for it. A
+  resumed session expected that number again and sent a `ResendRequest` for a message it already
+  had. `[measured 2026-09-05]` the interop gate found it, reading `35=2: 1` where it wanted none;
+  nothing in this repository's own tests could see it, because they all drive messages that leave
+  the link up and the corpus compares bytes that were all correct. The mark is now taken on every
+  path out, still after delivery, so ADR-0017's ordering is unchanged.
 
 **Not decided here**
 

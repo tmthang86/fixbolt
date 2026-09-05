@@ -647,7 +647,8 @@ everything else.
 **`Engine::add_resumed` is how you hand it over**, and it takes the journal too:
 
 ```rust
-let next_out = journal.highest().map_or(1, |h| h + 1);
+// `highest_out`, NOT `highest` — see the box below.
+let next_out = journal.highest_out().map_or(1, |h| h + 1);
 let next_in  = journal.highest_in().map_or(1, |h| h + 1);
 engine.add_resumed(transport, cfg, journal, next_out, next_in, Some(last_active_ms));
 ```
@@ -794,14 +795,9 @@ impl Recovery<FileJournal<64, 4096>> for OnDisk {
     fn fresh(&mut self, cfg: &Config) -> FileJournal<64, 4096> { /* open it */ }
 
     fn recover(&mut self, cfg: &Config) -> Option<Resumed<FileJournal<64, 4096>>> {
-        let journal = self.fresh(cfg);
-        let next_out = journal.highest().map_or(1, |h| h + 1);
-        Some(Resumed {
-            next_in: journal.highest_in().unwrap_or(1),
-            last_active_ms: journal.last_active(),   // the boundary question, §5a
-            journal,
-            next_out,
-        })
+        // All three numbers, computed once, correctly. `None` means
+        // "this counterparty left nothing" — the engine then asks `fresh`.
+        Resumed::from_journal(self.fresh(cfg))
     }
 }
 ```
@@ -1133,18 +1129,28 @@ fixbolt_engine::connect_and_serve::<MyApp, fixbolt_engine::journal::Store, _, _>
    dial outside those hours; it re-asks once a ceiling. It cannot wake exactly at the open.
 4. **`standard` only.** There is no `connect_and_serve_hft`. An `hft` deployment that dials
    out drives `Engine` itself.
-5. **Do not derive `next_out` from the journal.** `[measured 2026-09-05]` this is the quiet
-   twin of mistake 1 and it is easier to make, because it looks careful. `journal.highest() + 1`
-   is short by every **administrative** message you sent after your last application one, and
-   `Journal::put` records application messages only — the journal is the resend store, not a
-   record of your numbering. A clean logout is enough to do it: you answer the venue's `35=5`,
-   that spends a number, and your next `Logon` is one too low. A real `libquickfix` acceptor
-   answers `MsgSeqNum too low, expecting 4 but received 3` and will not let you on.
-   **And the number that is right is not reachable through this function today** — it lives in
-   the live session, `Observer` can read it, and `connect_and_serve` hands out no `Observer`
-   (`STATUS.md` items 47 and 48). Until it does, persist your own outbound counter alongside
-   the journal, or accept that a reconnect after any administrative traffic needs a
-   `ResetOnLogon` agreement with the venue.
+5. **Use `Resumed::from_journal`, and never derive `next_out` from `Journal::highest`.**
+   `[measured 2026-09-05]` this is the quiet twin of mistake 1 and it is easier to make,
+   because it looks careful. `journal.highest() + 1` is short by every **administrative**
+   message you sent after your last application one: `Journal::put` is offered application
+   messages only — the journal is the resend store — while a `Logon`, a `Heartbeat` and a
+   `Logout` each spend a `34=` all the same. A clean logout is enough to do it: you answer the
+   venue's `35=5`, that spends a number, and your next `Logon` is one too low. A real
+   `libquickfix` acceptor answers `MsgSeqNum too low, expecting 4 but received 3` and will not
+   let you on.
+
+   Since 2026-09-05 the journal records that count itself (`highest_out`), and
+   `Resumed::from_journal` reads all three fields off it:
+
+   ```rust
+   fn recover(&mut self, cfg: &Config) -> Option<Resumed<MyJournal>> {
+       Resumed::from_journal(self.open_for(cfg))
+   }
+   ```
+
+   **You still have to give the engine a durable journal.** `from_journal` over an in-memory
+   one answers `None`, which is *start fresh* — correct, and not continuity.
+   [ADR-0053](decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md),
    [a-journal-holds-messages-not-numbering](reference/a-journal-holds-messages-not-numbering.md)
 
 **Set the ceiling deliberately.** Without one, a long outage turns into an hour of silence and

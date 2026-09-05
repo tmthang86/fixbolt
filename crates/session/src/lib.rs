@@ -1508,10 +1508,38 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         mut emit: F,
     ) -> Link {
         let link = self.received_inner(bytes, app, journal, &mut emit);
-        // **Here rather than at the end of the body, because the body returns
-        // early.** A `Logout` answered gives `Link::Dropped` straight out of
-        // `judge`, and the answer spent a number — that is the one clean
-        // logout `STATUS.md` item 48 is about. ADR-0053.
+
+        // **After delivery, never before** — ADR-0017. Writing it before the
+        // application ran would mean an ill-timed crash *loses* the message:
+        // this end has counted it, so it never asks for a resend and the
+        // counterparty believes it arrived. Writing it after means the message
+        // is delivered twice, and the second copy carries `43=Y` because it
+        // comes from a `ResendRequest` this end issued. FIX has a flag for the
+        // second failure and none for the first.
+        //
+        // **Out here rather than inside the body, and `[measured 2026-09-05]`
+        // that is a fix rather than a tidy-up.** It used to sit after the
+        // drain, which `judge` answering `Link::Dropped` returns before — and
+        // the counterparty's own `Logout` is judged exactly that way. So the
+        // number it arrived under was consumed and never marked; a resumed
+        // session expected it again, the counterparty's next message was one
+        // too high, and this end sent a `ResendRequest` for a message it
+        // already had. **The interop gate found it, not this repository's own
+        // tests**: with the outbound half of ADR-0053 fixed, the clean-logout
+        // scenario reached far enough to read `35=2: 1` where it wanted none.
+        // `crates/session/tests/numbering.rs` holds it now.
+        //
+        // `next_in` is the *next* expected number, so the highest consumed is
+        // one below — and nothing is marked before the first message, when the
+        // count is still 1. `mark_in` takes the max, so the paths that return
+        // without consuming anything re-state a number the journal has.
+        if self.next_in > 1 {
+            journal.mark_in(self.next_in - 1);
+        }
+        // The outbound twin, and it is here for the same reason: a `Logout`
+        // answered gives `Link::Dropped` straight out of `judge`, and the
+        // answer spent a number. That is the clean logout `STATUS.md` item 48
+        // is about. ADR-0053.
         self.tell_journal(journal);
         link
     }
@@ -1548,24 +1576,6 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // cannot nest.
         let link = self.drain(app, journal, emit);
 
-        // **After delivery, never before** — ADR-0017. Here rather than inside
-        // `judge` because it must cover both a message delivered directly and
-        // one released when a gap closed, and because `judge` has early returns
-        // that would each need their own copy of this.
-        //
-        // Writing it before the application ran would mean an ill-timed crash
-        // *loses* the message: this end has counted it, so it never asks for a
-        // resend and the counterparty believes it arrived. Writing it after
-        // means the message is delivered twice, and the second copy carries
-        // `43=Y` because it comes from a `ResendRequest` this end issued. FIX
-        // has a flag for that failure and none for the other.
-        //
-        // `next_in` is the *next* expected number, so the highest consumed is
-        // one below — and nothing is marked before the first message, when the
-        // count is still 1.
-        if self.next_in > 1 {
-            journal.mark_in(self.next_in - 1);
-        }
         // **A resend in progress moves forward on every message too**, not
         // only on ticks. A counterparty that keeps talking gets its replay at
         // the rate its own traffic drives, and one that goes quiet gets it from

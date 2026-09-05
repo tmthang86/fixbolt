@@ -140,6 +140,23 @@ session plumbing is the session's.
   over an administrative message is not counted, because none was ever replayable. Guarded by
   `::a_resend_that_reaches_below_the_ring_counts_every_number_it_filled` and
   `::a_fill_over_messages_the_ring_never_held_is_not_counted`.
+- **The journal always knows the highest outbound number spent** `[2026-09-05]`, including the
+  numbers it holds no bytes for — a `Logon`, a `Heartbeat`, a `Logout`, and an application
+  message `put` refused. `Journal::mark_out` is a high-water mark, so a `put` that was kept
+  raises it and telling it again writes nothing. A resumed session's `next_out` is
+  `highest_out() + 1`, **never `highest() + 1`**, which is the highest message held for a
+  *replay*. Guarded by `crates/session/tests/numbering.rs` — in particular
+  `::three_administrative_messages_and_the_journal_knows_the_count` — and
+  `crates/engine/tests/on_disk.rs::the_outbound_count_survives_a_restart_and_is_not_highest`
+  ([ADR-0053](decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md)).
+- **The inbound mark covers the message that ended the session** `[2026-09-05]`. The
+  counterparty's own `Logout` is judged, consumed, and answered, and it is marked like any
+  other — the mark is taken on every path out of `Session::received_with`, not only the ones
+  that leave the link up. Before this the number it arrived under was consumed and never
+  recorded, so a resumed session expected it again and opened a gap on the counterparty's next
+  message. Guarded by
+  `crates/session/tests/numbering.rs::the_logout_that_ends_the_session_is_still_a_message_that_was_consumed`
+  and by `scripts/interop.sh`'s `interop-reconnect-logout: no_resend`, which is what found it.
 
 ---
 

@@ -70,6 +70,25 @@ Nên đổi hình, theo đúng lối thoát plan đã cho phép:
    Nên thân cũ của `received_with` và `tick_with` lùi thành `*_inner`, và bản public gọi inner →
    `tell_journal` → trả kết quả. Không đường nào ra mà không đi qua chỗ xả.
 
+**Sửa 4 — chiều VÀO có đúng cái lỗ đó, trên đúng dòng đó, và gate interop tìm ra chứ không phải
+test của repo này.** `[đo 2026-09-05]` Sau khi nửa chiều ra xanh, kịch bản logout sạch đi đủ xa
+để đọc tới assertion `no_resend` và đọc được **`35=2: 1`** — engine này gửi một `ResendRequest`
+cho message nó đã có.
+
+Nguyên nhân: `received_with` `return` sớm khi `judge` trả `Link::Dropped`, và **`35=5` của đối
+phương được phán đúng kiểu đó**, nên `journal.mark_in` nằm sau chỗ đó không bao giờ chạy. Số
+`34=` mà `35=5` mang đã bị tiêu và không được ghi; session hồi phục chờ lại đúng số ấy, message
+kế tiếp của đối phương cao hơn một, mở gap, và engine hỏi lại.
+
+Là **ảnh gương chính xác** của lỗi item 48: cùng một dòng `return`, cùng một message, chiều
+ngược lại. Nên `mark_in` chuyển ra `received_with` nằm cạnh `tell_journal` — vẫn **sau** khi giao
+cho application (ADR-0017 giữ nguyên, chỉ muộn hơn), và `mark_in` lấy `max` nên những đường ra
+không tiêu gì chỉ nhắc lại một số journal đã biết.
+
+Test đỏ trước: `the_logout_that_ends_the_session_is_still_a_message_that_was_consumed`, đỏ ở
+`left: Some(1)` chống `right: Some(2)`. **Bước 5 sinh ra một mục của bước 2**, và đó là lý do
+gate ý-kiến-thứ-hai tồn tại.
+
 ## Bối cảnh
 
 Một session FIX đánh số **mọi** message nó gửi — `Logon`, `Heartbeat`, `Logout` đều tiêu một số
@@ -304,4 +323,41 @@ reconnect-interop, và plan này không đóng nó.
 
 ## Nhật ký giao hàng
 
-*(trống — chưa bắt đầu)*
+**2026-09-05 — cả năm bước xong.** Bốn Sửa, cả bốn ghi trước khi code dịch chuyển.
+
+| Bước | Kết quả |
+|---|---|
+| 1 | [ADR-0053](../decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md), `Accepted`. Số 0052 đã bị công việc item 49/52 lấy mất — Sửa 1 |
+| 2 | `Journal::mark_out` + `highest_out`; `tell_journal` gọi từ `received_with`, `tick_with`, `send_application`; ba bản `_with`; `Conn` đổi ở bốn chỗ. `crates/session/tests/numbering.rs` **đỏ trước**: `left: None` chống `right: Some(3)` |
+| 3 | `FileJournal` ghi/đọc outbound mark, `Record::OutboundMark`; sáu test mới trong `on_disk.rs`, gồm `Fsync`, `put` bị từ chối, và file cũ đọc y như cũ |
+| 4 | `Resumed::from_journal`; `on_disk.rs`, `tools/interop`, `engine_recovery.rs`, `recovery.rs` đổi sang dùng nó — `grep` cho `highest().{expect,map_or}` trong `crates/` và `tools/` **trống** |
+| 5 | `scripts/interop.sh`: `known_gap` xoá, `SIGTERM` về **5/5**, thêm kịch bản `interop-reconnect-beat` ở `HeartBtInt=1`. Hai case alloc mới. Tài liệu |
+
+**Số đo, đọc từng dòng chứ không đọc mã thoát:**
+
+- `cargo test --all` **507 → 519**, 0 fail. `--no-default-features` 514, 0 fail.
+- `cargo clippy --all-targets -- -D warnings` sạch; `cargo fmt` sạch.
+- 59 định nghĩa: **59/59**, không đổi — và đó chính là điều đáng nói, corpus mù với chuyện này.
+- `scripts/check-no-optional-deps.sh` ok; `scripts/check-lint-config.sh` ok, chứng minh bằng đảo ngược.
+- `benches/alloc.rs`: `mark-out-mem 0`, `mark-out-file-async 0`, 29/29 case bằng 0. **Đảo ngược**
+  (`vec![seq]` trong `mark_out`) đọc `mark-out-mem 10000 mark-out-file-async 10000` — và cũng làm
+  đỏ tám case khác (`observe-idle`, `events-idle`, `admin-idle`, `origin-idle`…), tức là
+  `tell_journal` thật sự nằm trên vòng lặp turn chứ không chỉ trên đường test.
+- **`scripts/interop.sh`: `7 / 7 + 7 / 7 + 5 / 5 + 5 / 5 + 5 / 5`**, 29 assertion, mỗi dòng đọc
+  riêng. `interop-reconnect-logout: next_out ok sent up to 34=3 before the kill, came back at
+  34=4, wanted 34=4` — chỗ trước đây là `known_gap`.
+
+**Bước 5 sinh ra một mục của bước 2 — Sửa 4.** Lần chạy interop đầu tiên sau khi nửa chiều ra
+xanh đọc `no_resend FAIL 35=2: 1`: chiều **vào** có đúng cái lỗ đó, trên đúng dòng `return` đó.
+Không test nào của repo này thấy được, vì chúng đều lái message để link còn sống, còn corpus so
+byte và mọi byte đều đúng.
+
+**Chưa làm, nói rõ ra:**
+
+- **`scripts/check-no-kernel-sleep.sh` chưa chạy.** Máy này là container không có `bpftrace`;
+  ADR-0053 khẳng định `Async` không chạm engine thread bằng cấu trúc (đẩy vào ring, y hệt
+  `mark_in`), không bằng số đo.
+- **`benches/turn.rs` chưa đo lại.** Mỗi turn nay thêm một lời gọi trait; đây không phải máy §9
+  nên một con số ở đây sẽ là số của máy khác. **Đó là một mục mở, không phải một mục đã xong.**
+- **Chưa có CI run xanh gọi tên cho commit đóng plan** — ô cuối §9. `docs/CONFORMANCE.md` nói
+  thẳng rằng 5/5+5/5+5/5 hiện là lời của một máy dev.

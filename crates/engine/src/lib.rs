@@ -373,7 +373,7 @@ where
     /// ADR-0010's whole point is that choosing between a restart and a
     /// continuation is the caller's; this is where they say. The numbers are
     /// `journal.highest_out() + 1` and `journal.highest_in() + 1`, and
-    /// [`Resumed::from_journal`] computes both — **not `highest()`**, which is
+    /// [`recovery::Resumed::from_journal`] computes both — **not `highest()`**, which is
     /// the highest message held for a *replay* and is short by every
     /// administrative message since the last application one
     /// ([ADR-0053](../../../docs/decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md)).

@@ -17,6 +17,27 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A journal that knows how far it has counted.** `Journal` gains **`mark_out(seq)`** — a
+  high-water mark, empty default body — and **`highest_out() -> Option<u32>`**, no default;
+  `Resumed::from_journal(journal) -> Option<Resumed<J>>` computes `next_out`, `next_in` and
+  `last_active_ms` from them; `Record::OutboundMark { seq }` is the fourth record shape a
+  journal file can hold; and `Session` gains `logout_now_with`, `begin_logout_with` and
+  `send_sequence_reset_with`, which are the existing three with a journal to tell.
+  ([ADR-0053](docs/decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md),
+  `STATUS.md` item 48.)
+
+  **What it fixes.** `Journal::highest()` answers *what can be replayed*, and every worked
+  example in this repository read it as *how far the outbound count has got*. The two differ by
+  every administrative message sent since the last application one — a `Logon`, a `Heartbeat`
+  and a `Logout` each spend a `34=` no journal holds bytes for. `[measured 2026-09-05]` one
+  clean logout was enough: a real `libquickfix` refused the resumed session with `MsgSeqNum too
+  low, expecting 4 but received 3`.
+
+  **`FileJournal` writes one more record**, `seq == 0 && len == 4`, and **the format stays
+  v1** — `34=0` is not a sequence number FIX can produce, which is the same escape the inbound
+  and activity marks use. The ADR records that this is the last shape that gets it. A file
+  written before this reads exactly as it did, and is short by exactly as much as it was.
+
 - **`fixbolt_session::validate(view, msg_type) -> Option<SessionText>`** — the dictionary pass
   the session runs on every inbound message, callable without a session
   ([ADR-0050](docs/decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md),
@@ -89,6 +110,22 @@ below describe what a first release would contain.
   `Connection::with_shard`, `Connection::unsent_bytes`.
 
 ### Changed
+
+- **BREAKING — `Journal` gains two methods, and one has no default body.** Anyone implementing
+  the trait must add `highest_out()`; `mark_out()` defaults to doing nothing, which is right for
+  a journal that does not survive a restart. Nothing is published, so nothing in the wild breaks.
+- **BREAKING — `Session::tick_with` takes `&mut J` where it took `&J`.** A tick is where a
+  `Heartbeat` and a `TestRequest` are born, and telling the journal their number is a write.
+- **`Session::received_with` marks the inbound number on every path out, including the one that
+  ends the session.** `[measured 2026-09-05]` it used to sit after the drain, which the
+  counterparty's own `Logout` returns before — so the number that `Logout` arrived under was
+  consumed and never recorded, a resumed session expected it again, and this end sent a
+  `ResendRequest` for a message it already had. ADR-0017's ordering is unchanged: the mark is
+  still taken after the application has seen the message, just later. Found by the interop gate.
+- **Under `Durability::Fsync` an administrative message now costs a `sync_data`** — the outbound
+  count is written when it moves. This is the price ADR-0017 already accepted for the inbound
+  direction arriving on the outbound one; `Async` remains the default and keeps it off the
+  engine thread.
 
 - **Every entry point takes a message log.** *(breaking)* `serve`, `serve_hft`,
   `connect_and_serve`, `serve_with_recovery` and `serve_hft_with_recovery` each gained a

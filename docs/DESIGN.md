@@ -386,20 +386,35 @@ oldest }` in messages, and `JournalRefused { count }` for a reply longer than a 
 engine plan authorised neither ([ADR-0008](decisions/ADR-0008-journal-is-a-trait.md)). A
 record carries its own length, `seq(4) || len(4) || bytes`, and from format version 1 a CRC32,
 so a torn tail and a flipped byte both stop the read rather than being replayed to a
-counterparty. Two header values are not messages: `len == 0` is ADR-0017's inbound mark, and
-`seq == 0` is ADR-0039's activity mark, eight little-endian milliseconds saying when the
-session was last alive, written at logon and at an ordered shutdown, never per message. `34=0`
-is not a sequence number FIX has, so neither cost a format change.
+counterparty. **Three header shapes are not messages**: `len == 0` is ADR-0017's inbound mark;
+`seq == 0 && len == 8` is ADR-0039's activity mark, eight little-endian milliseconds saying when
+the session was last alive, written at logon and at an ordered shutdown, never per message; and
+`seq == 0 && len == 4` is
+[ADR-0053](decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md)'s
+outbound mark, the highest `34=` this session has spent. `34=0` is not a sequence number FIX has,
+so none of the three cost a format change — and **the third is the last that gets that escape**:
+a fourth shape would be a format only its own history can read, so the next one lifts the
+version to v2.
 
-**A journal reads back.** `Journal::highest()` and `highest_in()` report the counts,
-`FileJournal::open` reads the file before appending, `Session::resume` and
-`Engine::add_resumed` carry the numbers into a running engine, and `Recovery` is the seam the
-serving loop asks ([ADR-0034](decisions/ADR-0034-recovery-is-asked-once-the-counterparty-is-known.md),
+**A journal answers two questions, and only the first is about bytes.** *What can you
+replay?* — `get`, `highest`, `oldest`. *How far have you counted?* — `highest_out` and
+`highest_in`. `[measured 2026-09-05]` **treating the first as an answer to the second is a
+defect that reaches the wire**: `highest()` is the highest message *held*, and a `Logon`, a
+`Heartbeat` and a `Logout` each spend a `34=` no journal holds bytes for, so a restart deriving
+`next_out` from `highest()` is short by every administrative message since the last application
+one. A real `libquickfix` refused a resumed session over a difference of exactly one. So the
+session tells the journal the count it has spent — `mark_out`, a high-water mark — and
+`Resumed::from_journal` does the arithmetic once (ADR-0053). `FileJournal::open` reads the file
+before appending, `Session::resume` and `Engine::add_resumed` carry the numbers into a running
+engine, and `Recovery` is the seam the serving loop asks
+([ADR-0034](decisions/ADR-0034-recovery-is-asked-once-the-counterparty-is-known.md),
 [ADR-0039](decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md)). Held by
-`crates/engine/tests/recovery.rs` and `tests/on_disk.rs`.
+`crates/engine/tests/recovery.rs`, `tests/on_disk.rs` and
+`crates/session/tests/numbering.rs`.
 
-**The journal is not a message log.** It keeps outbound application messages for resend and
-one inbound number. No administrative traffic and no refused frame is in it; that is D14.
+**The journal is not a message log.** It keeps outbound application **messages** for resend and,
+of everything else, only **numbers** — one inbound, one outbound. No administrative traffic and
+no refused frame is in it; that is D14.
 
 ### D8 — In `hft` the engine thread busy-polls; in `standard` it blocks
 

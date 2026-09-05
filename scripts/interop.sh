@@ -377,6 +377,10 @@ CFG
 run_reconnect() {
   local signal="$1"
   TAG="$2"
+  # Seconds to wait after both News are delivered and before the venue is
+  # killed. `0` for the two original scenarios; the third uses it to guarantee
+  # a Heartbeat lands between the last application message and the death.
+  local settle="${3:-0}"
   local A1="${WORK}/${TAG}-A1.log"
   local A2="${WORK}/${TAG}-A2.log"
   local R="${WORK}/${TAG}-R.log"
@@ -410,6 +414,17 @@ run_reconnect() {
     echo "---- the acceptor said ----" >&2; cat "${A1}" >&2
   fi
 
+  # **A deliberate wait, and it is the point of the third scenario.** With
+  # `--heart-bt-int 1` this puts at least one Heartbeat after the `35=B`, so the
+  # last number this engine spent is one the journal holds no bytes for. Before
+  # ADR-0053 that made `next_out` come back short; the two original scenarios
+  # avoided it by never letting a Heartbeat happen, which is a fixture choosing
+  # the result. STATUS.md item 48.
+  if [[ "${settle}" != "0" ]]; then
+    echo "==> [${TAG}] waiting ${settle}s so a Heartbeat falls after the last 35=B"
+    sleep "${settle}"
+  fi
+
   echo "==> [${TAG}] the venue goes away (${signal})"
   kill "${signal}" "${QF1_PID}" 2>/dev/null || true
   wait "${QF1_PID}" 2>/dev/null || true
@@ -441,18 +456,21 @@ run_reconnect() {
   if [[ "${signal}" == "-KILL" ]]; then
     rc_assert_kill "${A1}" "${A2}" "${R}" "${came_back}"
   else
-    rc_assert_logout "${A1}" "${A2}"
+    rc_assert_logout "${A1}" "${A2}" "${R}" "${came_back}"
   fi
 }
 
 # What each scenario claims, read off the transcripts.
 #
-# **The two scenarios do not claim the same things, and that asymmetry is the
-# result rather than a shortcut.** After a kill, the numbering continues and is
-# asserted. After a clean logout it cannot, because this engine answers the
-# goodbye — spending an outbound number that `Journal::put` never records — and
-# no deployment using `connect_and_serve` can find out what that number was.
-# `STATUS.md` item 48, and docs/reference/a-journal-holds-messages-not-numbering.md.
+# **The two scenarios claim the same five things, and that is new.**
+# `[đo 2026-09-05]` until item 48 was fixed they could not: after a clean logout
+# this engine answers the goodbye, spending an outbound number `Journal::put`
+# never recorded, so the numbering could not continue and the third assertion
+# pinned the size of the gap instead of asserting it was closed. The journal now
+# records the number (ADR-0053), so `known_gap` is gone and the logout scenario
+# asserts continuation exactly as the kill scenario does. The one thing that
+# differs is the first step: one transcript must contain no `35=5`, the other
+# must contain one in each direction.
 rc_assert_kill() {
   local A1="$1" A2="$2" R="$3" came_back="$4"
 
@@ -462,6 +480,13 @@ rc_assert_kill() {
   goodbyes="$(grep -c -F '|35=5|' "${A1}" || true)"
   rc_step "dropped" "$([[ "${goodbyes}" -eq 0 ]] && echo yes || echo no)" \
     "no 35=5 in the first transcript (saw ${goodbyes})"
+
+  rc_assert_continued "${A1}" "${A2}" "${R}" "${came_back}"
+}
+
+# Assertions 2-5, which both scenarios now make.
+rc_assert_continued() {
+  local A1="$1" A2="$2" R="$3" came_back="$4"
 
   # 2. It came back. Nothing told it to — `reconnect::Policy` did.
   local logon_in
@@ -507,7 +532,7 @@ rc_assert_kill() {
 }
 
 rc_assert_logout() {
-  local A1="$1" A2="$2"
+  local A1="$1" A2="$2" R="$3" came_back="$4"
 
   # 1. A goodbye, and this engine answered it. `crates/session/tests/goodbye.rs`
   #    holds that behaviour; here another implementation confirms it.
@@ -517,33 +542,12 @@ rc_assert_logout() {
   rc_step "goodbye" "$([[ "${said}" -ge 1 && "${got}" -ge 1 ]] && echo yes || echo no)" \
     "35=5 out: ${said}, answered by this engine: ${got}"
 
-  # 2. **It redialled anyway** — ADR-0043 decision 5, that every ending climbs
-  #    the ladder including a clean logout, seen from an engine that never heard
-  #    of the ADR.
-  #
-  #    `[đo 2026-09-05]` the proof is NOT an `acceptor: in` line. QuickFIX
-  #    refuses this Logon in its session layer, so `fromAdmin` never runs and a
-  #    transcript built on application callbacks cannot see a message that
-  #    arrived. Its refusal is what says one did.
-  local arrived
-  arrived="$(grep -c -E 'MsgSeqNum too low|^acceptor: in .*\|35=A\|' "${A2}" || true)"
-  rc_step "redialled" "$([[ "${arrived}" -ge 1 ]] && echo yes || echo no)" \
-    "a Logon reached the acceptor after a clean goodbye (${arrived} lines say so)"
-
-  # 3. **And it was refused by exactly one.** This assertion pins a KNOWN GAP,
-  #    on purpose: `STATUS.md` item 48. `Journal::put` records application
-  #    messages only, so `highest() + 1` is short by the administrative messages
-  #    sent after the last application one — here the single 35=5 answering the
-  #    goodbye. Pinning the size is what makes it an explanation rather than a
-  #    shrug, and what makes this line go red the day item 48 is fixed, which is
-  #    when somebody has to come back and read it.
-  local pair expect recv
-  pair="$(grep -o -E 'expecting [0-9]+ but received [0-9]+' "${A2}" | head -1 || true)"
-  expect="$(echo "${pair}" | sed -nE 's/expecting ([0-9]+).*/\1/p')"
-  recv="$(echo "${pair}" | sed -nE 's/.*received ([0-9]+)/\1/p')"
-  rc_step "known_gap" \
-    "$([[ -n "${expect}" && -n "${recv}" && "${expect}" -eq $((recv + 1)) ]] && echo yes || echo no)" \
-    "${pair:-no refusal seen} — short by exactly the one 35=5 this engine sent after its last application message (item 48)"
+  # 2-5. **The same four the kill scenario makes**, and the third of them is the
+  #      one that used to be impossible: the answer to the goodbye spends a
+  #      number, and the journal now knows it. A run against the pre-ADR-0053
+  #      engine fails `next_out` with `expecting N but received N-1`, which is
+  #      what `known_gap` used to pin. ADR-0053, STATUS.md item 48.
+  rc_assert_continued "${A1}" "${A2}" "${R}" "${came_back}"
 }
 
 # ---- 4d. The venue is killed. Nobody says goodbye. --------------------------
@@ -569,6 +573,24 @@ else
   echo "interop-reconnect-logout: FAIL $((rc_total - rc_fail))/${rc_total}"
 fi
 
+# ---- 4e-bis. Killed, with a Heartbeat guaranteed inside the window. --------
+#
+# The same abrupt scenario as 4d, run at `HeartBtInt=1` with a pause before the
+# kill. `[đo 2026-09-05]` 4d passed at `HeartBtInt=30` **because no
+# administrative message was sent after the last application one** — the exact
+# condition STATUS.md item 48 is about — so it was green for a reason that was
+# the fixture rather than the engine. This round removes that condition: the
+# last number spent is a Heartbeat's, which no journal holds bytes for, and
+# `next_out` coming back right is ADR-0053 working for every administrative
+# message rather than for `35=5` alone.
+rc_fail=0; rc_total=0
+INTEROP_RECONNECT_ARGS="--heart-bt-int 1" run_reconnect -KILL "interop-reconnect-beat" 2.5
+if [[ "${rc_fail}" -eq 0 && "${rc_total}" -gt 0 ]]; then
+  echo "interop-reconnect-beat: PASS $((rc_total - rc_fail))/${rc_total}"
+else
+  echo "interop-reconnect-beat: FAIL $((rc_total - rc_fail))/${rc_total}"
+fi
+
 # ---- 4f. Read that output too. Every assertion, not only the PASS line. -----
 #
 # The same shape the two directions above use, and for the same reason: a
@@ -583,9 +605,16 @@ for step in dropped back next_out next_in no_resend; do
     fail=1
   fi
 done
-for step in goodbye redialled known_gap; do
+for step in goodbye back next_out next_in no_resend; do
   if ! grep -qE "^interop-reconnect-logout: ${step} +ok" "${WORK}/interop-reconnect-logout.steps" 2>/dev/null; then
     echo "MISSING OR FAILED ASSERTION: interop-reconnect-logout ${step}" >&2
+    fail=1
+  fi
+done
+# The third scenario: a kill with a Heartbeat guaranteed inside the window.
+for step in dropped back next_out next_in no_resend; do
+  if ! grep -qE "^interop-reconnect-beat: ${step} +ok" "${WORK}/interop-reconnect-beat.steps" 2>/dev/null; then
+    echo "MISSING OR FAILED ASSERTION: interop-reconnect-beat ${step}" >&2
     fail=1
   fi
 done
@@ -622,5 +651,5 @@ fi
 echo "==> the run added nothing git can see"
 
 echo
-echo "interop: 7 / 7 + 7 / 7 + 5 / 5 + 3 / 3 against libquickfix @ ${PINNED_SHA}"
-echo "both roles and both reconnect scenarios, each checked by somebody else's engine"
+echo "interop: 7 / 7 + 7 / 7 + 5 / 5 + 5 / 5 + 5 / 5 against libquickfix @ ${PINNED_SHA}"
+echo "both roles and all three reconnect scenarios, each checked by somebody else's engine"

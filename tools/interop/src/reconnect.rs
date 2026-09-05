@@ -141,11 +141,12 @@ impl Handler for Watch {
 
 /// One `FileJournal` per counterparty, on a path this role was given.
 ///
-/// The shape `crates/engine/tests/on_disk.rs` uses, with **one deliberate
-/// difference**: `next_in` is `highest_in() + 1`, because
-/// [`Journal::highest_in`]'s own rustdoc says *"a resumed session's `next_in`
-/// is this plus one"*. That test writes `highest_in().unwrap_or(1)` without the
-/// `+ 1`; the plan's trap 3 carries it, and it is not this file's to fix.
+/// `[đo 2026-09-05]` **This used to derive all three numbers by hand, and two of
+/// the three were wrong in different ways** — `next_out` from `journal.highest()`
+/// (short by every administrative message since the last application one), and
+/// `on_disk.rs`'s copy of the same block dropped the `+ 1` on `next_in`. Both are
+/// now [`Resumed::from_journal`], which is why that function exists: arithmetic
+/// written twice was got wrong twice. ADR-0053.
 struct OnDisk {
     path: PathBuf,
     how: Durability,
@@ -218,11 +219,26 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
     let first_ms = ms(args, "--first-ms", 200);
     let ceiling_ms = ms(args, "--ceiling-ms", 2_000);
 
-    // `30`, so no heartbeat falls inside the few seconds this scenario runs and
-    // the `34=` the script reads off the transcript stay the ones the protocol
-    // put there. The plan's trap 4.
+    // **`30` by default, and `--heart-bt-int` exists because that default used
+    // to be the reason a scenario passed.**
+    //
+    // `[đo 2026-09-05]` 30 was chosen so no Heartbeat falls inside the few
+    // seconds this scenario runs, keeping the `34=` on the transcript the ones
+    // the protocol put there (the reconnect plan's trap 4). It also meant the
+    // `SIGKILL` scenario was green **because no administrative message was sent
+    // after the last application one** — the exact condition item 48 was about.
+    // A gate that passes because of how its fixture is configured is not
+    // reporting on the engine.
+    //
+    // So the script now runs a second `SIGKILL` round at `--heart-bt-int 1`
+    // with a deliberate pause before the kill, which puts at least one
+    // Heartbeat between the `35=B` and the death. That round is what says the
+    // fix is about *every* administrative message rather than about `35=5`.
+    // ADR-0053.
+    let beat = u32::try_from(ms(args, "--heart-bt-int", 30)).unwrap_or(30);
     let cfg =
-        Config::initiator(b"FIX.4.4", sender.as_bytes(), target.as_bytes()).with_heart_bt_int(30);
+        Config::initiator(b"FIX.4.4", sender.as_bytes(), target.as_bytes()).with_heart_bt_int(beat);
+    println!("interop-reconnect: HeartBtInt={beat}");
 
     let policy = match Policy::new(first_ms, ceiling_ms) {
         Ok(p) => p,
