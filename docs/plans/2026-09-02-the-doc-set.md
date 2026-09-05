@@ -1,6 +1,6 @@
 # Bộ tài liệu: người dùng, người contribute, và người làm HFT
 
-> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** Đã duyệt 2026-09-02; **Sửa 3 được chủ repo duyệt 2026-09-03**
+> **Loại:** Plan · **Ngày:** 2026-09-02 · **Trạng thái:** **Xong** — đóng và merge 2026-09-03 (A, E, B, D; C hoãn sang phase 2), item 33, PR #32; duyệt 2026-09-02, **Sửa 3 được chủ repo duyệt 2026-09-03**
 > **Phạm vi:** tài liệu. Không đụng code sản phẩm.
 
 > **Sửa 1 — 2026-09-02, trước khi bắt đầu.** Bản đầu được soạn trên `73e48c6`. Kéo source về

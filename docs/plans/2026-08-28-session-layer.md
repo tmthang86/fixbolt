@@ -1,6 +1,6 @@
 # Máy trạng thái session FIX 4.4 — từ 0/59 lên 59/59
 
-> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** Đã duyệt 2026-08-28, đang làm (bước 5/6 xong)
+> **Loại:** Plan · **Ngày:** 2026-08-28 · **Trạng thái:** **Xong** — đóng 2026-08-29, cả sáu bước, 59 / 59; duyệt 2026-08-28
 > **Phạm vi:** Phase 1, tiêu chí 1 của `PRD.md` §2. Đây là plan lớn nhất dự án.
 
 ## Bối cảnh

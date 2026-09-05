@@ -1,6 +1,6 @@
 # Bỏ target tuyệt đối trong §6, thay bằng baseline theo từng máy
 
-> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** **Đã duyệt 2026-08-31**
+> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** **Xong** — đóng 2026-08-31, sáu bước, item 20, ADR-0016
 > **Phạm vi:** `DESIGN.md` §6, `crates/codec/benches/harness.rs` và bốn bench target dùng nó,
 > `scripts/bench.sh`. Không đụng `codec` runtime, `session`, `engine`, `transport`.
 >

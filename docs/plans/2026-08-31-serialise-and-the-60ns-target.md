@@ -1,6 +1,6 @@
 # Serialise: tìm ra 145 ns đi đâu, trước khi sửa bất cứ thứ gì
 
-> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** **Đã duyệt 2026-08-31**
+> **Loại:** Plan · **Ngày:** 2026-08-31 · **Trạng thái:** **Xong** — đóng 2026-08-31, sáu bước, item 11, ADR-0016
 > **Phạm vi:** `codec` — `template.rs`, `benches/serialize.rs`. Không đụng `session`,
 > `engine`, `transport`.
 >

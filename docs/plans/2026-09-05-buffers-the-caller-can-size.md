@@ -1,6 +1,6 @@
 # Ba hằng mà tài liệu bảo bạn tự chọn, và không ai chọn được
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **Đã duyệt (2026-09-05), đang làm**
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **Xong, đã merge** (2026-09-05, `ca25571`) — item 45 ngoài thứ tự wave, ADR-0047, PR #37
 > **Phạm vi:** `engine` (`lib.rs` type alias + `pump` + entry point, `shard.rs` một dòng),
 > **`session` (`Outbound::app`, `Session` — Sửa 2)**, docs. **Không chạm** `codec`,
 > `library` logic — chỉ thêm re-export.

@@ -1,6 +1,6 @@
 # Bước 1 — `codec` và `dict`: đọc, ghi FIX 4.4 không cấp phát bộ nhớ
 
-> **Loại:** Plan · **Ngày:** 2026-08-27 · **Trạng thái:** **Đã duyệt** — 2026-08-27, sau review kỹ thuật + outside voice
+> **Loại:** Plan · **Ngày:** 2026-08-27 · **Trạng thái:** **Xong** — đóng và merge 2026-08-28 (54 test, 0 cấp phát, 304M lượt fuzz); duyệt 2026-08-27 sau review kỹ thuật + outside voice
 > **Sửa lần 3 — 2026-08-28, duyệt lại cùng ngày.** Một tiêu chí nghiệm thu của Bước 1 sai so
 > với dữ liệu và không thể đạt. Chi tiết ở *Nhật ký giao hàng → Bước 1*.
 > **Phạm vi:** `DESIGN.md` §7 bước 1 — hai crate đầu tiên của workspace
