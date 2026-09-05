@@ -138,6 +138,14 @@ the venue's `35=5`, spending an outbound number the journal does not record, so 
 session is refused by exactly one. The assertion pins the *size* of the shortfall, so the day
 item 48 is fixed this line goes red and somebody has to come back and read it.
 
+**Machine and run for these two.** Gated on `ubuntu-latest` in the same blocking `interop` job:
+job [`101215154156`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725/job/101215154156)
+of run [`33932950725`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725), commit
+`d31db5e`, 11 jobs of 11. The job's own log was read rather than its conclusion, and every
+assertion line — `next_out ok … came back at 34=3, wanted 34=3` and `known_gap ok expecting 4
+but received 3` — is byte-identical to the development run, so item 48 is not one machine's
+accident.
+
 **These two scenarios are the first evidence for `connect_and_serve` that this repository did
 not write.** ADR-0043 said so in its own *Consequences*: *"every test of this is invented … only
 an interop scenario driving a real counterparty through a disconnect would close that"*.

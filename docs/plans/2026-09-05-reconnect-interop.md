@@ -402,6 +402,31 @@ interop: 7 / 7 + 7 / 7 + 5 / 5 + 3 / 3 against libquickfix @ 386ce46e...
 `34=` của Logon thứ hai, và hai News sau khi sàn sống lại được **giao tới ứng dụng** chứ không bị
 hỏi lại bằng `35=2`.
 
+### CI xanh, nêu theo id
+
+**CI xanh trên commit đóng plan**: run
+[`33932950725`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725), commit `d31db5e`,
+**11 job / 11**, `ubuntu-latest`. Job `interop`
+[`101215154156`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725/job/101215154156) —
+**log của chính job đó được đọc lại**, không phải kết luận của nó:
+
+```
+interop-reconnect: dropped     ok    no 35=5 in the first transcript (saw 0)
+interop-reconnect: back        ok    acceptor: in  ...|35=A|34=3|49=FIXBOLT|...
+interop-reconnect: next_out    ok    sent up to 34=2 before the kill, came back at 34=3, wanted 34=3
+interop-reconnect: next_in     ok    35=B at 34=5 6 sent after the restart, each delivered to the application
+interop-reconnect: no_resend   ok    35=2: 0, 141=Y: 0, 'MsgSeqNum too low': 0
+interop-reconnect: PASS 5/5
+interop-reconnect-logout: goodbye     ok    35=5 out: 1, answered by this engine: 1
+interop-reconnect-logout: redialled   ok    a Logon reached the acceptor after a clean goodbye (22 lines say so)
+interop-reconnect-logout: known_gap   ok    expecting 4 but received 3 — short by exactly the one 35=5 ... (item 48)
+interop-reconnect-logout: PASS 3/3
+interop: 7 / 7 + 7 / 7 + 5 / 5 + 3 / 3
+```
+
+**Từng dòng giống hệt bản chạy trong container này**, kể cả `expecting 4 but received 3` và
+`(22 lines say so)`. Item 48 vì vậy không phải chuyện của một máy.
+
 ### Ba reversal, mỗi cái cắn một chỗ khác nhau
 
 | Reversal | Thấy gì |
