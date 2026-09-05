@@ -159,6 +159,53 @@
 > API**, và bất biến **7** (không `unwrap`/`expect`/`panic` trong library crate) áp cho hàm mới,
 > bất biến **1** (`crates/session/benches/alloc.rs` vẫn phải đọc 0) áp cho đường nó gọi.
 
+> **Sửa 4 `[2026-09-05]` — bước 2b tìm ra một lỗi ở chỗ khác: hai case `parse` đang đo một
+> message mà chính parser từ chối. Phạm vi bước 2 rộng ra một dòng baseline.**
+>
+> Bench mới của bước 2b `assert` rằng message của nó parse xong và lượt kiểm không phàn nàn —
+> và cái assert đó **đỏ ngay lần chạy đầu**, trên đúng byte literal mà
+> `crates/codec/benches/parse.rs` đã dùng từ đầu:
+>
+> | Message | `9=` khai | `9=` thật | `10=` khai | `10=` thật | `parse_into::<_, 64>(…, ALL)` trả về |
+> |---|---|---|---|---|---|
+> | `NewOrderSingle` | 126 | 126 | 098 | **097** | `Err(BadCheckSum)` |
+> | `Heartbeat` | **49** | **51** | 000 | **226** | `Err(BadBodyLength)` |
+>
+> **Hệ quả không giống nhau cho hai case, và phải đọc `parse.rs` mới biết** — cả hai kiểm tra
+> chỉ chạy khi vòng lặp gặp `tag == 10`, tức là **sau khi cả message đã được đánh chỉ mục**:
+>
+> * `parse NewOrderSingle (validated)` **vẫn tính checksum** rồi mới so sánh và trượt, nên nó
+>   làm gần đủ việc. `[đo 2026-09-05]` sửa fixture: 119.8 → 121.6 · 125.0 · 119.6, **≈ +1%**,
+>   nằm trong nhiễu của chính nó.
+> * `parse Heartbeat (validated)` thì **không**: `if v.body_length && pos != trailer_at` bắn
+>   **trước** khối checksum, nên case này chưa bao giờ cộng 51 byte đó. `[đo 2026-09-05]` sửa
+>   fixture: 59.1 → **64.2 · 61.7 · 60.1**, và 64.2 **vượt trần** 61.9 của band 1.10 hiện tại.
+>
+> Nên `parse Heartbeat (validated)` = 56.3 ns là một figure của **một parse bị bỏ dở**, và nó đã
+> ở trong `DESIGN.md` §6, `benches/baselines.tsv` và §8. Đây là điều 10 đúng nghĩa: con số có
+> benchmark, có máy, có cấu hình §9, và **vẫn không đo cái mà tên nó nói**.
+>
+> **Phạm vi bước 2 rộng ra, và chỉ đúng chừng này:**
+>
+> 1. `crates/codec/benches/parse.rs` sửa fixture (`10=097`, và `9=51` + `10=226`), một dòng mỗi
+>    message. Không đổi một field nào — cùng số field, cùng độ dài body.
+> 2. `parse Heartbeat (validated)` **ghi lại baseline** cùng lượt 20 lần chạy của bước 2c. Hai
+>    case còn lại đo lại nhưng nếu vẫn trong band thì **không sửa dòng nào** — không thu hẹp,
+>    không nới, đúng chính sách của Sửa 2 điểm 3.
+> 3. Fixture của bench mới dùng timestamp **thật** (`20260905-12:00:00.000`) chứ không phải
+>    `00000000-00:00:00.000`: lượt kiểm hỏi `field_type().accepts()`, và `00000000-00:00:00.000`
+>    đọc ra `IncorrectDataFormat`. Cái cũ chưa bao giờ bị hỏi câu đó vì `NoDict` trả lời no-op.
+>
+> **Không đụng tới:** `crates/engine/benches/dispatch.rs` mang cùng byte literal ấy nhưng
+> **không parse** — nó đưa thẳng bytes cho `deliver`, nên checksum sai không ảnh hưởng figure.
+> Ghi ra đây để lần sau không ai phải đi tìm lại. Các test dùng `10=000` cũng không đụng: chúng
+> chạy `Validation::NONE` hoặc không quan tâm.
+>
+> **`[to testing-skills]`**: một fixture sai làm cho gate đo *ít việc hơn* thì không có gì đỏ
+> lên cả — kết quả bị vứt bằng `.ok()` và cái bench vẫn ổn định tới 1%. Cái tìm ra nó là một
+> bench **khác**, viết sau, `assert` rằng fixture của nó hợp lệ trước khi bấm giờ. Viết vào
+> [a-benchmark-parsed-a-message-the-parser-rejects](../reference/a-benchmark-parsed-a-message-the-parser-rejects.md).
+
 ## Bối cảnh
 
 Phase 1 vừa đóng, và buổi đo đóng nó để lại ba việc **trên cùng một cái máy**. Cả ba đều là
