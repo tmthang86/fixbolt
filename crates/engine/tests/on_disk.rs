@@ -417,6 +417,7 @@ mod serving {
     use std::time::Duration;
 
     use fixbolt_engine::journal::{Durability, FileJournal};
+    use fixbolt_engine::observe::Handles;
     use fixbolt_engine::presession::{Limits, Table};
     use fixbolt_engine::recovery::{Recovery, Resumed};
     use fixbolt_engine::{Application, Config};
@@ -557,6 +558,7 @@ mod serving {
                     opened: counter,
                 },
                 fixbolt_engine::msglog::NoLog,
+                Handles::new(),
             );
         });
 

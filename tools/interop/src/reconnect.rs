@@ -43,6 +43,7 @@
 //! [a-message-on-the-wire-is-not-a-message-delivered]: ../../../docs/reference/a-message-on-the-wire-is-not-a-message-delivered.md
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fixbolt::{Answer, GroupData, GroupEntryData, Handler, Incoming, Peer, Reply};
 use fixbolt_engine::journal::{Durability, FileJournal, Store};
@@ -261,6 +262,8 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
     if args.iter().any(|a| a == "--no-recovery") {
         println!("interop-reconnect: NoRecovery — every reconnect starts at 34=1");
         println!("interop-reconnect: dialing {addr}");
+        let handles = fixbolt::Handles::new();
+        watch_next_out(handles.observer());
         return match fixbolt_engine::connect_and_serve::<_, Store, NoRecovery, NoLog>(
             &addr,
             cfg,
@@ -268,6 +271,7 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
             policy,
             NoRecovery,
             NoLog,
+            handles,
         ) {
             Ok(s) => {
                 println!("interop-reconnect: stopped: {s:?}");
@@ -300,6 +304,11 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
     println!("interop-reconnect: journal {path}");
     println!("interop-reconnect: dialing {addr}");
 
+    // The handles are made before the engine, and the watcher takes an
+    // `Observer` off them before `connect_and_serve` is even called.
+    let handles = fixbolt::Handles::new();
+    watch_next_out(handles.observer());
+
     match fixbolt_engine::connect_and_serve::<_, Disk, OnDisk, NoLog>(
         &addr,
         cfg,
@@ -307,6 +316,7 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
         policy,
         recovery,
         NoLog,
+        handles,
     ) {
         Ok(s) => {
             println!("interop-reconnect: stopped: {s:?}");
@@ -317,6 +327,53 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// Print the **live** outbound number, once per connection, as soon as the
+/// session is logged on.
+///
+/// `[2026-09-05]` **this is the second source `STATUS.md` item 48 recorded as
+/// unreachable.** Its write-up has a table with a row reading *"`Observer` —
+/// reachable at `recover` time? **no**, `connect_and_serve` hands out no
+/// handle"*. It does now (item 47), so the durable number and the live one can
+/// finally be printed in the same transcript and `scripts/interop.sh` can
+/// assert they agree.
+///
+/// **They differ by exactly one, and the gate does that arithmetic rather than
+/// this process.** `recover` prints the number the resumed session will *start*
+/// at; by the time it is logged on it has spent that number on its own `Logon`,
+/// so the live count is one higher. A tool that adjusted the number before
+/// printing it could be wrong in the same direction as the defect under test.
+///
+/// One snapshot per connection, on the first turn it is up: at `HeartBtInt=1`
+/// the next administrative message is a second away and this poll is 2 ms, so
+/// the number printed is the one just after the `Logon` and not a later one.
+#[cfg(all(feature = "standard", unix))]
+fn watch_next_out(observer: fixbolt::Observer) {
+    std::thread::spawn(move || {
+        let mut announced = false;
+        loop {
+            match observer.request().as_ref().and_then(|s| {
+                s.sessions()
+                    .first()
+                    .copied()
+                    .filter(fixbolt::SessionSnapshot::logged_on)
+            }) {
+                Some(sess) if !announced => {
+                    announced = true;
+                    println!(
+                        "interop-reconnect: observer next_out={} next_in={}",
+                        sess.next_out(),
+                        sess.next_in()
+                    );
+                }
+                Some(_) => {}
+                // The connection went. The next one gets its own line.
+                None => announced = false,
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    });
 }
 
 /// A millisecond argument, or `default` if it is absent or unreadable.

@@ -37,6 +37,7 @@ use std::ops::Range;
 use std::time::Duration;
 
 use fixbolt_engine::Application;
+use fixbolt_engine::observe::Handles;
 use fixbolt_engine::presession::{Limits, Table};
 use fixbolt_session::Config;
 
@@ -180,6 +181,7 @@ fn a_message_larger_than_the_default_buffer() {
             4,
             Limits::new(8, 30_000).expect("both above zero"),
             fixbolt_engine::msglog::NoLog,
+            Handles::new(),
         );
     });
 
@@ -214,6 +216,7 @@ fn a_message_larger_than_the_default_buffer() {
             4,
             Limits::new(8, 30_000).expect("both above zero"),
             fixbolt_engine::msglog::NoLog,
+            Handles::new(),
         );
     });
 
@@ -273,6 +276,7 @@ fn a_big_message_pipelined_behind_the_logon() {
             4,
             Limits::new(8, 30_000).expect("both above zero"),
             fixbolt_engine::msglog::NoLog,
+            Handles::new(),
         );
     });
 
@@ -335,6 +339,7 @@ fn a_reply_larger_than_the_default_scratch() {
             4,
             Limits::new(8, 30_000).expect("both above zero"),
             fixbolt_engine::msglog::NoLog,
+            Handles::new(),
         );
     });
 
@@ -365,6 +370,7 @@ fn a_reply_larger_than_the_default_scratch() {
             4,
             Limits::new(8, 30_000).expect("both above zero"),
             fixbolt_engine::msglog::NoLog,
+            Handles::new(),
         );
     });
 

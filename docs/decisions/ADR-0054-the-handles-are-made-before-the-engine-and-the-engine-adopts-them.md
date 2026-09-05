@@ -144,6 +144,13 @@ written here so the next person does not re-derive it.
   to remember to move the counter. A stream is self-describing and a counter is not.
 - **`shard` is left behind**, and the asymmetry is now visible in the public API: ten functions
   take handles and two do not.
+- **Four of the ten now trip `clippy::too_many_arguments` at 8 against a ceiling of 7.**
+  `[measured 2026-09-05]` — `serve_with_recovery`, `serve_with_recovery_with`,
+  `serve_hft_with_recovery` and `serve_hft_with_recovery_with`, the four carrying both a
+  `Recovery` and a log. They take an `#[allow]` whose comment points here. **This is the
+  deferred builder's condition arriving early and being declined once**: the lint is an
+  opinion about shape, and the shape is the one this ADR chose. It is recorded rather than
+  muted so the next parameter meets a fact instead of a habit.
 
 **Not decided here**
 

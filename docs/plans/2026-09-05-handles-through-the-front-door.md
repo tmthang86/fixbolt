@@ -25,6 +25,21 @@ buổi sáng, và plan item 48 đóng vào buổi chiều cùng ngày, lấy đ�
 lại ngay trước khi bắt đầu bước 2 và ghi vào nhật ký. Điều kiện *"phải tăng"* không đổi, chỉ có
 mốc so sánh đổi.
 
+**Sửa 4 — cú "dừng" của `tools/interop` đến từ stdin, không phải `SIGTERM`.** Plan viết *"cài
+`SIGTERM` → `admin.shutdown(2_000)`"*. Bắt tín hiệu trong Rust ở đây cần **hoặc** `libc` cộng một
+`unsafe extern "C"` — §2 rule 8 đòi một plan và một câu chứng minh tính đúng cho chỗ ấy — **hoặc**
+một dependency mới cho một tool. Cả hai đều không phải điều gate này nói tới. Thứ đang được kiểm
+là *"`serve` quay về **vì** `Admin::shutdown` được gọi"*; **ai bóp cò không phải chủ đề**. Nên vai
+acceptor đọc một dòng (hoặc EOF) trên stdin và gọi `admin.shutdown`, còn `scripts/interop.sh` giữ
+đầu ghi của một fifo và viết một dòng vào đó. `Admin::shutdown` là hai atomic store, không cần
+async-signal-safe gì cả.
+
+**Sửa 5 — test *"`serve` trả về vì `Admin::shutdown`"* nằm ở `crates/library/tests/end_to_end.rs`,
+không phải `crates/engine/tests/shutdown.rs`.** `shutdown.rs` lái một `Engine` trên `Loopback`,
+không có socket và không có `#![cfg(standard, unix)]`; `end_to_end.rs` đã có cả hai và đã gọi
+`fixbolt::serve` qua socket thật. Đặt test ở đó cũng đúng khán giả hơn: câu sai trong
+`GETTING-STARTED.md` là câu nói với **người dùng thư viện**.
+
 **Sửa 3 — `GUIDE.md` §8c điểm 5 đã được item 48 sửa rồi.** Bảng *Tài liệu* dưới đây viết điều
 kiện *"cùng plan item 48 nếu plan đó chưa đóng"*; plan đó **đã đóng**, nên việc còn lại của plan
 này ở đoạn ấy chỉ là **đọc lại để hai plan không nói trái nhau**, không phải sửa lần nữa.

@@ -58,7 +58,7 @@ pub use fixbolt_engine::settings::{Problem, Settings, SettingsError};
 
 pub use fixbolt_engine::MAX_ON_LOGON;
 pub use fixbolt_engine::observe::{
-    Admin, Command, Event, EventKind, Observer, SessionSnapshot, Snapshot,
+    Admin, Command, Event, EventKind, Handles, Observer, SessionSnapshot, Snapshot,
 };
 /// What an operator can see and change while the engine runs.
 pub use fixbolt_engine::origin::{ORIGIN_CAPACITY, ORIGIN_LEN, Sender};

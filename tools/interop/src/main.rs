@@ -306,11 +306,18 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-/// **`--role acceptor`.** Serve until killed, and score nothing.
+/// **`--role acceptor`.** Serve until an operator stops it, and score nothing.
 ///
 /// The judge is `tools/interop/initiator.cpp` at the other end of the socket.
 /// This side's only output is the readiness line the script waits on, and what
 /// `serve` says when it stops.
+///
+/// `[2026-09-05]` **it used to say "serve until killed"**, and that was not a
+/// choice: `serve` returned only when `shutdown_finished()` answered, the only
+/// thing that starts that is `Admin::shutdown`, and an `Admin` needed an
+/// `Engine` this role never held (`STATUS.md` item 47). The stop now comes
+/// through the front door, so the `Shutdown` line below is a real count of
+/// sessions said goodbye to rather than a line nothing ever reached.
 #[cfg(all(feature = "standard", unix))]
 fn acceptor(args: &[String]) -> std::process::ExitCode {
     use fixbolt::{Limits, Settings};
@@ -351,6 +358,12 @@ fn acceptor(args: &[String]) -> std::process::ExitCode {
     // reaps a peer that left as `Step::Gone` and the slot goes back.
     announce_when_listening(addr.clone());
 
+    // The handles exist before the engine does, which is the whole of item 47.
+    // `stop_on_stdin` takes an `Admin` off them and the engine adopts the same
+    // cell inside `serve`.
+    let handles = fixbolt::Handles::new();
+    stop_on_stdin(handles.admin());
+
     match fixbolt::serve(
         &addr,
         table,
@@ -358,6 +371,7 @@ fn acceptor(args: &[String]) -> std::process::ExitCode {
         CAPACITY,
         limits,
         fixbolt::NoLog,
+        handles,
     ) {
         Ok(shutdown) => {
             println!("interop: acceptor stopped: {shutdown:?}");
@@ -380,6 +394,30 @@ fn acceptor(args: &[String]) -> std::process::ExitCode {
 const CAPACITY: usize = 4;
 #[cfg(all(feature = "standard", unix))]
 const PENDING: usize = 4;
+
+/// Stop the engine when the operator says so on stdin — a line, or EOF.
+///
+/// **Why stdin and not `SIGTERM`.** A signal handler here would need either
+/// `libc` and an `unsafe extern "C"` — `CLAUDE.md` §2 rule 8 wants a plan and a
+/// soundness argument for that — or a new dependency, and neither is what this
+/// gate is about. What is under test is *"`serve` came back because
+/// `Admin::shutdown` was called"*; **what pulls the trigger is not the
+/// subject.** `scripts/interop.sh` holds the write end of a fifo open and writes
+/// one line into it.
+///
+/// `Admin::shutdown` is two atomic stores, so this thread is not racing the
+/// engine for anything.
+#[cfg(all(feature = "standard", unix))]
+fn stop_on_stdin(admin: fixbolt::Admin) {
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        // EOF counts: a supervisor that closes the pipe has stopped supervising,
+        // and an acceptor that keeps serving after that is a process nobody owns.
+        let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
+        println!("interop: stopping on {:?}", line.trim());
+        admin.shutdown(2_000);
+    });
+}
 
 /// Print `interop: listening on <addr>` once a TCP connect to it succeeds.
 ///

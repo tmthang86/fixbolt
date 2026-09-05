@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use fixbolt_engine::observe::Handles;
 use fixbolt_engine::reconnect::Policy;
 use fixbolt_session::{Application, Config};
 
@@ -181,6 +182,7 @@ fn an_initiator_whose_counterparty_hangs_up_comes_back() {
             policy,
             fixbolt_engine::recovery::NoRecovery,
             fixbolt_engine::msglog::NoLog,
+            Handles::new(),
         );
         watcher.fetch_add(1, Ordering::Release);
     });
@@ -256,6 +258,7 @@ fn a_policy_that_says_stop_never_dials_at_all() {
             policy,
             fixbolt_engine::recovery::NoRecovery,
             fixbolt_engine::msglog::NoLog,
+            Handles::new(),
         );
         if done.is_ok() {
             flag.fetch_add(1, Ordering::Release);
@@ -278,4 +281,98 @@ fn a_policy_that_says_stop_never_dials_at_all() {
         "and nothing ever connected — a loop that dialled first and asked the \
          policy afterwards would leave a socket here"
     );
+}
+
+/// **The caller's `Observer` sees the `LoggedOn` that `dial` also acts on.**
+///
+/// `Observer::events` *drains* the ring: two readers on one cell share events
+/// rather than each seeing them. `dial` used to be one of those readers — it
+/// took `LoggedOn` out of the stream to reset the reconnect ladder — and that
+/// was invisible because the caller had no cell to be robbed of. `Handles`
+/// gives them one, and this is the assertion that says handing it over did not
+/// hand over an empty stream. ADR-0054 decision 5.
+///
+/// **Both halves are asserted**, because a `dial` that simply stopped reading
+/// would pass the event half and quietly break the backoff: the policy's ladder
+/// is reset by `logged_on()`, and the reconnect below only happens promptly if
+/// that still runs.
+#[test]
+fn the_callers_observer_still_sees_the_logon_the_loop_acted_on() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = listener.local_addr().expect("bound").to_string();
+
+    // A venue that logs the initiator on twice, hanging up in between.
+    let venue = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            sock.set_nodelay(true).ok();
+            sock.set_read_timeout(Some(Duration::from_secs(10))).ok();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            if read_one(&mut sock, deadline).is_none() {
+                return;
+            }
+            let _ = sock.write_all(&logon_reply(1));
+            // Hold it long enough for the engine to judge the session up.
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    });
+
+    // Made before the engine. Nothing here ever touches an `Engine`.
+    let handles = Handles::new();
+    let observer = handles.observer();
+    let admin = handles.admin();
+
+    let dialled = addr.clone();
+    let engine = std::thread::spawn(move || {
+        let policy = Policy::new(50, 200).expect("a legal pair");
+        let _ = fixbolt_engine::connect_and_serve::<Never, fixbolt_engine::journal::Store, _, _>(
+            &dialled,
+            cfg(),
+            Never,
+            policy,
+            fixbolt_engine::recovery::NoRecovery,
+            fixbolt_engine::msglog::NoLog,
+            handles,
+        );
+    });
+
+    // Two logons, read through the caller's own handle.
+    let mut seen = 0usize;
+    let mut events = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while seen < 2 && Instant::now() < deadline {
+        observer.events(&mut events);
+        seen += events
+            .iter()
+            .filter(|e| matches!(e.kind(), fixbolt_engine::observe::EventKind::LoggedOn))
+            .count();
+        events.clear();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        seen, 2,
+        "the caller's Observer saw {seen} LoggedOn event(s) of two. Zero means \
+         the serving loop is draining the stream it was handed"
+    );
+    assert_eq!(
+        observer.events_lost(),
+        0,
+        "and none were lost, so `seen` is a count and not a survivor"
+    );
+
+    // And the stop works through the same cell, which is how this test ends
+    // rather than leaving a thread dialling a dead port.
+    admin.shutdown(0);
+    let joined = Instant::now() + Duration::from_secs(10);
+    while !engine.is_finished() && Instant::now() < joined {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        engine.is_finished(),
+        "connect_and_serve returned after Admin::shutdown"
+    );
+    engine.join().ok();
+    venue.join().ok();
 }

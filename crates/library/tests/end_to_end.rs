@@ -37,7 +37,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use fixbolt::{Limits, Settings};
+use fixbolt::{Handles, Limits, Settings};
 
 const SOH: char = '\u{1}';
 
@@ -158,6 +158,7 @@ fn serving(name: &str) -> String {
             4,
             Limits::new(8, 30_000).expect("both above zero"),
             fixbolt::NoLog,
+            Handles::new(),
         );
     });
     addr
@@ -282,4 +283,93 @@ fn an_order_the_desk_refuses_puts_nothing_on_the_wire() {
         ),
         Err(e) => panic!("unexpected error waiting for silence: {e}"),
     }
+}
+
+/// **The specification for `STATUS.md` item 47.** A caller of the front door
+/// stops the engine, and `serve` comes back and says what it managed.
+///
+/// `docs/GETTING-STARTED.md` has said *"`serve` returns when an operator stops
+/// the engine through `Admin::shutdown`"* since 2026-09-03, and until now
+/// **nobody could do it**: an `Admin` came off an `Engine`, `serve` builds its
+/// engine inside itself, and the only thing that ever ended one of these loops
+/// was a signal. This is that sentence, executed.
+#[test]
+fn an_operator_stops_the_front_door_and_serve_comes_back() {
+    let path = scratch("stopped");
+    std::fs::write(
+        &path,
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nHeartBtInt=30\n",
+    )
+    .expect("the scratch directory is writable");
+    let table = Settings::load(&path)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .into_table();
+    let _ = std::fs::remove_file(&path);
+
+    // Made before the engine, which is the whole of the item.
+    let handles = Handles::new();
+    let admin = handles.admin();
+
+    let addr = free_port();
+    let serving = addr.clone();
+    let engine = std::thread::spawn(move || {
+        fixbolt::serve(
+            &serving,
+            table,
+            fixbolt::app(order_handler::Desk::default()),
+            4,
+            Limits::new(8, 30_000).expect("both above zero"),
+            fixbolt::NoLog,
+            handles,
+        )
+    });
+
+    let mut c = connect(&addr);
+    c.write_all(&logon("TW44", 1)).expect("send the logon");
+    assert!(
+        read_one(&mut c).contains("|35=A|"),
+        "the premise: a session is up, so the shutdown has something to say \
+         goodbye to"
+    );
+
+    admin.shutdown(2_000);
+
+    // The counterparty is told, which is the difference between maintenance and
+    // a dead line — ADR-0038.
+    let bye = read_one(&mut c);
+    assert!(bye.contains("|35=5|"), "the engine said goodbye: {bye:?}");
+
+    // Answer it, so the engine can finish inside its grace rather than at the
+    // deadline.
+    let stamp = now_stamp();
+    let back = frame(&format!(
+        "35=5{SOH}34=2{SOH}49=TW44{SOH}52={stamp}{SOH}56=ISLD{SOH}58=ok{SOH}"
+    ));
+    c.write_all(&back).expect("answer the Logout");
+
+    let deadline = Duration::from_secs(10);
+    let started = std::time::Instant::now();
+    while !engine.is_finished() && started.elapsed() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        engine.is_finished(),
+        "serve is still running {:?} after Admin::shutdown — the loop never \
+         saw it, which is the state this test exists to rule out",
+        started.elapsed()
+    );
+
+    let done = engine
+        .join()
+        .expect("the serving thread did not panic")
+        .expect("serve bound its port and therefore returns Ok");
+    assert_eq!(done.sessions(), 1, "one session was held: {done:?}");
+    assert_eq!(done.said_goodbye(), 1, "and it was told: {done:?}");
+    assert_eq!(
+        done.acked(),
+        1,
+        "and it answered inside the grace, so nothing timed out: {done:?}"
+    );
+    assert!(done.clean(), "a clean stop: {done:?}");
 }

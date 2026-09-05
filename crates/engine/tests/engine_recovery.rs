@@ -350,6 +350,7 @@ mod serving {
     use std::time::Duration;
 
     use fixbolt_engine::journal::Store;
+    use fixbolt_engine::observe::Handles;
     use fixbolt_engine::presession::{Limits, Table};
     use fixbolt_engine::recovery::Resumed;
     use fixbolt_session::Config;
@@ -414,6 +415,7 @@ mod serving {
                 Limits::new(8, 30_000).expect("both above zero"),
                 OneCounterparty { asked: counter },
                 fixbolt_engine::msglog::NoLog,
+                Handles::new(),
             );
         });
 
@@ -458,6 +460,7 @@ mod serving {
                 4,
                 Limits::new(8, 30_000).expect("both above zero"),
                 fixbolt_engine::msglog::NoLog,
+                Handles::new(),
             );
         });
 
