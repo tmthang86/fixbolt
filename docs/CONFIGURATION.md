@@ -120,10 +120,10 @@ not re-exported. Each `serve*` function now has a `*_with` twin that takes all f
 
 ```rust
 // the defaults, spelled out — this is exactly what `serve` calls
-serve_with::<256, 4096, 8192, 1024, _, _>(addr, table, app, capacity, limits, log)?;
+serve_with::<256, 4096, 8192, 1024, _, _>(addr, table, app, capacity, limits, log, handles)?;
 
 // a counterparty that sends 16 KiB messages and expects 8 KiB answers
-serve_with::<256, 16_384, 16_384, 8_192, _, _>(addr, table, app, capacity, limits, log)?;
+serve_with::<256, 16_384, 16_384, 8_192, _, _>(addr, table, app, capacity, limits, log, handles)?;
 ```
 
 The two `_` are the language's, not this API's: a turbofish must supply **every** generic

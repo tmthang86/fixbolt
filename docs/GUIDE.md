@@ -309,7 +309,7 @@ impl Handler for Desk {
     }
 }
 
-fixbolt::serve(addr, table, fixbolt::app(Desk), 64, limits, fixbolt::NoLog)?;
+fixbolt::serve(addr, table, fixbolt::app(Desk), 64, limits, fixbolt::NoLog, handles)?;
 ```
 
 **What you did not write, and cannot get wrong.** `8`, `9` and `10` are the frame. `34` and
@@ -400,6 +400,7 @@ fixbolt_engine::serve(
     64,                                    // connection capacity
     Limits::new(64, 30_000)?,              // pending sockets, and their deadline
     fixbolt_engine::msglog::NoLog,
+    handles,                               // §8a, §8c: watch it, administer it, stop it
 )?;
 ```
 
@@ -666,7 +667,7 @@ let recovery = FromFn::new(|cfg: &Config| Some(Resumed {
     next_in:        my_next_in_for(cfg),
     last_active_ms: my_last_active_for(cfg),
 }));
-fixbolt_engine::serve_with_recovery(addr, table, app, capacity, limits, recovery, log)?;
+fixbolt_engine::serve_with_recovery(addr, table, app, capacity, limits, recovery, log, handles)?;
 ```
 
 It is asked **once per connection, after the registry has named the counterparty**, on the
@@ -950,8 +951,15 @@ load per turn while nobody is asking
 ([ADR-0032](decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md)).
 
 ```rust
-let mut engine = /* ... */;
-let watch = engine.observer();          // the one allocation this mechanism makes
+// Through the front door: the handles exist before the engine, because `serve`
+// returns nothing until it has stopped (ADR-0054).
+let handles = fixbolt::Handles::new();
+let watch = handles.observer();         // the one allocation this mechanism makes
+// ... and then `serve(addr, table, app, capacity, limits, log, handles)`.
+//
+// Driving an `Engine` yourself instead? `engine.observer()` is the same handle
+// on the same cell, and the two cannot be mixed: an engine that already has a
+// cell refuses `adopt`.
 
 std::thread::spawn(move || {
     loop {
@@ -1111,6 +1119,7 @@ fixbolt_engine::connect_and_serve::<MyApp, fixbolt_engine::journal::Store, _, _>
     policy,
     fixbolt_engine::recovery::NoRecovery,   // read the next paragraph before shipping this
     fixbolt_engine::msglog::NoLog,
+    handles,                                // where Observer / Admin / Sender come from
 )?;
 ```
 
@@ -1150,6 +1159,12 @@ fixbolt_engine::connect_and_serve::<MyApp, fixbolt_engine::journal::Store, _, _>
 
    **You still have to give the engine a durable journal.** `from_journal` over an in-memory
    one answers `None`, which is *start fresh* — correct, and not continuity.
+
+   **And do not reach for `Observer::request().next_out` instead**, now that §8a's handles work
+   through the front door too. An observer knows the number **when somebody asks**; a Heartbeat
+   between your last poll and the process dying leaves your recorded number short in exactly
+   the same way, with a smaller and less reproducible window. The journal is the only source
+   that is both durable and present when `recover` runs.
    [ADR-0053](decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md),
    [a-journal-holds-messages-not-numbering](reference/a-journal-holds-messages-not-numbering.md)
 
@@ -1159,13 +1174,14 @@ any default.
 
 ### The 3 a.m. phone call
 
-The counterparty rings and says their next number is 4812. `Engine::admin()` hands you a
+The counterparty rings and says their next number is 4812. `Handles::admin()` hands you a
 second handle over the same mechanism as the observer: `Observer` looks, `Admin` changes
 ([ADR-0036](decisions/ADR-0036-one-mechanism-two-capabilities.md)). Give an `Observer` to
 everything that watches and an `Admin` only to whatever takes that call.
 
 ```rust
-let admin = engine.admin();     // Send + Sync, like the Observer
+let admin = handles.admin();    // Send + Sync, like the Observer; `engine.admin()`
+                                // is the same thing if you drive an Engine yourself
 // `id` comes from a snapshot: SessionSnapshot::id().
 admin.submit(Command::SetNextOut { id, n: 4812 });
 ```
@@ -1234,13 +1250,18 @@ and any bytes still in `tx` are lost having already spent their sequence numbers
 next session shows a gap for messages that never went on the wire.
 
 ```rust
-let admin = engine.admin();
+let handles = fixbolt::Handles::new();
+let admin = handles.admin();
 std::thread::spawn(move || {
     wait_for_sigterm();
     admin.shutdown(30_000);     // 30 s of grace, on the engine's clock
 });
 
-let done = engine.run();        // returns when the shutdown finishes
+// Through the front door — and this is the whole reason `Handles` is made
+// first: `serve` returns only once the shutdown has finished, so an `Admin`
+// taken afterwards would be an `Admin` on nothing (ADR-0054).
+let done = fixbolt::serve(addr, table, app, capacity, limits, log, handles)?;
+// Driving an `Engine` yourself: `engine.admin()` and then `engine.run()`.
 if !done.clean() {
     eprintln!(
         "{} of {} never answered — check their sequence numbers before restarting",
@@ -1295,7 +1316,8 @@ fn on_logon(&mut self, who: Peer<'_>, nth: u32, reply: Reply<'_, P, S>) -> Answe
 **Door 2 — `Sender`.** Anything said later, from any thread.
 
 ```rust
-let tx = engine.sender();          // Send + Sync + Clone
+let tx = handles.sender();         // Send + Sync + Clone; `engine.sender()` if you
+                                   // drive an Engine rather than calling `serve`
 std::thread::spawn(move || {
     if !tx.send(conn_id, &bytes) { /* the queue was full, or it did not fit */ }
 });

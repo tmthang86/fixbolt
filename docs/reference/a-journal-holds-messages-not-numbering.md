@@ -79,7 +79,14 @@ the front door **cannot observe the number it will need**, and there is no other
 |---|---|---|
 | `Journal` | **no** — application only | yes |
 | `MessageLog` (`FileLog`) | yes, both directions | **no** — one writer thread, flushed on close, and the log is owned by the engine for the whole run |
-| `Observer::snapshot` | yes (`next_out` directly) | **no** — `connect_and_serve` hands out no handle |
+| `Observer::snapshot` | yes (`next_out` directly) | **no** — and for two reasons, only one of which has gone away |
+
+`[amended 2026-09-05, item 47]` **the third column's `Observer` row said *"`connect_and_serve`
+hands out no handle"*, and that is fixed now** — `Handles` exists, every front door takes one,
+and the live `next_out` is readable from another thread. The row still reads **no**, because the
+reason that matters was never the handle: an observer knows the number *when somebody asks*, so
+the last poll before a crash is what you get. Fixing the reachable half did not make it the right
+source, which is the point of the section below.
 
 So item 38's gate found item 47 from the other side, with a counterparty's own words as the
 evidence. That is the part worth carrying: **the gap was not visible from inside this repository

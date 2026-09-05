@@ -124,3 +124,25 @@ decision 8 exists to prevent, and it will not look like a logging problem when i
 Sharded deployments get `messages.log.0`, `.1`, …, one per shard. Every engine numbers its
 connections from zero, so one shared file would write `conn=0` for as many sockets as there
 are shards.
+
+---
+
+## 8. Stopping it, in `hft` mode
+
+`[2026-09-05]` **The same `Handles`, and one difference that matters here.**
+`serve_hft(addr, table, app, capacity, limits, log, handles)` takes the handles like every
+other entry point, and `handles.admin().shutdown(grace)` from another thread is what makes it
+return.
+
+**The difference is where the grace is spent.** In `hft` the engine **spins**, so an engine
+waiting out a 30-second grace for a counterparty that will never answer burns its isolated
+core for thirty seconds. That is the mode doing what you asked, but it makes the grace a
+number worth choosing rather than copying: in `hft` you usually hold one session per thread
+(§1), the counterparty is on a low-latency link, and an answer that has not arrived in a
+second or two is not coming. Seconds, not tens of seconds.
+
+**Do not put the stopping thread on the isolated core.** It sleeps, waits on a signal or reads
+a socket — all the things §3 pinned that core to avoid — and `Admin` is `Send + Sync` precisely
+so it can live anywhere else.
+[ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md),
+[ADR-0054](decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md).

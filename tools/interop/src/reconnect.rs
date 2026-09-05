@@ -329,29 +329,32 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
     }
 }
 
-/// Print the **live** outbound number, once per connection, as soon as the
-/// session is logged on.
+/// Print the **live** outbound number, every time it moves.
 ///
 /// `[2026-09-05]` **this is the second source `STATUS.md` item 48 recorded as
 /// unreachable.** Its write-up has a table with a row reading *"`Observer` —
 /// reachable at `recover` time? **no**, `connect_and_serve` hands out no
-/// handle"*. It does now (item 47), so the durable number and the live one can
-/// finally be printed in the same transcript and `scripts/interop.sh` can
-/// assert they agree.
+/// handle"*. It does now (item 47), so the durable number and the live one
+/// reach the same transcript and `scripts/interop.sh` can compare them.
 ///
-/// **They differ by exactly one, and the gate does that arithmetic rather than
-/// this process.** `recover` prints the number the resumed session will *start*
-/// at; by the time it is logged on it has spent that number on its own `Logon`,
-/// so the live count is one higher. A tool that adjusted the number before
-/// printing it could be wrong in the same direction as the defect under test.
+/// # What the comparison can and cannot be
 ///
-/// One snapshot per connection, on the first turn it is up: at `HeartBtInt=1`
-/// the next administrative message is a second away and this poll is 2 ms, so
-/// the number printed is the one just after the `Logon` and not a later one.
+/// **Not equality.** An `Observer` *samples* and a journal *records*, and
+/// ADR-0053 already argued exactly why that gap cannot be closed: a message
+/// sent between the last poll and the connection ending is spent, durable, and
+/// invisible here. On a clean logout it always is — the answer to the
+/// counterparty's `35=5` and the drop happen inside one turn, so no snapshot is
+/// ever taken between them.
+///
+/// So the gate asserts the **direction**: what the operator saw spent, the
+/// journal knows about. Sampling can only make this side *low*, never high, so
+/// the inequality is safe where equality would be a race. A journal that
+/// forgot an administrative message — item 48's defect — makes the resumed
+/// number lower than a number that was printed here, and that is red.
 #[cfg(all(feature = "standard", unix))]
 fn watch_next_out(observer: fixbolt::Observer) {
     std::thread::spawn(move || {
-        let mut announced = false;
+        let mut last = None;
         loop {
             match observer.request().as_ref().and_then(|s| {
                 s.sessions()
@@ -359,8 +362,8 @@ fn watch_next_out(observer: fixbolt::Observer) {
                     .copied()
                     .filter(fixbolt::SessionSnapshot::logged_on)
             }) {
-                Some(sess) if !announced => {
-                    announced = true;
+                Some(sess) if last != Some(sess.next_out()) => {
+                    last = Some(sess.next_out());
                     println!(
                         "interop-reconnect: observer next_out={} next_in={}",
                         sess.next_out(),
@@ -368,8 +371,9 @@ fn watch_next_out(observer: fixbolt::Observer) {
                     );
                 }
                 Some(_) => {}
-                // The connection went. The next one gets its own line.
-                None => announced = false,
+                // The connection went. The next one starts its own run of
+                // numbers, and the gate reads them per resume.
+                None => last = None,
             }
             std::thread::sleep(Duration::from_millis(2));
         }

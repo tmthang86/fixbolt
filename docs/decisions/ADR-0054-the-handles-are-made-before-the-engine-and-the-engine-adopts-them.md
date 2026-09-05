@@ -1,6 +1,6 @@
 # ADR-0054 — The handles are made before the engine, and the engine adopts them
 
-- **Status**: Proposed — 2026-09-05
+- **Status**: Accepted — 2026-09-05
 - **Date**: 2026-09-05
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0036](ADR-0036-one-mechanism-two-capabilities.md) — one cell, two
@@ -151,6 +151,28 @@ written here so the next person does not re-derive it.
   deferred builder's condition arriving early and being declined once**: the lint is an
   opinion about shape, and the shape is the one this ADR chose. It is recorded rather than
   muted so the next parameter meets a fact instead of a habit.
+
+**Found by building it, and neither was in the plan**
+
+- **The gate the plan asked for could not be written as an equality, and the reason was already
+  in ADR-0053.** `scripts/interop.sh` was to assert that the durable `next_out` and the live one
+  are *"the same number"*. `[measured 2026-09-05]` the first attempt demanded `live == resumed +
+  1` and read `resumed 4, live 6` — the application speaks first on logon, so the constant was
+  wrong as well, and a gate resting on a constant like that breaks when the *application*
+  changes. The deeper reason is ADR-0053's own argument applied to the plan that came after it:
+  an observer knows the number **when somebody asks**, so a message sent between the last poll
+  and the ending is spent, durable and invisible on that side — and on a clean logout it always
+  is, because answering the counterparty's `35=5` and dropping the link happen inside one turn.
+  The assertion is the **direction**: what an operator saw spent, the journal knows about.
+  Sampling can only make the live number low, so the inequality is safe where equality is a
+  race, and it has teeth — with the outbound mark removed, `interop-reconnect-beat` reads
+  `BEHIND (resumed 3, already seen live 5)` while the logout scenario stays green, which is the
+  limit above stated by the gate itself.
+- **`docs/DESIGN.md` §6 was carrying the reconnect row from before ADR-0053 closed.** It still
+  read *"**3 / 3** after a `SIGTERM` … refused by **exactly one**, which is the known gap item
+  48 names"* — a row the previous plan's own §4 walk should have moved and did not, while
+  `STATUS.md` and `CONFORMANCE.md` had both been updated. **The sync table is walked by hand and
+  a hand missed one row of it**, which is the thing that rule keeps being about.
 
 **Not decided here**
 

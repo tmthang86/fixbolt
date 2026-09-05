@@ -17,6 +17,23 @@ below describe what a first release would contain.
 
 ### Added
 
+- **The handles reach the front door.** **`fixbolt::Handles`** — one cell, made by the caller
+  **before** the engine, with `observer()`, `admin()` and `sender()` on it — plus
+  **`Engine::adopt(&Handles) -> bool`** and **`Engine::logons() -> u64`**
+  ([ADR-0054](docs/decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md),
+  `STATUS.md` item 47).
+
+  **What it fixes.** `Engine::observer`, `admin` and `sender` all need a `&mut Engine`, and a
+  caller who came through `serve` never holds one: the engine is built inside the function and
+  only a `Shutdown` comes back, after everything has ended. So an engine reached through the
+  front door could not be watched, administered, sent through, **or stopped** — and
+  `docs/GETTING-STARTED.md` had promised since 2026-09-03 that *"`serve` returns when an
+  operator stops the engine through `Admin::shutdown`"*. `[measured 2026-09-05]` that sentence
+  now executes:
+  `crates/library/tests/end_to_end.rs::an_operator_stops_the_front_door_and_serve_comes_back`
+  reads `sessions 1, said_goodbye 1, acked 1`, and `scripts/interop.sh` stops its acceptor role
+  by asking rather than by `kill`.
+
 - **A journal that knows how far it has counted.** `Journal` gains **`mark_out(seq)`** — a
   high-water mark, empty default body — and **`highest_out() -> Option<u32>`**, no default;
   `Resumed::from_journal(journal) -> Option<Resumed<J>>` computes `next_out`, `next_in` and
@@ -111,6 +128,21 @@ below describe what a first release would contain.
 
 ### Changed
 
+- **BREAKING — all ten `serve*` / `connect_and_serve*` functions take `handles: Handles` as
+  their last parameter.** `serve`, `serve_with`, `serve_with_recovery`,
+  `serve_with_recovery_with`, `serve_hft`, `serve_hft_with`, `serve_hft_with_recovery`,
+  `serve_hft_with_recovery_with`, `connect_and_serve`, `connect_and_serve_with`. This
+  contradicts [ADR-0047](docs/decisions/ADR-0047-the-four-buffer-sizes-are-the-callers-through-a-second-function.md)
+  decision 2 — *"the originals keep their exact signatures"* — deliberately and in part; its
+  other four decisions stand and it is **not** superseded. The alternative was six more twin
+  functions, sixteen for one idea. `shard::serve_sharded_hft` is **not** in this list and is
+  named as an open question in ADR-0054: N shards are N cells, and a `ConnId` is unique only
+  within one.
+- **`connect_and_serve` no longer drains the caller's event ring.** `Observer::events` drains,
+  so two readers on one cell share events rather than each seeing them — and the reconnect loop
+  was one of those readers, taking every `LoggedOn` for its own backoff ladder. It compares
+  `Engine::logons()` across a turn instead. Nothing changed on a turn: the counter is
+  incremented in the branch that already tests whether a session came up.
 - **BREAKING — `Journal` gains two methods, and one has no default body.** Anyone implementing
   the trait must add `highest_out()`; `mark_out()` defaults to doing nothing, which is right for
   a journal that does not survive a restart. Nothing is published, so nothing in the wild breaks.

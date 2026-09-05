@@ -911,6 +911,62 @@ fn main() {
         "and the engine really did drain inside the window"
     );
 
+    // --- a cell the engine did not make --------------------------------------
+    //
+    // `STATUS.md` item 47: every front door adopts a `Handles` the caller made
+    // before the engine existed. That is the same `Arc<Shared>` the three
+    // methods above create lazily, so a turn must cost exactly what
+    // `admin-idle` and `origin-idle` already cost — **one relaxed load** — and
+    // `Engine::adopt` must add nothing of its own. A number here that differed
+    // from those two would say the front door pays for something the hand-built
+    // engine does not.
+    let handles = fixbolt_engine::observe::Handles::new();
+    let (mut ap_peer, ap_side) = Loopback::pair();
+    let mut adopted: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Silent>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        cfg(),
+        InlineDispatch::new(Silent),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    assert!(
+        adopted.adopt(&handles),
+        "a fresh engine takes the cell it is given"
+    );
+    let ap_watch = handles.observer();
+    adopted.add(ap_side);
+    let _ = ap_peer.send(&traffic[0]);
+    adopted.turn();
+    let _ = ap_peer.recv(&mut sink);
+    // **Live, and through the pre-made handle.** A zero below must mean "did
+    // not allocate", never "watched an engine that never came up".
+    let _ = ap_watch.request();
+    adopted.turn();
+    assert!(
+        ap_watch.request().is_some_and(|s| s
+            .sessions()
+            .iter()
+            .any(fixbolt_engine::observe::SessionSnapshot::logged_on)),
+        "the adopted cell must show a logged-on session, or the count below is \
+         about an engine with nothing in it"
+    );
+
+    let adopt_idle_allocs = count(|| {
+        for _ in 0..10_000 {
+            adopted.turn();
+        }
+    });
+
     // --- speaking first ------------------------------------------------------
     //
     // ADR-0048 door 1: one session, and the handler speaks the whole way to
@@ -1341,7 +1397,8 @@ fn main() {
          shutdown {shutdown_allocs} reconnect {reconnect_allocs} \
          log-record {log_record_allocs} log-idle {log_idle_allocs} \
          log-busy {log_busy_allocs} origin-idle {origin_idle_allocs} \
-         origin-busy {origin_busy_allocs} logon-first {logon_first_allocs}"
+         origin-busy {origin_busy_allocs} adopt-idle {adopt_idle_allocs} \
+         logon-first {logon_first_allocs}"
     );
     assert_eq!(
         [
@@ -1364,6 +1421,7 @@ fn main() {
             events_busy_allocs,
             admin_idle_allocs,
             admin_busy_allocs,
+            adopt_idle_allocs,
             shutdown_allocs,
             log_record_allocs,
             log_idle_allocs,
@@ -1375,7 +1433,7 @@ fn main() {
             mark_mem_allocs,
             mark_file_allocs
         ],
-        [0; 29],
+        [0; 30],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

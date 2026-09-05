@@ -232,10 +232,17 @@ TargetCompID=FIXBOLT
 CFG
 
 echo "==> starting this engine's acceptor on ${PORT2}"
+# **Stdin is the operator's channel**, and the fifo is what keeps it open: a
+# process reading a pipe nobody holds sees EOF immediately, so `exec 9>` is not
+# decoration. `tools/interop/src/main.rs::stop_on_stdin` says why the trigger is
+# a line rather than a signal — ADR-0054, plan Sửa 4.
+mkfifo "${WORK}/fixbolt-acceptor.ctl"
 "${REPO_ROOT}/target/debug/interop" --role acceptor \
   --listen "127.0.0.1:${PORT2}" --cfg "${WORK}/fixbolt.cfg" \
+  < "${WORK}/fixbolt-acceptor.ctl" \
   > "${WORK}/fixbolt-acceptor.log" 2>&1 &
 FIXBOLT_PID=$!
+exec 9> "${WORK}/fixbolt-acceptor.ctl"
 
 # The line it waits for is printed by a thread that CONNECTED to the port, not
 # by the thread that is about to call `serve`. A readiness line printed before
@@ -255,12 +262,41 @@ set +e
 "${WORK}/initiator" "${WORK}/initiator.cfg" ${INTEROP_INITIATOR_ARGS:-} \
   2>&1 | tee "${WORK}/interop-acceptor.log"
 set -e
-kill "${FIXBOLT_PID}" 2>/dev/null || true
+
+# **The first time in this repository that one of these processes is asked to
+# stop rather than killed.** `STATUS.md` item 47: `Admin::shutdown` reaches the
+# engine through the front door, so `serve` returns on its own and prints what
+# it managed. A `kill` here would prove nothing about that and would hide it.
+#
+# The wait has a bound: an engine that ignores the stop must fail this gate,
+# not hang it. If it is still up after ten seconds it is killed and the
+# assertion below reads a missing line rather than a timeout with no message.
+echo "stop" >&9 || true
+stopped="no"
+for _ in $(seq 1 100); do
+  kill -0 "${FIXBOLT_PID}" 2>/dev/null || { stopped="yes"; break; }
+  sleep 0.1
+done
+exec 9>&-
+if [[ "${stopped}" != "yes" ]]; then
+  echo "this engine's acceptor did not return from serve within 10s of Admin::shutdown" >&2
+  kill "${FIXBOLT_PID}" 2>/dev/null || true
+fi
 wait "${FIXBOLT_PID}" 2>/dev/null || true
 FIXBOLT_PID=""
 
 # ---- 4c. Read that output too. Every step, not only the PASS line. ---------
 fail=0
+
+# The eighth assertion of this direction, and it is about this engine rather
+# than about the C++ initiator: `serve` came back because an operator asked,
+# and it counted the session it said goodbye to.
+if grep -qE "^interop: acceptor stopped: Shutdown \{" "${WORK}/fixbolt-acceptor.log"; then
+  echo "interop-acceptor: shutdown ok $(grep -oE 'Shutdown \{.*' "${WORK}/fixbolt-acceptor.log" | head -1)"
+else
+  echo "MISSING: serve never returned through Admin::shutdown" >&2
+  fail=1
+fi
 for step in logon order heartbeat testrequest resend gapfill logout; do
   if grep -qE "^interop-acceptor: ${step} +ok" "${WORK}/interop-acceptor.log"; then
     :
@@ -529,6 +565,51 @@ rc_assert_continued() {
   rc_step "no_resend" \
     "$([[ "${resend}" -eq 0 && "${reset}" -eq 0 && "${toolow}" -eq 0 ]] && echo yes || echo no)" \
     "35=2: ${resend}, 141=Y: ${reset}, 'MsgSeqNum too low': ${toolow}"
+
+  # 6. **Two sources for the same number, and the journal is never behind.**
+  #    The durable one is the journal, read by `Resumed::from_journal` when the
+  #    session is resumed; the live one is the engine's own `next_out`, read
+  #    through an `Observer` from another thread. `STATUS.md` item 48's write-up
+  #    has a table saying the second was unreachable — `connect_and_serve`
+  #    handed out no handle. Item 47 is what makes this assertion exist at all.
+  #
+  #    **It is an inequality, and that is not a weaker version of an equality
+  #    that was tried and failed.** ADR-0053 argued that an observer knows the
+  #    number *when somebody asks*, so a message sent between the last poll and
+  #    the connection ending is spent, durable, and invisible to this side. On a
+  #    clean logout it always is: answering the counterparty's `35=5` and
+  #    dropping the link happen inside one turn, so no snapshot falls between
+  #    them. `[đo 2026-09-05]` the first version of this assertion demanded
+  #    `live == resumed + 1` and read `resumed 4, live 6` — the application also
+  #    speaks first on logon, so the constant was wrong too, and a gate built on
+  #    a constant like that breaks when the *application* changes.
+  #
+  #    Sampling can only make the live number low, never high. So: every number
+  #    an operator saw spent is one the journal knows about. Item 48's defect
+  #    makes the resumed number LOWER than one already printed here — in the
+  #    `beat` scenario, resumed 3 against a live 5 — and that is red.
+  local two
+  two="$(awk '
+    /interop-reconnect: observer next_out=/ {
+      match($0, /next_out=[0-9]+/); l = substr($0, RSTART + 9, RLENGTH - 9) + 0
+      if (l > high) { high = l }
+      next
+    }
+    /interop-reconnect: resuming next_out=/ {
+      match($0, /next_out=[0-9]+/); r = substr($0, RSTART + 9, RLENGTH - 9) + 0
+      n++
+      if (r < high) { bad = bad " (resumed " r ", already seen live " high ")" }
+      high = 0
+      next
+    }
+    END {
+      if (n == 0) { print "no resume was observed" }
+      else if (bad != "") { print "BEHIND" bad }
+      else { print "ok " n " resume(s), journal never behind the live count" }
+    }
+  ' "${R}")"
+  rc_step "two_sources" "$([[ "${two}" == ok* ]] && echo yes || echo no)" \
+    "journal vs Observer: ${two}"
 }
 
 rc_assert_logout() {
@@ -599,20 +680,20 @@ fi
 # `[measured 2026-09-04]` renaming one step in the acceptor direction left the
 # binary printing `PASS 7/7` while the script correctly failed.
 fail=0
-for step in dropped back next_out next_in no_resend; do
+for step in dropped back next_out next_in no_resend two_sources; do
   if ! grep -qE "^interop-reconnect: ${step} +ok" "${WORK}/interop-reconnect.steps" 2>/dev/null; then
     echo "MISSING OR FAILED ASSERTION: interop-reconnect ${step}" >&2
     fail=1
   fi
 done
-for step in goodbye back next_out next_in no_resend; do
+for step in goodbye back next_out next_in no_resend two_sources; do
   if ! grep -qE "^interop-reconnect-logout: ${step} +ok" "${WORK}/interop-reconnect-logout.steps" 2>/dev/null; then
     echo "MISSING OR FAILED ASSERTION: interop-reconnect-logout ${step}" >&2
     fail=1
   fi
 done
 # The third scenario: a kill with a Heartbeat guaranteed inside the window.
-for step in dropped back next_out next_in no_resend; do
+for step in dropped back next_out next_in no_resend two_sources; do
   if ! grep -qE "^interop-reconnect-beat: ${step} +ok" "${WORK}/interop-reconnect-beat.steps" 2>/dev/null; then
     echo "MISSING OR FAILED ASSERTION: interop-reconnect-beat ${step}" >&2
     fail=1
@@ -651,5 +732,5 @@ fi
 echo "==> the run added nothing git can see"
 
 echo
-echo "interop: 7 / 7 + 7 / 7 + 5 / 5 + 5 / 5 + 5 / 5 against libquickfix @ ${PINNED_SHA}"
+echo "interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 against libquickfix @ ${PINNED_SHA}"
 echo "both roles and all three reconnect scenarios, each checked by somebody else's engine"
