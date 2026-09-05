@@ -170,6 +170,10 @@ pub struct Engine<
     /// null-pointer-sized field and does no work at all — `observe`'s whole
     /// design.
     observe: Option<std::sync::Arc<crate::observe::Shared>>,
+    /// Sessions that have logged on since this engine was built. See
+    /// [`Self::logons`] — it exists because an event stream has exactly one
+    /// reader and `dial` used to be it.
+    logons: u64,
     /// Set the first turn after an operator asked to stop. `None` while the
     /// engine is simply running, which is the whole cost of being stoppable.
     stopping: Option<Stopping>,
@@ -241,6 +245,7 @@ where
             next_id: self.next_id,
             backpressure: self.backpressure,
             observe: self.observe,
+            logons: self.logons,
             stopping: self.stopping,
             #[cfg(all(feature = "standard", unix))]
             waker: self.waker,
@@ -298,6 +303,7 @@ where
             next_id: 0,
             backpressure: Backpressure::Disconnect,
             observe: None,
+            logons: 0,
             stopping: None,
             #[cfg(all(feature = "standard", unix))]
             waker: None,
@@ -554,6 +560,43 @@ where
         conn.opened(at, &mut self.log);
         self.conns.push(conn);
         Ok(id)
+    }
+
+    /// Take the cell somebody made before this engine existed, so the handles
+    /// they already hold watch **this** engine.
+    ///
+    /// `true` if it was taken. **`false`, changing nothing, if this engine
+    /// already has a cell** — two cells on one engine are two truths: the engine
+    /// would publish into one and the operator read the other, and every symptom
+    /// of that is silence. An engine gets a cell from [`Self::observer`],
+    /// [`Self::admin`] or [`Self::sender`], so the refusal is for a caller who
+    /// asked the engine for a handle first and then tried to give it one.
+    ///
+    /// After this, those three methods hand out handles onto the adopted cell —
+    /// they find it already there. `STATUS.md` item 47; every front door calls
+    /// this for you, which is the whole point.
+    pub fn adopt(&mut self, handles: &crate::observe::Handles) -> bool {
+        if self.observe.is_some() {
+            return false;
+        }
+        self.observe = Some(std::sync::Arc::clone(&handles.0));
+        true
+    }
+
+    /// How many sessions have logged on since this engine was built.
+    ///
+    /// **A counter, because the event stream has one reader.**
+    /// [`crate::observe::Observer::events`] drains the ring, so two readers
+    /// share events rather than each seeing them — and [`connect_and_serve`]
+    /// used to be one of those readers, quietly taking every `LoggedOn` the
+    /// caller was waiting for. The reconnect loop compares this number across a
+    /// turn instead.
+    ///
+    /// It costs one increment, in the branch that already tests whether the
+    /// session just came up.
+    #[must_use]
+    pub const fn logons(&self) -> u64 {
+        self.logons
     }
 
     /// A handle another thread reads this engine's state through.
@@ -958,6 +1001,10 @@ where
             // default body is empty. `STATUS.md` item 32 (c).
             if !was_on && self.conns[i].session.is_logged_on() {
                 self.conns[i].journal.mark_active(now);
+                // **The same instant the `LoggedOn` event is emitted from**, and
+                // deliberately outside the `observe` test below: `dial` needs it
+                // whether or not anybody is watching. See [`Self::logons`].
+                self.logons = self.logons.saturating_add(1);
                 // **The session may now speak first** (ADR-0048 door 1). Here
                 // and nowhere else: this is the one instant that is neither a
                 // reply nor a tick, and it is reached once per session rather

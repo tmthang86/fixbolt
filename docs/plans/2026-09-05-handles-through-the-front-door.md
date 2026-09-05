@@ -1,6 +1,6 @@
 # Cửa trước trả về tay cầm
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** Đã duyệt 2026-09-05
 > **Phạm vi:** `STATUS.md` item 47. Chạm `engine` (`Engine`, `observe`, `origin`, mười entry
 > point `serve*` / `connect_and_serve*`, vòng `dial`), `library` (re-export, `README`),
 > `tools/interop`, tài liệu, một ADR mới. **Không chạm** `codec`, `dict`, `session`, `transport`,
@@ -12,6 +12,22 @@
 > **Thứ tự:** sau [a-journal-that-knows-the-numbering](2026-09-05-a-journal-that-knows-the-numbering.md)
 > (item 48), trước đợt B — item 45 (c). Plan này **không** cần plan kia, nhưng plan kia nhỏ hơn
 > và đang ghim một gate đỏ, nên đi trước.
+
+## Sửa, ghi trước khi code dịch chuyển
+
+**Sửa 1 — số ADR là 0054, không phải 0053.** `[2026-09-05]` Plan này viết *"ADR-0053 mới"* vào
+buổi sáng, và plan item 48 đóng vào buổi chiều cùng ngày, lấy đúng số đó
+([ADR-0053](../decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md),
+`Accepted`). §5 không cho dùng lại số. Mọi chỗ trong plan này đọc *ADR-0053* nghĩa là
+**ADR-0054**; các mục tài liệu ở dưới đã sửa tên file.
+
+**Sửa 2 — con số nền của `cargo test --all` không còn là 506.** Item 48 thêm test; số nền đo
+lại ngay trước khi bắt đầu bước 2 và ghi vào nhật ký. Điều kiện *"phải tăng"* không đổi, chỉ có
+mốc so sánh đổi.
+
+**Sửa 3 — `GUIDE.md` §8c điểm 5 đã được item 48 sửa rồi.** Bảng *Tài liệu* dưới đây viết điều
+kiện *"cùng plan item 48 nếu plan đó chưa đóng"*; plan đó **đã đóng**, nên việc còn lại của plan
+này ở đoạn ấy chỉ là **đọc lại để hai plan không nói trái nhau**, không phải sửa lần nữa.
 
 ## Bối cảnh
 
@@ -121,7 +137,7 @@ nối lại — hai nguồn phải bằng nhau, và đó là một assertion m�
 chữ ký, `dial`) · `crates/library/src/lib.rs` (re-export) · `crates/library/README.md` ·
 `crates/engine/tests/observe.rs`, `admin.rs`, `originate.rs`, `reconnect.rs`, `shutdown.rs`,
 `wire.rs` (mọi test gọi `serve*`) · `crates/library/tests/end_to_end.rs` · `tools/interop/src/*.rs`
-· `tools/w2w` nếu gọi `serve` · `scripts/interop.sh` · `docs/decisions/ADR-0053-*.md` (mới).
+· `tools/w2w` nếu gọi `serve` · `scripts/interop.sh` · `docs/decisions/ADR-0054-*.md` (mới).
 
 ## Bất biến bị đụng tới
 
@@ -137,7 +153,7 @@ chữ ký, `dial`) · `crates/library/src/lib.rs` (re-export) · `crates/library
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| 1 | **ADR-0053 `Proposed`**: cell dựng trước thay vì callback hay sinh đôi; vì sao đi ngược ADR-0047 quyết định 2 và ADR-0047 **không** bị supersede (bốn const vẫn đúng, chỉ có *"chữ ký gốc bất biến"* rơi); vì sao không `Option`; builder `Serve` được ghi là phương án *hoãn* với điều kiện mở lại | — |
+| 1 | **ADR-0054 `Proposed`**: cell dựng trước thay vì callback hay sinh đôi; vì sao đi ngược ADR-0047 quyết định 2 và ADR-0047 **không** bị supersede (bốn const vẫn đúng, chỉ có *"chữ ký gốc bất biến"* rơi); vì sao không `Option`; builder `Serve` được ghi là phương án *hoãn* với điều kiện mở lại | — |
 | 2 | `Handles`, `Engine::adopt`, `Engine::logons`. **Test đỏ trước**: `crates/engine/tests/observe.rs::a_handle_made_before_the_engine_sees_its_first_logon` — dựng `Handles`, dựng `Engine`, `adopt`, logon qua transport giả, `observer.request()` phải thấy một session; `adopt` lần hai trả `false` | 1 |
 | 3 | Mười chữ ký + `dial` không xả ring. Test: `reconnect.rs` — `Observer` của người gọi **vẫn nhận** `LoggedOn` sau khi `dial` đã thấy nó; `shutdown.rs` — `admin.shutdown` từ thread khác làm `serve` **trả về** với `Shutdown::clean()` | 2 |
 | 4 | `library` re-export, `README`, sáu ví dụ tài liệu; `tools/interop` dừng bằng `Admin`, `two_sources` trong `scripts/interop.sh`; `tools/w2w` | 3 |
@@ -163,7 +179,7 @@ chữ ký, `dial`) · `crates/library/src/lib.rs` (re-export) · `crates/library
 
 ## Tài liệu phải cập nhật
 
-- [ ] `docs/decisions/ADR-0053-*.md` — mới; ADR-0047 **không** sửa (đã Accepted), ADR mới nói
+- [ ] `docs/decisions/ADR-0054-*.md` — mới; ADR-0047 **không** sửa (đã Accepted), ADR mới nói
       rõ điều gì của nó còn đứng
 - [ ] `DESIGN.md` §3 (public API của `library`), §4 — D15 mọc đoạn *cửa 2 tới được qua cửa trước*;
       ADR-0036 *một cơ chế hai năng lực* nay là **ba năng lực, một cell dựng trước**; đi lại §2
@@ -197,7 +213,7 @@ chữ ký, `dial`) · `crates/library/src/lib.rs` (re-export) · `crates/library
 
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
-| ADR-0053 kết luận builder `Serve` thay vì tham số thứ bảy | trung bình | plan sửa bước 3 thành *builder + mười hàm thành shim*, ghi Sửa 1; các bước 2, 4, 5 không đổi |
+| ADR-0054 kết luận builder `Serve` thay vì tham số thứ bảy | trung bình | plan sửa bước 3 thành *builder + mười hàm thành shim*, ghi Sửa 1; các bước 2, 4, 5 không đổi |
 | Mười chữ ký đổi làm mọi test/tool/doc gọi `serve` đổi theo | chắc chắn | đó là bước 3–4, đếm trước bằng grep và ghi số vào nhật ký |
 | `shard` không có handle và plan này không chạm nó | thấp | ghi rõ ở *Ngoài phạm vi*; một `Handles` cho N shard là câu hỏi `ConnId` theo shard — ADR nêu là câu hỏi mở |
 

@@ -108,6 +108,15 @@ struct Running {
 
 impl Running {
     fn start() -> Self {
+        Self::spawn(None)
+    }
+
+    /// The same engine, given a cell that existed before it did.
+    fn start_adopting(handles: &fixbolt_engine::observe::Handles) -> Self {
+        Self::spawn(Some(handles))
+    }
+
+    fn spawn(adopt: Option<&fixbolt_engine::observe::Handles>) -> Self {
         let acceptor = Acceptor::bind("127.0.0.1:0").expect("a free port");
         let addr = acceptor.local_addr().expect("bound").to_string();
         let mut engine: Acc = Engine::new(
@@ -120,6 +129,9 @@ impl Running {
             Yield,
             4,
         );
+        if let Some(h) = adopt {
+            assert!(engine.adopt(h), "a fresh engine has no cell of its own yet");
+        }
         let observer = engine.observer();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
@@ -266,5 +278,95 @@ fn the_engine_publishes_nothing_until_it_is_asked() {
         once,
         "and it went back to publishing nothing: {once} then {}",
         engine.observer.published()
+    );
+}
+
+/// **The specification for `STATUS.md` item 47, at the seam under the front
+/// door.**
+///
+/// Everything above is written the way the whole `observe` module was tested:
+/// build an `Engine`, ask it for a handle, drive it. A caller who comes through
+/// `serve` never holds an `Engine` and can never make that call — which is why
+/// item 30 has been finished and unreachable since it landed. So the handle has
+/// to be able to exist **before** the engine does.
+///
+/// This is that seam, one layer below `serve`: the cell is made first, the
+/// engine adopts it, and what the operator reads was never asked of the engine
+/// at all.
+#[test]
+fn a_handle_made_before_the_engine_sees_its_first_logon() {
+    // Made first. There is no engine at this point, and on the front-door path
+    // there never will be one the caller can name.
+    let handles = fixbolt_engine::observe::Handles::new();
+    let observer = handles.observer();
+
+    let engine = Running::start_adopting(&handles);
+
+    let mut client = TcpStream::connect(&engine.addr).expect("connect");
+    client.set_nodelay(true).expect("nodelay");
+    client.write_all(&corpus_logon()).expect("send the Logon");
+
+    // Read through the handle made before the engine, not through
+    // `Running::observer`, which is the one the engine handed out.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut last = None;
+    let s = loop {
+        if let Some(s) = observer.request() {
+            if s.sessions().first().is_some_and(|x| x.logged_on()) {
+                break s;
+            }
+            last = Some(s);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pre-made handle never saw the session log on; last snapshot: {last:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    };
+
+    let sess = s.sessions().first().expect("one session");
+    assert!(sess.logged_on(), "it answered the Logon: {sess:?}");
+    assert_eq!(sess.next_out(), 2, "the acceptor's own Logon was 34=1");
+}
+
+/// Two cells on one engine are two truths, so the second one is refused.
+///
+/// And the assertion that matters is not the `false` — it is that the engine
+/// **publishes into the cell it was given**. An `adopt` that quietly made its
+/// own cell would leave every reading above empty forever, with nothing to say
+/// why.
+#[test]
+fn an_engine_publishes_into_the_cell_it_was_given() {
+    let handles = fixbolt_engine::observe::Handles::new();
+    let mut engine: Acc = Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+        InlineDispatch::new(EchoApp::default()),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    assert!(engine.adopt(&handles), "an engine with no cell takes one");
+    assert!(
+        !engine.adopt(&fixbolt_engine::observe::Handles::new()),
+        "a second cell is refused rather than replacing the first"
+    );
+
+    // Ask through the pre-made handle, turn once, and the answer must have been
+    // published into that cell.
+    assert_eq!(handles.observer().published(), 0, "nothing asked yet");
+    let _ = handles.observer().request();
+    engine.turn();
+    assert_eq!(
+        handles.observer().published(),
+        1,
+        "the engine published into the caller's cell, not one of its own"
+    );
+
+    // And the three older methods find the adopted cell rather than making a
+    // second one — the same number, read through the engine's own handle.
+    assert_eq!(
+        engine.observer().published(),
+        1,
+        "`Engine::observer` hands out a handle onto the adopted cell"
     );
 }
