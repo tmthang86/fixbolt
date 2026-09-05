@@ -50,7 +50,6 @@ use fixbolt_engine::msglog::NoLog;
 use fixbolt_engine::reconnect::Policy;
 use fixbolt_engine::recovery::{NoRecovery, Recovery, Resumed};
 use fixbolt_session::Config;
-use fixbolt_session::journal::Journal;
 
 /// The journal this role keeps on disk.
 ///
@@ -191,24 +190,22 @@ impl Recovery<Disk> for OnDisk {
     }
 
     fn recover(&mut self, _cfg: &Config) -> Option<Resumed<Disk>> {
-        let journal = self.open();
-        let next_out = journal.highest().map_or(1, |h| h + 1);
-        // `+ 1`, per the trait's rustdoc. `highest_in` is the last number
-        // **seen**; the next one expected is the one after it.
-        let next_in = journal.highest_in().map_or(1, |h| h + 1);
-        let last_active_ms = journal.last_active();
-        if next_out == 1 && next_in == 1 && last_active_ms.is_none() {
-            // Nothing was left behind, which is the ordinary answer on the
-            // first attempt. The engine then asks `fresh` and starts at `34=1`.
-            return None;
-        }
-        println!("interop-reconnect: resuming next_out={next_out} next_in={next_in}");
-        Some(Resumed {
-            journal,
-            next_out,
-            next_in,
-            last_active_ms,
-        })
+        // **`from_journal`, not three lines of arithmetic.** `[đo 2026-09-05]`
+        // the three lines that used to be here derived `next_out` from
+        // `journal.highest()`, which is the highest message held for a
+        // *replay* — short by every administrative message since the last
+        // application one. A real `libquickfix` answered *"MsgSeqNum too low,
+        // expecting 4 but received 3"*. ADR-0053.
+        //
+        // `None` here is the ordinary answer on the first attempt: nothing was
+        // left behind, the engine asks `fresh`, and the session starts at
+        // `34=1`.
+        let resumed = Resumed::from_journal(self.open())?;
+        println!(
+            "interop-reconnect: resuming next_out={} next_in={}",
+            resumed.next_out, resumed.next_in
+        );
+        Some(resumed)
     }
 }
 

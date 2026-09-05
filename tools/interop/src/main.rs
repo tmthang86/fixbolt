@@ -130,11 +130,13 @@ impl Application for Count {
 struct Kept {
     msgs: Vec<(u32, Vec<u8>)>,
     highest_in: Option<u32>,
+    highest_out: Option<u32>,
 }
 
 impl Journal for Kept {
     fn put(&mut self, seq: u32, bytes: &[u8]) -> bool {
         self.msgs.push((seq, bytes.to_vec()));
+        self.highest_out = Some(self.highest_out.map_or(seq, |h| h.max(seq)));
         true
     }
 
@@ -159,6 +161,14 @@ impl Journal for Kept {
 
     fn highest_in(&self) -> Option<u32> {
         self.highest_in
+    }
+
+    fn mark_out(&mut self, seq: u32) {
+        self.highest_out = Some(self.highest_out.map_or(seq, |h| h.max(seq)));
+    }
+
+    fn highest_out(&self) -> Option<u32> {
+        self.highest_out
     }
 }
 

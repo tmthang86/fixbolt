@@ -244,7 +244,7 @@ fn what_no_longer_fits_in_the_ring_is_filled_over_not_skipped() {
     let mut out = feed(&mut s, &mut j, &resend_request(11, 2, 0));
     while out.len() < 9 {
         let before = out.len();
-        s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+        s.tick_with(FIXED_TIME_MILLIS, &mut j, |b| {
             out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
         });
         assert!(
@@ -584,7 +584,7 @@ fn a_resend_that_reaches_below_the_ring_counts_every_number_it_filled() {
     let mut out = feed(&mut s, &mut j, &resend_request(22, 1, 0));
     while out.len() < 9 {
         let before = out.len();
-        s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+        s.tick_with(FIXED_TIME_MILLIS, &mut j, |b| {
             out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
         });
         assert!(
@@ -728,7 +728,7 @@ fn a_long_resend_is_replayed_over_several_ticks_in_order() {
             "still {} of 100 after {calls} calls",
             replayed(&out).len()
         );
-        s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+        s.tick_with(FIXED_TIME_MILLIS, &mut j, |b| {
             out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
         });
     }
@@ -741,7 +741,7 @@ fn a_long_resend_is_replayed_over_several_ticks_in_order() {
 
     // And it stops when it is done: a fourteenth call says nothing.
     let mut after = Vec::new();
-    s.tick_with(FIXED_TIME_MILLIS, &j, |b| after.push(b.len()));
+    s.tick_with(FIXED_TIME_MILLIS, &mut j, |b| after.push(b.len()));
     assert!(after.is_empty(), "nothing is owed any more: {after:?}");
 }
 
@@ -773,7 +773,7 @@ fn a_replay_stalls_on_the_journal_less_tick_and_says_nothing_wrong() {
     );
     // And `tick_with` picks it up where it was left.
     let mut resumed = Vec::new();
-    s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+    s.tick_with(FIXED_TIME_MILLIS, &mut j, |b| {
         resumed.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
     });
     assert_eq!(replayed(&resumed), (10..=17).collect::<Vec<u32>>());
@@ -795,7 +795,7 @@ fn a_disconnect_cancels_a_resend_in_progress() {
     s.disconnect(|_| {});
     s.connect(|_| {});
     let mut after = Vec::new();
-    s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+    s.tick_with(FIXED_TIME_MILLIS, &mut j, |b| {
         after.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
     });
     assert!(
@@ -825,7 +825,7 @@ fn a_new_resend_request_replaces_the_one_in_progress() {
         "the new question, answered whole: {second:?}"
     );
     let mut after = Vec::new();
-    s.tick_with(FIXED_TIME_MILLIS, &j, |b| {
+    s.tick_with(FIXED_TIME_MILLIS, &mut j, |b| {
         after.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
     });
     assert!(
@@ -894,7 +894,7 @@ fn a_schedule_reset_cancels_a_resend_in_progress() {
 
     // A day later: the same wall-clock window, a different session.
     let mut after = Vec::new();
-    s.tick_with(FIXED_TIME_MILLIS + day, &j, |b| {
+    s.tick_with(FIXED_TIME_MILLIS + day, &mut j, |b| {
         after.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
     });
     assert!(

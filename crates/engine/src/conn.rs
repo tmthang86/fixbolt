@@ -454,6 +454,7 @@ impl<
         let bound = TX;
         let Self {
             session,
+            journal,
             transport,
             tx,
             tx_len,
@@ -474,7 +475,9 @@ impl<
             overflow,
             failed: dead,
         };
-        let _ = session.logout_now(SLOW_APPLICATION, |b| out.push(b));
+        // `_with`: the goodbye spends a number the journal keeps no bytes for,
+        // and this is a path a connection does not come back from. ADR-0053.
+        let _ = session.logout_now_with(SLOW_APPLICATION, journal, |b| out.push(b));
         // The `58=` tells the counterparty; this tells the operator, who is the
         // only one who can do anything about it. ADR-0011.
         session.note_drop_reason(fixbolt_session::DropReason::SlowApplication);
@@ -526,6 +529,7 @@ impl<
                 let blocks = self.policy.blocks();
                 let Self {
                     session,
+                    journal,
                     transport,
                     tx,
                     tx_len,
@@ -546,7 +550,7 @@ impl<
                     overflow,
                     failed: dead,
                 };
-                let sent = session.send_sequence_reset(n, |b| out.push(b));
+                let sent = session.send_sequence_reset_with(n, journal, |b| out.push(b));
                 if self.overflow {
                     self.slow_consumer(at_ms, log);
                 }
@@ -573,6 +577,7 @@ impl<
         let said = {
             let Self {
                 session,
+                journal,
                 transport,
                 tx,
                 tx_len,
@@ -593,7 +598,7 @@ impl<
                 overflow,
                 failed: dead,
             };
-            session.begin_logout(SHUTTING_DOWN, |b| out.push(b)) == Link::Up
+            session.begin_logout_with(SHUTTING_DOWN, journal, |b| out.push(b)) == Link::Up
         };
         if self.overflow {
             self.slow_consumer(at_ms, log);
@@ -619,6 +624,7 @@ impl<
         let bound = TX;
         let Self {
             session,
+            journal,
             transport,
             tx,
             tx_len,
@@ -641,7 +647,7 @@ impl<
             overflow,
             failed: dead,
         };
-        let _ = session.logout_now(SLOW_CONSUMER, |b| out.push(b));
+        let _ = session.logout_now_with(SLOW_CONSUMER, journal, |b| out.push(b));
         session.note_drop_reason(fixbolt_session::DropReason::SlowConsumer);
         self.overflow = false;
         self.closing = true;

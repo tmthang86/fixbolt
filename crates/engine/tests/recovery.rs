@@ -123,7 +123,7 @@ fn a_session_resumed_from_a_journal_keeps_counting() {
     }
     // The restart. Everything above is gone; only the file is left.
     let j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
-    let highest = j.highest().expect("the journal held something");
+    let highest = j.highest_out().expect("the journal held something");
 
     let mut s: Session<Acceptor, 64> = Session::resume(cfg(), highest + 1, 12);
     assert_eq!(s.next_out(), 9, "carried in from the journal");
@@ -235,13 +235,13 @@ fn a_session_resumes_both_counts_from_one_file() {
     let j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
     let s: Session<Acceptor, 64> = Session::resume(
         cfg(),
-        j.highest().map_or(1, |h| h + 1),
+        j.highest_out().map_or(1, |h| h + 1),
         j.highest_in().map_or(1, |h| h + 1),
     );
     assert_eq!(
         (s.next_out(), s.next_in()),
         (6, 31),
-        "outbound from the last record, inbound from the last mark"
+        "outbound from the count the journal kept, inbound from the last mark"
     );
 }
 

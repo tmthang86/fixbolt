@@ -92,6 +92,14 @@ pub struct MemJournal<const N: usize, const LEN: usize> {
     /// Not a slot: nothing is kept about an inbound message except that it was
     /// consumed, so one number is the whole of it. ADR-0017.
     highest_in: Option<u32>,
+    /// The highest outbound number spent, whether or not its bytes were kept.
+    ///
+    /// Separate from [`Self::high_water`], which is the floor
+    /// [`Journal::oldest`] is computed from and moves only when a message is
+    /// *kept*. This one also moves for a `Heartbeat`, a `Logout` and a
+    /// refused `put` — the numbers a restart needs and a replay cannot use.
+    /// ADR-0053.
+    highest_out: Option<u32>,
 }
 
 /// **Going back to an inline `[Slot<LEN>; N]` is a compile error, not a test.**
@@ -128,6 +136,7 @@ impl<const N: usize, const LEN: usize> MemJournal<N, LEN> {
             slots: slots.into_boxed_slice(),
             high_water: None,
             highest_in: None,
+            highest_out: None,
         }
     }
 }
@@ -151,6 +160,10 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
         slot.len = u16::try_from(bytes.len()).unwrap_or(0);
         slot.buf[..bytes.len()].copy_from_slice(bytes);
         self.high_water = Some(self.high_water.map_or(seq, |h| h.max(seq)));
+        // A kept message spends its number too, so this is the same fact
+        // `mark_out` records — which is what makes a `mark_out` following a
+        // successful `put` a no-op rather than a second write. ADR-0053.
+        self.highest_out = Some(self.highest_out.map_or(seq, |h| h.max(seq)));
         true
     }
 
@@ -216,6 +229,17 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
 
     fn highest_in(&self) -> Option<u32> {
         self.highest_in
+    }
+
+    fn mark_out(&mut self, seq: u32) {
+        // `max`, for the reason `mark_in` uses it and one more: the session
+        // tells this the same high-water mark on every turn, so all but the
+        // first telling of a number is deliberately nothing.
+        self.highest_out = Some(self.highest_out.map_or(seq, |h| h.max(seq)));
+    }
+
+    fn highest_out(&self) -> Option<u32> {
+        self.highest_out
     }
 }
 
@@ -379,6 +403,17 @@ const ACTIVITY_MARK: u32 = 0;
 /// How many bytes an activity mark carries: one `u64` of milliseconds.
 const ACTIVITY_LEN: usize = 8;
 
+/// How many bytes an *outbound mark* carries: one `u32`, the highest outbound
+/// sequence number spent.
+///
+/// It shares the reserved `seq == 0` of [`ACTIVITY_MARK`] and is told apart by
+/// its length, exactly as the inbound mark is told apart by having none. **The
+/// third and last use of that escape**: it works because `34=0` is not a
+/// sequence number FIX can produce and because nothing is published, and a
+/// fourth shape would be a format only its own history can read. The next
+/// record shape lifts the version to v2. ADR-0053.
+const OUTBOUND_LEN: usize = 4;
+
 /// Where the writer thread should be pinned, if anywhere.
 ///
 /// Two aliases rather than two copies of `open_with`: without the `affinity`
@@ -533,6 +568,12 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                     // order, so the last one is the one that describes the
                     // session at the moment it stopped.
                     last_active = Some(u64::from_le_bytes(t));
+                } else if seq == ACTIVITY_MARK && len == OUTBOUND_LEN {
+                    let mut n = [0u8; OUTBOUND_LEN];
+                    n.copy_from_slice(&bytes[at + RECORD_HEADER..end]);
+                    // `mark_out` takes the max, so the order these are read in
+                    // does not matter and a wound-back count does not lower it.
+                    mem_recovered.mark_out(u32::from_le_bytes(n));
                 } else if len == INBOUND_MARK {
                     mem_recovered.mark_in(seq);
                 } else {
@@ -804,13 +845,59 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
     fn highest_in(&self) -> Option<u32> {
         self.mem.highest_in()
     }
+
+    fn mark_out(&mut self, seq: u32) {
+        // **The guard is here, not at the call site.** The session tells this
+        // the same high-water mark on every turn, so without the comparison a
+        // quiet session under `Fsync` would `sync_data` once per turn for a
+        // number that has not moved. ADR-0053.
+        if self.mem.highest_out().is_some_and(|h| h >= seq) {
+            return;
+        }
+        self.mem.mark_out(seq);
+        // The same two tiers as `mark_in`, and the same cost: under `Fsync` an
+        // administrative message now pays a `sync_data` where it used to pay
+        // nothing. That is ADR-0017's price arriving on the outbound side, and
+        // `Async` — the default — keeps it off the engine thread.
+        match self.how {
+            Durability::Async => {
+                if let Some(p) = self.to_writer.as_mut() {
+                    let n = u32::try_from(OUTBOUND_LEN).unwrap_or(0);
+                    let _ = p.push(&[
+                        &ACTIVITY_MARK.to_le_bytes(),
+                        &n.to_le_bytes(),
+                        &seq.to_le_bytes(),
+                    ]);
+                }
+            }
+            Durability::Fsync => {
+                if let Some(f) = self.file.as_mut() {
+                    let mut rec = [0u8; RECORD_HEADER + OUTBOUND_LEN];
+                    rec[..RECORD_SEQ].copy_from_slice(&ACTIVITY_MARK.to_le_bytes());
+                    let n = u32::try_from(OUTBOUND_LEN).unwrap_or(0);
+                    rec[RECORD_SEQ..RECORD_HEADER].copy_from_slice(&n.to_le_bytes());
+                    rec[RECORD_HEADER..].copy_from_slice(&seq.to_le_bytes());
+                    let _ = f.write_all(&rec);
+                    if self.format == Format::V1 {
+                        let _ = f.write_all(&crc32(&[&rec]).to_le_bytes());
+                    }
+                    let _ = f.sync_data();
+                }
+            }
+        }
+    }
+
+    fn highest_out(&self) -> Option<u32> {
+        self.mem.highest_out()
+    }
 }
 
 // --- reading the file from outside the engine ----------------------------
 
 /// One record in a journal file.
 ///
-/// The two shapes the format has: a message, and ADR-0017's inbound mark.
+/// The four shapes the format has: a message, ADR-0017's inbound mark,
+/// ADR-0033's activity mark, and ADR-0053's outbound mark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Record<'a> {
     /// A message this session sent, with the number it went out under.
@@ -841,17 +928,34 @@ pub enum Record<'a> {
         /// The instant recorded.
         at_ms: u64,
     },
+    /// The highest **outbound** sequence number spent at that point, including
+    /// the administrative messages the journal holds no bytes for.
+    ///
+    /// Encoded as a record whose sequence number is zero and whose length is
+    /// four — see `OUTBOUND_LEN`. This is what a restart's `next_out` is
+    /// derived from, and a file written before it existed simply has none.
+    /// [ADR-0053]
+    ///
+    /// [ADR-0053]: ../../../docs/decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md
+    OutboundMark {
+        /// The highest outbound number spent.
+        seq: u32,
+    },
 }
 
 impl Record<'_> {
     /// The sequence number, whichever shape this is.
     ///
     /// An [`Record::ActivityMark`] answers `0`, which is the number it is
-    /// written under and is not a sequence number FIX has.
+    /// written under and is not a sequence number FIX has. An
+    /// [`Record::OutboundMark`] answers the **number it carries**, not the
+    /// zero it is written under: that number is the point of the record.
     #[must_use]
     pub const fn seq(&self) -> u32 {
         match *self {
-            Self::Message { seq, .. } | Self::InboundMark { seq } => seq,
+            Self::Message { seq, .. } | Self::InboundMark { seq } | Self::OutboundMark { seq } => {
+                seq
+            }
             Self::ActivityMark { .. } => ACTIVITY_MARK,
         }
     }
@@ -1060,6 +1164,12 @@ impl<'a> Iterator for Records<'a> {
             t.copy_from_slice(self.bytes.get(at + RECORD_HEADER..end)?);
             Some(Record::ActivityMark {
                 at_ms: u64::from_le_bytes(t),
+            })
+        } else if seq == ACTIVITY_MARK && len == OUTBOUND_LEN {
+            let mut n = [0u8; OUTBOUND_LEN];
+            n.copy_from_slice(self.bytes.get(at + RECORD_HEADER..end)?);
+            Some(Record::OutboundMark {
+                seq: u32::from_le_bytes(n),
             })
         } else if len == INBOUND_MARK {
             Some(Record::InboundMark { seq })

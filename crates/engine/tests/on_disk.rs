@@ -109,6 +109,201 @@ fn the_sequence_numbers_already_survive_a_restart() {
     assert_eq!(highest_in, Some(9), "the premise");
 }
 
+/// **The outbound count survives a restart too, and it is not the same number
+/// as `highest`.** A session that sends one order and then three
+/// administrative messages has spent `34=4` and journalled `34=1`; a restart
+/// deriving `next_out` from `highest` starts at 2 and is refused by the
+/// counterparty.
+///
+/// `STATUS.md` item 48, ADR-0053.
+#[test]
+fn the_outbound_count_survives_a_restart_and_is_not_highest() {
+    let path = tmp("outbound-count-survives");
+    {
+        let mut j: FileJournal<N, LEN> = FileJournal::open(&path, Durability::Async).expect("open");
+        j.put(1, b"8=FIX.4.4\x0135=D\x0134=1\x01");
+        // Three administrative messages: bytes nowhere, numbers spent.
+        j.mark_out(4);
+    }
+    let reopened: FileJournal<N, LEN> =
+        FileJournal::open(&path, Durability::Async).expect("reopen");
+    let (highest, highest_out) = (reopened.highest(), reopened.highest_out());
+    drop(reopened);
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(highest, Some(1), "one message is all that can be replayed");
+    assert_eq!(
+        highest_out,
+        Some(4),
+        "and four numbers were spent — the difference is the whole item"
+    );
+}
+
+/// The same under `Durability::Fsync`, which takes the other branch of every
+/// write in this type.
+#[test]
+fn the_outbound_count_survives_a_restart_under_fsync_too() {
+    let path = tmp("outbound-count-fsync");
+    {
+        let mut j: FileJournal<N, LEN> = FileJournal::open(&path, Durability::Fsync).expect("open");
+        j.put(1, b"8=FIX.4.4\x0135=D\x0134=1\x01");
+        j.mark_out(4);
+    }
+    let reopened: FileJournal<N, LEN> =
+        FileJournal::open(&path, Durability::Fsync).expect("reopen");
+    let highest_out = reopened.highest_out();
+    drop(reopened);
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(highest_out, Some(4));
+}
+
+/// **A kept message writes no outbound mark**, because `put` already raised the
+/// count. Without this the file would carry a second record per application
+/// message for a fact it already holds — the trap the plan named.
+#[test]
+fn a_kept_message_does_not_also_write_an_outbound_mark() {
+    use fixbolt_engine::journal::{Reader, Record};
+
+    let path = tmp("no-double-write");
+    {
+        let mut j: FileJournal<N, LEN> = FileJournal::open(&path, Durability::Async).expect("open");
+        for seq in 1..=10 {
+            j.put(
+                seq,
+                format!("8=FIX.4.4\u{1}35=D\u{1}34={seq}\u{1}").as_bytes(),
+            );
+            // Exactly what the session does after every application message.
+            j.mark_out(seq);
+        }
+    }
+    let reader = Reader::open(&path).expect("read");
+    let (messages, out_marks) = reader
+        .records()
+        .fold((0usize, 0usize), |(m, o), r| match r {
+            Record::Message { .. } => (m + 1, o),
+            Record::OutboundMark { .. } => (m, o + 1),
+            _ => (m, o),
+        });
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(messages, 10, "ten messages written");
+    assert_eq!(
+        out_marks, 0,
+        "and not one outbound mark, because `put` already said the number was spent"
+    );
+}
+
+/// **A `put` the journal refuses still spends the number**, and that is exactly
+/// when the mark is the only record of it. A reply longer than a slot is the
+/// case: legal on the wire, gap-filled on a resend, and invisible to `highest`.
+#[test]
+fn a_refused_put_still_moves_the_outbound_count() {
+    let path = tmp("refused-put");
+    {
+        let mut j: FileJournal<N, LEN> = FileJournal::open(&path, Durability::Async).expect("open");
+        j.put(1, b"8=FIX.4.4\x0135=D\x0134=1\x01");
+        let too_long = vec![b'x'; LEN + 1];
+        assert!(!j.put(2, &too_long), "the premise: it does not fit a slot");
+        j.mark_out(2);
+    }
+    let reopened: FileJournal<N, LEN> =
+        FileJournal::open(&path, Durability::Async).expect("reopen");
+    let (highest, highest_out) = (reopened.highest(), reopened.highest_out());
+    drop(reopened);
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(highest, Some(1), "the refused message is not held");
+    assert_eq!(highest_out, Some(2), "and its number was still spent");
+}
+
+/// **`Resumed::from_journal` computes what every example used to compute by
+/// hand**, and it is the outbound *count* it reads, not the highest kept
+/// message. `STATUS.md` item 48, ADR-0053.
+#[test]
+fn from_journal_reads_the_count_and_not_the_highest_kept_message() {
+    use fixbolt_engine::recovery::Resumed;
+
+    let path = tmp("from-journal");
+    {
+        let mut j: FileJournal<N, LEN> = FileJournal::open(&path, Durability::Async).expect("open");
+        j.put(1, b"8=FIX.4.4\x0135=D\x0134=1\x01");
+        j.mark_in(6);
+        j.mark_out(4);
+        j.mark_active(1_700_000_000_000);
+    }
+    let j: FileJournal<N, LEN> = FileJournal::open(&path, Durability::Async).expect("reopen");
+    let r = Resumed::from_journal(j).expect("this journal knows things");
+    let (next_out, next_in, last) = (r.next_out, r.next_in, r.last_active_ms);
+    drop(r);
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(
+        next_out, 5,
+        "highest_out is 4, and `highest` would have said 2 — the defect"
+    );
+    assert_eq!(next_in, 7);
+    assert_eq!(last, Some(1_700_000_000_000));
+}
+
+/// **A journal that knows nothing answers `None`**, which is the *"start
+/// fresh"* answer `Recovery::recover` gives. Without this, a first-ever
+/// connection would resume from numbers nobody set.
+#[test]
+fn from_journal_on_an_empty_journal_says_start_fresh() {
+    use fixbolt_engine::recovery::Resumed;
+
+    let path = tmp("from-journal-empty");
+    {
+        let _j: FileJournal<N, LEN> = FileJournal::open(&path, Durability::Async).expect("open");
+    }
+    let j: FileJournal<N, LEN> = FileJournal::open(&path, Durability::Async).expect("reopen");
+    let none = Resumed::from_journal(j).is_none();
+    let _ = std::fs::remove_file(&path);
+
+    assert!(
+        none,
+        "nothing was left behind, so there is nothing to resume"
+    );
+}
+
+/// **A file written before outbound marks existed reads exactly as it did**,
+/// and is short by exactly as much as it was — not worse, not better. The
+/// number was never written and cannot be reconstructed; what must not happen
+/// is the reader mistaking the new mark's shape for something else in an old
+/// file, or refusing to open one.
+#[test]
+fn a_file_with_no_outbound_mark_reads_as_it_always_did() {
+    let path = tmp("no-outbound-mark");
+    {
+        let mut j: FileJournal<N, LEN> = FileJournal::open(&path, Durability::Async).expect("open");
+        for seq in 1..=5 {
+            j.put(
+                seq,
+                format!("8=FIX.4.4\u{1}35=D\u{1}34={seq}\u{1}").as_bytes(),
+            );
+        }
+        j.mark_in(7);
+    }
+    let reopened: FileJournal<N, LEN> =
+        FileJournal::open(&path, Durability::Async).expect("reopen");
+    let (highest, highest_in, highest_out) = (
+        reopened.highest(),
+        reopened.highest_in(),
+        reopened.highest_out(),
+    );
+    drop(reopened);
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(highest, Some(5), "unchanged");
+    assert_eq!(highest_in, Some(7), "unchanged");
+    assert_eq!(
+        highest_out,
+        Some(5),
+        "what the kept messages say, which is what this file could ever have said"
+    );
+}
+
 /// **A file written before activity marks existed still reads exactly as it
 /// did.** The format did not change; the reader gained a branch.
 ///
@@ -225,7 +420,6 @@ mod serving {
     use fixbolt_engine::presession::{Limits, Table};
     use fixbolt_engine::recovery::{Recovery, Resumed};
     use fixbolt_engine::{Application, Config};
-    use fixbolt_session::journal::Journal;
 
     /// The sizes this test's journal uses. Small on purpose: the ring is not
     /// what is being tested, the **file** is.
@@ -283,21 +477,11 @@ mod serving {
         }
 
         fn recover(&mut self, cfg: &Config) -> Option<Resumed<Disk>> {
-            let journal = self.fresh(cfg);
-            let next_out = journal.highest().map_or(1, |h| h + 1);
-            let next_in = journal.highest_in().unwrap_or(1);
-            let last_active_ms = journal.last_active();
-            if next_out == 1 && last_active_ms.is_none() {
-                // Nothing was left behind. `None` is the ordinary answer, and
-                // the journal just opened is handed back through `fresh`.
-                return None;
-            }
-            Some(Resumed {
-                journal,
-                next_out,
-                next_in,
-                last_active_ms,
-            })
+            // `from_journal`, which is the arithmetic this example used to do
+            // by hand and get wrong — ADR-0053. `None` is the ordinary answer
+            // when nothing was left behind, and the journal just opened is
+            // handed back through `fresh`.
+            Resumed::from_journal(self.fresh(cfg))
         }
     }
 

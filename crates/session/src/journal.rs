@@ -129,6 +129,52 @@ pub trait Journal {
     /// reason [`Self::highest`] has none: a journal holding state must not be
     /// able to report that it holds none.
     fn highest_in(&self) -> Option<u32>;
+
+    /// Record that outbound sequence numbers up to and including `seq` have
+    /// been spent.
+    ///
+    /// **A high-water mark, not an event.** It is told *the highest number
+    /// spent so far*, so being told a number it already knows must do nothing,
+    /// and a [`Self::put`] that was kept raises this too — a `mark_out`
+    /// following a successful `put` of the same number therefore writes
+    /// nothing. The invariant is one sentence: **the journal always knows the
+    /// highest outbound number spent.**
+    ///
+    /// # Why this exists beside `put`
+    ///
+    /// `put` is offered application messages only, because the journal is the
+    /// store a `ResendRequest` is answered from and an administrative message
+    /// is never replayed — it is filled over. But a `Logon`, a `Heartbeat` and
+    /// a `Logout` each spend a `34=` all the same, so **`highest()` is not the
+    /// highest number this session has sent** and a restart deriving one from
+    /// the other is short by exactly the administrative messages that followed
+    /// the last application one.
+    ///
+    /// `[measured 2026-09-05]` One clean logout was enough: a real
+    /// `libquickfix` refused the resumed session with *"MsgSeqNum too low,
+    /// expecting 4 but received 3"*.
+    /// [ADR-0053](../../../docs/decisions/ADR-0053-the-journal-answers-two-questions-and-the-second-is-a-number.md).
+    ///
+    /// **A default no-op, like [`Self::mark_active`]**: a journal that does not
+    /// survive a restart is not obliged to pretend.
+    fn mark_out(&mut self, seq: u32) {
+        let _ = seq;
+    }
+
+    /// The highest outbound sequence number this journal knows to have been
+    /// spent — from [`Self::put`] and [`Self::mark_out`] together — or `None`
+    /// if it knows of none.
+    ///
+    /// A resumed session's `next_out` is this plus one, which is the whole
+    /// reason it exists. **No default**, for the reason [`Self::highest`] has
+    /// none: a journal holding state must not be able to report that it holds
+    /// none, because a session resuming from it would silently start again at 1.
+    ///
+    /// A durable journal written before [`Self::mark_out`] existed answers
+    /// whatever its kept messages say and is **short by the same amount it was
+    /// before** — not worse, not better. There is no way to reconstruct a
+    /// number that was never written.
+    fn highest_out(&self) -> Option<u32>;
 }
 
 /// A journal that keeps nothing. `DESIGN.md` D7's `None`.
@@ -159,6 +205,12 @@ impl Journal for NoJournal {
     fn mark_in(&mut self, _seq: u32) {}
 
     fn highest_in(&self) -> Option<u32> {
+        None
+    }
+
+    /// Always `None`. A journal that keeps nothing has counted nothing, and a
+    /// caller resuming from it has nothing to resume — which is the truth.
+    fn highest_out(&self) -> Option<u32> {
         None
     }
 

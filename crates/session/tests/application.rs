@@ -293,6 +293,12 @@ fn the_mark_is_written_after_the_application_has_seen_the_message() {
         fn highest_in(&self) -> Option<u32> {
             self.inner.highest_in()
         }
+        fn mark_out(&mut self, seq: u32) {
+            self.inner.mark_out(seq);
+        }
+        fn highest_out(&self) -> Option<u32> {
+            self.inner.highest_out()
+        }
     }
 
     let log = Rc::new(RefCell::new(Vec::new()));
