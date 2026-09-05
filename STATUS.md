@@ -57,6 +57,24 @@ that arrives with the next case somebody writes.
 `scripts/bench.sh --strict` exits 0, three consecutive runs after recording, read line by line:
 `timing over baseline 0 · cases w/o a baseline 0 · cases under the band 0`.
 
+**Merged: PR [#41](https://github.com/tmthang86/fixbolt/pull/41), merge commit `21104d8`. CI
+green 11 jobs of 11 on the merge commit itself**, run
+[`33944576168`](https://github.com/tmthang86/fixbolt/actions/runs/33944576168) — the run §9's
+last box asks for, not the branch tip's. On the tip that was merged, `bfcd465`, 22 checks of 22
+across runs [`33943897316`](https://github.com/tmthang86/fixbolt/actions/runs/33943897316) and
+[`33943899624`](https://github.com/tmthang86/fixbolt/actions/runs/33943899624). The `bench`
+job's log was read rather than its conclusion: `=== alignment read-back (ADR-0049)`, `OK: 13
+bench binaries, alignment pinned and read back`, `targets measuring 13 of 13`, `invariant
+failures 0`, and `cases w/o a baseline 28` **naming `fixbolt-session/validate` among them** —
+which is how a runner that is not this CPU says the new target actually ran.
+
+**One job was red first, and it was one the local sweep never runs.** `No dead internal links`:
+the `validate` rustdoc linked ADR-0050 by `https://github.com/…/blob/main/…` instead of
+`../../../docs/decisions/…`, which pins a reader to `main` and breaks on a fork or a rename.
+`scripts/check-links.py` is not in the per-step gate list the plan runs, so a green local sweep
+said nothing about a job that exists — the second time this session, and the shape §9's last
+box was written for.
+
 **Only step 3 of the owning plan is left** — item 34, and its measurement half is already paid
 for: `library, parse only` 159.6, `reply only` 804.1, `on_message` 1028.6 were recorded on this
 box on 2026-09-05, so the library layer finally has §9 figures instead of VM ones.
