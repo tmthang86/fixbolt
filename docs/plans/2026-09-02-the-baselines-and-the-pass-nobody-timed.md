@@ -94,6 +94,118 @@
 > ExecutionReport (template)` + `presession, read and route an identity`"*, vì hai case sau giờ
 > đã có kết luận và cả hai kết luận đều là *ghi lại baseline*, không phải *sửa code*.
 
+> **Sửa 3 `[2026-09-05]` — bước 2a đã chạy, và nó phủ định *hai* trong ba lựa chọn của chính
+> plan này. Ghi trước khi đổi một dòng nào.**
+>
+> Bước 2a là bước "đọc code chứ không đoán". Đã đọc. Kết quả: **(c) không làm được, (a) không
+> làm được, và (b) như plan viết ra thì không biên dịch nổi.**
+>
+> **Lượt kiểm nằm ở đâu.** Ba hàm tự do, **private**, trong `crates/session/src/lib.rs`:
+> `scan_fields` (2549), `bad_group_count` (2604), `missing_required` (2641), cộng hàm phụ
+> `in_a_group` (2622). Gọi ở **2153–2155** bên trong `judge`, nối bằng `.or_else`, đúng thứ tự
+> đó. Cả ba nhận `&MessageView<'_, N>` và `msg_type: &[u8]`, không đụng `self`, không cấp phát.
+>
+> **(c) — đo hiệu số với một dictionary rỗng — bị bác bằng đọc code.** `Fix44` được **viết
+> thẳng vào thân** ba hàm đó (`Fix44::is_defined_tag`, `Fix44::allows`, `Fix44::required(...)`,
+> mười ba chỗ), không phải một tham số kiểu. `Session<R, N, APP>` **không có tham số
+> dictionary** nào để chọn. Đối chiếu cho rõ: ở `codec` thì `parse_into::<D, N>` **có** generic,
+> và đó chính là lý do `benches/parse.rs` cắm được `NoDict` vào — 122.6 ns của nó là framing chứ
+> không phải lượt kiểm. Muốn `Session` cho chọn thì phải thêm một tham số kiểu cho `Session`,
+> tức tham số kiểu **thứ mười một** của `Engine`, tức đổi public API: **plan riêng, không phải
+> một bench**. Plan này gọi (c) là *"hình dạng ưa hơn"*; nó không tồn tại.
+>
+> **(a) — một đường công khai đã có chạm được lượt kiểm mà không chạm phần khác — cũng không
+> có.** Cửa vào duy nhất là `Session::received_with` → `judge` (private), và `judge` còn parse,
+> kiểm `BeginString`, lịch phiên, CompID, `SendingTime`, số thứ tự, gọi application, và có thể
+> gửi ra. Có một cái công tắc **trông rất giống** một biến duy nhất — dòng 2148,
+> `self.state != State::LoggedOn` bỏ qua **toàn bộ** lượt kiểm — nhưng hai nhánh rẽ nhau nặng ở
+> phía sau (nhánh chưa logon từ chối/thả message thay vì giao nó), nên hiệu số ấy không phải
+> lượt kiểm. Đây đúng loại "một cái núm nhúc nhích" mà điều 10 cấm nhận làm nguyên nhân.
+>
+> **(b) làm được, nhưng `pub(crate)` thì không.** Một bench target là **một crate khác**:
+> `crates/session/benches/alloc.rs` với tới crate này bằng `use fixbolt_session::…`, y như một
+> người dùng ngoài. `pub(crate)` vô hình từ đó. Đây là luật của ngôn ngữ, không phải một phép
+> đo. Chữ *"mở một API `pub(crate)` + một bench trong cùng crate"* của plan **không biên dịch
+> được**.
+>
+> **Nên bước 2a chốt: (b), và hàm phải `pub` thật** — đúng cái cửa thoát mà bảng *Bẫy đã lường
+> trước* của plan này đã viết sẵn: *"nếu buộc phải `pub` thì cần ADR"*. Hình dạng đề nghị, hẹp
+> nhất có thể:
+>
+> ```rust
+> pub fn validate<const N: usize>(
+>     view: &MessageView<'_, N>,
+>     msg_type: &[u8],
+> ) -> Option<SessionText>
+> ```
+>
+> gọi ba hàm cũ **không sửa một dòng nào**, đúng thứ tự `judge` gọi. `SessionText` đã `pub` sẵn
+> (`crates/session/src/text.rs:44`); `Held<12>` đang private và **ở nguyên đó**, nên tag text
+> không lọt vào chữ ký.
+>
+> **Giới hạn phải nói ra, không được giấu:** vì `validate` bỏ tag text đi, trên một message
+> **có lỗi** nó có thể không sinh mã y hệt `judge`. Bench chỉ đo message **không lỗi** — cũng
+> đúng là hình dạng item 39 hỏi (chi phí lượt kiểm đầy đủ, quét hết field, tra hết tag bắt
+> buộc), và trên đường đó không có gì bị bỏ đi cả.
+>
+> **Hai cách khác đã cân, và bị loại có nêu giá:**
+>
+> | Cách | Vì sao loại |
+> |---|---|
+> | `#[cfg(feature = "…")] pub` + `required-features` cho bench | Giữ được API ship sạch, nhưng một bench target thiếu feature bị cargo **bỏ qua im lặng**, và `bench.sh` với `check-bench-alignment.sh` sẽ nhìn thấy hai tập binary khác nhau. Một bench bị bỏ qua im lặng đúng bằng hình dạng false-green repo này đã dính |
+> | `#[path = "../src/…"] mod` trong bench, biên dịch bản sao thứ hai | Phải viết lại mọi `use crate::…` và vẫn phải mở `Held`/`tag_text`; và nó đo **một bản sao được biên dịch lại**, không phải hàm được ship. ADR-0049 vừa tiêu một ngày đúng vào câu "binary bị đo không phải binary được ship" |
+>
+> **2b/2c/2d không đổi nội dung**, chỉ thêm một điều kiện trước: **2b cần ADR-0050 cho public
+> API**, và bất biến **7** (không `unwrap`/`expect`/`panic` trong library crate) áp cho hàm mới,
+> bất biến **1** (`crates/session/benches/alloc.rs` vẫn phải đọc 0) áp cho đường nó gọi.
+
+> **Sửa 4 `[2026-09-05]` — bước 2b tìm ra một lỗi ở chỗ khác: hai case `parse` đang đo một
+> message mà chính parser từ chối. Phạm vi bước 2 rộng ra một dòng baseline.**
+>
+> Bench mới của bước 2b `assert` rằng message của nó parse xong và lượt kiểm không phàn nàn —
+> và cái assert đó **đỏ ngay lần chạy đầu**, trên đúng byte literal mà
+> `crates/codec/benches/parse.rs` đã dùng từ đầu:
+>
+> | Message | `9=` khai | `9=` thật | `10=` khai | `10=` thật | `parse_into::<_, 64>(…, ALL)` trả về |
+> |---|---|---|---|---|---|
+> | `NewOrderSingle` | 126 | 126 | 098 | **097** | `Err(BadCheckSum)` |
+> | `Heartbeat` | **49** | **51** | 000 | **226** | `Err(BadBodyLength)` |
+>
+> **Hệ quả không giống nhau cho hai case, và phải đọc `parse.rs` mới biết** — cả hai kiểm tra
+> chỉ chạy khi vòng lặp gặp `tag == 10`, tức là **sau khi cả message đã được đánh chỉ mục**:
+>
+> * `parse NewOrderSingle (validated)` **vẫn tính checksum** rồi mới so sánh và trượt, nên nó
+>   làm gần đủ việc. `[đo 2026-09-05]` sửa fixture: 119.8 → 121.6 · 125.0 · 119.6, **≈ +1%**,
+>   nằm trong nhiễu của chính nó.
+> * `parse Heartbeat (validated)` thì **không**: `if v.body_length && pos != trailer_at` bắn
+>   **trước** khối checksum, nên case này chưa bao giờ cộng 51 byte đó. `[đo 2026-09-05]` sửa
+>   fixture: 59.1 → **64.2 · 61.7 · 60.1**, và 64.2 **vượt trần** 61.9 của band 1.10 hiện tại.
+>
+> Nên `parse Heartbeat (validated)` = 56.3 ns là một figure của **một parse bị bỏ dở**, và nó đã
+> ở trong `DESIGN.md` §6, `benches/baselines.tsv` và §8. Đây là điều 10 đúng nghĩa: con số có
+> benchmark, có máy, có cấu hình §9, và **vẫn không đo cái mà tên nó nói**.
+>
+> **Phạm vi bước 2 rộng ra, và chỉ đúng chừng này:**
+>
+> 1. `crates/codec/benches/parse.rs` sửa fixture (`10=097`, và `9=51` + `10=226`), một dòng mỗi
+>    message. Không đổi một field nào — cùng số field, cùng độ dài body.
+> 2. `parse Heartbeat (validated)` **ghi lại baseline** cùng lượt 20 lần chạy của bước 2c. Hai
+>    case còn lại đo lại nhưng nếu vẫn trong band thì **không sửa dòng nào** — không thu hẹp,
+>    không nới, đúng chính sách của Sửa 2 điểm 3.
+> 3. Fixture của bench mới dùng timestamp **thật** (`20260905-12:00:00.000`) chứ không phải
+>    `00000000-00:00:00.000`: lượt kiểm hỏi `field_type().accepts()`, và `00000000-00:00:00.000`
+>    đọc ra `IncorrectDataFormat`. Cái cũ chưa bao giờ bị hỏi câu đó vì `NoDict` trả lời no-op.
+>
+> **Không đụng tới:** `crates/engine/benches/dispatch.rs` mang cùng byte literal ấy nhưng
+> **không parse** — nó đưa thẳng bytes cho `deliver`, nên checksum sai không ảnh hưởng figure.
+> Ghi ra đây để lần sau không ai phải đi tìm lại. Các test dùng `10=000` cũng không đụng: chúng
+> chạy `Validation::NONE` hoặc không quan tâm.
+>
+> **`[to testing-skills]`**: một fixture sai làm cho gate đo *ít việc hơn* thì không có gì đỏ
+> lên cả — kết quả bị vứt bằng `.ok()` và cái bench vẫn ổn định tới 1%. Cái tìm ra nó là một
+> bench **khác**, viết sau, `assert` rằng fixture của nó hợp lệ trước khi bấm giờ. Viết vào
+> [a-benchmark-parsed-a-message-the-parser-rejects](../reference/a-benchmark-parsed-a-message-the-parser-rejects.md).
+
 ## Bối cảnh
 
 Phase 1 vừa đóng, và buổi đo đóng nó để lại ba việc **trên cùng một cái máy**. Cả ba đều là
@@ -270,15 +382,18 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 
 ## Tài liệu phải cập nhật
 
-- [ ] `benches/baselines.tsv` — 5 dòng mới (bước 1d), + 1–2 dòng (bước 2c), mỗi dòng kèm `n`,
-      ngày, verdict
-- [ ] `docs/DESIGN.md` §6 — nếu một ceiling hay cách đo nào đổi
-- [ ] `docs/DESIGN.md` §8 — dòng cho lượt kiểm dictionary; và **cộng lại 3 898 ns**
-- [ ] `docs/reference/measured-costs.md` — **ưu tiên cao nhất**: mọi phát hiện của bước 1, kể
+- [x] `benches/baselines.tsv` — 5 dòng mới (bước 1d) + **4 dòng `validate`** và một dòng sửa
+      (`parse Heartbeat`) ở bước 2c, mỗi dòng kèm `n`, ngày, verdict
+- [x] `docs/DESIGN.md` §6 — dòng gate mới cho lượt kiểm, bảng baseline, `parse Heartbeat` sửa
+- [x] `docs/DESIGN.md` §8 — dòng `Dictionary pass (D1)`, bảng cộng lại 3 898 ns, tổng
+      user-space sửa ~0.46 → ~1.36 µs
+- [x] `docs/reference/measured-costs.md` — **ưu tiên cao nhất**: mọi phát hiện của bước 1, kể
       cả nếu nó là "một case chỉ có nghĩa trong suite nó được ghi baseline cùng"
-- [ ] `docs/decisions/` — ADR mới nếu bước 1e hoặc 3b ra một quyết định
-- [ ] `STATUS.md` — item 41, 39, 34
-- [ ] `docs/GUIDE.md` §8 — nếu bước 1 tìm ra một cách benchmark tự lừa mình mới
+- [x] `docs/decisions/` — ADR-0049 (bước 1e), **ADR-0050** (bước 2b)
+- [x] `STATUS.md` — item 41, 39 đóng; **49 và 50 mới**; 34 còn mở
+- [x] `docs/GUIDE.md` §8 — không cần: hai cách tự lừa tìm được (layout, fixture sai) là
+      chuyện của người **viết** bench, không phải ràng buộc của người **dùng** engine; chúng vào
+      `docs/reference/` và `CLAUDE.md` §10 thay vì GUIDE
 
 ## Bẫy đã lường trước
 
@@ -322,9 +437,19 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 | 1c | 2026-09-05 | **Xong, và bisect một commit chỉ ra sai commit.** `bf798ea` (nơi ghi baseline) hôm nay vẫn đọc **240.0** → máy và toolchain vô can. Bisect: `54eebe9` 240.6 → **`4396d6d` 268.0** → `576f924` 279.4 → HEAD 280.4. `4396d6d` **không chạm `crates/codec/src/`**. Chứng minh hai đường: căn lề ép đưa HEAD 278.9 → **233.0**; chèn **code trơ** đưa con số **236.5 → 292.4** qua bốn layout (pinned: 4.0%, unpinned: 14.6%) |
 | 1d | 2026-09-05 | **Xong, phạm vi rộng hơn plan viết.** ADR-0049 đổi *cách đo*, nên **cả 19 dòng cũ được ghi lại** dưới build đã ghim, cộng **5 dòng mới** = 24, `n = 20`, `pass 12 fail 0 unknown 1`. Không margin nào bị **thu hẹp** dù mẫu mới cho phép: `ring, one way` giữ 1.30, `ring, round trip` 1.20, `parse (no checks)` 1.15 — các mode chúng che chưa xuất hiện trong 20 lần này và không có bằng chứng chúng đã biến mất. `encode ExecutionReport (template)` lên **1.15** theo ADR-0049, dù thang từ 20 lần chạy chỉ đòi 1.10 — đúng chỗ cái lỗ của thang lộ ra |
 | 1e | 2026-09-05 | **Xong. `bench.sh --strict` thoát 0, ba lần liên tiếp**, đọc từng dòng: `timing over baseline 0 · cases w/o a baseline 0 · cases under the band 0`. [ADR-0049](../decisions/ADR-0049-bench-builds-pin-function-alignment-and-the-flag-is-read-back.md), `scripts/check-bench-alignment.sh` (23/23 pinned, 5/23 unpinned, reversal đỏ 2/11), [write-up](../reference/a-benchmark-that-measures-where-the-compiler-put-it.md) mang `[to testing-skills]`. **Item 41 đóng** |
-| 2, 3 | — | Chưa bắt đầu — item 39 (lượt kiểm dictionary) và item 34 |
+| 2a | 2026-09-05 | **Xong, và hai trong ba lựa chọn của plan bị phủ định bằng đọc code.** (c) không tồn tại: `Fix44` viết thẳng vào thân ba hàm, `Session` không có tham số dictionary — khác `parse_into::<D, N>` của codec, vốn là lý do `benches/parse.rs` cắm được `NoDict`. (a) không tồn tại: cửa vào duy nhất là `received_with` → `judge` (private), làm thêm parse, CompID, lịch, số thứ tự, application, gửi. (b) làm được nhưng **`pub(crate)` vô hình từ một bench target** — bench là crate khác. Chốt: `pub fn validate(...) -> Option<SessionText>`, ba hàm cũ không sửa, **cần ADR-0050**. Xem Sửa 3 |
+| 2b | 2026-09-05 | **Xong, và nó tìm ra lỗi ở chỗ khác ngay lần chạy đầu.** `pub fn validate` + [ADR-0050](../decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md) (chủ dự án duyệt), `crates/session/benches/validate.rs`. Đảo ngược: `validate` trả `None` ngay → **1.1 ns** cả hai case, đúng chữ ký "bench không đo gì" repo đã biết. Assert fixture của bench đỏ ngay trên byte của `parse.rs` → Sửa 4, item 50 |
+| 2c | 2026-09-05 | **Xong, `n = 21`.** Bốn dòng `validate`: NOS 882.1 · HB 169.5 · TestRequest w2w 218.4 · NOS w2w 897.3, margin 1.10, `pass 12 fail 0 unknown 1`, build đã ghim. `parse Heartbeat (validated)` **56.3 → 60.9** (sửa fixture, không phải drift); hai dòng `parse NewOrderSingle` đo lại trong band nên **không sửa**. `bench.sh --strict` thoát 0 **ba lần liên tiếp**. Hai dòng `validate` đầu **ghi lại một lần trong cùng buổi**: thêm hai case w2w vào cùng file làm chúng đi −2.3% và +3.6% ngược chiều nhau — đúng cái lỗ ADR-0049 vừa đặt tên, quay lại sau hai tiếng |
+| 2d | 2026-09-05 | **Xong, và câu trả lời là "không, nó không giải thích phần lớn".** §8 có dòng riêng cho lượt kiểm và một bảng cộng lại: lượt kiểm **678.9 ns = 17.4%** của 3 898; cộng parse vào (~+60), dispatch (+9), parse lần hai của application (+114), encode template (+233) → **~1 094 ns = 28%**; **còn ~2 804 ns chưa quy được cho ai — item 49 mới**, bốn ứng viên, không ứng viên nào được nhận. Tổng user-space của §8 đi **~0.46 → ~1.36 µs** vì `session ~0.1 µs` đã âm thầm đứng thay cho lượt kiểm này. **Item 39 đóng** |
+| 3 | — | Chưa bắt đầu — item 34. 3a coi như đã trả: ba figure `fixbolt/cost` ghi 2026-09-05 |
 
-**Trạng thái một câu `[2026-09-05]`:** **item 41 đóng** — `bench.sh --strict` xanh trên máy §9,
+**Trạng thái một câu `[2026-09-05]`, sau bước 2:** **item 39 đóng, và nó trả lời ngược với cái
+ai cũng chờ** — lượt kiểm dictionary tốn **897 ns**, gấp bảy lần parse, là dòng user-space lớn
+nhất của §8, và **vẫn chỉ giải thích 17.4%** của 3 898 ns; phần dư ~2 804 ns thành item 49 với
+một con số thay vì một cảm giác. Trên đường đi, bench mới bắt được **hai bench cũ đang đo một
+message mà parser từ chối** (item 50). Chỉ còn bước 3 (item 34).
+
+**Trạng thái một câu `[2026-09-05]`, sau bước 1:** **item 41 đóng** — `bench.sh --strict` xanh trên máy §9,
 nên mọi con số §6 lại có cổng canh; và cái đắt nhất tìm được không phải một hồi quy mà là
 **một benchmark đo chỗ trình biên dịch đặt nó**, thứ mà chính plan này đã loại trừ bằng cách đọc
-diff. Bước 2 (item 39) và bước 3 (item 34) chưa bắt đầu.
+diff.

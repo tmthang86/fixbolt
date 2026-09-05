@@ -2621,3 +2621,53 @@ And a third that is about the order of work rather than about benchmarks: **for 
 reading the diff of the function was decisive in five minutes and the measurement everyone
 reaches for first would have tested the wrong hypothesis.** Locate before you measure, when
 locating is a `git log -S` away.
+
+## The dictionary pass costs seven parses, and it explains a sixth of the gap it was named for
+
+`[measured 2026-09-05]` §9 desktop, AMD Ryzen 7 3700X, `check-machine.sh` `pass 12 fail 0
+unknown 1`, bench build with function alignment pinned (ADR-0049), medians of **21** qualifying
+`scripts/bench.sh` runs. `crates/session/benches/validate.rs`, through the public
+`fixbolt_session::validate` that [ADR-0050](../decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md)
+added for exactly this reason.
+
+| Case | ns/op | margin |
+|---|---|---|
+| `validate NewOrderSingle` (the `parse.rs` shape, 15 fields) | **882.1** | 1.10 |
+| `validate Heartbeat` (the `parse.rs` shape, 8 fields) | **169.5** | 1.10 |
+| `validate NewOrderSingle, w2w bytes` (16 fields) | **897.3** | 1.10 |
+| `validate TestRequest, w2w bytes` (9 fields) | **218.4** | 1.10 |
+
+For scale, the parse that precedes it on the same `NewOrderSingle` is **120.0 ns**. **The
+dictionary pass costs about seven times the parse**, and until this file existed nothing timed
+it: `benches/parse.rs` parses with `NoDict`, whose every answer is a no-op, so §8's parse row
+was never about this work.
+
+Proven by reversal, which is the only thing that says the case measures the pass rather than
+the harness: `validate` returning `None` immediately reads **1.1 ns** for every case.
+
+### And it is not the answer to the question it was opened for
+
+`STATUS.md` item 39 existed because the application round trip is **3 898 ns** above the
+administrative one and the committed benchmarks accounted for ~320 ns. The pass was written
+down as the largest untimed candidate. Subtracting the two figures that are `w2w`'s exact
+bytes — the only subtraction the numbers license — gives **678.9 ns, 17.4% of the gap**. With
+everything else `--path app` adds (inbound parse ~+60, dispatch +9, the application's own
+`Validation::NONE` re-parse +114, its template encode +233) the measured subtotal is **~1 094
+ns, 28%**, and **~2 804 ns is still unattributed**. `DESIGN.md` §8 carries the arithmetic.
+
+**The largest named candidate was a sixth of the answer.** That is the whole value of adding it
+up: the pass is genuinely the biggest user-space row in the budget, it is genuinely seven times
+the parse, and *both of those can be true while it explains almost none of the gap it was
+opened for*. A number large enough to feel like an explanation is the exact shape this file
+already records under [the score followed the timeout](#the-score-followed-the-timeout-and-the-timeout-was-not-the-cause).
+
+### The generalisation
+
+`[to testing-skills]` — **"the largest candidate" is a ranking, not a quantity, and the two get
+confused the moment one of them is measured.** An unexplained gap attracts a shortlist; the
+biggest item on it gets measured first and comes back large in its own right; and the natural
+next sentence — *so that is where the time went* — does not follow from anything. The
+discipline that costs nothing is to **finish the subtraction out loud**: put the measured
+pieces in a table, subtract, and write the remainder down as a number with its own name. Here
+the remainder is 72% and now has an open item; without the table it would have been a feeling
+that the gap was mostly explained.

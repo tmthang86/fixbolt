@@ -87,6 +87,16 @@ depends on that order.
 The order itself is tested: `14d` proves the required-field check runs before the CompID
 check, and the `14h` family proves the MsgType check runs after the required-field check.
 
+**The dictionary half of that table is callable on its own.**
+`fixbolt_session::validate(view, msg_type) -> Option<SessionText>`
+([ADR-0050](decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md)) runs the
+field scan, the required tags and the group counters in exactly the order above and returns the
+first fault, without a session. It therefore answers `373=` 0, 1, 4 and the group-count and
+value-format faults; it does **not** answer 9, 10 or 11, which need CompIDs, a clock and a
+session state that a bare view does not carry. It was made public so the pass could be timed —
+`[measured 2026-09-05]` 897.3 ns on a `NewOrderSingle`, `DESIGN.md` §8 — and it is the same
+code path, not a copy of it.
+
 **A session reject is not a business reject.** `2r_UnregisteredMsgType.def` sends `35=8` as
 an application message of an unsupported type, and the engine answers with a *business*
 reject, not a `373=`. Unsupported application types are the application's concern; malformed

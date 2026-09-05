@@ -17,6 +17,16 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`fixbolt_session::validate(view, msg_type) -> Option<SessionText>`** — the dictionary pass
+  the session runs on every inbound message, callable without a session
+  ([ADR-0050](docs/decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md),
+  `DESIGN.md` §6 and §8). Answers "what would the session fault this message for": the
+  wire-order field scan, then the required tags, then the group counters, first fault wins.
+  It looks at **none** of sequence numbers, CompIDs, `SendingTime` or session state, and it
+  does not return the `371=` tag reference. It exists because `STATUS.md` open item 39 could
+  not be measured without it — `[measured 2026-09-05]` **897.3 ns** on a `NewOrderSingle` and
+  **218.4 ns** on a `TestRequest`, §9 desktop, about seven times the parse that precedes it.
+
 - **An application can speak first.** Two new doors, and before them every application message
   this engine could send was a *reply*
   ([ADR-0048](docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md),

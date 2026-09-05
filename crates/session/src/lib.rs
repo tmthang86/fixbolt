@@ -2541,6 +2541,54 @@ enum Which {
     GapFill,
 }
 
+/// The dictionary's questions about one already-parsed message, and nothing
+/// else — the pass [`Session::received_with`] runs before it decides anything.
+///
+/// Returns the first fault, in the order [`Session`] itself applies them: the
+/// wire-order field scan, then the required tags, then the group counters.
+/// `None` means the dictionary has no complaint; it says nothing about
+/// sequence numbers, CompIDs, `SendingTime` or the session's state, none of
+/// which this looks at.
+///
+/// # Why this is public
+///
+/// [ADR-0050](../../../docs/decisions/ADR-0050-the-dictionary-pass-is-public-so-it-can-be-timed.md):
+/// `STATUS.md` open item 39 says this pass has never been timed, and it could
+/// not be — the three functions below are private, the dictionary is written
+/// into their bodies rather than passed to them, and every public route in
+/// also parses, checks identity and calls the application. A bench target is a
+/// separate crate, so `pub(crate)` would not have reached it either. Timed by
+/// `crates/session/benches/validate.rs`.
+///
+/// It is a real API rather than a hole punched for a benchmark: "what would
+/// the session fault this message for" is answerable without a session, and
+/// the answers are the ones `docs/SESSION-BEHAVIOUR.md` documents.
+///
+/// # What it does not tell you
+///
+/// The `371=` tag reference that a `Reject` carries is **not** returned. It is
+/// held in a fixed buffer that stays private, and a caller that needs it wants
+/// the session, not this.
+///
+/// ```
+/// use fixbolt_codec::{FieldIndex, Validation, parse_into};
+/// use fixbolt_dict::Fix44;
+/// use fixbolt_session::validate;
+///
+/// let msg: &[u8] = b"8=FIX.4.4\x019=51\x0135=0\x0134=2\x0149=TW44\x01\
+/// 52=20260905-12:00:00.000\x0156=ISLD\x0110=253\x01";
+/// let mut idx: FieldIndex<64> = FieldIndex::new();
+/// let r = parse_into::<Fix44, 64>(msg, &mut idx, Validation::ALL);
+/// assert!(r.is_ok());
+/// assert_eq!(validate(&idx.view(msg), b"0"), None);
+/// ```
+pub fn validate<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8]) -> Option<SessionText> {
+    scan_fields(view, msg_type)
+        .or_else(|| missing_required(view, msg_type))
+        .or_else(|| bad_group_count(view, msg_type))
+        .map(|(text, _tag)| text)
+}
+
 /// Walk the message in wire order and return the first fault, if any.
 ///
 /// One pass, first fault wins — which is what the corpus expects: `14h` sends

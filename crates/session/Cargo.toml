@@ -32,3 +32,8 @@ workspace = true
 [[bench]]
 name = "alloc"
 harness = false
+
+# Open item 39: the dictionary pass on every inbound message, timed on its own.
+[[bench]]
+name = "validate"
+harness = false

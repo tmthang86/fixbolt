@@ -56,6 +56,38 @@
 # they have gone. Narrowing on a quiet sample is how a gate gets widened again
 # later, by somebody who trusts it less each time.
 #
+# `[2026-09-05, second pass]` THREE LINES MOVED, AND ONE OF THEM WAS NEVER
+# MEASURING WHAT ITS NAME SAYS. `validate NewOrderSingle` and `validate
+# Heartbeat` are new -- the session's dictionary pass, open item 39, timed for
+# the first time (ADR-0050). `parse Heartbeat (validated)` goes 56.3 -> 60.9,
+# and that is a CORRECTION rather than a drift: its fixture declared `9=49`
+# against a body of 51, so `parse_into` returned `Err(BadBodyLength)` on the
+# line BEFORE the checksum block and the case had never summed its own 51
+# bytes. Same 20 runs, same pinned build, same `pass 12 fail 0 unknown 1`.
+# docs/reference/a-benchmark-parsed-a-message-the-parser-rejects.md
+#
+# `parse NewOrderSingle (validated)` read 119.8 against its 120.4 and `(no
+# checks)` 113.2 against 113.5 in the same 20 runs -- inside their bands, so
+# NEITHER LINE WAS TOUCHED. The fixture correction moves that case ~1% because
+# its checksum IS computed and only the comparison fails.
+#
+# The four `validate` lines take 1.10: max/median over the 21 runs is 1.005 to
+# 1.020, and unlike `encode ExecutionReport (template)` no layout sensitivity
+# large enough to need a wider band has been measured for them. If one appears,
+# it gets its own line in this note and its own number, not a quiet nudge.
+#
+# AND THE FIRST TWO WERE RE-RECORDED ONCE, WITHIN THE HOUR, FOR THE REASON
+# ADR-0049 EXISTS. `validate NewOrderSingle` and `validate Heartbeat` were first
+# taken at 902.5 and 163.6 from 20 runs of a binary holding two cases. Adding
+# the two `w2w bytes` cases to the SAME bench file — code the other two cases
+# never enter — moved them to 882.1 (-2.3%) and 169.5 (+3.6%), in opposite
+# directions, over 21 runs whose own max/median is 1.005 and 1.017. Both figures
+# were inside the 1.10 band, so nothing went red and nothing had to; the numbers
+# recorded here are the ones from the binary that exists. This is the ladder's
+# hole in miniature and it took two hours to reappear after the ADR that named
+# it: a margin fitted to run-to-run variance cannot see the variance that
+# arrives with the next case somebody writes.
+#
 # To add a machine: run `scripts/bench.sh` until check-machine.sh reads
 # `fail 0`, then N >= 20 more times, and paste the medians. The harness
 # prints a paste-ready line for every case it has no baseline for.
@@ -104,7 +136,7 @@
 # cpu	case	baseline	margin	n	date	verdict
 AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (validated)	120.4	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (no checks)	113.5	1.15	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	parse Heartbeat (validated)	56.3	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	parse Heartbeat (validated)	60.9	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	encode ExecutionReport (template)	237.6	1.15	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache	4.9	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	walk 1 group, 2 entries, 2 members	56.2	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
@@ -163,3 +195,7 @@ AMD Ryzen 7 3700X 8-Core Processor	presession, registry lookup of 40	100.8	1.10	
 AMD Ryzen 7 3700X 8-Core Processor	library, parse only	159.6	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	library, reply only	804.1	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	library, on_message	1028.6	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle	882.1	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	validate Heartbeat	169.5	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	validate TestRequest, w2w bytes	218.4	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle, w2w bytes	897.3	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
