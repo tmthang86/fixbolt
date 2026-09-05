@@ -199,3 +199,68 @@ AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle	882.1	1.10	21	2026-09
 AMD Ryzen 7 3700X 8-Core Processor	validate Heartbeat	169.5	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	validate TestRequest, w2w bytes	218.4	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle, w2w bytes	897.3	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
+
+# `[measured 2026-09-05]` THE SEVENTEEN LINES BELOW came from one campaign of 22 whole runs,
+# of which 20 are used and 2 were thrown away BY THEIR OWN VERDICT: run-18 read `gnome-shell
+# 31% of a core` and run-21 `gnome-shell 58%`, both with `claude` and `code` beside them. Three
+# earlier runs were discarded the same way and for a worse reason: a killed collection left a
+# `payload` bench binary spinning a TCP loopback round trip at 74% of a core for 28 minutes,
+# and `check-machine.sh` named it in every run it touched. Nothing contaminated reached this
+# file, and the mechanism that kept it out is the per-run verdict in the last column rather
+# than anybody's judgement.
+#
+# **The desktop's measuring window is narrower than any plan here has assumed.** Three of 22
+# runs failed the quiet check because a person was using the machine — typing in an editor is
+# enough. docs/reference/.
+#
+# THE OLD LINES DID NOT MOVE, AND THAT WAS THE POINT. Three new bench targets were added in
+# this campaign and every pre-existing case landed inside its band: `parse NewOrderSingle`
+# 120.4 -> 121.2, `encode ExecutionReport (template)` 237.6 -> 235.7, `validate NewOrderSingle`
+# 882.1 -> 874.1, `engine turn, 1 idle sessions` 481.0 -> 479.8. `[measured 2026-09-05]` adding
+# two CASES to an existing binary moved the two baselines already in it by -2.3% and +3.6%;
+# adding three whole TARGETS moved nothing. That is the difference the plan was written around.
+#
+# ONE LINE BELOW IS NOT FROM THAT CAMPAIGN, AND THE REASON IS THIS FILE.
+# `journal put, 191 bytes, one slot` carries **6.3, margin 1.35, n = 8** where every line
+# around it carries n = 20. The campaign measured it at **8.2** over 20 clean runs, tightly:
+# eighteen of the twenty read 8.1-8.3, with one 7.7 and one 9.5.
+#
+# Then the seventeen lines above were appended, and it read **6.3** — five times in a row, then
+# three more after the value itself was corrected, never anything else. Its two siblings in the
+# same binary did not move at all: `191 bytes, walking` stayed 8.9 and `87 bytes, walking`
+# 5.3-5.4.
+#
+# **This table is `include!`d into `harness.rs`, so recording a baseline changes the binary the
+# baseline was recorded from.** Writing the number changed the number, by 23%, for one small
+# case — and alignment was pinned throughout, so ADR-0049's flag was in force and did not
+# prevent it. 6.3 is measured on the binary that exists, which is the only binary anything will
+# ever be compared against; 8.2 belonged to a binary that stopped existing the moment it was
+# written down. The `n = 8` is honest and is not a full campaign: it is eight runs of that one
+# target, all reading 6.3.
+#
+# The margin is **1.35 rather than the 1.20 the ladder gives**. The ladder fits `max/median`
+# within one binary, which here is 1.159; the swing this line actually has to survive is the
+# cross-binary one, measured today at 1.30. Same reasoning as `encode ExecutionReport
+# (template)` carrying 1.15 against a measured 1.037, and the same hole:
+# docs/reference/a-benchmark-that-measures-where-the-compiler-put-it.md, now with a second
+# entry beside it.
+AMD Ryzen 7 3700X 8-Core Processor	TCP loopback, 8 in 8 out	12528.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	TCP loopback, 83 in 87 out	12608.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	TCP loopback, 149 in 191 out	12648.4	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	TCP loopback, 8192 in 8192 out	14890.9	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+
+AMD Ryzen 7 3700X 8-Core Processor	journal put, 191 bytes, walking	8.9	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	journal put, 87 bytes, walking	5.3	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	journal put, 191 bytes, one slot	6.3	1.35	8	2026-09-05	pass 12 fail 0 unknown 1
+
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy sessions	1659.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 2 busy sessions	3325.4	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 busy sessions	6686.0	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 8 busy sessions	13514.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 busy sessions	27369.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 32 busy sessions	56684.4	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 64 busy sessions	121009.1	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 64	1635.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 512	1654.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 4096	1657.7	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
