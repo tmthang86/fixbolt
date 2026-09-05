@@ -67,7 +67,7 @@ fn cfg() -> Config {
 }
 
 /// How the pre-session stage disposed of every socket, across a whole run:
-/// `[settled, timed_out, not_logon, gone, unrouted, unknown]`.
+/// `[settled, timed_out, not_logon, gone, unrouted, unknown, unframeable]`.
 ///
 /// **Not decoration, and this is the reason.** `1b_DuplicateIdentity.def` and
 /// `AlreadyLoggedOn.def` both expect *no response at all* on the second
@@ -80,7 +80,8 @@ fn cfg() -> Config {
 /// Static because `run` builds a fresh `ShardWire` per scenario and there is
 /// nowhere else that outlives them; [`alone`] serialises the two tests that
 /// read it.
-static DISPOSAL: [AtomicUsize; 6] = [
+static DISPOSAL: [AtomicUsize; 7] = [
+    AtomicUsize::new(0),
     AtomicUsize::new(0),
     AtomicUsize::new(0),
     AtomicUsize::new(0),
@@ -95,7 +96,7 @@ fn disposal_reset() {
     }
 }
 
-fn disposal_read() -> [usize; 6] {
+fn disposal_read() -> [usize; 7] {
     core::array::from_fn(|i| DISPOSAL[i].load(Ordering::Relaxed))
 }
 const N: usize = 256;
@@ -262,12 +263,14 @@ impl ShardWire {
             not_logon,
             unknown,
             gone,
+            unframeable,
         } = self.pending.turn(0);
         DISPOSAL[0].fetch_add(settled, Ordering::Relaxed);
         DISPOSAL[1].fetch_add(timed_out, Ordering::Relaxed);
         DISPOSAL[2].fetch_add(not_logon, Ordering::Relaxed);
         DISPOSAL[3].fetch_add(gone, Ordering::Relaxed);
         DISPOSAL[5].fetch_add(unknown, Ordering::Relaxed);
+        DISPOSAL[6].fetch_add(unframeable, Ordering::Relaxed);
         while let Some(k) = self.pending.settled() {
             let Some(p) = self.pending.take(k) else { break };
             if self.shards.hand(p).is_err() {
@@ -542,7 +545,15 @@ fn two_shards_pass_all_fifty_nine_because_identity_decides_the_shard() {
     //
     // Pinned rather than relaxed to a range: a THIRD connection disappearing
     // here would be a new defect wearing the same green.
-    let [settled, timed_out, not_logon, gone, unrouted, unknown] = disposal_read();
+    let [
+        settled,
+        timed_out,
+        not_logon,
+        gone,
+        unrouted,
+        unknown,
+        unframeable,
+    ] = disposal_read();
     assert!(
         settled > 59,
         "every scenario connects at least once: {settled}"
@@ -558,11 +569,26 @@ fn two_shards_pass_all_fifty_nine_because_identity_decides_the_shard() {
          whose own comment says `if first message is not a Logon, we must \
          disconnect` — ADR-0022"
     );
+    // `[moved 2026-09-05]` This read `gone == 1` until `Progress::unframeable`
+    // existed. The connection is the same one and it ends the same way; what
+    // changed is that a frame the stage can never read is no longer counted
+    // beside a peer that simply left — ADR-0055 decision 4.
+    //
+    // **The destructure above is what found this**, and that is the third time
+    // it has: adding a disposal reason broke this build rather than letting one
+    // connection quietly change columns. `cargo clippy --all-targets` on a
+    // laptop does not compile this file — it is behind `--features affinity`
+    // and CI is the only thing that builds it — so the exhaustive pattern was
+    // the whole difference between a caught change and a silent one.
     assert_eq!(
-        gone, 1,
+        gone, 0,
+        "nothing here is a peer that left: 1d's socket is unframeable, not gone"
+    );
+    assert_eq!(
+        unframeable, 1,
         "exactly one: 1d_InvalidLogonLengthInvalid.def, whose 9=40 is a lie the \
          framer takes at its word, leaving a frame that can never be a message \
-         — ADR-0022"
+         — ADR-0022, ADR-0055"
     );
     // Pinned, `[measured 2026-09-01]` by CI run 33512983304 on Linux with
     // `--features affinity`. ADR-0026's registry refuses an identity it does not

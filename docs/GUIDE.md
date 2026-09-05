@@ -410,12 +410,33 @@ Three things here are decisions, not defaults:
 |---|---|
 | **An empty table refuses every connection**, and `serve` refuses to start on one (`ServeError::NoCounterparties`) | There is no wildcard entry and none is planned. An acceptor that admits an identity nobody configured is an open port, which is what QuickFIX/J's `ANY_SESSION` template is |
 | **A refused identity is told nothing** | The socket closes with no Logout and no Reject, as `1c_InvalidSenderCompID.def` and `1c_InvalidTargetCompID.def` expect. It is indistinguishable from a wrong password on purpose |
-| **The refusal *is* the authentication hook** | There is no separate `AuthStrategy`. When a credential check on `553` / `554` arrives it goes in the `Entry`, behind the same `lookup`. Two hooks answering "may this counterparty in" are two rules that will disagree |
+| **The refusal *is* the authentication hook** | There is no separate `AuthStrategy`. A credential check on `553` / `554` / `96` goes behind the same trait, as `Registry::admit`. Two hooks answering "may this counterparty in" are two rules that will disagree |
 
 **`Table` keys on the comp IDs, and it is one implementation of a trait.**
 `Registry::lookup(Identity) -> Option<&Entry>` is the seam. If your counterparties are told
 apart by `50=` / `57=`, or live in a file or a database snapshot, write your own; it is about
-eight lines, and `crates/engine/tests/registry.rs` has one. Two rules for whatever you write:
+eight lines, and `crates/engine/tests/registry.rs` has one.
+
+**To check a password, implement `Registry::admit` instead** `[added 2026-09-05]`. It is given
+the whole `Logon`, so `553=Username`, `554=Password` and `96=RawData` are reachable; `lookup`
+never was, and that made this trait's advertised job impossible to do. **The default forwards
+to `lookup`**, so a registry written before today needs no change.
+
+```rust
+fn admit(&self, id: Identity<'_>, logon: &[u8]) -> Option<&Entry> {
+    // `field_value` borrows out of the caller's buffer — no allocation.
+    let given = fixbolt_engine::presession::field_value(logon, b"554=")?;
+    (given == self.password).then(|| self.lookup(id))?
+}
+```
+
+**fixbolt stores no credential and compares none.** There is no `Password` key in the
+configuration file and no default policy, because a default that accepted an empty password
+would be worse than no default at all — the same argument ADR-0026 decision 6 makes about an
+empty table. Comparing secrets is yours; do it in constant time if the threat model asks for
+it.
+
+Two rules for whatever you write:
 
 - **It must not allocate.** `lookup` is on the connection path and `benches/alloc.rs` asserts
   the whole pre-session stage is zero. Borrow from what your registry already owns.
@@ -452,7 +473,7 @@ EndTime=23:59:59
 ```
 
 ```rust
-let table = fixbolt_engine::settings::Settings::load("acceptor.cfg")?.into_table();
+let table = fixbolt_engine::settings::Settings::load("acceptor.cfg")?.into_table()?;
 ```
 
 `[DEFAULT]` supplies every `[SESSION]` after it; a `[SESSION]` overrides for itself. The
@@ -477,7 +498,7 @@ matches nothing, so truncation would give you an acceptor that starts cleanly an
 nobody. The limits are `fixbolt_session::MAX_BEGIN_STRING_LEN` and `MAX_COMP_ID_LEN`.
 
 **What the file cannot say**, and you will notice: no credential (ADR-0026 decision 3 makes
-`lookup` the only authentication hook), no per-counterparty journal path (that belongs to
+the registry the only authentication hook, and `Registry::admit` is where a check goes), no per-counterparty journal path (that belongs to
 `Recovery`, [ADR-0039](decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md)),
 no `50=` / `57=`, no reload while running (the table is read-only after startup), and no
 `UtcOffsetMillis` key, deliberately: §5a explains why a fixed offset in a settings file is a
@@ -734,11 +755,13 @@ So the size is yours to choose:
 A gateway holding hundreds of sessions should pick a smaller `N` through the const generic
 (§1a).
 
-**That 2 MiB is the number to hold in mind when sizing anything else.** `[measured 2026-09-04]`
-one `Connection` is 23 752 bytes at the default `RX = 4096`, and 36 040 at `RX = 16 384` — so
-quadrupling the receive buffer is **0.57%** of what a session already costs. The four sizes in
+**That 2 MiB is the number to hold in mind when sizing anything else.** `[measured 2026-09-05]`
+one `Connection` is 23 760 bytes at the default `RX = 4096`, and 36 048 at `RX = 16 384` — so
+quadrupling the receive buffer is **0.57%** of what a session already costs
+(`crates/engine/tests/connection_size.rs`). The four sizes in
 [CONFIGURATION.md](CONFIGURATION.md) are rarely worth economising on; the journal ring is where
-the memory actually goes.
+the memory actually goes. A larger `RX` buys capacity and not latency, and 4096 has never been
+measured: [ADR-0055](decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md).
 
 The messages a resend cannot reach are not lost quietly:
 

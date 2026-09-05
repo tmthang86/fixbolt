@@ -155,6 +155,16 @@ pub struct Engine<
     /// [`crate::backpressure::SLOW_APPLICATION`] — so this counter is the same
     /// event seen from the inside. See [`Self::refused_connections`].
     refused_connections: usize,
+    /// Sockets the pre-session stage let go because their first message could
+    /// not be framed.
+    ///
+    /// **Told to the engine rather than counted by it.** The stage sits in
+    /// front of the engine and owns its own sockets ([ADR-0020]); this is the
+    /// only place an operator can read the number, because `Snapshot` is the
+    /// only thing an operator reads at all. `serve` hands it over each turn.
+    ///
+    /// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
+    unframeable_prelogon: usize,
     cfg: Config,
     dispatch: D,
     clock: C,
@@ -236,6 +246,7 @@ where
             shard: self.shard,
             interests: self.interests,
             sources_missing: self.sources_missing,
+            unframeable_prelogon: self.unframeable_prelogon,
             speak_first_sends: self.speak_first_sends,
             refused_connections: self.refused_connections,
             cfg: self.cfg,
@@ -287,6 +298,7 @@ where
             conns: Vec::with_capacity(capacity),
             log: L::default(),
             log_lost_reported: 0,
+            unframeable_prelogon: 0,
             shard: 0,
             // Two more than the connections: `serve` adds the listener, and the
             // out-of-band waker is one more. Going over is not fatal — it costs
@@ -599,6 +611,23 @@ where
         self.logons
     }
 
+    /// Tell this engine how many sockets the pre-session stage in front of it
+    /// let go because their first message could not be framed.
+    ///
+    /// The stage owns its own sockets and is not part of the engine
+    /// ([ADR-0020]), so the number has to be handed over: `Snapshot` is the
+    /// only thing an operator reads, and a count nothing publishes is a count
+    /// nobody has. `serve` calls this once a turn with what
+    /// `presession::Progress` reported; a caller driving an `Engine` by hand
+    /// with its own pre-session stage does the same.
+    ///
+    /// Cumulative — the argument is the number **added** this turn.
+    ///
+    /// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
+    pub const fn note_unframeable(&mut self, n: usize) {
+        self.unframeable_prelogon = self.unframeable_prelogon.saturating_add(n);
+    }
+
     /// A handle another thread reads this engine's state through.
     ///
     /// **Calling this is what makes the engine observable at all.** Until then
@@ -863,6 +892,7 @@ where
         refused_connections: usize,
         sources_missing: usize,
         log_lost: u64,
+        unframeable_prelogon: usize,
     ) -> crate::observe::Snapshot {
         let mut snap = crate::observe::Snapshot::default();
         for c in conns {
@@ -879,7 +909,13 @@ where
                 },
             ));
         }
-        snap.set_counters(conns.len(), refused_connections, sources_missing, log_lost);
+        snap.set_counters(
+            conns.len(),
+            refused_connections,
+            sources_missing,
+            log_lost,
+            unframeable_prelogon,
+        );
         snap
     }
 
@@ -921,6 +957,7 @@ where
                 self.refused_connections,
                 self.sources_missing,
                 self.log.lost(),
+                self.unframeable_prelogon,
             );
             shared.publish(&snap);
         }
@@ -2167,6 +2204,9 @@ fn pump<
         }
         let now = crate::clock::Clock::now_ms(&mut clock);
         let p = set.turn(now);
+        // The pre-session stage is in front of the engine and keeps its own
+        // counts; this is the one line that lets an operator see this one.
+        engine.note_unframeable(p.unframeable);
         moved |= p != presession::Progress::default();
         while let Some(i) = set.settled() {
             let Some(pending) = set.take(i) else { break };

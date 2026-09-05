@@ -135,3 +135,69 @@ fn a_reply_that_does_not_fit_fails_rather_than_truncating() {
     );
     assert_eq!(answer.range(), None, "a failed reply named a range");
 }
+
+/// `35=j`, whole, and it is a **business** reject rather than a session one.
+///
+/// Step 6 of `plans/2026-09-04-settings-for-both-roles.md`. The expected bytes
+/// are a literal for the reason the module header gives: building them with
+/// `TemplateBuilder` would make this agree with the implementation by
+/// construction.
+#[test]
+fn a_business_reject_carries_the_four_fields_in_dictionary_order() {
+    let mut out = [0u8; 512];
+    let mut m = reply_for(&mut out).business_reject(b"11", b"D", 2, b"unknown security");
+    let answer = m.send();
+
+    let Answer::Sent(range) = answer else {
+        panic!("it should have been sent: {answer:?}");
+    };
+    assert_eq!(
+        show(&out[range]),
+        // `9=88` and `10=155` were computed away from the engine — the field
+        // bytes summed by hand and by a one-line script — because a frame
+        // copied out of the output under test is the one assertion in this file
+        // that would agree with any implementation. The first version of this
+        // literal said 93 and 016, and the engine was the one that was right.
+        "8=FIX.4.4|9=88|35=j|34=7|49=US|52=20260902-10:00:00.123|56=ALPHA|\
+         45=11|58=unknown security|372=D|380=2|10=155|",
+        "header first, then body tags ascending — the dictionary chooses, not \
+         the call site"
+    );
+}
+
+/// A handler may keep writing after the four.
+///
+/// **This is what says `business_reject` is a convenience over `message` and
+/// not a second path.** If it were its own encoder, a field added afterwards
+/// would have nowhere to go.
+#[test]
+fn a_business_reject_is_an_ordinary_message_and_takes_more_fields() {
+    let mut out = [0u8; 512];
+    let mut m = reply_for(&mut out).business_reject(b"11", b"D", 2, b"no");
+    let answer = m.field(379, b"CLIENT-1").send();
+
+    let Answer::Sent(range) = answer else {
+        panic!("it should have been sent: {answer:?}");
+    };
+    let wire = show(&out[range]);
+    assert!(
+        wire.contains("|379=CLIENT-1|"),
+        "the extra field is there: {wire}"
+    );
+    assert!(wire.contains("|372=D|"), "and the four still are: {wire}");
+}
+
+/// The session's tags are still not the handler's to write.
+#[test]
+fn a_business_reject_cannot_restate_a_session_owned_tag() {
+    let mut out = [0u8; 512];
+    let mut m = reply_for(&mut out).business_reject(b"11", b"D", 2, b"no");
+    let answer = m.field(34, b"999").send();
+
+    let Answer::Sent(range) = answer else {
+        panic!("it should have been sent: {answer:?}");
+    };
+    let wire = show(&out[range]);
+    assert!(wire.contains("|34=7|"), "the session's number: {wire}");
+    assert!(!wire.contains("|34=999|"), "and only that one: {wire}");
+}

@@ -46,7 +46,7 @@ impl Handler for Desk {
 # // same `#[cfg]` the re-export carries, applied to the doctest.
 # #[cfg(all(feature = "standard", unix))]
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-let table = Settings::load("acceptor.cfg")?.into_table();
+let table = Settings::load("acceptor.cfg")?.into_table()?;
 
 // Everything an operator can do to a running engine comes off this, and it is
 // made **before** the engine: `serve` returns only once it has stopped.

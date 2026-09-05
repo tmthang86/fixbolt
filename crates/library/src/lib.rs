@@ -18,7 +18,7 @@ pub use fixbolt_codec::{
 
 /// Who this acceptor serves, when, and under what numbers.
 pub use fixbolt_session::{
-    Application, Config, Link, Role,
+    Application, Config, DictionaryChecks, Link, ResetPolicy, Role,
     schedule::{Schedule, Weekday, Weekdays},
 };
 pub use fixbolt_session::{MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN, Peer};
@@ -46,6 +46,19 @@ pub use fixbolt_engine::serve_hft_with;
 #[cfg(all(feature = "standard", unix))]
 pub use fixbolt_engine::{serve, serve_with, serve_with_recovery, serve_with_recovery_with};
 
+/// Dialling out, and the rule for coming back.
+///
+/// `[added 2026-09-05]` `Settings::into_initiator` hands back a
+/// [`reconnect::Policy`], so the front door that takes one has to be nameable
+/// from here too: a caller who can build the argument and cannot name the
+/// function has a configuration file it cannot honour, which is the same shape
+/// `Settings::log` already argues against.
+#[cfg(all(feature = "standard", unix))]
+pub use fixbolt_engine::{connect_and_serve, connect_and_serve_with};
+
+/// The backoff ladder an initiator follows after a connection ends.
+pub use fixbolt_engine::reconnect;
+
 /// `hft` has no `standard` to depend on, so its recovery entry point is always
 /// present.
 pub use fixbolt_engine::{serve_hft_with_recovery, serve_hft_with_recovery_with};
@@ -54,7 +67,7 @@ pub use fixbolt_engine::{serve_hft_with_recovery, serve_hft_with_recovery_with};
 pub use fixbolt_engine::presession::{Entry, Identity, LimitError, Limits, Registry, Table};
 
 /// Who this acceptor serves, out of a file rather than out of a rebuild.
-pub use fixbolt_engine::settings::{Problem, Settings, SettingsError};
+pub use fixbolt_engine::settings::{ConnectionType, Problem, Settings, SettingsError};
 
 pub use fixbolt_engine::MAX_ON_LOGON;
 pub use fixbolt_engine::observe::{

@@ -184,6 +184,7 @@ pub struct Snapshot {
     truncated: bool,
     connections: usize,
     refused_connections: usize,
+    unframeable_prelogon: usize,
     sources_missing: usize,
     log_lost: u64,
 }
@@ -196,6 +197,7 @@ impl Default for Snapshot {
             truncated: false,
             connections: 0,
             refused_connections: 0,
+            unframeable_prelogon: 0,
             sources_missing: 0,
             log_lost: 0,
         }
@@ -226,6 +228,26 @@ impl Snapshot {
     #[must_use]
     pub const fn refused_connections(&self) -> usize {
         self.refused_connections
+    }
+
+    /// Sockets the pre-session stage let go because their first message could
+    /// not be framed — longer than the engine's `RX`, or not a readable frame.
+    ///
+    /// `[added 2026-09-05]` **Zero on a healthy acceptor, and a climbing number
+    /// is not transient.** Everything that counterparty sends of that shape
+    /// will be too long, so no retry helps: either raise `RX` through
+    /// `serve_with` ([ADR-0055]) or find out what is connecting to the port.
+    /// The refusal is silent on the wire — there is no session to speak on —
+    /// so this number is the only trace it leaves.
+    ///
+    /// **Not counted for `serve_sharded_hft`**, whose pre-session stage sits in
+    /// front of a fan of engines rather than behind one; the asymmetry is the
+    /// same one ADR-0054 names and is recorded rather than papered over.
+    ///
+    /// [ADR-0055]: ../../../docs/decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md
+    #[must_use]
+    pub const fn unframeable_prelogon(&self) -> usize {
+        self.unframeable_prelogon
     }
 
     /// Is this engine healthy enough to serve? Item 30 (f), and **a pure
@@ -267,11 +289,13 @@ impl Snapshot {
         refused_connections: usize,
         sources_missing: usize,
         log_lost: u64,
+        unframeable_prelogon: usize,
     ) {
         self.connections = connections;
         self.refused_connections = refused_connections;
         self.sources_missing = sources_missing;
         self.log_lost = log_lost;
+        self.unframeable_prelogon = unframeable_prelogon;
     }
 
     /// Messages the message log never wrote. **Zero on a healthy engine.**
@@ -571,12 +595,12 @@ mod tests {
 
         let mut refused = Snapshot::default();
         refused.push(session(1, true));
-        refused.set_counters(1, 1, 0, 0);
+        refused.set_counters(1, 1, 0, 0, 0);
         assert!(!refused.healthy(), "ADR-0011 dropped a session");
 
         let mut missing = Snapshot::default();
         missing.push(session(1, true));
-        missing.set_counters(1, 0, 1, 0);
+        missing.set_counters(1, 0, 1, 0, 0);
         assert!(
             !missing.healthy(),
             "a transport broke its own contract; the symptom is lateness"

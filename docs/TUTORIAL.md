@@ -163,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = "127.0.0.1:9876";
 
     // 1. Parse the settings into a table of counterparties.
-    let table = Settings::load(cfg_path)?.into_table();
+    let table = Settings::load(cfg_path)?.into_table()?;
     println!("loaded {} counterparty sessions", table.len());
 
     // 2. The handles, made before the engine — `serve` hands nothing back

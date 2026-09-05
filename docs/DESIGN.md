@@ -118,7 +118,7 @@ The crate is the largest, and its modules are the record of what was built when:
 | `poll`, `block`, `waker` | `poll(2)` and `standard`'s idle turn, behind `#[cfg(all(feature = "standard", unix))]`. The crate's first external dependency and first `unsafe`, both behind that feature | [ADR-0014](decisions/ADR-0014-standard-mode-blocks-on-poll.md) |
 | `affinity` | `CoreId`, `pin_current_thread` (reads the mask back), `running_on` (reads `/proc/thread-self/stat`), `Topology`, `ShardPlan`, `spawn_pinned`. Behind `#[cfg(all(feature = "affinity", target_os = "linux"))]`, off by default. Two `unsafe` blocks, each naming its test | [ADR-0015](decisions/ADR-0015-explicit-cores-pinned-from-inside-and-read-back.md), [ADR-0019](decisions/ADR-0019-two-unsafe-blocks-and-an-error-the-enum-can-hold.md) |
 | `shard` | `Shards`, `Shardable`, `serve_sharded_hft`: one pinned thread per shard, each confirming its own pin before any of them serves. The acceptor thread blocks, because it is not an engine thread | [ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md), [ADR-0022](decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md) |
-| `presession` | `Identity`, `identity_of`, `is_logon` (reads `49=` / `56=` / `35=` by field scan, no dictionary); `Limits`, `PendingSet` (owns a socket until its first whole message, under a deadline and a ceiling with no defaults); `Registry`, `Entry`, `Table` (which counterparty, decided before a session exists; a trait, and `None` from `lookup` is the authentication hook); `Route`, `HashRoute` (the shard a socket goes to, decided after its Logon). Everything allocated once, to the ceiling | [ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md), [ADR-0026](decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md), [ADR-0029](decisions/ADR-0029-the-pre-session-stage-enforces-four-definitions.md), [ADR-0030](decisions/ADR-0030-one-engine-holds-many-counterparties.md) |
+| `presession` | `Identity`, `identity_of`, `is_logon` (reads `49=` / `56=` / `35=` by field scan, no dictionary); `Limits`, `PendingSet` (owns a socket until its first whole message, under a deadline and a ceiling with no defaults); `Registry`, `Entry`, `Table` (which counterparty, decided before a session exists; a trait, and `None` from it is the authentication hook — `[2026-09-05]` the stage asks `admit(id, logon)`, which sees `553`/`554`/`96` and defaults to `lookup`, which could not); `field_value` (one field out of a message, borrowed, so a credential check allocates nothing); `Route`, `HashRoute` (the shard a socket goes to, decided after its Logon). Everything allocated once, to the ceiling | [ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md), [ADR-0026](decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md), [ADR-0029](decisions/ADR-0029-the-pre-session-stage-enforces-four-definitions.md), [ADR-0030](decisions/ADR-0030-one-engine-holds-many-counterparties.md) |
 | `journal` | `MemJournal` (the resend ring), `FileJournal` (append-only file with `Durability::{Async, Fsync}`, reloaded into a ring on open), `Reader` (the whole file, for a tool; allows itself to allocate), `Store = MemJournal<4096, 512>`. Records carry a CRC32 from format version 1 | [ADR-0008](decisions/ADR-0008-journal-is-a-trait.md), [ADR-0017](decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md), [ADR-0037](decisions/ADR-0037-reading-a-journal-is-not-recovering-from-one.md), [ADR-0039](decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md), [ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md) |
 | `recovery` | `Recovery` (asked once per connection, after the registry names the counterparty, on the acceptor thread), `Resumed`, `NoRecovery`, `FromFn`; `serve_with_recovery`, `serve_hft_with_recovery`, generic over the journal. `Engine::add_resumed` is the seam for a caller driving the engine | [ADR-0034](decisions/ADR-0034-recovery-is-asked-once-the-counterparty-is-known.md), [ADR-0039](decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md) |
 | `observe` | `Handles` (the one cell, made before the engine, adopted by it — [ADR-0054](decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md)); `Observer` / `Snapshot` / `SessionSnapshot` (on request; one relaxed load per turn while nobody asks; a fixed `[SessionSnapshot; 64]` plus `truncated`); `Event` / `EventKind` (pushed on a state change, never per message, losses counted); `Admin` / `Command` (the 3 a.m. operation, applied at the top of a turn; a refused `try_lock` loses nothing, a full queue refuses at the call) | [ADR-0032](decisions/ADR-0032-observation-is-a-snapshot-taken-on-request.md), [ADR-0035](decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md), [ADR-0036](decisions/ADR-0036-one-mechanism-two-capabilities.md), [ADR-0054](decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md) |
@@ -163,6 +163,15 @@ compile time. The `Application` is given the two things it does not own, the out
 sequence number and the clock, writes its reply into a buffer the session lends it, and
 returns the range it used; `None` spends no sequence number.
 
+**Two deadlines the caller may state, and both arrive through `tick`.** `[2026-09-05]`
+`Config::with_logon_timeout_ms` and `with_logout_timeout_ms` — QuickFIX's `LogonTimeout` and
+`LogoutTimeout` — end a connection that never completes its Logon, and one whose `Logout` is
+never answered, with `DropReason::LogonTimedOut` and `LogoutTimedOut` to say which. Off by
+default. **Neither is a clock in the session**: each is measured from the first `tick` after the
+event it bounds, which is the only shape D1 permits, and each belongs to the connection rather
+than to the session so a reconnect gets a whole new one. The logon one is the initiator's — an
+acceptor has `presession::Limits` in front of it, before a `Session` exists.
+
 **One machine, both roles.** The acceptor waits for a Logon and answers; the initiator sends
 one and waits. Sequence handling, resend, heartbeat, test request and logout are the same
 protocol read from the other end; [ADR-0004](decisions/ADR-0004-bidirectional-engine.md)
@@ -202,6 +211,17 @@ per scenario with `new`, so all seven reconnects in the corpus expect `34=1` and
 59 / 59 unchanged. `[measured 2026-08-31]` forcing `connect` to never reset drops it to 56 /
 59, which proves the corpus exercises that branch. Recovering the numbers is the engine's job;
 `Session::next_out()` and `next_in()` exist so it can persist them.
+
+**And an operator can override all of that, in three places.** `[2026-09-05]`
+`Config::with_reset(ResetPolicy)` — QuickFIX's `ResetOnLogon`, `ResetOnLogout` and
+`ResetOnDisconnect` — restarts both counts at 1 from this end, where until now only the
+counterparty's `141=Y` could. **It is a different question from `new` versus `resume`**: those
+say what the journal still holds, this says what the session wants next time, and only the
+second one is a thing a desk writes in a file. The default resets on nothing, so the corpus is
+untouched. `on_logon` acts in `connect`; the other two act in `Session::end`, **after** the
+message that ends the session has been written, because a `Logout` renumbered before it goes
+out spends `34=1` twice in one session. `docs/SESSION-BEHAVIOUR.md` §4 names the six tests —
+three for the flags and three for their absence.
 
 **Both counts survive, and the inbound one is written after delivery.**
 [ADR-0017](decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md): the journal

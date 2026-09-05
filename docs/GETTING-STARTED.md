@@ -153,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "127.0.0.1:9876";
 
     // 1. Load the configuration into a table of counterparties.
-    let table = Settings::load(cfg)?.into_table();
+    let table = Settings::load(cfg)?.into_table()?;
     println!("serving {} counterparties on {addr}", table.len());
 
     // 2. The handles, made BEFORE the engine. `serve` returns nothing until it

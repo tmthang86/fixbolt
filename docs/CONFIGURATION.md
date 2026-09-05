@@ -18,7 +18,7 @@ Validation is strict. An unknown key, a malformed value or an impossible schedul
 startup with the line number and the text that was written
 ([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)).
 
-**Eleven keys** are recognised `[changed 2026-09-04, was ten]`:
+**Twenty-three keys** are recognised `[changed 2026-09-05, was eleven]`.
 
 | Key | Meaning | Values | Default | Where | Source |
 |---|---|---|---|---|---|
@@ -33,6 +33,51 @@ startup with the line number and the text that was written
 | `EndDay` | Last day of a weekly session | `Monday`/`Mon` … `Sunday`/`Sun` | none | `[DEFAULT]` or `[SESSION]` | [`settings.rs:103`](../crates/engine/src/settings.rs#L103), [`settings.rs:590`](../crates/engine/src/settings.rs#L590) |
 | `Weekdays` | Days a daily session opens on | comma-separated, e.g. `Mon,Tue,Wed,Thu,Fri` | all seven days | `[DEFAULT]` or `[SESSION]` | [`settings.rs:104`](../crates/engine/src/settings.rs#L104), [`settings.rs:629`](../crates/engine/src/settings.rs#L629) |
 | `FileLogPath` | Path of the message log (both directions, one line per message). One engine writes one file; `conn=` and `shard=` tell counterparties apart inside it | any path the process can append to | none (no log) | `[DEFAULT]` **only**; a `[SESSION]` carrying it is refused | [`settings.rs`](../crates/engine/src/settings.rs), [`msglog.rs`](../crates/engine/src/msglog.rs) |
+
+**Which role the file describes, and where to dial** `[added 2026-09-05]`:
+
+| Key | Meaning | Values | Default | Where | Source |
+|---|---|---|---|---|---|
+| `ConnectionType` | Which role this whole file configures | `acceptor` or `initiator` | `acceptor` — every file written before 2026-09-05 | `[DEFAULT]` **only**; a file names one role | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `SocketConnectHost` | Where to dial. **Kept as written and resolved on every dial**, so a venue whose DNS fails over keeps working | a hostname or an address | required when `ConnectionType=initiator`; **refused otherwise, by line** | `[DEFAULT]` or `[SESSION]` | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `SocketConnectPort` | Which port | `0`–`65535` | required when `ConnectionType=initiator`; refused otherwise | `[DEFAULT]` or `[SESSION]` | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `ReconnectInterval` | First backoff delay after a connection ends | integer, **seconds** | `30` (QuickFIX's own) | initiator only | [`reconnect.rs`](../crates/engine/src/reconnect.rs) |
+| `ReconnectCeiling` | Largest backoff delay. **No QuickFIX equivalent** — without it the ladder doubles for ever | integer, **seconds**, not below `ReconnectInterval` | 16 × `ReconnectInterval` | initiator only | [`reconnect.rs`](../crates/engine/src/reconnect.rs) |
+
+**The session's own behaviour** `[added 2026-09-05]`. Each sets the `Config` knob of the same
+name in [§2](#2-programmatic-limits-and-defaults); all are `[DEFAULT]` or `[SESSION]`:
+
+| Key | Meaning | Values | Default |
+|---|---|---|---|
+| `ResetOnLogon` | Restart both counts as the connection is made, **including for a resumed session** | `Y` or `N` | `N` |
+| `ResetOnLogout` | Restart both counts once the `Logout` exchange is over | `Y` or `N` | `N` |
+| `ResetOnDisconnect` | Restart both counts when the link drops for any other reason | `Y` or `N` | `N` |
+| `LogonTimeout` | How long a connection may sit without completing its `Logon`. **The initiator's** — an acceptor has `Limits.logon_ms` in front of it | integer, **seconds**; `0` is off | `0` |
+| `LogoutTimeout` | How long to wait for the `Logout` this end asked for | integer, **seconds**; `0` is off | `0` |
+| `AllowUnknownMsgFields` | Do not refuse a **defined** tag that this `MsgType` does not carry (`373=2`). A tag the dictionary has never heard of is still refused | `Y` or `N` | `N` |
+| `ValidateUserDefinedFields` | Ask the dictionary about tags at or above 5000. **The one key whose `Y` means *keep working*** | `Y` or `N` | `Y` |
+
+**`ValidateFieldsOutOfOrder` is not recognised, and it is not an oversight.** QuickFIX's third
+setting of that family switches off `373=14`, *tag specified out of required order*. This engine
+builds a **flat index** of tag positions (DESIGN.md D2) and reads header-versus-body order out
+of it with one comparison in the same scan that checks everything else. There is no separate
+pass to skip; turning it off would mean deleting the comparison, which is a different engine
+rather than a setting. Writing the key gets *"unknown key"* with its line, like any other.
+
+**Y and N, and nothing else.** `true`, `yes` and `1` are refused with their line. Reading `true`
+as `Y` today is reading `1` as `N` tomorrow, and a flag guessed wrongly is a session that
+silently keeps or drops its numbering.
+
+**A file names one role, and the wrong door says so with a line number.** `Settings::into_table`
+refuses an initiator file and `Settings::into_initiator` refuses an acceptor file, each naming
+the `ConnectionType=` line and the other door. The mistake worth catching is the first: a table
+built from an initiator file is perfectly well formed, and the acceptor would sit waiting for
+the venue it was told to dial, with nothing on the wire to say so because nothing would happen
+on the wire. The sharded entry point takes a `Table` and nothing else, so it meets the same
+refusal — one mechanism, not a second check to disagree with the first.
+
+**An initiator file has exactly one `[SESSION]`**, because an initiator holds one session and
+`connect_and_serve` takes one `Config`. A second block is refused on its own line.
 
 Three rules the file enforces:
 
@@ -51,13 +96,17 @@ Set in code when the engine is built or started.
 
 | Parameter | Meaning | Values | Default | Where set | Source |
 |---|---|---|---|---|---|
-| `Limits` | Pre-session bounds: how many sockets may wait for their Logon, and for how long | `pending > 0`, `logon_ms > 0` | **none** ([ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)) | `Limits::new(pending, logon_ms)`, passed to `serve` / `serve_hft` | [`presession.rs:372`](../crates/engine/src/presession.rs#L372), [`presession.rs:412`](../crates/engine/src/presession.rs#L412) |
+| `Limits` | Pre-session bounds: how many sockets may wait for their Logon, and for how long | `pending > 0`, `logon_ms > 0` | **none** ([ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)) | `Limits::new(pending, logon_ms)`, passed to `serve` / `serve_hft` | [`presession.rs:372`](../crates/engine/src/presession.rs#L372), [`presession.rs:420`](../crates/engine/src/presession.rs#L420) |
 | `DEFAULT_CAPACITY` | Size of the ring between the engine and an out-of-band application | power of two, bytes | `4194304` (4 MiB) | `RingDispatch::new(capacity)` | [`ring.rs:113`](../crates/engine/src/ring.rs#L113) |
 | `DEFAULT_TIMEOUT_MS` | How long a `standard` engine blocks before waking to check timers | milliseconds | `100` | `Block::new(capacity)` or `Block::with_timeout_ms` | [`block.rs:33`](../crates/engine/src/block.rs#L33) |
 | `MIN_TIMEOUT_MS` | Smallest timeout `Block` accepts; a smaller one is raised to it | milliseconds | `5` | enforced by `Block::with_timeout_ms` | [`block.rs:41`](../crates/engine/src/block.rs#L41) |
 | `SLOTS` | Outbound messages the journal ring keeps for resends | power of two | `4096` `[changed 2026-09-04, was 8]` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`journal.rs:51`](../crates/engine/src/journal.rs#L51) |
 | `SLOT_LEN` | Largest message the journal ring can keep | bytes | `512` | `MemJournal<SLOTS, SLOT_LEN>` / `Store` | [`journal.rs:56`](../crates/engine/src/journal.rs#L56) |
 | `resend_batch` | Messages put on the wire per call when answering a `ResendRequest` | `u16`; zero is read as one | `8` | `Config::with_resend_batch` | [`session/src/lib.rs`](../crates/session/src/lib.rs) |
+| `validation` | `[added 2026-09-05]` Which of the dictionary's questions the session asks — QuickFIX's `AllowUnknownMsgFields` and `ValidateUserDefinedFields`. **`ValidateFieldsOutOfOrder` is not supported and will not be**: the parser builds a flat index (D2) and header-versus-body order is one comparison inside the same scan, not a pass that can be skipped | `DictionaryChecks::new()` plus `.allowing_unknown_msg_fields()` and/or `.skipping_user_defined_fields()` | every check **on** — what the 59 acceptance definitions prove | `Config::with_validation` | [`session/src/lib.rs`](../crates/session/src/lib.rs), [SESSION-BEHAVIOUR §3](SESSION-BEHAVIOUR.md) |
+| `logon_timeout_ms` | `[added 2026-09-05]` How long a connection may sit without completing its `Logon`. **The initiator's** — an acceptor has `Limits.logon_ms` in front of it, before a `Session` exists | milliseconds; **zero is off** | `0` | `Config::with_logon_timeout_ms` | [`session/src/lib.rs`](../crates/session/src/lib.rs), [SESSION-BEHAVIOUR §1](SESSION-BEHAVIOUR.md) |
+| `logout_timeout_ms` | `[added 2026-09-05]` How long this end waits for the `Logout` it asked for. Without it the only bound is 2.4 × `HeartBtInt` | milliseconds; **zero is off** | `0` | `Config::with_logout_timeout_ms` | [`session/src/lib.rs`](../crates/session/src/lib.rs), [SESSION-BEHAVIOUR §1](SESSION-BEHAVIOUR.md) |
+| `reset` | `[added 2026-09-05]` When this session restarts both counts at 1 of its own accord — QuickFIX's `ResetOnLogon`, `ResetOnLogout`, `ResetOnDisconnect`. **Not the same choice as `Session::new` versus `resume`**, which says what the journal holds | `ResetPolicy::new()` plus any of `.on_logon()`, `.on_logout()`, `.on_disconnect()` | resets on **nothing** — the behaviour the 59 acceptance definitions prove | `Config::with_reset` | [`session/src/lib.rs`](../crates/session/src/lib.rs), [SESSION-BEHAVIOUR §4](SESSION-BEHAVIOUR.md) |
 | `Durability` | What a `FileJournal` guarantees. **Under `Fsync` an *administrative* message costs a `sync_data` too**, since 2026-09-05: the outbound count is written when it moves, so a `Heartbeat` every second is a disk sync every second (ADR-0053, the price ADR-0017 already accepted inbound). `Async` — the default — keeps it off the engine thread | `Async` (background writer), `Fsync` (blocks the engine thread) | `Async` | `FileJournal::open(path, durability)` | [`journal.rs`](../crates/engine/src/journal.rs) |
 | `MAX_ON_LOGON` | Most messages one session may originate from `Handler::on_logon` | `u32`, not configurable | `16` | compile-time constant | [`engine/src/lib.rs`](../crates/engine/src/lib.rs) |
 | `ORIGIN_CAPACITY` | Originated messages a `Sender` may have waiting for the engine's next turn | `usize`, not configurable | `64` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
@@ -153,10 +202,18 @@ chose not to reply. A size sweep against a real acceptor found the wall between 
 bytes while `RX` was 16 KiB:
 [a-ceiling-has-more-than-one-floor](reference/a-ceiling-has-more-than-one-floor.md).
 
-**What they cost.** `[measured 2026-09-04]` one `Connection` is **23 752 bytes** at `RX = 4096`
-and **36 040** at `RX = 16 384` — the difference is exactly the buffer. Against that, each
-session carries a **~2 MiB** journal ring on the heap (`SLOTS × (SLOT_LEN + 8)`), so quadrupling
-the receive buffer is **+0.57%** per connection. Memory is rarely the reason not to raise these.
+**What they cost.** `[measured 2026-09-05]` one `Connection` is **23 760 bytes** at `RX = 4096`
+and **36 048** at `RX = 16 384` — the difference is exactly the buffer, which
+`crates/engine/tests/connection_size.rs` asserts rather than states. Against that, each session
+carries a **~2 MiB** journal ring on the heap (`SLOTS × (SLOT_LEN + 8)`), so quadrupling the
+receive buffer is **+0.57%** per connection. Memory is rarely the reason not to raise these —
+but a larger `RX` buys **capacity, not speed**, and `RX = 4096` is an unmeasured default:
+[ADR-0055](decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md).
+
+**There is no `MaxMessageSize` key, and there will not be one.** No engine surveyed has one —
+`MaxMessageSize` is FIX **tag 383**, an optional `Logon` field by which the two ends tell each
+other their limit, not a setting. `RX` is where this engine's ceiling is set, and it is set at
+compile time. ADR-0055.
 
 The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbound index,
 `P = 64` fields in a reply, `S = 1024` bytes for them. A reply that does not fit is

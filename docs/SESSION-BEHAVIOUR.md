@@ -36,6 +36,8 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 | `OutsideSchedule` | a message arrived while the schedule says the session is shut |
 | `CannotSend` | the session could not put a message on the wire and fails closed rather than send something malformed |
 | `HeartbeatTimeout` | nothing arrived for long enough, after an unanswered TestRequest |
+| `LogonTimedOut` | `[2026-09-05]` the connection was made and the Logon exchange never completed inside `Config::with_logon_timeout_ms`. **Not a heartbeat timeout** — that one means a working session stopped answering; on an initiator this usually means the venue is listening but not yet open |
+| `LogoutTimedOut` | `[2026-09-05]` this end said Logout and the answer never came inside `Config::with_logout_timeout_ms`. **Not `PeerLogout`** — that one means the exchange completed, this one is a shutdown to reconcile by hand |
 | `PeerLogout` | the counterparty sent a Logout |
 | `ScheduleClosed` | the schedule's window closed on a live session; **not a fault** |
 | `TransportClosed` | the socket closed |
@@ -46,6 +48,23 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 
 `DropReason` is `#[non_exhaustive]`; match it with a `_` arm. The engine pushes it to the
 operator on the event stream ([GUIDE.md §8a](GUIDE.md), *Why a connection ended*).
+
+**Two deadlines the caller states**, `[added 2026-09-05]`, both **off by default** and both
+measured from the first `Session::tick` after the event they bound — a pure layer is given time
+in no other way:
+
+| Setting | Bounds | Notes |
+|---|---|---|
+| `Config::with_logon_timeout_ms` | `connect` → the Logon exchange completing | **The initiator's.** An acceptor already has `presession::Limits::new(pending, logon_ms)` in front of it, holding the socket before a `Session` exists; an initiator dialling a venue that accepts the socket and says nothing has no such stage. Ends without a message: there is no agreed session to speak on |
+| `Config::with_logout_timeout_ms` | `begin_logout` → the answering Logout | `begin_logout` leaves the link up so the caller can wait. Before this the only bound was 2.4 × `HeartBtInt` — 72 s on a default session. Ends without a message: the goodbye already went out |
+
+Zero means off, the same reading `108=0` has. A deadline belongs to the **connection**, so
+`connect` clears it; `crates/session/tests/heartbeat.rs::a_reconnect_gets_a_whole_new_logon_deadline`
+is what says so, and it exists because removing that line broke nothing else. Guarded by
+`::a_logon_that_never_arrives_times_out_at_the_stated_deadline`,
+`::without_a_logon_timeout_a_silent_counterparty_waits_forever`,
+`crates/session/tests/goodbye.rs::a_goodbye_that_is_never_answered_times_out_at_the_stated_deadline`
+and `::without_a_logout_timeout_the_wait_runs_to_the_heartbeat_rules`.
 
 ---
 
@@ -95,12 +114,50 @@ first fault, without a session. It therefore answers `373=` 0, 1, 4 and the grou
 value-format faults; it does **not** answer 9, 10 or 11, which need CompIDs, a clock and a
 session state that a bare view does not carry. It was made public so the pass could be timed —
 `[measured 2026-09-05]` 897.3 ns on a `NewOrderSingle`, `DESIGN.md` §8 — and it is the same
-code path, not a copy of it.
+code path, not a copy of it. `validate_with(view, msg_type, checks)` `[added 2026-09-05]` is
+the same pass under a session's own settings.
+
+**Two of those questions can be switched off**, `[added 2026-09-05]`, through
+`Config::with_validation(DictionaryChecks::new()…)` — QuickFIX's `AllowUnknownMsgFields` and
+`ValidateUserDefinedFields`. **Both checks are on by default**, which is what the 59
+definitions prove.
+
+| Setting | Forgives | Does **not** forgive |
+|---|---|---|
+| `.allowing_unknown_msg_fields()` | `373=2`, *tag not defined for this message type* — a tag FIX 4.4 defines, on a message that does not carry it | `373=0`. A tag the dictionary has never heard of stays refused |
+| `.skipping_user_defined_fields()` | every question about a tag at or above `FIRST_USER_DEFINED_TAG` (5000) | anything below it. `999`, `0` and `-1` stay `373=0` — this is a range, not an amnesty |
+
+**`ValidateFieldsOutOfOrder` is deliberately absent**, and it is not an omission. QuickFIX's
+third setting of this family switches off `373=14`; here the parser builds a flat index (D2)
+and header-versus-body order is one comparison inside the same scan, with no separate pass to
+skip. Turning it off would mean deleting the comparison, which is a different engine rather
+than a setting.
+
+**The corpus is blind to both knobs, and `14a_BadField.def` is why that is easy to get wrong.**
+`[verified 2026-09-05]` all four of that file's faults are `373=0` — `999`, `0`, `-1` and
+`5000` — so it looks like the file that would move and it is not the fault either setting
+governs. `crates/session/tests/validation_knobs.rs` holds six cases: each knob's default, each
+knob's effect, and each knob **failing to forgive the other one's fault**.
 
 **A session reject is not a business reject.** `2r_UnregisteredMsgType.def` sends `35=8` as
 an application message of an unsupported type, and the engine answers with a *business*
 reject, not a `373=`. Unsupported application types are the application's concern; malformed
-session plumbing is the session's.
+session plumbing is the session's. `[added 2026-09-05]` The library writes one for you:
+`Reply::business_reject(ref_seq, ref_msg_type, reason, text)` lays out `35=j` with `45=`,
+`372=`, `380=` and `58=`, and hands back an ordinary `Message` you may add fields to. Both
+reference fields are **bytes**, so `Incoming::seq()` and `Incoming::msg_type()` go straight in
+without a parse and a re-render on the reply path.
+
+**A pre-session socket whose first message cannot be framed has its own number**
+`[added 2026-09-05]`. It used to be counted as *gone*, beside a peer that simply left.
+`presession::Progress::unframeable` and `Snapshot::unframeable_prelogon` are that fact on its
+own: **non-zero is not transient** — everything that counterparty sends of the same shape will
+be too long, so either the deployment's `RX` is smaller than the venue's messages
+([ADR-0055](decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md)) or
+something that is not FIX is connecting to the port. The refusal is silent on the wire, because
+there is no session to speak on, so the number is the only trace it leaves. Guarded by
+`crates/engine/tests/pending.rs::a_frame_longer_than_the_buffer_is_counted_apart_from_a_peer_that_left`
+and `::an_unframeable_socket_is_visible_through_the_engines_snapshot`.
 
 ---
 
@@ -115,7 +172,25 @@ session plumbing is the session's.
   expected number differently. The table beside the resend logic in
   `crates/session/src/lib.rs` records which restarts the counts.
 - **`141=Y` on a Logon resets both counts** before the Logon's own numbers are applied. It is
-  the only thing that restarts a resumed session's counters.
+  the only thing *on the wire* that restarts a resumed session's counters.
+- **`ResetPolicy` restarts them from this end** `[2026-09-05]`, and is the only other thing
+  that does. `Config::with_reset(ResetPolicy::new().on_logon() / .on_logout() /
+  .on_disconnect())` — QuickFIX's `ResetOnLogon`, `ResetOnLogout` and `ResetOnDisconnect`.
+  **The default resets on nothing**, which is the behaviour the 59 definitions prove.
+  - `on_logon` restarts both counts in `Session::connect`, **including for a resumed session**,
+    which is the only case where it changes anything.
+  - `on_logout` and `on_disconnect` restart them in `Session::end` — **after** the message that
+    ends the session has been written, so a `Logout` still carries the number it was owed
+    rather than spending `34=1` twice.
+  - It is not the same choice as `Session::new` versus `Session::resume`: those say what the
+    journal still holds, this says what the session wants next time.
+  Guarded by `crates/session/tests/logon.rs::reset_on_logon_restarts_a_resumed_sessions_numbers`,
+  `::reset_on_disconnect_restarts_the_numbers`,
+  `crates/session/tests/goodbye.rs::reset_on_logout_restarts_the_numbers_only_after_the_goodbye_is_numbered`,
+  and their three neutral twins — `::the_default_reset_policy_leaves_a_resumed_session_counting`,
+  `::a_disconnect_without_the_policy_keeps_the_numbers`,
+  `::a_logout_without_the_policy_keeps_the_numbers` — which are what say the flag and not the
+  code path is doing the work.
 - **`16=0` and a range past what was sent are clamped** to the last number this end actually
   sent. Guarded by
   `crates/engine/tests/journal.rs::what_no_longer_fits_in_the_ring_is_filled_over_not_skipped`.

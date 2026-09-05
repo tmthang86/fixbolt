@@ -320,7 +320,11 @@ fn a_frame_that_can_never_be_a_message_is_dropped() {
     ));
 
     let p = set.turn(T0 + 1);
-    assert_eq!(p.gone, 1, "unreadable, and there is nobody to tell");
+    // `[changed 2026-09-05]` This read `p.gone` until `Progress::unframeable`
+    // existed. The behaviour is the same and the fact is now its own: a frame
+    // this stage can never read is not a peer that left. ADR-0055 decision 4.
+    assert_eq!(p.unframeable, 1, "unreadable, and there is nobody to tell");
+    assert_eq!(p.gone, 0, "and it did not leave: {p:?}");
     assert_eq!(set.len(), 0);
 }
 
@@ -488,5 +492,110 @@ fn a_prefix_bigger_than_rx_is_refused_and_not_truncated() {
         eng.connections(),
         0,
         "a refused connection must not be half-added"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A frame longer than the buffer has a name now
+//
+// Step 6 of `plans/2026-09-04-settings-for-both-roles.md`, and
+// [ADR-0055](../../../docs/decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md)
+// decision 4.
+//
+// `[verified 2026-09-05]` this stage answered `Step::Gone` for a message longer
+// than `PRE` and counted it in `Progress::gone`, alongside a peer that simply
+// left. Two completely different operational facts under one number: one is a
+// counterparty closing a socket, the other is a counterparty this acceptor
+// **cannot ever talk to**, because everything it sends will be too long.
+//
+// `conn.rs` already argues this exact point for `DuplicateIdentity` — *named,
+// not merely closed* — and the argument had never been applied here. Artio,
+// the only surveyed engine with a ceiling at all, names its reason too.
+// ---------------------------------------------------------------------------
+
+/// A well-framed FIX message longer than `PRE`, so it can never be cut.
+fn a_message_longer_than_the_buffer() -> Vec<u8> {
+    let logon = a_logon();
+    let s = String::from_utf8(logon).expect("ascii");
+    let at_10 = s.find("\u{1}10=").expect("a trailer");
+    // One enormous `58=` — a real optional field of a Logon — so the message is
+    // well formed in every respect except that it does not fit.
+    let padding = "x".repeat(PRE * 2);
+    let body = format!("{}\u{1}58={padding}\u{1}10=000\u{1}", &s[..at_10]);
+    body.into_bytes()
+}
+
+#[test]
+fn a_frame_longer_than_the_buffer_is_counted_apart_from_a_peer_that_left() {
+    let mut set: PendingSet<Loopback, One, PRE> =
+        PendingSet::new(limits(4, 30_000), One::new(cfg()));
+    let (near, mut far) = Loopback::pair();
+    assert!(matches!(set.admit(near, T0), Ok(())));
+    let long = a_message_longer_than_the_buffer();
+    assert!(long.len() > PRE, "the premise: {} bytes", long.len());
+    let _ = far.send(&long);
+
+    let p = set.turn(T0);
+
+    assert_eq!(
+        p.unframeable, 1,
+        "a message this stage can never frame is its own fact: {p:?}"
+    );
+    assert_eq!(
+        p.gone, 0,
+        "and it is NOT the counterparty having left: {p:?}"
+    );
+    assert_eq!(set.len(), 0, "the socket is let go either way");
+    // The other half is `a_connection_whose_peer_goes_away_is_dropped` above,
+    // which reads `gone: 1` for a peer that closes: if `unframeable` were
+    // incremented for every ending, that test would have moved too.
+}
+
+/// The number reaches an operator, which is the whole reason it is a number.
+///
+/// `Progress` is returned to whoever drives the stage and then dropped; only
+/// `Snapshot` is read from another thread. **A count nothing publishes is a
+/// count nobody has** — the shape `CLAUDE.md` §4 calls prose holding a
+/// constraint, in numeric form.
+#[test]
+fn an_unframeable_socket_is_visible_through_the_engines_snapshot() {
+    use fixbolt_engine::observe::Handles;
+    use fixbolt_engine::transport::Loopback as Lb;
+
+    let handles = Handles::new();
+    let mut engine: fixbolt_engine::Engine<
+        Lb,
+        fixbolt_session::Acceptor,
+        fixbolt_engine::dispatch::InlineDispatch<Silent>,
+        fixbolt_engine::clock::ManualClock,
+        fixbolt_engine::wait::Spin,
+        fixbolt_engine::journal::Store,
+        256,
+        PRE,
+        8192,
+        fixbolt_engine::msglog::NoLog,
+        1024,
+    > = fixbolt_engine::Engine::new(
+        cfg(),
+        fixbolt_engine::dispatch::InlineDispatch::new(Silent),
+        fixbolt_engine::clock::ManualClock::at(T0),
+        fixbolt_engine::wait::Spin,
+        4,
+    );
+    assert!(engine.adopt(&handles), "a fresh engine has no cell");
+    let observer = handles.observer();
+
+    engine.note_unframeable(2);
+    // `request` asks and takes what is there; the engine publishes on the turn
+    // after the ask, so the first call is the question and the second is the
+    // answer. That is `Observer`'s contract, not a quirk of this test.
+    assert!(observer.request().is_none(), "nothing published yet");
+    engine.turn();
+
+    let snap = observer.request().expect("the engine published one");
+    assert_eq!(
+        snap.unframeable_prelogon(),
+        2,
+        "what the pre-session stage let go is readable from outside"
     );
 }
