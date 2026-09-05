@@ -56,11 +56,25 @@ clean-logout scenario reach its fifth assertion and read `35=2: 1` where it want
 this by construction. `benches/alloc.rs` reads `mark-out-mem 0 mark-out-file-async 0` across 29 of
 29 cases, proven by a reversal that read `10000` on both.
 
-**Not done, and named:** `benches/turn.rs` was **not** re-measured — every turn now carries one
-more trait call, and this closed on a container rather than the §9 desktop, so a number from here
-would be another machine's. `scripts/check-no-kernel-sleep.sh` did not run. **No CI run is named
-for this commit yet**, which is §9's last box, and `docs/CONFORMANCE.md` says so in place of a run
-id rather than borrowing an old one.
+**CI green on `3d16527`, 22 checks of 22**, runs
+[`33964556891`](https://github.com/tmthang86/fixbolt/actions/runs/33964556891) and
+[`33964529347`](https://github.com/tmthang86/fixbolt/actions/runs/33964529347) — §9's last box,
+for the branch; the merge commit's own run is owed when it lands. Three job logs were read rather
+than their conclusions. The interop job's assertion lines are byte-identical to the development
+run's. **`scripts/check-no-kernel-sleep.sh` ran, both halves**: the `hft` half made `accept4`,
+`recvfrom`, `sendto` and **no `poll`**, and the `standard` half tripped the check with `6 poll`,
+which is what says it can still fall. `tools/w2w --path app` printed `allocs 0 (both threads, the
+timed window only)` with the mark live on the path.
+
+**Not done, and named:** `benches/turn.rs` **has no cost figure**. It ran in CI and came back
+among the 45 `cases w/o a baseline` — *measured and printed but compared against nothing* — and
+this closed on a container rather than the §9 desktop, so no number here would be that machine's.
+Every turn now carries one more trait call and what it costs is unknown.
+
+**And one bullet in *Not proven* was false within the hour it was written.** It said
+`check-no-kernel-sleep.sh` had not run, because *this container* has no `bpftrace` — which was
+mistaken for the gate not running at all. **CI is a machine too**, and it had already run it. The
+bullet is struck with the log quoted.
 
 **Next: item 47**, [handles-through-the-front-door](docs/plans/2026-09-05-handles-through-the-front-door.md),
 *Chờ duyệt* — smaller now that reading `next_out` through a handle is no longer one of its
@@ -2541,15 +2555,25 @@ instead of tidied away.
 - **What the outbound mark costs a turn has not been measured.** `[2026-09-05]` ADR-0053 puts a
   `Journal::mark_out` on every path out of `Session::received_with`, `tick_with` and
   `send_application` — a comparison when the count has not moved, and one record when it has.
-  `benches/alloc.rs` says it allocates nothing (`mark-out-mem 0`, `mark-out-file-async 0`, proven
-  by reversal at `10000` each), and **that is the whole of what is proven**. `benches/turn.rs`
-  was **not** re-run: the work closed on a container, not on the §9 desktop, and a number from
-  here would be another machine's. Under `Durability::Fsync` the cost is a `sync_data` per
-  administrative message, which is ADR-0017's inbound price arriving outbound — argued, not timed.
-- **`scripts/check-no-kernel-sleep.sh` has not run against the outbound mark.** `[2026-09-05]`
-  the `Async` tier pushes into the same ring `mark_in` uses, so it cannot reach a disk on the
-  engine thread *by construction* — which is a reading of the code, and non-negotiable 4 is not
-  settled by readings. The container this closed on has no `bpftrace`.
+  What **is** proven: it allocates nothing (`benches/alloc.rs` `mark-out-mem 0`,
+  `mark-out-file-async 0`, proven by reversal at `10000` each, and CI's bench job read
+  `invariant failures 0` across 16 of 16 targets on its own CPU); and `tools/w2w --path app` on
+  the CI runner printed `allocs 0 (both threads, the timed window only)` with the mark live on
+  the path, which is the binary-level gate `benches/alloc.rs` cannot see.
+  **What is not: the cost.** `benches/turn.rs` ran in CI and is one of the 45 cases listed under
+  `cases w/o a baseline` — *"measured and printed but compared against nothing"* — so no number
+  for it exists on a machine that has a baseline. This closed on a container, not the §9 desktop.
+  Under `Durability::Fsync` the cost is a `sync_data` per administrative message, which is
+  ADR-0017's inbound price arriving outbound — argued, not timed.
+- ~~**`scripts/check-no-kernel-sleep.sh` has not run against the outbound mark.**~~ — **FALSE
+  within the hour it was written.** `[measured 2026-09-05]` it ran in CI on `3d16527`, job
+  [`101302253539`](https://github.com/tmthang86/fixbolt/actions/runs/33964556891/job/101302253539),
+  **both halves**, and the log was read rather than its conclusion: the `hft` half made
+  `accept4`, `recvfrom` and `sendto` and **no `poll`, no futex** — `GREEN ok — engine thread made
+  no blocking call; it did make socket calls` — and the `standard` half tripped it, `RED ok —
+  --mode standard trips it: 6 poll`, which is what says the check can still fall. The bullet was
+  written because *this container* has no `bpftrace`, and that was mistaken for the gate not
+  running at all: **CI is a machine too.**
 - **`Recovery::recover` runs on the acceptor thread and nothing bounds how long it takes.**
   ADR-0020 allows that thread to block, which is what makes reading a file legal there — and a
   slow implementation delays every connection queued behind it, with the pending deadline as

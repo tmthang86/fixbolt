@@ -162,14 +162,24 @@ of run [`33933972142`](https://github.com/tmthang86/fixbolt/actions/runs/3393397
 `c839854` — **the merge commit on `main`, not the branch tip**, because a branch being green
 says nothing about the commit where it meets `main`. 11 jobs of 11.
 
-**The 5 / 5 + 5 / 5 + 5 / 5 above is `[measured 2026-09-05]` on a development machine only, and
-CI has not confirmed it for the commit that changed it.** Read line by line rather than off the
-exit code: `interop-reconnect-logout: next_out ok sent up to 34=3 before the kill, came back at
-34=4, wanted 34=4`, `no_resend ok 35=2: 0, 141=Y: 0, 'MsgSeqNum too low': 0`, and
-`interop-reconnect-beat: next_out ok sent up to 34=4 before the kill, came back at 34=5, wanted
-34=5`. Machine: Linux 6.18 container, 4 cores, cmake and g++ from the image, libquickfix at the
-pinned `386ce46e`. **A run id for the closing commit is owed here** — §9's last box — and until
-one is named this row is a laptop's word, not the commit's.
+**The 5 / 5 + 5 / 5 + 5 / 5 is CI's, on the commit that changed it.** `[measured 2026-09-05]`
+`ubuntu-latest`, cmake 3.31.6, g++ 13.3.0, libquickfix at the pinned `386ce46e`: job
+[`101302253512`](https://github.com/tmthang86/fixbolt/actions/runs/33964556891/job/101302253512)
+of run [`33964556891`](https://github.com/tmthang86/fixbolt/actions/runs/33964556891) on
+`3d16527`, **22 checks of 22 across that run and
+[`33964529347`](https://github.com/tmthang86/fixbolt/actions/runs/33964529347)**. The job's own
+log was read rather than its conclusion, and the lines that matter are byte-identical to the
+development run — which is what says they are not one machine's accident:
+
+```
+interop-reconnect-logout: next_out    ok    sent up to 34=3 before the kill, came back at 34=4, wanted 34=4
+interop-reconnect-logout: no_resend   ok    35=2: 0, 141=Y: 0, 'MsgSeqNum too low': 0
+interop-reconnect-beat:   next_out    ok    sent up to 34=4 before the kill, came back at 34=5, wanted 34=5
+interop: 7 / 7 + 7 / 7 + 5 / 5 + 5 / 5 + 5 / 5 against libquickfix @ 386ce46e…
+```
+
+**This is a run on the PR branch, not on a merge commit on `main`**, which is the stronger thing
+and is owed when it merges.
 
 **These two scenarios are the first evidence for `connect_and_serve` that this repository did
 not write.** ADR-0043 said so in its own *Consequences*: *"every test of this is invented … only

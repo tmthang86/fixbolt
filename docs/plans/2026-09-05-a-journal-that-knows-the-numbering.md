@@ -1,6 +1,6 @@
 # Một journal biết mình đã đếm tới đâu
 
-> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **Đã duyệt 2026-09-05**, đang làm
+> **Loại:** Plan · **Ngày:** 2026-09-05 · **Trạng thái:** **ĐÓNG 2026-09-05**, cả năm bước
 > **Phạm vi:** `STATUS.md` item 48. Chạm `session` (trait `Journal`, hai chỗ tiêu số thứ tự),
 > `engine` (`MemJournal`, `FileJournal`, `Reader`, `Resumed`, hai chỗ gọi `mark_active`),
 > `tools/interop` + `scripts/interop.sh`, tài liệu, một ADR mới. **Không chạm** `codec`, `dict`,
@@ -352,12 +352,23 @@ xanh đọc `no_resend FAIL 35=2: 1`: chiều **vào** có đúng cái lỗ đó
 Không test nào của repo này thấy được, vì chúng đều lái message để link còn sống, còn corpus so
 byte và mọi byte đều đúng.
 
+**CI xanh 22/22 trên `3d16527`**, run
+[`33964556891`](https://github.com/tmthang86/fixbolt/actions/runs/33964556891) và
+[`33964529347`](https://github.com/tmthang86/fixbolt/actions/runs/33964529347) — ô cuối §9, cho
+nhánh; run của merge commit là thứ còn nợ khi nó về `main`. Đọc log ba job chứ không đọc kết luận:
+
+- job interop in đúng những dòng máy dev in, từng chữ — nên con số không phải tai nạn của một máy.
+- **`scripts/check-no-kernel-sleep.sh` có chạy, cả hai nửa**: nửa `hft` chỉ có `accept4`,
+  `recvfrom`, `sendto`, **không `poll`**; nửa `standard` làm check đổ với `6 poll`.
+- job bench: `targets measuring 16 of 16`, `invariant failures 0`, `cases under the band 0`.
+- `tools/w2w --path app` trên runner in `allocs 0 (both threads, the timed window only)`.
+
 **Chưa làm, nói rõ ra:**
 
-- **`scripts/check-no-kernel-sleep.sh` chưa chạy.** Máy này là container không có `bpftrace`;
-  ADR-0053 khẳng định `Async` không chạm engine thread bằng cấu trúc (đẩy vào ring, y hệt
-  `mark_in`), không bằng số đo.
-- **`benches/turn.rs` chưa đo lại.** Mỗi turn nay thêm một lời gọi trait; đây không phải máy §9
-  nên một con số ở đây sẽ là số của máy khác. **Đó là một mục mở, không phải một mục đã xong.**
-- **Chưa có CI run xanh gọi tên cho commit đóng plan** — ô cuối §9. `docs/CONFORMANCE.md` nói
-  thẳng rằng 5/5+5/5+5/5 hiện là lời của một máy dev.
+- **`benches/turn.rs` không có con số nào.** Nó *có* chạy trong CI nhưng rơi vào 45 case
+  `cases w/o a baseline` — *đo và in ra, nhưng so với không gì cả*. Đây không phải máy §9 nên một
+  con số ở đây cũng không phải số của máy đó. **Mỗi turn nay thêm một lời gọi trait và giá của nó
+  chưa biết** — một mục mở, không phải một mục đã xong.
+- **Và một bullet trong *Not proven* sai ngay trong giờ nó được viết.** Nó nói
+  `check-no-kernel-sleep.sh` chưa chạy, vì *container này* không có `bpftrace` — và điều đó bị
+  nhầm thành "gate không chạy ở đâu cả". **CI cũng là một cái máy.** Đã gạch, kèm log.
