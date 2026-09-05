@@ -350,6 +350,20 @@ jobs:
             echo '```'
             cat vendor/interop-run/interop-acceptor.log 2>/dev/null || echo '(no output)'
             echo '```'
+            echo
+            echo '### The reconnect scenarios: the venue dies and comes back'
+            echo
+            echo 'STATUS.md item 38. The assertions are read off the C++ acceptor'\''s two'
+            echo 'transcripts — before the kill and after it — not off this engine'\''s word.'
+            for tag in interop-reconnect interop-reconnect-logout; do
+              for half in A1 A2 R; do
+                echo
+                echo "#### $tag / $half"
+                echo '```'
+                cat "vendor/interop-run/$tag-$half.log" 2>/dev/null || echo '(no output)'
+                echo '```'
+              done
+            done
           } >> "$GITHUB_STEP_SUMMARY"
 
   # STATUS.md open item 20. Eight bench targets asserted ceilings and counts —

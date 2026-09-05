@@ -24,12 +24,19 @@ publish = false
 # (`docs/reference/feature-flags-unify-across-a-workspace.md`). Declared here,
 # `#[cfg]`-gated on the item in `src/main.rs`, and asked per crate by
 # `scripts/check-no-optional-deps.sh` — non-negotiable 6.
+# `[2026-09-05]` **`fixbolt-engine` is a direct dependency, and the feature has
+# to be forwarded to BOTH crates.** `--role reconnect` calls
+# `fixbolt_engine::connect_and_serve`, which the `fixbolt` facade does not
+# re-export (`GUIDE.md` §8c calls it by its full path for the same reason).
+# Forwarding to `fixbolt` alone would leave `fixbolt-engine/standard` off, and
+# the role would fail to compile for a reason that reads like a missing item.
 [features]
 default = ["standard"]
-standard = ["fixbolt/standard"]
+standard = ["fixbolt/standard", "fixbolt-engine/standard"]
 
 [dependencies]
 fixbolt = { path = "../../crates/library", default-features = false }
+fixbolt-engine = { path = "../../crates/engine", default-features = false }
 fixbolt-session = { path = "../../crates/session" }
 
 [lints]

@@ -54,6 +54,14 @@ PORT="${INTEROP_PORT:-15644}"
 # A second port, because the two directions each stand up a listener and a
 # collision would look exactly like a protocol failure.
 PORT2="${INTEROP_PORT2:-15645}"
+# A third, for the reconnect scenarios: they stand the C++ acceptor up TWICE on
+# the same port and a collision with either direction above would look exactly
+# like a counterparty that refused to come back.
+PORT3="${INTEROP_PORT3:-15646}"
+# How long any single wait below gets before the run is called a failure.
+# A reversal that removes the restart must go RED, not HANG — a hang is how a
+# reversal fails to prove anything (docs/reference/a-reversal-can-fail-by-hanging.md).
+DEADLINE="${INTEROP_DEADLINE:-20}"
 JOBS="${INTEROP_JOBS:-$(nproc 2>/dev/null || echo 2)}"
 
 for tool in cmake g++ git cargo; do
@@ -118,8 +126,13 @@ echo "==> starting the acceptor on ${PORT}"
 "${WORK}/acceptor" "${WORK}/acceptor.cfg" > "${WORK}/acceptor.log" 2>&1 &
 ACCEPTOR_PID=$!
 FIXBOLT_PID=""
+# The reconnect scenarios' three processes: the C++ acceptor before the kill,
+# the one after it, and this engine's initiator, which outlives both.
+QF1_PID=""
+QF2_PID=""
+RECON_PID=""
 cleanup() {
-  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}"; do
+  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}"; do
     [[ -n "${pid}" ]] || continue
     kill "${pid}" 2>/dev/null || true
     wait "${pid}" 2>/dev/null || true
@@ -268,6 +281,326 @@ if [[ "${fail}" -ne 0 ]]; then
   exit 1
 fi
 
+# ---- 4d / 4e. The reconnect loop, judged by an acceptor that dies -----------
+#
+# `STATUS.md` item 38. Item 35 shipped `connect_and_serve` and EVERY test of it
+# is this repository's own reading: the 59 acceptance definitions never
+# reconnect an initiator, the mirrored corpus does not reach it, and the two
+# directions above connect once. ADR-0043 said so in its own Consequences —
+# "only an interop scenario driving a real counterparty through a disconnect
+# would close that, which scripts/interop.sh could grow and today does not".
+# This is that scenario.
+#
+# WHAT PLAYS THE COUNTERPARTY, AND WHY IT IS KILLED RATHER THAN STOPPED.
+# `tools/interop/acceptor.cpp` is reused unchanged, and the venue "restarting"
+# is its process dying and coming back on the same FileStorePath. That is the
+# deployment case, and it is what forces QuickFIX's own store — not this
+# repository's — to be the thing that remembers where the numbering was.
+#
+# WHO JUDGES. Not fixbolt. The assertions below read the C++ acceptor's
+# transcripts, `A1.log` before the kill and `A2.log` after it. The one thing
+# read from this engine's own output is `delivered`, and that line is written
+# from inside the application: it says a message arrived AND was accepted in
+# sequence, which a line printed on the wire would not.
+
+rc_fail=0
+rc_total=0
+
+# One assertion. Always prints, never returns early — a step that cannot run
+# must not be able to hide the ones behind it.
+rc_step() {
+  local name="$1" ok="$2" saw="$3" line
+  if [[ "${ok}" == "yes" ]]; then
+    line="$(printf '%s: %-11s ok    %s' "${TAG}" "${name}" "${saw}")"
+  else
+    line="$(printf '%s: %-11s FAIL  %s' "${TAG}" "${name}" "${saw}")"
+    rc_fail=$((rc_fail + 1))
+  fi
+  rc_total=$((rc_total + 1))
+  echo "${line}"
+  # Also to a file, so the grep gate at 4f reads something this function
+  # actually wrote rather than checking its own arithmetic. A scenario that
+  # returned early prints fewer lines, and that is the failure 4f exists for.
+  echo "${line}" >> "${WORK}/${TAG}.steps"
+}
+
+# Wait for `pattern` to appear in `file` at least `n` times, bounded.
+# Returns non-zero on timeout rather than hanging: a reversal that removes the
+# restart has to go red, and a reversal that hangs proves nothing.
+rc_wait() {
+  local file="$1" pattern="$2" n="$3" i=0
+  local ticks=$((DEADLINE * 10))
+  while [[ "${i}" -lt "${ticks}" ]]; do
+    if [[ -f "${file}" ]] && [[ "$(grep -c -- "${pattern}" "${file}" || true)" -ge "${n}" ]]; then
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# The `34=` values on lines matching a filter, one per line.
+rc_seqs() { grep -F -- "$2" "$1" 2>/dev/null | sed -nE 's/.*\|34=([0-9]+)\|.*/\1/p' || true; }
+
+# The C++ acceptor's configuration for these two scenarios.
+#
+# **The three `ResetOn*` are `N`, and that is the whole scenario.** The two
+# directions above run them all `Y`, which makes QuickFIX forget its numbering
+# at every logon — under that configuration "the session continued" is not a
+# question that can be asked, because both ends restart at 1 and a broken
+# engine passes.
+mkdir -p "${WORK}/store3"
+cat > "${WORK}/acceptor-reconnect.cfg" <<CFG
+[DEFAULT]
+ConnectionType=acceptor
+SocketAcceptPort=${PORT3}
+SocketReuseAddress=Y
+StartTime=00:00:00
+EndTime=00:00:00
+UseDataDictionary=Y
+DataDictionary=${SRC}/spec/FIX44.xml
+FileStorePath=${WORK}/store3
+ResetOnLogon=N
+ResetOnLogout=N
+ResetOnDisconnect=N
+
+[SESSION]
+BeginString=FIX.4.4
+SenderCompID=QFACC
+TargetCompID=FIXBOLT
+HeartBtInt=30
+CFG
+
+# One scenario. $1 is the signal that ends the first acceptor, $2 the tag its
+# lines carry.
+run_reconnect() {
+  local signal="$1"
+  TAG="$2"
+  local A1="${WORK}/${TAG}-A1.log"
+  local A2="${WORK}/${TAG}-A2.log"
+  local R="${WORK}/${TAG}-R.log"
+
+  rm -rf "${WORK}/store3" "${WORK}/jrnl3"
+  mkdir -p "${WORK}/store3" "${WORK}/jrnl3"
+  rm -f "${A1}" "${A2}" "${R}" "${WORK}/${TAG}.steps"
+
+  echo
+  echo "==> [${TAG}] the acceptor, on ${PORT3}"
+  "${WORK}/acceptor" "${WORK}/acceptor-reconnect.cfg" > "${A1}" 2>&1 &
+  QF1_PID=$!
+  if ! rc_wait "${A1}" "acceptor: ready" 1; then
+    echo "the acceptor never became ready:" >&2; cat "${A1}" >&2; exit 1
+  fi
+
+  echo "==> [${TAG}] this engine's initiator, through connect_and_serve"
+  "${REPO_ROOT}/target/debug/interop" --role reconnect \
+    --connect "127.0.0.1:${PORT3}" --journal "${WORK}/jrnl3/FIXBOLT.journal" \
+    ${INTEROP_RECONNECT_ARGS:-} > "${R}" 2>&1 &
+  RECON_PID=$!
+
+  # Both News delivered means the session is fully up AND this end has already
+  # sent its own application message — which is what puts a number in the
+  # journal for `Recovery` to continue from. Killing before this point would
+  # be killing a session that has nothing to continue.
+  local up="yes"
+  rc_wait "${R}" "delivered" 2 || up="no"
+  if [[ "${up}" != "yes" ]]; then
+    echo "---- this engine said ----" >&2; cat "${R}" >&2
+    echo "---- the acceptor said ----" >&2; cat "${A1}" >&2
+  fi
+
+  echo "==> [${TAG}] the venue goes away (${signal})"
+  kill "${signal}" "${QF1_PID}" 2>/dev/null || true
+  wait "${QF1_PID}" 2>/dev/null || true
+  QF1_PID=""
+
+  # A goodbye needs a moment to be answered before the socket dies with it.
+  if [[ "${signal}" == "-TERM" ]]; then
+    rc_wait "${A1}" "35=5" 2 || true
+  fi
+
+  echo "==> [${TAG}] the venue comes back, same store"
+  "${WORK}/acceptor" "${WORK}/acceptor-reconnect.cfg" > "${A2}" 2>&1 &
+  QF2_PID=$!
+  if ! rc_wait "${A2}" "acceptor: ready" 1; then
+    echo "the acceptor never came back:" >&2; cat "${A2}" >&2; exit 1
+  fi
+
+  # Nothing here tells this engine to redial. `reconnect::Policy` does, on its
+  # own ladder, and this wait is the assertion that it did.
+  local came_back="yes"
+  rc_wait "${A2}" "acceptor: in " 1 || came_back="no"
+  # Let the resumed session finish saying what it has to say.
+  rc_wait "${R}" "delivered" 4 || true
+  sleep 0.5
+
+  kill "${RECON_PID}" 2>/dev/null || true; wait "${RECON_PID}" 2>/dev/null || true; RECON_PID=""
+  kill "${QF2_PID}" 2>/dev/null || true;  wait "${QF2_PID}" 2>/dev/null || true;  QF2_PID=""
+
+  if [[ "${signal}" == "-KILL" ]]; then
+    rc_assert_kill "${A1}" "${A2}" "${R}" "${came_back}"
+  else
+    rc_assert_logout "${A1}" "${A2}"
+  fi
+}
+
+# What each scenario claims, read off the transcripts.
+#
+# **The two scenarios do not claim the same things, and that asymmetry is the
+# result rather than a shortcut.** After a kill, the numbering continues and is
+# asserted. After a clean logout it cannot, because this engine answers the
+# goodbye — spending an outbound number that `Journal::put` never records — and
+# no deployment using `connect_and_serve` can find out what that number was.
+# `STATUS.md` item 48, and docs/reference/a-journal-holds-messages-not-numbering.md.
+rc_assert_kill() {
+  local A1="$1" A2="$2" R="$3" came_back="$4"
+
+  # 1. Nobody said goodbye. That is what makes this the abrupt scenario, and it
+  #    is asserted rather than assumed from the signal.
+  local goodbyes
+  goodbyes="$(grep -c -F '|35=5|' "${A1}" || true)"
+  rc_step "dropped" "$([[ "${goodbyes}" -eq 0 ]] && echo yes || echo no)" \
+    "no 35=5 in the first transcript (saw ${goodbyes})"
+
+  # 2. It came back. Nothing told it to — `reconnect::Policy` did.
+  local logon_in
+  logon_in="$(grep -E '^acceptor: in ' "${A2}" 2>/dev/null | grep -F '|35=A|' | head -1 || true)"
+  rc_step "back" "$([[ -n "${logon_in}" && "${came_back}" == "yes" ]] && echo yes || echo no)" \
+    "${logon_in:-nothing reached the second acceptor}"
+
+  # 3. The numbering continued. **Relational**: the number this engine's second
+  #    Logon carries must be one past the last it sent before the kill. A
+  #    literal `34=3` would be a gate a slow runner could break for a reason
+  #    that is not the protocol.
+  local last_out first_logon want got_seq
+  last_out="$(rc_seqs "${A1}" 'acceptor: in ' | tail -1)"
+  first_logon="$(rc_seqs "${A2}" 'acceptor: in ' | head -1)"
+  got_seq="${first_logon:-none}"
+  if [[ -n "${last_out}" ]]; then want=$((last_out + 1)); else want="?"; fi
+  rc_step "next_out" "$([[ "${got_seq}" == "${want}" ]] && echo yes || echo no)" \
+    "sent up to 34=${last_out:-none} before the kill, came back at 34=${got_seq}, wanted 34=${want}"
+
+  # 4. The inbound direction continued too, and this is where `delivered` earns
+  #    its place: a session whose `next_in` had restarted would have opened a
+  #    gap on these two and asked for them back instead of handing them up.
+  local news_ok="yes" n wanted=""
+  for n in $(grep -E '^acceptor: out ' "${A2}" 2>/dev/null | grep -F '|35=B|' | sed -nE 's/.*\|34=([0-9]+)\|.*/\1/p' || true); do
+    wanted="${wanted} ${n}"
+    grep -q "delivered 34=${n} " "${R}" || news_ok="no"
+  done
+  [[ -n "${wanted}" ]] || news_ok="no"
+  rc_step "next_in" "${news_ok}" \
+    "35=B at 34=${wanted# } sent after the restart, each delivered to the application"
+
+  # 5. And without anybody papering over it. A ResendRequest, a reset flag or a
+  #    "MsgSeqNum too low" would each mean the numbering did NOT carry — and the
+  #    third is the exact refusal this scenario produced before the journal held
+  #    an application message at all (the plan's Sửa 2).
+  local resend reset toolow
+  resend="$(grep -c -F '|35=2|' "${A2}" || true)"
+  reset="$(grep -c -F '|141=Y|' "${A2}" || true)"
+  toolow="$(grep -c -F 'MsgSeqNum too low' "${A2}" || true)"
+  rc_step "no_resend" \
+    "$([[ "${resend}" -eq 0 && "${reset}" -eq 0 && "${toolow}" -eq 0 ]] && echo yes || echo no)" \
+    "35=2: ${resend}, 141=Y: ${reset}, 'MsgSeqNum too low': ${toolow}"
+}
+
+rc_assert_logout() {
+  local A1="$1" A2="$2"
+
+  # 1. A goodbye, and this engine answered it. `crates/session/tests/goodbye.rs`
+  #    holds that behaviour; here another implementation confirms it.
+  local said got
+  said="$(grep -c -E '^acceptor: out .*\|35=5\|' "${A1}" || true)"
+  got="$(grep -c -E '^acceptor: in .*\|35=5\|' "${A1}" || true)"
+  rc_step "goodbye" "$([[ "${said}" -ge 1 && "${got}" -ge 1 ]] && echo yes || echo no)" \
+    "35=5 out: ${said}, answered by this engine: ${got}"
+
+  # 2. **It redialled anyway** — ADR-0043 decision 5, that every ending climbs
+  #    the ladder including a clean logout, seen from an engine that never heard
+  #    of the ADR.
+  #
+  #    `[đo 2026-09-05]` the proof is NOT an `acceptor: in` line. QuickFIX
+  #    refuses this Logon in its session layer, so `fromAdmin` never runs and a
+  #    transcript built on application callbacks cannot see a message that
+  #    arrived. Its refusal is what says one did.
+  local arrived
+  arrived="$(grep -c -E 'MsgSeqNum too low|^acceptor: in .*\|35=A\|' "${A2}" || true)"
+  rc_step "redialled" "$([[ "${arrived}" -ge 1 ]] && echo yes || echo no)" \
+    "a Logon reached the acceptor after a clean goodbye (${arrived} lines say so)"
+
+  # 3. **And it was refused by exactly one.** This assertion pins a KNOWN GAP,
+  #    on purpose: `STATUS.md` item 48. `Journal::put` records application
+  #    messages only, so `highest() + 1` is short by the administrative messages
+  #    sent after the last application one — here the single 35=5 answering the
+  #    goodbye. Pinning the size is what makes it an explanation rather than a
+  #    shrug, and what makes this line go red the day item 48 is fixed, which is
+  #    when somebody has to come back and read it.
+  local pair expect recv
+  pair="$(grep -o -E 'expecting [0-9]+ but received [0-9]+' "${A2}" | head -1 || true)"
+  expect="$(echo "${pair}" | sed -nE 's/expecting ([0-9]+).*/\1/p')"
+  recv="$(echo "${pair}" | sed -nE 's/.*received ([0-9]+)/\1/p')"
+  rc_step "known_gap" \
+    "$([[ -n "${expect}" && -n "${recv}" && "${expect}" -eq $((recv + 1)) ]] && echo yes || echo no)" \
+    "${pair:-no refusal seen} — short by exactly the one 35=5 this engine sent after its last application message (item 48)"
+}
+
+# ---- 4d. The venue is killed. Nobody says goodbye. --------------------------
+rc_fail=0; rc_total=0
+run_reconnect -KILL "interop-reconnect"
+if [[ "${rc_fail}" -eq 0 && "${rc_total}" -gt 0 ]]; then
+  echo "interop-reconnect: PASS $((rc_total - rc_fail))/${rc_total}"
+else
+  echo "interop-reconnect: FAIL $((rc_total - rc_fail))/${rc_total}"
+fi
+
+# ---- 4e. The venue says goodbye first, then goes. ---------------------------
+#
+# ADR-0043 decision 5: EVERY ending climbs the ladder, including a clean
+# logout. A policy that counted only failures would reconnect instantly after a
+# goodbye, which is a reconnect storm with a polite name. This is that decision
+# seen from an engine that never heard of it.
+rc_fail=0; rc_total=0
+run_reconnect -TERM "interop-reconnect-logout"
+if [[ "${rc_fail}" -eq 0 && "${rc_total}" -gt 0 ]]; then
+  echo "interop-reconnect-logout: PASS $((rc_total - rc_fail))/${rc_total}"
+else
+  echo "interop-reconnect-logout: FAIL $((rc_total - rc_fail))/${rc_total}"
+fi
+
+# ---- 4f. Read that output too. Every assertion, not only the PASS line. -----
+#
+# The same shape the two directions above use, and for the same reason: a
+# scenario that exits early prints fewer step lines and still leaves a PASS
+# line's arithmetic looking tidy. Naming every step is what catches that —
+# `[measured 2026-09-04]` renaming one step in the acceptor direction left the
+# binary printing `PASS 7/7` while the script correctly failed.
+fail=0
+for step in dropped back next_out next_in no_resend; do
+  if ! grep -qE "^interop-reconnect: ${step} +ok" "${WORK}/interop-reconnect.steps" 2>/dev/null; then
+    echo "MISSING OR FAILED ASSERTION: interop-reconnect ${step}" >&2
+    fail=1
+  fi
+done
+for step in goodbye redialled known_gap; do
+  if ! grep -qE "^interop-reconnect-logout: ${step} +ok" "${WORK}/interop-reconnect-logout.steps" 2>/dev/null; then
+    echo "MISSING OR FAILED ASSERTION: interop-reconnect-logout ${step}" >&2
+    fail=1
+  fi
+done
+
+if [[ "${fail}" -ne 0 ]]; then
+  echo >&2
+  echo "---- the reconnect scenarios failed; every transcript follows ----" >&2
+  for f in "${WORK}"/interop-reconnect*-A1.log "${WORK}"/interop-reconnect*-A2.log "${WORK}"/interop-reconnect*-R.log; do
+    [[ -f "${f}" ]] || continue
+    echo "---- ${f} ----" >&2
+    cat "${f}" >&2
+  done
+  exit 1
+fi
+
 # ---- 5. Nothing of QuickFIX's entered the repository ------------------------
 #
 # The question is what THIS SCRIPT added, not whether the tree was clean when it
@@ -289,5 +622,5 @@ fi
 echo "==> the run added nothing git can see"
 
 echo
-echo "interop: 7 / 7 + 7 / 7 against libquickfix @ ${PINNED_SHA}"
-echo "both roles, each checked by somebody else's engine"
+echo "interop: 7 / 7 + 7 / 7 + 5 / 5 + 3 / 3 against libquickfix @ ${PINNED_SHA}"
+echo "both roles and both reconnect scenarios, each checked by somebody else's engine"

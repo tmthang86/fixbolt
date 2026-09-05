@@ -114,6 +114,8 @@ scripts/interop.sh
 |---|---|---|---|
 | `interop:` | this engine's `Session<Initiator, 256>` over a blocking socket | a `libquickfix` `SocketAcceptor` | **7 / 7** |
 | `interop-acceptor:` | a `libquickfix` `SocketInitiator` | `fixbolt::serve` in `standard` mode: the poller, the pre-session table, the settings file, the library `Handler` and the session layer under all of it | **7 / 7** |
+| `interop-reconnect:` | a `libquickfix` `SocketAcceptor` **killed with `SIGKILL` and restarted on the same `FileStore`** | `fixbolt_engine::connect_and_serve`: the reconnect ladder, the `Recovery` seam, `add_resumed`, the engine turn | **5 / 5** |
+| `interop-reconnect-logout:` | the same, **stopped with `SIGTERM`** so it says goodbye first | the same, after a clean logout — ADR-0043 decision 5 | **3 / 3** |
 
 The seven steps of the acceptor direction: `logon` (with `141=Y` echoed); `order` (two
 `35=D`, two `35=8`, paired by `11=`); `heartbeat` (an unprompted `35=0` with **no** `112=`,
@@ -122,6 +124,32 @@ original sequence numbers replayed with `43=Y`**, not merely something carrying 
 `gapfill` (the acceptor asks `35=2 7=n 16=0`, and a fresh TestRequest after the gap fill is
 answered); `logout`.
 
+The five steps of the `SIGKILL` scenario: `dropped` (no `35=5` in the first transcript, so the
+ending really was abrupt); `back` (a Logon reaches the restarted acceptor, and **nothing told
+this engine to send it** — `reconnect::Policy` did); `next_out` (**relational**: that Logon's
+`34=` is one past the last number this engine sent before the kill, read off the transcript
+rather than written as a literal); `next_in` (every `35=B` the restarted acceptor sends is
+*delivered to the application*, which a session whose inbound count had restarted would have
+gap-requested instead); `no_resend` (no `35=2`, no `141=Y`, no `MsgSeqNum too low`).
+
+The three of the `SIGTERM` scenario: `goodbye`; `redialled`; and `known_gap`, which **pins a
+known limitation on purpose** — `STATUS.md` item 48. After a clean logout this engine answers
+the venue's `35=5`, spending an outbound number the journal does not record, so the resumed
+session is refused by exactly one. The assertion pins the *size* of the shortfall, so the day
+item 48 is fixed this line goes red and somebody has to come back and read it.
+
+**Machine and run for these two.** Gated on `ubuntu-latest` in the same blocking `interop` job:
+job [`101215154156`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725/job/101215154156)
+of run [`33932950725`](https://github.com/tmthang86/fixbolt/actions/runs/33932950725), commit
+`d31db5e`, 11 jobs of 11. The job's own log was read rather than its conclusion, and every
+assertion line — `next_out ok … came back at 34=3, wanted 34=3` and `known_gap ok expecting 4
+but received 3` — is byte-identical to the development run, so item 48 is not one machine's
+accident.
+
+**These two scenarios are the first evidence for `connect_and_serve` that this repository did
+not write.** ADR-0043 said so in its own *Consequences*: *"every test of this is invented … only
+an interop scenario driving a real counterparty through a disconnect would close that"*.
+
 **Machine and run.** Recorded on macOS 15 (Apple M5) and gated on `ubuntu-latest`
 (cmake 3.31.6, g++ 13.3.0) in the blocking `interop` CI job: job
 [`100900997589`](https://github.com/tmthang86/fixbolt/actions/runs/33833427382/job/100900997589)
@@ -129,9 +157,13 @@ of run [`33833427382`](https://github.com/tmthang86/fixbolt/actions/runs/3383342
 `f94e36e`. The job's own log was read rather than its conclusion: `interop: PASS 7/7`,
 `interop-acceptor: PASS 7/7`, `==> the run added nothing git can see`.
 
-### What these 14 cases do not buy
+### What these 22 cases do not buy
 
-- **They are not a second corpus.** Seven cases per direction against 59 definitions.
+- **They are not a second corpus.** Seven cases per direction, eight across the two reconnect
+  scenarios, against 59 definitions.
+- **The reconnect scenarios do not cover a fixbolt process that restarts.** Only the venue
+  dies; this engine stays up throughout. Recovery across *this* process ending is
+  `crates/engine/tests/on_disk.rs`, and it has no independent opinion.
 - **`hft` mode is not covered.** `serve_hft` spins a core at 100%, and a shared CI runner is
   the wrong place for it. The three `hft` entry points still have no gate.
 - **One counterparty, one identity, no TLS, no schedule, no shards.**

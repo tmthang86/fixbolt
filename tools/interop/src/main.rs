@@ -72,6 +72,11 @@
 // compiles.
 #[cfg(all(feature = "standard", unix))]
 mod desk;
+// The third role, and the same gate on its `mod`: it calls
+// `fixbolt_engine::connect_and_serve`, which like `fixbolt::serve` exists
+// only behind `standard` on unix.
+#[cfg(all(feature = "standard", unix))]
+mod reconnect;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -283,8 +288,9 @@ fn main() -> std::process::ExitCode {
     {
         "initiator" => initiator(&args),
         "acceptor" => acceptor(&args),
+        "reconnect" => reconnect_role(&args),
         other => {
-            println!("interop: FAIL unknown --role {other} (initiator | acceptor)");
+            println!("interop: FAIL unknown --role {other} (initiator | acceptor | reconnect)");
             std::process::ExitCode::FAILURE
         }
     }
@@ -387,6 +393,22 @@ fn announce_when_listening(addr: String) {
 #[cfg(not(all(feature = "standard", unix)))]
 fn acceptor(_args: &[String]) -> std::process::ExitCode {
     println!("interop: FAIL --role acceptor needs the `standard` feature on a unix target");
+    std::process::ExitCode::FAILURE
+}
+
+/// **`--role reconnect`.** `STATUS.md` item 38 — see [`mod@reconnect`].
+#[cfg(all(feature = "standard", unix))]
+fn reconnect_role(args: &[String]) -> std::process::ExitCode {
+    reconnect::run(args)
+}
+
+/// Without `standard` on unix there is no `connect_and_serve`, so there is no
+/// role either. The same shape [`acceptor`] carries, for the same reason.
+#[cfg(not(all(feature = "standard", unix)))]
+fn reconnect_role(_args: &[String]) -> std::process::ExitCode {
+    println!(
+        "interop-reconnect: FAIL --role reconnect needs the `standard` feature on a unix target"
+    );
     std::process::ExitCode::FAILURE
 }
 

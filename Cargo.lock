@@ -52,6 +52,7 @@ name = "fixbolt-interop"
 version = "0.0.0"
 dependencies = [
  "fixbolt",
+ "fixbolt-engine",
  "fixbolt-session",
 ]
 
