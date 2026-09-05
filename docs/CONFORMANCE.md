@@ -130,6 +130,13 @@ and prints its `Shutdown` instead of being killed. `[measured 2026-09-05]` remov
 10s"* and fail in 29 seconds — the bound is there because a reversal that hangs proves nothing
 ([a-reversal-can-fail-by-hanging](reference/a-reversal-can-fail-by-hanging.md)).
 
+**A stop line, and only a line.** `[measured 2026-09-05]` the first version of that trigger
+treated end-of-input as the signal too, and this job is what refuted it: a background process on
+a runner has no terminal on stdin, so it read `interop: stopping on ""` and the acceptor
+**stopped before the counterparty connected**. Only a non-empty line stops it now; `< /dev/null`
+leaves it serving and says so
+([a-control-channel-the-launcher-already-closed](reference/a-control-channel-the-launcher-already-closed.md)).
+
 The six steps of the `SIGKILL` scenario: `dropped` (no `35=5` in the first transcript, so the
 ending really was abrupt); `back` (a Logon reaches the restarted acceptor, and **nothing told
 this engine to send it** — `reconnect::Policy` did); `next_out` (**relational**: that Logon's

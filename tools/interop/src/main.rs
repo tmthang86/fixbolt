@@ -407,13 +407,34 @@ const PENDING: usize = 4;
 ///
 /// `Admin::shutdown` is two atomic stores, so this thread is not racing the
 /// engine for anything.
+///
+/// # EOF is not a stop, and CI is what settled that
+///
+/// `[measured 2026-09-05]` **this used to treat end-of-input as the signal**,
+/// with a comment arguing that a supervisor closing the pipe has stopped
+/// supervising. The blocking `interop` job refuted it within the hour: a
+/// background process on a runner has no terminal on stdin, so the read
+/// returned immediately and the log read
+///
+/// ```text
+/// interop: stopping on ""
+/// interop: acceptor stopped: Shutdown { sessions: 0, said_goodbye: 0, acked: 0, timed_out: 0 }
+/// ```
+///
+/// — the acceptor stopped before the counterparty had connected, and the whole
+/// direction failed. **A launcher closing stdin is the ordinary case, not a
+/// signal**: `nohup`, `systemd`, `docker` without `-i` and a shell's `&` all do
+/// it. So only a **non-empty line** stops the engine now, and end-of-input
+/// leaves it serving.
 #[cfg(all(feature = "standard", unix))]
 fn stop_on_stdin(admin: fixbolt::Admin) {
     std::thread::spawn(move || {
         let mut line = String::new();
-        // EOF counts: a supervisor that closes the pipe has stopped supervising,
-        // and an acceptor that keeps serving after that is a process nobody owns.
-        let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
+        let read = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
+        if !matches!(read, Ok(n) if n > 0) || line.trim().is_empty() {
+            println!("interop: stdin ended without a stop line; still serving");
+            return;
+        }
         println!("interop: stopping on {:?}", line.trim());
         admin.shutdown(2_000);
     });

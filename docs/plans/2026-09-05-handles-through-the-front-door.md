@@ -303,7 +303,24 @@ kèm comment trỏ về ADR-0054 — nơi builder `Serve` đã được ghi là 
 Lint chính là điều kiện ấy đến sớm và bị từ chối **một lần**, có chủ ý; ghi lại chứ không bịt,
 để tham số tiếp theo gặp một sự thật chứ không phải một thói quen.
 
-**Ba — `DESIGN.md` §6 vẫn mang dòng reconnect của trước ADR-0053.** Nó còn đọc *"**3 / 3** sau
+**Ba — cú dừng bằng stdin coi EOF là tín hiệu, và CI bác bỏ trong vòng một tiếng.** Bản đầu có
+comment: *"EOF cũng tính: một supervisor đóng pipe là đã thôi giám sát"*. Job `interop` đọc:
+`interop: stopping on ""` rồi `acceptor stopped: Shutdown { sessions: 0, … }` — acceptor dừng
+**trước khi** đối phương kịp nối. Tiến trình chạy nền trên runner không có terminal ở stdin, nên
+read trả về ngay. **Launcher đóng stdin là chuyện thường, không phải tín hiệu.** Nay chỉ một
+**dòng khác rỗng** mới dừng engine; EOF để engine phục vụ tiếp và in `stdin ended without a stop
+line; still serving`. Cả hai nửa đều được kiểm: `stop` vào fifo → `stopping on "stop"` và gate
+đọc `shutdown ok`; chạy với `< /dev/null` → tiến trình còn sống sau một giây. Write-up:
+[a-control-channel-the-launcher-already-closed](../reference/a-control-channel-the-launcher-already-closed.md),
+**`[to testing-skills]`**.
+
+**Bốn — commit giữa `3b817d7` đỏ ở job `interop`, và nói ra ở đây.** §8 đòi gate xanh **cho
+commit đó**, không phải cho ngọn nhánh. Bước 3 đổi `tools/interop` còn bước 4 đổi
+`scripts/interop.sh`, nên ở giữa hai bước cái tool đọc một stdin mà script chưa cấp — đúng lỗi ở
+*Ba*. `d9a1cb9` xanh cả hai run, và bản sửa EOF làm cả lớp lỗi ấy không còn khả năng xảy ra, chứ
+không phải chỉ sửa thứ tự.
+
+**Năm — `DESIGN.md` §6 vẫn mang dòng reconnect của trước ADR-0053.** Nó còn đọc *"**3 / 3** sau
 `SIGTERM` … refused by **exactly one**, which is the known gap item 48 names"*, trong khi
 `STATUS.md` và `CONFORMANCE.md` đều đã sửa. **Bảng đồng bộ §4 đi bằng tay, và một bàn tay bỏ sót
 đúng một dòng của nó.** Sửa trong plan này.

@@ -35,7 +35,7 @@ now; the reversal reads `the caller's Observer saw 0 LoggedOn event(s) of two`.
 
 **The interop gate is `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6`**, 33 assertions, up from 29.
 
-**Two things this closing found that the plan did not name.**
+**Three things this closing found that the plan did not name, and one of them was CI's.**
 
 **One — `two_sources` cannot be an equality, and the reason was already written down.** The plan
 asked the gate to assert that the durable `next_out` and the live one *"are the same number"*.
@@ -54,6 +54,24 @@ They take an `#[allow]` whose comment points at ADR-0054, which had already reco
 builder as *deferred* with its reopening condition. The lint is that condition arriving early
 and being declined once, on purpose, and it is recorded rather than muted so the next parameter
 meets a fact instead of a habit.
+
+**Three — the stop trigger treated end-of-input as the signal, and the `interop` job refuted
+that within the hour.** The comment read *"EOF counts: a supervisor that closes the pipe has
+stopped supervising"*. CI read `interop: stopping on ""` followed by `acceptor stopped:
+Shutdown { sessions: 0, … }` — **the acceptor stopped before the counterparty connected**,
+because a background process on a runner has no terminal on stdin and the read returns at once.
+A launcher closing stdin is the ordinary case, not a signal. Only a non-empty line stops it now,
+and both halves are checked: `stop` into the fifo gives `stopping on "stop"` and the gate's
+`shutdown ok`; `< /dev/null` leaves the process alive with *still serving* in the log. Write-up:
+[a-control-channel-the-launcher-already-closed](docs/reference/a-control-channel-the-launcher-already-closed.md),
+**`[to testing-skills]`**.
+
+**And the intermediate commit `3b817d7` was red for `interop`, which is said here rather than
+left in the run history.** §8 asks for gates green *for that commit*, not for the branch tip.
+Step 3 changed `tools/interop` and step 4 changed `scripts/interop.sh`, so between them the tool
+read a stdin the script did not yet supply — the defect above, in its first environment. The fix
+removes the whole class rather than the ordering: `d9a1cb9` is green in both runs and an EOF can
+no longer stop anything.
 
 `cargo test --all` **519 → 524**, 0 failed; `--no-default-features` 519; clippy `-D warnings`,
 `fmt`, `check-lint-config.sh` (by reversal), `check-no-optional-deps.sh`, `check-links.py`
