@@ -222,6 +222,75 @@ với kết quả đo của plan này**. Và đây là một dòng *Not proven* 
 bố sai, mà một **phép đo đúng vào ngày nó được đo** rồi bị một refactor một tuần sau âm thầm
 làm hỏng, mà không tài liệu nào chỉ vào nó. `[to testing-skills]`.
 
+## Sửa 3 (2026-09-05, trước bước B1) — `Loopback` không dùng được cho phép đo này
+
+**Cái gì sai.** Mục *Cách làm* nửa B viết "N session `Loopback` đã đăng nhập". Đọc code thì
+`transport::Loopback` giữ byte trong `std::collections::VecDeque<u8>`. Ba hệ quả, và cái thứ ba
+mới là cái giết phép đo:
+
+1. **Nó cấp phát.** `VecDeque` lớn lên bằng cách nhân đôi. `benches/alloc.rs` đã ghi lại đúng
+   bẫy này ở dòng chú thích của nó — một case từng báo "1 allocation" và con số ấy là hàng đợi
+   của cái fake đang phình, không phải của engine.
+2. **Nó tính tiền theo từng byte.** Đẩy và lấy 149 byte qua một deque byte-một là công việc của
+   harness nằm trong vùng tính giờ.
+3. **Nó thêm bộ nhớ heap cho mỗi connection, và bộ nhớ đó vào cache.** Phép đo này *là* một
+   phép đo cache. Dùng `Loopback` nghĩa là mỗi connection kéo theo một vùng đệm của đồ giả, rồi
+   ta đo cái đồ giả đó và gọi nó là `Connection`.
+
+**Đổi cách làm.** `density.rs` định nghĩa transport riêng của nó, `Feed`, ngay trong file bench:
+
+- `recv` chép **một** message vào buffer của caller và trả `Io::Ready(len)`. Không cấp phát,
+  không deque, chi phí là đúng một `memcpy` — cùng loại việc mà một `read()` thật làm, trừ
+  syscall.
+- `send` đếm byte rồi vứt. Không có hàng đợi để phình.
+- Message đầu là `Logon`; từ đó trở đi là `NewOrderSingle`, **vá tại chỗ**: `34=` viết ở bề rộng
+  cố định 8 chữ số, tăng có nhớ, và checksum cập nhật tăng dần thay vì tính lại. Không
+  `format!`, không cấp phát, chi phí không đổi theo N.
+
+Vá `34=` là bắt buộc chứ không phải tối ưu: `benches/alloc.rs` đã ghi `[measured 2026-08-30]`
+rằng gửi lại **cùng một** message làm session từ chối số thứ tự đã dùng và bỏ link, và từ vòng
+thứ ba trở đi bench đo một engine không còn connection nào.
+
+Trạng thái thêm vào mỗi connection: một template ~200 byte và bốn số. So với `VecDeque` thì đây
+là thứ nhỏ nhất có thể mà vẫn nuôi được một session thật.
+
+**Không đổi:** vẫn là `Engine` thật, `Connection` thật, `Session` thật, parse thật, journal thật.
+Cái bị thay chỉ là ống dẫn byte, và nó bị thay vì ống cũ nặng hơn thứ cần đo.
+
+**Tên case và dải N.**
+
+| Case | Nửa |
+|---|---|
+| `engine turn, {1,2,4,8,16,32,64} busy sessions` — ring 8 slot | B-i |
+| `engine turn, 1 busy, ring {64,512,4096}` | B-ii |
+
+Dải N dừng ở 64 vì số học đã đổi theo Sửa 2: `Connection` ~21 KiB cộng ring, nên L1d 32 KiB
+đến ở N≈1, mép L2 512 KiB ở **N≈20**, và L3 32 MiB còn cách rất xa ở N≈1 300. Điểm 128 là
+~3.2 MiB — vẫn nằm gọn trong L3, và nó là điểm cuối còn nói được điều gì.
+
+## Sửa 4 (2026-09-05, sau lần chạy đặc tính đầu tiên) — dải N dừng ở 64, và cái đó tốn gì
+
+**Vì sao.** Sweep tốn O(N): một lần chạy `density` mất ~7 phút, gần hết nằm ở hai điểm cuối.
+Baseline cần 20 lần chạy sạch, nên giữ N=128 là **~3.5 giờ** chiến dịch, bỏ nó còn **~1.2 giờ**.
+Chủ sở hữu chọn bỏ.
+
+**Cái bị mất, nói thẳng.** N=128 là điểm gần bão hoà nhất — chỗ gần như mọi dòng cache bị chạm
+đều đã bị đẩy khỏi L2 giữa hai lần thăm. Ước lượng *số byte bị chạm* dựa vào đó là vững nhất.
+Không có nó, phép quy đổi từ "đắt thêm bao nhiêu ns" sang "bao nhiêu KiB" phải làm ở N=64, nơi
+working set 1.63 MiB **chưa** bão hoà so với L2 512 KiB, nên tỉ lệ trượt phải ước lượng thay vì
+đọc thẳng. Sai số rộng ra: khoảng **2–4 KiB** thay vì một con số.
+
+**Cái KHÔNG bị mất, và nó mới là câu trả lời của item 14.** Cận trên "message chạm gần hết
+struct → mép L2 ở N ≈ 20" bị bác **không cần điểm bão hoà nào**: nếu đúng thế thì phải có một
+**bậc** ở quanh N=16–32, và đường cong ở đó chỉ nhích 2.8% rồi 5.6%, đều và không bậc. Một dốc
+đều là hình dạng của tập bị chạm nhỏ nằm rải trong vùng cấp phát lớn. Cận N≈9 chết bằng hình
+dạng, không bằng số học.
+
+**Quy tắc áp dụng, không có ngoại lệ.** Lần chạy đặc tính đầu tiên *có* đo N=128. Con số đó
+**không được trích dẫn ở bất kỳ đâu** sau khi case bị gỡ: bất di bất dịch số 10 đòi benchmark đã
+commit sinh ra nó, và một case không còn trong repository thì không phải benchmark đã commit.
+Nó ở lại trong lần chạy đã sinh ra nó và không đi đâu cả.
+
 ## Bất biến bị đụng tới
 
 Không đụng `codec`, `session`, `engine` hay `transport` **về mặt code hot path** — plan này chỉ
@@ -244,7 +313,7 @@ thêm bench target và tài liệu. Nhưng ba điều vẫn phải đi qua:
 | A2 | `crates/engine/benches/journal.rs` — hai case `put`, khẳng định `get(seq)` trả đúng bytes trước khi tính giờ | — |
 | A3 | Ghi baseline trên máy §9, làm phép trừ **ra giấy**, cập nhật `DESIGN.md` §8 + `measured-costs.md`, viết lại dòng item 49 với phần dư mới | A1, A2 |
 | B1 | Harness trong `density.rs`: N session `Loopback` đăng nhập xong, mỗi turn mỗi session một `NewOrderSingle`, khẳng định N reply quay ra mỗi vòng | — |
-| B2 | **B-i** — sweep N ∈ {1,2,4,8,16,32,64,128} với ring cố định nhỏ (`MemJournal<8,512>`), ns mỗi message. Ring đứng ngoài, nên tường nào thấy được là tường của struct | B1, Sửa 2 |
+| B2 | **B-i** — sweep N ∈ {1,2,4,8,16,32,64} với ring cố định nhỏ (`MemJournal<8,512>`), ns mỗi message. Ring đứng ngoài, nên tường nào thấy được là tường của struct | B1, Sửa 2 |
 | B3 | **B-ii** — N = 1, ring qua 8 / 64 / 512 / 4096 slot. Cùng một lượng việc, chỉ vùng nhớ khác. Đây là chỗ 2 MiB của `Store` bị định giá | B1, Sửa 2 |
 | B4 | Trả lời câu hỏi của item 14 bằng một con số, **sửa bốn con số và một câu in đậm đã hỏng trong `measured-costs.md`**, cập nhật `DESIGN.md`, `GUIDE.md` §1a nếu số học dịch, đóng nửa mở của item 14 | B2, B3 |
 | C | ADR nếu có quyết định kiến trúc (dự kiến có ít nhất một: phần dư của item 49 đóng lại thế nào), `CHANGELOG.md`, `STATUS.md`, đi từng dòng bảng §4 | A3, B4 |
