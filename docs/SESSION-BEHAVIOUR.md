@@ -36,6 +36,8 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 | `OutsideSchedule` | a message arrived while the schedule says the session is shut |
 | `CannotSend` | the session could not put a message on the wire and fails closed rather than send something malformed |
 | `HeartbeatTimeout` | nothing arrived for long enough, after an unanswered TestRequest |
+| `LogonTimedOut` | `[2026-09-05]` the connection was made and the Logon exchange never completed inside `Config::with_logon_timeout_ms`. **Not a heartbeat timeout** — that one means a working session stopped answering; on an initiator this usually means the venue is listening but not yet open |
+| `LogoutTimedOut` | `[2026-09-05]` this end said Logout and the answer never came inside `Config::with_logout_timeout_ms`. **Not `PeerLogout`** — that one means the exchange completed, this one is a shutdown to reconcile by hand |
 | `PeerLogout` | the counterparty sent a Logout |
 | `ScheduleClosed` | the schedule's window closed on a live session; **not a fault** |
 | `TransportClosed` | the socket closed |
@@ -46,6 +48,23 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 
 `DropReason` is `#[non_exhaustive]`; match it with a `_` arm. The engine pushes it to the
 operator on the event stream ([GUIDE.md §8a](GUIDE.md), *Why a connection ended*).
+
+**Two deadlines the caller states**, `[added 2026-09-05]`, both **off by default** and both
+measured from the first `Session::tick` after the event they bound — a pure layer is given time
+in no other way:
+
+| Setting | Bounds | Notes |
+|---|---|---|
+| `Config::with_logon_timeout_ms` | `connect` → the Logon exchange completing | **The initiator's.** An acceptor already has `presession::Limits::new(pending, logon_ms)` in front of it, holding the socket before a `Session` exists; an initiator dialling a venue that accepts the socket and says nothing has no such stage. Ends without a message: there is no agreed session to speak on |
+| `Config::with_logout_timeout_ms` | `begin_logout` → the answering Logout | `begin_logout` leaves the link up so the caller can wait. Before this the only bound was 2.4 × `HeartBtInt` — 72 s on a default session. Ends without a message: the goodbye already went out |
+
+Zero means off, the same reading `108=0` has. A deadline belongs to the **connection**, so
+`connect` clears it; `crates/session/tests/heartbeat.rs::a_reconnect_gets_a_whole_new_logon_deadline`
+is what says so, and it exists because removing that line broke nothing else. Guarded by
+`::a_logon_that_never_arrives_times_out_at_the_stated_deadline`,
+`::without_a_logon_timeout_a_silent_counterparty_waits_forever`,
+`crates/session/tests/goodbye.rs::a_goodbye_that_is_never_answered_times_out_at_the_stated_deadline`
+and `::without_a_logout_timeout_the_wait_runs_to_the_heartbeat_rules`.
 
 ---
 

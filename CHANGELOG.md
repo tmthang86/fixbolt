@@ -17,6 +17,24 @@ below describe what a first release would contain.
 
 ### Added
 
+- **Two deadlines a caller can state, and two reasons for them.**
+  **`Config::with_logon_timeout_ms`** and **`Config::with_logout_timeout_ms`** — QuickFIX's
+  `LogonTimeout` and `LogoutTimeout` — with **`DropReason::LogonTimedOut`** and
+  **`DropReason::LogoutTimedOut`** to say which one fired. Step 2 of `STATUS.md` item 45,
+  wave B. Both are **off by default**, so no existing session changes.
+
+  The logon deadline is the **initiator's**: an acceptor has `presession::Limits` holding the
+  socket before a `Session` exists, and an initiator dialling a venue that accepts the
+  connection and then says nothing has no such stage. The logout deadline bounds a wait that
+  nothing bounded: `begin_logout` leaves the link up so the caller can hear the answer, and
+  until now the only limit was 2.4 × `HeartBtInt` — 72 seconds on a default session, during
+  which a venue that took the goodbye and died holds the socket open.
+
+  Both are measured from the first `Session::tick` after the event they bound, because a pure
+  session layer is given time in no other way. Both end the connection **without sending
+  anything**: there is no agreed session to speak on before a Logon, and the goodbye has
+  already gone out after one.
+
 - **A session can be told to restart its numbering.** **`fixbolt::ResetPolicy`** — QuickFIX's
   `ResetOnLogon`, `ResetOnLogout` and `ResetOnDisconnect`, under those names — reached through
   **`Config::with_reset`** and read back through `Config::reset`. Step 1 of `STATUS.md` item 45,

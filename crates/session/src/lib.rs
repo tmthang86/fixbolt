@@ -356,6 +356,12 @@ pub struct Config {
     /// When this session restarts its numbering of its own accord.
     /// [`ResetPolicy::new`] is neutral and is the default.
     reset: ResetPolicy,
+    /// How long a connection may sit without completing its `Logon`.
+    /// Zero is off, which is the default. [`Config::with_logon_timeout_ms`].
+    logon_timeout_ms: u64,
+    /// How long this end waits for a `Logout` it asked for.
+    /// Zero is off, which is the default. [`Config::with_logout_timeout_ms`].
+    logout_timeout_ms: u64,
 }
 
 /// When a session restarts both sequence numbers at 1 without being asked to
@@ -475,6 +481,8 @@ impl Config {
             schedule: Schedule::always(),
             resend_batch: DEFAULT_RESEND_BATCH,
             reset: ResetPolicy::new(),
+            logon_timeout_ms: 0,
+            logout_timeout_ms: 0,
         }
     }
 
@@ -539,6 +547,60 @@ impl Config {
     #[must_use]
     pub const fn reset(&self) -> ResetPolicy {
         self.reset
+    }
+
+    /// QuickFIX's `LogonTimeout`: how long a connection may sit without
+    /// completing its `Logon` before the session gives up, in **milliseconds**.
+    ///
+    /// **Zero is off**, and off is the default — the same reading `108=0`
+    /// already has one screen down, and the behaviour every session in this
+    /// repository had before 2026-09-05.
+    ///
+    /// **This is the initiator's, and it is nobody else's.** An acceptor has
+    /// `presession::Limits::new(pending, logon_ms)` in front of it, which holds
+    /// the socket before a `Session` exists at all; an initiator that dials a
+    /// venue which accepts the connection and then says nothing has no such
+    /// stage. Setting it on an acceptor is not an error and does the obvious
+    /// thing, but it is a second deadline behind a first one.
+    ///
+    /// The clock starts at the **first [`Session::tick`] after
+    /// [`Session::connect`]**, because a pure layer is given time in no other
+    /// way (D1).
+    #[must_use]
+    pub const fn with_logon_timeout_ms(mut self, ms: u64) -> Self {
+        self.logon_timeout_ms = ms;
+        self
+    }
+
+    /// The logon deadline in milliseconds, or zero for none.
+    #[must_use]
+    pub const fn logon_timeout_ms(&self) -> u64 {
+        self.logon_timeout_ms
+    }
+
+    /// QuickFIX's `LogoutTimeout`: how long this end waits for the `Logout` it
+    /// asked for, in **milliseconds**.
+    ///
+    /// **Zero is off**, and off is the default.
+    ///
+    /// [`Session::begin_logout`] leaves the link up on purpose so the caller
+    /// can wait for the answer, and until this existed nothing bounded that
+    /// wait except the heartbeat rules — 2.4 × `HeartBtInt`, which is 72
+    /// seconds on a default session. A venue that takes the goodbye and then
+    /// dies holds the socket open through the close.
+    ///
+    /// The clock starts at the **first [`Session::tick`] after
+    /// [`Session::begin_logout`]**, for the same reason as above.
+    #[must_use]
+    pub const fn with_logout_timeout_ms(mut self, ms: u64) -> Self {
+        self.logout_timeout_ms = ms;
+        self
+    }
+
+    /// The logout deadline in milliseconds, or zero for none.
+    #[must_use]
+    pub const fn logout_timeout_ms(&self) -> u64 {
+        self.logout_timeout_ms
     }
 
     /// When this session is open, and when both ends start again at `34=1`.
@@ -769,6 +831,21 @@ pub enum DropReason {
     /// Nothing arrived for long enough that the session gave up, after an
     /// unanswered `TestRequest`.
     HeartbeatTimeout,
+    /// The connection was made and the `Logon` exchange never completed inside
+    /// [`Config::with_logon_timeout_ms`].
+    ///
+    /// **Not a heartbeat timeout, and telling them apart is the point.** A
+    /// heartbeat timeout means a session that was working stopped answering; on
+    /// an initiator this one usually means the venue is listening but not yet
+    /// open, or is refusing this end without saying so.
+    LogonTimedOut,
+    /// This end said `Logout` and the answer never came inside
+    /// [`Config::with_logout_timeout_ms`].
+    ///
+    /// **Not [`DropReason::PeerLogout`].** That one means the exchange
+    /// completed; this one means the goodbye went unanswered, which is the
+    /// difference between a clean shutdown and one to reconcile by hand.
+    LogoutTimedOut,
     /// The counterparty sent a `Logout`.
     PeerLogout,
     /// The schedule's window closed on a live session. **Not a fault.**
@@ -916,6 +993,23 @@ pub struct Session<R: Role, const N: usize, const APP: usize = DEFAULT_APP_SCRAT
     ///
     /// See [`Self::resend_beyond_journal`].
     resend_beyond_journal: u32,
+    /// When the wait for a `Logon`, and the wait for an answer to our `Logout`,
+    /// started being measured. `None` until the first [`Session::tick`] in that
+    /// state.
+    ///
+    /// **Two fields and not one**, though the states never overlap: one field
+    /// would have to be cleared at every state change, and the states are
+    /// entered from more places than either deadline is read from. A stale
+    /// instant here is a session that ends early for a reason it names wrongly,
+    /// which is the failure this whole enum of reasons exists to prevent.
+    ///
+    /// Set on a tick rather than in `connect` / `begin_logout` because those
+    /// two are given no clock: time reaches this layer through `tick` and
+    /// nowhere else (D1). The cost is that a deadline is measured from the
+    /// caller's first turn rather than from the connection, which for any
+    /// engine in this repository is the same millisecond.
+    awaiting_logon_since_ms: Option<u64>,
+    logging_out_since_ms: Option<u64>,
     _role: PhantomData<R>,
 }
 
@@ -959,6 +1053,8 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             owed: None,
             puts_refused: 0,
             resend_beyond_journal: 0,
+            awaiting_logon_since_ms: None,
+            logging_out_since_ms: None,
             _role: PhantomData,
         }
     }
@@ -1364,6 +1460,13 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // A live session has nothing to explain, and a stale cause read as a
         // current one is worse than no cause at all.
         self.last_drop_reason = None;
+        // Both deadlines belong to a connection, not to a session: an instant
+        // carried across a reconnect would expire the new connection on the old
+        // one's clock, which only moves forward. Guarded by
+        // `tests/heartbeat.rs::a_reconnect_gets_a_whole_new_logon_deadline`,
+        // written **because** removing these two lines broke nothing.
+        self.awaiting_logon_since_ms = None;
+        self.logging_out_since_ms = None;
         // **A new connection starts a new count; a resumed session does not.**
         // ADR-0010: FIX 4.4 numbers a session, not a connection, so a session
         // that outlived its process must keep counting — but a session that
@@ -1559,12 +1662,28 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             // `LoggingOut` deliberately falls through to the heartbeat rules
             // below: a counterparty that never answers our `Logout` must not
             // hold the connection open for ever.
-            // Before a Logon there is no agreed interval, so there is nothing
-            // to measure — and this is the **only** thing that says so, which
-            // is why `connect` no longer clears the clock as well. A logon
-            // timeout is the engine's business, and no acceptance definition
-            // tests one. `tests/heartbeat.rs` holds this.
-            State::AwaitingLogon => return Link::Up,
+            // Before a Logon there is no agreed interval, so the heartbeat
+            // rules have nothing to measure — and this is the **only** thing
+            // that says so, which is why `connect` no longer clears the clock
+            // as well. No acceptance definition tests a logon timeout.
+            // `tests/heartbeat.rs` holds this.
+            //
+            // `[2026-09-05]` A deadline the caller *states* is a different
+            // thing from an interval the counterparty agreed to, and this is
+            // where it is measured. Off unless configured, which is why the
+            // sentence above still holds for every session the corpus builds.
+            State::AwaitingLogon => {
+                let since = *self.awaiting_logon_since_ms.get_or_insert(now_ms);
+                if self.cfg.logon_timeout_ms != 0
+                    && now_ms.saturating_sub(since) >= self.cfg.logon_timeout_ms
+                {
+                    // No message: there is no agreed session to say anything
+                    // on, and a `Logout` before a `Logon` is not FIX.
+                    self.end(DropReason::LogonTimedOut);
+                    return Link::Dropped;
+                }
+                return Link::Up;
+            }
             // This end owes the Logon, and now it has a clock to date it with.
             State::MustLogon => {
                 self.state = State::AwaitingLogon;
@@ -1580,6 +1699,23 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
                 return Link::Up;
             }
             State::LoggedOn | State::LoggingOut => {}
+        }
+        // The goodbye is out and the answer is owed. `[2026-09-05]` Until this
+        // existed the only bound was the heartbeat rules below — 2.4 ×
+        // `HeartBtInt`, 72 seconds on a default session — so a venue that took
+        // the `Logout` and then died held the socket through the close.
+        //
+        // Ends without saying anything: the `Logout` has already gone out, and
+        // a second one is wrong on the wire for the same reason the inbound
+        // path answers a goodbye only when it did not start the exchange.
+        if self.state == State::LoggingOut {
+            let since = *self.logging_out_since_ms.get_or_insert(now_ms);
+            if self.cfg.logout_timeout_ms != 0
+                && now_ms.saturating_sub(since) >= self.cfg.logout_timeout_ms
+            {
+                self.end(DropReason::LogoutTimedOut);
+                return Link::Dropped;
+            }
         }
         // `108=0` means the counterparty asked for no heartbeats at all.
         if self.beat_ms == 0 {

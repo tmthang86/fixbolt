@@ -163,6 +163,15 @@ compile time. The `Application` is given the two things it does not own, the out
 sequence number and the clock, writes its reply into a buffer the session lends it, and
 returns the range it used; `None` spends no sequence number.
 
+**Two deadlines the caller may state, and both arrive through `tick`.** `[2026-09-05]`
+`Config::with_logon_timeout_ms` and `with_logout_timeout_ms` — QuickFIX's `LogonTimeout` and
+`LogoutTimeout` — end a connection that never completes its Logon, and one whose `Logout` is
+never answered, with `DropReason::LogonTimedOut` and `LogoutTimedOut` to say which. Off by
+default. **Neither is a clock in the session**: each is measured from the first `tick` after the
+event it bounds, which is the only shape D1 permits, and each belongs to the connection rather
+than to the session so a reconnect gets a whole new one. The logon one is the initiator's — an
+acceptor has `presession::Limits` in front of it, before a `Session` exists.
+
 **One machine, both roles.** The acceptor waits for a Logon and answers; the initiator sends
 one and waits. Sequence handling, resend, heartbeat, test request and logout are the same
 protocol read from the other end; [ADR-0004](decisions/ADR-0004-bidirectional-engine.md)
