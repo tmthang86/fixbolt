@@ -17,6 +17,31 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A frame the pre-session stage can never read has a name.**
+  **`presession::Progress::unframeable`** and **`Snapshot::unframeable_prelogon`**, with
+  **`Engine::note_unframeable`** to carry the count from the stage to the only thing an operator
+  reads. It used to be counted as *gone*, beside a peer that simply left. Step 6 of `STATUS.md`
+  item 45, wave B, and
+  [ADR-0055](docs/decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md)
+  decision 4.
+
+  Two completely different operational facts shared one number: a counterparty closing a
+  socket, and a counterparty this acceptor **can never talk to**. `conn.rs` already argued the
+  point for `DuplicateIdentity` — *named, not merely closed* — and the argument had never been
+  applied here. The refusal stays silent on the wire, because there is no session to speak on,
+  so the number is the only trace it can leave. Not counted for `serve_sharded_hft`, whose
+  pre-session stage sits in front of a fan of engines rather than behind one.
+
+- **`Reply::business_reject`.** `35=j` with `45=`, `372=`, `380=` and `58=`, handed back as an
+  ordinary `Message` so a handler may add more fields. The application's *"I understood the
+  message and will not act on it"*, which is a different sentence from the session's
+  `Reject (35=3)`.
+
+  Both reference fields are **bytes**, matching `Incoming::seq()` and `Incoming::msg_type()`:
+  taking a `u32` would mean parsing on the way in and rendering on the way out, on the reply
+  path, to produce the bytes that arrived. `benches/alloc.rs` gains a `reject` case and reads
+  0 through it.
+
 - **The registry can see the `Logon` it is deciding about.** **`Registry::admit(id, logon)`**,
   with a default that forwards to `lookup`, and **`presession::field_value`** made public so an
   implementation can read a field without allocating. Step 5 of `STATUS.md` item 45, wave B.

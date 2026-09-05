@@ -195,6 +195,66 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
         }
     }
 
+    /// A `BusinessMessageReject (35=j)`, written for you.
+    ///
+    /// `[added 2026-09-05]` The application's *"I understood the message and
+    /// will not act on it"*, which is a different sentence from the session's
+    /// `Reject (35=3)`: that one means the plumbing was wrong.
+    /// `docs/SESSION-BEHAVIOUR.md` §3 keeps the two apart, and
+    /// `2r_UnregisteredMsgType.def` is the corpus file that needs a business
+    /// reject rather than a session one.
+    ///
+    /// It exists because laying one out by hand means remembering four tags in
+    /// the right shape — `45=RefSeqNum`, `372=RefMsgType`,
+    /// `380=BusinessRejectReason`, `58=Text` — and getting `372` wrong makes a
+    /// message that is well formed and answers about the wrong thing.
+    ///
+    /// The four are ordinary fields on an ordinary [`Message`], so this is a
+    /// convenience over [`Self::message`] and not a second path: the ordering
+    /// still comes from the dictionary (non-negotiable 5) and the encode is the
+    /// same `TemplateBuilder`. Call [`Message::send`] on the result, or add
+    /// more fields first.
+    ///
+    /// **`ref_seq` and `ref_msg_type` are bytes**, because that is what the
+    /// handler already holds: `Incoming::seq()` and `Incoming::msg_type()` both
+    /// hand back the wire's own bytes, for the reason `app.rs` gives — a
+    /// handler that only echoes a number should not pay to parse it. Taking a
+    /// `u32` here would mean parsing on the way in and rendering on the way
+    /// out, on the reply path, to produce the bytes that arrived.
+    ///
+    /// ```no_run
+    /// # fn f(msg: &fixbolt::Incoming<'_>, reply: fixbolt::Reply<'_, 64, 1024>) -> fixbolt::Answer {
+    /// // "I know what a NewOrderSingle is; this instrument is not one I trade."
+    /// reply
+    ///     .business_reject(
+    ///         msg.seq().unwrap_or_default(),
+    ///         msg.msg_type(),
+    ///         2,
+    ///         b"unknown security",
+    ///     )
+    ///     .send()
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn business_reject(
+        self,
+        ref_seq: &[u8],
+        ref_msg_type: &[u8],
+        reason: u32,
+        text: &[u8],
+    ) -> Message<'a, P, S> {
+        // One ten-byte stack buffer, no allocation — `benches/alloc.rs` case
+        // `reject` is what says so.
+        let mut reason_digits = [0u8; 10];
+        let why = render_u32(reason, &mut reason_digits);
+        let mut m = self.message(b"j");
+        m.field(45, ref_seq)
+            .field(372, ref_msg_type)
+            .field(380, why)
+            .field(58, text);
+        m
+    }
+
     /// Say nothing. The same answer as returning [`Answer::Silent`], spelled so
     /// that a handler which decides not to reply reads as a decision.
     #[must_use]

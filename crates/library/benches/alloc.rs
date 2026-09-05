@@ -115,6 +115,34 @@ impl Handler for Desk {
     }
 }
 
+/// A desk that refuses every order it is given, through `Reply::business_reject`.
+///
+/// `[added 2026-09-05]` The four-tag `35=j` helper renders two numbers into
+/// stack buffers and writes four fields; nothing about that has to allocate,
+/// and this is what says it does not rather than a comment saying it should
+/// not — `CLAUDE.md` §2 rule 1.
+#[derive(Default)]
+struct Refuser {
+    refused: u32,
+}
+
+impl Handler for Refuser {
+    fn on_message(&mut self, msg: &Incoming<'_>, reply: Reply<'_>) -> Answer {
+        if msg.msg_type() != b"D" {
+            return reply.silent();
+        }
+        self.refused += 1;
+        reply
+            .business_reject(
+                msg.seq().unwrap_or_default(),
+                msg.msg_type(),
+                2,
+                b"not a security we trade",
+            )
+            .send()
+    }
+}
+
 /// The same handler with **one `to_vec()` in it**. The control.
 #[derive(Default)]
 struct LeakyDesk {
@@ -182,6 +210,7 @@ fn main() {
     let mut leaky = App::<LeakyDesk>::with_sizes(LeakyDesk::default());
     let mut mute = App::<Mute>::with_sizes(Mute);
     let mut garbage_app = App::<Desk>::with_sizes(Desk::default());
+    let mut refuser = App::<Refuser>::with_sizes(Refuser::default());
 
     // Warm anything lazy, and prove each path is the path it claims to be — so
     // a zero below means "did not allocate" rather than "did not run".
@@ -211,6 +240,12 @@ fn main() {
         "and it must say so — an uncounted refusal is one nobody can explain"
     );
 
+    assert_eq!(
+        drive(&mut refuser, &wire, &mut out, 1),
+        1,
+        "the business-reject path must actually write a message"
+    );
+
     let mut replied = 0;
     let reply_allocs = count(|| {
         replied = drive(&mut desk, &wire, &mut out, ROUNDS);
@@ -230,6 +265,12 @@ fn main() {
         drive(&mut mute, &wire, &mut out, ROUNDS);
     });
 
+    let mut refused = 0;
+    let reject_allocs = count(|| {
+        refused = drive(&mut refuser, &wire, &mut out, ROUNDS);
+    });
+    assert_eq!(refused, ROUNDS, "every order must have been refused");
+
     let before_unparsable = garbage_app.unparsable();
     let unparsable_allocs = count(|| {
         drive(&mut garbage_app, b"not a fix message", &mut out, ROUNDS);
@@ -242,12 +283,18 @@ fn main() {
 
     println!(
         "allocations: handler-reply {reply_allocs} handler-silent {silent_allocs} \
-         unparsable {unparsable_allocs} control-injected {control_allocs}"
+         reject {reject_allocs} unparsable {unparsable_allocs} \
+         control-injected {control_allocs}"
     );
 
     assert_eq!(
-        [reply_allocs, silent_allocs, unparsable_allocs],
-        [0, 0, 0],
+        [
+            reply_allocs,
+            silent_allocs,
+            reject_allocs,
+            unparsable_allocs
+        ],
+        [0, 0, 0, 0],
         "the library layer allocated on a path an application takes per message"
     );
 

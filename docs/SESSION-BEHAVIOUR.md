@@ -142,7 +142,22 @@ knob's effect, and each knob **failing to forgive the other one's fault**.
 **A session reject is not a business reject.** `2r_UnregisteredMsgType.def` sends `35=8` as
 an application message of an unsupported type, and the engine answers with a *business*
 reject, not a `373=`. Unsupported application types are the application's concern; malformed
-session plumbing is the session's.
+session plumbing is the session's. `[added 2026-09-05]` The library writes one for you:
+`Reply::business_reject(ref_seq, ref_msg_type, reason, text)` lays out `35=j` with `45=`,
+`372=`, `380=` and `58=`, and hands back an ordinary `Message` you may add fields to. Both
+reference fields are **bytes**, so `Incoming::seq()` and `Incoming::msg_type()` go straight in
+without a parse and a re-render on the reply path.
+
+**A pre-session socket whose first message cannot be framed has its own number**
+`[added 2026-09-05]`. It used to be counted as *gone*, beside a peer that simply left.
+`presession::Progress::unframeable` and `Snapshot::unframeable_prelogon` are that fact on its
+own: **non-zero is not transient** — everything that counterparty sends of the same shape will
+be too long, so either the deployment's `RX` is smaller than the venue's messages
+([ADR-0055](decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md)) or
+something that is not FIX is connecting to the port. The refusal is silent on the wire, because
+there is no session to speak on, so the number is the only trace it leaves. Guarded by
+`crates/engine/tests/pending.rs::a_frame_longer_than_the_buffer_is_counted_apart_from_a_peer_that_left`
+and `::an_unframeable_socket_is_visible_through_the_engines_snapshot`.
 
 ---
 

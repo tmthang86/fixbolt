@@ -520,9 +520,29 @@ pub struct Progress {
     /// **silent** about, because ADR-0026 decision 3 refuses it exactly as an
     /// invalid identity is refused. A number is the only trace it leaves.
     pub unknown: usize,
-    /// Connections dropped because the peer left or sent a frame that can never
-    /// be a message.
+    /// Connections dropped because the peer left or the socket failed.
+    ///
+    /// `[narrowed 2026-09-05]` A frame too long to ever be framed used to land
+    /// here too. It is [`Self::unframeable`] now: a peer closing a socket and a
+    /// peer this acceptor **can never talk to** are different operational facts,
+    /// and one number could not say which had happened.
     pub gone: usize,
+    /// Connections dropped because their first message is longer than the
+    /// pre-session buffer, which is the engine's `RX`.
+    ///
+    /// **Non-zero means a counterparty this acceptor cannot serve at all**, not
+    /// a transient fault: everything that counterparty sends of that shape will
+    /// be too long, and no retry helps. Either the venue's messages are bigger
+    /// than this deployment's `RX` — raise it through `serve_with`, see
+    /// [ADR-0055] — or something that is not FIX is connecting to the port.
+    ///
+    /// It is silent on the wire, deliberately and unavoidably: there is no
+    /// session to send a `Logout` on and the corpus expects a refused pre-session
+    /// connection to be told nothing. **A number is the only trace it can
+    /// leave**, which is why it is its own number.
+    ///
+    /// [ADR-0055]: ../../../docs/decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md
+    pub unframeable: usize,
 }
 
 /// One socket that has not said who it is.
@@ -695,6 +715,10 @@ impl<T: Transport, R: Registry, const PRE: usize> PendingSet<T, R, PRE> {
                     p.gone += 1;
                     self.slots.swap_remove(i);
                 }
+                Step::Unframeable => {
+                    p.unframeable += 1;
+                    self.slots.swap_remove(i);
+                }
             }
         }
         p
@@ -731,7 +755,12 @@ impl<T: Transport, R: Registry, const PRE: usize> PendingSet<T, R, PRE> {
             // Unreadable, and this stage has no session to hand it to. The
             // session's own rule about a garbled *Logon* still applies to
             // connections that get past here.
-            Cut::Garbage(_) => Step::Gone,
+            //
+            // **Named rather than merely closed** (ADR-0055 decision 4): a
+            // buffer that filled without yielding a message is a counterparty
+            // whose messages do not fit, which is a different fact from a peer
+            // that left, and the only trace it can leave is a number.
+            Cut::Garbage(_) => Step::Unframeable,
             Cut::Need => {
                 if now_ms >= slot.deadline_ms {
                     Step::TimedOut
@@ -803,7 +832,11 @@ enum Step {
     TimedOut,
     NotLogon,
     Unknown,
+    /// The peer left, or the socket failed.
     Gone,
+    /// The buffer filled without yielding a message: the first message is
+    /// longer than the buffer, or its frame is not readable at all.
+    Unframeable,
 }
 
 // --- choosing a shard --------------------------------------------------------
