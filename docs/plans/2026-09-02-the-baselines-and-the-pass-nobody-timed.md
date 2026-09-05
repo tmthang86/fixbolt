@@ -94,6 +94,71 @@
 > ExecutionReport (template)` + `presession, read and route an identity`"*, vì hai case sau giờ
 > đã có kết luận và cả hai kết luận đều là *ghi lại baseline*, không phải *sửa code*.
 
+> **Sửa 3 `[2026-09-05]` — bước 2a đã chạy, và nó phủ định *hai* trong ba lựa chọn của chính
+> plan này. Ghi trước khi đổi một dòng nào.**
+>
+> Bước 2a là bước "đọc code chứ không đoán". Đã đọc. Kết quả: **(c) không làm được, (a) không
+> làm được, và (b) như plan viết ra thì không biên dịch nổi.**
+>
+> **Lượt kiểm nằm ở đâu.** Ba hàm tự do, **private**, trong `crates/session/src/lib.rs`:
+> `scan_fields` (2549), `bad_group_count` (2604), `missing_required` (2641), cộng hàm phụ
+> `in_a_group` (2622). Gọi ở **2153–2155** bên trong `judge`, nối bằng `.or_else`, đúng thứ tự
+> đó. Cả ba nhận `&MessageView<'_, N>` và `msg_type: &[u8]`, không đụng `self`, không cấp phát.
+>
+> **(c) — đo hiệu số với một dictionary rỗng — bị bác bằng đọc code.** `Fix44` được **viết
+> thẳng vào thân** ba hàm đó (`Fix44::is_defined_tag`, `Fix44::allows`, `Fix44::required(...)`,
+> mười ba chỗ), không phải một tham số kiểu. `Session<R, N, APP>` **không có tham số
+> dictionary** nào để chọn. Đối chiếu cho rõ: ở `codec` thì `parse_into::<D, N>` **có** generic,
+> và đó chính là lý do `benches/parse.rs` cắm được `NoDict` vào — 122.6 ns của nó là framing chứ
+> không phải lượt kiểm. Muốn `Session` cho chọn thì phải thêm một tham số kiểu cho `Session`,
+> tức tham số kiểu **thứ mười một** của `Engine`, tức đổi public API: **plan riêng, không phải
+> một bench**. Plan này gọi (c) là *"hình dạng ưa hơn"*; nó không tồn tại.
+>
+> **(a) — một đường công khai đã có chạm được lượt kiểm mà không chạm phần khác — cũng không
+> có.** Cửa vào duy nhất là `Session::received_with` → `judge` (private), và `judge` còn parse,
+> kiểm `BeginString`, lịch phiên, CompID, `SendingTime`, số thứ tự, gọi application, và có thể
+> gửi ra. Có một cái công tắc **trông rất giống** một biến duy nhất — dòng 2148,
+> `self.state != State::LoggedOn` bỏ qua **toàn bộ** lượt kiểm — nhưng hai nhánh rẽ nhau nặng ở
+> phía sau (nhánh chưa logon từ chối/thả message thay vì giao nó), nên hiệu số ấy không phải
+> lượt kiểm. Đây đúng loại "một cái núm nhúc nhích" mà điều 10 cấm nhận làm nguyên nhân.
+>
+> **(b) làm được, nhưng `pub(crate)` thì không.** Một bench target là **một crate khác**:
+> `crates/session/benches/alloc.rs` với tới crate này bằng `use fixbolt_session::…`, y như một
+> người dùng ngoài. `pub(crate)` vô hình từ đó. Đây là luật của ngôn ngữ, không phải một phép
+> đo. Chữ *"mở một API `pub(crate)` + một bench trong cùng crate"* của plan **không biên dịch
+> được**.
+>
+> **Nên bước 2a chốt: (b), và hàm phải `pub` thật** — đúng cái cửa thoát mà bảng *Bẫy đã lường
+> trước* của plan này đã viết sẵn: *"nếu buộc phải `pub` thì cần ADR"*. Hình dạng đề nghị, hẹp
+> nhất có thể:
+>
+> ```rust
+> pub fn validate<const N: usize>(
+>     view: &MessageView<'_, N>,
+>     msg_type: &[u8],
+> ) -> Option<SessionText>
+> ```
+>
+> gọi ba hàm cũ **không sửa một dòng nào**, đúng thứ tự `judge` gọi. `SessionText` đã `pub` sẵn
+> (`crates/session/src/text.rs:44`); `Held<12>` đang private và **ở nguyên đó**, nên tag text
+> không lọt vào chữ ký.
+>
+> **Giới hạn phải nói ra, không được giấu:** vì `validate` bỏ tag text đi, trên một message
+> **có lỗi** nó có thể không sinh mã y hệt `judge`. Bench chỉ đo message **không lỗi** — cũng
+> đúng là hình dạng item 39 hỏi (chi phí lượt kiểm đầy đủ, quét hết field, tra hết tag bắt
+> buộc), và trên đường đó không có gì bị bỏ đi cả.
+>
+> **Hai cách khác đã cân, và bị loại có nêu giá:**
+>
+> | Cách | Vì sao loại |
+> |---|---|
+> | `#[cfg(feature = "…")] pub` + `required-features` cho bench | Giữ được API ship sạch, nhưng một bench target thiếu feature bị cargo **bỏ qua im lặng**, và `bench.sh` với `check-bench-alignment.sh` sẽ nhìn thấy hai tập binary khác nhau. Một bench bị bỏ qua im lặng đúng bằng hình dạng false-green repo này đã dính |
+> | `#[path = "../src/…"] mod` trong bench, biên dịch bản sao thứ hai | Phải viết lại mọi `use crate::…` và vẫn phải mở `Held`/`tag_text`; và nó đo **một bản sao được biên dịch lại**, không phải hàm được ship. ADR-0049 vừa tiêu một ngày đúng vào câu "binary bị đo không phải binary được ship" |
+>
+> **2b/2c/2d không đổi nội dung**, chỉ thêm một điều kiện trước: **2b cần ADR-0050 cho public
+> API**, và bất biến **7** (không `unwrap`/`expect`/`panic` trong library crate) áp cho hàm mới,
+> bất biến **1** (`crates/session/benches/alloc.rs` vẫn phải đọc 0) áp cho đường nó gọi.
+
 ## Bối cảnh
 
 Phase 1 vừa đóng, và buổi đo đóng nó để lại ba việc **trên cùng một cái máy**. Cả ba đều là
@@ -322,9 +387,12 @@ gọi tên — *"một fixture bị sửa để việc mới đi qua được"* 
 | 1c | 2026-09-05 | **Xong, và bisect một commit chỉ ra sai commit.** `bf798ea` (nơi ghi baseline) hôm nay vẫn đọc **240.0** → máy và toolchain vô can. Bisect: `54eebe9` 240.6 → **`4396d6d` 268.0** → `576f924` 279.4 → HEAD 280.4. `4396d6d` **không chạm `crates/codec/src/`**. Chứng minh hai đường: căn lề ép đưa HEAD 278.9 → **233.0**; chèn **code trơ** đưa con số **236.5 → 292.4** qua bốn layout (pinned: 4.0%, unpinned: 14.6%) |
 | 1d | 2026-09-05 | **Xong, phạm vi rộng hơn plan viết.** ADR-0049 đổi *cách đo*, nên **cả 19 dòng cũ được ghi lại** dưới build đã ghim, cộng **5 dòng mới** = 24, `n = 20`, `pass 12 fail 0 unknown 1`. Không margin nào bị **thu hẹp** dù mẫu mới cho phép: `ring, one way` giữ 1.30, `ring, round trip` 1.20, `parse (no checks)` 1.15 — các mode chúng che chưa xuất hiện trong 20 lần này và không có bằng chứng chúng đã biến mất. `encode ExecutionReport (template)` lên **1.15** theo ADR-0049, dù thang từ 20 lần chạy chỉ đòi 1.10 — đúng chỗ cái lỗ của thang lộ ra |
 | 1e | 2026-09-05 | **Xong. `bench.sh --strict` thoát 0, ba lần liên tiếp**, đọc từng dòng: `timing over baseline 0 · cases w/o a baseline 0 · cases under the band 0`. [ADR-0049](../decisions/ADR-0049-bench-builds-pin-function-alignment-and-the-flag-is-read-back.md), `scripts/check-bench-alignment.sh` (23/23 pinned, 5/23 unpinned, reversal đỏ 2/11), [write-up](../reference/a-benchmark-that-measures-where-the-compiler-put-it.md) mang `[to testing-skills]`. **Item 41 đóng** |
-| 2, 3 | — | Chưa bắt đầu — item 39 (lượt kiểm dictionary) và item 34 |
+| 2a | 2026-09-05 | **Xong, và hai trong ba lựa chọn của plan bị phủ định bằng đọc code.** (c) không tồn tại: `Fix44` viết thẳng vào thân ba hàm, `Session` không có tham số dictionary — khác `parse_into::<D, N>` của codec, vốn là lý do `benches/parse.rs` cắm được `NoDict`. (a) không tồn tại: cửa vào duy nhất là `received_with` → `judge` (private), làm thêm parse, CompID, lịch, số thứ tự, application, gửi. (b) làm được nhưng **`pub(crate)` vô hình từ một bench target** — bench là crate khác. Chốt: `pub fn validate(...) -> Option<SessionText>`, ba hàm cũ không sửa, **cần ADR-0050**. Xem Sửa 3 |
+| 2b, 2c, 2d, 3 | — | Chưa bắt đầu — chờ duyệt Sửa 3 và ADR-0050 |
 
 **Trạng thái một câu `[2026-09-05]`:** **item 41 đóng** — `bench.sh --strict` xanh trên máy §9,
 nên mọi con số §6 lại có cổng canh; và cái đắt nhất tìm được không phải một hồi quy mà là
 **một benchmark đo chỗ trình biên dịch đặt nó**, thứ mà chính plan này đã loại trừ bằng cách đọc
-diff. Bước 2 (item 39) và bước 3 (item 34) chưa bắt đầu.
+diff. Bước **2a xong** — lượt kiểm dictionary chỉ đo được qua một API `pub` mới, vì hai lựa chọn
+không-đụng-API của plan đều không tồn tại trong code (Sửa 3). Bước 2b trở đi và bước 3 (item 34)
+chưa bắt đầu.
