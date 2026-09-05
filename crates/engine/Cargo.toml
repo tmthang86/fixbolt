@@ -79,3 +79,11 @@ harness = false
 [[bench]]
 name = "turn"
 harness = false
+
+[[bench]]
+name = "payload"
+harness = false
+
+[[bench]]
+name = "journal"
+harness = false

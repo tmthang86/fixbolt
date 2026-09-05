@@ -114,6 +114,114 @@ với ring journal thu nhỏ: `MemJournal<8,512>` ≈ 4.2 KiB thay vì 33.3 KiB,
 Đây là **chứng minh bằng đảo ngược** đặt vào miền cache: đổi *kích thước* một vùng mà không đổi
 *việc* chạm vào nó, rồi xem con số có nghe theo không.
 
+## Sửa 1 (2026-09-05, trước bước A1) — bốn kích thước payload đều phải đo lại, và hai điểm là quá ít
+
+**Cái gì sai.** Mục *Những gì đã biết chắc* chép lại bốn con số từ dòng item 49 của `STATUS.md`
+— "149 byte vào và ~200 byte ra, so với 79 và ~70". Ba trong bốn con số đó sai. Chúng chưa bao
+giờ được đo; dấu `~` là lời thú nhận, và tôi đã suýt dựng hai case benchmark trên chúng.
+
+**Đo thế nào.** `strace -f -e trace=sendto` lên chính `./target/release/w2w`, đúng cờ mặc định
+(`--messages 20000 --warmup 2000`), trên máy §9, rồi lấy 2 000 lần gửi cuối của mỗi chiều.
+Ở trạng thái ổn định cả 2 000 mẫu **giống hệt nhau**, không phải một phân phối:
+
+| Đường | Vào (client → engine) | Ra (engine → client) |
+|---|---|---|
+| `--path admin` (`35=1` → `35=0`) | **83** | **87** |
+| `--path app` (`35=D` → `35=8`) | **149** | **191** |
+
+Đối chiếu dòng item 49: 149 **đúng**; `~200` thật ra là **191**; `79` thật ra là **83**;
+`~70` thật ra là **87** — lệch 17 byte, và lệch về phía **làm cho giả thuyết payload yếu đi**,
+vì chiều ra của đường admin lớn hơn tưởng.
+
+Kích thước **trôi theo số chữ số của `34=` và của `11=`/`112=`**: cùng hai đường này ở
+`--messages 20` đọc ra 77/81 và 143/179. Nên "đúng byte của w2w" chỉ có nghĩa khi kèm số message
+của lần chạy — bảng trên là ở cờ mặc định, và đó là cờ mọi con số w2w đã công bố dùng.
+
+Chênh lệch app − admin: **+66 byte vào, +104 byte ra**. Mỗi byte bị copy hai lần (vào kernel,
+ra khỏi kernel), nên một round trip app copy thêm **340 byte** so với admin.
+
+**Đổi cách làm.** Hai case là quá ít. Chênh lệch cần đọc nằm cỡ vài chục ns trên hai con số cỡ
+vài µs — dưới 2%, tức sát mức nhiễu của chính harness, và một hiệu số hai điểm thì **không có
+cách nào tự nói nó là thật hay là nhiễu**. `payload.rs` vì vậy có **bốn** case, không phải hai:
+
+| Case | Vì sao |
+|---|---|
+| `socket round trip, 8 in 8 out` | Sàn. Gần như không có payload, nên nó là chi phí bốn syscall gần như thuần |
+| `socket round trip, 83 in 87 out` | Đường admin, đúng byte đã đo |
+| `socket round trip, 149 in 191 out` | Đường app, đúng byte đã đo |
+| `socket round trip, 1024 in 1024 out` | Đòn bẩy. Có nó thì ra được **ns mỗi byte**, và số hạng payload trở thành một độ dốc chứ không phải một phép trừ |
+
+Số đem trừ vào 2 804 ns vẫn là hiệu **app − admin**; hai case còn lại là thứ cho biết hiệu đó
+có đáng tin không. Nếu độ dốc từ (8, 1024) dự đoán được hiệu (83/87, 149/191) thì hiệu đó là
+thật; nếu không thì cái đang đo không phải kích thước payload, và điều đó phải được nói ra chứ
+không được trừ.
+
+**Hệ quả cho tài liệu.** Dòng item 49 phải sửa bốn con số của chính nó, dù kết quả đo có ra sao
+— đó là một sai sót độc lập với việc benchmark trả lời gì.
+
+## Sửa 2 (2026-09-05, trước bước A2) — 53.3 KiB không còn tồn tại, và ring journal đã ra khỏi struct
+
+**Cái gì sai.** Mục *Những gì đã biết chắc* chép từ `measured-costs.md`:
+`size_of::<Connection<…, MemJournal<64,512>, 64, 4096, 8192>>()` = 54 600 byte, trong đó
+`Session<Acceptor,64>` 8 960 B và `MemJournal<64,512>` 33 288 B, kèm câu chốt **"L1d máy này là
+32 KiB — một connection không lọt L1"**. Cả bốn con số đó đo ngày 2026-08-30 và **đã hết đúng
+từ 2026-09-04**.
+
+**Đo lại, hôm nay, bằng `size_of` chạy thật:**
+
+| | 2026-08-30 ghi | Đo 2026-09-05 |
+|---|---|---|
+| `MemJournal<64,512>` | 33 288 B | **32 B** |
+| `Session<Acceptor,64>` | 8 960 B | **9 064 B** |
+| `Connection<…, MemJournal<64,512>, 64, 4096, 8192>` | 54 600 B (53.3 KiB) | **21 456 B (20.95 KiB)** |
+| `Connection` đúng hình dạng w2w (`Store`, 256, 4096, 8192) | — | **23 760 B (23.2 KiB)** |
+
+**Vì sao.** [ADR-0046](../decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md), commit
+`6d02f3a` ngày **2026-09-04**, đổi ring thành `slots: Box<[Slot<LEN>]>` và nâng mặc định lên
+4 096 slot. Ring **rời khỏi** struct: `size_of` của journal giờ là một con trỏ béo cộng
+`high_water`, còn 2 MiB thật nằm trên heap ở một allocation khác.
+
+**Ba hệ quả, và không cái nào nhỏ.**
+
+1. **Câu "một connection không lọt L1" giờ sai.** 20.95 KiB lọt thoải mái vào L1d 32 KiB. Câu
+   ấy đang nằm in đậm trong `measured-costs.md` và là tiền đề của cả mục kernel bypass.
+2. **Hai cận "N ≈ 9 hoặc N ≈ 128" được tính từ 53.3 KiB**, một con số không còn tồn tại. Câu
+   hỏi của item 14 vẫn nguyên giá trị — *một message chạm vào bao nhiêu* — nhưng số học phải
+   làm lại từ đầu.
+3. **Và bộ nhớ không biến mất, nó chuyển chỗ.** `Store` mặc định — thứ `tools/w2w` dùng — là
+   `MemJournal<4096,512>` = **2 MiB mỗi connection**, trên heap. `put` địa chỉ hoá bằng
+   `seq % 4096`, nên message liên tiếp đi vào slot liên tiếp và **quét tuyến tính hết 2 MiB rồi
+   quay vòng**. L3 của máy này là 32 MiB, L2 là 512 KiB. Mỗi `put` chạm 512 byte = 8 dòng
+   cache, gần như chắc chắn đã bị đẩy ra từ lâu. **Đây là ứng viên (3) của item 49, và nó vừa
+   to hơn nhiều so với lúc được kể tên.**
+
+**Đổi cách làm — nửa A.** `journal.rs` có **ba** case, không phải hai. Case thứ ba là phép đảo
+ngược trong miền cache, và nó tách "ghi 191 byte" khỏi "ghi vào một slot lạnh":
+
+| Case | Vì sao |
+|---|---|
+| `journal put, 191 bytes, next slot` | Đúng cái engine làm: seq tăng một, slot kế tiếp, quét hết 2 MiB |
+| `journal put, 87 bytes, next slot` | Đối chứng kích thước — đường admin không trả khoản này, nhưng nếu chi phí là *copy* thì hai case phải lệch theo byte |
+| `journal put, 191 bytes, one slot` | `seq += 4096`, luôn rơi vào slot 0. **Cùng một lượng việc, cache nóng.** Hiệu số với case đầu chính là cái ring 2 MiB tốn |
+
+Kích thước lấy theo Sửa 1: **191** byte là `ExecutionReport` thật, **87** là `Heartbeat` thật.
+
+**Đổi cách làm — nửa B.** Thí nghiệm phân biệt đã mô tả (`MemJournal<8,512>` so với
+`MemJournal<64,512>`) **không còn đo được cái gì**: cả hai giờ là 32 byte trong struct, khác
+nhau chỉ ở kích thước allocation trên heap. Nó vẫn là một thí nghiệm hợp lệ — nhưng nó đo
+**ring**, không đo `Connection`. Nên nửa B tách làm hai câu hỏi thay vì một:
+
+- **B-i:** trong 20.95 KiB của struct, một message chạm bao nhiêu → sweep N với ring **cố định
+  nhỏ** (`MemJournal<8,512>` = 4 KiB heap), để ring không tham gia.
+- **B-ii:** ring tốn bao nhiêu → giữ N = 1, đổi số slot của ring qua 8 / 64 / 512 / 4096.
+
+Bước B3 cũ trở thành B-ii. Chi tiết viết lại ở bảng *Chia việc*.
+
+**Hệ quả cho tài liệu.** `measured-costs.md` phải sửa bốn con số và một câu in đậm, **độc lập
+với kết quả đo của plan này**. Và đây là một dòng *Not proven* kiểu mới: không phải một tuyên
+bố sai, mà một **phép đo đúng vào ngày nó được đo** rồi bị một refactor một tuần sau âm thầm
+làm hỏng, mà không tài liệu nào chỉ vào nó. `[to testing-skills]`.
+
 ## Bất biến bị đụng tới
 
 Không đụng `codec`, `session`, `engine` hay `transport` **về mặt code hot path** — plan này chỉ
@@ -136,9 +244,9 @@ thêm bench target và tài liệu. Nhưng ba điều vẫn phải đi qua:
 | A2 | `crates/engine/benches/journal.rs` — hai case `put`, khẳng định `get(seq)` trả đúng bytes trước khi tính giờ | — |
 | A3 | Ghi baseline trên máy §9, làm phép trừ **ra giấy**, cập nhật `DESIGN.md` §8 + `measured-costs.md`, viết lại dòng item 49 với phần dư mới | A1, A2 |
 | B1 | Harness trong `density.rs`: N session `Loopback` đăng nhập xong, mỗi turn mỗi session một `NewOrderSingle`, khẳng định N reply quay ra mỗi vòng | — |
-| B2 | Sweep N ∈ {1,2,4,8,16,32,64,128}, ns mỗi message | B1 |
-| B3 | Chạy lại sweep với `MemJournal<8,512>` — thí nghiệm phân biệt | B2 |
-| B4 | Trả lời N ≈ 9 hay N ≈ 128 bằng một con số, cập nhật `measured-costs.md` Term 2, `DESIGN.md`, `GUIDE.md` §1a nếu số học dịch, đóng nửa mở của item 14 | B3 |
+| B2 | **B-i** — sweep N ∈ {1,2,4,8,16,32,64,128} với ring cố định nhỏ (`MemJournal<8,512>`), ns mỗi message. Ring đứng ngoài, nên tường nào thấy được là tường của struct | B1, Sửa 2 |
+| B3 | **B-ii** — N = 1, ring qua 8 / 64 / 512 / 4096 slot. Cùng một lượng việc, chỉ vùng nhớ khác. Đây là chỗ 2 MiB của `Store` bị định giá | B1, Sửa 2 |
+| B4 | Trả lời câu hỏi của item 14 bằng một con số, **sửa bốn con số và một câu in đậm đã hỏng trong `measured-costs.md`**, cập nhật `DESIGN.md`, `GUIDE.md` §1a nếu số học dịch, đóng nửa mở của item 14 | B2, B3 |
 | C | ADR nếu có quyết định kiến trúc (dự kiến có ít nhất một: phần dư của item 49 đóng lại thế nào), `CHANGELOG.md`, `STATUS.md`, đi từng dòng bảng §4 | A3, B4 |
 
 ## Cách kiểm chứng
