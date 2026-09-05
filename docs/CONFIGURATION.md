@@ -18,7 +18,7 @@ Validation is strict. An unknown key, a malformed value or an impossible schedul
 startup with the line number and the text that was written
 ([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)).
 
-**Eleven keys** are recognised `[changed 2026-09-04, was ten]`:
+**Twenty-three keys** are recognised `[changed 2026-09-05, was eleven]`.
 
 | Key | Meaning | Values | Default | Where | Source |
 |---|---|---|---|---|---|
@@ -33,6 +33,51 @@ startup with the line number and the text that was written
 | `EndDay` | Last day of a weekly session | `Monday`/`Mon` … `Sunday`/`Sun` | none | `[DEFAULT]` or `[SESSION]` | [`settings.rs:103`](../crates/engine/src/settings.rs#L103), [`settings.rs:590`](../crates/engine/src/settings.rs#L590) |
 | `Weekdays` | Days a daily session opens on | comma-separated, e.g. `Mon,Tue,Wed,Thu,Fri` | all seven days | `[DEFAULT]` or `[SESSION]` | [`settings.rs:104`](../crates/engine/src/settings.rs#L104), [`settings.rs:629`](../crates/engine/src/settings.rs#L629) |
 | `FileLogPath` | Path of the message log (both directions, one line per message). One engine writes one file; `conn=` and `shard=` tell counterparties apart inside it | any path the process can append to | none (no log) | `[DEFAULT]` **only**; a `[SESSION]` carrying it is refused | [`settings.rs`](../crates/engine/src/settings.rs), [`msglog.rs`](../crates/engine/src/msglog.rs) |
+
+**Which role the file describes, and where to dial** `[added 2026-09-05]`:
+
+| Key | Meaning | Values | Default | Where | Source |
+|---|---|---|---|---|---|
+| `ConnectionType` | Which role this whole file configures | `acceptor` or `initiator` | `acceptor` — every file written before 2026-09-05 | `[DEFAULT]` **only**; a file names one role | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `SocketConnectHost` | Where to dial. **Kept as written and resolved on every dial**, so a venue whose DNS fails over keeps working | a hostname or an address | required when `ConnectionType=initiator`; **refused otherwise, by line** | `[DEFAULT]` or `[SESSION]` | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `SocketConnectPort` | Which port | `0`–`65535` | required when `ConnectionType=initiator`; refused otherwise | `[DEFAULT]` or `[SESSION]` | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `ReconnectInterval` | First backoff delay after a connection ends | integer, **seconds** | `30` (QuickFIX's own) | initiator only | [`reconnect.rs`](../crates/engine/src/reconnect.rs) |
+| `ReconnectCeiling` | Largest backoff delay. **No QuickFIX equivalent** — without it the ladder doubles for ever | integer, **seconds**, not below `ReconnectInterval` | 16 × `ReconnectInterval` | initiator only | [`reconnect.rs`](../crates/engine/src/reconnect.rs) |
+
+**The session's own behaviour** `[added 2026-09-05]`. Each sets the `Config` knob of the same
+name in [§2](#2-programmatic-limits-and-defaults); all are `[DEFAULT]` or `[SESSION]`:
+
+| Key | Meaning | Values | Default |
+|---|---|---|---|
+| `ResetOnLogon` | Restart both counts as the connection is made, **including for a resumed session** | `Y` or `N` | `N` |
+| `ResetOnLogout` | Restart both counts once the `Logout` exchange is over | `Y` or `N` | `N` |
+| `ResetOnDisconnect` | Restart both counts when the link drops for any other reason | `Y` or `N` | `N` |
+| `LogonTimeout` | How long a connection may sit without completing its `Logon`. **The initiator's** — an acceptor has `Limits.logon_ms` in front of it | integer, **seconds**; `0` is off | `0` |
+| `LogoutTimeout` | How long to wait for the `Logout` this end asked for | integer, **seconds**; `0` is off | `0` |
+| `AllowUnknownMsgFields` | Do not refuse a **defined** tag that this `MsgType` does not carry (`373=2`). A tag the dictionary has never heard of is still refused | `Y` or `N` | `N` |
+| `ValidateUserDefinedFields` | Ask the dictionary about tags at or above 5000. **The one key whose `Y` means *keep working*** | `Y` or `N` | `Y` |
+
+**`ValidateFieldsOutOfOrder` is not recognised, and it is not an oversight.** QuickFIX's third
+setting of that family switches off `373=14`, *tag specified out of required order*. This engine
+builds a **flat index** of tag positions (DESIGN.md D2) and reads header-versus-body order out
+of it with one comparison in the same scan that checks everything else. There is no separate
+pass to skip; turning it off would mean deleting the comparison, which is a different engine
+rather than a setting. Writing the key gets *"unknown key"* with its line, like any other.
+
+**Y and N, and nothing else.** `true`, `yes` and `1` are refused with their line. Reading `true`
+as `Y` today is reading `1` as `N` tomorrow, and a flag guessed wrongly is a session that
+silently keeps or drops its numbering.
+
+**A file names one role, and the wrong door says so with a line number.** `Settings::into_table`
+refuses an initiator file and `Settings::into_initiator` refuses an acceptor file, each naming
+the `ConnectionType=` line and the other door. The mistake worth catching is the first: a table
+built from an initiator file is perfectly well formed, and the acceptor would sit waiting for
+the venue it was told to dial, with nothing on the wire to say so because nothing would happen
+on the wire. The sharded entry point takes a `Table` and nothing else, so it meets the same
+refusal — one mechanism, not a second check to disagree with the first.
+
+**An initiator file has exactly one `[SESSION]`**, because an initiator holds one session and
+`connect_and_serve` takes one `Config`. A second block is refused on its own line.
 
 Three rules the file enforces:
 

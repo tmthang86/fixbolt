@@ -452,7 +452,7 @@ EndTime=23:59:59
 ```
 
 ```rust
-let table = fixbolt_engine::settings::Settings::load("acceptor.cfg")?.into_table();
+let table = fixbolt_engine::settings::Settings::load("acceptor.cfg")?.into_table()?;
 ```
 
 `[DEFAULT]` supplies every `[SESSION]` after it; a `[SESSION]` overrides for itself. The

@@ -143,8 +143,8 @@ fn serving(name: &str) -> String {
     )
     .expect("the scratch directory is writable");
     let table = Settings::load(&path)
-        .unwrap_or_else(|e| panic!("{e}"))
-        .into_table();
+        .and_then(Settings::into_table)
+        .unwrap_or_else(|e| panic!("{e}"));
     let _ = std::fs::remove_file(&path);
     assert_eq!(table.len(), 1, "the file names exactly one counterparty");
 
@@ -303,8 +303,8 @@ fn an_operator_stops_the_front_door_and_serve_comes_back() {
     )
     .expect("the scratch directory is writable");
     let table = Settings::load(&path)
-        .unwrap_or_else(|e| panic!("{e}"))
-        .into_table();
+        .and_then(Settings::into_table)
+        .unwrap_or_else(|e| panic!("{e}"));
     let _ = std::fs::remove_file(&path);
 
     // Made before the engine, which is the whole of the item.

@@ -110,8 +110,8 @@ fn serving(name: &str, text: &str, counterparties: usize) -> String {
     let path = scratch(name);
     std::fs::write(&path, text).expect("the scratch directory is writable");
     let table = Settings::load(&path)
-        .unwrap_or_else(|e| panic!("{e}"))
-        .into_table();
+        .and_then(Settings::into_table)
+        .unwrap_or_else(|e| panic!("{e}"));
     let _ = std::fs::remove_file(&path);
     assert_eq!(
         table.len(),
@@ -310,7 +310,7 @@ fn a_file_log_path_in_the_config_reaches_serve_and_the_file_fills() {
         "the path comes from the file, not a default"
     );
     let log = fixbolt_engine::msglog::FileLog::open(&named).expect("a writable path");
-    let table = settings.into_table();
+    let table = settings.into_table().expect("an acceptor file");
     let _ = std::fs::remove_file(&cfg_path);
 
     let addr = free_port();

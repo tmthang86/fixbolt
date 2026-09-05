@@ -17,6 +17,39 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A configuration file can describe an initiator, and twelve new keys.**
+  **`ConnectionType`**, **`SocketConnectHost`**, **`SocketConnectPort`**, **`ReconnectInterval`**,
+  **`ReconnectCeiling`**, **`ResetOnLogon`**, **`ResetOnLogout`**, **`ResetOnDisconnect`**,
+  **`LogonTimeout`**, **`LogoutTimeout`**, **`AllowUnknownMsgFields`** and
+  **`ValidateUserDefinedFields`** — eleven recognised keys become twenty-three. With them,
+  **`fixbolt::ConnectionType`**, **`Settings::connection_type`** and
+  **`Settings::into_initiator`**. Step 4 of `STATUS.md` item 45, wave B.
+
+  Until now every key in the file was the acceptor's, so the one role that *dials* was the one
+  role that needed a rebuild to point somewhere else.
+
+  **`Settings::into_table` now returns `Result`**, and refuses an initiator file by line. That
+  is the mistake worth the signature change: the table would be perfectly well formed, and an
+  acceptor built from it would sit waiting for the venue it was told to dial, with nothing on
+  the wire to say so because nothing would happen on the wire. `serve_sharded_hft` takes a
+  `Table` and nothing else, so it meets the same refusal — one mechanism rather than a second
+  check to disagree with the first.
+
+  **`into_initiator` hands back the address as text, not a resolved `SocketAddr`.**
+  `TcpStream::connect` looks it up on every dial, so a venue whose DNS fails over keeps
+  working; resolving at parse time would pin the engine to one address chosen at startup and
+  put a nameserver in the path of reading a file.
+
+  Times in the file are **seconds**, because QuickFIX writes seconds and every operator who
+  will read this file has written those. Flags are **`Y` or `N` and nothing else**: reading
+  `true` as `Y` today is reading `1` as `N` tomorrow.
+
+  **`ValidateFieldsOutOfOrder` is not recognised and will not be** — see above.
+
+- **Renamed:** `Problem::SessionOnly` is now **`Problem::DefaultOnly`**, which is what it
+  always meant: a key that belongs in `[DEFAULT]` and was found in a `[SESSION]`. There are two
+  such keys now rather than one.
+
 - **Two of the dictionary's questions can be switched off.** **`fixbolt::DictionaryChecks`**,
   reached through **`Config::with_validation`**, plus **`fixbolt_session::validate_with`** —
   the public pass under a session's own settings. QuickFIX's `AllowUnknownMsgFields` and
