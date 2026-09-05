@@ -32,6 +32,20 @@ rather than spend a codec hot-path change on 2.9%; the wave-D draft `const-templ
 re-scoped before it becomes a plan. ADR-0041's open question 2 closes on the way: on §9 the
 three `library` cases add up (+6.7%), and the VM's *whole-less-than-the-sum* was the VM.
 
+**Merged: PR [#42](https://github.com/tmthang86/fixbolt/pull/42), merge commit `3e6d12f`. CI
+green 11 jobs of 11 on the merge commit itself**, run
+[`33945858850`](https://github.com/tmthang86/fixbolt/actions/runs/33945858850); on the tip that
+was merged, `5f99ebe`, 22 checks of 22 across
+[`33945512836`](https://github.com/tmthang86/fixbolt/actions/runs/33945512836) and
+[`33945515275`](https://github.com/tmthang86/fixbolt/actions/runs/33945515275).
+
+**What still needs the §9 desktop, asked and answered 2026-09-05 now the plan that owned it is
+closed:** item **49** (price one of its four candidates — the only one both machine-bound and
+ready), item **40** (blocked on a second machine and a cable, not on the configuration —
+`enp9s0` is `NO-CARRIER`), the open half of item **14** (how much of a `Connection`'s 53.3 KiB
+a message touches, which decides a cache wall at N≈9 or N≈128), and **wave C** as a whole —
+including `benches/turn.rs` at two values of `RX`, which is what the four buffer defaults in
+*Not proven* are waiting on. Items **36, 45, 47, 48** are code and need no machine.
 ## Before that — 2026-09-05: the dictionary pass, timed, and it explains 17%
 
 **Item 39 is closed.** The session's dictionary pass — every field asked `is_defined_tag`,
