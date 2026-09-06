@@ -486,6 +486,9 @@ fn initiator(args: &[String]) -> std::process::ExitCode {
     let addr = arg(args, "--connect").unwrap_or_else(|| "127.0.0.1:15644".to_owned());
     let sender = arg(args, "--sender").unwrap_or_else(|| "FIXBOLT".to_owned());
     let target = arg(args, "--target").unwrap_or_else(|| "QFACC".to_owned());
+    // `--next-expected` turns on `789=NextExpectedMsgSeqNum` on this end's
+    // Logon and adds the step that judges the counterparty's.
+    let next_expected = args.iter().any(|a| a == "--next-expected");
 
     println!("interop: fixbolt initiator -> libquickfix acceptor at {addr}");
     println!("interop: {sender} -> {target}, FIX.4.4");
@@ -504,7 +507,8 @@ fn initiator(args: &[String]) -> std::process::ExitCode {
         sock,
         session: Session::new(
             Config::initiator(b"FIX.4.4", sender.as_bytes(), target.as_bytes())
-                .with_heart_bt_int(30),
+                .with_heart_bt_int(30)
+                .with_next_expected(next_expected),
         ),
         app: Count::default(),
         journal: Kept::default(),
@@ -513,7 +517,7 @@ fn initiator(args: &[String]) -> std::process::ExitCode {
     };
     let mut score = Score { steps: Vec::new() };
 
-    if run(&mut w, &mut score, &target).is_none() {
+    if run(&mut w, &mut score, &target, next_expected).is_none() {
         // A step that could not read is a failure of that step, not a crash:
         // the score below still prints, so the script sees which one.
         println!("interop: the counterparty stopped answering");
@@ -527,7 +531,7 @@ fn initiator(args: &[String]) -> std::process::ExitCode {
 
 /// The scenario ADR-0004 named: logon, heartbeat, test request, resend, gap
 /// fill, logout. Each step judges itself on what came **back**.
-fn run(w: &mut Wire, score: &mut Score, target: &str) -> Option<()> {
+fn run(w: &mut Wire, score: &mut Score, target: &str, next_expected: bool) -> Option<()> {
     // ---- 1. Logon -----------------------------------------------------------
     //
     // `connect` records whose turn it is; `tick` is what makes an initiator
@@ -545,8 +549,31 @@ fn run(w: &mut Wire, score: &mut Score, target: &str) -> Option<()> {
     score.step(
         "logon",
         w.session.is_logged_on() && reply.contains(&from_them),
-        reply,
+        reply.clone(),
     );
+
+    // ---- 1b. `789=` really crossed the wire -------------------------------
+    //
+    // **A precondition, not a feature test, and it exists because the gate it
+    // guards can go green having tested nothing.** `[verified 2026-09-06]`
+    // QuickFIX C++ reads settings by name on demand (`SessionFactory.cpp:228`)
+    // with no validation pass, so a key it does not recognise is ignored **in
+    // silence**. The two QuickFIX families spell this one differently —
+    // `SendNextExpectedMsgSeqNum` in C++, `EnableNextExpectedMsgSeqNum` in
+    // Java — and writing the wrong one produces a counterparty that sends no
+    // `789`, a session that comes up perfectly, and every step below passing
+    // over a field that was never there.
+    //
+    // So the scenario asserts it **saw** the field before it asserts anything
+    // about the response to it.
+    // `docs/reference/who-owns-the-outbound-header.md`.
+    if next_expected {
+        score.step(
+            "next_expected",
+            reply.contains("|789="),
+            format!("the counterparty's Logon carries 789: {reply}"),
+        );
+    }
 
     // ---- 2. The acceptor's application messages ----------------------------
     //

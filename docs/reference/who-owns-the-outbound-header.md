@@ -141,10 +141,13 @@ the moment someone tries to add the field.
 **A gate configured with a key the system under test does not recognise runs green and tests
 nothing.**
 
+`[measured 2026-09-06]` **This was run, both ways, and the numbers are below rather than the
+prediction that used to be here.**
+
 The plan's interop step reads: *run `scripts/interop.sh` again with QuickFIX configured to send
 `789`*. Written with the key name this repository had recorded —
 `EnableNextExpectedMsgSeqNum` — against the C++ engine, which spells it
-`SendNextExpectedMsgSeqNum`, that run would have gone like this:
+`SendNextExpectedMsgSeqNum`, the run goes like this:
 
 1. `[verified 2026-09-06]` QuickFIX C++ reads settings **on demand by name**:
    `SessionFactory.cpp:228` asks `settings.has(SEND_NEXT_EXPECTED_MSG_SEQ_NUM)`. There is **no
@@ -157,6 +160,29 @@ The plan's interop step reads: *run `scripts/interop.sh` again with QuickFIX con
 
 Nothing is red, nothing logs, and the reviewer's evidence — *"interop passes with 789 enabled"* —
 is a true sentence about a run in which `789` was never enabled.
+
+**What was actually measured, on 2026-09-06, against `libquickfix` at `386ce46e`:**
+
+| Key written in the C++ config | The seven ordinary steps | `789` on the counterparty's Logon |
+|---|---|---|
+| `SendNextExpectedMsgSeqNum=Y` (correct) | `interop: PASS 7/7` | **`789=2`** — present |
+| `EnableNextExpectedMsgSeqNum=Y` (Java's) | **`interop: PASS 7/7`** | **absent** |
+
+**The two rows are indistinguishable on everything the scenario used to check.** The wrong key
+produced a session that logged on, exchanged two application messages, answered a `TestRequest`,
+replayed a resend, survived a gap fill and said goodbye — seven green steps over a field that
+never crossed the wire. Only the added precondition tells them apart, and under the wrong key it
+reads:
+
+```text
+interop-next-expected: received    FAIL  the counterparty's Logon carried no 789= — is SendNextExpectedMsgSeqNum the right key?
+```
+
+**The other direction stayed green in both runs, and that is worth its own line.** This engine's
+own `789=1` reached `libquickfix` and was accepted either way — the `sent` precondition passes in
+both rows — because the counterparty's *reading* of the field never depended on the key at all.
+Only its *writing* did. So a scenario asserting one direction would have been half a test while
+looking like a whole one.
 
 **The shape**: whenever a test's whole purpose depends on a configuration flag reaching the
 system under test, *the flag arriving is itself an assertion*, and it is the one nobody writes.
