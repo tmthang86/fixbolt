@@ -957,7 +957,7 @@ pub enum DropReason {
     ///
     /// **The `58=` text names the fault and not the numbers**, which is where
     /// this differs from QuickFIX: rendering them would be a second fielded
-    /// [`SessionText`](crate::SessionText) variant, and the plan chose a
+    /// [`SessionText`] variant, and the plan chose a
     /// constant. The numbers are on this side of the link — `next_out()` and
     /// the counterparty's `789=` — and reach an operator through this reason
     /// on the event stream. Guarded by
