@@ -1,8 +1,11 @@
 # ADR-0056: The application is told what the session owns, so a reply can carry `369`
 
-- **Status:** Proposed
+- **Status:** Accepted — 2026-09-06, **implemented on the same day**
 - **Date:** 2026-09-06
 - **Plan:** [seq-resync-789-369](../plans/2026-09-04-seq-resync-789-369.md), step 1
+- **Revised twice while `Proposed`, both revisions recorded in the text** (§5): `last_processed`
+  became an `Option`, and open question 1 was resolved against what it assumed. Both are marked
+  where they happened rather than summarised here
 - **Supersedes nothing.** Amends the `Application` seam that
   [ADR-0002](ADR-0002-engine-library-split.md) splits and
   [ADR-0048](ADR-0048-an-engine-that-can-speak-first-has-two-doors.md) widened; constrained by
