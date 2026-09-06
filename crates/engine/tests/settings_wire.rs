@@ -432,3 +432,68 @@ fn a_validation_knob_written_in_a_file_reaches_a_session_over_a_real_socket() {
     );
     assert!(!lenient.contains("|35=3|"), "and not a reject: {lenient}");
 }
+
+/// **The two sequence-resync keys, from a file to bytes on a real socket.**
+///
+/// The seam a unit test cannot cross: `engine::settings` parsing a key, the
+/// `Config` it builds reaching a live `Session`, and that session putting the
+/// field on the wire. Each half is covered elsewhere — `tests/settings.rs` for
+/// the parse, `session/tests/logon.rs` and `session/tests/application.rs` for
+/// the behaviour — and neither can see a key that stops in between.
+///
+/// **`369` has no external oracle and never will**: QuickFIX C++ does not send
+/// the field and has no key for it, and 0 of the 59 acceptance definitions
+/// carry the tag. `789` is confirmed by `scripts/interop.sh` against a real
+/// `libquickfix`; this test is what covers the other one.
+/// `docs/reference/who-owns-the-outbound-header.md`, ADR-0056.
+#[test]
+fn the_resync_keys_written_in_a_file_reach_a_session_over_a_real_socket() {
+    let logon_reply = |addr: &str| -> String {
+        let mut c = connect(addr);
+        c.write_all(&logon_now("TW44")).expect("send the logon");
+        let mut buf = [0u8; 4096];
+        let n = c.read(&mut buf).expect("the acceptor answers a good logon");
+        assert!(n > 0, "the logon must have been accepted");
+        String::from_utf8_lossy(&buf[..n]).replace('\u{1}', "|")
+    };
+
+    const BASE: &str = "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\n\
+                        [SESSION]\nTargetCompID=TW44\n";
+
+    // The neutral case first: the two below are only meaningful against it.
+    let plain = logon_reply(&serving("resync-off", BASE, 1));
+    assert!(
+        !plain.contains("789=") && !plain.contains("369="),
+        "neither key in the file, neither field on the wire: {plain}"
+    );
+
+    let next_expected = logon_reply(&serving(
+        "resync-789",
+        &format!("{BASE}SendNextExpectedMsgSeqNum=Y\n"),
+        1,
+    ));
+    assert!(
+        next_expected.contains("|789=2|"),
+        "SendNextExpectedMsgSeqNum=Y reaches the Logon reply, which counts the \
+         Logon it is answering: {next_expected}"
+    );
+    assert!(
+        !next_expected.contains("369="),
+        "and it does not turn on the other one: {next_expected}"
+    );
+
+    let last_processed = logon_reply(&serving(
+        "resync-369",
+        &format!("{BASE}EnableLastMsgSeqNumProcessed=Y\n"),
+        1,
+    ));
+    assert!(
+        last_processed.contains("|369=1|"),
+        "EnableLastMsgSeqNumProcessed=Y reports the message being answered: \
+         {last_processed}"
+    );
+    assert!(
+        !last_processed.contains("789="),
+        "and not the other one: {last_processed}"
+    );
+}

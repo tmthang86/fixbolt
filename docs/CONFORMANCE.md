@@ -117,6 +117,7 @@ scripts/interop.sh
 | `interop-reconnect:` | a `libquickfix` `SocketAcceptor` **killed with `SIGKILL` and restarted on the same `FileStore`** | `fixbolt_engine::connect_and_serve`: the reconnect ladder, the `Recovery` seam, `add_resumed`, the engine turn, and — since ADR-0054 — the durable count against the live one read through an `Observer` | **6 / 6** |
 | `interop-reconnect-logout:` | the same, **stopped with `SIGTERM`** so it says goodbye first | the same, after a clean logout — ADR-0043 decision 5 | **6 / 6** |
 | `interop-reconnect-beat:` | the same as the `SIGKILL` row, at **`HeartBtInt=1` with a pause before the kill**, so a `Heartbeat` is guaranteed between the last application message and the death | the same, with the last number spent belonging to a message no journal holds bytes for — ADR-0053 | **6 / 6** |
+| `interop-next-expected:` | a `libquickfix` `SocketAcceptor` with **`SendNextExpectedMsgSeqNum=Y`** | this engine's initiator with `Config::with_next_expected(true)`: `789` written on the way out and read on the way in | **9 / 9** |
 
 The seven steps of the acceptor direction: `logon` (with `141=Y` echoed); `order` (two
 `35=D`, two `35=8`, paired by `11=`); `heartbeat` (an unprompted `35=0` with **no** `112=`,
@@ -136,6 +137,26 @@ a runner has no terminal on stdin, so it read `interop: stopping on ""` and the 
 **stopped before the counterparty connected**. Only a non-empty line stops it now; `< /dev/null`
 leaves it serving and says so
 ([a-control-channel-the-launcher-already-closed](reference/a-control-channel-the-launcher-already-closed.md)).
+
+**The `789` scenario, and why two of its nine assertions are preconditions.**
+`[measured 2026-09-06]` this engine sent `789=1` on its `Logon` and `libquickfix` accepted it;
+`libquickfix` answered with `789=2`, which is the same off-by-one this engine implements on its
+own acceptor side, arriving from the other direction. Both are asserted **before** anything
+about the response, because the gate can otherwise pass having tested nothing: QuickFIX C++
+reads settings by name on demand with no validation pass, so a key it does not recognise is
+ignored in silence. Run with the QuickFIX/J spelling `EnableNextExpectedMsgSeqNum=Y`, the seven
+ordinary steps read **`PASS 7/7`** over a field that never crossed the wire, and only the
+`received` precondition tells the two runs apart. Written up, with the table, in
+[who-owns-the-outbound-header](reference/who-owns-the-outbound-header.md).
+
+**`369=LastMsgSeqNumProcessed` is not in this table and cannot be.** `[verified 2026-09-06]`
+QuickFIX C++ never sends the field and has no configuration key for it — the string occurs once
+outside its generated tables, in `Message::isHeaderField` — and 0 of the 59 acceptance
+definitions carry the tag. So the send direction of `369` is proven **only by this repository's
+own tests**: `crates/session/tests/application.rs`, `crates/library/tests/reply.rs`, and
+`crates/engine/tests/settings_wire.rs` for the file-to-socket seam. That is stated here rather
+than left for a reader to infer from the table's silence. An outside opinion would need
+QuickFIX/J, QuickFIX/n or quickfixgo standing up in the fixture, and that is a different plan.
 
 The six steps of the `SIGKILL` scenario: `dropped` (no `35=5` in the first transcript, so the
 ending really was abrupt); `back` (a Logon reaches the restarted acceptor, and **nothing told

@@ -157,6 +157,13 @@ they disagree about both the key names and the features:
 
 So `369` is **not** a gap against QuickFIX C++ — that engine does not have the feature either —
 and writing QuickFIX/J's key name into a C++ configuration file would be ignored in silence.
+
+**`[built 2026-09-06]` Both are implemented here now**, and the list above is the shape they
+were built to: `789` read unconditionally and sent behind `SendNextExpectedMsgSeqNum`, `369`
+behind `EnableLastMsgSeqNumProcessed`. `789` is confirmed in both directions against a real
+`libquickfix`; `369` cannot be, for the reason the table gives. What is left of the original
+line — *what a QuickFIX-family engine carries that this one does not* — is
+`TimestampPrecision` beyond milliseconds, which is wave B's third plan.
 The survey, and what it means for an engine whose application writes its own bytes, is
 [who-owns-the-outbound-header](who-owns-the-outbound-header.md). **A family name on a feature
 list is a claim about whichever member you happened to read.**

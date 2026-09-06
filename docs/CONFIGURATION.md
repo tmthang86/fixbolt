@@ -56,6 +56,34 @@ name in [§2](#2-programmatic-limits-and-defaults); all are `[DEFAULT]` or `[SES
 | `LogoutTimeout` | How long to wait for the `Logout` this end asked for | integer, **seconds**; `0` is off | `0` |
 | `AllowUnknownMsgFields` | Do not refuse a **defined** tag that this `MsgType` does not carry (`373=2`). A tag the dictionary has never heard of is still refused | `Y` or `N` | `N` |
 | `ValidateUserDefinedFields` | Ask the dictionary about tags at or above 5000. **The one key whose `Y` means *keep working*** | `Y` or `N` | `Y` |
+| `SendNextExpectedMsgSeqNum` | `[added 2026-09-06]` Put `789=NextExpectedMsgSeqNum` on every `Logon` this end sends, naming the number it is waiting to receive. **Reading an inbound `789` does not depend on this key** — that always happens | `Y` or `N` | `N` |
+| `EnableLastMsgSeqNumProcessed` | `[added 2026-09-06]` Report `369=LastMsgSeqNumProcessed` — *the last of your messages I have processed* — on messages this end sends. **What it reaches is not everything**: see the note below | `Y` or `N` | `N` |
+
+**Both resync keys default to `N`, and the default is the safe one rather than a shy one.**
+`[researched 2026-09-06]` every FIX engine surveyed defaults them off, because a counterparty
+that does not expect an optional field can answer a `Reject`. Some venues require `369` — CME
+iLink is the one OnixS names — so turning it on is a decision about the counterparty, not about
+this engine.
+
+**The two key names come from different QuickFIX families, and that is deliberate.** QuickFIX
+**C++** spells the first `SendNextExpectedMsgSeqNum`; QuickFIX/J and quickfixgo call it
+`EnableNextExpectedMsgSeqNum`. The C++ name is taken because that is the engine
+`scripts/interop.sh` runs against. The second has **no C++ equivalent at all** — that engine
+never sends `369` — so it takes the QuickFIX/J and QuickFIX/n spelling. Writing the other
+family's name gets *"unknown key"* with its line number, which is this engine's answer to a
+setting it does not understand ([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md))
+and is worth more than it sounds: QuickFIX C++ ignores a key it does not recognise **in
+silence**. `docs/reference/who-owns-the-outbound-header.md`.
+
+**What `EnableLastMsgSeqNumProcessed=Y` reaches, and what it cannot.** The seven messages the
+session generates itself carry `369`, and so does an application message this end originates.
+An application **reply** carries it only if the application writes it, because on that path the
+application writes the whole message and the session emits those bytes untouched. Through the
+`fixbolt` library that happens for you — `Reply` writes the field — but an application
+implementing `fixbolt_session::Application` directly must write
+`Header::last_processed` itself, and **nothing in this engine can detect one that does not**.
+[ADR-0056](decisions/ADR-0056-the-application-is-told-what-the-session-owns.md), and
+[GUIDE.md](GUIDE.md) carries it as a constraint the type system cannot enforce.
 
 **`ValidateFieldsOutOfOrder` is not recognised, and it is not an oversight.** QuickFIX's third
 setting of that family switches off `373=14`, *tag specified out of required order*. This engine

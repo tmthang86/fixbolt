@@ -327,13 +327,30 @@ The raw seam. Bytes in, a `Range<usize>` out, and everything above is yours to d
 
 ```rust
 impl Application for Desk {
-    fn on_message(&mut self, msg: &[u8], seq: u32, stamp: &[u8], out: &mut [u8])
+    fn on_message(&mut self, msg: &[u8], hdr: Header<'_>, out: &mut [u8])
         -> Option<Range<usize>> { /* ... */ }
 }
 ```
 
 `crates/conformance/src/echo.rs` is a worked example, and the comment at the top of it lists
 the traps you are now responsible for.
+
+**`[added 2026-09-06]` One of those traps the compiler cannot catch: `hdr.last_processed`.**
+`Header` carries the three values this session owns — `34=`, `52=`, and `369=` when
+`EnableLastMsgSeqNumProcessed` is on — and on this seam **writing them is your job**. The
+session emits your bytes untouched; it cannot add a field afterwards, because doing so would
+mean rebuilding your message, which is the cost this seam exists to avoid.
+
+`34=` and `52=` are hard to get wrong: a message missing them is refused or unreadable, so the
+first test finds it. **`369` is different.** Ignore it and everything works — the session comes
+up, messages flow, no gate anywhere in this engine goes red — and the counterparty simply never
+learns how far you have got. A venue that requires the field (CME iLink is the one OnixS names)
+would be within its rights to reject the session, and nothing on this side would have warned
+you.
+
+**If you do not need that control, use `fixbolt::Handler` instead**: `Reply` writes `369` for
+you, so above that seam the field is guaranteed rather than remembered.
+[ADR-0056](decisions/ADR-0056-the-application-is-told-what-the-session-owns.md).
 
 ### What the short way costs
 

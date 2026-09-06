@@ -15,7 +15,53 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 **Nothing has been released.** Six crates now exist and none is published; the entries
 below describe what a first release would contain.
 
+### Changed
+
+- **BREAKING: `fixbolt_session::Application::on_message` takes a `Header<'_>`** in place of the
+  loose `seq: u32, stamp: &[u8]` pair, and **`fixbolt::Reply::new` gains a
+  `last_processed: Option<u32>`**.
+  [ADR-0056](docs/decisions/ADR-0056-the-application-is-told-what-the-session-owns.md).
+
+  ```rust
+  // before
+  fn on_message(&mut self, msg: &[u8], seq: u32, stamp: &[u8], out: &mut [u8]) -> Option<Range<usize>>;
+  // after
+  fn on_message(&mut self, msg: &[u8], hdr: Header<'_>, out: &mut [u8]) -> Option<Range<usize>>;
+  ```
+
+  `Header` carries `seq`, `stamp` and `last_processed` — everything the session owns on the way
+  out. A struct rather than a third loose argument because `seq` and `last_processed` are both
+  `u32` sequence numbers and the loose form compiles when they are swapped; `on_logon` already
+  takes a `Peer` for the same reason.
+
+  **`fixbolt::Handler` is unchanged.** An application written against the library seam needs no
+  edit at all, and gets `369` written for it by `Reply`. Only code implementing
+  `fixbolt_session::Application` directly — the raw seam — has to change, and it is a compile
+  error rather than a silent one.
+
 ### Added
+
+- **`789=NextExpectedMsgSeqNum` and `369=LastMsgSeqNumProcessed`**, the two FIX 4.4 fields that
+  let two ends resynchronise without a `ResendRequest` round trip. `STATUS.md` item 45, wave B,
+  plan 2.
+
+  **Reading `789` is unconditional**, as in QuickFIX: a counterparty naming a lower number gets
+  an unprompted replay from it, a higher one gets a `Logout` and the new
+  **`DropReason::NextExpectedTooHigh`**, and an equal one changes nothing.
+
+  **Sending either is off by default**, through **`Config::with_next_expected`** and
+  **`Config::with_last_processed`**, or the file keys **`SendNextExpectedMsgSeqNum`** and
+  **`EnableLastMsgSeqNumProcessed`** (23 recognised keys become 25). Every engine surveyed
+  defaults them off, because a counterparty that does not expect an optional field can answer a
+  `Reject`.
+
+  The two key names come from different QuickFIX families on purpose: C++ spells the first one
+  that way and has **no key at all** for the second, because it never sends `369`. See
+  [`docs/reference/who-owns-the-outbound-header.md`](docs/reference/who-owns-the-outbound-header.md).
+
+  `[measured 2026-09-06]` `789` is confirmed in both directions against a real `libquickfix` —
+  `scripts/interop.sh`'s `interop-next-expected`, 9/9. **`369` in the send direction has no
+  external oracle and will not get one** from that fixture.
 
 - **A frame the pre-session stage can never read has a name.**
   **`presession::Progress::unframeable`** and **`Snapshot::unframeable_prelogon`**, with
