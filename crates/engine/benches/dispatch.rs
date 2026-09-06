@@ -7,7 +7,18 @@
 //! The harness is `crates/codec/benches/harness.rs`, included by path rather
 //! than copied: one rule, one place. It asserts a **regression ceiling**, not a
 //! published target, for the reason written there.
+
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+/// The header every `deliver` call in this bench hands over.
+///
+/// `last_processed: None` — this bench times dispatch, not `369`, and the
+/// field would change the record length it measures.
+const HDR2: fixbolt_session::Header<'static> = fixbolt_session::Header {
+    seq: 2,
+    stamp: b"20260828-12:00:00.000",
+    last_processed: None,
+};
 
 #[path = "../../codec/benches/harness.rs"]
 mod harness;
@@ -30,8 +41,7 @@ impl Application for Bounce {
     fn on_message(
         &mut self,
         msg: &[u8],
-        _seq: u32,
-        _stamp: &[u8],
+        _hdr: fixbolt_session::Header<'_>,
         out: &mut [u8],
     ) -> Option<Range<usize>> {
         let n = msg.len().min(out.len());
@@ -44,7 +54,12 @@ impl Application for Bounce {
 struct Mute;
 
 impl Application for Mute {
-    fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], _: &mut [u8]) -> Option<Range<usize>> {
+    fn on_message(
+        &mut self,
+        _: &[u8],
+        _: fixbolt_session::Header<'_>,
+        _: &mut [u8],
+    ) -> Option<Range<usize>> {
         None
     }
 }
@@ -56,12 +71,11 @@ fn main() {
         let msg: &[u8] = b"8=FIX.4.4\x019=126\x0135=D\x0134=2\x0149=TW44\x01\
 52=00000000-00:00:00.000\x0156=ISLD\x0111=ID\x0121=1\x0138=002000.00\x0140=1\x01\
 54=1\x0155=INTC\x0160=00000000-00:00:00.000\x01167=BOO\x0110=098\x01";
-        let stamp = b"20260828-12:00:00.000";
         let mut out = [0u8; 1024];
 
         let mut inline = InlineDispatch::new(Bounce);
         b.bench("inline deliver + reply", || {
-            let r = inline.deliver(0, black_box(msg), 2, stamp, &mut out);
+            let r = inline.deliver(0, black_box(msg), HDR2, &mut out);
             black_box(r);
             // `[measured 2026-09-01]` WITHOUT this line the case reads 1.3 ns
             // instead of 8.5, because `out` is written every iteration and read
@@ -90,7 +104,7 @@ fn main() {
         // M5: ~0.8 ns per byte, which is the `AtomicU8` copy and nothing else.
         // That per-byte figure is the price ADR-0007 pays to keep `unsafe` out.
         b.bench("ring, one way", || {
-            let r = ringed.deliver(0, black_box(msg), 2, stamp, &mut out);
+            let r = ringed.deliver(0, black_box(msg), HDR2, &mut out);
             black_box(r);
             // Drained by a handler that answers nothing, so nothing comes back and
             // the queue cannot fill.
@@ -100,7 +114,7 @@ fn main() {
 
         // Two copies and a handler. `[measured 2026-08-30]` 247.6 ns on an M5.
         b.bench("ring, round trip", || {
-            ringed.deliver(0, black_box(msg), 2, stamp, &mut out);
+            ringed.deliver(0, black_box(msg), HDR2, &mut out);
             let n = app.pump(&mut Bounce);
             black_box(n);
             let mut back = 0;

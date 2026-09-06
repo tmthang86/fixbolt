@@ -66,13 +66,23 @@ in place of the two loose facts it takes today.
 
 ```rust
 pub struct Header<'a> {
-    pub seq: u32,             // 34, the number this reply will spend
-    pub stamp: &'a [u8],      // 52, 21 bytes with milliseconds
-    pub last_processed: u32,  // 369, this end's last processed inbound number
+    pub seq: u32,                     // 34, the number this reply will spend
+    pub stamp: &'a [u8],              // 52, 21 bytes with milliseconds
+    pub last_processed: Option<u32>,  // 369, or None when this session does not report it
 }
 
 fn on_message(&mut self, msg: &[u8], hdr: Header<'_>, out: &mut [u8]) -> Option<Range<usize>>;
 ```
+
+**`[revised 2026-09-06, during the build]` `last_processed` is an `Option`, and the first draft
+of this ADR had it as a bare `u32` "supplied either way".** That was inconsistent with decision 4
+and the inconsistency only became visible once `Reply` had to act on it: with a bare `u32` there
+is nothing for `Reply::message` to test, so every reply through the `library` seam would carry
+`369` **regardless of `Config::with_last_processed`**, while the session's own seven messages
+obeyed the knob. One setting, two answers, depending on which layer wrote the message.
+
+`None` means *this session does not report `369`*, and it is the knob's value arriving where the
+decision is made. It also reads as what it is at the call site, which a sentinel `0` would not.
 
 **A struct rather than a fourth positional argument, and the reason is the same one
 [ADR-0054](ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md) gave
@@ -179,11 +189,24 @@ while the shape is small enough to change, rather than under a counterparty's de
 
 ## Open questions
 
-1. **Should `Header` carry the inbound `34=` instead of `next_in - 1`?** quickfixgo writes the
-   replied-to message's own sequence number when it has one, and that is the better answer to
-   the question `369` asks — the two differ whenever anything arrived between the message and
-   the reply. Not adopted here because the session's `next_in` is what every other engine uses
-   and is one field rather than a lifetime; revisit if a counterparty disagrees.
+1. ~~**Should `Header` carry the inbound `34=` instead of `next_in - 1`?**~~ **Resolved during
+   the build, 2026-09-06, and against what this question assumed.** It said quickfixgo was alone
+   in using the replied-to message's own number and that `next_in - 1` "is what every other
+   engine uses". **Both halves were wrong.** `[verified 2026-09-06]` QuickFIX/J
+   (`Session.java:2638`) and QuickFIX/n (`Session.cs:1419`) each special-case their `Logon`
+   reply to write `otherLogon.getHeader().getInt(MsgSeqNum)` — the incoming message's own
+   number — precisely because the generic `getExpectedTargetNum() - 1` on their send path is
+   stale for a message that is answering something. All three engines agree; two of them reach
+   it by special case rather than by threading the value, which is why reading only the generic
+   path made it look like one engine's idiosyncrasy.
+
+   **The harm was concrete, not theoretical.** With `next_in - 1` this engine's own Logon reply
+   read `369=0` while answering `34=1` — it reported having processed nothing, in the message
+   acknowledging something. `tests/application.rs::the_sessions_own_messages_carry_369_when_the_
+   knob_is_on` is what said so.
+
+   The session now keeps `last_in`, the `34=` of the last inbound message it accepted, set
+   before any reply is written. One field, the same answer on every path, and no special case.
 2. **Does `369` belong on a resend?** A replayed message carries its original `34=` and `43=Y`;
    whether its `369` should be the original or the current value is unstated in the spec and
    unanswered by the four engines' code read so far. `rebuild()` carries the source's fields

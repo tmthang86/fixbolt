@@ -74,7 +74,12 @@ static A: Counting = Counting;
 struct Silent;
 
 impl Application for Silent {
-    fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], _: &mut [u8]) -> Option<Range<usize>> {
+    fn on_message(
+        &mut self,
+        _: &[u8],
+        _: fixbolt_session::Header<'_>,
+        _: &mut [u8],
+    ) -> Option<Range<usize>> {
         None
     }
 }
@@ -84,7 +89,12 @@ impl Application for Silent {
 struct SpeaksToTheBound;
 
 impl Application for SpeaksToTheBound {
-    fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], _: &mut [u8]) -> Option<Range<usize>> {
+    fn on_message(
+        &mut self,
+        _: &[u8],
+        _: fixbolt_session::Header<'_>,
+        _: &mut [u8],
+    ) -> Option<Range<usize>> {
         None
     }
 
@@ -115,7 +125,12 @@ fn wire(body: &str) -> Vec<u8> {
 struct Bounce;
 
 impl Application for Bounce {
-    fn on_message(&mut self, msg: &[u8], _: u32, _: &[u8], out: &mut [u8]) -> Option<Range<usize>> {
+    fn on_message(
+        &mut self,
+        msg: &[u8],
+        _: fixbolt_session::Header<'_>,
+        out: &mut [u8],
+    ) -> Option<Range<usize>> {
         let n = msg.len().min(out.len());
         out[..n].copy_from_slice(&msg[..n]);
         Some(0..n)
@@ -387,7 +402,16 @@ fn main() {
     let order = &traffic[1];
 
     // Prove the path is the path: a message goes across and one comes back.
-    ringed.deliver(0, order, 2, stamp, &mut reply);
+    ringed.deliver(
+        0,
+        order,
+        fixbolt_session::Header {
+            seq: 2,
+            stamp,
+            last_processed: None,
+        },
+        &mut reply,
+    );
     assert_eq!(
         app.pump(&mut Bounce),
         1,
@@ -399,7 +423,16 @@ fn main() {
 
     let ring_allocs = count(|| {
         for _ in 0..10_000 {
-            ringed.deliver(0, order, 2, stamp, &mut reply);
+            ringed.deliver(
+                0,
+                order,
+                fixbolt_session::Header {
+                    seq: 2,
+                    stamp,
+                    last_processed: None,
+                },
+                &mut reply,
+            );
             app.pump(&mut Bounce);
             ringed.collect(|_, b| {
                 core::hint::black_box(b);

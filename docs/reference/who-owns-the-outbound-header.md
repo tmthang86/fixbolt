@@ -220,6 +220,35 @@ gitignored either way — nothing here is committed ([ADR-0001](../decisions/ADR
 
 ---
 
+## A second testing lesson, and it cost nothing to find **`[to testing-skills]`**
+
+**The claim a change is built around is the one nobody writes a test for.**
+
+ADR-0056's decision 2 is the reason widening the seam was worth doing at all: above the
+`library` seam `369` is *guaranteed*, because `Reply` writes it rather than a handler
+remembering to. Everything else in the change was tested as it was built — four session paths,
+three branches, both roles, an interop scenario.
+
+`[measured 2026-09-06]` **Deleting the four lines in `Reply::message` that write `369` left
+`cargo test --all` at 581 passed, 0 failed.** The load-bearing promise had no gate behind it.
+
+It survived because it is the *easy* part. The session's own paths needed arithmetic, so they
+got tests. The seam's guarantee is four obvious lines that plainly work when you read them —
+and reading is exactly what `CLAUDE.md` §10 says catches almost nothing. The tests that existed
+covered what had been hard to write, which is not the same set as what would be expensive to
+lose.
+
+**The shape**: after implementing, list the sentences you would put in the summary — *"and now
+X is guaranteed"* — and check each has a test that fails when X stops being true. A reversal
+that comes back green is not reassurance; it is the test you needed telling you it does not
+exist.
+
+The three tests now guarding it are `tests/reply.rs::a_handler_that_says_nothing_about_369_
+still_sends_it`, its neutral twin for the knob being off, and one for an origination, which
+reports nothing because the session has judged nothing.
+
+---
+
 ## Sources
 
 - QuickFIX C++, pinned `386ce46e` in gitignored `vendor/`: `src/C++/Session.cpp`,

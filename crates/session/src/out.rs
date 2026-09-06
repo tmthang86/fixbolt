@@ -67,6 +67,7 @@ impl<const APP: usize> Outbound<APP> {
                 .field(tag::TARGET_COMP_ID, target)
                 .slot(tag::MSG_SEQ_NUM)
                 .slot(tag::SENDING_TIME)
+                .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::ENCRYPT_METHOD)
                 .slot(tag::HEART_BT_INT)
                 // `SessionReset.def` logs on a second time with `141=Y` and
@@ -86,6 +87,7 @@ impl<const APP: usize> Outbound<APP> {
                 .field(tag::TARGET_COMP_ID, target)
                 .slot(tag::MSG_SEQ_NUM)
                 .slot(tag::SENDING_TIME)
+                .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::TEXT)
                 .build::<Fix44>()
                 .ok()?,
@@ -95,6 +97,7 @@ impl<const APP: usize> Outbound<APP> {
                 .field(tag::TARGET_COMP_ID, target)
                 .slot(tag::MSG_SEQ_NUM)
                 .slot(tag::SENDING_TIME)
+                .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 // The routing tags, reversed. An `OnBehalfOf` on the way in is
                 // a `DeliverTo` on the way out, and `ReverseRoute.def` sends
                 // all six one pair at a time.
@@ -120,6 +123,7 @@ impl<const APP: usize> Outbound<APP> {
                 .field(tag::TARGET_COMP_ID, target)
                 .slot(tag::MSG_SEQ_NUM)
                 .slot(tag::SENDING_TIME)
+                .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::TEST_REQ_ID)
                 .build::<Fix44>()
                 .ok()?,
@@ -129,6 +133,7 @@ impl<const APP: usize> Outbound<APP> {
                 .field(tag::TARGET_COMP_ID, target)
                 .slot(tag::MSG_SEQ_NUM)
                 .slot(tag::SENDING_TIME)
+                .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::TEST_REQ_ID)
                 .build::<Fix44>()
                 .ok()?,
@@ -138,6 +143,7 @@ impl<const APP: usize> Outbound<APP> {
                 .field(tag::TARGET_COMP_ID, target)
                 .slot(tag::MSG_SEQ_NUM)
                 .slot(tag::SENDING_TIME)
+                .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::BEGIN_SEQ_NO)
                 .slot(tag::END_SEQ_NO)
                 .build::<Fix44>()
@@ -152,6 +158,7 @@ impl<const APP: usize> Outbound<APP> {
                 .slot(tag::MSG_SEQ_NUM)
                 .slot(tag::POSS_DUP_FLAG)
                 .slot(tag::SENDING_TIME)
+                .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::ORIG_SENDING_TIME)
                 .slot(tag::NEW_SEQ_NO)
                 .slot(tag::GAP_FILL_FLAG)

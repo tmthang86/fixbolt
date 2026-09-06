@@ -52,8 +52,7 @@ pub trait Dispatch {
         &mut self,
         conn: ConnId,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         out: &mut [u8],
     ) -> Option<Range<usize>>;
 
@@ -142,11 +141,10 @@ impl<H: Application> Dispatch for InlineDispatch<H> {
         &mut self,
         _conn: ConnId,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         out: &mut [u8],
     ) -> Option<Range<usize>> {
-        self.handler.on_message(msg, seq, stamp, out)
+        self.handler.on_message(msg, hdr, out)
     }
 
     fn on_logon(
@@ -180,11 +178,48 @@ pub struct RingDispatch<const M: usize> {
 
 /// The layout of a record going out to the application.
 ///
-/// `conn` and `seq` so a reply can be routed and correlated, and `stamp`
-/// because [`Application::on_message`]'s contract says a reply must not
-/// regenerate its own `SendingTime` — the session patches it again on the way
-/// out, but the application still has to write a well-formed message.
-const OUT_HEADER: usize = 8 + 4 + STAMP;
+/// `conn` and `seq` so a reply can be routed and correlated, `last_processed`
+/// because [`fixbolt_session::Header`] carries it and this ring is the only
+/// path that has to serialise that struct, and `stamp` because
+/// [`Application::on_message`]'s contract says a reply must not regenerate its
+/// own `SendingTime` — the session patches it again on the way out, but the
+/// application still has to write a well-formed message.
+///
+/// **The offsets are named rather than written at each use.** `[2026-09-06]`
+/// the reader had `&scratch[12..OUT_HEADER]` for the stamp, a literal that
+/// was correct only while the two fields before it summed to 12. Adding
+/// `last_processed` moved it, and a magic number in one of the two places
+/// that must agree is a record that decodes into garbage with nothing red.
+/// ADR-0056.
+/// **Each field is `start .. start + LEN`, never `start .. next_field`.**
+///
+/// `[measured 2026-09-06]` the first version of this record wrote the sequence
+/// number as `fixed[OUT_SEQ..OUT_LAST_PROCESSED]`, which was four bytes until
+/// a flag byte was inserted between them and five afterwards.
+/// `copy_from_slice` panicked — in a library crate, which non-negotiable 7 is
+/// about and which clippy's `unwrap_used`/`expect_used` lints cannot see. Four
+/// `dispatch` tests caught it; nothing else could have.
+///
+/// A range that names the *next* field is a length written down in the wrong
+/// place: it is right only while nothing is inserted, and inserting is the one
+/// thing a record layout is edited to do. ADR-0056.
+const CONN_LEN: usize = 8;
+const SEQ_LEN: usize = 4;
+const HAS_LAST_LEN: usize = 1;
+const LAST_PROCESSED_LEN: usize = 4;
+
+const OUT_CONN: usize = 0;
+const OUT_SEQ: usize = OUT_CONN + CONN_LEN;
+/// `1` when `369` is being reported, `0` when it is not.
+///
+/// **A flag byte, not a sentinel value.** `u32::MAX` is unreachable as a
+/// sequence number today and "unreachable today" is how a decoder comes to
+/// read a real number as absent. One byte costs nothing on a record that
+/// already carries 33.
+const OUT_HAS_LAST: usize = OUT_SEQ + SEQ_LEN;
+const OUT_LAST_PROCESSED: usize = OUT_HAS_LAST + HAS_LAST_LEN;
+const OUT_STAMP: usize = OUT_LAST_PROCESSED + LAST_PROCESSED_LEN;
+const OUT_HEADER: usize = OUT_STAMP + STAMP;
 
 /// The layout coming back: just the connection.
 const BACK_HEADER: usize = 8;
@@ -230,15 +265,17 @@ impl<const M: usize> Dispatch for RingDispatch<M> {
         &mut self,
         conn: ConnId,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         _out: &mut [u8],
     ) -> Option<Range<usize>> {
         let mut fixed = [0u8; OUT_HEADER];
-        fixed[..8].copy_from_slice(&conn.to_le_bytes());
-        fixed[8..12].copy_from_slice(&seq.to_le_bytes());
-        let n = stamp.len().min(STAMP);
-        fixed[12..12 + n].copy_from_slice(&stamp[..n]);
+        fixed[OUT_CONN..OUT_CONN + CONN_LEN].copy_from_slice(&conn.to_le_bytes());
+        fixed[OUT_SEQ..OUT_SEQ + SEQ_LEN].copy_from_slice(&hdr.seq.to_le_bytes());
+        fixed[OUT_HAS_LAST] = u8::from(hdr.last_processed.is_some());
+        fixed[OUT_LAST_PROCESSED..OUT_LAST_PROCESSED + LAST_PROCESSED_LEN]
+            .copy_from_slice(&hdr.last_processed.unwrap_or(0).to_le_bytes());
+        let n = hdr.stamp.len().min(STAMP);
+        fixed[OUT_STAMP..OUT_STAMP + n].copy_from_slice(&hdr.stamp[..n]);
         if msg.len() > M || !self.to_app.push(&[&fixed, msg]) {
             self.refused += 1;
             self.refused_since = true;
@@ -339,10 +376,16 @@ impl<const M: usize> RingApp<M> {
             }
             done += 1;
             let mut conn = [0u8; 8];
-            conn.copy_from_slice(&self.scratch[..8]);
-            let mut seq = [0u8; 4];
-            seq.copy_from_slice(&self.scratch[8..12]);
+            conn.copy_from_slice(&self.scratch[OUT_CONN..OUT_CONN + CONN_LEN]);
+            let mut seq = [0u8; SEQ_LEN];
+            seq.copy_from_slice(&self.scratch[OUT_SEQ..OUT_SEQ + SEQ_LEN]);
             let seq = u32::from_le_bytes(seq);
+            let mut last = [0u8; LAST_PROCESSED_LEN];
+            last.copy_from_slice(
+                &self.scratch[OUT_LAST_PROCESSED..OUT_LAST_PROCESSED + LAST_PROCESSED_LEN],
+            );
+            let last_processed =
+                (self.scratch[OUT_HAS_LAST] != 0).then(|| u32::from_le_bytes(last));
             // Split the borrow: the handler reads the inbound message out of
             // `scratch` and writes into `reply`, and they are different fields.
             let Self {
@@ -352,9 +395,14 @@ impl<const M: usize> RingApp<M> {
                 dropped,
                 ..
             } = self;
-            let (stamp, msg) = (&scratch[12..OUT_HEADER], &scratch[OUT_HEADER..n]);
+            let (stamp, msg) = (&scratch[OUT_STAMP..OUT_HEADER], &scratch[OUT_HEADER..n]);
+            let hdr = fixbolt_session::Header {
+                seq,
+                stamp,
+                last_processed,
+            };
             let mut pushed = false;
-            if let Some(r) = handler.on_message(msg, seq, stamp, reply) {
+            if let Some(r) = handler.on_message(msg, hdr, reply) {
                 if to_engine.push(&[&conn, &reply[r]]) {
                     pushed = true;
                 } else {

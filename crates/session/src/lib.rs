@@ -71,6 +71,12 @@ pub(crate) mod tag {
     /// `fix44/Logon.h:35` agrees, so `Fix44` orders it and no call site here
     /// decides where it goes — non-negotiable 5.
     pub const NEXT_EXPECTED_MSG_SEQ_NUM: u32 = 789;
+    /// `LastMsgSeqNumProcessed`, a **header** field.
+    ///
+    /// `[verified 2026-09-06]` `spec/FIX44.xml`'s `<header>` block carries it
+    /// at position 27 of 29 and `fix44/Message.h:37` agrees, so it is legal on
+    /// every message and `Fix44` orders it.
+    pub const LAST_MSG_SEQ_NUM_PROCESSED: u32 = 369;
 }
 
 /// `MsgType` values this layer acts on.
@@ -120,17 +126,24 @@ pub trait Application {
     /// One message for the application.
     ///
     /// Write a complete FIX message into `out` and return the range it
-    /// occupies; the session emits it and spends `seq`. `None` says nothing,
-    /// which is what `19a_PossResendMessageThatHAsAlreadyBeenSent.def` asks
-    /// for: a `97=Y` whose order ID the application has already seen.
+    /// occupies; the session emits it and spends `hdr.seq`. `None` says
+    /// nothing, which is what `19a_PossResendMessageThatHAsAlreadyBeenSent.def`
+    /// asks for: a `97=Y` whose order ID the application has already seen.
     ///
-    /// `stamp` is 21 bytes with milliseconds. A reply that regenerates its own
-    /// `SendingTime` is a body-length failure four bytes later.
+    /// **Everything the session owns arrives in [`Header`]**, and writing those
+    /// values is the application's job on this path — the session emits the
+    /// bytes untouched and cannot add to them. `hdr.stamp` is 21 bytes with
+    /// milliseconds; a reply that regenerates its own `SendingTime` is a
+    /// body-length failure four bytes later.
+    ///
+    /// [`crate::Header::last_processed`] is `369` and is **optional**: writing
+    /// it is what [`Config::with_last_processed`] asks for, and nothing here
+    /// can detect an application that ignores it.
+    /// [ADR-0056](../../../docs/decisions/ADR-0056-the-application-is-told-what-the-session-owns.md).
     fn on_message(
         &mut self,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: Header<'_>,
         out: &mut [u8],
     ) -> Option<core::ops::Range<usize>>;
 
@@ -188,6 +201,40 @@ pub struct Peer<'a> {
     pub target: &'a [u8],
 }
 
+/// What the session owns on the way out, handed to the application that is
+/// about to write a reply.
+///
+/// **A struct rather than three arguments in a row**, for the reason [`Peer`]
+/// is one: `seq` and `last_processed` are both `u32` and both sequence
+/// numbers, so the loose form is a call that compiles when they are swapped.
+/// [ADR-0056](../../../docs/decisions/ADR-0056-the-application-is-told-what-the-session-owns.md).
+///
+/// **This is the whole of what the session can tell a reply.** On this path
+/// the application writes the entire message and the session emits those bytes
+/// verbatim — nothing here adds a field afterwards, which is what makes a
+/// reply cost no rebuild
+/// ([ADR-0044](../../../docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)).
+/// A value ignored here is simply absent from the wire.
+#[derive(Debug, Clone, Copy)]
+pub struct Header<'a> {
+    /// `34` **MsgSeqNum** — the number this reply will spend. Write it as
+    /// given; the session has already reserved it.
+    pub seq: u32,
+    /// `52` **SendingTime**, 21 bytes with milliseconds, from the session's
+    /// cached clock. Formatting a fresh one costs a body-length failure.
+    pub stamp: &'a [u8],
+    /// `369` **LastMsgSeqNumProcessed** — the last inbound number this end has
+    /// processed, which is `next_in - 1`.
+    ///
+    /// **`None` means this session does not report `369`**, which is
+    /// [`Config::with_last_processed`] arriving where the decision is made.
+    /// An `Option` rather than a bare number so that one setting gives one
+    /// answer: without it a reply written through `fixbolt::Reply` would carry
+    /// the field while the session's own seven messages obeyed the knob.
+    /// ADR-0056, revised during its own build.
+    pub last_processed: Option<u32>,
+}
+
 /// An application that never answers.
 ///
 /// What [`Session::received`] uses, so a caller with no application at all
@@ -199,8 +246,7 @@ impl Application for Silent {
     fn on_message(
         &mut self,
         _msg: &[u8],
-        _seq: u32,
-        _stamp: &[u8],
+        _hdr: Header<'_>,
         _out: &mut [u8],
     ) -> Option<core::ops::Range<usize>> {
         None
@@ -374,6 +420,10 @@ pub struct Config {
     ///
     /// See [`Config::with_next_expected`].
     next_expected: bool,
+    /// Report `369=LastMsgSeqNumProcessed` on the way out.
+    ///
+    /// See [`Config::with_last_processed`].
+    last_processed: bool,
     /// When this session restarts its numbering of its own accord.
     /// [`ResetPolicy::new`] is neutral and is the default.
     reset: ResetPolicy,
@@ -595,6 +645,7 @@ impl Config {
             schedule: Schedule::always(),
             resend_batch: DEFAULT_RESEND_BATCH,
             next_expected: false,
+            last_processed: false,
             reset: ResetPolicy::new(),
             logon_timeout_ms: 0,
             logout_timeout_ms: 0,
@@ -646,6 +697,35 @@ impl Config {
     #[must_use]
     pub const fn next_expected(&self) -> bool {
         self.next_expected
+    }
+
+    /// Report `369=LastMsgSeqNumProcessed` — *the last of your messages I have
+    /// processed* — on the way out.
+    ///
+    /// **Off by default**, like every engine surveyed
+    /// ([who-owns-the-outbound-header](../../../docs/reference/who-owns-the-outbound-header.md)):
+    /// a counterparty that does not expect the optional header field can answer
+    /// a `Reject`. Some venues require it — CME iLink is the one OnixS names.
+    ///
+    /// **What it reaches, and what it cannot.** The seven messages this session
+    /// generates carry the field, and so does an application message this end
+    /// originates. An application **reply** carries it only if the application
+    /// writes it, because on that path the application writes the whole message
+    /// and this layer emits those bytes untouched. Through
+    /// [`crate::Header::last_processed`] and `fixbolt::Reply` that happens for
+    /// you; below that seam it is yours to do, and nothing here can detect an
+    /// application that does not.
+    /// [ADR-0056](../../../docs/decisions/ADR-0056-the-application-is-told-what-the-session-owns.md).
+    #[must_use]
+    pub const fn with_last_processed(mut self, on: bool) -> Self {
+        self.last_processed = on;
+        self
+    }
+
+    /// Does this session report `369=`?
+    #[must_use]
+    pub const fn last_processed(&self) -> bool {
+        self.last_processed
     }
 
     /// How many messages one call may put on the wire answering a
@@ -1139,6 +1219,20 @@ pub struct Session<R: Role, const N: usize, const APP: usize = DEFAULT_APP_SCRAT
     /// outstanding, which is what stops a second `ResendRequest` going out for
     /// a gap already being filled.
     resend_from: u32,
+    /// `34=` of the last inbound message this session accepted.
+    ///
+    /// **The value `369` reports, and it is not `next_in - 1`.** The two differ
+    /// during exactly the window that matters: while a message is being
+    /// answered, `next_in` has not moved past it yet, so `next_in - 1` names
+    /// the message *before* the one being replied to. `[verified 2026-09-06]`
+    /// QuickFIX/J and QuickFIX/n both special-case their `Logon` reply to use
+    /// the incoming message's own `MsgSeqNum` for this reason
+    /// (`Session.java:2638`, `Session.cs:1419`), and quickfixgo threads the
+    /// replied-to message through its whole send path. One field gives this
+    /// engine the same answer everywhere. ADR-0056, open question 1, resolved
+    /// during the build by `tests/application.rs::the_sessions_own_messages_
+    /// carry_369_when_the_knob_is_on` reading `369=0`.
+    last_in: u32,
     resend_to: u32,
     /// Whether this session was built from persisted state.
     ///
@@ -1214,6 +1308,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             last_recv_ms: 0,
             test_requests: 0,
             resend_from: 0,
+            last_in: 0,
             resend_to: 0,
             session_mark: None,
             last_drop_reason: None,
@@ -2373,11 +2468,28 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         let mut seq = [0u8; 10];
         let seq = digits(at.unwrap_or(self.next_out), &mut seq);
 
+        // `369`, on every message this session generates, when the knob is on.
+        // **One place rather than seven**: every administrative message this
+        // layer sends goes through here, so a template that gained the slot
+        // and a call site that forgot to fill it cannot disagree.
+        //
+        // 18 slots, not 16: the widest message is the Reject at 14 extras plus
+        // `34=` and `52=`, and `369` is the seventeenth.
+        let mut last = [0u8; 10];
+        let last = self
+            .cfg
+            .last_processed
+            .then(|| digits(self.last_in, &mut last));
+
         let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
-        let mut slots: [(u32, &[u8]); 16] = [(0, &[]); 16];
+        let mut slots: [(u32, &[u8]); 18] = [(0, &[]); 18];
         slots[0] = (tag::MSG_SEQ_NUM, seq);
         slots[1] = (tag::SENDING_TIME, &stamp);
         let mut n = 2;
+        if let Some(v) = last {
+            slots[n] = (tag::LAST_MSG_SEQ_NUM_PROCESSED, v);
+            n += 1;
+        }
         for pair in extra {
             *slots.get_mut(n).ok_or(Refusal::CannotSend)? = *pair;
             n += 1;
@@ -2448,12 +2560,13 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         let mut seq = [0u8; 10];
         let seq = digits(self.next_out, &mut seq);
         let seq_out = self.next_out;
+        let last_processed = self.cfg.last_processed.then_some(self.last_in);
 
         let Some(o) = self.out.as_mut() else {
             return Link::Up;
         };
         let out::Outbound { app: buf, .. } = o;
-        let Some(r) = rebuild(msg, Some(seq), &now, false, buf) else {
+        let Some(r) = rebuild(msg, Some(seq), &now, last_processed, false, buf) else {
             return Link::Up;
         };
         if !journal.put(seq_out, &buf[r.clone()]) {
@@ -2906,6 +3019,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // outstanding `TestRequest`.
         self.last_recv_ms = self.now_ms;
         self.test_requests = 0;
+        // **Before any reply is written**, which is the whole point: a Logon
+        // reply, a Reject and a Heartbeat answering a TestRequest are all sent
+        // from below this line and all report the message they are answering.
+        self.last_in = seq;
 
         // The line above has already consumed the sequence number, and a Reject
         // does not give it back: `14a_BadField.def` rejects four messages in a
@@ -3140,11 +3257,24 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
             let stamp = *self.stamp.format(unix);
             let seq_out = self.next_out;
+            // Read before the application is given anything, and read from
+            // `next_in` rather than from `seq`: they are the same number here,
+            // and `next_in` stays right if a future path ever answers a
+            // message that did not advance the count.
+            let last_processed_now = self.cfg.last_processed.then_some(self.last_in);
             let mut kept = true;
             let sent = {
                 let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
                 let out::Outbound { app: buf, .. } = o;
-                match app.on_message(bytes, seq_out, &stamp, buf) {
+                let hdr = Header {
+                    seq: seq_out,
+                    stamp: &stamp,
+                    // `next_in` has already moved past this message —
+                    // `advance_past` ran above — so the last number processed
+                    // is one behind it, which is the message being answered.
+                    last_processed: last_processed_now,
+                };
+                match app.on_message(bytes, hdr, buf) {
                     Some(r) => {
                         // Kept before it is sent, and only application messages
                         // are kept: QuickFIX never replays an administrative
@@ -3448,7 +3578,7 @@ fn msg_type_of(bytes: &[u8]) -> Option<&[u8]> {
 /// Returns the range of `out` the message occupies, or `None` if the kept bytes
 /// are not a message or the result does not fit.
 fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<core::ops::Range<usize>> {
-    rebuild(kept, None, now, true, out)
+    rebuild(kept, None, now, None, true, out)
 }
 
 /// Write an application message this end is originating, or replaying.
@@ -3463,6 +3593,7 @@ fn rebuild(
     src: &[u8],
     seq: Option<&[u8]>,
     now: &[u8],
+    last_processed: Option<u32>,
     resend: bool,
     out: &mut [u8],
 ) -> Option<core::ops::Range<usize>> {
@@ -3482,6 +3613,17 @@ fn rebuild(
     // two that pays for it.
     let mut b = TemplateBuilder::<128, 1024>::new(begin);
     b.field(tag::SENDING_TIME, now);
+    // `369` on a message this end originates. **Not on a replay**: `resend`
+    // means the source bytes are being sent again, and their `369` was true
+    // when they first went out. Whether a replay should carry the old value or
+    // the current one is unstated in FIX 4.4 and unsettled by the four engines
+    // read for ADR-0056; carrying the original is what falls out of rebuilding
+    // from the kept bytes, and it is asserted rather than inherited by
+    // `tests/application.rs`.
+    if let (Some(v), false) = (last_processed, resend) {
+        let mut d = [0u8; 10];
+        b.field(tag::LAST_MSG_SEQ_NUM_PROCESSED, digits(v, &mut d));
+    }
     if resend {
         b.field(tag::POSS_DUP_FLAG, b"Y");
     }

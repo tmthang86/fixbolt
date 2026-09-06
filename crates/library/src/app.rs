@@ -221,8 +221,7 @@ impl<H: Handler<N, P, S>, const N: usize, const P: usize, const S: usize> Applic
     fn on_message(
         &mut self,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         out: &mut [u8],
     ) -> Option<Range<usize>> {
         // `Validation::NONE`: the frame was checked when this message was
@@ -248,7 +247,20 @@ impl<H: Handler<N, P, S>, const N: usize, const P: usize, const S: usize> Applic
 
         // The reversal, in the one place it happens: this side's sender is the
         // name they addressed the message to.
-        let reply = Reply::<P, S>::new(begin_string, seq, stamp, their_target, their_sender, out);
+        // **This is where `369` becomes a guarantee rather than an offer.**
+        // Everything above the `library` seam gets the field because `Reply`
+        // writes it, not because a handler remembered to — the same guarantee
+        // QuickFIX/J and QuickFIX/n give from their own send path.
+        // ADR-0056 decision 2.
+        let reply = Reply::<P, S>::new(
+            begin_string,
+            hdr.seq,
+            hdr.stamp,
+            hdr.last_processed,
+            their_target,
+            their_sender,
+            out,
+        );
         let incoming = Incoming { view };
 
         let answer = self.handler.on_message(&incoming, reply);

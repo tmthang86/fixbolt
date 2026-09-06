@@ -189,8 +189,7 @@ impl Application for Never {
     fn on_message(
         &mut self,
         _msg: &[u8],
-        _seq: u32,
-        _stamp: &[u8],
+        _hdr: fixbolt_session::Header<'_>,
         _out: &mut [u8],
     ) -> Option<Range<usize>> {
         eprintln!("w2w: the application was reached; this run measures something else");
@@ -259,10 +258,14 @@ impl Application for Desk {
     fn on_message(
         &mut self,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         out: &mut [u8],
     ) -> Option<Range<usize>> {
+        // `w2w` measures the round trip and does not set `369`: this binary is
+        // the latency figure, and a field nothing here reads would only widen
+        // the message it times. ADR-0056 -- below the `library` seam the field
+        // is the application's to write, and this application declines.
+        let (seq, stamp) = (hdr.seq, hdr.stamp);
         // `Validation::NONE`: the session has already validated this message
         // against the dictionary before delivering it, and validating twice
         // would price a check this design does once.

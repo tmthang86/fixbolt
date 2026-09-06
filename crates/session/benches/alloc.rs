@@ -99,10 +99,10 @@ impl Application for EchoApp {
     fn on_message(
         &mut self,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         out: &mut [u8],
     ) -> Option<core::ops::Range<usize>> {
+        let (seq, stamp) = (hdr.seq, hdr.stamp);
         echo(msg, out, seq, stamp).ok()
     }
 }
@@ -553,7 +553,9 @@ fn main() {
         // The path is proven live before it is counted: a zero below must mean
         // *did not allocate*, never *did not run*.
         let mut s: Session<Acceptor, 256> = Session::resume(
-            Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true),
+            Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+                .with_next_expected(true)
+                .with_last_processed(true),
             500,
             1,
         );
@@ -570,8 +572,11 @@ fn main() {
         // drives the replay. A case that only proved one of them would leave
         // the other's arithmetic uncounted.
         let mut reply = Vec::new();
-        let mut s2: Session<Acceptor, 256> =
-            Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true));
+        let mut s2: Session<Acceptor, 256> = Session::new(
+            Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+                .with_next_expected(true)
+                .with_last_processed(true),
+        );
         s2.connect(|_| ());
         s2.tick(now, |_| ());
         s2.received(&good, |b| reply.extend_from_slice(b));
@@ -579,11 +584,17 @@ fn main() {
             reply.windows(4).any(|w| w == b"789="),
             "the outbound half of 789 must be on this path too"
         );
+        assert!(
+            reply.windows(4).any(|w| w == b"369="),
+            "and 369, so this case counts both fields' arithmetic"
+        );
     }
     let next_expected_allocs = count(|| {
         for _ in 0..10_000 {
             let mut s: Session<Acceptor, 256> = Session::resume(
-                Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true),
+                Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
+                    .with_next_expected(true)
+                    .with_last_processed(true),
                 500,
                 1,
             );

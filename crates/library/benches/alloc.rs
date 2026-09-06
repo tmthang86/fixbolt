@@ -191,7 +191,18 @@ fn render(mut v: u32, buf: &mut [u8; 16]) -> &[u8] {
 fn drive<A: Application>(app: &mut A, wire: &[u8], out: &mut [u8], n: u32) -> u32 {
     let mut sent = 0;
     for seq in 1..=n {
-        if app.on_message(wire, seq, STAMP, out).is_some() {
+        if app
+            .on_message(
+                wire,
+                fixbolt_session::Header {
+                    seq,
+                    stamp: STAMP,
+                    last_processed: None,
+                },
+                out,
+            )
+            .is_some()
+        {
             sent += 1;
         }
     }
