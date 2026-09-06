@@ -775,7 +775,14 @@ fi
 echo
 echo "==> [interop-next-expected] a counterparty that speaks 789"
 
-cat > "${WORK}/acceptor-789.cfg" <<CFG
+# **Generated with stderr captured, and the capture is asserted empty.**
+# `[measured 2026-09-06]` an unquoted heredoc expands its body, so two
+# backticks in a *comment* inside one made the shell try to run the word
+# between them. It printed "…: command not found" and the script carried on
+# to `PASS 9/9` and `exit 0`: `set -e` does not see a failed substitution
+# inside a heredoc, and nothing else was looking. The error sat in a green
+# job's log for a whole CI run. This is the check that makes it fail instead.
+cat > "${WORK}/acceptor-789.cfg" 2> "${WORK}/acceptor-789.err" <<CFG
 [DEFAULT]
 ConnectionType=acceptor
 SocketAcceptPort=${PORT}
@@ -788,8 +795,16 @@ FileStorePath=${WORK}/store-789
 ResetOnLogon=Y
 ResetOnLogout=Y
 ResetOnDisconnect=Y
-# The C++ spelling. Java's `EnableNextExpectedMsgSeqNum` would be ignored here
+# The C++ spelling. Java's EnableNextExpectedMsgSeqNum would be ignored here
 # without a word, and the two preconditions below are what would catch it.
+#
+# NO BACKTICKS AND NO COMMAND SUBSTITUTION ANYWHERE IN THIS HEREDOC, comments
+# included: the delimiter is unquoted because the body needs ${PORT} and
+# ${SRC}, so the shell expands the body and runs substitutions in it. [measured 2026-09-06] the two backticks that
+# used to be around the name above made CI print
+# "EnableNextExpectedMsgSeqNum: command not found" in the middle of a job that
+# went on to pass 9/9. The assertion below is what makes this comment more than
+# a wish.
 SendNextExpectedMsgSeqNum=Y
 
 [SESSION]
@@ -798,6 +813,21 @@ SenderCompID=QFACC
 TargetCompID=FIXBOLT
 HeartBtInt=30
 CFG
+
+# **The generated file is read back before it is used.** An unquoted heredoc
+# expands its body, so a stray backtick or `$(` mangles the config *and* prints
+# a shell error nobody reads — the failure mode this scenario exists to catch,
+# arriving through the fixture instead of the engine.
+if [[ -s "${WORK}/acceptor-789.err" ]]; then
+  echo "[interop-next-expected] writing the config produced errors:" >&2
+  cat "${WORK}/acceptor-789.err" >&2
+  exit 1
+fi
+grep -qx 'SendNextExpectedMsgSeqNum=Y' "${WORK}/acceptor-789.cfg" || {
+  echo "[interop-next-expected] the generated config lost its key:" >&2
+  cat "${WORK}/acceptor-789.cfg" >&2
+  exit 1
+}
 
 mkdir -p "${WORK}/store-789"
 "${WORK}/acceptor" "${WORK}/acceptor-789.cfg" > "${WORK}/acceptor-789.log" 2>&1 &

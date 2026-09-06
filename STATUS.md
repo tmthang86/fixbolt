@@ -67,6 +67,25 @@ gives the same seven greens plus the field. Only the added precondition tells th
 the other direction stays green in both runs, so a scenario asserting one direction would have
 been half a test looking like a whole one.
 
+**`[2026-09-06]` §9's last box, closed on the commit it asks about — and reading it line by line
+found a defect the conclusion hid.** PR [#48](https://github.com/tmthang86/fixbolt/pull/48) merged
+as **`06a6509`**, run [`34034849824`](https://github.com/tmthang86/fixbolt/actions/runs/34034849824),
+**11 jobs of 11**. The interop job's log was read top to bottom rather than off its `PASS` line:
+`7 / 7 + 8 / 8`, three × `6 / 6` each with `resumes: 1` and `two_sources ok`, the new
+`interop-next-expected: PASS 9/9` with `789=1` out and `789=2` back — **and, in the middle of it,
+`scripts/interop.sh: line 778: EnableNextExpectedMsgSeqNum: command not found`.**
+
+Two backticks in a *comment* inside an unquoted heredoc. The delimiter is unquoted because the
+body needs `${PORT}` and `${SRC}`, so the shell expanded the body and tried to run the word
+between them. `set -euo pipefail` does not see a failed substitution inside a heredoc, so the
+scenario went on to pass and the script exited 0. **The script had been run four times on this
+machine and the error was never seen**, because every one of those runs read its output through
+`tail -4` or a `grep` for the lines the new scenario prints — filters built from what the run was
+expected to say. Fixed, and the generation now captures its own stderr and asserts it empty;
+reversal exits 1 with the error reported as a failure. Write-up:
+[reading-the-output-you-grepped-for](docs/reference/reading-the-output-you-grepped-for.md),
+**`[to testing-skills]`**.
+
 **Not done, and said rather than implied.** `369` in the send direction has **no external
 oracle and will not get one** from this fixture: QuickFIX C++ never sends the field and has no
 key for it, and 0 of the 59 definitions carry the tag. Every assertion about it is this
