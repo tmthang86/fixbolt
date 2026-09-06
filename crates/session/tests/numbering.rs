@@ -37,8 +37,7 @@ impl Application for Quiet {
     fn on_message(
         &mut self,
         _msg: &[u8],
-        _seq: u32,
-        _stamp: &[u8],
+        _hdr: fixbolt_session::Header<'_>,
         _out: &mut [u8],
     ) -> Option<Range<usize>> {
         None

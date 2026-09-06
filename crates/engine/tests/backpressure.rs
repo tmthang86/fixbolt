@@ -349,10 +349,10 @@ fn turn_echo(c: &mut Wide) -> Turn {
         fn on_message(
             &mut self,
             msg: &[u8],
-            seq: u32,
-            stamp: &[u8],
+            hdr: fixbolt_session::Header<'_>,
             out: &mut [u8],
         ) -> Option<std::ops::Range<usize>> {
+            let (seq, stamp) = (hdr.seq, hdr.stamp);
             fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
         }
     }

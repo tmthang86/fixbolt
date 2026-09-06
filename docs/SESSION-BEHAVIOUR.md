@@ -233,6 +233,54 @@ and `::an_unframeable_socket_is_visible_through_the_engines_snapshot`.
   `crates/session/tests/numbering.rs::the_logout_that_ends_the_session_is_still_a_message_that_was_consumed`
   and by `scripts/interop.sh`'s `interop-reconnect-logout: no_resend`, which is what found it.
 
+### 4a. `789` and `369` — resynchronising without a `ResendRequest` `[added 2026-09-06]`
+
+Both are **off by default** and both are optional in FIX 4.4. **Reading them is not optional**:
+an inbound `789` is acted on whether or not this end sends its own, exactly as QuickFIX does.
+
+**`789=NextExpectedMsgSeqNum` on an inbound `Logon` has three branches, not four.**
+
+| The counterparty says it expects | This end does |
+|---|---|
+| the number this end is about to send | nothing |
+| **lower** | replays from that number **without being asked** — the same batched cursor a `ResendRequest` sets, so `Config::with_resend_batch` and the gap-fill rules apply unchanged |
+| **higher** | `Logout` with `58=NextExpectedMsgSeqNum too high`, then the link ends with `DropReason::NextExpectedTooHigh` |
+
+**There is no fourth branch for `141=Y`, and that is a rule about ordering.** The reset is
+applied *before* `789` is judged, so a `Logon` carrying both `141=Y` and `789=1` lands in the
+first row on its own. QuickFIX C++ takes the same order (`Session.cpp:198–232`). Guarded by
+`crates/session/tests/logon.rs::a_reset_is_applied_before_next_expected_is_judged`, with
+`::a_lower_next_expected_starts_a_resend_without_being_asked`,
+`::a_higher_next_expected_is_a_logout_with_a_reason` and
+`::an_equal_next_expected_changes_nothing` for the three rows.
+
+**Sending `789` writes a different number at each end, and it is not a role rule.** It depends
+on whether the inbound `Logon`'s own number has been counted yet: an initiator opening a
+connection writes `next_in`, an acceptor *replying* writes `next_in + 1`, because the count moves
+after the reply is sent. `::an_acceptor_replying_counts_the_logon_it_is_answering` and
+`::an_initiator_opening_asks_for_the_number_it_is_actually_waiting_on`.
+`[measured 2026-09-06]` `libquickfix` answers this engine's `789=1` with `789=2`, which is the
+same arithmetic arriving from the other side — `scripts/interop.sh`'s `interop-next-expected`
+scenario.
+
+**`369=LastMsgSeqNumProcessed` reports the message being answered, not `next_in - 1`.** The two
+differ during exactly the window that matters — while a message is being replied to, the count
+has not moved past it — and using the count made this engine's `Logon` reply say `369=0` while
+answering `34=1`. QuickFIX/J and QuickFIX/n both special-case their `Logon` reply for the same
+reason. `crates/session/tests/application.rs::the_sessions_own_messages_carry_369_when_the_knob_is_on`.
+
+**A replay does not get a fresh `369`.** A resent message is rebuilt from its kept bytes and
+carries the value it had when it first went out. Whether that is right is unstated in FIX 4.4
+and unsettled by the four engines read for
+[ADR-0056](decisions/ADR-0056-the-application-is-told-what-the-session-owns.md); it is asserted
+rather than inherited.
+
+**`369` on an application reply is the application's to write.** On that path the application
+writes the whole message and this layer emits the bytes untouched, so the field arrives through
+`Header::last_processed` and nothing here can detect a handler that ignores it. The `fixbolt`
+library writes it for you —
+`crates/library/tests/reply.rs::a_handler_that_says_nothing_about_369_still_sends_it`.
+
 ---
 
 ## 5. PossDup, PossResend and OrigSendingTime

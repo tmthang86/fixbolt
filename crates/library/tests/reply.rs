@@ -23,7 +23,7 @@ const STAMP: &[u8] = b"20260902-10:00:00.123";
 /// What the handler is answering. `49=ALPHA` is the counterparty, `56=US` is
 /// this acceptor — so the reply must carry `49=US` and `56=ALPHA`.
 fn reply_for(out: &mut [u8]) -> Reply<'_> {
-    Reply::new(b"FIX.4.4", 7, STAMP, b"US", b"ALPHA", out)
+    Reply::new(b"FIX.4.4", 7, STAMP, None, b"US", b"ALPHA", out)
 }
 
 fn show(bytes: &[u8]) -> String {
@@ -200,4 +200,95 @@ fn a_business_reject_cannot_restate_a_session_owned_tag() {
     let wire = show(&out[range]);
     assert!(wire.contains("|34=7|"), "the session's number: {wire}");
     assert!(!wire.contains("|34=999|"), "and only that one: {wire}");
+}
+
+// ---------------------------------------------------------------------------
+// `369` through the `library` seam.
+//
+// **This section exists because a reversal did nothing.** `[measured
+// 2026-09-06]` deleting the four lines in `Reply::message` that write `369`
+// left `cargo test --all` at 581 passed, 0 failed. ADR-0056 decision 2 calls
+// the guarantee it gives above this seam "most of the point" of widening the
+// `Application` trait at all — and it was the one claim in the whole change
+// with no gate behind it. A reversal has three outcomes and *green* is the one
+// that means the test you needed was never written.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_handler_that_says_nothing_about_369_still_sends_it() {
+    // The guarantee: above this seam the field appears because `Reply` writes
+    // it, not because a handler remembered. The handler below names four body
+    // fields and nothing else — no `369`, no header at all.
+    let mut out = [0u8; 512];
+    let n = {
+        let reply =
+            Reply::<64, 1024>::new(b"FIX.4.4", 7, STAMP, Some(4), b"US", b"ALPHA", &mut out);
+        let mut m = reply.message(b"8");
+        m.field(37, b"X")
+            .field(17, b"Y")
+            .field(150, b"F")
+            .field(39, b"2");
+        match m.send() {
+            Answer::Sent(r) => r,
+            other => panic!("the reply must go out: {other:?}"),
+        }
+    };
+    let wire = show(&out[n]);
+    assert!(
+        wire.contains("|369=4|"),
+        "the library writes 369 the handler never mentioned: {wire}"
+    );
+    // And in the dictionary's position, not appended: `369` is a header field,
+    // so it precedes every body tag. Non-negotiable 5.
+    let at_369 = wire.find("369=").expect("369 is on the message");
+    let at_37 = wire.find("|37=").expect("37 is on the message");
+    assert!(at_369 < at_37, "369 is a header field: {wire}");
+}
+
+#[test]
+fn a_session_that_does_not_report_369_sends_no_such_field() {
+    // The neutral twin. `None` is `Config::with_last_processed` being off, and
+    // without this the test above would pass for a `Reply` that always wrote
+    // the field.
+    let mut out = [0u8; 512];
+    let n = {
+        let reply = reply_for(&mut out);
+        let mut m = reply.message(b"8");
+        m.field(37, b"X")
+            .field(17, b"Y")
+            .field(150, b"F")
+            .field(39, b"2");
+        match m.send() {
+            Answer::Sent(r) => r,
+            other => panic!("the reply must go out: {other:?}"),
+        }
+    };
+    let wire = show(&out[n]);
+    assert!(!wire.contains("369="), "no knob, no field: {wire}");
+}
+
+#[test]
+fn an_origination_carries_no_369() {
+    // The third case, and it is not the same as the second: here the session
+    // has judged nothing, so there is no *last processed* to report even with
+    // the knob on. `Reply::originate` cannot be handed one.
+    let mut out = [0u8; 512];
+    let n = {
+        let reply = Reply::<64, 1024>::originate(b"FIX.4.4", b"US", b"ALPHA", &mut out);
+        let mut m = reply.message(b"B");
+        m.field(148, b"hello").field(33, b"0");
+        match m.send() {
+            Answer::Sent(r) => r,
+            other => panic!("the origination must go out: {other:?}"),
+        }
+    };
+    let wire = show(&out[n]);
+    assert!(
+        !wire.contains("369="),
+        "an origination reports nothing: {wire}"
+    );
+    assert!(
+        !wire.contains("|34="),
+        "and the session writes 34= later: {wire}"
+    );
 }

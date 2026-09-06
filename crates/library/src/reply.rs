@@ -133,6 +133,11 @@ pub struct Reply<'a, const P: usize = 64, const S: usize = 1024> {
     /// decision 2.
     seq: Option<u32>,
     stamp: &'a [u8],
+    /// `369`, written beside `34=` and `52=` when this is a reply.
+    ///
+    /// `None` for an origination, for the same reason `seq` is: the session
+    /// has judged nothing yet, so there is no *last processed* to report.
+    last_processed: Option<u32>,
     sender: &'a [u8],
     target: &'a [u8],
     out: &'a mut [u8],
@@ -151,6 +156,7 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
         begin_string: &'a [u8],
         seq: u32,
         stamp: &'a [u8],
+        last_processed: Option<u32>,
         sender: &'a [u8],
         target: &'a [u8],
         out: &'a mut [u8],
@@ -159,6 +165,7 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
             begin_string,
             seq: Some(seq),
             stamp,
+            last_processed,
             sender,
             target,
             out,
@@ -189,6 +196,7 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
             begin_string,
             seq: None,
             stamp: b"",
+            last_processed: None,
             sender,
             target,
             out,
@@ -280,6 +288,20 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
         if let Some(n) = self.seq {
             b.field(34, render_u32(n, &mut digits))
                 .field(52, self.stamp);
+        }
+        // **`369`, written here so a handler never has to remember it.**
+        // `None` is `Config::with_last_processed` being off. An origination
+        // leaves it out for the same reason it leaves `34=` out: the session
+        // has judged nothing yet, so there is no *last processed* to report.
+        //
+        // Guarded by `tests/reply.rs::a_handler_that_says_nothing_about_369_
+        // still_sends_it` — **and that test exists because removing these four
+        // lines once broke nothing at all.** ADR-0056 decision 2 is the
+        // difference between this engine offering `369` and guaranteeing it,
+        // and until that test it was the one claim with no gate behind it.
+        if let Some(n) = self.last_processed {
+            let mut d = [0u8; 10];
+            b.field(369, render_u32(n, &mut d));
         }
         Message {
             out: self.out,

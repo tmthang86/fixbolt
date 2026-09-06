@@ -211,11 +211,10 @@ impl<D: Dispatch> Application for Deliver<'_, D> {
     fn on_message(
         &mut self,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         out: &mut [u8],
     ) -> Option<core::ops::Range<usize>> {
-        self.dispatch.deliver(self.conn, msg, seq, stamp, out)
+        self.dispatch.deliver(self.conn, msg, hdr, out)
     }
 }
 

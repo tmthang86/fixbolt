@@ -65,6 +65,18 @@ pub(crate) mod tag {
     pub const TEST_REQ_ID: u32 = 112;
     pub const GAP_FILL_FLAG: u32 = 123;
     pub const RESET_SEQ_NUM_FLAG: u32 = 141;
+    /// `NextExpectedMsgSeqNum`, a `Logon` body field.
+    ///
+    /// `[verified 2026-09-06]` `spec/FIX44.xml:284` puts it on `Logon` and
+    /// `fix44/Logon.h:35` agrees, so `Fix44` orders it and no call site here
+    /// decides where it goes — non-negotiable 5.
+    pub const NEXT_EXPECTED_MSG_SEQ_NUM: u32 = 789;
+    /// `LastMsgSeqNumProcessed`, a **header** field.
+    ///
+    /// `[verified 2026-09-06]` `spec/FIX44.xml`'s `<header>` block carries it
+    /// at position 27 of 29 and `fix44/Message.h:37` agrees, so it is legal on
+    /// every message and `Fix44` orders it.
+    pub const LAST_MSG_SEQ_NUM_PROCESSED: u32 = 369;
 }
 
 /// `MsgType` values this layer acts on.
@@ -86,6 +98,17 @@ mod msg {
 /// default, and this is the one place that depends on it.
 const OWN_TEST_REQ_ID: &[u8] = b"TEST";
 
+/// `58=` on the `Logout` that answers a `789=` this end has never reached.
+///
+/// A constant, not a rendered text: non-negotiable 2 keeps this layer free of
+/// `format!`, and the two numbers an operator needs are on this side of the
+/// link already — `Session::next_out` and the counterparty's own field — and
+/// reach the event stream through
+/// [`DropReason::NextExpectedTooHigh`]. QuickFIX C++ renders them into the
+/// text instead (`Session.cpp:230`); this is the one place the two engines'
+/// wire bytes differ on purpose.
+const NEXT_EXPECTED_TOO_HIGH: &[u8] = b"NextExpectedMsgSeqNum too high";
+
 /// What an application does with a message the session layer does not own.
 ///
 /// The session owns the seven administrative types — `0 1 2 3 4 5 A` — and
@@ -103,17 +126,24 @@ pub trait Application {
     /// One message for the application.
     ///
     /// Write a complete FIX message into `out` and return the range it
-    /// occupies; the session emits it and spends `seq`. `None` says nothing,
-    /// which is what `19a_PossResendMessageThatHAsAlreadyBeenSent.def` asks
-    /// for: a `97=Y` whose order ID the application has already seen.
+    /// occupies; the session emits it and spends `hdr.seq`. `None` says
+    /// nothing, which is what `19a_PossResendMessageThatHAsAlreadyBeenSent.def`
+    /// asks for: a `97=Y` whose order ID the application has already seen.
     ///
-    /// `stamp` is 21 bytes with milliseconds. A reply that regenerates its own
-    /// `SendingTime` is a body-length failure four bytes later.
+    /// **Everything the session owns arrives in [`Header`]**, and writing those
+    /// values is the application's job on this path — the session emits the
+    /// bytes untouched and cannot add to them. `hdr.stamp` is 21 bytes with
+    /// milliseconds; a reply that regenerates its own `SendingTime` is a
+    /// body-length failure four bytes later.
+    ///
+    /// [`crate::Header::last_processed`] is `369` and is **optional**: writing
+    /// it is what [`Config::with_last_processed`] asks for, and nothing here
+    /// can detect an application that ignores it.
+    /// [ADR-0056](../../../docs/decisions/ADR-0056-the-application-is-told-what-the-session-owns.md).
     fn on_message(
         &mut self,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: Header<'_>,
         out: &mut [u8],
     ) -> Option<core::ops::Range<usize>>;
 
@@ -171,6 +201,40 @@ pub struct Peer<'a> {
     pub target: &'a [u8],
 }
 
+/// What the session owns on the way out, handed to the application that is
+/// about to write a reply.
+///
+/// **A struct rather than three arguments in a row**, for the reason [`Peer`]
+/// is one: `seq` and `last_processed` are both `u32` and both sequence
+/// numbers, so the loose form is a call that compiles when they are swapped.
+/// [ADR-0056](../../../docs/decisions/ADR-0056-the-application-is-told-what-the-session-owns.md).
+///
+/// **This is the whole of what the session can tell a reply.** On this path
+/// the application writes the entire message and the session emits those bytes
+/// verbatim — nothing here adds a field afterwards, which is what makes a
+/// reply cost no rebuild
+/// ([ADR-0044](../../../docs/decisions/ADR-0044-a-builder-that-is-not-moved-per-field.md)).
+/// A value ignored here is simply absent from the wire.
+#[derive(Debug, Clone, Copy)]
+pub struct Header<'a> {
+    /// `34` **MsgSeqNum** — the number this reply will spend. Write it as
+    /// given; the session has already reserved it.
+    pub seq: u32,
+    /// `52` **SendingTime**, 21 bytes with milliseconds, from the session's
+    /// cached clock. Formatting a fresh one costs a body-length failure.
+    pub stamp: &'a [u8],
+    /// `369` **LastMsgSeqNumProcessed** — the last inbound number this end has
+    /// processed, which is `next_in - 1`.
+    ///
+    /// **`None` means this session does not report `369`**, which is
+    /// [`Config::with_last_processed`] arriving where the decision is made.
+    /// An `Option` rather than a bare number so that one setting gives one
+    /// answer: without it a reply written through `fixbolt::Reply` would carry
+    /// the field while the session's own seven messages obeyed the knob.
+    /// ADR-0056, revised during its own build.
+    pub last_processed: Option<u32>,
+}
+
 /// An application that never answers.
 ///
 /// What [`Session::received`] uses, so a caller with no application at all
@@ -182,8 +246,7 @@ impl Application for Silent {
     fn on_message(
         &mut self,
         _msg: &[u8],
-        _seq: u32,
-        _stamp: &[u8],
+        _hdr: Header<'_>,
         _out: &mut [u8],
     ) -> Option<core::ops::Range<usize>> {
         None
@@ -353,6 +416,14 @@ pub struct Config {
     /// How many messages one call may put on the wire while answering a
     /// `ResendRequest`. See [`Self::with_resend_batch`].
     resend_batch: u16,
+    /// Put `789=NextExpectedMsgSeqNum` on every `Logon` this session sends.
+    ///
+    /// See [`Config::with_next_expected`].
+    next_expected: bool,
+    /// Report `369=LastMsgSeqNumProcessed` on the way out.
+    ///
+    /// See [`Config::with_last_processed`].
+    last_processed: bool,
     /// When this session restarts its numbering of its own accord.
     /// [`ResetPolicy::new`] is neutral and is the default.
     reset: ResetPolicy,
@@ -573,6 +644,8 @@ impl Config {
             heart_bt_int: DEFAULT_HEART_BT_INT,
             schedule: Schedule::always(),
             resend_batch: DEFAULT_RESEND_BATCH,
+            next_expected: false,
+            last_processed: false,
             reset: ResetPolicy::new(),
             logon_timeout_ms: 0,
             logout_timeout_ms: 0,
@@ -595,6 +668,64 @@ impl Config {
     pub const fn with_heart_bt_int(mut self, secs: u32) -> Self {
         self.heart_bt_int = secs;
         self
+    }
+
+    /// Put `789=NextExpectedMsgSeqNum` on every `Logon` this session sends,
+    /// naming the number it is waiting to receive.
+    ///
+    /// **Off by default, and that is the safe default rather than a shy one.**
+    /// `[researched 2026-09-06]` every engine surveyed defaults it off, because
+    /// a counterparty that does not expect the field can answer a `Reject` —
+    /// see
+    /// [who-owns-the-outbound-header](../../../docs/reference/who-owns-the-outbound-header.md).
+    ///
+    /// Turning it on does not change what this session *accepts*: a `789`
+    /// arriving is read and acted on either way, exactly as QuickFIX does.
+    /// This knob is only about what goes out.
+    ///
+    /// The value differs by whether an inbound `Logon` has been counted yet —
+    /// `tests/logon.rs::an_acceptor_replying_counts_the_logon_it_is_answering`
+    /// and `::an_initiator_opening_asks_for_the_number_it_is_actually_waiting_on`
+    /// are the two halves.
+    #[must_use]
+    pub const fn with_next_expected(mut self, on: bool) -> Self {
+        self.next_expected = on;
+        self
+    }
+
+    /// Does this session put `789=` on its `Logon`?
+    #[must_use]
+    pub const fn next_expected(&self) -> bool {
+        self.next_expected
+    }
+
+    /// Report `369=LastMsgSeqNumProcessed` — *the last of your messages I have
+    /// processed* — on the way out.
+    ///
+    /// **Off by default**, like every engine surveyed
+    /// ([who-owns-the-outbound-header](../../../docs/reference/who-owns-the-outbound-header.md)):
+    /// a counterparty that does not expect the optional header field can answer
+    /// a `Reject`. Some venues require it — CME iLink is the one OnixS names.
+    ///
+    /// **What it reaches, and what it cannot.** The seven messages this session
+    /// generates carry the field, and so does an application message this end
+    /// originates. An application **reply** carries it only if the application
+    /// writes it, because on that path the application writes the whole message
+    /// and this layer emits those bytes untouched. Through
+    /// [`crate::Header::last_processed`] and `fixbolt::Reply` that happens for
+    /// you; below that seam it is yours to do, and nothing here can detect an
+    /// application that does not.
+    /// [ADR-0056](../../../docs/decisions/ADR-0056-the-application-is-told-what-the-session-owns.md).
+    #[must_use]
+    pub const fn with_last_processed(mut self, on: bool) -> Self {
+        self.last_processed = on;
+        self
+    }
+
+    /// Does this session report `369=`?
+    #[must_use]
+    pub const fn last_processed(&self) -> bool {
+        self.last_processed
     }
 
     /// How many messages one call may put on the wire answering a
@@ -931,6 +1062,21 @@ pub enum DropReason {
     SendingTimeOutOfRange,
     /// `34=` is absent, unreadable, or already used.
     SequenceNumberTooLow,
+    /// A `Logon` carried `789=` naming a number this end has never sent.
+    ///
+    /// The counterparty is waiting for a message that does not exist, so the
+    /// two ends disagree about the session and neither can discover how by
+    /// carrying on. QuickFIX C++ logs out and disconnects here
+    /// (`Session.cpp:232`) and so does this.
+    ///
+    /// **The `58=` text names the fault and not the numbers**, which is where
+    /// this differs from QuickFIX: rendering them would be a second fielded
+    /// [`SessionText`] variant, and the plan chose a
+    /// constant. The numbers are on this side of the link — `next_out()` and
+    /// the counterparty's `789=` — and reach an operator through this reason
+    /// on the event stream. Guarded by
+    /// `tests/logon.rs::a_higher_next_expected_is_a_logout_with_a_reason`.
+    NextExpectedTooHigh,
     /// A message arrived while the schedule says this session is shut. **Check
     /// the venue calendar**, not the clock.
     OutsideSchedule,
@@ -1073,6 +1219,20 @@ pub struct Session<R: Role, const N: usize, const APP: usize = DEFAULT_APP_SCRAT
     /// outstanding, which is what stops a second `ResendRequest` going out for
     /// a gap already being filled.
     resend_from: u32,
+    /// `34=` of the last inbound message this session accepted.
+    ///
+    /// **The value `369` reports, and it is not `next_in - 1`.** The two differ
+    /// during exactly the window that matters: while a message is being
+    /// answered, `next_in` has not moved past it yet, so `next_in - 1` names
+    /// the message *before* the one being replied to. `[verified 2026-09-06]`
+    /// QuickFIX/J and QuickFIX/n both special-case their `Logon` reply to use
+    /// the incoming message's own `MsgSeqNum` for this reason
+    /// (`Session.java:2638`, `Session.cs:1419`), and quickfixgo threads the
+    /// replied-to message through its whole send path. One field gives this
+    /// engine the same answer everywhere. ADR-0056, open question 1, resolved
+    /// during the build by `tests/application.rs::the_sessions_own_messages_
+    /// carry_369_when_the_knob_is_on` reading `369=0`.
+    last_in: u32,
     resend_to: u32,
     /// Whether this session was built from persisted state.
     ///
@@ -1148,6 +1308,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             last_recv_ms: 0,
             test_requests: 0,
             resend_from: 0,
+            last_in: 0,
             resend_to: 0,
             session_mark: None,
             last_drop_reason: None,
@@ -1800,11 +1961,26 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
                 let beat = digits(self.cfg.heart_bt_int, &mut beat);
                 self.beat_ms = u64::from(self.cfg.heart_bt_int) * 1_000;
                 self.last_recv_ms = now_ms;
-                let _ = self.send(
-                    Which::Logon,
-                    &[(tag::ENCRYPT_METHOD, b"0"), (tag::HEART_BT_INT, beat)],
-                    &mut *emit,
-                );
+                // **No adjustment here, and `+1` on the acceptor's reply.**
+                // Nothing has arrived on this connection, so there is no
+                // inbound `Logon` whose number is about to be counted:
+                // `next_in` already *is* what this end is waiting for.
+                // QuickFIX writes the same value in the same place
+                // (`Session.cpp:691`).
+                let mut want = [0u8; 10];
+                let want = digits(self.next_in, &mut want);
+                let mut extra: [(u32, &[u8]); 3] = [
+                    (tag::ENCRYPT_METHOD, b"0"),
+                    (tag::HEART_BT_INT, beat),
+                    (0, &[]),
+                ];
+                let n = if self.cfg.next_expected {
+                    extra[2] = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+                    3
+                } else {
+                    2
+                };
+                let _ = self.send(Which::Logon, &extra[..n], &mut *emit);
                 return Link::Up;
             }
             State::LoggedOn | State::LoggingOut => {}
@@ -2292,11 +2468,28 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         let mut seq = [0u8; 10];
         let seq = digits(at.unwrap_or(self.next_out), &mut seq);
 
+        // `369`, on every message this session generates, when the knob is on.
+        // **One place rather than seven**: every administrative message this
+        // layer sends goes through here, so a template that gained the slot
+        // and a call site that forgot to fill it cannot disagree.
+        //
+        // 18 slots, not 16: the widest message is the Reject at 14 extras plus
+        // `34=` and `52=`, and `369` is the seventeenth.
+        let mut last = [0u8; 10];
+        let last = self
+            .cfg
+            .last_processed
+            .then(|| digits(self.last_in, &mut last));
+
         let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
-        let mut slots: [(u32, &[u8]); 16] = [(0, &[]); 16];
+        let mut slots: [(u32, &[u8]); 18] = [(0, &[]); 18];
         slots[0] = (tag::MSG_SEQ_NUM, seq);
         slots[1] = (tag::SENDING_TIME, &stamp);
         let mut n = 2;
+        if let Some(v) = last {
+            slots[n] = (tag::LAST_MSG_SEQ_NUM_PROCESSED, v);
+            n += 1;
+        }
         for pair in extra {
             *slots.get_mut(n).ok_or(Refusal::CannotSend)? = *pair;
             n += 1;
@@ -2367,12 +2560,13 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         let mut seq = [0u8; 10];
         let seq = digits(self.next_out, &mut seq);
         let seq_out = self.next_out;
+        let last_processed = self.cfg.last_processed.then_some(self.last_in);
 
         let Some(o) = self.out.as_mut() else {
             return Link::Up;
         };
         let out::Outbound { app: buf, .. } = o;
-        let Some(r) = rebuild(msg, Some(seq), &now, false, buf) else {
+        let Some(r) = rebuild(msg, Some(seq), &now, last_processed, false, buf) else {
             return Link::Up;
         };
         if !journal.put(seq_out, &buf[r.clone()]) {
@@ -2694,6 +2888,14 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         let begin_seq_no = view.get(tag::BEGIN_SEQ_NO).and_then(|v| as_u32(v).ok());
         let end_seq_no = view.get(tag::END_SEQ_NO).and_then(|v| as_u32(v).ok());
         let reset_seq = view.get(tag::RESET_SEQ_NUM_FLAG) == Some(b"Y");
+        // `789=`, read here with the rest and judged in the `is_logon` block
+        // below — **after** `141=Y` has moved the number it is compared
+        // against. A value that is not a number is read as absent: the field
+        // is optional, and refusing a Logon over an unreadable optional field
+        // would lose a session this end can otherwise serve.
+        let next_expected = view
+            .get(tag::NEXT_EXPECTED_MSG_SEQ_NUM)
+            .and_then(|v| as_u32(v).ok());
         // 64 bytes: the corpus's longest is `HELLO1`. A longer one is dropped
         // rather than truncated, and the reply then carries no `112=` at all —
         // wrong, but visibly wrong, which a truncation would not be.
@@ -2817,6 +3019,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // outstanding `TestRequest`.
         self.last_recv_ms = self.now_ms;
         self.test_requests = 0;
+        // **Before any reply is written**, which is the whole point: a Logon
+        // reply, a Reject and a Heartbeat answering a TestRequest are all sent
+        // from below this line and all report the message they are answering.
+        self.last_in = seq;
 
         // The line above has already consumed the sequence number, and a Reject
         // does not give it back: `14a_BadField.def` rejects four messages in a
@@ -2835,23 +3041,67 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         if is_logon {
             let encrypt = encrypt.as_deref().ok_or(Refusal::LogonIncomplete)?;
             let heart_bt = heart_bt.as_deref().ok_or(Refusal::LogonIncomplete)?;
+
+            // **`789=` higher than anything this end has sent, judged before
+            // the reply.** The counterparty is waiting for a message that does
+            // not exist, so the two disagree about the session and neither can
+            // find out how by carrying on. Answering the Logon first would
+            // bring up a session this end is about to end.
+            //
+            // `141=Y` has already restarted `next_out` further up, which is
+            // what makes three branches enough: a reset Logon carrying
+            // `789=1` compares equal here rather than needing a rule of its
+            // own. `tests/logon.rs::a_reset_is_applied_before_next_expected_
+            // is_judged` is the guard, and QuickFIX C++ takes the same order
+            // (`Session.cpp:198-232`).
+            if next_expected.is_some_and(|want| want > self.next_out) {
+                self.note_drop_reason(DropReason::NextExpectedTooHigh);
+                return Ok(self.logout_now(NEXT_EXPECTED_TOO_HIGH, emit));
+            }
+            // **Decided here and acted on below, because the two halves are
+            // read at different moments.** The *comparison* is against the
+            // count as it stands now; the *range end* is read after the reply
+            // has spent a number. `[measured 2026-09-06]` using the post-reply
+            // count for both made `789=` equal to the count replay one message
+            // — `an_equal_next_expected_changes_nothing` and
+            // `a_reset_is_applied_before_next_expected_is_judged` both went
+            // red on it, which is the whole reason a neutral twin is written
+            // for a branch that does nothing. QuickFIX splits it the same way:
+            // the flag at `Session.cpp:229`, the range at `:274`.
+            let owes_retransmit = next_expected.is_some_and(|want| want < self.next_out);
             // The interval is the counterparty's, echoed and then obeyed. A
             // `108=` this session cannot read is not a reason to refuse a
             // Logon it is about to answer — it is a reason to keep quiet, which
             // is exactly what `beat_ms == 0` means.
             self.beat_ms = as_u32(heart_bt).map_or(0, |s| u64::from(s) * 1_000);
             self.state = State::LoggedOn;
-            let mut extra: [(u32, &[u8]); 3] = [
+            // **`+1`, and it is not a role rule.** `advance_past` runs after
+            // this reply is sent, so at this instant `next_in` is still the
+            // number of the `Logon` being answered — the number this end wants
+            // *next* is one past it. QuickFIX carries the same adjustment with
+            // the same explanation: *"+1 because incoming Logon did not
+            // increment the target SeqNum yet"* (`Session.cpp:713`).
+            //
+            // A reset has already restarted `next_in` above when `141=Y` was
+            // set, so this arithmetic is against the post-reset count and needs
+            // no case of its own.
+            let mut want = [0u8; 10];
+            let want = digits(self.next_in.saturating_add(1), &mut want);
+            let mut extra: [(u32, &[u8]); 4] = [
                 (tag::ENCRYPT_METHOD, encrypt),
                 (tag::HEART_BT_INT, heart_bt),
                 (0, &[]),
+                (0, &[]),
             ];
-            let n = if reset_seq {
-                extra[2] = (tag::RESET_SEQ_NUM_FLAG, b"Y");
-                3
-            } else {
-                2
-            };
+            let mut n = 2;
+            if reset_seq {
+                extra[n] = (tag::RESET_SEQ_NUM_FLAG, b"Y");
+                n += 1;
+            }
+            if self.cfg.next_expected {
+                extra[n] = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+                n += 1;
+            }
             // **Only the side that did not speak first answers.** A Logon is
             // one exchange: the initiator asks and the acceptor agrees. An
             // initiator that answers has started a second handshake on a
@@ -2869,6 +3119,38 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             // holds why it survived so long.
             if !R::SPEAKS_FIRST {
                 self.send(Which::Logon, &extra[..n], emit)?;
+            }
+
+            // **`789=` lower than this end's count: send the missing messages
+            // without being asked.** That is the whole point of the field —
+            // a reconnect costs no `ResendRequest` round trip.
+            //
+            // **The same cursor a `ResendRequest` sets**, so everything
+            // ADR-0046 bought applies unchanged: batched by
+            // `Config::with_resend_batch` so a long replay cannot overrun the
+            // transmit buffer, gap-filled over administrative messages, and
+            // counted into `resend_beyond_journal` below the ring's floor.
+            // It is emphatically **not** `resend_from`/`resend_to`, which
+            // record a resend this end has *asked for* and is waiting on;
+            // setting those here would leave this session believing it was
+            // owed something and sending nothing.
+            //
+            // **`end` is read after the reply went out, so it includes the
+            // Logon's own number**, matching QuickFIX C++
+            // (`Session.cpp:275`, where `endSeqNo` is `getExpectedSenderNum()
+            // - 1` evaluated after `generateLogon`). The alternative — capture
+            // it before the reply and cover only the messages the counterparty
+            // truly missed — also leaves both ends consistent, by a different
+            // route: the counterparty queues the out-of-order Logon and
+            // dequeues it when the fill lands on its number. **Neither can be
+            // settled by reading**, so this takes the shape the interop oracle
+            // actually runs, and `scripts/interop.sh` against a real
+            // `libquickfix` is what confirms it.
+            if let (true, Some(want)) = (owes_retransmit, next_expected) {
+                self.owed = Some(Replay {
+                    next: want,
+                    end: self.next_out - 1,
+                });
             }
             // **After the reply, not before.** A Logon that runs ahead is still
             // a Logon: `1a_ValidLogonMsgSeqNumTooHigh.def` sends `34=5` to an
@@ -2975,11 +3257,24 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
             let stamp = *self.stamp.format(unix);
             let seq_out = self.next_out;
+            // Read before the application is given anything, and read from
+            // `next_in` rather than from `seq`: they are the same number here,
+            // and `next_in` stays right if a future path ever answers a
+            // message that did not advance the count.
+            let last_processed_now = self.cfg.last_processed.then_some(self.last_in);
             let mut kept = true;
             let sent = {
                 let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
                 let out::Outbound { app: buf, .. } = o;
-                match app.on_message(bytes, seq_out, &stamp, buf) {
+                let hdr = Header {
+                    seq: seq_out,
+                    stamp: &stamp,
+                    // `next_in` has already moved past this message —
+                    // `advance_past` ran above — so the last number processed
+                    // is one behind it, which is the message being answered.
+                    last_processed: last_processed_now,
+                };
+                match app.on_message(bytes, hdr, buf) {
                     Some(r) => {
                         // Kept before it is sent, and only application messages
                         // are kept: QuickFIX never replays an administrative
@@ -3283,7 +3578,7 @@ fn msg_type_of(bytes: &[u8]) -> Option<&[u8]> {
 /// Returns the range of `out` the message occupies, or `None` if the kept bytes
 /// are not a message or the result does not fit.
 fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<core::ops::Range<usize>> {
-    rebuild(kept, None, now, true, out)
+    rebuild(kept, None, now, None, true, out)
 }
 
 /// Write an application message this end is originating, or replaying.
@@ -3298,6 +3593,7 @@ fn rebuild(
     src: &[u8],
     seq: Option<&[u8]>,
     now: &[u8],
+    last_processed: Option<u32>,
     resend: bool,
     out: &mut [u8],
 ) -> Option<core::ops::Range<usize>> {
@@ -3317,6 +3613,17 @@ fn rebuild(
     // two that pays for it.
     let mut b = TemplateBuilder::<128, 1024>::new(begin);
     b.field(tag::SENDING_TIME, now);
+    // `369` on a message this end originates. **Not on a replay**: `resend`
+    // means the source bytes are being sent again, and their `369` was true
+    // when they first went out. Whether a replay should carry the old value or
+    // the current one is unstated in FIX 4.4 and unsettled by the four engines
+    // read for ADR-0056; carrying the original is what falls out of rebuilding
+    // from the kept bytes, and it is asserted rather than inherited by
+    // `tests/application.rs`.
+    if let (Some(v), false) = (last_processed, resend) {
+        let mut d = [0u8; 10];
+        b.field(tag::LAST_MSG_SEQ_NUM_PROCESSED, digits(v, &mut d));
+    }
     if resend {
         b.field(tag::POSS_DUP_FLAG, b"Y");
     }

@@ -120,6 +120,16 @@ enum Key {
     /// Ask the dictionary about tags at or above 5000. `Y` is the default and
     /// means **keep checking**.
     ValidateUserDefinedFields,
+    /// QuickFIX **C++**'s spelling. QuickFIX/J and quickfixgo call the same
+    /// thing `EnableNextExpectedMsgSeqNum`, and this repository had recorded
+    /// the Java one — see
+    /// `docs/reference/who-owns-the-outbound-header.md`. The C++ name is
+    /// taken because that is the engine `scripts/interop.sh` runs against, so
+    /// a file written for one works unchanged against the other.
+    SendNextExpectedMsgSeqNum,
+    /// The QuickFIX/J and QuickFIX/n spelling, because QuickFIX C++ has no key
+    /// for this at all — it never sends the field.
+    EnableLastMsgSeqNumProcessed,
 }
 
 impl Key {
@@ -151,6 +161,8 @@ impl Key {
             "LogoutTimeout" => Some(Self::LogoutTimeout),
             "AllowUnknownMsgFields" => Some(Self::AllowUnknownMsgFields),
             "ValidateUserDefinedFields" => Some(Self::ValidateUserDefinedFields),
+            "SendNextExpectedMsgSeqNum" => Some(Self::SendNextExpectedMsgSeqNum),
+            "EnableLastMsgSeqNumProcessed" => Some(Self::EnableLastMsgSeqNumProcessed),
             _ => None,
         }
     }
@@ -180,6 +192,8 @@ impl Key {
             Self::LogoutTimeout => "LogoutTimeout",
             Self::AllowUnknownMsgFields => "AllowUnknownMsgFields",
             Self::ValidateUserDefinedFields => "ValidateUserDefinedFields",
+            Self::SendNextExpectedMsgSeqNum => "SendNextExpectedMsgSeqNum",
+            Self::EnableLastMsgSeqNumProcessed => "EnableLastMsgSeqNumProcessed",
         }
     }
 }
@@ -377,6 +391,8 @@ struct Block<'a> {
     logout_timeout: Option<(usize, &'a str)>,
     allow_unknown_msg_fields: Option<(usize, &'a str)>,
     validate_user_defined_fields: Option<(usize, &'a str)>,
+    send_next_expected: Option<(usize, &'a str)>,
+    enable_last_processed: Option<(usize, &'a str)>,
 }
 
 impl<'a> Block<'a> {
@@ -407,6 +423,8 @@ impl<'a> Block<'a> {
             Key::LogoutTimeout => &mut self.logout_timeout,
             Key::AllowUnknownMsgFields => &mut self.allow_unknown_msg_fields,
             Key::ValidateUserDefinedFields => &mut self.validate_user_defined_fields,
+            Key::SendNextExpectedMsgSeqNum => &mut self.send_next_expected,
+            Key::EnableLastMsgSeqNumProcessed => &mut self.enable_last_processed,
             // Handled before a block ever sees them. A `[SESSION]` carrying one
             // is refused in `parse`, not here, so the error can say why.
             Key::FileLogPath | Key::ConnectionType => {
@@ -448,6 +466,8 @@ impl<'a> Block<'a> {
             validate_user_defined_fields: self
                 .validate_user_defined_fields
                 .or(base.validate_user_defined_fields),
+            send_next_expected: self.send_next_expected.or(base.send_next_expected),
+            enable_last_processed: self.enable_last_processed.or(base.enable_last_processed),
         }
     }
 
@@ -873,6 +893,16 @@ fn build(block: Block<'_>) -> Result<Config, SettingsError> {
         checks = checks.skipping_user_defined_fields();
     }
     cfg = cfg.with_validation(checks);
+
+    // The two sequence-resync fields. Both **off** unless the file says
+    // otherwise, which is what every engine surveyed does: a counterparty that
+    // does not expect an optional field can answer a `Reject`.
+    if let Some(v) = block.send_next_expected {
+        cfg = cfg.with_next_expected(flag(v, Key::SendNextExpectedMsgSeqNum)?);
+    }
+    if let Some(v) = block.enable_last_processed {
+        cfg = cfg.with_last_processed(flag(v, Key::EnableLastMsgSeqNumProcessed)?);
+    }
 
     Ok(cfg)
 }

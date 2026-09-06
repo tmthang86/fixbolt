@@ -349,8 +349,7 @@ impl fixbolt_session::Application for Silent {
     fn on_message(
         &mut self,
         _m: &[u8],
-        _s: u32,
-        _t: &[u8],
+        _s: fixbolt_session::Header<'_>,
         _o: &mut [u8],
     ) -> Option<core::ops::Range<usize>> {
         None
@@ -736,8 +735,7 @@ fn a_reply_from_another_thread_wakes_a_sleeping_engine() {
         fn on_message(
             &mut self,
             m: &[u8],
-            _s: u32,
-            _t: &[u8],
+            _hdr: fixbolt_session::Header<'_>,
             out: &mut [u8],
         ) -> Option<core::ops::Range<usize>> {
             out[..m.len()].copy_from_slice(m);
@@ -748,9 +746,16 @@ fn a_reply_from_another_thread_wakes_a_sleeping_engine() {
     // Put one message on the outbound ring by hand, exactly as `deliver` would.
     {
         use fixbolt_engine::dispatch::Dispatch;
-        engine
-            .dispatch_mut()
-            .deliver(0, b"35=D\x01", 2, b"20260828-12:00:00.000", &mut [0u8; 512]);
+        engine.dispatch_mut().deliver(
+            0,
+            b"35=D\x01",
+            fixbolt_session::Header {
+                seq: 2,
+                stamp: b"20260828-12:00:00.000",
+                last_processed: None,
+            },
+            &mut [0u8; 512],
+        );
     }
 
     let pusher = std::thread::spawn(move || {

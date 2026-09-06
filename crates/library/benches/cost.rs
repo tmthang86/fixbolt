@@ -41,6 +41,12 @@ mod harness;
 
 use std::hint::black_box;
 
+const HDR: fixbolt_session::Header<'static> = fixbolt_session::Header {
+    seq: 7,
+    stamp: STAMP,
+    last_processed: None,
+};
+
 use fixbolt::{Answer, App, Application, Handler, Incoming, Reply};
 use fixbolt_codec::{FieldIndex, Validation, parse_into};
 use fixbolt_dict::Fix44;
@@ -105,8 +111,15 @@ fn main() {
 
         // The reply alone: a template built and encoded, no parse in the window.
         b.bench("library, reply only", || {
-            let r =
-                Reply::<64, 1024>::new(b"FIX.4.4", black_box(7), STAMP, b"ISLD", b"TW44", &mut out);
+            let r = Reply::<64, 1024>::new(
+                b"FIX.4.4",
+                black_box(7),
+                STAMP,
+                None,
+                b"ISLD",
+                b"TW44",
+                &mut out,
+            );
             black_box(
                 r.message(b"8")
                     .field(37, b"EXEC-1")
@@ -126,11 +139,11 @@ fn main() {
         // The whole path an application message takes through this crate.
         let mut app = App::<Desk>::with_sizes(Desk);
         assert!(
-            app.on_message(&wire, 7, STAMP, &mut out).is_some(),
+            app.on_message(&wire, HDR, &mut out).is_some(),
             "the path must reply before it is timed"
         );
         b.bench("library, on_message", || {
-            black_box(app.on_message(black_box(&wire), 7, STAMP, &mut out));
+            black_box(app.on_message(black_box(&wire), HDR, &mut out));
         });
     });
 }

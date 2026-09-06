@@ -103,7 +103,12 @@ fn news(out: &mut [u8], text: &str) -> Option<Range<usize>> {
 struct Quiet;
 
 impl Application for Quiet {
-    fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], _: &mut [u8]) -> Option<Range<usize>> {
+    fn on_message(
+        &mut self,
+        _: &[u8],
+        _: fixbolt_session::Header<'_>,
+        _: &mut [u8],
+    ) -> Option<Range<usize>> {
         None
     }
 }
@@ -128,7 +133,12 @@ fn an_application_that_says_nothing_on_logon_is_unchanged() {
 struct SpeaksFirst;
 
 impl Application for SpeaksFirst {
-    fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], _: &mut [u8]) -> Option<Range<usize>> {
+    fn on_message(
+        &mut self,
+        _: &[u8],
+        _: fixbolt_session::Header<'_>,
+        _: &mut [u8],
+    ) -> Option<Range<usize>> {
         None
     }
 
@@ -202,7 +212,12 @@ fn speaking_first_happens_once_per_session_not_once_per_turn() {
 struct NeverStops;
 
 impl Application for NeverStops {
-    fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], _: &mut [u8]) -> Option<Range<usize>> {
+    fn on_message(
+        &mut self,
+        _: &[u8],
+        _: fixbolt_session::Header<'_>,
+        _: &mut [u8],
+    ) -> Option<Range<usize>> {
         None
     }
 
@@ -237,7 +252,12 @@ fn what_an_application_writes_into_34_and_52_is_ignored() {
     struct Liar;
 
     impl Application for Liar {
-        fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], _: &mut [u8]) -> Option<Range<usize>> {
+        fn on_message(
+            &mut self,
+            _: &[u8],
+            _: fixbolt_session::Header<'_>,
+            _: &mut [u8],
+        ) -> Option<Range<usize>> {
             None
         }
 
@@ -409,10 +429,10 @@ fn an_origination_and_a_reply_in_one_turn_do_not_corrupt_each_other() {
         fn on_message(
             &mut self,
             msg: &[u8],
-            seq: u32,
-            stamp: &[u8],
+            hdr: fixbolt_session::Header<'_>,
             out: &mut [u8],
         ) -> Option<Range<usize>> {
+            let (seq, stamp) = (hdr.seq, hdr.stamp);
             fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
         }
     }

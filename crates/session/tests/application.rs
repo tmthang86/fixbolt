@@ -67,10 +67,10 @@ impl Application for Recorder {
     fn on_message(
         &mut self,
         _msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         _out: &mut [u8],
     ) -> Option<Range<usize>> {
+        let (seq, stamp) = (hdr.seq, hdr.stamp);
         self.calls
             .push((seq, String::from_utf8_lossy(stamp).into_owned()));
         None
@@ -260,10 +260,10 @@ fn the_mark_is_written_after_the_application_has_seen_the_message() {
         fn on_message(
             &mut self,
             _msg: &[u8],
-            seq: u32,
-            _stamp: &[u8],
+            hdr: fixbolt_session::Header<'_>,
             _out: &mut [u8],
         ) -> Option<Range<usize>> {
+            let (seq, _stamp) = (hdr.seq, hdr.stamp);
             self.0.borrow_mut().push(Event::Delivered(seq));
             None
         }
@@ -344,4 +344,141 @@ fn the_inbound_mark_never_goes_backwards() {
         Some(9),
         "a later, lower mark must not undo an earlier, higher one"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `LastMsgSeqNumProcessed (369)` — *the last of your messages I have
+// processed*, on the way out.
+//
+// **There is no outside opinion available for this field and there will not
+// be.** `[verified 2026-09-06]` QuickFIX C++ never sends `369` and has no
+// configuration key for it, so `scripts/interop.sh` cannot judge the send
+// direction; and 0 of the 59 acceptance definitions carry the tag. Every case
+// below is this repository judging its own work, which is stated here rather
+// than left for a reader to work out.
+// `docs/reference/who-owns-the-outbound-header.md`, ADR-0056.
+//
+// The four ways a message leaves this engine are asserted separately, because
+// only two of them are the session's to write.
+// ---------------------------------------------------------------------------
+
+/// An application that writes `369` from what the session told it.
+#[derive(Default)]
+struct Obedient;
+
+impl Application for Obedient {
+    fn on_message(
+        &mut self,
+        _msg: &[u8],
+        hdr: fixbolt_session::Header<'_>,
+        out: &mut [u8],
+    ) -> Option<Range<usize>> {
+        let mut body = format!("35=8\u{1}34={}\u{1}49=ISLD\u{1}52=", hdr.seq);
+        body.push_str(&String::from_utf8_lossy(hdr.stamp));
+        body.push('\u{1}');
+        if let Some(n) = hdr.last_processed {
+            body.push_str(&format!("369={n}\u{1}"));
+        }
+        body.push_str("56=TW44\u{1}37=X\u{1}17=Y\u{1}150=F\u{1}39=2\u{1}");
+        let framed = frame(&body);
+        out[..framed.len()].copy_from_slice(&framed);
+        Some(0..framed.len())
+    }
+}
+
+/// An application that ignores `hdr.last_processed` entirely.
+#[derive(Default)]
+struct Deaf;
+
+impl Application for Deaf {
+    fn on_message(
+        &mut self,
+        _msg: &[u8],
+        hdr: fixbolt_session::Header<'_>,
+        out: &mut [u8],
+    ) -> Option<Range<usize>> {
+        let mut body = format!("35=8\u{1}34={}\u{1}49=ISLD\u{1}52=", hdr.seq);
+        body.push_str(&String::from_utf8_lossy(hdr.stamp));
+        body.push_str("\u{1}56=TW44\u{1}37=X\u{1}17=Y\u{1}150=F\u{1}39=2\u{1}");
+        let framed = frame(&body);
+        out[..framed.len()].copy_from_slice(&framed);
+        Some(0..framed.len())
+    }
+}
+
+fn frame(body: &str) -> Vec<u8> {
+    let head = "8=FIX.4.4\u{1}";
+    with_real_checksum(format!("{head}9={}\u{1}{body}10=0\u{1}", body.len()).as_bytes())
+}
+
+fn on_and_off() -> (Session<Acceptor, 256>, Session<Acceptor, 256>) {
+    (
+        Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_last_processed(true)),
+        Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+    )
+}
+
+#[test]
+fn the_sessions_own_messages_carry_369_when_the_knob_is_on() {
+    // Path 1 of 4: a message this layer generates itself. The Logon reply is
+    // the first one every session sends.
+    let (mut on, mut off) = on_and_off();
+    let logon = &inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[0];
+
+    let mut with = Vec::new();
+    on.connect(|_| ());
+    on.tick(FIXED_TIME_MILLIS, |_| ());
+    on.received(logon, |b| {
+        with.push(String::from_utf8_lossy(b).replace('\u{1}', "|"))
+    });
+
+    let mut without = Vec::new();
+    off.connect(|_| ());
+    off.tick(FIXED_TIME_MILLIS, |_| ());
+    off.received(logon, |b| {
+        without.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+    });
+
+    // `34=1` arrived and was counted, so the last processed is 1.
+    assert!(
+        with[0].contains("|369=1|"),
+        "the Logon reply reports what it has processed: {with:?}"
+    );
+    assert!(
+        !without[0].contains("369="),
+        "and with the knob off it is byte-for-byte what it was: {without:?}"
+    );
+}
+
+#[test]
+fn a_reply_carries_369_only_because_the_application_wrote_it() {
+    // Paths 3 and 4, and the whole point of ADR-0056: on this path the session
+    // holds no pen. `Obedient` writes what it was told; `Deaf` ignores it; the
+    // session emits both untouched and cannot tell the difference.
+    let logon = &inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[0];
+    let order = &inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[1];
+
+    for (writes_it, want) in [(true, true), (false, false)] {
+        let mut s: Session<Acceptor, 256> =
+            Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_last_processed(true));
+        let mut journal = Store::new();
+        let mut out = Vec::new();
+        s.connect(|_| ());
+        s.tick(FIXED_TIME_MILLIS, |_| ());
+        s.received(logon, |_| ());
+        if writes_it {
+            s.received_with(order, &mut Obedient, &mut journal, |b| {
+                out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+            });
+        } else {
+            s.received_with(order, &mut Deaf, &mut journal, |b| {
+                out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+            });
+        }
+        assert_eq!(
+            out.iter().any(|m| m.contains("|369=")),
+            want,
+            "the knob is on in both runs; only the application differs: {out:?}"
+        );
+    }
 }

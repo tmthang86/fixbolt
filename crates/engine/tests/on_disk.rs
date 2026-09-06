@@ -433,10 +433,10 @@ mod serving {
         fn on_message(
             &mut self,
             msg: &[u8],
-            seq: u32,
-            stamp: &[u8],
+            hdr: fixbolt_session::Header<'_>,
             out: &mut [u8],
         ) -> Option<Range<usize>> {
+            let (seq, stamp) = (hdr.seq, hdr.stamp);
             self.0.reply(msg, seq, stamp, out)
         }
     }

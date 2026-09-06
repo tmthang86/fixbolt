@@ -172,11 +172,12 @@ impl fixbolt_session::Application for EchoApp {
     fn on_message(
         &mut self,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         out: &mut [u8],
     ) -> Option<std::ops::Range<usize>> {
-        self.0.reply(msg, seq, stamp, out)
+        // `conformance` has zero runtime dependencies on purpose, so its echo
+        // takes the two values loose rather than a `Header` it cannot name.
+        self.0.reply(msg, hdr.seq, hdr.stamp, out)
     }
 }
 

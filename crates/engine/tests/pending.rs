@@ -406,8 +406,7 @@ impl Application for Silent {
     fn on_message(
         &mut self,
         _: &[u8],
-        _: u32,
-        _: &[u8],
+        _: fixbolt_session::Header<'_>,
         _: &mut [u8],
     ) -> Option<std::ops::Range<usize>> {
         None

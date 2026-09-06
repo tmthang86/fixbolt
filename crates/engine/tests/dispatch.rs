@@ -27,10 +27,10 @@ impl Application for Echo {
     fn on_message(
         &mut self,
         msg: &[u8],
-        seq: u32,
-        stamp: &[u8],
+        hdr: fixbolt_session::Header<'_>,
         out: &mut [u8],
     ) -> Option<Range<usize>> {
+        let (seq, stamp) = (hdr.seq, hdr.stamp);
         fixbolt_conformance::echo::echo(msg, out, seq, stamp).ok()
     }
 }

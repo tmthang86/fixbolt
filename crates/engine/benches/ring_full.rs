@@ -85,7 +85,16 @@ fn fill(capacity: usize) -> (std::time::Duration, u128) {
     let mut accepted = 0usize;
     let mut pushes = 0usize;
     while ringed.refused() == 0 {
-        ringed.deliver(0, black_box(msg), 2, stamp, &mut out);
+        ringed.deliver(
+            0,
+            black_box(msg),
+            fixbolt_session::Header {
+                seq: 2,
+                stamp,
+                last_processed: None,
+            },
+            &mut out,
+        );
         pushes += 1;
         if ringed.refused() == 0 {
             accepted += 1;

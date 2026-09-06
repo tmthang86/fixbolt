@@ -131,8 +131,10 @@ FIXBOLT_PID=""
 QF1_PID=""
 QF2_PID=""
 RECON_PID=""
+# The 4g scenario's acceptor, so a failure there does not leak a listener.
+NE_PID=""
 cleanup() {
-  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}"; do
+  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}" "${NE_PID}"; do
     [[ -n "${pid}" ]] || continue
     kill "${pid}" 2>/dev/null || true
     wait "${pid}" 2>/dev/null || true
@@ -742,6 +744,122 @@ if [[ "${fail}" -ne 0 ]]; then
   exit 1
 fi
 
+# ---- 4g. `789=NextExpectedMsgSeqNum`, both directions on one connection -----
+#
+# **The only outside opinion this engine can get about `789`.** The 59
+# acceptance definitions carry the field 0 times, so nothing in this repository
+# can confirm that a real counterparty accepts what this end writes or that
+# this end reads what a real counterparty sends. This scenario is that
+# confirmation, and it is the whole of it.
+#
+# **It asserts that the field arrived before it asserts anything about the
+# response, and that ordering is the point.** `[verified 2026-09-06]` QuickFIX
+# C++ reads settings by name on demand (`SessionFactory.cpp:228`) with no
+# validation pass over the file, so a key it does not recognise is ignored in
+# **silence**. The two QuickFIX families spell this one differently —
+# `SendNextExpectedMsgSeqNum` here, `EnableNextExpectedMsgSeqNum` in Java, and
+# this repository had recorded the Java one. With the wrong name the
+# counterparty sends no `789`, the session comes up perfectly, every ordinary
+# step passes, and the scenario is green over a field that never existed.
+#
+# So there are two preconditions, one per direction, and each is a real
+# assertion rather than a comment:
+#
+#   * `sent`     — the C++ acceptor's own transcript shows the inbound Logon
+#                  carrying `789=`. This end wrote it and libquickfix took it.
+#   * `received` — the `next_expected` step inside the initiator, which reads
+#                  the counterparty's Logon reply and requires `789=` on it.
+#                  This is what fails if the key name is wrong.
+#
+# docs/reference/who-owns-the-outbound-header.md
+echo
+echo "==> [interop-next-expected] a counterparty that speaks 789"
+
+cat > "${WORK}/acceptor-789.cfg" <<CFG
+[DEFAULT]
+ConnectionType=acceptor
+SocketAcceptPort=${PORT}
+SocketReuseAddress=Y
+StartTime=00:00:00
+EndTime=00:00:00
+UseDataDictionary=Y
+DataDictionary=${SRC}/spec/FIX44.xml
+FileStorePath=${WORK}/store-789
+ResetOnLogon=Y
+ResetOnLogout=Y
+ResetOnDisconnect=Y
+# The C++ spelling. Java's `EnableNextExpectedMsgSeqNum` would be ignored here
+# without a word, and the two preconditions below are what would catch it.
+SendNextExpectedMsgSeqNum=Y
+
+[SESSION]
+BeginString=FIX.4.4
+SenderCompID=QFACC
+TargetCompID=FIXBOLT
+HeartBtInt=30
+CFG
+
+mkdir -p "${WORK}/store-789"
+"${WORK}/acceptor" "${WORK}/acceptor-789.cfg" > "${WORK}/acceptor-789.log" 2>&1 &
+NE_PID=$!
+for _ in $(seq 1 200); do
+  grep -q "acceptor: ready" "${WORK}/acceptor-789.log" && break
+  sleep 0.1
+done
+if ! grep -q "acceptor: ready" "${WORK}/acceptor-789.log"; then
+  echo "[interop-next-expected] the acceptor never became ready:" >&2
+  cat "${WORK}/acceptor-789.log" >&2
+  exit 1
+fi
+
+set +e
+"${REPO_ROOT}/target/debug/interop" --role initiator --connect "127.0.0.1:${PORT}" \
+  --sender FIXBOLT --target QFACC --next-expected \
+  > "${WORK}/interop-789.log" 2>&1
+set -e
+kill "${NE_PID}" 2>/dev/null || true
+wait "${NE_PID}" 2>/dev/null || true
+NE_PID=""
+
+ne_fail=0
+
+# Precondition 1: this end's `789` reached libquickfix, on the Logon it took.
+if grep -E "^acceptor: in  .*35=A.*789=" "${WORK}/acceptor-789.log" >/dev/null; then
+  echo "interop-next-expected: sent        ok    $(grep -E "^acceptor: in  .*35=A.*789=" "${WORK}/acceptor-789.log" | head -1)"
+else
+  echo "interop-next-expected: sent        FAIL  no inbound 35=A carrying 789= in the acceptor transcript" >&2
+  ne_fail=1
+fi
+
+# Precondition 2: libquickfix's `789` reached this end. **This is the one that
+# fails on a misspelled key**, and without it every line below is vacuous.
+if grep -qE "^interop: next_expected +ok" "${WORK}/interop-789.log"; then
+  echo "interop-next-expected: received    ok    $(grep -E "^interop: next_expected +ok" "${WORK}/interop-789.log" | head -1)"
+else
+  echo "interop-next-expected: received    FAIL  the counterparty's Logon carried no 789= — is SendNextExpectedMsgSeqNum the right key?" >&2
+  ne_fail=1
+fi
+
+# And the ordinary scenario still runs end to end with the field on both
+# Logons. A `789` that is accepted but breaks the session is not a pass.
+for step in logon news heartbeat testrequest resend gapfill logout; do
+  if ! grep -qE "^interop: ${step} +ok" "${WORK}/interop-789.log"; then
+    echo "interop-next-expected: ${step} FAIL  step did not pass with 789 on" >&2
+    ne_fail=1
+  fi
+done
+
+if [[ "${ne_fail}" -eq 0 ]]; then
+  echo "interop-next-expected: PASS 9/9"
+else
+  echo "interop-next-expected: FAIL" >&2
+  echo "---- what the acceptor saw ----" >&2
+  cat "${WORK}/acceptor-789.log" >&2
+  echo "---- what this engine printed ----" >&2
+  cat "${WORK}/interop-789.log" >&2
+  exit 1
+fi
+
 # ---- 5. Nothing of QuickFIX's entered the repository ------------------------
 #
 # The question is what THIS SCRIPT added, not whether the tree was clean when it
@@ -763,5 +881,6 @@ fi
 echo "==> the run added nothing git can see"
 
 echo
-echo "interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 against libquickfix @ ${PINNED_SHA}"
-echo "both roles and all three reconnect scenarios, each checked by somebody else's engine"
+echo "interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 against libquickfix @ ${PINNED_SHA}"
+echo "both roles, three reconnect scenarios and 789 in both directions,"
+echo "each checked by somebody else's engine"

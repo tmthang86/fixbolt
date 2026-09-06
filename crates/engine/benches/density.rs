@@ -263,7 +263,12 @@ impl Desk {
 }
 
 impl Application for Desk {
-    fn on_message(&mut self, _: &[u8], _: u32, _: &[u8], out: &mut [u8]) -> Option<Range<usize>> {
+    fn on_message(
+        &mut self,
+        _: &[u8],
+        _: fixbolt_session::Header<'_>,
+        out: &mut [u8],
+    ) -> Option<Range<usize>> {
         self.seen += 1;
         let n = self.reply.len();
         out.get_mut(..n)?.copy_from_slice(&self.reply);
