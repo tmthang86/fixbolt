@@ -20,7 +20,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fixbolt_conformance::echo::echo;
-use fixbolt_conformance::script::{Kind, scenarios};
+use fixbolt_conformance::script::{Kind, scenarios, with_real_checksum};
 use fixbolt_engine::journal::Store;
 use fixbolt_session::schedule::{Schedule, Weekdays};
 use fixbolt_session::text::SessionText;
@@ -522,6 +522,57 @@ fn main() {
         }
     });
 
+    // `789=` lower than the outbound count: the unprompted retransmit. It runs
+    // through `continue_replay`, so it is the same machinery `resend` above
+    // counts — but reached from the **Logon**, which is a path no other case
+    // here takes. `[verified 2026-09-06]` the corpus carries no `789=` at all,
+    // so this wire is built here.
+    let next_expected_logon = {
+        let s = String::from_utf8(good.clone()).expect("ascii");
+        // `108=2` here, not `108=30`: this file's Logon carries a two-second
+        // interval. `[measured 2026-09-06]` anchoring on the wrong text made
+        // `replace` a no-op, the wire carried no `789=`, and the liveness
+        // assertion below caught it — which is the only reason this comment
+        // exists rather than a silent zero.
+        let body = s.replace("108=2\u{1}", "108=2\u{1}789=498\u{1}");
+        assert_ne!(body, s, "the 789 field must actually be inserted");
+        let after_9 = body.find("\u{1}35=").expect("35= follows the frame") + 1;
+        let at_10 = body.find("\u{1}10=").map_or(body.len(), |i| i + 1);
+        let head_end = body.find('\u{1}').expect("8= is a field") + 1;
+        let n = at_10 - after_9;
+        with_real_checksum(
+            format!(
+                "{}9={n}\u{1}{}10=0\u{1}",
+                &body[..head_end],
+                &body[after_9..at_10]
+            )
+            .as_bytes(),
+        )
+    };
+    {
+        // The path is proven live before it is counted: a zero below must mean
+        // *did not allocate*, never *did not run*.
+        let mut s: Session<Acceptor, 256> =
+            Session::resume(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"), 500, 1);
+        let mut sent = 0usize;
+        s.connect(|_| ());
+        s.tick(now, |_| ());
+        s.received(&next_expected_logon, |_| sent += 1);
+        assert_eq!(
+            sent, 2,
+            "the 789 path must answer the Logon and then fill the gap"
+        );
+    }
+    let next_expected_allocs = count(|| {
+        for _ in 0..10_000 {
+            let mut s: Session<Acceptor, 256> =
+                Session::resume(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"), 500, 1);
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            s.received(&next_expected_logon, |_| ());
+        }
+    });
+
     println!(
         "allocations: accept {accept_allocs} refuse {refuse_allocs} \
          tick {tick_allocs} beat {beat_allocs} answer {answer_allocs} \
@@ -529,7 +580,8 @@ fn main() {
          resend {resend_allocs} logon_out {logon_out_allocs} \
          originate {originate_allocs} ordered {ordered_allocs} \
          clock {clock_allocs} text {text_allocs} \
-         schedule-open {schedule_open_allocs} schedule-shut {schedule_shut_allocs}"
+         schedule-open {schedule_open_allocs} schedule-shut {schedule_shut_allocs} \
+         next-expected {next_expected_allocs}"
     );
     // An array, not a tuple: `Debug` and `PartialEq` stop at twelve.
     assert_eq!(
@@ -549,9 +601,10 @@ fn main() {
             clock_allocs,
             text_allocs,
             schedule_open_allocs,
-            schedule_shut_allocs
+            schedule_shut_allocs,
+            next_expected_allocs
         ],
-        [0; 16],
+        [0; 17],
         "non-negotiable 1: the session layer allocates nothing, on any path"
     );
 }

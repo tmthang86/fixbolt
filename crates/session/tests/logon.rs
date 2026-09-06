@@ -332,3 +332,133 @@ fn a_disconnect_without_the_policy_keeps_the_numbers() {
 
     assert_eq!(session.next_out(), 2, "no policy, no reset");
 }
+
+// ---------------------------------------------------------------------------
+// `NextExpectedMsgSeqNum (789)` — a counterparty saying which number it wants
+// next, so a reconnect costs no `ResendRequest` round trip.
+//
+// **The corpus is blind to this field.** `[verified 2026-09-06]` `grep -rl
+// '789=' vendor/quickfix/test/definitions/server/fix44/` finds **0 of 59**, so
+// every case below is invented — `CLAUDE.md` §7 — and the only outside opinion
+// is `scripts/interop.sh` against a real `libquickfix`.
+//
+// The branch structure is QuickFIX C++'s, read from `Session.cpp:198–290`
+// rather than guessed: `141=Y` is applied *first*, then `789` is compared
+// against the outbound count, and the retransmit runs *after* the `Logon`
+// reply. There are **three** branches, not four: a reset moves the number the
+// comparison reads, so `141=Y` with `789=1` lands in the equal branch on its
+// own. `docs/reference/who-owns-the-outbound-header.md`.
+// ---------------------------------------------------------------------------
+
+/// A resumed acceptor whose next outbound number is `next_out`.
+///
+/// `next_in` is 1 so the corpus Logon's own `34=1` is the number this end is
+/// waiting for — otherwise the sequence check answers before `789` is reached
+/// and every assertion below would be about the wrong rule.
+fn resumed(next_out: u32) -> Session<Acceptor, 256> {
+    Session::resume(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"), next_out, 1)
+}
+
+/// [`good_logon`] carrying `789=<n>` in its body.
+fn logon_expecting(n: u32) -> Vec<u8> {
+    reframe(&replace(
+        &good_logon(),
+        "108=30\u{1}",
+        &format!("108=30\u{1}789={n}\u{1}"),
+    ))
+}
+
+#[test]
+fn an_equal_next_expected_changes_nothing() {
+    // The neutral case, and it is first because the two below are only
+    // meaningful against it: whatever they show has to be *this* plus one
+    // difference.
+    let mut session = resumed(500);
+    let out = collect(&mut session, &logon_expecting(500));
+
+    assert_eq!(session.next_out(), 501, "the Logon reply spent 500");
+    assert_eq!(
+        out.len(),
+        1,
+        "789 equal to the outbound count asks for nothing: {out:?}"
+    );
+    assert!(out[0].contains("35=A"), "and the one message is the Logon");
+}
+
+#[test]
+fn a_lower_next_expected_starts_a_resend_without_being_asked() {
+    // The whole point of the field. The counterparty says "I am waiting for
+    // 498"; this end has spent up to 499, so 498 and 499 go back **without a
+    // `ResendRequest` ever being sent**.
+    let mut session = resumed(500);
+    let out = collect(&mut session, &logon_expecting(498));
+
+    assert!(
+        out.len() >= 2,
+        "a low 789 must produce the Logon reply and then a replay: {out:?}"
+    );
+    assert!(
+        out[0].contains("35=A"),
+        "the Logon reply goes first: {out:?}"
+    );
+    // Nothing was journalled here, so the owed numbers cannot be replayed and
+    // are covered by one gap fill.
+    //
+    // **`36=501`, not `36=500`, and the difference is deliberate.** The range
+    // ends at `next_out - 1` read *after* the Logon reply spent 500, so the
+    // fill covers that Logon's own number too — which is what QuickFIX C++
+    // does (`Session.cpp:275`). The counterparty is not confused by it: its
+    // own 789-aware path queues the out-of-order Logon instead of asking for a
+    // resend, and this fill carries it past. `scripts/interop.sh` is what
+    // confirms that against a real `libquickfix`; this assertion only pins the
+    // shape so a change to it cannot be silent.
+    assert!(
+        out[1].contains("35=4") && out[1].contains("36=501"),
+        "and then the gap 498..=500 is filled: {out:?}"
+    );
+    assert!(
+        out[1].contains("34=498"),
+        "the fill is numbered from where the counterparty is: {out:?}"
+    );
+}
+
+#[test]
+fn a_higher_next_expected_is_a_logout_with_a_reason() {
+    // The counterparty is waiting for a number this end has never sent, so one
+    // of the two is wrong about the session and neither can find out by
+    // carrying on. QuickFIX logs out and disconnects; so does this.
+    let mut session = resumed(500);
+    let out = collect(&mut session, &logon_expecting(501));
+
+    assert_eq!(
+        session.last_drop_reason(),
+        Some(fixbolt_session::DropReason::NextExpectedTooHigh),
+        "the reason is named, not a bare socket close"
+    );
+    assert!(
+        out.iter().any(|m| m.contains("35=5")),
+        "and the counterparty is told why: {out:?}"
+    );
+}
+
+#[test]
+fn a_reset_is_applied_before_next_expected_is_judged() {
+    // **The ordering test, and it is the sharpest one here.** `141=Y` restarts
+    // both counts, so a Logon carrying `141=Y` and `789=1` is asking for
+    // nothing at all. Judge `789` first and this reads as "the counterparty
+    // wants 1 and I am at 500" — 499 messages replayed onto a session that
+    // just reset, every one of them a number the counterparty has agreed to
+    // forget.
+    let wire = reframe(&replace(
+        &logon_expecting(1),
+        "108=30\u{1}",
+        "108=30\u{1}141=Y\u{1}",
+    ));
+
+    let mut session = resumed(500);
+    let out = collect(&mut session, &wire);
+
+    assert_eq!(session.next_out(), 2, "141=Y restarted the outbound count");
+    assert_eq!(out.len(), 1, "and 789=1 then asks for nothing: {out:?}");
+    assert!(out[0].contains("35=A"));
+}

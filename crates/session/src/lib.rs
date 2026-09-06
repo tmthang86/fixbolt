@@ -65,6 +65,12 @@ pub(crate) mod tag {
     pub const TEST_REQ_ID: u32 = 112;
     pub const GAP_FILL_FLAG: u32 = 123;
     pub const RESET_SEQ_NUM_FLAG: u32 = 141;
+    /// `NextExpectedMsgSeqNum`, a `Logon` body field.
+    ///
+    /// `[verified 2026-09-06]` `spec/FIX44.xml:284` puts it on `Logon` and
+    /// `fix44/Logon.h:35` agrees, so `Fix44` orders it and no call site here
+    /// decides where it goes — non-negotiable 5.
+    pub const NEXT_EXPECTED_MSG_SEQ_NUM: u32 = 789;
 }
 
 /// `MsgType` values this layer acts on.
@@ -85,6 +91,17 @@ mod msg {
 /// be just as correct on the wire and would fail this gate. It is QuickFIX's
 /// default, and this is the one place that depends on it.
 const OWN_TEST_REQ_ID: &[u8] = b"TEST";
+
+/// `58=` on the `Logout` that answers a `789=` this end has never reached.
+///
+/// A constant, not a rendered text: non-negotiable 2 keeps this layer free of
+/// `format!`, and the two numbers an operator needs are on this side of the
+/// link already — `Session::next_out` and the counterparty's own field — and
+/// reach the event stream through
+/// [`DropReason::NextExpectedTooHigh`]. QuickFIX C++ renders them into the
+/// text instead (`Session.cpp:230`); this is the one place the two engines'
+/// wire bytes differ on purpose.
+const NEXT_EXPECTED_TOO_HIGH: &[u8] = b"NextExpectedMsgSeqNum too high";
 
 /// What an application does with a message the session layer does not own.
 ///
@@ -931,6 +948,21 @@ pub enum DropReason {
     SendingTimeOutOfRange,
     /// `34=` is absent, unreadable, or already used.
     SequenceNumberTooLow,
+    /// A `Logon` carried `789=` naming a number this end has never sent.
+    ///
+    /// The counterparty is waiting for a message that does not exist, so the
+    /// two ends disagree about the session and neither can discover how by
+    /// carrying on. QuickFIX C++ logs out and disconnects here
+    /// (`Session.cpp:232`) and so does this.
+    ///
+    /// **The `58=` text names the fault and not the numbers**, which is where
+    /// this differs from QuickFIX: rendering them would be a second fielded
+    /// [`SessionText`](crate::SessionText) variant, and the plan chose a
+    /// constant. The numbers are on this side of the link — `next_out()` and
+    /// the counterparty's `789=` — and reach an operator through this reason
+    /// on the event stream. Guarded by
+    /// `tests/logon.rs::a_higher_next_expected_is_a_logout_with_a_reason`.
+    NextExpectedTooHigh,
     /// A message arrived while the schedule says this session is shut. **Check
     /// the venue calendar**, not the clock.
     OutsideSchedule,
@@ -2694,6 +2726,14 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         let begin_seq_no = view.get(tag::BEGIN_SEQ_NO).and_then(|v| as_u32(v).ok());
         let end_seq_no = view.get(tag::END_SEQ_NO).and_then(|v| as_u32(v).ok());
         let reset_seq = view.get(tag::RESET_SEQ_NUM_FLAG) == Some(b"Y");
+        // `789=`, read here with the rest and judged in the `is_logon` block
+        // below — **after** `141=Y` has moved the number it is compared
+        // against. A value that is not a number is read as absent: the field
+        // is optional, and refusing a Logon over an unreadable optional field
+        // would lose a session this end can otherwise serve.
+        let next_expected = view
+            .get(tag::NEXT_EXPECTED_MSG_SEQ_NUM)
+            .and_then(|v| as_u32(v).ok());
         // 64 bytes: the corpus's longest is `HELLO1`. A longer one is dropped
         // rather than truncated, and the reply then carries no `112=` at all —
         // wrong, but visibly wrong, which a truncation would not be.
@@ -2835,6 +2875,34 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         if is_logon {
             let encrypt = encrypt.as_deref().ok_or(Refusal::LogonIncomplete)?;
             let heart_bt = heart_bt.as_deref().ok_or(Refusal::LogonIncomplete)?;
+
+            // **`789=` higher than anything this end has sent, judged before
+            // the reply.** The counterparty is waiting for a message that does
+            // not exist, so the two disagree about the session and neither can
+            // find out how by carrying on. Answering the Logon first would
+            // bring up a session this end is about to end.
+            //
+            // `141=Y` has already restarted `next_out` further up, which is
+            // what makes three branches enough: a reset Logon carrying
+            // `789=1` compares equal here rather than needing a rule of its
+            // own. `tests/logon.rs::a_reset_is_applied_before_next_expected_
+            // is_judged` is the guard, and QuickFIX C++ takes the same order
+            // (`Session.cpp:198-232`).
+            if next_expected.is_some_and(|want| want > self.next_out) {
+                self.note_drop_reason(DropReason::NextExpectedTooHigh);
+                return Ok(self.logout_now(NEXT_EXPECTED_TOO_HIGH, emit));
+            }
+            // **Decided here and acted on below, because the two halves are
+            // read at different moments.** The *comparison* is against the
+            // count as it stands now; the *range end* is read after the reply
+            // has spent a number. `[measured 2026-09-06]` using the post-reply
+            // count for both made `789=` equal to the count replay one message
+            // — `an_equal_next_expected_changes_nothing` and
+            // `a_reset_is_applied_before_next_expected_is_judged` both went
+            // red on it, which is the whole reason a neutral twin is written
+            // for a branch that does nothing. QuickFIX splits it the same way:
+            // the flag at `Session.cpp:229`, the range at `:274`.
+            let owes_retransmit = next_expected.is_some_and(|want| want < self.next_out);
             // The interval is the counterparty's, echoed and then obeyed. A
             // `108=` this session cannot read is not a reason to refuse a
             // Logon it is about to answer — it is a reason to keep quiet, which
@@ -2869,6 +2937,38 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             // holds why it survived so long.
             if !R::SPEAKS_FIRST {
                 self.send(Which::Logon, &extra[..n], emit)?;
+            }
+
+            // **`789=` lower than this end's count: send the missing messages
+            // without being asked.** That is the whole point of the field —
+            // a reconnect costs no `ResendRequest` round trip.
+            //
+            // **The same cursor a `ResendRequest` sets**, so everything
+            // ADR-0046 bought applies unchanged: batched by
+            // `Config::with_resend_batch` so a long replay cannot overrun the
+            // transmit buffer, gap-filled over administrative messages, and
+            // counted into `resend_beyond_journal` below the ring's floor.
+            // It is emphatically **not** `resend_from`/`resend_to`, which
+            // record a resend this end has *asked for* and is waiting on;
+            // setting those here would leave this session believing it was
+            // owed something and sending nothing.
+            //
+            // **`end` is read after the reply went out, so it includes the
+            // Logon's own number**, matching QuickFIX C++
+            // (`Session.cpp:275`, where `endSeqNo` is `getExpectedSenderNum()
+            // - 1` evaluated after `generateLogon`). The alternative — capture
+            // it before the reply and cover only the messages the counterparty
+            // truly missed — also leaves both ends consistent, by a different
+            // route: the counterparty queues the out-of-order Logon and
+            // dequeues it when the fill lands on its number. **Neither can be
+            // settled by reading**, so this takes the shape the interop oracle
+            // actually runs, and `scripts/interop.sh` against a real
+            // `libquickfix` is what confirms it.
+            if let (true, Some(want)) = (owes_retransmit, next_expected) {
+                self.owed = Some(Replay {
+                    next: want,
+                    end: self.next_out - 1,
+                });
             }
             // **After the reply, not before.** A Logon that runs ahead is still
             // a Logon: `1a_ValidLogonMsgSeqNumTooHigh.def` sends `34=5` to an
