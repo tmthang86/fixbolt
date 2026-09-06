@@ -142,6 +142,25 @@ QuickFIX/J's configuration reference: `NextExpectedMsgSeqNum(789)` and
 `STATUS.md` item 45's waves, or named there as deliberately declined
 (`SendRedundantResendRequests`, `RefreshOnLogon`, a database store).
 
+**`[corrected 2026-09-06]` "the QuickFIX family" is not one engine, and this line was quoting the
+wrong member of it.** The two fields above were taken from QuickFIX/**J**'s reference, but the
+engine `scripts/interop.sh` links against is the **C++** one, and a survey of five engines found
+they disagree about both the key names and the features:
+
+| | `789` read | key to send `789` | `369` sent | key for `369` |
+|---|---|---|---|---|
+| QuickFIX **C++** | yes | **`SendNextExpectedMsgSeqNum`** | **never** | **none exists** |
+| QuickFIX/**J** | yes | `EnableNextExpectedMsgSeqNum` | every message | `EnableLastMsgSeqNumProcessed` |
+| QuickFIX/**n** | **no** | — | every message | `EnableLastMsgSeqNumProcessed` |
+| quickfix**go** | yes | `EnableNextExpectedMsgSeqNum` | every message | `EnableLastMsgSeqNumProcessed` |
+| `nanofix` | no | — | no | — |
+
+So `369` is **not** a gap against QuickFIX C++ — that engine does not have the feature either —
+and writing QuickFIX/J's key name into a C++ configuration file would be ignored in silence.
+The survey, and what it means for an engine whose application writes its own bytes, is
+[who-owns-the-outbound-header](who-owns-the-outbound-header.md). **A family name on a feature
+list is a claim about whichever member you happened to read.**
+
 **`[2026-09-05]` Six of that list closed in one day**, with wave B's first plan:
 `ResetOnLogon`/`ResetOnLogout`/`ResetOnDisconnect`, `LogonTimeout`/`LogoutTimeout`,
 `ValidateUserDefinedFields`, `AllowUnknownMsgFields` and initiator connection settings in the

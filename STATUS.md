@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-06** — **wave B plan 2 is re-verified and awaiting approval; its draft named a function that does not exist.**
+Last updated: **2026-09-06** — **wave B plan 2 is re-verified and awaiting approval; a five-engine survey killed two of its three options and one of its key names.**
 
 ## Start here — 2026-09-06: a draft re-verified, and the pair it would have reused is the wrong pair
 
@@ -14,6 +14,38 @@ Last updated: **2026-09-06** — **wave B plan 2 is re-verified and awaiting app
 **And the re-verification found what the draft had no way to know.** Draft step 3 said `369` goes on every outbound message, *"patched like `34=`"*. It cannot be. There are **three** ways out, not one: the seven session templates (`out.rs`, a slot — fine), an originated application message (`rebuild()`, `lib.rs:3297` — fine), and an application **reply**, where `Application::on_message(msg, seq, stamp, out)` has the application write the entire message and the session emits `buf[r]` untouched (`:2982`). The session knows `next_in - 1` and does not pass it down. So `369` is a decision about a public trait — widen the seam, rebuild every reply (the ~24× item 34 measured, ADR-0044 fought), or ship it on some messages and say so — and the plan now **opens with an ADR** instead of a line of code.
 
 **Two more lines were right about the code and wrong about where it lives** (the Logon handler is `:2696–2707`, not `1855–1885`; `serialize.rs` is `codec`'s bench, not `session`'s), and one **cannot be verified here at all**: `EnableNextExpectedMsgSeqNum` is not checkable from `vendor/`, because `SessionSettings.h` is not in the sparse checkout (`.git/info/sparse-checkout`). It stays `[documented]`, not `[verified]`, and the plan says plainly that the interop step is then the only second opinion `789` gets.
+
+**`[researched 2026-09-06]` Five engines were read to answer one question — *which of the three
+options for `369` is valid?* — and the survey settled it.** `vendor/`'s sparse checkout was widened
+to read QuickFIX C++'s own `Session.cpp`, `SessionSettings.h` and `SessionFactory.cpp`; QuickFIX/J,
+QuickFIX/n, quickfixgo and `matthart1983/nanofix` were read from public source; OnixS from its
+guide. Write-up:
+[who-owns-the-outbound-header](docs/reference/who-owns-the-outbound-header.md).
+
+**The structural answer: every QuickFIX-family engine owns the header of every outbound message,
+including application ones, because the application hands it a message *object*.** This engine's
+application hands over *bytes*, and the session emits them untouched — which is what removes a
+rebuild per reply, and what puts `369` out of reach. So option 2 (session rewrites the reply) is
+**refuted by this repository's own number** — it is the ~24× of item 34 — and option 3 (`369` only
+on messages the session already generates) is **refuted by the survey**: no engine does it, and it
+would put `369` on a Heartbeat but not on the ExecutionReport answering an order. Option 1,
+widening the seam, is the only one left, and **it is still weaker than prior art**: the others
+*guarantee* the field, a byte-writing seam can only *offer* it.
+
+**Two facts that change the plan's own gates.** `369` is **not** a gap against QuickFIX C++:
+`[verified 2026-09-06]` that engine never sends it and has **no configuration key for it** — the
+string occurs once outside its generated tables, in `Message::isHeaderField`. So the interop step
+can never be an oracle for `369` in the send direction, and the plan now says so. And the key name
+this repository had recorded was the **wrong family's**: C++ spells it
+`SendNextExpectedMsgSeqNum`, not QuickFIX/J's `EnableNextExpectedMsgSeqNum`. That one would have
+been expensive: `SessionFactory.cpp:228` reads settings **by name, on demand, with no validation
+pass**, so an unrecognised key is ignored in silence — the interop scenario would have exchanged
+its messages, never sent a `789`, and **passed**. The gate now has to see `789=` on the wire before
+it asserts anything about the response. `docs/reference/prior-art.md` is corrected in the same
+commit, and the false-green carries **`[to testing-skills]`**.
+
+**`369` is not decoration, which is why declining it needs a reason rather than a shrug**: OnixS
+documents its option as existing because **CME iLink requires tag 369 on every message**.
 
 **What the corpus can contribute: nothing.** `[verified 2026-09-06]` `vendor/` re-fetched at `386ce46e…`, self-checking *59 definitions, 539 message lines, 244 with a checksum field* — and **0 of the 59 carry `789=` or `369=`**. The oracle does agree on shape: `369` is a **Header** field (`fix44/Message.h:37`, `FIX44.xml` header position 27 of 29) and `789` is a Logon field (`fix44/Logon.h:35`, `FIX44.xml:284`), so both are already in the generated `Fix44` and a `.slot()` is enough — non-negotiable 5 costs nothing here.
 
