@@ -462,3 +462,104 @@ fn a_reset_is_applied_before_next_expected_is_judged() {
     assert_eq!(out.len(), 1, "and 789=1 then asks for nothing: {out:?}");
     assert!(out[0].contains("35=A"));
 }
+
+// ---------------------------------------------------------------------------
+// Sending `789=`. Off by default, because every engine surveyed defaults it off
+// and a counterparty that does not expect the field answers a `Reject`.
+//
+// **The value differs between the two roles, and it is not a role rule.** It
+// depends on whether the inbound `Logon`'s own number has been counted at the
+// moment the field is written. QuickFIX C++ writes `getExpectedTargetNum()`
+// when it originates (`Session.cpp:691`) and `+1` when it replies (`:713`),
+// with the comment *"+1 because incoming Logon did not increment the target
+// SeqNum yet"*. This engine calls `advance_past` **after** the reply is sent,
+// so it is in the same position and needs the same `+1`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_acceptor_replying_counts_the_logon_it_is_answering() {
+    // `next_in` is 1, the Logon arriving is `34=1`, and the reply is built
+    // before `advance_past` runs — so the number this end will want next is 2,
+    // not 1. Writing `next_in` unadjusted here is the off-by-one QuickFIX's own
+    // comment warns about, and it would ask the counterparty to send `34=1`
+    // twice.
+    let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true);
+    let mut session: Session<Acceptor, 256> = Session::new(cfg);
+    let out = collect(&mut session, &good_logon());
+
+    assert_eq!(out.len(), 1, "one Logon reply: {out:?}");
+    assert!(
+        out[0].contains("|789=2|"),
+        "the reply asks for the number after the Logon it just took: {out:?}"
+    );
+}
+
+#[test]
+fn an_acceptor_with_the_knob_off_writes_no_789() {
+    // The neutral twin. Without it the test above proves only that *something*
+    // put a `789` on the wire, not that the knob decides it.
+    let mut session = acceptor();
+    let out = collect(&mut session, &good_logon());
+
+    assert!(
+        !out[0].contains("789="),
+        "off by default, and nothing writes it anyway: {out:?}"
+    );
+}
+
+#[test]
+fn an_initiator_opening_asks_for_the_number_it_is_actually_waiting_on() {
+    // The other half of the off-by-one. Nothing has arrived, so there is no
+    // inbound Logon to have counted: the number this end wants next is
+    // `next_in` itself, with no adjustment.
+    let cfg = Config::initiator(b"FIX.4.4", b"TW44", b"ISLD")
+        .with_heart_bt_int(30)
+        .with_next_expected(true);
+    let mut session: Session<fixbolt_session::Initiator, 256> = Session::new(cfg);
+    let mut out = Vec::new();
+    session.connect(|b| out.push(render(b)));
+    session.tick(FIXED_TIME_MILLIS, |b| out.push(render(b)));
+
+    assert_eq!(out.len(), 1, "the initiator opens with one Logon: {out:?}");
+    assert!(
+        out[0].contains("|789=1|"),
+        "a fresh initiator is waiting on 1: {out:?}"
+    );
+}
+
+#[test]
+fn a_resumed_initiator_asks_for_where_it_left_off() {
+    // And the value is the count, not a constant — a reversal that hard-coded
+    // `1` would pass the test above and fail this one.
+    let cfg = Config::initiator(b"FIX.4.4", b"TW44", b"ISLD")
+        .with_heart_bt_int(30)
+        .with_next_expected(true);
+    let mut session: Session<fixbolt_session::Initiator, 256> = Session::resume(cfg, 40, 41);
+    let mut out = Vec::new();
+    session.connect(|b| out.push(render(b)));
+    session.tick(FIXED_TIME_MILLIS, |b| out.push(render(b)));
+
+    assert!(
+        out[0].contains("|789=41|"),
+        "a resumed initiator names the number it is waiting on: {out:?}"
+    );
+}
+
+#[test]
+fn the_position_of_789_is_the_dictionarys_and_not_this_call_sites() {
+    // Non-negotiable 5. `789` goes into the template as a slot and `Fix44`
+    // decides where it lands; the acceptance comparator is positional, so a
+    // hand-placed field is a latent conformance failure. `98`, `108`, `141`,
+    // `789` is the dictionary's order (`spec/FIX44.xml`, Logon).
+    let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true);
+    let mut session: Session<Acceptor, 256> = Session::new(cfg);
+    let out = collect(&mut session, &good_logon());
+
+    let at_98 = out[0].find("98=").expect("the reply echoes 98");
+    let at_108 = out[0].find("108=").expect("the reply echoes 108");
+    let at_789 = out[0].find("789=").expect("the reply carries 789");
+    assert!(
+        at_98 < at_108 && at_108 < at_789,
+        "98, 108, then 789, as the dictionary orders them: {out:?}"
+    );
+}

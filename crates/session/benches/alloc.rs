@@ -552,8 +552,11 @@ fn main() {
     {
         // The path is proven live before it is counted: a zero below must mean
         // *did not allocate*, never *did not run*.
-        let mut s: Session<Acceptor, 256> =
-            Session::resume(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"), 500, 1);
+        let mut s: Session<Acceptor, 256> = Session::resume(
+            Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true),
+            500,
+            1,
+        );
         let mut sent = 0usize;
         s.connect(|_| ());
         s.tick(now, |_| ());
@@ -562,11 +565,28 @@ fn main() {
             sent, 2,
             "the 789 path must answer the Logon and then fill the gap"
         );
+        // Both halves of `789` are on this path, so both are counted: the knob
+        // is on, so the reply carries the field, and the inbound `789=498`
+        // drives the replay. A case that only proved one of them would leave
+        // the other's arithmetic uncounted.
+        let mut reply = Vec::new();
+        let mut s2: Session<Acceptor, 256> =
+            Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true));
+        s2.connect(|_| ());
+        s2.tick(now, |_| ());
+        s2.received(&good, |b| reply.extend_from_slice(b));
+        assert!(
+            reply.windows(4).any(|w| w == b"789="),
+            "the outbound half of 789 must be on this path too"
+        );
     }
     let next_expected_allocs = count(|| {
         for _ in 0..10_000 {
-            let mut s: Session<Acceptor, 256> =
-                Session::resume(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"), 500, 1);
+            let mut s: Session<Acceptor, 256> = Session::resume(
+                Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true),
+                500,
+                1,
+            );
             s.connect(|_| ());
             s.tick(now, |_| ());
             s.received(&next_expected_logon, |_| ());

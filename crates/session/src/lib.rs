@@ -370,6 +370,10 @@ pub struct Config {
     /// How many messages one call may put on the wire while answering a
     /// `ResendRequest`. See [`Self::with_resend_batch`].
     resend_batch: u16,
+    /// Put `789=NextExpectedMsgSeqNum` on every `Logon` this session sends.
+    ///
+    /// See [`Config::with_next_expected`].
+    next_expected: bool,
     /// When this session restarts its numbering of its own accord.
     /// [`ResetPolicy::new`] is neutral and is the default.
     reset: ResetPolicy,
@@ -590,6 +594,7 @@ impl Config {
             heart_bt_int: DEFAULT_HEART_BT_INT,
             schedule: Schedule::always(),
             resend_batch: DEFAULT_RESEND_BATCH,
+            next_expected: false,
             reset: ResetPolicy::new(),
             logon_timeout_ms: 0,
             logout_timeout_ms: 0,
@@ -612,6 +617,35 @@ impl Config {
     pub const fn with_heart_bt_int(mut self, secs: u32) -> Self {
         self.heart_bt_int = secs;
         self
+    }
+
+    /// Put `789=NextExpectedMsgSeqNum` on every `Logon` this session sends,
+    /// naming the number it is waiting to receive.
+    ///
+    /// **Off by default, and that is the safe default rather than a shy one.**
+    /// `[researched 2026-09-06]` every engine surveyed defaults it off, because
+    /// a counterparty that does not expect the field can answer a `Reject` —
+    /// see
+    /// [who-owns-the-outbound-header](../../../docs/reference/who-owns-the-outbound-header.md).
+    ///
+    /// Turning it on does not change what this session *accepts*: a `789`
+    /// arriving is read and acted on either way, exactly as QuickFIX does.
+    /// This knob is only about what goes out.
+    ///
+    /// The value differs by whether an inbound `Logon` has been counted yet —
+    /// `tests/logon.rs::an_acceptor_replying_counts_the_logon_it_is_answering`
+    /// and `::an_initiator_opening_asks_for_the_number_it_is_actually_waiting_on`
+    /// are the two halves.
+    #[must_use]
+    pub const fn with_next_expected(mut self, on: bool) -> Self {
+        self.next_expected = on;
+        self
+    }
+
+    /// Does this session put `789=` on its `Logon`?
+    #[must_use]
+    pub const fn next_expected(&self) -> bool {
+        self.next_expected
     }
 
     /// How many messages one call may put on the wire answering a
@@ -1832,11 +1866,26 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
                 let beat = digits(self.cfg.heart_bt_int, &mut beat);
                 self.beat_ms = u64::from(self.cfg.heart_bt_int) * 1_000;
                 self.last_recv_ms = now_ms;
-                let _ = self.send(
-                    Which::Logon,
-                    &[(tag::ENCRYPT_METHOD, b"0"), (tag::HEART_BT_INT, beat)],
-                    &mut *emit,
-                );
+                // **No adjustment here, and `+1` on the acceptor's reply.**
+                // Nothing has arrived on this connection, so there is no
+                // inbound `Logon` whose number is about to be counted:
+                // `next_in` already *is* what this end is waiting for.
+                // QuickFIX writes the same value in the same place
+                // (`Session.cpp:691`).
+                let mut want = [0u8; 10];
+                let want = digits(self.next_in, &mut want);
+                let mut extra: [(u32, &[u8]); 3] = [
+                    (tag::ENCRYPT_METHOD, b"0"),
+                    (tag::HEART_BT_INT, beat),
+                    (0, &[]),
+                ];
+                let n = if self.cfg.next_expected {
+                    extra[2] = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+                    3
+                } else {
+                    2
+                };
+                let _ = self.send(Which::Logon, &extra[..n], &mut *emit);
                 return Link::Up;
             }
             State::LoggedOn | State::LoggingOut => {}
@@ -2909,17 +2958,33 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             // is exactly what `beat_ms == 0` means.
             self.beat_ms = as_u32(heart_bt).map_or(0, |s| u64::from(s) * 1_000);
             self.state = State::LoggedOn;
-            let mut extra: [(u32, &[u8]); 3] = [
+            // **`+1`, and it is not a role rule.** `advance_past` runs after
+            // this reply is sent, so at this instant `next_in` is still the
+            // number of the `Logon` being answered — the number this end wants
+            // *next* is one past it. QuickFIX carries the same adjustment with
+            // the same explanation: *"+1 because incoming Logon did not
+            // increment the target SeqNum yet"* (`Session.cpp:713`).
+            //
+            // A reset has already restarted `next_in` above when `141=Y` was
+            // set, so this arithmetic is against the post-reset count and needs
+            // no case of its own.
+            let mut want = [0u8; 10];
+            let want = digits(self.next_in.saturating_add(1), &mut want);
+            let mut extra: [(u32, &[u8]); 4] = [
                 (tag::ENCRYPT_METHOD, encrypt),
                 (tag::HEART_BT_INT, heart_bt),
                 (0, &[]),
+                (0, &[]),
             ];
-            let n = if reset_seq {
-                extra[2] = (tag::RESET_SEQ_NUM_FLAG, b"Y");
-                3
-            } else {
-                2
-            };
+            let mut n = 2;
+            if reset_seq {
+                extra[n] = (tag::RESET_SEQ_NUM_FLAG, b"Y");
+                n += 1;
+            }
+            if self.cfg.next_expected {
+                extra[n] = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+                n += 1;
+            }
             // **Only the side that did not speak first answers.** A Logon is
             // one exchange: the initiator asks and the acceptor agrees. An
             // initiator that answers has started a second handshake on a

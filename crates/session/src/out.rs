@@ -72,6 +72,12 @@ impl<const APP: usize> Outbound<APP> {
                 // `SessionReset.def` logs on a second time with `141=Y` and
                 // expects it echoed, in the dictionary's order: `98, 108, 141`.
                 .slot(tag::RESET_SEQ_NUM_FLAG)
+                // `789`, written only when `Config::with_next_expected` is on.
+                // An unset slot is not written at all, so an ordinary Logon is
+                // byte-for-byte what it was — which is why the 59 definitions
+                // cannot see this and `the_position_of_789_is_the_dictionarys_
+                // and_not_this_call_sites` has to.
+                .slot(tag::NEXT_EXPECTED_MSG_SEQ_NUM)
                 .build::<Fix44>()
                 .ok()?,
             logout: TemplateBuilder::<24, 320>::new(begin)
