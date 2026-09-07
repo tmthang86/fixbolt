@@ -119,6 +119,17 @@ scripts/interop.sh
 | `interop-reconnect-beat:` | the same as the `SIGKILL` row, at **`HeartBtInt=1` with a pause before the kill**, so a `Heartbeat` is guaranteed between the last application message and the death | the same, with the last number spent belonging to a message no journal holds bytes for — ADR-0053 | **6 / 6** |
 | `interop-next-expected:` | a `libquickfix` `SocketAcceptor` with **`SendNextExpectedMsgSeqNum=Y`** | this engine's initiator with `Config::with_next_expected(true)`: `789` written on the way out and read on the way in | **9 / 9** |
 
+`[measured 2026-09-06]` The table above is from run
+[`34034849824`](https://github.com/tmthang86/fixbolt/actions/runs/34034849824) on `main`,
+commit `06a6509`, **11 jobs of 11** — the run that tests what actually landed, not a pull
+request's run against GitHub's merge ref. The interop job's log was read line by line, and doing
+so found a shell error inside the passing job: two backticks in a comment inside an unquoted
+heredoc made the fixture print `command not found` while the scenario went on to pass. Fixed,
+with the config generation now asserting its own stderr is empty
+([reading-the-output-you-grepped-for](reference/reading-the-output-you-grepped-for.md)). The
+scores are unaffected — the mangled text was a comment — but the run that produced them carried
+an error, and saying so is the point of naming a run by id at all.
+
 The seven steps of the acceptor direction: `logon` (with `141=Y` echoed); `order` (two
 `35=D`, two `35=8`, paired by `11=`); `heartbeat` (an unprompted `35=0` with **no** `112=`,
 within a deadline read from the `108=` on the wire); `testrequest`; `resend` (**the two
