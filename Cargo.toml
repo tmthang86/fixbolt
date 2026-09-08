@@ -47,3 +47,21 @@ all = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+# The fourth, added 2026-09-08, and it is the one that would have caught the
+# bug the other three could not see. `[measured 2026-09-06]` a ring dispatch
+# record gained a field between two existing ones and
+# `fixed[OUT_SEQ..OUT_LAST_PROCESSED]` went from four bytes to five in silence;
+# `copy_from_slice` then panicked **in a library crate** — non-negotiable 7's
+# exact subject, and invisible to `unwrap_used`, `expect_used` and `panic`,
+# because `a[i..j]` names none of them. Four `dispatch` tests caught it and
+# nothing else could have.
+#
+# `[measured 2026-09-08]` 207 sites in `crates/*/src` on the day this line was
+# written, across 21 files, each of which carries a `#![allow]` with its own
+# count. **The allow is not the mechanism.** `scripts/check-indexing-debt.sh`
+# counts with `--force-warn`, which overrides every one of those allows, and
+# fails when the total moves in the wrong direction — so new code in a clean
+# file is stopped by this line, and new code in a file that still owes is
+# stopped by the ceiling. STATUS.md item 55, open until the ceiling reaches 0.
+indexing_slicing = "deny"

@@ -12,6 +12,13 @@
 //! is a well-formed QTY and whether an order for nothing makes sense is not the
 //! dictionary's question.
 
+// `[measured 2026-09-08]` 22 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 /// The FIX field separator. A value containing one cannot have come off the
 /// wire as a single field, so no type accepts it.
 const SOH: u8 = 0x01;

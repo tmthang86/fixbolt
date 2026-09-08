@@ -7,6 +7,13 @@ mod field_type;
 
 pub use field_type::FieldType;
 
+// `[measured 2026-09-08]` The generated table indexes its own arrays, twice,
+// each time under a bound clippy cannot see. **An `#[allow]` written here does
+// not reach it** — rustc calls it an unused attribute and the two errors stand,
+// because a lint inside an `include!` belongs to the included file. So the
+// allow is emitted by `build.rs` onto the two generated functions themselves,
+// and this file stays under `indexing_slicing = "deny"` like every other.
+// STATUS.md item 55.
 include!(concat!(env!("OUT_DIR"), "/fix44.rs"));
 
 /// The FIX 4.4 dictionary, as `codec` sees it.

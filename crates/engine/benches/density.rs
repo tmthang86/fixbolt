@@ -69,6 +69,10 @@
 //!
 //! [ADR-0046]: ../../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 #[path = "../../codec/benches/harness.rs"]
 mod harness;

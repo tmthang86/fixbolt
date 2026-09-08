@@ -19,6 +19,13 @@
 //! with exactly what the file expects and must score `59 / 59`. Without it,
 //! step 4 of the plan would have been "it printed zero", which is not a result.
 
+// `[measured 2026-09-08]` 13 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 use core::fmt;
 
 use crate::compare::{Mismatch, compare};

@@ -19,6 +19,13 @@
 //! the whole body once its width is known. That is why [`Template::encode`]
 //! returns a `Range` and not a length: the message does not begin at `out[0]`.
 
+// `[measured 2026-09-08]` 32 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 use core::ops::Range;
 
 use crate::checksum::{checksum, format_checksum};

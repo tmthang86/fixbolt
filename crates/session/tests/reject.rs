@@ -15,6 +15,10 @@
 //! proves nothing about the guard and everything about the reverser — the check
 //! is that the mutation actually failed something, not that it compiled.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios};
 use fixbolt_session::{Acceptor, Config, Link, Session};

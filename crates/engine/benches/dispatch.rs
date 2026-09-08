@@ -9,6 +9,10 @@
 //! published target, for the reason written there.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 /// The header every `deliver` call in this bench hands over.
 ///

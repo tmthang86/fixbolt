@@ -25,6 +25,11 @@
 //!   no copy: `Incoming::get` borrows the engine's read buffer.
 //! * It allocates nothing. The one number it renders goes into a stack array.
 
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
+
 use fixbolt::{Answer, Handler, Incoming, Reply};
 
 /// A desk that fills whatever it is sent.

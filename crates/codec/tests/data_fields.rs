@@ -5,6 +5,10 @@
 //! by real data. These frames are built to the FIX 4.4 specification and are
 //! labelled as such — see `docs/reference/fix44-dictionary-traps.md`.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use fixbolt_codec::{Dictionary, FieldIndex, ParseError, Parsed, Validation, parse_into};
 

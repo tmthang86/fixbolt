@@ -9,6 +9,10 @@
 //! That is a falsifiable claim about 533 real messages, and it explains every
 //! line that differs without listing any of them.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 mod common;
 

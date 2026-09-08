@@ -11,6 +11,10 @@
 //! states them would pass for a weaker rule: a garbled frame is fatal **only**
 //! when it claims to be a Logon, and `108=0` means no heartbeats at all.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
 use fixbolt_session::{Acceptor, Config, Link, Session};

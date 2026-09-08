@@ -85,6 +85,77 @@ jobs:
       - run: scripts/fetch-quickfix-assets.sh
       - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --workspace --no-deps
 
+  # CLAUDE.md's first paragraph: this repository is going to be published, and
+  # every commit is treated as already public. Nothing looked at what the
+  # dependency tree is licensed under, or whether anything in it carries an
+  # advisory — the two facts that are cheapest to fix now and most expensive to
+  # discover after a release. Plan:
+  # docs/plans/2026-09-07-three-gates-a-sibling-engine-has.md, step 1.
+  #
+  # It is BLOCKING. A gate that warns is a gate nobody reads — CLAUDE.md §10.
+  deny:
+    name: Every dependency is permissively licensed and unadvised
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # deny.toml is judged against the resolved graph, and fixbolt-dict's
+      # build.rs reads vendor/. cargo-deny only needs `cargo metadata`, which
+      # does not run build scripts — but the fetch is cheap and keeps this job
+      # reading the same tree every other job builds.
+      - run: scripts/fetch-quickfix-assets.sh
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+      # `[measured 2026-09-08]` THE STEP ABOVE IS GREEN ABOUT A GRAPH THAT MAY
+      # BE SHORTER THAN THE REAL ONE. cargo-deny 0.20.2 does not judge the
+      # dev-dependencies of this workspace's members: an MPL-2.0 crate added to
+      # `[dev-dependencies]` of tools/jrnl — and separately of crates/codec — is
+      # resolved by `cargo metadata` (12 packages), printed by `cargo tree`, and
+      # never seen by `cargo deny list` (11 crates, `licenses ok`). The same
+      # crate as a normal dependency is rejected at once, so the checker is fine
+      # and the graph it gets is short. `exclude-dev = false` does not change it.
+      #
+      # So the count is compared against the one cargo itself resolves. Equal
+      # today, 11 and 11; the day a dev-dependency arrives this goes red and
+      # says which crate the licence gate never looked at. That is the whole
+      # value: an invisible hole becomes a loud one.
+      #
+      # STATUS.md open item 57.
+      - name: cargo-deny judged every crate cargo resolves
+        run: |
+          cargo install cargo-deny --locked --version 0.20.2 2>/dev/null || cargo install cargo-deny --locked
+          cargo deny list 2>/dev/null \
+            | sed 's/^[^:]*: //' | tr ',' '\n' | sed 's/@.*//;s/ //g' | sort -u | grep -v '^$' > /tmp/deny-saw.txt
+          cargo tree --workspace --prefix none \
+            | sed 's/ v[0-9].*//;s/ //g' | sort -u | grep -v '^$' > /tmp/cargo-saw.txt
+          echo "cargo-deny judged $(wc -l < /tmp/deny-saw.txt) crates; cargo resolves $(wc -l < /tmp/cargo-saw.txt)"
+          if ! diff -u /tmp/deny-saw.txt /tmp/cargo-saw.txt; then
+            echo "::error title=The licence gate did not look at every crate::cargo-deny's graph and cargo's disagree. Lines marked + are crates cargo resolves that the licence and advisory gate never judged. See deny.toml's closing comment and STATUS.md item 57."
+            exit 1
+          fi
+
+  # CLAUDE.md §2 non-negotiable 7's fourth machine check, and the one that would
+  # have seen the bug the other three could not. `[measured 2026-09-06]` a ring
+  # dispatch record gained a field, `fixed[OUT_SEQ..OUT_LAST_PROCESSED]` went
+  # from four bytes to five in silence, and `copy_from_slice` panicked inside a
+  # library crate — `a[i..j]` names neither unwrap, expect nor panic, so
+  # `unwrap_used`, `expect_used` and `panic` are all blind to it.
+  #
+  # The debt is 207 sites in crates/*/src and cannot be cleared in one diff, so
+  # the lint is denied and the files that still owe carry a scoped `allow`. This
+  # job counts them anyway, with `--force-warn`, which overrides an allow, and
+  # fails when the total moves in either direction — up is a regression, down is
+  # a ceiling somebody forgot to lower. STATUS.md item 55.
+  indexing-debt:
+    name: The indexing debt only goes down
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup component add clippy
+      - run: scripts/fetch-quickfix-assets.sh
+      - run: scripts/check-indexing-debt.sh
+
   gates:
     name: fmt · clippy · test
     runs-on: ubuntu-latest

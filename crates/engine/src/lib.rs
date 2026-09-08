@@ -938,7 +938,10 @@ where
     pub const fn clock_mut(&mut self) -> &mut C {
         &mut self.clock
     }
-
+    // `[measured 2026-09-08]` 18 indexing/slicing sites. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// One non-blocking pass over every connection. `true` if anything moved.
     ///
     /// Nothing in here can block: every transport call is non-blocking and
@@ -1196,7 +1199,10 @@ where
         }
         moved
     }
-
+    // `[measured 2026-09-08]` 3 indexing/slicing sites. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// Ask the application whether it has anything to say, now that this
     /// session is up. [ADR-0048] door 1.
     ///

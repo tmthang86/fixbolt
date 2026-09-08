@@ -26,6 +26,10 @@
 //!
 //! [operability]: ../../../docs/plans/2026-09-01-operability.md
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

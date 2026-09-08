@@ -66,10 +66,16 @@
 //!
 //! [ADR-0004]: ../../../docs/decisions/ADR-0004-bidirectional-engine.md
 
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
+
 // Non-negotiable 6: the feature gates the `mod` declaration itself, not only
 // the manifest entry. Without `standard` on a unix target `fixbolt::serve` does
 // not exist, so neither does the role that calls it, and this file still
 // compiles.
+
 #[cfg(all(feature = "standard", unix))]
 mod desk;
 // The third role, and the same gate on its `mod`: it calls
@@ -78,7 +84,7 @@ mod desk;
 #[cfg(all(feature = "standard", unix))]
 mod reconnect;
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::ops::Range;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -217,19 +223,35 @@ impl Wire {
     /// Returns the message as read, so a step can assert on what arrived rather
     /// than on what the session did with it — the two are different claims and
     /// only the first says the counterparty agreed with us.
-    fn read_one(&mut self) -> Option<String> {
+    ///
+    /// **It returns [`ReadOutcome`] rather than `Option<String>`, and that is
+    /// the whole point of the type.** See the enum for what the single `None`
+    /// used to hide.
+    fn read_one(&mut self) -> ReadOutcome {
         loop {
             if let Some(end) = whole(&self.buf) {
                 let msg: Vec<u8> = self.buf.drain(..end).collect();
                 let text = readable(&msg);
                 self.seen.push(text.clone());
                 self.drive(What::Bytes(&msg));
-                return Some(text);
+                return ReadOutcome::Message(text);
             }
             let mut chunk = [0u8; 4096];
             match self.sock.read(&mut chunk) {
-                Ok(0) | Err(_) => return None,
+                Ok(0) => return ReadOutcome::PeerClosed.say(self.buf.len()),
                 Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
+                // EINTR is not an ending. A signal arriving mid-read would
+                // otherwise be reported as a broken socket, which is the same
+                // class of mistake this enum exists to end.
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                // This socket is BLOCKING with an `SO_RCVTIMEO` on it, so
+                // `WouldBlock` here means the timeout expired — not "nothing
+                // yet". Linux reports it as `EAGAIN`, some platforms as
+                // `ETIMEDOUT`; both are the same ending and both are named.
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    return ReadOutcome::Timeout.say(self.buf.len());
+                }
+                Err(e) => return ReadOutcome::Failed(e.kind()).say(self.buf.len()),
             }
         }
     }
@@ -241,14 +263,86 @@ impl Wire {
     /// protocol. Bounded rather than open-ended so a wrong expectation ends the
     /// run instead of hanging it — `[measured 2026-09-02]` a reversal in this
     /// repository has already failed by hanging once.
-    fn read_until(&mut self, limit: usize, want: impl Fn(&str) -> bool) -> Option<String> {
+    ///
+    /// Running the bound out is [`ReadOutcome::NoMatch`], which is a **fifth**
+    /// ending and not a socket one: the link was fine and the counterparty was
+    /// talking, it just never said the thing being waited for. Collapsing it
+    /// into the other four would put "your expectation was wrong" and "the
+    /// counterparty died" back under one word.
+    fn read_until(&mut self, limit: usize, want: impl Fn(&str) -> bool) -> ReadOutcome {
         for _ in 0..limit {
-            let m = self.read_one()?;
-            if want(&m) {
-                return Some(m);
+            match self.read_one() {
+                ReadOutcome::Message(m) if want(&m) => return ReadOutcome::Message(m),
+                ReadOutcome::Message(_) => {}
+                ended => return ended,
             }
         }
-        None
+        ReadOutcome::NoMatch.say(limit)
+    }
+}
+
+/// How one attempt to read a whole FIX message ended.
+///
+/// **`tools/interop/src/main.rs` used to write `Ok(0) | Err(_) => return None`,
+/// and that line gave three different failures the same word.** A scenario that
+/// went red because the counterparty exited, one that went red because it
+/// stopped answering, and one that went red because the socket broke all
+/// printed *"the counterparty stopped answering"* — the sentence is only true
+/// of the second. The shape was found on 2026-09-07 while reading another Rust
+/// FIX engine's harness, which separates the same endings; this enum is that
+/// idea rewritten from scratch, not its code.
+///
+/// Proven distinguishable by `read_outcome_tests`, over a real loopback socket.
+#[derive(Debug)]
+enum ReadOutcome {
+    /// A whole message, framed and given to the session, as readable text.
+    Message(String),
+    /// The read timeout expired with no whole message in hand.
+    Timeout,
+    /// The peer closed cleanly — `read` returned `Ok(0)`.
+    PeerClosed,
+    /// The socket itself failed, and with which kind.
+    Failed(ErrorKind),
+    /// Not a socket ending: whole messages kept arriving and none matched.
+    NoMatch,
+}
+
+impl ReadOutcome {
+    /// Print the one sentence this ending — and only this ending — earns, then
+    /// hand the value back.
+    ///
+    /// `n` is whatever number that sentence is about: bytes left unframed for
+    /// the three socket endings, messages seen for [`Self::NoMatch`]. A partial
+    /// message in the buffer at a close is worth saying out loud, because "the
+    /// peer hung up" and "the peer hung up mid-message" are different bugs on
+    /// the other end.
+    fn say(self, n: usize) -> Self {
+        match &self {
+            Self::Message(_) => {}
+            Self::Timeout => println!(
+                "interop: read timed out after {READ_TIMEOUT:?}, link still up, {n} unframed bytes held"
+            ),
+            Self::PeerClosed => {
+                println!("interop: the peer closed the connection, {n} unframed bytes held");
+            }
+            Self::Failed(kind) => println!("interop: the socket failed: {kind:?}"),
+            Self::NoMatch => {
+                println!("interop: {n} whole messages arrived and none was the one waited for");
+            }
+        }
+        self
+    }
+
+    /// The message, if that is how it ended.
+    ///
+    /// Every caller that only needs *"did I get it?"* goes through here, so the
+    /// four other endings have already printed themselves by the time the
+    /// `Option` exists.
+    fn found(self) -> Option<String> {
+        match self {
+            Self::Message(m) => Some(m),
+            _ => None,
+        }
     }
 }
 
@@ -519,7 +613,15 @@ fn initiator(args: &[String]) -> std::process::ExitCode {
     if run(&mut w, &mut score, &target, next_expected).is_none() {
         // A step that could not read is a failure of that step, not a crash:
         // the score below still prints, so the script sees which one.
-        println!("interop: the counterparty stopped answering");
+        //
+        // **This line used to name a cause it could not know.** It read *"the
+        // counterparty stopped answering"*, which is true of one of the four
+        // endings `ReadOutcome` now separates and false of the other three —
+        // a peer that exited and a socket that broke both printed it. The
+        // ending itself is printed by `ReadOutcome::say` at the moment it
+        // happens, immediately above this line; this one says only that a step
+        // gave up.
+        println!("interop: a step ended without the message it was waiting for");
     }
     if score.finish() {
         std::process::ExitCode::SUCCESS
@@ -537,7 +639,7 @@ fn run(w: &mut Wire, score: &mut Score, target: &str, next_expected: bool) -> Op
     // speak, because time enters the session layer nowhere else.
     w.drive(What::Connect);
     w.drive(What::Tick);
-    let reply = w.read_until(4, |m| m.contains("|35=A|"))?;
+    let reply = w.read_until(4, |m| m.contains("|35=A|")).found()?;
     // `[2026-09-04]` **`49=` is compared against `--target`, not against a
     // hard-coded `QFACC`.** The literal was invisible for as long as this
     // binary had one counterparty; the moment `--role acceptor` gave it a
@@ -594,8 +696,8 @@ fn run(w: &mut Wire, score: &mut Score, target: &str, next_expected: bool) -> Op
     // is a red. `STATUS.md` item 46.
     //
     // [ADR-0048]: ../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md
-    w.read_until(6, |m| m.contains("|35=B|"));
-    w.read_until(6, |m| m.contains("|35=B|"));
+    let _ = w.read_until(6, |m| m.contains("|35=B|"));
+    let _ = w.read_until(6, |m| m.contains("|35=B|"));
     score.step(
         "news",
         w.app.app == 2,
@@ -623,7 +725,7 @@ fn run(w: &mut Wire, score: &mut Score, target: &str, next_expected: bool) -> Op
         let _ = w.sock.write_all(b);
     }) {
         let echo = w.read_until(6, |m| m.contains("|35=0|") && m.contains("|112=INTEROP-1|"));
-        answered = echo.is_some();
+        answered = echo.found().is_some();
     }
     score.step(
         "testrequest",
@@ -650,7 +752,7 @@ fn run(w: &mut Wire, score: &mut Score, target: &str, next_expected: bool) -> Op
         let _ = w.sock.write_all(b);
     }) {
         for _ in 0..8 {
-            let Some(m) = w.read_one() else { break };
+            let Some(m) = w.read_one().found() else { break };
             if m.contains("|35=B|") && m.contains("|43=Y|") {
                 if m.contains("|34=2|") {
                     replayed.push(2);
@@ -687,7 +789,7 @@ fn run(w: &mut Wire, score: &mut Score, target: &str, next_expected: bool) -> Op
     let asked = w.session.send_heartbeat(|b| {
         let _ = w.sock.write_all(b);
     });
-    let requested = w.read_until(6, |m| m.contains("|35=2|")).is_some();
+    let requested = w.read_until(6, |m| m.contains("|35=2|")).found().is_some();
     let survived = w.round_trip(b"ALIVE-AFTER-GAP")?;
     score.step(
         "gapfill",
@@ -699,7 +801,7 @@ fn run(w: &mut Wire, score: &mut Score, target: &str, next_expected: bool) -> Op
     let said = w.session.begin_logout(b"interop done", |b| {
         let _ = w.sock.write_all(b);
     }) == Link::Up;
-    let acked = w.read_until(6, |m| m.contains("|35=5|")).is_some();
+    let acked = w.read_until(6, |m| m.contains("|35=5|")).found().is_some();
     score.step("logout", said && acked, "35=5 out, 35=5 back".to_owned());
 
     Some(())
@@ -720,6 +822,7 @@ impl Wire {
         let want = format!("|112={}|", String::from_utf8_lossy(id));
         Some(
             self.read_until(8, |m| m.contains("|35=0|") && m.contains(&want))
+                .found()
                 .is_some(),
         )
     }
@@ -749,4 +852,119 @@ fn whole(bytes: &[u8]) -> Option<usize> {
     }
     let k = bytes[stop + 3..].iter().position(|b| *b == 1)?;
     Some(stop + 3 + k + 1)
+}
+
+// ---------------------------------------------------------------------------
+
+/// **Three socket endings that used to be one `None`.**
+///
+/// The meta-test [ADR-0004] never asked for and this repository needed anyway:
+/// it proves the branches are distinguishable, which is the only thing that
+/// makes the extra variants worth their code. Before them
+/// `Ok(0) | Err(_) => return None` gave a scenario that failed because the
+/// counterparty *died*, one that failed because it *went quiet*, and one that
+/// failed because the *socket broke* exactly the same sentence to fail with.
+///
+/// Driven by a local `TcpListener` rather than by `libquickfix`: the subject is
+/// this binary's own read path, and a C++ process on the other end would make
+/// the peer-closed case depend on somebody else's shutdown sequence.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod read_outcome_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// A whole FIX message whose `9=` and `10=` are computed rather than
+    /// written by hand.
+    ///
+    /// `STATUS.md` item 50: two committed benchmarks timed a message the parser
+    /// rejects, because the length and the checksum were literals. A fixture
+    /// this test *frames* has the same failure available to it, so it is built
+    /// by the same arithmetic `whole()` reads back.
+    fn heartbeat() -> Vec<u8> {
+        let body = b"35=0\x0149=QFACC\x0156=FIXBOLT\x0134=1\x0152=20260908-00:00:00.000\x01";
+        let mut m = Vec::new();
+        m.extend_from_slice(b"8=FIX.4.4\x01");
+        m.extend_from_slice(format!("9={}\x01", body.len()).as_bytes());
+        m.extend_from_slice(body);
+        let sum: u32 = m.iter().map(|b| u32::from(*b)).sum();
+        m.extend_from_slice(format!("10={:03}\x01", sum % 256).as_bytes());
+        m
+    }
+
+    /// Stand up a listener, let `server` do one thing to the accepted socket,
+    /// and return what this binary's read path made of it.
+    fn outcome(server: impl FnOnce(TcpStream) + Send + 'static) -> ReadOutcome {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let joined = std::thread::spawn(move || {
+            let (sock, _) = listener.accept().expect("accept");
+            server(sock);
+        });
+
+        let sock = TcpStream::connect(addr).expect("connect");
+        // Not `READ_TIMEOUT`: ten seconds is right for a gate against a real
+        // counterparty on a shared VM and wrong for a unit test that is
+        // *supposed* to time out.
+        sock.set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("timeout");
+
+        let mut w = Wire {
+            sock,
+            session: Session::new(Config::initiator(b"FIX.4.4", b"FIXBOLT", b"QFACC")),
+            app: Count::default(),
+            journal: Kept::default(),
+            seen: Vec::new(),
+            buf: Vec::new(),
+        };
+        let got = w.read_one();
+        joined.join().expect("server thread");
+        got
+    }
+
+    #[test]
+    fn a_peer_that_closes_cleanly_is_not_a_timeout() {
+        let got = outcome(drop);
+        assert!(
+            matches!(got, ReadOutcome::PeerClosed),
+            "a clean close read as {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_peer_that_goes_quiet_is_not_a_close() {
+        let got = outcome(|sock| {
+            // Hold it open, say nothing, outlast the reader's timeout.
+            std::thread::sleep(Duration::from_millis(600));
+            drop(sock);
+        });
+        assert!(
+            matches!(got, ReadOutcome::Timeout),
+            "a silent peer read as {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_whole_message_is_neither() {
+        let got = outcome(|mut sock| {
+            sock.write_all(&heartbeat()).expect("write");
+            std::thread::sleep(Duration::from_millis(600));
+        });
+        match got {
+            ReadOutcome::Message(text) => assert!(text.contains("|35=0|"), "read back {text}"),
+            other => panic!("a whole message read as {other:?}"),
+        }
+    }
+
+    /// The fixture is valid before anything frames it — item 50's rule, applied
+    /// to the message this file's own `whole()` is about to measure.
+    #[test]
+    fn the_fixture_is_a_whole_message() {
+        let m = heartbeat();
+        assert_eq!(
+            whole(&m),
+            Some(m.len()),
+            "whole() disagrees with the fixture"
+        );
+    }
 }

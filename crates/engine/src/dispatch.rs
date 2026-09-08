@@ -275,7 +275,18 @@ impl<const M: usize> Dispatch for RingDispatch<M> {
         fixed[OUT_LAST_PROCESSED..OUT_LAST_PROCESSED + LAST_PROCESSED_LEN]
             .copy_from_slice(&hdr.last_processed.unwrap_or(0).to_le_bytes());
         let n = hdr.stamp.len().min(STAMP);
-        fixed[OUT_STAMP..OUT_STAMP + n].copy_from_slice(&hdr.stamp[..n]);
+        // **`start .. start + LEN`, and through `get` rather than by index.**
+        // `[measured 2026-09-06]` the four lines above used `start .. next_field`
+        // and a field inserted between two of them silently widened one of them
+        // from four bytes to five; `copy_from_slice` then panicked in a library
+        // crate. The shape was fixed then. This is the lint that would have
+        // caught it, denied since 2026-09-08, and these two are the last
+        // subscripts on the path.
+        if let (Some(dst), Some(src)) =
+            (fixed.get_mut(OUT_STAMP..OUT_STAMP + n), hdr.stamp.get(..n))
+        {
+            dst.copy_from_slice(src);
+        }
         if msg.len() > M || !self.to_app.push(&[&fixed, msg]) {
             self.refused += 1;
             self.refused_since = true;
@@ -403,10 +414,15 @@ impl<const M: usize> RingApp<M> {
             };
             let mut pushed = false;
             if let Some(r) = handler.on_message(msg, hdr, reply) {
-                if to_engine.push(&[&conn, &reply[r]]) {
-                    pushed = true;
-                } else {
-                    *dropped += 1;
+                // **The range comes from the application**, which is somebody
+                // else's code, so a range past the end of the buffer it was
+                // handed is a possibility rather than a contradiction. It used
+                // to be `&reply[r]`: a panic inside a library crate, raised by
+                // a caller's arithmetic. It is counted as a drop now, which is
+                // what the other refusal on this line already does.
+                match reply.get(r) {
+                    Some(bytes) if to_engine.push(&[&conn, bytes]) => pushed = true,
+                    _ => *dropped += 1,
                 }
             }
             // **After the push, not before.** Waking first would send the

@@ -37,6 +37,13 @@
 //! catch it is a count — which is why the counts are asserted, and why this is
 //! belt as well as braces.
 
+// `[measured 2026-09-08]` 4 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 use std::fmt;
 use std::path::PathBuf;
 

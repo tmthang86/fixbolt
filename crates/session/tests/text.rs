@@ -8,6 +8,10 @@
 //! The table lives in `src/text.rs` and this file re-derives it from the `.def`
 //! files at run time. Hard-coding it twice would prove nothing.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use std::collections::BTreeMap;
 

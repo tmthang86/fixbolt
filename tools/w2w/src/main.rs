@@ -63,6 +63,10 @@
 //! It is armed only for the timed loop: startup renders 22 000 messages into a
 //! `Vec<Vec<u8>>` on purpose, and `affinity::Topology` reads `/proc`.
 #![allow(unsafe_code)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{Read, Write};

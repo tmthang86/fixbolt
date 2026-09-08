@@ -39,6 +39,20 @@ below describe what a first release would contain.
   `fixbolt_session::Application` directly — the raw seam — has to change, and it is a compile
   error rather than a silent one.
 
+- **An application handler returning a range outside the buffer it was given no longer panics.**
+  `crates/engine/src/dispatch.rs` used `&reply[r]` on the `Range` an `Application` hands back;
+  the range comes from somebody else's code, so a range past the end was a panic inside a
+  library crate raised by a caller's arithmetic. It is counted on the existing dropped-reply
+  counter instead — the same outcome a full ring already produced. `STATUS.md` item 55.
+
+- **A torn or corrupt journal file can no longer panic the process that opens it.**
+  `FileJournal::open` reads a file another process wrote, and every read of it now goes through
+  `slice::get`, with a failure treated exactly as the torn tail it is: stop, keep everything
+  before that point, report the bytes dropped. `open_with` also gained the `checked_add` that
+  `journal::Reader::open` already had, so a corrupt length cannot wrap into a byte range that is
+  in bounds and wrong. No format change, no API change, and the recovery outcome for a healthy
+  file is byte-for-byte what it was.
+
 ### Added
 
 - **`789=NextExpectedMsgSeqNum` and `369=LastMsgSeqNumProcessed`**, the two FIX 4.4 fields that

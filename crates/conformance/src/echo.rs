@@ -31,6 +31,13 @@
 //! It lives here and not in `engine`. It is the application the corpus assumes,
 //! and nothing else should depend on it.
 
+// `[measured 2026-09-08]` 6 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 use core::ops::Range;
 
 use fixbolt_codec::{EncodeError, FieldIndex, ParseError, TemplateBuilder, Validation, parse_into};
