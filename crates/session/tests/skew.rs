@@ -131,3 +131,81 @@ fn a_message_refused_for_skew_still_records_the_skew_that_refused_it() {
         "and it really was refused — otherwise this test measures the accepted path"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Microsecond `SendingTime` — wave B plan 3, half A
+// ---------------------------------------------------------------------------
+
+/// `good_logon()` with its `52=` replaced, and `9=` / `10=` recomputed.
+///
+/// Both have to move: a 24-byte stamp is three bytes longer than the corpus's
+/// 17, and `parse_into` checks the body length **before** it reaches the
+/// checksum — so a message with only its checksum fixed would be refused for a
+/// reason that has nothing to do with the clock, and this file would be
+/// measuring the wrong rejection.
+fn logon_stamped(sending_time: &str) -> Vec<u8> {
+    const SOH: char = '\u{1}';
+    let wire = String::from_utf8(good_logon()).expect("ascii");
+    assert!(
+        wire.contains(&format!("52=20260828-12:00:00{SOH}")),
+        "the corpus stamps its `I` lines to the second; if that changed, so did this test's premise"
+    );
+
+    let mut head = String::new();
+    let mut body = String::new();
+    for field in wire.split(SOH).filter(|f| !f.is_empty()) {
+        if field.starts_with("9=") || field.starts_with("10=") {
+            continue;
+        }
+        if field.starts_with("8=") {
+            head.push_str(field);
+            head.push(SOH);
+        } else if field.starts_with("52=") {
+            body.push_str(&format!("52={sending_time}{SOH}"));
+        } else {
+            body.push_str(field);
+            body.push(SOH);
+        }
+    }
+    let mut out = format!("{head}9={}{SOH}{body}", body.len()).into_bytes();
+    let sum: u8 = out.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+    out.extend_from_slice(format!("10={sum:03}{SOH}").as_bytes());
+    out
+}
+
+/// **A valid timestamp this engine cannot read, and the answer is silence.**
+///
+/// FIX 4.4 puts 17 or 21 bytes on the wire; a European venue under MiFID II
+/// RTS 25 puts 24. Before wave B plan 3 `parse_utc` returned `None` for that
+/// width, `time_ok` went false, and `AwaitingLogon` hung up **without sending a
+/// byte** — the treatment a *wrong* clock earns, applied to a *right* one.
+///
+/// Three assertions, because each fails for its own reason: the link, the
+/// measurement, and whether anything was said. The skew is `-123` and not
+/// `-124`: the sub-millisecond part is truncated, never rounded.
+#[test]
+fn a_microsecond_sending_time_is_read_and_the_link_survives() {
+    let mut session = acceptor();
+    session.connect(|_| {});
+    session.tick(FIXED_TIME_MILLIS, |_| {});
+
+    let mut out: Vec<u8> = Vec::new();
+    let link = session.received(&logon_stamped("20260828-12:00:00.123456"), |b| {
+        out.extend_from_slice(b);
+    });
+
+    assert_eq!(
+        link,
+        fixbolt_session::Link::Up,
+        "a valid microsecond SendingTime is not a reason to hang up"
+    );
+    assert_eq!(
+        session.last_skew_ms(),
+        Some(-123),
+        "truncated to milliseconds, not rounded: .123456 is 123 ms ahead of us"
+    );
+    assert!(
+        out.windows(5).any(|w| w == b"\x0135=A"),
+        "and the session answered, rather than saying nothing at all"
+    );
+}

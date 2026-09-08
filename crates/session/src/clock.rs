@@ -13,13 +13,6 @@
 //! the parser never needs a signed type. The engine converts once, at the edge:
 //! `year_zero_millis = unix_millis + MILLIS_YEAR_ZERO_TO_EPOCH`.
 
-// `[measured 2026-09-08]` 4 `clippy::indexing_slicing` sites in this file on
-// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
-// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
-// which overrides this line, and its ceiling only ever goes down. STATUS.md
-// item 55.
-#![allow(clippy::indexing_slicing)]
-
 /// Days from 0000-01-01 to 1970-01-01, proleptic Gregorian.
 ///
 /// Not a remembered constant: the test `the_epoch_offset_is_derived_not_recalled`
@@ -30,24 +23,56 @@ pub const DAYS_YEAR_ZERO_TO_EPOCH: i64 = 719_528;
 /// `SystemTime` reading to get the scale `Input::Tick` uses.
 pub const MILLIS_YEAR_ZERO_TO_EPOCH: u64 = 719_528 * 86_400_000;
 
-/// The two widths FIX 4.4 puts on the wire: `YYYYMMDD-HH:MM:SS` and the same
-/// with `.sss`. The corpus uses both — 17 bytes on `I` lines, 21 on `E`.
+/// The four widths a `UTCTimestamp` reaches this engine in.
+///
+/// FIX 4.4 documents the first two, and the corpus uses both — 17 bytes on `I`
+/// lines, 21 on `E`. The other two are what a venue actually sends: FIX 5.0
+/// SP2 EP allows them, and MiFID II RTS 25 requires a clock synchronised to the
+/// microsecond, so a European counterparty stamps `52=` with six fractional
+/// digits and expects to be understood.
+///
+/// **The corpus cannot see any of this**: 0 of the 59 definitions carry a
+/// stamp wider than 21 bytes, so `59 / 59` says this change broke nothing and
+/// says nothing about what it added. `crates/session/tests/skew.rs` holds that.
 const LEN_SECONDS: usize = 17;
 const LEN_MILLIS: usize = 21;
+const LEN_MICROS: usize = 24;
+const LEN_NANOS: usize = 27;
 
 /// Milliseconds since 0000-01-01T00:00:00Z, or `None` if `s` is not a
 /// `UTCTimestamp`.
 ///
-/// Rejects rather than repairs: a field that is not exactly one of the two
-/// documented widths, or that holds a digit out of range, is not a timestamp.
-/// The session turns `None` into a refusal, which is what
-/// `1d_InvalidLogonBadSendingTime` asks for.
+/// Rejects rather than repairs: a field that is not one of the four widths
+/// above, or that holds a digit out of range, is not a timestamp. The session
+/// turns `None` into a refusal, which is what `1d_InvalidLogonBadSendingTime`
+/// asks for — and, until 2026-09-08, is also what a *valid* microsecond stamp
+/// got: `None`, then `Refusal::BadSendingTime`, then a hang-up with no byte
+/// sent, because before a `Logon` there is no session to answer with.
+///
+/// # Anything finer than a millisecond is dropped, not rounded
+///
+/// The return type is milliseconds because `Input::Tick` is milliseconds
+/// (`DESIGN.md` D13), and skew, schedules and heartbeats are all measured in
+/// them. `.123999` is 123 ms: truncation loses at most 999 µs of a skew
+/// measured against a 120 000 ms bound, where rounding would let a stamp
+/// arrive one millisecond in the future.
+///
+/// **Reading a stamp is not sending one.** This engine still writes 21 bytes;
+/// the send half is `ADR-0057` and is not built.
 #[must_use]
 pub fn parse_utc(s: &[u8]) -> Option<u64> {
-    if s.len() != LEN_SECONDS && s.len() != LEN_MILLIS {
-        return None;
-    }
-    if s[8] != b'-' || s[11] != b':' || s[14] != b':' {
+    // Width picks the number of fractional digits, and an unknown width is not
+    // a timestamp. `get` rather than `s[8]`: this file carried a file-wide
+    // `#![allow(clippy::indexing_slicing)]` until half A, and non-negotiable 7
+    // is about a panic in a library crate, which a subscript is.
+    let frac_digits = match s.len() {
+        LEN_SECONDS => 0,
+        LEN_MILLIS => 3,
+        LEN_MICROS => 6,
+        LEN_NANOS => 9,
+        _ => return None,
+    };
+    if s.get(8) != Some(&b'-') || s.get(11) != Some(&b':') || s.get(14) != Some(&b':') {
         return None;
     }
     let year = num(s, 0, 4)?;
@@ -56,13 +81,19 @@ pub fn parse_utc(s: &[u8]) -> Option<u64> {
     let hour = num(s, 9, 2)?;
     let minute = num(s, 12, 2)?;
     let second = num(s, 15, 2)?;
-    let milli = if s.len() == LEN_MILLIS {
-        if s[17] != b'.' {
+    let milli = if frac_digits == 0 {
+        0
+    } else {
+        if s.get(17) != Some(&b'.') {
             return None;
         }
-        num(s, 18, 3)?
-    } else {
-        0
+        let milli = num(s, 18, 3)?;
+        // The digits past the millisecond are dropped, but they still have to
+        // be digits: `20260828-12:00:00.123abc` is not a timestamp whose tail
+        // happens to be unreadable, it is not a timestamp. Width 0 for the
+        // 21-byte case, which asks `num` for an empty slice and gets `Some(0)`.
+        num(s, 21, frac_digits - 3)?;
+        milli
     };
 
     if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
@@ -200,6 +231,52 @@ mod tests {
             b"20260828-13:60:00",     // minute 60
             b"20260828-13:45:61",     // second 61
             b"20260828-13:45:59,123", // comma, not `.`
+        ] {
+            assert_eq!(parse_utc(s), None, "{}", String::from_utf8_lossy(s));
+        }
+    }
+
+    #[test]
+    fn all_four_widths_name_the_same_instant() {
+        // The whole point: four spellings, one millisecond. If any of these
+        // disagreed, a venue would be judged for skew against a different
+        // instant depending on how precisely it can read its own clock.
+        let base = parse_utc(b"20260828-12:00:00").expect("17 bytes");
+        assert_eq!(parse_utc(b"20260828-12:00:00.000"), Some(base), "21 bytes");
+        assert_eq!(
+            parse_utc(b"20260828-12:00:00.000000"),
+            Some(base),
+            "24 bytes"
+        );
+        assert_eq!(
+            parse_utc(b"20260828-12:00:00.000000000"),
+            Some(base),
+            "27 bytes"
+        );
+    }
+
+    #[test]
+    fn anything_finer_than_a_millisecond_is_dropped_and_not_rounded() {
+        // `.999999` is 999 ms, not 1 000. Rounding here would put a stamp one
+        // millisecond into the future, and `last_skew_ms` would report a
+        // counterparty's clock as ahead when it is exactly right.
+        let sec = parse_utc(b"20260828-12:00:00").expect("17 bytes");
+        assert_eq!(parse_utc(b"20260828-12:00:00.999999"), Some(sec + 999));
+        assert_eq!(parse_utc(b"20260828-12:00:00.999999999"), Some(sec + 999));
+        assert_eq!(parse_utc(b"20260828-12:00:00.123456"), Some(sec + 123));
+        assert_eq!(parse_utc(b"20260828-12:00:00.123999999"), Some(sec + 123));
+    }
+
+    #[test]
+    fn a_wide_stamp_is_still_refused_when_it_is_not_a_timestamp() {
+        for s in [
+            &b"20260828-12:00:00:123456"[..], // `:` where the `.` belongs
+            b"20260828-12:00:00.123abc",      // the dropped digits are not digits
+            b"20260828-12:00:00.12345",       // 23 bytes: no width has five
+            b"20260828-12:00:00.1234567",     // 25 bytes
+            b"20260828-12:00:00.12345678",    // 26 bytes
+            b"20260828-12:00:00.1234567890",  // 28 bytes
+            b"20261328-12:00:00.123456",      // month 13, at the new width
         ] {
             assert_eq!(parse_utc(s), None, "{}", String::from_utf8_lossy(s));
         }

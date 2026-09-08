@@ -1,6 +1,6 @@
 # Timestamp micro giây, hai chiều
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Sửa lại:** 2026-09-08 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Sửa lại:** 2026-09-08 (Sửa 1) · **Trạng thái:** Nửa A ĐÓNG 2026-09-08 · Nửa B chờ ADR-0057
 > **Phạm vi:** `STATUS.md` item 45, đợt B, plan thứ ba. Chạm `codec` (`TimestampCache`,
 > **hot path**), `session` (`clock::parse_utc`, `Config`, `Session::stamp`), `engine`
 > (`settings`, `clock`), `conformance`, `benches`. **Không chạm** `dict`, `transport`.
@@ -146,10 +146,10 @@ Sau khi ADR được duyệt, hình dạng dự kiến:
 
 | Bước | Kết quả | Phụ thuộc |
 |---|---|---|
-| **A1** | **Test đỏ trước:** `crates/session/tests/skew.rs::a_microsecond_sending_time_is_refused_today` dựng trên `good_logon()` sẵn có, khẳng định hành vi **hôm nay** — link chết, không byte nào ra. Chạy, **chép output đỏ/xanh vào nhật ký trước khi sửa bất cứ gì** | — |
+| **A1** | **Test đỏ trước:** `crates/session/tests/skew.rs::a_microsecond_sending_time_is_read_and_the_link_survives` dựng trên `good_logon()` sẵn có, khẳng định hành vi **mong muốn** — link sống, skew đo được, có byte trả lời. Đỏ hôm nay. Chạy, **chép output đỏ vào nhật ký trước khi sửa bất cứ gì** (Sửa 1) | — |
 | **A2** | `parse_utc` nhận 17/21/24/27; cắt về ms. Test: bốn độ dài; `.` sai chỗ ở 24 byte → `None`; biên `.999999` → ms `999` (cắt, không làm tròn) | A1 |
 | **A3** | `122=OrigSendingTime` cùng đường — một test riêng, vì nó là một `Refusal` khác | A2 |
-| **A4** | A1 đảo chiều: giờ phải xanh và link phải sống. `cargo test --all`, `--no-default-features`, **59/59** | A2, A3 |
+| **A4** | A1 xanh, **không sửa một assertion nào**. `cargo test --all`, `--no-default-features`, **59/59** | A2, A3 |
 | **A5** | Docs nửa A: `SESSION-BEHAVIOUR.md` (nêu tên test canh), `CHANGELOG.md`, `STATUS.md`, và **`docs/reference/`**: một venue hợp lệ bị cắt kết nối im lặng vì một độ dài field — đúng loại bẫy §4 đòi ghi lại, kèm nhãn `[to testing-skills]` nếu bài học là về test | A4 |
 | — | **CỬA: ADR-0057 viết, duyệt.** Không bước nào dưới đây bắt đầu trước | A5 |
 | **B1** | `TimestampCache<const FRAC>`; bốn nơi dùng nêu tên precision; `codec` bench arm ×3; alloc 0 | ADR-0057 |
@@ -178,10 +178,10 @@ không đọc exit code, và **CI xanh trên đúng commit đóng plan**, nêu i
 
 ## Tài liệu phải cập nhật
 
-- [ ] `docs/SESSION-BEHAVIOUR.md` — hành vi biên với `52=`, nêu tên test canh (A5)
-- [ ] `docs/reference/<bẫy>.md` — một field hợp lệ bị cắt kết nối im lặng vì độ dài (A5)
-- [ ] `CHANGELOG.md` — API công khai của `session`, rồi `codec` (A5, B5)
-- [ ] `STATUS.md` — mục *Start here*, item 45, **và đọc từng dòng mục *Not proven*** (A5, B5)
+- [x] `docs/SESSION-BEHAVIOUR.md` — hành vi biên với `52=`, nêu tên test canh (A5)
+- [x] [`docs/reference/a-valid-field-refused-for-its-width.md`](../reference/a-valid-field-refused-for-its-width.md) — một field hợp lệ bị cắt kết nối im lặng vì độ dài (A5)
+- [x] `CHANGELOG.md` — nửa A xong; `codec` chờ nửa B — API công khai của `session`, rồi `codec` (A5, B5)
+- [x] `STATUS.md` — nửa A xong; đã đọc *Not proven* từng dòng và thêm một dòng mới — mục *Start here*, item 45, **và đọc từng dòng mục *Not proven*** (A5, B5)
 - [ ] `docs/decisions/ADR-0057-*.md` — nguồn thời gian dưới mili giây (cửa)
 - [ ] `docs/CONFIGURATION.md` — key `TimestampPrecision` (B5)
 - [ ] `docs/DESIGN.md` §6/§8 — hàng cache mới, kèm số đo (B5)
@@ -216,6 +216,90 @@ handler); `DateTime` precision trong `dict` types; `SECONDS` precision khi gửi
 đây chưa ai hỏi).
 
 ## Nhật ký giao hàng
+
+`[2026-09-08]` **NỬA A ĐÓNG, đủ năm bước A1–A5.** Chủ dự án duyệt trong ngày. Nửa B **chưa bắt
+đầu** và vẫn nằm sau cửa ADR-0057.
+
+**Bằng chứng, theo thứ tự nó xảy ra.**
+
+**A1 đỏ trước khi sửa một dòng code nào**, và đỏ đúng ở assertion đã định:
+
+```
+thread 'a_microsecond_sending_time_is_read_and_the_link_survives' panicked at
+crates/session/tests/skew.rs:197:5:
+assertion `left == right` failed: a valid microsecond SendingTime is not a reason to hang up
+  left: Dropped
+ right: Up
+```
+
+**A2** — `parse_utc` nhận 17/21/24/27, cắt về ms. Ba test đơn vị mới trong `clock.rs`. **Và
+bốn chỗ `s[i]` của file bị dọn luôn**, nên `#![allow(clippy::indexing_slicing)]` ở đầu
+`clock.rs` biến mất và `scripts/check-indexing-debt.sh` **đỏ ngay lần chạy đầu**: *"the debt
+went DOWN, 188 -> 184, and the ceiling still says 188"*. Trần hạ xuống 184 trong cùng commit,
+đúng như bảng *Bất biến bị đụng tới* đòi. `CLAUDE.md` §2 chép con số đó trong văn xuôi nên
+cũng sửa theo, và điều đó được nói thẳng ra ở `STATUS.md`.
+
+**A3** — và fixture đầu tiên **sai theo cách thứ hai**. `122=` để `.123456` trong khi `52=`
+vẫn `.000` thì `122=` trỏ tới một thời điểm **sau** chính message chở nó: đó là
+`2f_PossDupOrigSendingTimeTooHigh`, `373=10`, Logout. Test đỏ ở assertion cái link chứ không
+phải ở assertion nó được viết ra để kiểm. Đổi sang `.000456` — cắt về đúng mili giây của
+`52=` — nên bây giờ test **còn đỏ thêm** nếu phần dưới mili giây bị giữ lại hay bị làm tròn
+lên.
+
+**Đảo chiều hai lần, không phải một.** Bỏ `24`: bốn test đỏ, mỗi cái ở assertion của riêng nó,
+và `application.rs` in ra nguyên văn cái Reject của hành vi cũ:
+
+```
+8=FIX.4.4|9=100|35=3|34=2|49=ISLD|52=20260828-12:00:00.000|56=TW44|45=2|
+58=Required tag missing|371=122|372=0|373=1|10=238|
+```
+
+Bỏ `27` riêng: hai assertion nano đỏ, phần còn lại xanh. Một lần đảo chiều bỏ cả hai độ dài
+thì không phân biệt được nhánh nano sống với nhánh nano chết.
+
+**A4 — gate, đọc từng dòng chứ không đọc exit code** (bài học `[measured 2026-09-08]` của
+chính `STATUS.md`: một `| tail` từng biến `build failed` thành `exit 0`):
+
+| Gate | Kết quả |
+|---|---|
+| `cargo test --all` | **594 passed, 0 failed** (nền 589) |
+| `cargo test --all --no-default-features` | **589 passed, 0 failed** (nền 584) |
+| 59 định nghĩa | **59 / 59**, `score.rs::step_six_b_replays_what_it_sent_and_scores_fifty_nine` |
+| `cargo fmt --all --check` | sạch (chạy `--check` riêng, ra file, 0 byte) |
+| `cargo clippy --all-targets -- -D warnings` | 0 warning, 0 error |
+| `scripts/check-indexing-debt.sh` | 184 / trần 184, ok |
+| `scripts/check-no-optional-deps.sh` | ok cả ba crate |
+| `benches/alloc.rs` (engine) | 0 trên đủ **30** case |
+| `benches/alloc.rs` (codec) | 0 trên đủ 6 case |
+| `cargo doc -D rustdoc::broken_intra_doc_links` | 0 warning |
+
+**Chưa chạy, và nói thẳng chứ không để ngầm hiểu:** `scripts/interop.sh` — máy này không có
+`cmake`. Nó cũng sẽ không nói được gì về việc này: QuickFIX mặc định gửi mili giây, còn key
+micro giây thuộc về nửa B chưa xây. `scripts/bench.sh --strict` cũng chưa chạy: `parse_utc`
+nằm trên đường nhận, nhưng thay đổi là một `match` trên `s.len()` thay cho hai phép so sánh và
+`benches/alloc.rs` là gate mà §7 đòi cho một thay đổi không cấp phát; con số Criterion nếu đo ở
+đây cũng là số của container, không phải số máy §9, nên nó sẽ là một dòng không được phép trích
+theo bất biến 10.
+
+**A5** — `docs/reference/a-valid-field-refused-for-its-width.md` (`[to testing-skills]`),
+`SESSION-BEHAVIOUR.md` §1a + §5, `CHANGELOG.md`, `STATUS.md` (*Start here*, item 45, item 55,
+*Where the work is*, và một dòng mới trong *Not proven*: **không có capture thật nào của một
+venue gửi `52=` micro giây** — cái này dựng từ spec và từ MiFID II, không dựng từ bằng chứng).
+
+**Cái nửa A KHÔNG làm:** engine vẫn **gửi** 21 byte ở mọi precision, không có key nào đổi được,
+nên một venue đòi `52=` micro giây **từ** engine này vẫn chưa được phục vụ. Đó là nửa B, và cửa
+ADR-0057 vẫn đóng.
+
+`[2026-09-08]` **Sửa 1, viết trước khi code chạm vào bất cứ file nào.** Plan tự mâu thuẫn ở
+đúng một chỗ và bản sửa này chọn nửa chặt hơn. *Chia việc* đặt tên bước A1 là
+`a_microsecond_sending_time_is_refused_today` — một test khẳng định hành vi **hôm nay**, tức là
+**xanh** ngay từ đầu — rồi A4 bảo *"đảo chiều"* nó. Nhưng *Cách kiểm chứng* mục 1 và 2 đòi
+**"A1 đỏ trước"** và **"A4 xanh sau, cùng một test, không sửa assertion"**, còn bảng *Bẫy đã
+lường trước* nói thẳng: *"A1 xanh ngay từ đầu → dừng plan lại"*. Hai câu sau không thể đúng
+cùng lúc với cái tên kia. Chọn theo *Cách kiểm chứng*: A1 khẳng định hành vi **mong muốn**, đỏ
+hôm nay, xanh sau A2, **assertion không đổi một chữ**. Lý do không phải hình thức — một test
+được viết để xanh rồi sau đó bị lật đúng là hình dạng "fixture bị uốn cho code" mà `CLAUDE.md`
+§10 bảo tự canh, và nó sẽ là chính tay mình uốn.
 
 `[2026-09-08]` **Draft 2026-09-04 được xác minh lại và sửa, chuyển sang *Chờ duyệt*.** Năm chỗ
 lệch, ghi ở đầu file. Chỗ lớn nhất: draft giả định engine đưa micro giây xuống cache được, mà

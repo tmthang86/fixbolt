@@ -31,7 +31,7 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 | `LogonIncomplete` | a Logon missing `98=` or `108=` |
 | `WrongSenderCompId` | `49=` is not the configured counterparty |
 | `WrongTargetCompId` | `56=` is not us |
-| `SendingTimeOutOfRange` | `52=` is absent, unreadable, or further from the engine's clock than `max_skew_ms`. Check NTP; `Session::last_skew_ms` says by how much |
+| `SendingTimeOutOfRange` | `52=` is absent, unreadable, or further from the engine's clock than `max_skew_ms`. Check NTP; `Session::last_skew_ms` says by how much. **`[2026-09-08]` "unreadable" is narrower than it was**: a microsecond or nanosecond stamp is read now, not dropped — see §1a |
 | `SequenceNumberTooLow` | `34=` is absent, unreadable, or already used |
 | `OutsideSchedule` | a message arrived while the schedule says the session is shut |
 | `CannotSend` | the session could not put a message on the wire and fails closed rather than send something malformed |
@@ -67,6 +67,34 @@ is what says so, and it exists because removing that line broke nothing else. Gu
 and `::without_a_logout_timeout_the_wait_runs_to_the_heartbeat_rules`.
 
 ---
+
+### 1a. The four widths a timestamp may arrive in `[added 2026-09-08]`
+
+`52=SendingTime` and `122=OrigSendingTime` are accepted at **17, 21, 24 or 27 bytes** —
+`YYYYMMDD-HH:MM:SS` with no fraction, or with three, six or nine fractional digits. FIX 4.4
+documents the first two; the other two are what a venue under MiFID II RTS 25 actually sends,
+and **until 2026-09-08 this engine dropped such a connection in silence**, because an
+unreadable `52=` before a Logon is `Refusal::BadSendingTime` and there is no session yet to
+answer with. Guarded by
+`crates/session/tests/skew.rs::a_microsecond_sending_time_is_read_and_the_link_survives`.
+
+**Anything finer than a millisecond is dropped, not rounded.** `Input::Tick` is milliseconds
+([`DESIGN.md`](DESIGN.md) D13) and so are skew, schedules and heartbeats, so `.123999` is
+123 ms. Truncation loses at most 999 µs of a skew measured against a 120 000 ms bound;
+rounding would let a stamp that is exactly right arrive one millisecond in the future.
+Guarded by `clock::tests::anything_finer_than_a_millisecond_is_dropped_and_not_rounded`.
+
+**This is the receive direction only.** The engine still *writes* 21 bytes, at every
+precision a counterparty sends, and there is no key to change that. Where that time would
+come from is an open architectural question: `TimestampCache` lives inside the pure session,
+which is fed milliseconds by `Input::Tick` and has no finer clock to format — see the plan's
+`ADR-0057` gate. A venue that requires a microsecond `52=` **from** this engine is not served
+today.
+
+**The 59 acceptance definitions say nothing about any of this.** 0 of them carry a stamp
+wider than 21 bytes, so `59 / 59` is evidence that this change broke nothing and no evidence
+at all that it added something. See
+[reference/a-valid-field-refused-for-its-width.md](reference/a-valid-field-refused-for-its-width.md).
 
 ## 2. The seven messages the session answers itself
 
@@ -290,7 +318,10 @@ library writes it for you —
 - **`97=Y` (PossResend)** marks a message the sender may have sent before.
   `19b_PossResendMessageThatHasNotBeenSent.def` sends one the receiver has not seen.
 - **`122=` OrigSendingTime** is checked against SendingTime; `2m_BodyLengthValueNotCorrect.def`
-  exercises that path.
+  exercises that path. `[2026-09-08]` it is read at all four widths of §1a — before that a
+  microsecond `122=` earned `373=1` naming tag 122, this engine calling a field missing that
+  the counterparty can see in its own log. Guarded by
+  `crates/session/tests/application.rs::a_microsecond_orig_sending_time_is_read_rather_than_reported_missing`.
 
 ---
 

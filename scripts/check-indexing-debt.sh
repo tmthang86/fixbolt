@@ -30,6 +30,10 @@ cd "$ROOT"
 # not raise it. `docs/plans/2026-09-07-three-gates-a-sibling-engine-has.md`.
 #
 # 2026-09-08: 207 -> 188, journal.rs (18 sites) and dispatch.rs (3) cleaned.
+# 2026-09-08: 188 -> 184, clock.rs (4) cleaned by wave B plan 3 half A. The
+#   file's `#![allow]` went with them: `parse_utc` grew a width and the new
+#   code asks with `get`, so the four `s[8]`/`s[11]`/`s[14]`/`s[17]` that were
+#   the whole of this file's debt were rewritten on the way past.
 #
 # **The floor is not 0.** Two of the remaining sites are `crc_table` and
 # `crc32` in crates/engine/src/journal.rs, where the bound is a `& 0xFF` mask
@@ -37,7 +41,7 @@ cd "$ROOT"
 # proof, and `--force-warn` counts them anyway — which is right, because the
 # count is of subscripts, not of unexcused ones. When only sites like those two
 # are left, the ceiling stops moving and STATUS.md item 55 closes by saying so.
-CEILING=188
+CEILING=184
 
 # `--force-warn` is the whole mechanism: unlike `-W`, it overrides `#![allow]`
 # in the source. Proven by counting either side of adding one — see the
