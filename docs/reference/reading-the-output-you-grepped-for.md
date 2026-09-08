@@ -113,3 +113,76 @@ And one about reversals, which cost nothing to learn here: **a reversal must bre
 assertion is about.** `` `echo Y` `` is a command substitution and it did prove the heredoc
 expands — but it expands *to the right answer*, so the assertion stayed green and proved
 nothing. Picking the break is the part that needs care; running it is the easy half.
+
+---
+
+## `[measured 2026-09-08]` The same shape again, and this time the filter did not hide the failure — it manufactured a success
+
+Two days later, in a session whose whole job was reading `STATUS.md`, a docs-only change was
+checked against `CLAUDE.md` §7's *every step, every commit* rule:
+
+```sh
+cargo test --all 2>&1 | tail -60
+```
+
+The tool harness reported **`exit code 0`**. The suite had not run at all. The last sixty lines
+said so plainly:
+
+```text
+error: failed to run custom build command for `fixbolt-dict v0.0.0`
+  fixbolt-dict: FIX 4.4 dictionary not found at ../../vendor/quickfix/spec/FIX44.xml
+    run scripts/fetch-quickfix-assets.sh
+warning: build failed, waiting for other jobs to finish...
+
+[exited with code 0]
+```
+
+`vendor/` is gitignored by ADR-0001 and a fresh clone does not have it, so `fixbolt-dict`'s
+`build.rs` refused — correctly, with a good message. **Nothing was wrong with the gate.** What
+was wrong is that the status reported for it belonged to somebody else.
+
+### Why the zero
+
+A pipeline's exit status is **its last command's**. `tail` read its input, printed it, and
+succeeded. `cargo`'s failure was never consulted. `set -o pipefail` fixes this and is in force
+in every `scripts/*.sh` here — it was not in force in an ad-hoc one-liner typed at a shell,
+which is exactly where nobody thinks to set it.
+
+So this is one turn worse than the 2026-09-06 case above. There, the filter could not *show* the
+surprise but the exit status was still honest and simply not trusted. Here the filter **became**
+the exit status. A green that was inferred from the wrong process is not a weaker green; it is
+not a green at all.
+
+### What found it
+
+Rule 1 of the previous section, applied for its own sake: the output was read rather than the
+status. `tail -60` happened to be wide enough to contain the error — **which is luck, and worth
+naming as luck.** A `tail -3`, or a `grep 'test result:'` built from what a passing run says,
+would have shown nothing at all and left `exit code 0` as the only signal. The filter that
+hid the failure and the filter that revealed it differed by a number chosen without thought.
+
+### The fix
+
+Never let a filter stand between a command and its status. Two forms, both cheap:
+
+```sh
+cargo test --all > /tmp/test.log 2>&1; echo "CARGO_EXIT=$?"   # status is cargo's
+set -o pipefail                                                # or make the pipe honest
+```
+
+The first is preferred for anything slow: the full log survives on disk for the unfiltered read
+rule 1 asks for, instead of being consumed by the filter that summarised it.
+
+### A fourth transferable rule, for the list above
+
+4. **A filter in a pipeline replaces the exit status as well as the output.** Any tool, harness
+   or CI step that reports "the command succeeded" is reporting on the *last* process in the
+   pipe. Redirect to a file and read the status of the command you actually care about — or
+   turn on `pipefail` and know that you did. The cost of getting this wrong is not a missed
+   failure; it is a **recorded success** that later work is allowed to build on.
+
+And one observation about environments, since this repository now runs on more than one machine:
+**a gate can be green on a desk and impossible in a container**, for reasons that are correct on
+both. `vendor/` is absent by design; the fetch script exists for exactly this and takes one
+command. The failure mode to guard is not "the container is broken" — it is concluding *the
+suite passes here* from a run that never compiled.
