@@ -17,6 +17,24 @@ below describe what a first release would contain.
 
 ### Changed
 
+- **`fixbolt_session::clock::parse_utc` reads a `UTCTimestamp` at four widths, not two.**
+  17, 21, 24 and 27 bytes — no fraction, or three, six or nine fractional digits. The
+  signature is unchanged and so is the unit: anything finer than a millisecond is
+  **truncated**, because `Input::Tick` is milliseconds and so are skew, schedules and
+  heartbeats.
+
+  This is a behaviour change at the boundary, not only a parser one. A microsecond `52=`
+  was previously unreadable, which before a Logon means `Refusal::BadSendingTime` — **the
+  connection was dropped with nothing sent**, the treatment a wrong clock earns, applied to
+  a right one. A microsecond `122=OrigSendingTime` earned `373=1` naming tag 122. Both are
+  read now.
+  [`docs/SESSION-BEHAVIOUR.md` §1a](docs/SESSION-BEHAVIOUR.md),
+  [the trap](docs/reference/a-valid-field-refused-for-its-width.md).
+
+  **Receive only.** The engine still writes 21 bytes at every precision; the send direction
+  needs a decision about where a pure session would get sub-millisecond time from, and that
+  decision is not made.
+
 - **BREAKING: `fixbolt_session::Application::on_message` takes a `Header<'_>`** in place of the
   loose `seq: u32, stamp: &[u8]` pair, and **`fixbolt::Reply::new` gains a
   `last_processed: Option<u32>`**.

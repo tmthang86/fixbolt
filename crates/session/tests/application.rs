@@ -486,3 +486,66 @@ fn a_reply_carries_369_only_because_the_application_wrote_it() {
         );
     }
 }
+
+/// **The second path through `parse_utc`, and it fails differently.**
+///
+/// `122=OrigSendingTime` is read by the same function as `52=`, so a
+/// microsecond stamp was `None` here too — but a `None` here is not a silent
+/// hang-up. It is `373=1 RequiredTagMissing` naming tag 122
+/// (`2g_PossDupNoOrigSendingTime.def`): the session tells a venue that a field
+/// it can see in its own log is missing. One fix, two refusals, so two tests.
+///
+/// `52=` is left at the corpus's own width on purpose. A message wrong in two
+/// ways proves nothing about which rule caught it — `14d` and `14b` are in the
+/// corpus for exactly that reason — so the only wide field here is the one
+/// under test.
+///
+/// # And the fraction is `.000456`, which is the second thing this asserts
+///
+/// `[measured 2026-09-08]` the first version of this fixture used `.123456`
+/// and the session **ended the link**. It was right to: `122=` then names an
+/// instant *after* the `52=` it arrived with, which is
+/// `2f_PossDupOrigSendingTimeTooHigh` — `373=10` and a Logout. The fixture was
+/// wrong in two ways, exactly what the paragraph above warns about, and it
+/// took a `Dropped` to notice.
+///
+/// `.000456` truncates to the same millisecond as `52=`, so `orig > sent` is
+/// false — **and it is false only because the sub-millisecond part is
+/// dropped**. A `parse_utc` that kept it, or rounded it up, puts this test
+/// back on the `373=10` path and turns it red.
+#[test]
+fn a_microsecond_orig_sending_time_is_read_rather_than_reported_missing() {
+    let mut s = logged_on();
+
+    let msgs = inputs("2e_PossDupAlreadyReceived.def");
+    // `I` line 2 puts the count at 3; line 3 is the same 34=2 admitted with
+    // `43=Y`, which is the one that carries `122=`.
+    assert_eq!(s.received(&msgs[1], |_| {}), Link::Up, "34=2 is consumed");
+
+    let poss_dup = msgs[2].clone();
+    assert!(
+        String::from_utf8_lossy(&poss_dup).contains("122=20260828-12:00:00\u{1}"),
+        "the corpus stamps `122=` to the second; this test rewrites that field"
+    );
+    let wide = reframe(&set(
+        &poss_dup,
+        "\u{1}122=20260828-12:00:00\u{1}",
+        "\u{1}122=20260828-12:00:00.000456\u{1}",
+    ));
+
+    let mut out = Vec::new();
+    let link = s.received(&wide, |b| {
+        out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
+    });
+
+    assert_eq!(
+        link,
+        Link::Up,
+        "a readable `122=` is not a reason to end it"
+    );
+    assert!(
+        out.is_empty(),
+        "a repeat the session has already seen is dropped in silence; \
+         a `373=1` here would be this engine calling a field it cannot parse missing: {out:?}"
+    );
+}
