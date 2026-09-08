@@ -43,6 +43,13 @@
 //! but `standard` carries none — so *"there were more than this"* is a fact to
 //! report, not a case to fail on.
 
+// `[measured 2026-09-08]` 6 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 

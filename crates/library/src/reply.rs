@@ -20,6 +20,13 @@
 //! ascending. That is `CLAUDE.md` §2 non-negotiable 5, and it is the reason this
 //! type exists at all rather than a `&mut [u8]` and a comment.
 
+// `[measured 2026-09-08]` 2 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 use core::ops::Range;
 
 use fixbolt_codec::{EncodeError, GroupData, TemplateBuilder};

@@ -9,6 +9,10 @@
 //!
 //! The gate is `9=101` — byte-exact, because tag 9 is not in `fields.fmt`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use fixbolt_conformance::compare::compare;
 use fixbolt_conformance::echo::echo;

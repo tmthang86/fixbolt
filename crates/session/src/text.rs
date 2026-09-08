@@ -37,6 +37,13 @@
 //! keeps only the corpus-derived assertion in `tests/text.rs`. Written to move:
 //! no `std`, no dependency on anything in this crate.
 
+// `[measured 2026-09-08]` 2 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 /// A `58=Text` value the acceptance definitions expect.
 ///
 /// The variants that pair with a `373=` are listed in code order.

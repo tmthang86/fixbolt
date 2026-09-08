@@ -15,6 +15,10 @@
 //! reading — see the note under `judge_allocs` below.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #![allow(unsafe_code)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -33,6 +33,13 @@
 //! after a connection has logged on still reaches the session, unchanged.
 //! [ADR-0022](../../../docs/decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md).
 
+// `[measured 2026-09-08]` 3 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 /// What the front of the buffer holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cut {

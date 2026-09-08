@@ -76,7 +76,17 @@ list by hand. Each names the decision it enforces.
     someone else's claim and is labelled as such.
 
 **Machine-checked today:** 7 — `scripts/check-lint-config.sh`, run by CI, proves by reversal
-that the workspace lints actually deny `unwrap`/`expect`/`panic`. 6 — the
+that the workspace lints actually deny `unwrap`/`expect`/`panic`. **7 also, and only in part, by
+`scripts/check-indexing-debt.sh` since 2026-09-08**: `a[i..j]` panics and names none of those three,
+which is why they were all blind to the `copy_from_slice` panic of `[measured 2026-09-06]`.
+`indexing_slicing = "deny"` is on, the 19 files that still owe carry a scoped `allow`, and the script
+counts them anyway with `--force-warn` — which overrides an `allow` — against a ceiling of **188**
+that may only go down. **The `deny` half was inert for a day and the count did not show it**:
+`[measured 2026-09-08]` three of the allows were written `#![allow]` at the top of a `lib.rs`, which
+is an *inner* attribute and silences the whole crate, so new indexing in a clean module of `engine`,
+`session` or `dict` compiled without a word while the ratchet read exactly right
+(`docs/reference/an-allow-at-the-top-of-a-file-silenced-the-whole-crate.md`). Scoped to 15 functions
+now, and the reversal is run per crate rather than once. 6 — the
 `no-default-features` CI job **plus `scripts/check-no-optional-deps.sh`, and the second is not
 a nicety**: `[measured 2026-08-30]` the CI job alone was green about a build that never
 happened. `cargo test --all --no-default-features` still compiled `libc`, because `tools/w2w`

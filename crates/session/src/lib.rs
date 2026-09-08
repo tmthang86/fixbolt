@@ -325,6 +325,10 @@ struct Name<const N: usize> {
 }
 
 impl<const N: usize> Name<N> {
+    // `[measured 2026-09-08]` 1 indexing/slicing site. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     fn new(src: &[u8]) -> Self {
         let mut buf = [0u8; N];
         // Keeps the truncation rather than blanking it, so `fits` is the only
@@ -1909,7 +1913,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             journal.mark_out(self.next_out - 1);
         }
     }
-
+    // `[measured 2026-09-08]` 1 indexing/slicing site. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     fn tick_inner<F: FnMut(&[u8])>(&mut self, now_ms: u64, emit: &mut F) -> Link {
         self.now_ms = now_ms;
         // Before anything else, because a boundary that passed while this end
@@ -2149,7 +2156,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         }
         link
     }
-
+    // `[measured 2026-09-08]` 7 indexing/slicing sites. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// Judge every held message the count has caught up with.
     fn drain<A: Application, J: Journal, F: FnMut(&[u8])>(
         &mut self,
@@ -2180,7 +2190,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         }
         Link::Up
     }
-
+    // `[measured 2026-09-08]` 6 indexing/slicing sites. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// Hold a message that arrived ahead of the count.
     ///
     /// Silently drops it when there is no room, or when it is longer than a
@@ -2244,7 +2257,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         }
         Link::Up
     }
-
+    // `[measured 2026-09-08]` 1 indexing/slicing site. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// Write one templated message and hand it to `emit`.
     ///
     /// The template is chosen by `which`, not by a field order at this call
@@ -2375,7 +2391,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         self.tell_journal(journal);
         link
     }
-
+    // `[measured 2026-09-08]` 8 indexing/slicing sites. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// Write one `Reject (35=3)` and hand it to `emit`.
     fn send_reject<F: FnMut(&[u8])>(&mut self, r: &Reject, emit: &mut F) -> Link {
         let mut text = [0u8; SessionText::MAX_LEN];
@@ -2445,7 +2464,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
     ) -> Result<(), Refusal> {
         self.send_as(which, None, extra, emit)
     }
-
+    // `[measured 2026-09-08]` 3 indexing/slicing sites. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// As [`Self::send`], but with the sequence number chosen by the caller.
     ///
     /// `Some(n)` writes `34=n` and leaves the outbound count alone: a gap fill
@@ -2527,7 +2549,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         self.last_sent_ms = self.now_ms;
         Ok(())
     }
-
+    // `[measured 2026-09-08]` 2 indexing/slicing sites. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// Originate an application message.
     ///
     /// The acceptor never needs this — everything it sends is an answer. An
@@ -2589,7 +2614,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
     fn kept<J: Journal>(journal: &J, seq: u32) -> bool {
         journal.get(seq).is_some()
     }
-
+    // `[measured 2026-09-08]` 1 indexing/slicing site. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// Send the kept message numbered `seq` again, as a resend of itself.
     ///
     /// `false` if it is not in the journal — the caller then fills over it.
@@ -2697,7 +2725,10 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             emit,
         )
     }
-
+    // `[measured 2026-09-08]` 6 indexing/slicing sites. Scoped to this
+    // function and NOT to the file: a crate-root `#![allow]` silences the
+    // whole crate, submodules included. STATUS.md item 55.
+    #[allow(clippy::indexing_slicing)]
     /// Read one message, decide, and answer. The order the checks run in is
     /// the order QuickFIX applies them, and it is load-bearing: two rules that
     /// share an outcome are indistinguishable to the corpus, so which one fires
@@ -3538,7 +3569,10 @@ fn missing_required<const N: usize>(
     }
     None
 }
-
+// `[measured 2026-09-08]` 2 indexing/slicing sites. Scoped to this
+// function and NOT to the file: a crate-root `#![allow]` silences the
+// whole crate, submodules included. STATUS.md item 55.
+#[allow(clippy::indexing_slicing)]
 /// The `35=` of a frame the parser could not read, straight out of the bytes.
 ///
 /// QuickFIX does the same thing for the same reason: it has to decide whether
@@ -3580,7 +3614,10 @@ fn msg_type_of(bytes: &[u8]) -> Option<&[u8]> {
 fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<core::ops::Range<usize>> {
     rebuild(kept, None, now, None, true, out)
 }
-
+// `[measured 2026-09-08]` 2 indexing/slicing sites. Scoped to this
+// function and NOT to the file: a crate-root `#![allow]` silences the
+// whole crate, submodules included. STATUS.md item 55.
+#[allow(clippy::indexing_slicing)]
 /// Write an application message this end is originating, or replaying.
 ///
 /// `seq` renumbers it; `None` keeps the number already on it, which is what a
@@ -3745,7 +3782,10 @@ impl<const N: usize> core::ops::Deref for Held<N> {
         &self.buf[..self.len]
     }
 }
-
+// `[measured 2026-09-08]` 2 indexing/slicing sites. Scoped to this
+// function and NOT to the file: a crate-root `#![allow]` silences the
+// whole crate, submodules included. STATUS.md item 55.
+#[allow(clippy::indexing_slicing)]
 /// `n` in decimal, into `buf`. No `format!`, no allocation — non-negotiable 2.
 fn digits(n: u32, buf: &mut [u8; 10]) -> &[u8] {
     let mut at = buf.len();

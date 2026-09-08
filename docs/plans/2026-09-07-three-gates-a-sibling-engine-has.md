@@ -1,6 +1,6 @@
 # Ba cái gate mà một engine anh em có, còn cái này thì không
 
-> **Loại:** Plan · **Ngày:** 2026-09-07 · **Trạng thái:** Đã duyệt 2026-09-08
+> **Loại:** Plan · **Ngày:** 2026-09-07 · **Trạng thái:** **Đã đóng 2026-09-08**, đủ cả năm bước
 > **Phạm vi:** hạ tầng gate — lint, CI, và tầng đọc socket của `tools/interop`
 
 > **Duyệt nguyên văn, đủ cả năm bước** — bước 4 giữ nguyên trong phạm vi.
@@ -153,16 +153,16 @@ lại, số ghi vào nhật ký giao hàng kèm máy đã chạy. 59 acceptance 
 
 ## Tài liệu phải cập nhật
 
-- [ ] `CLAUDE.md` §2, danh sách "Machine-checked today": bất biến 7 nay có thêm
+- [x] `CLAUDE.md` §2, danh sách "Machine-checked today": bất biến 7 nay có thêm
       `scripts/check-indexing-debt.sh`, ghi rõ nó canh cái gì và trần là bao nhiêu
-- [ ] `STATUS.md` mục Open items: ba item mới **54** (interop gộp kết cục), **55** (nợ
+- [x] `STATUS.md` mục Open items: ba item mới **54** (interop gộp kết cục), **55** (nợ
       `indexing_slicing`, kèm trần hiện tại), **56** (chưa có gate license/advisory) — item 55 và
       56 đóng ngay trong plan này, 54 cũng vậy
-- [ ] `docs/reference/three-outcomes-collapsed-into-one-none.md` — write-up lỗ 1, đánh dấu
+- [x] `docs/reference/three-outcomes-collapsed-into-one-none.md` — write-up lỗ 1, đánh dấu
       **`[to testing-skills]`** (§11: đây là "một gate pass hoặc fail vì lý do khác với thứ đang
       được kiểm", đúng hàng `references/false-greens.md`)
-- [ ] `docs/reference/` — nếu bước 4 lộ ra thêm bẫy nào thì viết vào, ưu tiên cao nhất theo §4
-- [ ] `CHANGELOG.md` nếu bước 4 đổi public API của `engine` (dự kiến không)
+- [x] `docs/reference/` — nếu bước 4 lộ ra thêm bẫy nào thì viết vào, ưu tiên cao nhất theo §4
+- [x] `CHANGELOG.md` nếu bước 4 đổi public API của `engine` (dự kiến không)
 
 **Không cần cập nhật:** `DESIGN.md` (không thêm/bớt crate, không đổi public API), `PRD.md`,
 `CONFORMANCE.md` (không có số conformance nào đổi), `docs/best-practices-*.md`.
@@ -206,3 +206,52 @@ lại, số ghi vào nhật ký giao hàng kèm máy đã chạy. 59 acceptance 
 ## Nhật ký giao hàng
 
 *(chưa bắt đầu — plan đang chờ duyệt)*
+
+
+---
+
+## Đã làm xong — 2026-09-08
+
+**Cả năm bước, chạy trên máy Linux của chủ dự án** (AMD Ryzen 7 3700X, Linux 7.0.0-31),
+`scripts/check-machine.sh` **10 pass / 2 fail / 1 unknown** — hai cái fail là `isolcpus` và
+C-states, cả hai cần sửa kernel command line rồi reboot, ngoài phạm vi plan này.
+
+`cargo test --all` **589 passed, 0 failed** (585 trước đó, +4 test mới của bước 2);
+`--no-default-features` **584**; 59 acceptance definitions **59 / 59**
+(`score.rs` assert thẳng `report.passed == 59`); `benches/alloc.rs` **0 trên cả 30 case**;
+`benches/dispatch.rs` nằm trong band ở cả ba case
+(7.7 / 271.4 / 503.9 ns). `scripts/bench.sh` đầy đủ: **16 / 16 target đo được, 0 silent,
+0 invariant fail, 0 vượt baseline, 0 dưới band**, exit 0 — bao gồm cả case `journal`,
+là cái duy nhất bước 4 có thể làm chậm.
+
+**Ba phát hiện mà plan không lường trước, cả ba đều đã viết ra:**
+
+1. **`cargo-deny` không nhìn thấy dev-dependency.** Reversal đầu tiên dùng dev-dependency và
+   xanh — trông như reversal hỏng. `STATUS.md` item 57, đóng bằng cách so số crate với
+   `cargo tree` trong CI chứ không vá được ở tầng công cụ.
+2. **`#![allow]` ở đầu `lib.rs` là inner attribute, tắt lint cho cả crate.** Nửa `deny` của
+   ratchet chết ở `engine`, `session`, `dict` trong khi bộ đếm vẫn đúng. `STATUS.md` item 58.
+   Đã đổi sang `#[allow]` phạm vi từng hàm, 15 hàm.
+3. **Số file nhận `allow` là 81 chứ không phải 21.** `[workspace.lints]` với tới cả `tests/`,
+   `benches/` và `tools/`; 21 file `src/` là phần trong phạm vi và là phần trần đếm, 60 file
+   còn lại nhận `allow` kèm một câu nói rõ chúng nằm ngoài bất biến 7.
+
+**CI đỏ ba job ở lần chạy đầu, và hai trong ba là chính gate mới hỏng ở khâu đọc output.**
+`CARGO_TERM_COLOR: always` nằm ở đầu `.github/workflows/ci.yml`; bật màu thì
+`--message-format short` bọc ANSI vào từng dòng, `check-indexing-debt.sh` khớp **0 trên 188
+site**, và phép so danh sách crate của job `deny` báo cả 11 crate vừa thiếu vừa thừa. **Cái
+guard "0 site là FAIL" là thứ biến cái đó thành job đỏ thay vì job xanh** — viết ra khi chưa có
+gì để bắt, và bắt được ngay lần chạy thật đầu tiên. Cả hai nay dùng `--color never`, và đã thử
+lại dưới `CARGO_TERM_COLOR=always` ở máy trước khi push. Job đỏ thứ ba là thật:
+**ba site trong `crates/engine/src/affinity.rs`, nằm sau `--features affinity`** — mặc định tắt
+và chỉ Linux, nên lần đếm ban đầu (default features) không hề compile nó. Đã dọn, và script nay
+đếm hợp của hai cấu hình feature trên Linux; chứng minh bằng một site thêm vào đúng file đó,
+188 → 189.
+
+**Không làm được ở đây:** `scripts/interop.sh` không chạy trên desk này vì thiếu `cmake`
+(script `exit 1` đúng — cái nuốt exit code là `| tail` trong lệnh gọi, đúng bài
+`reading-the-output-you-grepped-for`). Yêu cầu "sáu scenario giữ nguyên điểm" của bước 2 do
+job `interop` trong CI gánh, ở đúng commit đóng plan, và không có gì khác gánh.
+
+**Trần `indexing_slicing`: 207 → 188.** Sàn không phải 0 — xem ghi chú cạnh `CEILING` trong
+`scripts/check-indexing-debt.sh`.

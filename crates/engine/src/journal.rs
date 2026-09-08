@@ -155,7 +155,13 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
         // comparison rather than a scan of all `N` — which at 4096 slots is
         // what makes a 1000-message resend affordable instead of four million
         // comparisons on the engine thread. ADR-0046 decision 3.
-        let slot = &mut self.slots[(seq as usize) % N];
+        let Some(slot) = self.slots.get_mut((seq as usize) % N) else {
+            // Unreachable: `N == 0` returned above and the modulus is `% N`.
+            // Written as a refusal rather than an index because the compiler
+            // cannot see that, and a refusal is already a legal outcome here —
+            // it becomes a gap fill. `indexing_slicing`, 2026-09-08.
+            return false;
+        };
         slot.seq = seq;
         slot.len = u16::try_from(bytes.len()).unwrap_or(0);
         slot.buf[..bytes.len()].copy_from_slice(bytes);
@@ -181,7 +187,7 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
         if N == 0 {
             return None;
         }
-        let slot = &self.slots[(seq as usize) % N];
+        let slot = self.slots.get((seq as usize) % N)?;
         (slot.seq == seq && slot.len > 0).then(|| &slot.buf[..usize::from(slot.len)])
     }
 
@@ -341,6 +347,11 @@ enum Format {
 /// each of its own; a 256-entry table is thirty lines and a `const fn`, and a
 /// crate for it would be a dependency in the dependency tree of a FIX engine
 /// for the rest of its life.
+// The loop is bounded by `i < 256` and the array is 256 long. `const fn` rules
+// out the alternative outright: neither `slice::get_mut` nor `Option` is
+// available in a const context on this toolchain. `indexing_slicing`,
+// 2026-09-08.
+#[allow(clippy::indexing_slicing)]
 const fn crc_table() -> [u32; 256] {
     let mut table = [0u32; 256];
     let mut i = 0usize;
@@ -370,6 +381,14 @@ static CRC_TABLE: [u32; 256] = crc_table();
 /// `seq`, `len` and the payload into a buffer first — on the `Fsync` path that
 /// would be an allocation on the engine thread, which is the one thing this
 /// module may not do.
+// `[measured 2026-09-08]` **The one index in this module that stays an index.**
+// `idx` is masked with `& 0xFF` on the line above, and `CRC_TABLE` is 256 long,
+// so the subscript is in range by construction — but clippy cannot see a proof
+// that lives one line up, and `indexing_slicing` is denied workspace-wide.
+// `.get(idx).unwrap_or(&0)` would replace an impossible panic with a *silent
+// wrong checksum*, which is strictly worse: the panic would at least be found.
+// This runs per byte on the `Fsync` path, which is the other reason.
+#[allow(clippy::indexing_slicing)]
 fn crc32(parts: &[&[u8]]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for part in parts {
@@ -501,8 +520,7 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
         let existing = std::fs::read(path).unwrap_or_default();
         // A file that is not there yet is version 1; one that is there is
         // whatever its first five bytes say, for ever.
-        let has_header =
-            existing.len() >= HEADER_V1.len() && &existing[..HEADER_V1.len()] == HEADER_V1;
+        let has_header = existing.get(..HEADER_V1.len()) == Some(HEADER_V1);
         let format = if existing.is_empty() || has_header {
             Format::V1
         } else {
@@ -518,15 +536,45 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
             while at + RECORD_HEADER <= bytes.len() {
                 let mut s4 = [0u8; 4];
                 let mut l4 = [0u8; 4];
-                s4.copy_from_slice(&bytes[at..at + RECORD_SEQ]);
-                l4.copy_from_slice(&bytes[at + RECORD_SEQ..at + RECORD_HEADER]);
+                // **A journal file is the one input to this module that another
+                // process wrote**, and it can be torn, truncated or garbage.
+                // Every read of it goes through `get`, and a `None` is treated
+                // exactly as a torn tail: stop, keep everything before this
+                // point, report the bytes dropped. `indexing_slicing`,
+                // 2026-09-08.
+                let (Some(sb), Some(lb)) = (
+                    bytes.get(at..at + RECORD_SEQ),
+                    bytes.get(at + RECORD_SEQ..at + RECORD_HEADER),
+                ) else {
+                    torn = bytes.len() - at;
+                    break;
+                };
+                s4.copy_from_slice(sb);
+                l4.copy_from_slice(lb);
                 let seq = u32::from_le_bytes(s4);
                 let len = u32::from_le_bytes(l4) as usize;
-                let end = at + RECORD_HEADER + len;
+                // Checked, because `len` comes off the disk. On a 32-bit target
+                // a corrupt length wraps this sum, and a wrapped `end` names a
+                // range that is *in bounds and wrong* — which `get` cannot save
+                // us from. `Reader::open` already did this; the writing side
+                // did not.
+                let Some(end) = at
+                    .checked_add(RECORD_HEADER)
+                    .and_then(|x| x.checked_add(len))
+                else {
+                    torn = bytes.len() - at;
+                    break;
+                };
                 // A version-1 record carries its checksum after the payload, so
                 // "the whole record" is four bytes longer.
                 let whole = if format == Format::V1 {
-                    end + RECORD_CRC
+                    match end.checked_add(RECORD_CRC) {
+                        Some(w) => w,
+                        None => {
+                            torn = bytes.len() - at;
+                            break;
+                        }
+                    }
                 } else {
                     end
                 };
@@ -554,30 +602,38 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 // framed and correctly numbered.
                 if format == Format::V1 {
                     let mut c4 = [0u8; RECORD_CRC];
-                    c4.copy_from_slice(&bytes[end..whole]);
-                    if u32::from_le_bytes(c4) != crc32(&[&bytes[at..end]]) {
+                    let (Some(cb), Some(body)) = (bytes.get(end..whole), bytes.get(at..end)) else {
+                        torn = bytes.len() - at;
+                        break;
+                    };
+                    c4.copy_from_slice(cb);
+                    if u32::from_le_bytes(c4) != crc32(&[body]) {
                         corrupt = 1;
                         torn = bytes.len() - at;
                         break;
                     }
                 }
+                let Some(payload) = bytes.get(at + RECORD_HEADER..end) else {
+                    torn = bytes.len() - at;
+                    break;
+                };
                 if seq == ACTIVITY_MARK && len == ACTIVITY_LEN {
                     let mut t = [0u8; ACTIVITY_LEN];
-                    t.copy_from_slice(&bytes[at + RECORD_HEADER..end]);
+                    t.copy_from_slice(payload);
                     // **The latest wins, not the first.** They are appended in
                     // order, so the last one is the one that describes the
                     // session at the moment it stopped.
                     last_active = Some(u64::from_le_bytes(t));
                 } else if seq == ACTIVITY_MARK && len == OUTBOUND_LEN {
                     let mut n = [0u8; OUTBOUND_LEN];
-                    n.copy_from_slice(&bytes[at + RECORD_HEADER..end]);
+                    n.copy_from_slice(payload);
                     // `mark_out` takes the max, so the order these are read in
                     // does not matter and a wound-back count does not lower it.
                     mem_recovered.mark_out(u32::from_le_bytes(n));
                 } else if len == INBOUND_MARK {
                     mem_recovered.mark_in(seq);
                 } else {
-                    mem_recovered.put(seq, &bytes[at + RECORD_HEADER..end]);
+                    mem_recovered.put(seq, payload);
                 }
                 at = whole;
             }
@@ -707,14 +763,19 @@ fn write_loop(mut file: File, mut from_engine: Consumer, format: Format) {
                 return;
             }
             Some(n) => {
-                let _ = file.write_all(&buf[..n]);
+                // `pop` never writes more than the buffer it was handed, so
+                // this is `Some` — but a `None` here would be a silent partial
+                // record on disk, and skipping the pop is the only answer that
+                // does not write one. `indexing_slicing`, 2026-09-08.
+                let Some(record) = buf.get(..n) else { continue };
+                let _ = file.write_all(record);
                 // **The checksum is computed here, not on the engine thread.**
                 // `Async` exists to keep work off that thread, and a CRC over a
                 // 200-byte record is ~100 ns of it. `Fsync` has no writer to
                 // hand it to and pays it inline, which is the smaller half of
                 // what that mode already costs.
                 if format == Format::V1 {
-                    let _ = file.write_all(&crc32(&[&buf[..n]]).to_le_bytes());
+                    let _ = file.write_all(&crc32(&[record]).to_le_bytes());
                 }
             }
             None => std::hint::spin_loop(),
@@ -999,7 +1060,7 @@ impl Reader {
     /// Whatever reading the file returns.
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
-        let format = if bytes.len() >= HEADER_V1.len() && &bytes[..HEADER_V1.len()] == HEADER_V1 {
+        let format = if bytes.get(..HEADER_V1.len()) == Some(HEADER_V1) {
             Format::V1
         } else {
             Format::V0
@@ -1012,7 +1073,10 @@ impl Reader {
         let mut corrupt = 0usize;
         while at + RECORD_HEADER <= bytes.len() {
             let mut l4 = [0u8; 4];
-            l4.copy_from_slice(&bytes[at + RECORD_SEQ..at + RECORD_HEADER]);
+            let Some(lb) = bytes.get(at + RECORD_SEQ..at + RECORD_HEADER) else {
+                break;
+            };
+            l4.copy_from_slice(lb);
             let len = u32::from_le_bytes(l4) as usize;
             let Some(end) = at
                 .checked_add(RECORD_HEADER)
@@ -1033,8 +1097,11 @@ impl Reader {
             }
             if format == Format::V1 {
                 let mut c4 = [0u8; RECORD_CRC];
-                c4.copy_from_slice(&bytes[end..whole]);
-                if u32::from_le_bytes(c4) != crc32(&[&bytes[at..end]]) {
+                let (Some(cb), Some(body)) = (bytes.get(end..whole), bytes.get(at..end)) else {
+                    break;
+                };
+                c4.copy_from_slice(cb);
+                if u32::from_le_bytes(c4) != crc32(&[body]) {
                     corrupt = 1;
                     break;
                 }

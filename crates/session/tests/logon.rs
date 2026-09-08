@@ -6,6 +6,10 @@
 //! for that rule does not prove it. Every test here exists because a reversal
 //! stayed green.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use fixbolt_conformance::script::{
     FIXED_TIME_IN, FIXED_TIME_MILLIS, FIXED_TIME_OUT, Kind, scenarios, with_real_checksum,

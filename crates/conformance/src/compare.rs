@@ -38,6 +38,13 @@
 //!
 //! [`docs/reference/quickfix-acceptance-def-format.md`]: ../../../docs/reference/quickfix-acceptance-def-format.md
 
+// `[measured 2026-09-08]` 1 `clippy::indexing_slicing` site in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 const SOH: u8 = 0x01;
 
 /// The first difference found, or nothing.

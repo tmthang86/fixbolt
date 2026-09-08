@@ -1,6 +1,10 @@
 //! The parser's syntax contract, on hand-built frames. Real `.def` data is
 //! `tests/defs.rs`; these are the boundaries that corpus does not contain.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
 
 use fixbolt_codec::{FieldIndex, NoDict, ParseError, Parsed, Validation, parse_into};
 

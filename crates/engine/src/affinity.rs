@@ -140,7 +140,14 @@ pub fn pin_current_thread(core: CoreId) -> Result<(), AffinityError> {
     }
 
     let mut wanted: Mask = [0; MASK_WORDS];
-    wanted[core.0 / 64] = 1u64 << (core.0 % 64);
+    // The bound is the `core.0 >= MASK_WORDS * 64` refusal above, which clippy
+    // cannot see. Written as a second refusal rather than as an index, so the
+    // two guards say the same thing and neither can be removed without the
+    // other going red — `indexing_slicing`, denied workspace-wide 2026-09-08.
+    let Some(word) = wanted.get_mut(core.0 / 64) else {
+        return Err(AffinityError::NoSuchCore(core));
+    };
+    *word = 1u64 << (core.0 % 64);
 
     // SAFETY: `wanted` is a live, 8-aligned `[u64; 16]` owned by this frame, and
     // its size in bytes is passed as `cpusetsize`, so the kernel reads only
@@ -420,8 +427,13 @@ impl Topology {
             .copied()
             .collect();
 
+        // `get(..i)` rather than `[..i]`: `i` comes from `enumerate` over the
+        // same vector and cannot be out of range, but the proof is on the line
+        // above and `indexing_slicing` is denied workspace-wide. A `None` here
+        // is unreachable and skipping the comparison is the harmless reading of
+        // it — the duplicate would be caught on the next pair.
         for (i, core) in named.iter().enumerate() {
-            if named[..i].contains(core) {
+            if named.get(..i).is_some_and(|seen| seen.contains(core)) {
                 return Err(AffinityError::DuplicateCore(*core));
             }
         }
@@ -439,7 +451,7 @@ impl Topology {
         // physical core, which is the same harm as two shards sharing one — so
         // this runs over every named core, not only the shards.
         for (i, a) in named.iter().enumerate() {
-            for b in &named[..i] {
+            for b in named.get(..i).unwrap_or(&[]) {
                 if self.siblings_of(*a).contains(b) && a != b {
                     return Err(AffinityError::SmtSiblingOf(*b, *a));
                 }

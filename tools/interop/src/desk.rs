@@ -25,6 +25,11 @@
 //! Nothing here is ordered by hand — non-negotiable 5. The fields go out in the
 //! dictionary's order because [`fixbolt::Reply`] puts them there.
 
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
+
 use fixbolt::{Answer, GroupData, GroupEntryData, Handler, Incoming, Peer, Reply};
 
 /// Fills every `NewOrderSingle` at the quantity it was sent with.

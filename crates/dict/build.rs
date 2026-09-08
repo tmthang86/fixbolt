@@ -12,6 +12,11 @@
 //!   * `<message>` may be self-closing (`XMLnonFIX`), so "has children" is not
 //!     the same as "exists".
 
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+#![allow(clippy::indexing_slicing)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -440,6 +445,11 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
          /// answer to a question that should not have been asked is no.\n\
          #[inline]\n\
          #[must_use]\n\
+         // The bound is on the line below the index. clippy cannot see that, and\n\
+         // `indexing_slicing` is denied workspace-wide since 2026-09-08 — so the\n\
+         // allow is emitted here, on the function, rather than at the crate root\n\
+         // where it would silence hand-written code too. STATUS.md item 55.\n\
+         #[allow(clippy::indexing_slicing)]\n\
          pub fn allows(msg_type: &[u8], tag: u32) -> bool {\n\
          \x20   let word = (tag / 64) as usize;\n\
          \x20   ALLOWED\n\
@@ -508,6 +518,10 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
          /// Whether FIX 4.4 defines this tag at all. Answers `373=0`.\n\
          #[inline]\n\
          #[must_use]\n\
+         // Same shape as `allows`, and `const fn` rules out `.get()`: neither\n\
+         // `slice::get` nor `Option::is_some_and` is const. The bound is the\n\
+         // left half of the `&&` on the line below. STATUS.md item 55.\n\
+         #[allow(clippy::indexing_slicing)]\n\
          pub const fn is_defined_tag(tag: u32) -> bool {{\n\
          \x20   let word = (tag / 64) as usize;\n\
          \x20   word < DEFINED_TAGS.len() && (DEFINED_TAGS[word] >> (tag % 64)) & 1 == 1\n\

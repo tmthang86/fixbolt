@@ -29,6 +29,13 @@
 //!
 //! [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
 
+// `[measured 2026-09-08]` 4 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 /// The two sides a FIX message names, borrowed from the buffer it arrived in.
 ///
 /// **In wire order.** `sender` is `49=` and `target` is `56=` exactly as they

@@ -1,6 +1,13 @@
 //! One connection: a socket, a receive buffer, a state machine, and whatever
 //! could not be written yet.
 
+// `[measured 2026-09-08]` 3 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 use fixbolt_session::journal::Journal as SessionJournal;
 use fixbolt_session::{Application, Link, Role, Session};
 

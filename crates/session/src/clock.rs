@@ -13,6 +13,13 @@
 //! the parser never needs a signed type. The engine converts once, at the edge:
 //! `year_zero_millis = unix_millis + MILLIS_YEAR_ZERO_TO_EPOCH`.
 
+// `[measured 2026-09-08]` 4 `clippy::indexing_slicing` sites in this file on
+// the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
+// permission: `scripts/check-indexing-debt.sh` counts these with `--force-warn`,
+// which overrides this line, and its ceiling only ever goes down. STATUS.md
+// item 55.
+#![allow(clippy::indexing_slicing)]
+
 /// Days from 0000-01-01 to 1970-01-01, proleptic Gregorian.
 ///
 /// Not a remembered constant: the test `the_epoch_offset_is_derived_not_recalled`
