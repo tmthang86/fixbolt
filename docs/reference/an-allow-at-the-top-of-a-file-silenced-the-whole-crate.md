@@ -73,6 +73,34 @@ crates/session/src/schedule.rs  -> 1 error
 crates/codec/src/checksum.rs    -> 1 error
 ```
 
+## Two more ways the same annotation pass was short, both found by CI
+
+**A feature-gated file is invisible to a run that does not turn the feature on.**
+The 21 files were enumerated from one `clippy` run under **default** features.
+Three sites in a file behind an off-by-default feature were never in that list,
+never annotated, and never counted by the ceiling — and the first CI run, which
+lints that feature separately, went red on them. The ceiling had been *measured*
+under one feature set and *believed* for all of them.
+
+**And the gate itself was broken by an environment variable it had never been run
+under.** The CI workflow sets `CARGO_TERM_COLOR: always` at the top of the file.
+With colour forced on, `cargo`'s `--message-format short` lines arrive wrapped in
+ANSI escapes, so the script's `grep '^crates/...: warning: ...'` matched **none of
+188 sites and counted 0**. A sibling gate added in the same change — a crate-list
+comparison — went red on the same run for the same reason, its two identical
+lists differing only in escape codes.
+
+The count of 0 was caught only because the script refuses to treat 0 as a pass:
+
+```
+check-indexing-debt: FAIL — 0 sites counted. clippy emitted nothing, which is
+  a broken invocation, not a clean workspace.
+```
+
+Without that clause, a ceiling of 188 would have been "met" for ever by a check
+that had stopped looking. **The guard was written on general principle, before
+there was anything to catch, and it caught something on the first real run.**
+
 ## The generalisation
 
 > **An opt-out written at the top of a file has a scope, and the scope is a
@@ -86,3 +114,18 @@ crates/codec/src/checksum.rs    -> 1 error
 > rejects it.** Do it in each unit the suppressions touch, not once. A ratchet's
 > counter can be perfectly correct while its enforcing half is switched off, and
 > the counter is the half everybody looks at.
+>
+> Two more, from the same change:
+>
+> **A baseline measured under one build configuration is a claim about that
+> configuration only.** Optional features, target platforms and cfg flags each
+> hide files from the tool that enumerates them. Enumerate under every
+> configuration the project actually builds, or state in the baseline which one
+> it is.
+>
+> **A gate that parses another tool's output must be run under the environment
+> that will run it.** Colour, locale, terminal width and verbosity all rewrite
+> that output, and the failure mode is a count of zero rather than an error.
+> **Refuse to treat an empty result as a pass** — it is the cheapest clause in
+> any gate that greps, and the only thing standing between "nothing is wrong"
+> and "nothing was looked at".

@@ -236,6 +236,18 @@ là cái duy nhất bước 4 có thể làm chậm.
    `benches/` và `tools/`; 21 file `src/` là phần trong phạm vi và là phần trần đếm, 60 file
    còn lại nhận `allow` kèm một câu nói rõ chúng nằm ngoài bất biến 7.
 
+**CI đỏ ba job ở lần chạy đầu, và hai trong ba là chính gate mới hỏng ở khâu đọc output.**
+`CARGO_TERM_COLOR: always` nằm ở đầu `.github/workflows/ci.yml`; bật màu thì
+`--message-format short` bọc ANSI vào từng dòng, `check-indexing-debt.sh` khớp **0 trên 188
+site**, và phép so danh sách crate của job `deny` báo cả 11 crate vừa thiếu vừa thừa. **Cái
+guard "0 site là FAIL" là thứ biến cái đó thành job đỏ thay vì job xanh** — viết ra khi chưa có
+gì để bắt, và bắt được ngay lần chạy thật đầu tiên. Cả hai nay dùng `--color never`, và đã thử
+lại dưới `CARGO_TERM_COLOR=always` ở máy trước khi push. Job đỏ thứ ba là thật:
+**ba site trong `crates/engine/src/affinity.rs`, nằm sau `--features affinity`** — mặc định tắt
+và chỉ Linux, nên lần đếm ban đầu (default features) không hề compile nó. Đã dọn, và script nay
+đếm hợp của hai cấu hình feature trên Linux; chứng minh bằng một site thêm vào đúng file đó,
+188 → 189.
+
 **Không làm được ở đây:** `scripts/interop.sh` không chạy trên desk này vì thiếu `cmake`
 (script `exit 1` đúng — cái nuốt exit code là `| tail` trong lệnh gọi, đúng bài
 `reading-the-output-you-grepped-for`). Yêu cầu "sáu scenario giữ nguyên điểm" của bước 2 do

@@ -15,6 +15,15 @@
 
 #![cfg(all(feature = "affinity", target_os = "linux"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
+// `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
+// panics in a test is a failing test, which is what a test is for.
+//
+// `[2026-09-08]` This file compiles only behind `--features affinity`, which is
+// why it was missed on the first pass: the annotations were placed from a
+// clippy run under DEFAULT features, and a feature-gated file is invisible to
+// one. CI's own `--features affinity` step found it.
+#![allow(clippy::indexing_slicing)]
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};

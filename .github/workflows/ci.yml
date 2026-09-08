@@ -122,12 +122,19 @@ jobs:
       # value: an invisible hole becomes a loud one.
       #
       # STATUS.md open item 57.
+      # `--color never` on both sides, and it is not cosmetic. `[measured
+      # 2026-09-08]` this job's first run was red on two identical lists:
+      # `CARGO_TERM_COLOR: always` at the top of this file wrapped the
+      # `cargo deny list` names in ANSI escapes and left `cargo tree`'s plain,
+      # so the diff reported all eleven crates as both missing and added. The
+      # same one-line environment variable broke the indexing-debt gate on the
+      # same run, in the same way, and neither had been tested under it.
       - name: cargo-deny judged every crate cargo resolves
         run: |
           cargo install cargo-deny --locked --version 0.20.2 2>/dev/null || cargo install cargo-deny --locked
-          cargo deny list 2>/dev/null \
+          cargo deny --color never list 2>/dev/null \
             | sed 's/^[^:]*: //' | tr ',' '\n' | sed 's/@.*//;s/ //g' | sort -u | grep -v '^$' > /tmp/deny-saw.txt
-          cargo tree --workspace --prefix none \
+          cargo tree --color never --workspace --prefix none \
             | sed 's/ v[0-9].*//;s/ //g' | sort -u | grep -v '^$' > /tmp/cargo-saw.txt
           echo "cargo-deny judged $(wc -l < /tmp/deny-saw.txt) crates; cargo resolves $(wc -l < /tmp/cargo-saw.txt)"
           if ! diff -u /tmp/deny-saw.txt /tmp/cargo-saw.txt; then

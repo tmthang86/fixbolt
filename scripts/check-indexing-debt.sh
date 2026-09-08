@@ -54,11 +54,37 @@ CEILING=188
 LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
 
-if ! cargo clippy --workspace --message-format short -- \
-    --force-warn clippy::indexing_slicing >"$LOG" 2>&1; then
-  echo "check-indexing-debt: clippy itself failed; the count below would be meaningless" >&2
-  tail -20 "$LOG" >&2
-  exit 2
+# `--color never`, and it is not cosmetic. `[measured 2026-09-08]` the CI
+# workflow sets `CARGO_TERM_COLOR: always` at the top of the file, so cargo
+# wrapped every `--message-format short` line in ANSI escapes, the grep below
+# matched none of them, and this script counted **0** on a workspace with 188.
+# The zero-guard further down is what turned that into a red job instead of a
+# green one; without it the ceiling would have read as met, for ever, by a
+# check that had stopped looking. Two of this repository's brand-new gates were
+# broken by the same one-line environment variable on the same run.
+CLIPPY=(cargo clippy --color never --message-format short)
+
+count_with() {
+  # $@: extra cargo arguments, e.g. --features affinity
+  if ! "${CLIPPY[@]}" --workspace "$@" -- \
+      --force-warn clippy::indexing_slicing >>"$LOG" 2>&1; then
+    echo "check-indexing-debt: clippy itself failed ($*); the count below would be meaningless" >&2
+    tail -20 "$LOG" >&2
+    exit 2
+  fi
+}
+
+count_with
+
+# **A feature-gated file is invisible to a run that does not turn the feature
+# on.** `[measured 2026-09-08]` `crates/engine/src/affinity.rs` holds three
+# sites and sat behind `--features affinity`, off by default and Linux-only
+# (ADR-0015); the first version of this script never compiled it, the ceiling
+# never counted it, and CI's own `--features affinity` step is what found them.
+# Counted here on Linux, where the feature exists at all — the union of the two
+# runs, deduplicated, so a file compiled twice is not two debts.
+if [[ "$(uname -s)" == "Linux" ]]; then
+  count_with --features affinity
 fi
 
 # Dedup on the WHOLE line — path, line, column AND message — not on the span.
