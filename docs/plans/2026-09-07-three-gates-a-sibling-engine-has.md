@@ -219,7 +219,10 @@ C-states, cả hai cần sửa kernel command line rồi reboot, ngoài phạm v
 `cargo test --all` **589 passed, 0 failed** (585 trước đó, +4 test mới của bước 2);
 `--no-default-features` **584**; 59 acceptance definitions **59 / 59**
 (`score.rs` assert thẳng `report.passed == 59`); `benches/alloc.rs` **0 trên cả 30 case**;
-`benches/dispatch.rs` nằm trong band ở cả ba case.
+`benches/dispatch.rs` nằm trong band ở cả ba case
+(7.7 / 271.4 / 503.9 ns). `scripts/bench.sh` đầy đủ: **16 / 16 target đo được, 0 silent,
+0 invariant fail, 0 vượt baseline, 0 dưới band**, exit 0 — bao gồm cả case `journal`,
+là cái duy nhất bước 4 có thể làm chậm.
 
 **Ba phát hiện mà plan không lường trước, cả ba đều đã viết ra:**
 
