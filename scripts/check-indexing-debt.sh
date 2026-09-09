@@ -41,7 +41,7 @@ cd "$ROOT"
 # proof, and `--force-warn` counts them anyway — which is right, because the
 # count is of subscripts, not of unexcused ones. When only sites like those two
 # are left, the ceiling stops moving and STATUS.md item 55 closes by saying so.
-CEILING=184
+CEILING=181
 
 # `--force-warn` is the whole mechanism: unlike `-W`, it overrides `#![allow]`
 # in the source. Proven by counting either side of adding one — see the

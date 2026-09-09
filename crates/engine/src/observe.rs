@@ -795,68 +795,114 @@ impl Event {
 /// than no event stream: it is a source an operator will trust and should not.
 #[derive(Debug)]
 pub(crate) struct Events {
-    ring: Mutex<EventRing>,
-    /// Bumped when the engine could not take the lock, or when the ring was
-    /// full. Read without the lock, so a reader can always learn it has missed
-    /// something even while the engine holds the cell.
+    /// One lock per slot, not one lock for the ring — **and that is the whole
+    /// of [ADR-0059]**.
+    ///
+    /// With a single `Mutex<EventRing>`, the producer and every consumer
+    /// contended for the same cell, so a reader polling attentively destroyed
+    /// events simply by reading. Per slot, the producer and a consumer collide
+    /// only when they are on the **same** slot, and with `EVENT_CAPACITY` slots
+    /// that happens only once the ring has wrapped all the way round — which is
+    /// the definition of full. So a loss now means one thing, and
+    /// [`Events::lost`]'s advice is true advice.
+    ///
+    /// `Mutex<Option<Event>>` rather than an atomic because `Event` carries a
+    /// `DropReason` and a `Command` outcome; there is no atomic for that, and
+    /// [ADR-0007](../../../docs/decisions/ADR-0007-spsc-ring-without-unsafe.md)
+    /// set the precedent that this crate builds concurrent queues **without
+    /// `unsafe`** (non-negotiable 8).
+    ///
+    /// [ADR-0059]: ../../../docs/decisions/ADR-0059-an-event-is-lost-only-when-the-ring-is-full.md
+    slots: Box<[Mutex<Option<Event>>]>,
+    /// Where the engine writes next. **Written only by the engine thread**, and
+    /// monotonic — the modulo happens at the slot, so this cannot be confused
+    /// with a length.
+    write: AtomicUsize,
+    /// Where readers have got to. Inside a mutex so that two `Observer`s take
+    /// turns with each other; `Observer` is `Clone` and ADR-0054 paid for a
+    /// second reader being a real case rather than a hypothetical one.
+    ///
+    /// **A reader may block here. The engine never touches it.**
+    read: Mutex<usize>,
+    /// Bumped when a slot could not be written because it still held an
+    /// undrained event. Read without any lock, so a reader can always learn it
+    /// has missed something.
     lost: AtomicU64,
-}
-
-#[derive(Debug)]
-struct EventRing {
-    slots: [Option<Event>; EVENT_CAPACITY],
-    head: usize,
-    len: usize,
 }
 
 impl Events {
     pub(crate) fn new() -> Self {
+        let mut slots = Vec::with_capacity(EVENT_CAPACITY);
+        slots.resize_with(EVENT_CAPACITY, || Mutex::new(None));
         Self {
-            ring: Mutex::new(EventRing {
-                slots: [None; EVENT_CAPACITY],
-                head: 0,
-                len: 0,
-            }),
+            slots: slots.into_boxed_slice(),
+            write: AtomicUsize::new(0),
+            read: Mutex::new(0),
             lost: AtomicU64::new(0),
         }
     }
 
-    /// Record an event, unless the reader holds the ring right now.
+    /// Record an event. **Never blocks, and never loses to a reader.**
     ///
-    /// `try_lock`, never `lock` — non-negotiable 4. A refusal counts as a loss
-    /// rather than blocking the engine thread, which is the trade this design
-    /// makes and states.
+    /// `try_lock` on one slot, not on the ring: the only way it fails is that a
+    /// consumer is draining this very slot, which after a full wrap means the
+    /// ring is full. An undrained event already sitting there means the same
+    /// thing. Both count as a loss and both mean *full* — ADR-0059 decision 3.
+    ///
+    /// The write index advances either way, so a slow reader falls behind and
+    /// is told how far by [`Events::lost`]; it never sees an event out of
+    /// order.
     pub(crate) fn push(&self, e: Event) {
-        let Ok(mut r) = self.ring.try_lock() else {
+        let w = self.write.load(Ordering::Relaxed);
+        let Some(slot) = self.slots.get(w % EVENT_CAPACITY) else {
             self.lost.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        if r.len == EVENT_CAPACITY {
-            // Full: drop the oldest, and say so.
-            let head = r.head;
-            r.slots[head] = Some(e);
-            r.head = (head + 1) % EVENT_CAPACITY;
-            self.lost.fetch_add(1, Ordering::Relaxed);
-            return;
+        match slot.try_lock() {
+            Ok(mut cell) => {
+                // Occupied means the reader has not been round yet: the oldest
+                // event in this slot is dropped, which is ADR-0035's choice and
+                // is kept.
+                if cell.replace(e).is_some() {
+                    self.lost.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            // A consumer holds this slot. The engine does not wait for it.
+            Err(_) => {
+                self.lost.fetch_add(1, Ordering::Relaxed);
+            }
         }
-        let at = (r.head + r.len) % EVENT_CAPACITY;
-        r.slots[at] = Some(e);
-        r.len += 1;
+        self.write.store(w.wrapping_add(1), Ordering::Release);
     }
 
+    /// Take everything readable, oldest first.
+    ///
+    /// Readers serialise on [`Events::read`] and may block on a slot the engine
+    /// is writing. That asymmetry is the design: an operator's thread is
+    /// allowed to wait, the engine's is not — the same trade
+    /// [ADR-0036](../../../docs/decisions/ADR-0036-one-mechanism-two-capabilities.md)
+    /// made for commands, in the other direction.
     fn drain(&self, out: &mut Vec<Event>) -> usize {
-        let Ok(mut r) = self.ring.lock() else {
+        let Ok(mut r) = self.read.lock() else {
             return 0;
         };
+        let w = self.write.load(Ordering::Acquire);
+        // More than a full lap behind: the slots in between hold newer events
+        // now, and reading them would deliver them out of order. The overwrites
+        // were already counted at `push`, so this only skips.
+        if w.wrapping_sub(*r) > EVENT_CAPACITY {
+            *r = w.wrapping_sub(EVENT_CAPACITY);
+        }
         let mut n = 0;
-        while r.len > 0 {
-            let head = r.head;
-            if let Some(e) = r.slots[head].take() {
+        while *r != w {
+            if let Some(slot) = self.slots.get(*r % EVENT_CAPACITY)
+                && let Ok(mut cell) = slot.lock()
+                && let Some(e) = cell.take()
+            {
                 out.push(e);
                 n += 1;
             }
-            r.head = (head + 1) % EVENT_CAPACITY;
-            r.len -= 1;
+            *r = r.wrapping_add(1);
         }
         n
     }
@@ -1135,5 +1181,123 @@ impl Admin {
     /// handle.
     pub fn events(&self, out: &mut Vec<Event>) -> usize {
         self.0.events.drain(out)
+    }
+}
+
+/// Reading the event stream must not destroy it.
+///
+/// `STATUS.md` item 60, [ADR-0059]. Two CI failures in two crates were the same
+/// defect and both were filed as flaky: an `Ended` event that never arrived,
+/// because [`Events::push`] took `try_lock` and a reader happened to be holding
+/// the ring. `try_lock` rather than `lock` is right — non-negotiable 4 forbids
+/// the engine thread blocking behind an operator's — but **the loss was never
+/// the price of that.** It was the price of one mutex shared by both sides.
+///
+/// **Why these are unit tests and not integration tests.** `Shared::emit` is
+/// `pub(crate)` and nothing public pushes an event; only the engine does. Adding
+/// a test-only door to `Handles` would be a public API change to make a private
+/// contract testable, which is the wrong trade — so the test lives where the
+/// contract does.
+///
+/// **What makes them able to see the defect, when nothing else could.** The
+/// failure needs a reader to hold the lock at the instant the engine pushes. A
+/// test that polls politely hits that window rarely enough to pass sixty times
+/// in a row, which is what item 60's investigation measured. So the reader here
+/// polls as tightly as it can, on purpose, and the assertion is about **loss**,
+/// not about time. `[measured 2026-09-09]` against the `try_lock` version, a
+/// reader polling this hard reproduced the loss in roughly **9 runs out of
+/// 20**; CPU starvation reproduced it not at all.
+///
+/// [ADR-0059]: ../../../docs/decisions/ADR-0059-an-event-is-lost-only-when-the-ring-is-full.md
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "a test joining a thread it spawned is not a library call site"
+)]
+mod event_loss_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use super::{EVENT_CAPACITY, Event, EventKind, Handles};
+
+    /// Comfortably under [`EVENT_CAPACITY`] **on purpose**: this is about losing
+    /// an event to a reader, not to a full ring. A full ring is a different loss
+    /// with a different meaning, and ADR-0059 decision 3 keeps it.
+    const PUSHES: usize = 200;
+
+    #[test]
+    fn a_reader_polling_as_hard_as_it_can_loses_nothing() {
+        let handles = Handles::new();
+        let observer = handles.observer();
+        let shared = Arc::clone(&observer.0);
+
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&done);
+
+        // The consumer: no sleep at all, which is what makes the window wide.
+        let reader = std::thread::spawn(move || {
+            let mut seen: Vec<Event> = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline {
+                observer.events(&mut seen);
+                if stop.load(Ordering::Relaxed) {
+                    // One last drain once the producer says it is finished, so a
+                    // pass cannot depend on the reader's own timing.
+                    observer.events(&mut seen);
+                    break;
+                }
+            }
+            (seen, observer.events_lost())
+        });
+
+        // The producer, standing in for the engine thread.
+        for i in 0..PUSHES {
+            shared.emit(i as u64, i as u64, EventKind::LoggedOn);
+        }
+        done.store(true, Ordering::Relaxed);
+
+        let (seen, lost) = reader.join().expect("the reader thread");
+
+        assert_eq!(
+            lost,
+            0,
+            "the stream lost {lost} events while somebody was reading it — \
+             reading must not destroy events (ADR-0059 decision 1); saw {} of \
+             {PUSHES}",
+            seen.len()
+        );
+        assert_eq!(
+            seen.len(),
+            PUSHES,
+            "every event pushed must reach the reader when the ring never filled"
+        );
+        // Order is part of the contract: an operator reading `Ended` before the
+        // `Logon` it belongs to would draw the wrong conclusion.
+        for (i, e) in seen.iter().enumerate() {
+            assert_eq!(e.id(), i as u64, "events arrived out of order");
+        }
+    }
+
+    /// The counter must still mean something. ADR-0059 decision 3 narrows a loss
+    /// to one cause — a full ring — and a fix that made `events_lost` forever
+    /// zero would have removed the signal rather than the defect.
+    #[test]
+    fn a_full_ring_still_counts_what_it_drops() {
+        let handles = Handles::new();
+        let observer = handles.observer();
+        let shared = Arc::clone(&observer.0);
+
+        // Nobody reads, so the ring fills and then overflows.
+        for i in 0..(EVENT_CAPACITY + 50) {
+            shared.emit(i as u64, i as u64, EventKind::LoggedOn);
+        }
+
+        assert!(
+            observer.events_lost() >= 50,
+            "a ring that overflowed must say so — that is the whole of what \
+             events_lost means after ADR-0059, and a gate that can never fire \
+             is not a gate"
+        );
     }
 }
