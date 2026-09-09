@@ -145,8 +145,26 @@ jobs:
       # would have gone on saying `11 and 11` however many optional trees were
       # added. STATUS.md item 57 is about a gate saying `ok` about what it never
       # saw; this is the guard for that gate having the same defect.
-      # Equal today, 36 and 36; the day a crate reaches one list and not the
-      # other this goes red and says which one the licence gate never saw. That is the whole
+      # `[amended 2026-09-09, again]` **`-e normal,build` ON THE CARGO SIDE, AND
+      # THE STEP BELOW IS WHY THAT IS NOT A RETREAT.** Adding a dev-dependency
+      # (`rcgen`, for a test certificate) made this comparison red at 36 against
+      # 45 — correctly: `cargo deny list` and `cargo deny check licenses` do not
+      # judge dev-dependencies, and nine crates were unjudged. Widening the
+      # cargo side to hide that would be precisely the defect
+      # `a-guard-that-watched-a-gate-shared-its-blind-spot.md` is about.
+      #
+      # So the hole is COVERED rather than hidden, by
+      # `scripts/check-every-crate-is-licensed.sh` in the step below, which asks
+      # `cargo metadata` — a completely different route, dev-dependencies
+      # included — and judges every licence against deny.toml's own allow list.
+      # With the gap covered by something that runs, this comparison narrows to
+      # its honest question: *did cargo-deny judge everything it claims to
+      # judge?* Equal today, 36 and 36.
+      #
+      # `cargo deny check advisories` is a third graph again, and it DOES see
+      # dev-dependencies: `[measured 2026-09-09]` it found RUSTSEC-2026-0009 in
+      # `time`, reached through that same `rcgen`. Three graphs, one binary, one
+      # workspace. That is the whole
       # value: an invisible hole becomes a loud one.
       #
       # STATUS.md open item 57.
@@ -162,13 +180,20 @@ jobs:
           cargo install cargo-deny --locked --version 0.20.2 2>/dev/null || cargo install cargo-deny --locked
           cargo deny --color never --all-features list 2>/dev/null \
             | sed 's/^[^:]*: //' | tr ',' '\n' | sed 's/@.*//;s/ //g' | sort -u | grep -v '^$' > /tmp/deny-saw.txt
-          cargo tree --color never --workspace --all-features --prefix none \
+          cargo tree --color never --workspace --all-features -e normal,build --prefix none \
             | sed 's/ v[0-9].*//;s/ //g' | sort -u | grep -v '^$' > /tmp/cargo-saw.txt
           echo "cargo-deny judged $(wc -l < /tmp/deny-saw.txt) crates; cargo resolves $(wc -l < /tmp/cargo-saw.txt)"
           if ! diff -u /tmp/deny-saw.txt /tmp/cargo-saw.txt; then
             echo "::error title=The licence gate did not look at every crate::cargo-deny's graph and cargo's disagree. Lines marked + are crates cargo resolves that the licence and advisory gate never judged. See deny.toml's closing comment and STATUS.md item 57."
             exit 1
           fi
+
+      # The half cargo-deny cannot do, from a source that is not cargo-deny.
+      # Dev-dependencies included; every licence checked against deny.toml's own
+      # allow list, parsed out of that file rather than copied. STATUS.md item
+      # 57's actual coverage, as opposed to its alarm.
+      - name: Every crate cargo resolves is permissively licensed
+        run: scripts/check-every-crate-is-licensed.sh
 
   # CLAUDE.md §2 non-negotiable 7's fourth machine check, and the one that would
   # have seen the bug the other three could not. `[measured 2026-09-06]` a ring

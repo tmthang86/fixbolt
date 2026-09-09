@@ -71,6 +71,15 @@ fixbolt-conformance = { path = "../conformance" }
 # unrelated to TLS is worse than no test (the spike recorded the same choice).
 # A dev-dependency reaches no consumer, and `check-no-optional-deps.sh` asks
 # with `-e normal`, which excludes them by construction.
+# `[measured 2026-09-09]` this one dev-dependency brought nine crates the
+# licence gate cannot see and one real security advisory (RUSTSEC-2026-0009,
+# a stack-exhaustion DoS in `time`, reached through `rcgen`), both found on the
+# first CI run after it was added. `time` is pinned past it in Cargo.lock, and
+# `scripts/check-every-crate-is-licensed.sh` exists because of the other nine.
+#
+# It also raises the Rust needed to RUN THE TESTS to 1.88, above the workspace's
+# declared `rust-version = "1.85"`. That declaration is about the published
+# crates and nothing in CI checks it, which is worth knowing before trusting it.
 rcgen = "0.14"
 rustls = { version = "0.23.43", default-features = false, features = [
     "std",

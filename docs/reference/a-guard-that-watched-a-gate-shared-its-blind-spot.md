@@ -45,6 +45,46 @@ trees were added.
 
 Both sides now ask `--all-features`, and read `36 and 36`.
 
+## `[measured 2026-09-09, the same day]` And then one dev-dependency proved all of it at once
+
+The change that exposed the guard also added a **dev-dependency** — a certificate generator for a
+test. Within one CI run it produced three separate findings, and they are only legible together:
+
+1. **The advisory check found a real vulnerability in it.** `RUSTSEC-2026-0009`, stack exhaustion
+   via a deprecated parsing feature, two levels down. Fixed by pinning the patched version.
+2. **The repaired guard went red, correctly**, at 36 against 45. The licence check does not judge
+   dev-dependencies, so nine crates were genuinely unjudged — the exact hole the guard was built
+   for, firing the first time a dev-dependency arrived.
+3. **The same binary was using three different graphs.** `list` reported 36. `check licenses`
+   judged 36. `check advisories` judged all 45 — it is what found the advisory in #1. One tool,
+   one workspace, one invocation style, three answers to "what is in this project?"
+
+**Point 3 is the one to carry.** It was not documented, it is not intuitive, and it means *"the
+tool checked it"* is not a single fact — it depends on which sub-check, and the sub-checks
+disagree.
+
+The resolution is worth stating too, because the tempting one is wrong. Widening the cargo side of
+the guard would have made 45 match 45 and turned the light off — hiding the hole rather than
+closing it, which is this page's whole subject. Instead the guard was **narrowed** to its honest
+question (*did the tool judge everything it claims to judge?*), and the gap was **covered by a
+second check that takes a different route entirely**: read the package graph from `cargo metadata`,
+read the policy from the config file, compare them, and never call the tool at all.
+
+That second check went red on its own first run — on three crates using the pre-SPDX `MIT/Apache-2.0`
+spelling, which its parser did not split. A parser bug reported as a policy violation is the
+loudest possible false positive, because it reads exactly like a real finding.
+
+## What to take from it, part two
+
+- **A gate is not one gate.** Before trusting "X checks this", find out which part of X, over which
+  graph. Sub-checks of one tool can disagree about the input, silently.
+- **When a guard goes red because it finally works, do not widen it until it is quiet.** Narrow it
+  to what it can honestly assert, and cover the remainder with something that does not share its
+  machinery.
+- **A second opinion has to come from a different direction to be worth anything.** The covering
+  check reads metadata and config; it can be wrong in its own ways, and that is the point — its
+  failures are uncorrelated with the tool's.
+
 ## What to take from it
 
 - **A guard over a gate must not be derived from the gate.** If the guard's input comes from the
