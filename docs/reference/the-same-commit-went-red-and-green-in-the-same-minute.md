@@ -62,8 +62,49 @@ duplication was the entire evidence.
   written down, is how a real intermittent defect survives for months: each individual person who
   met it concluded "flake" and moved on, and nobody ever counted.
 
-This one is now counted: **one red, one green, same commit** — a load-dependent readiness race in
-a test helper, not in the code it exercises. It has not been fixed, and this note is the record
-that it is open rather than explained away.
+This one is now counted: **one red, one green, same commit** — in a test helper, not in the code
+it exercises. It has not been fixed, and this note is the record that it is open rather than
+explained away.
+
+## `[measured 2026-09-09, an hour later]` It happened again, in a different test, and the obvious fix is refused
+
+A second pull request, a different test, the same signature: **one job, one commit, two runs,
+opposite results.** Different test file, different assertion, same shape — a helper that waits on a
+**wall-clock deadline** for something to be observable.
+
+So it is not one flaky test. It is a *family*: every test that waits a fixed number of seconds for
+an asynchronous system to reach a state can be starved on a loaded runner, and each of them will
+be met once, individually, by someone who concludes "flake" and moves on.
+
+**The obvious fix — raise the deadline — is refused, and the measurement is why.** Locally the
+second test completes in **0.00 s**, including pinned to a single core. The deadline it blew
+through on CI is **5 s**. A gate that finishes five hundred times inside its budget and then
+consumes the entire budget and sees nothing did not run slightly slow: **a step did not happen at
+all.** Raising the number would move the score without touching the cause, which is exactly the
+failure mode of accepting a cause because a knob moved with it.
+
+Three hypotheses were checked and two are dead:
+
+- *The observer's drain replaces the buffer rather than appending, so events seen in different
+  polls cannot accumulate.* **Refuted by reading it**: it appends.
+- *The change under test caused it.* **Refuted**: the feature involved is off by default and the
+  test does not touch it; and the duplicate run passed on the identical tree.
+- *A readiness race between the harness connecting and the server actually serving.* **Not
+  refuted, and not confirmed** — it fits the shape but nothing here has demonstrated it.
+
+The cause is **not found**, and that is written down rather than rounded to a diagnosis that sounds
+plausible.
+
+## What to take from it, part two
+
+- **A timeout that is blown by 500× is not a timeout problem.** Compare the failing budget against
+  the normal duration before touching either. If the ratio is large, the deadline is not the
+  constraint and changing it only hides the next occurrence.
+- **"Flake" is a classification, not an explanation.** Proving nondeterminism (two runs, one
+  commit) is cheap and worth doing immediately. Finding the cause is a separate job, and skipping
+  it should be recorded as skipped.
+- **One instance is an anecdote; two with the same signature is a category.** The second occurrence
+  is what turns "that test is flaky" into "wall-clock waits in test helpers are a defect class in
+  this repository", which is a much more actionable statement.
 
 `[to testing-skills]`
