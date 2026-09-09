@@ -225,9 +225,10 @@ fn date(v: &[u8]) -> bool {
 
 /// `HH:MM:SS` or `HH:MM:SS.sss`.
 fn time(v: &[u8]) -> bool {
-    // `HH:MM:SS`, or a `.` and three, six or nine fractional digits — the same
-    // four widths `session::clock::parse_utc` reads, and **the two readers
-    // agreeing is the point**.
+    // `HH:MM:SS`, or a `.` and one to twelve fractional digits — **the same
+    // rule `session::clock::parse_utc` applies, and the two readers agreeing is
+    // the point.** A timestamp reaches here as `&value[9..]`, so 8 bytes is a
+    // bare `HH:MM:SS` and 21 is twelve fractional digits.
     //
     // `[measured 2026-09-09]` they did not agree, and only a real counterparty
     // could see it. Half A of `timestamp-micros` widened `parse_utc` and left
@@ -235,7 +236,13 @@ fn time(v: &[u8]) -> bool {
     // and then answered every message after the Logon with
     // `35=3 ... 371=52 373=6` — a `Reject` per Heartbeat, per SequenceReset,
     // per Logout. `crates/dict/tests/field_types.rs::a_microsecond_timestamp_is_a_timestamp`.
-    if !matches!(v.len(), 8 | 12 | 15 | 18) {
+    //
+    // **ADR-0058 replaced both four-entry tables with a rule** so that a width
+    // cannot be added to one reader and forgotten in the other again;
+    // `crates/session/tests/timestamp_widths.rs::both_readers_agree_on_every_width`
+    // asks both the same question at every length from 0 to 34. `9 == 8 + 1` is
+    // a `.` with no digits and is refused by both — ADR-0058 decision 2.
+    if !(v.len() == 8 || (10..=21).contains(&v.len())) {
         return false;
     }
     if v[2] != b':' || v[5] != b':' {

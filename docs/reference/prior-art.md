@@ -195,6 +195,46 @@ days after the correction above was written.
 decision; the receive-side asymmetry it also found — this engine accepts 17/21/24/27 where the
 oracle accepts 17–27 — is `STATUS.md` open item 59.
 
+### `[researched 2026-09-09]` Five engines read the same field five different ways
+
+Item 59 asked what the strict set should be, and the answer was researched by reading each
+engine's parser rather than its documentation. **The QuickFIX family splits two against two on
+this exact question**, which is the sharpest instance yet of the rule two paragraphs up.
+
+| Engine | Widths its parser accepts | A bare `.` with no digits | Read at |
+|---|---|---|---|
+| QuickFIX **C++** | **any length 17–27** | **accepted**, as `fraction = 0` | `386ce46e:src/C++/FieldConvertors.h` |
+| QuickFIX/**J** | **exactly 17, 21, 24, 27, 30** | rejected | `quickfix-j/quickfixj`, `UtcTimestampConverter.java:42–46, 182` |
+| **quickfix-go** | **exactly 17, 21, 24, 27** | rejected | `quickfixgo/quickfix`, `fix_utc_timestamp.go`, `switch len(bytes)` |
+| QuickFIX/**n** (.NET) | **≥ 17, any number of fractional digits**, and a trailing timezone offset | rejected (a zero-length fraction throws) | `connamara/quickfixn`, `DateTimeConverter.cs:40–120` |
+| **nanofix** (the reference project) | **none — it never reads one** | — | `matthart1983/nanofix`: `SENDING_TIME: u32 = 52` is declared in `src/tags.rs:10` and used in no session, parser or message code; there is no skew check |
+
+Three things follow, and none of them was guessable from a feature list.
+
+**1. "Match the oracle" has no single answer here.** Two members enumerate the sanctioned widths
+and two accept a range. An engine that copies whichever one it read first will disagree with the
+other half of the same family.
+
+**2. But the asymmetry is not symmetric, and that is what decides it.** *Accepting* a width can
+never break interoperability with a strict engine, because a strict engine never **sends** one.
+*Refusing* a width does break it — and here it breaks it in the worst available way, a hang-up
+before `Logon` with no byte sent. So liberality on the receive side is free and strictness is not.
+
+**3. There is a seventh refused width, and item 59 counted six.** QuickFIX/J accepts **30 bytes**
+— twelve fractional digits, picoseconds — and the FIX Technical Addendum on time precision
+extends the timestamp type to picoseconds, on top of the EP wording that enumerates 3, 6 and 9.
+This engine refuses 30 exactly as silently as it refuses 19. A survey run to settle a question
+about six widths found a seventh that nothing in this repository had named.
+
+**The testing shape, told without FIX**: the question was *"what do other implementations
+accept?"*, and it was answered five times by reading five parsers. Four of the five answers
+disagreed with each other, one implementation turned out **not to implement the feature at all**
+while declaring the constant for it, and the survey's real payload was a case **outside the range
+the question was asked about**. A survey scoped to the question you already have can only confirm
+or deny that question; the finding that matters is often the row you did not think to ask for.
+
+`[to testing-skills]`
+
 **The testing shape, told without FIX**: a verification pass re-checked every line number and
 every code fact in a table, corrected the ones that had drifted, and **passed a row whose
 citation was the wrong document** — the claim was specific, formatted like every other row,
