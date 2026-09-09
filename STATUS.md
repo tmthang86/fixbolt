@@ -88,6 +88,14 @@ check — is still guarded**, by boundary cases at 18 and 31 bytes and by a non-
 built."* Half B built it the day before. Corrected in place with the date, per §4's rule that a
 stale document is worse than none.
 
+### §9's last box, closed on the commit it asks about
+
+PR [#56](https://github.com/tmthang86/fixbolt/pull/56) on **`588b350`**: **26 of 26 check runs**,
+[`34361019010`](https://github.com/tmthang86/fixbolt/actions/runs/34361019010) and [`34361066104`](https://github.com/tmthang86/fixbolt/actions/runs/34361066104). The three jobs neither desk can run for itself — `interop`, `bench` and `deny` — are among
+them, and **`interop` is the one that matters here**: §4i ran on a machine that is not this desk
+and read `interop-odd: 20-byte 52= from libquickfix — 10`, `35=3 naming tag 52 — 0`, `PASS 3/3`,
+the same numbers as locally. Read from the job log rather than off the check's PASS mark.
+
 ### Not done, said plainly
 
 **No §9 measurement**, and no `benches/baselines.tsv` row. ADR-0058's *Bad* section owes a
