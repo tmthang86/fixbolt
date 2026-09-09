@@ -65,6 +65,18 @@ ktls-core = { version = "0.0.5", features = ["shim-rustls"], optional = true }
 [dev-dependencies]
 fixbolt-conformance = { path = "../conformance" }
 
+# `crates/engine/tests/tls.rs` only, and **only in dev-dependencies**: a
+# self-signed certificate is generated per run rather than committed, because a
+# committed certificate expires and a test that fails in a year for a reason
+# unrelated to TLS is worse than no test (the spike recorded the same choice).
+# A dev-dependency reaches no consumer, and `check-no-optional-deps.sh` asks
+# with `-e normal`, which excludes them by construction.
+rcgen = "0.14"
+rustls = { version = "0.23.43", default-features = false, features = [
+    "std",
+    "ring",
+] }
+
 # For `crates/engine/tests/standard.rs` only, which sends a signal to a thread
 # that is inside `poll` to prove `EINTR` does not end the wait early — that
 # needs `pthread_kill`, and an integration test does not inherit the crate's own
