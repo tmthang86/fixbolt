@@ -47,7 +47,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use fixbolt_codec::TimestampCache;
+use fixbolt_codec::{Precision, TimestampCache};
 
 /// A fixed instant, so a checksum computed here is the same on every run and on
 /// every machine.
@@ -518,9 +518,13 @@ fn substitute_times(body: &str, millis: bool) -> String {
 /// before tomorrow midnight*, 86 279 seconds in the wrong direction, in the one
 /// file that exists to test `SendingTime` accuracy.
 fn at_offset(seconds: i64, millis: bool) -> String {
-    let mut cache = TimestampCache::new();
+    // **Milliseconds, named rather than defaulted** (ADR-0057). The corpus is a
+    // millisecond corpus: 17 bytes on `I` lines, 21 on `E`, and not one stamp
+    // wider in all 59 definitions. A harness that followed a session's
+    // precision would be comparing the engine against itself.
+    let mut cache = TimestampCache::with_precision(Precision::Millis);
     let at = BASE_UNIX_MS.saturating_add_signed(seconds.saturating_mul(1_000));
-    let full = cache.format(at);
+    let full = cache.format(at, 0);
     let width = if millis {
         full.len()
     } else {

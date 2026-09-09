@@ -211,7 +211,7 @@ mod tests {
         ] {
             let ms = parse_utc(s.as_bytes()).expect(s);
             let unix = ms - MILLIS_YEAR_ZERO_TO_EPOCH;
-            assert_eq!(core::str::from_utf8(cache.format(unix)), Ok(s), "{s}");
+            assert_eq!(core::str::from_utf8(cache.format(unix, 0)), Ok(s), "{s}");
         }
     }
 

@@ -118,6 +118,22 @@ scripts/interop.sh
 | `interop-reconnect-logout:` | the same, **stopped with `SIGTERM`** so it says goodbye first | the same, after a clean logout — ADR-0043 decision 5 | **6 / 6** |
 | `interop-reconnect-beat:` | the same as the `SIGKILL` row, at **`HeartBtInt=1` with a pause before the kill**, so a `Heartbeat` is guaranteed between the last application message and the death | the same, with the last number spent belonging to a message no journal holds bytes for — ADR-0053 | **6 / 6** |
 | `interop-next-expected:` | a `libquickfix` `SocketAcceptor` with **`SendNextExpectedMsgSeqNum=Y`** | this engine's initiator with `Config::with_next_expected(true)`: `789` written on the way out and read on the way in | **9 / 9** |
+| `interop-micros:` | a `libquickfix` `SocketInitiator` with **`TimestampPrecision=6`** | `fixbolt::serve` with `TimestampPrecision=6`: `52=` written at 24 bytes and a counterparty's 24-byte `52=` read — **judged on the bytes of QuickFIX's own transcript, not on a step line** | **5 / 5** |
+
+**`[measured 2026-09-09]` the `interop-micros:` row is the only one here that is judged on field
+widths rather than on steps, and it is why the row exists.** QuickFIX C++ accepts a
+`UTCTimestamp` of any length from 17 to 27 bytes, so a run in which this engine silently stayed
+at milliseconds would log on, exchange orders, resend, gap-fill and log out — every step gate
+green. What separates the two outcomes is a count of what is **not** there. The scenario reads
+QuickFIX's own view of the wire and asserts: at least one 24-byte `52=` from this engine, at
+least one from `libquickfix`, **zero** 21-byte stamps, and **zero** `35=3` naming tag 52. It
+reads `12 from fixbolt, 10 from libquickfix, 0, 0`. Proven by reversal: with this engine put
+back to `TimestampPrecision=3` it reads `0 from fixbolt` and `12` millisecond stamps, and fails.
+
+**It found a defect on its first run**, and the defect was in the *receive* direction that a
+plan had closed the day before: `dict`'s `UTCTIMESTAMP` reader still refused six- and nine-digit
+stamps, so every message after the Logon came back `373=6`.
+[one-field-two-readers](reference/one-field-two-readers.md).
 
 `[measured 2026-09-06]` The table above is from run
 [`34034849824`](https://github.com/tmthang86/fixbolt/actions/runs/34034849824) on `main`,

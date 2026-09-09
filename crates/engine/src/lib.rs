@@ -947,7 +947,13 @@ where
     /// Nothing in here can block: every transport call is non-blocking and
     /// every "nothing yet" is [`transport::Io::Idle`].
     pub fn turn(&mut self) -> bool {
-        let now = self.clock.now_ms();
+        // **One reading, and both halves of it.** `now.ms` is what everything
+        // in this function already used; `now.sub_ms_nanos` goes to exactly one
+        // place, the `52=` formatter inside the session, and is fetched here so
+        // it cannot belong to a different millisecond than its own seconds
+        // (ADR-0057 decision 1).
+        let reading = self.clock.now();
+        let now = reading.ms;
         // Being observable costs this, and only this, while nobody is
         // observing: one relaxed load through an `Option` that is `None` on an
         // engine whose `observer()` was never called. See `observe`.
@@ -1028,7 +1034,7 @@ where
             let shard = self.shard;
             let Self { conns, log, .. } = self;
             let outcome = conns[i].turn(
-                now,
+                reading,
                 &mut deliver,
                 |msg| others_on > 0 && presession::is_logon(msg),
                 shard,

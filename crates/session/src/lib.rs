@@ -24,8 +24,8 @@ pub mod text;
 use core::marker::PhantomData;
 
 use fixbolt_codec::{
-    Dictionary, FieldIndex, MessageView, ParseError, Parsed, SOH, TemplateBuilder, TimestampCache,
-    Validation, as_u32, parse_into, tag_text_at,
+    Dictionary, FieldIndex, MessageView, ParseError, Parsed, Precision, SOH, TemplateBuilder,
+    TimestampCache, Validation, as_u32, parse_into, tag_text_at,
 };
 use fixbolt_dict::{FieldType, Fix44};
 
@@ -132,9 +132,11 @@ pub trait Application {
     ///
     /// **Everything the session owns arrives in [`Header`]**, and writing those
     /// values is the application's job on this path — the session emits the
-    /// bytes untouched and cannot add to them. `hdr.stamp` is 21 bytes with
-    /// milliseconds; a reply that regenerates its own `SendingTime` is a
-    /// body-length failure four bytes later.
+    /// bytes untouched and cannot add to them. `hdr.stamp` is 21 bytes at the
+    /// default and 24 or 27 under [`Config::with_timestamp_precision`], so
+    /// **write `hdr.stamp` by its length, never by a constant**; a reply that
+    /// regenerates its own `SendingTime` is a body-length failure four bytes
+    /// later.
     ///
     /// [`crate::Header::last_processed`] is `369` and is **optional**: writing
     /// it is what [`Config::with_last_processed`] asks for, and nothing here
@@ -220,8 +222,14 @@ pub struct Header<'a> {
     /// `34` **MsgSeqNum** — the number this reply will spend. Write it as
     /// given; the session has already reserved it.
     pub seq: u32,
-    /// `52` **SendingTime**, 21 bytes with milliseconds, from the session's
-    /// cached clock. Formatting a fresh one costs a body-length failure.
+    /// `52` **SendingTime**, from the session's cached clock. Formatting a fresh
+    /// one costs a body-length failure.
+    ///
+    /// **Its length is the truth and is no longer a constant.** 21 bytes at the
+    /// default, 24 or 27 when [`Config::with_timestamp_precision`] says so
+    /// (ADR-0057). Copy `stamp.len()` bytes; an application written as
+    /// `out[..21].copy_from_slice(hdr.stamp)` still compiles and produces a
+    /// body-length failure three bytes later.
     pub stamp: &'a [u8],
     /// `369` **LastMsgSeqNumProcessed** — the last inbound number this end has
     /// processed, which is `next_in - 1`.
@@ -428,6 +436,12 @@ pub struct Config {
     ///
     /// See [`Config::with_last_processed`].
     last_processed: bool,
+    /// How many fractional digits `52=SendingTime` carries on the way out.
+    ///
+    /// [`Precision::Millis`] by default, which is what this engine has always
+    /// written and what QuickFIX C++ defaults to. See
+    /// [`Config::with_timestamp_precision`].
+    timestamp_precision: Precision,
     /// When this session restarts its numbering of its own accord.
     /// [`ResetPolicy::new`] is neutral and is the default.
     reset: ResetPolicy,
@@ -650,6 +664,11 @@ impl Config {
             resend_batch: DEFAULT_RESEND_BATCH,
             next_expected: false,
             last_processed: false,
+            // 21 bytes, as every message this engine has ever sent. QuickFIX
+            // C++ defaults to the same three digits, and a venue that accepts
+            // only 21 rejects 24 — so widening by default would break working
+            // deployments to serve the ones that asked. ADR-0057 decision 4.
+            timestamp_precision: Precision::Millis,
             reset: ResetPolicy::new(),
             logon_timeout_ms: 0,
             logout_timeout_ms: 0,
@@ -724,6 +743,33 @@ impl Config {
     pub const fn with_last_processed(mut self, on: bool) -> Self {
         self.last_processed = on;
         self
+    }
+
+    /// How many fractional digits `52=SendingTime` carries on the way out.
+    ///
+    /// [`Precision::Millis`] by default — 21 bytes, what this engine has always
+    /// written and what QuickFIX C++ writes unless told otherwise. A venue on
+    /// MiFID II RTS 25 wants [`Precision::Micros`].
+    ///
+    /// **This is a ceiling, not a promise.** The stamp is written at the
+    /// coarser of this setting and the resolution the caller actually handed
+    /// the session, so a session ticked through [`Session::tick`] — which
+    /// carries a millisecond and nothing finer — writes 21 bytes even when this
+    /// says microseconds. Padding the extra digits with zeroes would claim a
+    /// resolution this end does not have, which is the alternative
+    /// [ADR-0057](../../../docs/decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md)
+    /// declined. [`Session::tick_at`] is the door that carries the finer
+    /// number, and it is the one `fixbolt_engine` uses.
+    #[must_use]
+    pub const fn with_timestamp_precision(mut self, precision: Precision) -> Self {
+        self.timestamp_precision = precision;
+        self
+    }
+
+    /// What [`Config::with_timestamp_precision`] was set to.
+    #[must_use]
+    pub const fn timestamp_precision(&self) -> Precision {
+        self.timestamp_precision
     }
 
     /// Does this session report `369=`?
@@ -1171,6 +1217,19 @@ pub struct Session<R: Role, const N: usize, const APP: usize = DEFAULT_APP_SCRAT
     /// `SendingTime` — fail closed, and visible immediately rather than as a
     /// clock quietly two hours out.
     now_ms: u64,
+    /// Nanoseconds inside [`Self::now_ms`], from the same clock reading.
+    ///
+    /// Zero unless the caller used [`Session::tick_at`]. It is read by nothing
+    /// but the `52=` formatter — no comparison, no arithmetic, no schedule —
+    /// which is the property that let ADR-0057 add it without reversing D13.
+    now_sub_ms_nanos: u32,
+    /// How fine the last tick actually was.
+    ///
+    /// [`Precision::Millis`] after [`Session::tick`], [`Precision::Nanos`]
+    /// after [`Session::tick_at`]. `52=` is written at the **coarser** of this
+    /// and `cfg.timestamp_precision`, so a session cannot publish digits its
+    /// caller never gave it. ADR-0057.
+    now_resolution: Precision,
     idx: FieldIndex<N>,
     /// `None` when the configuration cannot be turned into templates. The
     /// session then refuses everything — see [`out::Outbound::new`].
@@ -1286,10 +1345,62 @@ pub struct Session<R: Role, const N: usize, const APP: usize = DEFAULT_APP_SCRAT
     _role: PhantomData<R>,
 }
 
+/// A `52=SendingTime` already rendered, owned so the borrow of the cache ends.
+///
+/// **Owned and not a slice, and sized by `TIMESTAMP_MAX_LEN` rather than by a
+/// constant**: since ADR-0057 the width is the configuration's, and every call
+/// site here needs `&mut self` again after formatting.
+#[derive(Clone, Copy)]
+struct Stamped {
+    bytes: [u8; fixbolt_codec::TIMESTAMP_MAX_LEN],
+    len: usize,
+}
+
+impl Stamped {
+    /// The rendered bytes. Empty is unreachable — `len` is a `Precision::bytes`,
+    /// never zero — and `unwrap_or` rather than a panic because this is a
+    /// library crate (non-negotiable 7).
+    fn as_bytes(&self) -> &[u8] {
+        self.bytes.get(..self.len).unwrap_or(&[])
+    }
+}
+
 impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
+    /// How wide a `52=` this session may write **right now**.
+    ///
+    /// The coarser of what the configuration asked for and what the last tick
+    /// actually supplied. A session configured for microseconds but driven by
+    /// [`Session::tick`] writes 21 bytes rather than padding three zeroes onto
+    /// a resolution it does not have — the alternative ADR-0057 declined.
+    fn stamp_precision(&self) -> Precision {
+        self.cfg.timestamp_precision.coarser(self.now_resolution)
+    }
+
+    /// Render `52=` for the instant of the last tick.
+    fn stamp_now(&mut self) -> Stamped {
+        // Unix milliseconds, because that is what `TimestampCache` takes and it
+        // is `no_std` and shared with callers that have no session. Saturating:
+        // a session ticked before 1970 is a misconfiguration, and reporting
+        // 1970 is better than wrapping into the year 292 million.
+        let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
+        // Truncated, never re-rendered: the digits are positional, so the
+        // millisecond form is a prefix of the microsecond form byte for byte.
+        let len = self.stamp_precision().bytes();
+        let full = self.stamp.format(unix, self.now_sub_ms_nanos);
+        let mut bytes = [0u8; fixbolt_codec::TIMESTAMP_MAX_LEN];
+        if let (Some(dst), Some(src)) = (bytes.get_mut(..len), full.get(..len)) {
+            dst.copy_from_slice(src);
+        }
+        Stamped { bytes, len }
+    }
+
     /// A session that has not yet been connected.
     #[must_use]
     pub fn new(cfg: Config) -> Self {
+        // Read before `cfg` is moved into the struct. The cache's width is the
+        // configuration's ceiling; how many of those bytes actually reach the
+        // wire is decided per tick, by `Self::stamp_precision`.
+        let cfg_precision = cfg.timestamp_precision;
         let out = match (cfg.begin_string.get(), cfg.sender_comp_id.get()) {
             (Some(begin), Some(sender)) => cfg
                 .target_comp_id
@@ -1301,9 +1412,11 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             cfg,
             state: State::Disconnected,
             now_ms: 0,
+            now_sub_ms_nanos: 0,
+            now_resolution: Precision::Millis,
             idx: FieldIndex::new(),
             out,
-            stamp: TimestampCache::new(),
+            stamp: TimestampCache::with_precision(cfg_precision),
             next_out: 1,
             next_in: 1,
             resumed: false,
@@ -1850,6 +1963,41 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // because the caller happened to use the journal-less form of a
         // timer tick. Stalling is recoverable; filling is not.
         // `a_replay_stalls_on_the_journal_less_tick_and_says_nothing_wrong`.
+        self.now_sub_ms_nanos = 0;
+        self.now_resolution = Precision::Millis;
+        self.tick_inner(now_ms, &mut emit)
+    }
+
+    /// [`Self::tick`], carrying the part of the instant below a millisecond.
+    ///
+    /// `sub_ms_nanos` is nanoseconds **inside** `now_ms`, from the same clock
+    /// reading — 0 to 999 999. It is read by exactly one thing, the `52=`
+    /// formatter: no schedule, no heartbeat, no skew and no journal record
+    /// changes unit, and `Input::Tick` is still milliseconds
+    /// ([D13](../../../docs/DESIGN.md)).
+    ///
+    /// # Why both numbers arrive in one call
+    ///
+    /// Two setters can disagree. A `set_fraction` called at a different moment
+    /// than the tick would print a remainder belonging to some other
+    /// millisecond, on a message stamped with this one, and nothing in the type
+    /// system would say so. One call cannot drift.
+    /// [ADR-0057](../../../docs/decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md)
+    /// decision 1.
+    ///
+    /// # It is a ceiling meeting a ceiling
+    ///
+    /// This door supplies nanosecond resolution; [`Config::with_timestamp_precision`]
+    /// says how much of it goes on the wire. The coarser wins, so calling this
+    /// on a millisecond session changes not one byte.
+    pub fn tick_at<F: FnMut(&[u8])>(
+        &mut self,
+        now_ms: u64,
+        sub_ms_nanos: u32,
+        mut emit: F,
+    ) -> Link {
+        self.now_sub_ms_nanos = sub_ms_nanos;
+        self.now_resolution = Precision::Nanos;
         self.tick_inner(now_ms, &mut emit)
     }
 
@@ -1868,6 +2016,29 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         journal: &mut J,
         mut emit: F,
     ) -> Link {
+        self.now_sub_ms_nanos = 0;
+        self.now_resolution = Precision::Millis;
+        let link = self.tick_after_inner(now_ms, journal, &mut emit);
+        // **After every path out, not only this one** — see `tell_journal`.
+        self.tell_journal(journal);
+        link
+    }
+
+    /// [`Self::tick_with`], carrying the part of the instant below a
+    /// millisecond.
+    ///
+    /// The door `fixbolt_engine` uses, so a deployment gets the precision it
+    /// configured. See [`Self::tick_at`] for why the two numbers travel
+    /// together.
+    pub fn tick_at_with<J: Journal, F: FnMut(&[u8])>(
+        &mut self,
+        now_ms: u64,
+        sub_ms_nanos: u32,
+        journal: &mut J,
+        mut emit: F,
+    ) -> Link {
+        self.now_sub_ms_nanos = sub_ms_nanos;
+        self.now_resolution = Precision::Nanos;
         let link = self.tick_after_inner(now_ms, journal, &mut emit);
         // **After every path out, not only this one** — see `tell_journal`.
         self.tell_journal(journal);
@@ -2481,12 +2652,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         extra: &[(u32, &[u8])],
         emit: &mut F,
     ) -> Result<(), Refusal> {
-        // Unix milliseconds, because that is what `TimestampCache` takes and it
-        // is `no_std` and shared with callers that have no session. Saturating:
-        // a session ticked before 1970 is a misconfiguration, and reporting
-        // 1970 is better than wrapping into the year 292 million.
-        let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
-        let stamp = *self.stamp.format(unix);
+        let stamp = self.stamp_now();
         let mut seq = [0u8; 10];
         let seq = digits(at.unwrap_or(self.next_out), &mut seq);
 
@@ -2506,7 +2672,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
         let mut slots: [(u32, &[u8]); 18] = [(0, &[]); 18];
         slots[0] = (tag::MSG_SEQ_NUM, seq);
-        slots[1] = (tag::SENDING_TIME, &stamp);
+        slots[1] = (tag::SENDING_TIME, stamp.as_bytes());
         let mut n = 2;
         if let Some(v) = last {
             slots[n] = (tag::LAST_MSG_SEQ_NUM_PROCESSED, v);
@@ -2580,8 +2746,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         if self.state != State::LoggedOn {
             return Link::Up;
         }
-        let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
-        let now = *self.stamp.format(unix);
+        let now = self.stamp_now();
         let mut seq = [0u8; 10];
         let seq = digits(self.next_out, &mut seq);
         let seq_out = self.next_out;
@@ -2591,7 +2756,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             return Link::Up;
         };
         let out::Outbound { app: buf, .. } = o;
-        let Some(r) = rebuild(msg, Some(seq), &now, last_processed, false, buf) else {
+        let Some(r) = rebuild(msg, Some(seq), now.as_bytes(), last_processed, false, buf) else {
             return Link::Up;
         };
         if !journal.put(seq_out, &buf[r.clone()]) {
@@ -2629,14 +2794,13 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         journal: &J,
         emit: &mut F,
     ) -> Result<bool, Refusal> {
-        let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
-        let now = *self.stamp.format(unix);
+        let now = self.stamp_now();
         let Some(kept) = journal.get(seq) else {
             return Ok(false);
         };
         let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
         let out::Outbound { app: buf, .. } = o;
-        let r = as_resend(kept, &now, buf).ok_or(Refusal::CannotSend)?;
+        let r = as_resend(kept, now.as_bytes(), buf).ok_or(Refusal::CannotSend)?;
         emit(&buf[r]);
         self.last_sent_ms = self.now_ms;
         Ok(true)
@@ -2709,8 +2873,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
 
     /// One `SequenceReset` gap fill covering `from..upto`, numbered `from`.
     fn fill<F: FnMut(&[u8])>(&mut self, from: u32, upto: u32, emit: &mut F) -> Result<(), Refusal> {
-        let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
-        let orig = *self.stamp.format(unix);
+        let orig = self.stamp_now();
         let mut new_seq = [0u8; 10];
         let new_seq = digits(upto, &mut new_seq);
         self.send_as(
@@ -2718,7 +2881,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             Some(from),
             &[
                 (tag::POSS_DUP_FLAG, b"Y"),
-                (tag::ORIG_SENDING_TIME, &orig),
+                (tag::ORIG_SENDING_TIME, orig.as_bytes()),
                 (tag::NEW_SEQ_NO, new_seq),
                 (tag::GAP_FILL_FLAG, b"Y"),
             ],
@@ -3285,8 +3448,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
 
         // Everything the session does not own belongs to the application.
         if is_application {
-            let unix = self.now_ms.saturating_sub(clock::MILLIS_YEAR_ZERO_TO_EPOCH);
-            let stamp = *self.stamp.format(unix);
+            let stamp = self.stamp_now();
             let seq_out = self.next_out;
             // Read before the application is given anything, and read from
             // `next_in` rather than from `seq`: they are the same number here,
@@ -3299,7 +3461,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
                 let out::Outbound { app: buf, .. } = o;
                 let hdr = Header {
                     seq: seq_out,
-                    stamp: &stamp,
+                    stamp: stamp.as_bytes(),
                     // `next_in` has already moved past this message —
                     // `advance_past` ran above — so the last number processed
                     // is one behind it, which is the message being answered.

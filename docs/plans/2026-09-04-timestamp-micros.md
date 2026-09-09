@@ -1,6 +1,6 @@
 # Timestamp micro giây, hai chiều
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Sửa lại:** 2026-09-08 (Sửa 1) · **Trạng thái:** Nửa A ĐÓNG 2026-09-08 · Nửa B chờ ADR-0057
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Sửa lại:** 2026-09-08 (Sửa 1) · **Trạng thái:** ĐÓNG 2026-09-09 — nửa A 09-08, nửa B 09-09
 > **Phạm vi:** `STATUS.md` item 45, đợt B, plan thứ ba. Chạm `codec` (`TimestampCache`,
 > **hot path**), `session` (`clock::parse_utc`, `Config`, `Session::stamp`), `engine`
 > (`settings`, `clock`), `conformance`, `benches`. **Không chạm** `dict`, `transport`.
@@ -182,9 +182,13 @@ không đọc exit code, và **CI xanh trên đúng commit đóng plan**, nêu i
 - [x] [`docs/reference/a-valid-field-refused-for-its-width.md`](../reference/a-valid-field-refused-for-its-width.md) — một field hợp lệ bị cắt kết nối im lặng vì độ dài (A5)
 - [x] `CHANGELOG.md` — nửa A xong; `codec` chờ nửa B — API công khai của `session`, rồi `codec` (A5, B5)
 - [x] `STATUS.md` — nửa A xong; đã đọc *Not proven* từng dòng và thêm một dòng mới — mục *Start here*, item 45, **và đọc từng dòng mục *Not proven*** (A5, B5)
-- [ ] `docs/decisions/ADR-0057-*.md` — nguồn thời gian dưới mili giây (cửa)
-- [ ] `docs/CONFIGURATION.md` — key `TimestampPrecision` (B5)
-- [ ] `docs/DESIGN.md` §6/§8 — hàng cache mới, kèm số đo (B5)
+- [x] `docs/decisions/ADR-0057-*.md` — nguồn thời gian dưới mili giây (cửa) — `Accepted` 2026-09-09
+- [x] `docs/CONFIGURATION.md` — key `TimestampPrecision` (B5)
+- [x] `docs/DESIGN.md` D9 — hàng cache mới kèm số đo (B5). **§6/§8 không đụng**: không hàng nào của ngân sách độ trễ đổi, và một hàng thêm vào đó mà không có số máy §9 thì là một lời hứa
+- [x] `docs/GUIDE.md` §5b — ba ràng buộc kiểu không giữ được (B5)
+- [x] `docs/SESSION-BEHAVIOUR.md` §1b — ba độ rộng đi ra (B5)
+- [x] `docs/CONFORMANCE.md` — hàng `interop-micros:` 5 / 5 (B5)
+- [x] [`docs/reference/one-field-two-readers.md`](../reference/one-field-two-readers.md) — một field, hai bộ đọc (B4)
 
 ## Bẫy đã lường trước
 
@@ -216,6 +220,135 @@ handler); `DateTime` precision trong `dict` types; `SECONDS` precision khi gửi
 đây chưa ai hỏi).
 
 ## Nhật ký giao hàng
+
+`[2026-09-09]` **NỬA B ĐÓNG, đủ năm bước B1–B5.** ADR-0057 được duyệt trong ngày và chuyển
+`Accepted`. Kết quả: `TimestampPrecision` là key thứ 26, `52=` đi ra ở 21/24/27 byte, và
+`scripts/interop.sh` có một kịch bản mới xử theo **byte** chứ không theo dòng bước.
+
+**Cái đắt nhất của cả plan không nằm trong plan.** Bước B4 chạy lần đầu: session logon xong, rồi
+**mọi message sau Logon bị `35=3 … 371=52 373=6`**. Nửa A đã mở rộng `parse_utc` — nhưng `52=`
+có **hai** bộ đọc, và bộ thứ hai, `dict::FieldType::UtcTimestamp`, vẫn chỉ nhận 8 hoặc 12 byte
+giờ. Không một gate nào trong repo này thấy được: test nửa A chạy trên một `Logon`, corpus không
+có stamp nào rộng hơn 21 byte, và test của `dict` liệt kê đúng những giá trị `dict` đã nhận.
+**Thứ tìm ra nó là engine của người khác.**
+[one-field-two-readers](../reference/one-field-two-readers.md), có nhãn `[to testing-skills]`.
+
+**Bằng chứng, theo thứ tự nó xảy ra.**
+
+**B1 đỏ trước, ở assertion chứ không phải ở compile:**
+
+```
+assertion `left == right` failed: a cache that cannot write more than
+milliseconds cannot serve a venue that requires microseconds
+  left: 21
+ right: 24
+```
+
+Nói thẳng một chỗ plan không lường: **assertion đó không bao giờ xanh được**, vì mặc định phải
+ở lại mili giây. Nó chứng minh khoảng trống có thật, không phải chứng minh hành vi đích — hành
+vi đích cần một kiểu chưa tồn tại lúc chạy đỏ. Mẫu *"cùng một test, không sửa assertion"* của
+nửa A **không chuyển được** sang một bước *thêm API*. Test thay thế nêu tên chuyện này.
+
+**Đảo chiều cái guard quan trọng nhất.** Đổi `Precision::coarser` cho nó chọn cái mịn hơn:
+
+```
+assertion `left == right` failed: a millisecond tick must not be padded out to
+Micros: 20260828-12:00:00.000000
+  left: 24
+ right: 21
+```
+
+`20260828-12:00:00.000000` — đúng lời nói dối phương án (c) bị bác. Guard biến việc ADR bác bỏ
+(c) thành tính chất của kiểu chứ không phải một câu trong tài liệu.
+
+**B4, gate interop, đọc trên transcript của chính QuickFIX:**
+
+```
+interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix
+interop-micros: 21-byte 52= — 0 (must be 0)
+interop-micros: 35=3 naming tag 52 — 0 (must be 0)
+interop-micros: PASS 5/5
+```
+
+Đảo chiều: đặt đầu này về `TimestampPrecision=3` → `0 from fixbolt`, `12` stamp mili giây, gate
+đỏ. **Và phải sửa `initiator.cpp` mới có bằng chứng**: nó chỉ in transcript khi thất bại, nên
+một lần chạy *thành công* không có bằng chứng nào cả — thêm `--dump-tape`. Bản đầu của §4h còn
+**chết im lặng**: nó glob một file log QuickFIX không bao giờ ghi, và dưới `set -o pipefail` thì
+script tắt mà không in một dòng.
+
+**B5, đo trên máy này chứ không phải máy §9**, ba lần mỗi arm, một biến một lần:
+
+| | ns/op |
+|---|---|
+| trước thay đổi, cùng máy | **4.7** |
+| trả về slice thay cho `&[u8; 21]`, chưa có branch | **4.8** |
+| như đã ship, mặc định `Millis` | **5.4** |
+| `Micros` | **10.5** |
+| `Nanos` | **13.0** |
+
+**+0.7 ns ở mặc định, trong đó branch runtime 0.6 và slice return 0.1.** Đó là giá của việc chọn
+trường runtime thay cho const generic, và là con số ADR-0057 quyết định 5 hỏi. **Số 4.9 ns không
+được đo lại** — nó là số máy §9 và máy này là VM chia sẻ.
+
+**Một regression bị bắt và bị sửa giữa đường.** Bản đầu gộp cả ba precision vào một vòng lặp:
+**4.7 → 6.4 ns**, +36% ở mặc định cho những chữ số mặc định không viết. Tách nhánh mili giây
+thành thẳng hàng đưa về 5.4. Và **ratchet indexing bắt bản đầu**: 184 → 186 vì một index tính
+được và một slice tính được; viết lại bằng slice pattern đưa về 184. Nhân đó biết thêm một điều
+về chính cái ratchet: `clippy::indexing_slicing` **không** báo với index hằng vào mảng cỡ cố
+định — nó đếm cái *không chứng minh được*, và đó mới là loại panic.
+
+**Cái nửa B KHÔNG làm:** không đo trên máy §9 (cần hai lần reboot, `[2026-09-05]`), nên mọi số
+ở trên mang nhãn máy của chúng; `benches/baselines.tsv` **không thêm dòng nào**. `SECONDS`
+precision vẫn ngoài phạm vi. Và `STATUS.md` item 59 **vẫn mở**: `dict` giờ khớp bốn độ rộng của
+`parse_utc`, nhưng oracle nhận 17–27, nên sáu precision nó gửi được vẫn bị đây từ chối.
+
+
+`[2026-09-09, sau khi duyệt]` **Sửa 2, viết trước khi code chạm vào bất cứ file nào.**
+ADR-0057 được duyệt trong ngày, `Accepted`. Đọc lại code để mở nửa B thì **ba dòng của plan này
+sai**, và một trong ba là một cái bẫy plan tự dựng lên cho một mối nguy **không tồn tại trong
+codebase này**.
+
+**Sửa 2a — B1 bỏ `const FRAC`, dùng trường runtime.** Plan viết
+`TimestampCache<const FRAC: usize>` "để không branch mỗi message". Nhưng **B2 lại đặt precision
+vào `Config`**, thứ đọc từ file cấu hình lúc chạy. Hai cái đó không đi được với nhau: một const
+generic bắt `Session<N, APP, FRAC>`, tức là engine phải `match` một giá trị runtime thành **ba
+bản monomorphise** của cả session lẫn engine, chạm cả mười chữ ký `serve*`. Đó là cái giá rất
+lớn cho một branch mà bộ dự đoán nhánh đoán đúng mọi lần (cùng một giá trị suốt đời session).
+ADR-0057 quyết định 5 để chuyện này cho plan, **với đúng một ràng buộc**: đo lại với
+`benches/baselines.tsv:141` — `SendingTime from the cache`, **4.9 ns**, AMD Ryzen 7 3700X,
+n = 20 — **cùng máy, cùng cách**. Nếu không có máy §9 thì đóng với nhãn *unmeasured* và nói rõ.
+
+**Sửa 2b — bẫy "slot `52=` build 21 byte, patch 24 byte → ghi đè `56=`" KHÔNG CÓ THẬT ở đây.**
+`Template::encode_with` viết `Part::Slot(tag)` bằng **đúng giá trị được đưa vào**, dài bao nhiêu
+cũng được, rồi tính `9=` từ vị trí ghi thực tế (`crates/codec/src/template.rs:585–590`,
+`body_len = w - k`). Không có slot cố định độ rộng, và không có đường patch tại chỗ: mỗi message
+được encode lại từ đầu. Đường application cũng vậy — `rebuild` gọi
+`b.field(tag::SENDING_TIME, now)` với một slice (`crates/session/src/lib.rs:3652`). **Test
+byte-level toàn message ở B2 vẫn giữ**, nhưng nó canh số học `9=`/`10=` chứ không canh một vụ
+ghi đè. *Một bẫy được canh nhầm chỗ vẫn tốn tiền như một bẫy thật.*
+
+**Sửa 2c — nửa B phải mở một cửa tick thứ hai, và plan không lường.** ADR-0057 quyết định 1 đòi
+phần lẻ đi **cùng một lời gọi** với `now_ms`. `tick`/`tick_with` hôm nay có **102 nơi gọi**
+(`grep`, 2026-09-09), trong đó **100 là test và bench**; đổi chữ ký là 100 lần sửa cơ học cho
+một tính năng mà 100 chỗ đó không hề chạm tới. Nên:
+
+- `tick_at(now_ms, sub_ms_nanos, emit)` và `tick_at_with(...)` — cửa mang cả hai số, một lời
+  gọi, một lần đọc đồng hồ. Đây là cửa engine dùng.
+- `tick`/`tick_with` **giữ nguyên chữ ký và đổi nghĩa cho rõ**: *một mili giây, và không có độ
+  phân giải nào mịn hơn*.
+
+**Và điều đó tự mở một lỗ mà plan phải bịt ngay**: một session cấu hình `MICROS` nhưng được
+đánh nhịp qua cửa mili giây sẽ in `.123000` — **đúng lời nói dối của phương án (c), vào bằng
+cửa sau**. Nên session ghi lại **độ phân giải nó được đưa**, và format ở `min(cấu hình, được
+đưa)`. Một session `MICROS` bị `tick()` in **21 byte**, không phải `.xxx000`. Có test canh, và
+đó là test biến việc ADR bác bỏ (c) thành một tính chất của kiểu chứ không phải một câu trong
+tài liệu.
+
+**Sửa 2d — cách viết giá trị của key.** `TimestampPrecision` nhận **số nguyên**, để một `.cfg`
+dùng chung với đầu QuickFIX C++ đọc được ở cả hai bên (ADR-0057, bảng oracle). Nhận `3`, `6`,
+`9`; **mọi giá trị khác là lỗi cấu hình lúc nạp, không phải clamp im lặng** — ADR-0057 câu hỏi
+mở 3 nói rõ hơn nào là trung thực. `0` (SECONDS) vẫn nằm trong *Ngoài phạm vi* của chính plan
+này.
 
 `[2026-09-09]` **Cửa đã có trang, chưa có chữ ký.**
 [ADR-0057](../decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md) viết xong,

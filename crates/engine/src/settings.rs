@@ -130,6 +130,15 @@ enum Key {
     /// The QuickFIX/J and QuickFIX/n spelling, because QuickFIX C++ has no key
     /// for this at all — it never sends the field.
     EnableLastMsgSeqNumProcessed,
+    /// Fractional digits on `52=SendingTime` going out: `3`, `6` or `9`.
+    ///
+    /// **QuickFIX C++'s spelling and QuickFIX C++'s shape** — an integer, not a
+    /// named width. `[researched 2026-09-09]` that engine reads it with
+    /// `getInt` and accepts 0–9 (`Session.h:167–174`), defaulting to 3
+    /// (`Session.cpp:68`), so a `.cfg` shared between the two ends carries a
+    /// number. This engine writes only 3, 6 and 9, and **refuses the other
+    /// seven rather than rounding to the nearest** — ADR-0057 open question 3.
+    TimestampPrecision,
 }
 
 impl Key {
@@ -163,6 +172,7 @@ impl Key {
             "ValidateUserDefinedFields" => Some(Self::ValidateUserDefinedFields),
             "SendNextExpectedMsgSeqNum" => Some(Self::SendNextExpectedMsgSeqNum),
             "EnableLastMsgSeqNumProcessed" => Some(Self::EnableLastMsgSeqNumProcessed),
+            "TimestampPrecision" => Some(Self::TimestampPrecision),
             _ => None,
         }
     }
@@ -194,6 +204,7 @@ impl Key {
             Self::ValidateUserDefinedFields => "ValidateUserDefinedFields",
             Self::SendNextExpectedMsgSeqNum => "SendNextExpectedMsgSeqNum",
             Self::EnableLastMsgSeqNumProcessed => "EnableLastMsgSeqNumProcessed",
+            Self::TimestampPrecision => "TimestampPrecision",
         }
     }
 }
@@ -274,6 +285,13 @@ pub enum Problem {
     ValueTooLong,
     /// A key that wants a number did not get one.
     NotANumber,
+    /// `TimestampPrecision` named a width this engine does not write.
+    ///
+    /// QuickFIX C++ accepts any integer 0–9; this engine writes 3, 6 or 9.
+    /// **Refused and not rounded**: answering `TimestampPrecision=4` with six
+    /// digits would put a resolution on the wire that the operator did not
+    /// choose, and nothing downstream would say so. ADR-0057 open question 3.
+    UnsupportedPrecision,
     /// No `[SESSION]` block at all. An empty table refuses every connection,
     /// which is indistinguishable from a network fault.
     NoSessions,
@@ -308,6 +326,9 @@ impl fmt::Display for Problem {
             Self::MissingKey => "a required key is missing",
             Self::ValueTooLong => "the value is longer than a session configuration can hold",
             Self::NotANumber => "expected a number",
+            Self::UnsupportedPrecision => {
+                "expected TimestampPrecision=3, 6 or 9 — this engine writes no other width"
+            }
             Self::NoSessions => "no [SESSION] block — this acceptor would serve nobody",
             Self::DuplicateSession => "two [SESSION] blocks name the same FIX identity",
             Self::BadTime => "expected a time of day as HH:MM:SS",
@@ -393,6 +414,7 @@ struct Block<'a> {
     validate_user_defined_fields: Option<(usize, &'a str)>,
     send_next_expected: Option<(usize, &'a str)>,
     enable_last_processed: Option<(usize, &'a str)>,
+    timestamp_precision: Option<(usize, &'a str)>,
 }
 
 impl<'a> Block<'a> {
@@ -425,6 +447,7 @@ impl<'a> Block<'a> {
             Key::ValidateUserDefinedFields => &mut self.validate_user_defined_fields,
             Key::SendNextExpectedMsgSeqNum => &mut self.send_next_expected,
             Key::EnableLastMsgSeqNumProcessed => &mut self.enable_last_processed,
+            Key::TimestampPrecision => &mut self.timestamp_precision,
             // Handled before a block ever sees them. A `[SESSION]` carrying one
             // is refused in `parse`, not here, so the error can say why.
             Key::FileLogPath | Key::ConnectionType => {
@@ -468,6 +491,7 @@ impl<'a> Block<'a> {
                 .or(base.validate_user_defined_fields),
             send_next_expected: self.send_next_expected.or(base.send_next_expected),
             enable_last_processed: self.enable_last_processed.or(base.enable_last_processed),
+            timestamp_precision: self.timestamp_precision.or(base.timestamp_precision),
         }
     }
 
@@ -902,6 +926,22 @@ fn build(block: Block<'_>) -> Result<Config, SettingsError> {
     }
     if let Some(v) = block.enable_last_processed {
         cfg = cfg.with_last_processed(flag(v, Key::EnableLastMsgSeqNumProcessed)?);
+    }
+    if let Some(v) = block.timestamp_precision {
+        let digits: u32 = number(v, Key::TimestampPrecision)?;
+        // **Refused, not rounded.** QuickFIX C++ takes 0-9 here; this engine
+        // writes 3, 6 or 9, and the six widths in between would have to become
+        // some other width to go out at all. A configuration error names the
+        // line; a silent clamp names nothing. ADR-0057 open question 3.
+        let precision =
+            fixbolt_codec::Precision::from_fractional_digits(digits).ok_or_else(|| {
+                SettingsError::at(
+                    v.0,
+                    Problem::UnsupportedPrecision,
+                    format!("{}={}", Key::TimestampPrecision.name(), v.1),
+                )
+            })?;
+        cfg = cfg.with_timestamp_precision(precision);
     }
 
     Ok(cfg)

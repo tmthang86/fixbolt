@@ -53,7 +53,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
-use fixbolt_codec::timestamp::TimestampCache;
+use fixbolt_codec::timestamp::{Precision, TimestampCache};
 
 use crate::dispatch::ConnId;
 use crate::ring::{Consumer, Producer};
@@ -403,7 +403,11 @@ fn torn_len(path: &Path, len: u64) -> std::io::Result<usize> {
 /// is not the engine thread, and nothing on the hot path waits for it.
 fn write_loop(mut file: File, mut from_engine: Consumer, lost: &AtomicU64) {
     let mut buf = vec![0u8; WRITER_BUF];
-    let mut clock = TimestampCache::new();
+    // **Milliseconds, named rather than defaulted** (ADR-0057). A diagnostic
+    // file has no reason to follow a session's `TimestampPrecision`: the two
+    // are read by different people for different questions, and a log whose
+    // column width moved with a configuration key would be worse to grep.
+    let mut clock = TimestampCache::with_precision(Precision::Millis);
     let mut peers: HashMap<(u16, ConnId), String> = HashMap::new();
     let mut line: Vec<u8> = Vec::with_capacity(WRITER_BUF * 2);
     // Flush when the ring runs dry, not per line: a `grep` two seconds later
@@ -445,7 +449,7 @@ fn write_loop(mut file: File, mut from_engine: Consumer, lost: &AtomicU64) {
                 line.clear();
                 if dir == Direction::Open {
                     let peer = String::from_utf8_lossy(payload).into_owned();
-                    let stamp = clock.format(at_ms.saturating_sub(MILLIS_YEAR_ZERO_TO_EPOCH));
+                    let stamp = clock.format(at_ms.saturating_sub(MILLIS_YEAR_ZERO_TO_EPOCH), 0);
                     line.extend_from_slice(b"# conn=");
                     push_num(id, &mut line);
                     line.extend_from_slice(b" shard=");
@@ -456,7 +460,7 @@ fn write_loop(mut file: File, mut from_engine: Consumer, lost: &AtomicU64) {
                     line.extend_from_slice(stamp);
                     peers.insert((shard, id), peer);
                 } else {
-                    let stamp = clock.format(at_ms.saturating_sub(MILLIS_YEAR_ZERO_TO_EPOCH));
+                    let stamp = clock.format(at_ms.saturating_sub(MILLIS_YEAR_ZERO_TO_EPOCH), 0);
                     line.extend_from_slice(stamp);
                     line.push(b' ');
                     line.extend_from_slice(dir.label().as_bytes());

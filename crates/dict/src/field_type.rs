@@ -225,7 +225,17 @@ fn date(v: &[u8]) -> bool {
 
 /// `HH:MM:SS` or `HH:MM:SS.sss`.
 fn time(v: &[u8]) -> bool {
-    if v.len() != 8 && v.len() != 12 {
+    // `HH:MM:SS`, or a `.` and three, six or nine fractional digits — the same
+    // four widths `session::clock::parse_utc` reads, and **the two readers
+    // agreeing is the point**.
+    //
+    // `[measured 2026-09-09]` they did not agree, and only a real counterparty
+    // could see it. Half A of `timestamp-micros` widened `parse_utc` and left
+    // this alone, so `scripts/interop.sh` at `TimestampPrecision=6` logged on
+    // and then answered every message after the Logon with
+    // `35=3 ... 371=52 373=6` — a `Reject` per Heartbeat, per SequenceReset,
+    // per Logout. `crates/dict/tests/field_types.rs::a_microsecond_timestamp_is_a_timestamp`.
+    if !matches!(v.len(), 8 | 12 | 15 | 18) {
         return false;
     }
     if v[2] != b':' || v[5] != b':' {

@@ -506,7 +506,7 @@ mod serving {
             .expect("after 1970")
             .as_millis() as u64;
         let mut cache = fixbolt_codec::timestamp::TimestampCache::new();
-        let full = *cache.format(now);
+        let full = cache.format(now, 0);
         let stamp = core::str::from_utf8(&full[..17]).expect("ascii");
         let inner = format!(
             "35=A\u{1}34={seq}\u{1}49=TW44\u{1}52={stamp}\u{1}56=ISLD\u{1}98=0\u{1}108=30\u{1}"

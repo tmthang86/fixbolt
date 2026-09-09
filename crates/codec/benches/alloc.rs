@@ -98,7 +98,7 @@ fn main() {
         .expect("template");
     let mut out = [0u8; 512];
     let mut clock = TimestampCache::new();
-    let _ = clock.format(1_787_000_000_000);
+    let _ = clock.format(1_787_000_000_000, 0);
 
     // Warm anything lazy in the runtime before the counted section.
     let _ = parse_into::<NoDict, 64>(msg, &mut idx, Validation::ALL);
@@ -112,7 +112,8 @@ fn main() {
 
     let encode_allocs = count(|| {
         for i in 0..10_000u64 {
-            let stamp = *clock.format(1_787_000_000_000 + i);
+            let mut stamp = [0u8; 21];
+            stamp.copy_from_slice(clock.format(1_787_000_000_000 + i, 0));
             let _ = t.encode(
                 &mut out,
                 &[

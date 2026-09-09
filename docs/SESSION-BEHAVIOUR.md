@@ -84,12 +84,40 @@ answer with. Guarded by
 rounding would let a stamp that is exactly right arrive one millisecond in the future.
 Guarded by `clock::tests::anything_finer_than_a_millisecond_is_dropped_and_not_rounded`.
 
-**This is the receive direction only.** The engine still *writes* 21 bytes, at every
-precision a counterparty sends, and there is no key to change that. Where that time would
-come from is an open architectural question: `TimestampCache` lives inside the pure session,
-which is fed milliseconds by `Input::Tick` and has no finer clock to format — see the plan's
-`ADR-0057` gate. A venue that requires a microsecond `52=` **from** this engine is not served
-today.
+**`[corrected 2026-09-09]` the receive direction had a second reader, and this paragraph's
+predecessor was wrong about being finished.** Widening `parse_utc` widened the reader that
+*measures the skew*; the reader that decides whether the value **is a `UTCTIMESTAMP` at all** —
+`dict::FieldType::UtcTimestamp` — still accepted 8 or 12 bytes of time. A real `libquickfix`
+counterparty at `TimestampPrecision=6` therefore logged on and had **every message after the
+Logon answered with `35=3 … 371=52 373=6`**, one Reject per Heartbeat, per SequenceReset, per
+Logout. Nothing in this repository could see it; `scripts/interop.sh` §4h found it. Both readers
+now take the same four widths, guarded by
+`crates/dict/tests/field_types.rs::a_microsecond_timestamp_is_a_timestamp` and by that interop
+scenario. [one-field-two-readers](reference/one-field-two-readers.md).
+
+### 1b. The three widths a timestamp may leave in `[added 2026-09-09]`
+
+`52=SendingTime` is written at **21, 24 or 27 bytes**, chosen by `TimestampPrecision` (3, 6 or
+9; default 3, and 21 bytes is what every deployment gets unless it asks otherwise).
+[ADR-0057](decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md),
+[CONFIGURATION.md](CONFIGURATION.md).
+
+**The configured width is a ceiling and the tick is the floor.** The stamp is written at the
+coarser of the two, so a session driven through `Session::tick` — a millisecond and nothing
+finer — writes 21 bytes even when configured for microseconds. `.xxx000` would claim a
+resolution this end does not have. Guarded by
+`crates/session/tests/timestamp_precision.rs::a_configured_width_is_a_ceiling_and_not_a_promise`,
+whose reversal prints the lie in full: `20260828-12:00:00.000000`.
+
+**The stamp names the instant the engine turn began**, not the instant of the `send`: the engine
+reads its clock once per turn and `Session::received` takes no time at all. See
+[GUIDE.md](GUIDE.md) §5b, which also carries the consequence a user has to honour — `Header::stamp`
+no longer has a constant width, and a reply must copy it by its length.
+
+**A value this engine cannot write is refused by line number, not rounded.**
+`TimestampPrecision=4` is a settings error; QuickFIX C++ accepts 0–9 for the same key, so a
+shared `.cfg` can legitimately name a width this engine does not have. Guarded by
+`crates/engine/tests/settings_roles.rs::a_precision_this_engine_cannot_write_is_refused_and_named`.
 
 **The 59 acceptance definitions say nothing about any of this.** 0 of them carry a stamp
 wider than 21 bytes, so `59 / 59` is evidence that this change broke nothing and no evidence

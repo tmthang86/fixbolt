@@ -89,7 +89,7 @@ fn now_ms() -> u64 {
 
 fn stamp() -> String {
     let mut cache = fixbolt_codec::timestamp::TimestampCache::new();
-    let full = *cache.format(now_ms());
+    let full = cache.format(now_ms(), 0);
     core::str::from_utf8(&full[..17]).expect("ascii").to_owned()
 }
 

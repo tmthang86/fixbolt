@@ -93,7 +93,7 @@ fn now_ms() -> u64 {
 /// which is the confusion `two-time-rules-share-one-observable` records.
 fn logon_now(who: &str) -> Vec<u8> {
     let mut cache = fixbolt_codec::timestamp::TimestampCache::new();
-    let full = *cache.format(now_ms());
+    let full = cache.format(now_ms(), 0);
     let stamp = core::str::from_utf8(&full[..17]).expect("ascii");
     let inner =
         format!("35=A\u{1}34=1\u{1}49={who}\u{1}52={stamp}\u{1}56=ISLD\u{1}98=0\u{1}108=30\u{1}");
@@ -390,7 +390,7 @@ fn a_file_log_path_in_the_config_reaches_serve_and_the_file_fills() {
 fn a_validation_knob_written_in_a_file_reaches_a_session_over_a_real_socket() {
     let logout_with_logon_fields = |seq: u32| {
         let mut cache = fixbolt_codec::timestamp::TimestampCache::new();
-        let full = *cache.format(now_ms());
+        let full = cache.format(now_ms(), 0);
         let stamp = core::str::from_utf8(&full[..17]).expect("ascii");
         let inner = format!(
             "35=5\u{1}34={seq}\u{1}49=TW44\u{1}52={stamp}\u{1}56=ISLD\u{1}98=0\u{1}108=30\u{1}"

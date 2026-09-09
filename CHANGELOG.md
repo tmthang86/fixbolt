@@ -17,6 +17,43 @@ below describe what a first release would contain.
 
 ### Changed
 
+- **`52=SendingTime` can be written at microsecond or nanosecond precision.**
+  [ADR-0057](docs/decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md). New
+  settings key `TimestampPrecision` (`3`, `6` or `9`; **default `3`**, so every byte an existing
+  deployment sends is unchanged), `Config::with_timestamp_precision`, and
+  `fixbolt_codec::Precision`.
+
+  **Breaking, and the compiler catches only some of it:**
+
+  - `fixbolt_codec::TimestampCache::format` takes a second argument — the nanoseconds inside the
+    millisecond — and returns `&[u8]` instead of `&[u8; 21]`. `TIMESTAMP_MAX_LEN` is the new
+    buffer size for a caller keeping its own copy.
+  - **`fixbolt_session::Header::stamp` no longer has a constant width.** It is 21 bytes at the
+    default and 24 or 27 otherwise. **The compiler cannot see this one**: an application written
+    as `out[..21].copy_from_slice(hdr.stamp)` still compiles and produces a body-length failure
+    three bytes later. Copy it by its length.
+  - `fixbolt_engine::clock::Clock` gains `now() -> Reading`, with a default body that answers
+    zero for the sub-millisecond part — so an existing `Clock` implementation still compiles and
+    still means what it did.
+  - `fixbolt_engine::conn::Conn::turn` takes a `clock::Reading` rather than a `u64`.
+
+  **The configured width is a ceiling, not a promise.** `Session::tick(now_ms)` carries a
+  millisecond and nothing finer, so a session driven that way writes 21 bytes even at
+  `TimestampPrecision=6`; `Session::tick_at(now_ms, sub_ms_nanos, …)` is the door that carries
+  the finer number, and the serving loop uses it. Padding with `.xxx000` would claim a resolution
+  the caller never supplied.
+
+- **`fixbolt_dict::FieldType::UtcTimestamp` and `UtcTimeOnly` accept six and nine fractional
+  digits.** They accepted none or three, so a counterparty sending a valid microsecond stamp had
+  **every message after its Logon rejected** with `373=6` naming tag 52 — even after
+  `parse_utc` had been widened, because the two are different readers of the same field. Found by
+  `scripts/interop.sh` against a real `libquickfix`, not by anything in this repository:
+  [one-field-two-readers](docs/reference/one-field-two-readers.md).
+
+- **`fixbolt_engine::settings` accepts a 26th key**, `TimestampPrecision`. A width this engine
+  does not write — QuickFIX C++ accepts `0`–`9` for the same key — is a settings error naming the
+  line, never a value rounded to the nearest.
+
 - **`fixbolt_session::clock::parse_utc` reads a `UTCTimestamp` at four widths, not two.**
   17, 21, 24 and 27 bytes — no fraction, or three, six or nine fractional digits. The
   signature is unchanged and so is the unit: anything finer than a millisecond is

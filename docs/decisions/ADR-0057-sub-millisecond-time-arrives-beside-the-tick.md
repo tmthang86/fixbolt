@@ -1,9 +1,12 @@
 # ADR-0057: Sub-millisecond time arrives beside the tick, not inside it
 
-- **Status:** Proposed — 2026-09-09
+- **Status:** Accepted — 2026-09-09, **approved by the owner on the day it was written**
 - **Date:** 2026-09-09
 - **Plan:** [timestamp-micros](../plans/2026-09-04-timestamp-micros.md) — this page **is** that
-  plan's gate. Half A is closed; **no line of half B is written before this is `Accepted`**
+  plan's gate. Half A is closed; half B opened on this approval. **Sửa 2 of that plan was written
+  before any code moved**, and it revises three of the plan's own lines against this decision —
+  the const generic, a trap that does not exist in this codebase, and the second tick door
+  decision 1 requires
 - **Constrained by** [D13](../DESIGN.md) (`Tick` counts milliseconds from year zero),
   non-negotiable 2 / [ADR-0002](ADR-0002-engine-library-split.md) (the session is pure — time
   enters as a tick and by no other door), [D9](../DESIGN.md) (`SendingTime` is patched from a

@@ -116,3 +116,57 @@ fn an_undefined_tag_has_no_type() {
         assert_eq!(Fix44::field_type(tag), None, "tag {tag}");
     }
 }
+
+/// **Found by `scripts/interop.sh`, not by anything in this repository.**
+///
+/// `[measured 2026-09-09]` half A of `timestamp-micros` widened
+/// `session::clock::parse_utc` to 17/21/24/27 bytes and closed its plan. It did
+/// not touch this validator, which is a *different* reader of the same field —
+/// so a real `libquickfix` initiator configured `TimestampPrecision=6` logged on
+/// and then had **every message after the Logon rejected**:
+///
+/// ```text
+/// 35=3 45=2 58=Incorrect data format for value 371=52 372=0 373=6
+/// ```
+///
+/// A `Reject` per Heartbeat, per SequenceReset, per Logout. Nothing in this
+/// repository's own tests could see it: they drive a Logon, and half A's
+/// assertion was that the link survived one.
+///
+/// `time` accepted lengths 8 and 12 — no fraction, or three digits. Six and
+/// nine are what FIX 5.0 SP2 EP allows and what MiFID II RTS 25 makes a venue
+/// send.
+#[test]
+fn a_microsecond_timestamp_is_a_timestamp() {
+    for value in [
+        b"20260909-06:15:27".as_ref(),
+        b"20260909-06:15:27.872".as_ref(),
+        b"20260909-06:15:27.872514".as_ref(),
+        b"20260909-06:15:27.872514123".as_ref(),
+    ] {
+        assert!(
+            FieldType::UtcTimestamp.accepts(value),
+            "{}",
+            String::from_utf8_lossy(value)
+        );
+    }
+    // The same four widths on a `UTCTIMEONLY`, which shares the reader.
+    for value in [
+        b"06:15:27".as_ref(),
+        b"06:15:27.872".as_ref(),
+        b"06:15:27.872514".as_ref(),
+        b"06:15:27.872514123".as_ref(),
+    ] {
+        assert!(
+            FieldType::UtcTimeOnly.accepts(value),
+            "{}",
+            String::from_utf8_lossy(value)
+        );
+    }
+    // And a width that is neither is still not a timestamp: this widens the
+    // set, it does not remove the check. `session::clock::parse_utc` reads the
+    // same four and no others, and the two readers agreeing is the point.
+    assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.8725"));
+    assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27."));
+    assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.87251412345"));
+}

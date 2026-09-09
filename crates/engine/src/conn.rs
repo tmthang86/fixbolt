@@ -283,7 +283,7 @@ impl<
     /// the question has to be asked before the message is judged, not after.
     pub fn turn<A: Application, G: FnMut(&[u8]) -> bool, L: MessageLog>(
         &mut self,
-        now_ms: u64,
+        now: crate::clock::Reading,
         app: &mut A,
         mut refuse: G,
         shard: u16,
@@ -291,6 +291,13 @@ impl<
     ) -> Turn {
         // One clock read per turn, so every line written on this pass carries
         // the same millisecond. Order is the order of the lines.
+        //
+        // `[2026-09-09]` **and the same sub-millisecond, which is what makes
+        // `52=` at microsecond precision mean anything.** The stamp names the
+        // instant this turn began, not the instant of the `send`; ADR-0057
+        // decision 3 and `GUIDE.md` say so rather than leaving a counterparty
+        // to work it out.
+        let now_ms = now.ms;
         let at_ms = now_ms;
         self.shard = shard;
         let mut moved = self.flush();
@@ -325,7 +332,9 @@ impl<
             // `tick_with`, not `tick`: an outstanding replay continues on a
             // tick, and a session with nothing arriving on it would otherwise
             // stall a resend longer than one batch. ADR-0046 decision 4.
-            if session.tick_with(now_ms, journal, |b| out.push(b)) == Link::Dropped {
+            if session.tick_at_with(now_ms, now.sub_ms_nanos, journal, |b| out.push(b))
+                == Link::Dropped
+            {
                 self.closing = true;
             }
             if self.overflow {

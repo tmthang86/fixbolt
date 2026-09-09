@@ -3,7 +3,7 @@
 #[path = "harness.rs"]
 mod harness;
 
-use fixbolt_codec::{NoDict, TemplateBuilder, TimestampCache};
+use fixbolt_codec::{NoDict, Precision, TemplateBuilder, TimestampCache};
 use std::hint::black_box;
 
 fn main() {
@@ -31,7 +31,8 @@ fn main() {
 
         let mut out = [0u8; 512];
         let mut clock = TimestampCache::new();
-        let stamp = *clock.format(1_787_000_000_000);
+        let mut stamp = [0u8; 21];
+        stamp.copy_from_slice(clock.format(1_787_000_000_000, 0));
 
         b.bench("encode ExecutionReport (template)", || {
             let r = t.encode(
@@ -56,10 +57,28 @@ fn main() {
             black_box(r).ok();
         });
 
+        // **The name of the first arm is load-bearing** and is not renamed:
+        // `benches/baselines.tsv:141` carries `SendingTime from the cache` at
+        // 4.9 ns on the AMD Ryzen 7 3700X, n = 20, `[2026-09-05]`, and ADR-0057
+        // decision 5 makes that row the constraint the runtime precision field
+        // has to answer to. The two arms beside it are what it costs to write
+        // more digits, on the same machine in the same run or not at all.
         let mut ms = 1_787_000_000_000u64;
         b.bench("SendingTime from the cache", || {
             ms += 1;
-            black_box(clock.format(black_box(ms)));
+            black_box(clock.format(black_box(ms), black_box(0)));
+        });
+
+        let mut micros = TimestampCache::with_precision(Precision::Micros);
+        b.bench("SendingTime from the cache, micros", || {
+            ms += 1;
+            black_box(micros.format(black_box(ms), black_box(456_789)));
+        });
+
+        let mut nanos = TimestampCache::with_precision(Precision::Nanos);
+        b.bench("SendingTime from the cache, nanos", || {
+            ms += 1;
+            black_box(nanos.format(black_box(ms), black_box(456_789)));
         });
     });
 }
