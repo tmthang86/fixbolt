@@ -23,6 +23,16 @@ standard = ["dep:libc"]
 # is what the comment on that dependency below already promised.
 affinity = ["dep:libc"]
 
+# ADR-0005, and wave B plan 4. **Off by default and it must stay off**: `rustls`
+# and `ktls-core` are the first dependencies here that pull a tree of their own,
+# and non-negotiable 6 says a build with nothing optional installed sees none of
+# it. `mod tls` is gated on this feature in `lib.rs`, not only here — the
+# manifest alone was never the guard.
+#
+# `ktls-core` needs `libc` for `setsockopt`/`getsockopt`, which is the same
+# optional `libc` `standard` and `affinity` take. One tree, still.
+tls = ["dep:rustls", "dep:ktls-core", "dep:libc"]
+
 [dependencies]
 fixbolt-codec = { path = "../codec" }
 fixbolt-dict = { path = "../dict" }
@@ -34,6 +44,21 @@ fixbolt-session = { path = "../session" }
 # async runtime, and is the same crate `plans/2026-08-30-threads-and-affinity.md`
 # takes for `sched_setaffinity` — one tree, not two. ADR-0014 decision 1.
 libc = { version = "0.2", optional = true }
+
+# ADR-0005 decision 1: the handshake runs in userspace via `rustls`, and it is
+# allowed to allocate — a named carve-out, bounded to the handshake. `ring`
+# rather than the default `aws_lc_rs` for the reason the spike recorded: this
+# machine has cc and perl but no cmake, and `aws-lc-sys` needs cmake. kTLS takes
+# raw AES-GCM keys and does not care which provider derived them.
+rustls = { version = "0.23.43", default-features = false, features = [
+    "std",
+    "ring",
+], optional = true }
+
+# ADR-0018 answered the load-bearing question with a measurement: this drives a
+# plain non-blocking socket with no async runtime, under four conditions that
+# `scripts/check-ktls-on-a-plain-socket.sh` re-proves on the kernel of the day.
+ktls-core = { version = "0.0.5", features = ["shim-rustls"], optional = true }
 
 # The 59 acceptance definitions are this crate's gate too — the same files,
 # through a real socket rather than a closure (CLAUDE.md §2 rule 3).

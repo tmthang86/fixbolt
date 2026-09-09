@@ -30,6 +30,14 @@ cd "${ROOT}" || exit 2
 # crate:dependency that must be absent when the crate is built with no features.
 CASES=(
   "fixbolt-engine:libc"
+  # `[2026-09-09]` wave B plan 4. `rustls` and `ktls-core` are the first
+  # dependencies here that pull trees of their own — `ring`, `zeroize`,
+  # `subtle` and the rest — so a leak is not one crate appearing where it
+  # should not be, it is a dozen. Both are asked for separately rather than
+  # trusting that gating one gates the other: `tls = [...]` names three
+  # `dep:` entries and a typo in any one of them is invisible until asked.
+  "fixbolt-engine:rustls"
+  "fixbolt-engine:ktls-core"
   # `[2026-09-02]` crates/library. It re-exports `serve`, which is `standard`
   # only, so it declares a `standard` feature of its own that forwards to
   # `fixbolt-engine/standard` — and a forwarding feature is exactly the shape
