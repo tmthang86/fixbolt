@@ -61,6 +61,8 @@ PORT3="${INTEROP_PORT3:-15646}"
 # A fourth, for the microsecond `52=` scenario. Same argument as the others: a
 # port collision and a protocol failure look identical from the log.
 PORT4="${INTEROP_PORT4:-15647}"
+# A fifth, for the odd-precision `52=` scenario (4i). Same argument again.
+PORT5="${INTEROP_PORT5:-15648}"
 # How long any single wait below gets before the run is called a failure.
 # A reversal that removes the restart must go RED, not HANG — a hang is how a
 # reversal fails to prove anything (docs/reference/a-reversal-can-fail-by-hanging.md).
@@ -138,8 +140,10 @@ RECON_PID=""
 NE_PID=""
 # The 4h scenario's acceptor.
 MIC_PID=""
+# The 4i scenario's acceptor.
+ODD_PID=""
 cleanup() {
-  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}" "${NE_PID}" "${MIC_PID}"; do
+  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}" "${NE_PID}" "${MIC_PID}" "${ODD_PID}"; do
     [[ -n "${pid}" ]] || continue
     kill "${pid}" 2>/dev/null || true
     wait "${pid}" 2>/dev/null || true
@@ -1052,6 +1056,137 @@ else
   cat "${WORK}/fixbolt-micros.log" >&2
   echo "---- what the C++ initiator said ----" >&2
   cat "${WORK}/interop-micros.log" >&2
+  exit 1
+fi
+
+# ---- 4i. `52=` at a precision this engine cannot send -----------------------
+#
+# ADR-0058, and `STATUS.md` open item 59. Scenario 4h proved the two ends agree
+# when both are configured for six digits. This one proves something the other
+# scenarios structurally cannot: that a width **fixbolt never produces** is
+# still understood when it arrives.
+#
+# **That is why the C++ end runs at `TimestampPrecision=2`.** This engine
+# refuses that value on the way out — `settings.rs` takes 3, 6 or 9 and nothing
+# else, ADR-0057 decision 1 — so the assertion below cannot be satisfied by this
+# repository talking to itself, and no fixture here can produce the bytes under
+# test. Only the oracle can.
+#
+# **What this looked like before ADR-0058, and why it is the item's real gate.**
+# A 20-byte `52=` read as `None`, which is `time_ok = false`, which in
+# `AwaitingLogon` is `Refusal::BadSendingTime` — a hang-up with **no byte sent**
+# (`crates/session/src/lib.rs`). Not a Reject, not a Logout: silence. So the
+# reversal of this gate is not a wrong count, it is a session that never comes
+# up, and the assertion that catches it is `logon ok`.
+echo
+echo "==> [interop-odd] libquickfix at TimestampPrecision=2 on ${PORT5}"
+mkdir -p "${WORK}/store5"
+
+cat > "${WORK}/fixbolt-odd.cfg" <<CFG
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=FIXBOLT
+
+[SESSION]
+TargetCompID=QFODD
+HeartBtInt=2
+CFG
+
+cat > "${WORK}/initiator-odd.cfg" <<CFG
+[DEFAULT]
+ConnectionType=initiator
+SocketConnectHost=127.0.0.1
+SocketConnectPort=${PORT5}
+HeartBtInt=2
+ReconnectInterval=1
+ResetOnLogon=Y
+ResetOnLogout=Y
+ResetOnDisconnect=Y
+StartTime=00:00:00
+EndTime=00:00:00
+UseDataDictionary=Y
+DataDictionary=${SRC}/spec/FIX44.xml
+FileStorePath=${WORK}/store5
+TimestampPrecision=2
+
+[SESSION]
+BeginString=FIX.4.4
+SenderCompID=QFODD
+TargetCompID=FIXBOLT
+CFG
+
+mkfifo "${WORK}/odd.ctl"
+"${REPO_ROOT}/target/debug/interop" --role acceptor \
+  --listen "127.0.0.1:${PORT5}" --cfg "${WORK}/fixbolt-odd.cfg" \
+  < "${WORK}/odd.ctl" \
+  > "${WORK}/fixbolt-odd.log" 2>&1 &
+ODD_PID=$!
+exec 9> "${WORK}/odd.ctl"
+
+for _ in $(seq 1 200); do
+  grep -q "interop: listening" "${WORK}/fixbolt-odd.log" && break
+  sleep 0.1
+done
+if ! grep -q "interop: listening" "${WORK}/fixbolt-odd.log"; then
+  echo "the odd-precision acceptor never became ready:" >&2
+  cat "${WORK}/fixbolt-odd.log" >&2
+  exit 1
+fi
+
+set +e
+"${WORK}/initiator" "${WORK}/initiator-odd.cfg" --dump-tape \
+  2>&1 | tee "${WORK}/interop-odd.log"
+set -e
+
+echo "stop" >&9 || true
+for _ in $(seq 1 100); do
+  kill -0 "${ODD_PID}" 2>/dev/null || break
+  sleep 0.1
+done
+exec 9>&-
+kill "${ODD_PID}" 2>/dev/null || true
+wait "${ODD_PID}" 2>/dev/null || true
+ODD_PID=""
+
+ODDLOG="${WORK}/interop-odd.log"
+odd_fail=0
+echo "==> [interop-odd] reading ${ODDLOG}"
+# A 20-byte `52=`: the seconds, a dot, TWO digits, then the separator. Anchored
+# on the separator for the same reason 4h is — `.11` is a prefix of `.111`, and
+# an unanchored pattern would count a millisecond stamp as a pass.
+odd_re='52=[0-9]{8}-[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{2}\|'
+n_odd="$(grep -cE "^ *out .*${odd_re}" "${ODDLOG}" || true)"
+n_odd_reject="$(grep -cE '35=3\|.*371=52' "${ODDLOG}" || true)"
+echo "interop-odd: 20-byte 52= from libquickfix — ${n_odd}"
+echo "interop-odd: 35=3 naming tag 52 — ${n_odd_reject} (must be 0)"
+# **The assertion that says the oracle really was configured.** Without it a run
+# in which `TimestampPrecision=2` was ignored would look identical to a pass:
+# the session would come up on 21-byte stamps and prove nothing at all.
+if [[ "${n_odd}" -lt 1 ]]; then
+  echo "MISSING: not one 20-byte 52= from libquickfix — the oracle was not configured, so nothing was tested" >&2
+  odd_fail=1
+fi
+# **The assertion the item is about.** Before ADR-0058 this run never got here:
+# the Logon carried a 20-byte `52=` and was answered with silence.
+if ! grep -qE "^interop-acceptor: logon +ok" "${ODDLOG}"; then
+  echo "MISSING: the odd-precision session never logged on — a valid 52= was refused before the Logon, in silence" >&2
+  odd_fail=1
+fi
+# After the Logon the same width must not be Rejected either, which is the
+# `dict` reader rather than `parse_utc` — the two-reader split of 2026-09-08.
+if [[ "${n_odd_reject}" -ne 0 ]]; then
+  echo "UNEXPECTED: ${n_odd_reject} Reject naming tag 52 — the second reader still refuses this width" >&2
+  odd_fail=1
+fi
+
+if [[ "${odd_fail}" -eq 0 ]]; then
+  echo "interop-odd: PASS 3/3"
+else
+  echo "interop-odd: FAIL" >&2
+  echo "---- what this engine's acceptor said ----" >&2
+  cat "${WORK}/fixbolt-odd.log" >&2
+  echo "---- what the C++ initiator said ----" >&2
+  cat "${WORK}/interop-odd.log" >&2
   exit 1
 fi
 

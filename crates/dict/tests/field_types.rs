@@ -163,10 +163,20 @@ fn a_microsecond_timestamp_is_a_timestamp() {
             String::from_utf8_lossy(value)
         );
     }
-    // And a width that is neither is still not a timestamp: this widens the
-    // set, it does not remove the check. `session::clock::parse_utc` reads the
-    // same four and no others, and the two readers agreeing is the point.
-    assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.8725"));
+    // **`[amended 2026-09-09, ADR-0058]` two assertions here were reversed on
+    // purpose, and this note is the reason rather than a tidy-up.** They said a
+    // four-digit fraction (22 bytes) and an eleven-digit one (29 bytes) were
+    // not timestamps. That was this engine's policy and it was the defect
+    // `STATUS.md` item 59 named: a QuickFIX C++ end at `TimestampPrecision=4`
+    // sends exactly the first, and before a `Logon` it was answered with
+    // silence. The set is now one to twelve fractional digits, so both are
+    // timestamps, and the assertions below say so.
+    assert!(FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.8725"));
+    assert!(FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.87251412345"));
+    // Widening the set did not remove the check, which is what the reversed
+    // lines were guarding and is still guarded. A `.` with nothing after it is
+    // not a fraction (ADR-0058 decision 2), and nothing goes past picoseconds.
     assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27."));
-    assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.87251412345"));
+    assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.1234567890123"));
+    assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.872a"));
 }

@@ -138,3 +138,27 @@ pattern changes the count by zero — and `[measured 2026-09-09]` writing the sa
 a computed index and a computed slice took it from **184 to 186**, which the ratchet caught in
 CI-equivalent form on the first run. The ceiling is a real guard; it is a guard about
 *unprovable* indexing, which is the kind that panics.
+
+## `[2026-09-09]` The shape that caused this no longer exists, and that is the actual fix
+
+Both readers were **tables of accepted widths** — `match s.len()` on four constants in one, a
+`matches!(v.len(), 8 | 12 | 15 | 18)` in the other. A table is the thing that can be half-updated:
+adding a row to one is a complete, coherent, reviewable change that leaves the other wrong.
+
+[ADR-0058](../decisions/ADR-0058-a-timestamp-is-read-at-every-precision-and-written-at-three.md)
+replaced both with a **rule** — a seconds field, optionally a `.` and one to twelve digits — while
+widening the accepted set for a different reason (`STATUS.md` item 59). A rule has no rows to
+forget. The two readers can still be made to disagree, but no longer by *adding a width to one of
+them*, which is how they came to disagree the first time.
+
+The test that would catch the next divergence asks both readers the same question at every length
+from 0 to 34 and compares the two answers to **each other**, not to a list:
+`crates/session/tests/timestamp_widths.rs::both_readers_agree_on_every_width`. Note what it does
+**not** do — it does not assert which widths are accepted. When it was first run, on the code of
+2026-09-09 before the widening, it **passed**: the two readers agreed, on a set that was too
+small. A consistency test is worth writing and is not a correctness test, and only the interop
+scenario could tell the difference.
+
+`[to testing-skills]` — the generalised shape: *when two components must agree, delete the thing
+they each hold a copy of. A test that they agree is cheap and worth having, but it passes just as
+happily when both are wrong together — so it cannot be the only gate.*

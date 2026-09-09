@@ -31,7 +31,7 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 | `LogonIncomplete` | a Logon missing `98=` or `108=` |
 | `WrongSenderCompId` | `49=` is not the configured counterparty |
 | `WrongTargetCompId` | `56=` is not us |
-| `SendingTimeOutOfRange` | `52=` is absent, unreadable, or further from the engine's clock than `max_skew_ms`. Check NTP; `Session::last_skew_ms` says by how much. **`[2026-09-08]` "unreadable" is narrower than it was**: a microsecond or nanosecond stamp is read now, not dropped — see §1a |
+| `SendingTimeOutOfRange` | `52=` is absent, unreadable, or further from the engine's clock than `max_skew_ms`. Check NTP; `Session::last_skew_ms` says by how much. **`[2026-09-09]` "unreadable" is narrower again**: every fraction from one to twelve digits is read now, not dropped — see §1a |
 | `SequenceNumberTooLow` | `34=` is absent, unreadable, or already used |
 | `OutsideSchedule` | a message arrived while the schedule says the session is shut |
 | `CannotSend` | the session could not put a message on the wire and fails closed rather than send something malformed |
@@ -68,15 +68,37 @@ and `::without_a_logout_timeout_the_wait_runs_to_the_heartbeat_rules`.
 
 ---
 
-### 1a. The four widths a timestamp may arrive in `[added 2026-09-08]`
+### 1a. Every width a timestamp may arrive in `[added 2026-09-08, widened 2026-09-09]`
 
-`52=SendingTime` and `122=OrigSendingTime` are accepted at **17, 21, 24 or 27 bytes** —
-`YYYYMMDD-HH:MM:SS` with no fraction, or with three, six or nine fractional digits. FIX 4.4
-documents the first two; the other two are what a venue under MiFID II RTS 25 actually sends,
+`52=SendingTime` and `122=OrigSendingTime` are accepted at **17 bytes, and at 19 to 30** —
+`YYYYMMDD-HH:MM:SS` with no fraction, or with **one to twelve** fractional digits. FIX 4.4
+documents the first two widths; the rest are what a venue under MiFID II RTS 25 actually sends,
 and **until 2026-09-08 this engine dropped such a connection in silence**, because an
 unreadable `52=` before a Logon is `Refusal::BadSendingTime` and there is no session yet to
 answer with. Guarded by
-`crates/session/tests/skew.rs::a_microsecond_sending_time_is_read_and_the_link_survives`.
+`crates/session/tests/skew.rs::a_microsecond_sending_time_is_read_and_the_link_survives` and
+`crates/session/tests/timestamp_widths.rs`.
+
+**`[widened 2026-09-09, ADR-0058]` the set was four widths and the silence was still reachable
+through the oracle's own configuration file.** `TimestampPrecision` in QuickFIX C++ is an
+integer 0–9, so a counterparty set to 1, 2, 4, 5, 7 or 8 sent a stamp this engine refused —
+and refused as a hang-up with no byte sent, the exact defect the 2026-09-08 change was written
+to close. A survey of five engines found a **seventh**: QuickFIX/J accepts 30 bytes,
+picoseconds. The rule is now one to twelve digits rather than a list.
+[prior-art.md](reference/prior-art.md) has the survey;
+[ADR-0058](decisions/ADR-0058-a-timestamp-is-read-at-every-precision-and-written-at-three.md)
+has the decision and the asymmetry it rests on — accepting a width cannot break interoperability
+with a stricter engine, because a stricter engine never sends one.
+
+**A `.` with no digits after it is refused, and that is a chosen difference from QuickFIX C++**,
+which reads `20260909-10:00:00.` as a zero fraction. It can never *send* one, since precision 0
+writes no `.` at all, so the divergence is unreachable from the oracle. ADR-0058 decision 2,
+guarded by `timestamp_widths.rs::a_dot_with_no_digits_is_not_a_timestamp` on both readers.
+
+**The fraction is positional and a short one is padded on the right**: `.1` is 100 ms, not 1 ms.
+Reading the digits as an integer would be wrong by up to 99 ms and **no gate here could see it**,
+because a skew is judged against `max_skew_ms`, 120 000 by default. Guarded by
+`timestamp_widths.rs::a_single_fractional_digit_is_a_tenth_of_a_second`.
 
 **Anything finer than a millisecond is dropped, not rounded.** `Input::Tick` is milliseconds
 ([`DESIGN.md`](DESIGN.md) D13) and so are skew, schedules and heartbeats, so `.123999` is
@@ -91,9 +113,12 @@ predecessor was wrong about being finished.** Widening `parse_utc` widened the r
 counterparty at `TimestampPrecision=6` therefore logged on and had **every message after the
 Logon answered with `35=3 … 371=52 373=6`**, one Reject per Heartbeat, per SequenceReset, per
 Logout. Nothing in this repository could see it; `scripts/interop.sh` §4h found it. Both readers
-now take the same four widths, guarded by
-`crates/dict/tests/field_types.rs::a_microsecond_timestamp_is_a_timestamp` and by that interop
-scenario. [one-field-two-readers](reference/one-field-two-readers.md).
+take the same widths, and since ADR-0058 they take them from **one rule rather than two tables**,
+so a width cannot be added to one and forgotten in the other. Guarded by
+`crates/dict/tests/field_types.rs::a_microsecond_timestamp_is_a_timestamp`, by
+`timestamp_widths.rs::both_readers_agree_on_every_width` — which asks both the same question at
+every length from 0 to 34 — and by `scripts/interop.sh` §4h and §4i.
+[one-field-two-readers](reference/one-field-two-readers.md).
 
 ### 1b. The three widths a timestamp may leave in `[added 2026-09-09]`
 

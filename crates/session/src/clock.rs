@@ -23,27 +23,40 @@ pub const DAYS_YEAR_ZERO_TO_EPOCH: i64 = 719_528;
 /// `SystemTime` reading to get the scale `Input::Tick` uses.
 pub const MILLIS_YEAR_ZERO_TO_EPOCH: u64 = 719_528 * 86_400_000;
 
-/// The four widths a `UTCTimestamp` reaches this engine in.
+/// A `UTCTimestamp` with no fraction: `YYYYMMDD-HH:MM:SS`.
 ///
-/// FIX 4.4 documents the first two, and the corpus uses both — 17 bytes on `I`
-/// lines, 21 on `E`. The other two are what a venue actually sends: FIX 5.0
-/// SP2 EP allows them, and MiFID II RTS 25 requires a clock synchronised to the
-/// microsecond, so a European counterparty stamps `52=` with six fractional
-/// digits and expects to be understood.
+/// FIX 4.4 documents this and the 21-byte millisecond form, and the corpus uses
+/// both — 17 bytes on `I` lines, 21 on `E`. Everything wider is what a venue
+/// actually sends: the FIX EP wording adds three, six and nine fractional
+/// digits, the Technical Addendum on time precision adds twelve, and MiFID II
+/// RTS 25 requires a clock synchronised to the microsecond, so a European
+/// counterparty stamps `52=` with six digits and expects to be understood.
+const LEN_SECONDS: usize = 17;
+
+/// The widest a `UTCTimestamp` gets: `LEN_SECONDS`, a `.`, and twelve digits.
+///
+/// **Picoseconds, and this engine refused them until [ADR-0058].** QuickFIX/J
+/// accepts exactly 30 bytes; QuickFIX C++ stops at 27; quickfix-go stops at 27;
+/// QuickFIX/n has no ceiling at all. `reference/prior-art.md` has the survey and
+/// the reason a *reader* takes the union rather than any one of those sets: a
+/// width accepted here can never break interoperability with a stricter engine,
+/// because a stricter engine never sends one.
 ///
 /// **The corpus cannot see any of this**: 0 of the 59 definitions carry a
 /// stamp wider than 21 bytes, so `59 / 59` says this change broke nothing and
-/// says nothing about what it added. `crates/session/tests/skew.rs` holds that.
-const LEN_SECONDS: usize = 17;
-const LEN_MILLIS: usize = 21;
-const LEN_MICROS: usize = 24;
-const LEN_NANOS: usize = 27;
+/// says nothing about what it added. `crates/session/tests/timestamp_widths.rs`
+/// asks the question the corpus cannot, and `scripts/interop.sh` §4i asks it of
+/// somebody else's engine.
+///
+/// [ADR-0058]: ../../../docs/decisions/ADR-0058-a-timestamp-is-read-at-every-precision-and-written-at-three.md
+const LEN_MAX: usize = 30;
 
 /// Milliseconds since 0000-01-01T00:00:00Z, or `None` if `s` is not a
 /// `UTCTimestamp`.
 ///
-/// Rejects rather than repairs: a field that is not one of the four widths
-/// above, or that holds a digit out of range, is not a timestamp. The session
+/// Rejects rather than repairs: a field whose length is not [`LEN_SECONDS`] or
+/// between `LEN_SECONDS + 2` and [`LEN_MAX`], or that holds a digit out of
+/// range, is not a timestamp. The session
 /// turns `None` into a refusal, which is what `1d_InvalidLogonBadSendingTime`
 /// asks for — and, until 2026-09-08, is also what a *valid* microsecond stamp
 /// got: `None`, then `Refusal::BadSendingTime`, then a hang-up with no byte
@@ -57,19 +70,36 @@ const LEN_NANOS: usize = 27;
 /// measured against a 120 000 ms bound, where rounding would let a stamp
 /// arrive one millisecond in the future.
 ///
-/// **Reading a stamp is not sending one.** This engine still writes 21 bytes;
-/// the send half is `ADR-0057` and is not built.
+/// # The fraction is positional, and a short one is padded on the right
+///
+/// `.1` is a *tenth of a second* — 100 ms — not one millisecond. Reading the
+/// digits as an integer is wrong by up to 99 ms and no gate here could see it,
+/// which is why [ADR-0058] decision 3 says this out loud and
+/// `tests/timestamp_widths.rs` holds it.
+///
+/// **Reading a stamp is not sending one.** `[corrected 2026-09-09]` this said
+/// the send half "is not built" for a day after it was; the widths written are
+/// 21, 24 or 27 and the key is `TimestampPrecision` (ADR-0057). What is read
+/// here is deliberately wider than what is written — strict out, liberal in,
+/// [ADR-0058] decision 4.
 #[must_use]
 pub fn parse_utc(s: &[u8]) -> Option<u64> {
-    // Width picks the number of fractional digits, and an unknown width is not
-    // a timestamp. `get` rather than `s[8]`: this file carried a file-wide
-    // `#![allow(clippy::indexing_slicing)]` until half A, and non-negotiable 7
-    // is about a panic in a library crate, which a subscript is.
+    // Width picks the number of fractional digits, and a length outside the
+    // range is not a timestamp. `get` rather than `s[8]`: this file carried a
+    // file-wide `#![allow(clippy::indexing_slicing)]` until half A, and
+    // non-negotiable 7 is about a panic in a library crate, which a subscript
+    // is.
+    //
+    // One rule, not a table of accepted widths. The table was the shape that
+    // let half A widen this reader and leave `dict`'s
+    // (`reference/one-field-two-readers.md`); a rule cannot be half-updated.
+    //
+    // `LEN_SECONDS + 1` — a `.` with nothing after it — is **not** a width.
+    // ADR-0058 decision 2: QuickFIX C++ takes it as `fraction = 0` and cannot
+    // ever send one, so the divergence is unreachable from the oracle.
     let frac_digits = match s.len() {
         LEN_SECONDS => 0,
-        LEN_MILLIS => 3,
-        LEN_MICROS => 6,
-        LEN_NANOS => 9,
+        n if (LEN_SECONDS + 2..=LEN_MAX).contains(&n) => n - LEN_SECONDS - 1,
         _ => return None,
     };
     if s.get(8) != Some(&b'-') || s.get(11) != Some(&b':') || s.get(14) != Some(&b':') {
@@ -84,16 +114,29 @@ pub fn parse_utc(s: &[u8]) -> Option<u64> {
     let milli = if frac_digits == 0 {
         0
     } else {
-        if s.get(17) != Some(&b'.') {
+        if s.get(LEN_SECONDS) != Some(&b'.') {
             return None;
         }
-        let milli = num(s, 18, 3)?;
-        // The digits past the millisecond are dropped, but they still have to
-        // be digits: `20260828-12:00:00.123abc` is not a timestamp whose tail
-        // happens to be unreadable, it is not a timestamp. Width 0 for the
-        // 21-byte case, which asks `num` for an empty slice and gets `Some(0)`.
-        num(s, 21, frac_digits - 3)?;
-        milli
+        let frac = s.get(LEN_SECONDS + 1..)?;
+        // Every fractional digit is checked, including the ones dropped below:
+        // `20260828-12:00:00.123abc` is not a timestamp whose tail happens to
+        // be unreadable, it is not a timestamp.
+        if !frac.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        // **Positional, not an integer, and this is the whole trap.** A
+        // fraction is a decimal fraction: `.1` is one tenth of a second, so a
+        // digit's place decides its value and a short fraction is padded on the
+        // right. Reading `.1` as the number 1 would give 1 ms instead of 100 —
+        // wrong by 99 ms, and invisible to every gate here, because a skew is
+        // judged against `max_skew_ms`, 120 000 by default.
+        //
+        // Two independent implementations agree: QuickFIX C++ multiplies the
+        // fraction by `PRECISION_FACTOR[digits]` (`FieldTypes.h:56`), and
+        // QuickFIX/n accumulates from `decimalBase = 0.1` downwards. Held by
+        // `tests/timestamp_widths.rs::a_single_fractional_digit_is_a_tenth_of_a_second`.
+        let digit = |i: usize| u32::from(frac.get(i).copied().unwrap_or(b'0') - b'0');
+        digit(0) * 100 + digit(1) * 10 + digit(2)
     };
 
     if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
@@ -219,10 +262,13 @@ mod tests {
     fn a_bad_sending_time_is_refused_rather_than_repaired() {
         for s in [
             &b""[..],
-            b"20260828",              // date only
-            b"20260828-13:45",        // no seconds
-            b"20260828 13:45:59",     // space, not `-`
-            b"20260828-13:45:59.12",  // two-digit millis
+            b"20260828",           // date only
+            b"20260828-13:45",     // no seconds
+            b"20260828 13:45:59",  // space, not `-`
+            b"20260828-13:45:59.", // `[amended 2026-09-09]` a `.` and no digits.
+            // Two-digit millis stood here and is now a timestamp worth 120 ms
+            // — ADR-0058 decision 1. A bare `.` replaces it, because that is
+            // the case still refused and decision 2 is why.
             b"2026082X-13:45:59",     // not a digit
             b"20261328-13:45:59",     // month 13
             b"20260230-13:45:59",     // 30 February
@@ -270,13 +316,17 @@ mod tests {
     #[test]
     fn a_wide_stamp_is_still_refused_when_it_is_not_a_timestamp() {
         for s in [
+            // `[amended 2026-09-09, ADR-0058]` **four entries here were widths
+            // and nothing else, and widths are no longer a reason to refuse.**
+            // 23, 25, 26 and 28 bytes are timestamps now. What this test is
+            // actually for — a stamp that is wide *and* malformed — is
+            // unchanged, and the boundary cases replace the width-only ones.
             &b"20260828-12:00:00:123456"[..], // `:` where the `.` belongs
             b"20260828-12:00:00.123abc",      // the dropped digits are not digits
-            b"20260828-12:00:00.12345",       // 23 bytes: no width has five
-            b"20260828-12:00:00.1234567",     // 25 bytes
-            b"20260828-12:00:00.12345678",    // 26 bytes
-            b"20260828-12:00:00.1234567890",  // 28 bytes
+            b"20260828-12:00:00.",            // 18 bytes: a `.` and no fraction
+            b"20260828-12:00:00.1234567890123", // 31 bytes: past picoseconds
             b"20261328-12:00:00.123456",      // month 13, at the new width
+            b"20260828-12:00:00.12345678901a", // 30 bytes, and the last is not a digit
         ] {
             assert_eq!(parse_utc(s), None, "{}", String::from_utf8_lossy(s));
         }

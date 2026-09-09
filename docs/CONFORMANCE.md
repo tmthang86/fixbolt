@@ -119,6 +119,7 @@ scripts/interop.sh
 | `interop-reconnect-beat:` | the same as the `SIGKILL` row, at **`HeartBtInt=1` with a pause before the kill**, so a `Heartbeat` is guaranteed between the last application message and the death | the same, with the last number spent belonging to a message no journal holds bytes for — ADR-0053 | **6 / 6** |
 | `interop-next-expected:` | a `libquickfix` `SocketAcceptor` with **`SendNextExpectedMsgSeqNum=Y`** | this engine's initiator with `Config::with_next_expected(true)`: `789` written on the way out and read on the way in | **9 / 9** |
 | `interop-micros:` | a `libquickfix` `SocketInitiator` with **`TimestampPrecision=6`** | `fixbolt::serve` with `TimestampPrecision=6`: `52=` written at 24 bytes and a counterparty's 24-byte `52=` read — **judged on the bytes of QuickFIX's own transcript, not on a step line** | **5 / 5** |
+| `interop-odd:` | a `libquickfix` `SocketInitiator` with **`TimestampPrecision=2`** — a width this engine **cannot be configured to send** | `fixbolt::serve` at its default: a 20-byte `52=` read on the way in, on both readers, when nothing here can produce those bytes | **3 / 3** |
 
 **`[measured 2026-09-09]` the `interop-micros:` row is the only one here that is judged on field
 widths rather than on steps, and it is why the row exists.** QuickFIX C++ accepts a
@@ -129,6 +130,23 @@ QuickFIX's own view of the wire and asserts: at least one 24-byte `52=` from thi
 least one from `libquickfix`, **zero** 21-byte stamps, and **zero** `35=3` naming tag 52. It
 reads `12 from fixbolt, 10 from libquickfix, 0, 0`. Proven by reversal: with this engine put
 back to `TimestampPrecision=3` it reads `0 from fixbolt` and `12` millisecond stamps, and fails.
+
+**`[measured 2026-09-09]` the `interop-odd:` row is the one no fixture in this repository could
+fake.** `settings.rs` refuses `TimestampPrecision=2` — this engine writes 3, 6 or 9 digits and no
+others (ADR-0057 decision 1) — so the 20-byte stamps under test can only come from the other end,
+and the scenario exists because `STATUS.md` open item 59 was about widths **fixbolt never sends**.
+The three assertions are: at least one 20-byte `52=` from `libquickfix` (without it the run proves
+nothing, because an oracle that ignored the key would look identical to a pass), the session
+**logs on**, and **zero** `35=3` naming tag 52. It reads `10, logon ok, 0`.
+
+**Proven by reversal, and the reversal is the item's own defect.** With `session::clock::parse_utc`
+put back to the four widths it had before
+[ADR-0058](decisions/ADR-0058-a-timestamp-is-read-at-every-precision-and-written-at-three.md), the
+scenario fails on **`the odd-precision session never logged on — a valid 52= was refused before
+the Logon, in silence`** — and on that assertion alone: the other two still pass, so the setup is
+proven valid at the moment the gate goes red. The stamp count moves **10 → 97** in the failing
+run, which is the silence made visible: the C++ end reconnects over and over because it is being
+hung up on without a byte of explanation.
 
 **It found a defect on its first run**, and the defect was in the *receive* direction that a
 plan had closed the day before: `dict`'s `UTCTIMESTAMP` reader still refused six- and nine-digit

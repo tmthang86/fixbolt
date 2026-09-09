@@ -17,6 +17,15 @@ below describe what a first release would contain.
 
 ### Changed
 
+- **`52=SendingTime` and `122=OrigSendingTime` are read at every precision the wire carries.**
+  [ADR-0058](docs/decisions/ADR-0058-a-timestamp-is-read-at-every-precision-and-written-at-three.md).
+  Accepted widths go from four (17, 21, 24, 27 bytes) to **17 and 19–30** — one to twelve
+  fractional digits, picoseconds included. **No public API changes**; what changes is which
+  counterparties can connect. A QuickFIX C++ end at `TimestampPrecision=1, 2, 4, 5, 7` or `8`,
+  or a QuickFIX/J end at picoseconds, was previously hung up on **before its Logon, with no byte
+  sent**. The send side is unchanged and still writes 3, 6 or 9 digits: strict out, liberal in.
+  A `.` with no digits after it stays refused, which is a deliberate difference from QuickFIX C++.
+
 - **`52=SendingTime` can be written at microsecond or nanosecond precision.**
   [ADR-0057](docs/decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md). New
   settings key `TimestampPrecision` (`3`, `6` or `9`; **default `3`**, so every byte an existing
