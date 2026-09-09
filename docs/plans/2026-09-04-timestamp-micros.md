@@ -217,6 +217,30 @@ handler); `DateTime` precision trong `dict` types; `SECONDS` precision khi gửi
 
 ## Nhật ký giao hàng
 
+`[2026-09-09]` **Cửa đã có trang, chưa có chữ ký.**
+[ADR-0057](../decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md) viết xong,
+trạng thái `Proposed`. Nó chọn **(b)** — phần lẻ dưới mili giây đi **cạnh** `now_ms`, **trong
+cùng một lời gọi, từ cùng một lần đọc đồng hồ** — và **không đảo D13**. Nửa B vẫn **chưa bắt
+đầu**: bước B1 chỉ chạy sau khi ADR được duyệt.
+
+**Hai điều viết ADR mới tìm ra, và lần xác minh lại 2026-09-08 đã không thấy:**
+
+1. **Engine đọc đồng hồ một lần mỗi lượt** (`crates/engine/src/lib.rs:950`; `conn.rs:292` nói
+   thẳng điều đó), và `Session::received` **không nhận thời gian nào cả** (`lib.rs:2063`). Nên
+   `52=` đang đặt tên cho **thời điểm lượt bắt đầu**, không phải thời điểm `send`. Ở mili giây
+   không ai phải quan tâm; ở micro giây thì phải, nếu không sáu chữ số kia là một tuyên bố về độ
+   phân giải mà engine không có. Thành quyết định 3 của ADR và một câu trong `GUIDE.md`.
+2. **Dòng `TimestampPrecision=SECONDS|MILLIS|MICROS|NANOS` trong bảng *Những gì đã biết chắc* dẫn
+   nguồn `prior-art.md`, và tài liệu đó chưa bao giờ có cách viết ấy.** Đó là của
+   QuickFIX/**J**. Đọc thẳng source QuickFIX **C++** ở đúng SHA đã pin: key nhận **số nguyên
+   0–9**, mặc định **3**, và bộ phân tích nhận **mọi độ dài 17–27**. Hệ quả tốt:
+   `scripts/interop.sh` **làm oracle được cho cả hai chiều** — thứ `369` không bao giờ có. Hệ
+   quả xấu: một dòng nhìn như có nguồn đã **sống sót qua chính lần xác minh lại** này. Xác minh
+   *dữ kiện* không phải là xác minh *xuất xứ*.
+
+Bảng *Những gì đã biết chắc* **chưa sửa** — nó là bản ghi của ngày 2026-09-08 và ADR-0057 là chỗ
+ghi cái đúng. Nếu ADR được duyệt, Sửa 2 sẽ sửa dòng đó cùng lúc với việc mở nửa B.
+
 `[2026-09-08]` **NỬA A ĐÓNG, đủ năm bước A1–A5.** Chủ dự án duyệt trong ngày. Nửa B **chưa bắt
 đầu** và vẫn nằm sau cửa ADR-0057.
 
