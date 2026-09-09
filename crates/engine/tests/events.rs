@@ -191,7 +191,23 @@ impl Running {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        panic!("timed out waiting for {what}; saw: {seen:?}");
+        // **Report the loss counter, not just the wait.** `[measured
+        // 2026-09-09]` this exact message, without the counter, cost item 60
+        // two hours: an `Ended` event had been destroyed by this loop's own
+        // polling, and the failure looked like the engine being slow. A test
+        // that consumes a stream which can lose cannot tell "the engine did not
+        // do it" from "the engine did it and I threw it away" unless it asks.
+        // ADR-0059 decision 6.
+        let lost = self.observer.events_lost();
+        assert_eq!(
+            lost, 0,
+            "timed out waiting for {what}, and the stream lost {lost} events — \
+             so this test cannot say whether the engine failed to do it or did \
+             it and the events were dropped. saw: {seen:?}"
+        );
+        panic!(
+            "timed out waiting for {what}; saw: {seen:?}; events_lost=0, so the engine really did not do it"
+        );
     }
 }
 

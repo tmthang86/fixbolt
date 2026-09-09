@@ -413,6 +413,16 @@ fn a_message_for_a_connection_that_has_gone_is_dropped_and_counted() {
         "the drop is counted rather than passed over"
     );
     observer.events(&mut events);
+    // ADR-0059 decision 6: this stream can lose events when the ring fills, so
+    // a test reading it says whether it did. Without this line an assertion
+    // below that finds nothing cannot distinguish an engine that stayed quiet
+    // from a reader that arrived too late — the confusion that cost item 60.
+    assert_eq!(
+        observer.events_lost(),
+        0,
+        "the event stream lost events, so nothing asserted about its contents \
+         below means what it says"
+    );
     assert!(
         events.iter().any(|ev| matches!(
             ev.kind(),

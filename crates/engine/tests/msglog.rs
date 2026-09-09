@@ -732,6 +732,16 @@ fn what_the_log_promised_and_the_socket_never_took_reaches_the_observer() {
 
     let mut events = Vec::new();
     let _ = observer.events(&mut events);
+    // ADR-0059 decision 6: this stream can lose events when the ring fills, so
+    // a test reading it says whether it did. Without this line an assertion
+    // below that finds nothing cannot distinguish an engine that stayed quiet
+    // from a reader that arrived too late — the confusion that cost item 60.
+    assert_eq!(
+        observer.events_lost(),
+        0,
+        "the event stream lost events, so nothing asserted about its contents \
+         below means what it says"
+    );
     let unsent: Vec<usize> = events
         .iter()
         .filter_map(|e| match e.kind() {

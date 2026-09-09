@@ -370,6 +370,9 @@ fn an_applied_command_reports_itself_on_the_event_stream() {
 
     let mut seen = Vec::new();
     watch.events(&mut seen);
+    // ADR-0059 decision 6: the stream can lose when the ring fills, so say
+    // whether it did before asserting on what it holds.
+    assert_eq!(watch.events_lost(), 0, "the event stream lost events");
     assert!(
         seen.iter().any(|e| e.kind()
             == EventKind::Administered {
@@ -396,6 +399,9 @@ fn a_command_for_a_connection_that_is_gone_says_so() {
 
     let mut seen = Vec::new();
     watch.events(&mut seen);
+    // ADR-0059 decision 6: the stream can lose when the ring fills, so say
+    // whether it did before asserting on what it holds.
+    assert_eq!(watch.events_lost(), 0, "the event stream lost events");
     assert!(
         seen.iter().any(|e| matches!(
             e.kind(),
@@ -422,6 +428,9 @@ fn a_refused_command_is_not_reported_as_applied() {
 
     let mut seen = Vec::new();
     watch.events(&mut seen);
+    // ADR-0059 decision 6: the stream can lose when the ring fills, so say
+    // whether it did before asserting on what it holds.
+    assert_eq!(watch.events_lost(), 0, "the event stream lost events");
     assert!(
         seen.iter().any(|e| matches!(
             e.kind(),
