@@ -378,3 +378,90 @@ fn after_the_handover_the_kernel_holds_the_keys_and_read_returns_plaintext() {
          receive keys"
     );
 }
+
+#[test]
+fn the_userspace_fallback_carries_the_same_bytes_and_says_it_is_not_the_kernel() {
+    // ADR-0005 decision 3. **This path is reached only when the kernel refuses
+    // the offload, and this desk's kernel does not refuse** — so without
+    // `with_offload(false)` the fallback would be code that compiles and has
+    // never run once. `CLAUDE.md` §10: a check that nothing reads proves
+    // nothing.
+    //
+    // The assertions are deliberately the same ones the kTLS test makes, plus
+    // the two that must come out the other way: it works, and it says it is not
+    // the kernel.
+    use fixbolt_engine::tls::TlsTransport;
+    use fixbolt_engine::transport::{Io, Transport};
+
+    let (cert, key) = pki();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let addr = listener.local_addr().expect("an address");
+
+    let cc = cert.clone();
+    let joiner = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let cfg = client_config(cc);
+        let name = "localhost".try_into().expect("a valid server name");
+        let mut conn = rustls::ClientConnection::new(cfg, name)
+            .map_err(|e| std::io::Error::other(format!("{e}")))?;
+        let mut sock = TcpStream::connect(addr)?;
+        let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+        tls.write_all(b"8=FIX.4.4|LOGON|")?;
+        tls.flush()?;
+        let mut back = vec![0u8; 32];
+        let n = std::io::Read::read(&mut tls, &mut back)?;
+        back.truncate(n);
+        Ok(back)
+    });
+
+    let (sock, _) = listener.accept().expect("the client connects");
+    let transport = TcpTransport::new(sock).expect("non-blocking");
+    let conn = rustls::server::UnbufferedServerConnection::new(server_config(cert, key))
+        .expect("a server connection");
+    let mut tls = TlsTransport::with_offload(transport, Handshake::new(conn), false);
+
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    let mut sweeps = 0usize;
+    while got.len() < b"8=FIX.4.4|LOGON|".len() {
+        sweeps += 1;
+        assert!(sweeps < 200_000, "nothing arrived: got {got:?}");
+        match tls.recv(&mut buf) {
+            Io::Ready(n) => got.extend_from_slice(buf.get(..n).unwrap_or_default()),
+            Io::Idle => std::thread::yield_now(),
+            other => panic!("recv said {other:?}"),
+        }
+    }
+    assert_eq!(
+        got, b"8=FIX.4.4|LOGON|",
+        "the fallback must carry the same bytes in the same order, including \
+         the Logon that arrived during the handshake"
+    );
+
+    let mut sent = 0usize;
+    let reply = b"35=A|";
+    let mut sweeps = 0usize;
+    while sent < reply.len() {
+        sweeps += 1;
+        assert!(sweeps < 200_000, "the reply never went out");
+        match tls.send(reply.get(sent..).unwrap_or_default()) {
+            Io::Ready(n) => sent += n,
+            Io::Idle => std::thread::yield_now(),
+            other => panic!("send said {other:?}"),
+        }
+    }
+    let echoed = joiner.join().expect("the client thread").expect("a read");
+    assert_eq!(echoed, reply, "the client could not decrypt the reply");
+
+    // **The two that must come out the other way.** A fallback that worked and
+    // reported `Kernel` would be worse than one that failed: every latency
+    // figure published from it would describe a code path the session is not
+    // on. ADR-0005 open question 3.
+    assert_eq!(tls.mode(), TlsMode::Userspace);
+    assert!(!tls.mode().keeps_the_hot_path());
+    assert!(
+        tls.fell_back(),
+        "the engine has to be able to say this happened, or nobody finds out \
+         until a histogram looks wrong"
+    );
+    assert!(!tls.is_ready(), "is_ready means the keys are in the kernel");
+}
