@@ -258,3 +258,123 @@ fn only_kernel_and_plain_keep_the_hot_path() {
          requires that be named rather than discovered in a histogram"
     );
 }
+
+/// `/proc/net/tls_stat`'s cumulative counters. Cumulative, not the `TlsCurr*`
+/// gauges: a gauge reads whatever is open at the instant it is sampled, and the
+/// spike recorded `[measured 2026-08-31]` that asserting on `TlsCurrTxSw` read
+/// `0 -> 1` for a pair that had plainly offloaded both ends.
+fn tls_stat(key: &str) -> u64 {
+    let Ok(text) = std::fs::read_to_string("/proc/net/tls_stat") else {
+        return 0;
+    };
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        if parts.next() == Some(key) {
+            return parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        }
+    }
+    0
+}
+
+#[test]
+fn after_the_handover_the_kernel_holds_the_keys_and_read_returns_plaintext() {
+    // Step 3's whole claim, and it is asserted three ways rather than one,
+    // because "it worked" is passable by an implementation that never offloaded
+    // anything: plaintext round trip, the mode this engine reports, and the
+    // kernel's own counters.
+    use fixbolt_engine::tls::TlsTransport;
+    use fixbolt_engine::transport::{Io, Transport};
+
+    let before_tx = tls_stat("TlsTxSw");
+    let before_rx = tls_stat("TlsRxSw");
+
+    let (cert, key) = pki();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let addr = listener.local_addr().expect("an address");
+
+    // A blocking rustls client that speaks first and then listens, so both
+    // directions are exercised.
+    let cc = cert.clone();
+    let joiner = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let cfg = client_config(cc);
+        let name = "localhost".try_into().expect("a valid server name");
+        let mut conn = rustls::ClientConnection::new(cfg, name)
+            .map_err(|e| std::io::Error::other(format!("{e}")))?;
+        let mut sock = TcpStream::connect(addr)?;
+        let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+        tls.write_all(b"8=FIX.4.4|LOGON|")?;
+        tls.flush()?;
+        let mut back = vec![0u8; 32];
+        let n = std::io::Read::read(&mut tls, &mut back)?;
+        back.truncate(n);
+        Ok(back)
+    });
+
+    let (sock, _) = listener.accept().expect("the client connects");
+    let transport = TcpTransport::new(sock).expect("non-blocking");
+    let conn = rustls::server::UnbufferedServerConnection::new(server_config(cert, key))
+        .expect("a server connection");
+    let mut tls = TlsTransport::new(transport, Handshake::new(conn));
+
+    // Drive it the way the engine does: ask, and take `Idle` for an answer.
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    let mut sweeps = 0usize;
+    while got.len() < b"8=FIX.4.4|LOGON|".len() {
+        sweeps += 1;
+        assert!(sweeps < 200_000, "nothing arrived: got {got:?}");
+        match tls.recv(&mut buf) {
+            Io::Ready(n) => got.extend_from_slice(buf.get(..n).unwrap_or_default()),
+            Io::Idle => std::thread::yield_now(),
+            other => panic!("recv said {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        got, b"8=FIX.4.4|LOGON|",
+        "the bytes the session sees must be plaintext, in order, with the \
+         pre-handover Logon first"
+    );
+    assert!(tls.is_ready(), "the handover did not happen");
+    assert_eq!(
+        tls.mode(),
+        TlsMode::Kernel,
+        "ADR-0005 open question 3: a session that silently stayed in userspace \
+         publishes a latency number about a different code path"
+    );
+
+    // Write back through the kernel, which is the other direction and a
+    // different `setsockopt`.
+    let mut sent = 0usize;
+    let reply = b"35=A|";
+    let mut sweeps = 0usize;
+    while sent < reply.len() {
+        sweeps += 1;
+        assert!(sweeps < 200_000, "the reply never went out");
+        match tls.send(reply.get(sent..).unwrap_or_default()) {
+            Io::Ready(n) => sent += n,
+            Io::Idle => std::thread::yield_now(),
+            other => panic!("send said {other:?}"),
+        }
+    }
+
+    let echoed = joiner.join().expect("the client thread").expect("a read");
+    assert_eq!(
+        echoed, reply,
+        "the client decrypted what the kernel encrypted, so the TX keys are \
+         really in the kernel and not merely accepted by it"
+    );
+
+    // **The assertion no amount of application-level success can fake.** A
+    // userspace fallback would pass every line above and move neither counter.
+    assert!(
+        tls_stat("TlsTxSw") > before_tx,
+        "/proc/net/tls_stat TlsTxSw did not move: the kernel never took the \
+         send keys, so this connection was not offloaded"
+    );
+    assert!(
+        tls_stat("TlsRxSw") > before_rx,
+        "/proc/net/tls_stat TlsRxSw did not move: the kernel never took the \
+         receive keys"
+    );
+}

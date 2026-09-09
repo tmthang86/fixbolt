@@ -291,3 +291,252 @@ mod handshake {
 
 #[cfg(target_os = "linux")]
 pub use handshake::{Handshake, Step};
+
+#[cfg(target_os = "linux")]
+mod transport_impl {
+    //! [`TlsTransport`]: a socket that handshakes, hands its keys to the kernel,
+    //! and then is an ordinary socket again.
+    //!
+    //! **The whole design is in that last clause.** After the handover the
+    //! kernel holds the keys, `read(2)` returns plaintext and `write(2)` takes
+    //! it, so [`Transport::recv`] and [`Transport::send`] are the same two
+    //! syscalls the plain transport makes. D8's spin loop learns nothing new,
+    //! the parser still works in place, and `benches/alloc.rs` still reads zero
+    //! — none of which is true of the userspace fallback, which is why
+    //! [`TlsMode`] exists and is reported rather than inferred.
+
+    use std::io;
+
+    use ktls_core::Context;
+    use rustls::kernel::KernelConnection;
+    use rustls::server::ServerConnectionData;
+
+    use super::{Handshake, Step, TlsMode};
+    use crate::transport::{Io, Source, TcpTransport, Transport};
+
+    /// What the socket is doing right now.
+    enum Stage {
+        /// Still negotiating. `recv`/`send` pump it and report [`Io::Idle`].
+        Handshaking(Box<Handshake>),
+        /// The kernel holds the keys. Ordinary reads and writes, plus the one
+        /// error path the offload adds.
+        Kernel(Box<Context<KernelConnection<ServerConnectionData>>>),
+        /// It ended, and the reason is kept so the engine reports it once.
+        Broken(io::ErrorKind),
+    }
+
+    /// A TLS acceptor socket.
+    pub struct TlsTransport {
+        sock: TcpTransport,
+        stage: Stage,
+        /// Application bytes rustls decrypted before the handover, waiting to be
+        /// handed to the session ahead of anything the kernel produces.
+        early: Vec<u8>,
+        early_at: usize,
+    }
+
+    impl TlsTransport {
+        /// Take a freshly accepted socket into a handshake.
+        #[must_use]
+        pub fn new(sock: TcpTransport, handshake: Handshake) -> Self {
+            Self {
+                sock,
+                stage: Stage::Handshaking(Box::new(handshake)),
+                early: Vec::new(),
+                early_at: 0,
+            }
+        }
+
+        /// Which of ADR-0005's answers is carrying the bytes.
+        ///
+        /// [`TlsMode::Plain`] is never returned by this type — it is what a
+        /// `TcpTransport` is — and a handshake still in flight reports
+        /// `Userspace`, because that is what is true while `rustls` is doing
+        /// the work. **Read it after the session is up**, which is the only
+        /// point at which the answer is stable and the only point a published
+        /// latency figure is about.
+        #[must_use]
+        pub const fn mode(&self) -> TlsMode {
+            match self.stage {
+                Stage::Kernel(_) => TlsMode::Kernel,
+                Stage::Handshaking(_) | Stage::Broken(_) => TlsMode::Userspace,
+            }
+        }
+
+        /// Whether the handshake is finished and the keys are in the kernel.
+        #[must_use]
+        pub const fn is_ready(&self) -> bool {
+            matches!(self.stage, Stage::Kernel(_))
+        }
+
+        /// Drive the handshake, and hand the keys over the moment it completes.
+        ///
+        /// Called from both `recv` and `send`, because either can be the first
+        /// thing the engine asks of a socket.
+        fn advance(&mut self) -> Result<(), io::ErrorKind> {
+            let Stage::Handshaking(hs) = &mut self.stage else {
+                return match self.stage {
+                    Stage::Broken(k) => Err(k),
+                    _ => Ok(()),
+                };
+            };
+            match hs.pump(&mut self.sock) {
+                Step::Pending => return Ok(()),
+                Step::Failed(k) => {
+                    self.stage = Stage::Broken(k);
+                    return Err(k);
+                }
+                Step::Done => {}
+            }
+
+            // ADR-0018's third condition, asserted rather than assumed. Bytes
+            // here are ciphertext the kernel will never see and whose place in
+            // the sequence it has already counted, so handing over now
+            // desynchronises the receive side and the next record fails with
+            // `EBADMSG` — the spike's `hand-draining-desyncs-the-kernel`.
+            if hs.leftover() != 0 {
+                self.stage = Stage::Broken(io::ErrorKind::InvalidData);
+                return Err(io::ErrorKind::InvalidData);
+            }
+            self.early = hs.take_early_data();
+            self.early_at = 0;
+
+            let Stage::Handshaking(hs) =
+                core::mem::replace(&mut self.stage, Stage::Broken(io::ErrorKind::InvalidData))
+            else {
+                return Err(io::ErrorKind::InvalidData);
+            };
+            let Ok((secrets, kconn)) = hs.into_connection().dangerous_into_kernel_connection()
+            else {
+                return Err(io::ErrorKind::InvalidData);
+            };
+
+            let version = kconn.protocol_version();
+            if super::hand_keys_to_kernel(self.sock.socket(), secrets, version).is_err() {
+                // **The fallback ADR-0005 decision 3 names lives here**, and it
+                // is not built: today a kernel that will not take the keys ends
+                // the connection rather than quietly costing a copy per
+                // direction. Step 4 of this plan makes it a `Userspace` stage
+                // with an event; refusing loudly is the honest interim.
+                return Err(io::ErrorKind::Unsupported);
+            }
+            self.stage = Stage::Kernel(Box::new(Context::new(kconn, None)));
+            Ok(())
+        }
+
+        /// Serve from the pre-handover bytes first. Returns 0 when they are
+        /// spent, which is the only time the kernel is asked.
+        fn drain_early(&mut self, buf: &mut [u8]) -> usize {
+            let Some(rest) = self.early.get(self.early_at..) else {
+                return 0;
+            };
+            if rest.is_empty() {
+                if !self.early.is_empty() {
+                    self.early = Vec::new();
+                    self.early_at = 0;
+                }
+                return 0;
+            }
+            let n = rest.len().min(buf.len());
+            let (Some(src), Some(dst)) = (rest.get(..n), buf.get_mut(..n)) else {
+                return 0;
+            };
+            dst.copy_from_slice(src);
+            self.early_at += n;
+            n
+        }
+    }
+
+    impl Transport for TlsTransport {
+        const POLLABLE: bool = cfg!(unix);
+
+        fn source(&self) -> Option<Source> {
+            self.sock.source()
+        }
+
+        fn recv(&mut self, buf: &mut [u8]) -> Io {
+            // **Before the socket, always.** A `Logon` that arrived during the
+            // handshake is already decrypted and in hand; reading the kernel
+            // first would deliver it out of order, which on a FIX session is a
+            // sequence gap the counterparty did not cause.
+            let n = self.drain_early(buf);
+            if n > 0 {
+                return Io::Ready(n);
+            }
+            if let Err(k) = self.advance() {
+                return Io::Failed(k);
+            }
+            let Stage::Kernel(ctx) = &mut self.stage else {
+                return Io::Idle;
+            };
+            // **Read the socket here rather than through `TcpTransport::recv`,
+            // and the reason is a hole in `Io` rather than a preference.**
+            // `Io::Failed` carries an `io::ErrorKind`, and the error this path
+            // must recognise is `EIO` — which has no stable `ErrorKind` at all
+            // (`ErrorKind::Uncategorized` is unstable to name). Going through
+            // the plain transport would throw away the one piece of information
+            // that distinguishes a recoverable control record from a dead
+            // socket.
+            //
+            // ADR-0018's first condition: **every** read error goes through
+            // `Context::handle_io_error`. A TLS 1.3 session ticket arrives as a
+            // control record the kernel will not decode, surfaces as `EIO`, and
+            // an engine that treated it as a failure would drop a session that
+            // was perfectly healthy — `[measured 2026-08-31]` the spike saw one
+            // ticket and one recovery on every client run.
+            match io::Read::read(&mut self.sock.socket(), buf) {
+                Ok(0) => Io::Closed,
+                Ok(n) => Io::Ready(n),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => Io::Idle,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => Io::Idle,
+                Err(e) => {
+                    if ctx.handle_io_error(self.sock.socket(), e).is_ok() {
+                        Io::Idle
+                    } else {
+                        Io::Failed(io::ErrorKind::InvalidData)
+                    }
+                }
+            }
+        }
+
+        fn send(&mut self, buf: &[u8]) -> Io {
+            if let Err(k) = self.advance() {
+                return Io::Failed(k);
+            }
+            if !matches!(self.stage, Stage::Kernel(_)) {
+                // Nothing may go out before the keys are in the kernel: it
+                // would leave as plaintext on a socket the peer is reading as
+                // TLS.
+                return Io::Idle;
+            }
+            self.sock.send(buf)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use transport_impl::TlsTransport;
+
+/// Hand the negotiated keys to the kernel, both directions.
+///
+/// Split out so the one `unsafe`-adjacent step — three `setsockopt` calls
+/// behind `ktls-core` — sits in one place with one name.
+///
+/// # Errors
+///
+/// Any of `setup_ulp` or the two `set` calls. A kernel without the `tls` module
+/// fails at `setup_ulp`, which is the case ADR-0005 decision 3's fallback is
+/// for.
+#[cfg(target_os = "linux")]
+fn hand_keys_to_kernel<S: std::os::fd::AsFd>(
+    sock: &S,
+    secrets: rustls::ExtractedSecrets,
+    version: rustls::ProtocolVersion,
+) -> Result<(), ktls_core::Error> {
+    ktls_core::setup_ulp(sock)?;
+    let secrets = ktls_core::ExtractedSecrets::try_from(secrets)?;
+    let version = ktls_core::ProtocolVersion::from(version);
+    ktls_core::TlsCryptoInfoTx::new(version, secrets.tx.1, secrets.tx.0)?.set(sock)?;
+    ktls_core::TlsCryptoInfoRx::new(version, secrets.rx.1, secrets.rx.0)?.set(sock)?;
+    Ok(())
+}
