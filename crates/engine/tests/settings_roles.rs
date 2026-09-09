@@ -265,3 +265,69 @@ fn connection_type_belongs_in_default_because_a_file_names_one_role() {
     assert_eq!(*e.problem(), Problem::DefaultOnly);
     assert_eq!(e.line(), 7);
 }
+
+// ---------------------------------------------------------------------------
+// `TimestampPrecision`, the 26th key — ADR-0057
+
+/// A file asking for microseconds reaches the session that has to write them.
+///
+/// **The seam this crosses is the one nothing else can**: `Config` is the
+/// session layer's and `settings` is the engine's, so a key that parses and
+/// never arrives would look exactly like a key that works.
+#[test]
+fn timestamp_precision_reaches_the_config() {
+    for (digits, want) in [
+        (3, fixbolt_codec::Precision::Millis),
+        (6, fixbolt_codec::Precision::Micros),
+        (9, fixbolt_codec::Precision::Nanos),
+    ] {
+        let text = format!("{ACCEPTOR}TimestampPrecision={digits}\n");
+        let s = Settings::parse(&text).expect("parses");
+        assert_eq!(
+            s.configs()[0].timestamp_precision(),
+            want,
+            "TimestampPrecision={digits}"
+        );
+    }
+}
+
+/// Absent means milliseconds — the default every deployment has today.
+#[test]
+fn no_timestamp_precision_key_means_milliseconds() {
+    let s = Settings::parse(ACCEPTOR).expect("parses");
+    assert_eq!(
+        s.configs()[0].timestamp_precision(),
+        fixbolt_codec::Precision::Millis
+    );
+}
+
+/// **Refused by line, not rounded to the nearest width this engine writes.**
+///
+/// QuickFIX C++ takes any integer 0-9 for this key, so a `.cfg` shared between
+/// the two ends can legitimately name `4` — and answering it with six digits
+/// would put a resolution on the wire that the operator never chose, silently.
+/// ADR-0057 open question 3.
+#[test]
+fn a_precision_this_engine_cannot_write_is_refused_and_named() {
+    for digits in [0, 1, 2, 4, 5, 7, 8] {
+        let text = format!("{ACCEPTOR}TimestampPrecision={digits}\n");
+        let e = err(&text);
+        assert_eq!(
+            *e.problem(),
+            Problem::UnsupportedPrecision,
+            "TimestampPrecision={digits} must be refused"
+        );
+        assert!(
+            e.to_string().contains("TimestampPrecision"),
+            "the error must name the key: {e}"
+        );
+    }
+}
+
+/// A value that is not a number at all is the other failure, and it is a
+/// different one — `NotANumber` before `UnsupportedPrecision`.
+#[test]
+fn a_precision_that_is_not_a_number_says_so() {
+    let e = err(&format!("{ACCEPTOR}TimestampPrecision=MICROS\n"));
+    assert_eq!(*e.problem(), Problem::NotANumber, "{e}");
+}

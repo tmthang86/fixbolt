@@ -58,6 +58,7 @@ name in [§2](#2-programmatic-limits-and-defaults); all are `[DEFAULT]` or `[SES
 | `ValidateUserDefinedFields` | Ask the dictionary about tags at or above 5000. **The one key whose `Y` means *keep working*** | `Y` or `N` | `Y` |
 | `SendNextExpectedMsgSeqNum` | `[added 2026-09-06]` Put `789=NextExpectedMsgSeqNum` on every `Logon` this end sends, naming the number it is waiting to receive. **Reading an inbound `789` does not depend on this key** — that always happens | `Y` or `N` | `N` |
 | `EnableLastMsgSeqNumProcessed` | `[added 2026-09-06]` Report `369=LastMsgSeqNumProcessed` — *the last of your messages I have processed* — on messages this end sends. **What it reaches is not everything**: see the note below | `Y` or `N` | `N` |
+| `TimestampPrecision` | `[added 2026-09-09]` Fractional digits on `52=SendingTime` **going out**: `3` → 21 bytes, `6` → 24, `9` → 27. **A ceiling, not a promise** — see the note below. Reading a wider stamp never depended on this key and never has since 2026-09-08 | `3`, `6` or `9` | `3` |
 
 **Both resync keys default to `N`, and the default is the safe one rather than a shy one.**
 `[researched 2026-09-06]` every FIX engine surveyed defaults them off, because a counterparty
@@ -117,6 +118,40 @@ Three rules the file enforces:
   no counterparty and the acceptor would start cleanly and serve nobody.
 
 ---
+
+
+### `TimestampPrecision` — a ceiling on the way out, and nothing on the way in
+
+`[added 2026-09-09]` [ADR-0057](decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md).
+
+**The key is an integer, and that is deliberate.** QuickFIX C++ — the engine `scripts/interop.sh`
+runs against — reads `TimestampPrecision` with `getInt` and accepts 0–9
+(`Session.h:167–174`, read at the pinned commit), defaulting to 3. A `.cfg` shared between the
+two ends therefore carries a number, not a name.
+
+**This engine writes three of those widths and refuses the other seven by line number.**
+`TimestampPrecision=4` is a settings error naming the key, not a value rounded up to 6: answering
+with a width the operator did not choose would put a resolution on the wire that nobody asked
+for and nothing downstream would say so.
+
+**It is a ceiling, and the floor is what your clock actually gave the session.** The stamp is
+written at the *coarser* of this key and the resolution the caller supplied, so:
+
+| How the session is driven | `TimestampPrecision=6` writes |
+|---|---|
+| `fixbolt::serve` and friends — the engine reads a real clock | **24 bytes** |
+| `Session::tick(now_ms)` by hand — a millisecond and nothing finer | **21 bytes** |
+
+Padding the three extra digits with zeroes would claim microsecond resolution this end does not
+have; `.123000` to a venue *measuring* clock divergence under MiFID II RTS 25 is worse than
+`.123`, which claims millisecond resolution truthfully. `Session::tick_at` is the door that
+carries the finer number, and the serving loop uses it.
+`crates/session/tests/timestamp_precision.rs::a_configured_width_is_a_ceiling_and_not_a_promise`
+holds it.
+
+**Receiving is not configurable and never was.** A counterparty's `52=` is read at 17, 21, 24 or
+27 bytes regardless of this key — a valid timestamp is not something an operator should have to
+switch on.
 
 ## 2. Programmatic limits and defaults
 

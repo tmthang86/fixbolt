@@ -399,13 +399,22 @@ void run(const FIX::SessionID &id, Score &score, bool invert_resend) {
 
 int main(int argc, char **argv) {
   if (argc < 2) {
-    std::cerr << "usage: initiator <config file> [--invert-resend]" << std::endl;
+    std::cerr << "usage: initiator <config file> [--invert-resend] [--dump-tape]"
+              << std::endl;
     return 2;
   }
   bool invert_resend = false;
+  // **Print the wire even when every step passed.** The scoreboard says a
+  // session worked; it says nothing about what the bytes looked like, and the
+  // microsecond scenario is judged on the width of one field. A tape printed
+  // only on failure cannot be the evidence for a run that succeeds.
+  bool dump_tape = false;
   for (int i = 2; i < argc; ++i) {
     if (std::string(argv[i]) == "--invert-resend") {
       invert_resend = true;
+    }
+    if (std::string(argv[i]) == "--dump-tape") {
+      dump_tape = true;
     }
   }
 
@@ -427,7 +436,7 @@ int main(int argc, char **argv) {
     initiator.start();
     run(id, score, invert_resend);
     const bool ok = score.finish();
-    if (!ok) {
+    if (!ok || dump_tape) {
       g_tape.dump();
     }
     initiator.stop();

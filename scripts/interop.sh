@@ -58,6 +58,9 @@ PORT2="${INTEROP_PORT2:-15645}"
 # the same port and a collision with either direction above would look exactly
 # like a counterparty that refused to come back.
 PORT3="${INTEROP_PORT3:-15646}"
+# A fourth, for the microsecond `52=` scenario. Same argument as the others: a
+# port collision and a protocol failure look identical from the log.
+PORT4="${INTEROP_PORT4:-15647}"
 # How long any single wait below gets before the run is called a failure.
 # A reversal that removes the restart must go RED, not HANG — a hang is how a
 # reversal fails to prove anything (docs/reference/a-reversal-can-fail-by-hanging.md).
@@ -133,8 +136,10 @@ QF2_PID=""
 RECON_PID=""
 # The 4g scenario's acceptor, so a failure there does not leak a listener.
 NE_PID=""
+# The 4h scenario's acceptor.
+MIC_PID=""
 cleanup() {
-  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}" "${NE_PID}"; do
+  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}" "${NE_PID}" "${MIC_PID}"; do
     [[ -n "${pid}" ]] || continue
     kill "${pid}" 2>/dev/null || true
     wait "${pid}" 2>/dev/null || true
@@ -890,6 +895,166 @@ else
   exit 1
 fi
 
+# ---- 4h. `52=` at microsecond precision, judged on the raw bytes ------------
+#
+# ADR-0057's half of `timestamp-micros`. Every other assertion in this script is
+# about a step completing; this one is about **what the field actually looks
+# like on the wire**, because a session that logs on proves nothing about the
+# width of its timestamps — QuickFIX C++ accepts any `UTCTimestamp` from 17 to
+# 27 bytes (`FieldConvertors.h:492-596`, read at the pin), so a 21-byte stamp
+# from an engine configured for 24 would pass every step gate above in silence.
+#
+# **The oracle is real here, which is unusual.** ADR-0056 had to record that
+# `369` can never be judged this way because QuickFIX C++ does not implement it.
+# `TimestampPrecision` it does: an integer 0-9, `Session.h:167-174`, default 3.
+# So both ends are configured for six digits and both directions are read.
+#
+# The raw bytes come from QuickFIX's own `FileLogPath`, not from this
+# repository's message log — a log written by the code under test is not
+# evidence about the code under test.
+echo
+echo "==> [interop-micros] both ends at TimestampPrecision=6 on ${PORT4}"
+mkdir -p "${WORK}/store4"
+
+cat > "${WORK}/fixbolt-micros.cfg" <<CFG
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=FIXBOLT
+TimestampPrecision=6
+
+[SESSION]
+TargetCompID=QFMIC
+HeartBtInt=2
+CFG
+
+cat > "${WORK}/initiator-micros.cfg" <<CFG
+[DEFAULT]
+ConnectionType=initiator
+SocketConnectHost=127.0.0.1
+SocketConnectPort=${PORT4}
+HeartBtInt=2
+ReconnectInterval=1
+ResetOnLogon=Y
+ResetOnLogout=Y
+ResetOnDisconnect=Y
+StartTime=00:00:00
+EndTime=00:00:00
+UseDataDictionary=Y
+DataDictionary=${SRC}/spec/FIX44.xml
+FileStorePath=${WORK}/store4
+TimestampPrecision=6
+
+[SESSION]
+BeginString=FIX.4.4
+SenderCompID=QFMIC
+TargetCompID=FIXBOLT
+CFG
+
+mkfifo "${WORK}/micros.ctl"
+"${REPO_ROOT}/target/debug/interop" --role acceptor \
+  --listen "127.0.0.1:${PORT4}" --cfg "${WORK}/fixbolt-micros.cfg" \
+  < "${WORK}/micros.ctl" \
+  > "${WORK}/fixbolt-micros.log" 2>&1 &
+MIC_PID=$!
+exec 8> "${WORK}/micros.ctl"
+
+for _ in $(seq 1 200); do
+  grep -q "interop: listening" "${WORK}/fixbolt-micros.log" && break
+  sleep 0.1
+done
+if ! grep -q "interop: listening" "${WORK}/fixbolt-micros.log"; then
+  echo "the microsecond acceptor never became ready:" >&2
+  cat "${WORK}/fixbolt-micros.log" >&2
+  exit 1
+fi
+
+set +e
+# `--dump-tape` so the transcript is printed on a run that PASSES. Every other
+# scenario here is judged on step lines; this one is judged on the bytes.
+"${WORK}/initiator" "${WORK}/initiator-micros.cfg" --dump-tape \
+  2>&1 | tee "${WORK}/interop-micros.log"
+set -e
+
+echo "stop" >&8 || true
+for _ in $(seq 1 100); do
+  kill -0 "${MIC_PID}" 2>/dev/null || break
+  sleep 0.1
+done
+exec 8>&-
+kill "${MIC_PID}" 2>/dev/null || true
+wait "${MIC_PID}" 2>/dev/null || true
+MIC_PID=""
+
+# **Where the raw bytes actually are.** `FileLogPath` is in the config above and
+# QuickFIX ignores it here: `tools/interop/initiator.cpp` installs its own
+# `RawLogFactory`, so the file log is never created. The first version of this
+# block globbed for that file, found nothing, and — under `set -o pipefail` —
+# died with no message at all. The bytes were on stdout the whole time: that
+# `FIX::Log` is a callback on the real wire, and the tool prints every frame it
+# sees with `SOH` shown as `|`. So this reads QuickFIX's own view of the socket,
+# which is still not a log written by the code under test.
+MICLOG="${WORK}/interop-micros.log"
+mic_fail=0
+echo "==> [interop-micros] reading ${MICLOG}"
+# A 24-byte `52=`: eight date digits, the time, a dot and SIX fractional digits,
+# then the field separator. **Anchoring on the separator is what makes this
+# count widths rather than prefixes** — `.123` matches the first four characters
+# of `.123456`, so an unanchored pattern would count every millisecond stamp as
+# a pass and this gate would be green about nothing.
+micros_re='52=[0-9]{8}-[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}\|'
+millis_re='52=[0-9]{8}-[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}\|'
+# `in ` is a frame that arrived at the C++ initiator, so it came from this
+# engine; `out` is one QuickFIX sent. Direction matters: ADR-0057 built the
+# first, and half A the second.
+n_ours="$(grep -cE "^ *in .*${micros_re}" "${MICLOG}" || true)"
+n_theirs="$(grep -cE "^ *out .*${micros_re}" "${MICLOG}" || true)"
+n_millis="$(grep -cE "${millis_re}" "${MICLOG}" || true)"
+n_reject="$(grep -cE '35=3\|.*371=52' "${MICLOG}" || true)"
+echo "interop-micros: 24-byte 52= — ${n_ours} from fixbolt, ${n_theirs} from libquickfix"
+echo "interop-micros: 21-byte 52= — ${n_millis} (must be 0)"
+echo "interop-micros: 35=3 naming tag 52 — ${n_reject} (must be 0)"
+if [[ "${n_ours}" -lt 1 ]]; then
+  echo "MISSING: not one 24-byte 52= from this engine — TimestampPrecision=6 did not reach the wire" >&2
+  mic_fail=1
+fi
+if [[ "${n_theirs}" -lt 1 ]]; then
+  echo "MISSING: not one 24-byte 52= from libquickfix — the oracle was not configured" >&2
+  mic_fail=1
+fi
+# **The assertion that says the two ends agree rather than merely both work.** A
+# run where this engine stayed at 21 bytes still logs on, because QuickFIX
+# accepts any width from 17 to 27 — so what separates the two outcomes is a
+# count of what is NOT there.
+if [[ "${n_millis}" -ne 0 ]]; then
+  echo "UNEXPECTED: ${n_millis} millisecond 52= in a run where both ends asked for six digits" >&2
+  mic_fail=1
+fi
+# `[measured 2026-09-09]` this is the assertion that earned this scenario its
+# keep. Half A widened `session::clock::parse_utc` and left `dict`'s
+# `UTCTIMESTAMP` reader at 8 or 12 bytes of time, so the first run of this block
+# logged on and then answered every message after the Logon with
+# `35=3 ... 371=52 373=6` — a Reject per Heartbeat, per SequenceReset, per
+# Logout, and nothing in this repository could see it.
+if [[ "${n_reject}" -ne 0 ]]; then
+  echo "UNEXPECTED: ${n_reject} Reject naming tag 52 — a valid timestamp was refused" >&2
+  mic_fail=1
+fi
+if ! grep -qE "^interop-acceptor: logon +ok" "${MICLOG}"; then
+  echo "MISSING: the microsecond session never logged on" >&2
+  mic_fail=1
+fi
+
+if [[ "${mic_fail}" -eq 0 ]]; then
+  echo "interop-micros: PASS 5/5"
+else
+  echo "interop-micros: FAIL" >&2
+  echo "---- what this engine's acceptor said ----" >&2
+  cat "${WORK}/fixbolt-micros.log" >&2
+  echo "---- what the C++ initiator said ----" >&2
+  cat "${WORK}/interop-micros.log" >&2
+  exit 1
+fi
+
 # ---- 5. Nothing of QuickFIX's entered the repository ------------------------
 #
 # The question is what THIS SCRIPT added, not whether the tree was clean when it
@@ -911,6 +1076,6 @@ fi
 echo "==> the run added nothing git can see"
 
 echo
-echo "interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 against libquickfix @ ${PINNED_SHA}"
+echo "interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5 against libquickfix @ ${PINNED_SHA}"
 echo "both roles, three reconnect scenarios and 789 in both directions,"
 echo "each checked by somebody else's engine"

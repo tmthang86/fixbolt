@@ -59,7 +59,7 @@ fn now_stamp() -> String {
         .expect("after 1970")
         .as_millis() as u64;
     let mut cache = fixbolt_codec::timestamp::TimestampCache::new();
-    let full = *cache.format(ms);
+    let full = cache.format(ms, 0);
     // 17 bytes: the corpus's own width for `52` on the way in.
     core::str::from_utf8(&full[..17]).expect("ascii").to_owned()
 }

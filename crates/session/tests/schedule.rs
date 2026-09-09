@@ -32,6 +32,9 @@
 //!
 //! [session-schedules]: ../../../docs/plans/2026-09-02-session-schedules.md
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Not a library crate's source: `scripts/check-indexing-debt.sh` counts nothing
+// outside `crates/*/src`, and an index that panics in a test is a failing test.
+#![allow(clippy::indexing_slicing)]
 
 use fixbolt_codec::timestamp::TimestampCache;
 use fixbolt_conformance::script::{
@@ -87,7 +90,7 @@ fn logon_stamped(at: u64) -> Vec<u8> {
     // The seconds form, 17 bytes, exactly as long as the one already there — so
     // `9=` does not move and only the checksum has to be recomputed.
     let mut cache = TimestampCache::new();
-    let full = *cache.format(at - MILLIS_YEAR_ZERO_TO_EPOCH);
+    let full = cache.format(at - MILLIS_YEAR_ZERO_TO_EPOCH, 0);
     let stamp = core::str::from_utf8(&full[..17]).expect("ascii");
     let old = format!("52={FIXED_TIME_IN}");
     assert!(

@@ -427,6 +427,15 @@ use fixbolt_engine::journal::Store;
 use fixbolt_engine::transport::{Io, Transport};
 use fixbolt_session::{Acceptor, Config, Session, Silent};
 
+/// A clock reading with no sub-millisecond part — what a test that drives a
+/// connection by hand has, and what `Conn::turn` takes since ADR-0057.
+fn at(ms: u64) -> fixbolt_engine::clock::Reading {
+    fixbolt_engine::clock::Reading {
+        ms,
+        sub_ms_nanos: 0,
+    }
+}
+
 /// A socket that hands over whatever it was primed with and swallows the rest.
 #[derive(Default)]
 struct Wire {
@@ -494,7 +503,7 @@ fn a_connection_logs_what_it_read_and_what_it_answered() {
     let mut log = FileLog::open(tmp.path()).unwrap();
     let mut c = wired(&logon);
     c.opened(FIXED_TIME_MILLIS, &mut log);
-    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 0, &mut log);
+    let _ = c.turn(at(FIXED_TIME_MILLIS), &mut Silent, |_| false, 0, &mut log);
     log.close();
 
     let lines = tmp.lines();
@@ -528,7 +537,7 @@ fn a_refused_frame_is_in_the_log_even_though_the_session_never_saw_it() {
     c.opened(FIXED_TIME_MILLIS, &mut log);
     // `true` is the engine's own rule, ADR-0030: a second Logon on a second
     // connection is dropped in silence.
-    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| true, 0, &mut log);
+    let _ = c.turn(at(FIXED_TIME_MILLIS), &mut Silent, |_| true, 0, &mut log);
     log.close();
 
     let lines = tmp.lines();
@@ -552,7 +561,7 @@ fn the_shard_the_engine_names_is_the_shard_on_the_line() {
 
     let mut log = FileLog::open(tmp.path()).unwrap();
     let mut c = wired(&logon);
-    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 5, &mut log);
+    let _ = c.turn(at(FIXED_TIME_MILLIS), &mut Silent, |_| false, 5, &mut log);
     log.close();
 
     let lines = tmp.lines();
@@ -619,7 +628,7 @@ fn bytes_still_queued_when_the_socket_dies_are_counted_not_claimed_as_sent() {
     c.opened(FIXED_TIME_MILLIS, &mut log);
     // The logon is read and answered; the answer cannot go out, so it stays in
     // `tx` — and the log has already called it `OUT`.
-    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 0, &mut log);
+    let _ = c.turn(at(FIXED_TIME_MILLIS), &mut Silent, |_| false, 0, &mut log);
     assert!(
         c.unsent_bytes() == 0,
         "nothing has been discarded yet: {}",
@@ -627,7 +636,7 @@ fn bytes_still_queued_when_the_socket_dies_are_counted_not_claimed_as_sent() {
     );
 
     c.transport.dead = true;
-    let _ = c.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 0, &mut log);
+    let _ = c.turn(at(FIXED_TIME_MILLIS), &mut Silent, |_| false, 0, &mut log);
     log.close();
 
     let outs = tmp.lines().iter().filter(|l| l.contains(" OUT ")).count();
@@ -775,8 +784,8 @@ fn two_shards_write_two_files_and_conn_ids_do_not_collide() {
     // The same connection number on two shards, which is what really happens.
     let mut ca = wired(&logon());
     let mut cb = wired(&logon());
-    let _ = ca.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 0, &mut log_a);
-    let _ = cb.turn(FIXED_TIME_MILLIS, &mut Silent, |_| false, 1, &mut log_b);
+    let _ = ca.turn(at(FIXED_TIME_MILLIS), &mut Silent, |_| false, 0, &mut log_a);
+    let _ = cb.turn(at(FIXED_TIME_MILLIS), &mut Silent, |_| false, 1, &mut log_b);
     log_a.close();
     log_b.close();
 

@@ -168,6 +168,42 @@ The survey, and what it means for an engine whose application writes its own byt
 [who-owns-the-outbound-header](who-owns-the-outbound-header.md). **A family name on a feature
 list is a claim about whichever member you happened to read.**
 
+**`[researched 2026-09-09]` `TimestampPrecision` in QuickFIX C++, read from source at the pinned
+SHA, because the sentence above had already been paid for once and was about to be repaid.**
+`quickfix/quickfix` at `386ce46e` — the commit `scripts/fetch-quickfix-assets.sh` pins — read
+from raw source, nothing fetched into `vendor/` and nothing committed:
+
+| | QuickFIX **C++** at `386ce46e` |
+|---|---|
+| Key | `TimestampPrecision`, read with `getInt` — **an integer 0–9**, not a named value; out of range throws (`SessionSettings.h:133`, `Session.h:167–174`, `SessionFactory.cpp:219–221`) |
+| Default | **3** (`Session.cpp:68`) |
+| Legacy spelling | `MillisecondsInTimeStamp`, a bool mapping to 3 or 0 (`Session.h:159–166`) |
+| On FIX **4.4** | sub-second **supported** — `beginString >= FIX.4.2` (`Session.h:175–184`) |
+| Parser accepts | **any length 17–27**: `.` at index 17, then 0–9 digits (`FieldConvertors.h:492–596`) |
+| Serialiser writes | `17 + 1 + precision` bytes (`FieldConvertors.h:465–489`) |
+
+Two consequences, recorded where the next reader will look for them.
+**`scripts/interop.sh` can be an oracle for this feature in both directions** — unlike `369`,
+the C++ end can be told `TimestampPrecision=6` and will both send and accept a 24-byte `52=` on
+a FIX.4.4 session. And **the value is an int, so `SECONDS|MILLIS|MICROS|NANOS` is QuickFIX/J's
+spelling, not this oracle's**: a `.cfg` shared between the two ends has to carry a number.
+`[2026-09-09]` that enum had already been written into
+[timestamp-micros](../plans/2026-09-04-timestamp-micros.md)'s *what is known for certain* table
+**citing this page**, which has never contained it — and the row survived a re-verification two
+days after the correction above was written.
+[ADR-0057](../decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md) carries the
+decision; the receive-side asymmetry it also found — this engine accepts 17/21/24/27 where the
+oracle accepts 17–27 — is `STATUS.md` open item 59.
+
+**The testing shape, told without FIX**: a verification pass re-checked every line number and
+every code fact in a table, corrected the ones that had drifted, and **passed a row whose
+citation was the wrong document** — the claim was specific, formatted like every other row,
+and pointed at a page that had never contained it. Re-verifying *facts* does not re-verify
+*provenance*, and a citation is the kind of claim that looks strongest exactly when nobody
+opens it.
+
+`[to testing-skills]`
+
 **`[2026-09-05]` Six of that list closed in one day**, with wave B's first plan:
 `ResetOnLogon`/`ResetOnLogout`/`ResetOnDisconnect`, `LogonTimeout`/`LogoutTimeout`,
 `ValidateUserDefinedFields`, `AllowUnknownMsgFields` and initiator connection settings in the

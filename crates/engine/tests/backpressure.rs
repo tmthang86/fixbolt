@@ -111,7 +111,12 @@ fn feed<const T: usize>(c: &mut Connection<Choked, Acceptor, Store, N, RX, T>, b
 
 fn turn(c: &mut Conn) -> Turn {
     c.turn(
-        FIXED_TIME_MILLIS,
+        // A test driving a connection by hand has a millisecond and nothing
+        // finer, which is exactly what `Reading`'s zero remainder says.
+        fixbolt_engine::clock::Reading {
+            ms: FIXED_TIME_MILLIS,
+            sub_ms_nanos: 0,
+        },
         &mut Silent,
         |_| false,
         0,
@@ -361,7 +366,12 @@ fn turn_echo(c: &mut Wide) -> Turn {
         }
     }
     c.turn(
-        FIXED_TIME_MILLIS,
+        // A test driving a connection by hand has a millisecond and nothing
+        // finer, which is exactly what `Reading`'s zero remainder says.
+        fixbolt_engine::clock::Reading {
+            ms: FIXED_TIME_MILLIS,
+            sub_ms_nanos: 0,
+        },
         &mut Echo,
         |_| false,
         0,

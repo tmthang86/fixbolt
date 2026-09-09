@@ -529,7 +529,28 @@ Three properties the first sketch got wrong:
   its width is known. That is why `encode` returns a `Range` and not a length.
 - **SendingTime is the hidden cost.** Naive formatting is 50–100 ns, as much as a parse. The
   `YYYYMMDD-HH:MM` prefix is cached and re-derived once a minute; only `SS.sss` is formatted per
-  message. `[measured 2026-08-31]` 4.9 ns from the cache.
+  message. `[measured 2026-08-31]` 4.9 ns from the cache, AMD Ryzen 7 3700X, n = 20,
+  `benches/baselines.tsv:141`.
+- **`[added 2026-09-09]` The width of that field is a session's configuration, and the cache
+  carries the precision as a field rather than as a `const` parameter.** `TimestampPrecision`
+  arrives from a settings file at run time, so a const generic would force `Session` and the
+  whole engine to be monomorphised three ways behind a runtime `match`
+  ([ADR-0057](decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md), and the plan's
+  Sửa 2). **The branch it costs instead was measured rather than argued**, one variable at a
+  time, `[measured 2026-09-09]` on an Intel Xeon @ 2.80GHz — a shared cloud VM and **not** the
+  §9 desktop, three runs per arm, `benches/serialize.rs`:
+
+  | | ns/op |
+  |---|---|
+  | before the change, same machine, same run conditions | **4.7** |
+  | returning a slice instead of `&[u8; 21]`, no precision branch | **4.8** |
+  | as shipped, at the default `Millis` | **5.4** |
+  | at `Micros` | **10.5** |
+  | at `Nanos` | **13.0** |
+
+  **+0.7 ns at the default, of which the runtime branch is 0.6 and the slice return is 0.1.**
+  The 4.9 ns row above was **not** re-measured; these stand beside it on a different machine and
+  do not replace it. The §9 figure is owed and is named in `STATUS.md`'s *Not proven*.
 
 This shape is how the fastest commercial engines are reported to reach tens of nanoseconds per
 serialise. That figure was once §6's published target, 60 ns, and

@@ -611,6 +611,38 @@ given**.
   `[measured 2026-08-31]` `SendingTime from the cache` is **4.9 ns**. Building one from scratch
   is orders of magnitude more and a hot-path allocation waiting to happen.
 
+### 5b. `52=SendingTime` names the start of the turn, not the instant of the `send`
+
+`[added 2026-09-09]`
+[ADR-0057](decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md).
+
+The engine reads the clock **once per turn** and hands that one reading to every connection on
+the pass, and `Session::received` takes no time at all — so a reply carries the stamp of the tick
+that preceded it in the same turn. At milliseconds nobody had to care. If you configure
+`TimestampPrecision=6`, the six digits are honest to the microsecond **of the turn's start**, and
+the distance from there to the `send` syscall is that turn's own work.
+
+**Three things follow, and the compiler enforces none of them.**
+
+1. **`hdr.stamp` no longer has a constant width.** It is 21 bytes at the default and 24 or 27
+   under `TimestampPrecision`. On the reply path your handler writes the whole message, so
+   **copy `hdr.stamp` by its length**. An application written as
+   `out[..21].copy_from_slice(hdr.stamp)` still compiles and produces a body-length failure three
+   bytes later. Writing a fresh `SendingTime` of your own is the same failure and was already
+   forbidden.
+
+2. **The width you configure is a ceiling, not a promise.** A session driven by
+   `Session::tick(now_ms)` has a millisecond and nothing finer, so it writes 21 bytes even when
+   the configuration says microseconds. Padding with `.xxx000` would claim a resolution this end
+   does not have, and to a venue measuring clock divergence under MiFID II RTS 25 a false
+   `.123000` is worse than a true `.123`. If you drive the session yourself and want the wider
+   stamp, use `Session::tick_at(now_ms, sub_ms_nanos, …)` — one call, both numbers, from one
+   clock reading. `serve` and friends already do.
+
+3. **A custom `Clock` supplies milliseconds unless you say otherwise.** The trait's `now()` has
+   a default body that answers zero for the sub-millisecond part, which is the truth for a clock
+   that does not know better rather than a placeholder. Override `now()` if yours does.
+
 ---
 
 ## 5a. Session schedules, and the timezone trap

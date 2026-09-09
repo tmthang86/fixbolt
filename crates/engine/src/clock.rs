@@ -18,10 +18,42 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// recalling it.
 pub const YEAR_ZERO_TO_EPOCH: u64 = fixbolt_session::clock::MILLIS_YEAR_ZERO_TO_EPOCH;
 
+/// One reading of a clock: a millisecond, and the part of the instant below it.
+///
+/// **One value and not two**, because the two must come from the same reading.
+/// Fetching them separately lets them drift, and a `52=` whose fraction belongs
+/// to a different millisecond than its seconds is wrong in a way nothing
+/// downstream can detect —
+/// [ADR-0057](../../../docs/decisions/ADR-0057-sub-millisecond-time-arrives-beside-the-tick.md)
+/// decision 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Reading {
+    /// Milliseconds since 0000-01-01, the scale `Session::tick` takes (D13).
+    pub ms: u64,
+    /// Nanoseconds **inside** `ms`, 0 to 999 999. Zero from a clock that does
+    /// not know any better, which is the truth and not a placeholder.
+    pub sub_ms_nanos: u32,
+}
+
 /// What time it is, in the session layer's units.
 pub trait Clock {
     /// Milliseconds since 0000-01-01.
     fn now_ms(&mut self) -> u64;
+
+    /// The same instant, plus whatever this clock knows below a millisecond.
+    ///
+    /// **The default answers `0` for the remainder, and that is not a stub.** A
+    /// clock that only knows milliseconds says so, and the session writes a
+    /// 21-byte `52=` rather than padding three zeroes onto a resolution nobody
+    /// had. Overriding this is how a clock offers more; [`SystemClock`] does,
+    /// [`ManualClock`] deliberately does not — the acceptance corpus drives one,
+    /// and every byte it compares is a millisecond byte.
+    fn now(&mut self) -> Reading {
+        Reading {
+            ms: self.now_ms(),
+            sub_ms_nanos: 0,
+        }
+    }
 }
 
 /// The wall clock. The default everywhere but a test.
@@ -30,10 +62,21 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn now_ms(&mut self) -> u64 {
-        let since_epoch = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
-        YEAR_ZERO_TO_EPOCH.saturating_add(since_epoch)
+        self.now().ms
+    }
+
+    /// **One `SystemTime::now()`, split at the millisecond.** `as_millis()` used
+    /// to be the whole of this function and threw the remainder away before
+    /// anything could ask for it; the reading has always had nanoseconds in it.
+    fn now(&mut self) -> Reading {
+        let Ok(d) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+            return Reading::default();
+        };
+        let ms = u64::try_from(d.as_millis()).unwrap_or(0);
+        Reading {
+            ms: YEAR_ZERO_TO_EPOCH.saturating_add(ms),
+            sub_ms_nanos: d.subsec_nanos() % 1_000_000,
+        }
     }
 }
 
