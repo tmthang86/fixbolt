@@ -17,6 +17,14 @@ below describe what a first release would contain.
 
 ### Changed
 
+- **Reading the event stream no longer destroys events.**
+  [ADR-0059](docs/decisions/ADR-0059-an-event-is-lost-only-when-the-ring-is-full.md). The ring
+  used one mutex for the engine and every reader, so `Observer::events()` polling attentively
+  made the engine drop events it was pushing at that instant — permanently, and counted only in
+  `events_lost()`. Per-slot locking removes the contention. **No API change**: `Observer`,
+  `events()` and `events_lost()` keep their signatures. What changes is that `events_lost() != 0`
+  now means exactly one thing — the ring was full — so the advice attached to it is true.
+
 - **`52=SendingTime` and `122=OrigSendingTime` are read at every precision the wire carries.**
   [ADR-0058](docs/decisions/ADR-0058-a-timestamp-is-read-at-every-precision-and-written-at-three.md).
   Accepted widths go from four (17, 21, 24, 27 bytes) to **17 and 19–30** — one to twelve

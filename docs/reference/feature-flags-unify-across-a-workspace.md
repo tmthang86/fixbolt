@@ -212,3 +212,47 @@ nothing about running the usual local command reveals that. Two things follow:
 - **Prefer to state the missing configuration rather than remember it.** The failure mode is not
   that the guard is weak; it is that *"I ran the checks"* and *"CI runs the checks"* are
   different sentences, and only one of them has the flag in it.
+
+## A third direction: a gate copied from a sibling that depends on less
+
+`[measured 2026-09-10]` The two cases above are one flag being on when the command said off, and
+one target the local command never compiles. This is a third shape, and the thing that makes it
+worth its own section is that **one of the two CI commands was green** — the test compiled, ran
+and passed — while the other could not compile it at all.
+
+`crates/engine/tests/shard_hft.rs` was written to drive `serve_sharded_hft`, and its file gate was
+copied from its sibling `shard_wire.rs`:
+
+```rust
+#![cfg(all(feature = "affinity", target_os = "linux"))]
+```
+
+That gate is **correct for `shard_wire.rs`**. That file drives `Shards::start`, which needs
+`affinity` and nothing else. But `serve_sharded_hft` carries a second condition of its own —
+`#[cfg(feature = "standard")]`, `crates/engine/src/shard.rs:439` — because it owns the
+pre-session stage and that needs a poller. So:
+
+| CI command | Result |
+|---|---|
+| `cargo test -p fixbolt-engine --features affinity` | **green** — `serve_sharded_hft_serves_a_session ... ok` |
+| `cargo test -p fixbolt-engine --no-default-features --features affinity` | `error[E0425]: cannot find function serve_sharded_hft` |
+
+`standard` is a default feature, so the first command has it and the second does not. Both are
+in the same job, and the job failed on the second.
+
+**The rule.** A test file's `#![cfg]` must name the conditions of **the item it calls**, not the
+conditions of the module that item lives in, and not the conditions of the file beside it. Two
+tests in one directory, over one module, can legitimately need different gates — and the wrong
+one is invisible under any single feature set, including the one that is green.
+
+**`[to testing-skills]`** The transferable part is the diagnostic asymmetry, not the Rust
+specifics. **A test that passes under one configuration and does not build under another is not
+half-working; it is a test whose applicability was guessed.** Copying a neighbour's setup
+condition is the cheapest way to guess it, because the neighbour is visibly similar and its
+condition is visibly working. The check that finds it is running the suite under **every**
+configuration the project claims to support — the failure cannot be reached from the passing one,
+so no amount of care inside the passing configuration substitutes.
+
+And nothing on the desk where it was written could have caught it: `shard` does not compile on
+darwin at all, so both commands were unavailable locally and the file's first compilation
+anywhere was in CI.

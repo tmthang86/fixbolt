@@ -272,6 +272,20 @@ and `::an_unframeable_socket_is_visible_through_the_engines_snapshot`.
   `::a_disconnect_without_the_policy_keeps_the_numbers`,
   `::a_logout_without_the_policy_keeps_the_numbers` — which are what say the flag and not the
   code path is doing the work.
+  `[2026-09-10]` **and `on_logon` is now judged over a socket by somebody else's engine too**,
+  `scripts/interop.sh` §4j: this engine's acceptor is stood up on a `FileJournal`, run against a
+  `libquickfix` initiator, stopped, started again on the same journal, and asked to log on a
+  second time. **The knob is the only line that differs between the two arms**, and the resumed
+  session's Logon reply carries `34=11` under `N` and `34=1` under `Y` — read off the frames that
+  arrived at the counterparty, not off this engine's own log. Before §4j existed the two values
+  produced byte-for-byte identical traffic in every scenario here, because `fixbolt::serve` has no
+  `Recovery` seam and the branch was unreachable. `STATUS.md` item 53.
+  **One thing §4j establishes that is easy to misread as a defect**: this acceptor does **not** put
+  `141=Y` on its Logon reply because its own `ResetOnLogon=Y` fired — it only echoes a `141=Y` that
+  arrived. `[measured 2026-09-10]` QuickFIX C++ does the same: its acceptor overload
+  (`Session.cpp:701`) sets the field only `if (m_state.receivedReset())`, and the
+  `shouldSendReset()` path that announces a local reset (`:687`) is in the **initiator** overload.
+  Two engines, same behaviour.
 - **`16=0` and a range past what was sent are clamped** to the last number this end actually
   sent. Guarded by
   `crates/engine/tests/journal.rs::what_no_longer_fits_in_the_ring_is_filled_over_not_skipped`.

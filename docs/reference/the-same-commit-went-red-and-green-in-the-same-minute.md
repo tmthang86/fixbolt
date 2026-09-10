@@ -62,49 +62,55 @@ duplication was the entire evidence.
   written down, is how a real intermittent defect survives for months: each individual person who
   met it concluded "flake" and moved on, and nobody ever counted.
 
-This one is now counted: **one red, one green, same commit** — in a test helper, not in the code
-it exercises. It has not been fixed, and this note is the record that it is open rather than
-explained away.
+This one is now counted: **one red, one green, same commit.** `[written 2026-09-09]` It was
+guessed at here as "a load-dependent readiness race in a test helper". **That guess was wrong**,
+and the section below is what it actually was — left visible rather than edited away, because the
+distance between the guess and the answer is the useful part.
 
-## `[measured 2026-09-09, an hour later]` It happened again, in a different test, and the obvious fix is refused
+## `[measured 2026-09-09, later]` It happened again, then the cause turned out not to be timing at all
 
-A second pull request, a different test, the same signature: **one job, one commit, two runs,
-opposite results.** Different test file, different assertion, same shape — a helper that waits on a
-**wall-clock deadline** for something to be observable.
+A second pull request, a different crate, the same signature: **one job, one commit, two runs,
+opposite results.** So not one flaky test — a *family*: every test that waits a fixed number of
+seconds for an asynchronous system to reach a state.
 
-So it is not one flaky test. It is a *family*: every test that waits a fixed number of seconds for
-an asynchronous system to reach a state can be starved on a loaded runner, and each of them will
-be met once, individually, by someone who concludes "flake" and moves on.
+**The obvious fix, raising the deadline, was refused**, and the measurement was why: the second
+test completes in **0.00 s** locally, including pinned to a single core. It blew a **5 s** budget
+on CI. A gate that finishes five hundred times inside its budget and then consumes all of it and
+sees nothing did not run slightly slow — a step did not happen.
 
-**The obvious fix — raise the deadline — is refused, and the measurement is why.** Locally the
-second test completes in **0.00 s**, including pinned to a single core. The deadline it blew
-through on CI is **5 s**. A gate that finishes five hundred times inside its budget and then
-consumes the entire budget and sees nothing did not run slightly slow: **a step did not happen at
-all.** Raising the number would move the score without touching the cause, which is exactly the
-failure mode of accepting a cause because a knob moved with it.
+And then the cause: **it was not a timing problem, it was a loss problem wearing a timeout's
+clothes.**
 
-Three hypotheses were checked and two are dead:
+The engine pushed events into a ring behind a `try_lock` — correctly, because that thread must
+never block behind an operator's. A failed `try_lock` **dropped the event permanently** and only
+incremented a counter. The test's wait helper polled that same ring every 2 ms, taking its mutex
+each time. Occasionally the two coincided, the event ceased to exist, and the test waited out its
+whole budget for something that was never coming.
 
-- *The observer's drain replaces the buffer rather than appending, so events seen in different
-  polls cannot accumulate.* **Refuted by reading it**: it appends.
-- *The change under test caused it.* **Refuted**: the feature involved is off by default and the
-  test does not touch it; and the duplicate run passed on the identical tree.
-- *A readiness race between the harness connecting and the server actually serving.* **Not
-  refuted, and not confirmed** — it fits the shape but nothing here has demonstrated it.
+Every hypothesis before that was about *delay*, and delay was never involved. Which is why:
 
-The cause is **not found**, and that is written down rather than rounded to a diagnosis that sounds
-plausible.
+- 32 spinning processes pinned to the same two cores left it at 0.12 s against a 5 s budget;
+- the test passed 60 runs out of 60, and the whole suite 3 of 3, at the runner's core count;
+- and **the one piece of distinguishing evidence had been in the first CI log all along** —
+  `saw: [ one event ]`, not `saw: []`. A test that timed out on a slow engine would have seen
+  nothing. Seeing exactly one of two says the other was **destroyed**, not delayed.
+
+Reproducing it meant inverting the instinct: not adding load, but **removing the politeness**.
+With the 2 ms sleep deleted so the reader held the lock almost continuously, it went from
+unreproducible to **9 runs in 20**, with the exact signature CI had produced.
 
 ## What to take from it, part two
 
-- **A timeout that is blown by 500× is not a timeout problem.** Compare the failing budget against
-  the normal duration before touching either. If the ratio is large, the deadline is not the
-  constraint and changing it only hides the next occurrence.
-- **"Flake" is a classification, not an explanation.** Proving nondeterminism (two runs, one
-  commit) is cheap and worth doing immediately. Finding the cause is a separate job, and skipping
-  it should be recorded as skipped.
-- **One instance is an anecdote; two with the same signature is a category.** The second occurrence
-  is what turns "that test is flaky" into "wall-clock waits in test helpers are a defect class in
-  this repository", which is a much more actionable statement.
+- **Read the failure's own output before theorising about the environment.** The evidence that
+  settled it was printed by the very first failing run, and went unexamined while three
+  environmental hypotheses were built and killed.
+- **"Timed out" is a symptom with at least two causes** — it was slow, or it is never coming.
+  They demand opposite investigations, and only the second explains a *partial* result.
+- **To reproduce a race, exaggerate the participant you control, not the machine.** Adding CPU
+  contention made everything slower and the race no likelier. Making the reader greedier made it
+  a coin flip.
+- **A guess written down as a guess costs nothing to correct.** This page said "a load-dependent
+  readiness race in a test helper". Keeping that sentence visible next to the answer is worth
+  more than a page that was right the first time.
 
 `[to testing-skills]`

@@ -296,3 +296,40 @@ exact file count unconfirmed. The 59-file gate stays the only free oracle for FI
 `SO_BUSY_POLL` / `SO_PREFER_BUSY_POLL` / `SO_INCOMING_NAPI_ID` (only meaningful with a real NIC —
 loopback has no NAPI), and `io_uring` with `IORING_REGISTER_NAPI` as a `standard`-mode poller.
 Both are wave C of item 45, after the NIC-to-NIC number exists to compare against.
+
+## `[researched 2026-09-09]` How five engines hand session events to an operator
+
+The second survey of the day, and it settled a **design** question rather than a protocol one:
+`STATUS.md` item 60 asked whether fixbolt's event stream losing events was a defect or a trade.
+Each row read from that engine's source.
+
+| Engine | Mechanism | Loses events? | Blocks the session thread? | Says *why* it ended? |
+|---|---|---|---|---|
+| QuickFIX **C++** | synchronous virtual callback — `Application::onLogout(const SessionID&)` | never | **yes**, for as long as the handler takes; `SynchronizedApplication` adds one global mutex across all sessions | **no** — no reason is carried |
+| QuickFIX/**J** | `SessionStateListener`, multicast through a reflection `Proxy`, in a loop on the calling thread | never | **yes** | **no**, though it has nine kinds including `onMissedHeartBeat` and `onHeartBeatTimeout` |
+| **quickfix-go** | synchronous interface callback | never | **yes** | **no** |
+| **nanofix** | atomic counters and gauges (`src/metrics.rs`) | never — they are counts | no | **no**; aggregate, not per connection |
+| **fixbolt** | bounded ring, non-blocking push, losses counted | **yes** | no | **yes** — `DropReason`, eighteen sites |
+
+**Two things follow, and the second is what changed the code.**
+
+**1. The trade is forced.** Every engine that never loses an event achieves it by running the
+operator's callback on the session thread. A slow handler stalls the session — which for three of
+the four is the documented behaviour, not a bug. fixbolt is the only one of the five that both
+keeps its engine thread free *and* says why a connection ended, and losing on overflow is what it
+pays.
+
+**2. But most of the loss was not paying for anything.** The stream also lost events when a reader
+happened to be polling, because producer and consumer shared one mutex — nobody had decided that;
+it was how the ring got built.
+[ADR-0059](../decisions/ADR-0059-an-event-is-lost-only-when-the-ring-is-full.md) removed it, and
+the remaining loss now means exactly one thing.
+
+**The testing shape, told without FIX**: the question was *"is this behaviour a defect or a
+deliberate trade?"*, and it could not be answered from inside the project — the code compiles
+either way and the tests pass either way. Reading four other implementations answered it in an
+afternoon, and split the behaviour in two: **one half was a real trade forced by a constraint the
+others do not have, and the other half was an implementation detail wearing the trade's clothes.**
+Without the comparison, both halves would have been defended together — or abandoned together.
+
+`[to testing-skills]`

@@ -228,6 +228,36 @@ private:
   int m_total = 0;
 };
 
+/// One step: the session comes up, and the Logon this engine sent is on the
+/// tape.
+///
+/// **Why the seven-step `run` cannot be used for this.** Its steps are written
+/// for a session that is NEW and whose Logon carries `141=Y`. Scenario 4j runs
+/// this binary a second time against a session that was **resumed**, where six
+/// of the seven have no meaning: `[measured 2026-09-10]` before this function
+/// existed, that second run read `logon FAIL 141=MISSING`, `order FAIL` and
+/// `heartbeat FAIL no unprompted 35=0 in 61 s` — in BOTH arms of the scenario,
+/// while the scenario itself printed `PASS 4/4` beside them. A green fraction
+/// over steps that were never applicable is worse than no fraction at all
+/// (docs/reference/a-green-fraction-over-a-scenario-that-never-ran.md), and it
+/// cost ~60 s per arm to produce.
+///
+/// It asserts only what 4j reads: that a Logon came back. **The `34=` on it is
+/// judged by the script**, not here, because what that number should be depends
+/// on the counterparty's `ResetOnLogon` — which is the variable under test and
+/// therefore not something this binary may assume.
+void run_logon_only(const FIX::SessionID &id, Score &score) {
+  const std::string from_them = "|49=" + id.getTargetCompID().getValue() + "|";
+  const std::string to_us = "|56=" + id.getSenderCompID().getValue() + "|";
+
+  std::string logon;
+  const bool logged_on = within(5000, [&] {
+    logon = first({"|35=A|", from_them, to_us});
+    return !logon.empty();
+  });
+  score.step("logon", logged_on, logged_on ? "35=A" : "no 35=A within 5 s");
+}
+
 /// Seven steps against this repository's acceptor.
 void run(const FIX::SessionID &id, Score &score, bool invert_resend) {
   // What arrives from the other end carries our target in `49=` and us in
@@ -399,7 +429,7 @@ void run(const FIX::SessionID &id, Score &score, bool invert_resend) {
 
 int main(int argc, char **argv) {
   if (argc < 2) {
-    std::cerr << "usage: initiator <config file> [--invert-resend] [--dump-tape]"
+    std::cerr << "usage: initiator <config file> [--invert-resend] [--dump-tape] [--logon-only]"
               << std::endl;
     return 2;
   }
@@ -409,12 +439,18 @@ int main(int argc, char **argv) {
   // microsecond scenario is judged on the width of one field. A tape printed
   // only on failure cannot be the evidence for a run that succeeds.
   bool dump_tape = false;
+  // **Scenario 4j only.** See `run_logon_only` for why the seven-step scenario
+  // is the wrong driver for a resumed session.
+  bool logon_only = false;
   for (int i = 2; i < argc; ++i) {
     if (std::string(argv[i]) == "--invert-resend") {
       invert_resend = true;
     }
     if (std::string(argv[i]) == "--dump-tape") {
       dump_tape = true;
+    }
+    if (std::string(argv[i]) == "--logon-only") {
+      logon_only = true;
     }
   }
 
@@ -434,7 +470,11 @@ int main(int argc, char **argv) {
 
     Score score;
     initiator.start();
-    run(id, score, invert_resend);
+    if (logon_only) {
+      run_logon_only(id, score);
+    } else {
+      run(id, score, invert_resend);
+    }
     const bool ok = score.finish();
     if (!ok || dump_tape) {
       g_tape.dump();

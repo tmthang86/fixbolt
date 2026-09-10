@@ -1116,10 +1116,27 @@ listed in [SESSION-BEHAVIOUR.md §1](SESSION-BEHAVIOUR.md).
 
 **Three things to hold onto:**
 
-1. **Read often enough.** The ring holds `EVENT_CAPACITY` (256) events and the engine never
-   waits for you. When it overflows, `events_lost()` goes up. Check it: an event stream that
-   loses silently is a source you would keep trusting, and a mass reconnect is both the moment
-   it can overflow and the moment you need it.
+1. **Read often enough — and this stream can lose, which no other FIX engine's does.**
+   The ring holds `EVENT_CAPACITY` (256) events and the engine never waits for you. When it
+   overflows, `events_lost()` goes up. Check it: an event stream that loses silently is a
+   source you would keep trusting, and a mass reconnect is both the moment it can overflow and
+   the moment you need it.
+
+   **The comparison is the warning.** `[researched 2026-09-09]` QuickFIX C++, QuickFIX/J and
+   quickfix-go all deliver session events as a **synchronous callback on the session thread**:
+   they never lose one, and they pay by letting your handler stall the session for as long as
+   it takes. nanofix exposes counters only. If you are arriving from any of them, losslessness
+   is the assumption you are carrying, and here it is wrong — the engine thread will not wait
+   for you, so a reader that falls a full ring behind misses events permanently. That is the
+   trade [ADR-0035](decisions/ADR-0035-an-event-is-pushed-and-a-loss-is-counted.md) made and
+   [ADR-0059](decisions/ADR-0059-an-event-is-lost-only-when-the-ring-is-full.md) narrowed, and
+   the compiler cannot warn you about it.
+
+   **What `events_lost()` means, exactly:** the ring was full. `[before 2026-09-09]` it could
+   also mean *somebody was reading at that instant* — polling attentively destroyed events —
+   which made the number unactionable and cost two days of CI failures filed as flaky
+   (`STATUS.md` item 60). It no longer can. So if the counter moves, read more often or read
+   in bigger batches; that advice is now true.
 2. **`ConnId` is not an identity.** An event names the connection, not the counterparty. If
    you need to know *who*, take a snapshot while the session is up and keep the mapping.
 3. **`EndedWithoutReason` means the cause was not recorded**, not that there was none. A
