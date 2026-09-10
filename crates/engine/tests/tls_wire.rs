@@ -37,6 +37,10 @@
 //!   *does* see, as a dead socket rather than as a mode.
 //! - **No latency claim.** Nothing here is timed and no figure belongs in
 //!   `DESIGN.md` §8. Those are step 6, and they need `w2w --tls`.
+//! - **Nothing in CI.** `[measured 2026-09-10]` no job runs `cargo test` with
+//!   `--features tls`, so this file and `tests/tls.rs` have only ever run on one
+//!   desktop. `STATUS.md` item 62. Read that before treating a green PR as
+//!   evidence about anything in here.
 //! - **Nothing about the engine thread.** The handshake runs on the acceptor
 //!   thread, which ADR-0020 permits to block. Whether the engine thread stays
 //!   out of the kernel under TLS is `scripts/check-no-kernel-sleep.sh` with an
