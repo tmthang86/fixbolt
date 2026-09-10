@@ -50,6 +50,19 @@
 // `mod` missing a `#[cfg]`, but a gate copied from a sibling that depends on
 // less. Nothing on this desk could have caught it — `shard` does not compile on
 // darwin at all.
+//
+// **And the residual hole, named rather than left.** Under
+// `--no-default-features --features affinity` this file now compiles to
+// **nothing**, and `cargo test` prints `0 passed; 0 failed` — which is the
+// correct outcome, because `serve_sharded_hft` does not exist there. But it is
+// also indistinguishable from a gate whose `#![cfg]` was over-tightened until it
+// compiled away **everywhere**, and that is
+// `docs/reference/a-test-that-skipped-itself-on-every-machine-that-ran-it.md`.
+// Nothing in CI would catch that. What stands in for a check today is the pair
+// of numbers read side by side: `[measured 2026-09-10]` run 34455393095 prints
+// `1 passed` under `--features affinity` and `0 passed` under
+// `--no-default-features --features affinity`, in that order, in one job. **If
+// both ever read zero, this file is dead and says nothing.**
 #![cfg(all(feature = "affinity", feature = "standard", target_os = "linux"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Not a library crate's source — non-negotiable 7 is about `crates/*/src`.

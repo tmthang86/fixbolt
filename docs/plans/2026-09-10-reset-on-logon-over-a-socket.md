@@ -209,5 +209,10 @@ QuickFIX kèm số dòng), `CONFORMANCE.md` (hàng `interop-reset:` mới, **c�
 `..._in_standard_mode_too`); `cargo fmt --check` sạch; `cargo clippy --all-targets -D warnings`
 sạch; `check-indexing-debt.sh` **181, ceiling 181**; `check-links.py` sạch.
 
-**Chưa làm:** không có CI run nào được gọi tên cho commit này (§9 ô cuối). Không đo hiệu năng, không
+**`[2026-09-10]` CI XANH trên `84176b6`**, run
+[`34455393095`](https://github.com/tmthang86/fixbolt/actions/runs/34455393095), **13 job / 13** —
+job `interop` (`Both roles, against a real libquickfix`) trong đó, nên **§4j pass trên Linux chứ
+không chỉ trên bàn này**. §9 ô cuối đóng.
+
+**Chưa làm:** Không đo hiệu năng, không
 chạm `crates/*/src`. `ResetOnLogout` và `ResetOnDisconnect` vẫn chỉ được chứng minh ở tầng session.

@@ -86,7 +86,19 @@ target does not. One job, two commands, opposite results. Fixed, and written up 
 direction in
 [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md).
 
-**No green CI run is named for the fixed commit yet** — §9's last box is open until one is.
+**§9's last box, closed on the commit it asks about.** `84176b6` is **green**, run
+[`34455393095`](https://github.com/tmthang86/fixbolt/actions/runs/34455393095), **13 jobs of 13**
+— `interop`, `bench` and `deny`, the three neither desk can run for itself, among them. Read from
+the job log rather than off the check marks: the `--features affinity` step prints
+`serve_sharded_hft_serves_a_session ... ok`, **1 passed**, and the
+`--no-default-features --features affinity` step prints **0 passed** for the same file, which is
+correct — `serve_sharded_hft` does not exist without `standard`. **Both numbers are quoted because
+either alone is misleading**: the second reads as green for a file that compiled to nothing, and
+if both ever read zero the gate is dead. That pair is the only thing standing in for a check on
+it, and it is said out loud in the file.
+
+**Still not done:** step 6 of the hft plan. `check-no-kernel-sleep.sh` traces `tools/w2w`, not
+`serve_hft`.
 **Step 6 of the hft plan is not done**: `check-no-kernel-sleep.sh` still traces `tools/w2w`, not
 `serve_hft`, so the syscall half of non-negotiable 4 is still unproven at the front door.
 **No §9 measurement, no benchmark, no performance claim.**

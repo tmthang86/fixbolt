@@ -219,6 +219,15 @@ mặc định** (`--features affinity` không chạy được trên darwin — C
 `check-indexing-debt.sh` 181/181; `check-no-optional-deps.sh` ok mọi crate;
 `check-lint-config.sh` RED ok / GREEN ok; `check-links.py` sạch.
 
+**`[2026-09-10, sau khi sửa]` CI XANH trên `84176b6`**, run
+[`34455393095`](https://github.com/tmthang86/fixbolt/actions/runs/34455393095), **13 job / 13**.
+Đọc từ log job: bước `--features affinity` in `serve_sharded_hft_serves_a_session ... ok`,
+**1 passed**; bước `--no-default-features --features affinity` in **0 passed** cho cùng file — đúng,
+vì hàm không tồn tại khi `standard` tắt. **Trích cả hai con số, vì mỗi con số một mình đều lừa
+được**: con thứ hai đọc như xanh cho một file compile thành rỗng, và **nếu cả hai đều đọc 0 thì
+gate này đã chết mà không nói gì**. Cặp số đó là thứ duy nhất thay cho một check ở đây, và nó được
+ghi thẳng vào doc của file.
+
 **Chưa làm, nói thẳng:**
 - **Bước 6 không làm.** `check-no-kernel-sleep.sh` vẫn trace `tools/w2w`, không trace `serve_hft`.
   **Nửa syscall của bất biến 4 vẫn chưa được chứng minh ở cửa trước.** Cần Linux; rủi ro này được
