@@ -63,6 +63,10 @@ PORT3="${INTEROP_PORT3:-15646}"
 PORT4="${INTEROP_PORT4:-15647}"
 # A fifth, for the odd-precision `52=` scenario (4i). Same argument again.
 PORT5="${INTEROP_PORT5:-15648}"
+# A sixth, for the `ResetOnLogon` scenario (4j). It stands this engine's
+# acceptor up TWICE on the same port, so a collision with any listener above
+# would look exactly like an acceptor that refused to come back.
+PORT6="${INTEROP_PORT6:-15649}"
 # How long any single wait below gets before the run is called a failure.
 # A reversal that removes the restart must go RED, not HANG — a hang is how a
 # reversal fails to prove anything (docs/reference/a-reversal-can-fail-by-hanging.md).
@@ -142,8 +146,13 @@ NE_PID=""
 MIC_PID=""
 # The 4i scenario's acceptor.
 ODD_PID=""
+# The 4j scenario stands this engine's acceptor up twice on the same port: once
+# before the restart and once after. Two pids, because a failure between them
+# would otherwise leak the first listener into the second half of the run.
+RST1_PID=""
+RST2_PID=""
 cleanup() {
-  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}" "${NE_PID}" "${MIC_PID}" "${ODD_PID}"; do
+  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}" "${NE_PID}" "${MIC_PID}" "${ODD_PID}" "${RST1_PID}" "${RST2_PID}"; do
     [[ -n "${pid}" ]] || continue
     kill "${pid}" 2>/dev/null || true
     wait "${pid}" 2>/dev/null || true
@@ -1190,6 +1199,217 @@ else
   exit 1
 fi
 
+# ---- 4j. `ResetOnLogon` judged over a socket, at BOTH values ----------------
+#
+# `STATUS.md` open item 53. The knob was proven at every layer and never on the
+# wire, and the reason it was deferred is worth repeating because it is what
+# this scenario had to work around: **an acceptor takes the `ResetOnLogon`
+# branch only when its session was resumed**, and `fixbolt::serve` has no
+# `Recovery` seam. So under every scenario above, `Y` and `N` produce byte-for-
+# byte identical wire traffic, and a gate over them would be green about
+# nothing.
+#
+# `--role acceptor --journal` is the seam, and it reuses the plumbing
+# `--role reconnect` already had (`tools/interop/src/reconnect.rs`, d31db5e).
+#
+# **The C++ end is one-shot**, so this does not kill an acceptor mid-session the
+# way 4d-4f do. It runs the initiator to completion, stops this engine, starts
+# it again on the same journal, and runs the initiator a second time against the
+# same `FileStorePath`. What is under test is the SECOND session.
+#
+# **All three `ResetOn*` are `N` on the C++ side, in both arms.** Same argument
+# as the reconnect scenarios (see `acceptor-reconnect.cfg` above): under `Y` the
+# oracle forgets its numbering at every logon, "did the session continue" stops
+# being a question that can be asked, and a broken engine passes. Holding the
+# C++ side identical across the two arms is also what makes the knob the only
+# variable — `docs/reference/the-strongest-knob-is-not-the-settle-point.md` is
+# about a gate that moved with a timeout and was really failing on something
+# else entirely.
+#
+# `$1` is the value of `ResetOnLogon` on THIS engine. Everything else is held.
+run_reset_on_logon() {
+  local knob="$1"
+  local work="${WORK}/reset-${knob}"
+  mkdir -p "${work}/store"
+
+  cat > "${work}/fixbolt.cfg" <<CFG
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=FIXBOLT
+
+[SESSION]
+TargetCompID=QFRST
+HeartBtInt=30
+ResetOnLogon=${knob}
+CFG
+
+  cat > "${work}/initiator.cfg" <<CFG
+[DEFAULT]
+ConnectionType=initiator
+SocketConnectHost=127.0.0.1
+SocketConnectPort=${PORT6}
+HeartBtInt=30
+ReconnectInterval=1
+ResetOnLogon=N
+ResetOnLogout=N
+ResetOnDisconnect=N
+StartTime=00:00:00
+EndTime=00:00:00
+UseDataDictionary=Y
+DataDictionary=${SRC}/spec/FIX44.xml
+FileStorePath=${work}/store
+
+[SESSION]
+BeginString=FIX.4.4
+SenderCompID=QFRST
+TargetCompID=FIXBOLT
+CFG
+
+  # One half of the scenario: stand this engine up on the journal, run the
+  # oracle against it, stop this engine cleanly. `$1` is the log suffix.
+  #
+  # **`stop` down a fifo, not a signal.** A `SIGKILL` here would leave the
+  # journal's writer thread unjoined and the next `FileJournal::open` reading a
+  # torn tail — which is a real failure mode, and it is `--role reconnect`'s
+  # scenario, not this one. Confusing the two would make a `ResetOnLogon`
+  # failure indistinguishable from a durability one.
+  local half
+  for half in 1 2; do
+    mkfifo "${work}/ctl${half}"
+    "${REPO_ROOT}/target/debug/interop" --role acceptor \
+      --listen "127.0.0.1:${PORT6}" --cfg "${work}/fixbolt.cfg" \
+      --journal "${work}/journal" \
+      < "${work}/ctl${half}" \
+      > "${work}/fixbolt${half}.log" 2>&1 &
+    local pid=$!
+    if [[ "${half}" == "1" ]]; then RST1_PID="${pid}"; else RST2_PID="${pid}"; fi
+    exec 8> "${work}/ctl${half}"
+
+    local ready=0
+    for _ in $(seq 1 200); do
+      # `2>/dev/null`: the file is created by the process that was just
+      # spawned, so the first iteration can lose the race. `[measured
+      # 2026-09-10]` without it a **passing** run printed
+      # `grep: .../fixbolt2.log: No such file or directory` — a shell error
+      # line inside a green job, the class PR #49 was about.
+      grep -q "interop: listening" "${work}/fixbolt${half}.log" 2>/dev/null && { ready=1; break; }
+      sleep 0.1
+    done
+    if [[ "${ready}" -eq 0 ]]; then
+      echo "reset-${knob}: acceptor half ${half} never became ready:" >&2
+      cat "${work}/fixbolt${half}.log" >&2
+      exec 8>&-
+      return 1
+    fi
+
+    # **Half 2 logs on and stops there.** The seven-step scenario is written
+    # for a NEW session carrying `141=Y`; against a RESUMED one six of its
+    # steps have no meaning, and `[measured 2026-09-10]` they read
+    # `logon FAIL 141=MISSING`, `order FAIL` and `heartbeat FAIL` in both arms
+    # while this scenario printed PASS beside them. See `run_logon_only` in
+    # `tools/interop/initiator.cpp`.
+    local only=""
+    [[ "${half}" == "2" ]] && only="--logon-only"
+    set +e
+    "${WORK}/initiator" "${work}/initiator.cfg" --dump-tape ${only} \
+      > "${work}/tape${half}.log" 2>&1
+    set -e
+
+    echo "stop" >&8 || true
+    for _ in $(seq 1 100); do
+      kill -0 "${pid}" 2>/dev/null || break
+      sleep 0.1
+    done
+    exec 8>&-
+    kill "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+    if [[ "${half}" == "1" ]]; then RST1_PID=""; else RST2_PID=""; fi
+  done
+  return 0
+}
+
+# The `34=` this engine put on its Logon, read off the frames that ARRIVED at
+# the C++ initiator. `in ` is a frame the oracle received, so it came from here
+# — reading our own `out` lines would be this engine grading itself, which
+# ADR-0042 decision 1 is about.
+fixbolt_logon_seq() {
+  grep -E '^ *in .*\|35=A\|' "$1" 2>/dev/null | sed -nE 's/.*\|34=([0-9]+)\|.*/\1/p' | head -1
+}
+
+echo
+echo "==> [interop-reset] ResetOnLogon over a socket, both values, on ${PORT6}"
+reset_fail=0
+# **Two plain variables, not an associative array.** `[measured 2026-09-10]`
+# `declare -A` is a bash 4 feature and macOS ships bash 3.2: the first run of
+# this scenario died on `declare: -A: invalid option` after the eight scenarios
+# above had already passed. A gate that runs only on the CI machine is a gate
+# the person writing the code cannot use.
+reset_seq_N=""
+reset_seq_Y=""
+
+for knob in N Y; do
+  if ! run_reset_on_logon "${knob}"; then
+    echo "reset-${knob}: the arm did not run to completion" >&2
+    reset_fail=1
+    continue
+  fi
+  s1="$(fixbolt_logon_seq "${WORK}/reset-${knob}/tape1.log")"
+  s2="$(fixbolt_logon_seq "${WORK}/reset-${knob}/tape2.log")"
+  if [[ "${knob}" == "N" ]]; then reset_seq_N="${s2}"; else reset_seq_Y="${s2}"; fi
+  echo "interop-reset: ResetOnLogon=${knob} — this engine's Logon 34= was ${s1:-none} then ${s2:-none}"
+
+  # **The first session must be ordinary in both arms.** If it is not, the
+  # second one is being compared against nothing, and a scenario that never
+  # reached its own subject would still print two numbers.
+  if [[ "${s1}" != "1" ]]; then
+    echo "MISSING: reset-${knob} first session's Logon was 34=${s1:-none}, expected 1 — the arm did not start clean" >&2
+    reset_fail=1
+  fi
+  if [[ -z "${s2}" ]]; then
+    echo "MISSING: reset-${knob} second session never produced a Logon from this engine" >&2
+    reset_fail=1
+  fi
+done
+
+# **The assertion item 53 exists for.** Two runs that differ only in one line of
+# one config file must not produce the same number. If they do, the knob was
+# never under test — which is the exact state this scenario was written to end,
+# and the reason `docs/reference/a-test-that-cannot-fail-reads-as-coverage.md`
+# is in this repository.
+if [[ "${reset_fail}" -eq 0 ]]; then
+  if [[ "${reset_seq_N}" == "${reset_seq_Y}" ]]; then
+    echo "UNCHANGED: ResetOnLogon=N and =Y both gave 34=${reset_seq_N} on the resumed session." >&2
+    echo "A direction whose result does not change has not tested the knob." >&2
+    reset_fail=1
+  fi
+  # `N` continues: the resumed session's Logon carries a number the first
+  # session already passed.
+  if [[ "${reset_seq_N}" -le 1 ]]; then
+    echo "WRONG: ResetOnLogon=N gave 34=${reset_seq_N} on the resumed session — the numbering did not continue" >&2
+    reset_fail=1
+  fi
+  # `Y` restarts, which is the whole meaning of the key.
+  if [[ "${reset_seq_Y}" -ne 1 ]]; then
+    echo "WRONG: ResetOnLogon=Y gave 34=${reset_seq_Y} on the resumed session — the count did not restart" >&2
+    reset_fail=1
+  fi
+fi
+
+if [[ "${reset_fail}" -eq 0 ]]; then
+  echo "interop-reset: PASS 4/4"
+else
+  echo "interop-reset: FAIL" >&2
+  for knob in N Y; do
+    for half in 1 2; do
+      echo "---- reset-${knob} acceptor half ${half} ----" >&2
+      cat "${WORK}/reset-${knob}/fixbolt${half}.log" 2>/dev/null >&2 || true
+      echo "---- reset-${knob} oracle tape ${half} ----" >&2
+      cat "${WORK}/reset-${knob}/tape${half}.log" 2>/dev/null >&2 || true
+    done
+  done
+  exit 1
+fi
+
 # ---- 5. Nothing of QuickFIX's entered the repository ------------------------
 #
 # The question is what THIS SCRIPT added, not whether the tree was clean when it
@@ -1211,6 +1431,6 @@ fi
 echo "==> the run added nothing git can see"
 
 echo
-echo "interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5 against libquickfix @ ${PINNED_SHA}"
+echo "interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5 + 3 / 3 + 4 / 4 against libquickfix @ ${PINNED_SHA}"
 echo "both roles, three reconnect scenarios and 789 in both directions,"
 echo "each checked by somebody else's engine"

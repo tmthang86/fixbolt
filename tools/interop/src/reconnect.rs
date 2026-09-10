@@ -57,7 +57,7 @@ use fixbolt_session::Config;
 /// 64 slots of 1 KiB. The scenario replays nothing — it is `34=` continuity
 /// under test, not the resend store — so the ring is sized to be obviously
 /// enough rather than to be interesting.
-type Disk = FileJournal<64, 1024>;
+pub(crate) type Disk = FileJournal<64, 1024>;
 
 /// Speaks once when the session comes up, prints what comes back, and answers
 /// nothing else.
@@ -148,19 +148,27 @@ impl Handler for Watch {
 /// `on_disk.rs`'s copy of the same block dropped the `+ 1` on `next_in`. Both are
 /// now [`Resumed::from_journal`], which is why that function exists: arithmetic
 /// written twice was got wrong twice. ADR-0053.
-struct OnDisk {
+pub(crate) struct OnDisk {
     path: PathBuf,
     how: Durability,
+    /// The prefix this recovery's own messages print under.
+    ///
+    /// `[2026-09-10]` **it used to be the literal `interop-reconnect`**, which
+    /// was true of the only role that had one. `--role acceptor` reuses this
+    /// type now, and a line reading `interop-reconnect: resuming` out of an
+    /// acceptor names the wrong scenario in a transcript the script greps.
+    tag: &'static str,
 }
 
 impl OnDisk {
     /// Open the path once, so a bad one is an error here rather than a process
     /// that exits from inside a trait method three seconds later.
-    fn probe(path: &Path, how: Durability) -> std::io::Result<Self> {
+    pub(crate) fn probe(path: &Path, how: Durability, tag: &'static str) -> std::io::Result<Self> {
         drop(FileJournal::<64, 1024>::open(path, how)?);
         Ok(Self {
             path: path.to_path_buf(),
             how,
+            tag,
         })
     }
 
@@ -176,10 +184,7 @@ impl OnDisk {
         match FileJournal::open(&self.path, self.how) {
             Ok(j) => j,
             Err(e) => {
-                println!(
-                    "interop-reconnect: FAIL journal {}: {e}",
-                    self.path.display()
-                );
+                println!("{}: FAIL journal {}: {e}", self.tag, self.path.display());
                 std::process::exit(1)
             }
         }
@@ -204,8 +209,8 @@ impl Recovery<Disk> for OnDisk {
         // `34=1`.
         let resumed = Resumed::from_journal(self.open())?;
         println!(
-            "interop-reconnect: resuming next_out={} next_in={}",
-            resumed.next_out, resumed.next_in
+            "{}: resuming next_out={} next_in={}",
+            self.tag, resumed.next_out, resumed.next_in
         );
         Some(resumed)
     }
@@ -294,7 +299,7 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
     // — and its writer thread joined — before the next one opens the same path.
     // If that turns out to be false the `next_out` assertion is what sees it,
     // and the plan's trap 5 says what to do about it.
-    let recovery = match OnDisk::probe(Path::new(&path), Durability::Async) {
+    let recovery = match OnDisk::probe(Path::new(&path), Durability::Async, "interop-reconnect") {
         Ok(r) => r,
         Err(e) => {
             println!("interop-reconnect: FAIL journal {path}: {e}");

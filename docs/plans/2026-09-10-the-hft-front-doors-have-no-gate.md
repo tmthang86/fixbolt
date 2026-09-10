@@ -146,4 +146,62 @@ File sửa: `scripts/check-no-kernel-sleep.sh` (bước 6), docs.
 
 ## Nhật ký giao hàng
 
-*(chưa bắt đầu)*
+**2026-09-10 — năm bước trên sáu xong. Bước 6 KHÔNG làm, và đó là nửa duy nhất đóng lỗ bất biến 4
+ở cửa trước.** Trên `plan/reset-on-logon-over-a-socket` cùng plan 1. Chưa merge, chưa có CI run nào
+được gọi tên.
+
+**Xác minh lại trước khi viết code, và phát hiện của `the-doc-set` vẫn đúng nguyên.**
+`[đo 2026-09-10]` `grep` qua `crates/*/tests`, `crates/*/benches`, `benches/` và `tools/` trả về ba
+lần xuất hiện của ba hàm đó và **cả ba là comment** — tám ngày sau khi doc-set ghi lại. Cả ba nằm
+trong API công khai của crate `fixbolt` (`crates/library/src/lib.rs:27, 36, 64`).
+
+**Và một sự thật mà bảng của plan này ban đầu không có:** `tools/w2w` **không** gọi `serve_hft`. Nó
+tự `Engine::new` rồi tự chọn `wait::Spin` (`tools/w2w/src/main.rs:122, 647-664`), và
+`check-no-kernel-sleep.sh` trace đúng cái binary đó. Nên **mọi con số `hft` đã công bố nói về một
+engine dựng bằng tay**, không phải về hàm người dùng thư viện gọi, và chưa từng có gì xác lập rằng
+hai đường đó đồng ý với nhau.
+
+**Bước 1, 2, 4 — `crates/engine/tests/hft_wire.rs`, 2 test, xanh.** `serve_hft` bind, dựng phiên
+qua socket kernel, dừng bằng `admin.shutdown(2_000)` và trả về `Shutdown` đếm đúng 1 session.
+`serve_hft_with_recovery` resume: `34=9` trên dây, và `Recovery` **tự đếm số lần bị hỏi** — không có
+assertion đó thì cái trước vẫn pass trên một seam không ai gọi. Cộng `EventKind::LoggedOn` đọc từ
+`Observer` và `events_lost() == 0` (ADR-0059), vì một reply đọc được từ socket vẫn pass với một
+engine trả lời từ tầng pre-session mà chưa bao giờ dựng phiên.
+
+**Bước 3 — `crates/engine/tests/shard_hft.rs`, viết xong, CHƯA BAO GIỜ COMPILE.** `shard` nằm sau
+`cfg(all(feature = "affinity", target_os = "linux"))`, bàn làm việc là Mac, nên **clippy dưới
+`--features affinity` cũng không thấy nó**. Xanh hay đỏ do CI nói; nói khác đi từ laptop là đúng
+thứ `CLAUDE.md` §10 kết thúc bằng. Hai hình dạng đã biết được ghi vào doc của file: hàm trả
+`Result<Infallible, ShardError>` nên **không có gì để join**, và nó **không dừng được** (item 32 a),
+nên test **rò một thread đang spin** suốt đời test binary đó — nói ra chứ không để người sau tìm.
+
+**Bước 5 — ba phép đảo chiều, và cái thứ hai là cái đáng giá.** Hai test này **xanh ngay từ đầu**
+(cửa đã có sẵn), nên không có bước đỏ-trước để trưng và đảo chiều chính là bằng chứng:
+
+1. `Recovery` trả `None` cho mọi người → đỏ đúng assertion định nhắm: `34=1` chỗ muốn `34=9`.
+2. **`serve_hft` đổi thành `serve` → VẪN XANH.** Và nó *phải* xanh, vì cả hai cửa đều phục vụ
+   đúng. Đây không phải phép đảo chiều hỏng; đây là **giới hạn của gate này, được chứng minh chứ
+   không phải được khẳng định**: file này không phân biệt được `hft` với `standard`. Thứ phân biệt
+   hai mode là một syscall trên engine thread, và chỉ `check-no-kernel-sleep.sh` trên Linux thấy nó.
+3. `wait_for_event` đòi `EndedWithoutReason` → báo `the stream held [LoggedOn]`, nên helper thật sự
+   đọc stream chứ không trả về `true` mù.
+
+**Docs:** `STATUS.md` (*Start here*, **cộng đoạn cũ ở dòng 2152 bị gạch** — nó nói ba cửa "still
+called by no test"), `docs/best-practices-hft.md` §8 (đoạn về `Admin::shutdown` giờ có test canh,
+kèm giới hạn), `docs/CONFORMANCE.md` (caveat `hft` được viết lại: cửa không còn vô gate, nhưng nửa
+syscall vẫn hở).
+
+**Gate đã chạy:** `cargo test --all` **623 / 0**; `--no-default-features` **618 / 0**;
+59 định nghĩa xanh cả hai mode; `fmt` sạch; `clippy --all-targets -D warnings` sạch **dưới feature
+mặc định** (`--features affinity` không chạy được trên darwin — CI);
+`check-indexing-debt.sh` 181/181; `check-no-optional-deps.sh` ok mọi crate;
+`check-lint-config.sh` RED ok / GREEN ok; `check-links.py` sạch.
+
+**Chưa làm, nói thẳng:**
+- **Bước 6 không làm.** `check-no-kernel-sleep.sh` vẫn trace `tools/w2w`, không trace `serve_hft`.
+  **Nửa syscall của bất biến 4 vẫn chưa được chứng minh ở cửa trước.** Cần Linux; rủi ro này được
+  xếp **Cao** trong plan và nó đã xảy ra.
+- `shard_hft.rs` chưa compile lần nào ở đây.
+- Không có CI run nào được gọi tên (§9 ô cuối).
+- Item 21 (`serve_hft` không pin core) và item 32 (a) (`serve_sharded_hft` không dừng được) vẫn mở,
+  cố ý ngoài phạm vi.

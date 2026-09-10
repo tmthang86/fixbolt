@@ -8,6 +8,30 @@
 > `scripts/interop.sh` build `libquickfix` và chạy được tại chỗ, nên vòng lặp phát triển
 > không cần bàn Linux.
 
+> **Sửa 1 — 2026-09-10, duyệt lại giữa lúc build, theo Rule Zero.** Bước 2 của plan nói "chạy
+> initiator lần thứ hai" mà không nhận ra `tools/interop/initiator.cpp` là **một kịch bản 7 bước
+> cố định**, viết cho một phiên mới có `141=Y`. Chạy lần hai vào một phiên đã resume thì sáu bước
+> còn lại vô nghĩa: `[đo 2026-09-10]` cả hai arm đều đọc `logon FAIL 141=MISSING`, `order FAIL`,
+> và `heartbeat FAIL no unprompted 35=0 in 61 s`. Kịch bản vẫn in `PASS 4/4` bên cạnh những dòng
+> đó — đúng hình dạng
+> [a-green-fraction-over-a-scenario-that-never-ran](../reference/a-green-fraction-over-a-scenario-that-never-ran.md).
+>
+> **Phạm vi mở rộng, có duyệt:** thêm cờ `--logon-only` cho `initiator.cpp` — nối, logon, in tape,
+> thoát. Nửa sau của §4j dùng nó, nên nó làm đúng việc nó cần và không gì khác: ~1 giây thay vì
+> ~60, không dòng FAIL nào.
+>
+> **`141=MISSING` đã bị điều tra và KHÔNG phải defect.** Đọc `Session.cpp` của oracle thay vì suy
+> luận: overload acceptor (dòng 701) chỉ set `141=Y` khi `m_state.receivedReset()` — tức là
+> **echo**, y hệt tầng session ở đây (`crates/session/src/lib.rs:3291`). Nhánh `shouldSendReset()`
+> ở dòng 687 nằm trong overload **initiator**, phía nói trước. Hai engine hành xử giống nhau; dòng
+> FAIL đó là assertion của kịch bản C++, không phải của giao thức. **Ghi lại vì lần đọc đầu tiên
+> đã gần như mở một item defect** — và cái chặn nó lại là đọc source của oracle, không phải đọc
+> thêm code ở đây.
+>
+> Kèm theo: `2>/dev/null` cho vòng lặp readiness. `[đo 2026-09-10]` nó in
+> `grep: .../fixbolt2.log: No such file or directory` một lần trong một lần chạy **đang pass** —
+> race giữa shell và tiến trình vừa spawn, đúng lớp lỗi PR #49.
+
 ## Bối cảnh
 
 `ResetOnLogon` được chứng minh ở mọi tầng **trừ** ngoài dây. Danh sách kiểm chứng của đợt B
@@ -133,4 +157,57 @@ vẫn phải đi qua tay:
 
 ## Nhật ký giao hàng
 
-*(chưa bắt đầu)*
+**2026-09-10 — cả năm bước xong, trên `plan/reset-on-logon-over-a-socket`.** Chưa merge, chưa có
+CI run nào được gọi tên: §9 ô cuối còn mở.
+
+**Bước 1.** `--role acceptor` nhận `--journal <path>`; có cờ thì đi qua
+`fixbolt::serve_with_recovery`, không cờ thì `fixbolt::serve` như cũ. `Disk` và `OnDisk` trong
+`reconnect.rs` thành `pub(crate)` và nhận thêm một field `tag` cho tiền tố in ra — nếu không, một
+dòng `interop-reconnect: resuming` phát ra từ acceptor sẽ gọi sai tên kịch bản trong một transcript
+mà script này grep.
+
+**Bước 2-3.** §4j trong `scripts/interop.sh`, cổng thứ sáu (`PORT6`, 15649). Chạy hai arm, `N` rồi
+`Y`, mỗi arm dựng acceptor hai lần trên cùng journal.
+
+`[đo 2026-09-10]` kết quả, đọc từ frame **đến** phía đối tác chứ không từ log của chính engine này:
+
+| `ResetOnLogon` | Logon lần 1 | Logon lần 2 (phiên resume) |
+|---|---|---|
+| `N` | `34=1` | **`34=11`** — numbering tiếp tục |
+| `Y` | `34=1` | **`34=1`** — đếm lại |
+
+`interop-reset: PASS 4/4`. Tám kịch bản cũ nguyên điểm: `7/7 + 8/8 + 6/6 + 6/6 + 6/6 + 9/9 + 5/5 +
+3/3`. Không dòng lỗi shell nào trong toàn bộ output (`grep -E 'command not found|: not found|No such
+file'` → rỗng).
+
+**Ba thứ đi chệch trong lúc build, cả ba ghi lại.**
+
+1. **`declare -A` là bash 4, macOS chạy bash 3.2.** Lần chạy đầu của §4j chết ở
+   `declare: -A: invalid option` **sau khi** tám kịch bản trên đã pass. Thay bằng hai biến thường.
+   Một gate chỉ chạy được trên máy CI là một gate người viết code không dùng được.
+2. **Kịch bản in `PASS 4/4` cạnh một tape đầy dòng `FAIL`** — xem *Sửa 1* và
+   [a-driver-reused-outside-its-scenario](../reference/a-driver-reused-outside-its-scenario.md).
+   Sửa bằng `--logon-only`.
+3. **`grep` thiếu `2>/dev/null`** in `No such file or directory` một lần trong một lần chạy đang
+   pass — race giữa shell và tiến trình vừa spawn.
+
+**Bước 4 — đảo chiều.** Không cần dựng riêng: **arm `Y` chính là phép đảo chiều của arm `N`**, cùng
+một kịch bản, khác một dòng cfg, và assertion *hai arm không được giống nhau* là thứ đỏ nếu knob
+không được test. Đây là hình dạng
+[a-reversal-needs-an-input-where-the-answers-differ](../reference/a-reversal-needs-an-input-where-the-answers-differ.md)
+đòi, và nó nằm sẵn trong gate chứ không phải một lần chạy tay.
+
+**Bước 5 — docs.** `SESSION-BEHAVIOUR.md` (hàng `ResetPolicy`, gọi tên §4j **và** hai overload của
+QuickFIX kèm số dòng), `CONFORMANCE.md` (hàng `interop-reset:` mới, **cộng một caveat cũ được gạch**:
+*"the reconnect scenarios do not cover a fixbolt process that restarts"* — §4j làm đúng việc đó),
+`docs/reference/a-driver-reused-outside-its-scenario.md` mới, `STATUS.md` (*Start here* + item 53
+đóng, nguyên văn cũ giữ lại).
+
+**Gate đã chạy, đọc output chứ không đọc exit code:** `cargo test --all` **623 passed / 0 failed**
+(621 → 623 là hai test của plan 2 trên cùng branch); `--no-default-features` **618 / 0**;
+59 định nghĩa xanh **cả hai mode** (`the_fifty_nine_definitions_pass_through_a_real_socket`,
+`..._in_standard_mode_too`); `cargo fmt --check` sạch; `cargo clippy --all-targets -D warnings`
+sạch; `check-indexing-debt.sh` **181, ceiling 181**; `check-links.py` sạch.
+
+**Chưa làm:** không có CI run nào được gọi tên cho commit này (§9 ô cuối). Không đo hiệu năng, không
+chạm `crates/*/src`. `ResetOnLogout` và `ResetOnDisconnect` vẫn chỉ được chứng minh ở tầng session.

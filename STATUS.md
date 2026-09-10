@@ -15,6 +15,73 @@ Last updated: **2026-09-09, merged** — **open item 60 is closed and on `main`.
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
 
+## Start here — 2026-09-10: two gates that were deferred for reasons that had expired
+
+**Open item 53 is CLOSED, and the three `hft` front doors have a gate.** Two plans, both on
+`plan/reset-on-logon-over-a-socket`:
+[reset-on-logon-over-a-socket](docs/plans/2026-09-10-reset-on-logon-over-a-socket.md) and
+[the-hft-front-doors-have-no-gate](docs/plans/2026-09-10-the-hft-front-doors-have-no-gate.md).
+**Neither touches a line of `crates/*/src`.**
+
+### `ResetOnLogon` is judged over a socket, and the reason it was deferred had expired
+
+`scripts/interop.sh` gains **§4j**: this engine's acceptor on a `FileJournal`, run against a
+`libquickfix` initiator, stopped, started again on the same journal, asked to log on a second
+time — **at `ResetOnLogon=Y` and at `N`, with the knob the only line that differs**. The resumed
+session's Logon reply carries `34=11` under `N` and `34=1` under `Y`, read off the frames that
+arrived at the counterparty. `interop-reset: PASS 4/4`.
+
+**Item 53 was deferred on 2026-09-05 with a reason that was true when written and false within
+hours.** It said the fixture had no recovery entry point and building one was *"a fixture change
+larger than the knob it would be testing"*. Commit `d31db5e`, **the same day**, added
+`tools/interop/src/reconnect.rs` with exactly that plumbing for the initiator side: a
+`FileJournal`, an `impl Recovery`, a `--no-recovery` reversal. The acceptor role reuses it, and it
+already read a settings file — so `ResetOnLogon` already reached `Config`. **One call site was
+what was missing**: `fixbolt::serve` → `serve_with_recovery`, behind a new `--journal` flag that
+leaves the eight green scenarios on their old path.
+
+### Three `hft` front doors nobody had ever called
+
+`crates/engine/tests/hft_wire.rs` drives `serve_hft` and `serve_hft_with_recovery` over kernel
+sockets; `crates/engine/tests/shard_hft.rs` drives `serve_sharded_hft` behind
+`cfg(affinity + linux)`. `[measured 2026-09-10]` before these, a `grep` across `crates/*/tests`,
+`crates/*/benches`, `benches/` and `tools/` found the three named **only in comments** — while all
+three are public API of the `fixbolt` crate.
+
+**What made it worse than an untested function:** `hft` *was* proven, just never through its own
+door. `tools/w2w` builds an `Engine` by hand and picks `wait::Spin` itself, and
+`check-no-kernel-sleep.sh` traces that binary — so every published `hft` figure described a
+hand-assembled engine.
+
+**And the gate's limitation is demonstrated, not asserted.** Reversal 2 swaps `serve_hft` for
+`serve` and the test **stays green**, because both doors serve correctly. So `hft_wire.rs` is a
+*behaviour* gate and cannot tell the modes apart; ADR-0013 decision 4 forbids writing it up as
+anything more.
+
+### Two harness failures in one hour, both written up
+
+[a-driver-reused-outside-its-scenario.md](docs/reference/a-driver-reused-outside-its-scenario.md),
+`[to testing-skills]`. §4j first reused `initiator.cpp`'s **fixed seven-step scenario** for its
+second run, where six steps have no meaning: they read `logon FAIL 141=MISSING`, `order FAIL`,
+`heartbeat FAIL` in both arms — **and §4j printed `PASS 4/4` beside them**, two scoreboards in one
+log with nothing reconciling them. Cost ~60 s per arm. Fixed with a `--logon-only` mode.
+
+**Then `141=MISSING` nearly became a defect item.** What stopped it was reading the oracle's
+source: QuickFIX C++'s **acceptor** overload (`Session.cpp:701`) sets `141=Y` only
+`if (m_state.receivedReset())` — it echoes, exactly as this engine does. The `shouldSendReset()`
+path that announces a local reset (`:687`) is the **initiator** overload. Two engines, same
+behaviour. Reasoning from the field name gave a confident, specific, wrong answer.
+
+### Not done, said plainly
+
+**No CI run is named yet** — §9's last box is open, and this section will be wrong until it is
+filled. **`shard_hft.rs` has never been compiled**: `shard` is behind
+`cfg(all(feature = "affinity", target_os = "linux"))` and the desk is a Mac, so clippy under
+`--features affinity` cannot see it either. Whether it is green is something CI says.
+**Step 6 of the hft plan is not done**: `check-no-kernel-sleep.sh` still traces `tools/w2w`, not
+`serve_hft`, so the syscall half of non-negotiable 4 is still unproven at the front door.
+**No §9 measurement, no benchmark, no performance claim.**
+
 ## Start here — 2026-09-09, merged: the flake that was a design defect, and the log line nobody read
 
 **`STATUS.md` open item 60 is CLOSED and merged**,
@@ -2081,11 +2148,19 @@ that holds it) and `CONFORMANCE.md` (each number traced to **Proven** here, with
 CI run id).
 
 **What the plan did NOT close, said plainly.** `engine`'s **20 modules still have no map** — that is
-phase C, deferred with the rest of the contributor track. And **three `hft` entry points —
+phase C, deferred with the rest of the contributor track. And ~~**three `hft` entry points —
 `serve_hft`, `serve_hft_with_recovery`, `serve_sharded_hft` — are still called by no test, no bench
-and no tool**, so the mode this project makes its claim about still has no gate running through its
-own front doors. That is a **code** defect, needs its own plan (Rule Zero), and the doc-set only
-recorded it.
+and no tool**~~ — **ANSWERED 2026-09-10**, and it took the plan Rule Zero asked for:
+[the-hft-front-doors-have-no-gate](docs/plans/2026-09-10-the-hft-front-doors-have-no-gate.md),
+`crates/engine/tests/hft_wire.rs` and `crates/engine/tests/shard_hft.rs`. `[measured 2026-09-10]`
+the finding was still exactly true on the day it was picked up: a `grep` across `crates/*/tests`,
+`crates/*/benches`, `benches/` and `tools/` found all three named **only in comments**, eight days
+after the doc-set recorded it.
+**Answered is not the same as closed.** Those tests prove the doors open and serve; they
+demonstrably cannot tell `hft` from `standard` — swap `serve_hft` for `serve` and they stay green,
+which that file records as its second reversal. `scripts/check-no-kernel-sleep.sh` still traces
+`tools/w2w` rather than `serve_hft`, so **the syscall half of non-negotiable 4 is still unproven at
+the front door**, and that is step 6 of the plan, needing Linux.
 
 It was the first plan here whose gates were all `scripts/check-links.py`, `cargo doc` and reading —
 **no benchmark, and no new figure**. It still produced one: the `docs` CI job, and the 13 broken
@@ -3480,7 +3555,7 @@ against hardware that does not exist.
 | 50 | ~~**Two committed `parse` benchmarks timed a message the parser rejects.**~~ — **CLOSED 2026-09-05, in the commit that found it.** `[measured 2026-09-05]` `crates/codec/benches/parse.rs` declared `10=098` on a `NewOrderSingle` whose checksum is 097, and `9=49` on a `Heartbeat` whose body is 51. Both checks live at the end of `parse_into`, so the `NewOrderSingle` had already computed its checksum and only failed the comparison (~+1% when corrected, inside its own spread) — but **the body-length check returns before the checksum block, so `parse Heartbeat (validated)` had never summed its own 51 bytes**: 56.3 → **60.9 ns**, and the first corrected run read 64.2 against a 61.9 ceiling. **Nothing in the suite could see it**: the result is discarded by design in a bench, the figure was stable to 1%, and the baseline it was compared against came from the same fixture. It was found by a **different** bench, written for item 39, that asserts its own fixture is valid before timing anything — and that assert is now in `parse.rs` too, proven by reversal (restoring `10=098` panics `Err(BadCheckSum)`). `crates/engine/benches/dispatch.rs` carries the same literal and is unaffected: it never parses. Checked, not assumed. Write-up: [a-benchmark-parsed-a-message-the-parser-rejects](docs/reference/a-benchmark-parsed-a-message-the-parser-rejects.md), **`[to testing-skills]`** | ~~a published 56.3 ns~~ — 60.9 ns, and the fixture is asserted before it is timed |
 | 51 | **A TCP loopback write costs thirty-two bare syscalls on this box, and nothing here explains it.** `[measured 2026-09-05]` `getppid` **170.5 ns**; a `pipe` write-and-read of 8 bytes **778.9 ns**; a UNIX `socketpair` **1 924.9 ns**; TCP `127.0.0.1` **10 228.6 ns**, of which the write alone is **5 450 ns**. **Not the read waiting** — a non-blocking version reads **0.00 `EAGAIN` per operation** and costs the same. **Not scheduling** — `taskset` agrees to 0.1%. **Not this project's code** — thirty lines of `std::net` under `rustc -O`. **Candidates, neither tested and neither claimed:** `nf_tables`, `nf_conntrack`, `nft_compat`, `xt_MASQUERADE` are all loaded and `tailscale0` is up, so every loopback packet traverses chains Tailscale and Docker installed; and Zen 2 carries retpolines, `IBPB: conditional`, `Safe RET` and `IBPB before exit to userspace`. **Why it matters:** every wire-to-wire figure this project has published went over `127.0.0.1`, `DESIGN.md` §8's floor is 10–20 µs, and if four syscalls are ten of them then the budget's largest term is one nothing here owns — and item 40's NIC figures will not be comparable to what they are about to be compared against. **Testing either candidate changes the owner's machine** (an `iptables -t raw -j NOTRACK` rule, or a boot with `mitigations=off`), which is their call and not a benchmark's. [a-loopback-write-costs-thirty-two-syscalls.md](docs/reference/a-loopback-write-costs-thirty-two-syscalls.md) `[to testing-skills]` | `DESIGN.md` §8's floor, and item 40 |
 | 52 | **Recording a baseline changed the baseline, because the table is compiled into the binary.** `[measured 2026-09-05]` `journal put, 191 bytes, one slot` read **8.2 ns** over 20 clean runs — eighteen of them between 8.1 and 8.3. The seventeen new lines were appended to `benches/baselines.tsv`, and the very next `bench.sh --strict` went **red on that case at 6.4**. On the binary that now exists it reads **6.3, eight times, never anything else**, while its two siblings in the same binary do not move (8.9 and 5.3–5.4). The file is `include!`d into `harness.rs`, so **appending the results changed the binary the results came from**, and one small case moved **23%**. **Alignment was pinned throughout** — ADR-0049's flag was in force, read back off all sixteen binaries, and did not prevent it. Correcting the value converges immediately (8.2 → 6.3, rebuild, reads 6.3), so it is a fixed point and not a chase. **What is open:** whether the ladder rule can mean anything for cases this small, and whether the table should stop being compiled in — a build script writing it to `OUT_DIR` would move the problem rather than remove it, since that file is an input too. For now one line carries **6.3 / 1.35 / n = 8** against neighbours that all say n = 20, and the disagreement is deliberate. Third appearance of the layout hole, and the first that is self-referential. [recording-a-baseline-changed-the-baseline.md](docs/reference/recording-a-baseline-changed-the-baseline.md) `[to testing-skills]`, [ADR-0052](docs/decisions/ADR-0052-two-candidates-are-retired-with-numbers-and-a-baseline-disagrees-with-its-neighbours.md) | ADR-0016, ADR-0031, ADR-0049 |
-| 53 | **`ResetOnLogon` is proven at every layer and not end to end over a socket.** `[2026-09-05]` Wave B plan 1's verification list asked for `scripts/interop.sh` run twice, `ResetOnLogon=Y` and `N` at both ends, on the argument that *a direction whose result does not change has not tested the knob*. It was not run that way, and the reason is structural rather than a shortcut: **an acceptor only takes the `ResetOnLogon` branch when its session was resumed**, so the scenario needs the recovery entry point inside the interop fixture — a fixture change larger than the knob it would be testing. What is proven: the session behaviour by six unit tests with three neutral twins (`tests/logon.rs`, `tests/goodbye.rs`); the key reaching `Config` by `tests/settings_roles.rs`; and **the seam between file and live session over a real socket** by `settings_wire.rs::a_validation_knob_written_in_a_file_reaches_a_session_over_a_real_socket`, whose reversal is a key that stops before the `Config`. What is not: a counterparty's own engine agreeing about the numbering afterwards. **Belongs with the recovery scenarios already in `interop.sh` §4d/4e**, not with a new script | the plan's own verification list, and `CLAUDE.md` §10 |
+| 53 | ~~**`ResetOnLogon` is proven at every layer and not end to end over a socket.**~~ — **CLOSED 2026-09-10**, `scripts/interop.sh` §4j, `interop-reset: PASS 4/4`. **And the reason this item was deferred had already expired when it was written.** It said the fixture needed a recovery entry point and that building one was *"a fixture change larger than the knob it would be testing"*; `d31db5e`, **the same day, 2026-09-05**, added `tools/interop/src/reconnect.rs` carrying exactly that plumbing for the initiator side. The acceptor role reuses `Disk`/`OnDisk` unchanged and already read a settings file, so one call site — `serve` → `serve_with_recovery` behind a new `--journal` — was the whole change. `[measured 2026-09-10]` `34=11` under `N`, `34=1` under `Y`, read off the counterparty's own transcript, with the knob the only line that differs between the arms. **The original text follows, unedited:**  `[2026-09-05]` Wave B plan 1's verification list asked for `scripts/interop.sh` run twice, `ResetOnLogon=Y` and `N` at both ends, on the argument that *a direction whose result does not change has not tested the knob*. It was not run that way, and the reason is structural rather than a shortcut: **an acceptor only takes the `ResetOnLogon` branch when its session was resumed**, so the scenario needs the recovery entry point inside the interop fixture — a fixture change larger than the knob it would be testing. What is proven: the session behaviour by six unit tests with three neutral twins (`tests/logon.rs`, `tests/goodbye.rs`); the key reaching `Config` by `tests/settings_roles.rs`; and **the seam between file and live session over a real socket** by `settings_wire.rs::a_validation_knob_written_in_a_file_reaches_a_session_over_a_real_socket`, whose reversal is a key that stops before the `Config`. What is not: a counterparty's own engine agreeing about the numbering afterwards. **Belongs with the recovery scenarios already in `interop.sh` §4d/4e**, not with a new script | the plan's own verification list, and `CLAUDE.md` §10 |
 | 54 | ~~**`tools/interop` gave three different socket endings the same word.**~~ — **CLOSED 2026-09-08**, [plan](docs/plans/2026-09-07-three-gates-a-sibling-engine-has.md) step 2. `tools/interop/src/main.rs` read `Ok(0) | Err(_) => return None`, so a counterparty that **exited**, one that **went quiet**, and a **socket that broke** all produced the same `None` and the same printed sentence, *"the counterparty stopped answering"* — true of one of the three. `ReadOutcome` separates four socket endings and a fifth that is not one (`NoMatch`: whole messages kept arriving and none matched, which used to be the same `None` again). Each prints its own line at the moment it happens. Proven by a meta-test over a real loopback `TcpListener`, written **red first** against the enum before it existed; `[measured 2026-09-08]` the reversal — folding `PeerClosed` back into `Timeout` — turns exactly one test red, on the assertion meant to prove it, while the other two stay green. **Found by reading another engine's harness, not by a red run here**: no gate could have surfaced it, because the failure message is part of the test and nothing tests the failure message. [three-outcomes-collapsed-into-one-none](docs/reference/three-outcomes-collapsed-into-one-none.md) **`[to testing-skills]`** | closed |
 | 55 | **184 indexing/slicing sites in `crates/*/src`, and the ceiling is the only thing holding them.** `[measured 2026-09-08]` `clippy::indexing_slicing` was not on: `a[i..j]` panics and names none of `unwrap`, `expect` or `panic!`, so all three lints enforcing non-negotiable 7 were blind to the `copy_from_slice` panic in `crates/engine/src/dispatch.rs` that four `dispatch` tests caught on 2026-09-06. It is `deny` now, 207 sites at the time, **188 after `journal.rs` (18) and `dispatch.rs` (3) were cleaned**, and **184 since 2026-09-08, when `clock.rs` (4) went with wave B plan 3 half A and that file's `#![allow]` went with them — the script was red on arrival at the lowered count, which is the ratchet working** — the file recovery path reads a file another process wrote, so every read of it goes through `get` and a `None` is treated exactly as a torn tail, and `open_with` gained the `checked_add` its sibling `Reader::open` already had. `scripts/check-indexing-debt.sh` counts with `--force-warn` and fails in **both** directions: up is a regression, down is a ceiling somebody forgot to lower. **The floor is not 0** — `crc32`'s table lookup is masked `& 0xFF` and `crc_table` is a `const fn` where `get_mut` does not exist; both carry a scoped `#[allow]` naming the proof and both still count. **What is not done:** the other 19 files, `crates/session/src/lib.rs` (42) and `crates/codec/src/template.rs` (32) first, and the ~400 sites in `tests/`, `benches/` and `tools/` which are deliberately out of scope | non-negotiable 7, the half no lint could see |
 | 56 | ~~**No gate looked at what the dependency tree is licensed under.**~~ — **CLOSED 2026-09-08**, [plan](docs/plans/2026-09-07-three-gates-a-sibling-engine-has.md) step 1. `deny.toml` plus a blocking CI job. Permissive allow-list only, `yanked = "deny"`, `wildcards = "deny"` with `allow-wildcard-paths` — `[measured 2026-09-08]` without that last one the gate was red on its first run against **this workspace's own nine crates**, because a `path` dependency carries no version and reads as `*`. Every `ignore` must carry a written reason; there are none today. The tree is two external crates, `libc` and `roxmltree`, both `MIT OR Apache-2.0`. Reversal: a real `MPL-2.0` crate added as a normal dependency is rejected at once with the right message. **Apache-2.0 is on the allow-list and that is not a contradiction with ADR-0001** — a dependency under it is not vendored and its `NOTICE` is not this project's to reproduce; *copied source* under it still is not allowed | this repository is going to be published |

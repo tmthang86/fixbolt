@@ -120,6 +120,7 @@ scripts/interop.sh
 | `interop-next-expected:` | a `libquickfix` `SocketAcceptor` with **`SendNextExpectedMsgSeqNum=Y`** | this engine's initiator with `Config::with_next_expected(true)`: `789` written on the way out and read on the way in | **9 / 9** |
 | `interop-micros:` | a `libquickfix` `SocketInitiator` with **`TimestampPrecision=6`** | `fixbolt::serve` with `TimestampPrecision=6`: `52=` written at 24 bytes and a counterparty's 24-byte `52=` read — **judged on the bytes of QuickFIX's own transcript, not on a step line** | **5 / 5** |
 | `interop-odd:` | a `libquickfix` `SocketInitiator` with **`TimestampPrecision=2`** — a width this engine **cannot be configured to send** | `fixbolt::serve` at its default: a 20-byte `52=` read on the way in, on both readers, when nothing here can produce those bytes | **3 / 3** |
+| `interop-reset:` | a `libquickfix` `SocketInitiator` at `ResetOn*=N` with a `FileStore` that survives, run **twice** against **this engine stopped and restarted on the same `FileJournal`** | `fixbolt::serve_with_recovery` with `ResetOnLogon` at **`Y` and at `N`** — the resumed session's Logon reply read off the counterparty's transcript. **The knob is the only line that differs between the two arms**; before this row existed the two values produced identical wire traffic, because `serve` has no `Recovery` seam and the branch was unreachable (`STATUS.md` item 53) | **4 / 4** |
 
 **`[measured 2026-09-09]` the `interop-micros:` row is the only one here that is judged on field
 widths rather than on steps, and it is why the row exists.** QuickFIX C++ accepts a
@@ -350,11 +351,20 @@ of run [`33833427382`](https://github.com/tmthang86/fixbolt/actions/runs/3383342
 
 - **They are not a second corpus.** Seven and eight cases in the two directions, eighteen
   across the three reconnect scenarios, against 59 definitions.
-- **The reconnect scenarios do not cover a fixbolt process that restarts.** Only the venue
-  dies; this engine stays up throughout. Recovery across *this* process ending is
-  `crates/engine/tests/on_disk.rs`, and it has no independent opinion.
-- **`hft` mode is not covered.** `serve_hft` spins a core at 100%, and a shared CI runner is
-  the wrong place for it. The three `hft` entry points still have no gate.
+- ~~**The reconnect scenarios do not cover a fixbolt process that restarts.**~~
+  `[2026-09-10]` **they still do not, and `interop-reset:` does.** That scenario stops this
+  engine and starts it again on the same `FileJournal`, so recovery across *this* process ending
+  now has an independent opinion — which is what `crates/engine/tests/on_disk.rs` never had.
+  The three reconnect scenarios are unchanged: only the venue dies in those.
+- **`hft` mode is not covered here, and that is a property of this script, not of the mode.**
+  `serve_hft` spins a core at 100% and a shared CI runner is the wrong place for it.
+  `[2026-09-10]` **what changed is that the entry points are no longer ungated**:
+  `crates/engine/tests/hft_wire.rs` drives `serve_hft` and `serve_hft_with_recovery` over kernel
+  sockets and `crates/engine/tests/shard_hft.rs` drives `serve_sharded_hft` on Linux. Those are
+  **behaviour** gates — they prove the doors open and serve, and they demonstrably cannot tell
+  `hft` from `standard` (that file's reversal 2 swaps one for the other and stays green). The
+  syscall-level half of non-negotiable 4 at the front door is still
+  `scripts/check-no-kernel-sleep.sh`, and it still traces `tools/w2w` rather than `serve_hft`.
 - **One counterparty, one identity, no TLS, no schedule, no shards.**
 - **The scoring reads raw wire strings**, not `libquickfix`'s application callbacks. That is
   deliberate: QuickFIX drops a PossDup replay of a number it has already seen before the
