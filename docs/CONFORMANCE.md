@@ -93,6 +93,15 @@ The tuned-box figures are in [DESIGN.md §6](DESIGN.md).
   `libquickfix` (§7), but that is **7 cases each, not 59**. Everything else on this page is
   this repository's own runner reading QuickFIX's definitions.
 
+- **TLS is gated for behaviour, not for mode.** `[2026-09-10]` the `tls` CI job runs
+  `clippy --features tls` and the three TLS test files on a runner that is asserted to be able to
+  offload TLS. What it proves: the handshake completes, the kernel takes the keys, the userspace
+  fallback carries the same bytes and says it is not the kernel, a session comes up through
+  `serve_tls`, and `TlsRequireKernel` refuses at both layers. **What it does not prove: anything
+  about the engine thread under TLS** — `scripts/check-no-kernel-sleep.sh` has no TLS arm, so no
+  claim here touches non-negotiable 4. **And no latency figure comes from it**;
+  [DESIGN.md](DESIGN.md) §8's TLS row is still empty.
+
 ---
 
 ## 7. Interop against a real `libquickfix`, both directions
@@ -370,3 +379,28 @@ of run [`33833427382`](https://github.com/tmthang86/fixbolt/actions/runs/3383342
   deliberate: QuickFIX drops a PossDup replay of a number it has already seen before the
   application sees it, and the `resend` step asks for exactly that. A judge written on the
   callbacks would report a correct answer as a missing message.
+
+---
+
+## 8. The `tls` job, and the two things it had to be built around
+
+`[measured 2026-09-10]` **Before it, no CI job had ever run a TLS test** — `ci.yml` passed
+`--features affinity` for the shard tests and `--all-features` to `cargo deny` and `cargo doc`,
+and never `--features tls` to `cargo test`. Found by grepping a **green** run's log for a TLS
+test name and getting **zero**. `STATUS.md` item 62.
+
+**The environment is asserted first, and fails in its own words.** One of these tests asserts
+`/proc/net/tls_stat` moved, which is a claim about the runner rather than about this engine.
+Before the assertion, a kernel without the `tls` module surfaced four minutes later as
+`tls_stat TlsTxSw did not move` — a line that reads as an engine defect. The job's first step
+runs `scripts/check-ktls-available.sh` and requires the verdict `READY`.
+
+`[measured 2026-09-10]` the runner: `Linux 6.17.0-1022-azure`, `CONFIG_TLS=m`, module loaded,
+`/proc/net/tls_stat` present, `setsockopt(TCP_ULP, "tls")` **ACCEPTED**, verdict **READY**.
+
+**The job counts the tests that ran, and fails at zero.** `[measured 2026-09-10]` dropping
+`--features tls` from the command leaves **cargo at exit 0 having run 0 tests**, against **11**
+with it. A green `cargo test` that compiled nothing is indistinguishable from a real one, so the
+count is read rather than the exit status.
+
+---

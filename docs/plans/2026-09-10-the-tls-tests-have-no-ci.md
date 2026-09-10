@@ -1,6 +1,6 @@
 # Đưa bộ test TLS vào CI, và làm cho "máy không chạy được" không giả dạng "engine hỏng"
 
-> **Loại:** Plan · **Ngày:** 2026-09-10 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-10 · **Trạng thái:** Xong
 > **Phạm vi:** `STATUS.md` item 62. Chạm `.github/workflows/ci.yml`, `scripts/`,
 > `crates/engine/tests/tls.rs`, docs. **Không chạm** `crates/*/src` — không một dòng code
 > engine nào đổi.
@@ -146,4 +146,39 @@ File sửa: `.github/workflows/ci.yml`, `crates/engine/tests/tls.rs` (chỉ khi 
 
 ## Nhật ký giao hàng
 
-*(chờ duyệt — chưa bắt đầu.)*
+**2026-09-10 — XONG, và bước 1 làm cho bước 4 biến mất.**
+
+**Bước 1 đo được, và câu trả lời là tin tốt.** `[measured 2026-09-10]` runner của GitHub:
+
+```
+kernel: Linux 6.17.0-1022-azure
+config: CONFIG_TLS=m
+tls_stat: present
+module: loaded=yes on_disk=yes
+setsockopt(TCP_ULP, "tls"): ACCEPTED
+READY
+```
+
+Nên **bước 4 không cần làm**: không `#[ignore]` test nào, không phải nghĩ ra cách skip mà không
+giả dạng pass, không phải đụng một dòng nào của `crates/engine/tests/tls.rs`. Toàn bộ phần khó
+nhất của plan — *một test skip trông y hệt một test pass* — **không phát sinh**, vì đo trước rồi
+mới quyết. Nếu làm ngược lại thì đã viết xong cơ chế ignore rồi mới biết là thừa.
+
+**Bước 2 và 3: job `tls` riêng**, không nhét vào `fmt · clippy · test`. Một trong các test khẳng
+định `/proc/net/tls_stat` dịch chuyển — đó là khẳng định về **runner**, không phải về engine.
+Trộn vào một job chạy sáu thứ khác thì một kernel mất module `tls` sẽ đọc thành *"bộ test hỏng"*.
+
+Bước đầu của job là khẳng định môi trường và **hỏng bằng câu chữ của chính nó**.
+
+**Bước 5: cả hai đảo chiều chạy ở máy, trước khi đẩy.**
+
+| Đảo chiều | Kết quả |
+|---|---|
+| bỏ `--features tls` khỏi lệnh test | `[measured 2026-09-10]` **cargo exit 0, và 0 test chạy** — đúng hình dạng item 62; có feature thì **11 test**. Guard đếm số bắt được |
+| verdict môi trường không phải `READY` | `NOT_BUILT`, `OTHER`, `NOT_LOADED` và chuỗi rỗng đều làm job đỏ ở **bước môi trường**; chỉ `READY` đi tiếp |
+
+**Cái đầu là đảo chiều đáng giá nhất của cả plan**, vì nó chứng minh bằng số rằng một lệnh
+`cargo test` xanh mà không compile gì trông **giống hệt** một lệnh xanh thật.
+
+**Không làm:** bước 4 (không cần), arm TLS cho `check-no-kernel-sleep.sh` (bước 6 của plan
+`tls`), `interop.sh` qua TLS. **Không số đo nào** ra từ plan này.
