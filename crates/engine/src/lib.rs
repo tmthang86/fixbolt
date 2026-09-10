@@ -49,6 +49,11 @@ pub mod block;
 #[cfg(all(feature = "standard", unix))]
 pub mod poll;
 pub mod ring;
+// Non-negotiable 6: the feature gates the `mod` declaration itself, not only
+// the manifest entry. `scripts/check-no-optional-deps.sh` asks per crate,
+// because at workspace scope a sibling turns the flag back on.
+#[cfg(feature = "tls")]
+pub mod tls;
 pub mod transport;
 pub mod wait;
 #[cfg(all(feature = "standard", unix))]

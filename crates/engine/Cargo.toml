@@ -23,6 +23,16 @@ standard = ["dep:libc"]
 # is what the comment on that dependency below already promised.
 affinity = ["dep:libc"]
 
+# ADR-0005, and wave B plan 4. **Off by default and it must stay off**: `rustls`
+# and `ktls-core` are the first dependencies here that pull a tree of their own,
+# and non-negotiable 6 says a build with nothing optional installed sees none of
+# it. `mod tls` is gated on this feature in `lib.rs`, not only here — the
+# manifest alone was never the guard.
+#
+# `ktls-core` needs `libc` for `setsockopt`/`getsockopt`, which is the same
+# optional `libc` `standard` and `affinity` take. One tree, still.
+tls = ["dep:rustls", "dep:ktls-core", "dep:libc"]
+
 [dependencies]
 fixbolt-codec = { path = "../codec" }
 fixbolt-dict = { path = "../dict" }
@@ -35,10 +45,46 @@ fixbolt-session = { path = "../session" }
 # takes for `sched_setaffinity` — one tree, not two. ADR-0014 decision 1.
 libc = { version = "0.2", optional = true }
 
+# ADR-0005 decision 1: the handshake runs in userspace via `rustls`, and it is
+# allowed to allocate — a named carve-out, bounded to the handshake. `ring`
+# rather than the default `aws_lc_rs` for the reason the spike recorded: this
+# machine has cc and perl but no cmake, and `aws-lc-sys` needs cmake. kTLS takes
+# raw AES-GCM keys and does not care which provider derived them.
+rustls = { version = "0.23.43", default-features = false, features = [
+    "std",
+    "ring",
+], optional = true }
+
+# ADR-0018 answered the load-bearing question with a measurement: this drives a
+# plain non-blocking socket with no async runtime, under four conditions that
+# `scripts/check-ktls-on-a-plain-socket.sh` re-proves on the kernel of the day.
+ktls-core = { version = "0.0.5", features = ["shim-rustls"], optional = true }
+
 # The 59 acceptance definitions are this crate's gate too — the same files,
 # through a real socket rather than a closure (CLAUDE.md §2 rule 3).
 [dev-dependencies]
 fixbolt-conformance = { path = "../conformance" }
+
+# `crates/engine/tests/tls.rs` only, and **only in dev-dependencies**: a
+# self-signed certificate is generated per run rather than committed, because a
+# committed certificate expires and a test that fails in a year for a reason
+# unrelated to TLS is worse than no test (the spike recorded the same choice).
+# A dev-dependency reaches no consumer, and `check-no-optional-deps.sh` asks
+# with `-e normal`, which excludes them by construction.
+# `[measured 2026-09-09]` this one dev-dependency brought nine crates the
+# licence gate cannot see and one real security advisory (RUSTSEC-2026-0009,
+# a stack-exhaustion DoS in `time`, reached through `rcgen`), both found on the
+# first CI run after it was added. `time` is pinned past it in Cargo.lock, and
+# `scripts/check-every-crate-is-licensed.sh` exists because of the other nine.
+#
+# It also raises the Rust needed to RUN THE TESTS to 1.88, above the workspace's
+# declared `rust-version = "1.85"`. That declaration is about the published
+# crates and nothing in CI checks it, which is worth knowing before trusting it.
+rcgen = "0.14"
+rustls = { version = "0.23.43", default-features = false, features = [
+    "std",
+    "ring",
+] }
 
 # For `crates/engine/tests/standard.rs` only, which sends a signal to a thread
 # that is inside `poll` to prove `EINTR` does not end the wait early — that
