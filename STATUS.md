@@ -97,7 +97,18 @@ either alone is misleading**: the second reads as green for a file that compiled
 if both ever read zero the gate is dead. That pair is the only thing standing in for a check on
 it, and it is said out loud in the file.
 
-**And the branch tip `f1db79a` is green too**, runs
+**MERGED as `7505e4a`, and CI is green on the merge commit itself**: run
+[`34468639573`](https://github.com/tmthang86/fixbolt/actions/runs/34468639573), **13 jobs of 13**.
+Read from the job logs rather than off the check marks — the `interop` job's own checkout prints
+`7505e4a61b6d3447cb3c54f766862901b71a3c0b`, so it really is the merge that was tested, and it
+carries `interop-reset: PASS 4/4` plus
+`interop: 7/7 + 8/8 + 6/6 + 6/6 + 6/6 + 9/9 + 5/5 + 3/3 + 4/4`. The `--features affinity` step
+prints all three new tests by name: `serve_hft_serves_a_session_and_stops`,
+`serve_hft_with_recovery_resumes_a_session`, `serve_sharded_hft_serves_a_session`, all `ok`.
+**`git diff fbbcc26 7505e4a` is empty**, so the branch's green transfers to the merge exactly
+rather than by assumption. §9's last box is closed.
+
+**And the branch tip `f1db79a` was green too**, runs
 [`34457921788`](https://github.com/tmthang86/fixbolt/actions/runs/34457921788) and
 [`34457928149`](https://github.com/tmthang86/fixbolt/actions/runs/34457928149), **13 jobs of 13**.
 `[measured 2026-09-10]` §4j on **Linux** returns the same two numbers this desk saw —
