@@ -74,10 +74,19 @@ behaviour. Reasoning from the field name gave a confident, specific, wrong answe
 
 ### Not done, said plainly
 
-**No CI run is named yet** — §9's last box is open, and this section will be wrong until it is
-filled. **`shard_hft.rs` has never been compiled**: `shard` is behind
-`cfg(all(feature = "affinity", target_os = "linux"))` and the desk is a Mac, so clippy under
-`--features affinity` cannot see it either. Whether it is green is something CI says.
+**CI's first run was RED, and it found the one thing this desk could not.** Run
+[`34454245260`](https://github.com/tmthang86/fixbolt/actions/runs/34454245260): 13 jobs, 12 green
+— including `interop`, so §4j passes on Linux too — and `fmt · clippy · test` red on its
+`--features affinity` step. `[measured 2026-09-10]` **`serve_sharded_hft_serves_a_session ... ok`**
+under `--features affinity`, the first time anything in this repository has called that function;
+then `error[E0425]: cannot find function serve_sharded_hft` under
+`--no-default-features --features affinity`, because `shard_hft.rs`'s gate was **copied from
+`shard_wire.rs`** and `serve_sharded_hft` carries a `#[cfg(feature = "standard")]` its sibling's
+target does not. One job, two commands, opposite results. Fixed, and written up as a third
+direction in
+[feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md).
+
+**No green CI run is named for the fixed commit yet** — §9's last box is open until one is.
 **Step 6 of the hft plan is not done**: `check-no-kernel-sleep.sh` still traces `tools/w2w`, not
 `serve_hft`, so the syscall half of non-negotiable 4 is still unproven at the front door.
 **No §9 measurement, no benchmark, no performance claim.**

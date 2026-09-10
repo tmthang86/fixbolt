@@ -168,7 +168,29 @@ assertion đó thì cái trước vẫn pass trên một seam không ai gọi. C
 `Observer` và `events_lost() == 0` (ADR-0059), vì một reply đọc được từ socket vẫn pass với một
 engine trả lời từ tầng pre-session mà chưa bao giờ dựng phiên.
 
-**Bước 3 — `crates/engine/tests/shard_hft.rs`, viết xong, CHƯA BAO GIỜ COMPILE.** `shard` nằm sau
+**Bước 3 — `crates/engine/tests/shard_hft.rs`. CI đã trả lời, và nó trả lời hai điều.**
+
+`[đo 2026-09-10]` **`serve_sharded_hft_serves_a_session ... ok`** trên CI Linux, run
+[`34454245260`](https://github.com/tmthang86/fixbolt/actions/runs/34454245260) — **lần đầu có thứ
+gì trong repo này gọi hàm đó, và nó chạy đúng.**
+
+Và **CI đỏ ở đúng chỗ nó phải đỏ.** File gate ban đầu là
+`all(feature = "affinity", target_os = "linux")`, **copy từ `shard_wire.rs`** — đúng cho file kia,
+vì nó lái `Shards::start` chỉ cần `affinity`. `serve_sharded_hft` còn nằm sau
+`#[cfg(feature = "standard")]` (`crates/engine/src/shard.rs:439`). Kết quả: `--features affinity`
+**xanh, test chạy và pass**, còn `--no-default-features --features affinity` không compile nổi:
+`error[E0425]: cannot find function serve_sharded_hft`. **Một file gate theo feature của module
+thay vì theo feature của hàm nó gọi.** Đã sửa thành ba điều kiện, và ghi vào
+[feature-flags-unify-across-a-workspace](../reference/feature-flags-unify-across-a-workspace.md)
+như hướng thứ ba — hai hướng cũ là *cờ bật khi lệnh nói tắt* và *target lệnh local không bao giờ
+compile*; hướng này là **một gate copy từ file bên cạnh phụ thuộc ít hơn**, và nó vô hình dưới mọi
+bộ feature đơn lẻ, kể cả bộ đang xanh.
+
+**Không có gì trên bàn này bắt được nó**: `shard` không compile trên darwin, nên cả hai lệnh đều
+không chạy được ở đây và lần compile đầu tiên của file này ở bất cứ đâu là trên CI. Đây chính là
+lý do §9 ô cuối tồn tại.
+
+**Hình dạng cũ của bước 3, giữ lại:** `shard` nằm sau
 `cfg(all(feature = "affinity", target_os = "linux"))`, bàn làm việc là Mac, nên **clippy dưới
 `--features affinity` cũng không thấy nó**. Xanh hay đỏ do CI nói; nói khác đi từ laptop là đúng
 thứ `CLAUDE.md` §10 kết thúc bằng. Hai hình dạng đã biết được ghi vào doc của file: hàm trả

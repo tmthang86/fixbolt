@@ -35,7 +35,22 @@
 //!
 //! [the-hft-front-doors-have-no-gate]: ../../../docs/plans/2026-09-10-the-hft-front-doors-have-no-gate.md
 
-#![cfg(all(feature = "affinity", target_os = "linux"))]
+// **Three conditions, and the third was learned from CI.** `[measured 2026-09-10]`
+// this file first carried `all(feature = "affinity", target_os = "linux")` —
+// copied from `shard_wire.rs`, which is **correct for itself**: that file drives
+// `Shards::start`, which needs only `affinity`. `serve_sharded_hft` is behind
+// `#[cfg(feature = "standard")]` as well (`crates/engine/src/shard.rs:439`),
+// because it owns the pre-session stage and that needs a poller.
+//
+// So `cargo test -p fixbolt-engine --features affinity` was green — the test ran
+// and passed — while `--no-default-features --features affinity` failed to
+// compile with `E0425: cannot find function serve_sharded_hft`. **A file gated
+// on its module's features rather than on the function's**, which is
+// non-negotiable 6 one level over from where `CLAUDE.md` §10 lists it: not a
+// `mod` missing a `#[cfg]`, but a gate copied from a sibling that depends on
+// less. Nothing on this desk could have caught it — `shard` does not compile on
+// darwin at all.
+#![cfg(all(feature = "affinity", feature = "standard", target_os = "linux"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Not a library crate's source — non-negotiable 7 is about `crates/*/src`.
 //
