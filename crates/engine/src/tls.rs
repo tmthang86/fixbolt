@@ -460,6 +460,60 @@ mod handshake {
 #[cfg(target_os = "linux")]
 pub use handshake::{Handshake, Step, Traffic};
 
+/// A `rustls::ServerConfig` this engine can actually hand to the kernel.
+///
+/// `[2026-09-10]` **step 4a of the `tls` plan.** [`crate::serve_tls`] takes a
+/// certificate and a key rather than a finished `ServerConfig` and builds it
+/// here, because two of the settings are load-bearing and neither is
+/// discoverable:
+///
+/// 1. **`enable_secret_extraction = true`.** Without it the connection is
+///    **dropped**, and it is worth being exact about why, because the obvious
+///    guess is wrong. It does not quietly serve from userspace `rustls`: the
+///    fallback is reachable only from a `setup_ulp` refusal, which is asked
+///    while the rustls connection is still alive.
+///    `dangerous_into_kernel_connection` **consumes** that connection, so a
+///    refusal there leaves nothing to fall back *to* — the comment on
+///    `TlsTransport::hand_over` says so, and it is the reason the two questions
+///    are asked in that order. `[measured 2026-09-10]` flipping this flag to
+///    `false` and running
+///    `crates/engine/tests/tls_wire.rs::serve_tls_brings_a_session_up_through_tls`
+///    reads `ConnectionReset` at the counterparty, with no FIX-level
+///    explanation because there is no session yet to carry one.
+/// 2. **TLS 1.3, `AES-128-GCM` only.** kTLS carries far fewer suites than
+///    `rustls` will negotiate, so leaving the ends to agree freely means the
+///    kernel offload succeeds or fails depending on what the counterparty
+///    offered. `spikes/ktls` made the same narrowing for the same reason.
+///
+/// **This is a deliberate narrowing and it is a cost, not only a safeguard.** A
+/// counterparty that cannot do `TLS13_AES_128_GCM_SHA256` cannot connect to this
+/// acceptor at all. ADR-0005 open question 2 — which kernel and which suites are
+/// the floor — is answered by measurement in step 6, and this is the answer
+/// standing in until then.
+///
+/// # Errors
+///
+/// [`crate::ServeError::Tls`] if the provider has no TLS 1.3, or the certificate
+/// and key do not match.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+pub fn server_config(
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<std::sync::Arc<rustls::ServerConfig>, crate::ServeError> {
+    let mut provider = rustls::crypto::ring::default_provider();
+    provider
+        .cipher_suites
+        .retain(|cs| cs.suite() == rustls::CipherSuite::TLS13_AES_128_GCM_SHA256);
+    let mut cfg = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| crate::ServeError::Tls(format!("{e}")))?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| crate::ServeError::Tls(format!("{e}")))?;
+    cfg.enable_secret_extraction = true;
+    Ok(std::sync::Arc::new(cfg))
+}
+
 #[cfg(target_os = "linux")]
 mod transport_impl {
     //! [`TlsTransport`]: a socket that handshakes, hands its keys to the kernel,

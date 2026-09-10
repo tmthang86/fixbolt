@@ -127,6 +127,33 @@ below describe what a first release would contain.
 
 ### Added
 
+- **TLS, behind `--features tls`, on Linux.** `fixbolt_engine::serve_tls` and `serve_tls_with`
+  accept FIX connections over TLS: the handshake runs in userspace through `rustls` on the
+  acceptor thread, and the steady state hands the keys to the kernel so `read(2)` and `write(2)`
+  carry plaintext and the engine loop is unchanged. `fixbolt_engine::tls` gains `TlsTransport`,
+  `TlsMode`, `Handshake` and `server_config`. `ServeError` gains a `Tls` variant. `STATUS.md`
+  item 45, wave B, plan 4, steps 1-4a. ADR-0005, ADR-0018.
+
+  **They take a certificate and a private key, not a `rustls::ServerConfig`.** Two settings are
+  load-bearing for the kernel handover and neither is discoverable: `enable_secret_extraction`,
+  and a narrowing to TLS 1.3 with `AES-128-GCM`. `[measured 2026-09-10]` without the first, the
+  connection is **dropped** rather than demoted to userspace — the refusal arrives after the
+  rustls connection has been consumed, so there is nothing to fall back to, and the counterparty
+  reads `ECONNRESET`. The engine holds both rather than documenting them.
+
+  **The narrowing is a cost as well as a safeguard**: a counterparty that cannot do
+  `TLS13_AES_128_GCM_SHA256` cannot connect to a `serve_tls` acceptor at all. Which kernel and
+  which suites are the floor is ADR-0005 open question 2 and is not yet answered by measurement.
+
+  **What is not here:** the initiator side, `TlsRequireKernel`, an event when a session falls back
+  to userspace, the configuration-file keys, and any latency figure. `TlsMode` can be read from a
+  `TlsTransport` and nothing yet reports it, so **a deployment cannot currently tell which of the
+  three modes carried its bytes** — ADR-0005 open question 3, still open.
+
+- **`fixbolt_engine::AcceptorEngineOver<T, …>`**, the acceptor engine shape over any transport.
+  `TcpAcceptorEngine` is now an alias for it with `T = TcpTransport`, so no existing signature
+  changed.
+
 - **`789=NextExpectedMsgSeqNum` and `369=LastMsgSeqNumProcessed`**, the two FIX 4.4 fields that
   let two ends resynchronise without a `ResendRequest` round trip. `STATUS.md` item 45, wave B,
   plan 2.
