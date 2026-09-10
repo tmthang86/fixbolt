@@ -1,4 +1,4 @@
-//! TLS as a second [`Transport`] implementation, and a name for which mode is
+//! TLS as a second [`crate::transport::Transport`] implementation, and a name for which mode is
 //! actually carrying the bytes.
 //!
 //! [ADR-0005] decided the shape: the handshake runs in userspace through

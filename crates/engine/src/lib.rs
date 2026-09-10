@@ -1497,13 +1497,19 @@ pub type TcpAcceptorEngine<
 /// The same acceptor shape, over **any** transport.
 ///
 /// `[2026-09-10]` **added by step 4a of the `tls` plan**, and it is the only
-/// thing that step needed from this file besides one line in [`pump`]:
+/// thing that step needed from this file besides one line in `pump`:
 /// [`Engine`] was already generic over its transport (`conns: Vec<Connection<T,
 /// …>>`), so reaching TLS is a type substitution rather than a redesign. What
 /// was missing was a name for the substitution.
 ///
 /// [`TcpAcceptorEngine`] is this with `T = TcpTransport` and is what almost
-/// everything wants; `T = tls::TlsTransport` is what [`serve_tls`] builds.
+/// everything wants; `T = tls::TlsTransport` is what `serve_tls` builds.
+///
+/// **The two names above are code spans and not intra-doc links on purpose.**
+/// `pump` is private, and `serve_tls` does not exist unless `--features tls` is
+/// on — while this alias does. `[measured 2026-09-10]` linking them failed the
+/// `rustdoc` job on a build where the target of the link was not compiled, which
+/// is the feature-gate trap of non-negotiable 6 arriving through documentation.
 pub type AcceptorEngineOver<
     T,
     A,

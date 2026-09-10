@@ -84,6 +84,17 @@ jobs:
       # the QuickFIX XML at build time, so vendor/ must be present first.
       - run: scripts/fetch-quickfix-assets.sh
       - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --workspace --no-deps
+      # **And again with everything on, because the first command cannot see a
+      # module behind a feature.** `[measured 2026-09-10]` the run above was
+      # green about `crates/engine/src/tls.rs` for as long as that file had
+      # existed, while its very first line carried a broken link — `mod tls` is
+      # `#[cfg(feature = "tls")]`, so the default build never documented it at
+      # all. Same family as STATUS.md item 57 and
+      # docs/reference/feature-flags-unify-across-a-workspace.md: a gate that
+      # reports ok about something it was never handed. Both commands are kept:
+      # a link may resolve under one feature set and not the other, and only
+      # running both says which.
+      - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --workspace --no-deps --all-features
 
   # CLAUDE.md's first paragraph: this repository is going to be published, and
   # every commit is treated as already public. Nothing looked at what the
