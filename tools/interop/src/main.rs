@@ -457,6 +457,18 @@ fn acceptor(args: &[String]) -> std::process::ExitCode {
     let handles = fixbolt::Handles::new();
     stop_on_stdin(handles.admin());
 
+    // **`--journal` is what makes `ResetOnLogon` observable at all.**
+    //
+    // `STATUS.md` item 53: an acceptor takes the `ResetOnLogon` branch only
+    // when its session was **resumed**, and `fixbolt::serve` has no `Recovery`
+    // seam, so under it the branch is unreachable — the key can be `Y` or `N`
+    // in the file and the wire looks identical. Without the flag this role
+    // still calls `serve`, unchanged, because eight scenarios are green
+    // through that path and none of them should change route for this one.
+    if let Some(path) = arg(args, "--journal") {
+        return acceptor_with_recovery(&addr, table, limits, handles, &path);
+    }
+
     match fixbolt::serve(
         &addr,
         table,
@@ -472,6 +484,61 @@ fn acceptor(args: &[String]) -> std::process::ExitCode {
         }
         Err(e) => {
             println!("interop: FAIL serve on {addr}: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// The same acceptor, with a journal on disk and a `Recovery` seam.
+///
+/// **This exists so `ResetOnLogon` has somewhere to be observed.**
+/// `STATUS.md` item 53 deferred that gate on 2026-09-05 for a reason it stated
+/// plainly — the fixture had no recovery entry point, and building one was
+/// judged larger than the knob it would test. On the same day, `d31db5e` built
+/// exactly that for [`mod@reconnect`]'s initiator side: [`reconnect::Disk`],
+/// [`reconnect::OnDisk`] and a `--no-recovery` reversal. This function is that
+/// plumbing, pointed at [`fixbolt::serve_with_recovery`] instead of
+/// `connect_and_serve`. Nothing new was designed for it.
+///
+/// The journal is opened once here so a bad path stops with a line rather than
+/// from inside a trait method three seconds later — the same argument
+/// [`reconnect::OnDisk::probe`] carries, and the same `Durability::Async`.
+#[cfg(all(feature = "standard", unix))]
+fn acceptor_with_recovery(
+    addr: &str,
+    table: fixbolt::Table,
+    limits: fixbolt::Limits,
+    handles: fixbolt::Handles,
+    path: &str,
+) -> std::process::ExitCode {
+    use fixbolt_engine::journal::Durability;
+    use reconnect::{Disk, OnDisk};
+
+    let recovery = match OnDisk::probe(std::path::Path::new(path), Durability::Async, "interop") {
+        Ok(r) => r,
+        Err(e) => {
+            println!("interop: FAIL journal {path}: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    println!("interop: journal {path}, recovery on");
+
+    match fixbolt::serve_with_recovery::<_, Disk, OnDisk, _>(
+        addr,
+        table,
+        fixbolt::app(desk::Desk::default()),
+        CAPACITY,
+        limits,
+        recovery,
+        fixbolt::NoLog,
+        handles,
+    ) {
+        Ok(shutdown) => {
+            println!("interop: acceptor stopped: {shutdown:?}");
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            println!("interop: FAIL serve_with_recovery on {addr}: {e}");
             std::process::ExitCode::FAILURE
         }
     }

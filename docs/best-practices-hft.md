@@ -141,6 +141,16 @@ number worth choosing rather than copying: in `hft` you usually hold one session
 (§1), the counterparty is on a low-latency link, and an answer that has not arrived in a
 second or two is not coming. Seconds, not tens of seconds.
 
+`[2026-09-10]` **and this paragraph is now guarded rather than only written.**
+`crates/engine/tests/hft_wire.rs::serve_hft_serves_a_session_and_stops` calls `serve_hft`, brings
+a session up over a kernel socket, calls `handles.admin().shutdown(2_000)` from another thread,
+and asserts `serve_hft` returned a `Shutdown` counting that session. Before that test,
+**nothing in this repository had ever called `serve_hft`** — the mode this document is about had
+no gate through its own front door, only through the hand-built engine in `tools/w2w`.
+**What that test does not prove is the spinning**: swap `serve_hft` for `serve` in it and it stays
+green, which is recorded in the file as its second reversal. §4's gates are still the only thing
+that separates the two modes.
+
 **Do not put the stopping thread on the isolated core.** It sleeps, waits on a signal or reads
 a socket — all the things §3 pinned that core to avoid — and `Admin` is `Send + Sync` precisely
 so it can live anywhere else.
