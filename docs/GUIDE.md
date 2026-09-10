@@ -1470,12 +1470,24 @@ Stated so you do not discover it in production:
   is yours to pin, with `affinity::pin_current_thread` before the call or `taskset` around the
   process. Skip it and [DESIGN.md §8](DESIGN.md)'s budget is not about your process. STATUS
   item 21.
-- **It is not TLS-complete.** The blocking question is answered: kTLS can be driven from a
-  plain non-blocking socket with no async runtime, under four conditions
-  ([ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md)). That is a
-  spike, not a feature: no TLS code is merged, no TLS latency number is published, and the
-  plan is a draft. Which kernel and which cipher suites are the floor, and what tells you a
-  session fell back to the userspace path, are open.
+- **TLS accepts, and it cannot yet tell you which mode it is in.** `[2026-09-10]`
+  `serve_tls` and `serve_tls_with` exist behind `--features tls`, on Linux, and bring a session
+  up over a real handshake. **Three constraints the compiler will not enforce for you:**
+
+  1. **A counterparty that cannot do `TLS13_AES_128_GCM_SHA256` cannot connect at all.** The
+     suite is narrowed deliberately, because kTLS carries far fewer suites than `rustls` will
+     negotiate and a free negotiation makes the kernel offload depend on what the other end
+     offered. Which kernel and which suites are the floor is still open
+     ([ADR-0005](decisions/ADR-0005-tls.md) question 2).
+  2. **You cannot find out whether your session is on kTLS or on userspace `rustls`.**
+     `TlsMode` exists on the transport and **nothing reports it**, so a latency figure you take
+     from a TLS session may describe either path. Until that lands, do not publish one.
+  3. **One certificate per listener.** No SNI, no second certificate. An acceptor that needs
+     more runs more listeners.
+
+  **Not built:** the initiator side, `TlsRequireKernel`, any configuration-file key, and any
+  published TLS latency number. `scripts/check-no-kernel-sleep.sh` has no TLS arm, so nothing
+  here claims the engine thread stays out of the kernel under TLS.
 - **It cannot originate an application message.** `Handler::on_message` returns one reply to
   one inbound message, and the session's `send_application` is reachable only by driving the
   session yourself (STATUS item 46).

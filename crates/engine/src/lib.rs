@@ -1492,8 +1492,36 @@ pub type TcpAcceptorEngine<
     const RX: usize = 4096,
     const TX: usize = 8192,
     const APP: usize = 1024,
+> = AcceptorEngineOver<TcpTransport, A, W, J, L, N, RX, TX, APP>;
+
+/// The same acceptor shape, over **any** transport.
+///
+/// `[2026-09-10]` **added by step 4a of the `tls` plan**, and it is the only
+/// thing that step needed from this file besides one line in `pump`:
+/// [`Engine`] was already generic over its transport (`conns: Vec<Connection<T,
+/// …>>`), so reaching TLS is a type substitution rather than a redesign. What
+/// was missing was a name for the substitution.
+///
+/// [`TcpAcceptorEngine`] is this with `T = TcpTransport` and is what almost
+/// everything wants; `T = tls::TlsTransport` is what `serve_tls` builds.
+///
+/// **The two names above are code spans and not intra-doc links on purpose.**
+/// `pump` is private, and `serve_tls` does not exist unless `--features tls` is
+/// on — while this alias does. `[measured 2026-09-10]` linking them failed the
+/// `rustdoc` job on a build where the target of the link was not compiled, which
+/// is the feature-gate trap of non-negotiable 6 arriving through documentation.
+pub type AcceptorEngineOver<
+    T,
+    A,
+    W,
+    J = crate::journal::Store,
+    L = NoLog,
+    const N: usize = 256,
+    const RX: usize = 4096,
+    const TX: usize = 8192,
+    const APP: usize = 1024,
 > = Engine<
-    TcpTransport,
+    T,
     fixbolt_session::Acceptor,
     InlineDispatch<A>,
     crate::clock::SystemClock,
@@ -1651,6 +1679,141 @@ pub fn serve_with<
     let _ = engine.adopt(&handles);
     pump(
         acceptor,
+        Some,
+        engine.with_log(log),
+        table,
+        limits,
+        crate::recovery::NoRecovery,
+    )
+}
+
+/// Accept FIX connections on `addr` **over TLS** and never return.
+/// **`standard` mode, Linux.**
+///
+/// `[2026-09-10]` **step 4a of the `tls` plan, and the step that makes TLS
+/// reachable at all.** Steps 1-3 built and tested [`tls::TlsTransport`]; until
+/// this function there was no way to put one inside an engine short of
+/// assembling the engine by hand, so the feature existed and no deployment
+/// could use it.
+///
+/// # Why it takes a certificate and a key rather than a `rustls::ServerConfig`
+///
+/// Because `enable_secret_extraction` is load-bearing and a caller cannot be
+/// expected to know it. `dangerous_into_kernel_connection` — the call that hands
+/// the keys to the kernel — refuses without it, and **the connection is then
+/// dropped rather than served from userspace**: that call consumes the rustls
+/// connection, so by the time the refusal is known there is nothing left to fall
+/// back to. `[measured 2026-09-10]` a `ServerConfig` built the obvious way
+/// compiles, handshakes, and hands the counterparty a `ConnectionReset` with no
+/// FIX-level explanation. The suite narrowing is the same kind of thing — kTLS
+/// carries fewer suites than `rustls` will negotiate.
+///
+/// Both are constraints the type system cannot hold, and `CLAUDE.md` §4 sends
+/// those to `GUIDE.md`. This one does not go there: it is held by not offering
+/// the caller the choice.
+///
+/// # What this does not decide
+///
+/// **Whether the kernel actually took the keys.** A session that fell back to
+/// userspace serves correctly and looks identical from outside. Reading the
+/// mode, raising [`observe::EventKind`] for a fallback, and refusing one with
+/// `TlsRequireKernel` are step 4b and are **not here**.
+///
+/// # Errors
+///
+/// As [`serve`], plus [`ServeError::Tls`] if the certificate and key do not
+/// make a server configuration.
+#[cfg(all(feature = "tls", feature = "standard", target_os = "linux"))]
+// **Nine, and clippy's ceiling is seven.** Same answer as the four
+// `*_with_recovery` entry points above: ADR-0054 recorded a `Serve` builder as
+// the alternative and named its reopening condition — *the first time an
+// eleventh parameter is wanted*. A certificate and a key are two things and
+// bundling them into one struct to buy a number would be arranging the code for
+// the lint. Nine is under the condition, so the condition is not tripped and
+// this is noted rather than silently muted.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_tls<A: Application, L: MessageLog>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    log: L,
+    handles: crate::observe::Handles,
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<Shutdown, ServeError> {
+    serve_tls_with::<256, 4096, 8192, 1024, A, L>(
+        addr, table, app, capacity, limits, log, handles, certs, key,
+    )
+}
+
+/// The same, with the four buffer sizes named by the caller.
+///
+/// See [`serve_with`] for what each one costs.
+///
+/// # Errors
+///
+/// As [`serve_tls`].
+#[cfg(all(feature = "tls", feature = "standard", target_os = "linux"))]
+// **Nine, and clippy's ceiling is seven.** Same answer as the four
+// `*_with_recovery` entry points above: ADR-0054 recorded a `Serve` builder as
+// the alternative and named its reopening condition — *the first time an
+// eleventh parameter is wanted*. A certificate and a key are two things and
+// bundling them into one struct to buy a number would be arranging the code for
+// the lint. Nine is under the condition, so the condition is not tripped and
+// this is noted rather than silently muted.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_tls_with<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    L: MessageLog,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    log: L,
+    handles: crate::observe::Handles,
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<Shutdown, ServeError> {
+    let cfg = default_config(&table)?;
+    let tls = crate::tls::server_config(certs, key)?;
+    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
+    let mut engine: AcceptorEngineOver<
+        crate::tls::TlsTransport,
+        A,
+        crate::block::Block,
+        crate::journal::Store,
+        NoLog,
+        N,
+        RX,
+        TX,
+        APP,
+    > = Engine::new(
+        cfg,
+        InlineDispatch::new(app),
+        crate::clock::SystemClock,
+        crate::block::Block::new(capacity + limits.pending() + 2),
+        capacity,
+    );
+    let _ = engine.adopt(&handles);
+    pump(
+        acceptor,
+        // **The handshake starts here, on the acceptor thread**, which ADR-0020
+        // permits to block and which is not the engine thread. A connection
+        // whose `rustls` state machine will not even start is dropped: there is
+        // no session to tell and nothing intelligible to say on the socket.
+        move |sock| {
+            rustls::server::UnbufferedServerConnection::new(std::sync::Arc::clone(&tls))
+                .ok()
+                .map(|conn| crate::tls::TlsTransport::new(sock, crate::tls::Handshake::new(conn)))
+        },
         engine.with_log(log),
         table,
         limits,
@@ -1950,7 +2113,14 @@ pub fn serve_with_recovery_with<
             capacity,
         );
     let _ = engine.adopt(&handles);
-    pump(acceptor, engine.with_log(log), table, limits, recovery)
+    pump(
+        acceptor,
+        Some,
+        engine.with_log(log),
+        table,
+        limits,
+        recovery,
+    )
 }
 
 /// As [`serve`], in `hft` mode: **spins, and burns a core for as long as the
@@ -2010,6 +2180,7 @@ pub fn serve_hft_with<
     let _ = engine.adopt(&handles);
     pump(
         acceptor,
+        Some,
         engine.with_log(log),
         table,
         limits,
@@ -2092,7 +2263,14 @@ pub fn serve_hft_with_recovery_with<
         capacity,
     );
     let _ = engine.adopt(&handles);
-    pump(acceptor, engine.with_log(log), table, limits, recovery)
+    pump(
+        acceptor,
+        Some,
+        engine.with_log(log),
+        table,
+        limits,
+        recovery,
+    )
 }
 
 /// Why a serving loop never started.
@@ -2120,6 +2298,18 @@ pub enum ServeError {
     /// already in use send an operator to two different places, and one variant
     /// covering both sends them to the wrong one first.
     LogPath(std::io::Error),
+    /// The certificate and key do not make a server configuration.
+    ///
+    /// **Its own variant for the same reason [`Self::LogPath`] is.** A bad
+    /// certificate and a busy port are two different mornings, and one variant
+    /// covering both sends an operator to the wrong one first. `[2026-09-10]`
+    /// added with [`serve_tls`], step 4a of the `tls` plan.
+    ///
+    /// It carries a `String` rather than the `rustls` error: `ServeError` is a
+    /// public type of this crate and `rustls` is optional, so a variant holding
+    /// one would change shape with a feature flag.
+    #[cfg(feature = "tls")]
+    Tls(String),
 }
 
 impl core::fmt::Display for ServeError {
@@ -2131,6 +2321,8 @@ impl core::fmt::Display for ServeError {
             ),
             Self::Io(e) => write!(f, "binding the listener: {e}"),
             Self::LogPath(e) => write!(f, "opening the message log named by FileLogPath: {e}"),
+            #[cfg(feature = "tls")]
+            Self::Tls(e) => write!(f, "building the TLS server configuration: {e}"),
         }
     }
 }
@@ -2139,6 +2331,8 @@ impl std::error::Error for ServeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::NoCounterparties => None,
+            #[cfg(feature = "tls")]
+            Self::Tls(_) => None,
             Self::Io(e) | Self::LogPath(e) => Some(e),
         }
     }
@@ -2180,7 +2374,17 @@ fn default_config(table: &presession::Table) -> Result<Config, ServeError> {
 /// `Cargo.toml` but not behind `#[cfg]` in `lib.rs`*; this is the same mistake
 /// from the other side, and `cargo check --no-default-features` is what catches
 /// it.
+/// `[2026-09-10]` **It is generic over the transport, and that is step 4a of the
+/// `tls` plan.** It used to name `TcpTransport` in one place — the `PendingSet`
+/// annotation below — and that single line was the whole reason no deployment
+/// could reach TLS: `TlsTransport` existed, was tested, and had nowhere to go.
+///
+/// `wrap` turns an accepted socket into whatever this engine's connections are.
+/// For every plain caller it is `Some`, and the compiler removes it; for
+/// [`serve_tls`] it starts a handshake. Returning `None` drops the socket, which
+/// is the same answer this loop already gave a connection it had no room for.
 fn pump<
+    T: crate::transport::Transport,
     const N: usize,
     const RX: usize,
     const TX: usize,
@@ -2190,9 +2394,11 @@ fn pump<
     J: SessionJournal,
     V: crate::recovery::Recovery<J>,
     L: MessageLog,
+    F: FnMut(TcpTransport) -> Option<T>,
 >(
     acceptor: Acceptor,
-    mut engine: TcpAcceptorEngine<A, W, J, L, N, RX, TX, APP>,
+    mut wrap: F,
+    mut engine: AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
     table: presession::Table,
     limits: presession::Limits,
     mut recovery: V,
@@ -2204,7 +2410,7 @@ fn pump<
     // nothing checking either. A prefix longer than the connection's buffer is
     // unframeable the instant it is handed over, so the two cannot drift; now
     // they cannot be written apart.
-    let mut set: presession::PendingSet<TcpTransport, presession::Table, RX> =
+    let mut set: presession::PendingSet<T, presession::Table, RX> =
         presession::PendingSet::new(limits, table);
     let mut clock = crate::clock::SystemClock;
     let listener = acceptor.source().map(Interest::readable);
@@ -2213,6 +2419,12 @@ fn pump<
         let mut moved = false;
         while set.len() < limits.pending() {
             let Some(t) = acceptor.accept() else { break };
+            // `wrap` returning `None` closes the socket too — a TLS acceptor
+            // that cannot build a connection for it has nothing to say on it.
+            let Some(t) = wrap(t) else {
+                moved = true;
+                continue;
+            };
             // Dropping the refusal closes the socket, which is what a caller
             // with nowhere to put a connection should do.
             drop(set.admit(t, crate::clock::Clock::now_ms(&mut clock)));

@@ -191,7 +191,9 @@ const ABORT: u8 = 2;
 /// and 57 through two**, failing exactly `1b_DuplicateIdentity.def` and
 /// `AlreadyLoggedOn.def` — `crates/engine/tests/shard_wire.rs`.
 ///
-/// [`Assign`] cannot fix this. It is asked at accept time and the `Logon` has
+/// `Assign` cannot fix this — a code span rather than a link because the type it
+/// names no longer exists; the pre-session stage replaced it ([ADR-0020], and
+/// `presession.rs` calls it *its predecessor*). It was asked at accept time and the `Logon` has
 /// not arrived, so nothing at that moment knows which identity the socket
 /// carries. **Until that is decided** (`STATUS.md` open item 24), this runtime is
 /// sound only where each shard serves an identity of its own — which the API
@@ -416,7 +418,7 @@ impl<const PRE: usize> Shards<PRE> {
 ///
 /// # The two limits are yours to choose
 ///
-/// [`Limits`] has no defaults ([ADR-0020] decision 4). A connection that opens
+/// [`crate::presession::Limits`] has no defaults ([ADR-0020] decision 4). A connection that opens
 /// and never sends a `Logon` costs a slot until its deadline, and a table with
 /// no ceiling costs memory without one — so the deadline and the ceiling are
 /// arguments, and there is no value here that somebody who has not seen your

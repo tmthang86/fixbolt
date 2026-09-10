@@ -638,11 +638,32 @@ offload, the handshake hands over with an empty buffer, and `setup_ulp` needs an
 [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md),
 `scripts/check-ktls-on-a-plain-socket.sh`).
 
-**Still not built.** No TLS code is merged; a plan is drafted
-([plans/2026-09-04-tls.md](plans/2026-09-04-tls.md)). Still unverified: which kernel version
-and cipher suites are the floor (ADR-0005 open question 2), whether a session survives a
-TLS 1.3 key update under kTLS (question 6), and what asserts which of the three modes is live
-(question 3). The §8 TLS row stays empty.
+**As built, `[2026-09-10]`.** `crates/engine/src/tls.rs` carries `TlsTransport`: a handshake
+driven from inside `recv`/`send` so it yields instead of spinning, the kTLS handover, and the
+userspace fallback. `serve_tls` and `serve_tls_with` are the front doors, and they take a
+**certificate and a key rather than a `rustls::ServerConfig`** — `enable_secret_extraction` and
+the TLS 1.3 / `AES-128-GCM` narrowing are load-bearing for the handover and are held by not
+offering the caller the choice. All of it is behind `--features tls`, on Linux.
+
+**The handshake is where the plan's Sửa 1 put it**, not in a pre-session stage:
+`PendingSet<T, R, PRE>` holds one transport *type* from `admit` to `take`, so a stage that
+changes the socket's type cannot be expressed. `presession.rs` was not modified.
+
+**Still not built:** the initiator side, `TlsRequireKernel`, an event when a session falls back,
+the five configuration keys, and `w2w --tls`. **Still unverified:** which kernel version and
+cipher suites are the floor (ADR-0005 open question 2), whether a session survives a TLS 1.3 key
+update under kTLS (question 6), and what asserts which of the three modes is live (question 3) —
+`TlsMode` exists and *nothing reads it*. **The §8 TLS row stays empty**, and
+`scripts/check-no-kernel-sleep.sh` has no TLS arm, so no claim is made about the engine thread
+under TLS.
+
+**One thing measured on the way, because the obvious guess about it is wrong.**
+`[measured 2026-09-10]` only a `setup_ulp` refusal reaches the userspace fallback. A refusal from
+`dangerous_into_kernel_connection` arrives *after* that call has consumed the rustls connection,
+so there is nothing left to fall back to and the connection is dropped — the counterparty reads
+`ECONNRESET` with no FIX-level explanation, because there is no session yet to carry one. That is
+why the two questions are asked in that order, and it is proven by reversal 1 of
+`crates/engine/tests/tls_wire.rs`.
 
 ### D13 — `Tick` counts milliseconds from year zero, not from the Unix epoch
 
