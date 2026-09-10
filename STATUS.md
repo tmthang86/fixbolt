@@ -97,6 +97,15 @@ either alone is misleading**: the second reads as green for a file that compiled
 if both ever read zero the gate is dead. That pair is the only thing standing in for a check on
 it, and it is said out loud in the file.
 
+**And the branch tip `f1db79a` is green too**, runs
+[`34457921788`](https://github.com/tmthang86/fixbolt/actions/runs/34457921788) and
+[`34457928149`](https://github.com/tmthang86/fixbolt/actions/runs/34457928149), **13 jobs of 13**.
+`[measured 2026-09-10]` §4j on **Linux** returns the same two numbers this desk saw —
+`ResetOnLogon=N — 1 then 11`, `ResetOnLogon=Y — 1 then 1`, `interop-reset: PASS 4/4` — and the
+score line is now `7/7 + 8/8 + 6/6 + 6/6 + 6/6 + 9/9 + 5/5 + 3/3 + 4/4`, plus
+`the run added nothing git can see`. **A commit cannot name its own run**, so the merge commit
+gets its own and is checked after merging, as every plan here closes.
+
 **Still not done:** step 6 of the hft plan. `check-no-kernel-sleep.sh` traces `tools/w2w`, not
 `serve_hft`.
 **Step 6 of the hft plan is not done**: `check-no-kernel-sleep.sh` still traces `tools/w2w`, not
