@@ -32,39 +32,16 @@
 
 /// Which of [ADR-0005]'s three answers is carrying this connection's bytes.
 ///
-/// **This type exists because a session that silently falls back to userspace
-/// publishes a latency number that is about a different code path** — ADR-0005
-/// open question 3. It is reported rather than inferred: `w2w` prints it beside
-/// every figure, and a `hft` deployment can refuse anything but
-/// [`TlsMode::Kernel`].
+/// `[2026-09-10]` **re-exported; it lives in [`crate::transport`] now.**
+/// [ADR-0060] decision 3 puts `Transport::tls_mode` on the core trait with a
+/// default so the engine can ask any transport without a downcast — and a type
+/// named in that trait cannot sit behind the `tls` feature, because the trait
+/// does not. The move is that decision's cost and ADR-0060's Consequences say
+/// so.
 ///
 /// [ADR-0005]: ../../../docs/decisions/ADR-0005-tls.md
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TlsMode {
-    /// No TLS at all — a plain `TcpTransport`. The default, and what every
-    /// number published before this module existed was measured on.
-    Plain,
-    /// The keys are in the kernel: `read(2)` and `write(2)` carry plaintext and
-    /// the engine thread does exactly what it does without TLS.
-    Kernel,
-    /// `rustls` in userspace, on the data path. **This leaves the hot-path
-    /// guarantee**: it copies once per direction and allocates. ADR-0005
-    /// decision 3 requires it be named rather than discovered.
-    Userspace,
-}
-
-impl TlsMode {
-    /// Whether this mode keeps the no-allocation, no-copy guarantee the `hft`
-    /// numbers are measured under.
-    ///
-    /// [`TlsMode::Userspace`] is the only one that does not, and
-    /// `TlsRequireKernel=Y` is how a deployment refuses it at startup rather
-    /// than discovering it in a latency histogram.
-    #[must_use]
-    pub const fn keeps_the_hot_path(self) -> bool {
-        matches!(self, Self::Plain | Self::Kernel)
-    }
-}
+/// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+pub use crate::transport::TlsMode;
 
 #[cfg(target_os = "linux")]
 mod handshake {
@@ -460,6 +437,80 @@ mod handshake {
 #[cfg(target_os = "linux")]
 pub use handshake::{Handshake, Step, Traffic};
 
+/// Which parts of the kernel handover a serving loop really performs.
+///
+/// `[2026-09-10]` **A test seam whose shape is a finding rather than a
+/// convenience.** [ADR-0060] decision 1 has two halves — a startup probe and a
+/// per-connection check — and the first attempt gave them **one boolean between
+/// them**. That could not express the case the second half exists for: *the
+/// kernel is capable and this handshake still fell back*. Setting the flag to
+/// "no kernel" made the startup probe refuse, so the serving loop never bound
+/// and the per-connection half was unreachable from any test —
+/// `[measured 2026-09-10]` `the serving loop never bound the address`.
+///
+/// One flag for two independent facts is `STATUS.md` item 54's shape, where
+/// three socket endings shared one word. Three named situations cost the same
+/// single parameter and say exactly which pretence is in force.
+///
+/// **A deployment always passes [`TlsProbe::Real`].**
+///
+/// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsProbe {
+    /// Ask the kernel, offload for real. **What a deployment passes.**
+    Real,
+    /// The startup probe reports that this kernel has no TLS ULP.
+    ///
+    /// Reaches ADR-0060 decision 1's **first** half on a desk whose kernel does
+    /// offload — which is every desk this has run on, so without it that
+    /// refusal would be code that compiles and has never run.
+    PretendKernelCannotOffload,
+    /// The startup probe is real; each handshake then lands in userspace.
+    ///
+    /// Reaches the **second** half: the suite-mismatch case, where the host is
+    /// fine and this particular connection is not. **This is the arm a single
+    /// boolean could not express.**
+    PretendHandshakeFallsBack,
+}
+
+/// Can **this kernel** offload TLS at all?
+///
+/// `[2026-09-10]` **[ADR-0060] decision 1, the startup half.** One `socket`, one
+/// `connect`, one `setsockopt`, once, before the listener opens — so a host
+/// built without `CONFIG_TLS` is found before a counterparty is affected, rather
+/// than through a dropped session that had nothing to do with that counterparty.
+///
+/// **The socket must be connected, and that is measured rather than assumed.**
+/// `scripts/check-ktls-available.sh` learned it first: `TCP_ULP` on an
+/// unconnected socket fails for a *different* reason, so a probe that skipped
+/// the `connect` would report a refusal on a kernel that offloads perfectly
+/// well. A probe wrong in the pessimistic direction is still wrong, and under
+/// `TlsRequireKernel=Y` it would refuse to start a correct deployment.
+///
+/// **What it does not answer:** whether the suite *your counterparty* picks can
+/// be offloaded. A capable kernel still lands a mismatched suite in userspace,
+/// which is why ADR-0060 decision 1 has a second half.
+///
+/// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+#[must_use]
+pub fn kernel_can_offload() -> bool {
+    let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") else {
+        return false;
+    };
+    let Ok(addr) = listener.local_addr() else {
+        return false;
+    };
+    let Ok(client) = std::net::TcpStream::connect(addr) else {
+        return false;
+    };
+    let Ok((server, _)) = listener.accept() else {
+        return false;
+    };
+    let answer = ktls_core::setup_ulp(&client).is_ok();
+    drop(server);
+    answer
+}
+
 /// A `rustls::ServerConfig` this engine can actually hand to the kernel.
 ///
 /// `[2026-09-10]` **step 4a of the `tls` plan.** [`crate::serve_tls`] takes a
@@ -737,6 +788,15 @@ mod transport_impl {
     }
 
     impl Transport for TlsTransport {
+        /// [ADR-0060] decision 3: the same answer as the inherent
+        /// [`TlsTransport::mode`], reachable through the trait so a generic engine
+        /// can ask it without a downcast.
+        ///
+        /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+        fn tls_mode(&self) -> TlsMode {
+            self.mode()
+        }
+
         const POLLABLE: bool = cfg!(unix);
 
         fn source(&self) -> Option<Source> {

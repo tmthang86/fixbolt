@@ -123,6 +123,20 @@ pub struct Engine<
     /// emitted for it, so the event carries **this turn's** loss rather than
     /// the running total. Same shape as the journal counters above.
     log_lost_reported: u64,
+    /// Whether a connection that did not reach the kernel is refused.
+    ///
+    /// `[2026-09-10]` **[ADR-0060] decision 1, second half.** `false` by
+    /// default and for every non-TLS engine — a `TcpTransport` answers
+    /// [`crate::transport::TlsMode::Plain`], which is not a fallback, so this
+    /// flag costs a plain engine one never-taken branch per **connection** and
+    /// nothing per turn.
+    ///
+    /// The first half of that decision is a startup probe in
+    /// [`serve_tls_with_offload`] and is not here: this is the case a probe
+    /// cannot see, where the kernel was capable and the suite was not.
+    ///
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    require_kernel: bool,
     /// Which shard this engine is, for a log line to name.
     ///
     /// Zero unless `shard::serve_sharded_hft` says otherwise. `ConnId` restarts
@@ -247,6 +261,7 @@ where
             conns: self.conns,
             log,
             log_lost_reported: self.log_lost_reported,
+            require_kernel: self.require_kernel,
             shard: self.shard,
             interests: self.interests,
             sources_missing: self.sources_missing,
@@ -303,6 +318,7 @@ where
             log: L::default(),
             log_lost_reported: 0,
             unframeable_prelogon: 0,
+            require_kernel: false,
             shard: 0,
             // Two more than the connections: `serve` adds the listener, and the
             // out-of-band waker is one more. Going over is not fatal — it costs
@@ -574,6 +590,27 @@ where
         }
         let at = self.clock.now_ms();
         conn.opened(at, &mut self.log);
+        // **[ADR-0060], and it is here rather than in the turn loop on purpose.**
+        // The handover happened in the pre-session stage, so the mode is already
+        // decided and cannot change again; asking once per connection keeps it
+        // off the hot path entirely, where asking per turn would put a branch
+        // there for an answer that never moves. A `TcpTransport` answers `Plain`
+        // and this whole block folds to one never-taken comparison.
+        if conn.transport.tls_mode() == crate::transport::TlsMode::Userspace {
+            if let Some(shared) = self.observe.as_ref() {
+                shared.emit(id, at, crate::observe::EventKind::TlsFellBackToUserspace);
+            }
+            if self.require_kernel {
+                // **Ended, not refused, and the difference is the error type.**
+                // Returning `Err` here would mean answering a TLS question with
+                // `PrefixTooLong` — the exact shape of `STATUS.md` item 54,
+                // where three socket endings shared one word. The connection is
+                // added and marked dead instead, so the engine's own machinery
+                // closes it and the event above is on the stream either way,
+                // which ADR-0060 decision 2 requires.
+                conn.refuse_without_a_session(fixbolt_session::DropReason::RefusedByDeployment);
+            }
+        }
         self.conns.push(conn);
         Ok(id)
     }
@@ -591,6 +628,23 @@ where
     /// After this, those three methods hand out handles onto the adopted cell —
     /// they find it already there. `STATUS.md` item 47; every front door calls
     /// this for you, which is the whole point.
+    /// Refuse any connection whose bytes did not reach the kernel.
+    ///
+    /// `[2026-09-10]` **[ADR-0060] decision 1**, the per-connection half.
+    /// `TlsRequireKernel=Y`. Off by default, which is ADR-0060 decision 2: a
+    /// deployment that has not thought about kTLS still runs, **and is still
+    /// told** — [`crate::observe::EventKind::TlsFellBackToUserspace`] is raised
+    /// either way, because the report does not depend on the strictness.
+    ///
+    /// It does nothing on an engine whose transport carries no TLS: a
+    /// [`crate::transport::TcpTransport`] reports
+    /// [`crate::transport::TlsMode::Plain`], and `Plain` is not a fallback.
+    ///
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    pub const fn require_kernel(&mut self, yes: bool) {
+        self.require_kernel = yes;
+    }
+
     pub fn adopt(&mut self, handles: &crate::observe::Handles) -> bool {
         if self.observe.is_some() {
             return false;
@@ -1745,6 +1799,154 @@ pub fn serve_tls<A: Application, L: MessageLog>(
 ) -> Result<Shutdown, ServeError> {
     serve_tls_with::<256, 4096, 8192, 1024, A, L>(
         addr, table, app, capacity, limits, log, handles, certs, key,
+    )
+}
+
+/// As [`serve_tls`], with `TlsRequireKernel` set by the caller.
+///
+/// `[2026-09-10]` [ADR-0060]. `require_kernel` is `TlsRequireKernel=Y`: this
+/// kernel is probed once before binding, and any later handshake that still
+/// lands in userspace ends that connection. **Either way the fallback is
+/// reported** — decision 2, and the reason [`serve_tls`] is not the reckless
+/// choice.
+///
+/// # Errors
+///
+/// As [`serve_tls_with_offload`].
+///
+/// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+#[allow(clippy::too_many_arguments)]
+#[cfg(all(feature = "tls", feature = "standard", target_os = "linux"))]
+pub fn serve_tls_requiring<A: Application, L: MessageLog>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    log: L,
+    handles: crate::observe::Handles,
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+    require_kernel: bool,
+) -> Result<Shutdown, ServeError> {
+    serve_tls_with_offload::<256, 4096, 8192, 1024, A, L>(
+        addr,
+        table,
+        app,
+        capacity,
+        limits,
+        log,
+        handles,
+        certs,
+        key,
+        require_kernel,
+        crate::tls::TlsProbe::Real,
+    )
+}
+
+/// The full door: buffer sizes, `TlsRequireKernel`, **and the offload seam**.
+///
+/// `offload` is not a deployment knob and a deployment passes `true`. It exists
+/// for the reason [`tls::TlsTransport::with_offload`] does: the userspace
+/// fallback is reached only when a kernel refuses, this desk's kernel does not
+/// refuse, and a path that cannot be reached from a test is a path that has
+/// never run — `CLAUDE.md` §10's promise rather than evidence.
+///
+/// **`false` makes both halves of [ADR-0060] decision 1 reachable**: the startup
+/// probe is treated as refusing, so `require_kernel` refuses to bind; and any
+/// handshake that completes lands in userspace, so the per-connection half fires
+/// too. `[measured 2026-09-10]` `crates/engine/tests/tls_mode.rs` drives every
+/// arm through it.
+///
+/// # Errors
+///
+/// As [`serve_tls`], plus [`ServeError::Tls`] when `require_kernel` is set and
+/// this kernel cannot offload TLS.
+///
+/// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+// **Eleven**, and that is the count [ADR-0054] named as the reopening condition
+// for a `Serve` builder — *the first time an eleventh parameter is wanted*. It
+// is reached here. Said out loud in that ADR's own terms rather than passed
+// over; `STATUS.md` carries the decision as due rather than made.
+#[allow(clippy::too_many_arguments)]
+#[cfg(all(feature = "tls", feature = "standard", target_os = "linux"))]
+pub fn serve_tls_with_offload<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    L: MessageLog,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    log: L,
+    handles: crate::observe::Handles,
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+    require_kernel: bool,
+    probe: crate::tls::TlsProbe,
+) -> Result<Shutdown, ServeError> {
+    // **ADR-0060 decision 1, first half, and it happens before `bind`.** An
+    // operator whose host was built without CONFIG_TLS finds out here, from a
+    // sentence about the kernel, rather than later from a session dropped for
+    // reasons the counterparty had nothing to do with.
+    let kernel_offloads = match probe {
+        crate::tls::TlsProbe::PretendKernelCannotOffload => false,
+        crate::tls::TlsProbe::Real | crate::tls::TlsProbe::PretendHandshakeFallsBack => {
+            crate::tls::kernel_can_offload()
+        }
+    };
+    if require_kernel && !kernel_offloads {
+        return Err(ServeError::Tls(
+            "TlsRequireKernel=Y, and this kernel cannot offload TLS: it has no \
+             tls ULP, so every session would fall back to userspace rustls and \
+             leave the hot-path guarantee"
+                .to_owned(),
+        ));
+    }
+    let cfg = default_config(&table)?;
+    let tls = crate::tls::server_config(certs, key)?;
+    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
+    let mut engine: AcceptorEngineOver<
+        crate::tls::TlsTransport,
+        A,
+        crate::block::Block,
+        crate::journal::Store,
+        NoLog,
+        N,
+        RX,
+        TX,
+        APP,
+    > = Engine::new(
+        cfg,
+        InlineDispatch::new(app),
+        crate::clock::SystemClock,
+        crate::block::Block::new(capacity + limits.pending() + 2),
+        capacity,
+    );
+    engine.require_kernel(require_kernel);
+    let _ = engine.adopt(&handles);
+    pump(
+        acceptor,
+        move |sock| {
+            rustls::server::UnbufferedServerConnection::new(std::sync::Arc::clone(&tls))
+                .ok()
+                .map(|conn| {
+                    crate::tls::TlsTransport::with_offload(
+                        sock,
+                        crate::tls::Handshake::new(conn),
+                        matches!(probe, crate::tls::TlsProbe::Real),
+                    )
+                })
+        },
+        engine.with_log(log),
+        table,
+        limits,
+        crate::recovery::NoRecovery,
     )
 }
 

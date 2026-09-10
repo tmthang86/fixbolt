@@ -1164,6 +1164,30 @@ pub enum DropReason {
     /// hands the message to a session at all, which is why it arrives through
     /// [`Session::disconnect_with`] rather than from a refusal.
     DuplicateIdentity,
+    /// **This deployment's own configuration refused the connection.** Nothing
+    /// the counterparty sent was wrong.
+    ///
+    /// `[2026-09-10]` Added for `TlsRequireKernel=Y` meeting a handshake that
+    /// landed in userspace ([ADR-0060]) — but named for the class rather than
+    /// for TLS, because this crate is pure and knows nothing about transports.
+    /// The **preceding event** on the observer's stream says which policy it
+    /// was; this variant's whole job is to stop the ending being read as the
+    /// counterparty's fault.
+    ///
+    /// **It exists because the alternative was measured and was worse.**
+    /// `[measured 2026-09-10]` before it, such a connection reported
+    /// `SendingTimeOutOfRange` with [`Session::last_skew_ms`] reading about two
+    /// thousand years — a protocol accusation, with a number, for a decision
+    /// taken entirely on this side. `STATUS.md` item 63.
+    ///
+    /// **The nearest thing in any other engine is Artio's
+    /// `INVALID_CONFIGURATION_NOT_LOGGING_MESSAGES`**, and Artio puts it in the
+    /// same flat enum as its protocol reasons — as this enum already does with
+    /// [`Self::DuplicateIdentity`], [`Self::SlowConsumer`] and
+    /// [`Self::EngineShutdown`]. `docs/reference/prior-art.md`.
+    ///
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    RefusedByDeployment,
     /// The application behind the ring would not take a message, so the engine
     /// ended the connection — [ADR-0011](../../../docs/decisions/ADR-0011-a-full-ring-disconnects.md).
     /// **The counterparty is faultless.**

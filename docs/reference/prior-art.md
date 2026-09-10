@@ -95,6 +95,101 @@ forbids. Artio, whose constraints are the same as this project's, has one anyway
 bytes of `Copy` is not what D2 forbids**: what D2 forbids is the 8 224-byte `MessageView` that cost
 5.9×. The gap is real and the objection was to a design nobody proposed.
 
+## `[researched 2026-09-10]` Five engines, and the two questions a local refusal asks
+
+Read for the fix to `STATUS.md` item 63, found while building the `tls` plan's step 4b: a
+connection this engine refused for a **local policy** reason (`TlsRequireKernel=Y`) reported
+`Ended(SendingTimeOutOfRange)` — a protocol accusation, with `last_skew_ms` reading about
+**2026 years**, sending an operator to check NTP on the counterparty's host for a fault that was
+entirely local.
+
+**Every engine's own source was read** — QuickFIX C++ from `vendor/quickfix-src` at the SHA
+`scripts/fetch-quickfix-assets.sh` pins, the rest from their repositories. Nothing here was run.
+
+### Question 1 — is `SendingTime` judged against a live clock, or against a stored "now"?
+
+| Engine | What the check reads |
+|---|---|
+| **QuickFIX C++** | `labs(m_timestamper() - sendingTime) <= m_maxLatency` — `Session.h:242-247`. **Live**, called inside the check |
+| **QuickFIX/J** | `Math.abs(SystemTime.currentTimeMillis() - sendingTime…) / 1000 <= maxLatency`. **Live** |
+| **quickfix-go** | `if delta := time.Since(sendingTime); delta <= -1*s.MaxLatency \|\| delta >= s.MaxLatency`. **Live** — `time.Since` reads `time.Now()` at the call |
+| **Artio** | Has `INVALID_SENDING_TIME` as a disconnect reason; the check is in the session logic, not driven by a stored tick |
+| **nanofix** | **Does not check `SendingTime` at all** |
+| **fixbolt** | `self.now_ms`, written **only** by `tick_inner` (`crates/session/src/lib.rs:2092`), initialised to `0` (`:1414`). `received_with` takes **no time argument** |
+
+**Four of four that check it read a live clock. fixbolt is the only one that depends on a prior
+tick having run** — and that is not a style difference, it is the whole defect: a session whose
+tick was skipped compares a real timestamp against zero and produces a skew of two thousand years.
+
+**This is a consequence of D1 rather than an oversight**, and that is worth saying plainly. The
+session layer is pure and time arrives as `Input::Tick`, so it *cannot* call a clock inside the
+check the way all four of these do. The other engines are not more careful here; they are
+impure, and impurity happens to make this class of bug unreachable. **The purity is still worth
+its price** — it is what makes the 59 acceptance definitions runnable with no socket and no
+clock — but it moves the obligation: **every path that judges a message must be sure a tick
+preceded it**, and nothing in this repository checks that today.
+
+### Question 2 — does a locally-refused connection still judge the counterparty's bytes?
+
+| Engine | What happens to the first message when the acceptor refuses |
+|---|---|
+| **QuickFIX C++** | `if (!m_pSession) { server.getMonitor().drop(m_socket); return false; }` — `SocketConnection.cpp:174-177`. The socket is dropped and **no session ever judges the bytes**. `m_pSession->next(message, …)` runs only when a session was found |
+| **quickfix-go** | `session, ok := a.sessions[sessID]; if !ok { … return }`, and the deferred `netConn.Close()` runs. **Closed before `session.connect()`** — the bytes are logged, never judged |
+| **QuickFIX/J** | `disconnect(String reason, boolean logError)` — the refusal is a disconnect with a free-text reason |
+| **Artio** | Authentication runs at the `Logon`; a refusal is `FAILED_AUTHENTICATION` or `AUTHENTICATION_TIMEOUT` |
+| **fixbolt today** | **Judges them anyway.** `Connection::turn`'s `if !self.closing` block covers only the tick/send half; the socket read and the "judged in order" loop that calls `received_with` sit **after** it (`crates/engine/src/conn.rs:363-433`) and run whatever `closing` says |
+
+**And QuickFIX C++ contradicts itself on this, in the same function.** The unknown-session path
+drops without judging — but the `AllowedRemoteAddresses` check, a pure local policy, runs
+**after** `m_pSession->next(message, …)` has already processed the `Logon`
+(`SocketConnection.cpp:178-186`). So that one deny-list refusal *does* let the session act first.
+One file, two orders, no comment about the difference. **Do not read the family as having a
+settled rule here** — read it as: the case everybody got right is the one where no session
+exists yet.
+
+### Question 3 — is there a type that names *why*, and does it separate local from protocol?
+
+| Engine | The type |
+|---|---|
+| **QuickFIX C++** | **None.** `void Session::disconnect()` takes no argument at all (`Session.cpp:621`); reasons live in `onEvent` log strings |
+| **QuickFIX/J** | **A string.** `disconnect(String reason, boolean logError)` |
+| **quickfix-go** | `MessageRejectError` for *protocol* rejects, split only by `IsBusinessReject()`. **No disconnect-reason type** |
+| **nanofix** | **None.** `SessionAction::SendLogout { text: Option<String> }` and nothing else |
+| **Artio** | **`DisconnectReason`, 26 variants**, in the SBE schema |
+
+**Artio is the only one with a structured enum, and it is the direct precedent — because it
+mixes both kinds in one flat type.** Local-side: `APPLICATION_DISCONNECT`, `LIBRARY_DISCONNECT`,
+`ENGINE_SHUTDOWN`, `SLOW_CONSUMER`, `DUPLICATE_SESSION`, `FAILED_AUTHENTICATION`,
+`AUTHENTICATION_TIMEOUT`, `ADMIN_API_DISCONNECT`, `REPLAY_BACK_PRESSURE_DISCONNECT`,
+`INVALID_CONFIGURATION_NOT_LOGGING_MESSAGES`. Counterparty-side: `INCORRECT_BEGIN_STRING`,
+`FIRST_MESSAGE_NOT_LOGON`, `MSG_SEQ_NO_TOO_LOW`, `INVALID_SENDING_TIME`,
+`NEGATIVE_HEARTBEAT_INTERVAL`, `MISSING_LOGON_COMP_ID`, `INVALID_FIX_MESSAGE`.
+
+**The separation is in the prose, not in the type.** Every local variant's description begins
+*"We disconnected…"*; `REMOTE_DISCONNECT` reads *"The TCP connection was disconnected
+remotely"*. Agency is carried by a sentence a reader has to read.
+
+**`INVALID_CONFIGURATION_NOT_LOGGING_MESSAGES` is the closest analogue to `TlsRequireKernel`**
+that exists anywhere in the family: a connection ended because *this deployment is configured in
+a way that cannot deliver what it promised*. Artio put it in the same enum as the protocol
+faults and did not flinch.
+
+### What this settles, and what it does not
+
+**Settled:** adding a local-policy variant to `DropReason` is not a divergence — it is what the
+only engine with such a type already does, ten times over. fixbolt's own `disconnect_with`
+already established the same pattern on 2026-09-02 for the single-logon case, before any of this
+was read.
+
+**Settled:** a refused connection should not judge the counterparty's bytes. Two engines drop
+the socket without ever handing them to a session, and neither has anything like fixbolt's
+problem as a result.
+
+**Not settled, and deliberately left open:** whether local and protocol reasons should be *two
+types* rather than one enum. Nobody in the family has tried it, so there is no evidence either
+way — only Artio's choice to keep one flat enum and carry the distinction in documentation, which
+is exactly the kind of prose-held constraint `CLAUDE.md` §4 says does not hold.
+
 ## Sources
 
 - <https://github.com/matthart1983/nanofix>

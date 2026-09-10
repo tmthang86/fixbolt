@@ -127,6 +127,21 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A deployment can require the kernel, and a connection it refuses says so.**
+  `fixbolt_engine::serve_tls_requiring` and `serve_tls_with_offload` take `TlsRequireKernel`:
+  the kernel is probed **once before binding** (`tls::kernel_can_offload`), and any handshake
+  that still lands in userspace ends that connection. `observe::EventKind::TlsFellBackToUserspace`
+  is raised **either way** — a permissive deployment serves the fallback and is still told.
+  `Transport::tls_mode` reports the mode from any transport, with a default of `TlsMode::Plain`,
+  so no existing transport changed. ADR-0060, closing ADR-0005 open question 3.
+
+- **`DropReason::RefusedByDeployment`** — this deployment's configuration refused the connection
+  and nothing on the wire was wrong. `[measured 2026-09-10]` before it, such a connection
+  reported `SendingTimeOutOfRange` with `Session::last_skew_ms` reading about **two thousand
+  years**: a refused connection still parsed the counterparty's `Logon` and, with no tick having
+  run, judged its `52=` against a session clock still at zero. A refused connection now judges
+  nothing at all. `STATUS.md` item 63.
+
 - **TLS, behind `--features tls`, on Linux.** `fixbolt_engine::serve_tls` and `serve_tls_with`
   accept FIX connections over TLS: the handshake runs in userspace through `rustls` on the
   acceptor thread, and the steady state hands the keys to the kernel so `read(2)` and `write(2)`

@@ -652,6 +652,30 @@ pub enum EventKind {
     /// through `Session::end`, which is a gap in this engine rather than a
     /// fault of the counterparty.
     EndedWithoutReason,
+    /// This connection's TLS handshake finished **outside the kernel**.
+    ///
+    /// `[2026-09-10]` **[ADR-0060], and it is what closes [ADR-0005] open
+    /// question 3** — open since 2026-08-27, and worded there as *"a gate is
+    /// needed, not a log line"*.
+    ///
+    /// The session serves correctly and looks identical from outside. What it
+    /// has left is the hot-path guarantee: userspace `rustls` copies once per
+    /// direction and allocates, so **a latency figure taken from a connection
+    /// that raised this event is about a different code path** than one that did
+    /// not. Non-negotiable 10 makes that figure unquotable; this event is how a
+    /// deployment knows which it has.
+    ///
+    /// **Raised once per connection, whatever `TlsRequireKernel` says.** Under
+    /// `Y` the connection is also ended; under the default `N` it is served.
+    /// ADR-0060 decision 2 keeps the two apart deliberately — the report does
+    /// not depend on the strictness, so an operator who chose nothing still
+    /// finds out.
+    ///
+    /// **Zero on a `Plain` acceptor**, which never has a mode to leave.
+    ///
+    /// [ADR-0005]: ../../../docs/decisions/ADR-0005-tls.md
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    TlsFellBackToUserspace,
     /// An operator's [`Command`] was applied, or was not.
     ///
     /// **The audit trail is the same channel as everything else**, so one

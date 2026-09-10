@@ -128,6 +128,42 @@ impl Interest {
     }
 }
 
+/// Which of [ADR-0005]'s three answers is carrying this connection's bytes.
+///
+/// **This type exists because a session that silently falls back to userspace
+/// publishes a latency number that is about a different code path** — ADR-0005
+/// open question 3. It is reported rather than inferred: `w2w` prints it beside
+/// every figure, and a `hft` deployment can refuse anything but
+/// [`TlsMode::Kernel`].
+///
+/// [ADR-0005]: ../../../docs/decisions/ADR-0005-tls.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TlsMode {
+    /// No TLS at all — a plain `TcpTransport`. The default, and what every
+    /// number published before this module existed was measured on.
+    Plain,
+    /// The keys are in the kernel: `read(2)` and `write(2)` carry plaintext and
+    /// the engine thread does exactly what it does without TLS.
+    Kernel,
+    /// `rustls` in userspace, on the data path. **This leaves the hot-path
+    /// guarantee**: it copies once per direction and allocates. ADR-0005
+    /// decision 3 requires it be named rather than discovered.
+    Userspace,
+}
+
+impl TlsMode {
+    /// Whether this mode keeps the no-allocation, no-copy guarantee the `hft`
+    /// numbers are measured under.
+    ///
+    /// [`TlsMode::Userspace`] is the only one that does not, and
+    /// `TlsRequireKernel=Y` is how a deployment refuses it at startup rather
+    /// than discovering it in a latency histogram.
+    #[must_use]
+    pub const fn keeps_the_hot_path(self) -> bool {
+        matches!(self, Self::Plain | Self::Kernel)
+    }
+}
+
 /// One connection's bytes.
 pub trait Transport {
     /// Whether this transport can be waited on at all.
@@ -147,6 +183,25 @@ pub trait Transport {
     /// offered, and the caller keeps the rest — that is backpressure, and its
     /// policy is `DESIGN.md` D10's business rather than this trait's.
     fn send(&mut self, buf: &[u8]) -> Io;
+
+    /// Which of [ADR-0005]'s three answers is carrying these bytes.
+    ///
+    /// `[2026-09-10]` **[ADR-0060] decision 3.** The engine is generic over its
+    /// transport, so it cannot ask a `TlsTransport` a `TlsTransport` question
+    /// without a downcast. A trait method with a default makes the answer
+    /// **total**: every transport that knows nothing about TLS says
+    /// [`TlsMode::Plain`] and none of them changed a line.
+    ///
+    /// **Read it after the session is up.** A handshake still in flight reports
+    /// `Userspace`, because that is what is true while `rustls` is doing the
+    /// work; the answer is stable only once bytes are flowing, and that is the
+    /// only moment a published latency figure is about.
+    ///
+    /// [ADR-0005]: ../../../docs/decisions/ADR-0005-tls.md
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    fn tls_mode(&self) -> TlsMode {
+        TlsMode::Plain
+    }
 
     /// The handle to wait on. `Some` whenever [`Self::POLLABLE`].
     ///
