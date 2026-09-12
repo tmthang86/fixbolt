@@ -91,3 +91,17 @@ rather than this instance: every line in `scripts/*.sh` that *enters* a director
 each pinning artefact that exists at the repository root, that artefact set being derived from
 what is there rather than hard-coded. There is no allow-list, so the three scripts audited clean
 above pass by never leaving the tree instead of by being named.
+
+A senior review of the gate itself found three spellings that got past the first version — a
+commented-out `# TODO: cp rust-toolchain.toml "$TMP"` counted as proof the copy happens, a
+`readonly TMP=…` did not seed because the prefix set was too narrow, and `cd "$(mktemp -d)"`
+seeded no variable to check a copy against. Three rules close that class: a line whose first
+non-blank character is `#` is never read, in any position; `cp` counts only in command position
+— start of line, or after `;` `&&` `||` `|` `(` `{` `then` `do` `else`. `[measured 2026-09-12]`
+`sudo cp`, `command cp` and `\cp` do **not** count: the wrong direction there is a red, and the
+author writes a plain `cp`. And the seeding regex takes any assignment prefix (`readonly`, `declare -r`,
+`typeset -g`, `export`, `local`, a plain assignment), with a `cd`/`pushd` into a scratch directory
+that names no variable at all failing outright rather than passing unseen. **Two limits remain**:
+order is not checked — a `cp` appearing after the `cd`/`pushd` in the script still counts — and a
+`cd` reached through a function call, `eval`, or hidden past a `#` inside a same-line string
+reads as a spurious red rather than a false green.

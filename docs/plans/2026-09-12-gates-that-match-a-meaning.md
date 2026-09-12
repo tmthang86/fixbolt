@@ -516,6 +516,68 @@ trong docstring của `fn enumerated` và trong đoạn ranh giới của `CONFI
 
 ## Nhật ký giao hàng
 
-*(trống — plan chưa duyệt, chưa dựng gì)*
+Nhánh `plan/gates-that-match-a-meaning`, tip `7323299` khi mục này được viết. **Chưa merge.**
+
+- **Bước 1 — `6e6aa22`.** `tools/attr-scan` (package `fixbolt-attr-scan`, binary `attr-scan`, một
+  dependency `proc-macro2` bật `span-locations`) đọc token của một crate root bằng đúng lexer mà
+  `rustc` dùng. `check-no-crate-root-allow.sh` viết lại A1/A2 trên output đó, thêm A0b (0 attribute
+  = tool hỏng, không phải cây sạch).
+  Gate: `scripts/check-no-crate-root-allow.sh` → `attr-scan: 6 files, 55 inner attributes` /
+  `check-no-crate-root-allow: ok — 6 crate roots, 10 manifests, 55 inner attributes`. Bốn cách viết
+  từng qua mặt regex cũ (R-A1…R-A4) đều đỏ lại; đối chứng xanh `#![doc = "#![allow(…)]"]` đọc
+  **56** — con số đó chứng minh attribute được đọc và xét, không phải bị bỏ qua.
+
+- **Bước 2 — `6eb04f5`.** `check-scratch-fixtures.sh`: dòng bắt đầu bằng `#` không bao giờ được
+  đọc, `cp` chỉ tính ở vị trí lệnh, mọi tiền tố gán (kể cả `readonly`, `declare -r`) đều gieo biến,
+  và một `cd`/`pushd` không gán biến thì rớt thẳng (B2b).
+  Gate: `bash scripts/check-scratch-fixtures.sh` → `ok — 20 scripts, 1 enter a scratch dir, 1
+  pins`. Ba cách viết item 66 tìm ra (`cp` bị comment, `readonly` không được gieo, `cd
+  "$(mktemp -d)"` không tên) đều đỏ đúng câu rồi phục hồi xanh.
+
+- **Bước 3 — `161744a`.** Job `tls` bỏ hẳn danh sách `--test …`, chạy
+  `cargo test -p fixbolt-engine --tests --features tls --no-fail-fast`.
+  `scripts/check-feature-gated-tests-ran.sh` hỏi chính bản build xem có test nào (`-- --list
+  --format terse`), chia log của job theo dòng `Running <path>`, và đòi mỗi test được liệt kê phải
+  xuất hiện trong đúng phần binary của nó.
+  Đo được: **38 binaries, 322 listed, 322 accounted for, 0 ignored.** Một test canary thêm vào
+  `tests/admin.rs` rồi bỏ khỏi log giả tái tạo đúng câu đỏ dự đoán; canary đã gỡ trước khi đóng
+  bước.
+
+- **Sửa 1 — `3ad4ab9`.** Đảo chiều của chính bước 3 bác bỏ lựa chọn `shellcheck -S warning` của
+  mục E: `SC2086` có severity **info**, không phải **warning**, nên `-S warning` không bao giờ thấy
+  một biến không ngoặc. Đổi thành `-S info` trên đúng ba script (`check-no-crate-root-allow.sh`,
+  `check-scratch-fixtures.sh`, `check-feature-gated-tests-ran.sh`). `-S info` báo hai `SC2094` giả
+  trong `check-scratch-fixtures.sh` (cả hai chỗ đều chỉ đọc `$f`, không ghi); tắt bằng
+  `# shellcheck disable=SC2094` tại đúng hai vòng lặp, kèm lý do, không tắt cho cả file.
+
+- **Bước 4 — `7323299`.** Bốn probe thêm vào `mod doc_table`
+  (`crates/engine/src/settings.rs`): câu đếm so với số biến thể `Key` bằng chữ; ô *Default* bắt
+  đầu bằng literal có backtick, so `configs()`/`role`/`dial`/`tls()`/`log()` giữa mẫu tối thiểu và
+  mẫu cộng `KEY=<default>`; ô *Values* liệt kê **từ hai literal trở lên** (Sửa 2 — một literal là
+  một hình dạng, không phải một liệt kê); ô *Where* so với chính lời từ chối của `settle`.
+  Đo được, mỗi số là một sàn: Default 15 probed / 15 skipped (16/16 với `tls`); Values liệt kê 10
+  probed / 20 skipped (11/11 với `tls`); Where 18 probed / 12 skipped. **Không ô nào của §1 sai
+  hôm nay** — một kết quả âm, được báo cáo như một kết quả, không phải một khoảng trống.
+
+- **Bước 5 — commit này.** Đồng bộ tài liệu: `CLAUDE.md` §2, `DESIGN.md` §6 (thêm một hàng cho
+  `check-feature-gated-tests-ran.sh`), cả hai `docs/reference/`, và `STATUS.md` được mở rộng lại
+  đúng bằng những gì bước 1–4 đo được — không hơn. Đóng item 66 và 68; thu hẹp rồi đóng phần thu
+  hẹp của item 67 (phần còn lại: ô *Meaning* và mọi ô ghi chú vẫn là văn xuôi, kiểm bằng tay); item
+  62 có thêm một dòng nói item 68 là lần cuối gỡ được danh sách; hai bullet *Not proven* về
+  `shellcheck` được thu hẹp còn "ba trên hai mươi script, ở `-S info`" thay vì "chưa từng chạy" —
+  và trong lúc soát lại, phát hiện bản nháp ban đầu của bullet đó lấy nhầm **19** làm tổng số
+  script trong khi `ls scripts/*.sh` ra **20**; đã sửa thành "ba trên hai mươi, mười bảy chưa phủ".
+  Một *Start here* mới được thêm ở đầu `STATUS.md`.
+  Kiểm chứng: `python3 scripts/check-links.py` không link chết (359 files, 1893 links); `cargo
+  test --all` không đổi (635 passed); grep câu chữ cũ trên `CLAUDE.md`/`DESIGN.md`/hai
+  `docs/reference/` rỗng (câu đó vẫn còn trong chính thân plan này, ở mục *Cách làm* và *Tài liệu
+  phải cập nhật* — đúng như phải thế, vì đó là mô tả lịch sử của việc cần sửa, không phải là câu
+  đang mô tả gate hôm nay; không đụng tới hai mục đó theo yêu cầu của bước).
+
+- **Bước 6 — chưa chạy.** Senior review context mới, tấn công cả ba gate bằng cách viết chưa thử,
+  vẫn còn mở. Đây là bước còn lại trước khi nhánh này có thể đóng và merge.
+
+**Còn lại trước khi đóng plan**: bước 6 (senior review), rồi manager tự chạy lại toàn bộ gate trên
+đúng commit đóng nhánh và đặt tên CI run.
 
 **Đây là phần sống sót qua nén context** — phiên sau đọc mục này trước tiên.

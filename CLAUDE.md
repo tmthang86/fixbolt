@@ -89,12 +89,17 @@ is an *inner* attribute and silences the whole crate, so new indexing in a clean
 (`docs/reference/an-allow-at-the-top-of-a-file-silenced-the-whole-crate.md`). Scoped to 15 functions
 now, and the reversal is run per crate rather than once. **Two more for 7 since 2026-09-12, and
 each guards a *class* whose first instance was closed with nothing watching for the second.**
-`scripts/check-no-crate-root-allow.sh` is the check the sentence above wanted: it refuses the ordinary spelling of an inner
-`allow`/`expect` at a crate root, and any `warn` that lowers a lint the workspace currently denies,
-over every `lib`/`bin` target under `crates/` taken from `cargo metadata` rather than from file
-names — so the `#![allow(clippy::unwrap_used)]` that would switch this whole rule off in one line is
+`scripts/check-no-crate-root-allow.sh` is the check the sentence above wanted: `tools/attr-scan`
+lexes each crate root with the same lexer `rustc` uses, and the script reads **every inner
+attribute that lexer sees** — comments, whitespace and newlines carry no meaning, and a string
+stays a string — refusing an `allow`/`expect` at a crate root and any `warn` that lowers a lint
+the workspace currently denies. Measured against the four reversals that go red — a `/* */` comment inside the parens, `# ! [ … ]` as three separate tokens, a bare `#!` then a newline before `[cfg_attr(test, allow(dead_code))]`, and a `warn` lowering a lint the workspace denies — and the one deliberate green control, `#![doc = "#![allow(…)]"]`, which stays green while the attribute count it reads goes 55 → 56, so the attribute was read and judged rather than overlooked — **and no further**: an inner attribute inside `mod x { … }` is still item 55,
+unchanged, and `RUSTFLAGS`, `--cap-lints` and a file pulled in by `include!` are still outside
+what this script can see. It runs over every `lib`/`bin` target under `crates/` taken from
+`cargo metadata` rather than from file names — so the `#![allow(clippy::unwrap_used)]` that would
+switch this whole rule off in one line is
 a red, which `check-lint-config.sh` can never see because it reads `Cargo.toml` and not source. It
-reads 6 crate roots and 9 manifests, and **its own second assertion is the finding**: `[measured
+reads 6 crate roots and 10 manifests, and **its own second assertion is the finding**: `[measured
 2026-09-12]` the first implementation of that assertion went *green* on its own reversal — a
 character class excluding `:` could not match a lint written after `clippy::`, which is how every
 real one is written, so the guard itself was off from the first run it ever made, and only a
@@ -110,7 +115,17 @@ the workspace pins. That instance was fixed with one `cp`; this script holds the
 trigger rustup actually uses — *entering* a directory outside the tree, not calling `mktemp` — with
 the pinning-artefact set derived from what exists at the root and **no allow-list**, because a named
 exemption is permanent and the day an exempt script grows a `cargo build` in its scratch dir nobody
-checks. It reads 19 scripts, 1 entering a scratch dir, 1 pin. 6 — the
+checks. Three rules since 2026-09-12: a line whose first non-blank character is `#` is never
+read, so a commented-out `cp` proves nothing; `cp` counts only in command position — start of
+line, or after `;` `&&` `||` `|` `(` `{` `then` `do` `else`. `[measured 2026-09-12]` `sudo cp`,
+`command cp` and `\cp` do **not** count — the wrong direction there is a red, and the author
+writes a plain `cp`; and the seeding regex takes any assignment prefix
+(`readonly`, `declare -r`, `typeset -g`, `export`, `local`, a plain assignment), with a
+`cd`/`pushd` into a scratch directory that names no variable at all failing outright rather than
+passing unseen. **Two limits remain**: order is not checked — a `cp` that appears after the
+`cd`/`pushd` still counts — and a `cd` reached through a function call, `eval`, or hidden past a
+`#` inside a same-line string reads as a spurious red rather than a false green. It reads 20
+scripts, 1 entering a scratch dir, 1 pin. 6 — the
 `no-default-features` CI job **plus `scripts/check-no-optional-deps.sh`, and the second is not
 a nicety**: `[measured 2026-08-30]` the CI job alone was green about a build that never
 happened. `cargo test --all --no-default-features` still compiled `libc`, because `tools/w2w`
