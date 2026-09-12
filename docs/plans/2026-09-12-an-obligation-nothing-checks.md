@@ -1,6 +1,6 @@
 # Một nghĩa vụ không ai kiểm — đóng item 57, 64, 69, 70
 
-> **Loại:** Plan · **Ngày:** 2026-09-12 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-12 · **Trạng thái:** Đã giao
 > **Phạm vi:** bốn open item không cần máy §9, một pull request, một phiên. Gate `deny`,
 > gate `check-scratch-fixtures.sh`, probe 3 của `mod doc_table` trong `crates/engine`, và
 > đồng hồ của `crates/session`.
@@ -610,5 +610,43 @@ Theo bảng §4 của `CLAUDE.md`, đi từng hàng:
 
 ## Nhật ký giao hàng
 
-*(trống — điền khi đóng từng bước: đã dựng gì, commit nào, gate nào xanh với output trích, cái gì
-chưa làm và vì sao, tên các test session phải thêm tick ở §D.3, CI run id của commit đóng)*
+**Branch `plan/an-obligation-nothing-checks`, PR [#65](https://github.com/tmthang86/fixbolt/pull/65).**
+Sáu bước, chạy liên tục theo `CLAUDE.md` §12: ba bước song song trong ba `git worktree` riêng — vì
+reversal của bước 1 gắn một crate `MPL-2.0` vào `tools/jrnl` và reversal của bước 4 đặt đồng hồ
+engine về `0`, chung một cây thì gate của bước 3 sẽ đỏ vì việc của người khác.
+
+| Bước | Commit | Kết quả, và cái bất ngờ |
+|---|---|---|
+| Plan | `a6029e9` | Architect (Fable 5.1) quyết cả bốn mục. **Ba trên bốn quyết định lật ngược điều repo đang viết.** |
+| 1 — item 57 | `d7e8608` | `include-dev = true`. `cargo deny` bốn dòng `ok`; so đếm **46 và 46** (trước là 11 và 11 trên đồ thị cụt hai đầu), giữ nguyên khi ép `CARGO_TERM_COLOR=always`. R57 / R57b / R57c đúng dự đoán. |
+| 3 — item 70 | `95ab19a` | Probe 3 thành tìm kiếm có biên. **Đỏ trước, và cái đỏ là lỗi thật**: parser nhận `+3`, `03`, `+6`, `06`, `+9`, `09`. 49 000 lượt parse hết **0.32 s** / trần 10 s. `10 probed, 20 skipped` (11 / 19 với `tls`). |
+| 4 — item 64 | `a85c5b3` | `DropReason::NeverTicked`. Session **147 passed / 0 failed, không sửa một test cũ nào** — sau guard này một session không thể tới `LoggedOn` mà chưa tick. `score` và `wire` đều `report.passed == 59`. `alloc` đọc 0 ở mọi case. **Danh sách test phải thêm tick ở §D.3: rỗng.** |
+| 2 — item 69 | `f085f43` | ADR-0061, không đổi một dòng logic; một hunk header `@@ -84,6 +84,18 @@`, không chạm dòng ≥ 92. Bốn `grep` cho bốn cách viết đều **0**. |
+| — | (tip trước 5) | `check-links.py` đỏ vì trích dẫn `CHANGELOG.md` của cargo-deny. **Gate sai, không phải plan sai** — nhưng không vá gate ở đây (§1); đổi chỗ trích dẫn, mở item 72. |
+| 5 — review | `845974c` | Senior review, context mới: **11/11 reversal đỏ đúng câu**, mọi gate xanh, **5 finding phải sửa** — bốn trong năm là *câu chữ*. |
+| 6 — đóng | — | `STATUS.md`, nhật ký này, CI run id. |
+
+**Cái đắt nhất của plan này, và nó lặp lại đúng bài học của PR trước:** câu
+*"the two-thousand-year number can no longer be produced at all"* trong `docs/SESSION-BEHAVIOUR.md`
+**sai ngay trong ngày nó được viết**. Guard chỉ đóng `now_ms == 0`; người nhúng tick bằng mili-giây
+Unix — đúng cái nhầm mà D13 và `GUIDE.md` §5 tồn tại để cảnh báo — vẫn đọc skew ≈ −1 970 năm kèm
+nguyên lời buộc tội `SendingTimeOutOfRange`. `CHANGELOG.md` viết *"on that path"* nên đã đúng từ đầu.
+Bảng bốn hàng nay nằm trong file, ghi rõ **chỉ hàng đầu có test canh**, ba hàng còn lại là phép đo.
+
+**Ba phát hiện khác đáng giữ:**
+
+1. **Một assertion không reversal nào làm đỏ được là đồ trang trí.** Assertion mới trong `events.rs`
+   ban đầu đứng sau ba assertion cũ, mà test đó chỉ mở hai connection — nên nó không bao giờ tới
+   lượt. Sửa bằng **thứ tự**, không phải bằng connection thứ ba: câu hỏi về *phía mình* phải hỏi
+   trước, vì nếu nó đúng thì mọi câu hỏi về phía đối tác bên dưới đều vô nghĩa.
+2. **`clippy::panic = "deny"` không thấy `debug_assert!`** — gợi ý của chính item 64 là một lỗi cùng
+   họ với plan này. Đo có control (`panic!("control")` cạnh nó → exit 101; bỏ control → exit 0).
+3. **Tiền đề của ADR-0061 yếu hơn cách nó đọc**: `scripts/check-bench-alignment.sh:102` đã viết
+   `read -r … < <(…)` từ trước — idiom của cách qua mặt thứ ba, do chính tác giả repo viết vì lý do
+   khác. Ghi vào *Consequences*, không sửa *Why* (§5: không sửa nội dung ADR đã Accepted).
+
+**Không làm, nói thẳng:** item 40, 49, 51, 52 cần máy §9 và một lần reboot — `/proc/cmdline` hôm nay
+không có `isolcpus`, `nohz_full` hay `rcu_nocbs`, và reboot giết chính phiên đang làm. Bốn item mới
+mở: **71** (con số "eighteen places" mục trong hai ADR đã Accepted), **72** (`check-links.py` đọc
+tên file trần là link về nhà), **73** (`number()` nhận `+30`/`030` trên bảy khoá), **74** (probe 3
+vẫn mù với literal ≥ 3 ký tự).
