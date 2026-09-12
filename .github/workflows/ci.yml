@@ -172,58 +172,32 @@ jobs:
           command: check
           arguments: --all-features
 
-      # `[measured 2026-09-08]` THE STEP ABOVE IS GREEN ABOUT A GRAPH THAT MAY
-      # BE SHORTER THAN THE REAL ONE. cargo-deny 0.20.2 does not judge the
-      # dev-dependencies of this workspace's members: an MPL-2.0 crate added to
-      # `[dev-dependencies]` of tools/jrnl — and separately of crates/codec — is
-      # resolved by `cargo metadata` (12 packages), printed by `cargo tree`, and
-      # never seen by `cargo deny list` (11 crates, `licenses ok`). The same
-      # crate as a normal dependency is rejected at once, so the checker is fine
-      # and the graph it gets is short. `exclude-dev = false` does not change it.
+      # `[measured 2026-09-08]` this comparison exists because cargo-deny used
+      # not to judge dev-dependencies at all, and the first attempt at closing
+      # that — `[graph] exclude-dev` — changed nothing: the wrong table. Every
+      # amendment below this line, up to 2026-09-09, was this guard chasing
+      # that hole with a narrower cargo side rather than a fixed cargo-deny
+      # side, which is precisely the defect
+      # `a-guard-that-watched-a-gate-shared-its-blind-spot.md` is about: a
+      # guard that compares two views of the same hole cannot see the hole.
       #
-      # So the count is compared against the one cargo itself resolves.
+      # `[measured 2026-09-12]` **the hole is closed, not covered.**
+      # `[licenses] include-dev = true` in `deny.toml` is the right knob:
+      # `cargo deny check licenses` and `cargo deny list` now judge this
+      # workspace's dev-dependencies exactly as they judge normal ones. So both
+      # sides of this comparison ask the plain question again — *did cargo-deny
+      # judge every crate cargo resolves, dev-dependencies included?* — with no
+      # narrowing on the cargo side to hide anything. Equal today, 46 and 46.
       #
-      # `[amended 2026-09-09]` **BOTH SIDES NOW ASK `--all-features`, AND THE
-      # REASON IS THAT `list` AND `check` DO NOT AGREE ABOUT WHAT THE GRAPH
-      # IS.** Wave B plan 4 put `rustls` and `ktls-core` behind an optional
-      # feature, and measured, on this workspace:
-      #
-      #     cargo deny list                     11 crates, no `ring`
-      #     cargo deny --all-features list      36 crates
-      #     cargo tree --workspace              11 crates
-      #     cargo deny check (no flag)          RED on `ring` when ISC is
-      #                                         removed from deny.toml
-      #
-      # The licence gate itself was **not** blind — `check` judged all 36. What
-      # was blind is this guard, whose whole premise is that `list` reports what
-      # `check` looked at. It does not. Both of its inputs omitted the same 25
-      # crates, so the two lists agreed, the step printed equal counts, and it
-      # attested to a comparison that had not been made. **A guard that
-      # compares two views of the same hole cannot see the hole**, and this one
-      # would have gone on saying `11 and 11` however many optional trees were
-      # added. STATUS.md item 57 is about a gate saying `ok` about what it never
-      # saw; this is the guard for that gate having the same defect.
-      # `[amended 2026-09-09, again]` **`-e normal,build` ON THE CARGO SIDE, AND
-      # THE STEP BELOW IS WHY THAT IS NOT A RETREAT.** Adding a dev-dependency
-      # (`rcgen`, for a test certificate) made this comparison red at 36 against
-      # 45 — correctly: `cargo deny list` and `cargo deny check licenses` do not
-      # judge dev-dependencies, and nine crates were unjudged. Widening the
-      # cargo side to hide that would be precisely the defect
-      # `a-guard-that-watched-a-gate-shared-its-blind-spot.md` is about.
-      #
-      # So the hole is COVERED rather than hidden, by
-      # `scripts/check-every-crate-is-licensed.sh` in the step below, which asks
-      # `cargo metadata` — a completely different route, dev-dependencies
-      # included — and judges every licence against deny.toml's own allow list.
-      # With the gap covered by something that runs, this comparison narrows to
-      # its honest question: *did cargo-deny judge everything it claims to
-      # judge?* Equal today, 36 and 36.
+      # `scripts/check-every-crate-is-licensed.sh`, in the step below, stays:
+      # a different tool (`cargo metadata`), a different parser, judged
+      # against the same `deny.toml` allow list. One route agreeing with
+      # itself would be no evidence at all.
       #
       # `cargo deny check advisories` is a third graph again, and it DOES see
       # dev-dependencies: `[measured 2026-09-09]` it found RUSTSEC-2026-0009 in
-      # `time`, reached through that same `rcgen`. Three graphs, one binary, one
-      # workspace. That is the whole
-      # value: an invisible hole becomes a loud one.
+      # `time`, reached through `rcgen`, a dev-dependency. Three graphs, one
+      # binary, one workspace.
       #
       # STATUS.md open item 57.
       # `--color never` on both sides, and it is not cosmetic. `[measured
@@ -238,7 +212,7 @@ jobs:
           cargo install cargo-deny --locked --version 0.20.2 2>/dev/null || cargo install cargo-deny --locked
           cargo deny --color never --all-features list 2>/dev/null \
             | sed 's/^[^:]*: //' | tr ',' '\n' | sed 's/@.*//;s/ //g' | sort -u | grep -v '^$' > /tmp/deny-saw.txt
-          cargo tree --color never --workspace --all-features -e normal,build --prefix none \
+          cargo tree --color never --workspace --all-features --prefix none \
             | sed 's/ v[0-9].*//;s/ //g' | sort -u | grep -v '^$' > /tmp/cargo-saw.txt
           echo "cargo-deny judged $(wc -l < /tmp/deny-saw.txt) crates; cargo resolves $(wc -l < /tmp/cargo-saw.txt)"
           if ! diff -u /tmp/deny-saw.txt /tmp/cargo-saw.txt; then

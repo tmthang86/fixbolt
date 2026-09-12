@@ -4,19 +4,15 @@
 #
 # WHY THIS EXISTS RATHER THAN JUST `cargo deny check licenses`.
 #
-# `[measured 2026-09-09]` on this workspace, in one cargo-deny binary (0.20.2):
-#
-#     cargo deny --all-features list          36 crates
-#     cargo tree --workspace --all-features   45 crates
-#     cargo deny check advisories             judges the 45 (it found
-#                                             RUSTSEC-2026-0009 in a
-#                                             dev-dependency)
-#     cargo deny check licenses               judges the 36
-#
-# The nine it does not judge are dev-dependencies. STATUS.md item 57 is about
-# exactly that, and the guard added for it compares `cargo deny list` against
-# `cargo tree` so the hole is loud rather than silent. It is loud. What it is
-# not, on its own, is **covered**.
+# `[measured 2026-09-09]` on this workspace, in one cargo-deny binary (0.20.2),
+# `cargo deny check licenses` used not to judge dev-dependencies at all —
+# `cargo deny --all-features list` reported 36 crates against `cargo tree`'s
+# 45, and the nine missing were every dev-dependency in the graph.
+# `[measured 2026-09-12]` that gap is closed: `[licenses] include-dev = true`
+# in `deny.toml` makes `cargo deny check licenses` judge dev-dependencies
+# exactly like normal ones. STATUS.md item 57 is about that gap, and the CI
+# job's `cargo deny list` vs `cargo tree` comparison, plus this script, are
+# what kept it loud while it was open.
 #
 # So this script answers the licence question from a source that has nothing to
 # do with cargo-deny: `cargo metadata`, which reports every package in the
