@@ -103,6 +103,65 @@ fn client_thread(
     })
 }
 
+/// **Step 6 of the TLS-CI plan's Sửa 1: a measurement, not a fix.**
+///
+/// Two tests in this file are red on GitHub's runner and green twenty times on
+/// the owner's desk, and `[measured 2026-09-12]` the *same* commit `aa4f46e`
+/// produced one green run and one red run on that runner minutes apart. Two
+/// explanations were open and the shape of the code was not allowed to pick
+/// between them:
+///
+/// - **(a)** the tests assert a scheduling outcome — the peer's application
+///   record simply had not arrived when `pump` reported [`Step::Done`], and
+///   nothing was lost;
+/// - **(b)** the bytes did arrive and `take_early_data` dropped them, which is
+///   a defect in `crates/engine/src/tls.rs` and exactly what the test's name
+///   claims to guard.
+///
+/// This prints what separates them. It is temporary, it asserts nothing, and
+/// the CI step that reads it passes `--nocapture`.
+///
+/// **Reading the socket directly here is sound only because this connection is
+/// then thrown away.** Bytes taken off the socket behind rustls's back are what
+/// the spike's `hand-draining-desyncs-the-kernel` check fails on — see
+/// [`fixbolt_engine::tls::Handshake::take_early_data`]. No handover follows.
+fn probe_after_done(
+    label: &str,
+    sweeps: usize,
+    pendings: usize,
+    early_len: usize,
+    leftover: usize,
+    transport: &mut TcpTransport,
+) {
+    use std::io::Read;
+    // Only worth waiting when nothing arrived in time: in the green case the
+    // record is already decrypted and this would just cost every run a second.
+    let late = if early_len == 0 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut buf = [0u8; 4096];
+        let mut n = 0usize;
+        while std::time::Instant::now() < deadline {
+            match (&mut transport.socket()).read(&mut buf) {
+                Ok(0) => break,
+                Ok(k) => {
+                    n += k;
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::yield_now();
+                }
+                Err(_) => break,
+            }
+        }
+        n
+    } else {
+        0
+    };
+    println!(
+        "probe {label}: sweeps {sweeps} pendings {pendings} early {early_len} leftover {leftover} late_ciphertext {late}"
+    );
+}
+
 #[test]
 fn a_handshake_completes_without_the_acceptor_ever_blocking() {
     let (cert, key) = pki();
@@ -147,6 +206,14 @@ fn a_handshake_completes_without_the_acceptor_ever_blocking() {
     // chance to be empty, so it proves nothing about not blocking. Every run
     // observed here needs the peer's flight to arrive, which takes at least one
     // round trip that this thread did not wait for.
+    probe_after_done(
+        "no_blocking",
+        sweeps,
+        pendings,
+        hs.take_early_data().len(),
+        hs.leftover(),
+        &mut transport,
+    );
     assert!(
         pendings > 0,
         "the handshake completed without ever yielding — this test cannot \
@@ -218,11 +285,15 @@ fn a_logon_sent_straight_after_finished_is_not_lost() {
     let mut hs = Handshake::new(conn);
 
     let mut sweeps = 0usize;
+    let mut pendings = 0usize;
     let outcome = loop {
         sweeps += 1;
         assert!(sweeps < 100_000, "the handshake never finished");
         match hs.pump(&mut transport) {
-            Step::Pending => std::thread::yield_now(),
+            Step::Pending => {
+                pendings += 1;
+                std::thread::yield_now();
+            }
             other => break other,
         }
     };
@@ -233,6 +304,14 @@ fn a_logon_sent_straight_after_finished_is_not_lost() {
     // rustls decrypted it, which is also what keeps the kernel's sequence
     // number right — see `Handshake::take_early_data`.
     let early = hs.take_early_data();
+    probe_after_done(
+        "logon_after_finished",
+        sweeps,
+        pendings,
+        early.len(),
+        hs.leftover(),
+        &mut transport,
+    );
     assert_eq!(
         early, b"hello",
         "application data that arrived before the handover was lost — a real          counterparty's Logon would vanish and the session would time out"
