@@ -163,10 +163,27 @@ the two plan files' delivery logs.
 
 ### Next
 
-The `tls` plan's own steps 5, 6 and 7 (different numbering from this plan's 4-7): the initiator
-side, `w2w --tls`, and the TLS arm of `check-no-kernel-sleep.sh`. Before any of that: this
-branch's remaining gates on the manager's own re-run, a CI run named by id, and the closing
-commit.
+`[2026-09-12, merged]` **This plan is closed and on `main`; nothing above is left to do.** What
+is next is a choice, and the three candidates are not equal:
+
+1. **Items 66, 67, 68** — the gates the senior review got past. Cheap, machine-independent, and
+   each has its fix already named in its row. 66 is the one with teeth: `#![/*x*/allow(...)]`
+   really does switch non-negotiable 7 off in one line today. **One plan covers all three**, and
+   it is the natural continuation of the plan that just closed.
+2. **The `tls` plan's own steps 5, 6, 7** (different numbering from the 2026-09-12 plan's 4-7):
+   the initiator side, `w2w --tls`, and the TLS arm of `check-no-kernel-sleep.sh`. **Step 6 is
+   the one that matters most and costs most**: it is the only thing that would let this
+   repository say anything at all about the engine thread under TLS, and it needs the §9 box —
+   three kernel parameters back on the command line, two reboots, and the machine to itself.
+   `[2026-09-12]` passwordless `sudo -n` is installed on the desk, so it no longer needs somebody
+   sitting at it, but it still needs the machine idle.
+3. **Items 49 and 51** — the unattributed ~2 770 ns of the application round trip, and the TCP
+   loopback write that costs thirty-two bare syscalls. Same §9 cost as (2), and they should share
+   a boot with it rather than each paying for their own.
+
+**If the next session is short, take (1).** If it has the machine and nothing else is measuring
+on it, take (2) and (3) together in one §9 boot — that is the whole reason to pay for the reboots
+once.
 
 ## Start here — 2026-09-12: the gate found the flake, and the flake was in the test
 
