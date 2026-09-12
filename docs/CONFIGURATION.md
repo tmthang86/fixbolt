@@ -195,6 +195,13 @@ two ends therefore carries a number, not a name.
 with a width the operator did not choose would put a resolution on the wire that nobody asked
 for and nothing downstream would say so.
 
+`[measured 2026-09-12]` **the value is read as written, not merely parsed.** `3`, `6` or `9`
+and nothing else: `03` and `+3` are refused as `UnsupportedPrecision`, on the line, even
+though Rust's own integer parser would read both as `3`. Item 70 of the plan that added this
+line found the gap by searching a bounded universe of short strings rather than sampling three
+fixed candidates (`crates/engine/src/settings.rs::doc_table::an_enumerated_values_cell_is_what_the_parser_accepts`,
+`crates/engine/tests/settings_roles.rs::timestamp_precision_is_refused_unless_spelled_exactly`).
+
 **It is a ceiling, and the floor is what your clock actually gave the session.** The stamp is
 written at the *coarser* of this key and the resolution the caller supplied, so:
 

@@ -818,6 +818,23 @@ fn number<T: std::str::FromStr>(
     })
 }
 
+/// `value` is spelled the one way this engine accepts a width in
+/// `TimestampPrecision`: ASCII digits only, no leading `+`, and no leading
+/// `0` unless the whole value is the single digit `0`.
+///
+/// Rust's own integer parser reads `+3` and `03` as `3` (measured against
+/// `rustc` 1.98.0), which is looser than the spelling this key is documented
+/// to take. Checked in addition to, not instead of, [`number`]: a value that
+/// is not a number at all (`MICROS`) stays [`Problem::NotANumber`], and only
+/// a value that *is* a number but spelled wrong becomes
+/// [`Problem::UnsupportedPrecision`] — probe 3 in `mod doc_table` is what
+/// caught the gap (`docs/CONFIGURATION.md` §1, `TimestampPrecision`).
+fn spelled_exactly_as_digits(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|b| b.is_ascii_digit())
+        && !(value.len() > 1 && value.as_bytes().first() == Some(&b'0'))
+}
+
 /// The counterparties a configuration file names.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
@@ -1272,6 +1289,20 @@ fn build(block: Block<'_>) -> Result<Config, SettingsError> {
         // writes 3, 6 or 9, and the six widths in between would have to become
         // some other width to go out at all. A configuration error names the
         // line; a silent clamp names nothing. ADR-0057 open question 3.
+        //
+        // **Spelled exactly, not merely parsed.** `value.parse::<u32>()`
+        // above reads `+3` and `03` as `3`, which is looser than the
+        // spelling this key documents — probe 3 in `mod doc_table` found the
+        // gap on 2026-09-12. `Problem::UnsupportedPrecision` is what a wrong
+        // width already answers with, and a wrong spelling of a right width
+        // is refused the same way, not rounded to it.
+        if !spelled_exactly_as_digits(v.1) {
+            return Err(SettingsError::at(
+                v.0,
+                Problem::UnsupportedPrecision,
+                format!("{}={}", Key::TimestampPrecision.name(), v.1),
+            ));
+        }
         let precision =
             fixbolt_codec::Precision::from_fractional_digits(digits).ok_or_else(|| {
                 SettingsError::at(
@@ -2175,33 +2206,104 @@ mod doc_table {
         )
     }
 
+    /// The 66-character alphabet the short leg of probe 3's universe is drawn
+    /// from: every digit, every letter in both cases, and the four
+    /// punctuation marks a bare value may legally carry (`+ - . _`). No
+    /// whitespace, `=`, `#`, `;`, `[` or `]`: the INI reader trims a value and
+    /// gives those other characters meaning only at the start of a line, so
+    /// leaving them out keeps the universe to *values*, never *syntax* — the
+    /// way this probe avoids a spurious red, by design rather than luck.
+    const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+-._";
+
+    /// Nine neighbours of one listed literal, which is where a real false
+    /// accept already found lives (`03`, `+3`, `Acceptor`): lower- and
+    /// upper-cased whole, the first character alone case-swapped, a leading
+    /// or trailing `0`, a leading `+`, an extra `x` glued on either side, and
+    /// the literal doubled.
+    fn neighbours(literal: &str) -> Vec<String> {
+        let mut chars = literal.chars();
+        let first = chars.next();
+        let rest: String = chars.collect();
+        let mut out = vec![literal.to_lowercase(), literal.to_uppercase()];
+        if let Some(first) = first {
+            let swapped: String = if first.is_lowercase() {
+                first.to_uppercase().collect()
+            } else {
+                first.to_lowercase().collect()
+            };
+            out.push(format!("{swapped}{rest}"));
+        }
+        out.push(format!("0{literal}"));
+        out.push(format!("+{literal}"));
+        out.push(format!("{literal}0"));
+        out.push(format!("{literal}x"));
+        out.push(format!("x{literal}"));
+        out.push(format!("{literal}{literal}"));
+        out
+    }
+
+    /// The bounded universe probe 3's reverse direction searches for a
+    /// *Values* cell listing `listed`: every string of length 1 and 2 over
+    /// [`ALPHABET`] (66 + 66² = 4 422 strings) plus [`neighbours`] of each
+    /// listed literal, minus `listed` itself, deduplicated.
+    fn candidates(listed: &[&str]) -> Vec<String> {
+        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for &a in ALPHABET {
+            set.insert((a as char).to_string());
+        }
+        for &a in ALPHABET {
+            for &b in ALPHABET {
+                set.insert(format!("{}{}", a as char, b as char));
+            }
+        }
+        for &literal in listed {
+            for neighbour in neighbours(literal) {
+                set.insert(neighbour);
+            }
+        }
+        for &literal in listed {
+            set.remove(literal);
+        }
+        set.into_iter().collect()
+    }
+
     /// **Probe 3.** A *Values* cell that lists literals is checked in two
     /// directions, and the two are not the same strength.
     ///
     /// **Forward, exhaustive over what is listed:** every literal the cell
     /// writes must be a value the parser accepts for that key.
     ///
-    /// **Reverse, a sample — not a proof the list is complete:** one
-    /// candidate, the first of `1`, `true` and `nope` that is not already
-    /// among the listed literals, must be refused as a bad value. A value the
-    /// parser accepts but the cell never lists is invisible to this probe
-    /// unless it happens to be one of those three.
+    /// **Reverse, a bounded search, not a sample.** [`candidates`] builds the
+    /// universe described above it. Every candidate not already in `listed`
+    /// gets one of three outcomes: refused as a bad value
+    /// ([`is_about_the_value`]) is correct and silent; accepted is gathered
+    /// across the whole row and asserted once, naming every such value, not
+    /// just the first; refused for some other reason means the universe
+    /// itself wrote something with syntax meaning and is a bug in the probe,
+    /// not a finding about the document — reported immediately, naming the
+    /// candidate. A zero-guard in the style of `scripts/check-indexing-debt.sh`
+    /// fails a row whose universe came out under 4 400 candidates, which
+    /// means the universe was not built rather than the row having nothing
+    /// left to try.
     ///
     /// `[measured 2026-09-12]` the senior review of PR #63 rewrote
     /// `SocketUseSSL`'s cell to `` `1` or `0` `` and the suite stayed green;
     /// the forward direction now refuses both literals and would catch it.
     /// `[measured 2026-09-12]` `TimestampPrecision`'s cell narrowed from
-    /// `` `3`, `6` or `9` `` to `` `3` or `6` ``: the parser still accepts
-    /// `9`, the document no longer lists it, and the suite stayed green — the
-    /// reverse direction's fixed candidates never draw `9`. Widening the
-    /// candidate set would close more of that hole but risks spurious reds
-    /// and needs its own measurement, which is an open item and not done
-    /// here.
+    /// `` `3`, `6` or `9` `` to `` `3` or `6` ``: the parser still accepted
+    /// `9`, the cell no longer listed it, and the suite stayed green — the
+    /// old reverse direction sampled three fixed candidates (`1`, `true`,
+    /// `nope`) and none of them was `9`. The bounded search above is the
+    /// fix: `9` sits in the base universe by construction (every length-1
+    /// string over [`ALPHABET`]), so narrowing the cell now goes red.
     #[test]
     fn an_enumerated_values_cell_is_what_the_parser_accepts() {
         /// Rows reached on 2026-09-12: 10, and 11 with the `tls` feature.
         /// Never lower it.
         const FLOOR: usize = if cfg!(feature = "tls") { 11 } else { 10 };
+        /// Below this many candidates for one row, the universe was not
+        /// built — the zero-guard `candidates` owes every row.
+        const MIN_UNIVERSE: usize = 4400;
 
         let doc = configuration_md();
         let (mut probed, mut skipped) = (0_usize, 0_usize);
@@ -2232,22 +2334,33 @@ mod doc_table {
                 );
             }
 
-            // The other direction. Without it the cell could list every value
-            // in the language and stay green.
-            let Some(foreign) = ["1", "true", "nope"]
-                .into_iter()
-                .find(|candidate| !listed.contains(candidate))
-            else {
-                skipped += 1;
-                continue;
-            };
-            let refusal = Settings::parse(&sample.with_in_default(&format!("{name}={foreign}")))
-                .err()
-                .map(|e| e.problem().clone());
-            let about_the_value = refusal.as_ref().is_some_and(is_about_the_value);
+            // The other direction: a bounded search, not a sample of three.
+            let universe = candidates(&listed);
             assert!(
-                about_the_value,
-                "docs/CONFIGURATION.md §1: {name} does not list `{foreign}` among its values and the parser does not refuse it as a bad value: {refusal:?}"
+                universe.len() >= MIN_UNIVERSE,
+                "probe 3 tried {} candidates for {name}, below {MIN_UNIVERSE} — the universe was not built",
+                universe.len()
+            );
+            let mut accepted: Vec<String> = Vec::new();
+            for candidate in &universe {
+                let refusal =
+                    Settings::parse(&sample.with_in_default(&format!("{name}={candidate}")))
+                        .err()
+                        .map(|e| e.problem().clone());
+                match refusal {
+                    None => accepted.push(candidate.clone()),
+                    Some(problem) => {
+                        let about_the_value = is_about_the_value(&problem);
+                        assert!(
+                            about_the_value,
+                            "probe 3 wrote {candidate:?} for {name} and the parser refused it for a reason that is not about the value ({problem:?}) — the candidate universe leaked a syntax character; fix the probe, not the document"
+                        );
+                    }
+                }
+            }
+            assert!(
+                accepted.is_empty(),
+                "docs/CONFIGURATION.md §1: {name} lists {listed:?} but the parser also accepts {accepted:?} — either the document is short or the parser is lax"
             );
         }
         println!("probe 3 — enumerated Values cells: {probed} probed, {skipped} skipped");
