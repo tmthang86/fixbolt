@@ -1988,16 +1988,35 @@ mod doc_table {
         }
     }
 
-    /// **Probe 1.** The sentence above the table counts the keys.
+    /// Only the lines inside `## 1.`, the same scoping [`doc_rows`] uses — so
+    /// a probe that claims to read that section cannot be satisfied by a
+    /// sentence sitting outside it.
+    fn section_one(doc: &str) -> impl Iterator<Item = &str> {
+        let mut inside = false;
+        doc.lines().filter(move |line| {
+            if line.starts_with("## ") {
+                inside = line.starts_with("## 1.");
+                false
+            } else {
+                inside
+            }
+        })
+    }
+
+    /// **Probe 1.** The sentence above the table, inside `## 1.`, counts the
+    /// keys.
     ///
     /// `[measured 2026-09-12]` the senior review of PR #63 rewrote it to *Four
     /// hundred keys* and nothing went red; before that it said *Twenty-three*
-    /// over 26 rows for a week.
+    /// over 26 rows for a week. `[measured 2026-09-12]` a decoy count sentence
+    /// placed before `## 1.` begins was enough to satisfy an earlier version
+    /// of this probe, which scanned the whole document rather than the
+    /// section it claims to read — [`section_one`] is the fix.
     #[test]
     fn the_count_sentence_counts_the_keys() {
         let doc = configuration_md();
         let n = arm_literals(NAME_FN).len();
-        let written = doc.lines().find_map(|line| {
+        let written = section_one(&doc).find_map(|line| {
             line.strip_prefix("**")
                 .and_then(|rest| rest.split_once(" keys** are recognised"))
                 .map(|(word, _)| word)
@@ -2156,11 +2175,28 @@ mod doc_table {
         )
     }
 
-    /// **Probe 3.** A *Values* cell that lists literals lists what the parser
-    /// takes — in both directions.
+    /// **Probe 3.** A *Values* cell that lists literals is checked in two
+    /// directions, and the two are not the same strength.
+    ///
+    /// **Forward, exhaustive over what is listed:** every literal the cell
+    /// writes must be a value the parser accepts for that key.
+    ///
+    /// **Reverse, a sample — not a proof the list is complete:** one
+    /// candidate, the first of `1`, `true` and `nope` that is not already
+    /// among the listed literals, must be refused as a bad value. A value the
+    /// parser accepts but the cell never lists is invisible to this probe
+    /// unless it happens to be one of those three.
     ///
     /// `[measured 2026-09-12]` the senior review of PR #63 rewrote
-    /// `SocketUseSSL`'s cell to `` `1` or `0` `` and the suite stayed green.
+    /// `SocketUseSSL`'s cell to `` `1` or `0` `` and the suite stayed green;
+    /// the forward direction now refuses both literals and would catch it.
+    /// `[measured 2026-09-12]` `TimestampPrecision`'s cell narrowed from
+    /// `` `3`, `6` or `9` `` to `` `3` or `6` ``: the parser still accepts
+    /// `9`, the document no longer lists it, and the suite stayed green — the
+    /// reverse direction's fixed candidates never draw `9`. Widening the
+    /// candidate set would close more of that hole but risks spurious reds
+    /// and needs its own measurement, which is an open item and not done
+    /// here.
     #[test]
     fn an_enumerated_values_cell_is_what_the_parser_accepts() {
         /// Rows reached on 2026-09-12: 10, and 11 with the `tls` feature.

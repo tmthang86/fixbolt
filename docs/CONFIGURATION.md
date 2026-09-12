@@ -22,12 +22,14 @@ startup with the line number and the text that was written
 
 **What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The
 `doc_table` tests in [`settings.rs`](../crates/engine/src/settings.rs) read this section and
-run the parser against four things: **the count sentence above**; **a *Default* cell that
-begins with a backticked literal** (the key is written into a minimal file with that value
-and must change nothing); **a *Values* cell that is two or more backticked literals joined by
-nothing but `or` and commas** (every literal must survive the parser, and a literal the cell
-does not list must not); and **a *Where* cell claiming either `[DEFAULT]` only or `[DEFAULT]`
-or `[SESSION]`** (the first must be refused in a `[SESSION]`, the second must not).
+run the parser against four things: **the count sentence above, inside this section**; **a
+*Default* cell that begins with a backticked literal** (the key is written into a minimal
+file with that value and must change nothing); **a *Values* cell that is two or more
+backticked literals joined by nothing but `or` and commas** (every listed literal must
+survive the parser, and one sampled value it does not list must not — a sample of three fixed
+candidates, not a check of everything the cell omits); and **a *Where* cell claiming either
+`[DEFAULT]` only or `[DEFAULT]` or `[SESSION]`** (the first must be refused in a `[SESSION]`,
+the second must not).
 `[measured 2026-09-12]` those three reached 15, 10 and 18 of the thirty rows — 16 and 11 for
 the first two in a build with the `tls` feature, which is the only build where the fourth TLS
 key can be written into a file at all.

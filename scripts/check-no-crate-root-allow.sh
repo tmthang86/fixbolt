@@ -27,7 +27,11 @@
 #
 # Scope: every `lib` and `bin` target's `src_path`, for packages under
 # `crates/`, read from `cargo metadata` — never from a file glob, so a future
-# `crates/x/src/bin/foo.rs` cannot go uncounted by having the wrong name.
+# `crates/x/src/bin/foo.rs` cannot go uncounted by having the wrong name. The
+# `jq` predicate names the kinds `lib` and `bin` and nothing else, so a
+# `proc-macro` crate — whose target kind is `proc-macro`, not `lib` — would sit
+# outside this scope; there is none in this workspace today, and the day one
+# lands the predicate is widened in the same commit.
 # `tools/` is deliberately excluded: non-negotiable 7 is about LIBRARY crates,
 # `check-indexing-debt.sh` already excludes `tools/` on the same reasoning, and
 # `tools/w2w` and `tools/interop` carry their own scoped, commented allows on
@@ -143,11 +147,46 @@ fi
 # The deny list A2 compares against is derived, never hard-coded, from the root
 # Cargo.toml's own `= "deny"` lines — so a lint added tomorrow is covered
 # without touching this file.
+#
+# `[measured 2026-09-12]` the first version of this derivation read
+# `sed -E 's/^[[:space:]]*([A-Za-z0-9_]+)[[:space:]]*=.*/\1/'`, which does not
+# match a line whose key is QUOTED — and `"unwrap_used" = "deny"` is valid TOML
+# that cargo accepts without a murmur. The sed then passed the whole line
+# through, DENY_LINTS held four strings that are not identifiers, and A2 matched
+# nothing attr-scan can ever print: `#![warn(clippy::unwrap_used)]` at the root
+# of `crates/session` passed this gate with exit 0. Three answers, all here:
+# the key may now be quoted and may be dotted (`clippy.unwrap_used = "deny"`,
+# and the inline-table spelling `unwrap_used = { level = "deny" }` reduces the
+# same way); anything that does not reduce to a bare identifier is dropped
+# rather than carried; and an EMPTY list is a FAIL, the zero-guard A0 and A0b
+# already apply to crate roots and to attributes. The VALUE may be a TOML
+# literal string too (`unwrap_used = 'deny'`), found while writing the
+# zero-guard's reversal: cargo reads it identically and the first grep did not.
+# And the count goes in the `ok` line for the same reason the other two do — a
+# number nobody reads is not a check.
+#
+# The honest limit: this was a gate MEASURING NOTHING, not non-negotiable 7
+# switched off. `cargo clippy --all-targets -- -D warnings` in CI still catches
+# the `unwrap` that a crate-root `warn` would have let through, because `-D
+# warnings` promotes the warning back to an error. What A2 adds over that is
+# naming the ATTRIBUTE rather than its first victim.
 mapfile -t DENY_LINTS < <(
-  grep -E '=[[:space:]]*"deny"' "$ROOT/Cargo.toml" \
-    | sed -E 's/^[[:space:]]*([A-Za-z0-9_]+)[[:space:]]*=.*/\1/' \
+  grep -E "=[[:space:]]*['\"]deny['\"]" "$ROOT/Cargo.toml" \
+    | grep -vE '^[[:space:]]*#' \
+    | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=.*$//; s/^.*\.//; s/^"//; s/"$//' \
+    | grep -E '^[A-Za-z0-9_-]+$' \
     | sort -u
 )
+
+D=${#DENY_LINTS[@]}
+
+# A2z — an empty deny list is not a pass. With nothing to compare against, A2
+# is vacuous and says "no crate-root warn lowers a workspace deny" about a
+# workspace whose denies it failed to read.
+if [[ "$D" -eq 0 ]]; then
+  echo "check-no-crate-root-allow: FAIL — 0 deny lints derived from Cargo.toml; A2 would be comparing every crate-root warn against an empty list. A broken derivation, not a workspace with no denies." >&2
+  FAIL=1
+fi
 
 # ---------------------------------------------------------------------------
 # A1 — no inner `allow`/`expect` at a crate root, bare or `cfg_attr`-wrapped.
@@ -266,4 +305,4 @@ if [[ "$FAIL" -ne 0 ]]; then
   exit 1
 fi
 
-echo "check-no-crate-root-allow: ok — ${N} crate roots, ${M} manifests, ${ATTRS} inner attributes"
+echo "check-no-crate-root-allow: ok — ${N} crate roots, ${M} manifests, ${ATTRS} inner attributes, ${D} deny lints"

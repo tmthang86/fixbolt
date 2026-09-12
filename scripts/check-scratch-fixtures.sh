@@ -26,8 +26,9 @@
 #   B0 — the pinning-artefact set is derived from what EXISTS at the repo root
 #        today (never hard-coded). Empty set is itself a failure: a deleted
 #        rust-toolchain.toml must be heard, not silently pass.
-#   B1 — for each scripts/*.sh, collect "scratch variables": names assigned
-#        from `mktemp`, `$TMPDIR`, or a `/tmp/` literal, then iterate to a
+#   B1 — for each script in scripts/ (SCOPE below says which files those are),
+#        collect "scratch variables": names assigned from `mktemp`, `$TMPDIR`,
+#        or a `/tmp/` literal, then iterate to a
 #        fixed point, adding names assigned from an existing scratch variable
 #        (check-lint-config.sh: TMP, then CRATE = "$TMP/lintcheck").
 #   B2 — a line that ENTERS a scratch dir (`cd`/`pushd` with an argument
@@ -45,12 +46,33 @@
 #        check-indexing-debt.sh's zero-guard: a count of nothing is a broken
 #        invocation, not a clean workspace.
 #
+# SCOPE, and why it is not a glob. `[measured 2026-09-12]` this script globbed
+# `scripts/*.sh`, so `scripts/fixture-probe.bash` — a shell script that `cd`s
+# into `$(mktemp -d)` and copies nothing — was not scanned at all and the gate
+# said "20 scripts, ok". Widening the glob to `*.sh *.bash` would only move the
+# hole to `*.ksh`, or to a script with no extension: an extension is a naming
+# convention, and this repository has already paid twice for a gate that is a
+# list somebody must remember to extend (STATUS.md items 62 and 68). So the
+# scope is now the property the KERNEL reads to decide the file is a shell
+# script — its shebang. Every regular file directly in `scripts/` is in scope
+# if its first line is `#!` naming an interpreter whose name ends in `sh`
+# (`sh`, `bash`, `dash`, `ksh`, `zsh`, with or without `env` and with or
+# without trailing flags), or if it is named `*.sh` at all, which keeps a
+# `.sh` file that forgot its shebang in scope. `check-links.py` is out because
+# its shebang says `python3`, which is also the honest answer: this script
+# cannot read Python, and says so two bullets down.
+#
 # What this check does NOT see, said before it is found the expensive way:
 #   - a `cd` reached through a function call or `eval`
 #   - `cd -- "$(dirname "$X")"` or other indirection that hides the target
 #   - a fixture written inside a CI `run:` step under $RUNNER_TEMP (ci.yml,
 #     not scripts/*.sh, is outside this script's grep)
 #   - a fixture script written in Python (check-links.py) or another language
+#     — the shebang scope above puts it out deliberately, not by accident
+#   - a `cp` whose pin name is only inside a quoted string that also begins
+#     with a ` #` — the trailing-comment strip below would cut it. That is a
+#     spurious red, the same direction as the `cd`-after-`#`-in-a-string case
+#     below, not a false green
 #   - an artefact pinned at the MACHINE level ($CARGO_HOME/config.toml) — no
 #     repository file can pin that, so no repository check can see it either
 #   - the reference doc's second failure direction: the right file was copied
@@ -95,8 +117,22 @@ if [[ "${#PINS[@]}" -eq 0 ]]; then
 fi
 
 shopt -s nullglob
-SCRIPTS=(scripts/*.sh)
+CANDIDATES_IN_SCRIPTS=(scripts/*)
 shopt -u nullglob
+
+SCRIPTS=()
+for cand in "${CANDIDATES_IN_SCRIPTS[@]}"; do
+  [[ -f "$cand" ]] || continue
+  if [[ "$cand" == *.sh ]]; then
+    SCRIPTS+=("$cand")
+    continue
+  fi
+  shebang=""
+  IFS= read -r shebang < "$cand" || true
+  case "$shebang" in
+    '#!'*sh | '#!'*sh[[:space:]]*) SCRIPTS+=("$cand") ;;
+  esac
+done
 
 # --- B4: zero scripts scanned is not a pass ----------------------------------
 if [[ "${#SCRIPTS[@]}" -eq 0 ]]; then
@@ -260,7 +296,15 @@ for f in "${SCRIPTS[@]}"; do
             fi
           done
           [[ "$found" -eq 1 ]] && break
-        done < <(grep -vE '^[[:space:]]*#' "$f" | grep -E "$CP_POSITION_RE" | grep -F -- "$pin")
+        # The trailing-comment strip is B-5's fix. `[measured 2026-09-12]`
+        # `cp "$ROOT/Cargo.toml" "$CRATE/Cargo.toml.bak"   # not
+        # rust-toolchain.toml` satisfied this search: `grep -F -- "$pin"`
+        # matches the pin name ANYWHERE on the line, and a comment is
+        # anywhere. The line is cut at its first ` #` before the pin is
+        # looked for, so a pin named only in a comment no longer counts as a
+        # copy. `refers_to` reads the cut line too, so a scratch variable
+        # that appears only in the comment does not count either.
+        done < <(grep -vE '^[[:space:]]*#' "$f" | sed -E 's/[[:space:]]+#.*$//' | grep -E "$CP_POSITION_RE" | grep -F -- "$pin")
 
         if [[ "$found" -eq 0 ]]; then
           echo "check-scratch-fixtures: FAIL — ${f}:${line_no} enters a scratch dir (\$${entered_var}, from mktemp at :${origin}) and never copies ${pin} into it" >&2
