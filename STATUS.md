@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-09, merged** — **open item 60 is closed and on `main`. It was never a flaky test: reading the event stream destroyed it, and the evidence that said so had been sitting in the first failing CI log for hours.** Before that: **2026-09-09, latest** — **open item 59 is closed, and the survey the owner asked for before approving it changed the answer twice: the QuickFIX family disagrees with itself about this field, and there was a seventh refused width nobody here had counted.** Before that: **wave B plan 3 is closed, merged, and green on the merge commit itself. This engine can send a microsecond `52=`. Its own gate found, on its first run, that the plan which closed the *receive* half the day before had widened one of the field's two readers and left the other — and only somebody else's engine could see it.**
+Last updated: **2026-09-12** — **open items 62 and 65 are closed on `plan/tls-4b`, and the job that closed 62 is what found 65.** A TLS test that was green 20 times on this desk was flaky on GitHub's runner; it was diagnosed by measurement rather than by reading the code, and the measurement said the engine was innocent. **The reversal that closed it went red on an assertion the approved plan did not predict, and the predicted one could never have failed.** Before that: **2026-09-09, merged** — **open item 60 is closed and on `main`. It was never a flaky test: reading the event stream destroyed it, and the evidence that said so had been sitting in the first failing CI log for hours.** Before that: **2026-09-09, latest** — **open item 59 is closed, and the survey the owner asked for before approving it changed the answer twice: the QuickFIX family disagrees with itself about this field, and there was a seventh refused width nobody here had counted.** Before that: **wave B plan 3 is closed, merged, and green on the merge commit itself. This engine can send a microsecond `52=`. Its own gate found, on its first run, that the plan which closed the *receive* half the day before had widened one of the field's two readers and left the other — and only somebody else's engine could see it.**
 
 `[2026-09-08, later]` **Docs only, after that plan closed.** Wave B plan 3 ([timestamp-micros](docs/plans/2026-09-04-timestamp-micros.md)) was re-verified and moved to *Chờ duyệt*, and **the re-verification found the plan could not be built as drafted** — see its row under *Open items*. The same pass read the **Where the work is** table below and found two cells false: `Branch` still named `16ad9b6` five days and three merged pull requests later, and `Plan in flight` still read `[2026-09-05] None`. Both corrected, both with the staleness left legible rather than tidied away. `Milestone` was **not** touched: it stops at 2026-09-02 because nothing has closed a milestone since, which is a true record rather than a stale one.
 
@@ -14,6 +14,86 @@ Last updated: **2026-09-09, merged** — **open item 60 is closed and on `main`.
 **`[2026-09-09, merged]` §9's last box, closed on the commit it asks about.** PR [#54](https://github.com/tmthang86/fixbolt/pull/54) merged as **`94b325d`**, no-ff. **CI green on the merge commit itself**, run [`34340173659`](https://github.com/tmthang86/fixbolt/actions/runs/34340173659), **13 jobs of 13** — the three neither desk can run for itself, `interop`, `bench` and `deny`, among them. The merged head `301cd2e` was **26 of 26** check runs across [`34320263926`](https://github.com/tmthang86/fixbolt/actions/runs/34320263926) and [`34320266574`](https://github.com/tmthang86/fixbolt/actions/runs/34320266574), and **`git diff 301cd2e 94b325d` is empty**, so the branch's green transfers to the merge exactly rather than by assumption.
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
+
+## Start here — 2026-09-12: the gate found the flake, and the flake was in the test
+
+**Branch `plan/tls-4b`, PR [#61](https://github.com/tmthang86/fixbolt/pull/61), closing commit
+`89b192b`. Not merged.** Open items **62** and **65** are closed;
+[the-tls-tests-have-no-ci](docs/plans/2026-09-10-the-tls-tests-have-no-ci.md) is *Xong (Sửa 1)*,
+steps 1-8.
+
+**CI green on the closing commit, by id:** runs
+[`34671147574`](https://github.com/tmthang86/fixbolt/actions/runs/34671147574) (`push`) and
+[`34671149007`](https://github.com/tmthang86/fixbolt/actions/runs/34671149007) (`pull_request`),
+**14 jobs of 14 each**. The `tls` job was read line by line, not off its tick: `verdict: READY`,
+`TLS tests that ran: 11`, `tls.rs repetitions failed: 0 of 3` in both.
+
+### What happened, in the order it happened
+
+**The `tls` job did not exist until item 62, and its first run found two red tests.** No CI job had
+ever run a TLS test — `--features tls` was never passed to `cargo test` — so `tls.rs` had only ever
+run on this desk. The job's first run was red, and **the plan that built the job had no step that
+owned fixing what it found**, so it went back to *Chờ duyệt* as Sửa 1 and gained steps 6-8. That
+is the same shape as Sửa 3 of the `tls` plan two days earlier: a thing named in prose that no step
+owns.
+
+**Step 6 measured instead of guessing, and the engine was innocent.** `[measured 2026-09-12]` commit
+`31fc0ec`, two runs, five repetitions each: **every probe that read `early 0` also read
+`late_ciphertext 27`** — the peer's TLS 1.3 record carrying 5 bytes of plaintext arrived *after*
+`Handshake::pump` reported `Done`. Nothing was dropped; nothing had arrived. So **no line of
+`crates/*/src` changed**, and the scope question Sửa 1 left open closed with "no".
+
+**The cause was the test's counterparty.** `rustls::Stream::write_all` completes the handshake and
+*then* writes application data — two socket writes, and on another thread the acceptor's `pump` is
+free to run in the gap. `InThreadClient` drives the client on the acceptor's own thread and queues
+`hello` *before* the flush that carries `Finished`, so the determinism is single-threaded ordering
+rather than a hope that two records share a TCP segment. `[measured 2026-09-12]` **3 of 5
+repetitions red before, 0 of 8 after**, on the runner.
+
+### The finding worth more than the fix
+
+**Reversal R2 went red on an assertion the approved plan did not predict, and the predicted one
+stayed green.** The plan said: put the `ClientHello` on the wire before the first pump and the
+*"first pump is `Pending`"* assertion goes red. It did not. `Pending` is reported in **two** states
+— nothing to do, and plenty to do but the peer has not answered — so it never was a discriminator.
+What went red was a second assertion added almost as a footnote: *the acceptor cannot have written
+a `ServerHello` for a `ClientHello` that was never sent.* Measured rather than argued: replacing
+that assertion with a print read `first = Pending, acceptor answered 647 bytes` and `... ok`.
+
+Read off its exit status, that reversal would have "proven" a line that cannot fail for the reason
+it exists. **Third wrong reversal prediction on this branch, and this one was in an approved plan.**
+[a-red-reversal-does-not-prove-the-assertion-you-wrote-it-for.md](docs/reference/a-red-reversal-does-not-prove-the-assertion-you-wrote-it-for.md),
+`[to testing-skills]`, carrying step 4a's case with it.
+
+### Two false greens this closed, both of them in gates
+
+- **The gate ran a flaky test once and called the commit green.** `[measured 2026-09-12]` 3 of 5
+  repetitions were red while the job finished **green**. The gate now runs the `tls` binary **three
+  times** and fails on any red.
+- **A red test binary hid two others entirely.** `cargo test` stops at the first failing binary, so
+  the earlier red run reported **6** tests where there are **11**, and `tls_wire.rs` and
+  `tls_mode.rs` had never run anywhere but this desk. `--no-fail-fast` now, and the step catches
+  cargo's status instead of letting `-e` abort — so the `tests that ran` count prints on a red run,
+  which is the only thing separating *a test failed* from *no test ran*.
+
+### Not proven, and the next session should not inherit it as proven
+
+- **The flake does not reproduce on this desk, even on the old code.** 30/30 green, and 30/30 again
+  pinned to one core against four spinners. The evidence for the diagnosis is the **runner's**
+  numbers only; the evidence for the fix is R1/R2 plus 0-of-8 on the runner.
+- **Three repetitions bound flakiness, they do not remove it.** What removes it is the
+  construction, and the construction is guarded by its own reversals.
+- **Nothing here says anything about the engine thread under TLS.**
+  `scripts/check-no-kernel-sleep.sh` still has no TLS arm — step 6 of the `tls` plan, untouched —
+  so this repository makes **no claim** about mode under TLS, and `DESIGN.md` §8's TLS row is still
+  empty.
+
+### Next
+
+**PR #61 is green and mergeable.** It carries step 4b of the `tls` plan as well as all of
+62/65, so the merge closes both. After it: `tls` plan step 4c (the five configuration keys),
+then step 6 (the TLS arm of `check-no-kernel-sleep.sh`) — and that one needs the §9 box and root,
+which this session did not need at all.
 
 ## Start here — 2026-09-10, later: TLS reaches the front door, and a reversal refuted the prediction it was written from
 

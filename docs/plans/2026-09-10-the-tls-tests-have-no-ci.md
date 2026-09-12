@@ -453,3 +453,22 @@ khi ghim `taskset -c 0` cùng 4 tiến trình quay. Nên bằng chứng cho (a) 
 runner**, và bằng chứng cho bản sửa là R1/R2 chứ không phải một tỉ lệ đỏ trước-sau. Ba lần lặp
 trong gate **chặn** flake chứ không **khử** nó; thứ khử nó là cách dựng, và cách dựng được canh
 bằng đảo chiều của chính nó.
+
+### Run CI xanh, theo id, cho đúng commit đóng
+
+`89b192b` — runs [`34671147574`](https://github.com/tmthang86/fixbolt/actions/runs/34671147574)
+(`push`) và [`34671149007`](https://github.com/tmthang86/fixbolt/actions/runs/34671149007)
+(`pull_request`), **14 job / 14 ở cả hai**. Job `tls` đọc từng dòng chứ không đọc dấu tick:
+
+```
+verdict: READY
+TLS tests that ran: 11
+=== tls.rs repetition 1 of 3 ===   test result: ok. 6 passed; 0 failed
+=== tls.rs repetition 2 of 3 ===   test result: ok. 6 passed; 0 failed
+=== tls.rs repetition 3 of 3 ===   test result: ok. 6 passed; 0 failed
+tls.rs repetitions failed: 0 of 3
+```
+
+**Và đây là con số trước-sau mà tôi đã nói là không có.** Gộp hai run: `tls.rs` chạy **8 lượt trên
+runner, 0 đỏ**. Trên `31fc0ec` cùng runner đó: **3 đỏ trên 5**. Nên bản sửa *có* tỉ lệ trước-sau —
+chỉ là nó chỉ tồn tại trên runner, không tồn tại ở bàn này, đúng như chỗ flake vốn sống.
