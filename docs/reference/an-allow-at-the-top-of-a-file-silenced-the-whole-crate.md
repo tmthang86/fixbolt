@@ -129,3 +129,12 @@ there was anything to catch, and it caught something on the first real run.**
 > **Refuse to treat an empty result as a pass** — it is the cheapest clause in
 > any gate that greps, and the only thing standing between "nothing is wrong"
 > and "nothing was looked at".
+
+**Guarded since 2026-09-12 by `scripts/check-no-crate-root-allow.sh`**, which refuses any inner
+`allow`/`expect` at a crate root — and any `warn` that lowers a lint the workspace denies —
+across every `lib`/`bin` target under `crates/`, taken from `cargo metadata` rather than from
+file names. The paste-a-violation reversal above is run once more as R-A4 of
+[its plan](../plans/2026-09-12-crate-root-allow-scratch-fixture-and-tls-4c.md), tying the textual
+check to the compiler effect: `[measured 2026-09-12]` with the crate-root `#![allow]` in place a
+fresh `v[0]` in a clean submodule of `dict` compiled at **exit 0** with no diagnostic, and without
+it the same code is **exit 101, `error: indexing may panic`**.

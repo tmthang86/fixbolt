@@ -356,5 +356,125 @@ Theo bảng `CLAUDE.md` §4, đi từng hàng:
 
 ## Nhật ký giao hàng
 
-*(trống — chưa dựng gì; điền khi đóng từng bước, ghi cả câu FAIL quan sát được ở mỗi đảo chiều
-và id run CI của commit đóng)*
+### Bước 1 và 2 — hai script, xong 2026-09-12, commit `2bdbf3f`
+
+`scripts/check-no-crate-root-allow.sh` (A0–A3) và `scripts/check-scratch-fixtures.sh` (B0–B4),
+cả hai đã nối vào job `lint-config` của `ci.yml`, ngay cạnh `check-lint-config.sh`.
+
+Số hai script đọc được ở cây sạch:
+
+```
+check-no-crate-root-allow: ok — 6 crate roots, 9 manifests
+check-scratch-fixtures: ok — 19 scripts, 1 enter a scratch dir, 1 pins
+```
+
+Bảy đảo chiều, mỗi cái **viết câu FAIL dự đoán trước rồi mới chạy**, và mỗi cái đỏ đúng câu đã
+dự đoán. Manager tự chạy lại R-A2 và R-B2:
+
+```
+check-no-crate-root-allow: FAIL — crate-root warn lowers a workspace deny at crates/dict/src/lib.rs:1
+exit=1
+check-scratch-fixtures: FAIL — scripts/check-no-kernel-sleep.sh:102 enters a scratch dir ($TMP, from mktemp at :31) and never copies rust-toolchain.toml into it
+```
+
+**Phát hiện đáng giá hơn cả hai script: A2 lần đầu viết ra đã *xanh* trên chính đảo chiều của
+nó.** Không phải đỏ ở assertion khác — không đỏ gì cả. Bộ khớp của nó là
+`(^|[^A-Za-z0-9_:])${lint}\b`, tức là loại dấu `:` ra khỏi những ký tự được phép đứng trước tên
+lint, nên nó **không bao giờ khớp được một lint viết sau `::`** — mà mọi lint clippy thật đều
+viết như thế. Cái assertion sinh ra để bắt `#![warn(clippy::unwrap_used)]` thì mù với
+`clippy::`. Sửa thành `\b${lint}\b` và chạy lại cả ba đảo chiều A.
+
+Đây là một nấc xa hơn item 58: ở đó **thứ được canh** bị tắt còn con số vẫn đọc đúng; ở đây
+**chính cái canh** bị tắt, và chỉ một đảo chiều có câu FAIL viết sẵn từ trước mới nhìn thấy. Nếu
+chỉ đọc *đỏ hay không đỏ* thì lần chạy đó được ghi là pass. Viết thành
+[a-matcher-excluded-the-separator-every-real-name-uses.md](../reference/a-matcher-excluded-the-separator-every-real-name-uses.md),
+có `[to testing-skills]`.
+
+### Bước 3 — đảo chiều hiệu ứng R-A4, rồi tài liệu. Xong 2026-09-12
+
+**R-A4 chạy đúng một lần, dự đoán viết trước khi chạm vào cây.**
+
+Chọn module nào của `dict`: crate này chỉ có hai file nguồn — `lib.rs` và `field_type.rs` —
+và `field_type.rs:20` đã mang `#![allow(clippy::indexing_slicing)]` của riêng nó, nên nó
+**không sạch**. Kiểm bằng `grep -rn '^#!\[' crates/*/src` và `ls crates/dict/src`. Module sạch
+duy nhất là chính gốc crate. Nên thí nghiệm tạo thêm một **file module mới, sạch**,
+`crates/dict/src/probe_scratch.rs`, khai báo bằng `pub mod probe_scratch;` trong `lib.rs` — đúng
+hình dạng của item 58 (một submodule sạch bị `#![allow]` ở gốc crate tắt hộ), chứ không phải
+cùng một file tự tắt chính nó.
+
+Dự đoán, viết trước:
+
+- **Lần 1**, có `#![allow(clippy::indexing_slicing)]` ở dòng 1 của `crates/dict/src/lib.rs`:
+  `cargo clippy -p fixbolt-dict --lib` **exit 0**, không có chữ `indexing may panic` nào.
+- **Lần 2**, bỏ đúng dòng đó, mọi thứ khác giữ nguyên: **exit khác 0**, có
+  `error: indexing may panic` chỉ vào `v[0]` trong `probe`.
+
+Lần 1, output nguyên văn và exit tách riêng:
+
+```
+EXIT_STATUS_RUN1=0
+   Compiling fixbolt-dict v0.0.0 (/home/tmt/Projects/nanofixengine/crates/dict)
+    Checking fixbolt-codec v0.0.0 (/home/tmt/Projects/nanofixengine/crates/codec)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.95s
+```
+
+`grep -c 'indexing may panic'` trên output đó: **0**.
+
+Lần 2:
+
+```
+EXIT_STATUS_RUN2=101
+    Checking fixbolt-dict v0.0.0 (/home/tmt/Projects/nanofixengine/crates/dict)
+error: indexing may panic
+ --> crates/dict/src/probe_scratch.rs:2:5
+  |
+2 |     v[0]
+  |     ^^^^
+  |
+  = help: consider using `.get(n)` or `.get_mut(n)` instead
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#indexing_slicing
+  = note: requested on the command line with `-D clippy::indexing-slicing`
+
+error: could not compile `fixbolt-dict` (lib) due to 1 previous error
+```
+
+**Cả hai dự đoán đúng.** Đây là thứ nối kiểm **văn bản** của A1 với **hiệu ứng** thật của trình
+biên dịch: A1 đỏ đúng lúc lint thật sự bị tắt, chứ không phải đỏ vì một luật văn bản tự đặt ra.
+
+Cây được khôi phục ngay sau đó: xoá `probe_scratch.rs`, `git checkout -- crates/dict/src/lib.rs`.
+`git status --porcelain` và `git diff -- crates/` đều rỗng trước khi viết tài liệu.
+
+**Tài liệu — đi từng hàng bảng `CLAUDE.md` §4:**
+
+- `docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md` — **mới**, là bẫy đắt
+  nhất của bước 1 (hàng *bẫy đã trả giá*, ưu tiên cao nhất). Có `[to testing-skills]`; đoạn tổng
+  quát hoá không nhắc FIX, engine hay bất cứ thứ gì của lĩnh vực này.
+- `CLAUDE.md` §2, đoạn *Machine-checked today*: thêm hai script vào phần bất biến 7, giữ nguyên
+  chữ cũ. `check-scratch-fixtures.sh` được ghi là **bất biến 7 ở một tầng lùi — nó canh cái
+  gate, không canh cái luật**: nó không chứng minh rằng không có `unwrap` trong crate thư viện,
+  nó chứng minh rằng thứ đi chứng minh điều đó chạy trên đúng compiler của dự án.
+- `DESIGN.md` §6, bảng *Mode and machine*: hai hàng mới ngay dưới hàng `check-lint-config.sh`.
+  Bảng trên đĩa đúng như plan giả định.
+- `STATUS.md` item **58** và **23** đóng. 23 đóng **theo lớp**, và ghi rõ cả hai vế: cái gì giờ
+  đã được giữ, và cái gì vẫn không — `cd` qua hàm hay `eval`, `cd -- "$(dirname "$X")"`, fixture
+  trong một bước `run:` của `ci.yml`, script Python, và artefact ghim ở mức **máy**
+  (`$CARGO_HOME/config.toml`) mà không file nào trong repo ghim được.
+- `STATUS.md` mục *Not proven*: **grep lại 2026-09-12, không có bullet nào về gốc crate, fixture
+  tạm, hay chuyện cấu hình lint có với tới mọi module — nên không có gì để gạch.** Đúng như hàng
+  tương ứng trong mục *Tài liệu phải cập nhật* của plan này đã nói.
+- `STATUS.md` mục *Not proven*: **thêm** một bullet — chưa script mới nào đi qua `shellcheck`; nó
+  không có trên máy này và không job CI nào chạy nó trên `scripts/`.
+- Hai file `docs/reference/` cũ (`an-allow-at-the-top-of-a-file-silenced-the-whole-crate.md`,
+  `a-scratch-fixture-inherits-the-machine.md`) mỗi file thêm một đoạn *"Guarded since 2026-09-12
+  by `scripts/…`"* — luật *"prose does not hold a constraint"*.
+
+Cổng chạy lại sau khi sửa tài liệu: `python3 scripts/check-links.py`,
+`bash scripts/check-no-crate-root-allow.sh`, `bash scripts/check-scratch-fixtures.sh` — output
+trích trong báo cáo của bước.
+
+### Việc dở dang sau bước 3
+
+- Bước **4–7** (gate doc↔key, rồi 4c) **chưa bắt đầu**. Nếu cắt ở đây thì PR vẫn có nghĩa: item
+  58 và 23 đóng, 4c chưa chạm — đúng như mục *Nếu phải cắt* của plan.
+- **Chưa có id run CI** cho commit đóng. §9 hộp cuối chưa đánh dấu được.
+- **`shellcheck` chưa chạy** trên hai script mới — ghi ở *Not proven* của `STATUS.md`.

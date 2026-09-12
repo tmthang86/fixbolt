@@ -87,7 +87,30 @@ that may only go down. **The `deny` half was inert for a day and the count did n
 is an *inner* attribute and silences the whole crate, so new indexing in a clean module of `engine`,
 `session` or `dict` compiled without a word while the ratchet read exactly right
 (`docs/reference/an-allow-at-the-top-of-a-file-silenced-the-whole-crate.md`). Scoped to 15 functions
-now, and the reversal is run per crate rather than once. 6 — the
+now, and the reversal is run per crate rather than once. **Two more for 7 since 2026-09-12, and
+each guards a *class* whose first instance was closed with nothing watching for the second.**
+`scripts/check-no-crate-root-allow.sh` is the check the sentence above wanted: it refuses any inner
+`allow`/`expect` at a crate root, and any `warn` that lowers a lint the workspace currently denies,
+over every `lib`/`bin` target under `crates/` taken from `cargo metadata` rather than from file
+names — so the `#![allow(clippy::unwrap_used)]` that would switch this whole rule off in one line is
+a red, which `check-lint-config.sh` can never see because it reads `Cargo.toml` and not source. It
+reads 6 crate roots and 9 manifests, and **its own second assertion is the finding**: `[measured
+2026-09-12]` the first implementation of that assertion went *green* on its own reversal — a
+character class excluding `:` could not match a lint written after `clippy::`, which is how every
+real one is written, so the guard itself was off from the first run it ever made, and only a
+reversal whose FAIL sentence had been written down beforehand could see it
+(`docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`). `[measured 2026-09-12]`
+R-A4 ties that textual check to the compiler effect once: with a crate-root `#![allow]` in place a
+fresh `v[0]` in a clean submodule of `dict` is **exit 0, no diagnostic**, and without it **exit 101,
+`error: indexing may panic`**. `scripts/check-scratch-fixtures.sh` is **7 at one remove — it guards
+the gate, not the rule**: `[measured 2026-08-31]` `check-lint-config.sh` built its throwaway crate
+in `mktemp -d`, where `rust-toolchain.toml` does not reach, so the only machine check this rule has
+was either a false red about the rule or silently running against a different clippy from the one
+the workspace pins. That instance was fixed with one `cp`; this script holds the class, keyed on the
+trigger rustup actually uses — *entering* a directory outside the tree, not calling `mktemp` — with
+the pinning-artefact set derived from what exists at the root and **no allow-list**, because a named
+exemption is permanent and the day an exempt script grows a `cargo build` in its scratch dir nobody
+checks. It reads 19 scripts, 1 entering a scratch dir, 1 pin. 6 — the
 `no-default-features` CI job **plus `scripts/check-no-optional-deps.sh`, and the second is not
 a nicety**: `[measured 2026-08-30]` the CI job alone was green about a build that never
 happened. `cargo test --all --no-default-features` still compiled `libc`, because `tools/w2w`
