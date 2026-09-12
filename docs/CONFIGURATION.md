@@ -18,7 +18,7 @@ Validation is strict. An unknown key, a malformed value or an impossible schedul
 startup with the line number and the text that was written
 ([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)).
 
-**Twenty-six keys** are recognised `[changed 2026-09-05, was eleven]`.
+**Thirty keys** are recognised `[changed 2026-09-12, was twenty-six]`.
 
 | Key | Meaning | Values | Default | Where | Source |
 |---|---|---|---|---|---|
@@ -116,6 +116,43 @@ Three rules the file enforces:
   refused.
 - A value longer than 32 bytes is refused rather than truncated. A truncated name would match
   no counterparty and the acceptor would start cleanly and serve nobody.
+
+**The certificate this acceptor presents** `[added 2026-09-12]`:
+
+| Key | Meaning | Values | Default | Where | Source |
+|---|---|---|---|---|---|
+| `SocketUseSSL` | Turn TLS on for this listener | `Y` or `N` | `N` | `[DEFAULT]` **only**; acceptor only — refused on an initiator file, by line | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `ServerCertificateFile` | The PEM certificate chain this acceptor presents | a path to a PEM file | required when `SocketUseSSL=Y`; refused otherwise | `[DEFAULT]` only | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `ServerCertificateKeyFile` | The private key for that chain | a path to a PEM file | required when `SocketUseSSL=Y`; refused otherwise | `[DEFAULT]` only | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `TlsRequireKernel` | Refuse this deployment rather than serve TLS from userspace, if the kernel cannot take the keys ([ADR-0060](decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md)) | `Y` or `N` | `N` | `[DEFAULT]` only; **refused**, not ignored, without `SocketUseSSL=Y` | [`settings.rs`](../crates/engine/src/settings.rs) |
+
+**All four are `[DEFAULT]`-only and acceptor-only, for the same reason a dialling key is refused
+on an acceptor file.** These four describe the certificate a *server* presents; an initiator file
+carrying one gets `WrongRole`, by line, exactly like `SocketConnectHost` on an acceptor file.
+There is no `ClientCertificateFile` yet, so an initiator has nothing to configure here. A
+`[SESSION]` block carrying one of the four is `DefaultOnly`, for the reason `FileLogPath` already
+is: one listener presents one certificate ([ADR-0005](decisions/ADR-0005-tls.md) open question 5)
+— SNI and a certificate per counterparty are out of scope, not merely unbuilt.
+
+**The switch and the certificate are checked against each other, not read independently.**
+`SocketUseSSL=Y` with no `ServerCertificateFile` or no `ServerCertificateKeyFile` is
+`MissingKey`, blamed on the `SocketUseSSL=` line; a certificate, a key or `TlsRequireKernel`
+written down with `SocketUseSSL=N` or no `SocketUseSSL` line at all is also `MissingKey`, blamed
+on the key that would do nothing — refused rather than silently ignored, because an operator who
+wrote a certificate and forgot the switch would otherwise get a plaintext acceptor with no
+sentence about it anywhere.
+
+**A build without the `tls` feature refuses `SocketUseSSL=Y` at parse time** (`Problem::NeedsFeature`)
+rather than serve the port in plaintext — non-negotiable 6: such a build has no `rustls` in it at
+all, so parsing and ignoring the key is not an honest option. This check runs *last*, so a file
+with a missing certificate is still told that first, in every build.
+
+**`Settings::into_table` refuses a file that asks for TLS** (`Problem::NeedsTlsDoor`, naming the
+`SocketUseSSL=` line), the same expensive mistake `WrongRole` already guards: the table would be
+perfectly well formed and the acceptor would serve **plaintext**, certificate unread on disk,
+nothing on the wire to say so. [`Settings::into_tls_table`](../crates/engine/src/settings.rs) is
+the door that returns the `Table` and the certificate together; reading the PEM off disk is the
+caller's next step, at [`tls::load_pem`](../crates/engine/src/tls.rs).
 
 ---
 
@@ -290,6 +327,14 @@ The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbo
 |---|---|---|---|
 | `standard` | `engine`, `library` | The blocking poller (`block.rs`, `serve`, `StandardAcceptorEngine`), through `poll(2)` via `libc` | **on** |
 | `affinity` | `engine` | Core pinning and topology checks via `libc`, Linux only. Naming a core in a build without it is a hard error | off |
+| `tls` | `engine` | `mod tls`: the userspace `rustls` handshake, the kTLS handover, `serve_tls`/`serve_tls_with`/`serve_tls_requiring`, `tls::load_pem`, and the four `SocketUseSSL`-family settings keys (§1). Pulls in `rustls`, `ktls-core` and `libc` — the first dependencies in this crate that bring a tree of their own | off |
 
-`cargo build --no-default-features` builds with neither, and CI proves that on a runner with
-nothing optional installed.
+`cargo build --no-default-features` builds with none of the three, and CI proves that on a
+runner with nothing optional installed. **`tls` is Linux-only in practice**: `mod tls` itself is
+gated only on the feature, but the handshake, `load_pem` and every `serve_tls*` entry point
+inside it are additionally `#[cfg(target_os = "linux")]`, so a `--features tls` build on another
+target compiles the crate but exposes no way to bring a TLS listener up — [D11 in
+`DESIGN.md`](DESIGN.md) has the full split by mode. The four `SocketUseSSL`-family settings keys
+(§1) are unaffected by any of this: `TlsSettings` and `Settings::into_tls_table` are compiled in
+every feature set, which is what lets a build **without** `tls` refuse `SocketUseSSL=Y` with a
+sentence (`Problem::NeedsFeature`) instead of failing to compile at all.

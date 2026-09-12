@@ -649,13 +649,19 @@ offering the caller the choice. All of it is behind `--features tls`, on Linux.
 `PendingSet<T, R, PRE>` holds one transport *type* from `admit` to `take`, so a stage that
 changes the socket's type cannot be expressed. `presession.rs` was not modified.
 
-**Still not built:** the initiator side, `TlsRequireKernel`, an event when a session falls back,
-the five configuration keys, and `w2w --tls`. **Still unverified:** which kernel version and
-cipher suites are the floor (ADR-0005 open question 2), whether a session survives a TLS 1.3 key
-update under kTLS (question 6), and what asserts which of the three modes is live (question 3) —
-`TlsMode` exists and *nothing reads it*. **The §8 TLS row stays empty**, and
-`scripts/check-no-kernel-sleep.sh` has no TLS arm, so no claim is made about the engine thread
-under TLS.
+**Still not built:** the initiator side, and `w2w --tls`. **Still unverified:** which kernel
+version and cipher suites are the floor (ADR-0005 open question 2), and whether a session
+survives a TLS 1.3 key update under kTLS (question 6). **Question 3 — what asserts which mode is
+live — is answered, as of step 4b [merged 2026-09-12, `e728c16`]:** `Transport::tls_mode()` is
+read by `serve_tls_with_offload`, a handshake that lands in userspace raises
+`observe::EventKind::TlsFellBackToUserspace` regardless of `TlsRequireKernel`, and
+`TlsRequireKernel=Y` refuses a deployment whose kernel cannot offload — both halves of
+ADR-0060 decision 1, with `crates/engine/tests/tls_mode.rs` driving every arm. **The four
+configuration-file keys landed too, as of step 4c [2026-09-12]:** `SocketUseSSL`,
+`ServerCertificateFile`, `ServerCertificateKeyFile` and `TlsRequireKernel`, all `[DEFAULT]`-only
+and acceptor-only — `docs/CONFIGURATION.md` §1 has the table, `crates/engine/src/settings.rs`
+the code. **The §8 TLS row stays empty**, and `scripts/check-no-kernel-sleep.sh` has no TLS arm,
+so no claim is made about the engine thread under TLS.
 
 **One thing measured on the way, because the obvious guess about it is wrong.**
 `[measured 2026-09-10]` only a `setup_ulp` refusal reaches the userspace fallback. A refusal from

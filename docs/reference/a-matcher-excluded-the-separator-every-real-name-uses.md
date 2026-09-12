@@ -117,3 +117,7 @@ a pass, and the assertion would have shipped, in CI, never able to fire.
 `scripts/check-no-crate-root-allow.sh` assertion A2, and the reversal R-A2 recorded in
 [the plan](../plans/2026-09-12-crate-root-allow-scratch-fixture-and-tls-4c.md). `STATUS.md`
 item 58.
+
+- [a-reversal-that-removed-the-guard-s-label-not-the-guard](a-reversal-that-removed-the-guard-s-label-not-the-guard.md)
+  — the third of the same day: a reversal that deleted a guard's `#[cfg]` label and left the
+  guarded statement compiled, so nothing changed and the test stayed green.

@@ -103,3 +103,8 @@ still wrong. What caught it was not review: it was printing the value instead of
   that observable, and *pending* never could have been.
 - **If a reversal fails during setup, it has not tested anything.** Get it to the assertion, or
   write a different reversal.
+
+`[2026-09-12, later]` A third case of the family, from the same day:
+[a-reversal-that-removed-the-guard-s-label-not-the-guard](a-reversal-that-removed-the-guard-s-label-not-the-guard.md)
+— the reversal removed the `#[cfg]` restricting a refusal instead of the refusal itself, so the
+program did not change and the green result was determined before the run started.

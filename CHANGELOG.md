@@ -165,6 +165,25 @@ below describe what a first release would contain.
   `TlsTransport` and nothing yet reports it, so **a deployment cannot currently tell which of the
   three modes carried its bytes** — ADR-0005 open question 3, still open.
 
+- **A `.cfg` file can now ask for TLS.** `fixbolt_engine::settings` reads four new
+  `[DEFAULT]`-only keys — `SocketUseSSL`, `ServerCertificateFile`, `ServerCertificateKeyFile`,
+  `TlsRequireKernel` — into a new public type, `TlsSettings` (`certificate()`, `private_key()`,
+  `require_kernel()`), reachable through two new `Settings` methods: `tls() -> Option<&TlsSettings>`
+  and `into_tls_table() -> Result<(Table, TlsSettings), SettingsError>`. `docs/CONFIGURATION.md`
+  §1 has the four rows; **thirty keys recognised now, not twenty-six**.
+
+  Two new `Problem` variants (the enum is `#[non_exhaustive]`, so this is not breaking):
+  `NeedsFeature` — `SocketUseSSL=Y` in a build without the `tls` feature, refused at **parse
+  time** rather than served in plaintext, non-negotiable 6 — and `NeedsTlsDoor` — a file that
+  asks for TLS handed to `Settings::into_table()`, refused for the same reason `WrongRole`
+  already is: the table would be well formed and the acceptor would serve plaintext with the
+  certificate unread on disk. `into_tls_table()` is the door that works.
+
+  **`fixbolt_engine::tls::load_pem(&TlsSettings)`**, behind `--features tls` on Linux, reads the
+  certificate chain and private key `TlsSettings` names into the `CertificateDer`/`PrivateKeyDer`
+  pair every `serve_tls*` entry point takes. Four operator mistakes get four distinct sentences,
+  each naming the settings key and the path, carried as `ServeError::Tls`.
+
 - **`fixbolt_engine::AcceptorEngineOver<T, …>`**, the acceptor engine shape over any transport.
   `TcpAcceptorEngine` is now an alias for it with `T = TcpTransport`, so no existing signature
   changed.

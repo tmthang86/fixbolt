@@ -478,3 +478,243 @@ trích trong báo cáo của bước.
   58 và 23 đóng, 4c chưa chạm — đúng như mục *Nếu phải cắt* của plan.
 - **Chưa có id run CI** cho commit đóng. §9 hộp cuối chưa đánh dấu được.
 - **`shellcheck` chưa chạy** trên hai script mới — ghi ở *Not proven* của `STATUS.md`.
+
+### Bước 4 — gate hai chiều doc↔key, xong 2026-09-12, commit `348b9a8`
+
+Bước 4c (`Sửa 3` của plan TLS) tự nhận là "kiểm hai chiều như 26 key kia", nhưng **gate đó chưa
+từng tồn tại**: không test, script hay job CI nào đọc `docs/CONFIGURATION.md` để đối chiếu với
+`Key`. `#[cfg(test)] mod doc_table` trong `settings.rs` đọc `include_str!("settings.rs")`, lấy
+mọi literal chữ trong các nhánh của `Key::name` (`match` không có nhánh `_`, nên danh sách này
+**đầy đủ do trình biên dịch giữ**, không phải do tay), rồi so với từng hàng `| \`Tên\` |` của §1
+— cả hai chiều — cộng `Key::parse(name(k)) == Some(k)` cho mọi key. Hai chốt chống-câm thêm vào
+ngoài yêu cầu của plan, rút từ chính bài học buổi sáng rằng một guard không khớp được thì không
+có gì để quan sát: một nhân chứng thứ hai gạo `Key::parse` độc lập rồi so hai tập hợp, và một sàn
+26 chỉ được tăng.
+
+**Tiền đề của bước không đúng, và đó chính là phát hiện.** Plan dự đoán test đỏ ngay khi viết, vì
+`CONFIGURATION.md:21` nói *"Twenty-three keys"* cạnh 26 hàng. Nó **xanh**: bảng §1 và enum `Key`
+đã khớp đúng nhau, chỉ câu văn xuôi ở dòng 21 sai — và test không đọc câu văn xuôi, một doc
+comment phía trên module nói rõ điều đó để sau này không ai tưởng câu đó được canh. Sửa dòng 21
+thành "Twenty-six"; con số được một `awk` độc lập xác nhận, không phải bởi test.
+
+Bốn đảo chiều thay vào đó, mỗi cái viết câu dự đoán trước. Manager tự chạy lại cái thứ hai:
+
+```
+docs/CONFIGURATION.md §1: Key has no doc row: `TimestampPrecision`
+test result: FAILED. 2 passed; 1 failed
+```
+
+Hai đảo chiều ngoài kịch bản của plan (R3, R4) là lý do hai chốt chống-câm tồn tại: phá dòng đánh
+dấu `Key::name` làm cả ba test đỏ ở câu *"is now reading nothing"* thay vì lướt qua một lần quét
+rỗng và coi như xanh; đổi tên heading `## 1.` cũng cho kết quả tương tự ở phía tài liệu.
+
+Hai giới hạn nói ra trước, chứ không để bị phát hiện sau: gate đọc dòng bắt đầu bằng `|`, nó
+**không parse markdown** — xoá dòng `|---|---|` của một bảng vẫn để gate xanh, tìm ra vì gõ sai
+một đảo chiều; và chú thích `[changed 2026-09-05, was eleven]` ở dòng 21 tự nó đã cũ — để nguyên,
+không thuộc phạm vi bước này.
+
+**Bất biến 7 áp dụng cho cả code `#[cfg(test)]`, và điều đó được kiểm bằng đảo chiều chứ không
+mặc định.** Không có `clippy.toml`, nên `unwrap()` trong module mới là lỗi biên dịch
+(`error: used \`unwrap()\` on a \`Result\` value`); module dùng `unwrap_or_default`,
+`strip_prefix`, `split_once` và `assert!` thay vào đó.
+
+Cổng: `cargo test --all` 626 qua, 0 hỏng; `--no-default-features` 0 hỏng; `cargo clippy
+--all-targets -- -D warnings` sạch; `cargo fmt --check` sạch; hai script của bước 1-2 vẫn `ok`;
+`check-links.py` 1865 link, không link chết. CI xanh trên commit cha `41bdd99`, run
+`34682470085`, 14/14 job.
+
+**Đỏ có chủ đích, chưa đóng plan**: bốn key mới của bước 5 chưa có hàng tài liệu —
+
+```
+docs/CONFIGURATION.md §1: Key has no doc row: `SocketUseSSL`
+test result: FAILED. 2 passed; 1 failed
+```
+
+Bước 6 và bước 7 đóng cả hai — plan TLS tự nói 4c-1 không merge nếu thiếu 4c-2.
+
+### Bước 5 (4c-1) — bốn key TLS vào `Settings`, xong 2026-09-12, commit `b39b52e`
+
+TLS đã tới cửa trước từ 4a và từ chối triển khai đòi kernel từ 4b, nhưng chưa file cấu hình nào
+bật được gì cả. Bốn key, đặt tên theo luật `docs/CONFIGURATION.md:69-77` tự viết — tên của
+QuickFIX C++ ở chỗ C++ có tên: `SocketUseSSL` (C++ không có key bật/tắt, đây là tên QuickFIX/J),
+`ServerCertificateFile`, `ServerCertificateKeyFile`, `TlsRequireKernel` (không kỹ sư nào khảo sát
+có key này; tiền lệ là `ReconnectCeiling`). `TlsCaFile` **không có**: `tls.rs:561` gọi
+`with_no_client_auth()`, và một key không ai đọc là một lời hứa trong tài liệu.
+
+`Settings::tls() -> Option<&TlsSettings>` mượn; `into_tls_table()` trả về bản sở hữu, vì bên gọi
+giữ chứng chỉ là bên đang dựng listener. `TlsBlock` tách khỏi `Block` có chủ đích: `Block` gộp
+theo từng `[SESSION]`, còn bốn key này không bao giờ gộp như vậy — nên *"một key TLS trong
+`[SESSION]` là lỗi"* là tính chất của kiểu dữ liệu, không phải luật phải nhớ.
+
+**Bất biến 6 là nửa quan trọng, và nó là *từ chối sạch sẽ*, không phải *đọc rồi lơ đi*.** Build
+không có feature `tls` từ chối `SocketUseSSL=Y` ngay lúc parse (`Problem::NeedsFeature`). Đúng
+một `#[cfg(not(feature = "tls"))]` trong cả crate, ở `settings.rs:707`, đặt trên **một câu lệnh**
+chứ không phải một khối — dạng khối làm phần còn lại của hàm thành `unreachable_code` và `-D
+warnings` đỏ. Nó nằm **cuối cùng** trong `settle` có chủ đích, để năm trong bảy test mới chạy
+được ở cả hai bộ feature, không chỉ bộ có TLS.
+
+`into_table()` từ chối file mang `SocketUseSSL=Y` bằng `Problem::NeedsTlsDoor` — cái sai đắt chỉ
+có một chiều: file xin TLS rót vào `serve` thường, phục vụ plaintext mà không ai thấy.
+
+**Đảo chiều, và lần thử đầu của manager là một no-op đáng ghi lại.** Thay `#[cfg(not(feature =
+"tls"))]` bằng một dòng comment khiến câu lệnh được canh vẫn biên dịch **vô điều kiện** — build
+không feature vẫn từ chối đúng, test vẫn xanh. **Đó là một đảo chiều không đổi gì cả, và nếu đọc
+theo đúng nghĩa đen sẽ tưởng nó vừa "chứng minh" cái guard.** Xoá hẳn cả khối từ chối mới là đảo
+chiều có ý nghĩa:
+
+```
+thread 'socket_use_ssl_is_refused_without_the_tls_feature' panicked at crates/engine/tests/settings.rs:1065:5:
+assertion `left == right` failed: a build without the `tls` feature must refuse SocketUseSSL=Y at parse time rather than serve the port in plaintext; instead: Ok(true)
+  left: None
+ right: Some(NeedsFeature)
+test result: FAILED. 38 passed; 1 failed
+```
+
+Người viết test lại vấp đúng lớp đó theo hướng khác: cách viết test tự nhiên nhất làm đảo chiều
+đỏ **bên trong** một hàm phụ, ở câu *"this should not have parsed"* — đúng
+`a-red-reversal-does-not-prove-the-assertion-you-wrote-it-for` một lần nữa. Assertion bây giờ so
+sánh một `Option<&Problem>` tồn tại bất kể file có parse được hay không.
+
+Ba bộ lệnh, không phải hai như brief tưởng: mặc định, `--no-default-features` và `--features
+tls` — vì `default = ["standard"]`, không có `tls`, nên hai bộ đầu là một.
+
+```
+default                  test result: ok. 39 passed; 0 failed
+--no-default-features    test result: ok. 39 passed; 0 failed
+--features tls           test result: ok. 41 passed; 0 failed
+```
+
+`cargo clippy --all-targets -- -D warnings` sạch cả hai; `check-indexing-debt.sh` 181/181,
+không đổi.
+
+**ĐỎ CÓ CHỦ ĐÍCH, nhánh này không được merge ở trạng thái này.** Gate hai chiều của bước 4 đỏ vì
+bốn key mới chưa có hàng tài liệu:
+
+```
+docs/CONFIGURATION.md §1: Key has no doc row: `SocketUseSSL`
+test result: FAILED. 2 passed; 1 failed
+```
+
+Hai nhân chứng còn lại của gate vẫn xanh, nên bản quét còn nguyên, chỉ thiếu hàng.
+`scripts/check-no-optional-deps.sh` thoát 1 đúng một test đó, không gì khác. Bước 6 (`load_pem`
+và test wire) và bước 7 (tài liệu) đóng cả hai.
+
+### Bước 6 (4c-2) — `load_pem` và một `.cfg` thật đưa phiên TLS lên, xong 2026-09-12, commit `0a49778`
+
+Bước 5 thêm bốn key và không ai đọc chúng; plan TLS tự nói 4c-1 không merge nếu thiếu bước này.
+Nó cũng đóng một khoảng trống hình dạng: `TlsSettings` giữ đường dẫn, mọi `serve_tls*` nhận DER,
+và chưa gì trong engine đọc PEM.
+
+`tls::load_pem(&TlsSettings)` nằm sau đúng cổng `#[cfg(all(feature = "tls", target_os =
+"linux"))]` như `server_config`, dùng `pem_file_iter`/`from_pem_file` của `rustls-pki-types`
+1.15.1 — đã có sẵn trong cây qua feature `std` của `rustls`, không thêm dependency,
+`Cargo.toml` không đổi. Bốn lỗi thao tác viên khác nhau được bốn câu khác nhau, mỗi câu nêu tên
+key cấu hình và đường dẫn: file không mở được, file không có mục `CERTIFICATE`, hai câu tương tự
+cho key. `ServeError::Tls` mang chúng; không `unwrap`, `expect`, `panic!` hay indexing —
+`check-indexing-debt` không đổi, 181/181.
+
+`crates/engine/tests/tls_settings_wire.rs` chạy toàn bộ đường đi trên một socket thật: `rcgen`
+ghi PEM ra thư mục tạm, một `.cfg` thật đặt tên hai đường dẫn đó cộng `SocketUseSSL=Y`, rồi
+`Settings::parse` → `into_tls_table` → `load_pem` → `serve_tls_requiring` → một client `rustls`
+bình thường bắt tay và logon.
+
+**Đảo chiều là trọng tâm của bước, và manager đã tự chạy lại.** Hoán đổi **nội dung byte** của
+hai file PEM:
+
+```
+load_pem refused the PEM written by rcgen: building the TLS server configuration: ServerCertificateFile /tmp/fixbolt-tls-settings-wire-up-88891/server.crt holds no CERTIFICATE section
+test result: FAILED. 2 passed; 1 failed; finished in 0.00s
+```
+
+Đỏ ở `load_pem`, trước khi listener bind, đúng như dự đoán. `0.00s` tự nó là bằng chứng — lần
+chạy xanh mất 2.19s vì nó mở socket, còn lần này chưa tới đó.
+
+Hoán đổi **đường dẫn** thay vì nội dung — đúng chữ plan yêu cầu — **không** tới được `load_pem`:
+một assertion trước đó bắt được trước. Cùng lớp với
+`a-matcher-excluded-the-separator-every-real-name-uses`: đảo chiều chạy, đỏ, nhưng chứng minh một
+thứ khác với thứ nó được viết ra để chứng minh. Ghi lại trong doc của chính module test, không
+phải một file `docs/reference/` mới. Một đảo chiều thứ hai — xoá chứng chỉ sau khi `.cfg` đã đặt
+tên nó — rơi đúng chỗ đó với câu khác, và đó là cái xác nhận bốn câu thông báo thật sự khác nhau
+nhau: soạn nó bắt được một tiền tố lặp (`could not be opened: I/O error: …`) mà không test đứng
+sẵn nào thấy được, vì chúng chỉ kiểm tên key và đường dẫn, không kiểm câu chữ.
+
+`cargo test -p fixbolt-engine --features tls --no-fail-fast`, chạy **ba lần**, cả 24 target xanh
+mỗi lần, chỉ còn đỏ tài liệu đã biết. Lặp lại có lý do: chính cái flake mà PR #61 đóng sáng nay
+được tìm ra nhờ chạy binary TLS ba lần, một lần xanh không nói lên điều gì.
+
+**CI SẼ KHÔNG CHẠY FILE NÀY nếu không sửa.** Job `tls` của `.github/workflows/ci.yml` nêu tên
+binary test tường minh — `--test tls --test tls_wire --test tls_mode` — và file mới không nằm
+trong đó, nên job sẽ xanh mà chưa từng biên dịch nó. Đúng hình dạng của `STATUS.md` item 62 một
+lớp sâu hơn, và đúng thứ mà con số *"TLS tests that ran"* của job đó tồn tại để bắt. Đã thêm
+`--test tls_settings_wire`, kèm comment rằng một file test `--features tls` mới phải được thêm ở
+đó trong cùng commit.
+
+Trần indexing của `CLAUDE.md` §2 đọc **184** trong khi script đã đọc 181 từ khi item 60 lên
+`main` 2026-09-09. Luật không đổi — trần chỉ được giảm — chỉ con số cũ, và nay ghi cả ngày nó
+dịch chuyển lẫn ngày nó được sửa. Một luật, một chỗ.
+
+**ĐỎ CÓ CHỦ ĐÍCH, không đổi từ commit trước, vẫn là đỏ duy nhất:**
+
+```
+docs/CONFIGURATION.md §1: Key has no doc row: `SocketUseSSL`
+```
+
+`scripts/check-no-optional-deps.sh` thoát 1 đúng một test đó. `cargo clippy --all-targets
+--features tls -- -D warnings` sạch, `cargo fmt --check` sạch, `check-links.py` 1867 link không
+chết, hai script của bước 1-2 vẫn `ok`. Bước 7 đóng tài liệu.
+
+### Bước 7 — tài liệu 4c, xong 2026-09-12 (commit đóng bước này)
+
+Viết bởi developer (sonnet), theo đúng brief bước 7: bốn hàng `docs/CONFIGURATION.md` §1 (đọc
+hành vi thật từ `settings.rs` và bảy test của `crates/engine/tests/settings.rs`, không đoán),
+một hàng `tls` ở §4 (thiếu từ bước 1 của plan TLS), mục TLS của `GUIDE.md` (`:1473`) thêm điều
+người dùng phải biết mà trình biên dịch không giữ được, `DESIGN.md` D11 đoạn *"Still not built"*
+sửa cho đúng sau 4b **và** 4c — bao gồm sửa một câu đã sai từ trước bước này: câu hỏi mở 3 của
+ADR-0005 (*cái gì khẳng định mode nào đang chạy*) đã được trả lời từ bước 4b (`e728c16`, sáng nay)
+nhưng D11 vẫn còn ghi *"TlsMode exists and nothing reads it"* — sửa luôn, không thuộc phạm vi
+brief nhưng là tài liệu tôi được giao sửa. `CHANGELOG.md` thêm API mới (`Settings::tls`,
+`into_tls_table`, `TlsSettings`, `tls::load_pem`, hai `Problem` mới), nhật ký giao hàng của cả
+hai plan.
+
+**Không đụng `crates/engine/src/settings.rs` hay bất cứ gì dưới `crates/`** — gate đỏ được canh
+bởi chính test đó, và nó là thứ đang phán xét bước này, đúng như brief nói.
+
+Cổng, trích nguyên văn:
+
+```
+cargo test -p fixbolt-engine --lib settings
+test settings::doc_table::every_key_name_parses_back_to_its_key ... ok
+test settings::doc_table::configuration_md_section_1_lists_exactly_the_keys ... ok
+test settings::doc_table::the_key_scrape_is_not_silently_short ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out
+```
+
+`cargo test --all` và `cargo test --all --no-default-features`: mọi binary `0 failed` (thoát đọc
+từ `${PIPESTATUS[0]}`, không qua `tail`). `bash scripts/check-no-optional-deps.sh`: `ok` cả chín
+kiểm. `python3 scripts/check-links.py`: `1882 internal links checked … no dead internal links` —
+tăng từ 1867, mọi liên kết mới (`ADR-0060`, `ADR-0005`, `tls.rs`, `settings.rs`) đều trỏ đúng chỗ.
+`bash scripts/check-no-crate-root-allow.sh` và `bash scripts/check-scratch-fixtures.sh`: vẫn
+`ok`, không đổi vì bước này không chạm code. `git status --porcelain`: đúng năm file được giao
+chạm, cộng nhật ký giao hàng của hai plan.
+
+**Không tạo file `docs/reference/` mới**, dù bước 5 để lại một phát hiện chưa có nơi ghi (đảo
+chiều no-op của manager, xem *Bước 5* ở trên) — việc đó nằm ngoài phạm vi bước 7 (chỉ docs được
+liệt kê trong brief), nên chỉ nêu tên trong nhật ký này và trong `STATUS.md`, không tự ý thêm
+file.
+
+### Việc dở dang sau bước 7
+
+- **Chưa có id run CI** cho bất kỳ commit nào sau `41bdd99`. §9 hộp cuối chưa đánh dấu được cho
+  các commit của bước 4-7 — manager sẽ đặt tên run khi đóng plan.
+- **`shellcheck` chưa chạy** trên bất kỳ script nào của repo này — ghi ở *Not proven* của
+  `STATUS.md`.
+- **Không có gì nói về luồng engine dưới TLS.** `scripts/check-no-kernel-sleep.sh` chưa có arm
+  TLS, `DESIGN.md` §8 hàng TLS vẫn trống.
+- **Ba đảo chiều gần-trượt của cả nhánh, một điểm chung**: bộ khớp không khớp `clippy::` (bước
+  1, đã có file), đảo chiều no-op của manager ở bước 5 (chưa có file), hoán đường dẫn của bước 6
+  không tới được `load_pem` (ghi trong doc của test, không phải file riêng). Hai trong ba đã có
+  chỗ ghi bền; cái còn lại được nêu tên ở đây và ở `STATUS.md` để không mất.
+- **Plan TLS bước 5, 6, 7 (đánh số riêng của plan đó) chưa bắt đầu**: initiator, `w2w --tls`, arm
+  TLS của `check-no-kernel-sleep.sh`.
+- Nếu phải cắt ở đây: không cần cắt gì nữa — bước 7 là bước cuối của plan này. Việc còn lại là
+  của manager: chạy lại toàn bộ cổng trên chính commit đóng, đặt tên một run CI, và commit.
