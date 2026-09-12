@@ -78,6 +78,34 @@ whose reconcile half reads a real run's log for three assertions that do not dep
 its two streams interleaved in. `STATUS.md` items 68 and 69. CI run `34696713544` is where this
 was found — job "TLS, with the kernel it needs", on commit `7323299`.
 
+## The same log, a third way, and the desk was green every time
+
+`[measured 2026-09-12]` the fix above was pushed, and CI went red again on the same gate —
+now reading **0 of 38** `Running` lines out of a log in which every binary had run. The cause
+was neither order nor spelling: **the tool colours its output on the runner and not on a piped
+desk terminal.** GitHub's runner receives
+
+```
+ESC[1mESC[92m     RunningESC[0m tests/foo.rs (target/debug/deps/foo-ff33a9423628d6e3)
+```
+
+and a matcher anchored at `^[[:space:]]*Running` cannot match a line that begins with an escape
+sequence. Reproduced by colourising a real local log and running the pre-fix checker over it:
+`0 Running lines`, the exact CI failure, against `38` after the fix.
+
+**Three failures of one gate, three different causes, and one thing in common: the developer's
+machine was green for all three.** A merged stream, a decorated name and a colour escape are
+each a way that *the same command's output is not the same text* on two machines. The rule that
+covers all three is narrower than "test on CI": **when a check parses another tool's output,
+that output is an interface the tool never promised to keep — so parse the most machine-readable
+form it offers, and normalise what you must parse.** In this case: take the binaries from the
+tool's JSON rather than from its prose, and strip the decorations before matching anything.
+
+And put the normalisation in the thing that *reads* the log, not in the thing that writes it.
+A checker handed a log it did not produce cannot assume how it was produced — setting a
+`no colour` variable where the log is generated fixes today's caller and leaves the next one
+to rediscover this.
+
 - [a-test-s-name-is-spelled-differently-in-a-listing-and-in-a-run](a-test-s-name-is-spelled-differently-in-a-listing-and-in-a-run.md)
   — found while fixing this one, in the same gate: a second, independent way the same log could
   be misread, this time about spelling rather than order.

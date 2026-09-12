@@ -216,6 +216,17 @@ declare -A log_ignored=()   # test name -> times seen ignored
 declare -A log_exe=()       # executable file name -> times a Running line named it
 running_lines=0
 
+# LOG is read through a filter that removes ANSI colour escapes. `[measured
+# 2026-09-12]` this half read **0 Running lines** out of a CI log in which
+# every one of the 38 binaries had run, because cargo colours its output on
+# GitHub's runner and not on a piped desk terminal: the runner writes
+# `ESC[1mESC[92m     RunningESC[0m tests/foo.rs (...)`, and `^[[:space:]]*Running`
+# cannot match that. The desk was green for the third time on a gate CI was
+# red on — see
+# docs/reference/two-streams-through-one-pipe-have-no-guaranteed-order.md.
+# The filter is here rather than in ci.yml on purpose: this script is handed a
+# log it did not produce, so it may not assume anything about how that log was
+# generated, `CARGO_TERM_COLOR` included.
 while IFS= read -r line; do
   if [[ "${line}" =~ ^[[:space:]]*Running[[:space:]].*\(([^()]*)\)[[:space:]]*$ ]]; then
     running_lines=$((running_lines + 1))
@@ -240,7 +251,7 @@ while IFS= read -r line; do
       log_ignored["${name}"]=$(( ${log_ignored["${name}"]:-0} + 1 ))
     fi
   fi
-done <"${log_file}"
+done < <(sed -E $'s/\x1b\\[[0-9;]*[a-zA-Z]//g' "${log_file}")
 
 fail=0
 accounted=0
