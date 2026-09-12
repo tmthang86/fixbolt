@@ -481,6 +481,28 @@ The architect is never a worker.
   evidence, in Vietnamese (§6), never as "the agent said it passed". The plan the architect
   writes is the one document the owner approves, so it is on disk and in Vietnamese before
   anything is built.
+`[added 2026-09-12]` **Once a plan is approved, the manager runs it to delivery without
+stopping to ask.** Approval of the plan is approval of the whole sequence below; the manager does
+not come back between steps for permission it already has. The sequence, in order, and none of it
+is optional:
+
+1. **Build every step of the plan**, routed per the table above, re-running the gate that closes
+   each step on the commit that closes it, and committing each step that ends green (§8).
+2. **Then a senior review**, in a fresh context, given the plan and the gates but not the
+   manager's reasoning — one per pull request, and per step where §2 says so.
+3. **A finding goes back to the senior developer to fix**, on the same branch, with the gate
+   re-run afterwards. It does not go to the owner as a question, and the manager does not fix it
+   itself. A finding that is a *design* problem goes to the architect instead (§1's third row):
+   stop, fix the plan, get it re-approved — that is the one case that does interrupt the run.
+4. **No findings — or all findings fixed and green — then merge**, and in the same pass update
+   `STATUS.md` and every document §4's table sends you to, naming the CI run id for the commit
+   being closed (§9's last box).
+
+**What still stops the run**, and nothing else: a gate that will not go green, a plan that turns
+out wrong, a step that needs the §9 machine when another session is measuring on it, or anything
+§8 calls out as needing the owner. **The owner is told what happened, not asked whether to
+continue.**
+
 **A session is one pull request, and the handoff is written, not remembered.** The owner opens
 a fresh session per pull request, and this repository already carries its state in files:
 `STATUS.md`, the plan's *Nhật ký giao hàng* — "the part that survives context compaction" — and
