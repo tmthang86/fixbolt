@@ -452,12 +452,26 @@ jobs:
             exit 1
           fi
       - run: cargo clippy --all-targets --features tls -- -D warnings
-      # `[measured 2026-09-12]` **This list is explicit, and that is itself a
-      # trap the job has now sprung once.** Step 4c-2 added
+      # `[measured 2026-09-12]` **This list is explicit, and it has now sprung
+      # the same trap twice in one day.** Step 4c-2 added
       # `tests/tls_settings_wire.rs` and this line did not name it, so the job
       # would have gone green having never compiled it — item 62's shape one
-      # layer in, which is what the count below exists to catch. A new
-      # `--features tls` test file must be added here in the same commit.
+      # layer in, which is what the count below exists to catch.
+      #
+      # **The second time was worse, and a list of FILES cannot catch it.** The
+      # senior review of PR #63 found three `#[cfg(feature = "tls")]` tests
+      # living in `tests/settings.rs` — a file this list had no reason to name,
+      # because most of it is not about TLS. `cargo test --all` compiles them
+      # away (no `tls` in the default features) and this job never named the
+      # file, so they ran on one desk and nowhere else. One of them,
+      # `into_table_refuses_a_file_that_asks_for_tls`, guards the expensive
+      # mistake `Problem::NeedsTlsDoor` exists for: a configuration that asks
+      # for TLS poured into plain `serve`, serving plaintext on a port the
+      # operator believes is encrypted.
+      #
+      # So the rule is not "add the new file": it is that **a `tls`-gated test
+      # anywhere in the crate must be named here**, and the count below is the
+      # only thing that will tell you when one is not.
       #
       # **Read the count, not the exit status.** `--features tls` compiles four
       # test files the default build never sees; a run that compiled none of them
@@ -476,7 +490,7 @@ jobs:
           status=0
           cargo test -p fixbolt-engine --features tls --no-fail-fast \
             --test tls --test tls_wire --test tls_mode \
-            --test tls_settings_wire \
+            --test tls_settings_wire --test settings \
             2>&1 | tee /tmp/tls-tests.log || status=$?
           ran="$(grep -cE '^test .* \.\.\. ok$' /tmp/tls-tests.log)"
           echo "TLS tests that ran: ${ran}"

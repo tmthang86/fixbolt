@@ -89,7 +89,7 @@ is an *inner* attribute and silences the whole crate, so new indexing in a clean
 (`docs/reference/an-allow-at-the-top-of-a-file-silenced-the-whole-crate.md`). Scoped to 15 functions
 now, and the reversal is run per crate rather than once. **Two more for 7 since 2026-09-12, and
 each guards a *class* whose first instance was closed with nothing watching for the second.**
-`scripts/check-no-crate-root-allow.sh` is the check the sentence above wanted: it refuses any inner
+`scripts/check-no-crate-root-allow.sh` is the check the sentence above wanted: it refuses the ordinary spelling of an inner
 `allow`/`expect` at a crate root, and any `warn` that lowers a lint the workspace currently denies,
 over every `lib`/`bin` target under `crates/` taken from `cargo metadata` rather than from file
 names — so the `#![allow(clippy::unwrap_used)]` that would switch this whole rule off in one line is

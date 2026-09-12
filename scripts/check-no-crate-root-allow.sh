@@ -98,6 +98,21 @@ fi
 
 # ---------------------------------------------------------------------------
 # A1 — no inner allow/expect (bare or cfg_attr-wrapped) at a crate root.
+#
+# THIS MATCHES A SPELLING, NOT A MEANING, and the senior review of PR #63
+# `[measured 2026-09-12]` got past it four ways that rustc accepts and that
+# really do silence the crate:
+#
+#   #![/*x*/allow(...)]        <- passes THIS check AND `cargo fmt --check`
+#   # ! [ allow ( ... ) ]      <- passes here, rewritten by cargo fmt
+#   /* c */ #![allow(...)]     <- passes here, rewritten by cargo fmt
+#   #!\n[allow(...)]           <- passes here, rewritten by cargo fmt
+#
+# Only the first survives the whole pipeline, because `cargo fmt --all --check`
+# runs in CI and normalises the other three. So the honest claim is: this check
+# plus rustfmt refuses the spellings a person actually writes, and the comment
+# form is a known hole. STATUS.md carries it as an open item rather than being
+# fixed under a closed plan.
 # ---------------------------------------------------------------------------
 A1_RE='^[[:space:]]*#!\[[[:space:]]*(cfg_attr\([^]]*,[[:space:]]*)?(allow|expect)\b'
 

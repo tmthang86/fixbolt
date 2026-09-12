@@ -1500,9 +1500,21 @@ fn schedule(block: Block<'_>) -> Result<Option<Schedule>, SettingsError> {
 /// never been checked at all, which is how `docs/CONFIGURATION.md:21` came to
 /// say *"Twenty-three keys"* above a table of 26 rows for a week.
 ///
-/// **The count sentence itself is still unguarded.** These tests compare the
-/// enum with the *rows* of §1; the prose above the table is prose, and nothing
-/// here would notice it going stale again.
+/// **Only the first cell of each row is checked, and that is a narrower promise
+/// than it reads.** These tests answer one question — *does a row exist whose
+/// key cell names this key, and does every key cell name a key?* Everything
+/// else in the row is prose: the meaning, the valid values, the default, the
+/// notes. A row can say the exact opposite of the code and stay green.
+///
+/// That is not hypothetical. `[measured 2026-09-12]` the `TlsRequireKernel`
+/// notes cell was written *"does nothing without `SocketUseSSL=Y`"* while
+/// `settle` **refuses** it, and this gate was green across the mistake; the
+/// senior review of PR #63 then falsified the meaning, values and default of
+/// two rows at once and still read `3 passed; 0 failed`.
+///
+/// **The count sentence above the table is unguarded too**, which is how
+/// `docs/CONFIGURATION.md:21` came to say *"Twenty-three keys"* over 26 rows
+/// for a week. Both gaps are `STATUS.md` open items rather than silent.
 #[cfg(test)]
 mod doc_table {
     use super::Key;

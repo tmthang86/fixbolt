@@ -113,6 +113,19 @@ for f in "${SCRIPTS[@]}"; do
   is_scratch=()
   origin_line=()
 
+  # THREE SHAPES GET PAST B1/B2, found by the senior review of PR #63
+  # `[measured 2026-09-12]`, each verified to pass this script while really
+  # leaving the tree:
+  #
+  #   cd "$(mktemp -d)"           no variable at all, so B1 never seeds
+  #   readonly TMP="$(mktemp -d)" the seed regex takes local|declare|export
+  #   # cp rust-toolchain.toml …  a COMMENTED cp satisfies B2
+  #
+  # The third is the worst, because it is the shape a person produces while
+  # debugging: the check SEES the `cd`, counts it, and accepts a commented-out
+  # line as proof the copy happens. STATUS.md carries all three as an open item
+  # rather than being fixed under a closed plan.
+  #
   # --- B1a: seed pass — vars assigned straight from mktemp/$TMPDIR//tmp/ ----
   line_no=0
   while IFS= read -r line || [[ -n "$line" ]]; do

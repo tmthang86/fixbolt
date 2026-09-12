@@ -130,7 +130,7 @@ there was anything to catch, and it caught something on the first real run.**
 > any gate that greps, and the only thing standing between "nothing is wrong"
 > and "nothing was looked at".
 
-**Guarded since 2026-09-12 by `scripts/check-no-crate-root-allow.sh`**, which refuses any inner
+**Guarded since 2026-09-12 by `scripts/check-no-crate-root-allow.sh`**, which refuses the ordinary spelling of an inner
 `allow`/`expect` at a crate root — and any `warn` that lowers a lint the workspace denies —
 across every `lib`/`bin` target under `crates/`, taken from `cargo metadata` rather than from
 file names. The paste-a-violation reversal above is run once more as R-A4 of
