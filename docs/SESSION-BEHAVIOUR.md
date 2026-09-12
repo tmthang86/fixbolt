@@ -45,6 +45,18 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 | `SlowApplication` | the ring to the application filled ([ADR-0011](decisions/ADR-0011-a-full-ring-disconnects.md)) |
 | `SlowConsumer` | the counterparty stopped reading and the send queue filled (DESIGN.md D10) |
 | `EngineShutdown` | an ordered shutdown closed it at the deadline ([ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md)) |
+| `RefusedByDeployment` | **nothing on the wire was wrong.** This deployment's configuration refused the connection — today only `TlsRequireKernel=Y` meeting a handshake that landed in userspace ([ADR-0060](decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md)). The **preceding event** on the stream names the policy; guarded by `crates/engine/tests/tls_mode.rs` |
+
+**The last five are the engine's reasons, not the wire's**, and the distinction is the point of
+the last one. `[measured 2026-09-10]` a connection refused for `TlsRequireKernel` used to report
+`SendingTimeOutOfRange`, with `Session::last_skew_ms` reading about **two thousand years** —
+a protocol accusation, carrying a number, against a counterparty that had done nothing wrong.
+The cause was that a refused connection still parsed the counterparty's `Logon`, and, no tick
+having run, judged its `52=` against a session clock still at zero. `STATUS.md` item 63.
+
+**A refused connection now judges nothing at all**, which is what QuickFIX C++ and quickfix-go
+both do (`docs/reference/prior-art.md`), and the reason is recorded at the moment of refusal
+because `disconnect_with` will not replace a cause already set.
 
 `DropReason` is `#[non_exhaustive]`; match it with a `_` arm. The engine pushes it to the
 operator on the event stream ([GUIDE.md §8a](GUIDE.md), *Why a connection ended*).

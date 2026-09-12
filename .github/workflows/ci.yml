@@ -60,6 +60,17 @@ jobs:
       - uses: actions/checkout@v5
       - run: scripts/check-ktls-classify.sh
       - run: scripts/check-machine-verdicts.sh
+      # `[measured 2026-09-10]` This runner CAN offload TLS, and that answer is
+      # what made the `tls` job below buildable as written: kernel
+      # `6.17.0-1022-azure`, `CONFIG_TLS=m`, module loaded, `/proc/net/tls_stat`
+      # present, `setsockopt(TCP_ULP, "tls")` ACCEPTED, verdict `READY`.
+      #
+      # Kept, and kept non-fatal. It is the `tls` job's diagnostic: when that
+      # job goes red on a kernel assertion, this line says in one glance whether
+      # the runner changed under us or the engine broke. `|| true` because a
+      # step that can fail is a gate, and the gate is the other job.
+      - name: What this runner's kernel says about TLS offload (informational)
+        run: scripts/check-ktls-available.sh || true
 
   # Also meaningful today: this repository is 17 markdown files and has already
   # shipped dead links twice, both found by hand.
@@ -388,6 +399,84 @@ jobs:
   # CLAUDE.md §2 non-negotiable 6: this must build on a machine with nothing
   # optional installed. Its own runner, so it cannot inherit anything a
   # previous step put there.
+  # `[measured 2026-09-10]` **Nothing had ever run a TLS test.** `ci.yml` passed
+  # `--features affinity` for the shard tests and `--all-features` to cargo-deny
+  # and cargo-doc, and never `--features tls` to `cargo test` — so
+  # crates/engine/tests/{tls,tls_wire,tls_mode}.rs ran on one desktop and every
+  # green pull request since the feature landed was green about code it had not
+  # compiled a test for. Found by grepping a GREEN run's log for a test name and
+  # getting zero. STATUS.md item 62, plan
+  # docs/plans/2026-09-10-the-tls-tests-have-no-ci.md.
+  #
+  # **Its own job, not a step on `fmt · clippy · test`.** One of these tests
+  # asserts /proc/net/tls_stat moved, which is a claim about the *runner* rather
+  # than about this engine. Folded into a job that runs six other things, a
+  # kernel that lost its tls module would read as "the test suite is broken".
+  tls:
+    name: TLS, with the kernel it needs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/fetch-quickfix-assets.sh
+      # **The environment is asserted first, and fails in its own words.** Not
+      # caution: before this, a missing kernel module surfaced four minutes later
+      # as `tls_stat TlsTxSw did not move` — an assertion that reads as an engine
+      # defect. An environment that cannot run the test must fail differently
+      # from an engine that is broken.
+      - name: This runner must be able to offload TLS
+        run: |
+          verdict="$(scripts/check-ktls-available.sh | tail -n +1 | grep -E '^(READY|NOT_BUILT|OTHER|NOT_LOADED)' | head -1)"
+          echo "verdict: ${verdict:-<none>}"
+          if [ "$verdict" != "READY" ]; then
+            echo "::error title=This runner cannot offload TLS::scripts/check-ktls-available.sh did not say READY. The TLS tests below assert that the kernel took the keys, and on this runner they cannot mean anything. This is the environment, not the engine — see STATUS.md item 62."
+            exit 1
+          fi
+      - run: cargo clippy --all-targets --features tls -- -D warnings
+      # **Read the count, not the exit status.** `--features tls` compiles three
+      # test files the default build never sees; a run that compiled none of them
+      # also exits 0. The step prints how many of their tests ran and fails if it
+      # is zero, which is the reversal for this job written into the job.
+      - name: The TLS tests, and proof they were the ones that ran
+        run: |
+          set -o pipefail
+          # `--no-fail-fast`, because `[measured 2026-09-12]` the red run of this
+          # job reported six tests when there are eleven: cargo stops at the
+          # first failing test binary, so `tls_wire.rs` and `tls_mode.rs` had
+          # still never run on any machine but the owner's desk.
+          # The status is caught rather than allowed to abort the step, so that
+          # the count below is printed for a RED run too — it is the count, not
+          # the exit status, that separates "a test failed" from "no test ran".
+          status=0
+          cargo test -p fixbolt-engine --features tls --no-fail-fast \
+            --test tls --test tls_wire --test tls_mode \
+            2>&1 | tee /tmp/tls-tests.log || status=$?
+          ran="$(grep -cE '^test .* \.\.\. ok$' /tmp/tls-tests.log)"
+          echo "TLS tests that ran: ${ran}"
+          if [ "$ran" -eq 0 ]; then
+            echo "::error title=The TLS job ran no TLS tests::cargo exited 0 having compiled nothing. That is the exact shape of STATUS.md item 62, one layer in."
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          # **Three repetitions of the `tls` binary, and all three must pass.**
+          # `[measured 2026-09-12]` runs 34666630103 and 34666631877 on commit
+          # 31fc0ec: 3 of 5 repetitions were red while this job finished green,
+          # because the gate ran the flaky test exactly once and hit a good
+          # roll. One green is what let a scheduling race live in this file.
+          fails=0
+          for i in 1 2 3; do
+            echo "=== tls.rs repetition ${i} of 3 ==="
+            if ! cargo test -p fixbolt-engine --features tls --test tls; then
+              fails=$((fails + 1))
+            fi
+          done
+          echo "tls.rs repetitions failed: ${fails} of 3"
+          if [ "$fails" -ne 0 ]; then
+            echo "::error title=The TLS tests are not deterministic::${fails} of 3 repetitions of the tls binary failed. A single green says nothing here — see the comment above this step."
+            exit 1
+          fi
+
   no-default-features:
     name: Builds with nothing optional installed
     runs-on: ubuntu-latest

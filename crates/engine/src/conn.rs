@@ -9,7 +9,7 @@
 #![allow(clippy::indexing_slicing)]
 
 use fixbolt_session::journal::Journal as SessionJournal;
-use fixbolt_session::{Application, Link, Role, Session};
+use fixbolt_session::{Application, DropReason, Link, Role, Session};
 
 use crate::backpressure::{Backpressure, SLOW_APPLICATION, SLOW_CONSUMER};
 
@@ -77,6 +77,16 @@ pub struct Connection<
     /// Set when the session says the link is down, so the engine can drop it
     /// after the last bytes have been pushed out.
     closing: bool,
+    /// Set when this deployment refused the connection before any session ran.
+    ///
+    /// `[2026-09-10]` **Its own flag rather than `closing`, and that is the
+    /// bug it fixes.** `closing` guards only the tick-and-send half of
+    /// [`Self::turn`]; the socket read and the loop that judges what arrived
+    /// sit after that block and run whatever `closing` says. So a refused
+    /// connection still parsed the counterparty's `Logon` — and, with no tick
+    /// having run, judged its `52=` against a session clock still at zero.
+    /// `STATUS.md` item 63.
+    refused: bool,
     /// Set when the **socket** is gone. Different from `closing`: a closing
     /// connection still has bytes to write, a dead one has nowhere to write
     /// them, and waiting for a queue to drain into a dead socket is a
@@ -112,6 +122,7 @@ impl<
             tx: [0; TX],
             tx_len: 0,
             closing: false,
+            refused: false,
             dead: false,
             policy: Backpressure::Disconnect,
             overflow: false,
@@ -267,6 +278,29 @@ impl<
         self.transport.source()
     }
 
+    /// End this connection before it ever carried a session.
+    ///
+    /// `[2026-09-10]` **[ADR-0060] decision 1**, the per-connection half:
+    /// `TlsRequireKernel=Y` and this handshake did not reach the kernel.
+    ///
+    /// Both flags are set, and `dead` is the one that matters. There is nothing
+    /// to write: no `Logout`, because there is no session to send one and no
+    /// text field to carry a reason, so waiting for a queue to drain would be
+    /// waiting for a queue that is empty. **The counterparty sees a closed
+    /// socket and nothing else** — one-sided by construction, and ADR-0060's
+    /// Consequences say so rather than leaving it to be discovered.
+    ///
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    pub fn refuse_without_a_session(&mut self, why: DropReason) {
+        // **Recorded while it is known.** `disconnect_with` will not replace a
+        // cause already set, so noting it here is what stops the ending being
+        // reported as whatever happens next.
+        self.session.note_drop_reason(why);
+        self.refused = true;
+        self.closing = true;
+        self.dead = true;
+    }
+
     /// One pass: push what is queued, read what has arrived, judge it, and let
     /// the clock move.
     ///
@@ -300,6 +334,18 @@ impl<
         let now_ms = now.ms;
         let at_ms = now_ms;
         self.shard = shard;
+        // **Before the socket is read, because a refused connection must not
+        // judge the counterparty's bytes.** `[researched 2026-09-10]` QuickFIX
+        // C++ drops the socket without ever handing the first message to a
+        // session (`SocketConnection.cpp:174-177`) and quickfix-go closes
+        // before `session.connect()`; `docs/reference/prior-art.md`. Judging
+        // them here would let a message this end had already decided to refuse
+        // set the reason it is reported under.
+        if self.refused {
+            self.unsent = self.tx_len;
+            let _ = self.session.disconnect(|_| {});
+            return Turn::Gone;
+        }
         let mut moved = self.flush();
 
         if !self.closing {

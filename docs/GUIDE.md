@@ -1479,14 +1479,19 @@ Stated so you do not discover it in production:
      negotiate and a free negotiation makes the kernel offload depend on what the other end
      offered. Which kernel and which suites are the floor is still open
      ([ADR-0005](decisions/ADR-0005-tls.md) question 2).
-  2. **You cannot find out whether your session is on kTLS or on userspace `rustls`.**
-     `TlsMode` exists on the transport and **nothing reports it**, so a latency figure you take
-     from a TLS session may describe either path. Until that lands, do not publish one.
+  2. **You are told when a session leaves the kernel, and you can refuse it.**
+     `[2026-09-10]` `EventKind::TlsFellBackToUserspace` names the connection that fell back, and
+     `TlsRequireKernel=Y` refuses twice: `serve_tls_requiring` **will not bind** on a host whose
+     kernel cannot offload TLS, and a handshake that lands in userspace anyway ends that
+     connection with `DropReason::RefusedByDeployment`. **The report does not depend on the
+     strictness** — a permissive deployment serves the fallback and still gets the event. A
+     latency figure from a connection that raised it is about a different code path, so do not
+     publish one without saying which mode it was.
   3. **One certificate per listener.** No SNI, no second certificate. An acceptor that needs
      more runs more listeners.
 
-  **Not built:** the initiator side, `TlsRequireKernel`, any configuration-file key, and any
-  published TLS latency number. `scripts/check-no-kernel-sleep.sh` has no TLS arm, so nothing
+  **Not built:** the initiator side, any configuration-file key (`TlsRequireKernel` is an
+  argument today, not a settings entry), and any published TLS latency number. `scripts/check-no-kernel-sleep.sh` has no TLS arm, so nothing
   here claims the engine thread stays out of the kernel under TLS.
 - **It cannot originate an application message.** `Handler::on_message` returns one reply to
   one inbound message, and the session's `send_application` is reachable only by driving the

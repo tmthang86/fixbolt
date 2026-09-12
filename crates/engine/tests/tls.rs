@@ -72,35 +72,113 @@ fn client_config(cert: rustls::pki_types::CertificateDer<'static>) -> Arc<rustls
     Arc::new(cfg)
 }
 
-/// A blocking `rustls` client on its own thread — the *counterparty*, not the
-/// code under test. Deliberately the ordinary buffered API: the thing being
-/// proven is that this engine's non-blocking acceptor completes a handshake
-/// with a perfectly normal TLS client.
-fn client_thread(
-    addr: std::net::SocketAddr,
-    cert: rustls::pki_types::CertificateDer<'static>,
-) -> std::thread::JoinHandle<std::io::Result<()>> {
-    std::thread::spawn(move || {
-        let cfg = client_config(cert);
+/// A `rustls` client driven **on this thread**, one step at a time — the
+/// *counterparty*, not the code under test.
+///
+/// **Why it is not a thread running `rustls::Stream`, which is what this file
+/// used until now.** `Stream::write_all` completes the handshake and *then*
+/// writes the application data: two separate socket writes, and on another
+/// thread the acceptor's `pump` is free to run in the gap between them. That
+/// gap is the whole flake. `[measured 2026-09-12]` CI runs 34666630103 and
+/// 34666631877, same commit `31fc0ec`, five repetitions each: every probe that
+/// read `early 0` also read `late_ciphertext 27` — the peer's TLS 1.3 record
+/// carrying 5 bytes of plaintext arrived **after** `pump` had reported
+/// [`Step::Done`]. Nothing was lost, and 3 of 5 repetitions were red on the
+/// runner while the same code was green 20 times on the owner's desk. The test
+/// was asserting a scheduling outcome it could only hope to meet.
+///
+/// **The ordering that replaces the hope, and it must not be "simplified"
+/// away:**
+///
+/// - Everything runs on one thread, so the acceptor's `pump` cannot run
+///   between two of the client's writes. A test flushes **all** pending client
+///   output with [`InThreadClient::flush_all`], and only then pumps again.
+/// - On loopback, TCP copies into the receiver's queue during the sender's
+///   `write`, so once `write_tls` has returned those bytes are readable by the
+///   acceptor. The determinism comes from that single-threaded ordering,
+///   **not** from hoping that two records share one TCP segment.
+///
+/// This side's socket is non-blocking too, which is what keeps the old failure
+/// mode away: a counterparty that waits for bytes the acceptor never sends
+/// hangs the test instead of failing it, and a hung test proves nothing
+/// (`docs/reference/a-reversal-can-fail-by-hanging.md`). Nothing here waits.
+struct InThreadClient {
+    conn: rustls::ClientConnection,
+    sock: TcpStream,
+}
+
+impl InThreadClient {
+    fn connect(
+        addr: std::net::SocketAddr,
+        cert: rustls::pki_types::CertificateDer<'static>,
+    ) -> Self {
         let name = "localhost".try_into().expect("a valid server name");
-        let mut conn = rustls::ClientConnection::new(cfg, name)
-            .map_err(|e| std::io::Error::other(format!("{e}")))?;
-        let mut sock = TcpStream::connect(addr)?;
-        let mut tls = rustls::Stream::new(&mut conn, &mut sock);
-        // Writing is what forces the handshake to completion, and it is all
-        // this counterparty does.
-        //
-        // **It deliberately does not read back**, and the first version of this
-        // test did. `rustls::Stream::read` blocks until bytes arrive; the code
-        // under test is a handshake driver that sends no application data, so
-        // the client waited forever and `joiner.join()` waited with it. The
-        // test hung instead of failing — which is how a test fails to prove
-        // anything at all (`docs/reference/a-reversal-can-fail-by-hanging.md`),
-        // and it looked exactly like the non-blocking loop having a bug.
-        tls.write_all(b"hello")?;
-        tls.flush()?;
-        Ok(())
-    })
+        let conn =
+            rustls::ClientConnection::new(client_config(cert), name).expect("a client connection");
+        // Connected blocking and switched after: the listener's backlog takes
+        // the connection without `accept` having been called yet, which is what
+        // lets both ends live on this thread.
+        let sock = TcpStream::connect(addr).expect("the listener is up");
+        sock.set_nonblocking(true).expect("non-blocking");
+        Self { conn, sock }
+    }
+
+    /// Take whatever the acceptor has already put on the wire and let rustls
+    /// act on it. Returns how many ciphertext bytes were there — **zero is an
+    /// observation**, not a non-event: it says the acceptor answered nothing.
+    fn absorb(&mut self) -> usize {
+        let mut got = 0usize;
+        loop {
+            match self.conn.read_tls(&mut self.sock) {
+                Ok(0) => break,
+                Ok(n) => {
+                    got += n;
+                    self.conn
+                        .process_new_packets()
+                        .expect("the acceptor's records parse");
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("read_tls: {e}"),
+            }
+        }
+        got
+    }
+
+    /// Hand rustls application plaintext. Queued into the **same** output
+    /// buffer as anything the handshake has already put there, and on the wire
+    /// only at the next [`InThreadClient::flush_all`].
+    fn queue_app(&mut self, data: &[u8]) {
+        self.conn
+            .writer()
+            .write_all(data)
+            .expect("rustls takes the plaintext");
+    }
+
+    fn is_handshaking(&self) -> bool {
+        self.conn.is_handshaking()
+    }
+
+    /// Put **everything** rustls has queued on the wire before returning. The
+    /// acceptor may only be pumped again after this has returned, and that is
+    /// the property the two tests below are built on.
+    fn flush_all(&mut self) {
+        // **Bounded, because the alternative is a hang.** A socket whose peer
+        // stopped reading answers `WouldBlock` for ever, and a test that spins
+        // there fails by hanging — which proves nothing at all
+        // (`docs/reference/a-reversal-can-fail-by-hanging.md`). A handshake
+        // flight is about a kilobyte and the loopback buffer is tens of them,
+        // so reaching this bound is a broken acceptor, not a slow one.
+        let mut spins = 0usize;
+        while self.conn.wants_write() {
+            spins += 1;
+            assert!(spins < 100_000, "the acceptor stopped reading mid-flight");
+            match self.conn.write_tls(&mut self.sock) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::yield_now(),
+                Err(e) => panic!("write_tls: {e}"),
+            }
+        }
+    }
 }
 
 #[test]
@@ -108,7 +186,7 @@ fn a_handshake_completes_without_the_acceptor_ever_blocking() {
     let (cert, key) = pki();
     let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
     let addr = listener.local_addr().expect("an address");
-    let joiner = client_thread(addr, cert.clone());
+    let mut client = InThreadClient::connect(addr, cert.clone());
 
     let (sock, _) = listener.accept().expect("the client connects");
     let mut transport = TcpTransport::new(sock).expect("non-blocking");
@@ -116,14 +194,39 @@ fn a_handshake_completes_without_the_acceptor_ever_blocking() {
         .expect("a server connection");
     let mut hs = Handshake::new(conn);
 
-    // **The assertion that this test exists for.** The handshake is driven in
-    // slices, and a slice that has nothing to do reports `Pending` and returns
-    // — it does not wait. A bounded number of sweeps stands in for the engine's
-    // own loop; an implementation that blocked would still pass, so the count
-    // below is what says it did not.
-    let mut sweeps = 0usize;
-    let mut pendings = 0usize;
+    // **The assertion that this test exists for, and it is now constructed
+    // rather than hoped for.** The handshake is driven in slices, and a slice
+    // that has nothing to do reports `Pending` and returns — it does not wait.
+    // The client lives on this thread and has not written one byte yet, so this
+    // first pump *is* that slice; it is not a race that usually goes the right
+    // way. Before this, the test asserted `pendings > 0` and hoped to meet the
+    // case at all.
+    let first = hs.pump(&mut transport);
+    assert_eq!(
+        first,
+        Step::Pending,
+        "a pump with an empty socket must report Pending and return, not wait"
+    );
+    // **`Pending` alone does not separate the two, and saying so here is the
+    // point.** A pump that had a whole `ClientHello` to answer also ends on
+    // `Pending`, waiting for the client's `Finished`. What says the acceptor
+    // had nothing to do is that it *answered* nothing: it cannot have written a
+    // `ServerHello` for a `ClientHello` that was never sent.
+    assert_eq!(
+        client.absorb(),
+        0,
+        "the acceptor wrote something in answer to a socket nobody had written to"
+    );
+
+    let mut sweeps = 1usize;
+    let mut pendings = 1usize;
     let outcome = loop {
+        // The client's whole turn, and all of it before the acceptor gets
+        // another: take what arrived, then flush **everything** rustls queued
+        // in reply. Nothing of this client's is left half-sent across a pump.
+        client.absorb();
+        client.flush_all();
+
         sweeps += 1;
         assert!(sweeps < 100_000, "the handshake never finished");
         match hs.pump(&mut transport) {
@@ -143,18 +246,16 @@ fn a_handshake_completes_without_the_acceptor_ever_blocking() {
          never see, and its receive sequence number has already counted it — \
          ADR-0018's third condition"
     );
-    // A handshake that finished on the first call never gave the socket a
-    // chance to be empty, so it proves nothing about not blocking. Every run
-    // observed here needs the peer's flight to arrive, which takes at least one
-    // round trip that this thread did not wait for.
+    // Two of these are known by construction: the empty socket above, and the
+    // one waiting for the client's `Finished`. `[measured 2026-09-12]` this
+    // reads exactly 2 on the owner's desk; the bound stays `> 0` because a
+    // partial write on a loaded machine can only *add* sweeps that yielded.
     assert!(
         pendings > 0,
         "the handshake completed without ever yielding — this test cannot \
          distinguish that from a spin, and the point of the inversion is \
          that it yields"
     );
-
-    let _ = joiner.join();
 }
 
 #[test]
@@ -209,7 +310,7 @@ fn a_logon_sent_straight_after_finished_is_not_lost() {
     let (cert, key) = pki();
     let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
     let addr = listener.local_addr().expect("an address");
-    let joiner = client_thread(addr, cert.clone());
+    let mut client = InThreadClient::connect(addr, cert.clone());
 
     let (sock, _) = listener.accept().expect("the client connects");
     let mut transport = TcpTransport::new(sock).expect("non-blocking");
@@ -217,16 +318,36 @@ fn a_logon_sent_straight_after_finished_is_not_lost() {
         .expect("a server connection");
     let mut hs = Handshake::new(conn);
 
+    // **The construction, and the three lines below are in this order for a
+    // reason.** The instant the client's handshake completes, `hello` goes into
+    // rustls *before* the next `write_tls` — so the client `Finished` and the
+    // application record leave in one flush, and both are in the acceptor's
+    // socket queue before it is ever pumped again. Writing after the flush is
+    // what `rustls::Stream::write_all` did, and it is the two-write ordering
+    // whose gap `[measured 2026-09-12]` was red 3 runs in 5 on GitHub's runner.
+    let mut queued = false;
     let mut sweeps = 0usize;
     let outcome = loop {
         sweeps += 1;
         assert!(sweeps < 100_000, "the handshake never finished");
         match hs.pump(&mut transport) {
-            Step::Pending => std::thread::yield_now(),
+            Step::Pending => {
+                client.absorb();
+                if !queued && !client.is_handshaking() {
+                    client.queue_app(b"hello");
+                    queued = true;
+                }
+                client.flush_all();
+            }
             other => break other,
         }
     };
     assert_eq!(outcome, Step::Done);
+    assert!(
+        queued,
+        "the client never reached the point of sending its Logon, so nothing \
+         below is about the case this test is named for"
+    );
 
     // The client writes `hello` the instant the handshake allows it, standing
     // in for a `Logon`. It must survive the handover, and it is plaintext:
@@ -243,8 +364,6 @@ fn a_logon_sent_straight_after_finished_is_not_lost() {
     // And the ciphertext buffer is empty, which is ADR-0018's third condition
     // and the thing that is NOT satisfied by having read the plaintext.
     assert_eq!(hs.leftover(), 0);
-
-    let _ = joiner.join();
 }
 
 #[test]
