@@ -34,6 +34,9 @@
 #        containing a scratch variable, or `--manifest-path`/`-C` pointing
 #        into one) must be accompanied, in the SAME script, by a `cp` naming
 #        EACH B0 artefact and that scratch variable (or one derived from it).
+#        B2b — entering a scratch dir that names no scratch VARIABLE at all
+#        (e.g. `cd "$(mktemp -d)"`) fails outright: there is no variable to
+#        check a copy against.
 #   B3 — `grep -rn 'Command::new("cargo")\|Command::new("rustc")' crates tools`
 #        must be empty. A Rust test that spawns the toolchain in `temp_dir()`
 #        is the same class, and this script cannot read Rust — so it REFUSES
@@ -54,6 +57,11 @@
 #     but that exact toolchain is not installed locally — rustup installs it
 #     on demand, and on the §9 machine that means reading the output, not the
 #     exit status, same as everywhere else in this repository
+#   - order: a `cp` appearing after the `cd`/`pushd` in the script still
+#     counts as covering it (see the per-file "live line" section below)
+#   - a `cd` that sits after a `#` inside a string on the SAME line (very
+#     rare) — the entering line is still scanned whole, so the wrong
+#     direction there is a spurious red, not a false green
 # Each, when it is hit for real, gets the same answer: extend this script in
 # the same commit, per CLAUDE.md §4's "discover a protocol trap" row.
 #
@@ -106,6 +114,33 @@ refers_to() {
   [[ "$haystack" =~ (^|[^A-Za-z0-9_])\$\{?${var}\}?([^A-Za-z0-9_]|$) ]]
 }
 
+# A "live" line is one whose first non-whitespace character is not `#`. In
+# `bash`, outside a heredoc or a multi-line string, a line starting with `#`
+# is always a comment, so it is never read by B1a, B1b, B2 or the `cp` search
+# below — a commented-out `cd` never seeds a scratch var, and a commented-out
+# `cp` never counts as a copy. (A `cp` line that happens to live inside a
+# heredoc's DATA and itself starts with `#` is filtered the same way — it was
+# never a real `cp` invocation to begin with, so excluding it costs nothing.)
+is_live() {
+  [[ ! "$1" =~ ^[[:space:]]*# ]]
+}
+
+# `cp` counts only in *command position*: at the start of a line, or right
+# after a command separator (`;` `&&` `||` `|` `(` `{`) or a keyword that
+# starts a new command (`then` `do` `else`). `echo x # cp …` does not match
+# (`cp` sits after `#`, not a separator); `echo cp …` does not match (`cp`
+# sits after a plain word). `sudo cp`, `command cp` and `\cp` do not match
+# either — the wrong direction here is red, and the fix is to write a plain
+# `cp` at the call site.
+CP_POSITION_RE='(^|[;&|({]|[[:space:]](then|do|else))[[:space:]]*cp[[:space:]]'
+
+# Seed regex: one optional leading word, with optional -flags, in front of
+# the assignment — so `readonly TMP=`, `declare -r TMP=`, `typeset -g TMP=`,
+# `export TMP=` and `local TMP=` all seed, as does a bare `TMP=`. It also
+# catches `echo TMP=…`; over-seeding only makes the check look at MORE lines,
+# which is the safe direction.
+ASSIGN_RE='^[[:space:]]*([A-Za-z]+([[:space:]]+-[A-Za-z]+)*[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+
 declare -A is_scratch
 declare -A origin_line
 
@@ -113,26 +148,14 @@ for f in "${SCRIPTS[@]}"; do
   is_scratch=()
   origin_line=()
 
-  # THREE SHAPES GET PAST B1/B2, found by the senior review of PR #63
-  # `[measured 2026-09-12]`, each verified to pass this script while really
-  # leaving the tree:
-  #
-  #   cd "$(mktemp -d)"           no variable at all, so B1 never seeds
-  #   readonly TMP="$(mktemp -d)" the seed regex takes local|declare|export
-  #   # cp rust-toolchain.toml …  a COMMENTED cp satisfies B2
-  #
-  # The third is the worst, because it is the shape a person produces while
-  # debugging: the check SEES the `cd`, counts it, and accepts a commented-out
-  # line as proof the copy happens. STATUS.md carries all three as an open item
-  # rather than being fixed under a closed plan.
-  #
   # --- B1a: seed pass — vars assigned straight from mktemp/$TMPDIR//tmp/ ----
   line_no=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     line_no=$((line_no + 1))
-    if [[ "$line" =~ ^[[:space:]]*(local[[:space:]]+|declare[[:space:]]+|export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-      var="${BASH_REMATCH[2]}"
-      rhs="${BASH_REMATCH[3]}"
+    is_live "$line" || continue
+    if [[ "$line" =~ $ASSIGN_RE ]]; then
+      var="${BASH_REMATCH[3]}"
+      rhs="${BASH_REMATCH[4]}"
       if [[ -z "${is_scratch[$var]:-}" ]]; then
         if [[ "$rhs" == *mktemp* || "$rhs" == *'TMPDIR'* || "$rhs" == *'/tmp/'* ]]; then
           is_scratch[$var]=1
@@ -149,9 +172,10 @@ for f in "${SCRIPTS[@]}"; do
     line_no=0
     while IFS= read -r line || [[ -n "$line" ]]; do
       line_no=$((line_no + 1))
-      if [[ "$line" =~ ^[[:space:]]*(local[[:space:]]+|declare[[:space:]]+|export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-        var="${BASH_REMATCH[2]}"
-        rhs="${BASH_REMATCH[3]}"
+      is_live "$line" || continue
+      if [[ "$line" =~ $ASSIGN_RE ]]; then
+        var="${BASH_REMATCH[3]}"
+        rhs="${BASH_REMATCH[4]}"
         if [[ -n "${is_scratch[$var]:-}" ]]; then
           continue
         fi
@@ -167,20 +191,36 @@ for f in "${SCRIPTS[@]}"; do
     done < "$f"
   done
 
-  # --- B2: lines that enter a scratch dir ------------------------------------
+  # --- B2 / B2b: lines that enter a scratch dir ------------------------------
   line_no=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     line_no=$((line_no + 1))
+    is_live "$line" || continue
+
     entered_var=""
+    entering=0
 
     if [[ "$line" =~ (^|[^A-Za-z0-9_])(cd|pushd)[[:space:]]+(.*)$ ]] \
        || [[ "$line" =~ (--manifest-path[=[:space:]]|-C[[:space:]]) ]]; then
+      entering=1
       for sv in "${!is_scratch[@]}"; do
         if refers_to "$line" "$sv"; then
           entered_var="$sv"
           break
         fi
       done
+    fi
+
+    # B2b: a line that enters a scratch dir but names no scratch VARIABLE at
+    # all — `cd "$(mktemp -d)"` and siblings — cannot be checked for a copy,
+    # so it fails outright rather than passing silently because B1 never had
+    # anything to seed.
+    if [[ "$entering" -eq 1 && -z "$entered_var" ]]; then
+      if [[ "$line" =~ mktemp|TMPDIR|/tmp/ ]]; then
+        echo "check-scratch-fixtures: FAIL — enters a scratch dir it never named at ${f}:${line_no} — assign it to a variable so the copy can be checked" >&2
+        status=1
+        continue
+      fi
     fi
 
     if [[ -n "$entered_var" ]]; then
@@ -206,7 +246,7 @@ for f in "${SCRIPTS[@]}"; do
             fi
           done
           [[ "$found" -eq 1 ]] && break
-        done < <(grep -E '(^|[[:space:]])cp[[:space:]]' "$f" | grep -F -- "$pin")
+        done < <(grep -vE '^[[:space:]]*#' "$f" | grep -E "$CP_POSITION_RE" | grep -F -- "$pin")
 
         if [[ "$found" -eq 0 ]]; then
           echo "check-scratch-fixtures: FAIL — ${f}:${line_no} enters a scratch dir (\$${entered_var}, from mktemp at :${origin}) and never copies ${pin} into it" >&2
