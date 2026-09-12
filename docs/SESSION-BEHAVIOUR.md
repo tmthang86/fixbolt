@@ -32,6 +32,7 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 | `WrongSenderCompId` | `49=` is not the configured counterparty |
 | `WrongTargetCompId` | `56=` is not us |
 | `SendingTimeOutOfRange` | `52=` is absent, unreadable, or further from the engine's clock than `max_skew_ms`. Check NTP; `Session::last_skew_ms` says by how much. **`[2026-09-09]` "unreadable" is narrower again**: every fraction from one to twelve digits is read now, not dropped — see §1a |
+| `NeverTicked` | `[2026-09-12]` **nothing on the wire was looked at.** A message was judged before the session's first `tick`, so there was no clock to judge `52=` or the schedule against — a fault on this side, named as such instead of as the counterparty's skew. `Session::last_skew_ms` stays `None` on this path. Guarded by `crates/session/tests/skew.rs::a_message_judged_before_the_first_tick_is_refused_as_never_ticked`, with its twin `the_same_message_after_one_tick_logs_on` proving the same bytes are accepted one tick later |
 | `SequenceNumberTooLow` | `34=` is absent, unreadable, or already used |
 | `OutsideSchedule` | a message arrived while the schedule says the session is shut |
 | `CannotSend` | the session could not put a message on the wire and fails closed rather than send something malformed |
@@ -52,7 +53,34 @@ the last one. `[measured 2026-09-10]` a connection refused for `TlsRequireKernel
 `SendingTimeOutOfRange`, with `Session::last_skew_ms` reading about **two thousand years** —
 a protocol accusation, carrying a number, against a counterparty that had done nothing wrong.
 The cause was that a refused connection still parsed the counterparty's `Logon`, and, no tick
-having run, judged its `52=` against a session clock still at zero. `STATUS.md` item 63.
+having run, judged its `52=` against a session clock still at zero. `STATUS.md` item 63. That
+same connection reads `RefusedByDeployment` today, because a refused connection reaches no
+judgement at all — the paragraph below — so the `[2026-09-10]` reading describes a path this
+repository no longer has, and nothing should be inferred from it about what that connection
+would report now.
+
+**`[2026-09-12]` `NeverTicked` closes `now_ms == 0`, and nothing wider.** A session judged
+before its first `tick` refuses *there*, ahead of the skew measurement, so on **that** path
+`Session::last_skew_ms` stays `None` and the two-thousand-year number cannot be produced. Zero
+is a witness that no tick has run, not a range of wrong clocks: any tick at all carries the
+session past the guard, and a clock that is merely **wrong** still measures the same accusation
+against the counterparty. `[measured 2026-09-12]` on this desk, feeding the corpus `Logon`
+stamped `20260828-12:00:00` — `FIXED_TIME_MILLIS`, 63 955 137 600 000 ms since `0000-01-01`:
+
+| the caller ticks with | `Session::last_skew_ms` | the connection reads |
+|---|---|---|
+| nothing at all | `None` | `NeverTicked` |
+| `1` | `-63955137599999`, about **−2 026 years** | `SendingTimeOutOfRange` |
+| Unix-epoch milliseconds, `1789000000000` | `-62166137600000`, about **−1 970 years** | `SendingTimeOutOfRange` |
+| `FIXED_TIME_MILLIS` — control | `Some(0)` | the link stays up |
+
+**The third row is the one to read.** Milliseconds since 1970 rather than since `0000-01-01`
+is the mistake `DESIGN.md` D13 and [GUIDE.md §5](GUIDE.md) exist to warn about; it is non-zero,
+so the guard lets it through, and it brings the two-thousand-year accusation back unchanged.
+Only the first row is held by a test —
+`crates/session/tests/skew.rs::a_message_judged_before_the_first_tick_is_refused_as_never_ticked`.
+The other three are measurements quoted here so the sentence above them can be checked again
+rather than believed.
 
 **A refused connection now judges nothing at all**, which is what QuickFIX C++ and quickfix-go
 both do (`docs/reference/prior-art.md`), and the reason is recorded at the moment of refusal

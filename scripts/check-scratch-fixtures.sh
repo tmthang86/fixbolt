@@ -84,6 +84,23 @@
 #   - a `cd` that sits after a `#` inside a string on the SAME line (very
 #     rare) — the entering line is still scanned whole, so the wrong
 #     direction there is a spurious red, not a false green
+#   - `[measured 2026-09-12]` a `cp` inside a heredoc body — the body is data,
+#     not a command, and a line inside it that reads like `cp` is not one
+#   - `[measured 2026-09-12]` a `cp` that copies OUT of the scratch dir
+#     rather than into it — B2 checks that a `cp` naming the artefact and the
+#     scratch variable is present, not which way the copy runs
+#   - `[measured 2026-09-12]` `read -r TMP < <(mktemp -d)` — TMP is seeded by
+#     a `read`, not by an assignment, so B1's scratch-variable scan never
+#     picks it up
+#   - `[measured 2026-09-12]` a bare `TMP=/tmp`, or `TMP=/var/tmp` — B1a
+#     recognises a literal scratch path by the substring `/tmp/`, WITH the
+#     trailing slash, so a path that ends at the directory itself seeds
+#     nothing. This is narrower than it looks and the narrow reading is the
+#     true one: `TMP=/tmp/zzz` and `SCRATCH=/var/tmp/x` are literal paths with
+#     no `mktemp` on the line and both ARE caught. Only the two bare spellings
+#     slip
+# These four are a known, closed set, not grown by one more regex each —
+# see ADR-0061 for why the gate stays as it is.
 # Each, when it is hit for real, gets the same answer: extend this script in
 # the same commit, per CLAUDE.md §4's "discover a protocol trap" row.
 #

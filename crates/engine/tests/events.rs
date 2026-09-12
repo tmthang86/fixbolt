@@ -265,6 +265,18 @@ fn an_operator_learns_why_each_connection_ended() {
         })
         .collect();
 
+    // **Asked before the three below, and the order is the assertion.** This is
+    // the only one of the four about *this* side rather than about them. A
+    // connection judged before its first tick was never judged against a clock
+    // at all, so if this fires, every question underneath it — their FIX
+    // version, their CompID, their clock — is being asked about a verdict that
+    // was never really reached. `STATUS.md` item 63, and the reversal R64-2 in
+    // `docs/plans/2026-09-12-an-obligation-nothing-checks.md`.
+    assert!(
+        !reasons.contains(&DropReason::NeverTicked),
+        "a connection ended before its first tick, so nothing below this line is \
+         a statement about the counterparty — the item 63 shape: {reasons:?}"
+    );
     assert!(
         reasons.contains(&DropReason::WrongBeginString),
         "one of them was on the wrong FIX version: {reasons:?}"

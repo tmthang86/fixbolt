@@ -56,6 +56,12 @@ allow = [
     "Unicode-3.0",
     "Zlib",
 ]
+# `[measured 2026-09-12]` off by default because dev-dependencies never ship;
+# on here because CLAUDE.md treats every commit as already public and a test
+# helper under a copyleft licence is still a file in this repository's tree.
+# Item 57's "could not be configured away" was the wrong table: the knob
+# tried was [graph] exclude-dev. This one is what `check licenses` reads.
+include-dev = true
 # The default is 0.8. Raised because a licence text that only 80% matches a
 # known one is exactly the case a human should look at.
 confidence-threshold = 0.93
@@ -86,20 +92,17 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 # ---------------------------------------------------------------------------
-# WHAT THIS GATE DOES NOT SEE, measured rather than assumed
+# WHAT THIS GATE SEES, now that `include-dev = true` is set above
 #
-# `[measured 2026-09-08]` **`cargo-deny` 0.20.2 does not judge the
-# dev-dependencies of this workspace's members.** An `MPL-2.0` crate added to
-# `[dev-dependencies]` of `tools/jrnl`, and separately of `crates/codec`, is
-# invisible to `cargo deny check`: `cargo metadata` reports 12 packages and
-# resolves it, `cargo tree -p fixbolt-jrnl` prints it, and `cargo deny list`
-# still prints 11 crates and says `licenses ok`. Setting `exclude-dev = false`
-# explicitly changes nothing, and neither does dropping every other setting in
-# this file. The same crate as a normal `[dependencies]` entry is rejected
-# immediately, with the right message — so the checker works and the graph it
-# is handed is short.
+# `[measured 2026-09-08]` the first attempt at closing this hole was `[graph]
+# exclude-dev` and it changed nothing — the wrong table. `[measured
+# 2026-09-12]` `[licenses] include-dev = true`, above, is the right one:
+# `cargo deny check licenses` now judges this workspace's dev-dependencies
+# exactly as it judges normal ones. An `MPL-2.0` crate in `[dev-dependencies]`
+# is rejected immediately, with the same message a normal dependency gets.
 #
-# It is left as a hole rather than papered over, and the CI job carries a
-# crate-count comparison against `cargo tree` so the hole is loud the day
-# something falls into it. `STATUS.md` open item 57;
+# The CI job's crate-count comparison against `cargo tree` (both sides now
+# include dev-dependencies) and `scripts/check-every-crate-is-licensed.sh`
+# stay in place as an independent second route rather than being removed —
+# `STATUS.md` open item 57;
 # docs/reference/a-license-gate-that-cannot-see-dev-dependencies.md.

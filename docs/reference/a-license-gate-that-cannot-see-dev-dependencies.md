@@ -52,11 +52,12 @@ reversal first. Had the reversal been written with a normal dependency — the m
 natural choice, and the one that works — it would have gone red on the first try,
 proven the gate, and the hole would have shipped.
 
-## The fix, which is not a fix
+## The fix, which was not a fix
 
-The tool's blind spot could not be configured away, so it was made **loud**
-instead. The CI job now compares the set of crates the gate judged against the
-set the build system resolves, and fails when they differ:
+The tool's blind spot was first believed to be unconfigurable, so it was made
+**loud** instead of closed. The CI job compared the set of crates the gate
+judged against the set the build system resolves, and failed when they
+differed:
 
 ```
 cargo deny list  | ... | sort -u  > deny-saw.txt
@@ -64,12 +65,48 @@ cargo tree       | ... | sort -u  > cargo-saw.txt
 diff -u deny-saw.txt cargo-saw.txt || exit 1
 ```
 
-Equal today, 11 and 11. With the MPL-2.0 dev-dependency present, `cargo deny
-check` still prints all four `ok` lines — and the diff prints `+option-ext` and
-exits 1.
+Equal at the time, 11 and 11. With the MPL-2.0 dev-dependency present, `cargo
+deny check` still printed all four `ok` lines — and the diff printed
+`+option-ext` and exited 1.
 
-An unfixable hole is worth converting into a noisy one. The gate still cannot
-judge those crates; it can no longer be quiet about not having tried.
+That was believed to be the best available outcome: an unfixable hole
+converted into a noisy one, the gate still unable to judge those crates but no
+longer quiet about not having tried. It was not the best available outcome —
+see below.
+
+## The hole was a knob in a different table `[measured 2026-09-12]`
+
+The "could not be configured away" above is false. On 2026-09-08 the knob
+tried was `[graph] exclude-dev`, and setting it changed nothing — measured at
+the time, and still true of that setting today. The knob that works is a
+different one, in a different table: `[licenses] include-dev = true`. With it
+set, `cargo deny check licenses` judges dev-dependencies exactly as it judges
+normal ones:
+
+| | `cargo deny list` (`include-dev` off) | `cargo deny list` (`include-dev` on) | `cargo tree` (dev-dependencies included) |
+|---|---|---|---|
+| this workspace, 2026-09-12 | 37 crates | 46 crates | 46 crates |
+
+**Reversal**, with `include-dev = true` in place: adding `option-ext = "0.2"`
+to `tools/jrnl`'s existing `[dev-dependencies]` table makes `cargo deny check`
+print
+
+```
+error[rejected]: failed to satisfy license requirements
+  licenses FAILED
+```
+
+naming `option-ext v0.2.0`, and `scripts/check-every-crate-is-licensed.sh`
+independently names `option-ext 0.2.0: MPL-2.0`. Reverting the manifest and
+lock file restores `licenses ok`. The CI job's crate-count comparison, with
+`-e normal,build` removed from its `cargo tree` side, holds equal on both the
+green and the red state — it was never the thing that could see this hole; it
+was only ever the thing that made the hole loud.
+
+The comparison and `scripts/check-every-crate-is-licensed.sh` both stay: not
+because the hole still needs a noisy substitute, but because a gate that was
+wrong about "unfixable" once is exactly the gate a second, independent route
+is for.
 
 ## The generalisation
 
@@ -82,3 +119,11 @@ judge those crates; it can no longer be quiet about not having tried.
 > rather than on the reversal. Reaching for "my test is wrong" first is what
 > keeps a hole open — the tool has just told you something, in the only way it
 > can.
+>
+> And before declaring a tool's blind spot unfixable, read the documentation
+> of the **check** that is blind, not only the documentation of the **graph**
+> it walks. `[graph] exclude-dev` looked like the obvious knob because the
+> hole was about dependency *resolution*; the actual knob lived under
+> `[licenses]`, the table for the check that was failing. "A setting in a
+> different table than the one you tried" is a more common answer than
+> "cannot be done".

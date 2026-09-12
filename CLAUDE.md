@@ -135,7 +135,7 @@ passing unseen. **A senior review then got past it four more ways, and none of t
 this rule used to predict** — no `eval`, no function call, no `#` hidden inside a same-line
 string. Two are fixed: a `cp` whose pin name lived only in a trailing comment now counts as no
 `cp` at all, and a script with no `.sh` name is scanned by its shebang rather than missed by its
-extension. **Four remain open by decision, for the architect** (STATUS.md item 69): a `cp` inside
+extension. **Four remain open by decision, ADR-0061**: a `cp` inside
 a heredoc body, a `cp` copying in the wrong direction (out of the scratch dir rather than into
 it), and two ways of seeding the scratch variable this script does not recognise —
 `read -r TMP < <(mktemp -d)` and a bare `TMP=/tmp`. Each is one more regex, and the plan that

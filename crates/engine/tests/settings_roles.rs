@@ -331,3 +331,34 @@ fn a_precision_that_is_not_a_number_says_so() {
     let e = err(&format!("{ACCEPTOR}TimestampPrecision=MICROS\n"));
     assert_eq!(*e.problem(), Problem::NotANumber, "{e}");
 }
+
+/// **A right width, wrongly spelled, is refused the same way a wrong width
+/// is — not rounded to it.**
+///
+/// `[measured 2026-09-12]` Rust's own integer parser reads `+3` and `03` as
+/// `3`, so `number()` alone would let both through; probe 3 in
+/// `engine::settings::doc_table` found the gap by searching a bounded
+/// universe of short strings rather than sampling three fixed ones
+/// (`docs/plans/2026-09-12-an-obligation-nothing-checks.md` item 70).
+#[test]
+fn timestamp_precision_is_refused_unless_spelled_exactly() {
+    for value in ["03", "+3", "009", "+6", "06", "+9", "09"] {
+        let e = err(&format!("{ACCEPTOR}TimestampPrecision={value}\n"));
+        assert_eq!(
+            *e.problem(),
+            Problem::UnsupportedPrecision,
+            "TimestampPrecision={value} must be refused, spelled wrong though it parses as a supported width"
+        );
+        assert!(
+            e.to_string().contains("TimestampPrecision"),
+            "the error must name the key: {e}"
+        );
+    }
+    for value in [3, 6, 9] {
+        let text = format!("{ACCEPTOR}TimestampPrecision={value}\n");
+        assert!(
+            Settings::parse(&text).is_ok(),
+            "TimestampPrecision={value}, spelled exactly, must parse"
+        );
+    }
+}

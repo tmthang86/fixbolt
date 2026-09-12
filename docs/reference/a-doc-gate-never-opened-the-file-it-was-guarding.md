@@ -106,8 +106,12 @@ there.
   the gate measured a build that never happened.
 - [an-allow-at-the-top-of-a-file-silenced-the-whole-crate](an-allow-at-the-top-of-a-file-silenced-the-whole-crate.md)
   — a ratchet whose counter read correctly while its enforcing half was off.
-- `STATUS.md` item 57 — a licence gate that cannot see dev-dependencies and prints `ok`
-  rather than saying so.
+- `STATUS.md` item 57 — a licence gate that could not see dev-dependencies and printed `ok`
+  rather than saying so. `[measured 2026-09-12]` closed: the blind spot was a configuration
+  key in a table nobody had read
+  ([a-license-gate-that-cannot-see-dev-dependencies](a-license-gate-that-cannot-see-dev-dependencies.md)).
+  The shape it is cited for here is unchanged — while it was open, the number it printed was
+  correct for the set it actually saw.
 
 Three of the four share one sentence: **the gate reported on a set smaller than the set it
 was believed to cover, and the number it printed was correct for the set it actually saw.**
