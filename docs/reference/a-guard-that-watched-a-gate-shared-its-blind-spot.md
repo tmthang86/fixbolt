@@ -43,7 +43,8 @@ weak; it is that it and the thing it watched shared a blind spot by construction
 carried no information at all. It would have gone on printing `11 and 11` however many optional
 trees were added.
 
-Both sides now ask `--all-features`, and read `36 and 36`.
+Both sides were made to ask `--all-features`, and read `36 and 36`. `[measured 2026-09-12]`
+they read `46 and 46` today, for the reason in the dated section at the foot of this page.
 
 ## `[measured 2026-09-09, the same day]` And then one dev-dependency proved all of it at once
 
@@ -52,9 +53,10 @@ test. Within one CI run it produced three separate findings, and they are only l
 
 1. **The advisory check found a real vulnerability in it.** `RUSTSEC-2026-0009`, stack exhaustion
    via a deprecated parsing feature, two levels down. Fixed by pinning the patched version.
-2. **The repaired guard went red, correctly**, at 36 against 45. The licence check does not judge
-   dev-dependencies, so nine crates were genuinely unjudged — the exact hole the guard was built
-   for, firing the first time a dev-dependency arrived.
+2. **The repaired guard went red, correctly**, at 36 against 45. The licence check, *as it was
+   configured then*, did not judge dev-dependencies, so nine crates were genuinely unjudged — the
+   exact hole the guard was built for, firing the first time a dev-dependency arrived. It judges
+   them now; see the foot of this page.
 3. **The same binary was using three different graphs.** `list` reported 36. `check licenses`
    judged 36. `check advisories` judged all 45 — it is what found the advisory in #1. One tool,
    one workspace, one invocation style, three answers to "what is in this project?"
@@ -66,9 +68,14 @@ disagree.
 The resolution is worth stating too, because the tempting one is wrong. Widening the cargo side of
 the guard would have made 45 match 45 and turned the light off — hiding the hole rather than
 closing it, which is this page's whole subject. Instead the guard was **narrowed** to its honest
-question (*did the tool judge everything it claims to judge?*), and the gap was **covered by a
-second check that takes a different route entirely**: read the package graph from `cargo metadata`,
-read the policy from the config file, compare them, and never call the tool at all.
+question (*did the tool judge everything it claims to judge?*) by asking `cargo tree` for
+`-e normal,build` only, and the gap was **covered by a second check that takes a different route
+entirely**: read the package graph from `cargo metadata`, read the policy from the config file,
+compare them, and never call the tool at all.
+
+**That narrowing was a holding action and it has since been undone** — `[measured 2026-09-12]`,
+after the hole itself turned out to be closable. The dated section below says what changed and
+why the second check stayed anyway.
 
 That second check went red on its own first run — on three crates using the pre-SPDX `MIT/Apache-2.0`
 spelling, which its parser did not split. A parser bug reported as a policy violation is the
@@ -84,6 +91,11 @@ loudest possible false positive, because it reads exactly like a real finding.
 - **A second opinion has to come from a different direction to be worth anything.** The covering
   check reads metadata and config; it can be wrong in its own ways, and that is the point — its
   failures are uncorrelated with the tool's.
+- `[added 2026-09-12]` **Narrowing a guard to route around a hole is a holding action, and it
+  should be dated as one.** This page recommended the narrowing and was right to; what it did not
+  say is that the narrowing quietly encodes *"the hole is permanent"*. It was not. Whenever a
+  guard is narrowed, write down the belief that made the narrowing correct, so that belief can be
+  retested rather than inherited.
 
 ## What to take from it
 
@@ -99,5 +111,32 @@ loudest possible false positive, because it reads exactly like a real finding.
 - **The way this surfaced is worth copying**: nobody audited the guard. It was found by *adding
   something the guard should have noticed* and observing that nothing moved. A guard that does not
   react when you hand it the case it exists for has not been tested.
+
+## `[measured 2026-09-12]` The hole this guard was watching turned out to have a knob
+
+`STATUS.md` item 57 stayed open on the belief that `cargo-deny` simply could not judge
+dev-dependencies. That belief was wrong, and the sibling entry
+[a-license-gate-that-cannot-see-dev-dependencies](a-license-gate-that-cannot-see-dev-dependencies.md)
+carries the measurement: the key tried on 2026-09-08 was `[graph] exclude-dev`, in the table
+that describes the *graph*; the one that works is `[licenses] include-dev = true`, in the table
+that describes the *check*.
+
+With it set, on this workspace, `[measured 2026-09-12]`:
+
+```
+cargo deny --all-features list                  37 crates   (include-dev off)
+cargo deny --all-features list                  46 crates   (include-dev on)
+cargo tree --workspace --all-features           46 crates
+```
+
+So the `-e normal,build` narrowing on the cargo side came off, and the guard asks its plain
+question again over the whole graph: `cargo-deny judged 46 crates; cargo resolves 46`. The
+reversal — an `MPL-2.0` crate added to an existing `[dev-dependencies]` table — now reads
+`error[rejected] … option-ext v0.2.0 … licenses FAILED`, where before it read `licenses ok`.
+
+**Two things did not change, and both are the point of this page.** The guard stayed: a
+comparison whose two sides now genuinely differ in origin is worth more than one whose sides
+agreed by sharing an omission. And `scripts/check-every-crate-is-licensed.sh` stayed: a gate
+that was wrong about *"unfixable"* once is exactly the gate a second, independent route is for.
 
 `[to testing-skills]`

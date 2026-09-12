@@ -2296,6 +2296,14 @@ mod doc_table {
     /// `nope`) and none of them was `9`. The bounded search above is the
     /// fix: `9` sits in the base universe by construction (every length-1
     /// string over [`ALPHABET`]), so narrowing the cell now goes red.
+    ///
+    /// **A third assertion sits between the two directions**, because they
+    /// leave one gap open to each other: the literals of a cell must be
+    /// distinct. Narrowing by duplication passes forward (the survivor
+    /// parses), passes in reverse (the lost literal is subtracted from the
+    /// universe by the copy that remains, and is too long to be drawn back),
+    /// and keeps the row's place in `FLOOR`. `[measured 2026-09-12]` it was
+    /// green until this assertion existed.
     #[test]
     fn an_enumerated_values_cell_is_what_the_parser_accepts() {
         /// Rows reached on 2026-09-12: 10, and 11 with the `tls` feature.
@@ -2316,6 +2324,30 @@ mod doc_table {
                 skipped += 1;
                 continue;
             };
+
+            // **A cell must not list one literal twice**, and this is not
+            // tidiness — it is the hole the two directions leave between them.
+            // [`candidates`] subtracts `listed` from the universe, so a cell
+            // narrowed by *duplicating* what it keeps — `` `acceptor` or
+            // `acceptor` `` in place of `` `acceptor` or `initiator` `` — loses
+            // a real value out of the document while [`enumerated`] still
+            // returns two literals, the row is still counted towards `FLOOR`,
+            // the forward direction still passes because the survivor parses,
+            // and the reverse direction never draws the lost literal because
+            // `initiator` is longer than the universe's two characters.
+            // `[measured 2026-09-12]` the senior review of this pull request
+            // made exactly that edit and the suite stayed green: item 70's own
+            // shape, spelled differently.
+            let mut unique = listed.clone();
+            unique.sort_unstable();
+            let listed_count = unique.len();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                listed_count,
+                "docs/CONFIGURATION.md §1: {name} lists a literal more than once ({listed:?}) — a duplicate shortens the cell without making the row disappear, so neither direction of probe 3 would notice a value dropped out of the document"
+            );
+
             let Some(sample) = sample(group(key)) else {
                 skipped += 1;
                 continue;

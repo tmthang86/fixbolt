@@ -1064,7 +1064,7 @@ enum Refusal {
     /// No tick has run; the session has no clock to judge `52=` or the
     /// schedule against.
     ///
-    /// Ordered **before** every rule that reads [`Session::now_ms`] so that a
+    /// Ordered **before** every rule that reads `Session::now_ms` so that a
     /// judgement made without a clock names this side rather than the
     /// counterparty's. Held by
     /// `tests/skew.rs::a_message_judged_before_the_first_tick_is_refused_as_never_ticked`.
@@ -1122,8 +1122,9 @@ pub enum DropReason {
     /// [`Session::tick`] — **a fault on this side**.
     ///
     /// The engine, or a harness, read bytes into a session whose clock has
-    /// never been set. Never the counterparty's clock, and never their
-    /// message: nothing they sent was looked at.
+    /// never been set. It is never a statement about the counterparty's clock,
+    /// and never a verdict on what they sent: the guard stands before the
+    /// first rule that would have judged them.
     ///
     /// **It exists because the alternative was measured.** `[measured
     /// 2026-09-10]` a session in this state answered with
@@ -1133,16 +1134,32 @@ pub enum DropReason {
     /// to tick before reading is D1's, it lives with the caller, and until now
     /// nothing named it when it was broken.
     ///
-    /// **The boundary, so it does not have to be rediscovered:** this names a
-    /// *judgement* made without a clock, not every message an unticked session
-    /// sees. One that cannot be parsed at all is still ignored as garbled and
-    /// the link stays up, because no clock-dependent rule was reached — the
-    /// guard stands after the frame is read and before the first rule that
-    /// consults [`Session::now_ms`].
+    /// **The boundary, so it does not have to be rediscovered:** the guard
+    /// stands after the frame is read, after `8=BeginString` is checked, and
+    /// before the first rule that consults `Session::now_ms`. So this names
+    /// a *judgement* made without a clock, not every message an unticked
+    /// session sees, and two other endings come out of such a session ahead of
+    /// it. `[measured 2026-09-12]` a wrong `8=` still reads
+    /// [`Self::WrongBeginString`] — that check needs no clock. A message that
+    /// cannot be parsed at all is still handled as garbled, which means the
+    /// link **stays up for anything but a `35=A`** and ends as
+    /// [`Self::LogonIncomplete`] for a garbled `Logon` — and a `Logon` is the
+    /// only first message an acceptor can be given, so that is the common
+    /// case rather than the corner one.
+    ///
+    /// **`now_ms == 0` is the witness, not a flag.** A caller that ticks to
+    /// exactly `0` is indistinguishable from one that has never ticked and
+    /// reads `NeverTicked` too; a session ticked to before 1970 is a
+    /// misconfiguration either way — see the comment on [`Session::tick`]'s
+    /// epoch. The converse is the sharper half: **any** tick past zero carries
+    /// the session through this guard, so a clock that is merely *wrong* — the
+    /// classic being milliseconds since 1970 instead of since `0000-01-01` —
+    /// is measured as the counterparty's skew, exactly as before.
+    /// `docs/SESSION-BEHAVIOUR.md` quotes that measurement.
     ///
     /// [`Session::last_skew_ms`] is **not** written on this path: the early
     /// return stands before the measurement, so the two-thousand-year number
-    /// can no longer be produced. Held by
+    /// cannot be produced *here*. Held by
     /// `crates/session/tests/skew.rs::a_message_judged_before_the_first_tick_is_refused_as_never_ticked`
     /// and, on the engine side, by the reversal R64-2 of
     /// `docs/plans/2026-09-12-an-obligation-nothing-checks.md`.

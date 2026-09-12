@@ -42,6 +42,17 @@ The gate stays a regex. Its four known false greens are named in its own header,
   in the same commit (`CLAUDE.md` §4), or supersede this ADR with a parser.
 - Bad: item 69's question can be reopened by the fifth spelling. The answer is the same
   until the adversary changes from an accident to a person.
+- Bad, and it weakens the premise above by one notch: *"the adversary is an accidental
+  fixture"* assumes nobody here writes these shapes on purpose, and one of the four is
+  already an idiom in this repository. `[measured 2026-09-12]`
+  `scripts/check-bench-alignment.sh:102` and `:122` both read
+  `read -r al tot < <(aligned_in "$bin")` — the third false green's exact spelling, written
+  for an unrelated reason by the same author these scripts are guarded against. The *Why*
+  bullet's `0 hits` is correct as counted — it counts a **scratch variable** seeded by a
+  `read`, and there is none — and this bullet is what it does not count: the idiom itself,
+  already in use. That script never leaves the tree, so nothing is wrong today; what is
+  wrong is calling the shape exotic. The day a scratch directory is seeded that way it will be an ordinary extension of
+  a habit already in `scripts/`, not a spelling somebody had to invent.
 
 ## Alternatives rejected
 
