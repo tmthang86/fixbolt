@@ -1061,6 +1061,14 @@ enum Refusal {
     WrongSenderCompId,
     /// `56=` is not us.
     WrongTargetCompId,
+    /// No tick has run; the session has no clock to judge `52=` or the
+    /// schedule against.
+    ///
+    /// Ordered **before** every rule that reads [`Session::now_ms`] so that a
+    /// judgement made without a clock names this side rather than the
+    /// counterparty's. Held by
+    /// `tests/skew.rs::a_message_judged_before_the_first_tick_is_refused_as_never_ticked`.
+    NeverTicked,
     /// `52=` is absent, unreadable, or too far from the last [`Session::tick`].
     BadSendingTime,
     /// `34=` is absent, unreadable, or lower than the one expected. FIX has no
@@ -1110,6 +1118,35 @@ pub enum DropReason {
     /// `52=` is absent, unreadable, or further from this engine's clock than
     /// `max_skew_ms`. **Check NTP** — [`Session::last_skew_ms`] says by how much.
     SendingTimeOutOfRange,
+    /// A message was judged before the session's first
+    /// [`Session::tick`] — **a fault on this side**.
+    ///
+    /// The engine, or a harness, read bytes into a session whose clock has
+    /// never been set. Never the counterparty's clock, and never their
+    /// message: nothing they sent was looked at.
+    ///
+    /// **It exists because the alternative was measured.** `[measured
+    /// 2026-09-10]` a session in this state answered with
+    /// [`Self::SendingTimeOutOfRange`] and [`Session::last_skew_ms`] reading
+    /// about **two thousand years** — the distance from year zero to now,
+    /// reported as a protocol accusation. `STATUS.md` item 63. The obligation
+    /// to tick before reading is D1's, it lives with the caller, and until now
+    /// nothing named it when it was broken.
+    ///
+    /// **The boundary, so it does not have to be rediscovered:** this names a
+    /// *judgement* made without a clock, not every message an unticked session
+    /// sees. One that cannot be parsed at all is still ignored as garbled and
+    /// the link stays up, because no clock-dependent rule was reached — the
+    /// guard stands after the frame is read and before the first rule that
+    /// consults [`Session::now_ms`].
+    ///
+    /// [`Session::last_skew_ms`] is **not** written on this path: the early
+    /// return stands before the measurement, so the two-thousand-year number
+    /// can no longer be produced. Held by
+    /// `crates/session/tests/skew.rs::a_message_judged_before_the_first_tick_is_refused_as_never_ticked`
+    /// and, on the engine side, by the reversal R64-2 of
+    /// `docs/plans/2026-09-12-an-obligation-nothing-checks.md`.
+    NeverTicked,
     /// `34=` is absent, unreadable, or already used.
     SequenceNumberTooLow,
     /// A `Logon` carried `789=` naming a number this end has never sent.
@@ -1216,6 +1253,7 @@ impl From<Refusal> for DropReason {
             Refusal::LogonIncomplete => Self::LogonIncomplete,
             Refusal::WrongSenderCompId => Self::WrongSenderCompId,
             Refusal::WrongTargetCompId => Self::WrongTargetCompId,
+            Refusal::NeverTicked => Self::NeverTicked,
             Refusal::BadSendingTime => Self::SendingTimeOutOfRange,
             Refusal::BadSeqNum => Self::SequenceNumberTooLow,
             Refusal::OutsideSchedule => Self::OutsideSchedule,
@@ -2991,6 +3029,26 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
                 return Ok(self.logout_with(SessionText::IncorrectBeginString, emit));
             }
             return Err(Refusal::WrongBeginString);
+        }
+
+        // **A judgement with no clock is a fault on this side**, and it is
+        // named as such rather than as the counterparty's skew. This stands
+        // before the schedule check and before the skew measurement because
+        // both read `now_ms`, and neither means anything at year zero:
+        // `[measured 2026-09-10]` the session answered `SendingTimeOutOfRange`
+        // with `last_skew_ms` about two thousand years. `STATUS.md` item 63.
+        //
+        // `now_ms == 0` is the whole witness — see the field's own comment: a
+        // session ticked to before 1970 is a misconfiguration, and the
+        // conformance runner ticks to 2026 before it feeds. No extra field on
+        // a cache-line-aligned struct.
+        //
+        // Guarded by
+        // `crates/session/tests/skew.rs::a_message_judged_before_the_first_tick_is_refused_as_never_ticked`
+        // and by the reversals R64-1 and R64-2 recorded in
+        // `docs/plans/2026-09-12-an-obligation-nothing-checks.md` §D.
+        if self.now_ms == 0 {
+            return Err(Refusal::NeverTicked);
         }
 
         // Outside its hours an acceptor is not a FIX endpoint at all, so this

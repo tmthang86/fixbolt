@@ -603,8 +603,12 @@ The session layer takes no clock (D1). Time arrives as `Input::Tick`, in millise
 `0000-01-01` (D13), and the session judges `SendingTime` against **the last tick it was
 given**.
 
-- **A session that has never ticked holds zero** and will refuse the first message it sees for
-  clock skew. The engine ticks before it reads for exactly this reason.
+- **A session that has never ticked holds zero** and refuses the first message it sees as
+  `DropReason::NeverTicked` — naming this side rather than the counterparty's clock. The engine
+  ticks before it reads for exactly this reason. `[2026-09-12]` until then the refusal came out
+  as `SendingTimeOutOfRange` with `Session::last_skew_ms` reading about two thousand years,
+  which sent an operator to check NTP over a mistake made entirely on this end (`STATUS.md`
+  item 63).
 - **If you drive the engine yourself**, as `crates/engine/tests/wire.rs` does, you own that
   ordering. Tick first, then read.
 - **Do not format a timestamp per message.** The outbound path patches a cached one;

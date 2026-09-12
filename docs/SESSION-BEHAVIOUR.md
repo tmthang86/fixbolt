@@ -32,6 +32,7 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 | `WrongSenderCompId` | `49=` is not the configured counterparty |
 | `WrongTargetCompId` | `56=` is not us |
 | `SendingTimeOutOfRange` | `52=` is absent, unreadable, or further from the engine's clock than `max_skew_ms`. Check NTP; `Session::last_skew_ms` says by how much. **`[2026-09-09]` "unreadable" is narrower again**: every fraction from one to twelve digits is read now, not dropped — see §1a |
+| `NeverTicked` | `[2026-09-12]` **nothing on the wire was looked at.** A message was judged before the session's first `tick`, so there was no clock to judge `52=` or the schedule against — a fault on this side, named as such instead of as the counterparty's skew. `Session::last_skew_ms` stays `None` on this path. Guarded by `crates/session/tests/skew.rs::a_message_judged_before_the_first_tick_is_refused_as_never_ticked`, with its twin `the_same_message_after_one_tick_logs_on` proving the same bytes are accepted one tick later |
 | `SequenceNumberTooLow` | `34=` is absent, unreadable, or already used |
 | `OutsideSchedule` | a message arrived while the schedule says the session is shut |
 | `CannotSend` | the session could not put a message on the wire and fails closed rather than send something malformed |
@@ -52,7 +53,9 @@ the last one. `[measured 2026-09-10]` a connection refused for `TlsRequireKernel
 `SendingTimeOutOfRange`, with `Session::last_skew_ms` reading about **two thousand years** —
 a protocol accusation, carrying a number, against a counterparty that had done nothing wrong.
 The cause was that a refused connection still parsed the counterparty's `Logon`, and, no tick
-having run, judged its `52=` against a session clock still at zero. `STATUS.md` item 63.
+having run, judged its `52=` against a session clock still at zero. `STATUS.md` item 63 — and
+since `[2026-09-12]` that first run reads `NeverTicked` instead, because the session now refuses
+before it measures, so the two-thousand-year number can no longer be produced at all.
 
 **A refused connection now judges nothing at all**, which is what QuickFIX C++ and quickfix-go
 both do (`docs/reference/prior-art.md`), and the reason is recorded at the moment of refusal

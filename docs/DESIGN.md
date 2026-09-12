@@ -162,7 +162,10 @@ touching protocol correctness.
 files need five). `Role` is a sealed trait with two marker types, so the branch resolves at
 compile time. The `Application` is given the two things it does not own, the outbound
 sequence number and the clock, writes its reply into a buffer the session lends it, and
-returns the range it used; `None` spends no sequence number.
+returns the range it used; `None` spends no sequence number. **A session judged before its
+first `tick` refuses with `DropReason::NeverTicked`**: the obligation D1 moves to the caller —
+time arrives from outside, so somebody outside has to send it — is named at the boundary rather
+than assumed. `[2026-09-12]`
 
 **Two deadlines the caller may state, and both arrive through `tick`.** `[2026-09-05]`
 `Config::with_logon_timeout_ms` and `with_logout_timeout_ms` — QuickFIX's `LogonTimeout` and

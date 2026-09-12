@@ -209,3 +209,71 @@ fn a_microsecond_sending_time_is_read_and_the_link_survives() {
         "and the session answered, rather than saying nothing at all"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A session judged before its first tick — `STATUS.md` item 64
+// ---------------------------------------------------------------------------
+
+/// **A session with no clock refuses, and names this side.**
+///
+/// `now_ms` starts at zero, only `tick` writes it, and `received` takes no
+/// time argument — so before the first tick every time-dependent rule runs
+/// against year zero. `[measured 2026-09-10]` item 63: the session answered
+/// `SendingTimeOutOfRange` with `last_skew_ms` about two thousand years, which
+/// is a protocol accusation about a fault entirely on this side.
+///
+/// Three assertions, each failing for its own reason: the link, the *name* of
+/// the reason, and that the number which made the accusation is not even
+/// measurable here.
+#[test]
+fn a_message_judged_before_the_first_tick_is_refused_as_never_ticked() {
+    let mut session = acceptor();
+    session.connect(|_| {});
+    // No tick. This is the whole premise of the test.
+    let link = session.received(&good_logon(), |_| {});
+
+    assert_eq!(
+        link,
+        fixbolt_session::Link::Dropped,
+        "a session with no clock cannot judge a message, so it does not pretend to"
+    );
+    assert_eq!(
+        session.last_drop_reason(),
+        Some(fixbolt_session::DropReason::NeverTicked),
+        "and it names its own missing tick, not the counterparty's clock"
+    );
+    assert_eq!(
+        session.last_skew_ms(),
+        None,
+        "item 63's two-thousand-year skew must not be measurable on a session that has no clock"
+    );
+}
+
+/// **The other half of the pair, and it is what makes the first one mean
+/// anything**: the same bytes, one `tick` earlier, log on.
+///
+/// Without this, `NeverTicked` could be a session that refuses everything.
+/// `two_clocks_that_agree_measure_zero_and_not_nothing` above already drives
+/// these bytes to `Link::Up` through `skew_at`, but it asserts the *skew* and
+/// not the *reason*, and its tick is hidden inside a helper — so the
+/// discriminating pair is not readable from either test alone. This one is
+/// written out beside its twin, and adds the assertion nothing else makes:
+/// after a tick there is no drop reason at all.
+#[test]
+fn the_same_message_after_one_tick_logs_on() {
+    let mut session = acceptor();
+    session.connect(|_| {});
+    session.tick(FIXED_TIME_MILLIS, |_| {});
+    let link = session.received(&good_logon(), |_| {});
+
+    assert_eq!(
+        link,
+        fixbolt_session::Link::Up,
+        "one tick is the only difference from the test above"
+    );
+    assert_eq!(
+        session.last_drop_reason(),
+        None,
+        "so the refusal really was about the missing clock and not about these bytes"
+    );
+}

@@ -17,6 +17,19 @@ below describe what a first release would contain.
 
 ### Changed
 
+- **A session judged before its first `tick` now says so: `DropReason::NeverTicked`.** New
+  variant on `DropReason`, which is `#[non_exhaustive]` — **not a breaking change**, and a
+  caller that matches on it exhaustively already has a wildcard arm. Nothing else about the
+  public API moves: `received` still takes no time argument, and time still arrives only
+  through `tick`.
+
+  What changes is what such a connection reports. `[measured 2026-09-10]` a session whose
+  clock had never been set judged the counterparty's `52=` against year zero and ended as
+  `SendingTimeOutOfRange` with `Session::last_skew_ms` reading about **two thousand years** — a
+  protocol accusation, carrying a number, for a mistake made entirely on this side. The refusal
+  now stands before the measurement, so `last_skew_ms` stays `None` on this path and that
+  number can no longer be produced. `STATUS.md` item 63.
+
 - **Reading the event stream no longer destroys events.**
   [ADR-0059](docs/decisions/ADR-0059-an-event-is-lost-only-when-the-ring-is-full.md). The ring
   used one mutex for the engine and every reader, so `Observer::events()` polling attentively
