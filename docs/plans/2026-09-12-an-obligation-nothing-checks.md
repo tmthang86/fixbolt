@@ -177,7 +177,10 @@ bước so đếm dùng `-e normal,build` bên `cargo tree`; `CARGO_TERM_COLOR: 
   khoá `include-dev`, mặc định `false` — *"If `true`, licenses are checked even for
   dev-dependencies"*, và lý do mặc định tắt: *"dev-dependencies are not used by downstream crates,
   nor part of binary artifacts."* Cùng trang: `include-build`, mặc định `true`.
-- **cargo-deny CHANGELOG** ([github.com/EmbarkStudios/cargo-deny/blob/main/CHANGELOG.md](https://github.com/EmbarkStudios/cargo-deny/blob/main/CHANGELOG.md)):
+- **cargo-deny release notes** ([github.com/EmbarkStudios/cargo-deny/releases](https://github.com/EmbarkStudios/cargo-deny/releases)
+  — cited as the releases page and not as its `CHANGELOG.md`, because `scripts/check-links.py`
+  reads any absolute URL ending in a name this repository also has as a link home; see
+  `STATUS.md` item 72):
   bản mới nhất **0.20.2 (2026-07-09)** — chính bản đang dùng, **không có gì để nâng cấp**. Không
   có dòng changelog nào nhắc `include-dev`; tìm kiếm chỉ ra PR#557 (khoảng 0.14.x) là nơi
   dev-dependencies bị bỏ khỏi licence check và khoá này ra đời; `include-build` là PR#800, 0.19.0.
