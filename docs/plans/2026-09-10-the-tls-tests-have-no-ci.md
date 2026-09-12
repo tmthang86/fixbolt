@@ -1,6 +1,6 @@
 # Đưa bộ test TLS vào CI, và làm cho "máy không chạy được" không giả dạng "engine hỏng"
 
-> **Loại:** Plan · **Ngày:** 2026-09-10 · **Trạng thái:** Chờ duyệt (Sửa 1)
+> **Loại:** Plan · **Ngày:** 2026-09-10 · **Trạng thái:** Xong (Sửa 1, 2026-09-12)
 >
 > **Sửa 1 — 2026-09-12.** Job `tls` do chính kế hoạch này dựng lên đã tìm ra hai test
 > đỏ trên runner, và **không bước nào của bảng sở hữu việc đó**. Kế hoạch chuyển từ
@@ -382,3 +382,74 @@ và khoảng giữa hai lần đó chính là cửa sổ đua**. Một client đ
 **một** lần ghi — cảnh này khi đó là dựng chứ không phải gặp. Đảo chiều đi kèm cũng đổi theo:
 tách `hello` ra một lần ghi riêng và xác nhận `early 0` quay lại, tức là chứng minh chính cái
 gộp-một-lần-ghi là thứ làm nó tất định.
+
+### Bước 7 và 8 — XONG 2026-09-12, và đảo chiều R2 lại refute một dự đoán đã được duyệt
+
+**Phạm vi giữ nguyên: không một dòng `crates/*/src` nào đổi.** Sửa `crates/engine/tests/tls.rs`
+và job `tls` trong `ci.yml`.
+
+**Cách sửa, và nó là "dựng" chứ không phải "nới".** `client_thread` bị xoá; thay bằng
+`InThreadClient` — một `rustls::ClientConnection` chạy **trên chính thread của acceptor**, socket
+non-blocking cả hai đầu. Hai test giờ dựng ra cảnh chúng khẳng định:
+
+- `a_logon_sent_straight_after_finished_is_not_lost`: `hello` được xếp vào `writer()` **ngay khi**
+  `is_handshaking()` thành false và **trước** lần `flush_all()` kế tiếp, nên `Finished` và record
+  app đi trong một lượt xả. Tất định đến từ **thứ tự một thread** — acceptor không thể chạy giữa
+  hai lần ghi của client — chứ không từ hy vọng hai record chung một TCP segment. Bốn assertion cũ
+  giữ nguyên từng chữ, cộng một `assert!(queued)` để test không xanh rỗng.
+- `a_handshake_completes_without_the_acceptor_ever_blocking`: pump lần đầu chạy khi client **chưa
+  ghi một byte nào**, nên `Step::Pending` là bắt buộc chứ không phải may.
+
+**Đảo chiều R1 đúng như dự đoán.** Trả `queue_app` về sau `flush_all` — tức dựng lại thứ tự
+hai-lần-ghi của `rustls::Stream` — đỏ ở đúng assertion đã đoán, `left: []` / `right: [104, 101,
+108, 108, 111]`, và **đỏ 10/10 lần**, tức bản thân cái đảo chiều cũng tất định.
+
+**Đảo chiều R2 đỏ, nhưng KHÔNG ở assertion đã đoán, và đó là phát hiện lớn nhất của bước này.**
+Dự đoán viết trong brief: đẩy `ClientHello` lên dây trước lần pump đầu thì assertion *"pump đầu
+là `Pending`"* phải đỏ. Nó **xanh**. Cái đỏ là assertion khác:
+
+```
+assertion `left == right` failed: the acceptor wrote something in answer to a socket nobody had written to
+  left: 646
+ right: 0
+```
+
+Lý do, hiển nhiên khi đã thấy và vô hình trước đó: **`Pending` được trả về ở hai trạng thái khác
+nhau** — khi không có gì để làm, và khi có đầy việc nhưng peer chưa trả lời. Nó không phân biệt
+được gì. Thứ mang nghĩa của test là assertion thứ hai: *acceptor không thể ghi `ServerHello` trả
+lời một `ClientHello` chưa từng được gửi*. Và điều này **được đo chứ không suy ra** — thay
+assertion kia bằng một lệnh in thì đọc `R2 probe: first = Pending, acceptor answered 647 bytes`
+kèm `... ok`.
+
+Nếu chỉ đọc màu của đảo chiều, kết luận sẽ là *"assertion `Pending` đã được chứng minh"* — về một
+dòng không thể đỏ vì lý do nó được viết ra. Viết thành
+[a-red-reversal-does-not-prove-the-assertion-you-wrote-it-for.md](../reference/a-red-reversal-does-not-prove-the-assertion-you-wrote-it-for.md),
+`[to testing-skills]`, kèm luôn ca của bước 4a (ba đảo chiều đỏ, không cái nào chạm tới assertion
+mang nghĩa). **Đây là lần thứ ba trên nhánh này một dự đoán về đảo chiều sai**, và lần này nó đã
+nằm trong một kế hoạch được duyệt.
+
+**Bước 8 gần như không còn việc.** Gate thật nhận `--no-fail-fast` và **chạy binary `tls` ba lần,
+đỏ một lần là đỏ cả job**; bước đo tạm bị xoá. Hai thay đổi này mua bằng hai số đo, và comment
+trong `ci.yml` nói rõ số nào mua cái nào.
+
+**Một thay đổi ngoài brief, và người làm nói ra thay vì để tôi phát hiện:** bước gate giờ bắt exit
+status của cargo thay vì để `-e` ngắt, nên dòng `TLS tests that ran: N` **in ra cả khi đỏ**. Trước
+đó một lần chạy đỏ ngắt trước khi đếm — và cái đếm chính là thứ duy nhất phân biệt *một test hỏng*
+với *không test nào chạy*.
+
+**Gate, chạy lại bởi tôi chứ không nhận báo cáo:**
+
+```
+fmt: clean
+clippy exit: 0
+tls binary, 30 repetitions: 30 pass / 0 fail
+test result: ok. 6 passed  /  4 passed  /  1 passed      cargo exit: 0
+cargo test --all exit: 0
+no dead internal links
+```
+
+**Chưa chứng minh:** không tái hiện được flake ở bàn này ngay cả trên code cũ — 30/30 xanh, kể cả
+khi ghim `taskset -c 0` cùng 4 tiến trình quay. Nên bằng chứng cho (a) vẫn **chỉ là số của
+runner**, và bằng chứng cho bản sửa là R1/R2 chứ không phải một tỉ lệ đỏ trước-sau. Ba lần lặp
+trong gate **chặn** flake chứ không **khử** nó; thứ khử nó là cách dựng, và cách dựng được canh
+bằng đảo chiều của chính nó.

@@ -432,45 +432,6 @@ jobs:
             exit 1
           fi
       - run: cargo clippy --all-targets --features tls -- -D warnings
-      # **TEMPORARY — step 6 of docs/plans/2026-09-10-the-tls-tests-have-no-ci.md
-      # Sửa 1, and it is a MEASUREMENT, not a gate.** It cannot fail the job.
-      #
-      # Two tests in tests/tls.rs are red here and green twenty times on the
-      # owner's desk, and `[measured 2026-09-12]` the same commit aa4f46e gave
-      # one green run (34510700732) and one red run (34510705777) on this
-      # runner. Two explanations were open — the tests assert a scheduling
-      # outcome, or the engine really drops the bytes — and the plan forbids
-      # picking between them by reading the code. This step prints what
-      # separates them: at the moment `pump` reports Done, how many sweeps went
-      # Pending, how many early bytes rustls decrypted, and whether the peer's
-      # ciphertext turns up LATE.
-      #
-      # Five repetitions, because one green says nothing about a flake: the
-      # green run above is a run of the very commit that also went red.
-      #
-      # **The grep matches `probe ` anywhere, not at the start of a line, and
-      # that is not a style choice.** `[measured 2026-09-12]` under
-      # `--test-threads=1` the harness prints `test NAME ... ` with no newline
-      # and then runs it, so the probe line is appended to that line. A `^probe`
-      # anchor matched nothing, and this step cannot fail — it would have
-      # printed no measurement at all and said so to nobody.
-      #
-      # `--no-fail-fast` is here for a second reason worth its own line: the red
-      # run reported six tests, not eleven. cargo stops at the first failing
-      # test binary, so tls_wire.rs and tls_mode.rs have still never run on any
-      # machine but that desk.
-      - name: MEASUREMENT ONLY — what the TLS tests see on this runner
-        run: |
-          for i in 1 2 3 4 5; do
-            echo "=== tls.rs repetition ${i} ==="
-            cargo test -p fixbolt-engine --features tls --test tls \
-              -- --nocapture --test-threads=1 2>&1 | grep -E 'probe |^test ' || true
-          done
-          echo "=== all three binaries, --no-fail-fast ==="
-          cargo test -p fixbolt-engine --features tls --no-fail-fast \
-            --test tls --test tls_wire --test tls_mode \
-            2>&1 | grep -E '^(test |test result|error)' || true
-
       # **Read the count, not the exit status.** `--features tls` compiles three
       # test files the default build never sees; a run that compiled none of them
       # also exits 0. The step prints how many of their tests ran and fails if it
@@ -478,12 +439,41 @@ jobs:
       - name: The TLS tests, and proof they were the ones that ran
         run: |
           set -o pipefail
-          cargo test -p fixbolt-engine --features tls --test tls --test tls_wire --test tls_mode \
-            2>&1 | tee /tmp/tls-tests.log
+          # `--no-fail-fast`, because `[measured 2026-09-12]` the red run of this
+          # job reported six tests when there are eleven: cargo stops at the
+          # first failing test binary, so `tls_wire.rs` and `tls_mode.rs` had
+          # still never run on any machine but the owner's desk.
+          # The status is caught rather than allowed to abort the step, so that
+          # the count below is printed for a RED run too — it is the count, not
+          # the exit status, that separates "a test failed" from "no test ran".
+          status=0
+          cargo test -p fixbolt-engine --features tls --no-fail-fast \
+            --test tls --test tls_wire --test tls_mode \
+            2>&1 | tee /tmp/tls-tests.log || status=$?
           ran="$(grep -cE '^test .* \.\.\. ok$' /tmp/tls-tests.log)"
           echo "TLS tests that ran: ${ran}"
           if [ "$ran" -eq 0 ]; then
             echo "::error title=The TLS job ran no TLS tests::cargo exited 0 having compiled nothing. That is the exact shape of STATUS.md item 62, one layer in."
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          # **Three repetitions of the `tls` binary, and all three must pass.**
+          # `[measured 2026-09-12]` runs 34666630103 and 34666631877 on commit
+          # 31fc0ec: 3 of 5 repetitions were red while this job finished green,
+          # because the gate ran the flaky test exactly once and hit a good
+          # roll. One green is what let a scheduling race live in this file.
+          fails=0
+          for i in 1 2 3; do
+            echo "=== tls.rs repetition ${i} of 3 ==="
+            if ! cargo test -p fixbolt-engine --features tls --test tls; then
+              fails=$((fails + 1))
+            fi
+          done
+          echo "tls.rs repetitions failed: ${fails} of 3"
+          if [ "$fails" -ne 0 ]; then
+            echo "::error title=The TLS tests are not deterministic::${fails} of 3 repetitions of the tls binary failed. A single green says nothing here — see the comment above this step."
             exit 1
           fi
 

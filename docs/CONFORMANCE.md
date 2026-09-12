@@ -403,4 +403,20 @@ runs `scripts/check-ktls-available.sh` and requires the verdict `READY`.
 with it. A green `cargo test` that compiled nothing is indistinguishable from a real one, so the
 count is read rather than the exit status.
 
+**It runs the `tls` binary three times, and `--no-fail-fast`, and both halves were bought by a
+false green.** `[measured 2026-09-12]` runs [`34666630103`](https://github.com/tmthang86/fixbolt/actions/runs/34666630103)
+and [`34666631877`](https://github.com/tmthang86/fixbolt/actions/runs/34666631877) on commit
+`31fc0ec`: **3 of 5 repetitions of the `tls` binary were red while the job finished green**,
+because the gate ran a flaky test exactly once and hit a good roll. And `cargo test` stops at the
+**first failing test binary**, so a red `tls.rs` had been hiding `tls_wire.rs` and `tls_mode.rs`
+entirely — the earlier red run reported **6** tests where there are **11**, and nobody read the
+number. A single green run of a test that is green 60% of the time is a statement about the run,
+not about the commit.
+
+**What it does not prove, said plainly.** The three repetitions bound flakiness; they do not
+eliminate it. The tests they run are deterministic **by construction** — the counterparty is
+driven on the acceptor's own thread, so no scheduler decides what this engine sees — and that
+construction is guarded by its own reversals rather than by the repetitions. Nothing here is a
+latency measurement: [DESIGN.md](DESIGN.md) §8's TLS row is still empty.
+
 ---
