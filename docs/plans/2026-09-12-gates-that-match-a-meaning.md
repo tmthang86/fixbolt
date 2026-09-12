@@ -574,10 +574,73 @@ Nhánh `plan/gates-that-match-a-meaning`, tip `7323299` khi mục này được 
   phải cập nhật* — đúng như phải thế, vì đó là mô tả lịch sử của việc cần sửa, không phải là câu
   đang mô tả gate hôm nay; không đụng tới hai mục đó theo yêu cầu của bước).
 
-- **Bước 6 — chưa chạy.** Senior review context mới, tấn công cả ba gate bằng cách viết chưa thử,
-  vẫn còn mở. Đây là bước còn lại trước khi nhánh này có thể đóng và merge.
+- **Bước 6 — context mới, opus, nhận đúng mục *Cách làm* và ba script, không nhận lý lẽ của phiên
+  này.** Đề bài duy nhất: tấn công cả ba gate bằng cách viết chưa thử. Qua mặt cả ba.
+  - Gate A (`check-no-crate-root-allow.sh`): điểm mù thứ hai, khác điểm mù đã sửa ở bước trước.
+    `DENY_LINTS` được suy ra bằng một `sed` chỉ khớp key trần, nên `"unwrap_used" = "deny"` — TOML
+    hợp lệ, cargo đọc được — trôi qua không khớp, và `#![warn(clippy::unwrap_used)]` ở gốc crate
+    đọc `ok`.
+  - Gate B (`check-scratch-fixtures.sh`): năm cách qua mặt nữa — `cp` bị comment ở cuối dòng (đã
+    có ở item 66 nhưng bản sửa đầu chưa đủ), một script không tên `.sh`, một `cp` nằm trong thân
+    heredoc, một `cp` copy sai chiều (`cp "$CRATE/x" "$ROOT/x.copy"`), và hai cách gieo biến
+    không được regex nhận: `read -r TMP < <(mktemp -d)` và `TMP=/tmp` trần.
+  - Doc-parser probe 3 (item 67): mẫu bác bỏ chỉ thử ba literal cố định, nên thu hẹp
+    `TimestampPrecision` từ `` `3`, `6` hoặc `9` `` xuống `` `3` hoặc `6` `` vẫn xanh.
 
-**Còn lại trước khi đóng plan**: bước 6 (senior review), rồi manager tự chạy lại toàn bộ gate trên
-đúng commit đóng nhánh và đặt tên CI run.
+- **Sửa 2 — `57b6b3a`, cùng ngày với bước 6.** Sáu trong số các phát hiện trên được sửa ngay:
+  - `DENY_LINTS` giờ nhận key có ngoặc kép, key có dấu chấm, và bảng inline
+    (`unwrap_used = { level = "deny" }`), nhận giá trị chuỗi literal (`'deny'`), và một danh sách
+    rỗng là `FAIL` chứ không phải một phép so sánh vô nghĩa với tập rỗng. Dòng `ok` in thêm số đếm
+    deny lint.
+  - `check-scratch-fixtures.sh`: dòng bắt đầu bằng `#` không còn được đọc ở **bất kỳ** bước nào
+    (kể cả phần bị comment cuối dòng), và việc chọn script vào phạm vi giờ theo shebang, không
+    theo đuôi `.sh`.
+  - **Bốn phát hiện KHÔNG được sửa, có chủ đích** — mỗi cái chỉ cần thêm một regex nữa, và đó chính
+    là cái vòng lặp mục A của plan này đã kết luận không thắng được bằng cách đó: `cp` trong thân
+    heredoc, `cp` copy sai chiều, và hai cách gieo biến (`read -r TMP < <(mktemp -d)`,
+    `TMP=/tmp`). Item 66 **không đóng trọn**: nửa gate A đóng hẳn, nửa gate B thì không — bốn cách
+    viết này giờ là item 69, câu hỏi cho kiến trúc sư về hình dạng của gate chứ không phải một
+    việc-cần-làm.
+  - **Sửa bước 6 ở gate A lại lộ ra một lỗi khác, không liên quan gì đến TLS hay lint config**:
+    chạy lại `check-feature-gated-tests-ran.sh` (đã đóng ở bước 3, item 68) trên một log thật thay
+    vì log dựng tay, nó đọc sai theo hai cách độc lập. **(1)** Nửa liệt kê từng đọc `Running
+    <path>` (stderr) trộn với các dòng tên test (stdout) qua `2>&1`, rồi suy đoán binary sở hữu
+    test nào từ thứ tự tương đối giữa hai luồng — CI run `34696713544` đỏ với một dòng test xuất
+    hiện trước bất kỳ dòng `Running` nào, vì thứ tự giữa hai luồng qua chung một pipe không được
+    đảm bảo, và cái xanh trên bàn chỉ là xanh nhờ may mắn. Sửa: hỏi thẳng
+    `cargo test --no-run --message-format=json` để lấy danh sách binary, rồi tự `--list` từng cái —
+    quy về đúng binary theo cấu trúc, không theo thứ tự dòng log; nửa đối chiếu giờ chỉ khẳng định
+    ba điều không phụ thuộc thứ tự. **(2)** libtest viết dòng chạy của một test
+    `#[should_panic]` khác dòng liệt kê (`NAME: test` khi liệt kê, `test NAME - should panic ...
+    ok` khi chạy), nên bản đếm đầu tiên đọc **325/326** trên một log mà cả 326 đã chạy thật — một
+    câu đỏ không nói gì về thứ đang được kiểm. Cả hai đã sửa cùng ngày. **Số liệt kê đúng ở tip
+    này là 326, không phải 322** — 322 là số đo tại `161744a` (commit của chính bước 3), 326 là số
+    đo sau khi bước 4 thêm bốn test `doc_table`; cả hai con số giờ được ghi kèm commit đo được, vì
+    đó là lý do nó trôi.
+  - Hai bài học được viết thành `docs/reference/` mới, cả hai mang nhãn `[to testing-skills]`:
+    [two-streams-through-one-pipe-have-no-guaranteed-order](../reference/two-streams-through-one-pipe-have-no-guaranteed-order.md)
+    và
+    [a-test-s-name-is-spelled-differently-in-a-listing-and-in-a-run](../reference/a-test-s-name-is-spelled-differently-in-a-listing-and-in-a-run.md).
+  - `CLAUDE.md` §2, `DESIGN.md` §6, `docs/reference/a-scratch-fixture-inherits-the-machine.md` và
+    `STATUS.md` được sửa lại đúng bằng những gì bước 6 đo được — ba câu đã sai (câu nói chỉ còn
+    hai giới hạn ở gate B, xuất hiện hai chỗ, và câu về `warn` hạ một lint bị deny) được viết lại
+    đúng, và ba con số sai (link count 1893 thay vì 1899, 322 thay vì 326 test được liệt kê, tip
+    `7323299` thay vì `57b6b3a`) được sửa, mỗi số kèm commit đo được nó.
+  Kiểm chứng: `python3 scripts/check-links.py` không link chết; `cargo test --all` không đổi
+  (635 passed); câu "chỉ còn hai giới hạn" không còn xuất hiện ở `CLAUDE.md` hay `docs/` ngoài
+  chính đoạn lịch sử này.
+
+**Bước 6 đã đổi nhánh, và đó chính là lý do senior review tồn tại**: nó không chỉ tìm ra lỗi mà
+còn buộc phải sửa ngay hai gate đã "đóng", và phát hiện ra rằng chính gate vừa đóng item 68 cũng
+sai — theo hai lý do không liên quan gì đến điều nó được viết ra để kiểm. Bốn phát hiện ở gate B
+**cố ý không sửa**: mỗi cái là một regex nữa, plan này đã tự kết luận trước khi bước 1 bắt đầu
+rằng vòng lặp "liệt kê cách qua mặt, vá, tìm cách kế tiếp" không thắng được — đó là lý do bước 1
+thay hẳn quy tắc-bằng-regex bằng một lexer thật (`tools/attr-scan`) cho gate kia, và gate B chưa
+từng được đối xử như vậy. Việc đó giờ là item 69, một câu hỏi thiết kế gửi kiến trúc sư, không
+phải một việc-cần-làm của bước 6.
+
+**Còn lại trước khi đóng plan**: manager tự chạy lại toàn bộ gate trên đúng commit đóng nhánh,
+đặt tên CI run, và merge. Item 69 và 70 không phải điều kiện đóng nhánh này — điểm cắt của plan
+đã đóng nửa gate-A của item 66 mà không cần chúng.
 
 **Đây là phần sống sót qua nén context** — phiên sau đọc mục này trước tiên.

@@ -99,12 +99,21 @@ what this script can see. It runs over every `lib`/`bin` target under `crates/` 
 `cargo metadata` rather than from file names — so the `#![allow(clippy::unwrap_used)]` that would
 switch this whole rule off in one line is
 a red, which `check-lint-config.sh` can never see because it reads `Cargo.toml` and not source. It
-reads 6 crate roots and 10 manifests, and **its own second assertion is the finding**: `[measured
-2026-09-12]` the first implementation of that assertion went *green* on its own reversal — a
-character class excluding `:` could not match a lint written after `clippy::`, which is how every
-real one is written, so the guard itself was off from the first run it ever made, and only a
-reversal whose FAIL sentence had been written down beforehand could see it
-(`docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`). `[measured 2026-09-12]`
+reads 6 crate roots, 10 manifests and 4 deny lints, and **its own second assertion is the
+finding, twice over**: `[measured 2026-09-12]` the first implementation of that assertion went
+*green* on its own reversal — a character class excluding `:` could not match a lint written
+after `clippy::`, which is how every real one is written, so the guard itself was off from the
+first run it ever made, and only a reversal whose FAIL sentence had been written down beforehand
+could see it
+(`docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`). `[measured
+2026-09-12]` a senior review then found the deny list itself was blind: the first derivation read
+`Cargo.toml` with a matcher that only accepted a bare identifier key, so `"unwrap_used" = "deny"`
+— valid TOML, and what cargo reads — passed through unmatched, `DENY_LINTS` held strings
+`attr-scan`'s output could never equal, and `#![warn(clippy::unwrap_used)]` at a crate root read
+`ok`. The key may now be quoted or dotted (`clippy.unwrap_used = "deny"`) or written as an
+inline table (`unwrap_used = { level = "deny" }`), the value may be a literal string
+(`'deny'`), and an **empty** deny list is itself a `FAIL` — the same zero-guard reasoning as an
+empty attribute count, not a workspace read as having nothing to deny. `[measured 2026-09-12]`
 R-A4 ties that textual check to the compiler effect once: with a crate-root `#![allow]` in place a
 fresh `v[0]` in a clean submodule of `dict` is **exit 0, no diagnostic**, and without it **exit 101,
 `error: indexing may panic`**. `scripts/check-scratch-fixtures.sh` is **7 at one remove — it guards
@@ -122,9 +131,15 @@ line, or after `;` `&&` `||` `|` `(` `{` `then` `do` `else`. `[measured 2026-09-
 writes a plain `cp`; and the seeding regex takes any assignment prefix
 (`readonly`, `declare -r`, `typeset -g`, `export`, `local`, a plain assignment), with a
 `cd`/`pushd` into a scratch directory that names no variable at all failing outright rather than
-passing unseen. **Two limits remain**: order is not checked — a `cp` that appears after the
-`cd`/`pushd` still counts — and a `cd` reached through a function call, `eval`, or hidden past a
-`#` inside a same-line string reads as a spurious red rather than a false green. It reads 20
+passing unseen. **A senior review then got past it four more ways, and none of the four is what
+this rule used to predict** — no `eval`, no function call, no `#` hidden inside a same-line
+string. Two are fixed: a `cp` whose pin name lived only in a trailing comment now counts as no
+`cp` at all, and a script with no `.sh` name is scanned by its shebang rather than missed by its
+extension. **Four remain open by decision, for the architect** (STATUS.md item 69): a `cp` inside
+a heredoc body, a `cp` copying in the wrong direction (out of the scratch dir rather than into
+it), and two ways of seeding the scratch variable this script does not recognise —
+`read -r TMP < <(mktemp -d)` and a bare `TMP=/tmp`. Each is one more regex, and the plan that
+found them concluded that loop cannot be won by adding another. It reads 20
 scripts, 1 entering a scratch dir, 1 pin. 6 — the
 `no-default-features` CI job **plus `scripts/check-no-optional-deps.sh`, and the second is not
 a nicety**: `[measured 2026-08-30]` the CI job alone was green about a build that never
