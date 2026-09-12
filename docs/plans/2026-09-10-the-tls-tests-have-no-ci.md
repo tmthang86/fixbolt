@@ -11,6 +11,7 @@
 > `crates/engine/tests/tls.rs`, docs. **Không chạm** `crates/*/src` — không một dòng code
 > engine nào đổi. **Dòng này đúng cho bước 1-5 và là câu hỏi mở của bước 6**: nếu bước 6 kết
 > luận (b), phạm vi phải mở và kế hoạch phải được duyệt lại lần nữa trước khi viết code.
+> **`[measured 2026-09-12]` bước 6 đã trả lời: (a). Phạm vi KHÔNG mở** — xem cuối file.
 >
 > **Thời lượng dự kiến:** nửa ngày. Bước 1 cần một vòng push–đọc-log của CI; các bước sau
 > làm được ở máy.
@@ -315,3 +316,69 @@ PR #61 đang chở một lỗi mất dữ liệu.
 - **Không đụng bốn test TLS đang xanh.** Chỉ hai test có tên ở trên được sửa, và chỉ sau bước 6.
 - **Vẫn không số §8 nào.** Bước 6 in ra số byte và số sweep; đó là số chẩn đoán, không phải số
   latency, và không dòng nào của nó vào `DESIGN.md` §8.
+
+### Bước 6 — ĐO XONG, và câu trả lời là **(a)**
+
+`[measured 2026-09-12]` commit `31fc0ec`, hai run, mỗi run năm lần lặp `tls.rs` với
+`--nocapture`, cộng một lượt `--no-fail-fast` cho cả ba binary.
+
+**Run [`34666630103`](https://github.com/tmthang86/fixbolt/actions/runs/34666630103) (`push`) — tái hiện được:**
+
+```
+probe no_blocking:          sweeps 996  pendings 995  early 5  leftover 0  late_ciphertext 0
+probe logon_after_finished: sweeps 812  pendings 811  early 0  leftover 0  late_ciphertext 27
+probe no_blocking:          sweeps 971  pendings 970  early 5  leftover 0  late_ciphertext 0
+probe logon_after_finished: sweeps 806  pendings 805  early 5  leftover 0  late_ciphertext 0
+probe no_blocking:          sweeps 944  pendings 943  early 0  leftover 0  late_ciphertext 27
+probe logon_after_finished: sweeps 784  pendings 783  early 0  leftover 0  late_ciphertext 27
+probe no_blocking:          sweeps 1031 pendings 1030 early 5  leftover 0  late_ciphertext 0
+probe logon_after_finished: sweeps 832  pendings 831  early 0  leftover 0  late_ciphertext 27
+probe no_blocking:          sweeps 868  pendings 867  early 5  leftover 0  late_ciphertext 0
+probe logon_after_finished: sweeps 795  pendings 794  early 5  leftover 0  late_ciphertext 0
+```
+
+**Run [`34666631877`](https://github.com/tmthang86/fixbolt/actions/runs/34666631877) (`pull_request`), CÙNG commit:** 10/10 đọc
+`early 5 late_ciphertext 0`, 5/5 lần lặp xanh. **Lại là cùng một commit cho hai kết quả**, lần
+này theo chiều ngược với ngày 2026-09-10.
+
+**Kết luận, và nó đọc thẳng từ số chứ không từ hình dạng:** mỗi lần `early 0` thì
+`late_ciphertext 27` — **byte của peer tới SAU khi `pump` trả `Done`**. 27 byte đúng bằng một
+record TLS 1.3 chở 5 byte plaintext (5 header + 5 payload + 1 content type + 16 tag). Engine
+**không đánh rơi gì**; byte chưa tới. Đó là **(a)**.
+
+Nên **phạm vi không mở sang `crates/engine/src/tls.rs`**, và câu hỏi mở ở đầu file này đóng lại
+với câu trả lời "không".
+
+**Bốn thứ khác đọc được từ cùng hai log:**
+
+1. **Ba trong năm lần lặp của run `…103` ĐỎ** — `test result: FAILED. 5 passed; 1 failed`, cả ba
+   lần đều là `a_logon_sent_straight_after_finished_is_not_lost`. **Mà job vẫn XANH.** Bước đo là
+   `|| true` nên nó nuốt lỗi đúng như thiết kế, và **bước gate sau đó chạy đúng một lần và tình
+   cờ trúng lần xanh**. Đây là một false green đang sống trong CI hôm nay: một gate chạy một lần
+   trên một test flaky 60% thì cái nó báo là *lần chạy đó*, không phải *commit đó*.
+2. **`pendings > 0` KHÔNG tái hiện** trong 10 lần. Nó đỏ ngày 2026-09-10 và xanh 10/10 hôm nay —
+   nên nó là một khẳng định về lịch chạy đúng y như cái kia, chỉ hiếm hơn. Bước 7 phải xử cả
+   hai; **sửa mỗi cái tái hiện được là để lại một quả mìn có hẹn giờ dài hơn**.
+3. **`no_blocking` đọc `early 0 late_ciphertext 27` một lần mà vẫn XANH** (lần lặp 3). Test đó
+   không assert `early`, nên nó đi qua đúng cái cảnh mà test kia đỏ. Một test đi qua một cảnh
+   không có nghĩa là nó canh cảnh đó.
+4. **`TLS tests that ran: 11` ở cả hai run**, và lượt `--no-fail-fast` đọc `6 + 4 + 1`. **Lần đầu
+   tiên `tls_wire.rs` (1 test) và `tls_mode.rs` (4 test) chạy trên một máy không phải bàn của chủ
+   repo, và cả hai xanh.** Bước 8 mất đi phần lớn lý do tồn tại, giống hệt cách bước 1 đã làm
+   bước 4 biến mất.
+
+**Số của bàn này để so sánh**, `[measured 2026-09-12]`, 5 lần lặp, xanh cả 5:
+`sweeps 377-416`, `early 5`, `late_ciphertext 0` — **không một lần nào rơi vào cảnh đó**. Runner
+quay 784-1031 sweep cho cùng một việc, tức là nó chờ lâu hơn gấp đôi, và đó là chỗ cửa sổ đua mở
+ra.
+
+**Bước 7 phải đổi so với lúc viết Sửa 1.** Lúc đó tôi ghi đảo chiều là *"cố tình làm `hello` tới
+sau `Done` và xác nhận test vẫn xanh"* — viết dưới giả định bản sửa sẽ là nới khẳng định xuống
+thành cái đúng trong cả hai trường hợp. Số đo nói bản sửa đúng là bản khác: **test phải DỰNG ra
+cảnh nó khẳng định, thay vì hy vọng gặp**. Client hiện tại là một thread `rustls::Stream` chạy
+tự do, và `Stream::write` hoàn tất bắt tay rồi mới ghi app data — **hai lần `write` xuống socket,
+và khoảng giữa hai lần đó chính là cửa sổ đua**. Một client được lái trong cùng thread, xếp
+`hello` vào `writer()` *trước* khi gọi `write_tls`, đẩy `Finished` và record app data xuống trong
+**một** lần ghi — cảnh này khi đó là dựng chứ không phải gặp. Đảo chiều đi kèm cũng đổi theo:
+tách `hello` ra một lần ghi riêng và xác nhận `early 0` quay lại, tức là chứng minh chính cái
+gộp-một-lần-ghi là thứ làm nó tất định.
