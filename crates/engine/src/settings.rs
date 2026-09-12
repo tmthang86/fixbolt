@@ -1152,3 +1152,202 @@ fn schedule(block: Block<'_>) -> Result<Option<Schedule>, SettingsError> {
         .map(Some)
         .ok_or_else(|| impossible(line, "Weekdays is empty"))
 }
+
+/// `docs/CONFIGURATION.md` §1 and the [`Key`] enum, checked against each other.
+///
+/// `[measured 2026-09-12]` nothing read that document. The 26 keys were
+/// exhaustive in one direction only — the compiler forces every `match self`
+/// over [`Key`] to cover every variant — and the documentation direction had
+/// never been checked at all, which is how `docs/CONFIGURATION.md:21` came to
+/// say *"Twenty-three keys"* above a table of 26 rows for a week.
+///
+/// **The count sentence itself is still unguarded.** These tests compare the
+/// enum with the *rows* of §1; the prose above the table is prose, and nothing
+/// here would notice it going stale again.
+#[cfg(test)]
+mod doc_table {
+    use super::Key;
+
+    /// This crate's own source, so the key list comes from the compiler rather
+    /// than from a second list that can drift. Resolved relative to this file.
+    const SRC: &str = include_str!("settings.rs");
+
+    /// `CARGO_MANIFEST_DIR` is `crates/engine`, so the repository root is two
+    /// levels up. Absolute, so it does not depend on which directory the test
+    /// binary is run from. Read at **run** time, not `include_str!`, so an
+    /// edited document is compared without rebuilding anything.
+    const DOC_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/CONFIGURATION.md");
+
+    /// The line that opens `Key::name`, matched whole so that this module's own
+    /// mention of it — inside a string literal — cannot be mistaken for it.
+    const NAME_FN: &str = "const fn name(self) -> &'static str {";
+    /// The same for `Key::parse`, the second witness in [`the_key_scrape_is_not_silently_short`].
+    const PARSE_FN: &str = "fn parse(name: &str) -> Option<Self> {";
+
+    /// Leading spaces on `line`.
+    fn indent(line: &str) -> usize {
+        line.len() - line.trim_start().len()
+    }
+
+    /// Every string literal in the arms of the function `opens` opens.
+    ///
+    /// `Key::name` is a `match self` with no wildcard arm, so a new [`Key`]
+    /// variant does not compile until it has an arm there carrying its
+    /// spelling. Reading that function back is therefore a key list the
+    /// **compiler** keeps complete, which a list written out here would not be.
+    fn arm_literals(opens: &str) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        let mut open_indent = None;
+        for line in SRC.lines() {
+            let trimmed = line.trim();
+            let Some(fn_indent) = open_indent else {
+                if trimmed == opens {
+                    open_indent = Some(indent(line));
+                }
+                continue;
+            };
+            // The function's own closing brace. The `match`'s brace is nested
+            // one level deeper, so it does not end the scan.
+            if trimmed == "}" && indent(line) <= fn_indent {
+                break;
+            }
+            // The spelling sits on the right of `=>` in `Key::name` and on the
+            // left of it in `Key::parse`, so take the first quoted word on any
+            // arm line. A comment is not an arm.
+            if trimmed.starts_with("//") || !line.contains("=>") {
+                continue;
+            }
+            let mut quoted = line.split('"');
+            let _before = quoted.next();
+            if let Some(name) = quoted.next() {
+                if !name.is_empty() {
+                    out.push(name);
+                }
+            }
+        }
+        assert!(
+            open_indent.is_some(),
+            "settings.rs no longer contains the line `{opens}` — the doc/key gate reads its match arms and is now reading nothing"
+        );
+        out
+    }
+
+    /// The key spelling of every row of `docs/CONFIGURATION.md` §1, in order.
+    ///
+    /// §1 runs from its own `## ` heading to the next one, so the `###`
+    /// subsection inside it is included and the `## 2.` tables are not. A row
+    /// counts when its **first cell is a backticked word and nothing else**:
+    /// header rows (`Key`), separator rows (`---`) and the prose table in the
+    /// `TimestampPrecision` subsection (`` `fixbolt::serve` and friends — … ``)
+    /// all fail that structurally. There is deliberately no character class
+    /// listing what a key name may contain —
+    /// `docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`
+    /// is this repository's case of exactly that going wrong.
+    fn doc_rows(doc: &str) -> Vec<&str> {
+        let mut inside = false;
+        let mut seen_section_one = false;
+        let mut rows = Vec::new();
+        for line in doc.lines() {
+            if line.starts_with("## ") {
+                inside = line.starts_with("## 1.");
+                seen_section_one |= inside;
+                continue;
+            }
+            if !inside || !line.starts_with('|') {
+                continue;
+            }
+            let mut cells = line.split('|');
+            let _leading = cells.next();
+            let Some(first) = cells.next() else {
+                continue;
+            };
+            let first = first.trim();
+            let Some(inner) = first
+                .strip_prefix('`')
+                .and_then(|rest| rest.strip_suffix('`'))
+            else {
+                continue;
+            };
+            if inner.is_empty() || inner.contains('`') || inner.contains(char::is_whitespace) {
+                continue;
+            }
+            rows.push(inner);
+        }
+        assert!(
+            seen_section_one,
+            "docs/CONFIGURATION.md has no `## 1.` heading — the doc/key gate scopes itself to that section and is now reading nothing"
+        );
+        rows
+    }
+
+    fn configuration_md() -> String {
+        let doc = std::fs::read_to_string(DOC_PATH).unwrap_or_default();
+        assert!(!doc.is_empty(), "cannot read {DOC_PATH}");
+        doc
+    }
+
+    /// Both directions, with a distinct sentence each. A check that can only
+    /// fail one way is half a gate.
+    #[test]
+    fn configuration_md_section_1_lists_exactly_the_keys() {
+        let doc = configuration_md();
+        let rows = doc_rows(&doc);
+        for name in arm_literals(NAME_FN) {
+            assert!(
+                rows.contains(&name),
+                "docs/CONFIGURATION.md §1: Key has no doc row: `{name}`"
+            );
+        }
+        for row in rows {
+            assert!(
+                Key::parse(row).is_some(),
+                "docs/CONFIGURATION.md §1: doc row has no Key: `{row}`"
+            );
+        }
+    }
+
+    #[test]
+    fn every_key_name_parses_back_to_its_key() {
+        for name in arm_literals(NAME_FN) {
+            let parsed = Key::parse(name);
+            assert!(
+                parsed.is_some(),
+                "Key::parse rejects its own name: `{name}`"
+            );
+            assert_eq!(
+                parsed.map(Key::name),
+                Some(name),
+                "Key::parse and Key::name disagree about `{name}`"
+            );
+        }
+    }
+
+    /// The scrape's own observable. A text scan that stops matching reports an
+    /// empty list, which reads exactly like a healthy tree — the failure mode
+    /// of `docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`.
+    /// Two witnesses answer that: `Key::parse`'s arms, scraped independently,
+    /// and a floor that may only ever be raised.
+    #[test]
+    fn the_key_scrape_is_not_silently_short() {
+        /// Keys on 2026-09-12. Raise it when keys are added; never lower it.
+        const FLOOR: usize = 26;
+
+        let mut names = arm_literals(NAME_FN);
+        let mut parses = arm_literals(PARSE_FN);
+        assert!(
+            names.len() >= FLOOR,
+            "the Key::name scrape found {} names, below the floor of {FLOOR} — it has stopped matching",
+            names.len()
+        );
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "Key::name repeats a spelling");
+        parses.sort_unstable();
+        parses.dedup();
+        assert_eq!(
+            names, parses,
+            "Key::name and Key::parse do not spell the same set of keys"
+        );
+    }
+}

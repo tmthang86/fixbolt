@@ -18,7 +18,7 @@ Validation is strict. An unknown key, a malformed value or an impossible schedul
 startup with the line number and the text that was written
 ([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)).
 
-**Twenty-three keys** are recognised `[changed 2026-09-05, was eleven]`.
+**Twenty-six keys** are recognised `[changed 2026-09-05, was eleven]`.
 
 | Key | Meaning | Values | Default | Where | Source |
 |---|---|---|---|---|---|
