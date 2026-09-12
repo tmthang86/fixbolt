@@ -114,7 +114,15 @@ the two plan files' delivery logs.
   runner rather than only on this desk. That count is the whole reason the step exists, and
   without `0a49778`'s one-line fix to `ci.yml` it would have read 11 beside a green tick. And
   `tls.rs repetitions failed: 0 of 3`, on the binary that was flaky on this same runner twelve
-  hours ago. **The merge commit itself is not green yet** — it does not exist.
+  hours ago. `[2026-09-12, later]` the branch tip **`b17404f`** — the commit that wrote this very
+  paragraph — is green as well, runs
+  [`34689325379`](https://github.com/tmthang86/fixbolt/actions/runs/34689325379) and
+  [`34689323845`](https://github.com/tmthang86/fixbolt/actions/runs/34689323845), 14 of 14 each.
+  **And there the chain stops on purpose.** Naming a run moves the tip, which needs a run, which
+  moves the tip: every plan here has escaped that the same way, by reading the **merge commit** on
+  its own rather than inferring it from the branch. So the one commit this section cannot cover is
+  the one adding this sentence, and the merge run is what covers it. **The merge commit itself is
+  not green yet** — it does not exist.
 - **`shellcheck` has never run** over any script in this repository.
 - **Nothing here says anything about the engine thread under TLS.**
   `scripts/check-no-kernel-sleep.sh` still has no TLS arm, and `DESIGN.md` §8's TLS row is still
