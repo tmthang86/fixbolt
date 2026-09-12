@@ -417,6 +417,29 @@ The architect is never a worker.
 - **The brief is the spec, and the spec is the unit of work.** Goal and why, exact files, the
   §2 items the step may touch, the gate command, what to quote back. A step that cannot be
   briefed that precisely is not ready for a developer — it goes back to the architect.
+- **Inline what exists nowhere else; point at what is on disk, by section, never by file.** A
+  subagent starts with an empty context plus this file and a `Read` tool. What only the manager
+  knows goes in the brief: the goal and why, a decision the owner made in conversation, what
+  "done" is, the gate command, what to quote back, which files may and may not be touched, and
+  any constraint under ~20 lines that would sink the step if missed. What is on disk is pointed
+  at with a section or a line range — `DESIGN.md §4 D9`, `ADR-0041` *Consequences*, the row of
+  the plan's *Chia việc* table, `crates/engine/src/x.rs:120-180` as the pattern to copy. Never
+  "read `DESIGN.md`" (108 KB) or "read `STATUS.md`" (477 KB): a subagent sent to a whole file
+  spends its context re-establishing what the manager already knew. A pasted page is Opus
+  output; a read page is Sonnet input, twelve times cheaper and verbatim. The one exception
+  runs the other way: a Haiku brief is self-contained — inputs, outputs, the command, what to
+  quote — because a runner must not have to interpret a document. The shape:
+
+  ```text
+  Role: developer (sonnet). Step 3 of docs/plans/2026-09-xx-<topic>.md, table Chia việc.
+  Why: <one sentence — what this serves, for whom>.
+  Read first, exactly here: DESIGN.md §4 D9; ADR-0041 Consequences; crates/engine/src/x.rs:120-180 (pattern).
+  Touch: crates/engine/src/y.rs, crates/engine/tests/y.rs. Do not touch: lib.rs, crates/session/.
+  §2 items: 1 (no alloc — benches/alloc.rs case y reads 0), 7 (no unwrap).
+  Done when: test `y_does_z` is green; `cargo test -p fixbolt-engine y_` and `cargo clippy --all-targets -- -D warnings` are clean.
+  Report: the diff summarised per file; both commands' output verbatim; anything surprising or ambiguous — stop and say so, do not guess.
+  Do not commit.
+  ```
 - **One file, one writer at a time.** Parallel developers get disjoint files, or a worktree
   each; a step that needs the same file runs after, not beside. `crates/engine/src/lib.rs` is
   the file this rule is for.
