@@ -34,6 +34,7 @@ Naming: `docs/plans/YYYY-MM-DD-<topic>.md`, following `docs/plans/_template.md`.
 | Typo, comment, doc link repair | No plan, but still update docs if behaviour changes |
 | Plan turns out wrong mid-build | **Stop. Fix the plan. Get it re-approved.** Never silently diverge |
 | Part of the plan is blocked | Finish everything else in full, then say plainly what was left out and why |
+| Handed an approved plan to build | Coordinate it as §12 says: one model per role, and a subagent's green is a claim until its output is quoted |
 
 Crates are added to the workspace **one at a time**, in the order of `DESIGN.md` §7, each
 behind its own plan. The gate for a step exists before the step: the `.def` runner before
@@ -381,3 +382,103 @@ never having left.**
 - **Nothing flows the other way as a rule.** A useful idea from upstream is adopted here on
   its merits, in a plan, like any other technique — not because it arrived from the sibling
   project.
+
+## 12. Who does what: one model per role
+
+`[added 2026-09-12]` This repository is built with Claude Code. **The main session is the project
+manager, on Opus 5, and it never implements.** Everything else is a subagent with one role,
+one model, and a brief. The roles are §1's seam made explicit: the architect writes the plan,
+the owner approves it, the manager has it built.
+
+| Role | Runs as | Model | Owns | Does not |
+|---|---|---|---|---|
+| **Manager** | the main session | Opus 5 | the branch (§8), asking the architect, splitting the approved plan into steps, choosing the model per step, running the gates (§7), the delivery log, the pull request, every word the owner reads | write code, write the design, or change the plan — §1's third row: stop, fix, get it re-approved |
+| **Architect** | subagent, in the background | Fable 5.1 | `DESIGN.md`, the ADRs, `docs/reference/`, module specs, technical decisions, the plan (§1) — **written to disk**, because a subagent's reply reaches nobody else. **Research on the internet comes first, every time**: prior art, the spec, what sibling engines measured — and the plan's *Những gì đã biết chắc* cites what it found, or says the search found nothing | touch `crates/`; design from memory |
+| **Senior developer** | subagent, fresh context | Opus 5 | reviewing a step against the plan and the gates, fixing what it finds, any step that touches `codec`, `session`, `engine` or `transport` (§2) | re-design; a design problem goes back to the architect through the manager |
+| **Developer** | subagent | Sonnet 5 | one step with named files and named tests | choose a design, or touch a file the brief did not name |
+| **Runner** | subagent | Haiku 4.5 | a mechanical task with one right answer: run this and quote it, grep this, fetch `vendor/`, repair doc links | anything that needs judgement |
+
+**Why the split is by context, not by price.** The manager's context never fills with code, so
+it can still see the whole plan at step nine; a developer's context holds one step, so it can
+finish it. The workers are where the tokens go — Cursor measured 69–90 % of a swarm's tokens in
+its workers — so the model chosen *per step* is the whole cost lever, and the architect on the
+expensive model is not. `docs/reference/` is what Cursor calls the field guide: a subagent that
+hit a surprise reports it, and the manager writes it down in the same commit (§4).
+
+**Routing a step reads the step, not its label**, and routes *up* on any one signal: more than
+one module or an invariant that spans modules; a spec the developer would have to interpret; a
+wrong answer that costs more than a re-run; reasoning the brief cannot spell out. **Anything that
+touches `codec`, `session`, `engine` or `transport` is built or reviewed by the senior developer
+at least** — §2 is walked by hand, and a hand that cannot see the whole path cannot walk it.
+The architect is never a worker.
+
+**Delegation rules, each tied to the section it exists for:**
+
+- **The brief is the spec, and the spec is the unit of work.** Goal and why, exact files, the
+  §2 items the step may touch, the gate command, what to quote back. A step that cannot be
+  briefed that precisely is not ready for a developer — it goes back to the architect.
+- **Inline what exists nowhere else; point at what is on disk, by section, never by file.** A
+  subagent starts with an empty context plus this file and a `Read` tool. What only the manager
+  knows goes in the brief: the goal and why, a decision the owner made in conversation, what
+  "done" is, the gate command, what to quote back, which files may and may not be touched, and
+  any constraint under ~20 lines that would sink the step if missed. What is on disk is pointed
+  at with a section or a line range — `DESIGN.md §4 D9`, `ADR-0041` *Consequences*, the row of
+  the plan's *Chia việc* table, `crates/engine/src/x.rs:120-180` as the pattern to copy. Never
+  "read `DESIGN.md`" (108 KB) or "read `STATUS.md`" (477 KB): a subagent sent to a whole file
+  spends its context re-establishing what the manager already knew. A pasted page is Opus
+  output; a read page is Sonnet input, twelve times cheaper and verbatim. The one exception
+  runs the other way: a Haiku brief is self-contained — inputs, outputs, the command, what to
+  quote — because a runner must not have to interpret a document. The shape:
+
+  ```text
+  Role: developer (sonnet). Step 3 of docs/plans/2026-09-xx-<topic>.md, table Chia việc.
+  Why: <one sentence — what this serves, for whom>.
+  Read first, exactly here: DESIGN.md §4 D9; ADR-0041 Consequences; crates/engine/src/x.rs:120-180 (pattern).
+  Touch: crates/engine/src/y.rs, crates/engine/tests/y.rs. Do not touch: lib.rs, crates/session/.
+  §2 items: 1 (no alloc — benches/alloc.rs case y reads 0), 7 (no unwrap).
+  Done when: test `y_does_z` is green; `cargo test -p fixbolt-engine y_` and `cargo clippy --all-targets -- -D warnings` are clean.
+  Report: the diff summarised per file; both commands' output verbatim; anything surprising or ambiguous — stop and say so, do not guess.
+  Do not commit.
+  ```
+- **One file, one writer at a time.** Parallel developers get disjoint files, or a worktree
+  each; a step that needs the same file runs after, not beside. `crates/engine/src/lib.rs` is
+  the file this rule is for.
+- **A subagent's green is a claim** (§10). It quotes the command and the output verbatim, or
+  it did not run. The manager re-runs the gate that closes a step itself, on the commit it
+  closes, and commits; developers do not commit. §9's last box names a CI run, never a subagent.
+- **A reviewer is a different lens, not a second copy.** `[measured 2026-09-04]` a Claude
+  subagent reviewing a Claude-written plan was recorded in
+  `docs/plans/2026-09-03-message-log.md` as "not a cross-model read", its agreement weighed
+  accordingly. §10 says review of a diff catches almost nothing; the lenses that do are the
+  gates, a fresh context given the plan rather than the reasoning, and the owner. One senior
+  review per step that touches §2, one per pull request otherwise — never after every edit.
+- **Escalate, do not re-brief.** A developer that reports ambiguity, or touches more than it
+  was briefed, goes one tier up. The same model is never briefed a third time on one step.
+- **The owner sees only what the manager writes.** A subagent's report is relayed with its
+  evidence, in Vietnamese (§6), never as "the agent said it passed". The plan the architect
+  writes is the one document the owner approves, so it is on disk and in Vietnamese before
+  anything is built.
+**A session is one pull request, and the handoff is written, not remembered.** The owner opens
+a fresh session per pull request, and this repository already carries its state in files:
+`STATUS.md`, the plan's *Nhật ký giao hàng* — "the part that survives context compaction" — and
+the CI run id named for the commit closed (§9). The manager's memory is those files, so:
+
+- **At the start, read `STATUS.md` by section, not end to end**: the first *Start here*, *Where
+  the work is*, *Open items*, then the *Nhật ký giao hàng* of the plan in flight. `[measured
+  2026-09-12]` the file is 3 665 lines and 28 *Start here* sections, which is a store rather
+  than the pointer it says it is; reading all of it spends the manager's context before the
+  first step.
+- **At the end, write the handoff as the brief for the next manager**: what is in flight, on
+  which branch and commit, the gate command, the CI run id, and what is not proven — in
+  *Start here* and in the plan's delivery log, in the same commit as the work. Anything the
+  manager knows and has not written there is lost by design.
+- **A step lives inside one session.** When a plan spans pull requests, the session boundary is
+  a row of the plan's *Chia việc* table, never the middle of one.
+- **Two sessions on one working tree.** Before staging or switching branches, ask which
+  session owns the tree; a new branch gets a `git worktree`. `DESIGN.md` §9 figures come from a
+  machine nothing else is loading, which a second session can silently break.
+
+**Machine-checked: nothing.** Every line here is walked by hand, like §4's table. The one
+number in it is Cursor's, from
+[their swarm write-up](https://cursor.com/blog/agent-swarm-model-economics), and is labelled
+as somebody else's claim per non-negotiable 10.
