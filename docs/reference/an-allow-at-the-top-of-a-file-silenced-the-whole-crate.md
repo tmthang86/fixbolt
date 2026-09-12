@@ -130,10 +130,21 @@ there was anything to catch, and it caught something on the first real run.**
 > any gate that greps, and the only thing standing between "nothing is wrong"
 > and "nothing was looked at".
 
-**Guarded since 2026-09-12 by `scripts/check-no-crate-root-allow.sh`**, which refuses the ordinary spelling of an inner
-`allow`/`expect` at a crate root — and any `warn` that lowers a lint the workspace denies —
-across every `lib`/`bin` target under `crates/`, taken from `cargo metadata` rather than from
-file names. The paste-a-violation reversal above is run once more as R-A4 of
+**Guarded since 2026-09-12 by `scripts/check-no-crate-root-allow.sh`**, reading `tools/attr-scan`'s
+output — a lex of each crate root with the same lexer `rustc` uses — rather than a regex, so it
+sees **every** inner attribute that lexer sees: comments, whitespace and newlines carry no
+meaning, and a string stays a string. It refuses an `allow`/`expect` at a crate root, and any
+`warn` that lowers a lint the workspace denies, across every `lib`/`bin` target under `crates/`,
+taken from `cargo metadata` rather than from file names. A senior review of the gate itself found four spellings
+that got past the earlier regex, and the lexer-based check reads each of them. Three are run as
+reversals here — a `/* */` comment inside the parens, `# ! [ … ]` as three separate tokens, and a
+bare `#!` then a newline before `[cfg_attr(test, allow(dead_code))]` — alongside a `warn` that
+lowers a workspace deny, and one deliberate green control: `#![doc = "#![allow(…)]"]` stays green,
+and the count of attributes read goes 55 → 56, so that attribute was read and judged rather than
+overlooked. A doc comment is a string to this lexer, not a nested attribute.
+**And no further**: an inner attribute inside `mod x { … }` is still item 55, unchanged, and
+`RUSTFLAGS`, `--cap-lints` and a file pulled in by `include!` are still outside what this script
+can see. The paste-a-violation reversal above is run once more as R-A4 of
 [its plan](../plans/2026-09-12-crate-root-allow-scratch-fixture-and-tls-4c.md), tying the textual
 check to the compiler effect: `[measured 2026-09-12]` with the crate-root `#![allow]` in place a
 fresh `v[0]` in a clean submodule of `dict` compiled at **exit 0** with no diagnostic, and without

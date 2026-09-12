@@ -89,17 +89,31 @@ is an *inner* attribute and silences the whole crate, so new indexing in a clean
 (`docs/reference/an-allow-at-the-top-of-a-file-silenced-the-whole-crate.md`). Scoped to 15 functions
 now, and the reversal is run per crate rather than once. **Two more for 7 since 2026-09-12, and
 each guards a *class* whose first instance was closed with nothing watching for the second.**
-`scripts/check-no-crate-root-allow.sh` is the check the sentence above wanted: it refuses the ordinary spelling of an inner
-`allow`/`expect` at a crate root, and any `warn` that lowers a lint the workspace currently denies,
-over every `lib`/`bin` target under `crates/` taken from `cargo metadata` rather than from file
-names — so the `#![allow(clippy::unwrap_used)]` that would switch this whole rule off in one line is
+`scripts/check-no-crate-root-allow.sh` is the check the sentence above wanted: `tools/attr-scan`
+lexes each crate root with the same lexer `rustc` uses, and the script reads **every inner
+attribute that lexer sees** — comments, whitespace and newlines carry no meaning, and a string
+stays a string — refusing an `allow`/`expect` at a crate root and any `warn` that lowers a lint
+the workspace currently denies. Measured against the four reversals that go red — a `/* */` comment inside the parens, `# ! [ … ]` as three separate tokens, a bare `#!` then a newline before `[cfg_attr(test, allow(dead_code))]`, and a `warn` lowering a lint the workspace denies — and the one deliberate green control, `#![doc = "#![allow(…)]"]`, which stays green while the attribute count it reads goes 55 → 56, so the attribute was read and judged rather than overlooked — **and no further**: an inner attribute inside `mod x { … }` is still item 55,
+unchanged, and `RUSTFLAGS`, `--cap-lints` and a file pulled in by `include!` are still outside
+what this script can see. It runs over every `lib`/`bin` target under `crates/` taken from
+`cargo metadata` rather than from file names — so the `#![allow(clippy::unwrap_used)]` that would
+switch this whole rule off in one line is
 a red, which `check-lint-config.sh` can never see because it reads `Cargo.toml` and not source. It
-reads 6 crate roots and 9 manifests, and **its own second assertion is the finding**: `[measured
-2026-09-12]` the first implementation of that assertion went *green* on its own reversal — a
-character class excluding `:` could not match a lint written after `clippy::`, which is how every
-real one is written, so the guard itself was off from the first run it ever made, and only a
-reversal whose FAIL sentence had been written down beforehand could see it
-(`docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`). `[measured 2026-09-12]`
+reads 6 crate roots, 10 manifests and 4 deny lints, and **its own second assertion is the
+finding, twice over**: `[measured 2026-09-12]` the first implementation of that assertion went
+*green* on its own reversal — a character class excluding `:` could not match a lint written
+after `clippy::`, which is how every real one is written, so the guard itself was off from the
+first run it ever made, and only a reversal whose FAIL sentence had been written down beforehand
+could see it
+(`docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`). `[measured
+2026-09-12]` a senior review then found the deny list itself was blind: the first derivation read
+`Cargo.toml` with a matcher that only accepted a bare identifier key, so `"unwrap_used" = "deny"`
+— valid TOML, and what cargo reads — passed through unmatched, `DENY_LINTS` held strings
+`attr-scan`'s output could never equal, and `#![warn(clippy::unwrap_used)]` at a crate root read
+`ok`. The key may now be quoted or dotted (`clippy.unwrap_used = "deny"`) or written as an
+inline table (`unwrap_used = { level = "deny" }`), the value may be a literal string
+(`'deny'`), and an **empty** deny list is itself a `FAIL` — the same zero-guard reasoning as an
+empty attribute count, not a workspace read as having nothing to deny. `[measured 2026-09-12]`
 R-A4 ties that textual check to the compiler effect once: with a crate-root `#![allow]` in place a
 fresh `v[0]` in a clean submodule of `dict` is **exit 0, no diagnostic**, and without it **exit 101,
 `error: indexing may panic`**. `scripts/check-scratch-fixtures.sh` is **7 at one remove — it guards
@@ -110,7 +124,23 @@ the workspace pins. That instance was fixed with one `cp`; this script holds the
 trigger rustup actually uses — *entering* a directory outside the tree, not calling `mktemp` — with
 the pinning-artefact set derived from what exists at the root and **no allow-list**, because a named
 exemption is permanent and the day an exempt script grows a `cargo build` in its scratch dir nobody
-checks. It reads 19 scripts, 1 entering a scratch dir, 1 pin. 6 — the
+checks. Three rules since 2026-09-12: a line whose first non-blank character is `#` is never
+read, so a commented-out `cp` proves nothing; `cp` counts only in command position — start of
+line, or after `;` `&&` `||` `|` `(` `{` `then` `do` `else`. `[measured 2026-09-12]` `sudo cp`,
+`command cp` and `\cp` do **not** count — the wrong direction there is a red, and the author
+writes a plain `cp`; and the seeding regex takes any assignment prefix
+(`readonly`, `declare -r`, `typeset -g`, `export`, `local`, a plain assignment), with a
+`cd`/`pushd` into a scratch directory that names no variable at all failing outright rather than
+passing unseen. **A senior review then got past it four more ways, and none of the four is what
+this rule used to predict** — no `eval`, no function call, no `#` hidden inside a same-line
+string. Two are fixed: a `cp` whose pin name lived only in a trailing comment now counts as no
+`cp` at all, and a script with no `.sh` name is scanned by its shebang rather than missed by its
+extension. **Four remain open by decision, for the architect** (STATUS.md item 69): a `cp` inside
+a heredoc body, a `cp` copying in the wrong direction (out of the scratch dir rather than into
+it), and two ways of seeding the scratch variable this script does not recognise —
+`read -r TMP < <(mktemp -d)` and a bare `TMP=/tmp`. Each is one more regex, and the plan that
+found them concluded that loop cannot be won by adding another. It reads 20
+scripts, 1 entering a scratch dir, 1 pin. 6 — the
 `no-default-features` CI job **plus `scripts/check-no-optional-deps.sh`, and the second is not
 a nicety**: `[measured 2026-08-30]` the CI job alone was green about a build that never
 happened. `cargo test --all --no-default-features` still compiled `libc`, because `tools/w2w`
@@ -481,6 +511,28 @@ The architect is never a worker.
   evidence, in Vietnamese (§6), never as "the agent said it passed". The plan the architect
   writes is the one document the owner approves, so it is on disk and in Vietnamese before
   anything is built.
+`[added 2026-09-12]` **Once a plan is approved, the manager runs it to delivery without
+stopping to ask.** Approval of the plan is approval of the whole sequence below; the manager does
+not come back between steps for permission it already has. The sequence, in order, and none of it
+is optional:
+
+1. **Build every step of the plan**, routed per the table above, re-running the gate that closes
+   each step on the commit that closes it, and committing each step that ends green (§8).
+2. **Then a senior review**, in a fresh context, given the plan and the gates but not the
+   manager's reasoning — one per pull request, and per step where §2 says so.
+3. **A finding goes back to the senior developer to fix**, on the same branch, with the gate
+   re-run afterwards. It does not go to the owner as a question, and the manager does not fix it
+   itself. A finding that is a *design* problem goes to the architect instead (§1's third row):
+   stop, fix the plan, get it re-approved — that is the one case that does interrupt the run.
+4. **No findings — or all findings fixed and green — then merge**, and in the same pass update
+   `STATUS.md` and every document §4's table sends you to, naming the CI run id for the commit
+   being closed (§9's last box).
+
+**What still stops the run**, and nothing else: a gate that will not go green, a plan that turns
+out wrong, a step that needs the §9 machine when another session is measuring on it, or anything
+§8 calls out as needing the owner. **The owner is told what happened, not asked whether to
+continue.**
+
 **A session is one pull request, and the handoff is written, not remembered.** The owner opens
 a fresh session per pull request, and this repository already carries its state in files:
 `STATUS.md`, the plan's *Nhật ký giao hàng* — "the part that survives context compaction" — and

@@ -27,7 +27,11 @@
 #
 # Scope: every `lib` and `bin` target's `src_path`, for packages under
 # `crates/`, read from `cargo metadata` — never from a file glob, so a future
-# `crates/x/src/bin/foo.rs` cannot go uncounted by having the wrong name.
+# `crates/x/src/bin/foo.rs` cannot go uncounted by having the wrong name. The
+# `jq` predicate names the kinds `lib` and `bin` and nothing else, so a
+# `proc-macro` crate — whose target kind is `proc-macro`, not `lib` — would sit
+# outside this scope; there is none in this workspace today, and the day one
+# lands the predicate is widened in the same commit.
 # `tools/` is deliberately excluded: non-negotiable 7 is about LIBRARY crates,
 # `check-indexing-debt.sh` already excludes `tools/` on the same reasoning, and
 # `tools/w2w` and `tools/interop` carry their own scoped, commented allows on
@@ -37,9 +41,29 @@
 # per-crate `[lints.*]` override bypasses the workspace lints regardless of
 # whether the crate is a library.
 #
+# WHAT THIS CHECK SEES. `[changed 2026-09-12]` A1 and A2 no longer read the
+# text of a crate root. They read `tools/attr-scan`, which lexes the file with
+# `proc-macro2` — the lexer `rustc` itself uses — and prints one line per inner
+# attribute at the crate root: `PATH:LINE<TAB>HEAD<TAB>IDENTS`. So the check now
+# sees **every inner attribute the Rust lexer sees at a crate root**, in every
+# spelling, because to a lexer a comment, a run of whitespace and a newline
+# carry no meaning at all:
+#
+#   #![/*x*/allow(...)]        #![allow(...)]        # ! [ allow ( ... ) ]
+#   /* c */ #![allow(...)]     #!\n[allow(...)]      #![cfg_attr(t, allow(..))]
+#
+# are one and the same three tokens — `#`, `!`, `[…]` — and each is a red.
+# Equally, **a string is a string**: `#![doc = "#![allow(clippy::unwrap_used)]"]`
+# stays green, and so does the pair `#![doc = "/*"]` … `#![doc = "*/"]` that
+# would make a strip-the-comments-then-match pass lose everything between them.
+# That pair is why the fix was a lexer rather than a fifth regex.
+#
 # This check does NOT see, and does not pretend to:
 #   - an OUTER `#[allow]` on `mod foo;` — that silences one module, which is
 #     item 55's ceiling to catch, not this script's;
+#   - an INNER `#![allow]` written inside `mod x { … }` in the crate root file
+#     — same reason, same item 55: `attr-scan` walks only the top-level token
+#     stream and never steps into a Group;
 #   - `RUSTFLAGS=-A ...` set from the environment (CI deliberately never sets
 #     RUSTFLAGS — see ci.yml:25-29);
 #   - `--cap-lints` passed from a command outside this repository;
@@ -51,7 +75,10 @@
 # that finds it — do not add it to a list "for later".
 #
 # Runs standalone: scripts/check-no-crate-root-allow.sh
-# Needs: cargo metadata (so a reachable rust-toolchain.toml), jq.
+# Needs: cargo metadata (so a reachable rust-toolchain.toml), jq, and a cargo
+# that can build `tools/attr-scan`. `cargo run -q -p fixbolt-attr-scan` is invoked from inside the tree,
+# never from a scratch directory, so `rustup` finds `rust-toolchain.toml` the
+# ordinary way — see scripts/check-scratch-fixtures.sh for why that matters.
 
 set -euo pipefail
 
@@ -97,60 +124,151 @@ if [[ "$N" -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# A1 — no inner allow/expect (bare or cfg_attr-wrapped) at a crate root.
+# Lex every crate root, once, with the lexer rustc uses. Relative paths go in,
+# so a FAIL line reads the way a person would write the path. `cargo run` is
+# invoked from $ROOT, so rustup resolves rust-toolchain.toml normally.
 #
-# THIS MATCHES A SPELLING, NOT A MEANING, and the senior review of PR #63
-# `[measured 2026-09-12]` got past it four ways that rustc accepts and that
-# really do silence the crate:
-#
-#   #![/*x*/allow(...)]        <- passes THIS check AND `cargo fmt --check`
-#   # ! [ allow ( ... ) ]      <- passes here, rewritten by cargo fmt
-#   /* c */ #![allow(...)]     <- passes here, rewritten by cargo fmt
-#   #!\n[allow(...)]           <- passes here, rewritten by cargo fmt
-#
-# Only the first survives the whole pipeline, because `cargo fmt --all --check`
-# runs in CI and normalises the other three. So the honest claim is: this check
-# plus rustfmt refuses the spellings a person actually writes, and the comment
-# form is a known hole. STATUS.md carries it as an open item rather than being
-# fixed under a closed plan.
+# attr-scan exits 2 for a file it cannot read or cannot lex. That is a REFUSAL,
+# and this script passes it straight through: a gate that cannot see the source
+# must go red, never green.
 # ---------------------------------------------------------------------------
-A1_RE='^[[:space:]]*#!\[[[:space:]]*(cfg_attr\([^]]*,[[:space:]]*)?(allow|expect)\b'
-
+CRATE_SRC_REL=()
 for f in "${CRATE_SRC_FILES[@]}"; do
-  rel="${f#"$ROOT"/}"
-  while IFS=: read -r lineno line; do
-    [[ -z "$lineno" ]] && continue
-    echo "check-no-crate-root-allow: FAIL — crate-root allow at ${rel}:${lineno}: ${line#"${line%%[![:space:]]*}"}" >&2
-    FAIL=1
-  done < <(grep -nE "$A1_RE" "$f" || true)
+  CRATE_SRC_REL+=("${f#"$ROOT"/}")
 done
 
-# ---------------------------------------------------------------------------
-# A2 — no crate-root `warn(...)` that names a lint the workspace currently
-# denies. The deny list is derived, never hard-coded, from the root
-# Cargo.toml's own `= "deny"` lines.
-# ---------------------------------------------------------------------------
+SCAN_STATUS=0
+SCAN="$(cargo run -q -p fixbolt-attr-scan -- "${CRATE_SRC_REL[@]}")" || SCAN_STATUS=$?
+if [[ "$SCAN_STATUS" -ne 0 ]]; then
+  echo "check-no-crate-root-allow: FAIL — attr-scan refused, exit ${SCAN_STATUS} (its error is above)." >&2
+  exit 2
+fi
+
+# The deny list A2 compares against is derived, never hard-coded, from the root
+# Cargo.toml's own `= "deny"` lines — so a lint added tomorrow is covered
+# without touching this file.
+#
+# `[measured 2026-09-12]` the first version of this derivation read
+# `sed -E 's/^[[:space:]]*([A-Za-z0-9_]+)[[:space:]]*=.*/\1/'`, which does not
+# match a line whose key is QUOTED — and `"unwrap_used" = "deny"` is valid TOML
+# that cargo accepts without a murmur. The sed then passed the whole line
+# through, DENY_LINTS held four strings that are not identifiers, and A2 matched
+# nothing attr-scan can ever print: `#![warn(clippy::unwrap_used)]` at the root
+# of `crates/session` passed this gate with exit 0. Three answers, all here:
+# the key may now be quoted and may be dotted (`clippy.unwrap_used = "deny"`,
+# and the inline-table spelling `unwrap_used = { level = "deny" }` reduces the
+# same way); anything that does not reduce to a bare identifier is dropped
+# rather than carried; and an EMPTY list is a FAIL, the zero-guard A0 and A0b
+# already apply to crate roots and to attributes. The VALUE may be a TOML
+# literal string too (`unwrap_used = 'deny'`), found while writing the
+# zero-guard's reversal: cargo reads it identically and the first grep did not.
+# And the count goes in the `ok` line for the same reason the other two do — a
+# number nobody reads is not a check.
+#
+# The honest limit: this was a gate MEASURING NOTHING, not non-negotiable 7
+# switched off. `cargo clippy --all-targets -- -D warnings` in CI still catches
+# the `unwrap` that a crate-root `warn` would have let through, because `-D
+# warnings` promotes the warning back to an error. What A2 adds over that is
+# naming the ATTRIBUTE rather than its first victim.
 mapfile -t DENY_LINTS < <(
-  grep -E '=[[:space:]]*"deny"' "$ROOT/Cargo.toml" \
-    | sed -E 's/^[[:space:]]*([A-Za-z0-9_]+)[[:space:]]*=.*/\1/' \
+  grep -E "=[[:space:]]*['\"]deny['\"]" "$ROOT/Cargo.toml" \
+    | grep -vE '^[[:space:]]*#' \
+    | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=.*$//; s/^.*\.//; s/^"//; s/"$//' \
+    | grep -E '^[A-Za-z0-9_-]+$' \
     | sort -u
 )
 
-A2_RE='^[[:space:]]*#!\[[[:space:]]*warn\('
+D=${#DENY_LINTS[@]}
 
-for f in "${CRATE_SRC_FILES[@]}"; do
-  rel="${f#"$ROOT"/}"
-  while IFS=: read -r lineno line; do
-    [[ -z "$lineno" ]] && continue
-    for lint in "${DENY_LINTS[@]}"; do
-      if echo "$line" | grep -qE "\\b${lint}\\b"; then
-        echo "check-no-crate-root-allow: FAIL — crate-root warn lowers a workspace deny at ${rel}:${lineno}" >&2
-        FAIL=1
-        break
-      fi
+# A2z — an empty deny list is not a pass. With nothing to compare against, A2
+# is vacuous and says "no crate-root warn lowers a workspace deny" about a
+# workspace whose denies it failed to read.
+if [[ "$D" -eq 0 ]]; then
+  echo "check-no-crate-root-allow: FAIL — 0 deny lints derived from Cargo.toml; A2 would be comparing every crate-root warn against an empty list. A broken derivation, not a workspace with no denies." >&2
+  FAIL=1
+fi
+
+# ---------------------------------------------------------------------------
+# A1 — no inner `allow`/`expect` at a crate root, bare or `cfg_attr`-wrapped.
+#      `expect(...)` is treated exactly as `allow(...)`: it silences the lint
+#      at the crate the same way and only fires if nothing turns out to need
+#      excusing.
+# A2 — no crate-root `warn(...)` naming a lint the workspace currently denies.
+#      A `warn` where the workspace says `deny` LOWERS the level, which is the
+#      same defect wearing a different word.
+#
+# Both read attr-scan's `PATH:LINE<TAB>HEAD<TAB>IDENTS`. HEAD is the first
+# identifier inside the brackets; IDENTS is every identifier inside them,
+# recursed through nested groups, which is what makes
+# `cfg_attr(a, cfg_attr(b, allow(x)))` reveal its `allow`.
+# ---------------------------------------------------------------------------
+ATTRS=0
+
+while IFS=$'\t' read -r loc head idents; do
+  [[ -z "$loc" ]] && continue
+  ATTRS=$((ATTRS + 1))
+
+  read -ra IDENT_LIST <<< "$idents"
+
+  # --- A1 -------------------------------------------------------------------
+  offender=""
+  case "$head" in
+    allow | expect) offender="$head" ;;
+    cfg_attr)
+      for id in "${IDENT_LIST[@]}"; do
+        case "$id" in
+          allow | expect)
+            offender="$id"
+            break
+            ;;
+        esac
+      done
+      ;;
+  esac
+
+  if [[ -n "$offender" ]]; then
+    echo "check-no-crate-root-allow: FAIL — crate-root allow at ${loc}: ${offender}(…)" >&2
+    FAIL=1
+    continue
+  fi
+
+  # --- A2 -------------------------------------------------------------------
+  widens=0
+  case "$head" in
+    warn) widens=1 ;;
+    cfg_attr)
+      for id in "${IDENT_LIST[@]}"; do
+        if [[ "$id" == "warn" ]]; then
+          widens=1
+          break
+        fi
+      done
+      ;;
+  esac
+
+  if [[ "$widens" -eq 1 ]]; then
+    for id in "${IDENT_LIST[@]}"; do
+      for lint in "${DENY_LINTS[@]}"; do
+        if [[ "$id" == "$lint" ]]; then
+          echo "check-no-crate-root-allow: FAIL — crate-root warn lowers a workspace deny at ${loc}" >&2
+          FAIL=1
+          break 2
+        fi
+      done
     done
-  done < <(grep -nE "$A2_RE" "$f" || true)
-done
+  fi
+done <<< "$SCAN"
+
+# A0b — zero inner attributes is not a pass either, for the same reason A0 is
+# not. Every lib.rs in this workspace opens with `//!`, which the lexer turns
+# into `#![doc = "…"]`, so the honest floor is well above zero and a total of 0
+# means attr-scan is broken, not that the tree is clean. Compared against 0 and
+# not against a floor on purpose: a floor would have to be maintained, and the
+# `doc` attributes are counted precisely so that no maintenance is needed.
+if [[ "$ATTRS" -eq 0 ]]; then
+  echo "check-no-crate-root-allow: FAIL — attr-scan read nothing: 0 inner attributes over ${N} crate roots, which is a broken tool, not a clean workspace." >&2
+  FAIL=1
+fi
 
 # ---------------------------------------------------------------------------
 # A3 — every workspace member's Cargo.toml inherits the workspace lints
@@ -187,4 +305,4 @@ if [[ "$FAIL" -ne 0 ]]; then
   exit 1
 fi
 
-echo "check-no-crate-root-allow: ok — ${N} crate roots, ${M} manifests"
+echo "check-no-crate-root-allow: ok — ${N} crate roots, ${M} manifests, ${ATTRS} inner attributes, ${D} deny lints"

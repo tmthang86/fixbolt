@@ -45,3 +45,8 @@ KRX-Specs/
 # re-run that silently resolves different ones is re-answering a different
 # question. spikes/ktls/README.md says which versions the answer is about.
 /spikes/*/target/
+
+# Agent worktrees (git worktree checkouts created by parallel subagents).
+# They are working copies of this same repository; committing one would nest
+# the repo inside itself.
+/.claude/worktrees/

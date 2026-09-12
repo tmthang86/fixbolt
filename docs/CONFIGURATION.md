@@ -20,6 +20,30 @@ startup with the line number and the text that was written
 
 **Thirty keys** are recognised `[changed 2026-09-12, was twenty-six]`.
 
+**What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The
+`doc_table` tests in [`settings.rs`](../crates/engine/src/settings.rs) read this section and
+run the parser against four things: **the count sentence above, inside this section**; **a
+*Default* cell that begins with a backticked literal** (the key is written into a minimal
+file with that value and must change nothing); **a *Values* cell that is two or more
+backticked literals joined by nothing but `or` and commas** (every listed literal must
+survive the parser, and one sampled value it does not list must not — a sample of three fixed
+candidates, not a check of everything the cell omits); and **a *Where* cell claiming either
+`[DEFAULT]` only or `[DEFAULT]` or `[SESSION]`** (the first must be refused in a `[SESSION]`,
+the second must not).
+`[measured 2026-09-12]` those three reached 15, 10 and 18 of the thirty rows — 16 and 11 for
+the first two in a build with the `tls` feature, which is the only build where the fourth TLS
+key can be written into a file at all.
+
+**Every other sentence here is a hand-checked promise** — each *Meaning* cell, every note,
+and each paragraph between the tables. So is a *Default* cell written as prose (`required`,
+`none`, `16 × …`) and a *Values* cell that describes a shape rather than listing values
+(`ASCII, max 32 bytes`, `HH:MM:SS`): **writing a cell that way costs it its machine check**,
+which is why each probe reports how many rows it skipped and carries a floor on how many it
+reached that may only be raised. `[measured 2026-09-12]` before those probes existed, a
+review rewrote the meaning, the values and the default of two TLS rows to say the opposite of
+the code and changed this count sentence to *"Four hundred keys"*, and the test suite read
+`3 passed; 0 failed`.
+
 | Key | Meaning | Values | Default | Where | Source |
 |---|---|---|---|---|---|
 | `BeginString` | FIX version of the session | ASCII, max 32 bytes, e.g. `FIX.4.4` | required | `[DEFAULT]` or `[SESSION]` | [`settings.rs:95`](../crates/engine/src/settings.rs#L95) |

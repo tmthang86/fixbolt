@@ -59,6 +59,22 @@ jobs:
       # instance is fixed; this guards the class. Note it can only fail here
       # for a tree reason, never a machine one: the check reads text.
       - run: scripts/check-scratch-fixtures.sh
+      # `[added 2026-09-12]` plan docs/plans/2026-09-12-gates-that-match-a-meaning.md,
+      # section E: the three scripts this plan writes or rewrites are shell,
+      # and shell is where a quoting bug (item 66b) lives. `ubuntu-latest`
+      # ships shellcheck already; this names exactly the three files rather
+      # than scanning `scripts/` wholesale — two of the nineteen other
+      # scripts there need the §9 machine to prove a quoting fix changed
+      # nothing, which this job cannot do.
+      #
+      # `[measured 2026-09-12]` **`-S info`, not `-S warning`, and the
+      # difference is the whole point of the line.** The plan said
+      # `-S warning`, and its own reversal — an unquoted variable — came back
+      # GREEN. SC2086 is severity *info*, so `-S warning` can never see the
+      # one defect class section E named as its reason to exist. Measured on
+      # shellcheck 0.11.0, one probe per level: error 0, warning 0,
+      # info SC2086, style SC2086. Plan revision Sửa 1.
+      - run: shellcheck -S info scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh
 
   # `[measured 2026-08-30]` scripts/check-ktls-available.sh printed
   # `config: CONFIG_TLS=m` and then "it was built without CONFIG_TLS" in the SAME
@@ -452,31 +468,23 @@ jobs:
             exit 1
           fi
       - run: cargo clippy --all-targets --features tls -- -D warnings
-      # `[measured 2026-09-12]` **This list is explicit, and it has now sprung
-      # the same trap twice in one day.** Step 4c-2 added
-      # `tests/tls_settings_wire.rs` and this line did not name it, so the job
-      # would have gone green having never compiled it — item 62's shape one
-      # layer in, which is what the count below exists to catch.
+      # `[measured 2026-09-12]` **The list is gone.** It used to be five
+      # `--test` file names, and that shape sprang the same trap twice in one
+      # day: `tests/tls_settings_wire.rs` landed and this line did not name
+      # it, then the senior review of PR #63 found three
+      # `#[cfg(feature = "tls")]` tests living inside `tests/settings.rs` — a
+      # file the list had no reason to name, because most of it is not about
+      # TLS. One of those three, `into_table_refuses_a_file_that_asks_for_tls`,
+      # guards the expensive mistake `Problem::NeedsTlsDoor` exists for: a
+      # configuration that asks for TLS poured into plain `serve`, serving
+      # plaintext on a port the operator believes is encrypted. STATUS.md
+      # item 68, same shape as item 62 one layer in.
       #
-      # **The second time was worse, and a list of FILES cannot catch it.** The
-      # senior review of PR #63 found three `#[cfg(feature = "tls")]` tests
-      # living in `tests/settings.rs` — a file this list had no reason to name,
-      # because most of it is not about TLS. `cargo test --all` compiles them
-      # away (no `tls` in the default features) and this job never named the
-      # file, so they ran on one desk and nowhere else. One of them,
-      # `into_table_refuses_a_file_that_asks_for_tls`, guards the expensive
-      # mistake `Problem::NeedsTlsDoor` exists for: a configuration that asks
-      # for TLS poured into plain `serve`, serving plaintext on a port the
-      # operator believes is encrypted.
-      #
-      # So the rule is not "add the new file": it is that **a `tls`-gated test
-      # anywhere in the crate must be named here**, and the count below is the
-      # only thing that will tell you when one is not.
-      #
-      # **Read the count, not the exit status.** `--features tls` compiles four
-      # test files the default build never sees; a run that compiled none of them
-      # also exits 0. The step prints how many of their tests ran and fails if it
-      # is zero, which is the reversal for this job written into the job.
+      # The evidence now is that the build lists its own tests below
+      # (`--tests --features tls`, then `-- --list`) and the log of the run
+      # must account for every one of them — read
+      # scripts/check-feature-gated-tests-ran.sh's `ok` line, not this
+      # step's tick.
       - name: The TLS tests, and proof they were the ones that ran
         run: |
           set -o pipefail
@@ -484,20 +492,14 @@ jobs:
           # job reported six tests when there are eleven: cargo stops at the
           # first failing test binary, so `tls_wire.rs` and `tls_mode.rs` had
           # still never run on any machine but the owner's desk.
-          # The status is caught rather than allowed to abort the step, so that
-          # the count below is printed for a RED run too — it is the count, not
-          # the exit status, that separates "a test failed" from "no test ran".
+          # The status is caught rather than allowed to abort the step, so
+          # that the script below is run against a RED run too — it is what
+          # the script reads in the log, not this command's exit status, that
+          # separates "a test failed" from "no test ran".
           status=0
-          cargo test -p fixbolt-engine --features tls --no-fail-fast \
-            --test tls --test tls_wire --test tls_mode \
-            --test tls_settings_wire --test settings \
+          cargo test -p fixbolt-engine --tests --features tls --no-fail-fast \
             2>&1 | tee /tmp/tls-tests.log || status=$?
-          ran="$(grep -cE '^test .* \.\.\. ok$' /tmp/tls-tests.log)"
-          echo "TLS tests that ran: ${ran}"
-          if [ "$ran" -eq 0 ]; then
-            echo "::error title=The TLS job ran no TLS tests::cargo exited 0 having compiled nothing. That is the exact shape of STATUS.md item 62, one layer in."
-            exit 1
-          fi
+          scripts/check-feature-gated-tests-ran.sh fixbolt-engine tls /tmp/tls-tests.log
           if [ "$status" -ne 0 ]; then
             exit "$status"
           fi
