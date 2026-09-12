@@ -81,7 +81,7 @@ that the workspace lints actually deny `unwrap`/`expect`/`panic`. **7 also, and 
 `scripts/check-indexing-debt.sh` since 2026-09-08**: `a[i..j]` panics and names none of those three,
 which is why they were all blind to the `copy_from_slice` panic of `[measured 2026-09-06]`.
 `indexing_slicing = "deny"` is on, the 19 files that still owe carry a scoped `allow`, and the script
-counts them anyway with `--force-warn` — which overrides an `allow` — against a ceiling of **184**
+counts them anyway with `--force-warn` — which overrides an `allow` — against a ceiling of **181** `[lowered 2026-09-09 by item 60; this line read 184 until 2026-09-12]`
 that may only go down. **The `deny` half was inert for a day and the count did not show it**:
 `[measured 2026-09-08]` three of the allows were written `#![allow]` at the top of a `lib.rs`, which
 is an *inner* attribute and silences the whole crate, so new indexing in a clean module of `engine`,
