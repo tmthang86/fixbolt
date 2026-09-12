@@ -140,6 +140,8 @@ tools/
   jrnl/          reads a journal file from outside the process that wrote it
   interop/       both roles against a real libquickfix over kernel TCP. The C++
                  counterparties are built by scripts/interop.sh and by CI, never by cargo
+  attr-scan/     lexes a crate root with proc-macro2 and lists its inner attributes;
+                 the eyes of scripts/check-no-crate-root-allow.sh. Nothing depends on it
 benches/         baselines.tsv: one recorded timing baseline per (CPU model, case).
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets; nightly, outside the workspace

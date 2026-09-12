@@ -149,6 +149,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fixbolt-attr-scan"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
 name = "fixbolt-codec"
 version = "0.0.0"
 dependencies = [

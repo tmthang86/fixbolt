@@ -107,6 +107,7 @@ Added one at a time, each behind an approved plan. All of them exist.
 | `tools/w2w` | tool | The wire-to-wire harness, and the binary the two mode checks trace. Counts its own allocations on both threads over the timed window and asserts zero. Has its own `[features]` block, because a `cfg` never reaches into a dependency's features | `engine`, `session`, `codec`, `dict` |
 | `tools/jrnl` | tool | Reads a journal file from outside the process that wrote it; warns on a torn tail or a bad checksum with exit code 2. Takes `engine` with `default-features = false` | `engine` |
 | `tools/interop` | tool | Both roles against a real `libquickfix` over kernel TCP. The C++ counterparties are built by `scripts/interop.sh`, never by cargo | `library` (as `fixbolt`, no default features), `session` |
+| `tools/attr-scan` | tool | Reads the inner attributes of a crate root with `proc-macro2` — the lexer `rustc` uses — and prints one `PATH:LINE HEAD IDENTS` line each, for `scripts/check-no-crate-root-allow.sh`. Package `fixbolt-attr-scan`, binary `attr-scan`, following the three tools beside it; the gate calls `cargo run -q -p fixbolt-attr-scan`. **No crate depends on it** | `proc-macro2` (feature `span-locations`) |
 
 ### What `engine` contains
 

@@ -1,0 +1,40 @@
+[package]
+# Package `fixbolt-attr-scan`, binary `attr-scan`. The step that wrote this
+# crate named the package `attr-scan`, because the plan spells the gate's
+# command `cargo run -p attr-scan`; the manager renamed it, because
+# `fixbolt-interop`, `fixbolt-jrnl` and `fixbolt-w2w` are three out of three
+# and a convention with one exception is two conventions. The gate's line was
+# changed with it.
+name = "fixbolt-attr-scan"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+# `proc-macro2` is here for one reason: it is the lexer `rustc` itself uses,
+# usable outside a proc-macro context. `scripts/check-no-crate-root-allow.sh`
+# used to match a regex against the text of a crate root, and a regex reads a
+# spelling where the rule is about a meaning —
+# `#![/*x*/allow(clippy::unwrap_used)]` got past it, past
+# `cargo fmt --all --check`, and past `check-lint-config.sh`, and
+# non-negotiable 7 was off for that crate. Justified in
+# docs/plans/2026-09-12-gates-that-match-a-meaning.md, section A.
+#
+# `span-locations` is what makes a line number exist at all: without it
+# `Span::start()` reads 0:0 and the gate could not say WHERE.
+#
+# No crate in this workspace depends on this one, and it is a binary, so it
+# adds nothing to any library's dependency tree and nothing to the
+# `--no-default-features` build of any library
+# (scripts/check-no-optional-deps.sh asks per crate).
+[dependencies]
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "attr-scan"
+path = "src/main.rs"
