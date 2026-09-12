@@ -1500,24 +1500,55 @@ fn schedule(block: Block<'_>) -> Result<Option<Schedule>, SettingsError> {
 /// never been checked at all, which is how `docs/CONFIGURATION.md:21` came to
 /// say *"Twenty-three keys"* above a table of 26 rows for a week.
 ///
-/// **Only the first cell of each row is checked, and that is a narrower promise
-/// than it reads.** These tests answer one question — *does a row exist whose
+/// **Until 2026-09-12 only the first cell of each row was checked**, which is
+/// a much narrower promise than the module read as: *does a row exist whose
 /// key cell names this key, and does every key cell name a key?* Everything
-/// else in the row is prose: the meaning, the valid values, the default, the
-/// notes. A row can say the exact opposite of the code and stay green.
+/// else in the row was prose to this gate, so a row could say the exact
+/// opposite of the code and stay green. That is not hypothetical —
+/// `[measured 2026-09-12]` the `TlsRequireKernel` notes cell was written
+/// *"does nothing without `SocketUseSSL=Y`"* while `settle` **refuses** it,
+/// and the senior review of PR #63 then falsified the meaning, the values and
+/// the default of two rows at once, changed the count sentence to *"Four
+/// hundred keys"*, and the suite still read `3 passed; 0 failed`.
 ///
-/// That is not hypothetical. `[measured 2026-09-12]` the `TlsRequireKernel`
-/// notes cell was written *"does nothing without `SocketUseSSL=Y`"* while
-/// `settle` **refuses** it, and this gate was green across the mistake; the
-/// senior review of PR #63 then falsified the meaning, values and default of
-/// two rows at once and still read `3 passed; 0 failed`.
+/// # The five questions these tests answer
 ///
-/// **The count sentence above the table is unguarded too**, which is how
-/// `docs/CONFIGURATION.md:21` came to say *"Twenty-three keys"* over 26 rows
-/// for a week. Both gaps are `STATUS.md` open items rather than silent.
+/// 1. **Does every key have a row, and every row a key?** The first cell.
+/// 2. **Is the count sentence true?** `**<number in words> keys** are
+///    recognised`, against the number of arms in [`Key::name`].
+/// 3. **Is a written default really the default?** A *Default* cell that
+///    begins with a backticked literal is a declaration: the minimal sample
+///    for that key's group is parsed without the key, and again with
+///    `KEY=<the documented default>` at the end of its `[DEFAULT]`, and the
+///    two must agree on the configurations, the role, where it dials, the
+///    certificate and the log path.
+/// 4. **Are the listed values the values the parser takes?** A *Values* cell
+///    that is two or more backticked literals joined by nothing but `or` and
+///    commas is an enumeration: every literal in it must survive the parser —
+///    a *context* error such as [`Problem::MissingKey`] is allowed, a *value*
+///    error such as [`Problem::NotAFlag`] is not — and a literal the cell does
+///    **not** list must be refused as a bad value.
+/// 5. **Is a `[DEFAULT]`-only claim true?** A *Where* cell saying `[DEFAULT]`
+///    **only** must give [`Problem::DefaultOnly`] when the key is written into
+///    a `[SESSION]`, and one saying `[DEFAULT]` or `[SESSION]` must not.
+///
+/// # What they do not answer, and it is most of the table
+///
+/// **The *Meaning* cell, every note cell and every paragraph between the
+/// tables are prose, and prose is a hand-check.** There is no machine reading
+/// for *"does nothing without `SocketUseSSL=Y`"* that does not first make the
+/// author write the sentence in a language a machine reads, at which point the
+/// document has stopped being one. A *Default* cell written as prose
+/// (`required`, `none`, `16 × ...`) and a *Values* cell that is not an
+/// enumeration (`ASCII, max 32 bytes`) are outside these probes on purpose —
+/// **they are counted as skipped, so the price of writing a cell in prose is
+/// visible rather than silent**, and each probe carries a floor on how many
+/// rows it reached that may only be raised. `docs/CONFIGURATION.md` §1 states
+/// that boundary for the reader of the document; this is the same boundary
+/// stated for the reader of the code.
 #[cfg(test)]
 mod doc_table {
-    use super::Key;
+    use super::{Key, Problem, Settings};
 
     /// This crate's own source, so the key list comes from the compiler rather
     /// than from a second list that can drift. Resolved relative to this file.
@@ -1583,46 +1614,125 @@ mod doc_table {
         out
     }
 
-    /// The key spelling of every row of `docs/CONFIGURATION.md` §1, in order.
+    /// One row of a `docs/CONFIGURATION.md` §1 table, with its cells reachable
+    /// by the name of the column above them.
+    ///
+    /// **By name, because §1 has four tables and two column shapes.** Three
+    /// carry `| Key | Meaning | Values | Default | Where | Source |`; the ten
+    /// `Config` keys sit in one with no *Where* and no *Source*, under a
+    /// paragraph that makes the claim in prose instead. Reading the fifth cell
+    /// by position would read a *Where* claim off a table that has none.
+    struct DocRow<'a> {
+        key: &'a str,
+        columns: Vec<(&'a str, &'a str)>,
+    }
+
+    impl<'a> DocRow<'a> {
+        /// The cell under the column called `header`, or [`None`] when this
+        /// row's table has no such column — which is a *skip*, never a pass.
+        fn cell(&self, header: &str) -> Option<&'a str> {
+            self.columns
+                .iter()
+                .find(|(name, _)| *name == header)
+                .map(|(_, value)| *value)
+        }
+    }
+
+    /// The cells of one Markdown table row, trimmed, without the two empty
+    /// strings the leading and trailing `|` produce.
+    fn row_cells(line: &str) -> Vec<&str> {
+        let line = line.trim();
+        let Some(inner) = line.strip_prefix('|') else {
+            return Vec::new();
+        };
+        let inner = inner.strip_suffix('|').unwrap_or(inner);
+        inner.split('|').map(str::trim).collect()
+    }
+
+    /// A `|---|---|` rule under a header.
+    fn is_separator(cells: &[&str]) -> bool {
+        !cells.is_empty()
+            && cells
+                .iter()
+                .all(|c| !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':'))
+    }
+
+    /// The word inside a cell that is **a backticked word and nothing else**,
+    /// which is what a key cell is and what no header, rule or prose cell is.
+    ///
+    /// There is deliberately no character class listing what a key name may
+    /// contain — `docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`
+    /// is this repository's case of exactly that going wrong.
+    fn backticked_word(cell: &str) -> Option<&str> {
+        let inner = cell.strip_prefix('`')?.strip_suffix('`')?;
+        if inner.is_empty() || inner.contains('`') || inner.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(inner)
+    }
+
+    /// Every row of `docs/CONFIGURATION.md` §1 that names a key, in order,
+    /// each carrying its own table's column names.
     ///
     /// §1 runs from its own `## ` heading to the next one, so the `###`
-    /// subsection inside it is included and the `## 2.` tables are not. A row
-    /// counts when its **first cell is a backticked word and nothing else**:
-    /// header rows (`Key`), separator rows (`---`) and the prose table in the
-    /// `TimestampPrecision` subsection (`` `fixbolt::serve` and friends — … ``)
-    /// all fail that structurally. There is deliberately no character class
-    /// listing what a key name may contain —
-    /// `docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`
-    /// is this repository's case of exactly that going wrong.
-    fn doc_rows(doc: &str) -> Vec<&str> {
+    /// subsection inside it is included and the `## 2.` tables are not. A
+    /// table is read as a settings table only when its header's first column
+    /// is `Key`: the two-column table in the `TimestampPrecision` subsection
+    /// says how the session is driven, not what a setting takes, and its rows
+    /// must not be read as settings.
+    fn doc_rows(doc: &str) -> Vec<DocRow<'_>> {
         let mut inside = false;
         let mut seen_section_one = false;
+        let mut headers: Vec<&str> = Vec::new();
         let mut rows = Vec::new();
         for line in doc.lines() {
             if line.starts_with("## ") {
                 inside = line.starts_with("## 1.");
                 seen_section_one |= inside;
+                headers.clear();
                 continue;
             }
-            if !inside || !line.starts_with('|') {
+            if !inside {
                 continue;
             }
-            let mut cells = line.split('|');
-            let _leading = cells.next();
-            let Some(first) = cells.next() else {
+            if !line.starts_with('|') {
+                // A table ends at the first line that is not a row, so the
+                // next table's rows cannot inherit this one's column names.
+                headers.clear();
+                continue;
+            }
+            let cells = row_cells(line);
+            if is_separator(&cells) {
+                continue;
+            }
+            let Some(first) = cells.first() else {
                 continue;
             };
-            let first = first.trim();
-            let Some(inner) = first
-                .strip_prefix('`')
-                .and_then(|rest| rest.strip_suffix('`'))
-            else {
+            let Some(name) = backticked_word(first) else {
+                // Not a key row, so it is the header of whatever table starts
+                // here — remembered only when it is a settings table.
+                headers = if *first == "Key" {
+                    cells.clone()
+                } else {
+                    Vec::new()
+                };
                 continue;
             };
-            if inner.is_empty() || inner.contains('`') || inner.contains(char::is_whitespace) {
-                continue;
-            }
-            rows.push(inner);
+            assert!(
+                !headers.is_empty(),
+                "docs/CONFIGURATION.md §1: the row for `{name}` sits under no `| Key | ... |` header, so its cells cannot be read by column"
+            );
+            assert_eq!(
+                cells.len(),
+                headers.len(),
+                "docs/CONFIGURATION.md §1: the row for `{name}` has {} cells under {} columns",
+                cells.len(),
+                headers.len()
+            );
+            rows.push(DocRow {
+                key: name,
+                columns: headers.iter().copied().zip(cells).collect(),
+            });
         }
         assert!(
             seen_section_one,
@@ -1645,14 +1755,15 @@ mod doc_table {
         let rows = doc_rows(&doc);
         for name in arm_literals(NAME_FN) {
             assert!(
-                rows.contains(&name),
+                rows.iter().any(|row| row.key == name),
                 "docs/CONFIGURATION.md §1: Key has no doc row: `{name}`"
             );
         }
         for row in rows {
             assert!(
-                Key::parse(row).is_some(),
-                "docs/CONFIGURATION.md §1: doc row has no Key: `{row}`"
+                Key::parse(row.key).is_some(),
+                "docs/CONFIGURATION.md §1: doc row has no Key: `{}`",
+                row.key
             );
         }
     }
@@ -1700,6 +1811,483 @@ mod doc_table {
         assert_eq!(
             names, parses,
             "Key::name and Key::parse do not spell the same set of keys"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // The four probes, `[added 2026-09-12]`. Everything above reads the key
+    // cell; everything below reads the cells that are already **values** —
+    // a default, a list of literals, a `[DEFAULT]`-only claim — and asks the
+    // parser whether they are true. The rest of the table stays prose, and
+    // the skip counts below are what make that visible.
+    // ------------------------------------------------------------------
+
+    /// A minimal configuration file that parses, split where a probe writes.
+    ///
+    /// Split rather than one string because *where* the line goes is the
+    /// question in two of the probes: a documented default is written at the
+    /// end of the `[DEFAULT]` block, and a `[DEFAULT]`-only claim is tested by
+    /// writing the key into the `[SESSION]`.
+    #[derive(Clone, Copy)]
+    struct Sample {
+        /// The `[DEFAULT]` block, ending in a newline.
+        default_block: &'static str,
+        /// Everything after it — one `[SESSION]`, ending in a newline.
+        sessions: &'static str,
+    }
+
+    impl Sample {
+        fn text(self) -> String {
+            format!("{}{}", self.default_block, self.sessions)
+        }
+
+        /// The sample with one more line at the end of `[DEFAULT]`.
+        fn with_in_default(self, line: &str) -> String {
+            format!("{}{line}\n{}", self.default_block, self.sessions)
+        }
+
+        /// The sample with one more line at the end of the `[SESSION]`.
+        fn with_in_session(self, line: &str) -> String {
+            format!("{}{}{line}\n", self.default_block, self.sessions)
+        }
+    }
+
+    /// The file every acceptor key is probed in. **It carries no
+    /// `ConnectionType` and no `SocketUseSSL`**, because a sample that already
+    /// names the key under probe answers [`Problem::RepeatedKey`] — which is
+    /// not a value error, and would make a probe green for the wrong reason.
+    const ACCEPTOR: Sample = Sample {
+        default_block: "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n",
+        sessions: "\n[SESSION]\nTargetCompID=TW44\n",
+    };
+
+    /// The file the dialling keys are probed in. `ReconnectInterval` and
+    /// `ReconnectCeiling` are absent for the same reason.
+    const INITIATOR: Sample = Sample {
+        default_block: "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\nConnectionType=initiator\nSocketConnectHost=127.0.0.1\nSocketConnectPort=9876\n",
+        sessions: "\n[SESSION]\nTargetCompID=TW44\n",
+    };
+
+    /// The file `TlsRequireKernel` is probed in, and **the reason it needs one
+    /// of its own**: `settle` refuses that key when `SocketUseSSL` is not `Y`,
+    /// *before* it ever reads its value, so in the `ACCEPTOR` sample a foreign
+    /// literal would come back [`Problem::MissingKey`] instead of
+    /// [`Problem::NotAFlag`] and probe 3 would pass on a parser that never
+    /// looked. The paths are never opened — `settle` builds a `PathBuf` and
+    /// reading the PEM happens at start-up, beside `serve_tls*`.
+    #[cfg(feature = "tls")]
+    const TLS: Sample = Sample {
+        default_block: "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\nSocketUseSSL=Y\nServerCertificateFile=/nonexistent/cert.pem\nServerCertificateKeyFile=/nonexistent/key.pem\n",
+        sessions: "\n[SESSION]\nTargetCompID=TW44\n",
+    };
+
+    /// Which minimal file a key can be written into.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Group {
+        Acceptor,
+        Initiator,
+        Tls,
+    }
+
+    /// The sample a key is probed in.
+    ///
+    /// **Exhaustive over [`Key`] with no `_` arm**, like every other `match`
+    /// in this module: a new setting has to say which file it can be written
+    /// into before it compiles, so "skip it" is never something a new key
+    /// falls into by default.
+    const fn group(key: Key) -> Group {
+        match key {
+            Key::BeginString
+            | Key::SenderCompId
+            | Key::TargetCompId
+            | Key::HeartBtInt
+            | Key::MaxSkewMillis
+            | Key::StartTime
+            | Key::EndTime
+            | Key::StartDay
+            | Key::EndDay
+            | Key::Weekdays
+            | Key::FileLogPath
+            | Key::ConnectionType
+            | Key::ResetOnLogon
+            | Key::ResetOnLogout
+            | Key::ResetOnDisconnect
+            | Key::LogonTimeout
+            | Key::LogoutTimeout
+            | Key::AllowUnknownMsgFields
+            | Key::ValidateUserDefinedFields
+            | Key::SendNextExpectedMsgSeqNum
+            | Key::EnableLastMsgSeqNumProcessed
+            | Key::TimestampPrecision
+            // `SocketUseSSL=N` and a foreign literal are both answered by the
+            // plain acceptor file, in either feature set — `settle` reads the
+            // flag before it asks whether this build has `rustls` in it.
+            | Key::SocketUseSsl => Group::Acceptor,
+            Key::SocketConnectHost
+            | Key::SocketConnectPort
+            | Key::ReconnectInterval
+            | Key::ReconnectCeiling => Group::Initiator,
+            Key::ServerCertificateFile | Key::ServerCertificateKeyFile | Key::TlsRequireKernel => {
+                Group::Tls
+            }
+        }
+    }
+
+    /// The sample for a group, or [`None`] when this build cannot write one —
+    /// the TLS file needs `SocketUseSSL=Y`, which a build without the `tls`
+    /// feature refuses by design (non-negotiable 6). A key with no sample is a
+    /// **skip, counted**, never a pass.
+    fn sample(group: Group) -> Option<Sample> {
+        match group {
+            Group::Acceptor => Some(ACCEPTOR),
+            Group::Initiator => Some(INITIATOR),
+            #[cfg(feature = "tls")]
+            Group::Tls => Some(TLS),
+            #[cfg(not(feature = "tls"))]
+            Group::Tls => None,
+        }
+    }
+
+    /// `n` written the way §1's count sentence writes it, for 1–99.
+    fn english(n: usize) -> Option<String> {
+        const UNITS: [&str; 20] = [
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+        ];
+        const TENS: [&str; 10] = [
+            "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+        ];
+        if n < 20 {
+            return UNITS.get(n).map(|word| (*word).to_string());
+        }
+        if n > 99 {
+            return None;
+        }
+        let ten = TENS.get(n / 10)?;
+        match n % 10 {
+            0 => Some((*ten).to_string()),
+            unit => UNITS.get(unit).map(|word| format!("{ten}-{word}")),
+        }
+    }
+
+    /// **Probe 1.** The sentence above the table counts the keys.
+    ///
+    /// `[measured 2026-09-12]` the senior review of PR #63 rewrote it to *Four
+    /// hundred keys* and nothing went red; before that it said *Twenty-three*
+    /// over 26 rows for a week.
+    #[test]
+    fn the_count_sentence_counts_the_keys() {
+        let doc = configuration_md();
+        let n = arm_literals(NAME_FN).len();
+        let written = doc.lines().find_map(|line| {
+            line.strip_prefix("**")
+                .and_then(|rest| rest.split_once(" keys** are recognised"))
+                .map(|(word, _)| word)
+        });
+        assert!(
+            written.is_some(),
+            "docs/CONFIGURATION.md §1 no longer has a `**<number in words> keys** are recognised` sentence — the count gate is reading nothing"
+        );
+        let expected = english(n);
+        assert!(
+            expected.is_some(),
+            "Key has {n} arms, which this test cannot write in words — english() covers 1-99"
+        );
+        if let (Some(written), Some(expected)) = (written, expected) {
+            assert_eq!(
+                written.to_ascii_lowercase(),
+                expected,
+                "docs/CONFIGURATION.md §1: the count sentence says `{written} keys` but Key has {n} arms, which is `{expected}`"
+            );
+        }
+    }
+
+    /// The literal a *Default* cell **begins** with, which is how a cell
+    /// declares a default rather than describing one. `` `120000` (2 minutes)
+    /// `` declares `120000`; `required`, `none` and ``16 × `ReconnectInterval` ``
+    /// declare nothing this can check.
+    fn leading_literal(cell: &str) -> Option<&str> {
+        let (literal, _) = cell.strip_prefix('`')?.split_once('`')?;
+        if literal.is_empty() {
+            None
+        } else {
+            Some(literal)
+        }
+    }
+
+    /// **Probe 2.** Writing a documented default changes nothing.
+    ///
+    /// The two parses are compared on what a configuration *is* — the
+    /// configurations, the role, where it dials, the certificate, the log
+    /// path — and **not** on `role_line` or `tls_line`, which are positions in
+    /// a file and differ by construction as soon as a line is added.
+    ///
+    /// This is the probe that reads the **code** rather than the document:
+    /// moving `DEFAULT_RECONNECT_INTERVAL_SECS` away from 30 turns the
+    /// `ReconnectInterval` row red without anybody touching Markdown.
+    #[test]
+    fn a_documented_default_changes_nothing() {
+        /// Rows reached on 2026-09-12: 15, and 16 with the `tls` feature.
+        /// Raise it when a prose *Default* cell becomes a literal one; never
+        /// lower it.
+        const FLOOR: usize = if cfg!(feature = "tls") { 16 } else { 15 };
+
+        let doc = configuration_md();
+        let (mut probed, mut skipped) = (0_usize, 0_usize);
+        for row in doc_rows(&doc) {
+            let name = row.key;
+            let Some(key) = Key::parse(name) else {
+                continue; // named by configuration_md_section_1_lists_exactly_the_keys
+            };
+            // A *Default* cell written as prose is outside this probe, and the
+            // count is the price of writing one.
+            let Some(default) = row.cell("Default").and_then(leading_literal) else {
+                skipped += 1;
+                continue;
+            };
+            let Some(sample) = sample(group(key)) else {
+                skipped += 1;
+                continue;
+            };
+            probed += 1;
+
+            let silent = Settings::parse(&sample.text());
+            let written = Settings::parse(&sample.with_in_default(&format!("{name}={default}")));
+            assert!(
+                silent.is_ok(),
+                "the sample this probe writes {name} into does not parse on its own: {:?}",
+                silent.as_ref().err()
+            );
+            assert!(
+                written.is_ok(),
+                "docs/CONFIGURATION.md §1: {name} documents default `{default}` but writing {name}={default} changes the parsed settings: it is refused — {:?}",
+                written.as_ref().err()
+            );
+            if let (Ok(silent), Ok(written)) = (silent, written) {
+                assert_eq!(
+                    silent.configs, written.configs,
+                    "docs/CONFIGURATION.md §1: {name} documents default `{default}` but writing {name}={default} changes the parsed settings: the session configurations"
+                );
+                assert_eq!(
+                    silent.role, written.role,
+                    "docs/CONFIGURATION.md §1: {name} documents default `{default}` but writing {name}={default} changes the parsed settings: the role"
+                );
+                assert_eq!(
+                    format!("{:?}", silent.dial),
+                    format!("{:?}", written.dial),
+                    "docs/CONFIGURATION.md §1: {name} documents default `{default}` but writing {name}={default} changes the parsed settings: where it dials"
+                );
+                assert_eq!(
+                    silent.tls, written.tls,
+                    "docs/CONFIGURATION.md §1: {name} documents default `{default}` but writing {name}={default} changes the parsed settings: the certificate"
+                );
+                assert_eq!(
+                    silent.log, written.log,
+                    "docs/CONFIGURATION.md §1: {name} documents default `{default}` but writing {name}={default} changes the parsed settings: the log path"
+                );
+            }
+        }
+        println!("probe 2 — Default cells: {probed} probed, {skipped} skipped");
+        assert!(
+            probed >= FLOOR,
+            "probe 2 reached {probed} rows, below its floor of {FLOOR} — either a documented default was rewritten as prose, or this probe has stopped matching"
+        );
+    }
+
+    /// The literals of a *Values* cell that is **nothing but an enumeration**:
+    /// two or more backticked literals with nothing between them but `or`,
+    /// commas and spaces.
+    ///
+    /// **Two or more, and the single-literal case is deliberately out.** A
+    /// lone literal in a *Values* cell is a shape rather than a value —
+    /// `` `HH:MM:SS` `` is what `StartTime` looks like, not something anybody
+    /// may write — and writing it out would answer [`Problem::BadTime`] from a
+    /// parser that is behaving exactly as documented. An enumeration has
+    /// something to enumerate.
+    fn enumerated(cell: &str) -> Option<Vec<&str>> {
+        let literals: Vec<&str> = cell.split('`').skip(1).step_by(2).collect();
+        if literals.len() < 2 {
+            return None;
+        }
+        let joined_by_or_alone = cell
+            .split('`')
+            .step_by(2)
+            .flat_map(|outside| outside.split(|c: char| c.is_whitespace() || c == ','))
+            .filter(|word| !word.is_empty())
+            .all(|word| word == "or");
+        joined_by_or_alone.then_some(literals)
+    }
+
+    /// A refusal about the **value** that was written, as against one about
+    /// the context it was written in.
+    ///
+    /// The split is the whole point of probe 3: `ConnectionType=initiator` in
+    /// a file with no `SocketConnectHost` is [`Problem::MissingKey`], which
+    /// says nothing about whether `initiator` is a value this parser knows.
+    /// Only this finite set says *that value is not one of mine*.
+    const fn is_about_the_value(problem: &Problem) -> bool {
+        matches!(
+            problem,
+            Problem::NotAFlag
+                | Problem::NotANumber
+                | Problem::BadConnectionType
+                | Problem::UnsupportedPrecision
+                | Problem::BadTime
+                | Problem::BadWeekday
+                | Problem::ValueTooLong
+        )
+    }
+
+    /// **Probe 3.** A *Values* cell that lists literals lists what the parser
+    /// takes — in both directions.
+    ///
+    /// `[measured 2026-09-12]` the senior review of PR #63 rewrote
+    /// `SocketUseSSL`'s cell to `` `1` or `0` `` and the suite stayed green.
+    #[test]
+    fn an_enumerated_values_cell_is_what_the_parser_accepts() {
+        /// Rows reached on 2026-09-12: 10, and 11 with the `tls` feature.
+        /// Never lower it.
+        const FLOOR: usize = if cfg!(feature = "tls") { 11 } else { 10 };
+
+        let doc = configuration_md();
+        let (mut probed, mut skipped) = (0_usize, 0_usize);
+        for row in doc_rows(&doc) {
+            let name = row.key;
+            let Some(key) = Key::parse(name) else {
+                continue;
+            };
+            let Some(listed) = row.cell("Values").and_then(enumerated) else {
+                skipped += 1;
+                continue;
+            };
+            let Some(sample) = sample(group(key)) else {
+                skipped += 1;
+                continue;
+            };
+            probed += 1;
+
+            for literal in &listed {
+                let refusal =
+                    Settings::parse(&sample.with_in_default(&format!("{name}={literal}")))
+                        .err()
+                        .map(|e| e.problem().clone());
+                let about_the_value = refusal.as_ref().is_some_and(is_about_the_value);
+                assert!(
+                    !about_the_value,
+                    "docs/CONFIGURATION.md §1: doc lists `{literal}` as a value of {name} but the parser refuses it: {refusal:?}"
+                );
+            }
+
+            // The other direction. Without it the cell could list every value
+            // in the language and stay green.
+            let Some(foreign) = ["1", "true", "nope"]
+                .into_iter()
+                .find(|candidate| !listed.contains(candidate))
+            else {
+                skipped += 1;
+                continue;
+            };
+            let refusal = Settings::parse(&sample.with_in_default(&format!("{name}={foreign}")))
+                .err()
+                .map(|e| e.problem().clone());
+            let about_the_value = refusal.as_ref().is_some_and(is_about_the_value);
+            assert!(
+                about_the_value,
+                "docs/CONFIGURATION.md §1: {name} does not list `{foreign}` among its values and the parser does not refuse it as a bad value: {refusal:?}"
+            );
+        }
+        println!("probe 3 — enumerated Values cells: {probed} probed, {skipped} skipped");
+        assert!(
+            probed >= FLOOR,
+            "probe 3 reached {probed} rows, below its floor of {FLOOR} — either a list of values was rewritten as prose, or this probe has stopped matching"
+        );
+    }
+
+    /// A *Where* cell that claims the key is `[DEFAULT]`-only.
+    fn says_default_only(cell: &str) -> bool {
+        cell.contains("`[DEFAULT]` **only**") || cell.contains("`[DEFAULT]` only")
+    }
+
+    /// A *Where* cell that claims a `[SESSION]` may carry the key.
+    fn says_a_session_may_carry_it(cell: &str) -> bool {
+        cell.contains("`[DEFAULT]` or `[SESSION]`") || cell.contains("`[SESSION]` (or `[DEFAULT]`)")
+    }
+
+    /// **Probe 4.** A `[DEFAULT]`-only claim is refused in a `[SESSION]`, and
+    /// a `[SESSION]` claim is not.
+    ///
+    /// This is the **sibling of the mistake that was actually made**: the
+    /// `TlsRequireKernel` notes cell said *"does nothing without
+    /// `SocketUseSSL=Y`"* where the parser refuses it, and no machine can read
+    /// that sentence — but the `[DEFAULT]`-only claim in the cell beside it is
+    /// a value, and this reads it.
+    ///
+    /// One sample for every row, because the question is about *sections* and
+    /// not about roles: every `[DEFAULT]`-only key is refused at the line it
+    /// is read on, before the file's role or this build's features come into
+    /// it.
+    #[test]
+    fn a_where_cell_that_claims_default_only_is_refused_in_a_session() {
+        /// Rows reached on 2026-09-12: 18. The ten `Config` keys have no
+        /// *Where* column and the two reconnect keys say `initiator only`,
+        /// which is a claim about a role and not about a section.
+        const FLOOR: usize = 18;
+
+        let doc = configuration_md();
+        let (mut probed, mut skipped) = (0_usize, 0_usize);
+        for row in doc_rows(&doc) {
+            let name = row.key;
+            if Key::parse(name).is_none() {
+                continue;
+            }
+            let Some(claim) = row.cell("Where") else {
+                skipped += 1;
+                continue;
+            };
+            // Any value: the question is whether the section is allowed, and
+            // the section is refused before the value is read.
+            let refusal = Settings::parse(&ACCEPTOR.with_in_session(&format!("{name}=Y")))
+                .err()
+                .map(|e| e.problem().clone());
+            let default_only = refusal.as_ref() == Some(&Problem::DefaultOnly);
+            if says_default_only(claim) {
+                probed += 1;
+                assert!(
+                    default_only,
+                    "docs/CONFIGURATION.md §1: {name} is documented as `[DEFAULT]` only but the parser does not say DefaultOnly in a [SESSION]: {refusal:?}"
+                );
+            } else if says_a_session_may_carry_it(claim) {
+                probed += 1;
+                assert!(
+                    !default_only,
+                    "docs/CONFIGURATION.md §1: {name} is documented as allowed in [SESSION] but the parser says DefaultOnly"
+                );
+            } else {
+                skipped += 1;
+            }
+        }
+        println!("probe 4 — Where cells: {probed} probed, {skipped} skipped");
+        assert!(
+            probed >= FLOOR,
+            "probe 4 reached {probed} rows, below its floor of {FLOOR} — either a section claim was rewritten as prose, or this probe has stopped matching"
         );
     }
 }
