@@ -17,16 +17,25 @@ Last updated: **2026-09-12** — **open items 62 and 65 are closed on `plan/tls-
 
 ## Start here — 2026-09-12: the gate found the flake, and the flake was in the test
 
-**Branch `plan/tls-4b`, PR [#61](https://github.com/tmthang86/fixbolt/pull/61), closing commit
-`89b192b`. Not merged.** Open items **62** and **65** are closed;
+**MERGED 2026-09-12 as `e728c16`.** PR [#61](https://github.com/tmthang86/fixbolt/pull/61),
+branch `plan/tls-4b`, closing commit `89b192b`. Open items **62** and **65** are closed;
 [the-tls-tests-have-no-ci](docs/plans/2026-09-10-the-tls-tests-have-no-ci.md) is *Xong (Sửa 1)*,
 steps 1-8.
 
-**CI green on the closing commit, by id:** runs
-[`34671147574`](https://github.com/tmthang86/fixbolt/actions/runs/34671147574) (`push`) and
-[`34671149007`](https://github.com/tmthang86/fixbolt/actions/runs/34671149007) (`pull_request`),
-**14 jobs of 14 each**. The `tls` job was read line by line, not off its tick: `verdict: READY`,
-`TLS tests that ran: 11`, `tls.rs repetitions failed: 0 of 3` in both.
+**CI green on the merge commit itself, by id:** run
+[`34672311560`](https://github.com/tmthang86/fixbolt/actions/runs/34672311560), **14 jobs of 14**,
+and the `tls` job's `git log -1` prints `e728c16`, so it really is the merge that was checked out:
+`verdict: READY`, `TLS tests that ran: 11`, `tls.rs repetitions failed: 0 of 3`. The closing commit
+`89b192b` was green too — runs
+[`34671147574`](https://github.com/tmthang86/fixbolt/actions/runs/34671147574) and
+[`34671149007`](https://github.com/tmthang86/fixbolt/actions/runs/34671149007), 14 of 14 each.
+
+**And the usual argument for carrying a branch's green onto a merge does NOT apply here.**
+`git diff fbe0a72 e728c16` is **not empty** — it is the 101 lines of `CLAUDE.md` §12 that `main`
+took from PR [#62](https://github.com/tmthang86/fixbolt/pull/62) while this branch was open. Every
+plan before this one closed by saying *the diff is empty, so the green transfers exactly*; that
+sentence was unavailable, so the merge commit was read on its own rather than inferred from the
+branch. It being "only a markdown file" is a prediction, and §10 does not accept one as a result.
 
 ### What happened, in the order it happened
 
@@ -90,8 +99,7 @@ it exists. **Third wrong reversal prediction on this branch, and this one was in
 
 ### Next
 
-**PR #61 is green and mergeable.** It carries step 4b of the `tls` plan as well as all of
-62/65, so the merge closes both. After it: `tls` plan step 4c (the five configuration keys),
+**PR #61 is merged**, and it carried step 4b of the `tls` plan as well as all of 62/65. Next: `tls` plan step 4c (the five configuration keys),
 then step 6 (the TLS arm of `check-no-kernel-sleep.sh`) — and that one needs the §9 box and root,
 which this session did not need at all.
 
