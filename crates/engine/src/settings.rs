@@ -139,6 +139,31 @@ enum Key {
     /// number. This engine writes only 3, 6 and 9, and **refuses the other
     /// seven rather than rounding to the nearest** — ADR-0057 open question 3.
     TimestampPrecision,
+    /// **`[DEFAULT]` only, and the acceptor's.** Whether this listener speaks
+    /// TLS at all.
+    ///
+    /// QuickFIX **C++ has no key for this** — it selects TLS by instantiating
+    /// `SSLSocketAcceptor` instead, which is a decision made in C++ and not in
+    /// a file. This is QuickFIX/J's spelling, taken under the naming law in
+    /// `docs/CONFIGURATION.md` §1: C++'s name where C++ has one, J's where it
+    /// does not.
+    SocketUseSsl,
+    /// **`[DEFAULT]` only.** The PEM chain this acceptor presents. QuickFIX
+    /// C++'s spelling.
+    ServerCertificateFile,
+    /// **`[DEFAULT]` only.** The private key for that chain. QuickFIX C++'s
+    /// spelling.
+    ServerCertificateKeyFile,
+    /// **`[DEFAULT]` only.** Refuse the deployment rather than fall back to
+    /// userspace TLS.
+    ///
+    /// No engine surveyed has this key, so the name is this repository's, on
+    /// the precedent of `ReconnectCeiling`. It carries a bare `Y`/`N` because
+    /// that is all [`serve_tls_requiring`] takes, and it is checked twice —
+    /// once before `bind`, once per connection — by ADR-0060.
+    ///
+    /// [`serve_tls_requiring`]: crate::serve_tls_requiring
+    TlsRequireKernel,
 }
 
 impl Key {
@@ -173,6 +198,10 @@ impl Key {
             "SendNextExpectedMsgSeqNum" => Some(Self::SendNextExpectedMsgSeqNum),
             "EnableLastMsgSeqNumProcessed" => Some(Self::EnableLastMsgSeqNumProcessed),
             "TimestampPrecision" => Some(Self::TimestampPrecision),
+            "SocketUseSSL" => Some(Self::SocketUseSsl),
+            "ServerCertificateFile" => Some(Self::ServerCertificateFile),
+            "ServerCertificateKeyFile" => Some(Self::ServerCertificateKeyFile),
+            "TlsRequireKernel" => Some(Self::TlsRequireKernel),
             _ => None,
         }
     }
@@ -205,6 +234,10 @@ impl Key {
             Self::SendNextExpectedMsgSeqNum => "SendNextExpectedMsgSeqNum",
             Self::EnableLastMsgSeqNumProcessed => "EnableLastMsgSeqNumProcessed",
             Self::TimestampPrecision => "TimestampPrecision",
+            Self::SocketUseSsl => "SocketUseSSL",
+            Self::ServerCertificateFile => "ServerCertificateFile",
+            Self::ServerCertificateKeyFile => "ServerCertificateKeyFile",
+            Self::TlsRequireKernel => "TlsRequireKernel",
         }
     }
 }
@@ -304,6 +337,23 @@ pub enum Problem {
     /// Times and days that name no schedule the session layer will build — a
     /// zero-length window, or weekdays on a weekly one.
     ImpossibleSchedule,
+    /// `SocketUseSSL=Y` in a build that was compiled without the `tls`
+    /// feature.
+    ///
+    /// **Refused cleanly, not parsed and ignored** — non-negotiable 6. A
+    /// build with nothing optional installed has no `rustls` in it at all, so
+    /// the only two honest answers to this file are this error and a plaintext
+    /// acceptor that nobody asked for. `docs/CONFIGURATION.md` §4 lists which
+    /// features a key needs.
+    NeedsFeature,
+    /// A file asking for TLS handed to [`Settings::into_table`].
+    ///
+    /// **The expensive mistake this catches**: the table would be perfectly
+    /// well formed, the port would answer, and the acceptor built from it would
+    /// serve **plaintext** with the certificate unread on disk. Nothing on the
+    /// wire would say so. Same shape as [`Problem::WrongRole`], same answer —
+    /// a line number and the door that works, [`Settings::into_tls_table`].
+    NeedsTlsDoor,
 }
 
 impl fmt::Display for Problem {
@@ -334,6 +384,10 @@ impl fmt::Display for Problem {
             Self::BadTime => "expected a time of day as HH:MM:SS",
             Self::BadWeekday => "expected a weekday, e.g. Monday or Mon",
             Self::ImpossibleSchedule => "these times and days describe no session",
+            Self::NeedsFeature => "this engine was built without the feature this key needs",
+            Self::NeedsTlsDoor => {
+                "this file asks for TLS, and into_table() would serve it as plaintext"
+            }
         };
         f.write_str(s)
     }
@@ -450,7 +504,12 @@ impl<'a> Block<'a> {
             Key::TimestampPrecision => &mut self.timestamp_precision,
             // Handled before a block ever sees them. A `[SESSION]` carrying one
             // is refused in `parse`, not here, so the error can say why.
-            Key::FileLogPath | Key::ConnectionType => {
+            Key::FileLogPath
+            | Key::ConnectionType
+            | Key::SocketUseSsl
+            | Key::ServerCertificateFile
+            | Key::ServerCertificateKeyFile
+            | Key::TlsRequireKernel => {
                 return Err(SettingsError::at(line, Problem::DefaultOnly, key.name()));
             }
         };
@@ -506,6 +565,200 @@ impl<'a> Block<'a> {
         ]
         .into_iter()
         .find_map(|(slot, key)| slot.map(|(line, _)| (line, key)))
+    }
+}
+
+/// The four `[DEFAULT]`-only TLS keys, before they become a [`TlsSettings`].
+///
+/// A block of its own rather than four more fields on [`Block`], because
+/// [`Block`] is merged per `[SESSION]` and these are never per-session: one
+/// listener presents one certificate, and SNI is out of scope (ADR-0005
+/// question 5). Keeping them out of [`Block`] is what makes
+/// "a TLS key in a `[SESSION]` is an error" a fact about the type rather than
+/// a rule somebody has to remember.
+#[derive(Debug, Default, Clone, Copy)]
+struct TlsBlock<'a> {
+    use_ssl: Option<(usize, &'a str)>,
+    certificate: Option<(usize, &'a str)>,
+    private_key: Option<(usize, &'a str)>,
+    require_kernel: Option<(usize, &'a str)>,
+}
+
+impl<'a> TlsBlock<'a> {
+    /// The slot this key fills, or `None` when the key is not one of these
+    /// four.
+    ///
+    /// The `match` is exhaustive over [`Key`] and has **no `_` arm**, for the
+    /// same reason nothing else in this module does: a new setting has to be
+    /// classified here before it compiles.
+    fn slot(&mut self, key: Key) -> Option<&mut Option<(usize, &'a str)>> {
+        match key {
+            Key::SocketUseSsl => Some(&mut self.use_ssl),
+            Key::ServerCertificateFile => Some(&mut self.certificate),
+            Key::ServerCertificateKeyFile => Some(&mut self.private_key),
+            Key::TlsRequireKernel => Some(&mut self.require_kernel),
+            Key::BeginString
+            | Key::SenderCompId
+            | Key::TargetCompId
+            | Key::HeartBtInt
+            | Key::MaxSkewMillis
+            | Key::StartTime
+            | Key::EndTime
+            | Key::StartDay
+            | Key::EndDay
+            | Key::Weekdays
+            | Key::FileLogPath
+            | Key::ConnectionType
+            | Key::SocketConnectHost
+            | Key::SocketConnectPort
+            | Key::ReconnectInterval
+            | Key::ReconnectCeiling
+            | Key::ResetOnLogon
+            | Key::ResetOnLogout
+            | Key::ResetOnDisconnect
+            | Key::LogonTimeout
+            | Key::LogoutTimeout
+            | Key::AllowUnknownMsgFields
+            | Key::ValidateUserDefinedFields
+            | Key::SendNextExpectedMsgSeqNum
+            | Key::EnableLastMsgSeqNumProcessed
+            | Key::TimestampPrecision => None,
+        }
+    }
+
+    /// The first of the four this file carries, in a fixed order so that the
+    /// key blamed for a whole-block problem does not depend on where the
+    /// operator happened to type it.
+    fn anchor(self) -> Option<(usize, Key)> {
+        [
+            (self.use_ssl, Key::SocketUseSsl),
+            (self.certificate, Key::ServerCertificateFile),
+            (self.private_key, Key::ServerCertificateKeyFile),
+            (self.require_kernel, Key::TlsRequireKernel),
+        ]
+        .into_iter()
+        .find_map(|(slot, key)| slot.map(|(line, _)| (line, key)))
+    }
+
+    /// The four keys checked against each other, against the role, and against
+    /// what this build can actually do.
+    ///
+    /// Returns the `SocketUseSSL` line beside the settings, so
+    /// [`Settings::into_table`] can refuse by line rather than by type name.
+    fn settle(self, role: ConnectionType) -> Result<Option<(usize, TlsSettings)>, SettingsError> {
+        let Some((anchor_line, anchor_key)) = self.anchor() else {
+            return Ok(None);
+        };
+        // **Acceptor-only, and the same refusal a dialling key gets on an
+        // acceptor file.** These four describe the certificate a *server*
+        // presents; an initiator that needs to present one needs
+        // `ClientCertificateFile`, which this engine does not have yet.
+        if role == ConnectionType::Initiator {
+            return Err(SettingsError::at(
+                anchor_line,
+                Problem::WrongRole,
+                format!("{} needs ConnectionType=acceptor", anchor_key.name()),
+            ));
+        }
+        let enabled = match self.use_ssl {
+            Some(v) => flag(v, Key::SocketUseSsl)?,
+            None => false,
+        };
+        let ssl_line = self.use_ssl.map_or(anchor_line, |(line, _)| line);
+        if !enabled {
+            // A certificate, a key or `TlsRequireKernel` with the switch off or
+            // absent describes something that will not happen. Refused rather
+            // than read and ignored: the operator wrote down a certificate and
+            // would otherwise get a plaintext acceptor with no sentence about
+            // it anywhere.
+            let dependent = [
+                (self.certificate, Key::ServerCertificateFile),
+                (self.private_key, Key::ServerCertificateKeyFile),
+                (self.require_kernel, Key::TlsRequireKernel),
+            ]
+            .into_iter()
+            .find_map(|(slot, key)| slot.map(|(line, _)| (line, key)));
+            if let Some((line, key)) = dependent {
+                return Err(SettingsError::at(
+                    line,
+                    Problem::MissingKey,
+                    format!("{} does nothing without SocketUseSSL=Y", key.name()),
+                ));
+            }
+            return Ok(None);
+        }
+        let certificate = required(self.certificate, Key::ServerCertificateFile, ssl_line)?;
+        let private_key = required(self.private_key, Key::ServerCertificateKeyFile, ssl_line)?;
+        let require_kernel = match self.require_kernel {
+            Some(v) => flag(v, Key::TlsRequireKernel)?,
+            None => false,
+        };
+
+        // **Non-negotiable 6, and the only `#[cfg]` in this module.** A build
+        // with nothing optional installed has no `rustls` in it, so the only
+        // two honest answers to `SocketUseSSL=Y` are this error and a plaintext
+        // acceptor nobody asked for. *Refused cleanly*, not *parsed and
+        // ignored*.
+        //
+        // It is **last** on purpose: the shape of the file is the operator's
+        // problem in every build, so "you forgot the certificate" is said by
+        // the featureless build too, and every refusal above this line is
+        // covered by a test that runs in both feature sets.
+        #[cfg(not(feature = "tls"))]
+        if enabled {
+            return Err(SettingsError::at(
+                ssl_line,
+                Problem::NeedsFeature,
+                "SocketUseSSL=Y needs this engine built with the `tls` feature",
+            ));
+        }
+
+        Ok(Some((
+            ssl_line,
+            TlsSettings {
+                certificate: PathBuf::from(certificate.1),
+                private_key: PathBuf::from(private_key.1),
+                require_kernel,
+            },
+        )))
+    }
+}
+
+/// The certificate this acceptor presents, and whether the kernel is required
+/// to carry it.
+///
+/// **Paths, not bytes.** Nothing here opens a file: reading the PEM belongs at
+/// start-up, beside `serve_tls*`, where an unreadable certificate is an
+/// `io::Error` about a path rather than a parse error about a line. A
+/// configuration parser that reads the filesystem is one that fails for two
+/// unrelated reasons with one message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsSettings {
+    certificate: PathBuf,
+    private_key: PathBuf,
+    require_kernel: bool,
+}
+
+impl TlsSettings {
+    /// The PEM chain this acceptor presents. `ServerCertificateFile`.
+    #[must_use]
+    pub fn certificate(&self) -> &Path {
+        &self.certificate
+    }
+
+    /// The private key for that chain. `ServerCertificateKeyFile`.
+    #[must_use]
+    pub fn private_key(&self) -> &Path {
+        &self.private_key
+    }
+
+    /// Whether a deployment that cannot offload TLS to the kernel is refused
+    /// rather than served from userspace. `TlsRequireKernel`, **off unless the
+    /// file says otherwise**: ADR-0060 refuses a deployment only when that
+    /// deployment asked to be refused.
+    #[must_use]
+    pub const fn require_kernel(&self) -> bool {
+        self.require_kernel
     }
 }
 
@@ -577,6 +830,12 @@ pub struct Settings {
     /// `host:port` and the backoff ladder, present exactly when the role is
     /// [`ConnectionType::Initiator`].
     dial: Option<(String, crate::reconnect::Policy)>,
+    /// The certificate to present, present exactly when the file said
+    /// `SocketUseSSL=Y`.
+    tls: Option<TlsSettings>,
+    /// The `SocketUseSSL=` line, so [`Self::into_table`] can refuse a TLS file
+    /// by line. Zero when the file did not ask for TLS.
+    tls_line: usize,
 }
 
 /// The first backoff delay when a file declares an initiator and says nothing
@@ -609,6 +868,7 @@ impl Settings {
         let mut sessions: Vec<Block<'_>> = Vec::new();
         let mut log: Option<(usize, &str)> = None;
         let mut role: Option<(usize, ConnectionType)> = None;
+        let mut tls = TlsBlock::default();
         // Which block the next `Key=Value` belongs to. `None` until the first
         // header, so a setting above it is refused rather than silently landing
         // in `[DEFAULT]`.
@@ -678,6 +938,21 @@ impl Settings {
                 role = Some((line, what));
                 continue;
             }
+            // `[DEFAULT]`-only, like `FileLogPath` and for the same kind of
+            // reason: one listener presents one certificate, and two
+            // `[SESSION]` blocks naming two certificates is a configuration
+            // that cannot be honoured on one port without SNI (ADR-0005
+            // question 5, out of scope).
+            if let Some(slot) = tls.slot(key) {
+                if !in_default {
+                    return Err(SettingsError::at(line, Problem::DefaultOnly, name));
+                }
+                if slot.is_some() {
+                    return Err(SettingsError::at(line, Problem::RepeatedKey, name));
+                }
+                *slot = Some((line, value));
+                continue;
+            }
             match current {
                 Some(i) => match sessions.get_mut(i) {
                     Some(b) => b.set(key, line, value)?,
@@ -700,6 +975,10 @@ impl Settings {
         }
 
         let (role_line, role) = role.unwrap_or((0, ConnectionType::Acceptor));
+        // After the whole file has been read, because `ConnectionType=` may sit
+        // below the TLS keys and the role is what decides whether they belong
+        // here at all.
+        let tls = tls.settle(role)?;
         // An initiator holds one session and `connect_and_serve` takes one
         // `Config`. Blamed on the second block's own line rather than on the
         // `ConnectionType=` line, because the second block is what the author
@@ -749,6 +1028,8 @@ impl Settings {
             role,
             role_line,
             dial,
+            tls_line: tls.as_ref().map_or(0, |(line, _)| *line),
+            tls: tls.map(|(_, settings)| settings),
         })
     }
 
@@ -777,6 +1058,21 @@ impl Settings {
         self.role
     }
 
+    /// The certificate this file asks to present, if it asked at all.
+    ///
+    /// **`None` is "the operator did not ask for TLS", and it is the only
+    /// honest reading** — the same rule as [`Self::log`]. There is no default
+    /// certificate path, because a default one would be a file somebody else
+    /// generated.
+    ///
+    /// Borrowed rather than owned: the caller that needs it to keep — the one
+    /// building a listener — takes [`Self::into_tls_table`] and gets it by
+    /// value, while everybody else is only asking a question.
+    #[must_use]
+    pub const fn tls(&self) -> Option<&TlsSettings> {
+        self.tls.as_ref()
+    }
+
     /// A registry serving exactly the counterparties this file names.
     ///
     /// # Errors
@@ -798,11 +1094,45 @@ impl Settings {
                 "this file configures an initiator: call into_initiator()",
             ));
         }
-        let mut table = Table::with_capacity(self.configs.len());
-        for cfg in self.configs {
-            table = table.serving(cfg);
+        if self.tls.is_some() {
+            return Err(SettingsError::at(
+                self.tls_line,
+                Problem::NeedsTlsDoor,
+                "this file asks for TLS: call into_tls_table()",
+            ));
         }
-        Ok(table)
+        Ok(table_of(self.configs))
+    }
+
+    /// The registry **and** the certificate, for the entry points that serve
+    /// TLS.
+    ///
+    /// The counterpart of [`Self::into_table`]: that door refuses a file
+    /// carrying `SocketUseSSL=Y`, this one is where such a file goes. Reading
+    /// the PEM is the caller's next step, not this one's — see [`TlsSettings`].
+    ///
+    /// # Errors
+    ///
+    /// [`Problem::WrongRole`] if the file declares an initiator, and
+    /// [`Problem::MissingKey`] if it never asked for TLS — a file with no
+    /// certificate in it cannot be served over one, and answering with a
+    /// plausible default would be answering with somebody else's key.
+    pub fn into_tls_table(self) -> Result<(Table, TlsSettings), SettingsError> {
+        if self.role == ConnectionType::Initiator {
+            return Err(SettingsError::at(
+                self.role_line,
+                Problem::WrongRole,
+                "this file configures an initiator: call into_initiator()",
+            ));
+        }
+        let Some(tls) = self.tls else {
+            return Err(SettingsError::at(
+                0,
+                Problem::MissingKey,
+                "this file asks for no TLS: add SocketUseSSL=Y, or call into_table()",
+            ));
+        };
+        Ok((table_of(self.configs), tls))
     }
 
     /// The three things `connect_and_serve` needs: the session's configuration,
@@ -841,6 +1171,15 @@ impl Settings {
         };
         Ok((cfg, addr, policy))
     }
+}
+
+/// The registry both acceptor doors build, so the two cannot drift.
+fn table_of(configs: Vec<Config>) -> Table {
+    let mut table = Table::with_capacity(configs.len());
+    for cfg in configs {
+        table = table.serving(cfg);
+    }
+    table
 }
 
 /// A line to blame a whole block for: its `TargetCompID`, which is the setting
@@ -1329,8 +1668,9 @@ mod doc_table {
     /// and a floor that may only ever be raised.
     #[test]
     fn the_key_scrape_is_not_silently_short() {
-        /// Keys on 2026-09-12. Raise it when keys are added; never lower it.
-        const FLOOR: usize = 26;
+        /// Keys on 2026-09-12, the four TLS keys included. Raise it when keys
+        /// are added; never lower it.
+        const FLOOR: usize = 30;
 
         let mut names = arm_literals(NAME_FN);
         let mut parses = arm_literals(PARSE_FN);

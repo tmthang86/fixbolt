@@ -782,3 +782,311 @@ TargetCompID=TW44
     .expect_err("two paths name no file");
     assert_eq!(e.problem(), &Problem::RepeatedKey, "left: {e}");
 }
+
+// ---------------------------------------------------------------------------
+// TLS — four keys, `[DEFAULT]`-only, acceptor-only, and a door of their own.
+//
+// Step 4c-1 of `docs/plans/2026-09-04-tls.md` (Sửa 5). TLS already reaches the
+// front door (`serve_tls_requiring`) and ADR-0060 already refuses a deployment
+// that demands the kernel and cannot have it — but until this, **no deployment
+// could ask for any of it from a file**, so the whole feature was reachable
+// only from Rust.
+//
+// The four keys, and why each is spelled the way it is, is `CONFIGURATION.md`'s
+// naming law and not restated here.
+//
+// Two refusals in this block are the expensive ones:
+//
+//   * a file carrying `SocketUseSSL=Y` poured into `into_table()` would build a
+//     perfectly good **plaintext** acceptor. The certificate would sit unread on
+//     disk, the port would answer, and nothing on the wire would say that the
+//     operator asked for TLS and did not get it. That is the same shape
+//     `WrongRole` already guards, and it gets the same answer: a refusal with a
+//     line number, and `into_tls_table()` as the door that works.
+//   * a build **without** the `tls` feature must refuse `SocketUseSSL=Y` at
+//     parse time rather than parse it and shrug (non-negotiable 6). *Refused
+//     cleanly*, not *parsed and ignored*.
+// ---------------------------------------------------------------------------
+
+/// A complete `[DEFAULT]` TLS block. Line 4 is `SocketUseSSL`, 5 the
+/// certificate, 6 the private key, 7 `TlsRequireKernel`.
+///
+/// The paths are never opened here — `Settings` carries them, and reading the
+/// PEM is `tls::load_pem`'s job at start-up — so no fixture file is needed and
+/// none is created.
+const TLS_ACCEPTOR: &str = "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+SocketUseSSL=Y
+ServerCertificateFile=/etc/fixbolt/server.pem
+ServerCertificateKeyFile=/etc/fixbolt/server.key
+TlsRequireKernel=Y
+
+[SESSION]
+TargetCompID=TW44
+";
+
+/// The four keys become one [`TlsSettings`], and a file that says nothing about
+/// TLS gets none — `None` is "the operator did not ask", never a default
+/// certificate path.
+#[cfg(feature = "tls")]
+#[test]
+fn tls_keys_parse_into_tls_settings() {
+    let s = Settings::parse(TLS_ACCEPTOR).expect("a legal TLS file");
+    let tls = s.tls().expect("the file asked for TLS");
+    assert_eq!(tls.certificate(), Path::new("/etc/fixbolt/server.pem"));
+    assert_eq!(tls.private_key(), Path::new("/etc/fixbolt/server.key"));
+    assert!(tls.require_kernel(), "TlsRequireKernel=Y was read");
+    assert_eq!(
+        s.configs().len(),
+        1,
+        "the [SESSION] blocks are built as usual"
+    );
+
+    // `TlsRequireKernel` defaults to **off**. ADR-0060 refuses a deployment
+    // only when that deployment asked to be refused; defaulting it on would
+    // turn every host without a `tls` ULP into a start-up failure nobody
+    // configured.
+    let relaxed = TLS_ACCEPTOR.replace("TlsRequireKernel=Y\n", "");
+    let s = Settings::parse(&relaxed).expect("a legal TLS file");
+    assert!(
+        !s.tls().expect("the file asked for TLS").require_kernel(),
+        "TlsRequireKernel is off unless the file says otherwise"
+    );
+
+    assert!(
+        Settings::parse(TWO_COUNTERPARTIES)
+            .expect("a legal file")
+            .tls()
+            .is_none(),
+        "a file that never mentions TLS asks for none"
+    );
+}
+
+/// `SocketUseSSL=Y` and no certificate is a configuration that cannot be
+/// honoured, and the error names the key that is missing rather than the one
+/// that is present.
+///
+/// **Runs in both feature sets**, which is why the `tls`-feature check is the
+/// *last* thing `settle` does: the shape of the file is the operator's problem
+/// in every build, and a build that cannot serve TLS at all should still be
+/// able to say "you forgot the certificate".
+#[test]
+fn socket_use_ssl_without_a_certificate_is_missing_key() {
+    let text = TLS_ACCEPTOR.replace("ServerCertificateFile=/etc/fixbolt/server.pem\n", "");
+    let e = refused(&text);
+    assert_eq!(*e.problem(), Problem::MissingKey, "left: {e}");
+    assert!(
+        e.to_string().contains("ServerCertificateFile"),
+        "it names the key that is missing: {e}"
+    );
+    assert_eq!(e.line(), 4, "blamed on the SocketUseSSL line: {e}");
+
+    let text = TLS_ACCEPTOR.replace("ServerCertificateKeyFile=/etc/fixbolt/server.key\n", "");
+    let e = refused(&text);
+    assert_eq!(*e.problem(), Problem::MissingKey, "left: {e}");
+    assert!(
+        e.to_string().contains("ServerCertificateKeyFile"),
+        "a certificate without its key is the same refusal: {e}"
+    );
+}
+
+/// A certificate, a private key or `TlsRequireKernel` **without**
+/// `SocketUseSSL=Y` is refused rather than read and ignored.
+///
+/// The failure this stops is the quiet one: an operator who wrote three TLS
+/// keys and forgot the switch would get a plaintext acceptor and no sentence
+/// about it anywhere.
+#[test]
+fn a_certificate_without_socket_use_ssl_is_refused() {
+    let text = TLS_ACCEPTOR.replace("SocketUseSSL=Y\n", "");
+    let e = refused(&text);
+    assert_eq!(*e.problem(), Problem::MissingKey, "left: {e}");
+    assert!(
+        e.to_string().contains("SocketUseSSL"),
+        "it names the switch that is missing: {e}"
+    );
+    assert_eq!(e.line(), 4, "and the line of the key that needs it: {e}");
+
+    // `SocketUseSSL=N` is not a loophole: it says TLS is off, and a certificate
+    // beside it still describes something that will not happen.
+    let e = refused(&TLS_ACCEPTOR.replace("SocketUseSSL=Y", "SocketUseSSL=N"));
+    assert_eq!(*e.problem(), Problem::MissingKey, "left: {e}");
+    assert!(
+        e.to_string().contains("ServerCertificateFile"),
+        "it names the key that does nothing: {e}"
+    );
+
+    // `SocketUseSSL=N` on its own is legal and means exactly what it says.
+    let off = "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+SocketUseSSL=N
+
+[SESSION]
+TargetCompID=TW44
+";
+    let s = Settings::parse(off).expect("SocketUseSSL=N is a legal thing to write");
+    assert!(s.tls().is_none(), "and it asks for no TLS");
+
+    // And it is still a flag: `true` read as `Y` today is `1` read as `N`
+    // tomorrow.
+    let e = refused(&TLS_ACCEPTOR.replace("SocketUseSSL=Y", "SocketUseSSL=true"));
+    assert_eq!(*e.problem(), Problem::NotAFlag, "left: {e}");
+}
+
+/// One listener, one certificate. SNI and a certificate per counterparty are
+/// out of scope (ADR-0005 question 5), so a TLS key inside a `[SESSION]` is an
+/// error and not a thing quietly applied to the whole engine.
+#[test]
+fn tls_keys_in_a_session_block_are_default_only() {
+    for key in [
+        "SocketUseSSL=Y",
+        "ServerCertificateFile=/etc/fixbolt/server.pem",
+        "ServerCertificateKeyFile=/etc/fixbolt/server.key",
+        "TlsRequireKernel=Y",
+    ] {
+        let text = format!(
+            "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+
+[SESSION]
+TargetCompID=TW44
+{key}
+"
+        );
+        let e = refused(&text);
+        assert_eq!(*e.problem(), Problem::DefaultOnly, "{key}, left: {e}");
+        assert_eq!(e.line(), 7, "{key}: and it names the line: {e}");
+    }
+}
+
+/// TLS here is the **acceptor's** — it presents a server certificate. An
+/// initiator file carrying one is the same refusal a dialling key gets on an
+/// acceptor file: `WrongRole`, by line.
+#[test]
+fn tls_keys_on_an_initiator_file_are_wrong_role() {
+    let text = "\
+[DEFAULT]
+ConnectionType=initiator
+BeginString=FIX.4.4
+SenderCompID=TW44
+SocketConnectHost=venue.example.com
+SocketConnectPort=9880
+SocketUseSSL=Y
+ServerCertificateFile=/etc/fixbolt/server.pem
+ServerCertificateKeyFile=/etc/fixbolt/server.key
+
+[SESSION]
+TargetCompID=ISLD
+";
+    let e = refused(text);
+    assert_eq!(*e.problem(), Problem::WrongRole, "left: {e}");
+    assert_eq!(e.line(), 7, "and it names the line: {e}");
+    assert!(
+        e.to_string().contains("SocketUseSSL"),
+        "it names the key that belongs to the other role: {e}"
+    );
+
+    // Every one of the four, not only the switch.
+    let plain = text.replace("SocketUseSSL=Y\n", "");
+    let e = refused(&plain);
+    assert_eq!(*e.problem(), Problem::WrongRole, "left: {e}");
+    assert!(e.to_string().contains("ServerCertificateFile"), "left: {e}");
+
+    // And the door says the same thing. An initiator file with no TLS in it at
+    // all reaches `into_tls_table` and is refused for the role, not for the
+    // missing certificate — the role is the thing the author has to change.
+    let plain = plain
+        .replace("ServerCertificateFile=/etc/fixbolt/server.pem\n", "")
+        .replace("ServerCertificateKeyFile=/etc/fixbolt/server.key\n", "");
+    let e = Settings::parse(&plain)
+        .expect("a legal initiator file")
+        .into_tls_table()
+        .expect_err("an initiator does not present a server certificate");
+    assert_eq!(*e.problem(), Problem::WrongRole, "left: {e}");
+    assert_eq!(e.line(), 2, "it names the ConnectionType= line: {e}");
+}
+
+/// **The expensive refusal.** A file that asks for TLS poured into
+/// `into_table()` would serve plaintext on the port, with the certificate
+/// unread on disk and nothing on the wire to say so.
+#[cfg(feature = "tls")]
+#[test]
+fn into_table_refuses_a_file_that_asks_for_tls() {
+    let s = Settings::parse(TLS_ACCEPTOR).expect("a legal TLS file");
+    let e = s
+        .clone()
+        .into_table()
+        .expect_err("into_table would serve this file as plaintext");
+    assert_eq!(*e.problem(), Problem::NeedsTlsDoor, "left: {e}");
+    assert_eq!(e.line(), 4, "it names the SocketUseSSL line: {e}");
+    assert!(
+        e.to_string().contains("into_tls_table"),
+        "and it names the door that works: {e}"
+    );
+
+    let (table, tls) = s.into_tls_table().expect("the right door");
+    assert_eq!(table.len(), 1, "the counterparties are still there");
+    assert!(tls.require_kernel());
+
+    // The reverse is not the expensive mistake, but it is still not a guess: a
+    // file with no TLS in it cannot produce a certificate.
+    let e = Settings::parse(TWO_COUNTERPARTIES)
+        .expect("a legal file")
+        .into_tls_table()
+        .expect_err("there is no certificate to serve");
+    assert_eq!(*e.problem(), Problem::MissingKey, "left: {e}");
+    assert!(e.to_string().contains("SocketUseSSL"), "left: {e}");
+}
+
+/// **Non-negotiable 6, the half that matters.** A build with nothing optional
+/// installed cannot serve TLS, and a file asking for it is refused **at parse
+/// time** — not parsed, not ignored, not accepted into an acceptor that would
+/// answer in plaintext.
+///
+/// # Why this test is shaped the way it is
+///
+/// The obvious spelling — `refused(TLS_ACCEPTOR)` first — goes red on its
+/// **reversal** inside the `refused` helper, with "this should not have parsed",
+/// and not on the `NeedsFeature` assertion at all. That is
+/// `docs/reference/a-red-reversal-does-not-prove-the-assertion-you-wrote-it-for.md`
+/// exactly. So the first assertion compares an `Option<&Problem>` that exists
+/// whether the file parsed or not, and it is the sentence the reversal has to
+/// print.
+#[cfg(not(feature = "tls"))]
+#[test]
+fn socket_use_ssl_is_refused_without_the_tls_feature() {
+    let outcome = Settings::parse(TLS_ACCEPTOR).map(|s| s.tls().is_some());
+    assert_eq!(
+        outcome.as_ref().err().map(|e| e.problem()),
+        Some(&Problem::NeedsFeature),
+        "a build without the `tls` feature must refuse SocketUseSSL=Y at parse \
+         time rather than serve the port in plaintext; instead: {outcome:?}"
+    );
+
+    let e = refused(TLS_ACCEPTOR);
+    assert_eq!(e.line(), 4, "it names the SocketUseSSL line: {e}");
+    assert!(
+        e.to_string().contains("tls"),
+        "and it names the feature to rebuild with: {e}"
+    );
+}
+
+/// The dual of [`socket_use_ssl_is_refused_without_the_tls_feature`]: the same
+/// file, the same keys, and with the feature on it is simply read.
+///
+/// A test that only ever runs in one feature set proves one feature set.
+#[cfg(feature = "tls")]
+#[test]
+fn socket_use_ssl_is_accepted_with_the_tls_feature() {
+    let s = Settings::parse(TLS_ACCEPTOR).expect("a build with `tls` serves this file");
+    assert!(
+        s.tls().is_some(),
+        "the same text the featureless build refuses"
+    );
+}
