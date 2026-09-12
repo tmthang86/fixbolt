@@ -435,6 +435,22 @@ The architect is never a worker.
   evidence, in Vietnamese (§6), never as "the agent said it passed". The plan the architect
   writes is the one document the owner approves, so it is on disk and in Vietnamese before
   anything is built.
+**A session is one pull request, and the handoff is written, not remembered.** The owner opens
+a fresh session per pull request, and this repository already carries its state in files:
+`STATUS.md`, the plan's *Nhật ký giao hàng* — "the part that survives context compaction" — and
+the CI run id named for the commit closed (§9). The manager's memory is those files, so:
+
+- **At the start, read `STATUS.md` by section, not end to end**: the first *Start here*, *Where
+  the work is*, *Open items*, then the *Nhật ký giao hàng* of the plan in flight. `[measured
+  2026-09-12]` the file is 3 665 lines and 28 *Start here* sections, which is a store rather
+  than the pointer it says it is; reading all of it spends the manager's context before the
+  first step.
+- **At the end, write the handoff as the brief for the next manager**: what is in flight, on
+  which branch and commit, the gate command, the CI run id, and what is not proven — in
+  *Start here* and in the plan's delivery log, in the same commit as the work. Anything the
+  manager knows and has not written there is lost by design.
+- **A step lives inside one session.** When a plan spans pull requests, the session boundary is
+  a row of the plan's *Chia việc* table, never the middle of one.
 - **Two sessions on one working tree.** Before staging or switching branches, ask which
   session owns the tree; a new branch gets a `git worktree`. `DESIGN.md` §9 figures come from a
   machine nothing else is loading, which a second session can silently break.
