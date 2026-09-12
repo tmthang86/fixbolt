@@ -39,6 +39,26 @@ jobs:
       - uses: actions/checkout@v5
       - run: rustup component add clippy
       - run: scripts/check-lint-config.sh
+      # Two text checks that answer the same question from the other side:
+      # check-lint-config.sh proves the workspace CONFIGURATION denies
+      # unwrap/expect/panic; these two prove nothing in the tree quietly
+      # switches that configuration back off.
+      #
+      # `[measured 2026-09-08]` STATUS.md item 58: `indexing_slicing = "deny"`
+      # was inert across engine, session and dict for the length of one build,
+      # because three debt annotations were written `#![allow(...)]` at the top
+      # of a lib.rs — an INNER attribute at a crate root silences the whole
+      # crate. check-indexing-debt.sh kept reading exactly the right number the
+      # whole time, because --force-warn overrides an allow. The number
+      # everybody looks at was right while the enforcing half was off.
+      - run: scripts/check-no-crate-root-allow.sh
+      # `[measured 2026-08-31]` STATUS.md item 23: check-lint-config.sh built
+      # its scratch crate in `mktemp -d`, where rust-toolchain.toml does not
+      # reach, so on a desktop with no `rustup default` it reported the
+      # workspace lints as not denying — while clippy had never run. The
+      # instance is fixed; this guards the class. Note it can only fail here
+      # for a tree reason, never a machine one: the check reads text.
+      - run: scripts/check-scratch-fixtures.sh
 
   # `[measured 2026-08-30]` scripts/check-ktls-available.sh printed
   # `config: CONFIG_TLS=m` and then "it was built without CONFIG_TLS" in the SAME
