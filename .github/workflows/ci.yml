@@ -66,7 +66,15 @@ jobs:
       # than scanning `scripts/` wholesale — two of the nineteen other
       # scripts there need the §9 machine to prove a quoting fix changed
       # nothing, which this job cannot do.
-      - run: shellcheck -S warning scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh
+      #
+      # `[measured 2026-09-12]` **`-S info`, not `-S warning`, and the
+      # difference is the whole point of the line.** The plan said
+      # `-S warning`, and its own reversal — an unquoted variable — came back
+      # GREEN. SC2086 is severity *info*, so `-S warning` can never see the
+      # one defect class section E named as its reason to exist. Measured on
+      # shellcheck 0.11.0, one probe per level: error 0, warning 0,
+      # info SC2086, style SC2086. Plan revision Sửa 1.
+      - run: shellcheck -S info scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh
 
   # `[measured 2026-08-30]` scripts/check-ktls-available.sh printed
   # `config: CONFIG_TLS=m` and then "it was built without CONFIG_TLS" in the SAME

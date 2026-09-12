@@ -193,6 +193,13 @@ for f in "${SCRIPTS[@]}"; do
 
   # --- B2 / B2b: lines that enter a scratch dir ------------------------------
   line_no=0
+  # shellcheck disable=SC2094
+  # SC2094 is read-and-write of one file in one pipeline. Both uses of
+  # "$f" here are READS — this script writes no file at all — so the
+  # warning is a false positive, and it is disabled at the two loops it
+  # points at rather than for the file, so a real one elsewhere still
+  # goes red. `shellcheck -S info` in CI is what makes this visible:
+  # `-S warning` never reported it, and never reports SC2086 either.
   while IFS= read -r line || [[ -n "$line" ]]; do
     line_no=$((line_no + 1))
     is_live "$line" || continue
@@ -238,6 +245,13 @@ for f in "${SCRIPTS[@]}"; do
 
       for pin in "${PINS[@]}"; do
         found=0
+        # shellcheck disable=SC2094
+        # SC2094 is read-and-write of one file in one pipeline. Both uses of
+        # "$f" here are READS — this script writes no file at all — so the
+        # warning is a false positive, and it is disabled at the two loops it
+        # points at rather than for the file, so a real one elsewhere still
+        # goes red. `shellcheck -S info` in CI is what makes this visible:
+        # `-S warning` never reported it, and never reports SC2086 either.
         while IFS= read -r cpline; do
           for fv in "${family[@]}"; do
             if refers_to "$cpline" "$fv"; then

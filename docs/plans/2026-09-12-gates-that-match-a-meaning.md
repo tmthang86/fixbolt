@@ -465,6 +465,55 @@ Theo bảng `CLAUDE.md` §4, đi từng hàng, **trong cùng commit với bướ
 - `cargo-nextest`, `syn`, `shfmt` — đã cân nhắc, không dùng (lý do ở *Tra cứu* và mục B).
 - Arm TLS của `check-no-kernel-sleep.sh`, `DESIGN.md` §8 hàng TLS — plan TLS, không phải đây.
 
+## Sửa
+
+### Sửa 1 `[2026-09-12]` — ngưỡng `shellcheck` là `-S info`, không phải `-S warning`
+
+Mục E chọn `shellcheck -S warning`, và **đảo chiều của chính bước 3 bác bỏ nó**: chèn một biến
+không ngoặc vào script rồi chạy `-S warning` cho ra **xanh**. `SC2086` có severity **info**, nên
+`-S warning` không bao giờ thấy được đúng lớp lỗi mục E viện dẫn làm lý do tồn tại.
+
+`[measured 2026-09-12]` shellcheck 0.11.0 trên bàn này, một probe `y="$(date)"; echo $y`, chạy
+từng mức:
+
+```
+error    exit=0
+warning  exit=0
+info     SC2086 (info)  exit=1
+style    SC2086 (info)  exit=1
+```
+
+**Đổi:** dòng trong job `lint-config` thành `shellcheck -S info` trên đúng ba script cũ.
+`-S info` khi đó báo `SC2094` hai chỗ trong `check-scratch-fixtures.sh` (dòng 249 và 257) —
+**false positive**: `SC2094` là *đọc và ghi cùng một file trong một pipeline*, còn cả hai chỗ đều
+chỉ **đọc** `$f`, và script này không ghi file nào. Tắt bằng `# shellcheck disable=SC2094` **tại
+đúng hai vòng lặp đó**, kèm lý do, chứ không tắt cho cả file — một `SC2094` thật ở chỗ khác vẫn
+phải đỏ. Đây chính là hình dạng mà bất biến 7 và item 66 nói tới, nên nó được đặt hẹp nhất có thể
+và có tên.
+
+Đã xác minh sau khi đổi: ba script sạch dưới `-S info` (`exit=0`), và probe biến không ngoặc đỏ
+đúng `SC2086`.
+
+**Vì sao đây là sửa plan chứ không phải sửa người làm:** developer bước 3 dự đoán đỏ, đo được
+xanh, **dừng lại và báo** thay vì hạ chuẩn hay tự đổi ngưỡng — đúng như brief yêu cầu. Con số sai
+nằm trong plan.
+
+### Sửa 2 `[2026-09-12]` — "ô Values là liệt kê" cần **từ hai literal trở lên**
+
+Mục D-3 định nghĩa ô *Values* là liệt kê khi phần ngoài backtick chỉ còn `or`, dấu phẩy và khoảng
+trắng. Viết đúng như thế thì `StartTime` và `EndTime` — ô `` `HH:MM:SS` `` — lọt vào, và chúng là
+một **hình dạng**, không phải một giá trị ai được phép viết. Đo được, với luật của D cài nguyên
+văn:
+
+```
+docs/CONFIGURATION.md §1: StartTime does not list `1` among its values and the
+parser does not refuse it as a bad value: Some(MissingKey)
+```
+
+**Đổi:** liệt kê phải có **từ hai literal trở lên** — một liệt kê thì phải có gì để liệt kê. Ghi
+trong docstring của `fn enumerated` và trong đoạn ranh giới của `CONFIGURATION.md`. Đây là thay
+đổi nhỏ nhất làm probe đúng; không có thiết kế nào khác được thay vào.
+
 ## Nhật ký giao hàng
 
 *(trống — plan chưa duyệt, chưa dựng gì)*
