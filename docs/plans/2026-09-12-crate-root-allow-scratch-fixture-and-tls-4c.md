@@ -704,8 +704,16 @@ file.
 
 ### Việc dở dang sau bước 7
 
-- **Chưa có id run CI** cho bất kỳ commit nào sau `41bdd99`. §9 hộp cuối chưa đánh dấu được cho
-  các commit của bước 4-7 — manager sẽ đặt tên run khi đóng plan.
+- ~~**Chưa có id run CI**~~ — **đã có, 2026-09-12.** Commit đóng **`a8a5824`** xanh, run
+  [`34688952076`](https://github.com/tmthang86/fixbolt/actions/runs/34688952076), **14 job / 14**;
+  `41bdd99` giữa nhánh cũng xanh, run
+  [`34682470085`](https://github.com/tmthang86/fixbolt/actions/runs/34682470085), 14 / 14.
+  **Dòng đáng đọc không phải dấu tick mà là con số**: job `tls` in `TLS tests that ran: 14`, trước
+  nhánh này là **11** — ba cái chênh đúng là `tls_settings_wire.rs`, nên file đó thật sự được
+  compile và chạy trên runner chứ không chỉ ở bàn này. Nếu thiếu một dòng sửa `ci.yml` ở `0a49778`
+  thì con số vẫn đọc 11 bên cạnh một dấu tick xanh. Và `tls.rs repetitions failed: 0 of 3`, trên
+  chính binary còn flaky ở runner này mười hai tiếng trước. **Commit merge thì chưa xanh — nó chưa
+  tồn tại.**
 - **`shellcheck` chưa chạy** trên bất kỳ script nào của repo này — ghi ở *Not proven* của
   `STATUS.md`.
 - **Không có gì nói về luồng engine dưới TLS.** `scripts/check-no-kernel-sleep.sh` chưa có arm
@@ -716,5 +724,12 @@ file.
   chỗ ghi bền; cái còn lại được nêu tên ở đây và ở `STATUS.md` để không mất.
 - **Plan TLS bước 5, 6, 7 (đánh số riêng của plan đó) chưa bắt đầu**: initiator, `w2w --tls`, arm
   TLS của `check-no-kernel-sleep.sh`.
-- Nếu phải cắt ở đây: không cần cắt gì nữa — bước 7 là bước cuối của plan này. Việc còn lại là
-  của manager: chạy lại toàn bộ cổng trên chính commit đóng, đặt tên một run CI, và commit.
+- ~~Việc còn lại của manager~~ — **xong 2026-09-12**: manager chạy lại toàn bộ cổng trên chính
+  commit đóng, đặt tên run CI ở trên, viết
+  [a-reversal-that-removed-the-guard-s-label-not-the-guard](../reference/a-reversal-that-removed-the-guard-s-label-not-the-guard.md)
+  cho đảo chiều no-op của chính mình (cái thứ ba, bước 7 đã nêu tên mà không được phép tạo file),
+  nối chéo cả ba mục, và **sửa một ô sai trong bảng mới**: ghi chú của `TlsRequireKernel` viết là
+  *"does nothing without `SocketUseSSL=Y`"* trong khi `settings.rs:668-680` **từ chối** nó — cổng
+  hai chiều kiểm *có hàng*, không kiểm *hàng đúng*. PR [#63](https://github.com/tmthang86/fixbolt/pull/63).
+
+**Plan ĐÓNG 2026-09-12**, cả 7 bước. Chưa merge.

@@ -102,9 +102,19 @@ the two plan files' delivery logs.
 
 ### Not proven
 
-- **No CI run is named for any commit after `41bdd99`** (14 of 14, run
-  [`34682470085`](https://github.com/tmthang86/fixbolt/actions/runs/34682470085)). The manager
-  names one before this branch merges.
+- ~~**No CI run is named for any commit after `41bdd99`.**~~ **Named 2026-09-12**: the closing
+  commit **`a8a5824`** is green, run
+  [`34688952076`](https://github.com/tmthang86/fixbolt/actions/runs/34688952076), **14 jobs of
+  14** — `interop`, `bench` and `deny` among them, the three neither desk can run for itself.
+  `41bdd99` mid-branch was green too, run
+  [`34682470085`](https://github.com/tmthang86/fixbolt/actions/runs/34682470085), 14 of 14.
+  **Two lines of that log are the ones worth reading rather than the conclusion.** The `tls` job
+  prints `TLS tests that ran: 14` where it printed **11** before this branch — three more, which
+  is exactly `tls_settings_wire.rs`, so the file really was compiled and really did run on the
+  runner rather than only on this desk. That count is the whole reason the step exists, and
+  without `0a49778`'s one-line fix to `ci.yml` it would have read 11 beside a green tick. And
+  `tls.rs repetitions failed: 0 of 3`, on the binary that was flaky on this same runner twelve
+  hours ago. **The merge commit itself is not green yet** — it does not exist.
 - **`shellcheck` has never run** over any script in this repository.
 - **Nothing here says anything about the engine thread under TLS.**
   `scripts/check-no-kernel-sleep.sh` still has no TLS arm, and `DESIGN.md` §8's TLS row is still
