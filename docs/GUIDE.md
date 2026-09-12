@@ -1489,10 +1489,22 @@ Stated so you do not discover it in production:
      publish one without saying which mode it was.
   3. **One certificate per listener.** No SNI, no second certificate. An acceptor that needs
      more runs more listeners.
+  4. **`[2026-09-12]` A `.cfg` file can now ask for TLS, and `into_tls_table()` is the only door
+     that will serve it.** Four `[DEFAULT]`-only keys —
+     `SocketUseSSL`, `ServerCertificateFile`, `ServerCertificateKeyFile`, `TlsRequireKernel` —
+     become a `TlsSettings` that `tls::load_pem` turns into the DER `serve_tls*` takes
+     ([CONFIGURATION.md §1](CONFIGURATION.md)). **`Settings::into_table()` still refuses a file
+     that asked for TLS**, naming the line and the door that works, so calling the plain door on
+     a file you have not inspected is caught rather than served as plaintext. **A build without
+     the `tls` feature refuses `SocketUseSSL=Y` at parse time**, before a socket is ever touched
+     — the same certainty non-negotiable 6 already gives the Rust API, now given to the file too.
+     The one thing the file cannot do that the Rust builder still can: a certificate per
+     `[SESSION]`. The four keys are `[DEFAULT]`-only, same as point 3 above, so a per-counterparty
+     certificate needs one listener per counterparty either way.
 
-  **Not built:** the initiator side, any configuration-file key (`TlsRequireKernel` is an
-  argument today, not a settings entry), and any published TLS latency number. `scripts/check-no-kernel-sleep.sh` has no TLS arm, so nothing
-  here claims the engine thread stays out of the kernel under TLS.
+  **Not built:** the initiator side (there is no `ClientCertificateFile`), and any published TLS
+  latency number. `scripts/check-no-kernel-sleep.sh` has no TLS arm, so nothing here claims the
+  engine thread stays out of the kernel under TLS.
 - **It cannot originate an application message.** `Handler::on_message` returns one reply to
   one inbound message, and the session's `send_application` is reachable only by driving the
   session yourself (STATUS item 46).

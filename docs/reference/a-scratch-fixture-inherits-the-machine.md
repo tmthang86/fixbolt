@@ -84,3 +84,10 @@ would ever have shown it, because CI is precisely the environment where it passe
 It surfaced because a plan's closing checklist requires every gate to be run *on
 the machine doing the work* and its output read — not its exit status, and not its
 last run somewhere else.
+
+**Guarded since 2026-09-12 by `scripts/check-scratch-fixtures.sh`**, which enforces the class
+rather than this instance: every line in `scripts/*.sh` that *enters* a directory outside the tree
+— the trigger rustup actually uses, not the call to `mktemp` — must be accompanied by a `cp` of
+each pinning artefact that exists at the repository root, that artefact set being derived from
+what is there rather than hard-coded. There is no allow-list, so the three scripts audited clean
+above pass by never leaving the tree instead of by being named.

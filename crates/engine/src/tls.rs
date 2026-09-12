@@ -565,6 +565,101 @@ pub fn server_config(
     Ok(std::sync::Arc::new(cfg))
 }
 
+/// The certificate and key a [`crate::settings::TlsSettings`] names, read off
+/// disk as DER.
+///
+/// **The joint between two halves that were built to different shapes.**
+/// `TlsSettings` carries *paths*, on purpose — a configuration parser that
+/// reads the filesystem fails for two unrelated reasons with one message. Every
+/// `serve_tls*` entry point takes *DER*. Until this function there was no
+/// supported way from one to the other, so the four settings keys of step 4c-1
+/// were a promise in a document. `crates/engine/tests/tls_settings_wire.rs` is
+/// the gate for the sentence *"a `.cfg` file can bring a TLS session up"*, and
+/// before it that sentence was false.
+///
+/// **Four operator mistakes, four different sentences.** A path that names no
+/// file, a file that cannot be read, a certificate file with no `CERTIFICATE`
+/// section in it, and a key file with no private key in it are four different
+/// things to go and fix, and each names the settings key *and* the path. They
+/// were collapsed into one message in the first draft and separated on purpose:
+/// "TLS setup failed" tells an operator to read the source.
+///
+/// **It reads whole files at start-up, and that is where it belongs.** Nothing
+/// here is on any hot path — non-negotiable 1 is about the parse, serialise,
+/// session and dispatch paths, and this runs once, before the listener binds.
+///
+/// # Errors
+///
+/// [`crate::ServeError::Tls`] for every one of the four, each naming the
+/// settings key and the path. The variant is shared with
+/// [`server_config`] because `ServeError` is a public enum and a new variant is
+/// a breaking change for a distinction the message already makes.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+pub fn load_pem(
+    settings: &crate::settings::TlsSettings,
+) -> Result<
+    (
+        Vec<rustls::pki_types::CertificateDer<'static>>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    ),
+    crate::ServeError,
+> {
+    use rustls::pki_types::pem::{Error as PemError, PemObject as _};
+
+    let cert_path = settings.certificate();
+    let key_path = settings.private_key();
+
+    // `pem_file_iter` reports opening the file from the call and reading it
+    // from the iterator — the split this function wants anyway, since a missing
+    // path and a corrupt body are different things to fix.
+    let certs = rustls::pki_types::CertificateDer::pem_file_iter(cert_path)
+        // `PemError`'s own `Display` prefixes `I/O error:`, which reads twice
+        // here; the `io::Error` alone is the sentence an operator needs.
+        .map_err(|e| match e {
+            PemError::Io(io) => crate::ServeError::Tls(format!(
+                "ServerCertificateFile {} could not be opened: {io}",
+                cert_path.display()
+            )),
+            other => crate::ServeError::Tls(format!(
+                "ServerCertificateFile {} could not be opened: {other}",
+                cert_path.display()
+            )),
+        })?
+        .collect::<Result<Vec<_>, PemError>>()
+        .map_err(|e| {
+            crate::ServeError::Tls(format!(
+                "ServerCertificateFile {} is not readable PEM: {e}",
+                cert_path.display()
+            ))
+        })?;
+    // An empty vector, not a `NoItemsFound`: the iterator yields nothing at all
+    // for a well-formed PEM holding only sections of other kinds — which is
+    // exactly what a private key handed in as a certificate looks like.
+    if certs.is_empty() {
+        return Err(crate::ServeError::Tls(format!(
+            "ServerCertificateFile {} holds no CERTIFICATE section",
+            cert_path.display()
+        )));
+    }
+
+    let key = rustls::pki_types::PrivateKeyDer::from_pem_file(key_path).map_err(|e| match e {
+        PemError::Io(io) => crate::ServeError::Tls(format!(
+            "ServerCertificateKeyFile {} could not be opened: {io}",
+            key_path.display()
+        )),
+        PemError::NoItemsFound => crate::ServeError::Tls(format!(
+            "ServerCertificateKeyFile {} holds no PRIVATE KEY section",
+            key_path.display()
+        )),
+        other => crate::ServeError::Tls(format!(
+            "ServerCertificateKeyFile {} is not readable PEM: {other}",
+            key_path.display()
+        )),
+    })?;
+
+    Ok((certs, key))
+}
+
 #[cfg(target_os = "linux")]
 mod transport_impl {
     //! [`TlsTransport`]: a socket that handshakes, hands its keys to the kernel,

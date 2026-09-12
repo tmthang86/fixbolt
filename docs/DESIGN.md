@@ -649,13 +649,19 @@ offering the caller the choice. All of it is behind `--features tls`, on Linux.
 `PendingSet<T, R, PRE>` holds one transport *type* from `admit` to `take`, so a stage that
 changes the socket's type cannot be expressed. `presession.rs` was not modified.
 
-**Still not built:** the initiator side, `TlsRequireKernel`, an event when a session falls back,
-the five configuration keys, and `w2w --tls`. **Still unverified:** which kernel version and
-cipher suites are the floor (ADR-0005 open question 2), whether a session survives a TLS 1.3 key
-update under kTLS (question 6), and what asserts which of the three modes is live (question 3) —
-`TlsMode` exists and *nothing reads it*. **The §8 TLS row stays empty**, and
-`scripts/check-no-kernel-sleep.sh` has no TLS arm, so no claim is made about the engine thread
-under TLS.
+**Still not built:** the initiator side, and `w2w --tls`. **Still unverified:** which kernel
+version and cipher suites are the floor (ADR-0005 open question 2), and whether a session
+survives a TLS 1.3 key update under kTLS (question 6). **Question 3 — what asserts which mode is
+live — is answered, as of step 4b [merged 2026-09-12, `e728c16`]:** `Transport::tls_mode()` is
+read by `serve_tls_with_offload`, a handshake that lands in userspace raises
+`observe::EventKind::TlsFellBackToUserspace` regardless of `TlsRequireKernel`, and
+`TlsRequireKernel=Y` refuses a deployment whose kernel cannot offload — both halves of
+ADR-0060 decision 1, with `crates/engine/tests/tls_mode.rs` driving every arm. **The four
+configuration-file keys landed too, as of step 4c [2026-09-12]:** `SocketUseSSL`,
+`ServerCertificateFile`, `ServerCertificateKeyFile` and `TlsRequireKernel`, all `[DEFAULT]`-only
+and acceptor-only — `docs/CONFIGURATION.md` §1 has the table, `crates/engine/src/settings.rs`
+the code. **The §8 TLS row stays empty**, and `scripts/check-no-kernel-sleep.sh` has no TLS arm,
+so no claim is made about the engine thread under TLS.
 
 **One thing measured on the way, because the obvious guess about it is wrong.**
 `[measured 2026-09-10]` only a `setup_ulp` refusal reaches the userspace fallback. A refusal from
@@ -849,8 +855,10 @@ below).
 | The engine thread never sleeps in the kernel (`hft`) | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`: traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid. `[measured 2026-08-30]` Linux 6.18: `accept4`, `recvfrom`, `sendto` and zero of `epoll_wait` / `poll` / `select` / `futex` / `nanosleep` / `sched_yield`. Runs the binary again in `standard` mode and fails if that run does not trip it: rule 4 had two machine checks before this one and both were green with a sleep present |
 | A `standard` engine gives the core back | engine-thread CPU under 5% over a wall-clock window, found sleeping rather than running, **and** a round-trip p50 far below the poll timeout | `scripts/check-standard-gives-the-core-back.sh`. Four assertions, because CPU near zero is also what a dead thread, a run that never reached the mode, and an engine woken by its own timeout report. `[measured 2026-08-30]` a `Block` made to ignore readiness reads 0% CPU, sleeping 20 / 20, p50 99 046 599 ns; only the p50 catches it. Requires `hft` and `yield` to trip it |
 | kTLS can be driven from a plain non-blocking socket | 15 assertions green, and the offloaded data path makes no blocking syscall | `scripts/check-ktls-on-a-plain-socket.sh` (D11, [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md)). `[measured 2026-08-31]` `recvfrom` 3033 + `sendto` 1000 over 1000 round trips and nothing else. Runs a second time with `poll(2)` in the loop and fails if that does not trip it. Skips with exit 2, not a pass, on a kernel that cannot offload |
-| Which TLS mode is actually in force | a session that fell back to the userspace path is detected, not assumed | **no gate exists yet** (ADR-0005 open question 3) |
+| Which TLS mode is actually in force | a session that fell back to the userspace path is detected, not assumed | `crates/engine/tests/tls_mode.rs` drives every arm, since step 4b [2026-09-12, `e728c16`]: `serve_tls_with_offload` reads `Transport::tls_mode()`, a handshake landing in userspace raises `observe::EventKind::TlsFellBackToUserspace` whether or not `TlsRequireKernel` is set, and `TlsRequireKernel=Y` refuses the deployment. **This cell read "no gate exists yet" for two days after the gate existed**, while D11 above said the opposite — one rule, two places, and the table is the place a reader checks. ADR-0005 question 3 is answered; ADR-0005 itself is not edited (§5), the answer is dated here |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, in CI on every push |
+| No crate root switches a lint back off | red on the ordinary spelling of an inner `allow`/`expect` at a crate root, and on a `warn` naming a lint the workspace denies | `scripts/check-no-crate-root-allow.sh`, in the `lint-config` CI job beside the row above. 6 crate roots and 9 manifests from `cargo metadata`, never a file glob, and 0 crate roots is an error rather than a pass. `[measured 2026-09-12]` **its own A2 reversal went green**: a character class excluding `:` could not match a lint written after `clippy::` ([a-matcher-excluded-the-separator-every-real-name-uses](reference/a-matcher-excluded-the-separator-every-real-name-uses.md)). R-A4 ties the textual check to the compiler once — with the crate-root allow in place a fresh `v[0]` in a clean submodule of `dict` is exit 0 and silent, without it exit 101 `indexing may panic` |
+| A gate's scratch fixture cannot inherit the machine | a line that enters a directory outside the tree by the shapes it knows carries a `cp` of each pinning artefact found at the repository root | `scripts/check-scratch-fixtures.sh`, same job. 19 scripts, 1 entering a scratch dir, 1 pin; the artefact set is derived from what exists there and an empty set is an error. No allow-list, so the other `mktemp` scripts pass by never leaving the tree rather than by being named ([a-scratch-fixture-inherits-the-machine](reference/a-scratch-fixture-inherits-the-machine.md)) |
 | Builds with nothing optional installed | `--no-default-features` on a clean runner | `.github/workflows/ci.yml`, its own job. `[measured 2026-08-30]` the workspace-wide command alone is not enough: cargo unifies features across one invocation, so a sibling crate switched the flag back on ([feature-flags-unify-across-a-workspace](reference/feature-flags-unify-across-a-workspace.md)) |
 | An optional dependency is really optional | absent from the crate's graph with no features on, and the crate still builds and tests that way | `scripts/check-no-optional-deps.sh`, per crate. Reversal: removing `optional = true` from `libc` turns it red with the graph printed |
 | No documentation link points at a missing file | every internal link resolves | `scripts/check-links.py`, in CI |
