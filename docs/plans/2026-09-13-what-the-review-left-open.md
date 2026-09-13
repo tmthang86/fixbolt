@@ -1,6 +1,6 @@
 # Bốn chỗ bản review PR #69 để lại — đóng items 80, 81, 82, 83
 
-> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt (owner, 2026-09-13)
 > **Phạm vi:** bộ probe `doc_table` trong `crates/engine/src/settings.rs` (probe 3, probe 7), một ô của `docs/CONFIGURATION.md` §1, doc comment của `crates/session/src/clock.rs`, `scripts/check-links.py`, cờ rustdoc của job CI `feature-sets`, một ADR mới (ADR-0066)
 
 > Tên file luôn tiếng Anh: `docs/plans/YYYY-MM-DD-<topic>.md`.
