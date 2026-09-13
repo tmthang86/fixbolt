@@ -70,12 +70,57 @@ Anchors (#section) are stripped and not verified — verifying them means parsin
 every heading, and the failure mode of a wrong anchor is mild compared with a
 link to a file that is not there.
 
+**Rule (c) fixed a false red. It left a true silence next to it, found while
+proving (c) in the review of PR #69.** `[measured 2026-09-13]` a link reading
+`https://github.com/tmthang86/fixbolt/blob/main/DESIGN.md` — this repository's
+own owner and name, `blob/main`, and a path this repository does not have at
+that spot (the real file is `docs/DESIGN.md`) — printed nothing. Rule (b)'s
+tail search only ever matches a suffix that **is** a real file; a wrong path
+under this repository's own name has no such suffix, so nothing in (a)–(c)
+ever looks at it. And the hole was wider than that one case:
+`crates/library/README.md` is exempted from rule (a)'s "use a relative path"
+message because it is included into rustdoc and published to crates.io, where
+a relative link into `docs/` breaks — but that exemption was granted the
+moment *any* suffix of the URL matched a real file, which is not the same
+thing as the URL's own path existing. A README link reading
+`.../fixbolt/blob/main/crates/docs/GUIDE.md` (wrong: the real file is
+`docs/GUIDE.md`, not `crates/docs/GUIDE.md`) was counted "checked" solely
+because the tail `docs/GUIDE.md` exists somewhere in the tree.
+
+**(d)**, checked before (c) and before the tail search, closes both: a
+`github.com` URL whose owner is this repository's own owner, whose repository
+name is the current one or a former one (`FORMER_NAMES`), and whose fourth
+segment is a path-carrying verb (`OWN_REPO_PATH_VERBS` — `blob`, `tree`,
+`raw`, `blame`; not `commit`, whose sha carries no path to check) is judged by
+reading the exact path after the ref and testing it against this repository's
+tree with `os.path.exists` — `exists`, not `isfile`, because a `tree/` URL
+names a directory. The ref itself is read as exactly one path segment, the
+way `remark-validate-links` reads it (`value.split(slash).slice(1)`): a ref
+containing `/` is not recognised as a ref at all, so everything after its
+first segment is read as part of the path, and a multi-segment ref reads as a
+wrong path — noisy, never silently green, and the limit is stated rather than
+hidden. Applies to **every** file, `crates/library/README.md` included: the
+README's exemption waives rule (a)'s "must be relative" message, never rule
+(d)'s "must exist" one. See
+[a-bare-filename-is-not-evidence-of-a-repository](reference/a-bare-filename-is-not-evidence-of-a-repository.md)
+for the shape of the hole this closes and the one still open.
+
+An own-repository URL whose fourth segment is not one of `OWN_REPO_PATH_VERBS`
+— `actions/…`, `pull/…`, `commit/<sha>`, or the bare repository root — names
+nothing rule (d) can check against a path, and is counted rather than
+silently ignored: printed in the summary as "not a file link". Below
+`OWN_REPO_FLOOR`, rule (d) is treated as having stopped matching rather than
+this repository having started citing itself less — `crates/library/README.md`
+alone cites three files this way, so a correctly matching rule (d) never
+checks fewer than three.
+
 Run: scripts/check-links.py
 """
 
 import os
 import re
 import sys
+from urllib.parse import unquote
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 # `[label]: url` — rustdoc's reference form, which is how one of the two dead
@@ -108,6 +153,21 @@ FORMER_NAMES = ("nanofixengine",)
 # The path segment that marks a github.com URL as a file link rather than a
 # link to the repo, an issue, a PR, or anything else GitHub serves at a path.
 GITHUB_FILE_VERBS = ("blob", "tree", "raw", "commit", "blame")
+
+# The subset of GITHUB_FILE_VERBS that carries a checkable path after the ref,
+# for rule (d) below. `commit/<sha>` is excluded on purpose: the sha is the
+# whole address, and there is no path segment after it to test against this
+# repository's tree. Derived from GITHUB_FILE_VERBS rather than listed again,
+# so the two rules that read a verb list never drift apart.
+OWN_REPO_PATH_VERBS = tuple(v for v in GITHUB_FILE_VERBS if v != "commit")
+
+# Rule (d)'s floor. `crates/library/README.md` alone cites three of this
+# repository's own files by absolute URL — it must, see the note on that file
+# in `names_a_repo_file` — so a correctly matching rule (d) never checks fewer
+# than three URLs. Below this, the rule has very likely stopped matching (a
+# renamed verb, a shifted segment index) rather than the repository actually
+# citing itself less.
+OWN_REPO_FLOOR = 3
 
 
 def looks_like_a_path(rel, target):
@@ -145,12 +205,21 @@ def names_a_repo_file(root, url):
         evidence. A bare filename such as `CHANGELOG.md` or `README.md` is a
         convention thousands of repositories share, not an address.
 
-    Returns `(tail, ignored_tail, foreign)`: `tail` is set when rule (a) or
-    (b) judges the match as evidence; `ignored_tail` is set instead when a
-    bare filename matched but rule (b) declined to call that evidence;
-    `foreign` is set instead when rule (c) recognised the URL as naming
-    another repository outright and declined to judge it at all. The caller
-    counts each of the latter two classes rather than dropping them silently.
+    Returns `(tail, ignored_tail, foreign, own_repo)`. When `own_repo` is not
+    `None`, rule (d) judged this URL and the other three are always
+    `(None, None, False)` — (d) is checked first, before (c) and the tail
+    search, and it fully replaces them for a URL it recognises.  `own_repo` is
+    `("file", path)` when the fourth segment is a path-carrying verb and a ref
+    follows it (`path` is `""` for the bare ref, e.g. `tree/main`), or
+    `("not_file_link", None)` when the URL is this repository's own but not a
+    checkable file link (`actions/…`, `pull/…`, `commit/<sha>`, the bare
+    repository root). Otherwise `own_repo` is `None` and the other three keep
+    their rule (a)–(c) meaning: `tail` is set when rule (a) or (b) judges the
+    match as evidence; `ignored_tail` is set instead when a bare filename
+    matched but rule (b) declined to call that evidence; `foreign` is set
+    instead when rule (c) recognised the URL as naming another repository
+    outright and declined to judge it at all. The caller counts every one of
+    these classes rather than dropping any of them silently.
     """
     rest = url
     for prefix in URL:
@@ -169,6 +238,29 @@ def names_a_repo_file(root, url):
     if head and head[0].startswith("www."):
         head[0] = head[0][len("www.") :]
     own = head == list(OWN_REPO)
+
+    # (d) this repository's own path, current name or a former one
+    # (`FORMER_NAMES`) — unlike `own` above, which only matches the current
+    # name, because a URL under a former name is still a citation of *this*
+    # repository and rule (d) exists to check its path, not merely to flag it
+    # as wrong-organisation the way (b) does. A bare filename is not evidence
+    # here — the owner and repository segments already are — so any tail
+    # length counts, same reasoning as (a).
+    own_or_former = (
+        len(head) == len(OWN_REPO)
+        and head[0] == OWN_REPO[0]
+        and head[1] == OWN_REPO[1]
+        and head[2] in (OWN_REPO[2],) + FORMER_NAMES
+    )
+    if own_or_former:
+        verb = parts[3] if len(parts) > 3 else None
+        if verb in OWN_REPO_PATH_VERBS and len(parts) > 4:
+            # parts[4] is the ref, read as exactly one segment (see the
+            # module docstring); everything after it is the path, `/`-joined
+            # and percent-decoded.
+            path = unquote("/".join(parts[5:]))
+            return None, None, False, ("file", path)
+        return None, None, False, ("not_file_link", None)
 
     # (c) a well-formed github.com file URL naming a repository that is
     # neither this one nor a former name of this one, **and whose owner
@@ -191,7 +283,7 @@ def names_a_repo_file(root, url):
         and parts[2].lower() not in (OWN_REPO[2],) + FORMER_NAMES
         and parts[1].lower() != OWN_REPO[1].lower()
     ):
-        return None, None, True
+        return None, None, True, None
 
     ignored_tail = None
     for i in range(len(parts)):
@@ -201,9 +293,9 @@ def names_a_repo_file(root, url):
         if not os.path.isfile(os.path.join(root, tail)):
             continue
         if own or "/" in tail:
-            return tail, None, False
+            return tail, None, False, None
         ignored_tail = tail  # rule (b): a bare filename, not judged
-    return None, ignored_tail, False
+    return None, ignored_tail, False, None
 
 
 def main():
@@ -211,8 +303,11 @@ def main():
     dead, checked, scanned = [], 0, 0
 
     absolute = []
+    missing = []
     ignored_bare = 0
     foreign_named = 0
+    own_checked = 0
+    own_not_file_link = 0
 
     for rel in source_files(root):
         scanned += 1
@@ -222,11 +317,40 @@ def main():
         for match in list(LINK.finditer(text)) + list(REFLINK.finditer(text)):
             target = match.group(1).split("#")[0].strip()
             if target.startswith(URL):
-                tail, ignored_tail, foreign = names_a_repo_file(root, target)
+                tail, ignored_tail, foreign, own_repo = names_a_repo_file(root, target)
+                if own_repo:
+                    kind, path = own_repo
+                    line = text[: match.start()].count("\n") + 1
+                    if kind == "not_file_link":
+                        own_not_file_link += 1
+                        continue
+                    own_checked += 1
+                    resolved = os.path.join(root, path) if path else root
+                    if not os.path.exists(resolved):
+                        missing.append((rel, line, target, path))
+                        continue
+                    if not os.path.isfile(resolved):
+                        # A real directory, or the bare ref with no path at
+                        # all (`tree/main`) — rule (d) has confirmed it
+                        # exists; there is no "use a relative path instead"
+                        # precedent for a directory link, so this is not
+                        # judged any further.
+                        continue
+                    # A real file: same "use a relative path" treatment as
+                    # rule (a)/(b), README's exemption included — that
+                    # exemption waives "must be relative", never "must
+                    # exist", which was already tested above.
+                    if rel == "crates/library/README.md":
+                        checked += 1
+                        continue
+                    absolute.append((rel, line, target, path))
+                    continue
                 if foreign:
                     foreign_named += 1
+                    continue
                 if ignored_tail:
                     ignored_bare += 1
+                    continue
                 if tail:
                     # crates/library/README.md is included into rustdoc via include_str!
                     # and published to crates.io and docs.rs, where relative paths into docs/
@@ -250,11 +374,15 @@ def main():
                 line = text[: match.start()].count("\n") + 1
                 dead.append((rel, line, target))
 
+    floor_broken = own_checked < OWN_REPO_FLOOR
+
     print(
         f"{scanned} markdown and rust files, {checked} internal links checked, "
         f"{len(absolute)} absolute URLs naming a file in this repository, "
         f"{ignored_bare} foreign URLs sharing only a filename with this repository (not judged), "
-        f"{foreign_named} foreign GitHub URLs naming another repository (not judged)"
+        f"{foreign_named} foreign GitHub URLs naming another repository (not judged), "
+        f"{own_checked} absolute URLs into this repository checked against its tree, "
+        f"{own_not_file_link} own-repository URLs that are not file links (not judged)"
     )
 
     if absolute:
@@ -266,12 +394,29 @@ def main():
             print(f"  {rel}:{line}  →  {target}", file=sys.stderr)
             print(f"      this repository has {tail}; link it by relative path", file=sys.stderr)
 
+    if missing:
+        print(
+            f"\nFAIL: {len(missing)} absolute URL(s) into this repository name a path it does not have",
+            file=sys.stderr,
+        )
+        for rel, line, target, path in missing:
+            print(f"  {rel}:{line}  →  {target}", file=sys.stderr)
+            print(f"      this repository has no {path}", file=sys.stderr)
+
     if dead:
         print(f"\nFAIL: {len(dead)} dead internal link(s)\n", file=sys.stderr)
         for rel, line, target in dead:
             print(f"  {rel}:{line}  →  {target}", file=sys.stderr)
 
-    if dead or absolute:
+    if floor_broken:
+        print(
+            f"\nFAIL: the own-repository URL rule checked {own_checked} URLs, below its floor "
+            f"of {OWN_REPO_FLOOR} — crates/library/README.md alone carries {OWN_REPO_FLOOR}, "
+            "so the rule has stopped matching",
+            file=sys.stderr,
+        )
+
+    if dead or absolute or missing or floor_broken:
         return 1
 
     print("no dead internal links")

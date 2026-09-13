@@ -1,6 +1,6 @@
 # ADR-0066 — The rustdoc gate denies every warning, not a list of named lints
 
-**Status:** Proposed · **Date:** 2026-09-13 · **Plan:** docs/plans/2026-09-13-what-the-review-left-open.md, steps 1–2
+**Status:** Accepted (owner, 2026-09-13) · **Date:** 2026-09-13 · **Plan:** docs/plans/2026-09-13-what-the-review-left-open.md, steps 1–2
 **Supersedes, in part:** [ADR-0065](ADR-0065-every-feature-set-to-depth-two-is-built-linted-and-documented.md)
 decision 1 — only the `RUSTDOCFLAGS` value it names. Depth, powerset, `--all-features` and
 everything else in ADR-0065 stand unchanged.
