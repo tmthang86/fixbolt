@@ -794,6 +794,44 @@ pub fn client_config(
     Ok(std::sync::Arc::new(cfg))
 }
 
+/// Everything an initiator needs to dial a TLS venue, as **one** parameter.
+///
+/// `[2026-09-13]` **step 5b of the `tls` plan, Sửa 6 item 6.4.5.**
+/// `crate::connect_and_serve_tls` takes the parameters of
+/// `crate::connect_and_serve` plus this — eight, the same count as the four
+/// `*_with_recovery` doors. Spread out as four parameters it would be eleven,
+/// which is the reopening condition [ADR-0054] named for a `Serve` builder; so
+/// the struct is the decision, not an arrangement for the lint.
+///
+/// **A deployment builds it from settings** (step 5c) or by hand. Every field
+/// is a fact about the venue or about this deployment; the test seam
+/// [`TlsProbe`] is deliberately not one of them.
+///
+/// [ADR-0054]: ../../../docs/decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md
+#[cfg(all(feature = "tls", target_os = "linux"))]
+#[derive(Debug)]
+pub struct ClientTls {
+    /// The certification authorities the venue's certificate must chain to —
+    /// `CertificationAuthoritiesFile`. **The only trust anchors**: see
+    /// [`client_config`], which refuses an empty list.
+    pub roots: Vec<rustls::pki_types::CertificateDer<'static>>,
+    /// This end's certificate chain and key, for a venue that asks for one;
+    /// `None` sends none.
+    pub identity: Option<(
+        Vec<rustls::pki_types::CertificateDer<'static>>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    )>,
+    /// The name the venue's certificate must carry — `SocketConnectHost`. An IP
+    /// literal is `ServerName::IpAddress` and needs an IP SAN.
+    pub server_name: rustls::pki_types::ServerName<'static>,
+    /// `TlsRequireKernel=Y`: refuse to dial on a kernel that cannot offload,
+    /// and end any connection whose handshake still lands in userspace.
+    /// **Either way the fallback is reported** ([ADR-0060] decision 2).
+    ///
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    pub require_kernel: bool,
+}
+
 /// The certificate and key a [`crate::settings::TlsSettings`] names, read off
 /// disk as DER.
 ///
