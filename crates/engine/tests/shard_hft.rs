@@ -77,8 +77,9 @@ use std::net::{TcpListener, TcpStream};
 use std::ops::Range;
 use std::time::Duration;
 
-use fixbolt_engine::affinity::{CoreId, ShardPlan, Topology};
+use fixbolt_engine::affinity::{AffinityError, CoreId, ShardPlan, Topology};
 use fixbolt_engine::presession::{Limits, Table};
+use fixbolt_engine::shard::ShardError;
 use fixbolt_engine::{Application, Config};
 
 #[derive(Default)]
@@ -202,4 +203,70 @@ fn serve_sharded_hft_serves_a_session() {
         reply.contains("|49=ISLD|"),
         "and it answered as the acceptor the table names: {reply}"
     );
+}
+
+/// **The plan is refused before a socket exists.**
+///
+/// `STATUS.md` item 75, ADR-0064. The port is one this test is already
+/// listening on, so a door that bound first would return `Io(AddrInUse)` — the
+/// core's refusal can only arrive if validation ran before the bind. The same
+/// shape as `hft_pinned.rs::serve_hft_pinned_refuses_a_core_the_machine_does_not_have`,
+/// for the sharded door.
+///
+/// **A refusal is evidence of order only when the bind would have failed too**,
+/// so the test first proves the port is really held: `Acceptor::bind` is
+/// `TcpListener::bind` (`crates/engine/src/lib.rs`), and the same call here must
+/// read `AddrInUse`. Without that line, a port that was somehow free would make
+/// every order read `Affinity` and this test green for the wrong reason.
+///
+/// Bounded at 5 s: the door is refused before it spawns a thread, which is the
+/// point, so it must come back — a door that hung instead would otherwise never
+/// read as a failure. The call runs on its own thread only so the bound can be
+/// enforced; on the refused path that thread returns at once.
+#[test]
+fn serve_sharded_hft_refuses_the_plan_before_it_binds() {
+    let held = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = held.local_addr().expect("bound").to_string();
+
+    let precondition = TcpListener::bind(&addr);
+    match precondition {
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {}
+        other => panic!(
+            "the port must be held for this test to say anything about order; binding {addr} again gave {other:?}"
+        ),
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let serving = addr.clone();
+    std::thread::spawn(move || {
+        let result = fixbolt_engine::shard::serve_sharded_hft(
+            &serving,
+            Table::with_capacity(1).serving(cfg()),
+            &ShardPlan::new(vec![CoreId(4096)]),
+            4,
+            Limits::new(8, 30_000).expect("both above zero"),
+            |_shard| EchoApp::default(),
+            None,
+        );
+        let _ = tx.send(result);
+    });
+
+    let result = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("serve_sharded_hft came back within 5 s rather than serving or hanging");
+
+    match result {
+        Err(ShardError::Affinity(e)) => assert_eq!(
+            e,
+            AffinityError::NoSuchCore(CoreId(4096)),
+            "the refusal names the core that does not exist"
+        ),
+        other => panic!(
+            "expected Err(Affinity(NoSuchCore(CoreId(4096)))) before any bind; got {other:?}"
+        ),
+    }
+
+    // Held to here, and dropped by name, so nobody reads the assert above as
+    // having run against a port that had already been let go.
+    drop(held);
 }

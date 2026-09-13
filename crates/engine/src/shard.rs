@@ -40,6 +40,8 @@ use std::thread::JoinHandle;
 use crate::affinity::{self, AffinityError, CoreId, ShardPlan};
 use crate::clock::Clock;
 use crate::dispatch::Dispatch;
+// Used only by `serve_sharded_hft_with`, which is `#[cfg(feature = "standard")]`.
+#[cfg(feature = "standard")]
 use crate::msglog::MaybeLog;
 use crate::presession::{Pending, identity_of};
 use crate::transport::{TcpTransport, Transport};
@@ -437,6 +439,11 @@ impl<const PRE: usize> Shards<PRE> {
 /// [`ShardError::Io`] from binding, [`ShardError::ThreadGone`] if a shard dies
 /// under it.
 ///
+/// The plan is refused **before** the address is bound, so an `Io` from binding
+/// is a real binding error and never a plan refusal hidden behind a held port
+/// ([ADR-0064]).
+///
+/// [ADR-0064]: ../../../docs/decisions/ADR-0064-a-door-acquires-nothing-before-it-has-validated.md
 /// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
 #[cfg(feature = "standard")]
 pub fn serve_sharded_hft<A, F>(
@@ -503,6 +510,14 @@ where
         .first()
         .map(crate::presession::Entry::config)
         .ok_or(ShardError::NoCounterparties)?;
+
+    // ADR-0064: the plan is checked against this machine **before** anything is
+    // acquired. Bound first, a held port and a bad core in the same call would
+    // answer `Io(AddrInUse)` and hide the refusal an operator has to act on —
+    // `tests/shard_hft.rs::serve_sharded_hft_refuses_the_plan_before_it_binds`.
+    // `Shards::start` below validates again on its own: it is public by itself,
+    // and a second read of `/sys` at startup is not on any hot path.
+    plan.validate()?;
 
     let acceptor = crate::Acceptor::bind(addr).map_err(ShardError::Io)?;
 

@@ -47,7 +47,7 @@ the type system or by a test, this page says so.
 | When idle | blocks on readiness and gives the core back | spins; burns a core, permanently, per polling thread |
 | Wakeup cost | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` one turn of **449 ns per session** |
 | Runs on | any OS, any hardware, a container, a shared box | Linux, on a machine that satisfies [DESIGN.md §9](DESIGN.md) |
-| Core pinning | none | the polling thread must sit on an isolated core. `serve_sharded_hft` pins its threads and refuses a bad plan; `serve_hft` runs on the calling thread and leaves the pinning to you (§9) |
+| Core pinning | none | the polling thread must sit on an isolated core. `serve_sharded_hft` pins its threads and refuses a bad plan before it takes the port, so a port error it reports is a real one; `serve_hft` runs on the calling thread and leaves the pinning to you (§9) |
 | Entry point | `serve` | `serve_hft`, `serve_sharded_hft` |
 | Choose it when | you are not counting microseconds, or you share the machine | one session matters more than the core it costs |
 
