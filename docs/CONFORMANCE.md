@@ -102,6 +102,10 @@ The tuned-box figures are in [DESIGN.md §6](DESIGN.md).
   claim here touches non-negotiable 4. **And no latency figure comes from it**;
   [DESIGN.md](DESIGN.md) §8's TLS row is still empty.
 
+  `[2026-09-13]` **Built on the §9 desk since, not yet in CI**: the initiator side, `w2w --tls`,
+  a kTLS arm on both halves of non-negotiable 4, and a KeyUpdate that survives instead of
+  aborting the session — see §8 below. None of it has a CI run id yet.
+
 ---
 
 ## 7. Interop against a real `libquickfix`, both directions
@@ -418,5 +422,16 @@ eliminate it. The tests they run are deterministic **by construction** — the c
 driven on the acceptor's own thread, so no scheduler decides what this engine sees — and that
 construction is guarded by its own reversals rather than by the repetitions. Nothing here is a
 latency measurement: [DESIGN.md](DESIGN.md) §8's TLS row is still empty.
+
+**Four test files landed since, Sửa 6 of the `tls` plan — CI run id: pending.**
+`crates/engine/tests/tls_client.rs`, `tls_initiator_wire.rs`, `tls_settings_wire.rs` and
+`tls_key_update.rs` all ran green on the §9 desk in desktop configuration (the commit messages
+of `fb6a27c`, `60c480a`, `2e1a543`, `2d33d2a`, `9b4d305`, `da9fe6e` and `daec090` each quote the
+local run), but none of this section's CI evidence covers them. Per the plan's own delivery
+log, CI is named green only through `eec1403` (run `34734714388`); `da9fe6e` and `daec090` —
+the two commits that add the kTLS arm to `scripts/check-no-kernel-sleep.sh` and
+`scripts/check-standard-gives-the-core-back.sh`, and the allocation-exactness tests in
+`tls_key_update.rs` — have **no CI run at all yet**. Do not read this section's existing run
+ids as covering either commit.
 
 ---

@@ -26,8 +26,11 @@ run the parser against four things: **the count sentence above, inside this sect
 *Default* cell that begins with a backticked literal** (the key is written into a minimal
 file with that value and must change nothing); **a *Values* cell that is two or more
 backticked literals joined by nothing but `or` and commas** (every listed literal must
-survive the parser, and one sampled value it does not list must not — a sample of three fixed
-candidates, not a check of everything the cell omits); and **a *Where* cell claiming either
+survive the parser, and every value it does not list must be refused — a bounded search over
+a universe of at least 4,400 candidates per row, every one- and two-character string over a
+fixed alphabet plus near-miss neighbours of each listed literal, `[changed 2026-09-13, was a
+sample of three fixed candidates]` — still not a check of everything the cell omits); and
+**a *Where* cell claiming either
 `[DEFAULT]` only or `[DEFAULT]` or `[SESSION]`** (the first must be refused in a `[SESSION]`,
 the second must not).
 `[measured 2026-09-13]` those three reached 15, 10 and 21 of the thirty-three rows — 16 and 11
@@ -374,14 +377,14 @@ The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbo
 |---|---|---|---|
 | `standard` | `engine`, `library` | The blocking poller (`block.rs`, `serve`, `StandardAcceptorEngine`), through `poll(2)` via `libc` | **on** |
 | `affinity` | `engine` | Core pinning and topology checks via `libc`, Linux only. Naming a core in a build without it is a hard error | off |
-| `tls` | `engine` | `mod tls`: the userspace `rustls` handshake, the kTLS handover, `serve_tls`/`serve_tls_with`/`serve_tls_requiring`, `tls::load_pem`, and the four `SocketUseSSL`-family settings keys (§1). Pulls in `rustls`, `ktls-core` and `libc` — the first dependencies in this crate that bring a tree of their own | off |
+| `tls` | `engine` | `mod tls`: the userspace `rustls` handshake, the kTLS handover, `serve_tls`/`serve_tls_with`/`serve_tls_requiring`, `connect_and_serve_tls`/`connect_and_serve_tls_with`, `tls::load_pem`/`tls::load_client_pem`, and the seven `SocketUseSSL`-family settings keys (§1). Pulls in `rustls`, `ktls-core` and `libc` — the first dependencies in this crate that bring a tree of their own | off |
 
 `cargo build --no-default-features` builds with none of the three, and CI proves that on a
 runner with nothing optional installed. **`tls` is Linux-only in practice**: `mod tls` itself is
 gated only on the feature, but the handshake, `load_pem` and every `serve_tls*` entry point
 inside it are additionally `#[cfg(target_os = "linux")]`, so a `--features tls` build on another
 target compiles the crate but exposes no way to bring a TLS listener up — [D11 in
-`DESIGN.md`](DESIGN.md) has the full split by mode. The four `SocketUseSSL`-family settings keys
+`DESIGN.md`](DESIGN.md) has the full split by mode. The seven `SocketUseSSL`-family settings keys
 (§1) are unaffected by any of this: `TlsSettings` and `Settings::into_tls_table` are compiled in
 every feature set, which is what lets a build **without** `tls` refuse `SocketUseSSL=Y` with a
 sentence (`Problem::NeedsFeature`) instead of failing to compile at all.

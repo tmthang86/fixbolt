@@ -59,6 +59,19 @@ judgement at all — the paragraph below — so the `[2026-09-10]` reading descr
 repository no longer has, and nothing should be inferred from it about what that connection
 would report now.
 
+**`[2026-09-13]` A connection that ends in its own first turn now reaches the reconnect
+policy, on either role.** The initiator's dial loop marked a connection "up" only *after* its
+first turn, so one that was refused inside that turn — `RefusedByDeployment` included, the row
+above — never told `reconnect::Policy` it had dropped, and the policy answered `Now` on every
+attempt instead of backing off. `up` is now set at `add`, before the turn runs, so a plain
+connection that dies in its first turn also backs off, not only a TLS one.
+`[measured 2026-09-13]` over a 1.5 s hold against a 50–200 ms doubling ladder: **879 dials**
+before this fix, **7** after. Guarded by
+`crates/engine/tests/tls_initiator_wire.rs::an_initiator_that_fell_back_is_reported_and_refused_when_the_kernel_was_demanded`,
+whose backoff assertion (`refusals <= 20` over the second second of a ten-second wait) is the
+one that would catch a regression here — the event-kind assertions above it only prove the
+refusal happened, not that it backed off.
+
 **`[2026-09-12]` `NeverTicked` closes `now_ms == 0`, and nothing wider.** A session judged
 before its first `tick` refuses *there*, ahead of the skew measurement, so on **that** path
 `Session::last_skew_ms` stays `None` and the two-thousand-year number cannot be produced. Zero

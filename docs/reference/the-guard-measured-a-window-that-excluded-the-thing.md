@@ -95,3 +95,36 @@ window is wrong; and nothing about the output says so.
 The defence is mechanical and costs one run: **for every guard, write down the sentence it
 proves, then break that sentence and watch.** If the guard does not move, do not adjust
 the claim — move the window.
+
+## A fourth instance, twice in one step — `[measured 2026-09-13]`
+
+Step 6b of the `tls` plan (`docs/plans/2026-09-04-tls.md`, commit `da9fe6e`) added a kTLS arm
+to `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh`: run
+`tools/w2w hft --tls ktls`, and assert the engine is read back as `tls: kernel` rather than
+`tls: userspace`, so the two transport arms cannot be mistaken for each other by a script that
+only watched syscalls. The claim the reversal needed to prove was **the read-back sentence**
+— *"this script refuses a run whose transport identity does not match the arm it asked for."*
+
+The first attempt at that reversal went red, and it was the wrong red. Forcing the engine into
+the userspace path under a `--tls ktls` invocation tripped `w2w`'s own **allocation** assertion
+— `userspace` allocates, `w2w` asserts `allocs 0` for `ktls`, so the binary panicked on its own
+count — *before* either script ever reached the line that reads the transport identity back.
+The scripts' own assertions were never exercised; a wholly different guard, one window earlier,
+caught the forced fallback first and ended the run before the thing under test ran at all. The
+baseline script, `w2w-baseline.sh`, had the same ordering in its first draft for the same
+reason: identity was checked **after** the allocation count rather than before it, so a
+mismatched arm that also happened to allocate read as an allocation failure, never as an
+identity failure.
+
+The fix was the same move this file already names: **reorder the checks so the window that
+proves the claim runs first**, then re-run the reversal and read the sentence it actually
+produces. Identity now comes before the allocation count in both places, and the second attempt
+at the reversal went red on exactly the intended sentence —
+`` `--tls ktls` ran tls `'userspace'` when `'kernel'` was required `` — then green once restored.
+
+This is the fourth time this repository has found a red in the wrong place, and the second and
+third both happened inside this one step, in the production script and the baseline script
+independently, from the same underlying ordering mistake made twice. The generalisation does
+not need restating; what this instance adds is that **the same wrong order can be written twice
+in one step**, in two different files, because the second one was copied from a shape that
+already had the bug.

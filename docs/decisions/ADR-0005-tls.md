@@ -64,6 +64,13 @@ hot-path guarantee is stated separately for each mode instead of being claimed f
    permitted here.** This is the carve-out from non-negotiable 1, and it is bounded to the
    handshake — not to the connection, and not to steady state.
 
+   `[noted 2026-09-13, does not change the decision above]` **This carve-out now has a second
+   named one beside it.** A peer's TLS 1.3 KeyUpdate, after the handover, cannot be made to
+   allocate zero without forking `rustls` or putting key material in a global; the narrower
+   carve-out this engine ships instead — exactly the boxes `rustls`'s own key-schedule trait
+   forces, counted by a test, and nothing else — is [ADR-0063](ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md),
+   which amends this decision's scope without changing its text.
+
 2. **Steady state on Linux: kTLS.** After the handshake, the negotiated keys are handed to the
    kernel. `recv` and `send` stay ordinary non-blocking syscalls, so:
    - **D8 is preserved unchanged** — the engine thread still spins, still never sleeps.
@@ -157,6 +164,13 @@ hot-path guarantee is stated separately for each mode instead of being claimed f
 5. **Does the acceptor need SNI and multiple certificates**, or is one certificate per listener
    sufficient for the deployments in scope?
 6. **How is key update handled under kTLS**, and what test proves a session survives one?
+
+   `[answered at phase-1 level, 2026-09-13]` It is handled: a feature flag ktls-core needed on
+   (`tls13-key-update`) that this engine had not enabled, and a control-record buffer taken at
+   the handover rather than left to grow. `crates/engine/tests/tls_key_update.rs` proves a
+   session survives one, for the rekey rates a `rustls` or OpenSSL peer initiates on its own;
+   a peer that rekeys faster than RFC 8446's AES-GCM ceiling is outside what this answer covers.
+   Full reasoning and the measured allocation cost: ADR-0063.
 
 ## Sources
 
