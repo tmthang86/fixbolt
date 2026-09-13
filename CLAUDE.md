@@ -169,7 +169,18 @@ three different broken engines**. `[measured 2026-08-30]` an engine that ignores
 waits out its timeout reads 0% CPU, is found sleeping 20 times out of 20, and has a p50 of
 99 046 599 ns; only the fourth assertion sees it. It requires `hft` **and** `yield` to trip it,
 which is also the first thing in this repository to *demonstrate* rather than assert that
-`wait::Yield` fails both gates. **The rest are hand-checks** on every relevant PR until a lint or test
+`wait::Yield` fails both gates. **A third for 4 since 2026-09-13, and it exists because both
+scripts trace `tools/w2w`, which is an acceptor**: the initiator's dial loop is the caller's own
+thread, runs before any session exists, and **no script in this repository can see it at all**.
+`the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits`
+(`crates/engine/tests/tls_initiator_wire.rs`) reads the dial thread's own tid from
+`/proc/thread-self` inside `connect_and_serve_tls`, parks a venue that completes the TCP connect
+and then says nothing, and asserts the same four things the `standard` script does, in the order
+that names the wrong answer first: no `LoggedOn` (a session that came up would make the figure be
+about `engine.idle()` instead), the thread was read at all, CPU under the ceiling, found sleeping
+at least once, and — the one a sleeping-but-unwakeable loop fails — that closing the venue's
+socket brings a second dial. **`hft` under TLS is still unchecked by anything**, because
+`connect_and_serve_tls` is `standard` only. **The rest are hand-checks** on every relevant PR until a lint or test
 exists — say explicitly that you walked the list.
 
 ## 3. Read before you touch the code
