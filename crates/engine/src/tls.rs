@@ -871,60 +871,136 @@ pub fn load_pem(
     ),
     crate::ServeError,
 > {
-    use rustls::pki_types::pem::{Error as PemError, PemObject as _};
+    let certs = read_certificates(settings.certificate(), "ServerCertificateFile")?;
+    let key = read_private_key(settings.private_key(), "ServerCertificateKeyFile")?;
+    Ok((certs, key))
+}
 
-    let cert_path = settings.certificate();
-    let key_path = settings.private_key();
+/// Every `CERTIFICATE` section of the PEM file at `path`, or a
+/// [`crate::ServeError::Tls`] naming `key` — the settings key the operator
+/// wrote the path under — and the path.
+///
+/// Shared by [`load_pem`] and [`load_client_pem`] so the three sentences about
+/// a certificate file (not there, not PEM, no `CERTIFICATE` in it) are written
+/// once and read the same for all three keys that name one.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+fn read_certificates(
+    path: &std::path::Path,
+    key: &str,
+) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, crate::ServeError> {
+    use rustls::pki_types::pem::{Error as PemError, PemObject as _};
 
     // `pem_file_iter` reports opening the file from the call and reading it
     // from the iterator — the split this function wants anyway, since a missing
     // path and a corrupt body are different things to fix.
-    let certs = rustls::pki_types::CertificateDer::pem_file_iter(cert_path)
+    let certs = rustls::pki_types::CertificateDer::pem_file_iter(path)
         // `PemError`'s own `Display` prefixes `I/O error:`, which reads twice
         // here; the `io::Error` alone is the sentence an operator needs.
         .map_err(|e| match e {
             PemError::Io(io) => crate::ServeError::Tls(format!(
-                "ServerCertificateFile {} could not be opened: {io}",
-                cert_path.display()
+                "{key} {} could not be opened: {io}",
+                path.display()
             )),
             other => crate::ServeError::Tls(format!(
-                "ServerCertificateFile {} could not be opened: {other}",
-                cert_path.display()
+                "{key} {} could not be opened: {other}",
+                path.display()
             )),
         })?
         .collect::<Result<Vec<_>, PemError>>()
         .map_err(|e| {
-            crate::ServeError::Tls(format!(
-                "ServerCertificateFile {} is not readable PEM: {e}",
-                cert_path.display()
-            ))
+            crate::ServeError::Tls(format!("{key} {} is not readable PEM: {e}", path.display()))
         })?;
     // An empty vector, not a `NoItemsFound`: the iterator yields nothing at all
     // for a well-formed PEM holding only sections of other kinds — which is
     // exactly what a private key handed in as a certificate looks like.
     if certs.is_empty() {
         return Err(crate::ServeError::Tls(format!(
-            "ServerCertificateFile {} holds no CERTIFICATE section",
-            cert_path.display()
+            "{key} {} holds no CERTIFICATE section",
+            path.display()
         )));
     }
+    Ok(certs)
+}
 
-    let key = rustls::pki_types::PrivateKeyDer::from_pem_file(key_path).map_err(|e| match e {
+/// The private key in the PEM file at `path`, or a [`crate::ServeError::Tls`]
+/// naming `key` and the path. The companion of [`read_certificates`].
+#[cfg(all(feature = "tls", target_os = "linux"))]
+fn read_private_key(
+    path: &std::path::Path,
+    key: &str,
+) -> Result<rustls::pki_types::PrivateKeyDer<'static>, crate::ServeError> {
+    use rustls::pki_types::pem::{Error as PemError, PemObject as _};
+
+    rustls::pki_types::PrivateKeyDer::from_pem_file(path).map_err(|e| match e {
         PemError::Io(io) => crate::ServeError::Tls(format!(
-            "ServerCertificateKeyFile {} could not be opened: {io}",
-            key_path.display()
+            "{key} {} could not be opened: {io}",
+            path.display()
         )),
         PemError::NoItemsFound => crate::ServeError::Tls(format!(
-            "ServerCertificateKeyFile {} holds no PRIVATE KEY section",
-            key_path.display()
+            "{key} {} holds no PRIVATE KEY section",
+            path.display()
         )),
         other => crate::ServeError::Tls(format!(
-            "ServerCertificateKeyFile {} is not readable PEM: {other}",
-            key_path.display()
+            "{key} {} is not readable PEM: {other}",
+            path.display()
         )),
-    })?;
+    })
+}
 
-    Ok((certs, key))
+/// Everything [`crate::connect_and_serve_tls`] needs to dial a TLS venue, read
+/// off disk from what a [`crate::settings::ClientTlsSettings`] names.
+///
+/// `[added 2026-09-13]` step 5c of `docs/plans/2026-09-04-tls.md` (Sửa 6, 6.4
+/// item 6). The initiator's counterpart of [`load_pem`], and the joint between
+/// a `.cfg` file and [`ClientTls`]; `tests/tls_initiator_wire.rs::a_configuration_file_brings_a_tls_initiator_up`
+/// is the gate for the sentence *"a `.cfg` file can dial a TLS venue"*.
+///
+/// `host` is the name the venue's certificate must carry — `SocketConnectHost`
+/// as written, which [`crate::settings::Settings::into_tls_initiator`] hands
+/// back as the host part of the dial address. An IPv6 literal may be written
+/// in brackets; they are taken off. An IP literal needs an IP SAN.
+///
+/// **Each operator mistake names its key and its path**, through the same
+/// loader [`load_pem`] uses: a `CertificationAuthoritiesFile` that is not
+/// there, is not PEM or holds no `CERTIFICATE`; a `ClientCertificateFile` the
+/// same; a `ClientCertificateKeyFile` holding no private key. Whether the
+/// certification authorities are *usable* as trust anchors, and whether the
+/// client certificate matches its key, is decided by [`client_config`], which
+/// `connect_and_serve_tls_with` calls before its first dial — so still before
+/// any connection is made, and with the same error variant.
+///
+/// # Errors
+///
+/// [`crate::ServeError::Tls`] for every one of the above, and for a `host` that
+/// is neither a DNS name nor an IP address.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+pub fn load_client_pem(
+    settings: &crate::settings::ClientTlsSettings,
+    host: &str,
+) -> Result<ClientTls, crate::ServeError> {
+    let roots = read_certificates(settings.ca(), "CertificationAuthoritiesFile")?;
+    let identity = match settings.identity() {
+        None => None,
+        Some((cert, key)) => Some((
+            read_certificates(cert, "ClientCertificateFile")?,
+            read_private_key(key, "ClientCertificateKeyFile")?,
+        )),
+    };
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    let server_name = rustls::pki_types::ServerName::try_from(bare.to_owned()).map_err(|e| {
+        crate::ServeError::Tls(format!(
+            "SocketConnectHost {host} is not a name a certificate can carry: {e}"
+        ))
+    })?;
+    Ok(ClientTls {
+        roots,
+        identity,
+        server_name,
+        require_kernel: settings.require_kernel(),
+    })
 }
 
 #[cfg(target_os = "linux")]

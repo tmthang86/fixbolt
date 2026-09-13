@@ -520,3 +520,205 @@ fn the_dial_loop_adds_no_connection_before_the_handshake_is_decided() {
     venue_admin.shutdown(0);
     let _ = join_within(venue_thread, Duration::from_secs(10), "serve_tls");
 }
+
+// ---------------------------------------------------------------------------
+// From a configuration file. Step 5c of the `tls` plan (Sửa 6, 6.4 item 6).
+//
+// Step 5b's door took a `ClientTls` built in Rust; a deployment configures
+// fixbolt from a file. `Settings::into_tls_initiator` → `tls::load_client_pem`
+// is the joint, and these two tests are what say it holds on a real socket —
+// the initiator's counterpart of `tests/tls_settings_wire.rs`.
+// ---------------------------------------------------------------------------
+
+/// A directory of its own per test, removed on `Drop` so a failing assertion
+/// does not leave PEMs behind.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "fixbolt-tls-initiator-wire-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("a scratch directory");
+        Self(p)
+    }
+
+    fn path(&self, leaf: &str) -> std::path::PathBuf {
+        self.0.join(leaf)
+    }
+
+    fn write(&self, leaf: &str, body: &str) -> std::path::PathBuf {
+        let p = self.path(leaf);
+        std::fs::write(&p, body).expect("the scratch file is writable");
+        p
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The `.cfg` an operator writes to dial a TLS venue.
+fn initiator_cfg_text(host: &str, port: &str, extra: &str) -> String {
+    format!(
+        "[DEFAULT]\n\
+         ConnectionType=initiator\n\
+         BeginString=FIX.4.4\n\
+         SenderCompID=FIXBOLT\n\
+         SocketConnectHost={host}\n\
+         SocketConnectPort={port}\n\
+         ReconnectInterval=1\n\
+         ReconnectCeiling=1\n\
+         SocketUseSSL=Y\n\
+         {extra}\
+         [SESSION]\n\
+         TargetCompID=VENUE\n"
+    )
+}
+
+/// **The whole initiator path from a file: a `.cfg` on disk, and a FIX session
+/// on an encrypted socket.**
+///
+/// `Settings::parse` → `into_tls_initiator` → `load_client_pem` →
+/// `connect_and_serve_tls` against `serve_tls`. The venue's self-signed
+/// certificate **is** the certification authority the file names, and the file
+/// also names a client certificate pair, so the identity half of the loader
+/// runs too — the venue asks for no client certificate, so this does not prove
+/// a venue that demands one accepts it.
+#[test]
+fn a_configuration_file_brings_a_tls_initiator_up() {
+    let _counters = kernel_counters();
+    let scratch = Scratch::new("up");
+
+    let venue_ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .expect("a self-signed certificate");
+    let ca_path = scratch.write("venue-ca.pem", &venue_ck.cert.pem());
+    let client_ck = rcgen::generate_simple_self_signed(vec!["fixbolt-client".to_string()])
+        .expect("a client certificate");
+    let client_cert = scratch.write("client.pem", &client_ck.cert.pem());
+    let client_key = scratch.write("client.key", &client_ck.signing_key.serialize_pem());
+
+    let addr = free_addr();
+    let (_, port) = addr.rsplit_once(':').expect("host:port");
+    let text = initiator_cfg_text(
+        "localhost",
+        port,
+        &format!(
+            "CertificationAuthoritiesFile={}\nClientCertificateFile={}\nClientCertificateKeyFile={}\n",
+            ca_path.display(),
+            client_cert.display(),
+            client_key.display()
+        ),
+    );
+    let cfg_path = scratch.write("initiator.cfg", &text);
+
+    // Read back from disk, so the file is what is under test.
+    let on_disk = std::fs::read_to_string(&cfg_path).expect("the .cfg is readable");
+    let settings = fixbolt_engine::settings::Settings::parse(&on_disk)
+        .unwrap_or_else(|e| panic!("the .cfg does not parse: {e}"));
+    let (cfg, dial, policy, tls) = settings
+        .into_tls_initiator()
+        .unwrap_or_else(|e| panic!("the TLS initiator door refused the file: {e}"));
+    assert_eq!(
+        dial,
+        format!("localhost:{port}"),
+        "the host survives as written"
+    );
+    assert_eq!(
+        tls.ca(),
+        ca_path.as_path(),
+        "the path the file named came back"
+    );
+    assert!(
+        !tls.require_kernel(),
+        "TlsRequireKernel is absent, so off — ADR-0060"
+    );
+
+    let client = fixbolt_engine::tls::load_client_pem(&tls, "localhost")
+        .unwrap_or_else(|e| panic!("load_client_pem refused the PEM written by rcgen: {e}"));
+    assert_eq!(client.roots.len(), 1, "one certification authority");
+    assert_eq!(
+        client.identity.as_ref().map(|(chain, _)| chain.len()),
+        Some(1),
+        "the client certificate pair the file named was read"
+    );
+
+    let venue_der = venue_ck.cert.der().clone();
+    let venue_key = PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+        venue_ck.signing_key.serialize_der(),
+    ));
+    let venue_handles = Handles::new();
+    let venue_seen = venue_handles.observer();
+    let venue_admin = venue_handles.admin();
+    let venue_thread = venue(&addr, venue_der, venue_key, venue_handles);
+
+    let handles = Handles::new();
+    let seen = handles.observer();
+    let admin = handles.admin();
+    let engine = std::thread::spawn(move || {
+        fixbolt_engine::connect_and_serve_tls::<_, fixbolt_engine::journal::Store, _, _>(
+            &dial,
+            cfg,
+            Never,
+            policy,
+            fixbolt_engine::recovery::NoRecovery,
+            fixbolt_engine::msglog::NoLog,
+            handles,
+            client,
+        )
+    });
+
+    let ours = wait_for_all(&seen, &[EventKind::LoggedOn], Duration::from_secs(10));
+    let theirs = wait_for_all(&venue_seen, &[EventKind::LoggedOn], Duration::from_secs(5));
+    assert!(
+        ours.contains(&EventKind::LoggedOn),
+        "the initiator configured from a file never logged on over TLS; its stream held {ours:?}"
+    );
+    assert!(
+        theirs.contains(&EventKind::LoggedOn),
+        "the venue never saw the session; its stream held {theirs:?}"
+    );
+
+    admin.shutdown(2_000);
+    let stopped = join_within(engine, Duration::from_secs(10), "connect_and_serve_tls");
+    assert!(stopped.is_ok(), "came back with an error: {stopped:?}");
+    venue_admin.shutdown(0);
+    let _ = join_within(venue_thread, Duration::from_secs(10), "serve_tls");
+}
+
+/// **A certification-authority path that names no file says so, and names the
+/// key** — before anything dials. It must not read like "the PEM was empty":
+/// one is a typo in a path, the other is the wrong file at a right path.
+#[test]
+fn a_ca_path_that_names_no_file_is_refused_by_name() {
+    let scratch = Scratch::new("noca");
+    let missing = scratch.path("not-here-ca.pem");
+    let text = initiator_cfg_text(
+        "localhost",
+        "9880",
+        &format!("CertificationAuthoritiesFile={}\n", missing.display()),
+    );
+
+    let settings =
+        fixbolt_engine::settings::Settings::parse(&text).unwrap_or_else(|e| panic!("{e}"));
+    let (_, _, _, tls) = settings
+        .into_tls_initiator()
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    let err = fixbolt_engine::tls::load_client_pem(&tls, "localhost")
+        .expect_err("a certification authority that is not on disk cannot verify anything");
+    let said = format!("{err}");
+    assert!(
+        said.contains("CertificationAuthoritiesFile") && said.contains("not-here-ca.pem"),
+        "the refusal names neither the key nor the path an operator must fix: {said}"
+    );
+    assert!(
+        said.contains("could not be opened"),
+        "a missing file must not read like a file with the wrong contents: {said}"
+    );
+}

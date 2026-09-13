@@ -139,8 +139,11 @@ enum Key {
     /// number. This engine writes only 3, 6 and 9, and **refuses the other
     /// seven rather than rounding to the nearest** — ADR-0057 open question 3.
     TimestampPrecision,
-    /// **`[DEFAULT]` only, and the acceptor's.** Whether this listener speaks
-    /// TLS at all.
+    /// **`[DEFAULT]` only, either role.** Whether this listener — or the
+    /// connection this initiator dials — speaks TLS at all.
+    ///
+    /// `[amended 2026-09-13]` acceptor-only until step 5c of the `tls` plan;
+    /// on an initiator it now asks for [`ClientTlsSettings`].
     ///
     /// QuickFIX **C++ has no key for this** — it selects TLS by instantiating
     /// `SSLSocketAcceptor` instead, which is a decision made in C++ and not in
@@ -154,8 +157,8 @@ enum Key {
     /// **`[DEFAULT]` only.** The private key for that chain. QuickFIX C++'s
     /// spelling.
     ServerCertificateKeyFile,
-    /// **`[DEFAULT]` only.** Refuse the deployment rather than fall back to
-    /// userspace TLS.
+    /// **`[DEFAULT]` only, either role.** Refuse the deployment rather than
+    /// fall back to userspace TLS.
     ///
     /// No engine surveyed has this key, so the name is this repository's, on
     /// the precedent of `ReconnectCeiling`. It carries a bare `Y`/`N` because
@@ -164,6 +167,22 @@ enum Key {
     ///
     /// [`serve_tls_requiring`]: crate::serve_tls_requiring
     TlsRequireKernel,
+    /// **`[DEFAULT]` only, initiator only, and required when an initiator says
+    /// `SocketUseSSL=Y`.** The PEM certification authorities the venue's
+    /// certificate must chain to. QuickFIX C++'s spelling.
+    ///
+    /// Required because there is nothing to fall back on: no system trust
+    /// store is linked, and a verifier that accepts anything —
+    /// `CertificateVerifyLevel=0` — is not offered (plan `tls` 6.8, 6.12).
+    CertificationAuthoritiesFile,
+    /// **`[DEFAULT]` only, initiator only, optional.** The PEM chain this
+    /// initiator presents to a venue that asks for one. QuickFIX C++'s
+    /// spelling; comes with [`Key::ClientCertificateKeyFile`] or not at all.
+    ClientCertificateFile,
+    /// **`[DEFAULT]` only, initiator only.** The private key for that chain,
+    /// **in a file of its own** — QuickFIX allows it inside the certificate
+    /// file, this engine does not, for either role.
+    ClientCertificateKeyFile,
 }
 
 impl Key {
@@ -202,6 +221,9 @@ impl Key {
             "ServerCertificateFile" => Some(Self::ServerCertificateFile),
             "ServerCertificateKeyFile" => Some(Self::ServerCertificateKeyFile),
             "TlsRequireKernel" => Some(Self::TlsRequireKernel),
+            "CertificationAuthoritiesFile" => Some(Self::CertificationAuthoritiesFile),
+            "ClientCertificateFile" => Some(Self::ClientCertificateFile),
+            "ClientCertificateKeyFile" => Some(Self::ClientCertificateKeyFile),
             _ => None,
         }
     }
@@ -238,6 +260,9 @@ impl Key {
             Self::ServerCertificateFile => "ServerCertificateFile",
             Self::ServerCertificateKeyFile => "ServerCertificateKeyFile",
             Self::TlsRequireKernel => "TlsRequireKernel",
+            Self::CertificationAuthoritiesFile => "CertificationAuthoritiesFile",
+            Self::ClientCertificateFile => "ClientCertificateFile",
+            Self::ClientCertificateKeyFile => "ClientCertificateKeyFile",
         }
     }
 }
@@ -346,13 +371,16 @@ pub enum Problem {
     /// acceptor that nobody asked for. `docs/CONFIGURATION.md` §4 lists which
     /// features a key needs.
     NeedsFeature,
-    /// A file asking for TLS handed to [`Settings::into_table`].
+    /// A file asking for TLS handed to [`Settings::into_table`] or
+    /// [`Settings::into_initiator`].
     ///
     /// **The expensive mistake this catches**: the table would be perfectly
     /// well formed, the port would answer, and the acceptor built from it would
-    /// serve **plaintext** with the certificate unread on disk. Nothing on the
-    /// wire would say so. Same shape as [`Problem::WrongRole`], same answer —
-    /// a line number and the door that works, [`Settings::into_tls_table`].
+    /// serve **plaintext** with the certificate unread on disk — or, on the
+    /// other role, the venue would be dialled in plaintext. Nothing on the wire
+    /// would say so. Same shape as [`Problem::WrongRole`], same answer — a line
+    /// number and the door that works, [`Settings::into_tls_table`] or
+    /// [`Settings::into_tls_initiator`].
     NeedsTlsDoor,
 }
 
@@ -386,7 +414,7 @@ impl fmt::Display for Problem {
             Self::ImpossibleSchedule => "these times and days describe no session",
             Self::NeedsFeature => "this engine was built without the feature this key needs",
             Self::NeedsTlsDoor => {
-                "this file asks for TLS, and into_table() would serve it as plaintext"
+                "this file asks for TLS, and this door would carry it as plaintext"
             }
         };
         f.write_str(s)
@@ -509,7 +537,10 @@ impl<'a> Block<'a> {
             | Key::SocketUseSsl
             | Key::ServerCertificateFile
             | Key::ServerCertificateKeyFile
-            | Key::TlsRequireKernel => {
+            | Key::TlsRequireKernel
+            | Key::CertificationAuthoritiesFile
+            | Key::ClientCertificateFile
+            | Key::ClientCertificateKeyFile => {
                 return Err(SettingsError::at(line, Problem::DefaultOnly, key.name()));
             }
         };
@@ -568,25 +599,48 @@ impl<'a> Block<'a> {
     }
 }
 
-/// The four `[DEFAULT]`-only TLS keys, before they become a [`TlsSettings`].
+/// The seven `[DEFAULT]`-only TLS keys, before they become a [`TlsSettings`]
+/// or a [`ClientTlsSettings`].
 ///
-/// A block of its own rather than four more fields on [`Block`], because
+/// A block of its own rather than seven more fields on [`Block`], because
 /// [`Block`] is merged per `[SESSION]` and these are never per-session: one
 /// listener presents one certificate, and SNI is out of scope (ADR-0005
-/// question 5). Keeping them out of [`Block`] is what makes
-/// "a TLS key in a `[SESSION]` is an error" a fact about the type rather than
-/// a rule somebody has to remember.
+/// question 5); an initiator holds one session. Keeping them out of [`Block`]
+/// is what makes "a TLS key in a `[SESSION]` is an error" a fact about the type
+/// rather than a rule somebody has to remember.
 #[derive(Debug, Default, Clone, Copy)]
 struct TlsBlock<'a> {
     use_ssl: Option<(usize, &'a str)>,
     certificate: Option<(usize, &'a str)>,
     private_key: Option<(usize, &'a str)>,
     require_kernel: Option<(usize, &'a str)>,
+    ca: Option<(usize, &'a str)>,
+    client_certificate: Option<(usize, &'a str)>,
+    client_private_key: Option<(usize, &'a str)>,
+}
+
+/// What [`TlsBlock::settle`] decided the file asks for, by role.
+#[derive(Debug)]
+enum SettledTls {
+    /// `SocketUseSSL=Y` on an acceptor file.
+    Server(TlsSettings),
+    /// `SocketUseSSL=Y` on an initiator file.
+    Client(ClientTlsSettings),
+}
+
+/// The first of `slots` that is filled, in the order given, so that the key
+/// blamed does not depend on where the operator happened to type it.
+fn first_present<'a>(
+    slots: impl IntoIterator<Item = (Option<(usize, &'a str)>, Key)>,
+) -> Option<(usize, Key)> {
+    slots
+        .into_iter()
+        .find_map(|(slot, key)| slot.map(|(line, _)| (line, key)))
 }
 
 impl<'a> TlsBlock<'a> {
     /// The slot this key fills, or `None` when the key is not one of these
-    /// four.
+    /// seven.
     ///
     /// The `match` is exhaustive over [`Key`] and has **no `_` arm**, for the
     /// same reason nothing else in this module does: a new setting has to be
@@ -597,6 +651,9 @@ impl<'a> TlsBlock<'a> {
             Key::ServerCertificateFile => Some(&mut self.certificate),
             Key::ServerCertificateKeyFile => Some(&mut self.private_key),
             Key::TlsRequireKernel => Some(&mut self.require_kernel),
+            Key::CertificationAuthoritiesFile => Some(&mut self.ca),
+            Key::ClientCertificateFile => Some(&mut self.client_certificate),
+            Key::ClientCertificateKeyFile => Some(&mut self.client_private_key),
             Key::BeginString
             | Key::SenderCompId
             | Key::TargetCompId
@@ -626,58 +683,83 @@ impl<'a> TlsBlock<'a> {
         }
     }
 
-    /// The first of the four this file carries, in a fixed order so that the
-    /// key blamed for a whole-block problem does not depend on where the
-    /// operator happened to type it.
+    /// The first of the seven this file carries, in a fixed order.
     fn anchor(self) -> Option<(usize, Key)> {
-        [
+        first_present([
             (self.use_ssl, Key::SocketUseSsl),
             (self.certificate, Key::ServerCertificateFile),
             (self.private_key, Key::ServerCertificateKeyFile),
             (self.require_kernel, Key::TlsRequireKernel),
-        ]
-        .into_iter()
-        .find_map(|(slot, key)| slot.map(|(line, _)| (line, key)))
+            (self.ca, Key::CertificationAuthoritiesFile),
+            (self.client_certificate, Key::ClientCertificateFile),
+            (self.client_private_key, Key::ClientCertificateKeyFile),
+        ])
     }
 
-    /// The four keys checked against each other, against the role, and against
-    /// what this build can actually do.
+    /// The seven keys checked against the role, against each other, and
+    /// against what this build can actually do — in that order.
     ///
-    /// Returns the `SocketUseSSL` line beside the settings, so
-    /// [`Settings::into_table`] can refuse by line rather than by type name.
-    fn settle(self, role: ConnectionType) -> Result<Option<(usize, TlsSettings)>, SettingsError> {
-        let Some((anchor_line, anchor_key)) = self.anchor() else {
+    /// **The role first**, because it is the thing the author has to change: a
+    /// server certificate on an initiator file is `WrongRole` whether or not
+    /// the switch is on, and so is a certification authority on an acceptor
+    /// file. `SocketUseSSL` and `TlsRequireKernel` belong to both roles.
+    ///
+    /// Returns the `SocketUseSSL` line beside the settings, so the plaintext
+    /// doors can refuse by line rather than by type name.
+    fn settle(self, role: ConnectionType) -> Result<Option<(usize, SettledTls)>, SettingsError> {
+        let Some((anchor_line, _)) = self.anchor() else {
             return Ok(None);
         };
-        // **Acceptor-only, and the same refusal a dialling key gets on an
-        // acceptor file.** These four describe the certificate a *server*
-        // presents; an initiator that needs to present one needs
-        // `ClientCertificateFile`, which this engine does not have yet.
-        if role == ConnectionType::Initiator {
+        // `[amended 2026-09-13]` step 5c of the `tls` plan. Until then all four
+        // keys were refused on an initiator file; now only the ones that
+        // describe the *other* end's side of the handshake are.
+        let (foreign, wanted) = match role {
+            ConnectionType::Initiator => (
+                first_present([
+                    (self.certificate, Key::ServerCertificateFile),
+                    (self.private_key, Key::ServerCertificateKeyFile),
+                ]),
+                "acceptor",
+            ),
+            // The acceptor verifies no client certificate, so it reads no
+            // certification authority (plan `tls` Sửa 5 item 3).
+            ConnectionType::Acceptor => (
+                first_present([
+                    (self.ca, Key::CertificationAuthoritiesFile),
+                    (self.client_certificate, Key::ClientCertificateFile),
+                    (self.client_private_key, Key::ClientCertificateKeyFile),
+                ]),
+                "initiator",
+            ),
+        };
+        if let Some((line, key)) = foreign {
             return Err(SettingsError::at(
-                anchor_line,
+                line,
                 Problem::WrongRole,
-                format!("{} needs ConnectionType=acceptor", anchor_key.name()),
+                format!("{} needs ConnectionType={wanted}", key.name()),
             ));
         }
+
         let enabled = match self.use_ssl {
             Some(v) => flag(v, Key::SocketUseSsl)?,
             None => false,
         };
         let ssl_line = self.use_ssl.map_or(anchor_line, |(line, _)| line);
         if !enabled {
-            // A certificate, a key or `TlsRequireKernel` with the switch off or
-            // absent describes something that will not happen. Refused rather
-            // than read and ignored: the operator wrote down a certificate and
-            // would otherwise get a plaintext acceptor with no sentence about
-            // it anywhere.
-            let dependent = [
+            // A certificate, a key, a certification authority or
+            // `TlsRequireKernel` with the switch off or absent describes
+            // something that will not happen. Refused rather than read and
+            // ignored: the operator wrote down a certificate and would
+            // otherwise get plaintext with no sentence about it anywhere. The
+            // role check above means only this role's keys can be here.
+            let dependent = first_present([
                 (self.certificate, Key::ServerCertificateFile),
                 (self.private_key, Key::ServerCertificateKeyFile),
+                (self.ca, Key::CertificationAuthoritiesFile),
+                (self.client_certificate, Key::ClientCertificateFile),
+                (self.client_private_key, Key::ClientCertificateKeyFile),
                 (self.require_kernel, Key::TlsRequireKernel),
-            ]
-            .into_iter()
-            .find_map(|(slot, key)| slot.map(|(line, _)| (line, key)));
+            ]);
             if let Some((line, key)) = dependent {
                 return Err(SettingsError::at(
                     line,
@@ -687,18 +769,63 @@ impl<'a> TlsBlock<'a> {
             }
             return Ok(None);
         }
-        let certificate = required(self.certificate, Key::ServerCertificateFile, ssl_line)?;
-        let private_key = required(self.private_key, Key::ServerCertificateKeyFile, ssl_line)?;
         let require_kernel = match self.require_kernel {
             Some(v) => flag(v, Key::TlsRequireKernel)?,
             None => false,
         };
+        let settled = match role {
+            ConnectionType::Acceptor => {
+                let certificate = required(self.certificate, Key::ServerCertificateFile, ssl_line)?;
+                let private_key =
+                    required(self.private_key, Key::ServerCertificateKeyFile, ssl_line)?;
+                SettledTls::Server(TlsSettings {
+                    certificate: PathBuf::from(certificate.1),
+                    private_key: PathBuf::from(private_key.1),
+                    require_kernel,
+                })
+            }
+            ConnectionType::Initiator => {
+                // **Required, with nothing to fall back on.** No system trust
+                // store is linked and no verify-off knob is offered, so an
+                // initiator without this could verify no venue at all — and
+                // would find out per dial, as a failed handshake, rather than
+                // once, here.
+                let ca = required(self.ca, Key::CertificationAuthoritiesFile, ssl_line)?;
+                // **A pair, or nothing.** Named by the half that is missing, on
+                // the line of the half that is present.
+                let identity = match (self.client_certificate, self.client_private_key) {
+                    (None, None) => None,
+                    (Some((_, cert)), Some((_, key))) => {
+                        Some((PathBuf::from(cert), PathBuf::from(key)))
+                    }
+                    (Some((line, _)), None) => {
+                        return Err(SettingsError::at(
+                            line,
+                            Problem::MissingKey,
+                            "ClientCertificateKeyFile — ClientCertificateFile needs its key, in a file of its own",
+                        ));
+                    }
+                    (None, Some((line, _))) => {
+                        return Err(SettingsError::at(
+                            line,
+                            Problem::MissingKey,
+                            "ClientCertificateFile — ClientCertificateKeyFile is a key for no certificate",
+                        ));
+                    }
+                };
+                SettledTls::Client(ClientTlsSettings {
+                    ca: PathBuf::from(ca.1),
+                    identity,
+                    require_kernel,
+                })
+            }
+        };
 
         // **Non-negotiable 6, and the only `#[cfg]` in this module.** A build
         // with nothing optional installed has no `rustls` in it, so the only
-        // two honest answers to `SocketUseSSL=Y` are this error and a plaintext
-        // acceptor nobody asked for. *Refused cleanly*, not *parsed and
-        // ignored*.
+        // two honest answers to `SocketUseSSL=Y` are this error and plaintext
+        // nobody asked for — on either role. *Refused cleanly*, not *parsed
+        // and ignored*.
         //
         // It is **last** on purpose: the shape of the file is the operator's
         // problem in every build, so "you forgot the certificate" is said by
@@ -713,14 +840,7 @@ impl<'a> TlsBlock<'a> {
             ));
         }
 
-        Ok(Some((
-            ssl_line,
-            TlsSettings {
-                certificate: PathBuf::from(certificate.1),
-                private_key: PathBuf::from(private_key.1),
-                require_kernel,
-            },
-        )))
+        Ok(Some((ssl_line, settled)))
     }
 }
 
@@ -756,6 +876,54 @@ impl TlsSettings {
     /// rather than served from userspace. `TlsRequireKernel`, **off unless the
     /// file says otherwise**: ADR-0060 refuses a deployment only when that
     /// deployment asked to be refused.
+    #[must_use]
+    pub const fn require_kernel(&self) -> bool {
+        self.require_kernel
+    }
+}
+
+/// What this initiator trusts, what it presents, and whether the kernel is
+/// required to carry it.
+///
+/// `[added 2026-09-13]` step 5c of `docs/plans/2026-09-04-tls.md` (Sửa 6, 6.4
+/// item 6). **Paths, not bytes**, for the reason [`TlsSettings`] gives: reading
+/// the PEM is `tls::load_client_pem`'s job at start-up, where an unreadable
+/// file is an error about a path rather than about a line.
+///
+/// **What it does not carry: the name the venue's certificate must bear.**
+/// That is `SocketConnectHost`, which [`Settings::into_tls_initiator`] already
+/// hands back inside the dial address; `tls::load_client_pem` takes it as its
+/// own argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientTlsSettings {
+    ca: PathBuf,
+    identity: Option<(PathBuf, PathBuf)>,
+    require_kernel: bool,
+}
+
+impl ClientTlsSettings {
+    /// The PEM certification authorities the venue's certificate must chain
+    /// to — `CertificationAuthoritiesFile`. **The only trust anchors**: there
+    /// is no system store and no way to switch verification off.
+    #[must_use]
+    pub fn ca(&self) -> &Path {
+        &self.ca
+    }
+
+    /// The client certificate chain and its key —
+    /// `ClientCertificateFile` and `ClientCertificateKeyFile` — or `None` when
+    /// the file named neither. Never one without the other: [`Settings::parse`]
+    /// refuses half a pair.
+    #[must_use]
+    pub fn identity(&self) -> Option<(&Path, &Path)> {
+        self.identity
+            .as_ref()
+            .map(|(cert, key)| (cert.as_path(), key.as_path()))
+    }
+
+    /// Whether a dialled connection whose handshake cannot be offloaded to the
+    /// kernel is refused rather than served from userspace. `TlsRequireKernel`,
+    /// **off unless the file says otherwise** — ADR-0060.
     #[must_use]
     pub const fn require_kernel(&self) -> bool {
         self.require_kernel
@@ -847,11 +1015,15 @@ pub struct Settings {
     /// `host:port` and the backoff ladder, present exactly when the role is
     /// [`ConnectionType::Initiator`].
     dial: Option<(String, crate::reconnect::Policy)>,
-    /// The certificate to present, present exactly when the file said
+    /// The certificate to present, present exactly when an acceptor file said
     /// `SocketUseSSL=Y`.
     tls: Option<TlsSettings>,
-    /// The `SocketUseSSL=` line, so [`Self::into_table`] can refuse a TLS file
-    /// by line. Zero when the file did not ask for TLS.
+    /// What to trust and present, present exactly when an initiator file said
+    /// `SocketUseSSL=Y`. **Never both** — a file names one role.
+    client_tls: Option<ClientTlsSettings>,
+    /// The `SocketUseSSL=` line, so [`Self::into_table`] and
+    /// [`Self::into_initiator`] can refuse a TLS file by line. Zero when the
+    /// file did not ask for TLS.
     tls_line: usize,
 }
 
@@ -1010,6 +1182,13 @@ impl Settings {
             ));
         }
 
+        let tls_line = tls.as_ref().map_or(0, |(line, _)| *line);
+        let (tls, client_tls) = match tls.map(|(_, settled)| settled) {
+            None => (None, None),
+            Some(SettledTls::Server(server)) => (Some(server), None),
+            Some(SettledTls::Client(client)) => (None, Some(client)),
+        };
+
         let mut dial = None;
         let mut configs: Vec<Config> = Vec::with_capacity(sessions.len());
         for block in sessions {
@@ -1045,8 +1224,9 @@ impl Settings {
             role,
             role_line,
             dial,
-            tls_line: tls.as_ref().map_or(0, |(line, _)| *line),
-            tls: tls.map(|(_, settings)| settings),
+            tls,
+            client_tls,
+            tls_line,
         })
     }
 
@@ -1088,6 +1268,18 @@ impl Settings {
     #[must_use]
     pub const fn tls(&self) -> Option<&TlsSettings> {
         self.tls.as_ref()
+    }
+
+    /// What this initiator file asks to trust and present, if it asked for TLS
+    /// at all.
+    ///
+    /// **`None` is "the operator did not ask for TLS"**, the same rule as
+    /// [`Self::tls`]; always `None` on an acceptor file, whose certificate is
+    /// [`Self::tls`]. The caller that dials takes
+    /// [`Self::into_tls_initiator`] and gets it by value.
+    #[must_use]
+    pub const fn client_tls(&self) -> Option<&ClientTlsSettings> {
+        self.client_tls.as_ref()
     }
 
     /// A registry serving exactly the counterparties this file names.
@@ -1163,12 +1355,62 @@ impl Settings {
     ///
     /// # Errors
     ///
-    /// [`Problem::WrongRole`] if the file describes an acceptor. Everything
-    /// else — a missing host, a port that is not a number, bounds that describe
-    /// no ladder — was already refused by [`Self::parse`], with its line.
+    /// [`Problem::WrongRole`] if the file describes an acceptor, and
+    /// [`Problem::NeedsTlsDoor`], naming the `SocketUseSSL=` line, if it asks
+    /// for TLS — **the initiator's expensive mistake**: the venue would be
+    /// dialled in plaintext with the certification authority unread on disk.
+    /// Everything else — a missing host, a port that is not a number, bounds
+    /// that describe no ladder — was already refused by [`Self::parse`], with
+    /// its line.
     pub fn into_initiator(
         self,
     ) -> Result<(Config, String, crate::reconnect::Policy), SettingsError> {
+        if self.client_tls.is_some() {
+            return Err(SettingsError::at(
+                self.tls_line,
+                Problem::NeedsTlsDoor,
+                "this file asks for TLS: call into_tls_initiator()",
+            ));
+        }
+        self.dialled()
+    }
+
+    /// The three things `connect_and_serve_tls` needs from the file **and**
+    /// what to trust and present, for the door that dials over TLS.
+    ///
+    /// `[added 2026-09-13]` the counterpart of [`Self::into_initiator`], as
+    /// [`Self::into_tls_table`] is of [`Self::into_table`]. Reading the PEM is
+    /// the caller's next step — `tls::load_client_pem`, which also takes the
+    /// host the venue's certificate must name.
+    ///
+    /// # Errors
+    ///
+    /// [`Problem::WrongRole`] if the file describes an acceptor, and
+    /// [`Problem::MissingKey`] if it never asked for TLS — a file with no
+    /// certification authority in it has nothing to verify a venue against.
+    pub fn into_tls_initiator(
+        mut self,
+    ) -> Result<(Config, String, crate::reconnect::Policy, ClientTlsSettings), SettingsError> {
+        if self.role == ConnectionType::Acceptor {
+            return Err(SettingsError::at(
+                self.role_line,
+                Problem::WrongRole,
+                "this file configures an acceptor: call into_tls_table()",
+            ));
+        }
+        let Some(tls) = self.client_tls.take() else {
+            return Err(SettingsError::at(
+                0,
+                Problem::MissingKey,
+                "this file asks for no TLS: add SocketUseSSL=Y, or call into_initiator()",
+            ));
+        };
+        let (cfg, addr, policy) = self.dialled()?;
+        Ok((cfg, addr, policy, tls))
+    }
+
+    /// The part both initiator doors share, so the two cannot drift.
+    fn dialled(self) -> Result<(Config, String, crate::reconnect::Policy), SettingsError> {
         let Some((addr, policy)) = self.dial else {
             return Err(SettingsError::at(
                 self.role_line,
@@ -1822,9 +2064,9 @@ mod doc_table {
     /// and a floor that may only ever be raised.
     #[test]
     fn the_key_scrape_is_not_silently_short() {
-        /// Keys on 2026-09-12, the four TLS keys included. Raise it when keys
-        /// are added; never lower it.
-        const FLOOR: usize = 30;
+        /// Keys on 2026-09-13, the seven TLS keys included (30 on 2026-09-12).
+        /// Raise it when keys are added; never lower it.
+        const FLOOR: usize = 33;
 
         let mut names = arm_literals(NAME_FN);
         let mut parses = arm_literals(PARSE_FN);
@@ -1912,12 +2154,24 @@ mod doc_table {
         sessions: "\n[SESSION]\nTargetCompID=TW44\n",
     };
 
+    /// The file the initiator's TLS keys are probed in, `[added 2026-09-13]`.
+    /// Same caveat as [`TLS`]: it already names `CertificationAuthoritiesFile`,
+    /// so that one key would answer [`Problem::RepeatedKey`] here — harmless
+    /// today only because none of the three rows has a literal *Default* or an
+    /// enumerated *Values* cell, which is where a probe reaches for a sample.
+    #[cfg(feature = "tls")]
+    const CLIENT_TLS: Sample = Sample {
+        default_block: "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\nConnectionType=initiator\nSocketConnectHost=127.0.0.1\nSocketConnectPort=9876\nSocketUseSSL=Y\nCertificationAuthoritiesFile=/nonexistent/ca.pem\n",
+        sessions: "\n[SESSION]\nTargetCompID=TW44\n",
+    };
+
     /// Which minimal file a key can be written into.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Group {
         Acceptor,
         Initiator,
         Tls,
+        ClientTls,
     }
 
     /// The sample a key is probed in.
@@ -1961,6 +2215,9 @@ mod doc_table {
             Key::ServerCertificateFile | Key::ServerCertificateKeyFile | Key::TlsRequireKernel => {
                 Group::Tls
             }
+            Key::CertificationAuthoritiesFile
+            | Key::ClientCertificateFile
+            | Key::ClientCertificateKeyFile => Group::ClientTls,
         }
     }
 
@@ -1976,6 +2233,10 @@ mod doc_table {
             Group::Tls => Some(TLS),
             #[cfg(not(feature = "tls"))]
             Group::Tls => None,
+            #[cfg(feature = "tls")]
+            Group::ClientTls => Some(CLIENT_TLS),
+            #[cfg(not(feature = "tls"))]
+            Group::ClientTls => None,
         }
     }
 
@@ -2148,6 +2409,10 @@ mod doc_table {
                 assert_eq!(
                     silent.tls, written.tls,
                     "docs/CONFIGURATION.md §1: {name} documents default `{default}` but writing {name}={default} changes the parsed settings: the certificate"
+                );
+                assert_eq!(
+                    silent.client_tls, written.client_tls,
+                    "docs/CONFIGURATION.md §1: {name} documents default `{default}` but writing {name}={default} changes the parsed settings: the initiator's TLS"
                 );
                 assert_eq!(
                     silent.log, written.log,
@@ -2427,10 +2692,11 @@ mod doc_table {
     /// it.
     #[test]
     fn a_where_cell_that_claims_default_only_is_refused_in_a_session() {
-        /// Rows reached on 2026-09-12: 18. The ten `Config` keys have no
-        /// *Where* column and the two reconnect keys say `initiator only`,
-        /// which is a claim about a role and not about a section.
-        const FLOOR: usize = 18;
+        /// Rows reached on 2026-09-13: 21 (18 on 2026-09-12, before the three
+        /// initiator TLS keys). The ten `Config` keys have no *Where* column
+        /// and the two reconnect keys say `initiator only`, which is a claim
+        /// about a role and not about a section.
+        const FLOOR: usize = 21;
 
         let doc = configuration_md();
         let (mut probed, mut skipped) = (0_usize, 0_usize);

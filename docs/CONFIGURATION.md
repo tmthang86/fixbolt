@@ -18,7 +18,7 @@ Validation is strict. An unknown key, a malformed value or an impossible schedul
 startup with the line number and the text that was written
 ([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)).
 
-**Thirty keys** are recognised `[changed 2026-09-12, was twenty-six]`.
+**Thirty-three keys** are recognised `[changed 2026-09-13, was thirty]`.
 
 **What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The
 `doc_table` tests in [`settings.rs`](../crates/engine/src/settings.rs) read this section and
@@ -30,9 +30,10 @@ survive the parser, and one sampled value it does not list must not — a sample
 candidates, not a check of everything the cell omits); and **a *Where* cell claiming either
 `[DEFAULT]` only or `[DEFAULT]` or `[SESSION]`** (the first must be refused in a `[SESSION]`,
 the second must not).
-`[measured 2026-09-12]` those three reached 15, 10 and 18 of the thirty rows — 16 and 11 for
-the first two in a build with the `tls` feature, which is the only build where the fourth TLS
-key can be written into a file at all.
+`[measured 2026-09-13]` those three reached 15, 10 and 21 of the thirty-three rows — 16 and 11
+for the first two in a build with the `tls` feature, which is the only build where a
+`SocketUseSSL=Y` file can be written at all (18 of thirty on 2026-09-12, before the three
+initiator keys).
 
 **Every other sentence here is a hand-checked promise** — each *Meaning* cell, every note,
 and each paragraph between the tables. So is a *Default* cell written as prose (`required`,
@@ -141,20 +142,26 @@ Three rules the file enforces:
 - A value longer than 32 bytes is refused rather than truncated. A truncated name would match
   no counterparty and the acceptor would start cleanly and serve nobody.
 
-**The certificate this acceptor presents** `[added 2026-09-12]`:
+**TLS: the certificate an acceptor presents, and what an initiator trusts** `[added 2026-09-12; initiator keys 2026-09-13]`:
 
 | Key | Meaning | Values | Default | Where | Source |
 |---|---|---|---|---|---|
-| `SocketUseSSL` | Turn TLS on for this listener | `Y` or `N` | `N` | `[DEFAULT]` **only**; acceptor only — refused on an initiator file, by line | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `SocketUseSSL` | Turn TLS on — for this listener, or for the connection this initiator dials `[changed 2026-09-13, was acceptor only]` | `Y` or `N` | `N` | `[DEFAULT]` **only**; either role | [`settings.rs`](../crates/engine/src/settings.rs) |
 | `ServerCertificateFile` | The PEM certificate chain this acceptor presents | a path to a PEM file | required when `SocketUseSSL=Y`; refused otherwise | `[DEFAULT]` only | [`settings.rs`](../crates/engine/src/settings.rs) |
 | `ServerCertificateKeyFile` | The private key for that chain | a path to a PEM file | required when `SocketUseSSL=Y`; refused otherwise | `[DEFAULT]` only | [`settings.rs`](../crates/engine/src/settings.rs) |
-| `TlsRequireKernel` | Refuse this deployment rather than serve TLS from userspace, if the kernel cannot take the keys ([ADR-0060](decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md)) | `Y` or `N` | `N` | `[DEFAULT]` only; **refused**, not ignored, without `SocketUseSSL=Y` | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `TlsRequireKernel` | Refuse this deployment rather than run TLS from userspace, if the kernel cannot take the keys ([ADR-0060](decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md)). Either role `[changed 2026-09-13, was acceptor only]` | `Y` or `N` | `N` | `[DEFAULT]` only; **refused**, not ignored, without `SocketUseSSL=Y` | [`settings.rs`](../crates/engine/src/settings.rs) |
+| `CertificationAuthoritiesFile` | The PEM certification authorities the venue's certificate must chain to. **The only trust anchors** — no system store, and no way to switch verification off | a path to a PEM file | required when an initiator says `SocketUseSSL=Y`; refused otherwise | `[DEFAULT]` only; initiator only | [`settings.rs`](../crates/engine/src/settings.rs), [`tls.rs`](../crates/engine/src/tls.rs) |
+| `ClientCertificateFile` | The PEM certificate chain this initiator presents to a venue that asks for one | a path to a PEM file | none — no client certificate is sent; comes with `ClientCertificateKeyFile` or not at all | `[DEFAULT]` only; initiator only | [`settings.rs`](../crates/engine/src/settings.rs), [`tls.rs`](../crates/engine/src/tls.rs) |
+| `ClientCertificateKeyFile` | The private key for that chain, **in a file of its own** | a path to a PEM file | none; comes with `ClientCertificateFile` or not at all | `[DEFAULT]` only; initiator only | [`settings.rs`](../crates/engine/src/settings.rs), [`tls.rs`](../crates/engine/src/tls.rs) |
 
-**All four are `[DEFAULT]`-only and acceptor-only, for the same reason a dialling key is refused
-on an acceptor file.** These four describe the certificate a *server* presents; an initiator file
-carrying one gets `WrongRole`, by line, exactly like `SocketConnectHost` on an acceptor file.
-There is no `ClientCertificateFile` yet, so an initiator has nothing to configure here. A
-`[SESSION]` block carrying one of the four is `DefaultOnly`, for the reason `FileLogPath` already
+**All seven are `[DEFAULT]`-only, and five of them belong to one role** `[changed 2026-09-13]`.
+`ServerCertificateFile` and `ServerCertificateKeyFile` describe the certificate a *server*
+presents, so an initiator file carrying one gets `WrongRole`, by line, exactly like
+`SocketConnectHost` on an acceptor file. `CertificationAuthoritiesFile`, `ClientCertificateFile`
+and `ClientCertificateKeyFile` describe what a *client* trusts and presents, so an acceptor file
+carrying one gets the same — the acceptor verifies no client certificate and reads no
+certification authority. `SocketUseSSL` and `TlsRequireKernel` mean the same on either role. A
+`[SESSION]` block carrying any of the seven is `DefaultOnly`, for the reason `FileLogPath` already
 is: one listener presents one certificate ([ADR-0005](decisions/ADR-0005-tls.md) open question 5)
 — SNI and a certificate per counterparty are out of scope, not merely unbuilt.
 
@@ -164,7 +171,12 @@ is: one listener presents one certificate ([ADR-0005](decisions/ADR-0005-tls.md)
 written down with `SocketUseSSL=N` or no `SocketUseSSL` line at all is also `MissingKey`, blamed
 on the key that would do nothing — refused rather than silently ignored, because an operator who
 wrote a certificate and forgot the switch would otherwise get a plaintext acceptor with no
-sentence about it anywhere.
+sentence about it anywhere. **On an initiator** `[added 2026-09-13]`, `SocketUseSSL=Y` with no
+`CertificationAuthoritiesFile` is `MissingKey` on the `SocketUseSSL=` line: there is no system
+trust store and `CertificateVerifyLevel` is not offered, so without it no venue could verify.
+`ClientCertificateFile` and `ClientCertificateKeyFile` come as a pair, in two files — QuickFIX
+allows the key inside the certificate file, this engine does not — and one without the other is
+`MissingKey`, naming the missing half on the line of the present one.
 
 **A build without the `tls` feature refuses `SocketUseSSL=Y` at parse time** (`Problem::NeedsFeature`)
 rather than serve the port in plaintext — non-negotiable 6: such a build has no `rustls` in it at
@@ -176,7 +188,11 @@ with a missing certificate is still told that first, in every build.
 perfectly well formed and the acceptor would serve **plaintext**, certificate unread on disk,
 nothing on the wire to say so. [`Settings::into_tls_table`](../crates/engine/src/settings.rs) is
 the door that returns the `Table` and the certificate together; reading the PEM off disk is the
-caller's next step, at [`tls::load_pem`](../crates/engine/src/tls.rs).
+caller's next step, at [`tls::load_pem`](../crates/engine/src/tls.rs). **`Settings::into_initiator`
+refuses such a file the same way** `[added 2026-09-13]` — it would dial the venue in plaintext —
+and `Settings::into_tls_initiator` returns the `Config`, the address, the reconnect policy and a
+`ClientTlsSettings`; [`tls::load_client_pem`](../crates/engine/src/tls.rs) reads the PEM and takes
+the host the venue's certificate must name.
 
 ---
 
