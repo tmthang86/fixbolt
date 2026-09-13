@@ -1086,8 +1086,8 @@ enum Refusal {
 
 /// Why a connection ended.
 ///
-/// `Link::Dropped` is one bit and this session returns it from **eighteen**
-/// places. A wrong `BeginString` means somebody is on the wrong FIX version; a
+/// `Link::Dropped` is one bit and this session returns it from every
+/// refusal path — the living count is in `docs/reference/prior-art.md`. A wrong `BeginString` means somebody is on the wrong FIX version; a
 /// wrong `SenderCompID` means somebody is pointed at the wrong counterparty; a
 /// `SendingTime` out of range means NTP; an hour outside the schedule means a
 /// venue calendar. Different people fix them, on different days, and **before

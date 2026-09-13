@@ -538,3 +538,51 @@ không có CI.
 Bước 1, 3, 5 chạy song song, **mỗi bước một worktree do manager tự dựng** trước khi giao
 (`.claude/worktrees/step{1,3,5}`, `vendor/` symlink) — lý do chia là *reversal của bước này làm đỏ
 gate của bước kia*, không chỉ là trùng file. Bước 4 rồi 2 chạy sau, trên nhánh đã gộp 1+3+5.
+
+### 2026-09-13 — bước 1 XONG (item 71)
+
+Con số sống ở **một** chỗ: hàng `fixbolt` của `docs/reference/prior-art.md:407` ghi **23** điểm trả
+về `Link::Dropped`, kèm lệnh `grep` và tên test. Test
+`the_site_count_prior_art_quotes_is_the_one_in_the_source` đếm lại từ source. Ba chỗ khác bỏ số;
+`crates/session/src/lib.rs` chỉ đổi rustdoc (manager kiểm: mọi dòng đổi đều là `///`). ADR-0035 và
+ADR-0059 mỗi file một dòng erratum dưới `Status`, thân không đổi (Q1).
+
+**Ba điều plan viết sai, đo mới thấy:**
+
+1. **`starts_with("return Link::Dropped")` đếm ra 21, không phải 23.** Hai điểm trả về là arm của
+   `match` (`… => return Link::Dropped,`), `return` không đứng đầu dòng. Developer đổi sang
+   `contains` — khớp `grep` 23, và là cách duy nhất để R71-1 đỏ đúng câu plan dự đoán. Manager kiểm
+   thêm: không dòng comment nào trong `lib.rs` khớp mẫu, nên `contains` và `grep` vẫn là một phép đo.
+2. **`prior-art.md` có ba hàng `| **fixbolt** |`**, không phải một; bộ tìm hàng lần đầu lấy nhầm dòng
+   118. Test giờ đòi hàng đó chứa cả `return sites`.
+3. **Cột *Khôi phục* của R71-1 ghi `git checkout`, và nó xoá luôn bản sửa.** Checkout trả file về
+   commit gần nhất, mà bản sửa chưa commit — lần chạy xanh sau khôi phục là thứ duy nhất thấy. Ghi
+   thành `docs/reference/a-restore-by-checkout-reverted-the-fix-too.md` `[to testing-skills]`, và
+   **manager báo ngay cho bước 3 đang chạy**, vì R73-3 có đúng cột khôi phục đó trên
+   `docs/CONFIGURATION.md` — file mà bước 3 cũng đang thêm một đoạn.
+
+**`include_str!` đổi thành `read_to_string(CARGO_MANIFEST_DIR…)`** theo đúng hàng bẫy của plan:
+`cargo package -p fixbolt-session --list` có liệt kê `tests/drop_reason.rs`. (`cargo package` đầy đủ
+vẫn hỏng vì một lý do có sẵn, không liên quan: dependency đường dẫn `fixbolt-codec` không có
+`version`.)
+
+**Manager sửa rustdoc của test trước khi commit**: bản giao nói test *"fails … including the date
+beside it"* — test không đọc ngày. Câu đó giờ nói thẳng là không đọc.
+
+**Gate, manager chạy lại trong checkout chính:**
+
+```
+cargo test -p fixbolt-session --test drop_reason     9 passed; 0 failed
+cargo clippy -p fixbolt-session --all-targets -D warnings   Finished, 0 warning
+cargo fmt --check                                     fmt-exit=0
+scripts/check-links.py (trong worktree step1, không có worktree lồng)
+                                                      371 files, 1987 links, no dead internal links
+R71-1 (23 → 24, khôi phục bằng bản sao)               đỏ: prior-art.md quotes 24 return sites of
+                                                      Link::Dropped; crates/session/src/lib.rs has 23
+                                                      — update the table, and the date beside it
+                                                      → khôi phục → 1 passed
+```
+
+`check-links.py` chạy ở gốc checkout chính đọc **1485** file và báo 9 URL — cả 9 là
+`crates/library/README.md` **bên trong ba worktree**, nơi ngoại lệ khoá theo đường dẫn không khớp.
+Không phải lỗi của cây; là lý do memory ghi *xoá worktree trước khi chạy script toàn repo*.

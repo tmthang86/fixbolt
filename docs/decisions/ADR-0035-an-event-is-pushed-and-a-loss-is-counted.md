@@ -1,6 +1,7 @@
 # ADR-0035 — An event is pushed, and a loss is counted
 
 - **Status:** Accepted
+- **Erratum `[2026-09-13]`:** *eighteen* was the count on 2026-09-02; the living count and the command that produces it are in [prior-art.md](../reference/prior-art.md) — ADR body unchanged.
 - **Amended by** [ADR-0059](ADR-0059-an-event-is-lost-only-when-the-ring-is-full.md) — **this decision stands entirely**; what that page changes is one of the two things that could cause a loss, and that thing turns out never to have been decided here
 - **Date:** 2026-09-02
 - **Related:** [ADR-0011](ADR-0011-a-full-ring-disconnects.md),

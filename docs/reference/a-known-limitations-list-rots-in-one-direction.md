@@ -129,6 +129,22 @@ And the person doing it had, that same day, in that same session, written this p
 > struck one shows the reader exactly how far behind it ran, which is the only thing that makes
 > the next reader check.
 
+## The same rot, in a number rather than a bullet
+
+`[measured 2026-09-13]` The mechanism above is not specific to a bulleted list. *eighteen* — the
+count of places `crates/session/src/lib.rs` returns `Link::Dropped` — was true on 2026-09-02, and
+was then copied by hand into six places: two ADRs, a reference page, a test file's header and its
+own docstring, and the session layer's rustdoc. Nobody re-ran the count after that day, because
+nothing pointed back at it the way `STATUS.md`'s *Not proven* section points nowhere. Re-measuring
+on 2026-09-13 with the grep the number was first produced with read **23**, not eighteen. The fix
+this time is the cheap one the *Generalised* section above names rather than merely proposes: the
+count now lives in exactly **one** place — `docs/reference/prior-art.md`'s `fixbolt` row — the
+other five places cite it by pointer instead of by digit, and
+`crates/session/tests/drop_reason.rs::the_site_count_prior_art_quotes_is_the_one_in_the_source`
+recomputes the count from the source on every test run and fails the moment the table disagrees
+with it, so the second copy of this exact mistake is a compile-time-adjacent test failure rather
+than a sixth silent lie.
+
 ## What was done here
 
 The eight bullets were struck in place with their closing dates, the section gained a note
