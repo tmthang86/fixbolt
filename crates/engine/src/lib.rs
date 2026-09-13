@@ -2773,7 +2773,7 @@ pub fn serve_hft_with<
 /// `DESIGN.md` D8 says the `hft` polling thread is pinned to an isolated core.
 /// [`serve_hft`] leaves that thread yours to pin, which is a valid choice
 /// (`taskset` around the process); this is the door that does it for you and
-/// refuses what [`serve_sharded_hft`](crate::shard::serve_sharded_hft) would
+/// refuses what `serve_sharded_hft` would
 /// refuse.
 ///
 /// # The order, and why it is this one
@@ -2957,7 +2957,7 @@ pub enum ServeError {
     /// **Its own variant for the same reason [`Self::LogPath`] is.** A bad
     /// certificate and a busy port are two different mornings, and one variant
     /// covering both sends an operator to the wrong one first. `[2026-09-10]`
-    /// added with [`serve_tls`], step 4a of the `tls` plan.
+    /// added with `serve_tls`, step 4a of the `tls` plan.
     ///
     /// It carries a `String` rather than the `rustls` error: `ServeError` is a
     /// public type of this crate and `rustls` is optional, so a variant holding

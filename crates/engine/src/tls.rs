@@ -766,7 +766,7 @@ pub fn kernel_can_offload() -> bool {
 
 /// A `rustls::ServerConfig` this engine can actually hand to the kernel.
 ///
-/// `[2026-09-10]` **step 4a of the `tls` plan.** [`crate::serve_tls`] takes a
+/// `[2026-09-10]` **step 4a of the `tls` plan.** `crate::serve_tls` takes a
 /// certificate and a key rather than a finished `ServerConfig` and builds it
 /// here, because two of the settings are load-bearing and neither is
 /// discoverable:
@@ -1052,7 +1052,7 @@ fn read_private_key(
     })
 }
 
-/// Everything [`crate::connect_and_serve_tls`] needs to dial a TLS venue, read
+/// Everything `crate::connect_and_serve_tls` needs to dial a TLS venue, read
 /// off disk from what a [`crate::settings::ClientTlsSettings`] names.
 ///
 /// `[added 2026-09-13]` step 5c of `docs/plans/2026-09-04-tls.md` (Sửa 6, 6.4
