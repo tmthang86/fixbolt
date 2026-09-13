@@ -78,6 +78,13 @@
 //! from the argument would label it `kernel` — the `--mode standard` lesson of
 //! 2026-08-30 from the TLS side. `userspace` leaves the hot-path guarantee
 //! (ADR-0005 decision 3), so its `allocs` is printed and not asserted.
+//!
+//! **And the read-back is refused here, not only downstream.** `[measured
+//! 2026-09-13]` step 6b left a fallen-back `ktls` arm to the script that reads
+//! `tls:`; the run never reached it, because `assert_eq!(allocs, 0)` fires
+//! first and userspace rustls allocates. The run then failed as a hot-path
+//! regression rather than as a transport that never took the keys. Every arm's
+//! read-back is now checked in [`measure`], before the first sample.
 #![allow(unsafe_code)]
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
 // `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
@@ -185,6 +192,18 @@ impl Tls {
         match self {
             Self::Off => "off",
             Self::Ktls => "ktls",
+            Self::Userspace => "userspace",
+        }
+    }
+
+    /// What the **engine** must report for this arm — [`seen_name`]'s spelling,
+    /// not the flag's. `--tls ktls` reads back as `tls: kernel`, which is why
+    /// the two differ at all, and why `scripts/w2w-baseline.sh` carries the
+    /// same mapping in its `want_tls` case.
+    const fn wants(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Ktls => "kernel",
             Self::Userspace => "userspace",
         }
     }
@@ -636,9 +655,10 @@ fn main() -> std::io::Result<()> {
     //
     // `off` and `ktls` hold it; `userspace` does not claim it. ADR-0005
     // decision 3 names userspace rustls as the mode that leaves the hot-path
-    // guarantee, and `measure` has already refused a `userspace` arm whose
-    // engine did not report `userspace` — so this exemption cannot cover a run
-    // that was on another transport.
+    // guarantee, and `measure` has already refused **every** arm whose engine
+    // did not report the transport that arm names — so neither this exemption
+    // nor the assertion below can be reached by a run that was on another
+    // transport, and `allocs != 0` here can only mean what it says.
     if tls == Tls::Userspace {
         println!("tls userspace: rustls is on the data path, which leaves the hot-path");
         println!("guarantee (ADR-0005 decision 3); `allocs` is printed and not asserted.");
@@ -720,20 +740,32 @@ fn measure<C: Wire>(
         std::thread::yield_now();
     };
     println!("tls: {}", seen_name(seen));
-    // Each arm must have run on the transport it names. `ktls` is the one arm
-    // that does NOT stop here on a mismatch: a handover that fell back is a
-    // finding, `tls:` above already says `userspace`, and a script reading that
-    // line is the gate for it (plan step 6b) — this binary does not also decide
-    // it by exiting early.
-    match (tls, seen) {
-        (Tls::Off, 1) | (Tls::Userspace, 3) | (Tls::Ktls, 2 | 3) => {}
-        _ => {
-            return Err(std::io::Error::other(format!(
-                "w2w: --tls {} ran with the engine reporting tls '{}'",
-                tls.name(),
-                seen_name(seen)
-            )));
-        }
+    // **Every arm must have run on the transport it names, `ktls` included, and
+    // this is the first thing that judges the run.** It returns before a single
+    // sample is taken, so it is necessarily ahead of the `assert_eq!(allocs, 0)`
+    // in `main`.
+    //
+    // `[measured 2026-09-13]` step 6b shipped this as `(Tls::Ktls, 2 | 3)` — a
+    // `ktls` arm whose handover fell back was deliberately allowed through, on
+    // the reasoning that `tls:` above already says `userspace` and
+    // `scripts/w2w-baseline.sh` reads that line. A senior review forced
+    // `with_offload(false)` on the engine side and found the script's check
+    // unreachable in exactly the case it was written for: the run reached the
+    // allocation assertion first and died with `panicked … allocs 600`, exit
+    // 101, naming a hot-path regression for a connection that had simply never
+    // taken the keys. The script is still the second reader; it is no longer
+    // the only one.
+    if seen_name(seen) != tls.wants() {
+        return Err(std::io::Error::other(format!(
+            "w2w: --tls {} requires the engine to report tls '{}', and it \
+             reports '{}' — the kernel handover fell back to userspace rustls, \
+             or this is not the arm that was asked for. Nothing measured below \
+             would be a figure about '{}', so nothing is measured.",
+            tls.name(),
+            tls.wants(),
+            seen_name(seen),
+            tls.name(),
+        )));
     }
 
     // **Every message is rendered before the clock starts.** The lesson is

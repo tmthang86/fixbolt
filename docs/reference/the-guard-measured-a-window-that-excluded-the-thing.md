@@ -116,15 +116,59 @@ reason: identity was checked **after** the allocation count rather than before i
 mismatched arm that also happened to allocate read as an allocation failure, never as an
 identity failure.
 
-The fix was the same move this file already names: **reorder the checks so the window that
-proves the claim runs first**, then re-run the reversal and read the sentence it actually
-produces. Identity now comes before the allocation count in both places, and the second attempt
-at the reversal went red on exactly the intended sentence —
-`` `--tls ktls` ran tls `'userspace'` when `'kernel'` was required `` — then green once restored.
+The fix commit (`da9fe6e`) reordered the **two calling scripts'** own checks — `w2w-baseline.sh`
+now greps `tls: $want_tls` (line 159) before `allocs +0` (line 172), and its own comment names
+the move: *"checked BEFORE the allocation count below rather than after it… that is exactly
+what happened here before this check was moved above the allocs check."* Read the other way at
+the time, that commit's message said plainly that the reversal now went red on the intended
+sentence and green once restored. **A senior review of this very paragraph, on this branch's
+tip (`6017991`), found that closing claim false anyway** — not because the two scripts' own
+ordering is wrong (it is not), but because the assertion that fires first sits one layer
+further down than either script, inside `tools/w2w` itself. `main.rs`'s
+`assert_eq!(allocs, 0, …)` (around line 646) is gated on the **requested** transport
+(`tls == Tls::Userspace`), not on the transport actually **observed**
+(`TLS_SEEN`/`seen_name(seen)`), and the match at the read-back (`match (tls, seen)`, around line
+728) deliberately lets `(Tls::Ktls, 3)` — asked for kernel, fell back to userspace — through
+without an error of its own, on the stated design that the calling script should be the one to
+catch that case. So a run of `--tls ktls` that actually falls back to userspace still runs the
+whole timed loop, still allocates, and still panics on `main.rs`'s own allocation assertion —
+a nonzero exit — before either script's now-correctly-ordered grep ever runs.
+`w2w-baseline.sh` executes under `set -euo pipefail` and reads the binary through
+`out=$("$BIN" …)`, so that nonzero exit ends the script at the assignment itself: its own
+`FAIL: … ran tls '…' when '…' was required` sentence (line 162) is never reached, let alone
+printed, for exactly this case — which is the sentence this file's own title describes,
+recurring one layer deeper than the first fix looked.
+`scripts/check-standard-gives-the-core-back.sh` does not depend on `set -e` and reads the
+binary's output from a file populated while a backgrounded process runs, so it is not shown
+here to fail the same way — but the assertion it would be racing against is the same one, and
+nothing in this step's reversal exercised that script against the forced-fallback case to say
+so with evidence.
 
-This is the fourth time this repository has found a red in the wrong place, and the second and
-third both happened inside this one step, in the production script and the baseline script
-independently, from the same underlying ordering mistake made twice. The generalisation does
-not need restating; what this instance adds is that **the same wrong order can be written twice
-in one step**, in two different files, because the second one was copied from a shape that
-already had the bug.
+**So the ordering claim held only for the two scripts' own source, not for a run end to end,
+until `tools/w2w` itself stopped deferring the mismatch to the calling script.** That is now
+fixed, in the working tree on top of commit `6017991`, not yet committed as of this writing:
+`measure()`'s read-back (`tools/w2w/src/main.rs`) now compares `seen_name(seen)` against a new
+`Tls::wants()` — what the engine *must* report for the arm requested — and returns its own
+`Err` the moment they disagree, before a single sample is taken and therefore strictly before
+the `assert_eq!(allocs, 0, …)` in `main` can fire for any reason. `scripts/w2w-baseline.sh` was
+changed to match: the command substitution that runs the binary now keeps both its output and
+its exit status (`out=$(… 2>&1) || rc=$?`) instead of letting `set -e` end the script on a
+nonzero exit before anything is read, and the exit-status check was moved to run *after* the
+three identity greps rather than implicitly pre-empting all of them. Both changes are visible
+with `git diff tools/w2w/src/main.rs scripts/w2w-baseline.sh` against `6017991` as of this
+writing; a future reader should re-grep rather than trust this sentence once that diff has been
+committed, since the commit that lands it is not named here yet.
+`scripts/check-standard-gives-the-core-back.sh` needed no equivalent change — it reads the
+binary's output from a file populated by a backgrounded process rather than through a
+`set -e`-guarded substitution, so it was never exposed to this exact failure, as reasoned above.
+
+This is the fourth time this repository has found a red in the wrong place, and the review that
+produced this section's rewrite is the fifth: the second and third both happened inside step 6b
+itself, in the production script and the baseline script independently, from the same
+underlying ordering mistake made twice; the fifth was one layer further down than either — the
+reorder those two scripts got right in `da9fe6e` did not reach the binary underneath them, which
+carried the identical mistake in its own gating condition, deferred to the very scripts that
+were reordered to catch it. The generalisation does not need restating; what this instance adds
+is that **fixing the visible instance of an ordering mistake does not prove the mistake is gone
+one layer down**, and only re-running the exact reversal against the whole chain — script and
+binary together, not the script's source read in isolation — showed that it was not.

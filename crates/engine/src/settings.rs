@@ -1300,7 +1300,7 @@ impl Settings {
             return Err(SettingsError::at(
                 self.role_line,
                 Problem::WrongRole,
-                "this file configures an initiator: call into_initiator()",
+                Self::initiator_door(self.client_tls.is_some()),
             ));
         }
         if self.tls.is_some() {
@@ -1331,7 +1331,7 @@ impl Settings {
             return Err(SettingsError::at(
                 self.role_line,
                 Problem::WrongRole,
-                "this file configures an initiator: call into_initiator()",
+                Self::initiator_door(self.client_tls.is_some()),
             ));
         }
         let Some(tls) = self.tls else {
@@ -1395,7 +1395,7 @@ impl Settings {
             return Err(SettingsError::at(
                 self.role_line,
                 Problem::WrongRole,
-                "this file configures an acceptor: call into_tls_table()",
+                Self::acceptor_door(self.tls.is_some()),
             ));
         }
         let Some(tls) = self.client_tls.take() else {
@@ -1409,13 +1409,40 @@ impl Settings {
         Ok((cfg, addr, policy, tls))
     }
 
+    /// **The initiator door that would actually take this file**, given whether
+    /// it asks for TLS.
+    ///
+    /// `[added 2026-09-13]` a `WrongRole` hint is read by somebody who is about
+    /// to make one more call, so it must name the door that ends the matter.
+    /// Until now every one of the four named the plain door of the other role,
+    /// and a TLS file sent there was refused a second time with
+    /// [`Problem::NeedsTlsDoor`] — right, and one round trip too many. The role
+    /// and the `SocketUseSSL=` line are both known here, so the hint can be.
+    const fn initiator_door(tls: bool) -> &'static str {
+        if tls {
+            "this file configures an initiator and asks for TLS: call into_tls_initiator()"
+        } else {
+            "this file configures an initiator: call into_initiator()"
+        }
+    }
+
+    /// [`Self::initiator_door`]'s counterpart: the acceptor door that would
+    /// take this file.
+    const fn acceptor_door(tls: bool) -> &'static str {
+        if tls {
+            "this file configures an acceptor and asks for TLS: call into_tls_table()"
+        } else {
+            "this file configures an acceptor: call into_table()"
+        }
+    }
+
     /// The part both initiator doors share, so the two cannot drift.
     fn dialled(self) -> Result<(Config, String, crate::reconnect::Policy), SettingsError> {
         let Some((addr, policy)) = self.dial else {
             return Err(SettingsError::at(
                 self.role_line,
                 Problem::WrongRole,
-                "this file configures an acceptor: call into_table()",
+                Self::acceptor_door(self.tls.is_some()),
             ));
         };
         let Some(cfg) = self.configs.first().copied() else {

@@ -1494,7 +1494,12 @@ Stated so you do not discover it in production:
      permissive deployment serves the fallback and still gets the event. A latency figure from a
      connection that raised it is about a different code path, so do not publish one without
      saying which mode it was. `Engine::tls_mode(ConnId)` reads the mode back after the first
-     logon, for either role, rather than trusting what you asked for.
+     logon, for either role, rather than trusting what you asked for — **but it is a method on
+     `Engine` itself, and every front door in this crate (`serve_tls*`, `connect_and_serve_tls*`)
+     builds the `Engine` internally and hands you back only a `Shutdown` summary once it stops.**
+     A deployment going through a front door cannot call `tls_mode` at all; only a caller who
+     builds `Engine` directly — the way `tools/w2w` does, to print its own `tls:` line — can
+     read a connection's mode back this way.
   3. **One certificate per listener; no client certificate per `[SESSION]`.** No SNI, no second
      server certificate — an acceptor that needs more runs more listeners. The initiator side is
      the same shape: `CertificationAuthoritiesFile`, `ClientCertificateFile` and

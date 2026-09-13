@@ -128,6 +128,62 @@ The exact counts were stable: five consecutive runs of the test binary, each ass
 public in a private module — reachable only as `<Client as Side>::Kernel` — and the one new
 public item is `TlsTransport<Client>::tickets_ignored(&self) -> u32`.
 
+## Revision — 2026-09-13, after the senior review of the branch (plan Sửa 8)
+
+A dated note, not a change of substance: no decision above is reversed. Two questions the
+review raised are about **what the numbers in decisions 2 and 3 are numbers of**, and the
+answers narrow the text rather than the decision. Plan Sửa 8 holds the sources and the step
+that builds the test below; it awaits the owner's approval as this note is written.
+
+- **The count is two boxes per direction rekeyed, and "four" is the `update_requested` case.**
+  ktls-core 0.0.5 updates the receive secret on every peer KeyUpdate and the transmit secret
+  only when the peer sets `update_requested` (`src/context.rs:436-475`); each direction is one
+  `refresh_traffic_secret`, which is one `derive_next` and one `expand_secret`, one box each
+  (`rustls-0.23.44/src/tls13/key_schedule.rs:565-580, 808-814`; `src/conn/kernel.rs:126-149`).
+  So a peer's KeyUpdate costs **four** boxes under `update_requested` — the case measured and
+  asserted by `a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces` — and **two**
+  under `update_not_requested`, which no library in the test bench can send on demand (rustls
+  and ktls-core both always ask for `update_requested`; a peer sends `update_not_requested`
+  spontaneously only by choice — OpenSSL's `SSL_key_update(…, SSL_KEY_UPDATE_NOT_REQUESTED)`,
+  the JDK when its inbound side is closed). *Derived from source, not yet measured*: step 6c-3
+  writes the five-byte record itself from a raw kTLS peer and asserts `== 2`, with the kernel's
+  `TlsTxRekeyOk` unchanged to prove the engine did not answer. There is no third number: any
+  other request value is refused by ktls-core with an alert.
+- **184 bytes is `ring`'s layout, not rustls's.** `RingHkdfExpander { alg, prk }`
+  (`src/crypto/ring/tls13.rs:302-305`): an 8-byte `&'static` plus `hkdf::Prk(hmac::Key)`, and
+  `hmac::Key` is two `digest::BlockContext`s of 88 bytes each — a `DynState` enum sized for
+  SHA-512's eight `u64`s (72 with its tag), a `u64` byte count, an `&'static Algorithm`
+  (`ring-0.17.14/src/hmac.rs:155-158`, `src/digest.rs:39-49`, `src/digest/dynstate.rs:23-26`).
+  8 + 2 × 88 = 184, which accounts for the measured size byte for byte. rustls requires
+  `ring = "0.17"` (caret), so a `ring` bump alone can move this constant.
+- **The engine does not pin `rustls` or `ring` with `=`, and this is a decision, not an
+  omission.** *Consequences* already said the numbers are the lock's; the reasons the caret
+  stays: an `=` in a library manifest propagates to every consumer, and one 0.23.x per graph
+  means a consumer needing any other 0.23.x cannot resolve (the Cargo book's own warning
+  against upper bounds below the next incompatible version); two security fixes have already
+  landed inside 0.23.x (RUSTSEC-2024-0336, patched 0.23.5; RUSTSEC-2024-0399, patched 0.23.18),
+  each of which an `=` pin turns into a manual bump under a red advisory; and the pin buys
+  nothing the committed `Cargo.lock` does not already give this repository's tests — cargo does
+  not move a lock on its own. **The promise, stated for the right reader:** this engine and
+  ktls-core allocate nothing while a peer's KeyUpdate is handled; rustls's key schedule
+  allocates two boxes per direction it rekeys, a box the `Hkdf` trait signature forces on
+  every provider. The count and the size belong to the rustls and ring this repository's
+  `Cargo.lock` resolves — 0.23.44 and 0.17.14 — and are asserted exactly so that a bump is
+  noticed; they are not a promise to a build with another lock.
+- **The test binds its constants to the lock, and CI asserts the lock.** Step 6c-3 adds two
+  strings, `DERIVED_FROM_RUSTLS = "0.23.44"` and `DERIVED_FROM_RING = "0.17.14"`, read against
+  the workspace `Cargo.lock` *after* the count and size assertions, so that a bump which leaves
+  both numbers unchanged still turns the test red with a sentence naming the old and new
+  versions and this note — otherwise the version in this text goes stale in silence, the
+  failure §4 of `CLAUDE.md` names. Step 6c-4 adds `cargo metadata --locked` as the first step
+  of CI's `fmt · clippy · test` job and `--locked` to the `tls` job's `cargo test` lines: not
+  against drift, which cargo does not do unasked, but against a manifest edit committed without
+  its lock, where the desk and CI would build two different graphs and neither would say so.
+
+The *Bad* consequence *"Every rustls bump now owes a re-derivation of two constants"* therefore
+reads *every rustls **or ring** bump*, and the constant it re-derives for size is read from
+`ring`'s `hmac.rs`, not rustls's `key_schedule.rs`.
+
 ## Why
 
 - **Zero where zero costs forty lines; a counted exception where zero costs a fork.** The

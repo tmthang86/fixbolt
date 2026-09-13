@@ -139,8 +139,17 @@ for arm in $ARMS; do
       sleep "$GAP"
       continue
     fi
+    # **The binary is allowed to fail, and its output is still read.**
+    # `[measured 2026-09-13]` under `set -e` a non-zero exit inside this command
+    # substitution ended the whole script right here, with nothing printed and
+    # no FAIL line — so every identity check below was unreachable for the one
+    # case each was written for. `|| rc=$?` keeps the output and the status;
+    # the checks then run in the order that names the cause best, and the exit
+    # status itself is judged last, after they have had their say. `2>&1` so a
+    # panic or a refusal from the binary travels with them.
+    rc=0
     out=$("$BIN" --mode "$mode" --path "$path" "${tls_args[@]}" "${PINARGS[@]}" \
-            --messages "$MESSAGES" --warmup "$WARMUP")
+            --messages "$MESSAGES" --warmup "$WARMUP" 2>&1) || rc=$?
     # WHAT RAN is read back and checked before anything the run measured is
     # trusted — the same order `check-no-kernel-sleep.sh` learned the hard way
     # after `--mode standard` once printed its banner and ran nothing. A typo
@@ -148,20 +157,34 @@ for arm in $ARMS; do
     # produce a column of figures for the wrong arm.
     echo "$out" | grep -qx "mode: $mode" || { echo "$out"; echo "ran a mode other than '$mode'"; exit 1; }
     echo "$out" | grep -qx "path: $path" || { echo "$out"; echo "ran a path other than '$path'"; exit 1; }
-    # The transport, checked BEFORE the allocation count below rather than
-    # after it: `ktls` expects zero allocations, so a quiet fallback to
-    # userspace would otherwise be caught by the allocs assertion instead of
-    # by this one, naming the wrong defect — `allocs != 0` reads as a hot-path
-    # regression, not as a transport that never took the keys. `[measured
-    # 2026-09-13]` that is exactly what happened here before this check was
-    # moved above the allocs check: the FAIL sentence was `allocs != 0`, not
-    # this one, for a run that had in fact run on the wrong transport.
+    # The transport, checked before the allocation count below and before the
+    # exit status: `ktls` expects zero allocations, so a quiet fallback to
+    # userspace would otherwise be caught by the allocs assertion instead of by
+    # this one, naming the wrong defect — `allocs != 0` reads as a hot-path
+    # regression, not as a transport that never took the keys.
+    #
+    # **Being written above the allocs check was not enough to make it run.**
+    # `[measured 2026-09-13]` a senior review forced the engine's handover off
+    # and this script exited 101 without printing the line below, because the
+    # binary's own `assert_eq!(allocs, 0)` fired first and `set -e` ended the
+    # script inside the command substitution above. Two things changed: `w2w`
+    # now refuses a read-back that does not match its `--tls` flag before it
+    # takes a sample, and the substitution above keeps the status instead of
+    # dying on it. This line is the second reader, and it now reads.
     echo "$out" | grep -qx "tls: $want_tls" || {
       ran_tls=$(echo "$out" | awk '/^tls: /{print $2; exit}')
       echo "$out"
       echo "FAIL: $mode:$path:$tls ran tls '${ran_tls:-<none>}' when '$want_tls' was required"
       exit 1
     }
+    # The status, after the three identity checks and before the figures: a run
+    # that ended any other way than by printing them is not a measurement, and
+    # the checks above get to name the cause first when they can.
+    if [ "$rc" -ne 0 ]; then
+      echo "$out"
+      echo "FAIL: $mode:$path:$tls — $BIN exited $rc"
+      exit 1
+    fi
     # A run whose allocation count is not zero is not a figure about this
     # engine, and the binary already asserts it; this is the second reader,
     # because a `set -e` that never looked would be a green nobody read.

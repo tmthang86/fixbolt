@@ -2197,7 +2197,14 @@ pub fn connect_and_serve_with<
 /// The handshake never blocks this thread: the socket is non-blocking, and
 /// while the venue has not answered the loop idles on the socket's readiness
 /// through the engine's own wait strategy, so `standard` sleeps rather than
-/// spins (non-negotiable 4).
+/// spins (non-negotiable 4). **Measured, not asserted**:
+/// `tests/tls_initiator_wire.rs::the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits`
+/// reads this thread's `utime + stime` out of `/proc` over three seconds
+/// against a venue that accepts and never speaks. `[measured 2026-09-13]`
+/// **0.00% of a core**, found sleeping 30 reads out of 30; with the
+/// `idle_with` call below deleted, **99.90%** and 0 out of 30.
+/// `scripts/check-standard-gives-the-core-back.sh` cannot see this loop —
+/// it traces `tools/w2w`, which is an acceptor.
 ///
 /// # A venue that never answers
 ///
@@ -2582,6 +2589,10 @@ fn dial<
                 // In `standard` this sleeps until the socket is readable or the
                 // strategy's own timeout passes, which also bounds how late the
                 // deadline above is noticed.
+                //
+                // Deleting this arm is the reversal of
+                // `tests/tls_initiator_wire.rs::the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits`:
+                // `[measured 2026-09-13]` 0.00% of a core becomes 99.90%.
                 match t.source() {
                     Some(source) => engine.idle_with(&[Interest::readable(source)]),
                     None => engine.idle(),

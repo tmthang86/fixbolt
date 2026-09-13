@@ -423,15 +423,26 @@ driven on the acceptor's own thread, so no scheduler decides what this engine se
 construction is guarded by its own reversals rather than by the repetitions. Nothing here is a
 latency measurement: [DESIGN.md](DESIGN.md) §8's TLS row is still empty.
 
-**Four test files landed since, Sửa 6 of the `tls` plan — CI run id: pending.**
-`crates/engine/tests/tls_client.rs`, `tls_initiator_wire.rs`, `tls_settings_wire.rs` and
-`tls_key_update.rs` all ran green on the §9 desk in desktop configuration (the commit messages
-of `fb6a27c`, `60c480a`, `2e1a543`, `2d33d2a`, `9b4d305`, `da9fe6e` and `daec090` each quote the
-local run), but none of this section's CI evidence covers them. Per the plan's own delivery
-log, CI is named green only through `eec1403` (run `34734714388`); `da9fe6e` and `daec090` —
-the two commits that add the kTLS arm to `scripts/check-no-kernel-sleep.sh` and
-`scripts/check-standard-gives-the-core-back.sh`, and the allocation-exactness tests in
-`tls_key_update.rs` — have **no CI run at all yet**. Do not read this section's existing run
-ids as covering either commit.
+**Three test files landed since, Sửa 6 of the `tls` plan.** `crates/engine/tests/tls_client.rs`,
+`tls_initiator_wire.rs` and `tls_key_update.rs` are new; `tls_settings_wire.rs` already existed
+on `main` before this plan (`git ls-tree main crates/engine/tests/` carries it unchanged) and
+does not belong in this count. All four files ran green on the §9 desk in desktop configuration
+(the commit messages of `fb6a27c`, `60c480a`, `2e1a543`, `2d33d2a`, `9b4d305`, `da9fe6e` and
+`daec090` each quote the local run).
+
+CI is not "pending" for these commits — it ran, and for two of them it was red. Per the plan's
+own delivery log, CI is named green through `eec1403` (run `34734714388`). `da9fe6e` (run
+[`34735819579`](https://github.com/tmthang86/fixbolt/actions/runs/34735819579)) and `daec090`
+(run [`34736430150`](https://github.com/tmthang86/fixbolt/actions/runs/34736430150)) each ran
+and were **RED**, both times in the same two jobs — "The engine thread never sleeps in the
+kernel" and "A standard engine gives the core back" — because those two non-negotiable-4 jobs
+built `fixbolt-w2w` without `--features tls`, so the kTLS arm Sửa 6 step 6b added to each
+script reported `TLS arm SKIPPED, NOT PASSED` and exited 2. Commit `6017991` ("ci: the two
+non-negotiable-4 jobs build w2w with tls, after the runner says READY") fixed the two jobs, and
+its own run,
+[`34736957859`](https://github.com/tmthang86/fixbolt/actions/runs/34736957859), is green across
+every job. **The branch tip is green; the two commits before the fix were run and were red, not
+unrun** — do not read `da9fe6e` or `daec090` as either "no CI" or "covered by the green run
+above"; each has its own run id and its own (red) result.
 
 ---

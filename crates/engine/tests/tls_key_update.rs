@@ -79,6 +79,22 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
 
+/// How many individual allocation **sizes** one counting window records.
+///
+/// `[measured 2026-09-13]` a senior review found the failure messages here
+/// diagnosable only with a debugger: they printed the count and the largest
+/// size, so a window of five said nothing about what the fifth allocation was.
+/// Every size in the window is recorded instead, up to this many — the window
+/// under test holds four, and a window that holds more is the failure this is
+/// here to name. Fixed size, in statics: recording a size must not itself
+/// allocate, so no `Vec` can be involved.
+const RECORDED: usize = 16;
+
+/// The sizes of the first [`RECORDED`] allocations of the window now open, and
+/// how many the window has seen. Reset by [`counted`], written by [`note`].
+static SIZE_OF: [AtomicUsize; RECORDED] = [const { AtomicUsize::new(0) }; RECORDED];
+static SIZE_N: AtomicUsize = AtomicUsize::new(0);
+
 thread_local! {
     /// Whether allocations on **this** thread are counted. Const-initialised
     /// and `Drop`-free, so reading it neither allocates nor registers a
@@ -91,6 +107,12 @@ fn note(size: usize) {
     if ARMED.try_with(Cell::get).unwrap_or(false) {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
         LARGEST.fetch_max(size, Ordering::Relaxed);
+        // `get`, not an index: past `RECORDED` the size is dropped and the
+        // count below says so. Allocation-free, which is the whole point.
+        let i = SIZE_N.fetch_add(1, Ordering::Relaxed);
+        if let Some(slot) = SIZE_OF.get(i) {
+            slot.store(size, Ordering::Relaxed);
+        }
     }
 }
 
@@ -119,18 +141,48 @@ unsafe impl GlobalAlloc for Counting {
 static A: Counting = Counting;
 
 /// What one counting window saw on this thread.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Window {
     /// Allocations and reallocations.
     count: usize,
     /// The largest size requested.
     largest: usize,
+    /// The size of each of the first [`RECORDED`] of them, in order.
+    sizes: [usize; RECORDED],
+    /// How many of `sizes` are meaningful — `count`, capped at [`RECORDED`].
+    kept: usize,
 }
 
 impl Window {
     fn add(&mut self, other: Window) {
         self.count += other.count;
         self.largest = self.largest.max(other.largest);
+        for size in other.sizes.iter().take(other.kept) {
+            if self.kept < RECORDED {
+                self.sizes[self.kept] = *size;
+                self.kept += 1;
+            }
+        }
+    }
+}
+
+/// **Every size, not only the largest** — the failure message is the whole
+/// diagnosis, so it carries the shape of the window and not a summary of it.
+/// Four boxes of 184 reads `count 4, largest 184, sizes [184, 184, 184, 184]`;
+/// a fifth allocation this engine added shows up as itself.
+impl std::fmt::Debug for Window {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Window {{ count: {}, largest: {}, sizes: {:?}",
+            self.count,
+            self.largest,
+            &self.sizes[..self.kept]
+        )?;
+        if self.count > self.kept {
+            write!(f, " and {} more, unrecorded", self.count - self.kept)?;
+        }
+        f.write_str(" }")
     }
 }
 
@@ -139,12 +191,20 @@ impl Window {
 fn counted<T>(f: impl FnOnce() -> T) -> (T, Window) {
     let before = ALLOCS.load(Ordering::Relaxed);
     LARGEST.store(0, Ordering::Relaxed);
+    SIZE_N.store(0, Ordering::Relaxed);
     ARMED.with(|a| a.set(true));
     let out = f();
     ARMED.with(|a| a.set(false));
+    let kept = SIZE_N.load(Ordering::Relaxed).min(RECORDED);
+    let mut sizes = [0usize; RECORDED];
+    for (slot, seen) in sizes.iter_mut().zip(SIZE_OF.iter()).take(kept) {
+        *slot = seen.load(Ordering::Relaxed);
+    }
     let w = Window {
         count: ALLOCS.load(Ordering::Relaxed) - before,
         largest: LARGEST.load(Ordering::Relaxed),
+        sizes,
+        kept,
     };
     (out, w)
 }
@@ -166,8 +226,50 @@ const RUSTLS_KEY_SCHEDULE_ALLOCS: usize = 4;
 /// The size of each of those boxes: a `Box<dyn HkdfExpander>` returned by
 /// `Hkdf::expander_for_okm` (`rustls-0.23.44/src/crypto/tls13.rs:134-168`),
 /// holding `ring`'s HMAC key for the 32-byte PRK. `[measured 2026-09-13]` 184
-/// bytes, by backtrace. A different size is a different rustls.
+/// bytes, by backtrace.
+///
+/// **Two crates own this number.** rustls decides that there is a box; `ring`
+/// 0.17.14 decides how big the key inside it is. A different size is a
+/// different rustls **or** a different ring, and `assert_key_schedule_only`
+/// names both, at the versions `Cargo.lock` resolved, rather than sending the
+/// next reader to one changelog.
 const RUSTLS_HKDF_EXPANDER_BOX: usize = 184;
+
+/// The workspace lock file, located at **compile** time so that a test run from
+/// any working directory finds it.
+const CARGO_LOCK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock");
+
+/// Every version of `name` that `Cargo.lock` resolves, as `"0.23.44"`, or a
+/// sentence saying where to look when it cannot be read.
+///
+/// `[measured 2026-09-13]` a senior review found the two messages below naming
+/// only rustls: 184 bytes is a `Box<dyn HkdfExpander>` **wrapping a `ring` HMAC
+/// key**, so a `ring` bump moves the size and a rustls bump moves the count,
+/// and each was being reported as the other's fault — or as this engine's.
+/// Neither crate publishes its version to a dependent at compile time, so the
+/// number comes from the lock file the build resolved, read on the failing
+/// path only. Called from a failure message, never inside a counting window.
+fn locked_versions(name: &str) -> String {
+    let Ok(text) = std::fs::read_to_string(CARGO_LOCK) else {
+        return format!("<unread: {CARGO_LOCK}>");
+    };
+    let wanted = format!("name = \"{name}\"");
+    let mut found: Vec<&str> = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() == wanted
+            && let Some(v) = lines.next()
+            && let Some(rest) = v.trim().strip_prefix("version = ")
+        {
+            found.push(rest.trim_matches('"'));
+        }
+    }
+    if found.is_empty() {
+        format!("<not in {CARGO_LOCK}>")
+    } else {
+        found.join(" and ")
+    }
+}
 
 /// **Serialises the tests of this file.** `/proc/net/tls_stat` is one set of
 /// counters for the namespace, and `ALLOCS` is one counter for the process.
@@ -799,17 +901,23 @@ fn initiator_pair(
 }
 
 /// `the_counter_is_live`: one `Vec::with_capacity(3)` inside a window counts
-/// once, at 3 bytes. Without it a window reading zero proves nothing.
+/// once, at 3 bytes, **and is recorded as a size of its own**. Without it a
+/// window reading zero proves nothing — and without the third assertion the
+/// `sizes` every failure message below prints could be empty for a live count.
 fn assert_the_counter_is_live() {
     let (probe, live) = counted(|| Vec::<u8>::with_capacity(3));
     drop(probe);
     assert_eq!(
-        live,
-        Window {
-            count: 1,
-            largest: 3
-        },
-        "the_counter_is_live: one Vec::with_capacity(3) must count once, at 3 bytes"
+        (live.count, live.largest),
+        (1, 3),
+        "the_counter_is_live: one Vec::with_capacity(3) must count once, at 3 \
+         bytes; the window read {live:?}"
+    );
+    assert_eq!(
+        &live.sizes[..live.kept],
+        &[3],
+        "the_counter_is_live: the per-allocation sizes every message below \
+         prints must hold that one allocation; the window read {live:?}"
     );
 }
 
@@ -976,6 +1084,13 @@ fn a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces() {
 
 /// The three assertions on a KeyUpdate window, in the order that names the
 /// cause best: ktls-core's buffer growing first, then the count, then the size.
+///
+/// **Both numbers are owned by two crates, and the messages say which.**
+/// `RUSTLS_KEY_SCHEDULE_ALLOCS` is how many boxes rustls's key schedule makes;
+/// `RUSTLS_HKDF_EXPANDER_BOX` is how big `ring`'s HMAC key inside one of them
+/// is. A bump of **either** moves a number here, so each message names both at
+/// their resolved versions and says which shape points at which — a message
+/// that blamed only rustls sent the next reader to the wrong changelog.
 fn assert_key_schedule_only(window: Window, who: &str) {
     assert!(
         window.largest < CONTROL_RECORD_BUF,
@@ -985,18 +1100,34 @@ fn assert_key_schedule_only(window: Window, who: &str) {
         window.largest
     );
     assert_eq!(
-        window.count, RUSTLS_KEY_SCHEDULE_ALLOCS,
+        window.count,
+        RUSTLS_KEY_SCHEDULE_ALLOCS,
         "{who}: {window:?} — TlsTransport::recv/send allocated a number of times \
          other than the {RUSTLS_KEY_SCHEDULE_ALLOCS} rustls key-schedule boxes \
          while handling the counterparty's KeyUpdate and answering under the new \
-         key. More is an allocation this engine or ktls-core added; fewer or a \
-         different number means rustls changed its key-schedule allocation; \
-         re-derive from key_schedule.rs and update ADR-0063"
+         key. Resolved here: rustls {rustls}, ring {ring}, ktls-core {ktls} \
+         (from {CARGO_LOCK}). Read `sizes` above: {RUSTLS_KEY_SCHEDULE_ALLOCS} \
+         entries of {RUSTLS_HKDF_EXPANDER_BOX} plus something else is an \
+         allocation this engine or ktls-core added, and the odd size names it; \
+         a different count of {RUSTLS_HKDF_EXPANDER_BOX}-byte entries is rustls \
+         changing how many expanders its key schedule boxes \
+         (tls13/key_schedule.rs). Re-derive both constants and update ADR-0063",
+        rustls = locked_versions("rustls"),
+        ring = locked_versions("ring"),
+        ktls = locked_versions("ktls-core"),
     );
     assert_eq!(
-        window.largest, RUSTLS_HKDF_EXPANDER_BOX,
-        "{who}: {window:?} — rustls changed its key-schedule allocation; re-derive \
-         from key_schedule.rs and update ADR-0063"
+        window.largest,
+        RUSTLS_HKDF_EXPANDER_BOX,
+        "{who}: {window:?} — a rustls key-schedule box is no longer \
+         {RUSTLS_HKDF_EXPANDER_BOX} bytes. Resolved here: rustls {rustls}, ring \
+         {ring} (from {CARGO_LOCK}). The box is a `Box<dyn HkdfExpander>` from \
+         rustls's `Hkdf::expander_for_okm` (crypto/tls13.rs) **wrapping ring's \
+         HMAC key**, so its size is ring's to change as much as rustls's: a \
+         `ring` bump moves it with rustls untouched. Re-derive \
+         RUSTLS_HKDF_EXPANDER_BOX and update ADR-0063",
+        rustls = locked_versions("rustls"),
+        ring = locked_versions("ring"),
     );
 }
 

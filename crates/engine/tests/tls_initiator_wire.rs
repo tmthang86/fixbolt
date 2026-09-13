@@ -21,6 +21,7 @@
 //! | `dial` adds before the handshake is decided | `the_dial_loop_adds_no_connection_before_the_handshake_is_decided` |
 //! | A venue that accepts TCP and never speaks hangs `dial` for ever | `a_counterparty_that_accepts_and_never_speaks_tls_is_dropped_at_the_deadline` |
 //! | A handshake that really fell back is not reported, or not refused | `an_initiator_that_fell_back_is_reported_and_refused_when_the_kernel_was_demanded` |
+//! | `standard` spins while the handshake waits on the venue | `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits` |
 //!
 //! # What this file does NOT prove
 //!
@@ -28,8 +29,6 @@
 //!   in `hft` mode.** `connect_and_serve_tls` is `standard` only, and
 //!   `scripts/check-no-kernel-sleep.sh` traces `tools/w2w`, an acceptor; it
 //!   cannot see this loop at all.
-//! - **That `standard` sleeps rather than spins while the handshake waits.** The
-//!   loop idles on `Interest::readable(socket)`; nothing here measures CPU.
 //! - **No latency and no allocation count.** The handshake is the carve-out of
 //!   non-negotiable 1; after it the session path is the one `tls_client.rs`
 //!   already exercises.
@@ -40,7 +39,7 @@
 #![allow(clippy::indexing_slicing)]
 
 use std::io::Read;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::ops::Range;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -720,5 +719,248 @@ fn a_ca_path_that_names_no_file_is_refused_by_name() {
     assert!(
         said.contains("could not be opened"),
         "a missing file must not read like a file with the wrong contents: {said}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Non-negotiable 4's second half, for the dial loop.
+//
+// `[added 2026-09-13]` a senior review read `connect_and_serve_tls`'s rustdoc —
+// "the loop idles on the socket's readiness through the engine's own wait
+// strategy, so `standard` sleeps rather than spins" — and found no test behind
+// it, and this file's own header saying "nothing here measures CPU". Prose does
+// not hold a constraint (CLAUDE.md §4): either something reads it or the
+// sentence goes. This is the something.
+//
+// `scripts/check-standard-gives-the-core-back.sh` cannot cover this loop: it
+// traces `tools/w2w`, which is an acceptor, and there is no binary that dials.
+// So the measurement is the script's, in Rust, on the one thread that matters.
+// ---------------------------------------------------------------------------
+
+/// USER_HZ. `utime` and `stime` in `/proc/<pid>/task/<tid>/stat` are in these
+/// units on Linux whatever `CONFIG_HZ` the kernel was built with, which is what
+/// `getconf CLK_TCK` reports and what
+/// `scripts/check-standard-gives-the-core-back.sh` reads from it.
+const CLK_TCK: f64 = 100.0;
+
+/// How long the engine thread's CPU is measured for.
+///
+/// Three seconds is thirty of the `standard` engine's 100 ms poll timeouts, so
+/// a sleeping thread has done thirty full turns inside the window and the
+/// figure is not one about a thread that happened to be between wakeups.
+const CPU_WINDOW: Duration = Duration::from_secs(3);
+
+/// How many times the thread's scheduler state is read across that window.
+const CPU_SAMPLES: usize = 30;
+
+/// **The ceiling, and why it is this number and not a tighter one.**
+///
+/// `[measured 2026-09-13]` on this desk the loop reads **0.00%** as written and
+/// **100.00%** with the `idle_with` call removed, so anything between the two
+/// separates them. The gap is 100 points wide and the ceiling sits at 20, which
+/// buys margin in both directions:
+///
+/// * **Against a false red.** A sleeping thread's cost is thirty turns in three
+///   seconds; it is 0.00% here and would have to become two hundred times
+///   busier to reach this line. A loaded machine does not make a sleeping
+///   thread burn CPU — it makes it wait longer, which shows up as *less*.
+/// * **Against a false green.** A spinning thread asks for a whole core. To
+///   read under 20% it would have to be given less than a fifth of one, which
+///   needs a machine oversubscribed more than fivefold — and this test binary's
+///   own tests are serialised by [`kernel_counters`], so the contention it can
+///   create is bounded.
+const CPU_CEILING_PCT: f64 = 20.0;
+
+/// `utime + stime` in clock ticks, and the scheduler state letter, for one
+/// thread of this process — `None` if the thread is gone.
+///
+/// **Counted from the last `)`.** The `comm` field is parenthesised and may
+/// itself contain spaces, so a field index taken from the start of the line is
+/// wrong for any thread whose name has one.
+fn task_cpu_and_state(tid: &str) -> Option<(u64, char)> {
+    let text = std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).ok()?;
+    let (_, rest) = text.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    // After the state (field 3) come ppid, pgrp, session, tty_nr, tpgid, flags,
+    // minflt, cminflt, majflt, cmajflt — ten — and then utime (14), stime (15).
+    let utime: u64 = fields.nth(10)?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+    Some((utime.saturating_add(stime), state))
+}
+
+/// Accept one connection within `within`, or say nothing came.
+fn accept_within(listener: &TcpListener, within: Duration) -> Option<TcpStream> {
+    let deadline = Instant::now() + within;
+    loop {
+        match listener.accept() {
+            Ok((sock, _)) => return Some(sock),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() > deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// **`standard` sleeps rather than spins while the initiator's TLS handshake
+/// waits on the venue** — non-negotiable 4's second half, on the one loop no
+/// script can reach.
+///
+/// The venue is a bare `TcpListener`: it accepts the TCP connection, never
+/// answers the `ClientHello`, and `LogonTimeout` is off, so the dial loop sits
+/// in exactly the state the rustdoc describes for as long as the measurement
+/// needs. The engine thread announces its own tid before it starts, and its
+/// `utime + stime` is read from `/proc` either side of a [`CPU_WINDOW`].
+///
+/// # Four assertions, because a low CPU figure is passable by three broken loops
+///
+/// The lesson is `scripts/check-standard-gives-the-core-back.sh`'s, and it is
+/// the same lesson here:
+///
+/// 1. **CPU under [`CPU_CEILING_PCT`]** — a loop that spins fails this and
+///    nothing else.
+/// 2. **The thread was found sleeping** at least once across [`CPU_SAMPLES`]
+///    reads of its scheduler state. A thread that has *died* also costs 0%.
+/// 3. **It never logged on** inside the window, so the figure is about the
+///    handshake and not about an idle established session, which is a different
+///    branch of the same loop (`engine.idle()`).
+/// 4. **It was still wakeable afterwards.** The venue's socket is closed and a
+///    second dial must arrive — a loop asleep on a timeout it never notices
+///    passes 1, 2 and 3 and is not the loop the rustdoc claims.
+///
+/// `[measured 2026-09-13]` as written: 0.00%, found sleeping 30 times out of
+/// 30. With the `idle_with(&[Interest::readable(source)])` arm of `dial`
+/// deleted: 100.00%, found sleeping 0 times out of 30.
+#[test]
+fn the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits() {
+    let _counters = kernel_counters();
+    let (cert, _key) = pki();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    listener
+        .set_nonblocking(true)
+        .expect("a bounded accept, so a hang is a red with a sentence");
+    let addr = listener.local_addr().expect("bound").to_string();
+
+    let (tid_tx, tid_rx) = std::sync::mpsc::channel::<String>();
+    let handles = Handles::new();
+    let seen = handles.observer();
+    let admin = handles.admin();
+    let dialled = addr.clone();
+    let tls = client_tls(cert, false);
+    // `LogonTimeout=0` — off — so nothing but this test ends the handshake.
+    let cfg = initiator_cfg().with_logon_timeout_ms(0);
+    let engine = std::thread::spawn(move || {
+        // The tid of the thread that runs `dial`, from inside it: the dial loop
+        // is the caller's thread, so this is the thread under measurement.
+        // `/proc/thread-self` resolves to `<pid>/task/<tid>`, as `tools/w2w`
+        // reads it — no dependency and no `gettid` binding.
+        let link = std::fs::read_link("/proc/thread-self").expect("/proc is mounted");
+        let path = link.to_string_lossy().into_owned();
+        let tid = path.rsplit('/').next().unwrap_or_default().to_owned();
+        let _ = tid_tx.send(tid);
+        fixbolt_engine::connect_and_serve_tls::<_, fixbolt_engine::journal::Store, _, _>(
+            &dialled,
+            cfg,
+            Never,
+            Policy::new(50, 200).expect("a legal pair"),
+            fixbolt_engine::recovery::NoRecovery,
+            fixbolt_engine::msglog::NoLog,
+            handles,
+            tls,
+        )
+    });
+
+    let tid = tid_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the engine thread never announced its tid");
+    let silent = accept_within(&listener, Duration::from_secs(10))
+        .expect("the initiator never dialled, so there is no handshake to measure");
+    // Read nothing from `silent`: the `ClientHello` stays in the kernel's
+    // buffer, this end sends nothing back, and the initiator's socket stays
+    // unreadable — which is the state under test.
+    //
+    // Settle first. The dial itself builds a rustls connection and writes, and
+    // that work is real but is not what the rustdoc claims.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let (before, _) = task_cpu_and_state(&tid).expect("the engine thread's /proc/.../stat");
+    let started = Instant::now();
+    let mut sleeping = 0usize;
+    let mut alive = 0usize;
+    let mut states = String::new();
+    for _ in 0..CPU_SAMPLES {
+        std::thread::sleep(CPU_WINDOW / u32::try_from(CPU_SAMPLES).unwrap_or(1));
+        if let Some((_, state)) = task_cpu_and_state(&tid) {
+            alive += 1;
+            states.push(state);
+            if state == 'S' {
+                sleeping += 1;
+            }
+        }
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    let (after, _) =
+        task_cpu_and_state(&tid).expect("the engine thread vanished during the window");
+    let pct = 100.0 * (after - before) as f64 / CLK_TCK / elapsed;
+
+    // 3, before the two that are about the window: a session that came up
+    // would make the figure be about `engine.idle()` instead.
+    let mut events = Vec::new();
+    seen.events(&mut events);
+    let kinds: Vec<EventKind> = events
+        .iter()
+        .map(fixbolt_engine::observe::Event::kind)
+        .collect();
+    assert!(
+        !kinds.contains(&EventKind::LoggedOn),
+        "a session came up against a venue that never spoke TLS, so the window \
+         above is not about a waiting handshake: {kinds:?}"
+    );
+    // Then that the measurement happened at all: a thread that has gone costs
+    // 0% CPU and reads no state, and both of the assertions below would pass
+    // on nothing.
+    assert!(
+        alive > 0,
+        "the engine thread could not be read at all across the window, so \
+         nothing was measured"
+    );
+    // 1 — the assertion a spinning loop fails, and the one the rustdoc claims.
+    // Ahead of 2 so that a spin is named as a spin, with its figure, rather
+    // than as "never found sleeping".
+    assert!(
+        pct < CPU_CEILING_PCT,
+        "the dial loop burned {pct:.2}% of a core over {elapsed:.2} s while \
+         waiting for a venue that never answered, against a ceiling of \
+         {CPU_CEILING_PCT}% — it is spinning, not idling on the socket's \
+         readiness, and `standard` must give the core back (non-negotiable 4, \
+         ADR-0013). Found sleeping {sleeping} of {alive} reads ({states})"
+    );
+    // 2.
+    assert!(
+        sleeping > 0,
+        "the engine thread was never found sleeping across {alive} reads \
+         ({states}) — 0% CPU is also what a thread that has died reads, and a \
+         thread always in R is spinning below this test's ceiling"
+    );
+
+    // 4. Asleep is not the same as unwakeable: close the venue's socket, and
+    // the loop must notice the ending and dial again.
+    drop(silent);
+    assert!(
+        accept_within(&listener, Duration::from_secs(10)).is_some(),
+        "the dial loop slept through the venue closing its socket: {pct:.2}% \
+         of a core is what an engine that never wakes reads too"
+    );
+
+    admin.shutdown(0);
+    let stopped = join_within(engine, Duration::from_secs(10), "connect_and_serve_tls");
+    assert!(stopped.is_ok(), "came back with an error: {stopped:?}");
+    println!(
+        "dial-loop idle: {pct:.2}% of a core over {elapsed:.2} s, found \
+         sleeping {sleeping}/{alive} ({states})"
     );
 }

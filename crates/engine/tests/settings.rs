@@ -1401,3 +1401,133 @@ TargetCompID=ISLD
         .expect_err("an initiator presents no server certificate");
     assert_eq!(*e.problem(), Problem::WrongRole, "left: {e}");
 }
+
+/// **A `WrongRole` refusal names a door that takes the file, not one more
+/// refusal.**
+///
+/// `[added 2026-09-13]` a senior review of the `tls` branch found the two-step
+/// dance: `into_tls_table()` on an initiator file that asks for TLS answered
+/// "call into_initiator()", and `into_initiator()` then refused the same file
+/// with [`Problem::NeedsTlsDoor`]. Both refusals were right and the pair was
+/// one round trip too many — the role **and** the `SocketUseSSL=` line are
+/// known at the first one, so the first one can name the last door.
+///
+/// Eight refusals, which is every wrong-door-for-the-role there is: two roles,
+/// with TLS and without, each poured into both doors of the other role. Each
+/// asserts the hint names the door that works **and** does not name the door
+/// that would refuse it again — `into_initiator` and `into_tls_initiator` are
+/// different strings, and it is exactly that difference the dance turned on.
+#[cfg(feature = "tls")]
+#[test]
+fn a_wrong_role_refusal_names_a_door_that_takes_the_file() {
+    const PLAIN_INITIATOR: &str = "\
+[DEFAULT]
+ConnectionType=initiator
+BeginString=FIX.4.4
+SenderCompID=TW44
+SocketConnectHost=venue.example.com
+SocketConnectPort=9880
+
+[SESSION]
+TargetCompID=ISLD
+";
+    let parse = |text: &str| Settings::parse(text).expect("a legal file");
+
+    // (what was poured, into which door, the door the hint must name, the door
+    // it must NOT name — the one that would refuse this same file again).
+    let refusals = [
+        (
+            "a TLS initiator file into into_table()",
+            parse(TLS_INITIATOR)
+                .into_table()
+                .expect_err("an initiator file builds no acceptor table"),
+            "into_tls_initiator()",
+            "into_initiator()",
+        ),
+        (
+            "a TLS initiator file into into_tls_table()",
+            parse(TLS_INITIATOR)
+                .into_tls_table()
+                .expect_err("an initiator presents no server certificate"),
+            "into_tls_initiator()",
+            "into_initiator()",
+        ),
+        (
+            "a plain initiator file into into_table()",
+            parse(PLAIN_INITIATOR)
+                .into_table()
+                .expect_err("an initiator file builds no acceptor table"),
+            "into_initiator()",
+            "into_tls_initiator()",
+        ),
+        (
+            "a plain initiator file into into_tls_table()",
+            parse(PLAIN_INITIATOR)
+                .into_tls_table()
+                .expect_err("an initiator presents no server certificate"),
+            "into_initiator()",
+            "into_tls_initiator()",
+        ),
+        (
+            "a TLS acceptor file into into_initiator()",
+            parse(TLS_ACCEPTOR)
+                .into_initiator()
+                .expect_err("an acceptor does not dial"),
+            "into_tls_table()",
+            "into_table()",
+        ),
+        (
+            "a TLS acceptor file into into_tls_initiator()",
+            parse(TLS_ACCEPTOR)
+                .into_tls_initiator()
+                .expect_err("an acceptor does not dial"),
+            "into_tls_table()",
+            "into_table()",
+        ),
+        (
+            "a plain acceptor file into into_initiator()",
+            parse(TWO_COUNTERPARTIES)
+                .into_initiator()
+                .expect_err("an acceptor does not dial"),
+            "into_table()",
+            "into_tls_table()",
+        ),
+        (
+            "a plain acceptor file into into_tls_initiator()",
+            parse(TWO_COUNTERPARTIES)
+                .into_tls_initiator()
+                .expect_err("an acceptor does not dial"),
+            "into_table()",
+            "into_tls_table()",
+        ),
+    ];
+
+    for (what, e, door, dance) in &refusals {
+        assert_eq!(*e.problem(), Problem::WrongRole, "{what}, left: {e}");
+        let said = e.to_string();
+        assert!(
+            said.contains(door),
+            "{what}: the refusal does not name {door}, the door that takes it: {said}"
+        );
+        assert!(
+            !said.contains(dance),
+            "{what}: the refusal names {dance}, which would refuse this same \
+             file a second time: {said}"
+        );
+    }
+
+    // And each named door really does take its file — otherwise the eight
+    // assertions above only prove that four strings were spelled correctly.
+    parse(TLS_INITIATOR)
+        .into_tls_initiator()
+        .expect("into_tls_initiator takes a TLS initiator file");
+    parse(PLAIN_INITIATOR)
+        .into_initiator()
+        .expect("into_initiator takes a plain initiator file");
+    parse(TLS_ACCEPTOR)
+        .into_tls_table()
+        .expect("into_tls_table takes a TLS acceptor file");
+    parse(TWO_COUNTERPARTIES)
+        .into_table()
+        .expect("into_table takes a plain acceptor file");
+}

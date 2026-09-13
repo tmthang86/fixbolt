@@ -654,8 +654,9 @@ offering the caller the choice. All of it is behind `--features tls`, on Linux.
 changes the socket's type cannot be expressed. `presession.rs` was not modified.
 
 **The initiator side landed in Sửa 6, `[2026-09-13]`.** `connect_and_serve_tls` and
-`connect_and_serve_tls_with` dial over `tls::ClientTls`/`tls::Side::Client`, generic `tls.rs`
-over `Side` (`Server`/`Client`) so the acceptor's four `tests/tls*.rs` did not change a line.
+`connect_and_serve_tls_with` dial over `tls::ClientTls`/`tls::Client`, generic `tls.rs`
+over the `Side` trait (`Server`/`Client` are its two implementors) so the acceptor's four
+`tests/tls*.rs` did not change a line.
 `dial` bounds the handshake by the connection's `LogonTimeout` (`0` = unbounded), because the
 session-level timer does not watch a handshake that has produced no `Logon` yet. **The
 initiator never resumes a TLS session — every redial is a full handshake**
@@ -679,15 +680,23 @@ reasoning, sources and the alternatives rejected: ADR-0063.
 `userspace`, read back through `Engine::tls_mode`) but nothing here has timed a rekey.
 **Still unverified:** which kernel version and cipher suites are the floor (ADR-0005 open
 question 2). **Question 6 — whether a session survives a TLS 1.3 key update under kTLS — is
-answered at phase-1 level**: it does, for the rekey rates a rustls or OpenSSL peer initiates on
-its own (ADR-0063); a peer that rekeys faster than RFC 8446's AES-GCM ceiling is the
-deployment's own concern. **Question 3 — what asserts which mode is live — is answered, as of
+answered at phase-1 level**: it does, for a peer that rekeys on its own the way rustls does; a
+peer that never initiates one automatically, such as OpenSSL
+([openssl#23566](https://github.com/openssl/openssl/issues/23566), open), never exercises this
+path at all, and a peer that rekeys faster than RFC 8446's AES-GCM ceiling is the deployment's
+own concern (ADR-0063). **Question 3 — what asserts which mode is live — is answered, as of
 step 4b [merged 2026-09-12, `e728c16`]:** `Transport::tls_mode()` is read by
 `serve_tls_with_offload`, a handshake that lands in userspace raises
 `observe::EventKind::TlsFellBackToUserspace` regardless of `TlsRequireKernel`, and
 `TlsRequireKernel=Y` refuses a deployment whose kernel cannot offload — both halves of
-ADR-0060 decision 1, with `crates/engine/tests/tls_mode.rs` driving every arm, and
-`Engine::tls_mode(ConnId)` gives the same read-back to a caller on either role. **The
+ADR-0060 decision 1, with `crates/engine/tests/tls_mode.rs` driving every arm. **The
+read-back itself, `Engine::tls_mode(ConnId)`, is a method on `Engine`, not on anything a front
+door hands back**: `serve_tls*` and `connect_and_serve_tls*` build the `Engine` inside
+themselves and return only a `Shutdown` summary once the loop ends, so a deployment going
+through one of those doors cannot call it on either role — only a caller that builds `Engine`
+directly, bypassing the front doors, can read a connection's mode back this way. `tools/w2w`
+does exactly that (its own `TLS_SEEN`/`tls:` line comes from the same read-back, not from a
+front door). The
 configuration-file keys landed too, as of step 4c [2026-09-12] and step 5c [2026-09-13]:**
 `SocketUseSSL` and `TlsRequireKernel` for either role, `ServerCertificateFile`/
 `ServerCertificateKeyFile` acceptor-only, `CertificationAuthoritiesFile`/
@@ -891,7 +900,7 @@ below).
 | The engine thread never sleeps in the kernel (`hft`) | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`: traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid. `[measured 2026-08-30]` Linux 6.18: `accept4`, `recvfrom`, `sendto` and zero of `epoll_wait` / `poll` / `select` / `futex` / `nanosleep` / `sched_yield`. Runs the binary again in `standard` mode and fails if that run does not trip it: rule 4 had two machine checks before this one and both were green with a sleep present |
 | The engine thread never sleeps in the kernel (`hft`), **TLS arm** `[2026-09-13]` | `--tls ktls` traces the same, with no sleeper and the read-back confirming which arm ran | the same script, Sửa 6 step 6b: runs `hft --tls ktls` (no sleeper, the usual socket calls, `tls: kernel` read back) and `--tls userspace` (must read back `tls: userspace`, so the two arms cannot be mistaken for each other). A build without the `tls` feature reports both old halves, then `TLS arm SKIPPED, NOT PASSED`, exit 2, rather than a silent pass |
 | A `standard` engine gives the core back | engine-thread CPU under 5% over a wall-clock window, found sleeping rather than running, **and** a round-trip p50 far below the poll timeout | `scripts/check-standard-gives-the-core-back.sh`. Four assertions, because CPU near zero is also what a dead thread, a run that never reached the mode, and an engine woken by its own timeout report. `[measured 2026-08-30]` a `Block` made to ignore readiness reads 0% CPU, sleeping 20 / 20, p50 99 046 599 ns; only the p50 catches it. Requires `hft` and `yield` to trip it |
-| A `standard` engine gives the core back, **TLS arm** `[2026-09-13]` | the same four assertions, on `standard hft --tls ktls`, plus the mode read back as `kernel` | the same script, Sửa 6 step 6b, the test ADR-0018 decision 4 asked for. `[measured 2026-09-13]` `standard` against `hft --tls ktls` reads engine CPU 99.53% and is correctly red — it is an `hft`-mode check run against the wrong mode, the reversal the script itself demands before trusting its own green |
+| A `standard` engine gives the core back, **TLS arm** `[2026-09-13]` | the same four assertions, on `standard --tls ktls` (not `hft`), plus the mode read back as `kernel` | `scripts/check-standard-gives-the-core-back.sh`'s own TLS-arm block, Sửa 6 step 6b (script lines 221-250): runs `--mode standard --tls ktls` once and judges it green-or-not by the same four assertions as the plain `standard` case, plus the `tls:` read-back. **This arm has no scripted red half** — the script's `for red in hft yield` reversal loop (lines 209-219) covers only the plain arm; nothing here automates a TLS-mode-mismatch reversal. The 99.53% CPU figure is not this script's output: it is a **hand-run** reversal — the standard-mode judgement invoked by hand against an `hft --tls ktls` run — recorded only in commit `da9fe6e`'s message ("standard check on hft --tls ktls: engine CPU 99.53%, red"), not reproduced by any committed script invocation |
 | kTLS can be driven from a plain non-blocking socket | 15 assertions green, and the offloaded data path makes no blocking syscall | `scripts/check-ktls-on-a-plain-socket.sh` (D11, [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md)). `[measured 2026-08-31]` `recvfrom` 3033 + `sendto` 1000 over 1000 round trips and nothing else. Runs a second time with `poll(2)` in the loop and fails if that does not trip it. Skips with exit 2, not a pass, on a kernel that cannot offload |
 | Which TLS mode is actually in force | a session that fell back to the userspace path is detected, not assumed | `crates/engine/tests/tls_mode.rs` drives every arm, since step 4b [2026-09-12, `e728c16`]: `serve_tls_with_offload` reads `Transport::tls_mode()`, a handshake landing in userspace raises `observe::EventKind::TlsFellBackToUserspace` whether or not `TlsRequireKernel` is set, and `TlsRequireKernel=Y` refuses the deployment. **This cell read "no gate exists yet" for two days after the gate existed**, while D11 above said the opposite — one rule, two places, and the table is the place a reader checks. ADR-0005 question 3 is answered; ADR-0005 itself is not edited (§5), the answer is dated here |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, in CI on every push |
