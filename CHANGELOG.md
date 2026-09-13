@@ -83,6 +83,12 @@ below describe what a first release would contain.
   ([ADR-0063](docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)).
   There is no configuration key to turn resumption back on.
 
+- **Every integer configuration value is now read as written, not merely parsed.**
+  `HeartBtInt=+30` and `SocketConnectPort=08080` are refused as `Problem::NotANumber`, and
+  `StartTime=+1:00:00` as `Problem::BadTime`. `Problem::NotANumber` now displays `"expected a
+  number written as digits only — no sign, no leading zero"`, not `"expected a number"`.
+  `docs/CONFIGURATION.md` §1.
+
 ### Fixed
 
 - **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered

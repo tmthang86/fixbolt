@@ -645,3 +645,63 @@ R21-1 (bind trước validate, khôi phục bằng bản sao, byte-identical)
 
 R21-2 và R21-3 do developer chạy và trích (R21-2 đỏ 3/3 sau khi thêm mask; R21-3 đỏ đúng câu
 `Err(Affinity(NotIsolated(CoreId(0))))` sau khi test in giá trị trả về).
+
+### 2026-09-13 — bước 3 XONG (item 73 + 74), và gate của cả plan trên cây 1+3+5
+
+**Item 73.** `number()` kiểm `spelled_exactly_as_digits` trước `parse`; thông điệp mới *"expected a
+number written as digits only — no sign, no leading zero"*; `time_of_day` chỉ nhận chữ số. **Suy luận
+mục 3 của plan đúng**: đỏ-trước cho thấy `StartTime=+1:00:00` và `HeartBtInt=+7` hôm nay **được
+nhận** (`this should not have parsed; it produced 1 configuration(s)`).
+
+**Plan viết sai thứ tự ở nhánh `TimestampPrecision`, và test có sẵn là thứ thấy.** Plan: *kiểm chính
+tả trước rồi mới `number()`*. Làm vậy thì `settings_roles.rs::a_precision_that_is_not_a_number_says_so`
+đỏ — `MICROS` ra `UnsupportedPrecision` thay vì `NotANumber`, vì `number()` giờ trả `NotANumber` cho
+cả *không phải số* lẫn *sai chính tả*. Developer để nhánh này **parse lỏng trước** (`MICROS` →
+`NotANumber`) rồi **kiểm chính tả sau** (`03` → `UnsupportedPrecision`). Cả hai test hôm qua xanh;
+**`settings_roles.rs` diff trống** (manager kiểm). **Cái giá, để senior review cân:** `TimestampPrecision`
+có đường parse riêng, không qua `number()` — ngược ý *một quy tắc ở một chỗ* của §C. Hành vi người
+dùng thấy không đổi so với hôm qua.
+
+**Item 74.** `enum Reader { Literals, Numeric, Prose }`, `const fn reader(key)` khớp đủ 33 khoá không
+`_`, `literals_of_match` khoanh vùng theo dòng mở hàm, vũ trụ tìm kiếm thêm `000`–`999`
+(`MIN_UNIVERSE` 5400), assertion *enumerated ⇒ không `Prose`*. Probe 6 mới, `FLOOR` **đo được 7** ở
+cả hai bộ feature. `Sample` không đổi: probe 6 va `RepeatedKey` ở `SocketConnectPort` (mẫu initiator
+đã có dòng đó), nên developer viết hàm tự do `with_value` **ngoài** `impl Sample` — bản đầu lỡ thêm
+vào `impl Sample`, tự thấy qua `git diff --stat` và dời ra.
+
+**Reversal** (developer chạy, `git diff --stat` trước mỗi lần tin đỏ): R73-3, R74-1, R74-2, R74-3 đỏ
+**đúng nguyên văn** câu dự đoán; R73-2 đỏ đúng phát hiện, chữ khác; R74-3 xanh trước (đúng lỗ plan
+nêu) rồi đỏ sau khi thêm assertion. **R73-3 khôi phục bằng cách sửa lại đúng một từ, không `git
+checkout`** — cảnh báo từ bước 1 tới kịp, đoạn mới trong `CONFIGURATION.md` còn nguyên.
+
+**Gate của cả plan, manager chạy trên cây đã gộp bước 1, 3, 5** (`ff3a407` + bước 3, trước commit này):
+
+```
+cargo fmt --check                                                   exit 0
+cargo clippy --all-targets -- -D warnings                           exit 0
+cargo clippy --all-targets --features affinity -- -D warnings       exit 0
+cargo clippy --all-targets --features fixbolt-engine/tls -- -D warnings  exit 0
+cargo test --all                                    103 result lines, 645 passed, 0 failed, 2 ignored
+cargo test --all --no-default-features              103 result lines, 640 passed, 0 failed, 2 ignored
+cargo test --all --features fixbolt-engine/tls      103 result lines, 683 passed, 0 failed, 2 ignored
+cargo test -p fixbolt-engine --features affinity     44 result lines, 355 passed, 0 failed, 1 ignored
+cargo test -p fixbolt-engine --lib doc_table [--features tls] -- --nocapture   8 passed ×2
+  probe 2 — Default cells: 15 probed, 18 skipped     (tls: 16 / 17)
+  probe 3 — enumerated Values cells: 10 probed, 23 skipped   (tls: 11 / 22)
+  probe 4 — Where cells: 21 probed, 12 skipped       (cả hai)
+  probe 6 — integer Values cells: 7 probed, 26 skipped       (cả hai)
+scripts/check-links.py            373 files, 1990 internal links, no dead internal links
+scripts/check-indexing-debt.sh    181 indexing/slicing sites, ceiling 181 — ok
+scripts/check-no-crate-root-allow.sh   ok — 6 crate roots, 10 manifests, 55 inner attributes, 4 deny lints
+scripts/check-no-optional-deps.sh      ok ×7 builds and tests; libc/rustls/ktls-core/rcgen absent
+R74-1 (arm "acc", khôi phục bằng bản sao, byte-identical)
+  đỏ: docs/CONFIGURATION.md §1: ConnectionType lists ["acceptor", "initiator"] but the parser's
+      match arms read ["acc", "acceptor", "initiator"] — a literal of three or more characters is
+      outside the bounded search, and this is the leg that sees it
+  → khôi phục → 8 passed
+```
+
+**Đếm test khớp từng đồng:** `--features fixbolt-engine/tls` đọc **679** trên `main` sau PR #66; nay
+**683** = +1 bước 1 (`the_site_count…`) +2 bước 3 (`tests/settings.rs`) +1 probe 6. `hft_pinned` cần
+`affinity`, nên chỉ thêm một binary rỗng vào `--all` (102 → 103 dòng) và 3 test vào lượt `affinity`.
+Chưa chạy trên §9; không bước nào ở đây cần.

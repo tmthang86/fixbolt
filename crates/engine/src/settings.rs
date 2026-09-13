@@ -403,7 +403,9 @@ impl fmt::Display for Problem {
             Self::RepeatedKey => "the same key twice in one block",
             Self::MissingKey => "a required key is missing",
             Self::ValueTooLong => "the value is longer than a session configuration can hold",
-            Self::NotANumber => "expected a number",
+            Self::NotANumber => {
+                "expected a number written as digits only — no sign, no leading zero"
+            }
             Self::UnsupportedPrecision => {
                 "expected TimestampPrecision=3, 6 or 9 — this engine writes no other width"
             }
@@ -977,10 +979,25 @@ fn flag((line, value): (usize, &str), key: Key) -> Result<bool, SettingsError> {
 }
 
 /// A key whose value is a number.
+///
+/// **Read exactly as written, not merely parsed** — item 73. `value.parse()`
+/// alone reads `+3` and `03` as `3` (measured against `rustc` 1.98.0), which
+/// is looser than every *Values* cell this engine documents for an integer
+/// key, and was the gap `TimestampPrecision` closed for its own width first
+/// (`docs/CONFIGURATION.md` §1, `spelled_exactly_as_digits`'s own doc comment
+/// gives the full history). Checked here, once, for the other seven keys
+/// that call this function bare.
 fn number<T: std::str::FromStr>(
     (line, value): (usize, &str),
     key: Key,
 ) -> Result<T, SettingsError> {
+    if !spelled_exactly_as_digits(value) {
+        return Err(SettingsError::at(
+            line,
+            Problem::NotANumber,
+            format!("{}={value}", key.name()),
+        ));
+    }
     value.parse().map_err(|_| {
         SettingsError::at(line, Problem::NotANumber, format!("{}={value}", key.name()))
     })
@@ -1553,18 +1570,26 @@ fn build(block: Block<'_>) -> Result<Config, SettingsError> {
         cfg = cfg.with_last_processed(flag(v, Key::EnableLastMsgSeqNumProcessed)?);
     }
     if let Some(v) = block.timestamp_precision {
-        let digits: u32 = number(v, Key::TimestampPrecision)?;
-        // **Refused, not rounded.** QuickFIX C++ takes 0-9 here; this engine
-        // writes 3, 6 or 9, and the six widths in between would have to become
-        // some other width to go out at all. A configuration error names the
-        // line; a silent clamp names nothing. ADR-0057 open question 3.
-        //
-        // **Spelled exactly, not merely parsed.** `value.parse::<u32>()`
-        // above reads `+3` and `03` as `3`, which is looser than the
-        // spelling this key documents — probe 3 in `mod doc_table` found the
-        // gap on 2026-09-12. `Problem::UnsupportedPrecision` is what a wrong
-        // width already answers with, and a wrong spelling of a right width
-        // is refused the same way, not rounded to it.
+        // **Parsed loosely on purpose — this key no longer calls `number`.**
+        // `number` below now refuses `+3` and `03` outright as
+        // [`Problem::NotANumber`] for every other integer key (item 73), but
+        // this key must still tell apart a value that is *not a number at
+        // all* (`MICROS`, which stays `NotANumber` —
+        // `a_precision_that_is_not_a_number_says_so` in `settings_roles.rs`
+        // is the control) from a value that *is* a number, spelled wrong
+        // (`03`, `+3`), which stays [`Problem::UnsupportedPrecision`] — probe
+        // 3 in `mod doc_table` found that second gap on 2026-09-12, and
+        // `timestamp_precision_is_refused_unless_spelled_exactly` is its
+        // control. Calling the now-strict `number` here would answer
+        // `NotANumber` for both and collapse the distinction, so the loose
+        // parse is kept, inline, exactly as it read before item 73.
+        let digits: u32 = v.1.parse().map_err(|_| {
+            SettingsError::at(
+                v.0,
+                Problem::NotANumber,
+                format!("{}={}", Key::TimestampPrecision.name(), v.1),
+            )
+        })?;
         if !spelled_exactly_as_digits(v.1) {
             return Err(SettingsError::at(
                 v.0,
@@ -1572,6 +1597,10 @@ fn build(block: Block<'_>) -> Result<Config, SettingsError> {
                 format!("{}={}", Key::TimestampPrecision.name(), v.1),
             ));
         }
+        // **Refused, not rounded.** QuickFIX C++ takes 0-9 here; this engine
+        // writes 3, 6 or 9, and the six widths in between would have to become
+        // some other width to go out at all. A configuration error names the
+        // line; a silent clamp names nothing. ADR-0057 open question 3.
         let precision =
             fixbolt_codec::Precision::from_fractional_digits(digits).ok_or_else(|| {
                 SettingsError::at(
@@ -1646,6 +1675,19 @@ fn time_of_day((line, value): (usize, &str), key: Key) -> Result<u32, SettingsEr
         return Err(bad());
     };
     if h.len() != 2 || m.len() != 2 || s.len() != 2 {
+        return Err(bad());
+    }
+    // **Digits only — item 73's other instance.** `"+1".parse::<u32>()` is
+    // `Ok(1)` (measured against `rustc` 1.98.0, same as `number`'s own gap),
+    // and at length 2 that reads as the hour `01`, so `StartTime=+1:00:00`
+    // was accepted as 01:00:00 before this check existed. Checked here
+    // rather than with `spelled_exactly_as_digits`: a leading zero is this
+    // key's own format (`01`, not `1`), not a mistake the way it is in a
+    // plain integer.
+    if !h.bytes().all(|b| b.is_ascii_digit())
+        || !m.bytes().all(|b| b.is_ascii_digit())
+        || !s.bytes().all(|b| b.is_ascii_digit())
+    {
         return Err(bad());
     }
     let (Ok(h), Ok(m), Ok(s)) = (h.parse::<u32>(), m.parse::<u32>(), s.parse::<u32>()) else {
@@ -1912,6 +1954,189 @@ mod doc_table {
             "settings.rs no longer contains the line `{opens}` — the doc/key gate reads its match arms and is now reading nothing"
         );
         out
+    }
+
+    /// `flag`'s own opening line. Its `match`'s own opener, `FLAG_MATCH_OPEN`,
+    /// is not unique by itself — a second bare `match value {` anywhere else
+    /// in this file would collide with it — so [`literals_of_match`] bounds
+    /// the search for it to the body of this function.
+    const FLAG_FN: &str =
+        "fn flag((line, value): (usize, &str), key: Key) -> Result<bool, SettingsError> {";
+    /// The line that opens the only `match` inside [`FLAG_FN`].
+    const FLAG_MATCH_OPEN: &str = "match value {";
+    /// The line that opens the `ConnectionType` match — long enough, on its
+    /// own, to be the only line in the file with this exact trimmed text, so
+    /// it needs no function to bound it.
+    const CONNECTION_TYPE_MATCH_OPEN: &str = "let what = match value {";
+
+    /// Every string literal in the arms of one `match`, found by the line
+    /// that opens it rather than by a function's name — the counterpart to
+    /// [`arm_literals`] for a `match` that is not a whole function's body.
+    ///
+    /// `opener`, trimmed, must be that line. When `opener`'s own trimmed text
+    /// is not unique in the whole file on its own — [`FLAG_MATCH_OPEN`]'s
+    /// bare `match value {` is not, now or the day a second flag-shaped
+    /// `match` is added — `inside_fn` names the line that opens the function
+    /// around it, and the search for `opener` is bounded to that function's
+    /// body.
+    ///
+    /// Closes on the first line, trimmed, that **starts with** `}` at an
+    /// indent no deeper than the opener's — not only a bare `}`.
+    /// [`arm_literals`] only ever needed the bare form, because `Key::name`
+    /// and `Key::parse` both close with one; [`Key::ConnectionType`]'s
+    /// `match` closes `};`, as the tail of a `let` statement, and a scan that
+    /// only accepted the bare form would read past it into whatever the file
+    /// happens to hold next — which is how item 74 found a second arm this
+    /// gate was never reading.
+    ///
+    /// Asserts exactly one line, in scope, matches `opener`: zero means this
+    /// helper can no longer find what it is looking for, and two or more
+    /// means it cannot tell which `match` it is supposed to be reading.
+    fn literals_of_match(inside_fn: Option<&str>, opener: &str) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        let mut in_scope = inside_fn.is_none();
+        let mut scope_indent: Option<usize> = None;
+        let mut opener_hits: usize = 0;
+        let mut open_indent: Option<usize> = None;
+        let mut closed = false;
+
+        for line in SRC.lines() {
+            let trimmed = line.trim();
+
+            if !in_scope {
+                if let Some(fn_line) = inside_fn
+                    && trimmed == fn_line
+                {
+                    in_scope = true;
+                    scope_indent = Some(indent(line));
+                }
+                continue;
+            }
+
+            // The bounding function's own closing brace, one level shallower
+            // than anything the `match` inside it can reach.
+            if let Some(si) = scope_indent
+                && trimmed == "}"
+                && indent(line) <= si
+            {
+                break;
+            }
+
+            if trimmed == opener {
+                opener_hits += 1;
+                if open_indent.is_none() {
+                    open_indent = Some(indent(line));
+                }
+                continue;
+            }
+
+            let Some(oi) = open_indent else {
+                continue;
+            };
+            if closed {
+                continue;
+            }
+            if trimmed.starts_with('}') && indent(line) <= oi {
+                closed = true;
+                continue;
+            }
+            if trimmed.starts_with("//") || !line.contains("=>") {
+                continue;
+            }
+            let mut quoted = line.split('"');
+            let _before = quoted.next();
+            if let Some(name) = quoted.next() {
+                if !name.is_empty() {
+                    out.push(name);
+                }
+            }
+        }
+
+        assert_eq!(
+            opener_hits, 1,
+            "settings.rs line `{opener}` matched {opener_hits} times — literals_of_match needs exactly one to read its arms"
+        );
+
+        out
+    }
+
+    /// How probe 3's second leg reads the parser back, for one [`Key`]: a
+    /// value matched against literal strings directly in the parser
+    /// ([`Reader::Literals`], naming the `match`'s opening line and, when it
+    /// needs one, the function that bounds the search for it), a value read
+    /// through [`super::number`] or one of its siblings ([`Reader::Numeric`]),
+    /// or free-form text this leg does not check at all ([`Reader::Prose`]).
+    ///
+    /// [`enumerated`] reading [`None`] on a row's *Values* cell skips that
+    /// row regardless of what `reader` answers — but a row [`enumerated`]
+    /// *does* read must not answer [`Reader::Prose`], or this leg is reading
+    /// nothing for a key the document says has a fixed list of values.
+    #[derive(Clone, Copy)]
+    enum Reader {
+        Literals(Option<&'static str>, &'static str),
+        Numeric,
+        Prose,
+    }
+
+    /// **Matched exhaustively, with no `_` arm**, like [`group`]. A new
+    /// [`Key`] read by a `match` on literal strings and left off this list
+    /// would read as [`Reader::Prose`] under a wildcard — silently, which is
+    /// exactly the gap item 74 closed for [`Key::ConnectionType`]: a key
+    /// nobody taught this leg about is a key this leg cannot see.
+    const fn reader(key: Key) -> Reader {
+        match key {
+            Key::ConnectionType => Reader::Literals(None, CONNECTION_TYPE_MATCH_OPEN),
+            Key::ResetOnLogon
+            | Key::ResetOnLogout
+            | Key::ResetOnDisconnect
+            | Key::AllowUnknownMsgFields
+            | Key::ValidateUserDefinedFields
+            | Key::SendNextExpectedMsgSeqNum
+            | Key::EnableLastMsgSeqNumProcessed
+            | Key::SocketUseSsl
+            | Key::TlsRequireKernel => Reader::Literals(Some(FLAG_FN), FLAG_MATCH_OPEN),
+            Key::HeartBtInt
+            | Key::MaxSkewMillis
+            | Key::LogonTimeout
+            | Key::LogoutTimeout
+            | Key::TimestampPrecision
+            | Key::SocketConnectPort
+            | Key::ReconnectInterval
+            | Key::ReconnectCeiling => Reader::Numeric,
+            Key::BeginString
+            | Key::SenderCompId
+            | Key::TargetCompId
+            | Key::StartTime
+            | Key::EndTime
+            | Key::StartDay
+            | Key::EndDay
+            | Key::Weekdays
+            | Key::FileLogPath
+            | Key::SocketConnectHost
+            | Key::ServerCertificateFile
+            | Key::ServerCertificateKeyFile
+            | Key::CertificationAuthoritiesFile
+            | Key::ClientCertificateFile
+            | Key::ClientCertificateKeyFile => Reader::Prose,
+        }
+    }
+
+    /// A *Values* cell this leg reads as "an integer, written as digits
+    /// only": the word `integer` appearing anywhere in the cell's prose, or a
+    /// cell that is nothing but two all-digit backticked literals joined by
+    /// an en dash (`` `0`–`65535` ``, `SocketConnectPort`'s cell).
+    /// [`enumerated`] reads that second shape as *not* an enumeration — its
+    /// joining word is `–`, not `or` — so probe 6 is the only thing in this
+    /// module that reads it at all.
+    fn looks_like_an_integer(cell: &str) -> bool {
+        if cell.contains("integer") {
+            return true;
+        }
+        let literals: Vec<&str> = cell.split('`').skip(1).step_by(2).collect();
+        literals.len() == 2
+            && literals
+                .iter()
+                .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
     }
 
     /// One row of a `docs/CONFIGURATION.md` §1 table, with its cells reachable
@@ -2267,6 +2492,38 @@ mod doc_table {
         }
     }
 
+    /// `sample.with_in_default("{name}={value}")`, except when `name=`
+    /// already has a line in `sample`'s own `[DEFAULT]` — `SocketConnectPort`
+    /// is one of the keys its own group needs to be a legal file at all — in
+    /// which case that line is replaced rather than duplicated.
+    ///
+    /// Plain `with_in_default` alone would answer `Problem::RepeatedKey` for
+    /// exactly the keys a sample needs to be valid in the first place, which
+    /// is the same caveat `CLIENT_TLS`'s own doc comment already names for
+    /// `CertificationAuthoritiesFile` as harmless only because nothing had
+    /// reached for it yet. Probe 6 is the first to reach for one of them. A
+    /// free function rather than a method on [`Sample`] — this step does not
+    /// touch that type.
+    fn with_value(sample: Sample, name: &str, value: &str) -> String {
+        let prefix = format!("{name}=");
+        if sample.default_block.lines().any(|l| l.starts_with(&prefix)) {
+            let mut out = String::new();
+            for line in sample.default_block.lines() {
+                if line.starts_with(&prefix) {
+                    out.push_str(&prefix);
+                    out.push_str(value);
+                } else {
+                    out.push_str(line);
+                }
+                out.push('\n');
+            }
+            out.push_str(sample.sessions);
+            out
+        } else {
+            sample.with_in_default(&format!("{name}={value}"))
+        }
+    }
+
     /// `n` written the way §1's count sentence writes it, for 1–99.
     fn english(n: usize) -> Option<String> {
         const UNITS: [&str; 20] = [
@@ -2536,8 +2793,20 @@ mod doc_table {
 
     /// The bounded universe probe 3's reverse direction searches for a
     /// *Values* cell listing `listed`: every string of length 1 and 2 over
-    /// [`ALPHABET`] (66 + 66² = 4 422 strings) plus [`neighbours`] of each
-    /// listed literal, minus `listed` itself, deduplicated.
+    /// [`ALPHABET`] (66 + 66² = 4 422 strings), every three-digit string
+    /// `000`–`999` (1 000 more, item 74), plus [`neighbours`] of each listed
+    /// literal, minus `listed` itself, deduplicated.
+    ///
+    /// **The three-digit leg exists because the short leg has a blind spot a
+    /// listed literal's own neighbours do not cover.** A literal three
+    /// characters or longer that the parser's `match` accepts but the
+    /// document never lists — `"acc"` alongside `"acceptor"` — sits outside
+    /// every length-1 and length-2 string and is not a near miss of anything
+    /// listed, so it was invisible to this direction alone; item 74's second
+    /// leg, [`literals_of_match`], is what actually finds it, but the wider
+    /// universe here means this direction no longer depends on one.
+    /// `[measured 2026-09-13]` roughly 7 ms more per row at the rate already
+    /// measured for the base universe.
     fn candidates(listed: &[&str]) -> Vec<String> {
         let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for &a in ALPHABET {
@@ -2546,6 +2815,13 @@ mod doc_table {
         for &a in ALPHABET {
             for &b in ALPHABET {
                 set.insert(format!("{}{}", a as char, b as char));
+            }
+        }
+        for a in 0..=9u8 {
+            for b in 0..=9u8 {
+                for c in 0..=9u8 {
+                    set.insert(format!("{a}{b}{c}"));
+                }
             }
         }
         for &literal in listed {
@@ -2574,9 +2850,23 @@ mod doc_table {
     /// itself wrote something with syntax meaning and is a bug in the probe,
     /// not a finding about the document — reported immediately, naming the
     /// candidate. A zero-guard in the style of `scripts/check-indexing-debt.sh`
-    /// fails a row whose universe came out under 4 400 candidates, which
-    /// means the universe was not built rather than the row having nothing
-    /// left to try.
+    /// fails a row whose universe came out under the floor `MIN_UNIVERSE`
+    /// names below, which means the universe was not built rather than the
+    /// row having nothing left to try.
+    ///
+    /// **A second leg, added for item 74, reads the parser's source instead
+    /// of searching it.** A bounded search is still a search: it can only
+    /// try what fits inside its universe, and a literal three characters or
+    /// longer that the parser's `match` happens to accept — `"acc"` beside
+    /// `"acceptor"` — sat outside every candidate this direction tried until
+    /// the universe grew a three-digit leg below. For the rows `reader`
+    /// classifies as [`Reader::Literals`], [`literals_of_match`] reads the
+    /// arms of that `match` directly off this file's own source and compares
+    /// the set against `listed` — not a value nobody tried, but the parser's
+    /// own arm list, whatever its length. Every row [`enumerated`] reads at
+    /// all must also name a `reader` other than [`Reader::Prose`], or this
+    /// leg is checking nothing for a key the document says has a fixed list
+    /// of values.
     ///
     /// `[measured 2026-09-12]` the senior review of PR #63 rewrote
     /// `SocketUseSSL`'s cell to `` `1` or `0` `` and the suite stayed green;
@@ -2602,8 +2892,10 @@ mod doc_table {
         /// Never lower it.
         const FLOOR: usize = if cfg!(feature = "tls") { 11 } else { 10 };
         /// Below this many candidates for one row, the universe was not
-        /// built — the zero-guard `candidates` owes every row.
-        const MIN_UNIVERSE: usize = 4400;
+        /// built — the zero-guard `candidates` owes every row. `4 422 + 1
+        /// 000`, less the margin the original 4,400 kept, after item 74
+        /// widened the universe with a three-digit leg.
+        const MIN_UNIVERSE: usize = 5400;
 
         let doc = configuration_md();
         let (mut probed, mut skipped) = (0_usize, 0_usize);
@@ -2639,6 +2931,24 @@ mod doc_table {
                 listed_count,
                 "docs/CONFIGURATION.md §1: {name} lists a literal more than once ({listed:?}) — a duplicate shortens the cell without making the row disappear, so neither direction of probe 3 would notice a value dropped out of the document"
             );
+
+            // **Item 74's second leg.** Independent of whether this build has
+            // a sample to write `name` into below — reading the parser's own
+            // source needs no runtime at all — so it runs for every row
+            // `enumerated` reads, `skipped` or not.
+            assert!(
+                !matches!(reader(key), Reader::Prose),
+                "{name} lists literals but declares Reader::Prose — say which match reads it"
+            );
+            if let Reader::Literals(inside_fn, opener) = reader(key) {
+                let arms = literals_of_match(inside_fn, opener);
+                let listed_set: std::collections::BTreeSet<&str> = listed.iter().copied().collect();
+                let arms_set: std::collections::BTreeSet<&str> = arms.iter().copied().collect();
+                assert_eq!(
+                    listed_set, arms_set,
+                    "docs/CONFIGURATION.md §1: {name} lists {listed:?} but the parser's match arms read {arms:?} — a literal of three or more characters is outside the bounded search, and this is the leg that sees it"
+                );
+            }
 
             let Some(sample) = sample(group(key)) else {
                 skipped += 1;
@@ -2691,6 +3001,59 @@ mod doc_table {
         assert!(
             probed >= FLOOR,
             "probe 3 reached {probed} rows, below its floor of {FLOOR} — either a list of values was rewritten as prose, or this probe has stopped matching"
+        );
+    }
+
+    /// **Probe 6, item 73.** A *Values* cell [`looks_like_an_integer`] reads
+    /// is tested directly against the promise `docs/CONFIGURATION.md` §1
+    /// makes for it: `{name}=+7` and `{name}=07` are both read as written,
+    /// not merely parsed, and must answer [`Problem::NotANumber`];
+    /// `{name}=7` is spelled correctly and must not.
+    ///
+    /// `TimestampPrecision`'s cell (`` `3`, `6` or `9` ``) does not have this
+    /// shape at all — it is [`enumerated`], which is probe 3's to check, not
+    /// this one's — so this leg never touches the one integer key whose
+    /// wrong spelling answers something other than `NotANumber`.
+    #[test]
+    fn an_integer_values_cell_is_read_as_written() {
+        /// Rows reached on 2026-09-13: 7. Never lower it.
+        const FLOOR: usize = 7;
+
+        let doc = configuration_md();
+        let (mut probed, mut skipped) = (0_usize, 0_usize);
+        for row in doc_rows(&doc) {
+            let name = row.key;
+            let Some(key) = Key::parse(name) else {
+                continue;
+            };
+            let Some(cell) = row.cell("Values") else {
+                continue;
+            };
+            if !looks_like_an_integer(cell) {
+                skipped += 1;
+                continue;
+            }
+            let Some(sample) = sample(group(key)) else {
+                skipped += 1;
+                continue;
+            };
+            probed += 1;
+
+            for (written, should_be_not_a_number) in [("+7", true), ("07", true), ("7", false)] {
+                let refusal = Settings::parse(&with_value(sample, name, written))
+                    .err()
+                    .map(|e| e.problem().clone());
+                let is_not_a_number = refusal.as_ref() == Some(&Problem::NotANumber);
+                assert_eq!(
+                    is_not_a_number, should_be_not_a_number,
+                    "docs/CONFIGURATION.md §1: {name}={written} is read as written — no sign, no leading zero — but the parser answered {refusal:?}"
+                );
+            }
+        }
+        println!("probe 6 — integer Values cells: {probed} probed, {skipped} skipped");
+        assert!(
+            probed >= FLOOR,
+            "probe 6 reached {probed} rows, below its floor of {FLOOR} — either an integer Values cell was rewritten as prose, or this probe has stopped matching"
         );
     }
 

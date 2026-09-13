@@ -18,6 +18,18 @@ Validation is strict. An unknown key, a malformed value or an impossible schedul
 startup with the line number and the text that was written
 ([ADR-0040](decisions/ADR-0040-a-configuration-file-refuses-what-it-does-not-understand.md)).
 
+**Every integer value is read exactly as it is written, not merely parsed**
+`[measured 2026-09-13]`: ASCII digits only, no leading `+`, no leading zero.
+`HeartBtInt=+30` and `SocketConnectPort=08080` are both refused as
+`Problem::NotANumber` — the same rule `TimestampPrecision` already enforced
+for its own width, now read the same way for the other seven integer keys.
+QuickFIX C++'s `IntConvertor` refuses a leading `+` but accepts a leading
+zero (`030` parses as 30); QuickFIX/J's `Long.parseLong` accepts both. This
+engine is stricter than either: no table below documents a value with a sign
+or a leading zero, so a file that writes one is not writing something this
+engine's own documentation offers, and the line number says so rather than
+guessing which of the two looser readings was meant.
+
 **Thirty-three keys** are recognised `[changed 2026-09-13, was thirty]`.
 
 **What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The
