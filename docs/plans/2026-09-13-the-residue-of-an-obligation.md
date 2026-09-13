@@ -1,6 +1,6 @@
 # Phần dư của một nghĩa vụ — đóng item 67, 71, 72, 73, 74 và 21; nói rõ vì sao 55 không ở đây
 
-> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt 2026-09-13, theo đề xuất (Q1 có, Q2 (b), Q3 đóng, Q4 trong plan này, Q5 tách) — chưa bắt đầu
+> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt 2026-09-13, theo đề xuất (Q1 có, Q2 (b), Q3 đóng, Q4 trong plan này, Q5 tách) — **đang làm**, nhánh `plan/the-residue-of-an-obligation`, draft PR mở ở commit đầu theo `CLAUDE.md` §8
 > **Phạm vi:** sáu open item không cần máy §9, một pull request, một phiên. `mod doc_table` và
 > `number()` trong `crates/engine/src/settings.rs`; `scripts/check-links.py`; bốn tài liệu mang con
 > số *eighteen*; một cửa vào `hft` có ghim lõi trong `crates/engine/src/lib.rs`.
@@ -529,4 +529,12 @@ Theo bảng §4 của `CLAUDE.md`, đi từng hàng:
 
 ## Nhật ký giao hàng
 
-*(trống — điền khi plan được duyệt và từng bước đóng)*
+### 2026-09-13 — bắt đầu
+
+Nhánh `plan/the-residue-of-an-obligation` từ `main` `949401c` (sau PR #66 và #67). **Draft PR mở
+ngay ở commit này**, vì từ PR #67 CI chỉ chạy trên `pull_request` — một nhánh chưa có PR là nhánh
+không có CI.
+
+Bước 1, 3, 5 chạy song song, **mỗi bước một worktree do manager tự dựng** trước khi giao
+(`.claude/worktrees/step{1,3,5}`, `vendor/` symlink) — lý do chia là *reversal của bước này làm đỏ
+gate của bước kia*, không chỉ là trùng file. Bước 4 rồi 2 chạy sau, trên nhánh đã gộp 1+3+5.
