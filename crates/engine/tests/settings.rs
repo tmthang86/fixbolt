@@ -395,6 +395,27 @@ fn a_setting_that_wants_a_number_says_so() {
     assert_eq!(e.line(), 6);
 }
 
+/// **A number too large for its key is `NotANumber` too, and the message says
+/// so.** `[measured 2026-09-13]` the senior review of PR #68 wrote
+/// `SocketConnectPort=65536` and `HeartBtInt=4294967296` — digits only, no sign,
+/// no leading zero — and was told *"expected a number written as digits only —
+/// no sign, no leading zero"*, which is exactly what had been written.
+#[test]
+fn a_number_too_large_for_its_key_is_refused_as_too_large() {
+    for (key, value, line) in [
+        ("SocketConnectPort", "65536", 6),
+        ("HeartBtInt", "4294967296", 6),
+    ] {
+        let e = refused(&file_for(key, value));
+        assert_eq!(*e.problem(), Problem::NotANumber, "{key}={value}: {e}");
+        assert_eq!(e.line(), line, "{key}={value}: {e}");
+        assert!(
+            e.to_string().contains("fits this key"),
+            "{key}={value} is digits only and too large; the message must not send the operator to the spelling alone: {e}"
+        );
+    }
+}
+
 /// A minimal file, legal once `{key}={value}` is filled in with something the
 /// parser accepts. The four acceptor keys share one shape; the three
 /// initiator-only keys (`SocketConnectPort`, `ReconnectInterval`,
@@ -434,12 +455,12 @@ fn file_for(key: &str, value: &str) -> String {
 /// `ReconnectInterval=30` is [`Problem::ImpossiblePolicy`], not
 /// `NotANumber`).
 ///
-/// Eight keys reach [`fixbolt_engine::settings`]'s private `number` bare;
+/// Seven keys reach [`fixbolt_engine::settings`]'s private `number`, and all
+/// eight integer keys the same private `integer_as_written` behind it.
 /// `TimestampPrecision` is the eighth and is excluded here on purpose — it
-/// already had its own spelling check before this plan, answers a wrongly
-/// spelled width with `Problem::UnsupportedPrecision`, and is covered by
-/// `settings_roles.rs::timestamp_precision_is_refused_unless_spelled_exactly`,
-/// which this step does not touch.
+/// answers a wrongly spelled width with `Problem::UnsupportedPrecision`, and
+/// is covered by
+/// `settings_roles.rs::timestamp_precision_is_refused_unless_spelled_exactly`.
 #[test]
 fn an_integer_key_is_read_as_written() {
     const KEYS: [(&str, usize); 7] = [

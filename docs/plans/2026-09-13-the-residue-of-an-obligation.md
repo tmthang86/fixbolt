@@ -787,3 +787,85 @@ R67-1 (SenderCompID mặc định rỗng, khôi phục byte-identical)
 ```
 
 **Đếm test:** `--features fixbolt-engine/tls` 683 → **684**, đúng +1 probe 5.
+
+### 2026-09-13 — bước 6, senior review: 12 lỗi thật, năm trong số đó là lỗ trong chính các guard vừa dựng
+
+Senior developer (opus), context mới, chỉ được đưa plan và gate. **Mọi reversal builder chạy đều đỏ
+đúng câu — và năm guard vẫn có đường đi qua mà không reversal nào thử.** Đó là bài học của bước này:
+một bộ reversal đỏ hết nói rằng guard bắt được *những gì đã thử*, không nói gì về chỗ chưa thử.
+
+**Lỗ trong guard (5), mỗi cái có phép thử xanh-trước-khi-sửa, đỏ-sau-khi-sửa:**
+
+1. **Probe 3, chân đọc arm:** `literals_of_match` chỉ đọc chuỗi ngoặc kép **đầu tiên** mỗi dòng, nên
+   `"Y" | "yes" => Ok(true),` lọt qua cả hai chân. Giờ đọc mọi chuỗi ở vế trái `=>`. **Manager tự chạy
+   lại cùng phép phá trên hai cây:** `3f55b26` (trước review) → `9 passed`; cây sau review →
+   `ResetOnLogon lists ["Y", "N"] but the parser's match arms read ["Y", "yes", "N"]`, `1 failed`.
+2. **Probe 3:** khai `Reader::Numeric` cũng tắt chân đọc code (assertion của R74-3 chỉ chặn `Prose`).
+   Thêm: khai `Numeric` thì mọi literal phải là chữ số.
+3. **Probe 5 không đọc điều kiện trong ô:** đổi ô thành `required when ConnectionType=acceptor` (ngược
+   hẳn) vẫn xanh. Giờ mẫu bị xoá khoá phải chứa đúng dòng `K=V` của điều kiện.
+4. **Probe 5 chỉ so biến thể lỗi, không so lỗi nói về khoá nào:** một `settle` hỏng trả `MissingKey`
+   về **khoá khác** vẫn xanh. Giờ detail phải nêu đúng khoá đang probe.
+5. **Test đếm `Link::Dropped`:** một điểm trả về viết dạng lạ (`return Ok(if true { Link::Dropped } else
+   { Link::Dropped });`) không được đếm, con số vẫn 23, test xanh. Giờ mọi dòng không phải comment nhắc
+   `Link::Dropped` phải là điểm đã đếm hoặc phép so sánh.
+
+**Lỗi hành vi và cấu trúc (3):**
+
+6. **`TimestampPrecision` về lại một quy tắc ở một chỗ.** `integer_as_written(v, key, misspelled)`:
+   `number()` gọi với `NotANumber`, `TimestampPrecision` với `UnsupportedPrecision`. Không test nào đổi
+   kỳ vọng. **Hệ quả cho bảng *Cách kiểm chứng*:** cột *control xanh* của R73-2 (`settings_roles` vẫn xanh
+   khi bỏ kiểm chính tả) **không còn đúng** — hai đường dùng chung quy tắc, phá là cả hai cùng đỏ. Đó là
+   điều §C muốn.
+7. **`SocketConnectPort=65536` nhận câu `expected a number written as digits only — no sign, no
+   leading zero`**, trong khi người viết đã viết đúng như vậy. Câu nối thêm `— that fits this key`; câu
+   của plan giữ nguyên làm phần đầu. Test mới `a_number_too_large_for_its_key_is_refused_as_too_large`,
+   đỏ trước. **Đây là một chữ plan đã ghi**; manager chấp nhận vì câu cũ sai với một đầu vào hợp lệ
+   về chính tả, và nói rõ với chủ sở hữu.
+8. **`check-links.py` quy tắc (a):** `TmThang86/Fixbolt` và `www.github.com/…` lọt, bị đếm là foreign.
+   Giờ so không phân biệt hoa/thường, bỏ `www.`. R72-1/2/3/4 và control `fixbolt-other` vẫn đúng.
+
+**Tài liệu sai (4):** rustdoc `mod doc_table` còn ghi *five questions*; `CONFIGURATION.md` §1 còn *four
+things*, *at least 4,400*, *those three* ngay dưới câu *Six probes*; rustdoc `serve_hft_pinned` nói *a
+pin that does not take leaves the thread as it was* — sai với `ReadbackMismatch` vì lúc đó set đã
+thành công; ba câu trong `a-known-limitations-list-rots-in-one-direction.md` và một câu trích FAIL
+không nguyên văn trong `a-bare-filename-is-not-evidence-of-a-repository.md`. Reviewer chạy lại R21-2
+16 lần: đỏ 16/16, `running_on` bắt 5, mask bắt 11 — khớp số đã ghi ở bước 5.
+
+**Quyết định cho câu hỏi builder để lại:**
+
+| Câu hỏi | Quyết định |
+|---|---|
+| `TimestampPrecision` parse riêng | **sửa** — mục 6 |
+| Re-export `serve_hft_pinned` qua `fixbolt` | **không** — `crates/library/README.md` cố ý loại `affinity`/`shard`, library không có feature `affinity`; re-export cho người dùng hàm mà không gọi được `CorePin`. `serve_sharded_hft` cũng không re-export |
+| Accessor waiver (ADR-0015 quyết định 5) | **thêm** `CorePin::is_unisolated_allowed()`, test `a_core_pin_says_whether_the_isolation_rule_was_waived` đỏ trước (`E0599`) |
+| `NoCounterparties` báo sau khi đã ghim | **không đổi** — thread chỉ ghim vào lõi đã qua validate, chưa có thread con hay socket nào, không phải *half a runtime* mà ADR-0015 quyết định 6 cấm; rustdoc ghi rõ |
+| Khoá TLS phụ thuộc trả `MissingKey` | **không đổi** — `tests/settings.rs::a_certificate_without_socket_use_ssl_is_refused` (có từ trước) assert đúng `MissingKey`; đổi là sửa assertion có sẵn, việc của architect |
+| `unused import MaybeLog` (`shard.rs:43`, `--no-default-features --features affinity`) | có từ trước, **open item** |
+| Job `docs` không build tập feature hẹp | **open item** |
+
+**Có từ trước PR, reviewer đo và không sửa — cần architect hoặc chủ sở hữu:**
+
+- **A.** `serve_sharded_hft` **bind trước validate** (bind `shard.rs:507`, validate chạy sau): port đang
+  giữ + `CoreId(4096)` → `Io(Os { code: 98, kind: AddrInUse })`. ADR-0015 quyết định 6 nói validate chạy
+  *trước khi một thread nào được spawn* vì nửa runtime rồi từ chối *leaves threads to join and sockets
+  to close*; chữ của nó nói *thread*, tinh thần của nó nói cả *socket*. Cửa mới làm đúng; cửa cũ thì không.
+- **B.** `HeartBtInt=0` được nhận, trong khi tài liệu ghi *positive integer*. Từ chối số 0 hay sửa tài
+  liệu là quyết định hành vi.
+- **C.** `reader(key)` tin lời khai: một khoá khai *đọc bởi `flag`* nhưng thật ra đọc bởi một `match`
+  khác cùng literal cộng alias thì không bị thấy.
+
+**Gate, manager chạy lại trên cây sau review:**
+
+```
+cargo fmt --check; clippy (default / affinity / tls) -- -D warnings      exit 0 ×4
+cargo test --all                                    103 lines, 647 passed, 0 failed, 2 ignored  (646 → +1 too_large)
+cargo test --all --no-default-features              103 lines, 642 passed, 0 failed, 2 ignored
+cargo test --all --features fixbolt-engine/tls      103 lines, 685 passed, 0 failed, 2 ignored
+cargo test -p fixbolt-engine --features affinity     44 lines, 358 passed, 0 failed  (356 → +1 accessor, +1 too_large)
+cargo test -p fixbolt-session --test score           step_six_b_replays_what_it_sent_and_scores_fifty_nine ... ok
+doc_table [tls]                                      9 passed ×2; probe 5 5/28 (tls 7/26)
+cargo doc -p fixbolt-engine --no-deps --features affinity, -D broken_intra_doc_links   Generated
+scripts/check-links.py   no dead internal links; 0 absolute; 0 foreign-bare
+check-indexing-debt 181 ok · check-no-crate-root-allow ok · check-no-optional-deps ok · unsafe in affinity.rs 6
+```

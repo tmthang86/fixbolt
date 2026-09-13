@@ -29,12 +29,12 @@ have at theirs.
 A citation of `https://github.com/EmbarkStudios/cargo-deny/blob/main/CHANGELOG.md` —
 `cargo-deny` is a real dependency-auditing tool, and its changelog is a reasonable thing to
 cite in passing — matched this repository's own `CHANGELOG.md` on that last, bare segment.
-The gate reported it exactly as it reports a genuinely wrong link: `FAIL: this
-repository has CHANGELOG.md; link it by relative path`. `[measured 2026-09-13]` the plan that fixed it
-went red on the old script for exactly that URL, in its own draft, when it wrote the URL as a
-markdown link to cite it as an example; on the new script the same link reads
-`1 foreign URLs sharing only a filename with this repository (not judged)`. That sentence is correct about the
-file and wrong about the URL.
+The gate reported it exactly as it reports a genuinely wrong link — `FAIL: 1 link(s) name a
+repository file by absolute URL`, then `this repository has CHANGELOG.md; link it by relative
+path` — a sentence correct about the file and wrong about the URL. `[measured 2026-09-13]` the
+plan that fixed it went red on the old script for exactly that URL, in its own draft, when it
+wrote the URL as a markdown link to cite it as an example; on the new script the same link
+reads `1 foreign URLs sharing only a filename with this repository (not judged)`.
 
 ## The two rules that replaced the one
 
@@ -47,7 +47,12 @@ names:
   (`["github.com", "tmthang86", "fixbolt"]`), never by string prefix, so a sibling
   repository like `fixbolt-other` does not match on a shared prefix — is judged on **any**
   matching tail, even one segment. Its own file under the wrong sub-path is exactly the
-  case this gate exists to catch.
+  case this gate exists to catch. **Those three segments are compared without case, and a
+  `www.` in front of the host is dropped**, because GitHub reads them that way:
+  `[measured 2026-09-13]` compared as written, a senior review's
+  `https://github.com/TmThang86/Fixbolt/blob/main/CHANGELOG.md` and
+  `https://www.github.com/tmthang86/fixbolt/blob/main/CHANGELOG.md` — both this repository's
+  own root file — were counted as foreign and not judged.
 - **(b)** any other path is judged only when the matching tail carries **two or more**
   segments. A single segment is a filename, and a filename names no owner.
 

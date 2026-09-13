@@ -2806,9 +2806,12 @@ pub fn serve_hft_with<
 /// and not when it returns an error raised after step 2 —
 /// [`ServeError::NoCounterparties`], [`ServeError::Io`]. Call it from a thread
 /// that exists to serve. `tests/hft_pinned.rs::serve_hft_pinned_serves_on_the_core_it_was_given`
-/// reads the calling thread's mask after a clean return. A refused core or a pin
-/// that does not take leaves the thread as it was, because a failing
-/// `sched_setaffinity` changes nothing (see [`affinity::pin_current_thread`]).
+/// reads the calling thread's mask after a clean return. A refused core, or a
+/// `sched_setaffinity` the kernel refuses, leaves the thread as it was, because
+/// a failing call changes nothing (see [`affinity::pin_current_thread`]). A
+/// [`ReadbackMismatch`](affinity::AffinityError::ReadbackMismatch) is the one
+/// affinity error that does not: the call succeeded, and the thread's mask is
+/// whatever the kernel made it.
 ///
 /// # Errors
 ///

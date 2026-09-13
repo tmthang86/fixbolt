@@ -617,6 +617,15 @@ impl CorePin {
         self.core
     }
 
+    /// Whether the isolation rule was waived — the same question
+    /// [`ShardPlan::is_unisolated_allowed`] answers, for the same reason:
+    /// ADR-0015 decision 5 wants the waiver in whatever the engine reports about
+    /// itself. `tests/affinity.rs::a_core_pin_says_whether_the_isolation_rule_was_waived`.
+    #[must_use]
+    pub fn is_unisolated_allowed(&self) -> bool {
+        self.allow_unisolated
+    }
+
     /// Check this core against the machine it is about to run on.
     ///
     /// Reads `/sys` and allocates, once, at startup — nowhere near a turn.

@@ -119,7 +119,17 @@ def names_a_repo_file(root, url):
             rest = rest[len(prefix) :]
             break
     parts = rest.split("#")[0].split("?")[0].strip("/").split("/")
-    own = parts[: len(OWN_REPO)] == list(OWN_REPO)
+    # GitHub reads a host, an owner and a repository name without regard to
+    # case, and `www.github.com` is the same host, so all three spell this
+    # repository. `[measured 2026-09-13]` compared as written, the senior review
+    # of PR #68 linked `https://github.com/TmThang86/Fixbolt/blob/main/CHANGELOG.md`
+    # and `https://www.github.com/tmthang86/fixbolt/blob/main/CHANGELOG.md` —
+    # both this repository's own root file — and both were counted as foreign
+    # and not judged. The file path after them stays case-sensitive.
+    head = [p.lower() for p in parts[: len(OWN_REPO)]]
+    if head and head[0].startswith("www."):
+        head[0] = head[0][len("www.") :]
+    own = head == list(OWN_REPO)
     ignored_tail = None
     for i in range(len(parts)):
         tail = "/".join(parts[i:])

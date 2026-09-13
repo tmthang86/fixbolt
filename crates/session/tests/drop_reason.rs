@@ -313,18 +313,36 @@ fn the_site_count_prior_art_quotes_is_the_one_in_the_source() {
     ))
     .expect("docs/reference/prior-art.md must be readable from the crate root");
 
-    let src_count = src
-        .lines()
-        .filter(|line| {
-            line.contains("return Link::Dropped")
-                || line.contains("return Ok(Link::Dropped)")
-                || line.contains("=> Link::Dropped")
-                || line.trim() == "Link::Dropped"
-        })
-        .count();
+    let is_site = |line: &str| {
+        line.contains("return Link::Dropped")
+            || line.contains("return Ok(Link::Dropped)")
+            || line.contains("=> Link::Dropped")
+            || line.trim() == "Link::Dropped"
+    };
+    let src_count = src.lines().filter(|line| is_site(line)).count();
     assert!(
         src_count >= 10,
         "the counter read nothing — the pattern no longer matches how lib.rs returns Link::Dropped"
+    );
+
+    // **Every other line that names `Link::Dropped` is accounted for**, or the
+    // count is short and agrees with the table anyway. A new return site in a
+    // shape the four patterns above do not read — `Ok(Link::Dropped)` as a
+    // block's tail, `if c { Link::Dropped } else { … }` — leaves both numbers
+    // where they were. `[measured 2026-09-13]` the senior review of PR #68
+    // added `return Ok(if true { Link::Dropped } else { Link::Dropped });` to
+    // `lib.rs` and this test read `1 passed`. A comment is not a site, and
+    // today's only other shape is a comparison (`link == Link::Dropped`).
+    let unaccounted: Vec<&str> = src
+        .lines()
+        .filter(|line| line.contains("Link::Dropped"))
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .filter(|line| !is_site(line))
+        .filter(|line| !line.contains("== Link::Dropped") && !line.contains("!= Link::Dropped"))
+        .collect();
+    assert!(
+        unaccounted.is_empty(),
+        "crates/session/src/lib.rs names Link::Dropped on lines this count neither counts nor knows to be a comparison: {unaccounted:?} — teach the count the new shape, and update the table and the grep in prior-art.md with it"
     );
 
     // `prior-art.md` has more than one `| **fixbolt** |` row (buffer size, cut

@@ -19,7 +19,8 @@ below describe what a first release would contain.
 
 - **`fixbolt_engine::serve_hft_pinned`, the single-engine `hft` door that pins.** Behind
   `--features affinity` on Linux. It takes a `fixbolt_engine::affinity::CorePin` —
-  `CorePin::to(CoreId)`, `.allow_unisolated()`, `.core()`, `.validate()` — refuses the core by
+  `CorePin::to(CoreId)`, `.allow_unisolated()`, `.core()`, `.is_unisolated_allowed()`,
+  `.validate()` — refuses the core by
   the rules `ShardPlan` already has (absent, offline, outside `isolcpus` unless waived), pins
   the calling thread and reads the mask back, and only then binds; the pin stays on that thread
   after the call returns. `serve_hft` is unchanged and still pins nothing. A refusal or a pin
@@ -86,7 +87,8 @@ below describe what a first release would contain.
 - **Every integer configuration value is now read as written, not merely parsed.**
   `HeartBtInt=+30` and `SocketConnectPort=08080` are refused as `Problem::NotANumber`, and
   `StartTime=+1:00:00` as `Problem::BadTime`. `Problem::NotANumber` now displays `"expected a
-  number written as digits only — no sign, no leading zero"`, not `"expected a number"`.
+  number written as digits only — no sign, no leading zero — that fits this key"`, not `"expected a
+  number"`.
   `docs/CONFIGURATION.md` §1.
 
 ### Fixed

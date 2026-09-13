@@ -37,26 +37,32 @@ read by a person** `[added 2026-09-13]`.
 
 **What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The
 `doc_table` tests in [`settings.rs`](../crates/engine/src/settings.rs) read this section and
-run the parser against four things: **the count sentence above, inside this section**; **a
-*Default* cell that begins with a backticked literal** (the key is written into a minimal
-file with that value and must change nothing); **a *Values* cell that is two or more
-backticked literals joined by nothing but `or` and commas** (every listed literal must
-survive the parser, and every value it does not list must be refused — a bounded search over
-a universe of at least 4,400 candidates per row, every one- and two-character string over a
-fixed alphabet plus near-miss neighbours of each listed literal, `[changed 2026-09-13, was a
-sample of three fixed candidates]` — still not a check of everything the cell omits); and
-**a *Where* cell claiming either
+run the parser against six things `[changed 2026-09-13, was four]`: **the count sentence
+above, inside this section**; **a *Default* cell that begins with a backticked literal** (the
+key is written into a minimal file with that value and must change nothing); **a *Values*
+cell that is two or more backticked literals joined by nothing but `or` and commas** (every
+listed literal must survive the parser, and every value it does not list must be refused — a
+bounded search over a universe of at least 5,400 candidates per row, every one- and
+two-character string over a fixed alphabet, every three-digit string, plus near-miss
+neighbours of each listed literal, `[changed 2026-09-13, was a sample of three fixed
+candidates]` — still not a check of everything the cell omits; and for a key read by a `match`
+on literal strings, the arms of that `match`, read off the source, must be exactly the listed
+literals); **a *Where* cell claiming either
 `[DEFAULT]` only or `[DEFAULT]` or `[SESSION]`** (the first must be refused in a `[SESSION]`,
-the second must not).
-`[measured 2026-09-13]` those three reached 15, 10 and 21 of the thirty-three rows — 16 and 11
-for the first two in a build with the `tls` feature, which is the only build where a
-`SocketUseSSL=Y` file can be written at all (18 of thirty on 2026-09-12, before the three
-initiator keys).
+the second must not); **a *Default* cell reading `required`, `required per [SESSION]` or
+`required when` a condition, `refused otherwise`** (a file without the key must be refused as
+missing that key, and a conditional key written where its condition does not hold must be
+refused about that key); and **a *Values* cell saying `integer`, or a range of two digit
+literals** (`+7` and `07` must be refused as `NotANumber`, `7` must not).
+`[measured 2026-09-13]` those five cell probes reached 15, 10, 21, 5 and 7 of the thirty-three
+rows — 16, 11 and 7 for the first, second and fourth in a build with the `tls` feature, which
+is the only build where a `SocketUseSSL=Y` file can be written at all (18 of thirty on
+2026-09-12, before the three initiator keys).
 
 **Every other sentence here is a hand-checked promise** — each *Meaning* cell, every note,
-and each paragraph between the tables. So is a *Default* cell written as prose (`required`,
-`none`, `16 × …`) and a *Values* cell that describes a shape rather than listing values
-(`ASCII, max 32 bytes`, `HH:MM:SS`): **writing a cell that way costs it its machine check**,
+and each paragraph between the tables. So is a *Default* cell written as prose (`none`,
+`all seven days`, `16 × …`) and a *Values* cell that describes a shape rather than listing
+values (`ASCII, max 32 bytes`, `HH:MM:SS`): **writing a cell that way costs it its machine check**,
 which is why each probe reports how many rows it skipped and carries a floor on how many it
 reached that may only be raised. `[measured 2026-09-12]` before those probes existed, a
 review rewrote the meaning, the values and the default of two TLS rows to say the opposite of
