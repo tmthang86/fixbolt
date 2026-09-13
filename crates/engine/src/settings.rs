@@ -3350,6 +3350,114 @@ mod doc_table {
         );
     }
 
+    /// The `` `a`–`b` `` range a *Values* cell names, when it names one: two
+    /// all-digit backticked literals with nothing between them but an en dash.
+    fn range_of(cell: &str) -> Option<(u64, u64)> {
+        let parts: Vec<&str> = cell.split('`').collect();
+        (1..parts.len()).step_by(2).find_map(|i| {
+            let low = parts.get(i)?;
+            let dash = parts.get(i + 1)?;
+            let high = parts.get(i + 2)?;
+            let digits = |l: &str| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit());
+            if dash.trim() != "–" || !digits(low) || !digits(high) {
+                return None;
+            }
+            Some((low.parse().ok()?, high.parse().ok()?))
+        })
+    }
+
+    /// **Probe 7, item 76.** A *Values* cell on a [`Reader::Numeric`] row that
+    /// names a bound is a bound the parser holds: `positive` refuses `0` as a
+    /// bad value, `non-negative` or `` `0` `` does not, and `` `a`–`b` ``
+    /// takes `a` and refuses `b + 1`.
+    ///
+    /// `[measured 2026-09-13]` `HeartBtInt`'s cell said *positive integer*
+    /// while the parser took `0` — which is what FIX 4.4 says `108=0` means —
+    /// and probes 3 and 6 were green throughout: neither reads a bound. A
+    /// cell with none of the three marks is skipped and counted, never passed.
+    #[test]
+    fn a_values_cell_that_names_a_bound_is_a_bound_the_parser_holds() {
+        /// Rows reached on 2026-09-13: 4 — the floor catches this probe silently
+        /// ceasing to match, and four *Values* cells name a bound today (plan
+        /// revision, not probe 6's 7). Raise it when a cell gains one; never lower it.
+        const FLOOR: usize = 4;
+
+        let doc = configuration_md();
+        let (mut probed, mut skipped, mut not_numeric) = (0_usize, 0_usize, 0_usize);
+        for row in doc_rows(&doc) {
+            let name = row.key;
+            let Some(key) = Key::parse(name) else {
+                continue;
+            };
+            if !matches!(reader(key), Reader::Numeric) {
+                not_numeric += 1;
+                continue;
+            }
+            let Some(cell) = row.cell("Values") else {
+                skipped += 1;
+                continue;
+            };
+            let says_positive = cell.contains("positive") && !cell.contains("non-positive");
+            let says_zero_allowed = cell.contains("non-negative") || cell.contains("`0`");
+            let range = range_of(cell);
+            if !says_positive && !says_zero_allowed && range.is_none() {
+                skipped += 1;
+                continue;
+            }
+            let Some(sample) = sample(group(key)) else {
+                skipped += 1;
+                continue;
+            };
+            probed += 1;
+
+            let refusal_of = |written: &str| {
+                Settings::parse(&with_value(sample, name, written))
+                    .err()
+                    .map(|e| e.problem().clone())
+            };
+            if says_positive {
+                let refusal = refusal_of("0");
+                assert!(
+                    refusal.as_ref().is_some_and(is_about_the_value),
+                    "docs/CONFIGURATION.md §1: {name} says positive but the parser accepts 0 — read FIX 4.4 before changing either side ({refusal:?})"
+                );
+            }
+            if says_zero_allowed {
+                let refusal = refusal_of("0");
+                assert!(
+                    !refusal.as_ref().is_some_and(is_about_the_value),
+                    "docs/CONFIGURATION.md §1: {name} says 0 is allowed but the parser refuses it: {refusal:?}"
+                );
+            }
+            if let Some((low, high)) = range {
+                let refusal = refusal_of(&low.to_string());
+                assert!(
+                    !refusal.as_ref().is_some_and(is_about_the_value),
+                    "docs/CONFIGURATION.md §1: {name} says `{low}`–`{high}` but the parser refuses {low}: {refusal:?}"
+                );
+                let above = high.checked_add(1);
+                assert!(
+                    above.is_some(),
+                    "docs/CONFIGURATION.md §1: {name} names a bound of {high}, which has no value above it to test"
+                );
+                if let Some(above) = above {
+                    let refusal = refusal_of(&above.to_string());
+                    assert!(
+                        refusal.as_ref().is_some_and(is_about_the_value),
+                        "docs/CONFIGURATION.md §1: {name} says `{low}`–`{high}` but the parser accepts {above} ({refusal:?})"
+                    );
+                }
+            }
+        }
+        println!(
+            "probe 7 — bounded Values cells: {probed} probed, {skipped} skipped, {not_numeric} not Numeric"
+        );
+        assert!(
+            probed >= FLOOR,
+            "probe 7 reached {probed} rows, below its floor of {FLOOR} — either a bound was rewritten as prose, or this probe has stopped matching"
+        );
+    }
+
     /// A *Where* cell that claims the key is `[DEFAULT]`-only.
     fn says_default_only(cell: &str) -> bool {
         cell.contains("`[DEFAULT]` **only**") || cell.contains("`[DEFAULT]` only")
