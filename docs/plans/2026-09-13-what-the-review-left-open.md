@@ -1,6 +1,6 @@
 # Bốn chỗ bản review PR #69 để lại — đóng items 80, 81, 82, 83
 
-> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt (owner, 2026-09-13)
+> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Xong (2026-09-13, PR #70)
 > **Phạm vi:** bộ probe `doc_table` trong `crates/engine/src/settings.rs` (probe 3, probe 7), một ô của `docs/CONFIGURATION.md` §1, doc comment của `crates/session/src/clock.rs`, `scripts/check-links.py`, cờ rustdoc của job CI `feature-sets`, một ADR mới (ADR-0066)
 
 > Tên file luôn tiếng Anh: `docs/plans/YYYY-MM-DD-<topic>.md`.
@@ -342,6 +342,17 @@ readiness (`CLAUDE.md` §7 — mở rộng phạm vi là nêu thêm case). `carg
 
 ## Nhật ký giao hàng
 
-_Chưa bắt đầu — plan đang chờ duyệt._
+| Bước | Commit | Bằng chứng |
+|---|---|---|
+| Plan, duyệt | `c7b5e48`, `e6c4ddd` | owner duyệt |
+| 1 — item 83 doc | `6009f25` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace` EXIT=0; diff `session` chỉ dòng `///` |
+| 3, 4 — items 81, 80 | `0be7320` | R81-1 đỏ giả đúng dự đoán; R81-2, R81-3, R80-1, R80-2 đỏ đúng câu; R80-3 xanh (phần dư) |
+| 2, 5 — items 83 cổng, 82 | `5088ec3` | R83-1, R83-2, R82-1..6 đúng câu |
+| DESIGN §6 | `034fe9e` | manager: `cargo hack doc` target Linux `-D warnings` EXIT=0, 32 bộ; CI run `34765320987` 14/14 |
+| 6 — senior review | — | 1 defect, 2 gap, 8 nit; manager tái hiện trước khi sửa |
+| Sửa finding | `2bd169f`, `e0ba30d` | kịch bản `WrongRole` đỏ; URL thiếu `blob/main` bị báo lại; `<url>`, chữ hoa/thường, tiêu đề link; R82-2 chạy lại trong README |
+| 7 — đóng | commit này | CI run `34766352240` cho `e0ba30d` |
 
-**Đây là phần sống sót qua nén context** — phiên sau đọc mục này trước tiên.
+**Lệch so với plan:** bước 4 đòi trích `probe 3 — … 11 probed` từ log CI của bản `tls` — không làm
+được, vì CI không chạy `--nocapture`; ghi ở *Not proven* của `STATUS.md`. Bước 1–5 chạy thành hai
+luồng song song trên hai worktree thay vì nối tiếp; `DESIGN.md` được áp sau cùng để không đụng nhau.
