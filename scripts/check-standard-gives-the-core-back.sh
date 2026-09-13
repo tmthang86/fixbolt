@@ -36,6 +36,16 @@
 # scripts/check-no-kernel-sleep.sh already traces this binary and requires
 # `--mode standard` to trip its sleeper list. Duplicating strace here would also
 # distort the very CPU figure this script exists to measure.
+#
+# `[2026-09-13]` step 6b of docs/plans/2026-09-04-tls.md, Sửa 6: ADR-0013
+# decision 6 names this half by mode; ADR-0018 decision 4 asks for it again
+# under kTLS specifically, because a transport swap is exactly the kind of
+# change non-negotiable 4 says must be proven in both directions. So there is
+# a fifth run, `--mode standard --tls ktls`, carrying every assertion the
+# plain `standard` run carries plus one more: the `tls:` read-back must say
+# `kernel`. A binary built without the `tls` feature refuses `--tls ktls`
+# outright (tools/w2w/src/main.rs), so that case is SKIPPED, NOT PASSED
+# rather than silently read as "gave the core back" — CLAUDE.md §10.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -61,13 +71,19 @@ CEILING_PCT=5
 P50_CEILING_NS=1000000
 SAMPLES=20
 
-# Run w2w in one mode and report: mode-as-run, engine-thread CPU percent over a
-# wall-clock window, share of samples found sleeping, and the p50.
+# Run w2w in one mode (and, since step 6b, one TLS arm — "off" unless told
+# otherwise, which passes no `--tls` flag at all and is byte-for-byte the
+# call this function made before that step existed) and report: mode-as-run,
+# engine-thread CPU percent over a wall-clock window, share of samples found
+# sleeping, the p50, and tls-as-run.
 measure() {
-  local mode="$1"
+  local mode="$1" tls="${2:-off}"
   local out="${TMP}/out.${mode}" pid tid t0 t1 c0 c1 sleeping=0 alive=0
+  local tls_args=()
+  [[ "${tls}" != "off" ]] && tls_args=(--tls "${tls}")
 
-  "${BIN}" --mode "${mode}" --messages 300 --warmup 50 --hold-ms $((WINDOW_S * 1000 + 2000)) \
+  "${BIN}" --mode "${mode}" "${tls_args[@]}" --messages 300 --warmup 50 \
+    --hold-ms $((WINDOW_S * 1000 + 2000)) \
     > "${out}" 2>&1 &
   pid=$!
 
@@ -117,8 +133,13 @@ measure() {
 
   wait "${pid}"
 
-  local ran_mode p50 pct
+  local ran_mode ran_tls p50 pct
   ran_mode="$(grep -oE '^mode: [a-z]+' "${out}" | head -1 | cut -d' ' -f2)"
+  # Same reasoning as `ran_mode`, for the transport: `[measured 2026-09-13]`
+  # step 6a reads this line back from the engine rather than the flag for
+  # exactly the reason `ran_mode` is read back rather than trusted — a `--tls
+  # ktls` that quietly fell back to userspace must not be read as "kernel".
+  ran_tls="$(grep -oE '^tls: [a-z]+' "${out}" | head -1 | cut -d' ' -f2)"
   # `awk`, not `grep -oE '[0-9]+'`. `[measured 2026-08-30]` the first version
   # was the latter, and it reported **50** for every mode — the "50" in the
   # LABEL `p50`, which is the first run of digits on the line. So assertion 4,
@@ -129,7 +150,7 @@ measure() {
   p50="$(awk '/^ +p50 +[0-9]+ ns/ { print $2; exit }' "${out}")"
   pct="$(echo "scale=2; 100 * (${c1} - ${c0}) / ${HZ} / (${t1} - ${t0})" | bc -l)"
 
-  echo "${ran_mode:-none} ${pct} ${sleeping} ${alive} ${p50:-0}"
+  echo "${ran_mode:-none} ${pct} ${sleeping} ${alive} ${p50:-0} ${ran_tls:-none}"
 }
 
 # Judge one mode's measurement.
@@ -146,12 +167,17 @@ measure() {
 # green because nothing ran — which is CLAUDE.md §10, applied to the half of the
 # gate that is supposed to be the safety net.
 judge() {
-  local want="$1" ran="$2" pct="$3" sleeping="$4" alive="$5" p50="$6" ok=0
+  local want="$1" ran="$2" pct="$3" sleeping="$4" alive="$5" p50="$6"
+  # `want_tls`/`ran_tls` are optional — every call this script made before
+  # step 6b passes only the first six arguments, and an unset `want_tls`
+  # skips the TLS assertion entirely rather than comparing against "".
+  local want_tls="${7:-}" ran_tls="${8:-}" ok=0
 
   printf '  mode reported   %s\n' "${ran}"
   printf '  engine CPU      %s%%   (ceiling %s%%)\n' "${pct}" "${CEILING_PCT}"
   printf '  found sleeping  %s of %s samples\n' "${sleeping}" "${alive}"
   printf '  round trip p50  %s ns   (ceiling %s ns)\n' "${p50}" "${P50_CEILING_NS}"
+  [[ -n "${want_tls}" ]] && printf '  tls reported    %s   (wanted %s)\n' "${ran_tls:-<none>}" "${want_tls}"
 
   [[ "${ran}" == "${want}" ]] || { echo "  !! the binary ran '${ran}', not '${want}'"; return 2; }
   (( alive >= SAMPLES / 2 )) || { echo "  !! the engine thread was not there to measure"; return 2; }
@@ -160,13 +186,17 @@ judge() {
   [[ "$(echo "${pct} < ${CEILING_PCT}" | bc -l)" == "1" ]] || { echo "  -> it did not give the core back"; ok=1; }
   (( sleeping * 2 > alive )) || { echo "  -> it was running, not sleeping"; ok=1; }
   (( p50 > 0 && p50 < P50_CEILING_NS )) || { echo "  -> it was woken by its own clock, not by the data"; ok=1; }
+  if [[ -n "${want_tls}" && "${ran_tls}" != "${want_tls}" ]]; then
+    echo "  -> --tls ran tls '${ran_tls:-<none>}' when '${want_tls}' was required"
+    ok=1
+  fi
   return "${ok}"
 }
 
 rc=0
 
 echo "== GREEN half: standard mode must block and give the core back =="
-read -r ran pct sleeping alive p50 <<<"$(measure standard)" || exit 1
+read -r ran pct sleeping alive p50 ran_tls <<<"$(measure standard)" || exit 1
 judge standard "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}"
 case $? in
   0) echo "GREEN ok — standard blocks, stays alive, and is woken by the data" ;;
@@ -179,7 +209,7 @@ esac
 for red in hft yield; do
   echo
   echo "== RED half: ${red} must trip this check =="
-  read -r ran pct sleeping alive p50 <<<"$(measure "${red}")" || exit 1
+  read -r ran pct sleeping alive p50 ran_tls <<<"$(measure "${red}")" || exit 1
   judge "${red}" "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}"
   case $? in
     0) echo "FAIL: ${red} PASSED this check, so the check cannot fail and means nothing" >&2; rc=1 ;;
@@ -187,5 +217,36 @@ for red in hft yield; do
     *) echo "FAIL: ${red} could not be measured, so its red is not evidence of anything" >&2; exit 2 ;;
   esac
 done
+
+echo
+echo "== TLS arm: standard mode with kTLS must also give the core back =="
+# `engine_syscalls` in scripts/check-no-kernel-sleep.sh learned this the hard
+# way: a build without the `tls` feature refuses `--tls` outright, before it
+# prints anything `measure`'s own 10-second engine-tid wait-loop would
+# recognise, so detecting that case has to happen BEFORE calling `measure` —
+# a quick, foreground, non-traced probe rather than a timeout.
+tls_probe_out="${TMP}/tls-probe.out"
+if ! "${BIN}" --mode standard --tls ktls --messages 10 --warmup 2 --hold-ms 50 \
+     >"${tls_probe_out}" 2>&1; then
+  # shellcheck disable=SC2016 # single-quoted on purpose: a backtick inside
+  # double quotes would be a command substitution, not the literal character
+  # main.rs's refusal message actually prints.
+  if grep -q 'needs `--features tls`' "${tls_probe_out}"; then
+    echo "TLS arm SKIPPED, NOT PASSED: this build has no TLS transport (needs \`--features tls\`)." >&2
+    echo "CLAUDE.md §10: a green result that was inferred rather than observed is not a result." >&2
+    exit 2
+  fi
+  echo "FAIL: --mode standard --tls ktls could not be run at all:" >&2
+  tail -5 "${tls_probe_out}" >&2
+  rc=1
+else
+  read -r ran pct sleeping alive p50 ran_tls <<<"$(measure standard ktls)" || exit 1
+  judge standard "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}" kernel "${ran_tls}"
+  case $? in
+    0) echo "GREEN ok — standard + ktls blocks, stays alive, is woken by the data, tls: kernel" ;;
+    1) echo "FAIL: standard + ktls does not satisfy non-negotiable 4's second half, or its tls read-back was wrong" >&2; rc=1 ;;
+    *) echo "FAIL: the TLS arm could not be measured, so nothing was checked" >&2; exit 2 ;;
+  esac
+fi
 
 exit "${rc}"

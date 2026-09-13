@@ -495,6 +495,16 @@ jobs:
             exit 1
           fi
 
+      # `[2026-09-13]` step 6b of docs/plans/2026-09-04-tls.md, Sửa 6:
+      # non-negotiable 4 has two machine checks and neither had a TLS arm —
+      # `tools/w2w` only grew `--tls` in step 6a, so nothing here ever traced
+      # the engine thread under kTLS. This is the one CI job that builds
+      # `fixbolt-w2w --features tls` at all, and `no-kernel-sleep` already
+      # shows `strace` installs cleanly on this same runner image.
+      - run: sudo apt-get update && sudo apt-get install -y strace
+      - run: cargo build -p fixbolt-w2w --release --features tls
+      - run: scripts/check-no-kernel-sleep.sh
+
   no-default-features:
     name: Builds with nothing optional installed
     runs-on: ubuntu-latest

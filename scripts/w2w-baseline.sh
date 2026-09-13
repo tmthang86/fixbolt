@@ -20,6 +20,14 @@
 # Competing load moves this project's ring median 71%, against 0.8% for every
 # §9 tuning row combined — it is the largest error term there is, and a model
 # that loads mid-sample passes a check taken only at the start.
+#
+# `[2026-09-13]` step 6b of docs/plans/2026-09-04-tls.md, Sửa 6: an `ARMS`
+# entry may now name a TLS arm too — `mode:path:tls`, the third field optional
+# and defaulting to `off`, so `ARMS="hft:admin"` (the only shape this script
+# knew before today) still means exactly what it meant before. `off` and
+# `ktls` keep the `allocs 0` assertion; `userspace` leaves ADR-0005 decision
+# 3's hot-path guarantee, so that one grep is skipped for it — the allocation
+# count is still printed in the per-run line, just not asserted zero.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -100,39 +108,80 @@ echo
 
 for arm in $ARMS; do
   mode=${arm%%:*}
-  path=${arm##*:}
+  rest=${arm#*:}
+  path=${rest%%:*}
+  # Third field optional. `rest` still has a ':' in it only when a tls field
+  # was actually given — `arm##*:` alone (the old `path` line) would instead
+  # have picked off the THIRD field as `path` the moment one arm grew a tls
+  # name, which is why this is two strips rather than one.
+  if [ "$rest" != "$path" ]; then
+    tls=${rest#*:}
+  else
+    tls=off
+  fi
+  tls_args=()
+  [ "$tls" != "off" ] && tls_args=(--tls "$tls")
+  # What the engine must REPORT for this arm, not what the flag is spelled —
+  # `--tls ktls` reads back as `tls: kernel` (tools/w2w/src/main.rs
+  # `seen_name`), and a handover that quietly fell back to userspace must
+  # disqualify the run rather than publish its p50 under the `ktls` label it
+  # never earned.
+  case "$tls" in
+    ktls) want_tls=kernel ;;
+    *) want_tls=$tls ;;
+  esac
   p50s=(); p99s=(); p999s=(); mins=(); skipped=0
   for i in $(seq 1 "$RUNS"); do
     b=$(busy_pct)
     if [ "$b" -gt 3 ]; then
-      printf '  %-8s %-5s run %2d  DISQUALIFIED, %s%% busy\n' "$mode" "$path" "$i" "$b"
+      printf '  %-8s %-5s %-9s run %2d  DISQUALIFIED, %s%% busy\n' "$mode" "$path" "$tls" "$i" "$b"
       skipped=$((skipped+1))
       sleep "$GAP"
       continue
     fi
-    out=$("$BIN" --mode "$mode" --path "$path" "${PINARGS[@]}" \
+    out=$("$BIN" --mode "$mode" --path "$path" "${tls_args[@]}" "${PINARGS[@]}" \
             --messages "$MESSAGES" --warmup "$WARMUP")
+    # WHAT RAN is read back and checked before anything the run measured is
+    # trusted — the same order `check-no-kernel-sleep.sh` learned the hard way
+    # after `--mode standard` once printed its banner and ran nothing. A typo
+    # in ARMS, or a kTLS handover that quietly fell back, must not quietly
+    # produce a column of figures for the wrong arm.
+    echo "$out" | grep -qx "mode: $mode" || { echo "$out"; echo "ran a mode other than '$mode'"; exit 1; }
+    echo "$out" | grep -qx "path: $path" || { echo "$out"; echo "ran a path other than '$path'"; exit 1; }
+    # The transport, checked BEFORE the allocation count below rather than
+    # after it: `ktls` expects zero allocations, so a quiet fallback to
+    # userspace would otherwise be caught by the allocs assertion instead of
+    # by this one, naming the wrong defect — `allocs != 0` reads as a hot-path
+    # regression, not as a transport that never took the keys. `[measured
+    # 2026-09-13]` that is exactly what happened here before this check was
+    # moved above the allocs check: the FAIL sentence was `allocs != 0`, not
+    # this one, for a run that had in fact run on the wrong transport.
+    echo "$out" | grep -qx "tls: $want_tls" || {
+      ran_tls=$(echo "$out" | awk '/^tls: /{print $2; exit}')
+      echo "$out"
+      echo "FAIL: $mode:$path:$tls ran tls '${ran_tls:-<none>}' when '$want_tls' was required"
+      exit 1
+    }
     # A run whose allocation count is not zero is not a figure about this
     # engine, and the binary already asserts it; this is the second reader,
     # because a `set -e` that never looked would be a green nobody read.
-    echo "$out" | grep -qE '^ *allocs +0 ' || { echo "$out"; echo "allocs != 0"; exit 1; }
-    # And the mode and path are READ BACK rather than assumed, which is what
-    # `check-no-kernel-sleep.sh` learned to do after `--mode standard` printed
-    # its banner and ran nothing. A typo in ARMS must not quietly produce a
-    # column of figures for the wrong arm.
-    echo "$out" | grep -qx "mode: $mode" || { echo "$out"; echo "ran a mode other than '$mode'"; exit 1; }
-    echo "$out" | grep -qx "path: $path" || { echo "$out"; echo "ran a path other than '$path'"; exit 1; }
+    # Skipped for `userspace`: ADR-0005 decision 3 leaves the zero-allocation
+    # guarantee there on purpose, and the binary itself only prints the count
+    # for that arm rather than asserting it — see tools/w2w/src/main.rs.
+    if [ "$tls" != userspace ]; then
+      echo "$out" | grep -qE '^ *allocs +0 ' || { echo "$out"; echo "allocs != 0"; exit 1; }
+    fi
     g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
     mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
-    printf '  %-8s %-5s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s\n' \
-      "$mode" "$path" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)"
+    printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s\n' \
+      "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)"
     sleep "$GAP"
   done
 
   q=${#p50s[@]}
   echo
   if [ "$q" -eq 0 ]; then
-    echo "  == $mode / $path: NO QUALIFYING RUNS ($skipped disqualified) =="
+    echo "  == $mode / $path / $tls: NO QUALIFYING RUNS ($skipped disqualified) =="
     echo
     continue
   fi
@@ -142,7 +191,7 @@ for arm in $ARMS; do
   mmin=$(printf '%s\n' "${mins[@]}" | median)
   x50=$(printf '%s\n' "${p50s[@]}" | sort -n | tail -1)
   n50=$(printf '%s\n' "${p50s[@]}" | sort -n | head -1)
-  echo "  == $mode / $path: median of $q qualifying runs ($skipped disqualified) =="
+  echo "  == $mode / $path / $tls: median of $q qualifying runs ($skipped disqualified) =="
   echo "     min    $mmin ns"
   echo "     p50    $m50 ns      (across runs: $n50 .. $x50)"
   echo "     p99    $m99 ns"
@@ -152,6 +201,9 @@ for arm in $ARMS; do
   # gate (crates/engine/benches/dispatch.rs paid for that lesson).
   echo "     spread max/median $(awk -v a="$x50" -v b="$m50" 'BEGIN{printf "%.3f", a/b}')"
   echo "     machine $VERDICT"
+  if [ "$tls" = userspace ]; then
+    echo "     allocs  NOT asserted zero — userspace leaves ADR-0005 decision 3's guarantee"
+  fi
   if [ "$PIN" = 1 ]; then
     echo "     pinned  engine cpu$ENGINE_CORE, client cpu$CLIENT_CORE"
   else
