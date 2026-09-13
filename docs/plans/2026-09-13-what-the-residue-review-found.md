@@ -205,7 +205,8 @@ cửa public — với hai lỗi cùng lúc, caller thấy `Affinity` thay cho `
 là `Numeric`, đọc ô *Values*: chứa chữ `positive` → parse `0` **phải bị từ chối** (lý do về
 giá trị, theo `is_about_the_value`); chứa `non-negative`, hoặc `` `0` `` → `0` **phải được
 nhận**; dạng `` `a`–`b` `` → `b+1` **phải bị từ chối**, và `a` phải được nhận. Ô không có dấu
-hiệu nào → đếm `skipped`, không đếm là đạt. Sàn: **7 hàng** (đúng bằng probe 6 hôm nay).
+hiệu nào → đếm `skipped`, không đếm là đạt. Sàn: **4 hàng** `[sửa 2026-09-13, xem *Sửa đổi
+giữa lúc dựng* — bản đầu ghi 7, lấy nhầm từ số của probe 6]`.
 Đảo chiều: đổi ô `HeartBtInt` về *positive integer, seconds* → đỏ với câu
 *"docs/CONFIGURATION.md §1: HeartBtInt says positive but the parser accepts 0 — read FIX 4.4
 before changing either side"*. **Trong phạm vi vì**: bài `docs/reference/` viết trong plan này,
@@ -284,7 +285,7 @@ Vai và model theo `CLAUDE.md` §12. Mọi bước đụng `crates/engine` do **
 |---|---|---|---|---|---|---|
 | 0 | **Đo trước khi dựng.** Cài `cargo-hack` trên bàn (`cargo install cargo-hack --locked`), chạy hai lệnh của job mới với `--target x86_64-unknown-linux-gnu`; trích **danh sách tổ hợp** cargo-hack in ra, **cái nào đỏ** (78 phải đỏ; nếu `--no-default-features --features tls` hay bộ nào khác cũng đỏ thì ghi lại — đó là lỗi mới, xem *Rủi ro*), và **thời gian chạy** | không sửa file | runner · haiku | — | hai lệnh ở *Cách làm*, output nguyên văn | `vendor/` đã fetch |
 | 1 | **Item 77**: nhánh `the_reader_table_matches_the_call_sites` trong `mod doc_table`, sàn 25; đảo chiều R77-1 (xem *Bẫy*) chạy và trích | `crates/engine/src/settings.rs` (chỉ trong `mod doc_table`) | senior dev · opus | 7 | `cargo test -p fixbolt-engine --lib doc_table` xanh, in số call site; `cargo clippy --all-targets -- -D warnings` | — |
-| 2 | **Item 76, test hồi quy**: probe 7 `a_values_cell_that_names_a_bound_is_a_bound_the_parser_holds`, sàn 7; đảo chiều R76-1 chạy và trích | `crates/engine/src/settings.rs` (cùng module) | senior dev · opus | 7 | như bước 1, và `cargo test -p fixbolt-engine --lib doc_table --features tls` (hàng §6 hiện có chạy cả hai) | 1 (cùng file) |
+| 2 | **Item 76, test hồi quy**: probe 7 `a_values_cell_that_names_a_bound_is_a_bound_the_parser_holds`, sàn **4** `[sửa 2026-09-13]`; đảo chiều R76-1 chạy và trích | `crates/engine/src/settings.rs` (cùng module) | senior dev · opus | 7 | như bước 1, và `cargo test -p fixbolt-engine --lib doc_table --features tls` (hàng §6 hiện có chạy cả hai) | 1 (cùng file) |
 | 3 | **Items 75 + 78**: `plan.validate()?` lên trước `bind` (ADR-0064); `#[cfg(feature = "standard")]` lên `use MaybeLog`; test `serve_sharded_hft_refuses_the_plan_before_it_binds` trong `shard_hft.rs`; đảo chiều R75-1 và R78-1 chạy **với target Linux** và trích; `CHANGELOG.md` *Changed*; `DESIGN.md:121`; `GUIDE.md:50` | `crates/engine/src/shard.rs`, `crates/engine/tests/shard_hft.rs`, `CHANGELOG.md`, `docs/DESIGN.md` §3, `docs/GUIDE.md` | senior dev · opus | 1, 4, 7 (đi qua, không đụng) | `cargo check --tests -p fixbolt-engine --features affinity --target x86_64-unknown-linux-gnu` sạch **0 warning**; cùng lệnh với `--no-default-features` sạch; `cargo test --all`; `cargo clippy --all-targets -- -D warnings`. **Test 75 chỉ chạy trên CI** — manager đọc log job *The affinity feature builds…* và trích dòng `serve_sharded_hft_refuses_the_plan_before_it_binds … ok` | — (file khác bước 1–2) |
 | 4 | **Items 78 + 79, cổng**: job `feature-sets` trong `ci.yml` (ADR-0065); gộp hai dòng `cargo doc` của job `docs`; chuyển comment item 61; `DESIGN.md` §6 hàng mới nêu **độ sâu 2 và lý do**; đảo chiều R79-1 chạy từ bàn và trích | `.github/workflows/ci.yml`, `docs/DESIGN.md` §6 | developer · sonnet | — (không đụng `crates/`) | `actionlint` hoặc `yamllint` nếu có trên máy (nếu không, nói rõ là không chạy); job mới **xanh trên CI** cho commit này, run id ghi lại; `scripts/check-links.py` chạy **trong worktree** | 3 (cổng phải xanh sau khi 78 đã sửa; R78-1 làm ở bước 3 là bằng chứng đỏ) |
 | 5 | **Senior review**, context mới, đưa plan + gate, không đưa lý luận của manager; một lần cho cả PR (§12) | đọc, sửa nếu có finding | senior dev · opus | tất cả | các lệnh ở trên chạy lại sau sửa | 1–4 |
@@ -297,7 +298,9 @@ Từng bước một. "Xanh" là output trích nguyên văn, không phải mã t
 - **Bước 0** — output cargo-hack phải liệt kê cho `fixbolt-engine` đủ 8 bộ: `--no-default-features`,
   `standard`, `affinity`, `tls`, `standard,affinity`, `standard,tls`, `affinity,tls`,
   `--all-features` (cargo-hack có thể gộp bộ tương đương; số nhỏ hơn 8 phải có lời giải thích
-  của nó trong log). Bộ `--no-default-features --features affinity` **phải đỏ** với `unused
+  của nó trong log). `[đo 2026-09-13]` **Thực tế là 10, không phải 8**: cargo-hack coi `default`
+  là một feature có tên, nên thêm `default,affinity` và `default,tls` — xem *Sửa đổi giữa lúc
+  dựng*. Bộ `--no-default-features --features affinity` **phải đỏ** với `unused
   import: crate::msglog::MaybeLog`. Không đỏ = cổng chưa nhìn thấy điều nó được dựng để thấy →
   dừng, hỏi lại.
 - **Bước 1** — trước khi viết code: viết R77-1 (sao `flag` thành `flag_or_yes` nhận `"Y" |
@@ -306,8 +309,9 @@ Từng bước một. "Xanh" là output trích nguyên văn, không phải mã t
   bằng chạy chứ không bằng đọc). Viết nhánh mới → đỏ trên đúng câu *"`flag_or_yes` reads
   `ResetOnLogon`…"*. Hoàn lại → xanh, in `25 call sites`.
 - **Bước 2** — R76-1: đổi ô `HeartBtInt` về *positive integer, seconds* → probe 7 đỏ trên
-  câu nêu `HeartBtInt` và `0`. Hoàn lại → xanh, `7 probed`. Kiểm thêm rằng probe 3 và 6 **không
-  đổi kết quả** dưới R76-1 (đó là lỗ hổng cũ, cho thấy bằng chạy).
+  câu nêu `HeartBtInt` và `0`. Hoàn lại → xanh, `4 probed, 4 skipped, 25 not Numeric` `[sửa
+  2026-09-13; bản đầu ghi 7]`. Kiểm thêm rằng probe 3 và 6 **không đổi kết quả** dưới R76-1 (đó
+  là lỗ hổng cũ, cho thấy bằng chạy).
 - **Bước 3** — R75-1: đặt `bind` lại trên `validate` → test mới đỏ với `expected
   Err(Affinity(NoSuchCore(CoreId(4096)))) before any bind; got Err(Io(… AddrInUse …))`. Chỉ
   chạy được trên CI (Linux); trên bàn, `cargo check --tests … --target x86_64-unknown-linux-gnu`
@@ -316,7 +320,7 @@ Từng bước một. "Xanh" là output trích nguyên văn, không phải mã t
   x86_64-unknown-linux-gnu` in lại `warning: unused import`; đặt lại → `0 warning`.
 - **Bước 4** — R79-1 từ bàn với cargo-hack + target Linux: lệnh doc đỏ với `unresolved link to
   `tls::TlsTransport``, và lệnh doc **cũ** `--all-features` xanh trên cùng cây. Hoàn lại → cả
-  hai xanh. Trên CI: job mới xanh, **và** log của nó có ≥ 8 dòng `info: running … on
+  hai xanh. Trên CI: job mới xanh, **và** log của nó có ≥ 10 `[sửa 2026-09-13; bản đầu 8]` dòng `info: running … on
   fixbolt-engine` (đếm, không suy).
 - **Không chạy** `benches/alloc.rs`, bộ Criterion, `w2w`, hai script bất biến 4 — không bước
   nào đụng đường nóng, wait strategy hay readiness (§7: mở rộng phạm vi là nêu thêm case, không
@@ -364,7 +368,7 @@ Từng bước một. "Xanh" là output trích nguyên văn, không phải mã t
 | **R77-1 không phải đảo chiều thật** — nếu probe 3 hiện tại đã đỏ với `flag_or_yes` thì item 77 không tồn tại | chạy probe 3 **trước** khi viết nhánh mới, dưới R77-1, và trích dòng `passed` (bước 1, dấu đầu tiên) |
 | **Probe 7 đọc "positive" trong một ô không phải khóa số** (ví dụ chữ *positive* trong ô prose) | probe 7 chỉ đọc hàng có `reader(key) == Numeric`; ô khác đếm `skipped` và in ra |
 | **`cargo hack doc` không nhận `RUSTDOCFLAGS`** hay cargo-hack không chuyển được subcommand `doc` | bước 0 đo trước; R79-1 phải đỏ **qua chính lệnh của job**, không qua `cargo doc` gọi tay. Nếu không đỏ: dừng, báo, fallback là vòng `for` shell trên danh sách bộ do `cargo metadata` cho — quyết định lại với owner |
-| **Job mới xanh vì cargo-hack gộp mất bộ cần thiết** (dedup tổ hợp tương đương) | đếm dòng `info: running … on fixbolt-engine` trong log ≥ 8; R78-1 và R79-1 chứng minh hai bộ cần thiết *thực sự* chạy |
+| **Job mới xanh vì cargo-hack gộp mất bộ cần thiết** (dedup tổ hợp tương đương) | đếm dòng `info: running … on fixbolt-engine` trong log ≥ 10 `[sửa 2026-09-13]`; R78-1 và R79-1 chứng minh hai bộ cần thiết *thực sự* chạy |
 | **Gộp hai dòng `cargo doc` của job `docs` làm mất cổng cũ nếu job mới bị tắt/skip** | job mới **không** có `continue-on-error`, không có `if:`; comment item 61 chuyển kèm để lý do không bị mất |
 | **Gộp cả `--features tls` vào powerset kéo theo yêu cầu kernel** — job `tls` hiện chạy trên runner riêng vì test cần kTLS | job mới chỉ `clippy` và `doc`, **không chạy test**; `rustls`/`ktls-core` chỉ cần biên dịch. Bước 0 xác nhận bộ `tls` build được trên bàn với target Linux |
 | **Sửa nhầm ADR-0015** thay vì viết ADR mới (§5) | `git diff --stat` của bước 3 và 6 không được có `ADR-0015`; reviewer bước 5 kiểm |
@@ -396,6 +400,76 @@ Từng bước một. "Xanh" là output trích nguyên văn, không phải mã t
   viết không mang marker.
 - **Các cửa khác** (`serve`, `serve_hft`, `serve_tls`, initiator) — không có kiểm tra đọc-máy
   nào để sắp lại; ADR-0064 quyết định 1 áp cho chúng bằng lời, không bằng code trong plan này.
+
+## Sửa đổi giữa lúc dựng
+
+`CLAUDE.md` §1, hàng ba: plan sai giữa lúc dựng thì sửa plan, và sửa sao cho đọc thấy được.
+Mỗi mục dưới đây ghi *plan viết gì*, *đo được gì*, *quyết định gì*.
+
+### 2026-09-13 — Sàn của probe 7 là 4, không phải 7 (bước 2; kiến trúc sư quyết)
+
+**Plan viết**: sàn 7 hàng, "đúng bằng probe 6 hôm nay". **Đo được** (senior dev, probe 7 viết đúng
+như plan, chạy trên `docs/CONFIGURATION.md` §1 hiện tại): `probe 7 — bounded Values cells: 4
+probed, 4 skipped, 25 not Numeric`. Bốn hàng được đọc: `HeartBtInt` (*non-negative*),
+`LogonTimeout` và `LogoutTimeout` (`` `0` is off ``), `SocketConnectPort` (`` `0`–`65535` ``). Bốn
+hàng bỏ qua vì ô chỉ ghi *integer*, không nêu bound: `MaxSkewMillis`, `TimestampPrecision`,
+`ReconnectInterval`, `ReconnectCeiling`. R76-1 hoạt động đúng: đổi ô `HeartBtInt` về *positive
+integer, seconds* → đỏ trên câu nêu `HeartBtInt`, probe 3 và 6 vẫn xanh.
+
+**Số 7 là lỗi của plan**: nó là số hàng probe 6 đọc (mọi ô có chữ *integer*), không phải số hàng
+*nêu bound* — hai câu hỏi khác nhau, và plan đã chép số của câu này sang câu kia.
+
+**Quyết định: sàn 4. Không thêm bound vào bốn ô để đủ 7.** Lý do:
+
+1. Sàn chỉ có một việc: phát hiện probe lặng lẽ không còn khớp gì nữa (probe 6 dùng sàn đúng
+   như vậy). Sàn 4 làm được việc đó. Sàn không phải mục tiêu để tài liệu vươn tới.
+2. Viết bound vào ô để một test đạt sàn là **chính cái bẫy của item 76, theo chiều ngược lại**:
+   bài `a-documentation-cell-is-not-a-specification.md` nói ô mô tả không phải đặc tả; thêm bốn
+   câu mô tả nữa là thêm bốn chỗ có thể sai — và ít nhất hai trong bốn *không thể* nhận bound mà
+   probe 7 đọc được một cách trung thực: `TimestampPrecision` là một *liệt kê* (`` `3`, `6` or `9` ``,
+   việc của probe 3, `settings.rs:1593` đọc bằng `integer_as_written` với `UnsupportedPrecision`),
+   và `MaxSkewMillis` không có bound nào ngoài kiểu `u64` (`settings.rs:1525`,
+   `with_max_skew_ms(mut self, ms: u64)` ở `session/src/lib.rs:916`) — ghi *non-negative* chỉ là
+   nhắc lại rằng dấu trừ bị từ chối, điều probe 6 đã chứng minh bằng `+7`.
+3. **Hai ô còn lại thì đúng là thiếu**, nhưng sửa chúng không thuộc bước 2 — xem mục *Phát hiện*
+   ngay dưới. Mở rộng một bước đã đo xong để kéo một con số về là đổi brief giữa lúc dựng.
+
+**Phát hiện kèm theo, ghi lại làm item mới ở bước 6, không làm trong bước 2**:
+`ReconnectInterval=0` **bị parser từ chối** — `settings.rs:1641-1653` gọi
+`crate::reconnect::Policy::new(first_ms, ceiling_ms)`, và `reconnect.rs:63-64` trả
+`PolicyError::FirstIsZero`, thành `Problem::ImpossiblePolicy` (`settings.rs:328-330`: *"a zero
+first delay, or a ceiling below it"*). `ReconnectCeiling=0` cũng bị từ chối, qua
+`CeilingBelowFirst` (`reconnect.rs:67`), vì `first ≥ 1` luôn. Hai ô ở `docs/CONFIGURATION.md:93-94`
+chỉ ghi *integer, seconds* — **ô nói ít hơn điều parser làm**, chiều ngược của item 76 (ô nói
+nhiều hơn). Đóng nó cần hai việc, và việc thứ hai là lý do nó không nằm ở bước 2:
+(a) ô `ReconnectInterval` → *positive integer, **seconds** — `0` is refused as `ImpossiblePolicy`,
+a ladder needs a first step*; ô `ReconnectCeiling` → *positive integer, **seconds**, not below
+`ReconnectInterval`*; (b) `is_about_the_value` (`settings.rs:2812-2820`) hiện **không** coi
+`ImpossiblePolicy` là lỗi-về-giá-trị, nên probe 7 với ô *positive* sẽ đỏ *sai* — phải thêm nhánh
+đó vào helper dùng chung của probe 3, và kiểm rằng probe 3 không đổi kết quả (không khóa liệt kê
+nào sinh `ImpossiblePolicy`). Khi làm, sàn probe 7 lên **6**, và đây là cách sàn được nâng: vì tài
+liệu nói thêm một sự thật, không phải vì test cần một con số.
+
+### 2026-09-13 — Ba chỗ bước 0 và bước 1 lệch so với plan, ghi làm sự thật
+
+- **Bước 1, `required(…)`**: plan liệt kê 25 call site dạng `hàm(…, Key::X)`. Trong parser còn
+  **8 call site** `required(…, Key::X, …)` mà plan không đếm; hàm này chỉ kiểm *có mặt* hay không,
+  không đọc giá trị, nên không có gì để so với `reader(key)`. Nhánh 77 **đếm riêng** nhóm này và
+  không đối chiếu với khai báo nào; sàn 25 **không gồm** 8 dòng đó. Plan giữ 25.
+- **Bước 1, turbofish**: cách quét của plan ("định danh ngay trước dấu ngoặc") không thấy được
+  `number::<u8>(v, Key::X)` — tên hàm cách ngoặc bởi `::<u8>`. Nhánh 77 **chuẩn hoá** bằng cách bỏ
+  phần turbofish ở đuôi trước khi đọc tên (`settings.rs:3098-3102`, có `[measured 2026-09-13]` ghi
+  điều gì xảy ra nếu không làm). Plan đã bỏ sót dạng gọi này khi đếm.
+- **Bước 0, số bộ feature**: plan nói 8 bộ cho `fixbolt-engine`. cargo-hack coi `default` là một
+  feature có tên, nên liệt kê **10**: thêm `default,affinity` và `default,tls` (trùng nội dung với
+  `standard,affinity` và `standard,tls`, nhưng cargo-hack không gộp vì tên khác). Số đếm dòng
+  `info: running` trong *Cách kiểm chứng* và *Bẫy* đã sửa từ 8 thành 10. Không đổi ranh giới sâu 2.
+- **Bước 0, 14 link hỏng**: lần chạy đầu của `cargo hack doc --feature-powerset --depth 2` đỏ ở
+  **mọi bộ không có `standard`** — 14 intra-doc link trỏ tới `serve`, `serve_with`,
+  `serve_with_recovery`, `connect_and_serve`, `StandardAcceptorEngine`, `poll::Poller`, là những
+  thứ chỉ tồn tại khi `standard` bật. Đúng rủi ro hàng đầu của bảng *Rủi ro* ("bộ khác cũng đỏ"),
+  ở nhánh "sửa nhỏ, không đổi hành vi": sửa trong commit `3404114`, chỉ đụng doc comment. Đây là
+  cổng mới tìm ra lỗi trước cả khi lên CI — bằng chứng nó nhìn thấy đúng lớp nó được dựng để thấy.
 
 ## Nhật ký giao hàng
 
