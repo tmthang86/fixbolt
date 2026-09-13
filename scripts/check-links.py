@@ -39,6 +39,33 @@ repository's own root file under the **wrong organisation**
 is counted and printed as a foreign URL sharing only a filename, never
 silently dropped.
 
+**Rule (b)'s tail search over-matched again, this time on a well-formed
+GitHub URL rather than a bare filename.** `[measured 2026-09-13]` a citation of
+`tokio-rs/tokio`'s own `.github/workflows/ci.yml` — a real, well-formed
+`owner/repo/blob/<ref>/<path>` URL naming a file this repository also happens
+to have at that same tail — was read as this repository's own file linked the
+wrong way. **(c)**, checked before (b): a `github.com` URL whose segments
+parse as `owner/repo/(blob|tree|raw|commit|blame)/<ref>/<path...>`, whose
+owner segment is **not** this repository's own owner (`OWN_REPO`, below,
+compared case-insensitively), and whose repo segment is neither this
+repository's current name nor a former one (`FORMER_NAMES`, below) names
+another repository explicitly and is not judged at all — counted in its own
+summary line, never silently dropped. `[measured 2026-09-13]` the owner check
+was added after a senior review found the first version of (c) judged only
+the repo segment: `https://github.com/tmthang86/fixbolt-engine/...` and
+`https://github.com/tmthang86/fixbot/...` — this repository's own owner, an
+unfamiliar repo name — were both waved through as foreign and never checked.
+This is narrower than it sounds: a *malformed* GitHub URL (no `blob/<ref>`,
+the wrong segment count — the `fixbolt/docs/decisions/...` case rule (b)
+already catches) and every non-GitHub host still fall through to (b)
+unchanged, and a well-formed URL whose repo segment **is** `fixbolt` or
+`nanofixengine` under the wrong owner is still judged by (b), because that is
+a wrong-organisation citation of this repository, not another one. The limit
+this still leaves: a well-formed URL under **another owner's** repository
+whose tail happens to match a file in this repository (a fork, or an
+unrelated repository that merely shares a relative path) now passes
+unjudged, counted.
+
 Anchors (#section) are stripped and not verified — verifying them means parsing
 every heading, and the failure mode of a wrong anchor is mild compared with a
 link to a file that is not there.
@@ -71,6 +98,16 @@ PATHISH = (".md", ".rs", ".toml", ".sh", ".py", ".yml", ".yaml", ".def", ".xml")
 # This repository's own GitHub address, as host+path segments. A rename or a
 # move to a different organisation changes only this tuple.
 OWN_REPO = ("github.com", "tmthang86", "fixbolt")
+
+# Names this repository has answered to besides its current one. A URL whose
+# repo segment is one of these is still a citation of *this* repository (under
+# the wrong owner, or from before the rename) and must stay judged by rule (b)
+# below — rule (c) must not wave it through as "another repository".
+FORMER_NAMES = ("nanofixengine",)
+
+# The path segment that marks a github.com URL as a file link rather than a
+# link to the repo, an issue, a PR, or anything else GitHub serves at a path.
+GITHUB_FILE_VERBS = ("blob", "tree", "raw", "commit", "blame")
 
 
 def looks_like_a_path(rel, target):
@@ -108,10 +145,12 @@ def names_a_repo_file(root, url):
         evidence. A bare filename such as `CHANGELOG.md` or `README.md` is a
         convention thousands of repositories share, not an address.
 
-    Returns `(tail, ignored_tail)`: `tail` is set when rule (a) or (b) judges
-    the match as evidence; `ignored_tail` is set instead when a bare filename
-    matched but rule (b) declined to call that evidence — the caller counts
-    this class rather than dropping it silently.
+    Returns `(tail, ignored_tail, foreign)`: `tail` is set when rule (a) or
+    (b) judges the match as evidence; `ignored_tail` is set instead when a
+    bare filename matched but rule (b) declined to call that evidence;
+    `foreign` is set instead when rule (c) recognised the URL as naming
+    another repository outright and declined to judge it at all. The caller
+    counts each of the latter two classes rather than dropping them silently.
     """
     rest = url
     for prefix in URL:
@@ -130,6 +169,30 @@ def names_a_repo_file(root, url):
     if head and head[0].startswith("www."):
         head[0] = head[0][len("www.") :]
     own = head == list(OWN_REPO)
+
+    # (c) a well-formed github.com file URL naming a repository that is
+    # neither this one nor a former name of this one, **and whose owner
+    # segment is not this repository's own owner**, is a citation of another
+    # repository, full stop — never judged, whatever tail it happens to
+    # share with this repository. Checked before (b)'s tail search, which
+    # cannot otherwise tell "this repo's file, wrong path" from "another
+    # repo's file that happens to sit at the same relative path". The owner
+    # check keeps a wrong or misspelled repository name **under this
+    # repository's own owner** from being waved through as "foreign": that
+    # is far more likely a mistaken citation of this repository than a real
+    # other repository, so it falls through to (b) and is judged there.
+    if (
+        not own
+        and head
+        and head[0] == "github.com"
+        and len(parts) >= 6
+        and parts[3] in GITHUB_FILE_VERBS
+        and parts[4]
+        and parts[2].lower() not in (OWN_REPO[2],) + FORMER_NAMES
+        and parts[1].lower() != OWN_REPO[1].lower()
+    ):
+        return None, None, True
+
     ignored_tail = None
     for i in range(len(parts)):
         tail = "/".join(parts[i:])
@@ -138,9 +201,9 @@ def names_a_repo_file(root, url):
         if not os.path.isfile(os.path.join(root, tail)):
             continue
         if own or "/" in tail:
-            return tail, None
+            return tail, None, False
         ignored_tail = tail  # rule (b): a bare filename, not judged
-    return None, ignored_tail
+    return None, ignored_tail, False
 
 
 def main():
@@ -149,6 +212,7 @@ def main():
 
     absolute = []
     ignored_bare = 0
+    foreign_named = 0
 
     for rel in source_files(root):
         scanned += 1
@@ -158,7 +222,9 @@ def main():
         for match in list(LINK.finditer(text)) + list(REFLINK.finditer(text)):
             target = match.group(1).split("#")[0].strip()
             if target.startswith(URL):
-                tail, ignored_tail = names_a_repo_file(root, target)
+                tail, ignored_tail, foreign = names_a_repo_file(root, target)
+                if foreign:
+                    foreign_named += 1
                 if ignored_tail:
                     ignored_bare += 1
                 if tail:
@@ -187,7 +253,8 @@ def main():
     print(
         f"{scanned} markdown and rust files, {checked} internal links checked, "
         f"{len(absolute)} absolute URLs naming a file in this repository, "
-        f"{ignored_bare} foreign URLs sharing only a filename with this repository (not judged)"
+        f"{ignored_bare} foreign URLs sharing only a filename with this repository (not judged), "
+        f"{foreign_named} foreign GitHub URLs naming another repository (not judged)"
     )
 
     if absolute:

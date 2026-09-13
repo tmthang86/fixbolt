@@ -91,6 +91,14 @@ below describe what a first release would contain.
   number"`.
   `docs/CONFIGURATION.md` §1.
 
+- **`serve_sharded_hft` and `serve_sharded_hft_with` check the `ShardPlan` before they bind.**
+  A call that has two errors at once — an address already in use and a core the machine cannot
+  honour — now returns `ShardError::Affinity`, not `ShardError::Io(AddrInUse)`; an `Io` from
+  binding is therefore always a real binding error. An empty `Table` is still refused first, as
+  `ShardError::NoCounterparties`.
+  [ADR-0064](docs/decisions/ADR-0064-a-door-acquires-nothing-before-it-has-validated.md),
+  `STATUS.md` item 75.
+
 ### Fixed
 
 - **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered

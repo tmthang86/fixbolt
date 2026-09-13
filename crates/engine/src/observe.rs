@@ -409,7 +409,7 @@ impl Shared {
 /// The three handles, **made before the engine they will watch**.
 ///
 /// [`crate::Engine::observer`] and its two siblings need a `&mut Engine`, and a
-/// caller who came through [`crate::serve`] never holds one: the engine is built
+/// caller who came through `crate::serve` never holds one: the engine is built
 /// inside the function and only a [`crate::Shutdown`] comes back, after
 /// everything has already ended. So an engine reached through the front door was
 /// finished and unobservable at the same time — `STATUS.md` item 47.

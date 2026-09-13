@@ -30,14 +30,14 @@ or a leading zero, so a file that writes one is not writing something this
 engine's own documentation offers, and the line number says so rather than
 guessing which of the two looser readings was meant.
 
-**Six probes read this table; the *Meaning* and notes cells are prose and are
-read by a person** `[added 2026-09-13]`.
+**Seven probes read this table; the *Meaning* and notes cells are prose and are
+read by a person** `[added 2026-09-13; changed 2026-09-13, was six]`.
 
 **Thirty-three keys** are recognised `[changed 2026-09-13, was thirty]`.
 
 **What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The
 `doc_table` tests in [`settings.rs`](../crates/engine/src/settings.rs) read this section and
-run the parser against six things `[changed 2026-09-13, was four]`: **the count sentence
+run the parser against seven things `[changed 2026-09-13, was four, then six]`: **the count sentence
 above, inside this section**; **a *Default* cell that begins with a backticked literal** (the
 key is written into a minimal file with that value and must change nothing); **a *Values*
 cell that is two or more backticked literals joined by nothing but `or` and commas** (every
@@ -47,15 +47,22 @@ two-character string over a fixed alphabet, every three-digit string, plus near-
 neighbours of each listed literal, `[changed 2026-09-13, was a sample of three fixed
 candidates]` — still not a check of everything the cell omits; and for a key read by a `match`
 on literal strings, the arms of that `match`, read off the source, must be exactly the listed
-literals); **a *Where* cell claiming either
+literals — and every call site in the parser must pass the key to the function its row is
+declared to be read by, which checks *which* function a key reaches and not what value reaches
+it); **a *Where* cell claiming either
 `[DEFAULT]` only or `[DEFAULT]` or `[SESSION]`** (the first must be refused in a `[SESSION]`,
 the second must not); **a *Default* cell reading `required`, `required per [SESSION]` or
 `required when` a condition, `refused otherwise`** (a file without the key must be refused as
 missing that key, and a conditional key written where its condition does not hold must be
 refused about that key); and **a *Values* cell saying `integer`, or a range of two digit
-literals** (`+7` and `07` must be refused as `NotANumber`, `7` must not).
-`[measured 2026-09-13]` those five cell probes reached 15, 10, 21, 5 and 7 of the thirty-three
-rows — 16, 11 and 7 for the first, second and fourth in a build with the `tls` feature, which
+literals** (`+7` and `07` must be refused as `NotANumber`, `7` must not); and **a *Values*
+cell on a numeric row that names a bound** — `positive`, `non-negative` or `` `0` ``, or
+`` `a`–`b` `` (`0` must be refused as a bad value for the first; `0` must not be refused for any
+reason that sample did not already give for the second; `a` must not be refused that way and
+`b + 1` must be refused as a bad value for the third).
+`[measured 2026-09-13]` those six cell probes reached 15, 10, 21, 5, 7 and 4 of the thirty-three
+rows — the sixth measured only in a build without `tls`, which does not compile on macOS —
+16, 11 and 7 for the first, second and fourth in a build with the `tls` feature, which
 is the only build where a `SocketUseSSL=Y` file can be written at all (18 of thirty on
 2026-09-12, before the three initiator keys).
 
@@ -74,7 +81,7 @@ the code and changed this count sentence to *"Four hundred keys"*, and the test 
 | `BeginString` | FIX version of the session | ASCII, max 32 bytes, e.g. `FIX.4.4` | required | `[DEFAULT]` or `[SESSION]` | [`settings.rs:95`](../crates/engine/src/settings.rs#L95) |
 | `SenderCompID` | This engine's identity | ASCII, max 32 bytes | required | `[DEFAULT]` or `[SESSION]` | [`settings.rs:96`](../crates/engine/src/settings.rs#L96) |
 | `TargetCompID` | The counterparty's identity | ASCII, max 32 bytes | required per `[SESSION]` | `[SESSION]` (or `[DEFAULT]`) | [`settings.rs:97`](../crates/engine/src/settings.rs#L97) |
-| `HeartBtInt` | Heartbeat interval | positive integer, seconds | `30` | `[DEFAULT]` or `[SESSION]` | [`settings.rs:98`](../crates/engine/src/settings.rs#L98), [`session/src/lib.rs:266`](../crates/session/src/lib.rs#L266) |
+| `HeartBtInt` | Heartbeat interval | non-negative integer, seconds; **zero means no heartbeats at all**, which is what FIX 4.4 says `108=0` means | `30` | `[DEFAULT]` or `[SESSION]` | [`settings.rs:98`](../crates/engine/src/settings.rs#L98), [`session/src/lib.rs:266`](../crates/session/src/lib.rs#L266) |
 | `MaxSkewMillis` | How far an inbound `SendingTime (52)` may differ from this engine's clock | integer, milliseconds | `120000` (2 minutes) | `[DEFAULT]` or `[SESSION]` | [`settings.rs:99`](../crates/engine/src/settings.rs#L99), [`session/src/lib.rs:260`](../crates/session/src/lib.rs#L260) |
 | `StartTime` | When the session opens each day, UTC | `HH:MM:SS` | none; with no `EndTime` the session is always open | `[DEFAULT]` or `[SESSION]` | [`settings.rs:100`](../crates/engine/src/settings.rs#L100), [`settings.rs:567`](../crates/engine/src/settings.rs#L567) |
 | `EndTime` | When the session closes each day, UTC | `HH:MM:SS` | none | `[DEFAULT]` or `[SESSION]` | [`settings.rs:101`](../crates/engine/src/settings.rs#L101), [`settings.rs:567`](../crates/engine/src/settings.rs#L567) |

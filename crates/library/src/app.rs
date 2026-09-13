@@ -155,7 +155,7 @@ pub trait Handler<const N: usize = 256, const P: usize = 64, const S: usize = 10
 
 /// A [`Handler`] wearing the [`fixbolt_session::Application`] the engine wants.
 ///
-/// Build one with [`app`] and hand it to [`crate::serve`].
+/// Build one with [`app`] and hand it to `crate::serve`.
 pub struct App<H, const N: usize = 256, const P: usize = 64, const S: usize = 1024> {
     handler: H,
     /// Reused across messages. Allocating one per message would be
@@ -165,7 +165,7 @@ pub struct App<H, const N: usize = 256, const P: usize = 64, const S: usize = 10
     failed: u64,
 }
 
-/// Wrap a handler for [`crate::serve`], with [`Handler`]'s default sizes.
+/// Wrap a handler for `crate::serve`, with [`Handler`]'s default sizes.
 pub fn app<H: Handler>(handler: H) -> App<H> {
     App {
         handler,
