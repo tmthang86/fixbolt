@@ -106,3 +106,19 @@ in both modes.
 - `target_os = "linux"` is not a feature and is not enumerated. The job runs on
   `ubuntu-latest`, so `mod shard` and `mod affinity` are compiled; a `cfg` that is wrong
   on another platform is outside this gate, as it was before.
+
+## Revision 2026-09-13 — measured at step 0
+
+- **cargo-hack 0.6.45 lists `default` as a feature of its own**, so `fixbolt-engine`'s
+  powerset to depth two is **10 sets, not 8**: the "Good" section above assumed `default`
+  and `--all-features` were the only two beyond the three named features and their pairs;
+  cargo-hack additionally enumerates `default` alone and each pair that includes it.
+- **Its first run found 14 broken intra-doc links**, every one in a set built without
+  `standard`: 11 in `fixbolt-engine`, 3 in `fixbolt`. Fixed in commit `3404114`.
+- **On a macOS desk the `tls` sets cannot be built at all** — `ktls-core` is Linux-only —
+  and any `--target x86_64-unknown-linux-gnu` build that reaches a dev-dependency needs a
+  C cross-compiler for `ring`, which this desk does not have. So the gate as a whole is
+  only fully observable on CI; the desk can prove the non-`tls` sets and no more.
+- **Wall time on the desk**: clippy 52 s, doc 48 s — both runs failed early (on the 14
+  broken links, and on sets that cannot cross-compile), so these are a **lower bound**, not
+  the CI estimate the "Bad" section above still owes.

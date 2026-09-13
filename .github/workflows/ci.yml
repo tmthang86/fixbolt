@@ -156,31 +156,59 @@ jobs:
           git log -1 --format='HEAD    = %H%nsubject = %s%nparents = %P'
       - run: scripts/check-links.py
 
-  # rustdoc is the front door of a Rust crate — docs.rs is where a user lands
-  # before the README. A broken intra-doc link there is a dead link the `links`
-  # job cannot see, because it is inside a doc comment, not a markdown file.
-  # `[measured 2026-09-03]` this job was red on arrival: 13 pre-existing warnings,
-  # including public docs linking to private items. The-doc-set plan, step B6.
-  docs:
-    name: rustdoc has no broken intra-doc links
+  # STATUS.md items 78 and 79 (ADR-0065): a feature combination no gate
+  # builds. CI's clippy ran under the default set and under `--features
+  # affinity` *with* `standard` also on; nothing ran `--no-default-features
+  # --features affinity`, so `crates/engine/src/shard.rs`'s `use
+  # crate::msglog::MaybeLog` — needed only by code gated `#[cfg(feature =
+  # "standard")]` — printed `warning: unused import` under `cargo test` and
+  # nothing failed, because a warning is not a test failure (item 78).
+  # Separately, an intra-doc link resolved under `--all-features` and broke
+  # under `--features affinity` alone, caught by a developer reading rustdoc
+  # output by hand, not by this file (item 79).
+  #
+  # One job now builds every feature set of every workspace crate to depth
+  # two — no features, each feature alone, each pair, all features — with
+  # `cargo-hack`, and runs `clippy -D warnings` and `doc` over that whole set.
+  # Depth two, not more: every defect of this family found here so far needed
+  # exactly one feature on and one off (ADR-0065 decision 2) — the boundary is
+  # read here and every time DESIGN.md §6's row for this gate is read; it does
+  # not grow just because the feature count does. This job also absorbs what
+  # the `docs` job used to check — `cargo doc` under the default set and under
+  # `--all-features` are both members of the powerset — so that job is gone;
+  # its guard is the comment on the doc step below.
+  feature-sets:
+    name: Every feature set to depth two builds, lints and documents
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # cargo doc compiles the crates, and fixbolt-dict generates its tables from
-      # the QuickFIX XML at build time, so vendor/ must be present first.
+      - run: rustup component add clippy
+      # fixbolt-dict generates its tables from the QuickFIX XML at build time,
+      # and every set built below compiles every crate that depends on it.
       - run: scripts/fetch-quickfix-assets.sh
-      - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --workspace --no-deps
-      # **And again with everything on, because the first command cannot see a
-      # module behind a feature.** `[measured 2026-09-10]` the run above was
-      # green about `crates/engine/src/tls.rs` for as long as that file had
-      # existed, while its very first line carried a broken link — `mod tls` is
-      # `#[cfg(feature = "tls")]`, so the default build never documented it at
-      # all. Same family as STATUS.md item 57 and
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      # Clippy rather than `check`: clippy also runs rustc's own lints, and
+      # `-D warnings` is what turns item 78's printed warning into a red job.
+      # `--keep-going` so one red feature set does not hide the rest.
+      - run: cargo hack clippy --workspace --all-targets --feature-powerset --depth 2 --keep-going -- -D warnings
+
+      # **Run again over the same sets, because one rustdoc invocation cannot
+      # see a module behind a feature it did not enable.** `[measured
+      # 2026-09-10]` the item-61 defect this generalises: a single `cargo doc
+      # --workspace --no-deps` was green about `crates/engine/src/tls.rs` for
+      # as long as that file had existed, because `mod tls` is
+      # `#[cfg(feature = "tls")]` and the default build never documented it at
+      # all. That was fixed by hand-adding one more set, `--all-features`;
+      # items 78 and 79 are the same shape one layer out — a link can resolve
+      # under one set and break under another — so the fix now runs every set
+      # the clippy step above already builds, not one more hand-picked pair.
+      # Same family as STATUS.md item 57 and
       # docs/reference/feature-flags-unify-across-a-workspace.md: a gate that
-      # reports ok about something it was never handed. Both commands are kept:
-      # a link may resolve under one feature set and not the other, and only
-      # running both says which.
-      - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --workspace --no-deps --all-features
+      # reports ok about something it was never handed.
+      - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo hack doc --workspace --no-deps --feature-powerset --depth 2 --keep-going
 
   # CLAUDE.md's first paragraph: this repository is going to be published, and
   # every commit is treated as already public. Nothing looked at what the
