@@ -97,7 +97,7 @@ the code and changed this count sentence to *"Four hundred keys"*, and the test 
 | `ConnectionType` | Which role this whole file configures | `acceptor` or `initiator` | `acceptor` — every file written before 2026-09-05 | `[DEFAULT]` **only**; a file names one role | [`settings.rs`](../crates/engine/src/settings.rs) |
 | `SocketConnectHost` | Where to dial. **Kept as written and resolved on every dial**, so a venue whose DNS fails over keeps working | a hostname or an address | required when `ConnectionType=initiator`; **refused otherwise, by line** | `[DEFAULT]` or `[SESSION]` | [`settings.rs`](../crates/engine/src/settings.rs) |
 | `SocketConnectPort` | Which port | `0`–`65535` | required when `ConnectionType=initiator`; refused otherwise | `[DEFAULT]` or `[SESSION]` | [`settings.rs`](../crates/engine/src/settings.rs) |
-| `ReconnectInterval` | First backoff delay after a connection ends | integer, **seconds** | `30` (QuickFIX's own) | initiator only | [`reconnect.rs`](../crates/engine/src/reconnect.rs) |
+| `ReconnectInterval` | First backoff delay after a connection ends | positive integer, **seconds** | `30` (QuickFIX's own) | initiator only | [`reconnect.rs`](../crates/engine/src/reconnect.rs) |
 | `ReconnectCeiling` | Largest backoff delay. **No QuickFIX equivalent** — without it the ladder doubles for ever | integer, **seconds**, not below `ReconnectInterval` | 16 × `ReconnectInterval` | initiator only | [`reconnect.rs`](../crates/engine/src/reconnect.rs) |
 
 **The session's own behaviour** `[added 2026-09-05]`. Each sets the `Config` knob of the same

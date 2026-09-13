@@ -2866,11 +2866,24 @@ mod doc_table {
         out
     }
 
+    /// The familiar spellings of a boolean, written out rather than derived:
+    /// exactly the 22 strings YAML 1.1's boolean type accepts
+    /// (<https://yaml.org/type/bool.html>), which in lower case are also what
+    /// Python's `configparser` accepts, case-insensitively, beside `1` and `0`
+    /// (<https://docs.python.org/3/library/configparser.html>). Literal,
+    /// because computing the case variants means slicing a string, and
+    /// `indexing_slicing` is `deny`.
+    const SPELLINGS: &[&str] = &[
+        "y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO", "true", "True", "TRUE", "false",
+        "False", "FALSE", "on", "On", "ON", "off", "Off", "OFF",
+    ];
+
     /// The bounded universe probe 3's reverse direction searches for a
     /// *Values* cell listing `listed`: every string of length 1 and 2 over
     /// [`ALPHABET`] (66 + 66² = 4 422 strings), every three-digit string
-    /// `000`–`999` (1 000 more, item 74), plus [`neighbours`] of each listed
-    /// literal, minus `listed` itself, deduplicated.
+    /// `000`–`999` (1 000 more, item 74), the familiar boolean spellings in
+    /// [`SPELLINGS`] (item 80), plus [`neighbours`] of each listed literal,
+    /// minus `listed` itself, deduplicated.
     ///
     /// **The three-digit leg exists because the short leg has a blind spot a
     /// listed literal's own neighbours do not cover.** A literal three
@@ -2882,6 +2895,15 @@ mod doc_table {
     /// universe here means this direction no longer depends on one.
     /// `[measured 2026-09-13]` roughly 7 ms more per row at the rate already
     /// measured for the base universe.
+    ///
+    /// **The spelling leg exists for the same reason, one step wider.** A
+    /// parser that takes `yes` or `true` for a `Y`/`N` key — written inline
+    /// beside the call, or by wrapping the value before `flag` sees it — is
+    /// three or more letters, not a near miss of `Y`, and not an arm of any
+    /// `match` the second leg reads. `[measured 2026-09-13]` both shapes read
+    /// `ok` before this leg (item 80) and name `["yes"]` and `["true"]` with
+    /// it. The spellings go in **before** `listed` is subtracted, so a cell
+    /// that lists `Y` still does not try `Y`.
     fn candidates(listed: &[&str]) -> Vec<String> {
         let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for &a in ALPHABET {
@@ -2898,6 +2920,9 @@ mod doc_table {
                     set.insert(format!("{a}{b}{c}"));
                 }
             }
+        }
+        for &spelling in SPELLINGS {
+            set.insert(spelling.to_string());
         }
         for &literal in listed {
             for neighbour in neighbours(literal) {
@@ -2917,7 +2942,9 @@ mod doc_table {
     /// writes must be a value the parser accepts for that key.
     ///
     /// **Reverse, a bounded search, not a sample.** [`candidates`] builds the
-    /// universe described above it. Every candidate not already in `listed`
+    /// universe described above it — short strings, three digits, the
+    /// familiar boolean spellings of [`SPELLINGS`], and near misses of what is
+    /// listed. Every candidate not already in `listed`
     /// gets one of three outcomes: refused as a bad value
     /// ([`is_about_the_value`]) is correct and silent; accepted is gathered
     /// across the whole row and asserted once, naming every such value, not
@@ -3248,6 +3275,17 @@ mod doc_table {
     /// read `ok`, `11 passed`. No further pattern is added for it: ADR-0061
     /// concluded a text scan is not completed by one more pattern, and this
     /// is that loop again.
+    ///
+    /// **Probe 3's reverse direction now sees both demonstrated shapes, by
+    /// behaviour rather than by source** (item 80): [`candidates`] tries the
+    /// familiar boolean spellings in [`SPELLINGS`], so the inline `yes` and a
+    /// wrapper turning `true` into `Y` each go red there, naming the value,
+    /// while this leg still reads `ok` for both. **The residue, `[measured
+    /// 2026-09-13]`**: a spelling of three or more characters outside
+    /// [`SPELLINGS`] — `&& (v.1 == "always" || flag(v, Key::ResetOnLogon)?)` —
+    /// is still green in probe 3 and in this leg: `10 probed, 23 skipped`,
+    /// `11 passed`. No bounded
+    /// search closes that, and a source scan is what ADR-0061 turned down.
     #[test]
     fn the_reader_table_matches_the_call_sites() {
         /// Reading call sites on 2026-09-13: 25 — `flag` 9, `number` 7,
@@ -3385,8 +3423,8 @@ mod doc_table {
     }
 
     /// **Probe 7, item 76.** A *Values* cell on a [`Reader::Numeric`] row that
-    /// names a bound is a bound the parser holds: `positive` refuses `0` as a
-    /// bad value, `non-negative` or `` `0` `` does not, and `` `a`–`b` ``
+    /// names a bound is a bound the parser holds: `positive` refuses `0` for its
+    /// value, `non-negative` or `` `0` `` does not, and `` `a`–`b` ``
     /// takes `a` and refuses `b + 1`.
     ///
     /// `[measured 2026-09-13]` `HeartBtInt`'s cell said *positive integer*
@@ -3395,10 +3433,12 @@ mod doc_table {
     /// cell with none of the three marks is skipped and counted, never passed.
     #[test]
     fn a_values_cell_that_names_a_bound_is_a_bound_the_parser_holds() {
-        /// Rows reached on 2026-09-13: 4 — the floor catches this probe silently
-        /// ceasing to match, and four *Values* cells name a bound today (plan
-        /// revision, not probe 6's 7). Raise it when a cell gains one; never lower it.
-        const FLOOR: usize = 4;
+        /// Rows reached on 2026-09-13: 5 — the floor catches this probe silently
+        /// ceasing to match, and five *Values* cells name a bound today (plan
+        /// revision, not probe 6's 7). The fifth is `ReconnectInterval`, item 81,
+        /// and it is the first row on which the `positive` branch runs against
+        /// real data. Raise it when a cell gains one; never lower it.
+        const FLOOR: usize = 5;
 
         let doc = configuration_md();
         let (mut probed, mut skipped, mut not_numeric) = (0_usize, 0_usize, 0_usize);
@@ -3447,6 +3487,10 @@ mod doc_table {
             // counts as refused here when the refusal is of that class **or**
             // is any refusal the unmodified sample does not already give:
             // only the one line differs, so only that value can have caused it.
+            // The `positive` branch reads the same predicate, for the same
+            // reason turned round: `ReconnectInterval=0` *is* refused, and
+            // refused as `ImpossiblePolicy` — a narrower test called that an
+            // accept and went red on a parser that was right (item 81).
             let refused_for_its_value = |refusal: &Option<Problem>| {
                 refusal
                     .as_ref()
@@ -3455,8 +3499,8 @@ mod doc_table {
             if says_positive {
                 let refusal = refusal_of("0");
                 assert!(
-                    refusal.as_ref().is_some_and(is_about_the_value),
-                    "docs/CONFIGURATION.md §1: {name} says positive but the parser accepts 0 — read FIX 4.4 before changing either side ({refusal:?})"
+                    refused_for_its_value(&refusal),
+                    "docs/CONFIGURATION.md §1: {name} says positive but the parser does not refuse {name}=0 for its value: {refusal:?}"
                 );
             }
             if says_zero_allowed {
