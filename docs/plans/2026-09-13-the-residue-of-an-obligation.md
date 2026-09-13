@@ -1,6 +1,6 @@
 # Phần dư của một nghĩa vụ — đóng item 67, 71, 72, 73, 74 và 21; nói rõ vì sao 55 không ở đây
 
-> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt 2026-09-13, theo đề xuất (Q1 có, Q2 (b), Q3 đóng, Q4 trong plan này, Q5 tách) — **đang làm**, nhánh `plan/the-residue-of-an-obligation`, draft PR mở ở commit đầu theo `CLAUDE.md` §8
+> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt 2026-09-13, theo đề xuất (Q1 có, Q2 (b), Q3 đóng, Q4 trong plan này, Q5 tách) — **ĐÃ ĐÓNG 2026-09-13**, cả bảy bước; PR [#68](https://github.com/tmthang86/fixbolt/pull/68), commit đóng `30b53cb`, CI run [`34746295036`](https://github.com/tmthang86/fixbolt/actions/runs/34746295036). Item 21, 67, 71, 72, 73, 74 đóng; 55 giữ làm ratchet (Q5); review mở item 75–79
 > **Phạm vi:** sáu open item không cần máy §9, một pull request, một phiên. `mod doc_table` và
 > `number()` trong `crates/engine/src/settings.rs`; `scripts/check-links.py`; bốn tài liệu mang con
 > số *eighteen*; một cửa vào `hft` có ghim lõi trong `crates/engine/src/lib.rs`.
@@ -869,3 +869,23 @@ cargo doc -p fixbolt-engine --no-deps --features affinity, -D broken_intra_doc_l
 scripts/check-links.py   no dead internal links; 0 absolute; 0 foreign-bare
 check-indexing-debt 181 ok · check-no-crate-root-allow ok · check-no-optional-deps ok · unsafe in affinity.rs 6
 ```
+
+### 2026-09-13 — bước 7, ĐÓNG
+
+`STATUS.md`: item **21, 67, 71, 72, 73, 74** đóng, mỗi hàng nêu cách đóng và giữ nguyên văn cũ sau
+*Was:*; hàng item 21 trong danh sách *cần máy Linux* gạch — đóng được **không cần máy §9**, vì test
+ghim chạy trên runner GitHub. Item **55** ghi quyết định Q5. Item **75–79** mở, cả năm từ senior
+review, cả năm có từ trước PR này. *Not proven* rà: `grep` ra hai bullet, cả hai về `serve_sharded_hft`
+recovery/stop, không bullet nào về item PR này đóng — không gạch gì, ghi rõ đã rà.
+
+**CI, theo quy tắc của PR #67:** draft PR mở ở commit đầu; mỗi commit đúng một run `pull_request`.
+`1a9c040` và `d44ea5a` bị commit kế tiếp huỷ run nên **không có kết quả CI riêng**; commit ngọn chứa
+cả hai. **Commit đóng `30b53cb`, run [`34746295036`](https://github.com/tmthang86/fixbolt/actions/runs/34746295036).**
+Manager **chờ run đó xong rồi mới push commit bàn giao** — push sớm sẽ huỷ đúng run cần ghi vào ô cuối
+§9. Ghi cho manager sau trong *Start here*.
+
+**Lệch plan, tổng hợp:** thứ tự bước 2 và 4 (song song thay vì nối tiếp); `starts_with` → `contains`
+(bước 1); thứ tự nhánh `TimestampPrecision` (bước 3, rồi review đưa về một quy tắc); biến thể
+`MissingKey` (bước 4); câu `NotANumber` thêm `— that fits this key` (review); cột *control xanh* của
+R73-2 không còn đúng (review). **Không lệch nào đổi quyết định Q1–Q5 của chủ sở hữu.**
+
