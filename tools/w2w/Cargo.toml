@@ -30,6 +30,18 @@ standard = ["fixbolt-engine/standard"]
 # flag, which is the lesson the `standard` block above was written for.
 affinity = ["fixbolt-engine/affinity"]
 
+# `[2026-09-13]` step 6a of `docs/plans/2026-09-04-tls.md`: `--tls ktls` and
+# `--tls userspace`, so `DESIGN.md` §8's three TLS rows come from the same
+# harness as the plain one. Not in `default`, for the reason `affinity` above is
+# not: `cargo test --all` would switch `fixbolt-engine/tls` on for every crate
+# in the invocation. `src/main.rs` refuses `--tls` other than `off` without it.
+#
+# `rustls` is named here because the client end and the server configuration
+# are built in this binary; `rcgen` makes the self-signed certificate at start-up
+# rather than committing one that expires. Both are **optional normal**
+# dependencies, so `scripts/check-no-optional-deps.sh` asks for each by name.
+tls = ["fixbolt-engine/tls", "dep:rustls", "dep:rcgen"]
+
 [dependencies]
 fixbolt-engine = { path = "../../crates/engine" }
 fixbolt-session = { path = "../../crates/session" }
@@ -39,6 +51,16 @@ fixbolt-session = { path = "../../crates/session" }
 # own, so this adds nothing to the tree.
 fixbolt-codec = { path = "../../crates/codec" }
 fixbolt-dict = { path = "../../crates/dict" }
+
+# The `tls` feature above, and nothing else. `ring` rather than rustls's default
+# `aws_lc_rs`, for the reason `crates/engine/Cargo.toml` gives: `aws-lc-sys`
+# needs cmake. rcgen 0.14's own defaults are `crypto`, `pem` and `ring`, the same
+# spelling as the engine's dev-dependency, so this adds no crate to the lock.
+rustls = { version = "0.23.43", default-features = false, features = [
+    "std",
+    "ring",
+], optional = true }
+rcgen = { version = "0.14", optional = true }
 
 [lints]
 workspace = true

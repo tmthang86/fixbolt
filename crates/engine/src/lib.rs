@@ -669,6 +669,37 @@ where
         self.logons
     }
 
+    /// Which of [ADR-0005]'s three answers is carrying connection `id`'s bytes,
+    /// **as its transport reports it**, or `None` if this engine holds no
+    /// connection by that id.
+    ///
+    /// `[2026-09-13]` step 6a of the `tls` plan. A figure measured over TLS is
+    /// about whichever path actually carried it, so a tool that prints the mode
+    /// must read it from here rather than echo what it asked for: a connection
+    /// told to offload that fell back to userspace is a different code path, and
+    /// ADR-0005 open question 3 is exactly that confusion. `tools/w2w` prints
+    /// this as its `tls:` line; its reversal — the engine forced to userspace
+    /// while `--tls ktls` is asked for — prints `tls: userspace`.
+    ///
+    /// **Read it after the session is up**, for the reason
+    /// [`crate::transport::Transport::tls_mode`] gives: a handshake in flight
+    /// reports `Userspace`. Not behind the `tls` feature, because neither is
+    /// [`crate::transport::TlsMode`] ([ADR-0060] decision 3): every plain engine
+    /// answers `Some(TlsMode::Plain)` for a connection it holds.
+    ///
+    /// A linear search over this engine's connections — for a caller that asks
+    /// once per connection, not per turn.
+    ///
+    /// [ADR-0005]: ../../../docs/decisions/ADR-0005-tls.md
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    #[must_use]
+    pub fn tls_mode(&self, id: ConnId) -> Option<crate::transport::TlsMode> {
+        self.conns
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.transport.tls_mode())
+    }
+
     /// Tell this engine how many sockets the pre-session stage in front of it
     /// let go because their first message could not be framed.
     ///

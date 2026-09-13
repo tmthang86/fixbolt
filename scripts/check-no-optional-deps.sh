@@ -52,6 +52,15 @@ CASES=(
   # `cargo test --all --no-default-features` must build it on a machine with no
   # CMake. Asked per crate, because at workspace scope a sibling answers for it.
   "fixbolt-interop:libc"
+  # `[2026-09-13]` tools/w2w grew `--tls` (step 6a of the `tls` plan), and its
+  # `tls` feature names `rustls` and `rcgen` as optional **normal** dependencies
+  # of its own — not only through `fixbolt-engine/tls`. `rcgen` in particular is
+  # a dev-dependency everywhere else in this workspace, so this is the first
+  # place it could reach a featureless build. Asked separately for the reason
+  # the two engine lines above are: a typo in one `dep:` entry is invisible
+  # until asked.
+  "fixbolt-w2w:rustls"
+  "fixbolt-w2w:rcgen"
 )
 
 rc=0

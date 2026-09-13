@@ -228,6 +228,8 @@ dependencies = [
  "fixbolt-dict",
  "fixbolt-engine",
  "fixbolt-session",
+ "rcgen",
+ "rustls",
 ]
 
 [[package]]
