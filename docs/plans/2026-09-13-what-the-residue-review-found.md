@@ -130,7 +130,8 @@ Kết quả muốn có: bốn item đóng, mỗi cái có một test hoặc mộ
 - Feature toàn workspace (đọc từng `Cargo.toml`): `fixbolt-engine` có `standard` (mặc định),
   `affinity`, `tls` → 8 tổ hợp; `tools/w2w` cũng 3 → 8; `crates/library` và `tools/interop`
   mỗi cái 1 (`standard`) → 2; các crate khác không có feature. **Với độ sâu 2, hôm nay vét
-  được toàn bộ** (3 feature thì "mọi cặp + tất cả" chính là 8/8).
+  được toàn bộ** (3 feature thì "mọi cặp + tất cả" chính là 8/8). `[sai — độ sâu 2 không có
+  "tất cả"; xem Sửa đổi giữa lúc dựng, 2026-09-13, review D2]`
 
 **Tiền lệ cho 78/79** — `[researched 2026-09-13]`:
 
@@ -229,11 +230,12 @@ bộ hai-feature nói hai feature dùng chung gì (ở đây là một `libc` op
 feature bật cùng lúc chưa từng thấy, và mỗi mức sâu thêm nhân số lần build với số feature.
 Ranh giới **giữ ở 2 khi số feature tăng**; ngày tìm ra lỗi ba-feature, plan sửa nó quyết định
 nâng sâu hay thêm bộ đó bằng tên, và ghi ADR mới. Hôm nay sâu 2 tình cờ vét hết (8/8 cho
-engine) — nói rõ để ngày nó không còn vét hết thì đó là quyết định có hồ sơ, không phải con số
+engine) `[sai — xem Sửa đổi giữa lúc dựng, 2026-09-13, review D2]` — nói rõ để ngày nó không còn vét hết thì đó là quyết định có hồ sơ, không phải con số
 ai đó chọn. **Không chạy test theo tổ hợp** — lý do ở ADR-0065 quyết định 3.
 
 Hai dòng `cargo doc` của job `docs` **bị gộp vào** (mặc định và `--all-features` đều nằm trong
-powerset) và bỏ đi; comment ghi item 61 chuyển sang job mới. Hai dòng `cargo test` của job
+powerset `[sai — --all-features không nằm trong đó; xem Sửa đổi giữa lúc dựng, 2026-09-13,
+review D2]`) và bỏ đi; comment ghi item 61 chuyển sang job mới. Hai dòng `cargo test` của job
 affinity giữ nguyên.
 
 **Đảo chiều cho job mới — viết trước khi dựng, câu FAIL phải in ra:**
@@ -470,6 +472,26 @@ liệu nói thêm một sự thật, không phải vì test cần một con số
   thứ chỉ tồn tại khi `standard` bật. Đúng rủi ro hàng đầu của bảng *Rủi ro* ("bộ khác cũng đỏ"),
   ở nhánh "sửa nhỏ, không đổi hành vi": sửa trong commit `3404114`, chỉ đụng doc comment. Đây là
   cổng mới tìm ra lỗi trước cả khi lên CI — bằng chứng nó nhìn thấy đúng lớp nó được dựng để thấy.
+
+### 2026-09-13 — Độ sâu 2 chưa bao giờ build "tất cả feature" (review D2)
+
+**Plan viết**: độ sâu 2 gồm "mọi cặp + tất cả", hôm nay "vét hết (8/8 cho engine)", và vì thế hai
+dòng `cargo doc` của job `docs` (mặc định và `--all-features`) được gộp vào rồi bỏ đi.
+
+**Đo được**: log CI run 34750085195 liệt kê đúng 10 bộ cho `fixbolt-engine` — không feature,
+`default`, `standard`, `affinity`, `tls`, `affinity+default`, `affinity+standard`, `affinity+tls`,
+`default+tls`, `standard+tls`. **Không có bộ `standard,affinity,tls`.** Trên máy bàn,
+`cargo hack check --workspace --feature-powerset --depth 2 --print-command-list` in ra đúng 10 bộ
+đó cho `fixbolt-engine` và cho `tools/w2w`. Lý do: cargo-hack đếm độ sâu theo số feature có tên, và
+"tất cả" của ba feature là ba tên — quá độ sâu 2 một bậc. Hệ quả: bỏ job `docs` là bỏ luôn lần build
+rustdoc duy nhất dưới `--all-features` (chính bộ của item 61), trong khi mọi tài liệu nói nó vẫn còn.
+
+**Quyết định**: giữ ranh giới sâu 2 (ADR-0065 quyết định 2 không đổi), và thêm hai bước riêng vào
+cuối job `feature-sets`: `cargo clippy --workspace --all-targets --all-features -- -D warnings` và
+`cargo doc --workspace --no-deps --all-features` với cùng `RUSTDOCFLAGS`. Sửa theo: comment
+`ci.yml`, hàng `DESIGN.md` §6, ADR-0065 (quyết định 1, 5, mục *Good*, câu cuối *Context*, kèm một
+mục *Revision* ghi ngày). Chưa chạy được trên máy bàn: các bộ có `tls` không build trên macOS, nên
+hai bước mới chỉ quan sát được trên CI.
 
 ## Nhật ký giao hàng
 

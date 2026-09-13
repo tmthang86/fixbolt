@@ -2140,8 +2140,11 @@ mod doc_table {
     /// cell that is nothing but two all-digit backticked literals joined by
     /// an en dash (`` `0`–`65535` ``, `SocketConnectPort`'s cell).
     /// [`enumerated`] reads that second shape as *not* an enumeration — its
-    /// joining word is `–`, not `or` — so probe 6 is the only thing in this
-    /// module that reads it at all.
+    /// joining word is `–`, not `or` — so probe 6 reads it as an integer
+    /// spelling, and probe 7's [`range_of`] reads the same shape again as a
+    /// bound; nothing else in this module reads it. `[corrected 2026-09-13]`
+    /// this said probe 6 was the only reader, which stopped being true when
+    /// probe 7 was added.
     fn looks_like_an_integer(cell: &str) -> bool {
         if cell.contains("integer") {
             return true;
@@ -2354,16 +2357,18 @@ mod doc_table {
     }
 
     // ------------------------------------------------------------------
-    // Six probes, `[added 2026-09-12, extended 2026-09-13]`. Probe 1, above,
-    // reads the count sentence; these five read the cells that are already
+    // Seven probes, `[added 2026-09-12, extended 2026-09-13]`. Probe 1, above,
+    // reads the count sentence; these six read the cells that are already
     // **values** — a default, a list of literals, a `[DEFAULT]`-only claim,
-    // a `required…` claim, an integer spelling — and ask the parser whether
-    // they are true:
+    // a `required…` claim, an integer spelling, a bound — and ask the parser
+    // whether they are true:
     //
     //   2. a *Default* cell that is a literal: writing it into a minimal
     //      file changes nothing.
     //   3. a *Values* cell that is an enumeration: every literal it lists
     //      parses, and — a bounded search, not a sample — nothing else does.
+    //      Its third leg reads the parser's own call sites: the function a
+    //      `Key::X` is passed to agrees with that key's declared [`reader`].
     //   4. a *Where* cell that claims `[DEFAULT]` only or `[DEFAULT]` or
     //      `[SESSION]`.
     //   5. a *Default* cell that says `required…`: absent is
@@ -2373,6 +2378,9 @@ mod doc_table {
     //      (`refused_otherwise_variant`), never a set of candidates.
     //   6. a *Values* cell read as an integer: `+7` and `07` are refused as
     //      written, `7` is not.
+    //   7. a *Values* cell on a numeric row that names a bound — `positive`,
+    //      `non-negative` or `` `0` ``, `` `a`–`b` `` — is a bound the parser
+    //      holds.
     //
     // **Everything else in these tables is a hand-checked promise, not a
     // machine-checked one** — every *Meaning* cell, every note, and the
@@ -3230,6 +3238,16 @@ mod doc_table {
     /// every call site above this module calls a function whose reading is
     /// known, that function agrees with the key's declaration, and every key
     /// declared read by a function has at least one call site reading it.
+    ///
+    /// **What it cannot see, `[measured 2026-09-13]`**: this leg checks which
+    /// reader a `Key::X` is *passed to*, not what value *reaches* it. A
+    /// comparison written inline beside the call, or a value wrapped before
+    /// it arrives (`flag(normalise(v), Key::X)`), is invisible to it. The
+    /// demonstration: the `ResetOnLogon` site rewritten as `&& (v.1 == "yes"
+    /// || flag(v, Key::ResetOnLogon)?)` — a parser that now accepts `yes` —
+    /// read `ok`, `11 passed`. No further pattern is added for it: ADR-0061
+    /// concluded a text scan is not completed by one more pattern, and this
+    /// is that loop again.
     #[test]
     fn the_reader_table_matches_the_call_sites() {
         /// Reading call sites on 2026-09-13: 25 — `flag` 9, `number` 7,
@@ -3415,6 +3433,25 @@ mod doc_table {
                     .err()
                     .map(|e| e.problem().clone())
             };
+            // What the sample answers with nothing of this probe's written
+            // into it: `None` for every sample today. A refusal the sample
+            // already gives is about the sample, not the value.
+            let baseline = Settings::parse(&sample.text())
+                .err()
+                .map(|e| e.problem().clone());
+            // **"Allowed" is not "not refused as a bad value".** `[measured
+            // 2026-09-13]` with `ReconnectInterval`'s cell reading
+            // *non-negative*, this branch read `ok` while the parser refused
+            // `ReconnectInterval=0` as `Problem::ImpossiblePolicy` — outside
+            // [`is_about_the_value`], which probe 3 needs narrow. So a value
+            // counts as refused here when the refusal is of that class **or**
+            // is any refusal the unmodified sample does not already give:
+            // only the one line differs, so only that value can have caused it.
+            let refused_for_its_value = |refusal: &Option<Problem>| {
+                refusal
+                    .as_ref()
+                    .is_some_and(|p| is_about_the_value(p) || baseline.as_ref() != Some(p))
+            };
             if says_positive {
                 let refusal = refusal_of("0");
                 assert!(
@@ -3425,15 +3462,15 @@ mod doc_table {
             if says_zero_allowed {
                 let refusal = refusal_of("0");
                 assert!(
-                    !refusal.as_ref().is_some_and(is_about_the_value),
-                    "docs/CONFIGURATION.md §1: {name} says 0 is allowed but the parser refuses it: {refusal:?}"
+                    !refused_for_its_value(&refusal),
+                    "docs/CONFIGURATION.md §1: {name} says 0 is allowed but the parser refuses {name}=0: {refusal:?}"
                 );
             }
             if let Some((low, high)) = range {
                 let refusal = refusal_of(&low.to_string());
                 assert!(
-                    !refusal.as_ref().is_some_and(is_about_the_value),
-                    "docs/CONFIGURATION.md §1: {name} says `{low}`–`{high}` but the parser refuses {low}: {refusal:?}"
+                    !refused_for_its_value(&refusal),
+                    "docs/CONFIGURATION.md §1: {name} says `{low}`–`{high}` but the parser refuses {name}={low}: {refusal:?}"
                 );
                 let above = high.checked_add(1);
                 assert!(

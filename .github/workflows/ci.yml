@@ -168,15 +168,25 @@ jobs:
   # output by hand, not by this file (item 79).
   #
   # One job now builds every feature set of every workspace crate to depth
-  # two — no features, each feature alone, each pair, all features — with
-  # `cargo-hack`, and runs `clippy -D warnings` and `doc` over that whole set.
-  # Depth two, not more: every defect of this family found here so far needed
-  # exactly one feature on and one off (ADR-0065 decision 2) — the boundary is
-  # read here and every time DESIGN.md §6's row for this gate is read; it does
-  # not grow just because the feature count does. This job also absorbs what
-  # the `docs` job used to check — `cargo doc` under the default set and under
-  # `--all-features` are both members of the powerset — so that job is gone;
+  # two — no features, each feature alone, each pair — with `cargo-hack`, and
+  # runs `clippy -D warnings` and `doc` over that whole set, then once more
+  # under `--all-features`. Depth two, not more: every defect of this family
+  # found here so far needed exactly one feature on and one off (ADR-0065
+  # decision 2) — the boundary is read here and every time DESIGN.md §6's row
+  # for this gate is read; it does not grow just because the feature count
+  # does. This job also absorbs what the `docs` job used to check — `cargo
+  # doc` under the default set (a member of the powerset) and under
+  # `--all-features` (the explicit steps at the end) — so that job is gone;
   # its guard is the comment on the doc step below.
+  #
+  # **`--all-features` is NOT in the powerset, which is why it is two steps
+  # of its own.** `[measured 2026-09-13]` cargo-hack counts `default` as a
+  # feature, so `fixbolt-engine`'s depth-two sets are ten — none, default,
+  # standard, affinity, tls, affinity+default, affinity+standard,
+  # affinity+tls, default+tls, standard+tls — and `standard,affinity,tls` is
+  # three named features, one past the depth. CI run 34750085195's log lists
+  # exactly those ten. Removing the `docs` job had silently removed the only
+  # rustdoc build under `--all-features` (the item-61 set) until these steps.
   feature-sets:
     name: Every feature set to depth two builds, lints and documents
     runs-on: ubuntu-latest
@@ -204,11 +214,17 @@ jobs:
       # all. That was fixed by hand-adding one more set, `--all-features`;
       # items 78 and 79 are the same shape one layer out — a link can resolve
       # under one set and break under another — so the fix now runs every set
-      # the clippy step above already builds, not one more hand-picked pair.
+      # the clippy step above already builds, plus `--all-features` in the
+      # last step, because the powerset to depth two does not contain it.
       # Same family as STATUS.md item 57 and
       # docs/reference/feature-flags-unify-across-a-workspace.md: a gate that
       # reports ok about something it was never handed.
       - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo hack doc --workspace --no-deps --feature-powerset --depth 2 --keep-going
+
+      # Every feature on at once — not a member of the depth-two powerset
+      # (see the job comment). The doc step is the item-61 set, restored.
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --workspace --no-deps --all-features
 
   # CLAUDE.md's first paragraph: this repository is going to be published, and
   # every commit is treated as already public. Nothing looked at what the

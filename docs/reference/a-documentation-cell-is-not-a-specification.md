@@ -62,11 +62,15 @@ The real gap was not a wrong cell; a cell can be wrong and be found. The gap was
 probe read a range**. Probe 6 proves an integer cell is read as written; probe 3 proves an
 enumeration lists exactly the parser's literals. A cell that says *positive* while the
 parser accepts `0` passed both, and would have kept passing. The regression test this
-entry owes under `CLAUDE.md` §4 is a probe that reads a *Values* cell's stated bound and
-feeds the parser the first value outside it: a cell saying *positive* must see `0`
-refused, a cell saying *non-negative* or naming `0` must see it accepted, and a cell of the
-shape `` `a`–`b` `` must see `b+1` refused. Reverting the `HeartBtInt` cell to *positive
-integer* must turn that probe red on the sentence that names the key. Plan:
+entry owed under `CLAUDE.md` §4 now holds it: probe 7,
+`a_values_cell_that_names_a_bound_is_a_bound_the_parser_holds` in `mod doc_table` of
+[`settings.rs`](../../crates/engine/src/settings.rs). It reads a *Values* cell's stated bound
+and feeds the parser the values at its edge: a cell saying *positive* must see `0` refused,
+a cell saying *non-negative* or naming `0` must see `0` refused for no reason the minimal
+file did not already give — any reason, not only a bad-value one — and a cell of the shape
+`` `a`–`b` `` must see `a` taken that way and `b+1` refused. `[measured 2026-09-13]`
+reverting the `HeartBtInt` cell to *positive integer, seconds* turns it red on
+`HeartBtInt says positive but the parser accepts 0`. Plan:
 [what-the-residue-review-found](../plans/2026-09-13-what-the-residue-review-found.md).
 
 ## The generalised lesson

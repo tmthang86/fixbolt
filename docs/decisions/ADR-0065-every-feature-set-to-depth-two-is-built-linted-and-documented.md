@@ -35,16 +35,23 @@ hand across three jobs, which works for a crate whose feature list is fixed and 
 Rust Project Primer's feature-checks page recommends `--feature-powerset --depth 2` for
 compile checks and `--each-feature` for tests, on the grounds that a full powerset is
 impractical at any real feature count. cargo-hack deduplicates fully equivalent
-combinations and includes `--no-default-features`, the default set and `--all-features`
-in both modes.
+combinations and includes `--no-default-features` and the default set in both modes.
+**It does not include `--all-features` under `--feature-powerset --depth 2`** when a crate has
+three or more features — `[corrected 2026-09-13]` this sentence said it did; see the second
+revision below.
 
 ## Decision
 
 1. **One CI job builds every feature set of every workspace crate up to depth two** — no
-   features, each feature alone, each pair, and all features — with `cargo hack`, using
+   features, each feature alone, and each pair — with `cargo hack`, using
    `--feature-powerset --depth 2 --workspace`, and runs two commands over that set:
    `clippy --all-targets -- -D warnings` and `doc --no-deps` with
    `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links"`.
+   **The same job then runs both once more under `--all-features`**, as plain `cargo clippy
+   --workspace --all-targets --all-features -- -D warnings` and `cargo doc --workspace
+   --no-deps --all-features` under the same flags, because that set is not in the powerset
+   at depth two. `[corrected 2026-09-13]` this decision said the powerset contained "all
+   features".
    Clippy rather than `check`, because clippy runs rustc's own lints too and `-D warnings`
    is what turns item 78 from a printed warning into a red job.
 2. **The boundary is depth two, and it stays two when the feature count grows.** The
@@ -61,7 +68,7 @@ in both modes.
    tests that exist for each feature (`--features affinity` twice, `--features tls` in its
    own job with its own kernel), and a test that fails only under a *pair* of features is
    a behaviour that depends on a feature, which is a different class from "did not
-   compile" or "a link did not resolve". Running the suite eight times per commit to
+   compile" or "a link did not resolve". Running the suite eleven times per commit to
    guard a class never observed is a cost this decision refuses on purpose.
 4. **The tool is `cargo-hack`, installed by `taiki-e/install-action@cargo-hack`.** It is a
    CI binary, not a dependency of any crate: `Cargo.lock` does not change, `deny.toml`
@@ -70,9 +77,11 @@ in both modes.
    deduplication for this repository to maintain, and the reason `check-scratch-fixtures.sh`
    stayed a regex (ADR-0061) does not apply: here the tool that already exists is the
    one every sibling project uses.
-5. The two `cargo doc` lines in the `docs` job are **subsumed** by decision 1 (default and
-   `--all-features` are both in the powerset) and removed; the job's comment, which
-   records item 61, moves to the new job. The test lines in the `affinity` job stay.
+5. The two `cargo doc` lines in the `docs` job are **subsumed** by decision 1 — the default
+   set by the powerset, and `--all-features` by decision 1's explicit steps, not by the
+   powerset — and removed; the job's comment, which records item 61, moves to the new job.
+   The test lines in the `affinity` job stay. `[corrected 2026-09-13]` this said both were
+   in the powerset, which is how the `--all-features` doc build was lost.
 
 ## Consequences
 
@@ -81,10 +90,12 @@ in both modes.
 - Items 78 and 79 become the same red, produced by the same command, and the class is
   closed rather than the two instances. A new feature added to any crate is in the
   powerset the next commit, with no `ci.yml` edit.
-- Today depth two happens to be exhaustive for this workspace — three features on the
-  largest crate means every one of its 8 sets is built — so the boundary costs nothing
-  yet. It is stated now so that the day it stops being exhaustive, it is a decision on
-  record and not a number someone picked.
+- Today depth two plus `--all-features` covers every combination of the three named
+  features on the largest crate — the seven below three by the powerset, the one at three
+  by the explicit steps — so the boundary costs nothing yet. It is stated now so that the
+  day it stops covering them, it is a decision on record and not a number someone picked.
+  `[corrected 2026-09-13]` this said depth two alone was exhaustive, "every one of its 8
+  sets"; depth two alone never built `standard,affinity,tls`.
 - The job's own log names the set that failed: cargo-hack prints `info: running cargo
   clippy --no-default-features --features affinity on fixbolt-engine` before each run, so
   a red is attributable without re-running anything.
@@ -95,8 +106,9 @@ in both modes.
   release binary; this repository already trusts `EmbarkStudios/cargo-deny-action@v2` the
   same way, but it is one more supply-chain trust, and a moved tag is a moved trust. Pin
   by tag as the sibling action is pinned; a hash pin for both is a separate decision.
-- **Job time.** `[to be measured in step 4 before this is accepted]` eight clippy builds
-  and eight doc builds of `fixbolt-engine` plus the smaller crates, sharing one target
+- **Job time.** `[to be measured in step 4 before this is accepted]` eleven clippy builds
+  and eleven doc builds of `fixbolt-engine` — ten powerset sets and `--all-features` — plus
+  the smaller crates, sharing one target
   directory. The estimate is under fifteen minutes on `ubuntu-latest`; if the measurement
   says otherwise, `--depth 1` for `doc` and `2` for `clippy` is the first thing to try,
   and the ADR is revised in place while `Proposed`.
@@ -122,3 +134,22 @@ in both modes.
 - **Wall time on the desk**: clippy 52 s, doc 48 s — both runs failed early (on the 14
   broken links, and on sets that cannot cross-compile), so these are a **lower bound**, not
   the CI estimate the "Bad" section above still owes.
+
+## Revision 2026-09-13 — the powerset never held `--all-features` (review D2)
+
+- **What was wrong**: decisions 1 and 5, the first "Good" bullet and the Context's last
+  sentence all said `--feature-powerset --depth 2` includes "all features". It does not.
+  cargo-hack's depth counts named features, and it counts `default` as one: for
+  `fixbolt-engine` the ten sets are none, `default`, `standard`, `affinity`, `tls`,
+  `affinity,default`, `affinity,standard`, `affinity,tls`, `default,tls`, `standard,tls` —
+  and `standard,affinity,tls` is three, one past the depth. `[measured 2026-09-13]` CI run
+  34750085195's log lists exactly those ten, and `cargo hack check --workspace
+  --feature-powerset --depth 2 --print-command-list` on the desk prints the same ten for
+  `fixbolt-engine` and for `tools/w2w`. Removing the `docs` job therefore removed the only
+  rustdoc build under `--all-features` — item 61's set — while every document said it had
+  been kept.
+- **What changed**: two explicit steps at the end of the `feature-sets` job,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings` and
+  `cargo doc --workspace --no-deps --all-features` under the same `RUSTDOCFLAGS`. The
+  decisions and consequences above are corrected in place, each correction marked. The
+  depth-two boundary and its reasoning (decision 2) are unchanged.

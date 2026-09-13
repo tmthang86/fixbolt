@@ -63,6 +63,16 @@ Running only the wider set would have hidden it just as thoroughly as running on
 narrower one hid the others. **Neither invocation is a superset of the other**, and treating
 one as "the thorough version" of the other is the mistake.
 
+`[added 2026-09-13]` **That job no longer exists.** The `docs` job was replaced by the
+`feature-sets` job ([ADR-0065](../decisions/ADR-0065-every-feature-set-to-depth-two-is-built-linted-and-documented.md)),
+which runs `cargo doc` under every feature set to depth two with `cargo hack
+--feature-powerset --depth 2`, and then once more under `--all-features` as a step of its
+own. The second half had to be added back: the powerset to depth two does not contain
+`--all-features` — cargo-hack counts `default` as a feature, and `fixbolt-engine`'s three
+named features are one past the depth — so from the commit that removed the `docs` job until
+the fix, the replacement silently dropped exactly the set this page's first bug was found in.
+The paragraphs above describe the job as it was.
+
 ## The reversal, run rather than described
 
 The rule this page ends on — *make it fail on purpose* — is not advice given from a
