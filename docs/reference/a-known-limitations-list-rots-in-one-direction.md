@@ -129,6 +129,27 @@ And the person doing it had, that same day, in that same session, written this p
 > struck one shows the reader exactly how far behind it ran, which is the only thing that makes
 > the next reader check.
 
+## The same rot, in a number rather than a bullet
+
+`[measured 2026-09-13]` The mechanism above is not specific to a bulleted list. *eighteen* — the
+count of places `crates/session/src/lib.rs` returns `Link::Dropped` — was recorded as verified on
+2026-09-02, and was then copied by hand into six places: two ADRs, a reference page, a test file's
+header and its own docstring, and the session layer's rustdoc. Nobody re-ran the count after that
+day, because nothing pointed back at it the way `STATUS.md`'s *Not proven* section points nowhere.
+On 2026-09-13 three ways of counting read 29 (every line naming it), 25 (comments left out) and
+**23** (return sites) — none of them eighteen, and neither ADR-0035 nor the test file's header
+records the command that had produced eighteen. The fix is the second of the two the *Generalised* section above names, the one a
+machine can falsify: the count now lives in exactly **one** place — `docs/reference/prior-art.md`'s
+`fixbolt` row, beside the `grep` that produces it — the test file and the rustdoc cite it by
+pointer instead of by digit, the two accepted ADRs keep their digit under a one-line erratum that
+points there, and
+`crates/session/tests/drop_reason.rs::the_site_count_prior_art_quotes_is_the_one_in_the_source`
+recomputes the count from the source on every test run and fails the moment the table disagrees
+with it — and, since the senior review of PR #68, the moment a line names `Link::Dropped` in a
+shape the count does not read, because a new site in such a shape moved neither number
+(`[measured 2026-09-13]`, `1 passed`). A seventh copy of this mistake is a test failure rather than
+a silent lie.
+
 ## What was done here
 
 The eight bullets were struck in place with their closing dates, the section gained a note

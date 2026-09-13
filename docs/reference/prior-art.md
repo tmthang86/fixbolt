@@ -404,7 +404,7 @@ Each row read from that engine's source.
 | QuickFIX/**J** | `SessionStateListener`, multicast through a reflection `Proxy`, in a loop on the calling thread | never | **yes** | **no**, though it has nine kinds including `onMissedHeartBeat` and `onHeartBeatTimeout` |
 | **quickfix-go** | synchronous interface callback | never | **yes** | **no** |
 | **nanofix** | atomic counters and gauges (`src/metrics.rs`) | never — they are counts | no | **no**; aggregate, not per connection |
-| **fixbolt** | bounded ring, non-blocking push, losses counted | **yes** | no | **yes** — `DropReason`, eighteen sites |
+| **fixbolt** | bounded ring, non-blocking push, losses counted | **yes** | no | **yes** — `DropReason`; `[measured 2026-09-13]` 23 return sites of `Link::Dropped` in `crates/session/src/lib.rs` (`grep -cE 'return (Ok\()?Link::Dropped\|=> Link::Dropped\|^\s*Link::Dropped\s*$'`), guarded by `drop_reason.rs::the_site_count_prior_art_quotes_is_the_one_in_the_source` |
 
 **Two things follow, and the second is what changed the code.**
 

@@ -1,11 +1,12 @@
 //! Why a connection ended, and today the answer is one bit.
 //!
 //! **Step 1 of [why-a-connection-ended], red at an assertion.** `[verified
-//! 2026-09-02]` `Link::Dropped` is returned from eighteen places in
-//! `crates/session/src/lib.rs` — a wrong `BeginString`, a wrong identity, a
-//! `SendingTime` too far out, a sequence number already used, a first message
-//! that is not a `Logon`, an hour outside the schedule — and **nothing at the
-//! other end tells them apart**.
+//! 2026-09-02]` `Link::Dropped` is returned from every refusal path in
+//! `crates/session/src/lib.rs` — the living count is in
+//! `docs/reference/prior-art.md`, not here — a wrong `BeginString`, a wrong
+//! identity, a `SendingTime` too far out, a sequence number already used, a
+//! first message that is not a `Logon`, an hour outside the schedule — and
+//! **nothing at the other end tells them apart**.
 //!
 //! # What that has already cost, twice, this week
 //!
@@ -166,8 +167,9 @@ fn reason_of(cfg: Config, now_ms: u64, wire: &[u8]) -> Option<DropReason> {
 }
 
 /// **One case per reason.** A single `assert_ne!` between two of them would
-/// pass for an enum with two variants and eighteen call sites, so each fault is
-/// named rather than merely distinguished.
+/// pass for an enum with two variants and many call sites — the living count
+/// is in `docs/reference/prior-art.md` — so each fault is named rather than
+/// merely distinguished.
 #[test]
 fn every_pre_session_fault_names_itself() {
     let cases: &[(&str, &str, DropReason)] = &[
@@ -279,4 +281,93 @@ fn a_timeout_and_a_peer_logout_are_named_too() {
         "they said goodbye"
     );
     assert_eq!(t.last_drop_reason(), Some(DropReason::PeerLogout));
+}
+
+// --- the living count lives in one place, and this test is it -------------
+
+/// **The number lives in `prior-art.md`'s `fixbolt` row, not here.** This
+/// test *is* the count: it re-derives, from the source, how many places
+/// `crates/session/src/lib.rs` returns `Link::Dropped`, and fails the moment
+/// the table quotes a different number. **It does not read the date beside
+/// that number** — the failure sentence asks for it to be updated, and only
+/// a person does that.
+///
+/// A line counts when it *contains* a return of `Link::Dropped`, not when it
+/// starts with one: two of the return sites are match arms
+/// (`… => return Link::Dropped,`), and `starts_with` reads 21 where the
+/// `grep` that `prior-art.md` quotes reads 23. `[measured 2026-09-13]`. A
+/// comment containing the same words would also count; none does today, and
+/// the `grep` counts it the same way, so the two stay one measurement.
+#[test]
+fn the_site_count_prior_art_quotes_is_the_one_in_the_source() {
+    let src = include_str!("../src/lib.rs");
+    // Not `include_str!`: `cargo package -p fixbolt-session --list` packages
+    // `tests/drop_reason.rs`, and an `include_str!` reaching outside the
+    // crate directory breaks that package's build — the tarball never
+    // contains `docs/`. A runtime read from `CARGO_MANIFEST_DIR` has the same
+    // failure mode, but only when the test actually runs, which a package
+    // build does not do.
+    let doc = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/reference/prior-art.md"
+    ))
+    .expect("docs/reference/prior-art.md must be readable from the crate root");
+
+    let is_site = |line: &str| {
+        line.contains("return Link::Dropped")
+            || line.contains("return Ok(Link::Dropped)")
+            || line.contains("=> Link::Dropped")
+            || line.trim() == "Link::Dropped"
+    };
+    let src_count = src.lines().filter(|line| is_site(line)).count();
+    assert!(
+        src_count >= 10,
+        "the counter read nothing — the pattern no longer matches how lib.rs returns Link::Dropped"
+    );
+
+    // **Every other line that names `Link::Dropped` is accounted for**, or the
+    // count is short and agrees with the table anyway. A new return site in a
+    // shape the four patterns above do not read — `Ok(Link::Dropped)` as a
+    // block's tail, `if c { Link::Dropped } else { … }` — leaves both numbers
+    // where they were. `[measured 2026-09-13]` the senior review of PR #68
+    // added `return Ok(if true { Link::Dropped } else { Link::Dropped });` to
+    // `lib.rs` and this test read `1 passed`. A comment is not a site, and
+    // today's only other shape is a comparison (`link == Link::Dropped`).
+    let unaccounted: Vec<&str> = src
+        .lines()
+        .filter(|line| line.contains("Link::Dropped"))
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .filter(|line| !is_site(line))
+        .filter(|line| !line.contains("== Link::Dropped") && !line.contains("!= Link::Dropped"))
+        .collect();
+    assert!(
+        unaccounted.is_empty(),
+        "crates/session/src/lib.rs names Link::Dropped on lines this count neither counts nor knows to be a comparison: {unaccounted:?} — teach the count the new shape, and update the table and the grep in prior-art.md with it"
+    );
+
+    // `prior-art.md` has more than one `| **fixbolt** |` row (buffer size, cut
+    // policy, drop reasons, …) — the one this test reads is the one that also
+    // names "return sites"; any other is a different row entirely.
+    let marker = " return sites";
+    let row = doc
+        .lines()
+        .find(|line| line.trim_start().starts_with("| **fixbolt** |") && line.contains(marker))
+        .expect(
+            "prior-art.md has no `fixbolt` row naming \"return sites\" — it no longer carries the living count",
+        );
+    let before = row
+        .find(marker)
+        .map(|idx| &row[..idx])
+        .expect("marker just matched by contains() must be found by find()");
+    let doc_count: usize = before
+        .split_whitespace()
+        .last()
+        .expect("no number precedes \"return sites\" in the `fixbolt` row")
+        .parse()
+        .expect("the token before \"return sites\" is not a number");
+
+    assert_eq!(
+        doc_count, src_count,
+        "prior-art.md quotes {doc_count} return sites of Link::Dropped; crates/session/src/lib.rs has {src_count} — update the table, and the date beside it"
+    );
 }

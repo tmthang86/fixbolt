@@ -1,6 +1,6 @@
 # Phần dư của một nghĩa vụ — đóng item 67, 71, 72, 73, 74 và 21; nói rõ vì sao 55 không ở đây
 
-> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt 2026-09-13, theo đề xuất (Q1 có, Q2 (b), Q3 đóng, Q4 trong plan này, Q5 tách) — chưa bắt đầu
+> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt 2026-09-13, theo đề xuất (Q1 có, Q2 (b), Q3 đóng, Q4 trong plan này, Q5 tách) — **ĐÃ ĐÓNG 2026-09-13**, cả bảy bước; PR [#68](https://github.com/tmthang86/fixbolt/pull/68), commit đóng `30b53cb`, CI run [`34746295036`](https://github.com/tmthang86/fixbolt/actions/runs/34746295036). Item 21, 67, 71, 72, 73, 74 đóng; 55 giữ làm ratchet (Q5); review mở item 75–79
 > **Phạm vi:** sáu open item không cần máy §9, một pull request, một phiên. `mod doc_table` và
 > `number()` trong `crates/engine/src/settings.rs`; `scripts/check-links.py`; bốn tài liệu mang con
 > số *eighteen*; một cửa vào `hft` có ghim lõi trong `crates/engine/src/lib.rs`.
@@ -529,4 +529,363 @@ Theo bảng §4 của `CLAUDE.md`, đi từng hàng:
 
 ## Nhật ký giao hàng
 
-*(trống — điền khi plan được duyệt và từng bước đóng)*
+### 2026-09-13 — bắt đầu
+
+Nhánh `plan/the-residue-of-an-obligation` từ `main` `949401c` (sau PR #66 và #67). **Draft PR mở
+ngay ở commit này**, vì từ PR #67 CI chỉ chạy trên `pull_request` — một nhánh chưa có PR là nhánh
+không có CI.
+
+Bước 1, 3, 5 chạy song song, **mỗi bước một worktree do manager tự dựng** trước khi giao
+(`.claude/worktrees/step{1,3,5}`, `vendor/` symlink) — lý do chia là *reversal của bước này làm đỏ
+gate của bước kia*, không chỉ là trùng file. Bước 4 rồi 2 chạy sau, trên nhánh đã gộp 1+3+5.
+
+### 2026-09-13 — bước 1 XONG (item 71)
+
+Con số sống ở **một** chỗ: hàng `fixbolt` của `docs/reference/prior-art.md:407` ghi **23** điểm trả
+về `Link::Dropped`, kèm lệnh `grep` và tên test. Test
+`the_site_count_prior_art_quotes_is_the_one_in_the_source` đếm lại từ source. Ba chỗ khác bỏ số;
+`crates/session/src/lib.rs` chỉ đổi rustdoc (manager kiểm: mọi dòng đổi đều là `///`). ADR-0035 và
+ADR-0059 mỗi file một dòng erratum dưới `Status`, thân không đổi (Q1).
+
+**Ba điều plan viết sai, đo mới thấy:**
+
+1. **`starts_with("return Link::Dropped")` đếm ra 21, không phải 23.** Hai điểm trả về là arm của
+   `match` (`… => return Link::Dropped,`), `return` không đứng đầu dòng. Developer đổi sang
+   `contains` — khớp `grep` 23, và là cách duy nhất để R71-1 đỏ đúng câu plan dự đoán. Manager kiểm
+   thêm: không dòng comment nào trong `lib.rs` khớp mẫu, nên `contains` và `grep` vẫn là một phép đo.
+2. **`prior-art.md` có ba hàng `| **fixbolt** |`**, không phải một; bộ tìm hàng lần đầu lấy nhầm dòng
+   118. Test giờ đòi hàng đó chứa cả `return sites`.
+3. **Cột *Khôi phục* của R71-1 ghi `git checkout`, và nó xoá luôn bản sửa.** Checkout trả file về
+   commit gần nhất, mà bản sửa chưa commit — lần chạy xanh sau khôi phục là thứ duy nhất thấy. Ghi
+   thành `docs/reference/a-restore-by-checkout-reverted-the-fix-too.md` `[to testing-skills]`, và
+   **manager báo ngay cho bước 3 đang chạy**, vì R73-3 có đúng cột khôi phục đó trên
+   `docs/CONFIGURATION.md` — file mà bước 3 cũng đang thêm một đoạn.
+
+**`include_str!` đổi thành `read_to_string(CARGO_MANIFEST_DIR…)`** theo đúng hàng bẫy của plan:
+`cargo package -p fixbolt-session --list` có liệt kê `tests/drop_reason.rs`. (`cargo package` đầy đủ
+vẫn hỏng vì một lý do có sẵn, không liên quan: dependency đường dẫn `fixbolt-codec` không có
+`version`.)
+
+**Manager sửa rustdoc của test trước khi commit**: bản giao nói test *"fails … including the date
+beside it"* — test không đọc ngày. Câu đó giờ nói thẳng là không đọc.
+
+**Gate, manager chạy lại trong checkout chính:**
+
+```
+cargo test -p fixbolt-session --test drop_reason     9 passed; 0 failed
+cargo clippy -p fixbolt-session --all-targets -D warnings   Finished, 0 warning
+cargo fmt --check                                     fmt-exit=0
+scripts/check-links.py (trong worktree step1, không có worktree lồng)
+                                                      371 files, 1987 links, no dead internal links
+R71-1 (23 → 24, khôi phục bằng bản sao)               đỏ: prior-art.md quotes 24 return sites of
+                                                      Link::Dropped; crates/session/src/lib.rs has 23
+                                                      — update the table, and the date beside it
+                                                      → khôi phục → 1 passed
+```
+
+`check-links.py` chạy ở gốc checkout chính đọc **1485** file và báo 9 URL — cả 9 là
+`crates/library/README.md` **bên trong ba worktree**, nơi ngoại lệ khoá theo đường dẫn không khớp.
+Không phải lỗi của cây; là lý do memory ghi *xoá worktree trước khi chạy script toàn repo*.
+
+### 2026-09-13 — bước 5 XONG (item 21)
+
+`affinity::CorePin` (`to`, `allow_unisolated`, `core`, `validate` — `validate` là `ShardPlan::new(vec![core])`
+nên **không có quy tắc từ chối mới**), `ServeError::Affinity`, và `serve_hft_pinned` theo thứ tự
+*validate → pin → serve*. `ServeError` đã là `#[non_exhaustive]`, nên biến thể mới không phải
+breaking change. `serve_hft` không đổi. Senior developer (opus) làm, trong worktree riêng.
+
+**Bốn chỗ lệch plan trong test, cả bốn làm test mạnh hơn:**
+
+1. **Test 1 và 2 dùng một port test đang giữ**, không phải `127.0.0.1:1`: chạy bằng root hoặc hạ
+   `ip_unprivileged_port_start` thì bind port 1 thành công, và R21-1 **treo** thay vì đỏ.
+2. **Test 3 thêm assertion mask** (`sched_getaffinity` trong `on_logon`) sau assertion `running_on`.
+   `[measured 2026-09-13]` bỏ lời gọi pin, thread không ghim vẫn nằm đúng `cpu0` **10/16 lần**.
+   Plan đã lường bẫy này và dặn *chạy 3 lần* — ba lần xanh cùng lúc sẽ xảy ra khoảng một phần tư số
+   lần. Ghi thành trường hợp thứ tư của
+   `docs/reference/a-reversal-needs-an-input-where-the-answers-differ.md`: *assert thứ việc ghim
+   thay đổi, không phải thứ việc ghim làm cho có khả năng xảy ra*.
+3. **Test 3 in giá trị trả về nếu cửa thoát trước khi bind** — lần đỏ đầu của R21-3 là 5 giây
+   *never bound*, mất hẳn lý do.
+4. **Test 3 đọc mask thêm một lần sau khi cửa trả về**, vì rustdoc và `GUIDE.md` nói thread vẫn bị
+   ghim sau lời gọi, và §4 đòi câu đó có test đứng sau. Có reversal riêng.
+
+**Một phát hiện về gate, chưa sửa:** rustdoc của biến thể mới lúc đầu link `Self::Tls`, gãy khi
+build **chỉ** `--features affinity`. Job `docs` của CI chạy mặc định và `--all-features` — **không
+tổ hợp nào trong hai cái đó thấy nó**. Developer tự bắt và sửa; lỗ ở CI vẫn còn. Ứng viên open
+item ở bước đóng.
+
+**Để senior review (bước 6) quyết, không sửa ở bước này:**
+- `crates/library/src/lib.rs:27` re-export `serve_hft` nhưng **không** re-export `serve_hft_pinned`.
+- `CorePin` không có accessor kiểu `ShardPlan::is_unisolated_allowed()`, trong khi ADR-0015 quyết
+  định 5 nói việc miễn `isolcpus` phải nhìn thấy được.
+- Thứ tự validate → pin → serve nghĩa là `NoCounterparties` (bảng rỗng) báo **sau** khi đã ghim,
+  và thread vẫn bị ghim lúc lỗi trả về. Rustdoc có ghi.
+- Có sẵn từ trước, không gate nào build: `unused import crate::msglog::MaybeLog` ở `shard.rs:43`
+  dưới `--no-default-features --features affinity`.
+
+**Gate, manager chạy lại trong checkout chính:**
+
+```
+cargo test -p fixbolt-engine --features affinity --test hft_pinned   ×3: 3 passed; 0 failed (2.01s)
+cargo test -p fixbolt-engine --features affinity                     44 binaries, 352 passed, 0 failed
+cargo clippy --all-targets --features affinity -- -D warnings         clean
+cargo clippy --all-targets -- -D warnings                             clean
+cargo build -p fixbolt-engine --no-default-features                   Finished
+RUSTDOCFLAGS=-D broken_intra_doc_links cargo doc -p fixbolt-engine --no-deps --features affinity
+                                                                      Finished, Generated
+scripts/check-indexing-debt.sh                                        ok (181)
+grep -c unsafe crates/engine/src/affinity.rs                          6 (trước: 6)
+cargo fmt --check                                                     exit 0
+scripts/check-links.py (trong worktree step5)                         372 files, no dead internal links
+R21-1 (bind trước validate, khôi phục bằng bản sao, byte-identical)
+  đỏ: expected Err(Affinity(NoSuchCore(CoreId(4096)))) before any bind;
+      got Err(Io(Os { code: 98, kind: AddrInUse, message: "Address already in use" }))
+  → khôi phục → 3 passed
+```
+
+R21-2 và R21-3 do developer chạy và trích (R21-2 đỏ 3/3 sau khi thêm mask; R21-3 đỏ đúng câu
+`Err(Affinity(NotIsolated(CoreId(0))))` sau khi test in giá trị trả về).
+
+### 2026-09-13 — bước 3 XONG (item 73 + 74), và gate của cả plan trên cây 1+3+5
+
+**Item 73.** `number()` kiểm `spelled_exactly_as_digits` trước `parse`; thông điệp mới *"expected a
+number written as digits only — no sign, no leading zero"*; `time_of_day` chỉ nhận chữ số. **Suy luận
+mục 3 của plan đúng**: đỏ-trước cho thấy `StartTime=+1:00:00` và `HeartBtInt=+7` hôm nay **được
+nhận** (`this should not have parsed; it produced 1 configuration(s)`).
+
+**Plan viết sai thứ tự ở nhánh `TimestampPrecision`, và test có sẵn là thứ thấy.** Plan: *kiểm chính
+tả trước rồi mới `number()`*. Làm vậy thì `settings_roles.rs::a_precision_that_is_not_a_number_says_so`
+đỏ — `MICROS` ra `UnsupportedPrecision` thay vì `NotANumber`, vì `number()` giờ trả `NotANumber` cho
+cả *không phải số* lẫn *sai chính tả*. Developer để nhánh này **parse lỏng trước** (`MICROS` →
+`NotANumber`) rồi **kiểm chính tả sau** (`03` → `UnsupportedPrecision`). Cả hai test hôm qua xanh;
+**`settings_roles.rs` diff trống** (manager kiểm). **Cái giá, để senior review cân:** `TimestampPrecision`
+có đường parse riêng, không qua `number()` — ngược ý *một quy tắc ở một chỗ* của §C. Hành vi người
+dùng thấy không đổi so với hôm qua.
+
+**Item 74.** `enum Reader { Literals, Numeric, Prose }`, `const fn reader(key)` khớp đủ 33 khoá không
+`_`, `literals_of_match` khoanh vùng theo dòng mở hàm, vũ trụ tìm kiếm thêm `000`–`999`
+(`MIN_UNIVERSE` 5400), assertion *enumerated ⇒ không `Prose`*. Probe 6 mới, `FLOOR` **đo được 7** ở
+cả hai bộ feature. `Sample` không đổi: probe 6 va `RepeatedKey` ở `SocketConnectPort` (mẫu initiator
+đã có dòng đó), nên developer viết hàm tự do `with_value` **ngoài** `impl Sample` — bản đầu lỡ thêm
+vào `impl Sample`, tự thấy qua `git diff --stat` và dời ra.
+
+**Reversal** (developer chạy, `git diff --stat` trước mỗi lần tin đỏ): R73-3, R74-1, R74-2, R74-3 đỏ
+**đúng nguyên văn** câu dự đoán; R73-2 đỏ đúng phát hiện, chữ khác; R74-3 xanh trước (đúng lỗ plan
+nêu) rồi đỏ sau khi thêm assertion. **R73-3 khôi phục bằng cách sửa lại đúng một từ, không `git
+checkout`** — cảnh báo từ bước 1 tới kịp, đoạn mới trong `CONFIGURATION.md` còn nguyên.
+
+**Gate của cả plan, manager chạy trên cây đã gộp bước 1, 3, 5** (`ff3a407` + bước 3, trước commit này):
+
+```
+cargo fmt --check                                                   exit 0
+cargo clippy --all-targets -- -D warnings                           exit 0
+cargo clippy --all-targets --features affinity -- -D warnings       exit 0
+cargo clippy --all-targets --features fixbolt-engine/tls -- -D warnings  exit 0
+cargo test --all                                    103 result lines, 645 passed, 0 failed, 2 ignored
+cargo test --all --no-default-features              103 result lines, 640 passed, 0 failed, 2 ignored
+cargo test --all --features fixbolt-engine/tls      103 result lines, 683 passed, 0 failed, 2 ignored
+cargo test -p fixbolt-engine --features affinity     44 result lines, 355 passed, 0 failed, 1 ignored
+cargo test -p fixbolt-engine --lib doc_table [--features tls] -- --nocapture   8 passed ×2
+  probe 2 — Default cells: 15 probed, 18 skipped     (tls: 16 / 17)
+  probe 3 — enumerated Values cells: 10 probed, 23 skipped   (tls: 11 / 22)
+  probe 4 — Where cells: 21 probed, 12 skipped       (cả hai)
+  probe 6 — integer Values cells: 7 probed, 26 skipped       (cả hai)
+scripts/check-links.py            373 files, 1990 internal links, no dead internal links
+scripts/check-indexing-debt.sh    181 indexing/slicing sites, ceiling 181 — ok
+scripts/check-no-crate-root-allow.sh   ok — 6 crate roots, 10 manifests, 55 inner attributes, 4 deny lints
+scripts/check-no-optional-deps.sh      ok ×7 builds and tests; libc/rustls/ktls-core/rcgen absent
+R74-1 (arm "acc", khôi phục bằng bản sao, byte-identical)
+  đỏ: docs/CONFIGURATION.md §1: ConnectionType lists ["acceptor", "initiator"] but the parser's
+      match arms read ["acc", "acceptor", "initiator"] — a literal of three or more characters is
+      outside the bounded search, and this is the leg that sees it
+  → khôi phục → 8 passed
+```
+
+**Đếm test khớp từng đồng:** `--features fixbolt-engine/tls` đọc **679** trên `main` sau PR #66; nay
+**683** = +1 bước 1 (`the_site_count…`) +2 bước 3 (`tests/settings.rs`) +1 probe 6. `hft_pinned` cần
+`affinity`, nên chỉ thêm một binary rỗng vào `--all` (102 → 103 dòng) và 3 test vào lượt `affinity`.
+Chưa chạy trên §9; không bước nào ở đây cần.
+
+### 2026-09-13 — bước 2 XONG (item 72)
+
+**Đổi lịch so với *Chia việc*, ghi rõ:** plan xếp bước 2 **sau** bước 4 vì chung `docs/DESIGN.md`.
+Manager chạy **song song** trong hai worktree: hai bước sửa hai hàng cách nhau ~30 dòng của §6
+(bước 4 thêm hàng cuối bảng *Correctness*, bước 2 sửa hàng `check-links.py` trong *Mode and
+machine*), và reversal của bước này (tạo `docs/zz-probe.md`) không làm đỏ gate của bước kia. Hàng
+bẫy dòng 500 của chính plan cho phép cách gộp này. Không đổi thiết kế nào.
+
+`scripts/check-links.py`: `OWN_REPO = ("github.com", "tmthang86", "fixbolt")` so **theo đoạn**;
+quy tắc (a) URL của chính repo bị xét trên mọi đuôi khớp, kể cả một đoạn; quy tắc (b) host khác chỉ
+bị xét khi đuôi khớp có từ hai đoạn; lớp bị bỏ qua được đếm và in. `DESIGN.md` §6 hàng
+`check-links.py` và reference mới
+`docs/reference/a-bare-filename-is-not-evidence-of-a-repository.md` `[to testing-skills]`.
+
+**Trên cây hôm nay lớp bỏ qua đọc 0** — link `cargo-deny` gây ra item 72 đã được viết lại thành URL
+trần từ trước, nên không còn là link. R72-1 là thứ tái hiện nó.
+
+**Manager sửa ba câu trong reference mới trước khi commit**, cả ba sai sự thật: (1) mở bài nói gate
+cũ *"would have stayed silent"* — thật ra gate cũ **đỏ sai**; (2) nói hai link sai thật nằm ở
+*"`a-shallow-clone-…`'s sibling case"* — thật ra ở `crates/engine/src/dispatch.rs` và
+`crates/session/src/journal.rs`, như docstring của script ghi; (3) *"would have reported"* — nó đã
+báo thật, và bằng chứng là bản nháp của chính plan này đỏ trên đúng URL đó (dòng 423-425).
+
+**Reversal** (developer chạy cả năm, đúng dự đoán; manager tự chạy lại R72-2 và R72-4 trong worktree):
+
+```
+trước (cây chưa đổi)   373 files, 1990 links, 0 absolute URLs naming a file in this repository
+sau                    374 files, 1993 links, 0 absolute URLs …, 0 foreign URLs sharing only a
+                       filename with this repository (not judged) — no dead internal links
+R72-1 cargo-deny CHANGELOG.md          không đỏ; 1 foreign URLs … (not judged)
+R72-2 fixbolt/docs/decisions/ADR-0001  FAIL: 1 link(s) name a repository file by absolute URL
+                                       this repository has docs/decisions/ADR-0001-relationship-to-quickfix.md
+R72-3 tmthang86/fixbolt/…/CHANGELOG.md FAIL … this repository has CHANGELOG.md
+R72-4 fixbolt/CHANGELOG.md (giới hạn)  không đỏ; 1 foreign URLs … (not judged)
+control tmthang86/fixbolt-other/…      không đỏ; đếm vào lớp bỏ qua — so theo đoạn, không theo tiền tố
+python3 -m py_compile                  compile-exit=0
+```
+
+### 2026-09-13 — bước 4 XONG (item 67), và gate của cả plan trên đủ năm bước
+
+Probe 5 `a_required_default_cell_is_what_the_parser_demands` đọc bốn dạng ô *Default* `required…`
+thẳng từ văn bản tài liệu; `Sample::without` tự assert đã xoá đúng một dòng. Docstring `mod doc_table`
+viết lại đủ sáu probe; `DESIGN.md` §6 có hàng mới cuối bảng *Correctness*; `CONFIGURATION.md` §1 một
+câu. **Item 67 đóng** theo Q3: phần còn lại — ô *Meaning* và ghi chú — là văn xuôi, người đọc.
+
+**Probe 5 không tìm thấy ô *required* nào sai hôm nay.** FLOOR đo **5** không `tls`, **7** với `tls`,
+đúng dự đoán.
+
+**Plan đoán sai tập biến thể.** Plan liệt kê `{WrongRole, NeedsFeature, NeedsTlsDoor, DefaultOnly}` cho
+khoá chứng chỉ TLS đặt vào acceptor không bật `SocketUseSSL`. Đo ra **`MissingKey`**: nhánh `dependent`
+của `TlsBlock::settle` dùng cùng biến thể cho *khoá phụ thuộc có mặt khi công tắc tắt*. Manager đọc
+code (`settings.rs:765-770`): câu lỗi là `ServerCertificateFile does nothing without SocketUseSSL=Y` —
+rõ với operator; chỉ **tên** biến thể lệch nghĩa. Assertion ghi đúng `MissingKey`. Để senior review cân.
+
+**Reversal**: R67-1 đỏ đúng câu; R67-2 — developer chọn cách đọc tốt hơn plan gợi ý, đọc hai nửa của
+ô riêng, nên câu đỏ nêu tên khoá (`SocketConnectHost says `required when …` but its Default cell no
+longer says `refused otherwise``) thay vì chỉ tụt dưới FLOOR; reversal ngoài plan — `without` không
+xoá gì — bắn assertion của chính nó (`sample does not contain …; the probe would test nothing`). Mọi
+khôi phục bằng `cp`, không `git checkout`.
+
+**Gate của cả plan, manager chạy trên cây đủ bước 1-5** (không còn worktree nào):
+
+```
+cargo fmt --check                                                   exit 0
+cargo clippy --all-targets [ / --features affinity / --features fixbolt-engine/tls ] -- -D warnings   exit 0 ×3
+cargo test --all                                    103 result lines, 646 passed, 0 failed, 2 ignored
+cargo test --all --no-default-features              103 result lines, 641 passed, 0 failed, 2 ignored
+cargo test --all --features fixbolt-engine/tls      103 result lines, 684 passed, 0 failed, 2 ignored
+cargo test -p fixbolt-engine --features affinity     44 result lines, 356 passed, 0 failed, 1 ignored
+cargo test -p fixbolt-session --test score           step_six_b_replays_what_it_sent_and_scores_fifty_nine ... ok
+doc_table (không tls):  probe 2 15/18 · probe 3 10/23 · probe 4 21/12 · probe 5 5/28 · probe 6 7/26 — 9 passed
+doc_table (tls):        probe 2 16/17 · probe 3 11/22 · probe 4 21/12 · probe 5 7/26 · probe 6 7/26 — 9 passed
+scripts/check-links.py            374 files, 1993 links, 0 absolute URLs …, 0 foreign URLs … (not judged); no dead internal links
+scripts/check-indexing-debt.sh    181, ceiling 181, ok
+scripts/check-no-crate-root-allow.sh   ok — 6 crate roots, 10 manifests, 55 inner attributes, 4 deny lints
+scripts/check-no-optional-deps.sh      ok
+R67-1 (SenderCompID mặc định rỗng, khôi phục byte-identical)
+  đỏ: docs/CONFIGURATION.md §1: SenderCompID says required but a file without it parses → 9 passed
+```
+
+**Đếm test:** `--features fixbolt-engine/tls` 683 → **684**, đúng +1 probe 5.
+
+### 2026-09-13 — bước 6, senior review: 12 lỗi thật, năm trong số đó là lỗ trong chính các guard vừa dựng
+
+Senior developer (opus), context mới, chỉ được đưa plan và gate. **Mọi reversal builder chạy đều đỏ
+đúng câu — và năm guard vẫn có đường đi qua mà không reversal nào thử.** Đó là bài học của bước này:
+một bộ reversal đỏ hết nói rằng guard bắt được *những gì đã thử*, không nói gì về chỗ chưa thử.
+
+**Lỗ trong guard (5), mỗi cái có phép thử xanh-trước-khi-sửa, đỏ-sau-khi-sửa:**
+
+1. **Probe 3, chân đọc arm:** `literals_of_match` chỉ đọc chuỗi ngoặc kép **đầu tiên** mỗi dòng, nên
+   `"Y" | "yes" => Ok(true),` lọt qua cả hai chân. Giờ đọc mọi chuỗi ở vế trái `=>`. **Manager tự chạy
+   lại cùng phép phá trên hai cây:** `3f55b26` (trước review) → `9 passed`; cây sau review →
+   `ResetOnLogon lists ["Y", "N"] but the parser's match arms read ["Y", "yes", "N"]`, `1 failed`.
+2. **Probe 3:** khai `Reader::Numeric` cũng tắt chân đọc code (assertion của R74-3 chỉ chặn `Prose`).
+   Thêm: khai `Numeric` thì mọi literal phải là chữ số.
+3. **Probe 5 không đọc điều kiện trong ô:** đổi ô thành `required when ConnectionType=acceptor` (ngược
+   hẳn) vẫn xanh. Giờ mẫu bị xoá khoá phải chứa đúng dòng `K=V` của điều kiện.
+4. **Probe 5 chỉ so biến thể lỗi, không so lỗi nói về khoá nào:** một `settle` hỏng trả `MissingKey`
+   về **khoá khác** vẫn xanh. Giờ detail phải nêu đúng khoá đang probe.
+5. **Test đếm `Link::Dropped`:** một điểm trả về viết dạng lạ (`return Ok(if true { Link::Dropped } else
+   { Link::Dropped });`) không được đếm, con số vẫn 23, test xanh. Giờ mọi dòng không phải comment nhắc
+   `Link::Dropped` phải là điểm đã đếm hoặc phép so sánh.
+
+**Lỗi hành vi và cấu trúc (3):**
+
+6. **`TimestampPrecision` về lại một quy tắc ở một chỗ.** `integer_as_written(v, key, misspelled)`:
+   `number()` gọi với `NotANumber`, `TimestampPrecision` với `UnsupportedPrecision`. Không test nào đổi
+   kỳ vọng. **Hệ quả cho bảng *Cách kiểm chứng*:** cột *control xanh* của R73-2 (`settings_roles` vẫn xanh
+   khi bỏ kiểm chính tả) **không còn đúng** — hai đường dùng chung quy tắc, phá là cả hai cùng đỏ. Đó là
+   điều §C muốn.
+7. **`SocketConnectPort=65536` nhận câu `expected a number written as digits only — no sign, no
+   leading zero`**, trong khi người viết đã viết đúng như vậy. Câu nối thêm `— that fits this key`; câu
+   của plan giữ nguyên làm phần đầu. Test mới `a_number_too_large_for_its_key_is_refused_as_too_large`,
+   đỏ trước. **Đây là một chữ plan đã ghi**; manager chấp nhận vì câu cũ sai với một đầu vào hợp lệ
+   về chính tả, và nói rõ với chủ sở hữu.
+8. **`check-links.py` quy tắc (a):** `TmThang86/Fixbolt` và `www.github.com/…` lọt, bị đếm là foreign.
+   Giờ so không phân biệt hoa/thường, bỏ `www.`. R72-1/2/3/4 và control `fixbolt-other` vẫn đúng.
+
+**Tài liệu sai (4):** rustdoc `mod doc_table` còn ghi *five questions*; `CONFIGURATION.md` §1 còn *four
+things*, *at least 4,400*, *those three* ngay dưới câu *Six probes*; rustdoc `serve_hft_pinned` nói *a
+pin that does not take leaves the thread as it was* — sai với `ReadbackMismatch` vì lúc đó set đã
+thành công; ba câu trong `a-known-limitations-list-rots-in-one-direction.md` và một câu trích FAIL
+không nguyên văn trong `a-bare-filename-is-not-evidence-of-a-repository.md`. Reviewer chạy lại R21-2
+16 lần: đỏ 16/16, `running_on` bắt 5, mask bắt 11 — khớp số đã ghi ở bước 5.
+
+**Quyết định cho câu hỏi builder để lại:**
+
+| Câu hỏi | Quyết định |
+|---|---|
+| `TimestampPrecision` parse riêng | **sửa** — mục 6 |
+| Re-export `serve_hft_pinned` qua `fixbolt` | **không** — `crates/library/README.md` cố ý loại `affinity`/`shard`, library không có feature `affinity`; re-export cho người dùng hàm mà không gọi được `CorePin`. `serve_sharded_hft` cũng không re-export |
+| Accessor waiver (ADR-0015 quyết định 5) | **thêm** `CorePin::is_unisolated_allowed()`, test `a_core_pin_says_whether_the_isolation_rule_was_waived` đỏ trước (`E0599`) |
+| `NoCounterparties` báo sau khi đã ghim | **không đổi** — thread chỉ ghim vào lõi đã qua validate, chưa có thread con hay socket nào, không phải *half a runtime* mà ADR-0015 quyết định 6 cấm; rustdoc ghi rõ |
+| Khoá TLS phụ thuộc trả `MissingKey` | **không đổi** — `tests/settings.rs::a_certificate_without_socket_use_ssl_is_refused` (có từ trước) assert đúng `MissingKey`; đổi là sửa assertion có sẵn, việc của architect |
+| `unused import MaybeLog` (`shard.rs:43`, `--no-default-features --features affinity`) | có từ trước, **open item** |
+| Job `docs` không build tập feature hẹp | **open item** |
+
+**Có từ trước PR, reviewer đo và không sửa — cần architect hoặc chủ sở hữu:**
+
+- **A.** `serve_sharded_hft` **bind trước validate** (bind `shard.rs:507`, validate chạy sau): port đang
+  giữ + `CoreId(4096)` → `Io(Os { code: 98, kind: AddrInUse })`. ADR-0015 quyết định 6 nói validate chạy
+  *trước khi một thread nào được spawn* vì nửa runtime rồi từ chối *leaves threads to join and sockets
+  to close*; chữ của nó nói *thread*, tinh thần của nó nói cả *socket*. Cửa mới làm đúng; cửa cũ thì không.
+- **B.** `HeartBtInt=0` được nhận, trong khi tài liệu ghi *positive integer*. Từ chối số 0 hay sửa tài
+  liệu là quyết định hành vi.
+- **C.** `reader(key)` tin lời khai: một khoá khai *đọc bởi `flag`* nhưng thật ra đọc bởi một `match`
+  khác cùng literal cộng alias thì không bị thấy.
+
+**Gate, manager chạy lại trên cây sau review:**
+
+```
+cargo fmt --check; clippy (default / affinity / tls) -- -D warnings      exit 0 ×4
+cargo test --all                                    103 lines, 647 passed, 0 failed, 2 ignored  (646 → +1 too_large)
+cargo test --all --no-default-features              103 lines, 642 passed, 0 failed, 2 ignored
+cargo test --all --features fixbolt-engine/tls      103 lines, 685 passed, 0 failed, 2 ignored
+cargo test -p fixbolt-engine --features affinity     44 lines, 358 passed, 0 failed  (356 → +1 accessor, +1 too_large)
+cargo test -p fixbolt-session --test score           step_six_b_replays_what_it_sent_and_scores_fifty_nine ... ok
+doc_table [tls]                                      9 passed ×2; probe 5 5/28 (tls 7/26)
+cargo doc -p fixbolt-engine --no-deps --features affinity, -D broken_intra_doc_links   Generated
+scripts/check-links.py   no dead internal links; 0 absolute; 0 foreign-bare
+check-indexing-debt 181 ok · check-no-crate-root-allow ok · check-no-optional-deps ok · unsafe in affinity.rs 6
+```
+
+### 2026-09-13 — bước 7, ĐÓNG
+
+`STATUS.md`: item **21, 67, 71, 72, 73, 74** đóng, mỗi hàng nêu cách đóng và giữ nguyên văn cũ sau
+*Was:*; hàng item 21 trong danh sách *cần máy Linux* gạch — đóng được **không cần máy §9**, vì test
+ghim chạy trên runner GitHub. Item **55** ghi quyết định Q5. Item **75–79** mở, cả năm từ senior
+review, cả năm có từ trước PR này. *Not proven* rà: `grep` ra hai bullet, cả hai về `serve_sharded_hft`
+recovery/stop, không bullet nào về item PR này đóng — không gạch gì, ghi rõ đã rà.
+
+**CI, theo quy tắc của PR #67:** draft PR mở ở commit đầu; mỗi commit đúng một run `pull_request`.
+`1a9c040` và `d44ea5a` bị commit kế tiếp huỷ run nên **không có kết quả CI riêng**; commit ngọn chứa
+cả hai. **Commit đóng `30b53cb`, run [`34746295036`](https://github.com/tmthang86/fixbolt/actions/runs/34746295036).**
+Manager **chờ run đó xong rồi mới push commit bàn giao** — push sớm sẽ huỷ đúng run cần ghi vào ô cuối
+§9. Ghi cho manager sau trong *Start here*.
+
+**Lệch plan, tổng hợp:** thứ tự bước 2 và 4 (song song thay vì nối tiếp); `starts_with` → `contains`
+(bước 1); thứ tự nhánh `TimestampPrecision` (bước 3, rồi review đưa về một quy tắc); biến thể
+`MissingKey` (bước 4); câu `NotANumber` thêm `— that fits this key` (review); cột *control xanh* của
+R73-2 không còn đúng (review). **Không lệch nào đổi quyết định Q1–Q5 của chủ sở hữu.**
+

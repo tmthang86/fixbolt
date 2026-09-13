@@ -2767,6 +2767,79 @@ pub fn serve_hft_with<
     )
 }
 
+/// As [`serve_hft`], on the core `pin` names: **refuses a bad core first, pins
+/// the thread that called it, and only then binds.**
+///
+/// `DESIGN.md` D8 says the `hft` polling thread is pinned to an isolated core.
+/// [`serve_hft`] leaves that thread yours to pin, which is a valid choice
+/// (`taskset` around the process); this is the door that does it for you and
+/// refuses what [`serve_sharded_hft`](crate::shard::serve_sharded_hft) would
+/// refuse.
+///
+/// # The order, and why it is this one
+///
+/// 1. [`CorePin::validate`](affinity::CorePin::validate) — every rule
+///    [`affinity::Topology::validate`] already has, and none of its own: a core
+///    that is absent, offline, or outside `isolcpus` unless
+///    [`allow_unisolated`](affinity::CorePin::allow_unisolated) was called.
+/// 2. [`affinity::pin_current_thread`], which reads the mask back rather than
+///    trusting the call's return — ADR-0015 decision 2.
+/// 3. Bind and serve, exactly as [`serve_hft`] does.
+///
+/// **Refusal before bind** because a listener bound first and only then told
+/// the core is wrong is a port held while the operator reads the error — and a
+/// refusal after a socket exists is the half-started runtime ADR-0015 decision 6
+/// forbids. **Pin before bind** because the thread that binds is the thread that
+/// serves, and nothing it does should happen unpinned.
+/// `tests/hft_pinned.rs::serve_hft_pinned_refuses_a_core_the_machine_does_not_have`
+/// holds the order: it hands this function a port that is already taken, so a
+/// door that bound first would answer [`ServeError::Io`].
+///
+/// Both syscalls and the `/sys` reads happen **once, before the first socket**,
+/// and [`Engine::turn`] is untouched — non-negotiables 1 and 4 are about the
+/// loop, and none of this is in it.
+///
+/// # The pin outlives the call
+///
+/// It pins **the calling thread**, because that is the thread the engine runs
+/// on, and nothing unpins it afterwards: not when this returns a [`Shutdown`],
+/// and not when it returns an error raised after step 2 —
+/// [`ServeError::NoCounterparties`], [`ServeError::Io`]. Call it from a thread
+/// that exists to serve. `tests/hft_pinned.rs::serve_hft_pinned_serves_on_the_core_it_was_given`
+/// reads the calling thread's mask after a clean return. A refused core, or a
+/// `sched_setaffinity` the kernel refuses, leaves the thread as it was, because
+/// a failing call changes nothing (see [`affinity::pin_current_thread`]). A
+/// [`ReadbackMismatch`](affinity::AffinityError::ReadbackMismatch) is the one
+/// affinity error that does not: the call succeeded, and the thread's mask is
+/// whatever the kernel made it.
+///
+/// # Errors
+///
+/// [`ServeError::Affinity`] if the core is refused or the pin does not take,
+/// before any socket exists; otherwise as [`serve_hft`].
+#[cfg(all(feature = "affinity", target_os = "linux"))]
+// **Eight, and clippy's ceiling is seven.** The eighth is the pin. ADR-0054's
+// Consequences took this same lint on four entry points rather than muting it,
+// and recorded the deferred `Serve` builder's reopening condition: *the first
+// time an eleventh parameter is wanted*. This is a fifth door at eight, not an
+// eleventh parameter, so the condition has not arrived; it is noted here so the
+// next parameter meets a count instead of a habit.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_hft_pinned<A: Application, L: MessageLog>(
+    pin: &affinity::CorePin,
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    log: L,
+    handles: crate::observe::Handles,
+) -> Result<Shutdown, ServeError> {
+    pin.validate().map_err(ServeError::Affinity)?;
+    affinity::pin_current_thread(pin.core()).map_err(ServeError::Affinity)?;
+    serve_hft_with::<256, 4096, 8192, 1024, A, L>(addr, table, app, capacity, limits, log, handles)
+}
+
 /// As [`serve_hft`], asking `recovery` what each counterparty left behind. See
 /// [`serve_with_recovery`].
 ///
@@ -2891,6 +2964,23 @@ pub enum ServeError {
     /// one would change shape with a feature flag.
     #[cfg(feature = "tls")]
     Tls(String),
+    /// The core named for the engine thread was refused, or pinning to it
+    /// failed — raised by [`serve_hft_pinned`], **always before a socket
+    /// exists**.
+    ///
+    /// **Its own variant for the reason [`Self::LogPath`] is.** A core outside
+    /// `isolcpus` and a port already in use send an operator to two different
+    /// places — the kernel command line and the process table — and one variant
+    /// covering both sends them to the wrong one first. It carries the
+    /// [`affinity::AffinityError`] whole, because that error names the
+    /// offending core (ADR-0015 decision 4).
+    ///
+    /// Behind the same `cfg` as `mod affinity`, because the error it holds does
+    /// not exist without it — the shape `Tls` already has. `ServeError`
+    /// is `#[non_exhaustive]`, so the variant is not a breaking change.
+    /// `[2026-09-13]` added with [`serve_hft_pinned`], `STATUS.md` item 21.
+    #[cfg(all(feature = "affinity", target_os = "linux"))]
+    Affinity(crate::affinity::AffinityError),
 }
 
 impl core::fmt::Display for ServeError {
@@ -2913,6 +3003,8 @@ impl core::fmt::Display for ServeError {
             // would be a breaking change to a public enum for a distinction
             // the text already makes.
             Self::Tls(e) => write!(f, "setting up TLS: {e}"),
+            #[cfg(all(feature = "affinity", target_os = "linux"))]
+            Self::Affinity(e) => write!(f, "pinning the engine thread: {e}"),
         }
     }
 }
@@ -2924,6 +3016,8 @@ impl std::error::Error for ServeError {
             #[cfg(feature = "tls")]
             Self::Tls(_) => None,
             Self::Io(e) | Self::LogPath(e) => Some(e),
+            #[cfg(all(feature = "affinity", target_os = "linux"))]
+            Self::Affinity(e) => Some(e),
         }
     }
 }

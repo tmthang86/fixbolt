@@ -129,7 +129,7 @@ fn the_error_type_names_the_core_that_was_refused() {
 // Step 3 — the refusals
 // ---------------------------------------------------------------------------
 
-use fixbolt_engine::affinity::{ShardPlan, Topology};
+use fixbolt_engine::affinity::{CorePin, ShardPlan, Topology};
 
 /// The §9 desktop as it actually reads, `[measured 2026-08-31]`, tuned and
 /// scoring `pass 10 fail 0`.
@@ -210,6 +210,27 @@ fn allow_unisolated_lifts_exactly_one_rule_and_no_other() {
     assert_eq!(
         tuned_desktop().validate(&also_bad),
         Err(AffinityError::NotOnline(CoreId(14)))
+    );
+}
+
+/// **A `CorePin` says whether the isolation rule was waived, as a `ShardPlan`
+/// does.** ADR-0015 decision 5: the waiver appears in whatever the engine
+/// reports about itself, because a bypassed guard that leaves no trace is
+/// bypassed permanently. `[added 2026-09-13]` by the senior review of PR #68 —
+/// `CorePin` shipped with the waiver and no way to read it back.
+#[test]
+fn a_core_pin_says_whether_the_isolation_rule_was_waived() {
+    let pin = CorePin::to(CoreId(3));
+    assert!(
+        !pin.is_unisolated_allowed(),
+        "the isolation rule is on unless waived"
+    );
+    let waived = pin.allow_unisolated();
+    assert!(waived.is_unisolated_allowed(), "the waiver reads back");
+    assert_eq!(
+        waived.core(),
+        CoreId(3),
+        "the waiver does not move the core"
     );
 }
 

@@ -341,7 +341,8 @@ pub enum Problem {
     /// truncated, because a truncated name matches nothing and would configure
     /// an acceptor that serves nobody.
     ValueTooLong,
-    /// A key that wants a number did not get one.
+    /// A key that wants a number did not get one: not digits, digits spelled
+    /// with a sign or a leading zero, or a number too large for the key.
     NotANumber,
     /// `TimestampPrecision` named a width this engine does not write.
     ///
@@ -403,7 +404,13 @@ impl fmt::Display for Problem {
             Self::RepeatedKey => "the same key twice in one block",
             Self::MissingKey => "a required key is missing",
             Self::ValueTooLong => "the value is longer than a session configuration can hold",
-            Self::NotANumber => "expected a number",
+            // `[changed 2026-09-13]` the tail clause is the senior review of
+            // PR #68: an out-of-range value is this variant too, and was told
+            // only about the spelling it had already got right.
+            // `tests/settings.rs::a_number_too_large_for_its_key_is_refused_as_too_large`.
+            Self::NotANumber => {
+                "expected a number written as digits only — no sign, no leading zero — that fits this key"
+            }
             Self::UnsupportedPrecision => {
                 "expected TimestampPrecision=3, 6 or 9 — this engine writes no other width"
             }
@@ -976,27 +983,52 @@ fn flag((line, value): (usize, &str), key: Key) -> Result<bool, SettingsError> {
     }
 }
 
-/// A key whose value is a number.
-fn number<T: std::str::FromStr>(
-    (line, value): (usize, &str),
-    key: Key,
-) -> Result<T, SettingsError> {
-    value.parse().map_err(|_| {
-        SettingsError::at(line, Problem::NotANumber, format!("{}={value}", key.name()))
-    })
+/// A key whose value is a number: [`integer_as_written`], with a wrong
+/// spelling answered the way a value that is not a number at all is —
+/// [`Problem::NotANumber`]. Seven of the eight integer keys.
+fn number<T: std::str::FromStr>(value: (usize, &str), key: Key) -> Result<T, SettingsError> {
+    integer_as_written(value, key, Problem::NotANumber)
 }
 
-/// `value` is spelled the one way this engine accepts a width in
-/// `TimestampPrecision`: ASCII digits only, no leading `+`, and no leading
-/// `0` unless the whole value is the single digit `0`.
+/// **The one reading of an integer this file has** — item 73. Parsed, and
+/// then **read exactly as written, not merely parsed**: `value.parse()` alone
+/// reads `+3` and `03` as `3` (measured against `rustc` 1.98.0), which is
+/// looser than every *Values* cell this engine documents for an integer key.
 ///
-/// Rust's own integer parser reads `+3` and `03` as `3` (measured against
-/// `rustc` 1.98.0), which is looser than the spelling this key is documented
-/// to take. Checked in addition to, not instead of, [`number`]: a value that
-/// is not a number at all (`MICROS`) stays [`Problem::NotANumber`], and only
-/// a value that *is* a number but spelled wrong becomes
-/// [`Problem::UnsupportedPrecision`] — probe 3 in `mod doc_table` is what
-/// caught the gap (`docs/CONFIGURATION.md` §1, `TimestampPrecision`).
+/// A value that does not parse at all (`MICROS`) is always
+/// [`Problem::NotANumber`]. A value that parses but is spelled wrong answers
+/// `misspelled`, which is the only thing the eight keys differ on: seven pass
+/// [`Problem::NotANumber`] through [`number`], and `TimestampPrecision` passes
+/// [`Problem::UnsupportedPrecision`], because it closed this gap for its own
+/// width first and a wrong spelling of a right width was already refused the
+/// way a wrong width is — `settings_roles.rs`
+/// `a_precision_that_is_not_a_number_says_so` and
+/// `timestamp_precision_is_refused_unless_spelled_exactly` hold the two
+/// answers apart. `[changed 2026-09-13]` the senior review of PR #68 folded
+/// `TimestampPrecision`'s inline copy of this back into one function.
+fn integer_as_written<T: std::str::FromStr>(
+    (line, value): (usize, &str),
+    key: Key,
+    misspelled: Problem,
+) -> Result<T, SettingsError> {
+    let parsed = value.parse().map_err(|_| {
+        SettingsError::at(line, Problem::NotANumber, format!("{}={value}", key.name()))
+    })?;
+    if !spelled_exactly_as_digits(value) {
+        return Err(SettingsError::at(
+            line,
+            misspelled,
+            format!("{}={value}", key.name()),
+        ));
+    }
+    Ok(parsed)
+}
+
+/// `value` is spelled the one way this engine accepts an integer: ASCII
+/// digits only, no leading `+`, and no leading `0` unless the whole value is
+/// the single digit `0`. Read by [`integer_as_written`] and nowhere else;
+/// probe 3 in `mod doc_table` is what caught the gap, on `TimestampPrecision`
+/// (`docs/CONFIGURATION.md` §1), and probe 6 holds it for the other seven.
 fn spelled_exactly_as_digits(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|b| b.is_ascii_digit())
@@ -1553,25 +1585,16 @@ fn build(block: Block<'_>) -> Result<Config, SettingsError> {
         cfg = cfg.with_last_processed(flag(v, Key::EnableLastMsgSeqNumProcessed)?);
     }
     if let Some(v) = block.timestamp_precision {
-        let digits: u32 = number(v, Key::TimestampPrecision)?;
+        // **Spelled exactly, not merely parsed** — the same rule as every
+        // other integer key, answered as a width: `03` and `+3` are
+        // [`Problem::UnsupportedPrecision`], `MICROS` is still
+        // [`Problem::NotANumber`]. See [`integer_as_written`].
+        let digits: u32 =
+            integer_as_written(v, Key::TimestampPrecision, Problem::UnsupportedPrecision)?;
         // **Refused, not rounded.** QuickFIX C++ takes 0-9 here; this engine
         // writes 3, 6 or 9, and the six widths in between would have to become
         // some other width to go out at all. A configuration error names the
         // line; a silent clamp names nothing. ADR-0057 open question 3.
-        //
-        // **Spelled exactly, not merely parsed.** `value.parse::<u32>()`
-        // above reads `+3` and `03` as `3`, which is looser than the
-        // spelling this key documents — probe 3 in `mod doc_table` found the
-        // gap on 2026-09-12. `Problem::UnsupportedPrecision` is what a wrong
-        // width already answers with, and a wrong spelling of a right width
-        // is refused the same way, not rounded to it.
-        if !spelled_exactly_as_digits(v.1) {
-            return Err(SettingsError::at(
-                v.0,
-                Problem::UnsupportedPrecision,
-                format!("{}={}", Key::TimestampPrecision.name(), v.1),
-            ));
-        }
         let precision =
             fixbolt_codec::Precision::from_fractional_digits(digits).ok_or_else(|| {
                 SettingsError::at(
@@ -1646,6 +1669,19 @@ fn time_of_day((line, value): (usize, &str), key: Key) -> Result<u32, SettingsEr
         return Err(bad());
     };
     if h.len() != 2 || m.len() != 2 || s.len() != 2 {
+        return Err(bad());
+    }
+    // **Digits only — item 73's other instance.** `"+1".parse::<u32>()` is
+    // `Ok(1)` (measured against `rustc` 1.98.0, same as `number`'s own gap),
+    // and at length 2 that reads as the hour `01`, so `StartTime=+1:00:00`
+    // was accepted as 01:00:00 before this check existed. Checked here
+    // rather than with `spelled_exactly_as_digits`: a leading zero is this
+    // key's own format (`01`, not `1`), not a mistake the way it is in a
+    // plain integer.
+    if !h.bytes().all(|b| b.is_ascii_digit())
+        || !m.bytes().all(|b| b.is_ascii_digit())
+        || !s.bytes().all(|b| b.is_ascii_digit())
+    {
         return Err(bad());
     }
     let (Ok(h), Ok(m), Ok(s)) = (h.parse::<u32>(), m.parse::<u32>(), s.parse::<u32>()) else {
@@ -1811,7 +1847,10 @@ fn schedule(block: Block<'_>) -> Result<Option<Schedule>, SettingsError> {
 /// the default of two rows at once, changed the count sentence to *"Four
 /// hundred keys"*, and the suite still read `3 passed; 0 failed`.
 ///
-/// # The five questions these tests answer
+/// # The seven questions these tests answer
+///
+/// `[changed 2026-09-13]` five until item 67 and item 73 added questions 6
+/// and 7 — probes 5 and 6 in the numbering the tests print.
 ///
 /// 1. **Does every key have a row, and every row a key?** The first cell.
 /// 2. **Is the count sentence true?** `**<number in words> keys** are
@@ -1827,10 +1866,19 @@ fn schedule(block: Block<'_>) -> Result<Option<Schedule>, SettingsError> {
 ///    commas is an enumeration: every literal in it must survive the parser —
 ///    a *context* error such as [`Problem::MissingKey`] is allowed, a *value*
 ///    error such as [`Problem::NotAFlag`] is not — and a literal the cell does
-///    **not** list must be refused as a bad value.
+///    **not** list must be refused as a bad value. For a key read by a `match`
+///    on literal strings, the arms of that `match` must also be exactly the
+///    listed literals, read off this file's source.
 /// 5. **Is a `[DEFAULT]`-only claim true?** A *Where* cell saying `[DEFAULT]`
 ///    **only** must give [`Problem::DefaultOnly`] when the key is written into
 ///    a `[SESSION]`, and one saying `[DEFAULT]` or `[SESSION]` must not.
+/// 6. **Is a `required…` claim true?** A *Default* cell reading `required`,
+///    `` required per `[SESSION]` `` or `` required when `K=V`; refused
+///    otherwise ``: removing the key is [`Problem::MissingKey`] about that
+///    key, and a conditional key written where the condition does not hold is
+///    refused about that key too.
+/// 7. **Is an integer read as written?** A *Values* cell saying `integer` or
+///    `` `0`–`65535` ``: `+7` and `07` are [`Problem::NotANumber`], `7` is not.
 ///
 /// # What they do not answer, and it is most of the table
 ///
@@ -1839,8 +1887,9 @@ fn schedule(block: Block<'_>) -> Result<Option<Schedule>, SettingsError> {
 /// for *"does nothing without `SocketUseSSL=Y`"* that does not first make the
 /// author write the sentence in a language a machine reads, at which point the
 /// document has stopped being one. A *Default* cell written as prose
-/// (`required`, `none`, `16 × ...`) and a *Values* cell that is not an
-/// enumeration (`ASCII, max 32 bytes`) are outside these probes on purpose —
+/// (`none`, `all seven days`, `16 × ...`) and a *Values* cell that is neither
+/// an enumeration nor an integer (`ASCII, max 32 bytes`) are outside these
+/// probes on purpose —
 /// **they are counted as skipped, so the price of writing a cell in prose is
 /// visible rather than silent**, and each probe carries a floor on how many
 /// rows it reached that may only be raised. `docs/CONFIGURATION.md` §1 states
@@ -1912,6 +1961,196 @@ mod doc_table {
             "settings.rs no longer contains the line `{opens}` — the doc/key gate reads its match arms and is now reading nothing"
         );
         out
+    }
+
+    /// `flag`'s own opening line. Its `match`'s own opener, `FLAG_MATCH_OPEN`,
+    /// is not unique by itself — a second bare `match value {` anywhere else
+    /// in this file would collide with it — so [`literals_of_match`] bounds
+    /// the search for it to the body of this function.
+    const FLAG_FN: &str =
+        "fn flag((line, value): (usize, &str), key: Key) -> Result<bool, SettingsError> {";
+    /// The line that opens the only `match` inside [`FLAG_FN`].
+    const FLAG_MATCH_OPEN: &str = "match value {";
+    /// The line that opens the `ConnectionType` match — long enough, on its
+    /// own, to be the only line in the file with this exact trimmed text, so
+    /// it needs no function to bound it.
+    const CONNECTION_TYPE_MATCH_OPEN: &str = "let what = match value {";
+
+    /// Every string literal in the arms of one `match`, found by the line
+    /// that opens it rather than by a function's name — the counterpart to
+    /// [`arm_literals`] for a `match` that is not a whole function's body.
+    ///
+    /// `opener`, trimmed, must be that line. When `opener`'s own trimmed text
+    /// is not unique in the whole file on its own — [`FLAG_MATCH_OPEN`]'s
+    /// bare `match value {` is not, now or the day a second flag-shaped
+    /// `match` is added — `inside_fn` names the line that opens the function
+    /// around it, and the search for `opener` is bounded to that function's
+    /// body.
+    ///
+    /// Closes on the first line, trimmed, that **starts with** `}` at an
+    /// indent no deeper than the opener's — not only a bare `}`.
+    /// [`arm_literals`] only ever needed the bare form, because `Key::name`
+    /// and `Key::parse` both close with one; [`Key::ConnectionType`]'s
+    /// `match` closes `};`, as the tail of a `let` statement, and a scan that
+    /// only accepted the bare form would read past it into whatever the file
+    /// happens to hold next — which is how item 74 found a second arm this
+    /// gate was never reading.
+    ///
+    /// Asserts exactly one line, in scope, matches `opener`: zero means this
+    /// helper can no longer find what it is looking for, and two or more
+    /// means it cannot tell which `match` it is supposed to be reading.
+    fn literals_of_match(inside_fn: Option<&str>, opener: &str) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        let mut in_scope = inside_fn.is_none();
+        let mut scope_indent: Option<usize> = None;
+        let mut opener_hits: usize = 0;
+        let mut open_indent: Option<usize> = None;
+        let mut closed = false;
+
+        for line in SRC.lines() {
+            let trimmed = line.trim();
+
+            if !in_scope {
+                if let Some(fn_line) = inside_fn
+                    && trimmed == fn_line
+                {
+                    in_scope = true;
+                    scope_indent = Some(indent(line));
+                }
+                continue;
+            }
+
+            // The bounding function's own closing brace, one level shallower
+            // than anything the `match` inside it can reach.
+            if let Some(si) = scope_indent
+                && trimmed == "}"
+                && indent(line) <= si
+            {
+                break;
+            }
+
+            if trimmed == opener {
+                opener_hits += 1;
+                if open_indent.is_none() {
+                    open_indent = Some(indent(line));
+                }
+                continue;
+            }
+
+            let Some(oi) = open_indent else {
+                continue;
+            };
+            if closed {
+                continue;
+            }
+            if trimmed.starts_with('}') && indent(line) <= oi {
+                closed = true;
+                continue;
+            }
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            // **Every literal on the pattern side of `=>`, not the first quoted
+            // word on the line** — which is all [`arm_literals`] needs, and is
+            // not enough here. `"Y" | "yes" => Ok(true),` is one arm carrying
+            // two literals, and rustfmt keeps it on one line. `[measured
+            // 2026-09-13]` the senior review of PR #68 added exactly that `|
+            // "yes"` to `flag`: this leg read `["Y", "N"]`, the bounded search
+            // never draws a three-letter word, and `cargo test -p
+            // fixbolt-engine` read 321 passed, 0 failed with `ResetOnLogon=yes`
+            // accepted. An empty literal is kept, not skipped: `"" =>` is a
+            // value the parser takes.
+            let Some((pattern, _)) = line.split_once("=>") else {
+                continue;
+            };
+            out.extend(pattern.split('"').skip(1).step_by(2));
+        }
+
+        assert_eq!(
+            opener_hits, 1,
+            "settings.rs line `{opener}` matched {opener_hits} times — literals_of_match needs exactly one to read its arms"
+        );
+
+        out
+    }
+
+    /// How probe 3's second leg reads the parser back, for one [`Key`]: a
+    /// value matched against literal strings directly in the parser
+    /// ([`Reader::Literals`], naming the `match`'s opening line and, when it
+    /// needs one, the function that bounds the search for it), a value read
+    /// through [`super::number`] or one of its siblings ([`Reader::Numeric`]),
+    /// or free-form text this leg does not check at all ([`Reader::Prose`]).
+    ///
+    /// [`enumerated`] reading [`None`] on a row's *Values* cell skips that
+    /// row regardless of what `reader` answers — but a row [`enumerated`]
+    /// *does* read must not answer [`Reader::Prose`], or this leg is reading
+    /// nothing for a key the document says has a fixed list of values.
+    #[derive(Clone, Copy)]
+    enum Reader {
+        Literals(Option<&'static str>, &'static str),
+        Numeric,
+        Prose,
+    }
+
+    /// **Matched exhaustively, with no `_` arm**, like [`group`]. A new
+    /// [`Key`] read by a `match` on literal strings and left off this list
+    /// would read as [`Reader::Prose`] under a wildcard — silently, which is
+    /// exactly the gap item 74 closed for [`Key::ConnectionType`]: a key
+    /// nobody taught this leg about is a key this leg cannot see.
+    const fn reader(key: Key) -> Reader {
+        match key {
+            Key::ConnectionType => Reader::Literals(None, CONNECTION_TYPE_MATCH_OPEN),
+            Key::ResetOnLogon
+            | Key::ResetOnLogout
+            | Key::ResetOnDisconnect
+            | Key::AllowUnknownMsgFields
+            | Key::ValidateUserDefinedFields
+            | Key::SendNextExpectedMsgSeqNum
+            | Key::EnableLastMsgSeqNumProcessed
+            | Key::SocketUseSsl
+            | Key::TlsRequireKernel => Reader::Literals(Some(FLAG_FN), FLAG_MATCH_OPEN),
+            Key::HeartBtInt
+            | Key::MaxSkewMillis
+            | Key::LogonTimeout
+            | Key::LogoutTimeout
+            | Key::TimestampPrecision
+            | Key::SocketConnectPort
+            | Key::ReconnectInterval
+            | Key::ReconnectCeiling => Reader::Numeric,
+            Key::BeginString
+            | Key::SenderCompId
+            | Key::TargetCompId
+            | Key::StartTime
+            | Key::EndTime
+            | Key::StartDay
+            | Key::EndDay
+            | Key::Weekdays
+            | Key::FileLogPath
+            | Key::SocketConnectHost
+            | Key::ServerCertificateFile
+            | Key::ServerCertificateKeyFile
+            | Key::CertificationAuthoritiesFile
+            | Key::ClientCertificateFile
+            | Key::ClientCertificateKeyFile => Reader::Prose,
+        }
+    }
+
+    /// A *Values* cell this leg reads as "an integer, written as digits
+    /// only": the word `integer` appearing anywhere in the cell's prose, or a
+    /// cell that is nothing but two all-digit backticked literals joined by
+    /// an en dash (`` `0`–`65535` ``, `SocketConnectPort`'s cell).
+    /// [`enumerated`] reads that second shape as *not* an enumeration — its
+    /// joining word is `–`, not `or` — so probe 6 is the only thing in this
+    /// module that reads it at all.
+    fn looks_like_an_integer(cell: &str) -> bool {
+        if cell.contains("integer") {
+            return true;
+        }
+        let literals: Vec<&str> = cell.split('`').skip(1).step_by(2).collect();
+        literals.len() == 2
+            && literals
+                .iter()
+                .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
     }
 
     /// One row of a `docs/CONFIGURATION.md` §1 table, with its cells reachable
@@ -2115,11 +2354,33 @@ mod doc_table {
     }
 
     // ------------------------------------------------------------------
-    // The four probes, `[added 2026-09-12]`. Everything above reads the key
-    // cell; everything below reads the cells that are already **values** —
-    // a default, a list of literals, a `[DEFAULT]`-only claim — and asks the
-    // parser whether they are true. The rest of the table stays prose, and
-    // the skip counts below are what make that visible.
+    // Six probes, `[added 2026-09-12, extended 2026-09-13]`. Probe 1, above,
+    // reads the count sentence; these five read the cells that are already
+    // **values** — a default, a list of literals, a `[DEFAULT]`-only claim,
+    // a `required…` claim, an integer spelling — and ask the parser whether
+    // they are true:
+    //
+    //   2. a *Default* cell that is a literal: writing it into a minimal
+    //      file changes nothing.
+    //   3. a *Values* cell that is an enumeration: every literal it lists
+    //      parses, and — a bounded search, not a sample — nothing else does.
+    //   4. a *Where* cell that claims `[DEFAULT]` only or `[DEFAULT]` or
+    //      `[SESSION]`.
+    //   5. a *Default* cell that says `required…`: absent is
+    //      [`Problem::MissingKey`], and wherever the cell also says
+    //      `refused otherwise`, present where the condition does not hold
+    //      is refused too — by the exact variant this module measured
+    //      (`refused_otherwise_variant`), never a set of candidates.
+    //   6. a *Values* cell read as an integer: `+7` and `07` are refused as
+    //      written, `7` is not.
+    //
+    // **Everything else in these tables is a hand-checked promise, not a
+    // machine-checked one** — every *Meaning* cell, every note, and the
+    // prose shapes of *Default* and *Values* (`none…`, `all seven days`,
+    // `16 × …`, `ASCII, max 32 bytes`). `docs/DESIGN.md` §6 and
+    // `docs/CONFIGURATION.md` §1 say so in as many words; the skip counts
+    // below are what keeps that a measured fact rather than a claim nobody
+    // checked.
     // ------------------------------------------------------------------
 
     /// A minimal configuration file that parses, split where a probe writes.
@@ -2149,6 +2410,37 @@ mod doc_table {
         /// The sample with one more line at the end of the `[SESSION]`.
         fn with_in_session(self, line: &str) -> String {
             format!("{}{}{line}\n", self.default_block, self.sessions)
+        }
+
+        /// [`Self::text`] with the line `{name}=…` removed, wherever it sits
+        /// — `[DEFAULT]` or `[SESSION]`. `[added 2026-09-13]`, for probe 5.
+        ///
+        /// Asserts it removed **exactly one** line. Zero means this sample
+        /// never carried `name` in the first place, so the probe that calls
+        /// this would go green for testing nothing at all — the trap item 67
+        /// named explicitly. Two or more means the removal is ambiguous and
+        /// this helper does not get to guess which line the probe meant.
+        fn without(self, name: &str) -> String {
+            let prefix = format!("{name}=");
+            let mut removed = 0_usize;
+            let mut out = String::new();
+            for line in self.text().lines() {
+                if line.starts_with(&prefix) {
+                    removed += 1;
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            assert!(
+                removed > 0,
+                "sample does not contain {name}; the probe would test nothing"
+            );
+            assert_eq!(
+                removed, 1,
+                "sample contains {name} {removed} times — `without` cannot tell which line the probe meant to remove"
+            );
+            out
         }
     }
 
@@ -2264,6 +2556,38 @@ mod doc_table {
             Group::ClientTls => Some(CLIENT_TLS),
             #[cfg(not(feature = "tls"))]
             Group::ClientTls => None,
+        }
+    }
+
+    /// `sample.with_in_default("{name}={value}")`, except when `name=`
+    /// already has a line in `sample`'s own `[DEFAULT]` — `SocketConnectPort`
+    /// is one of the keys its own group needs to be a legal file at all — in
+    /// which case that line is replaced rather than duplicated.
+    ///
+    /// Plain `with_in_default` alone would answer `Problem::RepeatedKey` for
+    /// exactly the keys a sample needs to be valid in the first place, which
+    /// is the same caveat `CLIENT_TLS`'s own doc comment already names for
+    /// `CertificationAuthoritiesFile` as harmless only because nothing had
+    /// reached for it yet. Probe 6 is the first to reach for one of them. A
+    /// free function rather than a method on [`Sample`] — this step does not
+    /// touch that type.
+    fn with_value(sample: Sample, name: &str, value: &str) -> String {
+        let prefix = format!("{name}=");
+        if sample.default_block.lines().any(|l| l.starts_with(&prefix)) {
+            let mut out = String::new();
+            for line in sample.default_block.lines() {
+                if line.starts_with(&prefix) {
+                    out.push_str(&prefix);
+                    out.push_str(value);
+                } else {
+                    out.push_str(line);
+                }
+                out.push('\n');
+            }
+            out.push_str(sample.sessions);
+            out
+        } else {
+            sample.with_in_default(&format!("{name}={value}"))
         }
     }
 
@@ -2536,8 +2860,20 @@ mod doc_table {
 
     /// The bounded universe probe 3's reverse direction searches for a
     /// *Values* cell listing `listed`: every string of length 1 and 2 over
-    /// [`ALPHABET`] (66 + 66² = 4 422 strings) plus [`neighbours`] of each
-    /// listed literal, minus `listed` itself, deduplicated.
+    /// [`ALPHABET`] (66 + 66² = 4 422 strings), every three-digit string
+    /// `000`–`999` (1 000 more, item 74), plus [`neighbours`] of each listed
+    /// literal, minus `listed` itself, deduplicated.
+    ///
+    /// **The three-digit leg exists because the short leg has a blind spot a
+    /// listed literal's own neighbours do not cover.** A literal three
+    /// characters or longer that the parser's `match` accepts but the
+    /// document never lists — `"acc"` alongside `"acceptor"` — sits outside
+    /// every length-1 and length-2 string and is not a near miss of anything
+    /// listed, so it was invisible to this direction alone; item 74's second
+    /// leg, [`literals_of_match`], is what actually finds it, but the wider
+    /// universe here means this direction no longer depends on one.
+    /// `[measured 2026-09-13]` roughly 7 ms more per row at the rate already
+    /// measured for the base universe.
     fn candidates(listed: &[&str]) -> Vec<String> {
         let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for &a in ALPHABET {
@@ -2546,6 +2882,13 @@ mod doc_table {
         for &a in ALPHABET {
             for &b in ALPHABET {
                 set.insert(format!("{}{}", a as char, b as char));
+            }
+        }
+        for a in 0..=9u8 {
+            for b in 0..=9u8 {
+                for c in 0..=9u8 {
+                    set.insert(format!("{a}{b}{c}"));
+                }
             }
         }
         for &literal in listed {
@@ -2574,9 +2917,23 @@ mod doc_table {
     /// itself wrote something with syntax meaning and is a bug in the probe,
     /// not a finding about the document — reported immediately, naming the
     /// candidate. A zero-guard in the style of `scripts/check-indexing-debt.sh`
-    /// fails a row whose universe came out under 4 400 candidates, which
-    /// means the universe was not built rather than the row having nothing
-    /// left to try.
+    /// fails a row whose universe came out under the floor `MIN_UNIVERSE`
+    /// names below, which means the universe was not built rather than the
+    /// row having nothing left to try.
+    ///
+    /// **A second leg, added for item 74, reads the parser's source instead
+    /// of searching it.** A bounded search is still a search: it can only
+    /// try what fits inside its universe, and a literal three characters or
+    /// longer that the parser's `match` happens to accept — `"acc"` beside
+    /// `"acceptor"` — sat outside every candidate this direction tried until
+    /// the universe grew a three-digit leg below. For the rows `reader`
+    /// classifies as [`Reader::Literals`], [`literals_of_match`] reads the
+    /// arms of that `match` directly off this file's own source and compares
+    /// the set against `listed` — not a value nobody tried, but the parser's
+    /// own arm list, whatever its length. Every row [`enumerated`] reads at
+    /// all must also name a `reader` other than [`Reader::Prose`], or this
+    /// leg is checking nothing for a key the document says has a fixed list
+    /// of values.
     ///
     /// `[measured 2026-09-12]` the senior review of PR #63 rewrote
     /// `SocketUseSSL`'s cell to `` `1` or `0` `` and the suite stayed green;
@@ -2602,8 +2959,10 @@ mod doc_table {
         /// Never lower it.
         const FLOOR: usize = if cfg!(feature = "tls") { 11 } else { 10 };
         /// Below this many candidates for one row, the universe was not
-        /// built — the zero-guard `candidates` owes every row.
-        const MIN_UNIVERSE: usize = 4400;
+        /// built — the zero-guard `candidates` owes every row. `4 422 + 1
+        /// 000`, less the margin the original 4,400 kept, after item 74
+        /// widened the universe with a three-digit leg.
+        const MIN_UNIVERSE: usize = 5400;
 
         let doc = configuration_md();
         let (mut probed, mut skipped) = (0_usize, 0_usize);
@@ -2639,6 +2998,37 @@ mod doc_table {
                 listed_count,
                 "docs/CONFIGURATION.md §1: {name} lists a literal more than once ({listed:?}) — a duplicate shortens the cell without making the row disappear, so neither direction of probe 3 would notice a value dropped out of the document"
             );
+
+            // **Item 74's second leg.** Independent of whether this build has
+            // a sample to write `name` into below — reading the parser's own
+            // source needs no runtime at all — so it runs for every row
+            // `enumerated` reads, `skipped` or not.
+            assert!(
+                !matches!(reader(key), Reader::Prose),
+                "{name} lists literals but declares Reader::Prose — say which match reads it"
+            );
+            // **`Numeric` is the other declaration that switches this leg
+            // off**, and the assertion above only closed `Prose`. `[measured
+            // 2026-09-13]` the senior review of PR #68 declared
+            // `ConnectionType` as `Reader::Numeric` and added R74-1's `"acc"`
+            // arm: `9 passed`. A number reader only ever takes digits, so a
+            // row whose literals are not all digits is not read by one.
+            assert!(
+                !matches!(reader(key), Reader::Numeric)
+                    || listed
+                        .iter()
+                        .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit())),
+                "{name} lists {listed:?} but declares Reader::Numeric — those are not numbers; say which match reads them"
+            );
+            if let Reader::Literals(inside_fn, opener) = reader(key) {
+                let arms = literals_of_match(inside_fn, opener);
+                let listed_set: std::collections::BTreeSet<&str> = listed.iter().copied().collect();
+                let arms_set: std::collections::BTreeSet<&str> = arms.iter().copied().collect();
+                assert_eq!(
+                    listed_set, arms_set,
+                    "docs/CONFIGURATION.md §1: {name} lists {listed:?} but the parser's match arms read {arms:?} — a literal of three or more characters is outside the bounded search, and this is the leg that sees it"
+                );
+            }
 
             let Some(sample) = sample(group(key)) else {
                 skipped += 1;
@@ -2691,6 +3081,59 @@ mod doc_table {
         assert!(
             probed >= FLOOR,
             "probe 3 reached {probed} rows, below its floor of {FLOOR} — either a list of values was rewritten as prose, or this probe has stopped matching"
+        );
+    }
+
+    /// **Probe 6, item 73.** A *Values* cell [`looks_like_an_integer`] reads
+    /// is tested directly against the promise `docs/CONFIGURATION.md` §1
+    /// makes for it: `{name}=+7` and `{name}=07` are both read as written,
+    /// not merely parsed, and must answer [`Problem::NotANumber`];
+    /// `{name}=7` is spelled correctly and must not.
+    ///
+    /// `TimestampPrecision`'s cell (`` `3`, `6` or `9` ``) does not have this
+    /// shape at all — it is [`enumerated`], which is probe 3's to check, not
+    /// this one's — so this leg never touches the one integer key whose
+    /// wrong spelling answers something other than `NotANumber`.
+    #[test]
+    fn an_integer_values_cell_is_read_as_written() {
+        /// Rows reached on 2026-09-13: 7. Never lower it.
+        const FLOOR: usize = 7;
+
+        let doc = configuration_md();
+        let (mut probed, mut skipped) = (0_usize, 0_usize);
+        for row in doc_rows(&doc) {
+            let name = row.key;
+            let Some(key) = Key::parse(name) else {
+                continue;
+            };
+            let Some(cell) = row.cell("Values") else {
+                continue;
+            };
+            if !looks_like_an_integer(cell) {
+                skipped += 1;
+                continue;
+            }
+            let Some(sample) = sample(group(key)) else {
+                skipped += 1;
+                continue;
+            };
+            probed += 1;
+
+            for (written, should_be_not_a_number) in [("+7", true), ("07", true), ("7", false)] {
+                let refusal = Settings::parse(&with_value(sample, name, written))
+                    .err()
+                    .map(|e| e.problem().clone());
+                let is_not_a_number = refusal.as_ref() == Some(&Problem::NotANumber);
+                assert_eq!(
+                    is_not_a_number, should_be_not_a_number,
+                    "docs/CONFIGURATION.md §1: {name}={written} is read as written — no sign, no leading zero — but the parser answered {refusal:?}"
+                );
+            }
+        }
+        println!("probe 6 — integer Values cells: {probed} probed, {skipped} skipped");
+        assert!(
+            probed >= FLOOR,
+            "probe 6 reached {probed} rows, below its floor of {FLOOR} — either an integer Values cell was rewritten as prose, or this probe has stopped matching"
         );
     }
 
@@ -2762,6 +3205,214 @@ mod doc_table {
         assert!(
             probed >= FLOOR,
             "probe 4 reached {probed} rows, below its floor of {FLOOR} — either a section claim was rewritten as prose, or this probe has stopped matching"
+        );
+    }
+
+    /// What a *Default* cell beginning with `required` checks, read off the
+    /// cell rather than named per key — the only four shapes §1 writes one
+    /// in. A cell that begins with anything else (`none…`, `all seven
+    /// days`, `16 × …`) is true prose and answers [`None`]: this probe's
+    /// skip, the same way a *Default* cell that is not a backticked literal
+    /// is probe 2's.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum RequiredDefault<'a> {
+        /// `required`, and nothing more — [`Key::BeginString`],
+        /// [`Key::SenderCompId`].
+        Bare,
+        /// `` required per `[SESSION]` `` — [`Key::TargetCompId`].
+        PerSession,
+        /// `` required when `{key}={value}`… `` — [`Key::SocketConnectHost`],
+        /// [`Key::SocketConnectPort`] (`key` is `ConnectionType`); and, with
+        /// the `tls` feature, [`Key::ServerCertificateFile`],
+        /// [`Key::ServerCertificateKeyFile`] (`key` is `SocketUseSSL`).
+        ///
+        /// `says_refused_otherwise` is read separately from the condition
+        /// itself, so a cell that drops that clause still parses as `When`
+        /// — it is still `required when …` — and it is this probe's own
+        /// assertion that goes red over the missing clause, naming the key,
+        /// rather than the row silently falling out of the count. R67-2.
+        When {
+            key: &'a str,
+            value: &'a str,
+            says_refused_otherwise: bool,
+        },
+    }
+
+    /// Reads [`RequiredDefault`] off the exact prose a *Default* cell
+    /// begins with.
+    fn required_default(cell: &str) -> Option<RequiredDefault<'_>> {
+        if cell == "required" {
+            return Some(RequiredDefault::Bare);
+        }
+        if cell == "required per `[SESSION]`" {
+            return Some(RequiredDefault::PerSession);
+        }
+        let rest = cell.strip_prefix("required when `")?;
+        let (condition, rest) = rest.split_once('`')?;
+        let (key, value) = condition.split_once('=')?;
+        Some(RequiredDefault::When {
+            key,
+            value,
+            says_refused_otherwise: rest.contains("refused otherwise"),
+        })
+    }
+
+    /// The exact [`Problem`] the parser answers for the *refused otherwise*
+    /// half of a `` required when `{key}=…` `` cell — **measured on
+    /// 2026-09-13, never guessed.**
+    ///
+    /// [`Key::ConnectionType`]'s wrong-role half is [`Problem::WrongRole`]:
+    /// writing a dialling key into a file with no `ConnectionType=initiator`
+    /// trips `Settings::parse`'s own dialling-key check before the value is
+    /// ever read.
+    ///
+    /// `SocketUseSSL`'s half is [`Problem::MissingKey`], which is **not**
+    /// one of the four shapes the plan guessed at (`WrongRole`,
+    /// `NeedsFeature`, `NeedsTlsDoor`, `DefaultOnly`) — and is not a probe
+    /// bug either. `TlsBlock::settle`'s `dependent` branch (the `if
+    /// !enabled` arm) answers a TLS key written with the switch off through
+    /// the very same branch, and the very same [`Problem`] variant, that
+    /// answers the switch on with the key absent: this parser reads
+    /// "missing" and "present in the wrong context" as one case for these
+    /// two keys, and this function records that rather than papering over
+    /// it with a guess.
+    fn refused_otherwise_variant(condition_key: &str) -> Option<Problem> {
+        match condition_key {
+            "ConnectionType" => Some(Problem::WrongRole),
+            "SocketUseSSL" => Some(Problem::MissingKey),
+            _ => None,
+        }
+    }
+
+    /// Whether a refusal's detail is about the key `name`: [`super::required`]
+    /// writes the bare key name, and the dialling-key and TLS `dependent`
+    /// checks begin their sentence with it.
+    fn is_about(detail: &str, name: &str) -> bool {
+        detail == name || detail.starts_with(&format!("{name} "))
+    }
+
+    /// `text` must be refused, and refused because the key this probe wrote
+    /// around is missing — not for some other reason that happens to also
+    /// be an error.
+    ///
+    /// **The variant is not enough, so the detail is read too.**
+    /// `[measured 2026-09-13]` the senior review of PR #68 let a certificate
+    /// switch TLS on by itself: a file naming `ServerCertificateFile` without
+    /// `SocketUseSSL` was then no longer refused for that key but asked for
+    /// `ServerCertificateKeyFile` instead — [`Problem::MissingKey`] as well —
+    /// and this probe read `7 probed` and passed. A `MissingKey` about another
+    /// key is a different claim from the one the cell makes.
+    fn assert_missing_when_removed(name: &str, text: &str) {
+        let refusal = Settings::parse(text).err();
+        let problem = refusal.as_ref().map(|e| e.problem().clone());
+        assert_eq!(
+            problem,
+            Some(Problem::MissingKey),
+            "docs/CONFIGURATION.md §1: {name} says required but a file without it parses"
+        );
+        let detail = refusal.as_ref().map_or("", |e| e.detail.as_str());
+        assert!(
+            is_about(detail, name),
+            "docs/CONFIGURATION.md §1: {name} says required, and a file without it is refused as MissingKey — but about `{detail}`, not about {name}"
+        );
+    }
+
+    /// **Probe 5, item 67.** A *Default* cell beginning with `required` is a
+    /// checkable claim the first four probes never read.
+    ///
+    /// **Every shape**: removing the key from the sample that already
+    /// satisfies whatever condition the cell names must answer
+    /// [`Problem::MissingKey`] — the cell says `required`, and a file
+    /// without the key parses anyway is exactly the wrong thing item 67
+    /// opened on.
+    ///
+    /// **The conditional shapes, additionally**: the cell's own `refused
+    /// otherwise` clause is asserted present — dropping it is R67-2, and the
+    /// assertion is what goes red over it, naming the key, rather than the
+    /// row quietly losing half its check — and then writing the key into
+    /// [`ACCEPTOR`], where the condition does not hold, must answer the
+    /// exact [`Problem`] [`refused_otherwise_variant`] measured for that
+    /// condition, not merely "an error".
+    ///
+    /// The placeholder value written for that second leg is the literal
+    /// `"X"`: every refusal this leg checks fires before the value is ever
+    /// read (the dialling-key check and the TLS `dependent` check both match
+    /// on presence, not on content), so a real-looking value would prove
+    /// nothing a placeholder does not.
+    #[test]
+    fn a_required_default_cell_is_what_the_parser_demands() {
+        /// Rows reached on 2026-09-13: 5, and 7 with the `tls` feature —
+        /// measured, never assumed. Raise it when a new conditional or bare
+        /// `required` cell is documented; never lower it.
+        const FLOOR: usize = if cfg!(feature = "tls") { 7 } else { 5 };
+
+        let doc = configuration_md();
+        let (mut probed, mut skipped) = (0_usize, 0_usize);
+        for row in doc_rows(&doc) {
+            let name = row.key;
+            let Some(key) = Key::parse(name) else {
+                continue;
+            };
+            let Some(default) = row.cell("Default") else {
+                continue;
+            };
+            let Some(shape) = required_default(default) else {
+                skipped += 1;
+                continue;
+            };
+            let Some(sample) = sample(group(key)) else {
+                skipped += 1;
+                continue;
+            };
+            probed += 1;
+
+            assert_missing_when_removed(name, &sample.without(name));
+
+            if let RequiredDefault::When {
+                key: condition_key,
+                value: condition_value,
+                says_refused_otherwise,
+            } = shape
+            {
+                assert!(
+                    says_refused_otherwise,
+                    "docs/CONFIGURATION.md §1: {name} says `required when `{condition_key}={condition_value}`…` but its Default cell no longer says `refused otherwise` — probe 5's other leg, the wrong-context refusal, has nothing left to check"
+                );
+                // **The condition the cell names is the one this probe tests.**
+                // The sample is chosen by `group(key)`, not by the cell, so
+                // without this a cell saying the exact opposite would pass.
+                // `[measured 2026-09-13]` the senior review of PR #68 rewrote
+                // both dialling keys' cells to `required when
+                // `ConnectionType=acceptor`; refused otherwise` and this probe
+                // read `5 probed` and passed.
+                let condition = format!("{condition_key}={condition_value}");
+                assert!(
+                    sample.text().lines().any(|l| l == condition)
+                        && !ACCEPTOR.text().lines().any(|l| l == condition),
+                    "docs/CONFIGURATION.md §1: {name} says `required when `{condition}`…`, but the file probe 5 removes it from does not say `{condition}`, or the file it is refused in does — the cell names a condition this probe did not test"
+                );
+                let expected = refused_otherwise_variant(condition_key);
+                assert!(
+                    expected.is_some(),
+                    "docs/CONFIGURATION.md §1: {name} is conditioned on `{condition_key}`, which probe 5 has not measured a refused-otherwise Problem for — measure it and add one to refused_otherwise_variant"
+                );
+                let refused = Settings::parse(&with_value(ACCEPTOR, name, "X")).err();
+                let refusal = refused.as_ref().map(|e| e.problem().clone());
+                assert_eq!(
+                    refusal, expected,
+                    "docs/CONFIGURATION.md §1: {name} says refused otherwise, but writing it where {condition_key}={condition_value} does not hold answers {refusal:?}, not {expected:?}"
+                );
+                let detail = refused.as_ref().map_or("", |e| e.detail.as_str());
+                assert!(
+                    is_about(detail, name),
+                    "docs/CONFIGURATION.md §1: {name} says refused otherwise, and writing it where {condition_key}={condition_value} does not hold is refused as {refusal:?} — but about `{detail}`, not about {name}"
+                );
+            }
+        }
+        println!("probe 5 — required Default cells: {probed} probed, {skipped} skipped");
+        assert!(
+            probed >= FLOOR,
+            "probe 5 reached {probed} rows, below its floor of {FLOOR} — either a required Default cell was rewritten as prose, or this probe has stopped matching"
         );
     }
 }

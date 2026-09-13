@@ -395,6 +395,103 @@ fn a_setting_that_wants_a_number_says_so() {
     assert_eq!(e.line(), 6);
 }
 
+/// **A number too large for its key is `NotANumber` too, and the message says
+/// so.** `[measured 2026-09-13]` the senior review of PR #68 wrote
+/// `SocketConnectPort=65536` and `HeartBtInt=4294967296` — digits only, no sign,
+/// no leading zero — and was told *"expected a number written as digits only —
+/// no sign, no leading zero"*, which is exactly what had been written.
+#[test]
+fn a_number_too_large_for_its_key_is_refused_as_too_large() {
+    for (key, value, line) in [
+        ("SocketConnectPort", "65536", 6),
+        ("HeartBtInt", "4294967296", 6),
+    ] {
+        let e = refused(&file_for(key, value));
+        assert_eq!(*e.problem(), Problem::NotANumber, "{key}={value}: {e}");
+        assert_eq!(e.line(), line, "{key}={value}: {e}");
+        assert!(
+            e.to_string().contains("fits this key"),
+            "{key}={value} is digits only and too large; the message must not send the operator to the spelling alone: {e}"
+        );
+    }
+}
+
+/// A minimal file, legal once `{key}={value}` is filled in with something the
+/// parser accepts. The four acceptor keys share one shape; the three
+/// initiator-only keys (`SocketConnectPort`, `ReconnectInterval`,
+/// `ReconnectCeiling`) each need the initiator keys before them already
+/// present, so each gets its own shape and the key under test sits on the
+/// line the caller expects.
+fn file_for(key: &str, value: &str) -> String {
+    match key {
+        "SocketConnectPort" => format!(
+            "[DEFAULT]\nConnectionType=initiator\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+             SocketConnectHost=venue.example.com\nSocketConnectPort={value}\n\
+             [SESSION]\nTargetCompID=TW44\n"
+        ),
+        "ReconnectInterval" => format!(
+            "[DEFAULT]\nConnectionType=initiator\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+             SocketConnectHost=venue.example.com\nSocketConnectPort=9880\n\
+             ReconnectInterval={value}\n\
+             [SESSION]\nTargetCompID=TW44\n"
+        ),
+        "ReconnectCeiling" => format!(
+            "[DEFAULT]\nConnectionType=initiator\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+             SocketConnectHost=venue.example.com\nSocketConnectPort=9880\nReconnectInterval=30\n\
+             ReconnectCeiling={value}\n\
+             [SESSION]\nTargetCompID=TW44\n"
+        ),
+        _ => format!(
+            "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+             [SESSION]\nTargetCompID=TW44\n{key}={value}\n"
+        ),
+    }
+}
+
+/// **Every integer key is read exactly as written — item 73.** `+7` and `07`
+/// are both refused as [`Problem::NotANumber`] at the line the key sits on in
+/// [`file_for`]; `7` is not itself a spelling error, though it may still be
+/// refused for an unrelated reason (`ReconnectCeiling=7` against the default
+/// `ReconnectInterval=30` is [`Problem::ImpossiblePolicy`], not
+/// `NotANumber`).
+///
+/// Seven keys reach [`fixbolt_engine::settings`]'s private `number`, and all
+/// eight integer keys the same private `integer_as_written` behind it.
+/// `TimestampPrecision` is the eighth and is excluded here on purpose — it
+/// answers a wrongly spelled width with `Problem::UnsupportedPrecision`, and
+/// is covered by
+/// `settings_roles.rs::timestamp_precision_is_refused_unless_spelled_exactly`.
+#[test]
+fn an_integer_key_is_read_as_written() {
+    const KEYS: [(&str, usize); 7] = [
+        ("HeartBtInt", 6),
+        ("MaxSkewMillis", 6),
+        ("LogonTimeout", 6),
+        ("LogoutTimeout", 6),
+        ("SocketConnectPort", 6),
+        ("ReconnectInterval", 7),
+        ("ReconnectCeiling", 8),
+    ];
+    for (key, line) in KEYS {
+        let e = refused(&file_for(key, "+7"));
+        assert_eq!(*e.problem(), Problem::NotANumber, "{key}=+7: {e}");
+        assert_eq!(e.line(), line, "{key}=+7: {e}");
+
+        let e = refused(&file_for(key, "07"));
+        assert_eq!(*e.problem(), Problem::NotANumber, "{key}=07: {e}");
+        assert_eq!(e.line(), line, "{key}=07: {e}");
+
+        let problem = Settings::parse(&file_for(key, "7"))
+            .err()
+            .map(|e| e.problem().clone());
+        assert_ne!(
+            problem,
+            Some(Problem::NotANumber),
+            "{key}=7 is spelled correctly and must not be a spelling error: {problem:?}"
+        );
+    }
+}
+
 /// An unknown section is refused rather than skipped: `[SESSIONS]` with an `s`
 /// would otherwise take every counterparty in the file with it.
 #[test]
@@ -614,6 +711,31 @@ fn a_time_that_is_not_hh_mm_ss_is_refused() {
         assert_eq!(*e.problem(), Problem::BadTime, "StartTime={bad}");
         assert_eq!(e.line(), 6, "StartTime={bad}: {e}");
     }
+}
+
+/// **A time of day is digits only — item 73's other instance.**
+/// `"+1".parse::<u32>()` is `Ok(1)`, and at length 2 that reads as the hour
+/// `01`, so `StartTime=+1:00:00` was read as 01:00:00 before this check
+/// existed. `01:00:00` itself is not a spelling error — a leading zero is
+/// this key's own format, not the mistake `number`'s own digits-only check
+/// (item 73's other half) refuses for a plain integer.
+#[test]
+fn a_time_of_day_is_digits_only() {
+    for bad in ["+1:00:00", "1+:00:00", "01:+0:00"] {
+        let e = refused(&format!(
+            "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+             [SESSION]\nTargetCompID=TW44\nStartTime={bad}\nEndTime=17:00:00\n"
+        ));
+        assert_eq!(*e.problem(), Problem::BadTime, "StartTime={bad}");
+        assert_eq!(e.line(), 6, "StartTime={bad}: {e}");
+    }
+
+    let s = Settings::parse(
+        "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+         [SESSION]\nTargetCompID=TW44\nStartTime=01:00:00\nEndTime=17:00:00\n",
+    )
+    .expect("01:00:00 is the spelling this key documents");
+    assert_eq!(s.configs().len(), 1);
 }
 
 /// A window of zero length is open never, which is not what anyone means by

@@ -95,3 +95,23 @@ Three practical forms:
 "the guard is redundant" for the length of time it took to look — and both were actually "the
 test does not test what its name says". The second reading is the expensive one to miss, because
 it leaves a test in the suite that will be trusted later.
+
+## `[measured 2026-09-13]` A fourth instance: the answer that is right by chance most of the time
+
+A door was added that validates a CPU core, pins the calling thread to it, then serves. The test
+pinned to `cpu0` and asserted, from inside the engine's own callback, that the thread was
+**running on** `cpu0` — read from `/proc/thread-self/stat`, not from the function's return
+value, exactly as the design asks. The reversal deleted the pin call and expected red.
+
+**On a 16-core desk with nothing else pinned, the unpinned thread was found running on `cpu0`
+in 10 runs out of 16.** The scheduler had no reason to move a freshly spawned thread off the
+core its parent was on, so "where the thread is" and "where the thread was pinned" gave the same
+answer most of the time. The plan had predicted the risk and prescribed *run it three times*;
+three runs would have been green together about a quarter of the time.
+
+The fix is the rule above applied to the observable rather than the input: **assert what
+pinning changes, not what pinning makes likely.** The thread's affinity *mask*, read with
+`sched_getaffinity` in the same callback, is exactly `{cpu0}` when pinned and all sixteen cores
+when not — there is no run in which the two versions agree. The `running_on` assertion stays,
+because the design names it, and the mask assertion sits after it. Across 16 runs of the
+reversal, `running_on` caught 6 and the mask caught the other 10.

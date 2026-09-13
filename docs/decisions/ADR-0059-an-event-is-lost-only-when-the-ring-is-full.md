@@ -1,6 +1,7 @@
 # ADR-0059: An event is lost only when the ring is full, never because somebody was reading
 
 - **Status:** Accepted — 2026-09-09, approved by the owner on the day it was written, after the five-engine survey it asked for
+- **Erratum `[2026-09-13]`:** *eighteen* was the count on 2026-09-02; the living count and the command that produces it are in [prior-art.md](../reference/prior-art.md) — ADR body unchanged.
 - **Date:** 2026-09-09
 - **Plan:** [events-without-a-shared-lock](../plans/2026-09-09-events-without-a-shared-lock.md) —
   this page is that plan's gate

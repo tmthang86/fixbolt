@@ -17,6 +17,17 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`fixbolt_engine::serve_hft_pinned`, the single-engine `hft` door that pins.** Behind
+  `--features affinity` on Linux. It takes a `fixbolt_engine::affinity::CorePin` —
+  `CorePin::to(CoreId)`, `.allow_unisolated()`, `.core()`, `.is_unisolated_allowed()`,
+  `.validate()` — refuses the core by
+  the rules `ShardPlan` already has (absent, offline, outside `isolcpus` unless waived), pins
+  the calling thread and reads the mask back, and only then binds; the pin stays on that thread
+  after the call returns. `serve_hft` is unchanged and still pins nothing. A refusal or a pin
+  that does not take is the new `ServeError::Affinity(AffinityError)`, present under the same
+  `cfg`; `ServeError` is `#[non_exhaustive]`, so this is not a breaking change. `STATUS.md`
+  item 21.
+
 - **A TLS initiator.** `fixbolt_engine::connect_and_serve_tls` and
   `connect_and_serve_tls_with` dial a TLS venue, behind `--features tls` on Linux, mirroring
   `serve_tls`/`serve_tls_with` on the acceptor side. `fixbolt_engine::tls::ClientTls` is the
@@ -72,6 +83,13 @@ below describe what a first release would contain.
   client uses acknowledges a `NewSessionTicket` without reading it
   ([ADR-0063](docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)).
   There is no configuration key to turn resumption back on.
+
+- **Every integer configuration value is now read as written, not merely parsed.**
+  `HeartBtInt=+30` and `SocketConnectPort=08080` are refused as `Problem::NotANumber`, and
+  `StartTime=+1:00:00` as `Problem::BadTime`. `Problem::NotANumber` now displays `"expected a
+  number written as digits only — no sign, no leading zero — that fits this key"`, not `"expected a
+  number"`.
+  `docs/CONFIGURATION.md` §1.
 
 ### Fixed
 
