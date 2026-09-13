@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-13, last** — **six open items closed without the §9 machine, and the
+Last updated: **2026-09-13, handoff** — **item 76 was not the owner decision it was recorded as: FIX 4.4 gives `108=0` a defined meaning, this repository's session layer already implemented and documented it, and the wrong half was one cell of `docs/CONFIGURATION.md`.** Branch `claude/status-remaining-items-63ox0y`, commits `179f5a2` + this one, **pushed with no pull request and therefore no CI run id** — `create_pull_request` returned HTTP 500 seven times, so §9's last box is **unmet** and opening the draft is the next machine's first job. Item **76** closes; **75, 77, 78, 79** stay open with a verdict each. See *Start here* below, which this line replaces. Before that: **2026-09-13, last** — **six open items closed without the §9 machine, and the
 senior review found five ways past the guards those items built — every builder's reversal had
 gone red, and none had tried the five.** PR [#68](https://github.com/tmthang86/fixbolt/pull/68), branch `plan/the-residue-of-an-obligation`,
 closing commit `30b53cb`, CI run [`34746295036`](https://github.com/tmthang86/fixbolt/actions/runs/34746295036).
@@ -69,6 +69,101 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 **`[2026-09-09, merged]` §9's last box, closed on the commit it asks about.** PR [#54](https://github.com/tmthang86/fixbolt/pull/54) merged as **`94b325d`**, no-ff. **CI green on the merge commit itself**, run [`34340173659`](https://github.com/tmthang86/fixbolt/actions/runs/34340173659), **13 jobs of 13** — the three neither desk can run for itself, `interop`, `bench` and `deny`, among them. The merged head `301cd2e` was **26 of 26** check runs across [`34320263926`](https://github.com/tmthang86/fixbolt/actions/runs/34320263926) and [`34320266574`](https://github.com/tmthang86/fixbolt/actions/runs/34320266574), and **`git diff 301cd2e 94b325d` is empty**, so the branch's green transfers to the merge exactly rather than by assumption.
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
+
+## Start here — 2026-09-13, handoff: item 76 was not a decision, and one search settled it
+
+**Read this first if you are the next manager.** This session ran in a container, **not the §9
+machine** — no number below is a published number (non-negotiable 10).
+
+### What is in flight
+
+Branch `claude/status-remaining-items-63ox0y`, two commits, **pushed**. **There is no pull request
+and therefore no CI run id** — `CLAUDE.md` §9's last box is **unmet for both commits**, and that is
+the first thing to fix on the next machine.
+
+| | |
+|---|---|
+| Commit 1 | `179f5a2` — the `handles-through-the-front-door` plan row, stale for eight days |
+| Commit 2 | this one — `docs/CONFIGURATION.md` §1's `HeartBtInt` cell, and this section |
+| Gate command | `python3 scripts/check-links.py` and `cargo test --all`, **after** `scripts/fetch-quickfix-assets.sh` |
+| CI run id | **none — `mcp__github__create_pull_request` returned HTTP 500 seven times** |
+
+**Open the draft pull request before anything else.** The 500 was not the request: a body of one
+sentence failed identically, `list_pull_requests` answered normally throughout, and the branch
+pushed without complaint. Seven attempts across the session, so it is not a single blip either.
+By §8 a branch with no pull request is a branch with no CI, and nothing here has been seen by CI.
+
+### Item 76 is closed, and it closed the other way round
+
+`STATUS.md` recorded item 76 as **a behaviour decision for the owner** — refuse `HeartBtInt=0`, or
+change the documentation cell. **It was neither.** `[researched 2026-09-13]` FIX 4.4 says `108=0`
+means *no heartbeats are generated at all*, while a `TestRequest` still forces a `Heartbeat` — see
+[B2BITS tag 108](https://www.b2bits.com/fixopaedia/fixdic44/tag_108_HeartBtInt_.html) and
+[Onix `msgtype 0`](https://www.onixs.biz/fix-dictionary/4.4/msgtype_0_0.html). So `0` is a valid
+value with a defined meaning, not a value to refuse.
+
+**And this repository already knew that — in the session layer, in writing, two levels down:**
+
+| Read | Says |
+|---|---|
+| `crates/session/src/lib.rs:1322` | *"zero means no heartbeats at all — which is what FIX 4.4 says `108=0` means"* |
+| `crates/session/src/lib.rs:2262` | `// 108=0 means the counterparty asked for no heartbeats at all.` |
+| `crates/session/src/lib.rs:2263` | `if self.beat_ms == 0 { return Link::Up; }` |
+| `crates/engine/src/settings.rs:1522` | `number(v, Key::HeartBtInt)?` — no range check, by design |
+
+So the engine is right, deliberate, and documented at the layer that implements it. **The only wrong
+half was one cell of `docs/CONFIGURATION.md` §1**, which read `positive integer, seconds`. Corrected
+to name what zero means, in the house style the same table already used for `logout_timeout_ms` on
+line 279 (`milliseconds; **zero is off**`).
+
+**The lesson is not about heartbeats.** A review found a value the engine accepts and a document
+forbids, and read the disagreement as *the engine is loose*. The opposite was true, and the evidence
+was a `grep` away in this repository's own source. `[measured 2026-09-13]` the whole thing took one
+web search and two `sed -n` of `session/src/lib.rs`. **A documentation cell is not a specification**,
+and where a cell and the code disagree, neither one wins by default — the protocol does. Nearest
+existing entry: `docs/reference/a-bare-filename-is-not-evidence-of-a-repository.md`, same shape at a
+different scale. **This deserves its own `docs/reference/` write-up under §4's highest-priority row
+and did not get one** — the next session owes it, with the `[to testing-skills]` marker, because the
+transferable half is about evidence rather than about FIX.
+
+### Items 75–79: what is left, and what each is blocked on
+
+Item 76 closes here. The other four were **all found by the senior review of PR
+[#68](https://github.com/tmthang86/fixbolt/pull/68), are all pre-existing, and each is a single
+measurement on one desk with no test behind it.**
+
+| Item | Verdict from this session | Blocked on |
+|---|---|---|
+| **77** `doc_table::reader(key)` trusts its own declaration | closable with no §9 machine | nothing — a plan |
+| **78** unused import under `--no-default-features --features affinity` | closable with no §9 machine | nothing — a plan |
+| **79** `docs` CI job builds only default and `--all-features` | closable with no §9 machine | nothing — a plan |
+| **75** `serve_sharded_hft` binds before it validates | closable, but §2 puts it on the senior developer | may need a new ADR — §5 forbids editing ADR-0015's substance |
+
+**78 and 79 are one family** — *a feature combination no gate builds* — and a plan for them must say
+which combinations will be built **and why it stops there**: the set is `2^n` and cannot be
+exhausted, so the boundary needs a stated reason, not a number. That is a gate change, so §4 sends
+it to `DESIGN.md` §6 in the same commit.
+
+### What this session tried and did not get
+
+- **No plan was written for 75–79.** An architect subagent was briefed and stopped by the owner
+  before it wrote anything; `docs/plans/` is unchanged. **Research works from the main session** —
+  the item 76 answer above came from one `WebSearch` here — so the next brief should carry the
+  findings inlined rather than send a subagent to look for them (§12: inline what exists nowhere
+  else).
+- **`vendor/` is absent in a fresh container** and `cargo test --all` does not compile without it.
+  Run `scripts/fetch-quickfix-assets.sh` first. Already recorded on 2026-09-08; recorded again
+  because this session hit it again.
+
+### Not proven
+
+- **Neither commit on this branch has been seen by CI.** Everything below is this container's word.
+- `scripts/check-links.py` and `cargo test --all` are the only gates run. The 59 acceptance
+  definitions, `benches/alloc.rs`, the Criterion suite and `tools/w2w` were **not** run, and nothing
+  here claims them. No line of `crates/*/src` changed on this branch.
+- **The `HeartBtInt=0` correction is a documentation change with no test behind it.** The session
+  layer's behaviour is held by its own tests; that the *cell* now matches it is held by nothing. A
+  `doc_table` probe that reads a range is exactly item 77's neighbourhood and was not written.
 
 ## Start here — 2026-09-13, last: the residue of an obligation, and five guards a review got past
 
@@ -4483,6 +4578,7 @@ against hardware that does not exist.
 | 73 | **CLOSED 2026-09-13**, PR [#68](https://github.com/tmthang86/fixbolt/pull/68), plan [the-residue-of-an-obligation](docs/plans/2026-09-13-the-residue-of-an-obligation.md). Every integer key is read as written — ASCII digits, no sign, no leading zero — through one function, `integer_as_written`, which `number()` and `TimestampPrecision` both call with their own refusal; `time_of_day` takes digits only. Red first: `StartTime=+1:00:00` and `HeartBtInt=+7` both parsed before. `SocketConnectPort=65536` is told the number must also fit the key. Probe 6 guards the table's integer cells. Was: **`number()` accepts `+30` and `030`, across seven user-visible configuration keys.** `[measured 2026-09-12]` `"+3".parse::<u32>()` is `Ok(3)` and `"03"` is `Ok(3)`, and `crates/engine/src/settings.rs`'s `number()` is Rust's parser unmodified — so `HeartBtInt=+30`, `SocketConnectPort=08080` and `MaxSkewMillis=+500` are all accepted today while no document offers them. **Deliberately not fixed with item 70**, which fixed only the `TimestampPrecision` arm: this is behaviour a user can see on seven keys, changing it needs a `docs/CONFIGURATION.md` row for each and a look at what QuickFIX C++ does (`IntConvertor` refuses `+` and accepts leading zeros), and doing it inside a plan that did not cover it is exactly the silent widening `CLAUDE.md` §1 forbids. **Nothing is broken today** — the values parse to what they read as; the gap is between the parser and the document | item 70, and probe 3's first red |
 | 74 | **CLOSED 2026-09-13**, PR [#68](https://github.com/tmthang86/fixbolt/pull/68), plan [the-residue-of-an-obligation](docs/plans/2026-09-13-the-residue-of-an-obligation.md). Probe 3 keeps its bounded search and gains a leg that reads the parser's `match` arms — every string left of `=>`, so `"Y" | "yes"` is seen — with an exhaustive `reader(key)` and assertions that an enumerated key is never declared `Prose` and a `Numeric` one carries only digits. **Its remaining limit is item 77.** Was: **Probe 3's bounded search is blind to any literal of three characters or more.** `[measured 2026-09-12]` adding a fake `"acc" => ConnectionType::Acceptor` arm to the parser, with `docs/CONFIGURATION.md` untouched, leaves `cargo test -p fixbolt-engine --lib doc_table` **green**. The universe is every 1- and 2-character string plus nine neighbours of each listed literal, so a third value the parser accepts and the document omits is only found if it happens to be a neighbour. **The plan that built the search declared this limit before it was built** and the senior review confirmed it by measurement rather than by reading — this is the residue of item 70, not a regression of it. `ConnectionType` is the only row with literals long enough for it to bite today; the day a key gains a long enumerated value, its reverse direction is decoration again. **Widening needs its own measurement** of which candidates are safe, for the reason item 70 was not a same-day fix: a badly chosen candidate produces a spurious red, and a spurious red is the worse failure | item 70, the senior review of PR [#65](https://github.com/tmthang86/fixbolt/pull/65) |
 | 75 | **`serve_sharded_hft` binds its socket before it validates the shard plan.** `[measured 2026-09-13]` by the senior review of PR [#68](https://github.com/tmthang86/fixbolt/pull/68): a port already held plus `CoreId(4096)` answers `Io(Os { code: 98, kind: AddrInUse })`, not an affinity refusal — the bind in `crates/engine/src/shard.rs` runs first. ADR-0015 decision 6 says `validate()` runs before a single thread is spawned, because half a runtime that then refuses *"leaves threads to join and sockets to close on an error path nobody exercises"*; its letter says threads, its reason says sockets too. `serve_hft_pinned`, added in the same PR, does validate → pin → bind and has a test for the order. **Pre-existing; `shard.rs` was outside that PR.** Needs a plan: the fix touches a public door and the ADR's wording |
+| 76 | **CLOSED 2026-09-13, handoff**, and **the premise was backwards rather than the engine loose.** `[researched 2026-09-13]` FIX 4.4 says `108=0` means no heartbeats are generated at all, a `TestRequest` still forcing one — [B2BITS tag 108](https://www.b2bits.com/fixopaedia/fixdic44/tag_108_HeartBtInt_.html), [Onix `msgtype 0`](https://www.onixs.biz/fix-dictionary/4.4/msgtype_0_0.html). So `0` is a defined value, not one to refuse — and this repository **already implemented and documented it two levels down**: `crates/session/src/lib.rs:1322` says *"zero means no heartbeats at all — which is what FIX 4.4 says `108=0` means"*, `:2262` repeats it as a comment and `:2263` is `if self.beat_ms == 0 { return Link::Up; }`; `crates/engine/src/settings.rs:1522` takes any `u32` with no range check, by design. **The wrong half was one cell of `docs/CONFIGURATION.md` §1**, which read `positive integer, seconds`; it now names what zero means, in the style line 279 already used for `logout_timeout_ms`. **No behaviour changed and no line of `crates/*/src` was touched.** Owed and not done: a `docs/reference/` entry with the `[to testing-skills]` marker — a cell and the code disagreeing is settled by the protocol, not by whichever you read second. The old text follows: |
 | 76 | **`HeartBtInt=0` parses, and `docs/CONFIGURATION.md` §1 calls the value a positive integer.** `[measured 2026-09-13]` by the senior review of PR #68, with a throwaway probe. Probe 6 checks that an integer is *written* as digits and probe 3 checks enumerations; neither reads a range. Refusing zero, or changing the cell, is a behaviour decision for the owner |
 | 77 | **`doc_table`'s `reader(key)` trusts its own declaration.** A key declared as read by one `match` but in fact read by another carrying the same literals plus an alias would not be seen: the arm-reading leg compares the table with the arms of the `match` the declaration names. Found by the senior review of PR #68; stated, not closed |
 | 78 | **An unused import under a feature combination no gate builds.** `[measured 2026-09-13]` `cargo check -p fixbolt-engine --no-default-features --features affinity` → `warning: unused import: crate::msglog::MaybeLog` at `crates/engine/src/shard.rs:43`. CI builds `--no-default-features` and `--features affinity` separately, never the two together. Pre-existing |
