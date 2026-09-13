@@ -3,7 +3,11 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-13** — **the engine can dial a TLS venue, and the three most valuable
+Last updated: **2026-09-13, later** — **CI runs once per commit, and a branch with no pull request
+open is now a branch with no CI.** PR [#67](https://github.com/tmthang86/fixbolt/pull/67), branch
+`plan/ci-fires-once`. **Open the pull request as a draft at the first commit of a branch** —
+`CLAUDE.md` §8 carries it. See *Start here* below, which this line replaces. Before that:
+**2026-09-13** — **the engine can dial a TLS venue, and the three most valuable
 things this pull request produced were none of the ones it was written to produce.** Branch
 `plan/tls-initiator-and-numbers`, tip `022ca36`, PR
 [#66](https://github.com/tmthang86/fixbolt/pull/66); **CI green on the closing commit itself**, run
@@ -59,6 +63,49 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 **`[2026-09-09, merged]` §9's last box, closed on the commit it asks about.** PR [#54](https://github.com/tmthang86/fixbolt/pull/54) merged as **`94b325d`**, no-ff. **CI green on the merge commit itself**, run [`34340173659`](https://github.com/tmthang86/fixbolt/actions/runs/34340173659), **13 jobs of 13** — the three neither desk can run for itself, `interop`, `bench` and `deny`, among them. The merged head `301cd2e` was **26 of 26** check runs across [`34320263926`](https://github.com/tmthang86/fixbolt/actions/runs/34320263926) and [`34320266574`](https://github.com/tmthang86/fixbolt/actions/runs/34320266574), and **`git diff 301cd2e 94b325d` is empty**, so the branch's green transfers to the merge exactly rather than by assumption.
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
+
+## Start here — 2026-09-13, later: CI fires once, and the pull request is what fires it
+
+**The one thing the next manager must do differently: open the pull request as a DRAFT at the first
+commit of a branch, not at the last.** `ci.yml` now triggers on `pull_request` plus `push` to `main`
+only, so until a pull request exists, **nothing checks the branch** — and `CLAUDE.md` §8's *gates
+must be green for that commit* depends on it. Measured on this branch: a push with no pull request
+open fired **zero** runs; opening the draft fired **exactly one**, `event=pull_request`.
+
+**Why.** `[measured 2026-09-13]` commit `5693c91` ran the whole suite twice — runs
+[`34740563843`](https://github.com/tmthang86/fixbolt/actions/runs/34740563843) (`push`) and
+[`34740565981`](https://github.com/tmthang86/fixbolt/actions/runs/34740565981) (`pull_request`),
+14 jobs each. The `concurrency` group was keyed on `github.ref`, which differs between the two
+events, so neither could cancel the other. It is now keyed on `github.head_ref || github.ref`, and
+**the first run of the new key was cancelled by the second push**, which is the key working.
+
+**A run after merge adds nothing while the base has not moved**, and this is now this repository's
+measurement rather than GitHub's claim. The `links` job prints what was checked out, and on run
+[`34741605309`](https://github.com/tmthang86/fixbolt/actions/runs/34741605309) it read:
+
+```
+github.sha   = 8ba59f87c27809761e431179c2bbc31dc838747f
+pr head sha  = 0c494efcce15584825177a9d0b81fe55cd45d458
+pr base sha  = 8b4763e162524ec2d430855618340d77d4f1890f
+shallow      = true
+subject = Merge 0c494efcce15584825177a9d0b81fe55cd45d458 into 8b4763e162524ec2d430855618340d77d4f1890f
+parents =
+```
+
+The run tests **the merge of head into base**, not the head. So when `main` has not moved, the
+manager names that run for §9's last box and proves the transfer with `git diff`, rather than
+waiting for a second run on the merge commit.
+
+**The first version of that step was a finding of its own.** It read `%P` and printed a blank,
+because `actions/checkout`'s `fetch-depth: 1` grafts the tip and its parents are never fetched — and
+a blank also *satisfies* an assertion phrased as "at most one parent". Written up as
+[a-shallow-clone-emptied-the-field-the-check-read](docs/reference/a-shallow-clone-emptied-the-field-the-check-read.md),
+`[to testing-skills]`.
+
+**Checked, and what it does not cover:** `.github/` holds one workflow, no job in it branches on
+`github.event_name`, and `main` has no branch protection (`gh api …/branches/main/protection` →
+`404 Branch not protected`), so no required check was keyed to a `push` run. **Not searched**:
+anything outside this repository that reads its check runs.
 
 ## Start here — 2026-09-13: a TLS initiator, and three findings nobody planned for
 
