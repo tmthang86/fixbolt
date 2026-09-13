@@ -1,6 +1,6 @@
 # Bốn lỗi cũ mà bản review PR #68 tìm ra — đóng items 75, 77, 78, 79
 
-> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt (owner, 2026-09-13, cả năm đề nghị)
 > **Phạm vi:** `crates/engine` (cửa `serve_sharded_hft`, bộ probe `doc_table`), CI (`.github/workflows/ci.yml`), `DESIGN.md` §3 và §6, hai ADR mới
 
 > Tên file luôn tiếng Anh: `docs/plans/YYYY-MM-DD-<topic>.md`.
