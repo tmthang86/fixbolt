@@ -743,3 +743,47 @@ R72-4 fixbolt/CHANGELOG.md (giới hạn)  không đỏ; 1 foreign URLs … (not
 control tmthang86/fixbolt-other/…      không đỏ; đếm vào lớp bỏ qua — so theo đoạn, không theo tiền tố
 python3 -m py_compile                  compile-exit=0
 ```
+
+### 2026-09-13 — bước 4 XONG (item 67), và gate của cả plan trên đủ năm bước
+
+Probe 5 `a_required_default_cell_is_what_the_parser_demands` đọc bốn dạng ô *Default* `required…`
+thẳng từ văn bản tài liệu; `Sample::without` tự assert đã xoá đúng một dòng. Docstring `mod doc_table`
+viết lại đủ sáu probe; `DESIGN.md` §6 có hàng mới cuối bảng *Correctness*; `CONFIGURATION.md` §1 một
+câu. **Item 67 đóng** theo Q3: phần còn lại — ô *Meaning* và ghi chú — là văn xuôi, người đọc.
+
+**Probe 5 không tìm thấy ô *required* nào sai hôm nay.** FLOOR đo **5** không `tls`, **7** với `tls`,
+đúng dự đoán.
+
+**Plan đoán sai tập biến thể.** Plan liệt kê `{WrongRole, NeedsFeature, NeedsTlsDoor, DefaultOnly}` cho
+khoá chứng chỉ TLS đặt vào acceptor không bật `SocketUseSSL`. Đo ra **`MissingKey`**: nhánh `dependent`
+của `TlsBlock::settle` dùng cùng biến thể cho *khoá phụ thuộc có mặt khi công tắc tắt*. Manager đọc
+code (`settings.rs:765-770`): câu lỗi là `ServerCertificateFile does nothing without SocketUseSSL=Y` —
+rõ với operator; chỉ **tên** biến thể lệch nghĩa. Assertion ghi đúng `MissingKey`. Để senior review cân.
+
+**Reversal**: R67-1 đỏ đúng câu; R67-2 — developer chọn cách đọc tốt hơn plan gợi ý, đọc hai nửa của
+ô riêng, nên câu đỏ nêu tên khoá (`SocketConnectHost says `required when …` but its Default cell no
+longer says `refused otherwise``) thay vì chỉ tụt dưới FLOOR; reversal ngoài plan — `without` không
+xoá gì — bắn assertion của chính nó (`sample does not contain …; the probe would test nothing`). Mọi
+khôi phục bằng `cp`, không `git checkout`.
+
+**Gate của cả plan, manager chạy trên cây đủ bước 1-5** (không còn worktree nào):
+
+```
+cargo fmt --check                                                   exit 0
+cargo clippy --all-targets [ / --features affinity / --features fixbolt-engine/tls ] -- -D warnings   exit 0 ×3
+cargo test --all                                    103 result lines, 646 passed, 0 failed, 2 ignored
+cargo test --all --no-default-features              103 result lines, 641 passed, 0 failed, 2 ignored
+cargo test --all --features fixbolt-engine/tls      103 result lines, 684 passed, 0 failed, 2 ignored
+cargo test -p fixbolt-engine --features affinity     44 result lines, 356 passed, 0 failed, 1 ignored
+cargo test -p fixbolt-session --test score           step_six_b_replays_what_it_sent_and_scores_fifty_nine ... ok
+doc_table (không tls):  probe 2 15/18 · probe 3 10/23 · probe 4 21/12 · probe 5 5/28 · probe 6 7/26 — 9 passed
+doc_table (tls):        probe 2 16/17 · probe 3 11/22 · probe 4 21/12 · probe 5 7/26 · probe 6 7/26 — 9 passed
+scripts/check-links.py            374 files, 1993 links, 0 absolute URLs …, 0 foreign URLs … (not judged); no dead internal links
+scripts/check-indexing-debt.sh    181, ceiling 181, ok
+scripts/check-no-crate-root-allow.sh   ok — 6 crate roots, 10 manifests, 55 inner attributes, 4 deny lints
+scripts/check-no-optional-deps.sh      ok
+R67-1 (SenderCompID mặc định rỗng, khôi phục byte-identical)
+  đỏ: docs/CONFIGURATION.md §1: SenderCompID says required but a file without it parses → 9 passed
+```
+
+**Đếm test:** `--features fixbolt-engine/tls` 683 → **684**, đúng +1 probe 5.

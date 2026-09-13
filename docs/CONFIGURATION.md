@@ -30,6 +30,9 @@ or a leading zero, so a file that writes one is not writing something this
 engine's own documentation offers, and the line number says so rather than
 guessing which of the two looser readings was meant.
 
+**Six probes read this table; the *Meaning* and notes cells are prose and are
+read by a person** `[added 2026-09-13]`.
+
 **Thirty-three keys** are recognised `[changed 2026-09-13, was thirty]`.
 
 **What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The

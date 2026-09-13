@@ -883,6 +883,7 @@ below).
 | What each of the 23 field types accepts | at least one accepted and one refused value per type | `crates/dict/tests/field_types.rs`. **Invented cases**: the corpus supplies two |
 | In-group field order matches another implementation | delimiter exact on all **730** groups; QuickFIX's `message_order` an exact subsequence of this crate's on all 730 | `crates/dict/tests/interop_quickfix_order.rs`. Exists because the round-trip test reads the same table the encoder does |
 | `parse_into` never panics on hostile input | `[measured 2026-08-28]` 304 230 294 executions, 0 crashes | `fuzz/fuzz_targets/parse.rs`, `cargo +nightly fuzz run parse` |
+| `docs/CONFIGURATION.md` §1 says what the parser does `[2026-09-13]` | **six probes**; *Meaning* and notes cells are prose, read by a person | `cargo test -p fixbolt-engine --lib doc_table`, and with `--features tls` |
 
 ### Allocation
 

@@ -2340,11 +2340,33 @@ mod doc_table {
     }
 
     // ------------------------------------------------------------------
-    // The four probes, `[added 2026-09-12]`. Everything above reads the key
-    // cell; everything below reads the cells that are already **values** —
-    // a default, a list of literals, a `[DEFAULT]`-only claim — and asks the
-    // parser whether they are true. The rest of the table stays prose, and
-    // the skip counts below are what make that visible.
+    // Six probes, `[added 2026-09-12, extended 2026-09-13]`. Probe 1, above,
+    // reads the count sentence; these six read the cells that are already
+    // **values** — a default, a list of literals, a `[DEFAULT]`-only claim,
+    // a `required…` claim, an integer spelling — and ask the parser whether
+    // they are true:
+    //
+    //   2. a *Default* cell that is a literal: writing it into a minimal
+    //      file changes nothing.
+    //   3. a *Values* cell that is an enumeration: every literal it lists
+    //      parses, and — a bounded search, not a sample — nothing else does.
+    //   4. a *Where* cell that claims `[DEFAULT]` only or `[DEFAULT]` or
+    //      `[SESSION]`.
+    //   5. a *Default* cell that says `required…`: absent is
+    //      [`Problem::MissingKey`], and wherever the cell also says
+    //      `refused otherwise`, present where the condition does not hold
+    //      is refused too — by the exact variant this module measured
+    //      (`refused_otherwise_variant`), never a set of candidates.
+    //   6. a *Values* cell read as an integer: `+7` and `07` are refused as
+    //      written, `7` is not.
+    //
+    // **Everything else in these tables is a hand-checked promise, not a
+    // machine-checked one** — every *Meaning* cell, every note, and the
+    // prose shapes of *Default* and *Values* (`none…`, `all seven days`,
+    // `16 × …`, `ASCII, max 32 bytes`). `docs/DESIGN.md` §6 and
+    // `docs/CONFIGURATION.md` §1 say so in as many words; the skip counts
+    // below are what keeps that a measured fact rather than a claim nobody
+    // checked.
     // ------------------------------------------------------------------
 
     /// A minimal configuration file that parses, split where a probe writes.
@@ -2374,6 +2396,37 @@ mod doc_table {
         /// The sample with one more line at the end of the `[SESSION]`.
         fn with_in_session(self, line: &str) -> String {
             format!("{}{}{line}\n", self.default_block, self.sessions)
+        }
+
+        /// [`Self::text`] with the line `{name}=…` removed, wherever it sits
+        /// — `[DEFAULT]` or `[SESSION]`. `[added 2026-09-13]`, for probe 5.
+        ///
+        /// Asserts it removed **exactly one** line. Zero means this sample
+        /// never carried `name` in the first place, so the probe that calls
+        /// this would go green for testing nothing at all — the trap item 67
+        /// named explicitly. Two or more means the removal is ambiguous and
+        /// this helper does not get to guess which line the probe meant.
+        fn without(self, name: &str) -> String {
+            let prefix = format!("{name}=");
+            let mut removed = 0_usize;
+            let mut out = String::new();
+            for line in self.text().lines() {
+                if line.starts_with(&prefix) {
+                    removed += 1;
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            assert!(
+                removed > 0,
+                "sample does not contain {name}; the probe would test nothing"
+            );
+            assert_eq!(
+                removed, 1,
+                "sample contains {name} {removed} times — `without` cannot tell which line the probe meant to remove"
+            );
+            out
         }
     }
 
@@ -3125,6 +3178,176 @@ mod doc_table {
         assert!(
             probed >= FLOOR,
             "probe 4 reached {probed} rows, below its floor of {FLOOR} — either a section claim was rewritten as prose, or this probe has stopped matching"
+        );
+    }
+
+    /// What a *Default* cell beginning with `required` checks, read off the
+    /// cell rather than named per key — the only four shapes §1 writes one
+    /// in. A cell that begins with anything else (`none…`, `all seven
+    /// days`, `16 × …`) is true prose and answers [`None`]: this probe's
+    /// skip, the same way a *Default* cell that is not a backticked literal
+    /// is probe 2's.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum RequiredDefault<'a> {
+        /// `required`, and nothing more — [`Key::BeginString`],
+        /// [`Key::SenderCompId`].
+        Bare,
+        /// `` required per `[SESSION]` `` — [`Key::TargetCompId`].
+        PerSession,
+        /// `` required when `{key}={value}`… `` — [`Key::SocketConnectHost`],
+        /// [`Key::SocketConnectPort`] (`key` is `ConnectionType`); and, with
+        /// the `tls` feature, [`Key::ServerCertificateFile`],
+        /// [`Key::ServerCertificateKeyFile`] (`key` is `SocketUseSSL`).
+        ///
+        /// `says_refused_otherwise` is read separately from the condition
+        /// itself, so a cell that drops that clause still parses as `When`
+        /// — it is still `required when …` — and it is this probe's own
+        /// assertion that goes red over the missing clause, naming the key,
+        /// rather than the row silently falling out of the count. R67-2.
+        When {
+            key: &'a str,
+            value: &'a str,
+            says_refused_otherwise: bool,
+        },
+    }
+
+    /// Reads [`RequiredDefault`] off the exact prose a *Default* cell
+    /// begins with.
+    fn required_default(cell: &str) -> Option<RequiredDefault<'_>> {
+        if cell == "required" {
+            return Some(RequiredDefault::Bare);
+        }
+        if cell == "required per `[SESSION]`" {
+            return Some(RequiredDefault::PerSession);
+        }
+        let rest = cell.strip_prefix("required when `")?;
+        let (condition, rest) = rest.split_once('`')?;
+        let (key, value) = condition.split_once('=')?;
+        Some(RequiredDefault::When {
+            key,
+            value,
+            says_refused_otherwise: rest.contains("refused otherwise"),
+        })
+    }
+
+    /// The exact [`Problem`] the parser answers for the *refused otherwise*
+    /// half of a `` required when `{key}=…` `` cell — **measured on
+    /// 2026-09-13, never guessed.**
+    ///
+    /// [`Key::ConnectionType`]'s wrong-role half is [`Problem::WrongRole`]:
+    /// writing a dialling key into a file with no `ConnectionType=initiator`
+    /// trips `Settings::parse`'s own dialling-key check before the value is
+    /// ever read.
+    ///
+    /// `SocketUseSSL`'s half is [`Problem::MissingKey`], which is **not**
+    /// one of the four shapes the plan guessed at (`WrongRole`,
+    /// `NeedsFeature`, `NeedsTlsDoor`, `DefaultOnly`) — and is not a probe
+    /// bug either. `TlsBlock::settle`'s `dependent` branch (the `if
+    /// !enabled` arm) answers a TLS key written with the switch off through
+    /// the very same branch, and the very same [`Problem`] variant, that
+    /// answers the switch on with the key absent: this parser reads
+    /// "missing" and "present in the wrong context" as one case for these
+    /// two keys, and this function records that rather than papering over
+    /// it with a guess.
+    fn refused_otherwise_variant(condition_key: &str) -> Option<Problem> {
+        match condition_key {
+            "ConnectionType" => Some(Problem::WrongRole),
+            "SocketUseSSL" => Some(Problem::MissingKey),
+            _ => None,
+        }
+    }
+
+    /// `text` must be refused, and refused because the key this probe wrote
+    /// around is missing — not for some other reason that happens to also
+    /// be an error.
+    fn assert_missing_when_removed(name: &str, text: &str) {
+        let refusal = Settings::parse(text).err().map(|e| e.problem().clone());
+        assert_eq!(
+            refusal,
+            Some(Problem::MissingKey),
+            "docs/CONFIGURATION.md §1: {name} says required but a file without it parses"
+        );
+    }
+
+    /// **Probe 5, item 67.** A *Default* cell beginning with `required` is a
+    /// checkable claim the first four probes never read.
+    ///
+    /// **Every shape**: removing the key from the sample that already
+    /// satisfies whatever condition the cell names must answer
+    /// [`Problem::MissingKey`] — the cell says `required`, and a file
+    /// without the key parses anyway is exactly the wrong thing item 67
+    /// opened on.
+    ///
+    /// **The conditional shapes, additionally**: the cell's own `refused
+    /// otherwise` clause is asserted present — dropping it is R67-2, and the
+    /// assertion is what goes red over it, naming the key, rather than the
+    /// row quietly losing half its check — and then writing the key into
+    /// [`ACCEPTOR`], where the condition does not hold, must answer the
+    /// exact [`Problem`] [`refused_otherwise_variant`] measured for that
+    /// condition, not merely "an error".
+    ///
+    /// The placeholder value written for that second leg is the literal
+    /// `"X"`: every refusal this leg checks fires before the value is ever
+    /// read (the dialling-key check and the TLS `dependent` check both match
+    /// on presence, not on content), so a real-looking value would prove
+    /// nothing a placeholder does not.
+    #[test]
+    fn a_required_default_cell_is_what_the_parser_demands() {
+        /// Rows reached on 2026-09-13: 5, and 7 with the `tls` feature —
+        /// measured, never assumed. Raise it when a new conditional or bare
+        /// `required` cell is documented; never lower it.
+        const FLOOR: usize = if cfg!(feature = "tls") { 7 } else { 5 };
+
+        let doc = configuration_md();
+        let (mut probed, mut skipped) = (0_usize, 0_usize);
+        for row in doc_rows(&doc) {
+            let name = row.key;
+            let Some(key) = Key::parse(name) else {
+                continue;
+            };
+            let Some(default) = row.cell("Default") else {
+                continue;
+            };
+            let Some(shape) = required_default(default) else {
+                skipped += 1;
+                continue;
+            };
+            let Some(sample) = sample(group(key)) else {
+                skipped += 1;
+                continue;
+            };
+            probed += 1;
+
+            assert_missing_when_removed(name, &sample.without(name));
+
+            if let RequiredDefault::When {
+                key: condition_key,
+                value: condition_value,
+                says_refused_otherwise,
+            } = shape
+            {
+                assert!(
+                    says_refused_otherwise,
+                    "docs/CONFIGURATION.md §1: {name} says `required when `{condition_key}={condition_value}`…` but its Default cell no longer says `refused otherwise` — probe 5's other leg, the wrong-context refusal, has nothing left to check"
+                );
+                let expected = refused_otherwise_variant(condition_key);
+                assert!(
+                    expected.is_some(),
+                    "docs/CONFIGURATION.md §1: {name} is conditioned on `{condition_key}`, which probe 5 has not measured a refused-otherwise Problem for — measure it and add one to refused_otherwise_variant"
+                );
+                let refusal = Settings::parse(&with_value(ACCEPTOR, name, "X"))
+                    .err()
+                    .map(|e| e.problem().clone());
+                assert_eq!(
+                    refusal, expected,
+                    "docs/CONFIGURATION.md §1: {name} says refused otherwise, but writing it where {condition_key}={condition_value} does not hold answers {refusal:?}, not {expected:?}"
+                );
+            }
+        }
+        println!("probe 5 — required Default cells: {probed} probed, {skipped} skipped");
+        assert!(
+            probed >= FLOOR,
+            "probe 5 reached {probed} rows, below its floor of {FLOOR} — either a required Default cell was rewritten as prose, or this probe has stopped matching"
         );
     }
 }
