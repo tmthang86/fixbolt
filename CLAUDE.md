@@ -325,6 +325,15 @@ Widening scope means **naming more cases**, never "run everything because it fee
 - **Never implement on `main`** — one branch per plan. Merge only when its exit criteria are
   met. **Commit and push at every step that ends green.**
 - Gates must be green **for that commit**, not merely for the branch tip.
+- **CI fires once per commit, and a branch with no pull request open is a branch
+  with no CI.** `[changed 2026-09-13]` `ci.yml` triggers on `pull_request` plus
+  `push` to `main` only. **So open the pull request as a draft at the first
+  commit of a branch, not at the last** — that is now the only thing keeping the
+  line above true. Before this, a bare `push:` ran alongside `pull_request:` and
+  the `concurrency` group was keyed on `github.ref`, which differs between the
+  two events (`refs/heads/<branch>` against `refs/pull/<n>/merge`), so neither
+  run ever cancelled the other: `[measured 2026-09-13]` commit `5693c91` burned
+  **28 job-runs for one commit's worth of information**.
 - `vendor/` is gitignored and fetched by `scripts/fetch-quickfix-assets.sh`. **Never commit
   its contents** — that pulls QuickFIX's attribution clause into this repository.
 
