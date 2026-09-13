@@ -1539,9 +1539,14 @@ Stated so you do not discover it in production:
      does not send one on its own. How often that is is the counterparty's property, not a
      setting here, and keeping a connection under AES-GCM's record limit is the deployment's own
      responsibility to respect — this engine does not count records or refuse a connection that
-     is approaching it. Handling one costs two `setsockopt` calls and the small, exactly-counted
-     allocation ADR-0063 names; it does not grow the per-connection control-record buffer, which
-     is pre-sized to 64 KiB at the handover.
+     is approaching it. Handling one costs one `setsockopt` per direction rekeyed and two small
+     boxes from rustls's key schedule per direction — four boxes when the peer sets
+     `update_requested`, two when it does not; this engine and ktls-core add nothing. The count
+     and the 184-byte size are the rustls and `ring` this repository's `Cargo.lock` resolves and
+     are asserted exactly by `crates/engine/tests/tls_key_update.rs`, not a promise to a build
+     with another lock ([ADR-0063](decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)
+     revision 2026-09-13); it does not grow the per-connection control-record buffer, which is
+     pre-sized to 64 KiB at the handover.
 
   **Not built:** any published TLS latency number. `scripts/check-no-kernel-sleep.sh` and
   `scripts/check-standard-gives-the-core-back.sh` both now run a kTLS arm, but what a rekey

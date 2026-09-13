@@ -81,8 +81,15 @@ below describe what a first release would contain.
   rekeys on its own record-count limit, which includes `rustls` at roughly 2^24 records — died
   silently once it reached that limit. The feature is on now, and
   `crates/engine/tests/tls_key_update.rs` asserts a session survives one, with the rekey's own
-  cost counted exactly (engine and ktls-core: 0 allocations; rustls's key schedule: exactly 4
-  boxes of 184 bytes — [ADR-0063](docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)).
+  cost counted exactly (engine and ktls-core: 0 allocations; rustls's key schedule: two boxes
+  of 184 bytes per direction rekeyed — four under `update_requested`, two under
+  `update_not_requested`, of this repository's `Cargo.lock` (rustls 0.23.44, ring 0.17.14) —
+  [ADR-0063](docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)).
+
+- **`tools/w2w --tls ktls` now exits non-zero on a kernel that cannot offload**, rather than
+  measuring the fallen-back connection in userspace and printing its allocation count under the
+  `ktls` label. The read-back (`Engine::tls_mode`) is checked against the requested arm before
+  the first sample is taken, for every arm, `ktls` included.
 
 - **A session judged before its first `tick` now says so: `DropReason::NeverTicked`.** New
   variant on `DropReason`, which is `#[non_exhaustive]` — **not a breaking change**, and a

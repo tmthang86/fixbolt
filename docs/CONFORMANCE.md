@@ -445,4 +445,18 @@ every job. **The branch tip is green; the two commits before the fix were run an
 unrun** — do not read `da9fe6e` or `daec090` as either "no CI" or "covered by the green run
 above"; each has its own run id and its own (red) result.
 
+**Sửa 8, two more steps, `docs/plans/2026-09-04-tls.md` §8.7.** 6c-4 (`54572c8`, `cargo metadata
+--locked` as the first step of the `gates` job, `--locked` on both `cargo test` lines of the
+`tls` job): CI run
+[`34738948420`](https://github.com/tmthang86/fixbolt/actions/runs/34738948420), **success**.
+6c-3 (`6159732`, the `update_not_requested` case,
+`a_key_update_without_update_requested_rekeys_one_direction_and_allocates_two_boxes`, both roles,
+plus the lock-reading assertion on `DERIVED_FROM_RUSTLS`/`DERIVED_FROM_RING`): CI run
+[`34739725589`](https://github.com/tmthang86/fixbolt/actions/runs/34739725589) was still
+`in_progress` as this was written (`gh run list --branch plan/tls-initiator-and-numbers`,
+2026-09-13) — **pending**, not invented; do not read it as green until it completes. On the §9
+desk: `cargo test -p fixbolt-engine --test tls_key_update` three consecutive runs, each `6
+passed`; `cargo test --all --features fixbolt-engine/tls`, **679 passed, 0 failed** (678 → 679,
+exactly the one new test).
+
 ---

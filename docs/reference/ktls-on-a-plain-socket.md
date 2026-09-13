@@ -310,3 +310,42 @@ first turned one misleading line into the worker's actual error on the next run.
 This generalises past threads to any fixture with a peer process, a container, or
 a mock server: **the half that fails first is usually not the half that reports.**
 
+### Two more, from the KeyUpdate test (Sửa 8, `[measured 2026-09-13]`)
+
+`crates/engine/tests/tls_key_update.rs` needed a raw peer whose own TLS is on the kernel — the
+only way to put `update_not_requested` on the wire, since neither rustls nor ktls-core will ever
+send that request byte on their own (§4.6.3 makes it an *answer's* flag, and this engine never
+initiates a KeyUpdate). Building that peer by hand, against `ktls-core`'s own public surface
+rather than through rustls, surfaced two things worth keeping.
+
+`[to testing-skills]` — **a counter scoped wider than the thing it counts turns "unchanged" into
+a coin flip decided by the test's own fixture.** `/proc/net/tls_stat`'s `TlsTxRekeyOk` counts the
+network namespace, not a socket. The test's assertion is that the *engine* did not answer a
+KeyUpdate that asked for no answer, and the first-cut plan for it read the counter as
+`unchanged` — a delta of zero. That is wrong on every run, and not because the engine is broken:
+the raw peer that drives the test is itself on the kernel, and RFC 8446 §4.6.3 obliges the
+*sender* of a KeyUpdate to rekey its own send side regardless of what it asked of the other end.
+The peer's own, entirely correct, rekey lands in the same namespace-wide counter the test reads,
+so "unchanged" was never available as an outcome — the fixture moves the very thing being
+asserted on. The fix is to name the contributor and assert the sum exactly rather than a
+direction: `PEER_TX_REKEYS = 1`, the delta asserted `== 1`, and the failure message spells the
+chain rather than leaving the number to speak for itself — *the engine read `DATA` back under
+the peer's new send key, so the peer's rekey happened and is the whole of this delta, leaving no
+room in it for the engine to have answered too.* This generalises past kTLS to any counter a
+shared kernel, process, or namespace exposes — `/proc` counters, a `netstat` tally, a database's
+instance-wide stats view — anywhere a test did not allocate the counter for its own exclusive
+use: a companion actor sharing that scope is not a maybe, it is a fact to account for by name
+before "unchanged" is trusted, and a range (`<= 1`) would have hidden the same bug a second way
+by also passing if the engine *had* answered.
+
+A second, narrower one: `ktls_core::ffi::recv_tls_record` is `pub`, but `Buffer::set_filled_all`
+— the only thing that makes the bytes it read visible to the caller — is `pub(crate)`
+(`ktls-core-0.0.5/src/ffi.rs:101`, `src/utils.rs:193`). A caller outside `ktls-core` can invoke
+the function and never see what it read. The raw peer here has no use for that path in any case
+— it reads application data, and the kernel only ever hands `read(2)` a record already decrypted
+in place — so the consequence was small: `RawPeer::read_app` uses a plain `read(2)` rather than
+`recv_tls_record`, and the asymmetry cost nothing beyond noticing it while reading the crate to
+build the fixture. Kept as a local note rather than `[to testing-skills]`: the lesson is about
+one upstream crate's own API surface, not a shape this repository has hit twice or expects a
+tester in another codebase to recognise on sight.
+
