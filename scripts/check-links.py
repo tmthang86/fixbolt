@@ -114,6 +114,37 @@ this repository having started citing itself less — `crates/library/README.md`
 alone cites three files this way, so a correctly matching rule (d) never
 checks fewer than three.
 
+**A senior review of PR #69 found four more holes in the same gate.**
+`[measured 2026-09-13]` **(1)** an own-repository URL with no recognised verb
+at all — `https://github.com/tmthang86/fixbolt/docs/GUIDE.md`, no
+`blob`/`tree`/`raw`/`blame` — was judged only by (d) and, finding no verb,
+counted as "not a file link" without ever trying rule (a)'s tail search; a
+wrong path here read as silence instead of a report. Fixed: a verb-less
+own-repository URL now falls through to that tail search, and is counted "not
+a file link" only when the search finds nothing either. **(2)** `<https://...>`
+autolinks — the form rustdoc's `-D warnings` (ADR-0066) requires for a bare
+URL in a doc comment — and
+`raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` URLs were never read
+at all: `LINK`/`REFLINK` match only `[x](url)` and `[label]: url`. `AUTOLINK`
+below reads the first; `RAW_HOST` extends rule (d) to the second, one segment
+shorter since the host already means "raw". **(3)** three narrower nits: a
+bare ref (`tree/main`) no longer counts toward `OWN_REPO_FLOOR`, since it
+names no particular file; the existence test compares each path segment
+case-exactly against `os.listdir` (`resolve_case_exact`), because macOS's
+default filesystem resolves `docs/design.md` to the real `docs/DESIGN.md`
+while Linux, where CI gates this repository, does not; a `..` segment is
+refused outright rather than followed out of the tree; and a Markdown link
+title (`[x](url "title")`) is stripped (`strip_link_title`) before the target
+is read, which a title left in the path had turned into a new, loud false
+"this repository has no ...". **(4) left as stated limits, not fixed**: a
+`%2F`-encoded `/` inside a ref can still hide a multi-segment ref from the "a
+ref containing `/` is not recognised" check above; a `fixbolt.git/...` URL
+does not match `OWN_REPO` (the trailing `.git` is not stripped) and falls
+through unjudged; and GitHub's `edit/<ref>/<path>` and `commits/<ref>/<path>`
+(plural — commit history scoped to a path, unlike singular `commit/<sha>`)
+verbs are not in `OWN_REPO_PATH_VERBS` and are counted as "not a file link"
+rather than checked.
+
 Run: scripts/check-links.py
 """
 
@@ -126,6 +157,16 @@ LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 # `[label]: url` — rustdoc's reference form, which is how one of the two dead
 # links was written and why matching only the inline form was not enough.
 REFLINK = re.compile(r"^\s*(?://[/!]\s*)?\[[^\]]+\]:\s*(\S+)\s*$", re.M)
+# `<https://...>` — the autolink form. Rustdoc's `-D warnings` (ADR-0066) makes
+# this the *required* spelling of a bare URL in a doc comment (a bare
+# `https://...` with no brackets is `error: this URL is not a hyperlink`), so
+# `crates/engine/src/settings.rs`'s doc comments and every reference list in
+# `docs/reference/` are written this way — and neither LINK nor REFLINK reads
+# it: `<...>` is not `[x](...)`  and not `[x]: ...`. Matches inside a `//!` or
+# `///` comment the same way LINK/REFLINK already do — the regex is
+# comment-blind, so a `.rs` file's doc-comment autolinks read the same as a
+# `.md` file's.
+AUTOLINK = re.compile(r"<(https?://[^\s<>]+)>")
 SKIP_DIRS = {".git", "vendor", "target", "node_modules"}
 EXTERNAL = ("http://", "https://", "mailto:", "#")
 URL = ("http://", "https://")
@@ -166,8 +207,56 @@ OWN_REPO_PATH_VERBS = tuple(v for v in GITHUB_FILE_VERBS if v != "commit")
 # in `names_a_repo_file` — so a correctly matching rule (d) never checks fewer
 # than three URLs. Below this, the rule has very likely stopped matching (a
 # renamed verb, a shifted segment index) rather than the repository actually
-# citing itself less.
+# citing itself less. A bare ref (`tree/main`, an own-repository URL with an
+# empty path) does not count toward this floor: it names no particular file,
+# so it is confirmed to exist and left uncounted rather than inflated into
+# "checked".
 OWN_REPO_FLOOR = 3
+
+# `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` is the same kind of
+# citation as a `github.com/<owner>/<repo>/raw/<ref>/<path>` URL, one segment
+# shorter because the host already means "raw" — there is no verb segment to
+# read. Judged the same way as rule (d): read the path after the ref, test it
+# against this repository's tree.
+RAW_HOST = "raw.githubusercontent.com"
+
+
+def strip_link_title(raw):
+    """A Markdown inline link may carry a title after the URL, quoted:
+    `[x](url "title")` or `[x](url 'title')`. Read whole, the title becomes
+    part of the "path" tested below and produces a loud false red the moment
+    somebody adds one to an existing link — so it is stripped before anything
+    else looks at the target.
+    """
+    match = re.match(r"""^(\S+)\s+(?:"[^"]*"|'[^']*')\s*$""", raw)
+    return match.group(1) if match else raw
+
+
+def resolve_case_exact(root, path):
+    """Resolve `path` under `root` by comparing each segment case-exactly
+    against `os.listdir` of its parent, rather than asking the OS whether the
+    path exists.
+
+    macOS's default filesystem is case-insensitive: `os.path.exists` alone
+    would pass `blob/main/docs/design.md` against a real `docs/DESIGN.md` on
+    the machine this is written on, and fail the same link on the Linux CI
+    box that gates this repository. A `..` segment is refused outright rather
+    than resolved — it is reported as a path this repository does not have,
+    not followed out of the tree. Returns the resolved absolute path, or
+    `None` if any segment does not match.
+    """
+    current = root
+    for segment in path.split("/"):
+        if segment in ("", ".", ".."):
+            return None
+        try:
+            entries = os.listdir(current)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        if segment not in entries:
+            return None
+        current = os.path.join(current, segment)
+    return current
 
 
 def looks_like_a_path(rel, target):
@@ -206,20 +295,27 @@ def names_a_repo_file(root, url):
         convention thousands of repositories share, not an address.
 
     Returns `(tail, ignored_tail, foreign, own_repo)`. When `own_repo` is not
-    `None`, rule (d) judged this URL and the other three are always
-    `(None, None, False)` — (d) is checked first, before (c) and the tail
-    search, and it fully replaces them for a URL it recognises.  `own_repo` is
-    `("file", path)` when the fourth segment is a path-carrying verb and a ref
-    follows it (`path` is `""` for the bare ref, e.g. `tree/main`), or
-    `("not_file_link", None)` when the URL is this repository's own but not a
-    checkable file link (`actions/…`, `pull/…`, `commit/<sha>`, the bare
-    repository root). Otherwise `own_repo` is `None` and the other three keep
-    their rule (a)–(c) meaning: `tail` is set when rule (a) or (b) judges the
-    match as evidence; `ignored_tail` is set instead when a bare filename
-    matched but rule (b) declined to call that evidence; `foreign` is set
-    instead when rule (c) recognised the URL as naming another repository
-    outright and declined to judge it at all. The caller counts every one of
-    these classes rather than dropping any of them silently.
+    `None`, rule (d) judged this URL by reading its path directly: `own_repo`
+    is `("file", path)` for `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`
+    or a `github.com` URL whose fourth segment is a path-carrying verb with a
+    ref after it (`path` is `""` for the bare ref, e.g. `tree/main`); it is
+    `("not_file_link", None)` when the URL is this repository's own (or a
+    former name's) but names no checkable path — `actions/…`, `pull/…`,
+    `commit/<sha>`, the bare repository root, **or** a verb-less own-repository
+    URL whose tail search below still found nothing. That last case is why
+    `own_repo` is not always decided immediately: an own-repository URL with
+    no recognised verb (`.../fixbolt/docs/GUIDE.md`) falls through to rule
+    (a)'s tail search first, exactly as a non-own-repository URL would, and
+    only becomes `("not_file_link", None)` if that search comes up empty —
+    see the comment at the `own_or_former` check below. Whenever `own_repo`
+    is set, the other three are `(None, None, False)`. Otherwise `own_repo`
+    is `None` and the other three keep their rule (a)–(c) meaning: `tail` is
+    set when rule (a) or (b) judges the match as evidence; `ignored_tail` is
+    set instead when a bare filename matched but rule (b) declined to call
+    that evidence; `foreign` is set instead when rule (c) recognised the URL
+    as naming another repository outright and declined to judge it at all.
+    The caller counts every one of these classes rather than dropping any of
+    them silently.
     """
     rest = url
     for prefix in URL:
@@ -252,6 +348,19 @@ def names_a_repo_file(root, url):
         and head[1] == OWN_REPO[1]
         and head[2] in (OWN_REPO[2],) + FORMER_NAMES
     )
+    # (d, raw host) `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` —
+    # checked ahead of (d)'s `github.com` form because it is a different host
+    # entirely and carries no verb segment: `parts[3]` is already the ref.
+    raw_own_or_former = (
+        len(parts) > 3
+        and parts[0].lower() == RAW_HOST
+        and parts[1].lower() == OWN_REPO[1]
+        and parts[2].lower() in (OWN_REPO[2],) + FORMER_NAMES
+    )
+    if raw_own_or_former:
+        path = unquote("/".join(parts[4:]))
+        return None, None, False, ("file", path)
+
     if own_or_former:
         verb = parts[3] if len(parts) > 3 else None
         if verb in OWN_REPO_PATH_VERBS and len(parts) > 4:
@@ -260,20 +369,29 @@ def names_a_repo_file(root, url):
             # and percent-decoded.
             path = unquote("/".join(parts[5:]))
             return None, None, False, ("file", path)
-        return None, None, False, ("not_file_link", None)
-
-    # (c) a well-formed github.com file URL naming a repository that is
-    # neither this one nor a former name of this one, **and whose owner
-    # segment is not this repository's own owner**, is a citation of another
-    # repository, full stop — never judged, whatever tail it happens to
-    # share with this repository. Checked before (b)'s tail search, which
-    # cannot otherwise tell "this repo's file, wrong path" from "another
-    # repo's file that happens to sit at the same relative path". The owner
-    # check keeps a wrong or misspelled repository name **under this
-    # repository's own owner** from being waved through as "foreign": that
-    # is far more likely a mistaken citation of this repository than a real
-    # other repository, so it falls through to (b) and is judged there.
-    if (
+        # Not a checkable blob|tree|raw|blame link — `.../fixbolt/docs/GUIDE.md`
+        # carries no verb at all, and rule (a) below would still judge it
+        # (own-repo path, any matching tail is evidence) if this returned
+        # early. Fall through to that tail search instead of rule (c), which
+        # cannot apply here anyway (own_or_former and rule (c)'s "not this
+        # repository" test are mutually exclusive); only when the tail search
+        # below finds nothing is this counted as not a file link.
+    elif (
+        # (c) a well-formed github.com file URL naming a repository that is
+        # neither this one nor a former name of this one, **and whose owner
+        # segment is not this repository's own owner**, is a citation of
+        # another repository, full stop — never judged, whatever tail it
+        # happens to share with this repository. Checked before (b)'s tail
+        # search, which cannot otherwise tell "this repo's file, wrong path"
+        # from "another repo's file that happens to sit at the same relative
+        # path". The owner check keeps a wrong or misspelled repository name
+        # **under this repository's own owner** from being waved through as
+        # "foreign": that is far more likely a mistaken citation of this
+        # repository than a real other repository, so it falls through to
+        # (b) and is judged there. Reached only when `own_or_former` above is
+        # false — the two conditions are mutually exclusive by construction
+        # (this branch requires the repo segment to be neither the current
+        # name nor a former one; `own_or_former` requires the opposite).
         not own
         and head
         and head[0] == "github.com"
@@ -295,6 +413,13 @@ def names_a_repo_file(root, url):
         if own or "/" in tail:
             return tail, None, False, None
         ignored_tail = tail  # rule (b): a bare filename, not judged
+    if own_or_former:
+        # The tail search above found nothing for an own-repository URL with
+        # no checkable verb (no verb at all, or a verb outside
+        # OWN_REPO_PATH_VERBS such as `actions/…`, `pull/…`, `commit/<sha>`,
+        # or the bare repository root) — counted as not a file link rather
+        # than silently returned as if it were an ordinary non-repository URL.
+        return None, None, False, ("not_file_link", None)
     return None, ignored_tail, False, None
 
 
@@ -314,8 +439,14 @@ def main():
         base = os.path.dirname(rel)
         with open(os.path.join(root, rel), encoding="utf-8") as fh:
             text = fh.read()
-        for match in list(LINK.finditer(text)) + list(REFLINK.finditer(text)):
-            target = match.group(1).split("#")[0].strip()
+        for match in list(LINK.finditer(text)) + list(REFLINK.finditer(text)) + list(
+            AUTOLINK.finditer(text)
+        ):
+            # A Markdown inline link's optional title (`[x](url "title")`)
+            # is stripped before the anchor, since the anchor split assumes
+            # the target ends at `#...` and a title would otherwise ride
+            # along as part of the "path" tested below.
+            target = strip_link_title(match.group(1).strip()).split("#")[0].strip()
             if target.startswith(URL):
                 tail, ignored_tail, foreign, own_repo = names_a_repo_file(root, target)
                 if own_repo:
@@ -324,14 +455,27 @@ def main():
                     if kind == "not_file_link":
                         own_not_file_link += 1
                         continue
+                    if not path:
+                        # A bare ref (`tree/main`, `blob/main`) names no
+                        # particular file — always confirmed to exist (it is
+                        # this repository's own root), never reported, and
+                        # not counted toward OWN_REPO_FLOOR: counting it would
+                        # let the floor stay green while the verb match that
+                        # actually matters (a real path after the ref) had
+                        # silently stopped firing.
+                        continue
                     own_checked += 1
-                    resolved = os.path.join(root, path) if path else root
-                    if not os.path.exists(resolved):
+                    resolved = resolve_case_exact(root, path)
+                    if resolved is None:
+                        # Covers a wrong path, a wrong case on any segment —
+                        # macOS resolves `docs/design.md` to the real
+                        # `docs/DESIGN.md` and this walk does not — and a
+                        # `..` segment, which is refused outright rather than
+                        # followed out of the tree.
                         missing.append((rel, line, target, path))
                         continue
                     if not os.path.isfile(resolved):
-                        # A real directory, or the bare ref with no path at
-                        # all (`tree/main`) — rule (d) has confirmed it
+                        # A real directory — rule (d) has confirmed it
                         # exists; there is no "use a relative path instead"
                         # precedent for a directory link, so this is not
                         # judged any further.

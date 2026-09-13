@@ -124,6 +124,24 @@ for a bare-filename match outside `OWN_REPO` above. Below a floor of three — t
 matching (a renamed verb, a shifted segment index) rather than the repository having started
 citing itself less, and fails the build rather than passing quietly on zero.
 
+## Rule (d) itself had gone silent on cases nothing above tests for
+
+`[measured 2026-09-13]` a senior review of PR #69, checking rule (d) rather than trusting
+it, found it silent on a verb-less own-repository URL (`.../fixbolt/docs/GUIDE.md` — no
+`blob`/`tree`/`raw`/`blame` — was counted "not a file link" without ever trying rule (a)'s
+tail search first) and on two link forms it never read at all: `<https://...>` autolinks —
+the spelling rustdoc's `-D warnings` (ADR-0066) requires for a bare URL in a doc comment —
+and `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` URLs. Both are fixed: a
+verb-less own-repository URL now falls through to rule (a)'s tail search before being
+counted silent, and `AUTOLINK`/`RAW_HOST` read the other two forms the same way (d) already
+reads a `blob` URL. A fourth: the existence test used `os.path.exists`, which macOS's
+default filesystem resolves case-insensitively — `docs/design.md` reads as the real
+`docs/DESIGN.md` on the machine this was written on and fails the same link on the Linux box
+that gates this repository — now compared segment-by-segment against `os.listdir`. Left as
+stated limits, not fixed: a `%2F`-encoded `/` inside a ref can still hide a multi-segment ref
+from the "one segment" check; a `fixbolt.git/...` URL does not match `OWN_REPO`; and GitHub's
+`edit`/`commits` (plural) verbs are not in `OWN_REPO_PATH_VERBS`.
+
 ## Related
 
 - [a-linux-only-module-is-invisible-to-a-mac-gate](a-linux-only-module-is-invisible-to-a-mac-gate.md)
