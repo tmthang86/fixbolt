@@ -1,6 +1,6 @@
 # ADR-0065 — Every feature set to depth two is built, linted and documented
 
-**Status:** Proposed · **Date:** 2026-09-13 · **Plan:** docs/plans/2026-09-13-what-the-residue-review-found.md, steps 4–5
+**Status:** Accepted (owner, 2026-09-13) · **Date:** 2026-09-13 · **Plan:** docs/plans/2026-09-13-what-the-residue-review-found.md, steps 4–5
 
 ## Context
 

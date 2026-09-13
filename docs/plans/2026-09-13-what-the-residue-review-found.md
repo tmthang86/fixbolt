@@ -1,6 +1,6 @@
 # Bốn lỗi cũ mà bản review PR #68 tìm ra — đóng items 75, 77, 78, 79
 
-> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Đã duyệt (owner, 2026-09-13, cả năm đề nghị)
+> **Loại:** Plan · **Ngày:** 2026-09-13 · **Trạng thái:** Xong (2026-09-13, PR #69)
 > **Phạm vi:** `crates/engine` (cửa `serve_sharded_hft`, bộ probe `doc_table`), CI (`.github/workflows/ci.yml`), `DESIGN.md` §3 và §6, hai ADR mới
 
 > Tên file luôn tiếng Anh: `docs/plans/YYYY-MM-DD-<topic>.md`.
@@ -495,5 +495,20 @@ hai bước mới chỉ quan sát được trên CI.
 
 ## Nhật ký giao hàng
 
-*(trống — điền khi đóng từng bước: đã dựng gì, commit nào, gate nào xanh với output trích,
-run id CI, cái gì chưa làm và vì sao)*
+| Bước | Commit | Bằng chứng |
+|---|---|---|
+| Plan, duyệt | `c1c024f`, `e9fc7b1` | owner duyệt cả năm đề nghị |
+| 0 — đo | (không sửa file) | cargo-hack 0.6.45: engine 10 bộ (tính cả `default`); 78 đỏ `unused import: crate::msglog::MaybeLog`; 14 link rustdoc hỏng khi không có `standard` |
+| 1 — item 77 | `089e1ed` | R77-1 xanh trên probe cũ (item 77 có thật), đỏ trên leg mới; `doc_table` ok. 10 passed |
+| 3 — items 75, 78 | `d7b2dfb` | R78-1 đỏ/xanh; `cargo test --all` 647 passed; test 75 `ok` trên CI run `34749822133` |
+| link rustdoc | `3404114`, `d601ccf` | 14 link (Mac) + 4 link (chỉ Linux, CI run `34750085195` đỏ); sau sửa: `cargo hack doc … --target x86_64-unknown-linux-gnu` EXIT=0, 32 bộ |
+| 4 — job `feature-sets` | `8ff3803` | xanh trên CI run `34750523839` sau khi sửa link |
+| Sửa sàn probe 7 | `8b0574f` | architect quyết sàn 4 (owner uỷ quyền) |
+| 2 — probe 7 | `4b001ef` | R76-1 đỏ, probe 3 và 6 vẫn xanh; đảo sàn đỏ `3 rows, below its floor of 4` |
+| 5 — senior review | — | 8 finding, manager tái hiện từng cái trước khi sửa, đều thật |
+| Sửa finding | `acd2f59`, `c6c907c` | D4 đỏ `ReconnectInterval … Some(ImpossiblePolicy)`; R76-1 đỏ; G1 gọi hàm trước/sau; R75-1 đỏ `got Err(Io(… AddrInUse …))` trong container Linux |
+| Đóng | commit này | CI run `34761934969` cho `c6c907c`, 14/14 |
+
+**Chưa làm và vì sao:** item 80 (giới hạn của leg call-site) ghi thành item, không vá thêm pattern
+theo ADR-0061; item 81 (ô `ReconnectInterval`) cần sửa ô và vị từ của probe 7 cùng lúc — ngoài phạm
+vi; items 82, 83 là phát hiện phụ có từ trước.

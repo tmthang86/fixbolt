@@ -1,6 +1,6 @@
 # ADR-0064 — A door acquires nothing before it has validated
 
-**Status:** Proposed · **Date:** 2026-09-13 · **Plan:** docs/plans/2026-09-13-what-the-residue-review-found.md, step 2
+**Status:** Accepted (owner, 2026-09-13) · **Date:** 2026-09-13 · **Plan:** docs/plans/2026-09-13-what-the-residue-review-found.md, step 2
 
 ## Context
 
