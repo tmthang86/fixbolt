@@ -3,23 +3,22 @@
 A FIX 4.4 engine in **Rust**, acceptor-first, positioned as **the fastest acceptor that can
 run on kernel TCP**. Not a port of QuickFIX ([ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md)).
 The design is **[docs/DESIGN.md](docs/DESIGN.md)** — D1–D10 are the decisions, §8 is the
-latency budget, §9 is the OS checklist. Where the work stands: **[STATUS.md](STATUS.md)** —
-read it before picking up work, update it when a plan phase closes.
+latency budget, §9 is the OS checklist. Where the work stands is **[STATUS.md](STATUS.md)**, never
+this file — read it before picking up work, update it when a plan phase closes.
 
-> **This repository is meant to be open-sourced.** Private today; treat every commit as
-> already public. Nothing confidential enters it — no exchange specifications, no captures,
-> no counterparty configuration, nothing from `shadow-exchange`. `.gitignore` is a safety
-> net, not the control. **The control is you, before `git add`.**
->
-> **The name is `fixbolt`, decided 2026-08-30.** It replaced the placeholder
-> `nanofixengine`, which sat one word from `matthart1983/nanofix` — the reference project
-> this repository measures itself against. Verified free on crates.io and GitHub before
-> adoption, on **both**: a free global registry says nothing about who already owns the
-> name in the reader's mind. Nothing is published yet, so nothing is locked in.
->
-> **Editing this file mid-session does not affect that session.** Say out loud which rule
-> you changed. **One rule, one place** — a rule restated in two places is two rules that
-> will disagree.
+**This file holds rules only.** No status, no dated history, no measurements: those go to
+`STATUS.md`, `docs/reference/` and the ADRs. A rule may carry one sentence of *why*; the story
+behind it lives where this file points. **One rule, one place** — a rule restated in two places is
+two rules that will disagree. Editing this file mid-session does not affect that session: say out
+loud which rule you changed.
+
+**This repository is meant to be open-sourced.** Treat every commit as already public. Nothing
+confidential enters it — no exchange specifications, no captures, no counterparty configuration,
+nothing from `shadow-exchange`. `.gitignore` is a safety net, not the control. **The control is
+you, before `git add`.**
+
+Section numbers are referenced from hundreds of documents, so they never shift. §11 was removed
+on 2026-09-13 and its number is not reused.
 
 ---
 
@@ -34,277 +33,162 @@ Naming: `docs/plans/YYYY-MM-DD-<topic>.md`, following `docs/plans/_template.md`.
 | Typo, comment, doc link repair | No plan, but still update docs if behaviour changes |
 | Plan turns out wrong mid-build | **Stop. Fix the plan. Get it re-approved.** Never silently diverge |
 | Part of the plan is blocked | Finish everything else in full, then say plainly what was left out and why |
-| Handed an approved plan to build | Coordinate it as §12 says: one model per role, and a subagent's green is a claim until its output is quoted |
+| Handed an approved plan to build | Coordinate it as §12 says |
 
-Crates are added to the workspace **one at a time**, in the order of `DESIGN.md` §7, each
-behind its own plan. The gate for a step exists before the step: the `.def` runner before
-the session layer, the wire-to-wire harness before the library.
+Crates are added to the workspace **one at a time**, in the order of `DESIGN.md` §7, each behind
+its own plan. The gate for a step exists before the step.
 
 ## 2. Non-negotiables — do not violate
 
-Every change touching `codec`, `session`, `engine` or `transport` is checked against this
-list by hand. Each names the decision it enforces.
+Every change touching `codec`, `session`, `engine` or `transport` is checked against this list by
+hand. Each names the decision it enforces.
 
-1. **No heap allocation on the parse, serialise, session or dispatch hot path.** Proven by
-   the counting allocator in `benches/alloc.rs`, never by reading the code. (D2, D9)
-2. **The session layer is pure.** No socket, no clock, no allocation, no `format!`. Time
-   arrives as `Input::Tick`. Errors are fieldless enums. (D1)
-3. **The 59 QuickFIX acceptance definitions are the session layer's gate.** A session change
-   that has not run them to 59/59 is not done. (D1, ADR-0001)
-4. **Mode-scoped, and both halves are rules.** `[amended 2026-08-30, ADR-0013]`
-   **In `hft` mode the engine thread never sleeps in the kernel on the hot path** — no
-   `epoll_wait`, no futex, no blocking `read`; a blocking call on that thread is a bug, not a
-   style choice. **In `standard` mode the engine thread MUST block when idle** — an engine
-   that spins by default is unusable on shared hardware, and `standard` is the default.
-   **The second half is not the weaker half**: a `standard` engine that spins is as much a
-   defect as an `hft` engine that sleeps, and each has its own machine check. Any measurement,
-   claim or gate that does not name which mode it is about is incomplete. (D8, ADR-0012,
-   ADR-0013)
+1. **No heap allocation on the parse, serialise, session or dispatch hot path.** Proven by the
+   counting allocator in each crate's `benches/alloc.rs`, never by reading the code. (D2, D9)
+2. **The session layer is pure.** No socket, no clock, no allocation, no `format!`. Time arrives
+   as `Input::Tick`. Errors are fieldless enums. (D1)
+3. **The 59 QuickFIX acceptance definitions are the session layer's gate.** A session change that
+   has not run them to 59/59 is not done. (D1, ADR-0001)
+4. **Mode-scoped, and both halves are rules.** In `hft` mode the engine thread never sleeps in the
+   kernel on the hot path — no `epoll_wait`, no futex, no blocking `read`. In `standard` mode (the
+   default) the engine thread **must** block when idle. A `standard` engine that spins is as much a
+   defect as an `hft` engine that sleeps. Any measurement, claim or gate that does not name its
+   mode is incomplete. (D8, ADR-0012, ADR-0013)
 5. **Field ordering comes from generated tables, never from a call site.** The acceptance
-   comparator is positional; a hand-ordered message is a latent conformance failure. (D3)
+   comparator is positional. (D3)
 6. **A feature flag gates the `mod` declaration itself**, and `build.rs` invokes no external
    toolchain unless that feature is on. CI builds `--no-default-features` on a machine with
    nothing optional installed. (D5)
 7. **No `panic!`, `unwrap()` or `expect()` in a library crate.** Enforced by workspace clippy
-   lints, not by discipline — the reference project has 276 and discipline did not hold. (D6)
+   lints, not by discipline. A panicking index `a[i..j]` names none of the three and is held
+   separately by `indexing_slicing = "deny"` and its debt ratchet. (D6)
 8. **`unsafe` needs a plan and a comment naming what proves it sound** — a Miri run, a fuzz
    target, a test. `unsafe_code = "warn"` is on at the workspace level.
-9. **No QuickFIX source is copied.** Its XML and `.def` files are data and a test oracle,
-   fetched into gitignored `vendor/`. If that ever changes, `NOTICE` becomes mandatory.
-   (ADR-0001)
-10. **No performance number without the committed benchmark that produced it, the machine
-    it ran on, and the §9 settings in force.** A number missing any of the three is
-    someone else's claim and is labelled as such.
+9. **No QuickFIX source is copied.** Its XML and `.def` files are data and a test oracle, fetched
+   into gitignored `vendor/`. If that ever changes, `NOTICE` becomes mandatory. (ADR-0001)
+10. **No performance number without the committed benchmark that produced it, the machine it ran
+    on, and the §9 settings in force.** A number missing any of the three is someone else's claim
+    and is labelled as such.
 
-**Machine-checked today:** 7 — `scripts/check-lint-config.sh`, run by CI, proves by reversal
-that the workspace lints actually deny `unwrap`/`expect`/`panic`. **7 also, and only in part, by
-`scripts/check-indexing-debt.sh` since 2026-09-08**: `a[i..j]` panics and names none of those three,
-which is why they were all blind to the `copy_from_slice` panic of `[measured 2026-09-06]`.
-`indexing_slicing = "deny"` is on, the 19 files that still owe carry a scoped `allow`, and the script
-counts them anyway with `--force-warn` — which overrides an `allow` — against a ceiling of **181** `[lowered 2026-09-09 by item 60; this line read 184 until 2026-09-12]`
-that may only go down. **The `deny` half was inert for a day and the count did not show it**:
-`[measured 2026-09-08]` three of the allows were written `#![allow]` at the top of a `lib.rs`, which
-is an *inner* attribute and silences the whole crate, so new indexing in a clean module of `engine`,
-`session` or `dict` compiled without a word while the ratchet read exactly right
-(`docs/reference/an-allow-at-the-top-of-a-file-silenced-the-whole-crate.md`). Scoped to 15 functions
-now, and the reversal is run per crate rather than once. **Two more for 7 since 2026-09-12, and
-each guards a *class* whose first instance was closed with nothing watching for the second.**
-`scripts/check-no-crate-root-allow.sh` is the check the sentence above wanted: `tools/attr-scan`
-lexes each crate root with the same lexer `rustc` uses, and the script reads **every inner
-attribute that lexer sees** — comments, whitespace and newlines carry no meaning, and a string
-stays a string — refusing an `allow`/`expect` at a crate root and any `warn` that lowers a lint
-the workspace currently denies. Measured against the four reversals that go red — a `/* */` comment inside the parens, `# ! [ … ]` as three separate tokens, a bare `#!` then a newline before `[cfg_attr(test, allow(dead_code))]`, and a `warn` lowering a lint the workspace denies — and the one deliberate green control, `#![doc = "#![allow(…)]"]`, which stays green while the attribute count it reads goes 55 → 56, so the attribute was read and judged rather than overlooked — **and no further**: an inner attribute inside `mod x { … }` is still item 55,
-unchanged, and `RUSTFLAGS`, `--cap-lints` and a file pulled in by `include!` are still outside
-what this script can see. It runs over every `lib`/`bin` target under `crates/` taken from
-`cargo metadata` rather than from file names — so the `#![allow(clippy::unwrap_used)]` that would
-switch this whole rule off in one line is
-a red, which `check-lint-config.sh` can never see because it reads `Cargo.toml` and not source. It
-reads 6 crate roots, 10 manifests and 4 deny lints, and **its own second assertion is the
-finding, twice over**: `[measured 2026-09-12]` the first implementation of that assertion went
-*green* on its own reversal — a character class excluding `:` could not match a lint written
-after `clippy::`, which is how every real one is written, so the guard itself was off from the
-first run it ever made, and only a reversal whose FAIL sentence had been written down beforehand
-could see it
-(`docs/reference/a-matcher-excluded-the-separator-every-real-name-uses.md`). `[measured
-2026-09-12]` a senior review then found the deny list itself was blind: the first derivation read
-`Cargo.toml` with a matcher that only accepted a bare identifier key, so `"unwrap_used" = "deny"`
-— valid TOML, and what cargo reads — passed through unmatched, `DENY_LINTS` held strings
-`attr-scan`'s output could never equal, and `#![warn(clippy::unwrap_used)]` at a crate root read
-`ok`. The key may now be quoted or dotted (`clippy.unwrap_used = "deny"`) or written as an
-inline table (`unwrap_used = { level = "deny" }`), the value may be a literal string
-(`'deny'`), and an **empty** deny list is itself a `FAIL` — the same zero-guard reasoning as an
-empty attribute count, not a workspace read as having nothing to deny. `[measured 2026-09-12]`
-R-A4 ties that textual check to the compiler effect once: with a crate-root `#![allow]` in place a
-fresh `v[0]` in a clean submodule of `dict` is **exit 0, no diagnostic**, and without it **exit 101,
-`error: indexing may panic`**. `scripts/check-scratch-fixtures.sh` is **7 at one remove — it guards
-the gate, not the rule**: `[measured 2026-08-31]` `check-lint-config.sh` built its throwaway crate
-in `mktemp -d`, where `rust-toolchain.toml` does not reach, so the only machine check this rule has
-was either a false red about the rule or silently running against a different clippy from the one
-the workspace pins. That instance was fixed with one `cp`; this script holds the class, keyed on the
-trigger rustup actually uses — *entering* a directory outside the tree, not calling `mktemp` — with
-the pinning-artefact set derived from what exists at the root and **no allow-list**, because a named
-exemption is permanent and the day an exempt script grows a `cargo build` in its scratch dir nobody
-checks. Three rules since 2026-09-12: a line whose first non-blank character is `#` is never
-read, so a commented-out `cp` proves nothing; `cp` counts only in command position — start of
-line, or after `;` `&&` `||` `|` `(` `{` `then` `do` `else`. `[measured 2026-09-12]` `sudo cp`,
-`command cp` and `\cp` do **not** count — the wrong direction there is a red, and the author
-writes a plain `cp`; and the seeding regex takes any assignment prefix
-(`readonly`, `declare -r`, `typeset -g`, `export`, `local`, a plain assignment), with a
-`cd`/`pushd` into a scratch directory that names no variable at all failing outright rather than
-passing unseen. **A senior review then got past it four more ways, and none of the four is what
-this rule used to predict** — no `eval`, no function call, no `#` hidden inside a same-line
-string. Two are fixed: a `cp` whose pin name lived only in a trailing comment now counts as no
-`cp` at all, and a script with no `.sh` name is scanned by its shebang rather than missed by its
-extension. **Four remain open by decision, ADR-0061**: a `cp` inside
-a heredoc body, a `cp` copying in the wrong direction (out of the scratch dir rather than into
-it), and two ways of seeding the scratch variable this script does not recognise —
-`read -r TMP < <(mktemp -d)` and a bare `TMP=/tmp`. Each is one more regex, and the plan that
-found them concluded that loop cannot be won by adding another. It reads 20
-scripts, 1 entering a scratch dir, 1 pin. 6 — the
-`no-default-features` CI job **plus `scripts/check-no-optional-deps.sh`, and the second is not
-a nicety**: `[measured 2026-08-30]` the CI job alone was green about a build that never
-happened. `cargo test --all --no-default-features` still compiled `libc`, because `tools/w2w`
-depends on `fixbolt-engine` with defaults and cargo unifies features across one invocation —
-the flag under test was switched back on by a sibling crate. It was noticed by a **test count**,
-not by the gate, and a module with no tests of its own would have hidden it entirely. The
-script asks per crate, which is the only scope where the flag means what it reads as
-(`docs/reference/feature-flags-unify-across-a-workspace.md`). 1 — `benches/alloc.rs`, each case asserting its own path is
-live, run by the `bench` CI job through `scripts/bench.sh`; **`[measured 2026-08-30]` this
-entry was false until that job existed** — `cargo test --all` does not run a `harness = false`
-bench target and nothing else invoked `cargo bench`, so the list named a check nothing ran.
-3 — the conformance runner, in process and over a socket. **1 also, for `tools/w2w` itself,
-since 2026-09-02**: `benches/alloc.rs` is a bench target in a library crate and cannot see a
-binary — the same blindness that made `dtruss` and `nm -u` useless for rule 4 — so `w2w` counts
-allocations on **both** threads over exactly the window it times, prints the count beside every
-figure it publishes, and asserts zero. `[measured 2026-09-02]` one `to_vec()` inside the timed
-loop reads `allocs 2000` over 2 000 messages. 4 — **both halves, since
-2026-08-30.** `scripts/check-no-kernel-sleep.sh` traces `tools/w2w` on Linux and attributes
-syscalls to the engine thread by tid; **it runs the binary a second time in `standard` mode and
-requires that run to trip the check**, because two earlier attempts at this rule reported success
-with a `sleep` present. `scripts/check-standard-gives-the-core-back.sh` is the other half:
-engine-thread CPU over a wall-clock window, the thread's scheduler state sampled to prove it is
-sleeping rather than dead, the mode read back from the binary rather than assumed, and the
-round-trip p50 against the poll timeout — **four assertions, because CPU near zero is passable by
-three different broken engines**. `[measured 2026-08-30]` an engine that ignores readiness and
-waits out its timeout reads 0% CPU, is found sleeping 20 times out of 20, and has a p50 of
-99 046 599 ns; only the fourth assertion sees it. It requires `hft` **and** `yield` to trip it,
-which is also the first thing in this repository to *demonstrate* rather than assert that
-`wait::Yield` fails both gates. **A third for 4 since 2026-09-13, and it exists because both
-scripts trace `tools/w2w`, which is an acceptor**: the initiator's dial loop is the caller's own
-thread, runs before any session exists, and **no script in this repository can see it at all**.
-`the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits`
-(`crates/engine/tests/tls_initiator_wire.rs`) reads the dial thread's own tid from
-`/proc/thread-self` inside `connect_and_serve_tls`, parks a venue that completes the TCP connect
-and then says nothing, and asserts the same four things the `standard` script does, in the order
-that names the wrong answer first: no `LoggedOn` (a session that came up would make the figure be
-about `engine.idle()` instead), the thread was read at all, CPU under the ceiling, found sleeping
-at least once, and — the one a sleeping-but-unwakeable loop fails — that closing the venue's
-socket brings a second dial. **`hft` under TLS is still unchecked by anything**, because
-`connect_and_serve_tls` is `standard` only. **The rest are hand-checks** on every relevant PR until a lint or test
-exists — say explicitly that you walked the list.
+### Machine checks
+
+A rule not in this table is a hand-check on every relevant PR — say explicitly that you walked
+the list. Each script's header states what it cannot see; read it before trusting a green.
+
+| Rule | Check | Note |
+|---|---|---|
+| 1 | `crates/*/benches/alloc.rs`, run by the `bench` CI job via `scripts/bench.sh`; `tools/w2w` counts allocations on both threads over its timed window and asserts zero | `cargo test` does not run a `harness = false` bench — only the job does |
+| 3 | `crates/conformance`, in process and over a socket | |
+| 4 | `scripts/check-no-kernel-sleep.sh` (`hft`), `scripts/check-standard-gives-the-core-back.sh` (`standard`), `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits` (initiator dial loop) | each script must also be tripped by the wrong mode; `hft` under TLS is unchecked |
+| 6 | `no-default-features` CI job **and** `scripts/check-no-optional-deps.sh`, per crate | cargo unifies features across one invocation — [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md) |
+| 7 | `scripts/check-lint-config.sh` (lints deny, proven by reversal); `scripts/check-indexing-debt.sh` (ratchet: the count may only go down); `scripts/check-no-crate-root-allow.sh` (no crate-root `allow`/`expect`, no `warn` lowering a denied lint); `scripts/check-scratch-fixtures.sh` (a scratch crate outside the tree gets the pinned toolchain) | known gaps of the scratch-fixture gate are open by decision, ADR-0061 |
 
 ## 3. Read before you touch the code
 
-**[docs/DESIGN.md](docs/DESIGN.md)** is mandatory before anything touching the codec,
-session, engine or dispatch. §4 D1–D10 say *what* was decided; the ADRs say *why* and *at
-what cost*; **[docs/reference/measured-costs.md](docs/reference/measured-costs.md)** holds
-the measurements that justified them, and
+**[docs/DESIGN.md](docs/DESIGN.md)** is mandatory before anything touching the codec, session,
+engine or dispatch — by section, not end to end. §4 D1–D10 say *what* was decided; the ADRs say
+*why* and *at what cost*; **[docs/reference/measured-costs.md](docs/reference/measured-costs.md)**
+holds the measurements, and
 **[docs/reference/quickfix-acceptance-def-format.md](docs/reference/quickfix-acceptance-def-format.md)**
-holds the one trap already paid for.
+holds the first trap already paid for.
 
 ## 4. Documentation set and sync rules
 
-Docs-as-code: Markdown, in this repo, changed **in the same commit** as the code it
-describes. **A stale document is worse than no document.**
+Docs-as-code: Markdown, in this repo, changed **in the same commit** as the code it describes.
+**A stale document is worse than no document.**
 
-| Directory | Answers |
+| File / directory | Answers |
 |---|---|
 | `docs/PRD.md` | what the product must do, in which phase, and how far it is from QuickFIX |
-| `docs/GUIDE.md` | **how to embed this engine without losing latency or messages** — written for a user of the framework, not a builder of it. Every constraint it names is one the type system cannot enforce |
-| `docs/GETTING-STARTED.md` | 3-step quickstart (config → application → bootstrap) using the `fixbolt` library crate |
+| `docs/GUIDE.md` | how to embed this engine without losing latency or messages — every constraint the type system cannot enforce |
+| `docs/GETTING-STARTED.md` | 3-step quickstart using the `fixbolt` library crate |
 | `docs/TUTORIAL.md` | step-by-step tutorial building a working acceptor around tested examples |
-| `docs/INTRODUCTION.md` | FIX 4.4 protocol concepts, vocabulary first, why the acceptor role is hard, prior art |
-| `docs/CONFIGURATION.md` | single lookup table for all settings (`settings.rs` keys, `Limits`, const generics, timeouts) |
-| `docs/SESSION-BEHAVIOUR.md` | session-layer boundary behaviour (logon, resend, gap fill, rejects, drop reasons) mapped to `.def`/tests |
-| `docs/CONFORMANCE.md` | published conformance results with commands, machines, and CI run IDs, plus unproven claims |
-| `docs/best-practices-standard.md` | operational recommendations for default `standard` mode (blocking, shared hosts) |
-| `docs/best-practices-hft.md` | operational recommendations for opt-in `hft` mode (spinning, core isolation) |
-| `docs/hft-playbook.md` | step-by-step tuning procedure: hardware, BIOS, kernel, NIC, app configuration, acceptance |
-| `docs/DESIGN.md` | how the system is built, and the latency budget it is built against |
-| `docs/reference/` | what this thing is — protocol facts, prior art, measured costs, traps |
-| `docs/decisions/` | who decided what, why, at what cost (ADRs) |
+| `docs/INTRODUCTION.md` | FIX 4.4 concepts, why the acceptor role is hard, prior art |
+| `docs/CONFIGURATION.md` | every setting: `settings.rs` keys, `Limits`, const generics, timeouts |
+| `docs/SESSION-BEHAVIOUR.md` | session boundary behaviour mapped to `.def`s and tests |
+| `docs/CONFORMANCE.md` | published conformance results with commands, machines, CI run ids |
+| `docs/best-practices-standard.md` / `docs/best-practices-hft.md` | operational recommendations per mode |
+| `docs/hft-playbook.md` | tuning procedure: hardware, BIOS, kernel, NIC, app, acceptance |
+| `docs/DESIGN.md` | how the system is built, and the latency budget |
+| `docs/reference/` | protocol facts, prior art, measured costs, traps |
+| `docs/decisions/` | ADRs: who decided what, why, at what cost |
 | `docs/plans/` | what is about to be built |
+| `STATUS.md` | where the work stands, open items, what is not proven |
 
 | When you change… | You must update |
 |---|---|
-| Move work between phases, or change what a phase must deliver | `PRD.md` §2, and the ADR that moved it |
+| What a phase must deliver | `PRD.md` §2, and the ADR that moved it |
 | Add / remove / rename a crate | `DESIGN.md` §3 + `README.md` layout + `Cargo.toml` members |
 | The public API of any crate | `DESIGN.md`, the crate's rustdoc, `CHANGELOG.md` |
-| A constraint a user of the engine must honour and the compiler cannot check | `GUIDE.md` |
-| A user-visible constant, default, or config file key | `docs/CONFIGURATION.md` |
-| Session-layer boundary behaviour (reset, resend, gap fill, reject codes, `DropReason`) | `docs/SESSION-BEHAVIOUR.md`, **naming the `.def` or test guarding it** |
-| A conformance number or gate result | `docs/CONFORMANCE.md`, **naming the command, machine, and CI run id** |
-| An operational recommendation for a mode | `docs/best-practices-<mode>.md` — **naming the mode explicitly** |
-| Hardware / BIOS / kernel / NIC tuning | `docs/hft-playbook.md`; if an OS row, update **`DESIGN.md` §9 first** |
-| Codec, session, dispatch, transport or backpressure behaviour | `DESIGN.md` §4, and re-walk §2 above |
-| A gate's target, or how it is measured | `DESIGN.md` §6 — and the benchmark that asserts it, in the same commit |
-| Anything that moves a row of the latency budget | `DESIGN.md` §8, with the measurement that moved it |
-| Discover a protocol trap, a wrong assumption, or a measured surprise | `docs/reference/` ← **highest priority** |
-| Pick a dependency, change technique, reverse a decision | New ADR in `docs/decisions/` |
-| The surprise was about **testing**, not about FIX | the same `docs/reference/` entry, marked `[to testing-skills]` — §11 |
-| **Prove something this repository listed as unproven** | **`STATUS.md`'s *Not proven* section — strike the bullet in the same commit** |
+| A constraint a user must honour and the compiler cannot check | `GUIDE.md` |
+| A user-visible constant, default, or config key | `docs/CONFIGURATION.md` |
+| Session boundary behaviour (reset, resend, gap fill, reject codes, `DropReason`) | `docs/SESSION-BEHAVIOUR.md`, naming the `.def` or test guarding it |
+| A conformance number or gate result | `docs/CONFORMANCE.md`, naming command, machine, CI run id |
+| An operational recommendation | `docs/best-practices-<mode>.md`, naming the mode |
+| Hardware / BIOS / kernel / NIC tuning | `docs/hft-playbook.md`; an OS row updates `DESIGN.md` §9 first |
+| Codec, session, dispatch, transport or backpressure behaviour | `DESIGN.md` §4, and re-walk §2 |
+| A gate's target, or how it is measured | `DESIGN.md` §6, and the benchmark that asserts it, same commit |
+| Anything that moves a row of the latency budget | `DESIGN.md` §8, with the measurement |
+| A protocol trap, a wrong assumption, a measured surprise | `docs/reference/` ← **highest priority** |
+| A dependency, a technique, a reversed decision | new ADR in `docs/decisions/` |
+| Prove something listed as unproven | strike the bullet in `STATUS.md` *Not proven*, same commit |
 
-**No row here is machine-checked.** Every one is walked by hand before a plan is closed.
+No row is machine-checked; walk it row by row before a plan is closed.
 
-`[added 2026-09-02]` **the last row exists because the list of things not yet proven is the one
-document nothing pointed at.** Every closing plan walked this table and struck its own *open
-item*; no row sent anybody to *Not proven*, so bullets stayed there after they stopped being
-true — **eight of them were false when the section was read on 2026-09-01, and an eleventh on
-2026-09-02**. A section whose whole job is honesty rots in exactly one direction: it keeps
-claiming the project is *less* proven than it is, which reads as modesty and is simply wrong.
-`STATUS.md` open item 27.
+**If it cost you, write it down.** An hour lost to a trap goes into `docs/reference/` or an ADR
+immediately, and **every recorded trap gets a regression test**.
 
-**"If it cost you, write it down."** An hour lost to a protocol trap or a wrong assumption
-goes into `docs/reference/` or an ADR immediately. **Every recorded trap gets a regression
-test.** The field-ordering trap already has its test named; the next trap gets one too.
-
-**Prose does not hold a constraint.** A comment asserting runtime behaviour must **name the
-thing that proves it** — a test name, a benchmark, a lint.
+**Prose does not hold a constraint.** A comment asserting runtime behaviour names the thing that
+proves it — a test, a benchmark, a lint.
 
 ## 5. ADRs
 
-Every **expensive, hard-to-reverse or contested** decision gets one. Numbered sequentially,
-never reused. `Proposed` → `Accepted` → (`Superseded by ADR-NNNN` | `Deprecated`).
+Every **expensive, hard-to-reverse or contested** decision gets one. Numbered sequentially, never
+reused. `Proposed` → `Accepted` → (`Superseded by ADR-NNNN` | `Deprecated`).
 
-- **Never edit an accepted ADR's substance.** Changed your mind? New ADR, supersede the old.
-  A `Proposed` ADR may be revised in place, **with the revision recorded in the text** — see
-  ADR-0002 for the shape.
+- **Never edit an accepted ADR's substance.** Changed your mind? New ADR, supersede the old. A
+  `Proposed` ADR may be revised in place, with the revision recorded in the text (ADR-0002 shows
+  the shape).
 - The most important section is **Consequences**, good and bad. Only-upsides is useless.
 
 ## 6. Code standards
 
 **Rust**
 - `cargo fmt` and `cargo clippy --all-targets -- -D warnings` clean before commit.
-- Errors are typed, fieldless where they sit on a hot path, `thiserror` elsewhere. Never
-  `Box<dyn Error>` in a public API.
-- **Public API takes borrowed views into the caller's buffer.** `MessageView` is 24 bytes
-  and `Copy`; an owned decoded struct on the hot path is a design regression.
-- **`FieldIndex<const N>`** — the caller picks `N`. Aliases for the common sizes; no hidden
-  constant.
-- Per-connection state is cache-line aligned, hot fields first. Buffers are pre-faulted at
-  startup (`pool.rs` in the reference project shows how).
-- `#![no_std]` compatibility for `codec` is a **goal, not yet a rule** — notice when you
-  reach for `std`.
+- Errors are typed: fieldless on a hot path, `thiserror` elsewhere. Never `Box<dyn Error>` in a
+  public API.
+- **Public API takes borrowed views into the caller's buffer.** `MessageView` is 24 bytes and
+  `Copy`; an owned decoded struct on the hot path is a design regression.
+- **`FieldIndex<const N>`** — the caller picks `N`. Aliases for common sizes; no hidden constant.
+- Per-connection state is cache-line aligned, hot fields first. Buffers are pre-faulted at startup.
+- `#![no_std]` for `codec` is a **goal, not yet a rule** — notice when you reach for `std`.
 - Logging via `tracing` behind a feature flag. **The engine never logs on the hot path.**
 
 **Dependencies**
-- `codec` has **zero** runtime dependencies. Every other crate justifies each dependency in
-  its plan. A dependency that pulls in an async runtime needs an ADR.
+- `codec` has **zero** runtime dependencies. Every other crate justifies each dependency in its
+  plan. A dependency that pulls in an async runtime needs an ADR.
 
-**Document language**
-- **File names, headings' identifiers, paths and code are always English.** No exception.
-- **The prose inside follows the reader.** *Describing the system → English*: code,
-  comments, `README.md`, `DESIGN.md`, `reference/`, ADRs, `CHANGELOG.md`, `STATUS.md`,
-  commit messages — this ships as a public library and its readers are worldwide.
-  *A plan, addressed to a person → Vietnamese, plain language*: every `docs/plans/` file.
-  **Jargon the reader must decode is a defect in a plan even when it is correct.**
-- **Replies to the owner in this repo are in Vietnamese.** Identifiers, commands and file
-  names stay in English.
+**Language**
+- File names, identifiers, paths and code are always English.
+- *Describing the system → English*: code, comments, `README.md`, `DESIGN.md`, `reference/`, ADRs,
+  `CHANGELOG.md`, `STATUS.md`, commit messages, this file.
+- *A plan, addressed to a person → Vietnamese, plain language*: every `docs/plans/` file. Jargon
+  the reader must decode is a defect in a plan even when it is correct.
+- Replies to the owner are in Vietnamese; identifiers, commands and file names stay English.
 
 ## 7. Testing
 
-- **TDD for pure logic**: field parsing, checksum, body length, repeating groups, sequence
-  numbers, the session state machine, template patching, timestamp caching.
-- **The acceptance definitions are the primary gate**, run as unit tests against the pure
-  session machine — no socket. They exist before the session layer does.
-- **Real captures over invented messages.** A hand-written packet proves the parser handles
-  a packet nobody sends. The `.def` files are real; a FIX capture from a counterparty
-  (a UAT gateway capture, once obtained — never committed here) is better.
-- **Never claim green without running it**, and **read the output, not the exit status.**
-- **A guard is proven by reversal**: break it, see it red, restore it, see it green. Confirm
-  the reversal changed something, and that it failed on the assertion you meant to prove.
-- **Benchmarks assert their bound.** A target that lives in a comment is a wish — the
-  reference project missed its own commented target by 7× and nothing noticed.
+- **TDD for pure logic**: field parsing, checksum, body length, repeating groups, sequence numbers,
+  the session state machine, template patching, timestamp caching.
+- **The acceptance definitions are the primary gate**, run against the pure session machine.
+- **Real captures over invented messages.** A counterparty capture is never committed here.
+- **Never claim green without running it**, and **read the output, not the exit status** — in a
+  pipeline the exit status is the last command's.
+- **A guard is proven by reversal**: break it, see it red on the assertion you meant, restore it,
+  see it green. Write the expected FAIL sentence down before running the reversal. A set of red
+  reversals proves only what was tried.
+- **Benchmarks assert their bound.** A target that lives in a comment is a wish.
+- `vendor/` must be fetched (`scripts/fetch-quickfix-assets.sh`) before `cargo test --all` compiles.
 
 | When | Run |
 |---|---|
@@ -312,30 +196,24 @@ never reused. `Proposed` → `Accepted` → (`Superseded by ADR-NNNN` | `Depreca
 | Any session-layer change | The 59 acceptance definitions |
 | Any hot-path change | The Criterion suite **and** `benches/alloc.rs` |
 | Any dispatch, transport, or engine-thread change | `benches/dispatch.rs`, then `tools/w2w` on Linux |
-| Any change to the wait strategy, the transport's readiness, or the mode split | **Both modes.** A change proven in one mode and not the other is proven in neither — ADR-0013 |
+| Any change to the wait strategy, readiness, or mode split | **Both modes** — proven in one is proven in neither (ADR-0013) |
 | Closing a plan, before merging `main` | All of the above, with the §9 settings recorded |
 
 Widening scope means **naming more cases**, never "run everything because it feels risky".
 
 ## 8. Branches, commits and releases
 
-- Conventional Commits. One commit = one coherent change, **including its documentation**;
-  the body records what was measured — machine, OS settings, command — and says explicitly
-  what was *not* proven.
-- **Never implement on `main`** — one branch per plan. Merge only when its exit criteria are
-  met. **Commit and push at every step that ends green.**
+- Conventional Commits. One commit = one coherent change **including its documentation**; the body
+  records what was measured (machine, OS settings, command) and what was *not* proven.
+- **Never implement on `main`** — one branch per plan, merged only when its exit criteria are met.
+  **Commit and push at every step that ends green.**
 - Gates must be green **for that commit**, not merely for the branch tip.
-- **CI fires once per commit, and a branch with no pull request open is a branch
-  with no CI.** `[changed 2026-09-13]` `ci.yml` triggers on `pull_request` plus
-  `push` to `main` only. **So open the pull request as a draft at the first
-  commit of a branch, not at the last** — that is now the only thing keeping the
-  line above true. Before this, a bare `push:` ran alongside `pull_request:` and
-  the `concurrency` group was keyed on `github.ref`, which differs between the
-  two events (`refs/heads/<branch>` against `refs/pull/<n>/merge`), so neither
-  run ever cancelled the other: `[measured 2026-09-13]` commit `5693c91` burned
-  **28 job-runs for one commit's worth of information**.
-- `vendor/` is gitignored and fetched by `scripts/fetch-quickfix-assets.sh`. **Never commit
-  its contents** — that pulls QuickFIX's attribution clause into this repository.
+- **CI runs on `pull_request` and on `push` to `main` only**, so a branch with no pull request has
+  no CI. **Open the pull request as a draft at the first commit of a branch.**
+- A push cancels the in-progress run for the same branch: wait for the closing commit's run to
+  finish before pushing a handoff commit.
+- `vendor/` is gitignored. **Never commit its contents** — that pulls QuickFIX's attribution clause
+  into this repository.
 
 ## 9. Definition of Done
 
@@ -343,237 +221,136 @@ Done only when **all** hold. Any unchecked box → report it as **not done**, an
 
 - [ ] Built to the approved plan (or the plan was revised and re-approved)
 - [ ] `cargo fmt`, `cargo clippy -D warnings` clean; `--no-default-features` builds
-- [ ] New logic has tests, and the tests §7 requires for this change were run and are green
+- [ ] New logic has tests, and the tests §7 requires were run and are green
 - [ ] The §2 list was walked, and the §4 sync table was walked row by row
 - [ ] An ADR exists if an architectural decision was made
 - [ ] Every performance claim names its benchmark, its machine, and its §9 settings
 - [ ] **Hot-path changes were measured on Linux**, not only on the development laptop
-- [ ] **A green CI run is named, by id, for the commit being closed.** `[measured 2026-08-30]`
-      the `engine` plan closed and merged with its gates reported green from an Apple M5 —
-      truthfully — while GitHub Actions failed on the same commit within the minute and nobody
-      read it. Four documents carried the laptop's number for a day. A laptop says the gates
-      pass *for you*; only CI says they pass *for the commit*
+- [ ] **A green CI run is named, by id, for the commit being closed.** A laptop says the gates pass
+      for you; only CI says they pass for the commit
 
 ## 10. Evidence, not promises
 
-Nothing here is delegated to a second reviewer. Because nobody else will look at it, every
-unit of work owes this evidence:
+Every unit of work owes this evidence:
 
 - **The failing test first**, shown **red against the unwritten code**, output quoted.
-- **The gates quoted, not summarised.** "It passed when I ran it" is not evidence.
-- **Existing tests stay green unmodified.** A fixture edited so new work can pass is the
-  failure mode to watch for — and it is your own hand that would edit it.
+- **The gates quoted, not summarised.**
+- **Existing tests stay green unmodified.** A fixture edited so new work can pass is the failure
+  mode to watch for.
 - **Name every trap the work can hit before starting**, each with the test that guards it.
 
 **Failures no gate can see — check by hand, every time:**
 
-- An allocation, a `format!`, or a `String` that crept onto a hot path or an error path.
-- A blocking call — `epoll_wait`, a mutex, a `read` without `O_NONBLOCK` — on the engine
-  thread.
+- An allocation, a `format!`, or a `String` on a hot path or an error path.
+- A blocking call — `epoll_wait`, a mutex, a `read` without `O_NONBLOCK` — on an `hft` engine thread.
 - A timestamp formatted from scratch per message instead of patched from the cache.
 - A `mod` behind a feature in `Cargo.toml` but not behind `#[cfg]` in `lib.rs`.
+- A feature combination no gate builds (e.g. `--no-default-features --features <one>`).
 - A number quoted from the laptop as though it were from the Linux box.
-- A plan closed, or a branch merged, while CI was red on that commit and nobody looked. §9's
-  last box exists because this already happened.
-- A cause accepted because a knob moved with it. A score that responds to a timeout says
-  something is being waited on and **nothing about what** — `[measured 2026-08-30]` a wire
-  gate whose score walked 39 → 43 → 59 with its own timeout was failing on Nagle, and the
-  wrong answer reached five documents before a one-variable experiment refuted it.
+- A plan closed, or a branch merged, while CI was red on that commit.
+- A cause accepted because a knob moved with it. A score that responds to a timeout says something
+  is waited on and **nothing about what** — isolate one variable before naming a cause.
+- Elapsed time inferred from your own activity instead of read from a clock.
 - Docs not updated in the same commit as the code, per §4.
 
-**The trap that outlives every process change: a check proves nothing until something reads
-it.** Any green result that was *inferred* rather than *observed* is not a result.
-
-**Review of a diff catches almost nothing.** Bugs get caught by running something and
-reading the output. Do not use review as the primary safety net.
-
-
-## 11. Contributing back to `testing-skills`
-
-**[`tmthang86/testing-skills`](https://github.com/tmthang86/testing-skills)** is the owner's
-other project: two Claude Code skills — `e2e-testing` and `design-conformance-testing` — plus
-the tooling that keeps them honest. **Its own roadmap names its biggest gap: nothing in it has
-been proven against a real system.** Everything measured in it so far came from one Tauri
-desktop app, through a UI.
-
-**This repository is the other half of that evidence, and it is the half that has no UI at
-all.** A FIX acceptor is tested end-to-end by driving real bytes through a real socket and
-reading what comes back — the same loop, with a wire protocol where the skills have a screen.
-That makes fixbolt the place where the *protocol* side of e2e testing gets found out,
-and what is found here is owed back.
-
-### What goes back
-
-Only material that this repository **measured**. A case is contributed when the command was
-run here, the output was read, and the numbers are the observed ones — never from reasoning
-about what would probably happen. That is §10 applied to somebody else's repository.
-
-| Found here | Goes to |
-|---|---|
-| A check that passed, or failed, for a reason other than the thing under test | `references/false-greens.md` |
-| A gate whose result depends on the machine, the timeout, or the load | `references/false-greens.md` |
-| A reversal that turned out to be a no-op, or that passed and exposed a hole in the test | `references/false-greens.md` |
-| How an e2e loop is driven against a **protocol** rather than a UI — settling, framing, a corpus as oracle, an injected clock as the only test double | the protocol reference the roadmap does not yet have |
-| A tool that claimed to prove something and could not — `dtruss` under SIP, `nm -u` over generic code | `references/false-greens.md` |
-
-**Strip it to the testing lesson.** The upstream repository is **public today**, and this one
-is written as though it already were. A case goes back as *the shape, the measurement, the
-fix* — legible to somebody who has never heard of FIX. **No message bytes, no counterparty
-anything, no exchange specification, nothing from `shadow-exchange`, no `vendor/` content.**
-If a case cannot be told without one of those, it does not go back; it stays in
-`docs/reference/` here.
-
-### When
-
-**A case is written into `docs/reference/` here first** — §4's row, unchanged, and it is what
-makes the case real. **The queue is that write-up itself**: a contributable case carries the
-literal marker **`[to testing-skills]`** on its own line, so `grep -rn '\[to testing-skills\]'
-docs/` is the whole backlog and there is no second list to go stale. The marker is replaced by
-the pull-request link when it lands.
-
-**The upstream pull request is opened when this project is implemented** — not when a plan
-closes. `[decided 2026-09-01]` the earlier rule was one pull request per plan, and it was
-changed for a reason worth keeping: **a case is only worth publishing once it has survived the
-work that came after it.** Two of the cases already written here were revised by a later plan
-that hit the same shape again, and a per-plan pull request would have published the first
-version of both.
-
-So the marker accumulates and the backlog is allowed to grow. `grep -rn '\[to testing-skills\]'
-docs/` is still the whole queue, and the generalised paragraph in each local write-up is still
-the draft of the upstream one — what moves is *when* they go, not what goes or how it is
-written. **A case that turns out to be a misunderstanding gets corrected here, for free, by
-never having left.**
-
-### What does not happen
-
-- **Nothing here depends on `testing-skills` to build, test or run.** No crate links it, no
-  script fetches it, no gate needs it installed. It is read by the person or the agent doing
-  the work, and the workspace must stay buildable by somebody who has never heard of it.
-- **The skills are not a substitute for this file.** Where the two disagree about this
-  repository, `CLAUDE.md` wins — §2's ten non-negotiables in particular are not up for
-  revision by an installed skill.
-- **Nothing flows the other way as a rule.** A useful idea from upstream is adopted here on
-  its merits, in a plan, like any other technique — not because it arrived from the sibling
-  project.
+**A check proves nothing until something reads it.** Any green result that was *inferred* rather
+than *observed* is not a result. **Review of a diff catches almost nothing**; bugs are caught by
+running something and reading the output.
 
 ## 12. Who does what: one model per role
 
-`[added 2026-09-12]` This repository is built with Claude Code. **The main session is the project
-manager, on Opus 5, and it never implements.** Everything else is a subagent with one role,
-one model, and a brief. The roles are §1's seam made explicit: the architect writes the plan,
-the owner approves it, the manager has it built.
+This repository is built with Claude Code. **The main session is the manager and never
+implements.** Everything else is a subagent with one role, one model, and a brief.
 
 | Role | Runs as | Model | Owns | Does not |
 |---|---|---|---|---|
-| **Manager** | the main session | Opus 5 | the branch (§8), asking the architect, splitting the approved plan into steps, choosing the model per step, running the gates (§7), the delivery log, the pull request, every word the owner reads | write code, write the design, or change the plan — §1's third row: stop, fix, get it re-approved |
-| **Architect** | subagent, in the background | Fable 5.1 | `DESIGN.md`, the ADRs, `docs/reference/`, module specs, technical decisions, the plan (§1) — **written to disk**, because a subagent's reply reaches nobody else. **Research on the internet comes first, every time**: prior art, the spec, what sibling engines measured — and the plan's *Những gì đã biết chắc* cites what it found, or says the search found nothing | touch `crates/`; design from memory |
-| **Senior developer** | subagent, fresh context | Opus 5 | reviewing a step against the plan and the gates, fixing what it finds, any step that touches `codec`, `session`, `engine` or `transport` (§2) | re-design; a design problem goes back to the architect through the manager |
-| **Developer** | subagent | Sonnet 5 | one step with named files and named tests | choose a design, or touch a file the brief did not name |
-| **Runner** | subagent | Haiku 4.5 | a mechanical task with one right answer: run this and quote it, grep this, fetch `vendor/`, repair doc links | anything that needs judgement |
+| **Manager** | main session | Opus | the branch (§8), splitting the approved plan into steps, choosing the model per step, **verifying every finding** (below), running the gates (§7), the delivery log, the pull request, every word the owner reads | write code, write the design, or change the plan |
+| **Architect** | subagent, background | Fable | `DESIGN.md`, ADRs, `docs/reference/`, the plan (§1) — **written to disk**. **Internet research first, every time**: prior art, the spec, what sibling engines measured; the plan's *Những gì đã biết chắc* cites it or says the search found nothing | touch `crates/`; design from memory |
+| **Senior developer** | subagent, fresh context | Opus | reviewing a step against the plan and gates, fixing verified findings, any step touching `codec`, `session`, `engine` or `transport` | re-design — a design problem goes to the architect through the manager |
+| **Developer** | subagent | Sonnet | one step with named files and named tests | choose a design, or touch a file the brief did not name |
+| **Runner** | subagent | Haiku | a mechanical task with one right answer: run and quote, grep, fetch `vendor/`, repair doc links | anything that needs judgement |
 
-**Why the split is by context, not by price.** The manager's context never fills with code, so
-it can still see the whole plan at step nine; a developer's context holds one step, so it can
-finish it. The workers are where the tokens go — Cursor measured 69–90 % of a swarm's tokens in
-its workers — so the model chosen *per step* is the whole cost lever, and the architect on the
-expensive model is not. `docs/reference/` is what Cursor calls the field guide: a subagent that
-hit a surprise reports it, and the manager writes it down in the same commit (§4).
+**Routing reads the step, not its label**, and routes *up* on any one signal: more than one module
+or an invariant spanning modules; a spec the developer would have to interpret; a wrong answer that
+costs more than a re-run; reasoning the brief cannot spell out. The architect is never a worker.
 
-**Routing a step reads the step, not its label**, and routes *up* on any one signal: more than
-one module or an invariant that spans modules; a spec the developer would have to interpret; a
-wrong answer that costs more than a re-run; reasoning the brief cannot spell out. **Anything that
-touches `codec`, `session`, `engine` or `transport` is built or reviewed by the senior developer
-at least** — §2 is walked by hand, and a hand that cannot see the whole path cannot walk it.
-The architect is never a worker.
+### Delegation
 
-**Delegation rules, each tied to the section it exists for:**
-
-- **The brief is the spec, and the spec is the unit of work.** Goal and why, exact files, the
-  §2 items the step may touch, the gate command, what to quote back. A step that cannot be
-  briefed that precisely is not ready for a developer — it goes back to the architect.
-- **Inline what exists nowhere else; point at what is on disk, by section, never by file.** A
-  subagent starts with an empty context plus this file and a `Read` tool. What only the manager
-  knows goes in the brief: the goal and why, a decision the owner made in conversation, what
-  "done" is, the gate command, what to quote back, which files may and may not be touched, and
-  any constraint under ~20 lines that would sink the step if missed. What is on disk is pointed
-  at with a section or a line range — `DESIGN.md §4 D9`, `ADR-0041` *Consequences*, the row of
-  the plan's *Chia việc* table, `crates/engine/src/x.rs:120-180` as the pattern to copy. Never
-  "read `DESIGN.md`" (108 KB) or "read `STATUS.md`" (477 KB): a subagent sent to a whole file
-  spends its context re-establishing what the manager already knew. A pasted page is Opus
-  output; a read page is Sonnet input, twelve times cheaper and verbatim. The one exception
-  runs the other way: a Haiku brief is self-contained — inputs, outputs, the command, what to
-  quote — because a runner must not have to interpret a document. The shape:
+- **The brief is the spec.** Goal and why, exact files to touch and not touch, the §2 items in
+  play, the gate command, what to quote back. A step that cannot be briefed that precisely goes
+  back to the architect.
+- **Inline what exists nowhere else; point at what is on disk by section or line range**, never at
+  a whole file (`DESIGN.md §4 D9`, `ADR-0041 Consequences`, `crates/engine/src/x.rs:120-180`). A
+  Haiku brief is fully self-contained.
 
   ```text
   Role: developer (sonnet). Step 3 of docs/plans/2026-09-xx-<topic>.md, table Chia việc.
-  Why: <one sentence — what this serves, for whom>.
-  Read first, exactly here: DESIGN.md §4 D9; ADR-0041 Consequences; crates/engine/src/x.rs:120-180 (pattern).
+  Why: <one sentence>.
+  Read first, exactly here: DESIGN.md §4 D9; ADR-0041 Consequences; crates/engine/src/x.rs:120-180.
   Touch: crates/engine/src/y.rs, crates/engine/tests/y.rs. Do not touch: lib.rs, crates/session/.
-  §2 items: 1 (no alloc — benches/alloc.rs case y reads 0), 7 (no unwrap).
-  Done when: test `y_does_z` is green; `cargo test -p fixbolt-engine y_` and `cargo clippy --all-targets -- -D warnings` are clean.
-  Report: the diff summarised per file; both commands' output verbatim; anything surprising or ambiguous — stop and say so, do not guess.
+  §2 items: 1 (benches/alloc.rs case y reads 0), 7 (no unwrap).
+  Done when: `y_does_z` green; `cargo test -p fixbolt-engine y_` and clippy -D warnings clean.
+  Report: diff per file; both commands' output verbatim; anything ambiguous — stop and say so.
   Do not commit.
   ```
-- **One file, one writer at a time.** Parallel developers get disjoint files, or a worktree
-  each; a step that needs the same file runs after, not beside. `crates/engine/src/lib.rs` is
-  the file this rule is for.
-- **A subagent's green is a claim** (§10). It quotes the command and the output verbatim, or
-  it did not run. The manager re-runs the gate that closes a step itself, on the commit it
-  closes, and commits; developers do not commit. §9's last box names a CI run, never a subagent.
-- **A reviewer is a different lens, not a second copy.** `[measured 2026-09-04]` a Claude
-  subagent reviewing a Claude-written plan was recorded in
-  `docs/plans/2026-09-03-message-log.md` as "not a cross-model read", its agreement weighed
-  accordingly. §10 says review of a diff catches almost nothing; the lenses that do are the
-  gates, a fresh context given the plan rather than the reasoning, and the owner. One senior
-  review per step that touches §2, one per pull request otherwise — never after every edit.
-- **Escalate, do not re-brief.** A developer that reports ambiguity, or touches more than it
-  was briefed, goes one tier up. The same model is never briefed a third time on one step.
-- **The owner sees only what the manager writes.** A subagent's report is relayed with its
-  evidence, in Vietnamese (§6), never as "the agent said it passed". The plan the architect
-  writes is the one document the owner approves, so it is on disk and in Vietnamese before
-  anything is built.
-`[added 2026-09-12]` **Once a plan is approved, the manager runs it to delivery without
-stopping to ask.** Approval of the plan is approval of the whole sequence below; the manager does
-not come back between steps for permission it already has. The sequence, in order, and none of it
-is optional:
+- **One file, one writer at a time.** Parallel developers get disjoint files or a worktree each.
+- **A subagent's green is a claim** (§10). The manager re-runs the gate that closes a step on the
+  commit it closes, and commits; developers do not commit.
+- **A reviewer is a different lens, not a second copy**: a fresh context given the plan, not the
+  manager's reasoning. One senior review per step that touches §2, one per pull request otherwise.
+- **Escalate, do not re-brief.** A developer that reports ambiguity or exceeds its brief goes one
+  tier up. The same model is never briefed a third time on one step.
+- **The owner sees only what the manager writes**, in Vietnamese, with evidence — never "the agent
+  said it passed".
 
-1. **Build every step of the plan**, routed per the table above, re-running the gate that closes
-   each step on the commit that closes it, and committing each step that ends green (§8).
-2. **Then a senior review**, in a fresh context, given the plan and the gates but not the
-   manager's reasoning — one per pull request, and per step where §2 says so.
-3. **A finding goes back to the senior developer to fix**, on the same branch, with the gate
-   re-run afterwards. It does not go to the owner as a question, and the manager does not fix it
-   itself. A finding that is a *design* problem goes to the architect instead (§1's third row):
-   stop, fix the plan, get it re-approved — that is the one case that does interrupt the run.
-4. **No findings — or all findings fixed and green — then merge**, and in the same pass update
-   `STATUS.md` and every document §4's table sends you to, naming the CI run id for the commit
-   being closed (§9's last box).
+### Verifying a finding before acting on it
 
-**What still stops the run**, and nothing else: a gate that will not go green, a plan that turns
-out wrong, a step that needs the §9 machine when another session is measuring on it, or anything
-§8 calls out as needing the owner. **The owner is told what happened, not asked whether to
-continue.**
+**A review finding is a claim, not a defect, until the manager has verified it.** A review can be
+wrong in either direction — including reading a documented, spec-correct behaviour as a bug. For
+every finding, before it is routed anywhere:
 
-**A session is one pull request, and the handoff is written, not remembered.** The owner opens
-a fresh session per pull request, and this repository already carries its state in files:
-`STATUS.md`, the plan's *Nhật ký giao hàng* — "the part that survives context compaction" — and
-the CI run id named for the commit closed (§9). The manager's memory is those files, so:
+1. **Reproduce it.** Run the command, test or probe the finding describes and read the output. A
+   finding that cannot be reproduced is not acted on.
+2. **Read the code and its documentation where the behaviour lives** — the rustdoc, comments,
+   tests and ADRs that may already say the behaviour is deliberate.
+3. **When the finding rests on a protocol, spec, library or tool claim, research it on the
+   internet** — the FIX specification, the crate or tool's documentation, what other engines do.
+   Where a document and the code disagree, neither wins by default; the specification decides.
+4. **Classify and record it** with the evidence: *confirmed* (route to fix), *refuted* (not fixed;
+   the evidence goes in the PR and, if it cost time, `docs/reference/`), or *design* (goes to the
+   architect).
 
-- **At the start, read `STATUS.md` by section, not end to end**: the first *Start here*, *Where
-  the work is*, *Open items*, then the *Nhật ký giao hàng* of the plan in flight. `[measured
-  2026-09-12]` the file is 3 665 lines and 28 *Start here* sections, which is a store rather
-  than the pointer it says it is; reading all of it spends the manager's context before the
-  first step.
-- **At the end, write the handoff as the brief for the next manager**: what is in flight, on
-  which branch and commit, the gate command, the CI run id, and what is not proven — in
-  *Start here* and in the plan's delivery log, in the same commit as the work. Anything the
-  manager knows and has not written there is lost by design.
-- **A step lives inside one session.** When a plan spans pull requests, the session boundary is
-  a row of the plan's *Chia việc* table, never the middle of one.
-- **Two sessions on one working tree.** Before staging or switching branches, ask which
-  session owns the tree; a new branch gets a `git worktree`. `DESIGN.md` §9 figures come from a
-  machine nothing else is loading, which a second session can silently break.
+### Running an approved plan
 
-**Machine-checked: nothing.** Every line here is walked by hand, like §4's table. The one
-number in it is Cursor's, from
-[their swarm write-up](https://cursor.com/blog/agent-swarm-model-economics), and is labelled
-as somebody else's claim per non-negotiable 10.
+**Once a plan is approved, the manager runs it to delivery without stopping to ask.**
+
+1. **Build every step**, routed per the table, re-running the gate that closes each step and
+   committing each step that ends green (§8).
+2. **Then a senior review**, fresh context, given the plan and the gates.
+3. **Verify each finding** as above. A confirmed finding goes back to the senior developer on the
+   same branch, gate re-run afterwards — not to the owner as a question, and the manager does not
+   fix it. A design finding goes to the architect: stop, fix the plan, get it re-approved.
+4. **No confirmed findings left, all green — merge**, and in the same pass update `STATUS.md` and
+   every document §4 names, citing the CI run id for the closing commit (§9).
+
+**What stops the run**, and nothing else: a gate that will not go green, a plan that turns out
+wrong, a step needing the §9 machine while another session measures on it, or anything §8 reserves
+for the owner. The owner is told what happened, not asked whether to continue.
+
+### Sessions and handoff
+
+- **A session is one pull request; the handoff is written, not remembered.** The manager's memory
+  is `STATUS.md`, the plan's *Nhật ký giao hàng*, and the CI run id for the commit closed.
+- **At the start, read `STATUS.md` by section**: the newest *Start here*, *Where the work is*,
+  *Open items*, then the delivery log of the plan in flight. Never end to end.
+- **At the end, write the handoff as the next manager's brief** — what is in flight, branch and
+  commit, gate command, CI run id, what is not proven — in *Start here* and the delivery log, in
+  the same commit as the work.
+- **A step lives inside one session.** When a plan spans pull requests, the boundary is a row of
+  the plan's *Chia việc* table.
+- **Two sessions, one working tree:** ask which session owns the tree before staging or switching
+  branches; a new branch gets a `git worktree`. Run repo-wide scripts (e.g. `check-links.py`) from
+  a checkout with no other worktrees nested under it. `DESIGN.md` §9 figures come from a machine
+  nothing else is loading.
+
+No line of §12 is machine-checked; walk it by hand like §4's table.
