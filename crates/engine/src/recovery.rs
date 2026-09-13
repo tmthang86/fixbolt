@@ -4,7 +4,7 @@
 //! # The seam this fills
 //!
 //! `[verified 2026-09-02]` [`crate::Engine::add_resumed`] can continue a session
-//! that outlived the process, but [`crate::serve`] and friends **accept
+//! that outlived the process, but `crate::serve` and friends **accept
 //! connections themselves** — the embedder never sees a transport to call it
 //! with. So a deployment that used the convenient entry point could not resume
 //! anything, which made recovery a feature you had to give up the serving loop
@@ -158,7 +158,7 @@ pub trait Recovery<J> {
 
 /// Every session starts fresh. The default, and it must be **exactly neutral**.
 ///
-/// What [`crate::serve`] and [`crate::serve_hft`] use, so their behaviour is
+/// What `crate::serve` and [`crate::serve_hft`] use, so their behaviour is
 /// unchanged from before [`Recovery`] existed — and the 59 acceptance
 /// definitions run under it.
 #[derive(Debug, Clone, Copy, Default)]

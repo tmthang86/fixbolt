@@ -67,7 +67,7 @@ impl Source {
     ///
     /// It is safe, because holding the wrong number is not unsound — `poll`
     /// answers `POLLNVAL` for a descriptor the kernel does not know, and
-    /// [`crate::poll::Poller`] turns that into an error rather than into
+    /// `crate::poll::Poller` turns that into an error rather than into
     /// "nothing has arrived". What it is **not** is harmless:
     ///
     /// > **The descriptor must stay open for as long as this `Source` is

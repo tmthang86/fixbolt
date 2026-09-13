@@ -657,7 +657,7 @@ where
     ///
     /// **A counter, because the event stream has one reader.**
     /// [`crate::observe::Observer::events`] drains the ring, so two readers
-    /// share events rather than each seeing them — and [`connect_and_serve`]
+    /// share events rather than each seeing them — and `connect_and_serve`
     /// used to be one of those readers, quietly taking every `LoggedOn` the
     /// caller was waiting for. The reconnect loop compares this number across a
     /// turn instead.
@@ -1559,12 +1559,12 @@ where
 /// idle strategy the caller names.
 ///
 /// `W` is the mode: [`wait::Spin`] for `hft`, `block::Block` for `standard`.
-/// [`HftAcceptorEngine`] and [`StandardAcceptorEngine`] name the two.
+/// [`HftAcceptorEngine`] and `StandardAcceptorEngine` name the two.
 ///
 /// `[2026-09-05]` **`N`, `RX` and `TX` are parameters with defaults, not
 /// literals.** They read the same at every existing call site — a default is
 /// applied where nothing is written — but they can now be named, which is what
-/// [`crate::serve_with`] exists to pass on. Before this they were spelled out
+/// `crate::serve_with` exists to pass on. Before this they were spelled out
 /// here as `256, 4096, 8192`, and an alias is exactly as much of a hidden
 /// constant as a `const` when nothing above it can say otherwise
 /// (`CLAUDE.md` §6).
@@ -2702,7 +2702,7 @@ pub fn serve_with_recovery_with<
     )
 }
 
-/// As [`serve`], in `hft` mode: **spins, and burns a core for as long as the
+/// As `serve`, in `hft` mode: **spins, and burns a core for as long as the
 /// process lives.**
 ///
 /// On a shared machine, in a container, or on a laptop that is not a bug you
@@ -2726,7 +2726,7 @@ pub fn serve_hft<A: Application, L: MessageLog>(
 }
 
 /// The same, with the three buffer sizes named by the caller. See
-/// [`serve_with`] for what `N`, `RX` and `TX` mean and what they cost.
+/// `serve_with` for what `N`, `RX` and `TX` mean and what they cost.
 ///
 /// # Errors
 ///
@@ -2841,7 +2841,7 @@ pub fn serve_hft_pinned<A: Application, L: MessageLog>(
 }
 
 /// As [`serve_hft`], asking `recovery` what each counterparty left behind. See
-/// [`serve_with_recovery`].
+/// `serve_with_recovery`.
 ///
 /// # Errors
 ///
@@ -2874,7 +2874,7 @@ pub fn serve_hft_with_recovery<
 }
 
 /// The same, with the three buffer sizes named by the caller. See
-/// [`serve_with`] for what `N`, `RX` and `TX` mean and what they cost.
+/// `serve_with` for what `N`, `RX` and `TX` mean and what they cost.
 ///
 /// # Errors
 ///

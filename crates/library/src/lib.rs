@@ -32,7 +32,7 @@ pub use fixbolt_engine::{ServeError, Shutdown, serve_hft};
 /// "instantiate `Engine<..., N, RX, TX>` directly", and from this crate that was
 /// not possible** — `Engine` is deliberately not re-exported, so the only way to
 /// a 16 KiB receive buffer was to depend on `fixbolt-engine` and rewrite the
-/// serving loop. These are the way. See [`fixbolt_engine::serve_with`].
+/// serving loop. These are the way. See `fixbolt_engine::serve_with`.
 pub use fixbolt_engine::serve_hft_with;
 
 /// `serve` blocks when idle and is the default mode, so it is the one an
