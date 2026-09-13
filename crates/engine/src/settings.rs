@@ -3084,6 +3084,219 @@ mod doc_table {
         );
     }
 
+    /// The line that opens this module. [`call_sites`] stops reading at it, so
+    /// the `Key::` this module writes about itself is never read as a call.
+    const DOC_TABLE_OPEN: &str = "mod doc_table {";
+
+    /// Functions that are handed a key's value and never look inside it —
+    /// [`super::required`] answers whether the key is present and returns the
+    /// value untouched, for a reader further down to parse. A call site through
+    /// one of these says nothing about which literals a key accepts, so it is
+    /// counted apart and checked against no declaration.
+    const PRESENCE_ONLY: &[&str] = &["required"];
+
+    /// `head` with a trailing turbofish removed — `number::<u8>` becomes
+    /// `number` — or `head` unchanged when it has none, or [`None`] when a
+    /// trailing `>` opens no `::<`.
+    ///
+    /// `[measured 2026-09-13]` without this, `number::<u8>(v,
+    /// Key::ResetOnLogon)` was no call site at all: the `(` is opened by `>`,
+    /// not by an identifier, and the leg answered *"no call site reads it"*
+    /// instead of naming `number`. A key read by `flag` in one place and by a
+    /// turbofish reader in another would have passed.
+    fn without_turbofish(head: &str) -> Option<&str> {
+        if !head.ends_with('>') {
+            return Some(head);
+        }
+        let mut depth = 0_usize;
+        for (i, c) in head.char_indices().rev() {
+            match c {
+                '>' => depth += 1,
+                '<' if depth == 1 => return head.get(..i)?.strip_suffix("::"),
+                '<' => depth -= 1,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The function whose argument list `Key::` sits in, when `Key::` begins at
+    /// byte `at` of `line` and is a second-or-later argument of a call:
+    /// preceded by a comma, inside a `(` opened directly by an identifier.
+    ///
+    /// A tuple `(slot, Key::X)` is opened by nothing, `format!(…, Key::X…)` by
+    /// `!`, and a `Key::X =>` or `| Key::X` arm follows no comma — none of
+    /// those is a call site, and all three answer [`None`].
+    fn enclosing_call(line: &str, at: usize) -> Option<&str> {
+        let before = line.get(..at)?.trim_end().strip_suffix(',')?;
+        let mut depth = 0_usize;
+        let mut open = None;
+        for (i, c) in before.char_indices().rev() {
+            match c {
+                ')' => depth += 1,
+                '(' if depth == 0 => {
+                    open = Some(i);
+                    break;
+                }
+                '(' => depth -= 1,
+                _ => {}
+            }
+        }
+        let head = without_turbofish(before.get(..open?)?)?;
+        let start = head
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
+            .last()
+            .map(|(i, _)| i)?;
+        let name = head.get(start..)?;
+        (!name.starts_with(|c: char| c.is_ascii_digit())).then_some(name)
+    }
+
+    /// Every call site in this file above [`DOC_TABLE_OPEN`], as `(function,
+    /// variant as written, line number)`. A comment line is not a call.
+    ///
+    /// **One line at a time**: a call rustfmt breaks across lines is lost, not
+    /// guessed at — which the floor in
+    /// [`the_reader_table_matches_the_call_sites`] and its per-key assertion
+    /// turn into a red rather than a silent short count.
+    fn call_sites() -> Vec<(&'static str, &'static str, usize)> {
+        let opener_hits = SRC
+            .lines()
+            .filter(|line| line.trim() == DOC_TABLE_OPEN)
+            .count();
+        assert_eq!(
+            opener_hits, 1,
+            "settings.rs line `{DOC_TABLE_OPEN}` matched {opener_hits} times — the call-site scan needs exactly one to know where the parser ends and this module begins"
+        );
+        let mut out = Vec::new();
+        for (index, line) in SRC.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed == DOC_TABLE_OPEN {
+                break;
+            }
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let mut from = 0;
+            while let Some(found) = line.get(from..).and_then(|rest| rest.find("Key::")) {
+                let at = from + found;
+                from = at + "Key::".len();
+                let variant = line.get(from..).map_or("", |rest| {
+                    let end = rest
+                        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .unwrap_or(rest.len());
+                    rest.get(..end).unwrap_or("")
+                });
+                if let Some(function) = enclosing_call(line, at) {
+                    out.push((function, variant, index + 1));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether a call site through `function` agrees with `declared`, or
+    /// [`None`] when `function` is not one this leg knows the reading of.
+    fn call_site_agrees(function: &str, declared: Reader) -> Option<bool> {
+        match function {
+            "flag" => Some(matches!(declared, Reader::Literals(Some(f), _) if f == FLAG_FN)),
+            "number" | "integer_as_written" => Some(matches!(declared, Reader::Numeric)),
+            "fitting" | "time_of_day" | "one_day" => Some(matches!(declared, Reader::Prose)),
+            _ => None,
+        }
+    }
+
+    /// A [`Reader`] as a FAIL sentence names it.
+    fn described(declared: Reader) -> &'static str {
+        match declared {
+            Reader::Literals(Some(f), _) if f == FLAG_FN => "Literals(flag)",
+            Reader::Literals(Some(_), _) => "Literals(a function this leg does not know)",
+            Reader::Literals(None, _) => "Literals(an inline match)",
+            Reader::Numeric => "Numeric",
+            Reader::Prose => "Prose",
+        }
+    }
+
+    /// **Probe 3, third leg, item 77.** [`reader`] is a declaration, and the
+    /// second leg trusted it: [`literals_of_match`] reads the arms of the
+    /// `match` the declaration *names*, not of the function the parser
+    /// *calls*. `[measured 2026-09-13]` a `flag_or_yes` accepting `"Y" |
+    /// "yes"`, with `ResetOnLogon` routed through it and `reader` unchanged,
+    /// read `9 passed; 0 failed` — `yes` is three letters, outside the bounded
+    /// search, and the second leg was reading `flag`'s arms.
+    ///
+    /// This leg reads the parser to check the table instead of believing it:
+    /// every call site above this module calls a function whose reading is
+    /// known, that function agrees with the key's declaration, and every key
+    /// declared read by a function has at least one call site reading it.
+    #[test]
+    fn the_reader_table_matches_the_call_sites() {
+        /// Reading call sites on 2026-09-13: 25 — `flag` 9, `number` 7,
+        /// `integer_as_written` 1, `fitting` 3, `time_of_day` 2, `one_day` 3.
+        /// The same in either feature set: this reads source text, not what
+        /// compiled. Raise it when a call site is added; never lower it.
+        const FLOOR: usize = 25;
+
+        let keys: Vec<(String, Key)> = arm_literals(NAME_FN)
+            .into_iter()
+            .filter_map(Key::parse)
+            .map(|key| (format!("{key:?}"), key))
+            .collect();
+        let (mut reading, mut presence) = (0_usize, 0_usize);
+        let mut read: Vec<Key> = Vec::new();
+        for (function, variant, line) in call_sites() {
+            let key = keys
+                .iter()
+                .find(|(spelled, _)| spelled == variant)
+                .map(|(_, key)| *key);
+            assert!(
+                key.is_some(),
+                "settings.rs:{line} calls `{function}` with `Key::{variant}`, which is no Key variant — the call-site scan misread the line"
+            );
+            let Some(key) = key else {
+                continue;
+            };
+            let name = key.name();
+            if PRESENCE_ONLY.contains(&function) {
+                presence += 1;
+                continue;
+            }
+            let agrees = call_site_agrees(function, reader(key));
+            assert!(
+                agrees.is_some(),
+                "`{function}` reads `{name}` (settings.rs:{line}), and this leg does not know what literals it accepts"
+            );
+            assert!(
+                agrees != Some(false),
+                "`{name}` is declared `{}` but the parser reads it through `{function}` (settings.rs:{line})",
+                described(reader(key))
+            );
+            reading += 1;
+            read.push(key);
+        }
+        for (_, key) in &keys {
+            let declared_function = match reader(*key) {
+                Reader::Literals(Some(f), _) if f == FLAG_FN => "flag",
+                Reader::Literals(Some(_), _) => "a function this leg does not know",
+                Reader::Numeric => "number or integer_as_written",
+                Reader::Literals(None, _) | Reader::Prose => continue,
+            };
+            assert!(
+                read.contains(key),
+                "`{}` is declared read by `{declared_function}` but no call site reads it",
+                key.name()
+            );
+        }
+        println!(
+            "probe 3, call-site leg: {reading} call sites, {presence} presence-only calls not counted"
+        );
+        assert!(
+            reading >= FLOOR,
+            "the call-site leg read {reading} call sites, below its floor of {FLOOR} — either a call was broken across lines, or this scan has stopped matching"
+        );
+    }
+
     /// **Probe 6, item 73.** A *Values* cell [`looks_like_an_integer`] reads
     /// is tested directly against the promise `docs/CONFIGURATION.md` §1
     /// makes for it: `{name}=+7` and `{name}=07` are both read as written,
