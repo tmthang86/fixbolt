@@ -705,3 +705,41 @@ R74-1 (arm "acc", khôi phục bằng bản sao, byte-identical)
 **683** = +1 bước 1 (`the_site_count…`) +2 bước 3 (`tests/settings.rs`) +1 probe 6. `hft_pinned` cần
 `affinity`, nên chỉ thêm một binary rỗng vào `--all` (102 → 103 dòng) và 3 test vào lượt `affinity`.
 Chưa chạy trên §9; không bước nào ở đây cần.
+
+### 2026-09-13 — bước 2 XONG (item 72)
+
+**Đổi lịch so với *Chia việc*, ghi rõ:** plan xếp bước 2 **sau** bước 4 vì chung `docs/DESIGN.md`.
+Manager chạy **song song** trong hai worktree: hai bước sửa hai hàng cách nhau ~30 dòng của §6
+(bước 4 thêm hàng cuối bảng *Correctness*, bước 2 sửa hàng `check-links.py` trong *Mode and
+machine*), và reversal của bước này (tạo `docs/zz-probe.md`) không làm đỏ gate của bước kia. Hàng
+bẫy dòng 500 của chính plan cho phép cách gộp này. Không đổi thiết kế nào.
+
+`scripts/check-links.py`: `OWN_REPO = ("github.com", "tmthang86", "fixbolt")` so **theo đoạn**;
+quy tắc (a) URL của chính repo bị xét trên mọi đuôi khớp, kể cả một đoạn; quy tắc (b) host khác chỉ
+bị xét khi đuôi khớp có từ hai đoạn; lớp bị bỏ qua được đếm và in. `DESIGN.md` §6 hàng
+`check-links.py` và reference mới
+`docs/reference/a-bare-filename-is-not-evidence-of-a-repository.md` `[to testing-skills]`.
+
+**Trên cây hôm nay lớp bỏ qua đọc 0** — link `cargo-deny` gây ra item 72 đã được viết lại thành URL
+trần từ trước, nên không còn là link. R72-1 là thứ tái hiện nó.
+
+**Manager sửa ba câu trong reference mới trước khi commit**, cả ba sai sự thật: (1) mở bài nói gate
+cũ *"would have stayed silent"* — thật ra gate cũ **đỏ sai**; (2) nói hai link sai thật nằm ở
+*"`a-shallow-clone-…`'s sibling case"* — thật ra ở `crates/engine/src/dispatch.rs` và
+`crates/session/src/journal.rs`, như docstring của script ghi; (3) *"would have reported"* — nó đã
+báo thật, và bằng chứng là bản nháp của chính plan này đỏ trên đúng URL đó (dòng 423-425).
+
+**Reversal** (developer chạy cả năm, đúng dự đoán; manager tự chạy lại R72-2 và R72-4 trong worktree):
+
+```
+trước (cây chưa đổi)   373 files, 1990 links, 0 absolute URLs naming a file in this repository
+sau                    374 files, 1993 links, 0 absolute URLs …, 0 foreign URLs sharing only a
+                       filename with this repository (not judged) — no dead internal links
+R72-1 cargo-deny CHANGELOG.md          không đỏ; 1 foreign URLs … (not judged)
+R72-2 fixbolt/docs/decisions/ADR-0001  FAIL: 1 link(s) name a repository file by absolute URL
+                                       this repository has docs/decisions/ADR-0001-relationship-to-quickfix.md
+R72-3 tmthang86/fixbolt/…/CHANGELOG.md FAIL … this repository has CHANGELOG.md
+R72-4 fixbolt/CHANGELOG.md (giới hạn)  không đỏ; 1 foreign URLs … (not judged)
+control tmthang86/fixbolt-other/…      không đỏ; đếm vào lớp bỏ qua — so theo đoạn, không theo tiền tố
+python3 -m py_compile                  compile-exit=0
+```
