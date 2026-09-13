@@ -54,8 +54,8 @@ const LEN_MAX: usize = 30;
 /// Milliseconds since 0000-01-01T00:00:00Z, or `None` if `s` is not a
 /// `UTCTimestamp`.
 ///
-/// Rejects rather than repairs: a field whose length is not [`LEN_SECONDS`] or
-/// between `LEN_SECONDS + 2` and [`LEN_MAX`], or that holds a digit out of
+/// Rejects rather than repairs: a field whose length is not `LEN_SECONDS` (17) or
+/// between `LEN_SECONDS + 2` and `LEN_MAX` (30), or that holds a digit out of
 /// range, is not a timestamp. The session
 /// turns `None` into a refusal, which is what `1d_InvalidLogonBadSendingTime`
 /// asks for — and, until 2026-09-08, is also what a *valid* microsecond stamp

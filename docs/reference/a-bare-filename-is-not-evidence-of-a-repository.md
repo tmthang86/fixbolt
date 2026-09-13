@@ -80,7 +80,73 @@ shared segment is barely a claim at all. The fix here is not a smarter heuristic
 filename; it is asking whether the claim is strong enough to act on, and saying out loud
 when it is not.
 
+## A different hole in the same gate: a real tail is not evidence of the right path
+
+`[measured 2026-09-13]` Rule (b) closed the false red. It left a true silence right next to
+it, found while proving (b) and (c) in the review of PR #69: `names_a_repo_file` only ever
+matches a URL by finding a **suffix that is itself a real file**. A link reading
+`https://github.com/tmthang86/fixbolt/blob/main/DESIGN.md` — this repository's own owner
+and name, a well-formed `blob/main/…` file link, and a path this repository does not have
+at that spot (the real file is `docs/DESIGN.md`) — has no matching suffix anywhere in the
+tree, so the tail search finds nothing and reports nothing. The wrong link and no link at
+all look identical to a check that only ever asks "does some tail of this match a real
+file?" and never asks "does *this* path exist?"
+
+**The hole was wider than that one case.** `crates/library/README.md` is exempted from the
+"use a relative path" message because it is included into rustdoc and published to
+crates.io and docs.rs, where a relative link into `docs/` breaks — so it must cite its own
+repository by absolute URL. That exemption was granted the moment *any* suffix of the URL
+matched a real file, which is not the same fact as the URL's own path existing. A README
+link reading `.../fixbolt/blob/main/crates/docs/GUIDE.md` (wrong — the real file is
+`docs/GUIDE.md`, not `crates/docs/GUIDE.md`) was counted "checked" solely because the tail
+`docs/GUIDE.md` exists somewhere in the tree. The README's own exemption became the reason
+its own broken link went unseen.
+
+**The fix is not a longer tail search — it is reading the URL's own path and testing it
+directly**, for exactly the URLs where that path is knowable: this repository's own
+`github.com` address, current name or a former one, with a verb (`blob`, `tree`, `raw`,
+`blame`) that names a path after the ref. `commit/<sha>` is excluded on purpose — the sha is
+the whole address, there is no path segment after it to test. The ref is read as exactly one
+path segment (the way `remark-validate-links` reads it — see the module docstring); a ref
+containing `/` is not recognised, so everything past its first segment is read as part of
+the path, which turns a multi-segment ref into a reported wrong path rather than a silent
+pass. `os.path.exists`, not `os.path.isfile`: a `tree/` URL names a directory, and a
+directory link should be findable, not treated as "not a file". The README's exemption
+still waives exactly one thing — "must be relative" — never "must exist": a wrong path in
+the README fails the build precisely because it is now checked at all, same as anywhere
+else in the repository.
+
+**An own-repository URL this rule cannot check by path** — `actions/…`, `pull/…`,
+`commit/<sha>`, or the bare repository root — is counted rather than dropped again, printed
+in the summary as a URL "that is not a file link (not judged)", the same choice already made
+for a bare-filename match outside `OWN_REPO` above. Below a floor of three — the number
+`crates/library/README.md` alone always carries — the rule is read as having stopped
+matching (a renamed verb, a shifted segment index) rather than the repository having started
+citing itself less, and fails the build rather than passing quietly on zero.
+
+## Rule (d) itself had gone silent on cases nothing above tests for
+
+`[measured 2026-09-13]` a senior review of PR #69, checking rule (d) rather than trusting
+it, found it silent on a verb-less own-repository URL (`.../fixbolt/docs/GUIDE.md` — no
+`blob`/`tree`/`raw`/`blame` — was counted "not a file link" without ever trying rule (a)'s
+tail search first) and on two link forms it never read at all: `<https://...>` autolinks —
+the spelling rustdoc's `-D warnings` (ADR-0066) requires for a bare URL in a doc comment —
+and `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` URLs. Both are fixed: a
+verb-less own-repository URL now falls through to rule (a)'s tail search before being
+counted silent, and `AUTOLINK`/`RAW_HOST` read the other two forms the same way (d) already
+reads a `blob` URL. A fourth: the existence test used `os.path.exists`, which macOS's
+default filesystem resolves case-insensitively — `docs/design.md` reads as the real
+`docs/DESIGN.md` on the machine this was written on and fails the same link on the Linux box
+that gates this repository — now compared segment-by-segment against `os.listdir`. Left as
+stated limits, not fixed: a `%2F`-encoded `/` inside a ref can still hide a multi-segment ref
+from the "one segment" check; a `fixbolt.git/...` URL does not match `OWN_REPO`; and GitHub's
+`edit`/`commits` (plural) verbs are not in `OWN_REPO_PATH_VERBS`.
+
 ## Related
+
+- [a-linux-only-module-is-invisible-to-a-mac-gate](a-linux-only-module-is-invisible-to-a-mac-gate.md)
+  — the same shape one gate over: a check that is green about a configuration it never
+  actually looked at, rather than about one it looked at and approved.
 
 - [a-matcher-excluded-the-separator-every-real-name-uses](a-matcher-excluded-the-separator-every-real-name-uses.md)
   — the same family from the opposite direction: a comparison built to reject a substring

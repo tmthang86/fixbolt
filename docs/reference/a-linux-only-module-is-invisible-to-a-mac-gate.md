@@ -29,7 +29,7 @@ ring's own switch for building without a target libc:
 export CC_x86_64_unknown_linux_gnu=clang
 export CFLAGS_x86_64_unknown_linux_gnu="--target=x86_64-unknown-linux-gnu -DRING_CORE_NOSTDLIBINC=1 -ffreestanding"
 export AR_x86_64_unknown_linux_gnu=ar
-RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" \
+RUSTDOCFLAGS="-D warnings" \
   cargo hack doc --workspace --no-deps --feature-powerset --depth 2 --keep-going \
   --target x86_64-unknown-linux-gnu
 ```

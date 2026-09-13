@@ -219,12 +219,18 @@ jobs:
       # Same family as STATUS.md item 57 and
       # docs/reference/feature-flags-unify-across-a-workspace.md: a gate that
       # reports ok about something it was never handed.
-      - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo hack doc --workspace --no-deps --feature-powerset --depth 2 --keep-going
+      #
+      # `-D warnings`, not two named lints: STATUS.md item 83 found
+      # `private_intra_doc_links` warn-and-ignored here, and naming it would
+      # only have closed that one instance — `bare_urls` and four more
+      # warn-by-default rustdoc lints were next in line. ADR-0066.
+      - run: RUSTDOCFLAGS="-D warnings" cargo hack doc --workspace --no-deps --feature-powerset --depth 2 --keep-going
 
       # Every feature on at once — not a member of the depth-two powerset
       # (see the job comment). The doc step is the item-61 set, restored.
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --workspace --no-deps --all-features
+      # `-D warnings`: ADR-0066, same reasoning as the powerset doc step above.
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
   # CLAUDE.md's first paragraph: this repository is going to be published, and
   # every commit is treated as already public. Nothing looked at what the
