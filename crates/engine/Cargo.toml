@@ -58,7 +58,7 @@ rustls = { version = "0.23.43", default-features = false, features = [
 # ADR-0018 answered the load-bearing question with a measurement: this drives a
 # plain non-blocking socket with no async runtime, under four conditions that
 # `scripts/check-ktls-on-a-plain-socket.sh` re-proves on the kernel of the day.
-ktls-core = { version = "0.0.5", features = ["shim-rustls"], optional = true }
+ktls-core = { version = "0.0.5", features = ["shim-rustls", "tls13-key-update"], optional = true }
 
 # The 59 acceptance definitions are this crate's gate too — the same files,
 # through a real socket rather than a closure (CLAUDE.md §2 rule 3).

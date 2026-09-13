@@ -1023,6 +1023,12 @@ mod transport_impl {
     use super::{Handshake, Server, Side, Step, TlsMode, Traffic};
     use crate::transport::{Io, Source, TcpTransport, Transport};
 
+    /// The capacity ktls-core 0.0.5 `recv_tls_record` reserves before reading
+    /// any control record: `u16::MAX + 5` (`ffi.rs:110`). Taken once, at the
+    /// handover, so reading one never allocates — see [`TlsTransport`]'s
+    /// `advance`. 64 KiB per kernel-mode connection, for as long as it lives.
+    const CONTROL_RECORD_BUF: usize = u16::MAX as usize + 5;
+
     /// What the socket is doing right now.
     enum Stage<S: Side> {
         /// Still negotiating. `recv`/`send` pump it and report [`Io::Idle`].
@@ -1203,7 +1209,26 @@ mod transport_impl {
                 self.stage = Stage::Broken(io::ErrorKind::Unsupported);
                 return Err(io::ErrorKind::Unsupported);
             }
-            self.stage = Stage::Kernel(Box::new(Context::new(kconn, None)));
+            // **Pre-sized, inside the handshake carve-out, and the size is
+            // ktls-core's rather than a guess.** Every control record after the
+            // handover — a client's session tickets, an alert, a KeyUpdate — is
+            // read by ktls-core 0.0.5 `recv_tls_record` (`ffi.rs:110`), which
+            // first calls `reserve(u16::MAX + 5)` on this buffer. `None` starts
+            // an empty `Vec`, so the first such record allocated 64 KiB on the
+            // engine thread. With the capacity taken here that `reserve` is a
+            // no-op: the buffer's length stays 0, because the engine never
+            // calls `Buffer::read`/`drain`, the only callers of the
+            // `shrink_to(65536)` in `Buffer::reset` (`utils.rs:210-214`), and
+            // the one branch that fills it — application data read as a control
+            // record, `context.rs:286-295` — is not reached after a `read(2)`
+            // that said `EIO`, which means a control record is at the head.
+            // A 16 KiB + 5 buffer — one TLS record — would not do: `reserve`
+            // asks for 65 540 regardless of the record.
+            // Proven by `tests/tls_key_update.rs::a_key_update_allocates_nothing_after_the_handover`
+            // (no allocation of this size on either side; rustls's own key schedule
+            // still allocates four boxes per rekey, which that test bounds and names).
+            let buffer = ktls_core::Buffer::new(Vec::with_capacity(CONTROL_RECORD_BUF));
+            self.stage = Stage::Kernel(Box::new(Context::new(kconn, Some(buffer))));
             Ok(())
         }
 
