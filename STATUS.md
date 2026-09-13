@@ -70,6 +70,15 @@ them. Steps **5a, 5b, 5c, 6a, 6b, 6c** (with 6c-2, 6c-3, 6c-4) and **7a** of
 [the `tls` plan](docs/plans/2026-09-04-tls.md) are built. **Two steps remain and both need the §9
 machine**: 6-M (three §8 numbers) and 7b (`DESIGN.md` §8/§9 and `CONFORMANCE.md`).
 
+**`[2026-09-13]` §9's last box, closed on the commit it asks about.** PR
+[#66](https://github.com/tmthang86/fixbolt/pull/66) merged as **`8b4763e`**, no-ff. The closing
+commit `5693c91` was **14 of 14**, run
+[`34740565981`](https://github.com/tmthang86/fixbolt/actions/runs/34740565981); **the merge commit
+itself is green**, run [`34741002974`](https://github.com/tmthang86/fixbolt/actions/runs/34741002974),
+**14 jobs of 14**; and **`git diff 5693c91 8b4763e` is empty**, so the branch's green transfers to
+the merge exactly rather than by assumption. `interop`, `bench` and `deny` — the three neither desk
+can run for itself — are among the 14.
+
 ### What it can do that it could not
 
 `TlsTransport<S: Side>` — the transport is generic over the side, `Server` and `Client` are
