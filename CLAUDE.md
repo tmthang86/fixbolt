@@ -77,7 +77,7 @@ the list. Each script's header states what it cannot see; read it before trustin
 
 | Rule | Check | Note |
 |---|---|---|
-| 1 | `crates/*/benches/alloc.rs`, run by the `bench` CI job via `scripts/bench.sh`; `tools/w2w` counts allocations on both threads over its timed window and asserts zero | `cargo test` does not run a `harness = false` bench — only the job does |
+| 1 | `crates/*/benches/alloc.rs`, run by the `bench` CI job via `scripts/bench.sh`, each case asserting its own path is live; `tools/w2w` counts allocations on both threads over its timed window and asserts zero | `cargo test` does not run a `harness = false` bench — only the job does |
 | 3 | `crates/conformance`, in process and over a socket | |
 | 4 | `scripts/check-no-kernel-sleep.sh` (`hft`), `scripts/check-standard-gives-the-core-back.sh` (`standard`), `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits` (initiator dial loop) | each script must also be tripped by the wrong mode; `hft` under TLS is unchecked |
 | 6 | `no-default-features` CI job **and** `scripts/check-no-optional-deps.sh`, per crate | cargo unifies features across one invocation — [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md) |
@@ -117,7 +117,7 @@ Docs-as-code: Markdown, in this repo, changed **in the same commit** as the code
 
 | When you change… | You must update |
 |---|---|
-| What a phase must deliver | `PRD.md` §2, and the ADR that moved it |
+| Move work between phases, or change what a phase must deliver | `PRD.md` §2, and the ADR that moved it |
 | Add / remove / rename a crate | `DESIGN.md` §3 + `README.md` layout + `Cargo.toml` members |
 | The public API of any crate | `DESIGN.md`, the crate's rustdoc, `CHANGELOG.md` |
 | A constraint a user must honour and the compiler cannot check | `GUIDE.md` |
@@ -242,7 +242,7 @@ Every unit of work owes this evidence:
 **Failures no gate can see — check by hand, every time:**
 
 - An allocation, a `format!`, or a `String` on a hot path or an error path.
-- A blocking call — `epoll_wait`, a mutex, a `read` without `O_NONBLOCK` — on an `hft` engine thread.
+- A blocking call on the engine thread — `epoll_wait` or a futex on an `hft` hot path; a mutex, or a `read` without `O_NONBLOCK`, in either mode.
 - A timestamp formatted from scratch per message instead of patched from the cache.
 - A `mod` behind a feature in `Cargo.toml` but not behind `#[cfg]` in `lib.rs`.
 - A feature combination no gate builds (e.g. `--no-default-features --features <one>`).
@@ -296,6 +296,8 @@ costs more than a re-run; reasoning the brief cannot spell out. The architect is
 - **One file, one writer at a time.** Parallel developers get disjoint files or a worktree each.
 - **A subagent's green is a claim** (§10). The manager re-runs the gate that closes a step on the
   commit it closes, and commits; developers do not commit.
+- **A surprise is reported and written down.** A subagent that hit a surprise reports it; the
+  manager writes it into `docs/reference/` in the same commit (§4).
 - **A reviewer is a different lens, not a second copy**: a fresh context given the plan, not the
   manager's reasoning. One senior review per step that touches §2, one per pull request otherwise.
 - **Escalate, do not re-brief.** A developer that reports ambiguity or exceeds its brief goes one

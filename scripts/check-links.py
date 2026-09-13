@@ -45,19 +45,26 @@ GitHub URL rather than a bare filename.** `[measured 2026-09-13]` a citation of
 `owner/repo/blob/<ref>/<path>` URL naming a file this repository also happens
 to have at that same tail — was read as this repository's own file linked the
 wrong way. **(c)**, checked before (b): a `github.com` URL whose segments
-parse as `owner/repo/(blob|tree|raw|commit|blame)/<ref>/<path...>` and whose
-repo segment is neither this repository's current name nor a former one
-(`FORMER_NAMES`, below) names another repository explicitly and is not judged
-at all — counted in its own summary line, never silently dropped. This is
-narrower than it sounds: a *malformed* GitHub URL (no `blob/<ref>`, the wrong
-segment count — the `fixbolt/docs/decisions/...` case rule (b) already
-catches) and every non-GitHub host still fall through to (b) unchanged, and a
-well-formed URL whose repo segment **is** `fixbolt` or `nanofixengine` under
-the wrong owner is still judged by (b), because that is a wrong-organisation
-citation of this repository, not another one. The limit this still leaves:
-a URL to this repository's file under a wrong owner **and** a repo name that
-is neither current nor former (a fork's URL, say, or a repository nobody has
-renamed from) now passes unjudged, counted.
+parse as `owner/repo/(blob|tree|raw|commit|blame)/<ref>/<path...>`, whose
+owner segment is **not** this repository's own owner (`OWN_REPO`, below,
+compared case-insensitively), and whose repo segment is neither this
+repository's current name nor a former one (`FORMER_NAMES`, below) names
+another repository explicitly and is not judged at all — counted in its own
+summary line, never silently dropped. `[measured 2026-09-13]` the owner check
+was added after a senior review found the first version of (c) judged only
+the repo segment: `https://github.com/tmthang86/fixbolt-engine/...` and
+`https://github.com/tmthang86/fixbot/...` — this repository's own owner, an
+unfamiliar repo name — were both waved through as foreign and never checked.
+This is narrower than it sounds: a *malformed* GitHub URL (no `blob/<ref>`,
+the wrong segment count — the `fixbolt/docs/decisions/...` case rule (b)
+already catches) and every non-GitHub host still fall through to (b)
+unchanged, and a well-formed URL whose repo segment **is** `fixbolt` or
+`nanofixengine` under the wrong owner is still judged by (b), because that is
+a wrong-organisation citation of this repository, not another one. The limit
+this still leaves: a well-formed URL under **another owner's** repository
+whose tail happens to match a file in this repository (a fork, or an
+unrelated repository that merely shares a relative path) now passes
+unjudged, counted.
 
 Anchors (#section) are stripped and not verified — verifying them means parsing
 every heading, and the failure mode of a wrong anchor is mild compared with a
@@ -164,11 +171,16 @@ def names_a_repo_file(root, url):
     own = head == list(OWN_REPO)
 
     # (c) a well-formed github.com file URL naming a repository that is
-    # neither this one nor a former name of this one is a citation of another
+    # neither this one nor a former name of this one, **and whose owner
+    # segment is not this repository's own owner**, is a citation of another
     # repository, full stop — never judged, whatever tail it happens to
     # share with this repository. Checked before (b)'s tail search, which
     # cannot otherwise tell "this repo's file, wrong path" from "another
-    # repo's file that happens to sit at the same relative path".
+    # repo's file that happens to sit at the same relative path". The owner
+    # check keeps a wrong or misspelled repository name **under this
+    # repository's own owner** from being waved through as "foreign": that
+    # is far more likely a mistaken citation of this repository than a real
+    # other repository, so it falls through to (b) and is judged there.
     if (
         not own
         and head
@@ -177,6 +189,7 @@ def names_a_repo_file(root, url):
         and parts[3] in GITHUB_FILE_VERBS
         and parts[4]
         and parts[2].lower() not in (OWN_REPO[2],) + FORMER_NAMES
+        and parts[1].lower() != OWN_REPO[1].lower()
     ):
         return None, None, True
 
