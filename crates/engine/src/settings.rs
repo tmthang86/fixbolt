@@ -2868,9 +2868,10 @@ mod doc_table {
 
     /// The familiar spellings of a boolean, written out rather than derived:
     /// exactly the 22 strings YAML 1.1's boolean type accepts
-    /// (<https://yaml.org/type/bool.html>), which in lower case are also what
-    /// Python's `configparser` accepts, case-insensitively, beside `1` and `0`
-    /// (<https://docs.python.org/3/library/configparser.html>). Literal,
+    /// (<https://yaml.org/type/bool.html>). Python's `configparser` accepts,
+    /// case-insensitively, every one of them except `y` and `n`, plus `1` and
+    /// `0` (`RawConfigParser.BOOLEAN_STATES`,
+    /// <https://docs.python.org/3/library/configparser.html>). Literal,
     /// because computing the case variants means slicing a string, and
     /// `indexing_slicing` is `deny`.
     const SPELLINGS: &[&str] = &[
@@ -3497,6 +3498,22 @@ mod doc_table {
                     .is_some_and(|p| is_about_the_value(p) || baseline.as_ref() != Some(p))
             };
             if says_positive {
+                // **The control comes first.** The predicate above counts any
+                // refusal the sample does not already give, so a refusal that
+                // is about *where* the key was written reads as a refusal of
+                // `0`. `[measured 2026-09-13]` with `ReconnectInterval` moved
+                // into the acceptor sample and its parser taking `0`, this
+                // branch read `ok` on `Problem::WrongRole`. `1` is positive, so
+                // a refusal of `1` means the refusal of `0` says nothing about
+                // the value. The zero-allowed branch needs no control — an
+                // unrelated refusal turns it red, never green — and the range
+                // branch has one already: `low` must not be refused, and
+                // `high + 1` must be refused narrowly, by `is_about_the_value`.
+                let control = refusal_of("1");
+                assert!(
+                    !refused_for_its_value(&control),
+                    "docs/CONFIGURATION.md §1: {name} says positive but the parser refuses {name}=1 as well ({control:?}) — so a refusal of {name}=0 would say nothing about the value"
+                );
                 let refusal = refusal_of("0");
                 assert!(
                     refused_for_its_value(&refusal),
