@@ -21,7 +21,10 @@
 //! test here also reads `/proc/net/tls_stat`: `TlsRxRekeyReceived` says the
 //! kernel saw the KeyUpdate and paused decryption, `TlsRxRekeyOk` says this
 //! engine gave it the new receive key, and `TlsTxRekeyOk` says it rekeyed its
-//! own send side in answer to `update_requested` — which rustls always asks for.
+//! own send side in answer to `update_requested` — which rustls always asks
+//! for, at both ends. The one case rustls cannot produce, a peer that sets
+//! `update_not_requested`, is driven by a peer whose own TLS is on the kernel,
+//! writing the five bytes of the handshake message itself (section 4).
 //!
 //! # What this file does NOT prove
 //!
@@ -33,10 +36,12 @@
 //!   having no `TlsRxRekey*` counters at all, and say so in a sentence of
 //!   their own. No such kernel was available to run that sentence red.
 //! - **That a KeyUpdate allocates literally nothing.** rustls's key schedule
-//!   boxes four HKDF expanders per rekey, which is not this engine's code and
-//!   is ADR-0063's second named carve-out from non-negotiable 1. The
-//!   allocation test counts those four **exactly** and asserts nothing else.
-//!   A client's session tickets, which rustls would store, are dropped unread
+//!   boxes **two** HKDF expanders for every direction it rekeys — four when
+//!   the peer set `update_requested` and this end answers, two when it did
+//!   not — which is not this engine's code and is ADR-0063's second named
+//!   carve-out from non-negotiable 1. The two allocation tests count those
+//!   boxes **exactly**, one request byte each, and assert nothing else. A
+//!   client's session tickets, which rustls would store, are dropped unread
 //!   and count zero (ADR-0063 decision 1, step 6c-2).
 //! - **What a rekey costs in latency.** Nothing here times one.
 #![cfg(all(feature = "tls", feature = "standard", target_os = "linux"))]
@@ -59,6 +64,7 @@ use std::cell::Cell;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::ops::Range;
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -214,14 +220,25 @@ fn counted<T>(f: impl FnOnce() -> T) -> (T, Window) {
 /// large inside a window is that buffer growing.
 const CONTROL_RECORD_BUF: usize = u16::MAX as usize + 5;
 
-/// rustls 0.23.44 with `ring` (the version `Cargo.lock` resolves):
-/// `KeyScheduleTraffic::refresh_traffic_secret` boxes an HKDF expander twice
-/// (`expander_for_okm`, reached from `derive_next` and from `expand_secret`),
-/// once per direction — the receive key for the peer's KeyUpdate and the send
-/// key for `update_requested`: `rustls-0.23.44/src/tls13/key_schedule.rs:565-580,
-/// 623-628, 808-814`. `[measured 2026-09-13]` 4 allocations, by backtrace.
+/// rustls 0.23.44 with `ring` (the versions `Cargo.lock` resolves): **two
+/// boxes for every direction rekeyed.** `KeyScheduleTraffic::refresh_traffic_secret`
+/// boxes an HKDF expander twice — `expander_for_okm`, reached once from
+/// `derive_next` and once from `expand_secret` — and it runs once per
+/// direction: `rustls-0.23.44/src/tls13/key_schedule.rs:565-580, 623-628,
+/// 808-814`.
+///
+/// **How many directions is the peer's to decide, not this engine's.**
+/// ktls-core rekeys the receive side for every KeyUpdate and the send side only
+/// when the peer set `update_requested`
+/// (`ktls-core-0.0.5/src/context.rs:436-475`), so a window reads **4** under
+/// `update_requested` and **2** under `update_not_requested` — and there is no
+/// third number, because any other request byte is refused with an alert
+/// (`context.rs:400-415`). `[measured 2026-09-13]` 4, by backtrace, in
+/// `a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces`;
+/// `[measured 2026-09-13]` 2, in
+/// `a_key_update_without_update_requested_rekeys_one_direction_and_allocates_two_boxes`.
 /// Not this engine's code and not removable from it — ADR-0063 decision 2.
-const RUSTLS_KEY_SCHEDULE_ALLOCS: usize = 4;
+const RUSTLS_BOXES_PER_DIRECTION: usize = 2;
 
 /// The size of each of those boxes: a `Box<dyn HkdfExpander>` returned by
 /// `Hkdf::expander_for_okm` (`rustls-0.23.44/src/crypto/tls13.rs:134-168`),
@@ -238,6 +255,18 @@ const RUSTLS_HKDF_EXPANDER_BOX: usize = 184;
 /// The workspace lock file, located at **compile** time so that a test run from
 /// any working directory finds it.
 const CARGO_LOCK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock");
+
+/// The rustls and `ring` the two constants above were derived from, and which
+/// `Cargo.lock` resolved when they were measured.
+///
+/// `Cargo.toml` asks for `rustls = "0.23.43"` — a caret requirement, which is a
+/// **minimum**, deliberately (the plan's Sửa 8 decision 1: pinning with `=` in a
+/// library's manifest makes every consumer that needs another 0.23.x
+/// unresolvable, and two security advisories have already landed inside the
+/// 0.23 series). So the numbers belong to the lock, and only the lock can say
+/// whether they still do.
+const DERIVED_FROM_RUSTLS: &str = "0.23.44";
+const DERIVED_FROM_RING: &str = "0.17.14";
 
 /// Every version of `name` that `Cargo.lock` resolves, as `"0.23.44"`, or a
 /// sentence saying where to look when it cannot be read.
@@ -269,6 +298,29 @@ fn locked_versions(name: &str) -> String {
     } else {
         found.join(" and ")
     }
+}
+
+/// **A bump that leaves the numbers unchanged must still touch this file.**
+///
+/// Called **last**, after the count and the size have been asserted, so that a
+/// lock bump which does move a number reds the sentence about allocation first
+/// and this one never at all. What it is for is the other case: a bump that
+/// changes nothing here would otherwise pass in silence while ADR-0063 and this
+/// file went on naming 0.23.44 and 0.17.14 for ever — a document that rots in
+/// the direction nothing reads. Same shape as `scripts/check-indexing-debt.sh`:
+/// the number may move, but not without a hand on the file.
+fn assert_the_lock_is_what_the_numbers_came_from(who: &str) {
+    let rustls = locked_versions("rustls");
+    let ring = locked_versions("ring");
+    assert_eq!(
+        (rustls.as_str(), ring.as_str()),
+        (DERIVED_FROM_RUSTLS, DERIVED_FROM_RING),
+        "{who}: Cargo.lock resolves rustls {rustls} / ring {ring}; the constants \
+         RUSTLS_BOXES_PER_DIRECTION and RUSTLS_HKDF_EXPANDER_BOX were derived \
+         from rustls {DERIVED_FROM_RUSTLS} / ring {DERIVED_FROM_RING} — this test \
+         already re-measured against the new lock (it passed above); update both \
+         DERIVED_FROM_* strings and add a dated line to ADR-0063's revision log"
+    );
 }
 
 /// **Serialises the tests of this file.** `/proc/net/tls_stat` is one set of
@@ -968,7 +1020,15 @@ where
     // **The sender has written and gone quiet** before the window opens: the
     // KeyUpdate and the record under the new key are both on the wire.
     peer.send_app(DATA);
+    exchange_counted(tls)
+}
 
+/// The engine side of one exchange, with **every** `recv` and `send` counted:
+/// read `DATA`, then answer with `DATA`. Shared by both KeyUpdate tests, which
+/// differ only in the peer that wrote the KeyUpdate and what it asked for.
+fn exchange_counted<S: fixbolt_engine::tls::Side>(
+    tls: &mut TlsTransport<S>,
+) -> (Window, Vec<u8>, Io) {
     let mut total = Window::default();
     let mut got = [0u8; 64];
     let mut len = 0usize;
@@ -1006,10 +1066,18 @@ where
     (total, got[..len].to_vec(), last)
 }
 
-/// **A KeyUpdate after the handover allocates, on either side of
+/// **A KeyUpdate that asks for an answer allocates, on either side of
 /// `TlsTransport`, exactly the boxes rustls's key schedule forces — and nothing
 /// in this engine or in ktls-core.** ADR-0063 decision 2, the second named
 /// carve-out from non-negotiable 1; asserted **exactly**, decision 3.
+///
+/// # This is the `update_requested` case, and the request byte is the peer's
+///
+/// rustls only ever sets `update_requested`, whether `refresh_traffic_keys` is
+/// called by hand or reached at its own confidentiality limit
+/// (`rustls-0.23.44/src/tls13/key_schedule.rs:528-533`), so a rustls peer can
+/// only ever produce this case. `a_key_update_without_update_requested_…` owns
+/// the other, with a peer that writes the handshake message itself.
 ///
 /// # Why exactly, and not "nothing" or "at most"
 ///
@@ -1021,8 +1089,9 @@ where
 /// `Hkdf` trait's signature returns a box, so no provider avoids it and no
 /// engine code can. Step 6c shipped `<= 4` under a name that said "nothing";
 /// a ceiling is green when the number moves in either direction, so this test
-/// asserts `== 4` and `== 184`, and a rustls bump that changes either is a red
-/// that says to re-derive both constants and update ADR-0063.
+/// asserts `2 × 2` directions and `== 184`, and a rustls or `ring` bump that
+/// changes either is a red that says to re-derive the constant and update
+/// ADR-0063.
 ///
 /// On the initiator side the session tickets are the first control records,
 /// not the KeyUpdate; they are read and set aside before this window opens,
@@ -1056,7 +1125,7 @@ fn a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces() {
             "acceptor: the reply did not decrypt"
         );
         assert_rekeyed(before, "acceptor");
-        assert_key_schedule_only(window, "acceptor");
+        assert_key_schedule_only(window, "acceptor", Rekeyed::ReceiveThenSend);
     }
 
     // --- The initiator: TlsTransport<Client>, a rustls server as the peer.
@@ -1078,20 +1147,68 @@ fn a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces() {
             "initiator: the reply did not decrypt"
         );
         assert_rekeyed(before, "initiator");
-        assert_key_schedule_only(window, "initiator");
+        assert_key_schedule_only(window, "initiator", Rekeyed::ReceiveThenSend);
     }
 }
 
-/// The three assertions on a KeyUpdate window, in the order that names the
-/// cause best: ktls-core's buffer growing first, then the count, then the size.
+/// Which directions one KeyUpdate rekeyed. **The peer's request byte decides**,
+/// and the box count follows from it at [`RUSTLS_BOXES_PER_DIRECTION`] each —
+/// which is why the count lives here as a mechanism and not as a single number.
+#[derive(Clone, Copy)]
+enum Rekeyed {
+    /// The peer set `update_requested`: the receive side for its KeyUpdate,
+    /// then the send side to answer it. RFC 8446 §4.6.3, and the only thing
+    /// rustls ever sends.
+    ReceiveThenSend,
+    /// The peer set `update_not_requested`: the receive side alone. Answering
+    /// would be the defect.
+    ReceiveOnly,
+}
+
+impl Rekeyed {
+    const fn directions(self) -> usize {
+        match self {
+            Self::ReceiveThenSend => 2,
+            Self::ReceiveOnly => 1,
+        }
+    }
+
+    fn boxes(self) -> usize {
+        RUSTLS_BOXES_PER_DIRECTION * self.directions()
+    }
+
+    /// The half of a failing message that says **which direction and why** —
+    /// without it, `count == 2` and `count == 4` fail with the same sentence
+    /// and the reader cannot tell which case was under test.
+    const fn why(self) -> &'static str {
+        match self {
+            Self::ReceiveThenSend => {
+                "the peer set update_requested, so rustls rekeyed two directions: \
+                 the receive side for the peer's KeyUpdate, then the send side \
+                 for the answer this end owes it"
+            }
+            Self::ReceiveOnly => {
+                "the peer set update_not_requested, so rustls rekeyed one \
+                 direction, the receive side, and this end owes no answer at all"
+            }
+        }
+    }
+}
+
+/// The assertions on a KeyUpdate window, in the order that names the cause
+/// best: ktls-core's buffer growing first, then the count, then the size, then
+/// every size, and last of all the lock the two numbers came from.
 ///
 /// **Both numbers are owned by two crates, and the messages say which.**
-/// `RUSTLS_KEY_SCHEDULE_ALLOCS` is how many boxes rustls's key schedule makes;
-/// `RUSTLS_HKDF_EXPANDER_BOX` is how big `ring`'s HMAC key inside one of them
-/// is. A bump of **either** moves a number here, so each message names both at
-/// their resolved versions and says which shape points at which — a message
-/// that blamed only rustls sent the next reader to the wrong changelog.
-fn assert_key_schedule_only(window: Window, who: &str) {
+/// `RUSTLS_BOXES_PER_DIRECTION` is how many boxes rustls's key schedule makes
+/// for one direction; `RUSTLS_HKDF_EXPANDER_BOX` is how big `ring`'s HMAC key
+/// inside one of them is. A bump of **either** moves a number here, so each
+/// message names both at their resolved versions and says which shape points at
+/// which — a message that blamed only rustls sent the next reader to the wrong
+/// changelog.
+fn assert_key_schedule_only(window: Window, who: &str, rekeyed: Rekeyed) {
+    let boxes = rekeyed.boxes();
+    let why = rekeyed.why();
     assert!(
         window.largest < CONTROL_RECORD_BUF,
         "{who}: {window:?} — an allocation of {} bytes while handling the \
@@ -1101,17 +1218,18 @@ fn assert_key_schedule_only(window: Window, who: &str) {
     );
     assert_eq!(
         window.count,
-        RUSTLS_KEY_SCHEDULE_ALLOCS,
+        boxes,
         "{who}: {window:?} — TlsTransport::recv/send allocated a number of times \
-         other than the {RUSTLS_KEY_SCHEDULE_ALLOCS} rustls key-schedule boxes \
-         while handling the counterparty's KeyUpdate and answering under the new \
-         key. Resolved here: rustls {rustls}, ring {ring}, ktls-core {ktls} \
-         (from {CARGO_LOCK}). Read `sizes` above: {RUSTLS_KEY_SCHEDULE_ALLOCS} \
-         entries of {RUSTLS_HKDF_EXPANDER_BOX} plus something else is an \
-         allocation this engine or ktls-core added, and the odd size names it; \
-         a different count of {RUSTLS_HKDF_EXPANDER_BOX}-byte entries is rustls \
-         changing how many expanders its key schedule boxes \
-         (tls13/key_schedule.rs). Re-derive both constants and update ADR-0063",
+         other than the {boxes} rustls key-schedule boxes this case owes: {why}, \
+         at {RUSTLS_BOXES_PER_DIRECTION} boxes a direction. Resolved here: rustls \
+         {rustls}, ring {ring}, ktls-core {ktls} (from {CARGO_LOCK}). Read \
+         `sizes` above: {boxes} entries of {RUSTLS_HKDF_EXPANDER_BOX} plus \
+         something else is an allocation this engine or ktls-core added, and the \
+         odd size names it; a different count of {RUSTLS_HKDF_EXPANDER_BOX}-byte \
+         entries is rustls changing how many expanders its key schedule boxes \
+         (tls13/key_schedule.rs), or ktls-core changing how many directions it \
+         rekeys for this request byte (context.rs). Re-derive \
+         RUSTLS_BOXES_PER_DIRECTION and update ADR-0063",
         rustls = locked_versions("rustls"),
         ring = locked_versions("ring"),
         ktls = locked_versions("ktls-core"),
@@ -1129,6 +1247,15 @@ fn assert_key_schedule_only(window: Window, who: &str) {
         rustls = locked_versions("rustls"),
         ring = locked_versions("ring"),
     );
+    assert_eq!(
+        &window.sizes[..window.kept],
+        vec![RUSTLS_HKDF_EXPANDER_BOX; boxes].as_slice(),
+        "{who}: {window:?} — the window holds {boxes} allocations and the largest \
+         is {RUSTLS_HKDF_EXPANDER_BOX}, but they are not all that size, so one of \
+         them is not a key-schedule box at all and the odd number above names it. \
+         {why}",
+    );
+    assert_the_lock_is_what_the_numbers_came_from(who);
 }
 
 /// **A client's session tickets allocate nothing after the handover.**
@@ -1254,6 +1381,465 @@ fn a_redial_does_a_full_handshake_not_a_resumption() {
                  initiator resumed a TLS session (ADR-0063 decision 1)"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4. The request byte rustls never sets
+// ---------------------------------------------------------------------------
+
+/// `HandshakeType::key_update`, RFC 8446 §4's table of handshake types.
+const KEY_UPDATE: u8 = 24;
+/// `KeyUpdateRequest::update_not_requested`, RFC 8446 §4.6.3: *rekey your
+/// receiving keys, and do not answer.*
+const UPDATE_NOT_REQUESTED: u8 = 0;
+
+/// How many send-side rekeys the **raw peer itself** contributes to the
+/// namespace-wide `TlsTxRekeyOk` for one KeyUpdate: its own, which RFC 8446
+/// §4.6.3 obliges the sender of a KeyUpdate to perform whatever it asked for.
+/// `[measured 2026-09-13]` — see [`assert_rekeyed_receive_side_only`].
+const PEER_TX_REKEYS: u64 = 1;
+
+/// A counterparty whose **own** TLS is on the kernel, so this file can put a
+/// KeyUpdate on the wire byte for byte.
+///
+/// # Why a peer like this has to exist
+///
+/// Nothing in the test kit can send `update_not_requested` on demand. rustls
+/// sets `update_requested` on every KeyUpdate it originates — by hand through
+/// `refresh_traffic_keys` and automatically at its confidentiality limit, both
+/// through `build_key_update_request` — and ktls-core's own
+/// `Context::refresh_traffic_keys` does the same
+/// (`ktls-core-0.0.5/src/context.rs:126-135`). The byte only ever goes out as
+/// an *answer*, which is exactly the message this engine never provokes,
+/// because it never asks (ADR-0063 decision 5). A peer that reaches a real
+/// counterparty — OpenSSL's `SSL_key_update(ssl, SSL_KEY_UPDATE_NOT_REQUESTED)`,
+/// or the JDK when its inbound side is closed — therefore cannot be imitated
+/// with a library here, and the record is written by hand instead:
+/// `send_tls_control_message` is public, the kernel encrypts the five bytes
+/// under the peer's current send key, and the handover that makes that possible
+/// is the one `spikes/ktls/src/tls.rs:86-112` and `tls.rs`'s `push_keys` do.
+struct RawPeer<D> {
+    sock: TcpStream,
+    kconn: rustls::kernel::KernelConnection<D>,
+}
+
+impl<D> RawPeer<D>
+where
+    rustls::kernel::KernelConnection<D>: ktls_core::TlsSession,
+{
+    /// Send a KeyUpdate carrying `request`, then rekey this peer's own send
+    /// side.
+    ///
+    /// **Both halves, always.** RFC 8446 §4.6.3 makes the sender of a KeyUpdate
+    /// update its own sending key whatever it asked of the other end; the
+    /// request byte only decides whether the *receiver* must answer. Without
+    /// the second half the engine's freshly rekeyed receive side could not read
+    /// the next record, and the test would be about a broken peer.
+    fn key_update(&mut self, request: u8) {
+        let mut record = [KEY_UPDATE, 0, 0, 1, request];
+        let sent = ktls_core::ffi::send_tls_control_message(
+            self.sock.as_raw_fd(),
+            ktls_core::ContentType::Handshake,
+            &mut record,
+        )
+        .expect("the kernel encrypts the peer's KeyUpdate under its current send key");
+        assert_eq!(
+            sent,
+            record.len(),
+            "the peer's KeyUpdate went out short, so the engine saw a truncated \
+             handshake message rather than the request byte this test is about"
+        );
+        ktls_core::TlsSession::update_tx_secret(&mut self.kconn)
+            .expect("rustls derives the peer's next send secret")
+            .set(&self.sock)
+            .expect("the kernel takes the peer's next send key");
+    }
+
+    fn send_app(&mut self, data: &[u8]) {
+        spin_write_all(&self.sock, data);
+    }
+
+    /// Read `want` bytes of application data.
+    ///
+    /// A plain `read(2)`: the kernel refuses one for a record that is not
+    /// application data and leaves that record at the head of the queue, so an
+    /// error here is a *diagnosis* — the engine answered a KeyUpdate it should
+    /// not have, or a session ticket reached this socket after the handover.
+    fn read_app(&mut self, want: usize) -> Vec<u8> {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        let mut sweeps = 0usize;
+        while got.len() < want {
+            sweeps += 1;
+            assert!(
+                sweeps < 200_000,
+                "the raw peer never read the reply: {got:?}"
+            );
+            match self.sock.read(&mut buf) {
+                Ok(0) => panic!("the engine closed with {} of {want} bytes read", got.len()),
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::yield_now(),
+                Err(e) => panic!(
+                    "the raw peer's read said {:?}: {e} — the kernel will not hand a \
+                     non-application record to read(2), so a control record is stuck \
+                     at the head of this socket's receive queue: either the engine \
+                     answered a KeyUpdate that asked for no answer, or a session \
+                     ticket arrived after the handover",
+                    e.kind()
+                ),
+            }
+        }
+        got
+    }
+}
+
+fn spin_write_all(sock: &TcpStream, data: &[u8]) {
+    let mut rest = data;
+    let mut sweeps = 0usize;
+    while !rest.is_empty() {
+        sweeps += 1;
+        assert!(sweeps < 200_000, "the raw peer's bytes never went out");
+        match (&*sock).write(rest) {
+            Ok(0) => panic!("the raw peer's socket took nothing"),
+            Ok(n) => rest = &rest[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::yield_now(),
+            Err(e) => panic!("the raw peer's write: {e}"),
+        }
+    }
+}
+
+/// One `recv` on the engine side, uncounted, asserting it is still handshaking.
+/// Both ends live on this thread, so nothing moves unless this moves it.
+fn pump<S: fixbolt_engine::tls::Side>(tls: &mut TlsTransport<S>) {
+    let mut buf = [0u8; 256];
+    match tls.recv(&mut buf) {
+        Io::Idle => {}
+        other => panic!("the engine side said {other:?} while the raw peer was handshaking"),
+    }
+}
+
+/// Drive an **unbuffered** rustls connection through its handshake against a
+/// `TlsTransport` on this same thread, then hand its keys to the kernel and
+/// evaluate to a [`RawPeer`].
+///
+/// A macro rather than a function because `process_tls_records` is inherent on
+/// the client and the server connection types rather than reached through a
+/// trait — there is nothing to be generic over. The shape is
+/// `spikes/ktls/src/tls.rs:86-112`, with two additions the spike did not need:
+/// the engine side is pumped between steps, and the loop does not stop at
+/// `WriteTraffic` but keeps reading until the socket is empty. **The second one
+/// is load-bearing**: an acceptor's rustls writes its session tickets before it
+/// hands over, so those records land here while this end is still in userspace;
+/// left unread they would be handed to the kernel as ciphertext it never
+/// decrypts, and every later `read(2)` would fail on a control record it will
+/// not deliver. Loopback completes delivery inside the writer's own `write`,
+/// so by the time the engine reads ready they are already queued here.
+macro_rules! raw_peer {
+    ($conn:expr, $sock:expr, $tls:expr) => {{
+        use rustls::unbuffered::{ConnectionState, UnbufferedStatus};
+
+        let mut conn = $conn;
+        let sock: TcpStream = $sock;
+        let tls = $tls;
+        let mut incoming = vec![0u8; 32 * 1024];
+        let mut used = 0usize;
+        let mut outgoing = vec![0u8; 32 * 1024];
+        let mut out_used = 0usize;
+        let mut sweeps = 0usize;
+        loop {
+            sweeps += 1;
+            assert!(sweeps < 200_000, "the raw peer's handshake never finished");
+            let UnbufferedStatus { discard, state } =
+                conn.process_tls_records(&mut incoming[..used]);
+            let mut want_read = false;
+            let mut done = false;
+            match state.expect("the engine side's handshake records parse") {
+                ConnectionState::EncodeTlsData(mut s) => {
+                    out_used += s
+                        .encode(&mut outgoing[out_used..])
+                        .expect("a handshake flight fits in 32 KiB");
+                }
+                ConnectionState::TransmitTlsData(s) => {
+                    spin_write_all(&sock, &outgoing[..out_used]);
+                    out_used = 0;
+                    s.done();
+                }
+                ConnectionState::BlockedHandshake => want_read = true,
+                ConnectionState::WriteTraffic(_) => done = true,
+                other => panic!("the raw peer's handshake reached {other:?}"),
+            }
+            if discard > 0 {
+                incoming.copy_within(discard..used, 0);
+                used -= discard;
+            }
+            if out_used > 0 && (want_read || done) {
+                spin_write_all(&sock, &outgoing[..out_used]);
+                out_used = 0;
+            }
+            pump(&mut *tls);
+            if want_read || (done && discard == 0) {
+                match (&sock).read(&mut incoming[used..]) {
+                    Ok(0) => panic!("the engine side closed during the handshake"),
+                    Ok(n) => used += n,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // Nothing more to read. The peer is finished only if it
+                        // was also finished processing what it already had.
+                        if done && discard == 0 {
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                    Err(e) => panic!("the raw peer's handshake read: {e}"),
+                }
+            }
+        }
+        assert_eq!(
+            used, 0,
+            "the raw peer held {used} bytes of ciphertext it never processed when it \
+             handed over — the kernel will never see them and its receive sequence \
+             number has already counted them"
+        );
+        assert_eq!(
+            tls.mode(),
+            TlsMode::Kernel,
+            "the engine side is not on the kernel, so nothing below is about kTLS"
+        );
+        ktls_core::setup_ulp(&sock).expect("the kernel has the tls module");
+        let (secrets, kconn) = conn
+            .dangerous_into_kernel_connection()
+            .expect("the raw peer's handshake is complete and its keys extractable");
+        let version = ktls_core::TlsSession::protocol_version(&kconn);
+        let secrets = ktls_core::ExtractedSecrets::try_from(secrets)
+            .expect("AES-128-GCM, which both ends are narrowed to");
+        ktls_core::TlsCryptoInfoTx::new(version, secrets.tx.1, secrets.tx.0)
+            .expect("the peer's send key is one the kernel carries")
+            .set(&sock)
+            .expect("setsockopt(TLS_TX) on the raw peer");
+        ktls_core::TlsCryptoInfoRx::new(version, secrets.rx.1, secrets.rx.0)
+            .expect("the peer's receive key is one the kernel carries")
+            .set(&sock)
+            .expect("setsockopt(TLS_RX) on the raw peer");
+        RawPeer { sock, kconn }
+    }};
+}
+
+/// The **counterparty's** client configuration for a peer that hands its own
+/// keys to the kernel: [`peer_client_config`] plus `enable_secret_extraction`,
+/// which `dangerous_into_kernel_connection` requires
+/// (`rustls-0.23.44/src/conn.rs:1195-1205`) and which no other peer here needs.
+fn raw_peer_client_config(cert: CertificateDer<'static>) -> Arc<rustls::ClientConfig> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert).expect("the certificate parses");
+    let mut cfg = rustls::ClientConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("TLS 1.3 is available")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    cfg.enable_secret_extraction = true;
+    Arc::new(cfg)
+}
+
+/// [`peer_server_config`] with the same one addition, for the same reason.
+fn raw_peer_server_config(
+    cert: CertificateDer<'static>,
+    key: PrivateKeyDer<'static>,
+) -> Arc<rustls::ServerConfig> {
+    let mut cfg = rustls::ServerConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("TLS 1.3 is available")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)
+        .expect("the certificate matches the key");
+    cfg.enable_secret_extraction = true;
+    Arc::new(cfg)
+}
+
+/// An accepted `TlsTransport<Server>` and a raw kTLS client as its peer —
+/// [`acceptor_pair`] with the peer moved onto the kernel.
+fn raw_acceptor_pair(
+    cert: CertificateDer<'static>,
+    key: PrivateKeyDer<'static>,
+) -> (TlsTransport, RawPeer<rustls::client::ClientConnectionData>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let sock = TcpStream::connect(listener.local_addr().expect("addr")).expect("connects");
+    sock.set_nonblocking(true).expect("non-blocking");
+    let (accepted, _) = listener.accept().expect("accepted");
+    let cfg = fixbolt_engine::tls::server_config(vec![cert.clone()], key).expect("a server config");
+    let mut tls: TlsTransport = TlsTransport::new(
+        TcpTransport::new(accepted).expect("non-blocking"),
+        Handshake::new(
+            rustls::server::UnbufferedServerConnection::new(cfg).expect("a server connection"),
+        ),
+    );
+    let conn = rustls::client::UnbufferedClientConnection::new(
+        raw_peer_client_config(cert),
+        ServerName::try_from("localhost").expect("a valid server name"),
+    )
+    .expect("a client connection");
+    let peer = raw_peer!(conn, sock, &mut tls);
+    (tls, peer)
+}
+
+/// A dialled `TlsTransport<Client>` and a raw kTLS server as its peer —
+/// [`initiator_pair`] with the peer moved onto the kernel.
+fn raw_initiator_pair(
+    cert: CertificateDer<'static>,
+    key: PrivateKeyDer<'static>,
+) -> (
+    TlsTransport<Client>,
+    RawPeer<rustls::server::ServerConnectionData>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let dialled = TcpStream::connect(listener.local_addr().expect("addr")).expect("connects");
+    let (sock, _) = listener.accept().expect("accepted");
+    sock.set_nonblocking(true).expect("non-blocking");
+    let client_cfg =
+        fixbolt_engine::tls::client_config(vec![cert.clone()], None).expect("a client config");
+    let mut tls: TlsTransport<Client> = TlsTransport::with_offload(
+        TcpTransport::new(dialled).expect("non-blocking"),
+        Handshake::new(
+            rustls::client::UnbufferedClientConnection::new(
+                client_cfg,
+                ServerName::try_from("localhost").expect("a valid server name"),
+            )
+            .expect("a client connection"),
+        ),
+        true,
+    );
+    let conn = rustls::server::UnbufferedServerConnection::new(raw_peer_server_config(cert, key))
+        .expect("a server connection");
+    let peer = raw_peer!(conn, sock, &mut tls);
+    (tls, peer)
+}
+
+/// [`first_records`] then [`warm`]'s exchange, for a [`RawPeer`]: every
+/// first-use cost is paid, and the path is proven to carry bytes both ways,
+/// before any counting window opens.
+fn establish_raw<S, D>(tls: &mut TlsTransport<S>, peer: &mut RawPeer<D>)
+where
+    S: fixbolt_engine::tls::Side,
+    rustls::kernel::KernelConnection<D>: ktls_core::TlsSession,
+{
+    let _nothing_owed = first_records(tls);
+    peer.send_app(b"warm");
+    assert_eq!(recv_uncounted(tls, 4), b"warm");
+    send_uncounted(tls, b"back");
+    assert_eq!(peer.read_app(4), b"back");
+}
+
+/// The kernel saw the peer's KeyUpdate, this end rekeyed its **receive** side,
+/// and it did not rekey its send side.
+///
+/// # Why `TlsTxRekeyOk` is read as a delta of one and not of zero
+///
+/// `/proc/net/tls_stat` counts the network namespace, not a socket, and in this
+/// test **both** ends are on the kernel — so the peer's own send-side rekey,
+/// the one RFC 8446 §4.6.3 obliges any sender of a KeyUpdate to do, lands in
+/// the same counter as the engine's would. `[measured 2026-09-13]` is what
+/// fixes the expected number; the chain that makes it mean "the engine did not
+/// answer" is: the engine read `DATA` (asserted before this is called), `DATA`
+/// went out under the peer's **new** send key, so the peer's rekey happened and
+/// is one of the counts — leaving no room in a delta of one for a second.
+fn assert_rekeyed_receive_side_only(before: Rekeys, who: &str, peer_tx_rekeys: u64) {
+    let after = rekeys();
+    assert!(
+        after.received > before.received,
+        "{who}: TlsRxRekeyReceived did not move ({before:?} -> {after:?}) — the \
+         kernel never saw a KeyUpdate, so this test did not test one"
+    );
+    assert!(
+        after.rx_ok > before.rx_ok,
+        "{who}: TlsRxRekeyOk did not move ({before:?} -> {after:?}) — the kernel \
+         paused decryption for a KeyUpdate and was never given the new key"
+    );
+    assert_eq!(
+        after.tx_ok - before.tx_ok,
+        peer_tx_rekeys,
+        "{who}: TlsTxRekeyOk moved by {moved} ({before:?} -> {after:?}) where the \
+         raw peer's own send-side rekey accounts for {peer_tx_rekeys} — so this \
+         end answered a KeyUpdate that carried update_not_requested. RFC 8446 \
+         §4.6.3 asks for an answer only under update_requested, and ktls-core \
+         sends one only there (context.rs:436-475); a move of {peer_tx_rekeys} \
+         plus one is this engine rekeying its send side for nothing, and a move \
+         of zero means the peer never rekeyed and the DATA asserted above cannot \
+         have been what this test thinks it was",
+        moved = after.tx_ok - before.tx_ok,
+    );
+}
+
+/// **A KeyUpdate that asks for no answer rekeys one direction and allocates two
+/// boxes.** The other half of ADR-0063 decision 2's carve-out: the count is
+/// `RUSTLS_BOXES_PER_DIRECTION` times the number of directions rekeyed, and the
+/// peer's request byte is what picks the number of directions.
+///
+/// # What each assertion is for
+///
+/// - `count == 2` and `sizes == [184, 184]`: rustls rekeyed **one** direction.
+///   Against `count == 4` this is the whole point of the test.
+/// - `TlsRxRekeyReceived` and `TlsRxRekeyOk` each move: the kernel saw a real
+///   KeyUpdate and was given a real new receive key. A window of two that
+///   handled no KeyUpdate at all would otherwise read the same.
+/// - `TlsTxRekeyOk` moves only by the peer's own rekey: **the engine did not
+///   answer.** This is the assertion that tells the two request bytes apart
+///   rather than merely counting allocations — `[measured 2026-09-13]` flipping
+///   the byte to `update_requested` and changing nothing else reds here, on a
+///   count of allocations that is also wrong but is asserted later.
+/// - The peer reads the engine's reply with a plain `read(2)` **under the send
+///   key the engine never changed**: the functional half of the same claim, and
+///   the one that does not depend on a namespace-wide counter.
+#[test]
+fn a_key_update_without_update_requested_rekeys_one_direction_and_allocates_two_boxes() {
+    let _serial = serial();
+    assert_the_counter_is_live();
+    let (cert, key) = pki();
+
+    // --- The acceptor: TlsTransport<Server>, a raw kTLS client as the peer.
+    {
+        let (mut tls, mut peer) = raw_acceptor_pair(cert.clone(), key.clone_key());
+        establish_raw(&mut tls, &mut peer);
+
+        let before = rekeys();
+        peer.key_update(UPDATE_NOT_REQUESTED);
+        // **The sender has written and gone quiet** before the window opens:
+        // the KeyUpdate and the record under the new key are both on the wire.
+        peer.send_app(DATA);
+        let (window, got, last) = exchange_counted(&mut tls);
+        assert_eq!(
+            got, DATA,
+            "acceptor: the record after the KeyUpdate never arrived; last Io {last:?}"
+        );
+        assert_rekeyed_receive_side_only(before, "acceptor", PEER_TX_REKEYS);
+        assert_key_schedule_only(window, "acceptor", Rekeyed::ReceiveOnly);
+        assert_eq!(
+            peer.read_app(DATA.len()),
+            DATA,
+            "acceptor: the reply did not decrypt under the receive key the peer \
+             still holds — the engine rekeyed a send side it was not asked to"
+        );
+    }
+
+    // --- The initiator: TlsTransport<Client>, a raw kTLS server as the peer.
+    {
+        let (mut tls, mut peer) = raw_initiator_pair(cert, key);
+        establish_raw(&mut tls, &mut peer);
+
+        let before = rekeys();
+        peer.key_update(UPDATE_NOT_REQUESTED);
+        peer.send_app(DATA);
+        let (window, got, last) = exchange_counted(&mut tls);
+        assert_eq!(
+            got, DATA,
+            "initiator: the record after the KeyUpdate never arrived; last Io {last:?}"
+        );
+        assert_rekeyed_receive_side_only(before, "initiator", PEER_TX_REKEYS);
+        assert_key_schedule_only(window, "initiator", Rekeyed::ReceiveOnly);
+        assert_eq!(
+            peer.read_app(DATA.len()),
+            DATA,
+            "initiator: the reply did not decrypt under the receive key the peer \
+             still holds — the engine rekeyed a send side it was not asked to"
+        );
     }
 }
 

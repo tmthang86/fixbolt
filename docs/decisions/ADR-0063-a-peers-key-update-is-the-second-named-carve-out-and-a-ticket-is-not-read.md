@@ -145,10 +145,21 @@ that builds the test below; it awaits the owner's approval as this note is writt
   under `update_not_requested`, which no library in the test bench can send on demand (rustls
   and ktls-core both always ask for `update_requested`; a peer sends `update_not_requested`
   spontaneously only by choice — OpenSSL's `SSL_key_update(…, SSL_KEY_UPDATE_NOT_REQUESTED)`,
-  the JDK when its inbound side is closed). *Derived from source, not yet measured*: step 6c-3
-  writes the five-byte record itself from a raw kTLS peer and asserts `== 2`, with the kernel's
-  `TlsTxRekeyOk` unchanged to prove the engine did not answer. There is no third number: any
-  other request value is refused by ktls-core with an alert.
+  the JDK when its inbound side is closed). **`[measured 2026-09-13]`, step 6c-3** — no longer
+  derived from source: a peer whose own TLS is on the kernel writes the five bytes itself,
+  `send_tls_control_message(fd, Handshake, [24, 0, 0, 1, 0])`, and both ends read
+  `Window { count: 2, largest: 184, sizes: [184, 184] }` — acceptor and initiator, in
+  `crates/engine/tests/tls_key_update.rs::a_key_update_without_update_requested_rekeys_one_direction_and_allocates_two_boxes`,
+  on the §9 desk in desktop configuration, `7.0.0-31-generic`, rustls 0.23.44 with `ring`
+  0.17.14. The engine does not answer: `TlsRxRekeyReceived` and `TlsRxRekeyOk` each move by one,
+  and `TlsTxRekeyOk` moves **by one, not by zero** — `/proc/net/tls_stat` counts a network
+  namespace rather than a socket, and in this test both ends are on the kernel, so the peer's
+  own send-side rekey, which RFC 8446 §4.6.3 obliges the sender of any KeyUpdate to perform,
+  lands in the same counter the engine's would. Flipping the request byte to `update_requested`
+  and changing nothing else reds exactly that assertion, at a delta of two, before the count is
+  ever reached — so the test tells the two request bytes apart and does not merely count
+  allocations. There is no third number: any other request value is refused by ktls-core with
+  an alert.
 - **184 bytes is `ring`'s layout, not rustls's.** `RingHkdfExpander { alg, prk }`
   (`src/crypto/ring/tls13.rs:302-305`): an 8-byte `&'static` plus `hkdf::Prk(hmac::Key)`, and
   `hmac::Key` is two `digest::BlockContext`s of 88 bytes each — a `DynState` enum sized for
@@ -170,7 +181,7 @@ that builds the test below; it awaits the owner's approval as this note is writt
   every provider. The count and the size belong to the rustls and ring this repository's
   `Cargo.lock` resolves — 0.23.44 and 0.17.14 — and are asserted exactly so that a bump is
   noticed; they are not a promise to a build with another lock.
-- **The test binds its constants to the lock, and CI asserts the lock.** Step 6c-3 adds two
+- **The test binds its constants to the lock, and CI asserts the lock.** Step 6c-3 added two
   strings, `DERIVED_FROM_RUSTLS = "0.23.44"` and `DERIVED_FROM_RING = "0.17.14"`, read against
   the workspace `Cargo.lock` *after* the count and size assertions, so that a bump which leaves
   both numbers unchanged still turns the test red with a sentence naming the old and new
