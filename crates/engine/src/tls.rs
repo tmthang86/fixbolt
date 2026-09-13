@@ -44,6 +44,247 @@
 pub use crate::transport::TlsMode;
 
 #[cfg(target_os = "linux")]
+mod side {
+    //! Which end of the handshake a [`super::TlsTransport`] is.
+    //!
+    //! `[2026-09-13]` **step 5a of the `tls` plan, Sửa 6 item 6.4.1.** Everything
+    //! in this file was written for the acceptor, and an initiator needs the
+    //! same handshake driver and the same kernel handover from the other end.
+    //! The plan decided one struct generic over the side rather than a second
+    //! client struct, because the handover is what ADR-0018's four conditions
+    //! paid for and two copies of it would drift.
+    //!
+    //! **It is not quite the pure type substitution the plan's 6.1 read it as**,
+    //! and the difference is why this trait carries two functions rather than
+    //! only associated types. `rustls` 0.23.44 defines `process_tls_records` in
+    //! two *inherent* impls, one on `UnbufferedConnectionCommon<ClientConnectionData>`
+    //! and one on `…<ServerConnectionData>` (`conn/unbuffered.rs:15-39`), not one
+    //! generic impl, and `dangerous_into_kernel_connection` likewise lives on
+    //! each connection type separately. Code generic over the side cannot name
+    //! either, so each side names them once here.
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use rustls::client::{ClientConnectionData, UnbufferedClientConnection};
+    use rustls::kernel::KernelConnection;
+    use rustls::server::{ServerConnectionData, UnbufferedServerConnection};
+    use rustls::unbuffered::UnbufferedStatus;
+
+    mod sealed {
+        pub trait Sealed {}
+    }
+
+    /// The acceptor end: a socket that was accepted. **The default** for every
+    /// type generic over [`Side`], so a spelling that predates the client —
+    /// `TlsTransport`, `Handshake`, `Traffic` — still means this.
+    #[derive(Debug)]
+    pub enum Server {}
+
+    /// The initiator end: a socket that was dialled.
+    #[derive(Debug)]
+    pub enum Client {}
+
+    /// Which end of the handshake. **Sealed**: there are exactly two, and the
+    /// handshake driver's correctness argument is made for both of them.
+    pub trait Side: sealed::Sealed + Sized + 'static {
+        /// The `rustls` unbuffered connection for this end.
+        type Connection;
+        /// The `rustls` per-side connection data.
+        type Data;
+        /// The session ktls-core drives after the handover. For [`Server`] it
+        /// is what `dangerous_into_kernel_connection` hands back,
+        /// `KernelConnection<ServerConnectionData>`; for [`Client`] it is that
+        /// value wrapped in `Ticketless`, which drops session tickets unread
+        /// ([ADR-0063] decision 1). Named as its own associated type because
+        /// `ktls_core::Context` bounds its parameter on `TlsSession`, and only
+        /// a bound written *here* is implied wherever `Self` is.
+        ///
+        /// [ADR-0063]: ../../../docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md
+        type Kernel: ktls_core::TlsSession;
+
+        #[doc(hidden)]
+        fn process_tls_records<'c, 'i>(
+            conn: &'c mut Self::Connection,
+            incoming: &'i mut [u8],
+        ) -> UnbufferedStatus<'c, 'i, Self::Data>;
+
+        #[doc(hidden)]
+        fn into_kernel(
+            conn: Self::Connection,
+        ) -> Result<(rustls::ExtractedSecrets, Self::Kernel), rustls::Error>;
+
+        /// The counter of session tickets this end's kernel session set aside,
+        /// shared so the transport can read it after ktls-core has taken the
+        /// session. `None` for an end that never receives a ticket.
+        #[doc(hidden)]
+        fn tickets(kernel: &Self::Kernel) -> Option<Arc<AtomicU32>>;
+    }
+
+    /// A `rustls` unbuffered connection that knows which [`Side`] it is.
+    ///
+    /// **Exists so that `Handshake::new(conn)` still infers its side**, and that
+    /// is the constraint the plan's default type parameter alone does not meet.
+    /// A default applies in a *type* position; in an *expression* such as
+    /// `Handshake::new(conn)` the parameter is inferred, and rustc cannot infer
+    /// `S` backwards from `S::Connection == UnbufferedServerConnection`. Asking
+    /// the connection type for its side runs the projection forwards, which it
+    /// can. Sealed, like [`Side`].
+    pub trait SideConnection: sealed::Sealed + Sized {
+        /// The end this connection is.
+        type Side: Side;
+
+        #[doc(hidden)]
+        fn into_side(self) -> <Self::Side as Side>::Connection;
+    }
+
+    impl sealed::Sealed for Server {}
+    impl sealed::Sealed for Client {}
+    impl sealed::Sealed for UnbufferedServerConnection {}
+    impl sealed::Sealed for UnbufferedClientConnection {}
+
+    impl Side for Server {
+        type Connection = UnbufferedServerConnection;
+        type Data = ServerConnectionData;
+        type Kernel = KernelConnection<ServerConnectionData>;
+
+        fn process_tls_records<'c, 'i>(
+            conn: &'c mut Self::Connection,
+            incoming: &'i mut [u8],
+        ) -> UnbufferedStatus<'c, 'i, Self::Data> {
+            conn.process_tls_records(incoming)
+        }
+
+        fn into_kernel(
+            conn: Self::Connection,
+        ) -> Result<(rustls::ExtractedSecrets, Self::Kernel), rustls::Error> {
+            conn.dangerous_into_kernel_connection()
+        }
+
+        fn tickets(_kernel: &Self::Kernel) -> Option<Arc<AtomicU32>> {
+            None
+        }
+    }
+
+    impl Side for Client {
+        type Connection = UnbufferedClientConnection;
+        type Data = ClientConnectionData;
+        type Kernel = Ticketless;
+
+        fn process_tls_records<'c, 'i>(
+            conn: &'c mut Self::Connection,
+            incoming: &'i mut [u8],
+        ) -> UnbufferedStatus<'c, 'i, Self::Data> {
+            conn.process_tls_records(incoming)
+        }
+
+        fn into_kernel(
+            conn: Self::Connection,
+        ) -> Result<(rustls::ExtractedSecrets, Self::Kernel), rustls::Error> {
+            let (secrets, inner) = conn.dangerous_into_kernel_connection()?;
+            Ok((
+                secrets,
+                Ticketless {
+                    inner,
+                    // One allocation, at the handover, inside ADR-0005
+                    // decision 1's handshake carve-out — beside the `Box` of
+                    // the `Context` and the control-record buffer taken there.
+                    ignored: Arc::new(AtomicU32::new(0)),
+                },
+            ))
+        }
+
+        fn tickets(kernel: &Self::Kernel) -> Option<Arc<AtomicU32>> {
+            Some(Arc::clone(&kernel.ignored))
+        }
+    }
+
+    /// The kernel-side session of a dialled connection: rustls's
+    /// `KernelConnection<ClientConnectionData>`, except that a TLS 1.3
+    /// `NewSessionTicket` is **counted and dropped unread**.
+    ///
+    /// `[2026-09-13]` **step 6c-2 of the `tls` plan, Sửa 7; [ADR-0063]
+    /// decision 1.** A server sends its session tickets after the handshake, so
+    /// a client receives them after the handover, on the engine thread — which
+    /// for an initiator is also the dialling thread. rustls's own
+    /// `handle_new_session_ticket` parses the ticket, derives its PSK and
+    /// clones the peer's certificate chain before the store drops or keeps the
+    /// result: `[measured 2026-09-13]` 16 allocations for a rustls server's two
+    /// tickets with resumption enabled (step 6c), and **the same 16 with
+    /// `Resumption::disabled()`** (step 6c-2, the ticket handed back to rustls
+    /// as a reversal) — disabling resumption alone removes none of them.
+    /// Nothing here would ever use a ticket, because this engine does not
+    /// resume TLS sessions, so the payload is not read at all.
+    ///
+    /// **The consequence is a rule: the initiator never resumes a TLS session,
+    /// and every dial is a full handshake.** `tls::client_config` sets
+    /// `Resumption::disabled()` so the userspace fallback — where rustls reads
+    /// tickets itself — agrees.
+    ///
+    /// The other four methods forward to ktls-core's own implementation for
+    /// `KernelConnection`, unchanged; a peer's KeyUpdate still allocates the
+    /// four key-schedule boxes ADR-0063 decision 2 names.
+    ///
+    /// Proven by `tests/tls_key_update.rs`:
+    /// `a_session_ticket_after_the_handover_allocates_nothing` (zero
+    /// allocations over the ticket window, and the counter moved by 2); the
+    /// rule by `a_redial_does_a_full_handshake_not_a_resumption`.
+    ///
+    /// [ADR-0063]: ../../../docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md
+    pub struct Ticketless {
+        inner: KernelConnection<ClientConnectionData>,
+        /// Tickets set aside. Shared with the transport, because ktls-core's
+        /// `Context` owns this value and offers no way back to it.
+        ignored: Arc<AtomicU32>,
+    }
+
+    impl ktls_core::TlsSession for Ticketless {
+        fn peer(&self) -> ktls_core::Peer {
+            ktls_core::TlsSession::peer(&self.inner)
+        }
+
+        fn protocol_version(&self) -> ktls_core::ProtocolVersion {
+            ktls_core::TlsSession::protocol_version(&self.inner)
+        }
+
+        fn update_tx_secret(&mut self) -> ktls_core::error::Result<ktls_core::TlsCryptoInfoTx> {
+            ktls_core::TlsSession::update_tx_secret(&mut self.inner)
+        }
+
+        fn update_rx_secret(&mut self) -> ktls_core::error::Result<ktls_core::TlsCryptoInfoRx> {
+            ktls_core::TlsSession::update_rx_secret(&mut self.inner)
+        }
+
+        /// Counted, not read. ktls-core has already checked that this end is
+        /// the client and the version is TLS 1.3 (`context.rs:493-513`), and
+        /// the record sits in the buffer taken at the handover.
+        fn handle_new_session_ticket(&mut self, _payload: &[u8]) -> ktls_core::error::Result<()> {
+            self.ignored.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    impl SideConnection for UnbufferedServerConnection {
+        type Side = Server;
+
+        fn into_side(self) -> UnbufferedServerConnection {
+            self
+        }
+    }
+
+    impl SideConnection for UnbufferedClientConnection {
+        type Side = Client;
+
+        fn into_side(self) -> UnbufferedClientConnection {
+            self
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use side::{Client, Server, Side, SideConnection};
+
+#[cfg(target_os = "linux")]
 mod handshake {
     //! A TLS handshake driven **without blocking**, from inside `recv`/`send`.
     //!
@@ -58,12 +299,17 @@ mod handshake {
     //! far as the socket allows and then returns, keeping every buffer and
     //! cursor, and reports [`Step::Pending`]. `PendingSet::turn` calls again on
     //! the next sweep. Nothing here waits.
+    //!
+    //! `[2026-09-13]` **Both ends drive the same loop.** A client's first pump
+    //! encodes its `ClientHello`, flushes it, and meets an empty socket exactly
+    //! as an acceptor meets one before the `ClientHello` arrives; nothing below
+    //! branches on [`super::Side`]. `tests/tls_client.rs` is the client's gate.
 
     use std::io;
 
-    use rustls::server::UnbufferedServerConnection;
     use rustls::unbuffered::{ConnectionState, UnbufferedStatus};
 
+    use super::{Server, Side, SideConnection};
     use crate::transport::{Io, TcpTransport, Transport};
 
     /// 32 KiB each way, taken once when the socket is admitted.
@@ -88,9 +334,9 @@ mod handshake {
         Failed(io::ErrorKind),
     }
 
-    /// The acceptor side of a handshake in progress.
-    pub struct Handshake {
-        conn: UnbufferedServerConnection,
+    /// A handshake in progress, on either [`Side`].
+    pub struct Handshake<S: Side = Server> {
+        conn: S::Connection,
         incoming: Vec<u8>,
         used: usize,
         outgoing: Vec<u8>,
@@ -99,11 +345,16 @@ mod handshake {
         early: Vec<u8>,
     }
 
-    impl Handshake {
+    impl<S: Side> Handshake<S> {
         /// Begin, with buffers taken now rather than during the handshake.
-        pub fn new(conn: UnbufferedServerConnection) -> Self {
+        ///
+        /// The side is the connection's: an `UnbufferedServerConnection`
+        /// makes a `Handshake<Server>`, an `UnbufferedClientConnection` a
+        /// `Handshake<Client>` — see [`SideConnection`] for why it is asked
+        /// that way round.
+        pub fn new<C: SideConnection<Side = S>>(conn: C) -> Self {
             Self {
-                conn,
+                conn: conn.into_side(),
                 incoming: vec![0u8; HANDSHAKE_BUF],
                 used: 0,
                 outgoing: vec![0u8; HANDSHAKE_BUF],
@@ -153,7 +404,7 @@ mod handshake {
         }
 
         /// Give up the connection once [`Step::Done`] has been reported.
-        pub fn into_connection(self) -> UnbufferedServerConnection {
+        pub fn into_connection(self) -> S::Connection {
             self.conn
         }
 
@@ -165,7 +416,7 @@ mod handshake {
         /// copies once per direction for the life of the session, so allocating
         /// per message on top of that would be a second cost on a path that has
         /// already left the guarantee.
-        pub fn into_traffic(self) -> Traffic {
+        pub fn into_traffic(self) -> Traffic<S> {
             Traffic {
                 conn: self.conn,
                 incoming: self.incoming,
@@ -214,7 +465,8 @@ mod handshake {
                 let Some(input) = self.incoming.get_mut(..self.used) else {
                     return Step::Failed(io::ErrorKind::InvalidData);
                 };
-                let UnbufferedStatus { discard, state } = self.conn.process_tls_records(input);
+                let UnbufferedStatus { discard, state } =
+                    S::process_tls_records(&mut self.conn, input);
 
                 let mut want_read = false;
                 let mut done = false;
@@ -293,8 +545,8 @@ mod handshake {
     /// Every byte is copied once on the way in and once on the way out;
     /// `benches/alloc.rs` does not cover this path and ADR-0005 decision 3 says
     /// it must be named rather than discovered.
-    pub struct Traffic {
-        conn: UnbufferedServerConnection,
+    pub struct Traffic<S: Side = Server> {
+        conn: S::Connection,
         incoming: Vec<u8>,
         used: usize,
         outgoing: Vec<u8>,
@@ -304,7 +556,7 @@ mod handshake {
         plain_at: usize,
     }
 
-    impl Traffic {
+    impl<S: Side> Traffic<S> {
         /// Take the bytes rustls decrypted during the handshake.
         ///
         /// They must be delivered before anything read afterwards: a `Logon`
@@ -359,7 +611,8 @@ mod handshake {
                 let Some(input) = self.incoming.get_mut(..self.used) else {
                     return Io::Failed(io::ErrorKind::InvalidData);
                 };
-                let UnbufferedStatus { discard, state } = self.conn.process_tls_records(input);
+                let UnbufferedStatus { discard, state } =
+                    S::process_tls_records(&mut self.conn, input);
                 let mut got = false;
                 match state {
                     Ok(ConnectionState::ReadTraffic(mut r)) => {
@@ -415,7 +668,7 @@ mod handshake {
             if buf.is_empty() {
                 return Io::Idle;
             }
-            let UnbufferedStatus { state, .. } = self.conn.process_tls_records(&mut []);
+            let UnbufferedStatus { state, .. } = S::process_tls_records(&mut self.conn, &mut []);
             let Ok(ConnectionState::WriteTraffic(mut w)) = state else {
                 return Io::Idle;
             };
@@ -551,11 +804,7 @@ pub fn server_config(
     certs: Vec<rustls::pki_types::CertificateDer<'static>>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
 ) -> Result<std::sync::Arc<rustls::ServerConfig>, crate::ServeError> {
-    let mut provider = rustls::crypto::ring::default_provider();
-    provider
-        .cipher_suites
-        .retain(|cs| cs.suite() == rustls::CipherSuite::TLS13_AES_128_GCM_SHA256);
-    let mut cfg = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(provider))
+    let mut cfg = rustls::ServerConfig::builder_with_provider(offloadable_provider())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| crate::ServeError::Tls(format!("{e}")))?
         .with_no_client_auth()
@@ -563,6 +812,129 @@ pub fn server_config(
         .map_err(|e| crate::ServeError::Tls(format!("{e}")))?;
     cfg.enable_secret_extraction = true;
     Ok(std::sync::Arc::new(cfg))
+}
+
+/// `ring`, narrowed to the one suite this engine hands to the kernel —
+/// [`server_config`]'s second numbered point, shared with [`client_config`] so
+/// the two ends cannot come to disagree about it.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+fn offloadable_provider() -> std::sync::Arc<rustls::crypto::CryptoProvider> {
+    let mut provider = rustls::crypto::ring::default_provider();
+    provider
+        .cipher_suites
+        .retain(|cs| cs.suite() == rustls::CipherSuite::TLS13_AES_128_GCM_SHA256);
+    std::sync::Arc::new(provider)
+}
+
+/// A `rustls::ClientConfig` whose connections this engine can hand to the
+/// kernel — [`server_config`]'s counterpart for the end that dials.
+///
+/// `[2026-09-13]` **step 5a of the `tls` plan, Sửa 6 item 6.4.2.** The same two
+/// load-bearing settings as [`server_config`], for the same reasons:
+/// `enable_secret_extraction = true`, without which the handover cannot take
+/// the keys, and TLS 1.3 with `AES-128-GCM` only.
+///
+/// **The server's certificate is always verified, against `roots` and nothing
+/// else.** With `ring` and neither `webpki-roots` nor `rustls-native-certs`
+/// there is no system root store, and adding one is an ADR; a verifier that
+/// accepts anything — QuickFIX's `CertificateVerifyLevel=0` — is not offered.
+/// An **empty** `roots` is therefore refused here rather than accepted: it
+/// would build a configuration under which no server can ever verify, and
+/// that would surface per connection, as a handshake failure, rather than
+/// once, at start-up.
+///
+/// `identity` is the client certificate chain and its key, for a venue that
+/// asks for one; `None` sends none.
+///
+/// **What it does not decide:** the name the certificate must carry. That is
+/// the `ServerName` given to `rustls::client::UnbufferedClientConnection::new`
+/// with this configuration — an IP literal needs an IP SAN, and
+/// `tests/tls_client.rs::a_certificate_for_another_name_fails_the_handshake`
+/// shows the mismatch reads as a failed handshake.
+///
+/// # Errors
+///
+/// [`crate::ServeError::Tls`] if `roots` is empty, a root cannot be parsed as a
+/// trust anchor, the provider has no TLS 1.3, or `identity`'s certificate and
+/// key do not match.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+pub fn client_config(
+    roots: Vec<rustls::pki_types::CertificateDer<'static>>,
+    identity: Option<(
+        Vec<rustls::pki_types::CertificateDer<'static>>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    )>,
+) -> Result<std::sync::Arc<rustls::ClientConfig>, crate::ServeError> {
+    if roots.is_empty() {
+        return Err(crate::ServeError::Tls(
+            "no certification authority was given, so no server certificate could verify"
+                .to_string(),
+        ));
+    }
+    let mut store = rustls::RootCertStore::empty();
+    for root in roots {
+        store.add(root).map_err(|e| {
+            crate::ServeError::Tls(format!("a certification authority is not usable: {e}"))
+        })?;
+    }
+    let builder = rustls::ClientConfig::builder_with_provider(offloadable_provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| crate::ServeError::Tls(format!("{e}")))?
+        .with_root_certificates(store);
+    let mut cfg = match identity {
+        None => builder.with_no_client_auth(),
+        Some((certs, key)) => builder
+            .with_client_auth_cert(certs, key)
+            .map_err(|e| crate::ServeError::Tls(format!("the client certificate: {e}")))?,
+    };
+    cfg.enable_secret_extraction = true;
+    // ADR-0063 decision 1: the initiator never resumes a TLS session. On the
+    // kernel path the tickets are dropped unread whatever this says
+    // (`side::Ticketless`); this line makes the userspace fallback, where
+    // rustls reads them itself, agree — and stops a 256-entry cache nobody
+    // reads. Proven by
+    // `tests/tls_key_update.rs::a_redial_does_a_full_handshake_not_a_resumption`,
+    // whose userspace arm is the one this line holds.
+    cfg.resumption = rustls::client::Resumption::disabled();
+    Ok(std::sync::Arc::new(cfg))
+}
+
+/// Everything an initiator needs to dial a TLS venue, as **one** parameter.
+///
+/// `[2026-09-13]` **step 5b of the `tls` plan, Sửa 6 item 6.4.5.**
+/// `crate::connect_and_serve_tls` takes the parameters of
+/// `crate::connect_and_serve` plus this — eight, the same count as the four
+/// `*_with_recovery` doors. Spread out as four parameters it would be eleven,
+/// which is the reopening condition [ADR-0054] named for a `Serve` builder; so
+/// the struct is the decision, not an arrangement for the lint.
+///
+/// **A deployment builds it from settings** (step 5c) or by hand. Every field
+/// is a fact about the venue or about this deployment; the test seam
+/// [`TlsProbe`] is deliberately not one of them.
+///
+/// [ADR-0054]: ../../../docs/decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md
+#[cfg(all(feature = "tls", target_os = "linux"))]
+#[derive(Debug)]
+pub struct ClientTls {
+    /// The certification authorities the venue's certificate must chain to —
+    /// `CertificationAuthoritiesFile`. **The only trust anchors**: see
+    /// [`client_config`], which refuses an empty list.
+    pub roots: Vec<rustls::pki_types::CertificateDer<'static>>,
+    /// This end's certificate chain and key, for a venue that asks for one;
+    /// `None` sends none.
+    pub identity: Option<(
+        Vec<rustls::pki_types::CertificateDer<'static>>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    )>,
+    /// The name the venue's certificate must carry — `SocketConnectHost`. An IP
+    /// literal is `ServerName::IpAddress` and needs an IP SAN.
+    pub server_name: rustls::pki_types::ServerName<'static>,
+    /// `TlsRequireKernel=Y`: refuse to dial on a kernel that cannot offload,
+    /// and end any connection whose handshake still lands in userspace.
+    /// **Either way the fallback is reported** ([ADR-0060] decision 2).
+    ///
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    pub require_kernel: bool,
 }
 
 /// The certificate and key a [`crate::settings::TlsSettings`] names, read off
@@ -604,60 +976,136 @@ pub fn load_pem(
     ),
     crate::ServeError,
 > {
-    use rustls::pki_types::pem::{Error as PemError, PemObject as _};
+    let certs = read_certificates(settings.certificate(), "ServerCertificateFile")?;
+    let key = read_private_key(settings.private_key(), "ServerCertificateKeyFile")?;
+    Ok((certs, key))
+}
 
-    let cert_path = settings.certificate();
-    let key_path = settings.private_key();
+/// Every `CERTIFICATE` section of the PEM file at `path`, or a
+/// [`crate::ServeError::Tls`] naming `key` — the settings key the operator
+/// wrote the path under — and the path.
+///
+/// Shared by [`load_pem`] and [`load_client_pem`] so the three sentences about
+/// a certificate file (not there, not PEM, no `CERTIFICATE` in it) are written
+/// once and read the same for all three keys that name one.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+fn read_certificates(
+    path: &std::path::Path,
+    key: &str,
+) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, crate::ServeError> {
+    use rustls::pki_types::pem::{Error as PemError, PemObject as _};
 
     // `pem_file_iter` reports opening the file from the call and reading it
     // from the iterator — the split this function wants anyway, since a missing
     // path and a corrupt body are different things to fix.
-    let certs = rustls::pki_types::CertificateDer::pem_file_iter(cert_path)
+    let certs = rustls::pki_types::CertificateDer::pem_file_iter(path)
         // `PemError`'s own `Display` prefixes `I/O error:`, which reads twice
         // here; the `io::Error` alone is the sentence an operator needs.
         .map_err(|e| match e {
             PemError::Io(io) => crate::ServeError::Tls(format!(
-                "ServerCertificateFile {} could not be opened: {io}",
-                cert_path.display()
+                "{key} {} could not be opened: {io}",
+                path.display()
             )),
             other => crate::ServeError::Tls(format!(
-                "ServerCertificateFile {} could not be opened: {other}",
-                cert_path.display()
+                "{key} {} could not be opened: {other}",
+                path.display()
             )),
         })?
         .collect::<Result<Vec<_>, PemError>>()
         .map_err(|e| {
-            crate::ServeError::Tls(format!(
-                "ServerCertificateFile {} is not readable PEM: {e}",
-                cert_path.display()
-            ))
+            crate::ServeError::Tls(format!("{key} {} is not readable PEM: {e}", path.display()))
         })?;
     // An empty vector, not a `NoItemsFound`: the iterator yields nothing at all
     // for a well-formed PEM holding only sections of other kinds — which is
     // exactly what a private key handed in as a certificate looks like.
     if certs.is_empty() {
         return Err(crate::ServeError::Tls(format!(
-            "ServerCertificateFile {} holds no CERTIFICATE section",
-            cert_path.display()
+            "{key} {} holds no CERTIFICATE section",
+            path.display()
         )));
     }
+    Ok(certs)
+}
 
-    let key = rustls::pki_types::PrivateKeyDer::from_pem_file(key_path).map_err(|e| match e {
+/// The private key in the PEM file at `path`, or a [`crate::ServeError::Tls`]
+/// naming `key` and the path. The companion of [`read_certificates`].
+#[cfg(all(feature = "tls", target_os = "linux"))]
+fn read_private_key(
+    path: &std::path::Path,
+    key: &str,
+) -> Result<rustls::pki_types::PrivateKeyDer<'static>, crate::ServeError> {
+    use rustls::pki_types::pem::{Error as PemError, PemObject as _};
+
+    rustls::pki_types::PrivateKeyDer::from_pem_file(path).map_err(|e| match e {
         PemError::Io(io) => crate::ServeError::Tls(format!(
-            "ServerCertificateKeyFile {} could not be opened: {io}",
-            key_path.display()
+            "{key} {} could not be opened: {io}",
+            path.display()
         )),
         PemError::NoItemsFound => crate::ServeError::Tls(format!(
-            "ServerCertificateKeyFile {} holds no PRIVATE KEY section",
-            key_path.display()
+            "{key} {} holds no PRIVATE KEY section",
+            path.display()
         )),
         other => crate::ServeError::Tls(format!(
-            "ServerCertificateKeyFile {} is not readable PEM: {other}",
-            key_path.display()
+            "{key} {} is not readable PEM: {other}",
+            path.display()
         )),
-    })?;
+    })
+}
 
-    Ok((certs, key))
+/// Everything [`crate::connect_and_serve_tls`] needs to dial a TLS venue, read
+/// off disk from what a [`crate::settings::ClientTlsSettings`] names.
+///
+/// `[added 2026-09-13]` step 5c of `docs/plans/2026-09-04-tls.md` (Sửa 6, 6.4
+/// item 6). The initiator's counterpart of [`load_pem`], and the joint between
+/// a `.cfg` file and [`ClientTls`]; `tests/tls_initiator_wire.rs::a_configuration_file_brings_a_tls_initiator_up`
+/// is the gate for the sentence *"a `.cfg` file can dial a TLS venue"*.
+///
+/// `host` is the name the venue's certificate must carry — `SocketConnectHost`
+/// as written, which [`crate::settings::Settings::into_tls_initiator`] hands
+/// back as the host part of the dial address. An IPv6 literal may be written
+/// in brackets; they are taken off. An IP literal needs an IP SAN.
+///
+/// **Each operator mistake names its key and its path**, through the same
+/// loader [`load_pem`] uses: a `CertificationAuthoritiesFile` that is not
+/// there, is not PEM or holds no `CERTIFICATE`; a `ClientCertificateFile` the
+/// same; a `ClientCertificateKeyFile` holding no private key. Whether the
+/// certification authorities are *usable* as trust anchors, and whether the
+/// client certificate matches its key, is decided by [`client_config`], which
+/// `connect_and_serve_tls_with` calls before its first dial — so still before
+/// any connection is made, and with the same error variant.
+///
+/// # Errors
+///
+/// [`crate::ServeError::Tls`] for every one of the above, and for a `host` that
+/// is neither a DNS name nor an IP address.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+pub fn load_client_pem(
+    settings: &crate::settings::ClientTlsSettings,
+    host: &str,
+) -> Result<ClientTls, crate::ServeError> {
+    let roots = read_certificates(settings.ca(), "CertificationAuthoritiesFile")?;
+    let identity = match settings.identity() {
+        None => None,
+        Some((cert, key)) => Some((
+            read_certificates(cert, "ClientCertificateFile")?,
+            read_private_key(key, "ClientCertificateKeyFile")?,
+        )),
+    };
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    let server_name = rustls::pki_types::ServerName::try_from(bare.to_owned()).map_err(|e| {
+        crate::ServeError::Tls(format!(
+            "SocketConnectHost {host} is not a name a certificate can carry: {e}"
+        ))
+    })?;
+    Ok(ClientTls {
+        roots,
+        identity,
+        server_name,
+        require_kernel: settings.require_kernel(),
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -674,35 +1122,49 @@ mod transport_impl {
     //! [`TlsMode`] exists and is reported rather than inferred.
 
     use std::io;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use ktls_core::Context;
-    use rustls::kernel::KernelConnection;
-    use rustls::server::ServerConnectionData;
 
-    use super::{Handshake, Step, TlsMode, Traffic};
+    use super::{Client, Handshake, Server, Side, Step, TlsMode, Traffic};
     use crate::transport::{Io, Source, TcpTransport, Transport};
 
+    /// The capacity ktls-core 0.0.5 `recv_tls_record` reserves before reading
+    /// any control record: `u16::MAX + 5` (`ffi.rs:110`). Taken once, at the
+    /// handover, so reading one never allocates — see [`TlsTransport`]'s
+    /// `advance`. 64 KiB per kernel-mode connection, for as long as it lives.
+    const CONTROL_RECORD_BUF: usize = u16::MAX as usize + 5;
+
     /// What the socket is doing right now.
-    enum Stage {
+    enum Stage<S: Side> {
         /// Still negotiating. `recv`/`send` pump it and report [`Io::Idle`].
-        Handshaking(Box<Handshake>),
+        Handshaking(Box<Handshake<S>>),
         /// The kernel holds the keys. Ordinary reads and writes, plus the one
-        /// error path the offload adds.
-        Kernel(Box<Context<KernelConnection<ServerConnectionData>>>),
+        /// error path the offload adds. `S::Kernel` is
+        /// `rustls::kernel::KernelConnection<S::Data>`, wrapped in
+        /// `side::Ticketless` on the client.
+        Kernel(Box<Context<S::Kernel>>),
         /// The kernel would not take the offload. **This is the mode that
         /// leaves the hot-path guarantee** — ADR-0005 decision 3 — and it is
         /// named rather than silently entered: `mode()` says so,
         /// [`TlsTransport::fell_back`] says so, and `TlsRequireKernel=Y` will
         /// refuse it outright.
-        Userspace(Box<Traffic>),
+        Userspace(Box<Traffic<S>>),
         /// It ended, and the reason is kept so the engine reports it once.
         Broken(io::ErrorKind),
     }
 
-    /// A TLS acceptor socket.
-    pub struct TlsTransport {
+    /// A TLS socket: an accepted one by default, a dialled one as
+    /// `TlsTransport<Client>`.
+    ///
+    /// `[2026-09-13]` generic over [`Side`] since step 5a of the `tls` plan. The
+    /// default keeps every spelling that predates the client meaning the
+    /// acceptor, and the four `tests/tls*.rs` files that were written against
+    /// that spelling are the gate that it still does.
+    pub struct TlsTransport<S: Side = Server> {
         sock: TcpTransport,
-        stage: Stage,
+        stage: Stage<S>,
         /// Application bytes rustls decrypted before the handover, waiting to be
         /// handed to the session ahead of anything the kernel produces.
         early: Vec<u8>,
@@ -713,12 +1175,16 @@ mod transport_impl {
         /// Whether to ask the kernel at all. Always `true` in a deployment; see
         /// [`TlsTransport::with_offload`].
         offload: bool,
+        /// The kernel session's count of session tickets set aside — `Some`
+        /// only on a client, and only once the keys are in the kernel.
+        tickets: Option<Arc<AtomicU32>>,
     }
 
-    impl TlsTransport {
-        /// Take a freshly accepted socket into a handshake.
+    impl<S: Side> TlsTransport<S> {
+        /// Take a freshly accepted — or freshly connected — socket into a
+        /// handshake.
         #[must_use]
-        pub fn new(sock: TcpTransport, handshake: Handshake) -> Self {
+        pub fn new(sock: TcpTransport, handshake: Handshake<S>) -> Self {
             Self::with_offload(sock, handshake, true)
         }
 
@@ -732,7 +1198,7 @@ mod transport_impl {
         /// It is not a deployment knob: `TlsRequireKernel` (step 4's settings
         /// half) is the operator-facing control and it points the other way.
         #[must_use]
-        pub fn with_offload(sock: TcpTransport, handshake: Handshake, offload: bool) -> Self {
+        pub fn with_offload(sock: TcpTransport, handshake: Handshake<S>, offload: bool) -> Self {
             Self {
                 sock,
                 offload,
@@ -740,6 +1206,7 @@ mod transport_impl {
                 early: Vec::new(),
                 early_at: 0,
                 fell_back: false,
+                tickets: None,
             }
         }
 
@@ -841,12 +1308,11 @@ mod transport_impl {
             else {
                 return Err(io::ErrorKind::InvalidData);
             };
-            let Ok((secrets, kconn)) = hs.into_connection().dangerous_into_kernel_connection()
-            else {
+            let Ok((secrets, kconn)) = S::into_kernel(hs.into_connection()) else {
                 return Err(io::ErrorKind::InvalidData);
             };
 
-            let version = kconn.protocol_version();
+            let version = ktls_core::TlsSession::protocol_version(&kconn);
             if super::push_keys(self.sock.socket(), secrets, version).is_err() {
                 // The ULP attached and the keys did not go down — a cipher
                 // suite this kernel does not carry (ADR-0005 open question 2).
@@ -855,7 +1321,28 @@ mod transport_impl {
                 self.stage = Stage::Broken(io::ErrorKind::Unsupported);
                 return Err(io::ErrorKind::Unsupported);
             }
-            self.stage = Stage::Kernel(Box::new(Context::new(kconn, None)));
+            // **Pre-sized, inside the handshake carve-out, and the size is
+            // ktls-core's rather than a guess.** Every control record after the
+            // handover — a client's session tickets, an alert, a KeyUpdate — is
+            // read by ktls-core 0.0.5 `recv_tls_record` (`ffi.rs:110`), which
+            // first calls `reserve(u16::MAX + 5)` on this buffer. `None` starts
+            // an empty `Vec`, so the first such record allocated 64 KiB on the
+            // engine thread. With the capacity taken here that `reserve` is a
+            // no-op: the buffer's length stays 0, because the engine never
+            // calls `Buffer::read`/`drain`, the only callers of the
+            // `shrink_to(65536)` in `Buffer::reset` (`utils.rs:210-214`), and
+            // the one branch that fills it — application data read as a control
+            // record, `context.rs:286-295` — is not reached after a `read(2)`
+            // that said `EIO`, which means a control record is at the head.
+            // A 16 KiB + 5 buffer — one TLS record — would not do: `reserve`
+            // asks for 65 540 regardless of the record.
+            // Proven by `tests/tls_key_update.rs::a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces`
+            // (no allocation of this size on either side; rustls's own key schedule
+            // still allocates four boxes per rekey, which that test counts exactly,
+            // ADR-0063) and by `a_session_ticket_after_the_handover_allocates_nothing`.
+            let buffer = ktls_core::Buffer::new(Vec::with_capacity(CONTROL_RECORD_BUF));
+            self.tickets = S::tickets(&kconn);
+            self.stage = Stage::Kernel(Box::new(Context::new(kconn, Some(buffer))));
             Ok(())
         }
 
@@ -882,7 +1369,31 @@ mod transport_impl {
         }
     }
 
-    impl Transport for TlsTransport {
+    impl TlsTransport<Client> {
+        /// How many TLS 1.3 session tickets this connection received on the
+        /// kernel path and **dropped unread**.
+        ///
+        /// `[2026-09-13]` step 6c-2 of the `tls` plan; [ADR-0063] decision 1.
+        /// The initiator never resumes a TLS session, so a ticket is counted
+        /// and not parsed, and costs no allocation on the engine thread. A
+        /// handler that does nothing cannot otherwise show that it ran; this
+        /// is that evidence, and a line a tool can print.
+        ///
+        /// `0` before the handover and on the userspace fallback, where rustls
+        /// reads tickets itself and — with `Resumption::disabled()` in
+        /// [`super::client_config`] — stores none. A rustls server sends two by
+        /// default.
+        ///
+        /// [ADR-0063]: ../../../docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md
+        #[must_use]
+        pub fn tickets_ignored(&self) -> u32 {
+            self.tickets
+                .as_ref()
+                .map_or(0, |n| n.load(Ordering::Relaxed))
+        }
+    }
+
+    impl<S: Side> Transport for TlsTransport<S> {
         /// [ADR-0060] decision 3: the same answer as the inherent
         /// [`TlsTransport::mode`], reachable through the trait so a generic engine
         /// can ask it without a downcast.
@@ -986,10 +1497,13 @@ pub use transport_impl::TlsTransport;
 fn push_keys<S: std::os::fd::AsFd>(
     sock: &S,
     secrets: rustls::ExtractedSecrets,
-    version: rustls::ProtocolVersion,
+    // Already `ktls_core`'s: `TlsSession::protocol_version` on a
+    // `KernelConnection` is the rustls value `.into()`'d — ktls-core 0.0.5
+    // `tls.rs:533-535, 576-578` — which is the conversion this function made
+    // itself before it became generic over the side.
+    version: ktls_core::ProtocolVersion,
 ) -> Result<(), ktls_core::Error> {
     let secrets = ktls_core::ExtractedSecrets::try_from(secrets)?;
-    let version = ktls_core::ProtocolVersion::from(version);
     ktls_core::TlsCryptoInfoTx::new(version, secrets.tx.1, secrets.tx.0)?.set(sock)?;
     ktls_core::TlsCryptoInfoRx::new(version, secrets.rx.1, secrets.rx.0)?.set(sock)?;
     Ok(())

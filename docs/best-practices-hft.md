@@ -156,3 +156,37 @@ a socket — all the things §3 pinned that core to avoid — and `Admin` is `Se
 so it can live anywhere else.
 [ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md),
 [ADR-0054](decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md).
+
+---
+
+## 9. TLS in `hft` mode: kTLS is required, not a preference
+
+`[2026-09-13]` **Run `hft` with TLS only over kTLS — set `TlsRequireKernel=Y`.** Userspace
+`rustls` is a real fallback for `standard`, but in `hft` it puts a copy and an allocation on
+every message, on the one thread this mode exists to keep off the kernel and off the allocator.
+`TlsRequireKernel=Y` on either role ([CONFIGURATION.md §1](CONFIGURATION.md)) refuses the
+deployment before it ever serves a message in userspace, rather than silently degrading
+([ADR-0060](decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md)).
+An `hft` deployment that leaves `TlsRequireKernel` unset can still fall back to userspace
+without refusing anything — `EventKind::TlsFellBackToUserspace` is reported either way — so
+the setting, not the mode, is what makes the refusal a gate.
+
+**Once the handover is done, the two halves of non-negotiable 4 hold the same way they do
+without TLS.** kTLS keeps `recv`/`send` as ordinary non-blocking syscalls, so §4's busy-poll
+loop never enters the kernel on the hot path, and a `standard` engine under the same kTLS
+connection still gives the core back. Both are machine-checked, with a kTLS arm added
+`[2026-09-13]`: `scripts/check-no-kernel-sleep.sh` traces `hft --tls ktls` for the usual zero of
+`epoll_wait`/`futex`/`nanosleep`/`sched_yield`, and traces `--tls userspace` separately so the
+two arms cannot be mistaken for each other by their read-back; `scripts/check-standard-gives-the-core-back.sh`
+runs `standard` against the same kTLS connection.
+
+**A peer's KeyUpdate is not free, and it is not on the hot path either.** The kernel stops
+decrypting on a KeyUpdate until the new key is installed, so the engine thread does the rekey
+itself rather than handing it to another thread — moving it off would add to exactly the path
+that is already blocked. What it costs is two `setsockopt` calls and rustls's own four
+small allocations, counted exactly by
+`crates/engine/tests/tls_key_update.rs`
+([ADR-0063](decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)).
+How often that happens is the *peer's* choice, not a setting here: a rustls peer rekeys at
+roughly 2^24 records, OpenSSL does not rekey on its own. **Nothing in this repository has timed
+what a rekey costs the `hft` p50** — §5's "Not measured" applies here too.

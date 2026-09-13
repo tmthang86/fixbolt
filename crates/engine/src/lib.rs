@@ -669,6 +669,37 @@ where
         self.logons
     }
 
+    /// Which of [ADR-0005]'s three answers is carrying connection `id`'s bytes,
+    /// **as its transport reports it**, or `None` if this engine holds no
+    /// connection by that id.
+    ///
+    /// `[2026-09-13]` step 6a of the `tls` plan. A figure measured over TLS is
+    /// about whichever path actually carried it, so a tool that prints the mode
+    /// must read it from here rather than echo what it asked for: a connection
+    /// told to offload that fell back to userspace is a different code path, and
+    /// ADR-0005 open question 3 is exactly that confusion. `tools/w2w` prints
+    /// this as its `tls:` line; its reversal — the engine forced to userspace
+    /// while `--tls ktls` is asked for — prints `tls: userspace`.
+    ///
+    /// **Read it after the session is up**, for the reason
+    /// [`crate::transport::Transport::tls_mode`] gives: a handshake in flight
+    /// reports `Userspace`. Not behind the `tls` feature, because neither is
+    /// [`crate::transport::TlsMode`] ([ADR-0060] decision 3): every plain engine
+    /// answers `Some(TlsMode::Plain)` for a connection it holds.
+    ///
+    /// A linear search over this engine's connections — for a caller that asks
+    /// once per connection, not per turn.
+    ///
+    /// [ADR-0005]: ../../../docs/decisions/ADR-0005-tls.md
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    #[must_use]
+    pub fn tls_mode(&self, id: ConnId) -> Option<crate::transport::TlsMode> {
+        self.conns
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.transport.tls_mode())
+    }
+
     /// Tell this engine how many sockets the pre-session stage in front of it
     /// let go because their first message could not be framed.
     ///
@@ -1609,8 +1640,29 @@ pub type TcpInitiatorEngine<
     const RX: usize = 4096,
     const TX: usize = 8192,
     const APP: usize = 1024,
+> = InitiatorEngineOver<TcpTransport, A, W, J, L, N, RX, TX, APP>;
+
+/// The initiator shape, over **any** transport — [`AcceptorEngineOver`]'s
+/// counterpart for the end that dials.
+///
+/// `[2026-09-13]` **added by step 5b of the `tls` plan**, for the same reason
+/// the acceptor alias was added by 4a: [`Engine`] was already generic over its
+/// transport, and what was missing was a name for the substitution.
+/// [`TcpInitiatorEngine`] is this with `T = TcpTransport`; `connect_and_serve_tls`
+/// builds it with `T = tls::TlsTransport<tls::Client>` — code spans rather than
+/// links, for the reason [`AcceptorEngineOver`] gives.
+pub type InitiatorEngineOver<
+    T,
+    A,
+    W,
+    J = crate::journal::Store,
+    L = NoLog,
+    const N: usize = 256,
+    const RX: usize = 4096,
+    const TX: usize = 8192,
+    const APP: usize = 1024,
 > = Engine<
-    TcpTransport,
+    T,
     fixbolt_session::Initiator,
     InlineDispatch<A>,
     crate::clock::SystemClock,
@@ -2118,13 +2170,280 @@ pub fn connect_and_serve_with<
             1,
         );
     let _ = engine.adopt(&handles);
-    dial(addr, cfg, engine.with_log(log), policy, recovery)
+    dial(addr, cfg, Some, engine.with_log(log), policy, recovery)
+}
+
+/// Dial `addr` **over TLS**, run one initiator session on it, and come back
+/// when it ends. **`standard` mode, Linux.**
+///
+/// `[2026-09-13]` **step 5b of the `tls` plan**, and the door that lets this
+/// engine dial a TLS venue at all. [`connect_and_serve`]'s parameters plus one:
+/// [`tls::ClientTls`] carries the roots, the optional client identity, the name
+/// the venue's certificate must carry, and `TlsRequireKernel`. See that type
+/// for why it is one struct and not four parameters.
+///
+/// # Where the handshake runs, and why it matters
+///
+/// **Inside the dial loop, on this thread, before the engine is given the
+/// connection.** [ADR-0060]'s check — raise
+/// [`observe::EventKind::TlsFellBackToUserspace`], refuse under
+/// `require_kernel` — runs when a connection is added, and a client still
+/// mid-handshake reads as userspace. Adding straight after `connect`, as the
+/// plain loop can, would report a false fallback on every connection and refuse
+/// all of them under `TlsRequireKernel=Y`.
+/// `tests/tls_initiator_wire.rs::the_dial_loop_adds_no_connection_before_the_handshake_is_decided`
+/// holds that.
+///
+/// The handshake never blocks this thread: the socket is non-blocking, and
+/// while the venue has not answered the loop idles on the socket's readiness
+/// through the engine's own wait strategy, so `standard` sleeps rather than
+/// spins (non-negotiable 4). **Measured, not asserted**:
+/// `tests/tls_initiator_wire.rs::the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits`
+/// reads this thread's `utime + stime` out of `/proc` over three seconds
+/// against a venue that accepts and never speaks. `[measured 2026-09-13]`
+/// **0.00% of a core**, found sleeping 30 reads out of 30; with the
+/// `idle_with` call below deleted, **99.90%** and 0 out of 30.
+/// `scripts/check-standard-gives-the-core-back.sh` cannot see this loop —
+/// it traces `tools/w2w`, which is an acceptor.
+///
+/// # A venue that never answers
+///
+/// The handshake is given the configuration's `LogonTimeout` —
+/// [`Config::logon_timeout_ms`], `0` for no limit — counted from the moment
+/// the TCP connection is made. When it passes, the socket is closed and the
+/// ending goes to `policy` like any other.
+/// `tests/tls_initiator_wire.rs::a_counterparty_that_accepts_and_never_speaks_tls_is_dropped_at_the_deadline`.
+///
+/// # Errors
+///
+/// [`ServeError::Tls`] if `tls` does not make a client configuration, or
+/// `require_kernel` is set and this kernel cannot offload TLS. **A handshake
+/// that fails is not an error**: like a refused dial, it goes to the policy.
+///
+/// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+#[cfg(all(feature = "tls", feature = "standard", target_os = "linux"))]
+// **Eight, and clippy's ceiling is seven.** Same answer as the four
+// `*_with_recovery` entry points: ADR-0054 recorded a `Serve` builder as the
+// alternative and named its reopening condition — *the first time an eleventh
+// parameter is wanted*. Eight is under it because the four TLS facts travel as
+// one `ClientTls`; spread out they would be eleven and trip it.
+#[allow(clippy::too_many_arguments)]
+pub fn connect_and_serve_tls<
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    addr: &str,
+    cfg: Config,
+    app: A,
+    policy: crate::reconnect::Policy,
+    recovery: V,
+    log: L,
+    handles: crate::observe::Handles,
+    tls: crate::tls::ClientTls,
+) -> Result<Shutdown, ServeError> {
+    connect_and_serve_tls_with::<256, 4096, 8192, 1024, A, J, V, L>(
+        addr,
+        cfg,
+        app,
+        policy,
+        recovery,
+        log,
+        handles,
+        tls,
+        crate::tls::TlsProbe::Real,
+    )
+}
+
+/// The full initiator TLS door: buffer sizes, **and the offload seam**.
+///
+/// See [`serve_with`] for what `N`, `RX` and `TX` cost, and
+/// [`serve_tls_with_offload`] for `probe`: a deployment passes
+/// [`tls::TlsProbe::Real`], and the other two arms exist so both halves of
+/// [ADR-0060] decision 1 can be reached from a test on a kernel that offloads.
+///
+/// # Errors
+///
+/// As [`connect_and_serve_tls`].
+///
+/// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+#[cfg(all(feature = "tls", feature = "standard", target_os = "linux"))]
+// **Nine** — [`connect_and_serve_tls`]'s eight plus the probe, which is a test
+// seam and deliberately not a field of `ClientTls`. Under ADR-0054's eleven.
+#[allow(clippy::too_many_arguments)]
+pub fn connect_and_serve_tls_with<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    addr: &str,
+    cfg: Config,
+    app: A,
+    policy: crate::reconnect::Policy,
+    recovery: V,
+    log: L,
+    handles: crate::observe::Handles,
+    tls: crate::tls::ClientTls,
+    probe: crate::tls::TlsProbe,
+) -> Result<Shutdown, ServeError> {
+    let crate::tls::ClientTls {
+        roots,
+        identity,
+        server_name,
+        require_kernel,
+    } = tls;
+    // **ADR-0060 decision 1, first half, before the first dial** — the
+    // initiator's counterpart of the check `serve_tls_with_offload` makes
+    // before `bind`, with the same sentence.
+    let kernel_offloads = match probe {
+        crate::tls::TlsProbe::PretendKernelCannotOffload => false,
+        crate::tls::TlsProbe::Real | crate::tls::TlsProbe::PretendHandshakeFallsBack => {
+            crate::tls::kernel_can_offload()
+        }
+    };
+    if require_kernel && !kernel_offloads {
+        return Err(ServeError::Tls(
+            "TlsRequireKernel=Y, and this kernel cannot offload TLS: it has no \
+             tls ULP, so every session would fall back to userspace rustls and \
+             leave the hot-path guarantee"
+                .to_owned(),
+        ));
+    }
+    let client = crate::tls::client_config(roots, identity)?;
+    let mut engine: InitiatorEngineOver<
+        crate::tls::TlsTransport<crate::tls::Client>,
+        A,
+        crate::block::Block,
+        J,
+        NoLog,
+        N,
+        RX,
+        TX,
+        APP,
+    > = Engine::new(
+        cfg,
+        InlineDispatch::new(app),
+        crate::clock::SystemClock,
+        // One connection — or one handshake, which is not yet a connection —
+        // and one waker, as `connect_and_serve_with`.
+        crate::block::Block::new(2),
+        1,
+    );
+    engine.require_kernel(require_kernel);
+    let _ = engine.adopt(&handles);
+    let offload = matches!(probe, crate::tls::TlsProbe::Real);
+    dial(
+        addr,
+        cfg,
+        // **Per connection, not per message**: one `Arc` count and one name
+        // clone at dial time, inside the handshake carve-out of non-negotiable
+        // 1. A connection whose `rustls` state machine will not start is
+        // dropped and goes to the policy.
+        move |sock| {
+            rustls::client::UnbufferedClientConnection::new(
+                std::sync::Arc::clone(&client),
+                server_name.clone(),
+            )
+            .ok()
+            .map(|conn| {
+                crate::tls::TlsTransport::with_offload(
+                    sock,
+                    crate::tls::Handshake::new(conn),
+                    offload,
+                )
+            })
+        },
+        engine.with_log(log),
+        policy,
+        recovery,
+    )
+}
+
+/// What a freshly dialled transport says about joining the engine.
+#[cfg(all(feature = "standard", unix))]
+#[cfg_attr(
+    not(all(feature = "tls", target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "only a TLS transport is ever Pending or Failed; a plain socket is Ready at connect"
+    )
+)]
+enum Admission {
+    /// Decided: hand it to the engine. For TLS, the keys are in the kernel or
+    /// the handshake fell back — either way [`Transport::tls_mode`] is final.
+    Ready,
+    /// Still negotiating. Wait on the socket and ask again.
+    Pending,
+    /// It will never be ready; the ending goes to the policy.
+    Failed,
+}
+
+/// A transport `dial` hands to the engine **only once it says so**.
+///
+/// `[2026-09-13]` step 5b of the `tls` plan, 6.2 item 5. Private: it is the one
+/// question `dial` asks that [`Transport`] does not, and it has exactly two
+/// answers in this crate.
+#[cfg(all(feature = "standard", unix))]
+trait Dialled: Transport {
+    fn admission(&mut self) -> Admission;
+}
+
+/// A plain socket is decided the moment `connect` returns, so the plain loop
+/// adds on the same turn it always did.
+#[cfg(all(feature = "standard", unix))]
+impl Dialled for TcpTransport {
+    fn admission(&mut self) -> Admission {
+        Admission::Ready
+    }
+}
+
+#[cfg(all(feature = "tls", feature = "standard", target_os = "linux"))]
+impl Dialled for crate::tls::TlsTransport<crate::tls::Client> {
+    fn admission(&mut self) -> Admission {
+        if self.is_ready() || self.fell_back() {
+            return Admission::Ready;
+        }
+        // **An empty send is how the handshake is driven without touching
+        // application bytes.** `TlsTransport::send` advances the handshake
+        // first and then offers the buffer: while handshaking it answers
+        // `Idle`; on the kernel the empty buffer reaches `TcpTransport::send`,
+        // which returns `Idle` without a syscall; in userspace `Traffic::send`
+        // flushes and returns `Idle` for an empty buffer. `recv` would do the
+        // driving too, but could consume a record the venue sent straight after
+        // its `Finished` before the session exists to read it.
+        match Transport::send(self, &[]) {
+            crate::transport::Io::Failed(_) | crate::transport::Io::Closed => {
+                return Admission::Failed;
+            }
+            crate::transport::Io::Idle | crate::transport::Io::Ready(_) => {}
+        }
+        if self.is_ready() || self.fell_back() {
+            Admission::Ready
+        } else {
+            Admission::Pending
+        }
+    }
 }
 
 /// The loop [`connect_and_serve`] runs, generic over the wait strategy so a
 /// test can drive it without a real clock.
+///
+/// `[2026-09-13]` **generic over the transport, and holding a handshake slot**
+/// — step 5b of the `tls` plan. `wrap` turns a connected socket into this
+/// engine's transport, as it does for `pump`; for the plain doors it is `Some`
+/// and folds away. The socket is added to the engine only once
+/// [`Dialled::admission`] says `Ready`, because ADR-0060's check runs when a
+/// connection is added and must see a decided mode. Until then it sits in
+/// `handshaking`, bounded by `LogonTimeout`.
 #[cfg(all(feature = "standard", unix))]
 fn dial<
+    T: Dialled,
     const N: usize,
     const RX: usize,
     const TX: usize,
@@ -2134,10 +2453,12 @@ fn dial<
     J: SessionJournal,
     V: crate::recovery::Recovery<J>,
     L: MessageLog,
+    F: FnMut(TcpTransport) -> Option<T>,
 >(
     addr: &str,
     cfg: Config,
-    mut engine: TcpInitiatorEngine<A, W, J, L, N, RX, TX, APP>,
+    mut wrap: F,
+    mut engine: InitiatorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
     mut policy: crate::reconnect::Policy,
     mut recovery: V,
 ) -> Result<Shutdown, ServeError> {
@@ -2149,6 +2470,11 @@ fn dial<
     let mut logons = engine.logons();
     let mut clock = crate::clock::SystemClock;
     let mut up = false;
+    // `LogonTimeout`, `0` for none — plan 6.2 item 6, approved 2026-09-13.
+    let handshake_ms = cfg.logon_timeout_ms();
+    // A connected socket whose handshake is not yet decided, and when it was
+    // connected. Always `None` between turns for a plain transport.
+    let mut handshaking: Option<(T, u64)> = None;
     loop {
         let now = crate::clock::Clock::now_ms(&mut clock);
 
@@ -2160,45 +2486,79 @@ fn dial<
                 policy.dropped(now);
                 up = false;
             }
-            match policy.next(now) {
-                // Nothing is connected, so there is nothing to say goodbye
-                // to. A `Shutdown` reporting zero sessions is the truth here,
-                // not a placeholder.
-                crate::reconnect::Next::Stop => return Ok(Shutdown::default()),
-                crate::reconnect::Next::At(_) => {
-                    // Nothing to wait on but the clock. The wait strategy's own
-                    // timeout bounds it — this does not sleep on a deadline it
-                    // chose, which is what non-negotiable 4 is about.
-                    engine.idle_with(&[]);
-                    continue;
+            if handshaking.is_none() {
+                match policy.next(now) {
+                    // Nothing is connected, so there is nothing to say goodbye
+                    // to. A `Shutdown` reporting zero sessions is the truth
+                    // here, not a placeholder.
+                    crate::reconnect::Next::Stop => return Ok(Shutdown::default()),
+                    crate::reconnect::Next::At(_) => {
+                        // Nothing to wait on but the clock. The wait strategy's
+                        // own timeout bounds it — this does not sleep on a
+                        // deadline it chose, which is what non-negotiable 4 is
+                        // about.
+                        engine.idle_with(&[]);
+                        continue;
+                    }
+                    crate::reconnect::Next::Now => match connect(addr) {
+                        Ok(t) => match wrap(t) {
+                            Some(t) => handshaking = Some((t, now)),
+                            None => policy.dropped(now),
+                        },
+                        // A refused dial is an ending like any other. It is the
+                        // commonest one there is, and treating it as an error
+                        // would end the loop the first time a venue was slow to
+                        // come up.
+                        Err(_) => policy.dropped(now),
+                    },
                 }
-                crate::reconnect::Next::Now => match connect(addr) {
-                    Ok(t) => {
+            }
+            if let Some((mut t, since)) = handshaking.take() {
+                match t.admission() {
+                    Admission::Ready => {
                         // **Asked on every attempt, not only the first.** A
                         // reconnect is not a restart (ADR-0010), and whether
                         // this one continues is the recovery's answer, not this
-                        // loop's guess.
-                        match recovery.recover(&cfg) {
-                            Some(r) => {
-                                engine.add_resumed(
-                                    t,
-                                    cfg,
-                                    r.journal,
-                                    r.next_out,
-                                    r.next_in,
-                                    r.last_active_ms,
-                                );
-                            }
-                            None => {
-                                engine.add_with_journal(t, recovery.fresh(&cfg));
-                            }
+                        // loop's guess. Asked once the connection is decided,
+                        // so a handshake that fails reads no journal.
+                        //
+                        // The prefix door rather than `add_with_journal`, and
+                        // the prefix is empty: it is the add that carries
+                        // ADR-0060's check. For a plain socket that check is
+                        // one never-taken comparison and the connection is
+                        // built exactly as `add_with_journal`/`add_resumed`
+                        // build it.
+                        let state = recovery.recover(&cfg);
+                        match engine.add_with_prefix_config_and_journal(t, cfg, &[], state, || {
+                            recovery.fresh(&cfg)
+                        }) {
+                            // **Up from the add, not from the next turn.** A
+                            // connection ADR-0060 refuses is gone within its
+                            // first turn; judged from after the turn it would
+                            // never have been up, `dropped` would never run,
+                            // and the policy would answer `Now` again at once —
+                            // a reconnect storm against a venue whose only
+                            // fault is a cipher suite. `[measured 2026-09-13]`
+                            // 879 dials in 1.5 s without this line, 7 with it;
+                            // `tests/tls_initiator_wire.rs::an_initiator_that_fell_back_is_reported_and_refused_when_the_kernel_was_demanded`
+                            // counts the refusals.
+                            Ok(_) => up = true,
+                            // An empty prefix always fits; if it somehow did
+                            // not, the socket is gone and that is an ending.
+                            Err(_) => policy.dropped(now),
                         }
                     }
-                    // A refused dial is an ending like any other. It is the
-                    // commonest one there is, and treating it as an error would
-                    // end the loop the first time a venue was slow to come up.
-                    Err(_) => policy.dropped(now),
-                },
+                    Admission::Pending
+                        if handshake_ms != 0 && now.saturating_sub(since) >= handshake_ms =>
+                    {
+                        // A venue that took the TCP connection and never
+                        // finished the handshake. No session exists to time it
+                        // out, so this loop does. Dropping `t` closes it.
+                        policy.dropped(now);
+                    }
+                    Admission::Pending => handshaking = Some((t, since)),
+                    Admission::Failed => policy.dropped(now),
+                }
             }
         }
 
@@ -2216,11 +2576,28 @@ fn dial<
             policy.logged_on();
         }
 
+        // A shutdown asked for mid-handshake finishes here too: the engine
+        // holds no connection, and returning drops the socket in the slot.
         if let Some(done) = engine.shutdown_finished() {
             return Ok(done);
         }
-        if !moved && engine.connections() > 0 {
-            engine.idle();
+        if !moved {
+            if engine.connections() > 0 {
+                engine.idle();
+            } else if let Some((t, _)) = handshaking.as_ref() {
+                // **Wait on the venue, never spin and never block on a read.**
+                // In `standard` this sleeps until the socket is readable or the
+                // strategy's own timeout passes, which also bounds how late the
+                // deadline above is noticed.
+                //
+                // Deleting this arm is the reversal of
+                // `tests/tls_initiator_wire.rs::the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits`:
+                // `[measured 2026-09-13]` 0.00% of a core becomes 99.90%.
+                match t.source() {
+                    Some(source) => engine.idle_with(&[Interest::readable(source)]),
+                    None => engine.idle(),
+                }
+            }
         }
     }
 }
@@ -2500,7 +2877,9 @@ pub enum ServeError {
     /// already in use send an operator to two different places, and one variant
     /// covering both sends them to the wrong one first.
     LogPath(std::io::Error),
-    /// The certificate and key do not make a server configuration.
+    /// TLS could not be set up: the certificate and key do not make a server
+    /// configuration, the roots or identity do not make a client one, or
+    /// `TlsRequireKernel=Y` on a kernel that cannot offload.
     ///
     /// **Its own variant for the same reason [`Self::LogPath`] is.** A bad
     /// certificate and a busy port are two different mornings, and one variant
@@ -2524,7 +2903,16 @@ impl core::fmt::Display for ServeError {
             Self::Io(e) => write!(f, "binding the listener: {e}"),
             Self::LogPath(e) => write!(f, "opening the message log named by FileLogPath: {e}"),
             #[cfg(feature = "tls")]
-            Self::Tls(e) => write!(f, "building the TLS server configuration: {e}"),
+            // **Side-neutral since step 5b of the `tls` plan.** It read
+            // "building the TLS server configuration" while only an acceptor
+            // could raise it; `tls::client_config` and the initiator's
+            // `TlsRequireKernel` refusal raise it now too, and a sentence naming
+            // the wrong end sends an operator to the wrong configuration file.
+            // The message after the colon already names what failed, which is
+            // why this is a wording change and not a new variant — a variant
+            // would be a breaking change to a public enum for a distinction
+            // the text already makes.
+            Self::Tls(e) => write!(f, "setting up TLS: {e}"),
         }
     }
 }

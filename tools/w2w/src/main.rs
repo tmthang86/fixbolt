@@ -62,6 +62,29 @@
 //!
 //! It is armed only for the timed loop: startup renders 22 000 messages into a
 //! `Vec<Vec<u8>>` on purpose, and `affinity::Topology` reads `/proc`.
+//!
+//! # TLS, and why the `tls:` line is read back
+//!
+//! `[2026-09-13]` step 6a of `docs/plans/2026-09-04-tls.md`. `--tls off|ktls|userspace`,
+//! default `off`, needs `--features tls` for anything but `off` and refuses
+//! otherwise. `off` is the plain path, unchanged: a blocking `TcpStream` client.
+//! `ktls` and `userspace` put a `TlsTransport` on **both** ends — the engine's
+//! accepted socket and the client's dialled one — and `userspace` forces
+//! `TlsTransport::with_offload(…, false)` on both.
+//!
+//! **`tls:` is printed from what the engine's transport reports after the first
+//! logon** (`Engine::tls_mode`), never from the flag. A `--tls ktls` whose
+//! handover fell back is a figure about userspace rustls, and a line echoed
+//! from the argument would label it `kernel` — the `--mode standard` lesson of
+//! 2026-08-30 from the TLS side. `userspace` leaves the hot-path guarantee
+//! (ADR-0005 decision 3), so its `allocs` is printed and not asserted.
+//!
+//! **And the read-back is refused here, not only downstream.** `[measured
+//! 2026-09-13]` step 6b left a fallen-back `ktls` arm to the script that reads
+//! `tls:`; the run never reached it, because `assert_eq!(allocs, 0)` fires
+//! first and userspace rustls allocates. The run then failed as a hot-path
+//! regression rather than as a transport that never took the keys. Every arm's
+//! read-back is now checked in [`measure`], before the first sample.
 #![allow(unsafe_code)]
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
 // `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
@@ -73,7 +96,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Allocations since the counter was armed, on **every** thread — which is the
@@ -117,8 +140,8 @@ static A: Counting = Counting;
 
 use fixbolt_codec::{FieldIndex, Template, TemplateBuilder, Validation, parse_into};
 use fixbolt_dict::Fix44;
-use fixbolt_engine::dispatch::InlineDispatch;
-use fixbolt_engine::transport::Interest;
+use fixbolt_engine::dispatch::{ConnId, InlineDispatch};
+use fixbolt_engine::transport::{Interest, TcpTransport, TlsMode, Transport};
 use fixbolt_engine::wait::{Spin, Waiting, Yield};
 use fixbolt_engine::{Acceptor, Engine};
 use fixbolt_session::{Application, Config};
@@ -128,6 +151,73 @@ use fixbolt_session::{Application, Config};
 /// A `const` rather than a `cfg` at each use site, so the refusal below is one
 /// branch that is always compiled and always read.
 const CAN_PIN: bool = cfg!(all(feature = "affinity", target_os = "linux"));
+
+/// Whether this build can run a TLS arm at all — the same shape as [`CAN_PIN`],
+/// and refused the same way. `fixbolt_engine::tls::TlsTransport` is Linux-only.
+const CAN_TLS: bool = cfg!(all(feature = "tls", target_os = "linux"));
+
+/// What the engine thread's transport reported after the first logon, for the
+/// client thread to print. `0` until then; see [`tls_code`].
+///
+/// A cell rather than a `println!` on the engine thread, so the line has one
+/// place in the output and is printed by the thread that then asserts on it.
+static TLS_SEEN: AtomicU8 = AtomicU8::new(0);
+
+/// [`TLS_SEEN`]'s encoding. `4` is "logged on, and the connection was gone by
+/// the time the engine was asked", which must fail the run rather than print.
+const fn tls_code(mode: Option<TlsMode>) -> u8 {
+    match mode {
+        Some(TlsMode::Plain) => 1,
+        Some(TlsMode::Kernel) => 2,
+        Some(TlsMode::Userspace) => 3,
+        None => 4,
+    }
+}
+
+/// Which transport carries the session — `--tls`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tls {
+    /// A plain `TcpTransport` and a blocking `TcpStream` client. The default,
+    /// and what every figure published before this flag was measured on.
+    Off,
+    /// `TlsTransport` on both ends, keys handed to the kernel.
+    Ktls,
+    /// `TlsTransport` on both ends with the offload refused, so `rustls` stays
+    /// on the data path. **Leaves the hot-path guarantee** — ADR-0005 decision 3.
+    Userspace,
+}
+
+impl Tls {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Ktls => "ktls",
+            Self::Userspace => "userspace",
+        }
+    }
+
+    /// What the **engine** must report for this arm — [`seen_name`]'s spelling,
+    /// not the flag's. `--tls ktls` reads back as `tls: kernel`, which is why
+    /// the two differ at all, and why `scripts/w2w-baseline.sh` carries the
+    /// same mapping in its `want_tls` case.
+    const fn wants(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Ktls => "kernel",
+            Self::Userspace => "userspace",
+        }
+    }
+}
+
+/// What `tls:` says, from what the engine reported — never from [`Tls`].
+const fn seen_name(code: u8) -> &'static str {
+    match code {
+        1 => "off",
+        2 => "kernel",
+        3 => "userspace",
+        _ => "unknown",
+    }
+}
 
 /// Which idle strategy the engine thread runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,6 +456,26 @@ fn main() -> std::io::Result<()> {
             return Err(std::io::Error::other("unknown --path"));
         }
     };
+    let tls = match arg::<String>(&args, "--tls").as_deref() {
+        None | Some("off") => Tls::Off,
+        Some("ktls") => Tls::Ktls,
+        Some("userspace") => Tls::Userspace,
+        Some(other) => {
+            eprintln!("w2w: unknown --tls {other}; expected off, ktls or userspace");
+            return Err(std::io::Error::other("unknown --tls"));
+        }
+    };
+    // The refusal, for the reason `--engine-core` has one: a TLS arm that
+    // quietly ran plain TCP would print a plain figure under a TLS heading.
+    if !CAN_TLS && tls != Tls::Off {
+        eprintln!(
+            "w2w: --tls {} needs `--features tls`, on Linux.",
+            tls.name()
+        );
+        eprintln!("     This build has no TLS transport. Build with:");
+        eprintln!("       cargo build --release -p fixbolt-w2w --features tls");
+        return Err(std::io::Error::other("this build has no TLS transport"));
+    }
     let engine_core: Option<usize> = arg(&args, "--engine-core");
     let client_core: Option<usize> = arg(&args, "--client-core");
 
@@ -439,6 +549,23 @@ fn main() -> std::io::Result<()> {
         Path::Admin => None,
         Path::App => Some(Desk::new()?),
     };
+    // The certificate and both configurations are made here, before either
+    // thread starts and far outside the timed window: `rcgen` and `rustls`
+    // allocate freely, and that is ADR-0005's handshake carve-out.
+    #[cfg(all(feature = "tls", target_os = "linux"))]
+    let pki = match tls {
+        Tls::Off => None,
+        Tls::Ktls | Tls::Userspace => Some(tls_arm::Pki::new()?),
+    };
+    #[cfg(all(feature = "tls", target_os = "linux"))]
+    let side = match &pki {
+        None => EngineSide::Plain,
+        // **The reversal of step 6a lives on this line**: forcing `false` here
+        // while `--tls ktls` is asked for must print `tls: userspace`.
+        Some(p) => EngineSide::Tls(std::sync::Arc::clone(&p.server), tls == Tls::Ktls),
+    };
+    #[cfg(not(all(feature = "tls", target_os = "linux")))]
+    let side = EngineSide::Plain;
     let body = move || {
         // The tid, so a syscall trace can be attributed to THIS thread and
         // not to the client on the main thread, which blocks on purpose.
@@ -451,8 +578,8 @@ fn main() -> std::io::Result<()> {
             println!("engine-tid: {tid}");
         }
         match desk {
-            None => run(acceptor, &engine_stop, mode, Never),
-            Some(d) => run(acceptor, &engine_stop, mode, d),
+            None => serve(acceptor, &engine_stop, mode, Never, side),
+            Some(d) => serve(acceptor, &engine_stop, mode, d, side),
         }
     };
     let engine = spawn_engine(body, engine_core)?;
@@ -471,12 +598,175 @@ fn main() -> std::io::Result<()> {
     #[cfg(not(all(feature = "affinity", target_os = "linux")))]
     println!("client-core: not pinned");
 
-    let mut sock = TcpStream::connect(&addr)?;
-    sock.set_nodelay(true)?;
+    let run = Run {
+        path,
+        warmup,
+        n,
+        hold_ms,
+        tls,
+    };
+    let (mut samples, allocs) = match tls {
+        Tls::Off => {
+            // The plain arm, exactly as it was before `--tls` existed: a
+            // blocking `TcpStream` with Nagle off. Changing this client changes
+            // every figure this binary has published.
+            let sock = TcpStream::connect(&addr)?;
+            sock.set_nodelay(true)?;
+            measure(sock, &run, &stop, engine)?
+        }
+        #[cfg(all(feature = "tls", target_os = "linux"))]
+        Tls::Ktls | Tls::Userspace => {
+            let Some(p) = pki.as_ref() else {
+                return Err(std::io::Error::other("w2w: a TLS arm with no certificate"));
+            };
+            let sock = tls_arm::connect(&addr, p, tls == Tls::Ktls)?;
+            measure(sock, &run, &stop, engine)?
+        }
+        #[cfg(not(all(feature = "tls", target_os = "linux")))]
+        Tls::Ktls | Tls::Userspace => {
+            // Unreachable: refused above, before any thread started.
+            return Err(std::io::Error::other("this build has no TLS transport"));
+        }
+    };
+
+    samples.sort_unstable();
+    let pick = |q: f64| samples[((samples.len() as f64 - 1.0) * q) as usize];
+    let what = match path {
+        Path::Admin => "TestRequest -> Heartbeat",
+        Path::App => "NewOrderSingle -> ExecutionReport",
+    };
+    println!("w2w: {what}, over kernel TCP on loopback");
+    println!("     mode   {:>9}", mode.name());
+    println!("     path   {:>9}", path.name());
+    println!("     {} samples after {} warmup", samples.len(), warmup);
+    println!("     min    {:>9} ns", samples[0]);
+    println!("     p50    {:>9} ns", pick(0.50));
+    println!("     p99    {:>9} ns", pick(0.99));
+    // Phase 1 exit criterion 6 names p99.9 specifically, and it was the one
+    // percentile this binary did not print. At the default 20 000 samples it is
+    // the mean of nothing — it is one sample, the 19 981st — so the criterion is
+    // reported with the sample count beside it and never without.
+    println!("     p99.9  {:>9} ns", pick(0.999));
+    println!("     max    {:>9} ns", samples[samples.len() - 1]);
+    println!("     allocs {allocs:>9}   (both threads, the timed window only)");
+    println!();
+    // Non-negotiable 1, for this binary. Reported first so the number is
+    // readable even when the assertion below ends the run.
+    //
+    // `off` and `ktls` hold it; `userspace` does not claim it. ADR-0005
+    // decision 3 names userspace rustls as the mode that leaves the hot-path
+    // guarantee, and `measure` has already refused **every** arm whose engine
+    // did not report the transport that arm names — so neither this exemption
+    // nor the assertion below can be reached by a run that was on another
+    // transport, and `allocs != 0` here can only mean what it says.
+    if tls == Tls::Userspace {
+        println!("tls userspace: rustls is on the data path, which leaves the hot-path");
+        println!("guarantee (ADR-0005 decision 3); `allocs` is printed and not asserted.");
+    } else {
+        assert_eq!(
+            allocs,
+            0,
+            "w2w: {allocs} allocations inside the timed window over {} messages, \
+             --tls {}, the engine reporting tls '{}' — this run measures malloc as \
+             well as the engine, and CLAUDE.md §2 non-negotiable 1 says the \
+             engine's path has none",
+            samples.len(),
+            tls.name(),
+            seen_name(TLS_SEEN.load(Ordering::Relaxed))
+        );
+    }
+    println!("NOT A LATENCY NUMBER FOR PUBLICATION unless this machine matches");
+    println!("DESIGN.md §9 — isolated cores, no frequency scaling, pinned threads.");
+    println!("Two of those three are the machine and are read by check-machine.sh;");
+    println!("the third is this run, and the `engine-core:`/`client-core:` lines above");
+    println!("say whether it got them. `not pinned` means this is not a §9 figure.");
+    println!("CLAUDE.md §2 rule 10: a number without its machine is someone else's claim.");
+    println!("ADR-0013 decision 4: and a standard figure is not an hft figure.");
+    println!("And an app figure is not an admin figure — `path` above says which.");
+    Ok(())
+}
+
+/// What [`measure`] needs to know about the run, as one argument.
+struct Run {
+    path: Path,
+    warmup: usize,
+    n: usize,
+    hold_ms: u64,
+    tls: Tls,
+}
+
+/// The client half: log on, read back which transport the engine got, warm up,
+/// time `n` round trips, and stop the engine.
+///
+/// Generic over [`Wire`] so the plain arm and both TLS arms run **one** loop:
+/// for `C = TcpStream` it is the loop this binary had before `--tls`, call for
+/// call — `write_all`, then `read` until one whole message.
+///
+/// Returns the samples, unsorted, and the allocation count over the timed
+/// window.
+fn measure<C: Wire>(
+    mut sock: C,
+    run: &Run,
+    stop: &AtomicBool,
+    engine: std::thread::JoinHandle<()>,
+) -> std::io::Result<(Vec<u64>, usize)> {
+    let Run {
+        path,
+        warmup,
+        n,
+        hold_ms,
+        tls,
+    } = *run;
 
     // Logon first, and read the answer, so the timed loop starts on an
     // established session rather than on a handshake.
     write_and_read(&mut sock, &logon(1))?;
+
+    // **Read back, not echoed.** The engine thread stores what its transport
+    // reported once `logons()` moved; a Logon answered means that has happened
+    // or is about to, on the other thread, so this waits for it — bounded, and
+    // outside the timed window.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let seen = loop {
+        let code = TLS_SEEN.load(Ordering::Relaxed);
+        if code != 0 {
+            break code;
+        }
+        if Instant::now() > deadline {
+            return Err(std::io::Error::other(
+                "w2w: the engine never reported which transport carried the logon",
+            ));
+        }
+        std::thread::yield_now();
+    };
+    println!("tls: {}", seen_name(seen));
+    // **Every arm must have run on the transport it names, `ktls` included, and
+    // this is the first thing that judges the run.** It returns before a single
+    // sample is taken, so it is necessarily ahead of the `assert_eq!(allocs, 0)`
+    // in `main`.
+    //
+    // `[measured 2026-09-13]` step 6b shipped this as `(Tls::Ktls, 2 | 3)` — a
+    // `ktls` arm whose handover fell back was deliberately allowed through, on
+    // the reasoning that `tls:` above already says `userspace` and
+    // `scripts/w2w-baseline.sh` reads that line. A senior review forced
+    // `with_offload(false)` on the engine side and found the script's check
+    // unreachable in exactly the case it was written for: the run reached the
+    // allocation assertion first and died with `panicked … allocs 600`, exit
+    // 101, naming a hot-path regression for a connection that had simply never
+    // taken the keys. The script is still the second reader; it is no longer
+    // the only one.
+    if seen_name(seen) != tls.wants() {
+        return Err(std::io::Error::other(format!(
+            "w2w: --tls {} requires the engine to report tls '{}', and it \
+             reports '{}' — the kernel handover fell back to userspace rustls, \
+             or this is not the arm that was asked for. Nothing measured below \
+             would be a figure about '{}', so nothing is measured.",
+            tls.name(),
+            tls.wants(),
+            seen_name(seen),
+            tls.name(),
+        )));
+    }
 
     // **Every message is rendered before the clock starts.** The lesson is
     // already written down: a benchmark that formats inside its own timed loop
@@ -493,7 +783,7 @@ fn main() -> std::io::Result<()> {
 
     let mut buf = [0u8; 4096];
     for m in msgs.iter().take(warmup) {
-        sock.write_all(m)?;
+        sock.put(m)?;
         read_one(&mut sock, &mut buf)?;
     }
 
@@ -504,7 +794,7 @@ fn main() -> std::io::Result<()> {
     ARMED.store(true, Ordering::Relaxed);
     for m in msgs.iter().skip(warmup) {
         let t0 = Instant::now();
-        sock.write_all(m)?;
+        sock.put(m)?;
         let len = read_one(&mut sock, &mut buf)?;
         let ns = t0.elapsed().as_nanos();
         // The reply must be the one this path asks for. A run that measured a
@@ -553,47 +843,7 @@ fn main() -> std::io::Result<()> {
     stop.store(true, Ordering::Relaxed);
     drop(sock);
     let _ = engine.join();
-
-    samples.sort_unstable();
-    let pick = |q: f64| samples[((samples.len() as f64 - 1.0) * q) as usize];
-    let what = match path {
-        Path::Admin => "TestRequest -> Heartbeat",
-        Path::App => "NewOrderSingle -> ExecutionReport",
-    };
-    println!("w2w: {what}, over kernel TCP on loopback");
-    println!("     mode   {:>9}", mode.name());
-    println!("     path   {:>9}", path.name());
-    println!("     {} samples after {} warmup", samples.len(), warmup);
-    println!("     min    {:>9} ns", samples[0]);
-    println!("     p50    {:>9} ns", pick(0.50));
-    println!("     p99    {:>9} ns", pick(0.99));
-    // Phase 1 exit criterion 6 names p99.9 specifically, and it was the one
-    // percentile this binary did not print. At the default 20 000 samples it is
-    // the mean of nothing — it is one sample, the 19 981st — so the criterion is
-    // reported with the sample count beside it and never without.
-    println!("     p99.9  {:>9} ns", pick(0.999));
-    println!("     max    {:>9} ns", samples[samples.len() - 1]);
-    println!("     allocs {allocs:>9}   (both threads, the timed window only)");
-    println!();
-    // Non-negotiable 1, for this binary. Reported first so the number is
-    // readable even when the assertion below ends the run.
-    assert_eq!(
-        allocs,
-        0,
-        "w2w: {allocs} allocations inside the timed window over {} messages — \
-         this run measures malloc as well as the engine, and CLAUDE.md §2 \
-         non-negotiable 1 says the engine's path has none",
-        samples.len()
-    );
-    println!("NOT A LATENCY NUMBER FOR PUBLICATION unless this machine matches");
-    println!("DESIGN.md §9 — isolated cores, no frequency scaling, pinned threads.");
-    println!("Two of those three are the machine and are read by check-machine.sh;");
-    println!("the third is this run, and the `engine-core:`/`client-core:` lines above");
-    println!("say whether it got them. `not pinned` means this is not a §9 figure.");
-    println!("CLAUDE.md §2 rule 10: a number without its machine is someone else's claim.");
-    println!("ADR-0013 decision 4: and a standard figure is not an hft figure.");
-    println!("And an app figure is not an admin figure — `path` above says which.");
-    Ok(())
+    Ok((samples, allocs))
 }
 
 /// Spawn the engine thread, pinned if a core was named.
@@ -639,31 +889,100 @@ fn spawn_engine<F: FnOnce() + Send + 'static>(
         .spawn(body)
 }
 
-/// Pick the idle strategy, with the application already chosen.
+/// What the engine thread's connections are: plain TCP, or a `TlsTransport`
+/// with its server configuration and whether to offload.
+enum EngineSide {
+    Plain,
+    #[cfg(all(feature = "tls", target_os = "linux"))]
+    Tls(std::sync::Arc<rustls::ServerConfig>, bool),
+}
+
+/// Pick the transport, with the application already chosen.
+///
+/// `wrap` is `lib.rs`'s `pump` shape: it turns an accepted socket into whatever
+/// this engine's connections are. For the plain arm it is `Some`, and the
+/// compiler removes it.
+fn serve<A: Application>(
+    acceptor: Acceptor,
+    stop: &AtomicBool,
+    mode: Mode,
+    app: A,
+    side: EngineSide,
+) {
+    match side {
+        EngineSide::Plain => run(acceptor, stop, mode, app, Some::<TcpTransport>),
+        #[cfg(all(feature = "tls", target_os = "linux"))]
+        EngineSide::Tls(cfg, offload) => run(acceptor, stop, mode, app, move |sock| {
+            // The handshake runs inside the transport's `recv`/`send` on the
+            // engine thread, before the first logon and so before the timed
+            // window — `tls.rs`'s module note on why it is not a pre-session
+            // stage. A connection rustls will not even start is dropped.
+            rustls::server::UnbufferedServerConnection::new(std::sync::Arc::clone(&cfg))
+                .ok()
+                .map(|conn| {
+                    fixbolt_engine::tls::TlsTransport::with_offload(
+                        sock,
+                        fixbolt_engine::tls::Handshake::new(conn),
+                        offload,
+                    )
+                })
+        }),
+    }
+}
+
+/// Pick the idle strategy, with the application and the transport already
+/// chosen.
 ///
 /// Split out from [`pump`] so that `--mode` and `--path` do not multiply into
 /// six copies of the loop: a reversal that also changed the loop would prove
 /// nothing about the loop.
-fn run<A: Application>(acceptor: Acceptor, stop: &AtomicBool, mode: Mode, app: A) {
+fn run<A: Application, T: Transport, F: FnMut(TcpTransport) -> Option<T>>(
+    acceptor: Acceptor,
+    stop: &AtomicBool,
+    mode: Mode,
+    app: A,
+    wrap: F,
+) {
     match mode {
-        Mode::Hft => pump(acceptor, stop, Spin, app),
-        Mode::Yield => pump(acceptor, stop, Yield, app),
+        Mode::Hft => pump(acceptor, stop, Spin, app, wrap),
+        Mode::Yield => pump(acceptor, stop, Yield, app, wrap),
         #[cfg(all(feature = "standard", unix))]
-        Mode::Standard => pump(acceptor, stop, fixbolt_engine::block::Block::new(16), app),
+        Mode::Standard => pump(
+            acceptor,
+            stop,
+            fixbolt_engine::block::Block::new(16),
+            app,
+            wrap,
+        ),
         #[cfg(not(all(feature = "standard", unix)))]
         Mode::Standard => {
+            let _ = wrap;
             eprintln!("w2w: this build has no standard mode");
         }
     }
 }
 
-/// The loop `DESIGN.md` D8 describes, over whichever idle strategy was chosen.
+/// The loop `DESIGN.md` D8 describes, over whichever idle strategy and
+/// transport were chosen.
 ///
 /// Generic so the two strategies are the *same* loop: a reversal that also
 /// changed the loop would prove nothing about the loop.
-fn pump<A: Application, W: Waiting>(acceptor: Acceptor, stop: &AtomicBool, wait: W, app: A) {
+///
+/// **Two loops, and the second is the one that is timed.** The first runs
+/// until a session has logged on, then asks the engine which transport carried
+/// it and stores the answer in [`TLS_SEEN`] for the client to print. The second
+/// is the loop this function was before `--tls`, with no per-turn check added:
+/// the question is asked once, and asking it every turn would put a branch in
+/// the figure for an answer that never moves.
+fn pump<A: Application, W: Waiting, T: Transport, F: FnMut(TcpTransport) -> Option<T>>(
+    acceptor: Acceptor,
+    stop: &AtomicBool,
+    wait: W,
+    app: A,
+    mut wrap: F,
+) {
     let mut engine: Engine<
-        fixbolt_engine::transport::TcpTransport,
+        T,
         fixbolt_session::Acceptor,
         InlineDispatch<A>,
         fixbolt_engine::clock::SystemClock,
@@ -681,9 +1000,30 @@ fn pump<A: Application, W: Waiting>(acceptor: Acceptor, stop: &AtomicBool, wait:
     );
     let listener = acceptor.source().map(Interest::readable);
     let extra: &[Interest] = listener.as_slice();
+    let mut first: Option<ConnId> = None;
     while !stop.load(Ordering::Relaxed) {
         while let Some(t) = acceptor.accept() {
-            let _ = engine.add(t);
+            if let Some(t) = wrap(t) {
+                let id = engine.add(t);
+                first.get_or_insert(id);
+            }
+        }
+        if !engine.turn() {
+            engine.idle_with(extra);
+        }
+        if engine.logons() > 0 {
+            TLS_SEEN.store(
+                tls_code(first.and_then(|id| engine.tls_mode(id))),
+                Ordering::Relaxed,
+            );
+            break;
+        }
+    }
+    while !stop.load(Ordering::Relaxed) {
+        while let Some(t) = acceptor.accept() {
+            if let Some(t) = wrap(t) {
+                let _ = engine.add(t);
+            }
         }
         if !engine.turn() {
             engine.idle_with(extra);
@@ -696,18 +1036,42 @@ fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
     args.get(i + 1)?.parse().ok()
 }
 
-fn write_and_read(sock: &mut TcpStream, msg: &[u8]) -> std::io::Result<()> {
+/// The client's end of the wire: the two calls the timed loop makes.
+///
+/// For `TcpStream` these are `Write::write_all` and `Read::read`, which is what
+/// the loop called before this trait existed. The TLS client is
+/// `tls_arm::Client`.
+trait Wire {
+    /// Write all of `msg`, blocking until it is gone.
+    fn put(&mut self, msg: &[u8]) -> std::io::Result<()>;
+    /// Read what has arrived, blocking until something has. `0` is end of
+    /// stream.
+    fn get(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
+}
+
+impl Wire for TcpStream {
+    #[inline]
+    fn put(&mut self, msg: &[u8]) -> std::io::Result<()> {
+        self.write_all(msg)
+    }
+    #[inline]
+    fn get(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.read(buf)
+    }
+}
+
+fn write_and_read<C: Wire>(sock: &mut C, msg: &[u8]) -> std::io::Result<()> {
     let mut buf = [0u8; 4096];
-    sock.write_all(msg)?;
+    sock.put(msg)?;
     read_one(sock, &mut buf)?;
     Ok(())
 }
 
 /// One whole FIX message, by its own `9=` and trailer.
-fn read_one(sock: &mut TcpStream, buf: &mut [u8]) -> std::io::Result<usize> {
+fn read_one<C: Wire>(sock: &mut C, buf: &mut [u8]) -> std::io::Result<usize> {
     let mut at = 0;
     loop {
-        let n = sock.read(&mut buf[at..])?;
+        let n = sock.get(&mut buf[at..])?;
         if n == 0 {
             return Err(std::io::Error::other("peer closed"));
         }
@@ -729,6 +1093,143 @@ fn whole(bytes: &[u8]) -> Option<usize> {
     }
     let k = bytes[stop + 3..].iter().position(|b| *b == 1)?;
     Some(stop + 3 + k + 1)
+}
+
+/// The TLS arms' client, certificate and configurations.
+///
+/// Behind the feature as a whole module, so a build without it names none of
+/// `rustls`, `rcgen` or `fixbolt_engine::tls` — `CLAUDE.md` §2 rule 6.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+mod tls_arm {
+    use std::io;
+    use std::net::TcpStream;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use fixbolt_engine::tls::{Client as ClientSide, Handshake, TlsTransport};
+    use fixbolt_engine::transport::{Io, TcpTransport, Transport};
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
+
+    /// A self-signed `localhost` certificate, made per run rather than
+    /// committed — a committed one expires, and the engine's own TLS tests made
+    /// the same choice — and both ends' configurations built from it by the
+    /// engine's own `server_config` and `client_config`.
+    pub struct Pki {
+        pub server: Arc<rustls::ServerConfig>,
+        client: Arc<rustls::ClientConfig>,
+    }
+
+    impl Pki {
+        pub fn new() -> io::Result<Self> {
+            let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+                .map_err(|e| io::Error::other(format!("w2w: a self-signed certificate: {e}")))?;
+            let cert: CertificateDer<'static> = ck.cert.der().clone();
+            let key =
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.signing_key.serialize_der()));
+            let server = fixbolt_engine::tls::server_config(vec![cert.clone()], key)
+                .map_err(|e| io::Error::other(format!("w2w: server TLS config: {e}")))?;
+            let client = fixbolt_engine::tls::client_config(vec![cert], None)
+                .map_err(|e| io::Error::other(format!("w2w: client TLS config: {e}")))?;
+            Ok(Self { server, client })
+        }
+    }
+
+    /// The client end: step 5a's `TlsTransport<Client>`, handshaken on a
+    /// non-blocking socket and then switched to blocking for the timed loop.
+    pub struct Client {
+        t: TlsTransport<ClientSide>,
+    }
+
+    /// Dial `addr`, complete the handshake, and hand the socket back blocking.
+    ///
+    /// **The handshake is spun to completion before the first `Logon`**, so the
+    /// session and the timed loop both start on a connection whose transport is
+    /// already decided. `offload` false is `--tls userspace`: the kernel is not
+    /// asked, and `TlsTransport::fell_back` is how that end knows it is done —
+    /// `is_ready` means *keys in the kernel* and never becomes true there.
+    ///
+    /// Then `set_nonblocking(false)`, through a duplicate of the descriptor:
+    /// `O_NONBLOCK` belongs to the open file description, which the duplicate
+    /// shares, so the transport's own socket blocks too. From there the
+    /// transport's `recv` blocks in `read(2)` — and an `EIO` from a control
+    /// record still goes through `Context::handle_io_error`, surfacing as
+    /// `Io::Idle`, which [`super::Wire::get`] reads again.
+    pub fn connect(addr: &str, pki: &Pki, offload: bool) -> io::Result<Client> {
+        let sock = TcpStream::connect(addr)?;
+        sock.set_nodelay(true)?;
+        let blocking = sock.try_clone()?;
+        let name = ServerName::try_from("localhost")
+            .map_err(|e| io::Error::other(format!("w2w: server name: {e}")))?;
+        let conn = rustls::client::UnbufferedClientConnection::new(Arc::clone(&pki.client), name)
+            .map_err(|e| io::Error::other(format!("w2w: client connection: {e}")))?;
+        let mut t = TlsTransport::with_offload(
+            TcpTransport::new(sock)?,
+            Handshake::<ClientSide>::new(conn),
+            offload,
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut scratch = [0u8; 64];
+        while !(t.is_ready() || t.fell_back()) {
+            match t.recv(&mut scratch) {
+                Io::Idle => {}
+                Io::Ready(_) => {
+                    return Err(io::Error::other(
+                        "w2w: application data arrived before this client logged on",
+                    ));
+                }
+                Io::Closed => return Err(io::Error::other("w2w: closed during the TLS handshake")),
+                Io::Failed(k) => {
+                    return Err(io::Error::new(k, "w2w: the TLS handshake failed"));
+                }
+            }
+            if Instant::now() > deadline {
+                return Err(io::Error::other(
+                    "w2w: the TLS handshake did not finish in 10 s",
+                ));
+            }
+            std::hint::spin_loop();
+        }
+        // The client is half of every round trip timed, so a `ktls` arm whose
+        // *client* fell back is not a `ktls` figure either. The engine's half is
+        // read back and printed as `tls:`; this half is refused here, because
+        // nothing downstream reads it.
+        if offload && !t.is_ready() {
+            return Err(io::Error::other(
+                "w2w: --tls ktls, and the client's kernel handover fell back to userspace",
+            ));
+        }
+        blocking.set_nonblocking(false)?;
+        Ok(Client { t })
+    }
+
+    impl super::Wire for Client {
+        fn put(&mut self, mut msg: &[u8]) -> io::Result<()> {
+            while !msg.is_empty() {
+                match self.t.send(msg) {
+                    Io::Ready(n) => msg = msg.get(n..).unwrap_or_default(),
+                    // `EINTR` on the blocking write, or rustls not yet able to
+                    // take the record. Asked again.
+                    Io::Idle => {}
+                    Io::Closed => return Err(io::Error::other("peer closed")),
+                    Io::Failed(k) => return Err(io::Error::from(k)),
+                }
+            }
+            Ok(())
+        }
+
+        fn get(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            loop {
+                match self.t.recv(buf) {
+                    Io::Ready(n) => return Ok(n),
+                    // A control record the kernel handed back as `EIO` and
+                    // ktls-core consumed — a session ticket — or `EINTR`.
+                    Io::Idle => {}
+                    Io::Closed => return Ok(0),
+                    Io::Failed(k) => return Err(io::Error::from(k)),
+                }
+            }
+        }
+    }
 }
 
 /// One field off the wire, with no allocation.

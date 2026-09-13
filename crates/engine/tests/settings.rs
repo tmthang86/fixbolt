@@ -965,9 +965,17 @@ TargetCompID=TW44
     }
 }
 
-/// TLS here is the **acceptor's** — it presents a server certificate. An
-/// initiator file carrying one is the same refusal a dialling key gets on an
-/// acceptor file: `WrongRole`, by line.
+/// The **server certificate** keys are the acceptor's — an initiator file
+/// carrying one is the same refusal a dialling key gets on an acceptor file:
+/// `WrongRole`, by line.
+///
+/// `[amended 2026-09-13]` step 5c of `docs/plans/2026-09-04-tls.md` (Sửa 6,
+/// 6.4 item 6, approved in 6.12): `SocketUseSSL` and `TlsRequireKernel` are now
+/// valid on **both** roles, so the first case no longer blames the
+/// `SocketUseSSL=` line (7) but the `ServerCertificateFile=` line (8), which is
+/// the key that still belongs to the other role. What this test asserted about
+/// that first case until then — `WrongRole` at line 7 naming `SocketUseSSL` —
+/// is exactly the behaviour the approved plan reverses.
 #[test]
 fn tls_keys_on_an_initiator_file_are_wrong_role() {
     let text = "\
@@ -986,9 +994,9 @@ TargetCompID=ISLD
 ";
     let e = refused(text);
     assert_eq!(*e.problem(), Problem::WrongRole, "left: {e}");
-    assert_eq!(e.line(), 7, "and it names the line: {e}");
+    assert_eq!(e.line(), 8, "and it names the line: {e}");
     assert!(
-        e.to_string().contains("SocketUseSSL"),
+        e.to_string().contains("ServerCertificateFile"),
         "it names the key that belongs to the other role: {e}"
     );
 
@@ -1075,6 +1083,23 @@ fn socket_use_ssl_is_refused_without_the_tls_feature() {
         e.to_string().contains("tls"),
         "and it names the feature to rebuild with: {e}"
     );
+
+    // `[added 2026-09-13]` **And an initiator file, now that one may ask.** A
+    // featureless build would otherwise dial the venue in plaintext with the
+    // certification authority unread on disk.
+    let outcome = Settings::parse(TLS_INITIATOR).map(|s| s.client_tls().is_some());
+    assert_eq!(
+        outcome.as_ref().err().map(|e| e.problem()),
+        Some(&Problem::NeedsFeature),
+        "a build without the `tls` feature must refuse SocketUseSSL=Y on an \
+         initiator file at parse time rather than dial in plaintext; instead: {outcome:?}"
+    );
+    let e = refused(TLS_INITIATOR);
+    assert_eq!(e.line(), 7, "it names the SocketUseSSL line: {e}");
+    assert!(
+        e.to_string().contains("tls"),
+        "and it names the feature to rebuild with: {e}"
+    );
 }
 
 /// The dual of [`socket_use_ssl_is_refused_without_the_tls_feature`]: the same
@@ -1089,4 +1114,420 @@ fn socket_use_ssl_is_accepted_with_the_tls_feature() {
         s.tls().is_some(),
         "the same text the featureless build refuses"
     );
+}
+
+// ---------------------------------------------------------------------------
+// TLS on an initiator — three more keys, and a door of its own.
+//
+// Step 5c of `docs/plans/2026-09-04-tls.md` (Sửa 6, 6.4 item 6; key names
+// approved in 6.12). Step 5b gave the initiator a TLS door reachable only from
+// Rust. A deployment configures fixbolt from a file, so until these keys that
+// door had no handle on the outside.
+//
+// The shape mirrors the acceptor's block above, one role over:
+//
+//   * `CertificationAuthoritiesFile` is **required** when an initiator says
+//     `SocketUseSSL=Y`. There is no system trust store and no way to switch
+//     verification off (`CertificateVerifyLevel` is not offered), so an
+//     initiator without it could verify no venue at all.
+//   * `ClientCertificateFile` and `ClientCertificateKeyFile` are an **optional
+//     pair**, in two files. One without the other is a refusal, not a guess.
+//   * the server-certificate keys on an initiator file, and these three on an
+//     acceptor file, are `WrongRole` by line — the acceptor reads no
+//     certification authority (it verifies no client certificate).
+//   * `into_initiator()` refuses a file that asks for TLS, for the reason
+//     `into_table()` does: it would dial the venue in **plaintext**.
+// ---------------------------------------------------------------------------
+
+/// A complete initiator TLS file. Line 7 is `SocketUseSSL`, 8 the certification
+/// authorities, 9 the client certificate, 10 its key, 11 `TlsRequireKernel`.
+///
+/// The paths are never opened here, for the reason `TLS_ACCEPTOR` gives.
+const TLS_INITIATOR: &str = "\
+[DEFAULT]
+ConnectionType=initiator
+BeginString=FIX.4.4
+SenderCompID=TW44
+SocketConnectHost=venue.example.com
+SocketConnectPort=9880
+SocketUseSSL=Y
+CertificationAuthoritiesFile=/etc/fixbolt/venue-ca.pem
+ClientCertificateFile=/etc/fixbolt/client.pem
+ClientCertificateKeyFile=/etc/fixbolt/client.key
+TlsRequireKernel=Y
+
+[SESSION]
+TargetCompID=ISLD
+";
+
+/// The three initiator keys and the two shared ones become one
+/// `ClientTlsSettings`; an initiator file carries no server certificate, and a
+/// file that never mentions TLS asks for none.
+#[cfg(feature = "tls")]
+#[test]
+fn client_tls_keys_parse_into_client_tls_settings() {
+    let s = Settings::parse(TLS_INITIATOR).expect("a legal initiator TLS file");
+    let tls = s.client_tls().expect("the file asked for TLS");
+    assert_eq!(tls.ca(), Path::new("/etc/fixbolt/venue-ca.pem"));
+    assert_eq!(
+        tls.identity(),
+        Some((
+            Path::new("/etc/fixbolt/client.pem"),
+            Path::new("/etc/fixbolt/client.key")
+        )),
+        "the client certificate and its key, as a pair"
+    );
+    assert!(tls.require_kernel(), "TlsRequireKernel=Y was read");
+    assert!(
+        s.tls().is_none(),
+        "an initiator presents no server certificate"
+    );
+
+    // The pair is optional: a venue that asks for no client certificate gets
+    // none, and `None` is "the operator did not write one", not a default path.
+    let anonymous = TLS_INITIATOR
+        .replace("ClientCertificateFile=/etc/fixbolt/client.pem\n", "")
+        .replace("ClientCertificateKeyFile=/etc/fixbolt/client.key\n", "");
+    let s = Settings::parse(&anonymous).expect("a legal initiator TLS file");
+    assert_eq!(
+        s.client_tls().expect("the file asked for TLS").identity(),
+        None
+    );
+
+    // `TlsRequireKernel` defaults to off on this role too — ADR-0060.
+    let relaxed = TLS_INITIATOR.replace("TlsRequireKernel=Y\n", "");
+    let s = Settings::parse(&relaxed).expect("a legal initiator TLS file");
+    assert!(
+        !s.client_tls()
+            .expect("the file asked for TLS")
+            .require_kernel(),
+        "TlsRequireKernel is off unless the file says otherwise"
+    );
+
+    let plain = relaxed
+        .replace("SocketUseSSL=Y\n", "")
+        .replace(
+            "CertificationAuthoritiesFile=/etc/fixbolt/venue-ca.pem\n",
+            "",
+        )
+        .replace("ClientCertificateFile=/etc/fixbolt/client.pem\n", "")
+        .replace("ClientCertificateKeyFile=/etc/fixbolt/client.key\n", "");
+    assert!(
+        Settings::parse(&plain)
+            .expect("a legal initiator file")
+            .client_tls()
+            .is_none(),
+        "an initiator file that never mentions TLS asks for none"
+    );
+}
+
+/// **`SocketUseSSL=Y` on an initiator needs something to verify the venue
+/// against.** No system trust store, no verify-off knob: without
+/// `CertificationAuthoritiesFile` no venue certificate could ever verify, and
+/// that would surface per dial as a failed handshake rather than once, here.
+///
+/// **Runs in both feature sets**, like `socket_use_ssl_without_a_certificate_is_missing_key`.
+/// The first assertion compares an `Option<&Problem>` that exists whether or not
+/// the file parsed, so the reversal — the check removed — goes red **on it**
+/// rather than inside the `refused` helper
+/// (`docs/reference/a-red-reversal-does-not-prove-the-assertion-you-wrote-it-for.md`).
+#[test]
+fn socket_use_ssl_on_an_initiator_needs_certification_authorities_file() {
+    let text = TLS_INITIATOR.replace(
+        "CertificationAuthoritiesFile=/etc/fixbolt/venue-ca.pem\n",
+        "",
+    );
+    let outcome = Settings::parse(&text).map(|s| s.connection_type());
+    assert_eq!(
+        outcome.as_ref().err().map(|e| e.problem()),
+        Some(&Problem::MissingKey),
+        "an initiator with SocketUseSSL=Y and no CertificationAuthoritiesFile \
+         has nothing to verify the venue against; instead: {outcome:?}"
+    );
+    let e = refused(&text);
+    assert!(
+        e.to_string().contains("CertificationAuthoritiesFile"),
+        "it names the key that is missing: {e}"
+    );
+    assert_eq!(e.line(), 7, "blamed on the SocketUseSSL line: {e}");
+
+    // The other direction: a certification authority with the switch off
+    // describes a verification that will not happen.
+    let e = refused(&TLS_INITIATOR.replace("SocketUseSSL=Y", "SocketUseSSL=N"));
+    assert_eq!(*e.problem(), Problem::MissingKey, "left: {e}");
+    assert!(
+        e.to_string().contains("CertificationAuthoritiesFile")
+            && e.to_string().contains("SocketUseSSL=Y"),
+        "it names the key that does nothing, and the switch it needs: {e}"
+    );
+    assert_eq!(e.line(), 8, "on the line of the key that needs it: {e}");
+}
+
+/// **The client certificate and its key come together, in two files.**
+/// QuickFIX lets the key sit inside the certificate file; this engine does not,
+/// for either role, and one without the other is refused naming the half that
+/// is missing, on the line of the half that is present.
+#[test]
+fn a_client_certificate_without_its_key_is_missing_key() {
+    let text = TLS_INITIATOR.replace("ClientCertificateKeyFile=/etc/fixbolt/client.key\n", "");
+    let outcome = Settings::parse(&text).map(|s| s.connection_type());
+    assert_eq!(
+        outcome.as_ref().err().map(|e| e.problem()),
+        Some(&Problem::MissingKey),
+        "a client certificate with no key cannot be presented; instead: {outcome:?}"
+    );
+    let e = refused(&text);
+    assert!(
+        e.to_string().contains("ClientCertificateKeyFile"),
+        "it names the key that is missing: {e}"
+    );
+    assert_eq!(e.line(), 9, "on the ClientCertificateFile line: {e}");
+
+    let text = TLS_INITIATOR.replace("ClientCertificateFile=/etc/fixbolt/client.pem\n", "");
+    let e = refused(&text);
+    assert_eq!(*e.problem(), Problem::MissingKey, "left: {e}");
+    assert!(
+        e.to_string().contains("ClientCertificateFile"),
+        "a key with no certificate is the same refusal the other way round: {e}"
+    );
+    assert_eq!(e.line(), 9, "on the ClientCertificateKeyFile line: {e}");
+}
+
+/// The mirror of `tls_keys_on_an_initiator_file_are_wrong_role`: what a client
+/// trusts and presents, written into an acceptor file, is `WrongRole` by line.
+/// The acceptor reads no certification authority — it verifies no client
+/// certificate (plan Sửa 5 item 3).
+#[test]
+fn client_tls_keys_on_an_acceptor_file_are_wrong_role() {
+    for key in [
+        "CertificationAuthoritiesFile=/etc/fixbolt/ca.pem",
+        "ClientCertificateFile=/etc/fixbolt/client.pem",
+        "ClientCertificateKeyFile=/etc/fixbolt/client.key",
+    ] {
+        let name = key.split('=').next().expect("a key");
+        // In a TLS acceptor file, on line 8 …
+        let text = TLS_ACCEPTOR.replace(
+            "TlsRequireKernel=Y\n",
+            &format!("TlsRequireKernel=Y\n{key}\n"),
+        );
+        // An `Option<&Problem>` first, so a parser that stopped refusing goes
+        // red here and not inside `refused`.
+        let outcome = Settings::parse(&text).map(|s| s.connection_type());
+        assert_eq!(
+            outcome.as_ref().err().map(|e| e.problem()),
+            Some(&Problem::WrongRole),
+            "{name} on an acceptor file belongs to the other role; instead: {outcome:?}"
+        );
+        let e = refused(&text);
+        assert_eq!(e.line(), 8, "{name}: and it names the line: {e}");
+        assert!(
+            e.to_string().contains(name) && e.to_string().contains("initiator"),
+            "{name}: it names the key and the role it belongs to: {e}"
+        );
+
+        // … and in an acceptor file that never mentions TLS, where the role is
+        // still the thing to fix — not the missing switch.
+        let text = format!(
+            "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+{key}
+
+[SESSION]
+TargetCompID=TW44
+"
+        );
+        let e = refused(&text);
+        assert_eq!(*e.problem(), Problem::WrongRole, "{name}, left: {e}");
+        assert_eq!(e.line(), 4, "{name}: and it names the line: {e}");
+    }
+
+    // And the door says the same thing.
+    let e = Settings::parse(TWO_COUNTERPARTIES)
+        .expect("a legal acceptor file")
+        .into_tls_initiator()
+        .expect_err("an acceptor does not dial");
+    assert_eq!(*e.problem(), Problem::WrongRole, "left: {e}");
+}
+
+/// **The expensive refusal, on the initiator's side.** A file that asks for TLS
+/// poured into `into_initiator()` would dial the venue in plaintext, with the
+/// certification authority unread on disk.
+#[cfg(feature = "tls")]
+#[test]
+fn into_initiator_refuses_a_file_that_asks_for_tls() {
+    let s = Settings::parse(TLS_INITIATOR).expect("a legal initiator TLS file");
+    let e = s
+        .clone()
+        .into_initiator()
+        .expect_err("into_initiator would dial this venue in plaintext");
+    assert_eq!(*e.problem(), Problem::NeedsTlsDoor, "left: {e}");
+    assert_eq!(e.line(), 7, "it names the SocketUseSSL line: {e}");
+    assert!(
+        e.to_string().contains("into_tls_initiator"),
+        "and it names the door that works: {e}"
+    );
+
+    let (cfg, addr, _policy, tls) = s.into_tls_initiator().expect("the right door");
+    assert_eq!(cfg.sender_comp_id(), b"TW44");
+    assert_eq!(addr, "venue.example.com:9880");
+    assert_eq!(tls.ca(), Path::new("/etc/fixbolt/venue-ca.pem"));
+    assert!(tls.require_kernel());
+
+    // A plain initiator file cannot produce a certification authority.
+    let plain = "\
+[DEFAULT]
+ConnectionType=initiator
+BeginString=FIX.4.4
+SenderCompID=TW44
+SocketConnectHost=venue.example.com
+SocketConnectPort=9880
+
+[SESSION]
+TargetCompID=ISLD
+";
+    let e = Settings::parse(plain)
+        .expect("a legal initiator file")
+        .into_tls_initiator()
+        .expect_err("there is nothing to verify the venue against");
+    assert_eq!(*e.problem(), Problem::MissingKey, "left: {e}");
+    assert!(e.to_string().contains("SocketUseSSL"), "left: {e}");
+
+    // And a TLS initiator file is not an acceptor, whichever acceptor door.
+    let e = Settings::parse(TLS_INITIATOR)
+        .expect("a legal initiator TLS file")
+        .into_tls_table()
+        .expect_err("an initiator presents no server certificate");
+    assert_eq!(*e.problem(), Problem::WrongRole, "left: {e}");
+}
+
+/// **A `WrongRole` refusal names a door that takes the file, not one more
+/// refusal.**
+///
+/// `[added 2026-09-13]` a senior review of the `tls` branch found the two-step
+/// dance: `into_tls_table()` on an initiator file that asks for TLS answered
+/// "call into_initiator()", and `into_initiator()` then refused the same file
+/// with [`Problem::NeedsTlsDoor`]. Both refusals were right and the pair was
+/// one round trip too many — the role **and** the `SocketUseSSL=` line are
+/// known at the first one, so the first one can name the last door.
+///
+/// Eight refusals, which is every wrong-door-for-the-role there is: two roles,
+/// with TLS and without, each poured into both doors of the other role. Each
+/// asserts the hint names the door that works **and** does not name the door
+/// that would refuse it again — `into_initiator` and `into_tls_initiator` are
+/// different strings, and it is exactly that difference the dance turned on.
+#[cfg(feature = "tls")]
+#[test]
+fn a_wrong_role_refusal_names_a_door_that_takes_the_file() {
+    const PLAIN_INITIATOR: &str = "\
+[DEFAULT]
+ConnectionType=initiator
+BeginString=FIX.4.4
+SenderCompID=TW44
+SocketConnectHost=venue.example.com
+SocketConnectPort=9880
+
+[SESSION]
+TargetCompID=ISLD
+";
+    let parse = |text: &str| Settings::parse(text).expect("a legal file");
+
+    // (what was poured, into which door, the door the hint must name, the door
+    // it must NOT name — the one that would refuse this same file again).
+    let refusals = [
+        (
+            "a TLS initiator file into into_table()",
+            parse(TLS_INITIATOR)
+                .into_table()
+                .expect_err("an initiator file builds no acceptor table"),
+            "into_tls_initiator()",
+            "into_initiator()",
+        ),
+        (
+            "a TLS initiator file into into_tls_table()",
+            parse(TLS_INITIATOR)
+                .into_tls_table()
+                .expect_err("an initiator presents no server certificate"),
+            "into_tls_initiator()",
+            "into_initiator()",
+        ),
+        (
+            "a plain initiator file into into_table()",
+            parse(PLAIN_INITIATOR)
+                .into_table()
+                .expect_err("an initiator file builds no acceptor table"),
+            "into_initiator()",
+            "into_tls_initiator()",
+        ),
+        (
+            "a plain initiator file into into_tls_table()",
+            parse(PLAIN_INITIATOR)
+                .into_tls_table()
+                .expect_err("an initiator presents no server certificate"),
+            "into_initiator()",
+            "into_tls_initiator()",
+        ),
+        (
+            "a TLS acceptor file into into_initiator()",
+            parse(TLS_ACCEPTOR)
+                .into_initiator()
+                .expect_err("an acceptor does not dial"),
+            "into_tls_table()",
+            "into_table()",
+        ),
+        (
+            "a TLS acceptor file into into_tls_initiator()",
+            parse(TLS_ACCEPTOR)
+                .into_tls_initiator()
+                .expect_err("an acceptor does not dial"),
+            "into_tls_table()",
+            "into_table()",
+        ),
+        (
+            "a plain acceptor file into into_initiator()",
+            parse(TWO_COUNTERPARTIES)
+                .into_initiator()
+                .expect_err("an acceptor does not dial"),
+            "into_table()",
+            "into_tls_table()",
+        ),
+        (
+            "a plain acceptor file into into_tls_initiator()",
+            parse(TWO_COUNTERPARTIES)
+                .into_tls_initiator()
+                .expect_err("an acceptor does not dial"),
+            "into_table()",
+            "into_tls_table()",
+        ),
+    ];
+
+    for (what, e, door, dance) in &refusals {
+        assert_eq!(*e.problem(), Problem::WrongRole, "{what}, left: {e}");
+        let said = e.to_string();
+        assert!(
+            said.contains(door),
+            "{what}: the refusal does not name {door}, the door that takes it: {said}"
+        );
+        assert!(
+            !said.contains(dance),
+            "{what}: the refusal names {dance}, which would refuse this same \
+             file a second time: {said}"
+        );
+    }
+
+    // And each named door really does take its file — otherwise the eight
+    // assertions above only prove that four strings were spelled correctly.
+    parse(TLS_INITIATOR)
+        .into_tls_initiator()
+        .expect("into_tls_initiator takes a TLS initiator file");
+    parse(PLAIN_INITIATOR)
+        .into_initiator()
+        .expect("into_initiator takes a plain initiator file");
+    parse(TLS_ACCEPTOR)
+        .into_tls_table()
+        .expect("into_tls_table takes a TLS acceptor file");
+    parse(TWO_COUNTERPARTIES)
+        .into_table()
+        .expect("into_table takes a plain acceptor file");
 }

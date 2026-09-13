@@ -102,6 +102,10 @@ The tuned-box figures are in [DESIGN.md §6](DESIGN.md).
   claim here touches non-negotiable 4. **And no latency figure comes from it**;
   [DESIGN.md](DESIGN.md) §8's TLS row is still empty.
 
+  `[2026-09-13]` **Built on the §9 desk since, not yet in CI**: the initiator side, `w2w --tls`,
+  a kTLS arm on both halves of non-negotiable 4, and a KeyUpdate that survives instead of
+  aborting the session — see §8 below. None of it has a CI run id yet.
+
 ---
 
 ## 7. Interop against a real `libquickfix`, both directions
@@ -418,5 +422,41 @@ eliminate it. The tests they run are deterministic **by construction** — the c
 driven on the acceptor's own thread, so no scheduler decides what this engine sees — and that
 construction is guarded by its own reversals rather than by the repetitions. Nothing here is a
 latency measurement: [DESIGN.md](DESIGN.md) §8's TLS row is still empty.
+
+**Three test files landed since, Sửa 6 of the `tls` plan.** `crates/engine/tests/tls_client.rs`,
+`tls_initiator_wire.rs` and `tls_key_update.rs` are new; `tls_settings_wire.rs` already existed
+on `main` before this plan (`git ls-tree main crates/engine/tests/` carries it unchanged) and
+does not belong in this count. All four files ran green on the §9 desk in desktop configuration
+(the commit messages of `fb6a27c`, `60c480a`, `2e1a543`, `2d33d2a`, `9b4d305`, `da9fe6e` and
+`daec090` each quote the local run).
+
+CI is not "pending" for these commits — it ran, and for two of them it was red. Per the plan's
+own delivery log, CI is named green through `eec1403` (run `34734714388`). `da9fe6e` (run
+[`34735819579`](https://github.com/tmthang86/fixbolt/actions/runs/34735819579)) and `daec090`
+(run [`34736430150`](https://github.com/tmthang86/fixbolt/actions/runs/34736430150)) each ran
+and were **RED**, both times in the same two jobs — "The engine thread never sleeps in the
+kernel" and "A standard engine gives the core back" — because those two non-negotiable-4 jobs
+built `fixbolt-w2w` without `--features tls`, so the kTLS arm Sửa 6 step 6b added to each
+script reported `TLS arm SKIPPED, NOT PASSED` and exited 2. Commit `6017991` ("ci: the two
+non-negotiable-4 jobs build w2w with tls, after the runner says READY") fixed the two jobs, and
+its own run,
+[`34736957859`](https://github.com/tmthang86/fixbolt/actions/runs/34736957859), is green across
+every job. **The branch tip is green; the two commits before the fix were run and were red, not
+unrun** — do not read `da9fe6e` or `daec090` as either "no CI" or "covered by the green run
+above"; each has its own run id and its own (red) result.
+
+**Sửa 8, two more steps, `docs/plans/2026-09-04-tls.md` §8.7.** 6c-4 (`54572c8`, `cargo metadata
+--locked` as the first step of the `gates` job, `--locked` on both `cargo test` lines of the
+`tls` job): CI run
+[`34738948420`](https://github.com/tmthang86/fixbolt/actions/runs/34738948420), **success**.
+6c-3 (`6159732`, the `update_not_requested` case,
+`a_key_update_without_update_requested_rekeys_one_direction_and_allocates_two_boxes`, both roles,
+plus the lock-reading assertion on `DERIVED_FROM_RUSTLS`/`DERIVED_FROM_RING`): CI run
+[`34739725589`](https://github.com/tmthang86/fixbolt/actions/runs/34739725589) was still
+`in_progress` as this was written (`gh run list --branch plan/tls-initiator-and-numbers`,
+2026-09-13) — **pending**, not invented; do not read it as green until it completes. On the §9
+desk: `cargo test -p fixbolt-engine --test tls_key_update` three consecutive runs, each `6
+passed`; `cargo test --all --features fixbolt-engine/tls`, **679 passed, 0 failed** (678 → 679,
+exactly the one new test).
 
 ---

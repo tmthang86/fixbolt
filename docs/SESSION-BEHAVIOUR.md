@@ -59,6 +59,28 @@ judgement at all — the paragraph below — so the `[2026-09-10]` reading descr
 repository no longer has, and nothing should be inferred from it about what that connection
 would report now.
 
+**`[2026-09-13]` A connection that ends in its own first turn now reaches the reconnect
+policy — on the initiator only; there is no dial loop, and no `reconnect::Policy`, on the
+acceptor side.** The initiator's dial loop (`fn dial`, `crates/engine/src/lib.rs`) marked a
+connection "up" only *after* its first turn, so one that was refused inside that turn —
+`RefusedByDeployment` included, the row above — never told `reconnect::Policy` it had dropped,
+and the policy answered `Now` on every attempt instead of backing off. `up` is now set at
+`add`, before the turn runs, so a plain connection that dies in its first turn also backs off,
+not only a TLS one. `[measured 2026-09-13]` over a 1.5 s hold against a 50–200 ms doubling
+ladder: **879 dials** before this fix, **7** after. Guarded by
+`crates/engine/tests/tls_initiator_wire.rs::an_initiator_that_fell_back_is_reported_and_refused_when_the_kernel_was_demanded`,
+whose backoff assertion (`refusals <= 20`) is the one that would catch a regression here — the
+event-kind assertions above it only prove the refusal happened, not that it backed off. That
+assertion runs over a **separate** one-second wait taken *after* the initial (up to ten-second)
+wait for the fallback-and-refusal events has already been satisfied — not "the second second"
+of one continuous ten-second timer; see the test, around line 452, for the two distinct
+`wait_for_all` calls. **The plain-TCP edge of this fix has no plain-TCP test of its own.** The
+only test guarding the backoff assertion drives a TLS connection that is told
+`TlsRequireKernel=Y` and forced to fall back, so the plain-TCP path — a connection refused for
+some other reason inside its first turn — is exercised only indirectly, by sharing the same
+`up`-at-`add` code path the TLS test happens to reach. A regression that broke the plain path
+specifically, without touching the TLS one, would not be caught by anything named here.
+
 **`[2026-09-12]` `NeverTicked` closes `now_ms == 0`, and nothing wider.** A session judged
 before its first `tick` refuses *there*, ahead of the skew measurement, so on **that** path
 `Session::last_skew_ms` stays `None` and the two-thousand-year number cannot be produced. Zero

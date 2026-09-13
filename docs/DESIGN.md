@@ -653,19 +653,59 @@ offering the caller the choice. All of it is behind `--features tls`, on Linux.
 `PendingSet<T, R, PRE>` holds one transport *type* from `admit` to `take`, so a stage that
 changes the socket's type cannot be expressed. `presession.rs` was not modified.
 
-**Still not built:** the initiator side, and `w2w --tls`. **Still unverified:** which kernel
-version and cipher suites are the floor (ADR-0005 open question 2), and whether a session
-survives a TLS 1.3 key update under kTLS (question 6). **Question 3 — what asserts which mode is
-live — is answered, as of step 4b [merged 2026-09-12, `e728c16`]:** `Transport::tls_mode()` is
-read by `serve_tls_with_offload`, a handshake that lands in userspace raises
+**The initiator side landed in Sửa 6, `[2026-09-13]`.** `connect_and_serve_tls` and
+`connect_and_serve_tls_with` dial over `tls::ClientTls`/`tls::Client`, generic `tls.rs`
+over the `Side` trait (`Server`/`Client` are its two implementors) so the acceptor's four
+`tests/tls*.rs` did not change a line.
+`dial` bounds the handshake by the connection's `LogonTimeout` (`0` = unbounded), because the
+session-level timer does not watch a handshake that has produced no `Logon` yet. **The
+initiator never resumes a TLS session — every redial is a full handshake**
+([ADR-0063](decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)
+decision 1): `tls::client_config` sets `Resumption::disabled()`, and the kernel-mode session
+type for `Client` (`tls::side::Ticketless`) acknowledges a `NewSessionTicket` without reading
+it, counted by `TlsTransport<Client>::tickets_ignored()`.
+
+**A peer's TLS 1.3 KeyUpdate is handled — the second named carve-out from non-negotiable 1,
+`[2026-09-13]`.** ktls-core 0.0.5 aborts a peer's KeyUpdate with an `InternalError` alert unless
+its `tls13-key-update` feature is on; it is on now. The control-record buffer is taken at the
+handover, sized to what ktls-core reserves (64 KiB, not the plan's original 16 KiB + 5).
+**This engine and ktls-core allocate nothing handling a rekey; rustls's own key schedule
+allocates two boxes of 184 bytes per direction rekeyed — four under `update_requested`, two
+under `update_not_requested` — of this lock's rustls 0.23.44 and ring 0.17.14**, asserted
+exactly, not `<=`, by `crates/engine/tests/tls_key_update.rs` — a ceiling would stay green if
+the number silently changed either way. `Resumption::disabled()` alone removes none of the
+sixteen allocations a client's two session tickets used to cost; the newtype above is the whole
+of that fix. Full reasoning, sources and the alternatives rejected: ADR-0063.
+
+**Still not built:** any published TLS latency number — `w2w --tls` exists (`off`/`ktls`/
+`userspace`, read back through `Engine::tls_mode`) but nothing here has timed a rekey.
+**Still unverified:** which kernel version and cipher suites are the floor (ADR-0005 open
+question 2). **Question 6 — whether a session survives a TLS 1.3 key update under kTLS — is
+answered at phase-1 level**: it does, for a peer that rekeys on its own the way rustls does; a
+peer that never initiates one automatically, such as OpenSSL
+([openssl#23566](https://github.com/openssl/openssl/issues/23566), open), never exercises this
+path at all, and a peer that rekeys faster than RFC 8446's AES-GCM ceiling is the deployment's
+own concern (ADR-0063). **Question 3 — what asserts which mode is live — is answered, as of
+step 4b [merged 2026-09-12, `e728c16`]:** `Transport::tls_mode()` is read by
+`serve_tls_with_offload`, a handshake that lands in userspace raises
 `observe::EventKind::TlsFellBackToUserspace` regardless of `TlsRequireKernel`, and
 `TlsRequireKernel=Y` refuses a deployment whose kernel cannot offload — both halves of
-ADR-0060 decision 1, with `crates/engine/tests/tls_mode.rs` driving every arm. **The four
-configuration-file keys landed too, as of step 4c [2026-09-12]:** `SocketUseSSL`,
-`ServerCertificateFile`, `ServerCertificateKeyFile` and `TlsRequireKernel`, all `[DEFAULT]`-only
-and acceptor-only — `docs/CONFIGURATION.md` §1 has the table, `crates/engine/src/settings.rs`
-the code. **The §8 TLS row stays empty**, and `scripts/check-no-kernel-sleep.sh` has no TLS arm,
-so no claim is made about the engine thread under TLS.
+ADR-0060 decision 1, with `crates/engine/tests/tls_mode.rs` driving every arm. **The
+read-back itself, `Engine::tls_mode(ConnId)`, is a method on `Engine`, not on anything a front
+door hands back**: `serve_tls*` and `connect_and_serve_tls*` build the `Engine` inside
+themselves and return only a `Shutdown` summary once the loop ends, so a deployment going
+through one of those doors cannot call it on either role — only a caller that builds `Engine`
+directly, bypassing the front doors, can read a connection's mode back this way. `tools/w2w`
+does exactly that (its own `TLS_SEEN`/`tls:` line comes from the same read-back, not from a
+front door). The
+configuration-file keys landed too, as of step 4c [2026-09-12] and step 5c [2026-09-13]:**
+`SocketUseSSL` and `TlsRequireKernel` for either role, `ServerCertificateFile`/
+`ServerCertificateKeyFile` acceptor-only, `CertificationAuthoritiesFile`/
+`ClientCertificateFile`/`ClientCertificateKeyFile` initiator-only — seven keys, all
+`[DEFAULT]`-only — `docs/CONFIGURATION.md` §1 has the table, `crates/engine/src/settings.rs`
+the code. **The §8 TLS row stays empty**: `scripts/check-no-kernel-sleep.sh` and
+`scripts/check-standard-gives-the-core-back.sh` both now run a kTLS arm (Sửa 6, step 6b), but
+no latency number is published from either mode.
 
 **One thing measured on the way, because the obvious guess about it is wrong.**
 `[measured 2026-09-10]` only a `setup_ulp` refusal reaches the userspace fallback. A refusal from
@@ -851,13 +891,17 @@ below).
 | Allocations on the hot path, codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
 | Allocations on the hot path, session | **0** on sixteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, ordered, clock, text, schedule-open, schedule-shut | `crates/session/benches/alloc.rs`. The refusal path is counted apart because a hostile counterparty controls it and a `format!` is easiest to reach for there. `[measured 2026-09-02]` injecting one into `ordered` reads 10 000 |
 | Allocations on the hot path, engine | **0** on twenty-seven paths: idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle, registry-lookup, observe-idle, observe-asked, events-idle, events-busy, admin-idle, admin-busy, shutdown, reconnect, log-record, log-idle, log-busy, **origin-idle, origin-busy, logon-first** | `crates/engine/benches/alloc.rs`. `busy` asserts the session is still logged on at the end of the count, because an earlier version measured a connection dropped at message two. `log-record` calls `MessageLog::record` a thousand times with no engine in the window; `[measured 2026-09-04]` making it allocate once reads 1000. `[measured 2026-09-05]` the two ADR-0048 cases read **2000** and **16** under an injected `format!`; `logon-first` is sixteen exact calls rather than thousands because `speak_first` runs once per session and the fixture cannot cycle sessions — one `Config` means a second concurrent session is refused as a duplicate, and a dropped `Loopback` peer signals no EOF, so an early version of that case read `1 sends over 500 sessions`. What no bench here proves is that the writer thread allocates nothing while the engine runs; `tools/w2w` is where a both-threads number belongs |
+| A peer's TLS 1.3 KeyUpdate allocates exactly what rustls's key schedule forces, and nothing else `[2026-09-13]` | engine and ktls-core: **0**; rustls: **two** boxes of **exactly 184** bytes per direction rekeyed — **four** under `update_requested`, **two** under `update_not_requested`, of this lock's rustls 0.23.44 and ring 0.17.14 — asserted `==`, not `<=` — the second named carve-out from non-negotiable 1 | `crates/engine/tests/tls_key_update.rs::a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces` (`update_requested`, 4 boxes) and `::a_key_update_without_update_requested_rekeys_one_direction_and_allocates_two_boxes` (`update_not_requested`, 2 boxes), each run reading the same count ([ADR-0063](decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)). A ceiling (`<= 4`) was what step 6c shipped under a name that said "nothing"; an exact count is the assertion that forces a re-read on the next rustls or ring bump |
+| A client's session tickets allocate nothing after the handover `[2026-09-13]` | **0** over the ticket window, **and** `tickets_ignored() == 2`, so an absent ticket cannot pass as an unallocating one | `crates/engine/tests/tls_key_update.rs::a_session_ticket_after_the_handover_allocates_nothing`. `[measured 2026-09-13]` `Resumption::disabled()` alone left this at 16 allocations (`Window { count: 16, largest: 354 }`); the newtype `tls::side::Ticketless` is the whole of the fix (ADR-0063 Revision) |
 
 ### Mode and machine
 
 | Gate | Target | Proven by |
 |---|---|---|
 | The engine thread never sleeps in the kernel (`hft`) | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`: traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid. `[measured 2026-08-30]` Linux 6.18: `accept4`, `recvfrom`, `sendto` and zero of `epoll_wait` / `poll` / `select` / `futex` / `nanosleep` / `sched_yield`. Runs the binary again in `standard` mode and fails if that run does not trip it: rule 4 had two machine checks before this one and both were green with a sleep present |
+| The engine thread never sleeps in the kernel (`hft`), **TLS arm** `[2026-09-13]` | `--tls ktls` traces the same, with no sleeper and the read-back confirming which arm ran | the same script, Sửa 6 step 6b: runs `hft --tls ktls` (no sleeper, the usual socket calls, `tls: kernel` read back) and `--tls userspace` (must read back `tls: userspace`, so the two arms cannot be mistaken for each other). A build without the `tls` feature reports both old halves, then `TLS arm SKIPPED, NOT PASSED`, exit 2, rather than a silent pass |
 | A `standard` engine gives the core back | engine-thread CPU under 5% over a wall-clock window, found sleeping rather than running, **and** a round-trip p50 far below the poll timeout | `scripts/check-standard-gives-the-core-back.sh`. Four assertions, because CPU near zero is also what a dead thread, a run that never reached the mode, and an engine woken by its own timeout report. `[measured 2026-08-30]` a `Block` made to ignore readiness reads 0% CPU, sleeping 20 / 20, p50 99 046 599 ns; only the p50 catches it. Requires `hft` and `yield` to trip it |
+| A `standard` engine gives the core back, **TLS arm** `[2026-09-13]` | the same four assertions, on `standard --tls ktls` (not `hft`), plus the mode read back as `kernel` | `scripts/check-standard-gives-the-core-back.sh`'s own TLS-arm block, Sửa 6 step 6b (script lines 221-250): runs `--mode standard --tls ktls` once and judges it green-or-not by the same four assertions as the plain `standard` case, plus the `tls:` read-back. **This arm has no scripted red half** — the script's `for red in hft yield` reversal loop (lines 209-219) covers only the plain arm; nothing here automates a TLS-mode-mismatch reversal. The 99.53% CPU figure is not this script's output: it is a **hand-run** reversal — the standard-mode judgement invoked by hand against an `hft --tls ktls` run — recorded only in commit `da9fe6e`'s message ("standard check on hft --tls ktls: engine CPU 99.53%, red"), not reproduced by any committed script invocation |
 | kTLS can be driven from a plain non-blocking socket | 15 assertions green, and the offloaded data path makes no blocking syscall | `scripts/check-ktls-on-a-plain-socket.sh` (D11, [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md)). `[measured 2026-08-31]` `recvfrom` 3033 + `sendto` 1000 over 1000 round trips and nothing else. Runs a second time with `poll(2)` in the loop and fails if that does not trip it. Skips with exit 2, not a pass, on a kernel that cannot offload |
 | Which TLS mode is actually in force | a session that fell back to the userspace path is detected, not assumed | `crates/engine/tests/tls_mode.rs` drives every arm, since step 4b [2026-09-12, `e728c16`]: `serve_tls_with_offload` reads `Transport::tls_mode()`, a handshake landing in userspace raises `observe::EventKind::TlsFellBackToUserspace` whether or not `TlsRequireKernel` is set, and `TlsRequireKernel=Y` refuses the deployment. **This cell read "no gate exists yet" for two days after the gate existed**, while D11 above said the opposite — one rule, two places, and the table is the place a reader checks. ADR-0005 question 3 is answered; ADR-0005 itself is not edited (§5), the answer is dated here |
 | The lint config denies `unwrap` / `expect` / `panic` | red on a crate carrying all three, green once they are gone | `scripts/check-lint-config.sh`, in CI on every push |
@@ -865,6 +909,7 @@ below).
 | A gate's scratch fixture cannot inherit the machine | red when a line enters a directory outside the tree without copying every pinning artefact found at the repository root, by three rules: a `#`-first line is never read, `cp` counts only in command position, and any assignment prefix seeds the scratch variable (a `cd`/`pushd` naming no variable at all fails outright) | `scripts/check-scratch-fixtures.sh`, same job. 20 scripts, 1 entering a scratch dir, 1 pin; the artefact set is derived from what exists there and an empty set is an error. No allow-list, so the other `mktemp` scripts pass by never leaving the tree rather than by being named. `[measured 2026-09-12]` a senior review got past it four more ways — a `cp` reached only through a trailing comment, and a script with no `.sh` name, both now fixed (a `#`-first line is never read at any step, and scope is by shebang rather than extension) — and four remain, `[measured 2026-09-12]` by decision rather than by oversight: a `cp` inside a heredoc body, a `cp` copying out of the scratch dir rather than into it, and two seeding misses, `read -r TMP < <(mktemp -d)` and a bare `TMP=/tmp`. Each is one more regex, and the gate stays a regex anyway — the reasoning, and why a real parser does not close the gap either, is `docs/decisions/ADR-0061-the-scratch-fixture-gate-is-a-regex-and-says-so.md` ([a-scratch-fixture-inherits-the-machine](reference/a-scratch-fixture-inherits-the-machine.md)) |
 | Every `tls`-gated test the build lists actually ran | red when a test the `--features tls` build lists cannot be accounted for in the job's own log, by three order-independent assertions rather than by attributing a log line to a binary | `scripts/check-feature-gated-tests-ran.sh`, in the `tls` CI job: the listing half asks `cargo test -p fixbolt-engine --tests --features tls --no-run --message-format=json` for the compiled binaries and runs each one's own `--list`, so attribution to a binary is exact by construction rather than read from the log. The reconcile half reads a real run's log, which interleaves `cargo`'s `Running <path>` (stderr) with each binary's own test lines (stdout) with no guaranteed order — `[measured 2026-09-12]` the first version merged the two with `2>&1` and inferred attribution from their relative order, which held on the author's desk and read a test as running before any `Running` line on CI ([two-streams-through-one-pipe-have-no-guaranteed-order](reference/two-streams-through-one-pipe-have-no-guaranteed-order.md)) — so it now asserts only what does not depend on order: every listed name appears in the log carrying a run status as many times as it was listed, the set of `Running` binaries equals the set built, and the ignored count is at the ceiling. `[measured 2026-09-12]` 38 binaries, 38 `Running` lines, 326 listed, 326 accounted for, 0 ignored (ceiling 0) — 322 was the count at `161744a`, before step 4 added four `doc_table` lib tests. Listing nothing is an error rather than a pass; a canary test added to `tests/admin.rs` and left off a synthetic log reproduces the FAIL sentence |
 | Builds with nothing optional installed | `--no-default-features` on a clean runner | `.github/workflows/ci.yml`, its own job. `[measured 2026-08-30]` the workspace-wide command alone is not enough: cargo unifies features across one invocation, so a sibling crate switched the flag back on ([feature-flags-unify-across-a-workspace](reference/feature-flags-unify-across-a-workspace.md)) |
+| `Cargo.lock` is current for the commit under test `[2026-09-13]` | a manifest edit committed without its matching lock is red, not a silent re-resolve | `cargo metadata --locked --format-version 1` as the first step of the `gates` job (`.github/workflows/ci.yml`), plus `--locked` on both `cargo test` invocations of the `tls` job — the job whose assertions (D11 above) are pinned to this lock's rustls and ring. Not `--frozen`: CI still needs the network to fetch what the lock names. Sửa 8 §8.3, `docs/plans/2026-09-04-tls.md` |
 | An optional dependency is really optional | absent from the crate's graph with no features on, and the crate still builds and tests that way | `scripts/check-no-optional-deps.sh`, per crate. Reversal: removing `optional = true` from `libc` turns it red with the graph printed |
 | No documentation link points at a missing file | every internal link resolves | `scripts/check-links.py`, in CI |
 | `unsafe` blocks | each names what proves it sound | code review + Miri |

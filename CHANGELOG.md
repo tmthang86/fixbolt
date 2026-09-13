@@ -15,7 +15,81 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 **Nothing has been released.** Six crates now exist and none is published; the entries
 below describe what a first release would contain.
 
+### Added
+
+- **A TLS initiator.** `fixbolt_engine::connect_and_serve_tls` and
+  `connect_and_serve_tls_with` dial a TLS venue, behind `--features tls` on Linux, mirroring
+  `serve_tls`/`serve_tls_with` on the acceptor side. `fixbolt_engine::tls::ClientTls` is the
+  one-struct parameter a deployment builds by hand or gets from `Settings::into_tls_initiator`;
+  `tls::load_client_pem` reads its certification authorities and optional client identity off
+  disk. The handshake is bounded by the connection's `LogonTimeout` (`0` = unbounded) rather
+  than by the session timer. Three new `[DEFAULT]`-only, initiator-only settings keys:
+  `CertificationAuthoritiesFile`, `ClientCertificateFile`, `ClientCertificateKeyFile` —
+  thirty-three keys recognised now, not thirty. `docs/plans/2026-09-04-tls.md` Sửa 6.
+
+- **`fixbolt_engine::Engine::tls_mode(ConnId) -> Option<TlsMode>`** reads back which mode —
+  kernel, userspace, or none — actually carried a connection's bytes, on either role, rather
+  than trusting what the deployment asked for.
+
+- **`fixbolt_engine::tls::TlsTransport<Client>::tickets_ignored() -> u32`**, the count of
+  session tickets a client's kernel-mode connection has acknowledged without reading. It is the
+  only way to prove the ticket path ran, since ignoring a ticket is otherwise a no-op
+  ([ADR-0063](docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)).
+
+- **`tools/w2w --tls off|ktls|userspace`** (default `off`), reading the mode back through
+  `Engine::tls_mode` after the first logon rather than echoing the flag. `off` and `ktls` assert
+  zero allocations over the timed window on both threads; `userspace` prints the count instead,
+  because `rustls` on the data path leaves that guarantee (ADR-0005 decision 3).
+  `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh` both
+  gained a kTLS arm that drives this flag.
+
 ### Changed
+
+- **`SocketUseSSL` and `TlsRequireKernel` are valid on either role**, not acceptor-only.
+  `docs/CONFIGURATION.md` §1 rows changed accordingly; no existing acceptor file changes
+  behaviour.
+
+- **`ServeError::Tls` now displays `"setting up TLS: {e}"`**, not
+  `"building the TLS server configuration: {e}"`. The old text named only the acceptor's half
+  of the work; it was wrong the moment an initiator's handshake-configuration error used the
+  same variant.
+
+- **`Problem::NeedsTlsDoor` now displays `"this file asks for TLS, and this door would carry
+  it as plaintext"`**, not `"…and into_table() would serve it as plaintext"` — the sentence
+  now holds for `Settings::into_table()` on an acceptor file and `Settings::into_initiator()`
+  on an initiator file alike.
+
+- **A connection that ends inside its own first turn now reaches the reconnect policy.** The
+  initiator's dial loop used to mark a connection "up" only after its first turn completed, so
+  one refused or dropped within that turn — `RefusedByDeployment` included — never told
+  `reconnect::Policy` it had ended, and the policy answered `Now` on every attempt instead of
+  backing off. `[measured 2026-09-13]` over a 1.5 s hold against a 50–200 ms doubling ladder:
+  879 dials before this fix, 7 after. Affects the plain initiator as well as the TLS one.
+  `docs/SESSION-BEHAVIOUR.md`.
+
+- **The TLS initiator never resumes a TLS session: every redial is a full handshake.**
+  `tls::client_config` disables session-ticket resumption, and the kernel-mode session type a
+  client uses acknowledges a `NewSessionTicket` without reading it
+  ([ADR-0063](docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)).
+  There is no configuration key to turn resumption back on.
+
+### Fixed
+
+- **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered
+  a peer's KeyUpdate with an `InternalError` alert unless its `tls13-key-update` feature was on;
+  this engine had not enabled it. A long-lived session under kTLS — against any peer that
+  rekeys on its own record-count limit, which includes `rustls` at roughly 2^24 records — died
+  silently once it reached that limit. The feature is on now, and
+  `crates/engine/tests/tls_key_update.rs` asserts a session survives one, with the rekey's own
+  cost counted exactly (engine and ktls-core: 0 allocations; rustls's key schedule: two boxes
+  of 184 bytes per direction rekeyed — four under `update_requested`, two under
+  `update_not_requested`, of this repository's `Cargo.lock` (rustls 0.23.44, ring 0.17.14) —
+  [ADR-0063](docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)).
+
+- **`tools/w2w --tls ktls` now exits non-zero on a kernel that cannot offload**, rather than
+  measuring the fallen-back connection in userspace and printing its allocation count under the
+  `ktls` label. The read-back (`Engine::tls_mode`) is checked against the requested arm before
+  the first sample is taken, for every arm, `ktls` included.
 
 - **A session judged before its first `tick` now says so: `DropReason::NeverTicked`.** New
   variant on `DropReason`, which is `#[non_exhaustive]` — **not a breaking change**, and a

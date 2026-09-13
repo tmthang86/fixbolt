@@ -1474,9 +1474,11 @@ Stated so you do not discover it in production:
   is yours to pin, with `affinity::pin_current_thread` before the call or `taskset` around the
   process. Skip it and [DESIGN.md §8](DESIGN.md)'s budget is not about your process. STATUS
   item 21.
-- **TLS accepts, and it cannot yet tell you which mode it is in.** `[2026-09-10]`
-  `serve_tls` and `serve_tls_with` exist behind `--features tls`, on Linux, and bring a session
-  up over a real handshake. **Three constraints the compiler will not enforce for you:**
+- **TLS accepts and dials, and it cannot yet tell you which mode it is in except by asking.**
+  `[2026-09-10]` `serve_tls` and `serve_tls_with` exist behind `--features tls`, on Linux, and
+  bring an acceptor's session up over a real handshake. `[2026-09-13]` `connect_and_serve_tls`
+  and `connect_and_serve_tls_with` do the same for an initiator. **Constraints the compiler
+  will not enforce for you:**
 
   1. **A counterparty that cannot do `TLS13_AES_128_GCM_SHA256` cannot connect at all.** The
      suite is narrowed deliberately, because kTLS carries far fewer suites than `rustls` will
@@ -1485,30 +1487,70 @@ Stated so you do not discover it in production:
      ([ADR-0005](decisions/ADR-0005-tls.md) question 2).
   2. **You are told when a session leaves the kernel, and you can refuse it.**
      `[2026-09-10]` `EventKind::TlsFellBackToUserspace` names the connection that fell back, and
-     `TlsRequireKernel=Y` refuses twice: `serve_tls_requiring` **will not bind** on a host whose
-     kernel cannot offload TLS, and a handshake that lands in userspace anyway ends that
-     connection with `DropReason::RefusedByDeployment`. **The report does not depend on the
-     strictness** — a permissive deployment serves the fallback and still gets the event. A
-     latency figure from a connection that raised it is about a different code path, so do not
-     publish one without saying which mode it was.
-  3. **One certificate per listener.** No SNI, no second certificate. An acceptor that needs
-     more runs more listeners.
-  4. **`[2026-09-12]` A `.cfg` file can now ask for TLS, and `into_tls_table()` is the only door
-     that will serve it.** Four `[DEFAULT]`-only keys —
-     `SocketUseSSL`, `ServerCertificateFile`, `ServerCertificateKeyFile`, `TlsRequireKernel` —
-     become a `TlsSettings` that `tls::load_pem` turns into the DER `serve_tls*` takes
-     ([CONFIGURATION.md §1](CONFIGURATION.md)). **`Settings::into_table()` still refuses a file
-     that asked for TLS**, naming the line and the door that works, so calling the plain door on
-     a file you have not inspected is caught rather than served as plaintext. **A build without
-     the `tls` feature refuses `SocketUseSSL=Y` at parse time**, before a socket is ever touched
-     — the same certainty non-negotiable 6 already gives the Rust API, now given to the file too.
-     The one thing the file cannot do that the Rust builder still can: a certificate per
-     `[SESSION]`. The four keys are `[DEFAULT]`-only, same as point 3 above, so a per-counterparty
-     certificate needs one listener per counterparty either way.
+     `TlsRequireKernel=Y` refuses twice on either role: `serve_tls_requiring` **will not bind**
+     (or, on an initiator, **will not dial**) on a host whose kernel cannot offload TLS, and a
+     handshake that lands in userspace anyway ends that connection with
+     `DropReason::RefusedByDeployment`. **The report does not depend on the strictness** — a
+     permissive deployment serves the fallback and still gets the event. A latency figure from a
+     connection that raised it is about a different code path, so do not publish one without
+     saying which mode it was. `Engine::tls_mode(ConnId)` reads the mode back after the first
+     logon, for either role, rather than trusting what you asked for — **but it is a method on
+     `Engine` itself, and every front door in this crate (`serve_tls*`, `connect_and_serve_tls*`)
+     builds the `Engine` internally and hands you back only a `Shutdown` summary once it stops.**
+     A deployment going through a front door cannot call `tls_mode` at all; only a caller who
+     builds `Engine` directly — the way `tools/w2w` does, to print its own `tls:` line — can
+     read a connection's mode back this way.
+  3. **One certificate per listener; no client certificate per `[SESSION]`.** No SNI, no second
+     server certificate — an acceptor that needs more runs more listeners. The initiator side is
+     the same shape: `CertificationAuthoritiesFile`, `ClientCertificateFile` and
+     `ClientCertificateKeyFile` are `[DEFAULT]`-only, so a per-counterparty client identity also
+     needs one process per counterparty, or the Rust builder (`ClientTls`) built by hand per dial.
+  4. **`[2026-09-12]` A `.cfg` file can ask for TLS on either role, and the table picks the
+     door.** On an acceptor, `SocketUseSSL`, `ServerCertificateFile`, `ServerCertificateKeyFile`,
+     `TlsRequireKernel` become a `TlsSettings` that `tls::load_pem` turns into the DER
+     `serve_tls*` takes. `[2026-09-13]` On an initiator, `SocketUseSSL`,
+     `CertificationAuthoritiesFile`, `ClientCertificateFile`, `ClientCertificateKeyFile`,
+     `TlsRequireKernel` become a `ClientTlsSettings` (`Settings::into_tls_initiator`), and
+     `tls::load_client_pem` turns it into a `tls::ClientTls` ready for `connect_and_serve_tls*`
+     ([CONFIGURATION.md §1](CONFIGURATION.md)). **`Settings::into_table()`/`into_initiator()`
+     still refuse a file that asked for TLS**, naming the line and the door that works, so
+     calling the plain door on a file you have not inspected is caught rather than served as
+     plaintext. **A build without the `tls` feature refuses `SocketUseSSL=Y` at parse time**,
+     before a socket is ever touched — the same certainty non-negotiable 6 already gives the
+     Rust API, now given to the file too. **`ClientTlsSettings` does not carry the host**: the
+     name the venue's certificate must bear comes from `SocketConnectHost`, which
+     `Settings::into_tls_initiator` hands back separately inside the dial address — a caller
+     building `ClientTls` by hand splits `host:port` itself and passes the host on to
+     `tls::load_client_pem` or `ClientTls::server_name`. **A host given as an IP literal needs an
+     IP SAN** on the venue's certificate: `rustls::pki_types::ServerName::IpAddress` does not
+     match a certificate that only names the host by DNS form.
+  5. **`[2026-09-13]` The initiator's handshake has its own deadline, separate from the
+     session's.** `dial` bounds the handshake by the connection's `LogonTimeout`
+     (`0` = unbounded) rather than by the session timer — a silent venue that never answers is
+     caught by this deadline, because the session-level timer does not watch a handshake that
+     has not produced a `Logon` yet. **The initiator never resumes a TLS session: every redial is
+     a full handshake.** `tls::client_config` disables session-ticket resumption
+     (`Resumption::disabled()`) and the kernel-mode session type never stores a ticket it is
+     handed — so a venue that relies on resumption to absorb a reconnect storm sees a full
+     handshake from this engine every time ([ADR-0063](decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)).
+  6. **`[2026-09-13]` A counterparty's TLS 1.3 KeyUpdate is handled; this engine never sends
+     one.** A long-lived session rekeys when the *peer's* library decides to — rustls sends a
+     KeyUpdate at roughly 2^24 records on a connection (RFC 8446's AES-GCM ceiling), OpenSSL
+     does not send one on its own. How often that is is the counterparty's property, not a
+     setting here, and keeping a connection under AES-GCM's record limit is the deployment's own
+     responsibility to respect — this engine does not count records or refuse a connection that
+     is approaching it. Handling one costs one `setsockopt` per direction rekeyed and two small
+     boxes from rustls's key schedule per direction — four boxes when the peer sets
+     `update_requested`, two when it does not; this engine and ktls-core add nothing. The count
+     and the 184-byte size are the rustls and `ring` this repository's `Cargo.lock` resolves and
+     are asserted exactly by `crates/engine/tests/tls_key_update.rs`, not a promise to a build
+     with another lock ([ADR-0063](decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)
+     revision 2026-09-13); it does not grow the per-connection control-record buffer, which is
+     pre-sized to 64 KiB at the handover.
 
-  **Not built:** the initiator side (there is no `ClientCertificateFile`), and any published TLS
-  latency number. `scripts/check-no-kernel-sleep.sh` has no TLS arm, so nothing here claims the
-  engine thread stays out of the kernel under TLS.
+  **Not built:** any published TLS latency number. `scripts/check-no-kernel-sleep.sh` and
+  `scripts/check-standard-gives-the-core-back.sh` both now run a kTLS arm, but what a rekey
+  costs in latency has not been timed — see [DESIGN.md](DESIGN.md) D11 *As built*.
 - **It cannot originate an application message.** `Handler::on_message` returns one reply to
   one inbound message, and the session's `send_application` is reachable only by driving the
   session yourself (STATUS item 46).

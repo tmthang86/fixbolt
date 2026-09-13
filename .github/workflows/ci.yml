@@ -253,6 +253,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      # Sửa 8 §8.3: `Cargo.toml` uses caret requirements for rustls and ring
+      # (kept, not pinned with `=` — a library `=` breaks every consumer who
+      # needs a different 0.23.x, per the Cargo book). That leaves exactly one
+      # hole: a manifest edit committed without its matching `Cargo.lock`. This
+      # step is early and cheap on purpose — every other job in this file reads
+      # the same commit's lock and manifest, so a mismatch here means a
+      # mismatch everywhere, and one red here is worth more than ten reds
+      # repeating the same fact. Not `--frozen`: CI still needs the network to
+      # fetch what the lock names.
+      - name: Cargo.lock is current for this commit
+        run: |
+          if ! cargo metadata --locked --format-version 1 > /dev/null; then
+            echo "::error title=Cargo.lock is out of date::cargo metadata --locked found a manifest that does not match the committed Cargo.lock. Fix: commit the updated Cargo.lock alongside the manifest change (Sửa 8, docs/plans/2026-09-04-tls.md)."
+            exit 1
+          fi
+
       - run: rustup component add rustfmt clippy
 
       - id: ws
@@ -343,7 +360,17 @@ jobs:
           fi
       - run: sudo apt-get update && sudo apt-get install -y strace
       - run: scripts/fetch-quickfix-assets.sh
-      - run: cargo build -p fixbolt-w2w --release
+      # `[2026-09-13]` The script's kTLS arm needs a `tls` build and a runner
+      # that can offload; without both it reports SKIPPED, NOT PASSED, exit 2.
+      - name: This runner must be able to offload TLS
+        run: |
+          verdict="$(scripts/check-ktls-available.sh | tail -n +1 | grep -E '^(READY|NOT_BUILT|OTHER|NOT_LOADED)' | head -1)"
+          echo "verdict: ${verdict:-<none>}"
+          if [ "$verdict" != "READY" ]; then
+            echo "::error title=This runner cannot offload TLS::scripts/check-ktls-available.sh did not say READY. This is the environment, not the engine."
+            exit 1
+          fi
+      - run: cargo build -p fixbolt-w2w --release --features tls
       - run: scripts/check-no-kernel-sleep.sh
 
       # `[2026-09-02]` `--path app` — `NewOrderSingle` -> `ExecutionReport`,
@@ -403,7 +430,17 @@ jobs:
             exit 1
           fi
       - run: scripts/fetch-quickfix-assets.sh
-      - run: cargo build -p fixbolt-w2w --release
+      # `[2026-09-13]` The script's kTLS arm needs a `tls` build and a runner
+      # that can offload; without both it reports SKIPPED, NOT PASSED, exit 2.
+      - name: This runner must be able to offload TLS
+        run: |
+          verdict="$(scripts/check-ktls-available.sh | tail -n +1 | grep -E '^(READY|NOT_BUILT|OTHER|NOT_LOADED)' | head -1)"
+          echo "verdict: ${verdict:-<none>}"
+          if [ "$verdict" != "READY" ]; then
+            echo "::error title=This runner cannot offload TLS::scripts/check-ktls-available.sh did not say READY. This is the environment, not the engine."
+            exit 1
+          fi
+      - run: cargo build -p fixbolt-w2w --release --features tls
       - run: scripts/check-standard-gives-the-core-back.sh
 
   # CLAUDE.md §2 non-negotiable 6: this must build on a machine with nothing
@@ -471,7 +508,7 @@ jobs:
           # the script reads in the log, not this command's exit status, that
           # separates "a test failed" from "no test ran".
           status=0
-          cargo test -p fixbolt-engine --tests --features tls --no-fail-fast \
+          cargo test -p fixbolt-engine --tests --features tls --no-fail-fast --locked \
             2>&1 | tee /tmp/tls-tests.log || status=$?
           scripts/check-feature-gated-tests-ran.sh fixbolt-engine tls /tmp/tls-tests.log
           if [ "$status" -ne 0 ]; then
@@ -485,7 +522,7 @@ jobs:
           fails=0
           for i in 1 2 3; do
             echo "=== tls.rs repetition ${i} of 3 ==="
-            if ! cargo test -p fixbolt-engine --features tls --test tls; then
+            if ! cargo test -p fixbolt-engine --features tls --locked --test tls; then
               fails=$((fails + 1))
             fi
           done
