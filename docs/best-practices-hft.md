@@ -57,6 +57,9 @@ Core placement is explicit and verified, never assumed
 - **`serve_hft` pins nothing.** It runs the engine on the thread that called it, so that
   thread is yours to pin, with `affinity::pin_current_thread` before the call or `taskset`
   around the process. `serve_sharded_hft` pins every engine thread it starts.
+  `serve_hft_pinned` is the single-engine door that pins for you: it refuses the core by the
+  same rules as a `ShardPlan` — `CorePin::allow_unisolated` lifts only the `isolcpus` one — pins
+  the calling thread and reads the mask back, and only then binds.
 
 `isolcpus` and `rcu_nocbs` stay in the checklist. `[measured 2026-08-31]` they are free
 (`Engine::turn` 494.8 ns on an `isolcpus` core, 498.2 on `rcu_nocbs`, 501.8 untouched), and

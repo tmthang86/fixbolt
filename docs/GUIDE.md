@@ -1472,8 +1472,12 @@ Stated so you do not discover it in production:
   session was last active is yours too.
 - **`serve_hft` pins nothing.** It runs the engine on the thread that called it, so that thread
   is yours to pin, with `affinity::pin_current_thread` before the call or `taskset` around the
-  process. Skip it and [DESIGN.md §8](DESIGN.md)'s budget is not about your process. STATUS
-  item 21.
+  process. Skip it and [DESIGN.md §8](DESIGN.md)'s budget is not about your process.
+  `serve_hft_pinned` (`--features affinity`, Linux) does it for you — it refuses a core that is
+  absent, offline or outside `isolcpus` unless `CorePin::allow_unisolated` says otherwise, pins
+  the calling thread and reads the mask back, and only then binds — and **the pin stays on that
+  thread after the call returns**, a bind error included, so call it from a thread that exists
+  to serve. STATUS item 21.
 - **TLS accepts and dials, and it cannot yet tell you which mode it is in except by asking.**
   `[2026-09-10]` `serve_tls` and `serve_tls_with` exist behind `--features tls`, on Linux, and
   bring an acceptor's session up over a real handshake. `[2026-09-13]` `connect_and_serve_tls`

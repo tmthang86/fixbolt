@@ -570,6 +570,74 @@ impl ShardPlan {
     }
 }
 
+/// The one core a single engine runs on, checked against this machine before
+/// it is used — what [`crate::serve_hft_pinned`] takes.
+///
+/// **Not a [`ShardPlan`] of one, as a type.** A plan with several shards handed
+/// to a door that runs one engine is a mistake, and the type is what refuses it
+/// rather than a check at startup. Underneath it *is* a plan of one:
+/// [`validate`](Self::validate) builds exactly that and asks
+/// [`Topology::validate`], so **every refusal rule is the one the sharded
+/// runtime already has** — absent, offline, and, unless
+/// [`allow_unisolated`](Self::allow_unisolated) was called, outside `isolcpus`.
+/// None is written again here.
+///
+/// ADR-0015 decisions 1 and 5: the caller names the core, and the engine never
+/// picks one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CorePin {
+    core: CoreId,
+    allow_unisolated: bool,
+}
+
+impl CorePin {
+    /// Pin to `core`, with the isolation rule on.
+    #[must_use]
+    pub fn to(core: CoreId) -> Self {
+        Self {
+            core,
+            allow_unisolated: false,
+        }
+    }
+
+    /// Accept a core that is not in `isolcpus`.
+    ///
+    /// The same waiver as [`ShardPlan::allow_unisolated`], and it lifts the same
+    /// one rule: for development machines and CI, which have no `isolcpus`. A
+    /// core that is absent or offline is still refused.
+    #[must_use]
+    pub fn allow_unisolated(mut self) -> Self {
+        self.allow_unisolated = true;
+        self
+    }
+
+    /// The core this names.
+    #[must_use]
+    pub fn core(&self) -> CoreId {
+        self.core
+    }
+
+    /// Check this core against the machine it is about to run on.
+    ///
+    /// Reads `/sys` and allocates, once, at startup — nowhere near a turn.
+    ///
+    /// # Errors
+    ///
+    /// Anything [`ShardPlan::validate`] returns for a plan naming only this
+    /// core: [`NoSuchCore`](AffinityError::NoSuchCore),
+    /// [`NotOnline`](AffinityError::NotOnline),
+    /// [`NotIsolated`](AffinityError::NotIsolated), or
+    /// [`Unreadable`](AffinityError::Unreadable).
+    pub fn validate(&self) -> Result<(), AffinityError> {
+        let plan = ShardPlan::new(vec![self.core]);
+        if self.allow_unisolated {
+            plan.allow_unisolated().validate()
+        } else {
+            plan.validate()
+        }
+    }
+}
+
 /// `"0-3,7"` -> `[0, 1, 2, 3, 7]`. An empty string is an empty list, which is
 /// what `/sys/devices/system/cpu/isolated` contains on a machine with no
 /// `isolcpus` — an answer, not a failure.

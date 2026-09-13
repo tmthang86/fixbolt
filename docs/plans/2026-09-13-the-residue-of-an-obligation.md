@@ -586,3 +586,62 @@ R71-1 (23 → 24, khôi phục bằng bản sao)               đỏ: prior-art.
 `check-links.py` chạy ở gốc checkout chính đọc **1485** file và báo 9 URL — cả 9 là
 `crates/library/README.md` **bên trong ba worktree**, nơi ngoại lệ khoá theo đường dẫn không khớp.
 Không phải lỗi của cây; là lý do memory ghi *xoá worktree trước khi chạy script toàn repo*.
+
+### 2026-09-13 — bước 5 XONG (item 21)
+
+`affinity::CorePin` (`to`, `allow_unisolated`, `core`, `validate` — `validate` là `ShardPlan::new(vec![core])`
+nên **không có quy tắc từ chối mới**), `ServeError::Affinity`, và `serve_hft_pinned` theo thứ tự
+*validate → pin → serve*. `ServeError` đã là `#[non_exhaustive]`, nên biến thể mới không phải
+breaking change. `serve_hft` không đổi. Senior developer (opus) làm, trong worktree riêng.
+
+**Bốn chỗ lệch plan trong test, cả bốn làm test mạnh hơn:**
+
+1. **Test 1 và 2 dùng một port test đang giữ**, không phải `127.0.0.1:1`: chạy bằng root hoặc hạ
+   `ip_unprivileged_port_start` thì bind port 1 thành công, và R21-1 **treo** thay vì đỏ.
+2. **Test 3 thêm assertion mask** (`sched_getaffinity` trong `on_logon`) sau assertion `running_on`.
+   `[measured 2026-09-13]` bỏ lời gọi pin, thread không ghim vẫn nằm đúng `cpu0` **10/16 lần**.
+   Plan đã lường bẫy này và dặn *chạy 3 lần* — ba lần xanh cùng lúc sẽ xảy ra khoảng một phần tư số
+   lần. Ghi thành trường hợp thứ tư của
+   `docs/reference/a-reversal-needs-an-input-where-the-answers-differ.md`: *assert thứ việc ghim
+   thay đổi, không phải thứ việc ghim làm cho có khả năng xảy ra*.
+3. **Test 3 in giá trị trả về nếu cửa thoát trước khi bind** — lần đỏ đầu của R21-3 là 5 giây
+   *never bound*, mất hẳn lý do.
+4. **Test 3 đọc mask thêm một lần sau khi cửa trả về**, vì rustdoc và `GUIDE.md` nói thread vẫn bị
+   ghim sau lời gọi, và §4 đòi câu đó có test đứng sau. Có reversal riêng.
+
+**Một phát hiện về gate, chưa sửa:** rustdoc của biến thể mới lúc đầu link `Self::Tls`, gãy khi
+build **chỉ** `--features affinity`. Job `docs` của CI chạy mặc định và `--all-features` — **không
+tổ hợp nào trong hai cái đó thấy nó**. Developer tự bắt và sửa; lỗ ở CI vẫn còn. Ứng viên open
+item ở bước đóng.
+
+**Để senior review (bước 6) quyết, không sửa ở bước này:**
+- `crates/library/src/lib.rs:27` re-export `serve_hft` nhưng **không** re-export `serve_hft_pinned`.
+- `CorePin` không có accessor kiểu `ShardPlan::is_unisolated_allowed()`, trong khi ADR-0015 quyết
+  định 5 nói việc miễn `isolcpus` phải nhìn thấy được.
+- Thứ tự validate → pin → serve nghĩa là `NoCounterparties` (bảng rỗng) báo **sau** khi đã ghim,
+  và thread vẫn bị ghim lúc lỗi trả về. Rustdoc có ghi.
+- Có sẵn từ trước, không gate nào build: `unused import crate::msglog::MaybeLog` ở `shard.rs:43`
+  dưới `--no-default-features --features affinity`.
+
+**Gate, manager chạy lại trong checkout chính:**
+
+```
+cargo test -p fixbolt-engine --features affinity --test hft_pinned   ×3: 3 passed; 0 failed (2.01s)
+cargo test -p fixbolt-engine --features affinity                     44 binaries, 352 passed, 0 failed
+cargo clippy --all-targets --features affinity -- -D warnings         clean
+cargo clippy --all-targets -- -D warnings                             clean
+cargo build -p fixbolt-engine --no-default-features                   Finished
+RUSTDOCFLAGS=-D broken_intra_doc_links cargo doc -p fixbolt-engine --no-deps --features affinity
+                                                                      Finished, Generated
+scripts/check-indexing-debt.sh                                        ok (181)
+grep -c unsafe crates/engine/src/affinity.rs                          6 (trước: 6)
+cargo fmt --check                                                     exit 0
+scripts/check-links.py (trong worktree step5)                         372 files, no dead internal links
+R21-1 (bind trước validate, khôi phục bằng bản sao, byte-identical)
+  đỏ: expected Err(Affinity(NoSuchCore(CoreId(4096)))) before any bind;
+      got Err(Io(Os { code: 98, kind: AddrInUse, message: "Address already in use" }))
+  → khôi phục → 3 passed
+```
+
+R21-2 và R21-3 do developer chạy và trích (R21-2 đỏ 3/3 sau khi thêm mask; R21-3 đỏ đúng câu
+`Err(Affinity(NotIsolated(CoreId(0))))` sau khi test in giá trị trả về).

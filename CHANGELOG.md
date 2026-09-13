@@ -17,6 +17,16 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`fixbolt_engine::serve_hft_pinned`, the single-engine `hft` door that pins.** Behind
+  `--features affinity` on Linux. It takes a `fixbolt_engine::affinity::CorePin` —
+  `CorePin::to(CoreId)`, `.allow_unisolated()`, `.core()`, `.validate()` — refuses the core by
+  the rules `ShardPlan` already has (absent, offline, outside `isolcpus` unless waived), pins
+  the calling thread and reads the mask back, and only then binds; the pin stays on that thread
+  after the call returns. `serve_hft` is unchanged and still pins nothing. A refusal or a pin
+  that does not take is the new `ServeError::Affinity(AffinityError)`, present under the same
+  `cfg`; `ServeError` is `#[non_exhaustive]`, so this is not a breaking change. `STATUS.md`
+  item 21.
+
 - **A TLS initiator.** `fixbolt_engine::connect_and_serve_tls` and
   `connect_and_serve_tls_with` dial a TLS venue, behind `--features tls` on Linux, mirroring
   `serve_tls`/`serve_tls_with` on the acceptor side. `fixbolt_engine::tls::ClientTls` is the
