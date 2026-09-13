@@ -1,6 +1,6 @@
 # ADR-0063 — A peer's KeyUpdate is the second named carve-out, and a session ticket is not read
 
-**Status:** Proposed · **Date:** 2026-09-13 · **Plan:** docs/plans/2026-09-04-tls.md Sửa 7 ·
+**Status:** Accepted (2026-09-13, the owner approved plan Sửa 7 as proposed — plan 7.10; built in step 6c-2) · **Date:** 2026-09-13 · **Plan:** docs/plans/2026-09-04-tls.md Sửa 7 ·
 **Amends the scope of:** [ADR-0005](ADR-0005-tls.md) decision 1 (its text is not changed)
 
 ## Context
@@ -93,6 +93,41 @@ waits, and a hand-off to another thread would add to exactly the path that is bl
    asking for a non-boxing path for `KernelConnection`'s rekey. Nothing in this repository
    waits for the answer.
 
+## Revision — 2026-09-13, on acceptance (step 6c-2)
+
+Recorded as §5 of `CLAUDE.md` requires for a `Proposed` ADR revised in place. The decisions
+above are unchanged; building them measured three things this text had as unknown or had
+slightly wrong, all `[measured 2026-09-13]` on the §9 desk in desktop configuration,
+`7.0.0-31-generic`, rustls 0.23.44 with `ring`, by `crates/engine/tests/tls_key_update.rs`:
+
+- **`Resumption::disabled()` alone removes none of the sixteen ticket allocations.** With it
+  set and the ticket handed back to rustls's `KernelConnection` (a reversal of decision 1's
+  newtype), the ticket window read `Window { count: 16, largest: 354 }` — against
+  `count: 16, largest: 355` with resumption enabled, measured the same day on the step-6c code
+  (`da9fe6e`) as this step's red run. *Context* said the reduction
+  was unmeasured; it is zero. The newtype is therefore the whole of the ticket fix, and the
+  `Resumption::disabled()` line is what keeps the userspace fallback from resuming.
+- **Which half of decision 1 holds the no-resumption rule, per path.** Kernel path: tickets
+  arrive after the handover, so either half alone prevents resumption — reverting only the
+  newtype stays `Full`, because rustls then stores into `NoClientSessionStorage`; reverting
+  both reads `Some(Resumed)` on the second dial. Userspace fallback (`with_offload(false)`):
+  rustls reads the tickets itself and only `Resumption::disabled()` stands between them and a
+  resumption — reverting it alone reads `Some(Resumed)`. So decision 3's redial test has
+  **two arms**, kernel and userspace, and each reversal turns exactly one of them red.
+- **`tickets_ignored()` needs one allocation at the handover.** ktls-core 0.0.5's `Context`
+  owns the session and exposes no accessor back to it (`src/context.rs`, public methods
+  `new`, `state`, `buffer`, `buffer_mut`, `refresh_traffic_keys`, `handle_io_error`,
+  `shutdown`, `is_closed`), so the counter is an `Arc<AtomicU32>` shared between the newtype
+  and the transport, allocated once when a client's keys go into the kernel — inside
+  ADR-0005 decision 1's handshake carve-out, beside the `Box` of the `Context` and the
+  control-record buffer taken at the same point. A server takes no counter and no allocation.
+
+The exact counts were stable: five consecutive runs of the test binary, each asserting
+`count == 4`, `largest == 184` on both sides, `count == 0` over the ticket window and
+`tickets_ignored` moving by exactly 2 inside it. The newtype is `tls::side::Ticketless`,
+public in a private module — reachable only as `<Client as Side>::Kernel` — and the one new
+public item is `TlsTransport<Client>::tickets_ignored(&self) -> u32`.
+
 ## Why
 
 - **Zero where zero costs forty lines; a counted exception where zero costs a fork.** The
@@ -146,7 +181,7 @@ waits, and a hand-off to another thread would add to exactly the path that is bl
 | Alternative | Why rejected |
 |---|---|
 | **Widen the carve-out to "connection-lifetime control events: handshake, tickets, KeyUpdate"** | Admits sixteen allocations per connection for tickets when a forty-line newtype makes them zero. A carve-out wider than necessary is the failure ADR-0005 warned about |
-| **`Resumption::disabled()` alone** | Reduces the ticket count by an unmeasured amount and does not reach zero: the kernel-mode client still parses, derives and clones before the no-op store drops the value |
+| **`Resumption::disabled()` alone** | Does not reach zero: the kernel-mode client still parses, derives and clones before the no-op store drops the value. *Unmeasured when proposed; `[measured 2026-09-13]` in 6c-2 it removes none of the sixteen — see Revision* |
 | **A custom `CryptoProvider` with a non-boxing HKDF** | Impossible in the trait as published; `expander_for_okm` returns `Box<dyn HkdfExpander>` for every provider. [rustls#1551](https://github.com/rustls/rustls/pull/1551) introduced the shape and measured its own boxes |
 | **Fork rustls** | A maintenance debt on a security crate, the line ADR-0001 drew against FFI and ADR-0005 held against OpenSSL |
 | **Rekey on a helper thread** | The kernel has already paused decryption; a hand-off lengthens the exact path that is blocked |

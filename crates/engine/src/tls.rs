@@ -56,12 +56,15 @@ mod side {
     //!
     //! **It is not quite the pure type substitution the plan's 6.1 read it as**,
     //! and the difference is why this trait carries two functions rather than
-    //! only associated types. `rustls` 0.23.43 defines `process_tls_records` in
+    //! only associated types. `rustls` 0.23.44 defines `process_tls_records` in
     //! two *inherent* impls, one on `UnbufferedConnectionCommon<ClientConnectionData>`
     //! and one on `…<ServerConnectionData>` (`conn/unbuffered.rs:15-39`), not one
     //! generic impl, and `dangerous_into_kernel_connection` likewise lives on
     //! each connection type separately. Code generic over the side cannot name
     //! either, so each side names them once here.
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use rustls::client::{ClientConnectionData, UnbufferedClientConnection};
     use rustls::kernel::KernelConnection;
@@ -89,10 +92,15 @@ mod side {
         type Connection;
         /// The `rustls` per-side connection data.
         type Data;
-        /// What `dangerous_into_kernel_connection` hands back for this end —
-        /// `KernelConnection<Self::Data>`. Named as its own associated type
-        /// because `ktls_core::Context` bounds its parameter on `TlsSession`,
-        /// and only a bound written *here* is implied wherever `Self` is.
+        /// The session ktls-core drives after the handover. For [`Server`] it
+        /// is what `dangerous_into_kernel_connection` hands back,
+        /// `KernelConnection<ServerConnectionData>`; for [`Client`] it is that
+        /// value wrapped in `Ticketless`, which drops session tickets unread
+        /// ([ADR-0063] decision 1). Named as its own associated type because
+        /// `ktls_core::Context` bounds its parameter on `TlsSession`, and only
+        /// a bound written *here* is implied wherever `Self` is.
+        ///
+        /// [ADR-0063]: ../../../docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md
         type Kernel: ktls_core::TlsSession;
 
         #[doc(hidden)]
@@ -105,6 +113,12 @@ mod side {
         fn into_kernel(
             conn: Self::Connection,
         ) -> Result<(rustls::ExtractedSecrets, Self::Kernel), rustls::Error>;
+
+        /// The counter of session tickets this end's kernel session set aside,
+        /// shared so the transport can read it after ktls-core has taken the
+        /// session. `None` for an end that never receives a ticket.
+        #[doc(hidden)]
+        fn tickets(kernel: &Self::Kernel) -> Option<Arc<AtomicU32>>;
     }
 
     /// A `rustls` unbuffered connection that knows which [`Side`] it is.
@@ -146,12 +160,16 @@ mod side {
         ) -> Result<(rustls::ExtractedSecrets, Self::Kernel), rustls::Error> {
             conn.dangerous_into_kernel_connection()
         }
+
+        fn tickets(_kernel: &Self::Kernel) -> Option<Arc<AtomicU32>> {
+            None
+        }
     }
 
     impl Side for Client {
         type Connection = UnbufferedClientConnection;
         type Data = ClientConnectionData;
-        type Kernel = KernelConnection<ClientConnectionData>;
+        type Kernel = Ticketless;
 
         fn process_tls_records<'c, 'i>(
             conn: &'c mut Self::Connection,
@@ -163,7 +181,86 @@ mod side {
         fn into_kernel(
             conn: Self::Connection,
         ) -> Result<(rustls::ExtractedSecrets, Self::Kernel), rustls::Error> {
-            conn.dangerous_into_kernel_connection()
+            let (secrets, inner) = conn.dangerous_into_kernel_connection()?;
+            Ok((
+                secrets,
+                Ticketless {
+                    inner,
+                    // One allocation, at the handover, inside ADR-0005
+                    // decision 1's handshake carve-out — beside the `Box` of
+                    // the `Context` and the control-record buffer taken there.
+                    ignored: Arc::new(AtomicU32::new(0)),
+                },
+            ))
+        }
+
+        fn tickets(kernel: &Self::Kernel) -> Option<Arc<AtomicU32>> {
+            Some(Arc::clone(&kernel.ignored))
+        }
+    }
+
+    /// The kernel-side session of a dialled connection: rustls's
+    /// `KernelConnection<ClientConnectionData>`, except that a TLS 1.3
+    /// `NewSessionTicket` is **counted and dropped unread**.
+    ///
+    /// `[2026-09-13]` **step 6c-2 of the `tls` plan, Sửa 7; [ADR-0063]
+    /// decision 1.** A server sends its session tickets after the handshake, so
+    /// a client receives them after the handover, on the engine thread — which
+    /// for an initiator is also the dialling thread. rustls's own
+    /// `handle_new_session_ticket` parses the ticket, derives its PSK and
+    /// clones the peer's certificate chain before the store drops or keeps the
+    /// result: `[measured 2026-09-13]` 16 allocations for a rustls server's two
+    /// tickets with resumption enabled (step 6c), and **the same 16 with
+    /// `Resumption::disabled()`** (step 6c-2, the ticket handed back to rustls
+    /// as a reversal) — disabling resumption alone removes none of them.
+    /// Nothing here would ever use a ticket, because this engine does not
+    /// resume TLS sessions, so the payload is not read at all.
+    ///
+    /// **The consequence is a rule: the initiator never resumes a TLS session,
+    /// and every dial is a full handshake.** `tls::client_config` sets
+    /// `Resumption::disabled()` so the userspace fallback — where rustls reads
+    /// tickets itself — agrees.
+    ///
+    /// The other four methods forward to ktls-core's own implementation for
+    /// `KernelConnection`, unchanged; a peer's KeyUpdate still allocates the
+    /// four key-schedule boxes ADR-0063 decision 2 names.
+    ///
+    /// Proven by `tests/tls_key_update.rs`:
+    /// `a_session_ticket_after_the_handover_allocates_nothing` (zero
+    /// allocations over the ticket window, and the counter moved by 2); the
+    /// rule by `a_redial_does_a_full_handshake_not_a_resumption`.
+    ///
+    /// [ADR-0063]: ../../../docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md
+    pub struct Ticketless {
+        inner: KernelConnection<ClientConnectionData>,
+        /// Tickets set aside. Shared with the transport, because ktls-core's
+        /// `Context` owns this value and offers no way back to it.
+        ignored: Arc<AtomicU32>,
+    }
+
+    impl ktls_core::TlsSession for Ticketless {
+        fn peer(&self) -> ktls_core::Peer {
+            ktls_core::TlsSession::peer(&self.inner)
+        }
+
+        fn protocol_version(&self) -> ktls_core::ProtocolVersion {
+            ktls_core::TlsSession::protocol_version(&self.inner)
+        }
+
+        fn update_tx_secret(&mut self) -> ktls_core::error::Result<ktls_core::TlsCryptoInfoTx> {
+            ktls_core::TlsSession::update_tx_secret(&mut self.inner)
+        }
+
+        fn update_rx_secret(&mut self) -> ktls_core::error::Result<ktls_core::TlsCryptoInfoRx> {
+            ktls_core::TlsSession::update_rx_secret(&mut self.inner)
+        }
+
+        /// Counted, not read. ktls-core has already checked that this end is
+        /// the client and the version is TLS 1.3 (`context.rs:493-513`), and
+        /// the record sits in the buffer taken at the handover.
+        fn handle_new_session_ticket(&mut self, _payload: &[u8]) -> ktls_core::error::Result<()> {
+            self.ignored.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
     }
 
@@ -791,6 +888,14 @@ pub fn client_config(
             .map_err(|e| crate::ServeError::Tls(format!("the client certificate: {e}")))?,
     };
     cfg.enable_secret_extraction = true;
+    // ADR-0063 decision 1: the initiator never resumes a TLS session. On the
+    // kernel path the tickets are dropped unread whatever this says
+    // (`side::Ticketless`); this line makes the userspace fallback, where
+    // rustls reads them itself, agree — and stops a 256-entry cache nobody
+    // reads. Proven by
+    // `tests/tls_key_update.rs::a_redial_does_a_full_handshake_not_a_resumption`,
+    // whose userspace arm is the one this line holds.
+    cfg.resumption = rustls::client::Resumption::disabled();
     Ok(std::sync::Arc::new(cfg))
 }
 
@@ -1017,10 +1122,12 @@ mod transport_impl {
     //! [`TlsMode`] exists and is reported rather than inferred.
 
     use std::io;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use ktls_core::Context;
 
-    use super::{Handshake, Server, Side, Step, TlsMode, Traffic};
+    use super::{Client, Handshake, Server, Side, Step, TlsMode, Traffic};
     use crate::transport::{Io, Source, TcpTransport, Transport};
 
     /// The capacity ktls-core 0.0.5 `recv_tls_record` reserves before reading
@@ -1035,7 +1142,8 @@ mod transport_impl {
         Handshaking(Box<Handshake<S>>),
         /// The kernel holds the keys. Ordinary reads and writes, plus the one
         /// error path the offload adds. `S::Kernel` is
-        /// `rustls::kernel::KernelConnection<S::Data>`.
+        /// `rustls::kernel::KernelConnection<S::Data>`, wrapped in
+        /// `side::Ticketless` on the client.
         Kernel(Box<Context<S::Kernel>>),
         /// The kernel would not take the offload. **This is the mode that
         /// leaves the hot-path guarantee** — ADR-0005 decision 3 — and it is
@@ -1067,6 +1175,9 @@ mod transport_impl {
         /// Whether to ask the kernel at all. Always `true` in a deployment; see
         /// [`TlsTransport::with_offload`].
         offload: bool,
+        /// The kernel session's count of session tickets set aside — `Some`
+        /// only on a client, and only once the keys are in the kernel.
+        tickets: Option<Arc<AtomicU32>>,
     }
 
     impl<S: Side> TlsTransport<S> {
@@ -1095,6 +1206,7 @@ mod transport_impl {
                 early: Vec::new(),
                 early_at: 0,
                 fell_back: false,
+                tickets: None,
             }
         }
 
@@ -1224,10 +1336,12 @@ mod transport_impl {
             // that said `EIO`, which means a control record is at the head.
             // A 16 KiB + 5 buffer — one TLS record — would not do: `reserve`
             // asks for 65 540 regardless of the record.
-            // Proven by `tests/tls_key_update.rs::a_key_update_allocates_nothing_after_the_handover`
+            // Proven by `tests/tls_key_update.rs::a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces`
             // (no allocation of this size on either side; rustls's own key schedule
-            // still allocates four boxes per rekey, which that test bounds and names).
+            // still allocates four boxes per rekey, which that test counts exactly,
+            // ADR-0063) and by `a_session_ticket_after_the_handover_allocates_nothing`.
             let buffer = ktls_core::Buffer::new(Vec::with_capacity(CONTROL_RECORD_BUF));
+            self.tickets = S::tickets(&kconn);
             self.stage = Stage::Kernel(Box::new(Context::new(kconn, Some(buffer))));
             Ok(())
         }
@@ -1252,6 +1366,30 @@ mod transport_impl {
             dst.copy_from_slice(src);
             self.early_at += n;
             n
+        }
+    }
+
+    impl TlsTransport<Client> {
+        /// How many TLS 1.3 session tickets this connection received on the
+        /// kernel path and **dropped unread**.
+        ///
+        /// `[2026-09-13]` step 6c-2 of the `tls` plan; [ADR-0063] decision 1.
+        /// The initiator never resumes a TLS session, so a ticket is counted
+        /// and not parsed, and costs no allocation on the engine thread. A
+        /// handler that does nothing cannot otherwise show that it ran; this
+        /// is that evidence, and a line a tool can print.
+        ///
+        /// `0` before the handover and on the userspace fallback, where rustls
+        /// reads tickets itself and — with `Resumption::disabled()` in
+        /// [`super::client_config`] — stores none. A rustls server sends two by
+        /// default.
+        ///
+        /// [ADR-0063]: ../../../docs/decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md
+        #[must_use]
+        pub fn tickets_ignored(&self) -> u32 {
+            self.tickets
+                .as_ref()
+                .map_or(0, |n| n.load(Ordering::Relaxed))
         }
     }
 

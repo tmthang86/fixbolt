@@ -33,10 +33,12 @@
 //!   having no `TlsRxRekey*` counters at all, and say so in a sentence of
 //!   their own. No such kernel was available to run that sentence red.
 //! - **That a KeyUpdate allocates literally nothing.** rustls's key schedule
-//!   boxes four HKDF expanders per rekey and stores each session ticket a
-//!   client receives; neither is this engine's code. The allocation test
-//!   asserts the buffer half to zero and bounds the rustls half — its rustdoc
-//!   says exactly where the line is and why.
+//!   boxes four HKDF expanders per rekey, which is not this engine's code and
+//!   is ADR-0063's second named carve-out from non-negotiable 1. The
+//!   allocation test counts those four **exactly** and asserts nothing else.
+//!   A client's session tickets, which rustls would store, are dropped unread
+//!   and count zero (ADR-0063 decision 1, step 6c-2).
+//! - **What a rekey costs in latency.** Nothing here times one.
 #![cfg(all(feature = "tls", feature = "standard", target_os = "linux"))]
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`. A
 // setup step that cannot be completed is a failing test, which is the point.
@@ -46,9 +48,10 @@
 // method forwards to `System` unchanged but for a relaxed counter behind a
 // thread-local flag; this is a test binary, so nothing ships it; and its
 // counter is proven live twice — by `the_counter_is_live` inside the test, and
-// by reversal: `Context::new(kconn, None)` in `tls.rs` reads
+// by reversal: `Context::new(kconn, None)` in `tls.rs` read
 // `Window { count: 5, largest: 65540 }` on the acceptor side and
-// `Window { count: 17, largest: 65540 }` over a client's session tickets.
+// `Window { count: 17, largest: 65540 }` over a client's session tickets
+// (`[measured 2026-09-13]`, step 6c, before the tickets were dropped unread).
 #![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -151,13 +154,20 @@ fn counted<T>(f: impl FnOnce() -> T) -> (T, Window) {
 /// large inside a window is that buffer growing.
 const CONTROL_RECORD_BUF: usize = u16::MAX as usize + 5;
 
-/// rustls 0.23.43 with `ring`: `KeyScheduleTraffic::refresh_traffic_secret`
-/// boxes an HKDF expander twice (`RingHkdf::expander_for_okm`, reached from
-/// `derive_next` and from `expand_secret`), once per direction — the receive
-/// key for the peer's KeyUpdate and the send key for `update_requested`.
-/// `[measured 2026-09-13]` 4 allocations of 184 bytes, by backtrace. Not this
-/// engine's code and not removable from it; see the test's rustdoc.
+/// rustls 0.23.44 with `ring` (the version `Cargo.lock` resolves):
+/// `KeyScheduleTraffic::refresh_traffic_secret` boxes an HKDF expander twice
+/// (`expander_for_okm`, reached from `derive_next` and from `expand_secret`),
+/// once per direction — the receive key for the peer's KeyUpdate and the send
+/// key for `update_requested`: `rustls-0.23.44/src/tls13/key_schedule.rs:565-580,
+/// 623-628, 808-814`. `[measured 2026-09-13]` 4 allocations, by backtrace.
+/// Not this engine's code and not removable from it — ADR-0063 decision 2.
 const RUSTLS_KEY_SCHEDULE_ALLOCS: usize = 4;
+
+/// The size of each of those boxes: a `Box<dyn HkdfExpander>` returned by
+/// `Hkdf::expander_for_okm` (`rustls-0.23.44/src/crypto/tls13.rs:134-168`),
+/// holding `ring`'s HMAC key for the 32-byte PRK. `[measured 2026-09-13]` 184
+/// bytes, by backtrace. A different size is a different rustls.
+const RUSTLS_HKDF_EXPANDER_BOX: usize = 184;
 
 /// **Serialises the tests of this file.** `/proc/net/tls_stat` is one set of
 /// counters for the namespace, and `ALLOCS` is one counter for the process.
@@ -656,14 +666,9 @@ where
     }
 }
 
-/// Complete the handshake with the peer on this thread and hand over.
-///
-/// Then read whatever the peer owed after its side of the handshake — a
-/// server's session tickets, which reach a **client** only after the handover
-/// — with every `recv` counted, and return that window. Then prove the kernel
-/// path carries bytes both ways, uncounted, so every first-use cost is paid
-/// before the KeyUpdate window opens.
-fn establish<S, C, D>(tls: &mut TlsTransport<S>, peer: &mut Peer<C>) -> Window
+/// Complete the handshake with the peer on this thread and hand over to the
+/// kernel. Nothing is counted.
+fn handshake<S, C, D>(tls: &mut TlsTransport<S>, peer: &mut Peer<C>)
 where
     S: fixbolt_engine::tls::Side,
     C: std::ops::DerefMut<Target = rustls::ConnectionCommon<D>>,
@@ -684,14 +689,20 @@ where
     assert_eq!(tls.mode(), TlsMode::Kernel, "no kernel, nothing to measure");
     peer.absorb();
     peer.flush_all();
+}
 
-    // The post-handover control records, counted. Eight reads: `tests/tls_client.rs`
-    // shows two tickets read as `Idle`, and an empty socket reads the same.
-    let mut first_records = Window::default();
+/// Read whatever the peer owed after its side of the handshake — a server's
+/// session tickets, which reach a **client** only after the handover — with
+/// every `recv` counted, and return that window. Eight reads:
+/// `tests/tls_client.rs` shows two tickets read as `Idle`, and an empty socket
+/// reads the same.
+fn first_records<S: fixbolt_engine::tls::Side>(tls: &mut TlsTransport<S>) -> Window {
+    let mut buf = [0u8; 256];
+    let mut window = Window::default();
     let mut last = Io::Idle;
     for _ in 0..8 {
         let (r, w) = counted(|| tls.recv(&mut buf));
-        first_records.add(w);
+        window.add(w);
         if r != Io::Idle {
             last = r;
             break;
@@ -702,12 +713,104 @@ where
         Io::Idle,
         "a post-handover control record did not read as Idle"
     );
+    window
+}
 
+/// Prove the path carries bytes both ways, uncounted, so every first-use cost
+/// is paid before a later window opens.
+fn warm<S, C, D>(tls: &mut TlsTransport<S>, peer: &mut Peer<C>)
+where
+    S: fixbolt_engine::tls::Side,
+    C: std::ops::DerefMut<Target = rustls::ConnectionCommon<D>>,
+    D: rustls::SideData,
+{
     peer.send_app(b"warm");
     assert_eq!(recv_uncounted(tls, 4), b"warm");
     send_uncounted(tls, b"back");
     assert_eq!(peer.read_app(4), b"back");
-    first_records
+}
+
+/// [`handshake`], [`first_records`], [`warm`], in that order.
+fn establish<S, C, D>(tls: &mut TlsTransport<S>, peer: &mut Peer<C>) -> Window
+where
+    S: fixbolt_engine::tls::Side,
+    C: std::ops::DerefMut<Target = rustls::ConnectionCommon<D>>,
+    D: rustls::SideData,
+{
+    handshake(tls, peer);
+    let window = first_records(tls);
+    warm(tls, peer);
+    window
+}
+
+/// An accepted `TlsTransport<Server>` and a plain rustls client as its peer.
+fn acceptor_pair(
+    cert: CertificateDer<'static>,
+    key: PrivateKeyDer<'static>,
+) -> (TlsTransport, Peer<rustls::ClientConnection>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let name = "localhost".try_into().expect("a valid server name");
+    let conn = rustls::ClientConnection::new(peer_client_config(cert.clone()), name)
+        .expect("a client connection");
+    let sock = TcpStream::connect(listener.local_addr().expect("addr")).expect("connects");
+    sock.set_nonblocking(true).expect("non-blocking");
+    let peer = Peer { conn, sock };
+    let (accepted, _) = listener.accept().expect("accepted");
+    let cfg = fixbolt_engine::tls::server_config(vec![cert], key).expect("a server config");
+    let tls: TlsTransport = TlsTransport::new(
+        TcpTransport::new(accepted).expect("non-blocking"),
+        Handshake::new(
+            rustls::server::UnbufferedServerConnection::new(cfg).expect("a server connection"),
+        ),
+    );
+    (tls, peer)
+}
+
+/// A dialled `TlsTransport<Client>` built from `client_cfg`, with the kernel
+/// offload on or off, and a plain rustls server built from `server_cfg` as its
+/// peer. Both configurations are taken as `Arc`s so a redial can reuse them —
+/// which is the only way a TLS session could ever be resumed.
+fn initiator_pair(
+    client_cfg: Arc<rustls::ClientConfig>,
+    server_cfg: Arc<rustls::ServerConfig>,
+    offload: bool,
+) -> (TlsTransport<Client>, Peer<rustls::ServerConnection>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let sock = TcpStream::connect(listener.local_addr().expect("addr")).expect("connects");
+    let (accepted, _) = listener.accept().expect("accepted");
+    accepted.set_nonblocking(true).expect("non-blocking");
+    let conn = rustls::ServerConnection::new(server_cfg).expect("a server connection");
+    let peer = Peer {
+        conn,
+        sock: accepted,
+    };
+    let tls: TlsTransport<Client> = TlsTransport::with_offload(
+        TcpTransport::new(sock).expect("non-blocking"),
+        Handshake::new(
+            rustls::client::UnbufferedClientConnection::new(
+                client_cfg,
+                ServerName::try_from("localhost").expect("a valid server name"),
+            )
+            .expect("a client connection"),
+        ),
+        offload,
+    );
+    (tls, peer)
+}
+
+/// `the_counter_is_live`: one `Vec::with_capacity(3)` inside a window counts
+/// once, at 3 bytes. Without it a window reading zero proves nothing.
+fn assert_the_counter_is_live() {
+    let (probe, live) = counted(|| Vec::<u8>::with_capacity(3));
+    drop(probe);
+    assert_eq!(
+        live,
+        Window {
+            count: 1,
+            largest: 3
+        },
+        "the_counter_is_live: one Vec::with_capacity(3) must count once, at 3 bytes"
+    );
 }
 
 fn recv_uncounted<S: fixbolt_engine::tls::Side>(tls: &mut TlsTransport<S>, want: usize) -> Vec<u8> {
@@ -795,34 +898,27 @@ where
     (total, got[..len].to_vec(), last)
 }
 
-/// **A KeyUpdate after the handover allocates nothing in this engine or in
-/// ktls-core** — on either side of `TlsTransport`. What it does allocate is
-/// rustls's key schedule, and this test names and bounds that rather than
-/// hiding it.
+/// **A KeyUpdate after the handover allocates, on either side of
+/// `TlsTransport`, exactly the boxes rustls's key schedule forces — and nothing
+/// in this engine or in ktls-core.** ADR-0063 decision 2, the second named
+/// carve-out from non-negotiable 1; asserted **exactly**, decision 3.
 ///
-/// # Why not "allocates nothing", which is what the plan named
+/// # Why exactly, and not "nothing" or "at most"
 ///
-/// `[measured 2026-09-13]` with the control-record buffer pre-sized, the
-/// acceptor's window still read **4**, and a backtrace per allocation put all
-/// four in rustls 0.23.43: `KernelConnection::update_rx_secret` and
-/// `update_tx_secret` → `KeyScheduleTraffic::refresh_traffic_secret` →
-/// `RingHkdf::expander_for_okm`, which returns a `Box<dyn HkdfExpander>` — two
-/// per direction, 184 bytes each. The `Hkdf` trait's signature returns a box,
-/// so no provider avoids it and no engine code can. A test asserting zero
-/// would be red for ever or would have to be faked; this one asserts what is
-/// true and would go red on anything new:
+/// `[measured 2026-09-13]` with ktls-core's control-record buffer pre-sized,
+/// the window still read **4**, and a backtrace per allocation put all four in
+/// rustls 0.23.44: `KernelConnection::update_rx_secret` and `update_tx_secret`
+/// → `KeyScheduleTraffic::refresh_traffic_secret` → `expander_for_okm`, which
+/// returns a `Box<dyn HkdfExpander>` — two per direction, 184 bytes each. The
+/// `Hkdf` trait's signature returns a box, so no provider avoids it and no
+/// engine code can. Step 6c shipped `<= 4` under a name that said "nothing";
+/// a ceiling is green when the number moves in either direction, so this test
+/// asserts `== 4` and `== 184`, and a rustls bump that changes either is a red
+/// that says to re-derive both constants and update ADR-0063.
 ///
-/// - **no allocation the size of ktls-core's control-record buffer** — the
-///   defect this step fixed (plan 6.9: *"Control record cấp phát trên engine
-///   thread sau bàn giao (`Buffer` rỗng)"*);
-/// - **no more than the four rustls key-schedule allocations** — so an
-///   allocation added to `TlsTransport::recv`/`send` on this path is a red.
-///
-/// On the initiator side the KeyUpdate is not the first control record — the
-/// session tickets are — so the buffer half is asserted over the ticket
-/// window as well. That window's **count** is not asserted: rustls stores each
-/// ticket (`[measured 2026-09-13]` 16 allocations for two), which is the same
-/// kind of finding and is reported, not hidden.
+/// On the initiator side the session tickets are the first control records,
+/// not the KeyUpdate; they are read and set aside before this window opens,
+/// and `a_session_ticket_after_the_handover_allocates_nothing` owns them.
 ///
 /// # Attribution
 ///
@@ -830,40 +926,14 @@ where
 /// `TlsTransport::recv`/`send`; the peer's rustls work runs between those calls,
 /// uncounted, and other tests' threads are never armed.
 #[test]
-fn a_key_update_allocates_nothing_after_the_handover() {
+fn a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces() {
     let _serial = serial();
-
-    let (probe, live) = counted(|| Vec::<u8>::with_capacity(3));
-    drop(probe);
-    assert_eq!(
-        live,
-        Window {
-            count: 1,
-            largest: 3
-        },
-        "the_counter_is_live: one Vec::with_capacity(3) must count once, at 3 bytes"
-    );
-
+    assert_the_counter_is_live();
     let (cert, key) = pki();
 
     // --- The acceptor: TlsTransport<Server>, a rustls client as the peer.
     {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
-        let name = "localhost".try_into().expect("a valid server name");
-        let conn = rustls::ClientConnection::new(peer_client_config(cert.clone()), name)
-            .expect("a client connection");
-        let sock = TcpStream::connect(listener.local_addr().expect("addr")).expect("connects");
-        sock.set_nonblocking(true).expect("non-blocking");
-        let mut peer = Peer { conn, sock };
-        let (accepted, _) = listener.accept().expect("accepted");
-        let cfg = fixbolt_engine::tls::server_config(vec![cert.clone()], key.clone_key())
-            .expect("a server config");
-        let mut tls: TlsTransport = TlsTransport::new(
-            TcpTransport::new(accepted).expect("non-blocking"),
-            Handshake::new(
-                rustls::server::UnbufferedServerConnection::new(cfg).expect("a server connection"),
-            ),
-        );
+        let (mut tls, mut peer) = acceptor_pair(cert.clone(), key.clone_key());
         let _nothing_owed = establish(&mut tls, &mut peer);
 
         let before = rekeys();
@@ -878,59 +948,15 @@ fn a_key_update_allocates_nothing_after_the_handover() {
             "acceptor: the reply did not decrypt"
         );
         assert_rekeyed(before, "acceptor");
-        assert!(
-            window.largest < CONTROL_RECORD_BUF,
-            "acceptor: {window:?} — an allocation of {} bytes while handling the \
-             counterparty's KeyUpdate is ktls-core's control-record buffer growing \
-             on the engine thread",
-            window.largest
-        );
-        assert!(
-            window.count <= RUSTLS_KEY_SCHEDULE_ALLOCS,
-            "acceptor: {window:?} — more than the {RUSTLS_KEY_SCHEDULE_ALLOCS} rustls \
-             key-schedule allocations inside TlsTransport::recv/send while handling \
-             the counterparty's KeyUpdate and answering under the new key"
-        );
+        assert_key_schedule_only(window, "acceptor");
     }
 
     // --- The initiator: TlsTransport<Client>, a rustls server as the peer.
     {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
-        let sock = TcpStream::connect(listener.local_addr().expect("addr")).expect("connects");
-        let (accepted, _) = listener.accept().expect("accepted");
-        accepted.set_nonblocking(true).expect("non-blocking");
-        let conn = rustls::ServerConnection::new(peer_server_config(cert.clone(), key))
-            .expect("a server connection");
-        let mut peer = Peer {
-            conn,
-            sock: accepted,
-        };
         let client_cfg =
-            fixbolt_engine::tls::client_config(vec![cert], None).expect("a client config");
-        let mut tls: TlsTransport<Client> = TlsTransport::new(
-            TcpTransport::new(sock).expect("non-blocking"),
-            Handshake::new(
-                rustls::client::UnbufferedClientConnection::new(
-                    client_cfg,
-                    ServerName::try_from("localhost").expect("a valid server name"),
-                )
-                .expect("a client connection"),
-            ),
-        );
-        let tickets = establish(&mut tls, &mut peer);
-        assert!(
-            tickets.count > 0,
-            "initiator: reading the post-handover records allocated nothing at all \
-             ({tickets:?}), so no session ticket was read and the window below is \
-             not about a client's first control record"
-        );
-        assert!(
-            tickets.largest < CONTROL_RECORD_BUF,
-            "initiator: {tickets:?} — an allocation of {} bytes while reading the \
-             session tickets is ktls-core's control-record buffer growing on the \
-             engine thread",
-            tickets.largest
-        );
+            fixbolt_engine::tls::client_config(vec![cert.clone()], None).expect("a client config");
+        let (mut tls, mut peer) = initiator_pair(client_cfg, peer_server_config(cert, key), true);
+        let _tickets = establish(&mut tls, &mut peer);
 
         let before = rekeys();
         let (window, got, last) = rekey_counted(&mut tls, &mut peer);
@@ -944,17 +970,177 @@ fn a_key_update_allocates_nothing_after_the_handover() {
             "initiator: the reply did not decrypt"
         );
         assert_rekeyed(before, "initiator");
-        assert!(
-            window.largest < CONTROL_RECORD_BUF,
-            "initiator: {window:?} — an allocation of {} bytes while handling the \
-             venue's KeyUpdate is ktls-core's control-record buffer growing",
-            window.largest
-        );
-        assert!(
-            window.count <= RUSTLS_KEY_SCHEDULE_ALLOCS,
-            "initiator: {window:?} — more than the {RUSTLS_KEY_SCHEDULE_ALLOCS} rustls \
-             key-schedule allocations inside TlsTransport::recv/send while handling \
-             the venue's KeyUpdate and answering under the new key"
-        );
+        assert_key_schedule_only(window, "initiator");
     }
+}
+
+/// The three assertions on a KeyUpdate window, in the order that names the
+/// cause best: ktls-core's buffer growing first, then the count, then the size.
+fn assert_key_schedule_only(window: Window, who: &str) {
+    assert!(
+        window.largest < CONTROL_RECORD_BUF,
+        "{who}: {window:?} — an allocation of {} bytes while handling the \
+         counterparty's KeyUpdate is ktls-core's control-record buffer growing \
+         on the engine thread",
+        window.largest
+    );
+    assert_eq!(
+        window.count, RUSTLS_KEY_SCHEDULE_ALLOCS,
+        "{who}: {window:?} — TlsTransport::recv/send allocated a number of times \
+         other than the {RUSTLS_KEY_SCHEDULE_ALLOCS} rustls key-schedule boxes \
+         while handling the counterparty's KeyUpdate and answering under the new \
+         key. More is an allocation this engine or ktls-core added; fewer or a \
+         different number means rustls changed its key-schedule allocation; \
+         re-derive from key_schedule.rs and update ADR-0063"
+    );
+    assert_eq!(
+        window.largest, RUSTLS_HKDF_EXPANDER_BOX,
+        "{who}: {window:?} — rustls changed its key-schedule allocation; re-derive \
+         from key_schedule.rs and update ADR-0063"
+    );
+}
+
+/// **A client's session tickets allocate nothing after the handover.**
+/// ADR-0063 decision 1: the kernel-side session of a `TlsTransport<Client>`
+/// counts a `NewSessionTicket` and drops it unread, so the initiator never
+/// stores — and never resumes — a TLS session.
+///
+/// # Why the counter is asserted too
+///
+/// A window that reads zero because no ticket arrived looks exactly like one
+/// that reads zero because the ticket cost nothing. A rustls server sends two
+/// tickets by default (`rustls-0.23.44/src/server/builder.rs:123`), and
+/// `tickets_ignored()` must move from **0 before** the window to **2 across
+/// it**: the tickets reached this client, inside this window, and were set
+/// aside.
+///
+/// `[measured 2026-09-13]` step 6c, before this decision: the same window read
+/// `count: 16` with the rustls `KernelConnection` storing both tickets.
+#[test]
+fn a_session_ticket_after_the_handover_allocates_nothing() {
+    let _serial = serial();
+    assert_the_counter_is_live();
+    let (cert, key) = pki();
+    let client_cfg =
+        fixbolt_engine::tls::client_config(vec![cert.clone()], None).expect("a client config");
+    let (mut tls, mut peer) = initiator_pair(client_cfg, peer_server_config(cert, key), true);
+
+    handshake(&mut tls, &mut peer);
+    let before = tls.tickets_ignored();
+    let window = first_records(&mut tls);
+    let within = tls.tickets_ignored() - before;
+    warm(&mut tls, &mut peer);
+
+    assert_eq!(
+        before, 0,
+        "a session ticket was read before the counting window opened, so the \
+         window below is not about tickets"
+    );
+    assert!(
+        window.largest < CONTROL_RECORD_BUF,
+        "initiator: {window:?} — an allocation of {} bytes while reading the \
+         session tickets is ktls-core's control-record buffer growing on the \
+         engine thread",
+        window.largest
+    );
+    assert_eq!(
+        window,
+        Window::default(),
+        "initiator: reading the session tickets after the handover allocated \
+         ({window:?}) — the kernel-side session parsed or stored a ticket"
+    );
+    assert_eq!(
+        within, 2,
+        "no ticket reached the client, so this window is not about tickets \
+         (tickets_ignored moved by {within}, expected the rustls server's default 2)"
+    );
+    assert_eq!(
+        tls.tickets_ignored(),
+        2,
+        "a ticket arrived after the counting window closed"
+    );
+}
+
+/// **A redial is a full TLS handshake, never a resumption.** ADR-0063
+/// decision 1's rule, read from the server's side: two dials with the **same**
+/// `Arc<ClientConfig>` to the **same** `Arc<ServerConfig>` — whose session
+/// cache would resume — and the second handshake is still `Full`.
+///
+/// # Both halves of the decision, each on the path it guards
+///
+/// - **Kernel.** Tickets arrive after the handover and the kernel-side session
+///   drops them unread, so nothing is stored whatever the configuration says.
+///   `tickets_ignored() == 2` proves they arrived.
+/// - **Userspace fallback** (`with_offload(false)`). rustls reads the tickets
+///   itself, so the only thing between them and a resumption is
+///   `Resumption::disabled()` in `tls::client_config`. The exchange after the
+///   handshake forces them to be read: they precede the application data on
+///   the stream.
+///
+/// A green here names the property, not a mechanism. `[measured 2026-09-13]`
+/// reverting only `Resumption::disabled()` turns the **userspace** arm red
+/// (`Some(Resumed)`); reverting only the kernel newtype — tickets handed back
+/// to rustls — stays green, because rustls then stores them in a no-op store;
+/// reverting both turns the **kernel** arm red. What the newtype alone buys is
+/// the zero in `a_session_ticket_after_the_handover_allocates_nothing`.
+#[test]
+fn a_redial_does_a_full_handshake_not_a_resumption() {
+    let _serial = serial();
+    let (cert, key) = pki();
+
+    for offload in [true, false] {
+        let path = if offload { "kernel" } else { "userspace" };
+        let client_cfg =
+            fixbolt_engine::tls::client_config(vec![cert.clone()], None).expect("a client config");
+        let server_cfg = peer_server_config(cert.clone(), key.clone_key());
+
+        for dial in 1..=2 {
+            let (mut tls, mut peer) =
+                initiator_pair(Arc::clone(&client_cfg), Arc::clone(&server_cfg), offload);
+            converse(&mut tls, &mut peer);
+            if offload {
+                assert_eq!(
+                    tls.mode(),
+                    TlsMode::Kernel,
+                    "{path} dial {dial}: not on the kernel"
+                );
+                assert_eq!(
+                    tls.tickets_ignored(),
+                    2,
+                    "{path} dial {dial}: no ticket reached the client, so nothing \
+                     here could have been resumed"
+                );
+            } else {
+                assert!(
+                    tls.fell_back() && tls.mode() == TlsMode::Userspace,
+                    "{path} dial {dial}: expected the userspace fallback"
+                );
+            }
+            assert_eq!(
+                peer.conn.handshake_kind(),
+                Some(rustls::HandshakeKind::Full),
+                "{path} dial {dial}: the server did not see a full handshake — the \
+                 initiator resumed a TLS session (ADR-0063 decision 1)"
+            );
+        }
+    }
+}
+
+/// Handshake on either path, then one exchange each way. The exchange is what
+/// makes a userspace client read its session tickets, which precede `warm` on
+/// the stream.
+fn converse(tls: &mut TlsTransport<Client>, peer: &mut Peer<rustls::ServerConnection>) {
+    let mut buf = [0u8; 256];
+    let mut sweeps = 0usize;
+    while peer.conn.is_handshaking() {
+        sweeps += 1;
+        assert!(sweeps < 100_000, "the handshake never finished");
+        match tls.recv(&mut buf) {
+            Io::Idle => {}
+            other => panic!("recv during the handshake said {other:?}"),
+        }
+        peer.absorb();
+        peer.flush_all();
+    }
+    warm(tls, peer);
 }
