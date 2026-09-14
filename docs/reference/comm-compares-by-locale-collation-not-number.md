@@ -54,10 +54,28 @@ such as `grep -Fxf`.
 
 ## Regression guard
 
-Honestly: there is no automated test for this. The guard that exists is the manual IRQ-row
-reversal run by hand during step A5 — break one IRQ's `smp_affinity_list` to an isolated
-CPU, confirm the row reads `FAIL` naming it, restore the recorded value, confirm it reads
-back identical and the row returns to its prior verdict — run against the real
-`/proc/irq/` tree on the `DESIGN.md` §9 desktop, not by a script CI runs. A machine with no
-NIC, no isolated-CPU list, or no root to read `/proc/irq/*/smp_affinity_list` cannot
-exercise this path at all, automated or not.
+`scripts/check-machine-verdicts.sh`, section `=== expand_cpulist, irq_overlap`, which CI runs
+(`.github/workflows/ci.yml`). `[2026-09-14]` senior review of PR #72 found this entry had no test,
+so the overlap check was moved out of the row's loop into a function, `irq_overlap` in
+`scripts/check-machine.sh`, defined above the `MACHINE_SOURCE_ONLY` return so the verdict test can
+source it without probing the machine. The cases need no NIC, no root and no isolated CPUs: the
+§9 desk's `6-7,14-15` against `0-15`, a two-digit CPU after a one-digit one (`6,10` against
+`9-10`), and whole-line membership both ways (`1` against `10-11`, `10-11` against `1`).
+
+Proven by reversal, on throwaway copies of both scripts, 2026-09-14, `LANG=en_US.UTF-8`:
+
+- `grep -Fxf` → `grep -Ff` (no whole-line match): red on
+  `isolated cpu1, affinity cpu10-11: no overlap`, got `[10 11]`.
+- `grep -Fxf` → the original `comm -12` over two `sort -n` streams: red on
+  `affinity 0-15 overlaps every isolated CPU, two-digit ones included`, **got `[6 7]` where
+  `[6 7 14 15]` was right**, and on `a two-digit CPU after a one-digit one`, got `[]`.
+
+**That reversal corrects this entry.** *What happened* above says the intersection `comm` printed
+anyway was right. Against `6-7,14-15` it is not: `comm` dropped `14` and `15`, the two CPUs after
+the collation break — so the warning was not harmless noise, and a row built on it would have
+passed an IRQ steered onto `cpu14`. The account above is kept as it was written; this paragraph is
+the measurement that overrides it.
+
+The row as a whole — reading the real `/proc/irq/*/smp_affinity_list` — is still only proven by
+the manual step A5 reversal on the §9 desktop (write an isolated CPU into one IRQ's list, see the
+row FAIL naming it, restore). A machine with no NIC cannot exercise that half.

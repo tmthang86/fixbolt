@@ -104,9 +104,20 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    `scripts/w2w-baseline.sh` drives both halves: `LISTEN=<addr>` starts the engine half here and
    the generator half either here too (`GENERATOR_SSH` empty, a loopback split for rehearsing the
    procedure before a cable is run) or on another host over `ssh` — `GENERATOR_W2W` names the
-   `w2w` binary on that host's `PATH` (default `w2w`). A split arm's figures are printed and
+   `w2w` binary on that host's `PATH` (default `w2w`). The generator connects to the address the
+   engine half prints on its `listening:` line, so `LISTEN=<ip>:0` works; with `GENERATOR_SSH`,
+   `LISTEN` must name an address that host can reach (`0.0.0.0` is refused), and the generator
+   there is **not pinned** by the script — the header and summary say so. A split arm's figures are printed and
    summarised labelled "as the counterparty sees it — not an acceptor wire figure", naming the
-   generator host, never as a §8 wire-to-wire number. An `ARMS` entry also grows a fourth,
+   generator host, never as a §8 wire-to-wire number. `WIRE_NIC=<ifname> OBSERVER_CORE=<cpu>`
+   adds the acceptor's own wire figure (item 4) to a split run: the engine half gets
+   `--wire-timestamps --nic $WIRE_NIC --observer-core $OBSERVER_CORE --warmup $WARMUP`, every
+   run must read `hw-rx-missing 0` and `hw-tx-missing 0` or **the script FAILS** (not
+   DISQUALIFIED: a missing stamp does not clear by waiting), and the summary prints the median
+   `wire p50/p99/p99.9` under its own heading, separate from the counterparty table. Refused
+   before anything runs: without `LISTEN`, without `OBSERVER_CORE`, with the observer on the
+   engine's core (or the client's, for a loopback split), and for any `standard` arm — run
+   `standard` in its own invocation without `WIRE_NIC`. An `ARMS` entry also grows a fourth,
    optional field — `mode:path:tls:interval`, the interval in microseconds passed on as
    `--interval <us>`; `0`, the default, adds no flag and no line, same as before this field
    existed. `FIXBOLT_NIC` reaches the script's two `scripts/check-machine.sh` calls the same way

@@ -93,49 +93,102 @@ const BASELINES_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../benches
 /// Read `benches/baselines.tsv` and check every data line parses the way
 /// [`baseline_for`] below expects, or end the process.
 ///
-/// Exits non-zero **in every mode**, not only `--strict`: a missing or
-/// unreadable file names `BASELINES_PATH`; a line that is not a comment, not
-/// blank, and does not split into at least `cpu`, `case`, a numeric `ns` and a
-/// numeric `margin` on tabs names its own 1-based line number. Unlike
-/// [`baseline_for`], which only has to find one (cpu, case) pair and is
-/// content to call anything else "no baseline", this walks every line: a typo
-/// two rows away from the case actually measured must not pass quietly either.
+/// Exits non-zero **in every mode**, not only `--strict`, with the message
+/// [`load_baselines`] returns: a missing or unreadable file names
+/// `BASELINES_PATH`; a bad data line names its own 1-based line number and
+/// why. Unlike [`baseline_for`], which only has to find one (cpu, case) pair
+/// and is content to call anything else "no baseline", this walks every line:
+/// a typo two rows away from the case actually measured must not pass quietly
+/// either.
 fn read_baselines() -> String {
-    let content = match std::fs::read_to_string(BASELINES_PATH) {
+    match load_baselines(BASELINES_PATH) {
         Ok(content) => content,
-        Err(e) => {
-            eprintln!("cannot read baselines file {BASELINES_PATH}: {e}");
+        Err(why) => {
+            eprintln!("{why}");
             std::process::exit(1);
         }
-    };
+    }
+}
+
+/// [`read_baselines`] without the exit, so that
+/// `crates/codec/tests/bench_baselines.rs` can test it: a `harness = false`
+/// bench is a `main()` that `cargo test` never runs, the same reason
+/// `verdict.rs` is tested from `tests/bench_verdict.rs`.
+///
+/// `Ok` is the whole file; `Err` is the message `read_baselines` prints.
+pub(crate) fn load_baselines(path: &str) -> Result<String, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read baselines file {path}: {e}"))?;
     for (i, raw) in content.lines().enumerate() {
         let line = raw.trim_end();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if !data_line_parses(line) {
-            eprintln!(
-                "{BASELINES_PATH}:{}: malformed baseline line, want \
+        if let Err(why) = data_line_parses(line) {
+            return Err(format!(
+                "{path}:{}: malformed baseline line ({why}), want \
                  cpu\\tcase\\tns\\tmargin\\t...: {raw:?}",
                 i + 1
-            );
-            std::process::exit(1);
+            ));
         }
     }
-    content
+    Ok(content)
 }
 
-/// Whether `line` parses the way [`baseline_for`] parses a data line: at
-/// least four tab-separated fields, with the third and fourth a valid `f64`.
-/// Fields beyond the fourth (`n`, `date`, `verdict`) are not read by either
-/// function, so they are not validated here either.
-fn data_line_parses(line: &str) -> bool {
+/// Whether `line` is a data line [`baseline_for`] can use, and if not, why.
+///
+/// At least four tab-separated fields: `cpu`, `case`, then `ns` a **finite
+/// number above zero** and `margin` a **finite number of at least 1.0**; and
+/// `n`, when the fifth column is there, a whole number above zero. `date` and
+/// `verdict` are not read by either function, so they are not checked.
+///
+/// **Parsing as an `f64` is not enough.** `[measured 2026-09-14]` senior review
+/// of PR #72: `nan` parses, and a margin of `nan` printed `baseline 56.2 xNaN =
+/// [NaN, NaN]` and exited 0 — every comparison with `NaN` is false, so
+/// [`verdict`] can never answer over or under and the case can never go red.
+/// `inf` is the same hole from the other side (a ceiling nothing reaches), a
+/// zero or negative `ns` makes the band meaningless, and a margin below 1.0
+/// puts the floor above the ceiling.
+///
+/// **The margin ladder in the file's header is not enforced here**, only
+/// `>= 1.0`. The ladder is a recording policy that a reviewer reads in the
+/// diff, and the header already says a margin off it "shows up as one in the
+/// diff"; enforcing it here would compare decimal spellings of `f64`s, and would
+/// turn a future ADR that widens the ladder into a bench that will not start.
+/// What this function refuses is what makes [`verdict`] incoherent, nothing
+/// more. Tested by `crates/codec/tests/bench_baselines.rs`.
+pub(crate) fn data_line_parses(line: &str) -> Result<(), &'static str> {
     let mut f = line.split('\t');
-    let Some(_cpu) = f.next() else { return false };
-    let Some(_case) = f.next() else { return false };
-    let Some(ns) = f.next() else { return false };
-    let Some(margin) = f.next() else { return false };
-    ns.trim().parse::<f64>().is_ok() && margin.trim().parse::<f64>().is_ok()
+    let Some(_cpu) = f.next() else {
+        return Err("no cpu");
+    };
+    let Some(_case) = f.next() else {
+        return Err("no case");
+    };
+    let Some(ns) = f.next() else {
+        return Err("no ns");
+    };
+    let Some(margin) = f.next() else {
+        return Err("no margin");
+    };
+    match ns.trim().parse::<f64>() {
+        Err(_) => return Err("ns is not a number"),
+        Ok(v) if !(v.is_finite() && v > 0.0) => return Err("ns is not a finite number above 0"),
+        Ok(_) => {}
+    }
+    match margin.trim().parse::<f64>() {
+        Err(_) => return Err("margin is not a number"),
+        Ok(v) if !(v.is_finite() && v >= 1.0) => {
+            return Err("margin is not a finite number of at least 1.0");
+        }
+        Ok(_) => {}
+    }
+    if let Some(n) = f.next()
+        && !matches!(n.trim().parse::<u32>(), Ok(v) if v > 0)
+    {
+        return Err("n is not a whole number above 0");
+    }
+    Ok(())
 }
 
 /// One machine's recorded figure for one case.

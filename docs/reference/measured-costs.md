@@ -166,7 +166,7 @@ example below, never the crate's own bins.
 
 `vendor/nanofix/examples/fixbolt_w2w_acceptor.rs` (gitignored, not this repository — CLAUDE.md §2
 rule 9). CompIDs and `BeginString` match exactly what `tools/w2w/src/main.rs`'s `--connect` half
-sends as its Logon (`logon()`, `tools/w2w/src/main.rs:1794-1799`: `49=W2W`, `56=ISLD`,
+sends as its Logon (`tools/w2w/src/main.rs`, fn `logon`: `49=W2W`, `56=ISLD`,
 `8=FIX.4.4`) — so the acceptor's own SenderCompID is `ISLD`, and it whitelists `W2W` as the only
 TargetCompID.
 
@@ -180,8 +180,8 @@ advances a counter that is behind the received sequence (`src/session.rs:271-286
 and **every single message after the Logon reads as a sequence gap.** Confirmed on this loopback
 acceptor with a raw-socket probe (`python3` script, not committed): each reply to a `TestRequest`
 arrived as a `ResendRequest` (`35=2`, `7=1`, `16=<n>`) immediately followed by the real
-`Heartbeat` (`35=0`) — and on the first `tools/w2w --connect --path admin` run, `main.rs:1291`'s
-strict `35=` assertion read the `ResendRequest` and failed with `expected 35=0, got 35=2`.
+`Heartbeat` (`35=0`) — and on the first `tools/w2w --connect --path admin` run, the strict `35=`
+assertion in `tools/w2w/src/main.rs`'s `measure` read the `ResendRequest` and failed with `expected 35=0, got 35=2`.
 
 **No nanofix source was changed to fix this.** The example instead builds its own accept loop
 from nanofix's lower-level public pieces — `Acceptor`, `Session`, `FixEngine`,
@@ -198,7 +198,8 @@ different call sequence through the same `pub` surface, written in this file, no
 message type nanofix's dispatch loop hands to application code (`src/engine.rs:669-688`); the
 reply is built with nanofix's own `serializer::build_execution_report` helper, echoing the
 order's ClOrdID (tag 11) and setting ExecType (tag 150) to `F`, which is exactly what
-`tools/w2w/src/main.rs:1303-1316` checks for `--path app`.
+`tools/w2w/src/main.rs`'s `measure` checks for `--path app` (the `Path::App` branch after the
+`35=` assertion).
 
 **Both paths are comparable, not admin-only.** The A7 brief allowed for an admin-only comparison
 if the API gave no application reply; here it does.
@@ -2963,14 +2964,15 @@ One `w2w` run of 1 000 messages was taken at 07:25:18 and thrown away first, as 
 item 5 asks after a reboot.
 
 **What `ktls` and `userspace` mean in this binary: TLS at both ends of the socket.**
-`tools/w2w/src/main.rs:915-929` wraps the engine's accepted socket in a `TlsTransport`,
-`:1165-1169` wraps the client's dialled one, and `:1196-1200` refuses a `ktls` run whose *client*
-handover fell back. Both ends are built from the engine's own
-`tls::server_config`/`tls::client_config` (`tools/w2w/src/main.rs:1116-1131`), which offer
+`tools/w2w/src/main.rs`'s `serve` (its `EngineSide::Tls` arm) wraps the engine's accepted socket
+in a `TlsTransport`, `tls_arm::connect` wraps the client's dialled one and, at its end, refuses a
+`ktls` run whose *client* handover fell back. Both ends are built from the engine's own
+`tls::server_config`/`tls::client_config` (`tools/w2w/src/main.rs`, `tls_arm::Pki::new`), which offer
 `TLS13_AES_128_GCM_SHA256` and nothing else (`crates/engine/src/tls.rs:821-827`). Every TLS figure below is a round trip with record
 processing at both ends; nothing here separates one end from the other.
-`scripts/w2w-baseline.sh:174-178` refuses a run whose `tls:` read-back is not the arm's (`kernel`
-for `ktls`) and `:194-196` refuses `allocs` ≠ 0 for every arm but `userspace`; both procedures end
+`scripts/w2w-baseline.sh` refuses a run whose `tls:` read-back is not the arm's (`kernel`
+for `ktls`, the `grep -qx "tls: $want_tls"` check) and refuses `allocs` ≠ 0 for every arm but
+`userspace` (the `allocs +0` check after it); both procedures end
 `baseline exit=0`, so every `ktls` run read back `kernel` and counted 0 allocations.
 
 **Two procedures, not one.** Procedure 1 ran 07:25:28–07:50:59, about seven minutes after boot
@@ -3307,7 +3309,7 @@ then published 17 473, 24 657 and 15 670 for the same three arms.
 **The spread column cannot register how far below the median a run falls.** Inside procedure 2,
 `hft / app / off` printed spread **1.008** while five of its twenty runs read p50 17 323, 17 523,
 17 864, 18 976 and 19 136 against a median of 19 998. The spread is maximum over median
-(`scripts/w2w-baseline.sh:222-225`). A fast run does move it, a little, by lowering the median:
+(`scripts/w2w-baseline.sh`, the summary's `spread max/median` line). A fast run does move it, a little, by lowering the median:
 with those five runs replaced by 20 050 the same column reads 1.005. But a run 13.4% under the
 median and a run 0.3% under it move it by exactly the same amount.
 

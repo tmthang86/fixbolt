@@ -56,6 +56,34 @@
 #     reads `${FIXBOLT_NIC:-}` (same default-to-empty as an unset variable),
 #     so `FIXBOLT_NIC=enp9s0 scripts/w2w-baseline.sh` needed nothing new here.
 #     The `export` below is that claim made checkable rather than assumed.
+#
+# `[2026-09-14]` senior review of PR #72, three fixes to the split run:
+#   * `WIRE_NIC=<ifname>` with `OBSERVER_CORE=<cpu>` makes a split run take the
+#     acceptor's own wire figure (plan B6; Sửa 2, Điều 4(d) and Q10): the listen
+#     half gets `--wire-timestamps --nic $WIRE_NIC --observer-core
+#     $OBSERVER_CORE --warmup $WARMUP` — the same `--warmup` the generator gets,
+#     so its cold requests are left out of the wire window rather than being the
+#     p99.9. Before this, A6 could run a split but never ask for a wire figure,
+#     so B6 had no procedure. Refused before anything runs: without `LISTEN`
+#     (the combined run is over loopback, which a hardware NIC never carries),
+#     without `OBSERVER_CORE`, with the observer on a measured core, and for
+#     any `standard` arm (Q10 — `standard` publishes no wire figure; run it in
+#     its own invocation without `WIRE_NIC`, for the counterparty table only).
+#     **A run whose `hw-rx-missing` or `hw-tx-missing` is not 0 FAILS the
+#     script; it is not DISQUALIFIED.** DISQUALIFIED here means a busy machine,
+#     which the next run can escape by waiting. A missing hardware stamp is the
+#     instrument: the plan's `igb` trap (a link change silently drops RX stamps
+#     to software, and the driver's read-back lies about it) persists into every
+#     later run until a person runs `ethtool -T` / link down-up and records the
+#     kernel — so carrying on would spend RUNS x GAP producing nothing, and a
+#     sample built from the runs that happened to keep their stamps would be a
+#     selected sample. The FAIL prints both counts and the listen half's output,
+#     which is the finding B6 records.
+#   * With `GENERATOR_SSH` the generator is NOT pinned by this script (it runs
+#     with no `--client-core`), and the header and summary now say so instead
+#     of naming `client cpu$CLIENT_CORE`.
+#   * The generator connects to the address the listen half PRINTED on its
+#     `listening:` line, not to `$LISTEN`, so `LISTEN=127.0.0.1:0` works.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -88,6 +116,10 @@ ALLOW_UNISOLATED=${ALLOW_UNISOLATED:-0}
 LISTEN=${LISTEN:-}
 GENERATOR_SSH=${GENERATOR_SSH:-}
 GENERATOR_W2W=${GENERATOR_W2W:-w2w}
+# The acceptor's wire figure (`[2026-09-14]` review note above). Both empty is
+# a split run exactly as before.
+WIRE_NIC=${WIRE_NIC:-}
+OBSERVER_CORE=${OBSERVER_CORE:-}
 # Read the same way `check-machine.sh` reads it (`NIC="${FIXBOLT_NIC:-}"`), and
 # exported so that claim is this line rather than an assumption about bash —
 # `${FIXBOLT_NIC:-}` reads identically whether it was unset or empty, so this
@@ -110,6 +142,35 @@ if [ "$PIN" = 1 ]; then
     LISTEN_PINARGS+=(--allow-unisolated)
     CONNECT_PINARGS+=(--allow-unisolated)
   fi
+fi
+
+# Every refusal that does not need the binary, before the machine block and
+# before any run — a B6 procedure that stops at arm three over a flag that was
+# wrong from the start has wasted two arms of a shared desk's time.
+refuse() { echo "refused before running: $*"; exit 1; }
+if [ -n "$OBSERVER_CORE" ] && [ -z "$WIRE_NIC" ]; then
+  refuse "OBSERVER_CORE is set and WIRE_NIC is not — the observer belongs to --wire-timestamps"
+fi
+if [ -n "$WIRE_NIC" ]; then
+  [ -n "$LISTEN" ] || refuse "WIRE_NIC needs LISTEN: the combined run is over loopback, and a hardware NIC never carries it"
+  case "$OBSERVER_CORE" in
+    ''|*[!0-9]*) refuse "WIRE_NIC needs OBSERVER_CORE=<cpu>: the observer spins, and w2w will not run it unpinned" ;;
+  esac
+  [ "$OBSERVER_CORE" != "$ENGINE_CORE" ] || refuse "OBSERVER_CORE $OBSERVER_CORE is ENGINE_CORE — the observer spins on its core"
+  if [ -z "$GENERATOR_SSH" ] && [ "$PIN" = 1 ] && [ "$OBSERVER_CORE" = "$CLIENT_CORE" ]; then
+    refuse "OBSERVER_CORE $OBSERVER_CORE is CLIENT_CORE, and the generator runs on this host"
+  fi
+  for arm in $ARMS; do
+    case "${arm%%:*}" in
+      hft) ;;
+      *) refuse "ARMS entry '$arm' with WIRE_NIC: only hft publishes a wire figure (plan Sửa 2, Q10). Run standard arms in their own invocation without WIRE_NIC — the counterparty table only" ;;
+    esac
+  done
+fi
+if [ -n "$GENERATOR_SSH" ]; then
+  case "${LISTEN%:*}" in
+    ''|0.0.0.0|'[::]') refuse "LISTEN=$LISTEN binds every address, and GENERATOR_SSH's host needs one it can reach — name this host's address on the link" ;;
+  esac
 fi
 
 # The machine block travels with the figures, read off the box rather than
@@ -196,13 +257,18 @@ wait_with_timeout() {
 }
 
 echo "runs $RUNS   messages $MESSAGES   warmup $WARMUP   gap ${GAP}s"
-if [ "$PIN" = 1 ]; then
+if [ "$PIN" = 1 ] && [ -n "$LISTEN" ] && [ -n "$GENERATOR_SSH" ]; then
+  echo "engine cpu$ENGINE_CORE   generator on $GENERATOR_SSH, NOT pinned by this script   (allow-unisolated $ALLOW_UNISOLATED)"
+elif [ "$PIN" = 1 ]; then
   echo "engine cpu$ENGINE_CORE   client cpu$CLIENT_CORE   (allow-unisolated $ALLOW_UNISOLATED)"
 else
   echo "UNPINNED — not a DESIGN.md §9 figure whatever check-machine.sh says above"
 fi
 if [ -n "$LISTEN" ]; then
   echo "split mode: listen $LISTEN, generator ${GENERATOR_SSH:-this host (loopback split)}"
+fi
+if [ -n "$WIRE_NIC" ]; then
+  echo "wire timestamps: $WIRE_NIC, observer cpu$OBSERVER_CORE, listen --warmup $WARMUP"
 fi
 echo
 
@@ -248,6 +314,11 @@ for arm in $ARMS; do
   gen_host="${GENERATOR_SSH:-this host (loopback split)}"
 
   p50s=(); p99s=(); p999s=(); mins=(); skipped=0
+  wp50s=(); wp99s=(); wp999s=()
+  wire_args=()
+  if [ -n "$WIRE_NIC" ]; then
+    wire_args=(--wire-timestamps --nic "$WIRE_NIC" --observer-core "$OBSERVER_CORE" --warmup "$WARMUP")
+  fi
   for i in $(seq 1 "$RUNS"); do
     b=$(busy_pct)
     if [ "$b" -gt 3 ]; then
@@ -264,7 +335,7 @@ for arm in $ARMS; do
       # first, allocations second, exit status last, because the checks above
       # name the cause better than a bare nonzero status ever could.
       listen_log=$(mktemp)
-      "$BIN" --listen "$LISTEN" --mode "$mode" --path "$path" "${LISTEN_PINARGS[@]}" \
+      "$BIN" --listen "$LISTEN" --mode "$mode" --path "$path" "${LISTEN_PINARGS[@]}" "${wire_args[@]}" \
         >"$listen_log" 2>&1 &
       listen_pid=$!
 
@@ -275,9 +346,14 @@ for arm in $ARMS; do
         exit 1
       fi
 
+      # The address the engine half actually bound, off its own line — `$LISTEN`
+      # itself is only right when it names a port, and `:0` asks the kernel for
+      # one (tools/w2w module doc: `listening:` prints the bound address).
+      connect_addr=$(awk '/^listening: /{print $2; exit}' "$listen_log")
+
       rc=0
       if [ -z "$GENERATOR_SSH" ]; then
-        cout=$("$BIN" --connect "$LISTEN" --path "$path" "${CONNECT_PINARGS[@]}" \
+        cout=$("$BIN" --connect "$connect_addr" --path "$path" "${CONNECT_PINARGS[@]}" \
                  --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" 2>&1) || rc=$?
       else
         # Separate `ssh` arguments, not one interpolated string: `sshd` joins
@@ -285,7 +361,7 @@ for arm in $ARMS; do
         # nothing here is evaluated a second time by this shell first, and
         # none of these tokens (an address, a word, a number) needs quoting
         # either side of the hop.
-        cout=$(ssh "$GENERATOR_SSH" "$GENERATOR_W2W" --connect "$LISTEN" --path "$path" \
+        cout=$(ssh "$GENERATOR_SSH" "$GENERATOR_W2W" --connect "$connect_addr" --path "$path" \
                  --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" 2>&1) || rc=$?
       fi
 
@@ -322,11 +398,39 @@ for arm in $ARMS; do
         exit 1
       fi
 
+      # The acceptor's wire figure, read off the listen half's own lines
+      # (tools/w2w/src/main.rs `Observed::report`: `hw-rx-missing <n> of <m>`,
+      # `hw-tx-missing <n> of <m>`, `wire p50 <ns> ns`, ...). After the exit
+      # status: a report that could not trust its tap returns an error before it
+      # prints any of these, and the status check above has already shown it.
+      wire_note=""
+      if [ -n "$WIRE_NIC" ]; then
+        rxm=$(echo "$lout" | awk '$1=="hw-rx-missing" {print $2; exit}')
+        txm=$(echo "$lout" | awk '$1=="hw-tx-missing" {print $2; exit}')
+        if [ "$rxm" != 0 ] || [ "$txm" != 0 ]; then
+          echo "$lout"
+          echo "FAIL: $mode:$path:$tls:$interval — run $i: hw-rx-missing ${rxm:-<not printed>}, hw-tx-missing ${txm:-<not printed>} on $WIRE_NIC."
+          echo "A run with any missing hardware stamp is not a wire figure (plan B6 publishes only missing 0)."
+          echo "Not DISQUALIFIED: the cause is the NIC's stamping, not load, and it will not clear by waiting —"
+          echo "see the plan's igb trap (ethtool -T, link down/up), and record this count and the kernel version."
+          exit 1
+        fi
+        wv() { echo "$lout" | awk -v k="$1" '$1=="wire" && $2==k {print $3; exit}'; }
+        wp50=$(wv p50); wp99=$(wv p99); wp999=$(wv p99.9)
+        if [ -z "$wp50" ] || [ -z "$wp99" ] || [ -z "$wp999" ]; then
+          echo "$lout"
+          echo "FAIL: $mode:$path:$tls:$interval — run $i: missing counts are 0 and no wire column was printed (tap drops or overflow — read the listen half above)"
+          exit 1
+        fi
+        wp50s+=("$wp50"); wp99s+=("$wp99"); wp999s+=("$wp999")
+        wire_note=$(printf '  wire p50 %8s  p99 %8s  p99.9 %8s  (acceptor, %s)' "$wp50" "$wp99" "$wp999" "$WIRE_NIC")
+      fi
+
       out="$cout"
       g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
       mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
-      printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s  (counterparty: %s)%s\n' \
-        "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$gen_host" "$iv_note"
+      printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s  (counterparty: %s)%s%s\n' \
+        "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$gen_host" "$iv_note" "$wire_note"
       sleep "$GAP"
       continue
     fi
@@ -419,7 +523,9 @@ for arm in $ARMS; do
   if [ "$tls" = userspace ]; then
     echo "     allocs  NOT asserted zero — userspace leaves ADR-0005 decision 3's guarantee"
   fi
-  if [ "$PIN" = 1 ]; then
+  if [ "$PIN" = 1 ] && [ -n "$LISTEN" ] && [ -n "$GENERATOR_SSH" ]; then
+    echo "     pinned  engine cpu$ENGINE_CORE; the generator on $GENERATOR_SSH is NOT pinned by this script"
+  elif [ "$PIN" = 1 ]; then
     echo "     pinned  engine cpu$ENGINE_CORE, client cpu$CLIENT_CORE"
   else
     echo "     pinned  NO — NOT a §9 figure"
@@ -427,6 +533,20 @@ for arm in $ARMS; do
   if [ -n "$LISTEN" ]; then
     echo "     split   as the counterparty sees it — not an acceptor wire figure"
     echo "     generator  $gen_host"
+  fi
+  if [ -n "$WIRE_NIC" ]; then
+    wm50=$(printf '%s\n' "${wp50s[@]}" | median)
+    wx50=$(printf '%s\n' "${wp50s[@]}" | sort -n | tail -1)
+    wn50=$(printf '%s\n' "${wp50s[@]}" | sort -n | head -1)
+    echo
+    echo "     -- acceptor wire figure: NIC in -> NIC out at the acceptor, $WIRE_NIC hardware stamps --"
+    echo "     -- median of the same $q runs; NOT the counterparty table above, and nothing is subtracted --"
+    echo "     wire p50    $wm50 ns      (across runs: $wn50 .. $wx50)"
+    echo "     wire p99    $(printf '%s\n' "${wp99s[@]}" | median) ns"
+    echo "     wire p99.9  $(printf '%s\n' "${wp999s[@]}" | median) ns"
+    echo "     window      every request after the logon, leaving out the first $WARMUP"
+    echo "     stamps      hw-rx-missing 0 and hw-tx-missing 0 in all $q runs"
+    echo "     observer    cpu$OBSERVER_CORE"
   fi
   echo
 done

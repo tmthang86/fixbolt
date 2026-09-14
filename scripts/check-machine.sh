@@ -62,6 +62,69 @@ expand_cpulist() {
   done
 }
 
+# irq_overlap <isolated cpulist> <smp_affinity_list cpulist>
+#
+# Every CPU in both lists, one per line; nothing when they do not overlap.
+# `grep -Fxf`, not `comm`: comm demands its inputs sorted by the current locale's
+# collation, which disagrees with `sort -n` on two-digit CPU numbers ("10" sorts
+# before "6" lexically), and comm says so loudly even though the numeric order is
+# exactly right — docs/reference/comm-compares-by-locale-collation-not-number.md.
+# A function so that scripts/check-machine-verdicts.sh can test it with two-digit
+# CPUs on any machine, NIC or not.
+irq_overlap() {
+  grep -Fxf <(expand_cpulist "$1") <(expand_cpulist "$2")
+}
+
+# nic_irqs <nic> <msi_irqs dir> <interrupts file>
+#
+# The NIC's IRQ numbers, one per line. `/sys/class/net/<nic>/device/msi_irqs/` is
+# preferred when it lists anything: it is the kernel's own list of the vectors
+# allocated to that PCI function, so a queue whose /proc/interrupts name does not
+# start with the interface name (a driver that names them after the PCI address,
+# say) is still counted. Otherwise, every /proc/interrupts line whose last field is
+# the bare name or `<nic>-<queue>`. The first line printed is `msi_irqs` or `names`,
+# saying which — the row names its source, because a PASS over a name match that
+# missed a vector is a PASS about fewer IRQs than the NIC has.
+nic_irqs() {
+  local nic="$1" msi="$2" interrupts="$3" from_msi
+  from_msi=$(find "$msi" -mindepth 1 -maxdepth 1 -name '[0-9]*' -printf '%f\n' 2>/dev/null | sort -n)
+  if [ -n "$from_msi" ]; then
+    echo msi_irqs
+    echo "$from_msi"
+    return 0
+  fi
+  echo names
+  awk -v nic="$nic" '{
+    n = split($0, f, " ")
+    name = f[n]
+    irq = f[1]
+    sub(/:$/, "", irq)
+    if (irq ~ /^[0-9]+$/ && (name == nic || substr(name, 1, length(nic) + 1) == nic "-")) print irq
+  }' "$interrupts" 2>/dev/null
+}
+
+# coalesce_verdict <ethtool -c output>
+#
+# One line, `PASS|FAIL|UNKNOWN<TAB><value>`. `Adaptive RX: on` FAILS whatever
+# rx-usecs reads: with adaptive moderation on, the driver rewrites the interrupt
+# rate from traffic, so `rx-usecs 0` is not what is in force — ethtool(8), `-C`
+# `adaptive-rx`. `n/a` (igb has no adaptive mode) and `off` fall through to
+# rx-usecs, exactly as the row read before the adaptive check existed.
+coalesce_verdict() {
+  local out="$1" adaptive rx_usecs
+  adaptive=$(echo "$out" | awk '/^Adaptive RX:/{print $3; exit}')
+  rx_usecs=$(echo "$out" | awk -F: '/^rx-usecs:/{v=$2; gsub(/[ \t]/,"",v); print v; exit}')
+  if [ "$adaptive" = on ]; then
+    printf 'FAIL\tAdaptive RX on, rx-usecs %s\n' "${rx_usecs:-unreported}"
+  elif [ -z "$rx_usecs" ] || [ "$rx_usecs" = "n/a" ]; then
+    printf 'UNKNOWN\trx-usecs not reported by this driver\n'
+  elif [ "$rx_usecs" = 0 ]; then
+    printf 'PASS\trx-usecs 0\n'
+  else
+    printf 'FAIL\trx-usecs %s\n' "$rx_usecs"
+  fi
+}
+
 # virt_verdict <systemd-detect-virt output> <steal % over the window>
 #
 # Why this row exists: a guest CANNOT satisfy §9, and it does not fail loudly — it
@@ -432,26 +495,29 @@ fi
 # Without a NIC selected this is reported, not judged: which core the NIC may
 # interrupt is a decision about which core the engine runs on, and without a
 # NIC this script does not know that. With a NIC selected (FIXBOLT_NIC, or
-# auto-selected above), it can actually judge: every IRQ line in
-# /proc/interrupts naming that NIC (the bare name, e.g. "enp9s0", or one of
-# its queues, e.g. "enp9s0-TxRx-0") gets its /proc/irq/<n>/smp_affinity_list
-# checked against /sys/devices/system/cpu/isolated.
+# auto-selected above), it can actually judge: every IRQ of that NIC —
+# `nic_irqs` above, from /sys/class/net/<nic>/device/msi_irqs when it lists any,
+# else the /proc/interrupts lines naming it (the bare name, e.g. "enp9s0", or
+# one of its queues, e.g. "enp9s0-TxRx-0") — gets its
+# /proc/irq/<n>/smp_affinity_list checked against
+# /sys/devices/system/cpu/isolated.
+#
+# `[2026-09-14]` senior review of PR #72: an IRQ whose smp_affinity_list could
+# not be read was skipped, so a NIC none of whose IRQs could be read PASSED
+# having checked nothing. It now makes the row UNKNOWN, naming the IRQs; an
+# overlap found on the IRQs that could be read still FAILS first.
 if [ -z "$NIC" ]; then
   nic_irqs=$(grep -ciE 'eth|enp|ens|eno|mlx|sfc' /proc/interrupts 2>/dev/null)
   : "${nic_irqs:=0}"
   row UNKNOWN "NIC IRQ affinity" "$nic_irqs NIC interrupt line(s) — steer them AWAY from the engine core" \
     "see /proc/interrupts, then write a mask to /proc/irq/<n>/smp_affinity"
 else
-  nic_irq_nums=$(awk -v nic="$NIC" '{
-    n = split($0, f, " ")
-    name = f[n]
-    irq = f[1]
-    sub(/:$/, "", irq)
-    if (irq ~ /^[0-9]+$/ && (name == nic || substr(name, 1, length(nic) + 1) == nic "-")) print irq
-  }' /proc/interrupts)
+  nic_irq_out=$(nic_irqs "$NIC" "/sys/class/net/$NIC/device/msi_irqs" /proc/interrupts)
+  irq_source=$(echo "$nic_irq_out" | head -1)
+  nic_irq_nums=$(echo "$nic_irq_out" | tail -n +2)
   isolated=$(r /sys/devices/system/cpu/isolated)
   if [ -z "$nic_irq_nums" ]; then
-    row UNKNOWN "NIC IRQ affinity" "$NIC: no IRQ line found in /proc/interrupts" \
+    row UNKNOWN "NIC IRQ affinity" "$NIC: no IRQ in /sys/class/net/$NIC/device/msi_irqs or /proc/interrupts" \
       "check /proc/interrupts for this NIC's queue names"
   elif [ -z "$isolated" ]; then
     # An empty isolated list means "nothing to check this against" — not a
@@ -461,26 +527,27 @@ else
     row UNKNOWN "NIC IRQ affinity" "$NIC: /sys/devices/system/cpu/isolated is empty — nothing to check IRQs against" \
       "set isolcpus for the engine core first, then re-run"
   else
-    isolated_expanded=$(expand_cpulist "$isolated")
     bad=""
+    unread=""
     for irq in $nic_irq_nums; do
       al=$(r "/proc/irq/$irq/smp_affinity_list")
-      [ -z "$al" ] && continue
-      al_expanded=$(expand_cpulist "$al")
-      # grep -Fxf, not `comm`: comm demands its inputs sorted by the current
-      # locale's collation, which disagrees with `sort -n` on two-digit CPU
-      # numbers ("10" sorts before "6" lexically) and comm says so loudly even
-      # though the numeric order above is exactly right.
-      overlap=$(grep -Fxf <(printf '%s\n' "$isolated_expanded") <(printf '%s\n' "$al_expanded"))
-      if [ -n "$overlap" ]; then
+      if [ -z "$al" ]; then
+        unread="${unread}${unread:+,}$irq"
+        continue
+      fi
+      if [ -n "$(irq_overlap "$isolated" "$al")" ]; then
         bad="${bad}irq $irq ($al) "
       fi
     done
+    irq_csv=$(echo "$nic_irq_nums" | tr '\n' ',' | sed 's/,$//')
     if [ -n "$bad" ]; then
       row FAIL "NIC IRQ affinity" "$NIC: ${bad}overlaps isolated $isolated" \
         "echo <non-isolated-cpu> | sudo tee /proc/irq/<n>/smp_affinity_list"
+    elif [ -n "$unread" ]; then
+      row UNKNOWN "NIC IRQ affinity" "$NIC: smp_affinity_list unreadable for IRQ $unread (of $irq_csv, from $irq_source) — not checked" \
+        "read /proc/irq/<n>/smp_affinity_list as a user that can, or run on the host"
     else
-      row PASS "NIC IRQ affinity" "$NIC: IRQ $(echo "$nic_irq_nums" | tr '\n' ',' | sed 's/,$//') — none on isolated $isolated"
+      row PASS "NIC IRQ affinity" "$NIC: IRQ $irq_csv (from $irq_source) — none on isolated $isolated"
     fi
   fi
 fi
@@ -494,17 +561,22 @@ if [ -n "$NIC" ]; then
   else
     ec_out=$(ethtool -c "$NIC" 2>&1)
     ec_status=$?
-    rx_usecs=$(echo "$ec_out" | awk -F: '/^rx-usecs:/{v=$2; gsub(/[ \t]/,"",v); print v; exit}')
+    cv=$(coalesce_verdict "$ec_out")
+    cv_value=${cv#*$'\t'}
     if [ "$ec_status" -ne 0 ]; then
       row UNKNOWN "coalescing" "$NIC: ethtool -c failed (exit $ec_status)" \
         "check the NIC/driver supports coalescing"
-    elif [ -z "$rx_usecs" ] || [ "$rx_usecs" = "n/a" ]; then
-      row UNKNOWN "coalescing" "$NIC: rx-usecs not reported by this driver" \
-        "unsupported here — check by hand"
-    elif [ "$rx_usecs" = 0 ]; then
-      row PASS "coalescing" "$NIC: rx-usecs 0"
     else
-      row FAIL "coalescing" "$NIC: rx-usecs $rx_usecs" "sudo ethtool -C $NIC rx-usecs 0"
+      case "${cv%%$'\t'*}" in
+        PASS) row PASS "coalescing" "$NIC: $cv_value" ;;
+        UNKNOWN) row UNKNOWN "coalescing" "$NIC: $cv_value" "unsupported here — check by hand" ;;
+        # Only the adaptive FAIL names `adaptive-rx off`: a driver with no
+        # adaptive mode (igb reads `n/a`) refuses the whole `-C` over it.
+        *) case "$cv_value" in
+             Adaptive*) row FAIL "coalescing" "$NIC: $cv_value" "sudo ethtool -C $NIC adaptive-rx off rx-usecs 0" ;;
+             *) row FAIL "coalescing" "$NIC: $cv_value" "sudo ethtool -C $NIC rx-usecs 0" ;;
+           esac ;;
+      esac
     fi
   fi
 fi

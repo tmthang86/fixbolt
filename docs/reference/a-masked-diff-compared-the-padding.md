@@ -51,3 +51,26 @@ compared `IDENTICAL (25 vs 25 lines)` between the pre-change and post-change bin
 - **A run that matches can still be misleading.** With a digit-only mask, two runs whose samples
   happen to have the same number of digits compare equal, so a pass depended on the timings.
   Read the diff when it goes red. Do not just change the mask until it passes.
+
+## Regression guard
+
+Honestly: **none that runs.** The mask is not in any committed script — it was typed at a shell
+for step A3a's gate, and `grep -rn` over `scripts/`, `tools/`, `crates/` and `.github/` on
+2026-09-14 finds neither the broken spelling nor the fixed one outside this file. A trap in a
+command nobody commits has nothing for a test to hold on to.
+
+What exists is a one-line reproduction, which anyone about to write a masked diff can run first
+(output from 2026-09-14, `cat -A` so the padding shows):
+
+```
+$ printf '     p99.9  %9s ns\n' 87196 291835 | sed -E 's/[0-9]+/N/g' | cat -A
+     pN.N      N ns$
+     pN.N     N ns$
+$ printf '     p99.9  %9s ns\n' 87196 291835 | sed -E 's/ +[0-9]+/ N/g; s/[0-9]+/N/g' | cat -A
+     pN.N N ns$
+     pN.N N ns$
+```
+
+The day a masked diff becomes a committed gate, it gets a fixture with two widths of the same
+field, and this section names it. The blind spot the fixed mask introduces — a changed field width
+compares equal — stays unguarded either way, and a gate built on it must say so.
