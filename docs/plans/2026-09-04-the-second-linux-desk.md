@@ -417,6 +417,18 @@ công bố. Xác minh lại trên `25e54dc` trước khi chia việc, đọc th�
 3. **A3a "build một lần trên macOS" bị chặn**: các phiên Mac đang offline. Mọi thứ khác của A3a vẫn
    làm; bằng chứng thay thế (nếu cài được target) là `cargo check --target x86_64-apple-darwin -p
    fixbolt-w2w`, **ghi rõ là check chéo, không phải một lần build trên Mac**, và việc build Mac còn nợ.
+4. **`ARMS` của A6 là `mode:path:tls:interval`, không phải `mode:path:interval`.** Plan viết A6 trước
+   khi bước 6b của plan `tls` biến trường thứ ba thành `tls`; interval thành trường thứ **tư**, tuỳ
+   chọn, mặc định `0`, và `mode:path`, `mode:path:tls` giữ đúng nghĩa hôm nay. Chỉ đổi chỗ đặt trường.
+5. **A3a do senior developer làm, không phải developer.** Plan không nói hai nửa `--listen`/`--connect`
+   dừng khi nào và in gì, và A3b (opus) xây trên cùng file ngay sau — theo luật route lên của
+   `CLAUDE.md` §12. Mỗi lựa chọn nó đưa ra nằm trong module doc của `tools/w2w/src/main.rs`, mục
+   *Two halves, and pacing*.
+
+**`[2026-09-14]` A5 xong, `f48f3ae`.** **A3a xong, `658b5c6`.** Gate đóng từng bước manager chạy lại
+trên cây của commit đó; bằng chứng nằm trong thân commit. Nhánh PASS của hàng NIC IRQ thấy được ngay
+hôm nay bằng cách đặt tạm năm IRQ của `enp9s0` sang `cpu4` rồi trả về `0-15` — plan tưởng phải chờ
+boot B.
 
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
