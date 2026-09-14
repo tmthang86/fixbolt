@@ -124,7 +124,13 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    existed. `FIXBOLT_NIC` reaches the script's two `scripts/check-machine.sh` calls the same way
    any other environment variable does. None of this changes the command line when `LISTEN` is
    unset and no `ARMS` entry uses a fourth field — `ARMS="hft:admin"` still means what it always
-   meant.
+   meant. `[2026-09-14]` ADR-0068 decision 5: the header now also prints the commit, tree state,
+   uptime and the binary's sha256/mtime, `OUT_DIR` (default
+   `target/w2w-baseline/<UTC timestamp>-<HEAD>`) keeps every run's raw output plus an appended
+   `summary.txt`, each summary gains two-sided `min/median`/`max/median` dispersion at every
+   published percentile beside the existing `spread`, and `W2W_EXTRA` (split on whitespace, so
+   `--journal file-async` or `--log file` needs no bespoke script) reaches the combined run and the
+   `--listen` half only — never `--connect`, which refuses both flags.
 4. `[2026-09-14]` **Wire-in → wire-out at the acceptor, on one clock — `hft` only**: add
    `--wire-timestamps --nic <ifname> --observer-core <cpu>` to the engine's process (`--listen`
    on the NIC's address; the combined run is over loopback and a hardware NIC never carries it),

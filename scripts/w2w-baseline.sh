@@ -125,6 +125,14 @@ OBSERVER_CORE=${OBSERVER_CORE:-}
 # `${FIXBOLT_NIC:-}` reads identically whether it was unset or empty, so this
 # changes nothing for a run that never sets it.
 export FIXBOLT_NIC="${FIXBOLT_NIC:-}"
+# Extra flags for the engine invocation, split on whitespace (`[2026-09-14]`
+# step S2, plan Sửa 3 Điều 2 / B5 — ADR-0068 decision 5's Consequences: "one
+# more variable"). Reaches the combined run and the `--listen` half only:
+# `--connect` refuses `--journal`/`--log` (it writes neither), so a split
+# run's generator never receives this.
+W2W_EXTRA=${W2W_EXTRA:-}
+EXTRA_ARGS=()
+[ -n "$W2W_EXTRA" ] && read -ra EXTRA_ARGS <<< "$W2W_EXTRA"
 BIN=target/release/w2w
 PINARGS=()
 # Split-mode pin args, one core per process rather than two in one — tools/w2w
@@ -142,6 +150,42 @@ if [ "$PIN" = 1 ]; then
     LISTEN_PINARGS+=(--allow-unisolated)
     CONNECT_PINARGS+=(--allow-unisolated)
   fi
+fi
+
+# Pure — no file, no global state, no side effect — so the regression test
+# (`scripts/check-w2w-baseline-summary.sh`) can source this file with
+# BASELINE_SOURCE_ONLY=1 and call them directly, the way
+# check-machine-verdicts.sh reaches check-machine.sh's pure functions
+# (check-machine.sh:174). `median` moved up from beside `busy_pct` so both
+# functions this test needs are together, above every refusal and the
+# machine block.
+median() { sort -n | awk '{v[NR]=$1} END {print (NR%2) ? v[(NR+1)/2] : int((v[NR/2]+v[NR/2+1])/2)}'; }
+
+# Two-sided dispersion, per ADR-0068 decision 5: `min/median` beside the
+# existing `max/median` (`spread`, kept below unchanged so an older summary
+# still reads the same way), at every published percentile — a fast run
+# moves this column exactly as much as an equally-far slow run moves the
+# other one, which `spread` alone cannot show. See
+# docs/reference/a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md,
+# "A spread column that cannot say how far down a run fell."
+dispersion() { # dispersion <label> <v...>
+  local label=$1; shift
+  local med min max
+  med=$(printf '%s\n' "$@" | median)
+  min=$(printf '%s\n' "$@" | sort -n | head -1)
+  max=$(printf '%s\n' "$@" | sort -n | tail -1)
+  printf '%s  %s ns      (across runs: %s .. %s)   min/median %s   max/median %s' \
+    "$label" "$med" "$min" "$max" \
+    "$(awk -v a="$min" -v b="$med" 'BEGIN{printf "%.3f", a/b}')" \
+    "$(awk -v a="$max" -v b="$med" 'BEGIN{printf "%.3f", a/b}')"
+}
+
+# Sourced by the baseline summary test, which wants `median` and `dispersion`
+# and none of the probing or any run — same guard shape as check-machine.sh:174.
+if [ "${BASELINE_SOURCE_ONLY:-0}" = 1 ]; then
+  # shellcheck disable=SC2317 # reachable when sourced; `|| exit 0` is only
+  # for the (unused here) case of running this file directly.
+  return 0 2>/dev/null || exit 0
 fi
 
 # Every refusal that does not need the binary, before the machine block and
@@ -172,6 +216,20 @@ if [ -n "$GENERATOR_SSH" ]; then
     ''|0.0.0.0|'[::]') refuse "LISTEN=$LISTEN binds every address, and GENERATOR_SSH's host needs one it can reach — name this host's address on the link" ;;
   esac
 fi
+
+# Pulls one flag's value out of W2W_EXTRA's split words, so the identity
+# check beside each run (`journal: X` / `log: X`, the same shape as the `tls`
+# check around `want_tls` further down) reads what was actually asked for.
+extra_val() { # extra_val <flag> <extra args...>
+  local flag=$1; shift
+  local prev=""
+  for a in "$@"; do
+    [ "$prev" = "$flag" ] && { printf '%s' "$a"; return; }
+    prev=$a
+  done
+}
+JOURNAL_WANT=$(extra_val --journal "${EXTRA_ARGS[@]}")
+LOG_WANT=$(extra_val --log "${EXTRA_ARGS[@]}")
 
 # The machine block travels with the figures, read off the box rather than
 # asserted — CLAUDE.md §2 non-negotiable 10. Its verdict is captured because
@@ -221,8 +279,6 @@ busy_pct() {
   echo $(( (100*(dt-di)) / dt ))
 }
 
-median() { sort -n | awk '{v[NR]=$1} END {print (NR%2) ? v[(NR+1)/2] : int((v[NR/2]+v[NR/2+1])/2)}'; }
-
 # Poll `file` for a line matching `pat`, up to `timeout_s` — the `--listen`
 # half prints `listening:` right after `bind`, long before its peer connects,
 # and Rust's `Stdout` is always line-buffered (never the C-stdio habit of full
@@ -257,6 +313,44 @@ wait_with_timeout() {
 }
 
 echo "runs $RUNS   messages $MESSAGES   warmup $WARMUP   gap ${GAP}s"
+# `[2026-09-14]` ADR-0068 decision 5: the procedure records what it measured
+# rather than leaving HEAD, the tree and the binary to whoever ran it and
+# happened to write them down — see
+# docs/reference/a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md,
+# "The commit was not in the output either."
+HEAD_SHORT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+TREE_STATUS=$(git status --porcelain 2>/dev/null || true)
+if [ -z "$TREE_STATUS" ]; then
+  TREE_STR="clean"
+else
+  TREE_N=$(printf '%s\n' "$TREE_STATUS" | wc -l)
+  TREE_PATHS=$(printf '%s\n' "$TREE_STATUS" | cut -c4- | tr '\n' ' ')
+  TREE_STR="$TREE_N paths: ${TREE_PATHS% }"
+fi
+echo "commit $HEAD_SHORT   tree $TREE_STR"
+UPTIME_S=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
+printf 'uptime %d:%02d\n' "$((UPTIME_S/3600))" "$(((UPTIME_S%3600)/60))"
+BIN_SHA=$(sha256sum "$BIN" 2>/dev/null | cut -c1-12)
+BIN_MTIME=$(date -Iseconds -r "$BIN" 2>/dev/null || echo unknown)
+echo "binary ${BIN_SHA:-unknown} $BIN_MTIME"
+if [ -n "$GENERATOR_SSH" ]; then
+  # Best effort: an unreachable host or a remote shell with no `w2w` on its
+  # PATH must not stop the run over a line that is evidence, not a gate —
+  # every command below falls back to `echo unknown` as its last word, so
+  # under `pipefail` the pipeline's status is always the fallback's.
+  gen_cmd="p=\$(command -v $GENERATOR_W2W 2>/dev/null) && { shasum -a 256 \"\$p\" 2>/dev/null || sha256sum \"\$p\" 2>/dev/null; }"
+  # shellcheck disable=SC2029 # $GENERATOR_W2W expands client-side on
+  # purpose (it names the remote binary); \$p and \$(command -v ...) are
+  # already escaped above to run on the remote shell instead.
+  GEN_SHA=$(ssh "$GENERATOR_SSH" "$gen_cmd" 2>/dev/null | awk '{print $1}' | cut -c1-12)
+  echo "generator binary ${GEN_SHA:-unknown}"
+fi
+if [ -n "$W2W_EXTRA" ]; then
+  echo "extra   $W2W_EXTRA"
+fi
+OUT_DIR=${OUT_DIR:-"target/w2w-baseline/$(date -u +%Y%m%dT%H%M%SZ)-$HEAD_SHORT"}
+mkdir -p "$OUT_DIR"
+echo "output $OUT_DIR"
 if [ "$PIN" = 1 ] && [ -n "$LISTEN" ] && [ -n "$GENERATOR_SSH" ]; then
   echo "engine cpu$ENGINE_CORE   generator on $GENERATOR_SSH, NOT pinned by this script   (allow-unisolated $ALLOW_UNISOLATED)"
 elif [ "$PIN" = 1 ]; then
@@ -304,6 +398,15 @@ for arm in $ARMS; do
     *) want_tls=$tls ;;
   esac
 
+  # The filename prefix each run's raw output is kept under (ADR-0068
+  # decision 5, "keeps every run's raw output on disk"), one character
+  # outside `A-Za-z0-9` in W2W_EXTRA becoming one `_` so it stays a filename.
+  extra_slug=""
+  if [ -n "$W2W_EXTRA" ]; then
+    extra_slug="-$(printf '%s' "$W2W_EXTRA" | tr -c 'A-Za-z0-9' '_')"
+  fi
+  run_prefix="$mode-$path-$tls-$interval$extra_slug"
+
   if [ -n "$LISTEN" ] && [ "$tls" != off ]; then
     echo "ARMS entry '$arm': LISTEN is set and tls is '$tls' — refused before running."
     echo "tools/w2w refuses --tls other than off to both --listen and --connect: the"
@@ -336,7 +439,7 @@ for arm in $ARMS; do
       # name the cause better than a bare nonzero status ever could.
       listen_log=$(mktemp)
       "$BIN" --listen "$LISTEN" --mode "$mode" --path "$path" "${LISTEN_PINARGS[@]}" "${wire_args[@]}" \
-        >"$listen_log" 2>&1 &
+        "${EXTRA_ARGS[@]}" >"$listen_log" 2>&1 &
       listen_pid=$!
 
       if ! wait_for_line "$listen_log" '^listening: ' 5; then
@@ -389,6 +492,20 @@ for arm in $ARMS; do
         echo "FAIL: $mode:$path:$tls:$interval — engine half ran a tls other than off"
         exit 1
       }
+      if [ -n "$JOURNAL_WANT" ]; then
+        echo "$lout" | grep -qx "journal: $JOURNAL_WANT" || {
+          echo "$lout"
+          echo "FAIL: $mode:$path:$tls:$interval — W2W_EXTRA asked for --journal $JOURNAL_WANT but the engine half printed no 'journal: $JOURNAL_WANT' line"
+          exit 1
+        }
+      fi
+      if [ -n "$LOG_WANT" ]; then
+        echo "$lout" | grep -qx "log: $LOG_WANT" || {
+          echo "$lout"
+          echo "FAIL: $mode:$path:$tls:$interval — W2W_EXTRA asked for --log $LOG_WANT but the engine half printed no 'log: $LOG_WANT' line"
+          exit 1
+        }
+      fi
       echo "$lout" | grep -qE '^ *allocs +0 ' || { echo "$lout"; echo "allocs != 0 (engine half)"; exit 1; }
       echo "$cout" | grep -qE '^ *allocs +0 ' || { echo "$cout"; echo "allocs != 0 (generator half)"; exit 1; }
       if [ "$rc" -ne 0 ] || [ "$lrc" -ne 0 ]; then
@@ -426,6 +543,9 @@ for arm in $ARMS; do
         wire_note=$(printf '  wire p50 %8s  p99 %8s  p99.9 %8s  (acceptor, %s)' "$wp50" "$wp99" "$wp999" "$WIRE_NIC")
       fi
 
+      printf '%s\n' "$cout" > "$OUT_DIR/$run_prefix-run-$i.txt"
+      printf '%s\n' "$lout" > "$OUT_DIR/$run_prefix-run-$i-listen.txt"
+
       out="$cout"
       g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
       mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
@@ -445,7 +565,7 @@ for arm in $ARMS; do
     # panic or a refusal from the binary travels with them.
     rc=0
     out=$("$BIN" --mode "$mode" --path "$path" "${tls_args[@]}" "${interval_args[@]}" "${PINARGS[@]}" \
-            --messages "$MESSAGES" --warmup "$WARMUP" 2>&1) || rc=$?
+            --messages "$MESSAGES" --warmup "$WARMUP" "${EXTRA_ARGS[@]}" 2>&1) || rc=$?
     # WHAT RAN is read back and checked before anything the run measured is
     # trusted — the same order `check-no-kernel-sleep.sh` learned the hard way
     # after `--mode standard` once printed its banner and ran nothing. A typo
@@ -473,7 +593,21 @@ for arm in $ARMS; do
       echo "FAIL: $mode:$path:$tls ran tls '${ran_tls:-<none>}' when '$want_tls' was required"
       exit 1
     }
-    # The status, after the three identity checks and before the figures: a run
+    if [ -n "$JOURNAL_WANT" ]; then
+      echo "$out" | grep -qx "journal: $JOURNAL_WANT" || {
+        echo "$out"
+        echo "FAIL: $mode:$path:$tls — W2W_EXTRA asked for --journal $JOURNAL_WANT but the run printed no 'journal: $JOURNAL_WANT' line"
+        exit 1
+      }
+    fi
+    if [ -n "$LOG_WANT" ]; then
+      echo "$out" | grep -qx "log: $LOG_WANT" || {
+        echo "$out"
+        echo "FAIL: $mode:$path:$tls — W2W_EXTRA asked for --log $LOG_WANT but the run printed no 'log: $LOG_WANT' line"
+        exit 1
+      }
+    fi
+    # The status, after every identity check and before the figures: a run
     # that ended any other way than by printing them is not a measurement, and
     # the checks above get to name the cause first when they can.
     if [ "$rc" -ne 0 ]; then
@@ -490,6 +624,7 @@ for arm in $ARMS; do
     if [ "$tls" != userspace ]; then
       echo "$out" | grep -qE '^ *allocs +0 ' || { echo "$out"; echo "allocs != 0"; exit 1; }
     fi
+    printf '%s\n' "$out" > "$OUT_DIR/$run_prefix-run-$i.txt"
     g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
     mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
     printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s%s\n' \
@@ -500,8 +635,10 @@ for arm in $ARMS; do
   q=${#p50s[@]}
   echo
   if [ "$q" -eq 0 ]; then
-    echo "  == $mode / $path / $tls: NO QUALIFYING RUNS ($skipped disqualified) ==$iv_note"
+    msg="  == $mode / $path / $tls: NO QUALIFYING RUNS ($skipped disqualified) ==$iv_note"
+    echo "$msg"
     echo
+    printf '%s\n\n' "$msg" >> "$OUT_DIR/summary.txt"
     continue
   fi
   m50=$(printf '%s\n' "${p50s[@]}" | median)
@@ -510,6 +647,11 @@ for arm in $ARMS; do
   mmin=$(printf '%s\n' "${mins[@]}" | median)
   x50=$(printf '%s\n' "${p50s[@]}" | sort -n | tail -1)
   n50=$(printf '%s\n' "${p50s[@]}" | sort -n | head -1)
+  # `[2026-09-14]` ADR-0068 decision 5: this whole block, unchanged in
+  # substance, now also lands in $OUT_DIR/summary.txt (`tee -a` keeps stdout
+  # identical to before) — the procedure's own record of what it measured,
+  # beside the per-run files written above.
+  {
   echo "  == $mode / $path / $tls: median of $q qualifying runs ($skipped disqualified) ==$iv_note"
   echo "     min    $mmin ns"
   echo "     p50    $m50 ns      (across runs: $n50 .. $x50)"
@@ -517,9 +659,18 @@ for arm in $ARMS; do
   echo "     p99.9  $m999 ns"
   # The spread of the per-run p50, as baselines.tsv's margin column defines it:
   # a bound tighter than the dispersion of the measurement is a randomly red
-  # gate (crates/engine/benches/dispatch.rs paid for that lesson).
+  # gate (crates/engine/benches/dispatch.rs paid for that lesson). Kept
+  # unchanged (p50, max/median only) so an older summary still reads the same
+  # way; the three `dispersion` lines below are decision 5's two-sided,
+  # per-percentile replacement for it.
   echo "     spread max/median $(awk -v a="$x50" -v b="$m50" 'BEGIN{printf "%.3f", a/b}')"
+  echo "     dispersion $(dispersion p50 "${p50s[@]}")"
+  echo "     dispersion $(dispersion p99 "${p99s[@]}")"
+  echo "     dispersion $(dispersion p99.9 "${p999s[@]}")"
   echo "     machine $VERDICT"
+  if [ -n "$W2W_EXTRA" ]; then
+    echo "     extra   $W2W_EXTRA"
+  fi
   if [ "$tls" = userspace ]; then
     echo "     allocs  NOT asserted zero — userspace leaves ADR-0005 decision 3's guarantee"
   fi
@@ -544,9 +695,13 @@ for arm in $ARMS; do
     echo "     wire p50    $wm50 ns      (across runs: $wn50 .. $wx50)"
     echo "     wire p99    $(printf '%s\n' "${wp99s[@]}" | median) ns"
     echo "     wire p99.9  $(printf '%s\n' "${wp999s[@]}" | median) ns"
+    echo "     wire dispersion $(dispersion p50 "${wp50s[@]}")"
+    echo "     wire dispersion $(dispersion p99 "${wp99s[@]}")"
+    echo "     wire dispersion $(dispersion p99.9 "${wp999s[@]}")"
     echo "     window      every request after the logon, leaving out the first $WARMUP"
     echo "     stamps      hw-rx-missing 0 and hw-tx-missing 0 in all $q runs"
     echo "     observer    cpu$OBSERVER_CORE"
   fi
   echo
+  } | tee -a "$OUT_DIR/summary.txt"
 done

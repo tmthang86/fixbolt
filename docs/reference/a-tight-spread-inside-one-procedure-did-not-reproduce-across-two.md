@@ -108,12 +108,27 @@ even inside one procedure it under-reports whenever the outliers are fast ones.
 
 ## What guards it
 
-**No regression test, and no gate — an unmet `CLAUDE.md` §4 obligation** ("every recorded trap
-gets a regression test"), so this entry does not meet the Definition of Done on its own.
-`scripts/w2w-baseline.sh` still publishes from one procedure, still prints a one-sided p50-only
-spread, and does not print HEAD; `DESIGN.md` §8's procedure still publishes from one twenty-run
-median. `STATUS.md` open item **85** is where changing that is tracked. Until then, `DESIGN.md`
-§8's TLS table shows both procedures side by side rather than one.
+`[2026-09-14, later]` **Two of the three halves have a guard; the third is a rule.**
+[ADR-0068](../decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)
+(accepted) makes a published figure two procedures shown side by side, and step S2 of
+[the-second-linux-desk](../plans/2026-09-04-the-second-linux-desk.md) *Sửa 3* changed
+`scripts/w2w-baseline.sh` to match:
+
+- **A dispersion that reads both sides.** A pure `dispersion` function prints `min/median` and
+  `max/median` for p50, p99 and p99.9 (and the wire columns). `scripts/check-w2w-baseline-summary.sh`,
+  run by CI's `script-logic` job, feeds it this entry's own twenty p50s — median 19 998, min/median
+  **0.866**, max/median **1.008** — and asserts that *"a run 13.4% under the median is visible from
+  the min side"*. Reversal, 2026-09-14: `min/median` removed from the function → red on that sentence,
+  `pass 0 fail 4`; restored → `pass 4 fail 0`. The old `spread max/median` line is kept, so records
+  from before can still be compared.
+- **The procedure records what it measured.** The header prints `commit`, `tree`, `uptime`, the
+  `binary` sha256 and mtime (and the generator's over ssh), and `output <dir>`; every run's raw
+  output is kept under that directory with a `summary.txt`. **No test asserts those header lines** —
+  they were checked once against a fake `w2w` (`bash -x`), and a real run is owed in boot B's build
+  slot.
+- **Reproduced before it is published** is ADR-0068's rule, applied by whoever publishes: nothing
+  runs the procedure twice or compares the two. `DESIGN.md` §8's procedure text is rewritten to it at
+  boot B step B2.
 
 ## Related
 
