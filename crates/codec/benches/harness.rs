@@ -76,9 +76,67 @@ use std::time::Instant;
 // every timing gate with nothing testing it. One source, two consumers.
 include!("verdict.rs");
 
-/// The recorded baselines, compiled in rather than read at runtime: a missing
-/// file is then a build failure and not a silently unchecked run.
-const BASELINES: &str = include_str!("../../../benches/baselines.tsv");
+/// Path to `benches/baselines.tsv`, fixed at compile time but read at run
+/// time — ADR-0067: appending a line to the file must not change one byte of
+/// the bench binary, and an `include_str!` of this same path could not give
+/// that up without also giving up "forgetting the baseline cannot be silent"
+/// (ADR-0016), so [`read_baselines`] below enforces that property itself.
+///
+/// Every crate that pulls this file in, whether by `#[path = "harness.rs"]`
+/// (within `codec`) or `#[path = "../../codec/benches/harness.rs"]` (from a
+/// sibling crate), has its `Cargo.toml` at the same depth, `crates/<name>`, so
+/// `CARGO_MANIFEST_DIR` plus two `..` lands on the repository root and then
+/// `benches/baselines.tsv` regardless of which crate this macro resolves
+/// against when the file is compiled into that crate's bench binary.
+const BASELINES_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../benches/baselines.tsv");
+
+/// Read `benches/baselines.tsv` and check every data line parses the way
+/// [`baseline_for`] below expects, or end the process.
+///
+/// Exits non-zero **in every mode**, not only `--strict`: a missing or
+/// unreadable file names `BASELINES_PATH`; a line that is not a comment, not
+/// blank, and does not split into at least `cpu`, `case`, a numeric `ns` and a
+/// numeric `margin` on tabs names its own 1-based line number. Unlike
+/// [`baseline_for`], which only has to find one (cpu, case) pair and is
+/// content to call anything else "no baseline", this walks every line: a typo
+/// two rows away from the case actually measured must not pass quietly either.
+fn read_baselines() -> String {
+    let content = match std::fs::read_to_string(BASELINES_PATH) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!("cannot read baselines file {BASELINES_PATH}: {e}");
+            std::process::exit(1);
+        }
+    };
+    for (i, raw) in content.lines().enumerate() {
+        let line = raw.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if !data_line_parses(line) {
+            eprintln!(
+                "{BASELINES_PATH}:{}: malformed baseline line, want \
+                 cpu\\tcase\\tns\\tmargin\\t...: {raw:?}",
+                i + 1
+            );
+            std::process::exit(1);
+        }
+    }
+    content
+}
+
+/// Whether `line` parses the way [`baseline_for`] parses a data line: at
+/// least four tab-separated fields, with the third and fourth a valid `f64`.
+/// Fields beyond the fourth (`n`, `date`, `verdict`) are not read by either
+/// function, so they are not validated here either.
+fn data_line_parses(line: &str) -> bool {
+    let mut f = line.split('\t');
+    let Some(_cpu) = f.next() else { return false };
+    let Some(_case) = f.next() else { return false };
+    let Some(ns) = f.next() else { return false };
+    let Some(margin) = f.next() else { return false };
+    ns.trim().parse::<f64>().is_ok() && margin.trim().parse::<f64>().is_ok()
+}
 
 /// One machine's recorded figure for one case.
 #[derive(Clone, Copy)]
@@ -126,14 +184,15 @@ fn cpu_model() -> Option<String> {
     }
 }
 
-/// The baseline recorded for `case` on `cpu`, if `benches/baselines.tsv` has a
-/// line for that pair.
+/// The baseline recorded for `case` on `cpu`, if `baselines` (the contents of
+/// `benches/baselines.tsv`, read once by [`read_baselines`]) has a line for
+/// that pair.
 ///
-/// A line whose numbers do not parse yields `None` and therefore the
-/// `NO BASELINE` outcome, which is loud. Skipping it silently would turn a typo
-/// in the data file into an unchecked case.
-fn baseline_for(cpu: &str, case: &str) -> Option<Baseline> {
-    BASELINES
+/// `read_baselines` has already rejected every line that does not parse, so a
+/// `None` here means only one thing: no line named this (cpu, case) pair,
+/// which is the loud `NO BASELINE` outcome below.
+fn baseline_for(baselines: &str, cpu: &str, case: &str) -> Option<Baseline> {
+    baselines
         .lines()
         .map(str::trim_end)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -154,12 +213,14 @@ fn baseline_for(cpu: &str, case: &str) -> Option<Baseline> {
 /// measured and printed.
 pub fn suite<F: FnOnce(&mut Suite)>(f: F) {
     let cpu = cpu_model();
+    let baselines = read_baselines();
     match &cpu {
         Some(c) => println!("machine   {c}"),
         None => println!("machine   UNKNOWN — no baseline can be looked up"),
     }
     let mut suite = Suite {
         cpu,
+        baselines,
         over: Vec::new(),
         under: Vec::new(),
         missing: Vec::new(),
@@ -172,6 +233,9 @@ pub fn suite<F: FnOnce(&mut Suite)>(f: F) {
 /// Collects the cases of one bench target. Obtained only from [`suite`].
 pub struct Suite {
     cpu: Option<String>,
+    /// The contents of `benches/baselines.tsv`, read and validated once by
+    /// [`read_baselines`] when this `Suite` was created.
+    baselines: String,
     over: Vec<String>,
     /// Cases below `baseline / margin`. **Not merged into `over`**: `finish`
     /// asserts on that one, and a real optimisation lands here too — see
@@ -202,7 +266,10 @@ impl Suite {
         }
         self.cases += 1;
 
-        let baseline = self.cpu.as_deref().and_then(|cpu| baseline_for(cpu, name));
+        let baseline = match self.cpu.as_deref() {
+            Some(cpu) => baseline_for(&self.baselines, cpu, name),
+            None => None,
+        };
 
         match baseline {
             Some(b) => {

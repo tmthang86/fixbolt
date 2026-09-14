@@ -28,6 +28,16 @@
 #             `pass 10` until ADR-0021 split §9's isolation row in two, and a row
 #             carrying the older count was measured against the older checklist.
 #
+# ADR-0067: this file is read at RUN TIME by `crates/codec/benches/harness.rs`
+# (`read_baselines`, via a path fixed at compile time), not compiled in. Before
+# ADR-0067, `include_str!` meant appending a line here changed every byte of
+# every bench binary that reads it, which moved a measured case from 8.2 to
+# 6.3 ns with no code change behind it — see
+# docs/reference/recording-a-baseline-changed-the-baseline.md. Appending a line
+# now changes none of them. The trade: a malformed or missing file is no longer
+# a build failure, so `read_baselines` exits the process non-zero in every mode
+# (not only `--strict`) and names the path, or the 1-based line, itself.
+#
 # `[measured 2026-09-05]` EVERY LINE BELOW WAS RE-RECORDED, and the reason is a
 # change to how the figures are produced rather than to any code. ADR-0049:
 # bench builds now pin function alignment, because `encode ExecutionReport

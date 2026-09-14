@@ -949,7 +949,13 @@ other row is an internal number; without this one they are unfalsifiable.
 nanosecond target.** Every timing row is judged against the figure this project measured for
 that case on the CPU it is running on, inside a band `[baseline / margin, baseline × margin]`.
 Both live in [`benches/baselines.tsv`](../benches/baselines.tsv), each line carrying its sample
-size, its date, and the `check-machine.sh` verdict of the run that produced it.
+size, its date, and the `check-machine.sh` verdict of the run that produced it. **The table is
+not part of any bench binary**: the harness reads it at run time from a path fixed at compile
+time, a missing or malformed file is a non-zero exit in every mode, and appending a line
+changes no byte of the binary it is compared against
+([ADR-0067](decisions/ADR-0067-the-baselines-are-read-at-run-time-not-compiled-in.md) —
+until then it was `include_str!`'d, and recording a baseline changed the baseline,
+`STATUS.md` item 52).
 
 Two findings retired the absolute column. The 60 ns serialise target was never a measurement
 of this engine, only of what commercial engines are reported to reach, and no machine came
