@@ -166,11 +166,14 @@
 //!
 //! **Opened once, outside the timed window, the same way the TLS certificate
 //! and the `Desk` template already are.** `--journal file-async` opens one
-//! [`fixbolt_engine::journal::FileJournal`] with `Durability::Async` in a file
-//! under `std::env::temp_dir()`, named by this process's id so two runs never
-//! collide, and removed when the run ends; `--log file` opens one
-//! [`fixbolt_engine::msglog::FileLog`] the same way. A temp directory that
-//! refuses a file fails the run before the engine thread starts.
+//! [`FileStore`] — a [`fixbolt_engine::journal::FileJournal`] with
+//! `Durability::Async`, carrying the same [`fixbolt_engine::journal::SLOTS`]
+//! and [`fixbolt_engine::journal::SLOT_LEN`] as the default `Store`, so boot
+//! B's row B5 changes one variable — in a file under `std::env::temp_dir()`,
+//! named by this process's id so two runs never collide, and removed when
+//! the run ends; `--log file` opens one [`fixbolt_engine::msglog::FileLog`]
+//! the same way. A temp directory that refuses a file fails the run before
+//! the engine thread starts.
 //!
 //! **`--journal file-async` only ever has one file to hand out.** [`OneFile`]
 //! gives it to the first connection and refuses every connection after — which
@@ -405,8 +408,10 @@ enum JournalKind {
     /// tool's engine has always had. Nothing survives a restart, and nothing a
     /// run of this tool does ever needs it to.
     Mem,
-    /// `FileJournal` with `Durability::Async`, in a file under
-    /// `std::env::temp_dir()` that this run removes when it ends.
+    /// [`FileStore`] — `FileJournal` with `Durability::Async`, sized with the
+    /// same `SLOTS` and `SLOT_LEN` as `Mem`'s `Store` so boot B's row B5
+    /// changes one variable — in a file under `std::env::temp_dir()` that
+    /// this run removes when it ends.
     FileAsync,
 }
 
@@ -1993,12 +1998,21 @@ impl Journals for FreshStore {
     }
 }
 
+/// The file journal `--journal file-async` opens, sized with the same
+/// [`fixbolt_engine::journal::SLOTS`] and [`fixbolt_engine::journal::SLOT_LEN`]
+/// as the default `Store` (`STATUS.md` item 88), so boot B's row B5 changes
+/// exactly one variable between its "none" and "file-async" arms.
+type FileStore = fixbolt_engine::journal::FileJournal<
+    { fixbolt_engine::journal::SLOTS },
+    { fixbolt_engine::journal::SLOT_LEN },
+>;
+
 /// `--journal file-async`: the one `FileJournal` this run opened, to the
 /// first connection, and nothing to any after.
-struct OneFile(Option<fixbolt_engine::journal::FileJournal<64, 512>>);
+struct OneFile(Option<FileStore>);
 
 impl Journals for OneFile {
-    type J = fixbolt_engine::journal::FileJournal<64, 512>;
+    type J = FileStore;
 
     #[inline]
     fn next(&mut self) -> Option<Self::J> {
@@ -2036,7 +2050,7 @@ impl Drop for TempFile {
 /// engine thread. `None` is the flag's default, and [`serve_chosen`] turns
 /// each `None` into the default type, not into a value of a wider one.
 struct Opened {
-    journal: Option<fixbolt_engine::journal::FileJournal<64, 512>>,
+    journal: Option<FileStore>,
     log: Option<fixbolt_engine::msglog::FileLog>,
 }
 

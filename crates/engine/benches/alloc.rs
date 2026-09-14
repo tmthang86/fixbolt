@@ -1427,20 +1427,24 @@ fn main() {
     // row and `STATUS.md`'s journal/log item are about `put` — the path a
     // `ResendRequest`'s reply walks before the file ever sees it, and the one
     // `tools/w2w --journal file-async` now puts through boot B's row B5. This
-    // proves the engine thread's half of that allocates nothing, with the same
-    // `FileJournal<64, 512>` + `Durability::Async` shape the mark-out case
-    // above already opened.
+    // proves the engine thread's half of that allocates nothing, with the
+    // same `SLOTS` / `SLOT_LEN` + `Durability::Async` shape `tools/w2w
+    // --journal file-async` now opens (STATUS.md item 88) — not
+    // `mark_file`'s smaller `FileJournal<64, 512>` above, which only needs
+    // to exist long enough to prove the mark path.
     let async_busy_at = std::env::temp_dir().join(format!(
         "fixbolt-alloc-journal-async-busy-{}.journal",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&async_busy_at);
-    let mut async_busy_journal: fixbolt_engine::journal::FileJournal<64, 512> =
-        fixbolt_engine::journal::FileJournal::open(
-            &async_busy_at,
-            fixbolt_engine::journal::Durability::Async,
-        )
-        .expect("the temp directory is writable");
+    let mut async_busy_journal: fixbolt_engine::journal::FileJournal<
+        { fixbolt_engine::journal::SLOTS },
+        { fixbolt_engine::journal::SLOT_LEN },
+    > = fixbolt_engine::journal::FileJournal::open(
+        &async_busy_at,
+        fixbolt_engine::journal::Durability::Async,
+    )
+    .expect("the temp directory is writable");
     let async_busy_msg = wire("35=D\x0134=1\x0111=W1\x0138=200\x0144=20.15\x01");
     // Warm, outside the window: `put`'s first call into a fresh ring can pay a
     // one-time cost the loop never repeats
