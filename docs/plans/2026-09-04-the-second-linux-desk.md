@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **đang làm Cửa sổ A** (từ 2026-09-14, nhánh `plan/the-second-linux-desk-a`) — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **tiếp theo: boot B** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -378,7 +378,7 @@ do ở *Chia việc*); sửa hay gửi PR cho `nanofix`; để `notrack` hay `mi
 
 ## Nhật ký giao hàng
 
-*(Đã duyệt 2026-09-13 — chưa bắt đầu.)*
+*(Đã duyệt 2026-09-13. Cửa sổ A bắt đầu và xong ngày 2026-09-14 — các mục ngày đó bên dưới.)*
 
 **`[2026-09-14]` B3 đã làm xong, ngoài plan này.** Tls bước 6 (6-M và 7b) chạy trong một boot §9
 riêng ngày 2026-09-14, theo đúng Q7 ("boot không chờ — tls bước 6 nhận một boot riêng"), nhánh
@@ -429,6 +429,138 @@ công bố. Xác minh lại trên `25e54dc` trước khi chia việc, đọc th�
 trên cây của commit đó; bằng chứng nằm trong thân commit. Nhánh PASS của hàng NIC IRQ thấy được ngay
 hôm nay bằng cách đặt tạm năm IRQ của `enp9s0` sang `cpu4` rồi trả về `0-15` — plan tưởng phải chờ
 boot B.
+
+- *A5 — đã chứng minh:* không có NIC thì output y nguyên bản cũ (`diff` exit 0); đặt một IRQ vào
+  CPU isolated → FAIL nêu đúng IRQ; `rx-usecs 3` → FAIL, `0` → PASS. *Chưa:* nhánh PASS trên một
+  NIC **có cáp**. Bẫy `comm` so theo locale chứ không theo số — ghi ở
+  [comm-compares-by-locale-collation-not-number](../reference/comm-compares-by-locale-collation-not-number.md);
+  lúc đó chỉ có đảo chiều bằng tay, từ `970b612` có test tự động (xem A8).
+- *A3a — đã chứng minh:* hai nửa `--listen`/`--connect` chạy với nhau, `allocs 0` mỗi bên;
+  `strace` client dùng `--interval` không có `nanosleep`/`futex`; không cờ thì output giống bản
+  cũ. *Chưa:* build thật trên Mac (chỉ `cargo check --target x86_64-apple-darwin`), chạy qua cáp,
+  tách đôi có TLS. Bẫy mới:
+  [a-masked-diff-compared-the-padding](../reference/a-masked-diff-compared-the-padding.md), chưa
+  có test tự động.
+
+**`[2026-09-14]` A1 xong, `bdd673f`.** `benches/baselines.tsv` được đọc **lúc chạy**, không còn
+nằm trong binary; [ADR-0067](../decisions/ADR-0067-the-baselines-are-read-at-run-time-not-compiled-in.md)
+do architect viết, phần code do developer (sonnet). *Đã chứng minh:* sha256 của binary bench
+`parse` giữ nguyên sau khi ghi thêm một dòng vào file (cargo không build lại); đổi tên file →
+thoát 1, nêu đường dẫn; xoá một dòng → riêng case đó `NO BASELINE`. *Chưa:* ba lần
+`bench.sh --strict` trên binary mới (B1); vì sao case nhỏ từng nhảy 8,2 → 6,3 ns; lỗ layout của
+ADR-0049 vẫn mở. Item 52 đóng **một nửa**.
+
+**`[2026-09-14]` A7 xong, `a7d5943`.** `nanofix` clone vào `vendor/nanofix` (gitignored), **ghim ở
+`0f79bae`**. Hai bản vá ghi bằng lời trong `measured-costs.md`, không chép source. Phát hiện một lỗi
+của chính nanofix: `FixServer` không cho Logon đi qua `validate_inbound_seq`, nên mọi message sau
+đó bị coi là hở số thứ tự; bin ví dụ tự dựng vòng accept từ các mảnh public của nanofix và đặt sẵn
+số thứ tự kỳ vọng, **không** vá nanofix. *Đã chứng minh:* `w2w --connect` vào nó, cả path admin
+lẫn app, đều exit 0. *Chưa:* không có con số nào — đó là B8. Path app có trả lời, nên B8 có thể
+đối chứng cả hai path.
+
+**`[2026-09-14]` A6 xong, `dbeb135`.** `ARMS` nhận interval ở trường thứ tư (đã nói ở mục *Ba chỗ
+khác plan*, điều 4); `LISTEN`, `GENERATOR_SSH`; `FIXBOLT_NIC` truyền xuống `check-machine.sh`. Sửa
+luôn một lỗi có sẵn: dưới `pipefail`, dòng `VERDICT` in thành hai dòng mỗi khi `check-machine.sh`
+thoát ≠ 0. *Đã chứng minh:* `bash -x` bản cũ và bản mới sinh cùng dòng lệnh `w2w` cho các arm hôm
+nay; arm hỏng và TLS + `LISTEN` bị từ chối trước khi chạy. *Chưa:* `GENERATOR_SSH` qua ssh thật —
+máy này không có sshd, Mac offline.
+
+**`[2026-09-14]` A2 xong, `ed96d9a`.** Case `engine turn, 1 busy, admin` trong `density.rs`, cùng
+khung với case app N = 1. **Đổi tier:** developer (sonnet) dừng giữa chừng **hai lần**, nên theo
+`CLAUDE.md` §12 bước này lên senior developer (opus). **Một sự cố cần ghi:** một agent đã bị dừng
+lại **tự chạy tiếp một lần** và bắt đầu làm; manager dừng nó lần nữa. *Đã chứng minh:* case in `NO BASELINE for AMD Ryzen 7 3700X` (đúng như chờ, tới B1); đảo
+chiều đưa order thay cho `TestRequest` → assertion *"each of the 1 sessions must get exactly one
+Heartbeat back"* đỏ, exit 101. *Chưa:* D_in (hiệu app − admin trong tiến trình) chưa đo — B1; chưa
+thử đảo chiều giới hạn số turn setup.
+
+**`[2026-09-14]` A4 xong, `607d40f` — chạy trước A3b.** Cùng file `tools/w2w/src/main.rs` với A3b,
+nhưng A3b đang chờ Sửa 2, nên A4 đi trước (plan ghi ngược lại). **Làm lại bởi senior developer:**
+bản của developer đưa mọi lời gọi journal qua một enum lúc chạy, nên **kiểu engine khi không có
+cờ đã khác** — benchmark không cờ sẽ đo một đoạn code khác với đoạn `DESIGN.md` §8 đã đo. Bản cuối
+chọn cờ **một lần** trước turn đầu, thành bốn kiểu engine cụ thể. *Đã chứng minh:* không cờ thì
+`type_name` của engine giống hệt `ed96d9a` ở năm arm; `journal-async-busy 0`, đảo chiều bằng
+`to_vec()` đọc 1; hai cờ ở `hft` và `standard` exit 0, `allocs 0`. *Chưa:* hai script luật 4 không
+chạy arm có cờ; record ghi trong lúc `--listen` đang chạy không được đọc giữa chừng. **Và F13 của
+review** — xem ghi chú cho B5 bên dưới.
+
+**`[2026-09-14]` Sửa 2 viết (`e83d06b`) và được duyệt (`cce8bd4`).** Khi xây A3b, ba điều plan
+viết sai: capability từ file mất khi chạy dưới `strace`; `SIOCSHWTSTAMP` cần `cap_net_admin`;
+`POLLERR` từ error queue làm `standard` spin mà không gate nào thấy. A3b giữ chưa commit tới khi
+chủ sở hữu trả lời Q8–Q11. Chi tiết ở mục *Sửa 2*.
+
+**`[2026-09-14]` A3b xong, `f9abc1a`**, làm lại theo *A3b sau Sửa 2*, chồng lên A4. *Đã chứng
+minh:* ba test `pair::` và ba test từ chối, mỗi cái đảo chiều đỏ đúng câu đã đoán; hai script luật
+4 với `W2W_EXTRA='--wire-timestamps --nic lo --observer-core 2'` tự chạy trong `unshare -Urn` và
+xanh, nửa đỏ vẫn đỏ; cùng lệnh dưới `aa-exec -p unconfined` → exit 2, *SKIPPED, NOT PASSED*;
+`--mode standard --wire-timestamps --nic enp9s0` → exit 1 nêu `POLLERR`, card vẫn tắt timestamp;
+tập syscall engine có/không cờ giống nhau ở `hft` và `standard`. **CI run
+[`34842390918`](https://github.com/tmthang86/fixbolt/actions/runs/34842390918) trên `f9abc1a`: 14
+job / 14 xanh** — lần đầu hai step user namespace chạy trên CI: runner **từ chối** userns, step bật
+sysctl AppArmor (log in ra `0`), cả hai arm xanh. *Chưa:* chưa đọc được một stamp phần cứng nào
+(`enp9s0` không cáp), nên phần đọc cmsg chỉ được chứng minh với stamp **vắng**; `POLLERR` chỉ thấy
+bằng một bản build tạm dùng stamp phần mềm, đã xoá — không gate nào thấy nó, chỉ lời từ chối của
+`w2w` canh. Hai ý để sau thành item mở trong `STATUS.md`: **86** (R5, gate không cần tracer) và
+**87** (S3, stamp TX bằng BPF).
+
+**`[2026-09-14]` A8 — senior review, sửa ở `970b612` và `6e716a5`.** Reviewer có context mới (opus), theo
+`CLAUDE.md` §12. **16 phát hiện: 7 lỗi, 9 góp ý**; manager tái hiện hoặc đọc lại từng cái trước
+khi giao sửa; sửa hết, **trừ F13**. Những cái đáng kể nhất:
+
+- **F1** — `w2w-baseline.sh` không thể chạy B6: không có chế độ wire. Giờ có `WIRE_NIC`,
+  `OBSERVER_CORE`, từ chối arm `standard` (Q10), và **FAIL mọi run thiếu stamp** (thiếu stamp là lỗi
+  dụng cụ đo, không phải máy bận). Thử trên `lo` trong `unshare -Urn`: FAIL đúng câu
+  `hw-rx-missing 2000, hw-tx-missing 2000`; nhánh thành công chỉ thử với một `w2w` giả.
+- **F3** — Ctrl-C giữa run để lại card `enp9s0` **đang bật timestamp** (`tx on, rx-filter all`,
+  thấy tận mắt). Giờ SIGINT/SIGTERM trả card về cũ (đọc lại: `tx off, rx-filter none`). Tín hiệu
+  thứ hai, `kill -9` hay crash thì không — runbook `hft-playbook.md` §6 mục 4 ghi cấu hình trước B6
+  và kiểm tra sau.
+- **F4** (luật 8) — observer có thể `dup` một fd mà engine đã đóng sau khi hết thời gian chờ. Thêm
+  trạng thái `CLAIMED`; bốn test, hai cái đỏ với cách cũ. *Chưa:* race dưới tranh chấp thật (test
+  một luồng + lập luận CAS).
+- **F8** — hai script luật 4 vẫn xanh với một build **bỏ qua** cờ `--wire-timestamps`. Giờ bắt buộc
+  có dòng `wire-timestamps:` và `hw-rx/tx-missing N of M` với M > 0.
+- **F9** — `baselines.tsv` nhận `nan`, `inf`, số âm. Giờ từ chối, nêu dòng;
+  `crates/codec/tests/bench_baselines.rs` 6 test.
+- **F10** — `Never` bị đổi cho `--listen` làm code của judge admin không cờ khác đi. Trả `Never` về
+  như `25e54dc`, `--listen` dùng `ListenNever` riêng; `objdump` diff rỗng.
+- **F11, F12** — `check-machine.sh` lấy IRQ từ `msi_irqs` trước, `smp_affinity_list` không đọc
+  được thì `UNKNOWN`; `scripts/check-machine-verdicts.sh` test `irq_overlap`, `nic_irqs`,
+  `coalesce_verdict` (`pass 27 fail 0`). Đảo chiều về `comm -12` làm mất CPU 14 và 15 — **mục bẫy
+  `comm` cũ nói giao của hai tập vẫn đúng là sai**, đã sửa. **Bẫy `comm` giờ có test tự động.**
+- F2, F5, F6, F7, F14, F15 — nhãn và tài liệu: generator qua ssh báo *không pin*; `LISTEN=…:0` dùng
+  được; `DESIGN.md` §6 liệt kê đủ 31 đường cấp phát (trước ghi 27); tham chiếu theo số dòng đổi
+  thành tên; mục *recording-a-baseline* ghi A1 đã đóng một nửa; nhãn `allocs` nêu mọi thread được
+  đếm.
+
+*Gate manager chạy lại trên `6e716a5`* (nguyên văn trong thân commit): fmt, clippy `-D warnings` với
+`affinity,tls` / mặc định / `--no-default-features`, `cargo check --target x86_64-apple-darwin`,
+`cargo test -p fixbolt-w2w` 23 passed, hai script luật 4 có và không `W2W_EXTRA` exit 0, shellcheck,
+check-links. **Chưa:** một tín hiệu rơi đúng lúc run phần cứng đang chạy đường gộp.
+
+**`[2026-09-14]` Ghi chú cho B5 — F13, chưa sửa.** `--journal file-async` dựng `FileJournal<64,
+512>`, còn mặc định (`--journal mem`) là `Store` = `MemJournal<4096, 512>`. Nên B5 so hai arm đó là
+**đổi hai thứ cùng lúc**: loại journal **và** kích thước vòng (4 096 → 64 ô) — hiệu số không gán
+được cho cái nào (`CLAUDE.md` §10, mỗi lần một biến). **Phải giải quyết trước khi chạy B5**: cho
+hai vòng cùng kích thước, hoặc thêm arm tách riêng kích thước. `STATUS.md` item **88**. Hàng B5 của
+bảng *Chia việc* không sửa.
+
+**`[2026-09-14]` Bẫy của cửa sổ A, mỗi cái ở đâu:**
+
+- `comm` so theo locale — [comm-compares-by-locale-collation-not-number](../reference/comm-compares-by-locale-collation-not-number.md); test tự động `check-machine-verdicts.sh`.
+- Diff có mặt nạ so luôn phần đệm — [a-masked-diff-compared-the-padding](../reference/a-masked-diff-compared-the-padding.md); chưa có test.
+- Stamp TX đánh thức engine đang chặn — [a-transmit-timestamp-wakes-a-blocking-engine](../reference/a-transmit-timestamp-wakes-a-blocking-engine.md); canh bằng lời từ chối của `w2w` và test `standard_is_refused_on_a_hardware_nic_and_not_on_loopback`.
+- **Tiến trình bị trace mất capability từ file, và AppArmor chặn user namespace tuỳ terminal (CI thì step phải bật sysctl)** — mục mới [a-traced-process-gets-no-file-capabilities](../reference/a-traced-process-gets-no-file-capabilities.md); canh bằng exit 2 *SKIPPED* của hai script và đảo chiều `aa-exec` (làm bằng tay, chưa có test tự động).
+- `igb` chỉ giữ một stamp TX đang chờ — bộ đếm `tx_hwtstamp_skipped` đọc trước/sau mỗi run B6, ghi ở `hft-playbook.md` §6 mục 4.
+
+**`[2026-09-14]` Đóng cửa sổ A (PR 1).** Mọi bước A1–A8 đã commit trên
+`plan/the-second-linux-desk-a`; commit cuối của review là `6e716a5`; CI của commit đóng PR:
+`<pending>`. **Không có con số nào** được tạo ra trong cửa sổ này — máy ở dòng boot §9 nhưng
+`fixbolt-machine off` và đang có việc khác chạy. Lúc 2026-09-14T20:09+07:00 `/proc/cmdline` vẫn có
+`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`; `enp9s0` không có carrier.
+**Tiếp theo: boot B** — đọc `/proc/cmdline` trước khi đụng grub (B0 có thể đã xong nửa grub),
+`sudo -n /usr/local/sbin/fixbolt-machine on`, runbook B0, bỏ run bench đầu; **B1 trước tiên**
+(ba lần `--strict`, baseline case admin n = 20, D_in); B3 đã xong ở PR #71; B5 chờ item 88; **B6
+cần cáp và Mac**.
 
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
