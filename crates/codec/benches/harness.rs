@@ -76,9 +76,120 @@ use std::time::Instant;
 // every timing gate with nothing testing it. One source, two consumers.
 include!("verdict.rs");
 
-/// The recorded baselines, compiled in rather than read at runtime: a missing
-/// file is then a build failure and not a silently unchecked run.
-const BASELINES: &str = include_str!("../../../benches/baselines.tsv");
+/// Path to `benches/baselines.tsv`, fixed at compile time but read at run
+/// time — ADR-0067: appending a line to the file must not change one byte of
+/// the bench binary, and an `include_str!` of this same path could not give
+/// that up without also giving up "forgetting the baseline cannot be silent"
+/// (ADR-0016), so [`read_baselines`] below enforces that property itself.
+///
+/// Every crate that pulls this file in, whether by `#[path = "harness.rs"]`
+/// (within `codec`) or `#[path = "../../codec/benches/harness.rs"]` (from a
+/// sibling crate), has its `Cargo.toml` at the same depth, `crates/<name>`, so
+/// `CARGO_MANIFEST_DIR` plus two `..` lands on the repository root and then
+/// `benches/baselines.tsv` regardless of which crate this macro resolves
+/// against when the file is compiled into that crate's bench binary.
+const BASELINES_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../benches/baselines.tsv");
+
+/// Read `benches/baselines.tsv` and check every data line parses the way
+/// [`baseline_for`] below expects, or end the process.
+///
+/// Exits non-zero **in every mode**, not only `--strict`, with the message
+/// [`load_baselines`] returns: a missing or unreadable file names
+/// `BASELINES_PATH`; a bad data line names its own 1-based line number and
+/// why. Unlike [`baseline_for`], which only has to find one (cpu, case) pair
+/// and is content to call anything else "no baseline", this walks every line:
+/// a typo two rows away from the case actually measured must not pass quietly
+/// either.
+fn read_baselines() -> String {
+    match load_baselines(BASELINES_PATH) {
+        Ok(content) => content,
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// [`read_baselines`] without the exit, so that
+/// `crates/codec/tests/bench_baselines.rs` can test it: a `harness = false`
+/// bench is a `main()` that `cargo test` never runs, the same reason
+/// `verdict.rs` is tested from `tests/bench_verdict.rs`.
+///
+/// `Ok` is the whole file; `Err` is the message `read_baselines` prints.
+pub(crate) fn load_baselines(path: &str) -> Result<String, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read baselines file {path}: {e}"))?;
+    for (i, raw) in content.lines().enumerate() {
+        let line = raw.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Err(why) = data_line_parses(line) {
+            return Err(format!(
+                "{path}:{}: malformed baseline line ({why}), want \
+                 cpu\\tcase\\tns\\tmargin\\t...: {raw:?}",
+                i + 1
+            ));
+        }
+    }
+    Ok(content)
+}
+
+/// Whether `line` is a data line [`baseline_for`] can use, and if not, why.
+///
+/// At least four tab-separated fields: `cpu`, `case`, then `ns` a **finite
+/// number above zero** and `margin` a **finite number of at least 1.0**; and
+/// `n`, when the fifth column is there, a whole number above zero. `date` and
+/// `verdict` are not read by either function, so they are not checked.
+///
+/// **Parsing as an `f64` is not enough.** `[measured 2026-09-14]` senior review
+/// of PR #72: `nan` parses, and a margin of `nan` printed `baseline 56.2 xNaN =
+/// [NaN, NaN]` and exited 0 — every comparison with `NaN` is false, so
+/// [`verdict`] can never answer over or under and the case can never go red.
+/// `inf` is the same hole from the other side (a ceiling nothing reaches), a
+/// zero or negative `ns` makes the band meaningless, and a margin below 1.0
+/// puts the floor above the ceiling.
+///
+/// **The margin ladder in the file's header is not enforced here**, only
+/// `>= 1.0`. The ladder is a recording policy that a reviewer reads in the
+/// diff, and the header already says a margin off it "shows up as one in the
+/// diff"; enforcing it here would compare decimal spellings of `f64`s, and would
+/// turn a future ADR that widens the ladder into a bench that will not start.
+/// What this function refuses is what makes [`verdict`] incoherent, nothing
+/// more. Tested by `crates/codec/tests/bench_baselines.rs`.
+pub(crate) fn data_line_parses(line: &str) -> Result<(), &'static str> {
+    let mut f = line.split('\t');
+    let Some(_cpu) = f.next() else {
+        return Err("no cpu");
+    };
+    let Some(_case) = f.next() else {
+        return Err("no case");
+    };
+    let Some(ns) = f.next() else {
+        return Err("no ns");
+    };
+    let Some(margin) = f.next() else {
+        return Err("no margin");
+    };
+    match ns.trim().parse::<f64>() {
+        Err(_) => return Err("ns is not a number"),
+        Ok(v) if !(v.is_finite() && v > 0.0) => return Err("ns is not a finite number above 0"),
+        Ok(_) => {}
+    }
+    match margin.trim().parse::<f64>() {
+        Err(_) => return Err("margin is not a number"),
+        Ok(v) if !(v.is_finite() && v >= 1.0) => {
+            return Err("margin is not a finite number of at least 1.0");
+        }
+        Ok(_) => {}
+    }
+    if let Some(n) = f.next()
+        && !matches!(n.trim().parse::<u32>(), Ok(v) if v > 0)
+    {
+        return Err("n is not a whole number above 0");
+    }
+    Ok(())
+}
 
 /// One machine's recorded figure for one case.
 #[derive(Clone, Copy)]
@@ -126,14 +237,15 @@ fn cpu_model() -> Option<String> {
     }
 }
 
-/// The baseline recorded for `case` on `cpu`, if `benches/baselines.tsv` has a
-/// line for that pair.
+/// The baseline recorded for `case` on `cpu`, if `baselines` (the contents of
+/// `benches/baselines.tsv`, read once by [`read_baselines`]) has a line for
+/// that pair.
 ///
-/// A line whose numbers do not parse yields `None` and therefore the
-/// `NO BASELINE` outcome, which is loud. Skipping it silently would turn a typo
-/// in the data file into an unchecked case.
-fn baseline_for(cpu: &str, case: &str) -> Option<Baseline> {
-    BASELINES
+/// `read_baselines` has already rejected every line that does not parse, so a
+/// `None` here means only one thing: no line named this (cpu, case) pair,
+/// which is the loud `NO BASELINE` outcome below.
+fn baseline_for(baselines: &str, cpu: &str, case: &str) -> Option<Baseline> {
+    baselines
         .lines()
         .map(str::trim_end)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -154,12 +266,14 @@ fn baseline_for(cpu: &str, case: &str) -> Option<Baseline> {
 /// measured and printed.
 pub fn suite<F: FnOnce(&mut Suite)>(f: F) {
     let cpu = cpu_model();
+    let baselines = read_baselines();
     match &cpu {
         Some(c) => println!("machine   {c}"),
         None => println!("machine   UNKNOWN — no baseline can be looked up"),
     }
     let mut suite = Suite {
         cpu,
+        baselines,
         over: Vec::new(),
         under: Vec::new(),
         missing: Vec::new(),
@@ -172,6 +286,9 @@ pub fn suite<F: FnOnce(&mut Suite)>(f: F) {
 /// Collects the cases of one bench target. Obtained only from [`suite`].
 pub struct Suite {
     cpu: Option<String>,
+    /// The contents of `benches/baselines.tsv`, read and validated once by
+    /// [`read_baselines`] when this `Suite` was created.
+    baselines: String,
     over: Vec<String>,
     /// Cases below `baseline / margin`. **Not merged into `over`**: `finish`
     /// asserts on that one, and a real optimisation lands here too — see
@@ -202,7 +319,10 @@ impl Suite {
         }
         self.cases += 1;
 
-        let baseline = self.cpu.as_deref().and_then(|cpu| baseline_for(cpu, name));
+        let baseline = match self.cpu.as_deref() {
+            Some(cpu) => baseline_for(&self.baselines, cpu, name),
+            None => None,
+        };
 
         match baseline {
             Some(b) => {

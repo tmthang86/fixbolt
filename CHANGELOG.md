@@ -17,6 +17,53 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`tools/w2w --listen`, `--connect` and `--interval`** (a tool, not a published crate).
+  `--listen <addr>` runs only the engine half: it serves until the last connection closes after
+  the first logon, prints `mode:`, `path:`, `listening:` and `tls:`, asserts zero allocations on
+  the engine thread from the first logon to the last close, and prints no latency figure.
+  `--connect <addr>` runs only the generator half and prints its percentiles under the heading
+  *as the counterparty sees it*, with no `mode:` or `tls:` line; a reply not received within
+  10 s fails the run. A flag that belongs to the other half is refused, `--listen` with
+  `--connect` is refused, and `--tls` other than `off` is refused on either half, because the
+  certificate is generated per process. `--interval <us>` spaces each send one interval after the
+  previous one by spinning on the client thread, and prints how many sends were late. With none
+  of the three flags the output is unchanged line for line.
+  `docs/plans/2026-09-04-the-second-linux-desk.md` A3a.
+  `[2026-09-14]` adds `--journal mem|file-async` and `--log none|file` (both default to today's
+  behaviour), applying to the combined run and `--listen`; `--connect` refuses both, for the
+  reason it refuses `--mode`. `file-async` opens the engine's own `FileJournal` with
+  `Durability::Async`, and `file` its own `FileLog`, each in a file under `std::env::temp_dir()`
+  removed when the run ends; the zero-allocation assertion over the timed window covers both.
+  Each choice is its own monomorphised engine, matched once before the first turn, so with
+  neither flag the timed engine is the same type as before (`Store`, `NoLog`) and no flagged arm
+  carries a runtime branch. With neither flag the output is unchanged line for line; with either,
+  a `journal:` or `log:` line is printed. `docs/plans/2026-09-04-the-second-linux-desk.md` A4.
+  **`--wire-timestamps --nic <ifname> --observer-core <cpu>`** (Linux only; A3b as revised by
+  Sửa 2), on the combined run and `--listen`, refused by `--connect`: timestamps each request's
+  arrival and each reply's departure on the named NIC's hardware clock, and prints `requests`,
+  `hw-rx-missing`, `hw-tx-missing`, the TX stamps seen, the tap's drops and — when at least one
+  request has both hardware stamps and nothing was dropped — `wire p50`, `wire p99` and
+  `wire p99.9` in ns. A missing hardware stamp is counted and never replaced by a software one.
+  On a loopback device the NIC is not reconfigured, both missing counts equal the request count
+  and no wire column is printed. On a hardware NIC it sets `tx_type ON` / `rx_filter ALL` for the
+  run and restores the previous configuration on exit — SIGINT and SIGTERM end such a run
+  through its normal path so the restore runs then too, and a second signal kills at once — and
+  **refuses `--mode standard`** — before
+  it needs any capability — because a TX timestamp waiting in the engine socket's error queue
+  raises `POLLERR` and makes a blocking engine spin
+  (`docs/reference/a-transmit-timestamp-wakes-a-blocking-engine.md`). `--listen` accepts
+  `--warmup <n>` beside `--wire-timestamps`, leaving the first `n` requests after the logon out
+  of the wire figures, and refuses it otherwise as before. Needs `cap_net_raw` (and
+  `cap_net_admin` on a hardware NIC); without them it refuses to run. Each flag without the
+  other two is refused, and so is an observer core equal to the engine's or the client's. The
+  `allocs` label names every thread counted — observer, journal writer and log writer included;
+  with none of the flags it reads as before.
+  `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh` append
+  `W2W_EXTRA` to every `w2w` they run — unset, their command lines are unchanged — and when it
+  holds `--wire-timestamps` they run themselves inside a user namespace (`unshare -Urn`), or
+  report SKIPPED, NOT PASSED with exit 2 where the namespace is refused, and fail any run whose
+  output lacks the wire arm's `wire-timestamps:` and `hw-rx-missing`/`hw-tx-missing` lines.
+
 - **`fixbolt_engine::serve_hft_pinned`, the single-engine `hft` door that pins.** Behind
   `--features affinity` on Linux. It takes a `fixbolt_engine::affinity::CorePin` —
   `CorePin::to(CoreId)`, `.allow_unisolated()`, `.core()`, `.is_unisolated_allowed()`,

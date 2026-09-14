@@ -1015,6 +1015,12 @@ Everything in this section was paid for in this repository.
    variable actually moved.
 5. **Measure a whole turn, including its syscalls.** Timing only the user-space part is how
    §8's budget came to exclude the syscall that dominates it.
+6. **Putting `SO_TIMESTAMPING` TX on a `standard` engine's socket, with nobody reading its error
+   queue promptly, turns it into an engine that spins in bursts.** `[2026-09-14]` a queued TX
+   stamp raises `POLLERR`, which `poll` reports whatever it was asked for, so the blocked engine
+   wakes, reads nothing, and wakes again until the queue is drained — the timestamping is then
+   measuring a spinning engine. `tools/w2w` refuses the combination on a hardware NIC:
+   [reference/a-transmit-timestamp-wakes-a-blocking-engine.md](reference/a-transmit-timestamp-wakes-a-blocking-engine.md).
 
 Longer versions with the numbers: [reference/measured-costs.md](reference/measured-costs.md).
 

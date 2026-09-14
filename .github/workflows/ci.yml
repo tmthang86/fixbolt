@@ -489,6 +489,23 @@ jobs:
             exit 1
           fi
 
+      # `[2026-09-14]` Sửa 2 of docs/plans/2026-09-04-the-second-linux-desk.md,
+      # Điều 1: the `--wire-timestamps` arm, a step of its own so its red never
+      # hides the plain arm's. It needs `--features affinity` for
+      # `--observer-core`, so it rebuilds after the refusal step above has read
+      # the no-affinity binary. The script runs itself inside `unshare -Urn`;
+      # Ubuntu 24.04's AppArmor refuses unprivileged user namespaces by default,
+      # and the sysctl below is how Ubuntu's 24.04 release notes say to allow
+      # them — only when the probe is refused. The observer takes the last cpu.
+      - name: The engine thread's syscalls with --wire-timestamps on lo, in a user namespace
+        run: |
+          if ! unshare -Urn true 2>/dev/null; then
+            echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          fi
+          cargo build -p fixbolt-w2w --release --features tls,affinity
+          W2W_EXTRA="--wire-timestamps --nic lo --observer-core $(( $(nproc) - 1 ))" \
+            scripts/check-no-kernel-sleep.sh
+
   # CLAUDE.md §2 non-negotiable 4, SECOND HALF: in `standard` mode the engine
   # thread must block when idle and give the core back. ADR-0013 decision 6
   # asked for it; until this job existed rule 4 was half-enforced and
@@ -531,6 +548,19 @@ jobs:
           fi
       - run: cargo build -p fixbolt-w2w --release --features tls
       - run: scripts/check-standard-gives-the-core-back.sh
+
+      # `[2026-09-14]` Sửa 2 of docs/plans/2026-09-04-the-second-linux-desk.md,
+      # Điều 1: the same arm for the second half of rule 4, as its own step. It
+      # cannot see the POLLERR trap (the script's header says why); w2w's refusal
+      # of `standard` on a hardware NIC stands in for it.
+      - name: A standard engine gives the core back with --wire-timestamps on lo, in a user namespace
+        run: |
+          if ! unshare -Urn true 2>/dev/null; then
+            echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          fi
+          cargo build -p fixbolt-w2w --release --features tls,affinity
+          W2W_EXTRA="--wire-timestamps --nic lo --observer-core $(( $(nproc) - 1 ))" \
+            scripts/check-standard-gives-the-core-back.sh
 
   # CLAUDE.md §2 non-negotiable 6: this must build on a machine with nothing
   # optional installed. Its own runner, so it cannot inherit anything a

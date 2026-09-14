@@ -2,6 +2,18 @@
 
 `[measured 2026-09-05]` on the `DESIGN.md` §9 desktop.
 
+> **`[2026-09-14]` Half of this is closed, half is not.** The compiled-in half is closed by step
+> A1 of `docs/plans/2026-09-04-the-second-linux-desk.md`, commit `bdd673f`,
+> [ADR-0067](../decisions/ADR-0067-the-baselines-are-read-at-run-time-not-compiled-in.md):
+> `harness.rs` now reads `benches/baselines.tsv` at run time, so appending a line changes no
+> bench binary (that commit's gate: the `parse` bench binary's sha256 read the same before and
+> after a line was appended, and cargo did not rebuild). A malformed file is no longer a build
+> failure; `read_baselines` exits non-zero naming the line instead, and
+> `crates/codec/tests/bench_baselines.rs` tests that, including a `nan` margin.
+> **The margin-ladder half stays open** (`STATUS.md` item 52): whether the ladder rule can mean
+> anything for a case this small, whose cross-binary layout swing the within-binary `max/median`
+> never sees. The account below is the 2026-09-05 one and describes the file as it was then.
+
 A benchmark case was measured over **twenty clean whole-suite runs** and read **8.2 ns**,
 tightly: eighteen of the twenty between 8.1 and 8.3, one 7.7, one 9.5. The number was written
 into `benches/baselines.tsv` along with sixteen others. The very next run of

@@ -132,6 +132,108 @@ installed, every commit.
 
 ---
 
+## `nanofix` prepared for a head-to-head — no figure yet — 2026-09-14
+
+[the-second-linux-desk](../plans/2026-09-04-the-second-linux-desk.md) step A7. This section only
+makes the boot B, row B8 comparison possible; **nothing below is a latency number.**
+
+### Pin
+
+`matthart1983/nanofix` at commit `0f79bae0ad141653c80cf01c60c807649a6adf7b`, cloned 2026-09-14 —
+the same commit §1 above measured parse cost on (dated there 2026-07-05, its author date).
+Licence: **MIT**, *"Copyright (c) 2026 Matt Hart"* (`vendor/nanofix/LICENSE`, gitignored, not
+committed here — CLAUDE.md §2 rule 9).
+
+### Two patches, neither committed anywhere, both local to the gitignored checkout
+
+1. **`build.rs` neutralised to a no-op** (`println!("cargo:rerun-if-changed=build.rs");` and
+   nothing else). The same defect §3 above describes for the parse-cost measurement is still
+   there unchanged: `build.rs::main` never reads `CARGO_FEATURE_AERON`, so even
+   `--no-default-features` alone still tries to locate or build Aeron. Neutralising it is the one
+   patch the A7 brief names explicitly.
+2. **An empty `[workspace]` table added to `vendor/nanofix/Cargo.toml`**, so Cargo stops walking
+   up into fixbolt's own `[workspace]` at the repo root — this checkout is nested under fixbolt's
+   gitignored `vendor/`, and without this line `cargo build` there errors with "current package
+   believes it's in a workspace when it's not".
+
+With both in place, `cd vendor/nanofix && cargo build --release --lib` compiles clean from a
+`rm -rf target` in 3.74s — no `cmake`, no Aeron. `cargo build --release` (no `--lib`) still fails
+at link: `src/bin/aeron_demo.rs` and `aeron_media_driver.rs` call real Aeron driver functions and
+are pulled in by default as `src/bin/*.rs` binaries — sidestepped by building only `--lib` and the
+example below, never the crate's own bins.
+
+### The example acceptor, and a defect it had to route around
+
+`vendor/nanofix/examples/fixbolt_w2w_acceptor.rs` (gitignored, not this repository — CLAUDE.md §2
+rule 9). CompIDs and `BeginString` match exactly what `tools/w2w/src/main.rs`'s `--connect` half
+sends as its Logon (`tools/w2w/src/main.rs`, fn `logon`: `49=W2W`, `56=ISLD`,
+`8=FIX.4.4`) — so the acceptor's own SenderCompID is `ISLD`, and it whitelists `W2W` as the only
+TargetCompID.
+
+**It does not call `nanofix::server::FixServer::start`.** That convenience wrapper's own
+`handle_connection` (`src/server.rs:132-235` in the pinned commit) reads the inbound Logon by
+hand, purely to learn the peer's CompID before a `Session` exists for it, and never runs that
+Logon's `MsgSeqNum` through `Session::validate_inbound_seq`. `Session::new` starts
+`inbound_seq_num` at 1 regardless (`src/session.rs:125-131`) and `validate_inbound_seq` never
+advances a counter that is behind the received sequence (`src/session.rs:271-286`) — it sends a
+`ResendRequest` instead. So with `FixServer::start`, `inbound_seq_num` stays parked at 1 forever,
+and **every single message after the Logon reads as a sequence gap.** Confirmed on this loopback
+acceptor with a raw-socket probe (`python3` script, not committed): each reply to a `TestRequest`
+arrived as a `ResendRequest` (`35=2`, `7=1`, `16=<n>`) immediately followed by the real
+`Heartbeat` (`35=0`) — and on the first `tools/w2w --connect --path admin` run, the strict `35=`
+assertion in `tools/w2w/src/main.rs`'s `measure` read the `ResendRequest` and failed with `expected 35=0, got 35=2`.
+
+**No nanofix source was changed to fix this.** The example instead builds its own accept loop
+from nanofix's lower-level public pieces — `Acceptor`, `Session`, `FixEngine`,
+`StdTcpTransport` — the same ones `FixServer::start` itself is built from, and adds one call
+`FixServer` omits: after reading the Logon by hand, `session.on_gap_filled(logon_seq + 1)` primes
+the inbound counter past it, using `Session::on_gap_filled` exactly as its own doc comment says
+("complete a resend"), before the session is handed to `FixEngine::new_acceptor`. That is a
+different call sequence through the same `pub` surface, written in this file, not a patch to
+`nanofix`'s code.
+
+`TestRequest -> Heartbeat` (`--path admin`) needed nothing else: nanofix's own engine dispatches
+`MsgType=1` itself, session-level, before `FixApp` is ever consulted (`src/engine.rs:601-611`).
+`NewOrderSingle -> ExecutionReport` (`--path app`) goes through `FixApp::on_message`, the one
+message type nanofix's dispatch loop hands to application code (`src/engine.rs:669-688`); the
+reply is built with nanofix's own `serializer::build_execution_report` helper, echoing the
+order's ClOrdID (tag 11) and setting ExecType (tag 150) to `F`, which is exactly what
+`tools/w2w/src/main.rs`'s `measure` checks for `--path app` (the `Path::App` branch after the
+`35=` assertion).
+
+**Both paths are comparable, not admin-only.** The A7 brief allowed for an admin-only comparison
+if the API gave no application reply; here it does.
+
+### The gate run — not a figure
+
+```
+target/release/w2w --connect 127.0.0.1:<port> --path admin --messages 100 --warmup 10
+target/release/w2w --connect 127.0.0.1:<port> --path app   --messages 100 --warmup 10
+```
+
+against `vendor/nanofix/target/release/examples/fixbolt_w2w_acceptor <port>` on loopback: Logon
+accepted both times, 100 of 100 replies correct (`35=0` for admin, `35=8` with a matching ClOrdID
+and `150=F` for app), `allocs 0` on the generator thread's timed window, both processes exit 0.
+**The ns figures `w2w` printed are not quoted here and must not be read as a measurement** — this
+step's own brief says it measures nothing, this was a laptop-adjacent desk with no §9 mitigations
+and no fixed mode declared, and CLAUDE.md §2 rule 10 requires the machine and the §9 settings
+beside any number that is meant to be one. **No figure yet — boot B, row B8** measures both
+engines with `check-machine.sh` and reports it there, in `standard` mode (nanofix is
+thread-per-connection with a blocking `recv`, `src/server.rs:117` / `src/transport_tcp.rs:23-37`
+in the pinned commit — pairing it with `hft` would be the mode-mixing non-negotiable 4 forbids).
+
+### Traps this step was watching for (plan's *Bẫy đã lường trước*)
+
+- **A patched nanofix is not nanofix.** Both patches above are named, by file and effect, beside
+  the pinned commit hash — and the `on_gap_filled` workaround is emphasised as *not* a source
+  patch for the same reason: a number from any of this must carry that description next to it,
+  not just the commit hash.
+- **`nanofix` refuses the Logon, or has no app reply.** Neither happened — recorded above so the
+  next reader does not re-discover it.
+- **`hft` compared against a blocking engine.** B8 is scoped to `standard` only; see above.
+
+---
+
 ## 4. Reference points from other engines — not measured here
 
 Repeated from [prior-art.md](prior-art.md) because the comparison is what justifies the
@@ -2862,14 +2964,15 @@ One `w2w` run of 1 000 messages was taken at 07:25:18 and thrown away first, as 
 item 5 asks after a reboot.
 
 **What `ktls` and `userspace` mean in this binary: TLS at both ends of the socket.**
-`tools/w2w/src/main.rs:915-929` wraps the engine's accepted socket in a `TlsTransport`,
-`:1165-1169` wraps the client's dialled one, and `:1196-1200` refuses a `ktls` run whose *client*
-handover fell back. Both ends are built from the engine's own
-`tls::server_config`/`tls::client_config` (`tools/w2w/src/main.rs:1116-1131`), which offer
+`tools/w2w/src/main.rs`'s `serve` (its `EngineSide::Tls` arm) wraps the engine's accepted socket
+in a `TlsTransport`, `tls_arm::connect` wraps the client's dialled one and, at its end, refuses a
+`ktls` run whose *client* handover fell back. Both ends are built from the engine's own
+`tls::server_config`/`tls::client_config` (`tools/w2w/src/main.rs`, `tls_arm::Pki::new`), which offer
 `TLS13_AES_128_GCM_SHA256` and nothing else (`crates/engine/src/tls.rs:821-827`). Every TLS figure below is a round trip with record
 processing at both ends; nothing here separates one end from the other.
-`scripts/w2w-baseline.sh:174-178` refuses a run whose `tls:` read-back is not the arm's (`kernel`
-for `ktls`) and `:194-196` refuses `allocs` ≠ 0 for every arm but `userspace`; both procedures end
+`scripts/w2w-baseline.sh` refuses a run whose `tls:` read-back is not the arm's (`kernel`
+for `ktls`, the `grep -qx "tls: $want_tls"` check) and refuses `allocs` ≠ 0 for every arm but
+`userspace` (the `allocs +0` check after it); both procedures end
 `baseline exit=0`, so every `ktls` run read back `kernel` and counted 0 allocations.
 
 **Two procedures, not one.** Procedure 1 ran 07:25:28–07:50:59, about seven minutes after boot
@@ -3206,7 +3309,7 @@ then published 17 473, 24 657 and 15 670 for the same three arms.
 **The spread column cannot register how far below the median a run falls.** Inside procedure 2,
 `hft / app / off` printed spread **1.008** while five of its twenty runs read p50 17 323, 17 523,
 17 864, 18 976 and 19 136 against a median of 19 998. The spread is maximum over median
-(`scripts/w2w-baseline.sh:222-225`). A fast run does move it, a little, by lowering the median:
+(`scripts/w2w-baseline.sh`, the summary's `spread max/median` line). A fast run does move it, a little, by lowering the median:
 with those five runs replaced by 20 050 the same column reads 1.005. But a run 13.4% under the
 median and a run 0.3% under it move it by exactly the same amount.
 

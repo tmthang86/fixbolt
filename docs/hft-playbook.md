@@ -58,6 +58,17 @@ Steer the NIC's receive queues onto cores that are **not** the engine core, keep
 interrupts off the isolated core, and enable `busy_poll` on the socket. The engine core should
 see nothing but its own session.
 
+`scripts/check-machine.sh` reads this, in `hft` mode same as `standard`, once a NIC is
+selected (`FIXBOLT_NIC=<nic>`, or auto-selected: the first interface with carrier, excluding
+`lo`, `tailscale*`, `docker*`, `veth*`, `br-*` and wireless `wl*`):
+
+```
+FIXBOLT_NIC=<nic> scripts/check-machine.sh   # NIC IRQ affinity, coalescing, irqbalance, busy_read
+echo <cpu> | sudo tee /proc/irq/<n>/smp_affinity_list   # steer one IRQ off the engine core
+sudo ethtool -C <nic> rx-usecs 0                        # interrupt coalescing off
+systemctl stop irqbalance                               # stop it moving IRQs back
+```
+
 ## 5. Application configuration and the build
 
 - **Core map:** core → shard → session, one session per polling thread
@@ -78,6 +89,76 @@ see nothing but its own session.
 2. `scripts/bench.sh --strict`: refuses a machine with mitigations off.
 3. `tools/w2w` for the wire-to-wire round trip, pinned with `--engine-core` and
    `--client-core`. `scripts/w2w-baseline.sh` is the committed 20-run procedure.
+   `[2026-09-14]` For two machines, `--listen <addr>` runs the engine half and `--connect <addr>`
+   the generator half. The engine half prints its mode, transport and engine-thread allocations
+   and **no latency figure**; the generator's table is a round trip *as the counterparty sees
+   it*, the generator's host and the wire included. `--connect` refuses `--engine-core` and
+   `--mode`; `--listen` refuses `--client-core`, `--messages`, `--warmup` (except beside
+   `--wire-timestamps`, item 4), `--hold-ms` and `--interval`; both refuse `--tls` other than `off`. `--interval <us>` spaces sends by
+   spinning, so the generator's core is busy for the whole wait between sends, not asleep.
+   `--journal mem|file-async` and `--log none|file` apply to the combined run and `--listen`
+   (both default to today's behaviour); `--connect` refuses both, for the reason it refuses
+   `--mode`. `file-async` opens the engine's `FileJournal` with `Durability::Async`, and `file`
+   its `FileLog`, each in a file under `std::env::temp_dir()` removed when the run ends — this is
+   the row `DESIGN.md` §8's "if FileLog is on, ~340 ns [unmeasured]" comes from, boot B's B5.
+   `scripts/w2w-baseline.sh` drives both halves: `LISTEN=<addr>` starts the engine half here and
+   the generator half either here too (`GENERATOR_SSH` empty, a loopback split for rehearsing the
+   procedure before a cable is run) or on another host over `ssh` — `GENERATOR_W2W` names the
+   `w2w` binary on that host's `PATH` (default `w2w`). The generator connects to the address the
+   engine half prints on its `listening:` line, so `LISTEN=<ip>:0` works; with `GENERATOR_SSH`,
+   `LISTEN` must name an address that host can reach (`0.0.0.0` is refused), and the generator
+   there is **not pinned** by the script — the header and summary say so. A split arm's figures are printed and
+   summarised labelled "as the counterparty sees it — not an acceptor wire figure", naming the
+   generator host, never as a §8 wire-to-wire number. `WIRE_NIC=<ifname> OBSERVER_CORE=<cpu>`
+   adds the acceptor's own wire figure (item 4) to a split run: the engine half gets
+   `--wire-timestamps --nic $WIRE_NIC --observer-core $OBSERVER_CORE --warmup $WARMUP`, every
+   run must read `hw-rx-missing 0` and `hw-tx-missing 0` or **the script FAILS** (not
+   DISQUALIFIED: a missing stamp does not clear by waiting), and the summary prints the median
+   `wire p50/p99/p99.9` under its own heading, separate from the counterparty table. Refused
+   before anything runs: without `LISTEN`, without `OBSERVER_CORE`, with the observer on the
+   engine's core (or the client's, for a loopback split), and for any `standard` arm — run
+   `standard` in its own invocation without `WIRE_NIC`. An `ARMS` entry also grows a fourth,
+   optional field — `mode:path:tls:interval`, the interval in microseconds passed on as
+   `--interval <us>`; `0`, the default, adds no flag and no line, same as before this field
+   existed. `FIXBOLT_NIC` reaches the script's two `scripts/check-machine.sh` calls the same way
+   any other environment variable does. None of this changes the command line when `LISTEN` is
+   unset and no `ARMS` entry uses a fourth field — `ARMS="hft:admin"` still means what it always
+   meant.
+4. `[2026-09-14]` **Wire-in → wire-out at the acceptor, on one clock — `hft` only**: add
+   `--wire-timestamps --nic <ifname> --observer-core <cpu>` to the engine's process (`--listen`
+   on the NIC's address; the combined run is over loopback and a hardware NIC never carries it),
+   and give `--listen` the same `--warmup <n>` as the generator so its cold requests stay out of
+   the wire figures. The observer spins on its core, which must not be the engine's or the
+   client's and need not be in `isolcpus`. **`--mode standard` with the flag on a hardware NIC is
+   refused**: a queued TX stamp raises `POLLERR` and makes a blocking engine spin
+   ([reference](reference/a-transmit-timestamp-wakes-a-blocking-engine.md)) — measure `standard`
+   there without the flag, from the generator's table only. **After every build, once:**
+
+   ```sh
+   sudo -n setcap cap_net_raw,cap_net_admin+ep target/release/w2w
+   ```
+
+   `cap_net_raw` opens the `AF_PACKET` tap; `cap_net_admin` is what `SIOCSHWTSTAMP` requires
+   (`net/core/dev_ioctl.c`) — `cap_net_raw` alone is refused on a hardware NIC. `cap_net_admin`
+   lets that file change the machine's network configuration, which is acceptable only because
+   the one user who runs it already has `sudo -n`, the capability is lost at every rebuild, and
+   `w2w` touches only `SIOCSHWTSTAMP`, prints the configuration before and after and restores the
+   previous one on exit — a Ctrl-C or a `kill` (SIGINT, SIGTERM) included; a second signal, a
+   `kill -9` or a crash restores nothing. **So around every B6 session:** record
+   `ethtool --get-hwtimestamp-cfg <nic>` before the first run and read it again after the last; the
+   two must agree, and where they do not, put the recorded one back with
+   `sudo -n ethtool --set-hwtimestamp-cfg <nic> tx <mode> rx-filter <filter>` before the next run
+   reads the wrong configuration as its "before". Do not run `w2w` under `sudo`. **A `w2w` started under `strace` (or
+   `gdb`) by an unprivileged user does not get these capabilities** and refuses to run: the gate
+   scripts' `W2W_EXTRA` arms therefore run on `lo` inside `unshare -Urn`, and to trace the engine
+   thread **on the real NIC**, which a namespace cannot see, run
+   `sudo -n strace -f -u "$USER" -o <file> target/release/w2w …` at the desk. Before and after each
+   run read `ethtool -S <nic> | grep tx_hwtstamp_skipped` and write it beside `hw-tx-missing`:
+   `igb` keeps one TX stamp pending and counts each one it skips there; the two must agree or be
+   explained. Publish a wire figure only from a run whose `hw-rx-missing` and `hw-tx-missing`
+   both read `0`: a driver's read-back of its own configuration is not evidence, each sample's
+   hardware stamp is. On `lo` both read the request count and no wire column is printed, by
+   design.
 
 **The measurement traps this project already paid for** are in [GUIDE.md §8](GUIDE.md). Read
 them rather than rediscover them. A score that moves with its own timeout is measuring the

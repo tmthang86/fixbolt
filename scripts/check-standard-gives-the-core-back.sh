@@ -46,7 +46,47 @@
 # `kernel`. A binary built without the `tls` feature refuses `--tls ktls`
 # outright (tools/w2w/src/main.rs), so that case is SKIPPED, NOT PASSED
 # rather than silently read as "gave the core back" — CLAUDE.md §10.
+#
+# `[2026-09-14]` step A3b of docs/plans/2026-09-04-the-second-linux-desk.md:
+# `W2W_EXTRA`, appended to every w2w invocation below. Unset or empty it expands
+# to no words, and every command line is the one this script ran before. Set to
+# `--wire-timestamps --nic lo --observer-core 2` it asks whether the tap, the
+# observer thread and `SO_TIMESTAMPING` on the engine's socket leave `standard`
+# blocking, and every run must print the wire arm's own lines or the script
+# fails (`wire_arm_ran`). **What it cannot see**: on `lo` no TX timestamp is ever queued, so no
+# `POLLERR` from the error queue ever reaches the engine's `poll` here, and this
+# window is idle in any case — a per-reply wake-up on a hardware NIC is outside
+# both. That is why w2w refuses `--mode standard --wire-timestamps` on any NIC
+# that is not loopback (Sửa 2 of the plan, Điều 3;
+# docs/reference/a-transmit-timestamp-wakes-a-blocking-engine.md): this script
+# cannot catch that trap, and the refusal is what stands in for it. Nor does it
+# see the accept path: with the flag, the engine thread spins (no syscall, at
+# most 2 s) once, while the observer stamps the accepted socket — before the
+# first logon and far outside the idle window measured here.
+#
+# **That arm runs inside a user namespace**, as check-no-kernel-sleep.sh's does
+# and for the same reasons (its header): `unshare -Urn`, `lo` brought up,
+# SKIPPED, NOT PASSED and exit 2 when the namespace is refused.
 set -uo pipefail
+
+# `W2W_EXTRA` with `--wire-timestamps` runs this whole script again inside a user
+# namespace — see the header. Before anything else, so the re-run makes its own
+# temporary directory and nothing is left behind by `exec`.
+if [[ "${W2W_EXTRA:-}" == *--wire-timestamps* && -z "${FIXBOLT_W2W_USERNS:-}" ]]; then
+  if ! unshare -Urn true 2>/dev/null; then
+    echo "SKIPPED, NOT PASSED: W2W_EXTRA asks for --wire-timestamps, whose arm runs inside a" >&2
+    echo "user namespace (unshare -Urn), and this process is not allowed to create one." >&2
+    echo "On Ubuntu >= 24.04 AppArmor refuses it to a process without a profile that allows" >&2
+    echo "userns. For this boot only: sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" >&2
+    echo "CLAUDE.md §10: a green result that was inferred rather than observed is not a result." >&2
+    exit 2
+  fi
+  echo "== W2W_EXTRA='${W2W_EXTRA}': running inside a user namespace (unshare -Urn), on its own lo =="
+  # shellcheck disable=SC2016 # single-quoted on purpose: expanded by the inner shell.
+  exec unshare -Urn env FIXBOLT_W2W_USERNS=1 bash -c \
+    'ip link set lo up || { echo "FAIL: could not bring up lo inside the user namespace" >&2; exit 1; }; exec bash "$0" "$@"' \
+    "${BASH_SOURCE[0]}" "$@"
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${ROOT}/target/release/w2w"
@@ -82,8 +122,9 @@ measure() {
   local tls_args=()
   [[ "${tls}" != "off" ]] && tls_args=(--tls "${tls}")
 
+  # shellcheck disable=SC2086 # deliberate: W2W_EXTRA is zero or more flags.
   "${BIN}" --mode "${mode}" "${tls_args[@]}" --messages 300 --warmup 50 \
-    --hold-ms $((WINDOW_S * 1000 + 2000)) \
+    --hold-ms $((WINDOW_S * 1000 + 2000)) ${W2W_EXTRA:-} \
     > "${out}" 2>&1 &
   pid=$!
 
@@ -153,6 +194,35 @@ measure() {
   echo "${ran_mode:-none} ${pct} ${sleeping} ${alive} ${p50:-0} ${ran_tls:-none}"
 }
 
+# `[2026-09-14]` **The wire arm is read back, not assumed from `W2W_EXTRA`** — the
+# `ran_mode` lesson again. A w2w that stopped acting on `--wire-timestamps`
+# would run every arm above as the plain one, and this script would be green
+# about an instrument that never started. So when `W2W_EXTRA` holds the flag,
+# each run's output must carry the observer's `wire-timestamps: <nic>, port`
+# line and both `hw-rx-missing N of M` and `hw-tx-missing N of M` lines, M above
+# zero; on `lo`, which has no hardware clock, N must equal M. With no flag this
+# returns 0 and reads nothing.
+wire_arm_ran() {
+  local out="$1" nic line missing of
+  [[ "${W2W_EXTRA:-}" == *--wire-timestamps* ]] || return 0
+  nic="$(sed -nE 's/(^|.* )--nic +([^ ]+).*/\2/p' <<<"${W2W_EXTRA}")"
+  if ! grep -qE "^wire-timestamps: ${nic}, port [0-9]+$" "${out}"; then
+    echo "FAIL: W2W_EXTRA asks for --wire-timestamps and w2w printed no 'wire-timestamps: ${nic}, port' line — the wire arm did not run" >&2
+    return 1
+  fi
+  for line in hw-rx-missing hw-tx-missing; do
+    read -r missing of <<<"$(awk -v l="${line}" '$1 == l && $3 == "of" && $2 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { print $2, $4; exit }' "${out}")"
+    if [[ -z "${of:-}" || "${of}" -eq 0 ]]; then
+      echo "FAIL: W2W_EXTRA asks for --wire-timestamps and w2w printed no '${line} N of M' line with M above zero — the observer's report did not run" >&2
+      return 1
+    fi
+    if [[ "${nic}" == "lo" && "${missing}" -ne "${of}" ]]; then
+      echo "FAIL: ${line} reads ${missing} of ${of} on lo, which has no hardware clock — every stamp must be counted missing" >&2
+      return 1
+    fi
+  done
+}
+
 # Judge one mode's measurement.
 #
 #   0  the mode gave the core back
@@ -197,6 +267,7 @@ rc=0
 
 echo "== GREEN half: standard mode must block and give the core back =="
 read -r ran pct sleeping alive p50 ran_tls <<<"$(measure standard)" || exit 1
+wire_arm_ran "${TMP}/out.standard" || exit 1
 judge standard "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}"
 case $? in
   0) echo "GREEN ok — standard blocks, stays alive, and is woken by the data" ;;
@@ -210,6 +281,7 @@ for red in hft yield; do
   echo
   echo "== RED half: ${red} must trip this check =="
   read -r ran pct sleeping alive p50 ran_tls <<<"$(measure "${red}")" || exit 1
+  wire_arm_ran "${TMP}/out.${red}" || exit 1
   judge "${red}" "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}"
   case $? in
     0) echo "FAIL: ${red} PASSED this check, so the check cannot fail and means nothing" >&2; rc=1 ;;
@@ -226,7 +298,8 @@ echo "== TLS arm: standard mode with kTLS must also give the core back =="
 # recognise, so detecting that case has to happen BEFORE calling `measure` —
 # a quick, foreground, non-traced probe rather than a timeout.
 tls_probe_out="${TMP}/tls-probe.out"
-if ! "${BIN}" --mode standard --tls ktls --messages 10 --warmup 2 --hold-ms 50 \
+# shellcheck disable=SC2086 # deliberate: W2W_EXTRA is zero or more flags.
+if ! "${BIN}" --mode standard --tls ktls --messages 10 --warmup 2 --hold-ms 50 ${W2W_EXTRA:-} \
      >"${tls_probe_out}" 2>&1; then
   # shellcheck disable=SC2016 # single-quoted on purpose: a backtick inside
   # double quotes would be a command substitution, not the literal character
@@ -240,7 +313,9 @@ if ! "${BIN}" --mode standard --tls ktls --messages 10 --warmup 2 --hold-ms 50 \
   tail -5 "${tls_probe_out}" >&2
   rc=1
 else
+  wire_arm_ran "${tls_probe_out}" || exit 1
   read -r ran pct sleeping alive p50 ran_tls <<<"$(measure standard ktls)" || exit 1
+  wire_arm_ran "${TMP}/out.standard" || exit 1
   judge standard "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}" kernel "${ran_tls}"
   case $? in
     0) echo "GREEN ok — standard + ktls blocks, stays alive, is woken by the data, tls: kernel" ;;

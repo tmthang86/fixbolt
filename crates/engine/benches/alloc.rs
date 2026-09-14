@@ -1420,9 +1420,73 @@ fn main() {
          thread and the zero above is about a path that did not happen"
     );
 
+    // ---- journal-async-busy: one message through FileJournal<Async> -------
+    //
+    // `mark_out`'s two cases above prove the *mark* path; `DESIGN.md` §8's
+    // "if FileLog is on, added per message per direction ~340 ns [unmeasured]"
+    // row and `STATUS.md`'s journal/log item are about `put` — the path a
+    // `ResendRequest`'s reply walks before the file ever sees it, and the one
+    // `tools/w2w --journal file-async` now puts through boot B's row B5. This
+    // proves the engine thread's half of that allocates nothing, with the same
+    // `FileJournal<64, 512>` + `Durability::Async` shape the mark-out case
+    // above already opened.
+    let async_busy_at = std::env::temp_dir().join(format!(
+        "fixbolt-alloc-journal-async-busy-{}.journal",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&async_busy_at);
+    let mut async_busy_journal: fixbolt_engine::journal::FileJournal<64, 512> =
+        fixbolt_engine::journal::FileJournal::open(
+            &async_busy_at,
+            fixbolt_engine::journal::Durability::Async,
+        )
+        .expect("the temp directory is writable");
+    let async_busy_msg = wire("35=D\x0134=1\x0111=W1\x0138=200\x0144=20.15\x01");
+    // Warm, outside the window: `put`'s first call into a fresh ring can pay a
+    // one-time cost the loop never repeats
+    // (`reference/a-benchmark-measured-its-own-fixture.md`).
+    assert!(
+        fixbolt_session::journal::Journal::put(&mut async_busy_journal, 1, &async_busy_msg),
+        "the warm-up put into a fresh ring was refused, so the window below \
+         would measure a path that never ran"
+    );
+    let journal_async_busy_allocs = count(|| {
+        fixbolt_session::journal::Journal::put(&mut async_busy_journal, 2, &async_busy_msg);
+    });
+    assert!(
+        fixbolt_session::journal::Journal::get(&async_busy_journal, 2).is_some(),
+        "the busy window's put did not land in the ring, so its zero count \
+         says nothing about the path that matters"
+    );
+    async_busy_journal.close();
+    let async_busy_wrote = std::fs::metadata(&async_busy_at)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    assert!(
+        async_busy_wrote > 0,
+        "the file journal wrote nothing, so Durability::Async never reached \
+         its writer thread and the zero above is about a path that did not \
+         happen"
+    );
+    let async_busy_reader =
+        fixbolt_engine::journal::Reader::open(&async_busy_at).expect("read the journal file back");
+    let async_busy_recorded = async_busy_reader
+        .records()
+        .filter(|r| matches!(r, fixbolt_engine::journal::Record::Message { .. }))
+        .count();
+    let _ = std::fs::remove_file(&async_busy_at);
+    assert_eq!(
+        async_busy_recorded, 2,
+        "the journal file holds {async_busy_recorded} message records, not \
+         the warm-up put and the one busy put this case made — \
+         Durability::Async dropped or duplicated something between the ring \
+         and the file"
+    );
+
     println!(
         "allocations: mark-out-mem {mark_mem_allocs} \
          mark-out-file-async {mark_file_allocs} \
+         journal-async-busy {journal_async_busy_allocs} \
          idle {idle_allocs} send {send_allocs} recv {recv_allocs} \
          frame {frame_allocs} turn {turn_allocs} shard-turn {shard_turn_allocs} \
          busy {busy_allocs} ring {ring_allocs} interests {interests_allocs} \
@@ -1468,9 +1532,10 @@ fn main() {
             origin_busy_allocs,
             logon_first_allocs,
             mark_mem_allocs,
-            mark_file_allocs
+            mark_file_allocs,
+            journal_async_busy_allocs
         ],
-        [0; 30],
+        [0; 31],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

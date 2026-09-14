@@ -67,6 +67,26 @@
 //!   `ExecutionReport` body. Its cost is constant in N and is not part of a
 //!   `Connection`.
 //!
+//! # The administrative twin, item 49
+//!
+//! `engine turn, 1 busy, admin` answers a `TestRequest` with a `Heartbeat`
+//! instead of an order with an `ExecutionReport`, at N = 1, through its own
+//! feed (`AdminFeed`) rather than `Feed`'s. `STATUS.md` item 49 asks where
+//! ~2 770 ns of the 3 898 ns on-wire difference between `tools/w2w --path app`
+//! and `--path admin` goes. The in-process difference `engine turn, 1 busy
+//! sessions` − `engine turn, 1 busy, admin` is the engine's share of it —
+//! framing, read-buffer management, session, dispatch and serialise, the
+//! `Heartbeat`'s included — and what is left of 3 898 ns is outside the
+//! process: kernel, copies and syscalls. Everything else about the two cases
+//! is the same: engine type parameters, clock, application type, `Config`,
+//! two-turn setup and timed closure.
+//!
+//! `AdminFeed` duplicates `Feed`'s small amount of sequence/checksum
+//! arithmetic rather than share it: a shared type threading a capture path
+//! through `send` would add to every call the already-committed `engine
+//! turn, N busy sessions` and ring sweeps make, for a case that did not
+//! exist when those were last measured.
+//!
 //! [ADR-0046]: ../../../docs/decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
@@ -77,8 +97,10 @@
 #[path = "../../codec/benches/harness.rs"]
 mod harness;
 
+use std::cell::Cell;
 use std::hint::black_box;
 use std::ops::Range;
+use std::rc::Rc;
 
 use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::InlineDispatch;
@@ -337,6 +359,217 @@ fn engine_with<const SLOTS: usize>(n: usize) -> Dense<SLOTS> {
     engine
 }
 
+/// The `TestRequest` the admin case (item 49) feeds, field for field like
+/// `order` and `logon`: same header shape, a fixed `TestReqID` the session
+/// must hand back on its `Heartbeat`.
+fn test_request(seq: u32, i: usize) -> Vec<u8> {
+    frame(&format!(
+        "35=1\x0134={seq:0SEQ$}\x0149={who}\x0152={STAMP}\x0156=ISLD\x01112=W2WPING\x01",
+        SEQ = SEQ_DIGITS,
+        who = peer(i)
+    ))
+}
+
+/// How many `Heartbeat`s `buf` carries, found by their `35=0` tag rather than
+/// by length so the next edit to the reply never has to keep a byte count in
+/// step with it.
+fn heartbeats_in(buf: &[u8]) -> u64 {
+    const TAG: &[u8] = b"\x0135=0\x01";
+    buf.windows(TAG.len()).filter(|w| *w == TAG).count() as u64
+}
+
+/// `Heartbeat`s `AdminFeed::send` has seen go out, shared with whoever built
+/// the feed — the engine owns the transport once it is added and has no API
+/// to reach it again, so this is the only way the setup below reads an answer
+/// back out, the way `engine_with` reads `Desk::seen`. `Rc::new` runs once,
+/// during setup; the timed turns never touch it (see `AdminFeed::send`).
+#[derive(Clone, Default)]
+struct Heartbeats(Rc<Cell<u64>>);
+
+impl Heartbeats {
+    fn add(&self, n: u64) {
+        self.0.set(self.0.get() + n);
+    }
+
+    fn get(&self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// One session's wire for the admin case (item 49): a `Logon`, then a
+/// `TestRequest` every turn. Not built on top of `Feed` — see "The
+/// administrative twin, item 49" above for why the small amount of
+/// seq/checksum arithmetic is duplicated rather than shared.
+struct AdminFeed {
+    logon: Vec<u8>,
+    test_request: Vec<u8>,
+    /// Where the eight `34=` digits start in `test_request`.
+    seq_at: usize,
+    /// Where the three `10=` digits start in `test_request`.
+    sum_at: usize,
+    /// Byte sum of `test_request` up to `sum_at`, kept in step with the
+    /// patches, the same way `Feed::sum` is.
+    sum: u32,
+    /// `false` until the Logon has been handed over.
+    logged_on: bool,
+    /// `TestRequest`s handed over so far, saturating at 255. `send` inspects
+    /// what goes out only while this is at most one — the Logon's turn and
+    /// the first `TestRequest`'s, the two turns the setup below reads.
+    fed: u8,
+    /// `Heartbeat`s counted on those two turns; see [`Heartbeats`].
+    heartbeats: Heartbeats,
+}
+
+impl AdminFeed {
+    /// Returns the feed to hand to the engine, and the handle the setup below
+    /// reads afterwards — `Feed` never needed one because the application
+    /// case proves itself through `Desk::seen` instead, which a `TestRequest`
+    /// never reaches.
+    fn new(i: usize) -> (Self, Heartbeats) {
+        // Built at 1, not 2, for the same reason `Feed::new` is: `recv`
+        // advances the sequence number before handing a message over, so the
+        // first `TestRequest` out carries 2, the number the session expects
+        // after the Logon spent 1.
+        let test_request = test_request(1, i);
+        let seq_at = find(&test_request, b"\x0134=") + 4;
+        let sum_at = test_request.len() - 4;
+        let sum = test_request[..sum_at - 3]
+            .iter()
+            .map(|b| u32::from(*b))
+            .sum();
+        let heartbeats = Heartbeats::default();
+        let feed = Self {
+            logon: logon(i),
+            test_request,
+            seq_at,
+            sum_at,
+            sum,
+            logged_on: false,
+            fed: 0,
+            heartbeats: heartbeats.clone(),
+        };
+        (feed, heartbeats)
+    }
+
+    /// Add one to the eight decimal digits at `seq_at`, carrying the change
+    /// into `sum` — `Feed::advance`'s arithmetic, kept as a separate copy so
+    /// editing one can never silently change the other's case.
+    fn advance(&mut self) {
+        let mut i = self.seq_at + SEQ_DIGITS;
+        while i > self.seq_at {
+            i -= 1;
+            if self.test_request[i] == b'9' {
+                self.test_request[i] = b'0';
+                self.sum -= 9;
+            } else {
+                self.test_request[i] += 1;
+                self.sum += 1;
+                break;
+            }
+        }
+        let c = self.sum % 256;
+        self.test_request[self.sum_at] = b'0' + u8::try_from(c / 100).unwrap_or(0);
+        self.test_request[self.sum_at + 1] = b'0' + u8::try_from((c / 10) % 10).unwrap_or(0);
+        self.test_request[self.sum_at + 2] = b'0' + u8::try_from(c % 10).unwrap_or(0);
+    }
+}
+
+impl Transport for AdminFeed {
+    const POLLABLE: bool = false;
+
+    fn recv(&mut self, buf: &mut [u8]) -> Io {
+        let src = if self.logged_on {
+            self.fed = self.fed.saturating_add(1);
+            self.advance();
+            &self.test_request
+        } else {
+            self.logged_on = true;
+            &self.logon
+        };
+        let n = src.len();
+        buf[..n].copy_from_slice(src);
+        Io::Ready(n)
+    }
+
+    fn send(&mut self, buf: &[u8]) -> Io {
+        // Inspects only the two setup turns. From the second `TestRequest` on
+        // — every turn this file times — the cost is one compare on a field
+        // of `self`, as `Feed::send`'s is one add to a field of `self`: no scan
+        // and no reach through the `Rc` to a second heap block, so the admin
+        // case's turn is not left paying for its own setup assertion.
+        if self.fed <= 1 {
+            self.heartbeats.add(heartbeats_in(buf));
+        }
+        Io::Ready(buf.len())
+    }
+}
+
+type DenseAdmin<const SLOTS: usize> = Engine<
+    AdminFeed,
+    fixbolt_session::Acceptor,
+    InlineDispatch<Desk>,
+    ManualClock,
+    Yield,
+    MemJournal<SLOTS, 512>,
+    64,
+    4096,
+    8192,
+>;
+
+/// `n` sessions, each logged on and each with a `TestRequest` waiting: the
+/// admin twin of `engine_with`, for `engine turn, 1 busy, admin` (item 49).
+/// Same engine construction, same socket arrangement (`AdminFeed` has no
+/// kernel either, like `Feed`), same two-turn shape — differing only in the
+/// message each session feeds and the reply the assertion proves came back.
+fn engine_with_admin<const SLOTS: usize>(n: usize) -> DenseAdmin<SLOTS> {
+    let mut engine: DenseAdmin<SLOTS> = Engine::new(
+        Config::acceptor(b"FIX.4.4", b"ISLD", b"W2W"),
+        InlineDispatch::new(Desk::new()),
+        ManualClock::at(fixbolt_conformance::script::FIXED_TIME_MILLIS),
+        Yield,
+        n.max(1),
+    );
+    let mut seen = Vec::with_capacity(n);
+    for i in 0..n {
+        let (feed, count) = AdminFeed::new(i);
+        engine
+            .add_with_prefix_and_config(
+                feed,
+                Config::acceptor(b"FIX.4.4", b"ISLD", peer(i).as_bytes()),
+                &[],
+            )
+            .expect("an empty prefix fits any RX");
+        seen.push(count);
+    }
+    assert_eq!(
+        engine.connections(),
+        n,
+        "the admin sweep must have {n} sessions"
+    );
+
+    // Turn one is the Logon and its answer; from turn two every session's
+    // `TestRequest` is due a `Heartbeat` — counted across turn two exactly as
+    // `engine_with` counts orders.
+    let heartbeats = |s: &[Heartbeats]| s.iter().map(Heartbeats::get).sum::<u64>();
+    engine.turn();
+    let before = heartbeats(&seen);
+    engine.turn();
+    let after = heartbeats(&seen);
+    assert_eq!(
+        after - before,
+        n as u64,
+        "each of the {n} sessions must get exactly one Heartbeat back for its \
+         TestRequest per turn, or this case is measuring an admin turn nobody \
+         answered"
+    );
+    assert_eq!(
+        engine.connections(),
+        n,
+        "and must still hold {n} sessions after two turns"
+    );
+    engine
+}
+
 fn main() {
     harness::suite(|b| {
         // B-i. The ring is pinned at 8 slots — 4 KiB of heap — so that what the
@@ -353,6 +586,17 @@ fn main() {
         for n in [1usize, 2, 4, 8, 16, 32, 64] {
             let mut engine = engine_with::<8>(n);
             b.bench(&format!("engine turn, {n} busy sessions"), || {
+                black_box(engine.turn());
+            });
+        }
+
+        // Item 49's administrative twin of the N = 1 case just above: same
+        // engine construction and measurement loop, a TestRequest/Heartbeat
+        // turn instead of an order/ExecutionReport one. See "The
+        // administrative twin, item 49" at the top of this file.
+        {
+            let mut engine = engine_with_admin::<8>(1);
+            b.bench("engine turn, 1 busy, admin", || {
                 black_box(engine.turn());
             });
         }

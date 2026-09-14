@@ -35,7 +35,51 @@
 # binary built without the `tls` feature refuses `--tls ktls` outright
 # (tools/w2w/src/main.rs), so that case is SKIPPED, NOT PASSED rather than
 # silently read as "no TLS syscalls" — CLAUDE.md §10.
+#
+# `[2026-09-14]` step A3b of docs/plans/2026-09-04-the-second-linux-desk.md:
+# `W2W_EXTRA`, appended to every w2w invocation below, so the same four runs can
+# be made with `--wire-timestamps` on. Unset or empty it expands to no words,
+# and every command line is the one this script ran before. Set, e.g.
+# `W2W_EXTRA="--wire-timestamps --nic lo --observer-core 2"`, it asks whether
+# the engine thread's syscall set survives the tap and the error-queue reader.
+# Every run must then print the wire arm's own lines, or the script fails
+# (`wire_arm_ran`): an arm that is only assumed to have run is the plain arm.
+#
+# **That arm runs inside a user namespace**, Sửa 2 of the plan (Điều 1, R1):
+# `strace` is an unprivileged tracer, and a program exec'd under one is never
+# given file capabilities (security/commoncap.c, `cap_bprm_creds_from_file`),
+# so a `setcap`'d w2w lands without `CAP_NET_RAW` and refuses to run without
+# its tap. So when `W2W_EXTRA` holds `--wire-timestamps` the script runs itself
+# again under `unshare -Urn`: root of a new user namespace with its own network
+# namespace, `lo` brought up, `CAP_NET_RAW` over that `lo` (af_packet.c,
+# `ns_capable`) — no `setcap`, no `sudo`, and the kernel path through that `lo`
+# is the path through any other. `FIXBOLT_W2W_USERNS` marks the inner run.
+# **When the namespace is refused** — Ubuntu >= 24.04's AppArmor refuses it to
+# a process without a profile that allows it — the script says SKIPPED, NOT
+# PASSED and exits 2, naming the sysctl; it never reads as green. Reversal:
+# `aa-exec -p unconfined -- env W2W_EXTRA=... scripts/check-no-kernel-sleep.sh`
+# must exit 2 with that sentence. A namespace has no `enp9s0`: tracing on a real
+# NIC is `sudo -n strace -f -u "$USER"` at the desk (docs/hft-playbook.md §6).
 set -uo pipefail
+
+# `W2W_EXTRA` with `--wire-timestamps` runs this whole script again inside a user
+# namespace — see the header. Before anything else, so the re-run makes its own
+# temporary directory and nothing is left behind by `exec`.
+if [[ "${W2W_EXTRA:-}" == *--wire-timestamps* && -z "${FIXBOLT_W2W_USERNS:-}" ]]; then
+  if ! unshare -Urn true 2>/dev/null; then
+    echo "SKIPPED, NOT PASSED: W2W_EXTRA asks for --wire-timestamps, whose arm runs inside a" >&2
+    echo "user namespace (unshare -Urn), and this process is not allowed to create one." >&2
+    echo "On Ubuntu >= 24.04 AppArmor refuses it to a process without a profile that allows" >&2
+    echo "userns. For this boot only: sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" >&2
+    echo "CLAUDE.md §10: a green result that was inferred rather than observed is not a result." >&2
+    exit 2
+  fi
+  echo "== W2W_EXTRA='${W2W_EXTRA}': running inside a user namespace (unshare -Urn), on its own lo =="
+  # shellcheck disable=SC2016 # single-quoted on purpose: expanded by the inner shell.
+  exec unshare -Urn env FIXBOLT_W2W_USERNS=1 bash -c \
+    'ip link set lo up || { echo "FAIL: could not bring up lo inside the user namespace" >&2; exit 1; }; exec bash "$0" "$@"' \
+    "${BASH_SOURCE[0]}" "$@"
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${ROOT}/target/release/w2w"
@@ -53,12 +97,42 @@ command -v strace >/dev/null || {
 # and `sendto` are the socket path and are non-blocking; they are not here.
 SLEEPERS='epoll_wait|epoll_pwait|epoll_pwait2|poll|ppoll|select|pselect6|futex|nanosleep|clock_nanosleep|sched_yield|io_uring_enter'
 
+# `[2026-09-14]` **The wire arm is read back, not assumed from `W2W_EXTRA`** — the
+# `ran_mode` lesson again. A w2w that stopped acting on `--wire-timestamps`
+# would run every arm above as the plain one, and this script would be green
+# about an instrument that never started. So when `W2W_EXTRA` holds the flag,
+# each run's output must carry the observer's `wire-timestamps: <nic>, port`
+# line and both `hw-rx-missing N of M` and `hw-tx-missing N of M` lines, M above
+# zero; on `lo`, which has no hardware clock, N must equal M. With no flag this
+# returns 0 and reads nothing.
+wire_arm_ran() {
+  local out="$1" nic line missing of
+  [[ "${W2W_EXTRA:-}" == *--wire-timestamps* ]] || return 0
+  nic="$(sed -nE 's/(^|.* )--nic +([^ ]+).*/\2/p' <<<"${W2W_EXTRA}")"
+  if ! grep -qE "^wire-timestamps: ${nic}, port [0-9]+$" "${out}"; then
+    echo "FAIL: W2W_EXTRA asks for --wire-timestamps and w2w printed no 'wire-timestamps: ${nic}, port' line — the wire arm did not run" >&2
+    return 1
+  fi
+  for line in hw-rx-missing hw-tx-missing; do
+    read -r missing of <<<"$(awk -v l="${line}" '$1 == l && $3 == "of" && $2 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { print $2, $4; exit }' "${out}")"
+    if [[ -z "${of:-}" || "${of}" -eq 0 ]]; then
+      echo "FAIL: W2W_EXTRA asks for --wire-timestamps and w2w printed no '${line} N of M' line with M above zero — the observer's report did not run" >&2
+      return 1
+    fi
+    if [[ "${nic}" == "lo" && "${missing}" -ne "${of}" ]]; then
+      echo "FAIL: ${line} reads ${missing} of ${of} on lo, which has no hardware clock — every stamp must be counted missing" >&2
+      return 1
+    fi
+  done
+}
+
 # Syscalls, by name, that the engine thread made during one run.
 engine_syscalls() {
   local out="${TMP}/out.$1" tr="${TMP}/tr.$1" tid
   # shellcheck disable=SC2086 # deliberate: $2 carries zero or more w2w flags
   # as one string (e.g. "--mode hft --tls ktls") and must split on spaces.
-  strace -f -o "${tr}" "${BIN}" --messages 300 --warmup 50 --hold-ms 400 ${2:-} \
+  # shellcheck disable=SC2086 # W2W_EXTRA likewise: zero or more flags.
+  strace -f -o "${tr}" "${BIN}" --messages 300 --warmup 50 --hold-ms 400 ${2:-} ${W2W_EXTRA:-} \
     > "${out}" 2>&1 || { echo "w2w failed:" >&2; tail -5 "${out}" >&2; return 1; }
   # **Read the mode back rather than trusting the flag.** `[measured
   # 2026-08-30]` `--mode standard` was once accepted, printed its banner, and
@@ -73,6 +147,7 @@ engine_syscalls() {
   fi
   tid="$(grep -oE 'engine-tid: [0-9]+' "${out}" | head -1 | grep -oE '[0-9]+')"
   [[ -n "${tid}" ]] || { echo "no engine-tid in output" >&2; return 1; }
+  wire_arm_ran "${out}" || return 1
   echo "${tid}" > "${TMP}/tid.$1"
   awk -v t="${tid}" '$1==t {print $2}' "${tr}" | grep -oE '^[a-z_0-9]+' | sort | uniq -c | sort -rn
 }
