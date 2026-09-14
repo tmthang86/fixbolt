@@ -2861,9 +2861,12 @@ for `ktls`) and `:194-196` refuses `allocs` ≠ 0 for every arm but `userspace`;
 `baseline exit=0`, so every `ktls` run read back `kernel` and counted 0 allocations.
 
 **Two procedures, not one.** Procedure 1 ran 07:25:28–07:50:59, about seven minutes after boot
-(procedure 2's own `uptime` line reads `up 38 min` at 07:56:27). Between them, a single
-`userspace` admin run read p50 17 553 against procedure 1's 20 774 for that arm (§2 below).
-Procedure 2 is the identical command, run after that, 07:56:27–08:21:57.
+(procedure 2's own `uptime` line reads `up 38 min` at 07:56:27). Procedure 2 is the identical
+command, 07:56:27–08:21:57, and **it was run because the single runs taken between the two
+disagreed with procedure 1**: one `userspace` admin run read p50 17 553 against procedure 1's
+20 774 for that arm; seven more single admin runs followed, whose four `userspace` runs all read
+that faster level while the kTLS and `off` runs sat only 2–3% under procedure 1; and the whole
+procedure was run again rather than publish either figure (§2 below, with those runs verbatim).
 
 ### Procedure 1, the summary blocks, verbatim
 
@@ -3147,8 +3150,28 @@ this measurement also read, **`allocs 0` for `ktls` against 80 000 per 20 000 ro
 
 `hft / admin / userspace` read **20 774** in procedure 1 (runs 20 639 .. 20 930, spread 1.008)
 and **17 473** in procedure 2 (runs 17 333 .. 17 813, spread 1.019). The two ranges do not
-overlap. Every other arm moved **0.2–2.5%**, all eight in the same direction, faster. A single
-`userspace` admin run between the procedures (07:53) already read p50 **17 553**.
+overlap. Every other arm moved **0.2–2.5%**, all eight in the same direction, faster.
+
+**What prompted procedure 2.** A single `userspace` admin run between the procedures (file time
+07:53, the allocation block above) read p50 **17 553**. Seven more single `hft` admin runs
+followed on the same binary and boot, `fixbolt-machine on`, engine `cpu6`, client `cpu7`, 20 000
+messages after 2 000 warmup. **They had no per-run quiet check** — an editor session was active —
+**so they are not §9 figures**; they are what the manager saw before deciding to re-run the whole
+procedure. The terminal output, verbatim:
+
+```
+07:54:28 userspace min 17142  p50 17433  p99 22553
+07:54:36 userspace min 17323  p50 17613  p99 22523
+07:54:45 userspace min 17133  p50 17453  p99 22873
+07:54:53 ktls min 23675  p50 24747  p99 30768
+07:55:02 ktls min 23444  p50 24506  p99 30428
+07:55:10 off min 15309  p50 15670  p99 20639
+07:55:19 userspace min 17133  p50 17423  p99 22432
+```
+
+Four `userspace` runs at p50 17 423–17 613, against procedure 1's 20 774 for that arm; two kTLS
+runs 2.2% and 3.1% under procedure 1's 25 298; one `off` run 2.5% under its 16 065. Procedure 2
+then published 17 473, 24 657 and 15 670 for the same three arms.
 
 Inside procedure 2, `hft / app / off` printed spread **1.008** while five of its twenty runs read
 p50 17 323, 17 523, 17 864, 18 976 and 19 136 against a median of 19 998. The spread is maximum

@@ -1487,8 +1487,10 @@ Stated so you do not discover it in production:
   1. **A counterparty that cannot do `TLS13_AES_128_GCM_SHA256` cannot connect at all.** The
      suite is narrowed deliberately, because kTLS carries far fewer suites than `rustls` will
      negotiate and a free negotiation makes the kernel offload depend on what the other end
-     offered. Which kernel and which suites are the floor is still open
-     ([ADR-0005](decisions/ADR-0005-tls.md) question 2).
+     offered. Which kernel and which suites are the floor is answered only at the level
+     measured ([ADR-0005](decisions/ADR-0005-tls.md) question 2): `[measured 2026-09-14]` the
+     kernel takes this suite on `7.0.0-31-generic`; no other suite and no minimum kernel has been
+     measured ([DESIGN.md](DESIGN.md) §9, the TLS row).
   2. **You are told when a session leaves the kernel, and you can refuse it.**
      `[2026-09-10]` `EventKind::TlsFellBackToUserspace` names the connection that fell back, and
      `TlsRequireKernel=Y` refuses twice on either role: `serve_tls_requiring` **will not bind**
@@ -1552,9 +1554,11 @@ Stated so you do not discover it in production:
      revision 2026-09-13); it does not grow the per-connection control-record buffer, which is
      pre-sized to 64 KiB at the handover.
 
-  **Not built:** any published TLS latency number. `scripts/check-no-kernel-sleep.sh` and
-  `scripts/check-standard-gives-the-core-back.sh` both now run a kTLS arm, but what a rekey
-  costs in latency has not been timed — see [DESIGN.md](DESIGN.md) D11 *As built*.
+  **Not built:** any timing of what a rekey costs in latency — see [DESIGN.md](DESIGN.md) D11
+  *As built*. `[measured 2026-09-14]` the steady-state TLS round trip is published, on the §9
+  desktop over loopback, in [DESIGN.md](DESIGN.md) §8 *The round trip under TLS, measured*, and
+  `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh` both run
+  a kTLS arm.
 - **It cannot originate an application message.** `Handler::on_message` returns one reply to
   one inbound message, and the session's `send_application` is reachable only by driving the
   session yourself (STATUS item 46).

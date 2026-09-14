@@ -37,8 +37,15 @@ over median, so **a run below the median cannot move it**. The same summary line
 **What differed between the two procedures, as far as anything recorded:** time since boot
 (about 7 minutes against 38) and that procedure 1 was the first after the reboot, behind one
 thrown-away run. **Neither is claimed as a cause** — nothing was varied to test either, and
-both moved together with the result. A single run of the same arm between the procedures
-(file time 07:53) already read the faster level: p50 17 553.
+both moved together with the result.
+
+**What made anyone look.** Between the procedures, a single run of the same arm read p50
+17 553 against the 20 774 procedure 1 had just published. Seven more single runs followed: the
+four of that arm read 17 423–17 613, while the runs of two sibling arms sat only 2–3% under their
+procedure-1 medians. Those single runs had no per-run quiet check, so they are not publishable
+figures — they are the reason the whole procedure was run again rather than either number being
+published. They are quoted verbatim in [measured-costs.md](measured-costs.md), *TLS on the wire*,
+§2. **Had nobody taken a single run afterwards, procedure 1's 20 774 would have been the figure.**
 
 **One descriptive fact, which makes it less strange and no less unexplained.** In procedure 1
 that arm's median per-run *minimum* was 17 644 ns — within 1% of the p50 procedure 2 then

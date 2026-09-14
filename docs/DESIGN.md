@@ -1090,7 +1090,9 @@ Each step was a plan, a branch and a merge. **All eight are complete as of 2026-
    The example names nothing from `fixbolt_engine` or `fixbolt_session`, which is the facade's
    own test ([ADR-0041](decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)).
 
-TLS (D11) has no step here. When it lands it belongs beside step 6, in `transport`.
+TLS (D11) has no step here. It landed beside step 6, as a second `Transport` —
+`TlsTransport` in `crates/engine/src/tls.rs`, behind `--features tls`
+([plan](plans/2026-09-04-tls.md)).
 
 ## 8. Latency budget on kernel TCP
 
