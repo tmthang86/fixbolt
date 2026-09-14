@@ -85,6 +85,61 @@
 //! first and userspace rustls allocates. The run then failed as a hot-path
 //! regression rather than as a transport that never took the keys. Every arm's
 //! read-back is now checked in [`measure`], before the first sample.
+//!
+//! # Two halves, and pacing
+//!
+//! `[2026-09-14]` step A3a of `docs/plans/2026-09-04-the-second-linux-desk.md`.
+//! With neither `--listen` nor `--connect` this binary is what it was: one
+//! process, the engine on one thread and the client on another, over loopback.
+//! **No new flag changes a line of that output**, so
+//! `scripts/check-no-kernel-sleep.sh`, `scripts/check-standard-gives-the-core-back.sh`
+//! and `scripts/w2w-baseline.sh` keep their meaning.
+//!
+//! * `--listen <addr>` — **the engine half, alone.** Binds `addr` and runs the
+//!   same engine thread, `--mode` and `--path` as the combined run. It serves
+//!   until, after the first logon, the last connection has closed, then exits.
+//!   It prints `mode:`, `path:`, `listening:` (the bound address, so `:0`
+//!   works), `engine-core:`, `engine-tid:`, and — after the session ends —
+//!   `tls:` read back from the engine as always, and `allocs` for the window
+//!   **this process can know**: from the turn after the first logon to the turn
+//!   that saw the last connection close, warmup and teardown included, because
+//!   the engine half cannot see where the generator's warmup ends. That count
+//!   is asserted zero. **It prints no latency figure**: the far end of every
+//!   round trip is in another process, and a line says so.
+//! * `--connect <addr>` — **the generator half, alone.** Logs on, warms up,
+//!   times `--messages` round trips, holds `--hold-ms`, closes. Its table is
+//!   headed **"as the counterparty sees it"** — a round trip on this process's
+//!   clock, this host's stack and the cable included — and its `allocs` is the
+//!   generator thread's over the timed window, asserted zero. It prints no
+//!   `mode:` and no `tls:` line: it cannot see the engine, and a line echoed
+//!   from a flag is the defect this file already paid for. It needs no
+//!   `affinity`, so it builds where pinning does not exist (macOS).
+//!
+//! **A flag that does not apply to a half is refused, not ignored** — the
+//! `Cargo.toml` `[features]` lesson. `--listen` refuses `--client-core`,
+//! `--messages`, `--warmup`, `--hold-ms` and `--interval` (no client thread;
+//! the count, the hold and the pacing are the generator's). `--connect` refuses
+//! `--engine-core` and `--mode` (no engine thread). Both refuse `--tls` other
+//! than `off`: the certificate is made per process, and two halves are two
+//! processes. `--listen` with `--connect` is refused. A new flag with no value,
+//! or one that does not parse, is refused. See [`half_of`] and its tests.
+//!
+//! **Two processes can disagree about `--path`, and one process could not.**
+//! `--connect --path app` against `--listen --path admin` gets no reply at all,
+//! so the generator bounds every read by [`REPLY_TIMEOUT`] and fails naming
+//! the likely cause, and the engine half fails if [`Never`] was reached. The
+//! other way round is not caught by the engine half — its `Desk` is simply
+//! never called — and needs no catching: the generator's `35=` check holds, and
+//! each process's `path:` line says truthfully what it ran.
+//!
+//! **`--interval <us>`** (combined run and `--connect`): each send waits until
+//! `interval` µs after the **previous send**, by spinning on the client thread
+//! against `Instant` — no `sleep`, no `nanosleep`, no `clock_nanosleep`, so the
+//! generator core is **burned by design**. Warmup is paced the same way. A send
+//! whose previous round trip outlasted the interval goes at once, with no
+//! catch-up burst, and is counted and printed as late. `0`, the default, waits
+//! for nothing and prints no `interval` line. The wait is taken before `t0`, so
+//! it is never inside a sample. See [`Pacer`].
 #![allow(unsafe_code)]
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
 // `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
@@ -279,6 +334,12 @@ impl Path {
 /// returning `None` quietly.
 struct Never;
 
+/// Whether [`Never`] was reached. Read only by `--listen`, which has no reply
+/// check of its own: in the combined run the client's `35=` assertion already
+/// fails such a run, but an engine half whose generator ran `--path app`
+/// against `--path admin` would otherwise end cleanly having served nothing.
+static APP_REACHED: AtomicBool = AtomicBool::new(false);
+
 impl Application for Never {
     fn on_message(
         &mut self,
@@ -287,6 +348,7 @@ impl Application for Never {
         _out: &mut [u8],
     ) -> Option<Range<usize>> {
         eprintln!("w2w: the application was reached; this run measures something else");
+        APP_REACHED.store(true, Ordering::Relaxed);
         None
     }
 }
@@ -419,14 +481,196 @@ fn render(mut v: u32, buf: &mut [u8; 10]) -> &[u8] {
     &buf[i..]
 }
 
+/// Which half of the measurement this process runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Half {
+    /// Neither `--listen` nor `--connect`: engine and client in one process,
+    /// over loopback. What this binary was before the two flags, line for line.
+    Both,
+    /// `--listen <addr>`: the engine thread only.
+    Listen(String),
+    /// `--connect <addr>`: the client thread only.
+    Connect(String),
+}
+
+/// What `--listen` refuses, and why. There is no client thread in that
+/// process, and the count, the hold and the pacing all belong to the one that
+/// sends.
+const LISTEN_REFUSES: &[(&str, &str)] = &[
+    (
+        "--client-core",
+        "this process has no client thread; pin the generator in the --connect process",
+    ),
+    (
+        "--messages",
+        "the engine half serves until its peer closes; the count belongs to --connect",
+    ),
+    (
+        "--warmup",
+        "the engine half serves until its peer closes; the warmup belongs to --connect",
+    ),
+    (
+        "--hold-ms",
+        "the idle window is held by the --connect process, which owns the connection",
+    ),
+    (
+        "--interval",
+        "pacing is done by the sender; pass it to the --connect process",
+    ),
+];
+
+/// What `--connect` refuses, and why. There is no engine thread in that
+/// process, and it cannot see which idle strategy the other one ran.
+const CONNECT_REFUSES: &[(&str, &str)] = &[
+    (
+        "--engine-core",
+        "this process has no engine thread; pin it in the --listen process",
+    ),
+    (
+        "--mode",
+        "the engine's idle strategy is chosen in the --listen process, and this process \
+         cannot read back which one ran",
+    ),
+];
+
+/// Which half this process is, with every refusal a half owes.
+///
+/// Says nothing at all when neither `--listen` nor `--connect` is present, so
+/// a run with no new flag reaches `main`'s older refusals exactly as before.
+fn half_of(args: &[String]) -> Result<Half, String> {
+    let listen: Option<String> = value_of(args, "--listen")?;
+    let connect: Option<String> = value_of(args, "--connect")?;
+    let (half, name, refuses) = match (listen, connect) {
+        (None, None) => return Ok(Half::Both),
+        (Some(_), Some(_)) => {
+            return Err(
+                "--listen and --connect are the two halves of one measurement; \
+                 one process runs one of them"
+                    .to_string(),
+            );
+        }
+        (Some(a), None) => (Half::Listen(a), "--listen", LISTEN_REFUSES),
+        (None, Some(a)) => (Half::Connect(a), "--connect", CONNECT_REFUSES),
+    };
+    if let Some((flag, why)) = refuses.iter().find(|(f, _)| present(args, f)) {
+        return Err(format!("{flag} does not apply to {name}: {why}"));
+    }
+    // Not only the arms this build can run: a split TLS run is refused on
+    // every build, so the refusal cannot depend on which features were on.
+    if let Some(t) = arg::<String>(args, "--tls")
+        && t != "off"
+    {
+        return Err(format!(
+            "--tls {t} is not available to {name}: the self-signed certificate is made \
+             per process, and the two halves are two processes"
+        ));
+    }
+    Ok(half)
+}
+
+/// `--interval`, in microseconds. Absent is `0`; present without a number is
+/// refused rather than read as `0`.
+fn interval_of(args: &[String]) -> Result<u64, String> {
+    Ok(value_of(args, "--interval")?.unwrap_or(0))
+}
+
+/// Whether `name` appears among the arguments at all.
+fn present(args: &[String], name: &str) -> bool {
+    args.iter().skip(1).any(|a| a == name)
+}
+
+/// A new flag's value: `None` if the flag is absent, refused if it is present
+/// with no value, with another flag where the value should be, or with one
+/// that does not parse. [`arg`] turns all three into "absent", which is why the
+/// older flags keep it and the new ones do not.
+fn value_of<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Option<T>, String> {
+    let Some(i) = args.iter().skip(1).position(|a| a == name) else {
+        return Ok(None);
+    };
+    match args.get(i + 2) {
+        Some(v) if !v.starts_with("--") => v
+            .parse()
+            .map(Some)
+            .map_err(|_| format!("{name} {v}: not a valid value")),
+        _ => Err(format!("{name} needs a value")),
+    }
+}
+
+/// `--interval`: spin until one interval after the previous send.
+///
+/// **Spins, and never sleeps.** `Instant::now` is `clock_gettime(CLOCK_MONOTONIC)`
+/// through the vDSO on Linux and `mach_absolute_time` on macOS — no syscall —
+/// and the loop between readings is `spin_loop`. The generator's core is burned
+/// for the whole run by design: a `nanosleep` would put this thread's wake-up
+/// jitter, and a kernel exit, into the pacing of every message. Proven by the
+/// `strace -f` gate of step A3a, not by this comment.
+struct Pacer {
+    every: Option<Duration>,
+    next: Option<Instant>,
+}
+
+impl Pacer {
+    const fn new(interval_us: u64) -> Self {
+        Self {
+            every: if interval_us == 0 {
+                None
+            } else {
+                Some(Duration::from_micros(interval_us))
+            },
+            next: None,
+        }
+    }
+
+    /// Wait for this send to be due. `true` if it was already overdue, which
+    /// the caller counts as late — and then it goes at once, with no catch-up.
+    #[inline]
+    fn wait(&self) -> bool {
+        let Some(at) = self.next else {
+            return false;
+        };
+        let mut now = Instant::now();
+        if now > at {
+            return true;
+        }
+        while now < at {
+            std::hint::spin_loop();
+            now = Instant::now();
+        }
+        false
+    }
+
+    /// A send went at `t0`; the next is due one interval later.
+    #[inline]
+    fn sent(&mut self, t0: Instant) {
+        if let Some(every) = self.every {
+            self.next = t0.checked_add(every);
+        }
+    }
+
+    /// [`Pacer::sent`] at now — reading the clock only when pacing, so an
+    /// unpaced warmup reads no more clocks than it did before `--interval`.
+    #[inline]
+    fn sent_now(&mut self) {
+        if self.every.is_some() {
+            self.sent(Instant::now());
+        }
+    }
+}
+
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    // The two halves' refusals first. With no new flag they return
+    // `(Half::Both, 0)` and print nothing, so everything below runs as it did.
+    let (half, interval_us) = match half_of(&args).and_then(|h| Ok((h, interval_of(&args)?))) {
+        Ok(v) => v,
+        Err(why) => {
+            eprintln!("w2w: {why}");
+            return Err(std::io::Error::other(why));
+        }
+    };
     let n: usize = arg(&args, "--messages").unwrap_or(20_000);
     let warmup: usize = arg(&args, "--warmup").unwrap_or(2_000);
     let hold_ms: u64 = arg(&args, "--hold-ms").unwrap_or(0);
-
-    let acceptor = Acceptor::bind("127.0.0.1:0")?;
-    let addr = acceptor.local_addr()?.to_string();
 
     // ADR-0013 decision 4: every published figure names its mode. `hft` stays
     // the default here even though `standard` is the engine's, because these
@@ -519,6 +763,36 @@ fn main() -> std::io::Result<()> {
         }
     }
 
+    let run = Run {
+        path,
+        warmup,
+        n,
+        hold_ms,
+        tls,
+        interval_us,
+    };
+    match half {
+        Half::Both => both_halves(mode, run, engine_core, client_core),
+        // `half_of` has refused `--client-core` here, and `--engine-core` and
+        // `--mode` for the generator, so neither function is handed a core or
+        // a mode it would have to ignore.
+        Half::Listen(addr) => engine_half(&addr, mode, run, engine_core),
+        Half::Connect(addr) => generator_half(&addr, run, client_core),
+    }
+}
+
+/// The combined run: engine and client in one process, over loopback. Every
+/// line it prints is the line this binary printed before `--listen` existed.
+fn both_halves(
+    mode: Mode,
+    run: Run,
+    engine_core: Option<usize>,
+    client_core: Option<usize>,
+) -> std::io::Result<()> {
+    let Run { path, tls, .. } = run;
+    let acceptor = Acceptor::bind("127.0.0.1:0")?;
+    let addr = acceptor.local_addr()?.to_string();
+
     // Printed before anything else, on its own line, because
     // `scripts/check-no-kernel-sleep.sh` and
     // `scripts/check-standard-gives-the-core-back.sh` both read it back to
@@ -567,52 +841,34 @@ fn main() -> std::io::Result<()> {
     #[cfg(not(all(feature = "tls", target_os = "linux")))]
     let side = EngineSide::Plain;
     let body = move || {
-        // The tid, so a syscall trace can be attributed to THIS thread and
-        // not to the client on the main thread, which blocks on purpose.
-        // `/proc/thread-self` resolves to `<pid>/task/<tid>` for the calling
-        // thread; no dependency and no `gettid` binding needed.
-        #[cfg(target_os = "linux")]
-        if let Ok(link) = std::fs::read_link("/proc/thread-self")
-            && let Some(tid) = link.to_string_lossy().rsplit('/').next()
-        {
-            println!("engine-tid: {tid}");
-        }
+        print_engine_tid();
+        // `false`: the client on the other thread stops this engine through
+        // `stop`, and times its own window.
         match desk {
-            None => serve(acceptor, &engine_stop, mode, Never, side),
-            Some(d) => serve(acceptor, &engine_stop, mode, d, side),
+            None => serve::<_, false>(acceptor, &engine_stop, mode, Never, side),
+            Some(d) => serve::<_, false>(acceptor, &engine_stop, mode, d, side),
         }
     };
     let engine = spawn_engine(body, engine_core)?;
 
-    // The client pins itself, from inside the thread that will run, which is
-    // ADR-0015's first clause. The main thread is the client.
-    #[cfg(all(feature = "affinity", target_os = "linux"))]
-    if let Some(cpu) = client_core {
-        use fixbolt_engine::affinity::{self, CoreId};
-        affinity::pin_current_thread(CoreId(cpu)).map_err(std::io::Error::other)?;
-        let on = affinity::running_on().map_err(std::io::Error::other)?;
-        println!("client-core: {on}");
-    } else {
-        println!("client-core: not pinned");
-    }
-    #[cfg(not(all(feature = "affinity", target_os = "linux")))]
-    println!("client-core: not pinned");
+    pin_client(client_core)?;
 
-    let run = Run {
-        path,
-        warmup,
-        n,
-        hold_ms,
-        tls,
+    let peer = Peer::InProcess {
+        stop: &stop,
+        engine,
     };
-    let (mut samples, allocs) = match tls {
+    let Measured {
+        mut samples,
+        allocs,
+        late,
+    } = match tls {
         Tls::Off => {
             // The plain arm, exactly as it was before `--tls` existed: a
             // blocking `TcpStream` with Nagle off. Changing this client changes
             // every figure this binary has published.
             let sock = TcpStream::connect(&addr)?;
             sock.set_nodelay(true)?;
-            measure(sock, &run, &stop, engine)?
+            measure(sock, &run, peer)?
         }
         #[cfg(all(feature = "tls", target_os = "linux"))]
         Tls::Ktls | Tls::Userspace => {
@@ -620,17 +876,16 @@ fn main() -> std::io::Result<()> {
                 return Err(std::io::Error::other("w2w: a TLS arm with no certificate"));
             };
             let sock = tls_arm::connect(&addr, p, tls == Tls::Ktls)?;
-            measure(sock, &run, &stop, engine)?
+            measure(sock, &run, peer)?
         }
         #[cfg(not(all(feature = "tls", target_os = "linux")))]
         Tls::Ktls | Tls::Userspace => {
             // Unreachable: refused above, before any thread started.
+            let _ = peer;
             return Err(std::io::Error::other("this build has no TLS transport"));
         }
     };
 
-    samples.sort_unstable();
-    let pick = |q: f64| samples[((samples.len() as f64 - 1.0) * q) as usize];
     let what = match path {
         Path::Admin => "TestRequest -> Heartbeat",
         Path::App => "NewOrderSingle -> ExecutionReport",
@@ -638,16 +893,7 @@ fn main() -> std::io::Result<()> {
     println!("w2w: {what}, over kernel TCP on loopback");
     println!("     mode   {:>9}", mode.name());
     println!("     path   {:>9}", path.name());
-    println!("     {} samples after {} warmup", samples.len(), warmup);
-    println!("     min    {:>9} ns", samples[0]);
-    println!("     p50    {:>9} ns", pick(0.50));
-    println!("     p99    {:>9} ns", pick(0.99));
-    // Phase 1 exit criterion 6 names p99.9 specifically, and it was the one
-    // percentile this binary did not print. At the default 20 000 samples it is
-    // the mean of nothing — it is one sample, the 19 981st — so the criterion is
-    // reported with the sample count beside it and never without.
-    println!("     p99.9  {:>9} ns", pick(0.999));
-    println!("     max    {:>9} ns", samples[samples.len() - 1]);
+    print_figures(&mut samples, &run, late);
     println!("     allocs {allocs:>9}   (both threads, the timed window only)");
     println!();
     // Non-negotiable 1, for this binary. Reported first so the number is
@@ -686,13 +932,244 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `--listen`: the engine thread alone, serving until its last connection has
+/// closed. Prints no latency figure — see the module note.
+fn engine_half(
+    addr: &str,
+    mode: Mode,
+    run: Run,
+    engine_core: Option<usize>,
+) -> std::io::Result<()> {
+    let Run { path, tls, .. } = run;
+    let acceptor = Acceptor::bind(addr)?;
+    let bound = acceptor.local_addr()?;
+
+    println!("mode: {}", mode.name());
+    println!("path: {}", path.name());
+    // The bound address, not the argument, so `--listen 127.0.0.1:0` tells the
+    // generator where to go.
+    println!("listening: {bound}");
+
+    let desk = match path {
+        Path::Admin => None,
+        Path::App => Some(Desk::new()?),
+    };
+    // Nobody stores `true` here: this engine ends when its peer does.
+    let stop = Arc::new(AtomicBool::new(false));
+    let body = move || {
+        print_engine_tid();
+        // `true`: arm the allocation counter after the first logon, and return
+        // once the last connection has closed.
+        match desk {
+            None => serve::<_, true>(acceptor, &stop, mode, Never, EngineSide::Plain),
+            Some(d) => serve::<_, true>(acceptor, &stop, mode, d, EngineSide::Plain),
+        }
+    };
+    let engine = spawn_engine(body, engine_core)?;
+    // The main thread blocks here and allocates nothing, so the count below is
+    // the engine thread's.
+    engine
+        .join()
+        .map_err(|_| std::io::Error::other("w2w: the engine thread panicked"))?;
+    let allocs = ALLOCS.load(Ordering::Relaxed);
+
+    // Read back, as in the combined run. `half_of` has refused every arm but
+    // `off`, so anything else here is a transport this process did not ask for.
+    let seen = TLS_SEEN.load(Ordering::Relaxed);
+    println!("tls: {}", seen_name(seen));
+    if seen_name(seen) != tls.wants() {
+        return Err(std::io::Error::other(format!(
+            "w2w: --listen requires the engine to report tls '{}', and it reports '{}'",
+            tls.wants(),
+            seen_name(seen),
+        )));
+    }
+
+    if APP_REACHED.load(Ordering::Relaxed) {
+        return Err(std::io::Error::other(
+            "w2w: --listen --path admin was sent an application message; the --connect \
+             process is running another --path, and nothing it timed is an admin figure",
+        ));
+    }
+
+    println!("w2w: engine half, over kernel TCP, listening on {bound}");
+    println!("     mode   {:>9}", mode.name());
+    println!("     path   {:>9}", path.name());
+    println!(
+        "     allocs {allocs:>9}   (engine thread, first logon to last close, warmup and teardown included)"
+    );
+    println!("     no latency figures: the far end of every round trip is in the --connect");
+    println!("     process, and this build takes no wire timestamps.");
+    println!();
+    // Non-negotiable 1, for the one thread in this process that does any work.
+    // The window is wider than the combined run's — warmup and the close are in
+    // it — so a zero here is at least as strong a claim.
+    assert_eq!(
+        allocs, 0,
+        "w2w: {allocs} allocations on the engine thread between the first logon and \
+         the last close — CLAUDE.md §2 non-negotiable 1 says the engine's path has none"
+    );
+    println!("CLAUDE.md §2 rule 10: a number without its machine is someone else's claim.");
+    println!("ADR-0013 decision 4: `mode` above is this engine's; the --connect table is");
+    println!("about this engine only when it was run against this process.");
+    Ok(())
+}
+
+/// How long `--connect` waits for any one reply before calling the run failed.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `--connect`: the client thread alone. Its figures are the counterparty's
+/// view and are labelled so — see the module note.
+fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::Result<()> {
+    let Run { path, .. } = run;
+    println!("path: {}", path.name());
+    println!("connect: {addr}");
+    pin_client(client_core)?;
+
+    let sock = TcpStream::connect(addr)?;
+    sock.set_nodelay(true)?;
+    // A bound on every blocking read, set once, before the logon. The combined
+    // run cannot be sent a message its engine will not answer; two processes
+    // can — `--path app` against a `--listen --path admin` gets no reply at
+    // all — and a generator that hangs forever reports nothing. `SO_RCVTIMEO`
+    // adds no syscall to a read, which is what the `strace -f` gate reads.
+    sock.set_read_timeout(Some(REPLY_TIMEOUT))?;
+    let Measured {
+        mut samples,
+        allocs,
+        late,
+    } = measure(sock, &run, Peer::Remote).map_err(|e| match e.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => std::io::Error::new(
+            e.kind(),
+            format!(
+                "w2w: no reply from {addr} within {} s — is the --listen process up, and \
+                 running the same --path?",
+                REPLY_TIMEOUT.as_secs()
+            ),
+        ),
+        _ => e,
+    })?;
+
+    let what = match path {
+        Path::Admin => "TestRequest -> Heartbeat",
+        Path::App => "NewOrderSingle -> ExecutionReport",
+    };
+    println!("w2w: {what}, as the counterparty sees it, over kernel TCP to {addr}");
+    println!("     path   {:>9}", path.name());
+    print_figures(&mut samples, &run, late);
+    println!("     allocs {allocs:>9}   (generator thread, the timed window only)");
+    println!();
+    // This thread's timed loop allocates nothing (see `field`), and an
+    // allocation between two samples is this tool perturbing its own figure.
+    assert_eq!(
+        allocs,
+        0,
+        "w2w: {allocs} allocations on the generator thread inside the timed window \
+         over {} messages",
+        samples.len()
+    );
+    println!("AS THE COUNTERPARTY SEES IT: each figure above is a round trip on this");
+    println!("process's clock — this host's stack, the wire and the acceptor together.");
+    println!("It is not a wire-to-wire figure at the acceptor, and nothing is subtracted");
+    println!("from it. The engine's mode, pinning and allocations are in the --listen output.");
+    println!("NOT A LATENCY NUMBER FOR PUBLICATION unless both machines match DESIGN.md §9.");
+    println!("CLAUDE.md §2 rule 10: a number without its machine is someone else's claim.");
+    Ok(())
+}
+
+/// The engine thread's tid, so a syscall trace can be attributed to THIS
+/// thread and not to the client on the main thread, which blocks on purpose.
+/// `/proc/thread-self` resolves to `<pid>/task/<tid>` for the calling thread;
+/// no dependency and no `gettid` binding needed.
+fn print_engine_tid() {
+    #[cfg(target_os = "linux")]
+    if let Ok(link) = std::fs::read_link("/proc/thread-self")
+        && let Some(tid) = link.to_string_lossy().rsplit('/').next()
+    {
+        println!("engine-tid: {tid}");
+    }
+}
+
+/// The client pins itself, from inside the thread that will run, which is
+/// ADR-0015's first clause. The main thread is the client.
+fn pin_client(client_core: Option<usize>) -> std::io::Result<()> {
+    #[cfg(all(feature = "affinity", target_os = "linux"))]
+    if let Some(cpu) = client_core {
+        use fixbolt_engine::affinity::{self, CoreId};
+        affinity::pin_current_thread(CoreId(cpu)).map_err(std::io::Error::other)?;
+        let on = affinity::running_on().map_err(std::io::Error::other)?;
+        println!("client-core: {on}");
+    } else {
+        println!("client-core: not pinned");
+    }
+    // `main` has refused a core on a build that cannot pin, so this is
+    // genuinely unused rather than quietly ignored.
+    #[cfg(not(all(feature = "affinity", target_os = "linux")))]
+    {
+        let _ = client_core;
+        println!("client-core: not pinned");
+    }
+    Ok(())
+}
+
+/// The percentile rows, shared by the combined run and the generator half so
+/// the two tables cannot drift apart in format.
+fn print_figures(samples: &mut [u64], run: &Run, late: usize) {
+    samples.sort_unstable();
+    let pick = |q: f64| samples[((samples.len() as f64 - 1.0) * q) as usize];
+    println!("     {} samples after {} warmup", samples.len(), run.warmup);
+    // Only when asked for, so a run with no `--interval` prints what it did.
+    if run.interval_us > 0 {
+        println!(
+            "     interval {} us after each send, spun on the client thread; {late} of {} sends late",
+            run.interval_us,
+            samples.len()
+        );
+    }
+    println!("     min    {:>9} ns", samples[0]);
+    println!("     p50    {:>9} ns", pick(0.50));
+    println!("     p99    {:>9} ns", pick(0.99));
+    // Phase 1 exit criterion 6 names p99.9 specifically, and it was the one
+    // percentile this binary did not print. At the default 20 000 samples it is
+    // the mean of nothing — it is one sample, the 19 981st — so the criterion is
+    // reported with the sample count beside it and never without.
+    println!("     p99.9  {:>9} ns", pick(0.999));
+    println!("     max    {:>9} ns", samples[samples.len() - 1]);
+}
+
 /// What [`measure`] needs to know about the run, as one argument.
+#[derive(Clone, Copy)]
 struct Run {
     path: Path,
     warmup: usize,
     n: usize,
     hold_ms: u64,
     tls: Tls,
+    /// `--interval`, µs; `0` is back-to-back.
+    interval_us: u64,
+}
+
+/// Who is on the other end of the client's socket.
+enum Peer<'a> {
+    /// The engine thread of this process: its transport is read back before
+    /// the first sample, and it is stopped and joined after the last.
+    InProcess {
+        stop: &'a AtomicBool,
+        engine: std::thread::JoinHandle<()>,
+    },
+    /// Another process (`--connect`). Nothing about it can be read back from
+    /// here, so nothing is printed about it.
+    Remote,
+}
+
+/// What [`measure`] returns.
+struct Measured {
+    /// Unsorted.
+    samples: Vec<u64>,
+    /// Allocations over the timed window, every thread in this process.
+    allocs: usize,
+    /// Timed sends that were already overdue under `--interval`.
+    late: usize,
 }
 
 /// The client half: log on, read back which transport the engine got, warm up,
@@ -702,70 +1179,68 @@ struct Run {
 /// for `C = TcpStream` it is the loop this binary had before `--tls`, call for
 /// call — `write_all`, then `read` until one whole message.
 ///
-/// Returns the samples, unsorted, and the allocation count over the timed
-/// window.
-fn measure<C: Wire>(
-    mut sock: C,
-    run: &Run,
-    stop: &AtomicBool,
-    engine: std::thread::JoinHandle<()>,
-) -> std::io::Result<(Vec<u64>, usize)> {
+/// With [`Peer::Remote`] there is no engine to read back or stop: the socket is
+/// closed after `--hold-ms`, which is what ends the `--listen` process.
+fn measure<C: Wire>(mut sock: C, run: &Run, peer: Peer<'_>) -> std::io::Result<Measured> {
     let Run {
         path,
         warmup,
         n,
         hold_ms,
         tls,
+        interval_us,
     } = *run;
 
     // Logon first, and read the answer, so the timed loop starts on an
     // established session rather than on a handshake.
     write_and_read(&mut sock, &logon(1))?;
 
-    // **Read back, not echoed.** The engine thread stores what its transport
-    // reported once `logons()` moved; a Logon answered means that has happened
-    // or is about to, on the other thread, so this waits for it — bounded, and
-    // outside the timed window.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let seen = loop {
-        let code = TLS_SEEN.load(Ordering::Relaxed);
-        if code != 0 {
-            break code;
+    if let Peer::InProcess { .. } = peer {
+        // **Read back, not echoed.** The engine thread stores what its transport
+        // reported once `logons()` moved; a Logon answered means that has happened
+        // or is about to, on the other thread, so this waits for it — bounded, and
+        // outside the timed window.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let seen = loop {
+            let code = TLS_SEEN.load(Ordering::Relaxed);
+            if code != 0 {
+                break code;
+            }
+            if Instant::now() > deadline {
+                return Err(std::io::Error::other(
+                    "w2w: the engine never reported which transport carried the logon",
+                ));
+            }
+            std::thread::yield_now();
+        };
+        println!("tls: {}", seen_name(seen));
+        // **Every arm must have run on the transport it names, `ktls` included, and
+        // this is the first thing that judges the run.** It returns before a single
+        // sample is taken, so it is necessarily ahead of the `assert_eq!(allocs, 0)`
+        // in `main`.
+        //
+        // `[measured 2026-09-13]` step 6b shipped this as `(Tls::Ktls, 2 | 3)` — a
+        // `ktls` arm whose handover fell back was deliberately allowed through, on
+        // the reasoning that `tls:` above already says `userspace` and
+        // `scripts/w2w-baseline.sh` reads that line. A senior review forced
+        // `with_offload(false)` on the engine side and found the script's check
+        // unreachable in exactly the case it was written for: the run reached the
+        // allocation assertion first and died with `panicked … allocs 600`, exit
+        // 101, naming a hot-path regression for a connection that had simply never
+        // taken the keys. The script is still the second reader; it is no longer
+        // the only one.
+        if seen_name(seen) != tls.wants() {
+            return Err(std::io::Error::other(format!(
+                "w2w: --tls {} requires the engine to report tls '{}', and it \
+                 reports '{}' — the kernel handover fell back to userspace rustls, \
+                 or this is not the arm that was asked for. Nothing measured below \
+                 would be a figure about '{}', so nothing is measured.",
+                tls.name(),
+                tls.wants(),
+                seen_name(seen),
+                tls.name(),
+            )));
         }
-        if Instant::now() > deadline {
-            return Err(std::io::Error::other(
-                "w2w: the engine never reported which transport carried the logon",
-            ));
-        }
-        std::thread::yield_now();
-    };
-    println!("tls: {}", seen_name(seen));
-    // **Every arm must have run on the transport it names, `ktls` included, and
-    // this is the first thing that judges the run.** It returns before a single
-    // sample is taken, so it is necessarily ahead of the `assert_eq!(allocs, 0)`
-    // in `main`.
-    //
-    // `[measured 2026-09-13]` step 6b shipped this as `(Tls::Ktls, 2 | 3)` — a
-    // `ktls` arm whose handover fell back was deliberately allowed through, on
-    // the reasoning that `tls:` above already says `userspace` and
-    // `scripts/w2w-baseline.sh` reads that line. A senior review forced
-    // `with_offload(false)` on the engine side and found the script's check
-    // unreachable in exactly the case it was written for: the run reached the
-    // allocation assertion first and died with `panicked … allocs 600`, exit
-    // 101, naming a hot-path regression for a connection that had simply never
-    // taken the keys. The script is still the second reader; it is no longer
-    // the only one.
-    if seen_name(seen) != tls.wants() {
-        return Err(std::io::Error::other(format!(
-            "w2w: --tls {} requires the engine to report tls '{}', and it \
-             reports '{}' — the kernel handover fell back to userspace rustls, \
-             or this is not the arm that was asked for. Nothing measured below \
-             would be a figure about '{}', so nothing is measured.",
-            tls.name(),
-            tls.wants(),
-            seen_name(seen),
-            tls.name(),
-        )));
     }
 
     // **Every message is rendered before the clock starts.** The lesson is
@@ -782,21 +1257,33 @@ fn measure<C: Wire>(
         .collect();
 
     let mut buf = [0u8; 4096];
+    // Warmup is paced like the window, so the window starts on an engine in
+    // the state the interval puts it in.
+    let mut pacer = Pacer::new(interval_us);
     for m in msgs.iter().take(warmup) {
+        pacer.wait();
+        pacer.sent_now();
         sock.put(m)?;
         read_one(&mut sock, &mut buf)?;
     }
 
     let mut samples: Vec<u64> = Vec::with_capacity(n);
+    let mut late = 0usize;
     // Armed after `samples` has its capacity, so the one allocation this loop
     // would otherwise be blamed for is outside the window rather than excused
     // inside it.
     ARMED.store(true, Ordering::Relaxed);
     for m in msgs.iter().skip(warmup) {
+        // Before `t0`: the wait is never inside a sample. With no `--interval`
+        // this returns at once, having read no clock.
+        if pacer.wait() {
+            late += 1;
+        }
         let t0 = Instant::now();
         sock.put(m)?;
         let len = read_one(&mut sock, &mut buf)?;
         let ns = t0.elapsed().as_nanos();
+        pacer.sent(t0);
         // The reply must be the one this path asks for. A run that measured a
         // Reject, a Logout, or a stale byte must not report a latency for it —
         // and a `--path app` run that quietly got a `35=3` back would otherwise
@@ -840,10 +1327,20 @@ fn measure<C: Wire>(
         std::thread::sleep(Duration::from_millis(hold_ms));
     }
 
-    stop.store(true, Ordering::Relaxed);
-    drop(sock);
-    let _ = engine.join();
-    Ok((samples, allocs))
+    match peer {
+        Peer::InProcess { stop, engine } => {
+            stop.store(true, Ordering::Relaxed);
+            drop(sock);
+            let _ = engine.join();
+        }
+        // Closing is what ends the `--listen` process.
+        Peer::Remote => drop(sock),
+    }
+    Ok(Measured {
+        samples,
+        allocs,
+        late,
+    })
 }
 
 /// Spawn the engine thread, pinned if a core was named.
@@ -902,7 +1399,10 @@ enum EngineSide {
 /// `wrap` is `lib.rs`'s `pump` shape: it turns an accepted socket into whatever
 /// this engine's connections are. For the plain arm it is `Some`, and the
 /// compiler removes it.
-fn serve<A: Application>(
+///
+/// `UNTIL_CLOSED` is `--listen`: see [`pump`]. A const, so the combined run's
+/// loop is compiled with no trace of it.
+fn serve<A: Application, const UNTIL_CLOSED: bool>(
     acceptor: Acceptor,
     stop: &AtomicBool,
     mode: Mode,
@@ -910,23 +1410,27 @@ fn serve<A: Application>(
     side: EngineSide,
 ) {
     match side {
-        EngineSide::Plain => run(acceptor, stop, mode, app, Some::<TcpTransport>),
+        EngineSide::Plain => {
+            run::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, Some::<TcpTransport>);
+        }
         #[cfg(all(feature = "tls", target_os = "linux"))]
-        EngineSide::Tls(cfg, offload) => run(acceptor, stop, mode, app, move |sock| {
-            // The handshake runs inside the transport's `recv`/`send` on the
-            // engine thread, before the first logon and so before the timed
-            // window — `tls.rs`'s module note on why it is not a pre-session
-            // stage. A connection rustls will not even start is dropped.
-            rustls::server::UnbufferedServerConnection::new(std::sync::Arc::clone(&cfg))
-                .ok()
-                .map(|conn| {
-                    fixbolt_engine::tls::TlsTransport::with_offload(
-                        sock,
-                        fixbolt_engine::tls::Handshake::new(conn),
-                        offload,
-                    )
-                })
-        }),
+        EngineSide::Tls(cfg, offload) => {
+            run::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, move |sock| {
+                // The handshake runs inside the transport's `recv`/`send` on the
+                // engine thread, before the first logon and so before the timed
+                // window — `tls.rs`'s module note on why it is not a pre-session
+                // stage. A connection rustls will not even start is dropped.
+                rustls::server::UnbufferedServerConnection::new(std::sync::Arc::clone(&cfg))
+                    .ok()
+                    .map(|conn| {
+                        fixbolt_engine::tls::TlsTransport::with_offload(
+                            sock,
+                            fixbolt_engine::tls::Handshake::new(conn),
+                            offload,
+                        )
+                    })
+            })
+        }
     }
 }
 
@@ -936,7 +1440,12 @@ fn serve<A: Application>(
 /// Split out from [`pump`] so that `--mode` and `--path` do not multiply into
 /// six copies of the loop: a reversal that also changed the loop would prove
 /// nothing about the loop.
-fn run<A: Application, T: Transport, F: FnMut(TcpTransport) -> Option<T>>(
+fn run<
+    A: Application,
+    T: Transport,
+    F: FnMut(TcpTransport) -> Option<T>,
+    const UNTIL_CLOSED: bool,
+>(
     acceptor: Acceptor,
     stop: &AtomicBool,
     mode: Mode,
@@ -944,10 +1453,10 @@ fn run<A: Application, T: Transport, F: FnMut(TcpTransport) -> Option<T>>(
     wrap: F,
 ) {
     match mode {
-        Mode::Hft => pump(acceptor, stop, Spin, app, wrap),
-        Mode::Yield => pump(acceptor, stop, Yield, app, wrap),
+        Mode::Hft => pump::<_, _, _, _, UNTIL_CLOSED>(acceptor, stop, Spin, app, wrap),
+        Mode::Yield => pump::<_, _, _, _, UNTIL_CLOSED>(acceptor, stop, Yield, app, wrap),
         #[cfg(all(feature = "standard", unix))]
-        Mode::Standard => pump(
+        Mode::Standard => pump::<_, _, _, _, UNTIL_CLOSED>(
             acceptor,
             stop,
             fixbolt_engine::block::Block::new(16),
@@ -974,7 +1483,21 @@ fn run<A: Application, T: Transport, F: FnMut(TcpTransport) -> Option<T>>(
 /// is the loop this function was before `--tls`, with no per-turn check added:
 /// the question is asked once, and asking it every turn would put a branch in
 /// the figure for an answer that never moves.
-fn pump<A: Application, W: Waiting, T: Transport, F: FnMut(TcpTransport) -> Option<T>>(
+///
+/// **`UNTIL_CLOSED`, and only for `--listen`.** That process has no client
+/// thread to time a window or set `stop`, so the engine thread does both
+/// ends itself: it arms [`ARMED`] once the first logon is in, and the second
+/// loop returns once the live connection count is zero, disarming on the way
+/// out. The window therefore holds warmup and the turn that saw the close. As
+/// a const, `false` compiles both checks away: the combined run's loops are
+/// the loops above, turn for turn.
+fn pump<
+    A: Application,
+    W: Waiting,
+    T: Transport,
+    F: FnMut(TcpTransport) -> Option<T>,
+    const UNTIL_CLOSED: bool,
+>(
     acceptor: Acceptor,
     stop: &AtomicBool,
     wait: W,
@@ -1016,6 +1539,9 @@ fn pump<A: Application, W: Waiting, T: Transport, F: FnMut(TcpTransport) -> Opti
                 tls_code(first.and_then(|id| engine.tls_mode(id))),
                 Ordering::Relaxed,
             );
+            if UNTIL_CLOSED {
+                ARMED.store(true, Ordering::Relaxed);
+            }
             break;
         }
     }
@@ -1028,6 +1554,12 @@ fn pump<A: Application, W: Waiting, T: Transport, F: FnMut(TcpTransport) -> Opti
         if !engine.turn() {
             engine.idle_with(extra);
         }
+        if UNTIL_CLOSED && engine.connections() == 0 {
+            break;
+        }
+    }
+    if UNTIL_CLOSED {
+        ARMED.store(false, Ordering::Relaxed);
     }
 }
 
@@ -1327,4 +1859,152 @@ fn civil(days: u64) -> (u64, u64, u64) {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// The two halves' refusals and `--interval`'s pacing — step A3a of
+/// `docs/plans/2026-09-04-the-second-linux-desk.md`. Pure functions, so no
+/// socket and no engine.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn argv(s: &str) -> Vec<String> {
+        std::iter::once("w2w")
+            .chain(s.split_whitespace())
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn no_new_flag_is_the_combined_run() {
+        for a in [
+            "",
+            "--messages 300 --warmup 50 --hold-ms 400 --mode hft",
+            "--mode standard --tls ktls --engine-core 6 --client-core 7",
+        ] {
+            assert_eq!(half_of(&argv(a)), Ok(Half::Both), "{a}");
+            assert_eq!(interval_of(&argv(a)), Ok(0), "{a}");
+        }
+    }
+
+    #[test]
+    fn each_half_takes_its_address() {
+        assert_eq!(
+            half_of(&argv(
+                "--listen 0.0.0.0:9000 --mode standard --engine-core 6"
+            )),
+            Ok(Half::Listen("0.0.0.0:9000".into()))
+        );
+        assert_eq!(
+            half_of(&argv(
+                "--connect 10.0.0.2:9000 --messages 10 --warmup 1 --hold-ms 5 --interval 1000 --client-core 7"
+            )),
+            Ok(Half::Connect("10.0.0.2:9000".into()))
+        );
+    }
+
+    #[test]
+    fn listen_and_connect_together_are_refused() {
+        let e = half_of(&argv("--listen 127.0.0.1:1 --connect 127.0.0.1:1")).unwrap_err();
+        assert!(e.contains("one process runs one of them"), "{e}");
+    }
+
+    #[test]
+    fn connect_refuses_what_only_an_engine_has() {
+        for flag in ["--engine-core 6", "--mode hft"] {
+            let e = half_of(&argv(&format!("--connect 127.0.0.1:1 {flag}"))).unwrap_err();
+            let name = flag.split(' ').next().unwrap();
+            assert!(
+                e.starts_with(&format!("{name} does not apply to --connect")),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn listen_refuses_what_only_a_generator_has() {
+        for flag in [
+            "--client-core 7",
+            "--messages 10",
+            "--warmup 1",
+            "--hold-ms 5",
+            "--interval 1000",
+        ] {
+            let e = half_of(&argv(&format!("--listen 127.0.0.1:1 {flag}"))).unwrap_err();
+            let name = flag.split(' ').next().unwrap();
+            assert!(
+                e.starts_with(&format!("{name} does not apply to --listen")),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn either_half_refuses_tls_but_accepts_off() {
+        for half in ["--listen", "--connect"] {
+            for arm in ["ktls", "userspace"] {
+                let e = half_of(&argv(&format!("{half} 127.0.0.1:1 --tls {arm}"))).unwrap_err();
+                assert!(
+                    e.starts_with(&format!("--tls {arm} is not available to {half}")),
+                    "{e}"
+                );
+            }
+            assert!(half_of(&argv(&format!("{half} 127.0.0.1:1 --tls off"))).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_new_flag_without_its_value_is_refused_not_defaulted() {
+        assert_eq!(
+            half_of(&argv("--listen")),
+            Err("--listen needs a value".into())
+        );
+        assert_eq!(
+            half_of(&argv("--connect --messages 10")),
+            Err("--connect needs a value".into())
+        );
+        assert_eq!(
+            interval_of(&argv("--interval")),
+            Err("--interval needs a value".into())
+        );
+        assert_eq!(
+            interval_of(&argv("--interval 1ms")),
+            Err("--interval 1ms: not a valid value".into())
+        );
+        assert_eq!(
+            interval_of(&argv("--interval -5")),
+            Err("--interval -5: not a valid value".into())
+        );
+        assert_eq!(interval_of(&argv("--interval 250")), Ok(250));
+    }
+
+    #[test]
+    fn a_zero_interval_never_waits() {
+        let mut p = Pacer::new(0);
+        p.sent(Instant::now());
+        p.sent_now();
+        assert!(p.next.is_none());
+        assert!(!p.wait());
+    }
+
+    #[test]
+    fn the_next_send_waits_one_interval_after_the_last() {
+        let mut p = Pacer::new(2_000);
+        let t0 = Instant::now();
+        p.sent(t0);
+        assert!(!p.wait(), "a send due in 2 ms is not late");
+        assert!(t0.elapsed() >= Duration::from_micros(2_000));
+    }
+
+    #[test]
+    fn an_overdue_send_is_counted_late_and_goes_at_once() {
+        let mut p = Pacer::new(1);
+        p.sent(Instant::now());
+        // The test may sleep; the pacer may not.
+        std::thread::sleep(Duration::from_millis(2));
+        let before = Instant::now();
+        assert!(p.wait());
+        assert!(before.elapsed() < Duration::from_millis(1));
+    }
 }

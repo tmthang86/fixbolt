@@ -17,6 +17,19 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`tools/w2w --listen`, `--connect` and `--interval`** (a tool, not a published crate).
+  `--listen <addr>` runs only the engine half: it serves until the last connection closes after
+  the first logon, prints `mode:`, `path:`, `listening:` and `tls:`, asserts zero allocations on
+  the engine thread from the first logon to the last close, and prints no latency figure.
+  `--connect <addr>` runs only the generator half and prints its percentiles under the heading
+  *as the counterparty sees it*, with no `mode:` or `tls:` line; a reply not received within
+  10 s fails the run. A flag that belongs to the other half is refused, `--listen` with
+  `--connect` is refused, and `--tls` other than `off` is refused on either half, because the
+  certificate is generated per process. `--interval <us>` spaces each send one interval after the
+  previous one by spinning on the client thread, and prints how many sends were late. With none
+  of the three flags the output is unchanged line for line.
+  `docs/plans/2026-09-04-the-second-linux-desk.md` A3a.
+
 - **`fixbolt_engine::serve_hft_pinned`, the single-engine `hft` door that pins.** Behind
   `--features affinity` on Linux. It takes a `fixbolt_engine::affinity::CorePin` —
   `CorePin::to(CoreId)`, `.allow_unisolated()`, `.core()`, `.is_unisolated_allowed()`,

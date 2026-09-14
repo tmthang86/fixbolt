@@ -89,6 +89,13 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
 2. `scripts/bench.sh --strict`: refuses a machine with mitigations off.
 3. `tools/w2w` for the wire-to-wire round trip, pinned with `--engine-core` and
    `--client-core`. `scripts/w2w-baseline.sh` is the committed 20-run procedure.
+   `[2026-09-14]` For two machines, `--listen <addr>` runs the engine half and `--connect <addr>`
+   the generator half. The engine half prints its mode, transport and engine-thread allocations
+   and **no latency figure**; the generator's table is a round trip *as the counterparty sees
+   it*, the generator's host and the wire included. `--connect` refuses `--engine-core` and
+   `--mode`; `--listen` refuses `--client-core`, `--messages`, `--warmup`, `--hold-ms` and
+   `--interval`; both refuse `--tls` other than `off`. `--interval <us>` spaces sends by
+   spinning, so the generator's core is busy for the whole wait between sends, not asleep.
 
 **The measurement traps this project already paid for** are in [GUIDE.md §8](GUIDE.md). Read
 them rather than rediscover them. A score that moves with its own timeout is measuring the
