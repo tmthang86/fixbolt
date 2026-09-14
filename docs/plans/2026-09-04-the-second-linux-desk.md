@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B đang chạy từ 2026-09-14 21:27** (nhánh `plan/the-second-linux-desk-b`, PR 2) — **Sửa 3 (Q12–Q17) chờ duyệt** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B đang chạy từ 2026-09-14 21:27** (nhánh `plan/the-second-linux-desk-b`, PR 2) — **Sửa 3 đã duyệt 2026-09-14, theo đề xuất Q12–Q17** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -610,6 +610,11 @@ file) và [ADR-0068](../decisions/ADR-0068-a-published-figure-is-two-procedures-
   Tailscale, còn chain của Docker/iptables-nft thì không; `nft list ruleset` trước và sau phải giống
   nhau.
 - **B1 chạy trước khi duyệt** (không phụ thuộc Sửa 3).
+
+**`[2026-09-14]` Ai tắt EEE, và Sửa 3 được duyệt.** Chủ sở hữu trả lời: *"lệnh đó session khác chạy
+theo chỉ đạo, tôi dừng rồi. Duyệt"*. Vậy ba lệnh 21:28:58–21:29:21 là của một session khác, theo lệnh
+chủ sở hữu, và session đó đã dừng trước khi B1 đo run nào được giữ. Không có số nào trước thời điểm
+này bị ảnh hưởng (chưa có số nào). Sửa 3 duyệt theo đề xuất — xem cuối mục *Sửa 3*.
 
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
@@ -1389,6 +1394,11 @@ EEE nếu Q15; `STATUS.md` item 85 (guard), 88 (đóng), item mới nếu A/B EE
 | **Q17** | Điều 5: một khe build sau B1; thứ tự B2→B5→B8→B4 ×2, B7, B6, B9; cỡ message B4 như (d), arm 1 s chỉ p50; cắt từ `interval 10 000` → B6 app 1 s → B8 app → `standard` 1 s nếu quá ngày? | **Có** | Giữ thứ tự cũ; B4 vẫn thiếu cỡ message — phải quyết trước khi chạy |
 
 Không câu nào chặn B1. S2 và S3 làm được ngay sau khi duyệt, không cần cargo; S1 chờ khe build.
+
+**`[2026-09-14]` Chủ sở hữu duyệt Sửa 3 theo đề xuất**, nguyên văn *"Duyệt"*: Q12 = vòng 4 096 ô
+(J1); Q13 = ADR-0068 (giờ *Accepted*) và S2 trước B2; Q14 = B6 công bố với EEE tắt, thêm A/B EEE
+bật, pause chỉ đếm; Q15 = hàng §9 *EEE off* và hàng `eee` của `check-machine.sh` nếu A/B ≥ 5 %;
+Q16 = `pick_nic` theo thiết bị vật lý (N1); Q17 = khe build sau B1, thứ tự và cỡ message như Điều 5.
 
 ### Nguồn (tra 2026-09-14)
 

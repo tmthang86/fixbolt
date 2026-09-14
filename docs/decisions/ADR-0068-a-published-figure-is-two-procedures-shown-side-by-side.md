@@ -1,8 +1,8 @@
 # ADR-0068 — A published latency figure is two procedures, shown side by side
 
-**Status:** Proposed (architect, 2026-09-14 — *Sửa 3* of
-[the-second-linux-desk](../plans/2026-09-04-the-second-linux-desk.md), Điều 2; the owner decides
-at Q13 of that section) · **Date:** 2026-09-14 ·
+**Status:** Accepted (owner, 2026-09-14, Q13 of *Sửa 3* answered as recommended: *"Duyệt"*).
+Proposed by the architect the same day — *Sửa 3* of
+[the-second-linux-desk](../plans/2026-09-04-the-second-linux-desk.md), Điều 2 · **Date:** 2026-09-14 ·
 **Plan:** docs/plans/2026-09-04-the-second-linux-desk.md, Sửa 3, Điều 2 and step S2
 **Answers:** the *needs a plan* sentence of `STATUS.md` open item 85 — *how a figure is
 reproduced before it is published, at every published percentile; a dispersion that reads both
