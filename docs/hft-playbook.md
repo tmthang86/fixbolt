@@ -59,8 +59,9 @@ interrupts off the isolated core, and enable `busy_poll` on the socket. The engi
 see nothing but its own session.
 
 `scripts/check-machine.sh` reads this, in `hft` mode same as `standard`, once a NIC is
-selected (`FIXBOLT_NIC=<nic>`, or auto-selected: the first interface with carrier, excluding
-`lo`, `tailscale*`, `docker*`, `veth*`, `br-*` and wireless `wl*`):
+selected (`FIXBOLT_NIC=<nic>`, or auto-selected: the first physical NIC under
+`/sys/class/net` in name order — a bus device, not virtual, not wireless; carrier only
+breaks a tie between several):
 
 ```
 FIXBOLT_NIC=<nic> scripts/check-machine.sh   # NIC IRQ affinity, coalescing, irqbalance, busy_read
