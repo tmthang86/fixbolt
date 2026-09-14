@@ -58,6 +58,17 @@ Steer the NIC's receive queues onto cores that are **not** the engine core, keep
 interrupts off the isolated core, and enable `busy_poll` on the socket. The engine core should
 see nothing but its own session.
 
+`scripts/check-machine.sh` reads this, in `hft` mode same as `standard`, once a NIC is
+selected (`FIXBOLT_NIC=<nic>`, or auto-selected: the first interface with carrier, excluding
+`lo`, `tailscale*`, `docker*`, `veth*`, `br-*` and wireless `wl*`):
+
+```
+FIXBOLT_NIC=<nic> scripts/check-machine.sh   # NIC IRQ affinity, coalescing, irqbalance, busy_read
+echo <cpu> | sudo tee /proc/irq/<n>/smp_affinity_list   # steer one IRQ off the engine core
+sudo ethtool -C <nic> rx-usecs 0                        # interrupt coalescing off
+systemctl stop irqbalance                               # stop it moving IRQs back
+```
+
 ## 5. Application configuration and the build
 
 - **Core map:** core → shard → session, one session per polling thread

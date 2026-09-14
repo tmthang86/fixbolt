@@ -1311,11 +1311,12 @@ machine, not the code. None of this is optional for a latency measurement to mea
 | `isolcpus` + `rcu_nocbs` for the engine core, **and the engine thread pinned to it** | No other tenants and no RCU callbacks on the engine core. `[measured 2026-08-31]` free: 494.8 ns and 498.2 ns per turn against 501.8 untouched. `[measured 2026-09-02]` worth **11× at p99.9 and nothing at p50**, wire-to-wire, application path, one variable, both arms inside one CCD: p50 19 968 against 19 407 (the isolated core is 2.9% *slower*), p99.9 **26 300 against 266 887**, and 293 749 with no pinning at all. A 20 000-sample benchmark of a 500 ns operation could not see it; the excursion is 250 µs long |
 | **CPU speculation mitigations IN FORCE** | `[measured 2026-09-01]` the single largest term in this design's budget. Turning them off makes every syscall **59–63%** cheaper: `Engine::turn` 448.9 → 175.2 ns, `recv` 420.5 → 156.9, while thirteen pure user-space benchmarks move −4.1% to +4.1% with no direction. All of it is `retbleed`'s untrained return thunk plus `spec_rstack_overflow`'s Safe RET; `vmscape` costs nothing. **This row requires them ON**, because `baselines.tsv` was recorded with them and a machine without them is not comparable. It is not advice to disable them ([ADR-0023](decisions/ADR-0023-section-9-records-the-cpu-mitigations.md)) |
 | `nohz_full`: **NOT recommended** | `[measured 2026-08-31]` 160 ns on every kernel entry, 670.7 ns per turn against 494.8. What it buys is the far tail only: p50 376 against 216, p99 376 against 224, p99.9 384 against 224, and it wins from p99.99 outward (504 against 2 848). A busy `hft` engine makes ~2 000 000 kernel entries per second and this removes ~1 100 excursions of 3 µs: 0.32 s of tax against 0.0033 s of tail. Take it only for a p99.99 objective ([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md)) |
-| IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt |
+| IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt. `scripts/check-machine.sh` judges this row for real, not just reports it, once a NIC is selected (`FIXBOLT_NIC=<name>`, or auto-selected: the first interface with carrier, excluding `lo`, `tailscale*`, `docker*`, `veth*`, `br-*` and wireless `wl*`): it reads every `/proc/irq/<n>/smp_affinity_list` naming that NIC and checks it against `/sys/devices/system/cpu/isolated`, and separately checks that `irqbalance` is not active — an active `irqbalance` redistributes IRQs regardless of any pin written here. Without a NIC selected, the row stays the `? ? ?` it always was |
+| Interrupt coalescing **off** | A NIC batching interrupts (`rx-usecs > 0`) trades latency for fewer interrupts — the wrong trade on the engine's receive path. `scripts/check-machine.sh` judges it once a NIC is selected (same selection rule as the IRQ affinity row above): `ethtool -c <nic>`, PASS when `rx-usecs: 0` |
 | `mlockall` + pre-faulted buffers | No page fault on the hot path. The reference project's `pool.rs` touches every page at startup; copy that |
 | Transparent huge pages **off** | THP compaction stalls are multi-millisecond |
 | CPU frequency governor `performance`, C-states off | A core waking from C6 costs ~100 µs |
-| `SO_BUSY_POLL` / `net.core.busy_poll` | Lets the kernel's own receive path spin instead of sleeping |
+| `SO_BUSY_POLL` / `net.core.busy_poll` | Lets the kernel's own receive path spin instead of sleeping. `scripts/check-machine.sh` also reads `net.core.busy_read` once a NIC is selected (same selection rule as the IRQ affinity row above), naming both values; without a NIC selected it reads `net.core.busy_poll` alone, as before |
 | **If TLS is on:** a kernel that carries the negotiated cipher suite in kTLS | kTLS support is narrower than what `rustls` will negotiate. A session that negotiates outside it drops silently to the userspace path and off the hot-path guarantee (D11). **Which kernel and which suites — ADR-0005 open question 2, answered at the level measured.** `[measured 2026-09-14]` `TLS13_AES_128_GCM_SHA256`, the only suite this engine offers (`crates/engine/src/tls.rs`, `offloadable_provider`), is taken by the kernel on **`7.0.0-31-generic`**: every kTLS run on the §9 desktop read back `tls: kernel`. **Not measured**: any other suite — the `tls` plan's optional suite step did not run — and the minimum kernel. **On the CI runner**, the `tls` job (*TLS, with the kernel it needs*, job `103750342469` of run [`34767259852`](https://github.com/tmthang86/fixbolt/actions/runs/34767259852), commit `1178f4d`) asserts that the kernel took `TLS13_AES_128_GCM_SHA256` keys — `crates/engine/tests/tls.rs:40-45` narrows to that suite and `:488-497` requires `/proc/net/tls_stat` `TlsTxSw` and `TlsRxSw` to move — and its log reads `verdict: READY` and every test `ok`. **That job prints no kernel version.** The runner kernel `6.17.0-1022-azure` is recorded on 2026-09-10 ([CONFORMANCE.md](CONFORMANCE.md) §8) and, in the same run, by another job (*The machine probes reach the right verdicts*, `kernel: Linux 6.17.0-1022-azure`) — not by the job that took the keys. That gap is the residue |
 
 A latency number published without stating which of these were set is not a number.
@@ -1327,6 +1328,17 @@ or `? ? ?` for each, with the command that fixes a failing one. It reads only; a
 is root, machine-specific, and belongs to the person at the box. `unknown` is deliberately
 **not** a pass: a container that cannot read `/sys` must not be able to look like a tuned
 host.
+
+`[2026-09-14]` step A5 of
+[plans/2026-09-04-the-second-linux-desk.md](plans/2026-09-04-the-second-linux-desk.md):
+`check-machine.sh` also judges NIC IRQ affinity, interrupt coalescing (`rx-usecs 0`),
+`irqbalance` inactive and `net.core.busy_read`, once a NIC is selected — `FIXBOLT_NIC=<name>`,
+or auto-selected as the first interface that has carrier, excluding `lo`, `tailscale*`,
+`docker*`, `veth*`, `br-*` and wireless `wl*`. Without `FIXBOLT_NIC` and without any such NIC
+carrying a signal, the output is unchanged from before this step: the NIC IRQ affinity row
+stays the same `? ? ?` it always was, no new rows print, and the string `pass 12 fail 0
+unknown 1` recorded in `benches/baselines.tsv` still names the loopback machine it always
+named.
 
 ```
 scripts/check-machine.sh          # what is in force, and how to fix what is not

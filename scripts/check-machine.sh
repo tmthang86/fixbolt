@@ -13,6 +13,22 @@
 # Exit 1 if any row FAILS, so `scripts/bench.sh --strict` can refuse to publish a
 # number from a machine that is not set up. `unknown` is NOT a pass: a container
 # that cannot read /sys must not look like a tuned host.
+#
+# [2026-09-14] step A5 of docs/plans/2026-09-04-the-second-linux-desk.md: the NIC
+# IRQ affinity row, plus two new rows (coalescing, irqbalance) and an extra field
+# on the busy_poll row, are judged for real once a NIC is selected — FIXBOLT_NIC,
+# or auto-selected as the first interface that HAS CARRIER, excluding lo itself,
+# tailscale* (this project's own remote-control tunnel), docker*/veth*/br-*
+# (container and bridge virtual interfaces) and wl* (wireless — no stable IRQ or
+# coalescing story). No NIC selected: every row below is byte-identical to the
+# script before this step, including the NIC IRQ affinity row's `? ? ?`.
+#
+# The overlap check (NIC IRQ affinity vs /sys/devices/system/cpu/isolated) first
+# used `comm -12` on two `sort -n`-ed lists and got "not in sorted order" on both,
+# despite the numeric order being correct: `comm` compares by the current
+# locale's collation, not numerically, and under a normal locale "10" sorts
+# before "6". Replaced with `grep -Fxf`, which needs no particular sort order.
+# See docs/reference/comm-compares-by-locale-collation-not-number.md.
 set -uo pipefail
 
 pass=0
@@ -33,6 +49,18 @@ row() { # row PASS|FAIL|UNKNOWN name value fixcmd
 
 # Read a file, or print nothing if it is not there / not readable.
 r() { cat "$1" 2>/dev/null; }
+
+# Expand a cpulist like "6-7,14-15" (the format of smp_affinity_list and of
+# /sys/devices/system/cpu/isolated) into one CPU number per line.
+expand_cpulist() {
+  echo "$1" | tr ',' '\n' | while IFS= read -r part; do
+    case "$part" in
+      *-*) seq "${part%%-*}" "${part##*-}" ;;
+      "") ;;
+      *) echo "$part" ;;
+    esac
+  done
+}
 
 # virt_verdict <systemd-detect-virt output> <steal % over the window>
 #
@@ -107,6 +135,32 @@ if [ "$(uname -s)" != Linux ]; then
 fi
 
 CMDLINE=$(r /proc/cmdline)
+
+# --- NIC selection --------------------------------------------------------
+#
+# `FIXBOLT_NIC=<name>` names the NIC explicitly (carrier not required — a
+# cable-less FAIL/UNKNOWN run is still useful). Otherwise auto-select the
+# first interface that HAS CARRIER, excluding: `lo` itself; `tailscale*`
+# (this project's own remote-control tunnel, not the measurement NIC);
+# `docker*`, `veth*`, `br-*` (container/bridge virtual interfaces — never
+# the wire the engine talks to); and `wl*` (wireless — no stable IRQ
+# affinity or ethtool coalescing story, and never what §9's NIC rows mean).
+# No FIXBOLT_NIC and no NIC left standing after those exclusions: NIC stays
+# empty and every row below behaves exactly as it did before this NIC
+# awareness existed.
+NIC="${FIXBOLT_NIC:-}"
+if [ -z "$NIC" ]; then
+  for dev in /sys/class/net/*/; do
+    cand=$(basename "$dev")
+    case "$cand" in
+      lo | tailscale* | docker* | veth* | br-* | wl*) continue ;;
+    esac
+    if [ "$(r "${dev}carrier")" = 1 ]; then
+      NIC="$cand"
+      break
+    fi
+  done
+fi
 
 echo "=== DESIGN.md §9"
 
@@ -234,13 +288,29 @@ else
 fi
 
 # --- busy poll ----------------------------------------------------------------
+# Without a NIC selected this row is exactly as it always was: only
+# `net.core.busy_poll`. With a NIC selected it also reads `net.core.busy_read`
+# — the receive-side half of the same A/B (see DESIGN.md §9, SO_BUSY_POLL row)
+# — and applies the same ">0" threshold to both, naming both values.
 bp=$(sysctl -n net.core.busy_poll 2>/dev/null)
-if [ -z "$bp" ]; then
-  row UNKNOWN "net.core.busy_poll" "sysctl unavailable" "run on the host"
-elif [ "$bp" -gt 0 ] 2>/dev/null; then
-  row PASS "net.core.busy_poll" "$bp"
+if [ -z "$NIC" ]; then
+  if [ -z "$bp" ]; then
+    row UNKNOWN "net.core.busy_poll" "sysctl unavailable" "run on the host"
+  elif [ "$bp" -gt 0 ] 2>/dev/null; then
+    row PASS "net.core.busy_poll" "$bp"
+  else
+    row FAIL "net.core.busy_poll" "$bp" "sudo sysctl -w net.core.busy_poll=50 net.core.busy_read=50"
+  fi
 else
-  row FAIL "net.core.busy_poll" "$bp" "sudo sysctl -w net.core.busy_poll=50 net.core.busy_read=50"
+  br=$(sysctl -n net.core.busy_read 2>/dev/null)
+  if [ -z "$bp" ] || [ -z "$br" ]; then
+    row UNKNOWN "net.core.busy_poll" "sysctl unavailable" "run on the host"
+  elif [ "$bp" -gt 0 ] 2>/dev/null && [ "$br" -gt 0 ] 2>/dev/null; then
+    row PASS "net.core.busy_poll" "busy_poll=$bp busy_read=$br"
+  else
+    row FAIL "net.core.busy_poll" "busy_poll=$bp busy_read=$br" \
+      "sudo sysctl -w net.core.busy_poll=50 net.core.busy_read=50"
+  fi
 fi
 
 # --- the machine is quiet -----------------------------------------------------
@@ -359,12 +429,102 @@ else
 fi
 
 # --- IRQ affinity -------------------------------------------------------------
-# Reported, not judged: which core the NIC may interrupt is a decision about
-# which core the engine runs on, and this script does not know that.
-nic_irqs=$(grep -ciE 'eth|enp|ens|eno|mlx|sfc' /proc/interrupts 2>/dev/null)
-: "${nic_irqs:=0}"
-row UNKNOWN "NIC IRQ affinity" "$nic_irqs NIC interrupt line(s) — steer them AWAY from the engine core" \
-  "see /proc/interrupts, then write a mask to /proc/irq/<n>/smp_affinity"
+# Without a NIC selected this is reported, not judged: which core the NIC may
+# interrupt is a decision about which core the engine runs on, and without a
+# NIC this script does not know that. With a NIC selected (FIXBOLT_NIC, or
+# auto-selected above), it can actually judge: every IRQ line in
+# /proc/interrupts naming that NIC (the bare name, e.g. "enp9s0", or one of
+# its queues, e.g. "enp9s0-TxRx-0") gets its /proc/irq/<n>/smp_affinity_list
+# checked against /sys/devices/system/cpu/isolated.
+if [ -z "$NIC" ]; then
+  nic_irqs=$(grep -ciE 'eth|enp|ens|eno|mlx|sfc' /proc/interrupts 2>/dev/null)
+  : "${nic_irqs:=0}"
+  row UNKNOWN "NIC IRQ affinity" "$nic_irqs NIC interrupt line(s) — steer them AWAY from the engine core" \
+    "see /proc/interrupts, then write a mask to /proc/irq/<n>/smp_affinity"
+else
+  nic_irq_nums=$(awk -v nic="$NIC" '{
+    n = split($0, f, " ")
+    name = f[n]
+    irq = f[1]
+    sub(/:$/, "", irq)
+    if (irq ~ /^[0-9]+$/ && (name == nic || substr(name, 1, length(nic) + 1) == nic "-")) print irq
+  }' /proc/interrupts)
+  isolated=$(r /sys/devices/system/cpu/isolated)
+  if [ -z "$nic_irq_nums" ]; then
+    row UNKNOWN "NIC IRQ affinity" "$NIC: no IRQ line found in /proc/interrupts" \
+      "check /proc/interrupts for this NIC's queue names"
+  elif [ -z "$isolated" ]; then
+    # An empty isolated list means "nothing to check this against" — not a
+    # pass, since an un-isolated engine core makes the whole question moot,
+    # and not a fail, since the NIC may still be steered correctly; UNKNOWN
+    # says exactly that rather than guessing either way.
+    row UNKNOWN "NIC IRQ affinity" "$NIC: /sys/devices/system/cpu/isolated is empty — nothing to check IRQs against" \
+      "set isolcpus for the engine core first, then re-run"
+  else
+    isolated_expanded=$(expand_cpulist "$isolated")
+    bad=""
+    for irq in $nic_irq_nums; do
+      al=$(r "/proc/irq/$irq/smp_affinity_list")
+      [ -z "$al" ] && continue
+      al_expanded=$(expand_cpulist "$al")
+      # grep -Fxf, not `comm`: comm demands its inputs sorted by the current
+      # locale's collation, which disagrees with `sort -n` on two-digit CPU
+      # numbers ("10" sorts before "6" lexically) and comm says so loudly even
+      # though the numeric order above is exactly right.
+      overlap=$(grep -Fxf <(printf '%s\n' "$isolated_expanded") <(printf '%s\n' "$al_expanded"))
+      if [ -n "$overlap" ]; then
+        bad="${bad}irq $irq ($al) "
+      fi
+    done
+    if [ -n "$bad" ]; then
+      row FAIL "NIC IRQ affinity" "$NIC: ${bad}overlaps isolated $isolated" \
+        "echo <non-isolated-cpu> | sudo tee /proc/irq/<n>/smp_affinity_list"
+    else
+      row PASS "NIC IRQ affinity" "$NIC: IRQ $(echo "$nic_irq_nums" | tr '\n' ',' | sed 's/,$//') — none on isolated $isolated"
+    fi
+  fi
+fi
+
+# --- NIC coalescing -------------------------------------------------------
+# New row (A5): only meaningful once a NIC is selected, and §9's "IRQ
+# affinity" row is pointless if the NIC is still batching interrupts.
+if [ -n "$NIC" ]; then
+  if ! command -v ethtool >/dev/null 2>&1; then
+    row UNKNOWN "coalescing" "ethtool not on PATH" "install ethtool"
+  else
+    ec_out=$(ethtool -c "$NIC" 2>&1)
+    ec_status=$?
+    rx_usecs=$(echo "$ec_out" | awk -F: '/^rx-usecs:/{v=$2; gsub(/[ \t]/,"",v); print v; exit}')
+    if [ "$ec_status" -ne 0 ]; then
+      row UNKNOWN "coalescing" "$NIC: ethtool -c failed (exit $ec_status)" \
+        "check the NIC/driver supports coalescing"
+    elif [ -z "$rx_usecs" ] || [ "$rx_usecs" = "n/a" ]; then
+      row UNKNOWN "coalescing" "$NIC: rx-usecs not reported by this driver" \
+        "unsupported here — check by hand"
+    elif [ "$rx_usecs" = 0 ]; then
+      row PASS "coalescing" "$NIC: rx-usecs 0"
+    else
+      row FAIL "coalescing" "$NIC: rx-usecs $rx_usecs" "sudo ethtool -C $NIC rx-usecs 0"
+    fi
+  fi
+fi
+
+# --- irqbalance -------------------------------------------------------------
+# New row (A5): irqbalance actively moving IRQs around defeats a pinned NIC
+# IRQ affinity the moment it runs.
+if [ -n "$NIC" ]; then
+  if ! command -v systemctl >/dev/null 2>&1; then
+    row UNKNOWN "irqbalance inactive" "systemctl not available" "check by hand: ps -C irqbalance"
+  else
+    ib_status=$(systemctl is-active irqbalance 2>/dev/null)
+    if [ "$ib_status" = active ]; then
+      row FAIL "irqbalance inactive" "active" \
+        "sudo systemctl stop irqbalance && sudo systemctl disable irqbalance"
+    else
+      row PASS "irqbalance inactive" "${ib_status:-inactive}"
+    fi
+  fi
+fi
 
 echo
 echo "=== summary"
