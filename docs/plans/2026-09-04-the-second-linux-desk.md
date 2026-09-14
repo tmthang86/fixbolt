@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **đang làm Cửa sổ A** (từ 2026-09-14, nhánh `plan/the-second-linux-desk-a`) — **Sửa 2 (chỉ A3b) chờ duyệt, 2026-09-14**: ba điều plan viết về A3b sai khi xây; A3b đã build nhưng **chưa commit** cho tới khi Q8–Q11 ở cuối file có câu trả lời
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **đang làm Cửa sổ A** (từ 2026-09-14, nhánh `plan/the-second-linux-desk-a`) — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -725,6 +725,8 @@ thì từ chối; `shellcheck -S info` sạch hai script. Tier **opus**, máy Li
 
 Không câu nào ở trên chặn A1, A2, A4–A7. A3b **chưa commit** cho tới khi có trả lời; developer
 sửa theo câu trả lời rồi manager chạy lại toàn bộ cột gate ở trên trên commit đóng bước.
+
+**`[2026-09-14]` Chủ sở hữu duyệt Sửa 2 theo đề xuất**, nguyên văn *"Duyệt theo đề xuất"*: Q8 = R1 (user namespace, SKIP exit 2 khi bị chặn), Q9 = có `cap_net_admin`, Q10 = bỏ số wire của arm `standard` và `w2w` từ chối `standard` + NIC thật, Q11 = `--listen` nhận `--warmup`. A3b làm lại theo mục *A3b sau Sửa 2*, chồng lên A4.
 
 ### Nguồn (tra 2026-09-14)
 
