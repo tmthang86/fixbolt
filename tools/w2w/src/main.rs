@@ -118,7 +118,8 @@
 //! **A flag that does not apply to a half is refused, not ignored** — the
 //! `Cargo.toml` `[features]` lesson. `--listen` refuses `--client-core`,
 //! `--messages`, `--warmup`, `--hold-ms` and `--interval` (no client thread;
-//! the count, the hold and the pacing are the generator's). `--connect` refuses
+//! the count, the hold and the pacing are the generator's) — `--warmup` only
+//! until `--wire-timestamps` is beside it, see *Wire timestamps* below. `--connect` refuses
 //! `--engine-core` and `--mode` (no engine thread). Both refuse `--tls` other
 //! than `off`: the certificate is made per process, and two halves are two
 //! processes. `--listen` with `--connect` is refused. A new flag with no value,
@@ -179,11 +180,87 @@
 //! asserted zero exactly as it always was; a `--journal` or `--log` run that
 //! allocated would fail that assertion loudly rather than quietly publish a
 //! number about `malloc`.
+//!
+//! # Wire timestamps: NIC in to NIC out, on one clock
+//!
+//! `[2026-09-14]` step A3b of the same plan. `--wire-timestamps --nic <ifname>
+//! --observer-core <cpu>`, Linux only, wherever the engine runs (the combined
+//! run and `--listen`; `--connect` refuses all three). Both stamps of a round
+//! trip are taken by **this** machine's NIC, on its one PHC, so the acceptor's
+//! wire-in → wire-out figure needs no clock sync with the generator.
+//!
+//! * **RX** — an *observer* thread, pinned to `--observer-core`, reads an
+//!   `AF_PACKET` `SOCK_DGRAM` tap on `--nic` with `SO_TIMESTAMPING =
+//!   RX_HARDWARE | RAW_HARDWARE`, a classic-BPF filter to the engine's port and
+//!   `PACKET_IGNORE_OUTGOING`. **`recvmsg`, not a `PACKET_RX_RING` with
+//!   `PACKET_TIMESTAMP`**: the ring's `tpacket_rcv` fills `tp_sec` from a
+//!   software stamp or `ktime_get_real` whenever the hardware stamp is absent
+//!   (`net/packet/af_packet.c`, "Always timestamp"), so a missing hardware stamp
+//!   would arrive looking like a present one. `recvmsg`'s `scm_timestamping`
+//!   leaves `ts[2]` zero instead, which is the only form the plan's
+//!   `hw-rx-missing` count can be built on.
+//! * **TX** — `SO_TIMESTAMPING = TX_HARDWARE | RAW_HARDWARE | OPT_ID |
+//!   OPT_ID_TCP | OPT_TSONLY` on the accepted socket, **before `engine.add`**,
+//!   and the observer reads that socket's error queue. **The engine thread makes
+//!   neither call.** Its accept path hands the descriptor across an atomic and
+//!   spins (no syscall) until the observer has `dup`ed it, set the option and
+//!   read the peer's port ([`wire::Handoff`]). The `dup` is what lets the
+//!   observer outlive the engine's own descriptor without reading a reused one.
+//!   Only the first connection is stamped; later ones are counted and printed.
+//! * **Pairing** — `pair.rs`, pure, by the TCP byte stream: see its module note.
+//!   A `ts[2]` of zero is counted into `hw-rx-missing` / `hw-tx-missing` and
+//!   printed, never replaced.
+//! * **The NIC** — `SIOCSHWTSTAMP` (`tx_type ON`, `rx_filter ALL`), read back
+//!   through the ioctl's own result and a `SIOCGHWTSTAMP`, refused unless both
+//!   say so, and the previous configuration is put back when the run ends. The
+//!   read-back is not trusted as evidence (the plan's `igb` trap); only a
+//!   sample's `ts[2] != 0` is.
+//! * **`lo`, decided**: a loopback device (`IFF_LOOPBACK`) has no hardware
+//!   clock. `SIOCSHWTSTAMP` is **not attempted** on it — it would fail with
+//!   `EOPNOTSUPP`, and only after asking for `CAP_NET_ADMIN` — and a line says
+//!   so. The tap still runs, so every request is still counted: the run prints
+//!   `hw-rx-missing` and `hw-tx-missing` equal to the number of requests and
+//!   **no wire column**. It is a run of the plumbing, not of a figure.
+//! * **Mode, decided (Sửa 2, Điều 3)**: `hft` is the mode with wire figures.
+//!   `--mode standard` on a NIC that is not loopback is **refused**, before
+//!   anything needs a capability: a hardware TX stamp waiting in the engine
+//!   socket's error queue raises `POLLERR`, which wakes a `standard` engine
+//!   asleep in `poll` and keeps waking it until the observer reads the stamp —
+//!   the instrument would make it spin
+//!   (`docs/reference/a-transmit-timestamp-wakes-a-blocking-engine.md`).
+//!   `standard` on loopback runs, so the gate scripts can use it.
+//! * **Window**: the combined run's is the `--messages` timed requests.
+//!   `--listen`'s is every request after the logon but the first
+//!   `--warmup <n>` — which `--listen` accepts **only** beside
+//!   `--wire-timestamps`, and which the generator should be given the same
+//!   number as; absent is `0`, and the label says the warmup is included.
+//! * **Capabilities, and what fails loudly.** The tap needs `CAP_NET_RAW`; a
+//!   hardware NIC also needs `CAP_NET_ADMIN` for `SIOCSHWTSTAMP`
+//!   (`net/core/dev_ioctl.c`). Refused with the `setcap` line when missing. **A
+//!   process exec'd under `strace` or `gdb` by an unprivileged tracer is not
+//!   given file capabilities** (`security/commoncap.c`,
+//!   `LSM_UNSAFE_PTRACE`), so it is refused the same way — never run on
+//!   without the tap. The gate scripts therefore run their `W2W_EXTRA` arm
+//!   inside a user namespace (`unshare -Urn`), where `w2w` holds `CAP_NET_RAW`
+//!   over that namespace's own `lo` with no `setcap` and no `sudo`.
+//! * **Printed**: `wire p50/p99/p99.9` over the requests that had both stamps,
+//!   beside the counts, the error-queue entries seen, the tap's drops, and
+//!   `allocs` — which, being counted on every thread, includes the observer's.
+//!   Any tap drop or buffer overflow withholds the wire column: a request the
+//!   tap never recorded would put its reply against its neighbour.
 #![allow(unsafe_code)]
+// Two kinds of `unsafe` live here, each with its own SAFETY note naming what
+// proves it: the counting allocator below, and — Linux only, `mod wire` — the
+// FFI calls of `--wire-timestamps` (`socket`, `setsockopt`, `ioctl`, `bind`,
+// `fcntl`, `getpeername`, `recvmsg` and the `CMSG_*` walk), which have no safe
+// spelling in `std`.
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
 // `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
+
+#[cfg(target_os = "linux")]
+mod pair;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{Read, Write};
@@ -590,7 +667,9 @@ const LISTEN_REFUSES: &[(&str, &str)] = &[
     ),
     (
         "--warmup",
-        "the engine half serves until its peer closes; the warmup belongs to --connect",
+        "the engine half serves until its peer closes; the warmup belongs to --connect \
+         (with --wire-timestamps it names how many requests after the logon to leave out \
+         of the wire figures)",
     ),
     (
         "--hold-ms",
@@ -624,7 +703,92 @@ const CONNECT_REFUSES: &[(&str, &str)] = &[
         "the engine's message log is chosen in the --listen process; this process has \
          no engine and nothing to log",
     ),
+    (
+        "--wire-timestamps",
+        "the stamps are taken on the engine's NIC, by the process that owns the engine's \
+         socket; pass it to the --listen process",
+    ),
+    (
+        "--nic",
+        "it names the engine's NIC for --wire-timestamps; pass it to the --listen process",
+    ),
+    (
+        "--observer-core",
+        "the observer thread reads the engine's socket; pass it to the --listen process",
+    ),
 ];
+
+/// `--mode standard --wire-timestamps` on a NIC that is not loopback: refused.
+///
+/// Sửa 2 of `docs/plans/2026-09-04-the-second-linux-desk.md`, Điều 3. A TX
+/// timestamp waiting in the engine socket's error queue makes `tcp_poll` report
+/// `POLLERR`, which `poll(2)` sets whatever `events` asked for; a `standard`
+/// engine asleep in `poll` is woken, reads `EAGAIN`, and is woken again at once
+/// until the observer has read the stamp — it spins, which is non-negotiable 4's
+/// second half broken by the instrument. Loopback never queues a hardware TX
+/// stamp, so `standard` on `lo` runs and the gate scripts can use it. `hft`
+/// never waits in `poll`, and `yield` never calls it.
+/// `docs/reference/a-transmit-timestamp-wakes-a-blocking-engine.md`.
+// Called by the Linux `mod wire` and by the tests; off Linux `wire_of` refuses
+// the flag before anything could ask.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn blocking_mode_on_hardware(mode: Mode, nic: &str, loopback: bool) -> Result<(), String> {
+    if mode == Mode::Standard && !loopback {
+        return Err(format!(
+            "--mode standard --wire-timestamps on {nic} is refused: {nic} is not loopback, and a \
+             hardware TX timestamp waiting in the engine socket's error queue raises POLLERR, \
+             which poll(2) reports whatever it was asked for — a standard engine would be woken \
+             and spin until the observer read it, so its figure would be of an engine that \
+             spins. Wire figures on a hardware NIC are hft only; measure standard there without \
+             --wire-timestamps (docs/reference/a-transmit-timestamp-wakes-a-blocking-engine.md)"
+        ));
+    }
+    Ok(())
+}
+
+/// `--wire-timestamps`, as parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WireArgs {
+    /// `--nic`: the interface both stamps are taken on.
+    nic: String,
+    /// `--observer-core`: where the observer thread spins.
+    observer_core: usize,
+}
+
+/// `--wire-timestamps` and its two companions, with every refusal they owe.
+///
+/// `half_of` has already refused all three under `--connect`. A companion
+/// without the flag is refused rather than ignored, and so is the flag without
+/// either companion: a spinning observer with no core could land on the
+/// engine's, and a tap with no interface has nothing to read.
+fn wire_of(args: &[String]) -> Result<Option<WireArgs>, String> {
+    let on = present(args, "--wire-timestamps");
+    let nic: Option<String> = value_of(args, "--nic")?;
+    let core: Option<usize> = value_of(args, "--observer-core")?;
+    if !on {
+        return match (nic, core) {
+            (None, None) => Ok(None),
+            _ => Err(
+                "--nic and --observer-core belong to --wire-timestamps, which was not \
+                      given"
+                    .to_string(),
+            ),
+        };
+    }
+    if !cfg!(target_os = "linux") {
+        return Err(
+            "--wire-timestamps is Linux-only: AF_PACKET, SO_TIMESTAMPING and \
+                    SIOCSHWTSTAMP do not exist here"
+                .to_string(),
+        );
+    }
+    let nic = nic.ok_or("--wire-timestamps needs --nic <ifname>")?;
+    let observer_core = core.ok_or(
+        "--wire-timestamps needs --observer-core <cpu>: the observer spins, and an \
+         unpinned spinner may land on the engine's core",
+    )?;
+    Ok(Some(WireArgs { nic, observer_core }))
+}
 
 /// Which half this process is, with every refusal a half owes.
 ///
@@ -645,7 +809,16 @@ fn half_of(args: &[String]) -> Result<Half, String> {
         (Some(a), None) => (Half::Listen(a), "--listen", LISTEN_REFUSES),
         (None, Some(a)) => (Half::Connect(a), "--connect", CONNECT_REFUSES),
     };
-    if let Some((flag, why)) = refuses.iter().find(|(f, _)| present(args, f)) {
+    // `--listen --warmup <n>` is the one exception, and only with
+    // `--wire-timestamps` (Sửa 2 of the plan, Q11): the engine half then leaves
+    // the first `n` requests after the logon out of its wire window, so a
+    // generator's cold warmup is not the p99.9. Without the flag it has
+    // nothing to leave out of, and is refused as before.
+    let wire_warmup = matches!(half, Half::Listen(_)) && present(args, "--wire-timestamps");
+    if let Some((flag, why)) = refuses
+        .iter()
+        .find(|(f, _)| present(args, f) && !(wire_warmup && *f == "--warmup"))
+    {
         return Err(format!("{flag} does not apply to {name}: {why}"));
     }
     // Not only the arms this build can run: a split TLS run is refused on
@@ -754,7 +927,10 @@ fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // The two halves' refusals first. With no new flag they return
     // `(Half::Both, 0)` and print nothing, so everything below runs as it did.
-    let (half, interval_us) = match half_of(&args).and_then(|h| Ok((h, interval_of(&args)?))) {
+    let (half, interval_us, wire) = match half_of(&args)
+        .and_then(|h| Ok((h, interval_of(&args)?)))
+        .and_then(|(h, i)| Ok((h, i, wire_of(&args)?)))
+    {
         Ok(v) => v,
         Err(why) => {
             eprintln!("w2w: {why}");
@@ -762,7 +938,20 @@ fn main() -> std::io::Result<()> {
         }
     };
     let n: usize = arg(&args, "--messages").unwrap_or(20_000);
-    let warmup: usize = arg(&args, "--warmup").unwrap_or(2_000);
+    // `--listen` reaches here with `--warmup` only beside `--wire-timestamps`
+    // (`half_of`), where it is the number of requests after the logon left out
+    // of the wire window: absent is `0`, and a value that does not parse is
+    // refused rather than defaulted, as for every flag A3a added.
+    let warmup: usize = match &half {
+        Half::Listen(_) => match value_of(&args, "--warmup") {
+            Ok(v) => v.unwrap_or(0),
+            Err(why) => {
+                eprintln!("w2w: {why}");
+                return Err(std::io::Error::other(why));
+            }
+        },
+        _ => arg(&args, "--warmup").unwrap_or(2_000),
+    };
     let hold_ms: u64 = arg(&args, "--hold-ms").unwrap_or(0);
 
     // ADR-0013 decision 4: every published figure names its mode. `hft` stays
@@ -846,6 +1035,26 @@ fn main() -> std::io::Result<()> {
         eprintln!("     be competing with the engine for it, which is what §9 forbids");
         return Err(std::io::Error::other("engine and client on one core"));
     }
+    // The observer spins, so it is pinned or it does not run — and never where
+    // the engine or the client is. It is **not** held to `isolcpus` below: it
+    // times nothing, both stamps are taken by the NIC before it reads them, and
+    // the plan puts it on an ordinary core. What it must not do is share one.
+    if let Some(w) = &wire {
+        if !CAN_PIN {
+            eprintln!("w2w: --observer-core needs `--features affinity`, on Linux: an observer");
+            eprintln!("     that spins unpinned may take the engine's core. Build with:");
+            eprintln!("       cargo build --release -p fixbolt-w2w --features affinity");
+            return Err(std::io::Error::other("this build cannot pin the observer"));
+        }
+        if [engine_core, client_core].contains(&Some(w.observer_core)) {
+            eprintln!(
+                "w2w: --observer-core {} is the engine's or the client's core; the observer",
+                w.observer_core
+            );
+            eprintln!("     spins, and would compete with the thread it is observing");
+            return Err(std::io::Error::other("observer on a measured core"));
+        }
+    }
     // `pin_current_thread` proves the thread went where it was told. It does
     // NOT prove the scheduler will keep other work off that core — that is
     // `isolcpus`, and the two are different claims. `[measured 2026-09-02]`
@@ -881,11 +1090,21 @@ fn main() -> std::io::Result<()> {
         interval_us,
     };
     match half {
-        Half::Both => both_halves(mode, run, engine_core, client_core, journal, log),
-        // `half_of` has refused `--client-core` here, and `--engine-core` and
-        // `--mode` for the generator, so neither function is handed a core or
-        // a mode it would have to ignore.
-        Half::Listen(addr) => engine_half(&addr, mode, run, engine_core, journal, log),
+        Half::Both => both_halves(
+            mode,
+            run,
+            engine_core,
+            client_core,
+            journal,
+            log,
+            wire.as_ref(),
+        ),
+        // `half_of` has refused `--client-core` here, and `--engine-core`,
+        // `--mode` and `--wire-timestamps` for the generator, so neither
+        // function is handed a core, a mode or a tap it would have to ignore.
+        Half::Listen(addr) => {
+            engine_half(&addr, mode, run, engine_core, journal, log, wire.as_ref())
+        }
         // `half_of` has refused `--journal` and `--log` for `--connect`, so
         // `generator_half` never receives a choice it has no engine to act on.
         Half::Connect(addr) => generator_half(&addr, run, client_core),
@@ -901,10 +1120,12 @@ fn both_halves(
     client_core: Option<usize>,
     journal: JournalKind,
     log: LogKind,
+    wire: Option<&WireArgs>,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind("127.0.0.1:0")?;
-    let addr = acceptor.local_addr()?.to_string();
+    let local = acceptor.local_addr()?;
+    let addr = local.to_string();
 
     // Printed before anything else, on its own line, because
     // `scripts/check-no-kernel-sleep.sh` and
@@ -928,6 +1149,20 @@ fn both_halves(
     // by which point `measure` below has already joined the engine thread, and
     // dropping the engine has already closed the writer threads.
     let (files, _cleanup) = open_files(journal, log)?;
+
+    // `--wire-timestamps`: the tap is reading before the client's SYN, which
+    // is what `pair::requests` counts the stream from. With no flag nothing is
+    // started and nothing is printed.
+    let observer = match wire {
+        Some(w) => Some(wire::Observer::start(
+            w,
+            mode,
+            local,
+            4 * (run.warmup + run.n) + 4096,
+        )?),
+        None => None,
+    };
+    let handoff = observer.as_ref().map(wire::Observer::handoff);
 
     let stop = Arc::new(AtomicBool::new(false));
     let engine_stop = Arc::clone(&stop);
@@ -974,8 +1209,12 @@ fn both_halves(
         // `false`: the client on the other thread stops this engine through
         // `stop`, and times its own window.
         match desk {
-            None => serve_chosen::<_, false>(acceptor, &engine_stop, mode, Never, side, files),
-            Some(d) => serve_chosen::<_, false>(acceptor, &engine_stop, mode, d, side, files),
+            None => {
+                serve_chosen::<_, false>(acceptor, &engine_stop, mode, Never, side, files, handoff)
+            }
+            Some(d) => {
+                serve_chosen::<_, false>(acceptor, &engine_stop, mode, d, side, files, handoff)
+            }
         }
     };
     let engine = spawn_engine(body, engine_core)?;
@@ -1015,6 +1254,10 @@ fn both_halves(
         }
     };
 
+    // The engine has been stopped and joined inside `measure`; the observer
+    // holds its own `dup` of the socket, so it drains the last stamps now.
+    let observed = observer.map(wire::Observer::finish).transpose()?;
+
     let what = match path {
         Path::Admin => "TestRequest -> Heartbeat",
         Path::App => "NewOrderSingle -> ExecutionReport",
@@ -1023,7 +1266,22 @@ fn both_halves(
     println!("     mode   {:>9}", mode.name());
     println!("     path   {:>9}", path.name());
     print_figures(&mut samples, &run, late);
-    println!("     allocs {allocs:>9}   (both threads, the timed window only)");
+    let verdict = match &observed {
+        None => {
+            println!("     allocs {allocs:>9}   (both threads, the timed window only)");
+            Ok(())
+        }
+        Some(o) => {
+            println!(
+                "     allocs {allocs:>9}   (engine, client and observer threads, the timed window only)"
+            );
+            o.report(wire::Window::Combined {
+                warmup: run.warmup,
+                n: run.n,
+                tls: tls != Tls::Off,
+            })
+        }
+    };
     println!();
     // Non-negotiable 1, for this binary. Reported first so the number is
     // readable even when the assertion below ends the run.
@@ -1050,6 +1308,10 @@ fn both_halves(
             seen_name(TLS_SEEN.load(Ordering::Relaxed))
         );
     }
+    // After the allocation verdict, so a tap that did not line up with the run
+    // cannot hide an allocation count — and before the footer, so it fails the
+    // run.
+    verdict?;
     println!("NOT A LATENCY NUMBER FOR PUBLICATION unless this machine matches");
     println!("DESIGN.md §9 — isolated cores, no frequency scaling, pinned threads.");
     println!("Two of those three are the machine and are read by check-machine.sh;");
@@ -1070,6 +1332,7 @@ fn engine_half(
     engine_core: Option<usize>,
     journal: JournalKind,
     log: LogKind,
+    wire: Option<&WireArgs>,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind(addr)?;
@@ -1089,6 +1352,18 @@ fn engine_half(
         println!("log: {}", log.name());
     }
 
+    // Before the engine thread, so the tap sees the generator's SYN.
+    let observer = match wire {
+        Some(w) => Some(wire::Observer::start(
+            w,
+            mode,
+            bound,
+            wire::LISTEN_CAPACITY,
+        )?),
+        None => None,
+    };
+    let handoff = observer.as_ref().map(wire::Observer::handoff);
+
     let desk = match path {
         Path::Admin => None,
         Path::App => Some(Desk::new()?),
@@ -1105,8 +1380,18 @@ fn engine_half(
         // `true`: arm the allocation counter after the first logon, and return
         // once the last connection has closed.
         match desk {
-            None => serve_chosen::<_, true>(acceptor, &stop, mode, Never, EngineSide::Plain, files),
-            Some(d) => serve_chosen::<_, true>(acceptor, &stop, mode, d, EngineSide::Plain, files),
+            None => serve_chosen::<_, true>(
+                acceptor,
+                &stop,
+                mode,
+                Never,
+                EngineSide::Plain,
+                files,
+                handoff,
+            ),
+            Some(d) => {
+                serve_chosen::<_, true>(acceptor, &stop, mode, d, EngineSide::Plain, files, handoff)
+            }
         }
     };
     let engine = spawn_engine(body, engine_core)?;
@@ -1116,6 +1401,7 @@ fn engine_half(
         .join()
         .map_err(|_| std::io::Error::other("w2w: the engine thread panicked"))?;
     let allocs = ALLOCS.load(Ordering::Relaxed);
+    let observed = observer.map(wire::Observer::finish).transpose()?;
 
     // Read back, as in the combined run. `half_of` has refused every arm but
     // `off`, so anything else here is a transport this process did not ask for.
@@ -1139,11 +1425,30 @@ fn engine_half(
     println!("w2w: engine half, over kernel TCP, listening on {bound}");
     println!("     mode   {:>9}", mode.name());
     println!("     path   {:>9}", path.name());
-    println!(
-        "     allocs {allocs:>9}   (engine thread, first logon to last close, warmup and teardown included)"
-    );
-    println!("     no latency figures: the far end of every round trip is in the --connect");
-    println!("     process, and this build takes no wire timestamps.");
+    let verdict = match &observed {
+        None => {
+            println!(
+                "     allocs {allocs:>9}   (engine thread, first logon to last close, warmup and teardown included)"
+            );
+            println!(
+                "     no latency figures: the far end of every round trip is in the --connect"
+            );
+            println!("     process, and this build takes no wire timestamps.");
+            Ok(())
+        }
+        Some(o) => {
+            println!(
+                "     allocs {allocs:>9}   (engine and observer threads, first logon to last close, warmup and teardown included)"
+            );
+            println!(
+                "     no round-trip figures: the far end of every round trip is in the --connect"
+            );
+            println!(
+                "     process. The wire figures below are this acceptor's own, NIC in to NIC out."
+            );
+            o.report(wire::Window::Listen { skip: run.warmup })
+        }
+    };
     println!();
     // Non-negotiable 1, for the one thread in this process that does any work.
     // The window is wider than the combined run's — warmup and the close are in
@@ -1153,6 +1458,7 @@ fn engine_half(
         "w2w: {allocs} allocations on the engine thread between the first logon and \
          the last close — CLAUDE.md §2 non-negotiable 1 says the engine's path has none"
     );
+    verdict?;
     println!("CLAUDE.md §2 rule 10: a number without its machine is someone else's claim.");
     println!("ADR-0013 decision 4: `mode` above is this engine's; the --connect table is");
     println!("about this engine only when it was run against this process.");
@@ -1669,27 +1975,46 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
     app: A,
     side: EngineSide,
     files: Opened,
+    stamp: Option<Arc<wire::Handoff>>,
 ) {
     use fixbolt_engine::msglog::NoLog;
     match files {
         Opened {
             journal: None,
             log: None,
-        } => serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, FreshStore, NoLog),
+        } => serve::<_, _, _, UNTIL_CLOSED>(
+            acceptor, stop, mode, app, side, FreshStore, NoLog, stamp,
+        ),
         Opened {
             journal: Some(j),
             log: None,
-        } => {
-            serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, OneFile(Some(j)), NoLog)
-        }
+        } => serve::<_, _, _, UNTIL_CLOSED>(
+            acceptor,
+            stop,
+            mode,
+            app,
+            side,
+            OneFile(Some(j)),
+            NoLog,
+            stamp,
+        ),
         Opened {
             journal: None,
             log: Some(l),
-        } => serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, FreshStore, l),
+        } => serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, FreshStore, l, stamp),
         Opened {
             journal: Some(j),
             log: Some(l),
-        } => serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, OneFile(Some(j)), l),
+        } => serve::<_, _, _, UNTIL_CLOSED>(
+            acceptor,
+            stop,
+            mode,
+            app,
+            side,
+            OneFile(Some(j)),
+            l,
+            stamp,
+        ),
     }
 }
 
@@ -1702,6 +2027,9 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
 ///
 /// `UNTIL_CLOSED` is `--listen`: see [`pump`]. A const, so the combined run's
 /// loop is compiled with no trace of it.
+// Eight: A4's journal and log and A3b's stamp each arrived as a type or a value
+// the engine thread must own, and bundling them would only rename the list.
+#[allow(clippy::too_many_arguments)]
 fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
     acceptor: Acceptor,
     stop: &AtomicBool,
@@ -1710,9 +2038,11 @@ fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
     side: EngineSide,
     journals: S,
     log: L,
+    stamp: Option<Arc<wire::Handoff>>,
 ) {
-    match side {
-        EngineSide::Plain => {
+    match (side, stamp) {
+        // No `--wire-timestamps`: the accept path this binary always had.
+        (EngineSide::Plain, None) => {
             run::<_, _, _, _, _, UNTIL_CLOSED>(
                 acceptor,
                 stop,
@@ -1723,14 +2053,37 @@ fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
                 log,
             );
         }
+        // `--wire-timestamps`: the observer sets `SO_TIMESTAMPING` on this
+        // socket before the engine owns it, and the engine thread makes no call
+        // of its own to get there — see `wire::Handoff::attach`. A socket the
+        // observer could not stamp is dropped, and the run fails naming why.
+        (EngineSide::Plain, Some(h)) => {
+            run::<_, _, _, _, _, UNTIL_CLOSED>(
+                acceptor,
+                stop,
+                mode,
+                app,
+                move |t: TcpTransport| h.attach(t.socket()).then_some(t),
+                journals,
+                log,
+            );
+        }
         #[cfg(all(feature = "tls", target_os = "linux"))]
-        EngineSide::Tls(cfg, offload) => {
+        (EngineSide::Tls(cfg, offload), stamp) => {
             run::<_, _, _, _, _, UNTIL_CLOSED>(
                 acceptor,
                 stop,
                 mode,
                 app,
                 move |sock| {
+                    // Stamped on the TCP socket, before the handshake's first
+                    // byte, so the key counts from the same `write_seq` as the
+                    // plain arm.
+                    if let Some(h) = &stamp
+                        && !h.attach(sock.socket())
+                    {
+                        return None;
+                    }
                     // The handshake runs inside the transport's `recv`/`send` on
                     // the engine thread, before the first logon and so before
                     // the timed window — `tls.rs`'s module note on why it is not
@@ -1973,6 +2326,1018 @@ fn whole(bytes: &[u8]) -> Option<usize> {
     }
     let k = bytes[stop + 3..].iter().position(|b| *b == 1)?;
     Some(stop + 3 + k + 1)
+}
+
+/// `--wire-timestamps`: the tap, the error queue, the NIC's configuration, and
+/// the report. Linux only; see the module note's *Wire timestamps* section.
+///
+/// **Every `unsafe` block here is an FFI call, or a read of what one returned,
+/// and none is on the engine thread.** What proves them, together: the three
+/// `pair::` tests prove the arithmetic on what these calls return; the `lo`
+/// run of step A3b (`requests` read back equal to logon + warmup + timed, and
+/// `allocs 0`) proves the tap's `recvmsg` and header walk return the frames the
+/// run sent; `scripts/check-no-kernel-sleep.sh` and
+/// `scripts/check-standard-gives-the-core-back.sh` under
+/// `W2W_EXTRA="--wire-timestamps --nic lo --observer-core 2"`, each run inside
+/// `unshare -Urn`, prove the engine thread's syscalls and idle CPU are unchanged
+/// with all of it running; the `standard` refusal is proven by
+/// `standard_is_refused_on_a_hardware_nic_and_not_on_loopback` and by running a
+/// binary with no capability against `enp9s0`. A
+/// hardware stamp has not been read yet (no cable): the `SCM_TIMESTAMPING` walk
+/// is proven on an absent `ts[2]` only.
+#[cfg(target_os = "linux")]
+mod wire {
+    use std::io;
+    use std::mem::{size_of, zeroed};
+    use std::net::{SocketAddr, TcpStream};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use super::pair::{self, Inbound, Sent};
+    use super::{Mode, WireArgs};
+
+    /// Records kept by `--listen`, which cannot know the generator's count.
+    /// A run that outgrows it is told so and gets no wire column.
+    pub const LISTEN_CAPACITY: usize = 1 << 20;
+
+    /// `SCM_TSTAMP_SND`, `include/uapi/linux/errqueue.h`; not in `libc`.
+    const SCM_TSTAMP_SND: u32 = 0;
+    /// Bytes of each tap frame the kernel copies: IPv4 and TCP headers at
+    /// their largest (60 + 60). The BPF filter returns it as the snap length.
+    const SNAP: usize = 128;
+    /// How long the engine's accept path waits for the observer to stamp.
+    const ATTACH_TIMEOUT: Duration = Duration::from_secs(2);
+    /// After `finish`, how long both queues must stay empty before the
+    /// observer stops: a hardware TX stamp is delivered from the driver's PTP
+    /// work, after the reply has left.
+    const QUIET: Duration = Duration::from_millis(100);
+    /// And the most `finish` will wait for that quiet.
+    const DRAIN_MAX: Duration = Duration::from_secs(2);
+
+    const IDLE: u8 = 0;
+    const OFFERED: u8 = 1;
+    const ATTACHED: u8 = 2;
+    const FAILED: u8 = 3;
+
+    /// The engine thread's side of the stamp: a descriptor offered across
+    /// atomics, and the observer's answer.
+    pub struct Handoff {
+        state: AtomicU8,
+        fd: AtomicI32,
+        peer: AtomicU16,
+        /// Connections after the first, which are served unstamped.
+        extra: AtomicUsize,
+    }
+
+    impl Handoff {
+        /// On the engine thread, before `engine.add`. **No syscall**: two
+        /// atomic stores, then a spin on `Instant` (the vDSO) until the
+        /// observer answers. `false` drops the connection; the observer has
+        /// said why on stderr, or the timeout line below does.
+        pub fn attach(&self, sock: &TcpStream) -> bool {
+            if self.state.load(Ordering::Acquire) != IDLE {
+                self.extra.fetch_add(1, Ordering::Relaxed);
+                return true;
+            }
+            self.fd.store(sock.as_raw_fd(), Ordering::Release);
+            self.state.store(OFFERED, Ordering::Release);
+            let deadline = Instant::now() + ATTACH_TIMEOUT;
+            loop {
+                match self.state.load(Ordering::Acquire) {
+                    ATTACHED => return true,
+                    FAILED => return false,
+                    _ => {}
+                }
+                if Instant::now() > deadline
+                    && self
+                        .state
+                        .compare_exchange(OFFERED, FAILED, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    eprintln!(
+                        "w2w: --wire-timestamps: the observer did not stamp the engine's socket \
+                         within {} s",
+                        ATTACH_TIMEOUT.as_secs()
+                    );
+                    return false;
+                }
+                std::hint::spin_loop();
+            }
+        }
+    }
+
+    /// Which requests the figures are over.
+    pub enum Window {
+        /// The combined run: logon, `warmup`, then `n` timed. A TLS arm's
+        /// handshake records are requests too, so it gets no window.
+        Combined { warmup: usize, n: usize, tls: bool },
+        /// `--listen`: every request after the logon but the first `skip`
+        /// (`--listen --warmup <n>`).
+        Listen { skip: usize },
+    }
+
+    /// What the observer recorded, for [`Observed::report`].
+    pub struct Observed {
+        nic: String,
+        loopback: bool,
+        attached: bool,
+        peer: u16,
+        extra: usize,
+        frames: Vec<Inbound>,
+        sent: Vec<Sent>,
+        /// Records that did not fit — requests or stamps nobody can pair.
+        overflow: usize,
+        /// `PACKET_STATISTICS.tp_drops` over the run.
+        tap_drops: u32,
+        /// Error-queue entries that were not a `SCM_TSTAMP_SND` timestamp.
+        other: usize,
+        /// The first `recvmsg` failure other than "nothing there", as errno.
+        errno: i32,
+    }
+
+    /// The running observer. Dropping it without [`Observer::finish`] stops
+    /// the thread and restores the NIC.
+    pub struct Observer {
+        handoff: Arc<Handoff>,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+        out: Arc<Mutex<Option<Observed>>>,
+        _nic: Option<HwConfig>,
+    }
+
+    impl Drop for Observer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+        }
+    }
+
+    fn os(what: &str) -> io::Error {
+        let e = io::Error::last_os_error();
+        io::Error::new(e.kind(), format!("w2w: --wire-timestamps: {what}: {e}"))
+    }
+
+    fn refused_raw(what: &str) -> io::Error {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::EPERM) {
+            eprintln!("w2w: --wire-timestamps: {what}: {e}.");
+            eprintln!("     This process lacks the capability. After each build run once:");
+            eprintln!("       sudo -n setcap cap_net_raw,cap_net_admin+ep target/release/w2w");
+            eprintln!("     A process started under strace or gdb by an unprivileged tracer is");
+            eprintln!(
+                "     never given file capabilities (security/commoncap.c), so it lands here"
+            );
+            eprintln!("     too. Nothing runs without the tap.");
+        }
+        io::Error::new(e.kind(), format!("w2w: --wire-timestamps: {what}: {e}"))
+    }
+
+    fn ifreq_for(nic: &str) -> io::Result<libc::ifreq> {
+        // SAFETY: `ifreq` is plain data; all-zero is a valid value of it.
+        let mut ifr: libc::ifreq = unsafe { zeroed() };
+        if nic.len() >= ifr.ifr_name.len() || nic.bytes().any(|b| b == 0) {
+            return Err(io::Error::other(format!(
+                "w2w: --nic {nic}: not an interface name"
+            )));
+        }
+        for (d, s) in ifr.ifr_name.iter_mut().zip(nic.bytes()) {
+            *d = s as libc::c_char;
+        }
+        Ok(ifr)
+    }
+
+    fn setsockopt<T>(fd: RawFd, level: i32, name: i32, v: &T) -> i32 {
+        // SAFETY: `v` is a live `T` for the call and its exact size is passed;
+        // the kernel copies it in and keeps no pointer. Proven with the module
+        // note's list.
+        unsafe {
+            libc::setsockopt(
+                fd,
+                level,
+                name,
+                (v as *const T).cast(),
+                size_of::<T>() as libc::socklen_t,
+            )
+        }
+    }
+
+    /// The NIC's timestamping configuration, set for the run and put back.
+    struct HwConfig {
+        ctl: OwnedFd,
+        nic: String,
+        old: libc::hwtstamp_config,
+    }
+
+    impl HwConfig {
+        fn hwtstamp(
+            ctl: &OwnedFd,
+            nic: &str,
+            req: libc::c_ulong,
+            cfg: &mut libc::hwtstamp_config,
+        ) -> i32 {
+            let Ok(mut ifr) = ifreq_for(nic) else {
+                return -1;
+            };
+            ifr.ifr_ifru.ifru_data = (cfg as *mut libc::hwtstamp_config).cast();
+            // SAFETY: `ifr` names the interface and points at `cfg`, which
+            // outlives the call; SIOC[GS]HWTSTAMP read and write exactly one
+            // `hwtstamp_config` through it.
+            unsafe { libc::ioctl(ctl.as_raw_fd(), req, &mut ifr) }
+        }
+
+        fn apply(nic: &str) -> io::Result<Self> {
+            // SAFETY: plain `socket(2)`; the result is checked before use.
+            let raw =
+                unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+            if raw < 0 {
+                return Err(os("socket(AF_INET) for the NIC's ioctls"));
+            }
+            // SAFETY: `raw` is a descriptor this function just opened and owns.
+            let ctl = unsafe { OwnedFd::from_raw_fd(raw) };
+            // SAFETY: all-zero is a valid `hwtstamp_config`.
+            let mut old: libc::hwtstamp_config = unsafe { zeroed() };
+            if Self::hwtstamp(&ctl, nic, libc::SIOCGHWTSTAMP, &mut old) < 0 {
+                return Err(os(&format!("SIOCGHWTSTAMP on {nic}")));
+            }
+            println!(
+                "hwtstamp {nic} before: tx_type {} rx_filter {}",
+                old.tx_type, old.rx_filter
+            );
+            // SAFETY: as above.
+            let mut want: libc::hwtstamp_config = unsafe { zeroed() };
+            want.tx_type = libc::HWTSTAMP_TX_ON as libc::c_int;
+            want.rx_filter = libc::HWTSTAMP_FILTER_ALL as libc::c_int;
+            if Self::hwtstamp(&ctl, nic, libc::SIOCSHWTSTAMP, &mut want) < 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::EPERM) {
+                    eprintln!("w2w: --wire-timestamps: SIOCSHWTSTAMP on {nic}: {e}.");
+                    eprintln!(
+                        "     It needs CAP_NET_ADMIN (net/core/dev_ioctl.c). After each build:"
+                    );
+                    eprintln!(
+                        "       sudo -n setcap cap_net_raw,cap_net_admin+ep target/release/w2w"
+                    );
+                }
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("w2w: --wire-timestamps: SIOCSHWTSTAMP on {nic}: {e}"),
+                ));
+            }
+            let this = Self {
+                ctl,
+                nic: nic.to_string(),
+                old,
+            };
+            // SAFETY: as above.
+            let mut back: libc::hwtstamp_config = unsafe { zeroed() };
+            let got = Self::hwtstamp(&this.ctl, nic, libc::SIOCGHWTSTAMP, &mut back);
+            println!(
+                "hwtstamp {nic} set: tx_type {} rx_filter {} (answer), tx_type {} rx_filter {} \
+                 (read back) — a driver's read-back is not evidence; each sample's ts[2] is",
+                want.tx_type, want.rx_filter, back.tx_type, back.rx_filter
+            );
+            let on = |c: &libc::hwtstamp_config| {
+                c.tx_type == libc::HWTSTAMP_TX_ON as libc::c_int
+                    && c.rx_filter == libc::HWTSTAMP_FILTER_ALL as libc::c_int
+            };
+            if got < 0 || !on(&want) || !on(&back) {
+                // `this` drops here and puts the old configuration back.
+                return Err(io::Error::other(format!(
+                    "w2w: --wire-timestamps: {nic} did not take tx_type ON and rx_filter ALL"
+                )));
+            }
+            Ok(this)
+        }
+    }
+
+    impl Drop for HwConfig {
+        fn drop(&mut self) {
+            let mut old = self.old;
+            let rc = Self::hwtstamp(&self.ctl, &self.nic, libc::SIOCSHWTSTAMP, &mut old);
+            if rc < 0 {
+                eprintln!(
+                    "w2w: could not restore {}'s timestamping (tx_type {} rx_filter {}): {}",
+                    self.nic,
+                    self.old.tx_type,
+                    self.old.rx_filter,
+                    io::Error::last_os_error()
+                );
+            } else {
+                println!(
+                    "hwtstamp {} restored: tx_type {} rx_filter {}",
+                    self.nic, old.tx_type, old.rx_filter
+                );
+            }
+        }
+    }
+
+    /// The three timespecs of an `SCM_TIMESTAMPING` control message, in ns,
+    /// or all zero when the message is absent — which is how the kernel says
+    /// "no stamp" when no software reporting flag is set.
+    ///
+    /// # Safety
+    ///
+    /// `msg` must be a `msghdr` a successful `recvmsg` just filled, whose
+    /// `msg_control` buffer is still live.
+    unsafe fn walk(
+        msg: &libc::msghdr,
+        mut on_err: impl FnMut(&libc::sock_extended_err),
+    ) -> [u64; 3] {
+        let mut ts = [0u64; 3];
+        let tsz = size_of::<libc::timespec>();
+        // SAFETY: the caller's contract; `CMSG_FIRSTHDR`/`CMSG_NXTHDR` stay
+        // inside `msg_controllen` and return null at its end.
+        let mut c = unsafe { libc::CMSG_FIRSTHDR(msg) };
+        while !c.is_null() {
+            // SAFETY: non-null and inside the control buffer, per the above.
+            let h = unsafe { &*c };
+            // SAFETY: `CMSG_DATA` of a live header.
+            let data = unsafe { libc::CMSG_DATA(c) };
+            let len = h.cmsg_len as usize;
+            // SAFETY: `CMSG_LEN` is arithmetic.
+            let need = |n: usize| len >= unsafe { libc::CMSG_LEN(n as u32) } as usize;
+            if h.cmsg_level == libc::SOL_SOCKET
+                && h.cmsg_type == libc::SCM_TIMESTAMPING
+                && need(3 * tsz)
+            {
+                for (i, slot) in ts.iter_mut().enumerate() {
+                    // SAFETY: `need(3 * tsz)` holds, so three timespecs are
+                    // inside the message; unaligned, so read unaligned.
+                    let t: libc::timespec =
+                        unsafe { std::ptr::read_unaligned(data.add(i * tsz).cast()) };
+                    *slot = u64::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000
+                        + u64::try_from(t.tv_nsec).unwrap_or(0);
+                }
+            } else if ((h.cmsg_level == libc::SOL_IP && h.cmsg_type == libc::IP_RECVERR)
+                || (h.cmsg_level == libc::SOL_IPV6 && h.cmsg_type == libc::IPV6_RECVERR))
+                && need(size_of::<libc::sock_extended_err>())
+            {
+                // SAFETY: the length was checked just above.
+                let e: libc::sock_extended_err = unsafe { std::ptr::read_unaligned(data.cast()) };
+                on_err(&e);
+            }
+            // SAFETY: `c` is a header of this message.
+            c = unsafe { libc::CMSG_NXTHDR(msg, c) };
+        }
+        ts
+    }
+
+    impl Observer {
+        /// Open the tap on `args.nic`, set the NIC up (unless it is loopback),
+        /// and start the observer on `args.observer_core`. `engine` is the
+        /// engine's bound address; its port is what the tap keeps.
+        pub fn start(
+            args: &WireArgs,
+            mode: Mode,
+            engine: SocketAddr,
+            capacity: usize,
+        ) -> io::Result<Self> {
+            let SocketAddr::V4(v4) = engine else {
+                return Err(io::Error::other(
+                    "w2w: --wire-timestamps reads IPv4 frames; listen on an IPv4 address",
+                ));
+            };
+            let port = v4.port();
+            let nic = args.nic.as_str();
+            let cname = std::ffi::CString::new(nic).map_err(|_| {
+                io::Error::other(format!("w2w: --nic {nic}: not an interface name"))
+            })?;
+            // SAFETY: a NUL-terminated string that outlives the call.
+            let ifindex = unsafe { libc::if_nametoindex(cname.as_ptr()) };
+            if ifindex == 0 {
+                return Err(os(&format!("--nic {nic}")));
+            }
+
+            // Loopback or not, asked on a plain `AF_INET` socket **before**
+            // anything that needs a capability: the `standard` refusal below
+            // must be reachable by a binary with none (Sửa 2, Điều 3's
+            // reversal).
+            // SAFETY: plain `socket(2)`; checked before use.
+            let raw =
+                unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+            if raw < 0 {
+                return Err(os("socket(AF_INET) for SIOCGIFFLAGS"));
+            }
+            // SAFETY: just opened, owned here.
+            let ctl = unsafe { OwnedFd::from_raw_fd(raw) };
+            let mut ifr = ifreq_for(nic)?;
+            // SAFETY: SIOCGIFFLAGS reads the name and writes `ifru_flags`
+            // inside `ifr`, which outlives the call.
+            if unsafe { libc::ioctl(ctl.as_raw_fd(), libc::SIOCGIFFLAGS, &mut ifr) } < 0 {
+                return Err(os(&format!("SIOCGIFFLAGS on {nic}")));
+            }
+            drop(ctl);
+            // SAFETY: SIOCGIFFLAGS just wrote this member of the union.
+            let loopback = i32::from(unsafe { ifr.ifr_ifru.ifru_flags }) & libc::IFF_LOOPBACK != 0;
+            super::blocking_mode_on_hardware(mode, nic, loopback).map_err(|why| {
+                eprintln!("w2w: {why}");
+                io::Error::other(format!("w2w: {why}"))
+            })?;
+
+            // SAFETY: plain `socket(2)`; checked before use.
+            let raw =
+                unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+            if raw < 0 {
+                return Err(refused_raw("socket(AF_PACKET)"));
+            }
+            // SAFETY: just opened, owned here.
+            let tap = unsafe { OwnedFd::from_raw_fd(raw) };
+            let hw = if loopback {
+                println!(
+                    "hwtstamp {nic}: loopback, no hardware clock — SIOCSHWTSTAMP not attempted; \
+                     every stamp will be counted missing and no wire column printed"
+                );
+                None
+            } else {
+                Some(HwConfig::apply(nic)?)
+            };
+
+            let fd = tap.as_raw_fd();
+            let one: libc::c_int = 1;
+            if setsockopt(fd, libc::SOL_PACKET, libc::PACKET_IGNORE_OUTGOING, &one) < 0 {
+                return Err(os("PACKET_IGNORE_OUTGOING"));
+            }
+            let rx: libc::c_uint =
+                libc::SOF_TIMESTAMPING_RX_HARDWARE | libc::SOF_TIMESTAMPING_RAW_HARDWARE;
+            if setsockopt(fd, libc::SOL_SOCKET, libc::SO_TIMESTAMPING, &rx) < 0 {
+                return Err(os("SO_TIMESTAMPING on the tap"));
+            }
+            // Classic BPF over the network header (SOCK_DGRAM): IPv4 TCP, not
+            // a fragment, destination port `port`; keep `SNAP` bytes. The same
+            // test is made again in `pair::parse_ipv4_tcp` — this one is only
+            // so the kernel does not queue what nobody reads.
+            let st = |code: u32, jt: u8, jf: u8, k: u32| libc::sock_filter {
+                code: code as u16,
+                jt,
+                jf,
+                k,
+            };
+            let mut prog = [
+                st(libc::BPF_LD | libc::BPF_B | libc::BPF_ABS, 0, 0, 9),
+                st(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, 0, 6, 6),
+                st(libc::BPF_LD | libc::BPF_H | libc::BPF_ABS, 0, 0, 6),
+                st(libc::BPF_JMP | libc::BPF_JSET | libc::BPF_K, 4, 0, 0x1fff),
+                st(libc::BPF_LDX | libc::BPF_B | libc::BPF_MSH, 0, 0, 0),
+                st(libc::BPF_LD | libc::BPF_H | libc::BPF_IND, 0, 0, 2),
+                st(
+                    libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                    0,
+                    1,
+                    u32::from(port),
+                ),
+                st(libc::BPF_RET | libc::BPF_K, 0, 0, SNAP as u32),
+                st(libc::BPF_RET | libc::BPF_K, 0, 0, 0),
+            ];
+            let fprog = libc::sock_fprog {
+                len: prog.len() as u16,
+                filter: prog.as_mut_ptr(),
+            };
+            if setsockopt(fd, libc::SOL_SOCKET, libc::SO_ATTACH_FILTER, &fprog) < 0 {
+                return Err(os("SO_ATTACH_FILTER on the tap"));
+            }
+            let rcvbuf: libc::c_int = 8 << 20;
+            let _ = setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &rcvbuf);
+            // SAFETY: all-zero is a valid `sockaddr_ll`.
+            let mut sll: libc::sockaddr_ll = unsafe { zeroed() };
+            sll.sll_family = libc::AF_PACKET as u16;
+            sll.sll_protocol = (libc::ETH_P_IP as u16).to_be();
+            sll.sll_ifindex = ifindex as i32;
+            // SAFETY: `sll` is a live `sockaddr_ll` and its size is passed.
+            let rc = unsafe {
+                libc::bind(
+                    fd,
+                    (&sll as *const libc::sockaddr_ll).cast(),
+                    size_of::<libc::sockaddr_ll>() as libc::socklen_t,
+                )
+            };
+            if rc < 0 {
+                return Err(os(&format!("bind the tap to {nic}")));
+            }
+            // Zero the drop counter: PACKET_STATISTICS resets on read.
+            let _ = tap_drops(fd);
+
+            // Every record the run can make, allocated and touched now — the
+            // observer's loop allocates nothing, and the counter would say so.
+            let mut frames = Vec::with_capacity(capacity);
+            frames.resize(capacity, Inbound::default());
+            frames.clear();
+            let mut sent = Vec::with_capacity(capacity);
+            sent.resize(capacity, Sent::default());
+            sent.clear();
+
+            let handoff = Arc::new(Handoff {
+                state: AtomicU8::new(IDLE),
+                fd: AtomicI32::new(-1),
+                peer: AtomicU16::new(0),
+                extra: AtomicUsize::new(0),
+            });
+            let stop = Arc::new(AtomicBool::new(false));
+            let out = Arc::new(Mutex::new(None));
+            let observed = Observed {
+                nic: nic.to_string(),
+                loopback,
+                attached: false,
+                peer: 0,
+                extra: 0,
+                frames,
+                sent,
+                overflow: 0,
+                tap_drops: 0,
+                other: 0,
+                errno: 0,
+            };
+            let body = {
+                let (h, s, o) = (Arc::clone(&handoff), Arc::clone(&stop), Arc::clone(&out));
+                move || observe(tap, port, &h, &s, &o, observed)
+            };
+            let (thread, on) = spawn_observer(args.observer_core, body)?;
+            println!("wire-timestamps: {nic}, port {port}");
+            println!("observer-core: {on}");
+            Ok(Self {
+                handoff,
+                stop,
+                thread: Some(thread),
+                out,
+                _nic: hw,
+            })
+        }
+
+        /// The engine thread's end of the handoff.
+        pub fn handoff(&self) -> Arc<Handoff> {
+            Arc::clone(&self.handoff)
+        }
+
+        /// Drain, stop and join the observer; the NIC is restored when `self`
+        /// drops at the end of this call.
+        pub fn finish(mut self) -> io::Result<Observed> {
+            self.stop.store(true, Ordering::Release);
+            if let Some(t) = self.thread.take() {
+                t.join()
+                    .map_err(|_| io::Error::other("w2w: the observer thread panicked"))?;
+            }
+            let got = self
+                .out
+                .lock()
+                .map_err(|_| io::Error::other("w2w: the observer's results were poisoned"))?
+                .take();
+            got.ok_or_else(|| io::Error::other("w2w: the observer left no results"))
+        }
+    }
+
+    /// The observer thread, pinned from inside and read back as the engine
+    /// is (ADR-0015). Two definitions, like `spawn_engine`: `main` refuses
+    /// `--observer-core` on a build that cannot pin, so the second is never
+    /// reached — and refuses rather than spin unpinned if it ever is.
+    #[cfg(feature = "affinity")]
+    fn spawn_observer<F: FnOnce() + Send + 'static>(
+        core: usize,
+        body: F,
+    ) -> io::Result<(std::thread::JoinHandle<()>, String)> {
+        use fixbolt_engine::affinity::{CoreId, spawn_pinned};
+        let (t, on) = spawn_pinned("w2w-observer", CoreId(core), body)?;
+        Ok((t, on.to_string()))
+    }
+
+    #[cfg(not(feature = "affinity"))]
+    fn spawn_observer<F: FnOnce() + Send + 'static>(
+        _core: usize,
+        _body: F,
+    ) -> io::Result<(std::thread::JoinHandle<()>, String)> {
+        Err(io::Error::other(
+            "w2w: --observer-core needs `--features affinity`",
+        ))
+    }
+
+    fn tap_drops(fd: RawFd) -> u32 {
+        // SAFETY: all-zero is a valid `tpacket_stats`.
+        let mut st: libc::tpacket_stats = unsafe { zeroed() };
+        let mut len = size_of::<libc::tpacket_stats>() as libc::socklen_t;
+        // SAFETY: `st` and `len` are live and `len` is its size.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_PACKET,
+                libc::PACKET_STATISTICS,
+                (&mut st as *mut libc::tpacket_stats).cast(),
+                &mut len,
+            )
+        };
+        if rc < 0 { u32::MAX } else { st.tp_drops }
+    }
+
+    /// The observer's side of the handoff: `dup`, stamp, read the peer's port.
+    fn stamp(h: &Handoff) -> Result<(OwnedFd, u16), io::Error> {
+        let fd = h.fd.load(Ordering::Acquire);
+        // SAFETY: `fd` is the engine's accepted socket, which the engine thread
+        // is holding (it is spinning in `Handoff::attach` and has not added it
+        // yet), so the descriptor is live for this call.
+        let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if dup < 0 {
+            return Err(os("dup of the engine's socket"));
+        }
+        // SAFETY: just created, owned here.
+        let dup = unsafe { OwnedFd::from_raw_fd(dup) };
+        let flags: libc::c_uint = libc::SOF_TIMESTAMPING_TX_HARDWARE
+            | libc::SOF_TIMESTAMPING_RAW_HARDWARE
+            | libc::SOF_TIMESTAMPING_OPT_ID
+            | libc::SOF_TIMESTAMPING_OPT_ID_TCP
+            | libc::SOF_TIMESTAMPING_OPT_TSONLY;
+        if setsockopt(
+            dup.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_TIMESTAMPING,
+            &flags,
+        ) < 0
+        {
+            return Err(os("SO_TIMESTAMPING on the engine's socket"));
+        }
+        // SAFETY: all-zero is a valid `sockaddr_storage`.
+        let mut ss: libc::sockaddr_storage = unsafe { zeroed() };
+        let mut len = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        // SAFETY: `ss` is large enough for any address and `len` says so.
+        if unsafe {
+            libc::getpeername(
+                dup.as_raw_fd(),
+                (&mut ss as *mut libc::sockaddr_storage).cast(),
+                &mut len,
+            )
+        } < 0
+        {
+            return Err(os("getpeername of the engine's socket"));
+        }
+        let port = match i32::from(ss.ss_family) {
+            libc::AF_INET => {
+                // SAFETY: the family says this is a `sockaddr_in`.
+                let sin: libc::sockaddr_in =
+                    unsafe { std::ptr::read((&ss as *const libc::sockaddr_storage).cast()) };
+                u16::from_be(sin.sin_port)
+            }
+            _ => {
+                return Err(io::Error::other(
+                    "w2w: --wire-timestamps: the peer is not IPv4",
+                ));
+            }
+        };
+        Ok((dup, port))
+    }
+
+    /// The observer thread. Spins: a waiter on the tap would be woken from the
+    /// receive softirq **before** TCP delivery, which is inside the figure.
+    #[allow(clippy::needless_pass_by_value)]
+    fn observe(
+        tap: OwnedFd,
+        port: u16,
+        h: &Handoff,
+        stop: &AtomicBool,
+        out: &Mutex<Option<Observed>>,
+        mut o: Observed,
+    ) {
+        let mut err: Option<OwnedFd> = None;
+        let mut buf = [0u8; SNAP];
+        let mut ctl = [0u64; 64];
+        let mut stopping: Option<Instant> = None;
+        let mut quiet_since: Option<Instant> = None;
+        loop {
+            let mut got = false;
+            if h.state.load(Ordering::Acquire) == OFFERED {
+                match stamp(h) {
+                    Ok((fd, peer)) => {
+                        if h.state
+                            .compare_exchange(
+                                OFFERED,
+                                ATTACHED,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            h.peer.store(peer, Ordering::Release);
+                            o.peer = peer;
+                            o.attached = true;
+                            err = Some(fd);
+                        }
+                    }
+                    Err(e) => {
+                        if h.state
+                            .compare_exchange(OFFERED, FAILED, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                        {
+                            eprintln!("{e}");
+                        }
+                    }
+                }
+            }
+
+            // The tap: every frame waiting.
+            loop {
+                let mut iov = libc::iovec {
+                    iov_base: buf.as_mut_ptr().cast(),
+                    iov_len: buf.len(),
+                };
+                // SAFETY: all-zero is a valid `msghdr`.
+                let mut msg: libc::msghdr = unsafe { zeroed() };
+                msg.msg_iov = &mut iov;
+                msg.msg_iovlen = 1;
+                msg.msg_control = ctl.as_mut_ptr().cast();
+                msg.msg_controllen = size_of_val(&ctl);
+                // SAFETY: `msg` points at `iov` → `buf` and at `ctl`, all live
+                // on this stack for the call, with their true lengths.
+                let n = unsafe { libc::recvmsg(tap.as_raw_fd(), &mut msg, libc::MSG_DONTWAIT) };
+                if n < 0 {
+                    note(&mut o);
+                    break;
+                }
+                got = true;
+                // SAFETY: `recvmsg` succeeded and `ctl` is live.
+                let ts = unsafe { walk(&msg, |_| {}) };
+                let len = usize::try_from(n).unwrap_or(0).min(buf.len());
+                if let Some(f) = pair::parse_ipv4_tcp(&buf[..len], port, ts) {
+                    if o.frames.len() < o.frames.capacity() {
+                        o.frames.push(f);
+                    } else {
+                        o.overflow += 1;
+                    }
+                }
+            }
+
+            // The engine socket's error queue: every stamp waiting.
+            if let Some(fd) = &err {
+                loop {
+                    // SAFETY: all-zero is a valid `msghdr`; no payload is
+                    // asked for (`OPT_TSONLY`), only control messages.
+                    let mut msg: libc::msghdr = unsafe { zeroed() };
+                    msg.msg_control = ctl.as_mut_ptr().cast();
+                    msg.msg_controllen = size_of_val(&ctl);
+                    // SAFETY: `msg` points at `ctl`, live for the call.
+                    let n = unsafe {
+                        libc::recvmsg(
+                            fd.as_raw_fd(),
+                            &mut msg,
+                            libc::MSG_ERRQUEUE | libc::MSG_DONTWAIT,
+                        )
+                    };
+                    if n < 0 {
+                        note(&mut o);
+                        break;
+                    }
+                    got = true;
+                    let mut key = None;
+                    // SAFETY: `recvmsg` succeeded and `ctl` is live.
+                    let ts = unsafe {
+                        walk(&msg, |e| {
+                            if e.ee_errno == libc::ENOMSG as u32
+                                && e.ee_origin == libc::SO_EE_ORIGIN_TIMESTAMPING
+                                && e.ee_info == SCM_TSTAMP_SND
+                            {
+                                key = Some(e.ee_data);
+                            }
+                        })
+                    };
+                    match key {
+                        Some(key) if o.sent.len() < o.sent.capacity() => {
+                            o.sent.push(Sent { ts, key })
+                        }
+                        Some(_) => o.overflow += 1,
+                        None => o.other += 1,
+                    }
+                }
+            }
+
+            if stop.load(Ordering::Acquire) {
+                let now = Instant::now();
+                let began = *stopping.get_or_insert(now);
+                if got {
+                    quiet_since = None;
+                }
+                let quiet = *quiet_since.get_or_insert(now);
+                if now.duration_since(quiet) >= QUIET || now.duration_since(began) >= DRAIN_MAX {
+                    break;
+                }
+            }
+            std::hint::spin_loop();
+        }
+        o.tap_drops = tap_drops(tap.as_raw_fd());
+        o.extra = h.extra.load(Ordering::Relaxed);
+        if let Ok(mut slot) = out.lock() {
+            *slot = Some(o);
+        }
+    }
+
+    /// A `recvmsg` that returned nothing: "nothing waiting" is the spin's
+    /// normal case; anything else is kept and printed.
+    fn note(o: &mut Observed) {
+        let e = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if e != libc::EAGAIN && e != libc::EINTR && o.errno == 0 {
+            o.errno = e;
+        }
+    }
+
+    impl Observed {
+        /// Print the wire section. `Err` when the tap cannot be trusted to line
+        /// up with the run — which on a plain arm means the tap is broken, and
+        /// must fail the run rather than print counts about something else.
+        pub fn report(&self, window: Window) -> io::Result<()> {
+            println!(
+                "     wire   NIC in -> NIC out at the acceptor, {} hardware stamps",
+                self.nic
+            );
+            if self.errno != 0 {
+                return Err(io::Error::other(format!(
+                    "w2w: --wire-timestamps: a read failed: {}",
+                    io::Error::from_raw_os_error(self.errno)
+                )));
+            }
+            if !self.attached {
+                return Err(io::Error::other(
+                    "w2w: --wire-timestamps: the observer never stamped the engine's socket",
+                ));
+            }
+            let mut reqs = Vec::new();
+            if pair::requests(&self.frames, self.peer, &mut reqs).is_none() {
+                let hint = match (&window, self.loopback) {
+                    (Window::Combined { .. }, false) => {
+                        "; the combined run is over loopback, so a hardware NIC never carries \
+                         it — run the engine with --listen on that NIC's address"
+                    }
+                    _ => "",
+                };
+                return Err(io::Error::other(format!(
+                    "w2w: --wire-timestamps: the tap on {} never saw the TCP handshake from port {} \
+                     — it is not watching the connection it was meant to{hint}",
+                    self.nic, self.peer
+                )));
+            }
+            let (range, label) = match window {
+                Window::Combined {
+                    warmup,
+                    n,
+                    tls: false,
+                } => {
+                    let expected = 1 + warmup + n;
+                    if reqs.len() != expected {
+                        return Err(io::Error::other(format!(
+                            "w2w: --wire-timestamps: the tap saw {} requests from port {}, and the \
+                             run sent {expected} (logon 1 + warmup {warmup} + timed {n})",
+                            reqs.len(),
+                            self.peer
+                        )));
+                    }
+                    (1 + warmup..expected, "the timed window".to_string())
+                }
+                Window::Combined { tls: true, .. } => (
+                    0..reqs.len(),
+                    "every request, TLS handshake records included — no window on a TLS arm"
+                        .to_string(),
+                ),
+                Window::Listen { skip } => {
+                    // The logon, then `skip` requests the generator called warmup.
+                    if 1 + skip > reqs.len() {
+                        return Err(io::Error::other(format!(
+                            "w2w: --wire-timestamps: the tap saw {} requests from port {}, and \
+                             --warmup {skip} leaves out more than the logon and every one after it",
+                            reqs.len(),
+                            self.peer
+                        )));
+                    }
+                    let label = if skip == 0 {
+                        "every request after the logon; --warmup 0, so the generator's warmup \
+                         is included"
+                            .to_string()
+                    } else {
+                        format!("every request after the logon, leaving out the first {skip}")
+                    };
+                    (1 + skip..reqs.len(), label)
+                }
+            };
+            let mut sent = self.sent.clone();
+            sent.sort_unstable_by_key(|s| s.key);
+            let mut wire = Vec::with_capacity(range.len());
+            let t = pair::pair(&reqs, range, &sent, &mut wire);
+            println!(
+                "     requests       {:>9}   ({label}; {} seen on the tap)",
+                t.requests,
+                reqs.len()
+            );
+            println!(
+                "     hw-rx-missing  {:>9}   of {}",
+                t.rx_missing, t.requests
+            );
+            println!(
+                "     hw-tx-missing  {:>9}   of {}",
+                t.tx_missing, t.requests
+            );
+            println!(
+                "     tx stamps seen {:>9}   (engine socket's error queue, every write)",
+                sent.len()
+            );
+            if self.other > 0 {
+                println!(
+                    "     errqueue other {:>9}   (entries that were not a TX timestamp)",
+                    self.other
+                );
+            }
+            if t.reversed > 0 {
+                println!(
+                    "     reversed       {:>9}   (reply stamped before its request; not figures)",
+                    t.reversed
+                );
+            }
+            if self.extra > 0 {
+                println!(
+                    "     unstamped conns {:>8}   (only the first connection is stamped)",
+                    self.extra
+                );
+            }
+            println!("     tap drops      {:>9}", self.tap_drops);
+            if self.overflow > 0 {
+                println!(
+                    "     overflow       {:>9}   (records that did not fit)",
+                    self.overflow
+                );
+            }
+            if self.tap_drops != 0 || self.overflow != 0 {
+                println!(
+                    "     no wire column: the tap lost frames or records, so a reply could be"
+                );
+                println!("     paired against a request that was not its own");
+            } else if wire.is_empty() {
+                println!(
+                    "     no wire column: no request had both a hardware RX and a hardware TX stamp"
+                );
+                if self.loopback {
+                    println!(
+                        "     ({} is loopback and has no hardware clock: expected)",
+                        self.nic
+                    );
+                } else {
+                    println!(
+                        "     ON A HARDWARE NIC. See the plan's igb trap: `ethtool -T`, link down/up,"
+                    );
+                    println!("     and record the kernel version before trusting any read-back.");
+                }
+            } else {
+                wire.sort_unstable();
+                let pick = |q: f64| wire[((wire.len() as f64 - 1.0) * q) as usize];
+                println!(
+                    "     wire over {} requests with both hardware stamps",
+                    wire.len()
+                );
+                println!("     wire p50   {:>9} ns", pick(0.50));
+                println!("     wire p99   {:>9} ns", pick(0.99));
+                println!("     wire p99.9 {:>9} ns", pick(0.999));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// `--wire-timestamps` does not exist off Linux: `wire_of` refuses it before
+/// anything here is reached, and these uninhabited types keep `main` free of
+/// `cfg`s.
+#[cfg(not(target_os = "linux"))]
+mod wire {
+    use std::io;
+    use std::net::{SocketAddr, TcpStream};
+    use std::sync::Arc;
+
+    use super::{Mode, WireArgs};
+
+    pub const LISTEN_CAPACITY: usize = 0;
+
+    pub enum Handoff {}
+    impl Handoff {
+        pub fn attach(&self, _: &TcpStream) -> bool {
+            match *self {}
+        }
+    }
+
+    // Built by `main` on every OS; read only by the Linux `report`.
+    #[allow(dead_code)]
+    pub enum Window {
+        Combined { warmup: usize, n: usize, tls: bool },
+        Listen { skip: usize },
+    }
+
+    pub enum Observed {}
+    impl Observed {
+        pub fn report(&self, _: Window) -> io::Result<()> {
+            match *self {}
+        }
+    }
+
+    pub enum Observer {}
+    impl Observer {
+        pub fn start(_: &WireArgs, _: Mode, _: SocketAddr, _: usize) -> io::Result<Self> {
+            Err(io::Error::other("w2w: --wire-timestamps is Linux-only"))
+        }
+        pub fn handoff(&self) -> Arc<Handoff> {
+            match *self {}
+        }
+        pub fn finish(self) -> io::Result<Observed> {
+            match self {}
+        }
+    }
 }
 
 /// The TLS arms' client, certificate and configurations.
@@ -2330,6 +3695,78 @@ mod tests {
             Err("--interval -5: not a valid value".into())
         );
         assert_eq!(interval_of(&argv("--interval 250")), Ok(250));
+    }
+
+    #[test]
+    fn wire_timestamps_are_refused_where_they_do_not_apply() {
+        assert_eq!(wire_of(&argv("--mode hft")), Ok(None));
+        for flag in ["--wire-timestamps", "--nic lo", "--observer-core 2"] {
+            let e = half_of(&argv(&format!("--connect 127.0.0.1:1 {flag}"))).unwrap_err();
+            let name = flag.split(' ').next().unwrap();
+            assert!(
+                e.starts_with(&format!("{name} does not apply to --connect")),
+                "{e}"
+            );
+        }
+        let e = wire_of(&argv("--nic lo --observer-core 2")).unwrap_err();
+        assert!(e.contains("belong to --wire-timestamps"), "{e}");
+        if cfg!(target_os = "linux") {
+            let e = wire_of(&argv("--wire-timestamps --observer-core 2")).unwrap_err();
+            assert!(e.contains("needs --nic"), "{e}");
+            let e = wire_of(&argv("--wire-timestamps --nic lo")).unwrap_err();
+            assert!(e.contains("needs --observer-core"), "{e}");
+            assert_eq!(
+                wire_of(&argv(
+                    "--listen 127.0.0.1:0 --wire-timestamps --nic lo --observer-core 2"
+                )),
+                Ok(Some(WireArgs {
+                    nic: "lo".into(),
+                    observer_core: 2
+                }))
+            );
+        } else {
+            let e = wire_of(&argv("--wire-timestamps --nic lo --observer-core 2")).unwrap_err();
+            assert!(e.contains("Linux-only"), "{e}");
+        }
+    }
+
+    #[test]
+    fn listen_takes_warmup_only_beside_wire_timestamps() {
+        let with = "--listen 127.0.0.1:0 --warmup 50 --wire-timestamps --nic lo --observer-core 2";
+        assert_eq!(half_of(&argv(with)), Ok(Half::Listen("127.0.0.1:0".into())));
+        let e = half_of(&argv("--listen 127.0.0.1:0 --warmup 50")).unwrap_err();
+        assert!(e.starts_with("--warmup does not apply to --listen"), "{e}");
+        // The exception is `--warmup` alone: the generator's other flags stay refused.
+        let e = half_of(&argv(
+            "--listen 127.0.0.1:0 --messages 10 --wire-timestamps --nic lo --observer-core 2",
+        ))
+        .unwrap_err();
+        assert!(
+            e.starts_with("--messages does not apply to --listen"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn standard_is_refused_on_a_hardware_nic_and_not_on_loopback() {
+        let e = blocking_mode_on_hardware(Mode::Standard, "enp9s0", false).unwrap_err();
+        assert!(
+            e.starts_with("--mode standard --wire-timestamps on enp9s0 is refused")
+                && e.contains("POLLERR"),
+            "{e}"
+        );
+        assert_eq!(
+            blocking_mode_on_hardware(Mode::Standard, "lo", true),
+            Ok(())
+        );
+        assert_eq!(
+            blocking_mode_on_hardware(Mode::Hft, "enp9s0", false),
+            Ok(())
+        );
+        assert_eq!(
+            blocking_mode_on_hardware(Mode::Yield, "enp9s0", false),
+            Ok(())
+        );
     }
 
     #[test]

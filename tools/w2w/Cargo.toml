@@ -62,6 +62,17 @@ rustls = { version = "0.23.43", default-features = false, features = [
 ], optional = true }
 rcgen = { version = "0.14", optional = true }
 
+# `[2026-09-14]` step A3b of `docs/plans/2026-09-04-the-second-linux-desk.md`:
+# `--wire-timestamps`. `socket(AF_PACKET)`, `setsockopt(SO_TIMESTAMPING)`,
+# `recvmsg(MSG_ERRQUEUE)` with its control messages, and the `SIOCSHWTSTAMP`
+# ioctl have no `std` spelling. Linux-only by `cfg(target_os)` and not by a
+# feature: the flag means nothing elsewhere, and `w2w` is not a library with a
+# no-optional build to keep clean (the plan's rule-6 row). The spelling is the one
+# `crates/engine` already uses, so `Cargo.lock` gains no crate (0.2.189 at the
+# time of writing); on macOS nothing is pulled at all.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true
 

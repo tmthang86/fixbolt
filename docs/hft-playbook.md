@@ -93,8 +93,8 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    the generator half. The engine half prints its mode, transport and engine-thread allocations
    and **no latency figure**; the generator's table is a round trip *as the counterparty sees
    it*, the generator's host and the wire included. `--connect` refuses `--engine-core` and
-   `--mode`; `--listen` refuses `--client-core`, `--messages`, `--warmup`, `--hold-ms` and
-   `--interval`; both refuse `--tls` other than `off`. `--interval <us>` spaces sends by
+   `--mode`; `--listen` refuses `--client-core`, `--messages`, `--warmup` (except beside
+   `--wire-timestamps`, item 4), `--hold-ms` and `--interval`; both refuse `--tls` other than `off`. `--interval <us>` spaces sends by
    spinning, so the generator's core is busy for the whole wait between sends, not asleep.
    `--journal mem|file-async` and `--log none|file` apply to the combined run and `--listen`
    (both default to today's behaviour); `--connect` refuses both, for the reason it refuses
@@ -113,6 +113,36 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    any other environment variable does. None of this changes the command line when `LISTEN` is
    unset and no `ARMS` entry uses a fourth field — `ARMS="hft:admin"` still means what it always
    meant.
+4. `[2026-09-14]` **Wire-in → wire-out at the acceptor, on one clock — `hft` only**: add
+   `--wire-timestamps --nic <ifname> --observer-core <cpu>` to the engine's process (`--listen`
+   on the NIC's address; the combined run is over loopback and a hardware NIC never carries it),
+   and give `--listen` the same `--warmup <n>` as the generator so its cold requests stay out of
+   the wire figures. The observer spins on its core, which must not be the engine's or the
+   client's and need not be in `isolcpus`. **`--mode standard` with the flag on a hardware NIC is
+   refused**: a queued TX stamp raises `POLLERR` and makes a blocking engine spin
+   ([reference](reference/a-transmit-timestamp-wakes-a-blocking-engine.md)) — measure `standard`
+   there without the flag, from the generator's table only. **After every build, once:**
+
+   ```sh
+   sudo -n setcap cap_net_raw,cap_net_admin+ep target/release/w2w
+   ```
+
+   `cap_net_raw` opens the `AF_PACKET` tap; `cap_net_admin` is what `SIOCSHWTSTAMP` requires
+   (`net/core/dev_ioctl.c`) — `cap_net_raw` alone is refused on a hardware NIC. `cap_net_admin`
+   lets that file change the machine's network configuration, which is acceptable only because
+   the one user who runs it already has `sudo -n`, the capability is lost at every rebuild, and
+   `w2w` touches only `SIOCSHWTSTAMP`, prints the configuration before and after and restores the
+   previous one on exit. Do not run `w2w` under `sudo`. **A `w2w` started under `strace` (or
+   `gdb`) by an unprivileged user does not get these capabilities** and refuses to run: the gate
+   scripts' `W2W_EXTRA` arms therefore run on `lo` inside `unshare -Urn`, and to trace the engine
+   thread **on the real NIC**, which a namespace cannot see, run
+   `sudo -n strace -f -u "$USER" -o <file> target/release/w2w …` at the desk. Before and after each
+   run read `ethtool -S <nic> | grep tx_hwtstamp_skipped` and write it beside `hw-tx-missing`:
+   `igb` keeps one TX stamp pending and counts each one it skips there; the two must agree or be
+   explained. Publish a wire figure only from a run whose `hw-rx-missing` and `hw-tx-missing`
+   both read `0`: a driver's read-back of its own configuration is not evidence, each sample's
+   hardware stamp is. On `lo` both read the request count and no wire column is printed, by
+   design.
 
 **The measurement traps this project already paid for** are in [GUIDE.md §8](GUIDE.md). Read
 them rather than rediscover them. A score that moves with its own timeout is measuring the
