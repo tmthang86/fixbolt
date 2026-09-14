@@ -554,7 +554,7 @@ bảng *Chia việc* không sửa.
 
 **`[2026-09-14]` Đóng cửa sổ A (PR 1).** Mọi bước A1–A8 đã commit trên
 `plan/the-second-linux-desk-a`; commit cuối của review là `6e716a5`; CI của commit đóng PR:
-`<pending>`. **Không có con số nào** được tạo ra trong cửa sổ này — máy ở dòng boot §9 nhưng
+`0861edf` xanh, run [`34849545025`](https://github.com/tmthang86/fixbolt/actions/runs/34849545025), 14/14 job — run `34848285886` trên `2ad9bb0` đỏ một job rustdoc vì một link doc do bản sửa F3 thêm vào, bước nào của manager cũng chưa chạy `cargo doc -D warnings`. **Không có con số nào** được tạo ra trong cửa sổ này — máy ở dòng boot §9 nhưng
 `fixbolt-machine off` và đang có việc khác chạy. Lúc 2026-09-14T20:09+07:00 `/proc/cmdline` vẫn có
 `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`; `enp9s0` không có carrier.
 **Tiếp theo: boot B** — đọc `/proc/cmdline` trước khi đụng grub (B0 có thể đã xong nửa grub),
