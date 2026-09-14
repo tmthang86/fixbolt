@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — chưa bắt đầu
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **đang làm Cửa sổ A** (từ 2026-09-14, nhánh `plan/the-second-linux-desk-a`)
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -395,6 +395,28 @@ B3.** Hai điều từ lần đó chạm vào plan này:
   §8, nó lặp lại đúng điều item 85 ghi. Trước khi B2 công bố, đọc
   [a-tight-spread-inside-one-procedure-did-not-reproduce-across-two](../reference/a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md)
   và xem item 85 đã có plan chưa.
+
+**`[2026-09-14]` Bắt đầu Cửa sổ A (PR 1).** Nhánh `plan/the-second-linux-desk-a` từ `main` `25e54dc`.
+Máy: bàn Linux, đang boot dòng §9 nhưng `fixbolt-machine off` (12 lõi) — cửa sổ A không đo gì để
+công bố. Xác minh lại trên `25e54dc` trước khi chia việc, đọc thẳng từ code:
+
+- `crates/codec/benches/harness.rs:81` vẫn `include_str!("../../../benches/baselines.tsv")` — A1 còn nguyên.
+- `crates/engine/src/transport.rs:243` `pub const fn socket(&self) -> &TcpStream` — A3b lấy fd được
+  mà không sửa `crates/engine`, như Sửa 1 viết.
+- `crates/engine/benches/density.rs` chưa có case `engine turn, 1 busy, admin`; `tools/w2w/src/main.rs`
+  chưa có `--listen`/`--connect`/`--interval`; không script nào có `W2W_EXTRA`;
+  `scripts/check-machine.sh:362-367` hàng NIC IRQ vẫn chỉ đếm dòng.
+- `enp9s0` là `igb`, **NO-CARRIER** — chưa có cáp, nên nhánh PASS của A5 chờ boot B như plan đã ghi.
+
+**Ba chỗ khác plan, nói ra trước khi làm:**
+
+1. **Số ADR của A1 là ADR-0067, không phải ADR-0062.** ADR-0062 đến ADR-0066 đã được dùng sau ngày
+   plan viết. Chỉ đổi số, quyết định giữ nguyên.
+2. **ADR-0067 do architect viết, không phải developer như cột Tier của A1.** `CLAUDE.md` §12 giao ADR
+   cho architect, và luật đó thắng cột Tier của plan. Developer vẫn làm phần code của A1.
+3. **A3a "build một lần trên macOS" bị chặn**: các phiên Mac đang offline. Mọi thứ khác của A3a vẫn
+   làm; bằng chứng thay thế (nếu cài được target) là `cargo check --target x86_64-apple-darwin -p
+   fixbolt-w2w`, **ghi rõ là check chéo, không phải một lần build trên Mac**, và việc build Mac còn nợ.
 
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
