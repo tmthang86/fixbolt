@@ -174,6 +174,12 @@ An `hft` deployment that leaves `TlsRequireKernel` unset can still fall back to 
 without refusing anything — `EventKind::TlsFellBackToUserspace` is reported either way — so
 the setting, not the mode, is what makes the refusal a gate.
 
+`[2026-09-14]` **Read this recommendation beside its first measurement.** On loopback, on the §9
+desktop, kTLS was slower than userspace `rustls` in both `hft` paths ([DESIGN.md](DESIGN.md) §8,
+*The round trip under TLS, measured*); whether that changes this recommendation is an open design
+question, `STATUS.md` open item 84, and until it is answered the recommendation above stands
+unchanged.
+
 **Once the handover is done, the two halves of non-negotiable 4 hold the same way they do
 without TLS.** kTLS keeps `recv`/`send` as ordinary non-blocking syscalls, so §4's busy-poll
 loop never sleeps in the kernel on the hot path, and a `standard` engine under the same kTLS

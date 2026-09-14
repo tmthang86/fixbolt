@@ -389,8 +389,9 @@ B3.** Hai điều từ lần đó chạm vào plan này:
   loopback (`hft` admin, `hft` app, `standard` admin, arm `off`) đã chạy hai lần trong boot đó —
   `DESIGN.md` §8 *The round trip under TLS, measured* và `measured-costs.md` *TLS on the wire* —
   và lệch bảng 2026-09-02 tối đa 2,1% ở p50. B2 chạy arm `standard` app thì chưa có số mới để so.
-- **Item 85 chạm cách B2 công bố.** Cùng lệnh, cùng boot, cách nhau nửa giờ, một arm dịch 15,9%
-  trong khi spread của nó ghi 1,008. Nếu B2 chỉ chạy `w2w-baseline.sh` một lần rồi đưa median vào
+- **Item 85 chạm cách B2 công bố.** Cùng lệnh, cùng boot, cách nhau nửa giờ, p50 của một arm dịch
+  15,9% trong khi spread của nó ở lần 1 ghi 1,008, và p99 của hai arm kTLS dịch 7–19% (một arm có hai
+  cụm run trong lần 1). Nếu B2 chỉ chạy `w2w-baseline.sh` một lần rồi đưa median vào
   §8, nó lặp lại đúng điều item 85 ghi. Trước khi B2 công bố, đọc
   [a-tight-spread-inside-one-procedure-did-not-reproduce-across-two](../reference/a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md)
   và xem item 85 đã có plan chưa.

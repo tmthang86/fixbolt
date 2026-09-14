@@ -102,9 +102,21 @@ The tuned-box figures are in [DESIGN.md §6](DESIGN.md).
   claim here touches non-negotiable 4~~. **And no latency figure comes from it**;
   ~~[DESIGN.md](DESIGN.md) §8's TLS row is still empty~~.
 
-  `[2026-09-13]` **Built on the §9 desk since, not yet in CI**: the initiator side, `w2w --tls`,
+  `[2026-09-13]` **Built on the §9 desk since, ~~not yet in CI~~**: the initiator side, `w2w --tls`,
   a kTLS arm on both halves of non-negotiable 4, and a KeyUpdate that survives instead of
-  aborting the session — see §8 below. None of it has a CI run id yet.
+  aborting the session — see §8 below. ~~None of it has a CI run id yet.~~
+
+  `[2026-09-14]` **All four have a CI run id: run
+  [`34767259852`](https://github.com/tmthang86/fixbolt/actions/runs/34767259852), push to
+  `main`, commit `1178f4d`, success**, read from its job logs rather than its conclusion. Job *The
+  engine thread never sleeps in the kernel* prints
+  `GREEN ok — --tls ktls: no blocking call, socket calls present, tls: kernel`; job *A standard
+  engine gives the core back* prints `tls reported    kernel   (wanted kernel)` and
+  `GREEN ok — standard + ktls blocks, stays alive, is woken by the data, tls: kernel`; job *TLS,
+  with the kernel it needs* prints `test connect_and_serve_tls_brings_a_session_up_against_serve_tls ... ok`,
+  `test an_acceptor_session_survives_a_key_update_from_the_counterparty ... ok` and
+  `test an_initiator_session_survives_a_key_update_from_the_venue ... ok`. The two kTLS arms trace
+  `tools/w2w --tls ktls`, so `w2w --tls` is built and run there too.
 
   `[2026-09-14]` **Both struck clauses are out of date.** Both non-negotiable-4 scripts carry a
   kTLS arm, and both arms ran green on the §9 desk in `hft` and in `standard` — §8 below, with the

@@ -198,9 +198,14 @@ the gaps have to be named, because anyone comparing the two will find them.
    says it directly: QuickFIX's real value is that thousands of counterparties have already
    found its bugs. No test coverage substitutes. This gap closes by being deployed, not by
    writing code.
-2. **TLS.** The blocking question is answered and the plan is drafted, but no TLS code is
+2. **TLS.** The blocking question is answered ~~and the plan is drafted, but no TLS code is
    merged, no TLS latency number exists, and nothing yet says which of the three TLS modes
-   (D11) a session is actually in.
+   (D11) a session is actually in~~. `[2026-09-14]` TLS is built behind `fixbolt-engine`'s `tls`
+   feature on Linux for both roles (`serve_tls`, `connect_and_serve_tls`); the steady-state round
+   trip is published in [DESIGN.md](DESIGN.md) §8; and a session's mode is reported and can be
+   required (`EventKind::TlsFellBackToUserspace`, `Engine::tls_mode`, `TlsRequireKernel` —
+   [DESIGN.md](DESIGN.md) §6, *Which TLS mode is actually in force*). What is still missing is a
+   counterparty this repository did not write: nothing here has spoken TLS to another engine.
 
 The one that was the largest, **many counterparties on one acceptor**, closed on 2026-09-01.
 Until then every entry point took one `Config`, so the engine was a link rather than an

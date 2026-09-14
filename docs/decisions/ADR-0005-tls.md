@@ -100,11 +100,15 @@ hot-path guarantee is stated separately for each mode instead of being claimed f
    §9 desktop, over loopback with TLS at both ends, in two identical procedures in one boot:
    `DESIGN.md` §8 *The round trip under TLS, measured*, and the whole reading in
    [measured-costs.md](../reference/measured-costs.md), *TLS on the wire*. **On loopback, kTLS
-   was the slower of the two in every arm.** That latency is not one of the reasons decision 2
-   gives for preferring kTLS — D8 preserved, parse-in-place preserved, the hot-path guarantee
-   met, and the kTLS arm still counted zero allocations where userspace counted four per round
-   trip — so it does not by itself reverse decision 2; whether decision 2 should still hold for
-   `hft` is `STATUS.md` open item 84, a design question for a new ADR if the answer changes.
+   was the slower of the two in both `hft` paths.** That latency is not one of the reasons
+   decision 2 gives for preferring kTLS — D8 preserved, parse-in-place preserved, crypto on AES-NI
+   with NIC offload where the hardware supports it, and the hot-path guarantee met, the kTLS arm
+   still counting zero allocations where userspace counted four per round trip — so it does not by
+   itself reverse decision 2. The NIC-offload half of the third reason is out of this
+   measurement's reach: loopback has no TLS hardware offload (`ethtool -k lo` reads
+   `tls-hw-tx-offload: off [fixed]` and `tls-hw-rx-offload: off [fixed]` on that desk, read
+   2026-09-14). Whether decision 2 should still hold for `hft` is
+   `STATUS.md` open item 84, a design question for a new ADR if the answer changes.
 
 ## Consequences
 
@@ -168,14 +172,17 @@ hot-path guarantee is stated separately for each mode instead of being claimed f
    than `rustls` negotiation, so this becomes a documented deployment requirement in
    `DESIGN.md` §9 alongside `isolcpus` and the governor setting.
 
-   `[answered at the level measured, 2026-09-14]` One suite on one kernel, and no floor.
+   `[answered at the level measured, 2026-09-14]` One suite, and no floor.
    `TLS13_AES_128_GCM_SHA256` — the only suite this engine offers, narrowed in
    `crates/engine/src/tls.rs` (`offloadable_provider`) — is taken by the kernel on
    `7.0.0-31-generic`: every kTLS run of `tools/w2w` and of both non-negotiable-4 scripts on the
-   §9 desktop read back `tls: kernel`. No other suite was measured (the `tls` plan's optional
-   suite step did not run), and no minimum kernel was measured. The CI runner's
-   `6.17.0-1022-azure` is recorded accepting `TCP_ULP` (`docs/CONFORMANCE.md` §8), which names no
-   suite and is not claimed as an offload. `DESIGN.md` §9's TLS row carries exactly this.
+   §9 desktop read back `tls: kernel`. On the CI runner, the `tls` job of run `34767259852`
+   (commit `1178f4d`) asserts the kernel took that suite's keys — `crates/engine/tests/tls.rs:40-45`
+   narrows to it and `:488-497` requires `TlsTxSw` and `TlsRxSw` to move — and passed; **that
+   job's log prints no kernel version**. The runner kernel `6.17.0-1022-azure` is recorded on
+   2026-09-10 (`docs/CONFORMANCE.md` §8) and by another job of the same run, not by the job that
+   took the keys. No other suite was measured (the `tls` plan's optional suite step did not run),
+   and no minimum kernel was measured. `DESIGN.md` §9's TLS row carries exactly this.
 
 3. **What asserts which mode is actually active?** A session that silently negotiates into the
    userspace path has left the fast path, and nothing currently notices. A gate is needed, not

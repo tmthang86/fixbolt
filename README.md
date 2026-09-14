@@ -117,7 +117,7 @@ with no I/O**, which is what lets the 59 acceptance definitions run as unit test
 drives those state machines. `library` (package `fixbolt`) is where your `Handler` lives. By
 default the handler runs **inline on the engine thread** with zero hops; an application that
 may block can run behind a ring buffer on its own thread instead. Outbound messages are
-pre-encoded templates patched per send. TLS is a second transport, behind `--features tls` on Linux: `rustls`
+pre-encoded templates patched per send. TLS is a second transport, behind `fixbolt-engine`'s `tls` feature on Linux: `rustls`
 for the handshake, then kTLS on Linux so the kernel hands back plaintext and parse-in-place
 still works ([ADR-0005](docs/decisions/ADR-0005-tls.md)). The full reasoning with the
 measurements behind it is in [docs/DESIGN.md](docs/DESIGN.md),

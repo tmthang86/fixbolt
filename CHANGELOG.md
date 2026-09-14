@@ -271,12 +271,18 @@ below describe what a first release would contain.
 
   **The narrowing is a cost as well as a safeguard**: a counterparty that cannot do
   `TLS13_AES_128_GCM_SHA256` cannot connect to a `serve_tls` acceptor at all. Which kernel and
-  which suites are the floor is ADR-0005 open question 2 and is not yet answered by measurement.
+  which suites are the floor is ADR-0005 open question 2 and ~~is not yet answered by measurement~~
+  `[2026-09-14]` is answered only at the level measured: the kernel takes that suite on
+  `7.0.0-31-generic`, and no other suite or minimum kernel is measured (`docs/DESIGN.md` §9).
 
-  **What is not here:** the initiator side, `TlsRequireKernel`, an event when a session falls back
+  **What is not here:** ~~the initiator side, `TlsRequireKernel`, an event when a session falls back
   to userspace, the configuration-file keys, and any latency figure. `TlsMode` can be read from a
   `TlsTransport` and nothing yet reports it, so **a deployment cannot currently tell which of the
-  three modes carried its bytes** — ADR-0005 open question 3, still open.
+  three modes carried its bytes** — ADR-0005 open question 3, still open.~~ `[2026-09-14]` all of it
+  has landed since, in this same *Unreleased* section: the initiator (`connect_and_serve_tls`),
+  `TlsRequireKernel`, `EventKind::TlsFellBackToUserspace`, the configuration-file keys and
+  `Engine::tls_mode(ConnId)` — ADR-0005 question 3 answered as of step 4b — and the first latency
+  figures, in `docs/DESIGN.md` §8.
 
 - **A `.cfg` file can now ask for TLS.** `fixbolt_engine::settings` reads four new
   `[DEFAULT]`-only keys — `SocketUseSSL`, `ServerCertificateFile`, `ServerCertificateKeyFile`,

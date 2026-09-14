@@ -111,14 +111,19 @@ outside and are not:
 None of these were touched, and none may be inferred from the above.
 
 - **No latency number.** The spike publishes none, deliberately: `DESIGN.md` §8's
-  TLS row stays empty until `tools/w2w` runs the same load three ways on one box.
+  TLS row ~~stays empty until~~ `[2026-09-14]` was filled when `tools/w2w` ran the
+  same load three ways on one box — not by this spike.
 - **Key update / rekey under kTLS.** ADR-0005 open question 6. `ktls-core` has a
   `tls13-key-update` feature and `Context::refresh_traffic_keys`; neither ran here.
 - **TLS 1.2, mutual TLS, SNI, multiple certificates.** ADR-0005 open questions 4
   and 5.
 - **The cipher-suite and kernel floor.** ADR-0005 open question 2. This spike
   pinned one suite on one kernel *so that* the result would be attributable.
-- **What asserts which mode is live.** ADR-0005 open question 3 — still no gate.
+  `[2026-09-14]` answered since only at the level measured — one suite, no floor
+  (`DESIGN.md` §9).
+- **What asserts which mode is live.** ADR-0005 open question 3 — ~~still no gate~~
+  `[2026-09-14]` a gate since step 4b of the `tls` plan, 2026-09-12
+  (`crates/engine/tests/tls_mode.rs`, `DESIGN.md` §6).
 
 ## What was wrong with how this was blocked
 
