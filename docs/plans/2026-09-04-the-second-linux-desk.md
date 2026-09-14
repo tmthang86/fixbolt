@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **đang làm Cửa sổ A** (từ 2026-09-14, nhánh `plan/the-second-linux-desk-a`)
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **đang làm Cửa sổ A** (từ 2026-09-14, nhánh `plan/the-second-linux-desk-a`) — **Sửa 2 (chỉ A3b) chờ duyệt, 2026-09-14**: ba điều plan viết về A3b sai khi xây; A3b đã build nhưng **chưa commit** cho tới khi Q8–Q11 ở cuối file có câu trả lời
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -468,3 +468,309 @@ gì đổi, và vì sao:
 **Trạng thái: Đã duyệt 2026-09-13, theo đề xuất Q1–Q7** (chủ sở hữu: *"Duyệt cả 3 theo đề xuất"*). Buildable với điều kiện: cáp + adapter (Q3) cho B6; Sửa 6 của `tls`
 trên `main` cho B3; Q1 cho boot C. Không có ba điều đó plan vẫn chạy được và nói rõ cái gì không
 đóng.
+
+## Sửa 2 — 2026-09-14, A3b: ba điều plan viết sai
+
+A3b đã được senior developer xây xong trong worktree `a3b` (chưa commit). Khi xây, ba điều plan
+khẳng định hoá ra sai, và cách làm rời văn bản plan ở năm chỗ. Theo `CLAUDE.md` §1 (*plan sai giữa
+chừng → dừng, sửa plan, duyệt lại*), phần này ghi từng điều: sai ở đâu, bằng chứng, các lựa chọn,
+**đề nghị**, và plan đổi gì. Manager đã tự tái hiện điều 1; architect tái hiện thêm hai đường chạy
+gate hôm nay (ghi rõ bên dưới, nhãn *thăm dò*). Chủ sở hữu quyết ở bảng Q8–Q11 cuối phần.
+
+Vài chữ dùng suốt phần này, nói bằng lời thường một lần:
+
+- **capability** — quyền hệ thống gắn vào *một file thực thi* (`setcap`), để tiến trình chạy
+  file đó làm được một việc root mà không cần là root. `cap_net_raw` = mở socket "nghe thô" trên
+  card mạng; `cap_net_admin` = **đổi cấu hình** mạng (card, route, tường lửa — rộng hơn nhiều).
+- **error queue** — mỗi socket có một hàng đợi phụ, kernel bỏ vào đó *lỗi* và **cả timestamp
+  TX**. Đọc bằng `recvmsg(MSG_ERRQUEUE)`. Hàng đợi này không rỗng thì `poll` báo cờ **`POLLERR`**
+  — và `poll` **luôn** báo cờ đó, dù mình có xin hay không.
+- **user namespace** — một "thế giới riêng" mà tiến trình thường tự mở (`unshare -Urn`): trong
+  đó nó được coi là root, có bộ mạng ảo riêng (kể cả `lo` riêng), nhưng ra ngoài thì không có
+  thêm quyền gì.
+
+### Điều 1 — gate của A3b không chạy được như plan viết
+
+**Plan viết** (A3b, dòng 153–156; *Chia việc* A3b): arm `check-no-kernel-sleep.sh` với
+`W2W_EXTRA="--wire-timestamps --nic lo"` "chạy được ở mọi máy Linux, không cần cáp".
+
+**Sai ở đâu.** Script chạy `w2w` **dưới `strace`**. Kernel có luật: một tiến trình được exec
+**khi đang bị trace bởi tracer không có `CAP_SYS_PTRACE`** thì **không được nhận capability từ
+file** — cap bị cắt về đúng cái tiến trình cha đã có (`security/commoncap.c`,
+`cap_bprm_creds_from_file`, ~dòng 1063–1075: `if ((is_setid || __cap_gained(permitted, new,
+old)) && ((bprm->unsafe & ~LSM_UNSAFE_PTRACE) || !ptracer_capable(current, new->user_ns))) {
+… new->cap_permitted = cap_intersect(new->cap_permitted, old->cap_permitted); }`). Nên
+`setcap` trên `target/release/w2w` **đúng** khi chạy thẳng và **vô dụng** khi chạy dưới `strace`
+của user thường.
+
+**Bằng chứng.** Manager tái hiện 2026-09-14: `getcap target/release/w2w` đọc
+`cap_net_admin,cap_net_raw=ep`; chạy thẳng exit 0; dưới script → `socket(AF_PACKET): Operation
+not permitted`, exit 1. Architect lặp lại hôm nay với bản copy binary **không** cap:
+
+```text
+$ ./w2w-nocap --mode hft --messages 100 --warmup 10 --hold-ms 50 --wire-timestamps --nic lo --observer-core 2
+Error: … "w2w: --wire-timestamps: socket(AF_PACKET): Operation not permitted (os error 1)"
+rc=1
+```
+
+**Các lựa chọn** (mỗi cái đã thử hoặc đã tra):
+
+| # | Cách | Đã thử? | Được | Mất |
+|---|---|---|---|---|
+| R1 | **Chạy arm này trong user namespace**: `unshare -Urn sh -c 'ip link set lo up && strace -f … w2w --wire-timestamps --nic lo …'` | **Có, hôm nay** — binary **không** cap, dưới strace: `mode: hft`, `engine-tid: 88645`, `hw-rx-missing 300 of 300`, `hw-tx-missing 300 of 300`, `tap drops 0`, rc=0; engine tid có 33 618 syscall được trace. Arm `standard` cũng chạy (tid 88777, 2 195 syscall) | Không sudo, không `setcap`, `w2w` không bao giờ là root thật; trong namespace nó có `cap_net_raw` trên `lo` *riêng* (`af_packet.c` ~3949: `ns_capable(net->user_ns, CAP_NET_RAW)`); `SIOCSHWTSTAMP` không bị đụng vì `lo` là loopback. Đường kernel qua `lo` trong namespace **giống hệt** `lo` ngoài | **Ubuntu ≥ 24.04 chặn user namespace cho tiến trình không có profile AppArmor cho phép** (`kernel.apparmor_restrict_unprivileged_userns = 1` trên máy này). Hôm nay chạy được **chỉ vì** terminal VS Code mang profile `vscode` có quyền `userns`; từ shell thường (`aa-exec -p unconfined`) → `unshare: write failed /proc/self/uid_map: Operation not permitted`. Mở khoá: một dòng `sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` **cho phiên đó** (mất sau reboot — cố ý, vì Qualys 2025 đã công bố ba cách vượt rào dựa trên userns). Runner CI (Ubuntu 24.04) **chưa biết**: mặc định cũng là 1; runner có sudo để bật, thấy ở lần CI đầu |
+| R2 | **`sudo -n strace -f -u tmt …`**: strace là root (nên `ptracer_capable` đúng), `-u` hạ con về `tmt` trước exec, cap từ file được giữ (`strace(1)`: `-u` "only useful when running as root, as it enables the correct execution of setuid … binaries") | **Có** — developer chạy một lần; architect lặp lại hôm nay: `mode: hft`, `engine-tid: 88873`, rc=0; file trace thuộc root (đọc được) | Không đổi cơ chế script, một chữ `sudo` | **Không thể vào CI**; gate của một bất biến thành gate-chỉ-ở-bàn; `strace` chạy root trên máy của chủ sở hữu mỗi lần gate chạy |
+| R3 | `perf trace` thay `strace` (không dùng ptrace, dùng tracepoint) | Không | Không đụng cap | Ubuntu đặt `perf_event_paranoid = 4` → vẫn cần root; đổi công cụ của cả gate vì một arm |
+| R4 | `setcap cap_sys_ptrace+ep` lên một bản copy `strace` | Không | Không sudo mỗi lần | Bản `strace` đó trace được **mọi** tiến trình, kể cả root — rộng hơn R2 mà không được gì hơn |
+| R5 | Bỏ `strace` cho arm này; `w2w` tự in `voluntary_ctxt_switches` của engine tid (đọc `/proc/self/task/<tid>/status`) — `hft` phải là 0 trong cửa sổ đo | Không | Không cần tracer, không cần cap gì thêm; cùng ý "không ngủ trong kernel" | Là **một gate mới** với cách đo mới → plan riêng, không phải sửa A3b |
+
+**Đề nghị: R1**, R2 là đường dự phòng ở bàn. Cụ thể:
+
+- `check-no-kernel-sleep.sh` và `check-standard-gives-the-core-back.sh`: khi `W2W_EXTRA` có
+  `--wire-timestamps`, script **tự chạy lại chính nó** trong `unshare -Urn` (bật `lo`, đánh dấu
+  bằng một biến để không lồng vô hạn); nếu `unshare -Urn true` bị từ chối → in `SKIPPED, NOT
+  PASSED`, **exit 2**, nêu đúng sysctl ở trên. Không có `W2W_EXTRA` → dòng lệnh **y nguyên** hôm
+  nay (giữ lời hứa của A3a). Exit 2 là đỏ trên CI, nên "userns bị chặn" không bao giờ đọc thành
+  xanh (`CLAUDE.md` §10).
+- **Đảo chiều cho guard mới**: `aa-exec -p unconfined -- env W2W_EXTRA=… scripts/check-no-kernel-sleep.sh`
+  trên máy này phải cho exit 2 và câu SKIP — chứ không phải 0, không phải 1.
+- CI: một **step riêng** cho arm `W2W_EXTRA` ở cả hai job (không trộn vào step hiện có, để đỏ
+  của arm mới không che arm cũ); nếu runner từ chối userns, step thêm dòng
+  `echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns` trước — đó là cách
+  Ubuntu ghi trong release notes 24.04, không phải sáng kiến của repo này.
+- Runbook (`hft-playbook.md` mục 4): giữ câu "không chạy `w2w` dưới `sudo`"; ghi R2 là cách khi
+  cần trace **trên NIC thật** (R1 chỉ có `lo` ảo — namespace không thấy `enp9s0`).
+- R5 ghi vào `STATUS.md` *Open items* như một ý cho sau, không làm ở đây.
+
+**Plan đổi gì.** A3b dòng 153–156: câu "chạy được ở mọi máy Linux" thay bằng "chạy trong user
+namespace; cần userns không bị AppArmor chặn, nếu chặn thì SKIP exit 2". *Chia việc* A3b cột
+*Test / gate*: thêm hai script chạy được **bên trong `unshare -Urn`** và đảo chiều `aa-exec`.
+Cột *File*: thêm `scripts/check-standard-gives-the-core-back.sh` (đã đụng trong build, plan chỉ
+ghi script kia) và `.github/workflows/ci.yml` (hai step). *Bẫy*: hàng mới — *cap từ file mất
+khi bị trace bởi user thường* (test: gate chạy trong userns, không cần `setcap`) và *userns bị
+AppArmor chặn tuỳ terminal* (test: đảo chiều `aa-exec`). *Rủi ro*: hàng mới cho runner CI.
+
+### Điều 2 — dòng capability trong plan thiếu một nửa
+
+**Plan viết** (A3b dòng 137): `sudo -n setcap cap_net_raw+ep target/release/w2w`.
+
+**Sai ở đâu.** `SIOCSHWTSTAMP` (bật timestamp phần cứng trên card) cần **`CAP_NET_ADMIN`**, không
+phải `CAP_NET_RAW`: `net/core/dev_ioctl.c` ~dòng 1025, trước khi rơi vào `dev_ifsioc`:
+`if (!ns_capable(net->user_ns, CAP_NET_ADMIN)) return -EPERM;`. Đọc lại (`SIOCGHWTSTAMP`) thì
+không cần. Tài liệu kernel nói thẳng: *"Only a processes with admin rights may change the
+configuration"* và cấu hình là **của cả card**, không phải của socket — mọi tiến trình khác trên
+`enp9s0` (ví dụ `ptp4l`, không có ở máy này) đều bị ảnh hưởng. `hwstamp_ctl` của linuxptp cũng
+chỉ là cái ioctl này chạy bằng root.
+
+**Dòng đúng**: `sudo -n setcap cap_net_raw,cap_net_admin+ep target/release/w2w` — code đã in
+đúng dòng này khi bị từ chối. **Hậu quả phải nói rõ**: `cap_net_admin` trên một binary benchmark
+là quyền **đổi cấu hình mạng của máy** — route, tường lửa, card — rộng hơn hẳn "nghe thô". Ba
+điều làm nó chấp nhận được ở đây, không ở đâu khác: (1) chỉ `tmt` chạy được file đó, và `tmt` đã
+có `sudo -n` không mật khẩu trên máy này (memory `fixbolt-sudo-helper`) — cap không cho thêm
+quyền nào `tmt` chưa có; (2) cap gắn vào **file**, mỗi lần `cargo build` ghi đè là mất, phải đặt
+lại có chủ ý; (3) `w2w` chỉ đụng `SIOCSHWTSTAMP`, in cấu hình **trước/sau**, và **trả lại** cấu
+hình cũ khi thoát (`HwConfig::drop`) — kể cả khi run lỗi giữa chừng.
+
+**Lựa chọn khác**: chỉ `cap_net_raw` trên `w2w`, còn bật/tắt timestamp bằng
+`sudo -n hwstamp_ctl -i enp9s0 -t 1 -r 1` trước run và trả lại sau (hoặc một verb mới của
+`/usr/local/sbin/fixbolt-machine`). Được: binary hẹp hơn. Mất: nếu run chết giữa chừng, card ở
+trạng thái "bật" cho tới khi ai đó nhớ; hai lệnh thay vì một; `hwstamp_ctl` chưa chắc có (gói
+`linuxptp`). **Đề nghị: giữ như đã build** — cap cả hai trên binary, dòng runbook sửa, hậu quả
+ghi trong `hft-playbook.md` mục 4 (đã có) và ở *Rủi ro*. Nếu chủ sở hữu không muốn
+`cap_net_admin` trên binary: đường `hwstamp_ctl`, và `HwConfig` chỉ **đọc** để in.
+
+**Plan đổi gì.** A3b dòng 137–138: dòng `setcap` mới, một câu về `cap_net_admin`. *Rủi ro* hàng
+"`AF_PACKET` + `setcap`": mức **Thấp → Trung**, cách xử lý ghi ba điều trên. Bất biến 8: ba
+call FFI thành nhiều hơn ba (`socket`, `bind`, `setsockopt` ×n, `ioctl` ×3, `recvmsg` ×2,
+`fcntl`, `getpeername`, `if_nametoindex`) — mỗi `unsafe` trong `mod wire` có comment SAFETY nêu
+thứ chứng minh; cột *Giữ bằng cách nào* đổi "ba call" thành "mọi call trong `mod wire`".
+
+### Điều 3 — bẫy `POLLERR` là thật ở `standard`, và không gate nào thấy
+
+**Plan viết** (*Bất biến* hàng 4; *Bẫy* dòng 347): `check-standard-gives-the-core-back.sh` với
+`W2W_EXTRA` canh được "`POLLERR` từ errqueue đánh thức `poll` của `standard` → engine spin";
+"CPU > 5 % là đỏ".
+
+**Sai ở đâu — hai lớp.**
+
+1. *Cơ chế là chắc chắn, không phải nghi ngờ.* `poll(2)`: `POLLERR` "will be set in the revents
+   field whenever the corresponding condition is true" — bất kể `events` xin gì. Với TCP, điều
+   kiện đó là `net/ipv4/tcp.c` `tcp_poll` ~dòng 604: `if (READ_ONCE(sk->sk_err) ||
+   !skb_queue_empty_lockless(&sk->sk_error_queue)) mask |= EPOLLERR;` — **error queue không rỗng
+   là đủ**, và đó chính là nơi timestamp TX nằm chờ observer đọc. Khi kernel bỏ stamp vào,
+   `sock_def_error_report` (`net/core/sock.c` ~4425) gọi `wake_up_interruptible_poll(…, EPOLLERR)`
+   — đánh thức thẳng engine đang ngủ trong `poll`. Engine dậy, `recvfrom` → `EAGAIN` (không có
+   dữ liệu), quay lại `poll` → trả về **ngay** vì hàng đợi vẫn chưa rỗng → lặp cho tới khi
+   observer kịp `recvmsg(MSG_ERRQUEUE)`. Engine không tự thoát được: chỉ ai đọc errqueue mới xoá
+   được điều kiện, và engine không đọc (đúng thiết kế — nó không biết gì về timestamp).
+2. *Gate không nhìn thấy.* `check-standard-gives-the-core-back.sh` đo CPU trong **cửa sổ rảnh**
+   (sau 300 message, `--hold-ms`); mỗi vòng lặp trên chỉ dài tới khi observer (đang spin) đọc
+   xong — micro giây — rồi engine ngủ lại; tới cửa sổ rảnh thì không còn gì. Và trên `lo` **không
+   có** stamp TX phần cứng nên errqueue **không bao giờ** có gì. Nên gate xanh trong mọi trường
+   hợp, kể cả khi bẫy đang xảy ra trên NIC thật.
+
+**Bằng chứng** (senior developer, 2026-09-14, bàn Linux, **thăm dò**, không phải số): build tạm
+dùng stamp TX **phần mềm** làm vật thay thế trên `lo` (đã xoá sau khi đo), `--interval 2000`,
+1 000 message, dưới strace: **111 trong 1 051 reply** đánh thức engine `standard` bằng `POLLERR`;
+mỗi lần engine lặp `poll → recvfrom EAGAIN` **tới 67 lần liên tiếp** cho tới khi observer đọc.
+Không strace, 1 000 msg/s, CPU engine 2,48 % không cờ so với 3,48 % có cờ (mỗi bên **một** run,
+độ phân giải 0,5 % — hướng, không phải số). Ở `hft` thì tập syscall engine **không đổi** có/không
+cờ (engine gọi `recvfrom` không chặn mỗi vòng, không `poll`, nên `POLLERR` không có ai để đánh
+thức).
+
+**Nghĩa là gì.** Một engine `standard` đo với `--wire-timestamps` trên NIC thật là một engine bị
+công cụ đo làm cho **spin từng đợt** — vi phạm đúng nửa thứ hai của luật 4 ("`standard` mà spin
+là lỗi"), dù lỗi thuộc về **cách đo**, không phải engine. Con số `wire` của arm đó là số của một
+thứ không phải engine `standard`. `w2w` không sửa được điều này; nó chỉ bị chặn bởi observer đọc
+nhanh tới đâu.
+
+**Các lựa chọn** (mỗi cái đã tra):
+
+| # | Cách | Được | Mất |
+|---|---|---|---|
+| S1 | **Arm `standard` của B6 không công bố số wire.** `w2w` **từ chối** `--mode standard --wire-timestamps` trên NIC không phải loopback (kiểm tra **trước** khi cần cap nào, nên thử được hôm nay trên `enp9s0` không cáp); arm `standard` NIC chạy **không** cờ, công bố **chỉ** bảng của Mac *"as the counterparty sees it"* | Không đụng `crates/engine`; không số nào sai lọt ra; `lo` gate vẫn chạy được ở `standard` (loopback không bị từ chối); một `if` | Item 40 hàng NIC-to-NIC của §6 thành **`hft` only**; `standard` trên NIC chỉ có RTT của máy kia (phần mềm, gồm cả kernel Mac) |
+| S2 | Engine `standard` xử lý `POLLERR` khác đi — ví dụ khi `poll` trả `POLLERR` mà `recvfrom` là `EAGAIN` thì tự `recvmsg(MSG_ERRQUEUE)` bỏ đi, hoặc đưa cho một hook | Số `standard` wire đo được | **Sửa `crates/engine`** — plan này hứa không đụng; engine biết về timestamp, thêm một syscall trên đường nóng của `standard`; và thứ đo được là một engine **khác** engine đang có. Là plan + ADR riêng nếu muốn |
+| S3 | Lấy stamp TX bằng **cơ chế khác**, không qua errqueue của socket engine: **BPF sock_ops timestamping** (Jason Xing, vào kernel 6.15; kernel 7.0 của máy này có). Chương trình BPF gắn vào cgroup bật `SK_BPF_CB_TX_TIMESTAMPING`; callback `BPF_SOCK_OPS_TSTAMP_SND_HW_CB` nhận stamp phần cứng; `SKBTX_HW_TSTAMP = SKBTX_HW_TSTAMP_NOBPF \| SKBTX_BPF` (`include/linux/skbuff.h` ~482) nên driver **vẫn** stamp cho yêu cầu chỉ-BPF. Mục tiêu công bố của loạt patch là "không phải sửa ứng dụng" | Ứng dụng (engine) **không** bị đụng socket; **không** có gì vào errqueue nếu socket không tự xin `SO_TIMESTAMPING` — *đọc từ cách chia cờ NOBPF/BPF, **chưa** xác minh trên `__skb_tstamp_tx`; phải đọc trước khi tin* | Cần chương trình BPF (viết + nạp: `aya` hoặc `libbpf` → dependency mới, ADR), `CAP_BPF` + `CAP_NET_ADMIN`, cgroup cho tiến trình engine, ringbuf ra observer; ghép theo byte vẫn qua `OPT_ID`-tương-đương của BPF (`sk_tskey_bpf_offset`). **Không phải một sửa của A3b** — là A3c hoặc plan riêng, ~2–3 ngày |
+| S4 | Stamp ngoài host: tap thụ động + thiết bị ghi có timestamp (Arista MetaWatch, Cisco 3550-F/Exablaze, SolarCapture) — cách ngành HFT đo wire thật | Không đụng gì trong host | Phần cứng ngoài phạm vi plan (*Ngoài phạm vi* đã nói không switch); AF_PACKET tap trên chính host **không** có TX phần cứng (libpcap #894, đã ghi ở Sửa 1) |
+| S5 | Chỉ đo `hft` với stamp wire, im lặng về `standard` | Đơn giản nhất | Không nói ra vì sao → người sau lại thử và đo sai; §6 hàng NIC không nói mode |
+
+**Đề nghị: S1**, ghi S3 là hướng đúng cho sau (một item mới trong `STATUS.md`, kèm điều kiện
+"đọc `__skb_tstamp_tx` trước"), S2 chỉ khi có ADR. Thêm vào B6 một **A/B miễn phí** để chặn câu
+hỏi "cờ đo có làm `hft` chậm không": arm `hft` NIC chạy **có** và **không** `--wire-timestamps`,
+so **bảng Mac** của hai arm — cùng nguồn, cùng đồng hồ; lệch trong band ADR-0031 thì stamping
+không phải hạng mục. (Observer đọc errqueue trên `dup` của socket engine chạm cùng `struct sock`
+— đó là thứ A/B này bắt.)
+
+**Plan đổi gì.**
+
+- *Bất biến* hàng 4, cột *Giữ bằng cách nào*, viết lại thành ba ý: (a) `hft`: tập syscall
+  engine tid không đổi có/không cờ — `check-no-kernel-sleep.sh` trong userns; (b) `standard`
+  trên `lo`: bốn assertion của `check-standard-gives-the-core-back.sh` xanh — **và header script
+  nói rõ nó không thấy `POLLERR`** (đã viết trong build); (c) `standard` trên NIC thật: **không
+  đo với cờ** — `w2w` từ chối, đảo chiều là chạy `--mode standard --wire-timestamps --nic enp9s0
+  --observer-core 2 --listen 127.0.0.1:0` bằng binary **không** cap → exit ≠ 0, câu từ chối nêu
+  `POLLERR`.
+- *Bẫy* dòng 347: cột *Test canh* đổi từ "`check-standard…` với `W2W_EXTRA`; CPU > 5 % là đỏ"
+  (sai — không thấy được) thành "`w2w` từ chối `standard` trên NIC thật; header
+  `check-standard…` ghi giới hạn; số thăm dò 111/1 051 ghi ở `docs/reference/`".
+- B6: "`hft`/`standard` × admin/app × interval" → **wire figure chỉ `hft`**; `standard` × admin/app
+  chạy không cờ, chỉ bảng Mac; thêm arm A/B có/không cờ ở `hft`; cột *Cho item / hàng*: §6 hàng
+  NIC ghi **mode `hft`** ngay trong hàng. *Chia việc* B6 cột *Test / gate*: thêm "arm `standard`
+  không có cột wire, có ghi lý do".
+- *Tài liệu phải cập nhật*: `docs/reference/` file mới (đề nghị tên
+  `a-transmit-timestamp-wakes-a-blocking-engine.md`): cơ chế, ba dòng kernel dẫn ở trên, số thăm
+  dò, và S3; `docs/GUIDE.md` §8 một câu: *đặt `SO_TIMESTAMPING` TX lên socket của engine
+  `standard` mà không có ai đọc errqueue là biến nó thành engine spin từng đợt*; `DESIGN.md` §6
+  hàng NIC ghi mode; `STATUS.md` item mới cho S3.
+
+### Điều 4 — năm chỗ code rời văn bản plan
+
+| | Plan viết | Đã build | Kết luận |
+|---|---|---|---|
+| **(a)** RX | tap `AF_PACKET` với **`PACKET_TIMESTAMP`** (ring) | tap `AF_PACKET` **`SOCK_DGRAM` + `recvmsg` + `SO_TIMESTAMPING`** (cmsg mang bộ ba `ts[0..3]`), lọc BPF theo port | **Xác nhận.** Ring `tpacket_rcv` (`af_packet.c` ~3438) khi không có stamp phần cứng/phần mềm thì **điền giờ hệ thống** (`ktime_get_real_ts64`) và **không** đặt cờ `TP_STATUS_TS_*` nào — đọc ring mà quên xem cờ là nhận nhầm giờ phần mềm thành phần cứng. Với cmsg, `ts[2] == 0` là "không có", đúng cái `hw-rx-missing` cần. Giá: một `recvmsg` mỗi frame trên observer — observer đang spin, không đáng kể. Ring vẫn dùng được **nếu** đọc cờ; ghi lại để ai sau này không tưởng ring bị cấm |
+| **(b)** ai đặt `SO_TIMESTAMPING` | "trong w2w, trước `engine.add`" — không nói thread nào | observer đặt trên **`dup`** của socket đã accept; engine thread đưa fd qua atomic rồi **spin không syscall** tới khi observer trả lời (timeout 2 s) — **cả ở `standard`**, lúc accept | **Xác nhận, có ghi chú.** Bắt buộc phải đặt trên socket **đã accept**, không đặt sẵn trên socket listen: `net/core/sock.c` `sock_set_timestamping` ~1040 — `OPT_ID` trên TCP đang `CLOSE`/`LISTEN` trả `-EINVAL`, và `OPT_ID_TCP` lấy `write_seq` **của socket đó** làm mốc. Spin ở đây nằm trên **đường accept**, một lần cho connection đầu, bị chặn 2 s, chỉ khi có cờ — không phải "rảnh" theo nghĩa luật 4; `check-standard…` đo cửa sổ rảnh nên không bị ảnh hưởng, **header script phải ghi** điều đó. Cách thay thế đơn giản hơn (engine thread tự `setsockopt` + `fcntl(F_DUPFD_CLOEXEC)` — `setsockopt` đã có trong tập syscall của engine, `fcntl` là thêm một tên **không** thuộc danh sách ngủ) ghi lại làm dự phòng nếu handoff có ngày trục trặc; không làm lại bây giờ |
+| **(c)** ghép request–reply | "theo thứ tự, một request trong chuyến" | theo **byte của luồng TCP**: key `OPT_ID_TCP` của reply (`ee_data` = offset byte cuối của một `send`, `tcp.c` ~796: `tskey = seq + len - 1`) so với `ack` của request **kế tiếp**; mất một stamp → **một** request thiếu, không dịch cả dãy | **Xác nhận** — tốt hơn plan. Và bẫy `igb` "một stamp TX đang chờ" ở *Bẫy* dòng 348 giờ **đã xác minh**: `igb_xmit_frame_ring` — `if (adapter->tstamp_config.tx_type == HWTSTAMP_TX_ON && !test_and_set_bit_lock(__IGB_PTP_TX_IN_PROGRESS, &adapter->state)) { … } else { adapter->tx_hwtstamp_skipped++; }`; loạt patch intel-wired-lan 2026-08 mô tả đúng: *"keeps a single outstanding Tx hardware timestamp request in adapter->ptp_tx_skb"*. Stamp bị bỏ **không** vào errqueue (w2w chỉ xin phần cứng, không xin phần mềm). **Bộ đếm đọc được**: `ethtool -S enp9s0 \| grep tx_hwtstamp_skipped` — máy này có, đang `0`. B6 đọc **trước/sau mỗi run** và ghi cạnh `hw-tx-missing`; hai số phải khớp nhau hoặc được giải thích |
+| **(d)** cửa sổ của `--listen` | không nói | `--listen` tính **mọi** request sau logon, **kể cả warmup** của generator; run TLS không có cửa sổ | **Bác phần warmup.** Với 20 000 request, p99.9 là **mẫu chậm thứ 20 từ trên xuống**; 50 request warmup (cache lạnh) sẽ **là** cả cái đuôi đó — p99.9 của `--listen` thành p99.9 của warmup. Sửa: `--listen` nhận **`--warmup <n>`** *chỉ khi* có `--wire-timestamps`, nghĩa là "bỏ n request đầu sau logon khỏi cửa sổ wire"; `w2w-baseline.sh` (A6) truyền cùng số với generator; nhãn in ra nói rõ "sau logon, bỏ n đầu". Không có cờ thì `--listen` vẫn từ chối `--warmup` như A3a. **Chấp nhận** phần TLS: `--listen` đã từ chối `--tls` (A3a), còn run gộp TLS đi loopback nên không có stamp — vô hại |
+| **(e)** run gộp trên `--nic enp9s0` | không nói | tap không thấy bắt tay TCP (run gộp đi loopback) → **lỗi to**, câu lỗi bảo dùng `--listen` | **Xác nhận.** Đúng ý "thà đỏ còn hơn đếm nhầm". Thêm một hàng *Bẫy*; test là chính câu lỗi đó (cần cap, chạy ở bàn) |
+
+**Plan đổi gì.** A3b dòng 134–142 viết lại theo (a)–(c) đã build; *Chia việc* A3b cột *Test /
+gate* thêm `--listen --warmup N --wire-timestamps` được nhận, `--listen --warmup N` không cờ bị
+từ chối; *Bẫy* dòng 348 bỏ chữ "chưa xác minh", thêm bộ đếm `ethtool -S`; *Bẫy* hàng mới cho
+(d) và (e); B6 thêm "đọc `tx_hwtstamp_skipped` trước/sau".
+
+### A3b sau Sửa 2 — văn bản thay cho dòng 130–156
+
+**A3b — `--wire-timestamps --nic <ifname> --observer-core <cpu>` (Linux, nửa engine).** Một
+đồng hồ: cả RX của request lẫn TX của reply lấy ở I211 của máy này, PHC `ptp0`, không PTP sync.
+
+- **RX**: thread observer (pin `--observer-core`, không phải 6/7, spin) mở tap `AF_PACKET`
+  `SOCK_DGRAM` trên `--nic`, `SO_TIMESTAMPING` RX phần cứng, lọc BPF theo port; mỗi frame đọc bằng
+  `recvmsg`, bộ ba stamp trong cmsg. Card được `SIOCSHWTSTAMP` (`tx_type ON`, `rx_filter ALL`) cho
+  run và **trả lại** khi thoát; in cấu hình trước/sau nhưng **không tin readback** (patch `igb`
+  2026-09-10). Loopback: không đụng card, mọi stamp đếm là thiếu, không in cột wire.
+- **TX**: observer đặt `SO_TIMESTAMPING` (TX phần cứng, `OPT_ID | OPT_ID_TCP | OPT_TSONLY`) lên
+  **`dup` của socket đã accept**, trước `engine.add`; engine thread đưa fd qua atomic và spin
+  (không syscall, ≤ 2 s) chờ trả lời — một lần, lúc accept. Observer đọc errqueue trên `dup`.
+- **Ghép** theo byte của luồng TCP (`pair.rs`): mất một stamp = thiếu **một** request. `ts[2] == 0`
+  đếm vào `hw-rx-missing`/`hw-tx-missing`, không bao giờ thay bằng phần mềm.
+- **Cửa sổ**: run gộp = `n` request sau warmup; `--listen` = mọi request sau logon **trừ
+  `--warmup n` đầu** (cờ này chỉ hợp lệ cùng `--wire-timestamps`).
+- **Mode**: `hft` là mode có số wire. `--mode standard` + NIC thật → **từ chối** (điều 3);
+  `standard` + loopback chạy, để gate chạy được.
+- **Quyền**: `sudo -n setcap cap_net_raw,cap_net_admin+ep target/release/w2w` sau mỗi build, ở
+  bàn, cho NIC thật. Gate trên `lo` chạy trong `unshare -Urn`, không cần cap, không sudo.
+- **In**: `wire p50/p99/p99.9`, `requests`, `hw-rx-missing`, `hw-tx-missing`, `tx stamps seen`,
+  `tap drops`, `allocs` engine + observer; Mac in bảng riêng *"as the counterparty sees it"*.
+- Phụ thuộc `libc` theo `cfg(target_os = "linux")`; mọi `unsafe` trong `mod wire` có comment nêu
+  thứ chứng minh (test `pair.rs`, hai script trong userns, câu từ chối).
+
+**Cột *Test / gate* của A3b (thay dòng 255):** tests `pair::pairs_in_order_one_in_flight`,
+`pair::a_missing_hw_stamp_is_counted_not_interpolated`,
+`pair::never_mixes_software_into_the_hardware_column`; `W2W_EXTRA="--wire-timestamps --nic lo
+--observer-core 2" scripts/check-no-kernel-sleep.sh` — tự chạy trong `unshare -Urn`, engine tid
+chỉ `recvfrom sendto` (+ `accept4`), nửa đỏ vẫn đỏ; cùng biến với
+`check-standard-gives-the-core-back.sh` bốn assertion xanh; **đảo chiều**: `aa-exec -p unconfined`
+→ exit 2 + câu SKIP; trên `lo` in `hw-rx-missing = hw-tx-missing = tổng`, không cột wire; binary
+**không** cap + `--mode standard --wire-timestamps --nic enp9s0 --observer-core 2 --listen
+127.0.0.1:0` → exit ≠ 0 nêu `POLLERR`; `--listen --warmup 50 --wire-timestamps …` nhận, không cờ
+thì từ chối; `shellcheck -S info` sạch hai script. Tier **opus**, máy Linux-desktop — không đổi.
+
+### Câu hỏi cho chủ sở hữu — mỗi câu một quyết định, đề nghị đứng trước
+
+| # | Câu hỏi | Đề nghị | Nếu "không" |
+|---|---|---|---|
+| **Q8** | Gate `W2W_EXTRA` chạy bằng cách nào? | **R1 — user namespace**, script tự `unshare -Urn`, SKIP exit 2 khi bị chặn; CI có step riêng; R2 (`sudo -n strace -u`) chỉ trong runbook cho NIC thật | R2 thành gate: arm này **chỉ ở bàn**, ghi vào `CLAUDE.md` §2 bảng *Machine checks* hàng 4 cột *Note* như "`hft` under TLS is unchecked" đang ghi |
+| **Q9** | `cap_net_admin` trên `target/release/w2w`? | **Có** — cùng `cap_net_raw`, đặt lại sau mỗi build, hậu quả ghi ở runbook và *Rủi ro* | `w2w` chỉ `cap_net_raw`; bật/tắt bằng `sudo -n hwstamp_ctl` (cần gói `linuxptp`) hoặc verb mới của `fixbolt-machine`; `HwConfig` chỉ đọc |
+| **Q10** | Bỏ số wire của arm `standard` khỏi B6, và `w2w` **từ chối** `standard` + NIC thật? | **Có cả hai** — §6 hàng NIC ghi mode `hft`; `standard` NIC chỉ có bảng Mac; S3 (BPF) ghi thành item mở cho sau | Giữ arm: cần S2 (sửa engine, plan + ADR riêng) **trước** boot B, hoặc công bố số của một engine spin — architect không ký cái thứ hai |
+| **Q11** | `--listen` nhận `--warmup <n>` khi có `--wire-timestamps`? | **Có** — nếu không, p99.9 của B6 là p99.9 của warmup | Giữ như đã build, và mọi số `--listen` chỉ công bố p50/p99, **không** p99.9 |
+
+Không câu nào ở trên chặn A1, A2, A4–A7. A3b **chưa commit** cho tới khi có trả lời; developer
+sửa theo câu trả lời rồi manager chạy lại toàn bộ cột gate ở trên trên commit đóng bước.
+
+### Nguồn (tra 2026-09-14)
+
+- Kernel `security/commoncap.c` v6.16, `cap_bprm_creds_from_file` —
+  <https://elixir.bootlin.com/linux/v6.16/source/security/commoncap.c> (đọc qua
+  raw.githubusercontent.com cùng tag); `LSM_UNSAFE_PTRACE` / `ptracer_capable`.
+- Kernel `net/core/dev_ioctl.c` v6.16, `dev_ioctl` — `CAP_NET_ADMIN` cho `SIOCSHWTSTAMP`:
+  <https://elixir.bootlin.com/linux/v6.16/source/net/core/dev_ioctl.c>.
+- `poll(2)` — `POLLERR` luôn báo: <https://man7.org/linux/man-pages/man2/poll.2.html>.
+- Kernel `net/ipv4/tcp.c` v6.16, `tcp_poll` (`EPOLLERR` khi errqueue không rỗng) và
+  `tcp_tx_timestamp` (`tskey = seq + len - 1`): <https://elixir.bootlin.com/linux/v6.16/source/net/ipv4/tcp.c>.
+- Kernel `net/core/sock.c` v6.16, `sock_set_timestamping` (`OPT_ID` từ chối `CLOSE`/`LISTEN`;
+  `OPT_ID_TCP` lấy `write_seq`) và `sock_def_error_report`:
+  <https://elixir.bootlin.com/linux/v6.16/source/net/core/sock.c>.
+- Kernel `net/packet/af_packet.c` v6.16, `tpacket_rcv` fallback `ktime_get_real_ts64`, và
+  `packet_create` `ns_capable(net->user_ns, CAP_NET_RAW)`:
+  <https://elixir.bootlin.com/linux/v6.16/source/net/packet/af_packet.c>.
+- Kernel `include/linux/skbuff.h` v6.16, `SKBTX_HW_TSTAMP = SKBTX_HW_TSTAMP_NOBPF | SKBTX_BPF`:
+  <https://elixir.bootlin.com/linux/v6.16/source/include/linux/skbuff.h>.
+- Tài liệu kernel *Timestamping* — errqueue, `OPT_ID_TCP`, `OPT_TSONLY`, "only a process with
+  admin rights may change the configuration": <https://docs.kernel.org/networking/timestamping.html>.
+- BPF sock_ops timestamping: LWN cover letter <https://lwn.net/Articles/996139/>; v6 trên
+  netdev <https://lists.openwall.net/netdev/2025/01/21/18>; kfunc
+  `bpf_sock_ops_enable_tx_tstamp` <https://github.com/torvalds/linux/commit/59422464266f8baa091edcb3779f0955a21abf00>;
+  eBPF docs <https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_SOCK_OPS/>. *Không tìm thấy
+  câu tài liệu nào nói thẳng "không vào errqueue"* — suy từ cách chia cờ, ghi là chưa xác minh.
+- `igb` một stamp TX đang chờ: loạt patch intel-wired-lan 2026-08 *igb: PTP Tx timestamp state
+  fixes* (trích `igb_xmit_frame_ring` và `tx_hwtstamp_skipped`)
+  <https://ratatoskr.run/intel-wired-lan/2026/08/17415163/t>; bộ đếm ethtool trong
+  `igb_ethtool.c` dòng ~41–43: <https://elixir.bootlin.com/linux/v6.16/source/drivers/net/ethernet/intel/igb/igb_ethtool.c>.
+- `strace(1)` `-u`: <https://man7.org/linux/man-pages/man1/strace.1.html>.
+- `hwstamp_ctl(8)`: <https://linuxptp.nwtime.org/documentation/hwstamp_ctl/>.
+- Ubuntu chặn user namespace không đặc quyền: release notes 24.04
+  <https://documentation.ubuntu.com/release-notes/24.04/>; Qualys 2025, ba cách vượt rào
+  <https://www.qualys.com/2025/three-bypasses-of-Ubuntu-unprivileged-user-namespace-restrictions.txt>.
+- Cách người khác lấy stamp TX: Onload cũng qua `recvmsg(MSG_ERRQUEUE)` trên socket gửi
+  (`ONLOAD_SOF_TIMESTAMPING_STREAM`) <https://github.com/majek/openonload/blob/master/src/tests/onload/hwtimestamping/tx_timestamping.c>;
+  đo wire ngoài host: Arista MetaWatch <https://www.arista.com/en/products/7130-meta-watch>,
+  FMADIO về trailer timestamp của packet broker
+  <https://www.fmad.io/blog/packet-broker-hardware-timestamps-getting-the-most-from-your-networks-timing-data>;
+  `rxtxcpu` (stackpath) chỉ là capture theo CPU, không có TX phần cứng —
+  <https://github.com/stackpath/rxtxcpu>. *Không tìm thấy công cụ nào lấy stamp TX phần cứng trong
+  host mà không qua errqueue của socket gửi, ngoài đường BPF ở trên.*
+- Tap AF_PACKET không có TX phần cứng: libpcap #894 (đã dẫn ở Sửa 1).
+- Thăm dò của architect hôm nay (bàn Linux, `fixbolt-machine off`, binary a3b copy không cap):
+  `unshare -Urn` chạy hết cả `hft` và `standard` dưới strace; `aa-exec -p unconfined -- unshare
+  -Urn true` → EPERM; `sudo -n strace -f -u tmt` → rc=0; `sysctl
+  kernel.apparmor_restrict_unprivileged_userns = 1`; `/proc/self/attr/current` của shell này là
+  `vscode (unconfined)`.
