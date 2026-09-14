@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **tiếp theo: boot B** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B đang chạy từ 2026-09-14 21:27** (nhánh `plan/the-second-linux-desk-b`, PR 2) — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -561,6 +561,33 @@ bảng *Chia việc* không sửa.
 `sudo -n /usr/local/sbin/fixbolt-machine on`, runbook B0, bỏ run bench đầu; **B1 trước tiên**
 (ba lần `--strict`, baseline case admin n = 20, D_in); B3 đã xong ở PR #71; B5 chờ item 88; **B6
 cần cáp và Mac**.
+
+**`[2026-09-14]` Bắt đầu boot B (PR 2).** Nhánh `plan/the-second-linux-desk-b` từ `main` `4c373e0`.
+**Không reboot**: máy đã ở dòng boot §9 từ 07:18 (`uptime` 14:08 lúc 21:27), nên bẫy *run đầu sau
+reboot* không áp dụng; run bench đầu vẫn bỏ theo runbook. Không session nào khác đang đo.
+
+*B0, đọc 21:27–21:29:*
+
+- `cat /proc/cmdline` → `... isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1 ...`,
+  **không** `nohz_full`. Grub không đụng.
+- Trước khi bật: `scripts/check-machine.sh` → `pass 8 fail 7 unknown 0` (knobs OFF; NIC tự chọn
+  `enp9s0`; IRQ 85–89 `0-15`; `rx-usecs 3`).
+- `sudo -n /usr/local/sbin/fixbolt-machine on` → `governor performance · boost 0 · smt off · thp
+  never · busy_poll 50 · tls loaded · nproc 6`; `sudo -n ethtool -C enp9s0 rx-usecs 0`; `4` ghi vào
+  `/proc/irq/{85..89}/smp_affinity_list`.
+- Sau: `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → **`pass 15 fail 0 unknown 0`**.
+- Cáp đã cắm, **thẳng vào cổng Ethernet có sẵn của một Mac mini** (không cần adapter của Q3):
+  `192.168.77.1 ↔ .2`, `Speed: 1000Mb/s`, `Link detected: yes`. **Topology B6 của plan không nói
+  tới hai điều đang bật ở cả hai đầu:** EEE (802.3az) `enabled - active`, và pause frames RX/TX.
+
+**Bẫy gặp ở B0.** `ethtool -C enp9s0 rx-usecs 0` làm `igb` **bật lại link** (`dmesg`: `NIC Link is
+Up` lúc 21:29:01; `carrier_changes` 4). `check-machine.sh` **không** `FIXBOLT_NIC`, chạy lúc
+21:28:58, không thấy carrier nên **không chọn NIC nào** — in `pass 12 fail 0 unknown 1` và vẫn
+*§9 satisfied*. Ba giây sau, cùng lệnh in `pass 15 fail 0 unknown 0`. Từ đây mọi bước B đặt
+`FIXBOLT_NIC=enp9s0` tường minh.
+
+**Việc chặn, gửi architect (Sửa 3):** B5 chờ item 88; B2 (và mọi hàng §8 của boot này) công bố
+thế nào khi item 85 chưa có plan; EEE và pause frames cho B6; bẫy `igb` ở trên cần một test.
 
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
