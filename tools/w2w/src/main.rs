@@ -128,7 +128,7 @@
 //! **Two processes can disagree about `--path`, and one process could not.**
 //! `--connect --path app` against `--listen --path admin` gets no reply at all,
 //! so the generator bounds every read by [`REPLY_TIMEOUT`] and fails naming
-//! the likely cause, and the engine half fails if [`Never`] was reached. The
+//! the likely cause, and the engine half fails if [`ListenNever`] was reached. The
 //! other way round is not caught by the engine half — its `Desk` is simply
 //! never called — and needs no catching: the generator's `35=` check holds, and
 //! each process's `path:` line says truthfully what it ran.
@@ -206,15 +206,20 @@
 //!   spins (no syscall) until the observer has `dup`ed it, set the option and
 //!   read the peer's port ([`wire::Handoff`]). The `dup` is what lets the
 //!   observer outlive the engine's own descriptor without reading a reused one.
+//!   The observer **claims** the offer before it touches the descriptor, and
+//!   the engine's 2 s timeout fires only on an unclaimed offer, so the engine
+//!   never drops the socket while the observer is using its descriptor.
 //!   Only the first connection is stamped; later ones are counted and printed.
 //! * **Pairing** — `pair.rs`, pure, by the TCP byte stream: see its module note.
 //!   A `ts[2]` of zero is counted into `hw-rx-missing` / `hw-tx-missing` and
 //!   printed, never replaced.
 //! * **The NIC** — `SIOCSHWTSTAMP` (`tx_type ON`, `rx_filter ALL`), read back
 //!   through the ioctl's own result and a `SIOCGHWTSTAMP`, refused unless both
-//!   say so, and the previous configuration is put back when the run ends. The
-//!   read-back is not trusted as evidence (the plan's `igb` trap); only a
-//!   sample's `ts[2] != 0` is.
+//!   say so, and the previous configuration is put back when the run ends —
+//!   a run ended by SIGINT or SIGTERM included: with the flag both are caught
+//!   and end the run through its normal path, `Drop` and all ([`signal`]); a
+//!   second one kills at once. The read-back is not trusted as evidence (the
+//!   plan's `igb` trap); only a sample's `ts[2] != 0` is.
 //! * **`lo`, decided**: a loopback device (`IFF_LOOPBACK`) has no hardware
 //!   clock. `SIOCSHWTSTAMP` is **not attempted** on it — it would fail with
 //!   `EOPNOTSUPP`, and only after asking for `CAP_NET_ADMIN` — and a line says
@@ -245,15 +250,16 @@
 //!   over that namespace's own `lo` with no `setcap` and no `sudo`.
 //! * **Printed**: `wire p50/p99/p99.9` over the requests that had both stamps,
 //!   beside the counts, the error-queue entries seen, the tap's drops, and
-//!   `allocs` — which, being counted on every thread, includes the observer's.
+//!   `allocs` — which, being counted on every thread, includes the observer's,
+//!   and says so: its label names every thread counted ([`counted_threads`]).
 //!   Any tap drop or buffer overflow withholds the wire column: a request the
 //!   tap never recorded would put its reply against its neighbour.
 #![allow(unsafe_code)]
 // Two kinds of `unsafe` live here, each with its own SAFETY note naming what
-// proves it: the counting allocator below, and — Linux only, `mod wire` — the
-// FFI calls of `--wire-timestamps` (`socket`, `setsockopt`, `ioctl`, `bind`,
-// `fcntl`, `getpeername`, `recvmsg` and the `CMSG_*` walk), which have no safe
-// spelling in `std`.
+// proves it: the counting allocator below, and — Linux only, `mod wire` and
+// `mod signal` — the FFI calls of `--wire-timestamps` (`socket`, `setsockopt`,
+// `ioctl`, `bind`, `fcntl`, `getpeername`, `recvmsg` and the `CMSG_*` walk,
+// and `sigaction` for SIGINT and SIGTERM), which have no safe spelling in `std`.
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
 // `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
 // panics in a test is a failing test, which is what a test is for.
@@ -494,12 +500,6 @@ impl Path {
 /// returning `None` quietly.
 struct Never;
 
-/// Whether [`Never`] was reached. Read only by `--listen`, which has no reply
-/// check of its own: in the combined run the client's `35=` assertion already
-/// fails such a run, but an engine half whose generator ran `--path app`
-/// against `--path admin` would otherwise end cleanly having served nothing.
-static APP_REACHED: AtomicBool = AtomicBool::new(false);
-
 impl Application for Never {
     fn on_message(
         &mut self,
@@ -508,8 +508,45 @@ impl Application for Never {
         _out: &mut [u8],
     ) -> Option<Range<usize>> {
         eprintln!("w2w: the application was reached; this run measures something else");
-        APP_REACHED.store(true, Ordering::Relaxed);
         None
+    }
+}
+
+/// Whether [`ListenNever`] was reached. Read only by `--listen`, which has no
+/// reply check of its own: in the combined run the client's `35=` assertion
+/// already fails such a run, but an engine half whose generator ran `--path
+/// app` against `--path admin` would otherwise end cleanly having served
+/// nothing.
+static APP_REACHED: AtomicBool = AtomicBool::new(false);
+
+/// `--listen --path admin`'s [`Never`]: the same, and it records that it was
+/// reached in [`APP_REACHED`].
+///
+/// **A type of its own so that [`Never`] stays the application the combined
+/// run was timed with.** `Never::on_message` is inlined into the session's
+/// `judge` on the no-flag admin path — the path `DESIGN.md` §8's round-trip
+/// rows are timed on — and the store, written there, changed that function's
+/// code. `[measured 2026-09-14]` `nm -S` of `judge::<…InlineDispatch<w2w::Never>…>`
+/// in a `--features affinity,tls` release build, and `objdump -d` of it
+/// against 25e54dc's: 0x238e bytes there; 0x2395 with the store in `Never` (one
+/// `movb` more, inside the block that runs only when the application is
+/// reached); 0x2393 with the store moved into an `#[inline(never)]` function
+/// (one `call` more, same place); and with `#[cold]` added to that function,
+/// LLVM moved the whole reached-block out of line and flipped the branch in
+/// front of it (`je` → `jne`). Only leaving `Never` as it was leaves `judge` as
+/// it was; `--listen` has had its own engine instance since it existed, and
+/// now has its own application type too.
+struct ListenNever;
+
+impl Application for ListenNever {
+    fn on_message(
+        &mut self,
+        msg: &[u8],
+        hdr: fixbolt_session::Header<'_>,
+        out: &mut [u8],
+    ) -> Option<Range<usize>> {
+        APP_REACHED.store(true, Ordering::Relaxed);
+        Never.on_message(msg, hdr, out)
     }
 }
 
@@ -1089,7 +1126,7 @@ fn main() -> std::io::Result<()> {
         tls,
         interval_us,
     };
-    match half {
+    let ran = match half {
         Half::Both => both_halves(
             mode,
             run,
@@ -1108,7 +1145,24 @@ fn main() -> std::io::Result<()> {
         // `half_of` has refused `--journal` and `--log` for `--connect`, so
         // `generator_half` never receives a choice it has no engine to act on.
         Half::Connect(addr) => generator_half(&addr, run, client_core),
+    };
+    // Only `--wire-timestamps` installs a handler (`signal`). By here every
+    // thread that run started has been joined or has returned, and every
+    // `Drop` has run — the observer's, and `HwConfig`'s, whose `restored`
+    // line is above on a hardware NIC. Whatever the half returned, a caught
+    // signal is what ended it, and it says so rather than dying by it.
+    if let Some(sig) = signal::caught() {
+        let name = signal::name(sig);
+        eprintln!(
+            "w2w: stopped by {name}: the engine was stopped, the observer joined, and the NIC's \
+             timestamping configuration put back if this run changed it; nothing is reported"
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            format!("w2w: stopped by {name}"),
+        ));
     }
+    ran
 }
 
 /// The combined run: engine and client in one process, over loopback. Every
@@ -1150,22 +1204,24 @@ fn both_halves(
     // dropping the engine has already closed the writer threads.
     let (files, _cleanup) = open_files(journal, log)?;
 
+    let stop = Arc::new(AtomicBool::new(false));
+    let engine_stop = Arc::clone(&stop);
+
     // `--wire-timestamps`: the tap is reading before the client's SYN, which
     // is what `pair::requests` counts the stream from. With no flag nothing is
-    // started and nothing is printed.
+    // started and nothing is printed. The observer also holds the engine's
+    // `stop`, for a SIGINT or SIGTERM (`signal`).
     let observer = match wire {
         Some(w) => Some(wire::Observer::start(
             w,
             mode,
             local,
             4 * (run.warmup + run.n) + 4096,
+            Arc::clone(&stop),
         )?),
         None => None,
     };
     let handoff = observer.as_ref().map(wire::Observer::handoff);
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let engine_stop = Arc::clone(&stop);
 
     // The engine thread, in the shape a deployment runs: `Spin` +
     // `InlineDispatch` + `SystemClock`, which is what `TcpAcceptorEngine` names.
@@ -1225,18 +1281,14 @@ fn both_halves(
         stop: &stop,
         engine,
     };
-    let Measured {
-        mut samples,
-        allocs,
-        late,
-    } = match tls {
+    let measured = match tls {
         Tls::Off => {
             // The plain arm, exactly as it was before `--tls` existed: a
             // blocking `TcpStream` with Nagle off. Changing this client changes
             // every figure this binary has published.
             let sock = TcpStream::connect(&addr)?;
             sock.set_nodelay(true)?;
-            measure(sock, &run, peer)?
+            measure(sock, &run, peer)
         }
         #[cfg(all(feature = "tls", target_os = "linux"))]
         Tls::Ktls | Tls::Userspace => {
@@ -1244,7 +1296,7 @@ fn both_halves(
                 return Err(std::io::Error::other("w2w: a TLS arm with no certificate"));
             };
             let sock = tls_arm::connect(&addr, p, tls == Tls::Ktls)?;
-            measure(sock, &run, peer)?
+            measure(sock, &run, peer)
         }
         #[cfg(not(all(feature = "tls", target_os = "linux")))]
         Tls::Ktls | Tls::Userspace => {
@@ -1254,9 +1306,27 @@ fn both_halves(
         }
     };
 
+    // A SIGINT or SIGTERM (`--wire-timestamps` only): the observer stopped the
+    // engine, so the client's read ended — as an error, or after the hold.
+    // Join the observer, which puts the NIC back as it drops, and let `main`
+    // say which signal it was; nothing about this run is reported.
+    if signal::caught().is_some() {
+        drop(observer.map(wire::Observer::finish));
+        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    }
+    let Measured {
+        mut samples,
+        allocs,
+        late,
+    } = measured?;
+
     // The engine has been stopped and joined inside `measure`; the observer
     // holds its own `dup` of the socket, so it drains the last stamps now.
     let observed = observer.map(wire::Observer::finish).transpose()?;
+    // And a signal that arrived while it drained.
+    if signal::caught().is_some() {
+        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    }
 
     let what = match path {
         Path::Admin => "TestRequest -> Heartbeat",
@@ -1266,21 +1336,18 @@ fn both_halves(
     println!("     mode   {:>9}", mode.name());
     println!("     path   {:>9}", path.name());
     print_figures(&mut samples, &run, late);
+    // Which threads `allocs` counted — every one this process ran in the
+    // window, the journal's and the log's writers included. With no flag it
+    // reads `both threads`, as it always did.
+    let counted = counted_threads(true, observed.is_some(), journal, log);
+    println!("     allocs {allocs:>9}   ({counted}, the timed window only)");
     let verdict = match &observed {
-        None => {
-            println!("     allocs {allocs:>9}   (both threads, the timed window only)");
-            Ok(())
-        }
-        Some(o) => {
-            println!(
-                "     allocs {allocs:>9}   (engine, client and observer threads, the timed window only)"
-            );
-            o.report(wire::Window::Combined {
-                warmup: run.warmup,
-                n: run.n,
-                tls: tls != Tls::Off,
-            })
-        }
+        None => Ok(()),
+        Some(o) => o.report(wire::Window::Combined {
+            warmup: run.warmup,
+            n: run.n,
+            tls: tls != Tls::Off,
+        }),
     };
     println!();
     // Non-negotiable 1, for this binary. Reported first so the number is
@@ -1352,6 +1419,9 @@ fn engine_half(
         println!("log: {}", log.name());
     }
 
+    // Nobody stores `true` here but the observer, on SIGINT or SIGTERM
+    // (`signal`): this engine ends when its peer does.
+    let stop = Arc::new(AtomicBool::new(false));
     // Before the engine thread, so the tap sees the generator's SYN.
     let observer = match wire {
         Some(w) => Some(wire::Observer::start(
@@ -1359,6 +1429,7 @@ fn engine_half(
             mode,
             bound,
             wire::LISTEN_CAPACITY,
+            Arc::clone(&stop),
         )?),
         None => None,
     };
@@ -1373,8 +1444,6 @@ fn engine_half(
     // `engine.join()` below has returned, by which point dropping the engine
     // has already closed the writer threads.
     let (files, _cleanup) = open_files(journal, log)?;
-    // Nobody stores `true` here: this engine ends when its peer does.
-    let stop = Arc::new(AtomicBool::new(false));
     let body = move || {
         print_engine_tid();
         // `true`: arm the allocation counter after the first logon, and return
@@ -1384,7 +1453,7 @@ fn engine_half(
                 acceptor,
                 &stop,
                 mode,
-                Never,
+                ListenNever,
                 EngineSide::Plain,
                 files,
                 handoff,
@@ -1402,6 +1471,10 @@ fn engine_half(
         .map_err(|_| std::io::Error::other("w2w: the engine thread panicked"))?;
     let allocs = ALLOCS.load(Ordering::Relaxed);
     let observed = observer.map(wire::Observer::finish).transpose()?;
+    // As in `both_halves`: joined, drained, NIC put back — `main` reports.
+    if signal::caught().is_some() {
+        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    }
 
     // Read back, as in the combined run. `half_of` has refused every arm but
     // `off`, so anything else here is a transport this process did not ask for.
@@ -1425,11 +1498,14 @@ fn engine_half(
     println!("w2w: engine half, over kernel TCP, listening on {bound}");
     println!("     mode   {:>9}", mode.name());
     println!("     path   {:>9}", path.name());
+    // As in `both_halves`: every thread counted, named. With no flag it reads
+    // `engine thread`, as it always did.
+    let counted = counted_threads(false, observed.is_some(), journal, log);
+    println!(
+        "     allocs {allocs:>9}   ({counted}, first logon to last close, warmup and teardown included)"
+    );
     let verdict = match &observed {
         None => {
-            println!(
-                "     allocs {allocs:>9}   (engine thread, first logon to last close, warmup and teardown included)"
-            );
             println!(
                 "     no latency figures: the far end of every round trip is in the --connect"
             );
@@ -1437,9 +1513,6 @@ fn engine_half(
             Ok(())
         }
         Some(o) => {
-            println!(
-                "     allocs {allocs:>9}   (engine and observer threads, first logon to last close, warmup and teardown included)"
-            );
             println!(
                 "     no round-trip figures: the far end of every round trip is in the --connect"
             );
@@ -1463,6 +1536,34 @@ fn engine_half(
     println!("ADR-0013 decision 4: `mode` above is this engine's; the --connect table is");
     println!("about this engine only when it was run against this process.");
     Ok(())
+}
+
+/// The threads an `allocs` line counts, for its label. [`ALLOCS`] counts every
+/// thread, so the label names every thread the run started: the engine, the
+/// client in the combined run, the observer under `--wire-timestamps`, and the
+/// writer threads `--journal file-async` and `--log file` open. With none of
+/// those flags it is `both threads` (combined) or `engine thread` (`--listen`),
+/// the words those lines always had.
+fn counted_threads(client: bool, observer: bool, journal: JournalKind, log: LogKind) -> String {
+    let mut names = vec!["engine"];
+    if client {
+        names.push("client");
+    }
+    if observer {
+        names.push("observer");
+    }
+    if journal == JournalKind::FileAsync {
+        names.push("journal writer");
+    }
+    if log == LogKind::File {
+        names.push("log writer");
+    }
+    match names.as_slice() {
+        ["engine", "client"] => "both threads".to_string(),
+        [one] => format!("{one} thread"),
+        [first @ .., last] => format!("{} and {last} threads", first.join(", ")),
+        [] => String::new(),
+    }
 }
 
 /// How long `--connect` waits for any one reply before calling the run failed.
@@ -1774,7 +1875,7 @@ fn measure<C: Wire>(mut sock: C, run: &Run, peer: Peer<'_>) -> std::io::Result<M
     // syscall trace has to look at to answer open item 15, because an idle spin
     // is exactly where a blocking call would hide.
     if hold_ms > 0 {
-        std::thread::sleep(Duration::from_millis(hold_ms));
+        hold(Duration::from_millis(hold_ms));
     }
 
     match peer {
@@ -1791,6 +1892,25 @@ fn measure<C: Wire>(mut sock: C, run: &Run, peer: Peer<'_>) -> std::io::Result<M
         allocs,
         late,
     })
+}
+
+/// `--hold-ms`. With no signal handler — every run without `--wire-timestamps`
+/// — one `sleep`, as it always was. With one, slices of at most 10 ms, so a
+/// SIGINT or SIGTERM during a long hold ends the run within a slice rather
+/// than after the hold (`std::thread::sleep` resumes after `EINTR`).
+fn hold(d: Duration) {
+    if !signal::installed() {
+        std::thread::sleep(d);
+        return;
+    }
+    let end = Instant::now() + d;
+    while signal::caught().is_none() {
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(10)));
+    }
 }
 
 /// Spawn the engine thread, pinned if a core was named.
@@ -2340,7 +2460,10 @@ fn whole(bytes: &[u8]) -> Option<usize> {
 /// `scripts/check-standard-gives-the-core-back.sh` under
 /// `W2W_EXTRA="--wire-timestamps --nic lo --observer-core 2"`, each run inside
 /// `unshare -Urn`, prove the engine thread's syscalls and idle CPU are unchanged
-/// with all of it running; the `standard` refusal is proven by
+/// with all of it running, and — since each reads back the `wire-timestamps:`
+/// and `hw-rx-missing` lines — that the arm ran at all; the descriptor handed
+/// from the engine to the observer is proven live by the handoff's state
+/// machine and its four tests (`stamp`'s SAFETY note); the `standard` refusal is proven by
 /// `standard_is_refused_on_a_hardware_nic_and_not_on_loopback` and by running a
 /// binary with no capability against `enp9s0`. A
 /// hardware stamp has not been read yet (no cable): the `SCM_TIMESTAMPING` walk
@@ -2376,10 +2499,16 @@ mod wire {
     /// And the most `finish` will wait for that quiet.
     const DRAIN_MAX: Duration = Duration::from_secs(2);
 
+    // The handoff's states. The engine moves IDLE→OFFERED and, only from
+    // OFFERED, OFFERED→FAILED on its timeout; the observer moves
+    // OFFERED→CLAIMED before it touches the descriptor, and CLAIMED→ATTACHED
+    // or CLAIMED→FAILED when it is done. Every move out of OFFERED is a CAS, so
+    // exactly one of the timeout and the claim wins.
     const IDLE: u8 = 0;
     const OFFERED: u8 = 1;
     const ATTACHED: u8 = 2;
     const FAILED: u8 = 3;
+    const CLAIMED: u8 = 4;
 
     /// The engine thread's side of the stamp: a descriptor offered across
     /// atomics, and the observer's answer.
@@ -2391,39 +2520,139 @@ mod wire {
         extra: AtomicUsize,
     }
 
+    /// What the engine sees when it looks at its offer once.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Answer {
+        /// Not answered yet: offered and not timed out, or claimed.
+        Waiting,
+        /// The observer stamped the socket.
+        Attached,
+        /// The observer claimed it and could not stamp it, and has said why.
+        Failed,
+        /// Nobody claimed it before the deadline; it can no longer be claimed.
+        TimedOut,
+    }
+
+    /// The observer's hold on an offered descriptor. **While it lives, the
+    /// engine's [`Handoff::attach`] neither times out nor returns**, so the
+    /// engine still owns the socket and [`Claim::fd`] names a live descriptor.
+    /// Dropped without [`Claim::resolve`] — an unwind — it fails the offer, so
+    /// the engine is never left waiting on a claim nobody will answer.
+    pub struct Claim<'a> {
+        h: &'a Handoff,
+        fd: RawFd,
+        done: bool,
+    }
+
+    impl Claim<'_> {
+        pub const fn fd(&self) -> RawFd {
+            self.fd
+        }
+
+        /// CLAIMED→ATTACHED or CLAIMED→FAILED: the engine may go on.
+        pub fn resolve(mut self, ok: bool) {
+            self.finish(if ok { ATTACHED } else { FAILED });
+        }
+
+        fn finish(&mut self, to: u8) {
+            if !self.done {
+                self.done = true;
+                self.h.state.store(to, Ordering::Release);
+            }
+        }
+    }
+
+    impl Drop for Claim<'_> {
+        fn drop(&mut self) {
+            self.finish(FAILED);
+        }
+    }
+
     impl Handoff {
+        pub const fn new() -> Self {
+            Self {
+                state: AtomicU8::new(IDLE),
+                fd: AtomicI32::new(-1),
+                peer: AtomicU16::new(0),
+                extra: AtomicUsize::new(0),
+            }
+        }
+
+        /// Engine: IDLE→OFFERED with `fd`. `false` once any offer has been made
+        /// — only the first connection is stamped.
+        fn offer(&self, fd: RawFd) -> bool {
+            if self.state.load(Ordering::Acquire) != IDLE {
+                return false;
+            }
+            // Only the engine thread moves out of IDLE, so the descriptor is in
+            // place before anyone can see OFFERED.
+            self.fd.store(fd, Ordering::Release);
+            self.state.store(OFFERED, Ordering::Release);
+            true
+        }
+
+        /// Engine: look at the offer once. `past_deadline` lets it time out,
+        /// and only an offer nobody has claimed can.
+        fn answer(&self, past_deadline: bool) -> Answer {
+            match self.state.load(Ordering::Acquire) {
+                ATTACHED => Answer::Attached,
+                FAILED => Answer::Failed,
+                // A CAS, not a store: the observer may be claiming right now,
+                // and if it won, this offer is no longer the engine's to end.
+                OFFERED
+                    if past_deadline
+                        && self
+                            .state
+                            .compare_exchange(OFFERED, FAILED, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok() =>
+                {
+                    Answer::TimedOut
+                }
+                // OFFERED and not yet due (or just claimed), or CLAIMED at any
+                // time: the observer answers.
+                _ => Answer::Waiting,
+            }
+        }
+
+        /// Observer: OFFERED→CLAIMED, before touching the descriptor.
+        pub fn claim(&self) -> Option<Claim<'_>> {
+            self.state
+                .compare_exchange(OFFERED, CLAIMED, Ordering::AcqRel, Ordering::Acquire)
+                .ok()
+                .map(|_| Claim {
+                    h: self,
+                    fd: self.fd.load(Ordering::Acquire),
+                    done: false,
+                })
+        }
+
         /// On the engine thread, before `engine.add`. **No syscall**: two
         /// atomic stores, then a spin on `Instant` (the vDSO) until the
         /// observer answers. `false` drops the connection; the observer has
-        /// said why on stderr, or the timeout line below does.
+        /// said why on stderr, or the timeout line below does. The timeout
+        /// fires only while the offer is unclaimed: once the observer holds a
+        /// [`Claim`], this waits for its answer, because returning would drop
+        /// the socket under a descriptor the observer is using.
         pub fn attach(&self, sock: &TcpStream) -> bool {
-            if self.state.load(Ordering::Acquire) != IDLE {
+            if !self.offer(sock.as_raw_fd()) {
                 self.extra.fetch_add(1, Ordering::Relaxed);
                 return true;
             }
-            self.fd.store(sock.as_raw_fd(), Ordering::Release);
-            self.state.store(OFFERED, Ordering::Release);
             let deadline = Instant::now() + ATTACH_TIMEOUT;
             loop {
-                match self.state.load(Ordering::Acquire) {
-                    ATTACHED => return true,
-                    FAILED => return false,
-                    _ => {}
+                match self.answer(Instant::now() > deadline) {
+                    Answer::Attached => return true,
+                    Answer::Failed => return false,
+                    Answer::TimedOut => {
+                        eprintln!(
+                            "w2w: --wire-timestamps: the observer did not stamp the engine's socket \
+                             within {} s",
+                            ATTACH_TIMEOUT.as_secs()
+                        );
+                        return false;
+                    }
+                    Answer::Waiting => std::hint::spin_loop(),
                 }
-                if Instant::now() > deadline
-                    && self
-                        .state
-                        .compare_exchange(OFFERED, FAILED, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                {
-                    eprintln!(
-                        "w2w: --wire-timestamps: the observer did not stamp the engine's socket \
-                         within {} s",
-                        ATTACH_TIMEOUT.as_secs()
-                    );
-                    return false;
-                }
-                std::hint::spin_loop();
             }
         }
     }
@@ -2687,11 +2916,14 @@ mod wire {
         /// Open the tap on `args.nic`, set the NIC up (unless it is loopback),
         /// and start the observer on `args.observer_core`. `engine` is the
         /// engine's bound address; its port is what the tap keeps.
+        /// `engine_stop` is the engine thread's `stop`: the observer sets it
+        /// when SIGINT or SIGTERM arrives (see `super::signal`).
         pub fn start(
             args: &WireArgs,
             mode: Mode,
             engine: SocketAddr,
             capacity: usize,
+            engine_stop: Arc<AtomicBool>,
         ) -> io::Result<Self> {
             let SocketAddr::V4(v4) = engine else {
                 return Err(io::Error::other(
@@ -2734,6 +2966,10 @@ mod wire {
                 eprintln!("w2w: {why}");
                 io::Error::other(format!("w2w: {why}"))
             })?;
+
+            // Before the NIC is touched: from here to the end of the run a
+            // SIGINT or SIGTERM unwinds, and `HwConfig`'s `Drop` runs.
+            super::signal::install()?;
 
             // SAFETY: plain `socket(2)`; checked before use.
             let raw =
@@ -2826,12 +3062,7 @@ mod wire {
             sent.resize(capacity, Sent::default());
             sent.clear();
 
-            let handoff = Arc::new(Handoff {
-                state: AtomicU8::new(IDLE),
-                fd: AtomicI32::new(-1),
-                peer: AtomicU16::new(0),
-                extra: AtomicUsize::new(0),
-            });
+            let handoff = Arc::new(Handoff::new());
             let stop = Arc::new(AtomicBool::new(false));
             let out = Arc::new(Mutex::new(None));
             let observed = Observed {
@@ -2849,7 +3080,7 @@ mod wire {
             };
             let body = {
                 let (h, s, o) = (Arc::clone(&handoff), Arc::clone(&stop), Arc::clone(&out));
-                move || observe(tap, port, &h, &s, &o, observed)
+                move || observe(tap, port, &h, &s, &engine_stop, &o, observed)
             };
             let (thread, on) = spawn_observer(args.observer_core, body)?;
             println!("wire-timestamps: {nic}, port {port}");
@@ -2927,11 +3158,18 @@ mod wire {
     }
 
     /// The observer's side of the handoff: `dup`, stamp, read the peer's port.
-    fn stamp(h: &Handoff) -> Result<(OwnedFd, u16), io::Error> {
-        let fd = h.fd.load(Ordering::Acquire);
-        // SAFETY: `fd` is the engine's accepted socket, which the engine thread
-        // is holding (it is spinning in `Handoff::attach` and has not added it
-        // yet), so the descriptor is live for this call.
+    /// Takes the [`Claim`] by reference, so it cannot outlive it.
+    fn stamp(claim: &Claim<'_>) -> Result<(OwnedFd, u16), io::Error> {
+        let fd = claim.fd();
+        // SAFETY: `fd` is the engine's accepted socket, and the claim is what
+        // keeps it live: `Handoff::claim` moved OFFERED→CLAIMED by CAS, so the
+        // engine's timeout (OFFERED→FAILED, also a CAS) can no longer fire, and
+        // from CLAIMED `Handoff::attach` does not return — the engine keeps its
+        // `TcpTransport`, and so this descriptor, until the claim resolves after
+        // this call. Only `fcntl` touches `fd`; everything after uses the `dup`.
+        // Proven by `an_unclaimed_offer_times_out_and_can_no_longer_be_claimed`,
+        // `a_claimed_offer_waits_past_the_deadline_for_its_answer` and
+        // `an_abandoned_claim_fails_the_offer` in `mod wire`'s tests.
         let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
         if dup < 0 {
             return Err(os("dup of the engine's socket"));
@@ -2990,6 +3228,7 @@ mod wire {
         port: u16,
         h: &Handoff,
         stop: &AtomicBool,
+        engine_stop: &AtomicBool,
         out: &Mutex<Option<Observed>>,
         mut o: Observed,
     ) {
@@ -3000,31 +3239,22 @@ mod wire {
         let mut quiet_since: Option<Instant> = None;
         loop {
             let mut got = false;
-            if h.state.load(Ordering::Acquire) == OFFERED {
-                match stamp(h) {
+            // SIGINT or SIGTERM: stop the engine, which is what ends the run
+            // normally too. This thread keeps going until `finish` stops it.
+            super::signal::relay(engine_stop);
+            // Claimed before the descriptor is touched — see `stamp`'s SAFETY.
+            if let Some(claim) = h.claim() {
+                match stamp(&claim) {
                     Ok((fd, peer)) => {
-                        if h.state
-                            .compare_exchange(
-                                OFFERED,
-                                ATTACHED,
-                                Ordering::AcqRel,
-                                Ordering::Acquire,
-                            )
-                            .is_ok()
-                        {
-                            h.peer.store(peer, Ordering::Release);
-                            o.peer = peer;
-                            o.attached = true;
-                            err = Some(fd);
-                        }
+                        h.peer.store(peer, Ordering::Release);
+                        o.peer = peer;
+                        o.attached = true;
+                        err = Some(fd);
+                        claim.resolve(true);
                     }
                     Err(e) => {
-                        if h.state
-                            .compare_exchange(OFFERED, FAILED, Ordering::AcqRel, Ordering::Acquire)
-                            .is_ok()
-                        {
-                            eprintln!("{e}");
-                        }
+                        eprintln!("{e}");
+                        claim.resolve(false);
                     }
                 }
             }
@@ -3290,6 +3520,194 @@ mod wire {
             Ok(())
         }
     }
+
+    /// The handoff's state machine, without a socket: the engine side is
+    /// `offer` + `answer`, the observer side `claim` + `Claim::resolve`, which
+    /// is all `attach` and `observe` do with it. `stamp`'s SAFETY note names
+    /// these three.
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    mod tests {
+        use super::{Answer, Handoff};
+
+        #[test]
+        fn an_unclaimed_offer_times_out_and_can_no_longer_be_claimed() {
+            let h = Handoff::new();
+            assert!(h.offer(7));
+            assert_eq!(h.answer(false), Answer::Waiting);
+            assert_eq!(h.answer(true), Answer::TimedOut);
+            // The engine has given up and will drop the socket: the observer
+            // must not get the descriptor.
+            assert!(h.claim().is_none());
+            assert_eq!(h.answer(true), Answer::Failed);
+        }
+
+        #[test]
+        fn a_claimed_offer_waits_past_the_deadline_for_its_answer() {
+            for ok in [true, false] {
+                let h = Handoff::new();
+                assert!(h.offer(7));
+                let claim = h.claim().expect("an offered descriptor can be claimed");
+                assert_eq!(claim.fd(), 7);
+                // Past the deadline, and the engine still waits: the observer
+                // is using the descriptor.
+                assert_eq!(h.answer(true), Answer::Waiting);
+                assert!(h.claim().is_none(), "one claim per offer");
+                claim.resolve(ok);
+                let want = if ok { Answer::Attached } else { Answer::Failed };
+                assert_eq!(h.answer(true), want);
+            }
+        }
+
+        #[test]
+        fn an_abandoned_claim_fails_the_offer() {
+            let h = Handoff::new();
+            assert!(h.offer(7));
+            drop(h.claim().expect("claimed"));
+            assert_eq!(h.answer(false), Answer::Failed);
+        }
+
+        #[test]
+        fn only_the_first_connection_is_offered() {
+            let h = Handoff::new();
+            assert!(h.offer(7));
+            assert!(!h.offer(8));
+            h.claim().expect("claimed").resolve(true);
+            assert!(!h.offer(9));
+        }
+    }
+}
+
+/// SIGINT and SIGTERM, for `--wire-timestamps` only: the run ends through the
+/// path it ends through anyway, so every `Drop` runs — above all the NIC's
+/// [`wire`] `HwConfig`, which puts the timestamping configuration back.
+///
+/// Without it, a `--listen` waiting for a generator that never comes, stopped
+/// with Ctrl-C or by a script's `kill`, died with `tx_type ON` / `rx_filter
+/// ALL` left on the NIC, and the next run read that back as "before".
+///
+/// **The handler stores one atomic and does nothing else** — async-signal-safe
+/// by construction. The observer thread, which exists exactly when the handler
+/// does and spins anyway, reads it every turn and sets the engine's `stop`
+/// ([`relay`]); the engine loop already returns on `stop`, `measure` and
+/// `engine_half` join as they always do, and `main` reports the signal. Nothing
+/// on the engine thread changes. `SA_RESTART`, so a blocking call elsewhere
+/// is not handed an `EINTR` it would report as a failure of its own;
+/// `SA_RESETHAND`, so a second Ctrl-C kills at once if the first is not enough.
+/// With no `--wire-timestamps` nothing is installed and both signals keep their
+/// default action.
+#[cfg(target_os = "linux")]
+mod signal {
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+
+    /// The last signal caught, `0` for none.
+    static CAUGHT: AtomicI32 = AtomicI32::new(0);
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_signal(sig: libc::c_int) {
+        CAUGHT.store(sig, Ordering::Release);
+    }
+
+    /// Install the handler for SIGINT and SIGTERM.
+    pub fn install() -> std::io::Result<()> {
+        for sig in [libc::SIGINT, libc::SIGTERM] {
+            // SAFETY: all-zero is a valid `sigaction`; `sigemptyset` fills the
+            // mask it is given, and `sigaction` copies `sa` in. The handler it
+            // installs performs one atomic store, which is async-signal-safe.
+            // Proven by `a_caught_signal_is_relayed_to_the_engine_stop` (a real
+            // `raise`, which would kill the test without it) and by the
+            // `timeout -s INT` run of `--listen --wire-timestamps` recorded
+            // with this change, which exits through `main` rather than by the
+            // signal.
+            let rc = unsafe {
+                let mut sa: libc::sigaction = std::mem::zeroed();
+                sa.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                sa.sa_flags = libc::SA_RESTART | libc::SA_RESETHAND;
+                libc::sigemptyset(&mut sa.sa_mask);
+                libc::sigaction(sig, &sa, std::ptr::null_mut())
+            };
+            if rc < 0 {
+                let e = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!("w2w: --wire-timestamps: sigaction: {e}"),
+                ));
+            }
+        }
+        INSTALLED.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether [`install`] ran — `measure`'s hold asks, so that a run with no
+    /// handler sleeps exactly as it did.
+    pub fn installed() -> bool {
+        INSTALLED.load(Ordering::Acquire)
+    }
+
+    /// The signal that ended the run, if one did.
+    pub fn caught() -> Option<i32> {
+        match CAUGHT.load(Ordering::Acquire) {
+            0 => None,
+            sig => Some(sig),
+        }
+    }
+
+    /// If a signal was caught, tell the engine to stop. `true` if one was.
+    pub fn relay(engine_stop: &AtomicBool) -> bool {
+        let hit = caught().is_some();
+        if hit {
+            engine_stop.store(true, Ordering::Relaxed);
+        }
+        hit
+    }
+
+    pub const fn name(sig: i32) -> &'static str {
+        match sig {
+            libc::SIGINT => "SIGINT",
+            libc::SIGTERM => "SIGTERM",
+            _ => "a signal",
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    mod tests {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// The one test in this binary that touches the handler: a real
+        /// `raise(SIGTERM)`, which kills the test process if the handler is
+        /// not installed.
+        #[test]
+        fn a_caught_signal_is_relayed_to_the_engine_stop() {
+            let stop = AtomicBool::new(false);
+            assert!(!super::relay(&stop));
+            assert!(!stop.load(Ordering::Relaxed));
+            super::install().unwrap();
+            assert!(super::installed());
+            // SAFETY: `raise` is a plain libc call; the handler it runs stores
+            // one atomic.
+            assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+            assert_eq!(super::caught(), Some(libc::SIGTERM));
+            assert!(super::relay(&stop));
+            assert!(stop.load(Ordering::Relaxed));
+            assert_eq!(super::name(libc::SIGTERM), "SIGTERM");
+        }
+    }
+}
+
+/// Off Linux there is no `--wire-timestamps`, so no handler: a run is never
+/// stopped by one.
+#[cfg(not(target_os = "linux"))]
+mod signal {
+    pub const fn installed() -> bool {
+        false
+    }
+    pub const fn caught() -> Option<i32> {
+        None
+    }
+    pub const fn name(_: i32) -> &'static str {
+        "a signal"
+    }
 }
 
 /// `--wire-timestamps` does not exist off Linux: `wire_of` refuses it before
@@ -3300,6 +3718,7 @@ mod wire {
     use std::io;
     use std::net::{SocketAddr, TcpStream};
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use super::{Mode, WireArgs};
 
@@ -3328,7 +3747,13 @@ mod wire {
 
     pub enum Observer {}
     impl Observer {
-        pub fn start(_: &WireArgs, _: Mode, _: SocketAddr, _: usize) -> io::Result<Self> {
+        pub fn start(
+            _: &WireArgs,
+            _: Mode,
+            _: SocketAddr,
+            _: usize,
+            _: Arc<AtomicBool>,
+        ) -> io::Result<Self> {
             Err(io::Error::other("w2w: --wire-timestamps is Linux-only"))
         }
         pub fn handoff(&self) -> Arc<Handoff> {
@@ -3766,6 +4191,79 @@ mod tests {
         assert_eq!(
             blocking_mode_on_hardware(Mode::Yield, "enp9s0", false),
             Ok(())
+        );
+    }
+
+    /// What the SIGINT/SIGTERM relay leans on (`signal`): a `--listen` engine
+    /// still waiting for its first connection — the wait a Ctrl-C interrupts —
+    /// returns once its `stop` is set, both in the mode that spins and in the
+    /// one that blocks in `poll`.
+    #[test]
+    fn a_stop_ends_the_listen_loop_before_any_connection() {
+        let modes: &[Mode] = if cfg!(all(feature = "standard", unix)) {
+            &[Mode::Hft, Mode::Standard]
+        } else {
+            &[Mode::Hft]
+        };
+        for &mode in modes {
+            let acceptor = Acceptor::bind("127.0.0.1:0").unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let engine_stop = Arc::clone(&stop);
+            let (files, _cleanup) = open_files(JournalKind::Mem, LogKind::None).unwrap();
+            let engine = std::thread::spawn(move || {
+                serve_chosen::<_, true>(
+                    acceptor,
+                    &engine_stop,
+                    mode,
+                    ListenNever,
+                    EngineSide::Plain,
+                    files,
+                    None,
+                );
+            });
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!engine.is_finished(), "{mode:?}: returned before stop");
+            stop.store(true, Ordering::Relaxed);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !engine.is_finished() {
+                assert!(
+                    Instant::now() < deadline,
+                    "{mode:?}: still serving 5 s after stop"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            engine.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn allocs_names_every_thread_it_counts() {
+        use JournalKind::{FileAsync, Mem};
+        use LogKind::{File, None as NoLog};
+        // No flag: the words these lines had before any flag existed.
+        assert_eq!(counted_threads(true, false, Mem, NoLog), "both threads");
+        assert_eq!(counted_threads(false, false, Mem, NoLog), "engine thread");
+        // `--wire-timestamps` alone: the words f9abc1a printed.
+        assert_eq!(
+            counted_threads(true, true, Mem, NoLog),
+            "engine, client and observer threads"
+        );
+        assert_eq!(
+            counted_threads(false, true, Mem, NoLog),
+            "engine and observer threads"
+        );
+        // The writer threads are counted, so they are named.
+        assert_eq!(
+            counted_threads(true, false, FileAsync, NoLog),
+            "engine, client and journal writer threads"
+        );
+        assert_eq!(
+            counted_threads(false, false, Mem, File),
+            "engine and log writer threads"
+        );
+        assert_eq!(
+            counted_threads(true, true, FileAsync, File),
+            "engine, client, observer, journal writer and log writer threads"
         );
     }
 

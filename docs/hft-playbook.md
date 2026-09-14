@@ -143,7 +143,12 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    lets that file change the machine's network configuration, which is acceptable only because
    the one user who runs it already has `sudo -n`, the capability is lost at every rebuild, and
    `w2w` touches only `SIOCSHWTSTAMP`, prints the configuration before and after and restores the
-   previous one on exit. Do not run `w2w` under `sudo`. **A `w2w` started under `strace` (or
+   previous one on exit — a Ctrl-C or a `kill` (SIGINT, SIGTERM) included; a second signal, a
+   `kill -9` or a crash restores nothing. **So around every B6 session:** record
+   `ethtool --get-hwtimestamp-cfg <nic>` before the first run and read it again after the last; the
+   two must agree, and where they do not, put the recorded one back with
+   `sudo -n ethtool --set-hwtimestamp-cfg <nic> tx <mode> rx-filter <filter>` before the next run
+   reads the wrong configuration as its "before". Do not run `w2w` under `sudo`. **A `w2w` started under `strace` (or
    `gdb`) by an unprivileged user does not get these capabilities** and refuses to run: the gate
    scripts' `W2W_EXTRA` arms therefore run on `lo` inside `unshare -Urn`, and to trace the engine
    thread **on the real NIC**, which a namespace cannot see, run

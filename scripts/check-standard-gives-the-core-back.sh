@@ -52,7 +52,8 @@
 # to no words, and every command line is the one this script ran before. Set to
 # `--wire-timestamps --nic lo --observer-core 2` it asks whether the tap, the
 # observer thread and `SO_TIMESTAMPING` on the engine's socket leave `standard`
-# blocking. **What it cannot see**: on `lo` no TX timestamp is ever queued, so no
+# blocking, and every run must print the wire arm's own lines or the script
+# fails (`wire_arm_ran`). **What it cannot see**: on `lo` no TX timestamp is ever queued, so no
 # `POLLERR` from the error queue ever reaches the engine's `poll` here, and this
 # window is idle in any case — a per-reply wake-up on a hardware NIC is outside
 # both. That is why w2w refuses `--mode standard --wire-timestamps` on any NIC
@@ -193,6 +194,35 @@ measure() {
   echo "${ran_mode:-none} ${pct} ${sleeping} ${alive} ${p50:-0} ${ran_tls:-none}"
 }
 
+# `[2026-09-14]` **The wire arm is read back, not assumed from `W2W_EXTRA`** — the
+# `ran_mode` lesson again. A w2w that stopped acting on `--wire-timestamps`
+# would run every arm above as the plain one, and this script would be green
+# about an instrument that never started. So when `W2W_EXTRA` holds the flag,
+# each run's output must carry the observer's `wire-timestamps: <nic>, port`
+# line and both `hw-rx-missing N of M` and `hw-tx-missing N of M` lines, M above
+# zero; on `lo`, which has no hardware clock, N must equal M. With no flag this
+# returns 0 and reads nothing.
+wire_arm_ran() {
+  local out="$1" nic line missing of
+  [[ "${W2W_EXTRA:-}" == *--wire-timestamps* ]] || return 0
+  nic="$(sed -nE 's/(^|.* )--nic +([^ ]+).*/\2/p' <<<"${W2W_EXTRA}")"
+  if ! grep -qE "^wire-timestamps: ${nic}, port [0-9]+$" "${out}"; then
+    echo "FAIL: W2W_EXTRA asks for --wire-timestamps and w2w printed no 'wire-timestamps: ${nic}, port' line — the wire arm did not run" >&2
+    return 1
+  fi
+  for line in hw-rx-missing hw-tx-missing; do
+    read -r missing of <<<"$(awk -v l="${line}" '$1 == l && $3 == "of" && $2 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { print $2, $4; exit }' "${out}")"
+    if [[ -z "${of:-}" || "${of}" -eq 0 ]]; then
+      echo "FAIL: W2W_EXTRA asks for --wire-timestamps and w2w printed no '${line} N of M' line with M above zero — the observer's report did not run" >&2
+      return 1
+    fi
+    if [[ "${nic}" == "lo" && "${missing}" -ne "${of}" ]]; then
+      echo "FAIL: ${line} reads ${missing} of ${of} on lo, which has no hardware clock — every stamp must be counted missing" >&2
+      return 1
+    fi
+  done
+}
+
 # Judge one mode's measurement.
 #
 #   0  the mode gave the core back
@@ -237,6 +267,7 @@ rc=0
 
 echo "== GREEN half: standard mode must block and give the core back =="
 read -r ran pct sleeping alive p50 ran_tls <<<"$(measure standard)" || exit 1
+wire_arm_ran "${TMP}/out.standard" || exit 1
 judge standard "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}"
 case $? in
   0) echo "GREEN ok — standard blocks, stays alive, and is woken by the data" ;;
@@ -250,6 +281,7 @@ for red in hft yield; do
   echo
   echo "== RED half: ${red} must trip this check =="
   read -r ran pct sleeping alive p50 ran_tls <<<"$(measure "${red}")" || exit 1
+  wire_arm_ran "${TMP}/out.${red}" || exit 1
   judge "${red}" "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}"
   case $? in
     0) echo "FAIL: ${red} PASSED this check, so the check cannot fail and means nothing" >&2; rc=1 ;;
@@ -281,7 +313,9 @@ if ! "${BIN}" --mode standard --tls ktls --messages 10 --warmup 2 --hold-ms 50 $
   tail -5 "${tls_probe_out}" >&2
   rc=1
 else
+  wire_arm_ran "${tls_probe_out}" || exit 1
   read -r ran pct sleeping alive p50 ran_tls <<<"$(measure standard ktls)" || exit 1
+  wire_arm_ran "${TMP}/out.standard" || exit 1
   judge standard "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}" kernel "${ran_tls}"
   case $? in
     0) echo "GREEN ok — standard + ktls blocks, stays alive, is woken by the data, tls: kernel" ;;

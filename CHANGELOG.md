@@ -46,18 +46,23 @@ below describe what a first release would contain.
   `wire p99.9` in ns. A missing hardware stamp is counted and never replaced by a software one.
   On a loopback device the NIC is not reconfigured, both missing counts equal the request count
   and no wire column is printed. On a hardware NIC it sets `tx_type ON` / `rx_filter ALL` for the
-  run and restores the previous configuration on exit, and **refuses `--mode standard`** — before
+  run and restores the previous configuration on exit — SIGINT and SIGTERM end such a run
+  through its normal path so the restore runs then too, and a second signal kills at once — and
+  **refuses `--mode standard`** — before
   it needs any capability — because a TX timestamp waiting in the engine socket's error queue
   raises `POLLERR` and makes a blocking engine spin
   (`docs/reference/a-transmit-timestamp-wakes-a-blocking-engine.md`). `--listen` accepts
   `--warmup <n>` beside `--wire-timestamps`, leaving the first `n` requests after the logon out
   of the wire figures, and refuses it otherwise as before. Needs `cap_net_raw` (and
   `cap_net_admin` on a hardware NIC); without them it refuses to run. Each flag without the
-  other two is refused, and so is an observer core equal to the engine's or the client's.
+  other two is refused, and so is an observer core equal to the engine's or the client's. The
+  `allocs` label names every thread counted — observer, journal writer and log writer included;
+  with none of the flags it reads as before.
   `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh` append
   `W2W_EXTRA` to every `w2w` they run — unset, their command lines are unchanged — and when it
   holds `--wire-timestamps` they run themselves inside a user namespace (`unshare -Urn`), or
-  report SKIPPED, NOT PASSED with exit 2 where the namespace is refused.
+  report SKIPPED, NOT PASSED with exit 2 where the namespace is refused, and fail any run whose
+  output lacks the wire arm's `wire-timestamps:` and `hw-rx-missing`/`hw-tx-missing` lines.
 
 - **`fixbolt_engine::serve_hft_pinned`, the single-engine `hft` door that pins.** Behind
   `--features affinity` on Linux. It takes a `fixbolt_engine::affinity::CorePin` —
