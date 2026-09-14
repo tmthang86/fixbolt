@@ -140,6 +140,45 @@
 //! catch-up burst, and is counted and printed as late. `0`, the default, waits
 //! for nothing and prints no `interval` line. The wait is taken before `t0`, so
 //! it is never inside a sample. See [`Pacer`].
+//!
+//! # The journal and the message log, each a type of its own
+//!
+//! `[2026-09-14]` step A4 of `docs/plans/2026-09-04-the-second-linux-desk.md`.
+//! `--journal mem|file-async` (default `mem`) and `--log none|file` (default
+//! `none`) apply wherever the engine half runs — the combined run and
+//! `--listen`; `--connect` refuses both, for the reason it refuses `--mode`:
+//! there is no engine thread in that process to read either choice back from.
+//!
+//! **With neither flag, the engine is the engine this tool timed before the
+//! flags existed** — `Engine<…, Store, 256, 4096, 8192>` with the default
+//! `NoLog`, type for type. `DESIGN.md` §8's round-trip rows are taken with the
+//! no-flag binary, and a tool that put a runtime `match` into every journal
+//! call, or an `Option` check into every log call, to offer an option would
+//! change the figure it exists to produce (`CLAUDE.md` §2 rule 10). So each
+//! choice is a type, not a value: [`serve_chosen`] matches the two flags
+//! **once**, on the engine thread before its first turn, and calls the
+//! generic [`serve`] with the journal source ([`FreshStore`] or [`OneFile`])
+//! and the log (`NoLog` or `FileLog`) as type parameters. Four monomorphised
+//! engines rather than one engine with a branch in it; the three flagged ones
+//! are exactly as branch-free as the default, which is what boot B's row B5
+//! needs of them too.
+//!
+//! **Opened once, outside the timed window, the same way the TLS certificate
+//! and the `Desk` template already are.** `--journal file-async` opens one
+//! [`fixbolt_engine::journal::FileJournal`] with `Durability::Async` in a file
+//! under `std::env::temp_dir()`, named by this process's id so two runs never
+//! collide, and removed when the run ends; `--log file` opens one
+//! [`fixbolt_engine::msglog::FileLog`] the same way. A temp directory that
+//! refuses a file fails the run before the engine thread starts.
+//!
+//! **`--journal file-async` only ever has one file to hand out.** [`OneFile`]
+//! gives it to the first connection and refuses every connection after — which
+//! is every connection this tool's module note above says it ever serves.
+//! [`FreshStore`] builds a `Store` per connection, the `J::default()` that
+//! `Engine::add` builds. The allocation count over the timed window is
+//! asserted zero exactly as it always was; a `--journal` or `--log` run that
+//! allocated would fail that assertion loudly rather than quietly publish a
+//! number about `malloc`.
 #![allow(unsafe_code)]
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
 // `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
@@ -196,6 +235,7 @@ static A: Counting = Counting;
 use fixbolt_codec::{FieldIndex, Template, TemplateBuilder, Validation, parse_into};
 use fixbolt_dict::Fix44;
 use fixbolt_engine::dispatch::{ConnId, InlineDispatch};
+use fixbolt_engine::msglog::MessageLog;
 use fixbolt_engine::transport::{Interest, TcpTransport, TlsMode, Transport};
 use fixbolt_engine::wait::{Spin, Waiting, Yield};
 use fixbolt_engine::{Acceptor, Engine};
@@ -271,6 +311,49 @@ const fn seen_name(code: u8) -> &'static str {
         2 => "kernel",
         3 => "userspace",
         _ => "unknown",
+    }
+}
+
+/// Which resend store the engine half keeps — `--journal`. `DESIGN.md` D7's
+/// table, brought to this tool for step A4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JournalKind {
+    /// `fixbolt_engine::journal::Store` (a `MemJournal`), the journal this
+    /// tool's engine has always had. Nothing survives a restart, and nothing a
+    /// run of this tool does ever needs it to.
+    Mem,
+    /// `FileJournal` with `Durability::Async`, in a file under
+    /// `std::env::temp_dir()` that this run removes when it ends.
+    FileAsync,
+}
+
+impl JournalKind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Mem => "mem",
+            Self::FileAsync => "file-async",
+        }
+    }
+}
+
+/// Which message log the engine half keeps — `--log`. `msglog.rs`'s module
+/// doc names the cost; this is where boot B's row B5 times it both-threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogKind {
+    /// `fixbolt_engine::msglog::NoLog`, the engine's own default and this
+    /// tool's: the log hook folds away at compile time.
+    None,
+    /// `FileLog`, in a file under `std::env::temp_dir()` that this run removes
+    /// when it ends.
+    File,
+}
+
+impl LogKind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::File => "file",
+        }
     }
 }
 
@@ -531,6 +614,16 @@ const CONNECT_REFUSES: &[(&str, &str)] = &[
         "the engine's idle strategy is chosen in the --listen process, and this process \
          cannot read back which one ran",
     ),
+    (
+        "--journal",
+        "the engine's resend store is chosen in the --listen process; this process has \
+         no engine and nothing to journal",
+    ),
+    (
+        "--log",
+        "the engine's message log is chosen in the --listen process; this process has \
+         no engine and nothing to log",
+    ),
 ];
 
 /// Which half this process is, with every refusal a half owes.
@@ -709,6 +802,22 @@ fn main() -> std::io::Result<()> {
             return Err(std::io::Error::other("unknown --tls"));
         }
     };
+    let journal = match arg::<String>(&args, "--journal").as_deref() {
+        None | Some("mem") => JournalKind::Mem,
+        Some("file-async") => JournalKind::FileAsync,
+        Some(other) => {
+            eprintln!("w2w: unknown --journal {other}; expected mem or file-async");
+            return Err(std::io::Error::other("unknown --journal"));
+        }
+    };
+    let log = match arg::<String>(&args, "--log").as_deref() {
+        None | Some("none") => LogKind::None,
+        Some("file") => LogKind::File,
+        Some(other) => {
+            eprintln!("w2w: unknown --log {other}; expected none or file");
+            return Err(std::io::Error::other("unknown --log"));
+        }
+    };
     // The refusal, for the reason `--engine-core` has one: a TLS arm that
     // quietly ran plain TCP would print a plain figure under a TLS heading.
     if !CAN_TLS && tls != Tls::Off {
@@ -772,11 +881,13 @@ fn main() -> std::io::Result<()> {
         interval_us,
     };
     match half {
-        Half::Both => both_halves(mode, run, engine_core, client_core),
+        Half::Both => both_halves(mode, run, engine_core, client_core, journal, log),
         // `half_of` has refused `--client-core` here, and `--engine-core` and
         // `--mode` for the generator, so neither function is handed a core or
         // a mode it would have to ignore.
-        Half::Listen(addr) => engine_half(&addr, mode, run, engine_core),
+        Half::Listen(addr) => engine_half(&addr, mode, run, engine_core, journal, log),
+        // `half_of` has refused `--journal` and `--log` for `--connect`, so
+        // `generator_half` never receives a choice it has no engine to act on.
         Half::Connect(addr) => generator_half(&addr, run, client_core),
     }
 }
@@ -788,6 +899,8 @@ fn both_halves(
     run: Run,
     engine_core: Option<usize>,
     client_core: Option<usize>,
+    journal: JournalKind,
+    log: LogKind,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind("127.0.0.1:0")?;
@@ -799,6 +912,22 @@ fn both_halves(
     // prove they ran the arm they meant to.
     println!("mode: {}", mode.name());
     println!("path: {}", path.name());
+    // Only when asked for, so a run with neither flag prints what it always
+    // did — see the module note "The journal and the message log".
+    if journal != JournalKind::Mem {
+        println!("journal: {}", journal.name());
+    }
+    if log != LogKind::None {
+        println!("log: {}", log.name());
+    }
+
+    // Opened before the engine thread starts and outside the timed window, the
+    // same carve-out the certificate and the `Desk` template below get: a temp
+    // directory that refuses a file fails the run here rather than at the
+    // first message. `_cleanup` removes the files when this function returns,
+    // by which point `measure` below has already joined the engine thread, and
+    // dropping the engine has already closed the writer threads.
+    let (files, _cleanup) = open_files(journal, log)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let engine_stop = Arc::clone(&stop);
@@ -845,8 +974,8 @@ fn both_halves(
         // `false`: the client on the other thread stops this engine through
         // `stop`, and times its own window.
         match desk {
-            None => serve::<_, false>(acceptor, &engine_stop, mode, Never, side),
-            Some(d) => serve::<_, false>(acceptor, &engine_stop, mode, d, side),
+            None => serve_chosen::<_, false>(acceptor, &engine_stop, mode, Never, side, files),
+            Some(d) => serve_chosen::<_, false>(acceptor, &engine_stop, mode, d, side, files),
         }
     };
     let engine = spawn_engine(body, engine_core)?;
@@ -939,6 +1068,8 @@ fn engine_half(
     mode: Mode,
     run: Run,
     engine_core: Option<usize>,
+    journal: JournalKind,
+    log: LogKind,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind(addr)?;
@@ -949,11 +1080,24 @@ fn engine_half(
     // The bound address, not the argument, so `--listen 127.0.0.1:0` tells the
     // generator where to go.
     println!("listening: {bound}");
+    // Only when asked for — see the module note "The journal and the message
+    // log, each a type of its own".
+    if journal != JournalKind::Mem {
+        println!("journal: {}", journal.name());
+    }
+    if log != LogKind::None {
+        println!("log: {}", log.name());
+    }
 
     let desk = match path {
         Path::Admin => None,
         Path::App => Some(Desk::new()?),
     };
+    // Opened before the engine thread starts, outside any timed window — see
+    // `both_halves`'s copy of this comment. `_cleanup` removes the files once
+    // `engine.join()` below has returned, by which point dropping the engine
+    // has already closed the writer threads.
+    let (files, _cleanup) = open_files(journal, log)?;
     // Nobody stores `true` here: this engine ends when its peer does.
     let stop = Arc::new(AtomicBool::new(false));
     let body = move || {
@@ -961,8 +1105,8 @@ fn engine_half(
         // `true`: arm the allocation counter after the first logon, and return
         // once the last connection has closed.
         match desk {
-            None => serve::<_, true>(acceptor, &stop, mode, Never, EngineSide::Plain),
-            Some(d) => serve::<_, true>(acceptor, &stop, mode, d, EngineSide::Plain),
+            None => serve_chosen::<_, true>(acceptor, &stop, mode, Never, EngineSide::Plain, files),
+            Some(d) => serve_chosen::<_, true>(acceptor, &stop, mode, d, EngineSide::Plain, files),
         }
     };
     let engine = spawn_engine(body, engine_core)?;
@@ -1394,7 +1538,163 @@ enum EngineSide {
     Tls(std::sync::Arc<rustls::ServerConfig>, bool),
 }
 
-/// Pick the transport, with the application already chosen.
+/// Where each accepted connection's resend store comes from: `--journal`,
+/// resolved to a type. See the module note "The journal and the message log,
+/// each a type of its own".
+///
+/// A trait with an associated type rather than a `FnMut` closure, so the
+/// journal is a type parameter of [`pump`]'s engine — never a value matched
+/// on inside it — and so each choice names one type, not one per call site.
+trait Journals {
+    /// The journal each connection gets.
+    type J: fixbolt_session::journal::Journal;
+
+    /// The next connection's journal, or `None` to refuse that connection.
+    fn next(&mut self) -> Option<Self::J>;
+}
+
+/// `--journal mem`, the default: a fresh `Store` per connection — the
+/// `J::default()` that `Engine::add` builds, so the no-flag engine's journal
+/// is the type and the value it was before `--journal` existed.
+struct FreshStore;
+
+impl Journals for FreshStore {
+    type J = fixbolt_engine::journal::Store;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::J> {
+        Some(fixbolt_engine::journal::Store::default())
+    }
+}
+
+/// `--journal file-async`: the one `FileJournal` this run opened, to the
+/// first connection, and nothing to any after.
+struct OneFile(Option<fixbolt_engine::journal::FileJournal<64, 512>>);
+
+impl Journals for OneFile {
+    type J = fixbolt_engine::journal::FileJournal<64, 512>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::J> {
+        self.0.take()
+    }
+}
+
+/// Where `--journal file-async` and `--log file` keep their files: under the
+/// system temp directory, named by this process's id so two runs on the same
+/// box never collide.
+fn journal_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "fixbolt-w2w-journal-{}.journal",
+        std::process::id()
+    ))
+}
+
+/// See [`journal_path`].
+fn log_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("fixbolt-w2w-log-{}.log", std::process::id()))
+}
+
+/// Deletes its path when dropped, best effort. Used only for a file this run
+/// itself opened — `--journal file-async` or `--log file` — never for a
+/// deployment's own files, which this tool does not otherwise touch.
+struct TempFile(std::path::PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The files `--journal file-async` and `--log file` opened, handed to the
+/// engine thread. `None` is the flag's default, and [`serve_chosen`] turns
+/// each `None` into the default type, not into a value of a wider one.
+struct Opened {
+    journal: Option<fixbolt_engine::journal::FileJournal<64, 512>>,
+    log: Option<fixbolt_engine::msglog::FileLog>,
+}
+
+/// The guards that remove whichever files [`open_files`] opened. Held by the
+/// thread that joins the engine thread, never by the engine thread itself.
+struct Cleanup {
+    _journal: Option<TempFile>,
+    _log: Option<TempFile>,
+}
+
+/// Open what `--journal` and `--log` asked for: before the engine thread
+/// starts and outside the timed window, so a temp directory that refuses a
+/// file fails the run rather than the first message. With neither flag this
+/// opens nothing and touches no file.
+fn open_files(journal: JournalKind, log: LogKind) -> std::io::Result<(Opened, Cleanup)> {
+    let (journal, journal_cleanup) = match journal {
+        JournalKind::Mem => (None, None),
+        JournalKind::FileAsync => {
+            let path = journal_path();
+            let opened = fixbolt_engine::journal::FileJournal::open(
+                &path,
+                fixbolt_engine::journal::Durability::Async,
+            )?;
+            (Some(opened), Some(TempFile(path)))
+        }
+    };
+    let (log, log_cleanup) = match log {
+        LogKind::None => (None, None),
+        LogKind::File => {
+            let path = log_path();
+            let opened = fixbolt_engine::msglog::FileLog::open(&path)?;
+            (Some(opened), Some(TempFile(path)))
+        }
+    };
+    Ok((
+        Opened { journal, log },
+        Cleanup {
+            _journal: journal_cleanup,
+            _log: log_cleanup,
+        },
+    ))
+}
+
+/// Pick the journal and the log, with the application and the transport side
+/// already chosen: the **one** place `--journal` and `--log` are matched on,
+/// before the engine's first turn.
+///
+/// Each arm calls [`serve`] with its own type parameters, so each is its own
+/// monomorphised engine. The `(None, None)` arm is `FreshStore` + `NoLog` —
+/// the engine this tool timed before either flag existed; the module note says
+/// why that is a rule and not a nicety.
+fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
+    acceptor: Acceptor,
+    stop: &AtomicBool,
+    mode: Mode,
+    app: A,
+    side: EngineSide,
+    files: Opened,
+) {
+    use fixbolt_engine::msglog::NoLog;
+    match files {
+        Opened {
+            journal: None,
+            log: None,
+        } => serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, FreshStore, NoLog),
+        Opened {
+            journal: Some(j),
+            log: None,
+        } => {
+            serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, OneFile(Some(j)), NoLog)
+        }
+        Opened {
+            journal: None,
+            log: Some(l),
+        } => serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, FreshStore, l),
+        Opened {
+            journal: Some(j),
+            log: Some(l),
+        } => serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, OneFile(Some(j)), l),
+    }
+}
+
+/// Pick the transport, with the application, the journal and the log already
+/// chosen.
 ///
 /// `wrap` is `lib.rs`'s `pump` shape: it turns an accepted socket into whatever
 /// this engine's connections are. For the plain arm it is `Some`, and the
@@ -1402,34 +1702,53 @@ enum EngineSide {
 ///
 /// `UNTIL_CLOSED` is `--listen`: see [`pump`]. A const, so the combined run's
 /// loop is compiled with no trace of it.
-fn serve<A: Application, const UNTIL_CLOSED: bool>(
+fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
     acceptor: Acceptor,
     stop: &AtomicBool,
     mode: Mode,
     app: A,
     side: EngineSide,
+    journals: S,
+    log: L,
 ) {
     match side {
         EngineSide::Plain => {
-            run::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, Some::<TcpTransport>);
+            run::<_, _, _, _, _, UNTIL_CLOSED>(
+                acceptor,
+                stop,
+                mode,
+                app,
+                Some::<TcpTransport>,
+                journals,
+                log,
+            );
         }
         #[cfg(all(feature = "tls", target_os = "linux"))]
         EngineSide::Tls(cfg, offload) => {
-            run::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, move |sock| {
-                // The handshake runs inside the transport's `recv`/`send` on the
-                // engine thread, before the first logon and so before the timed
-                // window — `tls.rs`'s module note on why it is not a pre-session
-                // stage. A connection rustls will not even start is dropped.
-                rustls::server::UnbufferedServerConnection::new(std::sync::Arc::clone(&cfg))
-                    .ok()
-                    .map(|conn| {
-                        fixbolt_engine::tls::TlsTransport::with_offload(
-                            sock,
-                            fixbolt_engine::tls::Handshake::new(conn),
-                            offload,
-                        )
-                    })
-            })
+            run::<_, _, _, _, _, UNTIL_CLOSED>(
+                acceptor,
+                stop,
+                mode,
+                app,
+                move |sock| {
+                    // The handshake runs inside the transport's `recv`/`send` on
+                    // the engine thread, before the first logon and so before
+                    // the timed window — `tls.rs`'s module note on why it is not
+                    // a pre-session stage. A connection rustls will not even
+                    // start is dropped.
+                    rustls::server::UnbufferedServerConnection::new(std::sync::Arc::clone(&cfg))
+                        .ok()
+                        .map(|conn| {
+                            fixbolt_engine::tls::TlsTransport::with_offload(
+                                sock,
+                                fixbolt_engine::tls::Handshake::new(conn),
+                                offload,
+                            )
+                        })
+                },
+                journals,
+                log,
+            );
         }
     }
 }
@@ -1444,6 +1763,8 @@ fn run<
     A: Application,
     T: Transport,
     F: FnMut(TcpTransport) -> Option<T>,
+    S: Journals,
+    L: MessageLog,
     const UNTIL_CLOSED: bool,
 >(
     acceptor: Acceptor,
@@ -1451,21 +1772,29 @@ fn run<
     mode: Mode,
     app: A,
     wrap: F,
+    journals: S,
+    log: L,
 ) {
     match mode {
-        Mode::Hft => pump::<_, _, _, _, UNTIL_CLOSED>(acceptor, stop, Spin, app, wrap),
-        Mode::Yield => pump::<_, _, _, _, UNTIL_CLOSED>(acceptor, stop, Yield, app, wrap),
+        Mode::Hft => {
+            pump::<_, _, _, _, _, _, UNTIL_CLOSED>(acceptor, stop, Spin, app, wrap, journals, log);
+        }
+        Mode::Yield => {
+            pump::<_, _, _, _, _, _, UNTIL_CLOSED>(acceptor, stop, Yield, app, wrap, journals, log);
+        }
         #[cfg(all(feature = "standard", unix))]
-        Mode::Standard => pump::<_, _, _, _, UNTIL_CLOSED>(
+        Mode::Standard => pump::<_, _, _, _, _, _, UNTIL_CLOSED>(
             acceptor,
             stop,
             fixbolt_engine::block::Block::new(16),
             app,
             wrap,
+            journals,
+            log,
         ),
         #[cfg(not(all(feature = "standard", unix)))]
         Mode::Standard => {
-            let _ = wrap;
+            let _ = (wrap, journals, log);
             eprintln!("w2w: this build has no standard mode");
         }
     }
@@ -1491,11 +1820,19 @@ fn run<
 /// out. The window therefore holds warmup and the turn that saw the close. As
 /// a const, `false` compiles both checks away: the combined run's loops are
 /// the loops above, turn for turn.
+///
+/// **`S` and `L` are the engine's journal and log types**, chosen once by
+/// [`serve_chosen`]. With `FreshStore` and `NoLog` the engine below is the
+/// `Engine<…, Store, 256, 4096, 8192>` this function built before `--journal`
+/// and `--log` existed; `journals.next()` runs only when a connection is
+/// accepted, never in a turn.
 fn pump<
     A: Application,
     W: Waiting,
     T: Transport,
     F: FnMut(TcpTransport) -> Option<T>,
+    S: Journals,
+    L: MessageLog,
     const UNTIL_CLOSED: bool,
 >(
     acceptor: Acceptor,
@@ -1503,6 +1840,8 @@ fn pump<
     wait: W,
     app: A,
     mut wrap: F,
+    mut journals: S,
+    log: L,
 ) {
     let mut engine: Engine<
         T,
@@ -1510,24 +1849,31 @@ fn pump<
         InlineDispatch<A>,
         fixbolt_engine::clock::SystemClock,
         W,
-        fixbolt_engine::journal::Store,
+        S::J,
         256,
         4096,
         8192,
-    > = Engine::new(
+        L,
+    > = Engine::<_, _, _, _, _, S::J, 256, 4096, 8192>::new(
         Config::acceptor(b"FIX.4.4", b"ISLD", b"W2W"),
         InlineDispatch::new(app),
         fixbolt_engine::clock::SystemClock,
         wait,
         8,
-    );
+    )
+    .with_log(log);
     let listener = acceptor.source().map(Interest::readable);
     let extra: &[Interest] = listener.as_slice();
     let mut first: Option<ConnId> = None;
     while !stop.load(Ordering::Relaxed) {
         while let Some(t) = acceptor.accept() {
-            if let Some(t) = wrap(t) {
-                let id = engine.add(t);
+            // `OneFile` hands out the one `--journal file-async` file to the
+            // first connection and nothing to any after — see the module note.
+            // `FreshStore` never runs dry.
+            if let Some(t) = wrap(t)
+                && let Some(j) = journals.next()
+            {
+                let id = engine.add_with_journal(t, j);
                 first.get_or_insert(id);
             }
         }
@@ -1547,8 +1893,10 @@ fn pump<
     }
     while !stop.load(Ordering::Relaxed) {
         while let Some(t) = acceptor.accept() {
-            if let Some(t) = wrap(t) {
-                let _ = engine.add(t);
+            if let Some(t) = wrap(t)
+                && let Some(j) = journals.next()
+            {
+                let _ = engine.add_with_journal(t, j);
             }
         }
         if !engine.turn() {
@@ -1912,7 +2260,12 @@ mod tests {
 
     #[test]
     fn connect_refuses_what_only_an_engine_has() {
-        for flag in ["--engine-core 6", "--mode hft"] {
+        for flag in [
+            "--engine-core 6",
+            "--mode hft",
+            "--journal file-async",
+            "--log file",
+        ] {
             let e = half_of(&argv(&format!("--connect 127.0.0.1:1 {flag}"))).unwrap_err();
             let name = flag.split(' ').next().unwrap();
             assert!(

@@ -96,6 +96,11 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    `--mode`; `--listen` refuses `--client-core`, `--messages`, `--warmup`, `--hold-ms` and
    `--interval`; both refuse `--tls` other than `off`. `--interval <us>` spaces sends by
    spinning, so the generator's core is busy for the whole wait between sends, not asleep.
+   `--journal mem|file-async` and `--log none|file` apply to the combined run and `--listen`
+   (both default to today's behaviour); `--connect` refuses both, for the reason it refuses
+   `--mode`. `file-async` opens the engine's `FileJournal` with `Durability::Async`, and `file`
+   its `FileLog`, each in a file under `std::env::temp_dir()` removed when the run ends — this is
+   the row `DESIGN.md` §8's "if FileLog is on, ~340 ns [unmeasured]" comes from, boot B's B5.
    `scripts/w2w-baseline.sh` drives both halves: `LISTEN=<addr>` starts the engine half here and
    the generator half either here too (`GENERATOR_SSH` empty, a loopback split for rehearsing the
    procedure before a cable is run) or on another host over `ssh` — `GENERATOR_W2W` names the

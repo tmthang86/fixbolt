@@ -29,6 +29,15 @@ below describe what a first release would contain.
   previous one by spinning on the client thread, and prints how many sends were late. With none
   of the three flags the output is unchanged line for line.
   `docs/plans/2026-09-04-the-second-linux-desk.md` A3a.
+  `[2026-09-14]` adds `--journal mem|file-async` and `--log none|file` (both default to today's
+  behaviour), applying to the combined run and `--listen`; `--connect` refuses both, for the
+  reason it refuses `--mode`. `file-async` opens the engine's own `FileJournal` with
+  `Durability::Async`, and `file` its own `FileLog`, each in a file under `std::env::temp_dir()`
+  removed when the run ends; the zero-allocation assertion over the timed window covers both.
+  Each choice is its own monomorphised engine, matched once before the first turn, so with
+  neither flag the timed engine is the same type as before (`Store`, `NoLog`) and no flagged arm
+  carries a runtime branch. With neither flag the output is unchanged line for line; with either,
+  a `journal:` or `log:` line is printed. `docs/plans/2026-09-04-the-second-linux-desk.md` A4.
 
 - **`fixbolt_engine::serve_hft_pinned`, the single-engine `hft` door that pins.** Behind
   `--features affinity` on Linux. It takes a `fixbolt_engine::affinity::CorePin` —
