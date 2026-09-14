@@ -3589,7 +3589,7 @@ mod wire {
 /// **The handler stores one atomic and does nothing else** — async-signal-safe
 /// by construction. The observer thread, which exists exactly when the handler
 /// does and spins anyway, reads it every turn and sets the engine's `stop`
-/// ([`relay`]); the engine loop already returns on `stop`, `measure` and
+/// ( `relay` ); the engine loop already returns on `stop`, `measure` and
 /// `engine_half` join as they always do, and `main` reports the signal. Nothing
 /// on the engine thread changes. `SA_RESTART`, so a blocking call elsewhere
 /// is not handed an `EINTR` it would report as a failure of its own;
