@@ -1270,6 +1270,27 @@ both are noise, and the remainder barely moved — ~2 804 to ~2 770 ns.**
 | The engine's framing and read-buffer management | **Open, and now holds almost all of it.** No benchmark isolates it |
 | The session's own `Heartbeat` serialise on the administrative side | **Open.** No committed case, so it is not subtracted in either direction |
 
+**`[measured 2026-09-15]` The engine's whole share, measured in one piece: D_in = 765.5 ns.**
+`engine turn, 1 busy sessions` − `engine turn, 1 busy, admin` (`crates/engine/benches/density.rs`,
+module doc *The administrative twin*): median 1 719.7 − 954.2 over the same 20 runs, paired
+per-run median 767.7 ns (734.3 .. 781.3). §9 desktop, `FIXBOLT_NIC=enp9s0
+scripts/check-machine.sh` → `pass 15 fail 0 unknown 0`, HEAD `f43d7e8`; boot B step B1 of
+[the-second-linux-desk](plans/2026-09-04-the-second-linux-desk.md). Both cases run the same
+engine with no kernel underneath, so D_in holds everything the process does differently —
+framing, read-buffer management, session, dispatch, the application, serialise, and the
+administrative side's own `Heartbeat` — and nothing a socket does. Two arithmetic facts, **no
+cause claimed**:
+
+- **The in-process rows above add to more than D_in** — ~1 104 ns without the kernel row, against
+  765.5. They were measured as separate cases, and their inputs moved since: `validate
+  NewOrderSingle, w2w bytes` reads 994.5 today against the 897.3 the dictionary row used. They are
+  not independent terms that add.
+- **Against the 3 898 ns, ~3 130 ns is outside one engine turn** — kernel, copies, syscalls, the
+  client and the read loop's wakeups. That makes *the engine's framing and read-buffer management*,
+  which the table above says holds almost all of the remainder, **at most part of 765.5 ns**. Two
+  conditions stand: the 3 898 ns was measured on the 2026-09-05 code, and B2 re-measures both paths
+  on this boot; and `Feed`'s and `AdminFeed`'s bytes are not asserted to be `w2w`'s.
+
 **Twice now the largest named candidate has not been the answer.** The dictionary pass is real,
 is the biggest single row on this page, and is 17.4% of what it was nominated to explain; the
 payload term was the intuitive one and is 0.9%. STATUS item 49.

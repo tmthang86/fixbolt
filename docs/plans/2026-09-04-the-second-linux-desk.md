@@ -616,6 +616,30 @@ theo chỉ đạo, tôi dừng rồi. Duyệt"*. Vậy ba lệnh 21:28:58–21:2
 chủ sở hữu, và session đó đã dừng trước khi B1 đo run nào được giữ. Không có số nào trước thời điểm
 này bị ảnh hưởng (chưa có số nào). Sửa 3 duyệt theo đề xuất — xem cuối mục *Sửa 3*.
 
+**`[2026-09-15]` B1 xong — gate xanh ba lần.** Manager tự chạy (không qua runner: một vòng lặp nền
+và vài lệnh đọc; runner Haiku hay treo khi chờ lệnh nền).
+
+- *Run bỏ* 22:01–22:09, `bench.sh --strict` mất **7 phút 42 giây**, `exit 1`: `cases w/o a baseline
+  3` — **plan chỉ nói tới một case thiếu baseline, thực tế có ba**: ngoài `engine turn, 1 busy,
+  admin` còn `SendingTime from the cache, micros` và `…, nanos` (thêm từ plan timestamp-micros,
+  chưa từng có baseline trên máy §9). Không ghi hai case đó thì gate B1 không bao giờ xanh, nên ghi
+  cả ba, theo tinh thần Q6. Thêm hai case đỏ: `SendingTime from the cache` 5.8 (trần 5.4) và
+  `validate NewOrderSingle, w2w bytes` 991.5 (trần 987.0).
+- *Đo* 21 lượt `serialize` + `density` + `validate`, 22:10–00:14, mỗi lượt ~6 phút (`density` không
+  lọc được case). Lượt 1 hàng quiet FAIL (`code 5% claude 3%` — chính session này) → loại; n = 20
+  là lượt 2–21, lượt nào cũng `pass 15 fail 0 unknown 0`. S2 và S3 chạy song song tới khoảng lượt 5:
+  median lượt 2–20 và 6–20 như nhau.
+- *Ghi* 5 dòng `benches/baselines.tsv` (đoạn chú thích cuối file): mới `engine turn, 1 busy, admin`
+  954.2, `…micros` 10.0, `…nanos` 12.7; sửa `SendingTime from the cache` 4.9 → 5.8 (+18%) và
+  `validate NewOrderSingle, w2w bytes` 897.3 → 994.5 (+10,8%). Không nhận nguyên nhân.
+- **Phát hiện:** mọi case khác của ba target nằm trong band nhưng chậm hơn dòng 2026-09-05 3,6–8,4%
+  (`density` +3,6–4,8%, `validate NewOrderSingle` 882.1 → 955.9). Không ghi lại (Q6), chưa tách
+  nguyên nhân: code đã merge từ 2026-09-05, máy, hay cả hai.
+- **D_in = 765.5 ns** (paired 767.7) → `DESIGN.md` §8 *The 3 898 ns, added back*, `STATUS.md` item 49.
+- *Gate*, 00:15–00:38, cây có `baselines.tsv` sửa (đọc lúc chạy, ADR-0067), ba lần như nhau:
+  `pass 15 fail 0 unknown 0` · `targets measuring 16 of 16` · `timing over baseline 0` · `cases w/o a
+  baseline 0` · `cases under the band 0` · `bench_exit=0`. Item 52: ba lần `--strict` còn nợ đã trả.
+
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
 Draft 2026-09-04 được đọc lại từng dòng đối chiếu với code, máy và STATUS ngày 2026-09-13. Những
