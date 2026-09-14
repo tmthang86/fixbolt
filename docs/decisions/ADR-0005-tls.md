@@ -95,6 +95,17 @@ hot-path guarantee is stated separately for each mode instead of being claimed f
    literature until `tools/w2w` measures the same load with TLS off, with kTLS, and with
    userspace rustls, on the same Linux box.
 
+   `[noted 2026-09-14, does not change the decision above]` **The row exists.** `tools/w2w`
+   measured the same load with TLS off, with kTLS and with userspace `rustls` on the `DESIGN.md`
+   §9 desktop, over loopback with TLS at both ends, in two identical procedures in one boot:
+   `DESIGN.md` §8 *The round trip under TLS, measured*, and the whole reading in
+   [measured-costs.md](../reference/measured-costs.md), *TLS on the wire*. **On loopback, kTLS
+   was the slower of the two in every arm.** That latency is not one of the reasons decision 2
+   gives for preferring kTLS — D8 preserved, parse-in-place preserved, the hot-path guarantee
+   met, and the kTLS arm still counted zero allocations where userspace counted four per round
+   trip — so it does not by itself reverse decision 2; whether decision 2 should still hold for
+   `hft` is `STATUS.md` open item 84, a design question for a new ADR if the answer changes.
+
 ## Consequences
 
 **Good**
@@ -156,6 +167,16 @@ hot-path guarantee is stated separately for each mode instead of being claimed f
 2. **Which kernel version and which cipher suites are the floor?** kTLS support is narrower
    than `rustls` negotiation, so this becomes a documented deployment requirement in
    `DESIGN.md` §9 alongside `isolcpus` and the governor setting.
+
+   `[answered at the level measured, 2026-09-14]` One suite on one kernel, and no floor.
+   `TLS13_AES_128_GCM_SHA256` — the only suite this engine offers, narrowed in
+   `crates/engine/src/tls.rs` (`offloadable_provider`) — is taken by the kernel on
+   `7.0.0-31-generic`: every kTLS run of `tools/w2w` and of both non-negotiable-4 scripts on the
+   §9 desktop read back `tls: kernel`. No other suite was measured (the `tls` plan's optional
+   suite step did not run), and no minimum kernel was measured. The CI runner's
+   `6.17.0-1022-azure` is recorded accepting `TCP_ULP` (`docs/CONFORMANCE.md` §8), which names no
+   suite and is not claimed as an offload. `DESIGN.md` §9's TLS row carries exactly this.
+
 3. **What asserts which mode is actually active?** A session that silently negotiates into the
    userspace path has left the fast path, and nothing currently notices. A gate is needed, not
    a log line.
