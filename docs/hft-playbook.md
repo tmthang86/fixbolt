@@ -96,6 +96,18 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    `--mode`; `--listen` refuses `--client-core`, `--messages`, `--warmup`, `--hold-ms` and
    `--interval`; both refuse `--tls` other than `off`. `--interval <us>` spaces sends by
    spinning, so the generator's core is busy for the whole wait between sends, not asleep.
+   `scripts/w2w-baseline.sh` drives both halves: `LISTEN=<addr>` starts the engine half here and
+   the generator half either here too (`GENERATOR_SSH` empty, a loopback split for rehearsing the
+   procedure before a cable is run) or on another host over `ssh` — `GENERATOR_W2W` names the
+   `w2w` binary on that host's `PATH` (default `w2w`). A split arm's figures are printed and
+   summarised labelled "as the counterparty sees it — not an acceptor wire figure", naming the
+   generator host, never as a §8 wire-to-wire number. An `ARMS` entry also grows a fourth,
+   optional field — `mode:path:tls:interval`, the interval in microseconds passed on as
+   `--interval <us>`; `0`, the default, adds no flag and no line, same as before this field
+   existed. `FIXBOLT_NIC` reaches the script's two `scripts/check-machine.sh` calls the same way
+   any other environment variable does. None of this changes the command line when `LISTEN` is
+   unset and no `ARMS` entry uses a fourth field — `ARMS="hft:admin"` still means what it always
+   meant.
 
 **The measurement traps this project already paid for** are in [GUIDE.md §8](GUIDE.md). Read
 them rather than rediscover them. A score that moves with its own timeout is measuring the

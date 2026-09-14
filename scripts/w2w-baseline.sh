@@ -28,6 +28,34 @@
 # `ktls` keep the `allocs 0` assertion; `userspace` leaves ADR-0005 decision
 # 3's hot-path guarantee, so that one grep is skipped for it — the allocation
 # count is still printed in the per-run line, just not asserted zero.
+#
+# `[2026-09-14]` step A6 of docs/plans/2026-09-04-the-second-linux-desk.md:
+# three independent additions, each off by default so `ARMS="hft:admin"` with
+# no new variable set still runs the same command line it ran yesterday.
+#   * `ARMS` grows a FOURTH, optional field: `mode:path:tls:interval`, the
+#     interval in microseconds passed on as `--interval <us>` (tools/w2w's
+#     own pacing, module doc "Two halves, and pacing" — it spins, it never
+#     sleeps). `mode:path` and `mode:path:tls` still mean exactly what they
+#     meant before; `0`, the default, adds no flag and names itself in no
+#     line, same as today.
+#   * `LISTEN=<addr>` splits each run into two processes: `--listen` here,
+#     locally, and `--connect` either here too (`GENERATOR_SSH` empty — a
+#     loopback split, useful for rehearsing this script before a cable is
+#     run) or on another host over `ssh`. The combined, single-process run
+#     `ARMS` has always meant is what runs when `LISTEN` is unset — nothing
+#     about that path changes below. A split run's figures are the
+#     generator's table, headed "as the counterparty sees it" in tools/w2w
+#     itself; this script repeats that label rather than publish them as an
+#     acceptor wire figure. `--tls` other than `off` is refused for a split
+#     arm before anything runs — tools/w2w refuses it too (the self-signed
+#     certificate is made per process, and a split run is two processes),
+#     this is just the earlier, clearer refusal.
+#   * `FIXBOLT_NIC` reaches the two `scripts/check-machine.sh` calls below the
+#     same way `RUNS` or `GAP` always have: bash hands a script's whole
+#     environment to everything it execs, and `check-machine.sh` already
+#     reads `${FIXBOLT_NIC:-}` (same default-to-empty as an unset variable),
+#     so `FIXBOLT_NIC=enp9s0 scripts/w2w-baseline.sh` needed nothing new here.
+#     The `export` below is that claim made checkable rather than assumed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -40,9 +68,10 @@ CLIENT_CORE=${CLIENT_CORE:-7}
 # previous suite inside the next quiet check's own one-second window and it
 # reads 25-36% busy, disqualifying itself. Eight was enough.
 GAP=${GAP:-8}
-# Arms, as `mode:path` pairs. Both modes because ADR-0013 says a change proven
-# in one mode is proven in neither; both paths because an app figure is not an
-# admin figure.
+# Arms, as `mode:path` pairs, optionally `mode:path:tls` or
+# `mode:path:tls:interval` — see the `[2026-09-13]` and `[2026-09-14]` notes
+# above. Both modes because ADR-0013 says a change proven in one mode is
+# proven in neither; both paths because an app figure is not an admin figure.
 ARMS=${ARMS:-"hft:admin hft:app standard:admin standard:app"}
 # PIN=0 runs with no pinning at all, and ALLOW_UNISOLATED=1 pins to a core
 # isolcpus does not name. Both are how the A/B in
@@ -51,11 +80,36 @@ ARMS=${ARMS:-"hft:admin hft:app standard:admin standard:app"}
 # mistaken for one.
 PIN=${PIN:-1}
 ALLOW_UNISOLATED=${ALLOW_UNISOLATED:-0}
+# Split mode (`[2026-09-14]` step A6). Empty `LISTEN` is the combined,
+# single-process run this script has always done; everything in this block is
+# inert until `LISTEN` is set. `GENERATOR_W2W` is the remote binary's name on
+# `GENERATOR_SSH`'s `PATH` — `w2w` there is the usual case once it is
+# installed rather than built fresh on every run.
+LISTEN=${LISTEN:-}
+GENERATOR_SSH=${GENERATOR_SSH:-}
+GENERATOR_W2W=${GENERATOR_W2W:-w2w}
+# Read the same way `check-machine.sh` reads it (`NIC="${FIXBOLT_NIC:-}"`), and
+# exported so that claim is this line rather than an assumption about bash —
+# `${FIXBOLT_NIC:-}` reads identically whether it was unset or empty, so this
+# changes nothing for a run that never sets it.
+export FIXBOLT_NIC="${FIXBOLT_NIC:-}"
 BIN=target/release/w2w
 PINARGS=()
+# Split-mode pin args, one core per process rather than two in one — tools/w2w
+# refuses `--client-core` to `--listen` and `--engine-core` to `--connect`
+# (module doc "Two halves, and pacing"), so each half gets only the flag that
+# applies to it.
+LISTEN_PINARGS=()
+CONNECT_PINARGS=()
 if [ "$PIN" = 1 ]; then
   PINARGS=(--engine-core "$ENGINE_CORE" --client-core "$CLIENT_CORE")
-  [ "$ALLOW_UNISOLATED" = 1 ] && PINARGS+=(--allow-unisolated)
+  LISTEN_PINARGS=(--engine-core "$ENGINE_CORE")
+  CONNECT_PINARGS=(--client-core "$CLIENT_CORE")
+  if [ "$ALLOW_UNISOLATED" = 1 ]; then
+    PINARGS+=(--allow-unisolated)
+    LISTEN_PINARGS+=(--allow-unisolated)
+    CONNECT_PINARGS+=(--allow-unisolated)
+  fi
 fi
 
 # The machine block travels with the figures, read off the box rather than
@@ -63,7 +117,17 @@ fi
 # `benches/baselines.tsv` records one per line for the same reason.
 echo "=============================================================="
 scripts/check-machine.sh || true
-VERDICT=$(scripts/check-machine.sh 2>/dev/null | grep -E '^pass [0-9]+' || echo "unknown")
+# `[2026-09-14]` fix: `check-machine.sh` exits non-zero on any FAIL row, and
+# under `set -o pipefail` that made the old one-liner's `|| echo "unknown"`
+# fire IN ADDITION to the line grep had already matched — pipefail reports
+# the pipeline's status as check-machine.sh's, not grep's, even once grep has
+# found its line, so the machine record (CLAUDE.md §2 rule 10) doubled to
+# `pass N fail N unknown N` followed by a bare second `unknown` line. Capturing
+# check-machine.sh's output first, with its own exit status thrown away by
+# `|| true`, means the `echo | grep` pipeline that follows carries only
+# grep's status.
+MACHINE_OUT=$(scripts/check-machine.sh 2>/dev/null || true)
+VERDICT=$(echo "$MACHINE_OUT" | grep -E '^pass [0-9]+' || echo "unknown")
 echo "=============================================================="
 echo
 
@@ -98,29 +162,72 @@ busy_pct() {
 
 median() { sort -n | awk '{v[NR]=$1} END {print (NR%2) ? v[(NR+1)/2] : int((v[NR/2]+v[NR/2+1])/2)}'; }
 
+# Poll `file` for a line matching `pat`, up to `timeout_s` — the `--listen`
+# half prints `listening:` right after `bind`, long before its peer connects,
+# and Rust's `Stdout` is always line-buffered (never the C-stdio habit of full
+# buffering off a terminal), so the line is in the file as soon as it is
+# printed.
+wait_for_line() {
+  local file=$1 pat=$2 timeout_s=$3 i=0
+  while ! grep -q "$pat" "$file" 2>/dev/null; do
+    i=$((i+1))
+    [ "$i" -ge $((timeout_s*10)) ] && return 1
+    sleep 0.1
+  done
+  return 0
+}
+
+# Wait for a backgrounded pid up to `timeout_s`, killing it and returning 124
+# on a timeout. The engine half serves until its peer's connection closes; a
+# generator that never reached `--connect` at all (a dead ssh host, say) would
+# otherwise leave it waiting forever and hang this script, not just that run.
+wait_with_timeout() {
+  local pid=$1 timeout_s=$2 i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    i=$((i+1))
+    if [ "$i" -ge $((timeout_s*10)) ]; then
+      kill "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      return 124
+    fi
+    sleep 0.1
+  done
+  wait "$pid"
+}
+
 echo "runs $RUNS   messages $MESSAGES   warmup $WARMUP   gap ${GAP}s"
 if [ "$PIN" = 1 ]; then
   echo "engine cpu$ENGINE_CORE   client cpu$CLIENT_CORE   (allow-unisolated $ALLOW_UNISOLATED)"
 else
   echo "UNPINNED — not a DESIGN.md §9 figure whatever check-machine.sh says above"
 fi
+if [ -n "$LISTEN" ]; then
+  echo "split mode: listen $LISTEN, generator ${GENERATOR_SSH:-this host (loopback split)}"
+fi
 echo
 
 for arm in $ARMS; do
-  mode=${arm%%:*}
-  rest=${arm#*:}
-  path=${rest%%:*}
-  # Third field optional. `rest` still has a ':' in it only when a tls field
-  # was actually given — `arm##*:` alone (the old `path` line) would instead
-  # have picked off the THIRD field as `path` the moment one arm grew a tls
-  # name, which is why this is two strips rather than one.
-  if [ "$rest" != "$path" ]; then
-    tls=${rest#*:}
-  else
-    tls=off
-  fi
+  # `mode:path`, `mode:path:tls` or `mode:path:tls:interval` — a missing field
+  # reads as empty from `read` and is defaulted below, so a two- or
+  # three-field arm means exactly what it meant before the fourth field
+  # existed.
+  IFS=':' read -r mode path tls interval <<< "$arm"
+  tls=${tls:-off}
+  interval=${interval:-0}
+  case "$interval" in
+    ''|*[!0-9]*)
+      echo "ARMS entry '$arm': fourth field '$interval' is not a whole number of microseconds"
+      exit 1
+      ;;
+  esac
   tls_args=()
   [ "$tls" != "off" ] && tls_args=(--tls "$tls")
+  interval_args=()
+  [ "$interval" != 0 ] && interval_args=(--interval "$interval")
+  # Named in the per-run line and the summary header only when it is not the
+  # default, so an arm with no fourth field prints byte-identically to before.
+  iv_note=""
+  [ "$interval" != 0 ] && iv_note="  interval ${interval}us"
   # What the engine must REPORT for this arm, not what the flag is spelled —
   # `--tls ktls` reads back as `tls: kernel` (tools/w2w/src/main.rs
   # `seen_name`), and a handover that quietly fell back to userspace must
@@ -130,15 +237,100 @@ for arm in $ARMS; do
     ktls) want_tls=kernel ;;
     *) want_tls=$tls ;;
   esac
+
+  if [ -n "$LISTEN" ] && [ "$tls" != off ]; then
+    echo "ARMS entry '$arm': LISTEN is set and tls is '$tls' — refused before running."
+    echo "tools/w2w refuses --tls other than off to both --listen and --connect: the"
+    echo "self-signed certificate is made per process, and a split run is two processes."
+    exit 1
+  fi
+
+  gen_host="${GENERATOR_SSH:-this host (loopback split)}"
+
   p50s=(); p99s=(); p999s=(); mins=(); skipped=0
   for i in $(seq 1 "$RUNS"); do
     b=$(busy_pct)
     if [ "$b" -gt 3 ]; then
-      printf '  %-8s %-5s %-9s run %2d  DISQUALIFIED, %s%% busy\n' "$mode" "$path" "$tls" "$i" "$b"
+      printf '  %-8s %-5s %-9s run %2d  DISQUALIFIED, %s%% busy%s\n' "$mode" "$path" "$tls" "$i" "$b" "$iv_note"
       skipped=$((skipped+1))
       sleep "$GAP"
       continue
     fi
+
+    if [ -n "$LISTEN" ]; then
+      # The split run: the engine half in the background, the generator half
+      # either here or over ssh, then both outputs read back before either
+      # figure is trusted — same order as the combined run below: identity
+      # first, allocations second, exit status last, because the checks above
+      # name the cause better than a bare nonzero status ever could.
+      listen_log=$(mktemp)
+      "$BIN" --listen "$LISTEN" --mode "$mode" --path "$path" "${LISTEN_PINARGS[@]}" \
+        >"$listen_log" 2>&1 &
+      listen_pid=$!
+
+      if ! wait_for_line "$listen_log" '^listening: ' 5; then
+        kill "$listen_pid" 2>/dev/null; wait "$listen_pid" 2>/dev/null
+        cat "$listen_log"; rm -f "$listen_log"
+        echo "FAIL: $mode:$path:$tls:$interval — engine half never printed 'listening:' within 5s"
+        exit 1
+      fi
+
+      rc=0
+      if [ -z "$GENERATOR_SSH" ]; then
+        cout=$("$BIN" --connect "$LISTEN" --path "$path" "${CONNECT_PINARGS[@]}" \
+                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" 2>&1) || rc=$?
+      else
+        # Separate `ssh` arguments, not one interpolated string: `sshd` joins
+        # them with spaces before handing the line to the remote shell, so
+        # nothing here is evaluated a second time by this shell first, and
+        # none of these tokens (an address, a word, a number) needs quoting
+        # either side of the hop.
+        cout=$(ssh "$GENERATOR_SSH" "$GENERATOR_W2W" --connect "$LISTEN" --path "$path" \
+                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" 2>&1) || rc=$?
+      fi
+
+      lrc=0
+      wait_with_timeout "$listen_pid" 5 || lrc=$?
+      lout=$(cat "$listen_log"); rm -f "$listen_log"
+
+      echo "$cout" | grep -qx "path: $path" || {
+        echo "$cout"
+        echo "FAIL: $mode:$path:$tls:$interval — generator ran a path other than '$path'"
+        exit 1
+      }
+      echo "$lout" | grep -qx "mode: $mode" || {
+        echo "$lout"
+        echo "FAIL: $mode:$path:$tls:$interval — engine half ran a mode other than '$mode'"
+        exit 1
+      }
+      echo "$lout" | grep -qx "path: $path" || {
+        echo "$lout"
+        echo "FAIL: $mode:$path:$tls:$interval — engine half ran a path other than '$path'"
+        exit 1
+      }
+      echo "$lout" | grep -qx "tls: off" || {
+        echo "$lout"
+        echo "FAIL: $mode:$path:$tls:$interval — engine half ran a tls other than off"
+        exit 1
+      }
+      echo "$lout" | grep -qE '^ *allocs +0 ' || { echo "$lout"; echo "allocs != 0 (engine half)"; exit 1; }
+      echo "$cout" | grep -qE '^ *allocs +0 ' || { echo "$cout"; echo "allocs != 0 (generator half)"; exit 1; }
+      if [ "$rc" -ne 0 ] || [ "$lrc" -ne 0 ]; then
+        echo "$lout"
+        echo "$cout"
+        echo "FAIL: $mode:$path:$tls:$interval — split run: listen exit $lrc, connect exit $rc"
+        exit 1
+      fi
+
+      out="$cout"
+      g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
+      mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
+      printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s  (counterparty: %s)%s\n' \
+        "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$gen_host" "$iv_note"
+      sleep "$GAP"
+      continue
+    fi
+
     # **The binary is allowed to fail, and its output is still read.**
     # `[measured 2026-09-13]` under `set -e` a non-zero exit inside this command
     # substitution ended the whole script right here, with nothing printed and
@@ -148,7 +340,7 @@ for arm in $ARMS; do
     # status itself is judged last, after they have had their say. `2>&1` so a
     # panic or a refusal from the binary travels with them.
     rc=0
-    out=$("$BIN" --mode "$mode" --path "$path" "${tls_args[@]}" "${PINARGS[@]}" \
+    out=$("$BIN" --mode "$mode" --path "$path" "${tls_args[@]}" "${interval_args[@]}" "${PINARGS[@]}" \
             --messages "$MESSAGES" --warmup "$WARMUP" 2>&1) || rc=$?
     # WHAT RAN is read back and checked before anything the run measured is
     # trusted — the same order `check-no-kernel-sleep.sh` learned the hard way
@@ -196,15 +388,15 @@ for arm in $ARMS; do
     fi
     g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
     mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
-    printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s\n' \
-      "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)"
+    printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s%s\n' \
+      "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$iv_note"
     sleep "$GAP"
   done
 
   q=${#p50s[@]}
   echo
   if [ "$q" -eq 0 ]; then
-    echo "  == $mode / $path / $tls: NO QUALIFYING RUNS ($skipped disqualified) =="
+    echo "  == $mode / $path / $tls: NO QUALIFYING RUNS ($skipped disqualified) ==$iv_note"
     echo
     continue
   fi
@@ -214,7 +406,7 @@ for arm in $ARMS; do
   mmin=$(printf '%s\n' "${mins[@]}" | median)
   x50=$(printf '%s\n' "${p50s[@]}" | sort -n | tail -1)
   n50=$(printf '%s\n' "${p50s[@]}" | sort -n | head -1)
-  echo "  == $mode / $path / $tls: median of $q qualifying runs ($skipped disqualified) =="
+  echo "  == $mode / $path / $tls: median of $q qualifying runs ($skipped disqualified) ==$iv_note"
   echo "     min    $mmin ns"
   echo "     p50    $m50 ns      (across runs: $n50 .. $x50)"
   echo "     p99    $m99 ns"
@@ -231,6 +423,10 @@ for arm in $ARMS; do
     echo "     pinned  engine cpu$ENGINE_CORE, client cpu$CLIENT_CORE"
   else
     echo "     pinned  NO — NOT a §9 figure"
+  fi
+  if [ -n "$LISTEN" ]; then
+    echo "     split   as the counterparty sees it — not an acceptor wire figure"
+    echo "     generator  $gen_host"
   fi
   echo
 done
