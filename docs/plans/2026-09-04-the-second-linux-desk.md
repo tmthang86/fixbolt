@@ -380,6 +380,22 @@ do ở *Chia việc*); sửa hay gửi PR cho `nanofix`; để `notrack` hay `mi
 
 *(Đã duyệt 2026-09-13 — chưa bắt đầu.)*
 
+**`[2026-09-14]` B3 đã làm xong, ngoài plan này.** Tls bước 6 (6-M và 7b) chạy trong một boot §9
+riêng ngày 2026-09-14, theo đúng Q7 ("boot không chờ — tls bước 6 nhận một boot riêng"), nhánh
+`plan/tls-numbers-on-s9` — xem nhật ký phiên B của [plan `tls`](2026-09-04-tls.md). **Boot B bỏ
+B3.** Hai điều từ lần đó chạm vào plan này:
+
+- **B2 so với cả hai lần đo của ngày 2026-09-14, không chỉ với bảng 2026-09-02.** Ba arm plain
+  loopback (`hft` admin, `hft` app, `standard` admin, arm `off`) đã chạy hai lần trong boot đó —
+  `DESIGN.md` §8 *The round trip under TLS, measured* và `measured-costs.md` *TLS on the wire* —
+  và lệch bảng 2026-09-02 tối đa 2,1% ở p50. B2 chạy arm `standard` app thì chưa có số mới để so.
+- **Item 85 chạm cách B2 công bố.** Cùng lệnh, cùng boot, cách nhau nửa giờ, p50 của một arm dịch
+  15,9% trong khi spread của nó ở lần 1 ghi 1,008, và p99 của hai arm kTLS dịch 7–19% (một arm có hai
+  cụm run trong lần 1). Nếu B2 chỉ chạy `w2w-baseline.sh` một lần rồi đưa median vào
+  §8, nó lặp lại đúng điều item 85 ghi. Trước khi B2 công bố, đọc
+  [a-tight-spread-inside-one-procedure-did-not-reproduce-across-two](../reference/a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md)
+  và xem item 85 đã có plan chưa.
+
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
 Draft 2026-09-04 được đọc lại từng dòng đối chiếu với code, máy và STATUS ngày 2026-09-13. Những

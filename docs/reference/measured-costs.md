@@ -2816,3 +2816,430 @@ each, so a per-syscall constant cancels. The **absolutes** are environment-bound
 round-trip claim about anything. See
 [a-loopback-write-costs-thirty-two-syscalls.md](a-loopback-write-costs-thirty-two-syscalls.md).
 
+## TLS on the wire: kTLS was the slower of the two, and one arm did not reproduce at p50 — 2026-09-14
+
+`[measured 2026-09-14]` **The first TLS latency figures this repository publishes**, step 6-M of
+[plans/2026-09-04-tls.md](../plans/2026-09-04-tls.md), and the condition
+[ADR-0005](../decisions/ADR-0005-tls.md) decision 5 set for `DESIGN.md` §8's TLS row: the same
+load with TLS off, with kTLS and with userspace `rustls`, on one Linux box. Two things came back
+that nobody predicted, and **neither has a cause**: kTLS was slower than userspace `rustls` in
+both `hft` paths, and one arm's p50 moved 15.9% between two identical procedures — with two kTLS
+arms' p99 moving 7–19% as well.
+
+### The machine, and the command
+
+AMD Ryzen 7 3700X (Zen 2, 8 cores), **Linux 7.0.0-31-generic**, rustc 1.98.0 (88d9e12ae
+2026-08-18), bare metal. Kernel command line `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15
+processor.max_cstate=1`, **no `nohz_full`**
+([ADR-0021](../decisions/ADR-0021-nohz-full-leaves-section-9.md)), **CPU speculation
+mitigations in force** ([ADR-0023](../decisions/ADR-0023-section-9-records-the-cpu-mitigations.md)).
+`fixbolt-machine on`: governor `performance`, boost 0, SMT off, THP `never`, `net.core.busy_poll`
+50; the `tls` module loaded. `scripts/check-machine.sh` reads **`pass 12  fail 0  unknown 1`** in
+the header of both procedures (07:25:28, 07:56:27) and straight after each (07:51:32, 08:22:07);
+the unknown is NIC IRQ affinity, and this is loopback. A read taken at 07:24:03 was
+`pass 11 fail 1 unknown 1`, its failing row verbatim:
+
+```
+FAIL   machine is quiet       7% CPU busy over 1s — code 30% of a core  gnome-shell 8% of a core  code 2% of a core
+```
+
+It is not the verdict of either procedure, whose own header read passed at 07:25:28, and the
+baseline re-reads the quiet row before every run.
+
+```
+cargo build --release -p fixbolt-w2w --features affinity,tls          # at 1178f4d
+RUNS=20 ARMS="hft:admin:off hft:admin:ktls hft:admin:userspace hft:app:off hft:app:ktls hft:app:userspace standard:admin:off standard:admin:ktls" scripts/w2w-baseline.sh
+```
+
+`1178f4d` is `main`, CI run [`34767259852`](https://github.com/tmthang86/fixbolt/actions/runs/34767259852)
+(push to `main`, success). **The commit and the tree were read by the manager's session, not by
+the procedure**: `git status -sb` clean on `main` at 07:22, and straight after the build at 07:24
+`git rev-parse HEAD` read `1178f4d3d9905291eb3c5b2ec27302ff138349c3` with an empty
+`git status --short`; the binary's modification time is 07:24:19. Neither procedure's output
+records HEAD or the tree state itself. Both procedures print
+`runs 20   messages 20000   warmup 2000   gap 8s` and `engine cpu6   client cpu7   (allow-unisolated 0)`.
+One `w2w` run of 1 000 messages was taken at 07:25:18 and thrown away first, as the plan's §6.7
+item 5 asks after a reboot.
+
+**What `ktls` and `userspace` mean in this binary: TLS at both ends of the socket.**
+`tools/w2w/src/main.rs:915-929` wraps the engine's accepted socket in a `TlsTransport`,
+`:1165-1169` wraps the client's dialled one, and `:1196-1200` refuses a `ktls` run whose *client*
+handover fell back. Both ends are built from the engine's own
+`tls::server_config`/`tls::client_config` (`tools/w2w/src/main.rs:1116-1131`), which offer
+`TLS13_AES_128_GCM_SHA256` and nothing else (`crates/engine/src/tls.rs:821-827`). Every TLS figure below is a round trip with record
+processing at both ends; nothing here separates one end from the other.
+`scripts/w2w-baseline.sh:174-178` refuses a run whose `tls:` read-back is not the arm's (`kernel`
+for `ktls`) and `:194-196` refuses `allocs` ≠ 0 for every arm but `userspace`; both procedures end
+`baseline exit=0`, so every `ktls` run read back `kernel` and counted 0 allocations.
+
+**Two procedures, not one.** Procedure 1 ran 07:25:28–07:50:59, about seven minutes after boot
+(procedure 2's own `uptime` line reads `up 38 min` at 07:56:27). Procedure 2 is the identical
+command, 07:56:27–08:21:57, and **it was run because the single runs taken between the two
+disagreed with procedure 1**: one `userspace` admin run read p50 17 553 against procedure 1's
+20 774 for that arm; seven more single admin runs followed, whose four `userspace` runs all read
+that faster level while the kTLS and `off` runs sat only 2–3% under procedure 1; and the whole
+procedure was run again rather than publish either figure (§2 below, with those runs verbatim).
+
+### Procedure 1, the summary blocks, verbatim
+
+```
+  == hft / admin / off: median of 20 qualifying runs (0 disqualified) ==
+     min    15835 ns
+     p50    16065 ns      (across runs: 16001 .. 16231)
+     p99    20804 ns
+     p99.9  22232 ns
+     spread max/median 1.010
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == hft / admin / ktls: median of 20 qualifying runs (0 disqualified) ==
+     min    24256 ns
+     p50    25298 ns      (across runs: 25148 .. 25449)
+     p99    37345 ns
+     p99.9  38924 ns
+     spread max/median 1.006
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == hft / admin / userspace: median of 20 qualifying runs (0 disqualified) ==
+     min    17644 ns
+     p50    20774 ns      (across runs: 20639 .. 20930)
+     p99    25303 ns
+     p99.9  27617 ns
+     spread max/median 1.008
+     machine pass 12   fail 0   unknown 1
+     allocs  NOT asserted zero — userspace leaves ADR-0005 decision 3's guarantee
+     pinned  engine cpu6, client cpu7
+
+  == hft / app / off: median of 18 qualifying runs (2 disqualified) ==
+     min    17453 ns
+     p50    20289 ns      (across runs: 20219 .. 20349)
+     p99    25107 ns
+     p99.9  26936 ns
+     spread max/median 1.003
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == hft / app / ktls: median of 20 qualifying runs (0 disqualified) ==
+     min    27677 ns
+     p50    29591 ns      (across runs: 29436 .. 29767)
+     p99    36409 ns
+     p99.9  42571 ns
+     spread max/median 1.006
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == hft / app / userspace: median of 20 qualifying runs (0 disqualified) ==
+     min    19352 ns
+     p50    21641 ns      (across runs: 21511 .. 21942)
+     p99    26385 ns
+     p99.9  28198 ns
+     spread max/median 1.014
+     machine pass 12   fail 0   unknown 1
+     allocs  NOT asserted zero — userspace leaves ADR-0005 decision 3's guarantee
+     pinned  engine cpu6, client cpu7
+
+  == standard / admin / off: median of 20 qualifying runs (0 disqualified) ==
+     min    16000 ns
+     p50    19522 ns      (across runs: 19417 .. 19587)
+     p99    24286 ns
+     p99.9  25879 ns
+     spread max/median 1.003
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == standard / admin / ktls: median of 20 qualifying runs (0 disqualified) ==
+     min    27918 ns
+     p50    29135 ns      (across runs: 28704 .. 29506)
+     p99    34475 ns
+     p99.9  40547 ns
+     spread max/median 1.013
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+```
+
+The two disqualified runs of `hft / app / off` read `11% busy` and `20% busy` before they started.
+
+### Procedure 2, the summary blocks, verbatim
+
+```
+  == hft / admin / off: median of 20 qualifying runs (0 disqualified) ==
+     min    15354 ns
+     p50    15670 ns      (across runs: 15600 .. 15749)
+     p99    20439 ns
+     p99.9  22037 ns
+     spread max/median 1.005
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == hft / admin / ktls: median of 20 qualifying runs (0 disqualified) ==
+     min    23625 ns
+     p50    24657 ns      (across runs: 24496 .. 24827)
+     p99    30447 ns
+     p99.9  37872 ns
+     spread max/median 1.007
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == hft / admin / userspace: median of 20 qualifying runs (0 disqualified) ==
+     min    17147 ns
+     p50    17473 ns      (across runs: 17333 .. 17813)
+     p99    22307 ns
+     p99.9  25538 ns
+     spread max/median 1.019
+     machine pass 12   fail 0   unknown 1
+     allocs  NOT asserted zero — userspace leaves ADR-0005 decision 3's guarantee
+     pinned  engine cpu6, client cpu7
+
+  == hft / app / off: median of 20 qualifying runs (0 disqualified) ==
+     min    16942 ns
+     p50    19998 ns      (across runs: 17323 .. 20158)
+     p99    24055 ns
+     p99.9  26841 ns
+     spread max/median 1.008
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == hft / app / ktls: median of 20 qualifying runs (0 disqualified) ==
+     min    27021 ns
+     p50    29501 ns      (across runs: 29286 .. 29676)
+     p99    39029 ns
+     p99.9  41794 ns
+     spread max/median 1.006
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == hft / app / userspace: median of 20 qualifying runs (0 disqualified) ==
+     min    18851 ns
+     p50    21596 ns      (across runs: 21331 .. 21851)
+     p99    26500 ns
+     p99.9  28238 ns
+     spread max/median 1.012
+     machine pass 12   fail 0   unknown 1
+     allocs  NOT asserted zero — userspace leaves ADR-0005 decision 3's guarantee
+     pinned  engine cpu6, client cpu7
+
+  == standard / admin / off: median of 20 qualifying runs (0 disqualified) ==
+     min    15509 ns
+     p50    19151 ns      (across runs: 19056 .. 19256)
+     p99    23895 ns
+     p99.9  25388 ns
+     spread max/median 1.005
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+
+  == standard / admin / ktls: median of 20 qualifying runs (0 disqualified) ==
+     min    27663 ns
+     p50    28840 ns      (across runs: 28634 .. 28985)
+     p99    34300 ns
+     p99.9  40031 ns
+     spread max/median 1.005
+     machine pass 12   fail 0   unknown 1
+     pinned  engine cpu6, client cpu7
+```
+
+### What userspace allocates
+
+The baseline does not assert `allocs` for `userspace` and does not print it in the summary, so
+the count comes from two single runs taken between the procedures (file time 07:53), **with no
+per-run quiet check** — an allocation count does not depend on it, a latency figure does — pinned
+`engine-core: cpu6`, `client-core: cpu7`, `tls: userspace`, 20 000 samples after 2 000 warmup:
+
+```
+tls: userspace
+w2w: TestRequest -> Heartbeat, over kernel TCP on loopback
+     20000 samples after 2000 warmup
+     allocs     80000   (both threads, the timed window only)
+
+tls: userspace
+w2w: NewOrderSingle -> ExecutionReport, over kernel TCP on loopback
+     20000 samples after 2000 warmup
+     allocs     80000   (both threads, the timed window only)
+```
+
+**4 allocations per round trip, over both threads and both TLS ends together.** The `off` and
+`ktls` arms count **0** in every run of both procedures, asserted.
+
+### The mode scripts' TLS arms, verbatim
+
+Run straight after procedure 1 on the same boot, the same `pass 12 fail 0 unknown 1`.
+`scripts/check-no-kernel-sleep.sh`, 07:50:59, TLS arms (the trace counts are the engine thread's,
+attributed by tid, over the script's own 300-message run — not the timed procedure):
+
+```
+== TLS arm: hft mode with kTLS must also pass, and read back 'kernel' ==
+   8110 recvfrom
+   8108 accept4
+    355 sendto
+      9 getrandom
+      4 setsockopt
+      4 munmap
+      4 mmap
+      3 sigaltstack
+GREEN ok — --tls ktls: no blocking call, socket calls present, tls: kernel
+
+== TLS arm: --tls userspace must read back 'userspace' ==
+GREEN ok — --tls userspace reads back tls: userspace (the read-back line distinguishes arms)
+no-kernel-sleep exit=0
+```
+
+`scripts/check-standard-gives-the-core-back.sh`, 07:51:01, TLS arm:
+
+```
+== TLS arm: standard mode with kTLS must also give the core back ==
+  mode reported   standard
+  engine CPU      .31%   (ceiling 5%)
+  found sleeping  20 of 20 samples
+  round trip p50  29466 ns   (ceiling 1000000 ns)
+  tls reported    kernel   (wanted kernel)
+GREEN ok — standard + ktls blocks, stays alive, is woken by the data, tls: kernel
+standard exit=0
+```
+
+Both scripts' plain halves passed in the same runs, the red halves included:
+`RED   ok — --mode standard trips it:  6 poll`, `RED   ok — hft trips it on the policy, as it must`
+and `RED   ok — yield trips it on the policy, as it must`.
+
+### The table, and what TLS adds
+
+Medians of the per-run p50 / p99 / p99.9, ns, both procedures side by side and **not averaged**.
+
+| Mode, path | TLS | procedure 1 | procedure 2 |
+|---|---|---|---|
+| `hft`, `TestRequest` → `Heartbeat` | off | 16 065 · 20 804 · 22 232 | 15 670 · 20 439 · 22 037 |
+| | kTLS | 25 298 · 37 345 · 38 924 | 24 657 · 30 447 · 37 872 |
+| | userspace | 20 774 · 25 303 · 27 617 | **17 473** · 22 307 · 25 538 |
+| `hft`, `NewOrderSingle` → `ExecutionReport` | off | 20 289 · 25 107 · 26 936 (18 of 20) | 19 998 · 24 055 · 26 841 |
+| | kTLS | 29 591 · 36 409 · 42 571 | 29 501 · 39 029 · 41 794 |
+| | userspace | 21 641 · 26 385 · 28 198 | 21 596 · 26 500 · 28 238 |
+| `standard`, `TestRequest` → `Heartbeat` | off | 19 522 · 24 286 · 25 879 | 19 151 · 23 895 · 25 388 |
+| | kTLS | 29 135 · 34 475 · 40 547 | 28 840 · 34 300 · 40 031 |
+
+p50 added over `off` **in the same procedure**, ns:
+
+| Mode, path | kTLS, proc. 1 / 2 | userspace, proc. 1 / 2 | kTLS − userspace, proc. 1 / 2 |
+|---|---|---|---|
+| `hft`, admin | +9 233 / +8 987 | +4 709 / +1 803 | 4 524 / 7 184 |
+| `hft`, app | +9 302 / +9 503 | +1 352 / +1 598 | 7 950 / 7 905 |
+| `standard`, admin | +9 613 / +9 689 | not run | — |
+
+**The `off` arms agreed with the 2026-09-02 table** (*The wire, at last*, above): they differ from
+it by at most **2.1% at p50, 2.4% at p99 and 3.0% at p99.9** (rounded), both procedures, all three
+arms — against a kernel one
+patch level older (`7.0.0-30`) and code twelve days older, so this is agreement, not a controlled
+repeat. Re-measuring that table is step B2 of
+[plans/2026-09-04-the-second-linux-desk.md](../plans/2026-09-04-the-second-linux-desk.md).
+
+### 1. kTLS was the slower of the two, in both `hft` paths, in both procedures, at every percentile
+
+Over plain TCP, kTLS added **9.0–9.5 µs** at p50 in the two `hft` arms and **9.6–9.7 µs** in the
+`standard` arm; userspace `rustls`, run in `hft` only, added **1.8–4.7 µs** on the administrative
+path and **1.4–1.6 µs** on the application path. kTLS
+minus userspace is **4.5 / 7.2 µs** administrative and **8.0 / 7.9 µs** application at p50, and
+positive at p99 and p99.9 in both paths and both procedures too (8 140 to 14 373 ns).
+
+What else was read on the same boot: the engine thread's eight most frequent syscalls under
+`hft --tls ktls` were the plain arm's socket calls — `recvfrom`, `accept4`, `sendto` — plus
+`getrandom` ×9 and `setsockopt` ×4, and no sleeper (the script block above). Nothing here times
+those calls or the kernel's record path.
+
+**What this does NOT show, said plainly:**
+
+- **Anything about a NIC.** This is loopback. Neither arm has hardware offload available —
+  `[read 2026-09-14]` by the manager on this desk, `ethtool -k lo` reads
+  `tls-hw-tx-offload: off [fixed]`, `tls-hw-rx-offload: off [fixed]` and
+  `tls-hw-record: off [fixed]` — so the case ADR-0005 decision 2 names, *"NIC offload where the
+  hardware supports it"*, is not in this measurement at all. On the software side, the
+  highest-priority `gcm(aes)` in `/proc/crypto` on this kernel is `generic-gcm-aesni-avx`
+  (priority 500; `generic-gcm-aesni` is 400); which implementation the kernel's TLS bound at
+  runtime was not read.
+- **Anything about another kernel**, another CPU or another suite. One boot, one kernel, one suite.
+- **Any cause.** No variable was isolated. `CLAUDE.md` §10: a cause is not accepted because a knob
+  moved with it, and no knob was moved.
+- **One end's cost.** Both ends run TLS in the same arm; the delta covers the request and the
+  reply at both ends together, and is not a per-message decrypt row.
+
+**What it does not change by itself.** ADR-0005 decision 2 prefers kTLS for reasons that are not
+latency on loopback: D8 preserved, parse-in-place preserved, AES-NI with NIC offload where the
+hardware supports it (the NIC half is out of reach here, above), and the hot-path guarantee — which
+this measurement also read, **`allocs 0` for `ktls` against 80 000 per 20 000 round trips for
+`userspace`**. Whether the design should still prefer kTLS for `hft` is a design question and is
+`STATUS.md` open item **84**, for the architect.
+
+### 2. One arm's p50 moved 15.9% between two identical procedures, and two arms' p99 moved too
+
+`hft / admin / userspace` read p50 **20 774** in procedure 1 (runs 20 639 .. 20 930, spread 1.008)
+and **17 473** in procedure 2 (runs 17 333 .. 17 813, spread 1.019). The two ranges do not
+overlap. **At p50**, every other arm moved **0.2–2.5%**, all eight in the same direction, faster.
+
+**At p99 the picture is not one arm.** `hft / admin / ktls` p99 moved 37 345 → 30 447 (**−18.5%**):
+procedure 1's per-run p99 fell in two clusters, 8 runs at 30 928–32 141 and 12 at 37 220–37 841,
+and procedure 2's 20 runs all read 29 887–30 699. `hft / app / ktls` p99 moved 36 409 → 39 029
+(**+7.2%**; runs 35 908–37 071, then 36 529–40 116). `hft / admin / userspace` p99 moved −11.8% and
+p99.9 −7.5%; `hft / app / off` p99 −4.2%. Every other p99 moved at most 1.8%, and every other
+p99.9 at most 2.7%. **And one level shift sat inside a single procedure**: procedure 1's
+`standard / admin / ktls` read p50 29 305–29 506 over runs 1–10 and 28 704–28 965 over runs 11–20,
+a spread of 1.013; procedure 2's runs read 28 634–28 985.
+
+**What prompted procedure 2.** A single `userspace` admin run between the procedures (file time
+07:53, the allocation block above, **no per-run quiet check**) read p50 **17 553**. Seven more
+single `hft` admin runs followed on the same binary and boot, `fixbolt-machine on`, engine `cpu6`,
+client `cpu7`, 20 000 messages after 2 000 warmup. **They had no per-run quiet check either** —
+the manager's editor session was active — **so none of these single runs is a §9 figure**; they
+are what the manager saw before deciding to re-run the whole procedure. The terminal output,
+verbatim:
+
+```
+07:54:28 userspace min 17142  p50 17433  p99 22553
+07:54:36 userspace min 17323  p50 17613  p99 22523
+07:54:45 userspace min 17133  p50 17453  p99 22873
+07:54:53 ktls min 23675  p50 24747  p99 30768
+07:55:02 ktls min 23444  p50 24506  p99 30428
+07:55:10 off min 15309  p50 15670  p99 20639
+07:55:19 userspace min 17133  p50 17423  p99 22432
+```
+
+Four `userspace` runs at p50 17 423–17 613, against procedure 1's 20 774 for that arm; two kTLS
+runs 2.2% and 3.1% under procedure 1's 25 298; one `off` run 2.5% under its 16 065. Procedure 2
+then published 17 473, 24 657 and 15 670 for the same three arms.
+
+**The spread column cannot register how far below the median a run falls.** Inside procedure 2,
+`hft / app / off` printed spread **1.008** while five of its twenty runs read p50 17 323, 17 523,
+17 864, 18 976 and 19 136 against a median of 19 998. The spread is maximum over median
+(`scripts/w2w-baseline.sh:222-225`). A fast run does move it, a little, by lowering the median:
+with those five runs replaced by 20 050 the same column reads 1.005. But a run 13.4% under the
+median and a run 0.3% under it move it by exactly the same amount.
+
+**The numbers, without an interpretation.** The moved arm's median per-run *minimum* went
+17 644 → 17 147 (−497 ns), in line with the other seven arms' minima (−255 to −656 ns), while its
+p50 went −3 301 ns. Procedure 1's per-run minima for that arm were 17 523–17 774, all above
+procedure 2's p50.
+
+**What differed between the procedures — candidates, none claimed as a cause.** Recorded before
+procedure 1: the quiet-row FAIL at 07:24:03, the release build (binary modified 07:24:19), the
+thrown-away run at 07:25:18, and about seven minutes since boot. Recorded between procedure 1 and
+procedure 2: both non-negotiable-4 scripts under `strace` (started 07:50:59 and 07:51:01), a
+`check-machine.sh` read at 07:51:32, the two single `userspace` runs at 07:53, the seven single
+admin runs at 07:54:28–07:55:19 with the manager's editor session active, and 38 minutes since
+boot by 07:56:27. Nothing was varied to separate any of them. The transferable half is
+[a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md](a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md):
+**a per-procedure spread bounds dispersion inside one procedure, not between procedures**, and one
+twenty-run median is one observation. `STATUS.md` open item **85**.
+
+### What is not proven
+
+- **A cause for either finding.** Named above; nothing was varied.
+- **Reproducibility beyond two procedures in one boot.** Two is enough to show a figure moving,
+  not enough to say where it settles; `DESIGN.md` §8 publishes both rather than choosing.
+- **The commit under test, from the procedure's own output.** HEAD and a clean tree were read by
+  the manager's session around the build, not printed by `scripts/w2w-baseline.sh` or `w2w`.
+- **A NIC, another kernel, another suite.** Loopback; `7.0.0-31-generic`; `TLS13_AES_128_GCM_SHA256`
+  only. The plan's optional step 8 — other suites against the kernel — **did not run**.
+- **`userspace` allocations in the procedures themselves.** The 80 000 is from two single runs;
+  the baseline does not count it per run.
+- **`standard` under userspace TLS, and `standard` on the application path under TLS.** Not in the
+  arm list.
+- **An initiator under TLS in `hft`.** `tools/w2w` is an acceptor and a client; `connect_and_serve_tls`
+  is `standard` only, and nothing here measured it.
+- **What a rekey costs.** Nothing here sent a `KeyUpdate` inside a timed window.
+

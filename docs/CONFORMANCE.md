@@ -98,13 +98,31 @@ The tuned-box figures are in [DESIGN.md §6](DESIGN.md).
   offload TLS. What it proves: the handshake completes, the kernel takes the keys, the userspace
   fallback carries the same bytes and says it is not the kernel, a session comes up through
   `serve_tls`, and `TlsRequireKernel` refuses at both layers. **What it does not prove: anything
-  about the engine thread under TLS** — `scripts/check-no-kernel-sleep.sh` has no TLS arm, so no
-  claim here touches non-negotiable 4. **And no latency figure comes from it**;
-  [DESIGN.md](DESIGN.md) §8's TLS row is still empty.
+  about the engine thread under TLS** — ~~`scripts/check-no-kernel-sleep.sh` has no TLS arm, so no
+  claim here touches non-negotiable 4~~. **And no latency figure comes from it**;
+  ~~[DESIGN.md](DESIGN.md) §8's TLS row is still empty~~.
 
-  `[2026-09-13]` **Built on the §9 desk since, not yet in CI**: the initiator side, `w2w --tls`,
+  `[2026-09-13]` **Built on the §9 desk since, ~~not yet in CI~~**: the initiator side, `w2w --tls`,
   a kTLS arm on both halves of non-negotiable 4, and a KeyUpdate that survives instead of
-  aborting the session — see §8 below. None of it has a CI run id yet.
+  aborting the session — see §8 below. ~~None of it has a CI run id yet.~~
+
+  `[2026-09-14]` **All four have a CI run id: run
+  [`34767259852`](https://github.com/tmthang86/fixbolt/actions/runs/34767259852), push to
+  `main`, commit `1178f4d`, success**, read from its job logs rather than its conclusion. Job *The
+  engine thread never sleeps in the kernel* prints
+  `GREEN ok — --tls ktls: no blocking call, socket calls present, tls: kernel`; job *A standard
+  engine gives the core back* prints `tls reported    kernel   (wanted kernel)` and
+  `GREEN ok — standard + ktls blocks, stays alive, is woken by the data, tls: kernel`; job *TLS,
+  with the kernel it needs* prints `test connect_and_serve_tls_brings_a_session_up_against_serve_tls ... ok`,
+  `test an_acceptor_session_survives_a_key_update_from_the_counterparty ... ok` and
+  `test an_initiator_session_survives_a_key_update_from_the_venue ... ok`. The two kTLS arms trace
+  `tools/w2w --tls ktls`, so `w2w --tls` is built and run there too.
+
+  `[2026-09-14]` **Both struck clauses are out of date.** Both non-negotiable-4 scripts carry a
+  kTLS arm, and both arms ran green on the §9 desk in `hft` and in `standard` — §8 below, with the
+  command, the machine and the CI run id. [DESIGN.md](DESIGN.md) §8's TLS table is filled; **its
+  figures are latency and are not on this page**. The `tls` CI job's own sentence above still
+  stands: it proves behaviour, not mode.
 
 ---
 
@@ -421,7 +439,8 @@ not about the commit.
 eliminate it. The tests they run are deterministic **by construction** — the counterparty is
 driven on the acceptor's own thread, so no scheduler decides what this engine sees — and that
 construction is guarded by its own reversals rather than by the repetitions. Nothing here is a
-latency measurement: [DESIGN.md](DESIGN.md) §8's TLS row is still empty.
+latency measurement: ~~[DESIGN.md](DESIGN.md) §8's TLS row is still empty~~ `[2026-09-14]` its
+TLS table is filled, and none of its figures is on this page.
 
 **Three test files landed since, Sửa 6 of the `tls` plan.** `crates/engine/tests/tls_client.rs`,
 `tls_initiator_wire.rs` and `tls_key_update.rs` are new; `tls_settings_wire.rs` already existed
@@ -458,5 +477,34 @@ plus the lock-reading assertion on `DERIVED_FROM_RUSTLS`/`DERIVED_FROM_RING`): C
 desk: `cargo test -p fixbolt-engine --test tls_key_update` three consecutive runs, each `6
 passed`; `cargo test --all --features fixbolt-engine/tls`, **679 passed, 0 failed** (678 → 679,
 exactly the one new test).
+
+**Step 6-M of the `tls` plan: both non-negotiable-4 scripts' kTLS arms on the §9 desk.**
+`[measured 2026-09-14]` AMD Ryzen 7 3700X, Linux `7.0.0-31-generic`, bare metal,
+`scripts/check-machine.sh` **`pass 12 fail 0 unknown 1`** at 07:25 and again at 07:51, straight
+after both scripts ran. Commit **`1178f4d`** (`main`), CI run
+[`34767259852`](https://github.com/tmthang86/fixbolt/actions/runs/34767259852), push to `main`,
+**success**.
+
+```
+cargo build --release -p fixbolt-w2w --features affinity,tls
+scripts/check-no-kernel-sleep.sh
+scripts/check-standard-gives-the-core-back.sh
+```
+
+| Script | Arm | Verdict, verbatim |
+|---|---|---|
+| `check-no-kernel-sleep.sh` | `hft`, plain, and its `--mode standard` red half | `GREEN ok — engine thread made no blocking call; it did make socket calls` · `RED   ok — --mode standard trips it:  6 poll` |
+| | **`hft --tls ktls`** | `GREEN ok — --tls ktls: no blocking call, socket calls present, tls: kernel` |
+| | `--tls userspace`, the read-back control | `GREEN ok — --tls userspace reads back tls: userspace (the read-back line distinguishes arms)` |
+| | exit | `no-kernel-sleep exit=0` |
+| `check-standard-gives-the-core-back.sh` | `standard`, plain, and its `hft` and `yield` red halves | `GREEN ok — standard blocks, stays alive, and is woken by the data` · `RED   ok — hft trips it on the policy, as it must` · `RED   ok — yield trips it on the policy, as it must` |
+| | **`standard --tls ktls`** | `GREEN ok — standard + ktls blocks, stays alive, is woken by the data, tls: kernel` |
+| | exit | `standard exit=0` |
+
+**What this adds to the CI runs above:** the same two arms, on the machine `DESIGN.md` §9
+describes rather than a shared runner, on the commit named. **What it does not:** an initiator
+under TLS in `hft` (both scripts trace `tools/w2w`, an acceptor), any suite but
+`TLS13_AES_128_GCM_SHA256`, or a NIC. The latency this sitting also measured is in
+[DESIGN.md](DESIGN.md) §8, not here.
 
 ---

@@ -677,10 +677,15 @@ the number silently changed either way. `Resumption::disabled()` alone removes n
 sixteen allocations a client's two session tickets used to cost; the newtype above is the whole
 of that fix. Full reasoning, sources and the alternatives rejected: ADR-0063.
 
-**Still not built:** any published TLS latency number — `w2w --tls` exists (`off`/`ktls`/
-`userspace`, read back through `Engine::tls_mode`) but nothing here has timed a rekey.
-**Still unverified:** which kernel version and cipher suites are the floor (ADR-0005 open
-question 2). **Question 6 — whether a session survives a TLS 1.3 key update under kTLS — is
+**Published, `[measured 2026-09-14]`:** the TLS round trip — `w2w --tls` (`off`/`ktls`/
+`userspace`, read back through `Engine::tls_mode`) on the §9 desktop, in §8 *The round trip
+under TLS, measured*. **Still not built:** any timing of a rekey — nothing here has timed one.
+**Question 2 — which kernel version and cipher suites are the floor — is answered at the level
+measured, `[2026-09-14]`:** `TLS13_AES_128_GCM_SHA256`, the one suite this engine offers
+(`crates/engine/src/tls.rs`, `offloadable_provider`), is taken by the kernel on
+`7.0.0-31-generic`, and on the CI runner by the `tls` job; no other suite and no minimum kernel
+was measured (§9's TLS row says what the CI half does and does not record).
+**Question 6 — whether a session survives a TLS 1.3 key update under kTLS — is
 answered at phase-1 level**: it does, for a peer that rekeys on its own the way rustls does; a
 peer that never initiates one automatically, such as OpenSSL
 ([openssl#23566](https://github.com/openssl/openssl/issues/23566), open), never exercises this
@@ -703,9 +708,13 @@ configuration-file keys landed too, as of step 4c [2026-09-12] and step 5c [2026
 `ServerCertificateKeyFile` acceptor-only, `CertificationAuthoritiesFile`/
 `ClientCertificateFile`/`ClientCertificateKeyFile` initiator-only — seven keys, all
 `[DEFAULT]`-only — `docs/CONFIGURATION.md` §1 has the table, `crates/engine/src/settings.rs`
-the code. **The §8 TLS row stays empty**: `scripts/check-no-kernel-sleep.sh` and
-`scripts/check-standard-gives-the-core-back.sh` both now run a kTLS arm (Sửa 6, step 6b), but
-no latency number is published from either mode.
+the code. **The §8 TLS row is filled, `[measured 2026-09-14]`**:
+`scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh` both run
+a kTLS arm (Sửa 6, step 6b), both green on the §9 desktop that day, and the round trip under
+TLS is §8's second table, for `hft` and for `standard`. **On loopback, kTLS was the slower of
+the two steady-state modes in both `hft` paths** — a measurement without a cause, and not by itself a
+reversal of the table above, whose column is the hot-path guarantee rather than speed
+(`STATUS.md` open item 84).
 
 **One thing measured on the way, because the obvious guess about it is wrong.**
 `[measured 2026-09-10]` only a `setup_ulp` refusal reaches the userspace fallback. A refusal from
@@ -1082,7 +1091,9 @@ Each step was a plan, a branch and a merge. **All eight are complete as of 2026-
    The example names nothing from `fixbolt_engine` or `fixbolt_session`, which is the facade's
    own test ([ADR-0041](decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)).
 
-TLS (D11) has no step here. When it lands it belongs beside step 6, in `transport`.
+TLS (D11) has no step here. It landed beside step 6, as a second `Transport` —
+`TlsTransport` in `crates/engine/src/tls.rs`, behind `--features tls`
+([plan](plans/2026-09-04-tls.md)).
 
 ## 8. Latency budget on kernel TCP
 
@@ -1122,12 +1133,82 @@ Three readings:
   stage table. [ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)
   declines SIMD on this basis: parse is 0.62% of the application round trip.
 
+### The round trip under TLS, measured
+
+`[measured 2026-09-14]` on the same §9 desktop — Linux `7.0.0-31-generic`, `check-machine.sh`
+`pass 12 fail 0 unknown 1` in each procedure's header and straight after it — engine pinned to
+isolated `cpu6` and the client to `cpu7`, medians of 20 runs of 20 000 timed round trips each (18
+qualifying for `hft` application `off` in procedure 1), **over loopback**, with **TLS 1.3
+`TLS13_AES_128_GCM_SHA256` at both ends of the socket** in every TLS arm: `tools/w2w` puts a
+`TlsTransport` on its client as well as on the engine (`tools/w2w/src/main.rs:915-929` engine
+side, `:1165-1169` client side). **The identical procedure ran twice in one boot**, 07:25–07:51 and
+07:56–08:22; both are shown and neither is averaged, because an arm's p50 and two arms' p99 did
+not reproduce. p50 · p99 · p99.9, in ns:
+
+| Round trip | TLS | procedure 1 | procedure 2 |
+|---|---|---|---|
+| `hft`, TestRequest → Heartbeat | off | 16 065 · 20 804 · 22 232 | 15 670 · 20 439 · 22 037 |
+| | kTLS | 25 298 · 37 345 ³ · 38 924 | 24 657 · 30 447 ³ · 37 872 |
+| | userspace ¹ | 20 774 ² · 25 303 · 27 617 | **17 473** ² · 22 307 · 25 538 |
+| `hft`, NewOrderSingle → ExecutionReport | off | 20 289 · 25 107 · 26 936 | 19 998 · 24 055 · 26 841 |
+| | kTLS | 29 591 · 36 409 ³ · 42 571 | 29 501 · 39 029 ³ · 41 794 |
+| | userspace ¹ | 21 641 · 26 385 · 28 198 | 21 596 · 26 500 · 28 238 |
+| **`standard`** ⁴, TestRequest → Heartbeat | off | 19 522 · 24 286 · 25 879 | 19 151 · 23 895 · 25 388 |
+| | kTLS | 29 135 · 34 475 · 40 547 | 28 840 · 34 300 · 40 031 |
+
+Spread, the largest per-run p50 over the median: 1.003–1.014 across the arms of procedure 1,
+1.005–1.019 across procedure 2.
+
+¹ **Userspace `rustls` leaves the hot-path guarantee** (D11, ADR-0005 decision 3): `[measured
+2026-09-14]` **80 000 allocations over 20 000 round trips**, both threads, in single runs on the
+same boot between the two procedures, with no per-run quiet check; `off` and kTLS assert **0** in
+every run of both procedures. These are the userspace mode's figures, not the engine's.
+² **This arm's p50 moved 15.9% between two identical procedures** — 20 639 .. 20 930 across the
+runs of procedure 1, whose spread read 1.008, and 17 333 .. 17 813 across procedure 2's, spread
+1.019 — while every other arm's p50 moved 0.2–2.5%, all faster. Its p99 moved 11.8% and its
+p99.9 7.5%. No cause is claimed:
+[reference/a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md](reference/a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md),
+`STATUS.md` open item 85.
+³ **The kTLS p99 did not reproduce either.** `hft` administrative: 37 345 → 30 447 (−18.5%);
+procedure 1's per-run p99 fell in two clusters, 8 runs at 30 928–32 141 and 12 at 37 220–37 841,
+and procedure 2's 20 runs all read 29 887–30 699. `hft` application: 36 409 → 39 029 (+7.2%). The
+p50 of both arms moved under 2.6%. No cause is claimed.
+⁴ **`standard` rows fill no row of the `hft` stage table below**, and the `tls` plan's §6.7 item 6
+said they would not be published in §8 at all; they are, labelled by mode (ADR-0013 decision 4),
+because they were measured for the other half of the rule — a transport change proven in one mode
+is proven in neither (`CLAUDE.md` §7). The plan's delivery log declares it as a deviation. Never
+compare a `standard` figure with an `hft` one except as a difference.
+
+`scripts/w2w-baseline.sh` with the eight arms named in `ARMS` is the procedure, and
+[reference/measured-costs.md](reference/measured-costs.md), *TLS on the wire*, is the whole
+reading, with both procedures' summary blocks verbatim. **The plain `off` arms differ from the
+first table by at most 2.1% at p50, 2.4% at p99 and 3.0% at p99.9** — on a newer kernel patch level
+and newer code, so it is agreement rather than a controlled repeat.
+
+Three readings:
+
+- **kTLS was the slower of the two in both `hft` paths, in both procedures, at p50, p99 and
+  p99.9.** At p50 it added **9.0–9.5 µs** over `off` in `hft` and 9.6–9.7 µs in `standard`;
+  userspace `rustls`, run in `hft` only, added **1.8–4.7 µs** on the administrative path and
+  **1.4–1.6 µs** on the application path. **What this does not show**: anything about a NIC —
+  over loopback neither arm has hardware offload to use (`ethtool -k lo`, below) — or about another
+  kernel, or any cause; nothing was isolated. It does not by itself reverse D11, whose case for
+  kTLS is the hot-path guarantee (D8, parse-in-place, no allocation), and the kTLS arm still counts
+  zero allocations. Whether `hft` should still prefer kTLS is a design question, `STATUS.md` open
+  item 84.
+- **The TLS figure is a round-trip delta with TLS at both ends, not a stage cost.** No benchmark
+  here isolates one end's record processing, which is why the stage table below carries the delta
+  and not a decrypt figure.
+- **One twenty-run median is one observation.** The userspace administrative p50 and the kTLS p99
+  this procedure would have published, run once, depended on which half hour it ran in (² and ³
+  above).
+
 ### Stage by stage (`hft`, N = 1)
 
 | Stage | Cost | Who controls it |
 |---|---|---|
 | NIC → kernel → socket buffer | 3–8 µs, from the literature | kernel, IRQ affinity, driver |
-| TLS record decrypt, if enabled | kTLS: in-kernel with AES-NI, no extra copy. Userspace: one copy each way plus allocation (D11). **No number measured here** | this design, and the kernel |
+| TLS record processing, if enabled | `[measured 2026-09-14]` **not separable by stage.** The round trip with TLS at **both** ends, over loopback on the §9 desktop, adds at p50 over `off`, in `hft`, **~9.0–9.5 µs under kTLS** and **~1.4–4.7 µs under userspace `rustls`** (*The round trip under TLS, measured*, above; both procedures). **kTLS was the slower of the two on loopback, in both `hft` paths**, with no cause claimed. kTLS: crypto in the kernel, **no extra userspace copy — a statement about copies, not about speed**. `[read 2026-09-14]` by the manager on this desk, `7.0.0-31-generic`: the highest-priority `gcm(aes)` in `/proc/crypto` is `generic-gcm-aesni-avx` (priority 500; `generic-gcm-aesni` is 400) — which one the kernel's TLS bound at runtime was not read; `ethtool -k lo` reads `tls-hw-tx-offload: off [fixed]`, `tls-hw-rx-offload: off [fixed]`, `tls-hw-record: off [fixed]`. Userspace: one copy each way plus allocation (D11) | this design, and the kernel |
 | Wakeup, `standard` | 2–5 µs, `epoll`-class, from the literature; the core is given back | this design, D8 |
 | Wakeup, `hft` | `[measured 2026-08-31]` `Engine::turn` **~449 ns × N**, N = sockets on the thread; a core is burned. ~670 ns on a core carrying `nohz_full`, which §9 no longer asks for (ADR-0021) | this design, D8, `benches/turn.rs` |
 | Parse (D2) | `[measured 2026-09-05]` **0.12 µs** for a `NewOrderSingle`, **0.06 µs** for a `Heartbeat`: framing, field indexing, `9=` and `10=` only. `benches/parse.rs` parses with `NoDict`, so this row is **not** the dictionary pass — that is the row below. `[measured 2026-09-05]` the `Heartbeat` figure was 56.3 ns until its fixture was corrected; it declared `9=49` against a body of 51, so the parse returned before its own checksum ([a benchmark parsed a message the parser rejects](reference/a-benchmark-parsed-a-message-the-parser-rejects.md)) | this design |
@@ -1210,10 +1291,13 @@ this table did not contain until the poll was measured, and which ADR-0012 settl
 session per polling thread is the shape this table describes, `density` carries the
 `N × 449 ns` term, and no latency figure is published without its `N`.
 
-The TLS row stays empty on purpose. It is filled in when `tools/w2w` runs the same load three
-ways, TLS off, kTLS and userspace `rustls`, on one Linux box (ADR-0005 decision 5). Going below
-the floor means kernel bypass, which is L0's job behind a feature flag that actually gates
-(D5), and is not v1.
+**The TLS row is filled, `[measured 2026-09-14]`, on the condition ADR-0005 decision 5 set for
+it**: `tools/w2w` ran the same load three ways, TLS off, kTLS and userspace `rustls`, on one Linux
+box — the §9 desktop — and the figures are *The round trip under TLS, measured*, above. What the
+row holds is a round-trip delta with TLS at both ends, not the per-message decrypt cost the row
+was drawn for — it was named *TLS record decrypt* until this measurement — and on loopback kTLS
+was the slower of the two modes. Going below the floor means kernel bypass, which is L0's job
+behind a feature flag that actually gates (D5), and is not v1.
 
 ## 9. Deployment — the OS is part of the design
 
@@ -1232,7 +1316,7 @@ machine, not the code. None of this is optional for a latency measurement to mea
 | Transparent huge pages **off** | THP compaction stalls are multi-millisecond |
 | CPU frequency governor `performance`, C-states off | A core waking from C6 costs ~100 µs |
 | `SO_BUSY_POLL` / `net.core.busy_poll` | Lets the kernel's own receive path spin instead of sleeping |
-| **If TLS is on:** a kernel that carries the negotiated cipher suite in kTLS | kTLS support is narrower than what `rustls` will negotiate. A session that negotiates outside it drops silently to the userspace path and off the hot-path guarantee (D11). Which kernel and which suites: ADR-0005 open question 2, unanswered |
+| **If TLS is on:** a kernel that carries the negotiated cipher suite in kTLS | kTLS support is narrower than what `rustls` will negotiate. A session that negotiates outside it drops silently to the userspace path and off the hot-path guarantee (D11). **Which kernel and which suites — ADR-0005 open question 2, answered at the level measured.** `[measured 2026-09-14]` `TLS13_AES_128_GCM_SHA256`, the only suite this engine offers (`crates/engine/src/tls.rs`, `offloadable_provider`), is taken by the kernel on **`7.0.0-31-generic`**: every kTLS run on the §9 desktop read back `tls: kernel`. **Not measured**: any other suite — the `tls` plan's optional suite step did not run — and the minimum kernel. **On the CI runner**, the `tls` job (*TLS, with the kernel it needs*, job `103750342469` of run [`34767259852`](https://github.com/tmthang86/fixbolt/actions/runs/34767259852), commit `1178f4d`) asserts that the kernel took `TLS13_AES_128_GCM_SHA256` keys — `crates/engine/tests/tls.rs:40-45` narrows to that suite and `:488-497` requires `/proc/net/tls_stat` `TlsTxSw` and `TlsRxSw` to move — and its log reads `verdict: READY` and every test `ok`. **That job prints no kernel version.** The runner kernel `6.17.0-1022-azure` is recorded on 2026-09-10 ([CONFORMANCE.md](CONFORMANCE.md) §8) and, in the same run, by another job (*The machine probes reach the right verdicts*, `kernel: Linux 6.17.0-1022-azure`) — not by the job that took the keys. That gap is the residue |
 
 A latency number published without stating which of these were set is not a number.
 
