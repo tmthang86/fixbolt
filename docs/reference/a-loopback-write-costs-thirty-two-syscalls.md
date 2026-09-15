@@ -32,7 +32,8 @@ and exit are cheap. Whatever costs 5 µs is inside the network stack.
 
 ## What might explain it, and none of this is claimed
 
-Two candidates were found and **neither was tested**, so neither is a cause:
+Two candidates were found. **Suspect 1 was tested 2026-09-15** (below) and found not to be the
+cause; suspect 2 remains untested:
 
 * **Netfilter.** `nf_tables`, `nf_conntrack`, `nft_compat`, `xt_conntrack`, `xt_connmark` and
   `xt_MASQUERADE` are all loaded, `nf_conntrack_count` reads 66, and `tailscale0` is up. Every
@@ -44,7 +45,38 @@ Two candidates were found and **neither was tested**, so neither is a cause:
   the shape retpolines tax hardest.
 
 Testing either means changing the machine — an `iptables -t raw -j NOTRACK` rule, or a boot
-with `mitigations=off` — and both are the owner's call rather than a benchmark's.
+with `mitigations=off` — and both are the owner's call rather than a benchmark's. Suspect 1 has
+since been tested; see the dated section below.
+
+## Suspect 1, tested — 2026-09-15: conntrack costs 3.3%, not the ~10 µs
+
+`[measured 2026-09-15]` boot B step B7 of
+[plans/2026-09-04-the-second-linux-desk.md](../plans/2026-09-04-the-second-linux-desk.md), on the
+same §9 desktop: an A(before)–B(notrack)–A(after) test, `nft add table ip fixbolt` with `iif "lo"
+notrack` (prerouting, priority raw) and `oif "lo" notrack` (output, priority raw), removed again
+afterward. `crates/engine/benches/payload.rs`'s `TCP loopback, 8 in 8 out` case, run directly, 5
+runs per phase:
+
+**conntrack on `lo` costs ~420 ns, ~3.3% of the ~12.6 µs 8-byte round trip, and A1 ≈ A2** — the
+rule is not left behind a slower baseline once it is removed. Full tables:
+[measured-costs.md](measured-costs.md), *Boot B, 2026-09-15*, section B7.
+
+**This does not explain the ~10 µs this page opens with.** 3.3% is far short of item 51's gap; if
+netfilter is part of the cost, conntrack on `lo` is not where most of it sits.
+
+A second thing turned up alongside it, a **candidate, not a cause**: `w2w-baseline.sh
+RUNS=10 ARMS=hft:admin` (loopback, combined) was bimodal in both the *before* and *after* phases —
+most runs ~18.2 µs p50, some ~15.7 µs — and never slow under `notrack`. `nf_conntrack_count` read
+53 before, 30 under `notrack`, 51 after. One candidate recorded, not claimed: conntrack state left
+by the payload bench's own connections, run immediately before phase A1, makes some later
+connections take a ~3 µs slower path — a third procedure run without payload-bench runs first
+read a tight 15 048–15 229 ns, matching the *fast* mode of the bimodal phases rather than the
+slow one.
+
+**Still untested:** the flush arm (`systemctl stop tailscaled` + `nft flush ruleset` for ten
+minutes, separating *conntrack* from *chain traversal*) — skipped this boot, the owner was not at
+the desk — and suspect 2, the speculation mitigations, which needs a `mitigations=off` boot
+(the plan's boot C, `STATUS.md` open item 51).
 
 ## Why it was worth writing down anyway
 

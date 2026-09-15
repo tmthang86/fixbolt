@@ -119,6 +119,88 @@ same $'UNKNOWN\trx-usecs not reported by this driver' "$(coalesce_verdict "$(eth
 same $'UNKNOWN\trx-usecs not reported by this driver' "$(coalesce_verdict "")" "no output at all"
 
 echo
+echo "=== eee_verdict"
+
+# `[2026-09-15]` Q15, docs/plans/2026-09-04-the-second-linux-desk.md Điều 3: desk
+# boot B6 measured EEE on costing `tools/w2w` wire p50 at interval 1 s +14.6 µs
+# (54 310 ns vs 39 714 ns with EEE off, same hour, enp9s0/igb) — far over the 5%
+# threshold, so `check-machine.sh` must FAIL a NIC with EEE on.
+
+ethtool_eee() { # ethtool_eee <EEE status value> <Tx LPI value>
+  printf 'EEE settings for enp9s0:\n\tEEE status: %s\n\tTx LPI: %s\n' "$1" "$2"
+}
+
+# Real: `ethtool --show-eee enp9s0` on this desk today, EEE off (the B6 baseline).
+same $'PASS\tEEE status: disabled' "$(eee_verdict "$(ethtool_eee disabled disabled)")" \
+  "real desk output, EEE off — the B6 baseline every procedure header requires"
+# Real: `ethtool --show-eee enp9s0` on this desk today, EEE forced on for the A/B arm.
+same $'FAIL\tEEE status: enabled - active' "$(eee_verdict "$(ethtool_eee "enabled - active" "0 (us)")")" \
+  "real desk output, EEE forced on — the +14.6 µs state"
+# Invented: `inactive` only means the link partner is not advertising EEE today,
+# not that this NIC will stay quiet once it does — must still FAIL.
+same $'FAIL\tEEE status: enabled - inactive' "$(eee_verdict "$(ethtool_eee "enabled - inactive" disabled)")" \
+  "invented: enabled but the far end isn't advertising today — still FAIL, not a pass by omission"
+# Invented: a NIC/driver ethtool cannot ask about EEE at all.
+same $'UNKNOWN\tno EEE status reported' "$(eee_verdict "netlink error: Operation not supported")" \
+  "invented: unsupported NIC — UNKNOWN, never a pass"
+same $'UNKNOWN\tno EEE status reported' "$(eee_verdict "")" \
+  "no output at all (e.g. ethtool missing) — UNKNOWN"
+
+echo
+echo "=== pick_nic"
+
+# fake_nic <net-root> <name> <type> <carrier> [marker ...]
+#
+# One fake interface directory under <net-root>. `carrier` empty means no
+# carrier file at all (some virtual interfaces have none). `marker` is
+# `device`, `wireless` or `phy80211` — pick_nic only checks that these
+# exist, never their content.
+fake_nic() {
+  local root="$1" name="$2" type="$3" carrier="$4" marker
+  mkdir -p "$root/$name"
+  echo "$type" > "$root/$name/type"
+  if [ -n "$carrier" ]; then
+    echo "$carrier" > "$root/$name/carrier"
+  fi
+  shift 4
+  for marker in "$@"; do
+    mkdir -p "$root/$name/$marker"
+  done
+}
+
+net=$(mktemp -d)
+fake_nic "$net" enp9s0 1 0 device
+same "enp9s0" "$(pick_nic "$net" "")" \
+  "a wired NIC without carrier is still picked — the §9 rows do not need a cable"
+rm -rf "$net"
+
+net=$(mktemp -d)
+fake_nic "$net" wlp7s0 1 1 device wireless
+same "" "$(pick_nic "$net" "")" \
+  "wireless is never the measurement NIC"
+rm -rf "$net"
+
+net=$(mktemp -d)
+fake_nic "$net" tailscale0 65534 ""
+fake_nic "$net" docker0 1 ""
+fake_nic "$net" lo 772 ""
+same "" "$(pick_nic "$net" "")" \
+  "virtual interfaces have no bus device"
+rm -rf "$net"
+
+net=$(mktemp -d)
+fake_nic "$net" enp8s0 1 0 device
+fake_nic "$net" enp9s0 1 1 device
+same "enp9s0" "$(pick_nic "$net" "")" \
+  "carrier breaks a tie, and only a tie"
+rm -rf "$net"
+
+net=$(mktemp -d)
+same "enp8s0" "$(pick_nic "$net" enp8s0)" \
+  "FIXBOLT_NIC wins without a carrier, as before"
+rm -rf "$net"
+
+echo
 echo "=== summary"
 echo "pass $pass   fail $fail"
 [[ "$fail" -eq 0 ]]

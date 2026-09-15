@@ -59,8 +59,9 @@ interrupts off the isolated core, and enable `busy_poll` on the socket. The engi
 see nothing but its own session.
 
 `scripts/check-machine.sh` reads this, in `hft` mode same as `standard`, once a NIC is
-selected (`FIXBOLT_NIC=<nic>`, or auto-selected: the first interface with carrier, excluding
-`lo`, `tailscale*`, `docker*`, `veth*`, `br-*` and wireless `wl*`):
+selected (`FIXBOLT_NIC=<nic>`, or auto-selected: the first physical NIC under
+`/sys/class/net` in name order — a bus device, not virtual, not wireless; carrier only
+breaks a tie between several):
 
 ```
 FIXBOLT_NIC=<nic> scripts/check-machine.sh   # NIC IRQ affinity, coalescing, irqbalance, busy_read
@@ -68,6 +69,18 @@ echo <cpu> | sudo tee /proc/irq/<n>/smp_affinity_list   # steer one IRQ off the 
 sudo ethtool -C <nic> rx-usecs 0                        # interrupt coalescing off
 systemctl stop irqbalance                               # stop it moving IRQs back
 ```
+
+**EEE (802.3az) must be off on the measurement NIC.** `[measured 2026-09-15]` one A/B on the §9
+desktop, `enp9s0` (Intel I211, `igb`) cabled to a Mac mini, `hft` admin paced at 1 s, same hour:
+**EEE on added +14.6 µs to wire p50**, close to the ~16.5 µs
+1000BASE-T wake time ([measured-costs.md](reference/measured-costs.md), boot B — the raw pair is A/B only, never a figure). Check with
+`ethtool --show-eee <nic>`; the row this project cares about reads `EEE status: disabled`.
+`scripts/check-machine.sh` reads this as its `eee` row, once a NIC is selected, alongside the
+block above. `ethtool --set-eee <nic> eee <on|off>` and `ethtool -A <nic> …` (pause negotiation)
+both bounce an `igb` link for ~4 s — wait for `Link detected: yes` (`ethtool <nic>`) before
+measuring again, and re-read `--show-eee` rather than trust the command that set it. Leave pause
+frames on and read all four `*_flow_control_*` counters (`ethtool -S <nic> | grep flow_control`)
+before and after: they must stay 0.
 
 ## 5. Application configuration and the build
 
@@ -120,10 +133,18 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    `standard` in its own invocation without `WIRE_NIC`. An `ARMS` entry also grows a fourth,
    optional field — `mode:path:tls:interval`, the interval in microseconds passed on as
    `--interval <us>`; `0`, the default, adds no flag and no line, same as before this field
-   existed. `FIXBOLT_NIC` reaches the script's two `scripts/check-machine.sh` calls the same way
-   any other environment variable does. None of this changes the command line when `LISTEN` is
+   existed. `FIXBOLT_NIC` reaches the script's `scripts/check-machine.sh` call the same way
+   any other environment variable does — one call since 2026-09-15, whose printed block and
+   whose `machine pass … fail … unknown …` verdict line are the same reading (before that fix
+   they were two readings, and on 2026-09-15 they disagreed). None of this changes the command line when `LISTEN` is
    unset and no `ARMS` entry uses a fourth field — `ARMS="hft:admin"` still means what it always
-   meant.
+   meant. `[2026-09-14]` ADR-0068 decision 5: the header now also prints the commit, tree state,
+   uptime and the binary's sha256/mtime, `OUT_DIR` (default
+   `target/w2w-baseline/<UTC timestamp>-<HEAD>`) keeps every run's raw output plus an appended
+   `summary.txt`, each summary gains two-sided `min/median`/`max/median` dispersion at every
+   published percentile beside the existing `spread`, and `W2W_EXTRA` (split on whitespace, so
+   `--journal file-async` or `--log file` needs no bespoke script) reaches the combined run and the
+   `--listen` half only — never `--connect`, which refuses both flags.
 4. `[2026-09-14]` **Wire-in → wire-out at the acceptor, on one clock — `hft` only**: add
    `--wire-timestamps --nic <ifname> --observer-core <cpu>` to the engine's process (`--listen`
    on the NIC's address; the combined run is over loopback and a hardware NIC never carries it),
@@ -159,6 +180,28 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    both read `0`: a driver's read-back of its own configuration is not evidence, each sample's
    hardware stamp is. On `lo` both read the request count and no wire column is printed, by
    design.
+
+   **The runbook to read before and after every such procedure**
+   (`docs/plans/2026-09-04-the-second-linux-desk.md`, *Sửa 3*, Điều 3, "Runbook B6"):
+
+   ```sh
+   sudo -n ethtool --show-eee <nic>                     # EEE status: disabled
+   sudo -n ethtool -a <nic>                             # Autonegotiate on, RX on, TX on
+   ethtool -S <nic> | grep -E 'flow_control|hwtstamp'   # four pause counters 0; tx_hwtstamp_skipped
+   ethtool --get-hwtimestamp-cfg <nic>                  # tx off, rx-filter none, as restored above
+   cat /proc/irq/<n1..n4>/smp_affinity_list             # each IRQ still steered off the engine core
+   ssh <counterparty> 'ifconfig <if> | grep media; shasum -a 256 <path-to-w2w>'
+   ```
+
+   `[measured 2026-09-15]` **an `igb` NIC cannot hold an interval-0 wire figure with this
+   procedure.** At `--interval 0` a TX stamp is skipped within 1–4 runs of 20 000:
+   `tx_hwtstamp_skipped` rose with every attempt across boot B (0 → 1 → 5 → 29 → 50 → 52) —
+   `igb` holds one TX timestamp at a time and skips the next request while one is already
+   pending (`igb_main.c`, `tx_hwtstamp_skipped++`). The script FAILs any run with a missing stamp
+   (the rule above), so an interval-0 wire figure is not obtainable on an Intel I211 with this
+   procedure. **Paced at 1 s — the only pacing run over the cable — every stamp arrived; what the
+   least pacing is that avoids a skip was not measured**
+   ([measured-costs.md](reference/measured-costs.md), boot B, section B6).
 
 **The measurement traps this project already paid for** are in [GUIDE.md §8](GUIDE.md). Read
 them rather than rediscover them. A score that moves with its own timeout is measuring the

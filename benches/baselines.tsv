@@ -148,7 +148,9 @@ AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (validated)	120.4	1.10	2
 AMD Ryzen 7 3700X 8-Core Processor	parse NewOrderSingle (no checks)	113.5	1.15	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	parse Heartbeat (validated)	60.9	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	encode ExecutionReport (template)	237.6	1.15	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache	4.9	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache	5.8	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache, micros	10.0	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache, nanos	12.7	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
 AMD Ryzen 7 3700X 8-Core Processor	walk 1 group, 2 entries, 2 members	56.2	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	walk 4 levels, 61-tag member list	339.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	group_members contains, 61 tags	9.0	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
@@ -208,7 +210,7 @@ AMD Ryzen 7 3700X 8-Core Processor	library, on_message	1028.6	1.10	20	2026-09-05
 AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle	882.1	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	validate Heartbeat	169.5	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	validate TestRequest, w2w bytes	218.4	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle, w2w bytes	897.3	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle, w2w bytes	994.5	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
 
 # `[measured 2026-09-05]` THE SEVENTEEN LINES BELOW came from one campaign of 22 whole runs,
 # of which 20 are used and 2 were thrown away BY THEIR OWN VERDICT: run-18 read `gnome-shell
@@ -264,6 +266,7 @@ AMD Ryzen 7 3700X 8-Core Processor	journal put, 87 bytes, walking	5.3	1.10	20	20
 AMD Ryzen 7 3700X 8-Core Processor	journal put, 191 bytes, one slot	6.3	1.35	8	2026-09-05	pass 12 fail 0 unknown 1
 
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy sessions	1659.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, admin	954.2	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 2 busy sessions	3325.4	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 busy sessions	6686.0	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 8 busy sessions	13514.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
@@ -274,3 +277,30 @@ AMD Ryzen 7 3700X 8-Core Processor	engine turn, 64 busy sessions	121009.1	1.10	2
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 64	1635.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 512	1654.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 4096	1657.7	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+
+# `[measured 2026-09-14/15]` BOOT B, STEP B1 of docs/plans/2026-09-04-the-second-linux-desk.md.
+# The first run on the A1 binary (ADR-0067, table read at run time) with the §9 knobs on and the
+# NIC judged: `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` -> pass 15 fail 0 unknown 0. HEAD
+# f43d7e8, clean tree. 21 whole runs of the `serialize`, `density` and `validate` targets, 22:10 to
+# 00:14; run 1 failed the quiet row (this session's own editor, 6% busy) and is excluded, so every
+# figure below is over runs 2-21, n = 20. Margins from the ladder: every max/median read <= 1.030.
+#
+# Five lines changed, and ONLY these five (Q6 of the plan: re-record a case only when it is red):
+#   NEW   engine turn, 1 busy, admin          954.2  (step A2's case; min 946.9, max 971.9)
+#   NEW   SendingTime from the cache, micros   10.0  (every run read 10.0)
+#   NEW   SendingTime from the cache, nanos    12.7  (every run read 12.7)
+#   MOVED SendingTime from the cache       4.9 -> 5.8  (+18%; every run read 5.8)
+#   MOVED validate NewOrderSingle, w2w bytes 897.3 -> 994.5  (+10.8%; min 988.5, max 1014.2)
+# No cause is claimed for either move. The micros and nanos cases were added to the same
+# `serialize` binary after 2026-09-05, and adding cases to a binary has moved its neighbours
+# before (the paragraph above: -2.3% and +3.6%) — a candidate, not a finding.
+#
+# EVERY OTHER CASE IN THESE THREE TARGETS IS IN ITS BAND. `density` and `validate` read 3.0-8.4%
+# SLOWER than their 2026-09-05 lines (`engine turn, 64 busy sessions` +3.0%; `validate
+# NewOrderSingle` 882.1 -> 955.9, +8.4%, ceiling 970.3; `validate Heartbeat` +4.5%; `validate
+# TestRequest, w2w bytes` +3.9%) EXCEPT `encode ExecutionReport (template)`, which read 229.3
+# against its 237.6 line -- 3.5% FASTER. Those lines were NOT re-recorded (Q6). Not isolated: code
+# merged since 2026-09-05, the machine, or both.
+#
+# D_in for STATUS.md item 49, same runs: `engine turn, 1 busy sessions` minus `engine turn, 1 busy,
+# admin`, paired per run, median 767.7 ns (734.3 .. 781.3); difference of the medians 765.5 ns.

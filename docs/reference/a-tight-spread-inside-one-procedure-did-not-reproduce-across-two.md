@@ -108,12 +108,48 @@ even inside one procedure it under-reports whenever the outliers are fast ones.
 
 ## What guards it
 
-**No regression test, and no gate — an unmet `CLAUDE.md` §4 obligation** ("every recorded trap
-gets a regression test"), so this entry does not meet the Definition of Done on its own.
-`scripts/w2w-baseline.sh` still publishes from one procedure, still prints a one-sided p50-only
-spread, and does not print HEAD; `DESIGN.md` §8's procedure still publishes from one twenty-run
-median. `STATUS.md` open item **85** is where changing that is tracked. Until then, `DESIGN.md`
-§8's TLS table shows both procedures side by side rather than one.
+`[2026-09-14, later]` **Two of the three halves have a guard; the third is a rule.**
+[ADR-0068](../decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)
+(accepted) makes a published figure two procedures shown side by side, and step S2 of
+[the-second-linux-desk](../plans/2026-09-04-the-second-linux-desk.md) *Sửa 3* changed
+`scripts/w2w-baseline.sh` to match:
+
+- **A dispersion that reads both sides.** A pure `dispersion` function prints `min/median` and
+  `max/median` for p50, p99 and p99.9 (and the wire columns). `scripts/check-w2w-baseline-summary.sh`,
+  run by CI's `script-logic` job, feeds it this entry's own twenty p50s — median 19 998, min/median
+  **0.866**, max/median **1.008** — and asserts that *"a run 13.4% under the median is visible from
+  the min side"*. Reversal, 2026-09-14: `min/median` removed from the function → red on that sentence,
+  `pass 0 fail 4`; restored → `pass 4 fail 0`. The old `spread max/median` line is kept, so records
+  from before can still be compared.
+- **The procedure records what it measured.** The header prints `commit`, `tree`, `uptime`, the
+  `binary` sha256 and mtime (and the generator's over ssh), and `output <dir>`; every run's raw
+  output is kept under that directory with a `summary.txt`. **No test asserts those header lines** —
+  they were checked once against a fake `w2w` (`bash -x`); a real run happened in boot B's build
+  slot, 2026-09-15 00:5x. Also after this review: failing runs' raw output is kept too (code fix F11).
+- **Reproduced before it is published** is ADR-0068's rule, applied by whoever publishes: nothing
+  runs the procedure twice or compares the two. `DESIGN.md` §8's procedure text now states
+  ADR-0068, done at boot B step B2.
+
+## It happened again, 2026-09-15
+
+`[measured 2026-09-15]` boot B of
+[plans/2026-09-04-the-second-linux-desk.md](../plans/2026-09-04-the-second-linux-desk.md), two
+full 20-run procedures apart on the same boot (00:58–02:54, 02:54–04:47): **every zero-interval
+loopback arm read 4.7–6.7% faster in procedure 2 than procedure 1 at p50** — B2's four arms
+(`hft`/`standard` × admin/app, combined process), B5's four journal/log arms, and B8's two
+`fixbolt` arms (admin/app, loopback split against `matthart1983/nanofix`), ten in all, moved the
+same direction, while each procedure's own in-procedure dispersion stayed tight (min/median ≥
+0.992, max/median ≤ 1.013 across all ten; B2 alone: ≥ 0.995, ≤ 1.011). **Nine of the ten did not
+reproduce**; `standard` app `--journal file-async` did (4.7/4.1/3.3%). B4's paced arms (1 ms,
+10 ms, 1 s) moved 0.4–3.9% at every percentile and reproduced; B8's `nanofix` arms reproduced too
+(1.8–3.1%), but B8's own `fixbolt` arms, run the same way, did **not** (p50 5.6% and 5.2%). A
+third procedure of B2, run 04:48–05:01 with no build in between, read within 0.1% of
+procedure 2 for `hft` and 2.0–2.2% above procedure 2 (below procedure 1) for `standard` — **so
+procedure 1 was the outlier, not a monotone drift with elapsed time**. Candidate recorded, not a
+cause, same as before: procedure 1 started about seven minutes after the build slot (cargo
+builds, rustdoc, the Mac rebuild) ended; nothing was varied to isolate it. Full tables and
+verdicts: [measured-costs.md](measured-costs.md), *Boot B, 2026-09-15*, sections B5, B7, B8 and
+"B2, procedure 3".
 
 ## Related
 

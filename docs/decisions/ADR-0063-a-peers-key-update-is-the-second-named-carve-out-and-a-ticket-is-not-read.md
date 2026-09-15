@@ -272,3 +272,13 @@ reads *every rustls **or ring** bump*, and the constant it re-derives for size i
 - [JDK-8329548](https://bugs.openjdk.org/browse/JDK-8329548) — JSSE's automatic KeyUpdate.
 - [Linux `tls.rst`](https://docs.kernel.org/networking/tls.html) — RX pauses on KeyUpdate until rekeyed.
 - Plan `docs/plans/2026-09-04-tls.md` 6.3, 6.9, Sửa 7; commit `2d33d2a`.
+
+## Revision — 2026-09-15, rustls 0.23.44 → 0.23.45
+
+A dated note, not a change of substance. `Cargo.lock` moved rustls from 0.23.44 to 0.23.45
+because advisory [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285) (TLS 1.3
+handshake messages accepted across encryption-level boundaries) failed CI's `cargo deny` job
+on PR #73; ring stays 0.17.14. `crates/engine/tests/tls_key_update.rs` re-measured
+`RUSTLS_BOXES_PER_DIRECTION` and `RUSTLS_HKDF_EXPANDER_BOX` against the new lock and both
+assertions held unchanged; only its `DERIVED_FROM_RUSTLS` string moved, as the test's last
+guard requires. No decision above changes.

@@ -3346,3 +3346,315 @@ twenty-run median is one observation. `STATUS.md` open item **85**.
   is `standard` only, and nothing here measured it.
 - **What a rekey costs.** Nothing here sent a `KeyUpdate` inside a timed window.
 
+## Boot B, 2026-09-15: two procedures, the first hardware stamps, and what conntrack and EEE cost
+
+`[measured 2026-09-15]` boot B of
+[plans/2026-09-04-the-second-linux-desk.md](../plans/2026-09-04-the-second-linux-desk.md): the
+journal and log's added cost (B5), the first head-to-head against `matthart1983/nanofix` (B8),
+one netfilter suspect tested (B7), the cable to the Mac (B6), a spin-loop profile (B9, diagnostic)
+and a third procedure of B2. Raw logs and per-run output:
+`target/w2w-baseline/boot-b-*` (gitignored) and the scratchpad directories the plan names.
+
+### Settings in force for every figure below
+
+- Machine: the §9 desktop, AMD Ryzen 7 3700X, kernel `7.0.0-31-generic`, boot line
+  `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1` (no `nohz_full`, mitigations
+  on), `fixbolt-machine on` (governor performance, boost 0, SMT off, THP never, busy_poll/busy_read
+  50), `enp9s0` IRQs 85–89 on cpu4, `rx-usecs 0`, EEE off at the desk.
+- `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 15 fail 0 unknown 0`; the busy row is
+  re-read before every run (3% ceiling); **0 runs disqualified** in any procedure below. **Except
+  B6's procedure 1 1 s wire arms**, whose own summaries read `pass 14 fail 1 unknown 0` (below).
+- Commit `5ca3889`, clean tree, for every w2w figure. Desk `w2w` sha256 `350d3c17320f` (release,
+  `--features affinity`, `cap_net_raw,cap_net_admin+ep`); Mac `w2w` sha256 `7b2b52cb9be7` at the
+  same commit.
+- Engine pinned to cpu6, local client to cpu7; `/tmp` (where `--journal file-async` and `--log
+  file` write) is **tmpfs**.
+- Procedure
+  ([ADR-0068](../decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)):
+  `scripts/w2w-baseline.sh`, 20 runs × 20 000 timed round trips, 2 000 warmup, `GAP` 8 s, unless
+  noted. Procedure 1: 2026-09-15 00:58–02:54; procedure 2: 02:54–04:47. Reproduced = both medians
+  within 5% of the smaller at that percentile.
+
+### B5 — journal and log
+
+p50 ns; "none" is B2's app arm of the same procedure; added = arm − none.
+
+| arm | proc 1 p50 (added) | proc 2 p50 (added) | p99 proc 1 / 2 | p99.9 proc 1 / 2 | verdict |
+|---|---|---|---|---|---|
+| hft app, none | 20 219 | 18 951 | 24 857 / 23 354 | 26 700 / 25 082 | not reproduced |
+| hft app, `--journal file-async` | 20 714 (+495) | 19 537 (+586) | 24 887 / 23 745 | 26 866 / 25 473 | not reproduced (p50 6.0, p99.9 5.5) |
+| hft app, `--log file` | 21 120 (+901) | 19 983 (+1 032) | 25 393 / 24 151 | 27 236 / 25 879 | not reproduced (5.7 / 5.1 / 5.2) |
+| standard app, none | 21 005 | 19 918 | 25 844 / 24 732 | 27 372 / 26 175 | not reproduced (p50) |
+| standard app, `--journal file-async` | 21 455 (+450) | 20 488 (+570) | 25 814 / 24 807 | 27 257 / 26 385 | reproduced (4.7 / 4.1 / 3.3) |
+| standard app, `--log file` | 21 901 (+896) | 20 840 (+922) | 26 285 / 25 062 | 27 813 / 26 685 | not reproduced (p50 5.1) |
+
+Reading: the *added* term has the same sign in both procedures and both modes, but only one of the
+four arms reproduced — `standard` app `--journal file-async` (+450 → +570 ns, 4.7%); `hft` app's
+journal and log, and `standard` app's log, did not (`hft` log's added term moved **+901 →
++1 032 ns, 14.5%**). File-async journal added **+450 to +586 ns** per application round trip,
+`FileLog` **+896 to +1 032 ns** per round trip — one inbound record and one outbound record, so
+half of that is per direction, **not separately measured** (against §8's `~340 ns [unmeasured]`).
+The journal is `FileJournal<4096, 512>`, `Durability::Async` (item 88
+fixed, step S1), on tmpfs — **not a disk figure**.
+
+### B8 — against `matthart1983/nanofix` (loopback split, `standard`)
+
+fixbolt: `w2w-baseline.sh` with `LISTEN=127.0.0.1:0 ARMS="standard:admin standard:app"` (engine
+half on cpu6, `--connect` generator on cpu7). nanofix: the example acceptor
+`vendor/nanofix/target/release/examples/fixbolt_w2w_acceptor` (nanofix `0f79bae`, sha256
+`a27c5c94439d`), a fresh process per run under `taskset -c 6`, the same `w2w --connect` on cpu7,
+the same busy check, GAP and counts. Driver script `scratchpad/b8-nanofix.sh`, quoted verbatim at
+the end of this section — **it lives nowhere else in the repository**. ns p50 / p99 / p99.9:
+
+Admin path:
+
+| arm | procedure 1 | procedure 2 | diff | verdict |
+|---|---|---|---|---|
+| fixbolt admin | 19 522 / 24 321 / 25 839 | 18 480 / 23 204 / 24 717 | 5.6 / 4.8 / 4.5 % | not reproduced (p50) |
+| nanofix admin | 19 106 / 22 172 / 22 899 | 18 655 / 21 495 / 22 342 | 2.4 / 3.1 / 2.5 % | reproduced |
+
+Application path:
+
+| arm | procedure 1 | procedure 2 | diff | verdict |
+|---|---|---|---|---|
+| fixbolt app | 21 005 / 25 949 / 27 307 | 19 963 / 24 692 / 26 310 | 5.2 / 5.1 / 3.8 % | not reproduced (p50, p99) |
+| nanofix app | 19 286 / 22 318 / 23 099 | 18 850 / 21 851 / 22 688 | 2.3 / 2.1 / 1.8 % | reproduced |
+
+Same-procedure differences, fixbolt − nanofix, ns (proc 1 / proc 2):
+
+| | p50 | p99 | p99.9 |
+|---|---|---|---|
+| admin | +416 / −175 (sign changes: no difference claimed) | +2 149 / +1 709 | +2 940 / +2 375 |
+| app | +1 719 / +1 113 | +3 631 / +2 841 | +4 208 / +3 622 |
+
+nanofix's own app path costs +180 / +195 ns over its own admin path (proc 1 / proc 2); fixbolt's
+app path costs +1 483 / +1 483 over its own admin path. **Both `standard`, both blocking on
+kernel TCP, loopback, one session.** `prior-art.md`'s claim rows are not changed by this.
+
+The driver script, verbatim — it lives nowhere else in the repository:
+
+```bash
+#!/usr/bin/env bash
+# B8: `tools/w2w --connect` against vendor/nanofix's example acceptor, shaped like
+# scripts/w2w-baseline.sh's loopback split run: a fresh acceptor per run pinned to
+# ENGINE_CORE, the generator pinned to CLIENT_CORE, the busy check per run (3%
+# ceiling, same function), GAP seconds between runs, every run's output kept, and
+# median + two-sided dispersion from the script's own functions.
+set -uo pipefail
+cd /home/tmt/Projects/nanofixengine
+RUNS=${RUNS:-20}; MESSAGES=${MESSAGES:-20000}; WARMUP=${WARMUP:-2000}; GAP=${GAP:-8}
+ENGINE_CORE=${ENGINE_CORE:-6}; CLIENT_CORE=${CLIENT_CORE:-7}; PORT=${PORT:-19876}
+PATHS=${PATHS:-"admin app"}
+OUT_DIR=${OUT_DIR:?}
+ACC=vendor/nanofix/target/release/examples/fixbolt_w2w_acceptor
+BIN=target/release/w2w
+mkdir -p "$OUT_DIR"
+BASELINE_SOURCE_ONLY=1 . scripts/w2w-baseline.sh   # median, dispersion (it cd-s and sets -e)
+set +e -u -o pipefail; cd /home/tmt/Projects/nanofixengine
+busy_pct() {
+  read -r _ a b c idle rest < /proc/stat
+  local t0=$((a+b+c+idle)) i0=$idle
+  sleep 1
+  read -r _ a b c idle rest < /proc/stat
+  local t1=$((a+b+c+idle)) i1=$idle
+  local dt=$((t1-t0)) di=$((i1-i0))
+  [ "$dt" -le 0 ] && { echo 100; return; }
+  echo $(( (100*(dt-di)) / dt ))
+}
+scripts/check-machine.sh
+echo "runs $RUNS   messages $MESSAGES   warmup $WARMUP   gap ${GAP}s"
+echo "commit $(git rev-parse --short HEAD)   tree $( [ -z "$(git status --porcelain)" ] && echo clean || echo "$(git status --porcelain | wc -l) paths")"
+echo "uptime $(awk '{printf "%d:%02d", $1/3600, ($1%3600)/60}' /proc/uptime)"
+echo "binary $(sha256sum "$BIN" | cut -c1-12) $(date -r "$BIN" -Iseconds)"
+echo "acceptor nanofix $(git -C vendor/nanofix rev-parse --short HEAD) $(sha256sum "$ACC" | cut -c1-12) $(date -r "$ACC" -Iseconds)"
+echo "output $OUT_DIR"
+echo "engine cpu$ENGINE_CORE (taskset, whole acceptor process)   client cpu$CLIENT_CORE"
+for path in $PATHS; do
+  mins=(); p50s=(); p99s=(); p999s=(); skipped=0
+  for i in $(seq 1 "$RUNS"); do
+    b=$(busy_pct)
+    if [ "$b" -gt 3 ]; then
+      printf '  nanofix  %-5s run %2d  DISQUALIFIED, %s%% busy\n' "$path" "$i" "$b"
+      skipped=$((skipped+1)); sleep "$GAP"; continue
+    fi
+    alog="$OUT_DIR/nanofix-$path-run-$i-acceptor.txt"
+    taskset -c "$ENGINE_CORE" "$ACC" "$PORT" >"$alog" 2>&1 &
+    apid=$!
+    for _ in $(seq 1 50); do grep -q 'listening on' "$alog" && break; sleep 0.1; done
+    grep -q 'listening on' "$alog" || { cat "$alog"; kill "$apid"; echo "FAIL: acceptor never listened"; exit 1; }
+    rc=0
+    out=$("$BIN" --connect "127.0.0.1:$PORT" --path "$path" --client-core "$CLIENT_CORE" \
+            --messages "$MESSAGES" --warmup "$WARMUP" 2>&1) || rc=$?
+    kill "$apid" 2>/dev/null; wait "$apid" 2>/dev/null
+    echo "$out" > "$OUT_DIR/nanofix-$path-run-$i.txt"
+    echo "$out" | grep -qx "path: $path" || { echo "$out"; echo "FAIL: generator ran a path other than $path"; exit 1; }
+    echo "$out" | grep -qE '^ *allocs +0 ' || { echo "$out"; echo "FAIL: allocs != 0 (generator)"; exit 1; }
+    [ "$rc" -eq 0 ] || { echo "$out"; echo "FAIL: connect exit $rc"; exit 1; }
+    g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
+    mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
+    printf '  nanofix  %-5s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s\n' \
+      "$path" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)"
+    sleep "$GAP"
+  done
+  n=${#p50s[@]}
+  {
+    echo
+    echo "  == nanofix / $path: median of $n qualifying runs ($skipped disqualified) =="
+    [ "$n" -gt 0 ] && {
+      echo "     min    $(printf '%s\n' "${mins[@]}" | median) ns"
+      echo "     dispersion $(dispersion p50 "${p50s[@]}")"
+      echo "     dispersion $(dispersion p99 "${p99s[@]}")"
+      echo "     dispersion $(dispersion p99.9 "${p999s[@]}")"
+    }
+    echo "     machine $(scripts/check-machine.sh 2>/dev/null | grep -E '^pass [0-9]+')"
+  } | tee -a "$OUT_DIR/summary.txt"
+done
+```
+
+### B7 — item 51, suspect 1: conntrack on loopback (A–B–A, A/B only, not a §8 figure)
+
+`[measured 2026-09-15]` before: `nft list tables` → six tables (`ip`/`ip6` × `filter`, `nat`,
+`mangle`, Tailscale and iptables-nft); `warp-cli settings` → `Mode: DnsOverHttps`;
+`nf_conntrack_count` 53. B: `nft add table ip fixbolt` with chains `pre` (prerouting, priority
+raw) `iif "lo" notrack` and `out` (output, priority raw) `oif "lo" notrack`. After removal the
+ruleset is identical to before except packet counters (diff: counter lines only). The flush arm
+was **skipped** — the owner was not at the desk (Q2). 2026-09-15 05:03–05:29, commit `5ca3889`.
+
+`crates/engine/benches/payload.rs` binary run directly (sha256 `e9633d31e344`, 5 runs per phase,
+the harness's per-run best), ns/op:
+
+| case | A1 before | B notrack | A2 after |
+|---|---|---|---|
+| TCP loopback, 8 in 8 out | 12 596.9 12 583.2 12 600.9 12 594.4 12 588.9 | 12 173.8 12 175.0 12 158.1 12 175.2 12 212.7 | 12 575.7 12 570.9 12 603.0 12 597.8 12 604.6 |
+| TCP loopback, 83 in 87 out | 12 652.3 12 686.9 12 657.9 12 674.0 12 642.6 | 12 258.6 12 272.4 12 261.8 12 238.8 12 250.6 | 12 662.7 12 678.9 12 672.2 12 629.1 12 677.0 |
+| TCP loopback, 149 in 191 out | 12 676.6 12 721.0 12 745.7 12 690.3 12 725.3 | 12 298.9 12 288.9 12 287.3 12 314.0 12 291.2 | 12 713.6 12 696.3 12 670.4 12 727.9 12 739.4 |
+| TCP loopback, 8192 in 8192 out | 14 674.1 14 717.7 14 844.5 14 809.6 14 910.8 | 14 292.4 14 294.6 14 542.8 14 894.5 14 331.7 | 14 681.7 14 701.8 14 693.9 14 629.6 14 810.0 |
+
+conntrack on `lo` costs **~420 ns** — **3.3%** of the 12.6 µs 8-byte TCP loopback round trip and
+about **4%** of item 51's ~10.2 µs gap, A1 ≈ A2. Item 51's gap is not explained by it.
+
+`w2w-baseline.sh RUNS=10 ARMS=hft:admin` (loopback, combined), per-run p50 ns:
+
+| phase | per-run p50 | median p50 / p99 / p99.9 |
+|---|---|---|
+| A1 before | 18 285 18 255 18 184 15 720 18 305 18 314 16 832 15 669 18 304 18 244 | 18 249 / 22 001 / 24 696 |
+| B notrack | 15 199 15 259 15 279 15 350 15 499 15 379 15 710 15 539 15 409 15 239 | 15 364 / 20 313 / 23 955 |
+| A2 after | 18 185 16 612 18 205 18 164 18 245 18 174 18 124 18 155 18 225 18 204 | 18 179 / 21 936 / 24 521 |
+
+Bimodal in both A phases — most runs ~18.2 µs, some ~15.7 µs — and never slow under notrack.
+Procedure 3 (15 133 median, every run 15 048–15 229) ran 04:48–05:01 **without** payload bench
+runs before it; A1 ran right after five payload runs. Candidate, not a cause: conntrack state left
+by the payload bench's connections makes some later connections take a ~3 µs slower path.
+`nf_conntrack_count`: 53 before, 30 under notrack, 51 after.
+
+### B6 — over the cable: A/B, and the interval-0 failure record
+
+`[measured 2026-09-15]` topology, per-run counters and the `eee` gate are recorded at
+[DESIGN.md §9](../DESIGN.md) and [hft-playbook.md §4](../hft-playbook.md) (the +14.6 µs A/B is
+committed there). Two things from B6 are recorded only here.
+
+**The two 1 s procedures ran close together.** Procedure 1's 1 s arms ran 05:32–06:10, procedure
+2's ran 06:20–06:58: starts 48 minutes apart, but only 10 minutes between the end of one and the
+start of the other — short of ADR-0068's rule 4 (at least 30 minutes, one pass through other
+steps). The pair (45 146 ‖ 42 918) did not reproduce anyway. **The two procedures also carry a
+different machine verdict**: procedure 1's 1 s wire arms' own summaries (`b6-1/wire-1s.log`) both
+read `machine pass 14 fail 1 unknown 0` — the printed header block read `pass 15`, because the
+script took its verdict from a second `check-machine.sh` run (fixed in code now), and which row
+failed there is not recorded; procedure 2's carry `pass 15 fail 0 unknown 0`.
+
+**Interval 0 wire: not measured.** Every attempt FAILed on a missing TX stamp before completing
+an arm: procedure 1 run 1 (`hw-tx-missing 1`), procedure 2 run 2 (1), and in the A/B busy0 run 1
+(1), irq6 run 3 (10), eee-on run 3 (1), eee-off run 4 (1). `tx_hwtstamp_skipped` rose 0 → 1 → 5 →
+29 → 50 → 52 across them: igb holds one TX timestamp at a time and skips the next request when
+one is pending. The script's rule (Sửa 2) fails any run with a missing stamp. **A failing run's
+own wire p50 is not a figure** — each carries `hw-tx-missing ≥ 1` — and is dropped below. The runs
+that did complete clean (20 000 round trips, `hw-rx-missing 0 hw-tx-missing 0`), all diagnostic and
+not reproduced, wire p50 ns: EEE off, busy_poll 50, IRQs on cpu4 — **26 178–26 218 ns, n = 4**
+(26 186 procedure 2 run 1; 26 178, 26 210, 26 218 the interval-0 EEE-off attempt's runs 1–3); IRQs
+on cpu6 — **29 082, 29 138 ns, n = 2**, about +2.9 µs over the EEE-off runs; EEE on — **39 522,
+39 546 ns, n = 2**, about +13.3 µs. `busy_poll`/`busy_read` 0 has **no clean run** — it failed at
+run 1 — so the plan's busy_read A/B has **no result**. The 2 000-round-trip smoke (24 562, 26 042)
+and the discard run (26 306) are not comparable and are excluded from every range above. **Only
+the admin arm ever ran at interval 0** — the script stops at the first FAIL, so the application
+arm never started.
+
+**A/B, one procedure each, RUNS=10, 07:08–07:49, differences only
+([ADR-0068](../decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)
+rule 4).** The plan's B6 gate asked for two A/B arms — `busy_read` and IRQs on the engine core —
+plus `tx_hwtstamp_skipped` read per run; both A/B arms in fact ran at interval 0, after both 1 s
+procedures had already failed there, and `tx_hwtstamp_skipped` was read once per procedure rather
+than per run:
+
+- EEE on at the desk (`ethtool --set-eee enp9s0 eee on`, link bounced, `enabled - active`, Mac
+  media gained `energy-efficient-ethernet`) vs EEE off again in the same hour, hft admin, 1 s:
+  wire p50 **54 310** (51 730..57 874) vs **39 714** (37 978..41 122) → **+14.6 µs**, ≈ the
+  16.5 µs 1000BASE-T wake time; counterparty p50 388 354 vs 374 937. *A/B only, never a
+  figure — the published 1 s pair is 45 146 ‖ 42 918.* Over Q15's 5% threshold →
+  §9 row + a `check-machine.sh` `eee` row (step Q15, this PR).
+- IRQs on cpu6: interval 0 only, failed at run 3 on a missing TX stamp; the two clean runs before
+  it read wire p50 **29 138, 29 082** against the EEE-off runs' 26 178–26 218 — about +2.9 µs
+  each, **diagnostic, n = 2**.
+- `busy_poll`/`busy_read` 0: interval 0 only, failed at run 1 on a missing TX stamp — **no clean
+  run, no result**.
+- The 1 s EEE-off arm read 39 714 while procedures 1 and 2 read 45 146 and 42 918 an hour
+  earlier: the 1 s wire figure moves ~14% across the morning.
+
+### B9 — perf on the engine thread, diagnostic
+
+`[measured 2026-09-15]` `hft`, loopback, 400 000 round trips, 4 s at 4 999 Hz, `-g`:
+`sudo perf record -F 4999 -g -t <engine-tid> -- sleep 4`; 19 945 samples (admin), 19 920 (app).
+Share of engine-thread samples, children (cumulative):
+
+| symbol | admin | app |
+|---|---|---|
+| `entry_SYSCALL_64_after_hwframe` | 89.30 % | 75.34 % |
+| `fixbolt_engine::Acceptor::accept` | **49.93 %** | **36.70 %** |
+| `TcpTransport::send` → `__x64_sys_sendto` | 30.65 % → 29.57 % | 32.18 % → 31.19 % |
+| `__x64_sys_accept4` → `do_accept` | 27.65 % → 25.39 % | 18.27 % → 16.74 % |
+| `TcpTransport::recv` → `__x64_sys_recvfrom` | 12.74 % → 10.70 % | 10.37 % → 8.08 % |
+| `sock_alloc_file` (under `do_accept`) | 10.94 % | 7.48 % |
+| `nft_do_chain` (self) | 1.27 % | 0.98 % |
+
+Top self symbols, app: `fixbolt_session::scan_fields::<256>` 5.40 %, `Session::judge` 1.75 %,
+`Template<32,512>::encode_with` 1.74 %, `MessageView::get` 1.15 %, `parse_into::<Fix44,256>`
+1.03 %. Top self, admin: `__memcg_slab_post_alloc_hook` 3.15 %, `srso_safe_ret` 3.04 %,
+`srso_return_thunk` 2.81 %, `native_queued_spin_lock_slowpath` 2.45 %, `evict` 1.19 %, `__fput`
+1.18 %, `inode_init_always_gfp` 1.11 %, `do_accept` 1.07 %.
+
+Reading, **diagnostic — not a cause**: the `hft` engine thread spins, so these are shares of the
+spin loop, not per-message latency. `Acceptor::accept` (cumulative, including its own code and the
+syscall it makes) is **49.9%** of admin samples and **36.7%** of app samples; the `accept4`
+syscall itself is **27.7%** and **18.3%**. A non-blocking `accept4` on an empty listener allocates
+a socket file and inode (`sock_alloc_file`, `inode_init_always_gfp`) and frees it (`__fput`,
+`evict`) before returning `EAGAIN`, as the callchain shows. What that does to the round trip — how
+long a turn is when a request lands — is not measured.
+
+### B2, procedure 3
+
+`[measured 2026-09-15]` **Procedure 3, diagnostic only (not a published column), B2 again
+04:48–05:01, same commit:** p50 hft admin 15 133, hft app 18 961, standard admin 18 856, standard
+app 20 319. `hft` matches procedure 2 within 0.1%; `standard` sits 2.0–2.2% above procedure 2 and
+below procedure 1. So procedure 1 is the outlier, not a monotone drift. Candidate recorded, not a
+cause: procedure 1 started ~7 minutes after the build slot (cargo builds, rustdoc, the Mac
+rebuild) ended.
+
+### What is not proven
+
+- **An interval-0 wire figure on this NIC with this procedure.** Every attempt FAILed on a
+  missing TX stamp (B6); the closest thing is diagnostic single runs.
+- **The 1 s wire figure at a single setting.** It moved ~14% across one morning (B6); only one
+  A/B was run per variable, so nothing separates that drift from EEE, busy_poll/IRQ placement or
+  the hour itself.
+- **A cause for either loopback bimodality.** B7's "conntrack state left by the payload bench"
+  and B2/B8's "procedure 1 started ~7 minutes after the build slot" are both candidates recorded,
+  not causes; nothing was varied to isolate either.
+- **Any latency effect from B9's profile.** It is a share of the spin loop, not a per-message
+  timing; what a non-blocking `accept4`'s allocate-and-free costs a round trip is not measured.
+- **Item 51's second suspect.** Suspect 1 (conntrack) is 3.3% of the 12.6 µs 8-byte TCP loopback
+  round trip, about 4% of item 51's ~10.2 µs gap; the CPU speculation mitigations (suspect 2) were
+  not tested this boot, and the flush arm (Tailscale + full ruleset) was skipped — the owner was
+  not at the desk.
+- **Whether fixbolt's admin path actually costs more than nanofix's.** The sign of the
+  same-procedure difference flipped between procedures (+416 / −175 ns); no difference is
+  claimed at admin p50.
+

@@ -17,11 +17,13 @@
 # [2026-09-14] step A5 of docs/plans/2026-09-04-the-second-linux-desk.md: the NIC
 # IRQ affinity row, plus two new rows (coalescing, irqbalance) and an extra field
 # on the busy_poll row, are judged for real once a NIC is selected — FIXBOLT_NIC,
-# or auto-selected as the first interface that HAS CARRIER, excluding lo itself,
-# tailscale* (this project's own remote-control tunnel), docker*/veth*/br-*
-# (container and bridge virtual interfaces) and wl* (wireless — no stable IRQ or
-# coalescing story). No NIC selected: every row below is byte-identical to the
-# script before this step, including the NIC IRQ affinity row's `? ? ?`.
+# or auto-selected by `pick_nic` below (a physical, non-wireless bus device
+# under /sys/class/net; carrier only breaks a tie among several — step S3,
+# same day, replaced the earlier carrier-only rule, whose scope shrank
+# silently when the link bounced:
+# docs/reference/a-machine-check-narrowed-its-own-scope-when-the-link-bounced.md).
+# No NIC selected: every row below is byte-identical to the script before
+# this step, including the NIC IRQ affinity row's `? ? ?`.
 #
 # The overlap check (NIC IRQ affinity vs /sys/devices/system/cpu/isolated) first
 # used `comm -12` on two `sort -n`-ed lists and got "not in sorted order" on both,
@@ -125,6 +127,30 @@ coalesce_verdict() {
   fi
 }
 
+# eee_verdict <ethtool --show-eee output>
+#
+# One line, `PASS|FAIL|UNKNOWN<TAB><value>`. Reads the `EEE status:` line only —
+# `Tx LPI` and the advertised-modes lines are not judged. [measured 2026-09-15]
+# desk boot B6, docs/plans/2026-09-04-the-second-linux-desk.md Điều 3 (Đề nghị,
+# Q15): with EEE on, `enp9s0` (Intel I211, igb) cabled to the Mac read
+# `tools/w2w` wire p50 at interval 1 s of 54 310 ns against 39 714 ns with EEE
+# off in the same hour — +14.6 µs, close to the 16.5 µs 1000BASE-T LPI wake
+# time, far over the 5% publishing threshold. `enabled - inactive` still
+# FAILs: it means only that the link partner is not advertising EEE *today*,
+# not that this NIC will stay quiet once the far end starts — the desk's own
+# setting is the only half §9 can hold constant. No `EEE status:` line at all
+# (ethtool -1, or a driver/NIC that does not support EEE) is UNKNOWN, same as
+# coalesce_verdict above: never a pass on text this function cannot read.
+eee_verdict() {
+  local out="$1" status
+  status=$(echo "$out" | awk -F: '/EEE status:/{v=$2; gsub(/^[ \t]+|[ \t]+$/,"",v); print v; exit}')
+  case "$status" in
+    disabled) printf 'PASS\tEEE status: disabled\n' ;;
+    "enabled - active" | "enabled - inactive") printf 'FAIL\tEEE status: %s\n' "$status" ;;
+    *) printf 'UNKNOWN\tno EEE status reported\n' ;;
+  esac
+}
+
 # virt_verdict <systemd-detect-virt output> <steal % over the window>
 #
 # Why this row exists: a guest CANNOT satisfy §9, and it does not fail loudly — it
@@ -170,6 +196,58 @@ virt_verdict() {
   esac
 }
 
+# pick_nic <net-root> <explicit>
+#
+# The measurement NIC, one name or empty. `explicit` (FIXBOLT_NIC) wins
+# outright — no carrier required, because a cable-less FAIL/UNKNOWN run is
+# still useful (A5). Otherwise walk <net-root>/*/ in name order and keep
+# every interface that is a physical bus device: `type` reads 1 (a loopback
+# reads 772, a Tailscale-style tunnel reads 65534), it has a `device`
+# symlink (a virtual interface — `docker0`, `veth*`, `br-*`, `lo`,
+# `tailscale*` — has none), and it is not wireless (`wireless/`, the old
+# sysfs marker, or `phy80211`, the cfg80211/mac80211 one — wireless has no
+# stable IRQ or coalescing story and is never what §9's NIC rows mean).
+# Among the survivors, the first with carrier = 1 wins; with none carrying,
+# the first survivor; with no survivor, empty.
+#
+# [2026-09-14] step S3 of docs/plans/2026-09-04-the-second-linux-desk.md:
+# selecting by carrier ALONE (the rule this replaces) meant a ~4 s link
+# bounce (`ethtool --set-eee`/`-A` reinitialising `igb`) left no candidate,
+# so the NIC-dependent rows below silently disappeared while the run still
+# printed "§9 satisfied". Carrier now only breaks a tie among physical
+# devices that do not depend on the cable being up this instant. See
+# docs/reference/a-machine-check-narrowed-its-own-scope-when-the-link-bounced.md.
+pick_nic() {
+  local net_root="$1" explicit="$2" dev cand first=""
+  if [ -n "$explicit" ]; then
+    echo "$explicit"
+    return 0
+  fi
+  for dev in "$net_root"/*/; do
+    if [ ! -d "$dev" ]; then
+      continue
+    fi
+    cand=$(basename "$dev")
+    if [ "$(r "${dev}type")" != 1 ]; then
+      continue
+    fi
+    if [ ! -e "${dev}device" ]; then
+      continue
+    fi
+    if [ -e "${dev}wireless" ] || [ -e "${dev}phy80211" ]; then
+      continue
+    fi
+    if [ "$(r "${dev}carrier")" = 1 ]; then
+      echo "$cand"
+      return 0
+    fi
+    if [ -z "$first" ]; then
+      first="$cand"
+    fi
+  done
+  echo "$first"
+}
+
 # Sourced by the verdict test, which wants the functions and none of the probing.
 if [ "${MACHINE_SOURCE_ONLY:-0}" = 1 ]; then
   return 0 2>/dev/null || exit 0
@@ -184,6 +262,29 @@ else
   echo "cpu       $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
   echo "cores     $(getconf _NPROCESSORS_ONLN 2>/dev/null || echo unknown)"
 fi
+
+# --- NIC selection --------------------------------------------------------
+#
+# `FIXBOLT_NIC=<name>` names the NIC explicitly (carrier not required — a
+# cable-less FAIL/UNKNOWN run is still useful). Otherwise `pick_nic` (above)
+# walks /sys/class/net in name order and keeps the first physical NIC — a
+# bus device, not virtual, not wireless — breaking a tie between several by
+# carrier. No candidate: NIC stays empty and every row below behaves exactly
+# as it did before this NIC awareness existed.
+#
+# Printed here, in the machine header, not just used silently by the rows
+# further down: [2026-09-14] a run whose auto-pick lost every candidate
+# during a link bounce dropped three rows and still printed "§9 satisfied"
+# without saying its own scope had shrunk — see
+# docs/reference/a-machine-check-narrowed-its-own-scope-when-the-link-bounced.md.
+NIC=$(pick_nic /sys/class/net "${FIXBOLT_NIC:-}")
+if [ -n "$NIC" ]; then
+  nic_carrier=$(r "/sys/class/net/$NIC/carrier")
+  echo "nic       $NIC (carrier ${nic_carrier:-unknown})"
+else
+  echo "nic       none — no wired NIC with a bus device under /sys/class/net; FIXBOLT_NIC=<name> names one"
+fi
+
 echo "rustc     $(rustc --version 2>/dev/null || echo 'not on PATH')"
 echo
 
@@ -198,32 +299,6 @@ if [ "$(uname -s)" != Linux ]; then
 fi
 
 CMDLINE=$(r /proc/cmdline)
-
-# --- NIC selection --------------------------------------------------------
-#
-# `FIXBOLT_NIC=<name>` names the NIC explicitly (carrier not required — a
-# cable-less FAIL/UNKNOWN run is still useful). Otherwise auto-select the
-# first interface that HAS CARRIER, excluding: `lo` itself; `tailscale*`
-# (this project's own remote-control tunnel, not the measurement NIC);
-# `docker*`, `veth*`, `br-*` (container/bridge virtual interfaces — never
-# the wire the engine talks to); and `wl*` (wireless — no stable IRQ
-# affinity or ethtool coalescing story, and never what §9's NIC rows mean).
-# No FIXBOLT_NIC and no NIC left standing after those exclusions: NIC stays
-# empty and every row below behaves exactly as it did before this NIC
-# awareness existed.
-NIC="${FIXBOLT_NIC:-}"
-if [ -z "$NIC" ]; then
-  for dev in /sys/class/net/*/; do
-    cand=$(basename "$dev")
-    case "$cand" in
-      lo | tailscale* | docker* | veth* | br-* | wl*) continue ;;
-    esac
-    if [ "$(r "${dev}carrier")" = 1 ]; then
-      NIC="$cand"
-      break
-    fi
-  done
-fi
 
 echo "=== DESIGN.md §9"
 
@@ -594,6 +669,32 @@ if [ -n "$NIC" ]; then
         "sudo systemctl stop irqbalance && sudo systemctl disable irqbalance"
     else
       row PASS "irqbalance inactive" "${ib_status:-inactive}"
+    fi
+  fi
+fi
+
+# --- EEE (802.3az) on the measurement NIC ---------------------------------
+# New row (Q15, desk boot B6): only meaningful once a NIC is selected, same as
+# coalescing and irqbalance above. See eee_verdict above for the measurement
+# and the reasoning; DESIGN.md §9 names this row "EEE off on the measurement
+# NIC".
+if [ -n "$NIC" ]; then
+  if ! command -v ethtool >/dev/null 2>&1; then
+    row UNKNOWN "eee" "ethtool not on PATH" "install ethtool"
+  else
+    ee_out=$(ethtool --show-eee "$NIC" 2>&1)
+    ee_status=$?
+    ev=$(eee_verdict "$ee_out")
+    ev_value=${ev#*$'\t'}
+    if [ "$ee_status" -ne 0 ]; then
+      row UNKNOWN "eee" "$NIC: ethtool --show-eee failed (exit $ee_status)" \
+        "check the NIC/driver supports EEE"
+    else
+      case "${ev%%$'\t'*}" in
+        PASS) row PASS "eee" "$NIC: $ev_value" ;;
+        UNKNOWN) row UNKNOWN "eee" "$NIC: $ev_value" "unsupported here — check by hand" ;;
+        *) row FAIL "eee" "$NIC: $ev_value" "sudo ethtool --set-eee $NIC eee off" ;;
+      esac
     fi
   fi
 fi

@@ -937,7 +937,7 @@ below).
 | Keeping a message for resend | `[measured 2026-09-05]` **8.9 ns** for a 191-byte `ExecutionReport` into `MemJournal<4096,512>`, walking the ring as the engine does; **6.3 ns** pinned to one slot. A 2 MiB ring is not a cache cost — 191 bytes at a 512-byte stride is what a prefetcher is for | `crates/engine/benches/journal.rs` against `baselines.tsv`, every case reading back what it wrote before anything is timed |
 | What a bigger message costs the kernel | `[measured 2026-09-05]` **0.1443 ns per byte** written and read, from an 8 → 8192 byte lever. The two real `tools/w2w` sizes are cases of their own and **their difference is under this instrument's resolution**, which the module doc says where the number is | `crates/engine/benches/payload.rs` against `baselines.tsv`. Absolute figures here are environment-bound, not a round-trip claim — [a loopback write costs thirty-two syscalls](reference/a-loopback-write-costs-thirty-two-syscalls.md) |
 | Wire-to-wire, loopback | `[measured 2026-09-02]` **met**: `pass 12 fail 0 unknown 1`, engine pinned to isolated `cpu6`, client to `cpu7`, medians of 20 runs of 20 000 round trips. `hft` **16 010 / 20 589 / 22 127 ns** administrative, **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. p99 ≤ 50 µs holds in all four arms. Allocations in the timed window 0 on both threads | `tools/w2w --features affinity`, driven by `scripts/w2w-baseline.sh`. Phase 1 exit criterion 6 |
-| Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met**: no cable, so no hardware stamp has been read; on `lo` the tool counts every stamp missing and prints no wire column, which is the only arm run so far. A figure is published only from a run with `hw-rx-missing 0` and `hw-tx-missing 0`. **Mode `hft` only**: `w2w` refuses `--mode standard --wire-timestamps` on a hardware NIC ([a-transmit-timestamp-wakes-a-blocking-engine](reference/a-transmit-timestamp-wakes-a-blocking-engine.md)); `standard` on a NIC is the generator's table, *as the counterparty sees it*, and never a wire figure |
+| Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above. `[measured 2026-09-15]` **measured, not reproduced, and not at the rate this row asks for**: the first hardware-stamped wire figures, `hft` paced at one message a second, wire p50 admin 45 146 ‖ 42 918 and application 49 626 ‖ 45 082 ns across two procedures (§8 *Boot B*); back to back, `igb` skipped a TX stamp within 1–4 runs every time, so no figure exists at interval 0 | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met** on that day: no cable, so no hardware stamp had been read (read on 2026-09-15 — the first column); on `lo` the tool counts every stamp missing and prints no wire column, which was the only arm run at the time. A figure is published only from a run with `hw-rx-missing 0` and `hw-tx-missing 0`. **Mode `hft` only**: `w2w` refuses `--mode standard --wire-timestamps` on a hardware NIC ([a-transmit-timestamp-wakes-a-blocking-engine](reference/a-transmit-timestamp-wakes-a-blocking-engine.md)); `standard` on a NIC is the generator's table, *as the counterparty sees it*, and never a wire figure |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every
 other row is an internal number; without this one they are unfalsifiable.
@@ -1116,12 +1116,97 @@ round trips each, **over loopback**:
 |---|---|---|
 | TestRequest → Heartbeat (no application) | p50 **16 010** · p99 **20 589** · p99.9 **22 127** ns | p50 **19 447** · p99 **24 106** · p99.9 **25 609** ns |
 | NewOrderSingle → ExecutionReport (through an application) | p50 **19 908** · p99 **24 657** · p99.9 **26 150** ns | p50 **20 920** · p99 **25 618** · p99.9 **27 092** ns |
-| if `FileLog` is on, added per message **per direction** | ~340 ns `[unmeasured]` | ~340 ns `[unmeasured]` |
+| if `FileLog` is on, added per round trip (one inbound record and one outbound record; half of that, per direction, was not separately measured) | +901 to +1 032 ns `[measured 2026-09-15]`, tmpfs, from arms that did not reproduce — *Boot B* below | +896 to +922 ns, same |
 
 `scripts/w2w-baseline.sh` is the procedure and
 [reference/measured-costs.md](reference/measured-costs.md) the whole reading. **Loopback is
 not a NIC**: §6's NIC-to-NIC row stays open, and these figures contain no driver and no
-interrupt.
+interrupt. **`[2026-09-15]` A figure published from here on is two procedures shown side by
+side** ([ADR-0068](decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)):
+same commit, same binary, clean tree, at least 30 minutes apart; both medians appear, never
+averaged; *reproduced* means within 5% of the smaller at every published percentile; an A/B arm
+is one procedure of 10 runs and is only ever a difference. The table above predates the rule and
+is one procedure.
+
+### Boot B, 2026-09-15: every zero-interval loopback arm was faster the second time; nine of ten by more than 5%
+
+`[measured 2026-09-15]` §9 desktop, `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 15
+fail 0 unknown 0` (busy row re-read before every run, 0 runs disqualified), kernel 7.0.0-31,
+commit `5ca3889`, clean tree, `w2w` sha256 `350d3c17320f`, engine on `cpu6`, client on `cpu7`,
+20 runs × 20 000 round trips unless noted; procedure 1 00:58–02:54, procedure 2 02:54–04:47.
+ns, p50 / p99 / p99.9, procedure 1 ‖ procedure 2. The whole reading, A/B arms and diagnostics:
+[measured-costs](reference/measured-costs.md), *Boot B*.
+
+| Loopback round trip | procedure 1 | procedure 2 | reproduced? |
+|---|---|---|---|
+| `hft`, TestRequest → Heartbeat | 16 021 / 20 258 / 22 072 | 15 149 / 19 577 / 21 355 | **no** — p50 5.8% |
+| `hft`, NewOrderSingle → ExecutionReport | 20 219 / 24 857 / 26 700 | 18 951 / 23 354 / 25 082 | **no** — 6.7 / 6.4 / 6.5% |
+| `standard`, TestRequest → Heartbeat | 19 452 / 24 081 / 25 528 | 18 455 / 22 934 / 24 677 | **no** — p50 5.4%, p99 5.0% |
+| `standard`, NewOrderSingle → ExecutionReport | 21 005 / 25 844 / 27 372 | 19 918 / 24 732 / 26 175 | **no** — p50 5.5% |
+
+**Zero-interval loopback arms were measured twice over: B2's four above, B5's four journal/log
+arms and B8's two fixbolt arms — ten in all, and all ten were faster in procedure 2, p50
+differences 4.7–6.7%.** Nine of the ten did not reproduce; the exception is `standard` app
+`--journal file-async` (4.7 / 4.1 / 3.3%). Across those ten, in-procedure p50 dispersion sat
+between min/median ≥ 0.992 and max/median ≤ 1.013 (B2 alone: ≥ 0.995, ≤ 1.011). That is
+[STATUS.md](../STATUS.md) item 85 again, at a larger scale and all in one direction. A
+third B2 run at 04:48 — diagnostic, not a column — matched procedure 2 within 0.1% in `hft` and
+read 2.0–2.2% slower in `standard`, so procedure 1 is the outlier rather than a drift. Procedure 1
+began about seven minutes after a build slot (cargo, rustdoc) ended: a candidate, not a cause.
+**The paced loopback arms below moved 0.4–3.9% at every percentile and reproduced**; the nanofix
+comparison in measured-costs reproduced too (1.8–3.1%), but B8's own fixbolt arms, run the same
+way, did not (p50 5.6% and 5.2%).
+
+| `hft` admin, loopback, paced (`--interval`) | procedure 1 | procedure 2 | reproduced? |
+|---|---|---|---|
+| 1 ms, 20 000 × 20 | 19 296 / 23 785 / 26 250 | 19 066 / 23 599 / 26 129 | yes — 1.2% |
+| 10 ms, 5 000 × 20 | 21 746 / 25 759 / 28 594 | 20 934 / 24 857 / 27 557 | yes — 3.9% |
+| 1 s, 100 × 10, p50 only | 33 784 | 32 506 | yes — 3.9% |
+| 1 s, `standard`, 100 × 10, p50 only | 32 121 | 31 916 | yes — 0.6% |
+
+**Latency at 3 a.m.**: an `hft` engine answering one message a second is ~2.1× slower at p50 than
+one answering back to back, and at 1 s `standard` read **lower** than `hft` in both procedures —
+32 121 vs 33 784 (5.2%) and 31 916 vs 32 506 (1.8%) — the two modes are within a few µs at 1 s, and
+`hft` is not faster there: D8's loopback advantage is not visible on a link idle for a second. The
+1 s arms carry 100 samples, so only p50
+is published. The plan asked for 120; `w2w` renders `SendingTime` before the clock starts, and
+at one message a second the 121st is older than the session's 120 s `MaxLatency` — the engine
+rejected it, correctly ([a-paced-run-outlived-the-sessions-maxlatency](reference/a-paced-run-outlived-the-sessions-maxlatency.md)).
+
+| Application round trip, what the journal and the log add | `hft` p50, proc 1 ‖ 2 | `standard` p50, proc 1 ‖ 2 |
+|---|---|---|
+| `--journal file-async` (`FileJournal<4096, 512>`, `Durability::Async`) | +495 ‖ +586 | +450 ‖ +570 |
+| `--log file` (`FileLog`, one record in, one out) | +901 ‖ +1 032 | +896 ‖ +922 |
+
+Each is the arm minus the same procedure's plain application arm above. Both files are on
+**tmpfs**: these are not disk figures. The journal and the in-memory `Store` now have the same
+4 096 slots (STATUS item 88), so the difference is the kind of journal alone.
+
+| Over a cable, `hft`, wire (NIC in → NIC out at the acceptor, hardware stamps) | procedure 1 | procedure 2 | reproduced? |
+|---|---|---|---|
+| admin, paced 1 s, 100 × 10, p50 | 45 146 | 42 918 | **no** — 5.2% |
+| application, paced 1 s, 100 × 10, p50 | 49 626 | 45 082 | **no** — 10.1% |
+| admin, back to back (the only arm that ran at interval 0 — the script stops at the first FAIL, so application never started) | **not measured** — an `igb` TX stamp was skipped within 1–4 runs every time | | |
+| `standard` admin, back to back, *as the Mac sees it* (no wire stamps) | 260 771 / 277 749 / 322 000 | 260 625 / 277 791 / 321 729 | yes — 0.1% |
+| `standard` application, same | 257 833 / 277 062 / 300 146 | 257 833 / 277 292 / 300 437 | yes — 0.1% |
+
+The two 1 s procedures above ran close together — 05:32–06:10 and 06:20–06:58, starts 48 minutes
+apart but only 10 minutes between the end of one and the start of the other, short of ADR-0068's
+rule 4 (at least 30 minutes) — and the pair did not reproduce anyway.
+
+Direct cable, desk `enp9s0` Intel I211 (`igb`) ↔ a Mac mini's built-in port, 1000baseT, **EEE
+off at the desk**, pause on at both ends with every flow-control counter 0, `rx-usecs 0`, MTU
+1500, IRQs on `cpu4`, observer on `cpu7`, generator unpinned on the Mac; `hw-rx-missing 0 and
+hw-tx-missing 0` in every published run. **These are the first hardware-stamped figures this
+repository has.** The back-to-back wire figure is what §6 asks for and it is not here: `igb`
+holds one pending TX stamp, `tx_hwtstamp_skipped` rose with every failed run, and the procedure
+fails a run with a missing stamp. **A failing run's own wire p50 is not a figure.** The runs that
+did complete clean (diagnostic, not reproduced): EEE off, busy_poll 50, IRQs on cpu4 —
+**26 178–26 218 ns, n = 4**; IRQs on cpu6 — **29 082, 29 138 ns, n = 2**, about +2.9 µs over the
+EEE-off runs; EEE on — **39 522, 39 546 ns, n = 2**, about +13.3 µs. `busy_poll`/`busy_read` 0 had
+**no clean run**. The 2 000-round-trip smoke and the discard run are not comparable and are
+excluded from every range above. The Mac's table contains the Mac's own stack and an
+unpinned generator both ways; it is not the acceptor's latency.
 
 Three readings:
 
@@ -1270,6 +1355,29 @@ both are noise, and the remainder barely moved — ~2 804 to ~2 770 ns.**
 | The engine's framing and read-buffer management | **Open, and now holds almost all of it.** No benchmark isolates it |
 | The session's own `Heartbeat` serialise on the administrative side | **Open.** No committed case, so it is not subtracted in either direction |
 
+**`[measured 2026-09-15]` The engine's whole share, measured in one piece: D_in = 765.5 ns.**
+`engine turn, 1 busy sessions` − `engine turn, 1 busy, admin` (`crates/engine/benches/density.rs`,
+module doc *The administrative twin*): median 1 719.7 − 954.2 over the same 20 runs, paired
+per-run median 767.7 ns (734.3 .. 781.3). §9 desktop, `FIXBOLT_NIC=enp9s0
+scripts/check-machine.sh` → `pass 15 fail 0 unknown 0`, HEAD `f43d7e8`; boot B step B1 of
+[the-second-linux-desk](plans/2026-09-04-the-second-linux-desk.md). Both cases run the same
+engine with no kernel underneath, so D_in holds everything the process does differently —
+framing, read-buffer management, session, dispatch, the application, serialise, and the
+administrative side's own `Heartbeat` — and nothing a socket does. Two arithmetic facts, **no
+cause claimed**:
+
+- **The in-process rows above add to more than D_in** — ~1 104 ns without the kernel row, against
+  765.5. They were measured as separate cases, and their inputs moved since: `validate
+  NewOrderSingle, w2w bytes` reads 994.5 today against the 897.3 the dictionary row used. They are
+  not independent terms that add.
+- **Against the 3 898 ns, ~3 130 ns is outside one engine turn** — kernel, copies, syscalls, the
+  client and the read loop's wakeups. That makes *the engine's framing and read-buffer management*,
+  which the table above says holds almost all of the remainder, **at most part of 765.5 ns**. Two
+  conditions stand: the 3 898 ns was measured on the 2026-09-05 code, and boot B's B2 re-measured
+  both paths — `hft` app − admin p50 reads **4 198 ‖ 3 802 ns** (procedures 1 ‖ 2, from arms that
+  did not reproduce), stated beside the 3 898 ns above; and `Feed`'s and `AdminFeed`'s bytes are
+  not asserted to be `w2w`'s.
+
 **Twice now the largest named candidate has not been the answer.** The dictionary pass is real,
 is the biggest single row on this page, and is 17.4% of what it was nominated to explain; the
 payload term was the intuitive one and is 0.9%. STATUS item 49.
@@ -1317,8 +1425,9 @@ machine, not the code. None of this is optional for a latency measurement to mea
 | `isolcpus` + `rcu_nocbs` for the engine core, **and the engine thread pinned to it** | No other tenants and no RCU callbacks on the engine core. `[measured 2026-08-31]` free: 494.8 ns and 498.2 ns per turn against 501.8 untouched. `[measured 2026-09-02]` worth **11× at p99.9 and nothing at p50**, wire-to-wire, application path, one variable, both arms inside one CCD: p50 19 968 against 19 407 (the isolated core is 2.9% *slower*), p99.9 **26 300 against 266 887**, and 293 749 with no pinning at all. A 20 000-sample benchmark of a 500 ns operation could not see it; the excursion is 250 µs long |
 | **CPU speculation mitigations IN FORCE** | `[measured 2026-09-01]` the single largest term in this design's budget. Turning them off makes every syscall **59–63%** cheaper: `Engine::turn` 448.9 → 175.2 ns, `recv` 420.5 → 156.9, while thirteen pure user-space benchmarks move −4.1% to +4.1% with no direction. All of it is `retbleed`'s untrained return thunk plus `spec_rstack_overflow`'s Safe RET; `vmscape` costs nothing. **This row requires them ON**, because `baselines.tsv` was recorded with them and a machine without them is not comparable. It is not advice to disable them ([ADR-0023](decisions/ADR-0023-section-9-records-the-cpu-mitigations.md)) |
 | `nohz_full`: **NOT recommended** | `[measured 2026-08-31]` 160 ns on every kernel entry, 670.7 ns per turn against 494.8. What it buys is the far tail only: p50 376 against 216, p99 376 against 224, p99.9 384 against 224, and it wins from p99.99 outward (504 against 2 848). A busy `hft` engine makes ~2 000 000 kernel entries per second and this removes ~1 100 excursions of 3 µs: 0.32 s of tax against 0.0033 s of tail. Take it only for a p99.99 objective ([ADR-0021](decisions/ADR-0021-nohz-full-leaves-section-9.md)) |
-| IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt. `scripts/check-machine.sh` judges this row for real, not just reports it, once a NIC is selected (`FIXBOLT_NIC=<name>`, or auto-selected: the first interface with carrier, excluding `lo`, `tailscale*`, `docker*`, `veth*`, `br-*` and wireless `wl*`): it reads every `/proc/irq/<n>/smp_affinity_list` naming that NIC and checks it against `/sys/devices/system/cpu/isolated`, and separately checks that `irqbalance` is not active — an active `irqbalance` redistributes IRQs regardless of any pin written here. Without a NIC selected, the row stays the `? ? ?` it always was |
+| IRQ affinity: NIC queue → a core that is *not* the engine core | The engine never takes an interrupt. `scripts/check-machine.sh` judges this row for real, not just reports it, once a NIC is selected (`FIXBOLT_NIC=<name>`, or auto-selected by `pick_nic`: a physical wired device — `type` 1, a bus `device`, not wireless — with carrier breaking a tie only, and printed on the header's `nic` line; `[2026-09-15]` it used to select by carrier, and a four-second link bounce silently dropped the NIC rows — [a-machine-check-narrowed-its-own-scope-when-the-link-bounced](reference/a-machine-check-narrowed-its-own-scope-when-the-link-bounced.md)): it reads every `/proc/irq/<n>/smp_affinity_list` naming that NIC and checks it against `/sys/devices/system/cpu/isolated`, and separately checks that `irqbalance` is not active — an active `irqbalance` redistributes IRQs regardless of any pin written here. Without a NIC selected, the row stays the `? ? ?` it always was |
 | Interrupt coalescing **off** | A NIC batching interrupts (`rx-usecs > 0`) trades latency for fewer interrupts — the wrong trade on the engine's receive path. `scripts/check-machine.sh` judges it once a NIC is selected (same selection rule as the IRQ affinity row above): `ethtool -c <nic>`, PASS when `rx-usecs: 0` |
+| EEE (802.3az) **off** on the measurement NIC | A NIC in Low Power Idle must wake its link partner before it can send, ~16.5 µs at 1000BASE-T, and that wait sits inside the acceptor's NIC-in → NIC-out window. `[measured 2026-09-15]` one A/B on the §9 desktop, `enp9s0` (I211) cabled to a Mac, `hft` admin paced at 1 s, same hour: **EEE on added +14.6 µs to wire p50** ([measured-costs](reference/measured-costs.md), boot B — the raw pair is A/B only, never a figure). `scripts/check-machine.sh` row `eee`, once a NIC is selected: `ethtool --show-eee <nic>`, PASS on `EEE status: disabled`, FAIL on `enabled - active` and `enabled - inactive` (inactive only means the far end does not advertise it today), UNKNOWN when there is no status to read. `--set-eee` bounces an `igb` link for ~4 s: wait for `Link detected: yes` before measuring |
 | `mlockall` + pre-faulted buffers | No page fault on the hot path. The reference project's `pool.rs` touches every page at startup; copy that |
 | Transparent huge pages **off** | THP compaction stalls are multi-millisecond |
 | CPU frequency governor `performance`, C-states off | A core waking from C6 costs ~100 µs |

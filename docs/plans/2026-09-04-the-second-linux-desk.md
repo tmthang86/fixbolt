@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **tiếp theo: boot B** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B xong 2026-09-15** (B0–B10, PR [#73](https://github.com/tmthang86/fixbolt/pull/73), commit đóng `f516761`, CI `34918683264` 14/14) — **tiếp theo: boot C (Q1), rồi boot D** — **Sửa 3 đã duyệt 2026-09-14, theo đề xuất Q12–Q17** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -562,6 +562,174 @@ bảng *Chia việc* không sửa.
 (ba lần `--strict`, baseline case admin n = 20, D_in); B3 đã xong ở PR #71; B5 chờ item 88; **B6
 cần cáp và Mac**.
 
+**`[2026-09-14]` Bắt đầu boot B (PR 2).** Nhánh `plan/the-second-linux-desk-b` từ `main` `4c373e0`.
+**Không reboot**: máy đã ở dòng boot §9 từ 07:18 (`uptime` 14:08 lúc 21:27), nên bẫy *run đầu sau
+reboot* không áp dụng; run bench đầu vẫn bỏ theo runbook. Không session nào khác đang đo.
+
+*B0, đọc 21:27–21:29:*
+
+- `cat /proc/cmdline` → `... isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1 ...`,
+  **không** `nohz_full`. Grub không đụng.
+- Trước khi bật: `scripts/check-machine.sh` → `pass 8 fail 7 unknown 0` (knobs OFF; NIC tự chọn
+  `enp9s0`; IRQ 85–89 `0-15`; `rx-usecs 3`).
+- `sudo -n /usr/local/sbin/fixbolt-machine on` → `governor performance · boost 0 · smt off · thp
+  never · busy_poll 50 · tls loaded · nproc 6`; `sudo -n ethtool -C enp9s0 rx-usecs 0`; `4` ghi vào
+  `/proc/irq/{85..89}/smp_affinity_list`.
+- Sau: `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → **`pass 15 fail 0 unknown 0`**.
+- Cáp đã cắm, **thẳng vào cổng Ethernet có sẵn của một Mac mini** (không cần adapter của Q3):
+  `192.168.77.1 ↔ .2`, `Speed: 1000Mb/s`, `Link detected: yes`. **Topology B6 của plan không nói
+  tới hai điều đang bật ở cả hai đầu:** EEE (802.3az) `enabled - active`, và pause frames RX/TX.
+
+**Bẫy gặp ở B0.** ~~`ethtool -C enp9s0 rx-usecs 0` làm `igb` **bật lại link**~~ **— nguyên nhân
+này sai, sửa bên dưới.** Link nhảy (`dmesg`: `NIC Link is Up` lúc 21:29:01; `carrier_changes` 4).
+`check-machine.sh` **không** `FIXBOLT_NIC`, chạy lúc 21:28:58, không thấy carrier nên **không chọn
+NIC nào** — in `pass 12 fail 0 unknown 1` và vẫn *§9 satisfied*. Ba giây sau, cùng lệnh in `pass 15
+fail 0 unknown 0`. Từ đây mọi bước B đặt `FIXBOLT_NIC=enp9s0` tường minh.
+
+**`[2026-09-14]` Sửa nguyên nhân — architect tìm ra, manager kiểm lại.** `sudo -n journalctl
+_COMM=sudo --since 21:20` ghi `ethtool -C enp9s0 rx-usecs 0` lúc 21:28:49.24 — link **không** nhảy
+khi đó — và **`ethtool --set-eee enp9s0 eee off` lúc 21:28:58.387**, tiếp theo `ethtool --show-eee
+enp9s0` 21:29:02.08 và `journalctl -k --since 21:28` 21:29:21.87. **Ba lệnh đó không phải của
+session boot B**: cùng user, cùng thư mục repo, không có trong lịch sử lệnh của session này. Tắt EEE
+gọi `igb_reinit_locked`, đó mới là lần link nhảy. Nên từ 21:29:02 **EEE ở desk đã tắt** (`EEE
+status: disabled`) và Mac `en0` đọc `1000baseT <full-duplex,flow-control>`, không còn
+`energy-efficient-ethernet`. Bẫy của `check-machine.sh` vẫn y nguyên, chỉ khác thứ làm link nhảy.
+**Ai chạy ba lệnh đó: đang hỏi chủ sở hữu** — một tác nhân khác đổi máy trong boot B là rủi ro cho
+mọi số đo.
+
+**Việc chặn, gửi architect (Sửa 3):** B5 chờ item 88; B2 (và mọi hàng §8 của boot này) công bố
+thế nào khi item 85 chưa có plan; EEE và pause frames cho B6; bẫy `igb` ở trên cần một test.
+
+**`[2026-09-14]` Sửa 3 tới tay chủ sở hữu, chờ duyệt Q12–Q17.** Architect viết mục *Sửa 3* (cuối
+file) và [ADR-0068](../decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)
+(Proposed), chỉ đọc máy 21:36–21:45. Hai điều manager ghi thêm, không đổi thiết kế:
+
+- **Chủ sở hữu ở bàn.** Manager hỏi, chủ sở hữu trả lời *"tôi có ở bàn"* → arm flush của B7 chạy
+  (Q2). Manager thêm một bước an toàn: `sudo -n nft list ruleset` ra file **trước** flush, và nạp lại
+  bằng `sudo -n nft -f <file>` **sau** — vì `systemctl start tailscaled` chỉ dựng lại bảng của
+  Tailscale, còn chain của Docker/iptables-nft thì không; `nft list ruleset` trước và sau phải giống
+  nhau.
+- **B1 chạy trước khi duyệt** (không phụ thuộc Sửa 3).
+
+**`[2026-09-14]` Ai tắt EEE, và Sửa 3 được duyệt.** Chủ sở hữu trả lời: *"lệnh đó session khác chạy
+theo chỉ đạo, tôi dừng rồi. Duyệt"*. Vậy ba lệnh 21:28:58–21:29:21 là của một session khác, theo lệnh
+chủ sở hữu, và session đó đã dừng trước khi B1 đo run nào được giữ. Không có số nào trước thời điểm
+này bị ảnh hưởng (chưa có số nào). Sửa 3 duyệt theo đề xuất — xem cuối mục *Sửa 3*.
+
+**`[2026-09-15]` B1 xong — gate xanh ba lần.** Manager tự chạy (không qua runner: một vòng lặp nền
+và vài lệnh đọc; runner Haiku hay treo khi chờ lệnh nền).
+
+- *Run bỏ* 22:01–22:09, `bench.sh --strict` mất **7 phút 42 giây**, `exit 1`: `cases w/o a baseline
+  3` — **plan chỉ nói tới một case thiếu baseline, thực tế có ba**: ngoài `engine turn, 1 busy,
+  admin` còn `SendingTime from the cache, micros` và `…, nanos` (thêm từ plan timestamp-micros,
+  chưa từng có baseline trên máy §9). Không ghi hai case đó thì gate B1 không bao giờ xanh, nên ghi
+  cả ba, theo tinh thần Q6. Thêm hai case đỏ: `SendingTime from the cache` 5.8 (trần 5.4) và
+  `validate NewOrderSingle, w2w bytes` 991.5 (trần 987.0).
+- *Đo* 21 lượt `serialize` + `density` + `validate`, 22:10–00:14, mỗi lượt ~6 phút (`density` không
+  lọc được case). Lượt 1 hàng quiet FAIL (`code 5% claude 3%` — chính session này) → loại; n = 20
+  là lượt 2–21, lượt nào cũng `pass 15 fail 0 unknown 0`. S2 và S3 chạy song song tới khoảng lượt 5:
+  median lượt 2–20 và 6–20 như nhau.
+- *Ghi* 5 dòng `benches/baselines.tsv` (đoạn chú thích cuối file): mới `engine turn, 1 busy, admin`
+  954.2, `…micros` 10.0, `…nanos` 12.7; sửa `SendingTime from the cache` 4.9 → 5.8 (+18%) và
+  `validate NewOrderSingle, w2w bytes` 897.3 → 994.5 (+10,8%). Không nhận nguyên nhân.
+- **Phát hiện:** mọi case khác của ba target nằm trong band nhưng chậm hơn dòng 2026-09-05 3,6–8,4%
+  (`density` +3,6–4,8%, `validate NewOrderSingle` 882.1 → 955.9). Không ghi lại (Q6), chưa tách
+  nguyên nhân: code đã merge từ 2026-09-05, máy, hay cả hai.
+- **D_in = 765.5 ns** (paired 767.7) → `DESIGN.md` §8 *The 3 898 ns, added back*, `STATUS.md` item 49.
+- *Gate*, 00:15–00:38, cây có `baselines.tsv` sửa (đọc lúc chạy, ADR-0067), ba lần như nhau:
+  `pass 15 fail 0 unknown 0` · `targets measuring 16 of 16` · `timing over baseline 0` · `cases w/o a
+  baseline 0` · `cases under the band 0` · `bench_exit=0`. Item 52: ba lần `--strict` còn nợ đã trả.
+
+**`[2026-09-15]` Khe build (00:40–00:57).** S3 (`46811f6`) và S2 (`d5be4d6`) làm trong hai worktree
+riêng, manager chạy lại gate rồi cherry-pick; S1 (`5ca3889`) làm ở cây chính. Gate quote trong
+thân từng commit. Thêm: rustdoc `-D warnings` cho `w2w` bốn bộ feature và `fixbolt-engine` — sạch
+(STATUS bảo thêm sau lần CI đỏ của PR #72). `setcap` trên `w2w` (sha256 `350d3c17320f`); Mac pull
+`5ca3889`, build lại (`7b2b52cb9be7`). Lần chạy thật đầu tiên của script S2: header, thư mục output,
+`summary.txt`, `extra`, kiểm tra `journal: file-async` — đều đúng. Bin ví dụ nanofix `0f79bae` còn
+nguyên, không build lại. B8 không chạy được bằng `w2w-baseline.sh` (acceptor ngoài), nên manager
+viết một script cùng khuôn split; nội dung chép nguyên văn vào `measured-costs.md` *Boot B*.
+
+**`[2026-09-15]` Procedure 1 và 2 (B2 → B5 → B8 → B4), commit `5ca3889`, cây sạch, 0 run bị loại.**
+Procedure 1 00:58–02:54, procedure 2 02:54–04:47. Số và nhận xét: `DESIGN.md` §8 *Boot B* và
+`measured-costs.md` *Boot B*. Ba điều đáng nói:
+
+- **Tám arm interval 0 (B2, B5, B8 phía fixbolt) đều nhanh hơn 5,0–6,7 % ở procedure 2**, trong khi
+  dispersion trong từng procedure rất chặt — theo ADR-0068 là *không tái lập*. Các arm có pacing,
+  nanofix, và bảng Mac thì tái lập. Manager chạy thêm **B2 lần 3 (chẩn đoán, không công bố)**
+  04:48–05:01: `hft` khớp procedure 2 trong 0,1 % → procedure 1 là lần lệch. Ứng viên: procedure 1
+  bắt đầu ~7 phút sau khe build.
+- **Plan sai một con số ở B4 (Sửa 3 Điều 5 d):** `MESSAGES=120 WARMUP=5` ở interval 1 s làm engine
+  từ chối seq 122 (`35=3 373=10`) — `w2w` render `52=` trước khi đo, 125 s > `MaxLatency` 120 s.
+  Engine đúng. Manager chạy lại với `MESSAGES=100` (105 s), giữ nguyên quy tắc "1 s chỉ công bố p50".
+  Bẫy mới, chưa có guard — STATUS item 90.
+- `/tmp` là tmpfs: số B5 không phải số đĩa.
+
+**`[2026-09-15]` B7 (05:03–05:29), A–B–A, nửa notrack.** Arm flush **bỏ**: chủ sở hữu đi ngủ, không ở
+bàn (Q2). Bảng `ip fixbolt` thêm rồi xoá; ruleset sau khi xoá giống trước (diff chỉ khác bộ đếm
+packet). conntrack trên `lo` ≈ 420 ns của một round trip TCP loopback 8 byte; `w2w` `hft` admin
+18 249 → 15 364 → 18 179 với hai pha A **hai mode** — ứng viên, không phải nguyên nhân (STATUS item 51).
+Payload bench chạy thẳng binary (không cargo), 5 lần mỗi pha vì mỗi lần 74 s.
+
+**`[2026-09-15]` B6 (05:31–07:49), qua cáp tới Mac.** Lượt thử đọc được **stamp phần cứng lần đầu**
+(`hw-rx-missing 0 hw-tx-missing 0`). Hai procedure: wire `hft` ở 1 s đo được nhưng không tái lập
+(5,2 % / 10,1 %); **interval 0 hỏng ở mọi lần** vì `igb` bỏ một TX stamp trong 1–4 run
+(`tx_hwtstamp_skipped` tăng theo), và luật Sửa 2 cho FAIL run thiếu stamp → không có số wire
+back-to-back (STATUS item 40, cần một quyết định của architect). Bảng Mac `standard` tái lập. A/B:
+EEE bật +14,6 µs ở 1 s → Q15 kích hoạt; busy_poll 0 và IRQ trên cpu6 chỉ có run đơn chẩn đoán vì
+cũng hỏng vì thiếu stamp. Trap EXIT trả máy về busy_poll 50, IRQ cpu4, EEE disabled — đọc lại lúc 07:49.
+
+**`[2026-09-15]` B9 (07:51), perf, chẩn đoán.** Engine thread `hft`: `Acceptor::accept` 49,9 %
+(admin) / 36,7 % (app) số sample; `accept4` trên listener rỗng cấp phát rồi huỷ socket file + inode
+trong kernel. Không phải chi phí mỗi message — STATUS item 89.
+
+**`[2026-09-15]` Q15 (`0057678`).** `check-machine.sh` hàng `eee`, `DESIGN.md` §9 hàng *EEE off*;
+verdicts `pass 37 fail 0`; desk `pass 16 fail 0 unknown 0`.
+
+**Một sự cố nhỏ:** file output thô của B1 (`b1-discard.txt`, `b1-strict-*.txt`) mất khỏi scratchpad
+giữa 00:38 và 05:05, không rõ vì sao (nghi một subagent dọn scratchpad). Dòng verdict còn trong thân
+`547c873`.
+
+**`[2026-09-15]` B10 — senior review (opus, context mới), 18 finding; manager kiểm chứng trước khi
+chuyển.** Kiểm lại trên log thô và code: F1, F2, F3, F4, F6, F10, F11, F12 **xác nhận** bằng lệnh;
+phần còn lại xác nhận bằng dòng log reviewer trích. Chuyển đi:
+
+- **F1 — CI đỏ trên HEAD**, job `deny`: RUSTSEC-2026-0285 (rustls 0.23.44), công bố sau run xanh đầu
+  của nhánh — `main` cũng dính. Sửa `6074c26`: rustls 0.23.45; test `tls_key_update` đo lại hằng
+  cấp phát (không đổi) rồi đòi cập nhật `DERIVED_FROM_RUSTLS` và một dòng revision ở ADR-0063 — đúng
+  như guard thiết kế. Gate manager chạy lại trong worktree: `tls_key_update` 6 passed, `cargo deny
+  check` → `advisories ok, bans ok, licenses ok, sources ok`.
+- **Code → senior developer (opus)**, `scripts/w2w-baseline.sh`: F11 run hỏng không được giữ output
+  (thư mục `boot-b-b6-1/wire-0` rỗng); F12 hash generator "best effort" giết script khi ssh lỗi; F4
+  verdict lấy từ một lần `check-machine.sh` khác lần được in (hai summary B6 procedure 1 đọc `pass 14
+  fail 1`, hàng FAIL không được ghi); F13 `W2W_EXTRA="--journal=file-async"` lách được kiểm tra identity.
+- **Docs → developer (sonnet)**, danh sách đã kiểm ở scratchpad: A/B EEE công bố số tuyệt đối (ADR-0068
+  quyết định 4 cấm — chỉ hiệu +14,6 µs); "tám arm" thật ra là **mười**, một arm (`standard` app
+  `--journal file-async`) có tái lập; số "chẩn đoán" interval 0 là p50 của **chính run hỏng** — run sạch
+  là 26 178–26 218 (EEE tắt, n = 4), 29 138/29 082 (IRQ cpu6), 39 546/39 522 (EEE bật), busy_poll 0
+  không có run sạch; **chỉ arm admin từng chạy ở interval 0**; `tx_hwtstamp_skipped` cuối là 52;
+  "1 ms or slower" trong playbook là suy ra, không đo; một dòng *Not proven* bị gạch quá tay (hai script
+  luật 4 chưa từng chạy với journal/log); B1 "mọi case khác chậm hơn" sai — `encode ExecutionReport
+  (template)` **nhanh hơn 3,5 %** (thân `547c873` còn câu sai, không sửa được); vài lỗi nhỏ khác.
+- **Không sửa, ghi lại:** F14 `pick_nic` với nhiều NIC dây (desk chỉ có một) → gợi ý cho architect; F15
+  dòng `exit=$?` trong script driver ở scratchpad luôn in 0 (không doc nào trích); F17 A/B busy_read và
+  IRQ cpu6 chạy ở interval 0 sau khi cả hai procedure đã hỏng ở đó — busy_read **không có kết quả**, và
+  `tx_hwtstamp_skipped` chỉ đọc mỗi procedure một lần chứ không mỗi run.
+- **F16 — cần chủ sở hữu biết:** số message của arm 1 s đổi từ 120 (Sửa 3 Q17) xuống 100, cho cả B4 và
+  B6, vì `MaxLatency` 120 s; quy tắc "1 s chỉ công bố p50" giữ nguyên. F5: hai procedure 1 s của B6
+  bắt đầu cách nhau 48 phút nhưng chỉ cách 10 phút giữa lúc hết cái trước và lúc bắt đầu cái sau
+  (ADR-0068 đòi ≥ 30 phút, một lượt qua bước khác) — cặp đó vốn không tái lập.
+
+**`[2026-09-15]` Đóng boot B (PR 2).** Sửa theo review: code (F4, F11, F12, F13 và N1 — tìm thêm lúc
+sửa) và docs, commit `f516761`; gate manager chạy lại: `check-w2w-baseline-summary.sh` `pass 7 fail 0`,
+shellcheck sạch, `check-machine-verdicts.sh` `pass 37 fail 0`, check-links sạch. **CI của commit đóng
+PR: `f516761` xanh, run [`34918683264`](https://github.com/tmthang86/fixbolt/actions/runs/34918683264),
+14/14 job.** Trước đó ba run đỏ đúng một job `deny` vì RUSTSEC-2026-0285 — sửa ở `6074c26`, run
+`34917310496` xanh. Log thô của mọi số: `target/boot-b-evidence/` và `target/w2w-baseline/boot-b-*`
+trên desk (gitignored). Máy tắt sau khi merge, theo lời chủ sở hữu; lần boot sau vẫn là dòng §9 nhưng
+knobs OFF, EEE bật lại, IRQ không pin — chạy lại B0. **Tiếp theo: boot C** (Q1, `mitigations=off`,
+chỉ hai phép đo của B7, nhãn A/B — PR 3), rồi **boot D** về desktop. Chưa làm ở boot B: arm flush của
+B7 (chủ sở hữu không ở bàn), mọi số wire interval 0, A/B busy_read.
+
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
 Draft 2026-09-04 được đọc lại từng dòng đối chiếu với code, máy và STATUS ngày 2026-09-13. Những
@@ -908,3 +1076,486 @@ sửa theo câu trả lời rồi manager chạy lại toàn bộ cột gate ở
   -Urn true` → EPERM; `sudo -n strace -f -u tmt` → rc=0; `sysctl
   kernel.apparmor_restrict_unprivileged_userns = 1`; `/proc/self/attr/current` của shell này là
   `vscode (unconfined)`.
+
+## Sửa 3 — 2026-09-14, boot B: bốn việc chặn B2, B5, B6
+
+Boot B bắt đầu 21:27, B0 xong và đã commit (`9bee2f2`). Nhật ký *Bắt đầu boot B* gửi architect
+bốn việc: B5 chờ item 88; B2 (và mọi hàng §8 của boot này) công bố thế nào khi item 85 chưa có
+plan; EEE và pause frames trên dây B6; bẫy `igb` ở B0 cần một test. Phần này trả lời từng việc,
+một *Điều* mỗi việc, cùng khuôn với Sửa 2: plan viết gì, thấy gì, bằng chứng, lựa chọn, **đề
+nghị**, plan đổi gì. Điều 5 gom những gì Mac mini và `warp-svc` đổi ở B6/B7/B8 và thứ tự B2–B9.
+
+Architect **chỉ đọc**: không `cargo`, không benchmark, không đổi gì trên máy. Mọi lệnh trên desk
+chạy 21:36–21:45 (đọc file, `ethtool` đọc, `nft list`, `journalctl`); trên Mac qua ssh 21:38–21:44
+(`ifconfig`, `networksetup -getMedia`, `system_profiler`, `git`, `shasum`). Chủ sở hữu quyết ở
+bảng Q12–Q17. **B1 không phụ thuộc phần này** và chạy song song.
+
+Vài chữ dùng suốt phần này, nói bằng lời thường một lần:
+
+- **EEE / LPI** — *Energy-Efficient Ethernet* (chuẩn 802.3az). Hai đầu dây thoả thuận lúc bắt tay;
+  đầu phát không có gì để gửi thì "ngủ" (*Low Power Idle*), muốn gửi lại phải "đánh thức" đầu thu
+  bên kia trước, mất khoảng **16,5 µs** ở 1000BASE-T. Chỉ dùng khi **cả hai** đầu quảng bá hỗ trợ;
+  một đầu không quảng bá thì cả dây không ngủ.
+- **pause frame** — khung "xin dừng" mà đầu thu gửi khi bộ đệm sắp đầy. Chỉ xuất hiện khi nghẽn.
+- **procedure** — một lần chạy trọn `scripts/w2w-baseline.sh` cho một arm (20 run). Số §8 hôm nay
+  là median của 20 run trong **một** procedure.
+- **carrier** — tín hiệu "dây đang nối, link đang lên" của card mạng.
+
+### Điều 1 — item 88: B5 đang đổi hai thứ cùng lúc
+
+**Plan viết** (B5, *Chia việc* B2–B5): so `--journal file-async` và `--log file` với "không", hai
+mode, path app. Nhật ký *Ghi chú cho B5 — F13* nói vòng của hai arm khác cỡ; item 88 nói *giải
+quyết trước B5*.
+
+**Thấy gì, đọc từ code.**
+
+- `tools/w2w/src/main.rs:1998`, `2001`, `2039`: `--journal file-async` dựng `FileJournal<64, 512>`.
+  Mặc định (`--journal mem`) là `Store = MemJournal<4096, 512>` (`crates/engine/src/journal.rs:51`,
+  `257`). Vòng 64 ô là 32 KiB — vừa L1; vòng 4 096 ô là 2 MiB — lớn hơn L2 của Zen 2 (512 KiB), nên
+  mỗi `put` ghi vào một dòng cache không có sẵn. Đó chính là biến thứ hai: vài chục ns mỗi message,
+  nhỏ cạnh 17 µs, nhưng không phải 0 và không tách được khỏi "giá của journal ra file".
+- Lý do duy nhất để chọn 64 (sợ 2 MiB trên stack) **không còn**: `MemJournal` giữ vòng trong
+  `Box<[Slot]>` (`journal.rs:81`, comment dòng 72–80 nói rõ vì sao), và `FileJournal<N, LEN>` chỉ
+  chứa `mem: MemJournal<N, LEN>` (dòng 281) — kích thước trên stack không đổi theo `N`.
+- **Pre-fault.** `MemJournal::new` (`journal.rs:128–141`) ghi từng ô bằng `resize_with`, nên mọi
+  trang của vòng được chạm lúc mở, **ngoài** cửa sổ đo; `FileJournal::open_with` gọi đúng hàm này
+  (dòng 512 và 655 — hai lần, một bản tạm bị vứt ở dòng 668) cộng vòng ghi cho thread writer
+  `ring::pair(1 << 20)` = 1 MiB (`ring.rs:47`, `124`). Ở 4 096 ô, `--journal file-async` tốn 2 MiB
+  vòng + 1 MiB ring + 2 MiB tạm lúc mở, cho **một** session. Không đáng kể, và cả hai arm cùng
+  cách pre-fault.
+- Arm "không journal" của B5 **chính là** arm B2 (A4 đã chứng minh: không cờ thì `type_name` engine
+  y hệt bản trước). Nên B5 không cần chạy lại arm "không" — nếu cùng procedure với B2.
+- `crates/engine/benches/alloc.rs:1438`: case `journal-async-busy` (gate luật 1 của A4) cũng mở
+  `FileJournal<64, 512>`; comment dòng 1431 nói nó cùng hình với case `mark_file`.
+
+**Các lựa chọn.**
+
+| # | Cách | Được | Mất |
+|---|---|---|---|
+| J1 | **`file-async` của w2w dùng `FileJournal<SLOTS, SLOT_LEN>`** — hai hằng public của `journal.rs`, đúng cỡ `Store` | B5 đổi **một** biến; arm "không" = B2, đỡ hai arm; +3 MiB | sửa ba dòng w2w + một dòng `alloc.rs`; phải build lại w2w (cargo — chỉ trong *khe build*, Điều 5) |
+| J2 | Thêm arm `--journal mem-64` để tách riêng kích thước vòng | có số "vòng nhỏ đáng bao nhiêu" | thêm kiểu engine thứ năm trong w2w, thêm hai arm × hai procedure; số đó không ai xin |
+| J3 | Giữ 64, ghi chú cạnh số | không code | B5 công bố một hiệu số không gán được cho cái nào — đúng cái F13 và `CLAUDE.md` §10 cấm |
+
+**Đề nghị: J1.** "Vòng nhỏ đáng bao nhiêu" là câu hỏi khác, chưa ai hỏi; khi hỏi thì là J2.
+
+**Spec S1 — developer (sonnet), review gộp vào B10 vì chạm gate luật 1:**
+
+```text
+Role: developer (sonnet). Sửa 3 Điều 1 (S1) của docs/plans/2026-09-04-the-second-linux-desk.md.
+Why: B5 phải đổi đúng một biến; vòng 64 ô của --journal file-async là biến thứ hai.
+Read first, exactly here: crates/engine/src/journal.rs:34-56 (SLOTS, SLOT_LEN) và 72-81;
+  tools/w2w/src/main.rs:1996-2007 và 2038-2041; crates/engine/benches/alloc.rs:1423-1445.
+Touch: tools/w2w/src/main.rs — một alias
+  `type FileStore = fixbolt_engine::journal::FileJournal<{ fixbolt_engine::journal::SLOTS }, { fixbolt_engine::journal::SLOT_LEN }>;`
+  thay cho ba chỗ `FileJournal<64, 512>`; module doc (~dòng 169) và doc của `JournalKind::FileAsync`
+  (~dòng 408) nói "cùng số ô với `Store`, để B5 đổi một biến";
+  crates/engine/benches/alloc.rs — case `journal-async-busy` dùng cùng hai hằng, comment dòng 1431
+  sửa theo; case `mark_file` (dòng 1397) giữ nguyên.
+Do not touch: crates/engine/src/, scripts/, bất kỳ file nào khác.
+§2 items: 1 (`journal-async-busy` đọc 0; đảo chiều của A4: một `to_vec()` trong đường Async push
+  → đọc ≥ 1, rồi trả lại), 7.
+Done when: `cargo build --release -p fixbolt-w2w --features affinity` xanh;
+  `target/release/w2w --mode hft --path app --journal file-async --messages 2000 --warmup 200`
+  in `journal: file-async`, `allocs 0`, exit 0 — và cùng lệnh với `--mode standard`;
+  `scripts/bench.sh` in `journal-async-busy 0`; đảo chiều đọc ≥ 1; không cờ thì banner/type_name
+  engine y hệt bản trước (lặp lại cách A4 đã làm); `cargo fmt`, clippy -D warnings sạch.
+Machine: KHÔNG chạy cargo trên desk khi có phép đo đang chạy — build và gate chỉ trong "khe
+  build" (Điều 5), hoặc trên máy Linux khác.
+Report: diff từng file; output nguyên văn của mọi lệnh ở Done; không commit.
+```
+
+**Plan đổi gì.** Hàng B5 của bảng *Boot B* thay bằng:
+
+| Bước | Đo gì | Cho item / hàng |
+|---|---|---|
+| **B5** | `W2W_EXTRA="--journal file-async"` rồi `W2W_EXTRA="--log file"` (Điều 2, S2), `ARMS="hft:app standard:app"`; arm "không" là arm app của B2 **cùng procedure**; **cùng vòng 4 096 ô (S1)** nên hiệu số là của loại journal, của log — không phải của kích thước vòng; hai procedure như Điều 2 | §8 hàng journal/log; **item 88 đóng** |
+
+*Chia việc* thêm hàng S1 (bảng ở Điều 5).
+
+### Điều 2 — item 85: boot B công bố thế nào
+
+**Plan viết** (*Chia việc* B2–B5, B6, B8): "`w2w-baseline.sh` mỗi arm 20 run, `check-machine.sh`
+quiet mỗi run" — tức **một** procedure, median của nó vào §8. Nhật ký B3 nói B2 không được làm
+thế "như item 85 không tồn tại", nhưng không nói làm gì thay.
+
+**Thấy gì.**
+
+- Bẫy [a-tight-spread-inside-one-procedure-did-not-reproduce-across-two](../reference/a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md)
+  đã có mục *The rule* (năm gạch đầu dòng: tái lập bằng hai procedure, công bố cả hai, dispersion
+  hai phía theo từng percentile, ghi mọi thứ xảy ra giữa hai lần, procedure tự ghi commit/cây/
+  uptime). Chưa có gì thực thi nó: `scripts/w2w-baseline.sh:511–521` chỉ in `spread max/median`
+  cho p50; không in HEAD, cây, uptime; không giữ output từng run trên đĩa (in ra stdout rồi
+  thôi — ai `tee` thì có). `DESIGN.md` §8 dòng 1208 đã viết *"one twenty-run median is one
+  observation"* nhưng phần thủ tục của §8 vẫn công bố từ một procedure.
+- `w2w` **không in commit của mình** và không có `--version`/`--help` — chạy trần là bắt đầu đo
+  (thử hôm nay trên Mac, `w2w --help` in banner một run). Chỉ script mới ghi được HEAD.
+- Script **không có chỗ cho `--journal`/`--log`** (`ARMS` là `mode:path:tls:interval`) — B5 không
+  chạy được bằng script như hàng viết. S2 thêm `W2W_EXTRA` (cùng tên với hai script luật 4).
+- Giá một procedure loopback: mỗi run ~1 s quiet-check + ~1–2 s đo + `GAP` 8 s ≈ 11 s → **~3,7
+  phút một arm**. Hai procedure là +3,7 phút mỗi arm công bố. Rẻ, trừ các arm `--interval` dài
+  (Điều 5, mục d).
+
+**Các lựa chọn.**
+
+| # | Cách | Được | Mất |
+|---|---|---|---|
+| P1 | Item 85 có plan riêng **trước**; boot B chỉ thu run thô, không công bố gì | đúng thủ tục | mất một ngày §9 mà §8 vẫn trống; plan riêng rồi cũng đề xuất đúng P2 |
+| P2 | **Quy tắc công bố hai procedure** ([ADR-0068](../decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md), Proposed) **và sửa script trước B2** (S2) | mọi số boot B có bằng chứng tái lập ở mỗi percentile; bẫy có test; §4 hết nợ | desk time ×2 cho arm công bố (~+2,5 giờ); S2 là nửa ngày sonnet **trước** B2 |
+| P3 | Chạy hai lần bằng script cũ, manager tính dispersion bằng tay từ output | không code | không ai giữ output từng run; không test → §4 vẫn nợ; lần sau lại quên; B5 vẫn không chạy được bằng script |
+
+**Đề nghị: P2.** Nội dung quy tắc — chi tiết và hậu quả ở ADR-0068 — tóm lại:
+
+1. **Một arm công bố = hai procedure y hệt**, cùng commit, cùng binary (sha256), cây sạch, cùng
+   boot, cách nhau ít nhất một lượt qua các bước khác (≥ 30 phút). **Cả hai median vào §8, cạnh
+   nhau, không lấy trung bình**, kèm hiệu %. Không có "một số duy nhất"; cặp số là số.
+2. **Tái lập** = ở **mỗi** percentile công bố (p50, p99, p99.9), hai median lệch ≤ **5 %** của
+   số nhỏ hơn. Con số là tạm và là *chọn*, không phải *đo*: các arm lành ngày 2026-09-14 lệch
+   0,2–2,5 % p50 và ≤ 3,0 % p99.9; ba arm hỏng lệch 7,2 / 15,9 / 18,5 %. Item 85 có band đo được
+   thì ADR mới thay.
+3. **Không tái lập** → vẫn ghi cả hai, đánh dấu *không tái lập*; không gate hay hàng §6 nào đọc
+   một trong hai là *met*; mọi thứ xảy ra giữa hai procedure ghi là ứng viên, không phải nguyên
+   nhân. B6 với arm không tái lập thì item 40 là *measured, not reproduced* — đó là kết quả.
+4. **Arm A/B là một procedure, `RUNS=10`, nhãn A/B, chỉ là hiệu số** — `busy_read` 0 ↔ 50, IRQ pin
+   vào cpu6, `--wire-timestamps` có/không, EEE bật (Điều 3), boot C. Không bao giờ là số §8. Đây
+   là câu của ADR-0023 áp dụng cho mọi A/B.
+5. **Script tự ghi**: HEAD, `git status --porcelain`, uptime, sha256 + mtime của binary (và của
+   binary generator qua ssh), thư mục giữ output từng run; dispersion hai phía theo từng
+   percentile.
+
+**Thời gian desk, ước lượng** (loopback ~3,7 phút/arm/procedure; qua cáp + ssh ~4 phút): B2 4 arm
+×2 ≈ 30 phút; B5 4 arm ×2 ≈ 30; B8 4 arm ×2 ≈ 30; B4 ba arm interval (cỡ message ở Điều 5 mục d)
+×2 ≈ 105 (+44 nếu thêm `standard` ở 1 s); B6 công bố (hft admin/app × interval 0 và 1 s, bảng Mac
+`standard` admin/app) ×2 ≈ 2 giờ, A/B một lần ≈ 20 phút; B7 ≈ 20; B9 ≈ 15; B1 tuỳ. **Tổng ~7–8
+giờ** — một ngày, sát. Thứ tự cắt nếu quá ngày (hàng *Rủi ro* "cắt từ B9 ngược lên" giữ, thêm):
+arm `interval 10 000` của B4 → arm app ở 1 s của B6 → arm app của B8 → `standard` 1 s.
+
+**`scripts/w2w-baseline.sh` phải đổi trước B2 — có.** Spec S2:
+
+```text
+Role: developer (sonnet). Sửa 3 Điều 2 (S2).
+Why: bẫy item 85 — số công bố phải mang HEAD, cây, uptime, binary; dispersion hai phía theo
+  percentile; output từng run giữ trên đĩa; và B5 cần truyền cờ w2w.
+Read first, exactly here: docs/reference/a-tight-spread-inside-one-procedure-did-not-reproduce-across-two.md
+  mục *The rule* và *What guards it*; ADR-0068 mục Decision 5; scripts/w2w-baseline.sh:87-135
+  (biến), 176-192 (khối máy), 209-224 (helper), 259-273 (header), 316-321 và 447-455 (lệnh w2w),
+  470-475 (kiểm tra identity tls — mẫu), 500-552 (summary); scripts/check-machine-verdicts.sh:16-31
+  và 67-73 (mẫu source-only + `same`); scripts/check-machine.sh:174 (guard MACHINE_SOURCE_ONLY).
+Touch: scripts/w2w-baseline.sh; scripts/check-w2w-baseline-summary.sh (mới); .github/workflows/ci.yml
+  (job `script-logic`: một dòng `- run: scripts/check-w2w-baseline-summary.sh` sau
+  check-machine-verdicts.sh); docs/hft-playbook.md §6 mục 3 (một câu: W2W_EXTRA, OUT_DIR, header).
+Do not touch: tools/, crates/, check-machine.sh, check-machine-verdicts.sh, bench.sh.
+Đổi gì:
+ (a) Header, sau dòng `runs …`: `commit <rev-parse --short HEAD>   tree <clean | N paths: …>`;
+     `uptime <giờ:phút từ /proc/uptime>`; `binary <sha256 12 ký tự đầu> <mtime ISO>`; với
+     GENERATOR_SSH: `generator binary <sha256 qua ssh: shasum -a 256 … || sha256sum …>` (best
+     effort, in `unknown` khi lỗi — không dừng); `output <OUT_DIR>`.
+ (b) OUT_DIR=${OUT_DIR:-target/w2w-baseline/<UTC yyyymmddThhmmssZ>-<HEAD>}: mỗi run ghi
+     `$OUT_DIR/<mode>-<path>-<tls>-<interval>[-<extra, ký tự lạ thành _>]-run-<i>.txt` = `$out`
+     nguyên văn (+ listen_log cho split); cuối mỗi arm, khối summary nối vào `$OUT_DIR/summary.txt`.
+     stdout in y như cũ.
+ (c) W2W_EXTRA (mặc định rỗng): tách theo khoảng trắng thành mảng, nối sau `--warmup` ở lệnh
+     combined (447) và lệnh --listen (357); KHÔNG đưa cho --connect (w2w từ chối --journal/--log ở
+     đó). Identity như tls (470-475): W2W_EXTRA có `--journal X` → `$out` phải có dòng `journal: X`;
+     `--log X` → `log: X`; sai → in `$out` + FAIL + exit 1. Header và khối summary in
+     `extra   <W2W_EXTRA>` khi khác rỗng.
+ (d) Hàm thuần `dispersion <label> <v…>` in
+     `<label>  <median> ns      (across runs: <min> .. <max>)   min/median <x.xxx>   max/median <x.xxx>`
+     cho p50, p99, p99.9 (và wire p50/p99/p99.9). Dòng `spread max/median` cũ (p50) GIỮ nguyên để
+     bản ghi cũ so được. `median` và `dispersion` chuyển lên trên một guard
+     `[ "${BASELINE_SOURCE_ONLY:-0}" = 1 ] && return 0` đặt ngay sau khối biến mặc định (trước
+     mọi refuse và trước dòng 179), theo mẫu check-machine.sh:174.
+ (e) Không biến mới → dòng lệnh w2w byte-giống: `bash -x` diff như A6 (chỉ khác các dòng header
+     mới — nêu đúng dòng nào).
+Test scripts/check-w2w-baseline-summary.sh (source với BASELINE_SOURCE_ONLY=1, helper `same` như
+  verdicts): 20 giá trị lấy từ bẫy — 17323 17523 17864 18976 19136 19990 19992 19994 19996 19998
+  19998 20000 20010 20020 20050 20100 20120 20140 20150 20158 → median 19998, min/median 0.866,
+  max/median 1.008 (câu: "a run 13.4% under the median is visible from the min side"); một bộ
+  đối xứng; n = 1 (1.000 / 1.000); n chẵn lấy trung bình nguyên như `median` hôm nay.
+Đảo chiều (câu FAIL dự kiến): bỏ `min/median` khỏi hàm →
+  `FAIL  want [p50  19998 ns … min/median 0.866  max/median 1.008] got [… max/median 1.008]  a run 13.4% under the median is visible from the min side`;
+  trả lại → `pass N fail 0`.
+Done when: test `fail 0`; `shellcheck -S info` sạch hai script; `bash -x` diff rỗng ngoài header;
+  một run thật `PIN=0 RUNS=2 MESSAGES=2000 ARMS=hft:admin` — trên máy Linux BẤT KỲ hoặc trên desk
+  chỉ trong khe build — cho thấy header, thư mục output, summary.txt; và
+  `W2W_EXTRA="--journal file-async"` in `extra`, identity `journal: file-async` (cần binary S1).
+Report: diff; output nguyên văn; không commit. Manager cập nhật mục *What guards it* của bẫy
+  (tên test, ADR-0068) trong CÙNG commit — CLAUDE.md §4.
+```
+
+**Plan đổi gì.** Hàng *Chia việc* B2–B5, B6, B8 cột *Test / gate*: "20 run mỗi arm" → "**hai
+procedure** mỗi arm công bố (ADR-0068), `RUNS` 20, quiet mỗi run, `FIXBOLT_NIC=enp9s0`; arm A/B
+một procedure `RUNS=10`". Cột *File* thêm ADR-0068. `DESIGN.md` §8: thủ tục viết lại theo ADR-0068
+ở bước docs của B2 (manager), bảng nào cũng hai cột. *Cách kiểm chứng* thêm: "số nào cũng là cặp;
+lệch > 5 % ở percentile nào thì arm đó *không tái lập*". Item 85 đóng phần *guard* khi S2 lên; phần
+*nguyên nhân* vẫn không ai nhận.
+
+### Điều 3 — EEE và pause frames trên dây B6
+
+**Plan viết** (B6): topology "cáp trực tiếp, I211, `igb`, `rx-usecs 0`, MTU 1500, kernel". Không
+chữ nào về EEE hay pause. Nhật ký B0 ghi "EEE `enabled - active` và pause RX/TX đang bật ở cả hai
+đầu".
+
+**Thấy gì — và một chỗ nhật ký B0 ghi sai nguyên nhân.**
+
+- **Nhật ký `sudo` của desk hôm nay** (`journalctl _COMM=sudo`): 21:17:31 `ethtool --show-eee
+  enp9s0` (lúc đó đọc *enabled - active* — ghi chú B0 đúng cho thời điểm ấy); 21:28:49.240
+  `ethtool -C enp9s0 rx-usecs 0`; **21:28:58.387 `ethtool --set-eee enp9s0 eee off`**; kernel
+  `NIC Link is Up` 21:29:02.067; 21:29:02.079 `--show-eee`. Trong `igb` (v6.16, `igb_ethtool.c`),
+  `igb_set_eee` khi đổi trạng thái gọi `igb_reinit_locked` — down/up, autoneg lại, ~4 s; còn
+  `igb_set_coalesce` **không có** đường reset nào (toàn văn hàm: chỉ ghi `itr_val` cho từng
+  q_vector). Vậy **link nhảy là do `--set-eee`, không phải `-C`** như nhật ký B0 và brief ghi; và
+  **EEE đã tắt ở desk từ 21:29:02**. `carrier_changes` = 4 khớp: lên lúc 21:05:05 (cắm cáp), xuống
+  rồi lên lúc 21:29:02.
+- Đọc lúc 21:36:58: `EEE status: disabled`, `Tx LPI: disabled`, `Advertised EEE link modes: Not
+  reported`, `Link partner advertised EEE link modes: 100baseT/Full 1000baseT/Full` (Mac vẫn quảng
+  bá). Mac lúc 21:38: `ifconfig en0` → `media: autoselect (1000baseT <full-duplex,flow-control>)`,
+  `networksetup -getMedia en0` → `Active: 1000baseT <full-duplex flow-control>` — **không** còn
+  `energy-efficient-ethernet` trong phần active (trước 21:28:58 manager thấy có). Nghĩa là dòng
+  active của macOS phản ánh **kết quả thoả thuận**, không phải cấu hình; và đúng như chuẩn, một
+  đầu không quảng bá thì cả dây không dùng LPI. **Tắt ở desk là đủ; không cần đụng Mac.**
+- Mac **có** tắt được phía nó nếu cần: `ifconfig -m en0` liệt kê `1000baseT mediaopt full-duplex
+  mediaopt flow-control mediaopt energy-efficient-ethernet` là một media riêng, nên
+  `networksetup -setMedia en0 1000baseT full-duplex flow-control` là "không EEE" — nhưng đặt thủ
+  công là bỏ autoselect, và Apple Community ghi hộp thoại hiển thị sai giá trị đã đặt (macOS 15.6).
+  **Không làm**: không cần, và đổi bên Mac cũng làm link nhảy.
+- Chip Mac: `system_profiler SPEthernetDataType` → **Broadcom 57762-A0**, driver
+  `AppleBCM5701Ethernet`, PCIe x1 2.5 GT/s, tối đa 1 Gb/s (khớp teardown ChargerLAB của Mac mini
+  M4 A3238). macOS 26.6.2 (25G83), `Mac16,10`.
+- **Pause**: `ethtool -a enp9s0` → autoneg on, RX on, TX on; dmesg link-up ghi `Flow Control:
+  RX/TX`; bốn bộ đếm `rx_flow_control_xon/xoff`, `tx_flow_control_xon/xoff` đều **0**. Đổi pause
+  (`ethtool -A`) đi qua `igb_set_pauseparam` → `igb_down`/`igb_up` → link nhảy → bẫy stamp `igb`.
+  Pause chỉ phát khi bộ đệm thu đầy; một request trong chuyến ở 1 Gb/s không làm đầy gì.
+- **Đầu nào ảnh hưởng cửa sổ RX→TX phần cứng của desk.** Chỉ **TX LPI của desk**: desk muốn gửi
+  reply thì phải đánh thức đầu thu của Mac trước (Tw ≈ 16,5 µs ở 1000BASE-T), và stamp TX của I211
+  lấy khi SFD rời MAC — tức **sau** khi đánh thức, nên chờ đánh thức nằm **trong** cửa sổ. TX LPI
+  của Mac (request tới desk) và trạng thái RX của desk nằm **ngoài** cửa sổ desk và **trong** bảng
+  Mac. Đây là suy luận từ chuẩn 802.3az và cách I210/I211 lấy stamp — *không tìm thấy nguồn nói
+  thẳng stamp lấy trước hay sau đánh thức*, nên arm A/B bên dưới là thứ kiểm chứng. Ở interval
+  1 s, nếu EEE bật thì chắc chắn ngủ; ở interval 0 (khoảng trống ~10–20 µs) không biết I211 có
+  kịp vào LPI không (không tìm thấy timer vào LPI trong datasheet I211) → A/B đo cả hai.
+
+**Đề nghị.**
+
+- **Số công bố B6: EEE tắt ở desk** — trạng thái hiện tại. Trước **mỗi** procedure: `sudo -n
+  ethtool --show-eee enp9s0` phải đọc `EEE status: disabled`; `ssh thangtran@192.168.77.2
+  'ifconfig en0 | grep media'` phải **không** có `energy-efficient-ethernet`; cả hai dòng ghi tay
+  vào nhật ký cạnh header (script không biết EEE).
+- **Arm A/B EEE bật, một procedure, `RUNS=10`**, `hft:admin` ở interval 0 và interval 1 000 000
+  (`MESSAGES=120`): `sudo -n ethtool --set-eee enp9s0 eee on` (link nhảy ~4 s: chờ `Link detected:
+  yes`; đọc `--show-eee` → `EEE status: enabled - active`; Mac active có `energy-efficient-ethernet`;
+  đọc lại năm `smp_affinity_list` vẫn `4`; run bỏ đầu tiên; `hw-rx-missing 0`), đo, rồi `eee off`,
+  đọc lại cả hai đầu, run bỏ. Kết quả là **hiệu số**, nhãn A/B, vào `measured-costs.md` và
+  `hft-playbook.md` §4. **Nếu** hiệu ở 1 s ≥ 5 % p50 hoặc cỡ 16 µs: `DESIGN.md` §9 thêm hàng *EEE
+  off on the measurement NIC* và `check-machine.sh` thêm hàng `eee` đọc `ethtool --show-eee`
+  (`disabled` PASS; `enabled - active` và `enabled - inactive` FAIL — *inactive* chỉ vì đầu kia
+  chưa quảng bá; không `ethtool`/không hỗ trợ → UNKNOWN; test trong `check-machine-verdicts.sh`) —
+  một bước code nhỏ sau B6, sonnet, cùng PR (Q15). Không đáng kể thì chỉ ghi ở playbook.
+- **Pause: không đổi.** Bốn bộ đếm đọc trước/sau **mỗi** procedure, phải giữ 0; khác 0 là phát
+  hiện, ghi cạnh số, không "chuẩn hoá".
+
+**Dòng topology B6 mới** (thay cụm "ghi topology: …" trong hàng B6): *cáp thẳng giữa I211 (`igb`,
+kernel `7.0.0-31-generic`) của desk và cổng Ethernet có sẵn của Mac mini `Mac16,10` (Broadcom
+57762-A0, `AppleBCM5701Ethernet`, macOS 26.6.2); `192.168.77.1/24 ↔ .2/24`; 1000baseT full duplex;
+**EEE tắt ở desk** (`--show-eee` → `disabled`; Mac active media không có
+`energy-efficient-ethernet`); **pause RX/TX bật ở cả hai đầu, không đổi**, bốn bộ đếm
+`*_flow_control_*` = 0 trước/sau; `rx-usecs 0`; MTU 1500; `tx_hwtstamp_skipped`, `hw-rx-missing`,
+`hw-tx-missing` từng run; sha256 binary hai đầu.*
+
+**Runbook B6, đọc trước và sau mỗi procedure** (thêm vào `hft-playbook.md` §6 mục 4 ở bước docs):
+
+```sh
+sudo -n ethtool --show-eee enp9s0                     # EEE status: disabled
+sudo -n ethtool -a enp9s0                             # Autonegotiate on, RX on, TX on
+ethtool -S enp9s0 | grep -E 'flow_control|hwtstamp'   # bốn bộ đếm pause 0; tx_hwtstamp_skipped
+ethtool --get-hwtimestamp-cfg enp9s0                  # tx off, rx-filter none (như playbook)
+cat /proc/irq/{85..89}/smp_affinity_list              # 4 ×5
+ssh thangtran@192.168.77.2 'ifconfig en0 | grep media; shasum -a 256 Projects/nanofixengine/target/release/w2w'
+```
+
+### Điều 4 — bẫy `igb` ở B0: verdict tự thu hẹp phạm vi khi link chớp
+
+**Thấy gì.** `scripts/check-machine.sh:214–226` chọn NIC theo **carrier**. Trong ~4 s link nhảy
+(21:28:58 → 21:29:02, do `--set-eee`, Điều 3), không có NIC → hàng *NIC IRQ affinity* rơi về nhánh
+đếm dòng `/proc/interrupts` và in UNKNOWN (dòng 509–513); hàng *coalescing* và *irqbalance* **biến
+mất** (chỉ in khi `$NIC` khác rỗng) → 13 hàng, `pass 12 fail 0 unknown 1`; dòng 604 coi `unknown ≤
+1` là đạt → *§9 satisfied*. Verdict đổi phạm vi mà không nói, và vẫn xanh. Ba giây sau, cùng lệnh:
+15 hàng. `FIXBOLT_NIC` tường minh (từ B0) tránh được, nhưng không có gì canh người sau.
+
+**Các lựa chọn.**
+
+| # | Cách | Được | Mất |
+|---|---|---|---|
+| N1 | **Chọn NIC theo thiết bị vật lý**: `type` = 1, có `device/`, không `wireless/` và không `phy80211`; carrier chỉ để phân thắng bại khi có nhiều; header in dòng `nic …` | phạm vi verdict không phụ thuộc thứ chớp; hàng IRQ và coalescing vốn không cần cáp (A5 đã nói *carrier not required* cho `FIXBOLT_NIC`) | máy có NIC dây không cáp giờ đọc 15 hàng thay vì 13 — bẫy A5 đã chấp nhận "ghi chuỗi thật"; câu auto-select ở `hft-playbook.md` §4 sửa |
+| N2 | Giữ carrier; thêm hàng UNKNOWN "NIC dây không carrier: enp9s0" → `unknown 2` → không satisfied | ít đổi | desk không cáp không bao giờ satisfied nếu không đặt `FIXBOLT_NIC`; vẫn phụ thuộc chớp, chỉ đổi chiều |
+| N3 | Chỉ quy tắc "luôn đặt `FIXBOLT_NIC`" (đã làm từ B0) | không code | không có test; §4 nợ; người sau quên là lặp lại |
+
+**Đề nghị: N1**, và N3 vẫn giữ trong runbook. Bẫy ghi ở `docs/reference/` tên
+**`a-machine-check-narrowed-its-own-scope-when-the-link-bounced.md`** (manager viết, cùng commit
+với S3): dòng thời gian ở Điều 3; vì sao dễ dính (chọn theo carrier + `unknown ≤ 1` là đạt); quy
+tắc *phạm vi của một verdict không được phụ thuộc vào thứ chớp, và cái không nhìn thấy phải tự
+nói ra trên một dòng của nó*; sự thật `igb`: `--set-eee` và `-A` làm link nhảy (source), `-C`
+không; canh bằng test dưới đây + dòng `nic` + `FIXBOLT_NIC` trong mọi bước B.
+
+**Spec S3 — developer (sonnet):**
+
+```text
+Role: developer (sonnet). Sửa 3 Điều 4 (S3).
+Why: verdict §9 tự bỏ ba hàng NIC khi link chớp 4 s và vẫn in "satisfied".
+Read first, exactly here: scripts/check-machine.sh:174 (guard), 176-190 (header), 202-226 (chọn
+  NIC), 500-560 (hàng IRQ/coalescing); scripts/check-machine-verdicts.sh:16-31, 67-73, 86-105
+  (mẫu cây giả); docs/hft-playbook.md:61-63.
+Touch: scripts/check-machine.sh; scripts/check-machine-verdicts.sh; docs/hft-playbook.md §4 (câu
+  auto-select). Do not touch: w2w-baseline.sh, bench.sh, tools/, crates/.
+Đổi gì: hàm thuần `pick_nic <net-root> <explicit>` đặt TRƯỚC guard dòng 174. `explicit` khác rỗng
+  → trả nguyên (như hôm nay, không cần carrier). Else duyệt `<net-root>/*/` theo thứ tự tên: giữ
+  nếu `type` đọc 1, `device` tồn tại, không có `wireless` và không có `phy80211`; trả ứng viên đầu
+  có `carrier` = 1, không có thì ứng viên đầu; không ứng viên → rỗng. Bỏ danh sách tên
+  `lo|tailscale*|docker*|veth*|br-*|wl*` — mỗi cái đã bị loại bởi thuộc tính, test chứng minh.
+  Gọi: `NIC=$(pick_nic /sys/class/net "${FIXBOLT_NIC:-}")`. Header, sau dòng `cores`:
+  `nic       enp9s0 (carrier 1)` hoặc
+  `nic       none — no wired NIC with a bus device under /sys/class/net; FIXBOLT_NIC=<name> names one`.
+  Dòng `pass N fail N unknown N` KHÔNG đổi dạng.
+Test (verdicts, mục `=== pick_nic`, cây giả mktemp):
+  1. `enp9s0/type=1 carrier=0 device/` → `enp9s0`  — "a wired NIC without carrier is still picked — the §9 rows do not need a cable"
+  2. `wlp7s0/type=1 carrier=1 device/ wireless/` → ""  — "wireless is never the measurement NIC"
+  3. `tailscale0/type=65534`, `docker0/type=1` không device, `lo/type=772` → ""  — "virtual interfaces have no bus device"
+  4. `enp8s0 carrier=0` + `enp9s0 carrier=1` → `enp9s0`  — "carrier breaks a tie, and only a tie"
+  5. explicit `enp8s0`, cây rỗng → `enp8s0`  — "FIXBOLT_NIC wins without a carrier, as before"
+Đảo chiều (câu FAIL dự kiến): đặt lại điều kiện carrier = 1 bắt buộc → case 1 in
+  `FAIL  want [enp9s0] got []  a wired NIC without carrier is still picked — the §9 rows do not need a cable`;
+  trả lại → `pass N fail 0` (N = 27 + 5).
+Done when: verdicts `fail 0`; `shellcheck -S info` sạch hai script; trên desk CHỈ ĐỌC (script này
+  nhẹ, chạy được giữa hai run): `scripts/check-machine.sh` không FIXBOLT_NIC in `nic enp9s0
+  (carrier 1)` và cùng 15 hàng như `FIXBOLT_NIC=enp9s0`; với FIXBOLT_NIC output y hệt hôm nay
+  trừ dòng `nic`; câu mới ở hft-playbook §4. Runner CI là guest (hàng virt FAIL sẵn) nên job
+  `bench` không đổi kết luận; job `script-logic` xanh là bằng chứng cho runner.
+Report: diff; output nguyên văn; không commit.
+```
+
+**Plan đổi gì.** *Bẫy đã lường trước* thêm hàng: *link chớp làm `check-machine.sh` tự bỏ ba hàng
+NIC, vẫn "satisfied"* — canh: `pick_nic` + test case 1 + dòng `nic` + `FIXBOLT_NIC` trong mọi bước
+B. Runbook B0 thêm một câu: *`--set-eee` và `ethtool -A` làm link nhảy ~4 s (`igb_reinit_locked`,
+`igb_down/up`); `-C` không; sau mỗi lệnh đổi link, chờ `Link detected: yes` rồi mới `check-machine`
+và run bỏ.* Hàng A5 của *Bẫy* ("không NIC → y nguyên `pass 12 … unknown 1`") giờ chỉ đúng cho máy
+**không có NIC dây**; desk không cáp đọc 15 hàng.
+
+### Điều 5 — Mac mini, `warp-svc`, và thứ tự B2–B9
+
+**(a) `warp-svc` không đụng B7.** `warp-cli settings` → `Mode: DnsOverHttps`: không tunnel, không
+interface `CloudflareWARP`. `sudo -n nft list tables` → sáu bảng (`ip`/`ip6` × `filter`, `nat`,
+`mangle`), 16 chain, tất cả của Tailscale hoặc do iptables-nft tạo; **không có** `inet
+cloudflare-warp` (bảng đó chỉ xuất hiện ở mode WARP theo tài liệu và cộng đồng Cloudflare). B7 giữ
+nguyên. Thêm vào "trước" của B7: `warp-cli settings`, `ip rule`, `nft list ruleset` — để ai đọc số
+sau biết một gói loopback đi qua `ip mangle OUTPUT` (kiểu **route**: mark đổi là kernel tra lại
+route), `ip nat POSTROUTING`, `ip mangle PREROUTING`, `ip filter INPUT` (3 rule, nhảy `ts-input` 5
+rule), cộng conntrack. Nếu ai bật mode WARP trước B7, đọc lại. Arm flush vẫn chỉ khi ở bàn (Q2);
+chủ sở hữu đang điều khiển qua Tailscale trên Wi-Fi (`wlp7s0`, 192.168.31.125) nên bỏ, item 51 đóng
+nửa như Q2 đã nói.
+*`[2026-09-14, manager]` Câu trên viết trước khi chủ sở hữu trả lời. Chủ sở hữu trả lời manager:
+"tôi có ở bàn" — **arm flush chạy** theo Q2, xem nhật ký giao hàng mục *Sửa 3 tới tay chủ sở hữu*.*
+
+**(b) IRQ Wi-Fi.** `iwlwifi` IRQ 90 có mask `0-15` nhưng `effective_affinity_list` = `0`, 1,18 triệu
+ngắt đều ở CPU0, **0** ở 6/7/14/15. Không phải vấn đề hôm nay. Một dòng `echo 4 | sudo -n tee
+/proc/irq/90/smp_affinity_list` cho chắc là tuỳ manager, không làm giữa hai procedure.
+`check-machine.sh` cố ý không nhìn Wi-Fi.
+
+**(c) Binary trên Mac.** Checkout `4c373e0`, cây sạch, `target/release/w2w` mtime 21:20, sha256
+`ef831cc944a8…`. Nửa `--connect` không dùng journal nên S1 không đổi nó; nhưng để hai đầu cùng
+commit, **build lại trên Mac sau khe build** (CPU của Mac, không phải desk) và ghi sha256 hai đầu
+(S2 làm tự động trong header). `w2w` không có `--help`/`--version` — chạy trần là đo (architect lỡ
+làm thế ba dòng trên Mac lúc 21:38, không ảnh hưởng desk) → runbook: nhận diện binary bằng sha256 +
+HEAD của checkout, không bằng cờ.
+
+**(d) B4 thiếu cỡ message — plan viết thiếu, không phải sai.** `MESSAGES` mặc định 20 000; ở
+interval 1 000 000 µs một run là 5,5 giờ. Đề nghị: `hft:admin:off:1000` giữ 20 000 (~20 s/run);
+`hft:admin:off:10000` `MESSAGES=5000` (~50 s/run); `hft:admin:off:1000000` **và**
+`standard:admin:off:1000000` (hàng "3 giờ sáng" là của engine ngủ) `MESSAGES=120 WARMUP=5 RUNS=10`
+(~2 phút/run) — arm 1 s **chỉ công bố p50** (và min/max): với 120 mẫu, p99.9 là mẫu thứ 119 của
+120 (`main.rs:1670`), không có nghĩa. Hai procedure như Điều 2.
+
+**(e) Q3.** Không cần adapter; mục 2 của *Phần cứng chủ sở hữu phải chuẩn bị* gạch bỏ.
+
+**(f) Thứ tự B2–B9 sau Sửa 3.** B1 đang chạy, không phụ thuộc gì. Sau khi chủ sở hữu duyệt: S2 và
+S3 (bash, test không cần cargo) làm ngay trong worktree; S1 làm trong worktree nhưng **build và
+gate chỉ trong khe build**. **Khe build, một lần, sau B1**: merge S1–S3 vào nhánh; `cargo build
+--release -p fixbolt-w2w --features affinity`; `setcap` theo playbook; `scripts/bench.sh` cho
+`journal-async-busy`; build bin ví dụ nanofix (A7); rồi run bỏ. Sau đó **không cargo cho tới B9**.
+Procedure 1: **B2 → B5 → B8 → B4**; procedure 2 cùng thứ tự (khoảng cách tự nhiên ≥ 30 phút); **B7**
+(đổi máy tạm, sau khi mọi số loopback đã có); **B6** (cáp; EEE tắt ×2 procedure, A/B ×1; muộn vì
+nó đụng máy: EEE, IRQ pin, sysctl); **B9**; C (Q1); D. B3 bỏ (đã làm ở PR #71).
+
+**Bảng *Chia việc* thêm ba hàng** (giữa B1 và B2–B5):
+
+| Bước | Kết quả | File | Test / gate | §2 | Máy | Tier | Phụ thuộc |
+|---|---|---|---|---|---|---|---|
+| S1 | `--journal file-async` cùng vòng 4 096 ô với `Store` | `tools/w2w/src/main.rs`, `crates/engine/benches/alloc.rs` | `bench.sh` → `journal-async-busy 0`; đảo chiều `to_vec()` → ≥ 1; hai mode với cờ exit 0 `allocs 0`; không cờ y hệt | 1, 7 | Linux, **khe build** | sonnet, review ở B10 | Q12 |
+| S2 | script ghi HEAD/cây/uptime/binary, giữ output, dispersion hai phía, `W2W_EXTRA` | `scripts/w2w-baseline.sh`, `scripts/check-w2w-baseline-summary.sh`, `ci.yml`, `hft-playbook.md` §6, bẫy item 85 (*What guards it*, manager) | test summary `fail 0`, đảo chiều bỏ `min/median`; `bash -x` diff; `shellcheck` | 10 | bất kỳ | sonnet | Q13 |
+| S3 | `pick_nic` theo thiết bị vật lý; dòng `nic` | `scripts/check-machine.sh`, `scripts/check-machine-verdicts.sh`, `hft-playbook.md` §4, reference mới (manager) | 5 case mới, đảo chiều case 1; desk đọc 15 hàng không cần `FIXBOLT_NIC` | 4, 10 | bất kỳ (+ một lần đọc trên desk) | sonnet | Q16 |
+
+Và *Tài liệu phải cập nhật* thêm: ADR-0068; `docs/reference/a-machine-check-narrowed-its-own-scope-when-the-link-bounced.md`;
+`hft-playbook.md` §4 (EEE, pause, auto-select) và §6; `DESIGN.md` §8 thủ tục hai procedure, §9 hàng
+EEE nếu Q15; `STATUS.md` item 85 (guard), 88 (đóng), item mới nếu A/B EEE đáng kể mà §9 chưa có hàng.
+
+### Câu hỏi cho chủ sở hữu — mỗi câu một quyết định, đề nghị đứng trước
+
+| # | Câu hỏi | Đề nghị | Nếu "không" |
+|---|---|---|---|
+| **Q12** | Điều 1: `--journal file-async` của w2w dùng vòng 4 096 ô như `Store` (J1), case alloc cùng cỡ? | **Có** | J2: thêm arm `mem-64` (+1 kiểu engine, +2 arm × 2 procedure); hoặc B5 bỏ, item 88 mở |
+| **Q13** | Điều 2: ADR-0068 — mỗi arm công bố là **hai procedure**, tái lập = lệch ≤ 5 % ở mỗi percentile, cả hai cột vào §8; **S2 sửa script trước B2**; arm A/B một procedure `RUNS=10`? | **Có** | P3: chạy hai lần bằng script cũ, manager tính tay, §4 vẫn nợ test, B5 không chạy được bằng script; hoặc P1: boot B chỉ thu run thô, §8 trống |
+| **Q14** | Điều 3: công bố B6 với EEE **tắt** ở desk (đã tắt từ 21:29); thêm A/B EEE bật hai arm (~15 phút, hai lần link nhảy); pause không đổi, chỉ đếm? | **Có** | Bỏ A/B: playbook chỉ ghi "EEE off, giá chưa đo"; công bố với EEE bật thì architect không ký |
+| **Q15** | Nếu A/B cho thấy EEE đáng ≥ 5 % p50 ở 1 s: `DESIGN.md` §9 thêm hàng *EEE off* và `check-machine.sh` thêm hàng `eee` (bước code nhỏ sau B6, cùng PR)? | **Có** | Chỉ ghi ở `hft-playbook.md` §4; §9 không có hàng, không ai canh |
+| **Q16** | Điều 4: `check-machine.sh` chọn NIC theo thiết bị vật lý, carrier chỉ phân thắng bại, dòng `nic` trong header, 5 test (N1)? | **Có** | N2 (hàng UNKNOWN thứ hai, desk không cáp không bao giờ satisfied) hoặc N3 (chỉ quy tắc, không test — §4 nợ) |
+| **Q17** | Điều 5: một khe build sau B1; thứ tự B2→B5→B8→B4 ×2, B7, B6, B9; cỡ message B4 như (d), arm 1 s chỉ p50; cắt từ `interval 10 000` → B6 app 1 s → B8 app → `standard` 1 s nếu quá ngày? | **Có** | Giữ thứ tự cũ; B4 vẫn thiếu cỡ message — phải quyết trước khi chạy |
+
+Không câu nào chặn B1. S2 và S3 làm được ngay sau khi duyệt, không cần cargo; S1 chờ khe build.
+
+**`[2026-09-14]` Chủ sở hữu duyệt Sửa 3 theo đề xuất**, nguyên văn *"Duyệt"*: Q12 = vòng 4 096 ô
+(J1); Q13 = ADR-0068 (giờ *Accepted*) và S2 trước B2; Q14 = B6 công bố với EEE tắt, thêm A/B EEE
+bật, pause chỉ đếm; Q15 = hàng §9 *EEE off* và hàng `eee` của `check-machine.sh` nếu A/B ≥ 5 %;
+Q16 = `pick_nic` theo thiết bị vật lý (N1); Q17 = khe build sau B1, thứ tự và cỡ message như Điều 5.
+
+### Nguồn (tra 2026-09-14)
+
+- Kernel `drivers/net/ethernet/intel/igb/igb_ethtool.c` v6.16 —
+  <https://raw.githubusercontent.com/torvalds/linux/v6.16/drivers/net/ethernet/intel/igb/igb_ethtool.c>:
+  `igb_set_coalesce` toàn văn (không `igb_reset`/`igb_reinit_locked`/`igb_down`; chỉ ghi
+  `itr_val`); `igb_set_eee` (`if (hw->dev_spec._82575.eee_disable != !edata->eee_enabled) { …
+  igb_reinit_locked(adapter) … }`); `igb_set_pauseparam` (`igb_down`/`igb_up` khi `fc_autoneg`);
+  `igb_get_eee` (`eee_enabled = !hw->dev_spec._82575.eee_disable`; LP advertised đọc qua
+  `igb_read_xmdio_reg`).
+- Kernel `igb_main.c` v6.16 — `igb_probe`/`igb_reset` gọi `igb_set_eee_i350(hw, true, true)` cho
+  i350/i210/i211 (EEE bật mặc định khi `eee_disable` chưa đặt):
+  <https://raw.githubusercontent.com/torvalds/linux/v6.16/drivers/net/ethernet/intel/igb/igb_main.c>.
+- IEEE 802.3az task force, Grimwood 07/2008 — thời gian đánh thức 16,5 µs (1000BASE-T), 30 µs
+  (100BASE-TX): <https://www.ieee802.org/3/az/public/jul08/grimwood_02_0708.pdf>. Wikipedia
+  *Energy-Efficient Ethernet* (LPI, hai đầu cùng quảng bá):
+  <https://en.wikipedia.org/wiki/Energy-Efficient_Ethernet>.
+- Intel I211 datasheet v3.4 (I211 hỗ trợ 802.3az):
+  <https://cdrdv2-public.intel.com/333017/333017%20-%20I211_Datasheet_v_3_4.pdf> — *không tìm
+  thấy* trong trích đoạn timer vào LPI của I211, cũng *không tìm thấy nguồn nào nói thẳng* stamp
+  TX lấy trước hay sau đánh thức LPI; arm A/B thay cho việc đọc.
+- macOS: Apple Community 2025, Mac mini macOS 15.6 — media `full-duplex,flow-control` là "mặc định
+  trừ `energy-efficient-ethernet`", hộp thoại Hardware hiển thị sai giá trị đã đặt:
+  <https://discussions.apple.com/thread/256119427>; thread 254643898 chỉ nói EEE hiện ở
+  *Network → Hardware* khi phần cứng có. Trên Mac này, `ifconfig -m en0` liệt kê media có
+  `mediaopt energy-efficient-ethernet` (đọc 21:44).
+- Mac mini M4 (A3238) teardown, ChargerLAB — Broadcom BCM57762 gigabit:
+  <https://www.chargerlab.com/teardown-of-apple-m4-mac-mini-a3238/>; xác nhận trên máy bằng
+  `system_profiler SPEthernetDataType` → *Broadcom 57762-A0*, `AppleBCM5701Ethernet`.
+- Cloudflare WARP trên Linux tạo bảng `inet cloudflare-warp` (mode WARP) và từng flush cả
+  ruleset khi disconnect:
+  <https://community.cloudflare.com/t/cloudflare-warp-linux-client-flush-whole-nftables-when-disconnecting/380404>;
+  kiến trúc client:
+  <https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/warp/configure-warp/route-traffic/warp-architecture/>.
+  Desk hôm nay ở mode `DnsOverHttps`, không có bảng đó (`nft list tables`, 21:37).
+- Mytkowicz et al., *Producing Wrong Data Without Doing Anything Obviously Wrong!*, ASPLOS 2009 —
+  <https://users.cs.northwestern.edu/~robby/courses/322-2013-spring/mytkowicz-wrong-data.pdf>:
+  môi trường đo dịch kết quả hơn cả hiệu ứng đang đo; chữa bằng đổi setup và báo spread giữa
+  setup — nền của ADR-0068.
+- `ethtool(8)` — `--set-eee`, `-A`, `-C`: <https://man7.org/linux/man-pages/man8/ethtool.8.html>.
+- Đọc trên máy (desk 21:36–21:45; Mac qua ssh 21:38–21:44): `ethtool --show-eee/-a/-c/-S/-i
+  enp9s0`; `/sys/class/net/*/{type,carrier,carrier_changes,device}`; `/proc/irq/{85..90}/
+  {smp,effective}_affinity_list`; `/proc/interrupts`; `journalctl _COMM=sudo` và kernel/NM
+  21:27–21:30; `sudo -n nft list tables|ruleset|table ip mangle`; `ip rule`; `warp-cli settings`;
+  Mac: `sysctl hw.model kern.osproductversion`, `ifconfig -m en0`, `networksetup -getMedia en0`,
+  `system_profiler SPEthernetDataType`, `git rev-parse/status`, `shasum -a 256`.
