@@ -22,7 +22,7 @@ MESSAGES=120`, run 1 of procedure 1 did not complete: the engine rejected messag
 and `w2w` exited **101**, its own check reading `expected 35=0` against the `35=3` it received.
 The run was re-taken with `WARMUP=5 MESSAGES=100` (105 s total instead of 125 s) and went green;
 that is the figure boot B publishes for the 1 s arm
-([measured-costs.md](measured-costs.md), *B4 — "latency at 3 a.m."*).
+([DESIGN.md](../DESIGN.md) §8, *Boot B*, the paced table — "Latency at 3 a.m.").
 
 ## Why
 

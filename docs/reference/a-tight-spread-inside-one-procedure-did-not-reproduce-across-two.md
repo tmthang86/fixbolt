@@ -124,24 +124,26 @@ even inside one procedure it under-reports whenever the outliers are fast ones.
 - **The procedure records what it measured.** The header prints `commit`, `tree`, `uptime`, the
   `binary` sha256 and mtime (and the generator's over ssh), and `output <dir>`; every run's raw
   output is kept under that directory with a `summary.txt`. **No test asserts those header lines** —
-  they were checked once against a fake `w2w` (`bash -x`), and a real run is owed in boot B's build
-  slot.
+  they were checked once against a fake `w2w` (`bash -x`); a real run happened in boot B's build
+  slot, 2026-09-15 00:5x. Also after this review: failing runs' raw output is kept too (code fix F11).
 - **Reproduced before it is published** is ADR-0068's rule, applied by whoever publishes: nothing
-  runs the procedure twice or compares the two. `DESIGN.md` §8's procedure text is rewritten to it at
-  boot B step B2.
+  runs the procedure twice or compares the two. `DESIGN.md` §8's procedure text now states
+  ADR-0068, done at boot B step B2.
 
 ## It happened again, 2026-09-15
 
 `[measured 2026-09-15]` boot B of
 [plans/2026-09-04-the-second-linux-desk.md](../plans/2026-09-04-the-second-linux-desk.md), two
 full 20-run procedures apart on the same boot (00:58–02:54, 02:54–04:47): **every zero-interval
-loopback arm read 5.0–6.7% faster in procedure 2 than procedure 1 at p50** — B2's four arms
-(`hft`/`standard` × admin/app, combined process) and B8's two `fixbolt` arms (admin/app, loopback
-split against `matthart1983/nanofix`) all moved the same direction, while each procedure's own
-in-procedure dispersion stayed tight (B2: min/median ≥ 0.995, max/median ≤ 1.011 in all eight
-cells). B4's paced arms (1 ms, 10 ms, 1 s) and B8's `nanofix` arms did **not** show this: they
-read within 0.5–5.2% of each other across the same two procedures, tighter than the zero-interval
-arms. A third procedure of B2, run 04:48–05:01 with no build in between, read within 0.1% of
+loopback arm read 4.7–6.7% faster in procedure 2 than procedure 1 at p50** — B2's four arms
+(`hft`/`standard` × admin/app, combined process), B5's four journal/log arms, and B8's two
+`fixbolt` arms (admin/app, loopback split against `matthart1983/nanofix`), ten in all, moved the
+same direction, while each procedure's own in-procedure dispersion stayed tight (min/median ≥
+0.992, max/median ≤ 1.013 across all ten; B2 alone: ≥ 0.995, ≤ 1.011). **Nine of the ten did not
+reproduce**; `standard` app `--journal file-async` did (4.7/4.1/3.3%). B4's paced arms (1 ms,
+10 ms, 1 s) moved 0.4–3.9% at every percentile and reproduced; B8's `nanofix` arms reproduced too
+(1.8–3.1%), but B8's own `fixbolt` arms, run the same way, did **not** (p50 5.6% and 5.2%). A
+third procedure of B2, run 04:48–05:01 with no build in between, read within 0.1% of
 procedure 2 for `hft` and 2.0–2.2% above procedure 2 (below procedure 1) for `standard` — **so
 procedure 1 was the outlier, not a monotone drift with elapsed time**. Candidate recorded, not a
 cause, same as before: procedure 1 started about seven minutes after the build slot (cargo

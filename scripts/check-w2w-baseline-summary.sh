@@ -11,6 +11,9 @@
 # spread column that cannot say how far down a run fell", names the trap;
 # this test is fed that arm's own twenty numbers, so the guard is provably
 # about the run that motivated it, not an invented one.
+#
+# `[2026-09-15]` also `extra_flag_refusal()`, the pure half of review finding
+# F13 (a `W2W_EXTRA` spelled `--journal=X` bypassed the journal identity check).
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,6 +57,23 @@ same "p99.9  12345 ns      (across runs: 12345 .. 12345)   min/median 1.000   ma
 same "p50  15 ns      (across runs: 10 .. 20)   min/median 0.667   max/median 1.333" \
   "$(dispersion p50 10 20)" \
   "n even averages the two middle values as an integer, like median() today"
+
+echo
+echo "=== extra_flag_refusal"
+
+# `[2026-09-15]` review finding F13: tools/w2w matches `--journal` only as a
+# whole word, so `--journal=file-async` ran the default journal while the
+# identity check was skipped and the summary still printed the flag. The
+# refusal names the token and the two-word form.
+same "W2W_EXTRA token '--journal=file-async': tools/w2w reads --journal only as a word of its own and would ignore this spelling, and the identity check would never run — write it as two words, '--journal file-async'" \
+  "$(extra_flag_refusal --journal=file-async)" \
+  "--journal=X is refused, naming the token and the two-word form"
+same "W2W_EXTRA token '--log=file': tools/w2w reads --log only as a word of its own and would ignore this spelling, and the identity check would never run — write it as two words, '--log file'" \
+  "$(extra_flag_refusal --log=file)" \
+  "--log=X is refused the same way"
+# The two-word form's words, one at a time, are what W2W_EXTRA is split into.
+same "" "$(extra_flag_refusal --journal)$(extra_flag_refusal file-async)$(extra_flag_refusal --log)$(extra_flag_refusal file)" \
+  "the two-word form is not refused"
 
 echo
 echo "=== summary"

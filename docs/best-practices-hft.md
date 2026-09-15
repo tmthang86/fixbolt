@@ -90,9 +90,9 @@ kernel TCP imposes, not a promise your box will hit. Run `scripts/check-machine.
 number as yours.
 
 **Turn off EEE (802.3az) on the NIC that carries the session.** `[measured 2026-09-15]` one A/B
-on the §9 desktop, `enp9s0` (Intel I211) cabled to a Mac mini, `hft` admin paced at 1 s: wire p50
-**54 310 ns with EEE on, 39 714 with it off** — +14.6 µs, close to the ~16.5 µs 1000BASE-T wake
-time. Check and fix it per [hft-playbook.md §4](hft-playbook.md).
+on the §9 desktop, `enp9s0` (Intel I211) cabled to a Mac mini, `hft` admin paced at 1 s:
+**EEE on added +14.6 µs to wire p50**, close to the ~16.5 µs 1000BASE-T wake
+time (raw pair is A/B only, never a figure). Check and fix it per [hft-playbook.md §4](hft-playbook.md).
 
 ---
 

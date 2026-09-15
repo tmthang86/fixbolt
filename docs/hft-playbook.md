@@ -72,8 +72,8 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
 
 **EEE (802.3az) must be off on the measurement NIC.** `[measured 2026-09-15]` one A/B on the §9
 desktop, `enp9s0` (Intel I211, `igb`) cabled to a Mac mini, `hft` admin paced at 1 s, same hour:
-wire p50 **54 310 ns with EEE on, 39 714 with it off** — **+14.6 µs**, close to the ~16.5 µs
-1000BASE-T wake time ([measured-costs.md](reference/measured-costs.md), boot B). Check with
+**EEE on added +14.6 µs to wire p50**, close to the ~16.5 µs
+1000BASE-T wake time ([measured-costs.md](reference/measured-costs.md), boot B — the raw pair is A/B only, never a figure). Check with
 `ethtool --show-eee <nic>`; the row this project cares about reads `EEE status: disabled`.
 `scripts/check-machine.sh` reads this as its `eee` row, once a NIC is selected, alongside the
 block above. `ethtool --set-eee <nic> eee <on|off>` and `ethtool -A <nic> …` (pause negotiation)
@@ -133,8 +133,10 @@ before and after: they must stay 0.
    `standard` in its own invocation without `WIRE_NIC`. An `ARMS` entry also grows a fourth,
    optional field — `mode:path:tls:interval`, the interval in microseconds passed on as
    `--interval <us>`; `0`, the default, adds no flag and no line, same as before this field
-   existed. `FIXBOLT_NIC` reaches the script's two `scripts/check-machine.sh` calls the same way
-   any other environment variable does. None of this changes the command line when `LISTEN` is
+   existed. `FIXBOLT_NIC` reaches the script's `scripts/check-machine.sh` call the same way
+   any other environment variable does — one call since 2026-09-15, whose printed block and
+   whose `machine pass … fail … unknown …` verdict line are the same reading (before that fix
+   they were two readings, and on 2026-09-15 they disagreed). None of this changes the command line when `LISTEN` is
    unset and no `ARMS` entry uses a fourth field — `ARMS="hft:admin"` still means what it always
    meant. `[2026-09-14]` ADR-0068 decision 5: the header now also prints the commit, tree state,
    uptime and the binary's sha256/mtime, `OUT_DIR` (default
@@ -180,7 +182,7 @@ before and after: they must stay 0.
    design.
 
    **The runbook to read before and after every such procedure**
-   (`docs/plans/2026-09-04-the-second-linux-desk.md`, *Sửa 3* Điều 3, lines 1276–1283):
+   (`docs/plans/2026-09-04-the-second-linux-desk.md`, *Sửa 3*, Điều 3, "Runbook B6"):
 
    ```sh
    sudo -n ethtool --show-eee <nic>                     # EEE status: disabled
@@ -193,11 +195,12 @@ before and after: they must stay 0.
 
    `[measured 2026-09-15]` **an `igb` NIC cannot hold an interval-0 wire figure with this
    procedure.** At `--interval 0` a TX stamp is skipped within 1–4 runs of 20 000:
-   `tx_hwtstamp_skipped` rose with every attempt across boot B (0 → 1 → 5 → 29 → 50 → 51) —
+   `tx_hwtstamp_skipped` rose with every attempt across boot B (0 → 1 → 5 → 29 → 50 → 52) —
    `igb` holds one TX timestamp at a time and skips the next request while one is already
-   pending. The script FAILs any run with a missing stamp (the rule above), so an interval-0 wire
-   figure is not obtainable on an Intel I211 with this procedure; only a paced run (`--interval`
-   at 1 ms or slower) leaves enough gap between sends for the stamp to clear
+   pending (`igb_main.c`, `tx_hwtstamp_skipped++`). The script FAILs any run with a missing stamp
+   (the rule above), so an interval-0 wire figure is not obtainable on an Intel I211 with this
+   procedure. **Paced at 1 s — the only pacing run over the cable — every stamp arrived; what the
+   least pacing is that avoids a skip was not measured**
    ([measured-costs.md](reference/measured-costs.md), boot B, section B6).
 
 **The measurement traps this project already paid for** are in [GUIDE.md §8](GUIDE.md). Read

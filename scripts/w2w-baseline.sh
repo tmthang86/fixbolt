@@ -50,7 +50,8 @@
 #     arm before anything runs — tools/w2w refuses it too (the self-signed
 #     certificate is made per process, and a split run is two processes),
 #     this is just the earlier, clearer refusal.
-#   * `FIXBOLT_NIC` reaches the two `scripts/check-machine.sh` calls below the
+#   * `FIXBOLT_NIC` reaches the `scripts/check-machine.sh` call below (one call
+#     since the `[2026-09-15]` F4 fix there; two before it) the
 #     same way `RUNS` or `GAP` always have: bash hands a script's whole
 #     environment to everything it execs, and `check-machine.sh` already
 #     reads `${FIXBOLT_NIC:-}` (same default-to-empty as an unset variable),
@@ -180,8 +181,26 @@ dispersion() { # dispersion <label> <v...>
     "$(awk -v a="$max" -v b="$med" 'BEGIN{printf "%.3f", a/b}')"
 }
 
-# Sourced by the baseline summary test, which wants `median` and `dispersion`
-# and none of the probing or any run — same guard shape as check-machine.sh:174.
+# `[2026-09-15]` review finding F13: a `W2W_EXTRA` token spelled `--journal=X`
+# or `--log=X`. tools/w2w matches a flag only as a whole word (`arg` in
+# tools/w2w/src/main.rs: `position(|a| a == name)`), so such a run uses the
+# default journal or log and says nothing; `extra_val` below finds no value in
+# it either, so the `journal: X` / `log: X` identity check never runs — while
+# the header and every summary still print `extra   --journal=X` beside
+# figures that never ran it. Prints the refusal for one token, or nothing.
+# Pure, so `scripts/check-w2w-baseline-summary.sh` calls it directly.
+extra_flag_refusal() { # extra_flag_refusal <one W2W_EXTRA token>
+  case "$1" in
+    --journal=*|--log=*)
+      printf "W2W_EXTRA token '%s': tools/w2w reads %s only as a word of its own and would ignore this spelling, and the identity check would never run — write it as two words, '%s %s'" \
+        "$1" "${1%%=*}" "${1%%=*}" "${1#*=}"
+      ;;
+  esac
+}
+
+# Sourced by the baseline summary test, which wants `median`, `dispersion` and
+# `extra_flag_refusal` and none of the probing or any run — same guard shape as
+# check-machine.sh:174.
 if [ "${BASELINE_SOURCE_ONLY:-0}" = 1 ]; then
   # shellcheck disable=SC2317 # reachable when sourced; `|| exit 0` is only
   # for the (unused here) case of running this file directly.
@@ -216,6 +235,12 @@ if [ -n "$GENERATOR_SSH" ]; then
     ''|0.0.0.0|'[::]') refuse "LISTEN=$LISTEN binds every address, and GENERATOR_SSH's host needs one it can reach — name this host's address on the link" ;;
   esac
 fi
+# F13, `extra_flag_refusal` above: one `=`-spelled journal or log token and
+# nothing runs, not even the machine block.
+for tok in "${EXTRA_ARGS[@]}"; do
+  why=$(extra_flag_refusal "$tok")
+  [ -z "$why" ] || refuse "$why"
+done
 
 # Pulls one flag's value out of W2W_EXTRA's split words, so the identity
 # check beside each run (`journal: X` / `log: X`, the same shape as the `tls`
@@ -235,7 +260,16 @@ LOG_WANT=$(extra_val --log "${EXTRA_ARGS[@]}")
 # asserted — CLAUDE.md §2 non-negotiable 10. Its verdict is captured because
 # `benches/baselines.tsv` records one per line for the same reason.
 echo "=============================================================="
-scripts/check-machine.sh || true
+# `[2026-09-15]` review finding F4: ONE run of check-machine.sh, printed and
+# read for the verdict. Until today the block printed one run and `VERDICT`
+# came from a second run moments later, and a row can change between two runs
+# (the quiet row reads a one-second window): on 2026-09-15 the printed block
+# read `pass 15 fail 0 unknown 0` while two summaries recorded `pass 14 fail 1
+# unknown 0`, and the failing row was printed nowhere. Only stdout is captured
+# — what `VERDICT` is read from, and what the second run captured — so the
+# printed block is the same bytes on stdout as before; stderr is left to go
+# where it always went.
+#
 # `[2026-09-14]` fix: `check-machine.sh` exits non-zero on any FAIL row, and
 # under `set -o pipefail` that made the old one-liner's `|| echo "unknown"`
 # fire IN ADDITION to the line grep had already matched — pipefail reports
@@ -245,7 +279,10 @@ scripts/check-machine.sh || true
 # check-machine.sh's output first, with its own exit status thrown away by
 # `|| true`, means the `echo | grep` pipeline that follows carries only
 # grep's status.
-MACHINE_OUT=$(scripts/check-machine.sh 2>/dev/null || true)
+MACHINE_OUT=$(scripts/check-machine.sh || true)
+# `$(...)` drops the trailing newline, `%s\n` puts one back; nothing printed
+# stays nothing printed.
+[ -z "$MACHINE_OUT" ] || printf '%s\n' "$MACHINE_OUT"
 VERDICT=$(echo "$MACHINE_OUT" | grep -E '^pass [0-9]+' || echo "unknown")
 echo "=============================================================="
 echo
@@ -335,14 +372,19 @@ BIN_MTIME=$(date -Iseconds -r "$BIN" 2>/dev/null || echo unknown)
 echo "binary ${BIN_SHA:-unknown} $BIN_MTIME"
 if [ -n "$GENERATOR_SSH" ]; then
   # Best effort: an unreachable host or a remote shell with no `w2w` on its
-  # PATH must not stop the run over a line that is evidence, not a gate —
-  # every command below falls back to `echo unknown` as its last word, so
-  # under `pipefail` the pipeline's status is always the fallback's.
+  # PATH must not stop the run over a line that is evidence, not a gate.
+  # `[2026-09-15]` review finding F12: this comment used to
+  # promise an `echo unknown` fallback that did not exist, and under `set -e`
+  # with `pipefail` a failing `ssh` (255 for an unreachable host, 1 when the
+  # remote `command -v` finds no binary) ended the whole script on this line,
+  # with no FAIL line. `|| GEN_SHA=""` now takes that status: whatever a failed
+  # command printed is dropped, the line below reads `generator binary
+  # unknown`, and the run goes on to pass or FAIL on its own evidence.
   gen_cmd="p=\$(command -v $GENERATOR_W2W 2>/dev/null) && { shasum -a 256 \"\$p\" 2>/dev/null || sha256sum \"\$p\" 2>/dev/null; }"
   # shellcheck disable=SC2029 # $GENERATOR_W2W expands client-side on
   # purpose (it names the remote binary); \$p and \$(command -v ...) are
   # already escaped above to run on the remote shell instead.
-  GEN_SHA=$(ssh "$GENERATOR_SSH" "$gen_cmd" 2>/dev/null | awk '{print $1}' | cut -c1-12)
+  GEN_SHA=$(ssh "$GENERATOR_SSH" "$gen_cmd" 2>/dev/null | awk '{print $1}' | cut -c1-12) || GEN_SHA=""
   echo "generator binary ${GEN_SHA:-unknown}"
 fi
 if [ -n "$W2W_EXTRA" ]; then
@@ -443,7 +485,18 @@ for arm in $ARMS; do
       listen_pid=$!
 
       if ! wait_for_line "$listen_log" '^listening: ' 5; then
-        kill "$listen_pid" 2>/dev/null; wait "$listen_pid" 2>/dev/null
+        # `[2026-09-15]` review finding N1: this body runs under `set -e`, and
+        # both calls below fail on exactly the failures this branch exists
+        # for — `wait` returns 143 for the half just killed, and `kill` returns
+        # 1 when the half had already exited on its own (a refused flag, a bind
+        # error) and bash has reaped it. Either one ended the script here with
+        # nothing printed, no FAIL line and the temp log left behind. Their
+        # status says nothing the FAIL line below does not, so `|| true`.
+        kill "$listen_pid" 2>/dev/null || true
+        wait "$listen_pid" 2>/dev/null || true
+        # F11's rule for this failure too: the listen half's output on disk
+        # before the script exits.
+        cp "$listen_log" "$OUT_DIR/$run_prefix-run-$i-listen.txt"
         cat "$listen_log"; rm -f "$listen_log"
         echo "FAIL: $mode:$path:$tls:$interval — engine half never printed 'listening:' within 5s"
         exit 1
@@ -471,6 +524,13 @@ for arm in $ARMS; do
       lrc=0
       wait_with_timeout "$listen_pid" 5 || lrc=$?
       lout=$(cat "$listen_log"); rm -f "$listen_log"
+      # `[2026-09-15]` review finding F11: both halves' raw output lands on
+      # disk HERE, as soon as both have returned and before any check below
+      # can `exit 1`. Written after the checks, as it was, the one run whose
+      # output mattered most — the one that failed — was the one never kept:
+      # `boot-b-b6-1/wire-0/` held nothing after a missing TX stamp FAILed it.
+      printf '%s\n' "$cout" > "$OUT_DIR/$run_prefix-run-$i.txt"
+      printf '%s\n' "$lout" > "$OUT_DIR/$run_prefix-run-$i-listen.txt"
 
       echo "$cout" | grep -qx "path: $path" || {
         echo "$cout"
@@ -543,9 +603,6 @@ for arm in $ARMS; do
         wire_note=$(printf '  wire p50 %8s  p99 %8s  p99.9 %8s  (acceptor, %s)' "$wp50" "$wp99" "$wp999" "$WIRE_NIC")
       fi
 
-      printf '%s\n' "$cout" > "$OUT_DIR/$run_prefix-run-$i.txt"
-      printf '%s\n' "$lout" > "$OUT_DIR/$run_prefix-run-$i-listen.txt"
-
       out="$cout"
       g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
       mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
@@ -566,6 +623,10 @@ for arm in $ARMS; do
     rc=0
     out=$("$BIN" --mode "$mode" --path "$path" "${tls_args[@]}" "${interval_args[@]}" "${PINARGS[@]}" \
             --messages "$MESSAGES" --warmup "$WARMUP" "${EXTRA_ARGS[@]}" 2>&1) || rc=$?
+    # F11 (`[2026-09-15]`, the split run above): the raw output is kept before
+    # any check below can `exit 1` — `boot-b-p1/b4-1s/` held nothing after a
+    # `35=3` reject FAILed its run.
+    printf '%s\n' "$out" > "$OUT_DIR/$run_prefix-run-$i.txt"
     # WHAT RAN is read back and checked before anything the run measured is
     # trusted — the same order `check-no-kernel-sleep.sh` learned the hard way
     # after `--mode standard` once printed its banner and ran nothing. A typo
@@ -624,7 +685,6 @@ for arm in $ARMS; do
     if [ "$tls" != userspace ]; then
       echo "$out" | grep -qE '^ *allocs +0 ' || { echo "$out"; echo "allocs != 0"; exit 1; }
     fi
-    printf '%s\n' "$out" > "$OUT_DIR/$run_prefix-run-$i.txt"
     g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
     mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
     printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s%s\n' \

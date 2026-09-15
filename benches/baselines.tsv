@@ -295,11 +295,12 @@ AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 4096	1657.7	1.10	20
 # `serialize` binary after 2026-09-05, and adding cases to a binary has moved its neighbours
 # before (the paragraph above: -2.3% and +3.6%) — a candidate, not a finding.
 #
-# EVERY OTHER CASE IN THESE THREE TARGETS IS IN ITS BAND AND SLOWER THAN ITS LINE. `density`
-# +3.6% to +4.8% (`engine turn, 1 busy sessions` 1659.8 -> median 1719.7), `validate
-# NewOrderSingle` 882.1 -> 955.9 (+8.4%, ceiling 970.3), `validate Heartbeat` +4.5%, `validate
-# TestRequest, w2w bytes` +3.9%. Those lines were NOT re-recorded (Q6). Not isolated: code merged
-# since 2026-09-05, the machine, or both.
+# EVERY OTHER CASE IN THESE THREE TARGETS IS IN ITS BAND. `density` and `validate` read 3.0-8.4%
+# SLOWER than their 2026-09-05 lines (`engine turn, 64 busy sessions` +3.0%; `validate
+# NewOrderSingle` 882.1 -> 955.9, +8.4%, ceiling 970.3; `validate Heartbeat` +4.5%; `validate
+# TestRequest, w2w bytes` +3.9%) EXCEPT `encode ExecutionReport (template)`, which read 229.3
+# against its 237.6 line -- 3.5% FASTER. Those lines were NOT re-recorded (Q6). Not isolated: code
+# merged since 2026-09-05, the machine, or both.
 #
 # D_in for STATUS.md item 49, same runs: `engine turn, 1 busy sessions` minus `engine turn, 1 busy,
 # admin`, paired per run, median 767.7 ns (734.3 .. 781.3); difference of the medians 765.5 ns.

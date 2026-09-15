@@ -689,6 +689,36 @@ verdicts `pass 37 fail 0`; desk `pass 16 fail 0 unknown 0`.
 giữa 00:38 và 05:05, không rõ vì sao (nghi một subagent dọn scratchpad). Dòng verdict còn trong thân
 `547c873`.
 
+**`[2026-09-15]` B10 — senior review (opus, context mới), 18 finding; manager kiểm chứng trước khi
+chuyển.** Kiểm lại trên log thô và code: F1, F2, F3, F4, F6, F10, F11, F12 **xác nhận** bằng lệnh;
+phần còn lại xác nhận bằng dòng log reviewer trích. Chuyển đi:
+
+- **F1 — CI đỏ trên HEAD**, job `deny`: RUSTSEC-2026-0285 (rustls 0.23.44), công bố sau run xanh đầu
+  của nhánh — `main` cũng dính. Sửa `6074c26`: rustls 0.23.45; test `tls_key_update` đo lại hằng
+  cấp phát (không đổi) rồi đòi cập nhật `DERIVED_FROM_RUSTLS` và một dòng revision ở ADR-0063 — đúng
+  như guard thiết kế. Gate manager chạy lại trong worktree: `tls_key_update` 6 passed, `cargo deny
+  check` → `advisories ok, bans ok, licenses ok, sources ok`.
+- **Code → senior developer (opus)**, `scripts/w2w-baseline.sh`: F11 run hỏng không được giữ output
+  (thư mục `boot-b-b6-1/wire-0` rỗng); F12 hash generator "best effort" giết script khi ssh lỗi; F4
+  verdict lấy từ một lần `check-machine.sh` khác lần được in (hai summary B6 procedure 1 đọc `pass 14
+  fail 1`, hàng FAIL không được ghi); F13 `W2W_EXTRA="--journal=file-async"` lách được kiểm tra identity.
+- **Docs → developer (sonnet)**, danh sách đã kiểm ở scratchpad: A/B EEE công bố số tuyệt đối (ADR-0068
+  quyết định 4 cấm — chỉ hiệu +14,6 µs); "tám arm" thật ra là **mười**, một arm (`standard` app
+  `--journal file-async`) có tái lập; số "chẩn đoán" interval 0 là p50 của **chính run hỏng** — run sạch
+  là 26 178–26 218 (EEE tắt, n = 4), 29 138/29 082 (IRQ cpu6), 39 546/39 522 (EEE bật), busy_poll 0
+  không có run sạch; **chỉ arm admin từng chạy ở interval 0**; `tx_hwtstamp_skipped` cuối là 52;
+  "1 ms or slower" trong playbook là suy ra, không đo; một dòng *Not proven* bị gạch quá tay (hai script
+  luật 4 chưa từng chạy với journal/log); B1 "mọi case khác chậm hơn" sai — `encode ExecutionReport
+  (template)` **nhanh hơn 3,5 %** (thân `547c873` còn câu sai, không sửa được); vài lỗi nhỏ khác.
+- **Không sửa, ghi lại:** F14 `pick_nic` với nhiều NIC dây (desk chỉ có một) → gợi ý cho architect; F15
+  dòng `exit=$?` trong script driver ở scratchpad luôn in 0 (không doc nào trích); F17 A/B busy_read và
+  IRQ cpu6 chạy ở interval 0 sau khi cả hai procedure đã hỏng ở đó — busy_read **không có kết quả**, và
+  `tx_hwtstamp_skipped` chỉ đọc mỗi procedure một lần chứ không mỗi run.
+- **F16 — cần chủ sở hữu biết:** số message của arm 1 s đổi từ 120 (Sửa 3 Q17) xuống 100, cho cả B4 và
+  B6, vì `MaxLatency` 120 s; quy tắc "1 s chỉ công bố p50" giữ nguyên. F5: hai procedure 1 s của B6
+  bắt đầu cách nhau 48 phút nhưng chỉ cách 10 phút giữa lúc hết cái trước và lúc bắt đầu cái sau
+  (ADR-0068 đòi ≥ 30 phút, một lượt qua bước khác) — cặp đó vốn không tái lập.
+
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
 Draft 2026-09-04 được đọc lại từng dòng đối chiếu với code, máy và STATUS ngày 2026-09-13. Những

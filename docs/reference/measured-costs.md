@@ -3362,7 +3362,8 @@ and a third procedure of B2. Raw logs and per-run output:
   on), `fixbolt-machine on` (governor performance, boost 0, SMT off, THP never, busy_poll/busy_read
   50), `enp9s0` IRQs 85–89 on cpu4, `rx-usecs 0`, EEE off at the desk.
 - `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 15 fail 0 unknown 0`; the busy row is
-  re-read before every run (3% ceiling); **0 runs disqualified** in any procedure below.
+  re-read before every run (3% ceiling); **0 runs disqualified** in any procedure below. **Except
+  B6's procedure 1 1 s wire arms**, whose own summaries read `pass 14 fail 1 unknown 0` (below).
 - Commit `5ca3889`, clean tree, for every w2w figure. Desk `w2w` sha256 `350d3c17320f` (release,
   `--features affinity`, `cap_net_raw,cap_net_admin+ep`); Mac `w2w` sha256 `7b2b52cb9be7` at the
   same commit.
@@ -3387,10 +3388,13 @@ p50 ns; "none" is B2's app arm of the same procedure; added = arm − none.
 | standard app, `--journal file-async` | 21 455 (+450) | 20 488 (+570) | 25 814 / 24 807 | 27 257 / 26 385 | reproduced (4.7 / 4.1 / 3.3) |
 | standard app, `--log file` | 21 901 (+896) | 20 840 (+922) | 26 285 / 25 062 | 27 813 / 26 685 | not reproduced (p50 5.1) |
 
-Reading: the *added* term has the same sign and similar size in both procedures and both modes —
-file-async journal **+450 to +586 ns** per application round trip, `FileLog` **+896 to +1 032 ns**
-per round trip (two records, inbound and outbound: ~450–516 ns per direction, against §8's
-`~340 ns [unmeasured]`). The journal is `FileJournal<4096, 512>`, `Durability::Async` (item 88
+Reading: the *added* term has the same sign in both procedures and both modes, but only one of the
+four arms reproduced — `standard` app `--journal file-async` (+450 → +570 ns, 4.7%); `hft` app's
+journal and log, and `standard` app's log, did not (`hft` log's added term moved **+901 →
++1 032 ns, 14.5%**). File-async journal added **+450 to +586 ns** per application round trip,
+`FileLog` **+896 to +1 032 ns** per round trip — one inbound record and one outbound record, so
+half of that is per direction, **not separately measured** (against §8's `~340 ns [unmeasured]`).
+The journal is `FileJournal<4096, 512>`, `Durability::Async` (item 88
 fixed, step S1), on tmpfs — **not a disk figure**.
 
 ### B8 — against `matthart1983/nanofix` (loopback split, `standard`)
@@ -3526,8 +3530,8 @@ the harness's per-run best), ns/op:
 | TCP loopback, 149 in 191 out | 12 676.6 12 721.0 12 745.7 12 690.3 12 725.3 | 12 298.9 12 288.9 12 287.3 12 314.0 12 291.2 | 12 713.6 12 696.3 12 670.4 12 727.9 12 739.4 |
 | TCP loopback, 8192 in 8192 out | 14 674.1 14 717.7 14 844.5 14 809.6 14 910.8 | 14 292.4 14 294.6 14 542.8 14 894.5 14 331.7 | 14 681.7 14 701.8 14 693.9 14 629.6 14 810.0 |
 
-conntrack on `lo` costs **~420 ns (3.3%)** of the 8-byte round trip, A1 ≈ A2. Item 51's ~10 µs is
-not explained by it.
+conntrack on `lo` costs **~420 ns** — **3.3%** of the 12.6 µs 8-byte TCP loopback round trip and
+about **4%** of item 51's ~10.2 µs gap, A1 ≈ A2. Item 51's gap is not explained by it.
 
 `w2w-baseline.sh RUNS=10 ARMS=hft:admin` (loopback, combined), per-run p50 ns:
 
@@ -3549,26 +3553,49 @@ by the payload bench's connections makes some later connections take a ~3 µs sl
 [DESIGN.md §9](../DESIGN.md) and [hft-playbook.md §4](../hft-playbook.md) (the +14.6 µs A/B is
 committed there). Two things from B6 are recorded only here.
 
+**The two 1 s procedures ran close together.** Procedure 1's 1 s arms ran 05:32–06:10, procedure
+2's ran 06:20–06:58: starts 48 minutes apart, but only 10 minutes between the end of one and the
+start of the other — short of ADR-0068's rule 4 (at least 30 minutes, one pass through other
+steps). The pair (45 146 ‖ 42 918) did not reproduce anyway. **The two procedures also carry a
+different machine verdict**: procedure 1's 1 s wire arms' own summaries (`b6-1/wire-1s.log`) both
+read `machine pass 14 fail 1 unknown 0` — the printed header block read `pass 15`, because the
+script took its verdict from a second `check-machine.sh` run (fixed in code now), and which row
+failed there is not recorded; procedure 2's carry `pass 15 fail 0 unknown 0`.
+
 **Interval 0 wire: not measured.** Every attempt FAILed on a missing TX stamp before completing
 an arm: procedure 1 run 1 (`hw-tx-missing 1`), procedure 2 run 2 (1), and in the A/B busy0 run 1
 (1), irq6 run 3 (10), eee-on run 3 (1), eee-off run 4 (1). `tx_hwtstamp_skipped` rose 0 → 1 → 5 →
-29 → 50 → 51 across them: igb holds one TX timestamp at a time and skips the next request when
-one is pending. The script's rule (Sửa 2) fails any run with a missing stamp. Wire p50 of the runs
-that completed before each failure (single runs, diagnostic): 26 106, 26 218 (EEE off); 26 122
-(EEE off, same hour as the A/B); 28 914 (busy_poll 0); 28 874 (IRQs on cpu6); 39 610 (EEE on).
+29 → 50 → 52 across them: igb holds one TX timestamp at a time and skips the next request when
+one is pending. The script's rule (Sửa 2) fails any run with a missing stamp. **A failing run's
+own wire p50 is not a figure** — each carries `hw-tx-missing ≥ 1` — and is dropped below. The runs
+that did complete clean (20 000 round trips, `hw-rx-missing 0 hw-tx-missing 0`), all diagnostic and
+not reproduced, wire p50 ns: EEE off, busy_poll 50, IRQs on cpu4 — **26 178–26 218 ns, n = 4**
+(26 186 procedure 2 run 1; 26 178, 26 210, 26 218 the interval-0 EEE-off attempt's runs 1–3); IRQs
+on cpu6 — **29 082, 29 138 ns, n = 2**, about +2.9 µs over the EEE-off runs; EEE on — **39 522,
+39 546 ns, n = 2**, about +13.3 µs. `busy_poll`/`busy_read` 0 has **no clean run** — it failed at
+run 1 — so the plan's busy_read A/B has **no result**. The 2 000-round-trip smoke (24 562, 26 042)
+and the discard run (26 306) are not comparable and are excluded from every range above. **Only
+the admin arm ever ran at interval 0** — the script stops at the first FAIL, so the application
+arm never started.
 
 **A/B, one procedure each, RUNS=10, 07:08–07:49, differences only
 ([ADR-0068](../decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)
-rule 4):**
+rule 4).** The plan's B6 gate asked for two A/B arms — `busy_read` and IRQs on the engine core —
+plus `tx_hwtstamp_skipped` read per run; both A/B arms in fact ran at interval 0, after both 1 s
+procedures had already failed there, and `tx_hwtstamp_skipped` was read once per procedure rather
+than per run:
 
 - EEE on at the desk (`ethtool --set-eee enp9s0 eee on`, link bounced, `enabled - active`, Mac
   media gained `energy-efficient-ethernet`) vs EEE off again in the same hour, hft admin, 1 s:
   wire p50 **54 310** (51 730..57 874) vs **39 714** (37 978..41 122) → **+14.6 µs**, ≈ the
-  16.5 µs 1000BASE-T wake time; counterparty p50 388 354 vs 374 937. Over Q15's 5% threshold →
+  16.5 µs 1000BASE-T wake time; counterparty p50 388 354 vs 374 937. *A/B only, never a
+  figure — the published 1 s pair is 45 146 ‖ 42 918.* Over Q15's 5% threshold →
   §9 row + a `check-machine.sh` `eee` row (step Q15, this PR).
-- busy_poll/busy_read 0 and IRQs on cpu6: interval 0 only, both failed on a missing TX stamp
-  (runs 1 and 3); single-run wire p50 28 914 and 28 874 against 26 122 — +2.8 µs each,
-  **diagnostic, n = 1**.
+- IRQs on cpu6: interval 0 only, failed at run 3 on a missing TX stamp; the two clean runs before
+  it read wire p50 **29 138, 29 082** against the EEE-off runs' 26 178–26 218 — about +2.9 µs
+  each, **diagnostic, n = 2**.
+- `busy_poll`/`busy_read` 0: interval 0 only, failed at run 1 on a missing TX stamp — **no clean
+  run, no result**.
 - The 1 s EEE-off arm read 39 714 while procedures 1 and 2 read 45 146 and 42 918 an hour
   earlier: the 1 s wire figure moves ~14% across the morning.
 
@@ -3595,11 +3622,12 @@ Top self symbols, app: `fixbolt_session::scan_fields::<256>` 5.40 %, `Session::j
 1.18 %, `inode_init_always_gfp` 1.11 %, `do_accept` 1.07 %.
 
 Reading, **diagnostic — not a cause**: the `hft` engine thread spins, so these are shares of the
-spin loop, not per-message latency. Most of the loop is the listener poll: a non-blocking
-`accept4` on an empty listener allocates a socket file and inode (`sock_alloc_file`,
-`inode_init_always_gfp`) and frees it (`__fput`, `evict`) before returning `EAGAIN`, as the
-callchain shows. What that does to the round trip — how long a turn is when a request lands — is
-not measured.
+spin loop, not per-message latency. `Acceptor::accept` (cumulative, including its own code and the
+syscall it makes) is **49.9%** of admin samples and **36.7%** of app samples; the `accept4`
+syscall itself is **27.7%** and **18.3%**. A non-blocking `accept4` on an empty listener allocates
+a socket file and inode (`sock_alloc_file`, `inode_init_always_gfp`) and frees it (`__fput`,
+`evict`) before returning `EAGAIN`, as the callchain shows. What that does to the round trip — how
+long a turn is when a request lands — is not measured.
 
 ### B2, procedure 3
 
@@ -3622,9 +3650,10 @@ rebuild) ended.
   not causes; nothing was varied to isolate either.
 - **Any latency effect from B9's profile.** It is a share of the spin loop, not a per-message
   timing; what a non-blocking `accept4`'s allocate-and-free costs a round trip is not measured.
-- **Item 51's second suspect.** Suspect 1 (conntrack) explains 3.3% of the ~10 µs gap; the CPU
-  speculation mitigations (suspect 2) were not tested this boot, and the flush arm (Tailscale +
-  full ruleset) was skipped — the owner was not at the desk.
+- **Item 51's second suspect.** Suspect 1 (conntrack) is 3.3% of the 12.6 µs 8-byte TCP loopback
+  round trip, about 4% of item 51's ~10.2 µs gap; the CPU speculation mitigations (suspect 2) were
+  not tested this boot, and the flush arm (Tailscale + full ruleset) was skipped — the owner was
+  not at the desk.
 - **Whether fixbolt's admin path actually costs more than nanofix's.** The sign of the
   same-procedure difference flipped between procedures (+416 / −175 ns); no difference is
   claimed at admin p50.
