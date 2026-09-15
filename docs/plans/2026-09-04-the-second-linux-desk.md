@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B xong 2026-09-15** (B0–B10, PR [#73](https://github.com/tmthang86/fixbolt/pull/73), commit đóng `f516761`, CI `34918683264` 14/14) — **tiếp theo: boot C (Q1), rồi boot D** — **Sửa 3 đã duyệt 2026-09-14, theo đề xuất Q12–Q17** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B xong 2026-09-15** (B0–B10, PR [#73](https://github.com/tmthang86/fixbolt/pull/73), commit đóng `f516761`, CI `34918683264` 14/14; merge `c47ddb6`, CI `34919173472` 14/14) — **tiếp theo: boot C (Q1), rồi boot D** — **Sửa 3 đã duyệt 2026-09-14, theo đề xuất Q12–Q17** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -729,6 +729,16 @@ trên desk (gitignored). Máy tắt sau khi merge, theo lời chủ sở hữu; 
 knobs OFF, EEE bật lại, IRQ không pin — chạy lại B0. **Tiếp theo: boot C** (Q1, `mitigations=off`,
 chỉ hai phép đo của B7, nhãn A/B — PR 3), rồi **boot D** về desktop. Chưa làm ở boot B: arm flush của
 B7 (chủ sở hữu không ở bàn), mọi số wire interval 0, A/B busy_read.
+
+**`[2026-09-15]` PR #73 đã merge, máy đã tắt và bật lại.** Merge `c47ddb6`; **CI chạy trên chính
+commit merge xanh**, run [`34919173472`](https://github.com/tmthang86/fixbolt/actions/runs/34919173472),
+14/14 job. Máy tắt 08:58, bật lại 20:39, vẫn dòng grub §9. Đọc lúc 20:47: `/proc/cmdline` có
+`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`;
+`FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 8 fail 8 unknown 0`. Tám hàng FAIL đúng là
+những gì B0 đặt lúc chạy và mất khi reboot: governor, turbo, SMT, THP, busy_poll, IRQ, coalescing,
+EEE. Evidence trong `target/boot-b-evidence/` còn nguyên. **Chủ sở hữu chưa trả lời F16** (arm 1 s
+chạy 100 message thay vì 120). Việc của boot C, từng bước, ở `STATUS.md` *Start here — 2026-09-15:
+boot B*, mục *Next*. Session sau là PR 3.
 
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
