@@ -70,6 +70,18 @@ sudo ethtool -C <nic> rx-usecs 0                        # interrupt coalescing o
 systemctl stop irqbalance                               # stop it moving IRQs back
 ```
 
+**EEE (802.3az) must be off on the measurement NIC.** `[measured 2026-09-15]` one A/B on the §9
+desktop, `enp9s0` (Intel I211, `igb`) cabled to a Mac mini, `hft` admin paced at 1 s, same hour:
+wire p50 **54 310 ns with EEE on, 39 714 with it off** — **+14.6 µs**, close to the ~16.5 µs
+1000BASE-T wake time ([measured-costs.md](reference/measured-costs.md), boot B). Check with
+`ethtool --show-eee <nic>`; the row this project cares about reads `EEE status: disabled`.
+`scripts/check-machine.sh` reads this as its `eee` row, once a NIC is selected, alongside the
+block above. `ethtool --set-eee <nic> eee <on|off>` and `ethtool -A <nic> …` (pause negotiation)
+both bounce an `igb` link for ~4 s — wait for `Link detected: yes` (`ethtool <nic>`) before
+measuring again, and re-read `--show-eee` rather than trust the command that set it. Leave pause
+frames on and read all four `*_flow_control_*` counters (`ethtool -S <nic> | grep flow_control`)
+before and after: they must stay 0.
+
 ## 5. Application configuration and the build
 
 - **Core map:** core → shard → session, one session per polling thread
@@ -166,6 +178,27 @@ systemctl stop irqbalance                               # stop it moving IRQs ba
    both read `0`: a driver's read-back of its own configuration is not evidence, each sample's
    hardware stamp is. On `lo` both read the request count and no wire column is printed, by
    design.
+
+   **The runbook to read before and after every such procedure**
+   (`docs/plans/2026-09-04-the-second-linux-desk.md`, *Sửa 3* Điều 3, lines 1276–1283):
+
+   ```sh
+   sudo -n ethtool --show-eee <nic>                     # EEE status: disabled
+   sudo -n ethtool -a <nic>                             # Autonegotiate on, RX on, TX on
+   ethtool -S <nic> | grep -E 'flow_control|hwtstamp'   # four pause counters 0; tx_hwtstamp_skipped
+   ethtool --get-hwtimestamp-cfg <nic>                  # tx off, rx-filter none, as restored above
+   cat /proc/irq/<n1..n4>/smp_affinity_list             # each IRQ still steered off the engine core
+   ssh <counterparty> 'ifconfig <if> | grep media; shasum -a 256 <path-to-w2w>'
+   ```
+
+   `[measured 2026-09-15]` **an `igb` NIC cannot hold an interval-0 wire figure with this
+   procedure.** At `--interval 0` a TX stamp is skipped within 1–4 runs of 20 000:
+   `tx_hwtstamp_skipped` rose with every attempt across boot B (0 → 1 → 5 → 29 → 50 → 51) —
+   `igb` holds one TX timestamp at a time and skips the next request while one is already
+   pending. The script FAILs any run with a missing stamp (the rule above), so an interval-0 wire
+   figure is not obtainable on an Intel I211 with this procedure; only a paced run (`--interval`
+   at 1 ms or slower) leaves enough gap between sends for the stamp to clear
+   ([measured-costs.md](reference/measured-costs.md), boot B, section B6).
 
 **The measurement traps this project already paid for** are in [GUIDE.md §8](GUIDE.md). Read
 them rather than rediscover them. A score that moves with its own timeout is measuring the

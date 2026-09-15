@@ -89,6 +89,11 @@ kernel TCP imposes, not a promise your box will hit. Run `scripts/check-machine.
 `scripts/bench.sh --strict`, and read the [HFT playbook](hft-playbook.md), before quoting a
 number as yours.
 
+**Turn off EEE (802.3az) on the NIC that carries the session.** `[measured 2026-09-15]` one A/B
+on the §9 desktop, `enp9s0` (Intel I211) cabled to a Mac mini, `hft` admin paced at 1 s: wire p50
+**54 310 ns with EEE on, 39 714 with it off** — +14.6 µs, close to the ~16.5 µs 1000BASE-T wake
+time. Check and fix it per [hft-playbook.md §4](hft-playbook.md).
+
 ---
 
 ## 6. The resend ring in `hft` mode

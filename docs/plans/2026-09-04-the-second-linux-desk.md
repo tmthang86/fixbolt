@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B đang chạy từ 2026-09-14 21:27** (nhánh `plan/the-second-linux-desk-b`, PR 2) — **Sửa 3 đã duyệt 2026-09-14, theo đề xuất Q12–Q17** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B đo xong 2026-09-15 07:52** (B0–B9, nhánh `plan/the-second-linux-desk-b`, PR [#73](https://github.com/tmthang86/fixbolt/pull/73); B10 review và merge xem nhật ký) — **tiếp theo: boot C (Q1), rồi boot D** — **Sửa 3 đã duyệt 2026-09-14, theo đề xuất Q12–Q17** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -639,6 +639,55 @@ và vài lệnh đọc; runner Haiku hay treo khi chờ lệnh nền).
 - *Gate*, 00:15–00:38, cây có `baselines.tsv` sửa (đọc lúc chạy, ADR-0067), ba lần như nhau:
   `pass 15 fail 0 unknown 0` · `targets measuring 16 of 16` · `timing over baseline 0` · `cases w/o a
   baseline 0` · `cases under the band 0` · `bench_exit=0`. Item 52: ba lần `--strict` còn nợ đã trả.
+
+**`[2026-09-15]` Khe build (00:40–00:57).** S3 (`46811f6`) và S2 (`d5be4d6`) làm trong hai worktree
+riêng, manager chạy lại gate rồi cherry-pick; S1 (`5ca3889`) làm ở cây chính. Gate quote trong
+thân từng commit. Thêm: rustdoc `-D warnings` cho `w2w` bốn bộ feature và `fixbolt-engine` — sạch
+(STATUS bảo thêm sau lần CI đỏ của PR #72). `setcap` trên `w2w` (sha256 `350d3c17320f`); Mac pull
+`5ca3889`, build lại (`7b2b52cb9be7`). Lần chạy thật đầu tiên của script S2: header, thư mục output,
+`summary.txt`, `extra`, kiểm tra `journal: file-async` — đều đúng. Bin ví dụ nanofix `0f79bae` còn
+nguyên, không build lại. B8 không chạy được bằng `w2w-baseline.sh` (acceptor ngoài), nên manager
+viết một script cùng khuôn split; nội dung chép nguyên văn vào `measured-costs.md` *Boot B*.
+
+**`[2026-09-15]` Procedure 1 và 2 (B2 → B5 → B8 → B4), commit `5ca3889`, cây sạch, 0 run bị loại.**
+Procedure 1 00:58–02:54, procedure 2 02:54–04:47. Số và nhận xét: `DESIGN.md` §8 *Boot B* và
+`measured-costs.md` *Boot B*. Ba điều đáng nói:
+
+- **Tám arm interval 0 (B2, B5, B8 phía fixbolt) đều nhanh hơn 5,0–6,7 % ở procedure 2**, trong khi
+  dispersion trong từng procedure rất chặt — theo ADR-0068 là *không tái lập*. Các arm có pacing,
+  nanofix, và bảng Mac thì tái lập. Manager chạy thêm **B2 lần 3 (chẩn đoán, không công bố)**
+  04:48–05:01: `hft` khớp procedure 2 trong 0,1 % → procedure 1 là lần lệch. Ứng viên: procedure 1
+  bắt đầu ~7 phút sau khe build.
+- **Plan sai một con số ở B4 (Sửa 3 Điều 5 d):** `MESSAGES=120 WARMUP=5` ở interval 1 s làm engine
+  từ chối seq 122 (`35=3 373=10`) — `w2w` render `52=` trước khi đo, 125 s > `MaxLatency` 120 s.
+  Engine đúng. Manager chạy lại với `MESSAGES=100` (105 s), giữ nguyên quy tắc "1 s chỉ công bố p50".
+  Bẫy mới, chưa có guard — STATUS item 90.
+- `/tmp` là tmpfs: số B5 không phải số đĩa.
+
+**`[2026-09-15]` B7 (05:03–05:29), A–B–A, nửa notrack.** Arm flush **bỏ**: chủ sở hữu đi ngủ, không ở
+bàn (Q2). Bảng `ip fixbolt` thêm rồi xoá; ruleset sau khi xoá giống trước (diff chỉ khác bộ đếm
+packet). conntrack trên `lo` ≈ 420 ns của một round trip TCP loopback 8 byte; `w2w` `hft` admin
+18 249 → 15 364 → 18 179 với hai pha A **hai mode** — ứng viên, không phải nguyên nhân (STATUS item 51).
+Payload bench chạy thẳng binary (không cargo), 5 lần mỗi pha vì mỗi lần 74 s.
+
+**`[2026-09-15]` B6 (05:31–07:49), qua cáp tới Mac.** Lượt thử đọc được **stamp phần cứng lần đầu**
+(`hw-rx-missing 0 hw-tx-missing 0`). Hai procedure: wire `hft` ở 1 s đo được nhưng không tái lập
+(5,2 % / 10,1 %); **interval 0 hỏng ở mọi lần** vì `igb` bỏ một TX stamp trong 1–4 run
+(`tx_hwtstamp_skipped` tăng theo), và luật Sửa 2 cho FAIL run thiếu stamp → không có số wire
+back-to-back (STATUS item 40, cần một quyết định của architect). Bảng Mac `standard` tái lập. A/B:
+EEE bật +14,6 µs ở 1 s → Q15 kích hoạt; busy_poll 0 và IRQ trên cpu6 chỉ có run đơn chẩn đoán vì
+cũng hỏng vì thiếu stamp. Trap EXIT trả máy về busy_poll 50, IRQ cpu4, EEE disabled — đọc lại lúc 07:49.
+
+**`[2026-09-15]` B9 (07:51), perf, chẩn đoán.** Engine thread `hft`: `Acceptor::accept` 49,9 %
+(admin) / 36,7 % (app) số sample; `accept4` trên listener rỗng cấp phát rồi huỷ socket file + inode
+trong kernel. Không phải chi phí mỗi message — STATUS item 89.
+
+**`[2026-09-15]` Q15 (`0057678`).** `check-machine.sh` hàng `eee`, `DESIGN.md` §9 hàng *EEE off*;
+verdicts `pass 37 fail 0`; desk `pass 16 fail 0 unknown 0`.
+
+**Một sự cố nhỏ:** file output thô của B1 (`b1-discard.txt`, `b1-strict-*.txt`) mất khỏi scratchpad
+giữa 00:38 và 05:05, không rõ vì sao (nghi một subagent dọn scratchpad). Dòng verdict còn trong thân
+`547c873`.
 
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 

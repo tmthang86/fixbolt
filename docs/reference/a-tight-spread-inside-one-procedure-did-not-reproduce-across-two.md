@@ -130,6 +130,25 @@ even inside one procedure it under-reports whenever the outliers are fast ones.
   runs the procedure twice or compares the two. `DESIGN.md` §8's procedure text is rewritten to it at
   boot B step B2.
 
+## It happened again, 2026-09-15
+
+`[measured 2026-09-15]` boot B of
+[plans/2026-09-04-the-second-linux-desk.md](../plans/2026-09-04-the-second-linux-desk.md), two
+full 20-run procedures apart on the same boot (00:58–02:54, 02:54–04:47): **every zero-interval
+loopback arm read 5.0–6.7% faster in procedure 2 than procedure 1 at p50** — B2's four arms
+(`hft`/`standard` × admin/app, combined process) and B8's two `fixbolt` arms (admin/app, loopback
+split against `matthart1983/nanofix`) all moved the same direction, while each procedure's own
+in-procedure dispersion stayed tight (B2: min/median ≥ 0.995, max/median ≤ 1.011 in all eight
+cells). B4's paced arms (1 ms, 10 ms, 1 s) and B8's `nanofix` arms did **not** show this: they
+read within 0.5–5.2% of each other across the same two procedures, tighter than the zero-interval
+arms. A third procedure of B2, run 04:48–05:01 with no build in between, read within 0.1% of
+procedure 2 for `hft` and 2.0–2.2% above procedure 2 (below procedure 1) for `standard` — **so
+procedure 1 was the outlier, not a monotone drift with elapsed time**. Candidate recorded, not a
+cause, same as before: procedure 1 started about seven minutes after the build slot (cargo
+builds, rustdoc, the Mac rebuild) ended; nothing was varied to isolate it. Full tables and
+verdicts: [measured-costs.md](measured-costs.md), *Boot B, 2026-09-15*, sections B5, B7, B8 and
+"B2, procedure 3".
+
 ## Related
 
 - [recording-a-baseline-changed-the-baseline.md](recording-a-baseline-changed-the-baseline.md)

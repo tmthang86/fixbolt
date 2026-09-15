@@ -937,7 +937,7 @@ below).
 | Keeping a message for resend | `[measured 2026-09-05]` **8.9 ns** for a 191-byte `ExecutionReport` into `MemJournal<4096,512>`, walking the ring as the engine does; **6.3 ns** pinned to one slot. A 2 MiB ring is not a cache cost — 191 bytes at a 512-byte stride is what a prefetcher is for | `crates/engine/benches/journal.rs` against `baselines.tsv`, every case reading back what it wrote before anything is timed |
 | What a bigger message costs the kernel | `[measured 2026-09-05]` **0.1443 ns per byte** written and read, from an 8 → 8192 byte lever. The two real `tools/w2w` sizes are cases of their own and **their difference is under this instrument's resolution**, which the module doc says where the number is | `crates/engine/benches/payload.rs` against `baselines.tsv`. Absolute figures here are environment-bound, not a round-trip claim — [a loopback write costs thirty-two syscalls](reference/a-loopback-write-costs-thirty-two-syscalls.md) |
 | Wire-to-wire, loopback | `[measured 2026-09-02]` **met**: `pass 12 fail 0 unknown 1`, engine pinned to isolated `cpu6`, client to `cpu7`, medians of 20 runs of 20 000 round trips. `hft` **16 010 / 20 589 / 22 127 ns** administrative, **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. p99 ≤ 50 µs holds in all four arms. Allocations in the timed window 0 on both threads | `tools/w2w --features affinity`, driven by `scripts/w2w-baseline.sh`. Phase 1 exit criterion 6 |
-| Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met**: no cable, so no hardware stamp has been read; on `lo` the tool counts every stamp missing and prints no wire column, which is the only arm run so far. A figure is published only from a run with `hw-rx-missing 0` and `hw-tx-missing 0`. **Mode `hft` only**: `w2w` refuses `--mode standard --wire-timestamps` on a hardware NIC ([a-transmit-timestamp-wakes-a-blocking-engine](reference/a-transmit-timestamp-wakes-a-blocking-engine.md)); `standard` on a NIC is the generator's table, *as the counterparty sees it*, and never a wire figure |
+| Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above. `[measured 2026-09-15]` **measured, not reproduced, and not at the rate this row asks for**: the first hardware-stamped wire figures, `hft` paced at one message a second, wire p50 admin 45 146 ‖ 42 918 and application 49 626 ‖ 45 082 ns across two procedures (§8 *Boot B*); back to back, `igb` skipped a TX stamp within 1–4 runs every time, so no figure exists at interval 0 | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met** on that day: no cable, so no hardware stamp had been read (read on 2026-09-15 — the first column); on `lo` the tool counts every stamp missing and prints no wire column, which is the only arm run so far. A figure is published only from a run with `hw-rx-missing 0` and `hw-tx-missing 0`. **Mode `hft` only**: `w2w` refuses `--mode standard --wire-timestamps` on a hardware NIC ([a-transmit-timestamp-wakes-a-blocking-engine](reference/a-transmit-timestamp-wakes-a-blocking-engine.md)); `standard` on a NIC is the generator's table, *as the counterparty sees it*, and never a wire figure |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every
 other row is an internal number; without this one they are unfalsifiable.
@@ -1116,12 +1116,82 @@ round trips each, **over loopback**:
 |---|---|---|
 | TestRequest → Heartbeat (no application) | p50 **16 010** · p99 **20 589** · p99.9 **22 127** ns | p50 **19 447** · p99 **24 106** · p99.9 **25 609** ns |
 | NewOrderSingle → ExecutionReport (through an application) | p50 **19 908** · p99 **24 657** · p99.9 **26 150** ns | p50 **20 920** · p99 **25 618** · p99.9 **27 092** ns |
-| if `FileLog` is on, added per message **per direction** | ~340 ns `[unmeasured]` | ~340 ns `[unmeasured]` |
+| if `FileLog` is on, added per message **per direction** | ~450–516 ns `[measured 2026-09-15]`, tmpfs — *Boot B* below | ~448–461 ns, same |
 
 `scripts/w2w-baseline.sh` is the procedure and
 [reference/measured-costs.md](reference/measured-costs.md) the whole reading. **Loopback is
 not a NIC**: §6's NIC-to-NIC row stays open, and these figures contain no driver and no
-interrupt.
+interrupt. **`[2026-09-15]` A figure published from here on is two procedures shown side by
+side** ([ADR-0068](decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)):
+same commit, same binary, clean tree, at least 30 minutes apart; both medians appear, never
+averaged; *reproduced* means within 5% of the smaller at every published percentile; an A/B arm
+is one procedure of 10 runs and is only ever a difference. The table above predates the rule and
+is one procedure.
+
+### Boot B, 2026-09-15: every loopback arm moved 5–7% between two identical procedures
+
+`[measured 2026-09-15]` §9 desktop, `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 15
+fail 0 unknown 0` (busy row re-read before every run, 0 runs disqualified), kernel 7.0.0-31,
+commit `5ca3889`, clean tree, `w2w` sha256 `350d3c17320f`, engine on `cpu6`, client on `cpu7`,
+20 runs × 20 000 round trips unless noted; procedure 1 00:58–02:54, procedure 2 02:54–04:47.
+ns, p50 / p99 / p99.9, procedure 1 ‖ procedure 2. The whole reading, A/B arms and diagnostics:
+[measured-costs](reference/measured-costs.md), *Boot B*.
+
+| Loopback round trip | procedure 1 | procedure 2 | reproduced? |
+|---|---|---|---|
+| `hft`, TestRequest → Heartbeat | 16 021 / 20 258 / 22 072 | 15 149 / 19 577 / 21 355 | **no** — p50 5.8% |
+| `hft`, NewOrderSingle → ExecutionReport | 20 219 / 24 857 / 26 700 | 18 951 / 23 354 / 25 082 | **no** — 6.7 / 6.4 / 6.5% |
+| `standard`, TestRequest → Heartbeat | 19 452 / 24 081 / 25 528 | 18 455 / 22 934 / 24 677 | **no** — p50 5.4%, p99 5.0% |
+| `standard`, NewOrderSingle → ExecutionReport | 21 005 / 25 844 / 27 372 | 19 918 / 24 732 / 26 175 | **no** — p50 5.5% |
+
+**Every zero-interval loopback arm was 5.0–6.7% faster in procedure 2, while each procedure's own
+p50 runs sat within 0.5% below and 1.1% above their median.** That is [STATUS.md](../STATUS.md)
+item 85 again, at a larger scale and all in one direction. A third B2 run at 04:48 — diagnostic,
+not a column — matched procedure 2 within 0.1% in `hft` and read 2.0–2.2% slower in `standard`,
+so procedure 1 is the outlier rather than a drift. Procedure 1 began about seven minutes after
+a build slot (cargo, rustdoc) ended: a candidate, not a cause. The paced arms below and the
+nanofix comparison in measured-costs reproduced.
+
+| `hft` admin, loopback, paced (`--interval`) | procedure 1 | procedure 2 | reproduced? |
+|---|---|---|---|
+| 1 ms, 20 000 × 20 | 19 296 / 23 785 / 26 250 | 19 066 / 23 599 / 26 129 | yes — 1.2% |
+| 10 ms, 5 000 × 20 | 21 746 / 25 759 / 28 594 | 20 934 / 24 857 / 27 557 | yes — 3.9% |
+| 1 s, 100 × 10, p50 only | 33 784 | 32 506 | yes — 3.9% |
+| 1 s, `standard`, 100 × 10, p50 only | 32 121 | 31 916 | yes — 0.6% |
+
+**Latency at 3 a.m.**: an `hft` engine answering one message a second is ~2.1× slower at p50 than
+one answering back to back, and at 1 s `standard` reads the same as `hft` — D8's loopback
+advantage is not visible on a link idle for a second. The 1 s arms carry 100 samples, so only p50
+is published. The plan asked for 120; `w2w` renders `SendingTime` before the clock starts, and
+at one message a second the 121st is older than the session's 120 s `MaxLatency` — the engine
+rejected it, correctly ([a-paced-run-outlived-the-sessions-maxlatency](reference/a-paced-run-outlived-the-sessions-maxlatency.md)).
+
+| Application round trip, what the journal and the log add | `hft` p50, proc 1 ‖ 2 | `standard` p50, proc 1 ‖ 2 |
+|---|---|---|
+| `--journal file-async` (`FileJournal<4096, 512>`, `Durability::Async`) | +495 ‖ +586 | +450 ‖ +570 |
+| `--log file` (`FileLog`, one record in, one out) | +901 ‖ +1 032 | +896 ‖ +922 |
+
+Each is the arm minus the same procedure's plain application arm above. Both files are on
+**tmpfs**: these are not disk figures. The journal and the in-memory `Store` now have the same
+4 096 slots (STATUS item 88), so the difference is the kind of journal alone.
+
+| Over a cable, `hft`, wire (NIC in → NIC out at the acceptor, hardware stamps) | procedure 1 | procedure 2 | reproduced? |
+|---|---|---|---|
+| admin, paced 1 s, 100 × 10, p50 | 45 146 | 42 918 | **no** — 5.2% |
+| application, paced 1 s, 100 × 10, p50 | 49 626 | 45 082 | **no** — 10.1% |
+| admin or application, back to back | **not measured** — an `igb` TX stamp was skipped within 1–4 runs every time | | |
+| `standard` admin, back to back, *as the Mac sees it* (no wire stamps) | 260 771 / 277 749 / 322 000 | 260 625 / 277 791 / 321 729 | yes — 0.1% |
+| `standard` application, same | 257 833 / 277 062 / 300 146 | 257 833 / 277 292 / 300 437 | yes — 0.1% |
+
+Direct cable, desk `enp9s0` Intel I211 (`igb`) ↔ a Mac mini's built-in port, 1000baseT, **EEE
+off at the desk**, pause on at both ends with every flow-control counter 0, `rx-usecs 0`, MTU
+1500, IRQs on `cpu4`, observer on `cpu7`, generator unpinned on the Mac; `hw-rx-missing 0 and
+hw-tx-missing 0` in every published run. **These are the first hardware-stamped figures this
+repository has.** The back-to-back wire figure is what §6 asks for and it is not here: `igb`
+holds one pending TX stamp, `tx_hwtstamp_skipped` rose with every failed run, and the procedure
+fails a run with a missing stamp. Single runs that completed before a failure read wire p50
+24 562–26 218 ns — diagnostic, not a figure. The Mac's table contains the Mac's own stack and an
+unpinned generator both ways; it is not the acceptor's latency.
 
 Three readings:
 
