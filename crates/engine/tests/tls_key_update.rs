@@ -265,7 +265,7 @@ const CARGO_LOCK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"
 /// unresolvable, and two security advisories have already landed inside the
 /// 0.23 series). So the numbers belong to the lock, and only the lock can say
 /// whether they still do.
-const DERIVED_FROM_RUSTLS: &str = "0.23.44";
+const DERIVED_FROM_RUSTLS: &str = "0.23.45";
 const DERIVED_FROM_RING: &str = "0.17.14";
 
 /// Every version of `name` that `Cargo.lock` resolves, as `"0.23.44"`, or a
