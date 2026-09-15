@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-15** — **boot B of the second Linux desk is measured: the first hardware-stamped wire figures exist, every zero-interval loopback arm was faster the second time (nine of ten by more than 5%), and EEE was worth +14.6 µs.** [the-second-linux-desk](docs/plans/2026-09-04-the-second-linux-desk.md) steps B0–B9 plus S1–S3 and Q15 of *Sửa 3*, branch `plan/the-second-linux-desk-b` off `4c373e0`, PR [#73](https://github.com/tmthang86/fixbolt/pull/73); **the closing commit is `f516761`, CI run [`34918683264`](https://github.com/tmthang86/fixbolt/actions/runs/34918683264), 14 jobs of 14**, after runs on `d5be4d6`, `5ca3889` and `5082e4d` failed only the `deny` job on RUSTSEC-2026-0285 (rustls 0.23.44 → 0.23.45 in `6074c26`, run [`34917310496`](https://github.com/tmthang86/fixbolt/actions/runs/34917310496) green). Items **52**'s owed runs, **49**'s D_in and **88** close; **40**, **51** and **85** move without closing; items **89**–**91** open. See *Start here* below, which this line replaces. Before that: **2026-09-14, later** — **window A of the second Linux desk is built: every tool boot B needs exists, and none of it has produced a figure.** [the-second-linux-desk](docs/plans/2026-09-04-the-second-linux-desk.md) steps A1–A8, branch `plan/the-second-linux-desk-a` off `25e54dc`, draft PR [#72](https://github.com/tmthang86/fixbolt/pull/72); CI green on `f9abc1a`, run [`34842390918`](https://github.com/tmthang86/fixbolt/actions/runs/34842390918), 14 jobs of 14, the first run of the user-namespace steps; the closing commit is `0861edf`, run [`34849545025`](https://github.com/tmthang86/fixbolt/actions/runs/34849545025), 14 jobs of 14 — after run [`34848285886`](https://github.com/tmthang86/fixbolt/actions/runs/34848285886) on `2ad9bb0` failed the rustdoc feature-set job on a doc link the F3 fix added, which no per-step gate had run. Item **52**'s compiled-in half is closed by ADR-0067; items **40**, **45 (b)** and **49** moved without closing; items **86**–**88** open. See *Start here* below, which this line replaces. Before that: **2026-09-14** — **the first TLS latency figures are published, and two things came back that nobody predicted: kTLS was slower than userspace `rustls` in both `hft` paths, and one arm's p50 moved 15.9% between two identical procedures (two kTLS arms' p99 moved 7–19% as well).** `tls` plan steps 6-M and 7b, measured on the §9 desktop (`pass 12 fail 0 unknown 1`), branch `plan/tls-numbers-on-s9` off `1178f4d`, PR [#71](https://github.com/tmthang86/fixbolt/pull/71); CI green on `00293a7`, run [`34797203780`](https://github.com/tmthang86/fixbolt/actions/runs/34797203780), and the closing commit `d022d9c` green, run [`34799053966`](https://github.com/tmthang86/fixbolt/actions/runs/34799053966), 14 jobs of 14. Items **84** and **85** open; neither has a cause. See *Start here* below, which this line replaces. Before that: **2026-09-13, later** — **items 80–83 are closed; 80 with a stated residue.** PR [#70](https://github.com/tmthang86/fixbolt/pull/70), branch `plan/what-the-review-left-open`, last code commit `e0ba30d`, CI run [`34766352240`](https://github.com/tmthang86/fixbolt/actions/runs/34766352240). See *Start here* below, which this line replaces. Before that: **2026-09-13, closed** — **items 75, 77, 78 and 79 are closed with a test or a gate each, and the senior review found eight real holes in that work, all fixed or stated.** PR [#69](https://github.com/tmthang86/fixbolt/pull/69), branch `plan/what-the-residue-review-found`, last code commit `c6c907c`, CI run [`34761934969`](https://github.com/tmthang86/fixbolt/actions/runs/34761934969), 14 jobs of 14. Items **80–83** open. `CLAUDE.md` is now rules only (358 lines). See *Start here* below, which this line replaces. Before that: **2026-09-13, handoff** — **item 76 was not the owner decision it was recorded as: FIX 4.4 gives `108=0` a defined meaning, this repository's session layer already implemented and documented it, and the wrong half was one cell of `docs/CONFIGURATION.md`.** Branch `claude/status-remaining-items-63ox0y`, commits `179f5a2` + this one, **pushed with no pull request and therefore no CI run id** — `create_pull_request` returned HTTP 500 seven times, so §9's last box is **unmet** and opening the draft is the next machine's first job. Item **76** closes; **75, 77, 78, 79** stay open with a verdict each. See *Start here* below, which this line replaces. Before that: **2026-09-13, last** — **six open items closed without the §9 machine, and the
+Last updated: **2026-09-15, merged** — **PR [#73](https://github.com/tmthang86/fixbolt/pull/73) is on `main` as `c47ddb6`, and the merge commit itself is green**, run [`34919173472`](https://github.com/tmthang86/fixbolt/actions/runs/34919173472), 14 jobs of 14. The desk was powered off after the merge and came back at 20:39 in the §9 boot line with every runtime setting reset: `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 8 fail 8 unknown 0`. Boot C is next — see *Start here* below, whose *Next* this line sharpens. Before that: **2026-09-15** — **boot B of the second Linux desk is measured: the first hardware-stamped wire figures exist, every zero-interval loopback arm was faster the second time (nine of ten by more than 5%), and EEE was worth +14.6 µs.** [the-second-linux-desk](docs/plans/2026-09-04-the-second-linux-desk.md) steps B0–B9 plus S1–S3 and Q15 of *Sửa 3*, branch `plan/the-second-linux-desk-b` off `4c373e0`, PR [#73](https://github.com/tmthang86/fixbolt/pull/73); **the closing commit is `f516761`, CI run [`34918683264`](https://github.com/tmthang86/fixbolt/actions/runs/34918683264), 14 jobs of 14**, after runs on `d5be4d6`, `5ca3889` and `5082e4d` failed only the `deny` job on RUSTSEC-2026-0285 (rustls 0.23.44 → 0.23.45 in `6074c26`, run [`34917310496`](https://github.com/tmthang86/fixbolt/actions/runs/34917310496) green). Items **52**'s owed runs, **49**'s D_in and **88** close; **40**, **51** and **85** move without closing; items **89**–**91** open. See *Start here* below, which this line replaces. Before that: **2026-09-14, later** — **window A of the second Linux desk is built: every tool boot B needs exists, and none of it has produced a figure.** [the-second-linux-desk](docs/plans/2026-09-04-the-second-linux-desk.md) steps A1–A8, branch `plan/the-second-linux-desk-a` off `25e54dc`, draft PR [#72](https://github.com/tmthang86/fixbolt/pull/72); CI green on `f9abc1a`, run [`34842390918`](https://github.com/tmthang86/fixbolt/actions/runs/34842390918), 14 jobs of 14, the first run of the user-namespace steps; the closing commit is `0861edf`, run [`34849545025`](https://github.com/tmthang86/fixbolt/actions/runs/34849545025), 14 jobs of 14 — after run [`34848285886`](https://github.com/tmthang86/fixbolt/actions/runs/34848285886) on `2ad9bb0` failed the rustdoc feature-set job on a doc link the F3 fix added, which no per-step gate had run. Item **52**'s compiled-in half is closed by ADR-0067; items **40**, **45 (b)** and **49** moved without closing; items **86**–**88** open. See *Start here* below, which this line replaces. Before that: **2026-09-14** — **the first TLS latency figures are published, and two things came back that nobody predicted: kTLS was slower than userspace `rustls` in both `hft` paths, and one arm's p50 moved 15.9% between two identical procedures (two kTLS arms' p99 moved 7–19% as well).** `tls` plan steps 6-M and 7b, measured on the §9 desktop (`pass 12 fail 0 unknown 1`), branch `plan/tls-numbers-on-s9` off `1178f4d`, PR [#71](https://github.com/tmthang86/fixbolt/pull/71); CI green on `00293a7`, run [`34797203780`](https://github.com/tmthang86/fixbolt/actions/runs/34797203780), and the closing commit `d022d9c` green, run [`34799053966`](https://github.com/tmthang86/fixbolt/actions/runs/34799053966), 14 jobs of 14. Items **84** and **85** open; neither has a cause. See *Start here* below, which this line replaces. Before that: **2026-09-13, later** — **items 80–83 are closed; 80 with a stated residue.** PR [#70](https://github.com/tmthang86/fixbolt/pull/70), branch `plan/what-the-review-left-open`, last code commit `e0ba30d`, CI run [`34766352240`](https://github.com/tmthang86/fixbolt/actions/runs/34766352240). See *Start here* below, which this line replaces. Before that: **2026-09-13, closed** — **items 75, 77, 78 and 79 are closed with a test or a gate each, and the senior review found eight real holes in that work, all fixed or stated.** PR [#69](https://github.com/tmthang86/fixbolt/pull/69), branch `plan/what-the-residue-review-found`, last code commit `c6c907c`, CI run [`34761934969`](https://github.com/tmthang86/fixbolt/actions/runs/34761934969), 14 jobs of 14. Items **80–83** open. `CLAUDE.md` is now rules only (358 lines). See *Start here* below, which this line replaces. Before that: **2026-09-13, handoff** — **item 76 was not the owner decision it was recorded as: FIX 4.4 gives `108=0` a defined meaning, this repository's session layer already implemented and documented it, and the wrong half was one cell of `docs/CONFIGURATION.md`.** Branch `claude/status-remaining-items-63ox0y`, commits `179f5a2` + this one, **pushed with no pull request and therefore no CI run id** — `create_pull_request` returned HTTP 500 seven times, so §9's last box is **unmet** and opening the draft is the next machine's first job. Item **76** closes; **75, 77, 78, 79** stay open with a verdict each. See *Start here* below, which this line replaces. Before that: **2026-09-13, last** — **six open items closed without the §9 machine, and the
 senior review found five ways past the guards those items built — every builder's reversal had
 gone red, and none had tried the five.** PR [#68](https://github.com/tmthang86/fixbolt/pull/68), branch `plan/the-residue-of-an-obligation`,
 closing commit `30b53cb`, CI run [`34746295036`](https://github.com/tmthang86/fixbolt/actions/runs/34746295036).
@@ -72,14 +72,19 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 
 ## Start here — 2026-09-15: boot B — the first NIC figures, and a procedure that did not reproduce
 
-Branch `plan/the-second-linux-desk-b`, off `main` at `4c373e0`, draft PR
-[#73](https://github.com/tmthang86/fixbolt/pull/73). Plan
+Branch `plan/the-second-linux-desk-b`, off `main` at `4c373e0`, PR
+[#73](https://github.com/tmthang86/fixbolt/pull/73), **merged as `c47ddb6`, CI on the merge commit
+run [`34919173472`](https://github.com/tmthang86/fixbolt/actions/runs/34919173472), 14 jobs of 14**. Plan
 [the-second-linux-desk](docs/plans/2026-09-04-the-second-linux-desk.md), boot B — PR 2 of three —
 with *Sửa 3* (owner: *"Duyệt"*, Q12–Q17) and [ADR-0068](docs/decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md).
 Every figure: the §9 desktop, `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 15 fail 0
 unknown 0`, measured on commit `5ca3889` with a clean tree (B1 on `f43d7e8`). **The desk is
-still in the §9 boot line; the next boot comes up with `fixbolt-machine` off, EEE on and the IRQs
-unpinned** — re-run B0 before any figure. **Closing commit `f516761`, CI run [`34918683264`](https://github.com/tmthang86/fixbolt/actions/runs/34918683264), 14 jobs of 14.** The raw logs behind every figure (procedure summaries, B6 reads, B7 states, B9 perf data, the driver scripts) are in gitignored `target/boot-b-evidence/` and the per-run outputs in `target/w2w-baseline/boot-b-*` on the desk — not in the repository, and gone with a `cargo clean`.
+still in the §9 boot line, and everything B0 set at run time is gone** — `[measured 2026-09-15
+20:47, boot at 20:39]` `/proc/cmdline` carries `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15
+processor.max_cstate=1` and `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` reads `pass 8 fail 8
+unknown 0`: governor `powersave`, turbo on, SMT on, THP `madvise`, `busy_poll=0 busy_read=0`, IRQs
+85–89 on `0-15`, `rx-usecs 3`, `EEE status: enabled - active`. Mitigations in force, `tls` loaded,
+link up. Re-run B0 before any figure. **Closing commit `f516761`, CI run [`34918683264`](https://github.com/tmthang86/fixbolt/actions/runs/34918683264), 14 jobs of 14.** The raw logs behind every figure (procedure summaries, B6 reads, B7 states, B9 perf data, the driver scripts) are in gitignored `target/boot-b-evidence/` and the per-run outputs in `target/w2w-baseline/boot-b-*` on the desk — not in the repository, and gone with a `cargo clean`.
 
 ### What closed
 
@@ -115,13 +120,42 @@ unpinned** — re-run B0 before any figure. **Closing commit `f516761`, CI run [
 - **B1's raw `bench.sh --strict` outputs** vanished from the session scratchpad; their verdict lines
   survive only in `547c873`'s commit body.
 
-### Next
+### Waiting on the owner
 
-- **Boot C** (Q1 = yes): `mitigations=off`, only B7's two measurements, labelled A/B — PR 3.
-- **Boot D**: restore the desktop grub line from `/etc/default/grub.fixbolt-backup-20260914-071641`,
-  `update-grub`, reboot, `fixbolt-machine off`, `sudo nmcli con delete fixbolt-direct`.
+- **F16 — acknowledge a changed number.** Sửa 3 Q17 approved 120 messages for the 1 s arms; B4 and
+  B6 ran **100** (105 with warmup), because 125 × 1 s outlives the session's 120 s `MaxLatency`
+  (item 90). The *p50 only* rule for 1 s arms is unchanged. Recorded in the plan's delivery log,
+  B10; the owner was told on 2026-09-15 and has not answered.
+- **B7's flush arm** (`systemctl stop tailscaled` + `nft flush ruleset`) was not run — it needs the
+  owner at the desk. Boot C can carry it only if the owner is there; otherwise item 51's
+  *conntrack vs chain traversal* split stays open.
+
+### Next — boot C, PR 3, a fresh session
+
+1. Branch `plan/the-second-linux-desk-c` off `main` at this handoff's merge; draft PR at the first
+   commit (`CLAUDE.md` §8).
+2. **B0 again, on the §9 line** (the plan's *Boot B* B0 block, runtime half only — no grub
+   change): `sudo -n /usr/local/sbin/fixbolt-machine on`; `sudo -n ethtool -C enp9s0 rx-usecs 0`;
+   `sudo -n ethtool --set-eee enp9s0 eee off` (this bounces the link ~4 s — wait for carrier);
+   `4` into `/proc/irq/{85..89}/smp_affinity_list`; `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh`
+   → `pass 16 fail 0 unknown 0` (boot B read 15; the `eee` row, Q15, is the sixteenth). Throw away the first bench run.
+3. **What boot C compares against**: the plan sets boot C's two B7 measurements beside boot B's
+   (`payload.rs` case `TCP loopback` 12 594.4 / 12 597.8 ns; `w2w` admin `hft` loopback, bimodal),
+   taken on `5ca3889`. `git diff --stat 5ca3889 c47ddb6 -- crates tools Cargo.lock` is only the
+   rustls bump and a test constant, so the plain loopback path is unchanged; say so in the delivery
+   log. Taking a fresh *before* in boot C's first §9 boot instead is a plan change — Sửa, owner first.
+4. **Boot C** (the plan's *Boot C*): add `mitigations=off` to the grub line, `update-grub`,
+   reboot, B0 again; `check-machine.sh` **must FAIL** the mitigations row (the free reversal of
+   ADR-0023); the same two measurements, labelled *A/B, not published* (ADR-0068 decision 4). No
+   full `w2w-baseline.sh`.
+5. Write raw logs to `target/boot-c-evidence/`, never the scratchpad (`/tmp` is tmpfs).
+6. **Boot D**: restore the desktop grub line from
+   `/etc/default/grub.fixbolt-backup-20260914-071641`, `update-grub`, reboot,
+   `fixbolt-machine off`, `sudo nmcli con delete fixbolt-direct`, `ethtool -C enp9s0 rx-usecs 3`;
+   say in *Start here* that the desk is back on the desktop line. Offer the owner
+   `sudo rm /etc/sudoers.d/fixbolt-all`.
 - Items **40** (a decision on missing stamps), **84**, **85**, **89** → architect; **90** → a small
-  plan with a test.
+  plan with a test. None of them needs the §9 machine to be designed.
 
 ## Start here — 2026-09-14, later: window A of the second Linux desk — the tools boot B needs
 
