@@ -1,6 +1,6 @@
 # Lần thứ hai ở bàn Linux: NIC thật, cache lạnh, và những con số còn thiếu
 
-> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B đo xong 2026-09-15 07:52** (B0–B9, nhánh `plan/the-second-linux-desk-b`, PR [#73](https://github.com/tmthang86/fixbolt/pull/73); B10 review và merge xem nhật ký) — **tiếp theo: boot C (Q1), rồi boot D** — **Sửa 3 đã duyệt 2026-09-14, theo đề xuất Q12–Q17** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
+> **Loại:** Plan · **Ngày:** 2026-09-04 · **Trạng thái:** **Đã duyệt 2026-09-13** (Sửa 1, theo đề xuất Q1–Q7) — **Cửa sổ A đã xong 2026-09-14** (A1–A8, nhánh `plan/the-second-linux-desk-a`, PR [#72](https://github.com/tmthang86/fixbolt/pull/72)) — **boot B xong 2026-09-15** (B0–B10, PR [#73](https://github.com/tmthang86/fixbolt/pull/73), commit đóng `f516761`, CI `34918683264` 14/14) — **tiếp theo: boot C (Q1), rồi boot D** — **Sửa 3 đã duyệt 2026-09-14, theo đề xuất Q12–Q17** — **Sửa 2 (chỉ A3b) đã duyệt 2026-09-14, theo đề xuất Q8–Q11**
 > **Phạm vi:** `STATUS.md` item 45, đợt C — **một plan cho một lần ngồi ở máy §9**. Đóng item
 > **40** (NIC-to-NIC), **49** (2 770 ns chưa quy được), **51** (32 syscall cho một write loopback),
 > **52** (bảng baseline nằm trong binary); điền hàng §8 *journal/log* còn `[unmeasured]`; đo
@@ -718,6 +718,17 @@ phần còn lại xác nhận bằng dòng log reviewer trích. Chuyển đi:
   B6, vì `MaxLatency` 120 s; quy tắc "1 s chỉ công bố p50" giữ nguyên. F5: hai procedure 1 s của B6
   bắt đầu cách nhau 48 phút nhưng chỉ cách 10 phút giữa lúc hết cái trước và lúc bắt đầu cái sau
   (ADR-0068 đòi ≥ 30 phút, một lượt qua bước khác) — cặp đó vốn không tái lập.
+
+**`[2026-09-15]` Đóng boot B (PR 2).** Sửa theo review: code (F4, F11, F12, F13 và N1 — tìm thêm lúc
+sửa) và docs, commit `f516761`; gate manager chạy lại: `check-w2w-baseline-summary.sh` `pass 7 fail 0`,
+shellcheck sạch, `check-machine-verdicts.sh` `pass 37 fail 0`, check-links sạch. **CI của commit đóng
+PR: `f516761` xanh, run [`34918683264`](https://github.com/tmthang86/fixbolt/actions/runs/34918683264),
+14/14 job.** Trước đó ba run đỏ đúng một job `deny` vì RUSTSEC-2026-0285 — sửa ở `6074c26`, run
+`34917310496` xanh. Log thô của mọi số: `target/boot-b-evidence/` và `target/w2w-baseline/boot-b-*`
+trên desk (gitignored). Máy tắt sau khi merge, theo lời chủ sở hữu; lần boot sau vẫn là dòng §9 nhưng
+knobs OFF, EEE bật lại, IRQ không pin — chạy lại B0. **Tiếp theo: boot C** (Q1, `mitigations=off`,
+chỉ hai phép đo của B7, nhãn A/B — PR 3), rồi **boot D** về desktop. Chưa làm ở boot B: arm flush của
+B7 (chủ sở hữu không ở bàn), mọi số wire interval 0, A/B busy_read.
 
 ## Sửa 1 — 2026-09-13, xác minh lại trước khi duyệt
 
