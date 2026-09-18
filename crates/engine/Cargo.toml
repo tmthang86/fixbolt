@@ -137,3 +137,7 @@ harness = false
 [[bench]]
 name = "density"
 harness = false
+
+[[bench]]
+name = "wakeup"
+harness = false
