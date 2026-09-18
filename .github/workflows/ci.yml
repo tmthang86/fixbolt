@@ -115,6 +115,7 @@ jobs:
       # published percentile) is pure, so it is checked here the same way
       # `virt_verdict` and friends are, fed the 2026-09-14 trap's own numbers.
       - run: scripts/check-w2w-baseline-summary.sh
+      - run: scripts/check-w2w-compare.sh
       # `[measured 2026-09-10]` This runner CAN offload TLS, and that answer is
       # what made the `tls` job below buildable as written: kernel
       # `6.17.0-1022-azure`, `CONFIG_TLS=m`, module loaded, `/proc/net/tls_stat`
