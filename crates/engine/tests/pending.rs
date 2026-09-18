@@ -107,6 +107,21 @@ fn neither_limit_has_a_default_and_zero_is_refused() {
 }
 
 #[test]
+fn limits_refuse_listener_every_zero() {
+    let base = limits(8, 30_000);
+    assert_eq!(
+        base.with_listener_every(0),
+        Err(LimitError::NoListenerCadence)
+    );
+    assert_eq!(
+        base.with_listener_every(1)
+            .map(|l| l.listener_every().get()),
+        Ok(1)
+    );
+    assert_eq!(base.listener_every().get(), 1, "1 is the default cadence");
+}
+
+#[test]
 fn a_full_table_refuses_the_next_connection_immediately() {
     let mut set: PendingSet<Loopback, One, PRE> =
         PendingSet::new(limits(2, 30_000), One::new(cfg()));

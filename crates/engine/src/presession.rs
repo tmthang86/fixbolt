@@ -423,7 +423,20 @@ use crate::transport::{Io, Transport};
 pub struct Limits {
     pending: usize,
     logon_ms: u64,
+    listener_every: core::num::NonZeroU32,
 }
+
+/// How many `hft`-mode spin turns pass between one poll of the listener and
+/// the next, when [`Limits::listener_every`] is never called.
+///
+/// `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
+/// §Cách làm 1: the listener is polled every turn until a number tells it
+/// otherwise, which is today's loop and therefore the only default that
+/// changes nothing for a caller who has never heard of this knob.
+const DEFAULT_LISTENER_EVERY: core::num::NonZeroU32 = match core::num::NonZeroU32::new(1) {
+    Some(n) => n,
+    None => unreachable!(),
+};
 
 /// Why a set of limits was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -433,6 +446,9 @@ pub enum LimitError {
     NoPendingAllowed,
     /// A deadline of zero expires every connection before it can answer.
     NoTimeToLogOn,
+    /// A cadence of zero never polls the listener at all — no connection
+    /// would ever be accepted.
+    NoListenerCadence,
 }
 
 // `[2026-09-02]` these two impls arrived with `crates/library`, and the facade
@@ -453,6 +469,10 @@ impl core::fmt::Display for LimitError {
             Self::NoTimeToLogOn => write!(
                 f,
                 "a logon deadline of zero expires every connection before it can answer"
+            ),
+            Self::NoListenerCadence => write!(
+                f,
+                "a listener cadence of zero never polls the listener, so no connection would ever be accepted"
             ),
         }
     }
@@ -475,7 +495,11 @@ impl Limits {
         if logon_ms == 0 {
             return Err(LimitError::NoTimeToLogOn);
         }
-        Ok(Self { pending, logon_ms })
+        Ok(Self {
+            pending,
+            logon_ms,
+            listener_every: DEFAULT_LISTENER_EVERY,
+        })
     }
 
     /// The ceiling on connections waiting to identify themselves.
@@ -488,6 +512,31 @@ impl Limits {
     #[must_use]
     pub const fn logon_ms(self) -> u64 {
         self.logon_ms
+    }
+
+    /// How many `hft`-mode spin turns pass between one poll of the listener
+    /// and the next. `1` (today's loop, [`DEFAULT_LISTENER_EVERY`]) unless
+    /// [`Self::with_listener_every`] was called.
+    #[must_use]
+    pub const fn listener_every(self) -> core::num::NonZeroU32 {
+        self.listener_every
+    }
+
+    /// Set the listener cadence.
+    ///
+    /// # Errors
+    ///
+    /// [`LimitError::NoListenerCadence`] for `0`, the same shape [`Self::new`]
+    /// already answers a zero `pending` or `logon_ms` with: a mistake in
+    /// exactly one direction, refused rather than silently floored to `1`.
+    pub const fn with_listener_every(self, every: u32) -> Result<Self, LimitError> {
+        match core::num::NonZeroU32::new(every) {
+            Some(listener_every) => Ok(Self {
+                listener_every,
+                ..self
+            }),
+            None => Err(LimitError::NoListenerCadence),
+        }
     }
 }
 
