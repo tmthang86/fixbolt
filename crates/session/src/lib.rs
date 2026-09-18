@@ -379,12 +379,6 @@ pub const MAX_BEGIN_STRING_LEN: usize = 16;
 /// costs.
 pub const MAX_COMP_ID_LEN: usize = 32;
 
-/// QuickFIX's default `MaxLatency`, in milliseconds.
-///
-/// `[documented]` 120 seconds is what `libquickfix` applies to `SendingTime`,
-/// and `1d_InvalidLogonBadSendingTime` is 2001 years out, so nothing in the
-/// corpus distinguishes this number from any other. It is the documented
-/// default, labelled as such.
 /// The default size of an [`Application`]'s reply scratch.
 ///
 /// `[measured 2026-09-05]` **1 KiB, and it is the tightest ceiling in the
@@ -400,6 +394,12 @@ pub const MAX_COMP_ID_LEN: usize = 32;
 /// into.
 pub const DEFAULT_APP_SCRATCH: usize = 1024;
 
+/// QuickFIX's default `MaxLatency`, in milliseconds.
+///
+/// `[documented]` 120 seconds is what `libquickfix` applies to `SendingTime`,
+/// and `1d_InvalidLogonBadSendingTime` is 2001 years out, so nothing in the
+/// corpus distinguishes this number from any other. It is the documented
+/// default, labelled as such.
 pub const DEFAULT_MAX_SKEW_MS: u64 = 120_000;
 
 /// The `HeartBtInt` an initiator proposes unless told otherwise, in seconds.
