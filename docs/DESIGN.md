@@ -10,7 +10,9 @@ session core, chosen by a type parameter
 ([ADR-0004](decisions/ADR-0004-bidirectional-engine.md)), built so that latency is a property
 the design guarantees rather than one it hopes for.
 
-**Positioning.** The fastest FIX acceptor that can be built **on kernel TCP**. The acceptor is
+**Positioning.** A FIX 4.4 acceptor on kernel TCP whose latency is a published, reproduced
+number ([ADR-0077](decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)
+decision 2). The acceptor is
 the headline because that is where the gap is: as of 2026-08-27 the Rust ecosystem has no
 production-proven FIX acceptor and already has two initiators
 ([reference/prior-art.md](reference/prior-art.md)). The initiator ships in the same phase,
@@ -448,7 +450,7 @@ Mode-scoped, and `standard` is the default
 | | `standard` (default) | `hft` (opt-in, Linux only) |
 |---|---|---|
 | Idle behaviour | blocks on readiness with a timeout, and gives the core back | spins on non-blocking sockets, never enters the kernel |
-| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` one turn at **449 ns per session** on a §9 core |
+| Cost of a wakeup | `epoll`-class: **`[measured 2026-09-18]` 4 960 ns p50 (`epoll_wait`), 4 819 ns (`poll`)**, p99 ≈ 7.9 µs, p99.9 ≈ 8.9 µs — `crates/engine/benches/wakeup.rs`, two isolated §9 cores, 20 runs × 20 000, [ADR-0025](decisions/ADR-0025-hft-has-a-hard-session-ceiling-and-the-engine-advises-rather-than-applies.md) *Measured* (the literature said 2–5 µs; this desk reads the top of it) | `[measured 2026-08-31]` one turn at **449 ns per session** on a §9 core; the arithmetic crossover with the measured wakeup is N ≈ 11, and the `hft` ceiling stays 4 until the busy turn at N > 1 is measured |
 | Pinning | none | `serve_sharded_hft` and `serve_hft_pinned` validate the core and pin from inside; `serve_hft` pins nothing and says so |
 | Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
 | Rule 4 says | it **must** block | it must **not** sleep |
@@ -633,6 +635,9 @@ the policy and the capacity come from one synthetic saturation run plus reasonin
 Decided in [ADR-0005](decisions/ADR-0005-tls.md). It needs a decision because of one
 collision: the codec parses in place at the I/O buffer, and encrypted bytes cannot be parsed
 in place. Userspace TLS reintroduces exactly the copy ADR-0003 spent its length removing.
+kTLS stays the `hft` steady state for the non-negotiable-1 guarantee it is the only path that
+keeps, not for latency — measured slower than userspace on loopback
+([ADR-0070](decisions/ADR-0070-ktls-stays-the-hft-steady-state-for-the-guarantee-not-for-latency.md)).
 
 | Mode | When | Hot-path guarantee |
 |---|---|---|
@@ -919,7 +924,7 @@ below).
 
 | Gate | Target | Proven by |
 |---|---|---|
-| The engine thread never sleeps in the kernel (`hft`) | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`: traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid. `[measured 2026-08-30]` Linux 6.18: `accept4`, `recvfrom`, `sendto` and zero of `epoll_wait` / `poll` / `select` / `futex` / `nanosleep` / `sched_yield`. Runs the binary again in `standard` mode and fails if that run does not trip it: rule 4 had two machine checks before this one and both were green with a sleep present |
+| The engine thread never sleeps in the kernel (`hft`) | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`: traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid. `[measured 2026-08-30]` Linux 6.18: `accept4`, `recvfrom`, `sendto` and zero of `epoll_wait` / `poll` / `select` / `futex` / `nanosleep` / `sched_yield`. Runs the binary again in `standard` mode and fails if that run does not trip it: rule 4 had two machine checks before this one and both were green with a sleep present. A second, tracer-free gate needs no capability: `scripts/check-no-kernel-sleep-by-ctxt.sh` reads the engine thread's voluntary context switches and asserts `hft` reads 0, `standard` reads > 0 ([ADR-0072](decisions/ADR-0072-a-tracer-free-check-that-the-hft-engine-thread-never-sleeps.md)) |
 | The engine thread never sleeps in the kernel (`hft`), **TLS arm** `[2026-09-13]` | `--tls ktls` traces the same, with no sleeper and the read-back confirming which arm ran | the same script, Sửa 6 step 6b: runs `hft --tls ktls` (no sleeper, the usual socket calls, `tls: kernel` read back) and `--tls userspace` (must read back `tls: userspace`, so the two arms cannot be mistaken for each other). A build without the `tls` feature reports both old halves, then `TLS arm SKIPPED, NOT PASSED`, exit 2, rather than a silent pass |
 | A `standard` engine gives the core back | engine-thread CPU under 5% over a wall-clock window, found sleeping rather than running, **and** a round-trip p50 far below the poll timeout | `scripts/check-standard-gives-the-core-back.sh`. Four assertions, because CPU near zero is also what a dead thread, a run that never reached the mode, and an engine woken by its own timeout report. `[measured 2026-08-30]` a `Block` made to ignore readiness reads 0% CPU, sleeping 20 / 20, p50 99 046 599 ns; only the p50 catches it. Requires `hft` and `yield` to trip it |
 | A `standard` engine gives the core back, **TLS arm** `[2026-09-13]` | the same four assertions, on `standard --tls ktls` (not `hft`), plus the mode read back as `kernel` | `scripts/check-standard-gives-the-core-back.sh`'s own TLS-arm block, Sửa 6 step 6b (script lines 221-250): runs `--mode standard --tls ktls` once and judges it green-or-not by the same four assertions as the plain `standard` case, plus the `tls:` read-back. **This arm has no scripted red half** — the script's `for red in hft yield` reversal loop (lines 209-219) covers only the plain arm; nothing here automates a TLS-mode-mismatch reversal. The 99.53% CPU figure is not this script's output: it is a **hand-run** reversal — the standard-mode judgement invoked by hand against an `hft --tls ktls` run — recorded only in commit `da9fe6e`'s message ("standard check on hft --tls ktls: engine CPU 99.53%, red"), not reproduced by any committed script invocation |
@@ -947,7 +952,14 @@ below).
 | Keeping a message for resend | `[measured 2026-09-05]` **8.9 ns** for a 191-byte `ExecutionReport` into `MemJournal<4096,512>`, walking the ring as the engine does; **6.3 ns** pinned to one slot. A 2 MiB ring is not a cache cost — 191 bytes at a 512-byte stride is what a prefetcher is for | `crates/engine/benches/journal.rs` against `baselines.tsv`, every case reading back what it wrote before anything is timed |
 | What a bigger message costs the kernel | `[measured 2026-09-05]` **0.1443 ns per byte** written and read, from an 8 → 8192 byte lever. The two real `tools/w2w` sizes are cases of their own and **their difference is under this instrument's resolution**, which the module doc says where the number is | `crates/engine/benches/payload.rs` against `baselines.tsv`. Absolute figures here are environment-bound, not a round-trip claim — [a loopback write costs thirty-two syscalls](reference/a-loopback-write-costs-thirty-two-syscalls.md) |
 | Wire-to-wire, loopback | `[measured 2026-09-02]` **met**: `pass 12 fail 0 unknown 1`, engine pinned to isolated `cpu6`, client to `cpu7`, medians of 20 runs of 20 000 round trips. `hft` **16 010 / 20 589 / 22 127 ns** administrative, **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. p99 ≤ 50 µs holds in all four arms. Allocations in the timed window 0 on both threads | `tools/w2w --features affinity`, driven by `scripts/w2w-baseline.sh`. Phase 1 exit criterion 6 |
-| Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above. `[measured 2026-09-15]` **measured, not reproduced, and not at the rate this row asks for**: the first hardware-stamped wire figures, `hft` paced at one message a second, wire p50 admin 45 146 ‖ 42 918 and application 49 626 ‖ 45 082 ns across two procedures (§8 *Boot B*); back to back, `igb` skipped a TX stamp within 1–4 runs every time, so no figure exists at interval 0 | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met** on that day: no cable, so no hardware stamp had been read (read on 2026-09-15 — the first column); on `lo` the tool counts every stamp missing and prints no wire column, which was the only arm run at the time. A figure is published only from a run with `hw-rx-missing 0` and `hw-tx-missing 0`. **Mode `hft` only**: `w2w` refuses `--mode standard --wire-timestamps` on a hardware NIC ([a-transmit-timestamp-wakes-a-blocking-engine](reference/a-transmit-timestamp-wakes-a-blocking-engine.md)); `standard` on a NIC is the generator's table, *as the counterparty sees it*, and never a wire figure |
+| Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above. `[measured 2026-09-15]` **measured, not reproduced, and not at the rate this row asks for**: the first hardware-stamped wire figures, `hft` paced at one message a second, wire p50 admin 45 146 ‖ 42 918 and application 49 626 ‖ 45 082 ns across two procedures (§8 *Boot B*); back to back, `igb` skipped a TX stamp within 1–4 runs every time, so no figure exists at interval 0 | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met** on that day: no cable, so no hardware stamp had been read (read on 2026-09-15 — the first column); on `lo` the tool counts every stamp missing and prints no wire column, which was the only arm run at the time. A figure is published from a run whose missing-stamp count is ≤ 0.1% of the timed requests and
+`hw-rx-missing 0` ([ADR-0071](decisions/ADR-0071-a-skipped-tx-stamp-is-a-missing-sample-not-a-failed-run.md)
+decision 1) — a skipped TX stamp costs one sample, it does not fail the run. **Mode `hft`
+only**: `w2w` refuses `--mode standard --wire-timestamps` on a hardware NIC
+([a-transmit-timestamp-wakes-a-blocking-engine](reference/a-transmit-timestamp-wakes-a-blocking-engine.md));
+`standard` on a NIC is the generator's table, *as the counterparty sees it*, and never a wire
+figure — a `standard` wire figure of its own waits on BPF sock_ops, phase 2
+([ADR-0073](decisions/ADR-0073-the-standard-wire-figure-goes-through-bpf-sock-ops-and-not-before-phase-2.md)) |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every
 other row is an internal number; without this one they are unfalsifiable.
@@ -1234,6 +1246,48 @@ Three readings:
   stage table. [ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)
   declines SIMD on this basis: parse is 0.62% of the application round trip.
 
+### Boot C, 2026-09-18: the listener asked every 16th iteration takes 2.6 µs off the application round trip, and 0.3 µs onto the administrative one
+
+`[measured 2026-09-18]` §9 desktop, `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 16
+fail 0 unknown 0` before every qualifying run, kernel 7.0.0-31, commit `55a1549`'s code (tree
+clean except untracked docs), engine on `cpu6`, client on `cpu7`, **loopback, `hft`**, 10 runs ×
+20 000 round trips per arm; procedure 1 ran N = 1, 16, 256 in that order, procedure 2 in reverse.
+`N` is `Limits::listener_every` (`ListenerEveryTurns`,
+[ADR-0069](decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)): how many loop
+iterations pass between two asks of the listener while the engine is busy. ns, p50 / p99 /
+p99.9, procedure 1 ‖ procedure 2 (qualifying runs of 10). The whole reading:
+[measured-costs](reference/measured-costs.md), *Boot C*.
+
+| Loopback round trip, `hft` | N | procedure 1 | procedure 2 | reproduced? |
+|---|---|---|---|---|
+| TestRequest → Heartbeat | 1 | 16 070 / 21 050 / 22 753 (9) | 16 080 / 20 719 / 22 798 (10) | yes — ≤ 1.6% |
+| | **16** | 16 381 / 21 591 / 23 695 (9) | 16 361 / 20 970 / 22 923 (9) | yes — ≤ 3.4% |
+| | 256 | 16 376 / 21 410 / 24 060 (10) | 16 361 / 21 531 / 23 866 (9) | yes — ≤ 0.8% |
+| NewOrderSingle → ExecutionReport | 1 | 20 209 / 25 188 / 27 202 (9) | 20 228 / 25 198 / 26 956 (8) | yes — ≤ 0.9% |
+| | **16** | 17 644 / 22 763 / 26 535 (8) | 17 603 / 22 628 / 26 765 (10) | yes — ≤ 0.9% |
+| | 256 | 17 608 / 22 603 / 27 242 (10) | 17 633 / 22 773 / 26 285 (10) | yes — ≤ 3.6% |
+
+Three readings, and the decision:
+
+- **The application path gains 12.7 ‖ 13.0% at p50 going from N = 1 to 16** — about 2.6 µs,
+  the size of one non-blocking `accept4` with the socket file it allocates and frees (B9's
+  profile), taken out from between two `recvfrom` calls. **N = 256 reads the same as 16 within
+  0.3%**, so what the listener still costs at 16 is inside the noise, and moving it off the
+  thread (ADR-0069 option d) is not worth a plan.
+- **The administrative path loses 1.9 ‖ 1.7% at p50 at N = 16** — about 0.3 µs, reproduced,
+  and **unexplained**. The candidate recorded in ADR-0069 (*Measured*) is the socket-lock /
+  backlog path taken more often when `recvfrom` is polled without an `accept4` between; nothing
+  was varied to test it. A cost stated is not a cost understood.
+- **A connect is not visibly slower**: `connect-rtt` 68–85 µs and `logon-rtt` 1.07–1.12 ms in
+  every run, no trend with N. Rule 4's gate stayed green with and without `--listener-every
+  256`, `w2w` built with `affinity,tls`.
+- **The default is 16** from the commit that publishes this block (ADR-0069 decision 2,
+  revised): the application figure wins by more than ADR-0068's 5% in both procedures; the
+  administrative cost is stated above; 16 rather than 256 because the worst-case accept delay
+  is N iterations and nothing was gained by the larger N. The table at the top of §8 (N = 1,
+  2026-09-02) is superseded for the application path by the N = 16 row here and is left in
+  place as the figure it was.
+
 ### The round trip under TLS, measured
 
 `[measured 2026-09-14]` on the same §9 desktop — Linux `7.0.0-31-generic`, `check-machine.sh`
@@ -1304,7 +1358,54 @@ Three readings:
   this procedure would have published, run once, depended on which half hour it ran in (² and ³
   above).
 
+### Boot C, mixed TLS: the engine's own kTLS costs ~0.4 µs over userspace; the client's kTLS costs the rest
+
+`[measured 2026-09-18]` same §9 desktop, `pass 16 fail 0 unknown 0`, commit `85460c1`'s code,
+loopback, **`hft` admin**, **`tools/w2w` at listener cadence N = 1** (its `--listener-every`
+defaulted to 1 and did not follow `Limits`' new default of 16 — the trap under *Boot C* above),
+10 runs × 20 000 per arm,
+two procedures in opposite arm order — every arm reproduced (largest difference 2.9%, at
+p99.9). `tools/w2w` now takes a TLS mode per end (`--client-tls`), so the two mixed arms split
+the 9 µs the 2026-09-14 table could not. p50 ns, procedure 1 ‖ procedure 2; *added* is against
+the same procedure's `off` arm at the same cadence (boot C N = 1: 16 070 ‖ 16 080):
+
+| engine | client | p50, proc 1 ‖ 2 | added over `off` |
+|---|---|---|---|
+| kTLS | kTLS | 25 503 ‖ 25 473 | **+9 433 ‖ +9 393** |
+| userspace | userspace | 20 824 ‖ 20 719 | +4 754 ‖ +4 639 |
+| **kTLS** | userspace | 21 175 ‖ 21 250 | +5 105 ‖ +5 170 |
+| userspace | **kTLS** | 22 177 ‖ 22 147 | +6 107 ‖ +6 067 |
+
+Three readings ([ADR-0070](decisions/ADR-0070-ktls-stays-the-hft-steady-state-for-the-guarantee-not-for-latency.md)
+decision 5):
+
+- **The engine's kTLS against the engine's userspace `rustls`, same userspace client: +351 ‖
+  +531 ns** — roughly 0.4 µs, about 2% of the round trip. That is the engine-side price of the
+  mode the design ships, and it is small.
+- **The client's kTLS against the client's userspace, same userspace engine: +1 353 ‖
+  +1 428 ns** — `w2w`'s client is a plain blocking thread, and its kernel record layer costs it
+  three to four times what the engine's costs the engine.
+- **Both-kTLS is superadditive**: the sum of the two one-sided costs on top of userspace/userspace
+  predicts 22 528 ‖ 22 678; measured 25 503 ‖ 25 473 — **~2.8–3.0 µs more than the parts**. Two
+  kernel record layers on one loopback pair interact (a candidate: each end's `recvmsg`
+  decrypts on the calling CPU only when the whole record has arrived, so the two ends serialise
+  where userspace pipelines); not isolated, recorded as a candidate.
+
+**The mixed arms print their allocations and do not assert them** (4 001 on the client thread
+in the userspace-client arms — the client's own `rustls`, not the engine); the symmetric arms
+keep their assertions. The 2026-09-14 table above stands as the both-ends figure it was.
+
 ### Stage by stage (`hft`, N = 1)
+
+**The Logon hop is not in this table, by decision.** A connection's first message pays the
+pre-session stage once — the `Logon` is read there, routed to an engine over a channel, and the
+socket handed across threads — and that cost is off the message path: bounded by the
+`presession` bench (426.2 ns per socket sweep, ~84 ns to read both comp IDs and pick a shard,
+`[measured 2026-09-01]`) plus one cross-thread wake, which §9 already keeps off the engine
+core. It is not measured, and becomes a measurement only if a user reports Logon latency
+([ADR-0074](decisions/ADR-0074-kernel-bypass-io-uring-and-the-logon-hop-stay-unmeasured-by-decision.md)
+decision 3).
+
 
 | Stage | Cost | Who controls it |
 |---|---|---|
@@ -1348,7 +1449,8 @@ which is why nothing in the design moves, but it is three times what this page s
 | **`Journal::put` of the reply into the ring** | **+8.9** | `journal put, 191 bytes, walking`. The administrative path never does it, so the whole figure counts |
 | **measured subtotal** | **~1 128** | **28.9% of the gap** |
 | the session's own `Heartbeat` serialise, which the application path does *not* do | −? | **no committed case**, so it is not subtracted |
-| **still unattributed** | **~2 770** | **71.1%** |
+| the kernel's own share, **measured in situ** rather than by slope: `sendto` and `recvfrom` on the engine tid, application minus administrative | **~0 — ≤ 50 ns, of both signs** | `[measured 2026-09-18]` boot C step C-49, `perf trace -s` over whole `hft` runs (the tracer inflates every syscall ~2× — p50 under trace 35.2–35.8 µs on *both* paths — so only differences count), 22 001 `sendto` per run: admin 186.608 / 186.508 ms total (avg 8.48 µs), app 187.663 / 183.876 ms (avg 8.53 / 8.36 µs); `recvfrom` avg 2.47 µs admin, 2.45 µs app. **The kernel does not charge the application path for its bigger payload at this instrument's resolution.** This confirms the +24.5 ns slope row and retires "kernel work proportional to payload" as a candidate for the remainder |
+| **still unattributed** | **~2 770** | **71.1%** — and, `[2026-09-18]` after C-49, **not the kernel's payload work, not the client's loop (identical on both paths), not `Journal::put`, not the dictionary pass beyond its 679 ns.** What is left is ~3.1 µs *outside* one engine turn (D_in is 765.5 ns) and outside proportional syscall cost. It is published as unattributed **by decision** ([STATUS.md](../STATUS.md) item 49's closing row): three probes have retired the named candidates and each cost a boot. The one probe that would split it is named and not scheduled — software `SO_TIMESTAMPING` stamps (TX/RX software, which loopback supports) on **both** sockets, so a round trip reads as four segments: client stack out, engine-side dwell (socket in → user → socket out), engine stack out, client stack in. `w2w --wire-timestamps` already parses the cmsg (software stamp = `ts[0]`); it is the `--stamp software` arm of a later boot, if anyone needs the split |
 
 **The largest candidate this page named turned out to be a sixth of the answer.** STATUS item
 39 wrote the dictionary pass down as the leading explanation for the 3 898 ns and it is

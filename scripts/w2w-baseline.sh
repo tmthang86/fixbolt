@@ -135,8 +135,10 @@ W2W_EXTRA=${W2W_EXTRA:-}
 EXTRA_ARGS=()
 [ -n "$W2W_EXTRA" ] && read -ra EXTRA_ARGS <<< "$W2W_EXTRA"
 # `--listener-every`, plan `2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
-# step 4: empty is no flag at all, so a run that never sets it is `tools/w2w`'s
-# default cadence of 1 — today's loop, unchanged. Set, it lets one procedure
+# step 4: empty is no flag at all, so a run that never sets it is the library's
+# default cadence — `Limits::listener_every()`, 16 since ADR-0069 was accepted
+# (before 2026-09-19 w2w defaulted to 1 on its own, and boot C's C-84/C-85/C-49
+# arms ran at 1). Set, it lets one procedure
 # alternate `LISTENER_EVERY=1` and `LISTENER_EVERY=<N>` arms without editing
 # the script, which is what the A/B in step 5 needs. Same reach as
 # `W2W_EXTRA` above: the combined run and the `--listen` half only, because
@@ -208,9 +210,139 @@ extra_flag_refusal() { # extra_flag_refusal <one W2W_EXTRA token>
   esac
 }
 
-# Sourced by the baseline summary test, which wants `median`, `dispersion` and
-# `extra_flag_refusal` and none of the probing or any run — same guard shape as
-# check-machine.sh:174.
+# ADR-0071 decision 1: a skipped TX stamp is a missing sample, not a failed
+# run — the igb NIC holds one pending TX stamp request, so a few stamps per
+# 20 000 are skipped by design. FAILs only when the missing count exceeds
+# 0.1% of the timed requests (20 of 20 000); an RX stamp never competes for a
+# slot, so ANY missing RX stamp is a failed run outright. Prints the reason
+# on FAIL, nothing on PASS — same shape as `extra_flag_refusal` above — and
+# is pure integer arithmetic (`tx * 1000 > total` reads `tx/total > 0.1%`
+# without a float) so `scripts/check-w2w-baseline-summary.sh` calls it
+# directly with `BASELINE_SOURCE_ONLY=1`.
+missing_stamp_verdict() { # missing_stamp_verdict <rx_missing> <tx_missing> <total>
+  local rx=$1 tx=$2 total=$3
+  if [ "$rx" -gt 0 ]; then
+    printf 'hw-rx-missing %s of %s — any missing RX stamp is a failed run (ADR-0071 decision 1)' "$rx" "$total"
+    return 1
+  fi
+  if [ $((tx * 1000)) -gt "$total" ]; then
+    printf 'hw-tx-missing %s of %s exceeds 0.1%%' "$tx" "$total"
+    return 1
+  fi
+  return 0
+}
+
+# `dump_pick <sorted-ascending-file> <n> <q>`: the same percentile
+# `tools/w2w`'s own `print_figures`/`Observed::report` compute —
+# `arr[floor((n-1)*q)]`, 0-based — read back off a file [`join_dump_verdict`]
+# below has already sorted, rather than resorting per call. Pure: reads only
+# the file it is given.
+dump_pick() {
+  local f=$1 n=$2 q=$3
+  awk -v n="$n" -v q="$q" 'BEGIN { r = int((n - 1) * q) + 1 } NR == r { print; exit }' "$f"
+}
+
+# `dump_diff_pct <a> <b>`: |a-b|/b as a percent, to four decimal places; `0`
+# when `b` is `0` (nothing to divide by, and a run whose distribution centres
+# on zero nanoseconds has bigger problems than this check).
+dump_diff_pct() {
+  awk -v a="$1" -v b="$2" \
+    'BEGIN { if (b == 0) { print 0; exit } d = a - b; if (d < 0) d = -d; printf "%.4f", (d / b) * 100 }'
+}
+
+# ADR-0071 decision 3: the check that dropping an unstamped request did not
+# skew the generator's own distribution — a join of the two `--dump` files
+# `tools/w2w` writes (one per half, `tools/w2w/src/main.rs` `write_connect_dump`
+# / `write_listen_dump`), by request index. Pure: reads only the two files it
+# is given and writes only its own temporary files, cleaned up before it
+# returns — no socket, no global state, same shape as `missing_stamp_verdict`
+# above: nothing printed and `0` on PASS, one line and `1` otherwise.
+#
+# PASS is the generator's own p50 within 1% and p99/p99.9 within 5% of
+# themselves, over every row vs. over the rows the acceptor stamped —
+# ADR-0071 decision 3's own bands, chosen there for the same reason
+# `missing_stamp_verdict`'s 0.1% was. Refused before any comparison when the
+# two dumps' `--warmup` headers disagree: `tools/w2w`'s request index counts
+# from a different point in each half then, and joining on it would pair the
+# wrong rows.
+join_dump_verdict() { # join_dump_verdict <connect_dump> <listen_dump>
+  local connect_dump=$1 listen_dump=$2
+  local cw lw
+  [ -r "$connect_dump" ] || {
+    printf 'join refused: cannot read %s' "$connect_dump"
+    return 1
+  }
+  [ -r "$listen_dump" ] || {
+    printf 'join refused: cannot read %s' "$listen_dump"
+    return 1
+  }
+  cw=$(head -1 "$connect_dump" | awk '{ for (i = 1; i <= NF; i++) if ($i == "warmup") print $(i + 1) }')
+  lw=$(head -1 "$listen_dump" | awk '{ for (i = 1; i <= NF; i++) if ($i == "warmup") print $(i + 1) }')
+  if [ -z "$cw" ] || [ -z "$lw" ]; then
+    printf 'join refused: %s or %s has no dump header with a warmup field' "$connect_dump" "$listen_dump"
+    return 1
+  fi
+  if [ "$cw" != "$lw" ]; then
+    printf 'join refused: connect --warmup %s and listen --warmup %s disagree — the two dumps do not count the same index' \
+      "$cw" "$lw"
+    return 1
+  fi
+
+  local all_f stamped_f n_all n_stamped
+  all_f=$(mktemp)
+  stamped_f=$(mktemp)
+  # First pass (the connect dump) builds `rtt[index]`; second pass (the
+  # listen dump) writes that same generator rtt into `all_f` for every index
+  # it also saw, and into `stamped_f` too when it marked that index stamped —
+  # an index either side never sent (a short dump, a truncated run) is
+  # simply not joined, rather than guessed at.
+  awk 'NR == FNR { if (FNR > 1) rtt[$1] = $2; next }
+       FNR > 1 { if ($1 in rtt) { print rtt[$1] > all_f; if ($2 == "stamped") print rtt[$1] > stamped_f } }' \
+    all_f="$all_f" stamped_f="$stamped_f" "$connect_dump" "$listen_dump"
+  sort -n -o "$all_f" "$all_f"
+  sort -n -o "$stamped_f" "$stamped_f"
+  n_all=$(wc -l <"$all_f")
+  n_stamped=$(wc -l <"$stamped_f")
+  if [ "$n_all" -eq 0 ] || [ "$n_stamped" -eq 0 ]; then
+    rm -f "$all_f" "$stamped_f"
+    printf 'join refused: no row of %s matched an index in %s' "$connect_dump" "$listen_dump"
+    return 1
+  fi
+
+  local a50 a99 a999 s50 s99 s999
+  a50=$(dump_pick "$all_f" "$n_all" 0.50)
+  a99=$(dump_pick "$all_f" "$n_all" 0.99)
+  a999=$(dump_pick "$all_f" "$n_all" 0.999)
+  s50=$(dump_pick "$stamped_f" "$n_stamped" 0.50)
+  s99=$(dump_pick "$stamped_f" "$n_stamped" 0.99)
+  s999=$(dump_pick "$stamped_f" "$n_stamped" 0.999)
+  rm -f "$all_f" "$stamped_f"
+
+  local d50 d99 d999 bad=""
+  d50=$(dump_diff_pct "$s50" "$a50")
+  d99=$(dump_diff_pct "$s99" "$a99")
+  d999=$(dump_diff_pct "$s999" "$a999")
+  if awk -v d="$d50" 'BEGIN { exit !(d > 1) }'; then
+    bad="p50 ${d50}% > 1%"
+  fi
+  if awk -v d="$d99" 'BEGIN { exit !(d > 5) }'; then
+    bad="${bad:+$bad, }p99 ${d99}% > 5%"
+  fi
+  if awk -v d="$d999" 'BEGIN { exit !(d > 5) }'; then
+    bad="${bad:+$bad, }p99.9 ${d999}% > 5%"
+  fi
+  if [ -n "$bad" ]; then
+    printf 'marked (ADR-0068 decision 3): dropping %d of %d rows (the ones the acceptor did not stamp) moved the generator distribution — %s (all: p50 %s p99 %s p99.9 %s; stamped: p50 %s p99 %s p99.9 %s)' \
+      "$((n_all - n_stamped))" "$n_all" "$bad" "$a50" "$a99" "$a999" "$s50" "$s99" "$s999"
+    return 1
+  fi
+  return 0
+}
+
+# Sourced by the baseline summary test, which wants `median`, `dispersion`,
+# `extra_flag_refusal`, `missing_stamp_verdict` and `join_dump_verdict` (with
+# `dump_pick`/`dump_diff_pct`) and none of the probing or any run — same
+# guard shape as check-machine.sh:174.
 if [ "${BASELINE_SOURCE_ONLY:-0}" = 1 ]; then
   # shellcheck disable=SC2317 # reachable when sourced; `|| exit 0` is only
   # for the (unused here) case of running this file directly.
@@ -326,6 +458,17 @@ busy_pct() {
   echo $(( (100*(dt-di)) / dt ))
 }
 
+# The driver's own count of skipped TX stamps (ADR-0071 *Sources*: `igb_ptp.c`
+# `__IGB_PTP_TX_IN_PROGRESS`), read before and after a WIRE_NIC run so the
+# per-run line can print the delta beside `hw-tx-missing` — the two are
+# expected to agree, and a reader who doubts the tap's pairing can check the
+# driver's own counter instead of trusting `pair.rs` alone. Empty when
+# `ethtool` is missing or the NIC has no such statistic, so a run this ran
+# against says so rather than printing an empty diff silently.
+tx_hwtstamp_skipped() { # tx_hwtstamp_skipped <nic>
+  ethtool -S "$1" 2>/dev/null | awk '/tx_hwtstamp_skipped/ {print $2; exit}'
+}
+
 # Poll `file` for a line matching `pat`, up to `timeout_s` — the `--listen`
 # half prints `listening:` right after `bind`, long before its peer connects,
 # and Rust's `Stdout` is always line-buffered (never the C-stdio habit of full
@@ -380,6 +523,24 @@ printf 'uptime %d:%02d\n' "$((UPTIME_S/3600))" "$(((UPTIME_S%3600)/60))"
 BIN_SHA=$(sha256sum "$BIN" 2>/dev/null | cut -c1-12)
 BIN_MTIME=$(date -Iseconds -r "$BIN" 2>/dev/null || echo unknown)
 echo "binary ${BIN_SHA:-unknown} $BIN_MTIME"
+# `[2026-09-18]` item 85, ADR-0068 decision 5: temperature and clock speed are
+# read once here, on this process, before any run starts — never on the
+# engine, which the script pins separately below. A file that cannot be read
+# (no such zone, no cpufreq node, permission) prints `n/a` for that one field;
+# it is evidence, not a gate, so it never fails the script.
+print_thermal_and_freq_header() {
+  local line="" zone type temp freq
+  for zone in /sys/class/thermal/thermal_zone*/temp; do
+    [ -e "$zone" ] || continue
+    type=$(cat "${zone%temp}type" 2>/dev/null || echo n/a)
+    temp=$(cat "$zone" 2>/dev/null || echo n/a)
+    line="$line thermal $type $temp"
+  done
+  freq=$(cat "/sys/devices/system/cpu/cpu${ENGINE_CORE}/cpufreq/cpuinfo_cur_freq" 2>/dev/null || echo n/a)
+  line="$line cpu${ENGINE_CORE}-freq $freq"
+  echo "${line# }"
+}
+print_thermal_and_freq_header
 if [ -n "$GENERATOR_SSH" ]; then
   # Best effort: an unreachable host or a remote shell with no `w2w` on its
   # PATH must not stop the run over a line that is evidence, not a gate.
@@ -432,44 +593,84 @@ for arm in $ARMS; do
       exit 1
       ;;
   esac
+  # C-84: the third field may itself carry a slash, `ktls/userspace`
+  # (engine/client) — the two loopback mixed arms, kernel one end and
+  # userspace rustls the other. No slash means what it always meant: the
+  # same mode both ends. `$tls` keeps its old, undivided spelling for every
+  # label and message below that predates the split; `engine_tls`/
+  # `client_tls` are only for what actually gets passed to the binary and
+  # read back from it.
+  case "$tls" in
+    */*) engine_tls=${tls%%/*}; client_tls=${tls#*/} ;;
+    *) engine_tls=$tls; client_tls=$tls ;;
+  esac
   tls_args=()
-  [ "$tls" != "off" ] && tls_args=(--tls "$tls")
+  [ "$engine_tls" != "off" ] && tls_args=(--tls "$engine_tls")
+  [ "$client_tls" != "$engine_tls" ] && tls_args+=(--client-tls "$client_tls")
   interval_args=()
   [ "$interval" != 0 ] && interval_args=(--interval "$interval")
+
+  # ADR-0072 decision 4: every published `hft` figure is gated on 0 voluntary
+  # context switches, not merely accompanied by the count. Printing it and
+  # reading it back below is the second reader; THIS is the gate, inside
+  # `tools/w2w` itself, which exits non-zero on the first voluntary switch and
+  # so lands on the ordinary `$BIN exited $rc` FAIL path with the assertion
+  # message in the kept output. Combined runs only: the split run's `--connect`
+  # half has no local engine thread and its `--listen` half is not the process
+  # whose exit status this loop reads. `standard` blocks by design (ADR-0014)
+  # and must never carry it. This script never runs under `strace`, so the
+  # tracer caveat that makes the flag opt-in does not apply here.
+  assert_args=()
+  [ "$mode" = hft ] && [ -z "$LISTEN" ] && assert_args=(--assert-no-voluntary-switches)
   # Named in the per-run line and the summary header only when it is not the
   # default, so an arm with no fourth field prints byte-identically to before.
   iv_note=""
   [ "$interval" != 0 ] && iv_note="  interval ${interval}us"
-  # What the engine must REPORT for this arm, not what the flag is spelled —
+  # What the run must REPORT for this arm, not what the flag is spelled —
   # `--tls ktls` reads back as `tls: kernel` (tools/w2w/src/main.rs
   # `seen_name`), and a handover that quietly fell back to userspace must
   # disqualify the run rather than publish its p50 under the `ktls` label it
-  # never earned.
-  case "$tls" in
-    ktls) want_tls=kernel ;;
-    *) want_tls=$tls ;;
+  # never earned. A mixed arm reads back as the pair, `tools/w2w`'s
+  # `measure()` printing "tls: kernel / client userspace" only when the two
+  # differ — same mapping, `ktls` -> `kernel`, on each side of the slash.
+  case "$engine_tls" in
+    ktls) want_engine=kernel ;;
+    *) want_engine=$engine_tls ;;
   esac
+  if [ "$client_tls" = "$engine_tls" ]; then
+    want_tls=$want_engine
+  else
+    case "$client_tls" in
+      ktls) want_client=kernel ;;
+      *) want_client=$client_tls ;;
+    esac
+    want_tls="$want_engine / client $want_client"
+  fi
 
   # The filename prefix each run's raw output is kept under (ADR-0068
   # decision 5, "keeps every run's raw output on disk"), one character
   # outside `A-Za-z0-9` in W2W_EXTRA becoming one `_` so it stays a filename.
+  # `tls_slug` swaps a mixed arm's `/` for `-`, so `ktls/userspace` names a
+  # file rather than a directory.
   extra_slug=""
   if [ -n "$W2W_EXTRA" ]; then
     extra_slug="-$(printf '%s' "$W2W_EXTRA" | tr -c 'A-Za-z0-9' '_')"
   fi
-  run_prefix="$mode-$path-$tls-$interval$extra_slug"
+  tls_slug=${tls//\//-}
+  run_prefix="$mode-$path-$tls_slug-$interval$extra_slug"
 
-  if [ -n "$LISTEN" ] && [ "$tls" != off ]; then
+  if [ -n "$LISTEN" ] && { [ "$engine_tls" != off ] || [ "$client_tls" != "$engine_tls" ]; }; then
     echo "ARMS entry '$arm': LISTEN is set and tls is '$tls' — refused before running."
-    echo "tools/w2w refuses --tls other than off to both --listen and --connect: the"
-    echo "self-signed certificate is made per process, and a split run is two processes."
+    echo "tools/w2w refuses --tls other than off to both --listen and --connect, and refuses"
+    echo "--client-tls there outright: a split run already picks one transport per process,"
+    echo "and the self-signed certificate is made per process, so a split run is two processes."
     exit 1
   fi
 
   gen_host="${GENERATOR_SSH:-this host (loopback split)}"
 
   p50s=(); p99s=(); p999s=(); mins=(); skipped=0
-  wp50s=(); wp99s=(); wp999s=()
+  wp50s=(); wp99s=(); wp999s=(); rxms=(); txms=()
   wire_args=()
   if [ -n "$WIRE_NIC" ]; then
     wire_args=(--wire-timestamps --nic "$WIRE_NIC" --observer-core "$OBSERVER_CORE" --warmup "$WARMUP")
@@ -490,8 +691,34 @@ for arm in $ARMS; do
       # first, allocations second, exit status last, because the checks above
       # name the cause better than a bare nonzero status ever could.
       listen_log=$(mktemp)
+      # ADR-0071 decision 1's own check: the driver's `tx_hwtstamp_skipped`
+      # read before and after, so the delta can be printed beside `pair.rs`'s
+      # `hw-tx-missing` count below rather than trusting one source alone.
+      skipped_before=""
+      [ -n "$WIRE_NIC" ] && skipped_before=$(tx_hwtstamp_skipped "$WIRE_NIC")
+      # ADR-0071 decision 3: each half's own `--dump`, only when a wire
+      # figure is being taken at all — with no WIRE_NIC the listen half took
+      # no wire timestamps and has no round-trip figure of its own to dump
+      # (tools/w2w refuses --dump there without --wire-timestamps), so there
+      # is nothing for the join below to read.
+      connect_dump_file=""
+      listen_dump_file=""
+      listen_dump_args=()
+      connect_dump_args=()
+      remote_dump_file=""
+      if [ -n "$WIRE_NIC" ]; then
+        listen_dump_file="$OUT_DIR/$run_prefix-run-$i-listen-dump.txt"
+        listen_dump_args=(--dump "$listen_dump_file")
+        if [ -n "$GENERATOR_SSH" ]; then
+          remote_dump_file="/tmp/w2w-dump-$$-$i.txt"
+          connect_dump_args=(--dump "$remote_dump_file")
+        else
+          connect_dump_file="$OUT_DIR/$run_prefix-run-$i-connect-dump.txt"
+          connect_dump_args=(--dump "$connect_dump_file")
+        fi
+      fi
       "$BIN" --listen "$LISTEN" --mode "$mode" --path "$path" "${LISTEN_PINARGS[@]}" "${wire_args[@]}" \
-        "${EXTRA_ARGS[@]}" "${LISTENER_EVERY_ARGS[@]}" >"$listen_log" 2>&1 &
+        "${listen_dump_args[@]}" "${EXTRA_ARGS[@]}" "${LISTENER_EVERY_ARGS[@]}" >"$listen_log" 2>&1 &
       listen_pid=$!
 
       if ! wait_for_line "$listen_log" '^listening: ' 5; then
@@ -520,7 +747,8 @@ for arm in $ARMS; do
       rc=0
       if [ -z "$GENERATOR_SSH" ]; then
         cout=$("$BIN" --connect "$connect_addr" --path "$path" "${CONNECT_PINARGS[@]}" \
-                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" 2>&1) || rc=$?
+                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" \
+                 "${connect_dump_args[@]}" 2>&1) || rc=$?
       else
         # Separate `ssh` arguments, not one interpolated string: `sshd` joins
         # them with spaces before handing the line to the remote shell, so
@@ -528,12 +756,21 @@ for arm in $ARMS; do
         # none of these tokens (an address, a word, a number) needs quoting
         # either side of the hop.
         cout=$(ssh "$GENERATOR_SSH" "$GENERATOR_W2W" --connect "$connect_addr" --path "$path" \
-                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" 2>&1) || rc=$?
+                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" \
+                 "${connect_dump_args[@]}" 2>&1) || rc=$?
       fi
 
       lrc=0
       wait_with_timeout "$listen_pid" 5 || lrc=$?
       lout=$(cat "$listen_log"); rm -f "$listen_log"
+      skipped_after=""
+      skipped_delta=""
+      if [ -n "$WIRE_NIC" ]; then
+        skipped_after=$(tx_hwtstamp_skipped "$WIRE_NIC")
+        if [ -n "$skipped_before" ] && [ -n "$skipped_after" ]; then
+          skipped_delta=$((skipped_after - skipped_before))
+        fi
+      fi
       # `[2026-09-15]` review finding F11: both halves' raw output lands on
       # disk HERE, as soon as both have returned and before any check below
       # can `exit 1`. Written after the checks, as it was, the one run whose
@@ -594,10 +831,19 @@ for arm in $ARMS; do
       if [ -n "$WIRE_NIC" ]; then
         rxm=$(echo "$lout" | awk '$1=="hw-rx-missing" {print $2; exit}')
         txm=$(echo "$lout" | awk '$1=="hw-tx-missing" {print $2; exit}')
-        if [ "$rxm" != 0 ] || [ "$txm" != 0 ]; then
+        reqs_total=$(echo "$lout" | awk '$1=="requests" {print $2; exit}')
+        if [ -z "$rxm" ] || [ -z "$txm" ] || [ -z "$reqs_total" ]; then
           echo "$lout"
-          echo "FAIL: $mode:$path:$tls:$interval — run $i: hw-rx-missing ${rxm:-<not printed>}, hw-tx-missing ${txm:-<not printed>} on $WIRE_NIC."
-          echo "A run with any missing hardware stamp is not a wire figure (plan B6 publishes only missing 0)."
+          echo "FAIL: $mode:$path:$tls:$interval — run $i: hw-rx-missing ${rxm:-<not printed>}, hw-tx-missing ${txm:-<not printed>} on $WIRE_NIC (the tap could not be trusted — read the listen half above)."
+          exit 1
+        fi
+        # ADR-0071 decision 1: a missing TX stamp within 0.1% of the run's
+        # requests is a smaller sample, not a FAIL; any missing RX stamp
+        # still is. `missing_stamp_verdict` is the pure function above,
+        # tested by scripts/check-w2w-baseline-summary.sh.
+        if ! verdict=$(missing_stamp_verdict "$rxm" "$txm" "$reqs_total"); then
+          echo "$lout"
+          echo "FAIL: $mode:$path:$tls:$interval — run $i: $verdict on $WIRE_NIC."
           echo "Not DISQUALIFIED: the cause is the NIC's stamping, not load, and it will not clear by waiting —"
           echo "see the plan's igb trap (ethtool -T, link down/up), and record this count and the kernel version."
           exit 1
@@ -606,18 +852,53 @@ for arm in $ARMS; do
         wp50=$(wv p50); wp99=$(wv p99); wp999=$(wv p99.9)
         if [ -z "$wp50" ] || [ -z "$wp99" ] || [ -z "$wp999" ]; then
           echo "$lout"
-          echo "FAIL: $mode:$path:$tls:$interval — run $i: missing counts are 0 and no wire column was printed (tap drops or overflow — read the listen half above)"
+          echo "FAIL: $mode:$path:$tls:$interval — run $i: missing counts are within the 0.1%/0 rule and no wire column was printed (tap drops or overflow — read the listen half above)"
           exit 1
         fi
         wp50s+=("$wp50"); wp99s+=("$wp99"); wp999s+=("$wp999")
-        wire_note=$(printf '  wire p50 %8s  p99 %8s  p99.9 %8s  (acceptor, %s)' "$wp50" "$wp99" "$wp999" "$WIRE_NIC")
+        rxms+=("$rxm"); txms+=("$txm")
+        skip_note=""
+        if [ -n "$skipped_delta" ]; then
+          skip_note="  ethtool tx_hwtstamp_skipped $skipped_before -> $skipped_after (delta $skipped_delta)"
+        fi
+        wire_note=$(printf '  wire p50 %8s  p99 %8s  p99.9 %8s  hw-rx-missing %s  hw-tx-missing %s of %s  (acceptor, %s)%s' \
+          "$wp50" "$wp99" "$wp999" "$rxm" "$txm" "$reqs_total" "$WIRE_NIC" "$skip_note")
+
+        # ADR-0071 decision 3: join the two `--dump` files just written, by
+        # request index — did dropping the requests the acceptor did not
+        # stamp skew the generator's own distribution? `join_dump_verdict` is
+        # the pure function above, tested by
+        # scripts/check-w2w-baseline-summary.sh. A disagreement MARKS the run
+        # rather than FAILing it (ADR-0068 decision 3's rule, reused): this
+        # run has already cleared `missing_stamp_verdict` above, and a join
+        # that cannot be trusted is evidence about the check, not about the
+        # engine.
+        if [ -n "$GENERATOR_SSH" ]; then
+          connect_dump_file="$OUT_DIR/$run_prefix-run-$i-connect-dump.txt"
+          if scp -q "$GENERATOR_SSH:$remote_dump_file" "$connect_dump_file" 2>/dev/null; then
+            ssh "$GENERATOR_SSH" rm -f "$remote_dump_file" 2>/dev/null || true
+          else
+            connect_dump_file=""
+          fi
+        fi
+        if [ -n "$connect_dump_file" ] && [ -s "$connect_dump_file" ] && [ -s "$listen_dump_file" ]; then
+          if jv=$(join_dump_verdict "$connect_dump_file" "$listen_dump_file"); then
+            join_note="  join: PASS (dropping the unstamped rows did not move the generator's distribution)"
+          else
+            join_note="  join: $jv"
+          fi
+        else
+          join_note="  join: skipped — no dump to join (${connect_dump_file:-generator dump not fetched})"
+        fi
+      else
+        join_note="  join: skipped — WIRE_NIC not set, so the listen half took no wire timestamps and wrote no dump to join"
       fi
 
       out="$cout"
       g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
       mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
-      printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s  (counterparty: %s)%s%s\n' \
-        "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$gen_host" "$iv_note" "$wire_note"
+      printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s  (counterparty: %s)%s%s%s\n' \
+        "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$gen_host" "$iv_note" "$wire_note" "$join_note"
       sleep "$GAP"
       continue
     fi
@@ -633,7 +914,7 @@ for arm in $ARMS; do
     rc=0
     out=$("$BIN" --mode "$mode" --path "$path" "${tls_args[@]}" "${interval_args[@]}" "${PINARGS[@]}" \
             --messages "$MESSAGES" --warmup "$WARMUP" "${EXTRA_ARGS[@]}" \
-            "${LISTENER_EVERY_ARGS[@]}" 2>&1) || rc=$?
+            "${LISTENER_EVERY_ARGS[@]}" "${assert_args[@]}" 2>&1) || rc=$?
     # F11 (`[2026-09-15]`, the split run above): the raw output is kept before
     # any check below can `exit 1` — `boot-b-p1/b4-1s/` held nothing after a
     # `35=3` reject FAILed its run.
@@ -690,16 +971,30 @@ for arm in $ARMS; do
     # A run whose allocation count is not zero is not a figure about this
     # engine, and the binary already asserts it; this is the second reader,
     # because a `set -e` that never looked would be a green nobody read.
-    # Skipped for `userspace`: ADR-0005 decision 3 leaves the zero-allocation
-    # guarantee there on purpose, and the binary itself only prints the count
-    # for that arm rather than asserting it — see tools/w2w/src/main.rs.
-    if [ "$tls" != userspace ]; then
+    # Skipped for `userspace` on either end: ADR-0005 decision 3 leaves the
+    # zero-allocation guarantee there on purpose, `allocs` counts both
+    # threads, and the binary itself only prints the count for that arm
+    # rather than asserting it — see tools/w2w/src/main.rs, including the
+    # mixed-arm case (kernel one end, userspace client the other).
+    if [ "$engine_tls" != userspace ] && [ "$client_tls" != userspace ]; then
       echo "$out" | grep -qE '^ *allocs +0 ' || { echo "$out"; echo "allocs != 0"; exit 1; }
     fi
     g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
     mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
-    printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s%s\n' \
-      "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$iv_note"
+    # ADR-0072 decision 4: every published `hft` figure carries the sentence
+    # "engine thread: 0 voluntary switches in the window" — the two numbers
+    # `tools/w2w` prints on its `engine-ctxt` line (read the same way `allocs`
+    # above is: this is the second reader — `--assert-no-voluntary-switches`,
+    # passed above on every combined `hft` arm, is the first and the one that
+    # fails the run). `--connect` (the split-run generator half, above) has no
+    # local engine thread and prints no such line, so this stays empty there
+    # rather than reading 0.
+    voluntary_ctxt="$(echo "$out" | awk '$1=="engine-ctxt" {print $3}')"
+    involuntary_ctxt="$(echo "$out" | awk '$1=="engine-ctxt" {print $5}')"
+    ctxt_note=""
+    [ -n "$voluntary_ctxt" ] && ctxt_note="  engine-ctxt voluntary $voluntary_ctxt involuntary $involuntary_ctxt"
+    printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s%s%s\n' \
+      "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$iv_note" "$ctxt_note"
     sleep "$GAP"
   done
 
@@ -742,7 +1037,7 @@ for arm in $ARMS; do
   if [ -n "$W2W_EXTRA" ]; then
     echo "     extra   $W2W_EXTRA"
   fi
-  if [ "$tls" = userspace ]; then
+  if [ "$engine_tls" = userspace ] || [ "$client_tls" = userspace ]; then
     echo "     allocs  NOT asserted zero — userspace leaves ADR-0005 decision 3's guarantee"
   fi
   if [ "$PIN" = 1 ] && [ -n "$LISTEN" ] && [ -n "$GENERATOR_SSH" ]; then
@@ -770,7 +1065,13 @@ for arm in $ARMS; do
     echo "     wire dispersion $(dispersion p99 "${wp99s[@]}")"
     echo "     wire dispersion $(dispersion p99.9 "${wp999s[@]}")"
     echo "     window      every request after the logon, leaving out the first $WARMUP"
-    echo "     stamps      hw-rx-missing 0 and hw-tx-missing 0 in all $q runs"
+    # ADR-0071 decision 1: printed per run, not asserted zero — ANY of these
+    # runs already passed `missing_stamp_verdict` above (RX 0, TX within 0.1%
+    # of that run's requests), so the sum here is evidence, not a second gate.
+    rxm_sum=0; txm_sum=0
+    for v in "${rxms[@]}"; do rxm_sum=$((rxm_sum + v)); done
+    for v in "${txms[@]}"; do txm_sum=$((txm_sum + v)); done
+    echo "     stamps      hw-rx-missing $rxm_sum and hw-tx-missing $txm_sum, summed over $q runs (each run within ADR-0071's rule: RX 0, TX <= 0.1%)"
     echo "     observer    cpu$OBSERVER_CORE"
   fi
   echo

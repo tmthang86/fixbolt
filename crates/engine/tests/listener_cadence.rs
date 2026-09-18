@@ -321,11 +321,12 @@ fn standard_does_not_spin_through_the_whole_cadence_before_accepting() {
     let _ = engine.join().expect("the serving thread did not panic");
 }
 
-/// **Cadence 1 is the loop as it was.**
+/// **The default cadence is 16 ([ADR-0069]); naming 1 still means "poll every
+/// turn", today's loop from before this knob existed.**
 ///
-/// A session over a kernel socket through `serve_hft` and through `serve`, with
-/// the cadence named explicitly as 1 and with the default `Limits` that has
-/// never been told about it — the same bytes back either way.
+/// A session over a kernel socket through `serve_hft`, with the cadence named
+/// explicitly as 1 and with the default `Limits` that has never been told
+/// about it — both serve correctly, at their own cadence.
 ///
 /// `[2026-09-18]` **this is not the 59 acceptance definitions.**
 /// `crates/engine/tests/wire.rs` runs those over a socket, but it drives
@@ -336,8 +337,10 @@ fn standard_does_not_spin_through_the_whole_cadence_before_accepting() {
 /// seam on those doors. What that means here: the 59 defs gate the session
 /// layer and are unchanged by this commit (`--test wire`, 59/59), and this test
 /// gates the loop the defs cannot reach.
+///
+/// [ADR-0069]: ../../../docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md
 #[test]
-fn listener_every_one_is_todays_loop() {
+fn listener_every_default_is_16_and_naming_one_still_polls_every_turn() {
     for named in [true, false] {
         let base = Limits::new(8, 30_000).expect("both above zero");
         let limits = if named {
@@ -345,11 +348,19 @@ fn listener_every_one_is_todays_loop() {
         } else {
             base
         };
-        assert_eq!(
-            limits.listener_every().get(),
-            1,
-            "the default cadence and the one named as 1 are the same number"
-        );
+        if named {
+            assert_eq!(
+                limits.listener_every().get(),
+                1,
+                "naming the cadence 1 still means poll every turn"
+            );
+        } else {
+            assert_eq!(
+                limits.listener_every().get(),
+                16,
+                "the default cadence is 16, measured at boot C (ADR-0069)"
+            );
+        }
 
         let addr = free_addr();
         let handles = Handles::new();
@@ -373,7 +384,8 @@ fn listener_every_one_is_todays_loop() {
         let reply = read_one(&mut client);
         assert!(
             reply.contains("|35=A|") && reply.contains("|34=1|"),
-            "cadence 1 (named: {named}) serves exactly as before: {reply}"
+            "cadence {} (named: {named}) serves correctly: {reply}",
+            limits.listener_every().get()
         );
 
         client

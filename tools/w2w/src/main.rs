@@ -281,7 +281,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Allocations since the counter was armed, on **every** thread — which is the
@@ -291,6 +291,11 @@ static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 /// be one allocation from the surrounding setup, and the assertion is against
 /// zero over 20 000 messages.
 static ARMED: AtomicBool = AtomicBool::new(false);
+/// The engine thread's tid, written once by [`print_engine_tid`] from inside
+/// that thread, read from the main thread by [`engine_ctxt_switches`]
+/// (ADR-0072 decision 1). `0` means "not yet known". `AtomicI32` because a
+/// linux tid is a `pid_t`.
+static ENGINE_TID: AtomicI32 = AtomicI32::new(0);
 
 struct Counting;
 
@@ -730,6 +735,11 @@ const LISTEN_REFUSES: &[(&str, &str)] = &[
         "--max-skew-ms",
         "the counterparty's MaxLatency bounds the sender's paced run; pass it to the --connect process",
     ),
+    (
+        "--client-tls",
+        "a split run already picks one transport per process, with --tls; there is no \
+         second half in this process to give a different one to",
+    ),
 ];
 
 /// What `--connect` refuses, and why. There is no engine thread in that
@@ -771,6 +781,11 @@ const CONNECT_REFUSES: &[(&str, &str)] = &[
         "--listener-every",
         "the listener's cadence is the engine's own accept loop; this process has no \
          listener to poll on one",
+    ),
+    (
+        "--client-tls",
+        "a split run already picks one transport per process, with --tls; there is no \
+         second half in this process to give a different one to",
     ),
 ];
 
@@ -904,6 +919,36 @@ fn max_skew_of(args: &[String]) -> Result<u64, String> {
     Ok(value_of(args, "--max-skew-ms")?.unwrap_or(fixbolt_session::DEFAULT_MAX_SKEW_MS))
 }
 
+/// `--client-tls`: the combined run's client half, independent of the
+/// engine's `--tls` — C-84's mixed arms (kernel one end, userspace the
+/// other). Absent, it is `tls`, so an invocation with no `--client-tls` is
+/// byte-identical to before the flag existed. Refuses the pair disagreeing on
+/// off vs on, either direction: a plain `TcpTransport` speaking to a
+/// `TlsTransport` never gets past the first byte. The two sides may still
+/// name different TLS *arms* (`ktls` one end, `userspace` the other) — only
+/// the off/on split must agree.
+fn client_tls_of(args: &[String], tls: Tls) -> Result<Tls, String> {
+    let client_tls = match arg::<String>(args, "--client-tls").as_deref() {
+        None => tls,
+        Some("off") => Tls::Off,
+        Some("ktls") => Tls::Ktls,
+        Some("userspace") => Tls::Userspace,
+        Some(other) => {
+            return Err(format!(
+                "unknown --client-tls {other}; expected off, ktls or userspace"
+            ));
+        }
+    };
+    if (tls == Tls::Off) != (client_tls == Tls::Off) {
+        return Err(format!(
+            "--tls {} and --client-tls {}: TLS on one end only cannot handshake",
+            tls.name(),
+            client_tls.name()
+        ));
+    }
+    Ok(client_tls)
+}
+
 /// One second's margin for [`stamp`]'s seconds-only resolution: the age a
 /// paced run computes here is a lower bound, and this absorbs the rounding
 /// `stamp()` does, not any drift from a round trip slower than the pacing.
@@ -950,11 +995,21 @@ fn paced_run_fits(
 
 /// `--listener-every <N>`: how many turns of w2w's own pump apart the listener
 /// is asked, ADR-0069 decision 1's rule copied for this binary's loop. Absent
-/// is `1` (today's loop, unchanged); present with `0` is refused the same way
-/// a missing value is, rather than silently read as "never poll".
+/// is the library's own default (`Limits::listener_every`, `16` as of
+/// ADR-0069 — this binary must measure what ships, never a value of its own);
+/// present with `0` is refused the same way a missing value is, rather than
+/// silently read as "never poll".
 fn listener_every_of(args: &[String]) -> Result<std::num::NonZeroU32, String> {
     match value_of::<u32>(args, "--listener-every")? {
-        None => Ok(std::num::NonZeroU32::MIN),
+        // Read off `Limits`, not hard-coded here: `new` always sets its
+        // `listener_every` field to the crate's own default, so a minimal,
+        // otherwise-unused `Limits` is how a binary outside the crate reads
+        // that constant back — `DEFAULT_LISTENER_EVERY` itself is private.
+        // `(1, 1)` are both nonzero, so `new` never takes the `Err` arm; the
+        // fallback below is unreachable, and `unwrap`/`expect` are denied
+        // (`CLAUDE.md` §2 rule 7), so it is named rather than unwrapped.
+        None => Ok(fixbolt_engine::presession::Limits::new(1, 1)
+            .map_or(std::num::NonZeroU32::MIN, |limits| limits.listener_every())),
         Some(0) => Err(
             "--listener-every 0: refused — a cadence of zero never asks the listener at \
                  all; pass at least 1"
@@ -964,6 +1019,15 @@ fn listener_every_of(args: &[String]) -> Result<std::num::NonZeroU32, String> {
         // below never runs; `unwrap_or` says that without `unwrap`/`expect`.
         Some(n) => Ok(std::num::NonZeroU32::new(n).unwrap_or(std::num::NonZeroU32::MIN)),
     }
+}
+
+/// `--dump <path>`: ADR-0071 decision 3's per-request table, written by
+/// either half after its own timed window has closed. Absent is `None`;
+/// present with no value is refused like every other new flag ([`value_of`]).
+/// Which halves may use it, and why the other cannot, is `main`'s refusal,
+/// not this parse.
+fn dump_of(args: &[String]) -> Result<Option<String>, String> {
+    value_of(args, "--dump")
 }
 
 /// Whether `name` appears among the arguments at all.
@@ -1053,10 +1117,11 @@ fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // The two halves' refusals first. With no new flag they return
     // `(Half::Both, 0)` and print nothing, so everything below runs as it did.
-    let (half, interval_us, wire, listener_every) = match half_of(&args)
+    let (half, interval_us, wire, listener_every, dump) = match half_of(&args)
         .and_then(|h| Ok((h, interval_of(&args)?)))
         .and_then(|(h, i)| Ok((h, i, wire_of(&args)?)))
         .and_then(|(h, i, w)| Ok((h, i, w, listener_every_of(&args)?)))
+        .and_then(|(h, i, w, le)| Ok((h, i, w, le, dump_of(&args)?)))
     {
         Ok(v) => v,
         Err(why) => {
@@ -1064,6 +1129,29 @@ fn main() -> std::io::Result<()> {
             return Err(std::io::Error::other(why));
         }
     };
+    // ADR-0071 decision 3: `--dump` belongs to each half separately — the
+    // combined run already holds both processes' samples in one place, and
+    // `--listen` with no `--wire-timestamps` has no round-trip figure of its
+    // own to write. Refused here, before a socket or a file is opened, same
+    // shape as every other new-flag refusal in this function.
+    if dump.is_some() {
+        match &half {
+            Half::Both => {
+                let why = "--dump joins two processes' per-request samples; the combined run \
+                            already holds both in one process, so there is nothing to join here \
+                            — run --listen and --connect separately";
+                eprintln!("w2w: {why}");
+                return Err(std::io::Error::other(why));
+            }
+            Half::Listen(_) if wire.is_none() => {
+                let why = "--dump on --listen needs --wire-timestamps: without it the engine \
+                            half has no round-trip figure of its own to write";
+                eprintln!("w2w: {why}");
+                return Err(std::io::Error::other(why));
+            }
+            Half::Listen(_) | Half::Connect(_) => {}
+        }
+    }
     let n: usize = arg(&args, "--messages").unwrap_or(20_000);
     // `--listen` reaches here with `--warmup` only beside `--wire-timestamps`
     // (`half_of`), where it is the number of requests after the logon left out
@@ -1098,6 +1186,19 @@ fn main() -> std::io::Result<()> {
             return Err(std::io::Error::other(why));
         }
     }
+
+    // Opt-in, not implied by `--mode hft`: an unprivileged tracer (`strace`)
+    // stops the traced thread at every syscall and signal-delivery-stop, and
+    // each `PTRACE_CONT` off a ptrace-stop is itself counted as a voluntary
+    // switch on the tracee — so `scripts/check-no-kernel-sleep.sh` running an
+    // `hft` binary under `strace -f` made this assertion fire on ~1800
+    // switches that were never a kernel sleep, coupling ADR-0072's tracer-free
+    // gate to the tracer it exists to route around. Only
+    // `scripts/check-no-kernel-sleep-by-ctxt.sh` and `scripts/w2w-baseline.sh`
+    // pass this flag. It asserts in **whatever mode it is given** — the flag is
+    // the opt-in, not the mode — so that `--mode standard` with it is the
+    // reversal that proves the assertion can go red.
+    let assert_no_voluntary = present(&args, "--assert-no-voluntary-switches");
 
     // ADR-0013 decision 4: every published figure names its mode. `hft` stays
     // the default here even though `standard` is the engine's, because these
@@ -1136,6 +1237,19 @@ fn main() -> std::io::Result<()> {
             return Err(std::io::Error::other("unknown --tls"));
         }
     };
+    // `--client-tls`: the combined run's client half, independent of the
+    // engine's `--tls` — C-84's mixed arms (kernel one end, userspace the
+    // other). Absent, it is `tls`, so every invocation written before this
+    // flag existed is byte-identical. `half_of` has already refused it on
+    // `--listen`/`--connect`: a split run picks one transport per process
+    // with `--tls` alone, and has no second half to give a different one to.
+    let client_tls = match client_tls_of(&args, tls) {
+        Ok(t) => t,
+        Err(why) => {
+            eprintln!("w2w: {why}");
+            return Err(std::io::Error::other(why));
+        }
+    };
     let journal = match arg::<String>(&args, "--journal").as_deref() {
         None | Some("mem") => JournalKind::Mem,
         Some("file-async") => JournalKind::FileAsync,
@@ -1158,6 +1272,15 @@ fn main() -> std::io::Result<()> {
         eprintln!(
             "w2w: --tls {} needs `--features tls`, on Linux.",
             tls.name()
+        );
+        eprintln!("     This build has no TLS transport. Build with:");
+        eprintln!("       cargo build --release -p fixbolt-w2w --features tls");
+        return Err(std::io::Error::other("this build has no TLS transport"));
+    }
+    if !CAN_TLS && client_tls != Tls::Off {
+        eprintln!(
+            "w2w: --client-tls {} needs `--features tls`, on Linux.",
+            client_tls.name()
         );
         eprintln!("     This build has no TLS transport. Build with:");
         eprintln!("       cargo build --release -p fixbolt-w2w --features tls");
@@ -1238,12 +1361,14 @@ fn main() -> std::io::Result<()> {
         Half::Both => both_halves(
             mode,
             run,
+            client_tls,
             engine_core,
             client_core,
             journal,
             log,
             wire.as_ref(),
             listener_every,
+            assert_no_voluntary,
         ),
         // `half_of` has refused `--client-core` here, and `--engine-core`,
         // `--mode` and `--wire-timestamps` for the generator, so neither
@@ -1257,10 +1382,11 @@ fn main() -> std::io::Result<()> {
             log,
             wire.as_ref(),
             listener_every,
+            dump.as_deref(),
         ),
         // `half_of` has refused `--journal` and `--log` for `--connect`, so
         // `generator_half` never receives a choice it has no engine to act on.
-        Half::Connect(addr) => generator_half(&addr, run, client_core),
+        Half::Connect(addr) => generator_half(&addr, run, client_core, dump.as_deref()),
     };
     // Only `--wire-timestamps` installs a handler (`signal`). By here every
     // thread that run started has been joined or has returned, and every
@@ -1287,12 +1413,14 @@ fn main() -> std::io::Result<()> {
 fn both_halves(
     mode: Mode,
     run: Run,
+    client_tls: Tls,
     engine_core: Option<usize>,
     client_core: Option<usize>,
     journal: JournalKind,
     log: LogKind,
     wire: Option<&WireArgs>,
     listener_every: std::num::NonZeroU32,
+    assert_no_voluntary: bool,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind("127.0.0.1:0")?;
@@ -1368,10 +1496,14 @@ fn both_halves(
     // The certificate and both configurations are made here, before either
     // thread starts and far outside the timed window: `rcgen` and `rustls`
     // allocate freely, and that is ADR-0005's handshake carve-out.
+    // One certificate, shared by both ends: the mixed arms differ in whether
+    // each side asks the kernel for offload, never in which key pair they
+    // hand rustls. The `--tls`/`--client-tls` refusal above has already made
+    // `tls != Off` and `client_tls != Off` agree, so either alone would do.
     #[cfg(all(feature = "tls", target_os = "linux"))]
-    let pki = match tls {
-        Tls::Off => None,
-        Tls::Ktls | Tls::Userspace => Some(tls_arm::Pki::new()?),
+    let pki = match (tls, client_tls) {
+        (Tls::Off, Tls::Off) => None,
+        _ => Some(tls_arm::Pki::new()?),
     };
     #[cfg(all(feature = "tls", target_os = "linux"))]
     let side = match &pki {
@@ -1417,7 +1549,10 @@ fn both_halves(
         stop: &stop,
         engine,
     };
-    let measured = match tls {
+    // The client half connects on `client_tls`, not `tls` — C-84's mixed
+    // arms. `client_tls` defaults to `tls`, so an invocation with no
+    // `--client-tls` takes this branch exactly as it always did.
+    let measured = match client_tls {
         Tls::Off => {
             // The plain arm, exactly as it was before `--tls` existed: a
             // blocking `TcpStream` with Nagle off. Changing this client changes
@@ -1426,7 +1561,15 @@ fn both_halves(
             let sock = TcpStream::connect(&addr)?;
             let connect_rtt_ns = connect_started.elapsed().as_nanos();
             sock.set_nodelay(true)?;
-            measure(sock, &run, peer, connect_started, connect_rtt_ns)
+            measure(
+                sock,
+                &run,
+                peer,
+                connect_started,
+                connect_rtt_ns,
+                assert_no_voluntary.then_some(mode),
+                client_tls,
+            )
         }
         #[cfg(all(feature = "tls", target_os = "linux"))]
         Tls::Ktls | Tls::Userspace => {
@@ -1434,9 +1577,17 @@ fn both_halves(
                 return Err(std::io::Error::other("w2w: a TLS arm with no certificate"));
             };
             let connect_started = Instant::now();
-            let sock = tls_arm::connect(&addr, p, tls == Tls::Ktls)?;
+            let sock = tls_arm::connect(&addr, p, client_tls == Tls::Ktls)?;
             let connect_rtt_ns = connect_started.elapsed().as_nanos();
-            measure(sock, &run, peer, connect_started, connect_rtt_ns)
+            measure(
+                sock,
+                &run,
+                peer,
+                connect_started,
+                connect_rtt_ns,
+                assert_no_voluntary.then_some(mode),
+                client_tls,
+            )
         }
         #[cfg(not(all(feature = "tls", target_os = "linux")))]
         Tls::Ktls | Tls::Userspace => {
@@ -1483,11 +1634,16 @@ fn both_halves(
     println!("     allocs {allocs:>9}   ({counted}, the timed window only)");
     let verdict = match &observed {
         None => Ok(()),
-        Some(o) => o.report(wire::Window::Combined {
-            warmup: run.warmup,
-            n: run.n,
-            tls: tls != Tls::Off,
-        }),
+        // `--dump` is refused for the combined run (`main`): both halves are
+        // one process here, so there is nothing to join.
+        Some(o) => o.report(
+            wire::Window::Combined {
+                warmup: run.warmup,
+                n: run.n,
+                tls: tls != Tls::Off,
+            },
+            None,
+        ),
     };
     println!();
     // Non-negotiable 1, for this binary. Reported first so the number is
@@ -1499,7 +1655,16 @@ fn both_halves(
     // did not report the transport that arm names — so neither this exemption
     // nor the assertion below can be reached by a run that was on another
     // transport, and `allocs != 0` here can only mean what it says.
-    if tls == Tls::Userspace {
+    //
+    // `client_tls == Userspace` exempts it too, mixed arm or not: `allocs`
+    // counts both threads (`counted_threads` above), and
+    // `[measured 2026-09-18]` `--tls ktls --client-tls userspace` showed the
+    // client's `rustls::client::UnbufferedClientConnection` allocating on this
+    // build (4001 allocations / 2000 messages) even though the engine's own
+    // kernel-offloaded half held zero — so a mixed arm with a userspace client
+    // is exactly the case ADR-0005 decision 3 already named, one thread
+    // earlier than the flag existed to say so.
+    if tls == Tls::Userspace || client_tls == Tls::Userspace {
         println!("tls userspace: rustls is on the data path, which leaves the hot-path");
         println!("guarantee (ADR-0005 decision 3); `allocs` is printed and not asserted.");
     } else {
@@ -1542,6 +1707,7 @@ fn engine_half(
     log: LogKind,
     wire: Option<&WireArgs>,
     listener_every: std::num::NonZeroU32,
+    dump: Option<&str>,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind(addr)?;
@@ -1671,7 +1837,7 @@ fn engine_half(
             println!(
                 "     process. The wire figures below are this acceptor's own, NIC in to NIC out."
             );
-            o.report(wire::Window::Listen { skip: run.warmup })
+            o.report(wire::Window::Listen { skip: run.warmup }, dump)
         }
     };
     println!();
@@ -1723,7 +1889,12 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `--connect`: the client thread alone. Its figures are the counterparty's
 /// view and are labelled so — see the module note.
-fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::Result<()> {
+fn generator_half(
+    addr: &str,
+    run: Run,
+    client_core: Option<usize>,
+    dump: Option<&str>,
+) -> std::io::Result<()> {
     let Run { path, .. } = run;
     println!("path: {}", path.name());
     println!("connect: {addr}");
@@ -1743,9 +1914,16 @@ fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::
         mut samples,
         allocs,
         late,
-    } = measure(sock, &run, Peer::Remote, connect_started, connect_rtt_ns).map_err(|e| match e
-        .kind()
-    {
+    } = measure(
+        sock,
+        &run,
+        Peer::Remote,
+        connect_started,
+        connect_rtt_ns,
+        None,
+        run.tls,
+    )
+    .map_err(|e| match e.kind() {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => std::io::Error::new(
             e.kind(),
             format!(
@@ -1756,6 +1934,16 @@ fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::
         ),
         _ => e,
     })?;
+
+    // ADR-0071 decision 3: written here, between `measure` returning (where
+    // `ARMED` was already cleared, `samples` is unsorted and in send order —
+    // the loop in `measure` pushes to it in that order) and `print_figures`
+    // below, which sorts `samples` in place. Nothing is added to the timed
+    // window by this: `allocs` was read back inside `measure` before `ARMED`
+    // was cleared, and the write below runs after both.
+    if let Some(path) = dump {
+        write_connect_dump(path, run.warmup, &samples)?;
+    }
 
     let what = match path {
         Path::Admin => "TestRequest -> Heartbeat",
@@ -1794,7 +1982,42 @@ fn print_engine_tid() {
         && let Some(tid) = link.to_string_lossy().rsplit('/').next()
     {
         println!("engine-tid: {tid}");
+        // ADR-0072 decision 1: the main thread reads this back from
+        // `/proc/self/task/<tid>/status`, so it is stored here once, on the
+        // engine thread itself, and never read on this thread again.
+        if let Ok(t) = tid.parse::<i32>() {
+            ENGINE_TID.store(t, Ordering::Relaxed);
+        }
     }
+}
+
+/// `voluntary_ctxt_switches` and `nonvoluntary_ctxt_switches` for one thread,
+/// read from `/proc/self/task/<tid>/status` (proc_pid_status(5)). Called on
+/// the **main** thread only, so the read adds no syscall to the engine thread
+/// it is watching — ADR-0072 decision 1. `None` when the tid is not yet known
+/// (`0`) or the file cannot be read or parsed: a run prints nothing rather
+/// than a wrong number.
+#[cfg(target_os = "linux")]
+fn engine_ctxt_switches(tid: i32) -> Option<(u64, u64)> {
+    if tid <= 0 {
+        return None;
+    }
+    let text = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).ok()?;
+    let mut voluntary = None;
+    let mut involuntary = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("voluntary_ctxt_switches:") {
+            voluntary = rest.trim().parse::<u64>().ok();
+        } else if let Some(rest) = line.strip_prefix("nonvoluntary_ctxt_switches:") {
+            involuntary = rest.trim().parse::<u64>().ok();
+        }
+    }
+    Some((voluntary?, involuntary?))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn engine_ctxt_switches(_tid: i32) -> Option<(u64, u64)> {
+    None
 }
 
 /// The client pins itself, from inside the thread that will run, which is
@@ -1821,6 +2044,26 @@ fn pin_client(client_core: Option<usize>) -> std::io::Result<()> {
 
 /// The percentile rows, shared by the combined run and the generator half so
 /// the two tables cannot drift apart in format.
+/// `--connect --dump <path>` (ADR-0071 decision 3). One line per timed
+/// request, `index rtt_ns`, `index` the 0-based send order after warmup —
+/// exactly `samples`'s own order, which is why this must run before anything
+/// sorts it. The header records `--warmup`, so `scripts/w2w-baseline.sh` can
+/// refuse a join against a `--listen` dump taken with a different one rather
+/// than pairing the wrong rows.
+fn write_connect_dump(path: &str, warmup: usize, samples: &[u64]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    writeln!(
+        f,
+        "# w2w dump connect warmup {warmup} requests {}",
+        samples.len()
+    )?;
+    for (index, ns) in samples.iter().enumerate() {
+        writeln!(f, "{index} {ns}")?;
+    }
+    f.flush()
+}
+
 fn print_figures(samples: &mut [u64], run: &Run, late: usize) {
     samples.sort_unstable();
     let pick = |q: f64| samples[((samples.len() as f64 - 1.0) * q) as usize];
@@ -1900,12 +2143,28 @@ struct Measured {
 /// share of the new-connection latency (plan
 /// `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
 /// line 210).
+/// `assert_no_voluntary`: `Some(mode)` when `--assert-no-voluntary-switches`
+/// was given, whatever the mode is — the flag is the opt-in, never the mode
+/// (opt-in because `strace` counts its own ptrace-stops as voluntary switches
+/// on the tracee, ADR-0072), and the mode is carried only so the failure names
+/// it. Asserting in every mode is what gives the assertion a reversal:
+/// `scripts/check-no-kernel-sleep-by-ctxt.sh` runs `--mode standard` with the
+/// flag and requires a non-zero exit. `generator_half`'s `Peer::Remote` has no
+/// local engine thread, so it always passes `None` and nothing is asserted
+/// there.
+/// `client_tls`: what the client half actually dialled with — `run.tls` for
+/// every call site but `both_halves`'s, where `--client-tls` may have said
+/// otherwise. Only read on the `Peer::InProcess` arm, for the read-back line;
+/// `generator_half`'s `Peer::Remote` call passes `run.tls` because the branch
+/// that would read it never runs there.
 fn measure<C: Wire>(
     mut sock: C,
     run: &Run,
     peer: Peer<'_>,
     connect_started: Instant,
     connect_rtt_ns: u128,
+    assert_no_voluntary: Option<Mode>,
+    client_tls: Tls,
 ) -> std::io::Result<Measured> {
     let Run {
         path,
@@ -1943,7 +2202,17 @@ fn measure<C: Wire>(
             }
             std::thread::yield_now();
         };
-        println!("tls: {}", seen_name(seen));
+        // Unchanged output when the two halves agree, which is every
+        // invocation written before `--client-tls` existed: just the engine's
+        // read-back, exactly as `check-no-kernel-sleep.sh`'s `tls: kernel`
+        // grep expects. The pair is printed only when they differ, and always
+        // with the engine's reading first, so that grep still matches as a
+        // substring on a mixed arm.
+        if client_tls == tls {
+            println!("tls: {}", seen_name(seen));
+        } else {
+            println!("tls: {} / client {}", seen_name(seen), client_tls.wants());
+        }
         // **Every arm must have run on the transport it names, `ktls` included, and
         // this is the first thing that judges the run.** It returns before a single
         // sample is taken, so it is necessarily ahead of the `assert_eq!(allocs, 0)`
@@ -1999,6 +2268,14 @@ fn measure<C: Wire>(
 
     let mut samples: Vec<u64> = Vec::with_capacity(n);
     let mut late = 0usize;
+    // ADR-0072 decision 1: sampled on the main thread, right before the window
+    // is armed — the engine thread's tid was written long before this point,
+    // since the `TLS_SEEN` wait above already synchronised with it having run
+    // past `print_engine_tid()`. `Peer::Remote` has no local engine thread.
+    let ctxt_before = match peer {
+        Peer::InProcess { .. } => engine_ctxt_switches(ENGINE_TID.load(Ordering::Relaxed)),
+        Peer::Remote => None,
+    };
     // Armed after `samples` has its capacity, so the one allocation this loop
     // would otherwise be blamed for is outside the window rather than excused
     // inside it.
@@ -2055,6 +2332,43 @@ fn measure<C: Wire>(
     // is exactly where a blocking call would hide.
     if hold_ms > 0 {
         hold(Duration::from_millis(hold_ms));
+    }
+
+    // ADR-0072 decision 1: sampled on the main thread — no syscall added to the
+    // engine thread it is watching — and **after `hold()` returns**, not before
+    // it. The idle hold is the one window in which a `standard` engine is
+    // certain to block in `poll`; sampling before it left that window outside
+    // the sampled interval, and the reversal half of
+    // `scripts/check-no-kernel-sleep-by-ctxt.sh` read `voluntary 0` on 2 of 7
+    // runs. An `hft` engine spins through the hold, so widening the interval
+    // leaves its count at 0.
+    let ctxt_after = match peer {
+        Peer::InProcess { .. } => engine_ctxt_switches(ENGINE_TID.load(Ordering::Relaxed)),
+        Peer::Remote => None,
+    };
+    if let (Some((v0, i0)), Some((v1, i1))) = (ctxt_before, ctxt_after) {
+        let voluntary = v1.saturating_sub(v0);
+        let involuntary = i1.saturating_sub(i0);
+        println!("engine-ctxt voluntary {voluntary} involuntary {involuntary}");
+        // `hft` half of non-negotiable 4 (CLAUDE.md §2 rule 4, ADR-0072 decision
+        // 1): the engine thread must never leave user space to wait. Opt-in
+        // (`--assert-no-voluntary-switches`), never implied by a mode: a
+        // `PTRACE_CONT` off a ptrace-stop is itself a voluntary switch on the
+        // tracee, so an `hft` run under `strace`
+        // (`scripts/check-no-kernel-sleep.sh`) would otherwise fail this on
+        // switches that are the tracer, not a kernel sleep. The flag asserts in
+        // **whatever mode it is given**, which is what makes the assertion
+        // reversible: `scripts/check-no-kernel-sleep-by-ctxt.sh` runs
+        // `--mode standard --assert-no-voluntary-switches` and requires it to
+        // go red. Without the flag every mode only prints the line.
+        if let Some(asserted) = assert_no_voluntary {
+            assert_eq!(
+                voluntary,
+                0,
+                "{}: engine thread made {voluntary} voluntary context switches, expected 0",
+                asserted.name()
+            );
+        }
     }
 
     match peer {
@@ -3656,7 +3970,15 @@ mod wire {
         /// Print the wire section. `Err` when the tap cannot be trusted to line
         /// up with the run — which on a plain arm means the tap is broken, and
         /// must fail the run rather than print counts about something else.
-        pub fn report(&self, window: Window) -> io::Result<()> {
+        pub fn report(&self, window: Window, dump: Option<&str>) -> io::Result<()> {
+            // Read here, before `window` is moved into the match below that
+            // turns it into `range` — ADR-0071 decision 3's dump header names
+            // the same `--warmup` the run itself used, for
+            // `scripts/w2w-baseline.sh` to compare against the generator's.
+            let warmup_for_dump = match &window {
+                Window::Combined { warmup, .. } => *warmup,
+                Window::Listen { skip } => *skip,
+            };
             println!(
                 "     wire   NIC in -> NIC out at the acceptor, {} hardware stamps",
                 self.nic
@@ -3731,6 +4053,17 @@ mod wire {
             };
             let mut sent = self.sent.clone();
             sent.sort_unstable_by_key(|s| s.key);
+            // ADR-0071 decision 3: written from `reqs`/`sent` exactly as
+            // `pair::pair` below reads them — same window, same sorted
+            // `sent` — and before it, so a later `return` from `pair::pair`
+            // (there is none today) could never leave a half-written dump.
+            // `pair.rs` is outside this step's touched files, so the loop
+            // that finds each request's reply is written a second time in
+            // `dump_listen_rows` rather than shared with `pair::pair`'s.
+            if let Some(path) = dump {
+                let rows = dump_listen_rows(&reqs, range.clone(), &sent);
+                write_listen_dump(path, warmup_for_dump, &rows)?;
+            }
             let mut wire = Vec::with_capacity(range.len());
             let t = pair::pair(&reqs, range, &sent, &mut wire);
             println!(
@@ -3810,6 +4143,69 @@ mod wire {
         }
     }
 
+    /// `--listen --wire-timestamps --dump <path>` (ADR-0071 decision 3). One
+    /// row per request in `window`: `Some(ns)` when both a hardware RX and a
+    /// hardware TX stamp were found (the wire-in -> wire-out figure), `None`
+    /// otherwise. Mirrors [`pair::pair`]'s own matching loop rather than
+    /// sharing it — `tools/w2w/src/pair.rs` is outside the files this step
+    /// touches — so `sent` must already be sorted by key, exactly as
+    /// [`pair::pair`] requires, and the two must be called with the same
+    /// `reqs`/`window`/`sent` to describe the same run.
+    fn dump_listen_rows(
+        reqs: &[pair::Request],
+        window: std::ops::Range<usize>,
+        sent: &[Sent],
+    ) -> Vec<(usize, Option<u64>)> {
+        let start = window.start;
+        let mut out = Vec::with_capacity(window.len());
+        let mut j = 0usize;
+        for k in window {
+            let Some(r) = reqs.get(k) else { break };
+            let hi = reqs.get(k + 1).map(|n| n.acked);
+            while sent.get(j).is_some_and(|s| s.key < r.acked) {
+                j += 1;
+            }
+            let reply = match hi {
+                Some(hi) => sent[j..].iter().take_while(|s| s.key < hi).last(),
+                None => sent.get(j),
+            };
+            let rx = pair::hw(&r.ts);
+            let tx = reply.and_then(|s| pair::hw(&s.ts));
+            let ns = match (rx, tx) {
+                (Some(a), Some(b)) => b.checked_sub(a),
+                _ => None,
+            };
+            out.push((k - start, ns));
+        }
+        out
+    }
+
+    /// Writes what [`dump_listen_rows`] found: one line per request,
+    /// `index stamped <ns>` or `index missing -`. `index` is 0-based within
+    /// the window (rank of the request's TCP byte offset after `--warmup`),
+    /// the same convention `write_connect_dump` uses on the generator's side,
+    /// so `scripts/w2w-baseline.sh` can join the two files on it directly.
+    fn write_listen_dump(
+        path: &str,
+        warmup: usize,
+        rows: &[(usize, Option<u64>)],
+    ) -> io::Result<()> {
+        use io::Write as _;
+        let mut f = io::BufWriter::new(std::fs::File::create(path)?);
+        writeln!(
+            f,
+            "# w2w dump listen warmup {warmup} requests {}",
+            rows.len()
+        )?;
+        for (index, ns) in rows {
+            match ns {
+                Some(ns) => writeln!(f, "{index} stamped {ns}")?,
+                None => writeln!(f, "{index} missing -")?,
+            }
+        }
+        f.flush()
+    }
+
     /// The handoff's state machine, without a socket: the engine side is
     /// `offer` + `answer`, the observer side `claim` + `Claim::resolve`, which
     /// is all `attach` and `observe` do with it. `stamp`'s SAFETY note names
@@ -3818,6 +4214,55 @@ mod wire {
     #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     mod tests {
         use super::{Answer, Handoff};
+
+        /// ADR-0071 decision 3: one row per request in the window, stamped
+        /// rows carrying `tx - rx`, missing rows carrying none — and the file
+        /// [`write_listen_dump`] writes from it has exactly that many data
+        /// lines after its header.
+        #[test]
+        fn listen_dump_rows_match_pair_pair_and_the_file_has_n_lines() {
+            use super::super::pair::{Request, Sent};
+            use super::{dump_listen_rows, write_listen_dump};
+
+            // Three requests in the window: the first stamped both ways, the
+            // second missing its TX stamp (no error-queue entry in range),
+            // the third missing its RX stamp (`ts[2] == 0`).
+            let reqs = vec![
+                Request {
+                    ts: [0, 0, 1_000],
+                    acked: 0,
+                },
+                Request {
+                    ts: [0, 0, 2_000],
+                    acked: 50,
+                },
+                Request {
+                    ts: [0, 0, 0],
+                    acked: 110,
+                },
+            ];
+            let sent = vec![Sent {
+                ts: [0, 0, 1_100],
+                key: 49,
+            }];
+            let rows = dump_listen_rows(&reqs, 0..reqs.len(), &sent);
+            assert_eq!(rows, vec![(0, Some(100)), (1, None), (2, None)]);
+
+            let path = std::env::temp_dir()
+                .join(format!("w2w-listen-dump-test-{}.txt", std::process::id()));
+            let path_str = path.to_str().expect("utf-8 tmp path").to_string();
+            write_listen_dump(&path_str, 2000, &rows).expect("dump written");
+            let text = std::fs::read_to_string(&path).expect("dump read back");
+            let mut lines = text.lines();
+            assert_eq!(
+                lines.next(),
+                Some("# w2w dump listen warmup 2000 requests 3")
+            );
+            let data: Vec<&str> = lines.collect();
+            assert_eq!(data.len(), 3, "one line per request, none dropped or added");
+            assert_eq!(data, vec!["0 stamped 100", "1 missing -", "2 missing -"]);
+            let _ = std::fs::remove_file(&path);
+        }
 
         #[test]
         fn an_unclaimed_offer_times_out_and_can_no_longer_be_claimed() {
@@ -4029,7 +4474,7 @@ mod wire {
 
     pub enum Observed {}
     impl Observed {
-        pub fn report(&self, _: Window) -> io::Result<()> {
+        pub fn report(&self, _: Window, _: Option<&str>) -> io::Result<()> {
             match *self {}
         }
     }
@@ -4304,6 +4749,38 @@ mod tests {
     }
 
     #[test]
+    fn dump_of_reads_the_flag_and_refuses_a_missing_value() {
+        assert_eq!(dump_of(&argv("")), Ok(None));
+        assert_eq!(
+            dump_of(&argv("--dump /tmp/w2w-dump-test.txt")),
+            Ok(Some("/tmp/w2w-dump-test.txt".to_string()))
+        );
+        assert!(dump_of(&argv("--dump")).is_err());
+    }
+
+    /// ADR-0071 decision 3: the dump has exactly `n` lines after the header,
+    /// and the header names the `--warmup` the run used, so
+    /// `scripts/w2w-baseline.sh` can refuse a join against a mismatched one.
+    #[test]
+    fn connect_dump_has_the_right_line_count_and_warmup_header() {
+        let path =
+            std::env::temp_dir().join(format!("w2w-connect-dump-test-{}.txt", std::process::id()));
+        let path_str = path.to_str().expect("utf-8 tmp path").to_string();
+        let samples: Vec<u64> = (0..5).map(|i| 1000 + i * 7).collect();
+        write_connect_dump(&path_str, 2000, &samples).expect("dump written");
+        let text = std::fs::read_to_string(&path).expect("dump read back");
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("# w2w dump connect warmup 2000 requests 5")
+        );
+        let rows: Vec<&str> = lines.collect();
+        assert_eq!(rows.len(), 5, "one line per sample, none dropped or added");
+        assert_eq!(rows, vec!["0 1000", "1 1007", "2 1014", "3 1021", "4 1028"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn no_new_flag_is_the_combined_run() {
         for a in [
             "",
@@ -4347,10 +4824,16 @@ mod tests {
     }
 
     #[test]
-    fn listener_every_defaults_to_one() {
+    fn listener_every_defaults_to_the_library_default() {
+        // The instrument must measure what ships: an absent `--listener-every`
+        // reads `Limits::listener_every()`, not a value of its own, so this
+        // asserts against the library rather than against a literal that
+        // could silently drift away from `DEFAULT_LISTENER_EVERY` again.
+        let library_default = fixbolt_engine::presession::Limits::new(1, 1)
+            .map_or(std::num::NonZeroU32::MIN, |limits| limits.listener_every());
         assert_eq!(
-            listener_every_of(&argv("--listen 127.0.0.1:0")).map(std::num::NonZeroU32::get),
-            Ok(1)
+            listener_every_of(&argv("--listen 127.0.0.1:0")),
+            Ok(library_default)
         );
     }
 
@@ -4437,6 +4920,64 @@ mod tests {
                 );
             }
             assert!(half_of(&argv(&format!("{half} 127.0.0.1:1 --tls off"))).is_ok());
+        }
+    }
+
+    /// C-84: `--client-tls` absent is `tls`, so every call this project made
+    /// before the flag existed resolves the same way.
+    #[test]
+    fn client_tls_defaults_to_tls() {
+        for tls in [Tls::Off, Tls::Ktls, Tls::Userspace] {
+            assert_eq!(client_tls_of(&argv(""), tls), Ok(tls));
+        }
+    }
+
+    /// The two mixed arms C-84 asks for: kernel one end, userspace the other,
+    /// each accepted.
+    #[test]
+    fn client_tls_may_differ_from_tls_in_kind() {
+        assert_eq!(
+            client_tls_of(&argv("--tls ktls --client-tls userspace"), Tls::Ktls),
+            Ok(Tls::Userspace)
+        );
+        assert_eq!(
+            client_tls_of(&argv("--tls userspace --client-tls ktls"), Tls::Userspace),
+            Ok(Tls::Ktls)
+        );
+    }
+
+    /// TLS on one end only cannot handshake — refused both directions.
+    #[test]
+    fn client_tls_off_on_one_end_only_is_refused() {
+        let e = client_tls_of(&argv("--tls off --client-tls ktls"), Tls::Off).unwrap_err();
+        assert!(
+            e.starts_with("--tls off and --client-tls ktls: TLS on one end only"),
+            "{e}"
+        );
+        let e = client_tls_of(&argv("--tls ktls --client-tls off"), Tls::Ktls).unwrap_err();
+        assert!(
+            e.starts_with("--tls ktls and --client-tls off: TLS on one end only"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn client_tls_unknown_value_is_refused() {
+        let e = client_tls_of(&argv("--client-tls quic"), Tls::Off).unwrap_err();
+        assert!(e.starts_with("unknown --client-tls quic"), "{e}");
+    }
+
+    /// `--client-tls` is refused on a split run — a `--listen`/`--connect`
+    /// process already picks one transport per process with `--tls` alone.
+    #[test]
+    fn client_tls_is_refused_on_a_split_run() {
+        for half in ["--listen", "--connect"] {
+            let e =
+                half_of(&argv(&format!("{half} 127.0.0.1:1 --client-tls userspace"))).unwrap_err();
+            assert!(
+                e.starts_with(&format!("--client-tls does not apply to {half}")),
+                "{e}"
+            );
         }
     }
 

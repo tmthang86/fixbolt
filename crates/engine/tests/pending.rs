@@ -116,9 +116,14 @@ fn limits_refuse_listener_every_zero() {
     assert_eq!(
         base.with_listener_every(1)
             .map(|l| l.listener_every().get()),
-        Ok(1)
+        Ok(1),
+        "naming the cadence 1 still means poll every turn"
     );
-    assert_eq!(base.listener_every().get(), 1, "1 is the default cadence");
+    assert_eq!(
+        base.listener_every().get(),
+        16,
+        "16 is the default cadence, measured at boot C (ADR-0069)"
+    );
 }
 
 #[test]

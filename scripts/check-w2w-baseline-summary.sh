@@ -76,6 +76,81 @@ same "" "$(extra_flag_refusal --journal)$(extra_flag_refusal file-async)$(extra_
   "the two-word form is not refused"
 
 echo
+echo "=== missing_stamp_verdict"
+
+# ADR-0071 decision 1: a run with skipped TX stamps within 0.1% of the timed
+# requests is a valid run with a smaller sample, not a FAIL.
+same "" "$(missing_stamp_verdict 0 19 20000)" \
+  "19 of 20000 tx-missing is within 0.1%, no RX missing: PASS (nothing printed)"
+same "hw-tx-missing 21 of 20000 exceeds 0.1%" "$(missing_stamp_verdict 0 21 20000)" \
+  "21 of 20000 tx-missing exceeds 0.1%: FAIL"
+same "hw-rx-missing 1 of 20000 — any missing RX stamp is a failed run (ADR-0071 decision 1)" \
+  "$(missing_stamp_verdict 1 0 20000)" \
+  "any missing RX stamp fails outright, even with tx-missing 0"
+
+echo
+echo "=== join_dump_verdict"
+
+# ADR-0071 decision 3: did dropping the requests the acceptor did not stamp
+# skew the generator's own distribution? Fixture: 20000 requests, 19979
+# "fast" (1000 ns) and 21 "slow" (50000..50020 ns, strictly increasing so
+# "the 20 slowest" is unambiguous) — chosen so p50 and p99 sit deep in the
+# fast bulk either way and only p99.9 reaches the slow tail, which is
+# exactly the row a handful of missing samples can move.
+JOIN_TMP=$(mktemp -d)
+BULK=19979
+SLOW=21
+TOTAL=$((BULK + SLOW))
+awk -v bulk="$BULK" -v slow="$SLOW" -v total="$TOTAL" 'BEGIN {
+  print "# w2w dump connect warmup 2000 requests " total
+  for (i = 0; i < bulk; i++) print i, 1000
+  for (i = 0; i < slow; i++) print bulk + i, 50000 + i
+}' >"$JOIN_TMP/connect.txt"
+
+# Case 1: drop 5 requests scattered through the fast bulk — an unbiased
+# drop of 0.025% of the run.
+awk -v bulk="$BULK" -v total="$TOTAL" 'BEGIN {
+  print "# w2w dump listen warmup 2000 requests " total
+  split("10 2000 8000 15000 19000", miss, " ")
+  for (m in miss) drop[miss[m]] = 1
+  for (i = 0; i < total; i++) {
+    if (i in drop) print i, "missing", "-"
+    else if (i < bulk) print i, "stamped", 1000
+    else print i, "stamped", 50000 + (i - bulk)
+  }
+}' >"$JOIN_TMP/listen-drop5.txt"
+same "" "$(join_dump_verdict "$JOIN_TMP/connect.txt" "$JOIN_TMP/listen-drop5.txt")" \
+  "dropping 5 of 20000 scattered rows does not move the generator's distribution: PASS"
+
+# Case 2: drop the 20 slowest of the 21 slow rows, keeping the fastest of
+# the slow tail stamped. p99.9(all) lands in the tail (BULK is one short of
+# the p99.9 rank by construction); p99.9(stamped) falls back into the fast
+# bulk once 20 of the 21 tail rows are gone — moved by ~98%, well past the
+# 5% band.
+awk -v bulk="$BULK" -v total="$TOTAL" 'BEGIN {
+  print "# w2w dump listen warmup 2000 requests " total
+  for (i = 0; i < total; i++) {
+    if (i < bulk) print i, "stamped", 1000
+    else if (i - bulk >= 1) print i, "missing", "-"
+    else print i, "stamped", 50000 + (i - bulk)
+  }
+}' >"$JOIN_TMP/listen-drop20slowest.txt"
+same "marked (ADR-0068 decision 3): dropping 20 of 20000 rows (the ones the acceptor did not stamp) moved the generator distribution — p99.9 98.0000% > 5% (all: p50 1000 p99 1000 p99.9 50000; stamped: p50 1000 p99 1000 p99.9 1000)" \
+  "$(join_dump_verdict "$JOIN_TMP/connect.txt" "$JOIN_TMP/listen-drop20slowest.txt")" \
+  "dropping the 20 slowest of 21 tail rows moves p99.9 by 98%: FAIL"
+
+# Case 3: the two dumps were taken with a different --warmup — refused
+# before any row is read, since the request index then counts from a
+# different point in each half.
+printf '# w2w dump connect warmup 2000 requests 1\n0 1234\n' >"$JOIN_TMP/connect-mismatch.txt"
+printf '# w2w dump listen warmup 1999 requests 1\n0 stamped 1234\n' >"$JOIN_TMP/listen-mismatch.txt"
+same "join refused: connect --warmup 2000 and listen --warmup 1999 disagree — the two dumps do not count the same index" \
+  "$(join_dump_verdict "$JOIN_TMP/connect-mismatch.txt" "$JOIN_TMP/listen-mismatch.txt")" \
+  "a --warmup mismatch between the two dumps is refused, not silently joined"
+
+rm -rf "$JOIN_TMP"
+
+echo
 echo "=== summary"
 echo "pass $pass   fail $fail"
 [[ "$fail" -eq 0 ]]

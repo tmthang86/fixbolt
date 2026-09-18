@@ -176,7 +176,11 @@ before and after: they must stay 0.
    `gdb`) by an unprivileged user does not get these capabilities** and refuses to run: the gate
    scripts' `W2W_EXTRA` arms therefore run on `lo` inside `unshare -Urn`, and to trace the engine
    thread **on the real NIC**, which a namespace cannot see, run
-   `sudo -n strace -f -u "$USER" -o <file> target/release/w2w …` at the desk. Before and after each
+   `sudo -n strace -f -u "$USER" -o <file> target/release/w2w …` at the desk.
+   `scripts/check-no-kernel-sleep-by-ctxt.sh` ([ADR-0072](decisions/ADR-0072-a-tracer-free-check-that-the-hft-engine-thread-never-sleeps.md))
+   needs no tracer and no capability — it reads `/proc/self/task/<tid>/status` from the main
+   thread, so it runs on the real NIC directly, without `sudo` and without the namespace
+   workaround `strace` needs. Before and after each
    run read `ethtool -S <nic> | grep tx_hwtstamp_skipped` and write it beside `hw-tx-missing`:
    `igb` keeps one TX stamp pending and counts each one it skips there; the two must agree or be
    explained. Publish a wire figure only from a run whose `hw-rx-missing` and `hw-tx-missing`

@@ -54,8 +54,8 @@ core, and §9 no longer asks for `nohz_full`:
 | A venue or broker running a FIX gateway | Many sessions per core, the `density` shape. Supported, with its own budget of `N × 449 ns` per polling thread where `N` is sessions **per shard** ([GUIDE.md §1a](GUIDE.md)). `fixbolt_engine::shard` gives M pinned threads of N sessions each, and each socket is routed to its shard by the identity in its Logon, so the single-logon rule holds across shards | Phase 1 |
 | A firm connecting out to venues | An initiator with reconnect, schedules and sequence persistence | Phase 1 ([ADR-0004](decisions/ADR-0004-bidirectional-engine.md)) |
 | A team building a simulator or a QA exchange | Both roles, plus a dispatch mode that survives an application that blocks | Phase 1 ([ADR-0002](decisions/ADR-0002-engine-library-split.md)) |
-| A market-data consumer | Binary encodings: SBE today, FAST for legacy feeds | Phase 2 |
-| A post-trade or clearing integration | FIXML | Phase 2, outside the hot-path guarantee |
+| A market-data consumer | Binary encodings: SBE in phase 2; FAST is out of scope for phase 2 ([ADR-0078](decisions/ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md) decision 4) | Phase 2 for SBE |
+| A post-trade or clearing integration | FIXML, out of scope for phase 2 (ADR-0078 decision 4) | Not scoped |
 
 **Every latency figure names its session count.** A figure without `N` is not a figure. Every
 number published before 2026-08-30 was taken at N = 1 in benchmarks holding no socket, which
@@ -93,13 +93,20 @@ below is built and merged.
 
 ### Phase 2: the encoding axis and the version axis
 
+Scope decided by [ADR-0078](decisions/ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md)
+decision 4: **encoding only, no session** — the `Encoding` trait, SBE, and the FIX 5.0 /
+FIXT 1.1 dictionaries the `ApplVerID` work drags in, plus `docs/internals`. Not FIXP, not
+FAST, not FIXML.
+
 | Item | Note |
 |---|---|
-| `Encoding` trait | the architectural gate for everything below |
-| SBE | the encoding modern venues actually use |
+| `Encoding` trait | the architectural gate for everything below ([ADR-0079](decisions/ADR-0079-one-view-per-encoding-and-one-trait-over-them.md)) |
+| SBE | the encoding modern venues actually use; no session of its own |
 | FIX 5.0 / FIXT 1.1 | SBE needs `ApplVerID`, so the two arrive together |
-| FAST | legacy market-data feeds; stateful decode |
-| FIXML | post-trade; outside the hot-path guarantee |
+
+FIXP is deferred to its own phase 3 plan and its own ADR, opened only when there is a target
+venue and an oracle for it ([ADR-0078](decisions/ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md)
+decision 2). FAST and FIXML are out of scope for phase 2.
 
 ### Phase 3: not scoped
 
@@ -263,13 +270,13 @@ Out unless a new ADR reverses them:
 
 | # | Question | Status |
 |---|---|---|
-| 1 | Does the headline positioning stay "the fastest acceptor on kernel TCP" now that the engine is bidirectional? | **Open.** Blocks `DESIGN.md` §1 and `README.md` |
+| 1 | Does the headline positioning stay "the fastest acceptor on kernel TCP" now that the engine is bidirectional? | **Answered by [ADR-0077](decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)**: acceptor-first stays, but "the fastest" is retired from every headline in favour of *a FIX 4.4 acceptor on kernel TCP whose latency is a published, reproduced number*; a superlative may appear only beside the pair that supports it |
 | 2 | Which plan owns repeating groups? | **Answered:** [their own plan](plans/2026-08-27-repeating-groups.md), after `codec` step 1 |
-| 3 | Does SBE ride a tag=value session, or does FIXP enter scope? | **Open.** Decides the size of phase 2 by roughly 5× |
-| 4 | One view type or several, once encodings stop having tags on the wire? | **Open.** Blocks every phase-2 line, and possibly `codec`'s public API today |
+| 3 | Does SBE ride a tag=value session, or does FIXP enter scope? | **Answered by [ADR-0078](decisions/ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md)**: SBE enters phase 2 as an encoding with no session of its own; FIXP is its own phase, its own plan and its own ADR |
+| 4 | One view type or several, once encodings stop having tags on the wire? | **Answered by [ADR-0079](decisions/ADR-0079-one-view-per-encoding-and-one-trait-over-them.md)**: several view types, one per encoding, held under one `Encoding` trait; `MessageView` and `codec`'s public API today are unchanged |
 | 5 | TLS: own implementation, `rustls`, or terminate outside the process? | **Answered** by [ADR-0005](decisions/ADR-0005-tls.md), which raised six questions of its own. The blocking one (can kTLS be driven from a non-blocking socket with no async runtime?) was answered yes on 2026-08-31 by [ADR-0018](decisions/ADR-0018-ktls-on-a-plain-socket-answers-adr-0005.md). ~~Five remain; question 2 (which kernel and which cipher suites are the floor) decides how deployable TLS is~~ `[2026-09-14]` two remain open: 4 (mutual TLS in phase 1) and 5 (SNI and several certificates). Question 3 was answered as of step 4b (2026-09-12), 6 at phase-1 level on 2026-09-13, and 2 only at the level measured on 2026-09-14 — one suite on one kernel, no floor ([DESIGN.md](DESIGN.md) §9) |
 | 6 | Final name | **Decided 2026-08-30: `fixbolt`** |
-| 7 | Can the engine configure itself from the machine (mode, cores, bypass) instead of making the caller do it? | **Proposed answer:** it detects and advises, never applies, and `hft` has a hard ceiling of four sessions per engine that refuses the fifth. Four because `2000 / 448.9 = 4.46`: the largest N that beats an `epoll`-class wakeup under both ends of the 2–5 µs literature range. [ADR-0025](decisions/ADR-0025-hft-has-a-hard-session-ceiling-and-the-engine-advises-rather-than-applies.md), deliberately still `Proposed` because its number rests on a run nobody has taken. Bypass detection stays in phase 3 |
+| 7 | Can the engine configure itself from the machine (mode, cores, bypass) instead of making the caller do it? | **Proposed answer:** it detects and advises, never applies, and `hft` has a hard ceiling of four sessions per engine that refuses the fifth. Four because `2000 / 448.9 = 4.46`: the largest N that beats an `epoll`-class wakeup under both ends of the 2–5 µs literature range. [ADR-0025](decisions/ADR-0025-hft-has-a-hard-session-ceiling-and-the-engine-advises-rather-than-applies.md) accepted once C-PRD7 records the number; deliberately still `Proposed` because its number rests on a run nobody has taken. Bypass detection stays in phase 3 |
 | 8 | Where does the counterparty registry live? | **Answered 2026-09-01** by [ADR-0026](decisions/ADR-0026-a-counterparty-registry-in-the-pre-session-stage.md): in `presession`, as a trait. All three engines surveyed (QuickFIX, QuickFIX/J, Artio) decide at the Logon through a provider or callback. `lookup` is synchronous, because an accept path that awaits a network call is a denial-of-service surface. Found a real defect: `Identity` was `(49, 56)` only, so `50=` / `57=` could not be served; they are carried now |
 | 9 | How much does this engine owe an auditor? | **Answered 2026-09-01** by [ADR-0027](decisions/ADR-0027-the-engine-owes-a-byte-stream-not-an-archive.md): a faithful copy of both directions at a boundary, off the hot path, and nothing beyond it. Built as the message log (D14) on 2026-09-04 |
 | 10 | Does the application get bytes, or typed values? | **Answered 2026-09-01** by [ADR-0028](decisions/ADR-0028-a-decimal-is-a-copy-value-parsed-on-demand.md): a `Copy` `Decimal { value, scale }` parsed on demand, no `f64`. It overturned this row's original guess that the gap was mislabelled. Not built yet |

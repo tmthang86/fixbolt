@@ -3661,4 +3661,268 @@ rebuild) ended.
   (`Limits::listener_every`, `pump`'s `ListenerCadence`, ADR-0069, Proposed) with default 1, so
   nothing on the hot path changed by shipping it. What N saves at N > 1, and what it costs a
   fresh connect, is unmeasured: boot C runs the A/B, N ∈ {1, 16, 256}, per ADR-0068.
+  **`[measured 2026-09-18]` answered by boot C, next section: −12.7 ‖ −13.0% on the application
+  path at N = 16, +1.9 ‖ +1.7% on the administrative one, both reproduced.**
+
+## Boot C, 2026-09-18: the listener cadence, N ∈ {1, 16, 256}, two procedures
+
+`[measured 2026-09-18]` step 5 of
+[plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md](../plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md),
+the A/B [ADR-0069](../decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)
+decision 4 asked for before any default could move. Raw output:
+`target/w2w-baseline/boot-c-p{1,2}-n{1,16,256}/summary.txt` and the per-run `.txt` files beside
+them; driver `target/boot-c-evidence/c89.sh`; gate logs
+`target/boot-c-evidence/c89-nks-{default,256}-tls.log` (all gitignored — `target/` is where boot
+evidence lives, because `/tmp` is tmpfs on this desk).
+
+### Settings in force for every figure below
+
+- Machine: the §9 desktop, AMD Ryzen 7 3700X, kernel `7.0.0-31-generic`, the boot B line
+  (`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, no `nohz_full`, mitigations
+  on, `fixbolt-machine on`). `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → **`pass 16 fail 0
+  unknown 0`** — one more row than boot B's 15 (the EEE row, added 2026-09-15) — read before every
+  run; runs that failed the busy row are the non-qualifying ones in the counts below.
+- Code: commit **`55a1549`** (branch `plan/the-second-linux-desk-c`, the merge of PR #76), tree
+  clean except untracked docs; `w2w` release with `--features affinity,tls`; the same binary for
+  every arm and both procedures.
+- Loopback, `hft`, engine on `cpu6`, client on `cpu7`, `scripts/w2w-baseline.sh` with
+  `LISTENER_EVERY=N`, **10 runs × 20 000 timed round trips**, 2 000 warmup, `GAP` 8 s.
+- Two procedures per ADR-0068, each running all three N on both paths; **procedure 1 in the
+  order N = 1, 16, 256, procedure 2 in the order 256, 16, 1**, so an order or warm-up effect would
+  appear as a cross-procedure disagreement rather than hide inside both.
+
+### The table
+
+ns, p50 / p99 / p99.9; qualifying runs of 10 in parentheses; reproduced = both medians within 5%
+of the smaller at every published percentile.
+
+| N | path | procedure 1 | procedure 2 | largest diff | reproduced? |
+|---|---|---|---|---|---|
+| 1 | admin | 16 070 / 21 050 / 22 753 (9) | 16 080 / 20 719 / 22 798 (10) | p99 1.6% | yes |
+| 16 | admin | 16 381 / 21 591 / 23 695 (9) | 16 361 / 20 970 / 22 923 (9) | p99.9 3.4% | yes |
+| 256 | admin | 16 376 / 21 410 / 24 060 (10) | 16 361 / 21 531 / 23 866 (9) | p99.9 0.8% | yes |
+| 1 | app | 20 209 / 25 188 / 27 202 (9) | 20 228 / 25 198 / 26 956 (8) | p99.9 0.9% | yes |
+| 16 | app | 17 644 / 22 763 / 26 535 (8) | 17 603 / 22 628 / 26 765 (10) | p99.9 0.9% | yes |
+| 256 | app | 17 608 / 22 603 / 27 242 (10) | 17 633 / 22 773 / 26 285 (10) | p99.9 3.6% | yes |
+
+Six arms, six reproduced — the first boot on this desk where every zero-interval loopback arm
+did (boot B: nine of ten did not, all faster the second time). Nothing was changed to earn
+that; it is recorded, not explained, and it makes item 85's *build slot* candidate neither
+stronger nor weaker (no build preceded either procedure here).
+
+### The differences, same procedure, N against N = 1
+
+| | admin p50 | admin p99 | app p50 | app p99 | app p99.9 |
+|---|---|---|---|---|---|
+| N = 16, procedure 1 | **+1.9%** (+311 ns) | +2.6% | **−12.7%** (−2 565 ns) | −9.6% | −2.5% |
+| N = 16, procedure 2 | **+1.7%** (+281 ns) | +1.2% | **−13.0%** (−2 625 ns) | −10.2% | −0.7% |
+| N = 256, procedure 1 | +1.9% | +1.7% | −12.9% | −10.3% | +0.1% |
+| N = 256, procedure 2 | +1.7% | +3.9% | −12.8% | −9.6% | −2.5% |
+| N = 256 against N = 16 | −0.0 / 0.0% | −0.8 / +2.7% | −0.2 / +0.2% | −0.7 / +0.6% | +2.7 / −1.8% |
+
+- **The application path's 2.6 µs is one `accept4`.** B9 put `Acceptor::accept` at 36.7% of the
+  application path's engine-thread samples; at N = 1 a request that lands while the thread is
+  inside `accept4` — allocating a socket file and an inode and freeing both before `EAGAIN` —
+  waits for it. Thinning the ask 16× removes almost all of that wait, and 256× removes nothing
+  more that this procedure can see (≤ 0.3% at p50).
+- **The administrative path's +0.3 µs is real and unexplained.** It reproduced (+1.9 ‖ +1.7%),
+  it is the same sign at N = 256, and the only difference from the application arm is the
+  message. One candidate, recorded as such: without an `accept4` between polls the engine's
+  `recvfrom` re-takes the socket's user lock more often, so more loopback segments arrive while
+  the socket is owned and take the backlog path (`tcp_v4_rcv` → `sk_add_backlog`, processed at
+  `release_sock`) instead of being processed in the sender's softirq — a few hundred nanoseconds
+  each. The application path would pay the same and hide it inside its 2.6 µs. **Not tested**:
+  `perf stat` on the backlog path, or `busy_read` 0 versus 50, at N = 1 and 16 would decide it.
+  Open, in `STATUS.md` item 89's closing row.
+- **A trap, found by C-49's syscall counts and worth one sentence here**: `tools/w2w`'s
+  `--listener-every` defaulted to **1** in its own argument parser and did not read `Limits`'
+  default, so the moment the library's default moved to 16 (this step), every later `w2w` run
+  without the flag — C-84, C-85, C-49 in this boot — ran at N = 1 while the library shipped 16.
+  The three are labelled N = 1 where they are published; as of the next commit `w2w` takes
+  `Limits`' default. Two copies of a default are two defaults (ADR-0069 *Bad*, the second copy).
+- **Connect and logon did not move with N**: per-run `connect-rtt` 68–85 µs and `logon-rtt`
+  1.07–1.12 ms in every run of every arm. One connect per run, on the client's clock, through
+  the pre-session stage; it bounds what a fresh connection experiences and is not the accept
+  delay (ADR-0069 consequence 2), which no instrument here reads.
+
+### Rule 4, with and without the cadence
+
+`scripts/check-no-kernel-sleep.sh` green in both configurations, `w2w` built with
+`--features affinity,tls`:
+
+| | `accept4` | `recvfrom` | `sendto` | log |
+|---|---|---|---|---|
+| default | 7 901 | 7 900 | 351 | `target/boot-c-evidence/c89-nks-default-tls.log` |
+| `W2W_EXTRA="--listener-every 256"` | 7 970 | 8 320 | 351 | `target/boot-c-evidence/c89-nks-256-tls.log` |
+
+`strace -c` on the engine tid over the whole `hft` half of the script, which includes the idle
+hold after the 300 messages. In the hold `Spin::idle` resets the countdown every iteration, so
+the listener is asked as often as at N = 1 — which is why the two `accept4` totals are within 1%.
+**The `accept4` count inside the loaded window alone is derived** — the gap between `recvfrom`
+and `sendto` grows from 7 549 to 7 969 with the cadence, consistent with 256 polls of the socket
+per ask of the listener — **not observed separately**; the script does not split the trace by
+window. No name from `SLEEPERS` appeared in either run.
+
+### C-PRD7 — the wakeup, measured: `epoll_wait` 4 960 ns, `poll` 4 819 ns at p50
+
+`[measured 2026-09-18]` `crates/engine/benches/wakeup.rs` (step 4.2 of
+[closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md)), `WAKEUP_CORES=6,7`,
+commit `85460c1`'s code, `pass 16 fail 0 unknown 0`; one thread on cpu6 writes one byte and
+records the instant, the other on cpu7 returns from `epoll_wait` (arm 1) or `poll` (arm 2) and
+reads the same clock; 20 000 wakes per run, 20 runs, the median of the 20 per-run p50s:
+
+| wait | p50 (median of 20) | per-run p50 range | max/median | p99 | p99.9 | max |
+|---|---|---|---|---|---|---|
+| `epoll_wait` | **4 960 ns** | 4 949 .. 4 980 | 1.004 | ≈ 7.8–7.9 µs | ≈ 8.9 µs | ≈ 10.3 µs |
+| `poll` | **4 819 ns** | 4 809 .. 4 829 | 1.004 | ≈ 7.8–7.9 µs | ≈ 8.9 µs | ≈ 10.3 µs |
+
+This is the number `DESIGN.md` §8's *Cost of a wakeup* row carried from the literature as
+2–5 µs since it was written, and ADR-0014 open question 1 / ADR-0025 open question 2 asked
+for. It reads the top of the range. `poll` is 141 ns cheaper than `epoll_wait` at p50 here, one
+fd each. Baseline: `benches/baselines.tsv`, `wakeup epoll_wait` 4 960, margin **1.10** (the
+ladder's floor; the measured max/median of 1.004 is far under it), n = 20. ADR-0025 accepts on
+this number and keeps its ceiling of 4 (the arithmetic crossover with a 448.9 ns idle turn is
+N ≈ 11; the busy turn at N > 1 is still unmeasured, so the ceiling is not raised).
+
+### C-85 — the build-slot candidate, tested with one variable, and it is dead
+
+`[measured 2026-09-18]` item 85's only recorded candidate for the 2026-09-14/15 drift was
+*"procedure 1 began minutes after a build slot"*. One variable: **procedure 1 started under two
+minutes after `cargo build --release` finished; procedure 2 after ten minutes of an idle
+machine**; `hft` admin, `off`, listener cadence N = 1 (`w2w`'s own default, see C-89's trap), 10 runs ×
+20 000 each, same commit
+`85460c1`, same binary, `pass 16 fail 0 unknown 0`.
+
+| | procedure 1 (< 2 min after the build) | procedure 2 (10 min idle) | diff |
+|---|---|---|---|
+| p50 | 16 005 | 15 990 | 0.09% |
+| p99 | 21 000 | 20 794 | 0.99% |
+| p99.9 | 22 978 | 22 312 | 2.99% |
+
+Reproduced at every percentile; **the build slot / thermal candidate is refuted** — a build
+immediately before a procedure moved nothing this procedure can see. The header's new
+thermal/frequency line read `thermal iwlwifi_1 65000 cpu6-freq n/a` on this desk: **there is no
+CPU thermal zone and no `cpuinfo_cur_freq`** exposed (the governor is `performance`, boost 0), so
+those two columns cannot help here and say so rather than printing a number from the wrong
+sensor. What moved ten arms by 4.7–6.7% on 2026-09-15 remains unexplained; item 85's guard
+(ADR-0068 pairs, the comparator script) is what stands between it and a published figure.
+
+### C-84 — TLS with one mode per end: where the 9 µs lives
+
+`[measured 2026-09-18]` four arms, `hft` admin, loopback, `tools/w2w --tls <engine> --client-tls
+<client>`, 10 runs × 20 000, two procedures in opposite arm order, commit `85460c1`'s code,
+`pass 16 fail 0 unknown 0`; `w2w` at listener cadence **N = 1** (its `--listener-every`
+default, which did not follow `Limits`' 16 — C-89's trap, below). Every arm reproduced (largest
+difference 2.9%, at p99.9). p50 ns, procedure 1 ‖ procedure 2; *added* is against the same
+procedure's `off` arm at the same cadence, boot C N = 1 (16 070 ‖ 16 080):
+
+| engine | client | p50 | added over `off` | against userspace/userspace |
+|---|---|---|---|---|
+| kTLS | kTLS | 25 503 ‖ 25 473 | +9 433 ‖ +9 393 | +4 679 ‖ +4 754 |
+| userspace | userspace | 20 824 ‖ 20 719 | +4 754 ‖ +4 639 | — |
+| kTLS | userspace | 21 175 ‖ 21 250 | +5 105 ‖ +5 170 | **+351 ‖ +531** (the engine's kTLS) |
+| userspace | kTLS | 22 177 ‖ 22 147 | +6 107 ‖ +6 067 | +1 353 ‖ +1 428 (the client's kTLS) |
+
+- **The engine's kTLS costs the engine 0.35–0.53 µs over its own userspace `rustls`**, with
+  the same client — about 2% of the round trip. That is the whole engine-side price of ADR-0005
+  decision 2.
+- **The client's kTLS costs the client ~1.4 µs** — `w2w`'s client is a plain blocking thread
+  reading one record at a time.
+- **Both kTLS is superadditive.** Additive prediction from the one-sided costs: 20 824 + 351 +
+  1 353 = 22 528 (‖ 22 678); measured 25 503 (‖ 25 473): **+2 975 ‖ +2 795 ns beyond the sum**.
+  Candidate, not isolated: each kernel record layer decrypts in `recvmsg` only once the whole
+  record is queued, so two of them on one loopback pair serialise where two userspace layers
+  overlap their work with the socket.
+- The mixed arms **print** their allocation counts and do not assert them: 4 001 on the client
+  thread in the userspace-client arms, the client's own `rustls`, outside the engine; the
+  symmetric arms keep their assertions (kTLS 0, userspace 4 per round trip on the engine).
+
+The 2026-09-14 both-ends table (*TLS on the wire*, above) is unchanged as the figure it was;
+this section says which end owns how much of it. `ADR-0070` decision 5 records it.
+
+### C-91 — the 3–8% slowdown is code, not the machine
+
+`[measured 2026-09-18]` one A/B, same boot, `pass 16 fail 0 unknown 0`: a worktree `../fb-0905`
+at **`0149b26`** — the commit that recorded the 2026-09-05 baseline lines — against today's tree
+(commit `85460c1`'s code), **20 rounds alternating tree order**, the three suites `serialize`,
+`density`, `validate` each round, medians of 20. Logs `target/boot-c-evidence/c91-runs.txt`,
+`c91-timeline.txt`. ns/op, old → new:
+
+| case | `0149b26` | today | diff |
+|---|---|---|---|
+| engine turn, 1 busy sessions | 1 660.2 | 1 817.2 | **+9.5%** |
+| engine turn, ring 4096 / 512 / 64 | 1 680.8 / 1 675.5 / 1 676.1 | 1 801.0 / 1 787.9 / 1 800.1 | +7.2 / +6.7 / +7.4% |
+| engine turn, 2 / 4 / 8 busy | 3 333.8 / 6 725.0 / 13 519.2 | 3 659.9 / 7 326.6 / 14 788.1 | +9.8 / +8.9 / +9.4% |
+| engine turn, 16 / 32 / 64 busy | 27 447.5 / 56 907.7 / 121 587.5 | 30 026.8 / 61 886.7 / 130 743.0 | +9.4 / +8.7 / +7.5% |
+| validate Heartbeat | 167.9 | 173.4 | +3.3% |
+| validate NewOrderSingle | 909.7 | 956.7 | +5.2% |
+| validate NewOrderSingle, w2w bytes | 927.8 | 968.5 | +4.4% |
+| validate TestRequest, w2w bytes | 216.3 | 229.4 | +6.1% |
+| encode ExecutionReport (template) | 245.8 | 237.4 | **−3.4%** |
+| SendingTime from the cache | 4.9 | 5.8 | +18.4% |
+
+**Verdict: code.** The old commit, built and run in today's boot on today's kernel
+(`7.0.0-31`), reads its own 2026-09-05 numbers (`engine turn, 1 busy` 1 660 against the 1 657.7
+line), so the kernel `-30 → -31` candidate is dead and the slowdown is in commits merged since
+`0149b26`: **~7–10% on every engine-turn case** — larger than boot B's +3.0% reading of the same
+cases suggested — and 3–6% on the validate cases, with `encode ExecutionReport (template)` 3.4%
+*faster*, as boot B also saw. Two facts narrow the bisect (the plan's C-91b): the toolchain is
+pinned at `1.98.0` throughout, and the validate cases are pure user space, so their 3–6% points
+at `588b350` (`52=` read at every precision, 2026-09-09) or its neighbours, while the engine-turn
+cases add a `recvfrom` per turn and point at the TLS branch's changes to `pump` and the transport
+(2026-09-09 → 13). Note that this run's *new* tree carried `ListenerEveryTurns=16` in the library
+— `density.rs` drives `Engine::turn` directly, so the cadence does not enter it — and the cadence
+would make a turn cheaper, not dearer, in any case.
+
+### C-49 — in situ: the kernel does not charge the application path for its payload
+
+`[measured 2026-09-18]` `perf trace -s` over whole `hft` runs, engine thread only, both paths,
+commit `85460c1`'s code, `w2w` at listener cadence N = 1 (its own default — the C-89 trap above),
+`pass 16 fail 0 unknown 0`; logs `target/boot-c-evidence/c49-*.perf` and `.w2w`. **The tracer
+inflates every syscall about 2×** — p50 under trace read 35.2–35.8 µs on *both* paths — so only
+the *difference* between the paths is a reading, never a level.
+
+| engine thread, per run | admin | app |
+|---|---|---|
+| `sendto`, 22 001 calls, total time | 186.608 ms / 186.508 ms (two runs) | 187.663 ms / 183.876 ms |
+| `sendto`, average | 8.48 µs | 8.53 / 8.36 µs |
+| `recvfrom`, average | 2.47 µs | 2.45 µs |
+
+**The application path's `sendto` differs from the administrative one by ≤ 50 ns and in both
+signs; `recvfrom` by 20 ns.** The kernel's own share of the larger payload is ~0 at this
+instrument's resolution, which is what the +24.5 ns slope row of `DESIGN.md` §8 predicted from
+the 8 → 8 192 byte lever. So the ~3 130 ns of the application round trip that lies outside one
+engine turn (D_in 765.5 ns) is **not payload-proportional kernel work**.
+
+Side reading, and the trap it found: `accept4` was called 40.6–45.7 k times per run against
+40.6–45.6 k `recvfrom` — **one `accept4` per spin turn**, although the library's default is 16
+since C-89. `w2w`'s `--listener-every` defaulted to 1 in its own parser and did not read
+`Limits`; every flagless `w2w` run in this boot after C-89 ran at N = 1. Answered, not open; the
+fix is in the next commit.
+
+**Item 49 closes here, by decision.** Three probes have retired the named candidates with
+numbers — the dictionary pass (17.4%, item 39), the payload copy (0.9%, and now in situ ~0),
+`Journal::put` (8.9 ns) — and the client's timed loop is byte-for-byte the same on both paths.
+The remainder is published in §8 as *unattributed, outside the engine turn and not the kernel's
+payload work*. The one instrument that would split it is named and not scheduled: software
+`SO_TIMESTAMPING` (TX/RX software stamps, which loopback supports) on both sockets, giving four
+segments per round trip — client stack out, engine-side dwell socket-in → socket-out, engine
+stack out, client stack in; `w2w --wire-timestamps` already parses the cmsg (`ts[0]`), so it is
+a `--stamp software` arm of some later boot if the number is ever needed.
+
+### What is not proven
+
+- **A mechanism for the administrative path's +0.3 µs.** One candidate above, untested.
+- **Anything on a NIC, in `standard`, or with more than one session.** Loopback, `hft`, N = 1
+  session only. `standard` is outside the cadence by ADR-0069 decision 3.
+- **The accept delay itself at N = 16 under load.** Consequence 2's *N × one iteration* is
+  arithmetic; `connect-rtt` does not measure it.
+- **The in-window `accept4` count**, derived as stated above.
+- **A mechanism for both-kTLS being superadditive** (C-84): one candidate, not isolated.
+- **What moved boot B's ten arms** (C-85 refuted the only candidate; nothing else was varied).
+- **Which commit(s) between `0149b26` and `85460c1` cost the 7–10%** (C-91b, the bisect).
+- **What the ~3 130 ns outside the engine turn is** (item 49, closed by decision; the software
+  stamp probe is named above and not scheduled).
+- **The busy turn at N > 1** (ADR-0025 open question 1), so the `hft` ceiling stays 4 although
+  the measured wakeup puts the arithmetic crossover at N ≈ 11.
 

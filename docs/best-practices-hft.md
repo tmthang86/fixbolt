@@ -185,6 +185,26 @@ desktop, kTLS was slower than userspace `rustls` in both `hft` paths ([DESIGN.md
 question, `STATUS.md` open item 84, and until it is answered the recommendation above stands
 unchanged.
 
+`[2026-09-18]` **`TlsRequireKernel=Y` stays the recommendation, and the price of the alternative
+is now named.** [ADR-0070](decisions/ADR-0070-ktls-stays-the-hft-steady-state-for-the-guarantee-not-for-latency.md)
+decision 1 restates why: kTLS is the `hft` steady state because it is the only path that meets
+non-negotiable 1 and keeps parse-in-place, not because it is faster. Decision 2 prices the
+alternative: on a kernel without TLS offload, kTLS costs ~9 µs a round trip at p50 against
+~1.4–4.7 µs for userspace, both ends included. A deployment that prefers latency to the
+allocation guarantee may run `hft` over userspace `rustls` **only if it accepts four heap
+allocations per round trip on the engine thread** — the number `tools/w2w` counted — and that
+deployment is outside the hot-path guarantee in those words. A NIC with `tls-hw-tx-offload: on`
+would change this measurement; none exists here (ADR-0070 decision 4), so the condition is
+stated, not offered.
+
+`[measured 2026-09-18, boot C]` **And the engine's own share of that ~9 µs is about 0.4 µs.**
+With the same userspace client, the engine over kTLS read **+351 ‖ +531 ns** against the engine
+over userspace `rustls` (`hft` admin, loopback, two procedures, [DESIGN.md](DESIGN.md) §8 *Boot C,
+mixed TLS*; ADR-0070 decision 5). The rest of the 9 µs is the **counterparty's** kTLS (+1.4 µs on
+`w2w`'s blocking client) and a ~3 µs interaction when both ends are kTLS, which is not isolated.
+So the trade this section asks you to make — kTLS for the allocation guarantee — costs this
+engine ~2% of a round trip; what it costs your counterparty is theirs to measure.
+
 **Once the handover is done, the two halves of non-negotiable 4 hold the same way they do
 without TLS.** kTLS keeps `recv`/`send` as ordinary non-blocking syscalls, so §4's busy-poll
 loop never sleeps in the kernel on the hot path, and a `standard` engine under the same kTLS
