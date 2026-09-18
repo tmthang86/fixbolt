@@ -281,7 +281,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Allocations since the counter was armed, on **every** thread — which is the
@@ -291,6 +291,11 @@ static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 /// be one allocation from the surrounding setup, and the assertion is against
 /// zero over 20 000 messages.
 static ARMED: AtomicBool = AtomicBool::new(false);
+/// The engine thread's tid, written once by [`print_engine_tid`] from inside
+/// that thread, read from the main thread by [`engine_ctxt_switches`]
+/// (ADR-0072 decision 1). `0` means "not yet known". `AtomicI32` because a
+/// linux tid is a `pid_t`.
+static ENGINE_TID: AtomicI32 = AtomicI32::new(0);
 
 struct Counting;
 
@@ -1099,6 +1104,16 @@ fn main() -> std::io::Result<()> {
         }
     }
 
+    // Opt-in, not implied by `--mode hft`: an unprivileged tracer (`strace`)
+    // stops the traced thread at every syscall and signal-delivery-stop, and
+    // each `PTRACE_CONT` off a ptrace-stop is itself counted as a voluntary
+    // switch on the tracee — so `scripts/check-no-kernel-sleep.sh` running an
+    // `hft` binary under `strace -f` made this assertion fire on ~1800
+    // switches that were never a kernel sleep, coupling ADR-0072's tracer-free
+    // gate to the tracer it exists to route around. Only
+    // `scripts/check-no-kernel-sleep-by-ctxt.sh` passes this flag.
+    let assert_no_voluntary = present(&args, "--assert-no-voluntary-switches");
+
     // ADR-0013 decision 4: every published figure names its mode. `hft` stays
     // the default here even though `standard` is the engine's, because these
     // numbers exist to describe `hft` and changing the default would silently
@@ -1244,6 +1259,7 @@ fn main() -> std::io::Result<()> {
             log,
             wire.as_ref(),
             listener_every,
+            assert_no_voluntary,
         ),
         // `half_of` has refused `--client-core` here, and `--engine-core`,
         // `--mode` and `--wire-timestamps` for the generator, so neither
@@ -1293,6 +1309,7 @@ fn both_halves(
     log: LogKind,
     wire: Option<&WireArgs>,
     listener_every: std::num::NonZeroU32,
+    assert_no_voluntary: bool,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind("127.0.0.1:0")?;
@@ -1426,7 +1443,14 @@ fn both_halves(
             let sock = TcpStream::connect(&addr)?;
             let connect_rtt_ns = connect_started.elapsed().as_nanos();
             sock.set_nodelay(true)?;
-            measure(sock, &run, peer, connect_started, connect_rtt_ns)
+            measure(
+                sock,
+                &run,
+                peer,
+                connect_started,
+                connect_rtt_ns,
+                assert_no_voluntary && mode == Mode::Hft,
+            )
         }
         #[cfg(all(feature = "tls", target_os = "linux"))]
         Tls::Ktls | Tls::Userspace => {
@@ -1436,7 +1460,14 @@ fn both_halves(
             let connect_started = Instant::now();
             let sock = tls_arm::connect(&addr, p, tls == Tls::Ktls)?;
             let connect_rtt_ns = connect_started.elapsed().as_nanos();
-            measure(sock, &run, peer, connect_started, connect_rtt_ns)
+            measure(
+                sock,
+                &run,
+                peer,
+                connect_started,
+                connect_rtt_ns,
+                assert_no_voluntary && mode == Mode::Hft,
+            )
         }
         #[cfg(not(all(feature = "tls", target_os = "linux")))]
         Tls::Ktls | Tls::Userspace => {
@@ -1743,7 +1774,7 @@ fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::
         mut samples,
         allocs,
         late,
-    } = measure(sock, &run, Peer::Remote, connect_started, connect_rtt_ns).map_err(|e| match e
+    } = measure(sock, &run, Peer::Remote, connect_started, connect_rtt_ns, false).map_err(|e| match e
         .kind()
     {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => std::io::Error::new(
@@ -1794,7 +1825,42 @@ fn print_engine_tid() {
         && let Some(tid) = link.to_string_lossy().rsplit('/').next()
     {
         println!("engine-tid: {tid}");
+        // ADR-0072 decision 1: the main thread reads this back from
+        // `/proc/self/task/<tid>/status`, so it is stored here once, on the
+        // engine thread itself, and never read on this thread again.
+        if let Ok(t) = tid.parse::<i32>() {
+            ENGINE_TID.store(t, Ordering::Relaxed);
+        }
     }
+}
+
+/// `voluntary_ctxt_switches` and `nonvoluntary_ctxt_switches` for one thread,
+/// read from `/proc/self/task/<tid>/status` (proc_pid_status(5)). Called on
+/// the **main** thread only, so the read adds no syscall to the engine thread
+/// it is watching — ADR-0072 decision 1. `None` when the tid is not yet known
+/// (`0`) or the file cannot be read or parsed: a run prints nothing rather
+/// than a wrong number.
+#[cfg(target_os = "linux")]
+fn engine_ctxt_switches(tid: i32) -> Option<(u64, u64)> {
+    if tid <= 0 {
+        return None;
+    }
+    let text = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).ok()?;
+    let mut voluntary = None;
+    let mut involuntary = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("voluntary_ctxt_switches:") {
+            voluntary = rest.trim().parse::<u64>().ok();
+        } else if let Some(rest) = line.strip_prefix("nonvoluntary_ctxt_switches:") {
+            involuntary = rest.trim().parse::<u64>().ok();
+        }
+    }
+    Some((voluntary?, involuntary?))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn engine_ctxt_switches(_tid: i32) -> Option<(u64, u64)> {
+    None
 }
 
 /// The client pins itself, from inside the thread that will run, which is
@@ -1900,12 +1966,19 @@ struct Measured {
 /// share of the new-connection latency (plan
 /// `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
 /// line 210).
+/// `assert_no_voluntary`: `both_halves` passes `true` only for `--mode hft
+/// --assert-no-voluntary-switches` — never implied by `--mode hft` alone, see
+/// the flag's own comment in `main` (opt-in because `strace` counts its own
+/// ptrace-stops as voluntary switches on the tracee, ADR-0072).
+/// `generator_half`'s `Peer::Remote` has no local engine thread, so it always
+/// passes `false` and nothing is asserted there.
 fn measure<C: Wire>(
     mut sock: C,
     run: &Run,
     peer: Peer<'_>,
     connect_started: Instant,
     connect_rtt_ns: u128,
+    assert_no_voluntary: bool,
 ) -> std::io::Result<Measured> {
     let Run {
         path,
@@ -1999,6 +2072,14 @@ fn measure<C: Wire>(
 
     let mut samples: Vec<u64> = Vec::with_capacity(n);
     let mut late = 0usize;
+    // ADR-0072 decision 1: sampled on the main thread, right before the window
+    // is armed — the engine thread's tid was written long before this point,
+    // since the `TLS_SEEN` wait above already synchronised with it having run
+    // past `print_engine_tid()`. `Peer::Remote` has no local engine thread.
+    let ctxt_before = match peer {
+        Peer::InProcess { .. } => engine_ctxt_switches(ENGINE_TID.load(Ordering::Relaxed)),
+        Peer::Remote => None,
+    };
     // Armed after `samples` has its capacity, so the one allocation this loop
     // would otherwise be blamed for is outside the window rather than excused
     // inside it.
@@ -2049,6 +2130,35 @@ fn measure<C: Wire>(
 
     ARMED.store(false, Ordering::Relaxed);
     let allocs = ALLOCS.load(Ordering::Relaxed);
+
+    // ADR-0072 decision 1: sampled right after the window closes, still on the
+    // main thread — no syscall added to the engine thread it is watching.
+    let ctxt_after = match peer {
+        Peer::InProcess { .. } => engine_ctxt_switches(ENGINE_TID.load(Ordering::Relaxed)),
+        Peer::Remote => None,
+    };
+    if let (Some((v0, i0)), Some((v1, i1))) = (ctxt_before, ctxt_after) {
+        let voluntary = v1.saturating_sub(v0);
+        let involuntary = i1.saturating_sub(i0);
+        println!("engine-ctxt voluntary {voluntary} involuntary {involuntary}");
+        // `hft` half of non-negotiable 4 (CLAUDE.md §2 rule 4, ADR-0072 decision
+        // 1): the engine thread must never leave user space to wait. Opt-in
+        // (`--assert-no-voluntary-switches`), not implied by `--mode hft`
+        // alone: a `PTRACE_CONT` off a ptrace-stop is itself a voluntary
+        // switch on the tracee, so an `hft` run under `strace`
+        // (`scripts/check-no-kernel-sleep.sh`) would otherwise fail this on
+        // switches that are the tracer, not a kernel sleep. `standard` and
+        // `yield` print the same line and assert nothing here — the reversal
+        // that proves this gate can go red is
+        // `scripts/check-no-kernel-sleep-by-ctxt.sh` running `--mode standard`.
+        if assert_no_voluntary {
+            assert_eq!(
+                voluntary,
+                0,
+                "hft: engine thread made {voluntary} voluntary context switches, expected 0"
+            );
+        }
+    }
 
     // A window in which the engine is up, connected and idle: this is what a
     // syscall trace has to look at to answer open item 15, because an idle spin

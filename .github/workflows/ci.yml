@@ -466,6 +466,12 @@ jobs:
       - run: cargo build -p fixbolt-w2w --release --features tls
       - run: scripts/check-no-kernel-sleep.sh
 
+      # ADR-0072: the tracer-free second machine check for non-negotiable 4's
+      # `hft` half — no `strace`, no capability, so it is the one that would
+      # still run on a real NIC (STATUS.md open item 86). This runner has none,
+      # but the check itself needs nothing the runner cannot give it.
+      - run: scripts/check-no-kernel-sleep-by-ctxt.sh
+
       # `[2026-09-02]` `--path app` — `NewOrderSingle` -> `ExecutionReport`,
       # the path DESIGN.md §8's table is actually about — is new, and the gate
       # above drives only `--path admin`. So it is run here once, small, for its

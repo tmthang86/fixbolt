@@ -698,8 +698,18 @@ for arm in $ARMS; do
     fi
     g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
     mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
-    printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s%s\n' \
-      "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$iv_note"
+    # ADR-0072 decision 4: every published `hft` figure carries the sentence
+    # "engine thread: 0 voluntary switches in the window" — the two numbers
+    # `tools/w2w` prints on its `engine-ctxt` line (read the same way `allocs`
+    # above is: this is the second reader, never the only one). `--connect`
+    # (the split-run generator half, above) has no local engine thread and
+    # prints no such line, so this stays empty there rather than reading 0.
+    voluntary_ctxt="$(echo "$out" | awk '$1=="engine-ctxt" {print $3}')"
+    involuntary_ctxt="$(echo "$out" | awk '$1=="engine-ctxt" {print $5}')"
+    ctxt_note=""
+    [ -n "$voluntary_ctxt" ] && ctxt_note="  engine-ctxt voluntary $voluntary_ctxt involuntary $involuntary_ctxt"
+    printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s%s%s\n' \
+      "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$iv_note" "$ctxt_note"
     sleep "$GAP"
   done
 
