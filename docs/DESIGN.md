@@ -450,7 +450,7 @@ Mode-scoped, and `standard` is the default
 | | `standard` (default) | `hft` (opt-in, Linux only) |
 |---|---|---|
 | Idle behaviour | blocks on readiness with a timeout, and gives the core back | spins on non-blocking sockets, never enters the kernel |
-| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` one turn at **449 ns per session** on a §9 core; measured here by `benches/wakeup.rs` at boot C |
+| Cost of a wakeup | `epoll`-class: **`[measured 2026-09-18]` 4 960 ns p50 (`epoll_wait`), 4 819 ns (`poll`)**, p99 ≈ 7.9 µs, p99.9 ≈ 8.9 µs — `crates/engine/benches/wakeup.rs`, two isolated §9 cores, 20 runs × 20 000, [ADR-0025](decisions/ADR-0025-hft-has-a-hard-session-ceiling-and-the-engine-advises-rather-than-applies.md) *Measured* (the literature said 2–5 µs; this desk reads the top of it) | `[measured 2026-08-31]` one turn at **449 ns per session** on a §9 core; the arithmetic crossover with the measured wakeup is N ≈ 11, and the `hft` ceiling stays 4 until the busy turn at N > 1 is measured |
 | Pinning | none | `serve_sharded_hft` and `serve_hft_pinned` validate the core and pin from inside; `serve_hft` pins nothing and says so |
 | Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
 | Rule 4 says | it **must** block | it must **not** sleep |
@@ -1357,6 +1357,41 @@ Three readings:
 - **One twenty-run median is one observation.** The userspace administrative p50 and the kTLS p99
   this procedure would have published, run once, depended on which half hour it ran in (² and ³
   above).
+
+### Boot C, mixed TLS: the engine's own kTLS costs ~0.4 µs over userspace; the client's kTLS costs the rest
+
+`[measured 2026-09-18]` same §9 desktop, `pass 16 fail 0 unknown 0`, commit `85460c1`'s code,
+loopback, **`hft` admin**, `ListenerEveryTurns` at its new default 16, 10 runs × 20 000 per arm,
+two procedures in opposite arm order — every arm reproduced (largest difference 2.9%, at
+p99.9). `tools/w2w` now takes a TLS mode per end (`--client-tls`), so the two mixed arms split
+the 9 µs the 2026-09-14 table could not. p50 ns, procedure 1 ‖ procedure 2; *added* is against
+the same procedure's `off` arm (boot C N = 16: 16 381 ‖ 16 361):
+
+| engine | client | p50, proc 1 ‖ 2 | added over `off` |
+|---|---|---|---|
+| kTLS | kTLS | 25 503 ‖ 25 473 | **+9 122 ‖ +9 112** |
+| userspace | userspace | 20 824 ‖ 20 719 | +4 443 ‖ +4 358 |
+| **kTLS** | userspace | 21 175 ‖ 21 250 | +4 794 ‖ +4 889 |
+| userspace | **kTLS** | 22 177 ‖ 22 147 | +5 796 ‖ +5 786 |
+
+Three readings ([ADR-0070](decisions/ADR-0070-ktls-stays-the-hft-steady-state-for-the-guarantee-not-for-latency.md)
+decision 5):
+
+- **The engine's kTLS against the engine's userspace `rustls`, same userspace client: +351 ‖
+  +531 ns** — roughly 0.4 µs, about 2% of the round trip. That is the engine-side price of the
+  mode the design ships, and it is small.
+- **The client's kTLS against the client's userspace, same userspace engine: +1 353 ‖
+  +1 428 ns** — `w2w`'s client is a plain blocking thread, and its kernel record layer costs it
+  three to four times what the engine's costs the engine.
+- **Both-kTLS is superadditive**: the sum of the two one-sided costs on top of userspace/userspace
+  predicts 22 528 ‖ 22 678; measured 25 503 ‖ 25 473 — **~2.8–3.0 µs more than the parts**. Two
+  kernel record layers on one loopback pair interact (a candidate: each end's `recvmsg`
+  decrypts on the calling CPU only when the whole record has arrived, so the two ends serialise
+  where userspace pipelines); not isolated, recorded as a candidate.
+
+**The mixed arms print their allocations and do not assert them** (4 001 on the client thread
+in the userspace-client arms — the client's own `rustls`, not the engine); the symmetric arms
+keep their assertions. The 2026-09-14 table above stands as the both-ends figure it was.
 
 ### Stage by stage (`hft`, N = 1)
 

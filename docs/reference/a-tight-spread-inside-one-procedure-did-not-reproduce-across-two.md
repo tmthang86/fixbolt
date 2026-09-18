@@ -151,6 +151,21 @@ builds, rustdoc, the Mac rebuild) ended; nothing was varied to isolate it. Full 
 verdicts: [measured-costs.md](measured-costs.md), *Boot B, 2026-09-15*, sections B5, B7, B8 and
 "B2, procedure 3".
 
+## Candidate tested, 2026-09-18 — the build slot is not it
+
+`[measured 2026-09-18]` boot C step C-85 of
+[plans/2026-09-18-closing-the-open-items.md](../plans/2026-09-18-closing-the-open-items.md), one
+variable: procedure 1 started **under two minutes after `cargo build --release`**, procedure 2
+after **ten minutes idle**; `hft` admin `off` (`ListenerEveryTurns=16`), 10 runs × 20 000, commit
+`85460c1`, same binary, `check-machine.sh` `pass 16 fail 0 unknown 0`. p50 16 005 ‖ 15 990
+(0.09%), p99 21 000 ‖ 20 794 (0.99%), p99.9 22 978 ‖ 22 312 (2.99%) — **reproduced at every
+percentile**. The one candidate this page had recorded twice is refuted: a build immediately
+before a procedure does not move it. The header line the comparator step added read `thermal
+iwlwifi_1 65000 cpu6-freq n/a` on this desk — no CPU thermal zone and no `cpuinfo_cur_freq` are
+exposed, so temperature and frequency cannot be read here and the header says `n/a` rather than
+a wrong sensor. What moved ten arms on 2026-09-15 stays unexplained, with no candidate left on
+the list; the guard (ADR-0068 pairs, `scripts/compare-w2w-procedures.sh`) is what holds.
+
 ## Related
 
 - [recording-a-baseline-changed-the-baseline.md](recording-a-baseline-changed-the-baseline.md)

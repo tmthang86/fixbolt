@@ -73,11 +73,22 @@ What the search found, 2026-09-18:
    p99.9, decision 2 is superseded by a new ADR that makes userspace the `hft` steady state
    and widens the non-negotiable 1 carve-out to the record layer. Until such a NIC exists here
    this is a stated condition, not a plan.
-5. **One measurement is owed and needs the desk: the engine's own share.** Four arms, `hft`
-   admin, loopback, ADR-0068 pairs: engine kTLS / client userspace, engine userspace / client
-   kTLS, and the two symmetric arms already taken. The two mixed arms split the 9 µs between
-   the two ends. It is bundled into the next §9 boot; it changes the numbers in decision 2's
-   documentation, not the decision.
+5. **The engine's own share is measured, and it is small.** `[measured 2026-09-18, boot C
+   step C-84]` §9 desktop, `pass 16 fail 0 unknown 0`, commit `85460c1`'s code, loopback,
+   `hft` admin, 10 runs × 20 000, two procedures in opposite order, every arm reproduced (max
+   2.9% at p99.9); `off` reference is boot C's `ListenerEveryTurns=16` arm, 16 381 ‖ 16 361 ns.
+   p50 ns, procedure 1 ‖ 2: kTLS/kTLS 25 503 ‖ 25 473 (+9.1 µs); userspace/userspace 20 824 ‖
+   20 719 (+4.4 µs); **engine kTLS + client userspace 21 175 ‖ 21 250 (+4.8 µs)**; engine
+   userspace + client kTLS 22 177 ‖ 22 147 (+5.8 µs). So, with the same userspace client, **the
+   engine's kTLS costs 351 ‖ 531 ns more than its userspace `rustls`** — about 0.4 µs, ~2% of
+   the round trip; the client's kTLS costs the client 1 353 ‖ 1 428 ns; and both-kTLS is
+   **superadditive** by ~2.8–3.0 µs over the sum of the parts (a candidate, not a cause: two
+   kernel record layers that each decrypt only on a complete record, serialising where two
+   userspace layers pipeline). The 9 µs of decision 2's documentation is therefore mostly the
+   *counterparty's* kTLS and the interaction, not this engine's. Decision 2's text stands; its
+   price is restated in `best-practices-hft.md` §9 with the engine's share separated. The mixed
+   arms print their allocations (4 001 on the client thread, the client's `rustls`) and do not
+   assert them; the symmetric arms still do.
 
 ## Consequences
 
@@ -92,16 +103,18 @@ What the search found, 2026-09-18:
 
 **Bad — and accepted**
 
-- **The recommended mode is the slower one on every machine this project owns.** A user who
-  benchmarks `hft` under TLS will find that following the recommendation costs ~5–7 µs a
-  round trip against the alternative. The document says so; it is still an awkward sentence.
+- **The recommended mode is the slower one on every machine this project owns** — by ~0.4 µs
+  of the engine's own doing (decision 5), and by ~5–7 µs a round trip when the counterparty is
+  kTLS too. A user who benchmarks `hft` under TLS against a kTLS peer will see the larger
+  number; the document says which part is this engine's.
 - **"Four allocations per round trip" is one measurement on one build.** The count may change
   with `rustls` versions; the guard is `tools/w2w`'s allocation counter on the TLS arms, which
   only the §9 procedure runs.
 - **Decision 4 names a NIC nobody here has.** The condition can stay unmet indefinitely, and
   during that time the design carries a preference it cannot show a latency benefit for.
-- **The mixed arms (decision 5) measure loopback**, so even the engine's own share will be a
-  software-kTLS figure and says nothing about offload.
+- **The mixed arms (decision 5) measured loopback**, so the engine's 0.4 µs is a software-kTLS
+  figure and says nothing about offload; and the superadditive ~3 µs is a candidate mechanism
+  nobody has isolated.
 
 ## Sources
 

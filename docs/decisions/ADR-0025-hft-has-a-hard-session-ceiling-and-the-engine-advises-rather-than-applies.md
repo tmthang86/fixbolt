@@ -1,11 +1,10 @@
 # ADR-0025 — `hft` has a hard session ceiling, and the engine advises rather than applies
 
-> **Status:** **Proposed — 2026-09-01.**
->
-> **Deliberately not self-accepted under the standing delegation.** The owner is forming this
-> decision in conversation now, and decision 1's number can still move — the busy-path
-> measurement it rests on has not been taken. Accepting it today would be accepting a number
-> before the run that settles it, which is what `CLAUDE.md` §10 exists to stop.
+> **Status:** **Accepted — 2026-09-18**, by the measurement decision 1 waited for: boot C step
+> C-PRD7 of [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md),
+> `crates/engine/benches/wakeup.rs` on the §9 desktop — **`epoll_wait` wake p50 4 960 ns, `poll`
+> 4 819 ns** (*Measured*, below), inside the 2–5 µs the ceiling was computed from. **Decision 1's
+> number stays 4.** Proposed 2026-09-01 and deliberately not self-accepted until this run existed.
 
 - **Date**: 2026-09-01
 - **Deciders**: Tran Manh Thang
@@ -77,6 +76,20 @@ stops startup, it never runs degraded.
 **The ceiling is provisional and the constant says so.** It is lowered, never raised, without
 the busy-path measurement described in the context.
 
+`[measured 2026-09-18, boot C]` **The wakeup half of the crossover is measured, and 4 stands.**
+`crates/engine/benches/wakeup.rs`, `WAKEUP_CORES=6,7` (isolated §9 cores, one thread writes a
+byte, the other returns from the wait; one clock, one direction), 20 000 wakes per run, 20 runs,
+`FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 16 fail 0 unknown 0`, commit `85460c1`'s
+code: **`epoll_wait` p50 4 960 ns** (median of 20; runs 4 949 .. 4 980, max/median 1.004),
+**`poll` 4 819 ns** (4 809 .. 4 829); p99 ≈ 7.8–7.9 µs, p99.9 ≈ 8.9 µs, max ≈ 10.3 µs on both.
+That is the top of the 2–5 µs literature range the context assumed. Against the idle turn of
+448.9 ns the arithmetic crossover is `4 960 / 448.9 ≈ 11`, so **the ceiling of 4 is
+conservative by about 2.5×** — and it stays 4, because the other half of the crossover, the
+*busy* turn at N > 1 (open question 1), is still unmeasured and `benches/density.rs` shows the
+per-message cost ramping with N (+13.9% at N = 64). Raising the ceiling needs that number; this
+run only removes the reason to lower it. Baseline line: `benches/baselines.tsv`, `wakeup epoll_wait`
+4 960, margin 1.10 (the ladder's floor; measured max/median 1.004), n = 20, 2026-09-18.
+
 **2. The engine detects and advises. It never applies.** `Machine::probe()` reads what
 `check-machine.sh` reads — the §9 rows, the topology, whether this is a guest — and returns a
 **printable value**. `advice.suggest(sessions)` returns a `ShardPlan`, a mode and a
@@ -144,7 +157,8 @@ on NUMA's behalf.
    `idle sessions`; `benches/dispatch.rs` measures the hop at N = 1 and `benches/alloc.rs`
    counts allocations rather than time. **Nothing measures the time of a busy turn at N > 1**,
    and it is what decides whether the ceiling stays at four.
-2. **What does a `standard` wakeup cost on the §9 machine?** ADR-0014 open question 1, still
+2. ~~**What does a `standard` wakeup cost on the §9 machine?**~~ **Answered 2026-09-18**: 4 960 ns
+   (`epoll_wait`) / 4 819 ns (`poll`) at p50 between two isolated cores, above. ADR-0014 open question 1, ~~still
    open. It is the borrowed half of the 4.46.
 3. **Is the ceiling per engine or per process?** Stated per engine here, because an engine is a
    shard and the sweep is per shard. A process running 25 shards holds 100 sessions and every

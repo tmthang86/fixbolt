@@ -3757,6 +3757,81 @@ and `sendto` grows from 7 549 to 7 969 with the cadence, consistent with 256 pol
 per ask of the listener — **not observed separately**; the script does not split the trace by
 window. No name from `SLEEPERS` appeared in either run.
 
+### C-PRD7 — the wakeup, measured: `epoll_wait` 4 960 ns, `poll` 4 819 ns at p50
+
+`[measured 2026-09-18]` `crates/engine/benches/wakeup.rs` (step 4.2 of
+[closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md)), `WAKEUP_CORES=6,7`,
+commit `85460c1`'s code, `pass 16 fail 0 unknown 0`; one thread on cpu6 writes one byte and
+records the instant, the other on cpu7 returns from `epoll_wait` (arm 1) or `poll` (arm 2) and
+reads the same clock; 20 000 wakes per run, 20 runs, the median of the 20 per-run p50s:
+
+| wait | p50 (median of 20) | per-run p50 range | max/median | p99 | p99.9 | max |
+|---|---|---|---|---|---|---|
+| `epoll_wait` | **4 960 ns** | 4 949 .. 4 980 | 1.004 | ≈ 7.8–7.9 µs | ≈ 8.9 µs | ≈ 10.3 µs |
+| `poll` | **4 819 ns** | 4 809 .. 4 829 | 1.004 | ≈ 7.8–7.9 µs | ≈ 8.9 µs | ≈ 10.3 µs |
+
+This is the number `DESIGN.md` §8's *Cost of a wakeup* row carried from the literature as
+2–5 µs since it was written, and ADR-0014 open question 1 / ADR-0025 open question 2 asked
+for. It reads the top of the range. `poll` is 141 ns cheaper than `epoll_wait` at p50 here, one
+fd each. Baseline: `benches/baselines.tsv`, `wakeup epoll_wait` 4 960, margin **1.10** (the
+ladder's floor; the measured max/median of 1.004 is far under it), n = 20. ADR-0025 accepts on
+this number and keeps its ceiling of 4 (the arithmetic crossover with a 448.9 ns idle turn is
+N ≈ 11; the busy turn at N > 1 is still unmeasured, so the ceiling is not raised).
+
+### C-85 — the build-slot candidate, tested with one variable, and it is dead
+
+`[measured 2026-09-18]` item 85's only recorded candidate for the 2026-09-14/15 drift was
+*"procedure 1 began minutes after a build slot"*. One variable: **procedure 1 started under two
+minutes after `cargo build --release` finished; procedure 2 after ten minutes of an idle
+machine**; `hft` admin, `off`, `ListenerEveryTurns=16`, 10 runs × 20 000 each, same commit
+`85460c1`, same binary, `pass 16 fail 0 unknown 0`.
+
+| | procedure 1 (< 2 min after the build) | procedure 2 (10 min idle) | diff |
+|---|---|---|---|
+| p50 | 16 005 | 15 990 | 0.09% |
+| p99 | 21 000 | 20 794 | 0.99% |
+| p99.9 | 22 978 | 22 312 | 2.99% |
+
+Reproduced at every percentile; **the build slot / thermal candidate is refuted** — a build
+immediately before a procedure moved nothing this procedure can see. The header's new
+thermal/frequency line read `thermal iwlwifi_1 65000 cpu6-freq n/a` on this desk: **there is no
+CPU thermal zone and no `cpuinfo_cur_freq`** exposed (the governor is `performance`, boost 0), so
+those two columns cannot help here and say so rather than printing a number from the wrong
+sensor. What moved ten arms by 4.7–6.7% on 2026-09-15 remains unexplained; item 85's guard
+(ADR-0068 pairs, the comparator script) is what stands between it and a published figure.
+
+### C-84 — TLS with one mode per end: where the 9 µs lives
+
+`[measured 2026-09-18]` four arms, `hft` admin, loopback, `tools/w2w --tls <engine> --client-tls
+<client>`, 10 runs × 20 000, two procedures in opposite arm order, commit `85460c1`'s code,
+`pass 16 fail 0 unknown 0`. Every arm reproduced (largest difference 2.9%, at p99.9). p50 ns,
+procedure 1 ‖ procedure 2; *added* is against the same procedure's `off` arm, boot C N = 16
+(16 381 ‖ 16 361):
+
+| engine | client | p50 | added over `off` | against userspace/userspace |
+|---|---|---|---|---|
+| kTLS | kTLS | 25 503 ‖ 25 473 | +9 122 ‖ +9 112 | +4 679 ‖ +4 754 |
+| userspace | userspace | 20 824 ‖ 20 719 | +4 443 ‖ +4 358 | — |
+| kTLS | userspace | 21 175 ‖ 21 250 | +4 794 ‖ +4 889 | **+351 ‖ +531** (the engine's kTLS) |
+| userspace | kTLS | 22 177 ‖ 22 147 | +5 796 ‖ +5 786 | +1 353 ‖ +1 428 (the client's kTLS) |
+
+- **The engine's kTLS costs the engine 0.35–0.53 µs over its own userspace `rustls`**, with
+  the same client — about 2% of the round trip. That is the whole engine-side price of ADR-0005
+  decision 2.
+- **The client's kTLS costs the client ~1.4 µs** — `w2w`'s client is a plain blocking thread
+  reading one record at a time.
+- **Both kTLS is superadditive.** Additive prediction from the one-sided costs: 20 824 + 351 +
+  1 353 = 22 528 (‖ 22 678); measured 25 503 (‖ 25 473): **+2 975 ‖ +2 795 ns beyond the sum**.
+  Candidate, not isolated: each kernel record layer decrypts in `recvmsg` only once the whole
+  record is queued, so two of them on one loopback pair serialise where two userspace layers
+  overlap their work with the socket.
+- The mixed arms **print** their allocation counts and do not assert them: 4 001 on the client
+  thread in the userspace-client arms, the client's own `rustls`, outside the engine; the
+  symmetric arms keep their assertions (kTLS 0, userspace 4 per round trip on the engine).
+
+The 2026-09-14 both-ends table (*TLS on the wire*, above) is unchanged as the figure it was;
+this section says which end owns how much of it. `ADR-0070` decision 5 records it.
+
 ### What is not proven
 
 - **A mechanism for the administrative path's +0.3 µs.** One candidate above, untested.
@@ -3765,4 +3840,8 @@ window. No name from `SLEEPERS` appeared in either run.
 - **The accept delay itself at N = 16 under load.** Consequence 2's *N × one iteration* is
   arithmetic; `connect-rtt` does not measure it.
 - **The in-window `accept4` count**, derived as stated above.
+- **A mechanism for both-kTLS being superadditive** (C-84): one candidate, not isolated.
+- **What moved boot B's ten arms** (C-85 refuted the only candidate; nothing else was varied).
+- **The busy turn at N > 1** (ADR-0025 open question 1), so the `hft` ceiling stays 4 although
+  the measured wakeup puts the arithmetic crossover at N ≈ 11.
 
