@@ -76,6 +76,19 @@ same "" "$(extra_flag_refusal --journal)$(extra_flag_refusal file-async)$(extra_
   "the two-word form is not refused"
 
 echo
+echo "=== missing_stamp_verdict"
+
+# ADR-0071 decision 1: a run with skipped TX stamps within 0.1% of the timed
+# requests is a valid run with a smaller sample, not a FAIL.
+same "" "$(missing_stamp_verdict 0 19 20000)" \
+  "19 of 20000 tx-missing is within 0.1%, no RX missing: PASS (nothing printed)"
+same "hw-tx-missing 21 of 20000 exceeds 0.1%" "$(missing_stamp_verdict 0 21 20000)" \
+  "21 of 20000 tx-missing exceeds 0.1%: FAIL"
+same "hw-rx-missing 1 of 20000 — any missing RX stamp is a failed run (ADR-0071 decision 1)" \
+  "$(missing_stamp_verdict 1 0 20000)" \
+  "any missing RX stamp fails outright, even with tx-missing 0"
+
+echo
 echo "=== summary"
 echo "pass $pass   fail $fail"
 [[ "$fail" -eq 0 ]]

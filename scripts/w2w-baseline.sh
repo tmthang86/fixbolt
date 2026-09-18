@@ -208,6 +208,28 @@ extra_flag_refusal() { # extra_flag_refusal <one W2W_EXTRA token>
   esac
 }
 
+# ADR-0071 decision 1: a skipped TX stamp is a missing sample, not a failed
+# run — the igb NIC holds one pending TX stamp request, so a few stamps per
+# 20 000 are skipped by design. FAILs only when the missing count exceeds
+# 0.1% of the timed requests (20 of 20 000); an RX stamp never competes for a
+# slot, so ANY missing RX stamp is a failed run outright. Prints the reason
+# on FAIL, nothing on PASS — same shape as `extra_flag_refusal` above — and
+# is pure integer arithmetic (`tx * 1000 > total` reads `tx/total > 0.1%`
+# without a float) so `scripts/check-w2w-baseline-summary.sh` calls it
+# directly with `BASELINE_SOURCE_ONLY=1`.
+missing_stamp_verdict() { # missing_stamp_verdict <rx_missing> <tx_missing> <total>
+  local rx=$1 tx=$2 total=$3
+  if [ "$rx" -gt 0 ]; then
+    printf 'hw-rx-missing %s of %s — any missing RX stamp is a failed run (ADR-0071 decision 1)' "$rx" "$total"
+    return 1
+  fi
+  if [ $((tx * 1000)) -gt "$total" ]; then
+    printf 'hw-tx-missing %s of %s exceeds 0.1%%' "$tx" "$total"
+    return 1
+  fi
+  return 0
+}
+
 # Sourced by the baseline summary test, which wants `median`, `dispersion` and
 # `extra_flag_refusal` and none of the probing or any run — same guard shape as
 # check-machine.sh:174.
@@ -324,6 +346,17 @@ busy_pct() {
   local dt=$((t1-t0)) di=$((i1-i0))
   [ "$dt" -le 0 ] && { echo 100; return; }
   echo $(( (100*(dt-di)) / dt ))
+}
+
+# The driver's own count of skipped TX stamps (ADR-0071 *Sources*: `igb_ptp.c`
+# `__IGB_PTP_TX_IN_PROGRESS`), read before and after a WIRE_NIC run so the
+# per-run line can print the delta beside `hw-tx-missing` — the two are
+# expected to agree, and a reader who doubts the tap's pairing can check the
+# driver's own counter instead of trusting `pair.rs` alone. Empty when
+# `ethtool` is missing or the NIC has no such statistic, so a run this ran
+# against says so rather than printing an empty diff silently.
+tx_hwtstamp_skipped() { # tx_hwtstamp_skipped <nic>
+  ethtool -S "$1" 2>/dev/null | awk '/tx_hwtstamp_skipped/ {print $2; exit}'
 }
 
 # Poll `file` for a line matching `pat`, up to `timeout_s` — the `--listen`
@@ -469,7 +502,7 @@ for arm in $ARMS; do
   gen_host="${GENERATOR_SSH:-this host (loopback split)}"
 
   p50s=(); p99s=(); p999s=(); mins=(); skipped=0
-  wp50s=(); wp99s=(); wp999s=()
+  wp50s=(); wp99s=(); wp999s=(); rxms=(); txms=()
   wire_args=()
   if [ -n "$WIRE_NIC" ]; then
     wire_args=(--wire-timestamps --nic "$WIRE_NIC" --observer-core "$OBSERVER_CORE" --warmup "$WARMUP")
@@ -490,6 +523,11 @@ for arm in $ARMS; do
       # first, allocations second, exit status last, because the checks above
       # name the cause better than a bare nonzero status ever could.
       listen_log=$(mktemp)
+      # ADR-0071 decision 1's own check: the driver's `tx_hwtstamp_skipped`
+      # read before and after, so the delta can be printed beside `pair.rs`'s
+      # `hw-tx-missing` count below rather than trusting one source alone.
+      skipped_before=""
+      [ -n "$WIRE_NIC" ] && skipped_before=$(tx_hwtstamp_skipped "$WIRE_NIC")
       "$BIN" --listen "$LISTEN" --mode "$mode" --path "$path" "${LISTEN_PINARGS[@]}" "${wire_args[@]}" \
         "${EXTRA_ARGS[@]}" "${LISTENER_EVERY_ARGS[@]}" >"$listen_log" 2>&1 &
       listen_pid=$!
@@ -534,6 +572,14 @@ for arm in $ARMS; do
       lrc=0
       wait_with_timeout "$listen_pid" 5 || lrc=$?
       lout=$(cat "$listen_log"); rm -f "$listen_log"
+      skipped_after=""
+      skipped_delta=""
+      if [ -n "$WIRE_NIC" ]; then
+        skipped_after=$(tx_hwtstamp_skipped "$WIRE_NIC")
+        if [ -n "$skipped_before" ] && [ -n "$skipped_after" ]; then
+          skipped_delta=$((skipped_after - skipped_before))
+        fi
+      fi
       # `[2026-09-15]` review finding F11: both halves' raw output lands on
       # disk HERE, as soon as both have returned and before any check below
       # can `exit 1`. Written after the checks, as it was, the one run whose
@@ -594,10 +640,19 @@ for arm in $ARMS; do
       if [ -n "$WIRE_NIC" ]; then
         rxm=$(echo "$lout" | awk '$1=="hw-rx-missing" {print $2; exit}')
         txm=$(echo "$lout" | awk '$1=="hw-tx-missing" {print $2; exit}')
-        if [ "$rxm" != 0 ] || [ "$txm" != 0 ]; then
+        reqs_total=$(echo "$lout" | awk '$1=="requests" {print $2; exit}')
+        if [ -z "$rxm" ] || [ -z "$txm" ] || [ -z "$reqs_total" ]; then
           echo "$lout"
-          echo "FAIL: $mode:$path:$tls:$interval — run $i: hw-rx-missing ${rxm:-<not printed>}, hw-tx-missing ${txm:-<not printed>} on $WIRE_NIC."
-          echo "A run with any missing hardware stamp is not a wire figure (plan B6 publishes only missing 0)."
+          echo "FAIL: $mode:$path:$tls:$interval — run $i: hw-rx-missing ${rxm:-<not printed>}, hw-tx-missing ${txm:-<not printed>} on $WIRE_NIC (the tap could not be trusted — read the listen half above)."
+          exit 1
+        fi
+        # ADR-0071 decision 1: a missing TX stamp within 0.1% of the run's
+        # requests is a smaller sample, not a FAIL; any missing RX stamp
+        # still is. `missing_stamp_verdict` is the pure function above,
+        # tested by scripts/check-w2w-baseline-summary.sh.
+        if ! verdict=$(missing_stamp_verdict "$rxm" "$txm" "$reqs_total"); then
+          echo "$lout"
+          echo "FAIL: $mode:$path:$tls:$interval — run $i: $verdict on $WIRE_NIC."
           echo "Not DISQUALIFIED: the cause is the NIC's stamping, not load, and it will not clear by waiting —"
           echo "see the plan's igb trap (ethtool -T, link down/up), and record this count and the kernel version."
           exit 1
@@ -606,11 +661,17 @@ for arm in $ARMS; do
         wp50=$(wv p50); wp99=$(wv p99); wp999=$(wv p99.9)
         if [ -z "$wp50" ] || [ -z "$wp99" ] || [ -z "$wp999" ]; then
           echo "$lout"
-          echo "FAIL: $mode:$path:$tls:$interval — run $i: missing counts are 0 and no wire column was printed (tap drops or overflow — read the listen half above)"
+          echo "FAIL: $mode:$path:$tls:$interval — run $i: missing counts are within the 0.1%/0 rule and no wire column was printed (tap drops or overflow — read the listen half above)"
           exit 1
         fi
         wp50s+=("$wp50"); wp99s+=("$wp99"); wp999s+=("$wp999")
-        wire_note=$(printf '  wire p50 %8s  p99 %8s  p99.9 %8s  (acceptor, %s)' "$wp50" "$wp99" "$wp999" "$WIRE_NIC")
+        rxms+=("$rxm"); txms+=("$txm")
+        skip_note=""
+        if [ -n "$skipped_delta" ]; then
+          skip_note="  ethtool tx_hwtstamp_skipped $skipped_before -> $skipped_after (delta $skipped_delta)"
+        fi
+        wire_note=$(printf '  wire p50 %8s  p99 %8s  p99.9 %8s  hw-rx-missing %s  hw-tx-missing %s of %s  (acceptor, %s)%s' \
+          "$wp50" "$wp99" "$wp999" "$rxm" "$txm" "$reqs_total" "$WIRE_NIC" "$skip_note")
       fi
 
       out="$cout"
@@ -780,7 +841,13 @@ for arm in $ARMS; do
     echo "     wire dispersion $(dispersion p99 "${wp99s[@]}")"
     echo "     wire dispersion $(dispersion p99.9 "${wp999s[@]}")"
     echo "     window      every request after the logon, leaving out the first $WARMUP"
-    echo "     stamps      hw-rx-missing 0 and hw-tx-missing 0 in all $q runs"
+    # ADR-0071 decision 1: printed per run, not asserted zero — ANY of these
+    # runs already passed `missing_stamp_verdict` above (RX 0, TX within 0.1%
+    # of that run's requests), so the sum here is evidence, not a second gate.
+    rxm_sum=0; txm_sum=0
+    for v in "${rxms[@]}"; do rxm_sum=$((rxm_sum + v)); done
+    for v in "${txms[@]}"; do txm_sum=$((txm_sum + v)); done
+    echo "     stamps      hw-rx-missing $rxm_sum and hw-tx-missing $txm_sum, summed over $q runs (each run within ADR-0071's rule: RX 0, TX <= 0.1%)"
     echo "     observer    cpu$OBSERVER_CORE"
   fi
   echo
