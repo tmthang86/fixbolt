@@ -36,8 +36,7 @@ commit `cdd6fba`, 10 checks of 10.
 `[measured 2026-09-18]` **14 / 14**, ceiling **14 of the 50 mirrorable files**, read from the
 classification table `crates/conformance/src/mirror.rs`
 ([ADR-0076](decisions/ADR-0076-the-mirrored-ceiling-is-a-classified-count-not-an-estimate.md),
-which withdraws ADR-0006's reasoned ceiling of 45). Commit `09effd1`, CI run id: *to be filled
-by the manager on the closing commit*. Composition of the 36 that are not reachable, each class
+which withdraws ADR-0006's reasoned ceiling of 45). Commit `09effd1`, CI run [`35405617390`](https://github.com/tmthang86/fixbolt/actions/runs/35405617390) on `7218615`, 14 jobs of 14. Composition of the 36 that are not reachable, each class
 naming the decision that refuses it: 11 need bytes no correct engine emits, 9 need a header field
 the API does not set, 6 need a body order the generated table refuses, 3 need `34=0`, 3 need a
 gap fill as an operator action, 2 need an admin message the API never originates, 2 need the

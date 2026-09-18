@@ -83,8 +83,7 @@ classification.
 ## Measured — 2026-09-18, commits `a2aa9ce` and `09effd1`
 
 `[measured 2026-09-18]` `crates/conformance/src/mirror.rs`, 50 rows, first at **`a2aa9ce`**,
-corrected at **`09effd1`** (both on `plan/the-second-linux-desk-c`; CI run id: *to be filled by
-the manager on the closing commit*).
+corrected at **`09effd1`** (both on `plan/the-second-linux-desk-c`; CI run [`35405617390`](https://github.com/tmthang86/fixbolt/actions/runs/35405617390) on `7218615`, 14 jobs of 14).
 
 | Class | Files | Refused by |
 |---|---|---|
