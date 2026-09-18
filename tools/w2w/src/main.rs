@@ -735,6 +735,11 @@ const LISTEN_REFUSES: &[(&str, &str)] = &[
         "--max-skew-ms",
         "the counterparty's MaxLatency bounds the sender's paced run; pass it to the --connect process",
     ),
+    (
+        "--client-tls",
+        "a split run already picks one transport per process, with --tls; there is no \
+         second half in this process to give a different one to",
+    ),
 ];
 
 /// What `--connect` refuses, and why. There is no engine thread in that
@@ -776,6 +781,11 @@ const CONNECT_REFUSES: &[(&str, &str)] = &[
         "--listener-every",
         "the listener's cadence is the engine's own accept loop; this process has no \
          listener to poll on one",
+    ),
+    (
+        "--client-tls",
+        "a split run already picks one transport per process, with --tls; there is no \
+         second half in this process to give a different one to",
     ),
 ];
 
@@ -907,6 +917,36 @@ fn interval_of(args: &[String]) -> Result<u64, String> {
 /// a second time. Present without a number is refused, same as `--interval`.
 fn max_skew_of(args: &[String]) -> Result<u64, String> {
     Ok(value_of(args, "--max-skew-ms")?.unwrap_or(fixbolt_session::DEFAULT_MAX_SKEW_MS))
+}
+
+/// `--client-tls`: the combined run's client half, independent of the
+/// engine's `--tls` — C-84's mixed arms (kernel one end, userspace the
+/// other). Absent, it is `tls`, so an invocation with no `--client-tls` is
+/// byte-identical to before the flag existed. Refuses the pair disagreeing on
+/// off vs on, either direction: a plain `TcpTransport` speaking to a
+/// `TlsTransport` never gets past the first byte. The two sides may still
+/// name different TLS *arms* (`ktls` one end, `userspace` the other) — only
+/// the off/on split must agree.
+fn client_tls_of(args: &[String], tls: Tls) -> Result<Tls, String> {
+    let client_tls = match arg::<String>(args, "--client-tls").as_deref() {
+        None => tls,
+        Some("off") => Tls::Off,
+        Some("ktls") => Tls::Ktls,
+        Some("userspace") => Tls::Userspace,
+        Some(other) => {
+            return Err(format!(
+                "unknown --client-tls {other}; expected off, ktls or userspace"
+            ));
+        }
+    };
+    if (tls == Tls::Off) != (client_tls == Tls::Off) {
+        return Err(format!(
+            "--tls {} and --client-tls {}: TLS on one end only cannot handshake",
+            tls.name(),
+            client_tls.name()
+        ));
+    }
+    Ok(client_tls)
 }
 
 /// One second's margin for [`stamp`]'s seconds-only resolution: the age a
@@ -1184,6 +1224,19 @@ fn main() -> std::io::Result<()> {
             return Err(std::io::Error::other("unknown --tls"));
         }
     };
+    // `--client-tls`: the combined run's client half, independent of the
+    // engine's `--tls` — C-84's mixed arms (kernel one end, userspace the
+    // other). Absent, it is `tls`, so every invocation written before this
+    // flag existed is byte-identical. `half_of` has already refused it on
+    // `--listen`/`--connect`: a split run picks one transport per process
+    // with `--tls` alone, and has no second half to give a different one to.
+    let client_tls = match client_tls_of(&args, tls) {
+        Ok(t) => t,
+        Err(why) => {
+            eprintln!("w2w: {why}");
+            return Err(std::io::Error::other(why));
+        }
+    };
     let journal = match arg::<String>(&args, "--journal").as_deref() {
         None | Some("mem") => JournalKind::Mem,
         Some("file-async") => JournalKind::FileAsync,
@@ -1206,6 +1259,15 @@ fn main() -> std::io::Result<()> {
         eprintln!(
             "w2w: --tls {} needs `--features tls`, on Linux.",
             tls.name()
+        );
+        eprintln!("     This build has no TLS transport. Build with:");
+        eprintln!("       cargo build --release -p fixbolt-w2w --features tls");
+        return Err(std::io::Error::other("this build has no TLS transport"));
+    }
+    if !CAN_TLS && client_tls != Tls::Off {
+        eprintln!(
+            "w2w: --client-tls {} needs `--features tls`, on Linux.",
+            client_tls.name()
         );
         eprintln!("     This build has no TLS transport. Build with:");
         eprintln!("       cargo build --release -p fixbolt-w2w --features tls");
@@ -1286,6 +1348,7 @@ fn main() -> std::io::Result<()> {
         Half::Both => both_halves(
             mode,
             run,
+            client_tls,
             engine_core,
             client_core,
             journal,
@@ -1337,6 +1400,7 @@ fn main() -> std::io::Result<()> {
 fn both_halves(
     mode: Mode,
     run: Run,
+    client_tls: Tls,
     engine_core: Option<usize>,
     client_core: Option<usize>,
     journal: JournalKind,
@@ -1419,10 +1483,14 @@ fn both_halves(
     // The certificate and both configurations are made here, before either
     // thread starts and far outside the timed window: `rcgen` and `rustls`
     // allocate freely, and that is ADR-0005's handshake carve-out.
+    // One certificate, shared by both ends: the mixed arms differ in whether
+    // each side asks the kernel for offload, never in which key pair they
+    // hand rustls. The `--tls`/`--client-tls` refusal above has already made
+    // `tls != Off` and `client_tls != Off` agree, so either alone would do.
     #[cfg(all(feature = "tls", target_os = "linux"))]
-    let pki = match tls {
-        Tls::Off => None,
-        Tls::Ktls | Tls::Userspace => Some(tls_arm::Pki::new()?),
+    let pki = match (tls, client_tls) {
+        (Tls::Off, Tls::Off) => None,
+        _ => Some(tls_arm::Pki::new()?),
     };
     #[cfg(all(feature = "tls", target_os = "linux"))]
     let side = match &pki {
@@ -1468,7 +1536,10 @@ fn both_halves(
         stop: &stop,
         engine,
     };
-    let measured = match tls {
+    // The client half connects on `client_tls`, not `tls` — C-84's mixed
+    // arms. `client_tls` defaults to `tls`, so an invocation with no
+    // `--client-tls` takes this branch exactly as it always did.
+    let measured = match client_tls {
         Tls::Off => {
             // The plain arm, exactly as it was before `--tls` existed: a
             // blocking `TcpStream` with Nagle off. Changing this client changes
@@ -1484,6 +1555,7 @@ fn both_halves(
                 connect_started,
                 connect_rtt_ns,
                 assert_no_voluntary && mode == Mode::Hft,
+                client_tls,
             )
         }
         #[cfg(all(feature = "tls", target_os = "linux"))]
@@ -1492,7 +1564,7 @@ fn both_halves(
                 return Err(std::io::Error::other("w2w: a TLS arm with no certificate"));
             };
             let connect_started = Instant::now();
-            let sock = tls_arm::connect(&addr, p, tls == Tls::Ktls)?;
+            let sock = tls_arm::connect(&addr, p, client_tls == Tls::Ktls)?;
             let connect_rtt_ns = connect_started.elapsed().as_nanos();
             measure(
                 sock,
@@ -1501,6 +1573,7 @@ fn both_halves(
                 connect_started,
                 connect_rtt_ns,
                 assert_no_voluntary && mode == Mode::Hft,
+                client_tls,
             )
         }
         #[cfg(not(all(feature = "tls", target_os = "linux")))]
@@ -1569,7 +1642,16 @@ fn both_halves(
     // did not report the transport that arm names — so neither this exemption
     // nor the assertion below can be reached by a run that was on another
     // transport, and `allocs != 0` here can only mean what it says.
-    if tls == Tls::Userspace {
+    //
+    // `client_tls == Userspace` exempts it too, mixed arm or not: `allocs`
+    // counts both threads (`counted_threads` above), and
+    // `[measured 2026-09-18]` `--tls ktls --client-tls userspace` showed the
+    // client's `rustls::client::UnbufferedClientConnection` allocating on this
+    // build (4001 allocations / 2000 messages) even though the engine's own
+    // kernel-offloaded half held zero — so a mixed arm with a userspace client
+    // is exactly the case ADR-0005 decision 3 already named, one thread
+    // earlier than the flag existed to say so.
+    if tls == Tls::Userspace || client_tls == Tls::Userspace {
         println!("tls userspace: rustls is on the data path, which leaves the hot-path");
         println!("guarantee (ADR-0005 decision 3); `allocs` is printed and not asserted.");
     } else {
@@ -1826,6 +1908,7 @@ fn generator_half(
         connect_started,
         connect_rtt_ns,
         false,
+        run.tls,
     )
     .map_err(|e| match e.kind() {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => std::io::Error::new(
@@ -2053,6 +2136,11 @@ struct Measured {
 /// ptrace-stops as voluntary switches on the tracee, ADR-0072).
 /// `generator_half`'s `Peer::Remote` has no local engine thread, so it always
 /// passes `false` and nothing is asserted there.
+/// `client_tls`: what the client half actually dialled with — `run.tls` for
+/// every call site but `both_halves`'s, where `--client-tls` may have said
+/// otherwise. Only read on the `Peer::InProcess` arm, for the read-back line;
+/// `generator_half`'s `Peer::Remote` call passes `run.tls` because the branch
+/// that would read it never runs there.
 fn measure<C: Wire>(
     mut sock: C,
     run: &Run,
@@ -2060,6 +2148,7 @@ fn measure<C: Wire>(
     connect_started: Instant,
     connect_rtt_ns: u128,
     assert_no_voluntary: bool,
+    client_tls: Tls,
 ) -> std::io::Result<Measured> {
     let Run {
         path,
@@ -2097,7 +2186,17 @@ fn measure<C: Wire>(
             }
             std::thread::yield_now();
         };
-        println!("tls: {}", seen_name(seen));
+        // Unchanged output when the two halves agree, which is every
+        // invocation written before `--client-tls` existed: just the engine's
+        // read-back, exactly as `check-no-kernel-sleep.sh`'s `tls: kernel`
+        // grep expects. The pair is printed only when they differ, and always
+        // with the engine's reading first, so that grep still matches as a
+        // substring on a mixed arm.
+        if client_tls == tls {
+            println!("tls: {}", seen_name(seen));
+        } else {
+            println!("tls: {} / client {}", seen_name(seen), client_tls.wants());
+        }
         // **Every arm must have run on the transport it names, `ktls` included, and
         // this is the first thing that judges the run.** It returns before a single
         // sample is taken, so it is necessarily ahead of the `assert_eq!(allocs, 0)`
@@ -4790,6 +4889,64 @@ mod tests {
                 );
             }
             assert!(half_of(&argv(&format!("{half} 127.0.0.1:1 --tls off"))).is_ok());
+        }
+    }
+
+    /// C-84: `--client-tls` absent is `tls`, so every call this project made
+    /// before the flag existed resolves the same way.
+    #[test]
+    fn client_tls_defaults_to_tls() {
+        for tls in [Tls::Off, Tls::Ktls, Tls::Userspace] {
+            assert_eq!(client_tls_of(&argv(""), tls), Ok(tls));
+        }
+    }
+
+    /// The two mixed arms C-84 asks for: kernel one end, userspace the other,
+    /// each accepted.
+    #[test]
+    fn client_tls_may_differ_from_tls_in_kind() {
+        assert_eq!(
+            client_tls_of(&argv("--tls ktls --client-tls userspace"), Tls::Ktls),
+            Ok(Tls::Userspace)
+        );
+        assert_eq!(
+            client_tls_of(&argv("--tls userspace --client-tls ktls"), Tls::Userspace),
+            Ok(Tls::Ktls)
+        );
+    }
+
+    /// TLS on one end only cannot handshake — refused both directions.
+    #[test]
+    fn client_tls_off_on_one_end_only_is_refused() {
+        let e = client_tls_of(&argv("--tls off --client-tls ktls"), Tls::Off).unwrap_err();
+        assert!(
+            e.starts_with("--tls off and --client-tls ktls: TLS on one end only"),
+            "{e}"
+        );
+        let e = client_tls_of(&argv("--tls ktls --client-tls off"), Tls::Ktls).unwrap_err();
+        assert!(
+            e.starts_with("--tls ktls and --client-tls off: TLS on one end only"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn client_tls_unknown_value_is_refused() {
+        let e = client_tls_of(&argv("--client-tls quic"), Tls::Off).unwrap_err();
+        assert!(e.starts_with("unknown --client-tls quic"), "{e}");
+    }
+
+    /// `--client-tls` is refused on a split run — a `--listen`/`--connect`
+    /// process already picks one transport per process with `--tls` alone.
+    #[test]
+    fn client_tls_is_refused_on_a_split_run() {
+        for half in ["--listen", "--connect"] {
+            let e =
+                half_of(&argv(&format!("{half} 127.0.0.1:1 --client-tls userspace"))).unwrap_err();
+            assert!(
+                e.starts_with(&format!("--client-tls does not apply to {half}")),
+                "{e}"
+            );
         }
     }
 

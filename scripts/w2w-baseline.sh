@@ -591,37 +591,64 @@ for arm in $ARMS; do
       exit 1
       ;;
   esac
+  # C-84: the third field may itself carry a slash, `ktls/userspace`
+  # (engine/client) — the two loopback mixed arms, kernel one end and
+  # userspace rustls the other. No slash means what it always meant: the
+  # same mode both ends. `$tls` keeps its old, undivided spelling for every
+  # label and message below that predates the split; `engine_tls`/
+  # `client_tls` are only for what actually gets passed to the binary and
+  # read back from it.
+  case "$tls" in
+    */*) engine_tls=${tls%%/*}; client_tls=${tls#*/} ;;
+    *) engine_tls=$tls; client_tls=$tls ;;
+  esac
   tls_args=()
-  [ "$tls" != "off" ] && tls_args=(--tls "$tls")
+  [ "$engine_tls" != "off" ] && tls_args=(--tls "$engine_tls")
+  [ "$client_tls" != "$engine_tls" ] && tls_args+=(--client-tls "$client_tls")
   interval_args=()
   [ "$interval" != 0 ] && interval_args=(--interval "$interval")
   # Named in the per-run line and the summary header only when it is not the
   # default, so an arm with no fourth field prints byte-identically to before.
   iv_note=""
   [ "$interval" != 0 ] && iv_note="  interval ${interval}us"
-  # What the engine must REPORT for this arm, not what the flag is spelled —
+  # What the run must REPORT for this arm, not what the flag is spelled —
   # `--tls ktls` reads back as `tls: kernel` (tools/w2w/src/main.rs
   # `seen_name`), and a handover that quietly fell back to userspace must
   # disqualify the run rather than publish its p50 under the `ktls` label it
-  # never earned.
-  case "$tls" in
-    ktls) want_tls=kernel ;;
-    *) want_tls=$tls ;;
+  # never earned. A mixed arm reads back as the pair, `tools/w2w`'s
+  # `measure()` printing "tls: kernel / client userspace" only when the two
+  # differ — same mapping, `ktls` -> `kernel`, on each side of the slash.
+  case "$engine_tls" in
+    ktls) want_engine=kernel ;;
+    *) want_engine=$engine_tls ;;
   esac
+  if [ "$client_tls" = "$engine_tls" ]; then
+    want_tls=$want_engine
+  else
+    case "$client_tls" in
+      ktls) want_client=kernel ;;
+      *) want_client=$client_tls ;;
+    esac
+    want_tls="$want_engine / client $want_client"
+  fi
 
   # The filename prefix each run's raw output is kept under (ADR-0068
   # decision 5, "keeps every run's raw output on disk"), one character
   # outside `A-Za-z0-9` in W2W_EXTRA becoming one `_` so it stays a filename.
+  # `tls_slug` swaps a mixed arm's `/` for `-`, so `ktls/userspace` names a
+  # file rather than a directory.
   extra_slug=""
   if [ -n "$W2W_EXTRA" ]; then
     extra_slug="-$(printf '%s' "$W2W_EXTRA" | tr -c 'A-Za-z0-9' '_')"
   fi
-  run_prefix="$mode-$path-$tls-$interval$extra_slug"
+  tls_slug=${tls//\//-}
+  run_prefix="$mode-$path-$tls_slug-$interval$extra_slug"
 
-  if [ -n "$LISTEN" ] && [ "$tls" != off ]; then
+  if [ -n "$LISTEN" ] && { [ "$engine_tls" != off ] || [ "$client_tls" != "$engine_tls" ]; }; then
     echo "ARMS entry '$arm': LISTEN is set and tls is '$tls' — refused before running."
-    echo "tools/w2w refuses --tls other than off to both --listen and --connect: the"
-    echo "self-signed certificate is made per process, and a split run is two processes."
+    echo "tools/w2w refuses --tls other than off to both --listen and --connect, and refuses"
+    echo "--client-tls there outright: a split run already picks one transport per process,"
+    echo "and the self-signed certificate is made per process, so a split run is two processes."
     exit 1
   fi
 
@@ -929,10 +956,12 @@ for arm in $ARMS; do
     # A run whose allocation count is not zero is not a figure about this
     # engine, and the binary already asserts it; this is the second reader,
     # because a `set -e` that never looked would be a green nobody read.
-    # Skipped for `userspace`: ADR-0005 decision 3 leaves the zero-allocation
-    # guarantee there on purpose, and the binary itself only prints the count
-    # for that arm rather than asserting it — see tools/w2w/src/main.rs.
-    if [ "$tls" != userspace ]; then
+    # Skipped for `userspace` on either end: ADR-0005 decision 3 leaves the
+    # zero-allocation guarantee there on purpose, `allocs` counts both
+    # threads, and the binary itself only prints the count for that arm
+    # rather than asserting it — see tools/w2w/src/main.rs, including the
+    # mixed-arm case (kernel one end, userspace client the other).
+    if [ "$engine_tls" != userspace ] && [ "$client_tls" != userspace ]; then
       echo "$out" | grep -qE '^ *allocs +0 ' || { echo "$out"; echo "allocs != 0"; exit 1; }
     fi
     g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
@@ -991,7 +1020,7 @@ for arm in $ARMS; do
   if [ -n "$W2W_EXTRA" ]; then
     echo "     extra   $W2W_EXTRA"
   fi
-  if [ "$tls" = userspace ]; then
+  if [ "$engine_tls" = userspace ] || [ "$client_tls" = userspace ]; then
     echo "     allocs  NOT asserted zero — userspace leaves ADR-0005 decision 3's guarantee"
   fi
   if [ "$PIN" = 1 ] && [ -n "$LISTEN" ] && [ -n "$GENERATOR_SSH" ]; then
