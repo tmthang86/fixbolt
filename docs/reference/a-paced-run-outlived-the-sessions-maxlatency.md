@@ -52,10 +52,23 @@ own 120 + 5 = 125 was already over it before a single message moved.
 
 ## What guards it
 
-**Nothing yet.** This is an unmet `CLAUDE.md` §4 obligation: a protocol trap, once found, is
-supposed to leave a regression test behind it, and this one has not.
+**`paced_run_fits(interval_us, warmup, n, max_skew_ms)`** in `tools/w2w/src/main.rs`, run once at
+startup for the combined run and `--connect`, before any engine or socket exists. The bound it
+checks:
 
-The guard that would close it: a refusal inside `tools/w2w` when `--interval × (warmup +
-messages)` ≥ 120 s — computed from the flags it is already given, before the run starts, with a
-message naming which of the two would need to shrink — plus a test exercising that refusal.
-Owned by `STATUS.md`, open items.
+```
+interval_us × (warmup + n − 1) / 1000 + MARGIN_MS < max_skew_ms
+```
+
+`MARGIN_MS` (1000 ms) absorbs `stamp()`'s seconds-only resolution — the age computed is a lower
+bound, not a round-trip allowance. `max_skew_ms` is `--max-skew-ms`, defaulting to
+`fixbolt_session::DEFAULT_MAX_SKEW_MS`, the same constant the session layer checks incoming `52=`
+against. An unpaced run (`--interval 0`) is never refused.
+
+Four tests exercise it: `a_paced_run_past_maxlatency_is_refused`,
+`a_paced_run_inside_maxlatency_is_allowed`, `an_unpaced_run_is_never_refused`, and
+`a_declared_maxlatency_moves_the_bound` (the last proves `--max-skew-ms` actually moves the
+bound, not just `DEFAULT_MAX_SKEW_MS`). Reversal was seen red on 2026-09-18 (guard disabled: the refusal
+branch made unreachable with `&& false`): the first, second and fourth of those tests failed
+as expected — `an_unpaced_run_is_never_refused` cannot fail this reversal, since an unpaced run
+never reaches the bound check. Restored, all green. Shipped in commit `fc1fa54`, item 90.

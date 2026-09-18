@@ -142,6 +142,11 @@
 //! for nothing and prints no `interval` line. The wait is taken before `t0`, so
 //! it is never inside a sample. See [`Pacer`].
 //!
+//! Every message is rendered before the clock starts, `52=` included, so a paced run whose last
+//! send would already be older than the counterparty's `MaxLatency` is refused at startup, before
+//! any engine or socket exists — see [`paced_run_fits`]. `--max-skew-ms` declares that
+//! `MaxLatency`; absent, it defaults to [`fixbolt_session::DEFAULT_MAX_SKEW_MS`].
+//!
 //! # The journal and the message log, each a type of its own
 //!
 //! `[2026-09-14]` step A4 of `docs/plans/2026-09-04-the-second-linux-desk.md`.

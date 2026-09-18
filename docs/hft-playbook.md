@@ -108,7 +108,10 @@ before and after: they must stay 0.
    it*, the generator's host and the wire included. `--connect` refuses `--engine-core` and
    `--mode`; `--listen` refuses `--client-core`, `--messages`, `--warmup` (except beside
    `--wire-timestamps`, item 4), `--hold-ms` and `--interval`; both refuse `--tls` other than `off`. `--interval <us>` spaces sends by
-   spinning, so the generator's core is busy for the whole wait between sends, not asleep.
+   spinning, so the generator's core is busy for the whole wait between sends, not asleep. A paced
+   run whose last `52=` would already be older than the counterparty's `MaxLatency` is refused at
+   startup, before any socket opens; `--max-skew-ms` declares that `MaxLatency` (default
+   `fixbolt_session::DEFAULT_MAX_SKEW_MS`).
    `--journal mem|file-async` and `--log none|file` apply to the combined run and `--listen`
    (both default to today's behaviour); `--connect` refuses both, for the reason it refuses
    `--mode`. `file-async` opens the engine's `FileJournal` with `Durability::Async`, and `file`

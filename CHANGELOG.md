@@ -101,6 +101,11 @@ below describe what a first release would contain.
   `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh` both
   gained a kTLS arm that drives this flag.
 
+- **`tools/w2w --max-skew-ms`**: refuses a paced run whose last `52=` would already be older than
+  the counterparty's `MaxLatency` (default `fixbolt_session::DEFAULT_MAX_SKEW_MS`), before any
+  engine or socket exists
+  ([a-paced-run-outlived-the-sessions-maxlatency](docs/reference/a-paced-run-outlived-the-sessions-maxlatency.md)).
+
 ### Changed
 
 - **`SocketUseSSL` and `TlsRequireKernel` are valid on either role**, not acceptor-only.
