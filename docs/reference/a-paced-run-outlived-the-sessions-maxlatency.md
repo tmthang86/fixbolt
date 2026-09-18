@@ -68,7 +68,12 @@ against. An unpaced run (`--interval 0`) is never refused.
 Four tests exercise it: `a_paced_run_past_maxlatency_is_refused`,
 `a_paced_run_inside_maxlatency_is_allowed`, `an_unpaced_run_is_never_refused`, and
 `a_declared_maxlatency_moves_the_bound` (the last proves `--max-skew-ms` actually moves the
-bound, not just `DEFAULT_MAX_SKEW_MS`). Reversal was seen red on 2026-09-18 (guard disabled: the refusal
-branch made unreachable with `&& false`): the first, second and fourth of those tests failed
-as expected — `an_unpaced_run_is_never_refused` cannot fail this reversal, since an unpaced run
-never reaches the bound check. Restored, all green. Shipped in commit `fc1fa54`, item 90.
+bound, not just `DEFAULT_MAX_SKEW_MS`). Two reversals were run on 2026-09-18. Guard disabled wholesale (refusal branch behind `&& false`):
+`a_paced_run_past_maxlatency_is_refused`, `a_paced_run_inside_maxlatency_is_allowed` and
+`a_declared_maxlatency_moves_the_bound` red, 17 passed. Boundary loosened by one (`>=` to `>` and
+`MARGIN_MS` dropped, the reversal the plan wrote down): **only** the `n = 120` arm of
+`a_paced_run_inside_maxlatency_is_allowed` went red, 19 passed — the plan had predicted
+`a_paced_run_past_maxlatency_is_refused` would, but its arguments (5 + 120 at 1 s) are 4 s past the
+bound and refuse either way. The test that pins the boundary is the 119/120 pair, not the far
+case; a set of red reversals proves only what was tried. `an_unpaced_run_is_never_refused` cannot
+fail either reversal, since an unpaced run never reaches the bound check. Restored, all green. Shipped in commit `fc1fa54`, item 90.

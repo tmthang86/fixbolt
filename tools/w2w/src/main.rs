@@ -726,6 +726,10 @@ const LISTEN_REFUSES: &[(&str, &str)] = &[
         "--interval",
         "pacing is done by the sender; pass it to the --connect process",
     ),
+    (
+        "--max-skew-ms",
+        "the counterparty's MaxLatency bounds the sender's paced run; pass it to the --connect process",
+    ),
 ];
 
 /// What `--connect` refuses, and why. There is no engine thread in that
@@ -4162,6 +4166,7 @@ mod tests {
             "--warmup 1",
             "--hold-ms 5",
             "--interval 1000",
+            "--max-skew-ms 5000",
         ] {
             let e = half_of(&argv(&format!("--listen 127.0.0.1:1 {flag}"))).unwrap_err();
             let name = flag.split(' ').next().unwrap();

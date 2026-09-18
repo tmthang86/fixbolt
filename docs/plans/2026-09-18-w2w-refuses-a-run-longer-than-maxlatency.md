@@ -190,4 +190,12 @@ vào kế hoạch này**: đề nghị owner cho một commit `docs:` riêng.
 
 ## Nhật ký giao hàng
 
-Chưa có.
+**2026-09-18, trên Mac, branch `plan/w2w-maxlatency-guard`, PR #75.**
+
+- Bước 1 — `fc1fa54`: `paced_run_fits`, `max_skew_of`, `--max-skew-ms`, 5 test (4 theo plan + `max_skew_of_reads_the_flag`). `cargo test -p fixbolt-w2w`: `20 passed; 0 failed`. Clippy `-D warnings` im lặng, `cargo fmt --check` sạch. Chạy thật: `--interval 1000000 --messages 125` bị từ chối trước khi mở socket.
+- Rustdoc `DEFAULT_MAX_SKEW_MS` — `c43ad95`, commit `docs:` riêng như plan đề nghị.
+- Bước 2 — `3488a92`: 5 tài liệu ở *Tài liệu phải cập nhật*; `check-links.py`: `no dead internal links`.
+- Reversal, hai lần. Tắt hẳn nhánh từ chối: 3 test đỏ (`..._is_refused`, `..._is_allowed`, `..._moves_the_bound`), 17 xanh. Reversal của plan (`>=` → `>` và bỏ `MARGIN_MS`): **chỉ** nhánh `n = 120` của `a_paced_run_inside_maxlatency_is_allowed` đỏ, 19 xanh. **Câu FAIL plan viết trước đã sai**: `paced_run_fits(1_000_000, 5, 120, 120_000)` là 124 s, vượt biên 4 s nên từ chối theo cả hai cách. Test pin biên là cặp 119/120, không phải ca xa. Ghi vào reference.
+- Senior review (Opus, context mới): không có gì chặn merge. N2 sửa (`--max-skew-ms` nay bị `--listen` từ chối như `--interval`, thêm vào `listen_refuses_what_only_a_generator_has`). N1 để lại: với `--max-skew-ms < 1000` gợi ý "at most 1 messages" trong khi 1 cũng bị từ chối — đầu vào suy biến, refusal vẫn đúng. N3 là mục reversal ở trên.
+- Không đo gì trên Linux; không có số liệu mới. CI run id: ghi ở *Start here* của `STATUS.md` khi đóng.
+
