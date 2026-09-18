@@ -265,7 +265,8 @@ implements.** Everything else is a subagent with one role, one model, and a brie
 | Role | Runs as | Model | Owns | Does not |
 |---|---|---|---|---|
 | **Manager** | main session | Opus | the branch (§8), splitting the approved plan into steps, choosing the model per step, **verifying every finding** (below), running the gates (§7), the delivery log, the pull request, every word the owner reads | write code, write the design, or change the plan |
-| **Architect** | subagent, background | Fable | `DESIGN.md`, ADRs, `docs/reference/`, the plan (§1) — **written to disk**. **Internet research first, every time**: prior art, the spec, what sibling engines measured; the plan's *Những gì đã biết chắc* cites it or says the search found nothing | touch `crates/`; design from memory |
+| **Architect** | subagent, background | Fable | `DESIGN.md`, ADRs, `docs/reference/`, the plan (§1) — **written to disk**. **Internet research before any decision** — when designing, and again whenever a problem is hard or the way to solve it is not already clear: prior art, the spec, what sibling engines measured, how others solved it; the plan's *Những gì đã biết chắc* and every ADR cite what was found or say the search found nothing | touch `crates/`; decide from memory |
+| **Senior reviewer** | subagent, fresh context, **escalation only** | Fable | a finding the senior developer could not close: open after one fix round, disputed between reviewer and author, or needing the spec, the design and the code held at once. Its verdict on that finding is final | write the fix — it goes back to the senior developer with the verdict; review a whole PR |
 | **Senior developer** | subagent, fresh context | Opus | reviewing a step against the plan and gates, fixing verified findings, any step touching `codec`, `session`, `engine` or `transport` | re-design — a design problem goes to the architect through the manager |
 | **Developer** | subagent | Sonnet | one step with named files and named tests | choose a design, or touch a file the brief did not name |
 | **Runner** | subagent | Haiku | a mechanical task with one right answer: run and quote, grep, fetch `vendor/`, repair doc links | anything that needs judgement |
@@ -300,6 +301,11 @@ costs more than a re-run; reasoning the brief cannot spell out. The architect is
   manager writes it into `docs/reference/` in the same commit (§4).
 - **A reviewer is a different lens, not a second copy**: a fresh context given the plan, not the
   manager's reasoning. One senior review per step that touches §2, one per pull request otherwise.
+- **Review escalates too.** A finding the Opus reviewer cannot close — open after one fix round,
+  disputed, or needing spec + design + code held together — goes to the Fable reviewer, fresh
+  context, briefed with the finding, both sides' evidence and the plan row. One Fable review per
+  finding, never per PR; *confirmed* → senior developer, *refuted* → evidence in the PR, *design*
+  → architect.
 - **Escalate, do not re-brief.** A developer that reports ambiguity or exceeds its brief goes one
   tier up. The same model is never briefed a third time on one step.
 - **The owner sees only what the manager writes**, in Vietnamese, with evidence — never "the agent
