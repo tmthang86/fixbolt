@@ -190,6 +190,16 @@ inherit the defect above: read `presession::identity_of` and `Route` before writ
 loop of your own. `serve()` is the single-threaded convenience and the wrong production shape
 for a gateway; read it as an example.
 
+**How often `serve`/`serve_hft` ask the listener is a knob, and it trades latency for fewer
+`accept4` calls.** `Limits::listener_every` (`ListenerEveryTurns`, default 1) sets how many
+`pump` iterations pass between one poll of the listener and the next in the spin half; the
+accept latency this trades away is at most `listener_every` × one turn, so size it for how long
+a reconnect storm may fairly wait, not for steady-state traffic. **`Settings::listener_every()`
+is parsed and returned but read by nothing in the library** — the embedder must pass it into
+`Limits` explicitly with `Limits::with_listener_every`, the same way any other `Settings` value
+that needs to reach `Limits` is wired by hand. `serve_sharded_hft` does not use this knob at
+all: its acceptor is its own blocking thread, off the shard loops entirely.
+
 ### Cores: you name them, the engine pins and reads back
 
 `fixbolt_engine::affinity`, behind the `affinity` feature, Linux only

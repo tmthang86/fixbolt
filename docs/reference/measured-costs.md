@@ -3657,4 +3657,8 @@ rebuild) ended.
 - **Whether fixbolt's admin path actually costs more than nanofix's.** The sign of the
   same-procedure difference flipped between procedures (+416 / −175 ns); no difference is
   claimed at admin p50.
+- **Item 89's effect on the per-message path and on accept latency.** The cadence is built
+  (`Limits::listener_every`, `pump`'s `ListenerCadence`, ADR-0069, Proposed) with default 1, so
+  nothing on the hot path changed by shipping it. What N saves at N > 1, and what it costs a
+  fresh connect, is unmeasured: boot C runs the A/B, N ∈ {1, 16, 256}, per ADR-0068.
 

@@ -240,4 +240,14 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4.
 
 ## Nhật ký giao hàng
 
-(Trống — chưa có bước nào đóng.)
+**2026-09-18, trên Mac, branch `plan/listener-poll-share` (worktree `../fixbolt-wt-89`), PR #76.**
+
+- Bước 1 — `d5ae645`: ADR-0069 Proposed; hai con số ước lượng dán nhãn `[estimated]`.
+- Bước 2 — `1ae2761`: `Limits::listener_every`, `with_listener_every` từ chối 0, khoá `ListenerEveryTurns`, hàng `docs/CONFIGURATION.md` (34 khoá). Developer dừng đúng vì brief cấm docs trong khi gate `doc_table` bắt buộc; cho phép rồi làm tiếp.
+- Bước 3 — `ab476a1`: `ListenerCadence` (struct thuần, `poll_now`/`woke`) trong `pump`; `tests/listener_cadence.rs` 4 test. **Khác plan**: test (iii) không chạy 59 def qua `pump` được vì `serve_*` tự dựng `SystemClock`; thay bằng một session thật qua `serve_hft` N=1 cộng `--test wire` 59/59 không đổi. Test (ii) không đếm được idle vì không có seam công khai; thay bằng N = 5 000 000 để nhịp tự thành đồng hồ. Reversal: bỏ reset sau `idle_with` → test `standard_…` đỏ (WouldBlock sau 5 s); bộ đếm không về 0 → 4 test socket **vẫn xanh**, nên đã tách struct thuần và test đơn vị: reversal đó làm `every_three_asks_once_in_three` đỏ.
+- Bước 4 — `79b3ec1`: `w2w --listener-every`, `logon-rtt`, `LISTENER_EVERY` trong baseline script. w2w có `pump` riêng, không đi qua `serve_*`, nên nhịp được chép, không dùng chung.
+- Senior review (Opus, context mới): không chặn merge. F1–F3 sửa ở `79ce314` (bỏ hai `unreachable!`, in `listener-every: N` và `connect-rtt`). F4 (khoá settings không tự nối vào `Limits`) ghi vào GUIDE/CONFIGURATION. F5–F6 ghi ở đây. Năm `#[allow(too_many_arguments)]` mức hàm trong `w2w` để nguyên.
+- Bước 5 **chưa làm** — cần bàn §9 (boot C). Mặc định N = 1, đường nóng không đổi. Không có số đo nào.
+- Bước 6 — commit này: DESIGN §4 D8, GUIDE, measured-costs *What is not proven*, CHANGELOG, STATUS item 89 thu hẹp về "đo ở boot C".
+- Bẫy gặp ngoài plan: `check-links.py 2>&1 | tail -1` che dòng FAIL vì hai stream qua pipe đảo thứ tự — ghi thành luật 5 trong `docs/reference/reading-the-output-you-grepped-for.md`, script giờ flush stdout trước FAIL.
+- CI: ghi ở *Start here* của `STATUS.md` khi đóng.
