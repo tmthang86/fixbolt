@@ -3734,6 +3734,12 @@ stronger nor weaker (no build preceded either procedure here).
   each. The application path would pay the same and hide it inside its 2.6 µs. **Not tested**:
   `perf stat` on the backlog path, or `busy_read` 0 versus 50, at N = 1 and 16 would decide it.
   Open, in `STATUS.md` item 89's closing row.
+- **A trap, found by C-49's syscall counts and worth one sentence here**: `tools/w2w`'s
+  `--listener-every` defaulted to **1** in its own argument parser and did not read `Limits`'
+  default, so the moment the library's default moved to 16 (this step), every later `w2w` run
+  without the flag — C-84, C-85, C-49 in this boot — ran at N = 1 while the library shipped 16.
+  The three are labelled N = 1 where they are published; as of the next commit `w2w` takes
+  `Limits`' default. Two copies of a default are two defaults (ADR-0069 *Bad*, the second copy).
 - **Connect and logon did not move with N**: per-run `connect-rtt` 68–85 µs and `logon-rtt`
   1.07–1.12 ms in every run of every arm. One connect per run, on the client's clock, through
   the pre-session stage; it bounds what a fresh connection experiences and is not the accept
@@ -3783,7 +3789,8 @@ N ≈ 11; the busy turn at N > 1 is still unmeasured, so the ceiling is not rais
 `[measured 2026-09-18]` item 85's only recorded candidate for the 2026-09-14/15 drift was
 *"procedure 1 began minutes after a build slot"*. One variable: **procedure 1 started under two
 minutes after `cargo build --release` finished; procedure 2 after ten minutes of an idle
-machine**; `hft` admin, `off`, `ListenerEveryTurns=16`, 10 runs × 20 000 each, same commit
+machine**; `hft` admin, `off`, listener cadence N = 1 (`w2w`'s own default, see C-89's trap), 10 runs ×
+20 000 each, same commit
 `85460c1`, same binary, `pass 16 fail 0 unknown 0`.
 
 | | procedure 1 (< 2 min after the build) | procedure 2 (10 min idle) | diff |
@@ -3804,16 +3811,17 @@ sensor. What moved ten arms by 4.7–6.7% on 2026-09-15 remains unexplained; ite
 
 `[measured 2026-09-18]` four arms, `hft` admin, loopback, `tools/w2w --tls <engine> --client-tls
 <client>`, 10 runs × 20 000, two procedures in opposite arm order, commit `85460c1`'s code,
-`pass 16 fail 0 unknown 0`. Every arm reproduced (largest difference 2.9%, at p99.9). p50 ns,
-procedure 1 ‖ procedure 2; *added* is against the same procedure's `off` arm, boot C N = 16
-(16 381 ‖ 16 361):
+`pass 16 fail 0 unknown 0`; `w2w` at listener cadence **N = 1** (its `--listener-every`
+default, which did not follow `Limits`' 16 — C-89's trap, below). Every arm reproduced (largest
+difference 2.9%, at p99.9). p50 ns, procedure 1 ‖ procedure 2; *added* is against the same
+procedure's `off` arm at the same cadence, boot C N = 1 (16 070 ‖ 16 080):
 
 | engine | client | p50 | added over `off` | against userspace/userspace |
 |---|---|---|---|---|
-| kTLS | kTLS | 25 503 ‖ 25 473 | +9 122 ‖ +9 112 | +4 679 ‖ +4 754 |
-| userspace | userspace | 20 824 ‖ 20 719 | +4 443 ‖ +4 358 | — |
-| kTLS | userspace | 21 175 ‖ 21 250 | +4 794 ‖ +4 889 | **+351 ‖ +531** (the engine's kTLS) |
-| userspace | kTLS | 22 177 ‖ 22 147 | +5 796 ‖ +5 786 | +1 353 ‖ +1 428 (the client's kTLS) |
+| kTLS | kTLS | 25 503 ‖ 25 473 | +9 433 ‖ +9 393 | +4 679 ‖ +4 754 |
+| userspace | userspace | 20 824 ‖ 20 719 | +4 754 ‖ +4 639 | — |
+| kTLS | userspace | 21 175 ‖ 21 250 | +5 105 ‖ +5 170 | **+351 ‖ +531** (the engine's kTLS) |
+| userspace | kTLS | 22 177 ‖ 22 147 | +6 107 ‖ +6 067 | +1 353 ‖ +1 428 (the client's kTLS) |
 
 - **The engine's kTLS costs the engine 0.35–0.53 µs over its own userspace `rustls`**, with
   the same client — about 2% of the round trip. That is the whole engine-side price of ADR-0005
@@ -3832,6 +3840,76 @@ procedure 1 ‖ procedure 2; *added* is against the same procedure's `off` arm, 
 The 2026-09-14 both-ends table (*TLS on the wire*, above) is unchanged as the figure it was;
 this section says which end owns how much of it. `ADR-0070` decision 5 records it.
 
+### C-91 — the 3–8% slowdown is code, not the machine
+
+`[measured 2026-09-18]` one A/B, same boot, `pass 16 fail 0 unknown 0`: a worktree `../fb-0905`
+at **`0149b26`** — the commit that recorded the 2026-09-05 baseline lines — against today's tree
+(commit `85460c1`'s code), **20 rounds alternating tree order**, the three suites `serialize`,
+`density`, `validate` each round, medians of 20. Logs `target/boot-c-evidence/c91-runs.txt`,
+`c91-timeline.txt`. ns/op, old → new:
+
+| case | `0149b26` | today | diff |
+|---|---|---|---|
+| engine turn, 1 busy sessions | 1 660.2 | 1 817.2 | **+9.5%** |
+| engine turn, ring 4096 / 512 / 64 | 1 680.8 / 1 675.5 / 1 676.1 | 1 801.0 / 1 787.9 / 1 800.1 | +7.2 / +6.7 / +7.4% |
+| engine turn, 2 / 4 / 8 busy | 3 333.8 / 6 725.0 / 13 519.2 | 3 659.9 / 7 326.6 / 14 788.1 | +9.8 / +8.9 / +9.4% |
+| engine turn, 16 / 32 / 64 busy | 27 447.5 / 56 907.7 / 121 587.5 | 30 026.8 / 61 886.7 / 130 743.0 | +9.4 / +8.7 / +7.5% |
+| validate Heartbeat | 167.9 | 173.4 | +3.3% |
+| validate NewOrderSingle | 909.7 | 956.7 | +5.2% |
+| validate NewOrderSingle, w2w bytes | 927.8 | 968.5 | +4.4% |
+| validate TestRequest, w2w bytes | 216.3 | 229.4 | +6.1% |
+| encode ExecutionReport (template) | 245.8 | 237.4 | **−3.4%** |
+| SendingTime from the cache | 4.9 | 5.8 | +18.4% |
+
+**Verdict: code.** The old commit, built and run in today's boot on today's kernel
+(`7.0.0-31`), reads its own 2026-09-05 numbers (`engine turn, 1 busy` 1 660 against the 1 657.7
+line), so the kernel `-30 → -31` candidate is dead and the slowdown is in commits merged since
+`0149b26`: **~7–10% on every engine-turn case** — larger than boot B's +3.0% reading of the same
+cases suggested — and 3–6% on the validate cases, with `encode ExecutionReport (template)` 3.4%
+*faster*, as boot B also saw. Two facts narrow the bisect (the plan's C-91b): the toolchain is
+pinned at `1.98.0` throughout, and the validate cases are pure user space, so their 3–6% points
+at `588b350` (`52=` read at every precision, 2026-09-09) or its neighbours, while the engine-turn
+cases add a `recvfrom` per turn and point at the TLS branch's changes to `pump` and the transport
+(2026-09-09 → 13). Note that this run's *new* tree carried `ListenerEveryTurns=16` in the library
+— `density.rs` drives `Engine::turn` directly, so the cadence does not enter it — and the cadence
+would make a turn cheaper, not dearer, in any case.
+
+### C-49 — in situ: the kernel does not charge the application path for its payload
+
+`[measured 2026-09-18]` `perf trace -s` over whole `hft` runs, engine thread only, both paths,
+commit `85460c1`'s code, `w2w` at listener cadence N = 1 (its own default — the C-89 trap above),
+`pass 16 fail 0 unknown 0`; logs `target/boot-c-evidence/c49-*.perf` and `.w2w`. **The tracer
+inflates every syscall about 2×** — p50 under trace read 35.2–35.8 µs on *both* paths — so only
+the *difference* between the paths is a reading, never a level.
+
+| engine thread, per run | admin | app |
+|---|---|---|
+| `sendto`, 22 001 calls, total time | 186.608 ms / 186.508 ms (two runs) | 187.663 ms / 183.876 ms |
+| `sendto`, average | 8.48 µs | 8.53 / 8.36 µs |
+| `recvfrom`, average | 2.47 µs | 2.45 µs |
+
+**The application path's `sendto` differs from the administrative one by ≤ 50 ns and in both
+signs; `recvfrom` by 20 ns.** The kernel's own share of the larger payload is ~0 at this
+instrument's resolution, which is what the +24.5 ns slope row of `DESIGN.md` §8 predicted from
+the 8 → 8 192 byte lever. So the ~3 130 ns of the application round trip that lies outside one
+engine turn (D_in 765.5 ns) is **not payload-proportional kernel work**.
+
+Side reading, and the trap it found: `accept4` was called 40.6–45.7 k times per run against
+40.6–45.6 k `recvfrom` — **one `accept4` per spin turn**, although the library's default is 16
+since C-89. `w2w`'s `--listener-every` defaulted to 1 in its own parser and did not read
+`Limits`; every flagless `w2w` run in this boot after C-89 ran at N = 1. Answered, not open; the
+fix is in the next commit.
+
+**Item 49 closes here, by decision.** Three probes have retired the named candidates with
+numbers — the dictionary pass (17.4%, item 39), the payload copy (0.9%, and now in situ ~0),
+`Journal::put` (8.9 ns) — and the client's timed loop is byte-for-byte the same on both paths.
+The remainder is published in §8 as *unattributed, outside the engine turn and not the kernel's
+payload work*. The one instrument that would split it is named and not scheduled: software
+`SO_TIMESTAMPING` (TX/RX software stamps, which loopback supports) on both sockets, giving four
+segments per round trip — client stack out, engine-side dwell socket-in → socket-out, engine
+stack out, client stack in; `w2w --wire-timestamps` already parses the cmsg (`ts[0]`), so it is
+a `--stamp software` arm of some later boot if the number is ever needed.
+
 ### What is not proven
 
 - **A mechanism for the administrative path's +0.3 µs.** One candidate above, untested.
@@ -3842,6 +3920,9 @@ this section says which end owns how much of it. `ADR-0070` decision 5 records i
 - **The in-window `accept4` count**, derived as stated above.
 - **A mechanism for both-kTLS being superadditive** (C-84): one candidate, not isolated.
 - **What moved boot B's ten arms** (C-85 refuted the only candidate; nothing else was varied).
+- **Which commit(s) between `0149b26` and `85460c1` cost the 7–10%** (C-91b, the bisect).
+- **What the ~3 130 ns outside the engine turn is** (item 49, closed by decision; the software
+  stamp probe is named above and not scheduled).
 - **The busy turn at N > 1** (ADR-0025 open question 1), so the `hft` ceiling stays 4 although
   the measured wakeup puts the arithmetic crossover at N ≈ 11.
 

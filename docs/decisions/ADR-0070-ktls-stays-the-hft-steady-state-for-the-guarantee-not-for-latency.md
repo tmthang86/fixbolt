@@ -76,10 +76,11 @@ What the search found, 2026-09-18:
 5. **The engine's own share is measured, and it is small.** `[measured 2026-09-18, boot C
    step C-84]` §9 desktop, `pass 16 fail 0 unknown 0`, commit `85460c1`'s code, loopback,
    `hft` admin, 10 runs × 20 000, two procedures in opposite order, every arm reproduced (max
-   2.9% at p99.9); `off` reference is boot C's `ListenerEveryTurns=16` arm, 16 381 ‖ 16 361 ns.
-   p50 ns, procedure 1 ‖ 2: kTLS/kTLS 25 503 ‖ 25 473 (+9.1 µs); userspace/userspace 20 824 ‖
-   20 719 (+4.4 µs); **engine kTLS + client userspace 21 175 ‖ 21 250 (+4.8 µs)**; engine
-   userspace + client kTLS 22 177 ‖ 22 147 (+5.8 µs). So, with the same userspace client, **the
+   2.9% at p99.9); `tools/w2w` ran at listener cadence N = 1 (its own default, which did not
+   follow `Limits`' 16 — ADR-0069 *Measured*), so the `off` reference is boot C's N = 1 arm,
+   16 070 ‖ 16 080 ns. p50 ns, procedure 1 ‖ 2: kTLS/kTLS 25 503 ‖ 25 473 (+9.4 µs);
+   userspace/userspace 20 824 ‖ 20 719 (+4.7 µs); **engine kTLS + client userspace 21 175 ‖
+   21 250 (+5.1 µs)**; engine userspace + client kTLS 22 177 ‖ 22 147 (+6.1 µs). So, with the same userspace client, **the
    engine's kTLS costs 351 ‖ 531 ns more than its userspace `rustls`** — about 0.4 µs, ~2% of
    the round trip; the client's kTLS costs the client 1 353 ‖ 1 428 ns; and both-kTLS is
    **superadditive** by ~2.8–3.0 µs over the sum of the parts (a candidate, not a cause: two

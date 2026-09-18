@@ -211,6 +211,13 @@ app p99.9); every p50 pair is within 0.2%.
   well, where `Spin::idle` resets the countdown and the listener is asked every iteration
   (consequence 1, *Bad*) — which is why the two `accept4` totals are close.
 
+**One trap, paid for the same day**: `tools/w2w` parsed `--listener-every` with its own default
+of 1 instead of reading `Limits`', so after this decision moved the library to 16, boot C's C-84,
+C-85 and C-49 ran at N = 1 without anyone asking for it — found by C-49's `accept4` count (one per
+spin turn). They are published as N = 1 arms; as of the next commit `w2w` follows `Limits`'
+default. The *second copy of the rule* consequence below was written for the countdown and it
+applies to the default too.
+
 What is not proven by this: the effect on a NIC (loopback only), on `standard` (out of scope by
 decision 3 — every wake is an accept), at more than one session, or the accept delay itself at
 N = 16 under load (consequence 2's formula stands as arithmetic).

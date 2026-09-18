@@ -156,7 +156,7 @@ verdicts: [measured-costs.md](measured-costs.md), *Boot B, 2026-09-15*, sections
 `[measured 2026-09-18]` boot C step C-85 of
 [plans/2026-09-18-closing-the-open-items.md](../plans/2026-09-18-closing-the-open-items.md), one
 variable: procedure 1 started **under two minutes after `cargo build --release`**, procedure 2
-after **ten minutes idle**; `hft` admin `off` (`ListenerEveryTurns=16`), 10 runs × 20 000, commit
+after **ten minutes idle**; `hft` admin `off` (`w2w` at listener cadence N = 1), 10 runs × 20 000, commit
 `85460c1`, same binary, `check-machine.sh` `pass 16 fail 0 unknown 0`. p50 16 005 ‖ 15 990
 (0.09%), p99 21 000 ‖ 20 794 (0.99%), p99.9 22 978 ‖ 22 312 (2.99%) — **reproduced at every
 percentile**. The one candidate this page had recorded twice is refuted: a build immediately

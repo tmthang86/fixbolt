@@ -1361,18 +1361,20 @@ Three readings:
 ### Boot C, mixed TLS: the engine's own kTLS costs ~0.4 µs over userspace; the client's kTLS costs the rest
 
 `[measured 2026-09-18]` same §9 desktop, `pass 16 fail 0 unknown 0`, commit `85460c1`'s code,
-loopback, **`hft` admin**, `ListenerEveryTurns` at its new default 16, 10 runs × 20 000 per arm,
+loopback, **`hft` admin**, **`tools/w2w` at listener cadence N = 1** (its `--listener-every`
+defaulted to 1 and did not follow `Limits`' new default of 16 — the trap under *Boot C* above),
+10 runs × 20 000 per arm,
 two procedures in opposite arm order — every arm reproduced (largest difference 2.9%, at
 p99.9). `tools/w2w` now takes a TLS mode per end (`--client-tls`), so the two mixed arms split
 the 9 µs the 2026-09-14 table could not. p50 ns, procedure 1 ‖ procedure 2; *added* is against
-the same procedure's `off` arm (boot C N = 16: 16 381 ‖ 16 361):
+the same procedure's `off` arm at the same cadence (boot C N = 1: 16 070 ‖ 16 080):
 
 | engine | client | p50, proc 1 ‖ 2 | added over `off` |
 |---|---|---|---|
-| kTLS | kTLS | 25 503 ‖ 25 473 | **+9 122 ‖ +9 112** |
-| userspace | userspace | 20 824 ‖ 20 719 | +4 443 ‖ +4 358 |
-| **kTLS** | userspace | 21 175 ‖ 21 250 | +4 794 ‖ +4 889 |
-| userspace | **kTLS** | 22 177 ‖ 22 147 | +5 796 ‖ +5 786 |
+| kTLS | kTLS | 25 503 ‖ 25 473 | **+9 433 ‖ +9 393** |
+| userspace | userspace | 20 824 ‖ 20 719 | +4 754 ‖ +4 639 |
+| **kTLS** | userspace | 21 175 ‖ 21 250 | +5 105 ‖ +5 170 |
+| userspace | **kTLS** | 22 177 ‖ 22 147 | +6 107 ‖ +6 067 |
 
 Three readings ([ADR-0070](decisions/ADR-0070-ktls-stays-the-hft-steady-state-for-the-guarantee-not-for-latency.md)
 decision 5):
@@ -1447,8 +1449,8 @@ which is why nothing in the design moves, but it is three times what this page s
 | **`Journal::put` of the reply into the ring** | **+8.9** | `journal put, 191 bytes, walking`. The administrative path never does it, so the whole figure counts |
 | **measured subtotal** | **~1 128** | **28.9% of the gap** |
 | the session's own `Heartbeat` serialise, which the application path does *not* do | −? | **no committed case**, so it is not subtracted |
-| the kernel's own share, **measured in situ** rather than by slope: median `sendto` and `recvfrom` on the engine tid, application minus administrative | *awaiting boot C step C-49* | [plans/2026-09-18-closing-the-open-items.md](plans/2026-09-18-closing-the-open-items.md) row C-49: `perf trace -s` / `strace -T` on the engine tid over 20 000 round trips per path; the difference of the two syscall medians is the kernel's number for the bigger payload. Until it exists, the +24.5 ns slope row above is the only kernel term, and it was read off an 8 → 8192 byte lever |
-| **still unattributed** | **~2 770** | **71.1%** |
+| the kernel's own share, **measured in situ** rather than by slope: `sendto` and `recvfrom` on the engine tid, application minus administrative | **~0 — ≤ 50 ns, of both signs** | `[measured 2026-09-18]` boot C step C-49, `perf trace -s` over whole `hft` runs (the tracer inflates every syscall ~2× — p50 under trace 35.2–35.8 µs on *both* paths — so only differences count), 22 001 `sendto` per run: admin 186.608 / 186.508 ms total (avg 8.48 µs), app 187.663 / 183.876 ms (avg 8.53 / 8.36 µs); `recvfrom` avg 2.47 µs admin, 2.45 µs app. **The kernel does not charge the application path for its bigger payload at this instrument's resolution.** This confirms the +24.5 ns slope row and retires "kernel work proportional to payload" as a candidate for the remainder |
+| **still unattributed** | **~2 770** | **71.1%** — and, `[2026-09-18]` after C-49, **not the kernel's payload work, not the client's loop (identical on both paths), not `Journal::put`, not the dictionary pass beyond its 679 ns.** What is left is ~3.1 µs *outside* one engine turn (D_in is 765.5 ns) and outside proportional syscall cost. It is published as unattributed **by decision** ([STATUS.md](../STATUS.md) item 49's closing row): three probes have retired the named candidates and each cost a boot. The one probe that would split it is named and not scheduled — software `SO_TIMESTAMPING` stamps (TX/RX software, which loopback supports) on **both** sockets, so a round trip reads as four segments: client stack out, engine-side dwell (socket in → user → socket out), engine stack out, client stack in. `w2w --wire-timestamps` already parses the cmsg (software stamp = `ts[0]`); it is the `--stamp software` arm of a later boot, if anyone needs the split |
 
 **The largest candidate this page named turned out to be a sixth of the answer.** STATUS item
 39 wrote the dictionary pass down as the leading explanation for the 3 898 ns and it is
