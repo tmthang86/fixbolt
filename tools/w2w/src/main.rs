@@ -995,11 +995,21 @@ fn paced_run_fits(
 
 /// `--listener-every <N>`: how many turns of w2w's own pump apart the listener
 /// is asked, ADR-0069 decision 1's rule copied for this binary's loop. Absent
-/// is `1` (today's loop, unchanged); present with `0` is refused the same way
-/// a missing value is, rather than silently read as "never poll".
+/// is the library's own default (`Limits::listener_every`, `16` as of
+/// ADR-0069 — this binary must measure what ships, never a value of its own);
+/// present with `0` is refused the same way a missing value is, rather than
+/// silently read as "never poll".
 fn listener_every_of(args: &[String]) -> Result<std::num::NonZeroU32, String> {
     match value_of::<u32>(args, "--listener-every")? {
-        None => Ok(std::num::NonZeroU32::MIN),
+        // Read off `Limits`, not hard-coded here: `new` always sets its
+        // `listener_every` field to the crate's own default, so a minimal,
+        // otherwise-unused `Limits` is how a binary outside the crate reads
+        // that constant back — `DEFAULT_LISTENER_EVERY` itself is private.
+        // `(1, 1)` are both nonzero, so `new` never takes the `Err` arm; the
+        // fallback below is unreachable, and `unwrap`/`expect` are denied
+        // (`CLAUDE.md` §2 rule 7), so it is named rather than unwrapped.
+        None => Ok(fixbolt_engine::presession::Limits::new(1, 1)
+            .map_or(std::num::NonZeroU32::MIN, |limits| limits.listener_every())),
         Some(0) => Err(
             "--listener-every 0: refused — a cadence of zero never asks the listener at \
                  all; pass at least 1"
@@ -4814,10 +4824,16 @@ mod tests {
     }
 
     #[test]
-    fn listener_every_defaults_to_one() {
+    fn listener_every_defaults_to_the_library_default() {
+        // The instrument must measure what ships: an absent `--listener-every`
+        // reads `Limits::listener_every()`, not a value of its own, so this
+        // asserts against the library rather than against a literal that
+        // could silently drift away from `DEFAULT_LISTENER_EVERY` again.
+        let library_default = fixbolt_engine::presession::Limits::new(1, 1)
+            .map_or(std::num::NonZeroU32::MIN, |limits| limits.listener_every());
         assert_eq!(
-            listener_every_of(&argv("--listen 127.0.0.1:0")).map(std::num::NonZeroU32::get),
-            Ok(1)
+            listener_every_of(&argv("--listen 127.0.0.1:0")),
+            Ok(library_default)
         );
     }
 

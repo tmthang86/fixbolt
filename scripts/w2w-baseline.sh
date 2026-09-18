@@ -135,8 +135,10 @@ W2W_EXTRA=${W2W_EXTRA:-}
 EXTRA_ARGS=()
 [ -n "$W2W_EXTRA" ] && read -ra EXTRA_ARGS <<< "$W2W_EXTRA"
 # `--listener-every`, plan `2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
-# step 4: empty is no flag at all, so a run that never sets it is `tools/w2w`'s
-# default cadence of 1 — today's loop, unchanged. Set, it lets one procedure
+# step 4: empty is no flag at all, so a run that never sets it is the library's
+# default cadence — `Limits::listener_every()`, 16 since ADR-0069 was accepted
+# (before 2026-09-19 w2w defaulted to 1 on its own, and boot C's C-84/C-85/C-49
+# arms ran at 1). Set, it lets one procedure
 # alternate `LISTENER_EVERY=1` and `LISTENER_EVERY=<N>` arms without editing
 # the script, which is what the A/B in step 5 needs. Same reach as
 # `W2W_EXTRA` above: the combined run and the `--listen` half only, because
