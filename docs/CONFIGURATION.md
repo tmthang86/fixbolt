@@ -33,7 +33,7 @@ guessing which of the two looser readings was meant.
 **Seven probes read this table; the *Meaning* and notes cells are prose and are
 read by a person** `[added 2026-09-13; changed 2026-09-13, was six]`.
 
-**Thirty-three keys** are recognised `[changed 2026-09-13, was thirty]`.
+**Thirty-four keys** are recognised `[changed 2026-09-18, was thirty-three]`.
 
 **What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The
 `doc_table` tests in [`settings.rs`](../crates/engine/src/settings.rs) read this section and
@@ -89,6 +89,7 @@ the code and changed this count sentence to *"Four hundred keys"*, and the test 
 | `EndDay` | Last day of a weekly session | `Monday`/`Mon` … `Sunday`/`Sun` | none | `[DEFAULT]` or `[SESSION]` | [`settings.rs:103`](../crates/engine/src/settings.rs#L103), [`settings.rs:590`](../crates/engine/src/settings.rs#L590) |
 | `Weekdays` | Days a daily session opens on | comma-separated, e.g. `Mon,Tue,Wed,Thu,Fri` | all seven days | `[DEFAULT]` or `[SESSION]` | [`settings.rs:104`](../crates/engine/src/settings.rs#L104), [`settings.rs:629`](../crates/engine/src/settings.rs#L629) |
 | `FileLogPath` | Path of the message log (both directions, one line per message). One engine writes one file; `conn=` and `shard=` tell counterparties apart inside it | any path the process can append to | none (no log) | `[DEFAULT]` **only**; a `[SESSION]` carrying it is refused | [`settings.rs`](../crates/engine/src/settings.rs), [`msglog.rs`](../crates/engine/src/msglog.rs) |
+| `ListenerEveryTurns` | `hft`-mode spin turns between one poll of the listener and the next — the accept latency this trades away is at most `ListenerEveryTurns` × one turn ([ADR-0069](decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)). Parsed here but read by nothing in the library; the embedder wires it into `Limits` with `Limits::with_listener_every` | positive integer, turns | `1` (poll every turn, today's loop) | `[DEFAULT]` **only**; a `[SESSION]` carrying it is refused | [`presession.rs`](../crates/engine/src/presession.rs), [`settings.rs`](../crates/engine/src/settings.rs) |
 
 **Which role the file describes, and where to dial** `[added 2026-09-05]`:
 

@@ -183,6 +183,13 @@ enum Key {
     /// **in a file of its own** — QuickFIX allows it inside the certificate
     /// file, this engine does not, for either role.
     ClientCertificateKeyFile,
+    /// **`[DEFAULT]` only, engine-wide.** How many `hft`-mode spin turns pass
+    /// between one poll of the listener and the next —
+    /// `docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md`.
+    /// No key in QuickFIX names this: the shared spin loop this tunes does
+    /// not exist there. `1` (today's loop, poll every turn) unless the
+    /// operator says otherwise.
+    ListenerEveryTurns,
 }
 
 impl Key {
@@ -224,6 +231,7 @@ impl Key {
             "CertificationAuthoritiesFile" => Some(Self::CertificationAuthoritiesFile),
             "ClientCertificateFile" => Some(Self::ClientCertificateFile),
             "ClientCertificateKeyFile" => Some(Self::ClientCertificateKeyFile),
+            "ListenerEveryTurns" => Some(Self::ListenerEveryTurns),
             _ => None,
         }
     }
@@ -263,6 +271,7 @@ impl Key {
             Self::CertificationAuthoritiesFile => "CertificationAuthoritiesFile",
             Self::ClientCertificateFile => "ClientCertificateFile",
             Self::ClientCertificateKeyFile => "ClientCertificateKeyFile",
+            Self::ListenerEveryTurns => "ListenerEveryTurns",
         }
     }
 }
@@ -383,6 +392,11 @@ pub enum Problem {
     /// number and the door that works, [`Settings::into_tls_table`] or
     /// [`Settings::into_tls_initiator`].
     NeedsTlsDoor,
+    /// `ListenerEveryTurns=0` — a cadence of zero never polls the listener,
+    /// so no connection would ever be accepted. The same mistake
+    /// [`presession::LimitError::NoListenerCadence`](crate::presession::LimitError::NoListenerCadence)
+    /// refuses on the builder this key feeds.
+    NoListenerCadence,
 }
 
 impl fmt::Display for Problem {
@@ -422,6 +436,9 @@ impl fmt::Display for Problem {
             Self::NeedsFeature => "this engine was built without the feature this key needs",
             Self::NeedsTlsDoor => {
                 "this file asks for TLS, and this door would carry it as plaintext"
+            }
+            Self::NoListenerCadence => {
+                "a cadence of zero never polls the listener — no connection would ever be accepted"
             }
         };
         f.write_str(s)
@@ -547,7 +564,8 @@ impl<'a> Block<'a> {
             | Key::TlsRequireKernel
             | Key::CertificationAuthoritiesFile
             | Key::ClientCertificateFile
-            | Key::ClientCertificateKeyFile => {
+            | Key::ClientCertificateKeyFile
+            | Key::ListenerEveryTurns => {
                 return Err(SettingsError::at(line, Problem::DefaultOnly, key.name()));
             }
         };
@@ -686,7 +704,8 @@ impl<'a> TlsBlock<'a> {
             | Key::ValidateUserDefinedFields
             | Key::SendNextExpectedMsgSeqNum
             | Key::EnableLastMsgSeqNumProcessed
-            | Key::TimestampPrecision => None,
+            | Key::TimestampPrecision
+            | Key::ListenerEveryTurns => None,
         }
     }
 
@@ -1036,7 +1055,7 @@ fn spelled_exactly_as_digits(value: &str) -> bool {
 }
 
 /// The counterparties a configuration file names.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Settings {
     configs: Vec<Config>,
     log: Option<PathBuf>,
@@ -1057,6 +1076,31 @@ pub struct Settings {
     /// [`Self::into_initiator`] can refuse a TLS file by line. Zero when the
     /// file did not ask for TLS.
     tls_line: usize,
+    /// `ListenerEveryTurns=`, fed straight to
+    /// [`presession::Limits::with_listener_every`](crate::presession::Limits::with_listener_every).
+    /// `1` (today's loop) when the file did not say.
+    listener_every: std::num::NonZeroU32,
+}
+
+/// `ListenerEveryTurns=` unless the file says otherwise — item 90's cadence
+/// of one turn, which is today's loop and changes nothing for a file written
+/// before this key existed.
+const DEFAULT_LISTENER_EVERY_TURNS: std::num::NonZeroU32 = std::num::NonZeroU32::MIN;
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            configs: Vec::new(),
+            log: None,
+            role: ConnectionType::default(),
+            role_line: 0,
+            dial: None,
+            tls: None,
+            client_tls: None,
+            tls_line: 0,
+            listener_every: DEFAULT_LISTENER_EVERY_TURNS,
+        }
+    }
 }
 
 /// The first backoff delay when a file declares an initiator and says nothing
@@ -1089,6 +1133,7 @@ impl Settings {
         let mut sessions: Vec<Block<'_>> = Vec::new();
         let mut log: Option<(usize, &str)> = None;
         let mut role: Option<(usize, ConnectionType)> = None;
+        let mut listener_every: Option<(usize, &str)> = None;
         let mut tls = TlsBlock::default();
         // Which block the next `Key=Value` belongs to. `None` until the first
         // header, so a setting above it is refused rather than silently landing
@@ -1157,6 +1202,16 @@ impl Settings {
                     }
                 };
                 role = Some((line, what));
+                continue;
+            }
+            if key == Key::ListenerEveryTurns {
+                if !in_default {
+                    return Err(SettingsError::at(line, Problem::DefaultOnly, name));
+                }
+                if listener_every.is_some() {
+                    return Err(SettingsError::at(line, Problem::RepeatedKey, name));
+                }
+                listener_every = Some((line, value));
                 continue;
             }
             // `[DEFAULT]`-only, like `FileLogPath` and for the same kind of
@@ -1250,6 +1305,19 @@ impl Settings {
             }
             configs.push(cfg);
         }
+        let listener_every = match listener_every {
+            None => DEFAULT_LISTENER_EVERY_TURNS,
+            Some(v) => {
+                let n: u32 = number(v, Key::ListenerEveryTurns)?;
+                std::num::NonZeroU32::new(n).ok_or_else(|| {
+                    SettingsError::at(
+                        v.0,
+                        Problem::NoListenerCadence,
+                        format!("{}={n}", Key::ListenerEveryTurns.name()),
+                    )
+                })?
+            }
+        };
         Ok(Self {
             configs,
             log: log.map(|(_, v)| PathBuf::from(v)),
@@ -1259,6 +1327,7 @@ impl Settings {
             tls,
             client_tls,
             tls_line,
+            listener_every,
         })
     }
 
@@ -1273,6 +1342,12 @@ impl Settings {
     #[must_use]
     pub fn log(&self) -> Option<&Path> {
         self.log.as_deref()
+    }
+
+    /// `ListenerEveryTurns=`, or `1` (today's loop) if the file did not say.
+    #[must_use]
+    pub const fn listener_every(&self) -> std::num::NonZeroU32 {
+        self.listener_every
     }
 
     #[must_use]
@@ -2116,7 +2191,8 @@ mod doc_table {
             | Key::TimestampPrecision
             | Key::SocketConnectPort
             | Key::ReconnectInterval
-            | Key::ReconnectCeiling => Reader::Numeric,
+            | Key::ReconnectCeiling
+            | Key::ListenerEveryTurns => Reader::Numeric,
             Key::BeginString
             | Key::SenderCompId
             | Key::TargetCompId
@@ -2531,6 +2607,7 @@ mod doc_table {
             | Key::SendNextExpectedMsgSeqNum
             | Key::EnableLastMsgSeqNumProcessed
             | Key::TimestampPrecision
+            | Key::ListenerEveryTurns
             // `SocketUseSSL=N` and a foreign literal are both answered by the
             // plain acceptor file, in either feature set — `settle` reads the
             // flag before it asks whether this build has `rustls` in it.

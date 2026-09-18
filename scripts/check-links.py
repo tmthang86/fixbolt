@@ -528,6 +528,7 @@ def main():
         f"{own_checked} absolute URLs into this repository checked against its tree, "
         f"{own_not_file_link} own-repository URLs that are not file links (not judged)"
     )
+    sys.stdout.flush()  # the summary goes out before any FAIL on stderr, even through a pipe
 
     if absolute:
         print(

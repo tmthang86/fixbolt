@@ -464,6 +464,16 @@ pins a core at 100% looks broken to most people who try it. And the spin is not 
 3.6 µs and clears the top of `epoll`'s range. `standard` is the honest default for everything
 that is not one session on an isolated core.
 
+**The listener is asked on a cadence, in the spin half only.** `pump` (the loop `serve`,
+`serve_hft` and `serve_tls` share) keeps one `u32` countdown, `Limits::listener_every`
+(`ListenerEveryTurns`, default 1 — today's loop, iteration for iteration): the accept loop runs
+when the countdown reads zero, otherwise it is decremented and skipped. In `standard` the
+countdown is reset to zero after every return from `idle_with`, so the listener is asked
+unconditionally on the turn right after a wake — a wake is always answered by an accept, which
+is what keeps the poll set drained and rule 4's `standard` half true. `serve_sharded_hft` never
+enters this code; its acceptor is its own blocking thread. `ADR-0069` (Proposed) has the
+alternatives and the consequences; no default other than 1 is set without a figure.
+
 **As built, the shared loop.** `Engine::turn` is one non-blocking pass over every connection:
 flush what is queued, **tick the clock**, read once, cut whole messages out, judge them, flush
 again. `Engine::run` is `loop { if !turn() { wait.idle() } }`. Reading *once* per turn rather

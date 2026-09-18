@@ -101,6 +101,18 @@ below describe what a first release would contain.
   `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh` both
   gained a kTLS arm that drives this flag.
 
+- **`fixbolt_engine::presession::Limits::with_listener_every(u32) -> Result<Self, LimitError>`
+  and `Limits::listener_every() -> NonZeroU32`** (default 1) — how many `pump` iterations pass
+  between one poll of the listener and the next in `hft`'s spin half; `standard` is unaffected,
+  its listener is asked on every wake as before. The settings key `ListenerEveryTurns` is parsed
+  by `Settings` but read by nothing in the library — an embedder wires it into `Limits` itself.
+  ADR-0069 (Proposed); STATUS item 89.
+
+- **`tools/w2w --listener-every <n>`**, mirroring `Limits::listener_every` on `w2w`'s own
+  `pump`, refused by `--connect` the way `--mode` is; a `logon-rtt` line (connect-to-Logon-reply
+  on the run's own clock) alongside `connect-rtt` (connect() itself), so the engine's share of
+  the two is visible on its own. `scripts/w2w-baseline.sh` gained `LISTENER_EVERY`.
+
 - **`tools/w2w --max-skew-ms`**: refuses a paced run whose last `52=` would already be older than
   the counterparty's `MaxLatency` (default `fixbolt_session::DEFAULT_MAX_SKEW_MS`), before any
   engine or socket exists

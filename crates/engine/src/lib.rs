@@ -3036,6 +3036,49 @@ fn default_config(table: &presession::Table) -> Result<Config, ServeError> {
         .ok_or(ServeError::NoCounterparties)
 }
 
+/// How many turns before `pump` asks the listener again — ADR-0069 decision 1.
+///
+/// A `u32` pair on the serving thread's stack: a compare, a subtraction, no
+/// clock and nothing allocated. Cadence 1 answers `true` on every turn, which
+/// is the loop as it was written before this existed.
+struct ListenerCadence {
+    every: u32,
+    until: u32,
+}
+
+impl ListenerCadence {
+    const fn new(every: core::num::NonZeroU32) -> Self {
+        Self {
+            every: every.get(),
+            until: 0,
+        }
+    }
+
+    /// Whether this turn asks the listener. Asking rearms the countdown.
+    fn poll_now(&mut self) -> bool {
+        if self.until != 0 {
+            self.until -= 1;
+            return false;
+        }
+        self.until = self.every - 1;
+        true
+    }
+
+    /// The engine came back from `idle_with`: the next turn asks the listener
+    /// whatever the countdown said — ADR-0069 decision 3. In `standard` the
+    /// wake may *be* the listener, and a wake answered by skipping the accept
+    /// leaves it readable, so `poll` returns at once and the loop spins through
+    /// the whole countdown: a working engine burning a core, the half of
+    /// non-negotiable 4 this mode exists to satisfy. In the spin half `idle`
+    /// returns immediately, so this also means an idle engine accepts on the
+    /// next turn at any cadence — the cadence thins out `accept4` between
+    /// messages, which is what Boot B step B9 measured, and costs nothing when
+    /// there are none.
+    fn woke(&mut self) {
+        self.until = 0;
+    }
+}
+
 /// The loop both `serve` functions run: hold new sockets until they say who
 /// they are, hand on the ones a registry serves, turn every connection, and idle
 /// when nothing moved.
@@ -3062,6 +3105,14 @@ fn default_config(table: &presession::Table) -> Result<Config, ServeError> {
 /// `tls` plan.** It used to name `TcpTransport` in one place — the `PendingSet`
 /// annotation below — and that single line was the whole reason no deployment
 /// could reach TLS: `TlsTransport` existed, was tested, and had nowhere to go.
+///
+/// `[2026-09-18]` **the listener is asked on a cadence, not on every turn.**
+/// `limits.listener_every()` is how many turns apart the accept loop runs
+/// (ADR-0069, `STATUS.md` item 89: `accept4` on an empty listener held 37-50%
+/// of the engine thread's samples between messages). The countdown is a `u32`
+/// on this stack and is reset to zero after every return from `idle_with`, so a
+/// blocking engine always answers a wake with an accept. Default 1 is this loop
+/// turn for turn.
 ///
 /// `wrap` turns an accepted socket into whatever this engine's connections are.
 /// For every plain caller it is `Some`, and the compiler removes it; for
@@ -3099,20 +3150,23 @@ fn pump<
     let mut clock = crate::clock::SystemClock;
     let listener = acceptor.source().map(Interest::readable);
     let mut extra: Vec<Interest> = Vec::with_capacity(limits.pending() + 1);
+    let mut cadence = ListenerCadence::new(limits.listener_every());
     loop {
         let mut moved = false;
-        while set.len() < limits.pending() {
-            let Some(t) = acceptor.accept() else { break };
-            // `wrap` returning `None` closes the socket too — a TLS acceptor
-            // that cannot build a connection for it has nothing to say on it.
-            let Some(t) = wrap(t) else {
+        if cadence.poll_now() {
+            while set.len() < limits.pending() {
+                let Some(t) = acceptor.accept() else { break };
+                // `wrap` returning `None` closes the socket too — a TLS acceptor
+                // that cannot build a connection for it has nothing to say on it.
+                let Some(t) = wrap(t) else {
+                    moved = true;
+                    continue;
+                };
+                // Dropping the refusal closes the socket, which is what a caller
+                // with nowhere to put a connection should do.
+                drop(set.admit(t, crate::clock::Clock::now_ms(&mut clock)));
                 moved = true;
-                continue;
-            };
-            // Dropping the refusal closes the socket, which is what a caller
-            // with nowhere to put a connection should do.
-            drop(set.admit(t, crate::clock::Clock::now_ms(&mut clock)));
-            moved = true;
+            }
         }
         let now = crate::clock::Clock::now_ms(&mut clock);
         let p = set.turn(now);
@@ -3154,6 +3208,10 @@ fn pump<
             extra.extend(listener);
             set.interests(&mut extra);
             engine.idle_with(&extra);
+            // **After every return from `idle_with`, the listener is asked on
+            // the next turn, whatever the cadence says** — see
+            // [`ListenerCadence::woke`].
+            cadence.woke();
         }
     }
 }
@@ -3343,5 +3401,84 @@ impl Shutdown {
     #[must_use]
     pub const fn clean(&self) -> bool {
         self.timed_out == 0 && self.acked == self.said_goodbye
+    }
+}
+
+/// The cadence counter `pump` keeps, on its own so it can be asked questions.
+///
+/// `[2026-09-18]` **pure logic, so it is tested as pure logic** — `CLAUDE.md`
+/// §7. In `pump` the countdown is unobservable: the reset after `idle_with`
+/// (ADR-0069 decision 3) reaches the listener whenever the engine has a spare
+/// moment, so a countdown that never reached zero left every socket test in
+/// `crates/engine/tests/listener_cadence.rs` green. Here the same break is one
+/// red assertion.
+#[cfg(test)]
+mod cadence_tests {
+    use super::ListenerCadence;
+    use core::num::NonZeroU32;
+
+    /// `const`, and matched rather than unwrapped: non-negotiable 7 is a
+    /// workspace lint and this module is inside the library crate, so there is
+    /// no `expect` to be had here — `crates/engine/tests/` is where those live.
+    const fn every(n: u32) -> ListenerCadence {
+        let every = match NonZeroU32::new(n) {
+            Some(n) => n,
+            // Unreachable for every caller below; a cadence of zero is refused
+            // by `Limits::with_listener_every` long before `pump` sees one.
+            None => NonZeroU32::MIN,
+        };
+        ListenerCadence::new(every)
+    }
+
+    /// Cadence 1 is the loop as it was: the listener on every turn.
+    #[test]
+    fn every_one_asks_on_every_turn() {
+        let mut c = every(1);
+        for turn in 0..10 {
+            assert!(c.poll_now(), "cadence 1 skipped turn {turn}");
+        }
+    }
+
+    /// Cadence 3 asks on one turn in three, starting with the first.
+    #[test]
+    fn every_three_asks_once_in_three() {
+        let mut c = every(3);
+        let answers: Vec<bool> = (0..7).map(|_| c.poll_now()).collect();
+        assert_eq!(
+            answers,
+            vec![true, false, false, true, false, false, true],
+            "one turn in three asks the listener, and the first one does"
+        );
+    }
+
+    /// A wake is answered by an accept wherever the countdown had got to —
+    /// the half of ADR-0069 that keeps non-negotiable 4's `standard` side true.
+    #[test]
+    fn woke_forces_the_next_turn_whatever_the_position() {
+        for skipped in 0..4 {
+            let mut c = every(5);
+            assert!(c.poll_now(), "the first turn asks");
+            for _ in 0..skipped {
+                assert!(!c.poll_now(), "mid-cadence turns skip");
+            }
+            c.woke();
+            assert!(
+                c.poll_now(),
+                "after a wake the listener is asked, {skipped} turns into the \
+                 cadence"
+            );
+        }
+    }
+
+    /// The largest cadence there is arms and counts without overflowing.
+    #[test]
+    fn the_largest_cadence_does_not_overflow() {
+        let mut c = every(u32::MAX);
+        assert!(c.poll_now(), "the first turn asks");
+        for _ in 0..1_000 {
+            assert!(!c.poll_now(), "and then it counts down, u32::MAX and all");
+        }
+        c.woke();
+        assert!(c.poll_now(), "and a wake still resets it");
     }
 }

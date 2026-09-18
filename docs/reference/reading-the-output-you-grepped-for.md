@@ -181,6 +181,26 @@ rule 1 asks for, instead of being consumed by the filter that summarised it.
    turn on `pipefail` and know that you did. The cost of getting this wrong is not a missed
    failure; it is a **recorded success** that later work is allowed to build on.
 
+### A fifth rule, `[measured 2026-09-18]`: two streams through one pipe do not keep their order
+
+`STATUS.md` on `plan/w2w-maxlatency-guard` linked a plan file that existed only on another
+branch. `scripts/check-links.py 2>&1 | tail -1` on the Mac printed the summary line and nothing
+else, the commit was pushed as a handoff, and CI run
+[`35317731330`](https://github.com/tmthang86/fixbolt/actions/runs/35317731330) failed the
+*No dead internal links* job on that one link. The Mac had not seen a different tree: it had
+seen a different **order**. The script writes its summary to stdout and its `FAIL:` block to
+stderr; through a pipe stdout is block-buffered and stderr is not, so the `FAIL` block came out
+first and the summary last, and `tail -1` kept the summary. Reproduced on demand with a probe
+file: `2>&1 | tail -1` shows the summary, `2>&1 | cat` shows `FAIL` two lines above it. A first
+explanation — that a sibling worktree had made the file visible — was written down and then
+refuted by `ls` before it reached this file.
+
+5. **A pipe merges two streams but not their order.** `2>&1 | tail -N` shows the last N lines
+   of whichever stream flushed last, not of what the program printed last. Read the exit
+   status, or the whole output, or make the tool flush. Guard: `check-links.py` now flushes
+   stdout before it writes any `FAIL` (`sys.stdout.flush()` after the summary), so the `FAIL`
+   block is the tail; no test asserts the ordering — the probe above is the check.
+
 And one observation about environments, since this repository now runs on more than one machine:
 **a gate can be green on a desk and impossible in a container**, for reasons that are correct on
 both. `vendor/` is absent by design; the fetch script exists for exactly this and takes one

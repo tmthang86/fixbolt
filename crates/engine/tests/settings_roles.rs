@@ -362,3 +362,57 @@ fn timestamp_precision_is_refused_unless_spelled_exactly() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// ListenerEveryTurns — docs/plans/2026-09-18-polling-the-listener-less-often
+// -than-the-sessions.md step 2
+// ---------------------------------------------------------------------------
+
+#[test]
+fn settings_parse_listener_every_turns() {
+    // Absent: today's loop, one turn between polls.
+    let s = Settings::parse(ACCEPTOR).expect("parses");
+    assert_eq!(s.listener_every().get(), 1, "1 is the default cadence");
+
+    // Present, in [DEFAULT], parses.
+    let text = "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+ListenerEveryTurns=16
+
+[SESSION]
+TargetCompID=TW44
+";
+    let s = Settings::parse(text).expect("parses");
+    assert_eq!(s.listener_every().get(), 16);
+
+    // A [SESSION]-only carrier is refused, same shape as FileLogPath.
+    let text = "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+
+[SESSION]
+TargetCompID=TW44
+ListenerEveryTurns=16
+";
+    let e = Settings::parse(text).expect_err("a [SESSION] key is refused");
+    assert_eq!(*e.problem(), Problem::DefaultOnly);
+    assert!(e.to_string().contains("ListenerEveryTurns"));
+
+    // 0 is refused, same error shape LimitError::NoListenerCadence names on
+    // the builder this key feeds.
+    let text = "\
+[DEFAULT]
+BeginString=FIX.4.4
+SenderCompID=ISLD
+ListenerEveryTurns=0
+
+[SESSION]
+TargetCompID=TW44
+";
+    let e = Settings::parse(text).expect_err("0 never polls the listener");
+    assert_eq!(*e.problem(), Problem::NoListenerCadence);
+    assert!(e.to_string().contains("ListenerEveryTurns"));
+}
