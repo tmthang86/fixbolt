@@ -1,0 +1,366 @@
+# Phase 2: trait `Encoding`, session FIXT 1.1 / FIX 5.0 SP2, rồi SBE
+
+> **Loại:** Plan · **Ngày:** 2026-09-19 · **Trạng thái:** Chờ duyệt
+> **Phạm vi:** phase 2 của `PRD.md` §2 — trục encoding và trục phiên bản; **không** FIXP,
+> không FAST, không FIXML (ADR-0078 quyết định 4)
+
+## Bối cảnh
+
+Phase 1 xong: một engine FIX 4.4 tag=value, hai vai, 59 / 59, số đo có máy có lệnh. Lệnh của
+chủ dự án ngày 2026-09-18 gồm việc dựng phase 2. Hai ADR đã mở đường và đã được duyệt:
+
+- **ADR-0078**: SBE vào phase 2 **chỉ là một encoding**, không có session riêng; FIXP để
+  phase 3. Vậy phase 2 là việc của `codec` và một bộ bảng, không phải một state machine mới.
+- **ADR-0079**: **mỗi encoding một kiểu view**, một trait `Encoding` phủ lên trên, dispatch
+  tĩnh; `MessageView` giữ nguyên tên, kích thước và API. Bước đầu tiên của phase 2 là trait
+  đó, và phải chứng minh nó không làm đường tag=value chậm đi (band ADR-0031, trên bàn §9)
+  trước khi viết dòng SBE nào.
+
+Kế hoạch này chia phase 2 thành ba khối theo thứ tự rẻ-trước: (A) trait `Encoding` với
+`MessageView` giữ nguyên; (B) session FIXT 1.1 / FIX 5.0 SP2 — có sẵn oracle 180 `.def`
+trong `vendor/`, là mục rẻ nhất phase 2 (`PRD.md` §2 bảng *Phase 2 starts with…*); (C) SBE
+dưới trait, với oracle là hex dump trong spec và `sbe-tool` của Real Logic chạy qua script.
+Cuối cùng (D) là `docs/internals`, phần C của the-doc-set bị hoãn sang "ADR đầu tiên của
+phase 2" (STATUS item 33).
+
+Hai quyết định mà 0078/0079 chưa cho, viết thành hai ADR đi kèm kế hoạch này, đều `Proposed`:
+
+- **ADR-0080**: dictionary là associated type của encoding (`Encoding::Dict`), không phải
+  tham số thứ hai của `Session`; session FIXT dùng **một bảng sinh từ hai file XML**
+  (`FIXT11.xml` + `FIX50SP2.xml`) sau feature `fix50sp2`; quy tắc `1137`/`1128`.
+- **ADR-0081**: bảng SBE do generator **của repo này** sinh (mẫu `dict/build.rs`), crate
+  `sbe` runtime zero-dep `no_std`; oracle là ba hex dump trong spec SBE 1.0 RC4 §7 (không cần
+  toolchain) cộng `sbe-tool` (Java, Apache-2.0) chạy qua `scripts/sbe-interop.sh` và một job
+  CI riêng, như `interop.sh` với `libquickfix`.
+
+## Những gì đã biết chắc
+
+**Trong repo (đọc 2026-09-19, nhánh `plan/the-second-linux-desk-c`):**
+
+- `Session<R: Role, const N: usize, const APP: usize>` (`crates/session/src/lib.rs:1289`)
+  gọi thẳng `Fix44` 17 lần: `parse_into::<Fix44, N>` (`:2985`), `Fix44::is_msg_type`
+  (`:3150`), và toàn bộ pass validate `:3735-3826` (`is_header`, `is_defined_tag`,
+  `field_type`, `allows`, `enum_allows`, `group_delimiter`, `group_members`,
+  `required_header`, `required`). Đó là **hàm inherent của struct sinh ra**, không phải
+  trait — nên chưa generic được. `out.rs` thêm 8 chỗ.
+- `codec::Dictionary` (`crates/codec/src/dict.rs:14`) chỉ có `is_header`, `data_length_tag`,
+  `group_delimiter`, `group_members`, `group_order`. `MessageView<'a, N>` 24 byte, `Copy`,
+  có `const _: () = assert!` trong `index.rs` (ADR-0003 guard 2).
+- `dict/build.rs` đọc **một** file (`NANOFIX_FIX44_XML`, mặc định
+  `vendor/quickfix/spec/FIX44.xml`) bằng `roxmltree = "=0.20.0"` build-dependency, sinh
+  `fix44.rs` rồi `include!`. `dict` chưa có feature nào.
+- Chỗ hardcode `FIX.4.4` ngoài session: chỉ ví dụ/rustdoc và test settings
+  (`engine/src/settings.rs:19, :2545-2576`, `engine/src/block.rs:71`,
+  `codec/src/template.rs:174`). `presession::is_logon` đọc `35=` bằng quét trường, không
+  phụ thuộc phiên bản.
+- `conformance::script::definitions_dir()` trỏ cứng `…/server/fix44`, và `load` **từ chối
+  số file khác 59** (`script.rs:228-245`). `crates/session/tests/score.rs` dựng engine tối
+  thiểu quanh `Session<Acceptor, …>`; `crates/engine/tests/wire.rs` chạy qua socket.
+- Alloc bench có ở bốn crate: `codec`, `session`, `engine`, `library` (`benches/alloc.rs`),
+  chạy bởi `scripts/bench.sh`, band theo `benches/baselines.tsv` (ADR-0016, ADR-0031).
+- CI đã có tiền lệ toolchain ngoài chạy qua script: job `interop` build `libquickfix` bằng
+  cmake/g++ (`.github/workflows/ci.yml:719-732`), không `build.rs` nào gọi nó.
+- STATUS item mới nhất là **91**; item 33 ghi `docs/internals` hoãn sang phase 2; dòng
+  `STATUS.md:2989` ghi phase 2 = "one opening ADR: the encoding trait, a dictionary chosen
+  at `Logon` by the registry, and `docs/internals`".
+
+**Trong `vendor/` (đo 2026-09-19):**
+
+- `vendor/quickfix/spec/` có `FIXT11.xml`, `FIX50.xml`, `FIX50SP1.xml`, `FIX50SP2.xml`.
+  `FIXT11.xml`: header 29 field + group `NoHops` (có `ApplVerID 1128`, `ApplExtID 1156`,
+  `CstmApplVerID 1129`), 8 message admin (`0 1 2 3 4 5 A n`), field `1137 DefaultApplVerID`
+  (bắt buộc trên Logon, dòng 90), `1130 RefApplVerID`. `FIX50SP2.xml`: **`<header />` và
+  `<trailer />` rỗng** (dòng 2, 4674), 156 message, 15 267 dòng `<field`. Hai file cùng định
+  nghĩa 1128/1129/1130/1137/1156.
+- `vendor/quickfix/test/definitions/server/{fix50,fix50sp1,fix50sp2}/`: **60 file mỗi thư
+  mục = 180**. `diff -r` cho thấy ba thư mục chỉ khác `TW50`/`TW50SP1`/`TW50SP2` và
+  `1137=7`/`8`/`9`. So với `fix44` (59 file) chỉ **thêm một file**
+  `1d_InvalidLogonNoDefaultApplVerID.def`: Logon `FIXT.1.1` không có `1137` → `eDISCONNECT`,
+  không gửi gì. Mọi Logon `E` echo `1137=<giá trị>`. **Không file nào chứa `1128=`.** Các
+  message ứng dụng trong corpus (`35=D`, `8`, `d`, …) dùng tag như FIX 4.4; text reject giữ
+  nguyên (`Required tag missing`, `Incorrect BeginString`, 373 codes).
+- Thư mục `future/` có 2 file (`14j`, `14k`), không thuộc phạm vi.
+
+**Đặc tả và prior art (web, đọc 2026-09-19; nguồn đầy đủ ở *Sources* của ADR-0080/0081):**
+
+- FIXT 1.1 so với FIX 4.4 session: OnixS ghi thay đổi "rất nhỏ": thêm `1128/1156/1129` vào
+  header, `1137` bắt buộc trên Logon ("The Session Default Application Version must be
+  specified at Logon time"), thứ tự ưu tiên *explicit (1128) > message-type default >
+  session default (1137)*, và "the use of the Explicit Application Version fields is not
+  permitted on FIX Session Level Messages". Seq num, resend, gap fill, reject: không đổi.
+- QuickFIX C++ `Session.cpp`: `nextLogon()` lấy `1137` bằng `FIELD_GET_REF` khi
+  `isFIXT()` (thiếu → ném, Logon hỏng → disconnect, khớp `.def`); `next()` chọn app
+  dictionary từ `1128` của message, fallback `m_targetDefaultApplVerID`; `generateLogon()`
+  đặt `1137=m_senderDefaultApplVerID`. QuickFIX/J: `DefaultApplVerID` "required only for
+  FIXT 1.1", `TransportDataDictionary` + `AppDataDictionary`.
+- Artio: `CodecGenerationTool` nhận "both the transport and data files" và sinh **một**
+  codec cho FIXT (wiki *Codecs*).
+- SBE 1.0 RC4: header composite 4 × `uint16` (`blockLength, templateId, schemaId, version`)
+  = 8 byte (§2); root block rồi group rồi varData (§3.5); `groupSizeEncoding` =
+  `blockLength u16, numInGroup u16` (§3.4.5); không padding trừ khi schema khai `offset`;
+  template lạ → nhảy bằng `blockLength` (§3.6). `07Examples.md` có **ba hex dump byte-exact
+  kèm offset**: `NewOrderSingle` (blockLength 54, template 99, schema 100), `ExecutionReport`
+  có group `FillsGrp` (42, 98), `BusinessMessageReject` có varData (9, 100).
+- `sbe-tool` (Real Logic/Aeron, **Apache-2.0**): có target Rust
+  (`generation/rust/RustGenerator.java` …), README: output "100% safe rust crates … do not
+  have any dependencies on any libraries"; chạy `java -Dsbe.target.language=Rust -jar
+  sbe-all-<v>.jar schema.xml`; Maven `uk.co.real-logic:sbe-tool`. Ví dụ chuẩn
+  `sbe-samples/src/main/resources/example-schema.xml` (`Car`, `byteOrder=littleEndian`,
+  composite, enum, set, group lồng, 3 varData). Là **Java** — không được gọi từ `build.rs`
+  (bất biến 6).
+- crates.io: `sbe`, `sbe_gen` (sinh code trên `zerocopy` — một dependency runtime),
+  `sbe-schema`. Không cái nào zero-dep với view mượn; **không dùng**.
+- **Tìm 2026-09-19 không thấy** venue nào chở SBE trong session FIXT tag=value (ADR-0078) và
+  không thấy corpus `.def` nào cho `1128` — nên hai quy tắc ở ADR-0080 quyết định 3 là
+  quyết định, không phải sự thật đo được.
+
+## Cách làm
+
+Bốn PR, thứ tự cố định vì mỗi PR sau xây trên kiểu của PR trước. Mọi bước trong `crates/`
+đều nêu file, test, gate và tier; tier `opus` cho bước đụng đường nóng hoặc bất biến.
+
+### PR A — trait `Encoding`, `MessageView` không đổi (ADR-0079 quyết định 1–3, 5)
+
+`crates/codec/src/encoding.rs` (mới):
+
+```rust
+pub trait Encoding {
+    /// Kiểu view mượn; `MessageView<'a, N>` cho tag=value. `Copy`, ≤ 24 byte.
+    type View<'a>: Copy where Self: 'a;
+    /// Định danh trường: `u32` (tag) cho tag=value; id trường cho SBE.
+    type Field: Copy;
+    /// Bảng tra (ADR-0080): `Fix44`, `Fixt11Fix50Sp2Tables`, `SbeTables<S>`.
+    type Dict: Dictionary;
+    /// Vùng nhớ chủ gọi giữ cho một kết nối: `FieldIndex<N>` cho tag=value.
+    type Scratch: Default;
+    type Template;
+    type Error: Copy;
+
+    fn parse<'a>(buf: &'a [u8], scratch: &'a mut Self::Scratch, v: Validation)
+        -> Result<Parsed<Self::View<'a>>, Self::Error>;
+    fn field<'a>(view: Self::View<'a>, f: Self::Field) -> Option<&'a [u8]>;
+    /// Các trường session đọc: `35`, `34`, `49`, `56`, `52`, `43`, `122`, `8`.
+    fn session_fields<'a>(view: Self::View<'a>) -> Option<SessionFields<'a>>;
+    fn patch(t: &mut Self::Template, f: Self::Field, value: &[u8]) -> Result<(), Self::Error>;
+    fn encode(t: &Self::Template, out: &mut [u8]) -> Result<usize, Self::Error>;
+}
+
+pub struct TagValue<D, const N: usize>(PhantomData<D>);
+pub type Fix44TagValue = TagValue<fixbolt_dict::Fix44, 64>;   // alias sống ở `dict`
+```
+
+`impl<D: Dictionary, const N: usize> Encoding for TagValue<D, N>` chỉ **gọi lại** `parse_into`,
+`MessageView::get`, `Template::patch`/`encode_with::<D>` hiện có, mọi hàm `#[inline]`. `Session`
+đổi thành `Session<E: Encoding, R: Role, const APP: usize>` (N nằm trong `E`), engine/library
+thêm alias `AcceptorFix44 = Session<Fix44TagValue, Acceptor>` để chữ ký `serve*` đọc như cũ.
+`parse_into`, `MessageView`, `FieldIndex` **không đổi một ký tự** (test `api_unchanged` khẳng
+định bằng `size_of` và bằng chữ ký gọi cũ compile).
+
+Gate đóng PR A là band ADR-0031 trên bàn §9: `benches/parse.rs`, `serialize.rs`, `alloc.rs`
+của `codec`, `validate.rs` của `session`, `density.rs` của `engine` — cùng commit, cùng boot,
+trước SBE. **Chỉ chạy khi bàn không còn phiên bisect C-91b** (memory: một phiên khác đang đo
+thì ở đây không `cargo`).
+
+### PR B — FIXT 1.1 / FIX 5.0 SP2 (ADR-0080)
+
+1. `dict::Tables` trait (`crates/dict/src/tables.rs`, mới) gom đúng các hàm validate session
+   gọi; `Fix44: Tables` uỷ quyền cho hàm sinh sẵn; `Encoding::Dict: Tables`.
+2. `dict/build.rs` nhận **cặp** XML sau feature `fix50sp2`: header/trailer/admin từ
+   `FIXT11.xml`, field/component/group/message từ `FIX50SP2.xml`; trùng field phải giống
+   nhau về số–tên–kiểu, khác → `die`. Sinh `fixt11_fix50sp2.rs`, `include!` sau
+   `#[cfg(feature = "fix50sp2")]`. Biến môi trường ghi đè `NANOFIX_FIXT11_XML`,
+   `NANOFIX_FIX50SP2_XML` theo mẫu `NANOFIX_FIX44_XML`.
+3. `conformance::script::load` nhận `Corpus { dir, expected, comp_id, default_appl_ver_id }`;
+   `definitions_dir()` giữ nguyên cho 59; thêm `fixt_corpora()` trả ba corpus 60 file.
+4. `session`: `Config` thêm `default_appl_ver_id: Option<Name<…>>`; khi `begin_string ==
+   b"FIXT.1.1"`: Logon thiếu `1137` → `DropReason::LogonWithoutDefaultApplVerID`; Logon gửi đi
+   có `1137`; lưu `1137` của đối tác; `1128` ngoài họ `7/8/9` → `Reject 373=5 371=1128`.
+   `session/tests/score_fixt.rs`: **180 / 180** trong process (3 corpus × 60);
+   `engine/tests/wire_fixt.rs`: 60 / 60 qua socket cho `fix50sp2`.
+5. `engine::settings`: key `DefaultApplVerID` (bắt buộc khi `BeginString=FIXT.1.1`, bị từ chối
+   khi không), `Problem` mới kèm số dòng.
+6. Alloc bench: case `parse NewOrderSingle (FIXT)`, `validate NewOrderSingle (FIXT tables)`,
+   `encode Logon with 1137` đọc 0; timing bench `validate NewOrderSingle (FIXT tables)` in
+   `NO BASELINE` tới khi ghi ở bàn.
+7. Interop: `scripts/interop.sh` thêm arm `FIXT` (cấu hình `libquickfix`
+   `BeginString=FIXT.1.1`, `DefaultApplVerID=FIX.5.0SP2`, `TransportDataDictionary`,
+   `AppDataDictionary`) cho **acceptor** trước, 7 / 7 cùng kịch bản.
+
+### PR C — SBE dưới trait (ADR-0079 quyết định 1, 4; ADR-0081)
+
+1. `crates/sbe` (mới, L1, `#![no_std]`, zero-dep): `header.rs` (decode 8 byte, hai byte
+   order), `view.rs` (`SbeView` 24 byte, `Copy`, `const _: () = assert!`), `group.rs`
+   (cursor `groupSizeEncoding`, lồng nhau), `vardata.rs`, `schema.rs` (trait `Schema` đọc
+   bảng `&'static`), `encoding.rs` (`Sbe<S>: Encoding`, `session_fields` trả `None`).
+2. `crates/sbe-gen` (mới): `generate(xml) -> Result<String, Error>`, `roxmltree`; sinh bảng
+   theo ADR-0081 quyết định 2; hỗ trợ phạm vi quyết định 5; ngoài phạm vi → `Error::Unsupported`
+   có tên phần tử, không bao giờ sinh bảng sai lặng lẽ.
+3. `scripts/fetch-sbe-assets.sh`: clone `fix-simple-binary-encoding` và
+   `simple-binary-encoding` ở SHA ghim vào `vendor/sbe-spec/`, `vendor/sbe-ref/` (gitignore).
+   `crates/sbe/build.rs` (dev-only, sau `[dev-dependencies] sbe-gen`) sinh bảng cho schema ví
+   dụ của spec và `example-schema.xml` vào `OUT_DIR` — chỉ cho test, không vào lib.
+4. `crates/sbe/tests/spec_examples.rs`: ba hex dump §7 decode từng trường, encode lại byte
+   một; `tests/car_roundtrip.rs`: `Car` mọi kiểu trường, group lồng, ba varData, round trip.
+5. `scripts/sbe-interop.sh` + job CI `sbe-interop` (Temurin 17): tải `sbe-all-<v>.jar` từ
+   Maven Central (SHA-256 ghim), sinh crate Rust của Real Logic cho `example-schema.xml`
+   vào `target/sbe-ref/`, `tools/sbe-interop` encode `Car` bằng của họ → decode bằng mình và
+   ngược lại, so byte. Là "second implementation" theo ADR-0042.
+6. `crates/sbe/benches/alloc.rs` (parse, field, group walk, encode: 0) và `benches/sbe.rs`
+   (timing, `NO BASELINE` tới bàn §9).
+7. `library`: alias `AcceptorSbe<S>` **không** có — SBE không có session (ADR-0078), nên cửa
+   `serve*` không nhận `Sbe<S>`; `GUIDE.md` nói rõ SBE là codec để dùng với transport của
+   người dùng, kèm ví dụ `examples/sbe_decode.rs`.
+
+### PR D — `docs/internals`
+
+Bản đồ mã cho người đóng góp (phần C của the-doc-set, STATUS item 33): một trang mỗi crate,
+theo mục `DESIGN.md` §3 và bảng *What `engine` contains*, thêm `sbe`/`sbe-gen`. Không mô tả
+hành vi (đã có ở DESIGN/GUIDE), chỉ "file nào giữ gì, đọc theo thứ tự nào".
+
+## Bất biến bị đụng tới
+
+Đụng `codec`, `session`, `engine`, `library`, thêm `sbe` — walk cả mười:
+
+| # | Đụng? | Giữ bằng cách nào |
+|---|---|---|
+| 1 zero alloc | **có** — trait mới trên đường parse/serialize; bảng FIXT; toàn bộ `sbe` | case alloc mới cho **mỗi** đường nóng mới (A1, B6, C6); `bench.sh` trong job `bench` |
+| 2 session thuần | **có** — `Session<E>` | không thêm I/O, clock, `format!`; `DropReason` mới fieldless; 59/59 + 180/180 chạy trên máy thuần |
+| 3 59 .def | **có** | 59/59 trên `Fix44TagValue` là gate của A2; 180/180 là gate của B4 |
+| 4 mode | không đụng wait strategy | A3 chỉ thêm tham số kiểu cho `serve*`; hai script mode chạy lại ở gate PR A |
+| 5 thứ tự từ bảng sinh | **có** — bảng FIXT mới, bảng SBE mới | B2 test thứ tự header FIXT so với `FIXT11.xml`; C2 sinh offset từ schema, không call site |
+| 6 feature gate `mod` | **có** — `fix50sp2` | `#[cfg]` trên `include!`; `build.rs` không đọc XML thứ hai khi feature tắt; `check-no-optional-deps.sh` thêm crate `sbe` |
+| 7 no unwrap/panic | có — crate mới | lint workspace; `check-lint-config.sh`; `sbe` không có `unsafe` |
+| 8 unsafe | không — `sbe` cấm `unsafe` | `#![forbid(unsafe_code)]` trong `sbe` |
+| 9 không copy QuickFIX | có — thêm asset ngoài | `vendor/sbe-*` gitignore, fetch bằng script, ghim SHA; hex dump spec chép thành số trong test (sự thật, không phải văn bản) |
+| 10 số đo có máy | **có** | band ADR-0031 ở gate PR A trên bàn §9; SBE baseline ghi ở bàn, tới lúc đó `NO BASELINE` |
+
+## Chia việc
+
+Mỗi dòng đủ để viết brief theo `CLAUDE.md` §12. Cột *Đọc trước* là đúng chỗ. Dòng
+**needs-desk** cần bàn §9 và **không chạy khi phiên bisect C-91b còn đo**.
+
+| Bước | Kết quả | File đụng (không đụng gì khác) | Gate (lệnh) | Tier | Phụ thuộc |
+|---|---|---|---|---|---|
+| **A1** | `codec::encoding`: trait `Encoding`, `SessionFields<'a>`, `TagValue<D, N>` impl gọi lại API cũ, mọi hàm `#[inline]`; `const _: () = assert!(size_of::<MessageView<64>>() == 24)` giữ nguyên; test `tests/encoding.rs`: `field` qua trait bằng `MessageView::get` trên 5 message thật của `tests/common`; `api_unchanged` compile chữ ký cũ. Alloc case `parse via Encoding` = 0. Đọc trước: ADR-0079 quyết định 1–2; ADR-0080 quyết định 1; `codec/src/index.rs` (`MessageView`, `get`), `parse.rs::parse_into`, `template.rs` (`patch`, `encode_with`) | `crates/codec/src/encoding.rs` (mới), `lib.rs` (một `pub mod` + `pub use`), `crates/codec/tests/encoding.rs` (mới), `crates/codec/benches/alloc.rs` (một case) | `cargo test -p fixbolt-codec` xanh; `cargo bench -p fixbolt-codec --bench alloc` in `parse via Encoding 0`; clippy `-D warnings`; `cargo doc -p fixbolt-codec` không warning | **opus** (đường nóng, bất biến 1) | ADR-0080 duyệt |
+| **A2** | `Session<E: Encoding, R, APP>`; 17 chỗ `Fix44::` → `<E::Dict as Tables>::`; `parse_into::<Fix44, N>` → `E::parse`; `out.rs` qua `E::Template`. `dict::Tables` trait + `impl Tables for Fix44` (uỷ quyền). Alias `Fix44TagValue` ở `dict`. Đọc trước: ADR-0080 quyết định 1; `session/src/lib.rs:2985`, `:3150`, `:3735-3826`, `out.rs` các chỗ `Fix44`; `score.rs:1-60` | `crates/session/src/lib.rs`, `out.rs`; `crates/dict/src/tables.rs` (mới), `lib.rs` (`mod`, alias); mọi test trong `crates/session/tests/` **chỉ đổi kiểu**, không đổi kỳ vọng | `cargo test -p fixbolt-session --test score` **59 / 59**; `cargo test -p fixbolt-session` xanh không sửa fixture; `cargo bench -p fixbolt-session --bench alloc` mọi case 0 | **opus** (bất biến 2, 3) | A1 |
+| **A3** | `engine`, `library`, `conformance`, `tools/w2w`, `tools/interop`, `tools/jrnl` compile với `Session<E>`; alias `AcceptorFix44`, `InitiatorFix44` trong `engine`; `serve*` thêm `E` với default alias sao cho `examples/acceptor.rs` **không đổi**. Đọc trước: ADR-0079 *Consequences* dòng "Generic engines mean generic front doors"; `engine/src/lib.rs` các `serve*`; `library/src/app.rs`, `reply.rs` chỗ `Fix44` | `crates/engine/src/lib.rs`, `shard.rs`, `recovery.rs`, `reconnect.rs`, `block.rs`; `crates/library/src/*.rs`; `crates/conformance/src/echo.rs`; `tools/*/src/main.rs` (chỉ kiểu) | `cargo test --all` xanh; `cargo test --no-default-features` xanh; `scripts/check-no-kernel-sleep.sh` và `check-standard-gives-the-core-back.sh` xanh (bất biến 4 walk lại); `cargo test -p fixbolt-engine --test wire` 59 / 59; `scripts/interop.sh` 7 / 7 hai vai | sonnet xây → **opus review** | A2 |
+| **A4** | Docs PR A: `DESIGN.md` §4 thêm **D16 — Encoding là trait, mỗi encoding một view** (nội dung = ADR-0079 quyết định 1–3 + chữ ký A1); §3 bảng `codec` thêm `encoding`; `GUIDE.md` mục alias; `CHANGELOG.md` *Unreleased* dòng public API `Session<E>`; `README.md` layout không đổi | `docs/DESIGN.md`, `docs/GUIDE.md`, `CHANGELOG.md`, `docs/GETTING-STARTED.md` (nếu chữ ký ví dụ đổi) | `python3 scripts/check-links.py` xanh | manager (haiku link check) | A3 |
+| **A-desk** *(needs-desk)* | Band ADR-0031 trên bàn §9, cùng boot, trước/sau commit A3: `scripts/bench.sh --strict` cho `parse serialize alloc validate density`, n = 20 mỗi bên, xen kẽ hai worktree (mẫu C-91); mọi case trong band → PR A đóng; lệch → **dừng**, sửa A1/A2, không ghi baseline mới | `docs/reference/measured-costs.md` (mục mới), `STATUS.md` (manager) | `scripts/bench.sh --strict` hai lần, quote; `scripts/check-machine.sh` `pass … fail 0` trong header | manager + haiku runner | A3; **bàn rảnh (không bisect)** |
+| **B1** | `dict/build.rs`: hàm `generate_pair(transport, app)`; feature `fix50sp2`; `include!` sau `#[cfg]`; trùng field khác nhau → `die` có tên field; `Fixt11Fix50Sp2Tables: Dictionary + Tables`; test `crates/dict/tests/fixt.rs`: header đúng 29 field + `NoHops`, `is_msg_type(b"A")` và `is_msg_type(b"D")` đều true, `required(b"A")` chứa 1137, `is_defined_tag(1128)`, số message = 156 + 8, `field_type(1156) == Int`. Đọc trước: ADR-0080 quyết định 2; `dict/build.rs:24-60` (override, `die`), `:88` (`generate`), `:753` (`collect_header`); `FIXT11.xml:1-40, 85-95`; `FIX50SP2.xml:1-5` | `crates/dict/build.rs`, `Cargo.toml` (feature), `src/lib.rs` (`cfg` include), `crates/dict/tests/fixt.rs` (mới) | `cargo test -p fixbolt-dict --features fix50sp2` xanh; `cargo test -p fixbolt-dict` (feature tắt) xanh và **không đọc** `FIXT11.xml` (đổi tên file tạm → vẫn build); `scripts/check-no-optional-deps.sh` xanh; đo và ghi thời gian build hai trạng thái | sonnet | A2 |
+| **B2** | Thứ tự trường FIXT so với QuickFIX: nếu `vendor/quickfix-src` (do `interop.sh` clone) có `src/C++/fix50sp2/` sinh sẵn, mở rộng `crates/dict/tests/interop_quickfix_order.rs` theo mẫu 730/730 cho SP2; nếu không có, test so **header order** với thứ tự khai trong `FIXT11.xml` và ghi rõ giới hạn trong test doc. Đọc trước: `DESIGN.md` D3 đoạn "checked against QuickFIX's generated C++"; `crates/dict/tests/interop_quickfix_order.rs` | `crates/dict/tests/interop_quickfix_order.rs` hoặc `tests/fixt_order.rs` (mới) | `cargo test -p fixbolt-dict --features fix50sp2 order` xanh; đảo chiều: hoán vị hai member kề nhau trong một group SP2 → đỏ | sonnet | B1 |
+| **B3** | `conformance::script`: `Corpus`, `load_corpus(&Corpus)`; `LoadError::WrongCount { expected, found }`; `fixt_corpora()` = 3 × `{dir, 60, comp_id, 1137}`; `echo.rs` generic `E`. Test `crates/conformance/tests/fixt_corpus.rs`: 180 file parse được, đúng 60 mỗi dir, mọi Logon `I` có `1137`, đúng một file mỗi dir thiếu `1137`. Đọc trước: `script.rs:215-260`; ADR-0080 *Context* đoạn oracle | `crates/conformance/src/script.rs`, `echo.rs`, `crates/conformance/tests/fixt_corpus.rs` (mới) | `cargo test -p fixbolt-conformance` xanh; `cargo test -p fixbolt-session --test score` vẫn 59 / 59 | sonnet | A3 |
+| **B4** | Session FIXT (ADR-0080 quyết định 3): `Config::default_appl_ver_id`, `Config::acceptor_fixt(...)`; `DropReason::LogonWithoutDefaultApplVerID`; Logon gửi đi có `1137` (ordered by tables, không call site); `1128` policy; text.rs không thêm text mới. `tests/score_fixt.rs` (feature `fix50sp2`): **180 / 180**, mỗi corpus in số riêng; `tests/fixt.rs`: 4 unit test: thiếu 1137 → drop reason đúng và **không gửi byte nào**; `1137` khác → vẫn logged on; `1128=9` → validate thường; `1128=4` → `Reject 373=5 371=1128`; session `FIX.4.4` **không** emit 1137. Đọc trước: ADR-0080 quyết định 3–4; `1d_InvalidLogonNoDefaultApplVerID.def`; `session/src/lib.rs` chỗ `WrongBeginString` (`:1053`) và Logon reply; `score.rs` wrapper | `crates/session/src/lib.rs`, `out.rs`, `crates/session/tests/score_fixt.rs` (mới), `tests/fixt.rs` (mới), `Cargo.toml` (feature pass-through) | `cargo test -p fixbolt-session --features fix50sp2 --test score_fixt` in `fix50 60/60 fix50sp1 60/60 fix50sp2 60/60`; `--test score` 59 / 59 không đổi; đảo chiều: bỏ check `1137` → `1d_…NoDefaultApplVerID` đỏ, câu FAIL dự kiến `expected DISCONNECT, engine sent Logon`; `cargo bench -p fixbolt-session --bench alloc --features fix50sp2` 0 | **opus** (bất biến 2, 3) | B1, B3 |
+| **B5** | `engine::settings`: key `DefaultApplVerID`; `Problem::DefaultApplVerIdRequired { line }` khi `BeginString=FIXT.1.1` mà thiếu, `Problem::DefaultApplVerIdWithoutFixt { line }` khi có mà BeginString là `FIX.4.x`; `Config` từ settings điền `default_appl_ver_id`. `engine/tests/wire_fixt.rs`: 60 / 60 `fix50sp2` qua socket (mẫu `wire.rs`). Đọc trước: ADR-0080 quyết định 4; ADR-0040; `settings.rs:90-130` (`BeginString`), test block `:2540-2580`; `engine/tests/wire.rs` phần dựng | `crates/engine/src/settings.rs`, `crates/engine/tests/wire_fixt.rs` (mới), `crates/engine/Cargo.toml` (feature) | `cargo test -p fixbolt-engine --features fix50sp2` xanh, `wire_fixt` in `60 / 60`; hai test `Problem` mới đỏ khi bỏ check | sonnet | B4 |
+| **B6** | Bench: `codec/benches/alloc.rs` case `parse NewOrderSingle (FIXT)`; `session/benches/alloc.rs` case `validate NewOrderSingle (FIXT tables)`, `encode Logon (FIXT, 1137)`; `session/benches/validate.rs` case timing `validate NewOrderSingle (FIXT tables)` in `NO BASELINE`. Đọc trước: `session/benches/validate.rs` case `validate NewOrderSingle`; `benches/baselines.tsv` header | ba file bench, `scripts/check-bench-alignment.sh` (nếu liệt kê case) | `scripts/bench.sh` với feature: ba case 0; alignment xanh | sonnet | B4 |
+| **B7** | `scripts/interop.sh` arm `FIXT`: cfg `libquickfix` `BeginString=FIXT.1.1 DefaultApplVerID=FIX.5.0SP2 TransportDataDictionary=…/FIXT11.xml AppDataDictionary=…/FIX50SP2.xml`; `tools/interop` cấu hình engine `FIXT.1.1`/`1137=9`; acceptor 7 / 7 trước, initiator 7 / 7 nếu không đụng D15; CI job `interop` chạy thêm arm. Đọc trước: `scripts/interop.sh:100-140`; `tools/interop/src/main.rs` phần cfg; ADR-0042 | `scripts/interop.sh`, `tools/interop/src/main.rs`, `.github/workflows/ci.yml` (job `interop`) | `scripts/interop.sh fixt` in `7 / 7` mỗi vai; quote | sonnet | B5 |
+| **B8** | Docs PR B: `CONFIGURATION.md` key `DefaultApplVerID` + feature `fix50sp2`; `SESSION-BEHAVIOUR.md` mục FIXT (4 hành vi, `.def`/test canh, hai hành vi "không có oracle" gọi tên ADR-0080); `CONFORMANCE.md` bảng 180 / 180 + wire 60 / 60 kèm CI run id; `DESIGN.md` §3 `dict` thêm bảng thứ hai, D16 đoạn `Dict`; `PRD.md` §2 hàng FIX 5.0 → `[measured]`; `CHANGELOG.md` | các file trên | link check xanh | manager | B7, CI xanh |
+| **C1** | `crates/sbe` runtime (ADR-0081 quyết định 1, 4, 5): `header.rs`, `view.rs` (`SbeView` 24 byte + `const _` assert), `group.rs`, `vardata.rs`, `schema.rs` (`trait Schema { fn message(template_id) -> Option<&'static MessageLayout>; … }`), `error.rs` (fieldless `SbeError`). `#![no_std]`, `#![forbid(unsafe_code)]`, zero dep. Unit test với bảng **viết tay** cho `NewOrderSingle` của spec §7 và hex dump của nó. Đọc trước: ADR-0081 quyết định 1–2, 4–5; SBE 1.0 RC4 §2, §3.3–3.6 (file `vendor/sbe-spec/v1-0-RC4/doc/03MessageStructure.md`); `codec/src/index.rs` (mẫu view + assert) | `crates/sbe/**` (mới), `Cargo.toml` workspace `members`, `scripts/check-no-optional-deps.sh` (thêm crate), `scripts/fetch-sbe-assets.sh` (mới, ghim SHA hai repo) | `cargo test -p fixbolt-sbe` xanh; `cargo test -p fixbolt-sbe --no-default-features`; clippy; `cargo build -p fixbolt-sbe --target thumbv7em-none-eabi` **hoặc** test `no_std` bằng `#![no_std]` + `cargo check` không `std` (chọn cái CI có sẵn, nêu rõ) | **opus** (crate mới trên đường nóng) | A1, ADR-0081 duyệt |
+| **C2** | `crates/sbe-gen`: `generate(xml) -> Result<String, Error>`; sinh `impl Schema` + bảng `&'static`; phạm vi ADR-0081 quyết định 5, ngoài phạm vi → `Error::Unsupported(&'static str)`. Test: schema spec §7 và `example-schema.xml` sinh ra compile (test dùng `trybuild`-free: ghi vào `OUT_DIR` rồi `include!` trong `crates/sbe/build.rs` dev-only); offset từng trường của `Car` bằng số tính tay từ schema (ít nhất 8 trường, 2 group, 3 varData). Đọc trước: ADR-0081 quyết định 2; `dict/build.rs:88-330` (mẫu emit bảng); `vendor/sbe-ref/sbe-samples/src/main/resources/example-schema.xml` | `crates/sbe-gen/**` (mới), `crates/sbe/build.rs` (mới, chỉ khi `cfg(test)`-style qua dev-dep), `crates/sbe/tests/schemas/` (chỉ **đường dẫn** vào vendor, không copy XML) | `cargo test -p fixbolt-sbe-gen` xanh; `cargo test -p fixbolt-sbe` compile bảng sinh | sonnet | C1 |
+| **C3** | `crates/sbe/tests/spec_examples.rs`: ba hex dump §7 decode → từng trường bằng số spec ghi → encode lại **byte một**; `tests/car_roundtrip.rs`: `Car` mọi kiểu, nested group, 3 varData; `tests/versioning.rs`: `sinceVersion` > header → absent; template lạ → skip đúng `blockLength`; message cụt → `Err`, không panic (fuzz nhỏ bằng cắt từng byte). Đọc trước: `07Examples.md` ba mục; ADR-0081 quyết định 3a, 4 | `crates/sbe/tests/*.rs` (mới) | `cargo test -p fixbolt-sbe` xanh; đảo chiều: đổi một byte trong hex `ExecutionReport` → test group đỏ ở đúng trường | sonnet | C2 |
+| **C4** | `impl Encoding for Sbe<S: Schema>` (`crates/sbe/src/encoding.rs`): `View = SbeView`, `Field = FieldId(u16)`, `Dict = SbeTables<S>` (`Tables` cấu trúc: `allows` từ bảng, `enum_allows` từ enum của schema, `required` = presence `required`), `session_fields` → `None`, `Template` = root block + group builder + varData append, `patch` theo offset. Test: `field` qua trait bằng số của spec §7; encode `NewOrderSingle` qua `Template` == hex spec. Đọc trước: ADR-0079 quyết định 2, 4; A1 (`codec/src/encoding.rs`); ADR-0080 quyết định 1 | `crates/sbe/src/encoding.rs`, `tables.rs` (mới), `crates/sbe/tests/encoding.rs` (mới) | `cargo test -p fixbolt-sbe` xanh; `cargo bench -p fixbolt-sbe --bench alloc` (C6) | **opus** (trait trên đường nóng) | C3, A2 |
+| **C5** | `scripts/sbe-interop.sh` + `tools/sbe-interop` + job CI `sbe-interop` (ADR-0081 quyết định 3b): tải `sbe-all-<v>.jar` (SHA-256 ghim trong script), Temurin 17 cài trong job, sinh crate Rust Real Logic cho `example-schema.xml` vào `target/sbe-ref/`, binary encode bằng họ → decode mình, encode mình → decode họ, so byte hai chiều cho `Car` với group lồng và varData; in `sbe-interop: 2 / 2`. Đọc trước: `scripts/interop.sh:30-110` (fetch/ghim/build); `.github/workflows/ci.yml:719-800` (job `interop`); README SBE đoạn lệnh chạy | `scripts/sbe-interop.sh` (mới), `tools/sbe-interop/**` (mới), `.github/workflows/ci.yml` (job mới), `Cargo.toml` members | `scripts/sbe-interop.sh` in `2 / 2`; job xanh trong CI, run id ghi lại | sonnet | C4 |
+| **C6** | `crates/sbe/benches/alloc.rs`: `parse Car`, `field`, `walk fuelFigures`, `encode NewOrderSingle` = 0, mỗi case chứng minh bằng injection (mẫu `codec/benches/alloc.rs:230-246`); `benches/sbe.rs` timing 4 case `NO BASELINE`; `scripts/bench.sh` và `check-bench-alignment.sh` biết crate mới. Đọc trước: `codec/benches/alloc.rs`, `harness.rs`; `scripts/bench.sh` phần INVARIANT/TIMING | `crates/sbe/benches/*.rs` (mới), `Cargo.toml` `[[bench]]`, `scripts/bench.sh`, `scripts/check-bench-alignment.sh` | `scripts/bench.sh` in bốn `0` và bốn `NO BASELINE`; alignment xanh | sonnet | C4 |
+| **C7** | `library/examples/sbe_decode.rs` + `tests/sbe_example.rs`: decode một `Car` từ bytes cố định qua `fixbolt::sbe` re-export, không socket (ADR-0078: không session). `library` re-export `sbe` sau feature `sbe` (gate `mod`/`pub use`). Đọc trước: ADR-0078 *Consequences* "cannot log on anywhere"; `library/src/lib.rs` re-export list | `crates/library/src/lib.rs`, `Cargo.toml`, `examples/sbe_decode.rs`, `tests/sbe_example.rs` | `cargo test -p fixbolt --features sbe` xanh; `--no-default-features` không kéo `sbe` (`check-no-optional-deps.sh`) | sonnet | C4 |
+| **C8** | Docs PR C: `DESIGN.md` §3 hai crate mới, §7 bước 9–10, D16 đoạn SBE, §6 gate `sbe-interop`; `GUIDE.md` mục "SBE là codec, bạn mang transport"; `GETTING-STARTED.md` không đổi (FIX 4.4); `CONFIGURATION.md` feature `sbe`; `README.md` layout; `CHANGELOG.md`; `PRD.md` §2 hàng SBE `[measured]`, bảng *Phase 2 starts…* hàng SBE → trỏ ADR-0081; `docs/reference/sbe-spec-facts.md` (header, order, group dims, §3.6 — sự thật đã dùng) | các file trên | link check xanh | manager | C7, CI xanh |
+| **C-desk** *(needs-desk)* | Baseline SBE trên bàn §9: `scripts/bench.sh` n = 20, ghi `benches/baselines.tsv` bốn case `sbe`; so `parse Car` với `parse NewOrderSingle` tag=value cùng boot; kết quả vào `measured-costs.md`, `DESIGN.md` §8 **chỉ** nếu có dòng budget đổi | `benches/baselines.tsv`, `docs/reference/measured-costs.md` | `scripts/bench.sh --strict` xanh sau khi ghi; `check-machine.sh` header | manager + haiku | C6; bàn rảnh |
+| **D1** | `docs/internals/README.md` + một trang mỗi crate (`codec.md`, `dict.md`, `session.md`, `engine.md`, `library.md`, `conformance.md`, `sbe.md`, `tools.md`): file → giữ gì → đọc theo thứ tự nào → test canh; mỗi trang ≤ 80 dòng; trỏ DESIGN/ADR thay vì kể lại. Đọc trước: `DESIGN.md` §3 và bảng *What `engine` contains*; STATUS item 33 đoạn "engine-has-no-map" | `docs/internals/**` (mới), `README.md` (một link), `CLAUDE.md` §4 bảng (một hàng, manager) | link check xanh; `grep -c` mỗi trang ≤ 80 dòng | sonnet | C8 |
+| **D2** | Đóng phase 2: `STATUS.md` (item 33 gạch phần internals; item mới cho hai hành vi FIXT không oracle và cho "no `1128` on session messages"; hàng Phase 2 `:2989`); `PRD.md` §2 *Phase 2* thêm bảng exit criteria đã đạt (180/180, 60/60 wire, spec 3/3, sbe-interop 2/2, band A-desk, alloc 0 × N); ADR-0080/0081 → *Accepted* với số đo | `STATUS.md`, `docs/PRD.md`, hai ADR | mọi CI run id nêu tên | manager | D1 |
+
+## Cách kiểm chứng
+
+- **PR A** đóng bằng ba thứ, đủ cả ba: 59 / 59 in-process và qua socket **không sửa fixture**;
+  hai script mode xanh (bất biến 4 walk lại vì `serve*` đổi chữ ký); **A-desk trong band
+  ADR-0031** trên bàn §9, quote `bench.sh --strict` hai worktree. Lệch band là dừng, không
+  phải ghi chú.
+- **PR B**: `score_fixt` in ba số `60/60`; câu FAIL đảo chiều viết trước: `1d_InvalidLogon
+  NoDefaultApplVerID: expected DISCONNECT, engine sent Logon`. `wire_fixt` 60 / 60 trên Linux
+  CI. Interop `fixt` 7 / 7 — đây là ý kiến độc lập duy nhất (ADR-0042); `.def` và interop cùng
+  xanh mới đóng. `dict` build có feature tắt **không mở** `FIXT11.xml` (đổi tên file rồi build).
+- **PR C**: ba hex dump spec round trip byte một; `sbe-interop` 2 / 2 trong CI với Java do job
+  cài; alloc `0` bốn case, chứng minh bằng injection; `no_std` chứng minh bằng build không
+  `std` (C1 nêu cách CI có). Đảo chiều C3: đổi một byte trong hex group → đỏ đúng trường.
+- **Mọi số thời gian** chỉ có sau A-desk/C-desk, trên bàn §9, header `check-machine.sh`, hai
+  procedure theo ADR-0068 nếu công bố. Trước đó bench in `NO BASELINE`.
+
+## Tài liệu phải cập nhật
+
+Theo `CLAUDE.md` §4; đây là danh sách **manager sửa**, dòng chính xác:
+
+- [ ] `docs/PRD.md` §2 *Phase 2* (dòng 94–108): bảng 3 hàng thêm cột *Plan / PR* trỏ kế hoạch
+      này (A/B/C); sau D2, thêm bảng *Phase 2 exit criteria* dưới bảng *Phase 1 exit
+      criteria* (sau dòng 148).
+- [ ] `docs/PRD.md` §2 *Phase 2 starts with an architectural decision* (dòng 150–167): hàng
+      **SBE** `[unproven]` → "decided: ADR-0078, ADR-0081"; hàng **FIX 5.0 / FIXT 1.1**
+      `[unproven]` → "`[measured 2026-09-19]` 180 = 60 × 3, differ only in `1137` and CompID;
+      ADR-0080"; hàng FAST/FIXML giữ, thêm "out of phase 2 (ADR-0078 d.4)".
+- [ ] `docs/PRD.md` §6: hàng mới **11** "Where does the dictionary live once the session is
+      generic? — Proposed answer ADR-0080"; **12** "Who generates SBE layouts? — Proposed
+      answer ADR-0081".
+- [ ] `docs/DESIGN.md` §3 (dòng 97–112): hàng `codec` thêm "`encoding`: the `Encoding` trait
+      (D16)"; hàng `dict` thêm "second table `Fixt11Fix50Sp2Tables` behind `fix50sp2`"; hai
+      hàng mới `sbe` (L1) và `sbe-gen` (build) sau `library`.
+- [ ] `docs/DESIGN.md` §4: **D16** mới sau D15 (dòng 779–846): trait, alias, `Dict`, SBE view,
+      static dispatch; §4 D2 thêm một câu "`SbeView` is the second 24-byte view (D16)".
+- [ ] `docs/DESIGN.md` §6 *Correctness* (dòng 877–912): hàng 180 `.def` FIXT và hàng
+      `sbe-interop`; §6 *Allocation*: các case mới.
+- [ ] `docs/DESIGN.md` §7 (dòng 1098–1124): "All eight are complete" → thêm bước 9 `sbe`, 10
+      `sbe-gen`, mỗi bước trỏ PR C.
+- [ ] `STATUS.md`: *Start here* mới khi mở PR A; hàng Phase 2 (dòng 2989) → trỏ kế hoạch này;
+      item 33 (dòng 5074) gạch phần `docs/internals` khi D1 xong; item mới ≥ 92 cho ba hành vi
+      FIXT không oracle (ADR-0080 quyết định 3).
+- [ ] `docs/CONFIGURATION.md` (dòng 81 vùng `BeginString`): key `DefaultApplVerID`; feature
+      `fix50sp2`, `sbe`.
+- [ ] `docs/SESSION-BEHAVIOUR.md`: mục FIXT 1.1, bốn hành vi, `.def`/test canh từng cái.
+- [ ] `docs/CONFORMANCE.md`: 180 / 180, 60 / 60 wire, interop `fixt` 7 / 7, spec 3 / 3,
+      sbe-interop 2 / 2 — lệnh, máy, CI run id.
+- [ ] `docs/GUIDE.md`: alias `Fix44TagValue`/`AcceptorFix44`; mục SBE "codec only".
+- [ ] `README.md` layout (dòng 132–140): hai crate mới; `CHANGELOG.md` *Unreleased*.
+- [ ] `docs/reference/sbe-spec-facts.md` (mới, C8) và mục mới trong `measured-costs.md`
+      (A-desk, C-desk).
+- [ ] `CLAUDE.md` §2 bảng *Machine checks* hàng 3: thêm "180 FIXT `.def` behind `fix50sp2`";
+      §7 bảng "Any session-layer change" → "59 + 180". (Manager, nói to rule đổi.)
+
+## Bẫy đã lường trước
+
+| Bẫy | Test canh |
+|---|---|
+| GAT `type View<'a>` + `#[inline]` làm hàm generic không inline qua ranh giới crate → tag=value chậm | A-desk band; `benches/parse.rs` là số đầu tiên đọc |
+| `Session<E>` monomorphise hai lần (Fix44 + FIXT) làm thời gian build `session` tăng; `dict` với hai bảng | B1 ghi thời gian build hai trạng thái; feature tắt mặc định |
+| Field trùng giữa `FIXT11.xml` và `FIX50SP2.xml` khác enum → bảng sai lặng lẽ | B1: khác → `die`; test cố ý sửa một enum trong bản copy XML → build đỏ |
+| Corpus loader vẫn từ chối ≠ 59 | B3 `LoadError::WrongCount`; test 60 mỗi dir |
+| `1137` phải nằm đúng thứ tự trong Logon gửi đi (comparator positional, D3) | B4 `score_fixt` `1a_ValidLogonWithCorrectMsgSeqNum` là file đầu tiên đỏ nếu sai |
+| `is_admin` cho FIXT lấy từ `msgcat` của `FIXT11.xml`, không từ `ADMIN` const trong session | B1 `is_admin(b"n")` (XMLnonFIX) true; B4 `8_OnlyAdminMessages` |
+| SBE `blockLength` trong header **lớn hơn** tổng field (schema thêm padding) → đọc group sai offset | C3 test với bảng viết tay `blockLength` = tổng + 4; §3.3.1 |
+| SBE `numInGroup` × `blockLength` vượt buffer → panic index | C3 fuzz cắt byte; `indexing_slicing = deny` |
+| Byte order: schema `bigEndian` với header cùng byte order (§2.2) | C3 test `NewOrderSingle` hex spec là big-endian? — người xây **đọc hex** và khẳng định trong test doc, không đoán |
+| `sbe-tool` phiên bản mới đổi output/CLI | C5 ghim version + SHA-256; job đỏ nói rõ "pin" |
+| `build.rs` của `sbe` (dev-only) chạy khi user build crate → kéo `roxmltree` vào runtime | C2: `build.rs` chỉ sau `cfg`/env `FIXBOLT_SBE_GEN_TESTS`; `check-no-optional-deps.sh` |
+| Java thiếu trên máy dev → `sbe-interop.sh` đỏ mập mờ | C5 script kiểm `java -version` đầu tiên, in hướng dẫn, exit 2 riêng |
+| `1128` trên message session (cấm theo spec) không bị từ chối | ghi STATUS item, không xây; test doc B4 nói rõ |
+| Bàn §9 đang bisect C-91b → số A-desk vô nghĩa | A-desk chỉ chạy khi `STATUS.md` *Start here* nói bisect xong; memory rule |
+
+## Rủi ro
+
+| Rủi ro | Mức | Cách xử lý |
+|---|---|---|
+| A-desk lệch band → trait phải thiết kế lại (ví dụ bỏ GAT, dùng `Encoding<'a>`) | cao | dừng ở A; kiến trúc sư sửa ADR-0079 (còn được sửa? — **không**, đã Accepted → ADR mới); PR B/C không mở |
+| `Session<E>` kéo theo `library` API đổi nhìn thấy được (`Handler` generic) | vừa | A3 dùng alias mặc định để `examples/acceptor.rs` không đổi; nếu không được → ghi CHANGELOG, GUIDE |
+| Generator SBE gặp schema venue dùng `ref`/`offset` phức tạp | vừa | `Error::Unsupported` có tên; phạm vi ADR-0081 d.5; venue là phase 3 |
+| Hai hành vi FIXT không oracle sai với một venue thật | thấp | ghi rõ ở SESSION-BEHAVIOUR + STATUS item; đổi bằng ADR mới |
+| `interop` FIXT: `libquickfix` cần `DataDictionary` path tuyệt đối, cfg khác 4.4 | thấp | B7 copy cfg mẫu QuickFIX/J; nếu initiator đụng D15 → chỉ acceptor, nói rõ |
+| Build time CI tăng (hai bảng dict + hai crate + Java job) | thấp | đo ở B1/C5, ghi STATUS; job `sbe-interop` không chặn nếu > 5 phút → ADR |
+
+## Ngoài phạm vi
+
+- **FIXP, SOFH, FAST, FIXML** (ADR-0078 quyết định 2, 4). Không có session cho SBE; `serve*`
+  không nhận `Sbe<S>`.
+- Bảng `FIX50`, `FIX50SP1` riêng; chọn app dictionary theo `1128` từng message (ADR-0080).
+- Cấm `1128/1156/1129` trên message session — item, không xây.
+- Flyweight/accessor có kiểu cho SBE (`fn cl_ord_id()`); SBE 2.0 RC.
+- Schema của bất kỳ venue nào (iLink 3, B3, MOEX).
+- `no_std` cho `codec` — vẫn là mục tiêu; `sbe` đi trước làm mẫu.
+- Số thời gian SBE công bố (chỉ baseline nội bộ ở C-desk; công bố cần hai procedure).
+
+## Nhật ký giao hàng
+
+*(trống — điền khi đóng từng PR: commit, CI run id, gate quote, cái gì chưa làm và vì sao)*
