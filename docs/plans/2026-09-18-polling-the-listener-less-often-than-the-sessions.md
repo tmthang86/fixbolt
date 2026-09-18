@@ -1,6 +1,6 @@
 # Hỏi listener thưa hơn hỏi session — và đo nó ra một con số latency
 
-> **Loại:** Plan · **Ngày:** 2026-09-18 · **Trạng thái:** Đã duyệt 2026-09-18 (owner: theo đề nghị cho cả ba câu hỏi)
+> **Loại:** Plan · **Ngày:** 2026-09-18 · **Trạng thái:** Đã đóng 2026-09-18 ở bước 4 + 6 (bước 5 chờ boot C) — PR #76, commit `55a1549`, CI run 35324480648 (14/14)
 > **Phạm vi:** `engine` (vòng lặp `pump` của `hft`), `tools/w2w`, STATUS item 89
 
 > Tên file luôn tiếng Anh: `docs/plans/YYYY-MM-DD-<topic>.md`.
@@ -250,4 +250,5 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4.
 - Bước 5 **chưa làm** — cần bàn §9 (boot C). Mặc định N = 1, đường nóng không đổi. Không có số đo nào.
 - Bước 6 — commit này: DESIGN §4 D8, GUIDE, measured-costs *What is not proven*, CHANGELOG, STATUS item 89 thu hẹp về "đo ở boot C".
 - Bẫy gặp ngoài plan: `check-links.py 2>&1 | tail -1` che dòng FAIL vì hai stream qua pipe đảo thứ tự — ghi thành luật 5 trong `docs/reference/reading-the-output-you-grepped-for.md`, script giờ flush stdout trước FAIL.
-- CI: ghi ở *Start here* của `STATUS.md` khi đóng.
+- Rebase lên `main` (conflict `main.rs`, `STATUS.md`, `CHANGELOG.md` với item 90; PR conflict thì GitHub không chạy CI). **CI trên `55a1549`: run [35324480648](https://github.com/tmthang86/fixbolt/actions/runs/35324480648), 14/14**; run 35323463898 trên `27aa90b` đỏ một job rustdoc (link tới hằng private), sửa ở `55a1549`.
+- Plan đóng ở bước 4 + 6; bước 5 chờ boot C.
