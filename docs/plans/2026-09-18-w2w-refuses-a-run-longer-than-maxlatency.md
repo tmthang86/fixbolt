@@ -1,6 +1,6 @@
 # w2w từ chối một lần chạy paced dài hơn MaxLatency
 
-> **Loại:** Plan · **Ngày:** 2026-09-18 · **Trạng thái:** Đã duyệt 2026-09-18 (owner: theo đề xuất cho cả hai câu hỏi)
+> **Loại:** Plan · **Ngày:** 2026-09-18 · **Trạng thái:** Đã đóng 2026-09-18 — PR #75, commit `8c5047e`, CI run 35315426980 (14/14)
 > **Phạm vi:** `tools/w2w` — đóng open item 90 của `STATUS.md`
 
 ## Bối cảnh
@@ -197,5 +197,6 @@ vào kế hoạch này**: đề nghị owner cho một commit `docs:` riêng.
 - Bước 2 — `3488a92`: 5 tài liệu ở *Tài liệu phải cập nhật*; `check-links.py`: `no dead internal links`.
 - Reversal, hai lần. Tắt hẳn nhánh từ chối: 3 test đỏ (`..._is_refused`, `..._is_allowed`, `..._moves_the_bound`), 17 xanh. Reversal của plan (`>=` → `>` và bỏ `MARGIN_MS`): **chỉ** nhánh `n = 120` của `a_paced_run_inside_maxlatency_is_allowed` đỏ, 19 xanh. **Câu FAIL plan viết trước đã sai**: `paced_run_fits(1_000_000, 5, 120, 120_000)` là 124 s, vượt biên 4 s nên từ chối theo cả hai cách. Test pin biên là cặp 119/120, không phải ca xa. Ghi vào reference.
 - Senior review (Opus, context mới): không có gì chặn merge. N2 sửa (`--max-skew-ms` nay bị `--listen` từ chối như `--interval`, thêm vào `listen_refuses_what_only_a_generator_has`). N1 để lại: với `--max-skew-ms < 1000` gợi ý "at most 1 messages" trong khi 1 cũng bị từ chối — đầu vào suy biến, refusal vẫn đúng. N3 là mục reversal ở trên.
-- Không đo gì trên Linux; không có số liệu mới. CI run id: ghi ở *Start here* của `STATUS.md` khi đóng.
+- Không đo gì trên Linux; không có số liệu mới.
+- **CI trên `8c5047e`: run [35315426980](https://github.com/tmthang86/fixbolt/actions/runs/35315426980), 14 job / 14 xanh.** Đóng plan.
 
