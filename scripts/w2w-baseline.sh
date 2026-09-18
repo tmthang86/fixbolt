@@ -134,6 +134,16 @@ export FIXBOLT_NIC="${FIXBOLT_NIC:-}"
 W2W_EXTRA=${W2W_EXTRA:-}
 EXTRA_ARGS=()
 [ -n "$W2W_EXTRA" ] && read -ra EXTRA_ARGS <<< "$W2W_EXTRA"
+# `--listener-every`, plan `2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
+# step 4: empty is no flag at all, so a run that never sets it is `tools/w2w`'s
+# default cadence of 1 — today's loop, unchanged. Set, it lets one procedure
+# alternate `LISTENER_EVERY=1` and `LISTENER_EVERY=<N>` arms without editing
+# the script, which is what the A/B in step 5 needs. Same reach as
+# `W2W_EXTRA` above: the combined run and the `--listen` half only, because
+# that is the process with a listener to poll.
+LISTENER_EVERY=${LISTENER_EVERY:-}
+LISTENER_EVERY_ARGS=()
+[ -n "$LISTENER_EVERY" ] && LISTENER_EVERY_ARGS=(--listener-every "$LISTENER_EVERY")
 BIN=target/release/w2w
 PINARGS=()
 # Split-mode pin args, one core per process rather than two in one — tools/w2w
@@ -481,7 +491,7 @@ for arm in $ARMS; do
       # name the cause better than a bare nonzero status ever could.
       listen_log=$(mktemp)
       "$BIN" --listen "$LISTEN" --mode "$mode" --path "$path" "${LISTEN_PINARGS[@]}" "${wire_args[@]}" \
-        "${EXTRA_ARGS[@]}" >"$listen_log" 2>&1 &
+        "${EXTRA_ARGS[@]}" "${LISTENER_EVERY_ARGS[@]}" >"$listen_log" 2>&1 &
       listen_pid=$!
 
       if ! wait_for_line "$listen_log" '^listening: ' 5; then
@@ -622,7 +632,8 @@ for arm in $ARMS; do
     # panic or a refusal from the binary travels with them.
     rc=0
     out=$("$BIN" --mode "$mode" --path "$path" "${tls_args[@]}" "${interval_args[@]}" "${PINARGS[@]}" \
-            --messages "$MESSAGES" --warmup "$WARMUP" "${EXTRA_ARGS[@]}" 2>&1) || rc=$?
+            --messages "$MESSAGES" --warmup "$WARMUP" "${EXTRA_ARGS[@]}" \
+            "${LISTENER_EVERY_ARGS[@]}" 2>&1) || rc=$?
     # F11 (`[2026-09-15]`, the split run above): the raw output is kept before
     # any check below can `exit 1` — `boot-b-p1/b4-1s/` held nothing after a
     # `35=3` reject FAILed its run.

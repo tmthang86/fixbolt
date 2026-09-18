@@ -767,6 +767,11 @@ const CONNECT_REFUSES: &[(&str, &str)] = &[
         "--observer-core",
         "the observer thread reads the engine's socket; pass it to the --listen process",
     ),
+    (
+        "--listener-every",
+        "the listener's cadence is the engine's own accept loop; this process has no \
+         listener to poll on one",
+    ),
 ];
 
 /// `--mode standard --wire-timestamps` on a NIC that is not loopback: refused.
@@ -943,6 +948,24 @@ fn paced_run_fits(
     Ok(())
 }
 
+/// `--listener-every <N>`: how many turns of w2w's own pump apart the listener
+/// is asked, ADR-0069 decision 1's rule copied for this binary's loop. Absent
+/// is `1` (today's loop, unchanged); present with `0` is refused the same way
+/// a missing value is, rather than silently read as "never poll".
+fn listener_every_of(args: &[String]) -> Result<std::num::NonZeroU32, String> {
+    match value_of::<u32>(args, "--listener-every")? {
+        None => Ok(std::num::NonZeroU32::MIN),
+        Some(0) => Err(
+            "--listener-every 0: refused — a cadence of zero never asks the listener at \
+                 all; pass at least 1"
+                .to_string(),
+        ),
+        // `n` is nonzero here — `Some(0)` was matched above — so the fallback
+        // below never runs; `unwrap_or` says that without `unwrap`/`expect`.
+        Some(n) => Ok(std::num::NonZeroU32::new(n).unwrap_or(std::num::NonZeroU32::MIN)),
+    }
+}
+
 /// Whether `name` appears among the arguments at all.
 fn present(args: &[String], name: &str) -> bool {
     args.iter().skip(1).any(|a| a == name)
@@ -1030,9 +1053,10 @@ fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // The two halves' refusals first. With no new flag they return
     // `(Half::Both, 0)` and print nothing, so everything below runs as it did.
-    let (half, interval_us, wire) = match half_of(&args)
+    let (half, interval_us, wire, listener_every) = match half_of(&args)
         .and_then(|h| Ok((h, interval_of(&args)?)))
         .and_then(|(h, i)| Ok((h, i, wire_of(&args)?)))
+        .and_then(|(h, i, w)| Ok((h, i, w, listener_every_of(&args)?)))
     {
         Ok(v) => v,
         Err(why) => {
@@ -1219,13 +1243,21 @@ fn main() -> std::io::Result<()> {
             journal,
             log,
             wire.as_ref(),
+            listener_every,
         ),
         // `half_of` has refused `--client-core` here, and `--engine-core`,
         // `--mode` and `--wire-timestamps` for the generator, so neither
         // function is handed a core, a mode or a tap it would have to ignore.
-        Half::Listen(addr) => {
-            engine_half(&addr, mode, run, engine_core, journal, log, wire.as_ref())
-        }
+        Half::Listen(addr) => engine_half(
+            &addr,
+            mode,
+            run,
+            engine_core,
+            journal,
+            log,
+            wire.as_ref(),
+            listener_every,
+        ),
         // `half_of` has refused `--journal` and `--log` for `--connect`, so
         // `generator_half` never receives a choice it has no engine to act on.
         Half::Connect(addr) => generator_half(&addr, run, client_core),
@@ -1251,6 +1283,7 @@ fn main() -> std::io::Result<()> {
 
 /// The combined run: engine and client in one process, over loopback. Every
 /// line it prints is the line this binary printed before `--listen` existed.
+#[allow(clippy::too_many_arguments)]
 fn both_halves(
     mode: Mode,
     run: Run,
@@ -1259,6 +1292,7 @@ fn both_halves(
     journal: JournalKind,
     log: LogKind,
     wire: Option<&WireArgs>,
+    listener_every: std::num::NonZeroU32,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind("127.0.0.1:0")?;
@@ -1349,12 +1383,26 @@ fn both_halves(
         // `false`: the client on the other thread stops this engine through
         // `stop`, and times its own window.
         match desk {
-            None => {
-                serve_chosen::<_, false>(acceptor, &engine_stop, mode, Never, side, files, handoff)
-            }
-            Some(d) => {
-                serve_chosen::<_, false>(acceptor, &engine_stop, mode, d, side, files, handoff)
-            }
+            None => serve_chosen::<_, false>(
+                acceptor,
+                &engine_stop,
+                mode,
+                Never,
+                side,
+                files,
+                handoff,
+                listener_every,
+            ),
+            Some(d) => serve_chosen::<_, false>(
+                acceptor,
+                &engine_stop,
+                mode,
+                d,
+                side,
+                files,
+                handoff,
+                listener_every,
+            ),
         }
     };
     let engine = spawn_engine(body, engine_core)?;
@@ -1370,17 +1418,19 @@ fn both_halves(
             // The plain arm, exactly as it was before `--tls` existed: a
             // blocking `TcpStream` with Nagle off. Changing this client changes
             // every figure this binary has published.
+            let connect_started = Instant::now();
             let sock = TcpStream::connect(&addr)?;
             sock.set_nodelay(true)?;
-            measure(sock, &run, peer)
+            measure(sock, &run, peer, connect_started)
         }
         #[cfg(all(feature = "tls", target_os = "linux"))]
         Tls::Ktls | Tls::Userspace => {
             let Some(p) = pki.as_ref() else {
                 return Err(std::io::Error::other("w2w: a TLS arm with no certificate"));
             };
+            let connect_started = Instant::now();
             let sock = tls_arm::connect(&addr, p, tls == Tls::Ktls)?;
-            measure(sock, &run, peer)
+            measure(sock, &run, peer, connect_started)
         }
         #[cfg(not(all(feature = "tls", target_os = "linux")))]
         Tls::Ktls | Tls::Userspace => {
@@ -1476,6 +1526,7 @@ fn both_halves(
 
 /// `--listen`: the engine thread alone, serving until its last connection has
 /// closed. Prints no latency figure — see the module note.
+#[allow(clippy::too_many_arguments)]
 fn engine_half(
     addr: &str,
     mode: Mode,
@@ -1484,6 +1535,7 @@ fn engine_half(
     journal: JournalKind,
     log: LogKind,
     wire: Option<&WireArgs>,
+    listener_every: std::num::NonZeroU32,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind(addr)?;
@@ -1541,10 +1593,18 @@ fn engine_half(
                 EngineSide::Plain,
                 files,
                 handoff,
+                listener_every,
             ),
-            Some(d) => {
-                serve_chosen::<_, true>(acceptor, &stop, mode, d, EngineSide::Plain, files, handoff)
-            }
+            Some(d) => serve_chosen::<_, true>(
+                acceptor,
+                &stop,
+                mode,
+                d,
+                EngineSide::Plain,
+                files,
+                handoff,
+                listener_every,
+            ),
         }
     };
     let engine = spawn_engine(body, engine_core)?;
@@ -1661,6 +1721,7 @@ fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::
     println!("connect: {addr}");
     pin_client(client_core)?;
 
+    let connect_started = Instant::now();
     let sock = TcpStream::connect(addr)?;
     sock.set_nodelay(true)?;
     // A bound on every blocking read, set once, before the logon. The combined
@@ -1673,7 +1734,7 @@ fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::
         mut samples,
         allocs,
         late,
-    } = measure(sock, &run, Peer::Remote).map_err(|e| match e.kind() {
+    } = measure(sock, &run, Peer::Remote, connect_started).map_err(|e| match e.kind() {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => std::io::Error::new(
             e.kind(),
             format!(
@@ -1816,7 +1877,17 @@ struct Measured {
 ///
 /// With [`Peer::Remote`] there is no engine to read back or stop: the socket is
 /// closed after `--hold-ms`, which is what ends the `--listen` process.
-fn measure<C: Wire>(mut sock: C, run: &Run, peer: Peer<'_>) -> std::io::Result<Measured> {
+/// `connect_started`: taken just before the socket's `connect()`, on the same
+/// clock ([`Instant`]) the timed window below uses. `measure` prints
+/// `logon-rtt` right after the answer is read — before any other clock read
+/// inside this function, and outside the loop that arms [`ALLOCS`], so it
+/// never perturbs the figures §7 gates.
+fn measure<C: Wire>(
+    mut sock: C,
+    run: &Run,
+    peer: Peer<'_>,
+    connect_started: Instant,
+) -> std::io::Result<Measured> {
     let Run {
         path,
         warmup,
@@ -1829,6 +1900,10 @@ fn measure<C: Wire>(mut sock: C, run: &Run, peer: Peer<'_>) -> std::io::Result<M
     // Logon first, and read the answer, so the timed loop starts on an
     // established session rather than on a handshake.
     write_and_read(&mut sock, &logon(1))?;
+    // (ii) of the plan: the new-connection latency, from the client's side —
+    // everything between "the client decided to connect" and "the session is
+    // up", which is what a listener cadence coarser than 1 can add to.
+    println!("logon-rtt: {} ns", connect_started.elapsed().as_nanos());
 
     if let Peer::InProcess { .. } = peer {
         // **Read back, not echoed.** The engine thread stores what its transport
@@ -2181,6 +2256,7 @@ fn open_files(journal: JournalKind, log: LogKind) -> std::io::Result<(Opened, Cl
 /// monomorphised engine. The `(None, None)` arm is `FreshStore` + `NoLog` —
 /// the engine this tool timed before either flag existed; the module note says
 /// why that is a rule and not a nicety.
+#[allow(clippy::too_many_arguments)]
 fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
     acceptor: Acceptor,
     stop: &AtomicBool,
@@ -2189,6 +2265,7 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
     side: EngineSide,
     files: Opened,
     stamp: Option<Arc<wire::Handoff>>,
+    listener_every: std::num::NonZeroU32,
 ) {
     use fixbolt_engine::msglog::NoLog;
     match files {
@@ -2196,7 +2273,15 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
             journal: None,
             log: None,
         } => serve::<_, _, _, UNTIL_CLOSED>(
-            acceptor, stop, mode, app, side, FreshStore, NoLog, stamp,
+            acceptor,
+            stop,
+            mode,
+            app,
+            side,
+            FreshStore,
+            NoLog,
+            stamp,
+            listener_every,
         ),
         Opened {
             journal: Some(j),
@@ -2210,11 +2295,22 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
             OneFile(Some(j)),
             NoLog,
             stamp,
+            listener_every,
         ),
         Opened {
             journal: None,
             log: Some(l),
-        } => serve::<_, _, _, UNTIL_CLOSED>(acceptor, stop, mode, app, side, FreshStore, l, stamp),
+        } => serve::<_, _, _, UNTIL_CLOSED>(
+            acceptor,
+            stop,
+            mode,
+            app,
+            side,
+            FreshStore,
+            l,
+            stamp,
+            listener_every,
+        ),
         Opened {
             journal: Some(j),
             log: Some(l),
@@ -2227,6 +2323,7 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
             OneFile(Some(j)),
             l,
             stamp,
+            listener_every,
         ),
     }
 }
@@ -2252,6 +2349,7 @@ fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
     journals: S,
     log: L,
     stamp: Option<Arc<wire::Handoff>>,
+    listener_every: std::num::NonZeroU32,
 ) {
     match (side, stamp) {
         // No `--wire-timestamps`: the accept path this binary always had.
@@ -2264,6 +2362,7 @@ fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
                 Some::<TcpTransport>,
                 journals,
                 log,
+                listener_every,
             );
         }
         // `--wire-timestamps`: the observer sets `SO_TIMESTAMPING` on this
@@ -2279,6 +2378,7 @@ fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
                 move |t: TcpTransport| h.attach(t.socket()).then_some(t),
                 journals,
                 log,
+                listener_every,
             );
         }
         #[cfg(all(feature = "tls", target_os = "linux"))]
@@ -2314,6 +2414,7 @@ fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
                 },
                 journals,
                 log,
+                listener_every,
             );
         }
     }
@@ -2325,6 +2426,7 @@ fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
 /// Split out from [`pump`] so that `--mode` and `--path` do not multiply into
 /// six copies of the loop: a reversal that also changed the loop would prove
 /// nothing about the loop.
+#[allow(clippy::too_many_arguments)]
 fn run<
     A: Application,
     T: Transport,
@@ -2340,13 +2442,32 @@ fn run<
     wrap: F,
     journals: S,
     log: L,
+    listener_every: std::num::NonZeroU32,
 ) {
     match mode {
         Mode::Hft => {
-            pump::<_, _, _, _, _, _, UNTIL_CLOSED>(acceptor, stop, Spin, app, wrap, journals, log);
+            pump::<_, _, _, _, _, _, UNTIL_CLOSED>(
+                acceptor,
+                stop,
+                Spin,
+                app,
+                wrap,
+                journals,
+                log,
+                listener_every,
+            );
         }
         Mode::Yield => {
-            pump::<_, _, _, _, _, _, UNTIL_CLOSED>(acceptor, stop, Yield, app, wrap, journals, log);
+            pump::<_, _, _, _, _, _, UNTIL_CLOSED>(
+                acceptor,
+                stop,
+                Yield,
+                app,
+                wrap,
+                journals,
+                log,
+                listener_every,
+            );
         }
         #[cfg(all(feature = "standard", unix))]
         Mode::Standard => pump::<_, _, _, _, _, _, UNTIL_CLOSED>(
@@ -2357,12 +2478,52 @@ fn run<
             wrap,
             journals,
             log,
+            listener_every,
         ),
         #[cfg(not(all(feature = "standard", unix)))]
         Mode::Standard => {
-            let _ = (wrap, journals, log);
+            let _ = (wrap, journals, log, listener_every);
             eprintln!("w2w: this build has no standard mode");
         }
+    }
+}
+
+/// How many turns of [`pump`]'s own accept loop apart the listener is asked —
+/// `--listener-every`, this binary's copy of ADR-0069 decision 1.
+///
+/// A pure `u32` pair, no clock and nothing allocated: the same shape as
+/// `crates/engine::lib::ListenerCadence`, copied rather than shared, because
+/// this loop is w2w's own hand-rolled accept path and not the engine's `pump`.
+/// Cadence 1 answers `true` on every turn, which is this loop as it was
+/// before `--listener-every` existed.
+struct ListenerCadence {
+    every: u32,
+    until: u32,
+}
+
+impl ListenerCadence {
+    const fn new(every: std::num::NonZeroU32) -> Self {
+        Self {
+            every: every.get(),
+            until: 0,
+        }
+    }
+
+    /// Whether this turn asks the listener. Asking rearms the countdown.
+    fn poll_now(&mut self) -> bool {
+        if self.until != 0 {
+            self.until -= 1;
+            return false;
+        }
+        self.until = self.every - 1;
+        true
+    }
+
+    /// The loop came back from `idle_with`: the next turn asks the listener
+    /// whatever the countdown said, so a blocking engine always answers a wake
+    /// with an accept — see `crates/engine::lib::ListenerCadence::woke`.
+    fn woke(&mut self) {
+        self.until = 0;
     }
 }
 
@@ -2392,6 +2553,13 @@ fn run<
 /// `Engine<…, Store, 256, 4096, 8192>` this function built before `--journal`
 /// and `--log` existed; `journals.next()` runs only when a connection is
 /// accepted, never in a turn.
+///
+/// `[2026-09-18]` **the listener is asked on a cadence, not on every turn**
+/// — `--listener-every <N>`, the same rule ADR-0069 gives `crates/engine`'s own
+/// `pump`, copied here rather than shared: this loop is its own hand-rolled
+/// accept path, not `crates/engine::lib::pump`, and a reversal of one must not
+/// silently also change the other.
+#[allow(clippy::too_many_arguments)]
 fn pump<
     A: Application,
     W: Waiting,
@@ -2408,6 +2576,7 @@ fn pump<
     mut wrap: F,
     mut journals: S,
     log: L,
+    listener_every: std::num::NonZeroU32,
 ) {
     let mut engine: Engine<
         T,
@@ -2431,20 +2600,24 @@ fn pump<
     let listener = acceptor.source().map(Interest::readable);
     let extra: &[Interest] = listener.as_slice();
     let mut first: Option<ConnId> = None;
+    let mut cadence = ListenerCadence::new(listener_every);
     while !stop.load(Ordering::Relaxed) {
-        while let Some(t) = acceptor.accept() {
-            // `OneFile` hands out the one `--journal file-async` file to the
-            // first connection and nothing to any after — see the module note.
-            // `FreshStore` never runs dry.
-            if let Some(t) = wrap(t)
-                && let Some(j) = journals.next()
-            {
-                let id = engine.add_with_journal(t, j);
-                first.get_or_insert(id);
+        if cadence.poll_now() {
+            while let Some(t) = acceptor.accept() {
+                // `OneFile` hands out the one `--journal file-async` file to the
+                // first connection and nothing to any after — see the module note.
+                // `FreshStore` never runs dry.
+                if let Some(t) = wrap(t)
+                    && let Some(j) = journals.next()
+                {
+                    let id = engine.add_with_journal(t, j);
+                    first.get_or_insert(id);
+                }
             }
         }
         if !engine.turn() {
             engine.idle_with(extra);
+            cadence.woke();
         }
         if engine.logons() > 0 {
             TLS_SEEN.store(
@@ -2458,15 +2631,18 @@ fn pump<
         }
     }
     while !stop.load(Ordering::Relaxed) {
-        while let Some(t) = acceptor.accept() {
-            if let Some(t) = wrap(t)
-                && let Some(j) = journals.next()
-            {
-                let _ = engine.add_with_journal(t, j);
+        if cadence.poll_now() {
+            while let Some(t) = acceptor.accept() {
+                if let Some(t) = wrap(t)
+                    && let Some(j) = journals.next()
+                {
+                    let _ = engine.add_with_journal(t, j);
+                }
             }
         }
         if !engine.turn() {
             engine.idle_with(extra);
+            cadence.woke();
         }
         if UNTIL_CLOSED && engine.connections() == 0 {
             break;
@@ -4142,6 +4318,59 @@ mod tests {
     }
 
     #[test]
+    fn listener_every_is_refused_by_connect() {
+        let e = half_of(&argv("--connect 127.0.0.1:1 --listener-every 16")).unwrap_err();
+        assert!(
+            e.starts_with("--listener-every does not apply to --connect"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn listener_every_defaults_to_one() {
+        assert_eq!(
+            listener_every_of(&argv("--listen 127.0.0.1:0")).map(std::num::NonZeroU32::get),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn listener_every_zero_is_refused() {
+        let e = listener_every_of(&argv("--listen 127.0.0.1:0 --listener-every 0")).unwrap_err();
+        assert!(e.starts_with("--listener-every 0: refused"), "{e}");
+    }
+
+    #[test]
+    fn listener_every_missing_a_value_is_refused() {
+        let e = listener_every_of(&argv("--listen 127.0.0.1:0 --listener-every")).unwrap_err();
+        assert!(e.contains("--listener-every needs a value"), "{e}");
+    }
+
+    #[test]
+    fn listener_every_one_always_polls() {
+        let mut c = ListenerCadence::new(std::num::NonZeroU32::new(1).unwrap());
+        for _ in 0..5 {
+            assert!(c.poll_now());
+        }
+    }
+
+    #[test]
+    fn listener_every_three_asks_once_in_three() {
+        let mut c = ListenerCadence::new(std::num::NonZeroU32::new(3).unwrap());
+        let asked: Vec<bool> = (0..4).map(|_| c.poll_now()).collect();
+        assert_eq!(asked, vec![true, false, false, true]);
+    }
+
+    #[test]
+    fn listener_every_wakes_force_the_next_poll() {
+        let mut c = ListenerCadence::new(std::num::NonZeroU32::new(3).unwrap());
+        assert!(c.poll_now());
+        assert!(!c.poll_now());
+        c.woke();
+        assert!(c.poll_now(), "a wake must force the very next turn to ask");
+    }
+
+    #[test]
     fn connect_refuses_what_only_an_engine_has() {
         for flag in [
             "--engine-core 6",
@@ -4361,6 +4590,7 @@ mod tests {
                     EngineSide::Plain,
                     files,
                     None,
+                    std::num::NonZeroU32::new(1).unwrap(),
                 );
             });
             std::thread::sleep(Duration::from_millis(50));
