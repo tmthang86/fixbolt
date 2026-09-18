@@ -50,11 +50,25 @@ checkable.
 2. **The published NIC figure is the interval-0 pair**, per ADR-0068, with its missing counts
    in the table. The paced figure at 1 s stays published beside it as the *cold* figure it
    already is (`DESIGN.md` §8 *Boot B*), never as a substitute.
-3. **The check that dropping the sample did not move the distribution is the generator's
-   table.** `w2w --connect` on the Mac sees every round trip, stamp or no stamp; a run's Mac
-   p50/p99/p99.9 computed over all requests and over the stamped subset must agree within the
-   ADR-0031 band, and `w2w --listen` prints both. If they disagree, decision 1's claim about
-   the mechanism is false for that run and the run is *marked*, not published.
+3. **The check that dropping the sample did not move the distribution is a join of the two
+   halves' per-sample dumps, by request index.** `[revised 2026-09-18, step 2.2's finding]`
+   As first written this decision asked `w2w --listen` for a counterparty table it cannot
+   have: the halves are two processes with no channel, `--connect` prints percentiles only,
+   and the acceptor's own table has no value for an unstamped request. Buildable form: both
+   halves gain `--dump <file>`, written **after** the timed window from data they already hold.
+   `--connect` writes one line per timed request — index (send order after warmup), round-trip
+   ns on its clock. `--listen --wire-timestamps` writes one line per timed request — index
+   (rank of the request's TCP byte offset after the acceptor's own `--warmup`, so the two
+   indexes agree by construction), `stamped`/`missing`, wire ns when stamped. The baseline
+   script fetches the generator's dump (`scp` when `GENERATOR_SSH`), joins on index, and
+   computes the generator's p50 / p99 / p99.9 twice — over every row and over the rows the
+   acceptor stamped. **The run is published only if the two agree within 1% at p50 and 5% at
+   p99 and p99.9** (chosen, like the 0.1%: a stamp skipped for observer lag is uncorrelated with
+   the request's own RTT, so the stamped subset should read as the whole to within sampling
+   noise; the slowest 20 of 20 000 going missing would move p99.9 by far more than 5%).
+   Disagreement marks the run, per ADR-0068 decision 3. The join is a pure function with a test
+   fed a synthetic dump. The generator's noise (an unpinned Mac) cancels: the check compares the
+   same process's samples against a subset of themselves.
 4. **A NIC with more slots is the right next purchase, and it is named**: an I225/I226
    (`igc`, four TX stamp registers) is the cheapest card with a PHC that removes the
    single-slot limit; it is not required to close item 40 and is not bought under this ADR.
@@ -78,8 +92,12 @@ checkable.
 - **0.1% is a chosen number**, like ADR-0068's 5%. It is small enough that a bimodal tail
   cannot hide in it (p99.9 is the 20th slowest of 20 000; losing 20 samples moves it by at
   most one rank), and nothing measured put it there.
-- **The Mac table is a software clock on a different machine.** It is a check on the *shape*
-  of the drop, not a second wire figure; its band is ADR-0031's, chosen for benches.
+- **The Mac dump is a software clock on a different machine.** It is a check on the *shape*
+  of the drop, not a second wire figure; its 1% / 5% bands are chosen, not measured.
+- **Two dumps and a join is more machinery for a check that should usually pass**, and a
+  request index is a convention two binaries must keep in step — a `--warmup` mismatch
+  between halves joins the wrong rows; the script passes one value to both and the dump header
+  records it.
 - **Two scripts change behaviour on a FAIL they used to raise**; the old strictness was itself
   a decision (Sửa 2), and a reader of boot B's log will see a rule reversed within a week. The
   reversal is recorded here rather than silently in the script.
