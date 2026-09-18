@@ -1,8 +1,10 @@
 # fixbolt
 
-A FIX 4.4 protocol engine written in Rust. It is built to be **the fastest FIX acceptor that
-runs on ordinary kernel TCP**, which is the part of the protocol the Rust ecosystem does not
-yet cover with anything production-proven.
+A FIX 4.4 protocol engine written in Rust. It is built to be **a FIX acceptor on ordinary
+kernel TCP whose latency is a published, reproduced number**
+([ADR-0077](docs/decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)),
+which is the part of the protocol the Rust ecosystem does not yet cover with anything
+production-proven.
 
 ## What it is
 

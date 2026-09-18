@@ -1,7 +1,8 @@
 # fixbolt — Engineering Rules
 
-A FIX 4.4 engine in **Rust**, acceptor-first, positioned as **the fastest acceptor that can
-run on kernel TCP**. Not a port of QuickFIX ([ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md)).
+A FIX 4.4 engine in **Rust**, acceptor-first, positioned as **a FIX acceptor on kernel TCP
+whose latency is a published, reproduced number** ([ADR-0077](docs/decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)
+decision 2). Not a port of QuickFIX ([ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md)).
 The design is **[docs/DESIGN.md](docs/DESIGN.md)** — D1–D10 are the decisions, §8 is the
 latency budget, §9 is the OS checklist. Where the work stands is **[STATUS.md](STATUS.md)**, never
 this file — read it before picking up work, update it when a plan phase closes.
@@ -79,7 +80,7 @@ the list. Each script's header states what it cannot see; read it before trustin
 |---|---|---|
 | 1 | `crates/*/benches/alloc.rs`, run by the `bench` CI job via `scripts/bench.sh`, each case asserting its own path is live; `tools/w2w` counts allocations on both threads over its timed window and asserts zero | `cargo test` does not run a `harness = false` bench — only the job does |
 | 3 | `crates/conformance`, in process and over a socket | |
-| 4 | `scripts/check-no-kernel-sleep.sh` (`hft`), `scripts/check-standard-gives-the-core-back.sh` (`standard`), `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits` (initiator dial loop) | each script must also be tripped by the wrong mode; `hft` under TLS is unchecked |
+| 4 | `scripts/check-no-kernel-sleep.sh` (`hft`), `scripts/check-standard-gives-the-core-back.sh` (`standard`), `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits` (initiator dial loop), `scripts/check-no-kernel-sleep-by-ctxt.sh` (`hft` voluntary-context-switch count, tracer-free, [ADR-0072](docs/decisions/ADR-0072-a-tracer-free-check-that-the-hft-engine-thread-never-sleeps.md)) | each script must also be tripped by the wrong mode; `hft` under TLS is unchecked |
 | 6 | `no-default-features` CI job **and** `scripts/check-no-optional-deps.sh`, per crate | cargo unifies features across one invocation — [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md) |
 | 7 | `scripts/check-lint-config.sh` (lints deny, proven by reversal); `scripts/check-indexing-debt.sh` (ratchet: the count may only go down); `scripts/check-no-crate-root-allow.sh` (no crate-root `allow`/`expect`, no `warn` lowering a denied lint); `scripts/check-scratch-fixtures.sh` (a scratch crate outside the tree gets the pinned toolchain) | known gaps of the scratch-fixture gate are open by decision, ADR-0061 |
 

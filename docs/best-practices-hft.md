@@ -185,6 +185,18 @@ desktop, kTLS was slower than userspace `rustls` in both `hft` paths ([DESIGN.md
 question, `STATUS.md` open item 84, and until it is answered the recommendation above stands
 unchanged.
 
+`[2026-09-18]` **`TlsRequireKernel=Y` stays the recommendation, and the price of the alternative
+is now named.** [ADR-0070](decisions/ADR-0070-ktls-stays-the-hft-steady-state-for-the-guarantee-not-for-latency.md)
+decision 1 restates why: kTLS is the `hft` steady state because it is the only path that meets
+non-negotiable 1 and keeps parse-in-place, not because it is faster. Decision 2 prices the
+alternative: on a kernel without TLS offload, kTLS costs ~9 µs a round trip at p50 against
+~1.4–4.7 µs for userspace, both ends included. A deployment that prefers latency to the
+allocation guarantee may run `hft` over userspace `rustls` **only if it accepts four heap
+allocations per round trip on the engine thread** — the number `tools/w2w` counted — and that
+deployment is outside the hot-path guarantee in those words. A NIC with `tls-hw-tx-offload: on`
+would change this measurement; none exists here (ADR-0070 decision 4), so the condition is
+stated, not offered.
+
 **Once the handover is done, the two halves of non-negotiable 4 hold the same way they do
 without TLS.** kTLS keeps `recv`/`send` as ordinary non-blocking syscalls, so §4's busy-poll
 loop never sleeps in the kernel on the hot path, and a `standard` engine under the same kTLS

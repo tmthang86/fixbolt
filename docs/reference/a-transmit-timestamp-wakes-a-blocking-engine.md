@@ -74,8 +74,11 @@ Recorded for later; none of it is built.
   program enables `SK_BPF_CB_TX_TIMESTAMPING` and receives `BPF_SOCK_OPS_TSTAMP_SND_HW_CB`, with
   the application's socket untouched. `SKBTX_HW_TSTAMP = SKBTX_HW_TSTAMP_NOBPF | SKBTX_BPF`
   (`include/linux/skbuff.h`) suggests a BPF-only request queues nothing on the error queue —
-  **inferred from how the flags are split, not verified**: read `__skb_tstamp_tx` before relying
-  on it. Needs a BPF loader (a new dependency and an ADR), `CAP_BPF` and `CAP_NET_ADMIN`.
+  verified 2026-09-18, [ADR-0073](../decisions/ADR-0073-the-standard-wire-figure-goes-through-bpf-sock-ops-and-not-before-phase-2.md),
+  quoted: `__skb_tstamp_tx` is read and the route is fixed — `tools/w2w-bpf/`, `clang -target bpf`
+  via `scripts/build-bpf-tstamp.sh`, loaded by `aya`, behind an off-by-default `bpf-tstamp`
+  feature — but it is not built before phase 2's first §9 boot (ADR-0073 decision 2). Needs a
+  BPF loader (a new dependency and an ADR), `CAP_BPF` and `CAP_NET_ADMIN`.
   Sources: <https://lwn.net/Articles/996139/>,
   <https://github.com/torvalds/linux/commit/59422464266f8baa091edcb3779f0955a21abf00>.
 - **Stamping outside the host** — a passive tap into a timestamping capture appliance — which

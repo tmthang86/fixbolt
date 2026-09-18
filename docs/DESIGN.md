@@ -10,7 +10,9 @@ session core, chosen by a type parameter
 ([ADR-0004](decisions/ADR-0004-bidirectional-engine.md)), built so that latency is a property
 the design guarantees rather than one it hopes for.
 
-**Positioning.** The fastest FIX acceptor that can be built **on kernel TCP**. The acceptor is
+**Positioning.** A FIX 4.4 acceptor on kernel TCP whose latency is a published, reproduced
+number ([ADR-0077](decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)
+decision 2). The acceptor is
 the headline because that is where the gap is: as of 2026-08-27 the Rust ecosystem has no
 production-proven FIX acceptor and already has two initiators
 ([reference/prior-art.md](reference/prior-art.md)). The initiator ships in the same phase,
@@ -448,7 +450,7 @@ Mode-scoped, and `standard` is the default
 | | `standard` (default) | `hft` (opt-in, Linux only) |
 |---|---|---|
 | Idle behaviour | blocks on readiness with a timeout, and gives the core back | spins on non-blocking sockets, never enters the kernel |
-| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` one turn at **449 ns per session** on a §9 core |
+| Cost of a wakeup | `epoll`-class, 2–5 µs | `[measured 2026-08-31]` one turn at **449 ns per session** on a §9 core; measured here by `benches/wakeup.rs` at boot C |
 | Pinning | none | `serve_sharded_hft` and `serve_hft_pinned` validate the core and pin from inside; `serve_hft` pins nothing and says so |
 | Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
 | Rule 4 says | it **must** block | it must **not** sleep |
@@ -633,6 +635,9 @@ the policy and the capacity come from one synthetic saturation run plus reasonin
 Decided in [ADR-0005](decisions/ADR-0005-tls.md). It needs a decision because of one
 collision: the codec parses in place at the I/O buffer, and encrypted bytes cannot be parsed
 in place. Userspace TLS reintroduces exactly the copy ADR-0003 spent its length removing.
+kTLS stays the `hft` steady state for the non-negotiable-1 guarantee it is the only path that
+keeps, not for latency — measured slower than userspace on loopback
+([ADR-0070](decisions/ADR-0070-ktls-stays-the-hft-steady-state-for-the-guarantee-not-for-latency.md)).
 
 | Mode | When | Hot-path guarantee |
 |---|---|---|
@@ -919,7 +924,7 @@ below).
 
 | Gate | Target | Proven by |
 |---|---|---|
-| The engine thread never sleeps in the kernel (`hft`) | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`: traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid. `[measured 2026-08-30]` Linux 6.18: `accept4`, `recvfrom`, `sendto` and zero of `epoll_wait` / `poll` / `select` / `futex` / `nanosleep` / `sched_yield`. Runs the binary again in `standard` mode and fails if that run does not trip it: rule 4 had two machine checks before this one and both were green with a sleep present |
+| The engine thread never sleeps in the kernel (`hft`) | no blocking syscall on that thread | `scripts/check-no-kernel-sleep.sh`: traces `tools/w2w` with `strace -f` and attributes calls to the engine thread by tid. `[measured 2026-08-30]` Linux 6.18: `accept4`, `recvfrom`, `sendto` and zero of `epoll_wait` / `poll` / `select` / `futex` / `nanosleep` / `sched_yield`. Runs the binary again in `standard` mode and fails if that run does not trip it: rule 4 had two machine checks before this one and both were green with a sleep present. A second, tracer-free gate needs no capability: `scripts/check-no-kernel-sleep-by-ctxt.sh` reads the engine thread's voluntary context switches and asserts `hft` reads 0, `standard` reads > 0 ([ADR-0072](decisions/ADR-0072-a-tracer-free-check-that-the-hft-engine-thread-never-sleeps.md)) |
 | The engine thread never sleeps in the kernel (`hft`), **TLS arm** `[2026-09-13]` | `--tls ktls` traces the same, with no sleeper and the read-back confirming which arm ran | the same script, Sửa 6 step 6b: runs `hft --tls ktls` (no sleeper, the usual socket calls, `tls: kernel` read back) and `--tls userspace` (must read back `tls: userspace`, so the two arms cannot be mistaken for each other). A build without the `tls` feature reports both old halves, then `TLS arm SKIPPED, NOT PASSED`, exit 2, rather than a silent pass |
 | A `standard` engine gives the core back | engine-thread CPU under 5% over a wall-clock window, found sleeping rather than running, **and** a round-trip p50 far below the poll timeout | `scripts/check-standard-gives-the-core-back.sh`. Four assertions, because CPU near zero is also what a dead thread, a run that never reached the mode, and an engine woken by its own timeout report. `[measured 2026-08-30]` a `Block` made to ignore readiness reads 0% CPU, sleeping 20 / 20, p50 99 046 599 ns; only the p50 catches it. Requires `hft` and `yield` to trip it |
 | A `standard` engine gives the core back, **TLS arm** `[2026-09-13]` | the same four assertions, on `standard --tls ktls` (not `hft`), plus the mode read back as `kernel` | `scripts/check-standard-gives-the-core-back.sh`'s own TLS-arm block, Sửa 6 step 6b (script lines 221-250): runs `--mode standard --tls ktls` once and judges it green-or-not by the same four assertions as the plain `standard` case, plus the `tls:` read-back. **This arm has no scripted red half** — the script's `for red in hft yield` reversal loop (lines 209-219) covers only the plain arm; nothing here automates a TLS-mode-mismatch reversal. The 99.53% CPU figure is not this script's output: it is a **hand-run** reversal — the standard-mode judgement invoked by hand against an `hft --tls ktls` run — recorded only in commit `da9fe6e`'s message ("standard check on hft --tls ktls: engine CPU 99.53%, red"), not reproduced by any committed script invocation |
@@ -947,7 +952,14 @@ below).
 | Keeping a message for resend | `[measured 2026-09-05]` **8.9 ns** for a 191-byte `ExecutionReport` into `MemJournal<4096,512>`, walking the ring as the engine does; **6.3 ns** pinned to one slot. A 2 MiB ring is not a cache cost — 191 bytes at a 512-byte stride is what a prefetcher is for | `crates/engine/benches/journal.rs` against `baselines.tsv`, every case reading back what it wrote before anything is timed |
 | What a bigger message costs the kernel | `[measured 2026-09-05]` **0.1443 ns per byte** written and read, from an 8 → 8192 byte lever. The two real `tools/w2w` sizes are cases of their own and **their difference is under this instrument's resolution**, which the module doc says where the number is | `crates/engine/benches/payload.rs` against `baselines.tsv`. Absolute figures here are environment-bound, not a round-trip claim — [a loopback write costs thirty-two syscalls](reference/a-loopback-write-costs-thirty-two-syscalls.md) |
 | Wire-to-wire, loopback | `[measured 2026-09-02]` **met**: `pass 12 fail 0 unknown 1`, engine pinned to isolated `cpu6`, client to `cpu7`, medians of 20 runs of 20 000 round trips. `hft` **16 010 / 20 589 / 22 127 ns** administrative, **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. p99 ≤ 50 µs holds in all four arms. Allocations in the timed window 0 on both threads | `tools/w2w --features affinity`, driven by `scripts/w2w-baseline.sh`. Phase 1 exit criterion 6 |
-| Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above. `[measured 2026-09-15]` **measured, not reproduced, and not at the rate this row asks for**: the first hardware-stamped wire figures, `hft` paced at one message a second, wire p50 admin 45 146 ‖ 42 918 and application 49 626 ‖ 45 082 ns across two procedures (§8 *Boot B*); back to back, `igb` skipped a TX stamp within 1–4 runs every time, so no figure exists at interval 0 | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met** on that day: no cable, so no hardware stamp had been read (read on 2026-09-15 — the first column); on `lo` the tool counts every stamp missing and prints no wire column, which was the only arm run at the time. A figure is published only from a run with `hw-rx-missing 0` and `hw-tx-missing 0`. **Mode `hft` only**: `w2w` refuses `--mode standard --wire-timestamps` on a hardware NIC ([a-transmit-timestamp-wakes-a-blocking-engine](reference/a-transmit-timestamp-wakes-a-blocking-engine.md)); `standard` on a NIC is the generator's table, *as the counterparty sees it*, and never a wire figure |
+| Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above. `[measured 2026-09-15]` **measured, not reproduced, and not at the rate this row asks for**: the first hardware-stamped wire figures, `hft` paced at one message a second, wire p50 admin 45 146 ‖ 42 918 and application 49 626 ‖ 45 082 ns across two procedures (§8 *Boot B*); back to back, `igb` skipped a TX stamp within 1–4 runs every time, so no figure exists at interval 0 | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met** on that day: no cable, so no hardware stamp had been read (read on 2026-09-15 — the first column); on `lo` the tool counts every stamp missing and prints no wire column, which was the only arm run at the time. A figure is published from a run whose missing-stamp count is ≤ 0.1% of the timed requests and
+`hw-rx-missing 0` ([ADR-0071](decisions/ADR-0071-a-skipped-tx-stamp-is-a-missing-sample-not-a-failed-run.md)
+decision 1) — a skipped TX stamp costs one sample, it does not fail the run. **Mode `hft`
+only**: `w2w` refuses `--mode standard --wire-timestamps` on a hardware NIC
+([a-transmit-timestamp-wakes-a-blocking-engine](reference/a-transmit-timestamp-wakes-a-blocking-engine.md));
+`standard` on a NIC is the generator's table, *as the counterparty sees it*, and never a wire
+figure — a `standard` wire figure of its own waits on BPF sock_ops, phase 2
+([ADR-0073](decisions/ADR-0073-the-standard-wire-figure-goes-through-bpf-sock-ops-and-not-before-phase-2.md)) |
 
 The wire-to-wire row is the only one that measures what a counterparty experiences. Every
 other row is an internal number; without this one they are unfalsifiable.
