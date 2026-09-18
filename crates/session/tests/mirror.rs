@@ -32,24 +32,21 @@ use fixbolt_conformance::script::{Kind, Scenario};
 use fixbolt_engine::journal::Store;
 use fixbolt_session::{Config, Initiator, Session};
 
-/// The `Reachable` files item 92 / `ADR-0076` already knows are red.
+/// There is no known-red `Reachable` file any more.
 ///
-/// A third red name here is a new defect, unreported; one of these two going
-/// green is progress that this test must be told about, not silently kept
-/// quiet — either way the set is asserted exactly, by name.
-///
-/// `[measured 2026-09-18]` **four, and two of them were the harness.**
-/// `8_AdminAndApplicationMessages` and `8_OnlyApplicationMessages` were red
-/// because `make_receivable` fed this end `122=` and `60=` still carrying the
-/// corpus's placeholder instant — see that function. The two left are one
-/// cause, and it is not the session: **both files' script side falls silent
-/// where a correct initiator must answer.** `6_SendTestRequest` ends on a
-/// `TestRequest` the script never answers (the file is testing the *timeout*),
-/// and `1a_ValidLogonMsgSeqNumTooHigh` ends on a `ResendRequest` the script
-/// never answers. Mirrored, that unanswered message is **our** answer — a
-/// Heartbeat carrying `112=`, and a gap fill — correct bytes no `I` line
-/// claims. That is a row of `ADR-0076`'s table, not a defect here.
-const KNOWN_RED: [&str; 2] = ["6_SendTestRequest.def", "1a_ValidLogonMsgSeqNumTooHigh.def"];
+/// `[measured 2026-09-18]` `09effd1` closed item 92 as a harness hole:
+/// `make_receivable` now substitutes the corpus's placeholder timestamp in
+/// `122=` and `60=`, not only `52=`, so `8_AdminAndApplicationMessages` and
+/// `8_OnlyApplicationMessages` went green. `6_SendTestRequest` and
+/// `1a_ValidLogonMsgSeqNumTooHigh` were never a session defect: both files'
+/// script side falls silent where a correct initiator must answer, so
+/// `ADR-0076` moves them to the class `NeedsAScriptThatAnswers` instead of
+/// counting them against `Reachable`. The two-way `KNOWN_RED` machinery the
+/// plan's 3.2 row proposed is withdrawn here — `ADR-0076` *Measured*, and the
+/// plan's *Nhật ký giao hàng* row 3.2. The score is `score == ceiling`, and a
+/// red `Reachable` file is still named in the failure message below, not
+/// silently swallowed.
+const KNOWN_RED: [&str; 0] = [];
 
 fn link(l: fixbolt_session::Link) -> Link {
     match l {
@@ -317,24 +314,18 @@ fn the_mirrored_corpus_with_an_operator_at_the_keyboard() {
     // here — `fixbolt_conformance::mirror::ceiling()`, `ADR-0076` decision 3.
     let score = report.passed_files.len();
     let ceiling = mirror::ceiling();
-    // **The two numbers are equal and the sets are not**, so the line says so:
-    // `[measured 2026-09-18]` two `Reachable` files are red (`KNOWN_RED`) and
-    // two files the table calls `NeedsHeaderTheApiDoesNotSet` — `19a`/`19b` —
-    // pass. A bare "14 / 14" would read as "every reachable file passes", and
-    // that is not what happened. `ADR-0076`'s table is what has to answer for
-    // it; this test only refuses to hide it.
+    // `[measured 2026-09-18]` the two numbers are equal and so are the sets:
+    // every `Reachable` file passes, `ADR-0076` *Measured*. `KNOWN_RED` is
+    // empty; a red `Reachable` file turns this line red by name, below.
     println!("mirrored {score} / {ceiling} (ceiling from the table, ADR-0076)");
     println!("  red Reachable: {KNOWN_RED:?} — see ADR-0076, STATUS.md item 92");
-    assert!(
-        score >= 14,
-        "mirrored score fell below 14 (now {score}); item 92 / ADR-0076 tracks what is red:\n{report}"
+    assert_eq!(
+        score, ceiling,
+        "mirrored score {score} does not meet the ceiling {ceiling}; ADR-0076 tracks what is red:\n{report}"
     );
 
-    // Every `Reachable` file that did not pass is red. The four item 92 /
-    // `ADR-0076` already knows about are named in `KNOWN_RED`; a fifth name
-    // here is a new, unreported defect, and one of the four going green is
-    // progress this test must catch, not silently keep — either way the set
-    // is compared by name, exactly.
+    // Every `Reachable` file that did not pass is red. `KNOWN_RED` is empty:
+    // any name here is a new, unreported defect.
     let mut red: Vec<&str> = mirror::files_in(MirrorClass::Reachable)
         .into_iter()
         .filter(|f| !report.passed_files.iter().any(|p| p == f))

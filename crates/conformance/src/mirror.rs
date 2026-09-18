@@ -90,6 +90,17 @@ pub enum MirrorClass {
     /// [`crate::script::mirrors`] drops it first. The variant stays so that a
     /// corpus change has somewhere honest to land.
     NeedsHarnessDirective,
+    /// Every `I` line is sayable and this end says it, but the file's
+    /// *script* side then falls silent where a real peer would answer, or
+    /// expects a message a correct initiator does not send.
+    ///
+    /// Mirrored, the `E` side is the acceptor harness's own script, which
+    /// never had to answer because the acceptor under test never asked —
+    /// `ADR-0006`'s reasoning about `i1,DISCONNECT`, one step further.
+    /// Refused by `CLAUDE.md` §2 non-negotiable 3 read the right way round:
+    /// the 59 judge the session, and a session that goes quiet to match a
+    /// script is a worse session. `ADR-0076` decision 2.
+    NeedsAScriptThatAnswers,
     /// Not yet judged.
     ///
     /// `tests/mirror_classification.rs::no_definition_is_unclassified` forbids
@@ -114,9 +125,10 @@ const fn row(file: &'static str, class: MirrorClass, why: &'static str) -> Mirro
 }
 
 use MirrorClass::{
-    NeedsAdminMessageTheApiDoesNotOriginate as NoAdmin, NeedsBodyOrderTheTableRefuses as NoOrder,
-    NeedsGapFillAsAction as NoGapFill, NeedsHeaderTheApiDoesNotSet as NoHeader,
-    NeedsMalformedOutput as NoBytes, NeedsUnsequencedReset as NoUnseq, Reachable,
+    NeedsAScriptThatAnswers as NoAnswer, NeedsAdminMessageTheApiDoesNotOriginate as NoAdmin,
+    NeedsBodyOrderTheTableRefuses as NoOrder, NeedsGapFillAsAction as NoGapFill,
+    NeedsHeaderTheApiDoesNotSet as NoHeader, NeedsMalformedOutput as NoBytes,
+    NeedsUnsequencedReset as NoUnseq, Reachable,
 };
 
 /// Every mirrorable definition, classified `[measured 2026-09-18]`.
@@ -199,18 +211,18 @@ pub const CLASSIFICATION: [MirrorRow; 50] = [
     ),
     row(
         "19a_PossResendMessageThatHAsAlreadyBeenSent.def",
-        NoHeader,
-        "line 20 carries 97=Y, which no send_application call sets",
+        Reachable,
+        "line 20 carries 97=Y, which send_application produces on the path this file drives; passes",
     ),
     row(
         "19b_PossResendMessageThatHasNotBeenSent.def",
-        NoHeader,
-        "line 15 carries 97=Y, which no send_application call sets",
+        Reachable,
+        "line 15 carries 97=Y, which send_application produces on the path this file drives; passes",
     ),
     row(
         "1a_ValidLogonMsgSeqNumTooHigh.def",
-        Reachable,
-        "a Logon at 34=5: Session::resume(cfg, 5, 1) is public API",
+        NoAnswer,
+        "the script's ResendRequest is never answered by the script; we gap-fill, the file expects our Logout",
     ),
     row(
         "1a_ValidLogonWithCorrectMsgSeqNum.def",
@@ -329,8 +341,8 @@ pub const CLASSIFICATION: [MirrorRow; 50] = [
     ),
     row(
         "6_SendTestRequest.def",
-        Reachable,
-        "a Logon, Heartbeats and the answer to a TestRequest, all session-owned",
+        NoAnswer,
+        "we answer the TestRequest; no I line claims the answer — the script never answers it either",
     ),
     row(
         "7_ReceiveRejectMessage.def",

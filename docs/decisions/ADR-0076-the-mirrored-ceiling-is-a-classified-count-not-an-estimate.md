@@ -54,6 +54,18 @@ classification.
    - `NeedsHarnessDirective` — ADR-0006's case; **empty** among the 50, because `mirrors`
      drops `1b_DuplicateIdentity.def` before the table sees it; kept so a corpus change has
      somewhere honest to land;
+   - `NeedsAScriptThatAnswers` `[added 2026-09-18, item 92]` — every `I` line is sayable and
+     this end says it, but the file's *script* side then falls silent where a real peer would
+     answer, or expects a message a correct initiator does not send: `6_SendTestRequest` (we
+     answer the `TestRequest`; no `I` line claims the answer) and `1a_ValidLogonMsgSeqNumTooHigh`
+     (the script's `ResendRequest` is never answered by the script, we gap-fill, the file
+     expects our `Logout`). Mirrored, the `E` side is the acceptor harness's own script, which
+     never had to answer because the acceptor under test never asked — ADR-0006's reasoning
+     about `i1,DISCONNECT`, one step further. Refused by non-negotiable 3 read the right way
+     round: the 59 judge the session, and a session that goes quiet to match a script is a
+     worse session. `NeedsHarnessDirective` does not fit — it is about a directive line the
+     harness cannot express, not about the script's behaviour — so this is a ninth variant;
+     `crates/conformance/src/mirror.rs` gains it in the commit that closes 3.2.
    - `Unclassified` — forbidden by test.
    Tests (`crates/conformance/tests/mirror_classification.rs`): the row set **is** the set
    `mirrors` keeps; `Unclassified` is empty; the `34=0` and `123=Y` rows contain those bytes;
@@ -65,39 +77,57 @@ classification.
    `123=Y` as an operator action is refused because the session already sends it when it
    should; a directive is refused by ADR-0006. Each class names its ADR in the enum's rustdoc.
 5. **The number is in *Measured* below**, with the commit and the CI run, as this decision
-   asked. **ADR-0006's 45 is superseded on that point**: the ceiling is **14 of 50**.
+   asked. **ADR-0006's 45 is superseded on that point**: the ceiling is **14 of 50**, and the
+   score meets it.
 
-## Measured — 2026-09-18, commit `a2aa9ce`
+## Measured — 2026-09-18, commits `a2aa9ce` and `09effd1`
 
-`[measured 2026-09-18]` `crates/conformance/src/mirror.rs`, 50 rows, commit **`a2aa9ce`** on
-`plan/the-second-linux-desk-c` (CI run id: *to be filled by the manager on the closing commit*).
+`[measured 2026-09-18]` `crates/conformance/src/mirror.rs`, 50 rows, first at **`a2aa9ce`**,
+corrected at **`09effd1`** (both on `plan/the-second-linux-desk-c`; CI run id: *to be filled by
+the manager on the closing commit*).
 
 | Class | Files | Refused by |
 |---|---|---|
 | `Reachable` | **14** | — |
-| `NeedsHeaderTheApiDoesNotSet` | 11 | ADR-0042 d1 |
 | `NeedsMalformedOutput` | 11 | ADR-0042 d1 (ADR-0006 counted 5 of these) |
+| `NeedsHeaderTheApiDoesNotSet` | 9 | ADR-0042 d1 |
 | `NeedsBodyOrderTheTableRefuses` | 6 | non-negotiable 5 / D3 |
 | `NeedsUnsequencedReset` | 3 | ADR-0042 d1 |
 | `NeedsGapFillAsAction` | 3 | this ADR, decision 4 |
 | `NeedsAdminMessageTheApiDoesNotOriginate` | 2 | non-negotiable 2 |
+| `NeedsAScriptThatAnswers` | 2 | non-negotiable 3, ADR-0006's reasoning |
 | `NeedsHarnessDirective` | 0 | ADR-0006 (file dropped before the table) |
 | `Unclassified` | 0 | forbidden by test |
 
-**The ceiling is 14, not 45.** ADR-0006 reasoned from message lines and directives; the
-table reads every `I` line against what the API can be asked to say, and 36 of the 50 need
-bytes only a back door could produce. The 14: `13b_UnsolicitedLogoutMessage`,
-`1a_ValidLogonMsgSeqNumTooHigh`, `1a_ValidLogonWithCorrectMsgSeqNum`, `2a_MsgSeqNumCorrect`,
-`2k_CompIDDoesNotMatchProfile`, `2o_SendingTimeValueOutOfRange`, `2q_MsgTypeNotValid`,
-`4a_NoDataSentDuringHeartBtInt`, `4b_ReceivedTestRequest`, `6_SendTestRequest`,
-`8_AdminAndApplicationMessages`, `8_OnlyApplicationMessages`, `AlreadyLoggedOn`, `ReverseRoute`.
+**The ceiling is 14, not 45, and the score is 14 / 14.** At `a2aa9ce` the table read 14 and the
+score 10 / 14; `STATUS.md` item 92 held the four red `Reachable` rows. `09effd1` closed it as a
+**harness hole, not a session defect**: `make_receivable` substituted the corpus's placeholder
+timestamp (`00000000-00:00:00`) only in `52=`, while the session parses `122=` and `60=` as
+`UTCTimestamp` too (FIX 4.4) and rejected them with `371=122/373=1` and `371=60/373=6`; three
+tags are substituted now, three unit tests hold it, and the harness's `Adapter::at` resumes at
+the first `I` line's `34=` (it moves no number). **Nothing in `crates/session/src` changed; the
+59 read 59 / 59 both ways.** The composition of the 14 moved by two in each direction:
 
-**The score today is 10 of 14.** Four `Reachable` files are red, and by this ADR's own rule
-that is a claim to be settled, not a reason to move a row: `STATUS.md` item 92 holds them,
-with the two hypotheses (a harness hole in `make_receivable` — a `PossDup` built without
-`122=OrigSendingTime`, answered by the engine with `Reject 45=2 371=122`; and a harness that
-never calls `Session::resume(cfg, 5, 1)` for `1a_ValidLogonMsgSeqNumTooHigh`) and the test that
-decides each. Neither is a session defect on today's evidence.
+- `8_AdminAndApplicationMessages` and `8_OnlyApplicationMessages` went green — they were
+  `Reachable` and red for the harness's reason;
+- `19a_PossResendMessageThatHAsAlreadyBeenSent` and `19b_PossResendMessageThatHasNotBeenSent`
+  **pass**, so they are `Reachable`, and their `NeedsHeaderTheApiDoesNotSet` rows (*"97=Y,
+  which no send_application call sets"*) were wrong — the `97=Y` line is on the path the file
+  drives and the session produces it; the rows move to `Reachable` and the `why` is rewritten
+  to say which call produces it;
+- `6_SendTestRequest` and `1a_ValidLogonMsgSeqNumTooHigh` stay red **because the corpus's
+  script side falls silent where a correct initiator answers** — they are not `Reachable`; they
+  are the two rows of the new class `NeedsAScriptThatAnswers` (decision 2).
+
+So 14 − 2 + 2 = **14 `Reachable`, 14 green**. The 14: `13b_UnsolicitedLogoutMessage`,
+`19a_PossResendMessageThatHAsAlreadyBeenSent`, `19b_PossResendMessageThatHasNotBeenSent`,
+`1a_ValidLogonWithCorrectMsgSeqNum`, `2a_MsgSeqNumCorrect`, `2k_CompIDDoesNotMatchProfile`,
+`2o_SendingTimeValueOutOfRange`, `2q_MsgTypeNotValid`, `4a_NoDataSentDuringHeartBtInt`,
+`4b_ReceivedTestRequest`, `8_AdminAndApplicationMessages`, `8_OnlyApplicationMessages`,
+`AlreadyLoggedOn`, `ReverseRoute`. The trap is written up in
+[reference/a-corpus-placeholder-timestamp-lives-in-three-tags.md](../reference/a-corpus-placeholder-timestamp-lives-in-three-tags.md).
+The score test asserts `score == Reachable` with no `KNOWN_RED` array — the array the plan's
+3.2 row proposed was never needed.
 
 ## Consequences
 
@@ -110,14 +140,15 @@ decides each. Neither is a session defect on today's evidence.
 
 **Bad — and accepted**
 
-- **The measured ceiling is well under 45 — 14** — and the mirrored score reads 10 / 14 where
-  it read 10 / 50 against a ceiling of 45. Correct is worse to read than optimistic.
+- **The measured ceiling is well under 45 — 14** — and the mirrored score reads 14 / 14 where
+  it read 10 / 50 against a ceiling of 45. Correct is worse to read than optimistic, and a full
+  score against a small ceiling invites the question *"why so few?"*, whose answer is the table.
 - **Classifying 34 files is judgement**, one by one, against the initiator's public API as it
   is today; a later API addition (say an operator-originated gap fill, if ever wanted) moves
   files from `Needs*` to `Reachable` and needs the table edited — by design, but by hand.
-- **A `Reachable` verdict is a claim until the file passes.** The plan's step will find
-  session defects the way the 2 → 10 jump did; those are wins, but they are also unplanned
-  session work under non-negotiable 3.
+- **A `Reachable` verdict is a claim until the file passes**, and a passing file is a claim
+  about the row's *reason* too: two rows were green under a wrong `why` (19a/19b) and two were
+  `Reachable` for a wrong reason (6, 1a). The tests check bytes, not reasons.
 
 ## Sources
 
