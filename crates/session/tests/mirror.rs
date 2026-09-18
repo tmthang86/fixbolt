@@ -26,10 +26,23 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_conformance::mirror::{self, MirrorClass};
 use fixbolt_conformance::runner::{Conn, Input, Intent, Link, SessionUnderTest, run_mirrored};
 use fixbolt_conformance::script::{Kind, Scenario};
 use fixbolt_engine::journal::Store;
 use fixbolt_session::{Config, Initiator, Session};
+
+/// The `Reachable` files item 92 / `ADR-0076` already knows are red.
+///
+/// A fifth red name here is a new defect, unreported; one of these four going
+/// green is progress that this test must be told about, not silently kept
+/// quiet — either way the set is asserted exactly, by name.
+const KNOWN_RED: [&str; 4] = [
+    "6_SendTestRequest.def",
+    "8_AdminAndApplicationMessages.def",
+    "8_OnlyApplicationMessages.def",
+    "1a_ValidLogonMsgSeqNumTooHigh.def",
+];
 
 fn link(l: fixbolt_session::Link) -> Link {
     match l {
@@ -256,12 +269,37 @@ fn the_mirrored_corpus_with_an_operator_at_the_keyboard() {
         "the harness originated something it did not before:\n{report}"
     );
 
+    // The score is read against the table's ceiling, not a number restated
+    // here — `fixbolt_conformance::mirror::ceiling()`, `ADR-0076` decision 3.
+    let score = report.passed_files.len();
+    let ceiling = mirror::ceiling();
+    println!("mirrored {score} / {ceiling} (ceiling from the table, ADR-0076)");
+    assert!(
+        score >= 10,
+        "mirrored score fell below 10 (now {score}); item 92 / ADR-0076 tracks what is red:\n{report}"
+    );
+
+    // Every `Reachable` file that did not pass is red. The four item 92 /
+    // `ADR-0076` already knows about are named in `KNOWN_RED`; a fifth name
+    // here is a new, unreported defect, and one of the four going green is
+    // progress this test must catch, not silently keep — either way the set
+    // is compared by name, exactly.
+    let mut red: Vec<&str> = mirror::files_in(MirrorClass::Reachable)
+        .into_iter()
+        .filter(|f| !report.passed_files.iter().any(|p| p == f))
+        .collect();
+    red.sort_unstable();
+    let mut known_red = KNOWN_RED;
+    known_red.sort_unstable();
+    assert_eq!(
+        red, known_red,
+        "the red Reachable files changed — item 92 / ADR-0076 names {known_red:?}, found {red:?}:\n{report}"
+    );
+
     // The five whose first `I` line is wrong **on purpose** — a CompID that
     // does not match, a `SendingTime` 2001 years out, a `9=` 23 bytes short,
     // and one that is not a Logon at all. Mirrored, they ask this engine to
-    // send those, and a correct engine cannot. That is what makes the ceiling
-    // **45 and not 50**, and it is why those five are named here rather than
-    // counted.
+    // send those, and a correct engine cannot.
     let mut early: Vec<&str> = report
         .failures
         .iter()
