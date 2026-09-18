@@ -118,6 +118,31 @@ below describe what a first release would contain.
   engine or socket exists
   ([a-paced-run-outlived-the-sessions-maxlatency](docs/reference/a-paced-run-outlived-the-sessions-maxlatency.md)).
 
+- **`tools/w2w`** prints `engine-ctxt voluntary/involuntary` and gains
+  `--assert-no-voluntary-switches`, reading `/proc/self/task/<tid>/status` on the engine thread
+  around the timed window (ADR-0072).
+
+- **`scripts/check-no-kernel-sleep-by-ctxt.sh`**, new: the same non-negotiable 4 as
+  `check-no-kernel-sleep.sh`, proven by voluntary context switches read from `/proc` instead of
+  by naming a syscall.
+
+- **`scripts/w2w-baseline.sh`** applies ADR-0071's missing-hardware-stamp rule, prints
+  `tx_hwtstamp_skipped` deltas and the engine-ctxt numbers per run, and prints a thermal/frequency
+  line — every `/sys/class/thermal/thermal_zone*/temp` and the engine core's
+  `cpuinfo_cur_freq` — once, before the runs.
+
+- **`scripts/compare-w2w-procedures.sh`** and **`scripts/check-w2w-compare.sh`**, new: the
+  two-procedure reproduction verdict of ADR-0068 as a script, not a hand check.
+
+- **`fixbolt_engine::presession::Limits::listener_every` / the `ListenerEveryTurns` setting**
+  now default to 16 rather than 1 (ADR-0069).
+
+- **Bench cases `serialize Heartbeat (session)`** and **`crates/engine/benches/wakeup.rs`**, new;
+  both print `NO BASELINE` until measured on the §9 machine.
+
+- **`fixbolt_conformance::mirror`**, new: the eight-class mirrored-message taxonomy of
+  ADR-0076.
+
 ### Changed
 
 - **`SocketUseSSL` and `TlsRequireKernel` are valid on either role**, not acceptor-only.

@@ -413,6 +413,24 @@ printf 'uptime %d:%02d\n' "$((UPTIME_S/3600))" "$(((UPTIME_S%3600)/60))"
 BIN_SHA=$(sha256sum "$BIN" 2>/dev/null | cut -c1-12)
 BIN_MTIME=$(date -Iseconds -r "$BIN" 2>/dev/null || echo unknown)
 echo "binary ${BIN_SHA:-unknown} $BIN_MTIME"
+# `[2026-09-18]` item 85, ADR-0068 decision 5: temperature and clock speed are
+# read once here, on this process, before any run starts — never on the
+# engine, which the script pins separately below. A file that cannot be read
+# (no such zone, no cpufreq node, permission) prints `n/a` for that one field;
+# it is evidence, not a gate, so it never fails the script.
+print_thermal_and_freq_header() {
+  local line="" zone type temp freq
+  for zone in /sys/class/thermal/thermal_zone*/temp; do
+    [ -e "$zone" ] || continue
+    type=$(cat "${zone%temp}type" 2>/dev/null || echo n/a)
+    temp=$(cat "$zone" 2>/dev/null || echo n/a)
+    line="$line thermal $type $temp"
+  done
+  freq=$(cat "/sys/devices/system/cpu/cpu${ENGINE_CORE}/cpufreq/cpuinfo_cur_freq" 2>/dev/null || echo n/a)
+  line="$line cpu${ENGINE_CORE}-freq $freq"
+  echo "${line# }"
+}
+print_thermal_and_freq_header
 if [ -n "$GENERATOR_SSH" ]; then
   # Best effort: an unreachable host or a remote shell with no `w2w` on its
   # PATH must not stop the run over a line that is evidence, not a gate.
