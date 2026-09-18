@@ -37,3 +37,8 @@ harness = false
 [[bench]]
 name = "validate"
 harness = false
+
+# Open item 49: the session's own Heartbeat serialise, timed on its own.
+[[bench]]
+name = "heartbeat"
+harness = false
