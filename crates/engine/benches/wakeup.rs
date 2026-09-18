@@ -243,9 +243,7 @@ mod linux {
         // `socketpair` either fills both elements and returns 0, or returns
         // -1 and leaves them untouched — checked immediately below.
         #[allow(unsafe_code)]
-        let rc = unsafe {
-            libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr())
-        };
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
         if rc != 0 {
             eprintln!(
                 "wakeup: socketpair failed: {}",
@@ -447,7 +445,13 @@ mod linux {
         let mut s = samples.to_vec();
         s.sort_unstable();
         let pick = |q: f64| s[((s.len() as f64 - 1.0) * q) as usize];
-        println!("{name}   NO BASELINE   n={}", s.len());
+        // The p50 as `ns/op`: scripts/bench.sh reads that token as the proof a
+        // target measured something, and reports a silent target as FAIL.
+        println!(
+            "{name} p50   {:>9}.0 ns/op   NO BASELINE   n={}",
+            pick(0.50),
+            s.len()
+        );
         println!("     min    {:>9} ns", s[0]);
         println!("     p50    {:>9} ns", pick(0.50));
         println!("     p99    {:>9} ns", pick(0.99));

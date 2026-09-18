@@ -34,15 +34,22 @@ use fixbolt_session::{Config, Initiator, Session};
 
 /// The `Reachable` files item 92 / `ADR-0076` already knows are red.
 ///
-/// A fifth red name here is a new defect, unreported; one of these four going
+/// A third red name here is a new defect, unreported; one of these two going
 /// green is progress that this test must be told about, not silently kept
 /// quiet — either way the set is asserted exactly, by name.
-const KNOWN_RED: [&str; 4] = [
-    "6_SendTestRequest.def",
-    "8_AdminAndApplicationMessages.def",
-    "8_OnlyApplicationMessages.def",
-    "1a_ValidLogonMsgSeqNumTooHigh.def",
-];
+///
+/// `[measured 2026-09-18]` **four, and two of them were the harness.**
+/// `8_AdminAndApplicationMessages` and `8_OnlyApplicationMessages` were red
+/// because `make_receivable` fed this end `122=` and `60=` still carrying the
+/// corpus's placeholder instant — see that function. The two left are one
+/// cause, and it is not the session: **both files' script side falls silent
+/// where a correct initiator must answer.** `6_SendTestRequest` ends on a
+/// `TestRequest` the script never answers (the file is testing the *timeout*),
+/// and `1a_ValidLogonMsgSeqNumTooHigh` ends on a `ResendRequest` the script
+/// never answers. Mirrored, that unanswered message is **our** answer — a
+/// Heartbeat carrying `112=`, and a gap fill — correct bytes no `I` line
+/// claims. That is a row of `ADR-0076`'s table, not a defect here.
+const KNOWN_RED: [&str; 2] = ["6_SendTestRequest.def", "1a_ValidLogonMsgSeqNumTooHigh.def"];
 
 fn link(l: fixbolt_session::Link) -> Link {
     match l {
@@ -58,6 +65,7 @@ fn link(l: fixbolt_session::Link) -> Link {
 struct Adapter {
     conns: Vec<(Conn, Session<Initiator, 256>, Store)>,
     heart_bt_int: u32,
+    first_out_seq: u32,
 }
 
 impl Adapter {
@@ -65,6 +73,7 @@ impl Adapter {
         Self {
             conns: Vec::new(),
             heart_bt_int: proposed_heart_bt_int(s),
+            first_out_seq: first_out_seq(s),
         }
     }
 
@@ -72,16 +81,47 @@ impl Adapter {
         if let Some(i) = self.conns.iter().position(|(c, _, _)| *c == conn) {
             return i;
         }
-        self.conns.push((
-            conn,
-            Session::new(
-                Config::initiator(b"FIX.4.4", b"TW44", b"ISLD")
-                    .with_heart_bt_int(self.heart_bt_int),
-            ),
-            Store::new(),
-        ));
+        let cfg =
+            Config::initiator(b"FIX.4.4", b"TW44", b"ISLD").with_heart_bt_int(self.heart_bt_int);
+        // **A file whose first `I` line is not `34=1` is a session that was
+        // already running**, and saying so is configuration, not a back door:
+        // `Session::resume` is the public call an engine makes after a restart,
+        // and it takes numbers, never bytes. `1a_ValidLogonMsgSeqNumTooHigh`
+        // opens at `34=5` against a counterparty still at 1 — a login by a side
+        // that has sent four messages this file does not show. Item 92,
+        // hypothesis B.
+        //
+        // `[measured 2026-09-18]` **it moves no number in this test**: the
+        // score, the pass list and the driven counts are identical with and
+        // without it, because `1a` is the only file it touches and that file
+        // stays red for another reason (`KNOWN_RED`). It is here because the
+        // harness was misreporting *why*: without it, `1a`'s first failure is
+        // a `34=` mismatch that says nothing, and the real cause is two lines
+        // further down.
+        let session = if self.first_out_seq == 1 {
+            Session::new(cfg)
+        } else {
+            Session::resume(cfg, self.first_out_seq, 1)
+        };
+        self.conns.push((conn, session, Store::new()));
         self.conns.len() - 1
     }
+}
+
+/// The `34=` this file's own first `I` line carries.
+///
+/// Mirrored, that line is **this engine's** output, so the number is state the
+/// session is resumed with rather than something read off the wire.
+fn first_out_seq(s: &Scenario) -> u32 {
+    for step in &s.steps {
+        if let Kind::Expect(m) = &step.kind
+            && let Some(v) = field(&m.wire, 34)
+            && let Ok(n) = core::str::from_utf8(v).unwrap_or("").parse::<u32>()
+        {
+            return n;
+        }
+    }
+    1
 }
 
 /// The `108=` this file's own Logon asks for.
@@ -230,6 +270,8 @@ fn the_mirrored_corpus_with_an_operator_at_the_keyboard() {
         report.passed_files,
         [
             "13b_UnsolicitedLogoutMessage.def",
+            "19a_PossResendMessageThatHAsAlreadyBeenSent.def",
+            "19b_PossResendMessageThatHasNotBeenSent.def",
             "1a_ValidLogonWithCorrectMsgSeqNum.def",
             "2a_MsgSeqNumCorrect.def",
             "2k_CompIDDoesNotMatchProfile.def",
@@ -237,6 +279,8 @@ fn the_mirrored_corpus_with_an_operator_at_the_keyboard() {
             "2q_MsgTypeNotValid.def",
             "4a_NoDataSentDuringHeartBtInt.def",
             "4b_ReceivedTestRequest.def",
+            "8_AdminAndApplicationMessages.def",
+            "8_OnlyApplicationMessages.def",
             "AlreadyLoggedOn.def",
             "ReverseRoute.def",
         ],
@@ -259,12 +303,12 @@ fn the_mirrored_corpus_with_an_operator_at_the_keyboard() {
     assert_eq!(
         report.driven,
         [
-            ("0".to_owned(), 42),
-            ("1".to_owned(), 21),
-            ("2".to_owned(), 3),
+            ("0".to_owned(), 45),
+            ("1".to_owned(), 24),
+            ("2".to_owned(), 9),
             ("4".to_owned(), 10),
-            ("5".to_owned(), 30),
-            ("app".to_owned(), 35),
+            ("5".to_owned(), 36),
+            ("app".to_owned(), 47),
         ],
         "the harness originated something it did not before:\n{report}"
     );
@@ -273,10 +317,17 @@ fn the_mirrored_corpus_with_an_operator_at_the_keyboard() {
     // here — `fixbolt_conformance::mirror::ceiling()`, `ADR-0076` decision 3.
     let score = report.passed_files.len();
     let ceiling = mirror::ceiling();
+    // **The two numbers are equal and the sets are not**, so the line says so:
+    // `[measured 2026-09-18]` two `Reachable` files are red (`KNOWN_RED`) and
+    // two files the table calls `NeedsHeaderTheApiDoesNotSet` — `19a`/`19b` —
+    // pass. A bare "14 / 14" would read as "every reachable file passes", and
+    // that is not what happened. `ADR-0076`'s table is what has to answer for
+    // it; this test only refuses to hide it.
     println!("mirrored {score} / {ceiling} (ceiling from the table, ADR-0076)");
+    println!("  red Reachable: {KNOWN_RED:?} — see ADR-0076, STATUS.md item 92");
     assert!(
-        score >= 10,
-        "mirrored score fell below 10 (now {score}); item 92 / ADR-0076 tracks what is red:\n{report}"
+        score >= 14,
+        "mirrored score fell below 14 (now {score}); item 92 / ADR-0076 tracks what is red:\n{report}"
     );
 
     // Every `Reachable` file that did not pass is red. The four item 92 /

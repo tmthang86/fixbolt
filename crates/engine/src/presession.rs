@@ -438,8 +438,7 @@ pub struct Limits {
 ///
 /// [`ADR-0069`]: ../../../docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md
 // `MIN` is `1`; sixteen more without `new`/`unwrap`/`unsafe`.
-const DEFAULT_LISTENER_EVERY: core::num::NonZeroU32 =
-    core::num::NonZeroU32::MIN.saturating_add(15);
+const DEFAULT_LISTENER_EVERY: core::num::NonZeroU32 = core::num::NonZeroU32::MIN.saturating_add(15);
 
 /// Why a set of limits was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

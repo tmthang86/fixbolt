@@ -299,18 +299,45 @@ pub fn scenarios_mirrored() -> Result<Vec<Scenario>, LoadError> {
 /// | Field | Becomes | Why it is not a change of meaning |
 /// |---|---|---|
 /// | `52=00000000-00:00:00.000` | [`FIXED_TIME_OUT`] | Same 21 bytes, so `9=` still holds. It is the instant the runner ticks to, which is what every `I` line already carries |
+/// | `122=00000000-00:00:00.000` | [`FIXED_TIME_OUT`] | Same 21 bytes. `122=` is *the original `52=`*, and in this harness every message this end sends carries [`FIXED_TIME_OUT`], so the original send time **is** that instant |
+/// | `60=00000000-00:00:00` | [`FIXED_TIME_IN`] | Same 17 bytes. `TransactTime` is a `UTCTimestamp` too, and the corpus writes the same placeholder into it |
 /// | `10=` | the real checksum | Recomputed from the bytes as they now stand, exactly as [`with_real_checksum`] does for the runner's own fake session |
+///
+/// `[measured 2026-09-18]` **`122=` is the same hole as `52=`, found one
+/// corpus later.** `OrigSendingTime` is a `UTCTimestamp`, and
+/// `00000000-00:00:00.000` is month 00 day 00 — not one. Mirrored, an `E` line
+/// carrying `43=Y` is a resend *arriving here*, and FIX 4.4 requires `122=` on
+/// it; the session reads the field, cannot parse it, and answers
+/// `Reject 373=1 371=122` — *Required tag missing* — because a value it cannot
+/// read is a value that is not there. The corpus never had to make it real for
+/// the same reason it never had to make `52=` real: `Comparator.rb` matches
+/// both by shape. STATUS.md item 92.
+///
+/// `60=` is the third of the same hole and was found behind it: a
+/// `NewOrderSingle` arriving with `60=00000000-00:00:00` is answered
+/// `Reject 373=6 371=60` — *Incorrect data format for value* — and that reject
+/// lands **before** any `43=Y` message in `8_OnlyApplicationMessages.def`, so
+/// the `122=` fix alone shows nothing.
 ///
 /// Nothing else is touched. A message whose `52=` is a *deliberately* wrong
 /// real value — `1d_InvalidLogonBadSendingTime` sends one from 2001 — keeps it,
 /// because it is not the placeholder.
 fn make_receivable(m: Message) -> Message {
-    const PLACEHOLDER: &str = "52=00000000-00:00:00.000";
+    // The corpus's placeholder instant, per tag that carries it, longest form
+    // first: `00000000-00:00:00` is a prefix of `00000000-00:00:00.000`, so
+    // replacing the short form first would leave a `.000` dangling.
+    const SUBS: [(&str, &str, &str); 3] = [
+        ("122", "00000000-00:00:00.000", FIXED_TIME_OUT),
+        ("52", "00000000-00:00:00.000", FIXED_TIME_OUT),
+        ("60", "00000000-00:00:00", FIXED_TIME_IN),
+    ];
     let text = String::from_utf8_lossy(&m.wire).into_owned();
-    if !text.contains(PLACEHOLDER) {
+    let patched = SUBS.iter().fold(text.clone(), |acc, (tag, from, to)| {
+        acc.replace(&format!("{tag}={from}"), &format!("{tag}={to}"))
+    });
+    if patched == text {
         return m;
     }
-    let patched = text.replace(PLACEHOLDER, &format!("52={FIXED_TIME_OUT}"));
     Message {
         wire: with_real_checksum(patched.as_bytes()),
         ..m
@@ -586,4 +613,67 @@ pub fn with_real_checksum(wire: &[u8]) -> Vec<u8> {
     let sum: u8 = out.iter().fold(0u8, |a, &b| a.wrapping_add(b));
     out.extend_from_slice(format!("10={sum:03}\u{1}").as_bytes());
     out
+}
+
+#[cfg(test)]
+mod receivable {
+    use super::{FIXED_TIME_OUT, Message, make_receivable};
+
+    fn msg(fields: &str) -> Message {
+        Message {
+            wire: fields.replace('|', "\u{1}").into_bytes(),
+            had_body_length: true,
+            had_checksum: true,
+        }
+    }
+
+    fn text(m: &Message) -> String {
+        String::from_utf8_lossy(&m.wire).replace('\u{1}', "|")
+    }
+
+    /// **The whole of item 92's hypothesis A, as one assertion.**
+    ///
+    /// An `E` line that carries `43=Y` is, mirrored, a resend *arriving here*.
+    /// FIX 4.4 requires `122=OrigSendingTime` on it, and it must be a
+    /// `UTCTimestamp` — the corpus's `00000000-00:00:00.000` is month 00, day
+    /// 00 and is not one. A session that reads it gets nothing back and
+    /// answers `Reject 373=1 371=122`, which is the engine refusing a message
+    /// the *harness* built.
+    #[test]
+    fn a_poss_dup_input_carries_a_real_orig_sending_time() {
+        let out = make_receivable(msg(
+            "8=FIX.4.4|9=132|35=D|34=2|43=Y|49=ISLD|52=00000000-00:00:00.000|56=TW44|\
+             122=00000000-00:00:00.000|11=ID|10=0|",
+        ));
+        let out = text(&out);
+        assert!(
+            out.contains(&format!("|122={FIXED_TIME_OUT}|")),
+            "43=Y without a readable 122= is item 92's harness hole: {out}"
+        );
+        assert!(
+            !out.contains("00000000-00:00:00.000"),
+            "a placeholder instant survived: {out}"
+        );
+    }
+
+    /// The substitution is byte-for-byte, so every `9=` in the corpus still
+    /// holds — the reason it can be done at all.
+    #[test]
+    fn the_substitution_does_not_move_the_body_length() {
+        // `10=` already three digits, so the only thing that could move the
+        // length is the substitution itself.
+        let before =
+            msg("8=FIX.4.4|9=9|35=0|52=00000000-00:00:00.000|122=00000000-00:00:00.000|10=000|");
+        let len = before.wire.len();
+        assert_eq!(make_receivable(before).wire.len(), len);
+    }
+
+    /// A `52=` that is wrong **on purpose** is not the placeholder and is left
+    /// alone — `1d_InvalidLogonBadSendingTime` sends one from 2001.
+    #[test]
+    fn a_deliberately_stale_timestamp_is_untouched() {
+        let before = msg("8=FIX.4.4|9=9|35=A|52=20010101-10:00:00|10=0|");
+        let wire = before.wire.clone();
+        assert_eq!(make_receivable(before).wire, wire);
+    }
 }
