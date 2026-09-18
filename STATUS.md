@@ -98,8 +98,8 @@ degenerate input, the refusal itself right.
 
 ### Next
 
-- **Item 89 is in flight in parallel**: [polling-the-listener-less-often-than-the-sessions](docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md),
-  branch `plan/listener-poll-share` in worktree `../fixbolt-wt-89`, PR [#76](https://github.com/tmthang86/fixbolt/pull/76),
+- **Item 89 is in flight in parallel**: `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md` (on its own
+  branch, not on `main` yet, so not a link), branch `plan/listener-poll-share` in worktree `../fixbolt-wt-89`, PR [#76](https://github.com/tmthang86/fixbolt/pull/76),
   ADR-0069 Proposed. Steps 1–2 committed; step 3 (`pump`) in review. Its measurement is boot C.
 - **Boot C** stays the next desk session, per the 2026-09-15 *Next* below, and now carries the
   item 89 A/B (`N ∈ {1, 16, 256}`) as well.
