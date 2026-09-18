@@ -1,6 +1,6 @@
 # ADR-0077 — The positioning stays acceptor-first, and "fastest" is said only beside a reproduced pair
 
-- **Status**: Proposed — 2026-09-18
+- **Status**: **Accepted — 2026-09-18**, by the plan [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md), approved by the manager under the owner's 2026-09-18 mandate. Proposed the same day.
 - **Date**: 2026-09-18
 - **Deciders**: Tran Manh Thang
 - **Related**: `PRD.md` §6 row 1, §1; `DESIGN.md` §1 *Positioning*; `README.md` line 3;

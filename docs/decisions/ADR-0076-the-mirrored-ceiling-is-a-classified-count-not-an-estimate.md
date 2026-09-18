@@ -1,6 +1,6 @@
 # ADR-0076 — The mirrored corpus's ceiling is a classified count, not an estimate
 
-- **Status**: Proposed — 2026-09-18. **Supersedes** [ADR-0006](ADR-0006-mirrored-corpus-is-fifty.md)'s
+- **Status**: **Accepted — 2026-09-18**, by the measured 14 / 14 at `02edfdb` (the plan [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md), approved by the manager under the owner's 2026-09-18 mandate). Proposed the same day. **Supersedes** [ADR-0006](ADR-0006-mirrored-corpus-is-fifty.md)'s
   ceiling of 45 only; ADR-0006's exclusion of `1b_DuplicateIdentity.def` and its rule about
   directives stand.
 - **Date**: 2026-09-18
@@ -34,7 +34,7 @@ classification.
    count produced by a committed classification, not an estimate.
 2. **The classification is a table in `crates/conformance/src/mirror.rs`**, one row per
    mirrored file, each naming the `I` line that decided it. `[revised 2026-09-18, on building
-   it]` Five classes were not enough; the enum has eight, and **each refusing class names the
+   it]` Five classes were not enough; the enum has **nine** (the ninth added when item 92 closed), and **each refusing class names the
    decision that refuses it**:
    - `Reachable` — every `I` line is one of the six calls the API takes (`connect`,
      `send_heartbeat`, `send_test_request`, `send_resend_request`, `send_sequence_reset`,

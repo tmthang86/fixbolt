@@ -607,6 +607,19 @@ for arm in $ARMS; do
   [ "$client_tls" != "$engine_tls" ] && tls_args+=(--client-tls "$client_tls")
   interval_args=()
   [ "$interval" != 0 ] && interval_args=(--interval "$interval")
+
+  # ADR-0072 decision 4: every published `hft` figure is gated on 0 voluntary
+  # context switches, not merely accompanied by the count. Printing it and
+  # reading it back below is the second reader; THIS is the gate, inside
+  # `tools/w2w` itself, which exits non-zero on the first voluntary switch and
+  # so lands on the ordinary `$BIN exited $rc` FAIL path with the assertion
+  # message in the kept output. Combined runs only: the split run's `--connect`
+  # half has no local engine thread and its `--listen` half is not the process
+  # whose exit status this loop reads. `standard` blocks by design (ADR-0014)
+  # and must never carry it. This script never runs under `strace`, so the
+  # tracer caveat that makes the flag opt-in does not apply here.
+  assert_args=()
+  [ "$mode" = hft ] && [ -z "$LISTEN" ] && assert_args=(--assert-no-voluntary-switches)
   # Named in the per-run line and the summary header only when it is not the
   # default, so an arm with no fourth field prints byte-identically to before.
   iv_note=""
@@ -899,7 +912,7 @@ for arm in $ARMS; do
     rc=0
     out=$("$BIN" --mode "$mode" --path "$path" "${tls_args[@]}" "${interval_args[@]}" "${PINARGS[@]}" \
             --messages "$MESSAGES" --warmup "$WARMUP" "${EXTRA_ARGS[@]}" \
-            "${LISTENER_EVERY_ARGS[@]}" 2>&1) || rc=$?
+            "${LISTENER_EVERY_ARGS[@]}" "${assert_args[@]}" 2>&1) || rc=$?
     # F11 (`[2026-09-15]`, the split run above): the raw output is kept before
     # any check below can `exit 1` — `boot-b-p1/b4-1s/` held nothing after a
     # `35=3` reject FAILed its run.
@@ -969,9 +982,11 @@ for arm in $ARMS; do
     # ADR-0072 decision 4: every published `hft` figure carries the sentence
     # "engine thread: 0 voluntary switches in the window" — the two numbers
     # `tools/w2w` prints on its `engine-ctxt` line (read the same way `allocs`
-    # above is: this is the second reader, never the only one). `--connect`
-    # (the split-run generator half, above) has no local engine thread and
-    # prints no such line, so this stays empty there rather than reading 0.
+    # above is: this is the second reader — `--assert-no-voluntary-switches`,
+    # passed above on every combined `hft` arm, is the first and the one that
+    # fails the run). `--connect` (the split-run generator half, above) has no
+    # local engine thread and prints no such line, so this stays empty there
+    # rather than reading 0.
     voluntary_ctxt="$(echo "$out" | awk '$1=="engine-ctxt" {print $3}')"
     involuntary_ctxt="$(echo "$out" | awk '$1=="engine-ctxt" {print $5}')"
     ctxt_note=""

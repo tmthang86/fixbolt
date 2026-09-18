@@ -120,13 +120,22 @@ below describe what a first release would contain.
 
 - **`tools/w2w`** prints `engine-ctxt voluntary/involuntary` and gains
   `--assert-no-voluntary-switches`, reading `/proc/self/task/<tid>/status` on the engine thread
-  around the timed window (ADR-0072).
+  around the timed window and the idle `--hold-ms` that follows it (ADR-0072). The flag asserts in
+  whatever mode it is given, so `--mode standard` is its reversal.
+
+- **`tools/w2w`** gains `--dump <file>`, writing one line per request so the two halves of a
+  combined run can be joined by request index (ADR-0071 decision 3).
+
+- **`tools/w2w`** gains `--client-tls <off|ktls|userspace>`, letting the two ends of a combined run
+  use different TLS modes.
 
 - **`scripts/check-no-kernel-sleep-by-ctxt.sh`**, new: the same non-negotiable 4 as
   `check-no-kernel-sleep.sh`, proven by voluntary context switches read from `/proc` instead of
   by naming a syscall.
 
-- **`scripts/w2w-baseline.sh`** applies ADR-0071's missing-hardware-stamp rule, prints
+- **`scripts/w2w-baseline.sh`** applies ADR-0071's missing-hardware-stamp rule, passes
+  `--assert-no-voluntary-switches` to every combined `hft` arm so a published figure is gated on
+  zero voluntary switches rather than merely accompanied by the count (ADR-0072 decision 4), prints
   `tx_hwtstamp_skipped` deltas and the engine-ctxt numbers per run, and prints a thermal/frequency
   line — every `/sys/class/thermal/thermal_zone*/temp` and the engine core's
   `cpuinfo_cur_freq` — once, before the runs.

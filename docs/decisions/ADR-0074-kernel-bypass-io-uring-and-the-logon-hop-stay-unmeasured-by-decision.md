@@ -1,6 +1,6 @@
 # ADR-0074 — Kernel bypass, `io_uring` and the Logon hop stay unmeasured, by decision
 
-- **Status**: Proposed — 2026-09-18
+- **Status**: **Accepted — 2026-09-18**, by the plan [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md), approved by the manager under the owner's 2026-09-18 mandate. Proposed the same day.
 - **Date**: 2026-09-18
 - **Deciders**: Tran Manh Thang
 - **Related**: `PRD.md` §5 (permanent non-goals), §2 *Phase 3*;

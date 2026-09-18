@@ -1,6 +1,6 @@
 # ADR-0071 — A skipped TX stamp is a missing sample, not a failed run
 
-- **Status**: Proposed — 2026-09-18
+- **Status**: **Accepted — 2026-09-18**, by the plan [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md), approved by the manager under the owner's 2026-09-18 mandate; decision 3 as revised the same day. Proposed the same day.
 - **Date**: 2026-09-18
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0068](ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md),

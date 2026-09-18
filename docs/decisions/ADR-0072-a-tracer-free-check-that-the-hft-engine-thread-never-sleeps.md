@@ -1,6 +1,6 @@
 # ADR-0072 — A tracer-free check that the `hft` engine thread never sleeps: voluntary context switches
 
-- **Status**: Proposed — 2026-09-18
+- **Status**: **Accepted — 2026-09-18**, by the plan [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md), approved by the manager under the owner's 2026-09-18 mandate, with decisions 1 and 4 revised to the gate as built (PR #78 senior review). Proposed the same day.
 - **Date**: 2026-09-18
 - **Deciders**: Tran Manh Thang
 - **Related**: `CLAUDE.md` §2 non-negotiable 4 and its *Machine checks* row 4,
@@ -30,11 +30,16 @@ involuntary side, which is the noise column, not the sleep column.
 
 ## Decision
 
-1. **`tools/w2w` reads the engine thread's two counters at the start and the end of the timed
-   window** — from `/proc/self/task/<tid>/status`, on the main thread, so the engine thread
-   makes no new syscall — and prints `engine-ctxt voluntary <n> involuntary <m>` beside
-   `allocs`. In `hft` the run **fails** if voluntary is non-zero. In `standard` it prints and
-   does not judge (the mode check for `standard` is the existing four-assertion script).
+1. **`tools/w2w` reads the engine thread's two counters before the timed window and after the
+   `--hold-ms` idle window** — from `/proc/self/task/<tid>/status`, on the main thread, so the
+   engine thread makes no new syscall — and prints `engine-ctxt voluntary <n> involuntary <m>`
+   beside `allocs`. `[revised 2026-09-18, PR #78 senior review]` **The assertion is opt-in:
+   `--assert-no-voluntary-switches` makes the run fail if voluntary is non-zero, in whatever
+   mode is given.** It is opt-in because a tracer inflates the column — under `strace` every
+   `PTRACE_CONT` resume is a voluntary switch — so the `strace` gate must never carry the flag,
+   and a `standard` run given the flag is the reversal (it must fail). The second sample is
+   taken after the hold, not at the end of the timed window, so that a `standard` engine has
+   had its idle time to block in and the red half is deterministic.
 2. **A new script, `scripts/check-no-kernel-sleep-by-ctxt.sh`, is the second machine check
    for row 4**: it runs `w2w --mode hft` and asserts voluntary reads 0, then runs `--mode
    standard` and asserts voluntary reads **> 0** — the reversal is built in, as the `strace`
@@ -43,9 +48,11 @@ involuntary side, which is the noise column, not the sleep column.
 3. **The `strace` check stays.** It names *which* syscall slept; the counter only says that
    something did. Both run in CI; the `strace` one keeps its user-namespace arm on `lo`, the
    counter one takes the NIC arm.
-4. **`scripts/w2w-baseline.sh` records the counters in every run's output**, so every published
-   `hft` figure from now on carries the sentence *engine thread: 0 voluntary switches in the
-   window*, which is what `CLAUDE.md` §2 rule 4 asks a figure to state.
+4. **`scripts/w2w-baseline.sh` passes `--assert-no-voluntary-switches` to every `hft` arm of a
+   combined run and records both counters in every run's output**, so every published `hft`
+   figure from now on is gated on *engine thread: 0 voluntary switches through the hold* — the
+   sentence `CLAUDE.md` §2 rule 4 asks a figure to state. `standard` arms record the counters
+   and are not gated by this flag (their gate is the four-assertion script).
 
 ## Consequences
 
@@ -66,9 +73,16 @@ involuntary side, which is the noise column, not the sleep column.
   so this gate rightly ignores it — but a reader may take *0* for *no syscall*, which it is not.
 - **Involuntary switches on an isolated core should also be zero and are not asserted**; they
   are printed. Asserting them would turn a §9 tuning fault into a gate failure on a laptop.
-- **A `standard` run with too little idle time could read 0 voluntary switches** and fail the
-  reversal; the script's `--hold-ms` window keeps it well away from that, and a red reversal
-  is a loud failure, not a false green.
+- **The reversal depends on the `standard` engine having blocked at least once before the
+  second sample**; sampling after the `--hold-ms` window guarantees an idle stretch in which it
+  must, so the red half is deterministic rather than a race with the timed window.
+- **Two traps, paid for while building it** (`[measured 2026-09-18]`): **`sched_yield` lands on
+  the *involuntary* column** — the task stays runnable, so `__schedule` counts it on `nivcsw` —
+  which is why the gate reads the voluntary column only and why a `yield`-style spin cannot be
+  caught by it (the `strace` gate names `sched_yield` for that); and **a tracer inflates the
+  voluntary column** — under `strace` the tracee stops and is resumed by `PTRACE_CONT` on every
+  syscall, each stop a voluntary switch — which is why the flag is opt-in and the `strace`
+  script never passes it.
 
 ## Sources
 

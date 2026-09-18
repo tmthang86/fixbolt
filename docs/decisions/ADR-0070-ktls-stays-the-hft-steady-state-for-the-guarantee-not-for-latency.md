@@ -1,6 +1,6 @@
 # ADR-0070 — kTLS stays the `hft` steady state for the guarantee, not for latency
 
-- **Status**: Proposed — 2026-09-18
+- **Status**: **Accepted — 2026-09-18**, by the plan [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md), approved by the manager under the owner's 2026-09-18 mandate. Proposed the same day.
 - **Date**: 2026-09-18
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0005](ADR-0005-tls.md) decision 2 (amended, not reversed),

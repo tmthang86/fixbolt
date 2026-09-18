@@ -1,6 +1,6 @@
 # ADR-0078 — SBE enters as an encoding without a session, and FIXP is its own phase
 
-- **Status**: Proposed — 2026-09-18
+- **Status**: **Accepted — 2026-09-18**, by the plan [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md), approved by the manager under the owner's 2026-09-18 mandate. Proposed the same day.
 - **Date**: 2026-09-18
 - **Deciders**: Tran Manh Thang
 - **Related**: `PRD.md` §2 *Phase 2*, *Phase 2 starts with an architectural decision*, §6

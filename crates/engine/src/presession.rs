@@ -432,8 +432,9 @@ pub struct Limits {
 /// `16`, measured at boot C: the A/B in
 /// `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
 /// §Cách làm 1 (`ListenerEveryTurns` ∈ {1, 16, 256}, interleaved within one
-/// procedure, two procedures) showed the `hft` app path 12.8 % faster at 16,
-/// reproduced in both. [`ADR-0069`] rule 4 gates moving this default on a
+/// procedure, two procedures) showed the `hft` app path 12.7 % faster at 16
+/// than at 1 in procedure 1 and 13.0 % in procedure 2 (p50), reproduced in
+/// both. [`ADR-0069`] rule 4 gates moving this default on a
 /// published figure; this is that figure.
 ///
 /// [`ADR-0069`]: ../../../docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md

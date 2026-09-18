@@ -1086,8 +1086,8 @@ pub struct Settings {
 /// `ListenerEveryTurns=` unless the file says otherwise. `16`, measured at
 /// boot C: the A/B in
 /// `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
-/// §Cách làm 1 showed the `hft` app path 12.8 % faster at 16 than at 1,
-/// reproduced in two procedures; [`ADR-0069`](../../../docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)
+/// §Cách làm 1 showed the `hft` app path 12.7 % faster at 16 than at 1 in
+/// procedure 1 and 13.0 % in procedure 2 (p50), reproduced in both; [`ADR-0069`](../../../docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)
 /// rule 4 gates moving this default on a published figure, this is that
 /// figure, and it moves with `presession::DEFAULT_LISTENER_EVERY` — one
 /// cadence, two constants, so a caller who names neither still gets one

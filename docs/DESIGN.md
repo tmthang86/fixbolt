@@ -1360,6 +1360,16 @@ Three readings:
 
 ### Stage by stage (`hft`, N = 1)
 
+**The Logon hop is not in this table, by decision.** A connection's first message pays the
+pre-session stage once — the `Logon` is read there, routed to an engine over a channel, and the
+socket handed across threads — and that cost is off the message path: bounded by the
+`presession` bench (426.2 ns per socket sweep, ~84 ns to read both comp IDs and pick a shard,
+`[measured 2026-09-01]`) plus one cross-thread wake, which §9 already keeps off the engine
+core. It is not measured, and becomes a measurement only if a user reports Logon latency
+([ADR-0074](decisions/ADR-0074-kernel-bypass-io-uring-and-the-logon-hop-stay-unmeasured-by-decision.md)
+decision 3).
+
+
 | Stage | Cost | Who controls it |
 |---|---|---|
 | NIC → kernel → socket buffer | 3–8 µs, from the literature | kernel, IRQ affinity, driver |
@@ -1402,6 +1412,7 @@ which is why nothing in the design moves, but it is three times what this page s
 | **`Journal::put` of the reply into the ring** | **+8.9** | `journal put, 191 bytes, walking`. The administrative path never does it, so the whole figure counts |
 | **measured subtotal** | **~1 128** | **28.9% of the gap** |
 | the session's own `Heartbeat` serialise, which the application path does *not* do | −? | **no committed case**, so it is not subtracted |
+| the kernel's own share, **measured in situ** rather than by slope: median `sendto` and `recvfrom` on the engine tid, application minus administrative | *awaiting boot C step C-49* | [plans/2026-09-18-closing-the-open-items.md](plans/2026-09-18-closing-the-open-items.md) row C-49: `perf trace -s` / `strace -T` on the engine tid over 20 000 round trips per path; the difference of the two syscall medians is the kernel's number for the bigger payload. Until it exists, the +24.5 ns slope row above is the only kernel term, and it was read off an 8 → 8192 byte lever |
 | **still unattributed** | **~2 770** | **71.1%** |
 
 **The largest candidate this page named turned out to be a sixth of the answer.** STATUS item

@@ -1,6 +1,6 @@
 # ADR-0073 — `standard`'s wire figure goes through BPF sock_ops timestamping, and not before phase 2
 
-- **Status**: Proposed — 2026-09-18
+- **Status**: **Accepted — 2026-09-18**, by the plan [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md), approved by the manager under the owner's 2026-09-18 mandate. Proposed the same day.
 - **Date**: 2026-09-18
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0071](ADR-0071-a-skipped-tx-stamp-is-a-missing-sample-not-a-failed-run.md),

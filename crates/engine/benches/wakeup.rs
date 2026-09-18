@@ -147,6 +147,16 @@ mod linux {
 
         let poll = measure(n, Arm::Poll, cores);
         print_arm("wakeup poll", &poll);
+
+        // The same grep-able summary line `codec/benches/harness.rs` prints,
+        // in the same format, because `scripts/bench.sh` reads exactly
+        // `^cases without a baseline: <n>` and counts it into its
+        // `cases w/o a baseline` row. Printing `NO BASELINE` per arm without
+        // this line left both arms invisible to that counter — "not red"
+        // reading as "green", which is the one thing that row exists to stop.
+        // Every arm here is baseline-less until boot C records one (plan row
+        // C-PRD7), so the count is the number of arms above.
+        println!("cases without a baseline: 2  wakeup epoll, wakeup poll");
     }
 
     /// `WAKEUP_CORES=<a>,<b>`, or `None` when unset. Exits the process with a

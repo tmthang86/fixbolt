@@ -1,6 +1,6 @@
 # ADR-0075 — The indexing ratchet is the closure of the indexing debt
 
-- **Status**: Proposed — 2026-09-18
+- **Status**: **Accepted — 2026-09-18**, by the plan [closing-the-open-items](../plans/2026-09-18-closing-the-open-items.md), approved by the manager under the owner's 2026-09-18 mandate. Proposed the same day.
 - **Date**: 2026-09-18
 - **Deciders**: Tran Manh Thang
 - **Related**: `CLAUDE.md` §2 non-negotiable 7 and *Machine checks* row 7;

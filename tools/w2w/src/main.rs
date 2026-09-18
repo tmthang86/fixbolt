@@ -1184,7 +1184,10 @@ fn main() -> std::io::Result<()> {
     // `hft` binary under `strace -f` made this assertion fire on ~1800
     // switches that were never a kernel sleep, coupling ADR-0072's tracer-free
     // gate to the tracer it exists to route around. Only
-    // `scripts/check-no-kernel-sleep-by-ctxt.sh` passes this flag.
+    // `scripts/check-no-kernel-sleep-by-ctxt.sh` and `scripts/w2w-baseline.sh`
+    // pass this flag. It asserts in **whatever mode it is given** — the flag is
+    // the opt-in, not the mode — so that `--mode standard` with it is the
+    // reversal that proves the assertion can go red.
     let assert_no_voluntary = present(&args, "--assert-no-voluntary-switches");
 
     // ADR-0013 decision 4: every published figure names its mode. `hft` stays
@@ -1554,7 +1557,7 @@ fn both_halves(
                 peer,
                 connect_started,
                 connect_rtt_ns,
-                assert_no_voluntary && mode == Mode::Hft,
+                assert_no_voluntary.then_some(mode),
                 client_tls,
             )
         }
@@ -1572,7 +1575,7 @@ fn both_halves(
                 peer,
                 connect_started,
                 connect_rtt_ns,
-                assert_no_voluntary && mode == Mode::Hft,
+                assert_no_voluntary.then_some(mode),
                 client_tls,
             )
         }
@@ -1907,7 +1910,7 @@ fn generator_half(
         Peer::Remote,
         connect_started,
         connect_rtt_ns,
-        false,
+        None,
         run.tls,
     )
     .map_err(|e| match e.kind() {
@@ -2130,12 +2133,15 @@ struct Measured {
 /// share of the new-connection latency (plan
 /// `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
 /// line 210).
-/// `assert_no_voluntary`: `both_halves` passes `true` only for `--mode hft
-/// --assert-no-voluntary-switches` — never implied by `--mode hft` alone, see
-/// the flag's own comment in `main` (opt-in because `strace` counts its own
-/// ptrace-stops as voluntary switches on the tracee, ADR-0072).
-/// `generator_half`'s `Peer::Remote` has no local engine thread, so it always
-/// passes `false` and nothing is asserted there.
+/// `assert_no_voluntary`: `Some(mode)` when `--assert-no-voluntary-switches`
+/// was given, whatever the mode is — the flag is the opt-in, never the mode
+/// (opt-in because `strace` counts its own ptrace-stops as voluntary switches
+/// on the tracee, ADR-0072), and the mode is carried only so the failure names
+/// it. Asserting in every mode is what gives the assertion a reversal:
+/// `scripts/check-no-kernel-sleep-by-ctxt.sh` runs `--mode standard` with the
+/// flag and requires a non-zero exit. `generator_half`'s `Peer::Remote` has no
+/// local engine thread, so it always passes `None` and nothing is asserted
+/// there.
 /// `client_tls`: what the client half actually dialled with — `run.tls` for
 /// every call site but `both_halves`'s, where `--client-tls` may have said
 /// otherwise. Only read on the `Peer::InProcess` arm, for the read-back line;
@@ -2147,7 +2153,7 @@ fn measure<C: Wire>(
     peer: Peer<'_>,
     connect_started: Instant,
     connect_rtt_ns: u128,
-    assert_no_voluntary: bool,
+    assert_no_voluntary: Option<Mode>,
     client_tls: Tls,
 ) -> std::io::Result<Measured> {
     let Run {
@@ -2311,8 +2317,21 @@ fn measure<C: Wire>(
     ARMED.store(false, Ordering::Relaxed);
     let allocs = ALLOCS.load(Ordering::Relaxed);
 
-    // ADR-0072 decision 1: sampled right after the window closes, still on the
-    // main thread — no syscall added to the engine thread it is watching.
+    // A window in which the engine is up, connected and idle: this is what a
+    // syscall trace has to look at to answer open item 15, because an idle spin
+    // is exactly where a blocking call would hide.
+    if hold_ms > 0 {
+        hold(Duration::from_millis(hold_ms));
+    }
+
+    // ADR-0072 decision 1: sampled on the main thread — no syscall added to the
+    // engine thread it is watching — and **after `hold()` returns**, not before
+    // it. The idle hold is the one window in which a `standard` engine is
+    // certain to block in `poll`; sampling before it left that window outside
+    // the sampled interval, and the reversal half of
+    // `scripts/check-no-kernel-sleep-by-ctxt.sh` read `voluntary 0` on 2 of 7
+    // runs. An `hft` engine spins through the hold, so widening the interval
+    // leaves its count at 0.
     let ctxt_after = match peer {
         Peer::InProcess { .. } => engine_ctxt_switches(ENGINE_TID.load(Ordering::Relaxed)),
         Peer::Remote => None,
@@ -2323,27 +2342,23 @@ fn measure<C: Wire>(
         println!("engine-ctxt voluntary {voluntary} involuntary {involuntary}");
         // `hft` half of non-negotiable 4 (CLAUDE.md §2 rule 4, ADR-0072 decision
         // 1): the engine thread must never leave user space to wait. Opt-in
-        // (`--assert-no-voluntary-switches`), not implied by `--mode hft`
-        // alone: a `PTRACE_CONT` off a ptrace-stop is itself a voluntary
-        // switch on the tracee, so an `hft` run under `strace`
+        // (`--assert-no-voluntary-switches`), never implied by a mode: a
+        // `PTRACE_CONT` off a ptrace-stop is itself a voluntary switch on the
+        // tracee, so an `hft` run under `strace`
         // (`scripts/check-no-kernel-sleep.sh`) would otherwise fail this on
-        // switches that are the tracer, not a kernel sleep. `standard` and
-        // `yield` print the same line and assert nothing here — the reversal
-        // that proves this gate can go red is
-        // `scripts/check-no-kernel-sleep-by-ctxt.sh` running `--mode standard`.
-        if assert_no_voluntary {
+        // switches that are the tracer, not a kernel sleep. The flag asserts in
+        // **whatever mode it is given**, which is what makes the assertion
+        // reversible: `scripts/check-no-kernel-sleep-by-ctxt.sh` runs
+        // `--mode standard --assert-no-voluntary-switches` and requires it to
+        // go red. Without the flag every mode only prints the line.
+        if let Some(asserted) = assert_no_voluntary {
             assert_eq!(
-                voluntary, 0,
-                "hft: engine thread made {voluntary} voluntary context switches, expected 0"
+                voluntary,
+                0,
+                "{}: engine thread made {voluntary} voluntary context switches, expected 0",
+                asserted.name()
             );
         }
-    }
-
-    // A window in which the engine is up, connected and idle: this is what a
-    // syscall trace has to look at to answer open item 15, because an idle spin
-    // is exactly where a blocking call would hide.
-    if hold_ms > 0 {
-        hold(Duration::from_millis(hold_ms));
     }
 
     match peer {
