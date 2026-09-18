@@ -1078,14 +1078,23 @@ pub struct Settings {
     tls_line: usize,
     /// `ListenerEveryTurns=`, fed straight to
     /// [`presession::Limits::with_listener_every`](crate::presession::Limits::with_listener_every).
-    /// `1` (today's loop) when the file did not say.
+    /// `16` (measured at boot C, [`ADR-0069`](../../../docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md))
+    /// when the file did not say.
     listener_every: std::num::NonZeroU32,
 }
 
-/// `ListenerEveryTurns=` unless the file says otherwise — item 90's cadence
-/// of one turn, which is today's loop and changes nothing for a file written
-/// before this key existed.
-const DEFAULT_LISTENER_EVERY_TURNS: std::num::NonZeroU32 = std::num::NonZeroU32::MIN;
+/// `ListenerEveryTurns=` unless the file says otherwise. `16`, measured at
+/// boot C: the A/B in
+/// `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
+/// §Cách làm 1 showed the `hft` app path 12.8 % faster at 16 than at 1,
+/// reproduced in two procedures; [`ADR-0069`](../../../docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)
+/// rule 4 gates moving this default on a published figure, this is that
+/// figure, and it moves with `presession::DEFAULT_LISTENER_EVERY` — one
+/// cadence, two constants, so a caller who names neither still gets one
+/// number end to end.
+// `MIN` is `1`; sixteen more without `new`/`unwrap`/`unsafe`.
+const DEFAULT_LISTENER_EVERY_TURNS: std::num::NonZeroU32 =
+    std::num::NonZeroU32::MIN.saturating_add(15);
 
 impl Default for Settings {
     fn default() -> Self {

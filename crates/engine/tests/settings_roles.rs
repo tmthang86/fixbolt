@@ -370,22 +370,30 @@ fn timestamp_precision_is_refused_unless_spelled_exactly() {
 
 #[test]
 fn settings_parse_listener_every_turns() {
-    // Absent: today's loop, one turn between polls.
+    // Absent: 16, measured at boot C (ADR-0069).
     let s = Settings::parse(ACCEPTOR).expect("parses");
-    assert_eq!(s.listener_every().get(), 1, "1 is the default cadence");
+    assert_eq!(
+        s.listener_every().get(),
+        16,
+        "16 is the default cadence, measured at boot C (ADR-0069)"
+    );
 
-    // Present, in [DEFAULT], parses.
+    // Present, in [DEFAULT], parses — and naming 1 still means poll every turn.
     let text = "\
 [DEFAULT]
 BeginString=FIX.4.4
 SenderCompID=ISLD
-ListenerEveryTurns=16
+ListenerEveryTurns=1
 
 [SESSION]
 TargetCompID=TW44
 ";
     let s = Settings::parse(text).expect("parses");
-    assert_eq!(s.listener_every().get(), 16);
+    assert_eq!(
+        s.listener_every().get(),
+        1,
+        "naming the cadence 1 still means poll every turn"
+    );
 
     // A [SESSION]-only carrier is refused, same shape as FileLogPath.
     let text = "\

@@ -429,11 +429,17 @@ pub struct Limits {
 /// How many `hft`-mode spin turns pass between one poll of the listener and
 /// the next, when [`Limits::listener_every`] is never called.
 ///
+/// `16`, measured at boot C: the A/B in
 /// `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
-/// §Cách làm 1: the listener is polled every turn until a number tells it
-/// otherwise, which is today's loop and therefore the only default that
-/// changes nothing for a caller who has never heard of this knob.
-const DEFAULT_LISTENER_EVERY: core::num::NonZeroU32 = core::num::NonZeroU32::MIN;
+/// §Cách làm 1 (`ListenerEveryTurns` ∈ {1, 16, 256}, interleaved within one
+/// procedure, two procedures) showed the `hft` app path 12.8 % faster at 16,
+/// reproduced in both. [`ADR-0069`] rule 4 gates moving this default on a
+/// published figure; this is that figure.
+///
+/// [`ADR-0069`]: ../../../docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md
+// `MIN` is `1`; sixteen more without `new`/`unwrap`/`unsafe`.
+const DEFAULT_LISTENER_EVERY: core::num::NonZeroU32 =
+    core::num::NonZeroU32::MIN.saturating_add(15);
 
 /// Why a set of limits was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -512,8 +518,10 @@ impl Limits {
     }
 
     /// How many `hft`-mode spin turns pass between one poll of the listener
-    /// and the next. `1` (today's loop, `DEFAULT_LISTENER_EVERY`) unless
-    /// [`Self::with_listener_every`] was called.
+    /// and the next. `16` (`DEFAULT_LISTENER_EVERY`, measured at boot C,
+    /// [`ADR-0069`]) unless [`Self::with_listener_every`] was called.
+    ///
+    /// [`ADR-0069`]: ../../../docs/decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md
     #[must_use]
     pub const fn listener_every(self) -> core::num::NonZeroU32 {
         self.listener_every
