@@ -971,6 +971,15 @@ fn listener_every_of(args: &[String]) -> Result<std::num::NonZeroU32, String> {
     }
 }
 
+/// `--dump <path>`: ADR-0071 decision 3's per-request table, written by
+/// either half after its own timed window has closed. Absent is `None`;
+/// present with no value is refused like every other new flag ([`value_of`]).
+/// Which halves may use it, and why the other cannot, is `main`'s refusal,
+/// not this parse.
+fn dump_of(args: &[String]) -> Result<Option<String>, String> {
+    value_of(args, "--dump")
+}
+
 /// Whether `name` appears among the arguments at all.
 fn present(args: &[String], name: &str) -> bool {
     args.iter().skip(1).any(|a| a == name)
@@ -1058,10 +1067,11 @@ fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // The two halves' refusals first. With no new flag they return
     // `(Half::Both, 0)` and print nothing, so everything below runs as it did.
-    let (half, interval_us, wire, listener_every) = match half_of(&args)
+    let (half, interval_us, wire, listener_every, dump) = match half_of(&args)
         .and_then(|h| Ok((h, interval_of(&args)?)))
         .and_then(|(h, i)| Ok((h, i, wire_of(&args)?)))
         .and_then(|(h, i, w)| Ok((h, i, w, listener_every_of(&args)?)))
+        .and_then(|(h, i, w, le)| Ok((h, i, w, le, dump_of(&args)?)))
     {
         Ok(v) => v,
         Err(why) => {
@@ -1069,6 +1079,29 @@ fn main() -> std::io::Result<()> {
             return Err(std::io::Error::other(why));
         }
     };
+    // ADR-0071 decision 3: `--dump` belongs to each half separately — the
+    // combined run already holds both processes' samples in one place, and
+    // `--listen` with no `--wire-timestamps` has no round-trip figure of its
+    // own to write. Refused here, before a socket or a file is opened, same
+    // shape as every other new-flag refusal in this function.
+    if dump.is_some() {
+        match &half {
+            Half::Both => {
+                let why = "--dump joins two processes' per-request samples; the combined run \
+                            already holds both in one process, so there is nothing to join here \
+                            — run --listen and --connect separately";
+                eprintln!("w2w: {why}");
+                return Err(std::io::Error::other(why));
+            }
+            Half::Listen(_) if wire.is_none() => {
+                let why = "--dump on --listen needs --wire-timestamps: without it the engine \
+                            half has no round-trip figure of its own to write";
+                eprintln!("w2w: {why}");
+                return Err(std::io::Error::other(why));
+            }
+            Half::Listen(_) | Half::Connect(_) => {}
+        }
+    }
     let n: usize = arg(&args, "--messages").unwrap_or(20_000);
     // `--listen` reaches here with `--warmup` only beside `--wire-timestamps`
     // (`half_of`), where it is the number of requests after the logon left out
@@ -1273,10 +1306,11 @@ fn main() -> std::io::Result<()> {
             log,
             wire.as_ref(),
             listener_every,
+            dump.as_deref(),
         ),
         // `half_of` has refused `--journal` and `--log` for `--connect`, so
         // `generator_half` never receives a choice it has no engine to act on.
-        Half::Connect(addr) => generator_half(&addr, run, client_core),
+        Half::Connect(addr) => generator_half(&addr, run, client_core, dump.as_deref()),
     };
     // Only `--wire-timestamps` installs a handler (`signal`). By here every
     // thread that run started has been joined or has returned, and every
@@ -1514,11 +1548,16 @@ fn both_halves(
     println!("     allocs {allocs:>9}   ({counted}, the timed window only)");
     let verdict = match &observed {
         None => Ok(()),
-        Some(o) => o.report(wire::Window::Combined {
-            warmup: run.warmup,
-            n: run.n,
-            tls: tls != Tls::Off,
-        }),
+        // `--dump` is refused for the combined run (`main`): both halves are
+        // one process here, so there is nothing to join.
+        Some(o) => o.report(
+            wire::Window::Combined {
+                warmup: run.warmup,
+                n: run.n,
+                tls: tls != Tls::Off,
+            },
+            None,
+        ),
     };
     println!();
     // Non-negotiable 1, for this binary. Reported first so the number is
@@ -1573,6 +1612,7 @@ fn engine_half(
     log: LogKind,
     wire: Option<&WireArgs>,
     listener_every: std::num::NonZeroU32,
+    dump: Option<&str>,
 ) -> std::io::Result<()> {
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind(addr)?;
@@ -1702,7 +1742,7 @@ fn engine_half(
             println!(
                 "     process. The wire figures below are this acceptor's own, NIC in to NIC out."
             );
-            o.report(wire::Window::Listen { skip: run.warmup })
+            o.report(wire::Window::Listen { skip: run.warmup }, dump)
         }
     };
     println!();
@@ -1754,7 +1794,12 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `--connect`: the client thread alone. Its figures are the counterparty's
 /// view and are labelled so — see the module note.
-fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::Result<()> {
+fn generator_half(
+    addr: &str,
+    run: Run,
+    client_core: Option<usize>,
+    dump: Option<&str>,
+) -> std::io::Result<()> {
     let Run { path, .. } = run;
     println!("path: {}", path.name());
     println!("connect: {addr}");
@@ -1774,9 +1819,15 @@ fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::
         mut samples,
         allocs,
         late,
-    } = measure(sock, &run, Peer::Remote, connect_started, connect_rtt_ns, false).map_err(|e| match e
-        .kind()
-    {
+    } = measure(
+        sock,
+        &run,
+        Peer::Remote,
+        connect_started,
+        connect_rtt_ns,
+        false,
+    )
+    .map_err(|e| match e.kind() {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => std::io::Error::new(
             e.kind(),
             format!(
@@ -1787,6 +1838,16 @@ fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::
         ),
         _ => e,
     })?;
+
+    // ADR-0071 decision 3: written here, between `measure` returning (where
+    // `ARMED` was already cleared, `samples` is unsorted and in send order —
+    // the loop in `measure` pushes to it in that order) and `print_figures`
+    // below, which sorts `samples` in place. Nothing is added to the timed
+    // window by this: `allocs` was read back inside `measure` before `ARMED`
+    // was cleared, and the write below runs after both.
+    if let Some(path) = dump {
+        write_connect_dump(path, run.warmup, &samples)?;
+    }
 
     let what = match path {
         Path::Admin => "TestRequest -> Heartbeat",
@@ -1887,6 +1948,26 @@ fn pin_client(client_core: Option<usize>) -> std::io::Result<()> {
 
 /// The percentile rows, shared by the combined run and the generator half so
 /// the two tables cannot drift apart in format.
+/// `--connect --dump <path>` (ADR-0071 decision 3). One line per timed
+/// request, `index rtt_ns`, `index` the 0-based send order after warmup —
+/// exactly `samples`'s own order, which is why this must run before anything
+/// sorts it. The header records `--warmup`, so `scripts/w2w-baseline.sh` can
+/// refuse a join against a `--listen` dump taken with a different one rather
+/// than pairing the wrong rows.
+fn write_connect_dump(path: &str, warmup: usize, samples: &[u64]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    writeln!(
+        f,
+        "# w2w dump connect warmup {warmup} requests {}",
+        samples.len()
+    )?;
+    for (index, ns) in samples.iter().enumerate() {
+        writeln!(f, "{index} {ns}")?;
+    }
+    f.flush()
+}
+
 fn print_figures(samples: &mut [u64], run: &Run, late: usize) {
     samples.sort_unstable();
     let pick = |q: f64| samples[((samples.len() as f64 - 1.0) * q) as usize];
@@ -2153,8 +2234,7 @@ fn measure<C: Wire>(
         // `scripts/check-no-kernel-sleep-by-ctxt.sh` running `--mode standard`.
         if assert_no_voluntary {
             assert_eq!(
-                voluntary,
-                0,
+                voluntary, 0,
                 "hft: engine thread made {voluntary} voluntary context switches, expected 0"
             );
         }
@@ -3766,7 +3846,15 @@ mod wire {
         /// Print the wire section. `Err` when the tap cannot be trusted to line
         /// up with the run — which on a plain arm means the tap is broken, and
         /// must fail the run rather than print counts about something else.
-        pub fn report(&self, window: Window) -> io::Result<()> {
+        pub fn report(&self, window: Window, dump: Option<&str>) -> io::Result<()> {
+            // Read here, before `window` is moved into the match below that
+            // turns it into `range` — ADR-0071 decision 3's dump header names
+            // the same `--warmup` the run itself used, for
+            // `scripts/w2w-baseline.sh` to compare against the generator's.
+            let warmup_for_dump = match &window {
+                Window::Combined { warmup, .. } => *warmup,
+                Window::Listen { skip } => *skip,
+            };
             println!(
                 "     wire   NIC in -> NIC out at the acceptor, {} hardware stamps",
                 self.nic
@@ -3841,6 +3929,17 @@ mod wire {
             };
             let mut sent = self.sent.clone();
             sent.sort_unstable_by_key(|s| s.key);
+            // ADR-0071 decision 3: written from `reqs`/`sent` exactly as
+            // `pair::pair` below reads them — same window, same sorted
+            // `sent` — and before it, so a later `return` from `pair::pair`
+            // (there is none today) could never leave a half-written dump.
+            // `pair.rs` is outside this step's touched files, so the loop
+            // that finds each request's reply is written a second time in
+            // `dump_listen_rows` rather than shared with `pair::pair`'s.
+            if let Some(path) = dump {
+                let rows = dump_listen_rows(&reqs, range.clone(), &sent);
+                write_listen_dump(path, warmup_for_dump, &rows)?;
+            }
             let mut wire = Vec::with_capacity(range.len());
             let t = pair::pair(&reqs, range, &sent, &mut wire);
             println!(
@@ -3920,6 +4019,69 @@ mod wire {
         }
     }
 
+    /// `--listen --wire-timestamps --dump <path>` (ADR-0071 decision 3). One
+    /// row per request in `window`: `Some(ns)` when both a hardware RX and a
+    /// hardware TX stamp were found (the wire-in -> wire-out figure), `None`
+    /// otherwise. Mirrors [`pair::pair`]'s own matching loop rather than
+    /// sharing it — `tools/w2w/src/pair.rs` is outside the files this step
+    /// touches — so `sent` must already be sorted by key, exactly as
+    /// [`pair::pair`] requires, and the two must be called with the same
+    /// `reqs`/`window`/`sent` to describe the same run.
+    fn dump_listen_rows(
+        reqs: &[pair::Request],
+        window: std::ops::Range<usize>,
+        sent: &[Sent],
+    ) -> Vec<(usize, Option<u64>)> {
+        let start = window.start;
+        let mut out = Vec::with_capacity(window.len());
+        let mut j = 0usize;
+        for k in window {
+            let Some(r) = reqs.get(k) else { break };
+            let hi = reqs.get(k + 1).map(|n| n.acked);
+            while sent.get(j).is_some_and(|s| s.key < r.acked) {
+                j += 1;
+            }
+            let reply = match hi {
+                Some(hi) => sent[j..].iter().take_while(|s| s.key < hi).last(),
+                None => sent.get(j),
+            };
+            let rx = pair::hw(&r.ts);
+            let tx = reply.and_then(|s| pair::hw(&s.ts));
+            let ns = match (rx, tx) {
+                (Some(a), Some(b)) => b.checked_sub(a),
+                _ => None,
+            };
+            out.push((k - start, ns));
+        }
+        out
+    }
+
+    /// Writes what [`dump_listen_rows`] found: one line per request,
+    /// `index stamped <ns>` or `index missing -`. `index` is 0-based within
+    /// the window (rank of the request's TCP byte offset after `--warmup`),
+    /// the same convention `write_connect_dump` uses on the generator's side,
+    /// so `scripts/w2w-baseline.sh` can join the two files on it directly.
+    fn write_listen_dump(
+        path: &str,
+        warmup: usize,
+        rows: &[(usize, Option<u64>)],
+    ) -> io::Result<()> {
+        use io::Write as _;
+        let mut f = io::BufWriter::new(std::fs::File::create(path)?);
+        writeln!(
+            f,
+            "# w2w dump listen warmup {warmup} requests {}",
+            rows.len()
+        )?;
+        for (index, ns) in rows {
+            match ns {
+                Some(ns) => writeln!(f, "{index} stamped {ns}")?,
+                None => writeln!(f, "{index} missing -")?,
+            }
+        }
+        f.flush()
+    }
+
     /// The handoff's state machine, without a socket: the engine side is
     /// `offer` + `answer`, the observer side `claim` + `Claim::resolve`, which
     /// is all `attach` and `observe` do with it. `stamp`'s SAFETY note names
@@ -3928,6 +4090,55 @@ mod wire {
     #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     mod tests {
         use super::{Answer, Handoff};
+
+        /// ADR-0071 decision 3: one row per request in the window, stamped
+        /// rows carrying `tx - rx`, missing rows carrying none — and the file
+        /// [`write_listen_dump`] writes from it has exactly that many data
+        /// lines after its header.
+        #[test]
+        fn listen_dump_rows_match_pair_pair_and_the_file_has_n_lines() {
+            use super::super::pair::{Request, Sent};
+            use super::{dump_listen_rows, write_listen_dump};
+
+            // Three requests in the window: the first stamped both ways, the
+            // second missing its TX stamp (no error-queue entry in range),
+            // the third missing its RX stamp (`ts[2] == 0`).
+            let reqs = vec![
+                Request {
+                    ts: [0, 0, 1_000],
+                    acked: 0,
+                },
+                Request {
+                    ts: [0, 0, 2_000],
+                    acked: 50,
+                },
+                Request {
+                    ts: [0, 0, 0],
+                    acked: 110,
+                },
+            ];
+            let sent = vec![Sent {
+                ts: [0, 0, 1_100],
+                key: 49,
+            }];
+            let rows = dump_listen_rows(&reqs, 0..reqs.len(), &sent);
+            assert_eq!(rows, vec![(0, Some(100)), (1, None), (2, None)]);
+
+            let path = std::env::temp_dir()
+                .join(format!("w2w-listen-dump-test-{}.txt", std::process::id()));
+            let path_str = path.to_str().expect("utf-8 tmp path").to_string();
+            write_listen_dump(&path_str, 2000, &rows).expect("dump written");
+            let text = std::fs::read_to_string(&path).expect("dump read back");
+            let mut lines = text.lines();
+            assert_eq!(
+                lines.next(),
+                Some("# w2w dump listen warmup 2000 requests 3")
+            );
+            let data: Vec<&str> = lines.collect();
+            assert_eq!(data.len(), 3, "one line per request, none dropped or added");
+            assert_eq!(data, vec!["0 stamped 100", "1 missing -", "2 missing -"]);
+            let _ = std::fs::remove_file(&path);
+        }
 
         #[test]
         fn an_unclaimed_offer_times_out_and_can_no_longer_be_claimed() {
@@ -4139,7 +4350,7 @@ mod wire {
 
     pub enum Observed {}
     impl Observed {
-        pub fn report(&self, _: Window) -> io::Result<()> {
+        pub fn report(&self, _: Window, _: Option<&str>) -> io::Result<()> {
             match *self {}
         }
     }
@@ -4411,6 +4622,38 @@ mod tests {
             .chain(s.split_whitespace())
             .map(String::from)
             .collect()
+    }
+
+    #[test]
+    fn dump_of_reads_the_flag_and_refuses_a_missing_value() {
+        assert_eq!(dump_of(&argv("")), Ok(None));
+        assert_eq!(
+            dump_of(&argv("--dump /tmp/w2w-dump-test.txt")),
+            Ok(Some("/tmp/w2w-dump-test.txt".to_string()))
+        );
+        assert!(dump_of(&argv("--dump")).is_err());
+    }
+
+    /// ADR-0071 decision 3: the dump has exactly `n` lines after the header,
+    /// and the header names the `--warmup` the run used, so
+    /// `scripts/w2w-baseline.sh` can refuse a join against a mismatched one.
+    #[test]
+    fn connect_dump_has_the_right_line_count_and_warmup_header() {
+        let path =
+            std::env::temp_dir().join(format!("w2w-connect-dump-test-{}.txt", std::process::id()));
+        let path_str = path.to_str().expect("utf-8 tmp path").to_string();
+        let samples: Vec<u64> = (0..5).map(|i| 1000 + i * 7).collect();
+        write_connect_dump(&path_str, 2000, &samples).expect("dump written");
+        let text = std::fs::read_to_string(&path).expect("dump read back");
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("# w2w dump connect warmup 2000 requests 5")
+        );
+        let rows: Vec<&str> = lines.collect();
+        assert_eq!(rows.len(), 5, "one line per sample, none dropped or added");
+        assert_eq!(rows, vec!["0 1000", "1 1007", "2 1014", "3 1021", "4 1028"]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

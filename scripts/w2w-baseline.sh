@@ -230,9 +230,117 @@ missing_stamp_verdict() { # missing_stamp_verdict <rx_missing> <tx_missing> <tot
   return 0
 }
 
-# Sourced by the baseline summary test, which wants `median`, `dispersion` and
-# `extra_flag_refusal` and none of the probing or any run — same guard shape as
-# check-machine.sh:174.
+# `dump_pick <sorted-ascending-file> <n> <q>`: the same percentile
+# `tools/w2w`'s own `print_figures`/`Observed::report` compute —
+# `arr[floor((n-1)*q)]`, 0-based — read back off a file [`join_dump_verdict`]
+# below has already sorted, rather than resorting per call. Pure: reads only
+# the file it is given.
+dump_pick() {
+  local f=$1 n=$2 q=$3
+  awk -v n="$n" -v q="$q" 'BEGIN { r = int((n - 1) * q) + 1 } NR == r { print; exit }' "$f"
+}
+
+# `dump_diff_pct <a> <b>`: |a-b|/b as a percent, to four decimal places; `0`
+# when `b` is `0` (nothing to divide by, and a run whose distribution centres
+# on zero nanoseconds has bigger problems than this check).
+dump_diff_pct() {
+  awk -v a="$1" -v b="$2" \
+    'BEGIN { if (b == 0) { print 0; exit } d = a - b; if (d < 0) d = -d; printf "%.4f", (d / b) * 100 }'
+}
+
+# ADR-0071 decision 3: the check that dropping an unstamped request did not
+# skew the generator's own distribution — a join of the two `--dump` files
+# `tools/w2w` writes (one per half, `tools/w2w/src/main.rs` `write_connect_dump`
+# / `write_listen_dump`), by request index. Pure: reads only the two files it
+# is given and writes only its own temporary files, cleaned up before it
+# returns — no socket, no global state, same shape as `missing_stamp_verdict`
+# above: nothing printed and `0` on PASS, one line and `1` otherwise.
+#
+# PASS is the generator's own p50 within 1% and p99/p99.9 within 5% of
+# themselves, over every row vs. over the rows the acceptor stamped —
+# ADR-0071 decision 3's own bands, chosen there for the same reason
+# `missing_stamp_verdict`'s 0.1% was. Refused before any comparison when the
+# two dumps' `--warmup` headers disagree: `tools/w2w`'s request index counts
+# from a different point in each half then, and joining on it would pair the
+# wrong rows.
+join_dump_verdict() { # join_dump_verdict <connect_dump> <listen_dump>
+  local connect_dump=$1 listen_dump=$2
+  local cw lw
+  [ -r "$connect_dump" ] || {
+    printf 'join refused: cannot read %s' "$connect_dump"
+    return 1
+  }
+  [ -r "$listen_dump" ] || {
+    printf 'join refused: cannot read %s' "$listen_dump"
+    return 1
+  }
+  cw=$(head -1 "$connect_dump" | awk '{ for (i = 1; i <= NF; i++) if ($i == "warmup") print $(i + 1) }')
+  lw=$(head -1 "$listen_dump" | awk '{ for (i = 1; i <= NF; i++) if ($i == "warmup") print $(i + 1) }')
+  if [ -z "$cw" ] || [ -z "$lw" ]; then
+    printf 'join refused: %s or %s has no dump header with a warmup field' "$connect_dump" "$listen_dump"
+    return 1
+  fi
+  if [ "$cw" != "$lw" ]; then
+    printf 'join refused: connect --warmup %s and listen --warmup %s disagree — the two dumps do not count the same index' \
+      "$cw" "$lw"
+    return 1
+  fi
+
+  local all_f stamped_f n_all n_stamped
+  all_f=$(mktemp)
+  stamped_f=$(mktemp)
+  # First pass (the connect dump) builds `rtt[index]`; second pass (the
+  # listen dump) writes that same generator rtt into `all_f` for every index
+  # it also saw, and into `stamped_f` too when it marked that index stamped —
+  # an index either side never sent (a short dump, a truncated run) is
+  # simply not joined, rather than guessed at.
+  awk 'NR == FNR { if (FNR > 1) rtt[$1] = $2; next }
+       FNR > 1 { if ($1 in rtt) { print rtt[$1] > all_f; if ($2 == "stamped") print rtt[$1] > stamped_f } }' \
+    all_f="$all_f" stamped_f="$stamped_f" "$connect_dump" "$listen_dump"
+  sort -n -o "$all_f" "$all_f"
+  sort -n -o "$stamped_f" "$stamped_f"
+  n_all=$(wc -l <"$all_f")
+  n_stamped=$(wc -l <"$stamped_f")
+  if [ "$n_all" -eq 0 ] || [ "$n_stamped" -eq 0 ]; then
+    rm -f "$all_f" "$stamped_f"
+    printf 'join refused: no row of %s matched an index in %s' "$connect_dump" "$listen_dump"
+    return 1
+  fi
+
+  local a50 a99 a999 s50 s99 s999
+  a50=$(dump_pick "$all_f" "$n_all" 0.50)
+  a99=$(dump_pick "$all_f" "$n_all" 0.99)
+  a999=$(dump_pick "$all_f" "$n_all" 0.999)
+  s50=$(dump_pick "$stamped_f" "$n_stamped" 0.50)
+  s99=$(dump_pick "$stamped_f" "$n_stamped" 0.99)
+  s999=$(dump_pick "$stamped_f" "$n_stamped" 0.999)
+  rm -f "$all_f" "$stamped_f"
+
+  local d50 d99 d999 bad=""
+  d50=$(dump_diff_pct "$s50" "$a50")
+  d99=$(dump_diff_pct "$s99" "$a99")
+  d999=$(dump_diff_pct "$s999" "$a999")
+  if awk -v d="$d50" 'BEGIN { exit !(d > 1) }'; then
+    bad="p50 ${d50}% > 1%"
+  fi
+  if awk -v d="$d99" 'BEGIN { exit !(d > 5) }'; then
+    bad="${bad:+$bad, }p99 ${d99}% > 5%"
+  fi
+  if awk -v d="$d999" 'BEGIN { exit !(d > 5) }'; then
+    bad="${bad:+$bad, }p99.9 ${d999}% > 5%"
+  fi
+  if [ -n "$bad" ]; then
+    printf 'marked (ADR-0068 decision 3): dropping %d of %d rows (the ones the acceptor did not stamp) moved the generator distribution — %s (all: p50 %s p99 %s p99.9 %s; stamped: p50 %s p99 %s p99.9 %s)' \
+      "$((n_all - n_stamped))" "$n_all" "$bad" "$a50" "$a99" "$a999" "$s50" "$s99" "$s999"
+    return 1
+  fi
+  return 0
+}
+
+# Sourced by the baseline summary test, which wants `median`, `dispersion`,
+# `extra_flag_refusal`, `missing_stamp_verdict` and `join_dump_verdict` (with
+# `dump_pick`/`dump_diff_pct`) and none of the probing or any run — same
+# guard shape as check-machine.sh:174.
 if [ "${BASELINE_SOURCE_ONLY:-0}" = 1 ]; then
   # shellcheck disable=SC2317 # reachable when sourced; `|| exit 0` is only
   # for the (unused here) case of running this file directly.
@@ -546,8 +654,29 @@ for arm in $ARMS; do
       # `hw-tx-missing` count below rather than trusting one source alone.
       skipped_before=""
       [ -n "$WIRE_NIC" ] && skipped_before=$(tx_hwtstamp_skipped "$WIRE_NIC")
+      # ADR-0071 decision 3: each half's own `--dump`, only when a wire
+      # figure is being taken at all — with no WIRE_NIC the listen half took
+      # no wire timestamps and has no round-trip figure of its own to dump
+      # (tools/w2w refuses --dump there without --wire-timestamps), so there
+      # is nothing for the join below to read.
+      connect_dump_file=""
+      listen_dump_file=""
+      listen_dump_args=()
+      connect_dump_args=()
+      remote_dump_file=""
+      if [ -n "$WIRE_NIC" ]; then
+        listen_dump_file="$OUT_DIR/$run_prefix-run-$i-listen-dump.txt"
+        listen_dump_args=(--dump "$listen_dump_file")
+        if [ -n "$GENERATOR_SSH" ]; then
+          remote_dump_file="/tmp/w2w-dump-$$-$i.txt"
+          connect_dump_args=(--dump "$remote_dump_file")
+        else
+          connect_dump_file="$OUT_DIR/$run_prefix-run-$i-connect-dump.txt"
+          connect_dump_args=(--dump "$connect_dump_file")
+        fi
+      fi
       "$BIN" --listen "$LISTEN" --mode "$mode" --path "$path" "${LISTEN_PINARGS[@]}" "${wire_args[@]}" \
-        "${EXTRA_ARGS[@]}" "${LISTENER_EVERY_ARGS[@]}" >"$listen_log" 2>&1 &
+        "${listen_dump_args[@]}" "${EXTRA_ARGS[@]}" "${LISTENER_EVERY_ARGS[@]}" >"$listen_log" 2>&1 &
       listen_pid=$!
 
       if ! wait_for_line "$listen_log" '^listening: ' 5; then
@@ -576,7 +705,8 @@ for arm in $ARMS; do
       rc=0
       if [ -z "$GENERATOR_SSH" ]; then
         cout=$("$BIN" --connect "$connect_addr" --path "$path" "${CONNECT_PINARGS[@]}" \
-                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" 2>&1) || rc=$?
+                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" \
+                 "${connect_dump_args[@]}" 2>&1) || rc=$?
       else
         # Separate `ssh` arguments, not one interpolated string: `sshd` joins
         # them with spaces before handing the line to the remote shell, so
@@ -584,7 +714,8 @@ for arm in $ARMS; do
         # none of these tokens (an address, a word, a number) needs quoting
         # either side of the hop.
         cout=$(ssh "$GENERATOR_SSH" "$GENERATOR_W2W" --connect "$connect_addr" --path "$path" \
-                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" 2>&1) || rc=$?
+                 --messages "$MESSAGES" --warmup "$WARMUP" "${interval_args[@]}" \
+                 "${connect_dump_args[@]}" 2>&1) || rc=$?
       fi
 
       lrc=0
@@ -690,13 +821,42 @@ for arm in $ARMS; do
         fi
         wire_note=$(printf '  wire p50 %8s  p99 %8s  p99.9 %8s  hw-rx-missing %s  hw-tx-missing %s of %s  (acceptor, %s)%s' \
           "$wp50" "$wp99" "$wp999" "$rxm" "$txm" "$reqs_total" "$WIRE_NIC" "$skip_note")
+
+        # ADR-0071 decision 3: join the two `--dump` files just written, by
+        # request index — did dropping the requests the acceptor did not
+        # stamp skew the generator's own distribution? `join_dump_verdict` is
+        # the pure function above, tested by
+        # scripts/check-w2w-baseline-summary.sh. A disagreement MARKS the run
+        # rather than FAILing it (ADR-0068 decision 3's rule, reused): this
+        # run has already cleared `missing_stamp_verdict` above, and a join
+        # that cannot be trusted is evidence about the check, not about the
+        # engine.
+        if [ -n "$GENERATOR_SSH" ]; then
+          connect_dump_file="$OUT_DIR/$run_prefix-run-$i-connect-dump.txt"
+          if scp -q "$GENERATOR_SSH:$remote_dump_file" "$connect_dump_file" 2>/dev/null; then
+            ssh "$GENERATOR_SSH" rm -f "$remote_dump_file" 2>/dev/null || true
+          else
+            connect_dump_file=""
+          fi
+        fi
+        if [ -n "$connect_dump_file" ] && [ -s "$connect_dump_file" ] && [ -s "$listen_dump_file" ]; then
+          if jv=$(join_dump_verdict "$connect_dump_file" "$listen_dump_file"); then
+            join_note="  join: PASS (dropping the unstamped rows did not move the generator's distribution)"
+          else
+            join_note="  join: $jv"
+          fi
+        else
+          join_note="  join: skipped — no dump to join (${connect_dump_file:-generator dump not fetched})"
+        fi
+      else
+        join_note="  join: skipped — WIRE_NIC not set, so the listen half took no wire timestamps and wrote no dump to join"
       fi
 
       out="$cout"
       g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
       mins+=("$(g min)"); p50s+=("$(g p50)"); p99s+=("$(g p99)"); p999s+=("$(g p99.9)")
-      printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s  (counterparty: %s)%s%s\n' \
-        "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$gen_host" "$iv_note" "$wire_note"
+      printf '  %-8s %-5s %-9s run %2d  %s%% busy   min %8s  p50 %8s  p99 %8s  p99.9 %8s  (counterparty: %s)%s%s%s\n' \
+        "$mode" "$path" "$tls" "$i" "$b" "$(g min)" "$(g p50)" "$(g p99)" "$(g p99.9)" "$gen_host" "$iv_note" "$wire_note" "$join_note"
       sleep "$GAP"
       continue
     fi
