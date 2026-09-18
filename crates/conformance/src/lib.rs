@@ -12,5 +12,6 @@
 
 pub mod compare;
 pub mod echo;
+pub mod mirror;
 pub mod runner;
 pub mod script;
