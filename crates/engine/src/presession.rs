@@ -433,10 +433,7 @@ pub struct Limits {
 /// §Cách làm 1: the listener is polled every turn until a number tells it
 /// otherwise, which is today's loop and therefore the only default that
 /// changes nothing for a caller who has never heard of this knob.
-const DEFAULT_LISTENER_EVERY: core::num::NonZeroU32 = match core::num::NonZeroU32::new(1) {
-    Some(n) => n,
-    None => unreachable!(),
-};
+const DEFAULT_LISTENER_EVERY: core::num::NonZeroU32 = core::num::NonZeroU32::MIN;
 
 /// Why a set of limits was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

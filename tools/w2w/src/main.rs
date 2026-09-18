@@ -1305,6 +1305,10 @@ fn both_halves(
     // prove they ran the arm they meant to.
     println!("mode: {}", mode.name());
     println!("path: {}", path.name());
+    // The cadence that actually ran, read back by
+    // `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`'s
+    // Bẫy table so a script can confirm it, not merely infer it from the flag.
+    println!("listener-every: {listener_every}");
     // Only when asked for, so a run with neither flag prints what it always
     // did — see the module note "The journal and the message log".
     if journal != JournalKind::Mem {
@@ -1420,8 +1424,9 @@ fn both_halves(
             // every figure this binary has published.
             let connect_started = Instant::now();
             let sock = TcpStream::connect(&addr)?;
+            let connect_rtt_ns = connect_started.elapsed().as_nanos();
             sock.set_nodelay(true)?;
-            measure(sock, &run, peer, connect_started)
+            measure(sock, &run, peer, connect_started, connect_rtt_ns)
         }
         #[cfg(all(feature = "tls", target_os = "linux"))]
         Tls::Ktls | Tls::Userspace => {
@@ -1430,7 +1435,8 @@ fn both_halves(
             };
             let connect_started = Instant::now();
             let sock = tls_arm::connect(&addr, p, tls == Tls::Ktls)?;
-            measure(sock, &run, peer, connect_started)
+            let connect_rtt_ns = connect_started.elapsed().as_nanos();
+            measure(sock, &run, peer, connect_started, connect_rtt_ns)
         }
         #[cfg(not(all(feature = "tls", target_os = "linux")))]
         Tls::Ktls | Tls::Userspace => {
@@ -1543,6 +1549,8 @@ fn engine_half(
 
     println!("mode: {}", mode.name());
     println!("path: {}", path.name());
+    // The cadence that actually ran — see `both_halves`'s matching line.
+    println!("listener-every: {listener_every}");
     // The bound address, not the argument, so `--listen 127.0.0.1:0` tells the
     // generator where to go.
     println!("listening: {bound}");
@@ -1723,6 +1731,7 @@ fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::
 
     let connect_started = Instant::now();
     let sock = TcpStream::connect(addr)?;
+    let connect_rtt_ns = connect_started.elapsed().as_nanos();
     sock.set_nodelay(true)?;
     // A bound on every blocking read, set once, before the logon. The combined
     // run cannot be sent a message its engine will not answer; two processes
@@ -1734,7 +1743,9 @@ fn generator_half(addr: &str, run: Run, client_core: Option<usize>) -> std::io::
         mut samples,
         allocs,
         late,
-    } = measure(sock, &run, Peer::Remote, connect_started).map_err(|e| match e.kind() {
+    } = measure(sock, &run, Peer::Remote, connect_started, connect_rtt_ns).map_err(|e| match e
+        .kind()
+    {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => std::io::Error::new(
             e.kind(),
             format!(
@@ -1882,11 +1893,19 @@ struct Measured {
 /// `logon-rtt` right after the answer is read — before any other clock read
 /// inside this function, and outside the loop that arms [`ALLOCS`], so it
 /// never perturbs the figures §7 gates.
+///
+/// `connect_rtt_ns`: `connect_started.elapsed()` read once, right after
+/// `connect()` returned at the call site — no clock read inside the timed
+/// window. Printed beside `logon-rtt` so their difference is the engine's
+/// share of the new-connection latency (plan
+/// `docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md`
+/// line 210).
 fn measure<C: Wire>(
     mut sock: C,
     run: &Run,
     peer: Peer<'_>,
     connect_started: Instant,
+    connect_rtt_ns: u128,
 ) -> std::io::Result<Measured> {
     let Run {
         path,
@@ -1903,6 +1922,7 @@ fn measure<C: Wire>(
     // (ii) of the plan: the new-connection latency, from the client's side —
     // everything between "the client decided to connect" and "the session is
     // up", which is what a listener cadence coarser than 1 can add to.
+    println!("connect-rtt: {connect_rtt_ns} ns");
     println!("logon-rtt: {} ns", connect_started.elapsed().as_nanos());
 
     if let Peer::InProcess { .. } = peer {

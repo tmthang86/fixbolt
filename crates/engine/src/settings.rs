@@ -1085,10 +1085,7 @@ pub struct Settings {
 /// `ListenerEveryTurns=` unless the file says otherwise — item 90's cadence
 /// of one turn, which is today's loop and changes nothing for a file written
 /// before this key existed.
-const DEFAULT_LISTENER_EVERY_TURNS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(1) {
-    Some(n) => n,
-    None => unreachable!(),
-};
+const DEFAULT_LISTENER_EVERY_TURNS: std::num::NonZeroU32 = std::num::NonZeroU32::MIN;
 
 impl Default for Settings {
     fn default() -> Self {
