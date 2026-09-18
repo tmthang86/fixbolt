@@ -3661,4 +3661,108 @@ rebuild) ended.
   (`Limits::listener_every`, `pump`'s `ListenerCadence`, ADR-0069, Proposed) with default 1, so
   nothing on the hot path changed by shipping it. What N saves at N > 1, and what it costs a
   fresh connect, is unmeasured: boot C runs the A/B, N ∈ {1, 16, 256}, per ADR-0068.
+  **`[measured 2026-09-18]` answered by boot C, next section: −12.7 ‖ −13.0% on the application
+  path at N = 16, +1.9 ‖ +1.7% on the administrative one, both reproduced.**
+
+## Boot C, 2026-09-18: the listener cadence, N ∈ {1, 16, 256}, two procedures
+
+`[measured 2026-09-18]` step 5 of
+[plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md](../plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md),
+the A/B [ADR-0069](../decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)
+decision 4 asked for before any default could move. Raw output:
+`target/w2w-baseline/boot-c-p{1,2}-n{1,16,256}/summary.txt` and the per-run `.txt` files beside
+them; driver `target/boot-c-evidence/c89.sh`; gate logs
+`target/boot-c-evidence/c89-nks-{default,256}-tls.log` (all gitignored — `target/` is where boot
+evidence lives, because `/tmp` is tmpfs on this desk).
+
+### Settings in force for every figure below
+
+- Machine: the §9 desktop, AMD Ryzen 7 3700X, kernel `7.0.0-31-generic`, the boot B line
+  (`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, no `nohz_full`, mitigations
+  on, `fixbolt-machine on`). `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → **`pass 16 fail 0
+  unknown 0`** — one more row than boot B's 15 (the EEE row, added 2026-09-15) — read before every
+  run; runs that failed the busy row are the non-qualifying ones in the counts below.
+- Code: commit **`55a1549`** (branch `plan/the-second-linux-desk-c`, the merge of PR #76), tree
+  clean except untracked docs; `w2w` release with `--features affinity,tls`; the same binary for
+  every arm and both procedures.
+- Loopback, `hft`, engine on `cpu6`, client on `cpu7`, `scripts/w2w-baseline.sh` with
+  `LISTENER_EVERY=N`, **10 runs × 20 000 timed round trips**, 2 000 warmup, `GAP` 8 s.
+- Two procedures per ADR-0068, each running all three N on both paths; **procedure 1 in the
+  order N = 1, 16, 256, procedure 2 in the order 256, 16, 1**, so an order or warm-up effect would
+  appear as a cross-procedure disagreement rather than hide inside both.
+
+### The table
+
+ns, p50 / p99 / p99.9; qualifying runs of 10 in parentheses; reproduced = both medians within 5%
+of the smaller at every published percentile.
+
+| N | path | procedure 1 | procedure 2 | largest diff | reproduced? |
+|---|---|---|---|---|---|
+| 1 | admin | 16 070 / 21 050 / 22 753 (9) | 16 080 / 20 719 / 22 798 (10) | p99 1.6% | yes |
+| 16 | admin | 16 381 / 21 591 / 23 695 (9) | 16 361 / 20 970 / 22 923 (9) | p99.9 3.4% | yes |
+| 256 | admin | 16 376 / 21 410 / 24 060 (10) | 16 361 / 21 531 / 23 866 (9) | p99.9 0.8% | yes |
+| 1 | app | 20 209 / 25 188 / 27 202 (9) | 20 228 / 25 198 / 26 956 (8) | p99.9 0.9% | yes |
+| 16 | app | 17 644 / 22 763 / 26 535 (8) | 17 603 / 22 628 / 26 765 (10) | p99.9 0.9% | yes |
+| 256 | app | 17 608 / 22 603 / 27 242 (10) | 17 633 / 22 773 / 26 285 (10) | p99.9 3.6% | yes |
+
+Six arms, six reproduced — the first boot on this desk where every zero-interval loopback arm
+did (boot B: nine of ten did not, all faster the second time). Nothing was changed to earn
+that; it is recorded, not explained, and it makes item 85's *build slot* candidate neither
+stronger nor weaker (no build preceded either procedure here).
+
+### The differences, same procedure, N against N = 1
+
+| | admin p50 | admin p99 | app p50 | app p99 | app p99.9 |
+|---|---|---|---|---|---|
+| N = 16, procedure 1 | **+1.9%** (+311 ns) | +2.6% | **−12.7%** (−2 565 ns) | −9.6% | −2.5% |
+| N = 16, procedure 2 | **+1.7%** (+281 ns) | +1.2% | **−13.0%** (−2 625 ns) | −10.2% | −0.7% |
+| N = 256, procedure 1 | +1.9% | +1.7% | −12.9% | −10.3% | +0.1% |
+| N = 256, procedure 2 | +1.7% | +3.9% | −12.8% | −9.6% | −2.5% |
+| N = 256 against N = 16 | −0.0 / 0.0% | −0.8 / +2.7% | −0.2 / +0.2% | −0.7 / +0.6% | +2.7 / −1.8% |
+
+- **The application path's 2.6 µs is one `accept4`.** B9 put `Acceptor::accept` at 36.7% of the
+  application path's engine-thread samples; at N = 1 a request that lands while the thread is
+  inside `accept4` — allocating a socket file and an inode and freeing both before `EAGAIN` —
+  waits for it. Thinning the ask 16× removes almost all of that wait, and 256× removes nothing
+  more that this procedure can see (≤ 0.3% at p50).
+- **The administrative path's +0.3 µs is real and unexplained.** It reproduced (+1.9 ‖ +1.7%),
+  it is the same sign at N = 256, and the only difference from the application arm is the
+  message. One candidate, recorded as such: without an `accept4` between polls the engine's
+  `recvfrom` re-takes the socket's user lock more often, so more loopback segments arrive while
+  the socket is owned and take the backlog path (`tcp_v4_rcv` → `sk_add_backlog`, processed at
+  `release_sock`) instead of being processed in the sender's softirq — a few hundred nanoseconds
+  each. The application path would pay the same and hide it inside its 2.6 µs. **Not tested**:
+  `perf stat` on the backlog path, or `busy_read` 0 versus 50, at N = 1 and 16 would decide it.
+  Open, in `STATUS.md` item 89's closing row.
+- **Connect and logon did not move with N**: per-run `connect-rtt` 68–85 µs and `logon-rtt`
+  1.07–1.12 ms in every run of every arm. One connect per run, on the client's clock, through
+  the pre-session stage; it bounds what a fresh connection experiences and is not the accept
+  delay (ADR-0069 consequence 2), which no instrument here reads.
+
+### Rule 4, with and without the cadence
+
+`scripts/check-no-kernel-sleep.sh` green in both configurations, `w2w` built with
+`--features affinity,tls`:
+
+| | `accept4` | `recvfrom` | `sendto` | log |
+|---|---|---|---|---|
+| default | 7 901 | 7 900 | 351 | `target/boot-c-evidence/c89-nks-default-tls.log` |
+| `W2W_EXTRA="--listener-every 256"` | 7 970 | 8 320 | 351 | `target/boot-c-evidence/c89-nks-256-tls.log` |
+
+`strace -c` on the engine tid over the whole `hft` half of the script, which includes the idle
+hold after the 300 messages. In the hold `Spin::idle` resets the countdown every iteration, so
+the listener is asked as often as at N = 1 — which is why the two `accept4` totals are within 1%.
+**The `accept4` count inside the loaded window alone is derived** — the gap between `recvfrom`
+and `sendto` grows from 7 549 to 7 969 with the cadence, consistent with 256 polls of the socket
+per ask of the listener — **not observed separately**; the script does not split the trace by
+window. No name from `SLEEPERS` appeared in either run.
+
+### What is not proven
+
+- **A mechanism for the administrative path's +0.3 µs.** One candidate above, untested.
+- **Anything on a NIC, in `standard`, or with more than one session.** Loopback, `hft`, N = 1
+  session only. `standard` is outside the cadence by ADR-0069 decision 3.
+- **The accept delay itself at N = 16 under load.** Consequence 2's *N × one iteration* is
+  arithmetic; `connect-rtt` does not measure it.
+- **The in-window `accept4` count**, derived as stated above.
 

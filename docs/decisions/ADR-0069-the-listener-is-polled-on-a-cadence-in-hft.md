@@ -1,9 +1,11 @@
 # ADR-0069 — The listener is polled on a cadence in `hft`, and on every wake in `standard`
 
-**Status:** Proposed (architect, 2026-09-18; step 1 of
-[polling-the-listener-less-often-than-the-sessions](../plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md),
-whose questions Q1–Q3 the owner answered as recommended). Becomes *Accepted* in the commit that
-publishes the plan's step 5 measurement, and not before. · **Date:** 2026-09-18 ·
+**Status:** **Accepted — 2026-09-18**, in the commit that publishes step 5 of
+[polling-the-listener-less-often-than-the-sessions](../plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md)
+(boot C figures below; manager's decision under the owner's mandate). Proposed by the architect
+the same morning at step 1, questions Q1–Q3 answered by the owner as recommended. **Revised
+in place before acceptance** (`CLAUDE.md` §5): decision 2's default moves from 1 to **16**, on
+the figures in *Measured*; the original text is kept struck through. · **Date:** 2026-09-18 ·
 **Plan:** docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md
 **Answers:** `STATUS.md` open item 89 — *whether the listener should be polled less often than
 the sessions, and what that measures as*.
@@ -67,15 +69,21 @@ non-blocking `accept4` on an empty listener adds to a message's latency.
    keeps one `u32` countdown; the accept loop runs when it reads zero and is then reloaded with
    `listener_every − 1`; otherwise it is decremented and the accept loop is skipped. No clock is
    read for this and nothing is allocated.
-2. **The cadence is a `Limits` field: `listener_every: NonZeroU32`, default 1.** Default 1 is
-   today's loop, iteration for iteration. The settings key is `listener_every_turns`.
+2. **The cadence is a `Limits` field: `listener_every: NonZeroU32`, default 16.** ~~Default 1
+   is today's loop, iteration for iteration.~~ `[revised 2026-09-18, boot C]` The default is
+   **16**: the application round trip fell 12.7–13.0% at p50 against N = 1, reproduced across two
+   procedures within 0.3%; N = 256 was indistinguishable from 16 (≤ 0.3% at p50) and buys 16×
+   the worst-case accept delay of consequence 2, so the smaller bound wins. The administrative
+   round trip read **1.7–1.9% slower** at p50 at N = 16 — reproduced, a stated cost, and its
+   mechanism is not known (*Measured*, below). N = 1 remains available and is what
+   `listener_every_one_is_todays_loop` holds. The settings key is `listener_every_turns`.
    `Limits::new(pending, logon_ms)` keeps its signature; the value is set by a builder method.
 3. **After every return from `idle_with`, the countdown is reset to zero.** The next iteration
    asks the listener unconditionally. This is what keeps rule 4's `standard` half true (fact 3):
    a wake is answered by an accept, so the poll set is drained and the poller blocks again. The
    rule is not gated on the mode; in the spin half `idle` returns at once, so the reset is
    harmless there and has a meaning of its own (consequence 3 below).
-4. **The default moves only with a figure.** A default other than 1 is set in the commit that
+4. **The default moves only with a figure** — and it did, once, in the revision above. A default other than 1 is set in the commit that
    publishes the step-5 A/B (N ∈ {1, 16, 256}, interleaved within one procedure, two procedures,
    verdict per [ADR-0068](ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)),
    naming the benchmark, the machine and the §9 settings (`CLAUDE.md` §2 rule 10). A difference
@@ -112,9 +120,10 @@ Good:
 
 - **A latency, not a share.** Item 89's question gets an answer in nanoseconds of round trip,
   taken by the committed procedure, or the honest reading that the effect is inside the drift.
-- **Today's behaviour is the default.** N = 1 reproduces the current loop exactly; nothing on the
-  hot path changes until a figure says it should, and `listener_every_one_is_todays_loop` runs
-  the 59 definitions over a socket to hold that.
+- ~~**Today's behaviour is the default.**~~ `[revised 2026-09-18]` **The default is 16, set by a
+  figure.** N = 1 still reproduces the 2026-09-17 loop exactly and `listener_every_one_is_todays_loop`
+  runs the 59 definitions over a socket to hold that; a deployment that wants the old loop sets
+  `ListenerEveryTurns=1`.
 - **`standard` is untouched in effect.** Decision 3 makes every wake an accept, so the poll set
   is drained as before; `serve_sharded_hft` never enters this code.
 - **The cost of a large N is a formula, not a surprise.** See the next list.
@@ -147,6 +156,64 @@ Bad:
 - **The reset-on-wake rule is a line somebody can delete.** Its absence is invisible in `hft`
   and catastrophic in `standard`. It is held by a test and a script reversal (plan, *Cách kiểm
   chứng*), not by prose.
+
+## Measured — boot C, 2026-09-18
+
+`[measured 2026-09-18]` the §9 desktop (AMD Ryzen 7 3700X, kernel `7.0.0-31-generic`),
+`FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → **`pass 16 fail 0 unknown 0`** before every
+qualifying run; commit **`55a1549`**'s code on branch `plan/the-second-linux-desk-c`, tree clean
+except untracked docs; loopback, `hft`, engine on `cpu6`, client on `cpu7`;
+`scripts/w2w-baseline.sh` with `LISTENER_EVERY`, **10 runs × 20 000 round trips per arm**;
+driver `target/boot-c-evidence/c89.sh`, outputs
+`target/w2w-baseline/boot-c-p{1,2}-n{1,16,256}/summary.txt` (gitignored). Procedure 1 ran the
+arms in the order N = 1, 16, 256; procedure 2 in the order 256, 16, 1, so an order effect would
+show as a disagreement between the columns. p50 / p99 / p99.9 ns, procedure 1 ‖ procedure 2,
+qualifying runs of 10 in parentheses:
+
+| N | TestRequest → Heartbeat | | NewOrderSingle → ExecutionReport | |
+|---|---|---|---|---|
+| 1 | 16 070 / 21 050 / 22 753 (9) | 16 080 / 20 719 / 22 798 (10) | 20 209 / 25 188 / 27 202 (9) | 20 228 / 25 198 / 26 956 (8) |
+| 16 | 16 381 / 21 591 / 23 695 (9) | 16 361 / 20 970 / 22 923 (9) | 17 644 / 22 763 / 26 535 (8) | 17 603 / 22 628 / 26 765 (10) |
+| 256 | 16 376 / 21 410 / 24 060 (10) | 16 361 / 21 531 / 23 866 (9) | 17 608 / 22 603 / 27 242 (10) | 17 633 / 22 773 / 26 285 (10) |
+
+Every arm **reproduced** by ADR-0068's rule: the largest cross-procedure difference is 3.6% (N = 256
+app p99.9); every p50 pair is within 0.2%.
+
+- **Application path, N = 16 against N = 1: −12.7% (procedure 1) and −13.0% (procedure 2) at
+  p50** (20 209 → 17 644; 20 228 → 17 603), −9.6 / −10.2% at p99, −2.5 / −0.7% at p99.9. The
+  size — about 2.6 µs — is the order of one `accept4` with its allocate-and-free (B9's 27.7%
+  share of an iteration at the administrative rate), which is what the loop's shape predicted.
+- **Administrative path, N = 16 against N = 1: +1.9% (procedure 1) and +1.7% (procedure 2) at
+  p50** (16 070 → 16 381; 16 080 → 16 361), +2.6 / +1.2% at p99. Reproduced, and **not
+  explained**. The two paths differ only in the message; the same `accept4` was removed from
+  between the same `recvfrom` calls in both. One candidate, recorded as a candidate: with no
+  `accept4` between polls the engine's non-blocking `recvfrom` re-takes the socket lock more
+  often, and a loopback segment that finds the socket owned by user is queued to the backlog
+  and processed on release (`tcp_v4_rcv` → `sk_add_backlog`) rather than in the sender's
+  softirq — a few hundred nanoseconds, the size seen; the application path would pay it too
+  and hide it under the 2.6 µs it gains. Untested: `perf stat -e` on the backlog path at N = 1
+  and 16 would decide it, and it is open, not a cause.
+- **N = 256 against N = 16: within 0.3% at p50 on both paths**, so the plan's Q3 question —
+  whether option (d), the listener off the engine thread, is worth a plan — is answered *no*:
+  thinning the listener 16× or 256× reads the same, so what `accept4` leaves at N = 16 is inside
+  the noise, not ~1 µs.
+- **A connect is not made slower by N in any visible way**: `connect-rtt` read 68–85 µs and
+  `logon-rtt` 1.07–1.12 ms in every run, with no trend across N = 1 / 16 / 256 (per-run lines in
+  the run files). Those are one connect per run, dominated by the pre-session stage and the
+  client's own work; they bound the cost of consequence 2 above from the client's side and do
+  not measure the accept delay itself.
+- **Rule 4's gate is unchanged and green**: `scripts/check-no-kernel-sleep.sh` passed with and
+  without `W2W_EXTRA="--listener-every 256"`, `w2w` built with `--features affinity,tls`
+  (`target/boot-c-evidence/c89-nks-{default,256}-tls.log`). `strace -c` on the engine tid, `hft`
+  half: default **7 901 `accept4` / 7 900 `recvfrom` / 351 `sendto`**; N = 256 **7 970 / 8 320 /
+  351**. The `accept4` count inside the loaded window is **derived** from the gap between
+  `recvfrom` and `sendto`, not observed separately, because the trace covers the idle hold as
+  well, where `Spin::idle` resets the countdown and the listener is asked every iteration
+  (consequence 1, *Bad*) — which is why the two `accept4` totals are close.
+
+What is not proven by this: the effect on a NIC (loopback only), on `standard` (out of scope by
+decision 3 — every wake is an accept), at more than one session, or the accept delay itself at
+N = 16 under load (consequence 2's formula stands as arithmetic).
 
 ## Sources
 

@@ -1234,6 +1234,48 @@ Three readings:
   stage table. [ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)
   declines SIMD on this basis: parse is 0.62% of the application round trip.
 
+### Boot C, 2026-09-18: the listener asked every 16th iteration takes 2.6 µs off the application round trip, and 0.3 µs onto the administrative one
+
+`[measured 2026-09-18]` §9 desktop, `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 16
+fail 0 unknown 0` before every qualifying run, kernel 7.0.0-31, commit `55a1549`'s code (tree
+clean except untracked docs), engine on `cpu6`, client on `cpu7`, **loopback, `hft`**, 10 runs ×
+20 000 round trips per arm; procedure 1 ran N = 1, 16, 256 in that order, procedure 2 in reverse.
+`N` is `Limits::listener_every` (`ListenerEveryTurns`,
+[ADR-0069](decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)): how many loop
+iterations pass between two asks of the listener while the engine is busy. ns, p50 / p99 /
+p99.9, procedure 1 ‖ procedure 2 (qualifying runs of 10). The whole reading:
+[measured-costs](reference/measured-costs.md), *Boot C*.
+
+| Loopback round trip, `hft` | N | procedure 1 | procedure 2 | reproduced? |
+|---|---|---|---|---|
+| TestRequest → Heartbeat | 1 | 16 070 / 21 050 / 22 753 (9) | 16 080 / 20 719 / 22 798 (10) | yes — ≤ 1.6% |
+| | **16** | 16 381 / 21 591 / 23 695 (9) | 16 361 / 20 970 / 22 923 (9) | yes — ≤ 3.4% |
+| | 256 | 16 376 / 21 410 / 24 060 (10) | 16 361 / 21 531 / 23 866 (9) | yes — ≤ 0.8% |
+| NewOrderSingle → ExecutionReport | 1 | 20 209 / 25 188 / 27 202 (9) | 20 228 / 25 198 / 26 956 (8) | yes — ≤ 0.9% |
+| | **16** | 17 644 / 22 763 / 26 535 (8) | 17 603 / 22 628 / 26 765 (10) | yes — ≤ 0.9% |
+| | 256 | 17 608 / 22 603 / 27 242 (10) | 17 633 / 22 773 / 26 285 (10) | yes — ≤ 3.6% |
+
+Three readings, and the decision:
+
+- **The application path gains 12.7 ‖ 13.0% at p50 going from N = 1 to 16** — about 2.6 µs,
+  the size of one non-blocking `accept4` with the socket file it allocates and frees (B9's
+  profile), taken out from between two `recvfrom` calls. **N = 256 reads the same as 16 within
+  0.3%**, so what the listener still costs at 16 is inside the noise, and moving it off the
+  thread (ADR-0069 option d) is not worth a plan.
+- **The administrative path loses 1.9 ‖ 1.7% at p50 at N = 16** — about 0.3 µs, reproduced,
+  and **unexplained**. The candidate recorded in ADR-0069 (*Measured*) is the socket-lock /
+  backlog path taken more often when `recvfrom` is polled without an `accept4` between; nothing
+  was varied to test it. A cost stated is not a cost understood.
+- **A connect is not visibly slower**: `connect-rtt` 68–85 µs and `logon-rtt` 1.07–1.12 ms in
+  every run, no trend with N. Rule 4's gate stayed green with and without `--listener-every
+  256`, `w2w` built with `affinity,tls`.
+- **The default is 16** from the commit that publishes this block (ADR-0069 decision 2,
+  revised): the application figure wins by more than ADR-0068's 5% in both procedures; the
+  administrative cost is stated above; 16 rather than 256 because the worst-case accept delay
+  is N iterations and nothing was gained by the larger N. The table at the top of §8 (N = 1,
+  2026-09-02) is superseded for the application path by the N = 16 row here and is left in
+  place as the figure it was.
+
 ### The round trip under TLS, measured
 
 `[measured 2026-09-14]` on the same §9 desktop — Linux `7.0.0-31-generic`, `check-machine.sh`
