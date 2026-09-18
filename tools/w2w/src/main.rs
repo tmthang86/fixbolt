@@ -142,6 +142,11 @@
 //! for nothing and prints no `interval` line. The wait is taken before `t0`, so
 //! it is never inside a sample. See [`Pacer`].
 //!
+//! Every message is rendered before the clock starts, `52=` included, so a paced run whose last
+//! send would already be older than the counterparty's `MaxLatency` is refused at startup, before
+//! any engine or socket exists — see [`paced_run_fits`]. `--max-skew-ms` declares that
+//! `MaxLatency`; absent, it defaults to [`fixbolt_session::DEFAULT_MAX_SKEW_MS`].
+//!
 //! # The journal and the message log, each a type of its own
 //!
 //! `[2026-09-14]` step A4 of `docs/plans/2026-09-04-the-second-linux-desk.md`.
@@ -721,6 +726,10 @@ const LISTEN_REFUSES: &[(&str, &str)] = &[
         "--interval",
         "pacing is done by the sender; pass it to the --connect process",
     ),
+    (
+        "--max-skew-ms",
+        "the counterparty's MaxLatency bounds the sender's paced run; pass it to the --connect process",
+    ),
 ];
 
 /// What `--connect` refuses, and why. There is no engine thread in that
@@ -882,6 +891,58 @@ fn interval_of(args: &[String]) -> Result<u64, String> {
     Ok(value_of(args, "--interval")?.unwrap_or(0))
 }
 
+/// `--max-skew-ms`: the counterparty's `MaxLatency`, for [`paced_run_fits`].
+/// Absent is [`fixbolt_session::DEFAULT_MAX_SKEW_MS`] — the same constant the
+/// session layer checks incoming `52=` against, read once rather than written
+/// a second time. Present without a number is refused, same as `--interval`.
+fn max_skew_of(args: &[String]) -> Result<u64, String> {
+    Ok(value_of(args, "--max-skew-ms")?.unwrap_or(fixbolt_session::DEFAULT_MAX_SKEW_MS))
+}
+
+/// One second's margin for [`stamp`]'s seconds-only resolution: the age a
+/// paced run computes here is a lower bound, and this absorbs the rounding
+/// `stamp()` does, not any drift from a round trip slower than the pacing.
+const MARGIN_MS: u64 = 1000;
+
+/// Refuse a paced run whose last message's `52=` would already be older than
+/// the counterparty's `MaxLatency` by the time it is sent, so `w2w` fails
+/// before it opens a socket instead of at seq ~122 mid-run. Only applies when
+/// the run is paced (`interval_us > 0`) and sends at least one message
+/// (`warmup + n >= 1`); an unpaced run has no age to bound.
+fn paced_run_fits(
+    interval_us: u64,
+    warmup: usize,
+    n: usize,
+    max_skew_ms: u64,
+) -> Result<(), String> {
+    if interval_us == 0 {
+        return Ok(());
+    }
+    let total = warmup.saturating_add(n);
+    if total == 0 {
+        return Ok(());
+    }
+    let sends = u64::try_from(total.saturating_sub(1)).unwrap_or(u64::MAX);
+    let age_ms = interval_us.saturating_mul(sends) / 1000;
+    let bound = age_ms.saturating_add(MARGIN_MS);
+    if bound >= max_skew_ms {
+        // Largest total send count (warmup + n) that keeps `bound <
+        // max_skew_ms`, i.e. the largest `sends` with
+        // `interval_us * sends / 1000 + MARGIN_MS < max_skew_ms`.
+        let budget_ms = max_skew_ms.saturating_sub(MARGIN_MS);
+        let max_sends = budget_ms.saturating_mul(1000).saturating_sub(1) / interval_us;
+        let max_messages = usize::try_from(max_sends.saturating_add(1)).unwrap_or(usize::MAX);
+        return Err(format!(
+            "--interval {interval_us} us x (warmup {warmup} + messages {n} - 1) = {age_ms} ms; \
+             with {MARGIN_MS} ms of margin that is not under the counterparty's MaxLatency \
+             {max_skew_ms} ms. Lower --interval, or send at most {max_messages} messages \
+             including --warmup. See \
+             docs/reference/a-paced-run-outlived-the-sessions-maxlatency.md"
+        ));
+    }
+    Ok(())
+}
+
 /// Whether `name` appears among the arguments at all.
 fn present(args: &[String], name: &str) -> bool {
     args.iter().skip(1).any(|a| a == name)
@@ -995,6 +1056,24 @@ fn main() -> std::io::Result<()> {
         _ => arg(&args, "--warmup").unwrap_or(2_000),
     };
     let hold_ms: u64 = arg(&args, "--hold-ms").unwrap_or(0);
+
+    // Refuse a paced run whose last `52=` would already be too old by the
+    // counterparty's MaxLatency, before any engine or socket is built.
+    // `Half::Listen` has no pacing and no message count to check (`half_of`
+    // already refused `--interval`/`--messages`/`--warmup` there).
+    if !matches!(half, Half::Listen(_)) {
+        let max_skew_ms = match max_skew_of(&args) {
+            Ok(v) => v,
+            Err(why) => {
+                eprintln!("w2w: {why}");
+                return Err(std::io::Error::other(why));
+            }
+        };
+        if let Err(why) = paced_run_fits(interval_us, warmup, n, max_skew_ms) {
+            eprintln!("w2w: {why}");
+            return Err(std::io::Error::other(why));
+        }
+    }
 
     // ADR-0013 decision 4: every published figure names its mode. `hft` stays
     // the default here even though `standard` is the engine's, because these
@@ -4087,6 +4166,7 @@ mod tests {
             "--warmup 1",
             "--hold-ms 5",
             "--interval 1000",
+            "--max-skew-ms 5000",
         ] {
             let e = half_of(&argv(&format!("--listen 127.0.0.1:1 {flag}"))).unwrap_err();
             let name = flag.split(' ').next().unwrap();
@@ -4134,6 +4214,54 @@ mod tests {
             Err("--interval -5: not a valid value".into())
         );
         assert_eq!(interval_of(&argv("--interval 250")), Ok(250));
+    }
+
+    #[test]
+    fn a_paced_run_past_maxlatency_is_refused() {
+        assert!(paced_run_fits(1_000_000, 5, 120, fixbolt_session::DEFAULT_MAX_SKEW_MS).is_err());
+        // The boot B shape: no warmup, 125 messages.
+        assert!(paced_run_fits(1_000_000, 0, 125, fixbolt_session::DEFAULT_MAX_SKEW_MS).is_err());
+    }
+
+    #[test]
+    fn a_paced_run_inside_maxlatency_is_allowed() {
+        assert_eq!(
+            paced_run_fits(1_000_000, 0, 105, fixbolt_session::DEFAULT_MAX_SKEW_MS),
+            Ok(())
+        );
+        // The largest n that still fits under the default MaxLatency.
+        assert_eq!(
+            paced_run_fits(1_000_000, 0, 119, fixbolt_session::DEFAULT_MAX_SKEW_MS),
+            Ok(())
+        );
+        assert!(paced_run_fits(1_000_000, 0, 120, fixbolt_session::DEFAULT_MAX_SKEW_MS).is_err());
+    }
+
+    #[test]
+    fn an_unpaced_run_is_never_refused() {
+        assert_eq!(
+            paced_run_fits(0, 0, 10_000_000, fixbolt_session::DEFAULT_MAX_SKEW_MS),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_declared_maxlatency_moves_the_bound() {
+        assert!(paced_run_fits(1_000_000, 5, 120, 120_000).is_err());
+        assert_eq!(paced_run_fits(1_000_000, 5, 120, 200_000), Ok(()));
+    }
+
+    #[test]
+    fn max_skew_of_reads_the_flag() {
+        assert_eq!(
+            max_skew_of(&argv("")),
+            Ok(fixbolt_session::DEFAULT_MAX_SKEW_MS)
+        );
+        assert_eq!(max_skew_of(&argv("--max-skew-ms 5000")), Ok(5000));
+        assert_eq!(
+            max_skew_of(&argv("--max-skew-ms")),
+            Err("--max-skew-ms needs a value".into())
+        );
     }
 
     #[test]
