@@ -512,7 +512,7 @@ impl Limits {
     }
 
     /// How many `hft`-mode spin turns pass between one poll of the listener
-    /// and the next. `1` (today's loop, [`DEFAULT_LISTENER_EVERY`]) unless
+    /// and the next. `1` (today's loop, `DEFAULT_LISTENER_EVERY`) unless
     /// [`Self::with_listener_every`] was called.
     #[must_use]
     pub const fn listener_every(self) -> core::num::NonZeroU32 {
