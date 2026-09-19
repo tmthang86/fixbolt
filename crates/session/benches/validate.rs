@@ -58,6 +58,9 @@ use fixbolt_dict::Fix44;
 use fixbolt_session::validate;
 use std::hint::black_box;
 
+#[cfg(feature = "fix50sp2")]
+use fixbolt_dict::Fixt11Fix50Sp2Tables;
+
 fn main() {
     harness::suite(|b| {
         // The same two messages as `crates/codec/benches/parse.rs`.
@@ -151,5 +154,48 @@ fn main() {
             let v = validate::<Fix44, 64>(black_box(&w_nos_view), black_box(b"D"));
             black_box(v);
         });
+
+        // The same pass over the FIXT 1.1 / FIX 5.0 SP2 tables. The same
+        // fourteen fields as `validate NewOrderSingle` above, with
+        // `8=FIXT.1.1` and this side's CompID, so the two figures may be read
+        // side by side and the difference is the **table**, not the message.
+        //
+        // The FIXT pair is a much larger table — 25 929 generated `(msg_type,
+        // counter)` group pairs against FIX 4.4's 731, and 164 message types
+        // against 93 — so the per-field `match` arms this pass walks are not
+        // the same code at all, even though the fields are.
+        //
+        // `[machine 2026-09-19]` no baseline exists for this case on any CPU:
+        // `benches/baselines.tsv` records a Ryzen and this is not it, so the
+        // harness prints NO BASELINE and compares it against nothing. That is
+        // the expected reading here and it is **not** a published figure —
+        // `CLAUDE.md` §2 non-negotiable 10.
+        #[cfg(feature = "fix50sp2")]
+        {
+            let fixt_nos: &[u8] = b"8=FIXT.1.1\x019=128\x0135=D\x0134=2\x0149=TW50SP2\x01\
+52=20260905-12:00:00.000\x0156=ISLD\x0111=ID\x0121=1\x0138=002000.00\x0140=1\x01\
+54=1\x0155=INTC\x0160=20260905-12:00:00.000\x01167=CS\x0110=111\x01";
+            let mut fixt_idx: FieldIndex<64> = FieldIndex::new();
+            let r =
+                parse_into::<Fixt11Fix50Sp2Tables, 64>(fixt_nos, &mut fixt_idx, Validation::ALL);
+            assert!(
+                matches!(r, Ok(Parsed::Complete { .. })),
+                "FIXT NewOrderSingle {r:?}"
+            );
+            let fixt_view = fixt_idx.view(fixt_nos);
+            // Fault-free, asserted for the reason the header gives: `validate`
+            // returns on the first fault, so a faulty message times a prefix of
+            // the pass and the figure would be stable and meaningless.
+            assert_eq!(
+                validate::<Fixt11Fix50Sp2Tables, 64>(&fixt_view, b"D"),
+                None,
+                "FIXT NewOrderSingle is clean"
+            );
+            b.bench("validate NewOrderSingle (FIXT tables)", || {
+                let v =
+                    validate::<Fixt11Fix50Sp2Tables, 64>(black_box(&fixt_view), black_box(b"D"));
+                black_box(v);
+            });
+        }
     });
 }

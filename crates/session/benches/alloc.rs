@@ -32,6 +32,13 @@ use fixbolt_session::schedule::{Schedule, Weekdays};
 use fixbolt_session::text::SessionText;
 use fixbolt_session::{Acceptor, Application, Config, Initiator, Link, Session, clock};
 
+#[cfg(feature = "fix50sp2")]
+use fixbolt_codec::{FieldIndex, Parsed, Validation, parse_into};
+#[cfg(feature = "fix50sp2")]
+use fixbolt_dict::Fixt11Fix50Sp2Tables;
+#[cfg(feature = "fix50sp2")]
+use fixbolt_session::validate;
+
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
 struct Counting;
@@ -115,6 +122,41 @@ impl Application for EchoApp {
 
 fn acceptor() -> Session<TagValue<Fix44, 256>, Acceptor> {
     Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"))
+}
+
+/// The FIXT 1.1 / FIX 5.0 SP2 encoding, spelled as `tests/score_fixt.rs` and
+/// `tests/fixt.rs` spell it — `dict` publishes no alias for this pairing, and
+/// `CLAUDE.md` §6 says the caller picks `N`. 256 because that is the capacity a
+/// real FIXT session is given in those two files, and this bench must count the
+/// path a session takes rather than a cheaper one.
+#[cfg(feature = "fix50sp2")]
+type Fixt = TagValue<Fixt11Fix50Sp2Tables, 256>;
+
+/// The corpus's FIXT acceptor: ISLD, speaking FIX 5.0 SP2 (`1137=9`) to
+/// TW50SP2. The same configuration `tests/fixt.rs` builds.
+#[cfg(feature = "fix50sp2")]
+fn fixt_acceptor() -> Session<Fixt, Acceptor> {
+    Session::new(Config::acceptor_fixt(
+        b"FIXT.1.1",
+        b"ISLD",
+        b"TW50SP2",
+        b"9",
+    ))
+}
+
+/// One FIXT message with `9=` and `10=` computed, `|` for SOH — `tests/fixt.rs`'s
+/// `msg`, which is where these bytes come from.
+///
+/// Every call is outside a counted window: what is measured is the path a
+/// message takes, never the building of one.
+#[cfg(feature = "fix50sp2")]
+fn fixt_msg(body: &str) -> Vec<u8> {
+    let body = body.replace('|', "\u{1}");
+    let mut m = format!("8=FIXT.1.1\u{1}9={}\u{1}", body.len()).into_bytes();
+    m.extend_from_slice(body.as_bytes());
+    let sum: u32 = m.iter().map(|c| u32::from(*c)).sum();
+    m.extend_from_slice(format!("10={:03}\u{1}", sum % 256).as_bytes());
+    m
 }
 
 fn main() {
@@ -610,6 +652,159 @@ fn main() {
         }
     });
 
+    // --- FIXT 1.1 / FIX 5.0 SP2 ---------------------------------------------
+    //
+    // Everything above drives `Fix44`. B1-B4 added a second dictionary, a
+    // second `BeginString` rule, `1137=` on the Logon and a fourth scan pass
+    // for group members, and **not one of those paths had ever been counted**.
+    // ADR-0084 was accepted citing a bench case for these tables; these are it.
+    //
+    // The three are here rather than in `crates/codec/benches/alloc.rs`
+    // because all three are the *session's* pass: `validate` is this crate's
+    // function, and the Logon is this crate's encoder. The codec's own bench
+    // carries the FIXT parse.
+    #[cfg(feature = "fix50sp2")]
+    let (fixt_validate_allocs, fixt_group_allocs, fixt_logon_allocs) = {
+        // A `35=D` off the FIXT wire, no repeating group: the message shape the
+        // 17 cases above already cover for FIX 4.4, now through the other
+        // dictionary. Parsed once, outside every counted window — the parse has
+        // its own case in the codec's bench and pricing it twice would say
+        // nothing here.
+        let nos = fixt_msg(
+            "35=D|34=2|49=TW50SP2|52=20260828-12:00:00|56=ISLD|11=ID|21=1|\
+38=002000.00|40=1|54=1|55=INTC|60=20260828-12:00:00|167=CS|",
+        );
+        let mut nos_idx: FieldIndex<256> = FieldIndex::new();
+        let r = parse_into::<Fixt11Fix50Sp2Tables, 256>(&nos, &mut nos_idx, Validation::ALL);
+        assert!(
+            matches!(r, Ok(Parsed::Complete { .. })),
+            "the FIXT fixture must parse: {r:?}"
+        );
+        let nos_view = nos_idx.view(&nos);
+        // Liveness, and the strongest form available: `None` is returned only
+        // after **all four** passes have run to the end. A faulty message would
+        // return early and this case would then count a prefix — which is the
+        // trap `benches/validate.rs`' module comment is about.
+        assert_eq!(
+            validate::<Fixt11Fix50Sp2Tables, 256>(&nos_view, b"D"),
+            None,
+            "the FIXT validate path must actually run the whole pass"
+        );
+        let validate_allocs = count(|| {
+            for _ in 0..10_000 {
+                let _ = validate::<Fixt11Fix50Sp2Tables, 256>(&nos_view, b"D");
+            }
+        });
+
+        // **The same pass over a message that really carries a group.**
+        //
+        // `[verified 2026-09-19]` the eight `.def` files behind the 17 cases
+        // above — `15_HeaderAndBodyFieldsOrderedDifferently`,
+        // `1d_InvalidLogonBadSendingTime`, `1d_InvalidLogonWrongBeginString`,
+        // `1e_NotLogonMessage`, `4b_ReceivedTestRequest`, `8_OnlyAdminMessages`,
+        // `8_OnlyApplicationMessages`, `RejectResentMessage` — contain **zero**
+        // group counters between them. So every existing case proves that a
+        // *group-free* message allocates nothing, and B4b's fourth scan pass
+        // and its `SeenCounters` stack array live on exactly the path none of
+        // them walks.
+        //
+        // `NoPartyIDs(453)` on the `35=D`, two entries, rather than the
+        // header's `NoHops(627)`: 453 is a body group with five declared
+        // members on this message type (`448, 447, 452, 2376, 802`), so a
+        // populated instance exercises `SeenCounters::record`, `defers` and
+        // `scan_group_members` over several members and two repetitions.
+        // `NoHops` would do the same job with three members, and is the harder
+        // fixture to keep fault-free because the header's order rules apply to
+        // it as well as the group's.
+        let grouped = fixt_msg(
+            "35=D|34=2|49=TW50SP2|52=20260828-12:00:00|56=ISLD|11=ID|21=1|\
+38=002000.00|40=1|54=1|55=INTC|453=2|448=PARTYA|447=D|452=1|448=PARTYB|447=D|\
+452=2|60=20260828-12:00:00|167=CS|",
+        );
+        let mut grp_idx: FieldIndex<256> = FieldIndex::new();
+        let r = parse_into::<Fixt11Fix50Sp2Tables, 256>(&grouped, &mut grp_idx, Validation::ALL);
+        assert!(
+            matches!(r, Ok(Parsed::Complete { .. })),
+            "the grouped FIXT fixture must parse: {r:?}"
+        );
+        let grp_view = grp_idx.view(&grouped);
+        // Three liveness assertions, because a zero here would otherwise be the
+        // easiest one in this file to get for the wrong reason.
+        //
+        // One: the group is really populated — two entries walked off the index
+        // the parser built, not a `453=2` the scan never looked past.
+        assert_eq!(
+            grp_view
+                .group::<Fixt11Fix50Sp2Tables>(b"D", 453)
+                .expect("453 is a group of D")
+                .count(),
+            2,
+            "the group case must actually carry two party entries"
+        );
+        // Two: the whole pass runs to the end on it.
+        assert_eq!(
+            validate::<Fixt11Fix50Sp2Tables, 256>(&grp_view, b"D"),
+            None,
+            "the grouped FIXT message must be fault-free"
+        );
+        // Three, and the one that pins the *deferred member* path specifically:
+        // break one member's value and the fault must come back. `452` is an
+        // `int`, so `452=NOPE` is a `373=6` — and it can only be found by the
+        // fourth pass, because `scan_fields` defers a member of a group this
+        // message carries (ADR-0084 decision 2).
+        let broken = fixt_msg(
+            "35=D|34=2|49=TW50SP2|52=20260828-12:00:00|56=ISLD|11=ID|21=1|\
+38=002000.00|40=1|54=1|55=INTC|453=2|448=PARTYA|447=D|452=1|448=PARTYB|447=D|\
+452=NOPE|60=20260828-12:00:00|167=CS|",
+        );
+        let mut broken_idx: FieldIndex<256> = FieldIndex::new();
+        let _ = parse_into::<Fixt11Fix50Sp2Tables, 256>(&broken, &mut broken_idx, Validation::ALL);
+        assert!(
+            validate::<Fixt11Fix50Sp2Tables, 256>(&broken_idx.view(&broken), b"D").is_some(),
+            "the group-member pass must actually inspect a member's value"
+        );
+        let group_allocs = count(|| {
+            for _ in 0..10_000 {
+                let _ = validate::<Fixt11Fix50Sp2Tables, 256>(&grp_view, b"D");
+            }
+        });
+
+        // The outbound Logon B4 added: a FIXT acceptor answers with its **own**
+        // `1137=`, not the counterparty's echoed back (ADR-0080 decision 3).
+        // That is a field written into the reply from the `Config`, which is
+        // the shape that tempts a `to_vec()` — and `out.rs` writes it on a path
+        // no FIX 4.4 case above reaches.
+        let fixt_logon =
+            fixt_msg("35=A|34=1|49=TW50SP2|52=20260828-12:00:00|56=ISLD|98=0|108=30|1137=9|");
+        {
+            let mut s = fixt_acceptor();
+            s.connect(|_| ());
+            s.tick(now, |_| ());
+            let mut reply = Vec::new();
+            assert_eq!(
+                s.received(&fixt_logon, |b| reply.extend_from_slice(b)),
+                Link::Up,
+                "the FIXT logon path must actually log on"
+            );
+            assert!(
+                reply.windows(7).any(|w| w == b"\x011137=9"),
+                "and the reply must actually carry 1137"
+            );
+        }
+        // A fresh session each time, for the reason `accept` gives above: a
+        // replayed Logon is refused from the second iteration on.
+        let logon_allocs = count(|| {
+            for _ in 0..10_000 {
+                let mut s = fixt_acceptor();
+                s.connect(|_| ());
+                s.tick(now, |_| ());
+                s.received(&fixt_logon, |_| ());
+            }
+        });
+
+        (validate_allocs, group_allocs, logon_allocs)
+    };
+
     println!(
         "allocations: accept {accept_allocs} refuse {refuse_allocs} \
          tick {tick_allocs} beat {beat_allocs} answer {answer_allocs} \
@@ -644,4 +839,21 @@ fn main() {
         [0; 17],
         "non-negotiable 1: the session layer allocates nothing, on any path"
     );
+
+    // Counted and asserted on their own rather than folded into the array
+    // above, so the seventeen FIX 4.4 cases read identically whether the
+    // feature is on or off.
+    #[cfg(feature = "fix50sp2")]
+    {
+        println!(
+            "allocations: validate NewOrderSingle (FIXT tables) {fixt_validate_allocs} \
+             validate NewOrderSingle (populated group) {fixt_group_allocs} \
+             encode Logon (FIXT, 1137) {fixt_logon_allocs}"
+        );
+        assert_eq!(
+            [fixt_validate_allocs, fixt_group_allocs, fixt_logon_allocs],
+            [0; 3],
+            "non-negotiable 1: the FIXT 1.1 paths allocate nothing either"
+        );
+    }
 }
