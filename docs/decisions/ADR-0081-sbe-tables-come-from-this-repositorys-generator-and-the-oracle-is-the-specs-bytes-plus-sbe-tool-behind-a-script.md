@@ -1,8 +1,10 @@
 # ADR-0081 — SBE tables come from this repository's generator, and the oracle is the spec's bytes plus `sbe-tool` behind a script
 
-- **Status**: Proposed — 2026-09-19
+- **Status**: Accepted — 2026-09-19
 - **Date**: 2026-09-19
-- **Deciders**: Tran Manh Thang
+- **Deciders**: Tran Manh Thang, who approved it by name ("duyệt ADR-0081", 2026-09-19) in the
+  Mac session that builds PR C, and in the same message delegated every later design and merge
+  decision on that PR to the session.
 - **Related**: [ADR-0078](ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md)
   decision 1 (a generated SBE codec, gated by round-tripping the reference schema examples);
   [ADR-0079](ADR-0079-one-view-per-encoding-and-one-trait-over-them.md) decisions 1, 4;
