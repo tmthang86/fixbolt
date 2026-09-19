@@ -14,10 +14,16 @@
 # Usage: scripts/compare-w2w-procedures.sh <summary1> <summary2> [threshold%]
 #
 # Each summary is a scripts/w2w-baseline.sh summary.txt: blocks that open
-# with a line `  == <mode> / <path> / <tls>[/<interval>]: median of N
-# qualifying runs ... ==` followed by plain `p50`, `p99`, `p99.9` lines (the
-# `dispersion p50 ...` lines are a different first field and are not read
-# here).
+# with a line `  == <mode> / <path> / <tls>: median of N qualifying runs ...
+# ==` optionally followed by `  interval Nus` on the same line (a sweep
+# summary's arms), then plain `p50`, `p99`, `p99.9` lines (the counterparty's
+# view). A WIRE_NIC block additionally carries `wire p50`, `wire p99`,
+# `wire p99.9` lines — the acceptor's hardware-stamped figure. Per
+# ADR-0071 decision 2, when an arm has wire rows those are what gets
+# compared (labelled `wire p50` etc in the output); an arm with none
+# (loopback) is compared on its plain rows exactly as before. The
+# `dispersion p50 ...` / `wire dispersion p50 ...` lines are a different
+# field shape and are not read here.
 set -uo pipefail
 
 # Percentage difference between two numbers, relative to the SMALLER of the
@@ -46,7 +52,7 @@ compare_one() { # compare_one <label> <v1> <v2> <threshold>
   local label=$1 v1=$2 v2=$3 threshold=$4 d v
   d=$(diff_pct "$v1" "$v2")
   v=$(pct_verdict "$d" "$threshold")
-  printf '    %-6s %10s ns   %10s ns   diff %6s%%   %s\n' "$label" "$v1" "$v2" "$d" "$v"
+  printf '    %-9s %10s ns   %10s ns   diff %6s%%   %s\n' "$label" "$v1" "$v2" "$d" "$v"
   [ "$v" = "reproduced" ]
 }
 
@@ -68,34 +74,57 @@ THRESHOLD=${3:-5}
 [ -r "$SUMMARY1" ] || { echo "cannot read $SUMMARY1" >&2; exit 2; }
 [ -r "$SUMMARY2" ] || { echo "cannot read $SUMMARY2" >&2; exit 2; }
 
-# Pull "<arm> <percentile> <value>" triples out of one summary. The arm key
-# is "<mode>/<path>/<tls>[/<interval>]" with the " / " separators collapsed,
-# so it can be used as an associative-array key with no embedded spaces.
+# Pull "<arm> <percentile> <value> <kind>" quadruples out of one summary.
+# The arm key is "<mode>/<path>/<tls>" with the " / " separators collapsed
+# (an interval-sweep arm gets "@<interval>" appended, e.g. "hft/admin/off
+# @10us", so that two interval arms of one summary are distinct keys), so it
+# can be used as an associative-array key with no embedded spaces. <kind> is
+# "wire" for a `wire p50`-style row, "plain" for the counterparty's own.
 extract() { # extract <file>
   awk '
     $1 == "==" {
       line = $0
       sub(/^ *== */, "", line)
+      interval = ""
+      if (match(line, /interval [0-9]+us/)) {
+        interval = substr(line, RSTART, RLENGTH)
+        sub(/^interval /, "", interval)
+      }
       sub(/:.*/, "", line)
       gsub(/ \/ /, "/", line)
       gsub(/ /, "", line)
       arm = line
+      if (interval != "") arm = arm "@" interval
+      next
+    }
+    arm != "" && $1 == "wire" && ($2 == "p50" || $2 == "p99" || $2 == "p99.9") {
+      print arm, $2, $3, "wire"
       next
     }
     arm != "" && ($1 == "p50" || $1 == "p99" || $1 == "p99.9") {
-      print arm, $1, $2
+      print arm, $1, $2, "plain"
     }
   ' "$1"
 }
 
-declare -A V1 V2
-declare -A ARMS1 ARMS2
-while read -r arm pct val; do
-  V1["$arm|$pct"]=$val
+declare -A P1 P2 W1 W2
+declare -A ARMS1 ARMS2 ARMSWIRE1 ARMSWIRE2
+while read -r arm pct val kind; do
+  if [ "$kind" = "wire" ]; then
+    W1["$arm|$pct"]=$val
+    ARMSWIRE1["$arm"]=1
+  else
+    P1["$arm|$pct"]=$val
+  fi
   ARMS1["$arm"]=1
 done < <(extract "$SUMMARY1")
-while read -r arm pct val; do
-  V2["$arm|$pct"]=$val
+while read -r arm pct val kind; do
+  if [ "$kind" = "wire" ]; then
+    W2["$arm|$pct"]=$val
+    ARMSWIRE2["$arm"]=1
+  else
+    P2["$arm|$pct"]=$val
+  fi
   ARMS2["$arm"]=1
 done < <(extract "$SUMMARY2")
 
@@ -122,15 +151,26 @@ for arm in "${all_arms[@]}"; do
   fi
   echo "== $arm =="
   arm_ok=1
+  use_wire=0
+  if [ -n "${ARMSWIRE1[$arm]:-}" ] || [ -n "${ARMSWIRE2[$arm]:-}" ]; then
+    use_wire=1
+  fi
   for pct in p50 p99 p99.9; do
-    v1=${V1["$arm|$pct"]:-}
-    v2=${V2["$arm|$pct"]:-}
+    if [ "$use_wire" = 1 ]; then
+      v1=${W1["$arm|$pct"]:-${P1["$arm|$pct"]:-}}
+      v2=${W2["$arm|$pct"]:-${P2["$arm|$pct"]:-}}
+      label="wire $pct"
+    else
+      v1=${P1["$arm|$pct"]:-}
+      v2=${P2["$arm|$pct"]:-}
+      label=$pct
+    fi
     if [ -z "$v1" ] || [ -z "$v2" ]; then
-      printf '    %-6s missing in one summary\n' "$pct"
+      printf '    %-9s missing in one summary\n' "$label"
       arm_ok=0
       continue
     fi
-    if ! compare_one "$pct" "$v1" "$v2" "$THRESHOLD"; then
+    if ! compare_one "$label" "$v1" "$v2" "$THRESHOLD"; then
       arm_ok=0
     fi
   done

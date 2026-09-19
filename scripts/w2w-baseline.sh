@@ -70,16 +70,25 @@
 #     without `OBSERVER_CORE`, with the observer on a measured core, and for
 #     any `standard` arm (Q10 — `standard` publishes no wire figure; run it in
 #     its own invocation without `WIRE_NIC`, for the counterparty table only).
-#     **A run whose `hw-rx-missing` or `hw-tx-missing` is not 0 FAILS the
-#     script; it is not DISQUALIFIED.** DISQUALIFIED here means a busy machine,
-#     which the next run can escape by waiting. A missing hardware stamp is the
-#     instrument: the plan's `igb` trap (a link change silently drops RX stamps
-#     to software, and the driver's read-back lies about it) persists into every
-#     later run until a person runs `ethtool -T` / link down-up and records the
-#     kernel — so carrying on would spend RUNS x GAP producing nothing, and a
-#     sample built from the runs that happened to keep their stamps would be a
-#     selected sample. The FAIL prints both counts and the listen half's output,
-#     which is the finding B6 records.
+#     **A run whose `hw-rx-missing` is not 0 FAILS the script; it is not
+#     DISQUALIFIED.** A missing RX stamp is the instrument: the plan's `igb`
+#     trap (a link change silently drops RX stamps to software, and the
+#     driver's read-back lies about it) persists into every later run until a
+#     person runs `ethtool -T` / link down-up and records the kernel — so
+#     carrying on would spend RUNS x GAP producing nothing, and a sample built
+#     from the runs that happened to keep their stamps would be a selected
+#     sample. The FAIL prints both counts and the listen half's output, which
+#     is the finding B6 records.
+#     `[2026-09-19]` ADR-0071 decision 1 revised: `hw-tx-missing` over 0.1% of
+#     the run's requests is DISQUALIFIED instead — over the cable at
+#     interval 0 the I211 skips 3-30 TX stamps per 20 000 on some runs and
+#     not others, and the igb NIC's one-pending-stamp-slot design makes that
+#     expected, not a fault. The run is skipped, counted in `skipped`, and
+#     its output is kept on disk like any other failed run; the procedure
+#     carries on to the next run rather than throwing away every good run
+#     around it. An arm where fewer than half of `RUNS` qualified (whichever
+#     reason) still FAILs, since a median cannot be published from what is
+#     mostly missing.
 #   * With `GENERATOR_SSH` the generator is NOT pinned by this script (it runs
 #     with no `--client-core`), and the header and summary now say so instead
 #     of naming `client cpu$CLIENT_CORE`.
@@ -210,26 +219,44 @@ extra_flag_refusal() { # extra_flag_refusal <one W2W_EXTRA token>
   esac
 }
 
-# ADR-0071 decision 1: a skipped TX stamp is a missing sample, not a failed
-# run — the igb NIC holds one pending TX stamp request, so a few stamps per
-# 20 000 are skipped by design. FAILs only when the missing count exceeds
-# 0.1% of the timed requests (20 of 20 000); an RX stamp never competes for a
-# slot, so ANY missing RX stamp is a failed run outright. Prints the reason
-# on FAIL, nothing on PASS — same shape as `extra_flag_refusal` above — and
-# is pure integer arithmetic (`tx * 1000 > total` reads `tx/total > 0.1%`
-# without a float) so `scripts/check-w2w-baseline-summary.sh` calls it
-# directly with `BASELINE_SOURCE_ONLY=1`.
+# ADR-0071 decision 1 (revised 2026-09-19): a skipped TX stamp is a missing
+# sample, not a failed run — the igb NIC holds one pending TX stamp request,
+# so a few stamps per 20 000 are skipped by design, and over the cable this
+# has been observed to trip the 0.1% ceiling on some runs and not others.
+# Exceeding 0.1% of the timed requests (20 of 20 000) no longer FAILs the
+# whole procedure; it DISQUALIFIES that one run, the same as a busy machine,
+# so the good runs around it are kept. An RX stamp never competes for a
+# slot, so ANY missing RX stamp is still a hard FAIL — the instrument, not
+# load, and it will not clear by waiting. Prints the reason on FAIL/DISQUALIFY,
+# nothing on PASS — same shape as `extra_flag_refusal` above — and is pure
+# integer arithmetic (`tx * 1000 > total` reads `tx/total > 0.1%` without a
+# float) so `scripts/check-w2w-baseline-summary.sh` calls it directly with
+# `BASELINE_SOURCE_ONLY=1`. The two non-zero outcomes are told apart by exit
+# code, not by parsing the message: 2 is the RX hard-FAIL, 1 is the TX
+# disqualification.
 missing_stamp_verdict() { # missing_stamp_verdict <rx_missing> <tx_missing> <total>
   local rx=$1 tx=$2 total=$3
   if [ "$rx" -gt 0 ]; then
     printf 'hw-rx-missing %s of %s — any missing RX stamp is a failed run (ADR-0071 decision 1)' "$rx" "$total"
-    return 1
+    return 2
   fi
   if [ $((tx * 1000)) -gt "$total" ]; then
     printf 'hw-tx-missing %s of %s exceeds 0.1%%' "$tx" "$total"
     return 1
   fi
   return 0
+}
+
+# ADR-0071 decision 1 (revised 2026-09-19), the summary-side half: an arm
+# where more than half of RUNS were disqualified (busy machine or hw-tx-missing
+# over the 0.1% ceiling) has not produced a trustworthy median — too much of
+# the sample is missing for "median of q qualifying runs" to mean much. Pure
+# integer arithmetic, same shape as `missing_stamp_verdict` above: `q * 2 <
+# runs` reads `q < runs/2` without a float. Tested by
+# scripts/check-w2w-baseline-summary.sh.
+enough_qualified() { # enough_qualified <q> <runs>
+  local q=$1 runs=$2
+  [ $((q * 2)) -ge "$runs" ]
 }
 
 # `dump_pick <sorted-ascending-file> <n> <q>`: the same percentile
@@ -837,16 +864,32 @@ for arm in $ARMS; do
           echo "FAIL: $mode:$path:$tls:$interval — run $i: hw-rx-missing ${rxm:-<not printed>}, hw-tx-missing ${txm:-<not printed>} on $WIRE_NIC (the tap could not be trusted — read the listen half above)."
           exit 1
         fi
-        # ADR-0071 decision 1: a missing TX stamp within 0.1% of the run's
-        # requests is a smaller sample, not a FAIL; any missing RX stamp
-        # still is. `missing_stamp_verdict` is the pure function above,
-        # tested by scripts/check-w2w-baseline-summary.sh.
-        if ! verdict=$(missing_stamp_verdict "$rxm" "$txm" "$reqs_total"); then
+        # ADR-0071 decision 1 (revised 2026-09-19): a missing TX stamp within
+        # 0.1% of the run's requests is a smaller sample, not a FAIL — over
+        # the cable the ceiling is tripped by some runs and not others, so
+        # exceeding it now DISQUALIFIES this one run rather than the whole
+        # procedure; any missing RX stamp is still a hard FAIL, the
+        # instrument rather than load. `missing_stamp_verdict` is the pure
+        # function above, tested by scripts/check-w2w-baseline-summary.sh —
+        # its exit code (2 = RX hard-FAIL, 1 = TX disqualification) tells
+        # the two outcomes apart.
+        if verdict=$(missing_stamp_verdict "$rxm" "$txm" "$reqs_total"); then
+          vrc=0
+        else
+          vrc=$?
+        fi
+        if [ "$vrc" -eq 2 ]; then
           echo "$lout"
           echo "FAIL: $mode:$path:$tls:$interval — run $i: $verdict on $WIRE_NIC."
           echo "Not DISQUALIFIED: the cause is the NIC's stamping, not load, and it will not clear by waiting —"
           echo "see the plan's igb trap (ethtool -T, link down/up), and record this count and the kernel version."
           exit 1
+        elif [ "$vrc" -eq 1 ]; then
+          printf '  %-8s %-5s %-9s run %2d  DISQUALIFIED, %s%s\n' \
+            "$mode" "$path" "$tls" "$i" "$verdict" "$iv_note"
+          skipped=$((skipped+1))
+          sleep "$GAP"
+          continue
         fi
         wv() { echo "$lout" | awk -v k="$1" '$1=="wire" && $2==k {print $3; exit}'; }
         wp50=$(wv p50); wp99=$(wv p99); wp999=$(wv p99.9)
@@ -1006,6 +1049,15 @@ for arm in $ARMS; do
     echo
     printf '%s\n\n' "$msg" >> "$OUT_DIR/summary.txt"
     continue
+  fi
+  # ADR-0071 decision 1 (revised 2026-09-19): a run disqualified for
+  # hw-tx-missing over the 0.1% ceiling is kept, not FAILed, but an arm
+  # where too few runs qualified still is not a median worth publishing.
+  # `enough_qualified` is the pure function above, tested by
+  # scripts/check-w2w-baseline-summary.sh.
+  if ! enough_qualified "$q" "$RUNS"; then
+    echo "FAIL: $mode:$path:$tls — only $q of $RUNS runs qualified"
+    exit 1
   fi
   m50=$(printf '%s\n' "${p50s[@]}" | median)
   m99=$(printf '%s\n' "${p99s[@]}" | median)

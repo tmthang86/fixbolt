@@ -952,7 +952,7 @@ below).
 | Keeping a message for resend | `[measured 2026-09-05]` **8.9 ns** for a 191-byte `ExecutionReport` into `MemJournal<4096,512>`, walking the ring as the engine does; **6.3 ns** pinned to one slot. A 2 MiB ring is not a cache cost — 191 bytes at a 512-byte stride is what a prefetcher is for | `crates/engine/benches/journal.rs` against `baselines.tsv`, every case reading back what it wrote before anything is timed |
 | What a bigger message costs the kernel | `[measured 2026-09-05]` **0.1443 ns per byte** written and read, from an 8 → 8192 byte lever. The two real `tools/w2w` sizes are cases of their own and **their difference is under this instrument's resolution**, which the module doc says where the number is | `crates/engine/benches/payload.rs` against `baselines.tsv`. Absolute figures here are environment-bound, not a round-trip claim — [a loopback write costs thirty-two syscalls](reference/a-loopback-write-costs-thirty-two-syscalls.md) |
 | Wire-to-wire, loopback | `[measured 2026-09-02]` **met**: `pass 12 fail 0 unknown 1`, engine pinned to isolated `cpu6`, client to `cpu7`, medians of 20 runs of 20 000 round trips. `hft` **16 010 / 20 589 / 22 127 ns** administrative, **19 908 / 24 657 / 26 150** application; `standard` **19 447 / 24 106 / 25 609** and **20 920 / 25 618 / 27 092**. p99 ≤ 50 µs holds in all four arms. Allocations in the timed window 0 on both threads | `tools/w2w --features affinity`, driven by `scripts/w2w-baseline.sh`. Phase 1 exit criterion 6 |
-| Wire-to-wire, NIC to NIC | **not met.** Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every figure above. `[measured 2026-09-15]` **measured, not reproduced, and not at the rate this row asks for**: the first hardware-stamped wire figures, `hft` paced at one message a second, wire p50 admin 45 146 ‖ 42 918 and application 49 626 ‖ 45 082 ns across two procedures (§8 *Boot B*); back to back, `igb` skipped a TX stamp within 1–4 runs every time, so no figure exists at interval 0 | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met** on that day: no cable, so no hardware stamp had been read (read on 2026-09-15 — the first column); on `lo` the tool counts every stamp missing and prints no wire column, which was the only arm run at the time. A figure is published from a run whose missing-stamp count is ≤ 0.1% of the timed requests and
+| Wire-to-wire, NIC to NIC | **MET at p50 and p99, `hft`, back to back — `[measured 2026-09-18]` boot C, C-40**: acceptor NIC-in → NIC-out, hardware stamps both directions on `enp9s0` (I211), the generator on a Mac mini over a direct cable, interval 0, 20 000 requests × 10 runs per arm, two procedures ([ADR-0068](decisions/ADR-0068-a-published-figure-is-two-procedures-shown-side-by-side.md)): **admin p50 27 050 ‖ 27 114, p99 31 982 ‖ 32 254 ns**; **application p50 28 894 ‖ 28 878, p99 34 058 ‖ 34 110** — p50 and p99 within 0.9%, p99 ≤ 50 µs in both arms. **p99.9 is published marked, not met**: 35 374 ‖ 49 146 admin, 62 306 ‖ 88 630 app (27–42% apart, a tail two procedures did not agree on). The rate is the one this row asks for — each request sent as soon as the previous reply arrived, ~37 000 round trips a second — with 6/10 ‖ 8/10 runs qualifying under [ADR-0071](decisions/ADR-0071-a-skipped-tx-stamp-is-a-missing-sample-not-a-failed-run.md)'s 0.1% TX-missing line. **`hft` only**: `standard` waits on BPF sock_ops, phase 2 ([ADR-0073](decisions/ADR-0073-the-standard-wire-figure-goes-through-bpf-sock-ops-and-not-before-phase-2.md)). ~~**not met.**~~ Loopback has no driver, no IRQ and no wire, which is why §9's NIC IRQ affinity row reads `unknown` beside every loopback figure above. `[measured 2026-09-15]` the first hardware-stamped figures were paced at one message a second — wire p50 admin 45 146 ‖ 42 918 and application 49 626 ‖ 45 082 ns (§8 *Boot B*), ~18 µs *slower* than back to back: the cold figure beside the hot one; back to back, `igb` skipped a TX stamp within 1–4 runs every time and the procedure then failed a run for it | `tools/w2w` with `SO_TIMESTAMPING`, HdrHistogram, a load generator on a separate machine. STATUS item 40. `[2026-09-14]` the two halves exist (`--listen`, `--connect`), and so does `--wire-timestamps` on the engine half — hardware RX and TX stamps on the acceptor's NIC, one PHC, no clock sync. **Still not met** on that day: no cable, so no hardware stamp had been read (read on 2026-09-15 — the first column); on `lo` the tool counts every stamp missing and prints no wire column, which was the only arm run at the time. A figure is published from a run whose missing-stamp count is ≤ 0.1% of the timed requests and
 `hw-rx-missing 0` ([ADR-0071](decisions/ADR-0071-a-skipped-tx-stamp-is-a-missing-sample-not-a-failed-run.md)
 decision 1) — a skipped TX stamp costs one sample, it does not fail the run. **Mode `hft`
 only**: `w2w` refuses `--mode standard --wire-timestamps` on a hardware NIC
@@ -1288,6 +1288,49 @@ Three readings, and the decision:
   2026-09-02) is superseded for the application path by the N = 16 row here and is left in
   place as the figure it was.
 
+### Boot C, over the cable: the first back-to-back wire figure — 27.1 µs admin, 28.9 µs application at p50
+
+`[measured 2026-09-18]` §9 desktop, `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 16
+fail 0 unknown 0`, commit `ecfdd81`'s code (the Mac's `w2w` `2f93af5c`, built from `main` at
+`ece17e7`), `enp9s0` (Intel I211, `igb`) ↔ a Mac mini over a direct cable, EEE off, IRQs on
+`cpu4`, engine on `cpu6`, observer on `cpu7`, **hardware RX and TX stamps on the acceptor's NIC,
+one PHC, no clock sync**; `hft`, **interval 0**, 20 000 requests per run, 10 runs per arm, two
+procedures; every qualifying run's `--dump` join read `join: PASS` (ADR-0071 decision 3 — the
+dropped samples did not move the counterparty's distribution). Wire figure = NIC-in of the
+request → NIC-out of the reply, at the acceptor. ns, p50 / p99 / p99.9, procedure 1 ‖ 2,
+qualifying runs of 10 in parentheses — a run over 0.1% TX-missing is disqualified, not fatal
+([ADR-0071](decisions/ADR-0071-a-skipped-tx-stamp-is-a-missing-sample-not-a-failed-run.md)
+decision 1 as revised):
+
+| Wire round trip, `hft`, back to back | procedure 1 | procedure 2 | reproduced? |
+|---|---|---|---|
+| TestRequest → Heartbeat | **27 050** / **31 982** / 35 374 (6) | **27 114** / **32 254** / 49 146 (8) | **p50, p99 yes** (0.2%, 0.9%); p99.9 **no** (39%) |
+| NewOrderSingle → ExecutionReport | **28 894** / **34 058** / 62 306 (6) | **28 878** / **34 110** / 88 630 (8) | **p50, p99 yes** (0.1%, 0.2%); p99.9 **no** (42%) |
+
+Per-run p50 sat inside 27 034..27 178 ‖ 27 010..27 234 (admin) and 28 778..28 954 ‖
+28 810..29 090 (application). **p50 and p99 are the figure; p99.9 is published as a pair that
+did not reproduce and meets nothing** (ADR-0068 decision 3) — the tail over a cable is where the
+I211's IRQ path and the Mac's unpinned generator show, and two procedures did not agree on it.
+The counterparty's own table (the Mac, unpinned, its whole stack both ways) read p50 ~232 µs in
+both arms and p99.9 0.37–0.95 ms: not this engine's figure, printed for the join only.
+
+Three readings:
+
+- **The wire adds ~11 µs to the loopback round trip** — admin 27.1 µs against 16.1 µs loopback
+  (boot C N = 1), application 28.9 against 20.2 — which is the driver, the interrupt on `cpu4`,
+  two PHY crossings and two frames on a 1 Gb/s wire (~1.9 µs each way for ~240 bytes), none of
+  which loopback contains. §9's NIC rows are no longer `unknown` beside this figure.
+- **The application path costs 1.8 µs over the administrative one on the wire**, against 3.9–4.1
+  µs on loopback at N = 1 and 1.2 µs at N = 16: the wire figure was taken at `w2w`'s cadence of
+  N = 1 (the C-89 trap) and still reads a smaller gap than loopback did, which is one more
+  reading that item 49's remainder is not payload work.
+- **Back to back is ~18 µs faster than paced at one message a second** (boot B's 45.1 ‖ 42.9
+  admin, 49.6 ‖ 45.1 application): the hot figure beside the cold one, as ADR-0071 decision 2
+  anticipated, and the reason both are published.
+
+The sweep and the skip statistics — pacing 0–50 µs does **not** stop the I211 skipping stamps —
+are in [measured-costs](reference/measured-costs.md), *Boot C*, C-40.
+
 ### The round trip under TLS, measured
 
 `[measured 2026-09-14]` on the same §9 desktop — Linux `7.0.0-31-generic`, `check-machine.sh`
@@ -1466,6 +1509,17 @@ both are noise, and the remainder barely moved — ~2 804 to ~2 770 ns.**
 | `Journal::put` of the outbound `ExecutionReport` | **Dead: 8.9 ns.** Confirmed in situ as well: one session, identical work, the ring swept 8 → 64 → 512 → 4 096 slots (4 KiB to 2 MiB) reads 1 659.8 / 1 635.5 / 1 654.8 / 1 657.7 — a 1.5% spread that is **not monotone** |
 | The engine's framing and read-buffer management | **Open, and now holds almost all of it.** No benchmark isolates it |
 | The session's own `Heartbeat` serialise on the administrative side | **Open.** No committed case, so it is not subtracted in either direction |
+
+**`[measured 2026-09-18]` The engine-turn lines of 2026-09-05 read 7–10% under today's code,
+and the baselines are deliberately not moved.** Boot C step C-91 ran the commit that recorded
+them (`0149b26`) beside `85460c1` in one boot: `engine turn, 1 busy sessions` 1 660.2 → 1 817.2
+ns (+9.5%), every engine-turn case +6.7–9.8%, the kernel unchanged as a cause. C-91b bisected
+it: **`588b350`** (`52=` read at every precision) is the first commit over a 5% line, worth
+~+33 ns, and the rest is **four more steps of 2–3% each** spread over 2026-09-06 → 09-18
+([measured-costs](reference/measured-costs.md) *Boot C*, C-91 and C-91b; STATUS items 91, 93).
+The `density` and `validate` baselines stay at their 2026-09-05 values until each step has a
+name and a decision — a baseline re-recorded to cover a regression is the failure ADR-0016 was
+written against — so `bench.sh --strict` reads those cases *over baseline* on purpose until then.
 
 **`[measured 2026-09-15]` The engine's whole share, measured in one piece: D_in = 765.5 ns.**
 `engine turn, 1 busy sessions` − `engine turn, 1 busy, admin` (`crates/engine/benches/density.rs`,
