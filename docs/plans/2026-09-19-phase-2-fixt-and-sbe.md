@@ -610,14 +610,74 @@ trong `crates/` và `tools/` — `check-links.py` không xét tên file viết t
 *File đụng (không đụng gì khác)* của hàng B1 **không liệt kê** file đó — và gate của chính hàng B1
 không thể xanh nếu thiếu. Ghi ra đây chứ không làm lặng.
 
+**Sau khi chủ uỷ quyền duyệt (2026-09-19, "uỷ quyền cho bạn duyệt thay tôi")**
+
+ADR-0083 → **Accepted** (`d6134c0`). Dòng *Deciders* ghi rõ chủ **không đọc** ADR: kiến trúc sư
+đề xuất, manager tự đo lại sáu sự thật, không ai khác đọc. Số ADR đổi 0082 → 0083 (`c22bb57`)
+vì phiên bàn lấy 0082 cùng buổi chiều — hai file khác slug nên **git merge cả hai không báo xung
+đột**; trang `two-branches-can-take-the-same-adr-number-without-a-conflict.md` ghi lệnh khảo sát
+chéo nhánh nên chạy trước khi viết ADR. Merge `plan/phase-2-a` (`958e71d`) gỡ xung đột duy nhất —
+đúng *Nhật ký giao hàng*, hai bên thuần cộng thêm, giữ cả hai theo thứ tự A → B.
+
+| Bước | Commit | Gate manager tự chạy lại trên commit đó |
+|---|---|---|
+| **B1** | `a787e3a` | `--features fix50sp2` fixt 9/9, field_types 8/8; feature tắt xanh; `--all` và `--no-default-features` 0 `FAILED`; clippy hai chiều sạch; `RUSTDOCFLAGS="-D warnings" cargo doc` hai chiều exit 0; `check-no-optional-deps.sh` ok; `check-indexing-debt.sh` 178/178; `score` 59/59 |
+| **B2** | `0a881d2` | `fetch-quickfix-assets.sh` 160 header SP2, corpus 59/539/244 không đổi; `fixt_order` 2/2; `interop_quickfix_order` vẫn 730/730; `git status --porcelain \| grep vendor` **0 dòng** (§2 rule 9) |
+
+**Đảo chiều manager tự làm** (câu FAIL viết trước): cho khai báo component **rỗng** bên transport
+thắng → **đoán** `the_logon_carries_the_msg_type_group` đỏ, **thực tế** build chết sớm hơn ở tầng
+chặn component rỗng. Đoán sai tầng nào cắn, và phòng thủ hoá ra **xếp lớp**: phải phá cả luật merge
+lẫn hai tầng chặn mới tạo được mất mát im lặng.
+
+**Hai phát hiện lớn, đều tự kiểm từ nguồn gốc**
+
+1. **Chi phí bảng thứ hai không phải "double"** như ADR-0080 viết: **25.6×** byte sinh
+   (4 008 198 / 156 397) và **9.4×** build nguội (5.25 s / 0.56 s), ba lần mỗi bên, máy cloud.
+   Nguyên nhân: `ALLOWED` là bitset trên `0..=max_tag`, max_tag SP2 = **50002** so với 956 →
+   782 word/message thay vì 15, trong khi chỉ nhiều hơn 6.6× số field. **Đường nóng không chậm đi,
+   không thêm allocation**; feature tắt mặc định nên không sửa gì. Trang
+   `a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md`.
+2. **Oracle 730/730 không chuyển được sang SP2.** Hai mệnh đề (delimiter, subsequence) đúng trên
+   **cả 25 927** nhóm, giữ hard assert. Mệnh đề 3 ("tag thừa đều là group counter") **sai**:
+   1 307 tag / 64 750 lần. Manager tự khai triển đệ quy `FIX50SP2.xml` ngoài `build.rs` và ngoài
+   parser của test → `NoSides(552)` trong `AE` ra **162** tag gồm `OrderQty(38)`, đúng bằng `G402`;
+   còn `TradeCaptureReport.h` **tự mâu thuẫn**: `FIELD_SET(*this, FIX::OrderQty)` dòng 6417 nhưng
+   `message_order(552,…)` chỉ 144 tag, không có 38. Cùng hình thù ở `LegSecurityXML(1872)`.
+   Nguyên nhân: `<component>` lồng ≥ 2 tầng trong `<group>`, hình thù FIX 4.4 gần như không có.
+   **Bỏ field đi cho khớp QuickFIX mới là sai** (§2 điều 5, D3). Test chốt bốn số bằng `assert_eq!`
+   (25 927 / 231 / 1 307 / 64 750). Trang
+   `quickfix-drops-deeply-nested-fields-from-its-own-message-order.md`.
+
+**Lệch phạm vi đã ghi, không làm lặng:** `crates/dict/src/field_type.rs` (ADR-0083 quyết định 1)
+và `scripts/fetch-quickfix-assets.sh` (quyết định 3) đều **không** có trong cột *File đụng* của
+hàng B1/B2. Thêm: `scripts/check-indexing-debt.sh` hạ trần 181 → 178 vì refactor `UtcTimestamp`
+bỏ được ba subscript panic — chính script đó yêu cầu hạ trần trong cùng commit.
+
+**Chi phí fetch cho B8/D2 chép sang:** `src/C++/fix50sp2/` = 26 413 279 byte / 160 file, khớp dự
+đoán 26.4 MB của ADR-0083; `vendor/quickfix` 14M → 39M. Ba fetch nguội mỗi bên: 3.70/3.37/3.45 s
+trước, 2.23/3.32/3.30 s sau — **thời gian thêm không phân biệt được với nhiễu mạng** trên máy này.
+ADR yêu cầu CI cho số riêng, vẫn giữ.
+
 **Chưa làm, và vì sao**
 
-- `impl Tables for Fixt11Fix50Sp2Tables` (B1): `dict::Tables` là của A2, nhánh bàn.
 - `echo.rs` generic `E` (B3): cần A1, và A3 đang sửa chính `echo.rs`.
 - B4–B7: sau khi PR A gộp → `git fetch && git rebase origin/main`, chạy lại gate rồi mới tiếp.
 - Một hàng `CLAUDE.md` §4 trỏ `docs/internals/` (hàng D1 yêu cầu): `CLAUDE.md` là file **chỉ bàn**
   theo *Chạy song song* → **giao lại cho phiên bàn**.
 - Dòng cho `DESIGN.md` / `GUIDE.md` / `CHANGELOG.md` / `CONFIGURATION.md`: thuộc B8.
+- **Luật `enum_allows` per-token cho bảng `Fix44`**: `enum_allows(18, b"2 A") == Some(false)` →
+  `373=5` cho một `ExecInst` hợp lệ (`session/src/lib.rs:3765`); cả hai engine QuickFIX tách theo
+  dấu cách trước. 0/239 `.def` gửi field multi-value nên 59/59 không thấy. B1 dựng bảng **FIXT**
+  per-token và **không** đụng `Fix44` — sửa FIX 4.4 là thay đổi biên session không có oracle,
+  **cần hàng kế hoạch riêng** (ADR-0083 quyết định 1, luật thứ hai).
+- Gác trùng số ADR: một dòng shell, nhưng `ci.yml` thuộc bước khác, và script không job nào chạy
+  là check không ai đọc (§10). Ghi trong trang reference cho phiên sở hữu file đó.
 
-**Chưa chứng minh:** chưa có CI run id cho hai commit trên — bảng gate còn là lời khai của máy
-cloud cho tới khi CI lên tiếng (§9). Không có số nào từ bàn §9. `engine.md` đã 63/80 dòng.
+**Chưa chứng minh:** **chưa có CI run id xanh nào** cho nhánh này — job `feature-sets` đỏ **năm
+head liên tiếp** vì `serve_with` ở `crates/engine/src/lib.rs:134` của PR A (link hỏng khi không có
+feature `standard`); đỏ cả trên base `plan/phase-2-a`; `crates/engine` ngoài bộ file nhánh này nên
+patch một dòng **đã kiểm chứng** nằm trong comment PR #82, không push. Không có số nào từ bàn §9.
+Sáu variant `FieldType` mới **không có corpus nào đỡ** — luật `accepts` rút từ chữ của spec, và
+arm FIXT của `interop.sh` (B7) là đối tác thật đầu tiên có thể phản bác. ADR-0083 trích FIX
+Orchestra *FIX Latest EP312*, **không** phải PDF SP2 Volume 1 (proxy chặn `fixtrading.org`,
+`onixs.biz`) và nói rõ chỗ đó.
