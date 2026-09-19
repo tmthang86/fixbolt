@@ -407,10 +407,15 @@ The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbo
 |---|---|---|---|
 | `standard` | `engine`, `library` | The blocking poller (`block.rs`, `serve`, `StandardAcceptorEngine`), through `poll(2)` via `libc` | **on** |
 | `affinity` | `engine` | Core pinning and topology checks via `libc`, Linux only. Naming a core in a build without it is a hard error | off |
+| `fix50sp2` | `codec`, `dict`, `session`, `engine` | The second dictionary: `dict`'s `build.rs` reads `FIXT11.xml` **and** `FIX50SP2.xml` into one table and emits `Fixt11Fix50Sp2Tables`, and the FIXT tests and bench cases in all four crates compile. Pulls in **no dependency** — it is generated code and build time only, and `codec`'s copy is a dev-dependency pass-through so its benches can name the table. `[measured]` the generated file goes 156 KB to 4.0 MB and a cold `dict` build 0.56 s to 5.25 s: see [a-bitset-keyed-by-tag-scales-with-the-highest-tag](reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md) | off |
 | `tls` | `engine` | `mod tls`: the userspace `rustls` handshake, the kTLS handover, `serve_tls`/`serve_tls_with`/`serve_tls_requiring`, `connect_and_serve_tls`/`connect_and_serve_tls_with`, `tls::load_pem`/`tls::load_client_pem`, and the seven `SocketUseSSL`-family settings keys (§1). Pulls in `rustls`, `ktls-core` and `libc` — the first dependencies in this crate that bring a tree of their own | off |
 
-`cargo build --no-default-features` builds with none of the three, and CI proves that on a
-runner with nothing optional installed. **`tls` is Linux-only in practice**: `mod tls` itself is
+`cargo build --no-default-features` builds with none of the four, and CI proves that on a
+runner with nothing optional installed. **`fix50sp2` gates tests, which needs its own CI
+invocation** — a feature-gated test compiles to nothing under `cargo test --all`, so the
+`gates` job runs the four crates that declare it and proves through
+`scripts/check-feature-gated-tests-ran.sh` that the named tests actually executed:
+[a-feature-gated-test-is-a-test-ci-never-runs](reference/a-feature-gated-test-is-a-test-ci-never-runs.md). **`tls` is Linux-only in practice**: `mod tls` itself is
 gated only on the feature, but the handshake, `load_pem` and every `serve_tls*` entry point
 inside it are additionally `#[cfg(target_os = "linux")]`, so a `--features tls` build on another
 target compiles the crate but exposes no way to bring a TLS listener up — [D11 in

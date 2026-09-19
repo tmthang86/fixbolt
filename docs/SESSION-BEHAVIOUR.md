@@ -46,6 +46,7 @@ Every reason for a drop is a variant of `DropReason` in `crates/session/src/lib.
 | `SlowApplication` | the ring to the application filled ([ADR-0011](decisions/ADR-0011-a-full-ring-disconnects.md)) |
 | `SlowConsumer` | the counterparty stopped reading and the send queue filled (DESIGN.md D10) |
 | `EngineShutdown` | an ordered shutdown closed it at the deadline ([ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md)) |
+| `LogonWithoutDefaultApplVerId` | `[added 2026-09-19]` the session's `BeginString` is `FIXT.1.1` and the counterparty's Logon carried no `1137=` (DefaultApplVerID). FIXT 1.1 makes `1137` a **required** field of the Logon, and it is the only place the application version is named, so there is nothing to fall back to. Dropped in silence like every other Logon refusal — **no Logout, no Reject** ([ADR-0080](decisions/ADR-0080-the-dictionary-rides-the-encoding-and-a-fixt-session-is-one-table-built-from-two-xml-files.md) decision 4). A `FIX.4.4` session never reaches this rule. Guarded by `crates/session/tests/fixt.rs::a_logon_without_1137_is_dropped_and_nothing_is_sent` and by `1d_InvalidLogonNoDefaultApplVerID.def`, one of the 60 in each FIXT corpus |
 | `RefusedByDeployment` | **nothing on the wire was wrong.** This deployment's configuration refused the connection — today only `TlsRequireKernel=Y` meeting a handshake that landed in userspace ([ADR-0060](decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md)). The **preceding event** on the stream names the policy; guarded by `crates/engine/tests/tls_mode.rs` |
 
 **The last five are the engine's reasons, not the wire's**, and the distinction is the point of
@@ -475,6 +476,38 @@ session does with it:
 message needing no stimulus cannot be written in that format — `[measured 2026-09-05]` removing
 the door entirely leaves `--test score` at 59 / 59. The gate that holds it is
 `scripts/interop.sh`'s acceptor role, judged by `libquickfix`.
+
+---
+
+## 5b. FIXT 1.1 / FIX 5.0 SP2 `[added 2026-09-19]`
+
+A FIXT 1.1 session is this same state machine with a different dictionary
+([ADR-0080](decisions/ADR-0080-the-dictionary-rides-the-encoding-and-a-fixt-session-is-one-table-built-from-two-xml-files.md)).
+Four behaviours differ at the boundary, and two of them have **no oracle** — see below.
+
+| Behaviour | What happens | What guards it |
+|---|---|---|
+| A Logon without `1137=` on a `FIXT.1.1` session | dropped, nothing sent — `DropReason::LogonWithoutDefaultApplVerId`, §1 | `tests/fixt.rs::a_logon_without_1137_is_dropped_and_nothing_is_sent`; `1d_InvalidLogonNoDefaultApplVerID.def` |
+| This engine's own Logon on a `FIXT.1.1` session | carries `1137=<DefaultApplVerID>`, placed by the generated tables and never by a call site (§2 item 5) | `tests/fixt.rs::a_fix_44_session_emits_no_1137`; interop `4k` reads the real bytes `8=FIXT.1.1\|…\|1137=9\|` off libquickfix's transcript |
+| `1128=` (ApplVerID) outside the FIX 5.0 family | `Reject` with `373=5 371=1128` | `tests/fixt.rs::an_appl_ver_id_outside_the_fix_50_family_is_rejected`, with its twin `…_in_the_fix_50_family_is_validated_normally` |
+| An admin message's body | validated against the **transport** dictionary (`FIXT11.xml`) alone, not the merged pair | `14a_BadField.def` in all three corpora; [ADR-0084](decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md) decision 1 |
+
+### The two with no oracle
+
+QuickFIX's acceptance definitions were written for FIX 4.4, and the FIXT corpora are those same
+files replayed against the FIXT dictionaries. So two of the rules above are this engine's reading
+of the specification with **no counterparty and no `.def` disagreeing or agreeing**:
+
+* **what a counterparty's `1137` is used for after logon.** This engine stores it and does not
+  re-validate against it; nothing in the corpora sends a message that would tell the two
+  behaviours apart.
+* **`1128=` on a session-level message.** The rule above is applied wherever `1128` appears; no
+  `.def` sends `1128` on a session message at all, so the corpora cannot see the difference
+  between that and applying it only on application messages.
+
+Both are recorded as unproven in [STATUS.md](../STATUS.md) rather than presented as results.
+The interop `FIXT` arm ([CONFORMANCE.md](CONFORMANCE.md) §9) is the first independent opinion on
+any of this, and it exercises the first three rows, not these two.
 
 ---
 

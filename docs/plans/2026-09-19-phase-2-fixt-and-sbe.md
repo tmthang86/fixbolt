@@ -720,3 +720,45 @@ Sáu variant `FieldType` mới **không có corpus nào đỡ** — luật `acce
 arm FIXT của `interop.sh` (B7) là đối tác thật đầu tiên có thể phản bác. ADR-0083 trích FIX
 Orchestra *FIX Latest EP312*, **không** phải PDF SP2 Volume 1 (proxy chặn `fixtrading.org`,
 `onixs.biz`) và nói rõ chỗ đó.
+
+#### PR B — các bước B5 đến B8
+
+| Bước | Commit | Bằng chứng manager tự chạy lại trên đúng commit đó |
+|---|---|---|
+| **B5** | `fbdf1aa` | `wire_fixt` **60 / 60** đọc bằng `--nocapture` (có `assert_eq!`, không chỉ in); `--test wire` 59/59 với `wire.rs` **không sửa**; `doc_table` 13 passed (trước 11 passed 2 FAILED); `--all` / `--no-default-features` 0 failed; clippy + fmt + rustdoc hai chiều sạch; `check-no-kernel-sleep.sh` GREEN + RED ok; `check-standard-gives-the-core-back.sh` GREEN CPU 0% ngủ 20/20, RED ok trên `hft` và `yield` |
+| **B6** | `29cf3c3` | `scripts/bench.sh` 18/18 target, `invariant failures 0`, `OK`; bốn case mới đọc **0**; tập 18 binary `bench.sh` build **trùng khít** tập read-back chứng nhận (so bằng `comm`/`diff`, không bằng exit code) |
+| **B7** | `9ca0608` | `scripts/interop.sh` rc=0, FIXT **7 / 7 acceptor + 7 / 7 initiator**; vòng lặp bốn crate của CI chạy tại chỗ, `check-feature-gated-tests-ran.sh` ok cả bốn; `grep -c fix50sp2 ci.yml` 12 (trước 0); `git status --porcelain \| grep vendor` **rỗng** sau một lần chạy interop đầy đủ (§2 rule 9) |
+| **B8** | (commit này) | `check-links.py` không link chết; bảng đồng bộ §4 đi từng dòng |
+
+**Ba lần agent sửa manager, và cả ba lần agent đúng.** Ghi lại vì đây là bằng chứng quy trình
+§12 hoạt động, không phải để tự trách:
+
+1. **B4b** — manager đề nghị gate việc hoãn `373=5/6` bằng `has_groups(msg_type)`, lý lẽ là
+   Heartbeat không khai báo group nào. Agent **từ chối và chứng minh sai**: `NoHops(627)` nằm
+   trong `<header>` của `FIX44.xml` nên **mọi** message type đều có group. Gate ấy nếu dựng thật
+   thì **59/59 và 179/180 đều vẫn xanh** — không `.def` nào gửi `NoHops` có nội dung.
+2. **B5** — brief của manager bắt hai `Problem` mới mang `{ line }`. Agent từ chối: cả 20+
+   variant hiện có đều không có trường, số dòng đã đi trên `SettingsError`. Manager đọc lại enum
+   và constructor: agent đúng.
+3. **B6** — manager chẩn đoán sai nguyên nhân lỗ hổng đọc-ngược căn chỉnh, và cách sửa một dòng
+   của manager sẽ đưa từ **1 sai thành 17 sai**. Nguyên nhân thật là `--workspace` hợp nhất
+   feature khác `-p`. Ghi ở
+   [a-workspace-build-and-a-per-package-build-are-different-artifacts](../reference/a-workspace-build-and-a-per-package-build-are-different-artifacts.md).
+
+**Còn nợ, nêu tên chứ không để trôi:**
+
+- **Hai băng chưa đo, cần bàn §9**: band ADR-0031 của PR A (A-desk), và band `validate` của B4b
+  (`validate NewOrderSingle` 877.5 → 906.2 ns, `validate Heartbeat` 140.7 → 166.2 ns). Máy cloud
+  là Xeon, `benches/baselines.tsv` chỉ có Ryzen, nên mọi lần chạy in `NO BASELINE` và hộp này
+  **không phân giải nổi** hiệu ứng cỡ đó — cùng mã không đổi đo được 158.4 rồi 166.2 ns.
+- **`is_admin` chưa bao giờ được dựng.** Bảng *Bẫy* của kế hoạch chờ B1 sinh nó từ `msgcat` với
+  `is_admin(b"n")` đúng. Đo: 0 lần xuất hiện trong bảng sinh ra, `build.rs` không đọc `msgcat`,
+  và `ADMIN` là const viết tay 7 phần tử ở `session/src/lib.rs:291`, **thiếu `b"n"`**. Là nợ B1
+  hay đã bị bỏ im lặng thì chưa rõ, và ghi lại là chưa rõ.
+- **`CLAUDE.md` §2 bảng *Machine checks* hàng 3 và §7 hàng "Any session-layer change"** vẫn nói
+  59. Nay còn 179/180 sau feature. Kế hoạch giao dòng này cho manager, nhưng chủ đã liệt
+  `CLAUDE.md` vào danh sách không được đụng của PR B, nên **để nguyên và ghi nợ** thay vì tự ý
+  sửa một file chủ đã rào.
+- **Doctest sau feature vẫn không chạy ở đâu cả**: `check-feature-gated-tests-ran.sh` nhận
+  `--tests`. Hôm nay chưa có doctest `fix50sp2` nào. Ghi trong `ci.yml`.
+- **Gác trùng số ADR** vẫn chưa có (hai nhánh lấy cùng một số mà git không xung đột).

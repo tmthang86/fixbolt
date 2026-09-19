@@ -101,7 +101,7 @@ Added one at a time, each behind an approved plan. All of them exist.
 | Crate | Layer | Owns | Depends on |
 |---|---|---|---|
 | `codec` | L1 | Parse and serialise in place. The hot path. `no_std`-compatible is the goal; zero dependencies is the rule. `encoding`: the `Encoding` trait and `TagValue<D, N>`, its tag=value implementation, which forwards unchanged to `parse_into`, `MessageView` and `Template` (D16) | — |
-| `dict` | build | Code generation from the FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the validation tables (defined tags, message types, per-message tag sets, field types, enum values). `tables`: `Tables`, the seven functions the session calls, implemented for `Fix44`; the alias `Fix44TagValue` (D16) | `codec`; it implements `codec::Dictionary` |
+| `dict` | build | Code generation from the FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the validation tables (defined tags, message types, per-message tag sets, field types, enum values). `tables`: `Tables`, the eight functions the session calls, implemented for `Fix44`; the alias `Fix44TagValue` (D16). `[2026-09-19]` behind the off-by-default `fix50sp2` feature it emits a **second table**, `Fixt11Fix50Sp2Tables`, built from two XML files at once — transport from `FIXT11.xml`, application from `FIX50SP2.xml` (ADR-0080). The eighth function, `is_defined_tag_for`, exists because an admin message's body is checked against the transport file alone (ADR-0084) | `codec`; it implements `codec::Dictionary` |
 | `session` | L2 | The FIX session state machine. Pure, no I/O, `Role` as a type parameter. Time enters as `Tick` in milliseconds since 0000-01-01 (D13). Module `schedule` holds when a session is open and when both ends restart at `34=1` (ADR-0033) | `codec`, `dict` |
 | `engine` | L3 | TCP acceptor and connector, drives the session machines, owns the journal and the message log. `transport` is a module here until something needs it to be a crate | `session`; `libc` **only** under the `standard` or `affinity` feature |
 | `library` | L4 | The application-facing API, package **`fixbolt`**: `Handler`, `Incoming`, `Reply`, `App`, and a curated re-export of what an application needs (`serve`, `Config`, `Table`, `Limits`, `Settings`, `Handles`, `Observer`, `Admin`, `Recovery`, `FileJournal`, `FileLog`, …). `Engine`, `Dispatch`, `Transport`, `wait`, `shard`, `affinity`, `frame` and `ring` are deliberately absent; reaching for one means naming `fixbolt-engine` yourself | `engine` |
@@ -891,6 +891,29 @@ pub struct TagValue<D, const N: usize>(PhantomData<D>);   // impl Encoding for T
 pub type Fix44TagValue = TagValue<Fix44, 64>;              // lives in `dict`, beside `Fix44`
 ```
 
+**The dictionary rides the encoding** (ADR-0080 decision 1). `Encoding::Dict` is the table the
+session asks about tags, and it is an associated type rather than a second parameter of
+`Session`, so changing dictionary changes one type and nothing else. Two things follow, and both
+are load-bearing:
+
+* **`Encoding::Dict` requires only `codec::Dictionary`, never `dict::Tables`.** `codec` has zero
+  dependencies and cannot see `dict`. The stronger bound lives on `Session` — `where E::Dict:
+  Tables` — which is where the session's extra questions (required fields, enum values, field
+  types, which layer defines a tag) are actually asked.
+* **A FIXT 1.1 session is that one type substitution.** `TagValue<Fix44, 256>` becomes
+  `TagValue<Fixt11Fix50Sp2Tables, 256>` and the state machine is untouched; the differences at
+  the boundary are the dictionary's, not the machine's. The four that are the session's own —
+  `1137` required on a FIXT Logon, `1137` on the way out, `1128` outside the FIX 5.0 family, and
+  an admin body checked against the transport file alone — are in
+  [SESSION-BEHAVIOUR.md](SESSION-BEHAVIOUR.md) §5b with what guards each.
+
+`[measured 2026-09-19]` the second table is **not** "about twice the size", which is what
+ADR-0080 predicted: `ALLOWED` is a bitset over `0..=max_tag`, SP2's highest tag is 50002 against
+FIX 4.4's 956, and the generated file goes 156 KB to 4.0 MB — 25.6×, on 6.6× the fields. Nothing
+on the hot path got slower and no allocation was added; the cost is build time and binary size,
+and it is written up in
+[a-bitset-keyed-by-tag-scales-with-the-highest-tag](reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md).
+
 Four shared operations — parse, view, read a field, encode — plus `session_fields`, the one hook
 the session gets; the `Option` on it ("do you carry a FIX session header at all") is the whole
 provision this trait makes for an encoding that does not. **Static dispatch only**: every method
@@ -1006,6 +1029,8 @@ below).
 |---|---|---|
 | Session conformance, acceptor, in process | **59 / 59** | `cargo test -p fixbolt-session --test score` `[measured 2026-08-29]` |
 | Session conformance, acceptor, through a real socket | **59 / 59 on every machine** | `cargo test -p fixbolt-engine --test wire`: kernel sockets, the real framer, the real session, the real application; only the clock is injected, because every `I` line in the corpus carries a fixed instant. `[measured 2026-08-30]` 59 / 59 on the M5 and on Linux. It read 39 / 59 on Linux until the harness's client socket was given `TCP_NODELAY`; the gate is now flat across a 20× span of its timing bounds |
+| Session conformance, FIXT 1.1 / FIX 5.0 SP2, in process | **179 / 180**, one divergence pinned by content | `cargo test -p fixbolt-session --features fix50sp2 --test score_fixt`. Three corpora of 60 — `fix50` 59/60, `fix50sp1` 60/60, `fix50sp2` 60/60. The one failing file is asserted by name, line and the engine's actual wire bytes, and **180 / 180 is not reachable with one SP2 table**: tag 336 carries 0 enumerated values in `FIX50.xml` and 7 in `FIX50SP2.xml`, so scoring the `fix50` corpus against the SP2 table is stricter than QuickFIX was ([ADR-0084](decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md) decision 3). No fixture was edited and no exclusion list exists |
+| Session conformance, FIXT 1.1 / FIX 5.0 SP2, through a real socket | **60 / 60** | `cargo test -p fixbolt-engine --features fix50sp2 --test wire_fixt`: the `fix50sp2` corpus through kernel sockets, the same harness as the 59. `[measured 2026-09-19]` it reached 60 / 60 first run, because `TCP_NODELAY` and the bounded-turns pump were copied from `tests/wire.rs` rather than rediscovered |
 | Session conformance, acceptor, in `standard` mode | **59 / 59** with the engine blocking between steps | the same wire test, second case. The only place the corpus meets `standard`. It proves the protocol, not the wiring: `[measured 2026-08-30]` with `Block` made to ignore readiness the run took 3.30 s against a 3.28 s baseline, because one block satisfies the settle criterion either way |
 | Session conformance, acceptor, through the shard runtime | **59 / 59 through one shard and through two** | `cargo test -p fixbolt-engine --features affinity --test shard_wire`. `[measured 2026-08-31]` it read 57 through two; `[measured 2026-09-01]` 59 ([ADR-0020](decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)). The test also counts how the pre-session stage disposed of every socket, because a dropped connection is indistinguishable from a refused duplicate ([ADR-0022](decisions/ADR-0022-the-pre-session-stage-enforces-two-definitions.md)) |
 | Session conformance, initiator, mirrored corpus | **10 / 50** `[measured 2026-09-02]`, ceiling of 45 in doubt, and the harness's own drive count asserted beside it | `cargo test -p fixbolt-session --test mirror`. The secondary gate. It asserted `passed == 0` for three days, and a gate pinned at a constant reports nothing about the code under it. The jump to 10 was two real defects: a session that said goodbye first answered the acknowledgement with a third Logout, and `begin_logout(b"")` wrote an empty `58=`. `Report::driven` counts every time the harness played the operator, by MsgType, because a score a harness can raise by driving harder is not a score. Reversals: `make_receivable` neutered takes it to 0 / 50; letting the acceptor corpus be driven makes `tests/score.rs` panic |
