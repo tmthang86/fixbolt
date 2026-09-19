@@ -24,6 +24,7 @@ the type system or by a test, this page says so.
 | [1c](#1c-many-counterparties-one-registry-and-a-configuration-file) | Counterparties and the configuration file |
 | [2](#2-the-engine-calls-you-on-its-hot-path) | What not to do in a handler |
 | [3](#3-messageview-borrows-the-engines-buffer) | Borrowed messages |
+| [3a](#3a-the-encoding-is-a-type-parameter-and-fix-44-tagvalue-is-the-default) | `Encoding`, `AcceptorFix44`, and what did not change |
 | [4](#4-when-the-ring-fills-you-lose-the-connection) | `RingDispatch` and its failure mode |
 | [5](#5-time-enters-as-a-tick) | Time |
 | [5a](#5a-session-schedules-and-the-timezone-trap) | Schedules |
@@ -570,6 +571,46 @@ The view handed to your handler points into the engine's own read buffer. It is 
 - **Do not assume field order when reading.** Ask the view for a tag; do not index positions.
   Field ordering on the write path comes from generated tables and never from a call site
   (non-negotiable 5); the same discipline is worth having on the read path.
+
+---
+
+## 3a. The encoding is a type parameter, and FIX 4.4 tag=value is the default
+
+`[2026-09-19]` `Session`, `Connection` and `Engine` are generic over an `Encoding`
+([DESIGN.md D16](DESIGN.md), ADR-0079; the session's half is
+[ADR-0082](decisions/ADR-0082-the-session-is-generic-over-tag-value-encodings-and-the-boundary-to-sbe-is-the-session-not-the-trait.md),
+). If you use the `fixbolt` crate you will not see it: **no `serve*` or
+`connect_and_serve*` signature changed**, `examples/acceptor.rs` compiles untouched, and
+`Handler` still hands you a `MessageView`. The parameter has a default, and the default is what
+you already had.
+
+| Name | Lives in | What it is |
+|---|---|---|
+| `Encoding` | `fixbolt_codec` | the trait: parse, view, read a field, encode, and `session_fields` |
+| `TagValue<D, N>` | `fixbolt_codec`, re-exported by `fixbolt_engine` | tag=value over dictionary `D`, with `N` fields of index — forwards to `parse_into`, `MessageView`, `Template` unchanged |
+| `Fix44TagValue` | `fixbolt_dict` | `TagValue<Fix44, 64>` |
+| `AcceptorFix44<N = 256, APP = 1024>` | `fixbolt_engine` | `Session<TagValue<Fix44, N>, Acceptor, APP>` — what `Session<Acceptor, N, APP>` meant before |
+| `InitiatorFix44<N = 256, APP = 1024>` | `fixbolt_engine` | the same, initiator role |
+| `E: Encoding = TagValue<Fix44, N>` | the trailing parameter of `Engine`, `Connection`, `TcpAcceptorEngine` and the other five engine aliases | the default; you name it only to replace it |
+
+Three things to know before you write `E` yourself:
+
+- **`N` moved into `E`.** `Session<Acceptor, 256>` is now `Session<TagValue<Fix44, 256>, Acceptor>`
+  or `AcceptorFix44<256>`. `Session` has three parameters — `E`, the role, `APP` — and `N` is
+  pinned by `E`'s view and scratch types, not by a parameter of its own. You still pick the number
+  (`CLAUDE.md` §6: no hidden constant).
+- **`Session<E>` is generic over tag=value encodings and nothing else.** Any `TagValue<D, N>`
+  whose `D` implements `fixbolt_dict::Tables` is a session: FIX 4.4 today, FIXT 1.1 / FIX 5.0 SP2
+  when phase 2's PR B lands. An SBE encoding will implement `Encoding` and **will not be a
+  session**: `Session<Sbe<S>>` is a compile error at the session's `where` clause, by design,
+  because the FIX session layer is tag=value by specification. There is no SBE session to wait
+  for; SBE will be a codec you carry over your own transport.
+- **The default sits on the types, not on the functions.** Rust puts no default on a function's
+  type parameter, so `serve`, `serve_with`, `serve_hft`, … build their engine with the default
+  `E` and infer nothing — which is exactly why none of them changed. Running another tag=value
+  encoding today means naming the engine alias with `E` filled in (`TcpAcceptorEngine<A, W, J,
+  L, N, RX, TX, APP, TagValue<MyDict, N>>`) and driving `Engine` yourself, which means naming
+  `fixbolt-engine` (§1a already asks that of a sharded deployment).
 
 ---
 

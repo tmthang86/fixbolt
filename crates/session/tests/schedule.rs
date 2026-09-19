@@ -36,10 +36,12 @@
 // outside `crates/*/src`, and an index that panics in a test is a failing test.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_codec::timestamp::TimestampCache;
 use fixbolt_conformance::script::{
     FIXED_TIME_IN, FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum,
 };
+use fixbolt_dict::Fix44;
 use fixbolt_session::clock::MILLIS_YEAR_ZERO_TO_EPOCH;
 use fixbolt_session::schedule::{Schedule, Weekday, Weekdays};
 use fixbolt_session::{Acceptor, Config, Link, Session};
@@ -115,7 +117,7 @@ fn cfg() -> Config {
 /// Drive a session to `now_ms` and offer it a real Logon. Returns whether the
 /// link survived and how many messages went out.
 fn logon_at(cfg: Config, now_ms: u64) -> (Link, usize) {
-    let mut session: Session<Acceptor, 256> = Session::new(cfg);
+    let mut session: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg);
     let mut sent = 0usize;
     session.connect(|_| sent += 1);
     session.tick(now_ms, |_| sent += 1);
@@ -159,7 +161,8 @@ fn the_first_logon_of_a_new_trading_day_is_numbered_one() {
     // instant no reset can be decided at all — `Session::resume` is the version
     // that was not told, and it deliberately never resets.
     let yesterday = midnight() + 16 * HOUR_MS;
-    let mut session: Session<Acceptor, 256> = Session::resume_at(cfg(), 41, 41, yesterday);
+    let mut session: Session<TagValue<Fix44, 256>, Acceptor> =
+        Session::resume_at(cfg(), 41, 41, yesterday);
     let mut out = Vec::new();
     session.connect(|_| {});
     // A whole day later, inside today's window.
@@ -202,7 +205,7 @@ fn the_first_logon_of_a_new_trading_day_is_numbered_one() {
 /// is what this one protects.
 #[test]
 fn a_reconnect_inside_the_same_trading_day_keeps_its_numbers() {
-    let mut session: Session<Acceptor, 256> = Session::resume(cfg(), 41, 41);
+    let mut session: Session<TagValue<Fix44, 256>, Acceptor> = Session::resume(cfg(), 41, 41);
     session.connect(|_| {});
     session.tick(midnight() + 12 * HOUR_MS, |_| {});
 

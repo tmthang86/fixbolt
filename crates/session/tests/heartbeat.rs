@@ -16,7 +16,9 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Acceptor, Config, Link, Session};
 
 /// `HeartBtInt` for the tests that name a threshold, in milliseconds. Ten
@@ -24,7 +26,7 @@ use fixbolt_session::{Acceptor, Config, Link, Session};
 /// on the exact boundary.
 const BEAT_MS: u64 = 10_000;
 
-fn acceptor() -> Session<Acceptor, 256> {
+fn acceptor() -> Session<TagValue<Fix44, 256>, Acceptor> {
     Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"))
 }
 
@@ -83,7 +85,7 @@ fn logon_asking_for(beat_secs: u64) -> Vec<u8> {
 }
 
 /// A session logged on at [`FIXED_TIME_MILLIS`], with the Logon reply dropped.
-fn logged_on(beat_secs: u64) -> Session<Acceptor, 256> {
+fn logged_on(beat_secs: u64) -> Session<TagValue<Fix44, 256>, Acceptor> {
     let mut s = acceptor();
     s.connect(|_| {});
     s.tick(FIXED_TIME_MILLIS, |_| {});
@@ -94,7 +96,7 @@ fn logged_on(beat_secs: u64) -> Session<Acceptor, 256> {
 }
 
 /// Tick to `FIXED_TIME_MILLIS + after_ms` and report what came out.
-fn at(s: &mut Session<Acceptor, 256>, after_ms: u64) -> (Link, Vec<String>) {
+fn at(s: &mut Session<TagValue<Fix44, 256>, Acceptor>, after_ms: u64) -> (Link, Vec<String>) {
     let mut out = Vec::new();
     let link = s.tick(FIXED_TIME_MILLIS + after_ms, |b| {
         out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
@@ -289,7 +291,7 @@ fn a_session_awaiting_a_logon_never_speaks_first() {
 #[test]
 fn a_logon_that_never_arrives_times_out_at_the_stated_deadline() {
     let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_logon_timeout_ms(5_000);
-    let mut s: Session<Acceptor, 256> = Session::new(cfg);
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg);
     s.connect(|_| {});
 
     // The deadline starts at the first tick after connecting: this layer has no
@@ -337,7 +339,7 @@ fn without_a_logon_timeout_a_silent_counterparty_waits_forever() {
 #[test]
 fn a_reconnect_gets_a_whole_new_logon_deadline() {
     let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_logon_timeout_ms(5_000);
-    let mut s: Session<Acceptor, 256> = Session::new(cfg);
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg);
 
     s.connect(|_| {});
     at(&mut s, 0);

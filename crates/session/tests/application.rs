@@ -15,12 +15,14 @@
 
 use std::ops::Range;
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_engine::journal::Store;
 use fixbolt_session::journal::Journal;
 use fixbolt_session::{Acceptor, Application, Config, Link, Session};
 
-fn acceptor() -> Session<Acceptor, 256> {
+fn acceptor() -> Session<TagValue<Fix44, 256>, Acceptor> {
     Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"))
 }
 
@@ -87,7 +89,7 @@ impl Application for Recorder {
 /// The `HeartBtInt` matters: `15_HeaderAndBodyFieldsOrderedDifferently.def`
 /// asks for `108=2`, which times the session out 4.8 s later — too short to
 /// tick a clock forward under.
-fn logged_on() -> Session<Acceptor, 256> {
+fn logged_on() -> Session<TagValue<Fix44, 256>, Acceptor> {
     let mut s = acceptor();
     s.connect(|_| {});
     s.tick(FIXED_TIME_MILLIS, |_| {});
@@ -415,7 +417,10 @@ fn frame(body: &str) -> Vec<u8> {
     with_real_checksum(format!("{head}9={}\u{1}{body}10=0\u{1}", body.len()).as_bytes())
 }
 
-fn on_and_off() -> (Session<Acceptor, 256>, Session<Acceptor, 256>) {
+fn on_and_off() -> (
+    Session<TagValue<Fix44, 256>, Acceptor>,
+    Session<TagValue<Fix44, 256>, Acceptor>,
+) {
     (
         Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_last_processed(true)),
         Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
@@ -463,7 +468,7 @@ fn a_reply_carries_369_only_because_the_application_wrote_it() {
     let order = &inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[1];
 
     for (writes_it, want) in [(true, true), (false, false)] {
-        let mut s: Session<Acceptor, 256> =
+        let mut s: Session<TagValue<Fix44, 256>, Acceptor> =
             Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_last_processed(true));
         let mut journal = Store::new();
         let mut out = Vec::new();

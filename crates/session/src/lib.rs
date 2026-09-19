@@ -24,10 +24,10 @@ pub mod text;
 use core::marker::PhantomData;
 
 use fixbolt_codec::{
-    Dictionary, FieldIndex, MessageView, ParseError, Parsed, Precision, SOH, TemplateBuilder,
-    TimestampCache, Validation, as_u32, parse_into, tag_text_at,
+    Dictionary, Encoding, FieldIndex, MessageView, ParseError, Parsed, Precision, SOH, Template,
+    TemplateBuilder, TimestampCache, Validation, as_u32, tag_text_at,
 };
-use fixbolt_dict::{FieldType, Fix44};
+use fixbolt_dict::{FieldType, Tables};
 
 use crate::journal::{Journal, NoJournal};
 use crate::out::Outbound;
@@ -1279,14 +1279,22 @@ impl From<Refusal> for DropReason {
     }
 }
 
-/// One FIX session, parameterised by role.
+/// One FIX session, parameterised by encoding and role.
 ///
-/// `N` is the [`FieldIndex`] capacity — the caller picks it, per `CLAUDE.md`
-/// §6. 256 covers every message in the acceptance corpus.
+/// `E` is the [`Encoding`] (ADR-0079): it carries the wire format, the
+/// dictionary it validates against, and the [`FieldIndex`] capacity `N` that
+/// used to be a parameter here — `TagValue<Fix44, 256>` is the FIX 4.4
+/// tag=value encoding with room for 256 fields, and the caller still picks `N`
+/// per `CLAUDE.md` §6. 256 covers every message in the acceptance corpus.
+///
+/// **The state machine does not change with `E`**, which is the whole point:
+/// a FIXT 1.1 / FIX 5.0 SP2 session is this machine with a different
+/// `E::Dict`. What the impl below requires of `E` — and why it is not simply
+/// `E: Encoding` — is written on the impl itself.
 ///
 /// Not `Debug`: `FieldIndex` is not, and it is 3 KiB of offsets that no one
 /// would read anyway.
-pub struct Session<R: Role, const N: usize, const APP: usize = DEFAULT_APP_SCRATCH> {
+pub struct Session<E: Encoding, R: Role, const APP: usize = DEFAULT_APP_SCRATCH> {
     cfg: Config,
     state: State,
     /// Milliseconds since 0000-01-01, from the last [`Session::tick`].
@@ -1309,10 +1317,10 @@ pub struct Session<R: Role, const N: usize, const APP: usize = DEFAULT_APP_SCRAT
     /// and `cfg.timestamp_precision`, so a session cannot publish digits its
     /// caller never gave it. ADR-0057.
     now_resolution: Precision,
-    idx: FieldIndex<N>,
+    idx: E::Scratch,
     /// `None` when the configuration cannot be turned into templates. The
     /// session then refuses everything — see [`out::Outbound::new`].
-    out: Option<Outbound<APP>>,
+    out: Option<Outbound<E, APP>>,
     /// `SendingTime`, formatted once a minute rather than once a message (D9).
     stamp: TimestampCache,
     /// `34=` on the next message this session sends. FIX counts from 1.
@@ -1444,7 +1452,46 @@ impl Stamped {
     }
 }
 
-impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
+/// # What the session needs of an [`Encoding`], beyond the trait
+///
+/// ADR-0079 gives `Encoding` four shared operations — parse, view, read a
+/// field, encode — and deliberately no more. The session layer needs more than
+/// four, and the bounds below say exactly which, rather than leaving it to a
+/// compile error four crates away:
+///
+/// * `View<'a> = MessageView<'a, N>`: the validation pass walks a message in
+///   wire order (`MessageView::field_at`, `len`, `find_from`, `group`) and the
+///   trait exposes only `field`. `N` is not a parameter of `Session` — it is
+///   pinned by this binding and by the one below, so it stays the caller's
+///   choice while `Session<E, R, APP>` keeps three parameters.
+/// * `Scratch = FieldIndex<N>`: the same `N`, and what [`Encoding::view`] is
+///   handed.
+/// * `Template<24, 320> = Template<24, 320>`: the seven outbound skeletons are
+///   laid out by `codec`'s `TemplateBuilder`, because the trait offers no way
+///   to build one — see `out::Outbound::new`.
+/// * `Field = u32`: the slots this layer fills are named by FIX tag, and the
+///   `tag` module above is the list of them.
+/// * `ParseError = ParseError`: `judge` answers `BadTag` differently from
+///   every other failure — `14a_BadField.def` against `2d_GarbledMessage.def`
+///   — so it matches on the variants, not on an opaque `Copy` value.
+/// * `E::Dict: Tables`: the `373=` questions live in `dict`, and
+///   `Encoding::Dict` may only require `codec::Dictionary` because `codec` has
+///   zero dependencies (ADR-0080 decision 1).
+///
+/// Every tag=value encoding satisfies all four, FIXT 1.1 included. An encoding
+/// with its own view and its own skeleton — SBE — satisfies none of them and
+/// gets no session, which is what ADR-0078 decided.
+impl<E, R: Role, const N: usize, const APP: usize> Session<E, R, APP>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
     /// How wide a `52=` this session may write **right now**.
     ///
     /// The coarser of what the configuration asked for and what the last tick
@@ -2784,9 +2831,12 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             Which::ResendRequest => &*resend_request,
             Which::GapFill => &*gap_fill,
         };
-        let range = template
-            .encode(buf, &slots[..n])
-            .map_err(|_| Refusal::CannotSend)?;
+        // `24, 320` named rather than inferred: the template's own capacity
+        // is `Skeleton`'s, and the equality binding on this impl makes the two
+        // the same type — inference cannot pick a const parameter out of an
+        // associated type that is already equal to a concrete one.
+        let range =
+            E::encode::<24, 320>(template, buf, &slots[..n]).map_err(|_| Refusal::CannotSend)?;
         emit(&buf[range]);
         if at.is_none() {
             self.next_out += 1;
@@ -2835,7 +2885,9 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
             return Link::Up;
         };
         let out::Outbound { app: buf, .. } = o;
-        let Some(r) = rebuild(msg, Some(seq), now.as_bytes(), last_processed, false, buf) else {
+        let Some(r) =
+            rebuild::<E::Dict>(msg, Some(seq), now.as_bytes(), last_processed, false, buf)
+        else {
             return Link::Up;
         };
         if !journal.put(seq_out, &buf[r.clone()]) {
@@ -2879,7 +2931,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         };
         let o = self.out.as_mut().ok_or(Refusal::CannotSend)?;
         let out::Outbound { app: buf, .. } = o;
-        let r = as_resend(kept, now.as_bytes(), buf).ok_or(Refusal::CannotSend)?;
+        let r = as_resend::<E::Dict>(kept, now.as_bytes(), buf).ok_or(Refusal::CannotSend)?;
         emit(&buf[r]);
         self.last_sent_ms = self.now_ms;
         Ok(true)
@@ -2982,7 +3034,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         journal: &mut J,
         emit: &mut F,
     ) -> Result<Link, Refusal> {
-        match parse_into::<Fix44, N>(bytes, &mut self.idx, Validation::ALL) {
+        match E::parse(bytes, &mut self.idx, Validation::ALL) {
             // A partial read is not a refusal: the next call brings the rest.
             Ok(Parsed::Incomplete) => return Ok(Link::Up),
             Ok(Parsed::Complete { .. }) => {}
@@ -3007,7 +3059,7 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
                 if !text.is_some_and(is_signed_integer) {
                     return Ok(self.garbled(bytes));
                 }
-                let view = self.idx.view(bytes);
+                let view = E::view(&self.idx, bytes);
                 let r = Reject {
                     text: SessionText::InvalidTagNumber,
                     ref_tag: copy::<12>(text),
@@ -3031,11 +3083,11 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         // breaks it as unreadable rather than as a rejectable fault.
         // `[measured]` `2t_FirstThreeFieldsOutOfOrder.def` is the only file in
         // the corpus that sends one, and it expects both to be ignored.
-        if self.idx.view(bytes).field_at(2).map(|(t, _)| t) != Some(tag::MSG_TYPE) {
+        if E::view(&self.idx, bytes).field_at(2).map(|(t, _)| t) != Some(tag::MSG_TYPE) {
             return Ok(self.garbled(bytes));
         }
 
-        let view = self.idx.view(bytes);
+        let view = E::view(&self.idx, bytes);
         let cfg = &self.cfg;
 
         if !view
@@ -3147,12 +3199,12 @@ impl<R: Role, const N: usize, const APP: usize> Session<R, N, APP> {
         let mt = view.get(tag::MSG_TYPE).unwrap_or_default();
         let fault = if self.state != State::LoggedOn {
             None
-        } else if !Fix44::is_msg_type(mt) {
+        } else if !<E::Dict as Tables>::is_msg_type(mt) {
             Some((SessionText::InvalidMsgType, None))
         } else {
-            scan_fields(&view, mt, self.cfg.validation)
-                .or_else(|| missing_required(&view, mt))
-                .or_else(|| bad_group_count(&view, mt))
+            scan_fields::<E::Dict, N>(&view, mt, self.cfg.validation)
+                .or_else(|| missing_required::<E::Dict, N>(&view, mt))
+                .or_else(|| bad_group_count::<E::Dict, N>(&view, mt))
                 // A CompID that is merely wrong, once there is a session to say
                 // so with. `2k_CompIDDoesNotMatchProfile.def` sends all three
                 // combinations and expects `373=9` for each.
@@ -3675,15 +3727,21 @@ enum Which {
 /// use fixbolt_dict::Fix44;
 /// use fixbolt_session::validate;
 ///
+/// // The dictionary is named, not assumed: the same pass answers for FIX 4.4
+/// // and for any other table that implements `fixbolt_dict::Tables`.
+///
 /// let msg: &[u8] = b"8=FIX.4.4\x019=51\x0135=0\x0134=2\x0149=TW44\x01\
 /// 52=20260905-12:00:00.000\x0156=ISLD\x0110=253\x01";
 /// let mut idx: FieldIndex<64> = FieldIndex::new();
 /// let r = parse_into::<Fix44, 64>(msg, &mut idx, Validation::ALL);
 /// assert!(r.is_ok());
-/// assert_eq!(validate(&idx.view(msg), b"0"), None);
+/// assert_eq!(validate::<Fix44, 64>(&idx.view(msg), b"0"), None);
 /// ```
-pub fn validate<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8]) -> Option<SessionText> {
-    validate_with(view, msg_type, DictionaryChecks::new())
+pub fn validate<D: Tables, const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+) -> Option<SessionText> {
+    validate_with::<D, N>(view, msg_type, DictionaryChecks::new())
 }
 
 /// [`validate`], asking only the questions `checks` leaves on.
@@ -3692,14 +3750,14 @@ pub fn validate<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8]) -> O
 /// configured session would have said about a message rather than what a
 /// default one would. See [`DictionaryChecks`] for what each setting forgives
 /// and, more usefully, what it does not.
-pub fn validate_with<const N: usize>(
+pub fn validate_with<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
     checks: DictionaryChecks,
 ) -> Option<SessionText> {
-    scan_fields(view, msg_type, checks)
-        .or_else(|| missing_required(view, msg_type))
-        .or_else(|| bad_group_count(view, msg_type))
+    scan_fields::<D, N>(view, msg_type, checks)
+        .or_else(|| missing_required::<D, N>(view, msg_type))
+        .or_else(|| bad_group_count::<D, N>(view, msg_type))
         .map(|(text, _tag)| text)
 }
 
@@ -3708,7 +3766,7 @@ pub fn validate_with<const N: usize>(
 /// One pass, first fault wins — which is what the corpus expects: `14h` sends
 /// `40=1|40=2` among a dozen good fields and names `371=40`, not the first tag
 /// in the message.
-fn scan_fields<const N: usize>(
+fn scan_fields<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
     checks: DictionaryChecks,
@@ -3732,7 +3790,7 @@ fn scan_fields<const N: usize>(
         // `14g_HeaderBodyTrailerFieldsOutOfOrder.def` puts `34=` after `11=`
         // and names `371=34`. Within the header the order is free — `14b`
         // sends `49, 34, 56, 52` and is faulted for something else entirely.
-        if Fix44::is_header(tag) {
+        if D::is_header(tag) {
             if in_body {
                 return Some((SessionText::TagSpecifiedOutOfRequiredOrder, tag_text(tag)));
             }
@@ -3740,32 +3798,33 @@ fn scan_fields<const N: usize>(
             in_body = true;
         }
 
-        if !Fix44::is_defined_tag(tag) {
+        if !<D as Tables>::is_defined_tag(tag) {
             return Some((SessionText::InvalidTagNumber, tag_text(tag)));
         }
         // `373=4` before `373=6`: an empty value is its own fault, and
         // `14d_TagSpecifiedWithoutValue.def` says so with `56=`.
-        if value.is_empty() && Fix44::field_type(tag) != Some(FieldType::Data) {
+        if value.is_empty() && <D as Tables>::field_type(tag) != Some(FieldType::Data) {
             return Some((SessionText::TagSpecifiedWithoutValue, tag_text(tag)));
         }
         // `AllowUnknownMsgFields=Y` forgives exactly this one: a tag FIX 4.4
         // defines, on a message that does not carry it. It is **not** the same
         // question as `is_defined_tag` above, and a counterparty that sends a
         // real field on the wrong message is the case it exists for.
-        if !checks.allows_unknown_msg_fields() && !Fix44::allows(msg_type, tag) {
+        if !checks.allows_unknown_msg_fields() && !<D as Tables>::allows(msg_type, tag) {
             return Some((SessionText::TagNotDefinedForThisMessageType, tag_text(tag)));
         }
         // A repeat at the top level. Group members repeat by design, so a tag
         // that belongs to a group present in this message is skipped — that is
         // what `21_RepeatingGroupSpecifierWithValueOfZero.def` and `14i` sit on.
-        if view.find_from(0, tag).is_some_and(|(at, _)| at < i) && !in_a_group(view, msg_type, tag)
+        if view.find_from(0, tag).is_some_and(|(at, _)| at < i)
+            && !in_a_group::<D, N>(view, msg_type, tag)
         {
             return Some((SessionText::TagAppearsMoreThanOnce, tag_text(tag)));
         }
-        if Fix44::enum_allows(tag, value) == Some(false) {
+        if <D as Tables>::enum_allows(tag, value) == Some(false) {
             return Some((SessionText::ValueIsIncorrect, tag_text(tag)));
         }
-        if Fix44::field_type(tag).is_some_and(|t| !t.accepts(value)) {
+        if <D as Tables>::field_type(tag).is_some_and(|t| !t.accepts(value)) {
             return Some((SessionText::IncorrectDataFormat, tag_text(tag)));
         }
     }
@@ -3777,16 +3836,16 @@ fn scan_fields<const N: usize>(
 /// `14i_RepeatingGroupCountNotEqual.def` declares `386=3` and sends two
 /// entries. This is the **only** repeating group the 59 definitions populate,
 /// and it is in a negative test — see `PRD.md` §4.
-fn bad_group_count<const N: usize>(
+fn bad_group_count<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
 ) -> Option<(SessionText, Option<Held<12>>)> {
     for i in 0..view.len() {
         let (counter, _) = view.field_at(i)?;
-        if Fix44::group_delimiter(msg_type, counter).is_none() {
+        if D::group_delimiter(msg_type, counter).is_none() {
             continue;
         }
-        let group = view.group::<Fix44>(msg_type, counter)?;
+        let group = view.group::<D>(msg_type, counter)?;
         if group.declared() != Some(group.counted()) {
             return Some((SessionText::IncorrectNumInGroupCount, tag_text(counter)));
         }
@@ -3795,13 +3854,17 @@ fn bad_group_count<const N: usize>(
 }
 
 /// Whether `tag` is a member of some repeating group this message carries.
-fn in_a_group<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8], tag: u32) -> bool {
+fn in_a_group<D: Tables, const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+    tag: u32,
+) -> bool {
     for i in 0..view.len() {
         let Some((counter, _)) = view.field_at(i) else {
             continue;
         };
-        if Fix44::group_delimiter(msg_type, counter).is_some()
-            && Fix44::group_members(msg_type, counter).contains(&tag)
+        if D::group_delimiter(msg_type, counter).is_some()
+            && D::group_members(msg_type, counter).contains(&tag)
         {
             return true;
         }
@@ -3814,16 +3877,16 @@ fn in_a_group<const N: usize>(view: &MessageView<'_, N>, msg_type: &[u8], tag: u
 /// The header's requirements and the body's are two tables, because they answer
 /// two questions — `14b_RequiredFieldMissing.def` needs both, once for `56=`
 /// and once for `11=`.
-fn missing_required<const N: usize>(
+fn missing_required<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
 ) -> Option<(SessionText, Option<Held<12>>)> {
-    for &tag in Fix44::required_header() {
+    for &tag in <D as Tables>::required_header() {
         if view.get(tag).is_none() {
             return Some((SessionText::RequiredTagMissing, tag_text(tag)));
         }
     }
-    for &tag in Fix44::required(msg_type) {
+    for &tag in <D as Tables>::required(msg_type) {
         if view.get(tag).is_none() {
             return Some((SessionText::RequiredTagMissing, tag_text(tag)));
         }
@@ -3865,15 +3928,19 @@ fn msg_type_of(bytes: &[u8]) -> Option<&[u8]> {
 /// two fields.
 ///
 /// **Nothing here decides an order.** The fields go into a [`TemplateBuilder`]
-/// in whatever order they are read out of the kept bytes, and `Fix44` sorts
+/// in whatever order they are read out of the kept bytes, and `D` sorts
 /// them — non-negotiable 5. That is what puts `43` among the header tags and
 /// `122` after the last of them, and it is the same path
 /// `15_HeaderAndBodyFieldsOrderedDifferently.def` proves for an echo.
 ///
 /// Returns the range of `out` the message occupies, or `None` if the kept bytes
 /// are not a message or the result does not fit.
-fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<core::ops::Range<usize>> {
-    rebuild(kept, None, now, None, true, out)
+fn as_resend<D: Dictionary>(
+    kept: &[u8],
+    now: &[u8],
+    out: &mut [u8],
+) -> Option<core::ops::Range<usize>> {
+    rebuild::<D>(kept, None, now, None, true, out)
 }
 // `[measured 2026-09-08]` 2 indexing/slicing sites. Scoped to this
 // function and NOT to the file: a crate-root `#![allow]` silences the
@@ -3885,9 +3952,9 @@ fn as_resend(kept: &[u8], now: &[u8], out: &mut [u8]) -> Option<core::ops::Range
 /// replay needs. `resend` adds `43=Y` and carries the old `52=` as `122=`.
 ///
 /// **Nothing here decides an order.** Every field goes into a
-/// [`TemplateBuilder`] in whatever order it is read, and `Fix44` sorts them —
+/// [`TemplateBuilder`] in whatever order it is read, and `D` sorts them —
 /// non-negotiable 5.
-fn rebuild(
+fn rebuild<D: Dictionary>(
     src: &[u8],
     seq: Option<&[u8]>,
     now: &[u8],
@@ -3953,8 +4020,8 @@ fn rebuild(
         }
     }
 
-    let t = b.build::<Fix44>().ok()?;
-    t.encode_with::<Fix44>(out, &[], &[]).ok()
+    let t = b.build::<D>().ok()?;
+    t.encode_with::<D>(out, &[], &[]).ok()
 }
 
 /// ASCII digits to a tag number. `None` for anything else — a kept message came

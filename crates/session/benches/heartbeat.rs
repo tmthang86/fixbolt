@@ -45,6 +45,8 @@
 #[path = "../../codec/benches/harness.rs"]
 mod harness;
 
+use fixbolt_codec::TagValue;
+use fixbolt_dict::Fix44;
 use fixbolt_session::journal::NoJournal;
 use fixbolt_session::{Acceptor, Config, Link, Session, Silent};
 use std::hint::black_box;
@@ -72,7 +74,7 @@ fn main() {
         // TestRequest bytes below, both stamped `49=W2W`/`56=ISLD`, are this
         // session's own counterparty rather than an invented one.
         let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"W2W");
-        let mut session: Session<Acceptor, 256> = Session::new(cfg);
+        let mut session: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg);
         session.connect(|_| {});
         // `Session::tick` counts milliseconds since 0000-01-01, not the Unix
         // epoch (see its rustdoc). 2026-09-05T12:00:00Z is Unix ms

@@ -30,7 +30,7 @@ one thread is supported and named **`density`**; it costs `[measured 2026-08-31]
 figures on this page. Every figure here names its `N`.
 
 **Sections.** §1 the finding the architecture is built around · §2 layers · §3 crates ·
-§4 decisions D1–D15 · §5 non-goals · §6 gates · §7 build order · §8 latency budget · §9 the
+§4 decisions D1–D16 · §5 non-goals · §6 gates · §7 build order · §8 latency budget · §9 the
 OS checklist.
 
 ---
@@ -100,8 +100,8 @@ Added one at a time, each behind an approved plan. All of them exist.
 
 | Crate | Layer | Owns | Depends on |
 |---|---|---|---|
-| `codec` | L1 | Parse and serialise in place. The hot path. `no_std`-compatible is the goal; zero dependencies is the rule | — |
-| `dict` | build | Code generation from the FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the validation tables (defined tags, message types, per-message tag sets, field types, enum values) | `codec`; it implements `codec::Dictionary` |
+| `codec` | L1 | Parse and serialise in place. The hot path. `no_std`-compatible is the goal; zero dependencies is the rule. `encoding`: the `Encoding` trait and `TagValue<D, N>`, its tag=value implementation, which forwards unchanged to `parse_into`, `MessageView` and `Template` (D16) | — |
+| `dict` | build | Code generation from the FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the validation tables (defined tags, message types, per-message tag sets, field types, enum values). `tables`: `Tables`, the seven functions the session calls, implemented for `Fix44`; the alias `Fix44TagValue` (D16) | `codec`; it implements `codec::Dictionary` |
 | `session` | L2 | The FIX session state machine. Pure, no I/O, `Role` as a type parameter. Time enters as `Tick` in milliseconds since 0000-01-01 (D13). Module `schedule` holds when a session is open and when both ends restart at `34=1` (ADR-0033) | `codec`, `dict` |
 | `engine` | L3 | TCP acceptor and connector, drives the session machines, owns the journal and the message log. `transport` is a module here until something needs it to be a crate | `session`; `libc` **only** under the `standard` or `affinity` feature |
 | `library` | L4 | The application-facing API, package **`fixbolt`**: `Handler`, `Incoming`, `Reply`, `App`, and a curated re-export of what an application needs (`serve`, `Config`, `Table`, `Limits`, `Settings`, `Handles`, `Observer`, `Admin`, `Recovery`, `FileJournal`, `FileLog`, …). `Engine`, `Dispatch`, `Transport`, `wait`, `shard`, `affinity`, `frame` and `ring` are deliberately absent; reaching for one means naming `fixbolt-engine` yourself | `engine` |
@@ -294,6 +294,10 @@ in wire order and knows nothing about groups. A group is resolved only when aske
 `declared()` (what the counter says) and `counted()` (what is on the wire) are reported
 separately and never reconciled by the codec. Whether a mismatch is a `Reject 373=16` is the
 session layer's decision.
+
+`[added 2026-09-19]` This view is one encoding's view. `Encoding` (D16) names it as
+`TagValue::View<'a>` and forwards to it unchanged; a second encoding brings a second view type
+of its own rather than widening this one.
 
 ### D3 — Field ordering comes from generated tables, never from hand-written code
 
@@ -844,6 +848,128 @@ reaches the outbound buffer, and a dying socket discards that buffer.
 `EventKind::MessageLogUnsent { bytes }` says how much of that connection's tail the file is
 wrong about.
 
+### D16 — `Encoding` is a trait, each encoding has its own view, and `Session` is generic over tag=value
+
+`[added 2026-09-19]` Phase 2 brings a second wire format (SBE) and a second dictionary
+(FIXT 1.1 / FIX 5.0 SP2) to a codec, a session and an engine written for FIX 4.4 tag=value
+alone. [ADR-0079](decisions/ADR-0079-one-view-per-encoding-and-one-trait-over-them.md) decides
+how they share one engine;
+[ADR-0082](decisions/ADR-0082-the-session-is-generic-over-tag-value-encodings-and-the-boundary-to-sbe-is-the-session-not-the-trait.md)
+decides where the session's genericity stops. The plan is
+[phase-2-fixt-and-sbe](plans/2026-09-19-phase-2-fixt-and-sbe.md), PR A.
+
+**Each encoding keeps its own view type** (ADR-0079 decision 1). `MessageView` is unchanged —
+its name, its 24 bytes, `Copy`, its API — and nothing in `codec`'s existing public API is renamed
+or re-typed by phase 2; `crates/codec/tests/encoding.rs::api_unchanged` holds the sizes and the
+old call signatures. SBE gets its own `Copy` view, generated per schema and sized to stay
+≤ 24 bytes, when step 9 (§7) lands.
+
+**One trait over them, `Encoding`** (ADR-0079 decision 2), in `crates/codec/src/encoding.rs`,
+as built rather than as the plan first sketched it:
+
+```rust
+pub trait Encoding {
+    type View<'a>: Copy;                              // MessageView<'a, N> for tag=value
+    type Field: Copy;                                 // u32 — a tag — for tag=value
+    type Dict: Dictionary;                            // codec::Dictionary only: codec has no dependencies
+    type Scratch: Default;                            // FieldIndex<N> for tag=value
+    type Template<const P: usize, const S: usize>;    // the D9 parts list; P, S the caller's
+    type ParseError: Copy;
+    type EncodeError: Copy;
+
+    fn parse(buf: &[u8], scratch: &mut Self::Scratch, v: Validation)
+        -> Result<Parsed, Self::ParseError>;
+    fn view<'a>(scratch: &'a Self::Scratch, buf: &'a [u8]) -> Self::View<'a>;
+    fn field<'a>(view: Self::View<'a>, f: Self::Field) -> Option<&'a [u8]>;
+    fn session_fields<'a>(view: Self::View<'a>) -> Option<SessionFields<'a>>;
+    fn encode<const P: usize, const S: usize>(
+        t: &Self::Template<P, S>, out: &mut [u8], slots: &[(Self::Field, &[u8])],
+    ) -> Result<Range<usize>, Self::EncodeError>;
+}
+
+pub struct TagValue<D, const N: usize>(PhantomData<D>);   // impl Encoding for TagValue<D: Dictionary, N>
+pub type Fix44TagValue = TagValue<Fix44, 64>;              // lives in `dict`, beside `Fix44`
+```
+
+Four shared operations — parse, view, read a field, encode — plus `session_fields`, the one hook
+the session gets; the `Option` on it ("do you carry a FIX session header at all") is the whole
+provision this trait makes for an encoding that does not. **Static dispatch only**: every method
+is an associated function with no receiver, every one is `#[inline]`, and `TagValue`'s forward
+unchanged to `parse_into`, `FieldIndex::view`, `MessageView::get` and `Template::encode_with`. The
+trait adds a name, not a branch, which is why `crates/codec/benches/alloc.rs` counts
+`parse via Encoding` beside the direct parse and both must read 0. No `dyn Encoding` on any path
+a message takes. Three shapes follow from "forwards unchanged": `parse` returns the existing
+`Parsed` and `view` is its own method, so a view can still be built over the index after
+`ParseError::BadTag` (`14a_BadField`); `encode` is one call over an immutable D9 template, not
+`patch` then `encode`; and the two error types are the two `codec` already returns. Repeating
+groups are deliberately absent from the trait — `GroupData` is a tag=value shape. ADR-0079
+decision 5 is the guard that this costs the tag=value path nothing: `benches/parse.rs`,
+`serialize.rs` and `alloc.rs` inside the ADR-0031 band on the §9 machine, same commit, before any
+SBE line; a band miss is a stop.
+
+**`Session` is generic over tag=value encodings; `Session<Sbe<S>>` does not compile (ADR-0082).**
+`Session<E: Encoding, R: Role, const APP: usize>`: the index capacity `N` that used to be a
+parameter now rides in `E`, and the state machine does not change with `E` — a FIXT 1.1 /
+FIX 5.0 SP2 session is this machine with a different `E::Dict`. But `impl Session` needs more of
+`E` than the trait gives, and says so in six bounds rather than leaving it to a compile error
+four crates away. In the words of the rustdoc on that `impl` (`crates/session/src/lib.rs`, *What
+the session needs of an `Encoding`, beyond the trait*):
+
+```rust
+impl<E, R: Role, const N: usize, const APP: usize> Session<E, R, APP>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+```
+
+- `View<'a> = MessageView<'a, N>`: the validation pass walks a message in wire order
+  (`MessageView::field_at`, `len`, `find_from`, `group`) and the trait exposes only `field`.
+  **`N` is not a parameter of `Session` — it is pinned by this binding and by the one below**, so
+  it stays the caller's choice (`CLAUDE.md` §6) while `Session<E, R, APP>` keeps three
+  parameters.
+- `Scratch = FieldIndex<N>`: the same `N`, and what `Encoding::view` is handed.
+- `Template<24, 320> = Template<24, 320>`: the seven outbound skeletons are laid out by `codec`'s
+  `TemplateBuilder`, because the trait offers no way to build one (`out::Outbound::new`).
+- `Field = u32`: the slots this layer fills are named by FIX tag, and the `tag` module is the list
+  of them.
+- `ParseError = ParseError`: `judge` answers `BadTag` differently from every other failure —
+  `14a_BadField.def` against `2d_GarbledMessage.def` — so it matches on the variants, not on an
+  opaque `Copy` value.
+- `E::Dict: Tables`: the `373=` questions live in `dict`, and `Encoding::Dict` may only require
+  `codec::Dictionary` because `codec` has zero dependencies (ADR-0080 decision 1). `Tables` is a
+  bound on `Session`, never on the trait.
+
+Every tag=value encoding satisfies all of them, FIXT 1.1 included. An encoding with its own view
+and its own skeleton — SBE — satisfies none of them and gets no session, which is what ADR-0078
+decided. The boundary to SBE is therefore **a type error at the session's `where` clause, not a
+trait method**, and the trait does not grow to erase it: an ordered walk, a builder and an error
+probe on `Encoding` would be tag=value shapes under generic names, and the type-level harness for
+"SBE inside a FIXT session" that ADR-0078 decision 3 declined for lack of any venue (ADR-0082,
+*The alternative, not chosen*). The FIX Session Layer specification draws the same line — a valid
+FIX message is a tagvalue string (§3.1.4) and both ends validate tagvalue (§4.5) — and the
+encoding-independent session is FIXP, phase 3, a second `impl` beside `Session` (ADR-0078
+decision 2). ADR-0082 decision 2 amends ADR-0079 decision 3 accordingly, and decision 4 follows:
+`SbeTables<S>` implements `codec::Dictionary` only, and `sbe` does not depend on `dict`. The 59
+definitions run against `Session<TagValue<Fix44, 256>, _>` exactly as before, in process and over
+a socket, which is what proves the generalisation moved nothing.
+
+**Generic sessions mean generic front doors, and the doors kept their shape.** `Connection` and
+`Engine` take a trailing `E: Encoding = TagValue<Fix44, N>`, as do the six engine aliases
+(`TcpAcceptorEngine`, `AcceptorEngineOver`, `HftAcceptorEngine`, `StandardAcceptorEngine`,
+`TcpInitiatorEngine`, `InitiatorEngineOver`); `AcceptorFix44<N = 256, APP>` and
+`InitiatorFix44<N = 256, APP>` name `Session<TagValue<Fix44, N>, Acceptor | Initiator, APP>`,
+which is what `Session<Acceptor, N, APP>` meant before. Rust allows no default on a function's
+type parameter and ADR-0047 refuses a partial turbofish, so the default sits on `Engine` and the
+aliases and **every `serve*` signature is unchanged** — `crates/library/examples/acceptor.rs`
+compiles untouched. `engine` re-exports `TagValue` and `Fix44` so the default is a type a caller
+can name and therefore substitute.
+
 ## 5. Non-goals for v1
 
 The full list is [PRD.md §5](PRD.md); this is the subset that shapes the architecture.
@@ -914,7 +1040,7 @@ below).
 
 | Gate | Target | Proven by |
 |---|---|---|
-| Allocations on the hot path, codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator |
+| Allocations on the hot path, codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator. `[2026-09-19]` the `parse via Encoding` case counts the same parse through `Encoding::parse` beside the direct `parse_into` case, and each asserts its own path is live (D16) |
 | Allocations on the hot path, session | **0** on sixteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, ordered, clock, text, schedule-open, schedule-shut | `crates/session/benches/alloc.rs`. The refusal path is counted apart because a hostile counterparty controls it and a `format!` is easiest to reach for there. `[measured 2026-09-02]` injecting one into `ordered` reads 10 000 |
 | Allocations on the hot path, engine | **0** on thirty-one paths (`cargo bench -p fixbolt-engine --bench alloc`'s `allocations:` line, 2026-09-14): **mark-out-mem, mark-out-file-async, journal-async-busy**, idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle, registry-lookup, observe-idle, observe-asked, events-idle, events-busy, admin-idle, admin-busy, shutdown, reconnect, log-record, log-idle, log-busy, **origin-idle, origin-busy**, adopt-idle, **logon-first** | `crates/engine/benches/alloc.rs`. `busy` asserts the session is still logged on at the end of the count, because an earlier version measured a connection dropped at message two. `log-record` calls `MessageLog::record` a thousand times with no engine in the window; `[measured 2026-09-04]` making it allocate once reads 1000. `[measured 2026-09-05]` the two ADR-0048 cases read **2000** and **16** under an injected `format!`; `logon-first` is sixteen exact calls rather than thousands because `speak_first` runs once per session and the fixture cannot cycle sessions — one `Config` means a second concurrent session is refused as a duplicate, and a dropped `Loopback` peer signals no EOF, so an early version of that case read `1 sends over 500 sessions`. What no bench here proves is that the writer thread allocates nothing while the engine runs; `tools/w2w` is where a both-threads number belongs |
 | A peer's TLS 1.3 KeyUpdate allocates exactly what rustls's key schedule forces, and nothing else `[2026-09-13]` | engine and ktls-core: **0**; rustls: **two** boxes of **exactly 184** bytes per direction rekeyed — **four** under `update_requested`, **two** under `update_not_requested`, of this lock's rustls 0.23.44 and ring 0.17.14 — asserted `==`, not `<=` — the second named carve-out from non-negotiable 1 | `crates/engine/tests/tls_key_update.rs::a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces` (`update_requested`, 4 boxes) and `::a_key_update_without_update_requested_rekeys_one_direction_and_allocates_two_boxes` (`update_not_requested`, 2 boxes), each run reading the same count ([ADR-0063](decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)). A ceiling (`<= 4`) was what step 6c shipped under a name that said "nothing"; an exact count is the assertion that forces a re-read on the next rustls or ring bump |
@@ -1097,7 +1223,8 @@ measurements.
 
 ## 7. Build order
 
-Each step was a plan, a branch and a merge. **All eight are complete as of 2026-09-02.**
+Each step was a plan, a branch and a merge. **Steps 1–8 are complete as of 2026-09-02; step 9 is
+in flight.**
 
 1. **`codec` + `dict`**: parse, serialise, generated tables ([plan](plans/2026-08-27-codec-dict.md)).
 2. **Repeating groups**: `GroupIter` over the flat index, `<component>` recursion in `dict`
@@ -1118,6 +1245,12 @@ Each step was a plan, a branch and a merge. **All eight are complete as of 2026-
    which pulls in the same handler file with `#[path]` and drives it through a kernel socket.
    The example names nothing from `fixbolt_engine` or `fixbolt_session`, which is the facade's
    own test ([ADR-0041](decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)).
+9. **`sbe` + `sbe-gen`**: the SBE codec under the `Encoding` trait (D16) and the generator that
+   emits its layout tables from a schema. One step, like step 1, because the runtime is only
+   usable with generated tables and the generator is only testable against the runtime. Under
+   the phase 2 [plan](plans/2026-09-19-phase-2-fixt-and-sbe.md), the one exception to "one
+   crate per plan" in `CLAUDE.md` §1, decided by the owner on 2026-09-19. `tools/sbe-interop`
+   sits beside it as `tools/interop` sits beside step 5.
 
 TLS (D11) has no step here. It landed beside step 6, as a second `Transport` —
 `TlsTransport` in `crates/engine/src/tls.rs`, behind `--features tls`

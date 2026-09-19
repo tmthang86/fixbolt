@@ -8,6 +8,8 @@
 // item 55.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::{Encoding, FieldIndex, MessageView, ParseError, TagValue, Template};
+use fixbolt_dict::{Fix44, Tables};
 use fixbolt_session::journal::Journal as SessionJournal;
 use fixbolt_session::{Application, DropReason, Link, Role, Session};
 
@@ -37,6 +39,13 @@ pub enum Turn {
 /// `N` sizes the session's field index, `RX` its receive buffer and `TX` the
 /// bytes it has written but the socket has not taken. All three are the
 /// caller's choice and none is a hidden constant — `CLAUDE.md` §6.
+///
+/// `E` is the wire format the session speaks ([`Encoding`], ADR-0079). It is
+/// **last and it has a default**, so every existing `Connection<T, R, J, N,
+/// RX, TX, APP>` keeps meaning what it meant: FIX 4.4 tag=value with room for
+/// `N` fields. `N` stays a parameter of its own because it is the one the
+/// caller sizes and the one `docs/CONFIGURATION.md` names; the bound on the
+/// impl below ties it to `E::Scratch`, so the two cannot disagree.
 pub struct Connection<
     T,
     R: Role,
@@ -45,6 +54,7 @@ pub struct Connection<
     const RX: usize,
     const TX: usize,
     const APP: usize = 1024,
+    E: Encoding = TagValue<Fix44, N>,
 > {
     /// Which connection this is, for routing a reply that comes back from
     /// another thread. Never reused: the engine only ever counts up.
@@ -65,7 +75,7 @@ pub struct Connection<
     shard: u16,
     /// The socket. `None` once it has been given up.
     pub transport: T,
-    pub session: Session<R, N, APP>,
+    pub session: Session<E, R, APP>,
     /// What this connection has already sent, for a `ResendRequest` to be
     /// answered from. `DESIGN.md` D7 — the session says *keep this*, the
     /// journal decides how and whether it survives a restart.
@@ -99,6 +109,13 @@ pub struct Connection<
     overflow: bool,
 }
 
+/// The bound is [`Session`]'s own, repeated: `Encoding` gives four operations
+/// and the session layer needs more than four, so the equalities that pin its
+/// view, its scratch and its skeleton travel with every type that holds one.
+/// See the impl on `Session` in `crates/session/src/lib.rs` for what each one
+/// buys. Nothing here reads a field or writes a template itself — this file
+/// moves bytes between a socket and a session — so the bound is here only to
+/// be able to *call* the session at all.
 impl<
     T: Transport,
     R: Role,
@@ -107,10 +124,20 @@ impl<
     const RX: usize,
     const TX: usize,
     const APP: usize,
-> Connection<T, R, J, N, RX, TX, APP>
+    E,
+> Connection<T, R, J, N, RX, TX, APP, E>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
 {
     /// Wrap a socket and a session that has not been told about it yet.
-    pub const fn new(id: ConnId, transport: T, session: Session<R, N, APP>, journal: J) -> Self {
+    pub const fn new(id: ConnId, transport: T, session: Session<E, R, APP>, journal: J) -> Self {
         Self {
             id,
             unsent: 0,

@@ -23,9 +23,10 @@
 use std::ops::Range;
 
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_engine::AcceptorFix44;
 use fixbolt_engine::journal::{Durability, FileJournal, MemJournal, SLOT_LEN, Store};
 use fixbolt_session::journal::{Journal, NoJournal};
-use fixbolt_session::{Acceptor, Application, Config, Link, Session};
+use fixbolt_session::{Application, Config, Link, Session};
 
 /// The acceptance server's own application: echo every order back.
 struct EchoApp;
@@ -110,7 +111,7 @@ fn resend_request(seq: u32, from: u32, to: u32) -> Vec<u8> {
 /// `docs/reference/` keeps collecting. So the size is named here.
 type Ring8 = MemJournal<8, SLOT_LEN>;
 
-fn logged_on() -> (Session<Acceptor, 256>, Ring8) {
+fn logged_on() -> (AcceptorFix44<256>, Ring8) {
     let mut s = Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"));
     s.connect(|_| {});
     s.tick(FIXED_TIME_MILLIS, |_| {});
@@ -119,7 +120,7 @@ fn logged_on() -> (Session<Acceptor, 256>, Ring8) {
     (s, Ring8::new())
 }
 
-fn feed<J: Journal>(s: &mut Session<Acceptor, 256>, j: &mut J, wire: &[u8]) -> Vec<String> {
+fn feed<J: Journal>(s: &mut AcceptorFix44<256>, j: &mut J, wire: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     s.received_with(wire, &mut EchoApp, j, |b| {
         out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));
@@ -684,7 +685,7 @@ fn a_put_the_journal_refuses_is_counted() {
 // the session's own rules about the cursor.
 
 /// A logged-on acceptor with a ring big enough to keep everything.
-fn logged_on_deep(batch: u16) -> (Session<Acceptor, 256>, Store) {
+fn logged_on_deep(batch: u16) -> (AcceptorFix44<256>, Store) {
     let mut s =
         Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_resend_batch(batch));
     s.connect(|_| {});

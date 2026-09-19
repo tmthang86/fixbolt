@@ -11,8 +11,10 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::runner::{Conn, Input, Link, SessionUnderTest, run};
 use fixbolt_conformance::script::FIXED_TIME_MILLIS;
+use fixbolt_dict::Fix44;
 use fixbolt_engine::frame::{Cut, Framer};
 use fixbolt_engine::journal::Store;
 use fixbolt_session::{Acceptor, Config, Session};
@@ -59,7 +61,7 @@ struct Adapter {
 /// One connection: its state machine and the bytes that have arrived for it.
 struct Wire {
     conn: Conn,
-    session: Session<Acceptor, 256>,
+    session: Session<TagValue<Fix44, 256>, Acceptor>,
     /// The store moved to `engine` at step 6 of its plan; the score adapter
     /// stands in for an engine, so it supplies the real one.
     journal: Store,

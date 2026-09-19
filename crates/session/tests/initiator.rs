@@ -29,7 +29,9 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_IN, FIXED_TIME_MILLIS, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Config, Initiator, Link, Session};
 
 fn cfg() -> Config {
@@ -61,8 +63,8 @@ fn readable(b: &[u8]) -> String {
 /// Three inputs and no socket: `connect` records whose turn it is, `tick` is
 /// what makes it speak — time enters this layer nowhere else — and the peer's
 /// Logon is what completes the handshake.
-fn logged_on() -> (Session<Initiator, 256>, Vec<String>) {
-    let mut s: Session<Initiator, 256> = Session::new(cfg());
+fn logged_on() -> (Session<TagValue<Fix44, 256>, Initiator>, Vec<String>) {
+    let mut s: Session<TagValue<Fix44, 256>, Initiator> = Session::new(cfg());
     let mut out: Vec<String> = Vec::new();
     assert_eq!(s.connect(|b| out.push(readable(b))), Link::Up);
     assert_eq!(
@@ -96,7 +98,7 @@ fn logged_on() -> (Session<Initiator, 256>, Vec<String>) {
 /// See `docs/reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md`.
 #[test]
 fn an_initiator_does_not_answer_a_logon_with_a_logon() {
-    let mut s: Session<Initiator, 256> = Session::new(cfg());
+    let mut s: Session<TagValue<Fix44, 256>, Initiator> = Session::new(cfg());
     let mut out: Vec<String> = Vec::new();
     s.connect(|b| out.push(readable(b)));
     s.tick(FIXED_TIME_MILLIS, |b| out.push(readable(b)));
@@ -203,7 +205,7 @@ fn a_resend_request_carries_the_range_the_caller_chose() {
 /// use, and there is no reason for the three to agree by accident.
 #[test]
 fn nothing_can_be_originated_before_the_session_is_logged_on() {
-    let mut s: Session<Initiator, 256> = Session::new(cfg());
+    let mut s: Session<TagValue<Fix44, 256>, Initiator> = Session::new(cfg());
     let mut out: Vec<String> = Vec::new();
     assert_eq!(s.connect(|b| out.push(readable(b))), Link::Up);
     assert!(!s.is_logged_on(), "the premise");
