@@ -2359,6 +2359,90 @@ whether you have found it.
 
 ---
 
+## Item 51's last arm: `mitigations=off` takes 58% off a TCP loopback round trip — A/B, not published — 2026-09-19
+
+**A/B, not published.** Every figure in this section was taken with the CPU speculation
+mitigations disabled, a setting `DESIGN.md` §9 forbids
+([ADR-0023](../decisions/ADR-0023-section-9-records-the-cpu-mitigations.md)). They are
+differences against boot B and nothing else: none of them enters `DESIGN.md` §8,
+`benches/baselines.tsv` or any published row (non-negotiable 10).
+
+`[measured 2026-09-19]` AMD Ryzen 7 3700X (host `tmt-B450-I-AORUS-PRO-WIFI`), Linux 7.0.0-31,
+command line `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1 mitigations=off`,
+commit `0fe50c0`. `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` read **`pass 15 fail 1 unknown
+0`**, the one FAIL being the CPU mitigations row (`disabled retbleed spec_rstack_overflow
+spec_store_bypass spectre_v1 spectre_v2 vmscape`). That is also the reversal of ADR-0023's
+check, observed for free: the section above found the script green with everything off; it is
+now red on exactly that row. Raw logs: `target/item51/` (gitignored, this desk only).
+
+The two procedures are the ones boot B ran for suspect 1 (step B7), unchanged.
+
+**1. `cargo bench -p fixbolt-engine --bench payload`, six runs, the first discarded** (the
+first run after a reboot is thrown away by rule; the desktop is still settling).
+`TCP loopback, 8 in 8 out`: 5226.5 / 5241.1 / 5247.5 / 5272.4 / 5223.6 ns/op — median
+**5241.1**, spread 0.9% (discarded run: 5243.0).
+
+| | boot B, mitigated | this boot, `mitigations=off` | difference |
+|---|---|---|---|
+| `TCP loopback, 8 in 8 out` | 12 594.4 / 12 597.8 | 5 241.1 | **−7 355 ns, −58.4%** |
+
+The last run's other cases, against the committed (mitigated) baselines: 83 in 87 out
+5365.1 vs 12 608.5 (−57.4%); 149 in 191 out 5372.1 vs 12 648.4 (−57.5%); 8192 in 8192 out
+6919.8 vs 14 890.9 (−53.5%). The bench printed `UNDER BASELINE` on all four, as it must; **the
+baselines were not re-recorded**, because they describe the §9 machine and this boot is not one.
+
+**2. `RUNS=10 ARMS="hft:admin" scripts/w2w-baseline.sh`, twice**, loopback, engine on CPU 6,
+client on CPU 7. Procedure 1 qualified 10 of 10; **procedure 2 qualified 9** — its run 9 was
+disqualified at 6% busy, by the machine-quiet guard, and the median is over the nine.
+`engine-ctxt voluntary 0` on every qualifying run; one of them (procedure 2, run 1) read
+`involuntary 1`, which is preemption, not a kernel sleep.
+
+| `hft` admin, ns | min | p50 (across runs) | p99 | p99.9 |
+|---|---|---|---|---|
+| procedure 1 | 7719 | **8045** (8025 .. 8125) | 11 856 | 13 855 |
+| procedure 2 | 7694 | **8086** (7985 .. 8115) | 11 863 | 13 746 |
+| boot B, mitigated, p50 | | 18 249 / 18 179 | | |
+| difference at p50 | | **−10 204 / −10 093 ns, −55.9% / −55.5%** | | |
+
+### The bimodality did not appear
+
+Boot B's notrack-off phases were bimodal — most runs near 18.2 µs, some near 15.7. Here all
+nineteen qualifying runs sit in one mode: p50 7985 .. 8125, max/median 1.010 in procedure 1, and
+both procedures ran after the payload bench, the order that preceded the slow mode in boot B.
+That is an observation, not a cause: mitigations, the day and the boot all changed together, and
+the slow mode was never reproducible on demand, so nineteen unimodal runs cannot say it is gone.
+
+### What it says about item 51's suspect 2
+
+Item 51 asked why an 8-byte TCP loopback round trip costs ~10.2 µs more than a bare syscall
+accounts for. Suspect 1, conntrack, was ~420 ns (3.3%). **Suspect 2 is ~7.4 µs (58%)** — larger
+than the 61% the section above found per syscall would suggest only in absolute terms, and
+consistent with its mechanism: the AMD return-thunk family charges every `ret` inside the
+kernel, and the TCP send/receive path through `lo`, netfilter and the softirq is the deepest
+call chain this project exercises. The w2w round trip, four such traversals plus the engine,
+gave back ~10.1 µs, the same order as item 51's whole gap.
+
+What remains, 5.2 µs for the round trip, is still ~30 bare unmitigated syscalls (`getpid`
+59.45 ns above), so loopback TCP is expensive on this box with or without mitigations; the
+mitigations roughly multiply that cost by 2.4 rather than create it.
+
+### What this does not prove
+
+- **It is a cross-boot, cross-day A/B on one machine.** Boot B was 2026-09-15, same kernel
+  build, a different commit; no user-space anchor (`user_loop`) was run in this boot to tie
+  the two together the way the section above did. The size of the effect (−56 to −58%, against
+  run-to-run spread under 1.2%) is what carries it, not the design.
+- **Which mitigation.** Only all-off was run. The section above attributes the per-syscall
+  cost to `retbleed` + `spec_rstack_overflow`; that the loopback path follows the same split is
+  inferred, not measured.
+- **The flush arm** (Tailscale and the full ruleset removed) is still unrun, so what of the
+  remaining 5.2 µs is netfilter beyond conntrack is unknown.
+- **A cause for boot B's bimodality**, as above.
+- **Nothing about the mitigated, publishable configuration changed.** §8's loopback floor stands
+  as measured under §9.
+
+---
+
 ## What LTO and `codegen-units` are worth here, and who actually gets it — 2026-09-01
 
 `STATUS.md` open item 13 since the project began: *"Release profile is default. No `lto`, no
@@ -3653,7 +3737,9 @@ rebuild) ended.
 - **Item 51's second suspect.** Suspect 1 (conntrack) is 3.3% of the 12.6 µs 8-byte TCP loopback
   round trip, about 4% of item 51's ~10.2 µs gap; the CPU speculation mitigations (suspect 2) were
   not tested this boot, and the flush arm (Tailscale + full ruleset) was skipped — the owner was
-  not at the desk.
+  not at the desk. **`[measured 2026-09-19]` suspect 2 answered, A/B not published: −58.4% on
+  the 8-byte round trip, −55.9 ‖ −55.5% at w2w admin p50 — see *Item 51's last arm* beside the
+  ADR-0023 section.**
 - **Whether fixbolt's admin path actually costs more than nanofix's.** The sign of the
   same-procedure difference flipped between procedures (+416 / −175 ns); no difference is
   claimed at admin p50.
