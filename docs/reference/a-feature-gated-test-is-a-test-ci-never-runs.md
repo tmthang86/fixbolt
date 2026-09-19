@@ -103,9 +103,23 @@ and the five FIXT binaries running with real counts rather than the empty-shell 
 is about — `score_fixt` 2 tests, `wire_fixt` 1, against `running 0 tests` under the default
 feature set.
 
-**Still not observed: the check on the check.** Making a feature-gated test fail on purpose and
-watching CI go red needs a push, so it is the manager's, not the step's. Until it has been seen
-once, treat the paragraph above as a claim about a YAML file.
+**The check on the check is observed — and it was not synthetic.** This page asked for a
+feature-gated test to be broken on purpose and CI watched to see it go red. That was never needed:
+the first time this step ever ran, it went red on a **real** defect that `cargo test --all` could
+not see — `crates/dict/tests/fixt_order.rs` had four possible answers at one pin, because its
+oracle walked `read_dir`
+([a-test-oracle-that-reads-read-dir-has-more-than-one-answer](a-test-oracle-that-reads-read-dir-has-more-than-one-answer.md)).
+Both directions were watched on the same branch, one commit apart:
+
+```
+9ca0608  fix50sp2 step RED   fixt_order.rs:235  left: 64460  right: 64750   (twice)
+064d90a  fix50sp2 step GREEN after the fix                 CI run 35449251846
+```
+
+That is a stronger observation than breaking something deliberately would have been, because the
+failure was one nobody planted and nobody expected. Four numbers had been pinned, quoted in
+`docs/reference/`, and **wrong since the commit that introduced them** — invisible to every gate
+in this repository, because no gate had ever run that test on a second machine.
 
 A known gap, named rather than left implicit: the script is given `--tests`, so a **doctest**
 behind the feature would still run nowhere. There is no `fix50sp2` doctest today. The same gap is

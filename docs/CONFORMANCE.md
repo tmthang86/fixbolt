@@ -528,7 +528,8 @@ under TLS in `hft` (both scripts trace `tools/w2w`, an acceptor), any suite but
 Behind the off-by-default `fix50sp2` feature. Machine: the cloud Linux box this branch was built
 on, an `Intel(R) Xeon(R) Processor @ 2.10GHz`, **not** the `DESIGN.md` §9 desk — which does not
 matter for the counts on this page, because correctness figures do not depend on OS tuning.
-CI run id for the commit these were read on: **`35447380546`**, PR #82, commit `9ca0608`.
+CI run id for the commit these were read on: **`35449251846`**, PR #82, commit `064d90a` —
+the first green run in which CI actually executed the `fix50sp2` tests at all.
 
 ### The three corpora, in process
 
