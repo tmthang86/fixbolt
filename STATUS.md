@@ -74,7 +74,8 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 
 **Where.** Branch `plan/phase-2-a`, PR [#79](https://github.com/tmthang86/fixbolt/pull/79), **draft**,
 off `main` at `ece17e7` and merged up to `55c28d8`. Code commit `c2df98f`, CI run
-[`35428204779`](https://github.com/tmthang86/fixbolt/actions/runs/35428204779). The desk is powered off on the desktop grub line (see *The machine*).
+[`35428204779`](https://github.com/tmthang86/fixbolt/actions/runs/35428204779), 14 jobs of 14;
+this handoff commit's own run is [`35428678707`](https://github.com/tmthang86/fixbolt/actions/runs/35428678707), also 14 of 14. The desk is powered off on the desktop grub line (see *The machine*).
 
 ### What closed
 
