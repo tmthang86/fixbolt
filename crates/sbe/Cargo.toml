@@ -21,5 +21,13 @@ encoding = ["dep:fixbolt-codec"]
 [dependencies]
 fixbolt-codec = { path = "../codec", optional = true }
 
+[[bench]]
+name = "alloc"
+harness = false
+
+[[bench]]
+name = "sbe"
+harness = false
+
 [lints]
 workspace = true
