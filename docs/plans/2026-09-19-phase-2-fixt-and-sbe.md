@@ -444,3 +444,65 @@ Theo `CLAUDE.md` §4; đây là danh sách **manager sửa**, dòng chính xác:
 
 *(mỗi PR một mục con `### PR A` / `### PR B` / `### PR C` / `### PR D` — điền khi đóng: commit,
 CI run id, gate quote, cái gì chưa làm và vì sao)*
+
+### PR B
+
+Nhánh `feat/phase-2-b`, base `plan/phase-2-a` (kế hoạch và ADR-0080 nằm ở đó, không ở `main`).
+PR draft [#82](https://github.com/tmthang86/fixbolt/pull/82). Máy: cloud Linux, **không phải bàn
+§9** — không có số thời gian nào trong PR này.
+
+**Đã giao**
+
+| Bước | Commit | Gate đã chạy và đọc output |
+|---|---|---|
+| B3 (phần không cần A) | `27051f6` | `cargo test -p fixbolt-conformance` mọi suite `ok`, `fixt_corpus` 4/4; `--test score` in `step_six_b_replays_what_it_sent_and_scores_fifty_nine ... ok` (59/59, không sửa fixture); `cargo test --all` và `--no-default-features` 0 `FAILED`; clippy `-D warnings` sạch; `fmt --check` sạch |
+| D1a | `ca15066` | `check-links.py`: `2321 internal links checked`, `no dead internal links`; `wc -l` tám trang: 41/39/35/31/63/31/39/38, đều ≤ 80 |
+
+Đảo chiều (§7, câu FAIL viết trước khi chạy, cả ba đỏ đúng câu đã đoán, khôi phục → xanh):
+`1137` 9→8 → `Logon 1137 should equal the corpus's declared value`; count 60→59 →
+`expected 59 definitions in this corpus, found 60`; comp_id → `TW50` →
+`Logon 49 should equal the corpus's declared CompID`.
+
+Kiểm tay ngoài gate: 85 đường dẫn file mà tám trang `internals/` nêu bằng văn xuôi đều tồn tại
+trong `crates/` và `tools/` — `check-links.py` không xét tên file viết trong prose.
+
+**Năm phát hiện chặn B1/B2** (đọc thẳng hai XML ở pin `386ce46e…`, mỗi cái tái lập bằng parser):
+
+1. `FIX50SP2.xml` dùng **10 tên kiểu** `field_type.rs::from_xml` không biết — `XID` 34 field,
+   `XIDREF` 29, `LOCALMKTTIME` 45, `MULTIPLECHARVALUE` 8, `XMLDATA` 8, `TZTIMEONLY` 6,
+   `MULTIPLESTRINGVALUE` 4, `TZTIMESTAMP` 1, `LANGUAGE` 1, `TAGNUM` 1. `build.rs` **cố ý `die`**
+   khi gặp kiểu lạ. Mỗi ánh xạ quyết định `SessionRejectReason 6`, là quyết định hành vi.
+2. `XmlData(213)` là `DATA` ở `FIXT11.xml` nhưng `XMLDATA` ở `FIX50SP2.xml`. 71/71 field FIXT11
+   đều có trong SP2, 70 khớp số–tên–kiểu, **đúng field này lệch**. ADR-0080 quyết định 2 bảo lệch
+   thì `die` → luật như đã viết làm hỏng build vì chính QuickFIX viết hai kiểu cho một field.
+3. Oracle của B2 **có tồn tại**: quickfix ở đúng pin ship **160 header sinh sẵn** ở
+   `src/C++/fix50sp2/`, nhưng `fetch-quickfix-assets.sh` chỉ sparse-checkout `/src/C++/fix44/`,
+   còn `vendor/quickfix-src` chỉ có sau khi `interop.sh` cmake-build libquickfix — việc mà không
+   test `dict` nào và không job `test` nào của CI làm.
+4. `<component name='MsgTypeGrp' />` **rỗng** ở file transport, có `NoMsgTypes(384)` sáu thành
+   viên ở file app, và Logon tham chiếu nó → merge sai chiều làm **mất im lặng** một repeating
+   group khỏi Logon (đúng kiểu hỏng của §2 điều 5). **Không `.def` nào trong 180 file có `384=`**
+   nên corpus không thấy. `HopGrp` giống hệt hai bên, không xung đột.
+5. Câu "đúng một file mỗi dir thiếu `1137`" của hàng B3: mỗi dir có **hai** file không có
+   `1137=` — `1d_InvalidLogonNoDefaultApplVerID.def` (Logon thiếu 1137, đúng ý hàng) và
+   `1e_NotLogonMessage.def` (**không có Logon nào**). Đã siết chính xác trong test, không cần sửa
+   kế hoạch. Cùng kiểu: `49=` khớp CompID khai báo trên mọi Logon trừ `1c_InvalidSenderCompID.def`
+   (`49=WT`, cố ý). `[đo 2026-09-19]` 198 dòng Logon `I`, 195 có `1137`.
+
+1–4 đang ở kiến trúc sư → **ADR-0082** + trang `docs/reference/` cho bẫy `XmlData`.
+
+**Lệch phạm vi chủ cần biết:** sửa phát hiện 1 phải động `crates/dict/src/field_type.rs`, mà cột
+*File đụng (không đụng gì khác)* của hàng B1 **không liệt kê** file đó — và gate của chính hàng B1
+không thể xanh nếu thiếu. Ghi ra đây chứ không làm lặng.
+
+**Chưa làm, và vì sao**
+
+- `impl Tables for Fixt11Fix50Sp2Tables` (B1): `dict::Tables` là của A2, nhánh bàn.
+- `echo.rs` generic `E` (B3): cần A1, và A3 đang sửa chính `echo.rs`.
+- B4–B7: sau khi PR A gộp → `git fetch && git rebase origin/main`, chạy lại gate rồi mới tiếp.
+- Một hàng `CLAUDE.md` §4 trỏ `docs/internals/` (hàng D1 yêu cầu): `CLAUDE.md` là file **chỉ bàn**
+  theo *Chạy song song* → **giao lại cho phiên bàn**.
+- Dòng cho `DESIGN.md` / `GUIDE.md` / `CHANGELOG.md` / `CONFIGURATION.md`: thuộc B8.
+
+**Chưa chứng minh:** chưa có CI run id cho hai commit trên — bảng gate còn là lời khai của máy
+cloud cho tới khi CI lên tiếng (§9). Không có số nào từ bàn §9. `engine.md` đã 63/80 dòng.
