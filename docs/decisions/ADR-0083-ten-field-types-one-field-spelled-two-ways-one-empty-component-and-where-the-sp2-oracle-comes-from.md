@@ -1,4 +1,4 @@
-# ADR-0082 — Ten field types, one field spelled two ways, one empty component, and where the SP2 oracle comes from
+# ADR-0083 — Ten field types, one field spelled two ways, one empty component, and where the SP2 oracle comes from
 
 - **Status**: Proposed — 2026-09-19
 - **Date**: 2026-09-19

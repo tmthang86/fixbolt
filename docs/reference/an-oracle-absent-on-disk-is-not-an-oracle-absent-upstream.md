@@ -2,7 +2,7 @@
 
 `[measured 2026-09-19]` — phase 2 plan, row B2, before it was built.
 [Plan](../plans/2026-09-19-phase-2-fixt-and-sbe.md) · decided in
-[ADR-0082](../decisions/ADR-0082-ten-field-types-one-field-spelled-two-ways-one-empty-component-and-where-the-sp2-oracle-comes-from.md)
+[ADR-0083](../decisions/ADR-0083-ten-field-types-one-field-spelled-two-ways-one-empty-component-and-where-the-sp2-oracle-comes-from.md)
 decision 3 · guarded by `crates/dict/tests/interop_quickfix_order.rs`'s SP2 sibling, which
 **panics** with the fetch instruction when `vendor/quickfix/src/C++/fix50sp2/` is absent
 
@@ -50,5 +50,5 @@ one step earlier — the skip was written into the plan.
 ## What it cost
 
 Measured, not inferred: the 26.4 MB the pattern adds per fresh fetch, from `ls-tree -l`. Not
-measured: the seconds it adds to the CI fetch step — ADR-0082 says the plan's delivery log
+measured: the seconds it adds to the CI fetch step — ADR-0083 says the plan's delivery log
 records that from the first CI run after the change, before and after.

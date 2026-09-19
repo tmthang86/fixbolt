@@ -4,7 +4,7 @@ Everything here was measured on `vendor/quickfix/spec/` at the pinned SHA
 `386ce46e917ae494ab6e90b1be90fd421cdbe3f9` on **2026-09-19**, with `xml.etree`, not a regular
 expression ([fix44-dictionary-traps](fix44-dictionary-traps.md) trap 4 says why). Each trap
 names the decision that absorbs it in
-[ADR-0082](../decisions/ADR-0082-ten-field-types-one-field-spelled-two-ways-one-empty-component-and-where-the-sp2-oracle-comes-from.md)
+[ADR-0083](../decisions/ADR-0083-ten-field-types-one-field-spelled-two-ways-one-empty-component-and-where-the-sp2-oracle-comes-from.md)
 and the test that goes red if it comes back. The tests are named here **before** they are
 written; plan row B1 writes them.
 
@@ -39,7 +39,7 @@ the ten (`XMLTypeToType` → `TYPE::Unknown`; `FieldType.fromName` → `UNKNOWN`
 validate none of them. That is not an oracle for "string is fine"; it is two engines that
 never wrote the arm.
 
-ADR-0082 decision 1 gives each a variant and a format rule, six of them new.
+ADR-0083 decision 1 gives each a variant and a format rule, six of them new.
 
 > **Guarded by** `crates/dict/tests/field_types.rs` — the `29` count assertion (a thirtieth
 > name upstream is red, not `String`), one good/bad pair per new variant written from the
@@ -63,7 +63,7 @@ delimiting rule of `data`). QuickFIX's own aggregate generator hides the split b
 edited its copies to say `DATA` in both. No issue in either tracker mentions it (search
 2026-09-19).
 
-ADR-0082 decision 2: the pair build compares the **variant** `from_xml` returns, not the
+ADR-0083 decision 2: the pair build compares the **variant** `from_xml` returns, not the
 string. `DATA` and `XMLDATA` are both `Data`; `INT` against `STRING` still fails.
 
 > **Guarded by** `crates/dict/tests/fixt.rs::xml_data_is_one_data_field_from_two_spellings`
@@ -94,7 +94,7 @@ dictionary, so a Logon carrying `NoMsgTypes` reaches it as repeated flat tags. Q
 `FIXT11.xml` has the component filled in. Artio merges with `HashMap.putAll` — application
 file wins, silently, for every component, full or empty.
 
-ADR-0082 decision 4: one component map; identical definitions merge; an empty one loses to
+ADR-0083 decision 4: one component map; identical definitions merge; an empty one loses to
 a full one **with a `cargo:warning`**; two full ones that differ fail the build; any
 reference that resolves to zero members fails the build.
 
@@ -119,7 +119,7 @@ all 8 XMLDATA fields finds nothing for this one and the build dies. The obvious 
 three `…PaymentStreamFormula` fields sit behind `NoLegPaymentStreamFormulas`-style counters;
 `EncodedWarningText(2521)` behind `WarningText`; and so on).
 
-ADR-0082 decision 5: one named exception, consulted only after the name rule fails, and the
+ADR-0083 decision 5: one named exception, consulted only after the name rule fails, and the
 build fails if the exception goes unused or names a pair the XML does not carry.
 
 > **Guarded by** `crates/dict/tests/fixt.rs::the_one_abbreviated_length_field_is_paired_by_name`
@@ -135,7 +135,7 @@ values in SP2 only (3 and 164). ADR-0080 decision 2 spoke of number, name and ty
 nothing about values, so a `generate_pair` that takes the first list it sees ships
 `enum_allows(1128, b"10") == Some(false)` — `373=5` on a value the specification defines.
 
-ADR-0082 decision 2: the table carries the superset; two sets that each hold a value the
+ADR-0083 decision 2: the table carries the superset; two sets that each hold a value the
 other lacks fail the build naming both.
 
 > **Guarded by** `crates/dict/tests/fixt.rs::a_shared_enum_carries_the_superset` —
@@ -152,7 +152,7 @@ and the session answers `373=5`. QuickFIX C++ (`DataDictionary.h` `isFieldValue`
 QuickFIX/J (`DataDictionary.java` `isMultipleValueStringField`) both split on spaces first.
 0 of 239 `.def` files send a multi-value field, which is why 59 / 59 never saw it.
 
-ADR-0082 decision 1 makes the per-token rule the FIXT table's rule and routes the FIX 4.4
+ADR-0083 decision 1 makes the per-token rule the FIXT table's rule and routes the FIX 4.4
 change to its own plan row, because it is a session-boundary change with no `.def`.
 
 > **Guarded by** `crates/dict/tests/field_types.rs::a_multi_value_enum_is_checked_token_by_token`

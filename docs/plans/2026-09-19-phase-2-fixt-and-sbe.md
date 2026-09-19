@@ -489,7 +489,7 @@ trong `crates/` và `tools/` — `check-links.py` không xét tên file viết t
    kế hoạch. Cùng kiểu: `49=` khớp CompID khai báo trên mọi Logon trừ `1c_InvalidSenderCompID.def`
    (`49=WT`, cố ý). `[đo 2026-09-19]` 198 dòng Logon `I`, 195 có `1137`.
 
-1–4 đang ở kiến trúc sư → **ADR-0082** + trang `docs/reference/` cho bẫy `XmlData`.
+1–4 đang ở kiến trúc sư → **ADR-0083** + trang `docs/reference/` cho bẫy `XmlData`.
 
 **Lệch phạm vi chủ cần biết:** sửa phát hiện 1 phải động `crates/dict/src/field_type.rs`, mà cột
 *File đụng (không đụng gì khác)* của hàng B1 **không liệt kê** file đó — và gate của chính hàng B1
