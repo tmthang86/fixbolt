@@ -131,11 +131,15 @@ Two bands are owed to the desk and neither can be resolved here:
   so. A second gap found while building that fixture is closed in the same commit: under
   `ValidateUserDefinedFields=N` the scan skips a counter ≥ 5000 before recording it, and the walk
   now skips it too (158 SP2 pairs are in that class).
-* **The cost of the positional walk on a message with more than 32 counters is UNMEASURED.**
-  `in_a_group_before` is O(n) per deferred field on an already-quadratic scan. No figure exists:
-  this box is a Xeon and every timing case prints `NO BASELINE`. Owed to the §9 desk alongside
-  A-desk and B4b's validate band. ADR-0085 names a successor design (a generated `member →
-  counters` table) if it measures badly.
+* **The cost of the positional walk on a message with more than 32 counters is measured only on
+  the wrong machine, and it is large.** `validate TradeCaptureReport (33 groups)` reads
+  **47 793.4 ns/op** against **~1 046 ns/op** for `validate NewOrderSingle (FIXT tables)` — same
+  box, same run, both `NO BASELINE` on an untuned Xeon, so **neither is publishable** and only the
+  ratio means anything. About 46×. **It is not an isolated variable**: that message is far larger
+  as well as driving the quadratic walk, so nothing here says how much of the 46× is the walk.
+  Isolating it needs the §9 desk, alongside A-desk and B4b's validate band. ADR-0085's
+  *Alternatives* D — a generated `member → counters` table — is the successor if it measures badly,
+  and this figure is not yet grounds to conclude that it does.
 * **`bad_group_count` abandons the whole `373=16` pass on a nested group, silently.** `[found
   2026-09-19 while building B4c's fixture; PRE-EXISTING, not introduced by PR B]` It returns
   `Option` and does `let group = view.group::<D>(msg_type, counter)?;` — the `?` is on an `Option`

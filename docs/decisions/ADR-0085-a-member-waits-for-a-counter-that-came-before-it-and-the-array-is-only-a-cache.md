@@ -15,6 +15,24 @@
   because they arrive through `<component>`, and the manager did not build a recursive
   expander to settle it. The figure is the architect's, and *Context* item 5's likelihood
   is labelled judgement rather than measurement in the ADR's own words.
+- **Measured after the fact** `[2026-09-19, commits d7be83d and B4d]`: the decision is built
+  and its branch is reached. `SeenCounters` fills at 34 counters against 32 slots on the
+  33-group `AE` fixture (proven by a reversal at `SEEN = 64`); the reversal sentence
+  `expected 373=5 371=447, engine sent 373=16 371=1907` was predicted and observed word for
+  word; the alloc case `validate TradeCaptureReport (33 groups)` reads **0**, with a
+  corrupted-copy assertion that fires only if the full-array path ran inside the bench
+  binary. A second gap closed in the same row: under `ValidateUserDefinedFields=N` the scan
+  skips a counter ≥ 5000 before recording it, so the walk skips it too — 158 SP2 pairs are
+  in that class, and decision 2's "agree by construction" is true as written only because
+  of that fix.
+- **The cost is measured on the wrong machine, and it is large.** `validate
+  TradeCaptureReport (33 groups)` reads **47 793.4 ns/op** against **~1 046 ns/op** for
+  `validate NewOrderSingle (FIXT tables)` — same box, same run, both `NO BASELINE` on an
+  untuned Xeon, so **neither is a published figure** (non-negotiable 10) and the ratio is
+  the only thing worth reading. About 46×. **It is not isolated**: the 33-group message is
+  far larger as well as quadratic, so this does not say how much of it is the walk. It is
+  the number that decides whether *Alternatives* D (a generated `member → counters` table)
+  is needed, and it is owed to the §9 desk before anyone concludes either way.
 - **Date**: 2026-09-19
 - **Deciders**: Tran Manh Thang. Proposed by the architect on 2026-09-19 from a senior-review
   finding the PR B manager verified before it reached the architect; the measurements in

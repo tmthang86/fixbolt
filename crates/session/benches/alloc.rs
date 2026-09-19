@@ -159,6 +159,83 @@ fn fixt_msg(body: &str) -> Vec<u8> {
     m
 }
 
+/// 32 of the 48 top-level groups `TradeCaptureReport(AE)` declares whose
+/// delimiter enumerates no value, so a one-entry group can carry any
+/// well-formed one — copied field for field from `tests/fixt.rs`'s
+/// `AE_GROUPS`, which explains the 32-blocks/33-counters shape in full.
+///
+/// Duplicated rather than shared: `tests/fixt.rs` is an integration test
+/// binary, not a library this bench crate can depend on, and B4d's row asks
+/// for the *same bytes* as B4c's Test 3, not merely a similar fixture.
+#[cfg(feature = "fix50sp2")]
+const AE_GROUPS: [(&str, &str, &str); 32] = [
+    ("1907", "1903", "X"),
+    ("1116", "1117", "R"),
+    ("454", "455", "A"),
+    ("1976", "1977", "1"),
+    ("2304", "2305", "A"),
+    ("1018", "1019", "P"),
+    ("40278", "40471", "B"),
+    ("41230", "41231", "B"),
+    ("41092", "41093", "E"),
+    ("41094", "41095", "F"),
+    ("42775", "42776", "B"),
+    ("41116", "41117", "B"),
+    ("41137", "41138", "20260919"),
+    ("41140", "41141", "B"),
+    ("41152", "41153", "20260919"),
+    ("40019", "40020", "Y"),
+    ("40181", "40182", "1.0"),
+    ("40022", "40023", "USD"),
+    ("40204", "40209", "0"),
+    ("42296", "42297", "E"),
+    ("2734", "2733", "M"),
+    ("2746", "2747", "20260919-12:00:00.000"),
+    ("40040", "40041", "D"),
+    ("40046", "40047", "S"),
+    ("40042", "40043", "M"),
+    ("711", "311", "U"),
+    ("1703", "1704", "1.0"),
+    ("555", "600", "L"),
+    ("768", "769", "20260919-12:00:00.000"),
+    ("1387", "1388", "1"),
+    ("41312", "41313", "J"),
+    ("2104", "2105", "A"),
+];
+
+/// `tests/fixt.rs`'s `trade_capture_report`, with the tail's nested `447=`
+/// pulled out as a parameter instead of hard-coded to `D`.
+///
+/// B4d's third liveness assertion needs a corrupted **copy** of the fault-free
+/// fixture — one field changed, nothing else — and the nested `447` is the one
+/// that sits *after* the 33rd counter, past every slot `SeenCounters` has: the
+/// top-level `447={stray}` a line below is `tests/fixt.rs`'s Test 1 fixture
+/// (a member met *before* its own counter), a different fault this case is not
+/// about. `regulatory_count` and `stray` stay fixed at `"1"` / `"D"` here — the
+/// fault-free values — so the only thing that differs between this case's two
+/// calls is `nested_party_id_source`.
+#[cfg(feature = "fix50sp2")]
+fn trade_capture_report(
+    regulatory_count: &str,
+    stray: &str,
+    nested_party_id_source: &str,
+) -> Vec<u8> {
+    let mut body = String::from("35=AE|34=2|49=TW50SP2|52=20260828-12:00:00|56=ISLD|");
+    for (counter, delimiter, value) in AE_GROUPS {
+        let count = if counter == "1907" {
+            regulatory_count
+        } else {
+            "1"
+        };
+        body.push_str(&format!("{counter}={count}|{delimiter}={value}|"));
+    }
+    body.push_str(&format!("447={stray}|"));
+    body.push_str(&format!(
+        "552=1|54=1|453=1|448=A|447={nested_party_id_source}|452=1|"
+    ));
+    fixt_msg(&body)
+}
+
 fn main() {
     let now = clock::parse_utc(b"20260828-12:00:00").expect("a real instant");
 
@@ -664,7 +741,7 @@ fn main() {
     // function, and the Logon is this crate's encoder. The codec's own bench
     // carries the FIXT parse.
     #[cfg(feature = "fix50sp2")]
-    let (fixt_validate_allocs, fixt_group_allocs, fixt_logon_allocs) = {
+    let (fixt_validate_allocs, fixt_group_allocs, fixt_logon_allocs, fixt_trade_capture_allocs) = {
         // A `35=D` off the FIXT wire, no repeating group: the message shape the
         // 17 cases above already cover for FIX 4.4, now through the other
         // dictionary. Parsed once, outside every counted window — the parse has
@@ -802,7 +879,85 @@ fn main() {
             }
         });
 
-        (validate_allocs, group_allocs, logon_allocs)
+        // **The same pass over a `TradeCaptureReport` whose 33 group counters
+        // fill `SeenCounters`** (ADR-0085). `d7be83d` made the overflow
+        // fallback positional — `in_a_group_before` — instead of a switch to a
+        // different question, so the 32-slot array is now a cache of the same
+        // answer rather than a second code path. Until this case existed
+        // nothing had ever counted it: the three cases above are all far short
+        // of 32 counters, so `SeenCounters::defers`'s `full` branch has never
+        // run inside this bench binary.
+        //
+        // Same bytes as `tests/fixt.rs`'s
+        // `the_same_thirty_three_counters_without_the_two_faults_are_accepted`
+        // (B4c's Test 3, the fault-free twin) — a bench on different bytes
+        // proves something else.
+        let clean = trade_capture_report("1", "D", "D");
+        let mut clean_idx: FieldIndex<256> = FieldIndex::new();
+        let r = parse_into::<Fixt11Fix50Sp2Tables, 256>(&clean, &mut clean_idx, Validation::ALL);
+        assert!(
+            matches!(r, Ok(Parsed::Complete { .. })),
+            "the 33-counter TradeCaptureReport fixture must parse: {r:?}"
+        );
+        let clean_view = clean_idx.view(&clean);
+        // Three liveness assertions, for the same reason the populated-group
+        // case above gives.
+        //
+        // One: both groups this fixture carries are really populated off the
+        // index the parser built — the top-level `1907` block and the `552`
+        // block the array overflowed into — not a count the scan never looked
+        // past.
+        assert_eq!(
+            clean_view
+                .group::<Fixt11Fix50Sp2Tables>(b"AE", 1907)
+                .expect("1907 is a group of AE")
+                .count(),
+            1,
+            "the 1907 block must carry its one declared entry"
+        );
+        assert_eq!(
+            clean_view
+                .group::<Fixt11Fix50Sp2Tables>(b"AE", 552)
+                .expect("552 is a group of AE")
+                .count(),
+            1,
+            "the 552 block must carry its one declared entry"
+        );
+        // Two: the whole pass runs to the end on it.
+        assert_eq!(
+            validate::<Fixt11Fix50Sp2Tables, 256>(&clean_view, b"AE"),
+            None,
+            "the 33-counter TradeCaptureReport must be fault-free"
+        );
+        let trade_capture_allocs = count(|| {
+            for _ in 0..10_000 {
+                let _ = validate::<Fixt11Fix50Sp2Tables, 256>(&clean_view, b"AE");
+            }
+        });
+        // Three, and the one that proves the `full` branch actually ran in
+        // *this bench binary* rather than only in `tests/fixt.rs`: a corrupted
+        // **copy**, one field changed — the `447=` sitting after the 33rd
+        // counter, inside `552`'s nested `453` group, past every slot
+        // `SeenCounters` has. `447=ZZ` is not a `PartyIDSource`, and
+        // `tests/fixt.rs`'s Test 1 already proves that same enum answer for
+        // the same tag, reached from a different pass; this proves the
+        // fourth pass reaches it too, through `in_a_group_before` rather than
+        // the array.
+        let broken = trade_capture_report("1", "D", "ZZ");
+        let mut broken_idx: FieldIndex<256> = FieldIndex::new();
+        let _ = parse_into::<Fixt11Fix50Sp2Tables, 256>(&broken, &mut broken_idx, Validation::ALL);
+        assert_eq!(
+            validate::<Fixt11Fix50Sp2Tables, 256>(&broken_idx.view(&broken), b"AE"),
+            Some(SessionText::ValueIsIncorrect),
+            "the full-array fallback must still inspect a deferred member's value"
+        );
+
+        (
+            validate_allocs,
+            group_allocs,
+            logon_allocs,
+            trade_capture_allocs,
+        )
     };
 
     println!(
@@ -848,11 +1003,17 @@ fn main() {
         println!(
             "allocations: validate NewOrderSingle (FIXT tables) {fixt_validate_allocs} \
              validate NewOrderSingle (populated group) {fixt_group_allocs} \
-             encode Logon (FIXT, 1137) {fixt_logon_allocs}"
+             encode Logon (FIXT, 1137) {fixt_logon_allocs} \
+             validate TradeCaptureReport (33 groups) {fixt_trade_capture_allocs}"
         );
         assert_eq!(
-            [fixt_validate_allocs, fixt_group_allocs, fixt_logon_allocs],
-            [0; 3],
+            [
+                fixt_validate_allocs,
+                fixt_group_allocs,
+                fixt_logon_allocs,
+                fixt_trade_capture_allocs
+            ],
+            [0; 4],
             "non-negotiable 1: the FIXT 1.1 paths allocate nothing either"
         );
     }
