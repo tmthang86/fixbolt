@@ -149,10 +149,15 @@ benches/         baselines.tsv: one recorded timing baseline per (CPU model, cas
 fuzz/            cargo-fuzz targets; nightly, outside the workspace
 spikes/ktls/     answers ADR-0005's kTLS question and stops; nothing depends on it
 docs/            see the table above; decisions/ holds the ADRs, reference/ the
-                 measured facts and traps, plans/ what is about to be built (Vietnamese)
+                 measured facts and traps, plans/ what is about to be built (Vietnamese),
+                 internals/ a map of which file in which crate holds what
 vendor/          QuickFIX XML and acceptance definitions, fetched by script, gitignored,
                  never committed
 ```
+
+`docs/internals/` is that map, one page per crate: which file holds what, in what order to
+read it, and which test guards it — start at
+[docs/internals/README.md](docs/internals/README.md).
 
 ## Licence
 
