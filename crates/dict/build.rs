@@ -233,6 +233,10 @@ fn generate_pair(transport: &roxmltree::Document<'_>, app: &roxmltree::Document<
     let (troot, aroot) = (transport.root_element(), app.root_element());
     let (tnum, ttype, tenum) = collect_fields(troot, "FIXT11.xml");
     let (anum, atype, aenum) = collect_fields(aroot, "FIX50SP2.xml");
+    // Taken before the merge, because after it there is no transport half left
+    // to ask. ADR-0084 decision 1: what the transport file defines is a table
+    // of its own, not a filter over the merged one.
+    let transport_tags: Vec<u32> = tnum.values().copied().collect();
     let (number_of, type_of, enum_of) = merge_fields((tnum, ttype, tenum), (anum, atype, aenum));
 
     let components = merge_components(
@@ -255,7 +259,18 @@ fn generate_pair(transport: &roxmltree::Document<'_>, app: &roxmltree::Document<
         .chain(application.children().filter(|n| n.has_tag_name("message")))
         .collect();
 
-    emit(&Spec {
+    // The transport file's own `<messages>`, by msgtype — the same node the
+    // merged list is built from, so the two cannot name different sets.
+    let transport_msg_types: Vec<&str> = admin
+        .children()
+        .filter(|n| n.has_tag_name("message"))
+        .map(|m| match m.attribute("msgtype") {
+            Some(mt) => mt,
+            None => die("FIXT11.xml: <message> without msgtype"),
+        })
+        .collect();
+
+    let mut out = emit(&Spec {
         dialect: "FIXT 1.1 / FIX 5.0 SP2",
         source: "the QuickFIX FIXT11.xml and FIX50SP2.xml pair",
         number_of,
@@ -267,7 +282,86 @@ fn generate_pair(transport: &roxmltree::Document<'_>, app: &roxmltree::Document<
         trailer,
         length_exceptions: SP2_LENGTH_EXCEPTIONS,
         per_token_enums: true,
-    })
+    });
+    out.push_str(&emit_transport_layer(&transport_tags, &transport_msg_types));
+    out
+}
+
+/// The transport layer's own tag set and message list — the pair table only.
+///
+/// ADR-0084 decision 1. `14a_BadField.def` sends `999=HI` on a `35=0` Heartbeat
+/// and expects `373=0`, *Invalid tag number*; `999` is `LegUnitOfMeasure` in
+/// `FIX50SP2.xml` and absent from `FIXT11.xml`, so the merged bitset answers
+/// `true` and the engine would send `373=2`. Both QuickFIX engines validate an
+/// admin body against the transport dictionary alone.
+///
+/// Both halves come out of the **one** transport document, so "defined by the
+/// transport file" and "a message of the transport file" are the same file by
+/// construction — `DESIGN.md` D3, the rule lives in a table and never at a call
+/// site. A single-file table has one layer and needs neither, which is why this
+/// is emitted here rather than in [`emit`].
+fn emit_transport_layer(tags: &[u32], msg_types: &[&str]) -> String {
+    let max_tag = tags.iter().copied().max().unwrap_or(0);
+    let words = (max_tag as usize / 64) + 1;
+    let mut bits = vec![0u64; words];
+    for &t in tags {
+        bits[t as usize / 64] |= 1u64 << (t % 64);
+    }
+    if msg_types.is_empty() {
+        die("FIXT11.xml: <messages> is empty; there is no transport layer to emit");
+    }
+    let mut o = String::with_capacity(4 * 1024);
+    let _ = writeln!(
+        o,
+        "/// Tags the **transport** file defines, as a bitset over 0..={max_tag}.\n\
+         ///\n\
+         /// {} fields, the highest being tag {max_tag}. Separate from\n\
+         /// `DEFINED_TAGS`, which is the merged set: a session message is\n\
+         /// checked against this one (ADR-0084 decision 1).\n\
+         static TRANSPORT_DEFINED_TAGS: [u64; {words}] = [{}];\n\
+         \n\
+         /// Whether the transport file defines this tag at all.\n\
+         ///\n\
+         /// The `373=0` question for a message of the transport layer.\n\
+         /// [`is_defined_tag`] is the same question over both files.\n\
+         #[inline]\n\
+         #[must_use]\n\
+         // Same shape as `is_defined_tag`, and `const fn` rules out `.get()`:\n\
+         // neither `slice::get` nor `Option::is_some_and` is const. The bound is\n\
+         // the left half of the `&&` on the line below. STATUS.md item 55.\n\
+         #[allow(clippy::indexing_slicing)]\n\
+         pub const fn is_transport_tag(tag: u32) -> bool {{\n\
+         \x20   let word = (tag / 64) as usize;\n\
+         \x20   word < TRANSPORT_DEFINED_TAGS.len()\n\
+         \x20       && (TRANSPORT_DEFINED_TAGS[word] >> (tag % 64)) & 1 == 1\n\
+         }}\n",
+        tags.len(),
+        bits.iter()
+            .map(|w| format!("0x{w:016x}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    let _ = writeln!(
+        o,
+        "/// Whether the transport file defines this message type.\n\
+         ///\n\
+         /// The {} of them, read from `FIXT11.xml`'s own `<messages>` — never\n\
+         /// from a list written beside a call site, which is what `DESIGN.md` D3\n\
+         /// forbids and what would disagree with this file the day either\n\
+         /// changes.\n\
+         #[inline]\n\
+         #[must_use]\n\
+         pub fn is_transport_message(msg_type: &[u8]) -> bool {{\n\
+         \x20   matches!(msg_type, {})\n\
+         }}\n",
+        msg_types.len(),
+        msg_types
+            .iter()
+            .map(|mt| format!("b\"{mt}\""))
+            .collect::<Vec<_>>()
+            .join(" | "),
+    );
+    o
 }
 
 /// Every `<field>`: number, variant and enumerated values.

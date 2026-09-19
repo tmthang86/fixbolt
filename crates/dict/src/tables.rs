@@ -37,6 +37,20 @@ pub trait Tables: Dictionary {
     /// Whether FIX defines this tag at all — `373=0`, *Invalid tag number*.
     fn is_defined_tag(tag: u32) -> bool;
 
+    /// Whether the layer that defines this message type defines this tag —
+    /// `373=0`.
+    ///
+    /// A single-file dictionary has one layer and answers
+    /// [`Tables::is_defined_tag`]. A FIXT table has two: a message of the
+    /// transport file (`is_transport_message`) is defined there and carries
+    /// only its tags; a message of the application file carries the merged set.
+    ///
+    /// There is deliberately **no default method**
+    /// ([ADR-0084](../../../docs/decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md)
+    /// decision 1): a default would hand a future third table FIX 4.4
+    /// semantics silently, and nothing about a table is silent.
+    fn is_defined_tag_for(msg_type: &[u8], tag: u32) -> bool;
+
     /// The header fields every message must carry — `373=1`, together with
     /// [`Tables::required`].
     fn required_header() -> &'static [u32];
@@ -66,6 +80,13 @@ pub trait Tables: Dictionary {
 impl Tables for crate::Fix44 {
     #[inline]
     fn is_defined_tag(tag: u32) -> bool {
+        crate::is_defined_tag(tag)
+    }
+
+    #[inline]
+    fn is_defined_tag_for(_msg_type: &[u8], tag: u32) -> bool {
+        // FIX 4.4 is one file, so it is one layer: every message type is
+        // defined by the same document that defines every tag.
         crate::is_defined_tag(tag)
     }
 
@@ -117,6 +138,17 @@ mod tests {
             Fix44::is_defined_tag(35)
         );
         assert!(!<Fix44 as Tables>::is_defined_tag(5000));
+        // ADR-0084 decision 1 must not move FIX 4.4: one file is one layer, so
+        // the message type cannot change the answer. `999` is the tag that
+        // splits the two layers on the FIXT table, and `0` the message type it
+        // splits them on.
+        for tag in [999u32, 35, 5000] {
+            assert_eq!(
+                <Fix44 as Tables>::is_defined_tag_for(b"0", tag),
+                Fix44::is_defined_tag(tag),
+                "tag {tag} on a Heartbeat"
+            );
+        }
         assert_eq!(
             <Fix44 as Tables>::required_header(),
             Fix44::required_header()

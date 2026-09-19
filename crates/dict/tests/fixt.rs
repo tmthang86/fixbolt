@@ -212,3 +212,47 @@ fn the_dictionary_and_tables_impls_answer_from_the_pair_table() {
     assert!(!Fixt::is_defined_tag(50_003));
     assert_eq!(Fixt::field_type(50_003), None);
 }
+
+/// **ADR-0084 decision 1.** A message is validated against the tag set of the
+/// layer that defines it.
+///
+/// `14a_BadField.def` sends `999=HI` on a `35=0` Heartbeat and expects `373=0`,
+/// *Invalid tag number*. `999` is `LegUnitOfMeasure` in `FIX50SP2.xml` and
+/// absent from `FIXT11.xml`, so the merged table's `is_defined_tag` says `true`
+/// and the engine would answer `373=2` instead. Both QuickFIX engines validate
+/// an admin body against the transport dictionary alone, and this is the table
+/// half of saying the same thing: the transport bitset and the transport
+/// message list are **generated from one file**, so "defined by the transport
+/// file" and "a message of the transport file" cannot drift apart (`DESIGN.md`
+/// D3 — the rule lives in a table, never at a call site).
+#[test]
+fn a_session_message_is_checked_against_the_transport_layers_tags() {
+    use fixbolt_dict::fixt11_fix50sp2::{is_transport_message, is_transport_tag};
+
+    // The transport file's 71 fields, and nothing else. `[measured 2026-09-19]`
+    // at pin `386ce46e`: highest tag 1409, so the bitset is 23 `u64` words.
+    assert!(
+        !is_transport_tag(999),
+        "LegUnitOfMeasure is FIX50SP2's, not FIXT11's"
+    );
+    assert!(is_transport_tag(1137), "DefaultApplVerID");
+    assert!(is_transport_tag(35), "MsgType");
+    assert!(!is_transport_tag(55), "Symbol is an application field");
+
+    // The eight transport messages, `0 1 2 3 4 5 A n` — every one `msgcat`
+    // `admin`. Read from the transport file's `<messages>`, never from the
+    // session's hand-written `ADMIN` const, which has seven entries and lacks
+    // `n`.
+    assert!(is_transport_message(b"n"), "XMLnonFIX");
+    assert!(!is_transport_message(b"D"), "NewOrderSingle");
+
+    // And the question the session actually asks.
+    assert!(
+        !<Fixt as fixbolt_dict::Tables>::is_defined_tag_for(b"0", 999),
+        "`999` on a Heartbeat is 373=0"
+    );
+    assert!(
+        <Fixt as fixbolt_dict::Tables>::is_defined_tag_for(b"D", 999),
+        "`999` on a NewOrderSingle is a defined tag"
+    );
+}

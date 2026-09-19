@@ -229,9 +229,22 @@ fn is_defined_tag_for(msg_type: &[u8], tag: u32) -> bool;
   for a tag with no message around it.
 - **Cost**: 184 bytes of static plus an eight-entry message list, one branch on
   `is_transport_message` per field of a FIXT admin message
-  (admin messages are off the order path), no allocation (`benches/alloc.rs` case
-  `validate NewOrderSingle (FIXT tables)` stays 0 — an application message never takes the
-  branch). Public API of `dict` grows by one method: `DESIGN.md` D16's `Tables` list,
+  (admin messages are off the order path), no allocation.
+
+  > **Correction, 2026-09-19, after B4a was built.** This bullet first read *"no allocation
+  > (`benches/alloc.rs` case `validate NewOrderSingle (FIXT tables)` stays 0 — an application
+  > message never takes the branch)"*. **That case does not exist.**
+  > `grep -rn "FIXT\|fix50sp2" crates/*/benches/*.rs` returns nothing: no bench in any crate
+  > has a FIXT case, and `session/benches/alloc.rs`'s 17 cases are all FIX 4.4 — none
+  > validates through the pair table. The case is **row B6's**, not yet built (the plan's
+  > *Cách làm* PR B item 6 names it). The bullet cited, in the present tense, a measurement
+  > scheduled for later. Non-negotiable 1 says allocation is proven by the counting allocator
+  > and *never by reading the code*, so the honest statement is: **the FIXT validation path's
+  > allocation count is unproven until B6 adds that case.** What B4a does prove is the
+  > correctness half — `crates/dict/tests/fixt.rs` asserts
+  > `is_defined_tag_for(b"D", 999) == true`, so an application message takes the `else` arm.
+  > Found by the B4a developer, who declined to add a bench outside its brief and reported it
+  > instead. The decision itself is unchanged; only this evidence claim is corrected. Public API of `dict` grows by one method: `DESIGN.md` D16's `Tables` list,
   `CHANGELOG.md`, the trait's rustdoc.
 - **Does not change FIX 4.4**: `crates/dict/src/tables.rs::the_trait_and_the_inherent_methods_agree`
   gains `is_defined_tag_for(b"0", 999) == is_defined_tag(999)` and the same for `35` and

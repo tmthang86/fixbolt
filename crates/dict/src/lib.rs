@@ -135,6 +135,20 @@ impl Tables for Fixt11Fix50Sp2Tables {
     }
 
     #[inline]
+    fn is_defined_tag_for(msg_type: &[u8], tag: u32) -> bool {
+        // ADR-0084 decision 1. Two files, two layers: a message of the
+        // transport file carries only the transport file's tags, and
+        // `999=LegUnitOfMeasure` on a Heartbeat is `373=0` rather than `373=2`
+        // — which is what both QuickFIX engines answer, and what
+        // `14a_BadField.def` expects in all three FIXT corpora.
+        if fixt11_fix50sp2::is_transport_message(msg_type) {
+            fixt11_fix50sp2::is_transport_tag(tag)
+        } else {
+            fixt11_fix50sp2::is_defined_tag(tag)
+        }
+    }
+
+    #[inline]
     fn required_header() -> &'static [u32] {
         fixt11_fix50sp2::required_header()
     }

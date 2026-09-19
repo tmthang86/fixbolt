@@ -4024,7 +4024,13 @@ fn scan_fields<D: Tables, const N: usize>(
             in_body = true;
         }
 
-        if !<D as Tables>::is_defined_tag(tag) {
+        // `is_defined_tag_for`, not `is_defined_tag`: the question is whether
+        // the layer that defines this message type defines this tag. On a
+        // single-file dictionary the two are one answer; on the FIXT pair a
+        // session message is checked against the transport file alone, so
+        // `999=LegUnitOfMeasure` on a Heartbeat is `373=0` and not `373=2` —
+        // ADR-0084 decision 1, `14a_BadField.def` in all three FIXT corpora.
+        if !<D as Tables>::is_defined_tag_for(msg_type, tag) {
             return Some((SessionText::InvalidTagNumber, tag_text(tag)));
         }
         // `373=4` before `373=6`: an empty value is its own fault, and
