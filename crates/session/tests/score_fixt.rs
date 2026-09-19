@@ -1,21 +1,24 @@
-//! The FIXT 1.1 score: **180 / 180**, three corpora of sixty.
+//! The FIXT 1.1 score: **179 / 180**, three corpora of sixty, with the 180th
+//! **asserted** as a known, accepted divergence rather than reached.
 //!
 //! `CLAUDE.md` §2 non-negotiable 3 names the 59 FIX 4.4 definitions as the
 //! session layer's gate; `tests/score.rs` is that gate and nothing here touches
 //! it. This is the second one ADR-0080 decision 2 asks for, and it is a
 //! different kind of evidence: the 59 prove the state machine still does what
-//! it did, these 180 prove the **same** state machine does it through a second
-//! `E::Dict`, built from two XML files, with three FIXT rules on top.
+//! it did, these 180 prove the **same** state machine does it through a
+//! second `E::Dict`, built from two XML files, with the FIXT rules of
+//! [ADR-0084] on top — decision 1 (a session message is checked against the
+//! tag set of the layer that defines it) and decision 2 (a group member's
+//! value waits for the count) are built, and every file that turns on one of
+//! them passes.
 //!
 //! # Three corpora, one table
 //!
-//! `[measured 2026-09-19]`, ADR-0080 *Context*: `fix50`, `fix50sp1` and
-//! `fix50sp2` differ only in the counterparty's `SenderCompID` and in the
-//! `1137=DefaultApplVerID` their Logons carry (`7`, `8`, `9`). So there is one
-//! generated table — SP2's, a superset — and the other two are covered **by
-//! parameter, not by table**, which is decision 2's own sentence. Each corpus
-//! prints its own number, because three sixties summed into one 180 would hide
-//! a corpus that scored 59 and one that scored 61.
+//! `[measured 2026-09-19]`, masked properly (`SenderCompID`, `1137`,
+//! `BodyLength`, SOH matched as a byte, not `.`): `fix50sp1` is byte-equal to
+//! `fix50sp2` on **60 / 60** files, so the one generated `fix50sp2` table is
+//! their oracle by measurement. `fix50` differs on exactly one file — see
+//! below.
 //!
 //! # The file the 59 do not have
 //!
@@ -25,51 +28,40 @@
 //! `LogonWithoutDefaultApplVerId`, and it is the one file that fails if the
 //! check is removed.
 //!
-//! # This test is RED at 173 / 180, and the seven are not session defects
+//! # `336`, and the one accepted divergence — [ADR-0084] decision 3
 //!
-//! `[measured 2026-09-19]` `fix50 57/60 fix50sp1 58/60 fix50sp2 58/60`. Every
-//! FIXT rule of ADR-0080 decision 3 is built and every file that turns on one
-//! of them passes. The seven that fail are **three questions ADR-0080 decision
-//! 2 did not answer**, each needing a decision this row may not take, and each
-//! measured rather than reasoned:
+//! `TradingSessionID(336)` carries **0** enumerated values in `FIX50.xml` and
+//! **7** in `FIX50SP2.xml`. QuickFIX ran each of the three corpora against
+//! its own application dictionary — `FIX50.xml` for `fix50`, `FIX50SP2.xml`
+//! for the other two — so `21_RepeatingGroupSpecifierWithValueOfZero.def`'s
+//! `336=ONE_MAIN` on a `35=d` is echoed there and is not here: scoring
+//! `fix50` on the one generated SP2 table gives it no way to be lenient about
+//! a value only `FIX50.xml` allows, so `scan_fields` answers
+//! `Reject 373=5 371=336` — *Value is incorrect (out of range) for this tag*
+//! — where `FIX50.xml`'s own oracle expects the message processed.
 //!
-//! 1. **An admin message's body is validated against the merged table, and
-//!    QuickFIX validates it against the transport dictionary alone.**
-//!    `14a_BadField.def` sends `999=HI` on a `35=0` and expects `373=0`
-//!    *Invalid tag number*. `FIXT11.xml` does not define `999`; `FIX50SP2.xml`
-//!    does (`LegUnitOfMeasure`), so the merged table answers
-//!    `is_defined_tag(999) == true`, `allows("0", 999) == false`, and this
-//!    session says `373=2`. ADR-0083 *Context* item 4 records the QuickFIX
-//!    behaviour in passing — *"`Message.cpp` line 328–329 parses an admin
-//!    message's body against the session dictionary"*. One merged
-//!    `is_defined_tag` cannot express it; `Tables` has no question that
-//!    separates a transport field from an application one. Three files.
-//! 2. **A repeating group's members are value-checked here and are not by
-//!    QuickFIX.** `14i_RepeatingGroupCountNotEqual.def` declares `386=3` and
-//!    sends two `336=PRE-OPEN` entries, expecting `373=16`. `336` is
-//!    `group_members("D", 386)[0]` and `enum_allows(336, b"PRE-OPEN")` is
-//!    `Some(false)` under SP2 — FIX 4.4 gives `336` no enumerated values and
-//!    FIX 5.0 gave it none either, SP1 added six — so `scan_fields` answers
-//!    `373=5` before `bad_group_count` is reached. QuickFIX's
-//!    `DataDictionary::iterate` walks the top-level `FieldMap` only; group
-//!    members live in nested maps and their values are never checked. This
-//!    engine's index is flat by design (D2), so the rule would have to be the
-//!    session's — and it would change FIX 4.4 behaviour, which is a row of its
-//!    own. Two files, `fix50sp1` and `fix50sp2`.
-//! 3. **The three corpora are not one corpus with a different `1137`.**
-//!    ADR-0080 *Context* says they *"differ only in the CompID and the value of
-//!    `1137`"*. `21_RepeatingGroupSpecifierWithValueOfZero.def` disproves it:
-//!    `fix50`'s copy carries `336=ONE_MAIN` on a `35=d` and `fix50sp1`'s and
-//!    `fix50sp2`'s do not. `TradingSessionID(336)` carries **no** enumerated
-//!    values in `FIX50.xml`, six in `FIX50SP1.xml` and seven in `FIX50SP2.xml`
-//!    (counted with `xml.etree` on 2026-09-19), so QuickFIX echoed the message
-//!    and the SP2 table refuses it `373=5`. Covering `fix50` "by parameter,
-//!    not by table" is what does not hold. One file.
+//! The successor that reaches 180 / 180 **by table**, not by exception, is a
+//! generated `fixt11_fix50.rs`, named in decision 3 and not yet built.
+//! **The day it lands, this divergence assertion is deleted** and `fix50`
+//! runs on its own table.
 //!
-//! All three are for the architect (`CLAUDE.md` §12: a design problem goes to
-//! the architect through the manager). **Nothing here was relaxed to make a
-//! number**: the assertion below still reads 180, because that is what the plan
-//! row promises and a gate quietly lowered to what was achieved is not a gate.
+//! **This assertion pins the strict direction only.** Decision 3's *"What
+//! bidirectional drift does to this decision"* paragraph and its
+//! *Bad — and accepted* bullet "The divergence assertion sees one direction"
+//! say why: enumerations drift both ways between FIX50, SP1 and SP2, and a
+//! file that *passes* is never examined here, so a value the SP2 table
+//! wrongly *accepts* — the permissive direction, e.g.
+//! `DeskOrderHandlingInst(1035)`, 24 values in `FIX50.xml` and 0 in
+//! `FIX50SP2.xml` — is invisible to this test by construction. No `.def` in
+//! these 180 files carries such a value, so `crates/dict/tests/fixt.rs` pins
+//! that direction directly on the table, which is the only guard on that
+//! side until the successor exists.
+//!
+//! **Nothing here was relaxed to make a number**: 179 is the honest score,
+//! recorded by counting and pinned by content — not lowered by editing a
+//! fixture or excluding a file (`CLAUDE.md` §10).
+//!
+//! [ADR-0084]: ../../../docs/decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md
 #![cfg(feature = "fix50sp2")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
@@ -78,8 +70,8 @@
 #![allow(clippy::indexing_slicing)]
 
 use fixbolt_codec::TagValue;
-use fixbolt_conformance::runner::{Conn, Input, Link, SessionUnderTest, run_scenario};
-use fixbolt_conformance::script::{Corpus, fixt_corpora, load_corpus};
+use fixbolt_conformance::runner::{Conn, Failure, Input, Link, SessionUnderTest, run_scenario};
+use fixbolt_conformance::script::{Corpus, FIXED_TIME_MILLIS, Kind, fixt_corpora, load_corpus};
 use fixbolt_dict::Fixt11Fix50Sp2Tables;
 use fixbolt_engine::frame::{Cut, Framer};
 use fixbolt_engine::journal::Store;
@@ -253,8 +245,14 @@ fn acceptor(corpus: &Corpus) -> Config {
     )
 }
 
-/// How many of `corpus`'s files pass, and which do not.
-fn score(corpus: &Corpus) -> (usize, usize, Vec<String>) {
+/// How many of `corpus`'s files pass, and every failure — [`Failure`] itself,
+/// not a formatted string, so a caller can check *which* file and *which*
+/// line failed rather than trusting a printed line. `Failure::reason` carries
+/// the comparator's summary (`Mismatch::FieldCount { expected: 17, actual: 13
+/// }` for the one ADR-0084 decision 3 accepts); it does not carry the
+/// engine's own bytes — [`engine_output_at`] gets those, separately, for the
+/// one file that needs them.
+fn score(corpus: &Corpus) -> (usize, usize, Vec<Failure>) {
     let all = load_corpus(corpus).unwrap_or_else(|e| panic!("{e}"));
     let mut passed = 0;
     let mut failed = Vec::new();
@@ -264,36 +262,161 @@ fn score(corpus: &Corpus) -> (usize, usize, Vec<String>) {
         if failures.is_empty() {
             passed += 1;
         } else {
-            let first = &failures[0];
-            failed.push(format!("{}:{} {}", first.file, first.line_no, first.reason));
+            failed.push(
+                failures
+                    .into_iter()
+                    .next()
+                    .expect("checked non-empty above"),
+            );
         }
     }
     (passed, all.len(), failed)
 }
 
-/// **180 / 180**, and each corpus's own number is printed.
+/// Drive one scenario up to one `E` line and return the engine's own bytes
+/// for it, rather than trusting the comparator's summary of the mismatch.
 ///
-/// The reversal this test exists for is written down in the plan's row B4:
-/// remove the `1137` check in `Session::judge` and
-/// `1d_InvalidLogonNoDefaultApplVerID` must go red with *expected DISCONNECT,
-/// engine sent Logon* — in one corpus per directory, so three files, not one.
+/// `run_scenario`'s [`Failure::reason`] on
+/// `21_RepeatingGroupSpecifierWithValueOfZero.def:17` is
+/// `Mismatch::FieldCount { expected: 17, actual: 13 }` — it says the two
+/// messages have a different shape and nothing about what the engine actually
+/// put on the wire. ADR-0084 decision 3's content check needs the bytes
+/// themselves, so this replays the file's own `Connect` / `Send` / `Tick`
+/// steps through a fresh [`Adapter`] — the same session-under-test the score
+/// uses — and returns the first message produced for the input immediately
+/// before the named `E` line.
+fn engine_output_at(corpus: &Corpus, file: &str, line_no: usize) -> Vec<u8> {
+    let all = load_corpus(corpus).unwrap_or_else(|e| panic!("{e}"));
+    let s = all
+        .iter()
+        .find(|s| s.file == file)
+        .unwrap_or_else(|| panic!("{file} is not in {}", corpus.dir));
+    let mut adapter = Adapter::new(corpus);
+    let mut pending: Vec<Vec<u8>> = Vec::new();
+    let now = FIXED_TIME_MILLIS;
+    for step in &s.steps {
+        let conn = Conn(step.session.unwrap_or(1));
+        match &step.kind {
+            Kind::Connect => {
+                adapter.step(conn, Input::Connect, |b: &[u8]| pending.push(b.to_vec()));
+                adapter.step(conn, Input::Tick(now), |b: &[u8]| pending.push(b.to_vec()));
+            }
+            Kind::Disconnect => {
+                adapter.step(conn, Input::Disconnect, |b: &[u8]| pending.push(b.to_vec()));
+            }
+            Kind::Send(m) => {
+                adapter.step(conn, Input::Tick(now), |b: &[u8]| pending.push(b.to_vec()));
+                adapter.step(conn, Input::Bytes(&m.wire), |b: &[u8]| {
+                    pending.push(b.to_vec())
+                });
+            }
+            Kind::Expect(_) => {
+                if step.line_no == line_no {
+                    return pending
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| panic!("{file}:{line_no} produced no output at all"));
+                }
+                if !pending.is_empty() {
+                    pending.remove(0);
+                }
+            }
+            Kind::ExpectDisconnect => {}
+        }
+    }
+    panic!("{file}:{line_no} was never reached while driving the scenario");
+}
+
+/// **179 / 180.** ADR-0084 decision 3: the 180th is not skipped, not
+/// excluded and no fixture is edited — it is asserted, by content, to be
+/// exactly one known divergence.
+///
+/// The reversal `1d_InvalidLogonNoDefaultApplVerID` proves is written down in
+/// the plan's row B4: remove the `1137` check in `Session::judge` and it must
+/// go red with *expected DISCONNECT, engine sent Logon* — in one corpus per
+/// directory, so three files, not one.
 #[test]
 fn the_three_fixt_corpora_score_sixty_each() {
     let mut line = String::new();
     let mut total = 0;
     let mut expected = 0;
     let mut detail = String::new();
+    let mut scores: Vec<(&'static str, usize, usize)> = Vec::new();
+    let mut all_failures: Vec<(&'static str, Failure)> = Vec::new();
     for corpus in fixt_corpora() {
-        let (passed, of, failed) = score(&corpus);
+        let (passed, of, failures) = score(&corpus);
         line.push_str(&format!("{} {passed}/{of} ", corpus.dir));
         total += passed;
         expected += of;
-        for f in failed {
-            detail.push_str(&format!("\n  {}: {f}", corpus.dir));
+        for f in &failures {
+            detail.push_str(&format!(
+                "\n  {}: {}:{} {}",
+                corpus.dir, f.file, f.line_no, f.reason
+            ));
         }
+        scores.push((corpus.dir, passed, of));
+        all_failures.extend(failures.into_iter().map(|f| (corpus.dir, f)));
     }
     println!("{}", line.trim_end());
-    assert_eq!((total, expected), (180, 180), "{}{detail}", line.trim_end());
+
+    assert_eq!((total, expected), (179, 180), "{}{detail}", line.trim_end());
+
+    // `fix50sp1` and `fix50sp2` each 60 / 60; `fix50` 59 / 60 — named per
+    // corpus, so a mismatch says *which* corpus moved, not only that the sum
+    // did.
+    for (dir, passed, of) in &scores {
+        let want = if *dir == "fix50" { 59 } else { 60 };
+        assert_eq!(
+            (*passed, *of),
+            (want, 60),
+            "{dir} should be {want}/60{detail}"
+        );
+    }
+
+    // The single failure is exactly this file, on this corpus, on this line —
+    // any other file, any other corpus, or a second failure, is red.
+    assert_eq!(
+        all_failures.len(),
+        1,
+        "expected exactly one failing file across the 180{detail}"
+    );
+    let (corpus_dir, failure) = &all_failures[0];
+    assert_eq!(
+        *corpus_dir, "fix50",
+        "the one accepted divergence is fix50's alone (ADR-0084 decision 3){detail}"
+    );
+    assert_eq!(
+        failure.file, "21_RepeatingGroupSpecifierWithValueOfZero.def",
+        "a different file failed than the one ADR-0084 decision 3 names{detail}"
+    );
+    assert_eq!(
+        failure.line_no, 17,
+        "the failure is on a different line than ADR-0084 decision 3 names{detail}"
+    );
+
+    // The comparator's own reason (`Mismatch::FieldCount { expected: 17,
+    // actual: 13 }`) says only that the shapes differ. Drive the file again
+    // and read what the engine actually put on the wire.
+    let corpus = fixt_corpora()
+        .into_iter()
+        .find(|c| c.dir == *corpus_dir)
+        .expect("named just above");
+    let wire = engine_output_at(&corpus, &failure.file, failure.line_no);
+    assert_eq!(
+        field(&wire, 35),
+        Some(&b"3"[..]),
+        "expected a Reject (35=3), not the echoed 35=d"
+    );
+    assert_eq!(
+        field(&wire, 373),
+        Some(&b"5"[..]),
+        "expected SessionRejectReason 5, Value is incorrect (out of range) for this tag"
+    );
+    assert_eq!(
+        field(&wire, 371),
+        Some(&b"336"[..]),
+        "expected RefTagID naming TradingSessionID(336)"
+    );
 }
 
 /// The file the FIX 4.4 corpus does not have is one of the sixty, by name.

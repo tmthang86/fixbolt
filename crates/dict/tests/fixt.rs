@@ -256,3 +256,48 @@ fn a_session_message_is_checked_against_the_transport_layers_tags() {
         "`999` on a NewOrderSingle is a defined tag"
     );
 }
+
+/// **ADR-0084 decision 3, "What bidirectional drift does to this decision".**
+/// Enumerations between FIX50, SP1 and SP2 drift **both ways**, not only the
+/// strict direction `score_fixt`'s divergence assertion can see — a passing
+/// file is never examined there, so nothing in the 180 `.def`s would ever
+/// catch the permissive direction going missing. This test pins it directly
+/// on the table, independent of any corpus.
+///
+/// `[measured 2026-09-19]` with `xml.etree` over `vendor/quickfix/spec/`,
+/// re-verified against the built table below rather than assumed from the
+/// ADR: `TradingSessionID(336)` is **stricter** under SP2 than FIX50 (0
+/// values there, 7 here); `DeskOrderHandlingInst(1035)` is **more
+/// permissive** — **24 values in `FIX50.xml`**, 0 in `FIX50SP2.xml` — so a
+/// value FIX50 would refuse is not enumerated here at all;
+/// `MarketUpdateAction(1395)` is the same shape one service pack later —
+/// **3 values in `FIX50SP1.xml`**, 0 in `FIX50SP2.xml`. No `.def` in the 180
+/// carries `1035=` or `1395=`, so this is the only guard on the permissive
+/// direction until the FIX50 successor table (decision 3) exists — the day
+/// it lands, this test gains its other half: `Some(false)` on that table for
+/// the same two values.
+#[test]
+fn enum_drift_between_service_packs_is_pinned_in_both_directions() {
+    // Stricter than FIX50: FIX50 has no enumeration for 336 at all
+    // (`enum_allows` there is `None`), SP2 refuses `ONE_MAIN`.
+    assert_eq!(
+        Fixt::enum_allows(336, b"ONE_MAIN"),
+        Some(false),
+        "TradingSessionID: SP2 enumerates it (7 values) and refuses ONE_MAIN"
+    );
+    // More permissive than FIX50: DeskOrderHandlingInst, 24 values in
+    // FIX50.xml, 0 in FIX50SP2.xml — SP2 does not enumerate it at all, so a
+    // value FIX50 would answer `Some(false)` to is `None` here.
+    assert_eq!(
+        Fixt::enum_allows(1035, b"ZZZ"),
+        None,
+        "DeskOrderHandlingInst: 24 values in FIX50.xml, 0 in FIX50SP2.xml"
+    );
+    // More permissive than SP1: MarketUpdateAction, 3 values in
+    // FIX50SP1.xml, 0 in FIX50SP2.xml.
+    assert_eq!(
+        Fixt::enum_allows(1395, b"Z"),
+        None,
+        "MarketUpdateAction: 3 values in FIX50SP1.xml, 0 in FIX50SP2.xml"
+    );
+}
