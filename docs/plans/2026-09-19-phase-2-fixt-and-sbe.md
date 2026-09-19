@@ -10,6 +10,16 @@
 > **lệch `CLAUDE.md` §1** (hai crate mới trong một kế hoạch) chủ quyết theo **cách 1**: `sbe` +
 > `sbe-gen` là một cặp, một bước §7 (bước 9), ghi vào `DESIGN.md` ở A4. Nội dung các bước,
 > gate và tier **không đổi**.
+>
+> **Sửa 2026-09-19 (lần 2) — chờ chủ duyệt:** bản phác thảo mã ở *Cách làm* → *PR A* viết
+> lại cho **đúng với trait đã xây** (commit `44df719`, `crates/codec/src/encoding.rs`). Bản
+> phác cũ lệch mã ở ba chỗ, mỗi chỗ do một luật hoặc một file có sẵn ép buộc, nêu tên ngay
+> dưới bản mới. **Hàng A1 của *Chia việc* — kết quả, file đụng, bốn gate, tier — không đổi
+> một chữ và đã đạt đủ**, nên việc tiếp tục sang A2 theo `CLAUDE.md` §1 (kế hoạch sửa, chờ
+> duyệt lại, không lệch lặng lẽ). Kèm theo: hàng A2 và mục *PR B* điểm 1 ghi rõ ràng buộc
+> `where E::Dict: Tables` đặt ở `Session`, không đặt trên trait (trước đây viết
+> `Encoding::Dict: Tables`, không thể được vì `codec` không phụ thuộc `dict`); hàng C4 ghi
+> `SbeTables<S>` phải impl cả hai trait. Chủ chỉ cần duyệt bản phác; không có quyết định mới.
 
 ## Bối cảnh
 
@@ -130,40 +140,88 @@ test, gate và tier; tier `opus` cho bước đụng đường nóng hoặc bấ
 
 ### PR A — trait `Encoding`, `MessageView` không đổi (ADR-0079 quyết định 1–3, 5)
 
-`crates/codec/src/encoding.rs` (mới):
+`crates/codec/src/encoding.rs` — **đã xây, commit `44df719`**; đoạn dưới chép đúng chữ ký
+trong file đó (bản phác cũ nằm ngay sau, kèm lý do từng chỗ lệch):
 
 ```rust
 pub trait Encoding {
-    /// Kiểu view mượn; `MessageView<'a, N>` cho tag=value. `Copy`, ≤ 24 byte.
-    type View<'a>: Copy where Self: 'a;
+    /// Kiểu view mượn; `MessageView<'a, N>` cho tag=value. `Copy`, 24 byte (assert ở lib.rs).
+    type View<'a>: Copy;
     /// Định danh trường: `u32` (tag) cho tag=value; id trường cho SBE.
     type Field: Copy;
-    /// Bảng tra (ADR-0080): `Fix44`, `Fixt11Fix50Sp2Tables`, `SbeTables<S>`.
+    /// Bảng tra (ADR-0080). Ràng buộc là `codec::Dictionary` — KHÔNG phải `dict::Tables`,
+    /// vì `codec` không phụ thuộc `dict`; `Session` tự thêm `where E::Dict: Tables` (A2).
     type Dict: Dictionary;
     /// Vùng nhớ chủ gọi giữ cho một kết nối: `FieldIndex<N>` cho tag=value.
     type Scratch: Default;
-    type Template;
-    type Error: Copy;
+    /// Khung gửi đi có lỗ (D9); P, S là sức chứa do chủ gọi chọn, y như `Template<P, S>`.
+    type Template<const P: usize, const S: usize>;
+    type ParseError: Copy;
+    type EncodeError: Copy;
 
-    fn parse<'a>(buf: &'a [u8], scratch: &'a mut Self::Scratch, v: Validation)
-        -> Result<Parsed<Self::View<'a>>, Self::Error>;
+    fn parse(buf: &[u8], scratch: &mut Self::Scratch, v: Validation)
+        -> Result<Parsed, Self::ParseError>;
+    /// Mượn `buf` qua `scratch` — tách khỏi `parse`, gọi được cả sau `Err` (xem lệch 1).
+    fn view<'a>(scratch: &'a Self::Scratch, buf: &'a [u8]) -> Self::View<'a>;
     fn field<'a>(view: Self::View<'a>, f: Self::Field) -> Option<&'a [u8]>;
-    /// Các trường session đọc: `35`, `34`, `49`, `56`, `52`, `43`, `122`, `8`.
+    /// Các trường session đọc: `8`, `35`, `34`, `49`, `56`, `52`, `43`, `122`; SBE trả `None`.
     fn session_fields<'a>(view: Self::View<'a>) -> Option<SessionFields<'a>>;
-    fn patch(t: &mut Self::Template, f: Self::Field, value: &[u8]) -> Result<(), Self::Error>;
-    fn encode(t: &Self::Template, out: &mut [u8]) -> Result<usize, Self::Error>;
+    /// Ghi một message: byte cố định của template, `slots` lấp lỗ. Trả về KHOẢNG `out` bị
+    /// chiếm, không phải độ dài — prefix canh phải nên message không bắt đầu ở `out[0]`.
+    fn encode<const P: usize, const S: usize>(
+        t: &Self::Template<P, S>, out: &mut [u8], slots: &[(Self::Field, &[u8])],
+    ) -> Result<Range<usize>, Self::EncodeError>;
 }
 
 pub struct TagValue<D, const N: usize>(PhantomData<D>);
-pub type Fix44TagValue = TagValue<fixbolt_dict::Fix44, 64>;   // alias sống ở `dict`
+pub type Fix44TagValue = TagValue<fixbolt_dict::Fix44, 64>;   // alias sống ở `dict` (A2)
 ```
 
-`impl<D: Dictionary, const N: usize> Encoding for TagValue<D, N>` chỉ **gọi lại** `parse_into`,
-`MessageView::get`, `Template::patch`/`encode_with::<D>` hiện có, mọi hàm `#[inline]`. `Session`
-đổi thành `Session<E: Encoding, R: Role, const APP: usize>` (N nằm trong `E`), engine/library
-thêm alias `AcceptorFix44 = Session<Fix44TagValue, Acceptor>` để chữ ký `serve*` đọc như cũ.
-`parse_into`, `MessageView`, `FieldIndex` **không đổi một ký tự** (test `api_unchanged` khẳng
-định bằng `size_of` và bằng chữ ký gọi cũ compile).
+`impl<D: Dictionary, const N: usize> Encoding for TagValue<D, N>` chỉ **gọi lại** hàm có sẵn,
+mọi hàm `#[inline]`: `parse` → `parse_into::<D, N>`, `view` → `FieldIndex::view`, `field` →
+`MessageView::get`, `session_fields` → tám lần `get`, `encode` → `Template::encode_with::<D>`
+với group rỗng. `View = MessageView<'a, N>`, `Field = u32`, `Scratch = FieldIndex<N>`,
+`Template<P, S> = Template<P, S>`, hai kiểu lỗi = `ParseError`, `EncodeError` của `codec`.
+`Session` đổi thành `Session<E: Encoding, R: Role, const APP: usize>` (N nằm trong `E`),
+engine/library thêm alias `AcceptorFix44 = Session<Fix44TagValue, Acceptor>` để chữ ký `serve*`
+đọc như cũ. `parse_into`, `MessageView`, `FieldIndex`, `Parsed` **không đổi một ký tự** (test
+`api_unchanged` trong `crates/codec/tests/encoding.rs` khẳng định bằng `size_of` và bằng chữ ký
+gọi cũ compile). Nhóm lặp (repeating group) **cố ý không có** trên trait: bốn thao tác của
+ADR-0079 không gồm ghi group, và `GroupData` là hình dạng tag=value, không có nghĩa dưới SBE —
+ai ghi group thì dùng thẳng `Template::encode_with`.
+
+**Ba chỗ bản phác cũ lệch mã** (bản phác là phác thảo; hàng A1 mới là spec, và hàng A1 đòi
+`parse_into`, `MessageView`, `FieldIndex` không đổi, `TagValue` chỉ *gọi lại* chúng):
+
+1. *Phác cũ:* `parse` trả `Parsed<Self::View<'a>>` — view nằm trong kết quả `Ok`.
+   *Mã:* `parse` trả `Parsed` **có sẵn** (enum `Complete { consumed } | Incomplete`,
+   `parse.rs:36`), và `view(scratch, buf)` là hàm riêng. *Vì sao:* làm `Parsed` generic là đổi
+   kiểu trả về của `parse_into` — public API của `codec`, hàng A1 cấm. Và tách ra là cần
+   thật: sau `ParseError::BadTag`, index vẫn giữ mọi trường đọc *trước* tag hỏng, session
+   dựng view trên đó để đọc `34=`/`35=` mà trả lời (`session/src/lib.rs:2994-3010`, định
+   nghĩa `14a_BadField`). View chỉ có trong nhánh `Ok` không làm được việc đó.
+2. *Phác cũ:* `patch(t: &mut Template, f, value)` rồi `encode(t, out) -> usize`.
+   *Mã:* một hàm `encode(t: &Template<P, S>, out, slots) -> Range<usize>`. *Vì sao:*
+   `Template<P, S>` **bất biến** theo D9 — dựng một lần, lỗ lấp bằng `slots` lúc gửi;
+   `template.rs` không có `patch` (chỉ `new/field/slot/group/build/encode/encode_with`). Chữ
+   ký này khớp 1:1 call site A2 sẽ thay: `template.encode(buf, &slots[..n])` ở
+   `session/src/lib.rs:2788`, và trả `Range` chứ không phải `usize` vì đó là hợp đồng của
+   `Template::encode` (prefix canh phải, `emit(&buf[range])`).
+3. *Phác cũ:* một `type Error: Copy` chung. *Mã:* `ParseError` và `EncodeError` riêng, bằng
+   đúng hai kiểu `codec` đang trả. *Vì sao:* `match` của session trên `ParseError::BadTag`,
+   `Incomplete`… (`:2988-2994`) giữ nguyên ở A2, không phải bọc/mở thêm một lớp.
+
+Hai chi tiết nhỏ cùng loại: `type View<'a>: Copy` bỏ `where Self: 'a` (marker không có
+lifetime, không cần); `type Template` thành GAT có tham số const `<P, S>` để `out.rs` gọi
+`E::Template<24, 320>` (`Skeleton`) mà không mất sức chứa do chủ gọi chọn.
+
+**Hệ quả cho A2 và C4:** `Encoding::Dict` chỉ đòi `codec::Dictionary`, nên `Session` phải tự
+viết `where E::Dict: Tables` để gọi pass validate qua `<E::Dict as Tables>::…`; và
+`SbeTables<S>` (C4) phải impl **cả** `codec::Dictionary` (để làm `Dict`) **lẫn** `dict::Tables`
+(để `Session` nhận — dù SBE không có session, ràng buộc kiểu vẫn phải thoả nếu C4 muốn
+`Sbe<S>: Encoding` dùng được ở nơi khác `Session`; nếu C4 quyết `SbeTables` chỉ impl
+`Dictionary` thì ghi rõ trong test doc rằng `Session<Sbe<S>>` không compile — là điều ADR-0078
+muốn).
 
 Gate đóng PR A là band ADR-0031 trên bàn §9: `benches/parse.rs`, `serialize.rs`, `alloc.rs`
 của `codec`, `validate.rs` của `session`, `density.rs` của `engine` — cùng commit, cùng boot,
@@ -173,7 +231,9 @@ thì ở đây không `cargo`).
 ### PR B — FIXT 1.1 / FIX 5.0 SP2 (ADR-0080)
 
 1. `dict::Tables` trait (`crates/dict/src/tables.rs`, mới) gom đúng các hàm validate session
-   gọi; `Fix44: Tables` uỷ quyền cho hàm sinh sẵn; `Encoding::Dict: Tables`.
+   gọi; `Fix44: Tables` uỷ quyền cho hàm sinh sẵn. Ràng buộc nằm ở **`Session`**
+   (`where E::Dict: Tables`, A2), **không** nằm trên trait — `Encoding::Dict` chỉ đòi
+   `codec::Dictionary` vì `codec` không phụ thuộc `dict` (sửa 2026-09-19 lần 2).
 2. `dict/build.rs` nhận **cặp** XML sau feature `fix50sp2`: header/trailer/admin từ
    `FIXT11.xml`, field/component/group/message từ `FIX50SP2.xml`; trùng field phải giống
    nhau về số–tên–kiểu, khác → `die`. Sinh `fixt11_fix50sp2.rs`, `include!` sau
@@ -251,7 +311,7 @@ Mỗi dòng đủ để viết brief theo `CLAUDE.md` §12. Cột *Đọc trư�
 | Bước | Kết quả | File đụng (không đụng gì khác) | Gate (lệnh) | Tier | Phụ thuộc |
 |---|---|---|---|---|---|
 | **A1** | `codec::encoding`: trait `Encoding`, `SessionFields<'a>`, `TagValue<D, N>` impl gọi lại API cũ, mọi hàm `#[inline]`; `const _: () = assert!(size_of::<MessageView<64>>() == 24)` giữ nguyên; test `tests/encoding.rs`: `field` qua trait bằng `MessageView::get` trên 5 message thật của `tests/common`; `api_unchanged` compile chữ ký cũ. Alloc case `parse via Encoding` = 0. Đọc trước: ADR-0079 quyết định 1–2; ADR-0080 quyết định 1; `codec/src/index.rs` (`MessageView`, `get`), `parse.rs::parse_into`, `template.rs` (`patch`, `encode_with`) | `crates/codec/src/encoding.rs` (mới), `lib.rs` (một `pub mod` + `pub use`), `crates/codec/tests/encoding.rs` (mới), `crates/codec/benches/alloc.rs` (một case) | `cargo test -p fixbolt-codec` xanh; `cargo bench -p fixbolt-codec --bench alloc` in `parse via Encoding 0`; clippy `-D warnings`; `cargo doc -p fixbolt-codec` không warning | **opus** (đường nóng, bất biến 1) | ADR-0080 duyệt |
-| **A2** | `Session<E: Encoding, R, APP>`; 17 chỗ `Fix44::` → `<E::Dict as Tables>::`; `parse_into::<Fix44, N>` → `E::parse`; `out.rs` qua `E::Template`. `dict::Tables` trait + `impl Tables for Fix44` (uỷ quyền). Alias `Fix44TagValue` ở `dict`. Đọc trước: ADR-0080 quyết định 1; `session/src/lib.rs:2985`, `:3150`, `:3735-3826`, `out.rs` các chỗ `Fix44`; `score.rs:1-60` | `crates/session/src/lib.rs`, `out.rs`; `crates/dict/src/tables.rs` (mới), `lib.rs` (`mod`, alias); mọi test trong `crates/session/tests/` **chỉ đổi kiểu**, không đổi kỳ vọng | `cargo test -p fixbolt-session --test score` **59 / 59**; `cargo test -p fixbolt-session` xanh không sửa fixture; `cargo bench -p fixbolt-session --bench alloc` mọi case 0 | **opus** (bất biến 2, 3) | A1 |
+| **A2** | `Session<E: Encoding, R, APP>` **với `where E::Dict: Tables` trên `Session`** (trait chỉ đòi `codec::Dictionary`); 17 chỗ `Fix44::` → `<E::Dict as Tables>::`; `parse_into::<Fix44, N>` → `E::parse`, và `self.idx.view(bytes)` → `E::view(&self.idx, bytes)` (cả nhánh `BadTag` `:2994`); `out.rs` `Skeleton` = `E::Template<24, 320>`, `template.encode(buf, &slots[..n])` (`:2788`) → `E::encode(template, buf, &slots[..n])`; hai `match` trên `ParseError` giữ nguyên (`E::ParseError = ParseError`). `dict::Tables` trait + `impl Tables for Fix44` (uỷ quyền). Alias `Fix44TagValue` ở `dict`. Đọc trước: ADR-0080 quyết định 1; `session/src/lib.rs:2985`, `:3150`, `:3735-3826`, `out.rs` các chỗ `Fix44`; `score.rs:1-60` | `crates/session/src/lib.rs`, `out.rs`; `crates/dict/src/tables.rs` (mới), `lib.rs` (`mod`, alias); mọi test trong `crates/session/tests/` **chỉ đổi kiểu**, không đổi kỳ vọng | `cargo test -p fixbolt-session --test score` **59 / 59**; `cargo test -p fixbolt-session` xanh không sửa fixture; `cargo bench -p fixbolt-session --bench alloc` mọi case 0 | **opus** (bất biến 2, 3) | A1 |
 | **A3** | `engine`, `library`, `conformance`, `tools/w2w`, `tools/interop`, `tools/jrnl` compile với `Session<E>`; alias `AcceptorFix44`, `InitiatorFix44` trong `engine`; `serve*` thêm `E` với default alias sao cho `examples/acceptor.rs` **không đổi**. Đọc trước: ADR-0079 *Consequences* dòng "Generic engines mean generic front doors"; `engine/src/lib.rs` các `serve*`; `library/src/app.rs`, `reply.rs` chỗ `Fix44` | `crates/engine/src/lib.rs`, `shard.rs`, `recovery.rs`, `reconnect.rs`, `block.rs`; `crates/library/src/*.rs`; `crates/conformance/src/echo.rs`; `tools/*/src/main.rs` (chỉ kiểu) | `cargo test --all` xanh; `cargo test --no-default-features` xanh; `scripts/check-no-kernel-sleep.sh` và `check-standard-gives-the-core-back.sh` xanh (bất biến 4 walk lại); `cargo test -p fixbolt-engine --test wire` 59 / 59; `scripts/interop.sh` 7 / 7 hai vai | sonnet xây → **opus review** | A2 |
 | **A4** | Docs PR A: `DESIGN.md` §4 thêm **D16 — Encoding là trait, mỗi encoding một view** (nội dung = ADR-0079 quyết định 1–3 + chữ ký A1); §3 bảng `codec` thêm `encoding`; `GUIDE.md` mục alias; `CHANGELOG.md` *Unreleased* dòng public API `Session<E>`; `README.md` layout không đổi. **Thêm `DESIGN.md` §7 bước 9** (ngoại lệ §1, chủ duyệt 2026-09-19 — xem *Chạy song song*), nguyên văn tiếng Anh, chèn sau bước 8 và trước đoạn "TLS (D11) has no step here": `9. **\`sbe\` + \`sbe-gen\`**: the SBE codec under the \`Encoding\` trait (D16) and the generator that emits its layout tables from a schema. One step, like step 1, because the runtime is only usable with generated tables and the generator is only testable against the runtime. Under the phase 2 plan (chỗ này đặt một link chữ `plan` trỏ file này, đường dẫn tương đối từ `docs/` như bước 1), the one exception to "one crate per plan" in \`CLAUDE.md\` §1, decided by the owner on 2026-09-19. \`tools/sbe-interop\` sits beside it as \`tools/interop\` sits beside step 5.` Câu "All eight are complete as of 2026-09-02" đổi thành "Steps 1–8 are complete as of 2026-09-02; step 9 is in flight." | `docs/DESIGN.md` (§3, §4 D16, **§7 bước 9**), `docs/GUIDE.md`, `CHANGELOG.md`, `docs/GETTING-STARTED.md` (nếu chữ ký ví dụ đổi) | `python3 scripts/check-links.py` xanh; `grep -n '^9\. \*\*`sbe` + `sbe-gen`\*\*' docs/DESIGN.md` in đúng một dòng | manager (haiku link check) | A3 |
 | **A-desk** *(needs-desk)* | Band ADR-0031 trên bàn §9, cùng boot, trước/sau commit A3: `scripts/bench.sh --strict` cho `parse serialize alloc validate density`, n = 20 mỗi bên, xen kẽ hai worktree (mẫu C-91); mọi case trong band → PR A đóng; lệch → **dừng**, sửa A1/A2, không ghi baseline mới | `docs/reference/measured-costs.md` (mục mới), `STATUS.md` (manager) | `scripts/bench.sh --strict` hai lần, quote; `scripts/check-machine.sh` `pass … fail 0` trong header | manager + haiku runner | A3; **bàn rảnh (không bisect)** |
@@ -266,7 +326,7 @@ Mỗi dòng đủ để viết brief theo `CLAUDE.md` §12. Cột *Đọc trư�
 | **C1** | `crates/sbe` runtime (ADR-0081 quyết định 1, 4, 5): `header.rs`, `view.rs` (`SbeView` 24 byte + `const _` assert), `group.rs`, `vardata.rs`, `schema.rs` (`trait Schema { fn message(template_id) -> Option<&'static MessageLayout>; … }`), `error.rs` (fieldless `SbeError`). `#![no_std]`, `#![forbid(unsafe_code)]`, zero dep. Unit test với bảng **viết tay** cho `NewOrderSingle` của spec §7 và hex dump của nó. Đọc trước: ADR-0081 quyết định 1–2, 4–5; SBE 1.0 RC4 §2, §3.3–3.6 (file `vendor/sbe-spec/v1-0-RC4/doc/03MessageStructure.md`); `codec/src/index.rs` (mẫu view + assert) | `crates/sbe/**` (mới), `Cargo.toml` workspace `members`, `scripts/check-no-optional-deps.sh` (thêm crate), `scripts/fetch-sbe-assets.sh` (mới, ghim SHA hai repo) | `cargo test -p fixbolt-sbe` xanh; `cargo test -p fixbolt-sbe --no-default-features`; clippy; `cargo build -p fixbolt-sbe --target thumbv7em-none-eabi` **hoặc** test `no_std` bằng `#![no_std]` + `cargo check` không `std` (chọn cái CI có sẵn, nêu rõ) | **opus** (crate mới trên đường nóng) | **Chỉ ADR-0081 duyệt** — C1 không gọi trait `Encoding` (đó là C4), nên không chờ A1. Đụng file chung: `Cargo.toml` `members`, `Cargo.lock`, `check-no-optional-deps.sh` — xem *Chạy song song* |
 | **C2** | `crates/sbe-gen`: `generate(xml) -> Result<String, Error>`; sinh `impl Schema` + bảng `&'static`; phạm vi ADR-0081 quyết định 5, ngoài phạm vi → `Error::Unsupported(&'static str)`. Test: schema spec §7 và `example-schema.xml` sinh ra compile (test dùng `trybuild`-free: ghi vào `OUT_DIR` rồi `include!` trong `crates/sbe/build.rs` dev-only); offset từng trường của `Car` bằng số tính tay từ schema (ít nhất 8 trường, 2 group, 3 varData). Đọc trước: ADR-0081 quyết định 2; `dict/build.rs:88-330` (mẫu emit bảng); `vendor/sbe-ref/sbe-samples/src/main/resources/example-schema.xml` | `crates/sbe-gen/**` (mới), `crates/sbe/build.rs` (mới, chỉ khi `cfg(test)`-style qua dev-dep), `crates/sbe/tests/schemas/` (chỉ **đường dẫn** vào vendor, không copy XML) | `cargo test -p fixbolt-sbe-gen` xanh; `cargo test -p fixbolt-sbe` compile bảng sinh | sonnet | C1 |
 | **C3** | `crates/sbe/tests/spec_examples.rs`: ba hex dump §7 decode → từng trường bằng số spec ghi → encode lại **byte một**; `tests/car_roundtrip.rs`: `Car` mọi kiểu, nested group, 3 varData; `tests/versioning.rs`: `sinceVersion` > header → absent; template lạ → skip đúng `blockLength`; message cụt → `Err`, không panic (fuzz nhỏ bằng cắt từng byte). Đọc trước: `07Examples.md` ba mục; ADR-0081 quyết định 3a, 4 | `crates/sbe/tests/*.rs` (mới) | `cargo test -p fixbolt-sbe` xanh; đảo chiều: đổi một byte trong hex `ExecutionReport` → test group đỏ ở đúng trường | sonnet | C2 |
-| **C4** | `impl Encoding for Sbe<S: Schema>` (`crates/sbe/src/encoding.rs`): `View = SbeView`, `Field = FieldId(u16)`, `Dict = SbeTables<S>` (`Tables` cấu trúc: `allows` từ bảng, `enum_allows` từ enum của schema, `required` = presence `required`), `session_fields` → `None`, `Template` = root block + group builder + varData append, `patch` theo offset. Test: `field` qua trait bằng số của spec §7; encode `NewOrderSingle` qua `Template` == hex spec. Đọc trước: ADR-0079 quyết định 2, 4; A1 (`codec/src/encoding.rs`); ADR-0080 quyết định 1 | `crates/sbe/src/encoding.rs`, `tables.rs` (mới), `crates/sbe/tests/encoding.rs` (mới) | `cargo test -p fixbolt-sbe` xanh; `cargo bench -p fixbolt-sbe --bench alloc` (C6) | **opus** (trait trên đường nóng) | C3, **và PR A đã gộp** (A1 cho `Encoding`, A2 cho `dict::Tables` mà `SbeTables` impl) |
+| **C4** | `impl Encoding for Sbe<S: Schema>` (`crates/sbe/src/encoding.rs`): `View = SbeView`, `Field = FieldId(u16)`, `Dict = SbeTables<S>` — impl **cả** `codec::Dictionary` (ràng buộc của trait) **lẫn** `dict::Tables` (ràng buộc `Session` đặt ở A2; `Tables` cấu trúc: `allows` từ bảng, `enum_allows` từ enum của schema, `required` = presence `required`), `session_fields` → `None`, `Template<P, S>` = root block + group builder + varData append (GAT có tham số const, bỏ qua `P, S` nếu không dùng), `encode(t, out, slots)` ghi theo offset (**không có `patch`** — xem *PR A* lệch 2), trả `Range<usize>`; hai kiểu lỗi riêng. Test: `field` qua trait bằng số của spec §7; encode `NewOrderSingle` qua `Template` == hex spec. Đọc trước: ADR-0079 quyết định 2, 4; A1 (`codec/src/encoding.rs`); ADR-0080 quyết định 1 | `crates/sbe/src/encoding.rs`, `tables.rs` (mới), `crates/sbe/tests/encoding.rs` (mới) | `cargo test -p fixbolt-sbe` xanh; `cargo bench -p fixbolt-sbe --bench alloc` (C6) | **opus** (trait trên đường nóng) | C3, **và PR A đã gộp** (A1 cho `Encoding`, A2 cho `dict::Tables` mà `SbeTables` impl) |
 | **C5** | `scripts/sbe-interop.sh` + `tools/sbe-interop` + job CI `sbe-interop` (ADR-0081 quyết định 3b): tải `sbe-all-<v>.jar` (SHA-256 ghim trong script), Temurin 17 cài trong job, sinh crate Rust Real Logic cho `example-schema.xml` vào `target/sbe-ref/`, binary encode bằng họ → decode mình, encode mình → decode họ, so byte hai chiều cho `Car` với group lồng và varData; in `sbe-interop: 2 / 2`. Đọc trước: `scripts/interop.sh:30-110` (fetch/ghim/build); `.github/workflows/ci.yml:719-800` (job `interop`); README SBE đoạn lệnh chạy | `scripts/sbe-interop.sh` (mới), `tools/sbe-interop/**` (mới), `.github/workflows/ci.yml` (job mới), `Cargo.toml` members | `scripts/sbe-interop.sh` in `2 / 2`; job xanh trong CI, run id ghi lại | sonnet | C4 (encode "mình" đi qua `Template` của C4). Đụng `ci.yml` và `Cargo.toml` `members` cùng B7/C1 — cùng một phiên sửa, xem *Chạy song song* |
 | **C6** | `crates/sbe/benches/alloc.rs`: `parse Car`, `field`, `walk fuelFigures`, `encode NewOrderSingle` = 0, mỗi case chứng minh bằng injection (mẫu `codec/benches/alloc.rs:230-246`); `benches/sbe.rs` timing 4 case `NO BASELINE`; `scripts/bench.sh` và `check-bench-alignment.sh` biết crate mới. Đọc trước: `codec/benches/alloc.rs`, `harness.rs`; `scripts/bench.sh` phần INVARIANT/TIMING | `crates/sbe/benches/*.rs` (mới), `Cargo.toml` `[[bench]]`, `scripts/bench.sh`, `scripts/check-bench-alignment.sh` | `scripts/bench.sh` in bốn `0` và bốn `NO BASELINE`; alignment xanh | sonnet | C4 |
 | **C7** | `library/examples/sbe_decode.rs` + `tests/sbe_example.rs`: decode một `Car` từ bytes cố định qua `fixbolt::sbe` re-export, không socket (ADR-0078: không session). `library` re-export `sbe` sau feature `sbe` (gate `mod`/`pub use`). Đọc trước: ADR-0078 *Consequences* "cannot log on anywhere"; `library/src/lib.rs` re-export list | `crates/library/src/lib.rs`, `Cargo.toml`, `examples/sbe_decode.rs`, `tests/sbe_example.rs` | `cargo test -p fixbolt --features sbe` xanh; `--no-default-features` không kéo `sbe` (`check-no-optional-deps.sh`) | sonnet | C4, **và PR A đã gộp** (A3 sửa `crates/library/src/*.rs`) |
@@ -444,3 +504,14 @@ Theo `CLAUDE.md` §4; đây là danh sách **manager sửa**, dòng chính xác:
 
 *(mỗi PR một mục con `### PR A` / `### PR B` / `### PR C` / `### PR D` — điền khi đóng: commit,
 CI run id, gate quote, cái gì chưa làm và vì sao)*
+
+### PR A
+
+- **2026-09-19 — A1 giao, commit `44df719`** (nhánh `plan/phase-2-a`, phiên bàn): bốn file
+  đúng như hàng A1 (`crates/codec/src/encoding.rs` mới, `lib.rs` +2 dòng, `tests/encoding.rs`
+  mới, `benches/alloc.rs` một case). Bốn gate xanh theo báo cáo của manager (manager chạy lại
+  trên commit này trước khi gộp): `cargo test -p fixbolt-codec`; `cargo bench -p fixbolt-codec
+  --bench alloc` in `parse via Encoding 0`; clippy `-D warnings`; `cargo doc -p fixbolt-codec`
+  không warning. CI run id: chưa có (PR draft mở khi nào thì ghi khi ấy). Trait xây ra khác
+  bản phác *PR A* ở ba chỗ — kế hoạch đã sửa cùng ngày (mục *Sửa … lần 2* đầu file, **chờ chủ
+  duyệt**); hàng A1 không đổi. A-desk chưa chạy: số band ADR-0031 chỉ có sau A3.
