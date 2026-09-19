@@ -132,9 +132,12 @@ Every criterion is a command that passes or fails. **All seven are met.**
 **What the ticks do not buy**, so nobody reads more into them:
 
 - **Criterion 6 is loopback.** [DESIGN.md §6](DESIGN.md) has a stricter row, NIC to NIC with
-  `SO_TIMESTAMPING` and a load generator on another machine, and that row is open (STATUS
-  item 40). Until 2026-09-02 `tools/w2w` pinned no threads and printed no p99.9, so no earlier
-  run could have met this criterion however well the box was tuned.
+  `SO_TIMESTAMPING` and a load generator on another machine, ~~and that row is open (STATUS
+  item 40)~~ — `[measured 2026-09-18]` **that row is now met at p50 and p99 for `hft`, back to
+  back over a cable** (admin 27 050 ‖ 27 114 ns, application 28 894 ‖ 28 878 at p50, two
+  procedures; p99.9 published marked, not reproduced; `standard` not wire-stamped, ADR-0073),
+  which phase 1 never asked for. Until 2026-09-02 `tools/w2w` pinned no threads and printed no
+  p99.9, so no earlier run could have met this criterion however well the box was tuned.
 - **Criterion 4 is 14 cases, not a second corpus.** One scenario per direction against one
   counterparty. It does not cover `hft` mode, TLS, more than one counterparty, session
   schedules, reconnect or backoff, and neither do the `.def` files. `[measured 2026-09-04]`
