@@ -131,7 +131,7 @@ pub const MAX_ON_LOGON: u32 = 16;
 /// TX, L, APP>` written before phase 2 still names the same type — FIX 4.4
 /// tag=value over an `N`-field index. `N` did **not** fold into it: it is what
 /// a deployment sizes and what `docs/CONFIGURATION.md` and
-/// [`serve_with`] name, and the impl below binds
+/// `serve_with` name, and the impl below binds
 /// `E::Scratch` to `FieldIndex<N>` so the two can never mean different
 /// numbers.
 pub struct Engine<
