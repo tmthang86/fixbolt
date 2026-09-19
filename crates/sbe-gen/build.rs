@@ -53,7 +53,36 @@ fn main() {
     write_generated(&out.join("car.rs"), &ref_schema, |path| {
         generate_car(path, &ref_common_types)
     });
+
+    // Inline, not from vendor/: a composite whose member `offset` pads it,
+    // read and written through generated tables by `tests/encoding.rs`.
+    let padded = generator::generate(PADDED_XML).unwrap_or_else(|e| compile_error(&e.to_string()));
+    if let Err(e) = std::fs::write(out.join("padded.rs"), padded) {
+        die(&format!("cannot write padded.rs: {e}"));
+    }
 }
+
+/// A composite `{x uint8; y uint32 offset="4"}` — 8 bytes on the wire, 3 of
+/// them padding (RC4 `04MessageSchema.md` "Element offset within a composite
+/// type") — then a second field.
+const PADDED_XML: &str = r#"<messageSchema id="7" version="0" byteOrder="littleEndian" package="padded">
+  <types>
+    <composite name="messageHeader">
+      <type name="blockLength" primitiveType="uint16"/>
+      <type name="templateId" primitiveType="uint16"/>
+      <type name="schemaId" primitiveType="uint16"/>
+      <type name="version" primitiveType="uint16"/>
+    </composite>
+    <composite name="Padded">
+      <type name="x" primitiveType="uint8"/>
+      <type name="y" primitiveType="uint32" offset="4"/>
+    </composite>
+  </types>
+  <message name="M" id="1">
+    <field name="p" id="1" type="Padded"/>
+    <field name="q" id="2" type="uint32"/>
+  </message>
+</messageSchema>"#;
 
 /// Writes `path` from `source` via `generate`, or a `compile_error!` naming
 /// what is missing — never silently empty and never silently stale.

@@ -142,8 +142,16 @@ fn write_scalar(
         }
         (Primitive::UInt64, Value::UInt(u)) => wire::write_u64(dst, at, u, order),
         // The reader widens `float` to `f64`; narrowing a value it produced
-        // gives back the same `f32` bit for bit (NaN stays NaN).
-        (Primitive::Float, Value::Float(f)) => wire::write_f32(dst, at, f as f32, order),
+        // gives back the same `f32` bit for bit (NaN stays NaN, ±inf stays
+        // ±inf). A finite value past `f32::MAX` has no `f32`: `as` would
+        // write ±inf, a different value, so it is refused
+        // (`a_finite_double_too_big_for_a_float_is_bad_value`).
+        (Primitive::Float, Value::Float(f)) => {
+            if f.is_finite() && f.abs() > f64::from(f32::MAX) {
+                return Err(SbeError::BadValue);
+            }
+            wire::write_f32(dst, at, f as f32, order)
+        }
         (Primitive::Double, Value::Float(f)) => wire::write_f64(dst, at, f, order),
         _ => Err(SbeError::BadValue),
     }
@@ -592,9 +600,27 @@ impl GroupWriter<'_> {
     ///
     /// # Errors
     /// `LengthOverflow` when one more entry does not fit `numInGroup`'s width;
-    /// `BufferTooSmall`; and whatever `f` returns — in which case the count
-    /// on the wire does not include this entry.
+    /// `BufferTooSmall`; and whatever `f` returns. On any error the entry is
+    /// undone: the write position goes back to where the entry started and
+    /// the count on the wire does not include it, so the group — and the
+    /// message — can still be continued and finished as if the entry had
+    /// never been attempted (bytes past the position are left as written and
+    /// are overwritten by whatever comes next). Guarded by
+    /// `a_failed_entry_is_rewound_and_the_message_still_walks` in
+    /// `tests/encoding.rs`.
     pub fn entry<F>(&mut self, f: F) -> Result<(), SbeError>
+    where
+        F: FnOnce(&mut EntryWriter<'_>) -> Result<(), SbeError>,
+    {
+        let start = *self.pos;
+        let r = self.write_entry(start, f);
+        if r.is_err() {
+            *self.pos = start;
+        }
+        r
+    }
+
+    fn write_entry<F>(&mut self, start: usize, f: F) -> Result<(), SbeError>
     where
         F: FnOnce(&mut EntryWriter<'_>) -> Result<(), SbeError>,
     {
@@ -602,7 +628,6 @@ impl GroupWriter<'_> {
         if !fits(self.layout.dimension.num_in_group, next) {
             return Err(SbeError::LengthOverflow);
         }
-        let start = *self.pos;
         let len = usize::from(self.layout.block_length);
         init_block(self.out, start, len, self.layout.fields, self.order)?;
         *self.pos = start + len;

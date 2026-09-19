@@ -138,6 +138,9 @@ impl Schema for Examples {
         match template_id {
             99 => Some(&NEW_ORDER_SINGLE),
             5 => Some(&SMALL),
+            6 => Some(&NUMBERS),
+            7 => Some(&WITH_DATA),
+            8 => Some(&EMPTY_ENTRIES),
             _ => None,
         }
     }
@@ -444,5 +447,205 @@ fn big_endian_schemas_write_every_number_big_endian() -> Result<(), SbeError> {
             2, b'a', b'b', // varData
         ]
     );
+
+    // Every other width and kind, each byte for byte.
+    let mut out = [0u8; 64];
+    let mut w = MessageWriter::new::<ExamplesBe>(&mut out, 6)?;
+    w.put(&NUMBER_FIELDS[0], Value::Int(-2))?; // i16
+    w.put(&NUMBER_FIELDS[1], Value::Int(0x0102_0304))?; // i32
+    w.put(&NUMBER_FIELDS[2], Value::Int(-0x0102_0304_0506_0708))?; // i64
+    w.put(&NUMBER_FIELDS[3], Value::UInt(0x0A0B))?; // u16
+    w.put(&NUMBER_FIELDS[4], Value::UInt(0x0C0D_0E0F))?; // u32
+    w.put(&NUMBER_FIELDS[5], Value::Float(1.5))?; // f32: 0x3FC00000
+    w.put(&NUMBER_FIELDS[6], Value::Float(-2.5))?; // f64: 0xC004000000000000
+    let len = w.finish()?;
+    assert_eq!(
+        &out[..len],
+        &[
+            0, 32, 0, 6, 0, 100, 0, 0, // header, big-endian
+            0xFF, 0xFE, // i16 -2
+            1, 2, 3, 4, // i32
+            0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8, 0xF8, // i64 -0x0102030405060708
+            0x0A, 0x0B, // u16
+            0x0C, 0x0D, 0x0E, 0x0F, // u32
+            0x3F, 0xC0, 0, 0, // f32 1.5
+            0xC0, 0x04, 0, 0, 0, 0, 0, 0, // f64 -2.5
+        ]
+    );
     Ok(())
 }
+
+// --- float narrowing ----------------------------------------------------------
+
+#[test]
+fn a_finite_double_too_big_for_a_float_is_bad_value() -> Result<(), SbeError> {
+    let f32_field = &NUMBER_FIELDS[5];
+    let mut out = [0u8; 64];
+    let mut w = MessageWriter::new::<Examples>(&mut out, 6)?;
+    for too_big in [1e300, -1e300, f64::MAX, f64::from(f32::MAX) * 2.0] {
+        assert_eq!(
+            w.put(f32_field, Value::Float(too_big)),
+            Err(SbeError::BadValue),
+            "{too_big}"
+        );
+    }
+    for fits in [
+        f64::from(f32::MAX),
+        f64::from(f32::MIN),
+        1.5,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ] {
+        assert_eq!(w.put(f32_field, Value::Float(fits)), Ok(()), "{fits}");
+    }
+    Ok(())
+}
+
+// --- a failed entry -----------------------------------------------------------
+
+/// Probe `e`: an entry whose closure fails after writing its block and its
+/// `varData` must leave nothing of itself behind.
+#[test]
+fn a_failed_entry_is_rewound_and_the_message_still_walks() -> Result<(), SbeError> {
+    let mut out = [0u8; 64];
+    let mut w = MessageWriter::new::<Examples>(&mut out, 7)?;
+    w.group(&ENTRY_GROUPS[0], |g| {
+        g.entry(|e| {
+            e.put(&SMALL_ENTRY[0], Value::Char(b'a'))?;
+            e.var_data(&SMALL_DATA[0], b"abc")
+        })?;
+        let failed = g.entry(|e| {
+            e.put(&SMALL_ENTRY[0], Value::Char(b'b'))?;
+            e.var_data(&SMALL_DATA[0], b"xy")?;
+            Err(SbeError::BadValue)
+        });
+        assert_eq!(failed, Err(SbeError::BadValue));
+        assert_eq!(g.count(), 1);
+        Ok(())
+    })?;
+    let len = w.finish()?;
+    // header, empty root block, 4-byte dimension, one entry: block + "abc".
+    assert_eq!(len, 8 + 4 + 1 + (1 + 3));
+    assert_eq!(
+        parsed(&out[..len]).0,
+        Ok(Parsed::Complete { consumed: len })
+    );
+    let walked = SbeView::decode::<Examples>(&out[..len])?
+        .tail::<Examples>()?
+        .skip_group(&ENTRY_GROUPS[0])?
+        .position();
+    assert_eq!(walked, len);
+    Ok(())
+}
+
+// --- entries that read nothing ------------------------------------------------
+
+/// Probe schema `b`: a `uint32` count of entries whose block is empty and
+/// whose only nested group postdates the header's version — every entry is
+/// zero bytes, so the walk must not cost `numInGroup` iterations.
+#[test]
+fn zero_byte_entries_are_walked_in_constant_time() -> Result<(), SbeError> {
+    let mut msg = [0u8; 8 + 6];
+    msg[..8].copy_from_slice(&[0, 0, 8, 0, 100, 0, 0, 0]); // version 0
+    msg[10..].copy_from_slice(&u32::MAX.to_le_bytes());
+    let start = std::time::Instant::now();
+    let walked = SbeView::decode::<Examples>(&msg)?
+        .tail::<Examples>()?
+        .skip_group(&EMPTY_ENTRY_GROUPS[0])?
+        .position();
+    let (r, _) = parsed(&msg);
+    let elapsed = start.elapsed();
+    assert_eq!(walked, msg.len());
+    assert_eq!(
+        r,
+        Ok(Parsed::Complete {
+            consumed: msg.len()
+        })
+    );
+    assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+    Ok(())
+}
+
+/// Every number kind, for the byte-order and narrowing tests.
+const I16: &[Element] = &[scalar(Primitive::Int16, 1)];
+const I32: &[Element] = &[scalar(Primitive::Int32, 1)];
+const I64: &[Element] = &[scalar(Primitive::Int64, 1)];
+const U16: &[Element] = &[scalar(Primitive::UInt16, 1)];
+const U32: &[Element] = &[scalar(Primitive::UInt32, 1)];
+const F32: &[Element] = &[scalar(Primitive::Float, 1)];
+const F64: &[Element] = &[scalar(Primitive::Double, 1)];
+static NUMBER_FIELDS: [FieldLayout; 7] = [
+    field(1, 0, 2, I16),
+    field(2, 2, 4, I32),
+    field(3, 6, 8, I64),
+    field(4, 14, 2, U16),
+    field(5, 16, 4, U32),
+    field(6, 20, 4, F32),
+    field(7, 24, 8, F64),
+];
+static NUMBERS: MessageLayout = MessageLayout {
+    template_id: 6,
+    name: "Numbers",
+    block_length: 32,
+    since_version: 0,
+    fields: &NUMBER_FIELDS,
+    groups: &[],
+    var_data: &[],
+};
+
+/// A group whose entries carry a `varData`, for the failed-entry test.
+static ENTRY_GROUPS: [GroupLayout; 1] = [GroupLayout {
+    id: 11,
+    name: "WithData",
+    block_length: 1,
+    since_version: 0,
+    dimension: DimensionLayout::GROUP_SIZE_ENCODING,
+    fields: &SMALL_ENTRY,
+    groups: &[],
+    var_data: &SMALL_DATA,
+}];
+static WITH_DATA: MessageLayout = MessageLayout {
+    template_id: 7,
+    name: "WithData",
+    block_length: 0,
+    since_version: 0,
+    fields: &[],
+    groups: &ENTRY_GROUPS,
+    var_data: &[],
+};
+
+/// Probe schema `b`: `uint32` numInGroup, empty entry block, one nested
+/// group added in version 1.
+static LATE_GROUPS: [GroupLayout; 1] = [GroupLayout {
+    id: 13,
+    name: "Late",
+    block_length: 1,
+    since_version: 1,
+    dimension: DimensionLayout::GROUP_SIZE_ENCODING,
+    fields: &SMALL_ENTRY,
+    groups: &[],
+    var_data: &[],
+}];
+static EMPTY_ENTRY_GROUPS: [GroupLayout; 1] = [GroupLayout {
+    id: 12,
+    name: "Empty",
+    block_length: 0,
+    since_version: 0,
+    dimension: DimensionLayout {
+        block_length: LengthType::U16,
+        num_in_group: LengthType::U32,
+    },
+    fields: &[],
+    groups: &LATE_GROUPS,
+    var_data: &[],
+}];
+static EMPTY_ENTRIES: MessageLayout = MessageLayout {
+    template_id: 8,
+    name: "EmptyEntries",
+    block_length: 0,
+    since_version: 0,
+    fields: &[],
+    groups: &EMPTY_ENTRY_GROUPS,
+    var_data: &[],
+};

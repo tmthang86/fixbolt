@@ -336,7 +336,14 @@ fn is_element_iter<'a, 'i>(node: Node<'a, 'i>) -> impl Iterator<Item = Node<'a, 
 // Resolving a `<field>`/`<data>` `type="…"` reference into elements
 // --------------------------------------------------------------------------
 
-/// Resolves `type_ref` to its flattened, offset-resolved elements.
+/// Resolves `type_ref` to its flattened, offset-resolved elements, and the
+/// type's size on the wire.
+///
+/// The size is what a field of this type occupies in its block, or a `<ref>`
+/// to it in its composite: for a composite it is `flatten_composite`'s, which
+/// includes the padding a member's `offset` introduces (RC4
+/// `04MessageSchema.md` "Element offset within a composite type") — never
+/// the sum of the elements' own sizes.
 ///
 /// `prefix` is the dotted path so far (empty at the top of a field).
 /// `ref_depth` counts `<ref>` hops already taken; ADR-0081 decision 5 allows
@@ -350,45 +357,35 @@ fn flatten(
     prefix: &str,
     ref_depth: u32,
     presence_override: Option<Presence>,
-) -> Result<Vec<Element>, Error> {
+) -> Result<(Vec<Element>, u32), Error> {
+    let single = |el: Element| {
+        let size = u32::from(wire_len(el.primitive, el.length, &el.presence));
+        (vec![el], size)
+    };
     if let Some(primitive) = Primitive::from_name(type_ref) {
         let presence = presence_override.unwrap_or(Presence::Required);
-        return Ok(vec![Element {
+        return Ok(single(Element {
             path: prefix.to_string(),
             offset: 0,
             primitive,
             length: 1,
             presence,
-        }]);
+        }));
     }
     let node = types
         .get(type_ref)
         .ok_or_else(|| Error::Schema(format!("unknown type '{type_ref}'")))?;
     match local_name(node) {
-        "type" => Ok(vec![element_from_type_node(
-            node,
-            prefix,
-            presence_override,
-        )?]),
-        "enum" => Ok(vec![element_from_enum_node(
-            node,
-            types,
-            prefix,
-            presence_override,
-        )?]),
-        "set" => Ok(vec![element_from_set_node(
-            node,
-            types,
-            prefix,
-            presence_override,
-        )?]),
+        "type" => element_from_type_node(node, prefix, presence_override).map(single),
+        "enum" => element_from_enum_node(node, types, prefix, presence_override).map(single),
+        "set" => element_from_set_node(node, types, prefix, presence_override).map(single),
         "composite" => {
             if presence_override.is_some() {
                 return Err(Error::Unsupported(
                     "presence or valueRef on a field whose type is a composite",
                 ));
             }
-            flatten_composite(node, types, prefix, ref_depth).map(|(elements, _size)| elements)
+            flatten_composite(node, types, prefix, ref_depth)
         }
         _other => Err(Error::Unsupported(
             "type reference resolves to neither type, enum, set nor composite",
@@ -423,6 +420,13 @@ fn element_from_type_node(
         Some(p) => p,
         None => resolve_presence(node, primitive)?,
     };
+    if matches!(presence, Presence::Optional { .. }) && primitive != Primitive::Char && length > 1 {
+        // `fixbolt_sbe` nulls an array only as a char array (every byte the
+        // null char); ADR-0081 decision 5 does not cover any other.
+        return Err(Error::Unsupported(
+            "presence=\"optional\" on a non-char array (length > 1)",
+        ));
+    }
     Ok(Element {
         path: prefix.to_string(),
         offset: 0,
@@ -552,50 +556,6 @@ fn resolve_value_ref(
     constant_value(primitive, value_node.text().unwrap_or(""))
 }
 
-/// The size, in bytes, of `type_ref` as a required instance — used to
-/// advance a composite's member cursor across a `<ref>`.
-fn type_size(type_ref: &str, types: &Types<'_, '_>) -> Result<u32, Error> {
-    if let Some(p) = Primitive::from_name(type_ref) {
-        return Ok(u32::from(p.size()));
-    }
-    let node = types
-        .get(type_ref)
-        .ok_or_else(|| Error::Schema(format!("unknown type '{type_ref}'")))?;
-    match local_name(node) {
-        "type" => {
-            let primitive_name = node
-                .attribute("primitiveType")
-                .ok_or_else(|| Error::Schema("<type> with no primitiveType".to_string()))?;
-            let primitive = Primitive::from_name(primitive_name)
-                .ok_or(Error::Unsupported("primitiveType outside SBE 1.0's eleven"))?;
-            let length: u32 = match node.attribute("length") {
-                Some(s) => s
-                    .parse()
-                    .map_err(|_| Error::Schema(format!("<type> length '{s}' is not a u32")))?,
-                None => 1,
-            };
-            let is_constant = node.attribute("presence") == Some("constant");
-            Ok(if is_constant {
-                0
-            } else {
-                u32::from(primitive.size()) * length
-            })
-        }
-        "enum" | "set" => {
-            let encoding_type = node
-                .attribute("encodingType")
-                .ok_or_else(|| Error::Schema("enum/set with no encodingType".to_string()))?;
-            Ok(u32::from(
-                resolve_encoding_primitive(encoding_type, types)?.size(),
-            ))
-        }
-        "composite" => flatten_composite(node, types, "", 0).map(|(_elements, size)| size),
-        _other => Err(Error::Unsupported(
-            "type reference resolves to neither type, enum, set nor composite",
-        )),
-    }
-}
-
 /// Flattens a `<composite>`'s members, resolving offsets left to right.
 ///
 /// Returns the flattened elements and the composite's total wire size (the
@@ -633,6 +593,17 @@ fn flatten_composite(
                     .map_err(|_| Error::Schema(format!("offset '{s}' is not a u32")))
             })
             .transpose()?;
+        if child.attribute("sinceVersion").is_some() {
+            return Err(Error::Unsupported("sinceVersion on a composite member"));
+        }
+        if let Some(o) = explicit_offset
+            && o < cursor
+        {
+            return Err(Error::Schema(format!(
+                "composite member '{member_prefix}' offset {o} would overlap the members before it, \
+                 which end at {cursor} (RC4 \"Element offset within a composite type\")"
+            )));
+        }
         let effective_pos = explicit_offset.unwrap_or(cursor);
 
         match local_name(child) {
@@ -643,8 +614,7 @@ fn flatten_composite(
                 let target = child
                     .attribute("type")
                     .ok_or_else(|| Error::Schema(format!("<ref name='{name}'> with no type")))?;
-                let size = type_size(target, types)?;
-                let sub = flatten(target, types, &member_prefix, ref_depth + 1, None)?;
+                let (sub, size) = flatten(target, types, &member_prefix, ref_depth + 1, None)?;
                 for mut e in sub {
                     e.offset = u16::try_from(u32::from(e.offset) + effective_pos)
                         .map_err(|_| Error::Unsupported("offset exceeds u16"))?;
@@ -914,15 +884,16 @@ fn parse_field(node: Node<'_, '_>, types: &Types<'_, '_>, cursor: u32) -> Result
     let type_ref = required_attr(node, "type")?;
     let since_version = optional_u16_attr(node, "sinceVersion")?.unwrap_or(0);
     let presence_override = field_presence_override(node, type_ref, types)?;
-    let elements = flatten(type_ref, types, "", 0, presence_override)?;
-    let len: u16 = elements
-        .iter()
-        .map(|e| wire_len(e.primitive, e.length, &e.presence))
-        .fold(0u32, |acc, w| acc + u32::from(w))
-        .try_into()
-        .map_err(|_| Error::Unsupported("field length exceeds u16"))?;
+    let (elements, size) = flatten(type_ref, types, "", 0, presence_override)?;
+    let len = u16::try_from(size).map_err(|_| Error::Unsupported("field length exceeds u16"))?;
     let explicit_offset = optional_u16_attr(node, "offset")?;
     let offset = match explicit_offset {
+        Some(o) if u32::from(o) < cursor => {
+            return Err(Error::Schema(format!(
+                "field '{name}' offset {o} would overlap the fields before it, which end at \
+                 {cursor} (RC4 \"Field offset specified by message schema\")"
+            )));
+        }
         Some(o) => o,
         None => u16::try_from(cursor).map_err(|_| Error::Unsupported("offset exceeds u16"))?,
     };
@@ -939,8 +910,12 @@ fn parse_field(node: Node<'_, '_>, types: &Types<'_, '_>, cursor: u32) -> Result
 /// A `<message>`'s or `<group>`'s children, in schema order: `<field>`s
 /// first (each advancing the running block cursor), then `<group>`s, then
 /// `<data>`s — SBE 1.0 RC4's "Sequence of message body elements". A
-/// `<field>` after a `<group>`/`<data>` is refused rather than silently
-/// reordered.
+/// `<field>` after a `<group>`/`<data>`, or a `<group>` after a `<data>`, is
+/// refused rather than silently reordered (`03MessageStructure.md`, "Fixed-
+/// length field after repeating group or variable-length field" and
+/// "Repeating group after variable-length field"). Explicit field offsets
+/// that overlap an earlier field, and an explicit `blockLength` shorter than
+/// the fields, are refused as [`Error::Schema`].
 /// A message's or group's fixed fields, its groups, its `varData`, and the
 /// fixed block's length — what `<message>` and `<group>` both parse to,
 /// named once so their shared parser (`layout_block`) does not trip
@@ -954,6 +929,13 @@ fn layout_block(node: Node<'_, '_>, types: &Types<'_, '_>) -> Result<Block, Erro
     let mut cursor: u32 = 0;
     let mut fields_done = false;
     for child in is_element_iter(node) {
+        if local_name(child) == "group" && !var_data.is_empty() {
+            return Err(Error::Schema(
+                "<group> declared after <data> at the same level (RC4 \"Repeating group after \
+                 variable-length field\")"
+                    .to_string(),
+            ));
+        }
         match local_name(child) {
             "field" => {
                 if fields_done {
@@ -981,6 +963,13 @@ fn layout_block(node: Node<'_, '_>, types: &Types<'_, '_>) -> Result<Block, Erro
         }
     }
     let block_length = match optional_u16_attr(node, "blockLength")? {
+        Some(v) if u32::from(v) < cursor => {
+            return Err(Error::Schema(format!(
+                "blockLength {v} is shorter than the fields, which end at {cursor} (RC4 \
+                 <message> blockLength: \"must be greater than or equal to the sum of field \
+                 lengths\")"
+            )));
+        }
         Some(v) => v,
         None => {
             u16::try_from(cursor).map_err(|_| Error::Unsupported("block length exceeds u16"))?
@@ -1235,9 +1224,16 @@ fn emit_message(m: &MessageDef) -> String {
 fn generate_impl(root: Node<'_, '_>, included: &[Document<'_>]) -> Result<String, Error> {
     let schema_id = required_u16_attr(root, "id")?;
     let version = optional_u16_attr(root, "version")?.unwrap_or(0);
+    // RC4 `<messageSchema>` `byteOrder`: default littleEndian; the values
+    // are exactly littleEndian and bigEndian.
     let byte_order = match root.attribute("byteOrder") {
+        None | Some("littleEndian") => "Little",
         Some("bigEndian") => "Big",
-        _ => "Little",
+        Some(other) => {
+            return Err(Error::Schema(format!(
+                "byteOrder '{other}' is neither littleEndian nor bigEndian"
+            )));
+        }
     };
     let package = root.attribute("package").unwrap_or("");
     let struct_name = schema_struct_name(package, schema_id);
@@ -1447,6 +1443,173 @@ mod tests {
         );
         let result = generate(&xml);
         assert!(matches!(result, Err(Error::Unsupported(_))));
+    }
+
+    /// A composite member's `offset` pads the composite (RC4 §4.4.4.3,
+    /// `04MessageSchema.md` "Element offset within a composite type"): the
+    /// field is as long as the composite, padding included, and the next
+    /// field starts after it.
+    #[test]
+    fn a_padded_composite_field_is_as_long_as_the_composite() -> Result<(), Error> {
+        let xml = schema_xml(
+            r#"<composite name="Padded">
+                   <type name="x" primitiveType="uint8"/>
+                   <type name="y" primitiveType="uint32" offset="4"/>
+               </composite>"#,
+            r#"<message id="1" name="M">
+                   <field id="1" name="p" type="Padded"/>
+                   <field id="2" name="q" type="uint32"/>
+               </message>"#,
+        );
+        let generated = generate(&xml)?;
+        assert!(
+            generated.contains(r#"name: "p", offset: 0, len: 8,"#),
+            "{generated}"
+        );
+        assert!(
+            generated.contains(r#"name: "q", offset: 8, len: 4,"#),
+            "{generated}"
+        );
+        assert!(generated.contains("block_length: 12,"), "{generated}");
+        Ok(())
+    }
+
+    /// `03MessageStructure.md`, "Repeating group after variable-length field".
+    #[test]
+    fn a_group_after_data_is_a_schema_error() {
+        let xml = schema_xml(
+            r#"<composite name="varStr">
+                   <type name="length" primitiveType="uint16"/>
+                   <type name="varData" primitiveType="uint8" length="0"/>
+               </composite>"#,
+            r#"<message id="1" name="M">
+                   <data name="d" id="5" type="varStr"/>
+                   <group name="g" id="10"><field name="z" id="12" type="uint8"/></group>
+               </message>"#,
+        );
+        let result = generate(&xml);
+        assert!(
+            matches!(&result, Err(Error::Schema(msg)) if msg.contains("group after variable-length")),
+            "{result:?}"
+        );
+    }
+
+    /// `04MessageSchema.md` `<message>` `blockLength`: "must be greater than
+    /// or equal to the sum of field lengths".
+    #[test]
+    fn a_block_length_shorter_than_its_fields_is_a_schema_error() {
+        let xml = schema_xml(
+            "",
+            r#"<message id="1" name="M" blockLength="2"><field id="1" name="w" type="uint32"/></message>"#,
+        );
+        let result = generate(&xml);
+        assert!(
+            matches!(&result, Err(Error::Schema(msg)) if msg.contains("blockLength")),
+            "{result:?}"
+        );
+    }
+
+    /// `03MessageStructure.md` "Field offset specified by message schema":
+    /// "an offset is invalid if it would cause elements to overlap".
+    #[test]
+    fn a_field_offset_overlapping_an_earlier_field_is_a_schema_error() {
+        let xml = schema_xml(
+            "",
+            r#"<message id="1" name="M">
+                   <field id="1" name="a" type="uint32"/>
+                   <field id="2" name="b" type="uint8" offset="2"/>
+               </message>"#,
+        );
+        let result = generate(&xml);
+        assert!(
+            matches!(&result, Err(Error::Schema(msg)) if msg.contains("overlap")),
+            "{result:?}"
+        );
+    }
+
+    /// `04MessageSchema.md` "Element offset within a composite type": the same
+    /// rule for a composite's members.
+    #[test]
+    fn a_composite_member_offset_overlapping_an_earlier_member_is_a_schema_error() {
+        let xml = schema_xml(
+            r#"<composite name="C">
+                   <type name="a" primitiveType="uint32"/>
+                   <type name="b" primitiveType="uint8" offset="1"/>
+               </composite>"#,
+            r#"<message id="1" name="M"><field id="1" name="c" type="C"/></message>"#,
+        );
+        let result = generate(&xml);
+        assert!(
+            matches!(&result, Err(Error::Schema(msg)) if msg.contains("overlap")),
+            "{result:?}"
+        );
+    }
+
+    /// Outside ADR-0081 decision 5: an optional array is null-checked only
+    /// as a char array.
+    #[test]
+    fn an_optional_non_char_array_is_unsupported() {
+        let xml = schema_xml(
+            r#"<type name="Arr" primitiveType="uint8" length="4" presence="optional"/>"#,
+            r#"<message id="1" name="M"><field id="1" name="arr" type="Arr"/></message>"#,
+        );
+        let result = generate(&xml);
+        assert!(
+            matches!(&result, Err(Error::Unsupported(what)) if what.contains("optional")),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn an_optional_char_array_is_still_generated() -> Result<(), Error> {
+        let xml = schema_xml(
+            r#"<type name="Str" primitiveType="char" length="4" presence="optional"/>"#,
+            r#"<message id="1" name="M"><field id="1" name="s" type="Str"/></message>"#,
+        );
+        let generated = generate(&xml)?;
+        assert!(generated.contains("Presence::Optional"), "{generated}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_composite_member_with_since_version_is_unsupported() {
+        let xml = schema_xml(
+            r#"<composite name="Cv">
+                   <type name="a" primitiveType="uint8"/>
+                   <type name="b" primitiveType="uint8" sinceVersion="1"/>
+               </composite>"#,
+            r#"<message id="1" name="M"><field id="1" name="c" type="Cv"/></message>"#,
+        );
+        let result = generate(&xml);
+        assert!(
+            matches!(&result, Err(Error::Unsupported(what)) if what.contains("sinceVersion")),
+            "{result:?}"
+        );
+    }
+
+    /// `04MessageSchema.md` `<messageSchema>` `byteOrder`: default
+    /// `littleEndian`; the two values are `littleEndian` and `bigEndian`.
+    #[test]
+    fn byte_order_defaults_to_little_and_accepts_only_the_two_spec_values() {
+        let with = |attr: &str| {
+            generate(&format!(
+                r#"<messageSchema id="1" version="0" {attr} package="p">
+                       <types>{HEADER}</types>
+                   </messageSchema>"#
+            ))
+        };
+        let little = "ByteOrder::Little;";
+        let big = "ByteOrder::Big;";
+        assert!(matches!(&with(""), Ok(s) if s.contains(little)));
+        assert!(matches!(&with(r#"byteOrder="littleEndian""#), Ok(s) if s.contains(little)));
+        assert!(matches!(&with(r#"byteOrder="bigEndian""#), Ok(s) if s.contains(big)));
+        for bad in ["BigEndian", "big", "LittleEndian", ""] {
+            let result = with(&format!(r#"byteOrder="{bad}""#));
+            assert!(
+                matches!(&result, Err(Error::Schema(msg)) if msg.contains("byteOrder")),
+                "byteOrder={bad:?}: {result:?}"
+            );
+        }
     }
 
     #[test]

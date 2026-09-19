@@ -27,3 +27,22 @@ Mechanism"); §3.6 does not exist in the RC4 table of contents. Recorded first i
 [the-sbe-rc4-example-dumps-disagree-with-their-own-tables](the-sbe-rc4-example-dumps-disagree-with-their-own-tables.md);
 the ADR's own text is not edited for it (`CLAUDE.md` §5: an accepted ADR's substance is never
 edited in place).
+
+## Schema rules the generator refuses rather than repairs
+
+`[2026-09-19, senior review of PR C]` Each of these was once accepted silently; each is now an
+`Err` from `fixbolt_sbe_gen::generate`, guarded by a unit test in
+`crates/sbe-gen/src/generator.rs`:
+
+| Rule | Spec | Error |
+|---|---|---|
+| A composite with a member `offset` (padding) is as long as the composite, not the sum of its members — the next field starts after the padding | `04MessageSchema.md`, `offset` attribute, §4.4.4.3 | was a silent overlap; now laid out right (`a_padded_composite_field_is_as_long_as_the_composite`) |
+| No group after `<data>` at the same level; no field after a group or `<data>` | `03MessageStructure.md`, "Repeating group after variable-length field" / "Fixed-length field after …" | `Schema` / `Unsupported` |
+| An explicit `blockLength` is at least the extent of the fields; field and composite-member offsets do not overlap | `04MessageSchema.md`, `blockLength` row; "Incompatible offset and blockLength" | `Schema` |
+| `byteOrder` is absent (little), `littleEndian` or `bigEndian` — nothing else | `04MessageSchema.md`, `messageSchema` attributes | `Schema` |
+| `presence="optional"` on a non-char array, and `sinceVersion` on a composite member | outside ADR-0081 decision 5 | `Unsupported` |
+
+**On the runtime side**: a group entry whose tail is entirely absent at the header's version
+consumes no bytes, so a `uint32` `numInGroup` could make one tiny message cost a walk of four
+billion entries. `crates/sbe/src/group.rs` skips such entries in one step
+(`zero_byte_entries_are_walked_in_constant_time`, `crates/sbe/tests/encoding.rs`).

@@ -36,6 +36,11 @@ mod car_generated {
     include!(concat!(env!("OUT_DIR"), "/car.rs"));
 }
 
+#[allow(unused_imports)] // the generated `use` names every table type; this schema needs few
+mod padded_generated {
+    include!(concat!(env!("OUT_DIR"), "/padded.rs"));
+}
+
 use car_generated::Baseline as Car;
 
 /// The generated §7 tables under the `schemaId` the dumps carry. The XML says
@@ -535,5 +540,31 @@ fn groups_and_var_data_not_written_go_out_empty_and_the_message_still_walks() ->
         w.var_data(var(m.var_data, "manufacturer"), b"x"),
         Err(SbeError::OutOfOrder)
     );
+    Ok(())
+}
+
+/// A composite whose member `offset` pads it (`build.rs` `PADDED_XML`): the
+/// field spans the whole composite, so its last member is writable and
+/// readable, and the next field sits after the padding.
+#[test]
+fn a_padded_composite_field_writes_and_reads_its_last_member() -> Result<(), SbeError> {
+    use padded_generated::Padded;
+    let m = Padded::message(1).unwrap();
+    let (p, q) = (&m.fields[0], &m.fields[1]);
+    assert_eq!((p.offset, p.len, q.offset, m.block_length), (0, 8, 8, 12));
+    let mut out = [0u8; 32];
+    let mut w = MessageWriter::new::<Padded>(&mut out, 1)?;
+    w.put_element(p, 0, Some(Value::UInt(1)))?;
+    w.put_element(p, 1, Some(Value::UInt(0x0A0B_0C0D)))?;
+    w.put(q, Value::UInt(9))?;
+    let len = w.finish()?;
+    assert_eq!(
+        &out[8..len],
+        &[1, 0, 0, 0, 0x0D, 0x0C, 0x0B, 0x0A, 9, 0, 0, 0]
+    );
+    let root = SbeView::decode::<Padded>(&out[..len])?.root::<Padded>()?;
+    let y = root.field(p)?.unwrap().element(1)?;
+    assert_eq!(y, Some(Value::UInt(0x0A0B_0C0D)));
+    assert_eq!(root.value(q)?, Some(Value::UInt(9)));
     Ok(())
 }

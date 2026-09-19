@@ -221,9 +221,26 @@ impl<'a> Group<'a> {
         Ok(self.cur)
     }
 
-    /// Whether an entry has anything after its block (nested groups, `varData`).
+    /// Whether an entry has anything on the wire after its block: a nested
+    /// group or `varData` the message's version includes. One whose
+    /// `sinceVersion` postdates the header is not on the wire (see
+    /// [`Cursor::group`], [`Cursor::var_data`]), so entries whose whole tail
+    /// is that are fixed-size and [`Group::finish`] skips them in one step —
+    /// including entries of 0 bytes, which would otherwise cost `numInGroup`
+    /// iterations for nothing (up to `u32::MAX` of them from a 14-byte
+    /// message). Guarded by `zero_byte_entries_are_walked_in_constant_time`
+    /// in `tests/encoding.rs`.
     fn has_tail(&self) -> bool {
-        !self.layout.groups.is_empty() || !self.layout.var_data.is_empty()
+        let version = self.cur.version;
+        self.layout
+            .groups
+            .iter()
+            .any(|g| g.since_version <= version)
+            || self
+                .layout
+                .var_data
+                .iter()
+                .any(|v| v.since_version <= version)
     }
 
     fn skip_pending_tail(&mut self) -> Result<(), SbeError> {
