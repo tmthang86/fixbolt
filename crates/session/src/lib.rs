@@ -77,7 +77,28 @@ pub(crate) mod tag {
     /// at position 27 of 29 and `fix44/Message.h:37` agrees, so it is legal on
     /// every message and `Fix44` orders it.
     pub const LAST_MSG_SEQ_NUM_PROCESSED: u32 = 369;
+    /// `ApplVerID`, a FIXT 1.1 **header** field.
+    ///
+    /// `[verified 2026-09-19]` `spec/FIXT11.xml:215` defines it with ten
+    /// enumerated values, `0`–`9`, and its `<header>` block carries it. FIX 4.4
+    /// does not define it at all, which is why a FIX 4.4 session answers
+    /// `373=0` for it and a FIXT one does not.
+    pub const APPL_VER_ID: u32 = 1128;
+    /// `DefaultApplVerID`, a **body** field of the FIXT 1.1 `Logon`.
+    ///
+    /// `[verified 2026-09-19]` `spec/FIXT11.xml:230` defines the field and
+    /// `:90` puts it on `Logon` with `required='Y'`, so `Fixt11Fix50Sp2Tables`
+    /// orders it after `108=` and `141=` and no call site here decides where it
+    /// goes — non-negotiable 5.
+    pub const DEFAULT_APPL_VER_ID: u32 = 1137;
 }
+
+/// The one `BeginString` that makes a session a FIXT 1.1 session.
+///
+/// FIXT 1.1 is the transport version, and every FIX 5.0 family session carries
+/// it on the wire whatever `1137=` says the application version is — which is
+/// the whole reason `1137` exists. ADR-0080 decision 3.
+const FIXT_1_1: &[u8] = b"FIXT.1.1";
 
 /// `MsgType` values this layer acts on.
 mod msg {
@@ -379,6 +400,16 @@ pub const MAX_BEGIN_STRING_LEN: usize = 16;
 /// costs.
 pub const MAX_COMP_ID_LEN: usize = 32;
 
+/// The most bytes a [`Config`] can hold for `1137=DefaultApplVerID`.
+///
+/// `[verified 2026-09-19]` the ten values FIXT 1.1 enumerates are one
+/// character each (`spec/FIXT11.xml:215-226`), and QuickFIX spells the setting
+/// with those same strings. Sixteen leaves room for a venue that spells its
+/// own and still fits inside the `Logon` skeleton's scratch. Over-long is
+/// refused rather than truncated, exactly as [`MAX_BEGIN_STRING_LEN`] is — see
+/// [`Config::acceptor_fixt`].
+pub const MAX_APPL_VER_ID_LEN: usize = 16;
+
 /// The default size of an [`Application`]'s reply scratch.
 ///
 /// `[measured 2026-09-05]` **1 KiB, and it is the tightest ceiling in the
@@ -454,6 +485,10 @@ pub struct Config {
     /// Which of the dictionary's questions this session asks.
     /// [`DictionaryChecks::new`] asks all of them and is the default.
     validation: DictionaryChecks,
+    /// `1137=DefaultApplVerID`, the application version a FIXT 1.1 session
+    /// runs at. `None` for FIX 4.x, which neither requires nor emits it.
+    /// [`Config::acceptor_fixt`], ADR-0080 decision 3.
+    default_appl_ver_id: Option<Name<MAX_APPL_VER_ID_LEN>>,
 }
 
 /// Which of the dictionary's questions a session asks about an inbound message.
@@ -673,6 +708,43 @@ impl Config {
             logon_timeout_ms: 0,
             logout_timeout_ms: 0,
             validation: DictionaryChecks::new(),
+            default_appl_ver_id: None,
+        }
+    }
+
+    /// A FIXT 1.1 acceptor's configuration: [`Self::acceptor`] plus the
+    /// `1137=DefaultApplVerID` the session both requires and emits.
+    ///
+    /// `begin_string` is taken rather than assumed because it is the thing a
+    /// counterparty's `8=` is matched against, and a configuration that says
+    /// `FIXT.1.1` in one place and something else in another is the fault this
+    /// engine refuses to have two copies of. The FIXT rules below turn on that
+    /// value and on nothing else:
+    ///
+    /// * an inbound `Logon` without `1137=` is dropped in silence with
+    ///   [`DropReason::LogonWithoutDefaultApplVerId`]
+    ///   (`1d_InvalidLogonNoDefaultApplVerID.def`);
+    /// * this session's own `Logon` carries `1137=<default_appl_ver_id>`, in
+    ///   the dictionary's position;
+    /// * `1128=ApplVerID` on an application message must name a FIX 5.0 family
+    ///   version.
+    ///
+    /// A `default_appl_ver_id` longer than [`MAX_APPL_VER_ID_LEN`] is **not**
+    /// truncated: like an over-long CompID it configures a session that refuses
+    /// every message, because a version string half-written is not a version.
+    ///
+    /// ADR-0080 decision 3. The settings key that fills this in is decision 4
+    /// and belongs to `engine`.
+    #[must_use]
+    pub fn acceptor_fixt(
+        begin_string: &[u8],
+        sender_comp_id: &[u8],
+        target_comp_id: &[u8],
+        default_appl_ver_id: &[u8],
+    ) -> Self {
+        Self {
+            default_appl_ver_id: Some(Name::new(default_appl_ver_id)),
+            ..Self::acceptor(begin_string, sender_comp_id, target_comp_id)
         }
     }
 
@@ -963,6 +1035,38 @@ impl Config {
         self.target_comp_id.get().unwrap_or(b"")
     }
 
+    /// `1137` **DefaultApplVerID**, as configured, or `None` for a FIX 4.x
+    /// session.
+    ///
+    /// `None` **also** when the configured value did not fit — the same
+    /// fail-closed answer [`Self::begin_string`] gives, and here it is not
+    /// merely cosmetic: [`Session::new`] refuses to build its templates at all
+    /// for such a configuration, so the session sends nothing rather than a
+    /// `Logon` with a truncated version on it.
+    #[must_use]
+    pub fn default_appl_ver_id(&self) -> Option<&[u8]> {
+        self.default_appl_ver_id.as_ref()?.get()
+    }
+
+    /// Is this a FIXT 1.1 session?
+    ///
+    /// The `BeginString`, and nothing else: FIXT 1.1 is the transport version,
+    /// and `1137=` names the application version *inside* it. A configuration
+    /// carrying a `default_appl_ver_id` under `8=FIX.4.4` is not a FIXT
+    /// session and none of the three FIXT rules applies to it — `engine`
+    /// refuses that pairing at the settings file (ADR-0080 decision 4), and
+    /// this layer simply does not act on it.
+    fn is_fixt(&self) -> bool {
+        self.begin_string.matches(FIXT_1_1)
+    }
+
+    /// The configured `1137=`, copied off the configuration so the borrow ends
+    /// before `send` takes `&mut self`. The same trick `copy` exists for on the
+    /// inbound side.
+    fn appl_ver_id_held(&self) -> Option<Held<MAX_APPL_VER_ID_LEN>> {
+        copy(self.default_appl_ver_id.as_ref()?.get())
+    }
+
     /// Do these two configurations name the **same FIX session identity**?
     ///
     /// BeginString and both comp IDs, and deliberately nothing else: two entries
@@ -1057,6 +1161,8 @@ enum Refusal {
     /// A Logon without `98=` or `108=`. FIX 4.4 makes both required, and a
     /// session cannot answer without echoing them.
     LogonIncomplete,
+    /// A Logon without `1137=` on a session configured for `FIXT.1.1`.
+    LogonWithoutDefaultApplVerId,
     /// `49=` is not the configured counterparty.
     WrongSenderCompId,
     /// `56=` is not us.
@@ -1111,6 +1217,25 @@ pub enum DropReason {
     NotALogon,
     /// A `Logon` without `98=` or `108=`, both required by FIX 4.4.
     LogonIncomplete,
+    /// A `Logon` without `1137=DefaultApplVerID` on a session configured for
+    /// `8=FIXT.1.1`. **Nothing is sent** — not a `Logout`, not a `Reject`.
+    ///
+    /// FIXT 1.1 makes `1137` a required field of the `Logon`, and it is the
+    /// only thing that says which application version the session will speak;
+    /// a session that guessed would validate every later message against a
+    /// dictionary the counterparty never agreed to.
+    ///
+    /// **The oracle is one file**, `1d_InvalidLogonNoDefaultApplVerID.def` —
+    /// four lines, a `Logon` carrying `98=0 108=30` and no `1137`, answered by
+    /// `eDISCONNECT` with no `E` line in front of it. That silence is the
+    /// shape every other pre-Logon fault takes here (`1c`, `1d`, `1e`), so
+    /// this reason is what tells an operator which of them it was.
+    ///
+    /// A `FIX.4.x` session never produces it: the rule turns on the configured
+    /// `BeginString` alone. Held by
+    /// `tests/fixt.rs::a_logon_without_1137_is_dropped_and_nothing_is_sent`
+    /// and by `tests/score_fixt.rs`.
+    LogonWithoutDefaultApplVerId,
     /// `49=` is not the configured counterparty.
     WrongSenderCompId,
     /// `56=` is not us.
@@ -1268,6 +1393,7 @@ impl From<Refusal> for DropReason {
             Refusal::WrongBeginString => Self::WrongBeginString,
             Refusal::NotALogon => Self::NotALogon,
             Refusal::LogonIncomplete => Self::LogonIncomplete,
+            Refusal::LogonWithoutDefaultApplVerId => Self::LogonWithoutDefaultApplVerId,
             Refusal::WrongSenderCompId => Self::WrongSenderCompId,
             Refusal::WrongTargetCompId => Self::WrongTargetCompId,
             Refusal::NeverTicked => Self::NeverTicked,
@@ -1344,6 +1470,15 @@ pub struct Session<E: Encoding, R: Role, const APP: usize = DEFAULT_APP_SCRATCH>
     /// so a live session reports `None` rather than the previous connection's
     /// cause.
     last_drop_reason: Option<DropReason>,
+    /// The `1137=DefaultApplVerID` the counterparty's `Logon` carried.
+    ///
+    /// **Stored and not judged.** ADR-0080 decision 3: a value other than this
+    /// end's is accepted, because the SP2 tables are a superset of SP0's and
+    /// SP1's and no `.def` in the three corpora sends a mismatch — a refusal
+    /// here would be a rule with no test. `docs/SESSION-BEHAVIOUR.md` records
+    /// it as *not covered by the corpus*. Read it with
+    /// [`Session::peer_default_appl_ver_id`].
+    peer_appl_ver_id: Option<Held<MAX_APPL_VER_ID_LEN>>,
     /// The engine's clock minus the `SendingTime` of the last message whose
     /// `52=` could be read, in milliseconds. Positive: their stamp is behind
     /// ours.
@@ -1527,8 +1662,15 @@ where
         // configuration's ceiling; how many of those bytes actually reach the
         // wire is decided per tick, by `Self::stamp_precision`.
         let cfg_precision = cfg.timestamp_precision;
+        // A configured `1137=` that did not fit is treated exactly as an
+        // over-long CompID is: no templates, so the session refuses everything
+        // rather than putting a truncated application version on the wire.
+        let names_fit = cfg
+            .default_appl_ver_id
+            .as_ref()
+            .is_none_or(|n| n.get().is_some());
         let out = match (cfg.begin_string.get(), cfg.sender_comp_id.get()) {
-            (Some(begin), Some(sender)) => cfg
+            (Some(begin), Some(sender)) if names_fit => cfg
                 .target_comp_id
                 .get()
                 .and_then(|target| Outbound::new(begin, sender, target)),
@@ -1555,6 +1697,7 @@ where
             resend_to: 0,
             session_mark: None,
             last_drop_reason: None,
+            peer_appl_ver_id: None,
             last_skew_ms: None,
             queue: [const {
                 Queued {
@@ -1671,6 +1814,18 @@ where
     #[must_use]
     pub const fn last_drop_reason(&self) -> Option<DropReason> {
         self.last_drop_reason
+    }
+
+    /// The `1137=DefaultApplVerID` the counterparty's `Logon` carried, if any.
+    ///
+    /// `None` on a FIX 4.x session, and on a FIXT session that has not yet
+    /// taken a `Logon`. It is **not** compared against
+    /// [`Config::default_appl_ver_id`] — ADR-0080 decision 3 accepts a
+    /// mismatch and says why — so this is how an operator, or a venue's
+    /// onboarding check, sees that the two ends disagree.
+    #[must_use]
+    pub fn peer_default_appl_ver_id(&self) -> Option<&[u8]> {
+        self.peer_appl_ver_id.as_deref()
     }
 
     /// End the session, recording why.
@@ -2273,17 +2428,31 @@ where
                 // (`Session.cpp:691`).
                 let mut want = [0u8; 10];
                 let want = digits(self.next_in, &mut want);
-                let mut extra: [(u32, &[u8]); 3] = [
+                let ours = self.cfg.appl_ver_id_held();
+                let mut extra: [(u32, &[u8]); 4] = [
                     (tag::ENCRYPT_METHOD, b"0"),
                     (tag::HEART_BT_INT, beat),
                     (0, &[]),
+                    (0, &[]),
                 ];
-                let n = if self.cfg.next_expected {
-                    extra[2] = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
-                    3
-                } else {
-                    2
-                };
+                // `get_mut`, for the reason the acceptor's own reply gives.
+                let mut n = 2;
+                if self.cfg.next_expected
+                    && let Some(slot) = extra.get_mut(n)
+                {
+                    *slot = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+                    n += 1;
+                }
+                // The opening `Logon` of a FIXT initiator carries `1137=` for
+                // the same reason the acceptor's reply does: it is required,
+                // and a counterparty that follows this engine's own rule would
+                // drop the connection without it.
+                if let Some(v) = ours.as_deref()
+                    && let Some(slot) = extra.get_mut(n)
+                {
+                    *slot = (tag::DEFAULT_APPL_VER_ID, v);
+                    n += 1;
+                }
                 let _ = self.send(Which::Logon, &extra[..n], &mut *emit);
                 return Link::Up;
             }
@@ -3197,12 +3366,22 @@ where
         }
 
         let mt = view.get(tag::MSG_TYPE).unwrap_or_default();
+        let fixt = self.cfg.is_fixt();
         let fault = if self.state != State::LoggedOn {
             None
         } else if !<E::Dict as Tables>::is_msg_type(mt) {
             Some((SessionText::InvalidMsgType, None))
         } else {
             scan_fields::<E::Dict, N>(&view, mt, self.cfg.validation)
+                // `1128=` naming a version this session cannot be speaking.
+                // After the field scan, because the scan already answers the
+                // values FIXT does not enumerate at all and this rule is only
+                // about the seven it does enumerate and this engine still
+                // refuses.
+                .or_else(|| {
+                    fixt.then(|| out_of_family_appl_ver_id::<N>(&view, mt))
+                        .flatten()
+                })
                 .or_else(|| missing_required::<E::Dict, N>(&view, mt))
                 .or_else(|| bad_group_count::<E::Dict, N>(&view, mt))
                 // A CompID that is merely wrong, once there is a session to say
@@ -3252,6 +3431,11 @@ where
         let poss_dup = view.get(tag::POSS_DUP_FLAG) == Some(b"Y");
         let encrypt = copy::<8>(view.get(tag::ENCRYPT_METHOD));
         let heart_bt = copy::<8>(view.get(tag::HEART_BT_INT));
+        // Presence and value are read apart on purpose: `copy` answers `None`
+        // both for a field that is absent and for one longer than the buffer,
+        // and only the first of those is the `Logon` this engine refuses.
+        let has_appl_ver_id = view.get(tag::DEFAULT_APPL_VER_ID).is_some();
+        let their_appl_ver_id = copy::<MAX_APPL_VER_ID_LEN>(view.get(tag::DEFAULT_APPL_VER_ID));
 
         // A Logon carrying `141=Y` restarts both counts **before** its own
         // sequence number is judged: QuickFIX resets in `nextLogon` and only
@@ -3384,8 +3568,24 @@ where
         }
 
         if is_logon {
+            // **FIXT 1.1: `1137=` or nothing at all.** Ahead of `98=`/`108=`
+            // because it is the field that decides which dictionary the rest
+            // of this session is judged against; the corpus cannot separate
+            // the two orders — `1d_InvalidLogonNoDefaultApplVerID.def` sends
+            // a `Logon` that carries both of the others — so the order is this
+            // engine's and is written down rather than assumed.
+            //
+            // Nothing is sent: the file's `eDISCONNECT` has no `E` line in
+            // front of it, which is the same silence `1c`, `1d` and `1e` ask
+            // for, and `Refusal` is the path that gives it.
+            if fixt && !has_appl_ver_id {
+                return Err(Refusal::LogonWithoutDefaultApplVerId);
+            }
             let encrypt = encrypt.as_deref().ok_or(Refusal::LogonIncomplete)?;
             let heart_bt = heart_bt.as_deref().ok_or(Refusal::LogonIncomplete)?;
+            // Stored, never compared. ADR-0080 decision 3, and the field's own
+            // comment says what a mismatch costs.
+            self.peer_appl_ver_id = their_appl_ver_id;
 
             // **`789=` higher than anything this end has sent, judged before
             // the reply.** The counterparty is waiting for a message that does
@@ -3432,19 +3632,45 @@ where
             // no case of its own.
             let mut want = [0u8; 10];
             let want = digits(self.next_in.saturating_add(1), &mut want);
-            let mut extra: [(u32, &[u8]); 4] = [
+            // Copied off the configuration first: `send` takes `&mut self`,
+            // so a `&[u8]` still borrowed out of `self.cfg` could not reach it.
+            let ours = self.cfg.appl_ver_id_held();
+            let mut extra: [(u32, &[u8]); 5] = [
                 (tag::ENCRYPT_METHOD, encrypt),
                 (tag::HEART_BT_INT, heart_bt),
                 (0, &[]),
                 (0, &[]),
+                (0, &[]),
             ];
+            // `get_mut` and not `extra[n]`: `indexing_slicing` is denied and
+            // `scripts/check-indexing-debt.sh` counts a subscript here whether
+            // or not the bound is obvious. Two of these three were that debt
+            // before `1137` made it three; all three are `get_mut` now, and the
+            // `None` arm is unreachable by construction — `n` starts at 2 and
+            // only three branches below can raise it, against a five-wide
+            // array — so it writes nothing rather than panicking.
             let mut n = 2;
-            if reset_seq {
-                extra[n] = (tag::RESET_SEQ_NUM_FLAG, b"Y");
+            if reset_seq && let Some(slot) = extra.get_mut(n) {
+                *slot = (tag::RESET_SEQ_NUM_FLAG, b"Y");
                 n += 1;
             }
-            if self.cfg.next_expected {
-                extra[n] = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+            if self.cfg.next_expected
+                && let Some(slot) = extra.get_mut(n)
+            {
+                *slot = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+                n += 1;
+            }
+            // **Our own `1137=`, not theirs echoed.** Every `E` Logon in the
+            // three FIXT corpora carries the directory's own value, and the
+            // acceptor's answer is a statement about what *this* end speaks.
+            // Where it lands on the wire is `E::Dict`'s to say — the slot is
+            // declared in `out::Outbound::new` and sorted there (non-negotiable
+            // 5), and an unset slot is not written, which is what leaves a
+            // FIX 4.4 `Logon` byte-for-byte what it was.
+            if let Some(v) = ours.as_deref()
+                && let Some(slot) = extra.get_mut(n)
+            {
+                *slot = (tag::DEFAULT_APPL_VER_ID, v);
                 n += 1;
             }
             // **Only the side that did not speak first answers.** A Logon is
@@ -3829,6 +4055,36 @@ fn scan_fields<D: Tables, const N: usize>(
         }
     }
     None
+}
+
+/// `373=5`: `1128=ApplVerID` naming a version outside the FIX 5.0 family.
+///
+/// FIXT 1.1 enumerates ten values for `1128` (`spec/FIXT11.xml:215-226`), so
+/// the generated table answers `373=5` for an eleventh on its own. Seven of the
+/// ten — `0`–`6`, FIX 2.7 through FIX 4.4 — are values a *FIXT* session cannot
+/// be speaking, and the table says nothing about that because the table is the
+/// XML. This is the rule that does. ADR-0080 decision 3.
+///
+/// **Application messages only, and it is read and not obeyed.** A venue that
+/// sends an SP1 message on an SP2 session gets SP2 validation: three tables and
+/// a per-message switch is a branch per message for a case no `.def` exercises,
+/// and ADR-0080 declined it under *Bad — and accepted*. The header fields
+/// `1128`, `1156` and `1129` are, by the FIXT 1.1 session protocol, not
+/// permitted on session messages at all; phase 2 does not enforce that because
+/// no `.def` does and QuickFIX does not either — an open item, not a rule.
+///
+/// Held by `tests/fixt.rs::an_appl_ver_id_outside_the_fix_50_family_is_rejected`
+/// and its neutral twin one line above it.
+fn out_of_family_appl_ver_id<const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+) -> Option<(SessionText, Option<Held<12>>)> {
+    if ADMIN.contains(&msg_type) {
+        return None;
+    }
+    let v = view.get(tag::APPL_VER_ID)?;
+    (v != b"7" && v != b"8" && v != b"9")
+        .then(|| (SessionText::ValueIsIncorrect, tag_text(tag::APPL_VER_ID)))
 }
 
 /// `373=16`: a group counter that disagrees with the entries behind it.

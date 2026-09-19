@@ -34,6 +34,12 @@ cd "$ROOT"
 #   file's `#![allow]` went with them: `parse_utc` grew a width and the new
 #   code asks with `get`, so the four `s[8]`/`s[11]`/`s[14]`/`s[17]` that were
 #   the whole of this file's debt were rewritten on the way past.
+# 2026-09-19: 178 -> 176, the two Logon blocks in crates/session/src/lib.rs
+#   cleaned on the way past by plan row B4. `1137=DefaultApplVerID` needed a
+#   third `extra[n] = ...` in the acceptor's reply and turned the initiator's
+#   constant `extra[2] = ...` into two variable subscripts, so all five writes
+#   in the two blocks became `get_mut` instead — the field that arrived is why
+#   the sites went, and they went down rather than up.
 #
 # **The floor is not 0.** Two of the remaining sites are `crc_table` and
 # `crc32` in crates/engine/src/journal.rs, where the bound is a `& 0xFF` mask
@@ -41,7 +47,7 @@ cd "$ROOT"
 # proof, and `--force-warn` counts them anyway — which is right, because the
 # count is of subscripts, not of unexcused ones. When only sites like those two
 # are left, the ceiling stops moving and STATUS.md item 55 closes by saying so.
-CEILING=178
+CEILING=176
 
 # `--force-warn` is the whole mechanism: unlike `-W`, it overrides `#![allow]`
 # in the source. Proven by counting either side of adding one — see the

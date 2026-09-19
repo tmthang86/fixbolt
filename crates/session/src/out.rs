@@ -99,6 +99,16 @@ where
                 // cannot see this and `the_position_of_789_is_the_dictionarys_
                 // and_not_this_call_sites` has to.
                 .slot(tag::NEXT_EXPECTED_MSG_SEQ_NUM)
+                // `1137=DefaultApplVerID`, written only by a FIXT 1.1 session
+                // — `Config::acceptor_fixt`. Declared for **every** encoding
+                // and sorted by `E::Dict` like every other slot, because the
+                // alternative is a call site that decides where `1137` goes,
+                // which is exactly non-negotiable 5. Under `Fix44` the tag is
+                // simply never filled, so a FIX 4.4 `Logon` is byte-for-byte
+                // what it was; under `Fixt11Fix50Sp2Tables` it sorts after
+                // `108=` and `141=`, which is where the three FIXT corpora's
+                // `E` lines put it.
+                .slot(tag::DEFAULT_APPL_VER_ID)
                 .build::<E::Dict>()
                 .ok()?,
             logout: TemplateBuilder::<24, 320>::new(begin)

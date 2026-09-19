@@ -8,6 +8,12 @@ rust-version.workspace = true
 publish = false
 description = "The FIX 4.4 session state machine. Pure: no socket, no clock, no allocation"
 
+# Pass-through only: this crate compiles no second table of its own. The feature
+# turns on `dict`'s FIXT 1.1 / FIX 5.0 SP2 tables so `tests/score_fixt.rs` and
+# `tests/fixt.rs` can name `Fixt11Fix50Sp2Tables` (ADR-0080 decision 2).
+[features]
+fix50sp2 = ["fixbolt-dict/fix50sp2"]
+
 [dependencies]
 fixbolt-codec = { path = "../codec" }
 fixbolt-dict = { path = "../dict" }
