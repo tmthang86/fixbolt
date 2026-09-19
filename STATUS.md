@@ -74,10 +74,23 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 
 **Read this before trusting any timing claim about FIXT, and before assuming 180 / 180.**
 
-PR [#82](https://github.com/tmthang86/fixbolt/pull/82), branch `feat/phase-2-b`, steps B1–B8 of
-[phase-2-fixt-and-sbe](docs/plans/2026-09-19-phase-2-fixt-and-sbe.md). What it does is in
-[CONFORMANCE.md §9](docs/CONFORMANCE.md) and [SESSION-BEHAVIOUR.md §5b](docs/SESSION-BEHAVIOUR.md).
-What it does **not** do is below.
+**`[2026-09-19, merged]`** PR [#82](https://github.com/tmthang86/fixbolt/pull/82) merged to `main`
+as **`e673e8f`**, no-ff. **CI green on the merge commit itself**, run
+[`35456988038`](https://github.com/tmthang86/fixbolt/actions/runs/35456988038), **14 jobs of 14**
+— counted, not eyeballed. The branch's closing commit `24e0e6e` was 14 of 14 on run
+[`35456425546`](https://github.com/tmthang86/fixbolt/actions/runs/35456425546).
+
+Steps B1–B8 of [phase-2-fixt-and-sbe](docs/plans/2026-09-19-phase-2-fixt-and-sbe.md), plus
+**B4c–B4e**, which a senior review created and which stopped the run under §12 until ADR-0085 was
+written and approved. What it does is in [CONFORMANCE.md §9](docs/CONFORMANCE.md) and
+[SESSION-BEHAVIOUR.md §3a and §5b](docs/SESSION-BEHAVIOUR.md). What it does **not** do is below.
+
+The PR was **retargeted from `plan/phase-2-a` to `main` before merging**: that branch had become
+an ancestor of `main`, so merging as configured would have put the whole track on a branch that
+led nowhere while still reporting success. `main` was merged in first (`24e0e6e`) and four
+documentation conflicts resolved by hand — one of them `DESIGN.md`'s `dict` row, where `main`
+still carried the pre-B4a "seven functions" wording that a careless resolution would have
+restored.
 
 ### Not measured — the whole of it
 

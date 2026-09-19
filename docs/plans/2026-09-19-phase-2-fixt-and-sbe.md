@@ -755,6 +755,26 @@ arm FIXT của `interop.sh` (B7) là đối tác thật đầu tiên có thể p
 Orchestra *FIX Latest EP312*, **không** phải PDF SP2 Volume 1 (proxy chặn `fixtrading.org`,
 `onixs.biz`) và nói rõ chỗ đó.
 
+#### PR B — đã gộp
+
+**`[2026-09-19]`** PR [#82](https://github.com/tmthang86/fixbolt/pull/82) gộp vào `main` tại
+**`e673e8f`**, no-ff. **CI xanh trên chính commit merge**, run
+[`35456988038`](https://github.com/tmthang86/fixbolt/actions/runs/35456988038), **14 / 14 job** —
+đếm, không liếc. Commit đóng nhánh `24e0e6e` cũng 14 / 14, run
+[`35456425546`](https://github.com/tmthang86/fixbolt/actions/runs/35456425546).
+
+Base của PR **đổi từ `plan/phase-2-a` sang `main`** trước khi gộp: nhánh đó đã nằm trong `main`,
+nên gộp theo cấu hình cũ sẽ đưa cả track vào một nhánh không dẫn đi đâu mà vẫn báo thành công.
+`main` được gộp vào trước (`24e0e6e`), bốn xung đột tài liệu giải bằng tay.
+
+Sau khi gộp, `scripts/bench.sh` đọc **20 / 20** target: hai crate SBE của PR C đi vào mà không
+phải sửa dòng nào, vì B6 đã cho script lấy feature set và danh sách binary **từ `cargo metadata`**
+thay vì danh sách package viết cứng.
+
+Còn nợ, đã ghi ở `STATUS.md` mục *Not proven*: ba băng cần bàn §9 (A-desk, `validate` của B4b,
+chi phí quét vị trí); `bad_group_count` bỏ cả lượt `373=16` khi gặp nhóm lồng (cần hàng riêng);
+`is_admin` chưa dựng; hàng `CLAUDE.md` §2 và §7; gác trùng số ADR; doctest sau feature.
+
 #### PR B — các bước B5 đến B8
 
 | Bước | Commit | Bằng chứng manager tự chạy lại trên đúng commit đó |
