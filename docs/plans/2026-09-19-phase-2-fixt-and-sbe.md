@@ -559,3 +559,30 @@ CI run id, gate quote, cái gì chưa làm và vì sao)*
   Status vẫn `Proposed`** — hàng A4 ghi "→ Accepted cùng commit, *sau khi chủ duyệt*", chủ
   đang vắng và chưa duyệt, nên D16 và `GUIDE.md` trích ADR-0082 là *Proposed*. Khi chủ duyệt:
   đổi Status trong ADR-0082, bỏ hai chữ "Proposed" ở D16 và `GUIDE.md` 3a, và dòng CHANGELOG.
+
+### PR C
+
+- **2026-09-19 — ADR-0081 Accepted** (`980338a`, nhánh `feat/phase-2-c`, PR
+  [#83](https://github.com/tmthang86/fixbolt/pull/83), phiên Mac): chủ duyệt đích danh, và uỷ
+  quyền cho phiên này mọi quyết định thiết kế và gộp sau đó của PR C.
+- **2026-09-19 — C1 giao, commit `4390256`:** `crates/sbe` (`no_std`, `forbid(unsafe_code)`,
+  không dependency), `scripts/fetch-sbe-assets.sh` ghim spec `418a8f6` và Real Logic `05b076c`
+  (1.40.2). 22 + 1 test xanh, clippy sạch, bốn đảo chiều đỏ đúng chỗ. Bẫy ghi ở
+  `docs/reference/the-sbe-rc4-example-dumps-disagree-with-their-own-tables.md`: dump §7 và
+  bảng giải thích của chính nó không khớp ở bốn chỗ — test tin byte, không tin bảng.
+- **2026-09-19 — Sửa kế hoạch lần 4 (PR C), duyệt theo uỷ quyền của chủ:** hàng C2/C3 như
+  viết không xây được, vì `build.rs` không dùng được dev-dependency — để `crates/sbe/build.rs`
+  gọi `sbe-gen` thì `sbe` phải có build-dependency kéo `roxmltree`, trái ADR-0081 quyết định 1
+  ("not a dependency of `sbe`"). Sửa:
+  1. Bảng sinh cho test do **`crates/sbe-gen/build.rs`** tạo (nạp mã generator bằng
+     `#[path]`, `roxmltree` là build-dependency của `sbe-gen`); `sbe-gen` có dev-dependency
+     `fixbolt-sbe`. Không có `crates/sbe/build.rs`.
+  2. Test của C3 (`spec_examples.rs`, `car_roundtrip.rs`, `versioning.rs`) nằm ở
+     **`crates/sbe-gen/tests/`** thay vì `crates/sbe/tests/`; gate C3 là
+     `cargo test -p fixbolt-sbe-gen`.
+  3. CI chỉ chạy `scripts/fetch-quickfix-assets.sh`, và Mac không đụng `ci.yml`; nên script
+     ấy gọi `scripts/fetch-sbe-assets.sh` ở dòng cuối. Thiếu `vendor/sbe-*` thì `build.rs` vẫn
+     cho lib build (người dùng `sbe-gen` không cần vendor), nhưng file sinh ra là
+     `compile_error!` nên test **đỏ**, không bao giờ xanh lặng lẽ.
+  4. `example-schema.xml` dùng `xi:include`; `generate(xml)` giữ nguyên chữ ký và trả
+     `Error::Unsupported` khi gặp include; thêm `generate_with_includes(xml, resolve)`.
