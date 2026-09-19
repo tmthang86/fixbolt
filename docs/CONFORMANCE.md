@@ -528,10 +528,15 @@ under TLS in `hft` (both scripts trace `tools/w2w`, an acceptor), any suite but
 Behind the off-by-default `fix50sp2` feature. Machine: the cloud Linux box this branch was built
 on, an `Intel(R) Xeon(R) Processor @ 2.10GHz`, **not** the `DESIGN.md` §9 desk — which does not
 matter for the counts on this page, because correctness figures do not depend on OS tuning.
-CI run id: **`35449590277`**, PR #82, commit `69fb801`, **14 jobs of 14 green**, including the
-step that runs the `fix50sp2` tests and proves the named tests executed. The two commits after it
-on this branch change documentation only and no code, so this run is the one that validated every
-figure on this page.
+CI run id: **`35454656457`**, PR #82, commit `eb8e7ae`, **14 jobs of 14 green**, including the
+step that runs the `fix50sp2` tests and proves the named tests executed, the `interop` job that
+runs the FIXT arm, and the `bench` job that counts the allocations.
+
+`[corrected 2026-09-19]` this box named run `35449590277` on `69fb801` and said the commits after
+it changed documentation only. That stopped being true when B4c (`d7be83d`) and B4d (`eb8e7ae`)
+landed code for ADR-0085 — a citation that was accurate when written and went stale under later
+commits, which is the second time on this branch that a run id in this file outlived what it
+described.
 
 ### The three corpora, in process
 
