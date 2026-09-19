@@ -14,9 +14,10 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_engine::AcceptorFix44;
 use fixbolt_engine::journal::{Durability, FileJournal};
 use fixbolt_session::journal::Journal;
-use fixbolt_session::{Acceptor, Config, Session};
+use fixbolt_session::{Config, Session};
 
 fn cfg() -> Config {
     Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
@@ -129,7 +130,7 @@ fn a_session_resumed_from_a_journal_keeps_counting() {
     let j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
     let highest = j.highest_out().expect("the journal held something");
 
-    let mut s: Session<Acceptor, 64> = Session::resume(cfg(), highest + 1, 12);
+    let mut s: AcceptorFix44<64> = Session::resume(cfg(), highest + 1, 12);
     assert_eq!(s.next_out(), 9, "carried in from the journal");
     assert_eq!(s.next_in(), 12);
 
@@ -156,7 +157,7 @@ fn a_session_resumed_from_a_journal_keeps_counting() {
 /// §17: a test asserting about state it assembled itself.
 #[test]
 fn a_new_session_still_restarts_on_every_connect() {
-    let mut fresh: Session<Acceptor, 64> = Session::new(cfg());
+    let mut fresh: AcceptorFix44<64> = Session::new(cfg());
     fresh.connect(|_| {});
     // Move it off 1 the only way this layer offers without a whole handshake.
     fresh.logout_now(b"bye", |_| {});
@@ -179,7 +180,7 @@ fn a_new_session_still_restarts_on_every_connect() {
 /// neither `if true` nor `if false` can pass.
 #[test]
 fn a_resumed_session_keeps_counting_across_a_reconnect() {
-    let mut s: Session<Acceptor, 64> = Session::resume(cfg(), 40, 50);
+    let mut s: AcceptorFix44<64> = Session::resume(cfg(), 40, 50);
     s.connect(|_| {});
     s.logout_now(b"bye", |_| {});
     let after = (s.next_out(), s.next_in());
@@ -237,7 +238,7 @@ fn a_session_resumes_both_counts_from_one_file() {
     }
     // Everything above is gone. This is the restart.
     let j: FileJournal<8, 512> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
-    let s: Session<Acceptor, 64> = Session::resume(
+    let s: AcceptorFix44<64> = Session::resume(
         cfg(),
         j.highest_out().map_or(1, |h| h + 1),
         j.highest_in().map_or(1, |h| h + 1),

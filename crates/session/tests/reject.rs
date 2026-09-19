@@ -20,7 +20,9 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios};
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Acceptor, Config, Link, Session};
 
 /// Every `I` line of one definition file, in order.
@@ -40,7 +42,7 @@ fn inputs(file: &str) -> Vec<Vec<u8>> {
 }
 
 struct Driver {
-    session: Session<Acceptor, 256>,
+    session: Session<TagValue<Fix44, 256>, Acceptor>,
     out: Vec<String>,
 }
 

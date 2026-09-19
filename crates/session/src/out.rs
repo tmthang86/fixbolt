@@ -2,12 +2,11 @@
 //!
 //! Non-negotiable 5: **field ordering comes from generated tables, never from a
 //! call site.** Every message here is a [`Template`] built once and sorted by
-//! `Fix44`, so no function in this crate ever decides that `49` precedes `52`.
-//! The acceptance comparator is positional; a hand-ordered message would pass
-//! review and fail the gate.
+//! `E::Dict`, so no function in this crate ever decides that `49` precedes
+//! `52`. The acceptance comparator is positional; a hand-ordered message would
+//! pass review and fail the gate.
 
-use fixbolt_codec::{Template, TemplateBuilder};
-use fixbolt_dict::Fix44;
+use fixbolt_codec::{Encoding, Template, TemplateBuilder};
 
 /// Parts and scratch bytes a session message needs.
 ///
@@ -19,7 +18,12 @@ use fixbolt_dict::Fix44;
 /// Scratch holds `BeginString` plus two CompIDs plus tag digits — 320 covers
 /// the 32-byte maximum [`crate::Config`] can hold, which
 /// [`tests::the_widest_configuration_still_builds`] proves rather than assumes.
-pub(crate) type Skeleton = Template<24, 320>;
+///
+/// The encoding names the type (ADR-0079): `Template<24, 320>` for tag=value,
+/// whatever an encoding with a different wire shape needs. `Outbound::new`
+/// still builds a `codec::Template`, so it carries the equality bound that says
+/// so — see its own doc.
+pub(crate) type Skeleton<E> = <E as Encoding>::Template<24, 320>;
 
 /// Every message a session generates itself, pre-sorted, plus the buffer it
 /// writes into.
@@ -28,14 +32,14 @@ pub(crate) type Skeleton = Template<24, 320>;
 /// ample for a session message — the longest in the corpus is 101 — and a
 /// resend replays stored bytes rather than re-encoding, so it does not size
 /// this.
-pub(crate) struct Outbound<const APP: usize = { crate::DEFAULT_APP_SCRATCH }> {
-    pub(crate) logon: Skeleton,
-    pub(crate) logout: Skeleton,
-    pub(crate) reject: Skeleton,
-    pub(crate) heartbeat: Skeleton,
-    pub(crate) test_request: Skeleton,
-    pub(crate) resend_request: Skeleton,
-    pub(crate) gap_fill: Skeleton,
+pub(crate) struct Outbound<E: Encoding, const APP: usize = { crate::DEFAULT_APP_SCRATCH }> {
+    pub(crate) logon: Skeleton<E>,
+    pub(crate) logout: Skeleton<E>,
+    pub(crate) reject: Skeleton<E>,
+    pub(crate) heartbeat: Skeleton<E>,
+    pub(crate) test_request: Skeleton<E>,
+    pub(crate) resend_request: Skeleton<E>,
+    pub(crate) gap_fill: Skeleton<E>,
     pub(crate) buf: [u8; 512],
     /// Where an [`crate::Application`] writes its reply. Separate from `buf`
     /// because an application message is bigger than a session one: the
@@ -52,11 +56,27 @@ pub(crate) struct Outbound<const APP: usize = { crate::DEFAULT_APP_SCRATCH }> {
     pub(crate) app: [u8; APP],
 }
 
-impl<const APP: usize> Outbound<APP> {
+impl<E, const APP: usize> Outbound<E, APP>
+where
+    E: Encoding<Template<24, 320> = Template<24, 320>>,
+{
     /// `None` if any template cannot be built.
     ///
-    /// The only ways that happens are a `BeginString` or CompID too long for
-    /// the scratch, or a tag `Fix44` does not know — both configuration errors.
+    /// # Why the bound says `Template<24, 320> = Template<24, 320>`
+    ///
+    /// [`Encoding`] offers no way to *build* a `Self::Template`: ADR-0079's
+    /// four shared operations are parse, view, read a field and encode, and
+    /// building an outbound skeleton is none of them. So the seven messages
+    /// below are laid out by `codec`'s own [`TemplateBuilder`], and this impl
+    /// can only exist for an encoding whose skeleton *is* that type. Every
+    /// tag=value encoding is one, FIXT 1.1 included, which is what PR B needs;
+    /// an encoding with its own skeleton shape (SBE) gets no session, which is
+    /// what ADR-0078 decided. The field **ordering** is still the dictionary's
+    /// and never a call site's — `build::<E::Dict>()` below, non-negotiable 5.
+    ///
+    /// The only ways it answers `None` are a `BeginString` or CompID too long
+    /// for the scratch, or a tag `E::Dict` does not know — both configuration
+    /// errors.
     /// The session treats `None` as *refuse everything*, the same fail-closed
     /// answer [`crate::Config`] gives a CompID it cannot hold.
     pub(crate) fn new(begin: &[u8], sender: &[u8], target: &[u8]) -> Option<Self> {
@@ -79,7 +99,7 @@ impl<const APP: usize> Outbound<APP> {
                 // cannot see this and `the_position_of_789_is_the_dictionarys_
                 // and_not_this_call_sites` has to.
                 .slot(tag::NEXT_EXPECTED_MSG_SEQ_NUM)
-                .build::<Fix44>()
+                .build::<E::Dict>()
                 .ok()?,
             logout: TemplateBuilder::<24, 320>::new(begin)
                 .field(tag::MSG_TYPE, b"5")
@@ -89,7 +109,7 @@ impl<const APP: usize> Outbound<APP> {
                 .slot(tag::SENDING_TIME)
                 .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::TEXT)
-                .build::<Fix44>()
+                .build::<E::Dict>()
                 .ok()?,
             reject: TemplateBuilder::<24, 320>::new(begin)
                 .field(tag::MSG_TYPE, b"3")
@@ -112,7 +132,7 @@ impl<const APP: usize> Outbound<APP> {
                 .slot(tag::REF_TAG_ID)
                 .slot(tag::REF_MSG_TYPE)
                 .slot(tag::SESSION_REJECT_REASON)
-                .build::<Fix44>()
+                .build::<E::Dict>()
                 .ok()?,
             // A Heartbeat carries `112=` only when it answers a TestRequest.
             // An unset slot is not written, which is what makes one template
@@ -125,7 +145,7 @@ impl<const APP: usize> Outbound<APP> {
                 .slot(tag::SENDING_TIME)
                 .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::TEST_REQ_ID)
-                .build::<Fix44>()
+                .build::<E::Dict>()
                 .ok()?,
             test_request: TemplateBuilder::<24, 320>::new(begin)
                 .field(tag::MSG_TYPE, b"1")
@@ -135,7 +155,7 @@ impl<const APP: usize> Outbound<APP> {
                 .slot(tag::SENDING_TIME)
                 .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::TEST_REQ_ID)
-                .build::<Fix44>()
+                .build::<E::Dict>()
                 .ok()?,
             resend_request: TemplateBuilder::<24, 320>::new(begin)
                 .field(tag::MSG_TYPE, b"2")
@@ -146,7 +166,7 @@ impl<const APP: usize> Outbound<APP> {
                 .slot(tag::LAST_MSG_SEQ_NUM_PROCESSED)
                 .slot(tag::BEGIN_SEQ_NO)
                 .slot(tag::END_SEQ_NO)
-                .build::<Fix44>()
+                .build::<E::Dict>()
                 .ok()?,
             // A `SequenceReset` sent as a gap fill: it stands in for messages
             // this session will not replay, so it carries `43=Y` and the
@@ -162,7 +182,7 @@ impl<const APP: usize> Outbound<APP> {
                 .slot(tag::ORIG_SENDING_TIME)
                 .slot(tag::NEW_SEQ_NO)
                 .slot(tag::GAP_FILL_FLAG)
-                .build::<Fix44>()
+                .build::<E::Dict>()
                 .ok()?,
             buf: [0; 512],
             app: [0; APP],
@@ -178,6 +198,8 @@ use crate::tag;
     reason = "a test asserting a constant is not a library call site"
 )]
 mod tests {
+    use fixbolt_dict::Fix44TagValue;
+
     use super::*;
 
     #[test]
@@ -189,7 +211,10 @@ mod tests {
         // second parameter honest.
         let wide = [b'X'; 32];
         assert!(
-            Outbound::<{ crate::DEFAULT_APP_SCRATCH }>::new(b"FIX.4.4", &wide, &wide).is_some()
+            Outbound::<Fix44TagValue, { crate::DEFAULT_APP_SCRATCH }>::new(
+                b"FIX.4.4", &wide, &wide
+            )
+            .is_some()
         );
     }
 
@@ -197,7 +222,7 @@ mod tests {
     fn a_comp_id_wider_than_the_scratch_is_refused_not_truncated() {
         let far_too_wide = [b'X'; 250];
         assert!(
-            Outbound::<{ crate::DEFAULT_APP_SCRATCH }>::new(
+            Outbound::<Fix44TagValue, { crate::DEFAULT_APP_SCRATCH }>::new(
                 b"FIX.4.4",
                 &far_too_wide,
                 &far_too_wide

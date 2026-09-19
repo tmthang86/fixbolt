@@ -26,8 +26,9 @@
 // outside `crates/*/src`, and an index that panics in a test is a failing test.
 #![allow(clippy::indexing_slicing)]
 
-use fixbolt_codec::Precision;
+use fixbolt_codec::{Precision, TagValue};
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Acceptor, Config, Session};
 
 fn cfg(precision: Precision) -> Config {
@@ -65,7 +66,7 @@ fn sending_time(msg: &[u8]) -> String {
 /// `sub_ms_nanos` of `None` uses the millisecond door, which is what a caller
 /// with no finer clock has.
 fn logon_reply(precision: Precision, sub_ms_nanos: Option<u32>) -> Vec<u8> {
-    let mut session: Session<Acceptor, 256> = Session::new(cfg(precision));
+    let mut session: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg(precision));
     session.connect(|_| {});
     match sub_ms_nanos {
         Some(n) => session.tick_at(FIXED_TIME_MILLIS, n, |_| {}),

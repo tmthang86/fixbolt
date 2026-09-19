@@ -87,15 +87,23 @@ fn main() {
         // pass and says nothing. Asserted here rather than assumed: this is the
         // one thing that would make every figure below quietly wrong, and a
         // bench that measures a first-field reject would still look stable.
-        assert_eq!(validate(&nos_view, b"D"), None, "NewOrderSingle is clean");
-        assert_eq!(validate(&hb_view, b"0"), None, "Heartbeat is clean");
+        assert_eq!(
+            validate::<Fix44, 64>(&nos_view, b"D"),
+            None,
+            "NewOrderSingle is clean"
+        );
+        assert_eq!(
+            validate::<Fix44, 64>(&hb_view, b"0"),
+            None,
+            "Heartbeat is clean"
+        );
 
         b.bench("validate NewOrderSingle", || {
-            let v = validate(black_box(&nos_view), black_box(b"D"));
+            let v = validate::<Fix44, 64>(black_box(&nos_view), black_box(b"D"));
             black_box(v);
         });
         b.bench("validate Heartbeat", || {
-            let v = validate(black_box(&hb_view), black_box(b"0"));
+            let v = validate::<Fix44, 64>(black_box(&hb_view), black_box(b"0"));
             black_box(v);
         });
 
@@ -124,19 +132,23 @@ fn main() {
 
         let w_tr_view = w_tr_idx.view(w_tr);
         let w_nos_view = w_nos_idx.view(w_nos);
-        assert_eq!(validate(&w_tr_view, b"1"), None, "w2w TestRequest is clean");
         assert_eq!(
-            validate(&w_nos_view, b"D"),
+            validate::<Fix44, 64>(&w_tr_view, b"1"),
+            None,
+            "w2w TestRequest is clean"
+        );
+        assert_eq!(
+            validate::<Fix44, 64>(&w_nos_view, b"D"),
             None,
             "w2w NewOrderSingle is clean"
         );
 
         b.bench("validate TestRequest, w2w bytes", || {
-            let v = validate(black_box(&w_tr_view), black_box(b"1"));
+            let v = validate::<Fix44, 64>(black_box(&w_tr_view), black_box(b"1"));
             black_box(v);
         });
         b.bench("validate NewOrderSingle, w2w bytes", || {
-            let v = validate(black_box(&w_nos_view), black_box(b"D"));
+            let v = validate::<Fix44, 64>(black_box(&w_nos_view), black_box(b"D"));
             black_box(v);
         });
     });

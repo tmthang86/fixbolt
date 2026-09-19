@@ -8,6 +8,7 @@
 
 pub mod checksum;
 pub mod dict;
+pub mod encoding;
 pub mod group;
 pub mod index;
 pub mod parse;
@@ -16,6 +17,7 @@ pub mod timestamp;
 
 pub use checksum::{checksum, format_checksum};
 pub use dict::{Dictionary, NoDict};
+pub use encoding::{Encoding, SessionFields, TagValue};
 pub use group::{GroupEntry, GroupIter};
 pub use index::{ConvertError, FieldEntry, FieldIndex, MessageView, as_char, as_i64, as_u32};
 pub use parse::{ParseError, Parsed, SOH, Validation, parse_into, tag_text_at};

@@ -18,7 +18,9 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Acceptor, Config, Link, Session};
 
 fn cfg() -> Config {
@@ -44,8 +46,8 @@ fn good_logon() -> Vec<u8> {
 }
 
 /// A logged-on session and everything it has said so far.
-fn logged_on() -> (Session<Acceptor, 256>, Vec<String>) {
-    let mut s: Session<Acceptor, 256> = Session::new(cfg());
+fn logged_on() -> (Session<TagValue<Fix44, 256>, Acceptor>, Vec<String>) {
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg());
     let mut out = Vec::new();
     s.connect(|b| out.push(String::from_utf8_lossy(b).replace('\u{1}', "|")));
     s.tick(FIXED_TIME_MILLIS, |b| {
@@ -172,7 +174,7 @@ fn a_reset_may_move_the_number_down() {
 #[test]
 fn a_reset_that_cannot_be_sent_does_not_move_the_number() {
     let too_long = vec![b'X'; 400];
-    let mut s: Session<Acceptor, 256> =
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> =
         Session::new(Config::acceptor(b"FIX.4.4", &too_long, b"TW44"));
     let was = s.next_out();
     let mut sent = 0;

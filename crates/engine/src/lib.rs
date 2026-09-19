@@ -63,6 +63,33 @@ use std::net::{TcpListener, TcpStream};
 
 pub use fixbolt_session::{Application, Config, Role, Session};
 
+/// The tag=value [`Encoding`], re-exported because an engine's `E` parameter
+/// defaults to `TagValue<Fix44, N>` and a type nobody can name is a type
+/// nobody can substitute.
+pub use fixbolt_codec::TagValue;
+use fixbolt_codec::{Encoding, FieldIndex, MessageView, ParseError, Template};
+/// The FIX 4.4 dictionary, for the same reason [`TagValue`] is here.
+pub use fixbolt_dict::Fix44;
+use fixbolt_dict::Tables;
+
+/// One FIX 4.4 acceptor session: tag=value, `N` fields of index.
+///
+/// ADR-0079 *Consequences*: *"generic engines mean generic front doors"*. This
+/// is the door keeping its old shape — `Session<TagValue<Fix44, N>, Acceptor,
+/// APP>` is what `Session<Acceptor, N, APP>` meant before the encoding became a
+/// parameter, and a caller that wants another index size still writes the
+/// number, exactly as it always did (`CLAUDE.md` §6, the caller picks `N`).
+pub type AcceptorFix44<
+    const N: usize = 256,
+    const APP: usize = { fixbolt_session::DEFAULT_APP_SCRATCH },
+> = Session<TagValue<Fix44, N>, fixbolt_session::Acceptor, APP>;
+
+/// One FIX 4.4 initiator session. [`AcceptorFix44`] for the other role.
+pub type InitiatorFix44<
+    const N: usize = 256,
+    const APP: usize = { fixbolt_session::DEFAULT_APP_SCRATCH },
+> = Session<TagValue<Fix44, N>, fixbolt_session::Initiator, APP>;
+
 use crate::backpressure::Backpressure;
 use crate::clock::Clock;
 use crate::conn::{Connection, Turn};
@@ -97,6 +124,16 @@ pub const MAX_ON_LOGON: u32 = 16;
 ///
 /// `[2026-09-05]` **`APP` is here because it was the tightest of the four and
 /// the only one with no name** — `docs/reference/a-ceiling-has-more-than-one-floor.md`.
+///
+/// `[2026-09-19]` **`E` is the encoding** ([`fixbolt_codec::Encoding`],
+/// ADR-0079: *"generic engines mean generic front doors"*). It is the last
+/// parameter and it has a default, so every `Engine<T, R, D, C, W, J, N, RX,
+/// TX, L, APP>` written before phase 2 still names the same type — FIX 4.4
+/// tag=value over an `N`-field index. `N` did **not** fold into it: it is what
+/// a deployment sizes and what `docs/CONFIGURATION.md` and
+/// [`serve_with`] name, and the impl below binds
+/// `E::Scratch` to `FieldIndex<N>` so the two can never mean different
+/// numbers.
 pub struct Engine<
     T,
     R: Role,
@@ -109,8 +146,9 @@ pub struct Engine<
     const TX: usize,
     L = NoLog,
     const APP: usize = 1024,
+    E: Encoding = TagValue<Fix44, N>,
 > {
-    conns: Vec<Connection<T, R, J, N, RX, TX, APP>>,
+    conns: Vec<Connection<T, R, J, N, RX, TX, APP, E>>,
     /// Every message this engine sees or sends, if anybody asked for them.
     ///
     /// [`NoLog`] by default and it compiles away: `MessageLog::LOGS` is a
@@ -237,8 +275,12 @@ impl<D: Dispatch> Application for Deliver<'_, D> {
     }
 }
 
-impl<T, R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L, const APP: usize>
-    Engine<T, R, D, C, W, J, N, RX, TX, L, APP>
+/// The `E` bound is [`Session`]'s own, repeated — see the impl on `Session` in
+/// `crates/session/src/lib.rs` for what each equality buys. It travels with
+/// every type that holds a session, because [`Encoding`]'s four operations are
+/// fewer than the session layer needs.
+impl<T, R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L, const APP: usize, E>
+    Engine<T, R, D, C, W, J, N, RX, TX, L, APP, E>
 where
     T: Transport,
     R: Role,
@@ -247,6 +289,14 @@ where
     W: Waiting,
     J: SessionJournal,
     L: MessageLog,
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
 {
     /// The same engine, recording every message it sees or sends into `log`.
     ///
@@ -256,7 +306,10 @@ where
     /// every one of this repository's 38 `Engine::new` call sites keeps
     /// compiling, and the ones that never wanted a log never mention it.
     #[must_use]
-    pub fn with_log<L2: MessageLog>(self, log: L2) -> Engine<T, R, D, C, W, J, N, RX, TX, L2, APP> {
+    pub fn with_log<L2: MessageLog>(
+        self,
+        log: L2,
+    ) -> Engine<T, R, D, C, W, J, N, RX, TX, L2, APP, E> {
         Engine {
             conns: self.conns,
             log,
@@ -977,7 +1030,7 @@ where
     /// `benches/alloc.rs` cases `observe-idle` and `observe-asked` are what
     /// prove it, not this comment.
     fn snapshot(
-        conns: &[Connection<T, R, J, N, RX, TX, APP>],
+        conns: &[Connection<T, R, J, N, RX, TX, APP, E>],
         refused_connections: usize,
         sources_missing: usize,
         log_lost: u64,
@@ -1452,7 +1505,7 @@ where
     }
 
     fn rebuild(
-        conns: &[Connection<T, R, J, N, RX, TX, APP>],
+        conns: &[Connection<T, R, J, N, RX, TX, APP, E>],
         interests: &mut Vec<Interest>,
         missing: &mut usize,
         own: &[Interest],
@@ -1577,7 +1630,8 @@ pub type TcpAcceptorEngine<
     const RX: usize = 4096,
     const TX: usize = 8192,
     const APP: usize = 1024,
-> = AcceptorEngineOver<TcpTransport, A, W, J, L, N, RX, TX, APP>;
+    E = TagValue<Fix44, N>,
+> = AcceptorEngineOver<TcpTransport, A, W, J, L, N, RX, TX, APP, E>;
 
 /// The same acceptor shape, over **any** transport.
 ///
@@ -1605,6 +1659,7 @@ pub type AcceptorEngineOver<
     const RX: usize = 4096,
     const TX: usize = 8192,
     const APP: usize = 1024,
+    E = TagValue<Fix44, N>,
 > = Engine<
     T,
     fixbolt_session::Acceptor,
@@ -1617,6 +1672,7 @@ pub type AcceptorEngineOver<
     TX,
     L,
     APP,
+    E,
 >;
 
 /// The `hft` shape: spins, burns a core, and needs a machine that satisfies
@@ -1628,7 +1684,8 @@ pub type HftAcceptorEngine<
     const RX: usize = 4096,
     const TX: usize = 8192,
     const APP: usize = 1024,
-> = TcpAcceptorEngine<A, crate::wait::Spin, crate::journal::Store, L, N, RX, TX, APP>;
+    E = TagValue<Fix44, N>,
+> = TcpAcceptorEngine<A, crate::wait::Spin, crate::journal::Store, L, N, RX, TX, APP, E>;
 
 /// The same shape, dialling out. `STATUS.md` item 35.
 pub type TcpInitiatorEngine<
@@ -1640,7 +1697,8 @@ pub type TcpInitiatorEngine<
     const RX: usize = 4096,
     const TX: usize = 8192,
     const APP: usize = 1024,
-> = InitiatorEngineOver<TcpTransport, A, W, J, L, N, RX, TX, APP>;
+    E = TagValue<Fix44, N>,
+> = InitiatorEngineOver<TcpTransport, A, W, J, L, N, RX, TX, APP, E>;
 
 /// The initiator shape, over **any** transport — [`AcceptorEngineOver`]'s
 /// counterpart for the end that dials.
@@ -1661,6 +1719,7 @@ pub type InitiatorEngineOver<
     const RX: usize = 4096,
     const TX: usize = 8192,
     const APP: usize = 1024,
+    E = TagValue<Fix44, N>,
 > = Engine<
     T,
     fixbolt_session::Initiator,
@@ -1673,6 +1732,7 @@ pub type InitiatorEngineOver<
     TX,
     L,
     APP,
+    E,
 >;
 
 /// The `standard` shape, and **the default**: blocks on readiness and gives the
@@ -1685,7 +1745,8 @@ pub type StandardAcceptorEngine<
     const RX: usize = 4096,
     const TX: usize = 8192,
     const APP: usize = 1024,
-> = TcpAcceptorEngine<A, crate::block::Block, crate::journal::Store, L, N, RX, TX, APP>;
+    E = TagValue<Fix44, N>,
+> = TcpAcceptorEngine<A, crate::block::Block, crate::journal::Store, L, N, RX, TX, APP, E>;
 
 /// Accept FIX connections on `addr` and never return. **`standard` mode.**
 ///

@@ -30,7 +30,9 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Acceptor, Config, DictionaryChecks, Link, Session};
 
 fn base() -> Config {
@@ -75,8 +77,8 @@ fn reframe(wire: &[u8], from: &str, to: &str) -> Vec<u8> {
     with_real_checksum(rebuilt.as_bytes())
 }
 
-fn logged_on(cfg: Config) -> Session<Acceptor, 256> {
-    let mut s: Session<Acceptor, 256> = Session::new(cfg);
+fn logged_on(cfg: Config) -> Session<TagValue<Fix44, 256>, Acceptor> {
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg);
     s.connect(|_| {});
     s.tick(FIXED_TIME_MILLIS, |_| {});
     let logon = &inputs("14a_BadField.def")[0];
@@ -98,7 +100,7 @@ fn logout_with_logon_fields() -> Vec<u8> {
     reframe(&reframe(logon, "35=A", "35=5"), "34=1", "34=2")
 }
 
-fn answer(s: &mut Session<Acceptor, 256>, wire: &[u8]) -> (Link, Vec<String>) {
+fn answer(s: &mut Session<TagValue<Fix44, 256>, Acceptor>, wire: &[u8]) -> (Link, Vec<String>) {
     let mut out = Vec::new();
     let link = s.received(wire, |b| {
         out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));

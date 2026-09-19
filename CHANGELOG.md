@@ -17,6 +17,18 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`fixbolt_codec::Encoding`, `TagValue<D, N>` and `SessionFields`** — one trait over the
+  encodings (parse, view, read a field, encode, `session_fields`), static dispatch only, and the
+  tag=value implementation that forwards unchanged to `parse_into`, `FieldIndex::view`,
+  `MessageView::get` and `Template::encode_with`; `parse_into`, `MessageView`, `FieldIndex` and
+  `Parsed` are untouched (`crates/codec/tests/encoding.rs::api_unchanged`). **`fixbolt_dict::Tables`**
+  (the seven functions the session calls, implemented for `Fix44`) and the alias
+  **`fixbolt_dict::Fix44TagValue`** (`TagValue<Fix44, 64>`). **`fixbolt_engine::AcceptorFix44`**
+  and **`InitiatorFix44`**, plus re-exports of `TagValue` and `Fix44` so the engine's default
+  `E` is a type a caller can name. `crates/codec/benches/alloc.rs` gains the `parse via Encoding`
+  case, asserting 0 beside the direct parse. `docs/DESIGN.md` D16;
+  `docs/plans/2026-09-19-phase-2-fixt-and-sbe.md` A1–A3.
+
 - **`tools/w2w --listen`, `--connect` and `--interval`** (a tool, not a published crate).
   `--listen <addr>` runs only the engine half: it serves until the last connection closes after
   the first logon, prints `mode:`, `path:`, `listening:` and `tls:`, asserts zero allocations on
@@ -153,6 +165,17 @@ below describe what a first release would contain.
   ADR-0076.
 
 ### Changed
+
+- **BREAKING — `Session<R, N, APP>` is now `Session<E: Encoding, R, APP>`**, and `N` rides in
+  `E`: `Session<Acceptor, 256>` is written `Session<TagValue<Fix44, 256>, Acceptor>` or
+  `fixbolt_engine::AcceptorFix44<256>`. `Connection`, `Engine` and the six engine aliases gain a
+  trailing `E: Encoding = TagValue<Fix44, N>`; **no `serve*` or `connect_and_serve*` signature
+  changes**, and `crates/library/examples/acceptor.rs` compiles untouched. `Session<E>` is
+  generic over **tag=value** encodings only — the `impl` binds `View`, `Scratch`,
+  `Template<24, 320>`, `Field` and `ParseError` to `codec`'s types and requires
+  `E::Dict: fixbolt_dict::Tables` — so an SBE encoding implements `Encoding` and `Session<Sbe<S>>`
+  does not compile (`docs/DESIGN.md` D16; ADR-0079; ADR-0082, Proposed).
+  `docs/plans/2026-09-19-phase-2-fixt-and-sbe.md` A2–A3.
 
 - **`SocketUseSSL` and `TlsRequireKernel` are valid on either role**, not acceptor-only.
   `docs/CONFIGURATION.md` §1 rows changed accordingly; no existing acceptor file changes
