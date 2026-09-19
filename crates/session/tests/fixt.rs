@@ -15,7 +15,7 @@
 use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_IN, FIXED_TIME_MILLIS};
 use fixbolt_dict::{Fix44, Fixt11Fix50Sp2Tables};
-use fixbolt_session::{Acceptor, Config, DropReason, Session};
+use fixbolt_session::{Acceptor, Config, DictionaryChecks, DropReason, Session};
 
 /// The FIXT 1.1 / FIX 5.0 SP2 encoding, as `tests/score_fixt.rs` spells it.
 type Fixt = TagValue<Fixt11Fix50Sp2Tables, 256>;
@@ -200,4 +200,277 @@ fn a_fix_44_session_emits_no_1137() {
     // And the rule that refuses a Logon without it is FIXT's alone: this one
     // carried no `1137` and was answered rather than dropped.
     assert_eq!(s.last_drop_reason(), None);
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0085: what a counterparty is told once the deferral array is full.
+// ---------------------------------------------------------------------------
+
+/// 32 of the 48 top-level groups `TradeCaptureReport(AE)` declares — the ones
+/// whose delimiter enumerates no value, so a one-entry group can carry any
+/// well-formed one. `(counter, delimiter, a value the delimiter's type
+/// accepts)`, ADR-0085 *Sources*.
+///
+/// Thirty-two blocks, **thirty-three** counters: `40204`'s delimiter `40209`
+/// is itself a `NumInGroup` with a group of its own, so that block records
+/// two. `SEEN` is 32, so everything after the last block is past the bound —
+/// which `lib.rs`'s `an_ae_with_thirty_three_group_counters_fills_the_array`
+/// asserts directly, this file being unable to see a private field.
+const AE_GROUPS: [(&str, &str, &str); 32] = [
+    ("1907", "1903", "X"),
+    ("1116", "1117", "R"),
+    ("454", "455", "A"),
+    ("1976", "1977", "1"),
+    ("2304", "2305", "A"),
+    ("1018", "1019", "P"),
+    ("40278", "40471", "B"),
+    ("41230", "41231", "B"),
+    ("41092", "41093", "E"),
+    ("41094", "41095", "F"),
+    ("42775", "42776", "B"),
+    ("41116", "41117", "B"),
+    ("41137", "41138", "20260919"),
+    ("41140", "41141", "B"),
+    ("41152", "41153", "20260919"),
+    ("40019", "40020", "Y"),
+    ("40181", "40182", "1.0"),
+    ("40022", "40023", "USD"),
+    ("40204", "40209", "0"),
+    ("42296", "42297", "E"),
+    ("2734", "2733", "M"),
+    ("2746", "2747", "20260919-12:00:00.000"),
+    ("40040", "40041", "D"),
+    ("40046", "40047", "S"),
+    ("40042", "40043", "M"),
+    ("711", "311", "U"),
+    ("1703", "1704", "1.0"),
+    ("555", "600", "L"),
+    ("768", "769", "20260919-12:00:00.000"),
+    ("1387", "1388", "1"),
+    ("41312", "41313", "J"),
+    ("2104", "2105", "A"),
+];
+
+/// The 32 blocks, then a stray `447` at top level, then the `552` group whose
+/// nested `453` is the group `447` belongs to.
+///
+/// `regulatory_count` is `1907`'s declared count — `2` against one entry is a
+/// `373=16` waiting in the third pass. `stray` is the top-level `447`: `ZZ` is
+/// not a `PartyIDSource`, `D` is.
+fn trade_capture_report(regulatory_count: &str, stray: &str) -> Vec<u8> {
+    let mut body = String::from("35=AE|34=2|49=TW50SP2|52=<T>|56=ISLD|");
+    for (counter, delimiter, value) in AE_GROUPS {
+        let count = if counter == "1907" {
+            regulatory_count
+        } else {
+            "1"
+        };
+        body.push_str(&format!("{counter}={count}|{delimiter}={value}|"));
+    }
+    body.push_str(&format!("447={stray}|"));
+    body.push_str("552=1|54=1|453=1|448=A|447=D|452=1|");
+    msg("FIXT.1.1", &body)
+}
+
+/// Log on, send `wire`, and return what went out after the Logon, with the
+/// `34=` the session wants next and the link state.
+fn after_a_report(wire: &[u8]) -> (Vec<Vec<u8>>, u32, fixbolt_session::Link) {
+    after_a_report_on(fixt_acceptor(), wire)
+}
+
+/// The same, on a session the caller configured.
+fn after_a_report_on(
+    mut s: Session<Fixt, Acceptor>,
+    wire: &[u8],
+) -> (Vec<Vec<u8>>, u32, fixbolt_session::Link) {
+    let mut sink: Vec<Vec<u8>> = Vec::new();
+    s.connect(|b: &[u8]| sink.push(b.to_vec()));
+    s.tick(FIXED_TIME_MILLIS, |b: &[u8]| sink.push(b.to_vec()));
+    let logon = msg(
+        "FIXT.1.1",
+        "35=A|34=1|49=TW50SP2|52=<T>|56=ISLD|98=0|108=30|1137=9|",
+    );
+    s.received(&logon, |b: &[u8]| sink.push(b.to_vec()));
+    sink.clear();
+    let link = s.received(wire, |b: &[u8]| sink.push(b.to_vec()));
+    (sink, s.next_in(), link)
+}
+
+/// The `373=` and `371=` a Reject carries, in that order — so a failure here
+/// reads as the ADR wrote it down before it was run.
+fn reason_and_tag(reject: &str) -> String {
+    let field = |name: &str| {
+        reject
+            .split('|')
+            .find(|f| f.starts_with(name))
+            .unwrap_or("<absent>")
+            .to_string()
+    };
+    format!("{} {}", field("373="), field("371="))
+}
+
+/// **A stray member met after the array is full is still answered in wire
+/// order.** ADR-0085 decisions 1, 2 and 5.
+///
+/// 33 group counters fill `SeenCounters`, so every field after them asks
+/// `in_a_group_before` instead of the array. `447=ZZ` sits *before* its own
+/// counter `453`, so it is not a member of anything yet: `373=5` naming it,
+/// from the first pass, ahead of the `373=16` that `1907=2` has waiting.
+///
+/// The reversal this was written against — put `in_a_group` back in the
+/// `full` branch — makes the answer `373=16 371=1907`, because the whole-
+/// message walk finds `453` further down and defers `447` past the count
+/// check. Same bytes, two reason codes, chosen by a capacity nobody published.
+#[test]
+fn a_stray_member_is_answered_in_wire_order_when_the_array_is_full() {
+    let (out, _next_in, _link) = after_a_report(&trade_capture_report("2", "ZZ"));
+
+    let wire = readable(&out);
+    assert_eq!(out.len(), 1, "exactly one Reject:\n{wire}");
+    assert!(
+        wire.contains("|373=5|") && wire.contains("|371=447|"),
+        "expected 373=5 371=447, engine sent {}",
+        reason_and_tag(&wire)
+    );
+}
+
+/// The twin: the same 33 counters, both faults removed, and nothing is said.
+///
+/// Without it the test above could be green because the message is malformed
+/// in some way that has nothing to do with the array — a shape this engine
+/// refuses for a third reason would satisfy "one Reject naming 447" too.
+#[test]
+fn the_same_thirty_three_counters_without_the_two_faults_are_accepted() {
+    let (out, next_in, link) = after_a_report(&trade_capture_report("1", "D"));
+
+    let wire = readable(&out);
+    assert_eq!(link, fixbolt_session::Link::Up, "still up:\n{wire}");
+    assert!(out.is_empty(), "nothing is said about it:\n{wire}");
+    assert_eq!(next_in, 3, "and it counted, so it was accepted");
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0085 decision 2, under `ValidateUserDefinedFields=N`: the fallback must
+// ignore exactly the counters the array ignores.
+// ---------------------------------------------------------------------------
+
+/// 33 groups of `AE` whose counter **and** delimiter are below tag 5000, so the
+/// array still fills when `ValidateUserDefinedFields=N` is taking user-defined
+/// tags out of the scan. `1907` is last, so the array fills on it.
+///
+/// The sub-5000 counters left out are nested groups of `AE`, where
+/// `MessageView::group` answers `None` and `bad_group_count` ends that pass
+/// without a verdict — pre-existing, and it would have silenced the `373=16`
+/// this fixture needs as its competing fault.
+const AE_SUB_5000_GROUPS: [(&str, &str, &str); 33] = [
+    ("73", "2887", "A"),
+    ("78", "79", "A"),
+    ("136", "137", "1.0"),
+    ("453", "448", "A"),
+    ("454", "455", "A"),
+    ("457", "458", "A"),
+    ("539", "524", "A"),
+    ("555", "600", "L"),
+    ("711", "311", "U"),
+    ("756", "757", "A"),
+    ("768", "769", "20260919-12:00:00.000"),
+    ("781", "782", "A"),
+    ("802", "523", "A"),
+    ("804", "545", "A"),
+    ("806", "760", "A"),
+    ("887", "888", "A"),
+    ("1016", "1012", "20260919-12:00:00.000"),
+    ("1018", "1019", "P"),
+    ("1058", "1059", "A"),
+    ("1116", "1117", "R"),
+    ("1334", "1335", "A"),
+    ("1342", "1330", "A"),
+    ("1387", "1388", "1"),
+    ("1491", "1492", "20260919"),
+    ("1516", "1517", "A"),
+    ("1562", "1563", "A"),
+    ("1586", "1587", "1.0"),
+    ("1671", "1691", "A"),
+    ("1703", "1704", "1.0"),
+    ("1844", "1845", "A"),
+    ("1855", "1856", "A"),
+    ("1861", "1862", "A"),
+    ("1907", "1903", "X"),
+];
+
+/// The 33 sub-5000 blocks, then `40212 NoPayments` — a user-defined counter —
+/// and `492 PaymentMethod`, a member of it that is not user-defined.
+///
+/// `regulatory_count` is `1907`'s declared count: `2` against one entry is the
+/// `373=16` that wins if `492` is wrongly deferred.
+fn payments_after_a_full_array(regulatory_count: &str, payment_method: &str) -> Vec<u8> {
+    let mut body = String::from("35=AE|34=2|49=TW50SP2|52=<T>|56=ISLD|");
+    for (counter, delimiter, value) in AE_SUB_5000_GROUPS {
+        let count = if counter == "1907" {
+            regulatory_count
+        } else {
+            "1"
+        };
+        body.push_str(&format!("{counter}={count}|{delimiter}={value}|"));
+    }
+    body.push_str(&format!("40212=1|40213=1|492={payment_method}|"));
+    msg("FIXT.1.1", &body)
+}
+
+/// The corpus's FIXT acceptor with `ValidateUserDefinedFields=N`.
+fn fixt_acceptor_skipping_user_defined() -> Session<Fixt, Acceptor> {
+    Session::new(
+        Config::acceptor_fixt(b"FIXT.1.1", b"ISLD", b"TW50SP2", b"9")
+            .with_validation(DictionaryChecks::new().skipping_user_defined_fields()),
+    )
+}
+
+/// **A counter the scan is told to ignore does not defer its member.**
+/// ADR-0085 decision 2, under `ValidateUserDefinedFields=N`.
+///
+/// `scan_fields` drops a tag at or above 5000 before it can record it, so
+/// `40212` never enters `SeenCounters` — and `in_a_group_before`, which
+/// answers once the array is full, must not find it either. `492` is then a
+/// stray top-level field: `373=5` naming it, ahead of the `373=16` waiting on
+/// `1907=2`.
+///
+/// The knob is the only variable, and the second half of this test moves it
+/// back: with the check on, `40212` *is* a counter the scan passed, `492`
+/// waits for it, and the answer is the `373=16`.
+#[test]
+fn a_member_of_a_user_defined_group_is_not_deferred_when_the_scan_ignores_its_counter() {
+    let wire = payments_after_a_full_array("2", "ZZ");
+
+    let (out, _next_in, _link) = after_a_report_on(fixt_acceptor_skipping_user_defined(), &wire);
+    let readable_out = readable(&out);
+    assert_eq!(out.len(), 1, "exactly one Reject:\n{readable_out}");
+    assert!(
+        readable_out.contains("|373=5|") && readable_out.contains("|371=492|"),
+        "expected 373=5 371=492, engine sent {}",
+        reason_and_tag(&readable_out)
+    );
+
+    let (out, _next_in, _link) = after_a_report(&wire);
+    let readable_out = readable(&out);
+    assert_eq!(out.len(), 1, "exactly one Reject:\n{readable_out}");
+    assert!(
+        readable_out.contains("|373=16|") && readable_out.contains("|371=1907|"),
+        "with the check on, the same bytes defer 492 and the count speaks: {}",
+        reason_and_tag(&readable_out)
+    );
+}
+
+/// The twin: both faults removed and the knob still on, so the shape itself is
+/// not what earns the Reject above.
+#[test]
+fn the_same_user_defined_group_without_the_two_faults_is_accepted() {
+    let (out, next_in, link) = after_a_report_on(
+        fixt_acceptor_skipping_user_defined(),
+        &payments_after_a_full_array("1", "1"),
+    );
+
+    let wire = readable(&out);
+    assert_eq!(link, fixbolt_session::Link::Up, "still up:\n{wire}");
+    assert!(out.is_empty(), "nothing is said about it:\n{wire}");
+    assert_eq!(next_in, 3, "and it counted, so it was accepted");
 }

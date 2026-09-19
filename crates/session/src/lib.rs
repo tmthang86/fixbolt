@@ -4001,18 +4001,24 @@ pub fn validate_with<D: Tables, const N: usize>(
 /// message a second time to find out.
 ///
 /// [ADR-0084](../../../docs/decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md)
-/// decision 2. Fixed size and on the stack.
+/// decision 2, as amended by
+/// [ADR-0085](../../../docs/decisions/ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md)
+/// decision 1. Fixed size and on the stack.
 ///
-/// **What the counting allocator actually covers.** `benches/alloc.rs`'s 17
-/// cases all read 0 with this in place, and every one of them drives a message
-/// from the 59 that carries **no populated repeating group** — so what they
-/// prove is that a message without a group pays nothing, not that the pass
-/// below allocates nothing when one is present. Non-negotiable 1 says
-/// allocation is proven by the allocator and *never* by reading the code, so
-/// the honest statement is that **the group path's allocation count is
-/// unproven until an `alloc.rs` case sends a populated group**. That case is
-/// outside this row's brief; the shape here — one stack array, no `Vec`, no
-/// `format!` — is what it would be testing.
+/// **The question this array answers, and the only one it may be given.** A
+/// field's `373=5` and `373=6` wait for `373=1` and `373=16` **if and only if**
+/// it is a member of a repeating group of this message type whose counter
+/// appears *before it on the wire*. A member ahead of its counter is a stray
+/// top-level field and is answered in wire order like any other — ADR-0085
+/// decision 1. Remembering the counters the scan has passed is how the fast
+/// path asks that; [`in_a_group_before`], walking the fields before the one
+/// being asked, is how the full array asks the same thing. The two agree by
+/// construction — including under `ValidateUserDefinedFields=N`, where both
+/// ignore the same counters — so `SEEN` moves the cost and never the answer. It is **not**
+/// [`in_a_group`]'s question — *does the message carry that group anywhere* —
+/// which the `373=13` arm needs and this array must never be given: that swap
+/// is the defect ADR-0085 repairs, and it changed the Reject a counterparty
+/// read (ADR-0085 decisions 2 and 4).
 ///
 /// `[measured 2026-09-19]` **`SEEN` is 32 because FIX 4.4 declares at most 23
 /// distinct group counters for one message type** — `AllocationInstruction(J)`
@@ -4021,9 +4027,15 @@ pub fn validate_with<D: Tables, const N: usize>(
 /// group at any depth. So a FIX 4.4 message cannot fill this array. FIXT 1.1 /
 /// FIX 5.0 SP2 is a different size of problem — 25 929 pairs and up to **393**
 /// counters on `TradeCaptureReport(AE)` — and no fixed array holds that, so
-/// [`SeenCounters::defers`] falls back to [`in_a_group`] once the array is
-/// full. **The answer never depends on the capacity, only its cost does**,
-/// which is what makes 32 a tuning number rather than a rule.
+/// [`SeenCounters::defers`] falls back to the walk once the array is full.
+/// Neither half of that sentence is left to this paragraph: the counts are
+/// re-measured on every run by
+/// `tests::no_fix_44_message_type_reaches_the_seen_bound_and_the_fixt_table_passes_it`,
+/// and the full array is *observed* rather than argued by
+/// `tests::an_ae_with_thirty_three_group_counters_fills_the_array`, which is
+/// the first thing in this repository to reach it. What a counterparty is told
+/// once it is full is pinned over the wire by
+/// `tests/fixt.rs::a_stray_member_is_answered_in_wire_order_when_the_array_is_full`.
 struct SeenCounters {
     tags: [u32; Self::SEEN],
     len: usize,
@@ -4066,16 +4078,27 @@ impl SeenCounters {
         }
     }
 
-    /// Whether `tag`'s value and format wait for `373=1` and `373=16` —
-    /// that is, whether it is a member of a group this message carries.
+    /// Whether `tag`'s value and format wait for `373=1` and `373=16` — that
+    /// is, whether it is a member of a group whose counter came before it.
+    ///
+    /// `upto` is the index the walk stops at when this array is full and the
+    /// answer has to be recomputed: the field's own index in [`scan_fields`],
+    /// and `view.len()` in [`scan_group_members`], where the array is complete
+    /// and therefore holds every counter the scan passed (ADR-0085 decision 2
+    /// and its decision 4 note on why the superset is harmless). `checks` goes
+    /// with it because the array is not filled blind either — see
+    /// [`in_a_group_before`]. Both are unread while the array still has room,
+    /// because then the array *is* the answer.
     fn defers<D: Tables, const N: usize>(
         &self,
         view: &MessageView<'_, N>,
         msg_type: &[u8],
         tag: u32,
+        upto: usize,
+        checks: DictionaryChecks,
     ) -> bool {
         if self.full {
-            return in_a_group::<D, N>(view, msg_type, tag);
+            return in_a_group_before::<D, N>(view, msg_type, tag, upto, checks);
         }
         self.tags
             .iter()
@@ -4169,7 +4192,7 @@ fn scan_fields<D: Tables, const N: usize>(
         // `seen` is empty until a counter goes past, so a message with no
         // group never enters the branch and pays one `is_empty` test per
         // field.
-        if seen.is_empty() || !seen.defers::<D, N>(view, msg_type, tag) {
+        if seen.is_empty() || !seen.defers::<D, N>(view, msg_type, tag, i, checks) {
             if <D as Tables>::enum_allows(tag, value) == Some(false) {
                 return Some((SessionText::ValueIsIncorrect, tag_text(tag)));
             }
@@ -4232,7 +4255,10 @@ fn scan_group_members<D: Tables, const N: usize>(
         if checks.skips_user_defined_fields() && tag >= FIRST_USER_DEFINED_TAG {
             continue;
         }
-        if !seen.defers::<D, N>(view, msg_type, tag) {
+        // `view.len()`, not `i`: by this pass the array holds every counter
+        // the scan passed, so the recomputed answer must see every counter
+        // too — the two modes ask one set (ADR-0085 decision 2).
+        if !seen.defers::<D, N>(view, msg_type, tag, view.len(), checks) {
             continue;
         }
         if <D as Tables>::enum_allows(tag, value) == Some(false) {
@@ -4297,7 +4323,68 @@ fn bad_group_count<D: Tables, const N: usize>(
     None
 }
 
+/// Whether `tag` is a member of a repeating group whose counter appears in
+/// this message **before** index `upto`.
+///
+/// The deferral oracle of
+/// [ADR-0085](../../../docs/decisions/ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md)
+/// decision 1, and the slow half of [`SeenCounters`]: the array caches this
+/// walk's answer, and when the array fills the walk is done again rather than
+/// a different question being asked. `upto = view.len()` makes it position-free
+/// and is only correct where the array itself is (`scan_group_members`).
+///
+/// **Not [`in_a_group`]**, which the `373=13` arm keeps: two functions, one
+/// question each, because a stray member ahead of its counter is not in the
+/// group (ADR-0085 decision 4) while a tag that repeats by design is.
+///
+/// **`checks` is here for one reason: the cache is not filled blind.**
+/// [`scan_fields`] drops a tag at or above [`FIRST_USER_DEFINED_TAG`] under
+/// `ValidateUserDefinedFields=N` *before* the counter test, so `record` never
+/// sees such a counter — and a walk that did see it would defer a member the
+/// array would have answered in wire order. That is the same divergence
+/// ADR-0085 exists to remove, one knob further in, so the filter is repeated
+/// here rather than left to a sentence. `[measured 2026-09-19]` the SP2 table
+/// has 158 `(msg_type, counter)` pairs whose counter is user-defined and which
+/// list a member that is not, so it is reachable and not theoretical; held by
+/// `tests::a_user_defined_counter_is_not_recorded_and_the_walk_does_not_find_it`
+/// and, over the wire, by `tests/fixt.rs::a_member_of_a_user_defined_group_is_not_deferred_when_the_scan_ignores_its_counter`.
+///
+/// The one condition `record` applies that is **not** repeated here is
+/// `field_type == NumInGroup`; `crates/dict/tests/group_tables.rs::every_group_counter_is_a_num_in_group`
+/// holds the two equivalent for both generated tables, which is why a lookup
+/// per step is not spent on it.
+///
+/// Reached by `tests/fixt.rs::a_stray_member_is_answered_in_wire_order_when_the_array_is_full`,
+/// which is also where the reversal that put [`in_a_group`] back here was read
+/// (`373=16 371=1907` instead of `373=5 371=447`).
+fn in_a_group_before<D: Tables, const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+    tag: u32,
+    upto: usize,
+    checks: DictionaryChecks,
+) -> bool {
+    for i in 0..upto {
+        let Some((counter, _)) = view.field_at(i) else {
+            continue;
+        };
+        // Exactly the tags `scan_fields` skipped before it could record them.
+        if checks.skips_user_defined_fields() && counter >= FIRST_USER_DEFINED_TAG {
+            continue;
+        }
+        if D::group_delimiter(msg_type, counter).is_some()
+            && D::group_members(msg_type, counter).contains(&tag)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether `tag` is a member of some repeating group this message carries.
+///
+/// The `373=13` arm's question and **not** the deferral's — see
+/// [`in_a_group_before`].
 fn in_a_group<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
@@ -4571,4 +4658,295 @@ fn digits(n: u32, buf: &mut [u8; 10]) -> &[u8] {
         }
     }
     &buf[at..]
+}
+
+/// The two facts about [`SeenCounters`] that a sentence used to hold.
+///
+/// The only place in this crate where `SEEN` and `full` are visible at all —
+/// both are private, which is why these are unit tests and not integration
+/// ones. What the full array *says* to a counterparty is a different question
+/// and is pinned over the wire in `tests/fixt.rs`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "fix50sp2")]
+    use fixbolt_codec::parse_into;
+
+    /// 32 of the 48 top-level groups `TradeCaptureReport(AE)` declares: the
+    /// ones whose delimiter enumerates no value, so a one-entry group can be
+    /// populated with any well-formed one. `(counter, delimiter, a value the
+    /// delimiter's type accepts)`, from ADR-0085 *Sources*, re-read here off
+    /// the generated table rather than off the XML.
+    ///
+    /// `40204`'s delimiter `40209` is **itself** a `NumInGroup` this message
+    /// type declares a group for, so that one block records *two* counters —
+    /// which is why 32 blocks are already 33 counters, and why the wire test
+    /// in `tests/fixt.rs` can put its stray after the 32nd block and still be
+    /// past the bound.
+    #[cfg(feature = "fix50sp2")]
+    const AE_GROUPS: [(&str, &str, &str); 32] = [
+        ("1907", "1903", "X"),
+        ("1116", "1117", "R"),
+        ("454", "455", "A"),
+        ("1976", "1977", "1"),
+        ("2304", "2305", "A"),
+        ("1018", "1019", "P"),
+        ("40278", "40471", "B"),
+        ("41230", "41231", "B"),
+        ("41092", "41093", "E"),
+        ("41094", "41095", "F"),
+        ("42775", "42776", "B"),
+        ("41116", "41117", "B"),
+        ("41137", "41138", "20260919"),
+        ("41140", "41141", "B"),
+        ("41152", "41153", "20260919"),
+        ("40019", "40020", "Y"),
+        ("40181", "40182", "1.0"),
+        ("40022", "40023", "USD"),
+        ("40204", "40209", "0"),
+        ("42296", "42297", "E"),
+        ("2734", "2733", "M"),
+        ("2746", "2747", "20260919-12:00:00.000"),
+        ("40040", "40041", "D"),
+        ("40046", "40047", "S"),
+        ("40042", "40043", "M"),
+        ("711", "311", "U"),
+        ("1703", "1704", "1.0"),
+        ("555", "600", "L"),
+        ("768", "769", "20260919-12:00:00.000"),
+        ("1387", "1388", "1"),
+        ("41312", "41313", "J"),
+        ("2104", "2105", "A"),
+    ];
+
+    /// `35=AE` on a FIXT session, up to the first group.
+    #[cfg(feature = "fix50sp2")]
+    const AE_HEADER: &str = "35=AE|34=2|49=TW50SP2|52=20260919-12:00:00.000|56=ISLD|";
+
+    /// One message, `|` for SOH, with `9=` and `10=` computed — the shape
+    /// `tests/fixt.rs::msg` uses, kept here because a unit test cannot reach a
+    /// helper in another crate's test binary.
+    #[cfg(feature = "fix50sp2")]
+    fn framed(body: &str) -> Vec<u8> {
+        let body = body.replace('|', "\u{1}");
+        let mut m = format!("8=FIXT.1.1\u{1}9={}\u{1}", body.len()).into_bytes();
+        m.extend_from_slice(body.as_bytes());
+        let sum: u32 = m.iter().map(|c| u32::from(*c)).sum();
+        m.extend_from_slice(format!("10={:03}\u{1}", sum % 256).as_bytes());
+        m
+    }
+
+    /// The counters `scan_fields` recorded for `body`, and whether the array
+    /// ran out of room — the thing no test in this repository could see before
+    /// ADR-0085, and the reason that ADR exists.
+    #[cfg(feature = "fix50sp2")]
+    fn scan(body: &str, checks: DictionaryChecks) -> (bool, usize, Option<SessionText>) {
+        let wire = framed(body);
+        let mut idx: FieldIndex<256> = FieldIndex::new();
+        let parsed =
+            parse_into::<fixbolt_dict::Fixt11Fix50Sp2Tables, 256>(&wire, &mut idx, Validation::ALL);
+        assert!(
+            matches!(parsed, Ok(Parsed::Complete { .. })),
+            "the fixture must parse before it can be scanned: {parsed:?}"
+        );
+        let view = idx.view(&wire);
+        let mut seen = SeenCounters::new();
+        let fault =
+            scan_fields::<fixbolt_dict::Fixt11Fix50Sp2Tables, 256>(&view, b"AE", checks, &mut seen);
+        (seen.full, seen.len, fault.map(|(text, _)| text))
+    }
+
+    /// **The fallback branch is reached, and it is observed rather than
+    /// inferred.** ADR-0085 decision 5.
+    ///
+    /// 33 one-entry top-level groups on one `TradeCaptureReport`, every value
+    /// legal: the array has 32 slots, so the 33rd distinct counter sets `full`
+    /// and every later field's deferral question is answered by
+    /// [`in_a_group_before`] instead of by the array. Before this test the
+    /// branch was unreachable by anything in the repository — a `panic!` in it
+    /// survived the whole suite (ADR-0085 *Context* 4).
+    #[cfg(feature = "fix50sp2")]
+    #[test]
+    fn an_ae_with_thirty_three_group_counters_fills_the_array() {
+        let mut body = String::from(AE_HEADER);
+        for (counter, delimiter, value) in AE_GROUPS {
+            body.push_str(&format!("{counter}=1|{delimiter}={value}|"));
+        }
+        // The 33rd group, and the one the wire test carries a member of.
+        body.push_str("552=1|54=1|");
+        let (full, len, fault) = scan(&body, DictionaryChecks::new());
+
+        assert_eq!(
+            fault, None,
+            "the fixture must be a clean message, or it proves nothing about the array"
+        );
+        assert!(
+            full,
+            "33 distinct group counters must exhaust {} slots; the scan recorded {len}",
+            SeenCounters::SEEN
+        );
+
+        // And the 32 blocks above already fill it on their own, which is what
+        // lets `tests/fixt.rs` put its stray member after the last of them:
+        // `40204=1|40209=0|` records `40204` **and** `40209`.
+        let mut without_sides = String::from(AE_HEADER);
+        for (counter, delimiter, value) in AE_GROUPS {
+            without_sides.push_str(&format!("{counter}=1|{delimiter}={value}|"));
+        }
+        let (full, len, fault) = scan(&without_sides, DictionaryChecks::new());
+        assert_eq!(fault, None, "the 32-block fixture must be clean too");
+        assert!(
+            full,
+            "32 blocks are 33 counters, so the array is full before the stray: recorded {len}"
+        );
+    }
+
+    /// 33 groups of `AE` whose counter **and** delimiter are both below
+    /// [`FIRST_USER_DEFINED_TAG`], so the array still fills when
+    /// `ValidateUserDefinedFields=N` is taking user-defined tags out of the
+    /// scan. `1907` is last, so the array fills on it and everything after is
+    /// past the bound.
+    ///
+    /// The twelve counters this list leaves out of the sub-5000 set are nested
+    /// groups of `AE`, where `MessageView::group` answers `None` and
+    /// `bad_group_count`'s `?` ends that pass without a verdict — pre-existing
+    /// and nothing to do with ADR-0085, but it would have silenced the
+    /// `373=16` this fixture needs as its competing fault.
+    #[cfg(feature = "fix50sp2")]
+    const AE_SUB_5000_GROUPS: [(&str, &str, &str); 33] = [
+        ("73", "2887", "A"),
+        ("78", "79", "A"),
+        ("136", "137", "1.0"),
+        ("453", "448", "A"),
+        ("454", "455", "A"),
+        ("457", "458", "A"),
+        ("539", "524", "A"),
+        ("555", "600", "L"),
+        ("711", "311", "U"),
+        ("756", "757", "A"),
+        ("768", "769", "20260919-12:00:00.000"),
+        ("781", "782", "A"),
+        ("802", "523", "A"),
+        ("804", "545", "A"),
+        ("806", "760", "A"),
+        ("887", "888", "A"),
+        ("1016", "1012", "20260919-12:00:00.000"),
+        ("1018", "1019", "P"),
+        ("1058", "1059", "A"),
+        ("1116", "1117", "R"),
+        ("1334", "1335", "A"),
+        ("1342", "1330", "A"),
+        ("1387", "1388", "1"),
+        ("1491", "1492", "20260919"),
+        ("1516", "1517", "A"),
+        ("1562", "1563", "A"),
+        ("1586", "1587", "1.0"),
+        ("1671", "1691", "A"),
+        ("1703", "1704", "1.0"),
+        ("1844", "1845", "A"),
+        ("1855", "1856", "A"),
+        ("1861", "1862", "A"),
+        ("1907", "1903", "X"),
+    ];
+
+    /// The 33 sub-5000 blocks, then the user-defined counter `40212 NoPayments`
+    /// and `492 PaymentMethod`, a member of it that is **not** user-defined.
+    #[cfg(feature = "fix50sp2")]
+    fn payments_after_a_full_array(payment_method: &str) -> String {
+        let mut body = String::from(AE_HEADER);
+        for (counter, delimiter, value) in AE_SUB_5000_GROUPS {
+            let count = if counter == "1907" { "2" } else { "1" };
+            body.push_str(&format!("{counter}={count}|{delimiter}={value}|"));
+        }
+        body.push_str(&format!("40212=1|40213=1|492={payment_method}|"));
+        body
+    }
+
+    /// **A counter the scan is told to ignore is not a counter the fallback may
+    /// find.** ADR-0085 decision 2, the case its "agree by construction" claim
+    /// did not originally hold.
+    ///
+    /// `ValidateUserDefinedFields=N` drops `40212` before `record` can see it,
+    /// so `492` — its member, and *not* user-defined — is a stray top-level
+    /// field and is answered in wire order. A walk without the same filter
+    /// would find `40212` and defer it past `bad_group_count`, which is the
+    /// exact divergence this ADR exists to remove, one knob further in.
+    ///
+    /// The knob is the only variable: the same bytes with the check left on
+    /// defer `492` legitimately, because there `40212` really is a counter the
+    /// scan passed.
+    #[cfg(feature = "fix50sp2")]
+    #[test]
+    fn a_user_defined_counter_is_not_recorded_and_the_walk_does_not_find_it() {
+        let body = payments_after_a_full_array("ZZ");
+
+        let skipping = DictionaryChecks::new().skipping_user_defined_fields();
+        let (full, len, fault) = scan(&body, skipping);
+        assert!(
+            full,
+            "the fallback is only under test while the array is full: recorded {len}"
+        );
+        assert_eq!(
+            fault,
+            Some(SessionText::ValueIsIncorrect),
+            "`492` is a stray here, so the scan answers it in wire order"
+        );
+
+        // One variable moved, and the answer moves with it.
+        let (full, _len, fault) = scan(&body, DictionaryChecks::new());
+        assert!(full, "the same bytes still fill the array");
+        assert_eq!(
+            fault, None,
+            "with the check on, `40212` is a counter the scan passed and `492` waits for it"
+        );
+    }
+
+    /// **`SEEN = 32` is a cost number, and the dictionaries say where it
+    /// bites.** ADR-0085 decision 3.
+    ///
+    /// The sentence this replaces lived in [`SeenCounters`]' rustdoc: *FIX 4.4
+    /// declares at most 23 distinct group counters for one message type*. A
+    /// sentence cannot notice a regenerated table, so it is counted here on
+    /// every run, and the FIXT figure is counted beside it so the day the
+    /// fallback stops being live on that table is a red test and not a
+    /// surprise.
+    #[test]
+    fn no_fix_44_message_type_reaches_the_seen_bound_and_the_fixt_table_passes_it() {
+        fn widest(keys: &[(&[u8], u32)]) -> usize {
+            let mut per_type: std::collections::BTreeMap<&[u8], usize> =
+                std::collections::BTreeMap::new();
+            for (msg_type, _counter) in keys {
+                *per_type.entry(msg_type).or_insert(0) += 1;
+            }
+            per_type.into_values().max().unwrap_or(0)
+        }
+
+        let fix44 = widest(&fixbolt_dict::GROUP_KEYS);
+        println!(
+            "FIX 4.4: {} (msg_type, counter) pairs, at most {fix44} counters on one message type; SEEN = {}",
+            fixbolt_dict::GROUP_KEYS.len(),
+            SeenCounters::SEEN
+        );
+        assert!(
+            fix44 <= SeenCounters::SEEN,
+            "a FIX 4.4 message cannot fill the array — if this goes red the rustdoc's \
+             capacity paragraph is wrong and `SEEN` needs re-deciding, not raising by reflex: \
+             {fix44} > {}",
+            SeenCounters::SEEN
+        );
+
+        #[cfg(feature = "fix50sp2")]
+        {
+            let sp2 = widest(&fixbolt_dict::fixt11_fix50sp2::GROUP_KEYS);
+            println!(
+                "FIXT 1.1 / FIX 5.0 SP2: {} pairs, at most {sp2} counters on one message type",
+                fixbolt_dict::fixt11_fix50sp2::GROUP_KEYS.len()
+            );
+            assert!(
+                sp2 > SeenCounters::SEEN,
+                "the fallback is only live because this table crosses the bound: {sp2} <= {}",
+                SeenCounters::SEEN
+            );
+        }
+    }
 }
