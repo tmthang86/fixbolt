@@ -3367,12 +3367,14 @@ where
 
         let mt = view.get(tag::MSG_TYPE).unwrap_or_default();
         let fixt = self.cfg.is_fixt();
+        // Filled by the wire-order scan and read by the fourth pass below.
+        let mut seen = SeenCounters::new();
         let fault = if self.state != State::LoggedOn {
             None
         } else if !<E::Dict as Tables>::is_msg_type(mt) {
             Some((SessionText::InvalidMsgType, None))
         } else {
-            scan_fields::<E::Dict, N>(&view, mt, self.cfg.validation)
+            scan_fields::<E::Dict, N>(&view, mt, self.cfg.validation, &mut seen)
                 // `1128=` naming a version this session cannot be speaking.
                 // After the field scan, because the scan already answers the
                 // values FIXT does not enumerate at all and this rule is only
@@ -3384,6 +3386,11 @@ where
                 })
                 .or_else(|| missing_required::<E::Dict, N>(&view, mt))
                 .or_else(|| bad_group_count::<E::Dict, N>(&view, mt))
+                // A group member's value and format, deferred by the scan so
+                // that the count above answers first — ADR-0084 decision 2.
+                // Still ahead of `373=9` and `373=10`, which is where the
+                // wire-order scan that used to ask them sat.
+                .or_else(|| scan_group_members::<E::Dict, N>(&view, mt, self.cfg.validation, &seen))
                 // A CompID that is merely wrong, once there is a session to say
                 // so with. `2k_CompIDDoesNotMatchProfile.def` sends all three
                 // combinations and expects `373=9` for each.
@@ -3981,10 +3988,100 @@ pub fn validate_with<D: Tables, const N: usize>(
     msg_type: &[u8],
     checks: DictionaryChecks,
 ) -> Option<SessionText> {
-    scan_fields::<D, N>(view, msg_type, checks)
+    let mut seen = SeenCounters::new();
+    scan_fields::<D, N>(view, msg_type, checks, &mut seen)
         .or_else(|| missing_required::<D, N>(view, msg_type))
         .or_else(|| bad_group_count::<D, N>(view, msg_type))
+        .or_else(|| scan_group_members::<D, N>(view, msg_type, checks, &seen))
         .map(|(text, _tag)| text)
+}
+
+/// The group counters one wire-order scan walked past, so the pass that asks a
+/// member's value knows which fields the scan deferred without walking the
+/// message a second time to find out.
+///
+/// [ADR-0084](../../../docs/decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md)
+/// decision 2. Fixed size and on the stack.
+///
+/// **What the counting allocator actually covers.** `benches/alloc.rs`'s 17
+/// cases all read 0 with this in place, and every one of them drives a message
+/// from the 59 that carries **no populated repeating group** — so what they
+/// prove is that a message without a group pays nothing, not that the pass
+/// below allocates nothing when one is present. Non-negotiable 1 says
+/// allocation is proven by the allocator and *never* by reading the code, so
+/// the honest statement is that **the group path's allocation count is
+/// unproven until an `alloc.rs` case sends a populated group**. That case is
+/// outside this row's brief; the shape here — one stack array, no `Vec`, no
+/// `format!` — is what it would be testing.
+///
+/// `[measured 2026-09-19]` **`SEEN` is 32 because FIX 4.4 declares at most 23
+/// distinct group counters for one message type** — `AllocationInstruction(J)`
+/// and `AllocationReport(AS)`, counted over the generated `GROUP_KEYS`, whose
+/// 731 `(msg_type, counter)` pairs cover all 76 message types that carry a
+/// group at any depth. So a FIX 4.4 message cannot fill this array. FIXT 1.1 /
+/// FIX 5.0 SP2 is a different size of problem — 25 929 pairs and up to **393**
+/// counters on `TradeCaptureReport(AE)` — and no fixed array holds that, so
+/// [`SeenCounters::defers`] falls back to [`in_a_group`] once the array is
+/// full. **The answer never depends on the capacity, only its cost does**,
+/// which is what makes 32 a tuning number rather than a rule.
+struct SeenCounters {
+    tags: [u32; Self::SEEN],
+    len: usize,
+    /// Set once a counter was met with no room left. From then on the
+    /// membership question is asked of the message rather than of `tags`.
+    full: bool,
+}
+
+impl SeenCounters {
+    const SEEN: usize = 32;
+
+    const fn new() -> Self {
+        Self {
+            tags: [0; Self::SEEN],
+            len: 0,
+            full: false,
+        }
+    }
+
+    /// Whether this message carried no group counter at all — the case that
+    /// must never reach [`scan_group_members`]' body or pay for it.
+    const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Note that `tag` is a counter of a group `msg_type` declares.
+    ///
+    /// Idempotent: a counter cannot legally repeat at the top level, and one
+    /// that does is `373=13`'s business, not this array's.
+    fn record(&mut self, tag: u32) {
+        if self.tags.iter().take(self.len).any(|&t| t == tag) {
+            return;
+        }
+        match self.tags.get_mut(self.len) {
+            Some(slot) => {
+                *slot = tag;
+                self.len += 1;
+            }
+            None => self.full = true,
+        }
+    }
+
+    /// Whether `tag`'s value and format wait for `373=1` and `373=16` —
+    /// that is, whether it is a member of a group this message carries.
+    fn defers<D: Tables, const N: usize>(
+        &self,
+        view: &MessageView<'_, N>,
+        msg_type: &[u8],
+        tag: u32,
+    ) -> bool {
+        if self.full {
+            return in_a_group::<D, N>(view, msg_type, tag);
+        }
+        self.tags
+            .iter()
+            .take(self.len)
+            .any(|&counter| D::group_members(msg_type, counter).contains(&tag))
+    }
 }
 
 /// Walk the message in wire order and return the first fault, if any.
@@ -3992,10 +4089,16 @@ pub fn validate_with<D: Tables, const N: usize>(
 /// One pass, first fault wins — which is what the corpus expects: `14h` sends
 /// `40=1|40=2` among a dozen good fields and names `371=40`, not the first tag
 /// in the message.
+///
+/// `seen` comes out filled with the group counters this walk passed, for
+/// [`scan_group_members`] to read. It is an out-parameter rather than a return
+/// value because this function already returns the fault, and because a
+/// counter met *after* the fault is a counter no later pass will run on.
 fn scan_fields<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
     checks: DictionaryChecks,
+    seen: &mut SeenCounters,
 ) -> Option<(SessionText, Option<Held<12>>)> {
     let mut in_body = false;
     for i in 0..view.len() {
@@ -4033,9 +4136,13 @@ fn scan_fields<D: Tables, const N: usize>(
         if !<D as Tables>::is_defined_tag_for(msg_type, tag) {
             return Some((SessionText::InvalidTagNumber, tag_text(tag)));
         }
+        // Read once and used three times below — the empty-value arm, the
+        // format arm, and the counter test at the end of the loop. Three calls
+        // to `field_type` per field is what this replaces.
+        let field_type = <D as Tables>::field_type(tag);
         // `373=4` before `373=6`: an empty value is its own fault, and
         // `14d_TagSpecifiedWithoutValue.def` says so with `56=`.
-        if value.is_empty() && <D as Tables>::field_type(tag) != Some(FieldType::Data) {
+        if value.is_empty() && field_type != Some(FieldType::Data) {
             return Some((SessionText::TagSpecifiedWithoutValue, tag_text(tag)));
         }
         // `AllowUnknownMsgFields=Y` forgives exactly this one: a tag FIX 4.4
@@ -4052,6 +4159,81 @@ fn scan_fields<D: Tables, const N: usize>(
             && !in_a_group::<D, N>(view, msg_type, tag)
         {
             return Some((SessionText::TagAppearsMoreThanOnce, tag_text(tag)));
+        }
+        // The last two arms — `373=5` and `373=6` — wait for `373=1` and
+        // `373=16` when the tag is a member of a group this message carries,
+        // which is the order both QuickFIX engines apply (ADR-0084 decision
+        // 2). Everything above stays here: `373=0`, `373=2`, `373=4`, `373=13`
+        // and `373=14` on a member are answered in wire order as before.
+        //
+        // `seen` is empty until a counter goes past, so a message with no
+        // group never enters the branch and pays one `is_empty` test per
+        // field.
+        if seen.is_empty() || !seen.defers::<D, N>(view, msg_type, tag) {
+            if <D as Tables>::enum_allows(tag, value) == Some(false) {
+                return Some((SessionText::ValueIsIncorrect, tag_text(tag)));
+            }
+            if field_type.is_some_and(|t| !t.accepts(value)) {
+                return Some((SessionText::IncorrectDataFormat, tag_text(tag)));
+            }
+        }
+        // After the arms, not before: a counter is never a member of its own
+        // group, so the order cannot change this field's answer — but a
+        // *nested* counter is a member of its parent's, and recording it here
+        // is what lets the parent's grandchildren be deferred too.
+        //
+        // `NumInGroup` first, because it is a comparison on a value already in
+        // hand and `group_delimiter` is a two-level match. Every group counter
+        // in every dictionary this workspace generates is `NUMINGROUP` —
+        // `[measured 2026-09-19]` 93 groups in `FIX44.xml`, 2 in `FIXT11.xml`,
+        // 561 in `FIX50SP2.xml`, none otherwise — and
+        // `crates/dict/tests/group_tables.rs::every_group_counter_is_a_num_in_group`
+        // holds it for both tables, naming this line.
+        if field_type == Some(FieldType::NumInGroup) && D::group_delimiter(msg_type, tag).is_some()
+        {
+            seen.record(tag);
+        }
+    }
+    None
+}
+
+/// `373=5` and `373=6` on the group members the wire-order scan deferred.
+///
+/// The fourth pass, run only once `missing_required` and `bad_group_count`
+/// have found nothing — [ADR-0084](../../../docs/decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md)
+/// decision 2. Wire order again, first fault wins, and exactly the tags
+/// [`scan_fields`] skipped: `14i_RepeatingGroupCountNotEqual.def` declares
+/// `386=3`, sends two entries and wants `373=16` naming the counter, not
+/// `373=5` naming the member inside them.
+///
+/// **This engine still asks.** QuickFIX C++ never descends into a group and so
+/// never refuses a member's value at all; QuickFIX/J does, after the top-level
+/// questions. `FIX44.xml` alone has 110 enumerated group-member fields, and
+/// ADR-0001's posture is that a value the table can refuse is refused — so the
+/// order moves and the question stays.
+///
+/// Returns immediately on a message that carried no group counter, which is
+/// every session message and most application ones.
+fn scan_group_members<D: Tables, const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+    checks: DictionaryChecks,
+    seen: &SeenCounters,
+) -> Option<(SessionText, Option<Held<12>>)> {
+    if seen.is_empty() {
+        return None;
+    }
+    for i in 0..view.len() {
+        let Some((tag, value)) = view.field_at(i) else {
+            continue;
+        };
+        // `ValidateUserDefinedFields=N` forgives a user-defined tag wherever
+        // it sits, inside a group as much as outside one.
+        if checks.skips_user_defined_fields() && tag >= FIRST_USER_DEFINED_TAG {
+            continue;
+        }
+        if !seen.defers::<D, N>(view, msg_type, tag) {
+            continue;
         }
         if <D as Tables>::enum_allows(tag, value) == Some(false) {
             return Some((SessionText::ValueIsIncorrect, tag_text(tag)));

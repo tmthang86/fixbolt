@@ -185,8 +185,11 @@ struct Spec<'a, 'i> {
     /// ADR-0083 decision 5. Empty for FIX 4.4, one row for the pair.
     length_exceptions: &'static [LengthException],
     /// Whether `enum_allows` splits a multi-value field on spaces before it
-    /// checks the list. ADR-0083 decision 1's second rule: the FIXT table is
-    /// built with it; FIX 4.4 gets it in a plan row of its own.
+    /// checks the list. ADR-0083 decision 1's second rule. Both tables are now
+    /// built with it: the pair from B1, FIX 4.4 from the row ADR-0084
+    /// decision 2 gave it. The field stays because a table built to the
+    /// whole-value reading is a thing this generator must still be able to
+    /// say, and because the two spellings of the rule are then one line apart.
     per_token_enums: bool,
 }
 
@@ -218,7 +221,10 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
         header,
         trailer,
         length_exceptions: &[],
-        per_token_enums: false,
+        // ADR-0083 decision 1's second rule, applied to FIX 4.4 by ADR-0084
+        // decision 2's row: `18=2 A` is one legal two-value `ExecInst`, not one
+        // illegal value. It was `false` here only until that row landed.
+        per_token_enums: true,
     })
 }
 
@@ -988,9 +994,9 @@ fn emit(spec: &Spec<'_, '_>) -> String {
     // ADR-0083 decision 1, second rule: on a multi-value type the check is
     // **per token** — the value is split on single spaces and every token must
     // be in the list, which is what QuickFIX C++ (`isFieldValue`) and
-    // QuickFIX/J (`DataDictionary` line 526) both do. Emitted only for the
-    // table built to that rule; FIX 4.4 keeps the whole-value check until the
-    // plan row that changes its session behaviour lands.
+    // QuickFIX/J (`DataDictionary` line 526) both do. Emitted only for a
+    // table built to that rule, which since ADR-0084 decision 2's row is both
+    // of them.
     let multi: Vec<u32> = if spec.per_token_enums {
         enum_index
             .keys()
