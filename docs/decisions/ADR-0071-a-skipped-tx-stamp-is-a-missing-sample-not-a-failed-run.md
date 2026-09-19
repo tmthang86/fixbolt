@@ -41,12 +41,25 @@ checkable.
 
 1. **A run with skipped stamps is a valid run whose sample count is smaller.** `tools/w2w
    --wire-timestamps` already pairs by TCP byte offset so one missing stamp costs one sample;
-   `scripts/w2w-baseline.sh` stops FAILing on `hw-tx-missing > 0` and instead **FAILs when the
-   missing count exceeds 0.1% of the timed requests** (20 of 20 000) or when
-   `hw-rx-missing > 0` (an RX stamp never competes for a slot; a missing one is a real fault).
-   The missing count is printed beside every percentile of every run and in the summary, and
-   `tx_hwtstamp_skipped` before/after the run is printed with it; the two must agree or the run
-   is marked.
+   `scripts/w2w-baseline.sh` stops FAILing on `hw-tx-missing > 0`. The missing count is printed
+   beside every percentile of every run and in the summary, and `tx_hwtstamp_skipped`
+   before/after the run is printed with it; the two must agree or the run is marked.
+   ~~It **FAILs when the missing count exceeds 0.1% of the timed requests** (20 of 20 000) or
+   when `hw-rx-missing > 0`.~~
+
+   **`[revised 2026-09-18, after C-40's first attempt — the ADR is Accepted, so the original
+   sentence stays struck above and this note carries the change, ADR-0002's shape.]`** A run
+   whose TX-missing count exceeds 0.1% of the timed requests is **disqualified, not fatal**: its
+   counts are printed on its own line, its output stays on disk, it is excluded from the medians
+   and the procedure **continues**. The procedure FAILs only when **fewer than half of `RUNS`
+   qualify**, or on **any `hw-rx-missing > 0`** (unchanged: an RX stamp never competes for a
+   slot, so a missing one is an instrument fault). *Why:* at interval 0 on the I211 the observed
+   miss rate straddles the line — boot B saw 1–4 per 20 000, C-40's first attempt 3, 15, 17 and
+   **30** (0.15%) in four consecutive runs — and a **per-run** rule that aborts the **procedure**
+   threw away four qualifying runs the moment the fifth crossed it, and would have done so again
+   for procedure 2 and for the sweep of decision 5, which is the very measurement that says
+   whether 0.1% is the right neighbour. A rule about one run must cost one run.
+
 2. **The published NIC figure is the interval-0 pair**, per ADR-0068, with its missing counts
    in the table. The paced figure at 1 s stays published beside it as the *cold* figure it
    already is (`DESIGN.md` §8 *Boot B*), never as a substitute.
@@ -99,8 +112,11 @@ checkable.
   between halves joins the wrong rows; the script passes one value to both and the dump header
   records it.
 - **Two scripts change behaviour on a FAIL they used to raise**; the old strictness was itself
-  a decision (Sửa 2), and a reader of boot B's log will see a rule reversed within a week. The
-  reversal is recorded here rather than silently in the script.
+  a decision (Sửa 2), and a reader of boot B's log will see a rule reversed within a week — and
+  then softened again the same day (decision 1's revision), because the first rewrite still let
+  one run abort a procedure. Both changes are recorded here rather than silently in the script.
+- **"Fewer than half qualify" is a third chosen number.** It stops a procedure from publishing a
+  median of three runs, and nothing measured put it at half.
 - **The sweep (decision 5) costs desk time** in a boot that already has more arms than hours.
 
 ## Sources
