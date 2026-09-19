@@ -122,6 +122,27 @@ Two bands are owed to the desk and neither can be resolved here:
   They are now 59 **plus** 179/180 behind `fix50sp2`. The plan assigns that edit to the manager,
   but the owner fenced `CLAUDE.md` for this PR, so it was left alone and is recorded here instead.
 * **No guard against two branches taking the same ADR number.** Still open.
+* **`SeenCounters` is NOT capacity-independent, and its rustdoc says it is.** `[found by senior
+  review 2026-09-19]` `crates/session/src/lib.rs:4025` claims *"The answer never depends on the
+  capacity, only its cost does"*. Measured, it does. When the 32-entry array fills, `defers` falls
+  back to `in_a_group`, which scans `0..view.len()` — **the whole message** — while the array
+  records only counters the scan has already **passed**. On a message where a group member appears
+  before its counter, the two give different reject reasons (`373=5 371=447` against
+  `373=1 371=40` on one hand-made `35=D`). FIX 4.4 cannot reach it: 731 `(msg_type, counter)`
+  pairs, at most 23 per message type. **FIXT can: 25 929 pairs, up to 393 on `TradeCaptureReport`
+  (AE), and 94 of 144 message types declare more than 32 counters.** No test in the repository
+  reaches the branch — proven by putting a `panic!` in it and running `cargo test --all`,
+  `-p fixbolt-session --features fix50sp2` and `-p fixbolt-engine --features fix50sp2`: zero hits,
+  all green. Routed to the architect; ADR-0084 decision 2's sentence *"`in_a_group` is not called
+  per field"* stops being true the moment the array is full, so this needs an ADR, not a patch.
+* **Two answers to "is this a session message?" in one validate pass.** Generated
+  `is_transport_message` names eight types including `n` (XMLnonFIX); the hand-written `ADMIN`
+  const at `crates/session/src/lib.rs:291` names seven and omits `n`. So `35=n` is validated
+  against the transport tag set **and** subjected to the application-only `1128` rule. This is the
+  concrete consequence of `is_admin` never having been built, which is the item above it.
+* **`CLAUDE.md` §4's file table has no row for `docs/internals/`**, which ships in this PR. Fenced
+  for this PR like the other `CLAUDE.md` rows, and recorded here so it is visible where the next
+  manager is told to read.
 
 ### What this PR did close
 

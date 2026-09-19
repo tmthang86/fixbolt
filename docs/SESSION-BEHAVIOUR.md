@@ -501,9 +501,18 @@ of the specification with **no counterparty and no `.def` disagreeing or agreein
 * **what a counterparty's `1137` is used for after logon.** This engine stores it and does not
   re-validate against it; nothing in the corpora sends a message that would tell the two
   behaviours apart.
-* **`1128=` on a session-level message.** The rule above is applied wherever `1128` appears; no
-  `.def` sends `1128` on a session message at all, so the corpora cannot see the difference
-  between that and applying it only on application messages.
+* **`1128=` on a session-level message.** `[corrected 2026-09-19]` This page first said the rule
+  is "applied wherever `1128` appears". **That is the opposite of what the code does.**
+  `out_of_family_appl_ver_id` returns early on an admin message type, so the rule is applied to
+  **application messages only** — measured: `35=0` carrying `1128=4` produces no reply at all,
+  `35=D` carrying `1128=4` produces `Reject 373=5 371=1128`. No `.def` sends `1128` on a session
+  message, and no test covers it, so nothing in this repository holds the boundary either way.
+
+  Which message types count as "session-level" is itself unsettled here, and that is recorded
+  rather than smoothed over: the validate pass asks the question twice and gets two answers.
+  Generated `is_transport_message` names eight types including `n` (XMLnonFIX); the hand-written
+  `ADMIN` const in `crates/session/src/lib.rs` names seven and **omits `n`**. So `35=n` is checked
+  against the transport tag set *and* subjected to the application-only `1128` rule.
 
 Both are recorded as unproven in [STATUS.md](../STATUS.md) rather than presented as results.
 The interop `FIXT` arm ([CONFORMANCE.md](CONFORMANCE.md) §9) is the first independent opinion on

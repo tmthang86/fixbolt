@@ -15,7 +15,12 @@ It landed at B1. Measured, three cold builds each (`cargo clean -p fixbolt-dict`
 
 | | FIX 4.4 only | `--features fix50sp2` | Ratio |
 |---|---|---|---|
-| generated file | 156 397 B, 3 721 lines | 4 008 198 B, 42 221 lines | **25.6×** bytes |
+| generated file | 156 620 B, 3 725 lines | 4 010 039 B, 42 256 lines | **25.6×** bytes |
+
+`[re-measured 2026-09-19 at 69fb801]` the row first read 156 397 / 3 721 and 4 008 198 /
+42 221, measured at B1. B4a and B4b then grew both files — `TRANSPORT_DEFINED_TAGS` and the
+per-token enum tables — and the row was not re-measured in the same commit, which §4 asks
+for. The **ratio is unchanged** at 25.6×, so nothing this page concludes moves.
 | cold build of the crate | 0.56 s | 5.25 s | **9.4×** (+4.7 s) |
 
 Not 2×. The estimate was not lazy — it is what "one more table of the same shape" predicts, and
