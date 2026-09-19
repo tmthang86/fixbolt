@@ -551,3 +551,11 @@ CI run id, gate quote, cái gì chưa làm và vì sao)*
   session vào tagvalue. Ghi ADR-0082; sửa kế hoạch ở mục *Sửa … lần 3*, đoạn *Hệ quả cho A2
   và C4*, hàng A4 (D16), C4 (`SbeTables` chỉ `Dictionary`, bỏ phụ thuộc A2), C7 (doctest
   `compile_fail`), *Tài liệu phải cập nhật*. Mã A1/A2 không đổi; **chờ chủ quyết ADR-0082**.
+- **2026-09-19 — A4 viết xong, một việc để lại:** `DESIGN.md` §3 (`codec` thêm `encoding`,
+  `dict` thêm `tables`), §4 D16 (+ một câu ở D2), §6 case `parse via Encoding`, §7 bước 9 và
+  câu "Steps 1–8 … step 9 is in flight"; `GUIDE.md` mục 3a (alias, `serve*` không đổi);
+  `CHANGELOG.md` *Unreleased* (Changed: `Session<E>`; Added: trait, `Tables`, alias);
+  `GETTING-STARTED.md`, `README.md` không đổi (ví dụ không đổi chữ ký). **Chưa làm: ADR-0082
+  Status vẫn `Proposed`** — hàng A4 ghi "→ Accepted cùng commit, *sau khi chủ duyệt*", chủ
+  đang vắng và chưa duyệt, nên D16 và `GUIDE.md` trích ADR-0082 là *Proposed*. Khi chủ duyệt:
+  đổi Status trong ADR-0082, bỏ hai chữ "Proposed" ở D16 và `GUIDE.md` 3a, và dòng CHANGELOG.
