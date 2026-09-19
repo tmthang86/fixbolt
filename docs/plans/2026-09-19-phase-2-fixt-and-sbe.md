@@ -673,10 +673,14 @@ ADR yêu cầu CI cho số riêng, vẫn giữ.
 - Gác trùng số ADR: một dòng shell, nhưng `ci.yml` thuộc bước khác, và script không job nào chạy
   là check không ai đọc (§10). Ghi trong trang reference cho phiên sở hữu file đó.
 
-**Chưa chứng minh:** **chưa có CI run id xanh nào** cho nhánh này — job `feature-sets` đỏ **năm
-head liên tiếp** vì `serve_with` ở `crates/engine/src/lib.rs:134` của PR A (link hỏng khi không có
-feature `standard`); đỏ cả trên base `plan/phase-2-a`; `crates/engine` ngoài bộ file nhánh này nên
-patch một dòng **đã kiểm chứng** nằm trong comment PR #82, không push. Không có số nào từ bàn §9.
+**CI xanh — `35430710585`, 14/14 job, trên `33c85d8`** (§9). Job `feature-sets` đỏ **sáu head
+liên tiếp** vì `serve_with` ở `crates/engine/src/lib.rs:134` của PR A (link hỏng khi không có
+feature `standard`), đỏ cả trên base; `crates/engine` ngoài bộ file nhánh này nên patch một dòng
+**đã kiểm chứng rồi hoàn nguyên** nằm trong comment PR #82, không push. Bàn sửa ở `c2df98f` —
+đúng bản patch đó — và `33c85d8` merge base về, gỡ CI. Bốn lệnh rustdoc từng đỏ chạy lại trước khi
+push: cả bốn `OK`.
+
+**Chưa chứng minh:** không có số nào từ bàn §9.
 Sáu variant `FieldType` mới **không có corpus nào đỡ** — luật `accepts` rút từ chữ của spec, và
 arm FIXT của `interop.sh` (B7) là đối tác thật đầu tiên có thể phản bác. ADR-0083 trích FIX
 Orchestra *FIX Latest EP312*, **không** phải PDF SP2 Volume 1 (proxy chặn `fixtrading.org`,
