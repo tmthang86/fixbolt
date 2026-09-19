@@ -8,6 +8,14 @@ rust-version.workspace = true
 publish = false
 description = "FIX 4.4 tables generated from the QuickFIX XML dictionary at build time"
 
+# `fix50sp2` adds **no dependency**: `roxmltree` is already an unconditional
+# build-dependency and the feature only decides whether `build.rs` reads a
+# second pair of XML files and whether `lib.rs` declares the module that
+# `include!`s the table (CLAUDE.md §2 item 6 — the flag gates the `mod`, not
+# only the manifest).
+[features]
+fix50sp2 = []
+
 [dependencies]
 fixbolt-codec = { path = "../codec" }
 

@@ -1,16 +1,27 @@
-//! Generates `$OUT_DIR/fix44.rs` from the QuickFIX FIX 4.4 XML dictionary.
+//! Generates `$OUT_DIR/fix44.rs` from the QuickFIX FIX 4.4 XML dictionary, and
+//! — behind the `fix50sp2` feature — `$OUT_DIR/fixt11_fix50sp2.rs` from the
+//! **pair** `FIXT11.xml` + `FIX50SP2.xml` (ADR-0080 decision 2, as narrowed by
+//! ADR-0083).
 //!
-//! The dictionary is not in this repository — ADR-0001 keeps it in gitignored
-//! `vendor/`. When it is absent the build fails loudly and names the script that
-//! fetches it. It never falls back to a stub: a dictionary that silently becomes
-//! empty is a parser that silently stops validating.
+//! The dictionaries are not in this repository — ADR-0001 keeps them in
+//! gitignored `vendor/`. When one is absent the build fails loudly and names the
+//! script that fetches it. It never falls back to a stub: a dictionary that
+//! silently becomes empty is a parser that silently stops validating.
 //!
 //! Traps this generator is written against are recorded in
-//! `docs/reference/fix44-dictionary-traps.md`. Two matter here:
+//! `docs/reference/fix44-dictionary-traps.md` and
+//! `docs/reference/fixt-dictionary-traps.md`. Four matter here:
 //!   * a DATA field's length field is NOT `tag - 1` — Signature(89) takes
-//!     SignatureLength(93). Matching is by name.
+//!     SignatureLength(93). Matching is by name, with one named exception
+//!     (ADR-0083 decision 5).
 //!   * `<message>` may be self-closing (`XMLnonFIX`), so "has children" is not
 //!     the same as "exists".
+//!   * one field is spelled `DATA` in one file and `XMLDATA` in the other, so
+//!     the pair build compares the `FieldType` **variant**, never the XML
+//!     spelling (ADR-0083 decision 2).
+//!   * `<component name='MsgTypeGrp' />` is empty in `FIXT11.xml` and full in
+//!     `FIX50SP2.xml`, so components merge across the pair and an empty
+//!     declaration loses to a full one (ADR-0083 decision 4).
 
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
 // `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
@@ -19,50 +30,116 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `NANOFIX_FIX44_XML` overrides the location, for packagers and for CI runs
 /// that place the asset elsewhere.
 const OVERRIDE: &str = "NANOFIX_FIX44_XML";
 const DEFAULT: &str = "../../vendor/quickfix/spec/FIX44.xml";
 
+/// The transport half of a FIXT 1.1 session: header, trailer and the eight
+/// admin messages. Same override pattern as `NANOFIX_FIX44_XML`.
+const FIXT_OVERRIDE: &str = "NANOFIX_FIXT11_XML";
+const FIXT_DEFAULT: &str = "../../vendor/quickfix/spec/FIXT11.xml";
+
+/// The application half: fields, components, groups and 156 messages.
+const SP2_OVERRIDE: &str = "NANOFIX_FIX50SP2_XML";
+const SP2_DEFAULT: &str = "../../vendor/quickfix/spec/FIX50SP2.xml";
+
+/// A DATA or XMLDATA field whose length field the `{name}Len` / `{name}Length`
+/// rule cannot find: `(data_tag, length_tag, data_name, length_name)`.
+///
+/// ADR-0083 decision 5. Consulted **only** after the name rule has failed, and
+/// checked in both directions — an entry whose names or numbers the XML does
+/// not carry, or that the name rule would have found anyway, fails the build.
+/// The shape is `interop_quickfix_fields.rs::TYPE_EXEMPTIONS`'s.
+type LengthException = (u32, u32, &'static str, &'static str);
+
+/// The one row measured on 2026-09-19 at pin `386ce46e`: 74 of FIX 5.0 SP2's 75
+/// DATA fields and all 8 of its XMLDATA fields pair by name; this one
+/// abbreviates `Security` to `Sec` in its length field's name.
+///
+/// A `tag - 1` fallback is refused rather than added: twelve SP2 DATA/XMLDATA
+/// fields do not sit at `length + 1`, and a fallback pairs the wrong field
+/// silently the next time upstream abbreviates a name.
+const SP2_LENGTH_EXCEPTIONS: &[LengthException] = &[(
+    41874,
+    41873,
+    "EncodedUnderlyingMarketDisruptionFallbackUnderlierSecurityDesc",
+    "EncodedUnderlyingMarketDisruptionFallbackUnderlierSecDescLen",
+)];
+
 fn main() {
     println!("cargo:rerun-if-env-changed={OVERRIDE}");
-
-    let path = match std::env::var(OVERRIDE) {
-        Ok(p) => PathBuf::from(p),
-        Err(_) => PathBuf::from(DEFAULT),
-    };
+    let path = spec_path(OVERRIDE, DEFAULT);
     println!("cargo:rerun-if-changed={}", path.display());
     // The type table is emitted from `FieldType::from_xml`, so editing that
     // file must regenerate. Without this line a new variant compiles into the
     // crate and never reaches the generated table.
     println!("cargo:rerun-if-changed=src/field_type.rs");
 
+    let text = read_spec(&path, "FIX 4.4 dictionary", OVERRIDE);
+    let doc = parse_spec(&path, &text);
+    write_generated("fix44.rs", &generate(&doc));
+
+    // ---- the FIXT 1.1 / FIX 5.0 SP2 pair, behind `fix50sp2` ---------------
+    // **Read only when the feature is on.** `CLAUDE.md` §2 item 6: with the
+    // feature off nothing below runs, so a machine that never fetched
+    // `FIXT11.xml` is not asked whether it exists.
+    if std::env::var_os("CARGO_FEATURE_FIX50SP2").is_none() {
+        return;
+    }
+    println!("cargo:rerun-if-env-changed={FIXT_OVERRIDE}");
+    println!("cargo:rerun-if-env-changed={SP2_OVERRIDE}");
+    let transport_path = spec_path(FIXT_OVERRIDE, FIXT_DEFAULT);
+    let app_path = spec_path(SP2_OVERRIDE, SP2_DEFAULT);
+    println!("cargo:rerun-if-changed={}", transport_path.display());
+    println!("cargo:rerun-if-changed={}", app_path.display());
+
+    let transport_text = read_spec(&transport_path, "FIXT 1.1 dictionary", FIXT_OVERRIDE);
+    let app_text = read_spec(&app_path, "FIX 5.0 SP2 dictionary", SP2_OVERRIDE);
+    let transport = parse_spec(&transport_path, &transport_text);
+    let app = parse_spec(&app_path, &app_text);
+    write_generated("fixt11_fix50sp2.rs", &generate_pair(&transport, &app));
+}
+
+/// Where a dictionary lives: the override if it is set, the vendored copy
+/// otherwise.
+fn spec_path(var: &str, default: &str) -> PathBuf {
+    match std::env::var(var) {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => PathBuf::from(default),
+    }
+}
+
+/// Reads a dictionary, or dies naming the script that fetches it.
+fn read_spec(path: &Path, what: &str, var: &str) -> String {
     if !path.exists() {
         die(&format!(
-            "FIX 4.4 dictionary not found at {}\n\n  run scripts/fetch-quickfix-assets.sh\n\n\
+            "{what} not found at {}\n\n  run scripts/fetch-quickfix-assets.sh\n\n\
              It is not committed on purpose: the QuickFIX licence's attribution clause\n\
              would come with it. See docs/decisions/ADR-0001-relationship-to-quickfix.md.\n\
-             Set {OVERRIDE} to use a copy from somewhere else.",
+             Set {var} to use a copy from somewhere else.",
             path.display()
         ));
     }
-
-    let text = match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => die(&format!("cannot read {}: {e}", path.display())),
-    };
-    let doc = match roxmltree::Document::parse(&text) {
+    }
+}
+
+fn parse_spec<'i>(path: &Path, text: &'i str) -> roxmltree::Document<'i> {
+    match roxmltree::Document::parse(text) {
         Ok(d) => d,
         Err(e) => die(&format!("{} is not well-formed XML: {e}", path.display())),
-    };
+    }
+}
 
-    let generated = generate(&doc);
-
+fn write_generated(name: &str, body: &str) {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_else(|_| ".".into()));
-    if let Err(e) = std::fs::write(out.join("fix44.rs"), generated) {
-        die(&format!("cannot write fix44.rs: {e}"));
+    if let Err(e) = std::fs::write(out.join(name), body) {
+        die(&format!("cannot write {name}: {e}"));
     }
 }
 
@@ -85,19 +162,138 @@ fn child<'a, 'i>(root: roxmltree::Node<'a, 'i>, name: &str) -> Option<roxmltree:
     root.children().find(|n| n.has_tag_name(name))
 }
 
+/// Everything one generated table is built from, however many XML files it came
+/// from.
+///
+/// [`generate`] fills it from one document; [`generate_pair`] merges two into
+/// one under ADR-0083's rules and fills the same struct, so the emitter below
+/// is one emitter and the two tables cannot drift apart in shape.
+struct Spec<'a, 'i> {
+    /// Names this dialect in the generated doc comments.
+    dialect: &'static str,
+    /// The `@generated by` banner's source clause.
+    source: &'static str,
+    number_of: BTreeMap<&'a str, u32>,
+    /// The **variant**, not the XML spelling: `DATA` and `XMLDATA` are one
+    /// type and the pair build depends on that (ADR-0083 decision 2).
+    type_of: BTreeMap<&'a str, FieldType>,
+    enum_of: BTreeMap<&'a str, Vec<&'a str>>,
+    components: BTreeMap<&'a str, roxmltree::Node<'a, 'i>>,
+    messages: Vec<roxmltree::Node<'a, 'i>>,
+    header: roxmltree::Node<'a, 'i>,
+    trailer: roxmltree::Node<'a, 'i>,
+    /// ADR-0083 decision 5. Empty for FIX 4.4, one row for the pair.
+    length_exceptions: &'static [LengthException],
+    /// Whether `enum_allows` splits a multi-value field on spaces before it
+    /// checks the list. ADR-0083 decision 1's second rule: the FIXT table is
+    /// built with it; FIX 4.4 gets it in a plan row of its own.
+    per_token_enums: bool,
+}
+
+/// The FIX 4.4 table, from one file.
 fn generate(doc: &roxmltree::Document<'_>) -> String {
     let root = doc.root_element();
+    let (number_of, type_of, enum_of) = collect_fields(root, "FIX44.xml");
+    let (Some(header), Some(trailer)) = (child(root, "header"), child(root, "trailer")) else {
+        die("<header> or <trailer> section missing")
+    };
+    let Some(messages_el) = child(root, "messages") else {
+        die("<messages> section missing")
+    };
+    emit(&Spec {
+        dialect: "FIX 4.4",
+        source: "the QuickFIX FIX 4.4 XML",
+        number_of,
+        type_of,
+        enum_of,
+        components: {
+            let map = collect_components(root);
+            refuse_empty_components(&map, "FIX44.xml");
+            map
+        },
+        messages: messages_el
+            .children()
+            .filter(|n| n.has_tag_name("message"))
+            .collect(),
+        header,
+        trailer,
+        length_exceptions: &[],
+        per_token_enums: false,
+    })
+}
 
-    // ---- every field: number, name, type -----------------------------------
+/// The FIXT 1.1 / FIX 5.0 SP2 table, from the pair.
+///
+/// Header, trailer and the eight admin messages come from the transport file;
+/// fields, components, groups and the 156 application messages from the
+/// application file. Every message — admin included — resolves its
+/// `<component>` references against the **one** merged map, which is ADR-0083
+/// decision 4 and the reason `NoMsgTypes(384)` reaches the Logon table at all.
+fn generate_pair(transport: &roxmltree::Document<'_>, app: &roxmltree::Document<'_>) -> String {
+    let (troot, aroot) = (transport.root_element(), app.root_element());
+    let (tnum, ttype, tenum) = collect_fields(troot, "FIXT11.xml");
+    let (anum, atype, aenum) = collect_fields(aroot, "FIX50SP2.xml");
+    let (number_of, type_of, enum_of) = merge_fields((tnum, ttype, tenum), (anum, atype, aenum));
+
+    let components = merge_components(
+        collect_components(troot),
+        "FIXT11.xml",
+        collect_components(aroot),
+        "FIX50SP2.xml",
+    );
+
+    let (Some(header), Some(trailer)) = (child(troot, "header"), child(troot, "trailer")) else {
+        die("FIXT11.xml: <header> or <trailer> section missing")
+    };
+    let (Some(admin), Some(application)) = (child(troot, "messages"), child(aroot, "messages"))
+    else {
+        die("<messages> section missing in FIXT11.xml or FIX50SP2.xml")
+    };
+    let messages: Vec<roxmltree::Node<'_, '_>> = admin
+        .children()
+        .filter(|n| n.has_tag_name("message"))
+        .chain(application.children().filter(|n| n.has_tag_name("message")))
+        .collect();
+
+    emit(&Spec {
+        dialect: "FIXT 1.1 / FIX 5.0 SP2",
+        source: "the QuickFIX FIXT11.xml and FIX50SP2.xml pair",
+        number_of,
+        type_of,
+        enum_of,
+        components,
+        messages,
+        header,
+        trailer,
+        length_exceptions: SP2_LENGTH_EXCEPTIONS,
+        per_token_enums: true,
+    })
+}
+
+/// Every `<field>`: number, variant and enumerated values.
+///
+/// The type name is turned into a [`FieldType`] **here** rather than at emit
+/// time, because the pair build has to compare variants before it can emit
+/// anything (ADR-0083 decision 2).
+#[allow(clippy::type_complexity)]
+fn collect_fields<'a>(
+    root: roxmltree::Node<'a, '_>,
+    file: &str,
+) -> (
+    BTreeMap<&'a str, u32>,
+    BTreeMap<&'a str, FieldType>,
+    BTreeMap<&'a str, Vec<&'a str>>,
+) {
     let Some(fields_el) = child(root, "fields") else {
-        die("<fields> section missing")
+        die(&format!("{file}: <fields> section missing"))
     };
     let mut number_of: BTreeMap<&str, u32> = BTreeMap::new();
-    let mut type_of: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut type_of: BTreeMap<&str, FieldType> = BTreeMap::new();
     let mut enum_of: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut named: BTreeMap<u32, &str> = BTreeMap::new();
     for f in fields_el.children().filter(|n| n.has_tag_name("field")) {
         let (Some(name), Some(num)) = (f.attribute("name"), f.attribute("number")) else {
-            die("<field> without name or number")
+            die(&format!("{file}: <field> without name or number"))
         };
         let Ok(num) = num.parse::<u32>() else {
             die(&format!("field {name} has a non-numeric number"))
@@ -105,7 +301,25 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
         if number_of.insert(name, num).is_some() {
             die(&format!("field name {name} appears twice"));
         }
-        type_of.insert(name, f.attribute("type").unwrap_or(""));
+        if let Some(prev) = named.insert(num, name) {
+            die(&format!(
+                "{file}: fields {prev} and {name} both carry number {num}"
+            ));
+        }
+        let ty = f.attribute("type").unwrap_or("");
+        match FieldType::from_xml(ty) {
+            Some(t) => {
+                type_of.insert(name, t);
+            }
+            // A type name `src/field_type.rs` does not list must stop the
+            // build. Falling back to STRING would make `373=6` silently blind
+            // to a whole type, and no acceptance definition would notice.
+            None => die(&format!(
+                "field {name} has type {ty:?}, which src/field_type.rs does not know.\n\
+                 Add the variant there — both `from_xml` and `as_rust` — rather than\n\
+                 letting it fall through to STRING."
+            )),
+        }
 
         let values: Vec<&str> = f
             .children()
@@ -121,32 +335,314 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
             enum_of.insert(name, values);
         }
     }
+    (number_of, type_of, enum_of)
+}
+
+/// Every `<component>`, by name — **including empty ones**, which
+/// [`merge_components`] needs to see before it can decide anything
+/// (ADR-0083 decision 4b). A single-file build refuses them through
+/// [`refuse_empty_components`].
+fn collect_components<'a, 'i>(
+    root: roxmltree::Node<'a, 'i>,
+) -> BTreeMap<&'a str, roxmltree::Node<'a, 'i>> {
+    match child(root, "components") {
+        Some(el) => el
+            .children()
+            .filter(|n| n.has_tag_name("component"))
+            .filter_map(|n| n.attribute("name").map(|k| (k, n)))
+            .collect(),
+        None => BTreeMap::new(),
+    }
+}
+
+/// Whether an element has at least one child element.
+fn has_members(n: roxmltree::Node<'_, '_>) -> bool {
+    n.children().any(|c| c.is_element())
+}
+
+/// A `<component>` with no children cannot mean "deliberately nothing": a
+/// reference to it resolves to zero members, which is the silent loss
+/// `CLAUDE.md` §2 item 5 forbids. The one way an empty declaration survives is
+/// as the losing half of a pair — ADR-0083 decision 4b.
+fn refuse_empty_components(map: &BTreeMap<&str, roxmltree::Node<'_, '_>>, file: &str) {
+    for (name, def) in map {
+        if !has_members(*def) {
+            die(&format!(
+                "{file}: <component name='{name}'> has no children, and no other file\n\
+                 defines it. A reference to it would resolve to zero members — the\n\
+                 silent loss CLAUDE.md §2 item 5 forbids. ADR-0083 decision 4."
+            ));
+        }
+    }
+}
+
+/// The three maps [`collect_fields`] returns, and [`merge_fields`] merges.
+type Fields<'a> = (
+    BTreeMap<&'a str, u32>,
+    BTreeMap<&'a str, FieldType>,
+    BTreeMap<&'a str, Vec<&'a str>>,
+);
+
+/// ADR-0083 decision 2: a field defined in both files must agree on number, on
+/// name, and on the **variant** `from_xml` gives its type name.
+///
+/// Two spellings that map to one variant are one type, which is what resolves
+/// `XmlData(213)` — `DATA` in `FIXT11.xml`, `XMLDATA` in `FIX50SP2.xml` — with
+/// no exception and no winner. Anything else is refused with the field named: a
+/// silent "first wins" ships a `373=6` that depends on file order.
+///
+/// Enum lists: one side's set must be a **superset** of the other's and the
+/// table carries the superset. Two sets that each hold a value the other lacks
+/// fail the build naming both stray values.
+fn merge_fields<'a>(transport: Fields<'a>, app: Fields<'a>) -> Fields<'a> {
+    let (tnum, ttype, tenum) = transport;
+    let (mut number_of, mut type_of, mut enum_of) = app;
+
+    for (name, num) in tnum {
+        match number_of.get(name) {
+            Some(&other) if other != num => die(&format!(
+                "field {name} is number {num} in FIXT11.xml and {other} in FIX50SP2.xml.\n\
+                 One name cannot be two tags."
+            )),
+            Some(_) => {}
+            None => {
+                number_of.insert(name, num);
+            }
+        }
+    }
+
+    for (name, ty) in ttype {
+        match type_of.get(name) {
+            Some(&other) if other != ty => die(&format!(
+                "field {name} is {ty:?} in FIXT11.xml and {other:?} in FIX50SP2.xml.\n\
+                 The two spellings map to different FieldType variants, so the table\n\
+                 would answer 373=6 by file order. Refusing. ADR-0083 decision 2."
+            )),
+            Some(_) => {}
+            None => {
+                type_of.insert(name, ty);
+            }
+        }
+    }
+
+    for (name, values) in tenum {
+        let take_transport = match enum_of.get(name) {
+            None => true,
+            Some(app_values) => {
+                let mine: BTreeSet<&str> = values.iter().copied().collect();
+                let theirs: BTreeSet<&str> = app_values.iter().copied().collect();
+                if mine.is_subset(&theirs) {
+                    false
+                } else if theirs.is_subset(&mine) {
+                    true
+                } else {
+                    let only_t: Vec<&str> = mine.difference(&theirs).copied().collect();
+                    let only_a: Vec<&str> = theirs.difference(&mine).copied().collect();
+                    die(&format!(
+                        "field {name} is enumerated in both files and neither list contains\n\
+                         the other: only in FIXT11.xml {only_t:?}, only in FIX50SP2.xml\n\
+                         {only_a:?}. A union would hide the divergence. ADR-0083 decision 2."
+                    ))
+                }
+            }
+        };
+        if take_transport {
+            enum_of.insert(name, values);
+        }
+    }
+
+    // The same number under two names, across the pair as well as within one
+    // file. `collect_fields` already asked this per file.
+    let mut named: BTreeMap<u32, &str> = BTreeMap::new();
+    for (&name, &num) in &number_of {
+        if let Some(prev) = named.insert(num, name)
+            && prev != name
+        {
+            die(&format!(
+                "fields {prev} and {name} both carry number {num} across the pair."
+            ));
+        }
+    }
+
+    (number_of, type_of, enum_of)
+}
+
+/// ADR-0083 decision 4: one component map, built from both files.
+///
+/// * identical children — one definition, no message (`HopGrp`);
+/// * one side empty and the other not — the full one is the definition and a
+///   `cargo:warning` names the component and the file that left it empty
+///   (`MsgTypeGrp`);
+/// * both non-empty and different — the build fails naming the component and
+///   the first differing child.
+fn merge_components<'a, 'i>(
+    transport: BTreeMap<&'a str, roxmltree::Node<'a, 'i>>,
+    tfile: &str,
+    app: BTreeMap<&'a str, roxmltree::Node<'a, 'i>>,
+    afile: &str,
+) -> BTreeMap<&'a str, roxmltree::Node<'a, 'i>> {
+    let mut out: BTreeMap<&'a str, roxmltree::Node<'a, 'i>> = BTreeMap::new();
+    let names: BTreeSet<&'a str> = transport.keys().chain(app.keys()).copied().collect();
+    for name in names {
+        let chosen = match (transport.get(name), app.get(name)) {
+            (Some(&t), Some(&a)) => match (has_members(t), has_members(a)) {
+                (true, true) => {
+                    if let Some(where_) = first_difference(t, a, name) {
+                        die(&format!(
+                            "component {name} is defined in both files and they differ at\n\
+                             {where_}. Two full definitions that disagree are a real\n\
+                             conflict and no order rule makes it safe. ADR-0083 decision 4c."
+                        ));
+                    }
+                    t
+                }
+                (true, false) => {
+                    warn_empty(name, afile);
+                    t
+                }
+                (false, true) => {
+                    warn_empty(name, tfile);
+                    a
+                }
+                (false, false) => die(&format!(
+                    "component {name} is empty in {tfile} and in {afile}. A reference to\n\
+                     it resolves to zero members. ADR-0083 decision 4."
+                )),
+            },
+            (Some(&t), None) => t,
+            (None, Some(&a)) => a,
+            (None, None) => continue,
+        };
+        out.insert(name, chosen);
+    }
+    refuse_empty_components(&out, "the FIXT11.xml + FIX50SP2.xml pair");
+    out
+}
+
+/// The override is visible in every build log, not only in the ADR.
+fn warn_empty(name: &str, file: &str) {
+    println!(
+        "cargo:warning=component {name} is declared empty in {file}; the other file's \
+         full definition is used. An empty component cannot mean \"deliberately nothing\" \
+         — see docs/decisions/ADR-0083 decision 4b."
+    );
+}
+
+/// Where two component definitions first differ: element name, `name`,
+/// `required`, order or nesting. `None` when they are identical.
+fn first_difference(
+    x: roxmltree::Node<'_, '_>,
+    y: roxmltree::Node<'_, '_>,
+    path: &str,
+) -> Option<String> {
+    let xs: Vec<roxmltree::Node<'_, '_>> = x.children().filter(|n| n.is_element()).collect();
+    let ys: Vec<roxmltree::Node<'_, '_>> = y.children().filter(|n| n.is_element()).collect();
+    for i in 0..xs.len().max(ys.len()) {
+        match (xs.get(i), ys.get(i)) {
+            (Some(&a), Some(&b)) => {
+                if describe(a) != describe(b) {
+                    return Some(format!("{path}: {} against {}", describe(a), describe(b)));
+                }
+                if let Some(deeper) = first_difference(
+                    a,
+                    b,
+                    &format!("{path}/{}", a.attribute("name").unwrap_or("")),
+                ) {
+                    return Some(deeper);
+                }
+            }
+            (Some(&a), None) | (None, Some(&a)) => {
+                return Some(format!("{path}: {} on one side only", describe(a)));
+            }
+            (None, None) => {}
+        }
+    }
+    None
+}
+
+fn describe(n: roxmltree::Node<'_, '_>) -> String {
+    format!(
+        "<{} name='{}' required='{}'>",
+        n.tag_name().name(),
+        n.attribute("name").unwrap_or(""),
+        n.attribute("required").unwrap_or("")
+    )
+}
+
+/// A `<component>` reference that resolves to zero members, wherever it
+/// appears. This is `collect_groups`'s `group {name} ... has no members` check
+/// one level up — ADR-0083 decision 4's second refusal.
+fn refuse_empty_reference(def: roxmltree::Node<'_, '_>, name: &str, ctx: &str) {
+    if !has_members(def) {
+        die(&format!(
+            "{ctx} references component {name}, which resolves to zero members.\n\
+             A component that splices in nothing loses every field under it in\n\
+             silence — CLAUDE.md §2 item 5. ADR-0083 decision 4."
+        ));
+    }
+}
+
+fn emit(spec: &Spec<'_, '_>) -> String {
+    let number_of = &spec.number_of;
+    let type_of = &spec.type_of;
+    let enum_of = &spec.enum_of;
+    let components = &spec.components;
+    let header_el = spec.header;
+    let dialect = spec.dialect;
 
     // ---- header tags -------------------------------------------------------
-    let Some(header_el) = child(root, "header") else {
-        die("<header> section missing")
-    };
     // Descends into <group>. The FIX 4.4 header holds one — NoHops(627) with
     // HopCompID(628), HopSendingTime(629), HopRefID(630) — and all four are
     // header fields. Taking only direct <field> children yields 26 instead of
     // 30, and the four missing ones would sort into the BODY when writing,
     // which is non-negotiable 5's exact failure mode. No acceptance definition
-    // carries a hop, so nothing in the 59 would ever notice.
+    // carries a hop, so nothing in the 59 would ever notice. FIXT 1.1's header
+    // is the same shape: 29 direct fields and the same group.
     let mut header: BTreeSet<u32> = BTreeSet::new();
-    collect_header(header_el, &number_of, &mut header);
+    collect_header(header_el, number_of, &mut header);
 
     // ---- DATA -> LENGTH, matched by NAME, never by tag-1 -------------------
+    // `XMLDATA` is the same variant as `DATA` (ADR-0083 decision 1), so it is
+    // paired by the same rule — all 8 of FIX 5.0 SP2's pair by name, measured.
     let mut data_len: BTreeMap<u32, u32> = BTreeMap::new();
-    for (&name, &ty) in &type_of {
-        if ty != "DATA" {
+    let mut exception_used = vec![false; spec.length_exceptions.len()];
+    for (&name, &ty) in type_of {
+        if ty != FieldType::Data {
             continue;
         }
+        let tag = number_of[name];
         let candidate = [format!("{name}Len"), format!("{name}Length")]
             .into_iter()
             .find_map(|c| number_of.get(c.as_str()).copied());
-        match candidate {
-            Some(len_tag) => {
-                data_len.insert(number_of[name], len_tag);
+        if let Some(len_tag) = candidate {
+            data_len.insert(tag, len_tag);
+            continue;
+        }
+        // The name rule found nothing. Only now is the exception table
+        // consulted, and it is checked in both directions — ADR-0083
+        // decision 5.
+        match spec
+            .length_exceptions
+            .iter()
+            .position(|(data_tag, _, _, _)| *data_tag == tag)
+        {
+            Some(i) => {
+                let (data_tag, length_tag, data_name, length_name) = spec.length_exceptions[i];
+                if data_name != name {
+                    die(&format!(
+                        "length exception for tag {data_tag} names field {data_name},\n\
+                         but the dictionary calls tag {tag} {name}."
+                    ));
+                }
+                if number_of.get(length_name) != Some(&length_tag) {
+                    die(&format!(
+                        "length exception for {data_name} names {length_name} as tag\n\
+                         {length_tag}, which this dictionary does not carry under that\n\
+                         number. An exception the XML does not support is a wrong pairing."
+                    ));
+                }
+                exception_used[i] = true;
+                data_len.insert(data_tag, length_tag);
             }
             // Not a warning. A DATA field with no length field cannot be parsed
             // at all — the parser would scan for 0x01 inside binary content.
@@ -157,28 +653,28 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
             )),
         }
     }
+    for (i, (data_tag, _, data_name, _)) in spec.length_exceptions.iter().enumerate() {
+        if !exception_used[i] {
+            die(&format!(
+                "length exception {data_name}({data_tag}) went unused.\n\
+                 Either the field is not in this dictionary, or the {{name}}Len /\n\
+                 {{name}}Length rule found its length field without help. An exception\n\
+                 nobody needs is a rule nobody checked — delete the row. ADR-0083\n\
+                 decision 5."
+            ));
+        }
+    }
 
     // ---- required fields, per message, descending into components ---------
     // A `required='Y'` component contributes its own `required='Y'` fields, and
     // nothing else: Instrument is required in NewOrderSingle while every field
     // inside it, Symbol(55) included, is optional. "The message requires an
     // Instrument" and "the message requires a Symbol" are different statements.
-    let components: BTreeMap<&str, roxmltree::Node<'_, '_>> = match child(root, "components") {
-        Some(el) => el
-            .children()
-            .filter(|n| n.has_tag_name("component"))
-            .filter_map(|n| n.attribute("name").map(|k| (k, n)))
-            .collect(),
-        None => BTreeMap::new(),
-    };
-    let Some(messages_el) = child(root, "messages") else {
-        die("<messages> section missing")
-    };
     let mut required: Vec<(String, Vec<u32>)> = Vec::new();
     let mut msg_consts: Vec<(String, String)> = Vec::new();
     let mut msg_types: BTreeSet<String> = BTreeSet::new();
     let mut allowed: Vec<(String, BTreeSet<u32>)> = Vec::new();
-    for m in messages_el.children().filter(|n| n.has_tag_name("message")) {
+    for &m in &spec.messages {
         let (Some(name), Some(mt)) = (m.attribute("name"), m.attribute("msgtype")) else {
             die("<message> without name or msgtype")
         };
@@ -188,7 +684,7 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
         }
 
         let mut set = BTreeSet::new();
-        collect_required(m, &components, &number_of, name, &mut set, &mut Vec::new());
+        collect_required(m, components, number_of, name, &mut set, &mut Vec::new());
         let mut tags: Vec<u32> = set.into_iter().collect();
         tags.sort_unstable();
         if !tags.is_empty() {
@@ -196,7 +692,7 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
         }
 
         let mut body = BTreeSet::new();
-        collect_allowed(m, &components, &number_of, name, &mut body, &mut Vec::new());
+        collect_allowed(m, components, number_of, name, &mut body, &mut Vec::new());
         allowed.push((mt.to_string(), body));
     }
 
@@ -207,14 +703,14 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     // message there is. Three more counters behave the same way.
     let mut groups: BTreeMap<(String, u32), Vec<u32>> = BTreeMap::new();
     let mut positions: usize = 0usize;
-    for m in messages_el.children().filter(|n| n.has_tag_name("message")) {
+    for &m in &spec.messages {
         let Some(mt) = m.attribute("msgtype") else {
             die("<message> without msgtype")
         };
         collect_groups(
             m,
-            &components,
-            &number_of,
+            components,
+            number_of,
             mt,
             &mut groups,
             &mut positions,
@@ -225,8 +721,8 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     // keyed under the empty message type and emitted without a msg_type arm.
     collect_groups(
         header_el,
-        &components,
-        &number_of,
+        components,
+        number_of,
         "",
         &mut groups,
         &mut positions,
@@ -263,12 +759,16 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
 
     // ---- emit --------------------------------------------------------------
     let mut o = String::with_capacity(96 * 1024);
-    o.push_str("// @generated by crates/dict/build.rs from the QuickFIX FIX 4.4 XML.\n");
+    let _ = writeln!(
+        o,
+        "// @generated by crates/dict/build.rs from {}.",
+        spec.source
+    );
     o.push_str("// Do not edit. Regenerate by touching the XML or the build script.\n\n");
 
     o.push_str("/// Field tag numbers, by name.\npub mod tag {\n");
     let mut seen: BTreeMap<String, &str> = BTreeMap::new();
-    for (name, num) in &number_of {
+    for (name, num) in number_of {
         let c = screaming(name);
         if let Some(prev) = seen.insert(c.clone(), name) {
             die(&format!("fields {prev} and {name} both become tag::{c}"));
@@ -278,7 +778,8 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     o.push_str("}\n\n");
 
     o.push_str(
-        "/// Message type values, by name. Multi-byte: FIX 4.4 uses AA..BH.\npub mod msg_type {\n",
+        "/// Message type values, by name. Multi-byte: this dialect uses values\n\
+         /// of more than one character.\npub mod msg_type {\n",
     );
     let mut seen2: BTreeSet<String> = BTreeSet::new();
     for (c, mt) in &msg_consts {
@@ -311,16 +812,14 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     // expects `373=1` with `371=56` — a header field, which `required(b"0")`
     // does not and should not mention.
     let mut header_required: BTreeSet<u32> = BTreeSet::new();
-    if let Some(el) = child(root, "header") {
-        for c in el.children() {
-            if c.attribute("required") != Some("Y") {
-                continue;
-            }
-            if let Some(name) = c.attribute("name")
-                && let Some(&t) = number_of.get(name)
-            {
-                header_required.insert(t);
-            }
+    for c in header_el.children() {
+        if c.attribute("required") != Some("Y") {
+            continue;
+        }
+        if let Some(name) = c.attribute("name")
+            && let Some(&t) = number_of.get(name)
+        {
+            header_required.insert(t);
         }
     }
     let _ = writeln!(
@@ -351,7 +850,7 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     let mut enum_lists: Vec<Vec<&str>> = Vec::new();
     let mut enum_index: BTreeMap<u32, usize> = BTreeMap::new();
     let mut enum_values = 0usize;
-    for (&name, values) in &enum_of {
+    for (&name, values) in enum_of {
         enum_values += values.len();
         let at = enum_lists
             .iter()
@@ -377,7 +876,7 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     let _ = writeln!(
         o,
         "\n/// The values an enumerated field will take. `None` means the field is\n\
-         /// not enumerated, or the tag is not FIX 4.4 at all.\n\
+         /// not enumerated, or the tag is not {dialect} at all.\n\
          ///\n\
          /// `[measured]` {} enumerated fields, {enum_values} values, {} distinct\n\
          /// lists after deduplication.\n\
@@ -391,7 +890,45 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     for (tag, at) in &enum_index {
         let _ = writeln!(o, "        {tag} => &V{at},");
     }
-    o.push_str("        _ => return None,\n    };\n    Some(list.contains(&value))\n}\n\n");
+    o.push_str("        _ => return None,\n    };\n");
+    // ADR-0083 decision 1, second rule: on a multi-value type the check is
+    // **per token** — the value is split on single spaces and every token must
+    // be in the list, which is what QuickFIX C++ (`isFieldValue`) and
+    // QuickFIX/J (`DataDictionary` line 526) both do. Emitted only for the
+    // table built to that rule; FIX 4.4 keeps the whole-value check until the
+    // plan row that changes its session behaviour lands.
+    let multi: Vec<u32> = if spec.per_token_enums {
+        enum_index
+            .keys()
+            .copied()
+            .filter(|tag| {
+                type_of.iter().any(|(name, ty)| {
+                    number_of.get(name) == Some(tag)
+                        && matches!(
+                            ty,
+                            FieldType::MultipleValueString | FieldType::MultipleCharValue
+                        )
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if !multi.is_empty() {
+        let _ = writeln!(
+            o,
+            "    // `18=2 A` is one legal MULTIPLECHARVALUE, not one illegal value.\n\
+             \x20   if matches!(tag, {}) {{\n\
+             \x20       return Some(value.split(|&b| b == b' ').all(|t| list.contains(&t)));\n\
+             \x20   }}",
+            multi
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+    }
+    o.push_str("    Some(list.contains(&value))\n}\n\n");
 
     // ---- allows: one bitset per message type -------------------------------
     // A bitset, not a sorted list: 15 words against a binary search over up to
@@ -399,10 +936,7 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     // validates. Header and trailer are folded in at generation time so the
     // call site asks one question instead of three.
     let mut trailer: BTreeSet<u32> = BTreeSet::new();
-    match child(root, "trailer") {
-        Some(el) => collect_header(el, &number_of, &mut trailer),
-        None => die("<trailer> section missing"),
-    }
+    collect_header(spec.trailer, number_of, &mut trailer);
     let mut allow_bits: Vec<(String, Vec<u64>)> = Vec::new();
     let mut body_pairs = 0usize;
     for (mt, body) in &allowed {
@@ -460,27 +994,17 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     );
 
     // ---- field_type: the declared type of every tag ------------------------
-    // The type *names* come from the XML; what each type accepts is
-    // `src/field_type.rs`, included above rather than restated here.
+    // The type *names* came from the XML and were turned into variants by
+    // `collect_fields`, which is where an unknown one stops the build; what
+    // each type accepts is `src/field_type.rs`, included above rather than
+    // restated here.
     let mut typed: BTreeMap<u32, &'static str> = BTreeMap::new();
-    for (&name, &ty) in &type_of {
-        match FieldType::from_xml(ty) {
-            Some(t) => {
-                typed.insert(number_of[name], t.as_rust());
-            }
-            // A 24th type appearing upstream must stop the build. Falling back
-            // to STRING would make `373=6` silently blind to a whole type, and
-            // no acceptance definition would notice.
-            None => die(&format!(
-                "field {name} has type {ty:?}, which src/field_type.rs does not know.\n\
-                 Add the variant there — both `from_xml` and `as_rust` — rather than\n\
-                 letting it fall through to STRING."
-            )),
-        }
+    for (&name, &ty) in type_of {
+        typed.insert(number_of[name], ty.as_rust());
     }
     let _ = writeln!(
         o,
-        "/// The declared type of a field. `None` means FIX 4.4 has no such tag.\n\
+        "/// The declared type of a field. `None` means {dialect} has no such tag.\n\
          ///\n\
          /// {} fields across {} types.\n\
          #[inline]\n\
@@ -507,7 +1031,7 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     }
     let _ = writeln!(
         o,
-        "/// Tags FIX 4.4 defines, as a bitset over 0..={max_tag}.\n\
+        "/// Tags {dialect} defines, as a bitset over 0..={max_tag}.\n\
          ///\n\
          /// {} fields, the highest being tag {max_tag}. **There is no user-defined\n\
          /// range here.** QuickFIX\'s own `FieldNumbers.h` calls 5000..=9999\n\
@@ -515,7 +1039,7 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
          /// invalid tag, so \"defined\" means \"in FIX44.xml\" and nothing else.\n\
          static DEFINED_TAGS: [u64; {words}] = [{}];\n\
          \n\
-         /// Whether FIX 4.4 defines this tag at all. Answers `373=0`.\n\
+         /// Whether {dialect} defines this tag at all. Answers `373=0`.\n\
          #[inline]\n\
          #[must_use]\n\
          // Same shape as `allows`, and `const fn` rules out `.get()`: neither\n\
@@ -536,7 +1060,7 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     // ---- is_msg_type -------------------------------------------------------
     let _ = writeln!(
         o,
-        "/// Whether this is a FIX 4.4 message type. Answers `373=11`.\n\
+        "/// Whether this is a {dialect} message type. Answers `373=11`.\n\
          ///\n\
          /// {} of them. `required()` cannot answer this: it gives `&[]` for an\n\
          /// unknown type and for a known one with no required fields alike, which\n\
@@ -594,17 +1118,18 @@ fn generate(doc: &roxmltree::Document<'_>) -> String {
     // ---- group tables ------------------------------------------------------
     let _ = writeln!(
         o,
-        "/// Distinct group counter tags in FIX 4.4, `NoHops(627)` from the\n\
+        "/// Distinct group counter tags in {dialect}, `NoHops(627)` from the\n\
          /// header included.\npub const GROUP_COUNTERS: usize = {};\n",
         by_counter.len()
     );
     let _ = writeln!(
         o,
         "/// Group positions once `<component>` references are expanded: the\n\
-         /// number of places a group can appear across all 93 messages plus the\n\
-         /// header. Larger than the 93 `<group>` declarations because a component\n\
+         /// number of places a group can appear across all {} messages plus the\n\
+         /// header. Larger than the `<group>` declaration count because a component\n\
          /// holding a group is referenced from many messages.\n\
-         pub const GROUP_POSITIONS: usize = {positions};\n"
+         pub const GROUP_POSITIONS: usize = {positions};\n",
+        spec.messages.len()
     );
     for (i, l) in lists.iter().enumerate() {
         let items = l.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
@@ -696,6 +1221,7 @@ fn collect_required<'a>(
             let Some(def) = components.get(name) else {
                 die(&format!("message {msg} names unknown component {name}"))
             };
+            refuse_empty_reference(*def, name, &format!("message {msg}"));
             if path.contains(&name) {
                 die(&format!("component cycle: {} -> {name}", path.join(" -> ")));
             }
@@ -738,6 +1264,7 @@ fn collect_allowed<'a>(
             let Some(def) = components.get(name) else {
                 die(&format!("message {msg} names unknown component {name}"))
             };
+            refuse_empty_reference(*def, name, &format!("message {msg}"));
             if path.contains(&name) {
                 die(&format!("component cycle: {} -> {name}", path.join(" -> ")));
             }
@@ -822,6 +1349,7 @@ fn collect_members<'a>(
             let Some(def) = components.get(name) else {
                 die(&format!("{ctx} names unknown component {name}"))
             };
+            refuse_empty_reference(*def, name, ctx);
             if path.contains(&name) {
                 die(&format!("component cycle: {} -> {name}", path.join(" -> ")));
             }
@@ -889,6 +1417,7 @@ fn collect_groups<'a>(
             let Some(def) = components.get(name) else {
                 die(&format!("message {mt} names unknown component {name}"))
             };
+            refuse_empty_reference(*def, name, &format!("message {mt}"));
             if path.contains(&name) {
                 die(&format!("component cycle: {} -> {name}", path.join(" -> ")));
             }

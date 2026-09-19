@@ -1,4 +1,9 @@
-//! The 23 FIX 4.4 field types, and what each will accept on the wire.
+//! The 29 field types the two dictionaries use, and what each will accept on
+//! the wire.
+//!
+//! Twenty-three names come from `FIX44.xml`; `FIX50SP2.xml` adds ten more, six
+//! of which are new variants and four of which are a second XML spelling for a
+//! variant that already exists (ADR-0083 decision 1).
 //!
 //! Hand-written rather than generated: the *set* of types comes from the XML
 //! and is asserted against it, but what "a QTY" looks like is not in the XML at
@@ -23,11 +28,19 @@
 /// wire as a single field, so no type accepts it.
 const SOH: u8 = 0x01;
 
-/// A FIX 4.4 field's data type.
+/// A FIX field's data type.
 ///
-/// Exactly the 23 the XML uses — `crates/dict/tests/generated.rs` asserts that,
-/// so a 24th type appearing upstream is a build failure rather than a silent
-/// `STRING`.
+/// Exactly the type names the two dictionaries use — `FIX44.xml`'s 23 and
+/// `FIX50SP2.xml`'s 32, which overlap in 22 — and
+/// `crates/dict/tests/field_types.rs` asserts the count, so a thirtieth type
+/// appearing upstream is a build failure rather than a silent `STRING`.
+///
+/// Four XML names map onto a variant that already existed because the
+/// specification defines them as the same wire format: `XID` and `XIDREF` are
+/// [`FieldType::String`], `MULTIPLESTRINGVALUE` is
+/// [`FieldType::MultipleValueString`], `XMLDATA` is [`FieldType::Data`].
+/// ADR-0083 decision 1 records why, and [`FieldType::from_xml`] records the
+/// spellings beside each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FieldType {
     Int,
@@ -53,6 +66,13 @@ pub enum FieldType {
     UtcTimeOnly,
     UtcTimestamp,
     Data,
+    // The six `FIX50SP2.xml` adds. ADR-0083 decision 1.
+    Language,
+    TagNum,
+    MultipleCharValue,
+    LocalMktTime,
+    TzTimeOnly,
+    TzTimestamp,
 }
 
 impl FieldType {
@@ -84,6 +104,20 @@ impl FieldType {
             b"UTCTIMEONLY" => Self::UtcTimeOnly,
             b"UTCTIMESTAMP" => Self::UtcTimestamp,
             b"DATA" => Self::Data,
+            // `FIX50SP2.xml`'s ten. `XmlData(213)` is spelled `DATA` in
+            // `FIXT11.xml` and `XMLDATA` here, which is why the pair build
+            // compares *variants* and needs no exception for it (ADR-0083
+            // decision 2).
+            b"XID" | b"XIDREF" => Self::String,
+            b"MULTIPLESTRINGVALUE" => Self::MultipleValueString,
+            b"XMLDATA" => Self::Data,
+            b"LANGUAGE" => Self::Language,
+            b"TAGNUM" => Self::TagNum,
+            b"MULTIPLECHARVALUE" => Self::MultipleCharValue,
+            b"LOCALMKTTIME" => Self::LocalMktTime,
+            b"TZTIMEONLY" => Self::TzTimeOnly,
+            b"TZTIMESTAMP" => Self::TzTimestamp,
+            // An eleventh unknown name still stops the build.
             _ => return None,
         })
     }
@@ -115,6 +149,12 @@ impl FieldType {
             Self::UtcTimeOnly => "UtcTimeOnly",
             Self::UtcTimestamp => "UtcTimestamp",
             Self::Data => "Data",
+            Self::Language => "Language",
+            Self::TagNum => "TagNum",
+            Self::MultipleCharValue => "MultipleCharValue",
+            Self::LocalMktTime => "LocalMktTime",
+            Self::TzTimeOnly => "TzTimeOnly",
+            Self::TzTimestamp => "TzTimestamp",
         }
     }
 
@@ -161,9 +201,29 @@ impl FieldType {
             Self::MonthYear => month_year(value),
             Self::LocalMktDate | Self::UtcDateOnly => date(value),
             Self::UtcTimeOnly => time(value),
-            Self::UtcTimestamp => {
-                value.len() > 9 && value[8] == b'-' && date(&value[..8]) && time(&value[9..])
-            }
+            Self::UtcTimestamp => utc_timestamp(value),
+            // ISO 639-1, two letters. Case is not checked, for the reason
+            // `Country` does not check it.
+            Self::Language => value.len() == 2 && value.iter().all(u8::is_ascii_alphabetic),
+            // *"int field representing a tag number. Value must be positive and
+            // may not contain leading zeros."* Stricter than QuickFIX's
+            // `IntConvertor`, which takes `-1` and `007`.
+            Self::TagNum => unsigned_int(value) && value.first() != Some(&b'0'),
+            // *"one or more space delimited single character values"* — `18=2 A
+            // F`. `split` yields at least one token and an empty value was
+            // refused above, so "none empty" falls out of the length check.
+            Self::MultipleCharValue => value.split(|&b| b == b' ').all(|t| t.len() == 1),
+            // *"Format is HH:MM:SS"* — no fraction is offered, so the shared
+            // time reader is pinned to width 8.
+            Self::LocalMktTime => value.len() == 8 && time(value),
+            // *"HH:MM[:SS][Z | [ + | - hh[:mm]]]"*. No fraction, per the text.
+            Self::TzTimeOnly => match strip_zone(value) {
+                head if head.len() == 8 => time(head),
+                head => hour_minute(head),
+            },
+            // The `UtcTimestamp` reader unchanged — ADR-0058's one rule for
+            // widths stays one rule — and only the zone suffix is new.
+            Self::TzTimestamp => utc_timestamp(strip_zone(value)),
         }
     }
 }
@@ -260,4 +320,75 @@ fn time(v: &[u8]) -> bool {
         return false;
     }
     v.len() == 8 || (v[8] == b'.' && v[9..].iter().all(u8::is_ascii_digit))
+}
+
+/// `YYYYMMDD-HH:MM:SS` with the optional fraction ADR-0058's rule allows.
+///
+/// One reader, called from two arms: [`FieldType::UtcTimestamp`] and — after
+/// its zone suffix has been taken off — [`FieldType::TzTimestamp`]. ADR-0083
+/// decision 1 is explicit that the date-time part of a `TZTIMESTAMP` is this
+/// reader **unchanged**, so a width added here reaches both.
+fn utc_timestamp(v: &[u8]) -> bool {
+    match v.split_at_checked(8) {
+        Some((d, [b'-', t @ ..])) => date(d) && time(t),
+        _ => false,
+    }
+}
+
+/// Removes a trailing FIX time-zone suffix: `Z`, `+hh`, `-hh`, `+hh:mm` or
+/// `-hh:mm`.
+///
+/// A value with no suffix, or with one that is not well formed, comes back
+/// unchanged — and is then refused by the time reader it is handed to, which is
+/// where the `373=6` is decided. Anchored on the end and on a fixed width
+/// rather than scanning for a sign: `20260919-06:15:27` ends in a `-` eight
+/// bytes in, and a scan would take `06:15:27` for a zone.
+fn strip_zone(v: &[u8]) -> &[u8] {
+    if let Some(head) = v.strip_suffix(b"Z") {
+        return head;
+    }
+    if let Some((head, [sign, h1, h2, b':', m1, m2])) = split_tail(v, 6)
+        && (*sign == b'+' || *sign == b'-')
+        && zone_hour(*h1, *h2)
+        && two_digit(*m1, *m2).is_some_and(|m| m <= 59)
+    {
+        return head;
+    }
+    if let Some((head, [sign, h1, h2])) = split_tail(v, 3)
+        && (*sign == b'+' || *sign == b'-')
+        && zone_hour(*h1, *h2)
+    {
+        return head;
+    }
+    v
+}
+
+/// `v` split so the second half is exactly `n` bytes, or `None` if it is
+/// shorter than that.
+fn split_tail(v: &[u8], n: usize) -> Option<(&[u8], &[u8])> {
+    v.len().checked_sub(n).and_then(|at| v.split_at_checked(at))
+}
+
+/// Two ASCII digits as a number.
+fn two_digit(a: u8, b: u8) -> Option<u32> {
+    (a.is_ascii_digit() && b.is_ascii_digit())
+        .then(|| u32::from(a - b'0') * 10 + u32::from(b - b'0'))
+}
+
+/// The `hh` of a zone offset. **01 to 12**, which is the specification's text
+/// for `TZTimeOnly` and `TZTimestamp` — not the 00..=14 the world uses.
+/// ADR-0083 decision 1 says exactly this range, so it is written exactly this
+/// range and the ADR carries the cost.
+fn zone_hour(a: u8, b: u8) -> bool {
+    two_digit(a, b).is_some_and(|h| (1..=12).contains(&h))
+}
+
+/// `HH:MM`, the short form `TZTimeOnly` allows and no other type does.
+fn hour_minute(v: &[u8]) -> bool {
+    matches!(
+        v,
+        [h1, h2, b':', m1, m2]
+            if two_digit(*h1, *h2).is_some_and(|h| h <= 23)
+                && two_digit(*m1, *m2).is_some_and(|m| m <= 59)
+    )
 }

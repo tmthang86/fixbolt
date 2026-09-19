@@ -1,4 +1,11 @@
-//! What each of the 23 FIX 4.4 field types will and will not accept.
+//! What each of the 29 field types will and will not accept.
+//!
+//! Twenty-three are FIX 4.4's. `FIX50SP2.xml` adds ten names, six of them new
+//! variants (ADR-0083 decision 1) — and **no `.def` in any corpus sends one**,
+//! so the six pairs below are written from the specification's text and nothing
+//! else. That is the risk `docs/reference/a-valid-field-refused-for-its-width.md`
+//! records; each new rule is the loosest reading of its sentence for exactly
+//! that reason.
 //!
 //! **These cases are written by hand, not taken from a capture.** `CLAUDE.md`
 //! §7 prefers real messages, and the acceptance corpus supplies exactly two:
@@ -61,11 +68,35 @@ fn every_type_refuses_something() {
             b"20260828-12:00:00",
             b"20260828 12:00:00",
         ),
+        // The six ADR-0083 decision 1 adds. Each bad case fails for the reason
+        // that decision's row names, not for some other reason that happens to
+        // be true as well.
+        //
+        // *"Identifier for a national language — uses ISO 639-1"*: two letters,
+        // and `eng` is ISO 639-2.
+        (FieldType::Language, b"en", b"eng"),
+        // *"Value must be positive and may not contain leading zeros."*
+        // Stricter than QuickFIX's `IntConvertor`, which takes this one.
+        (FieldType::TagNum, b"1626", b"007"),
+        // *"one or more space delimited single character values"* — a doubled
+        // space makes an empty token, which is not a single character.
+        (FieldType::MultipleCharValue, b"2 A F", b"2  A"),
+        // *"Format is HH:MM:SS"* — no fraction is offered, so width 8 exactly.
+        (FieldType::LocalMktTime, b"12:00:00", b"12:00:00.000"),
+        // *"[Z | [ + | - hh[:mm]]]"* with `hh` 01–12: `+13` is outside it.
+        (FieldType::TzTimeOnly, b"12:00:00Z", b"12:00:00+13"),
+        // The date-time half is the `UtcTimestamp` reader unchanged, so a wrong
+        // separator is wrong here for the same reason it is there.
+        (
+            FieldType::TzTimestamp,
+            b"20260919-12:00:00.123-05:00",
+            b"20260919T12:00:00Z",
+        ),
     ];
     assert_eq!(
         cases.len(),
-        22,
-        "22 of the 23 FIX 4.4 types. DATA is the exception and has its own test"
+        28,
+        "28 of the 29 types. DATA is the exception and has its own test"
     );
 
     for (ty, good, bad) in cases {
@@ -179,4 +210,92 @@ fn a_microsecond_timestamp_is_a_timestamp() {
     assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27."));
     assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.1234567890123"));
     assert!(!FieldType::UtcTimestamp.accepts(b"20260909-06:15:27.872a"));
+}
+
+/// The zone suffix `TZTIMEONLY` and `TZTIMESTAMP` carry, in every shape the
+/// specification writes and one it does not.
+///
+/// Worth its own test because the suffix is the only new *parsing* the six
+/// variants introduce: `20260919-12:00:00` already ends in a `-` eight bytes
+/// in, so a reader that scanned for a sign instead of anchoring on the end
+/// would take `12:00:00` for a time zone and the whole value for a date.
+#[test]
+fn the_time_zone_suffix_is_read_from_the_end() {
+    for value in [
+        b"12:00".as_ref(),
+        b"12:00:00".as_ref(),
+        b"12:00Z".as_ref(),
+        b"12:00:00Z".as_ref(),
+        b"12:00:00+05".as_ref(),
+        b"12:00:00-05".as_ref(),
+        b"12:00:00+05:30".as_ref(),
+    ] {
+        assert!(
+            FieldType::TzTimeOnly.accepts(value),
+            "{}",
+            String::from_utf8_lossy(value)
+        );
+    }
+    for value in [
+        // No fraction is offered on a TZTIMEONLY, per the text.
+        b"12:00:00.123".as_ref(),
+        // `hh` is 01..=12 and `mm` 00..=59.
+        b"12:00:00+00".as_ref(),
+        b"12:00:00+05:60".as_ref(),
+        // A sign with nothing readable after it is not a zone, and what is left
+        // is not a time either.
+        b"12:00:00+".as_ref(),
+        b"12:00:00+5".as_ref(),
+    ] {
+        assert!(
+            !FieldType::TzTimeOnly.accepts(value),
+            "{}",
+            String::from_utf8_lossy(value)
+        );
+    }
+
+    // A TZTIMESTAMP is the UTCTIMESTAMP reader plus that suffix — every width
+    // ADR-0058 allows, with or without a zone.
+    for value in [
+        b"20260919-12:00:00".as_ref(),
+        b"20260919-12:00:00Z".as_ref(),
+        b"20260919-12:00:00.872514-05:00".as_ref(),
+        b"20260919-12:00:00.872514123+12".as_ref(),
+    ] {
+        assert!(
+            FieldType::TzTimestamp.accepts(value),
+            "{}",
+            String::from_utf8_lossy(value)
+        );
+    }
+    // ADR-0058 decision 2 is one rule for both readers: a `.` with no digits
+    // after it is not a fraction, wherever the zone is.
+    assert!(!FieldType::TzTimestamp.accepts(b"20260919-12:00:00.Z"));
+    assert!(!FieldType::TzTimestamp.accepts(b"12:00:00Z"));
+}
+
+/// The four XML names that map onto a variant which already existed.
+///
+/// ADR-0083 decision 2 turns on this: `XmlData(213)` is `DATA` in `FIXT11.xml`
+/// and `XMLDATA` in `FIX50SP2.xml`, and the pair build compares variants, so
+/// the two spellings must land on the same one here or the merge invents a
+/// conflict that is not there.
+#[test]
+fn four_xml_names_are_a_second_spelling_of_a_variant_that_exists() {
+    assert_eq!(FieldType::from_xml("XID"), Some(FieldType::String));
+    assert_eq!(FieldType::from_xml("XIDREF"), Some(FieldType::String));
+    assert_eq!(FieldType::from_xml("XMLDATA"), Some(FieldType::Data));
+    assert_eq!(FieldType::from_xml("DATA"), Some(FieldType::Data));
+    assert_eq!(
+        FieldType::from_xml("MULTIPLESTRINGVALUE"),
+        Some(FieldType::MultipleValueString)
+    );
+    assert_eq!(
+        FieldType::from_xml("MULTIPLEVALUESTRING"),
+        Some(FieldType::MultipleValueString)
+    );
+    // And the arm that stops the build is still there: a thirtieth name is a
+    // `None`, never a silent `String`.
+    assert_eq!(FieldType::from_xml("LOCALMKTDATETIME"), None);
+    assert_eq!(FieldType::from_xml(""), None);
 }
