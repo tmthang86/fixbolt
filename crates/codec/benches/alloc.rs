@@ -27,8 +27,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fixbolt_codec::{
-    Dictionary, Encoding, FieldIndex, NoDict, TagValue, TemplateBuilder, TimestampCache,
-    Validation, parse_into,
+    Dictionary, Encoding, FieldIndex, NoDict, ParseError, TagValue, TemplateBuilder,
+    TimestampCache, Validation, parse_into,
 };
 use fixbolt_dict::Fix44;
 
@@ -102,7 +102,26 @@ fn main() {
     let _ = clock.format(1_787_000_000_000, 0);
 
     // Warm anything lazy in the runtime before the counted section.
-    let _ = parse_into::<NoDict, 64>(msg, &mut idx, Validation::ALL);
+    //
+    // The warm is also the `parse` case's liveness assert: a zero means nothing
+    // until something says the path ran. `msg` carries `10=098` against an
+    // actual checksum of 097, so `parse_into` ends in `BadCheckSum` — *after*
+    // pushing every field, which is why this case has always measured a whole
+    // message walk. Asserting that outcome states the fixture's flaw instead of
+    // depending on it silently, and reading a field back proves the index was
+    // really filled. See
+    // `docs/reference/a-bench-message-that-fails-its-own-checksum.md`.
+    let warm_parse = parse_into::<NoDict, 64>(msg, &mut idx, Validation::ALL);
+    assert_eq!(
+        warm_parse,
+        Err(ParseError::BadCheckSum),
+        "the parse path must actually run"
+    );
+    assert_eq!(
+        idx.view(msg).get(55),
+        Some(b"INTC".as_ref()),
+        "the parse path must actually fill the index"
+    );
     let _ = t.encode(&mut out, &[(34, b"1".as_ref())]);
 
     let parse_allocs = count(|| {
@@ -117,19 +136,13 @@ fn main() {
     // a counting allocator is for, and a trait is exactly the place a future
     // implementation could start owning something.
     //
-    // The path must be live before its zero means anything, and "live" is two
-    // claims, not one: the trait returns what `parse_into` returns, and the
-    // index really was filled. `msg` above carries `10=098`, which is **not**
-    // its checksum, so both calls end in `BadCheckSum` — the fields are all
-    // pushed before `10=` is verified, so the walk is the whole message either
-    // way. Comparing the two outcomes rather than asserting `Complete` keeps
-    // this case honest about that instead of quietly depending on it.
+    // Its liveness assert is the stronger of the two available: not "the trait
+    // returned something", but "the trait returned exactly what `parse_into`
+    // returned on the same bytes", against the outcome asserted above.
     let mut eidx: FieldIndex<64> = FieldIndex::new();
-    let mut didx: FieldIndex<64> = FieldIndex::new();
-    let direct_warm = parse_into::<NoDict, 64>(msg, &mut didx, Validation::ALL);
-    let warm_parse = <TagValue<NoDict, 64> as Encoding>::parse(msg, &mut eidx, Validation::ALL);
+    let warm_trait = <TagValue<NoDict, 64> as Encoding>::parse(msg, &mut eidx, Validation::ALL);
     assert_eq!(
-        warm_parse, direct_warm,
+        warm_trait, warm_parse,
         "the Encoding parse path must return what parse_into returns"
     );
     let warm_view = <TagValue<NoDict, 64> as Encoding>::view(&eidx, msg);
