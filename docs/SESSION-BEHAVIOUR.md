@@ -247,6 +247,39 @@ depends on that order.
 | `10` | SendingTime accuracy | `2m_BodyLengthValueNotCorrect.def` (via `122` OrigSendingTime) |
 | `11` | invalid MsgType | `2r_UnregisteredMsgType.def` |
 
+### 3a. A group member's value waits for its count `[added 2026-09-19]`
+
+**"First fault wins" has one exception, and it is deliberate.** `373=5` (value out of range) and
+`373=6` (incorrect data format) on a field that is a **member of a repeating group** are deferred
+behind two checks that would otherwise lose the race: `373=1` (required field missing) and
+`373=16` (incorrect `NumInGroup` count). A message with both faults is answered about the count
+first, which is where QuickFIX/J puts it
+([ADR-0084](decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md)
+decision 2). **This changed FIX 4.4 behaviour as well as FIXT.**
+
+"Member" means something exact, and the exactness is the whole of
+[ADR-0085](decisions/ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md):
+a field is a member **iff its group's counter appears before it on the wire**. A member ahead of
+its counter is a stray top-level field and is answered in wire order like any other.
+
+The scan remembers the counters it has passed in a 32-slot array on the stack, because a `Vec`
+would allocate on the validate path (non-negotiable 1). **A message that fills the array gets the
+same answer** — the overflow path asks the same positional question, so the capacity moves the
+cost and never the verdict. That sentence used to be prose asserting itself; it is now held by
+tests, because the branch it describes was reached by none:
+
+| What | Held by |
+|---|---|
+| the ordering itself | `crates/session/tests/group_member_values.rs` |
+| a message that fills the array is answered the same | `tests/fixt.rs::a_stray_member_is_answered_in_wire_order_when_the_array_is_full`, with its accepted twin |
+| the array really fills on that message | `lib.rs::tests::an_ae_with_thirty_three_group_counters_fills_the_array` |
+| FIX 4.4 can never fill it, and the FIXT table can | `lib.rs::tests::no_fix_44_message_type_reaches_the_seen_bound_and_the_fixt_table_passes_it` (23 against `SEEN = 32`; SP2 reaches 393) |
+| under `ValidateUserDefinedFields=N`, both paths ignore the same counters | `tests/fixt.rs::a_member_of_a_user_defined_group_is_not_deferred_when_the_scan_ignores_its_counter`, with its twin |
+
+**`373=13` is not part of this** and asks a different question — *does this tag repeat by design in
+this message* — which is a property of the bytes rather than of what the scan has passed, so it
+reads the whole message on purpose.
+
 The order itself is tested: `14d` proves the required-field check runs before the CompID
 check, and the `14h` family proves the MsgType check runs after the required-field check.
 

@@ -35,9 +35,13 @@ below describe what a first release would contain.
   and ADR-0084.
 
 - **A group member's value is checked after its counter agrees.** `373=5` and `373=6` on a member
-  of a group whose counter the scan has already passed are deferred behind `missing_required` and
-  `bad_group_count`, so a message with both faults is answered about the count first (ADR-0084
-  decision 2). Observable behaviour change on FIX 4.4 as well as FIXT. Together with it, the
+  of a group are deferred behind `missing_required` and `bad_group_count`, so a message with both
+  faults is answered about the count first (ADR-0084 decision 2). Observable behaviour change on
+  FIX 4.4 as well as FIXT. **"Member" means its counter appeared *before it on the wire***, and a
+  message carrying more counters than the 32-slot scan array holds gets the same answer — the
+  overflow path asks the same positional question
+  ([ADR-0085](docs/decisions/ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md)),
+  including under `ValidateUserDefinedFields=N`, where both paths ignore the same counters. Together with it, the
   FIX 4.4 enumeration check became **per token** for `MULTIPLEVALUESTRING` fields: eight tags —
   18, 276, 277, 286, 291, 292, 529, 546 — change answer, and `18=2 A` is now one legal
   two-value field rather than one illegal value.

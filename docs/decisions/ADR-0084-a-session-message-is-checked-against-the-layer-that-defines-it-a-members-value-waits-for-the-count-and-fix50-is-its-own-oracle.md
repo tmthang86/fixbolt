@@ -1,6 +1,6 @@
 # ADR-0084 — A session message is checked against the layer that defines it, a group member's value waits for the count, and `fix50` is its own oracle
 
-- **Status**: Accepted — 2026-09-19
+- **Status**: Accepted — 2026-09-19 — **decision 2 amended by [ADR-0085](ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md)**, which narrows what "member" means and fixes the overflow path. Substance untouched, per §5.
 - **Approved by**: the PR B manager session under the owner's blanket delegation
   ("uỷ quyền toàn bộ cho bạn", 2026-09-19). The owner did not read it. Every figure in
   *Context* was re-measured by the manager independently of the architect before this line

@@ -61,9 +61,19 @@ it is a branch waiting for a counterparty.
 
 ## Regression tests
 
-Plan row B4c of
-[2026-09-19-phase-2-fixt-and-sbe](../plans/2026-09-19-phase-2-fixt-and-sbe.md): a
-`TradeCaptureReport` with 33 one-entry top-level groups on the SP2 table, asserting
-`SeenCounters::full` after the scan and `373=5 371=447` on a stray member placed after the
-33rd counter; the reversal's FAIL sentence is `expected 373=5 371=447, engine sent 373=16
-371=1907`. The test names are filled in here by row B4e once B4c lands.
+Built by plan row B4c of
+[2026-09-19-phase-2-fixt-and-sbe](../plans/2026-09-19-phase-2-fixt-and-sbe.md), landed as
+`d7be83d`. Five tests, because the branch needed holding from three directions — that it exists,
+that anything reaches it, and that the two paths now agree:
+
+| Test | What it holds |
+|---|---|
+| `crates/session/tests/fixt.rs::a_stray_member_is_answered_in_wire_order_when_the_array_is_full` | a message that fills the array gets the positional answer. Reversal FAIL sentence, predicted then observed word for word: `expected 373=5 371=447, engine sent 373=16 371=1907` |
+| `…::the_same_thirty_three_counters_without_the_two_faults_are_accepted` | the twin — the fixture is a legal message, so the red above is the branch and not the bytes. It stayed green through the reversal |
+| `crates/session/src/lib.rs::tests::an_ae_with_thirty_three_group_counters_fills_the_array` | the precondition, **observed not inferred**. Proven live by a second reversal: at `SEEN = 64` it reads `33 distinct group counters must exhaust 64 slots; the scan recorded 34` — 34 counters against 32 slots, full by two rather than by luck |
+| `…::tests::no_fix_44_message_type_reaches_the_seen_bound_and_the_fixt_table_passes_it` | the sentence that used to be prose: FIX 4.4's maximum is 23 against `SEEN = 32`, and the FIXT table reaches 393. Folded from `GROUP_KEYS` every run, so the day a dictionary crosses the bound the test says so |
+| `tests/fixt.rs::a_member_of_a_user_defined_group_is_not_deferred_when_the_scan_ignores_its_counter` | the second gap, found while building the first fixture: under `ValidateUserDefinedFields=N` the scan skips a counter ≥ 5000 before recording it, so the walk must skip it too. The knob is the only variable — `373=5 371=492` with it on, `373=16 371=1907` with it off, same bytes |
+
+Thirty-two group blocks make **thirty-three** counters: `40204`'s delimiter `40209` is itself a
+`NumInGroup` with a group of its own, so one block records twice. That is the kind of detail a
+fixture built from the XML rather than from the generated table would have got wrong.

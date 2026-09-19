@@ -122,19 +122,30 @@ Two bands are owed to the desk and neither can be resolved here:
   They are now 59 **plus** 179/180 behind `fix50sp2`. The plan assigns that edit to the manager,
   but the owner fenced `CLAUDE.md` for this PR, so it was left alone and is recorded here instead.
 * **No guard against two branches taking the same ADR number.** Still open.
-* **`SeenCounters` is NOT capacity-independent, and its rustdoc says it is.** `[found by senior
-  review 2026-09-19]` `crates/session/src/lib.rs:4025` claims *"The answer never depends on the
-  capacity, only its cost does"*. Measured, it does. When the 32-entry array fills, `defers` falls
-  back to `in_a_group`, which scans `0..view.len()` — **the whole message** — while the array
-  records only counters the scan has already **passed**. On a message where a group member appears
-  before its counter, the two give different reject reasons (`373=5 371=447` against
-  `373=1 371=40` on one hand-made `35=D`). FIX 4.4 cannot reach it: 731 `(msg_type, counter)`
-  pairs, at most 23 per message type. **FIXT can: 25 929 pairs, up to 393 on `TradeCaptureReport`
-  (AE), and 94 of 144 message types declare more than 32 counters.** No test in the repository
-  reaches the branch — proven by putting a `panic!` in it and running `cargo test --all`,
-  `-p fixbolt-session --features fix50sp2` and `-p fixbolt-engine --features fix50sp2`: zero hits,
-  all green. Routed to the architect; ADR-0084 decision 2's sentence *"`in_a_group` is not called
-  per field"* stops being true the moment the array is full, so this needs an ADR, not a patch.
+* ~~**`SeenCounters` is NOT capacity-independent, and its rustdoc says it is.**~~ **Closed
+  2026-09-19 by [ADR-0085](docs/decisions/ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md)
+  and commit `d7be83d`.** The overflow path now asks the same positional question the array
+  answers, so the capacity moves cost and never the verdict, and five tests hold what the rustdoc
+  used to assert — including one that proves the array actually fills (34 counters against 32
+  slots) and one that folds `GROUP_KEYS` so the day a dictionary crosses the bound the test says
+  so. A second gap found while building that fixture is closed in the same commit: under
+  `ValidateUserDefinedFields=N` the scan skips a counter ≥ 5000 before recording it, and the walk
+  now skips it too (158 SP2 pairs are in that class).
+* **The cost of the positional walk on a message with more than 32 counters is UNMEASURED.**
+  `in_a_group_before` is O(n) per deferred field on an already-quadratic scan. No figure exists:
+  this box is a Xeon and every timing case prints `NO BASELINE`. Owed to the §9 desk alongside
+  A-desk and B4b's validate band. ADR-0085 names a successor design (a generated `member →
+  counters` table) if it measures badly.
+* **`bad_group_count` abandons the whole `373=16` pass on a nested group, silently.** `[found
+  2026-09-19 while building B4c's fixture; PRE-EXISTING, not introduced by PR B]` It returns
+  `Option` and does `let group = view.group::<D>(msg_type, counter)?;` — the `?` is on an `Option`
+  in a function returning `Option`, so a counter whose group the view cannot build ends the pass
+  with `None`, meaning "no fault", and **every counter after it goes unchecked**. Same shape on
+  `field_at(i)?` a line above. Measured: `MessageView::group` answers `None` for a nested counter,
+  and 12 of 45 sub-5000 candidate counters on `AE` are nested. So a message carrying a nested
+  group currently gets no `373=16` check at all. Confirmed by reading the code; not fixed, because
+  it is nothing to do with ADR-0085 and widening B4c to cover it would have been scope creep. It
+  needs a row of its own.
 * **Two answers to "is this a session message?" in one validate pass.** Generated
   `is_transport_message` names eight types including `n` (XMLnonFIX); the hand-written `ADMIN`
   const at `crates/session/src/lib.rs:291` names seven and omits `n`. So `35=n` is validated
