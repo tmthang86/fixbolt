@@ -1,0 +1,27 @@
+[package]
+name = "fixbolt-sbe-gen"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Generates fixbolt-sbe layout tables from an SBE 1.0 XML schema, at the caller's build time"
+
+# One real, always-on dependency, as ADR-0081 decision 1 draws the line for
+# this crate: `sbe-gen` is not on any hot path and is not a dependency of
+# `sbe` itself (`sbe` stays at zero dependencies). A user's crate adds this
+# under [build-dependencies] and calls `generate`/`generate_with_includes`
+# from its own build.rs, the same shape `crates/dict` uses for the FIX
+# dictionary.
+[dependencies]
+roxmltree = "=0.20.0"
+
+[build-dependencies]
+roxmltree = "=0.20.0"
+
+[dev-dependencies]
+fixbolt-sbe = { path = "../sbe" }
+
+[lints]
+workspace = true

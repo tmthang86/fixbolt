@@ -559,3 +559,53 @@ CI run id, gate quote, cái gì chưa làm và vì sao)*
   Status vẫn `Proposed`** — hàng A4 ghi "→ Accepted cùng commit, *sau khi chủ duyệt*", chủ
   đang vắng và chưa duyệt, nên D16 và `GUIDE.md` trích ADR-0082 là *Proposed*. Khi chủ duyệt:
   đổi Status trong ADR-0082, bỏ hai chữ "Proposed" ở D16 và `GUIDE.md` 3a, và dòng CHANGELOG.
+
+### PR C
+
+- **2026-09-19 — ADR-0081 Accepted** (`980338a`, nhánh `feat/phase-2-c`, PR
+  [#83](https://github.com/tmthang86/fixbolt/pull/83), phiên Mac): chủ duyệt đích danh, và uỷ
+  quyền cho phiên này mọi quyết định thiết kế và gộp sau đó của PR C.
+- **2026-09-19 — C1 giao, commit `4390256`:** `crates/sbe` (`no_std`, `forbid(unsafe_code)`,
+  không dependency), `scripts/fetch-sbe-assets.sh` ghim spec `418a8f6` và Real Logic `05b076c`
+  (1.40.2). 22 + 1 test xanh, clippy sạch, bốn đảo chiều đỏ đúng chỗ. Bẫy ghi ở
+  `docs/reference/the-sbe-rc4-example-dumps-disagree-with-their-own-tables.md`: dump §7 và
+  bảng giải thích của chính nó không khớp ở bốn chỗ — test tin byte, không tin bảng.
+- **2026-09-19 — Sửa kế hoạch lần 4 (PR C), duyệt theo uỷ quyền của chủ:** hàng C2/C3 như
+  viết không xây được, vì `build.rs` không dùng được dev-dependency — để `crates/sbe/build.rs`
+  gọi `sbe-gen` thì `sbe` phải có build-dependency kéo `roxmltree`, trái ADR-0081 quyết định 1
+  ("not a dependency of `sbe`"). Sửa:
+  1. Bảng sinh cho test do **`crates/sbe-gen/build.rs`** tạo (nạp mã generator bằng
+     `#[path]`, `roxmltree` là build-dependency của `sbe-gen`); `sbe-gen` có dev-dependency
+     `fixbolt-sbe`. Không có `crates/sbe/build.rs`.
+  2. Test của C3 (`spec_examples.rs`, `car_roundtrip.rs`, `versioning.rs`) nằm ở
+     **`crates/sbe-gen/tests/`** thay vì `crates/sbe/tests/`; gate C3 là
+     `cargo test -p fixbolt-sbe-gen`.
+  3. CI chỉ chạy `scripts/fetch-quickfix-assets.sh`, và Mac không đụng `ci.yml`; nên script
+     ấy gọi `scripts/fetch-sbe-assets.sh` ở dòng cuối. Thiếu `vendor/sbe-*` thì `build.rs` vẫn
+     cho lib build (người dùng `sbe-gen` không cần vendor), nhưng file sinh ra là
+     `compile_error!` nên test **đỏ**, không bao giờ xanh lặng lẽ.
+  4. `example-schema.xml` dùng `xi:include`; `generate(xml)` giữ nguyên chữ ký và trả
+     `Error::Unsupported` khi gặp include; thêm `generate_with_includes(xml, resolve)`.
+- **2026-09-19 — C2 `163c845`, C3 `7d7b723`, C4 `2429d5c`, C7 `5fe1214`, C6 `8982d36`, C8
+  `ecbbb01`.** C3 và C4 chạy song song, rồi C6 và C7 song song (bộ file tách rời). Hai lệch
+  so với bảng, quyết theo uỷ quyền: (a) **encode lại từng byte** chuyển từ C3 sang C4, vì chỉ
+  C4 xây encoder — C3 chỉ còn phía đọc; (b) `sbe` phụ thuộc `fixbolt-codec` **chỉ** sau feature
+  `encoding` (mặc định bật, gate `mod`), nên `--no-default-features` vẫn không dependency.
+  `Encoding::encode` chỉ ghi root block; group và `varData` đi qua `MessageWriter`. Bench C6
+  dùng bảng viết tay (một message "nested group + varData" thay cho `Car`, gọi đúng tên), vì
+  `sbe` không được phụ thuộc `sbe-gen`. Bẫy mới:
+  `docs/reference/an-encoding-that-ignores-a-const-parameter-makes-every-caller-name-it.md`.
+- **2026-09-19 — review senior (Opus, context mới): 10 finding, cả 10 manager tái hiện bằng
+  probe và đối chiếu spec**, cả 10 xác nhận, không cái nào bị bác. Một blocker: composite có
+  `offset` (padding) làm generator đặt field sau chồng lên nó. Sáu nên sửa: một message 14 byte
+  bắt reader đi 2e8 entry (2,57 s); `GroupWriter::entry` lỗi mà không lùi con trỏ; ba luật
+  schema của spec bị nhận lặng lẽ; optional non-char array và `sinceVersion` trong composite
+  sinh ra bảng hỏng thay vì `Unsupported`. Ba nhỏ: `byteOrder` lạ thành little, f64 quá lớn
+  thành `inf`, test big-endian thiếu độ rộng. Sửa cả 10, mỗi cái có test đỏ trước (test big-endian
+  xanh ngay từ đầu — chỉ là thêm phủ, không phải lỗi). Ghi ở `docs/reference/sbe-spec-facts.md`
+  mục cuối.
+- **Chưa làm ở PR C, và vì sao:** C5 (`sbe-interop`: Linux + Java + `ci.yml`) thuộc phiên
+  cloud; C-desk (baseline thời gian) cần bàn §9; D1b cần `docs/internals/` của D1a, hiện chỉ
+  nằm trên `feat/phase-2-b`. `sinceVersion` chưa được thử qua bảng **sinh ra** (không schema
+  mẫu nào khai báo nó); `check-no-crate-root-allow.sh` không chạy được trên Mac (bash 3.2), CI
+  chạy nó.

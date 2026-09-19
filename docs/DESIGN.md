@@ -101,7 +101,9 @@ Added one at a time, each behind an approved plan. All of them exist.
 | Crate | Layer | Owns | Depends on |
 |---|---|---|---|
 | `codec` | L1 | Parse and serialise in place. The hot path. `no_std`-compatible is the goal; zero dependencies is the rule. `encoding`: the `Encoding` trait and `TagValue<D, N>`, its tag=value implementation, which forwards unchanged to `parse_into`, `MessageView` and `Template` (D16) | — |
+| `sbe` | L1 | SBE 1.0 decode and encode over `&'static` tables a schema's `Schema` impl supplies: header, `SbeView` (24 bytes, `Copy`), group cursor, `varData`. `#![no_std]`, `#![forbid(unsafe_code)]`. Behind the default feature `encoding`: `Sbe<S>: codec::Encoding`, and the writer (`MessageWriter`/`GroupWriter`/`EntryWriter`) that lets `encode` fill a root block and groups/`varData` fill themselves (D16) | `codec`, only under the default feature `encoding`; none with it off |
 | `dict` | build | Code generation from the FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the validation tables (defined tags, message types, per-message tag sets, field types, enum values). `tables`: `Tables`, the seven functions the session calls, implemented for `Fix44`; the alias `Fix44TagValue` (D16) | `codec`; it implements `codec::Dictionary` |
+| `sbe-gen` | build | `generate(xml)` / `generate_with_includes(xml, resolve)`: an SBE 1.0 schema to the `&'static` tables `sbe` reads, plus a unit struct implementing `sbe::Schema`. A construct outside ADR-0081 decision 5's scope is `Error::Unsupported(name)`, never a silently wrong table | `roxmltree`; dev-depends on `fixbolt-sbe` to compile the tables its own tests read |
 | `session` | L2 | The FIX session state machine. Pure, no I/O, `Role` as a type parameter. Time enters as `Tick` in milliseconds since 0000-01-01 (D13). Module `schedule` holds when a session is open and when both ends restart at `34=1` (ADR-0033) | `codec`, `dict` |
 | `engine` | L3 | TCP acceptor and connector, drives the session machines, owns the journal and the message log. `transport` is a module here until something needs it to be a crate | `session`; `libc` **only** under the `standard` or `affinity` feature |
 | `library` | L4 | The application-facing API, package **`fixbolt`**: `Handler`, `Incoming`, `Reply`, `App`, and a curated re-export of what an application needs (`serve`, `Config`, `Table`, `Limits`, `Settings`, `Handles`, `Observer`, `Admin`, `Recovery`, `FileJournal`, `FileLog`, …). `Engine`, `Dispatch`, `Transport`, `wait`, `shard`, `affinity`, `frame` and `ring` are deliberately absent; reaching for one means naming `fixbolt-engine` yourself | `engine` |
@@ -970,6 +972,26 @@ aliases and **every `serve*` signature is unchanged** — `crates/library/exampl
 compiles untouched. `engine` re-exports `TagValue` and `Fix44` so the default is a type a caller
 can name and therefore substitute.
 
+**`[added 2026-09-19, step 9]` `Sbe<S>: Encoding`, and the boundary above is now code, not a
+prediction.** `crates/sbe` implements the trait for any `S: Schema` (ADR-0081):
+`View<'a> = SbeView<'a>`, 24 bytes and `Copy`, the same shape discipline as `MessageView`;
+`Field = FieldId`, a template-relative field id, never a FIX tag; `Dict = SbeTables<S>`, which
+implements `codec::Dictionary` **only** — `sbe` does not depend on `dict`, so it cannot implement
+`dict::Tables`, and ADR-0082 decision 4 says it should not try; `session_fields` returns `None`
+unconditionally, spending the trait's one hook for "does this encoding carry a FIX session
+header" on the answer "no". `encode` writes the root block only, from a pre-built
+`SbeTemplate<S, N>` (D9's shape, reused because the trait's `Template<P, S>` offers no group or
+`varData` slots of its own); groups and `varData` are written after it, in schema order, through
+`sbe`'s native `MessageWriter` / `GroupWriter` / `EntryWriter`, not through anything `Encoding`
+declares. **`Session<Sbe<S>>` does not compile**, and that sentence has a proof rather than an
+assertion behind it: `crates/library/src/lib.rs`'s `sbe` module carries a `compile_fail` doctest
+naming exactly why — `Sbe<S>`'s `View`/`Scratch` are `SbeView`/`MessageHeader`, never
+`MessageView<'_, N>`/`FieldIndex<N>` for any `N`, and `SbeTables<S>` has no `dict::Tables` impl —
+checked on every build of the `sbe` feature. The `encoding` feature on `sbe` (on by default) is
+what gates the module that implements `Encoding`, and with it the crate's only dependency,
+`codec`; `--no-default-features` leaves `sbe` at zero dependencies — header, view, group and
+`varData` only, the runtime `sbe-gen`'s tables are read by.
+
 ## 5. Non-goals for v1
 
 The full list is [PRD.md §5](PRD.md); this is the subset that shapes the architecture.
@@ -1041,6 +1063,7 @@ below).
 | Gate | Target | Proven by |
 |---|---|---|
 | Allocations on the hot path, codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator. `[2026-09-19]` the `parse via Encoding` case counts the same parse through `Encoding::parse` beside the direct `parse_into` case, and each asserts its own path is live (D16) |
+| Allocations on the hot path, sbe `[2026-09-19]` | **0** on four paths: parse nested (header+root), field (through `Encoding::field`), walk nested group + `varData`, encode NewOrderSingle (through `Encoding::encode` with an `SbeTemplate`) | `crates/sbe/benches/alloc.rs`, counting allocator, injection-proven the same way as `codec`'s. `benches/sbe.rs` times the same four through the shared harness and prints `NO BASELINE`; no timing baseline has been recorded yet (D16, step 9) |
 | Allocations on the hot path, session | **0** on sixteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, ordered, clock, text, schedule-open, schedule-shut | `crates/session/benches/alloc.rs`. The refusal path is counted apart because a hostile counterparty controls it and a `format!` is easiest to reach for there. `[measured 2026-09-02]` injecting one into `ordered` reads 10 000 |
 | Allocations on the hot path, engine | **0** on thirty-one paths (`cargo bench -p fixbolt-engine --bench alloc`'s `allocations:` line, 2026-09-14): **mark-out-mem, mark-out-file-async, journal-async-busy**, idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle, registry-lookup, observe-idle, observe-asked, events-idle, events-busy, admin-idle, admin-busy, shutdown, reconnect, log-record, log-idle, log-busy, **origin-idle, origin-busy**, adopt-idle, **logon-first** | `crates/engine/benches/alloc.rs`. `busy` asserts the session is still logged on at the end of the count, because an earlier version measured a connection dropped at message two. `log-record` calls `MessageLog::record` a thousand times with no engine in the window; `[measured 2026-09-04]` making it allocate once reads 1000. `[measured 2026-09-05]` the two ADR-0048 cases read **2000** and **16** under an injected `format!`; `logon-first` is sixteen exact calls rather than thousands because `speak_first` runs once per session and the fixture cannot cycle sessions — one `Config` means a second concurrent session is refused as a duplicate, and a dropped `Loopback` peer signals no EOF, so an early version of that case read `1 sends over 500 sessions`. What no bench here proves is that the writer thread allocates nothing while the engine runs; `tools/w2w` is where a both-threads number belongs |
 | A peer's TLS 1.3 KeyUpdate allocates exactly what rustls's key schedule forces, and nothing else `[2026-09-13]` | engine and ktls-core: **0**; rustls: **two** boxes of **exactly 184** bytes per direction rekeyed — **four** under `update_requested`, **two** under `update_not_requested`, of this lock's rustls 0.23.44 and ring 0.17.14 — asserted `==`, not `<=` — the second named carve-out from non-negotiable 1 | `crates/engine/tests/tls_key_update.rs::a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces` (`update_requested`, 4 boxes) and `::a_key_update_without_update_requested_rekeys_one_direction_and_allocates_two_boxes` (`update_not_requested`, 2 boxes), each run reading the same count ([ADR-0063](decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)). A ceiling (`<= 4`) was what step 6c shipped under a name that said "nothing"; an exact count is the assertion that forces a re-read on the next rustls or ring bump |
@@ -1223,8 +1246,10 @@ measurements.
 
 ## 7. Build order
 
-Each step was a plan, a branch and a merge. **Steps 1–8 are complete as of 2026-09-02; step 9 is
-in flight.**
+Each step was a plan, a branch and a merge. **Steps 1–8 are complete as of 2026-09-02. Step 9 is
+in flight: `sbe` and `sbe-gen` are built and tested as of 2026-09-19; `tools/sbe-interop`, the
+second-implementation check the step also names, is not — it is routed to the cloud session
+(Linux + Java) and has not landed.**
 
 1. **`codec` + `dict`**: parse, serialise, generated tables ([plan](plans/2026-08-27-codec-dict.md)).
 2. **Repeating groups**: `GroupIter` over the flat index, `<component>` recursion in `dict`
