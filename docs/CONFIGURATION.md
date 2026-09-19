@@ -33,7 +33,7 @@ guessing which of the two looser readings was meant.
 **Seven probes read this table; the *Meaning* and notes cells are prose and are
 read by a person** `[added 2026-09-13; changed 2026-09-13, was six]`.
 
-**Thirty-four keys** are recognised `[changed 2026-09-18, was thirty-three]`.
+**Thirty-five keys** are recognised `[changed 2026-09-19, was thirty-four]`.
 
 **What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The
 `doc_table` tests in [`settings.rs`](../crates/engine/src/settings.rs) read this section and
@@ -81,6 +81,7 @@ the code and changed this count sentence to *"Four hundred keys"*, and the test 
 | `BeginString` | FIX version of the session | ASCII, max 32 bytes, e.g. `FIX.4.4` | required | `[DEFAULT]` or `[SESSION]` | [`settings.rs:95`](../crates/engine/src/settings.rs#L95) |
 | `SenderCompID` | This engine's identity | ASCII, max 32 bytes | required | `[DEFAULT]` or `[SESSION]` | [`settings.rs:96`](../crates/engine/src/settings.rs#L96) |
 | `TargetCompID` | The counterparty's identity | ASCII, max 32 bytes | required per `[SESSION]` | `[SESSION]` (or `[DEFAULT]`) | [`settings.rs:97`](../crates/engine/src/settings.rs#L97) |
+| `DefaultApplVerID` | The application version a FIXT 1.1 session defaults to. It is sent as `1137` on this engine's own `Logon`, and a counterparty `Logon` that omits it is dropped — ADR-0080 decision 4 | ASCII, max 16 bytes. The `ApplVerID` strings QuickFIX spells, `9` being FIX 5.0 SP2. **The list is not enforced here**: it is `fixbolt-session`'s to enforce on the wire, and a second copy in this file would be a second rule | none. Required when `BeginString` is `FIXT.1.1`, and refused when it is not | `[DEFAULT]` or `[SESSION]` | [`settings.rs`](../crates/engine/src/settings.rs) |
 | `HeartBtInt` | Heartbeat interval | non-negative integer, seconds; **zero means no heartbeats at all**, which is what FIX 4.4 says `108=0` means | `30` | `[DEFAULT]` or `[SESSION]` | [`settings.rs:98`](../crates/engine/src/settings.rs#L98), [`session/src/lib.rs:266`](../crates/session/src/lib.rs#L266) |
 | `MaxSkewMillis` | How far an inbound `SendingTime (52)` may differ from this engine's clock | integer, milliseconds | `120000` (2 minutes) | `[DEFAULT]` or `[SESSION]` | [`settings.rs:99`](../crates/engine/src/settings.rs#L99), [`session/src/lib.rs:260`](../crates/session/src/lib.rs#L260) |
 | `StartTime` | When the session opens each day, UTC | `HH:MM:SS` | none; with no `EndTime` the session is always open | `[DEFAULT]` or `[SESSION]` | [`settings.rs:100`](../crates/engine/src/settings.rs#L100), [`settings.rs:567`](../crates/engine/src/settings.rs#L567) |
