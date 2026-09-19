@@ -18,7 +18,9 @@
 
 use std::ops::Range;
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_engine::journal::Store;
 use fixbolt_session::journal::Journal;
 use fixbolt_session::{Acceptor, Application, Config, Link, Session};
@@ -98,8 +100,8 @@ fn their_logout(seq: u32) -> Vec<u8> {
 }
 
 /// Logged on, with the journal that saw it happen. The `Logon` answer is `34=1`.
-fn logged_on() -> (Session<Acceptor, 256>, Store) {
-    let mut s: Session<Acceptor, 256> = Session::new(cfg());
+fn logged_on() -> (Session<TagValue<Fix44, 256>, Acceptor>, Store) {
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg());
     let mut j = Store::new();
     let mut app = Quiet;
     s.connect(|_| {});

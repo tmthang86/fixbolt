@@ -21,10 +21,12 @@
 //! when it is wanted.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Acceptor, Config, Session};
 
-fn acceptor() -> Session<Acceptor, 256> {
+fn acceptor() -> Session<TagValue<Fix44, 256>, Acceptor> {
     Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"))
 }
 

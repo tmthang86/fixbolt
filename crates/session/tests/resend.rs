@@ -15,10 +15,12 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Acceptor, Config, Link, Session};
 
-fn acceptor() -> Session<Acceptor, 256> {
+fn acceptor() -> Session<TagValue<Fix44, 256>, Acceptor> {
     Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"))
 }
 
@@ -83,7 +85,7 @@ fn set(wire: &[u8], from: &str, to: &str) -> Vec<u8> {
 
 /// A session logged on at [`FIXED_TIME_MILLIS`] with `108=30`, its Logon reply
 /// discarded. Inbound count 2, outbound count 2.
-fn logged_on() -> Session<Acceptor, 256> {
+fn logged_on() -> Session<TagValue<Fix44, 256>, Acceptor> {
     let mut s = acceptor();
     s.connect(|_| {});
     s.tick(FIXED_TIME_MILLIS, |_| {});
@@ -93,7 +95,7 @@ fn logged_on() -> Session<Acceptor, 256> {
 }
 
 /// Feed one message and report every reply, rendered.
-fn feed(s: &mut Session<Acceptor, 256>, wire: &[u8]) -> Vec<String> {
+fn feed(s: &mut Session<TagValue<Fix44, 256>, Acceptor>, wire: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     s.received(wire, |b| {
         out.push(String::from_utf8_lossy(b).replace('\u{1}', "|"));

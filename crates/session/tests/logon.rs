@@ -11,12 +11,14 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{
     FIXED_TIME_IN, FIXED_TIME_MILLIS, FIXED_TIME_OUT, Kind, scenarios, with_real_checksum,
 };
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Acceptor, Config, Link, Session};
 
-fn acceptor() -> Session<Acceptor, 256> {
+fn acceptor() -> Session<TagValue<Fix44, 256>, Acceptor> {
     Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"))
 }
 
@@ -76,7 +78,7 @@ fn reframe(wire: &[u8]) -> Vec<u8> {
 }
 
 /// Like [`feed`], but keeps what came back.
-fn collect(session: &mut Session<Acceptor, 256>, wire: &[u8]) -> Vec<String> {
+fn collect(session: &mut Session<TagValue<Fix44, 256>, Acceptor>, wire: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     session.connect(|b| out.push(render(b)));
     session.tick(FIXED_TIME_MILLIS, |b| out.push(render(b)));
@@ -88,7 +90,7 @@ fn render(b: &[u8]) -> String {
     String::from_utf8_lossy(b).replace('\u{1}', "|")
 }
 
-fn feed(session: &mut Session<Acceptor, 256>, wire: &[u8]) -> (Link, usize) {
+fn feed(session: &mut Session<TagValue<Fix44, 256>, Acceptor>, wire: &[u8]) -> (Link, usize) {
     let mut sent = 0usize;
     session.connect(|_| sent += 1);
     session.tick(fixbolt_conformance::script::FIXED_TIME_MILLIS, |_| {
@@ -188,7 +190,7 @@ fn a_comp_id_too_long_to_hold_does_not_match_its_own_truncation() {
         &format!("56={truncated}"),
     ));
 
-    let mut fits: Session<Acceptor, 256> =
+    let mut fits: Session<TagValue<Fix44, 256>, Acceptor> =
         Session::new(Config::acceptor(b"FIX.4.4", truncated.as_bytes(), b"TW44"));
     assert_eq!(
         feed(&mut fits, &wire).0,
@@ -197,7 +199,7 @@ fn a_comp_id_too_long_to_hold_does_not_match_its_own_truncation() {
          proves nothing"
     );
 
-    let mut overflows: Session<Acceptor, 256> =
+    let mut overflows: Session<TagValue<Fix44, 256>, Acceptor> =
         Session::new(Config::acceptor(b"FIX.4.4", configured.as_bytes(), b"TW44"));
     assert_eq!(
         feed(&mut overflows, &wire).0,
@@ -281,7 +283,7 @@ fn the_clock_moves_and_the_next_message_says_so() {
 fn the_default_reset_policy_leaves_a_resumed_session_counting() {
     // The neutral half, and it must be red for the right reason if `connect`
     // ever starts resetting a resumed session by itself.
-    let mut session: Session<Acceptor, 256> =
+    let mut session: Session<TagValue<Fix44, 256>, Acceptor> =
         Session::resume(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"), 500, 400);
     session.connect(|_| ());
 
@@ -297,7 +299,7 @@ fn the_default_reset_policy_leaves_a_resumed_session_counting() {
 fn reset_on_logon_restarts_a_resumed_sessions_numbers() {
     let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
         .with_reset(fixbolt_session::ResetPolicy::new().on_logon());
-    let mut session: Session<Acceptor, 256> = Session::resume(cfg, 500, 400);
+    let mut session: Session<TagValue<Fix44, 256>, Acceptor> = Session::resume(cfg, 500, 400);
     session.connect(|_| ());
 
     assert_eq!(
@@ -312,7 +314,7 @@ fn reset_on_logon_restarts_a_resumed_sessions_numbers() {
 fn reset_on_disconnect_restarts_the_numbers() {
     let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
         .with_reset(fixbolt_session::ResetPolicy::new().on_disconnect());
-    let mut session: Session<Acceptor, 256> = Session::new(cfg);
+    let mut session: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg);
     session.connect(|_| ());
     session.tick(FIXED_TIME_MILLIS, |_| ());
     session.received(&good_logon(), |_| ());
@@ -359,7 +361,7 @@ fn a_disconnect_without_the_policy_keeps_the_numbers() {
 /// `next_in` is 1 so the corpus Logon's own `34=1` is the number this end is
 /// waiting for — otherwise the sequence check answers before `789` is reached
 /// and every assertion below would be about the wrong rule.
-fn resumed(next_out: u32) -> Session<Acceptor, 256> {
+fn resumed(next_out: u32) -> Session<TagValue<Fix44, 256>, Acceptor> {
     Session::resume(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"), next_out, 1)
 }
 
@@ -488,7 +490,7 @@ fn an_acceptor_replying_counts_the_logon_it_is_answering() {
     // comment warns about, and it would ask the counterparty to send `34=1`
     // twice.
     let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true);
-    let mut session: Session<Acceptor, 256> = Session::new(cfg);
+    let mut session: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg);
     let out = collect(&mut session, &good_logon());
 
     assert_eq!(out.len(), 1, "one Logon reply: {out:?}");
@@ -519,7 +521,7 @@ fn an_initiator_opening_asks_for_the_number_it_is_actually_waiting_on() {
     let cfg = Config::initiator(b"FIX.4.4", b"TW44", b"ISLD")
         .with_heart_bt_int(30)
         .with_next_expected(true);
-    let mut session: Session<fixbolt_session::Initiator, 256> = Session::new(cfg);
+    let mut session: Session<TagValue<Fix44, 256>, fixbolt_session::Initiator> = Session::new(cfg);
     let mut out = Vec::new();
     session.connect(|b| out.push(render(b)));
     session.tick(FIXED_TIME_MILLIS, |b| out.push(render(b)));
@@ -538,7 +540,8 @@ fn a_resumed_initiator_asks_for_where_it_left_off() {
     let cfg = Config::initiator(b"FIX.4.4", b"TW44", b"ISLD")
         .with_heart_bt_int(30)
         .with_next_expected(true);
-    let mut session: Session<fixbolt_session::Initiator, 256> = Session::resume(cfg, 40, 41);
+    let mut session: Session<TagValue<Fix44, 256>, fixbolt_session::Initiator> =
+        Session::resume(cfg, 40, 41);
     let mut out = Vec::new();
     session.connect(|b| out.push(render(b)));
     session.tick(FIXED_TIME_MILLIS, |b| out.push(render(b)));
@@ -556,7 +559,7 @@ fn the_position_of_789_is_the_dictionarys_and_not_this_call_sites() {
     // hand-placed field is a latent conformance failure. `98`, `108`, `141`,
     // `789` is the dictionary's order (`spec/FIX44.xml`, Logon).
     let cfg = Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_next_expected(true);
-    let mut session: Session<Acceptor, 256> = Session::new(cfg);
+    let mut session: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg);
     let out = collect(&mut session, &good_logon());
 
     let at_98 = out[0].find("98=").expect("the reply echoes 98");

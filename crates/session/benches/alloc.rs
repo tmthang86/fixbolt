@@ -23,8 +23,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::echo::echo;
 use fixbolt_conformance::script::{Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_engine::journal::Store;
 use fixbolt_session::schedule::{Schedule, Weekdays};
 use fixbolt_session::text::SessionText;
@@ -111,7 +113,7 @@ impl Application for EchoApp {
     }
 }
 
-fn acceptor() -> Session<Acceptor, 256> {
+fn acceptor() -> Session<TagValue<Fix44, 256>, Acceptor> {
     Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"))
 }
 
@@ -348,7 +350,7 @@ fn main() {
     let order = inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[1].clone();
     let logon_reply = inputs("15_HeaderAndBodyFieldsOrderedDifferently.def")[0].clone();
     {
-        let mut s: Session<Initiator, 256> =
+        let mut s: Session<TagValue<Fix44, 256>, Initiator> =
             Session::new(Config::initiator(b"FIX.4.4", b"TW44", b"ISLD"));
         s.connect(|_| ());
         let mut sent = 0usize;
@@ -358,7 +360,7 @@ fn main() {
 
     let logon_out_allocs = count(|| {
         for _ in 0..10_000 {
-            let mut s: Session<Initiator, 256> =
+            let mut s: Session<TagValue<Fix44, 256>, Initiator> =
                 Session::new(Config::initiator(b"FIX.4.4", b"TW44", b"ISLD"));
             s.connect(|_| ());
             s.tick(now, |_| ());
@@ -484,7 +486,7 @@ fn main() {
     );
     assert!(!filtered.contains(shut_at), "and the shut case really shut");
 
-    let mut open_session: Session<Acceptor, 256> =
+    let mut open_session: Session<TagValue<Fix44, 256>, Acceptor> =
         Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_schedule(filtered));
     open_session.connect(|_| ());
     open_session.tick(open_at, |_| ());
@@ -501,7 +503,7 @@ fn main() {
 
     // The closing turn, built fresh each time because it ends the link.
     {
-        let mut s: Session<Acceptor, 256> =
+        let mut s: Session<TagValue<Fix44, 256>, Acceptor> =
             Session::new(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_schedule(filtered));
         s.connect(|_| ());
         s.tick(open_at, |_| ());
@@ -516,7 +518,7 @@ fn main() {
     }
     let schedule_shut_allocs = count(|| {
         for _ in 0..10_000 {
-            let mut s: Session<Acceptor, 256> = Session::new(
+            let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(
                 Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44").with_schedule(filtered),
             );
             s.connect(|_| ());
@@ -556,7 +558,7 @@ fn main() {
     {
         // The path is proven live before it is counted: a zero below must mean
         // *did not allocate*, never *did not run*.
-        let mut s: Session<Acceptor, 256> = Session::resume(
+        let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::resume(
             Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
                 .with_next_expected(true)
                 .with_last_processed(true),
@@ -576,7 +578,7 @@ fn main() {
         // drives the replay. A case that only proved one of them would leave
         // the other's arithmetic uncounted.
         let mut reply = Vec::new();
-        let mut s2: Session<Acceptor, 256> = Session::new(
+        let mut s2: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(
             Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
                 .with_next_expected(true)
                 .with_last_processed(true),
@@ -595,7 +597,7 @@ fn main() {
     }
     let next_expected_allocs = count(|| {
         for _ in 0..10_000 {
-            let mut s: Session<Acceptor, 256> = Session::resume(
+            let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::resume(
                 Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")
                     .with_next_expected(true)
                     .with_last_processed(true),

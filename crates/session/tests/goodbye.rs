@@ -20,7 +20,9 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_MILLIS, Kind, scenarios, with_real_checksum};
+use fixbolt_dict::Fix44;
 use fixbolt_session::{Acceptor, Config, DropReason, Link, Session};
 
 fn cfg() -> Config {
@@ -61,8 +63,8 @@ fn reframe(wire: &[u8], from: &str, to: &str) -> Vec<u8> {
     with_real_checksum(rebuilt.as_bytes())
 }
 
-fn logged_on() -> (Session<Acceptor, 256>, Vec<String>) {
-    let mut s: Session<Acceptor, 256> = Session::new(cfg());
+fn logged_on() -> (Session<TagValue<Fix44, 256>, Acceptor>, Vec<String>) {
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg());
     let mut out = Vec::new();
     s.connect(|b| out.push(String::from_utf8_lossy(b).replace('\u{1}', "|")));
     s.tick(FIXED_TIME_MILLIS, |b| {
@@ -276,7 +278,7 @@ fn asking_twice_sends_one_goodbye() {
 /// the event stream as `EndedWithoutReason`.
 #[test]
 fn a_session_that_never_logged_on_is_ended_with_a_reason_and_told_nothing() {
-    let mut s: Session<Acceptor, 256> = Session::new(cfg());
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> = Session::new(cfg());
     s.connect(|_| {});
     s.tick(FIXED_TIME_MILLIS, |_| {});
     let mut sent = 0;
@@ -326,7 +328,7 @@ fn a_goodbye_that_cannot_be_built_does_not_leave_a_shutdown_waiting() {
 /// alone cannot tell a goodbye from a refusal.
 #[test]
 fn reset_on_logout_restarts_the_numbers_only_after_the_goodbye_is_numbered() {
-    let mut s: Session<Acceptor, 256> =
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> =
         Session::new(cfg().with_reset(fixbolt_session::ResetPolicy::new().on_logout()));
     s.connect(|_| ());
     s.tick(FIXED_TIME_MILLIS, |_| ());
@@ -372,7 +374,8 @@ fn a_logout_without_the_policy_keeps_the_numbers() {
 /// the close.
 #[test]
 fn a_goodbye_that_is_never_answered_times_out_at_the_stated_deadline() {
-    let mut s: Session<Acceptor, 256> = Session::new(cfg().with_logout_timeout_ms(5_000));
+    let mut s: Session<TagValue<Fix44, 256>, Acceptor> =
+        Session::new(cfg().with_logout_timeout_ms(5_000));
     s.connect(|_| ());
     s.tick(FIXED_TIME_MILLIS, |_| ());
     s.received(&good_logon(), |_| ());

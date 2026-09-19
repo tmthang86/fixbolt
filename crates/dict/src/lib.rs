@@ -4,8 +4,19 @@
 //! data rather than something copied into this repository.
 
 mod field_type;
+mod tables;
 
 pub use field_type::FieldType;
+pub use tables::Tables;
+
+/// FIX 4.4 tag=value under [`fixbolt_codec::Encoding`].
+///
+/// The encoding a `Session` is generic over by default, and the name
+/// `engine` and `library` build their own aliases on. `64` is the
+/// [`fixbolt_codec::FieldIndex`] capacity the alias fixes; a caller that wants
+/// another writes `TagValue<Fix44, N>` itself, exactly as it used to pick `N`
+/// on `Session` (`CLAUDE.md` §6 — the caller picks `N`, no hidden constant).
+pub type Fix44TagValue = fixbolt_codec::TagValue<Fix44, 64>;
 
 // `[measured 2026-09-08]` The generated table indexes its own arrays, twice,
 // each time under a bound clippy cannot see. **An `#[allow]` written here does

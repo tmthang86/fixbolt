@@ -26,9 +26,11 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+use fixbolt_codec::TagValue;
 use fixbolt_conformance::mirror::{self, MirrorClass};
 use fixbolt_conformance::runner::{Conn, Input, Intent, Link, SessionUnderTest, run_mirrored};
 use fixbolt_conformance::script::{Kind, Scenario};
+use fixbolt_dict::Fix44;
 use fixbolt_engine::journal::Store;
 use fixbolt_session::{Config, Initiator, Session};
 
@@ -60,7 +62,7 @@ fn link(l: fixbolt_session::Link) -> Link {
 /// Mirrored, the CompIDs swap: the files are written from `ISLD`'s side and
 /// this engine is `TW44`.
 struct Adapter {
-    conns: Vec<(Conn, Session<Initiator, 256>, Store)>,
+    conns: Vec<(Conn, Session<TagValue<Fix44, 256>, Initiator>, Store)>,
     heart_bt_int: u32,
     first_out_seq: u32,
 }
