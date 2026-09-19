@@ -506,8 +506,9 @@ fn corpus_dir(corpus: &Corpus) -> PathBuf {
 
 /// Every `.def` file in `corpus`, in sorted order, parsed.
 ///
-/// Duplicates [`load`]'s body rather than sharing it: [`load`] asserts the
-/// hardcoded 59 with [`LoadError::WrongFileCount`], and the 59 FIX 4.4 path
+/// Duplicates the private `load`'s body rather than sharing it: `load`
+/// asserts the hardcoded 59 with [`LoadError::WrongFileCount`], and the 59
+/// FIX 4.4 path
 /// must keep that exact error type (CLAUDE.md §12 brief, step B3) — factoring
 /// a shared helper would mean either path returning an error the other did
 /// not before, so this one duplicates instead and asserts `corpus.count` with
