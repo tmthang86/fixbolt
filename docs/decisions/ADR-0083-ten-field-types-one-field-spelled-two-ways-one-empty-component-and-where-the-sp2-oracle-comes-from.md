@@ -1,8 +1,13 @@
 # ADR-0083 — Ten field types, one field spelled two ways, one empty component, and where the SP2 oracle comes from
 
-- **Status**: Proposed — 2026-09-19
+- **Status**: Accepted — 2026-09-19
 - **Date**: 2026-09-19
-- **Deciders**: Tran Manh Thang
+- **Deciders**: Tran Manh Thang, who delegated the decision on this ADR to the PR B manager
+  session on 2026-09-19 ("uỷ quyền cho bạn duyệt thay tôi") rather than reading it himself.
+  Recorded here because the delegation is the reason the status moved, and because a reader
+  asking *who actually weighed these five decisions* deserves the honest answer: the
+  architect proposed them, the manager verified the six underlying facts by re-measuring
+  them, and nobody else has read the ADR.
 - **Related**: [ADR-0080](ADR-0080-the-dictionary-rides-the-encoding-and-a-fixt-session-is-one-table-built-from-two-xml-files.md)
   decision 2 (the pair build — this ADR narrows its "must agree on number, name and type" and
   fills the gaps it left); [ADR-0001](ADR-0001-relationship-to-quickfix.md) (the XML is data and
