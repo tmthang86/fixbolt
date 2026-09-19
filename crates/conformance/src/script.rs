@@ -113,6 +113,9 @@ pub enum LoadError {
     UnreadableFile { path: PathBuf, cause: String },
     /// The directory held a number of `.def` files other than 59.
     WrongFileCount(usize),
+    /// A [`Corpus`] directory held a number of `.def` files other than the
+    /// one it declared.
+    WrongCount { expected: usize, found: usize },
     /// A line began with a directive letter and could not be understood.
     UnknownDirective {
         file: String,
@@ -137,6 +140,11 @@ impl fmt::Display for LoadError {
             Self::WrongFileCount(n) => write!(
                 f,
                 "expected 59 FIX 4.4 acceptance definitions, found {n}. \
+                 The corpus tracks mutable master — see STATUS.md open item 7."
+            ),
+            Self::WrongCount { expected, found } => write!(
+                f,
+                "expected {expected} definitions in this corpus, found {found}. \
                  The corpus tracks mutable master — see STATUS.md open item 7."
             ),
             Self::UnknownDirective {
@@ -438,6 +446,124 @@ fn load(mirrored: bool) -> Result<Vec<Scenario>, LoadError> {
 /// As [`scenarios`].
 pub fn load_all() -> Result<Vec<Step>, LoadError> {
     Ok(scenarios()?.into_iter().flat_map(|s| s.steps).collect())
+}
+
+/// One FIXT `.def` corpus under
+/// `vendor/quickfix/test/definitions/server/` — see [`fixt_corpora`].
+///
+/// `[measured 2026-09-19]`, ADR-0080 *Context*, "The oracle:" paragraph: three
+/// directories, 60 files each, differing only in the counterparty
+/// `SenderCompID` and the `DefaultApplVerID(1137)` a Logon carries.
+#[derive(Debug, Clone, Copy)]
+pub struct Corpus {
+    /// Directory name under `vendor/quickfix/test/definitions/server/`, e.g.
+    /// `"fix50sp2"`.
+    pub dir: &'static str,
+    /// Expected number of `.def` files in the directory.
+    pub count: usize,
+    /// The counterparty `SenderCompID` (`49=`) this corpus's `I` Logon lines
+    /// carry.
+    pub comp_id: &'static str,
+    /// The `DefaultApplVerID(1137)` value this corpus's `I` Logon lines
+    /// carry.
+    pub default_appl_ver_id: &'static str,
+}
+
+/// The three FIXT corpora (ADR-0080 decision 2): FIX 5.0, FIX 5.0 SP1 and
+/// FIX 5.0 SP2 sit over the same `FIXT11.xml` transport dictionary and are
+/// told apart only by `DefaultApplVerID(1137)`, so `dict` generates one table
+/// (SP2's) and the other two are covered here, by parameter, not by table.
+#[must_use]
+pub fn fixt_corpora() -> [Corpus; 3] {
+    [
+        Corpus {
+            dir: "fix50",
+            count: 60,
+            comp_id: "TW50",
+            default_appl_ver_id: "7",
+        },
+        Corpus {
+            dir: "fix50sp1",
+            count: 60,
+            comp_id: "TW50SP1",
+            default_appl_ver_id: "8",
+        },
+        Corpus {
+            dir: "fix50sp2",
+            count: 60,
+            comp_id: "TW50SP2",
+            default_appl_ver_id: "9",
+        },
+    ]
+}
+
+/// Where a [`Corpus`]'s `.def` files live.
+fn corpus_dir(corpus: &Corpus) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../vendor/quickfix/test/definitions/server")
+        .join(corpus.dir)
+}
+
+/// Every `.def` file in `corpus`, in sorted order, parsed.
+///
+/// Duplicates [`load`]'s body rather than sharing it: [`load`] asserts the
+/// hardcoded 59 with [`LoadError::WrongFileCount`], and the 59 FIX 4.4 path
+/// must keep that exact error type (CLAUDE.md §12 brief, step B3) — factoring
+/// a shared helper would mean either path returning an error the other did
+/// not before, so this one duplicates instead and asserts `corpus.count` with
+/// [`LoadError::WrongCount`].
+///
+/// Never mirrored: nothing under B3 or B4 runs a FIXT corpus from the other
+/// side.
+///
+/// # Errors
+///
+/// [`LoadError`] on the same terms as [`scenarios`], substituting `corpus`'s
+/// own directory and expected count for the FIX 4.4 ones.
+pub fn load_corpus(corpus: &Corpus) -> Result<Vec<Scenario>, LoadError> {
+    let dir = corpus_dir(corpus);
+    let entries = std::fs::read_dir(&dir).map_err(|e| LoadError::NoCorpus {
+        path: dir.clone(),
+        cause: e.to_string(),
+    })?;
+
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "def"))
+        .collect();
+    files.sort();
+    if files.len() != corpus.count {
+        return Err(LoadError::WrongCount {
+            expected: corpus.count,
+            found: files.len(),
+        });
+    }
+
+    let mut out = Vec::with_capacity(corpus.count);
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let text = std::fs::read_to_string(&path).map_err(|e| LoadError::UnreadableFile {
+            path: path.clone(),
+            cause: e.to_string(),
+        })?;
+        let mut steps = Vec::new();
+        for (i, raw) in text.lines().enumerate() {
+            if let Some(step) = parse_line(&name, i + 1, raw, false)? {
+                steps.push(step);
+            }
+        }
+        out.push(Scenario {
+            file: name,
+            steps,
+            mirrored: false,
+        });
+    }
+    Ok(out)
 }
 
 fn parse_line(
