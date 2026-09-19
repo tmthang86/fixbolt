@@ -24,10 +24,12 @@ fixbolt-codec = { path = "../codec", optional = true }
 [[bench]]
 name = "alloc"
 harness = false
+required-features = ["encoding"]
 
 [[bench]]
 name = "sbe"
 harness = false
+required-features = ["encoding"]
 
 [lints]
 workspace = true
