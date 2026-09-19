@@ -27,7 +27,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fixbolt_codec::{
-    Dictionary, FieldIndex, NoDict, TemplateBuilder, TimestampCache, Validation, parse_into,
+    Dictionary, Encoding, FieldIndex, NoDict, TagValue, TemplateBuilder, TimestampCache,
+    Validation, parse_into,
 };
 use fixbolt_dict::Fix44;
 
@@ -107,6 +108,39 @@ fn main() {
     let parse_allocs = count(|| {
         for _ in 0..10_000 {
             let _ = parse_into::<NoDict, 64>(msg, &mut idx, Validation::ALL);
+        }
+    });
+
+    // The same parse, reached through the `Encoding` trait (ADR-0079 decision
+    // 2). `TagValue::parse` forwards to `parse_into` and is `#[inline]`, so this
+    // case should read 0 for the same reason `parse` does — but "should" is what
+    // a counting allocator is for, and a trait is exactly the place a future
+    // implementation could start owning something.
+    //
+    // The path must be live before its zero means anything, and "live" is two
+    // claims, not one: the trait returns what `parse_into` returns, and the
+    // index really was filled. `msg` above carries `10=098`, which is **not**
+    // its checksum, so both calls end in `BadCheckSum` — the fields are all
+    // pushed before `10=` is verified, so the walk is the whole message either
+    // way. Comparing the two outcomes rather than asserting `Complete` keeps
+    // this case honest about that instead of quietly depending on it.
+    let mut eidx: FieldIndex<64> = FieldIndex::new();
+    let mut didx: FieldIndex<64> = FieldIndex::new();
+    let direct_warm = parse_into::<NoDict, 64>(msg, &mut didx, Validation::ALL);
+    let warm_parse = <TagValue<NoDict, 64> as Encoding>::parse(msg, &mut eidx, Validation::ALL);
+    assert_eq!(
+        warm_parse, direct_warm,
+        "the Encoding parse path must return what parse_into returns"
+    );
+    let warm_view = <TagValue<NoDict, 64> as Encoding>::view(&eidx, msg);
+    assert_eq!(
+        <TagValue<NoDict, 64> as Encoding>::field(warm_view, 55),
+        Some(b"INTC".as_ref()),
+        "the Encoding parse path must actually fill the index"
+    );
+    let encoding_parse_allocs = count(|| {
+        for _ in 0..10_000 {
+            let _ = <TagValue<NoDict, 64> as Encoding>::parse(msg, &mut eidx, Validation::ALL);
         }
     });
 
@@ -232,12 +266,17 @@ fn main() {
     });
 
     println!("allocations: parse   {parse_allocs}");
+    println!("allocations: parse via Encoding {encoding_parse_allocs}");
     println!("allocations: encode  {encode_allocs}");
     println!("allocations: lookup  {lookup_allocs}");
     println!("allocations: group   {group_allocs}");
     println!("allocations: validate {validate_allocs}");
     println!("allocations: data    {data_allocs}");
     assert_eq!(parse_allocs, 0, "parse must not allocate");
+    assert_eq!(
+        encoding_parse_allocs, 0,
+        "parsing through the Encoding trait must not allocate"
+    );
     assert_eq!(encode_allocs, 0, "encode must not allocate");
     assert_eq!(lookup_allocs, 0, "field lookup must not allocate");
     assert_eq!(
