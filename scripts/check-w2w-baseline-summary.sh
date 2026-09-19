@@ -89,6 +89,20 @@ same "hw-rx-missing 1 of 20000 — any missing RX stamp is a failed run (ADR-007
   "any missing RX stamp fails outright, even with tx-missing 0"
 
 echo
+echo "=== enough_qualified"
+
+# ADR-0071 decision 1 (revised 2026-09-19): an arm FAILs when fewer than half
+# of RUNS qualified — `q * 2 >= runs` is the pure integer form of `q >= runs/2`.
+same "1" "$(enough_qualified 4 10; echo $?)" \
+  "4 of 10 qualified is fewer than half: not enough (exit 1)"
+same "0" "$(enough_qualified 5 10; echo $?)" \
+  "5 of 10 qualified is exactly half: enough (exit 0)"
+same "0" "$(enough_qualified 20 20; echo $?)" \
+  "all runs qualified: enough (exit 0)"
+same "1" "$(enough_qualified 0 20; echo $?)" \
+  "0 of 20 qualified: not enough (exit 1)"
+
+echo
 echo "=== join_dump_verdict"
 
 # ADR-0071 decision 3: did dropping the requests the acceptor did not stamp

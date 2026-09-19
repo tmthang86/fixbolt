@@ -2359,6 +2359,90 @@ whether you have found it.
 
 ---
 
+## Item 51's last arm: `mitigations=off` takes 58% off a TCP loopback round trip — A/B, not published — 2026-09-19
+
+**A/B, not published.** Every figure in this section was taken with the CPU speculation
+mitigations disabled, a setting `DESIGN.md` §9 forbids
+([ADR-0023](../decisions/ADR-0023-section-9-records-the-cpu-mitigations.md)). They are
+differences against boot B and nothing else: none of them enters `DESIGN.md` §8,
+`benches/baselines.tsv` or any published row (non-negotiable 10).
+
+`[measured 2026-09-19]` AMD Ryzen 7 3700X (host `tmt-B450-I-AORUS-PRO-WIFI`), Linux 7.0.0-31,
+command line `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1 mitigations=off`,
+commit `0fe50c0`. `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` read **`pass 15 fail 1 unknown
+0`**, the one FAIL being the CPU mitigations row (`disabled retbleed spec_rstack_overflow
+spec_store_bypass spectre_v1 spectre_v2 vmscape`). That is also the reversal of ADR-0023's
+check, observed for free: the section above found the script green with everything off; it is
+now red on exactly that row. Raw logs: `target/item51/` (gitignored, this desk only).
+
+The two procedures are the ones boot B ran for suspect 1 (step B7), unchanged.
+
+**1. `cargo bench -p fixbolt-engine --bench payload`, six runs, the first discarded** (the
+first run after a reboot is thrown away by rule; the desktop is still settling).
+`TCP loopback, 8 in 8 out`: 5226.5 / 5241.1 / 5247.5 / 5272.4 / 5223.6 ns/op — median
+**5241.1**, spread 0.9% (discarded run: 5243.0).
+
+| | boot B, mitigated | this boot, `mitigations=off` | difference |
+|---|---|---|---|
+| `TCP loopback, 8 in 8 out` | 12 594.4 / 12 597.8 | 5 241.1 | **−7 355 ns, −58.4%** |
+
+The last run's other cases, against the committed (mitigated) baselines: 83 in 87 out
+5365.1 vs 12 608.5 (−57.4%); 149 in 191 out 5372.1 vs 12 648.4 (−57.5%); 8192 in 8192 out
+6919.8 vs 14 890.9 (−53.5%). The bench printed `UNDER BASELINE` on all four, as it must; **the
+baselines were not re-recorded**, because they describe the §9 machine and this boot is not one.
+
+**2. `RUNS=10 ARMS="hft:admin" scripts/w2w-baseline.sh`, twice**, loopback, engine on CPU 6,
+client on CPU 7. Procedure 1 qualified 10 of 10; **procedure 2 qualified 9** — its run 9 was
+disqualified at 6% busy, by the machine-quiet guard, and the median is over the nine.
+`engine-ctxt voluntary 0` on every qualifying run; one of them (procedure 2, run 1) read
+`involuntary 1`, which is preemption, not a kernel sleep.
+
+| `hft` admin, ns | min | p50 (across runs) | p99 | p99.9 |
+|---|---|---|---|---|
+| procedure 1 | 7719 | **8045** (8025 .. 8125) | 11 856 | 13 855 |
+| procedure 2 | 7694 | **8086** (7985 .. 8115) | 11 863 | 13 746 |
+| boot B, mitigated, p50 | | 18 249 / 18 179 | | |
+| difference at p50 | | **−10 204 / −10 093 ns, −55.9% / −55.5%** | | |
+
+### The bimodality did not appear
+
+Boot B's notrack-off phases were bimodal — most runs near 18.2 µs, some near 15.7. Here all
+nineteen qualifying runs sit in one mode: p50 7985 .. 8125, max/median 1.010 in procedure 1, and
+both procedures ran after the payload bench, the order that preceded the slow mode in boot B.
+That is an observation, not a cause: mitigations, the day and the boot all changed together, and
+the slow mode was never reproducible on demand, so nineteen unimodal runs cannot say it is gone.
+
+### What it says about item 51's suspect 2
+
+Item 51 asked why an 8-byte TCP loopback round trip costs ~10.2 µs more than a bare syscall
+accounts for. Suspect 1, conntrack, was ~420 ns (3.3%). **Suspect 2 is ~7.4 µs (58%)** — larger
+than the 61% the section above found per syscall would suggest only in absolute terms, and
+consistent with its mechanism: the AMD return-thunk family charges every `ret` inside the
+kernel, and the TCP send/receive path through `lo`, netfilter and the softirq is the deepest
+call chain this project exercises. The w2w round trip, four such traversals plus the engine,
+gave back ~10.1 µs, the same order as item 51's whole gap.
+
+What remains, 5.2 µs for the round trip, is still ~30 bare unmitigated syscalls (`getpid`
+59.45 ns above), so loopback TCP is expensive on this box with or without mitigations; the
+mitigations roughly multiply that cost by 2.4 rather than create it.
+
+### What this does not prove
+
+- **It is a cross-boot, cross-day A/B on one machine.** Boot B was 2026-09-15, same kernel
+  build, a different commit; no user-space anchor (`user_loop`) was run in this boot to tie
+  the two together the way the section above did. The size of the effect (−56 to −58%, against
+  run-to-run spread under 1.2%) is what carries it, not the design.
+- **Which mitigation.** Only all-off was run. The section above attributes the per-syscall
+  cost to `retbleed` + `spec_rstack_overflow`; that the loopback path follows the same split is
+  inferred, not measured.
+- **The flush arm** (Tailscale and the full ruleset removed) is still unrun, so what of the
+  remaining 5.2 µs is netfilter beyond conntrack is unknown.
+- **A cause for boot B's bimodality**, as above.
+- **Nothing about the mitigated, publishable configuration changed.** §8's loopback floor stands
+  as measured under §9.
+
+---
+
 ## What LTO and `codegen-units` are worth here, and who actually gets it — 2026-09-01
 
 `STATUS.md` open item 13 since the project began: *"Release profile is default. No `lto`, no
@@ -3653,7 +3737,9 @@ rebuild) ended.
 - **Item 51's second suspect.** Suspect 1 (conntrack) is 3.3% of the 12.6 µs 8-byte TCP loopback
   round trip, about 4% of item 51's ~10.2 µs gap; the CPU speculation mitigations (suspect 2) were
   not tested this boot, and the flush arm (Tailscale + full ruleset) was skipped — the owner was
-  not at the desk.
+  not at the desk. **`[measured 2026-09-19]` suspect 2 answered, A/B not published: −58.4% on
+  the 8-byte round trip, −55.9 ‖ −55.5% at w2w admin p50 — see *Item 51's last arm* beside the
+  ADR-0023 section.**
 - **Whether fixbolt's admin path actually costs more than nanofix's.** The sign of the
   same-procedure difference flipped between procedures (+416 / −175 ns); no difference is
   claimed at admin p50.
@@ -3762,6 +3848,60 @@ the listener is asked as often as at N = 1 — which is why the two `accept4` to
 and `sendto` grows from 7 549 to 7 969 with the cadence, consistent with 256 polls of the socket
 per ask of the listener — **not observed separately**; the script does not split the trace by
 window. No name from `SLEEPERS` appeared in either run.
+
+### C-40 — over the cable, back to back: the first interval-0 wire figure, and where the I211 skips
+
+`[measured 2026-09-18]` boot C, rerun under ADR-0071 decision 1 as revised (a run over 0.1%
+TX-missing is disqualified, the procedure continues). §9 desktop, `pass 16 fail 0 unknown 0`,
+commit `ecfdd81`'s code; the Mac mini's `w2w` sha256 `2f93af5c` from `main` at `ece17e7` (the Mac
+clone is a real git checkout now); `enp9s0` (I211) ↔ Mac over the direct cable, EEE off, IRQs on
+`cpu4`, engine `cpu6`, observer `cpu7`, hardware RX and TX stamps at the acceptor; `hft`,
+interval 0, 20 000 requests × `RUNS=10` per arm, two procedures, `--dump` join on every
+qualifying run. **First attempt** the same morning: aborted at run 5 by the rule as first
+written (30 of 20 000 = 0.15% over the line FAILed the script); its four qualifying runs read
+wire p50 27 098 / 27 282 / 27 010 / 26 794 — diagnostic, consistent with the rerun, not a column.
+
+**Figures** (acceptor wire, ns, p50 / p99 / p99.9, qualifying of 10):
+
+| arm | procedure 1 | procedure 2 | diff p50 / p99 / p99.9 | verdict |
+|---|---|---|---|---|
+| `hft` admin | 27 050 / 31 982 / 35 374 (6) | 27 114 / 32 254 / 49 146 (8) | 0.2 / 0.9 / **39%** | p50, p99 reproduced; p99.9 not |
+| `hft` app | 28 894 / 34 058 / 62 306 (6) | 28 878 / 34 110 / 88 630 (8) | 0.1 / 0.2 / **42%** | p50, p99 reproduced; p99.9 not |
+
+Per-run p50 range: admin 27 034..27 178 ‖ 27 010..27 234; app 28 778..28 954 ‖ 28 810..29 090.
+The counterparty (Mac, unpinned, its own stack both ways): p50 ~232 µs in both arms, p99.9
+0.37–0.95 ms — not this engine's figure; it exists for the join. **Every qualifying run's join
+read `join: PASS`** (the counterparty's p50/p99/p99.9 over all samples against over the stamped
+subset, within ADR-0071's 1% / 5%): `grep -c "join: PASS"` over the run logs gives the count.
+
+**The sweep** (ADR-0071 decision 5): admin, one procedure of 10 runs per interval, wire p50 ns,
+qualifying of 10:
+
+| `--interval` | wire p50 | qualifying | p99 |
+|---|---|---|---|
+| 0 | 27 138 | 7 | 31.9–32.4 µs |
+| 10 µs | 27 018 | 8 | " |
+| 20 µs | 27 074 | 7 | " |
+| 30 µs | 27 062 | 8 | " |
+| 50 µs | 27 090 | 7 | " |
+
+**Pacing 0–50 µs does not stop the I211 skipping stamps.** Per-run `hw-tx-missing` over the whole
+rerun ranged **0–109 of 20 000 with no trend by interval**; at every interval about 30–40% of
+runs crossed the 0.1% line (3 of 10 at 10 and 30 µs, 4 of 10 elsewhere). `ethtool -S enp9s0`'s
+`tx_hwtstamp_skipped` went **413 → 2 381** over the rerun (Δ 1 968), to be set beside the sum of
+`hw-tx-missing` over all runs in the logs; boot B's 1 s pacing had **0**. So the interval at which
+skips stop lies somewhere between 50 µs and 1 s and is not where the sweep looked; the 0.1%
+line's measured neighbour is: *at 0–50 µs, a third of runs are over it*. Decision 1's revision
+(disqualify the run, keep the procedure) is what let this table exist at all. The wire p50 is flat
+across the sweep (27.0–27.1 µs) — pacing inside 50 µs changes nothing an engine that spins can see.
+
+**Against boot B's 1 s pacing** (45 146 ‖ 42 918 admin, 49 626 ‖ 45 082 app): back to back is
+~18 µs faster — the hot figure beside the cold one, the reason ADR-0071 decision 2 publishes both.
+
+**Instrument finding**: `scripts/compare-w2w-procedures.sh` compared the *counterparty* p50 lines
+(~232 µs) rather than the `wire p50` rows when both were present, and would have called the
+pair reproduced on the wrong number; it must prefer the wire rows when present — fixed by a
+developer in the closing commit, with a test case fed this run's two summaries.
 
 ### C-PRD7 — the wakeup, measured: `epoll_wait` 4 960 ns, `poll` 4 819 ns at p50
 
@@ -3874,6 +4014,43 @@ cases add a `recvfrom` per turn and point at the TLS branch's changes to `pump` 
 — `density.rs` drives `Engine::turn` directly, so the cadence does not enter it — and the cadence
 would make a turn cheaper, not dearer, in any case.
 
+### C-91b — the bisect: one commit crosses the line, and the slope is five steps
+
+`[measured 2026-09-18]` same boot, `pass 16 fail 0 unknown 0`; `git bisect start 85460c1
+0149b26`, judge = `density`'s `engine turn, 1 busy sessions`, median of 3 runs per commit (5 on
+the first), **bad above 1 743 ns** (1 660.2 × 1.05); log `target/boot-c-evidence/c91b-log.txt`.
+The commits bisect visited, in history order, oldest first (each figure is the state of the tree
+*at* that commit, so a docs commit's figure is the code merged before it):
+
+| commit | date | what it is | median ns | vs `0149b26` |
+|---|---|---|---|---|
+| `0149b26` | 2026-09-05 | the baseline commit (C-91) | 1 660.2 | — |
+| `792c2e7` | 2026-09-06 | docs (plan) — code merged 09-05 → 09-06 under it | 1 700.0 | +40 |
+| `28465e8` | 2026-09-09 | merge PR #55 | 1 719.6 | +59 |
+| **`588b350`** | 2026-09-09 | **`feat(session)!: read 52= at every precision`** | **1 752.2** | **+92 — first over 1 743** |
+| `043a4a2` | 2026-09-09 | docs (status) | 1 740.2 | +80 |
+| `627637e` | 2026-09-08 | docs (plan) | 1 742.2 | +82 |
+| `906c256` | 2026-09-09 | merge PR #56 (`utc-timestamp-widths`) | 1 752.9 | +93 |
+| `1c36406` | 2026-09-09 | `TlsTransport` hands its keys to the kernel | 1 753.8 | +94 |
+| `f085f43` | 2026-09-12 | docs (ADR) — the TLS and settings code of 09-09 → 09-12 under it | 1 792.2 | +132 |
+| `85460c1` | 2026-09-18 | today (C-91) | 1 817.2 | +157 |
+
+`git bisect` names **`588b350`** as the first bad commit — it is where the 5% line is crossed,
+and it is worth about **+33 ns** on the turn (1 719.6 → 1 752.2; `043a4a2` and `627637e` read
+~10 ns under it, which is the noise band of a 3-run median). It touches
+`crates/session/src/clock.rs` (`parse_utc`, 17 and 21 bytes → seven widths) and
+`crates/dict/src/field_type.rs`; the candidate mechanism is the width dispatch now on the hot
+path of every inbound `SendingTime` — which is also the lead the validate cases pointed at in
+C-91 (+3–6% on pure user-space cases), so one commit explains both families' first step.
+
+**But the profile is cumulative, not one step.** ~+40 ns had already arrived by `792c2e7`
+(code of 09-05 → 09-06), ~+20 more by `28465e8`, ~+33 at `588b350`, ~+40 between `1c36406`
+and `f085f43` (the TLS transport and settings work of 09-09 → 09-12), ~+25 from `f085f43` to
+HEAD (09-12 → 09-18, which includes `ListenerEveryTurns` and the pump changes). Five steps of
+2–3% each, on a case whose band is 10%: none would have tripped `bench.sh` alone, and together
+they are 9.5%. **The machine question is closed; the code question is five perf tasks**, one per
+segment, each with its two bisect endpoints named — STATUS item 93.
+
 ### C-49 — in situ: the kernel does not charge the application path for its payload
 
 `[measured 2026-09-18]` `perf trace -s` over whole `hft` runs, engine thread only, both paths,
@@ -3918,9 +4095,13 @@ a `--stamp software` arm of some later boot if the number is ever needed.
 - **The accept delay itself at N = 16 under load.** Consequence 2's *N × one iteration* is
   arithmetic; `connect-rtt` does not measure it.
 - **The in-window `accept4` count**, derived as stated above.
+- **The wire p99.9**: two procedures 27–42% apart; published marked, meets nothing.
+- **The pacing at which the I211 stops skipping TX stamps**: between 50 µs and 1 s, unmeasured.
+- **A `standard` wire figure** (ADR-0073, phase 2).
 - **A mechanism for both-kTLS being superadditive** (C-84): one candidate, not isolated.
 - **What moved boot B's ten arms** (C-85 refuted the only candidate; nothing else was varied).
-- **Which commit(s) between `0149b26` and `85460c1` cost the 7–10%** (C-91b, the bisect).
+- **The mechanism behind each of the five steps** (C-91b named the segments; `588b350`'s
+  width dispatch is a candidate, not a measured cause; the other four segments have none yet).
 - **What the ~3 130 ns outside the engine turn is** (item 49, closed by decision; the software
   stamp probe is named above and not scheduled).
 - **The busy turn at N > 1** (ADR-0025 open question 1), so the `hft` ceiling stays 4 although
