@@ -3874,6 +3874,43 @@ cases add a `recvfrom` per turn and point at the TLS branch's changes to `pump` 
 — `density.rs` drives `Engine::turn` directly, so the cadence does not enter it — and the cadence
 would make a turn cheaper, not dearer, in any case.
 
+### C-91b — the bisect: one commit crosses the line, and the slope is five steps
+
+`[measured 2026-09-18]` same boot, `pass 16 fail 0 unknown 0`; `git bisect start 85460c1
+0149b26`, judge = `density`'s `engine turn, 1 busy sessions`, median of 3 runs per commit (5 on
+the first), **bad above 1 743 ns** (1 660.2 × 1.05); log `target/boot-c-evidence/c91b-log.txt`.
+The commits bisect visited, in history order, oldest first (each figure is the state of the tree
+*at* that commit, so a docs commit's figure is the code merged before it):
+
+| commit | date | what it is | median ns | vs `0149b26` |
+|---|---|---|---|---|
+| `0149b26` | 2026-09-05 | the baseline commit (C-91) | 1 660.2 | — |
+| `792c2e7` | 2026-09-06 | docs (plan) — code merged 09-05 → 09-06 under it | 1 700.0 | +40 |
+| `28465e8` | 2026-09-09 | merge PR #55 | 1 719.6 | +59 |
+| **`588b350`** | 2026-09-09 | **`feat(session)!: read 52= at every precision`** | **1 752.2** | **+92 — first over 1 743** |
+| `043a4a2` | 2026-09-09 | docs (status) | 1 740.2 | +80 |
+| `627637e` | 2026-09-08 | docs (plan) | 1 742.2 | +82 |
+| `906c256` | 2026-09-09 | merge PR #56 (`utc-timestamp-widths`) | 1 752.9 | +93 |
+| `1c36406` | 2026-09-09 | `TlsTransport` hands its keys to the kernel | 1 753.8 | +94 |
+| `f085f43` | 2026-09-12 | docs (ADR) — the TLS and settings code of 09-09 → 09-12 under it | 1 792.2 | +132 |
+| `85460c1` | 2026-09-18 | today (C-91) | 1 817.2 | +157 |
+
+`git bisect` names **`588b350`** as the first bad commit — it is where the 5% line is crossed,
+and it is worth about **+33 ns** on the turn (1 719.6 → 1 752.2; `043a4a2` and `627637e` read
+~10 ns under it, which is the noise band of a 3-run median). It touches
+`crates/session/src/clock.rs` (`parse_utc`, 17 and 21 bytes → seven widths) and
+`crates/dict/src/field_type.rs`; the candidate mechanism is the width dispatch now on the hot
+path of every inbound `SendingTime` — which is also the lead the validate cases pointed at in
+C-91 (+3–6% on pure user-space cases), so one commit explains both families' first step.
+
+**But the profile is cumulative, not one step.** ~+40 ns had already arrived by `792c2e7`
+(code of 09-05 → 09-06), ~+20 more by `28465e8`, ~+33 at `588b350`, ~+40 between `1c36406`
+and `f085f43` (the TLS transport and settings work of 09-09 → 09-12), ~+25 from `f085f43` to
+HEAD (09-12 → 09-18, which includes `ListenerEveryTurns` and the pump changes). Five steps of
+2–3% each, on a case whose band is 10%: none would have tripped `bench.sh` alone, and together
+they are 9.5%. **The machine question is closed; the code question is five perf tasks**, one per
+segment, each with its two bisect endpoints named — STATUS item 93.
+
 ### C-49 — in situ: the kernel does not charge the application path for its payload
 
 `[measured 2026-09-18]` `perf trace -s` over whole `hft` runs, engine thread only, both paths,
@@ -3920,7 +3957,8 @@ a `--stamp software` arm of some later boot if the number is ever needed.
 - **The in-window `accept4` count**, derived as stated above.
 - **A mechanism for both-kTLS being superadditive** (C-84): one candidate, not isolated.
 - **What moved boot B's ten arms** (C-85 refuted the only candidate; nothing else was varied).
-- **Which commit(s) between `0149b26` and `85460c1` cost the 7–10%** (C-91b, the bisect).
+- **The mechanism behind each of the five steps** (C-91b named the segments; `588b350`'s
+  width dispatch is a candidate, not a measured cause; the other four segments have none yet).
 - **What the ~3 130 ns outside the engine turn is** (item 49, closed by decision; the software
   stamp probe is named above and not scheduled).
 - **The busy turn at N > 1** (ADR-0025 open question 1), so the `hft` ceiling stays 4 although

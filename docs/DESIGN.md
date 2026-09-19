@@ -1467,6 +1467,17 @@ both are noise, and the remainder barely moved — ~2 804 to ~2 770 ns.**
 | The engine's framing and read-buffer management | **Open, and now holds almost all of it.** No benchmark isolates it |
 | The session's own `Heartbeat` serialise on the administrative side | **Open.** No committed case, so it is not subtracted in either direction |
 
+**`[measured 2026-09-18]` The engine-turn lines of 2026-09-05 read 7–10% under today's code,
+and the baselines are deliberately not moved.** Boot C step C-91 ran the commit that recorded
+them (`0149b26`) beside `85460c1` in one boot: `engine turn, 1 busy sessions` 1 660.2 → 1 817.2
+ns (+9.5%), every engine-turn case +6.7–9.8%, the kernel unchanged as a cause. C-91b bisected
+it: **`588b350`** (`52=` read at every precision) is the first commit over a 5% line, worth
+~+33 ns, and the rest is **four more steps of 2–3% each** spread over 2026-09-06 → 09-18
+([measured-costs](reference/measured-costs.md) *Boot C*, C-91 and C-91b; STATUS items 91, 93).
+The `density` and `validate` baselines stay at their 2026-09-05 values until each step has a
+name and a decision — a baseline re-recorded to cover a regression is the failure ADR-0016 was
+written against — so `bench.sh --strict` reads those cases *over baseline* on purpose until then.
+
 **`[measured 2026-09-15]` The engine's whole share, measured in one piece: D_in = 765.5 ns.**
 `engine turn, 1 busy sessions` − `engine turn, 1 busy, admin` (`crates/engine/benches/density.rs`,
 module doc *The administrative twin*): median 1 719.7 − 954.2 over the same 20 runs, paired
