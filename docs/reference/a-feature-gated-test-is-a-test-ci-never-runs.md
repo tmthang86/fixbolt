@@ -54,16 +54,33 @@ in the repository is `cargo test --all`.
 ## What to do
 
 A feature that gates tests needs its own CI invocation, named in the same commit that creates
-the feature. The minimum is one line per crate that has feature-gated tests:
+the feature.
 
-```
-- run: cargo test -p fixbolt-dict --features fix50sp2
-- run: cargo test -p fixbolt-session --features fix50sp2
-- run: cargo test -p fixbolt-conformance --features fix50sp2
-```
+`[corrected 2026-09-19]` This page first suggested three bare lines, one per crate. Two things
+were wrong with them and both were found when the fix was built:
 
-`cargo hack test --workspace --feature-powerset --depth 2` would cover it generically, and costs
-what the powerset costs; the explicit lines cost one job-step each and say which crate is meant.
+* **`cargo test -p fixbolt-conformance --features fix50sp2` does not work.** That crate has no
+  `[features]` section at all — the string `fix50sp2` appears in it only inside a doc comment.
+  Passing a feature a package does not declare is a hard cargo error.
+* **A bare `cargo test` line proves only its own exit status**, which is the thing this family of
+  traps keeps defeating. A green command is not evidence that the tests you meant ran.
+
+What was built instead, in the `gates` job: one loop over the crates that **declare** the feature
+(`codec`, `dict`, `session`, `engine`), each running the crate's whole `--tests` suite and then
+passing the log through `scripts/check-feature-gated-tests-ran.sh` — the script the `tls` job
+already uses for the same shape. It asks the build which tests the feature has and then requires
+each one to appear as having run: R1 a listed test with no run status, R2 a built binary with no
+`Running` line, R3 a test that was ignored. That turns *"the command exited 0"* into *"these named
+tests executed"*.
+
+Two details worth keeping:
+
+* The boundary is **crates that declare the feature**, not *crates that have gated tests today*.
+  `fixbolt-codec` has none yet; the wider boundary cannot silently reopen when the next one is
+  written.
+* It runs **each crate's whole suite**, never a list of file names. `crates/dict/tests/group_tables.rs`
+  has no `#![cfg]` at the top — it grows one extra case under an inner `#[cfg(feature =
+  "fix50sp2")]`, which any file-name list would have missed.
 
 The check on the check: **make a feature-gated test fail on purpose and confirm CI goes red.**
 Until that has been observed once, "CI covers the feature" is a claim about a YAML file, not a
@@ -71,10 +88,28 @@ measurement — and this page exists because the YAML file read as though it did
 
 ## What guards it
 
-Nothing, at the time of writing. The fix belongs to plan row B7, which is the row that owns
-`.github/workflows/ci.yml` under the parallel-work contract, and it is written down here so it
-is not carried in somebody's head until then. A green CI run on this branch **does not** mean any
-FIXT test passed.
+`[changed 2026-09-19]` The `gates` job's step *"The fix50sp2 tests, and proof they were the ones
+that ran"*, via `scripts/check-feature-gated-tests-ran.sh`, described above. Measured on the
+commit that added it, all four crates accounted for with nothing ignored:
+
+```
+fixbolt-codec    14 binaries, 14 Running lines,  87 listed,  87 accounted for, 0 ignored
+fixbolt-dict     11 binaries, 11 Running lines,  59 listed,  59 accounted for, 0 ignored
+fixbolt-session  22 binaries, 22 Running lines, 169 listed, 169 accounted for, 0 ignored
+fixbolt-engine   44 binaries, 44 Running lines, 334 listed, 334 accounted for, 0 ignored
+```
+
+and the five FIXT binaries running with real counts rather than the empty-shell result this page
+is about — `score_fixt` 2 tests, `wire_fixt` 1, against `running 0 tests` under the default
+feature set.
+
+**Still not observed: the check on the check.** Making a feature-gated test fail on purpose and
+watching CI go red needs a push, so it is the manager's, not the step's. Until it has been seen
+once, treat the paragraph above as a claim about a YAML file.
+
+A known gap, named rather than left implicit: the script is given `--tests`, so a **doctest**
+behind the feature would still run nowhere. There is no `fix50sp2` doctest today. The same gap is
+recorded in the script's own header for `tls`.
 
 ## Related
 

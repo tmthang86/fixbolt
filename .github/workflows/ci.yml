@@ -192,6 +192,14 @@ jobs:
   # three named features, one past the depth. CI run 34750085195's log lists
   # exactly those ten. Removing the `docs` job had silently removed the only
   # rustdoc build under `--all-features` (the item-61 set) until these steps.
+  #
+  # THIS JOB RUNS NO TEST. It lints and documents every feature set; it does
+  # not execute one assertion in any of them. The step "The fix50sp2 tests, and
+  # proof they were the ones that ran", in the `gates` job below, is
+  # what runs a feature-gated test, and the `tls` job is the other one — see
+  # docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md
+  # for the commit where reading this job as though it did cost a green run on
+  # a deliberately red test.
   feature-sets:
     name: Every feature set to depth two builds, lints and documents
     runs-on: ubuntu-latest
@@ -402,6 +410,88 @@ jobs:
           cargo clippy --all-targets --features affinity -- -D warnings
           cargo test -p fixbolt-engine --features affinity
           cargo test -p fixbolt-engine --no-default-features --features affinity
+
+      # `[measured 2026-09-19]` THIS CLOSES THE GAP IN
+      # docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md: until
+      # this step existed, `grep -n fix50sp2 .github/workflows/ci.yml` matched
+      # NOTHING. Every FIXT test file opens with `#![cfg(feature =
+      # "fix50sp2")]`, so `cargo test --all` and `cargo test --all
+      # --no-default-features` compiled all of them to nothing — five test
+      # binaries (dict `fixt`, dict `fixt_order`, session `fixt`, session
+      # `score_fixt`, engine `wire_fixt`) that CI had never executed on any
+      # commit since the feature was created. A commit was pushed deliberately
+      # red, with a failing `score_fixt` quoted in its message, and CI reported
+      # success, 14 jobs of 14.
+      #
+      # WHAT THIS IS *NOT*, AND WHY A READER NEEDS TELLING: the `feature-sets`
+      # job above already covers `fix50sp2` — with `cargo hack clippy` and
+      # `cargo hack doc` over the feature powerset. That is **lint and
+      # documentation**. It compiles the gated test files and type-checks them;
+      # it never runs one, and an assertion that compiles is not an assertion
+      # that holds. "The powerset job covers the feature" is a true sentence
+      # about two of the three things a reader means by it. The gap sat next to
+      # the job that looked like it closed it, which is why it survived.
+      #
+      # ONE LOOP ITERATION PER CRATE THAT *DECLARES* THE FEATURE, not per crate
+      # that happens to have a gated test today — `fixbolt-codec` has none yet,
+      # and the boundary "declares it" is the one that cannot quietly reopen
+      # when the next gated test is written. Whole crate suites, never a
+      # `--test <name>` list: STATUS.md item 68 is that list springing the trap
+      # twice in one day, and `dict/tests/group_tables.rs` is the same shape
+      # here — not `#![cfg]`-gated at all, it grows cases under an inner
+      # `#[cfg(feature = "fix50sp2")]` that no file-name list would have named.
+      #
+      # `cargo hack test --workspace --feature-powerset --depth 2` would cover
+      # this generically. It was not chosen for three reasons: it re-runs the
+      # ENTIRE workspace suite — the engine's socket tests included — once per
+      # feature set, for a feature whose tests live in four named crates; a red
+      # line in its output does not say which set was meant; and, decisively,
+      # it would still be a step whose tick is its own exit status, which is
+      # precisely the evidence STATUS.md item 62 proved worthless.
+      #
+      # THE EVIDENCE IS THE SCRIPT'S `ok` LINE, NOT THIS STEP'S TICK. Same
+      # shape as the `tls` job below, and the same script: the build is asked
+      # which tests exist under the feature, and the log of the run must
+      # account for every one of them — a binary with no `Running` line is R2,
+      # a listed test with no run status is R1, an `ignored` test is R3. That
+      # is what turns "the command exited 0" into "these named tests executed".
+      # `cargo test` is run with `--no-fail-fast` and its status caught rather
+      # than allowed to abort, so the script reads a RED run's log too: "a test
+      # failed" and "no test ran" must not arrive as the same tick.
+      #
+      # KNOWN HOLE, stated rather than papered over: the script takes `--tests`,
+      # so DOCTESTS gated on this feature would still run nowhere. It is the
+      # hole its own header names for `tls`, unchanged here; there is no
+      # `fix50sp2` doctest today.
+      #
+      # The check on this check is the one thing no YAML file can assert:
+      # break a feature-gated test on purpose and watch CI go red. Until that
+      # has been observed, this step is a claim, not a measurement — CLAUDE.md
+      # §10, and the whole reason the reference page above exists.
+      - name: The fix50sp2 tests, and proof they were the ones that ran
+        run: |
+          set -o pipefail
+          tests_failed=0
+          checks_failed=0
+          for p in fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine; do
+            echo "=== ${p} --features fix50sp2 ==="
+            status=0
+            cargo test -p "${p}" --tests --features fix50sp2 --no-fail-fast --locked \
+              2>&1 | tee "/tmp/fix50sp2-${p}.log" || status=$?
+            if ! scripts/check-feature-gated-tests-ran.sh "${p}" fix50sp2 "/tmp/fix50sp2-${p}.log"; then
+              checks_failed=1
+            fi
+            if [ "$status" -ne 0 ]; then
+              tests_failed=1
+            fi
+          done
+          if [ "$checks_failed" -ne 0 ]; then
+            echo "::error title=A fix50sp2 test did not run::scripts/check-feature-gated-tests-ran.sh could not account for every test the fix50sp2 build lists. Read its FAIL lines above: R1 a listed test with no run status, R2 a built binary with no Running line, R3 a test that was ignored. See docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md."
+            exit 1
+          fi
+          if [ "$tests_failed" -ne 0 ]; then
+            exit 1
+          fi
 
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —
@@ -779,6 +869,20 @@ jobs:
                 cat "vendor/interop-run/$tag-$half.log" 2>/dev/null || echo '(no output)'
                 echo '```'
               done
+            done
+            # The FIXT 1.1 arm, both directions. Four transcripts for the same
+            # reason the four above are here: under FIXT a failure at logon is
+            # a config the counterparty refused, and the only thing that says
+            # WHICH of the two dictionaries or the `1137=` spelling it was is
+            # the other end's own log. scripts/interop.sh section 4k.
+            echo
+            echo '### FIXT.1.1 / FIX.5.0SP2, both directions'
+            for f in fixbolt-acceptor interop-acceptor acceptor interop-initiator; do
+              echo
+              echo "#### fixt / $f"
+              echo '```'
+              cat "vendor/interop-run/fixt/$f.log" 2>/dev/null || echo '(no output)'
+              echo '```'
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
