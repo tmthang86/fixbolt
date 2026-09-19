@@ -61,6 +61,13 @@ echo "  src/C++/FixFields.h + FixCommonFields.h — field types, read ONLY as an
 echo "  src/C++/FixValues.h               — enum values, a PARTIAL oracle (see the plan)"
 echo "  LICENSE                           — read it before using anything else here"
 echo
+# CI (`.github/workflows/ci.yml`) runs only this script, never
+# fetch-sbe-assets.sh directly — plan phase 2 PR C, "Sửa kế hoạch lần 4" point
+# 3. Chaining it here, at the very end, is what makes the SBE vendor assets
+# show up on CI without a second workflow step, and the Mac track that builds
+# this crate never touches ci.yml to get it.
+"$(dirname "$0")/fetch-sbe-assets.sh"
+echo
 # --- the corpus is what this project measured, or the fetch fails -------------
 #
 # Every one of these appears in docs/ as a measured fact. Checking them here is
