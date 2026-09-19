@@ -3763,6 +3763,60 @@ and `sendto` grows from 7 549 to 7 969 with the cadence, consistent with 256 pol
 per ask of the listener — **not observed separately**; the script does not split the trace by
 window. No name from `SLEEPERS` appeared in either run.
 
+### C-40 — over the cable, back to back: the first interval-0 wire figure, and where the I211 skips
+
+`[measured 2026-09-18]` boot C, rerun under ADR-0071 decision 1 as revised (a run over 0.1%
+TX-missing is disqualified, the procedure continues). §9 desktop, `pass 16 fail 0 unknown 0`,
+commit `ecfdd81`'s code; the Mac mini's `w2w` sha256 `2f93af5c` from `main` at `ece17e7` (the Mac
+clone is a real git checkout now); `enp9s0` (I211) ↔ Mac over the direct cable, EEE off, IRQs on
+`cpu4`, engine `cpu6`, observer `cpu7`, hardware RX and TX stamps at the acceptor; `hft`,
+interval 0, 20 000 requests × `RUNS=10` per arm, two procedures, `--dump` join on every
+qualifying run. **First attempt** the same morning: aborted at run 5 by the rule as first
+written (30 of 20 000 = 0.15% over the line FAILed the script); its four qualifying runs read
+wire p50 27 098 / 27 282 / 27 010 / 26 794 — diagnostic, consistent with the rerun, not a column.
+
+**Figures** (acceptor wire, ns, p50 / p99 / p99.9, qualifying of 10):
+
+| arm | procedure 1 | procedure 2 | diff p50 / p99 / p99.9 | verdict |
+|---|---|---|---|---|
+| `hft` admin | 27 050 / 31 982 / 35 374 (6) | 27 114 / 32 254 / 49 146 (8) | 0.2 / 0.9 / **39%** | p50, p99 reproduced; p99.9 not |
+| `hft` app | 28 894 / 34 058 / 62 306 (6) | 28 878 / 34 110 / 88 630 (8) | 0.1 / 0.2 / **42%** | p50, p99 reproduced; p99.9 not |
+
+Per-run p50 range: admin 27 034..27 178 ‖ 27 010..27 234; app 28 778..28 954 ‖ 28 810..29 090.
+The counterparty (Mac, unpinned, its own stack both ways): p50 ~232 µs in both arms, p99.9
+0.37–0.95 ms — not this engine's figure; it exists for the join. **Every qualifying run's join
+read `join: PASS`** (the counterparty's p50/p99/p99.9 over all samples against over the stamped
+subset, within ADR-0071's 1% / 5%): `grep -c "join: PASS"` over the run logs gives the count.
+
+**The sweep** (ADR-0071 decision 5): admin, one procedure of 10 runs per interval, wire p50 ns,
+qualifying of 10:
+
+| `--interval` | wire p50 | qualifying | p99 |
+|---|---|---|---|
+| 0 | 27 138 | 7 | 31.9–32.4 µs |
+| 10 µs | 27 018 | 8 | " |
+| 20 µs | 27 074 | 7 | " |
+| 30 µs | 27 062 | 8 | " |
+| 50 µs | 27 090 | 7 | " |
+
+**Pacing 0–50 µs does not stop the I211 skipping stamps.** Per-run `hw-tx-missing` over the whole
+rerun ranged **0–109 of 20 000 with no trend by interval**; at every interval about 30–40% of
+runs crossed the 0.1% line (3 of 10 at 10 and 30 µs, 4 of 10 elsewhere). `ethtool -S enp9s0`'s
+`tx_hwtstamp_skipped` went **413 → 2 381** over the rerun (Δ 1 968), to be set beside the sum of
+`hw-tx-missing` over all runs in the logs; boot B's 1 s pacing had **0**. So the interval at which
+skips stop lies somewhere between 50 µs and 1 s and is not where the sweep looked; the 0.1%
+line's measured neighbour is: *at 0–50 µs, a third of runs are over it*. Decision 1's revision
+(disqualify the run, keep the procedure) is what let this table exist at all. The wire p50 is flat
+across the sweep (27.0–27.1 µs) — pacing inside 50 µs changes nothing an engine that spins can see.
+
+**Against boot B's 1 s pacing** (45 146 ‖ 42 918 admin, 49 626 ‖ 45 082 app): back to back is
+~18 µs faster — the hot figure beside the cold one, the reason ADR-0071 decision 2 publishes both.
+
+**Instrument finding**: `scripts/compare-w2w-procedures.sh` compared the *counterparty* p50 lines
+(~232 µs) rather than the `wire p50` rows when both were present, and would have called the
+pair reproduced on the wrong number; it must prefer the wire rows when present — fixed by a
+developer in the closing commit, with a test case fed this run's two summaries.
+
 ### C-PRD7 — the wakeup, measured: `epoll_wait` 4 960 ns, `poll` 4 819 ns at p50
 
 `[measured 2026-09-18]` `crates/engine/benches/wakeup.rs` (step 4.2 of
@@ -3955,6 +4009,9 @@ a `--stamp software` arm of some later boot if the number is ever needed.
 - **The accept delay itself at N = 16 under load.** Consequence 2's *N × one iteration* is
   arithmetic; `connect-rtt` does not measure it.
 - **The in-window `accept4` count**, derived as stated above.
+- **The wire p99.9**: two procedures 27–42% apart; published marked, meets nothing.
+- **The pacing at which the I211 stops skipping TX stamps**: between 50 µs and 1 s, unmeasured.
+- **A `standard` wire figure** (ADR-0073, phase 2).
 - **A mechanism for both-kTLS being superadditive** (C-84): one candidate, not isolated.
 - **What moved boot B's ten arms** (C-85 refuted the only candidate; nothing else was varied).
 - **The mechanism behind each of the five steps** (C-91b named the segments; `588b350`'s

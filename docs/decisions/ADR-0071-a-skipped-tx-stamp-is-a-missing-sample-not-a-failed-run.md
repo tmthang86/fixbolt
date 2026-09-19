@@ -89,6 +89,16 @@ checkable.
    10, 20, 30, 50 µs on the I211, one procedure of 10 runs each, A/B by ADR-0068 decision 4,
    recorded in `measured-costs.md` so the 0.1% threshold has a measured neighbour.
 
+   `[measured 2026-09-18, C-40]` **Run, and the skips did not stop.** Wire p50 27 018–27 138 ns
+   at every interval (flat); per-run `hw-tx-missing` 0–109 of 20 000 with **no trend by
+   interval**; about a third of runs over the 0.1% line at every interval (7–8 of 10
+   qualifying); `tx_hwtstamp_skipped` 413 → 2 381 over the rerun. Boot B's 1 s pacing had 0. So
+   the interval at which the I211 stops skipping lies between 50 µs and 1 s, outside the sweep,
+   and the 0.1% line's measured neighbour is *a third of back-to-back runs cross it*. The
+   threshold stands: the figure it gates reproduced at p50 and p99 in both arms
+   (`DESIGN.md` §8 *Boot C, over the cable*), and decision 1's revision is what let the
+   procedure survive the runs that cross it.
+
 ## Consequences
 
 **Good**

@@ -155,6 +155,115 @@ same "arms 2 reproduced 1 not-reproduced 1" \
   "final line: 2 paired arms, 1 reproduced, 1 not"
 
 echo
+echo "=== compare-w2w-procedures.sh, WIRE_NIC arm (ADR-0071 decision 2)"
+
+wiredir=$(mktemp -d)
+trap 'rm -rf "$wiredir" "$fixdir"' EXIT
+
+# Counterparty rows differ 30% (would be "not reproduced" if read); wire
+# rows differ 0.3% (must be "reproduced" — the wire pair is what gets
+# published per ADR-0071 decision 2).
+cat >"$wiredir/w1.txt" <<'EOF'
+  == hft / admin / off: median of 6 qualifying runs (4 disqualified) ==
+     min    129083 ns
+     p50    232375 ns      (across runs: 232125 .. 232666)
+     p99    279792 ns
+     p99.9  939812 ns
+     spread max/median 1.001
+     machine pass 16   fail 0   unknown 0
+     pinned  engine cpu6; the generator on thangtran@192.168.77.2 is NOT pinned by this script
+     split   as the counterparty sees it — not an acceptor wire figure
+     generator  thangtran@192.168.77.2
+
+     -- acceptor wire figure: NIC in -> NIC out at the acceptor, enp9s0 hardware stamps --
+     -- median of the same 6 runs; NOT the counterparty table above, and nothing is subtracted --
+     wire p50    27050 ns      (across runs: 27034 .. 27178)
+     wire p99    31982 ns
+     wire p99.9  35374 ns
+     window      every request after the logon, leaving out the first 2000
+     stamps      hw-rx-missing 0 and hw-tx-missing 26, summed over 6 runs (each run within ADR-0071's rule: RX 0, TX <= 0.1%)
+     observer    cpu7
+EOF
+
+cat >"$wiredir/w2.txt" <<'EOF'
+  == hft / admin / off: median of 6 qualifying runs (4 disqualified) ==
+     min    129604 ns
+     p50    302088 ns      (across runs: 301500 .. 302666)
+     p99    363730 ns
+     p99.9  1221756 ns
+     spread max/median 1.002
+     machine pass 16   fail 0   unknown 0
+     pinned  engine cpu6; the generator on thangtran@192.168.77.2 is NOT pinned by this script
+     split   as the counterparty sees it — not an acceptor wire figure
+     generator  thangtran@192.168.77.2
+
+     -- acceptor wire figure: NIC in -> NIC out at the acceptor, enp9s0 hardware stamps --
+     -- median of the same 6 runs; NOT the counterparty table above, and nothing is subtracted --
+     wire p50    27131 ns      (across runs: 27040 .. 27210)
+     wire p99    32078 ns
+     wire p99.9  35480 ns
+     window      every request after the logon, leaving out the first 2000
+     stamps      hw-rx-missing 0 and hw-tx-missing 26, summed over 6 runs (each run within ADR-0071's rule: RX 0, TX <= 0.1%)
+     observer    cpu7
+EOF
+
+wireout=$("$here/compare-w2w-procedures.sh" "$wiredir/w1.txt" "$wiredir/w2.txt" 2>&1)
+wirerc=$?
+
+same "0" "$wirerc" \
+  "exit 0: the wire pair (0.3% at every percentile) reproduces despite the counterparty rows differing 30%"
+same "1" "$(printf '%s\n' "$wireout" | grep -c 'wire p50')" \
+  "output is labelled 'wire p50', not the counterparty's p50"
+same "arms 1 reproduced 1 not-reproduced 0" \
+  "$(printf '%s\n' "$wireout" | tail -1)" \
+  "the one arm reproduces on the wire figure"
+
+# Reversal: widen the wire rows to a 6% difference (still under the
+# counterparty's own 30%) and the arm must flip to "not reproduced" on the
+# wire assertion — proving the comparator is reading the wire rows, not the
+# counterparty rows, which never moved.
+sed -i 's/wire p50    27131 ns.*/wire p50    28769 ns      (across runs: 28700 .. 28820)/' "$wiredir/w2.txt"
+wireout_rev=$("$here/compare-w2w-procedures.sh" "$wiredir/w1.txt" "$wiredir/w2.txt" 2>&1)
+wirerc_rev=$?
+same "1" "$wirerc_rev" \
+  "reversal: wire p50 widened to ~6% -> exit 1, not reproduced"
+same "arms 1 reproduced 0 not-reproduced 1" \
+  "$(printf '%s\n' "$wireout_rev" | tail -1)" \
+  "reversal quoted: $(printf '%s\n' "$wireout_rev" | grep 'wire p50')"
+
+echo
+echo "=== compare-w2w-procedures.sh, two interval arms of one summary"
+
+ivdir=$(mktemp -d)
+trap 'rm -rf "$ivdir" "$wiredir" "$fixdir"' EXIT
+
+cat >"$ivdir/i1.txt" <<'EOF'
+  == hft / admin / off: median of 8 qualifying runs (2 disqualified) ==  interval 10us
+     min    125979 ns
+     p50    232813 ns      (across runs: 230208 .. 233416)
+     p99    285083 ns
+     p99.9  806270 ns
+     spread max/median 1.003
+     machine pass 15   fail 1   unknown 0
+
+  == hft / admin / off: median of 7 qualifying runs (3 disqualified) ==  interval 20us
+     min    126417 ns
+     p50    232875 ns      (across runs: 232542 .. 233167)
+     p99    285541 ns
+     p99.9  935792 ns
+     spread max/median 1.001
+     machine pass 16   fail 0   unknown 0
+EOF
+cp "$ivdir/i1.txt" "$ivdir/i2.txt"
+
+ivout=$("$here/compare-w2w-procedures.sh" "$ivdir/i1.txt" "$ivdir/i2.txt" 2>&1)
+same "arms 2 reproduced 2 not-reproduced 0" \
+  "$(printf '%s\n' "$ivout" | tail -1)" \
+  "the @10us and @20us arms of one summary are two distinct, paired keys"
+same "2" "$(printf '%s\n' "$ivout" | grep -c '^== hft/admin/off@')" \
+  "both arm headers carry the interval suffix"
+
+echo
 echo "=== summary"
 echo "ok scripts/check-w2w-compare.sh pass $pass   fail $fail"
 [[ "$fail" -eq 0 ]]
