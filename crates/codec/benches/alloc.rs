@@ -32,6 +32,11 @@ use fixbolt_codec::{
 };
 use fixbolt_dict::Fix44;
 
+#[cfg(feature = "fix50sp2")]
+use fixbolt_codec::Parsed;
+#[cfg(feature = "fix50sp2")]
+use fixbolt_dict::Fixt11Fix50Sp2Tables;
+
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
 struct Counting;
@@ -278,6 +283,40 @@ fn main() {
         }
     });
 
+    // The same parse, through the FIXT 1.1 / FIX 5.0 SP2 tables rather than
+    // `Fix44`. A second dictionary is a second set of generated `match` arms
+    // over a table two orders of magnitude larger — 25 929 `(msg_type,
+    // counter)` group pairs against FIX 4.4's 731 — and nothing had ever
+    // counted an allocation on it. ADR-0084 was accepted citing a bench case
+    // for these tables; this is that case for the parse half.
+    //
+    // A real `35=D` off the FIXT wire, with `8=FIXT.1.1` and a correct `9=`
+    // and `10=`, so the parse runs to `Parsed::Complete` rather than bailing
+    // at the frame. The liveness assert is both halves of that: the outcome,
+    // and a field read back out of the index.
+    #[cfg(feature = "fix50sp2")]
+    let fixt_parse_allocs = {
+        let nos: &[u8] = b"8=FIXT.1.1\x019=128\x0135=D\x0134=2\x0149=TW50SP2\x01\
+52=20260905-12:00:00.000\x0156=ISLD\x0111=ID\x0121=1\x0138=002000.00\x0140=1\x01\
+54=1\x0155=INTC\x0160=20260905-12:00:00.000\x01167=CS\x0110=111\x01";
+        let mut fidx: FieldIndex<64> = FieldIndex::new();
+        let warm = parse_into::<Fixt11Fix50Sp2Tables, 64>(nos, &mut fidx, Validation::ALL);
+        assert!(
+            matches!(warm, Ok(Parsed::Complete { .. })),
+            "the FIXT parse path must actually run: {warm:?}"
+        );
+        assert_eq!(
+            fidx.view(nos).get(55),
+            Some(b"INTC".as_ref()),
+            "the FIXT parse path must actually fill the index"
+        );
+        count(|| {
+            for _ in 0..10_000 {
+                let _ = parse_into::<Fixt11Fix50Sp2Tables, 64>(nos, &mut fidx, Validation::ALL);
+            }
+        })
+    };
+
     println!("allocations: parse   {parse_allocs}");
     println!("allocations: parse via Encoding {encoding_parse_allocs}");
     println!("allocations: encode  {encode_allocs}");
@@ -304,5 +343,13 @@ fn main() {
         data_allocs, 0,
         "writing a DATA field and its length must not allocate"
     );
+    #[cfg(feature = "fix50sp2")]
+    {
+        println!("allocations: parse NewOrderSingle (FIXT) {fixt_parse_allocs}");
+        assert_eq!(
+            fixt_parse_allocs, 0,
+            "parsing through the FIXT 1.1 / FIX 5.0 SP2 tables must not allocate"
+        );
+    }
     println!("allocations: 0");
 }

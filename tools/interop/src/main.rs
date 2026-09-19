@@ -51,6 +51,23 @@
 //! core at 100% and a shared CI runner is the wrong place for that. That debt
 //! stays named in `STATUS.md`.
 //!
+//! # FIXT 1.1, in both roles
+//!
+//! `[2026-09-19]` **the header is no longer a literal.** `--role initiator`
+//! takes `--begin-string` (default `FIX.4.4`, so every invocation written
+//! before this day still means what it meant) and `--default-appl-ver-id`,
+//! which is the **wire** value of `1137` — `9` for FIX 5.0 SP2, not the
+//! `FIX.5.0SP2` that QuickFIX's own config file spells. `--role acceptor`
+//! needed no flag at all: it reads a settings file, and `DefaultApplVerID` is
+//! a key in it (ADR-0080 decision 4).
+//!
+//! What that buys is the one thing `session/tests/score_fixt.rs` and
+//! `engine/tests/wire_fixt.rs` cannot buy, however many definitions they
+//! score: **both of them are this repository reading its own corpus.**
+//! `scripts/interop.sh`'s `4k` arm puts libquickfix on the far end with
+//! `FIXT11.xml` and `FIX50SP2.xml` loaded, in both directions — ADR-0042's
+//! only independent opinion, applied to FIXT.
+//!
 //! # Reading this binary's result
 //!
 //! **Read the lines, not the exit code.** In `--role initiator` every step
@@ -650,9 +667,43 @@ fn initiator(args: &[String]) -> std::process::ExitCode {
     // `--next-expected` turns on `789=NextExpectedMsgSeqNum` on this end's
     // Logon and adds the step that judges the counterparty's.
     let next_expected = args.iter().any(|a| a == "--next-expected");
+    // **`--begin-string` and `--default-appl-ver-id` are what make the FIXT
+    // arm possible from this side**, and they default to the FIX 4.4 session
+    // this role has run since criterion 4, so the invocation
+    // `scripts/interop.sh` has used for two weeks still means what it meant —
+    // the same argument the `--role` default carries in `main`.
+    //
+    // The pair is checked rather than taken separately, because the two ways
+    // of getting it half right both produce a session that logs on to nobody
+    // and a step 1 that reads as a counterparty fault: a `FIXT.1.1` session
+    // with no `1137=` is refused by QuickFIX's own FIXT dictionary, and a
+    // `1137=` under `FIX.4.4` is a tag the FIX 4.4 tables do not define. That
+    // is `engine::settings`'s `DefaultApplVerIdRequired` /
+    // `DefaultApplVerIdWithoutFixt` pair (ADR-0080 decision 4) applied at this
+    // tool's own front door, and it fails HERE with the reason rather than
+    // three seconds later as a silence at a deadline.
+    let begin_string = arg(args, "--begin-string").unwrap_or_else(|| "FIX.4.4".to_owned());
+    let default_appl_ver_id = arg(args, "--default-appl-ver-id");
+    let fixt = begin_string == "FIXT.1.1";
+    match (fixt, default_appl_ver_id.as_deref()) {
+        (true, None) => {
+            println!("interop: FAIL --begin-string FIXT.1.1 needs --default-appl-ver-id <1137>");
+            return std::process::ExitCode::FAILURE;
+        }
+        (false, Some(v)) => {
+            println!(
+                "interop: FAIL --default-appl-ver-id {v} is refused unless --begin-string FIXT.1.1"
+            );
+            return std::process::ExitCode::FAILURE;
+        }
+        _ => {}
+    }
 
     println!("interop: fixbolt initiator -> libquickfix acceptor at {addr}");
-    println!("interop: {sender} -> {target}, FIX.4.4");
+    match default_appl_ver_id.as_deref() {
+        Some(v) => println!("interop: {sender} -> {target}, {begin_string}, 1137={v}"),
+        None => println!("interop: {sender} -> {target}, {begin_string}"),
+    }
 
     let Ok(sock) = TcpStream::connect(&addr) else {
         println!("interop: FAIL could not connect to {addr}");
@@ -666,10 +717,30 @@ fn initiator(args: &[String]) -> std::process::ExitCode {
 
     let mut w = Wire {
         sock,
+        // **`Config::acceptor_fixt` on an initiator is not a slip.**
+        // `Config::initiator` *is* `Config::acceptor` — `crates/session`'s own
+        // one-line body — because the role is the `Session` type parameter
+        // (`InitiatorFix44` here), never the `Config`. `acceptor_fixt` is the
+        // only constructor that fills `default_appl_ver_id`, so it is the one
+        // a FIXT session of either role is built from; `with_heart_bt_int`
+        // below is the field only an initiator uses, and it applies to both
+        // branches identically.
         session: Session::new(
-            Config::initiator(b"FIX.4.4", sender.as_bytes(), target.as_bytes())
-                .with_heart_bt_int(30)
-                .with_next_expected(next_expected),
+            match default_appl_ver_id.as_deref() {
+                Some(v) => Config::acceptor_fixt(
+                    begin_string.as_bytes(),
+                    sender.as_bytes(),
+                    target.as_bytes(),
+                    v.as_bytes(),
+                ),
+                None => Config::initiator(
+                    begin_string.as_bytes(),
+                    sender.as_bytes(),
+                    target.as_bytes(),
+                ),
+            }
+            .with_heart_bt_int(30)
+            .with_next_expected(next_expected),
         ),
         app: Count::default(),
         journal: Kept::default(),

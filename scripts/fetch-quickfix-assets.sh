@@ -47,7 +47,7 @@ git -C "${VENDOR}" checkout -q --detach FETCH_HEAD
 # would leave it that way. That failure is silent — the tests that need the new
 # paths just do not find them.
 git -C "${VENDOR}" sparse-checkout set --no-cone \
-  '/spec/' '/test/definitions/' '/src/C++/fix44/' '/LICENSE' \
+  '/spec/' '/test/definitions/' '/src/C++/fix44/' '/src/C++/fix50sp2/' '/LICENSE' \
   '/src/C++/FixFieldNumbers.h' '/src/C++/FixFields.h' \
   '/src/C++/FixCommonFields.h' '/src/C++/FixValues.h'
 
@@ -101,6 +101,7 @@ fi
 echo "corpus verified: ${got_defs} definitions, ${got_msg} message lines, ${got_ck} with a checksum field"
 
 ls "${VENDOR}/src/C++/fix44" | wc -l | xargs echo "generated headers:"
+ls "${VENDOR}/src/C++/fix50sp2" | wc -l | xargs echo "generated SP2 headers:"
 for f in FixFieldNumbers.h FixFields.h FixCommonFields.h FixValues.h; do
   [[ -f "${VENDOR}/src/C++/${f}" ]] || { echo "MISSING ${f}" >&2; exit 1; }
   wc -l < "${VENDOR}/src/C++/${f}" | xargs echo "  src/C++/${f}:"

@@ -282,6 +282,40 @@ thì ở đây không `cargo`).
    `BeginString=FIXT.1.1`, `DefaultApplVerID=FIX.5.0SP2`, `TransportDataDictionary`,
    `AppDataDictionary`) cho **acceptor** trước, 7 / 7 cùng kịch bản.
 
+#### PR B — ba hàng thêm 2026-09-19 sau senior review, chờ duyệt (ADR-0085)
+
+> **Vì sao có mục này.** Senior review của PR B tìm ra một lỗi mà cách sửa là một quyết định
+> thiết kế, nên theo `CLAUDE.md` §1 (*kế hoạch sai giữa chừng → dừng, sửa kế hoạch, duyệt lại*)
+> PR B **dừng ở đây** cho tới khi
+> [ADR-0085](../decisions/ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md)
+> được duyệt (chủ, hoặc manager theo uỷ quyền 2026-09-19 như đã làm với ADR-0084).
+>
+> **Lỗi, nói bằng lời thường.** Hàng B4b (ADR-0084 quyết định 2) làm cho giá trị của một trường
+> *nằm trong nhóm lặp* được hỏi **sau** khi đã kiểm "thiếu trường bắt buộc" (`373=1`) và "đếm
+> nhóm sai" (`373=16`). Để biết một trường có nằm trong nhóm hay không, máy quét ghi lại các
+> trường đếm (`NoXXX`) nó **đã đi qua** vào một mảng 32 ô trên stack (`SeenCounters`). Khi
+> mảng đầy, mã hiện tại chuyển sang hỏi một hàm khác (`in_a_group`) — hàm này nhìn **cả
+> message**, kể cả những trường đếm nằm **sau** trường đang xét. Hai câu hỏi ấy khác nhau,
+> nên cùng một message có thể nhận hai mã lý do Reject khác nhau tuỳ mảng đầy hay chưa.
+> FIX 4.4 không bao giờ làm đầy mảng (nhiều nhất 23 trường đếm trên một loại message);
+> FIXT/SP2 thì có (`TradeCaptureReport` khai 393, riêng cấp trên cùng đã 48). **Không test
+> nào trong repo chạm tới nhánh "mảng đầy"** — đặt `panic!` vào đó, chạy hết test, không nổ.
+>
+> **Quyết định của ADR-0085, một câu.** Một trường được hoãn hỏi giá trị **khi và chỉ khi**
+> trường đếm của nhóm nó thuộc về đã xuất hiện **trước nó trên dây**; khi mảng đầy, hàm thay
+> thế phải hỏi **đúng câu ấy** (chỉ nhìn `0..i`), nên mảng chỉ còn là bộ nhớ đệm và 32 chỉ
+> là con số về chi phí. Mảng giữ nguyên 32. Nhánh `373=13` **không** đổi.
+
+| Bước | Kết quả | File đụng (không đụng gì khác) | Gate (lệnh) | Tier | Phụ thuộc |
+|---|---|---|---|---|---|
+| **B4c** | Sửa hàm thay thế khi mảng đầy theo ADR-0085 quyết định 1–2: thêm `in_a_group_before(view, msg_type, tag, upto)` (quét `0..upto`), `SeenCounters::defers` khi `full` gọi hàm này với `upto` = chỉ số trường đang xét (trong `scan_fields`; còn trong `scan_group_members` gọi với `upto = view.len()`, vì ở pass bốn mảng đã chứa **mọi** trường đếm của message nên hàm thay thế cũng phải nhìn mọi trường đếm — hai chế độ cùng hỏi một tập, ADR-0085 quyết định 2 và 4); `in_a_group` giữ nguyên cho nhánh `373=13`. Viết lại rustdoc của `SeenCounters` (`lib.rs:3999-4026`): bỏ câu *"the answer never depends on the capacity"* và câu *"no `alloc.rs` case sends a populated group"* (đã cũ — B6 đã thêm case `validate NewOrderSingle (populated group)`), thay bằng luật của ADR-0085 quyết định 1 và tên hai test dưới đây. **Test 1** (unit, trong mô-đun `#[cfg(test)] mod tests` của `lib.rs` — **hiện chưa có, tạo mới**, đặt cuối file; test này sau `#[cfg(feature = "fix50sp2")]`; nằm trong lib crate nên chịu đủ lint của bất biến 7: không `unwrap`/`expect`/`panic!`, không `a[i]`, chỉ `assert!`/`assert_eq!` và `match`; lý do phải là unit test: `SeenCounters::full` là private): parse một `35=AE` trên bảng `Fixt11Fix50Sp2Tables` gồm 33 nhóm cấp trên cùng khác nhau, mỗi nhóm `NoX=1\|<delimiter>=<giá trị hợp lệ>\|` — lấy 32 nhóm có delimiter *không* liệt kê giá trị (bảng 48 nhóm trong ADR-0085 *Sources*) cộng `552=1\|54=1\|`; gọi `scan_fields`, assert `seen.full == true`. **Test 2** (integration, `crates/session/tests/fixt.rs`, dùng `fixt_acceptor()` và `msg()` sẵn có ở `:26-46`): cùng 33 nhóm ấy, trong đó `1907=2\|1903=X\|` (khai 2, gửi 1 → `373=16`), rồi **sau nhóm thứ 33** đặt `447=ZZ` (thành viên của `453`, giá trị bảng từ chối), rồi `552=1\|54=1\|453=1\|448=A\|447=D\|452=1\|`; kỳ vọng đúng **một** Reject `373=5` và `371=447`. **Đảo chiều, câu FAIL viết trước khi chạy**: đặt lại `in_a_group` vào nhánh `full` → Test 2 đỏ với `expected 373=5 371=447, engine sent 373=16 371=1907`; khôi phục → xanh. **Test 3** (song sinh, cùng file): message của Test 2 với `1907=1` và `447=D` thay `447=ZZ` → không Reject, `Link::Up`, `next_in()` tăng — chứng minh hình dạng message tự nó hợp lệ, không phải xanh vì lỗi khác. **Test 4** (unit, cạnh Test 1, không cần feature): gấp `fixbolt_dict::GROUP_KEYS` theo `msg_type`, assert số trường đếm lớn nhất của `Fix44` `<= SeenCounters::SEEN` (in ra con số, kỳ vọng 23); sau feature, in con số của `fixt11_fix50sp2::GROUP_KEYS` (kỳ vọng 393) và assert nó `> SEEN` — để ghi bằng test rằng nhánh thay thế **sống** trên bảng ấy. Đọc trước: ADR-0085 *Decision* 1–2, 4–5 và *Sources* (bảng 48 nhóm); `lib.rs:3999-4089`, `:4158-4196`, `:4217-4247`, `:4301-4316`; `tests/fixt.rs:17-60`; `tests/group_member_values.rs:222-300` (mẫu assert) | `crates/session/src/lib.rs` (chỉ `SeenCounters`, `defers`, hàm mới, rustdoc, mô-đun test), `crates/session/tests/fixt.rs`. **Không đụng** `scan_group_members` ngoài đối số `upto`, không đụng nhánh `373=13`, không đụng `crates/dict/`, không đụng test nào đang có | `cargo test -p fixbolt-session --features fix50sp2` xanh, bốn test mới có tên trong output; `cargo test -p fixbolt-session --test score` **59 / 59**; `--features fix50sp2 --test score_fixt` in `fix50 59/60 fix50sp1 60/60 fix50sp2 60/60` không đổi (assert lệch `21` vẫn đúng nội dung); `--test group_member_values` xanh **không sửa**; đảo chiều đúng câu FAIL đã viết; clippy `-D warnings`; `scripts/check-indexing-debt.sh` không tăng; `cargo doc -p fixbolt-session` không warning | **opus** (senior developer — bất biến 1, 2, 3; đường validate) | **ADR-0085 duyệt** |
+| **B4d** | Bench: `crates/session/benches/alloc.rs` case `validate TradeCaptureReport (33 groups)` sau `#[cfg(feature = "fix50sp2")]`, cùng bytes với Test 3 của B4c (message hợp lệ), đọc **0**; ba assert sống theo mẫu case `validate NewOrderSingle (populated group)` (`alloc.rs:660-760`): (1) `view.group::<Fixt11Fix50Sp2Tables>(b"AE", 1907).count() == 1` và cùng thế với `552`, (2) `validate(...) == None` trên cả message, (3) bản hỏng `447=ZZ` ở vị trí sau nhóm 33 trả `Some(ValueIsIncorrect)` — cái (3) là cái chứng minh nhánh `full` đã chạy trong bench chứ không chỉ trong test. `crates/session/benches/validate.rs` thêm case timing cùng tên, in `NO BASELINE` trên máy cloud (không ghi baseline; bàn §9 ghi sau, không chặn PR). Đọc trước: `alloc.rs:660-760`, `:840-860` (chỗ in tên case); `benches/validate.rs` case `validate NewOrderSingle (FIXT tables)`; `scripts/check-bench-alignment.sh` | `crates/session/benches/alloc.rs`, `crates/session/benches/validate.rs`, `scripts/check-bench-alignment.sh` (chỉ nếu script liệt kê tên case) | `scripts/bench.sh` với feature: case mới đọc `0`, `invariant failures 0`; `scripts/check-bench-alignment.sh` xanh; tập binary build **trùng** tập read-back (so bằng `comm`, như B6) | sonnet | B4c |
+| **B4e** | Docs: `docs/SESSION-BEHAVIOUR.md` — B4b **chưa từng viết** dòng hành vi của nó (kiểm 2026-09-19: bảng chỉ có dòng ADR-0084 quyết định 1), nên viết **một** dòng cho cả hai: *giá trị `373=5`/`373=6` của thành viên nhóm được hỏi sau `373=1` và `373=16`, "thành viên" nghĩa là trường đếm đã xuất hiện trước nó; message làm đầy mảng 32 nhận cùng câu trả lời* — canh bởi `tests/group_member_values.rs` và Test 2 của B4c, trỏ ADR-0084 quyết định 2 và ADR-0085; `CHANGELOG.md` sửa mục *A group member's value is checked after its counter agrees* (`:37-39`) thêm nửa câu "counter đứng trước" và tên ADR-0085; ADR-0085 *Status* → Accepted kèm số đo của B4c/B4d (câu FAIL đảo chiều, con số 23 / 393 Test 4 in ra, số `0` của case alloc); ADR-0084 **chỉ** thêm vào dòng *Status* chữ "amended by ADR-0085" (§5 cho phép đổi trạng thái, không đổi nội dung); `docs/reference/a-fallback-that-answers-a-different-question.md` điền tên test hồi quy đúng như B4c đặt; `STATUS.md` mục *Not proven*: gạch "nhánh mảng đầy chưa test nào chạm" nếu có ghi, và thêm mục mở "chi phí message > 32 trường đếm chưa đo trên bàn §9". Đọc trước: ADR-0085 *Consequences* (đoạn "what a counterparty observes" là nguồn của dòng SESSION-BEHAVIOUR); `SESSION-BEHAVIOUR.md:485-500`; `CHANGELOG.md:30-40` | các file trên; `docs/reference/a-fallback-that-answers-a-different-question.md` (một dòng tên test) | `python3 scripts/check-links.py` không link chết; bảng đồng bộ §4 đi từng dòng và nói ra đã đi | manager | B4d, CI xanh trên commit đóng B4d |
+
+Ba hàng này đứng **sau** B8 trong thứ tự giao và **trước** senior review lại + gộp: B8 đã giao
+docs của PR B, nhưng dòng SESSION-BEHAVIOUR của B4b thiếu — B4e trả nợ đó luôn. Không hàng nào
+cần bàn §9.
+
 ### PR C — SBE dưới trait (ADR-0079 quyết định 1, 4; ADR-0081)
 
 1. `crates/sbe` (mới, L1, `#![no_std]`, zero-dep): `header.rs` (decode 8 byte, hai byte
@@ -432,10 +466,17 @@ hơn trên nhánh riêng nếu chủ chấp nhận §7 đi sau vài ngày (chủ
   hai script mode xanh (bất biến 4 walk lại vì `serve*` đổi chữ ký); **A-desk trong band
   ADR-0031** trên bàn §9, quote `bench.sh --strict` hai worktree. Lệch band là dừng, không
   phải ghi chú.
-- **PR B**: `score_fixt` in ba số `60/60`; câu FAIL đảo chiều viết trước: `1d_InvalidLogon
-  NoDefaultApplVerID: expected DISCONNECT, engine sent Logon`. `wire_fixt` 60 / 60 trên Linux
-  CI. Interop `fixt` 7 / 7 — đây là ý kiến độc lập duy nhất (ADR-0042); `.def` và interop cùng
-  xanh mới đóng. `dict` build có feature tắt **không mở** `FIXT11.xml` (đổi tên file rồi build).
+- **PR B** *(sửa 2026-09-19 theo ADR-0084 — viết lại, **không** hạ)*: `score_fixt` in
+  `fix50 59/60 fix50sp1 60/60 fix50sp2 60/60` **và** khẳng định bằng nội dung rằng file duy nhất
+  lệch là `21_RepeatingGroupSpecifierWithValueOfZero.def:17`, engine trả `Reject 373=5 371=336`
+  (ADR-0084 quyết định 3); câu FAIL đảo chiều `1d_…` giữ nguyên. Số cũ là ba `60/60`; nó không
+  đạt được vì `336` có 0 giá trị enum trong `FIX50.xml` và 7 trong `FIX50SP2.xml`, nên corpus
+  `fix50` chấm bằng bảng SP2 hỏng đúng một file. `wire_fixt` 60 / 60 trên Linux CI. Interop
+  `fixt` 7 / 7 — đây là ý kiến độc lập duy nhất (ADR-0042); `.def` và interop cùng xanh mới
+  đóng. `dict` build có feature tắt **không mở** `FIXT11.xml` (đổi tên file rồi build).
+  **Thêm:** CI phải thật sự chạy test sau feature — `grep fix50sp2 .github/workflows/ci.yml`
+  hiện **không khớp gì**, nên bốn binary test FIXT chưa từng chạy trong CI (B7, và trang
+  `a-feature-gated-test-is-a-test-ci-never-runs.md`).
 - **PR C**: ba hex dump spec round trip byte một; `sbe-interop` 2 / 2 trong CI với Java do job
   cài; alloc `0` bốn case, chứng minh bằng injection; `no_std` chứng minh bằng build không
   `std` (C1 nêu cách CI có). Đảo chiều C3: đổi một byte trong hex group → đỏ đúng trường.
@@ -559,6 +600,202 @@ CI run id, gate quote, cái gì chưa làm và vì sao)*
   Status vẫn `Proposed`** — hàng A4 ghi "→ Accepted cùng commit, *sau khi chủ duyệt*", chủ
   đang vắng và chưa duyệt, nên D16 và `GUIDE.md` trích ADR-0082 là *Proposed*. Khi chủ duyệt:
   đổi Status trong ADR-0082, bỏ hai chữ "Proposed" ở D16 và `GUIDE.md` 3a, và dòng CHANGELOG.
+
+### PR B
+
+Nhánh `feat/phase-2-b`, base `plan/phase-2-a` (kế hoạch và ADR-0080 nằm ở đó, không ở `main`).
+PR draft [#82](https://github.com/tmthang86/fixbolt/pull/82). Máy: cloud Linux, **không phải bàn
+§9** — không có số thời gian nào trong PR này.
+
+**Đã giao**
+
+| Bước | Commit | Gate đã chạy và đọc output |
+|---|---|---|
+| B3 (phần không cần A) | `27051f6` | `cargo test -p fixbolt-conformance` mọi suite `ok`, `fixt_corpus` 4/4; `--test score` in `step_six_b_replays_what_it_sent_and_scores_fifty_nine ... ok` (59/59, không sửa fixture); `cargo test --all` và `--no-default-features` 0 `FAILED`; clippy `-D warnings` sạch; `fmt --check` sạch |
+| D1a | `ca15066` | `check-links.py`: `2321 internal links checked`, `no dead internal links`; `wc -l` tám trang: 41/39/35/31/63/31/39/38, đều ≤ 80 |
+
+Đảo chiều (§7, câu FAIL viết trước khi chạy, cả ba đỏ đúng câu đã đoán, khôi phục → xanh):
+`1137` 9→8 → `Logon 1137 should equal the corpus's declared value`; count 60→59 →
+`expected 59 definitions in this corpus, found 60`; comp_id → `TW50` →
+`Logon 49 should equal the corpus's declared CompID`.
+
+Kiểm tay ngoài gate: 85 đường dẫn file mà tám trang `internals/` nêu bằng văn xuôi đều tồn tại
+trong `crates/` và `tools/` — `check-links.py` không xét tên file viết trong prose.
+
+**Năm phát hiện chặn B1/B2** (đọc thẳng hai XML ở pin `386ce46e…`, mỗi cái tái lập bằng parser):
+
+1. `FIX50SP2.xml` dùng **10 tên kiểu** `field_type.rs::from_xml` không biết — `XID` 34 field,
+   `XIDREF` 29, `LOCALMKTTIME` 45, `MULTIPLECHARVALUE` 8, `XMLDATA` 8, `TZTIMEONLY` 6,
+   `MULTIPLESTRINGVALUE` 4, `TZTIMESTAMP` 1, `LANGUAGE` 1, `TAGNUM` 1. `build.rs` **cố ý `die`**
+   khi gặp kiểu lạ. Mỗi ánh xạ quyết định `SessionRejectReason 6`, là quyết định hành vi.
+2. `XmlData(213)` là `DATA` ở `FIXT11.xml` nhưng `XMLDATA` ở `FIX50SP2.xml`. 71/71 field FIXT11
+   đều có trong SP2, 70 khớp số–tên–kiểu, **đúng field này lệch**. ADR-0080 quyết định 2 bảo lệch
+   thì `die` → luật như đã viết làm hỏng build vì chính QuickFIX viết hai kiểu cho một field.
+3. Oracle của B2 **có tồn tại**: quickfix ở đúng pin ship **160 header sinh sẵn** ở
+   `src/C++/fix50sp2/`, nhưng `fetch-quickfix-assets.sh` chỉ sparse-checkout `/src/C++/fix44/`,
+   còn `vendor/quickfix-src` chỉ có sau khi `interop.sh` cmake-build libquickfix — việc mà không
+   test `dict` nào và không job `test` nào của CI làm.
+4. `<component name='MsgTypeGrp' />` **rỗng** ở file transport, có `NoMsgTypes(384)` sáu thành
+   viên ở file app, và Logon tham chiếu nó → merge sai chiều làm **mất im lặng** một repeating
+   group khỏi Logon (đúng kiểu hỏng của §2 điều 5). **Không `.def` nào trong 180 file có `384=`**
+   nên corpus không thấy. `HopGrp` giống hệt hai bên, không xung đột.
+5. Câu "đúng một file mỗi dir thiếu `1137`" của hàng B3: mỗi dir có **hai** file không có
+   `1137=` — `1d_InvalidLogonNoDefaultApplVerID.def` (Logon thiếu 1137, đúng ý hàng) và
+   `1e_NotLogonMessage.def` (**không có Logon nào**). Đã siết chính xác trong test, không cần sửa
+   kế hoạch. Cùng kiểu: `49=` khớp CompID khai báo trên mọi Logon trừ `1c_InvalidSenderCompID.def`
+   (`49=WT`, cố ý). `[đo 2026-09-19]` 198 dòng Logon `I`, 195 có `1137`.
+
+1–4 đang ở kiến trúc sư → **ADR-0083** + trang `docs/reference/` cho bẫy `XmlData`.
+
+**Lệch phạm vi chủ cần biết:** sửa phát hiện 1 phải động `crates/dict/src/field_type.rs`, mà cột
+*File đụng (không đụng gì khác)* của hàng B1 **không liệt kê** file đó — và gate của chính hàng B1
+không thể xanh nếu thiếu. Ghi ra đây chứ không làm lặng.
+
+**Sau khi chủ uỷ quyền duyệt (2026-09-19, "uỷ quyền cho bạn duyệt thay tôi")**
+
+ADR-0083 → **Accepted** (`d6134c0`). Dòng *Deciders* ghi rõ chủ **không đọc** ADR: kiến trúc sư
+đề xuất, manager tự đo lại sáu sự thật, không ai khác đọc. Số ADR đổi 0082 → 0083 (`c22bb57`)
+vì phiên bàn lấy 0082 cùng buổi chiều — hai file khác slug nên **git merge cả hai không báo xung
+đột**; trang `two-branches-can-take-the-same-adr-number-without-a-conflict.md` ghi lệnh khảo sát
+chéo nhánh nên chạy trước khi viết ADR. Merge `plan/phase-2-a` (`958e71d`) gỡ xung đột duy nhất —
+đúng *Nhật ký giao hàng*, hai bên thuần cộng thêm, giữ cả hai theo thứ tự A → B.
+
+| Bước | Commit | Gate manager tự chạy lại trên commit đó |
+|---|---|---|
+| **B1** | `a787e3a` | `--features fix50sp2` fixt 9/9, field_types 8/8; feature tắt xanh; `--all` và `--no-default-features` 0 `FAILED`; clippy hai chiều sạch; `RUSTDOCFLAGS="-D warnings" cargo doc` hai chiều exit 0; `check-no-optional-deps.sh` ok; `check-indexing-debt.sh` 178/178; `score` 59/59 |
+| **B2** | `0a881d2` | `fetch-quickfix-assets.sh` 160 header SP2, corpus 59/539/244 không đổi; `fixt_order` 2/2; `interop_quickfix_order` vẫn 730/730; `git status --porcelain \| grep vendor` **0 dòng** (§2 rule 9) |
+
+**Đảo chiều manager tự làm** (câu FAIL viết trước): cho khai báo component **rỗng** bên transport
+thắng → **đoán** `the_logon_carries_the_msg_type_group` đỏ, **thực tế** build chết sớm hơn ở tầng
+chặn component rỗng. Đoán sai tầng nào cắn, và phòng thủ hoá ra **xếp lớp**: phải phá cả luật merge
+lẫn hai tầng chặn mới tạo được mất mát im lặng.
+
+**Hai phát hiện lớn, đều tự kiểm từ nguồn gốc**
+
+1. **Chi phí bảng thứ hai không phải "double"** như ADR-0080 viết: **25.6×** byte sinh
+   (4 008 198 / 156 397) và **9.4×** build nguội (5.25 s / 0.56 s), ba lần mỗi bên, máy cloud.
+   Nguyên nhân: `ALLOWED` là bitset trên `0..=max_tag`, max_tag SP2 = **50002** so với 956 →
+   782 word/message thay vì 15, trong khi chỉ nhiều hơn 6.6× số field. **Đường nóng không chậm đi,
+   không thêm allocation**; feature tắt mặc định nên không sửa gì. Trang
+   `a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md`.
+2. **Oracle 730/730 không chuyển được sang SP2.** Hai mệnh đề (delimiter, subsequence) đúng trên
+   **cả 25 927** nhóm, giữ hard assert. Mệnh đề 3 ("tag thừa đều là group counter") **sai**:
+   1 307 tag / 64 750 lần. Manager tự khai triển đệ quy `FIX50SP2.xml` ngoài `build.rs` và ngoài
+   parser của test → `NoSides(552)` trong `AE` ra **162** tag gồm `OrderQty(38)`, đúng bằng `G402`;
+   còn `TradeCaptureReport.h` **tự mâu thuẫn**: `FIELD_SET(*this, FIX::OrderQty)` dòng 6417 nhưng
+   `message_order(552,…)` chỉ 144 tag, không có 38. Cùng hình thù ở `LegSecurityXML(1872)`.
+   Nguyên nhân: `<component>` lồng ≥ 2 tầng trong `<group>`, hình thù FIX 4.4 gần như không có.
+   **Bỏ field đi cho khớp QuickFIX mới là sai** (§2 điều 5, D3). Test chốt bốn số bằng `assert_eq!`
+   (25 927 / 231 / 1 307 / 64 750). Trang
+   `quickfix-drops-deeply-nested-fields-from-its-own-message-order.md`.
+
+**Lệch phạm vi đã ghi, không làm lặng:** `crates/dict/src/field_type.rs` (ADR-0083 quyết định 1)
+và `scripts/fetch-quickfix-assets.sh` (quyết định 3) đều **không** có trong cột *File đụng* của
+hàng B1/B2. Thêm: `scripts/check-indexing-debt.sh` hạ trần 181 → 178 vì refactor `UtcTimestamp`
+bỏ được ba subscript panic — chính script đó yêu cầu hạ trần trong cùng commit.
+
+**Chi phí fetch cho B8/D2 chép sang:** `src/C++/fix50sp2/` = 26 413 279 byte / 160 file, khớp dự
+đoán 26.4 MB của ADR-0083; `vendor/quickfix` 14M → 39M. Ba fetch nguội mỗi bên: 3.70/3.37/3.45 s
+trước, 2.23/3.32/3.30 s sau — **thời gian thêm không phân biệt được với nhiễu mạng** trên máy này.
+ADR yêu cầu CI cho số riêng, vẫn giữ.
+
+**ADR-0084 (Accepted) — B4 dừng ở 173/180 và ba hàng nó đẻ ra**
+
+`score_fixt` đỏ **không phải lỗi B4**. Bảy file hỏng là ba câu hỏi ADR-0080 quyết định 2 chưa trả
+lời, manager tự đo lại từng cái: `14a`×3, `14i`×3, `21`×1. Ba hàng follow-on, **chưa làm**:
+
+| Hàng | Việc | Tier |
+|---|---|---|
+| **B4a** | `Tables::is_defined_tag_for(msg_type, tag)` + `TRANSPORT_DEFINED_TAGS` trong `generate_pair`; `scan_fields` đổi một lời gọi. Một message được validate theo tập tag của **tầng định nghĩa nó** — cả hai engine QuickFIX làm vậy | developer |
+| **B4b** | Hoãn `373=5/6` trên thành viên group tới sau `373=1` và `373=16` (chỗ QuickFIX/J đặt), **gộp cùng** luật per-token `enum_allows` của ADR-0083 — cùng một arm, cùng kiểu test tay, **đổi hành vi FIX 4.4**, không có `.def` nào canh | **senior developer** |
+| **B4c** | `score_fixt` đổi assertion sang `(179, 180)` + tuple ghim `21_…def:17` với `373=5 371=336`; sửa dòng *Cách kiểm chứng* (đã làm ở trên) | developer |
+
+**Số đo đáng nhớ:** enum giữa các service pack **trôi hai chiều**, không phải superset như
+ADR-0080 quyết định 3 viết. FIX50→SP2: 4 field free→enum, 5 mất giá trị, **1 enum→free** —
+`DeskOrderHandlingInst(1035)` **24 giá trị → 0**. SP1→SP2: 3 / 3 / **2** (thêm `1395` 3→0).
+Nghĩa là chấm `fix50` bằng bảng SP2 sai được **cả hai chiều**; assertion chỉ ghim được chiều chặt,
+và điều đó **chấp nhận được** vì **0/180** file `.def` mang `1035=` hoặc `1395=` (đã grep).
+
+**Một hàng kế hoạch chưa bao giờ được xây:** bảng traps nói B1 sinh `is_admin` từ `msgcat` và
+`is_admin(b"n")` phải true. Đo: **0** lần `is_admin` trong bảng sinh, **0** lần `build.rs` đọc
+`msgcat`, và `ADMIN` là const 7 phần tử **viết tay** ở `session/src/lib.rs:291`, **không có**
+`b"n"`. Nợ của B1 hay bị bỏ lặng — cần xác định, chưa xử lý.
+
+**Lỗ hổng CI, nghiêm trọng:** `grep fix50sp2 .github/workflows/ci.yml` **không khớp gì**. Bốn
+binary test FIXT (`dict/tests/fixt.rs`, `dict/tests/fixt_order.rs`, `session/tests/fixt.rs`,
+`session/tests/score_fixt.rs`) **chưa từng chạy trong CI**. Mọi số FIXT của PR này là lời khai
+của máy cloud. Bịt ở **B7**, kèm phép thử ngược: cố ý làm một test sau feature đỏ và xác nhận CI
+đỏ theo. Trang `a-feature-gated-test-is-a-test-ci-never-runs.md`.
+
+**Chưa làm, và vì sao**
+
+- `echo.rs` generic `E` (B3): cần A1, và A3 đang sửa chính `echo.rs`.
+- B4–B7: sau khi PR A gộp → `git fetch && git rebase origin/main`, chạy lại gate rồi mới tiếp.
+- Một hàng `CLAUDE.md` §4 trỏ `docs/internals/` (hàng D1 yêu cầu): `CLAUDE.md` là file **chỉ bàn**
+  theo *Chạy song song* → **giao lại cho phiên bàn**.
+- Dòng cho `DESIGN.md` / `GUIDE.md` / `CHANGELOG.md` / `CONFIGURATION.md`: thuộc B8.
+- **Luật `enum_allows` per-token cho bảng `Fix44`**: `enum_allows(18, b"2 A") == Some(false)` →
+  `373=5` cho một `ExecInst` hợp lệ (`session/src/lib.rs:3765`); cả hai engine QuickFIX tách theo
+  dấu cách trước. 0/239 `.def` gửi field multi-value nên 59/59 không thấy. B1 dựng bảng **FIXT**
+  per-token và **không** đụng `Fix44` — sửa FIX 4.4 là thay đổi biên session không có oracle,
+  **cần hàng kế hoạch riêng** (ADR-0083 quyết định 1, luật thứ hai).
+- Gác trùng số ADR: một dòng shell, nhưng `ci.yml` thuộc bước khác, và script không job nào chạy
+  là check không ai đọc (§10). Ghi trong trang reference cho phiên sở hữu file đó.
+
+**CI xanh — `35430710585`, 14/14 job, trên `33c85d8`** (§9). Job `feature-sets` đỏ **sáu head
+liên tiếp** vì `serve_with` ở `crates/engine/src/lib.rs:134` của PR A (link hỏng khi không có
+feature `standard`), đỏ cả trên base; `crates/engine` ngoài bộ file nhánh này nên patch một dòng
+**đã kiểm chứng rồi hoàn nguyên** nằm trong comment PR #82, không push. Bàn sửa ở `c2df98f` —
+đúng bản patch đó — và `33c85d8` merge base về, gỡ CI. Bốn lệnh rustdoc từng đỏ chạy lại trước khi
+push: cả bốn `OK`.
+
+**Chưa chứng minh:** không có số nào từ bàn §9.
+Sáu variant `FieldType` mới **không có corpus nào đỡ** — luật `accepts` rút từ chữ của spec, và
+arm FIXT của `interop.sh` (B7) là đối tác thật đầu tiên có thể phản bác. ADR-0083 trích FIX
+Orchestra *FIX Latest EP312*, **không** phải PDF SP2 Volume 1 (proxy chặn `fixtrading.org`,
+`onixs.biz`) và nói rõ chỗ đó.
+
+#### PR B — các bước B5 đến B8
+
+| Bước | Commit | Bằng chứng manager tự chạy lại trên đúng commit đó |
+|---|---|---|
+| **B5** | `fbdf1aa` | `wire_fixt` **60 / 60** đọc bằng `--nocapture` (có `assert_eq!`, không chỉ in); `--test wire` 59/59 với `wire.rs` **không sửa**; `doc_table` 13 passed (trước 11 passed 2 FAILED); `--all` / `--no-default-features` 0 failed; clippy + fmt + rustdoc hai chiều sạch; `check-no-kernel-sleep.sh` GREEN + RED ok; `check-standard-gives-the-core-back.sh` GREEN CPU 0% ngủ 20/20, RED ok trên `hft` và `yield` |
+| **B6** | `29cf3c3` | `scripts/bench.sh` 18/18 target, `invariant failures 0`, `OK`; bốn case mới đọc **0**; tập 18 binary `bench.sh` build **trùng khít** tập read-back chứng nhận (so bằng `comm`/`diff`, không bằng exit code) |
+| **B7** | `9ca0608` | `scripts/interop.sh` rc=0, FIXT **7 / 7 acceptor + 7 / 7 initiator**; vòng lặp bốn crate của CI chạy tại chỗ, `check-feature-gated-tests-ran.sh` ok cả bốn; `grep -c fix50sp2 ci.yml` 12 (trước 0); `git status --porcelain \| grep vendor` **rỗng** sau một lần chạy interop đầy đủ (§2 rule 9) |
+| **B8** | (commit này) | `check-links.py` không link chết; bảng đồng bộ §4 đi từng dòng |
+
+**Ba lần agent sửa manager, và cả ba lần agent đúng.** Ghi lại vì đây là bằng chứng quy trình
+§12 hoạt động, không phải để tự trách:
+
+1. **B4b** — manager đề nghị gate việc hoãn `373=5/6` bằng `has_groups(msg_type)`, lý lẽ là
+   Heartbeat không khai báo group nào. Agent **từ chối và chứng minh sai**: `NoHops(627)` nằm
+   trong `<header>` của `FIX44.xml` nên **mọi** message type đều có group. Gate ấy nếu dựng thật
+   thì **59/59 và 179/180 đều vẫn xanh** — không `.def` nào gửi `NoHops` có nội dung.
+2. **B5** — brief của manager bắt hai `Problem` mới mang `{ line }`. Agent từ chối: cả 20+
+   variant hiện có đều không có trường, số dòng đã đi trên `SettingsError`. Manager đọc lại enum
+   và constructor: agent đúng.
+3. **B6** — manager chẩn đoán sai nguyên nhân lỗ hổng đọc-ngược căn chỉnh, và cách sửa một dòng
+   của manager sẽ đưa từ **1 sai thành 17 sai**. Nguyên nhân thật là `--workspace` hợp nhất
+   feature khác `-p`. Ghi ở
+   [a-workspace-build-and-a-per-package-build-are-different-artifacts](../reference/a-workspace-build-and-a-per-package-build-are-different-artifacts.md).
+
+**Còn nợ, nêu tên chứ không để trôi:**
+
+- **Hai băng chưa đo, cần bàn §9**: band ADR-0031 của PR A (A-desk), và band `validate` của B4b
+  (`validate NewOrderSingle` 877.5 → 906.2 ns, `validate Heartbeat` 140.7 → 166.2 ns). Máy cloud
+  là Xeon, `benches/baselines.tsv` chỉ có Ryzen, nên mọi lần chạy in `NO BASELINE` và hộp này
+  **không phân giải nổi** hiệu ứng cỡ đó — cùng mã không đổi đo được 158.4 rồi 166.2 ns.
+- **`is_admin` chưa bao giờ được dựng.** Bảng *Bẫy* của kế hoạch chờ B1 sinh nó từ `msgcat` với
+  `is_admin(b"n")` đúng. Đo: 0 lần xuất hiện trong bảng sinh ra, `build.rs` không đọc `msgcat`,
+  và `ADMIN` là const viết tay 7 phần tử ở `session/src/lib.rs:291`, **thiếu `b"n"`**. Là nợ B1
+  hay đã bị bỏ im lặng thì chưa rõ, và ghi lại là chưa rõ.
+- **`CLAUDE.md` §2 bảng *Machine checks* hàng 3 và §7 hàng "Any session-layer change"** vẫn nói
+  59. Nay còn 179/180 sau feature. Kế hoạch giao dòng này cho manager, nhưng chủ đã liệt
+  `CLAUDE.md` vào danh sách không được đụng của PR B, nên **để nguyên và ghi nợ** thay vì tự ý
+  sửa một file chủ đã rào.
+- **Doctest sau feature vẫn không chạy ở đâu cả**: `check-feature-gated-tests-ran.sh` nhận
+  `--tests`. Hôm nay chưa có doctest `fix50sp2` nào. Ghi trong `ci.yml`.
+- **Gác trùng số ADR** vẫn chưa có (hai nhánh lấy cùng một số mà git không xung đột).
 
 ### PR C
 

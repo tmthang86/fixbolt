@@ -23,6 +23,13 @@ standard = ["dep:libc"]
 # is what the comment on that dependency below already promised.
 affinity = ["dep:libc"]
 
+# Pass-through only, same shape as `fixbolt-session`'s own `fix50sp2`: this
+# crate compiles no second table. It turns on `dict`'s FIXT 1.1 / FIX 5.0 SP2
+# table (`fixbolt_dict::Fixt11Fix50Sp2Tables`, named directly by
+# `tests/wire_fixt.rs`) and forwards to `session` so its own generic bound
+# is satisfiable. ADR-0080 decision 2, CLAUDE.md §12 brief, step B5.
+fix50sp2 = ["fixbolt-dict/fix50sp2", "fixbolt-session/fix50sp2"]
+
 # ADR-0005, and wave B plan 4. **Off by default and it must stay off**: `rustls`
 # and `ktls-core` are the first dependencies here that pull a tree of their own,
 # and non-negotiable 6 says a build with nothing optional installed sees none of

@@ -13,6 +13,15 @@ description = "FIX 4.4 parse and serialise in place, no allocation on the hot pa
 # that measures nothing. Every real bench is declared below, so discovery is off.
 autobenches = false
 
+# Pass-through only, and **dev-only in effect**: this crate compiles no table of
+# its own and `fixbolt-dict` is a dev-dependency here. The feature exists so
+# `benches/alloc.rs` can name `Fixt11Fix50Sp2Tables` under a flag of this
+# package's own — a bench that only measures when some *other* crate happens to
+# be in the same cargo invocation is a bench nobody can run
+# (docs/reference/feature-flags-unify-across-a-workspace.md).
+[features]
+fix50sp2 = ["fixbolt-dict/fix50sp2"]
+
 [dev-dependencies]
 # A dev-dependency cycle: dict depends on codec, and codec's TESTS depend on
 # dict. Cargo permits exactly this shape, and it is the only way to test the

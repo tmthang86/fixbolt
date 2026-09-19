@@ -17,6 +17,35 @@ below describe what a first release would contain.
 
 ### Added
 
+- **FIXT 1.1 / FIX 5.0 SP2, behind the off-by-default `fix50sp2` feature.**
+  **`fixbolt_dict::Fixt11Fix50Sp2Tables`** — one dictionary built from two XML files, the
+  transport's header/trailer/admin from `FIXT11.xml` and the application's fields, components,
+  groups and messages from `FIX50SP2.xml`. **`fixbolt_dict::Tables` gains
+  `is_defined_tag_for(msg_type, tag)`**, with no default method, because an admin message's body
+  is checked against the transport dictionary alone ([ADR-0084](docs/decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md)
+  decision 1) — **a breaking change for any out-of-tree `Tables` implementation**.
+  **`fixbolt_session::Config::acceptor_fixt`** and `Config::default_appl_ver_id`, and
+  **`DropReason::LogonWithoutDefaultApplVerId`** for a FIXT Logon that carries no `1137=`.
+  **`fixbolt_engine::settings`** gains the `DefaultApplVerID` key with
+  `Problem::DefaultApplVerIdRequired` and `Problem::DefaultApplVerIdWithoutFixt`. `fixbolt_codec`
+  gains a `fix50sp2` feature that enables nothing at runtime — it exists so the crate's benches
+  can name the pair table. See `docs/SESSION-BEHAVIOUR.md` §5b, `docs/CONFORMANCE.md` §9,
+  [ADR-0080](docs/decisions/ADR-0080-the-dictionary-rides-the-encoding-and-a-fixt-session-is-one-table-built-from-two-xml-files.md),
+  [ADR-0083](docs/decisions/ADR-0083-ten-field-types-one-field-spelled-two-ways-one-empty-component-and-where-the-sp2-oracle-comes-from.md)
+  and ADR-0084.
+
+- **A group member's value is checked after its counter agrees.** `373=5` and `373=6` on a member
+  of a group are deferred behind `missing_required` and `bad_group_count`, so a message with both
+  faults is answered about the count first (ADR-0084 decision 2). Observable behaviour change on
+  FIX 4.4 as well as FIXT. **"Member" means its counter appeared *before it on the wire***, and a
+  message carrying more counters than the 32-slot scan array holds gets the same answer — the
+  overflow path asks the same positional question
+  ([ADR-0085](docs/decisions/ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md)),
+  including under `ValidateUserDefinedFields=N`, where both paths ignore the same counters. Together with it, the
+  FIX 4.4 enumeration check became **per token** for `MULTIPLEVALUESTRING` fields: eight tags —
+  18, 276, 277, 286, 291, 292, 529, 546 — change answer, and `18=2 A` is now one legal
+  two-value field rather than one illegal value.
+
 - **`fixbolt_codec::Encoding`, `TagValue<D, N>` and `SessionFields`** — one trait over the
   encodings (parse, view, read a field, encode, `session_fields`), static dispatch only, and the
   tag=value implementation that forwards unchanged to `parse_into`, `FieldIndex::view`,

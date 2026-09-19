@@ -77,7 +77,28 @@ pub(crate) mod tag {
     /// at position 27 of 29 and `fix44/Message.h:37` agrees, so it is legal on
     /// every message and `Fix44` orders it.
     pub const LAST_MSG_SEQ_NUM_PROCESSED: u32 = 369;
+    /// `ApplVerID`, a FIXT 1.1 **header** field.
+    ///
+    /// `[verified 2026-09-19]` `spec/FIXT11.xml:215` defines it with ten
+    /// enumerated values, `0`–`9`, and its `<header>` block carries it. FIX 4.4
+    /// does not define it at all, which is why a FIX 4.4 session answers
+    /// `373=0` for it and a FIXT one does not.
+    pub const APPL_VER_ID: u32 = 1128;
+    /// `DefaultApplVerID`, a **body** field of the FIXT 1.1 `Logon`.
+    ///
+    /// `[verified 2026-09-19]` `spec/FIXT11.xml:230` defines the field and
+    /// `:90` puts it on `Logon` with `required='Y'`, so `Fixt11Fix50Sp2Tables`
+    /// orders it after `108=` and `141=` and no call site here decides where it
+    /// goes — non-negotiable 5.
+    pub const DEFAULT_APPL_VER_ID: u32 = 1137;
 }
+
+/// The one `BeginString` that makes a session a FIXT 1.1 session.
+///
+/// FIXT 1.1 is the transport version, and every FIX 5.0 family session carries
+/// it on the wire whatever `1137=` says the application version is — which is
+/// the whole reason `1137` exists. ADR-0080 decision 3.
+const FIXT_1_1: &[u8] = b"FIXT.1.1";
 
 /// `MsgType` values this layer acts on.
 mod msg {
@@ -379,6 +400,16 @@ pub const MAX_BEGIN_STRING_LEN: usize = 16;
 /// costs.
 pub const MAX_COMP_ID_LEN: usize = 32;
 
+/// The most bytes a [`Config`] can hold for `1137=DefaultApplVerID`.
+///
+/// `[verified 2026-09-19]` the ten values FIXT 1.1 enumerates are one
+/// character each (`spec/FIXT11.xml:215-226`), and QuickFIX spells the setting
+/// with those same strings. Sixteen leaves room for a venue that spells its
+/// own and still fits inside the `Logon` skeleton's scratch. Over-long is
+/// refused rather than truncated, exactly as [`MAX_BEGIN_STRING_LEN`] is — see
+/// [`Config::acceptor_fixt`].
+pub const MAX_APPL_VER_ID_LEN: usize = 16;
+
 /// The default size of an [`Application`]'s reply scratch.
 ///
 /// `[measured 2026-09-05]` **1 KiB, and it is the tightest ceiling in the
@@ -454,6 +485,10 @@ pub struct Config {
     /// Which of the dictionary's questions this session asks.
     /// [`DictionaryChecks::new`] asks all of them and is the default.
     validation: DictionaryChecks,
+    /// `1137=DefaultApplVerID`, the application version a FIXT 1.1 session
+    /// runs at. `None` for FIX 4.x, which neither requires nor emits it.
+    /// [`Config::acceptor_fixt`], ADR-0080 decision 3.
+    default_appl_ver_id: Option<Name<MAX_APPL_VER_ID_LEN>>,
 }
 
 /// Which of the dictionary's questions a session asks about an inbound message.
@@ -673,6 +708,43 @@ impl Config {
             logon_timeout_ms: 0,
             logout_timeout_ms: 0,
             validation: DictionaryChecks::new(),
+            default_appl_ver_id: None,
+        }
+    }
+
+    /// A FIXT 1.1 acceptor's configuration: [`Self::acceptor`] plus the
+    /// `1137=DefaultApplVerID` the session both requires and emits.
+    ///
+    /// `begin_string` is taken rather than assumed because it is the thing a
+    /// counterparty's `8=` is matched against, and a configuration that says
+    /// `FIXT.1.1` in one place and something else in another is the fault this
+    /// engine refuses to have two copies of. The FIXT rules below turn on that
+    /// value and on nothing else:
+    ///
+    /// * an inbound `Logon` without `1137=` is dropped in silence with
+    ///   [`DropReason::LogonWithoutDefaultApplVerId`]
+    ///   (`1d_InvalidLogonNoDefaultApplVerID.def`);
+    /// * this session's own `Logon` carries `1137=<default_appl_ver_id>`, in
+    ///   the dictionary's position;
+    /// * `1128=ApplVerID` on an application message must name a FIX 5.0 family
+    ///   version.
+    ///
+    /// A `default_appl_ver_id` longer than [`MAX_APPL_VER_ID_LEN`] is **not**
+    /// truncated: like an over-long CompID it configures a session that refuses
+    /// every message, because a version string half-written is not a version.
+    ///
+    /// ADR-0080 decision 3. The settings key that fills this in is decision 4
+    /// and belongs to `engine`.
+    #[must_use]
+    pub fn acceptor_fixt(
+        begin_string: &[u8],
+        sender_comp_id: &[u8],
+        target_comp_id: &[u8],
+        default_appl_ver_id: &[u8],
+    ) -> Self {
+        Self {
+            default_appl_ver_id: Some(Name::new(default_appl_ver_id)),
+            ..Self::acceptor(begin_string, sender_comp_id, target_comp_id)
         }
     }
 
@@ -963,6 +1035,38 @@ impl Config {
         self.target_comp_id.get().unwrap_or(b"")
     }
 
+    /// `1137` **DefaultApplVerID**, as configured, or `None` for a FIX 4.x
+    /// session.
+    ///
+    /// `None` **also** when the configured value did not fit — the same
+    /// fail-closed answer [`Self::begin_string`] gives, and here it is not
+    /// merely cosmetic: [`Session::new`] refuses to build its templates at all
+    /// for such a configuration, so the session sends nothing rather than a
+    /// `Logon` with a truncated version on it.
+    #[must_use]
+    pub fn default_appl_ver_id(&self) -> Option<&[u8]> {
+        self.default_appl_ver_id.as_ref()?.get()
+    }
+
+    /// Is this a FIXT 1.1 session?
+    ///
+    /// The `BeginString`, and nothing else: FIXT 1.1 is the transport version,
+    /// and `1137=` names the application version *inside* it. A configuration
+    /// carrying a `default_appl_ver_id` under `8=FIX.4.4` is not a FIXT
+    /// session and none of the three FIXT rules applies to it — `engine`
+    /// refuses that pairing at the settings file (ADR-0080 decision 4), and
+    /// this layer simply does not act on it.
+    fn is_fixt(&self) -> bool {
+        self.begin_string.matches(FIXT_1_1)
+    }
+
+    /// The configured `1137=`, copied off the configuration so the borrow ends
+    /// before `send` takes `&mut self`. The same trick `copy` exists for on the
+    /// inbound side.
+    fn appl_ver_id_held(&self) -> Option<Held<MAX_APPL_VER_ID_LEN>> {
+        copy(self.default_appl_ver_id.as_ref()?.get())
+    }
+
     /// Do these two configurations name the **same FIX session identity**?
     ///
     /// BeginString and both comp IDs, and deliberately nothing else: two entries
@@ -1057,6 +1161,8 @@ enum Refusal {
     /// A Logon without `98=` or `108=`. FIX 4.4 makes both required, and a
     /// session cannot answer without echoing them.
     LogonIncomplete,
+    /// A Logon without `1137=` on a session configured for `FIXT.1.1`.
+    LogonWithoutDefaultApplVerId,
     /// `49=` is not the configured counterparty.
     WrongSenderCompId,
     /// `56=` is not us.
@@ -1111,6 +1217,25 @@ pub enum DropReason {
     NotALogon,
     /// A `Logon` without `98=` or `108=`, both required by FIX 4.4.
     LogonIncomplete,
+    /// A `Logon` without `1137=DefaultApplVerID` on a session configured for
+    /// `8=FIXT.1.1`. **Nothing is sent** — not a `Logout`, not a `Reject`.
+    ///
+    /// FIXT 1.1 makes `1137` a required field of the `Logon`, and it is the
+    /// only thing that says which application version the session will speak;
+    /// a session that guessed would validate every later message against a
+    /// dictionary the counterparty never agreed to.
+    ///
+    /// **The oracle is one file**, `1d_InvalidLogonNoDefaultApplVerID.def` —
+    /// four lines, a `Logon` carrying `98=0 108=30` and no `1137`, answered by
+    /// `eDISCONNECT` with no `E` line in front of it. That silence is the
+    /// shape every other pre-Logon fault takes here (`1c`, `1d`, `1e`), so
+    /// this reason is what tells an operator which of them it was.
+    ///
+    /// A `FIX.4.x` session never produces it: the rule turns on the configured
+    /// `BeginString` alone. Held by
+    /// `tests/fixt.rs::a_logon_without_1137_is_dropped_and_nothing_is_sent`
+    /// and by `tests/score_fixt.rs`.
+    LogonWithoutDefaultApplVerId,
     /// `49=` is not the configured counterparty.
     WrongSenderCompId,
     /// `56=` is not us.
@@ -1268,6 +1393,7 @@ impl From<Refusal> for DropReason {
             Refusal::WrongBeginString => Self::WrongBeginString,
             Refusal::NotALogon => Self::NotALogon,
             Refusal::LogonIncomplete => Self::LogonIncomplete,
+            Refusal::LogonWithoutDefaultApplVerId => Self::LogonWithoutDefaultApplVerId,
             Refusal::WrongSenderCompId => Self::WrongSenderCompId,
             Refusal::WrongTargetCompId => Self::WrongTargetCompId,
             Refusal::NeverTicked => Self::NeverTicked,
@@ -1344,6 +1470,15 @@ pub struct Session<E: Encoding, R: Role, const APP: usize = DEFAULT_APP_SCRATCH>
     /// so a live session reports `None` rather than the previous connection's
     /// cause.
     last_drop_reason: Option<DropReason>,
+    /// The `1137=DefaultApplVerID` the counterparty's `Logon` carried.
+    ///
+    /// **Stored and not judged.** ADR-0080 decision 3: a value other than this
+    /// end's is accepted, because the SP2 tables are a superset of SP0's and
+    /// SP1's and no `.def` in the three corpora sends a mismatch — a refusal
+    /// here would be a rule with no test. `docs/SESSION-BEHAVIOUR.md` records
+    /// it as *not covered by the corpus*. Read it with
+    /// [`Session::peer_default_appl_ver_id`].
+    peer_appl_ver_id: Option<Held<MAX_APPL_VER_ID_LEN>>,
     /// The engine's clock minus the `SendingTime` of the last message whose
     /// `52=` could be read, in milliseconds. Positive: their stamp is behind
     /// ours.
@@ -1527,8 +1662,15 @@ where
         // configuration's ceiling; how many of those bytes actually reach the
         // wire is decided per tick, by `Self::stamp_precision`.
         let cfg_precision = cfg.timestamp_precision;
+        // A configured `1137=` that did not fit is treated exactly as an
+        // over-long CompID is: no templates, so the session refuses everything
+        // rather than putting a truncated application version on the wire.
+        let names_fit = cfg
+            .default_appl_ver_id
+            .as_ref()
+            .is_none_or(|n| n.get().is_some());
         let out = match (cfg.begin_string.get(), cfg.sender_comp_id.get()) {
-            (Some(begin), Some(sender)) => cfg
+            (Some(begin), Some(sender)) if names_fit => cfg
                 .target_comp_id
                 .get()
                 .and_then(|target| Outbound::new(begin, sender, target)),
@@ -1555,6 +1697,7 @@ where
             resend_to: 0,
             session_mark: None,
             last_drop_reason: None,
+            peer_appl_ver_id: None,
             last_skew_ms: None,
             queue: [const {
                 Queued {
@@ -1671,6 +1814,18 @@ where
     #[must_use]
     pub const fn last_drop_reason(&self) -> Option<DropReason> {
         self.last_drop_reason
+    }
+
+    /// The `1137=DefaultApplVerID` the counterparty's `Logon` carried, if any.
+    ///
+    /// `None` on a FIX 4.x session, and on a FIXT session that has not yet
+    /// taken a `Logon`. It is **not** compared against
+    /// [`Config::default_appl_ver_id`] — ADR-0080 decision 3 accepts a
+    /// mismatch and says why — so this is how an operator, or a venue's
+    /// onboarding check, sees that the two ends disagree.
+    #[must_use]
+    pub fn peer_default_appl_ver_id(&self) -> Option<&[u8]> {
+        self.peer_appl_ver_id.as_deref()
     }
 
     /// End the session, recording why.
@@ -2273,17 +2428,31 @@ where
                 // (`Session.cpp:691`).
                 let mut want = [0u8; 10];
                 let want = digits(self.next_in, &mut want);
-                let mut extra: [(u32, &[u8]); 3] = [
+                let ours = self.cfg.appl_ver_id_held();
+                let mut extra: [(u32, &[u8]); 4] = [
                     (tag::ENCRYPT_METHOD, b"0"),
                     (tag::HEART_BT_INT, beat),
                     (0, &[]),
+                    (0, &[]),
                 ];
-                let n = if self.cfg.next_expected {
-                    extra[2] = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
-                    3
-                } else {
-                    2
-                };
+                // `get_mut`, for the reason the acceptor's own reply gives.
+                let mut n = 2;
+                if self.cfg.next_expected
+                    && let Some(slot) = extra.get_mut(n)
+                {
+                    *slot = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+                    n += 1;
+                }
+                // The opening `Logon` of a FIXT initiator carries `1137=` for
+                // the same reason the acceptor's reply does: it is required,
+                // and a counterparty that follows this engine's own rule would
+                // drop the connection without it.
+                if let Some(v) = ours.as_deref()
+                    && let Some(slot) = extra.get_mut(n)
+                {
+                    *slot = (tag::DEFAULT_APPL_VER_ID, v);
+                    n += 1;
+                }
                 let _ = self.send(Which::Logon, &extra[..n], &mut *emit);
                 return Link::Up;
             }
@@ -3197,14 +3366,31 @@ where
         }
 
         let mt = view.get(tag::MSG_TYPE).unwrap_or_default();
+        let fixt = self.cfg.is_fixt();
+        // Filled by the wire-order scan and read by the fourth pass below.
+        let mut seen = SeenCounters::new();
         let fault = if self.state != State::LoggedOn {
             None
         } else if !<E::Dict as Tables>::is_msg_type(mt) {
             Some((SessionText::InvalidMsgType, None))
         } else {
-            scan_fields::<E::Dict, N>(&view, mt, self.cfg.validation)
+            scan_fields::<E::Dict, N>(&view, mt, self.cfg.validation, &mut seen)
+                // `1128=` naming a version this session cannot be speaking.
+                // After the field scan, because the scan already answers the
+                // values FIXT does not enumerate at all and this rule is only
+                // about the seven it does enumerate and this engine still
+                // refuses.
+                .or_else(|| {
+                    fixt.then(|| out_of_family_appl_ver_id::<N>(&view, mt))
+                        .flatten()
+                })
                 .or_else(|| missing_required::<E::Dict, N>(&view, mt))
                 .or_else(|| bad_group_count::<E::Dict, N>(&view, mt))
+                // A group member's value and format, deferred by the scan so
+                // that the count above answers first — ADR-0084 decision 2.
+                // Still ahead of `373=9` and `373=10`, which is where the
+                // wire-order scan that used to ask them sat.
+                .or_else(|| scan_group_members::<E::Dict, N>(&view, mt, self.cfg.validation, &seen))
                 // A CompID that is merely wrong, once there is a session to say
                 // so with. `2k_CompIDDoesNotMatchProfile.def` sends all three
                 // combinations and expects `373=9` for each.
@@ -3252,6 +3438,11 @@ where
         let poss_dup = view.get(tag::POSS_DUP_FLAG) == Some(b"Y");
         let encrypt = copy::<8>(view.get(tag::ENCRYPT_METHOD));
         let heart_bt = copy::<8>(view.get(tag::HEART_BT_INT));
+        // Presence and value are read apart on purpose: `copy` answers `None`
+        // both for a field that is absent and for one longer than the buffer,
+        // and only the first of those is the `Logon` this engine refuses.
+        let has_appl_ver_id = view.get(tag::DEFAULT_APPL_VER_ID).is_some();
+        let their_appl_ver_id = copy::<MAX_APPL_VER_ID_LEN>(view.get(tag::DEFAULT_APPL_VER_ID));
 
         // A Logon carrying `141=Y` restarts both counts **before** its own
         // sequence number is judged: QuickFIX resets in `nextLogon` and only
@@ -3384,8 +3575,24 @@ where
         }
 
         if is_logon {
+            // **FIXT 1.1: `1137=` or nothing at all.** Ahead of `98=`/`108=`
+            // because it is the field that decides which dictionary the rest
+            // of this session is judged against; the corpus cannot separate
+            // the two orders — `1d_InvalidLogonNoDefaultApplVerID.def` sends
+            // a `Logon` that carries both of the others — so the order is this
+            // engine's and is written down rather than assumed.
+            //
+            // Nothing is sent: the file's `eDISCONNECT` has no `E` line in
+            // front of it, which is the same silence `1c`, `1d` and `1e` ask
+            // for, and `Refusal` is the path that gives it.
+            if fixt && !has_appl_ver_id {
+                return Err(Refusal::LogonWithoutDefaultApplVerId);
+            }
             let encrypt = encrypt.as_deref().ok_or(Refusal::LogonIncomplete)?;
             let heart_bt = heart_bt.as_deref().ok_or(Refusal::LogonIncomplete)?;
+            // Stored, never compared. ADR-0080 decision 3, and the field's own
+            // comment says what a mismatch costs.
+            self.peer_appl_ver_id = their_appl_ver_id;
 
             // **`789=` higher than anything this end has sent, judged before
             // the reply.** The counterparty is waiting for a message that does
@@ -3432,19 +3639,45 @@ where
             // no case of its own.
             let mut want = [0u8; 10];
             let want = digits(self.next_in.saturating_add(1), &mut want);
-            let mut extra: [(u32, &[u8]); 4] = [
+            // Copied off the configuration first: `send` takes `&mut self`,
+            // so a `&[u8]` still borrowed out of `self.cfg` could not reach it.
+            let ours = self.cfg.appl_ver_id_held();
+            let mut extra: [(u32, &[u8]); 5] = [
                 (tag::ENCRYPT_METHOD, encrypt),
                 (tag::HEART_BT_INT, heart_bt),
                 (0, &[]),
                 (0, &[]),
+                (0, &[]),
             ];
+            // `get_mut` and not `extra[n]`: `indexing_slicing` is denied and
+            // `scripts/check-indexing-debt.sh` counts a subscript here whether
+            // or not the bound is obvious. Two of these three were that debt
+            // before `1137` made it three; all three are `get_mut` now, and the
+            // `None` arm is unreachable by construction — `n` starts at 2 and
+            // only three branches below can raise it, against a five-wide
+            // array — so it writes nothing rather than panicking.
             let mut n = 2;
-            if reset_seq {
-                extra[n] = (tag::RESET_SEQ_NUM_FLAG, b"Y");
+            if reset_seq && let Some(slot) = extra.get_mut(n) {
+                *slot = (tag::RESET_SEQ_NUM_FLAG, b"Y");
                 n += 1;
             }
-            if self.cfg.next_expected {
-                extra[n] = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+            if self.cfg.next_expected
+                && let Some(slot) = extra.get_mut(n)
+            {
+                *slot = (tag::NEXT_EXPECTED_MSG_SEQ_NUM, want);
+                n += 1;
+            }
+            // **Our own `1137=`, not theirs echoed.** Every `E` Logon in the
+            // three FIXT corpora carries the directory's own value, and the
+            // acceptor's answer is a statement about what *this* end speaks.
+            // Where it lands on the wire is `E::Dict`'s to say — the slot is
+            // declared in `out::Outbound::new` and sorted there (non-negotiable
+            // 5), and an unset slot is not written, which is what leaves a
+            // FIX 4.4 `Logon` byte-for-byte what it was.
+            if let Some(v) = ours.as_deref()
+                && let Some(slot) = extra.get_mut(n)
+            {
+                *slot = (tag::DEFAULT_APPL_VER_ID, v);
                 n += 1;
             }
             // **Only the side that did not speak first answers.** A Logon is
@@ -3755,10 +3988,123 @@ pub fn validate_with<D: Tables, const N: usize>(
     msg_type: &[u8],
     checks: DictionaryChecks,
 ) -> Option<SessionText> {
-    scan_fields::<D, N>(view, msg_type, checks)
+    let mut seen = SeenCounters::new();
+    scan_fields::<D, N>(view, msg_type, checks, &mut seen)
         .or_else(|| missing_required::<D, N>(view, msg_type))
         .or_else(|| bad_group_count::<D, N>(view, msg_type))
+        .or_else(|| scan_group_members::<D, N>(view, msg_type, checks, &seen))
         .map(|(text, _tag)| text)
+}
+
+/// The group counters one wire-order scan walked past, so the pass that asks a
+/// member's value knows which fields the scan deferred without walking the
+/// message a second time to find out.
+///
+/// [ADR-0084](../../../docs/decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md)
+/// decision 2, as amended by
+/// [ADR-0085](../../../docs/decisions/ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md)
+/// decision 1. Fixed size and on the stack.
+///
+/// **The question this array answers, and the only one it may be given.** A
+/// field's `373=5` and `373=6` wait for `373=1` and `373=16` **if and only if**
+/// it is a member of a repeating group of this message type whose counter
+/// appears *before it on the wire*. A member ahead of its counter is a stray
+/// top-level field and is answered in wire order like any other — ADR-0085
+/// decision 1. Remembering the counters the scan has passed is how the fast
+/// path asks that; [`in_a_group_before`], walking the fields before the one
+/// being asked, is how the full array asks the same thing. The two agree by
+/// construction — including under `ValidateUserDefinedFields=N`, where both
+/// ignore the same counters — so `SEEN` moves the cost and never the answer. It is **not**
+/// [`in_a_group`]'s question — *does the message carry that group anywhere* —
+/// which the `373=13` arm needs and this array must never be given: that swap
+/// is the defect ADR-0085 repairs, and it changed the Reject a counterparty
+/// read (ADR-0085 decisions 2 and 4).
+///
+/// `[measured 2026-09-19]` **`SEEN` is 32 because FIX 4.4 declares at most 23
+/// distinct group counters for one message type** — `AllocationInstruction(J)`
+/// and `AllocationReport(AS)`, counted over the generated `GROUP_KEYS`, whose
+/// 731 `(msg_type, counter)` pairs cover all 76 message types that carry a
+/// group at any depth. So a FIX 4.4 message cannot fill this array. FIXT 1.1 /
+/// FIX 5.0 SP2 is a different size of problem — 25 929 pairs and up to **393**
+/// counters on `TradeCaptureReport(AE)` — and no fixed array holds that, so
+/// [`SeenCounters::defers`] falls back to the walk once the array is full.
+/// Neither half of that sentence is left to this paragraph: the counts are
+/// re-measured on every run by
+/// `tests::no_fix_44_message_type_reaches_the_seen_bound_and_the_fixt_table_passes_it`,
+/// and the full array is *observed* rather than argued by
+/// `tests::an_ae_with_thirty_three_group_counters_fills_the_array`, which is
+/// the first thing in this repository to reach it. What a counterparty is told
+/// once it is full is pinned over the wire by
+/// `tests/fixt.rs::a_stray_member_is_answered_in_wire_order_when_the_array_is_full`.
+struct SeenCounters {
+    tags: [u32; Self::SEEN],
+    len: usize,
+    /// Set once a counter was met with no room left. From then on the
+    /// membership question is asked of the message rather than of `tags`.
+    full: bool,
+}
+
+impl SeenCounters {
+    const SEEN: usize = 32;
+
+    const fn new() -> Self {
+        Self {
+            tags: [0; Self::SEEN],
+            len: 0,
+            full: false,
+        }
+    }
+
+    /// Whether this message carried no group counter at all — the case that
+    /// must never reach [`scan_group_members`]' body or pay for it.
+    const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Note that `tag` is a counter of a group `msg_type` declares.
+    ///
+    /// Idempotent: a counter cannot legally repeat at the top level, and one
+    /// that does is `373=13`'s business, not this array's.
+    fn record(&mut self, tag: u32) {
+        if self.tags.iter().take(self.len).any(|&t| t == tag) {
+            return;
+        }
+        match self.tags.get_mut(self.len) {
+            Some(slot) => {
+                *slot = tag;
+                self.len += 1;
+            }
+            None => self.full = true,
+        }
+    }
+
+    /// Whether `tag`'s value and format wait for `373=1` and `373=16` — that
+    /// is, whether it is a member of a group whose counter came before it.
+    ///
+    /// `upto` is the index the walk stops at when this array is full and the
+    /// answer has to be recomputed: the field's own index in [`scan_fields`],
+    /// and `view.len()` in [`scan_group_members`], where the array is complete
+    /// and therefore holds every counter the scan passed (ADR-0085 decision 2
+    /// and its decision 4 note on why the superset is harmless). `checks` goes
+    /// with it because the array is not filled blind either — see
+    /// [`in_a_group_before`]. Both are unread while the array still has room,
+    /// because then the array *is* the answer.
+    fn defers<D: Tables, const N: usize>(
+        &self,
+        view: &MessageView<'_, N>,
+        msg_type: &[u8],
+        tag: u32,
+        upto: usize,
+        checks: DictionaryChecks,
+    ) -> bool {
+        if self.full {
+            return in_a_group_before::<D, N>(view, msg_type, tag, upto, checks);
+        }
+        self.tags
+            .iter()
+            .take(self.len)
+            .any(|&counter| D::group_members(msg_type, counter).contains(&tag))
+    }
 }
 
 /// Walk the message in wire order and return the first fault, if any.
@@ -3766,10 +4112,16 @@ pub fn validate_with<D: Tables, const N: usize>(
 /// One pass, first fault wins — which is what the corpus expects: `14h` sends
 /// `40=1|40=2` among a dozen good fields and names `371=40`, not the first tag
 /// in the message.
+///
+/// `seen` comes out filled with the group counters this walk passed, for
+/// [`scan_group_members`] to read. It is an out-parameter rather than a return
+/// value because this function already returns the fault, and because a
+/// counter met *after* the fault is a counter no later pass will run on.
 fn scan_fields<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
     checks: DictionaryChecks,
+    seen: &mut SeenCounters,
 ) -> Option<(SessionText, Option<Held<12>>)> {
     let mut in_body = false;
     for i in 0..view.len() {
@@ -3798,12 +4150,22 @@ fn scan_fields<D: Tables, const N: usize>(
             in_body = true;
         }
 
-        if !<D as Tables>::is_defined_tag(tag) {
+        // `is_defined_tag_for`, not `is_defined_tag`: the question is whether
+        // the layer that defines this message type defines this tag. On a
+        // single-file dictionary the two are one answer; on the FIXT pair a
+        // session message is checked against the transport file alone, so
+        // `999=LegUnitOfMeasure` on a Heartbeat is `373=0` and not `373=2` —
+        // ADR-0084 decision 1, `14a_BadField.def` in all three FIXT corpora.
+        if !<D as Tables>::is_defined_tag_for(msg_type, tag) {
             return Some((SessionText::InvalidTagNumber, tag_text(tag)));
         }
+        // Read once and used three times below — the empty-value arm, the
+        // format arm, and the counter test at the end of the loop. Three calls
+        // to `field_type` per field is what this replaces.
+        let field_type = <D as Tables>::field_type(tag);
         // `373=4` before `373=6`: an empty value is its own fault, and
         // `14d_TagSpecifiedWithoutValue.def` says so with `56=`.
-        if value.is_empty() && <D as Tables>::field_type(tag) != Some(FieldType::Data) {
+        if value.is_empty() && field_type != Some(FieldType::Data) {
             return Some((SessionText::TagSpecifiedWithoutValue, tag_text(tag)));
         }
         // `AllowUnknownMsgFields=Y` forgives exactly this one: a tag FIX 4.4
@@ -3821,6 +4183,84 @@ fn scan_fields<D: Tables, const N: usize>(
         {
             return Some((SessionText::TagAppearsMoreThanOnce, tag_text(tag)));
         }
+        // The last two arms — `373=5` and `373=6` — wait for `373=1` and
+        // `373=16` when the tag is a member of a group this message carries,
+        // which is the order both QuickFIX engines apply (ADR-0084 decision
+        // 2). Everything above stays here: `373=0`, `373=2`, `373=4`, `373=13`
+        // and `373=14` on a member are answered in wire order as before.
+        //
+        // `seen` is empty until a counter goes past, so a message with no
+        // group never enters the branch and pays one `is_empty` test per
+        // field.
+        if seen.is_empty() || !seen.defers::<D, N>(view, msg_type, tag, i, checks) {
+            if <D as Tables>::enum_allows(tag, value) == Some(false) {
+                return Some((SessionText::ValueIsIncorrect, tag_text(tag)));
+            }
+            if field_type.is_some_and(|t| !t.accepts(value)) {
+                return Some((SessionText::IncorrectDataFormat, tag_text(tag)));
+            }
+        }
+        // After the arms, not before: a counter is never a member of its own
+        // group, so the order cannot change this field's answer — but a
+        // *nested* counter is a member of its parent's, and recording it here
+        // is what lets the parent's grandchildren be deferred too.
+        //
+        // `NumInGroup` first, because it is a comparison on a value already in
+        // hand and `group_delimiter` is a two-level match. Every group counter
+        // in every dictionary this workspace generates is `NUMINGROUP` —
+        // `[measured 2026-09-19]` 93 groups in `FIX44.xml`, 2 in `FIXT11.xml`,
+        // 561 in `FIX50SP2.xml`, none otherwise — and
+        // `crates/dict/tests/group_tables.rs::every_group_counter_is_a_num_in_group`
+        // holds it for both tables, naming this line.
+        if field_type == Some(FieldType::NumInGroup) && D::group_delimiter(msg_type, tag).is_some()
+        {
+            seen.record(tag);
+        }
+    }
+    None
+}
+
+/// `373=5` and `373=6` on the group members the wire-order scan deferred.
+///
+/// The fourth pass, run only once `missing_required` and `bad_group_count`
+/// have found nothing — [ADR-0084](../../../docs/decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md)
+/// decision 2. Wire order again, first fault wins, and exactly the tags
+/// [`scan_fields`] skipped: `14i_RepeatingGroupCountNotEqual.def` declares
+/// `386=3`, sends two entries and wants `373=16` naming the counter, not
+/// `373=5` naming the member inside them.
+///
+/// **This engine still asks.** QuickFIX C++ never descends into a group and so
+/// never refuses a member's value at all; QuickFIX/J does, after the top-level
+/// questions. `FIX44.xml` alone has 110 enumerated group-member fields, and
+/// ADR-0001's posture is that a value the table can refuse is refused — so the
+/// order moves and the question stays.
+///
+/// Returns immediately on a message that carried no group counter, which is
+/// every session message and most application ones.
+fn scan_group_members<D: Tables, const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+    checks: DictionaryChecks,
+    seen: &SeenCounters,
+) -> Option<(SessionText, Option<Held<12>>)> {
+    if seen.is_empty() {
+        return None;
+    }
+    for i in 0..view.len() {
+        let Some((tag, value)) = view.field_at(i) else {
+            continue;
+        };
+        // `ValidateUserDefinedFields=N` forgives a user-defined tag wherever
+        // it sits, inside a group as much as outside one.
+        if checks.skips_user_defined_fields() && tag >= FIRST_USER_DEFINED_TAG {
+            continue;
+        }
+        // `view.len()`, not `i`: by this pass the array holds every counter
+        // the scan passed, so the recomputed answer must see every counter
+        // too — the two modes ask one set (ADR-0085 decision 2).
+        if !seen.defers::<D, N>(view, msg_type, tag, view.len(), checks) {
+            continue;
+        }
         if <D as Tables>::enum_allows(tag, value) == Some(false) {
             return Some((SessionText::ValueIsIncorrect, tag_text(tag)));
         }
@@ -3829,6 +4269,36 @@ fn scan_fields<D: Tables, const N: usize>(
         }
     }
     None
+}
+
+/// `373=5`: `1128=ApplVerID` naming a version outside the FIX 5.0 family.
+///
+/// FIXT 1.1 enumerates ten values for `1128` (`spec/FIXT11.xml:215-226`), so
+/// the generated table answers `373=5` for an eleventh on its own. Seven of the
+/// ten — `0`–`6`, FIX 2.7 through FIX 4.4 — are values a *FIXT* session cannot
+/// be speaking, and the table says nothing about that because the table is the
+/// XML. This is the rule that does. ADR-0080 decision 3.
+///
+/// **Application messages only, and it is read and not obeyed.** A venue that
+/// sends an SP1 message on an SP2 session gets SP2 validation: three tables and
+/// a per-message switch is a branch per message for a case no `.def` exercises,
+/// and ADR-0080 declined it under *Bad — and accepted*. The header fields
+/// `1128`, `1156` and `1129` are, by the FIXT 1.1 session protocol, not
+/// permitted on session messages at all; phase 2 does not enforce that because
+/// no `.def` does and QuickFIX does not either — an open item, not a rule.
+///
+/// Held by `tests/fixt.rs::an_appl_ver_id_outside_the_fix_50_family_is_rejected`
+/// and its neutral twin one line above it.
+fn out_of_family_appl_ver_id<const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+) -> Option<(SessionText, Option<Held<12>>)> {
+    if ADMIN.contains(&msg_type) {
+        return None;
+    }
+    let v = view.get(tag::APPL_VER_ID)?;
+    (v != b"7" && v != b"8" && v != b"9")
+        .then(|| (SessionText::ValueIsIncorrect, tag_text(tag::APPL_VER_ID)))
 }
 
 /// `373=16`: a group counter that disagrees with the entries behind it.
@@ -3853,7 +4323,68 @@ fn bad_group_count<D: Tables, const N: usize>(
     None
 }
 
+/// Whether `tag` is a member of a repeating group whose counter appears in
+/// this message **before** index `upto`.
+///
+/// The deferral oracle of
+/// [ADR-0085](../../../docs/decisions/ADR-0085-a-member-waits-for-a-counter-that-came-before-it-and-the-array-is-only-a-cache.md)
+/// decision 1, and the slow half of [`SeenCounters`]: the array caches this
+/// walk's answer, and when the array fills the walk is done again rather than
+/// a different question being asked. `upto = view.len()` makes it position-free
+/// and is only correct where the array itself is (`scan_group_members`).
+///
+/// **Not [`in_a_group`]**, which the `373=13` arm keeps: two functions, one
+/// question each, because a stray member ahead of its counter is not in the
+/// group (ADR-0085 decision 4) while a tag that repeats by design is.
+///
+/// **`checks` is here for one reason: the cache is not filled blind.**
+/// [`scan_fields`] drops a tag at or above [`FIRST_USER_DEFINED_TAG`] under
+/// `ValidateUserDefinedFields=N` *before* the counter test, so `record` never
+/// sees such a counter — and a walk that did see it would defer a member the
+/// array would have answered in wire order. That is the same divergence
+/// ADR-0085 exists to remove, one knob further in, so the filter is repeated
+/// here rather than left to a sentence. `[measured 2026-09-19]` the SP2 table
+/// has 158 `(msg_type, counter)` pairs whose counter is user-defined and which
+/// list a member that is not, so it is reachable and not theoretical; held by
+/// `tests::a_user_defined_counter_is_not_recorded_and_the_walk_does_not_find_it`
+/// and, over the wire, by `tests/fixt.rs::a_member_of_a_user_defined_group_is_not_deferred_when_the_scan_ignores_its_counter`.
+///
+/// The one condition `record` applies that is **not** repeated here is
+/// `field_type == NumInGroup`; `crates/dict/tests/group_tables.rs::every_group_counter_is_a_num_in_group`
+/// holds the two equivalent for both generated tables, which is why a lookup
+/// per step is not spent on it.
+///
+/// Reached by `tests/fixt.rs::a_stray_member_is_answered_in_wire_order_when_the_array_is_full`,
+/// which is also where the reversal that put [`in_a_group`] back here was read
+/// (`373=16 371=1907` instead of `373=5 371=447`).
+fn in_a_group_before<D: Tables, const N: usize>(
+    view: &MessageView<'_, N>,
+    msg_type: &[u8],
+    tag: u32,
+    upto: usize,
+    checks: DictionaryChecks,
+) -> bool {
+    for i in 0..upto {
+        let Some((counter, _)) = view.field_at(i) else {
+            continue;
+        };
+        // Exactly the tags `scan_fields` skipped before it could record them.
+        if checks.skips_user_defined_fields() && counter >= FIRST_USER_DEFINED_TAG {
+            continue;
+        }
+        if D::group_delimiter(msg_type, counter).is_some()
+            && D::group_members(msg_type, counter).contains(&tag)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether `tag` is a member of some repeating group this message carries.
+///
+/// The `373=13` arm's question and **not** the deferral's — see
+/// [`in_a_group_before`].
 fn in_a_group<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
@@ -4127,4 +4658,295 @@ fn digits(n: u32, buf: &mut [u8; 10]) -> &[u8] {
         }
     }
     &buf[at..]
+}
+
+/// The two facts about [`SeenCounters`] that a sentence used to hold.
+///
+/// The only place in this crate where `SEEN` and `full` are visible at all —
+/// both are private, which is why these are unit tests and not integration
+/// ones. What the full array *says* to a counterparty is a different question
+/// and is pinned over the wire in `tests/fixt.rs`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "fix50sp2")]
+    use fixbolt_codec::parse_into;
+
+    /// 32 of the 48 top-level groups `TradeCaptureReport(AE)` declares: the
+    /// ones whose delimiter enumerates no value, so a one-entry group can be
+    /// populated with any well-formed one. `(counter, delimiter, a value the
+    /// delimiter's type accepts)`, from ADR-0085 *Sources*, re-read here off
+    /// the generated table rather than off the XML.
+    ///
+    /// `40204`'s delimiter `40209` is **itself** a `NumInGroup` this message
+    /// type declares a group for, so that one block records *two* counters —
+    /// which is why 32 blocks are already 33 counters, and why the wire test
+    /// in `tests/fixt.rs` can put its stray after the 32nd block and still be
+    /// past the bound.
+    #[cfg(feature = "fix50sp2")]
+    const AE_GROUPS: [(&str, &str, &str); 32] = [
+        ("1907", "1903", "X"),
+        ("1116", "1117", "R"),
+        ("454", "455", "A"),
+        ("1976", "1977", "1"),
+        ("2304", "2305", "A"),
+        ("1018", "1019", "P"),
+        ("40278", "40471", "B"),
+        ("41230", "41231", "B"),
+        ("41092", "41093", "E"),
+        ("41094", "41095", "F"),
+        ("42775", "42776", "B"),
+        ("41116", "41117", "B"),
+        ("41137", "41138", "20260919"),
+        ("41140", "41141", "B"),
+        ("41152", "41153", "20260919"),
+        ("40019", "40020", "Y"),
+        ("40181", "40182", "1.0"),
+        ("40022", "40023", "USD"),
+        ("40204", "40209", "0"),
+        ("42296", "42297", "E"),
+        ("2734", "2733", "M"),
+        ("2746", "2747", "20260919-12:00:00.000"),
+        ("40040", "40041", "D"),
+        ("40046", "40047", "S"),
+        ("40042", "40043", "M"),
+        ("711", "311", "U"),
+        ("1703", "1704", "1.0"),
+        ("555", "600", "L"),
+        ("768", "769", "20260919-12:00:00.000"),
+        ("1387", "1388", "1"),
+        ("41312", "41313", "J"),
+        ("2104", "2105", "A"),
+    ];
+
+    /// `35=AE` on a FIXT session, up to the first group.
+    #[cfg(feature = "fix50sp2")]
+    const AE_HEADER: &str = "35=AE|34=2|49=TW50SP2|52=20260919-12:00:00.000|56=ISLD|";
+
+    /// One message, `|` for SOH, with `9=` and `10=` computed — the shape
+    /// `tests/fixt.rs::msg` uses, kept here because a unit test cannot reach a
+    /// helper in another crate's test binary.
+    #[cfg(feature = "fix50sp2")]
+    fn framed(body: &str) -> Vec<u8> {
+        let body = body.replace('|', "\u{1}");
+        let mut m = format!("8=FIXT.1.1\u{1}9={}\u{1}", body.len()).into_bytes();
+        m.extend_from_slice(body.as_bytes());
+        let sum: u32 = m.iter().map(|c| u32::from(*c)).sum();
+        m.extend_from_slice(format!("10={:03}\u{1}", sum % 256).as_bytes());
+        m
+    }
+
+    /// The counters `scan_fields` recorded for `body`, and whether the array
+    /// ran out of room — the thing no test in this repository could see before
+    /// ADR-0085, and the reason that ADR exists.
+    #[cfg(feature = "fix50sp2")]
+    fn scan(body: &str, checks: DictionaryChecks) -> (bool, usize, Option<SessionText>) {
+        let wire = framed(body);
+        let mut idx: FieldIndex<256> = FieldIndex::new();
+        let parsed =
+            parse_into::<fixbolt_dict::Fixt11Fix50Sp2Tables, 256>(&wire, &mut idx, Validation::ALL);
+        assert!(
+            matches!(parsed, Ok(Parsed::Complete { .. })),
+            "the fixture must parse before it can be scanned: {parsed:?}"
+        );
+        let view = idx.view(&wire);
+        let mut seen = SeenCounters::new();
+        let fault =
+            scan_fields::<fixbolt_dict::Fixt11Fix50Sp2Tables, 256>(&view, b"AE", checks, &mut seen);
+        (seen.full, seen.len, fault.map(|(text, _)| text))
+    }
+
+    /// **The fallback branch is reached, and it is observed rather than
+    /// inferred.** ADR-0085 decision 5.
+    ///
+    /// 33 one-entry top-level groups on one `TradeCaptureReport`, every value
+    /// legal: the array has 32 slots, so the 33rd distinct counter sets `full`
+    /// and every later field's deferral question is answered by
+    /// [`in_a_group_before`] instead of by the array. Before this test the
+    /// branch was unreachable by anything in the repository — a `panic!` in it
+    /// survived the whole suite (ADR-0085 *Context* 4).
+    #[cfg(feature = "fix50sp2")]
+    #[test]
+    fn an_ae_with_thirty_three_group_counters_fills_the_array() {
+        let mut body = String::from(AE_HEADER);
+        for (counter, delimiter, value) in AE_GROUPS {
+            body.push_str(&format!("{counter}=1|{delimiter}={value}|"));
+        }
+        // The 33rd group, and the one the wire test carries a member of.
+        body.push_str("552=1|54=1|");
+        let (full, len, fault) = scan(&body, DictionaryChecks::new());
+
+        assert_eq!(
+            fault, None,
+            "the fixture must be a clean message, or it proves nothing about the array"
+        );
+        assert!(
+            full,
+            "33 distinct group counters must exhaust {} slots; the scan recorded {len}",
+            SeenCounters::SEEN
+        );
+
+        // And the 32 blocks above already fill it on their own, which is what
+        // lets `tests/fixt.rs` put its stray member after the last of them:
+        // `40204=1|40209=0|` records `40204` **and** `40209`.
+        let mut without_sides = String::from(AE_HEADER);
+        for (counter, delimiter, value) in AE_GROUPS {
+            without_sides.push_str(&format!("{counter}=1|{delimiter}={value}|"));
+        }
+        let (full, len, fault) = scan(&without_sides, DictionaryChecks::new());
+        assert_eq!(fault, None, "the 32-block fixture must be clean too");
+        assert!(
+            full,
+            "32 blocks are 33 counters, so the array is full before the stray: recorded {len}"
+        );
+    }
+
+    /// 33 groups of `AE` whose counter **and** delimiter are both below
+    /// [`FIRST_USER_DEFINED_TAG`], so the array still fills when
+    /// `ValidateUserDefinedFields=N` is taking user-defined tags out of the
+    /// scan. `1907` is last, so the array fills on it and everything after is
+    /// past the bound.
+    ///
+    /// The twelve counters this list leaves out of the sub-5000 set are nested
+    /// groups of `AE`, where `MessageView::group` answers `None` and
+    /// `bad_group_count`'s `?` ends that pass without a verdict — pre-existing
+    /// and nothing to do with ADR-0085, but it would have silenced the
+    /// `373=16` this fixture needs as its competing fault.
+    #[cfg(feature = "fix50sp2")]
+    const AE_SUB_5000_GROUPS: [(&str, &str, &str); 33] = [
+        ("73", "2887", "A"),
+        ("78", "79", "A"),
+        ("136", "137", "1.0"),
+        ("453", "448", "A"),
+        ("454", "455", "A"),
+        ("457", "458", "A"),
+        ("539", "524", "A"),
+        ("555", "600", "L"),
+        ("711", "311", "U"),
+        ("756", "757", "A"),
+        ("768", "769", "20260919-12:00:00.000"),
+        ("781", "782", "A"),
+        ("802", "523", "A"),
+        ("804", "545", "A"),
+        ("806", "760", "A"),
+        ("887", "888", "A"),
+        ("1016", "1012", "20260919-12:00:00.000"),
+        ("1018", "1019", "P"),
+        ("1058", "1059", "A"),
+        ("1116", "1117", "R"),
+        ("1334", "1335", "A"),
+        ("1342", "1330", "A"),
+        ("1387", "1388", "1"),
+        ("1491", "1492", "20260919"),
+        ("1516", "1517", "A"),
+        ("1562", "1563", "A"),
+        ("1586", "1587", "1.0"),
+        ("1671", "1691", "A"),
+        ("1703", "1704", "1.0"),
+        ("1844", "1845", "A"),
+        ("1855", "1856", "A"),
+        ("1861", "1862", "A"),
+        ("1907", "1903", "X"),
+    ];
+
+    /// The 33 sub-5000 blocks, then the user-defined counter `40212 NoPayments`
+    /// and `492 PaymentMethod`, a member of it that is **not** user-defined.
+    #[cfg(feature = "fix50sp2")]
+    fn payments_after_a_full_array(payment_method: &str) -> String {
+        let mut body = String::from(AE_HEADER);
+        for (counter, delimiter, value) in AE_SUB_5000_GROUPS {
+            let count = if counter == "1907" { "2" } else { "1" };
+            body.push_str(&format!("{counter}={count}|{delimiter}={value}|"));
+        }
+        body.push_str(&format!("40212=1|40213=1|492={payment_method}|"));
+        body
+    }
+
+    /// **A counter the scan is told to ignore is not a counter the fallback may
+    /// find.** ADR-0085 decision 2, the case its "agree by construction" claim
+    /// did not originally hold.
+    ///
+    /// `ValidateUserDefinedFields=N` drops `40212` before `record` can see it,
+    /// so `492` — its member, and *not* user-defined — is a stray top-level
+    /// field and is answered in wire order. A walk without the same filter
+    /// would find `40212` and defer it past `bad_group_count`, which is the
+    /// exact divergence this ADR exists to remove, one knob further in.
+    ///
+    /// The knob is the only variable: the same bytes with the check left on
+    /// defer `492` legitimately, because there `40212` really is a counter the
+    /// scan passed.
+    #[cfg(feature = "fix50sp2")]
+    #[test]
+    fn a_user_defined_counter_is_not_recorded_and_the_walk_does_not_find_it() {
+        let body = payments_after_a_full_array("ZZ");
+
+        let skipping = DictionaryChecks::new().skipping_user_defined_fields();
+        let (full, len, fault) = scan(&body, skipping);
+        assert!(
+            full,
+            "the fallback is only under test while the array is full: recorded {len}"
+        );
+        assert_eq!(
+            fault,
+            Some(SessionText::ValueIsIncorrect),
+            "`492` is a stray here, so the scan answers it in wire order"
+        );
+
+        // One variable moved, and the answer moves with it.
+        let (full, _len, fault) = scan(&body, DictionaryChecks::new());
+        assert!(full, "the same bytes still fill the array");
+        assert_eq!(
+            fault, None,
+            "with the check on, `40212` is a counter the scan passed and `492` waits for it"
+        );
+    }
+
+    /// **`SEEN = 32` is a cost number, and the dictionaries say where it
+    /// bites.** ADR-0085 decision 3.
+    ///
+    /// The sentence this replaces lived in [`SeenCounters`]' rustdoc: *FIX 4.4
+    /// declares at most 23 distinct group counters for one message type*. A
+    /// sentence cannot notice a regenerated table, so it is counted here on
+    /// every run, and the FIXT figure is counted beside it so the day the
+    /// fallback stops being live on that table is a red test and not a
+    /// surprise.
+    #[test]
+    fn no_fix_44_message_type_reaches_the_seen_bound_and_the_fixt_table_passes_it() {
+        fn widest(keys: &[(&[u8], u32)]) -> usize {
+            let mut per_type: std::collections::BTreeMap<&[u8], usize> =
+                std::collections::BTreeMap::new();
+            for (msg_type, _counter) in keys {
+                *per_type.entry(msg_type).or_insert(0) += 1;
+            }
+            per_type.into_values().max().unwrap_or(0)
+        }
+
+        let fix44 = widest(&fixbolt_dict::GROUP_KEYS);
+        println!(
+            "FIX 4.4: {} (msg_type, counter) pairs, at most {fix44} counters on one message type; SEEN = {}",
+            fixbolt_dict::GROUP_KEYS.len(),
+            SeenCounters::SEEN
+        );
+        assert!(
+            fix44 <= SeenCounters::SEEN,
+            "a FIX 4.4 message cannot fill the array — if this goes red the rustdoc's \
+             capacity paragraph is wrong and `SEEN` needs re-deciding, not raising by reflex: \
+             {fix44} > {}",
+            SeenCounters::SEEN
+        );
+
+        #[cfg(feature = "fix50sp2")]
+        {
+            let sp2 = widest(&fixbolt_dict::fixt11_fix50sp2::GROUP_KEYS);
+            println!(
+                "FIXT 1.1 / FIX 5.0 SP2: {} pairs, at most {sp2} counters on one message type",
+                fixbolt_dict::fixt11_fix50sp2::GROUP_KEYS.len()
+            );
+            assert!(
+                sp2 > SeenCounters::SEEN,
+                "the fallback is only live because this table crosses the bound: {sp2} <= {}",
+                SeenCounters::SEEN
+            );
+        }
+    }
 }

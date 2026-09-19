@@ -38,10 +38,71 @@
 // item 55.
 #![allow(clippy::indexing_slicing)]
 
+use core::marker::PhantomData;
 use core::ops::Range;
 
-use fixbolt_codec::{EncodeError, FieldIndex, ParseError, TemplateBuilder, Validation, parse_into};
+use fixbolt_codec::{
+    EncodeError, Encoding, FieldIndex, MessageView, ParseError, TagValue, TemplateBuilder,
+    Validation,
+};
 use fixbolt_dict::Fix44;
+
+/// The [`FieldIndex`] capacity every function here parses into.
+///
+/// `[measured]` the widest message in the corpus carries far fewer than 256
+/// fields; the number is the one this fixture has always used and it is named
+/// rather than repeated so the three bounds below cannot drift apart.
+pub const IDX: usize = 256;
+
+/// The encoding this fixture assumes when the caller does not say.
+///
+/// FIX 4.4 tag=value with [`IDX`] slots — what the 59 acceptance definitions
+/// run against, and what every existing caller of [`echo`],
+/// [`business_reject`] and [`Echo`] was already getting before those three grew
+/// an encoding parameter.
+pub type Fix44Echo = TagValue<Fix44, IDX>;
+
+/// What this fixture needs of an [`Encoding`], beyond the trait.
+///
+/// A blanket-implemented alias, for the reason `fixbolt_session`'s `impl
+/// Session` carries the same list written out: ADR-0079 gives `Encoding` four
+/// shared operations and the echo needs more than four, so the extra
+/// requirements are stated once rather than repeated on three items.
+///
+/// * `View<'a> = MessageView<'a, IDX>`: the echo walks the incoming message in
+///   **wire order** (`len`, `field_at`) to copy every field it does not
+///   regenerate, and the trait exposes only `field`.
+/// * `Scratch = FieldIndex<IDX>`: the same `IDX`, and what [`Encoding::view`]
+///   is handed.
+/// * `Field = u32`: the fields here are named by FIX tag.
+/// * `ParseError = ParseError`: [`EchoError::Parse`] carries the concrete
+///   error, because a caller matching on it is matching on `codec`'s variants.
+///
+/// It says nothing about `Template`: the reply is laid out with `codec`'s own
+/// [`TemplateBuilder`] and sorted by `E::Dict`, exactly as
+/// `session::out::Outbound` does and for the same reason — the trait offers no
+/// way to *build* a skeleton. Every tag=value encoding satisfies this,
+/// FIXT 1.1 included; SBE satisfies none of it and has no acceptance corpus to
+/// echo.
+pub trait Echoable:
+    for<'a> Encoding<
+        View<'a> = MessageView<'a, IDX>,
+        Scratch = FieldIndex<IDX>,
+        Field = u32,
+        ParseError = ParseError,
+    >
+{
+}
+
+impl<E> Echoable for E where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, IDX>,
+            Scratch = FieldIndex<IDX>,
+            Field = u32,
+            ParseError = ParseError,
+        >
+{
+}
 
 /// Fields the acceptor writes itself rather than echoing.
 ///
@@ -67,11 +128,29 @@ pub enum EchoError {
     Parse(ParseError),
     /// The reply could not be laid out or written.
     Encode(EncodeError),
-    /// The incoming message has no `35`, `49` or `56`.
+    /// The incoming message has no `8`, `35`, `49` or `56`.
     MissingHeader(u32),
 }
 
-/// Echo an application message back to its sender.
+/// Echo an application message back to its sender, as FIX 4.4.
+///
+/// [`echo_with`] with [`Fix44Echo`]. Kept as its own function because a free
+/// function cannot carry a default type parameter, and every caller of this one
+/// wrote it before there was a second encoding to choose.
+///
+/// # Errors
+///
+/// As [`echo_with`].
+pub fn echo(
+    incoming: &[u8],
+    out: &mut [u8],
+    seq: u32,
+    sending_time: &[u8],
+) -> Result<Range<usize>, EchoError> {
+    echo_with::<Fix44Echo>(incoming, out, seq, sending_time)
+}
+
+/// Echo an application message back to its sender, under the encoding `E`.
 ///
 /// `seq` and `sending_time` come from the session: an application does not own
 /// the sequence number or the clock. `sending_time` must be 21 bytes with
@@ -80,23 +159,33 @@ pub enum EchoError {
 /// Returns the range of `out` the reply occupies; the message does **not** start
 /// at `out[0]`.
 ///
+/// # The `BeginString` is the incoming message's, not a constant
+///
+/// It used to be `b"FIX.4.4"` written here. A FIXT 1.1 corpus expects
+/// `8=FIXT.1.1` back and an [`Encoding`] cannot be asked what its `BeginString`
+/// is — it is the *session's* configuration, not the encoding's. So the reply
+/// carries back the `8=` that arrived, which is the same byte string for FIX 4.4
+/// and the right one for FIXT. A message with no `8=` never reaches an
+/// application, and is [`EchoError::MissingHeader`] here rather than a guess.
+///
 /// # Errors
 ///
 /// [`EchoError`] if the input does not parse, lacks a routable header, or the
 /// reply does not fit.
-pub fn echo(
+pub fn echo_with<E: Echoable>(
     incoming: &[u8],
     out: &mut [u8],
     seq: u32,
     sending_time: &[u8],
 ) -> Result<Range<usize>, EchoError> {
-    let mut idx: FieldIndex<256> = FieldIndex::new();
+    let mut idx: FieldIndex<IDX> = FieldIndex::new();
     // The frame was already checked when this message was accepted; re-checking
     // a body length here would reject the deliberately-wrong ones the corpus
     // sends on purpose.
-    parse_into::<Fix44, 256>(incoming, &mut idx, Validation::NONE).map_err(EchoError::Parse)?;
-    let view = idx.view(incoming);
+    E::parse(incoming, &mut idx, Validation::NONE).map_err(EchoError::Parse)?;
+    let view = E::view(&idx, incoming);
 
+    let begin = view.get(8).ok_or(EchoError::MissingHeader(8))?;
     let msg_type = view.get(35).ok_or(EchoError::MissingHeader(35))?;
     let sender = view.get(49).ok_or(EchoError::MissingHeader(49))?;
     let target = view.get(56).ok_or(EchoError::MissingHeader(56))?;
@@ -104,7 +193,7 @@ pub fn echo(
     let mut seq_buf = [0u8; 10];
     let seq_bytes = render(seq, &mut seq_buf);
 
-    let mut b = TemplateBuilder::<128, 4096>::new(b"FIX.4.4");
+    let mut b = TemplateBuilder::<128, 4096>::new(begin);
     b.field(35, msg_type)
         .field(34, seq_bytes)
         // Routed back: this side's sender is the other side's target.
@@ -122,8 +211,8 @@ pub fn echo(
         b.field(tag, value);
     }
 
-    let t = b.build::<Fix44>().map_err(EchoError::Encode)?;
-    t.encode_with::<Fix44>(out, &[], &[])
+    let t = b.build::<E::Dict>().map_err(EchoError::Encode)?;
+    t.encode_with::<E::Dict>(out, &[], &[])
         .map_err(EchoError::Encode)
 }
 
@@ -166,10 +255,49 @@ pub fn business_reject(
     seq: u32,
     sending_time: &[u8],
 ) -> Result<Range<usize>, EchoError> {
-    let mut idx: FieldIndex<256> = FieldIndex::new();
-    parse_into::<Fix44, 256>(incoming, &mut idx, Validation::NONE).map_err(EchoError::Parse)?;
-    let view = idx.view(incoming);
+    business_reject_with::<Fix44Echo>(incoming, out, seq, sending_time, None)
+}
 
+/// [`business_reject`] under the encoding `E`, optionally carrying
+/// `1137=DefaultApplVerID`.
+///
+/// The `BeginString` comes back off the incoming message, for the reason
+/// [`echo_with`] gives.
+///
+/// # `1137` on a `35=j`, which no dictionary puts there
+///
+/// `[measured 2026-09-19]` the `E` line of `2r_UnregisteredMsgType.def` in all
+/// three FIXT corpora ends `…372=8 380=3 1137=<the corpus's value> 10=0`, and
+/// the file fails on a field count of 12 against 13 without it. `FIX50SP2.xml`
+/// does **not** list `DefaultApplVerID` on `BusinessMessageReject` — its
+/// version field there is `RefApplVerID(1130)` — and `FIXT11.xml` does not
+/// carry `1137` in the header either, so the byte is not a dictionary's doing.
+///
+/// **Why QuickFIX writes it is not established here**, and this is a fixture,
+/// so it reproduces the oracle's bytes rather than a rule it cannot cite —
+/// exactly as `OWN_TEST_REQ_ID = b"TEST"` does in `session`. Two things say it
+/// belongs to the *application* and not to the session layer: the `35=3`
+/// Rejects and the `35=5` Logout in the same corpora carry no `1137`, and in
+/// this engine the `35=j` is the application's message (see
+/// [`business_reject`]'s own note on why `373=11` is the wrong answer to
+/// `2r`). `None` — every FIX 4.4 caller — writes nothing and is byte-for-byte
+/// what it was.
+///
+/// # Errors
+///
+/// As [`echo_with`].
+pub fn business_reject_with<E: Echoable>(
+    incoming: &[u8],
+    out: &mut [u8],
+    seq: u32,
+    sending_time: &[u8],
+    default_appl_ver_id: Option<&[u8]>,
+) -> Result<Range<usize>, EchoError> {
+    let mut idx: FieldIndex<IDX> = FieldIndex::new();
+    E::parse(incoming, &mut idx, Validation::NONE).map_err(EchoError::Parse)?;
+    let view = E::view(&idx, incoming);
+
+    let begin = view.get(8).ok_or(EchoError::MissingHeader(8))?;
     let msg_type = view.get(35).ok_or(EchoError::MissingHeader(35))?;
     let sender = view.get(49).ok_or(EchoError::MissingHeader(49))?;
     let target = view.get(56).ok_or(EchoError::MissingHeader(56))?;
@@ -178,8 +306,8 @@ pub fn business_reject(
     let mut seq_buf = [0u8; 10];
     let seq_bytes = render(seq, &mut seq_buf);
 
-    let t = TemplateBuilder::<16, 256>::new(b"FIX.4.4")
-        .field(35, b"j")
+    let mut b = TemplateBuilder::<16, 256>::new(begin);
+    b.field(35, b"j")
         .field(34, seq_bytes)
         .field(49, target)
         .field(56, sender)
@@ -188,10 +316,15 @@ pub fn business_reject(
         .field(58, UNSUPPORTED)
         .field(372, msg_type)
         // `BusinessRejectReason = 3`, "Unsupported Message Type".
-        .field(380, b"3")
-        .build::<Fix44>()
-        .map_err(EchoError::Encode)?;
-    t.encode_with::<Fix44>(out, &[], &[])
+        .field(380, b"3");
+    if let Some(v) = default_appl_ver_id {
+        // Where it lands is `E::Dict`'s to decide, like every other field
+        // here — `build` below sorts them. The corpus puts it last, which is
+        // where an ascending body order puts 1137 anyway.
+        b.field(1137, v);
+    }
+    let t = b.build::<E::Dict>().map_err(EchoError::Encode)?;
+    t.encode_with::<E::Dict>(out, &[], &[])
         .map_err(EchoError::Encode)
 }
 
@@ -208,12 +341,61 @@ pub fn business_reject(
 /// `conformance` depending on `codec` and `dict` only, and a shared test
 /// fixture is not a reason to change a crate's dependency graph. Each caller
 /// writes the five-line impl that forwards to [`Echo::reply`].
-#[derive(Debug, Default)]
-pub struct Echo {
+///
+/// # The encoding parameter, and why it has a default
+///
+/// `Echo<E>` echoes under `E`. It **defaults to [`Fix44Echo`]** so that
+/// `Echo`, written bare, is what it always was — a dozen tests across `engine`
+/// and `session` name it that way, and row B3 of the phase-2 plan is about
+/// FIXT gaining an echo, not about rewriting them. `Echo<Fixt11…>` is what
+/// `session/tests/score_fixt.rs` runs the 180 against.
+///
+/// `Default` and `Debug` are written out rather than derived: a derive would
+/// demand `E: Default` and `E: Debug`, and an [`Encoding`] is a marker type
+/// that is neither and has no values to be.
+pub struct Echo<E = Fix44Echo> {
     seen: Vec<Vec<u8>>,
+    /// What [`business_reject_with`] writes into `1137=`, if anything. Empty
+    /// for every FIX 4.4 caller, which is what leaves them unchanged.
+    speaks: Vec<u8>,
+    /// `fn() -> E` rather than `E`, so `Echo<E>` is `Send` and `Sync`
+    /// whatever `E` is: an engine test holds one across a thread boundary.
+    _encoding: PhantomData<fn() -> E>,
 }
 
-impl Echo {
+impl<E> Default for Echo<E> {
+    fn default() -> Self {
+        Self {
+            seen: Vec::new(),
+            speaks: Vec::new(),
+            _encoding: PhantomData,
+        }
+    }
+}
+
+impl<E> Echo<E> {
+    /// The `1137=DefaultApplVerID` this fixture's `35=j` carries.
+    ///
+    /// A FIXT corpus's own value — `7`, `8` or `9`. See
+    /// [`business_reject_with`] for what the oracle asks for and what is and
+    /// is not known about why. A FIX 4.4 caller never calls this and its
+    /// replies do not change.
+    #[must_use]
+    pub fn speaking(mut self, default_appl_ver_id: &[u8]) -> Self {
+        self.speaks = default_appl_ver_id.to_vec();
+        self
+    }
+}
+
+impl<E> core::fmt::Debug for Echo<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Echo")
+            .field("seen", &self.seen.len())
+            .finish()
+    }
+}
+
+impl<E: Echoable> Echo<E> {
     /// What the acceptance server answers with, if anything.
     ///
     /// Orders and security definitions are echoed; everything else gets a
@@ -233,7 +415,8 @@ impl Echo {
     ) -> Option<Range<usize>> {
         let msg_type = tag(msg, 35)?;
         if msg_type != b"D" && msg_type != b"d" {
-            return business_reject(msg, out, seq, stamp).ok();
+            let speaks = (!self.speaks.is_empty()).then_some(self.speaks.as_slice());
+            return business_reject_with::<E>(msg, out, seq, stamp, speaks).ok();
         }
         if let Some(id) = tag(msg, 11) {
             let already = self.seen.iter().any(|s| s == id);
@@ -244,7 +427,7 @@ impl Echo {
                 self.seen.push(id.to_vec());
             }
         }
-        echo(msg, out, seq, stamp).ok()
+        echo_with::<E>(msg, out, seq, stamp).ok()
     }
 }
 

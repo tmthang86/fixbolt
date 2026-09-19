@@ -49,8 +49,75 @@ cd "$(dirname "$0")/.."
 BENCH_RUSTFLAGS="-C llvm-args=-align-all-functions=6"
 ALIGN=64
 
+# The single definition of the bench FEATURE set, here for the same reason the
+# flag above is: it is a property of how the bench binaries are built, so two
+# copies of it are two different builds and "the figures would come from
+# artifacts the check never saw" stops being a warning and becomes a
+# description. `scripts/bench.sh` asks for it with `--features`, exactly as it
+# asks for the flag with `--flags`, and keeps no list of its own.
+#
+# These gate bench CASES, not dependencies. `[measured 2026-09-19]` every FIXT
+# 1.1 / FIX 5.0 SP2 case sits behind `#[cfg(feature = "fix50sp2")]`, and a bench
+# run without the feature compiles them to nothing and stays green having
+# measured none of them -- the trap in
+# docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md, one layer
+# down: there a test binary CI never ran, here a case that never existed in the
+# binary CI did run.
+#
+# A feature NAME, never a package list: `fixbolt-codec`, `fixbolt-session` and
+# `fixbolt-engine` each grew this feature in a different pull request. Which
+# packages declare it is a per-package question and belongs to bench.sh, which
+# asks cargo; what the set IS belongs here.
+#
+# Additive only -- no `--no-default-features` -- so each package keeps its own
+# default set and gains these on top.
+BENCH_FEATURES=(fix50sp2)
+
+# The set as cargo wants it on a command line: comma separated, empty when there
+# is none. `${a[*]:-}` rather than `${a[*]}` so an empty list is not an unbound
+# variable under `set -u`, and no `mapfile` anywhere -- macOS ships bash 3.2.
+bench_features_csv() {
+  (
+    IFS=,
+    echo "${BENCH_FEATURES[*]:-}"
+  )
+}
+
+# One line per workspace package: "<name><TAB><the features of BENCH_FEATURES it
+# declares, comma separated>". Empty second field when it declares none.
+#
+# WHICH packages get the feature is asked of cargo, never listed: `fixbolt-codec`,
+# `fixbolt-session` and `fixbolt-engine` each grew `fix50sp2` in a different pull
+# request and a list would have missed whichever came last. Passing a feature a
+# package does not declare is a hard cargo error, so the question has to be asked
+# of every target either way.
+#
+# It lives HERE, next to the set, because `bench_binaries` below needs the same
+# answer `scripts/bench.sh` acts on -- see that function's comment. bench.sh asks
+# for this map once with `--features-map` and looks packages up in it.
+bench_features_map() {
+  local want_json
+  want_json=$(printf '%s\n' "${BENCH_FEATURES[@]:-}" | jq -R . | jq -s 'map(select(. != ""))')
+  cargo metadata --no-deps --format-version 1 |
+    jq -r --argjson want "$want_json" '
+      .packages[]
+      | . as $pkg
+      | "\($pkg.name)\t\([$want[] | . as $f | select($pkg.features | has($f))] | join(","))"
+    ' | sort
+}
+
 if [ "${1:-}" = "--flags" ]; then
   printf '%s' "$BENCH_RUSTFLAGS"
+  exit 0
+fi
+
+if [ "${1:-}" = "--features" ]; then
+  printf '%s' "$(bench_features_csv)"
+  exit 0
+fi
+
+if [ "${1:-}" = "--features-map" ]; then
+  bench_features_map
   exit 0
 fi
 
@@ -87,9 +154,40 @@ aligned_in() {
 
 # The bench executables, from cargo rather than from a glob: a stale binary left
 # in `deps/` by an earlier build is exactly what this check must not read.
+#
+# **ONE INVOCATION PER PACKAGE, with that package's features -- exactly as
+# `scripts/bench.sh` builds them.** Not `--workspace`, which was what this did
+# and which reads back binaries nothing measured. A cargo unit's identity
+# includes its feature set AND whatever feature unification the invocation
+# performs across the packages it selects, so `--workspace` is a different build
+# from `-p <pkg>` even when the flags match:
+#
+#   `[measured 2026-09-19]` fixbolt-session --bench alloc
+#     -p, --features fix50sp2   alloc-66cc3ea49f7b020a   <- what bench.sh RUNS
+#     --workspace --features    alloc-f3c4b7c7d945a11e
+#     --workspace, no features  alloc-e674ff459564cb4a
+#
+#   and under `--workspace` the mismatch is not confined to the featured
+#   packages: featureless, `fixbolt --bench alloc` was already
+#   alloc-1845cc4723f12ea9 per package against alloc-282bf43cebf5f93e in the
+#   workspace build this function used to read.
+#
+# Certifying any of those but the first is ADR-0049's guard pointed at the wrong
+# artifact, which is the failure mode this whole script exists to end.
 bench_binaries() {
-  local flags=$1
-  RUSTFLAGS="$flags" cargo bench --workspace --no-run --message-format=json -q 2>/dev/null |
+  local flags=$1 pkg feats
+  local map
+  map=$(bench_features_map)
+  while IFS=$'\t' read -r pkg feats; do
+    [ -n "$pkg" ] || continue
+    if [ -n "${feats:-}" ]; then
+      RUSTFLAGS="$flags" cargo bench -q -p "$pkg" --no-run --features "$feats" \
+        --message-format=json 2>/dev/null
+    else
+      RUSTFLAGS="$flags" cargo bench -q -p "$pkg" --no-run \
+        --message-format=json 2>/dev/null
+    fi
+  done <<<"$map" |
     jq -r 'select(.executable != null and (.target.kind[]? == "bench")) | .executable'
 }
 
@@ -113,6 +211,7 @@ fi
 
 echo "=== bench alignment (ADR-0049)"
 echo "flag      $BENCH_RUSTFLAGS"
+echo "features  $(bench_features_csv)"
 
 bad=0
 seen=0

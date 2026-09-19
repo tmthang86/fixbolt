@@ -67,6 +67,11 @@ PORT5="${INTEROP_PORT5:-15648}"
 # acceptor up TWICE on the same port, so a collision with any listener above
 # would look exactly like an acceptor that refused to come back.
 PORT6="${INTEROP_PORT6:-15649}"
+# A seventh and an eighth, for the FIXT 1.1 arm (4k). TWO, because that arm runs
+# BOTH directions and each stands up its own listener: a collision between them
+# would look exactly like a FIXT session the counterparty refused.
+PORT7="${INTEROP_PORT7:-15650}"
+PORT8="${INTEROP_PORT8:-15651}"
 # How long any single wait below gets before the run is called a failure.
 # A reversal that removes the restart must go RED, not HANG — a hang is how a
 # reversal fails to prove anything (docs/reference/a-reversal-can-fail-by-hanging.md).
@@ -151,8 +156,13 @@ ODD_PID=""
 # would otherwise leak the first listener into the second half of the run.
 RST1_PID=""
 RST2_PID=""
+# The 4k FIXT arm's two listeners: this engine's acceptor in the first half,
+# the C++ acceptor in the second. Two names, because a failure between the
+# halves would otherwise leak the first one into the second.
+FIXT_FB_PID=""
+FIXT_QF_PID=""
 cleanup() {
-  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}" "${NE_PID}" "${MIC_PID}" "${ODD_PID}" "${RST1_PID}" "${RST2_PID}"; do
+  for pid in "${ACCEPTOR_PID}" "${FIXBOLT_PID}" "${QF1_PID}" "${QF2_PID}" "${RECON_PID}" "${NE_PID}" "${MIC_PID}" "${ODD_PID}" "${RST1_PID}" "${RST2_PID}" "${FIXT_FB_PID}" "${FIXT_QF_PID}"; do
     [[ -n "${pid}" ]] || continue
     kill "${pid}" 2>/dev/null || true
     wait "${pid}" 2>/dev/null || true
@@ -1410,6 +1420,253 @@ else
   exit 1
 fi
 
+# ---- 4k. FIXT 1.1 / FIX 5.0 SP2, both directions ----------------------------
+#
+# **The only independent opinion this repository can get about FIXT.** ADR-0042:
+# a second implementation is the only one. Everything else that says FIXT works
+# is this repository reading its own corpus — `session/tests/score_fixt.rs`
+# scores 180 definitions with this project's own runner, and
+# `engine/tests/wire_fixt.rs` puts 60 of them over a socket with this project's
+# own client on the far end. Neither is somebody else's engine, and ADR-0004
+# decision 5 named that risk before any of it existed.
+#
+# WHAT LIBQUICKFIX IS ASKED TO BELIEVE, AND WHY THE CONFIG IS NOT A 4.4 ONE.
+# A FIXT session is configured in QuickFIX with **two** dictionaries, never the
+# single `DataDictionary=` every arm above uses:
+#
+#   TransportDataDictionary=<src>/spec/FIXT11.xml   the session layer, 8=FIXT.1.1
+#   AppDataDictionary=<src>/spec/FIX50SP2.xml       the application layer
+#   DefaultApplVerID=FIX.5.0SP2                     QuickFIX's spelling of 1137
+#
+# and `DefaultApplVerID` is spelled `FIX.5.0SP2` **in the config** while the
+# value that crosses the wire in `1137=` is `9` — the enum, not the name. This
+# end is given the wire value, because `engine::settings`'s `DefaultApplVerID`
+# key is the wire value (ADR-0080 decision 4, `crates/engine/tests/wire_fixt.rs`
+# uses the same `9`). Writing `9` in the QuickFIX config, or `FIX.5.0SP2` in
+# this engine's, produces a session that dies at logon with an unhelpful
+# message — which is why both transcripts are dumped on failure below.
+#
+# The FIXT dictionary makes `1137=` REQUIRED on a Logon, so the first thing
+# this arm proves is not an assertion in this file at all: libquickfix will not
+# log on to a Logon missing it, in either direction.
+#
+# WHAT IS UNDER TEST HERE THAT NOTHING ELSE COVERS. The acceptor half runs the
+# whole product path — `fixbolt::serve`, the settings file, the pre-session
+# registry — with `BeginString=FIXT.1.1` and `DefaultApplVerID=9` read off a
+# file rather than written in a test. The initiator half is the session layer's
+# initiator under the same header. **D15 is not reached in either half**: this
+# engine originates no application message in this arm — the two `35=B` News
+# come from the C++ side in the initiator direction, and in the acceptor
+# direction `desk::Desk::on_logon` sends them as it does in every arm above.
+echo
+echo "==> [interop-fixt] FIXT.1.1 / FIX.5.0SP2, both directions"
+
+mkdir -p "${WORK}/fixt"
+
+# --- 4k-i. A C++ INITIATOR into this engine's acceptor. The product first. ---
+cat > "${WORK}/fixt/fixbolt.cfg" <<CFG
+[DEFAULT]
+BeginString=FIXT.1.1
+SenderCompID=FIXBOLT
+DefaultApplVerID=9
+
+[SESSION]
+TargetCompID=QFFIXT
+HeartBtInt=2
+CFG
+
+cat > "${WORK}/fixt/initiator.cfg" <<CFG
+[DEFAULT]
+ConnectionType=initiator
+SocketConnectHost=127.0.0.1
+SocketConnectPort=${PORT7}
+HeartBtInt=2
+ReconnectInterval=1
+ResetOnLogon=Y
+ResetOnLogout=Y
+ResetOnDisconnect=Y
+StartTime=00:00:00
+EndTime=00:00:00
+UseDataDictionary=Y
+TransportDataDictionary=${SRC}/spec/FIXT11.xml
+AppDataDictionary=${SRC}/spec/FIX50SP2.xml
+FileStorePath=${WORK}/fixt/store-i
+
+[SESSION]
+BeginString=FIXT.1.1
+DefaultApplVerID=FIX.5.0SP2
+SenderCompID=QFFIXT
+TargetCompID=FIXBOLT
+CFG
+
+# Read back before use, same argument as 4g: an unquoted heredoc expands its
+# body, and a config that lost a line here fails as a protocol error three
+# steps on.
+for key in TransportDataDictionary AppDataDictionary DefaultApplVerID; do
+  grep -q "^${key}=" "${WORK}/fixt/initiator.cfg" || {
+    echo "[interop-fixt] the generated initiator config lost ${key}:" >&2
+    cat "${WORK}/fixt/initiator.cfg" >&2
+    exit 1
+  }
+done
+
+mkdir -p "${WORK}/fixt/store-i"
+mkfifo "${WORK}/fixt/ctl"
+"${REPO_ROOT}/target/debug/interop" --role acceptor \
+  --listen "127.0.0.1:${PORT7}" --cfg "${WORK}/fixt/fixbolt.cfg" \
+  < "${WORK}/fixt/ctl" \
+  > "${WORK}/fixt/fixbolt-acceptor.log" 2>&1 &
+FIXT_FB_PID=$!
+exec 7> "${WORK}/fixt/ctl"
+
+for _ in $(seq 1 200); do
+  grep -q "interop: listening" "${WORK}/fixt/fixbolt-acceptor.log" 2>/dev/null && break
+  sleep 0.1
+done
+if ! grep -q "interop: listening" "${WORK}/fixt/fixbolt-acceptor.log" 2>/dev/null; then
+  echo "[interop-fixt] this engine's FIXT acceptor never became ready:" >&2
+  cat "${WORK}/fixt/fixbolt-acceptor.log" >&2
+  exec 7>&-
+  exit 1
+fi
+
+set +e
+"${WORK}/initiator" "${WORK}/fixt/initiator.cfg" \
+  > "${WORK}/fixt/interop-acceptor.log" 2>&1
+set -e
+
+echo "stop" >&7 || true
+for _ in $(seq 1 100); do
+  kill -0 "${FIXT_FB_PID}" 2>/dev/null || break
+  sleep 0.1
+done
+exec 7>&-
+kill "${FIXT_FB_PID}" 2>/dev/null || true
+wait "${FIXT_FB_PID}" 2>/dev/null || true
+FIXT_FB_PID=""
+
+# --- 4k-ii. This engine's INITIATOR into a C++ acceptor. ---------------------
+cat > "${WORK}/fixt/acceptor.cfg" <<CFG
+[DEFAULT]
+ConnectionType=acceptor
+SocketAcceptPort=${PORT8}
+SocketReuseAddress=Y
+StartTime=00:00:00
+EndTime=00:00:00
+UseDataDictionary=Y
+TransportDataDictionary=${SRC}/spec/FIXT11.xml
+AppDataDictionary=${SRC}/spec/FIX50SP2.xml
+FileStorePath=${WORK}/fixt/store-a
+ResetOnLogon=Y
+ResetOnLogout=Y
+ResetOnDisconnect=Y
+
+[SESSION]
+BeginString=FIXT.1.1
+DefaultApplVerID=FIX.5.0SP2
+SenderCompID=QFFIXTA
+TargetCompID=FIXBOLT
+HeartBtInt=30
+CFG
+
+for key in TransportDataDictionary AppDataDictionary DefaultApplVerID; do
+  grep -q "^${key}=" "${WORK}/fixt/acceptor.cfg" || {
+    echo "[interop-fixt] the generated acceptor config lost ${key}:" >&2
+    cat "${WORK}/fixt/acceptor.cfg" >&2
+    exit 1
+  }
+done
+
+mkdir -p "${WORK}/fixt/store-a"
+"${WORK}/acceptor" "${WORK}/fixt/acceptor.cfg" > "${WORK}/fixt/acceptor.log" 2>&1 &
+FIXT_QF_PID=$!
+for _ in $(seq 1 200); do
+  grep -q "acceptor: ready" "${WORK}/fixt/acceptor.log" 2>/dev/null && break
+  sleep 0.1
+done
+if ! grep -q "acceptor: ready" "${WORK}/fixt/acceptor.log" 2>/dev/null; then
+  echo "[interop-fixt] the C++ FIXT acceptor never became ready:" >&2
+  cat "${WORK}/fixt/acceptor.log" >&2
+  exit 1
+fi
+
+set +e
+"${REPO_ROOT}/target/debug/interop" --role initiator --connect "127.0.0.1:${PORT8}" \
+  --sender FIXBOLT --target QFFIXTA \
+  --begin-string FIXT.1.1 --default-appl-ver-id 9 \
+  > "${WORK}/fixt/interop-initiator.log" 2>&1
+set -e
+kill "${FIXT_QF_PID}" 2>/dev/null || true
+wait "${FIXT_QF_PID}" 2>/dev/null || true
+FIXT_QF_PID=""
+
+# --- 4k-iii. Read both transcripts. Every step, and the header they crossed. -
+fixt_fail=0
+
+# **The precondition, and it is not decoration.** Every step below would read
+# the same whether the session was FIXT.1.1 or the FIX.4.4 this script runs
+# eight other arms of — the seven step names are identical. So the header is
+# asserted on the counterparty's own transcript first: `8=FIXT.1.1` and a
+# Logon carrying `1137=`, written by this engine and taken by libquickfix.
+# Without this the arm could pass having proved nothing new.
+if grep -E "^acceptor: in  8=FIXT\.1\.1.*35=A.*1137=" "${WORK}/fixt/acceptor.log" >/dev/null; then
+  echo "interop-fixt: header      ok    $(grep -E "^acceptor: in  8=FIXT\.1\.1.*35=A.*1137=" "${WORK}/fixt/acceptor.log" | head -1)"
+else
+  echo "interop-fixt: header      FAIL  no inbound 8=FIXT.1.1 Logon carrying 1137= in the C++ acceptor's transcript" >&2
+  fixt_fail=1
+fi
+
+if grep -q "logged on to FIXT.1.1:" "${WORK}/fixt/interop-acceptor.log"; then
+  echo "interop-fixt: session     ok    $(grep -o "logged on to FIXT\.1\.1:.*" "${WORK}/fixt/interop-acceptor.log" | head -1)"
+else
+  echo "interop-fixt: session     FAIL  the C++ initiator never reported a FIXT.1.1 session against this engine's acceptor" >&2
+  fixt_fail=1
+fi
+
+# The acceptor direction: the role that is the product, judged by the C++
+# initiator exactly as arm 4c judges the FIX 4.4 one.
+for step in logon order heartbeat testrequest resend gapfill logout; do
+  if ! grep -qE "^interop-acceptor: ${step} +ok" "${WORK}/fixt/interop-acceptor.log"; then
+    echo "interop-fixt: acceptor ${step} FAIL  step did not pass under FIXT.1.1" >&2
+    fixt_fail=1
+  fi
+done
+if grep -q "^interop-acceptor: PASS 7/7" "${WORK}/fixt/interop-acceptor.log"; then
+  echo "interop-fixt: acceptor    ok    PASS 7/7 under FIXT.1.1, judged by libquickfix"
+else
+  echo "interop-fixt: acceptor    FAIL  no 'interop-acceptor: PASS 7/7' line" >&2
+  fixt_fail=1
+fi
+
+# The initiator direction.
+for step in logon news heartbeat testrequest resend gapfill logout; do
+  if ! grep -qE "^interop: ${step} +ok" "${WORK}/fixt/interop-initiator.log"; then
+    echo "interop-fixt: initiator ${step} FAIL  step did not pass under FIXT.1.1" >&2
+    fixt_fail=1
+  fi
+done
+if grep -q "^interop: PASS 7/7" "${WORK}/fixt/interop-initiator.log"; then
+  echo "interop-fixt: initiator   ok    PASS 7/7 under FIXT.1.1, against libquickfix"
+else
+  echo "interop-fixt: initiator   FAIL  no 'interop: PASS 7/7' line" >&2
+  fixt_fail=1
+fi
+
+if [[ "${fixt_fail}" -eq 0 ]]; then
+  echo "interop-fixt: PASS 4/4"
+else
+  echo "interop-fixt: FAIL" >&2
+  echo "---- what this engine's FIXT acceptor said ----" >&2
+  cat "${WORK}/fixt/fixbolt-acceptor.log" >&2
+  echo "---- what the C++ initiator saw ----" >&2
+  cat "${WORK}/fixt/interop-acceptor.log" >&2
+  echo "---- what the C++ acceptor saw ----" >&2
+  cat "${WORK}/fixt/acceptor.log" >&2
+  echo "---- what this engine's FIXT initiator printed ----" >&2
+  cat "${WORK}/fixt/interop-initiator.log" >&2
+  exit 1
+fi
+
 # ---- 5. Nothing of QuickFIX's entered the repository ------------------------
 #
 # The question is what THIS SCRIPT added, not whether the tree was clean when it
@@ -1431,6 +1688,7 @@ fi
 echo "==> the run added nothing git can see"
 
 echo
-echo "interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5 + 3 / 3 + 4 / 4 against libquickfix @ ${PINNED_SHA}"
-echo "both roles, three reconnect scenarios and 789 in both directions,"
+echo "interop: 7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5 + 3 / 3 + 4 / 4 + 4 / 4 (FIXT: 7 / 7 acceptor + 7 / 7 initiator) against libquickfix @ ${PINNED_SHA}"
+echo "both roles, three reconnect scenarios, 789 in both directions and"
+echo "FIXT.1.1 / FIX.5.0SP2 in both directions,"
 echo "each checked by somebody else's engine"

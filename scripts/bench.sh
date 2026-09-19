@@ -78,11 +78,13 @@ echo
 # worthless here (check-machine.sh says so on its own line); its BEHAVIOUR --
 # does every target run, does a case fall outside its band -- is machine
 # independent and was unverifiable for no good reason.
+METADATA=$(cargo metadata --no-deps --format-version 1)
+
 TARGETS=()
 while IFS= read -r line; do
   [ -n "$line" ] && TARGETS+=("$line")
 done < <(
-  cargo metadata --no-deps --format-version 1 |
+  echo "$METADATA" |
     jq -r '.packages[] | .name as $p | .targets[] | select(.kind[]=="bench") | "\($p) \(.name)"' |
     sort
 )
@@ -91,6 +93,35 @@ if [ "$EXPECTED" -eq 0 ]; then
   echo "no bench targets found — cargo metadata returned none, which cannot be right" >&2
   exit 1
 fi
+
+# Features that gate bench CASES rather than dependencies, e.g. every FIXT 1.1 /
+# FIX 5.0 SP2 case, which sits behind `#[cfg(feature = "fix50sp2")]`. Without
+# them this script ran `cargo bench -p "$pkg" --bench "$name"` with NO features,
+# those cases compiled to nothing, and the bench job stayed green having
+# measured none of them — the trap in
+# docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md, one layer
+# down.
+#
+# ASKED FOR, never repeated. Both the set and the per-package answer come from
+# scripts/check-bench-alignment.sh, the same way the codegen flag does with
+# `--flags`, because that script has to read its alignment back off THE SAME
+# BINARIES these figures come from. A cargo unit's identity includes its
+# features, so a second copy of this list here would be a second build and the
+# ADR-0049 read-back would certify artifacts nothing measured — the sentence
+# that file's header already carries, and CLAUDE.md §1's "one rule, one place".
+#
+# Fetched ONCE, as a "<pkg><TAB><features>" map, rather than once per target:
+# building it costs a `cargo metadata`, and there are 18 targets.
+BENCH_FEATURES_MAP="$(scripts/check-bench-alignment.sh --features-map)"
+
+# `$1`'s row of that map: the features to add for this package, comma separated,
+# empty when it gets none. A lookup, not a definition — passing a feature a
+# package does not declare is a hard cargo error, so every target has to be
+# asked, and the answer is the one the alignment check acts on too.
+bench_features_for() {
+  awk -F'\t' -v p="$1" '$1 == p { print $2; found = 1; exit } END { if (!found) print "" }' \
+    <<<"$BENCH_FEATURES_MAP"
+}
 
 ran=0
 silent=()
@@ -109,9 +140,15 @@ for entry in "${TARGETS[@]}"; do
   pkg=${entry% *}
   name=${entry#* }
   if is_invariant "$name"; then kind=INVARIANT; else kind=TIMING; fi
-  echo "=== $kind  $pkg --bench $name"
+  feats=$(bench_features_for "$pkg")
   set +e
-  out=$(cargo bench -q -p "$pkg" --bench "$name" 2>&1)
+  if [ -n "$feats" ]; then
+    echo "=== $kind  $pkg --bench $name --features $feats"
+    out=$(cargo bench -q -p "$pkg" --bench "$name" --features "$feats" 2>&1)
+  else
+    echo "=== $kind  $pkg --bench $name"
+    out=$(cargo bench -q -p "$pkg" --bench "$name" 2>&1)
+  fi
   code=$?
   set -e
   echo "$out"

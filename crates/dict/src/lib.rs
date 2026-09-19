@@ -27,6 +27,24 @@ pub type Fix44TagValue = fixbolt_codec::TagValue<Fix44, 64>;
 // STATUS.md item 55.
 include!(concat!(env!("OUT_DIR"), "/fix44.rs"));
 
+/// The FIXT 1.1 / FIX 5.0 SP2 tables, generated from the **pair**
+/// `vendor/quickfix/spec/FIXT11.xml` + `FIX50SP2.xml` at build time.
+///
+/// Behind the `fix50sp2` feature, and behind a module rather than at the crate
+/// root: the generated free functions have the same names as FIX 4.4's and two
+/// `field_type` at one scope do not compile. `CLAUDE.md` §2 item 6 — the
+/// feature gates this `mod`, not only `Cargo.toml`.
+///
+/// ADR-0080 decision 2 and ADR-0083 say how the two files become one table:
+/// header, trailer and the eight admin messages come from the transport file,
+/// fields, components, groups and the 156 application messages from the
+/// application file, and every message resolves its components against one
+/// merged map.
+#[cfg(feature = "fix50sp2")]
+pub mod fixt11_fix50sp2 {
+    include!(concat!(env!("OUT_DIR"), "/fixt11_fix50sp2.rs"));
+}
+
 /// The FIX 4.4 dictionary, as `codec` sees it.
 ///
 /// A zero-sized type: `Dictionary`'s methods are associated functions, so there
@@ -64,6 +82,100 @@ impl fixbolt_codec::Dictionary for Fix44 {
         // Declaration order already begins with the delimiter, so `order` and
         // `members` are one list read two ways.
         group_members(msg_type, counter)
+    }
+}
+
+/// The FIXT 1.1 / FIX 5.0 SP2 dictionary, as `codec` and the session see it.
+///
+/// The same zero-sized shape as [`Fix44`], over the tables in
+/// [`fixt11_fix50sp2`]. A `Session` is generic over the encoding and the
+/// dictionary rides it (ADR-0080 decision 1), so this type is the whole of what
+/// a FIXT 1.1 session needs that a FIX 4.4 one does not.
+#[cfg(feature = "fix50sp2")]
+pub struct Fixt11Fix50Sp2Tables;
+
+#[cfg(feature = "fix50sp2")]
+impl fixbolt_codec::Dictionary for Fixt11Fix50Sp2Tables {
+    #[inline]
+    fn is_header(tag: u32) -> bool {
+        fixt11_fix50sp2::is_header(tag)
+    }
+
+    #[inline]
+    fn data_length_tag(tag: u32) -> Option<u32> {
+        fixt11_fix50sp2::data_length_tag(tag)
+    }
+
+    #[inline]
+    fn group_delimiter(msg_type: &[u8], counter: u32) -> Option<u32> {
+        // The head of the member list, never a table of its own — the same
+        // rule `Fix44` follows and for the same reason.
+        match fixt11_fix50sp2::group_members(msg_type, counter) {
+            [first, ..] => Some(*first),
+            [] => None,
+        }
+    }
+
+    #[inline]
+    fn group_members(msg_type: &[u8], counter: u32) -> &'static [u32] {
+        fixt11_fix50sp2::group_members(msg_type, counter)
+    }
+
+    #[inline]
+    fn group_order(msg_type: &[u8], counter: u32) -> &'static [u32] {
+        fixt11_fix50sp2::group_members(msg_type, counter)
+    }
+}
+
+#[cfg(feature = "fix50sp2")]
+impl Tables for Fixt11Fix50Sp2Tables {
+    #[inline]
+    fn is_defined_tag(tag: u32) -> bool {
+        fixt11_fix50sp2::is_defined_tag(tag)
+    }
+
+    #[inline]
+    fn is_defined_tag_for(msg_type: &[u8], tag: u32) -> bool {
+        // ADR-0084 decision 1. Two files, two layers: a message of the
+        // transport file carries only the transport file's tags, and
+        // `999=LegUnitOfMeasure` on a Heartbeat is `373=0` rather than `373=2`
+        // — which is what both QuickFIX engines answer, and what
+        // `14a_BadField.def` expects in all three FIXT corpora.
+        if fixt11_fix50sp2::is_transport_message(msg_type) {
+            fixt11_fix50sp2::is_transport_tag(tag)
+        } else {
+            fixt11_fix50sp2::is_defined_tag(tag)
+        }
+    }
+
+    #[inline]
+    fn required_header() -> &'static [u32] {
+        fixt11_fix50sp2::required_header()
+    }
+
+    #[inline]
+    fn required(msg_type: &[u8]) -> &'static [u32] {
+        fixt11_fix50sp2::required(msg_type)
+    }
+
+    #[inline]
+    fn allows(msg_type: &[u8], tag: u32) -> bool {
+        fixt11_fix50sp2::allows(msg_type, tag)
+    }
+
+    #[inline]
+    fn enum_allows(tag: u32, value: &[u8]) -> Option<bool> {
+        fixt11_fix50sp2::enum_allows(tag, value)
+    }
+
+    #[inline]
+    fn field_type(tag: u32) -> Option<FieldType> {
+        fixt11_fix50sp2::field_type(tag)
+    }
+
+    #[inline]
+    fn is_msg_type(msg_type: &[u8]) -> bool {
+        fixt11_fix50sp2::is_msg_type(msg_type)
     }
 }
 

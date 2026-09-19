@@ -522,3 +522,107 @@ under TLS in `hft` (both scripts trace `tools/w2w`, an acceptor), any suite but
 [DESIGN.md](DESIGN.md) §8, not here.
 
 ---
+
+## 9. FIXT 1.1 / FIX 5.0 SP2 `[added 2026-09-19]`
+
+Behind the off-by-default `fix50sp2` feature. Machine: the cloud Linux box this branch was built
+on, an `Intel(R) Xeon(R) Processor @ 2.10GHz`, **not** the `DESIGN.md` §9 desk — which does not
+matter for the counts on this page, because correctness figures do not depend on OS tuning.
+CI run id: **`35454656457`**, PR #82, commit `eb8e7ae`, **14 jobs of 14 green**, including the
+step that runs the `fix50sp2` tests and proves the named tests executed, the `interop` job that
+runs the FIXT arm, and the `bench` job that counts the allocations.
+
+`[corrected 2026-09-19]` this box named run `35449590277` on `69fb801` and said the commits after
+it changed documentation only. That stopped being true when B4c (`d7be83d`) and B4d (`eb8e7ae`)
+landed code for ADR-0085 — a citation that was accurate when written and went stale under later
+commits, which is the second time on this branch that a run id in this file outlived what it
+described.
+
+### The three corpora, in process
+
+| Corpus | Result | Command |
+|---|---|---|
+| `fix50` | **59 / 60** | `cargo test -p fixbolt-session --features fix50sp2 --test score_fixt` |
+| `fix50sp1` | **60 / 60** | the same run |
+| `fix50sp2` | **60 / 60** | the same run |
+| total | **179 / 180** | |
+
+**179, not 180, and the difference is recorded rather than excluded.** The plan asked for
+180 / 180 and it is not reachable with one SP2 table.
+`21_RepeatingGroupSpecifierWithValueOfZero.def:17` in the `fix50` corpus expects no reject and
+this engine sends `Reject 373=5 371=336`, because tag 336 (`TradingSessionID`) carries **0**
+enumerated values in `FIX50.xml` and **7** in `FIX50SP2.xml` — scoring a FIX 5.0 corpus against
+an SP2 table is stricter than the QuickFIX run that produced the expectations, which used each
+corpus's own dictionary
+([ADR-0084](decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md)
+decision 3).
+
+The test **asserts** that divergence by content, not by count: the corpus, the file, the line,
+and the engine's actual wire bytes. **No fixture was edited and no exclusion list exists.** If
+the divergence is ever fixed and the corpus reaches 180, the test goes red and says so.
+
+What that assertion does **not** see, stated because it is easy to read it as stronger than it
+is: it pins the **strict** direction only. A file that passes is not examined, so a case where
+the SP2 table is more *permissive* than the corpus's own dictionary would score green and be
+invisible. The drift runs both ways — `DeskOrderHandlingInst(1035)` goes 24 enumerated values to
+0 between FIX50 and SP2, `MarketUpdateAction(1395)` 3 to 0 between SP1 and SP2 — and it is
+accepted because 0 of the 180 `.def` files carry either tag.
+
+### Through a real socket
+
+| | Result | Command |
+|---|---|---|
+| `fix50sp2`, acceptor, kernel sockets | **60 / 60** | `cargo test -p fixbolt-engine --features fix50sp2 --test wire_fixt` |
+
+The same harness as the 59 — real framer, real session, real application, only the clock
+injected. It read 60 / 60 on the first run because `TCP_NODELAY` on the client socket and the
+bounded-turns pump were carried over from `tests/wire.rs` rather than rediscovered; without the
+former the FIX 4.4 gate once scored 39 / 59 on Linux (§1).
+
+### Against a real `libquickfix`, both directions
+
+| Direction | Result | Judged by |
+|---|---|---|
+| C++ initiator → **this engine's acceptor** | **7 / 7** | libquickfix's own transcript |
+| this engine's initiator → C++ acceptor | **7 / 7** | libquickfix's own transcript |
+
+`scripts/interop.sh`, section `4k`, against QuickFIX at pin
+`386ce46e917ae494ab6e90b1be90fd421cdbe3f9`, configured `BeginString=FIXT.1.1`,
+`DefaultApplVerID=FIX.5.0SP2`, `TransportDataDictionary=FIXT11.xml`,
+`AppDataDictionary=FIX50SP2.xml`. Seven steps each way: logon, application messages, heartbeat,
+test request, resend, gap fill, logout.
+
+This is **the only independent opinion** on any of it ([ADR-0042](decisions/ADR-0042-a-second-implementation-is-the-only-independent-opinion.md)).
+The `.def` corpora are FIX 4.4 tests replayed against FIXT dictionaries; libquickfix is a second
+implementation reading the same wire.
+
+The arm is distinguished from the eight FIX 4.4 arms beside it by a `header` assertion that reads
+the real inbound bytes — all seven step names are identical, so without it a misconfigured FIXT
+arm would score 7 / 7 while running a FIX 4.4 session:
+
+```
+interop-fixt: header ok  acceptor: in 8=FIXT.1.1|9=76|35=A|34=1|49=FIXBOLT|…|1137=9|10=205|
+```
+
+### CI runs these, which it did not until this commit
+
+`grep fix50sp2 .github/workflows/ci.yml` matched **nothing** before `9ca0608`. All five FIXT test
+binaries sat behind `#![cfg(feature = "fix50sp2")]` and compiled to nothing under
+`cargo test --all`, so every figure above had been this box's word alone. The `gates` job now runs
+the four crates that declare the feature and proves through
+`scripts/check-feature-gated-tests-ran.sh` that the named tests executed rather than that a
+command exited 0 — see
+[a-feature-gated-test-is-a-test-ci-never-runs](reference/a-feature-gated-test-is-a-test-ci-never-runs.md).
+
+### What is not proven here
+
+* **Two boundary behaviours have no oracle at all** — what a counterparty's `1137` is used for
+  after logon, and `1128` on a session-level message. No `.def` and no counterparty exercises
+  either; they are this engine's reading of the specification. `docs/SESSION-BEHAVIOUR.md` §5b.
+* **No latency figure for FIXT appears anywhere.** The pair table is 25.6× the generated bytes of
+  FIX 4.4's and the timing bench prints `NO BASELINE` on this Xeon, `benches/baselines.tsv`
+  holding only a Ryzen. Whether validation through the larger table costs anything is **unmeasured**
+  and owed to the §9 desk.
+* The three corpora are **acceptor-side only**. There is no FIXT mirror of §1's initiator corpus.
+
+---

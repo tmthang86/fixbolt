@@ -33,7 +33,7 @@ guessing which of the two looser readings was meant.
 **Seven probes read this table; the *Meaning* and notes cells are prose and are
 read by a person** `[added 2026-09-13; changed 2026-09-13, was six]`.
 
-**Thirty-four keys** are recognised `[changed 2026-09-18, was thirty-three]`.
+**Thirty-five keys** are recognised `[changed 2026-09-19, was thirty-four]`.
 
 **What in these tables a machine checks, and what is a promise** `[added 2026-09-12]`. The
 `doc_table` tests in [`settings.rs`](../crates/engine/src/settings.rs) read this section and
@@ -81,6 +81,7 @@ the code and changed this count sentence to *"Four hundred keys"*, and the test 
 | `BeginString` | FIX version of the session | ASCII, max 32 bytes, e.g. `FIX.4.4` | required | `[DEFAULT]` or `[SESSION]` | [`settings.rs:95`](../crates/engine/src/settings.rs#L95) |
 | `SenderCompID` | This engine's identity | ASCII, max 32 bytes | required | `[DEFAULT]` or `[SESSION]` | [`settings.rs:96`](../crates/engine/src/settings.rs#L96) |
 | `TargetCompID` | The counterparty's identity | ASCII, max 32 bytes | required per `[SESSION]` | `[SESSION]` (or `[DEFAULT]`) | [`settings.rs:97`](../crates/engine/src/settings.rs#L97) |
+| `DefaultApplVerID` | The application version a FIXT 1.1 session defaults to. It is sent as `1137` on this engine's own `Logon`, and a counterparty `Logon` that omits it is dropped — ADR-0080 decision 4 | ASCII, max 16 bytes. The `ApplVerID` strings QuickFIX spells, `9` being FIX 5.0 SP2. **The list is not enforced here**: it is `fixbolt-session`'s to enforce on the wire, and a second copy in this file would be a second rule | none. Required when `BeginString` is `FIXT.1.1`, and refused when it is not | `[DEFAULT]` or `[SESSION]` | [`settings.rs`](../crates/engine/src/settings.rs) |
 | `HeartBtInt` | Heartbeat interval | non-negative integer, seconds; **zero means no heartbeats at all**, which is what FIX 4.4 says `108=0` means | `30` | `[DEFAULT]` or `[SESSION]` | [`settings.rs:98`](../crates/engine/src/settings.rs#L98), [`session/src/lib.rs:266`](../crates/session/src/lib.rs#L266) |
 | `MaxSkewMillis` | How far an inbound `SendingTime (52)` may differ from this engine's clock | integer, milliseconds | `120000` (2 minutes) | `[DEFAULT]` or `[SESSION]` | [`settings.rs:99`](../crates/engine/src/settings.rs#L99), [`session/src/lib.rs:260`](../crates/session/src/lib.rs#L260) |
 | `StartTime` | When the session opens each day, UTC | `HH:MM:SS` | none; with no `EndTime` the session is always open | `[DEFAULT]` or `[SESSION]` | [`settings.rs:100`](../crates/engine/src/settings.rs#L100), [`settings.rs:567`](../crates/engine/src/settings.rs#L567) |
@@ -406,6 +407,7 @@ The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbo
 |---|---|---|---|
 | `standard` | `engine`, `library` | The blocking poller (`block.rs`, `serve`, `StandardAcceptorEngine`), through `poll(2)` via `libc` | **on** |
 | `affinity` | `engine` | Core pinning and topology checks via `libc`, Linux only. Naming a core in a build without it is a hard error | off |
+| `fix50sp2` | `codec`, `dict`, `session`, `engine` | The second dictionary: `dict`'s `build.rs` reads `FIXT11.xml` **and** `FIX50SP2.xml` into one table and emits `Fixt11Fix50Sp2Tables`, and the FIXT tests and bench cases in all four crates compile. Pulls in **no dependency** — it is generated code and build time only, and `codec`'s copy is a dev-dependency pass-through so its benches can name the table. `[measured]` the generated file goes 156 KB to 4.0 MB and a cold `dict` build 0.56 s to 5.25 s: see [a-bitset-keyed-by-tag-scales-with-the-highest-tag](reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md) | off |
 | `tls` | `engine` | `mod tls`: the userspace `rustls` handshake, the kTLS handover, `serve_tls`/`serve_tls_with`/`serve_tls_requiring`, `connect_and_serve_tls`/`connect_and_serve_tls_with`, `tls::load_pem`/`tls::load_client_pem`, and the seven `SocketUseSSL`-family settings keys (§1). Pulls in `rustls`, `ktls-core` and `libc` — the first dependencies in this crate that bring a tree of their own | off |
 | `sbe` | `library` (`fixbolt`) | The re-export `fixbolt::sbe` (= `fixbolt-sbe`): SBE 1.0 over generated tables, a codec with no session and no `serve*` of its own ([GUIDE.md §3b](GUIDE.md)) | off |
 | `encoding` | `sbe` (`fixbolt-sbe`) | The module implementing `Sbe<S>: codec::Encoding`, and with it `sbe`'s only dependency, `codec`. Off leaves `sbe` at zero dependencies: header, view, group and `varData` only ([DESIGN.md D16](DESIGN.md)) | **on** |
@@ -413,7 +415,12 @@ The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbo
 `cargo build --no-default-features` builds with none of the three `engine`/`library` features
 above, and CI proves that on a runner with nothing optional installed. `fixbolt-sbe`'s own
 `--no-default-features` is the separate case that turns `encoding` off; `scripts/check-no-optional-deps.sh`
-checks each crate independently. **`tls` is Linux-only in practice**: `mod tls` itself is
+checks each crate independently. **`fix50sp2` gates tests, which needs its own CI invocation** —
+a feature-gated test compiles to nothing under `cargo test --all`, so the `gates` job runs the
+four crates that declare it and proves through `scripts/check-feature-gated-tests-ran.sh` that the
+named tests actually executed:
+[a-feature-gated-test-is-a-test-ci-never-runs](reference/a-feature-gated-test-is-a-test-ci-never-runs.md).
+**`tls` is Linux-only in practice**: `mod tls` itself is
 gated only on the feature, but the handshake, `load_pem` and every `serve_tls*` entry point
 inside it are additionally `#[cfg(target_os = "linux")]`, so a `--features tls` build on another
 target compiles the crate but exposes no way to bring a TLS listener up — [D11 in

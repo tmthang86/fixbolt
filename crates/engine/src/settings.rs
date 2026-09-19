@@ -64,7 +64,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use fixbolt_session::schedule::{Schedule, Weekday, Weekdays};
-use fixbolt_session::{Config, MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN};
+use fixbolt_session::{Config, MAX_APPL_VER_ID_LEN, MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN};
 
 use crate::presession::Table;
 
@@ -79,6 +79,18 @@ enum Key {
     BeginString,
     SenderCompId,
     TargetCompId,
+    /// `1137=DefaultApplVerID`, a FIXT 1.1 session's own application version.
+    ///
+    /// **`[DEFAULT]` or `[SESSION]`, required when `BeginString=FIXT.1.1` and
+    /// refused otherwise** — ADR-0080 decision 4. Values are the `ApplVerID`
+    /// enum strings QuickFIX spells (`7`, `8`, `9`), fed straight into
+    /// [`Config::acceptor_fixt`] and never matched against that list here: the
+    /// list is `fixbolt_session`'s to enforce, on the wire, the same way an
+    /// out-of-family `1128` already is — a second copy in this file would be a
+    /// second rule.
+    ///
+    /// [`Config::acceptor_fixt`]: fixbolt_session::Config::acceptor_fixt
+    DefaultApplVerId,
     HeartBtInt,
     MaxSkewMillis,
     StartTime,
@@ -199,6 +211,7 @@ impl Key {
             "BeginString" => Some(Self::BeginString),
             "SenderCompID" => Some(Self::SenderCompId),
             "TargetCompID" => Some(Self::TargetCompId),
+            "DefaultApplVerID" => Some(Self::DefaultApplVerId),
             "HeartBtInt" => Some(Self::HeartBtInt),
             "MaxSkewMillis" => Some(Self::MaxSkewMillis),
             "StartTime" => Some(Self::StartTime),
@@ -241,6 +254,7 @@ impl Key {
             Self::BeginString => "BeginString",
             Self::SenderCompId => "SenderCompID",
             Self::TargetCompId => "TargetCompID",
+            Self::DefaultApplVerId => "DefaultApplVerID",
             Self::HeartBtInt => "HeartBtInt",
             Self::MaxSkewMillis => "MaxSkewMillis",
             Self::StartTime => "StartTime",
@@ -346,6 +360,16 @@ pub enum Problem {
     RepeatedKey,
     /// A required key is missing from both `[DEFAULT]` and the `[SESSION]`.
     MissingKey,
+    /// `BeginString=FIXT.1.1` with no `DefaultApplVerID` — ADR-0080 decision
+    /// 4. Not [`Problem::MissingKey`]: that variant says a key is missing
+    /// unconditionally, and this one is missing only because of what another
+    /// key said, which is the sentence an operator needs to fix it.
+    DefaultApplVerIdRequired,
+    /// `DefaultApplVerID` on a session whose `BeginString` is not
+    /// `FIXT.1.1` — ADR-0080 decision 4. The mirror of
+    /// [`Problem::DefaultApplVerIdRequired`]: a key that names an application
+    /// version inside a transport that has no application version of its own.
+    DefaultApplVerIdWithoutFixt,
     /// A value longer than a [`Config`] can hold. It is refused rather than
     /// truncated, because a truncated name matches nothing and would configure
     /// an acceptor that serves nobody.
@@ -417,6 +441,12 @@ impl fmt::Display for Problem {
             }
             Self::RepeatedKey => "the same key twice in one block",
             Self::MissingKey => "a required key is missing",
+            Self::DefaultApplVerIdRequired => {
+                "DefaultApplVerID is required when BeginString=FIXT.1.1"
+            }
+            Self::DefaultApplVerIdWithoutFixt => {
+                "DefaultApplVerID is refused unless BeginString=FIXT.1.1"
+            }
             Self::ValueTooLong => "the value is longer than a session configuration can hold",
             // `[changed 2026-09-13]` the tail clause is the senior review of
             // PR #68: an out-of-range value is this variant too, and was told
@@ -500,6 +530,7 @@ struct Block<'a> {
     begin_string: Option<(usize, &'a str)>,
     sender: Option<(usize, &'a str)>,
     target: Option<(usize, &'a str)>,
+    default_appl_ver_id: Option<(usize, &'a str)>,
     heart_bt_int: Option<(usize, &'a str)>,
     max_skew: Option<(usize, &'a str)>,
     start_time: Option<(usize, &'a str)>,
@@ -533,6 +564,7 @@ impl<'a> Block<'a> {
             Key::BeginString => &mut self.begin_string,
             Key::SenderCompId => &mut self.sender,
             Key::TargetCompId => &mut self.target,
+            Key::DefaultApplVerId => &mut self.default_appl_ver_id,
             Key::HeartBtInt => &mut self.heart_bt_int,
             Key::MaxSkewMillis => &mut self.max_skew,
             Key::StartTime => &mut self.start_time,
@@ -582,6 +614,7 @@ impl<'a> Block<'a> {
             begin_string: self.begin_string.or(base.begin_string),
             sender: self.sender.or(base.sender),
             target: self.target.or(base.target),
+            default_appl_ver_id: self.default_appl_ver_id.or(base.default_appl_ver_id),
             heart_bt_int: self.heart_bt_int.or(base.heart_bt_int),
             max_skew: self.max_skew.or(base.max_skew),
             start_time: self.start_time.or(base.start_time),
@@ -682,6 +715,7 @@ impl<'a> TlsBlock<'a> {
             Key::BeginString
             | Key::SenderCompId
             | Key::TargetCompId
+            | Key::DefaultApplVerId
             | Key::HeartBtInt
             | Key::MaxSkewMillis
             | Key::StartTime
@@ -1590,6 +1624,15 @@ fn line_of(block: Block<'_>) -> usize {
     block.target.map_or(0, |(line, _)| line)
 }
 
+/// The one `BeginString` that makes a `[SESSION]` a FIXT 1.1 session, and the
+/// only value [`Key::DefaultApplVerId`] reads `begin` against.
+///
+/// `fixbolt_session` keeps its own copy of this same literal private (D3's
+/// generated tables own the dictionary; this string owns nothing but which
+/// [`Config`] constructor to call), so this file spells it again rather than
+/// import one — ADR-0080 decision 4.
+const FIXT_1_1: &str = "FIXT.1.1";
+
 /// One merged block becomes one [`Config`].
 fn build(block: Block<'_>) -> Result<Config, SettingsError> {
     let at = line_of(block);
@@ -1597,11 +1640,51 @@ fn build(block: Block<'_>) -> Result<Config, SettingsError> {
     let sender = required(block.sender, Key::SenderCompId, at)?;
     let target = required(block.target, Key::TargetCompId, at)?;
 
-    let mut cfg = Config::acceptor(
-        fitting(begin, MAX_BEGIN_STRING_LEN, Key::BeginString)?,
-        fitting(sender, MAX_COMP_ID_LEN, Key::SenderCompId)?,
-        fitting(target, MAX_COMP_ID_LEN, Key::TargetCompId)?,
-    );
+    let mut cfg = if begin.1 == FIXT_1_1 {
+        // **Required, not defaulted.** `1137` has no sensible fallback — a
+        // guessed application version is a wrong version, and ADR-0080
+        // decision 4 refuses to guess. Blamed the same way every other
+        // missing key on this block is: the block's own line, from
+        // `TargetCompID`, because there is no `DefaultApplVerID=` line to
+        // blame yet.
+        let appl_ver_id = block.default_appl_ver_id.ok_or_else(|| {
+            SettingsError::at(
+                at,
+                Problem::DefaultApplVerIdRequired,
+                format!(
+                    "{} — BeginString=FIXT.1.1 requires it",
+                    Key::DefaultApplVerId.name()
+                ),
+            )
+        })?;
+        Config::acceptor_fixt(
+            fitting(begin, MAX_BEGIN_STRING_LEN, Key::BeginString)?,
+            fitting(sender, MAX_COMP_ID_LEN, Key::SenderCompId)?,
+            fitting(target, MAX_COMP_ID_LEN, Key::TargetCompId)?,
+            fitting(appl_ver_id, MAX_APPL_VER_ID_LEN, Key::DefaultApplVerId)?,
+        )
+    } else {
+        // **The mirror refusal.** A `DefaultApplVerID` under a `FIX.4.x`
+        // `BeginString` names an application version for a transport that
+        // carries none — refused on the key's own line, which this leg does
+        // have, rather than folded into `Config::acceptor` and read as
+        // ignored.
+        if let Some((line, _)) = block.default_appl_ver_id {
+            return Err(SettingsError::at(
+                line,
+                Problem::DefaultApplVerIdWithoutFixt,
+                format!(
+                    "{} needs BeginString=FIXT.1.1",
+                    Key::DefaultApplVerId.name()
+                ),
+            ));
+        }
+        Config::acceptor(
+            fitting(begin, MAX_BEGIN_STRING_LEN, Key::BeginString)?,
+            fitting(sender, MAX_COMP_ID_LEN, Key::SenderCompId)?,
+            fitting(target, MAX_COMP_ID_LEN, Key::TargetCompId)?,
+        )
+    };
     if let Some(v) = block.heart_bt_int {
         cfg = cfg.with_heart_bt_int(number(v, Key::HeartBtInt)?);
     }
@@ -2205,6 +2288,7 @@ mod doc_table {
             Key::BeginString
             | Key::SenderCompId
             | Key::TargetCompId
+            | Key::DefaultApplVerId
             | Key::StartTime
             | Key::EndTime
             | Key::StartDay
@@ -2597,6 +2681,7 @@ mod doc_table {
             Key::BeginString
             | Key::SenderCompId
             | Key::TargetCompId
+            | Key::DefaultApplVerId
             | Key::HeartBtInt
             | Key::MaxSkewMillis
             | Key::StartTime
@@ -3919,5 +4004,81 @@ mod doc_table {
             probed >= FLOOR,
             "probe 5 reached {probed} rows, below its floor of {FLOOR} — either a required Default cell was rewritten as prose, or this probe has stopped matching"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // `DefaultApplVerID`'s own two reversals — ADR-0080 decision 4. Not a doc
+    // probe: `docs/CONFIGURATION.md` §1 carries no row for this key yet (out
+    // of scope for this step), so these read the parser directly, the way
+    // `a_where_cell_that_claims_default_only_is_refused_in_a_session`'s
+    // sibling files elsewhere in this crate do.
+    // ------------------------------------------------------------------
+
+    /// **Reversal 1.** A `[SESSION]` with `BeginString=FIXT.1.1` and no
+    /// `DefaultApplVerID` is [`Problem::DefaultApplVerIdRequired`], blamed on
+    /// `TargetCompID`'s line — line 6, the only line naming this `[SESSION]`,
+    /// the same line every other missing-key refusal on this block is blamed
+    /// on (`line_of`).
+    ///
+    /// **Predicted FAIL, written down before running the reversal**: with the
+    /// `begin.1 == FIXT_1_1` guard in `build` removed (so a FIXT file falls
+    /// through to plain `Config::acceptor`), this test fails with
+    /// `assertion `left == right` failed` `left: None, right: Some(Default…Required)`
+    /// — the file parses clean instead of being refused.
+    #[test]
+    fn a_fixt_session_without_default_appl_ver_id_is_refused() {
+        let text =
+            "[DEFAULT]\nBeginString=FIXT.1.1\nSenderCompID=ISLD\n\n[SESSION]\nTargetCompID=TW50\n";
+        let result = Settings::parse(text);
+        let err = result.as_ref().err();
+        assert!(
+            err.is_some(),
+            "expected DefaultApplVerIdRequired for a FIXT session with no DefaultApplVerID, the file parsed as {result:?}"
+        );
+        if let Some(err) = err {
+            assert_eq!(
+                err.problem(),
+                &Problem::DefaultApplVerIdRequired,
+                "wrong Problem for a FIXT session with no DefaultApplVerID: {err}"
+            );
+            assert_eq!(
+                err.line(),
+                6,
+                "wrong line for a FIXT session with no DefaultApplVerID: {err}"
+            );
+        }
+    }
+
+    /// **Reversal 2.** A `[SESSION]` with `BeginString=FIX.4.4` and a
+    /// `DefaultApplVerID` is [`Problem::DefaultApplVerIdWithoutFixt`], blamed
+    /// on `DefaultApplVerID`'s own line — line 7, the line the operator
+    /// actually wrote and would have to delete.
+    ///
+    /// **Predicted FAIL, written down before running the reversal**: with the
+    /// `else` branch's `block.default_appl_ver_id` check removed (so the key
+    /// is read and silently dropped on a FIX 4.4 file), this test fails with
+    /// `assertion `left == right` failed` `left: None, right: Some(Default…WithoutFixt)`
+    /// — the file parses clean instead of being refused.
+    #[test]
+    fn a_default_appl_ver_id_without_fixt_is_refused() {
+        let text = "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\n[SESSION]\nTargetCompID=TW44\nDefaultApplVerID=9\n";
+        let result = Settings::parse(text);
+        let err = result.as_ref().err();
+        assert!(
+            err.is_some(),
+            "expected DefaultApplVerIdWithoutFixt for DefaultApplVerID under FIX.4.4, the file parsed as {result:?}"
+        );
+        if let Some(err) = err {
+            assert_eq!(
+                err.problem(),
+                &Problem::DefaultApplVerIdWithoutFixt,
+                "wrong Problem for DefaultApplVerID under FIX.4.4: {err}"
+            );
+            assert_eq!(
+                err.line(),
+                7,
+                "wrong line for DefaultApplVerID under FIX.4.4: {err}"
+            );
+        }
     }
 }

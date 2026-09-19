@@ -97,3 +97,40 @@ fn the_tables_cover_what_the_dictionary_declares() {
     assert_eq!(fixbolt_dict::GROUP_COUNTERS, 59);
     assert_eq!(fixbolt_dict::GROUP_POSITIONS, 731);
 }
+
+/// Every group counter is a `NUMINGROUP`, in both generated tables.
+///
+/// Not a curiosity: `crates/session/src/lib.rs`'s `scan_fields` tests
+/// `field_type(tag) == Some(FieldType::NumInGroup)` before it asks
+/// `group_delimiter` at all, because a `NumInGroup` comparison is on a value
+/// already in hand and `group_delimiter` is a two-level match. If a dictionary
+/// ever declared a `<group>` on a field of some other type, that counter would
+/// never be recorded, the members behind it would keep their value checked in
+/// wire order, and ADR-0084 decision 2's ordering would silently stop applying
+/// to them. This is the test that would go red first.
+///
+/// `[measured 2026-09-19]` 93 `<group>` declarations in `FIX44.xml`, 2 in
+/// `FIXT11.xml`, 561 in `FIX50SP2.xml`; none on a field of any other type.
+#[test]
+fn every_group_counter_is_a_num_in_group() {
+    use fixbolt_dict::{FieldType, Tables};
+
+    for (mt, counter) in &fixbolt_dict::GROUP_KEYS {
+        assert_eq!(
+            <Fix44 as Tables>::field_type(*counter),
+            Some(FieldType::NumInGroup),
+            "FIX 4.4 counter {counter} on {}",
+            String::from_utf8_lossy(mt)
+        );
+    }
+
+    #[cfg(feature = "fix50sp2")]
+    for (mt, counter) in &fixbolt_dict::fixt11_fix50sp2::GROUP_KEYS {
+        assert_eq!(
+            <fixbolt_dict::Fixt11Fix50Sp2Tables as Tables>::field_type(*counter),
+            Some(FieldType::NumInGroup),
+            "FIXT 1.1 / FIX 5.0 SP2 counter {counter} on {}",
+            String::from_utf8_lossy(mt)
+        );
+    }
+}

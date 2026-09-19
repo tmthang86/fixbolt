@@ -524,7 +524,10 @@ line 14: unknown key: Starttime
 
 **A value longer than a `Config` can hold is refused, not truncated.** A truncated name
 matches nothing, so truncation would give you an acceptor that starts cleanly and serves
-nobody. The limits are `fixbolt_session::MAX_BEGIN_STRING_LEN` and `MAX_COMP_ID_LEN`.
+nobody. The limits are `fixbolt_session::MAX_BEGIN_STRING_LEN`, `MAX_COMP_ID_LEN` and
+`MAX_APPL_VER_ID_LEN` (16) `[added 2026-09-19]`. **The third bites harder than the other
+two**: a `DefaultApplVerID` longer than 16 bytes is refused when the `Config` is built, so a
+FIXT 1.1 session never comes up at all rather than coming up and truncating a field.
 
 **What the file cannot say**, and you will notice: no credential (ADR-0026 decision 3 makes
 the registry the only authentication hook, and `Registry::admit` is where a check goes), no per-counterparty journal path (that belongs to
@@ -602,7 +605,7 @@ Three things to know before you write `E` yourself:
   (`CLAUDE.md` §6: no hidden constant).
 - **`Session<E>` is generic over tag=value encodings and nothing else.** Any `TagValue<D, N>`
   whose `D` implements `fixbolt_dict::Tables` is a session: FIX 4.4 today, FIXT 1.1 / FIX 5.0 SP2
-  when phase 2's PR B lands. An SBE encoding will implement `Encoding` and **will not be a
+  today, and FIXT 1.1 / FIX 5.0 SP2 behind the off-by-default `fix50sp2` feature `[2026-09-19]`. An SBE encoding will implement `Encoding` and **will not be a
   session**: `Session<Sbe<S>>` is a compile error at the session's `where` clause, by design,
   because the FIX session layer is tag=value by specification. There is no SBE session to wait
   for; SBE will be a codec you carry over your own transport.
