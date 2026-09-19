@@ -33,7 +33,7 @@
 //! * `LegSecurityXML(1872)` and 23 fields shaped like it (a `<component>`
 //!   wrapping exactly a `LENGTH` + `XMLDATA` + `STRING` triple, referenced
 //!   from inside a group) are declared members of their group in the XML —
-//!   `SecurityXML(1185)` alone accounts for 24 of the 64 750 occurrences
+//!   `SecurityXML(1185)` alone accounts for 24 of the 64 094 occurrences
 //!   below — and QuickFIX's own class sets them (`FIELD_SET(*this,
 //!   FIX::LegSecurityXML)` is in `IOI.h`) but its generator's
 //!   `message_order()` omits every one of them, everywhere in the corpus.
@@ -68,6 +68,7 @@
 #![cfg(feature = "fix50sp2")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -96,9 +97,13 @@ fn quickfix_groups() -> BTreeMap<(String, u32), (u32, Vec<u32>)> {
         )
     });
 
-    let mut out = BTreeMap::new();
-    for e in entries {
-        let path = e.expect("dir entry").path();
+    // `read_dir` yields entries in an order no OS specifies, so this walk is
+    // only reproducible if it sorts them first.
+    let mut paths: Vec<PathBuf> = entries.map(|e| e.expect("dir entry").path()).collect();
+    paths.sort();
+
+    let mut out: BTreeMap<(String, u32), (u32, Vec<u32>)> = BTreeMap::new();
+    for path in paths {
         if path.extension().is_none_or(|x| x != "h") {
             continue;
         }
@@ -132,7 +137,63 @@ fn quickfix_groups() -> BTreeMap<(String, u32), (u32, Vec<u32>)> {
             if order.is_empty() {
                 continue;
             }
-            out.entry((mt.clone(), counter)).or_insert((delim, order));
+            // Two headers can declare the same MsgType. QuickFIX keeps a
+            // stale copy of a renamed message beside the current one:
+            // `ExecutionAcknowledgement.h` beside `ExecutionAck.h`, and
+            // `MassQuoteAcknowledgement.h` beside `MassQuoteAck.h`, though
+            // only `ExecutionAck` and `MassQuoteAck` are messages in the
+            // `FIX50SP2.xml` this table was built from. `[measured
+            // 2026-09-19]` 32 `(msg_type, counter)` keys are declared twice
+            // that way and 21 of them carry a different `message_order`. So
+            // keeping whichever header `read_dir` handed over first made the
+            // numbers pinned below a property of the filesystem: two stale
+            // headers are two independent coin flips, and CI and a developer
+            // box landed on different faces of the same pin. All 32 of those
+            // keys are declared by a current header too, so merging this way
+            // and ignoring the two stale files outright give the same table;
+            // merging is what says so out loud.
+            //
+            // The rule, and it is a rule rather than a tie-break: **keep the
+            // richer order, and assert the other is an exact subsequence of
+            // it.** The stale header is an older generation of the same group,
+            // so it can differ only by fields the later revision added;
+            // asserting that relation is what makes discarding it safe, and it
+            // holds on all 21 today. Because the choice is made by the two
+            // orders and never by arrival, the result no longer depends on the
+            // sort above — the sort keeps everything else about this walk
+            // reproducible, and both are wanted.
+            match out.entry((mt.clone(), counter)) {
+                Entry::Vacant(slot) => {
+                    slot.insert((delim, order));
+                }
+                Entry::Occupied(mut slot) => {
+                    let richer = {
+                        let (have_delim, have_order) = slot.get();
+                        assert_eq!(
+                            *have_delim, delim,
+                            "({mt}, {counter}) is declared twice with different delimiters"
+                        );
+                        let richer = order.len() > have_order.len();
+                        let (long, short) = if richer {
+                            (order.as_slice(), have_order.as_slice())
+                        } else {
+                            (have_order.as_slice(), order.as_slice())
+                        };
+                        assert!(
+                            is_subsequence(short, long),
+                            "({mt}, {counter}) is declared twice and neither order is a \
+                             subsequence of the other, so one is not an older generation of \
+                             the other and this test may not simply keep the richer.\n\
+                             kept:  {have_order:?}\n\
+                             other: {order:?}"
+                        );
+                        richer
+                    };
+                    if richer {
+                        slot.insert((delim, order));
+                    }
+                }
+            }
         }
     }
     out
@@ -216,24 +277,29 @@ fn quickfix_and_this_crate_agree_on_every_sp2_group() {
         dropped_field_extras.len(),
         dropped_field_occurrences
     );
-    // `[measured 2026-09-19]` at pin `386ce46e`. Pinned the way the FIX 4.4
-    // test pins 730 — a change in any of the four numbers below means either
-    // the pin moved (fetch script's `PINNED_SHA`), the pair build's group
-    // table changed, or QuickFIX's generator changed, and either way a human
-    // reads why before moving the number.
+    // `[measured 2026-09-19]` at pin `386ce46e`, on a clean build, after
+    // `quickfix_groups` above was made independent of `read_dir` order. The
+    // last three moved when it was: at this one pin the old code had four
+    // answers, one per face of the two coin flips above — 226/941/64 094 (both
+    // current headers, what is pinned here), 230/1 231/64 384, 231/1 307/
+    // 64 460 (what CI read) and 231/1 307/64 750 (what a developer box read).
+    // Pinned the way the FIX 4.4 test pins 730 — a change in any of the four
+    // numbers below means either the pin moved (fetch script's `PINNED_SHA`),
+    // the pair build's group table changed, or QuickFIX's generator changed,
+    // and either way a human reads why before moving the number.
     assert_eq!(checked, 25_927, "every group in the generated SP2 headers");
     assert_eq!(
         nested_counter_extras.len(),
-        231,
+        226,
         "distinct tags that stand in for a nested group — the FIX 4.4 kind of extra"
     );
     assert_eq!(
         dropped_field_extras.len(),
-        1_307,
+        941,
         "distinct tags QuickFIX's generator drops from message_order — see the module doc"
     );
     assert_eq!(
-        dropped_field_occurrences, 64_750,
+        dropped_field_occurrences, 64_094,
         "how many (group, tag) pairs that covers"
     );
 }

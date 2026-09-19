@@ -13,8 +13,13 @@ QuickFIX's generated C++ on three claims, and has read `730 / 730` on all three 
    only thing this crate adds is the nesting hook QuickFIX omits.
 
 Step B2 pointed the same three claims at FIX 5.0 SP2. Claims 1 and 2 hold on **all 25 927**
-SP2 groups, zero exceptions. **Claim 3 is false**, on 1 307 distinct tags across 64 750
+SP2 groups, zero exceptions. **Claim 3 is false**, on 941 distinct tags across 64 094
 occurrences — and the cause is QuickFIX's generator, not this crate's table.
+
+`[corrected 2026-09-19]` those two numbers first read **1 307** and **64 750**, and both
+were wrong: the oracle walked `read_dir` and kept whichever header arrived first, so it
+had four answers at one pin. See
+[a-test-oracle-that-reads-read-dir-has-more-than-one-answer](a-test-oracle-that-reads-read-dir-has-more-than-one-answer.md).
 
 ## The proof, from QuickFIX's own header
 
@@ -65,9 +70,9 @@ splits claim 3 into two **pinned counts** rather than one boolean:
 | Number | Meaning |
 |---|---|
 | `checked == 25_927` | every group in the generated SP2 headers |
-| `nested_counter_extras == 231` | the FIX 4.4 kind — extras that *are* group counters |
-| `dropped_field_extras == 1_307` | distinct plain fields QuickFIX's generator drops |
-| `dropped_field_occurrences == 64_750` | how often, across all groups |
+| `nested_counter_extras == 226` | the FIX 4.4 kind — extras that *are* group counters |
+| `dropped_field_extras == 941` | distinct plain fields QuickFIX's generator drops |
+| `dropped_field_occurrences == 64_094` | how often, across all groups |
 
 All four are asserted, not printed, so a change in this crate's table **or** in QuickFIX's
 generator turns the test red and makes someone look. A count pinned is weaker than an

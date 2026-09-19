@@ -37,6 +37,7 @@
 //! `[measured 2026-08-28]` 730 / 730 on all three.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -60,9 +61,13 @@ fn quickfix_groups() -> BTreeMap<(String, u32), (u32, Vec<u32>)> {
         )
     });
 
-    let mut out = BTreeMap::new();
-    for e in entries {
-        let path = e.expect("dir entry").path();
+    // `read_dir` yields entries in an order no OS specifies, so this walk is
+    // only reproducible if it sorts them first.
+    let mut paths: Vec<PathBuf> = entries.map(|e| e.expect("dir entry").path()).collect();
+    paths.sort();
+
+    let mut out: BTreeMap<(String, u32), (u32, Vec<u32>)> = BTreeMap::new();
+    for path in paths {
         if path.extension().is_none_or(|x| x != "h") {
             continue;
         }
@@ -96,7 +101,49 @@ fn quickfix_groups() -> BTreeMap<(String, u32), (u32, Vec<u32>)> {
             if order.is_empty() {
                 continue;
             }
-            out.entry((mt.clone(), counter)).or_insert((delim, order));
+            // Two headers could declare the same MsgType — QuickFIX keeps a
+            // stale copy of a renamed message beside the current one in
+            // `fix50sp2/`, and `fixt_order.rs` has to merge them. `[measured
+            // 2026-09-19]` `fix44/` has no such pair: 730 keys out of 730
+            // specs, nothing declared twice. The same merge is kept here
+            // anyway, so that this file cannot start answering differently per
+            // machine if QuickFIX ever ships one. The rule: keep the richer
+            // order, and assert the other is an exact subsequence of it — an
+            // older generation of a group can differ only by fields the later
+            // revision added, and asserting that is what makes discarding it
+            // safe. The choice is made by the two orders, never by arrival.
+            match out.entry((mt.clone(), counter)) {
+                Entry::Vacant(slot) => {
+                    slot.insert((delim, order));
+                }
+                Entry::Occupied(mut slot) => {
+                    let richer = {
+                        let (have_delim, have_order) = slot.get();
+                        assert_eq!(
+                            *have_delim, delim,
+                            "({mt}, {counter}) is declared twice with different delimiters"
+                        );
+                        let richer = order.len() > have_order.len();
+                        let (long, short) = if richer {
+                            (order.as_slice(), have_order.as_slice())
+                        } else {
+                            (have_order.as_slice(), order.as_slice())
+                        };
+                        assert!(
+                            is_subsequence(short, long),
+                            "({mt}, {counter}) is declared twice and neither order is a \
+                             subsequence of the other, so one is not an older generation of \
+                             the other and this test may not simply keep the richer.\n\
+                             kept:  {have_order:?}\n\
+                             other: {order:?}"
+                        );
+                        richer
+                    };
+                    if richer {
+                        slot.insert((delim, order));
+                    }
+                }
+            }
         }
     }
     out
