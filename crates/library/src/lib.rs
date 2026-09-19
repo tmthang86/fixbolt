@@ -91,3 +91,48 @@ pub use fixbolt_engine::msglog::{Direction, FileLog, MaybeLog, MessageLog, NoLog
 
 /// Why a connection ended.
 pub use fixbolt_session::DropReason;
+
+/// SBE 1.0, decoded and encoded over generated tables (ADR-0081) — a codec you
+/// bring your own transport to, not a session.
+///
+/// **This is not another mode of `serve*`.** ADR-0078 keeps SBE out of the FIX
+/// session layer entirely: it carries no `BeginString`, no `MsgSeqNum`, no
+/// `Logon` — nothing the session state machine or `serve*` needs — so there is
+/// no `serve_sbe` and never will be one behind this feature. What lands here
+/// is [`sbe::SbeView`] to read a message and [`sbe::MessageWriter`] to write
+/// one, both over `&'static` tables `sbe-gen` compiles from a schema; the
+/// caller supplies the socket, the framing (SOFH or otherwise) and the loop.
+///
+/// `ADR-0082` decision 4 draws the boundary at the type: `Sbe<S>` implements
+/// `codec::Encoding` so it can be measured on the same footing as tag=value,
+/// but `Session<Sbe<S>, _>` is rejected before the dictionary is ever asked —
+/// on the five associated-type equalities `crates/session/src/lib.rs` states
+/// as *"What the session needs of an `Encoding`, beyond the trait"`. The
+/// doctest below is that rejection, kept honest by the compiler on every
+/// build of this feature.
+///
+/// ```compile_fail
+/// use fixbolt::sbe::{ByteOrder, MessageLayout, Sbe, Schema};
+/// use fixbolt_session::{Acceptor, Config, Session};
+///
+/// // A schema is enough to name `Sbe<S>`; this example never decodes a
+/// // message, because the point is what will not compile.
+/// struct DocSchema;
+/// impl Schema for DocSchema {
+///     const ID: u16 = 1;
+///     const VERSION: u16 = 0;
+///     const BYTE_ORDER: ByteOrder = ByteOrder::Little;
+///     fn message(_template_id: u16) -> Option<&'static MessageLayout> {
+///         None
+///     }
+/// }
+///
+/// let cfg = Config::acceptor(b"FIX.4.4", b"US", b"THEM");
+/// // Fails: `Sbe<DocSchema>` does not satisfy the bounds `Session::new`
+/// // requires of its `Encoding` — `Sbe<S>::View<'_>` is `SbeView<'_>`, never
+/// // `MessageView<'_, N>` for any `N`, and `SbeTables<S>` implements
+/// // `codec::Dictionary` only, never `dict::Tables` (ADR-0082 decision 4).
+/// let _session: Session<Sbe<DocSchema>, Acceptor> = Session::new(cfg);
+/// ```
+#[cfg(feature = "sbe")]
+pub use fixbolt_sbe as sbe;

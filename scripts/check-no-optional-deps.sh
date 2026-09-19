@@ -66,6 +66,11 @@ CASES=(
   # zero-dependency loop below allows any `fixbolt-*` crate, so it cannot see
   # this one leak into a featureless build; asking by name can.
   "fixbolt-sbe:fixbolt-codec"
+  # `[2026-09-19]` crates/library, phase 2 step C7. `fixbolt` re-exports
+  # `fixbolt-sbe` as `sbe` behind its own `sbe` feature — the same forwarding
+  # shape as the `fixbolt:libc` line above, and the same reason: asked per
+  # crate, because a sibling in the workspace would answer for it at scope.
+  "fixbolt:fixbolt-sbe"
 )
 
 rc=0

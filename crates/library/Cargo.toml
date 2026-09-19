@@ -23,11 +23,21 @@ description = "The application-facing API: a handler, a reply, and one place to 
 [features]
 default = ["standard"]
 standard = ["fixbolt-engine/standard"]
+# ADR-0078, ADR-0082 decision 4. SBE is a codec without a session: this feature
+# re-exports `fixbolt-sbe` and nothing else changes — `standard`'s `serve*` and
+# this feature are independent. Not default, and gated on the `mod`/`pub use`
+# itself in `lib.rs` (CLAUDE.md §2 rule 6), so `--no-default-features` never
+# names `fixbolt-sbe`. `scripts/check-no-optional-deps.sh` has the case
+# `fixbolt:fixbolt-sbe`.
+sbe = ["dep:fixbolt-sbe"]
 
 [dependencies]
 fixbolt-codec = { path = "../codec" }
 fixbolt-dict = { path = "../dict" }
 fixbolt-engine = { path = "../engine", default-features = false }
+fixbolt-sbe = { path = "../sbe", optional = true, default-features = false, features = [
+    "encoding",
+] }
 fixbolt-session = { path = "../session" }
 
 [lints]
@@ -40,3 +50,7 @@ harness = false
 [[bench]]
 name = "cost"
 harness = false
+
+[[example]]
+name = "sbe_decode"
+required-features = ["sbe"]
