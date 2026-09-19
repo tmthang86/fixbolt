@@ -7,7 +7,7 @@
 //! ```
 //!
 //! `--role initiator` is phase 1 exit criterion 4 and is the whole of what this
-//! binary did until 2026-09-04: it drives `Session<Initiator, 256>` into a C++
+//! binary did until 2026-09-04: it drives `InitiatorFix44<256>` into a C++
 //! acceptor and scores seven steps itself.
 //!
 //! `--role acceptor` is the other half, and it is **the half that is the
@@ -38,7 +38,7 @@
 //! operator can order.
 //!
 //! **`--role initiator`, not under test: the engine's polling loop.** It drives
-//! `Session<Initiator, 256>` over a blocking `TcpStream` rather than through
+//! `InitiatorFix44<256>` over a blocking `TcpStream` rather than through
 //! `fixbolt_engine::Engine`, because criterion 4 is about the protocol and the
 //! engine loop already has `crates/engine/tests/wire.rs` and `tools/w2w` over
 //! the same kernel sockets. `STATUS.md` carries that limit rather than leaving
@@ -89,9 +89,10 @@ use std::net::TcpStream;
 use std::ops::Range;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use fixbolt_engine::InitiatorFix44;
 use fixbolt_session::clock::MILLIS_YEAR_ZERO_TO_EPOCH;
 use fixbolt_session::journal::Journal;
-use fixbolt_session::{Application, Config, Initiator, Link, Session};
+use fixbolt_session::{Application, Config, Link, Session};
 
 /// The `112=` this end chooses. Deliberately not `TEST`, which is what the
 /// session writes for a request **it** raised: if the acceptor's answer echoed
@@ -180,7 +181,7 @@ impl Journal for Kept {
 /// One session, one socket, and the bookkeeping a step needs to judge itself.
 struct Wire {
     sock: TcpStream,
-    session: Session<Initiator, 256>,
+    session: InitiatorFix44<256>,
     app: Count,
     journal: Kept,
     /// Every message received, newest last, as readable text.

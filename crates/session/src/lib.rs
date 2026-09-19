@@ -1468,7 +1468,7 @@ impl Stamped {
 ///   handed.
 /// * `Template<24, 320> = Template<24, 320>`: the seven outbound skeletons are
 ///   laid out by `codec`'s `TemplateBuilder`, because the trait offers no way
-///   to build one — see [`out::Outbound::new`].
+///   to build one — see `out::Outbound::new`.
 /// * `Field = u32`: the slots this layer fills are named by FIX tag, and the
 ///   `tag` module above is the list of them.
 /// * `ParseError = ParseError`: `judge` answers `BadTag` differently from
