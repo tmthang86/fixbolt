@@ -1,8 +1,13 @@
 # ADR-0082 — The session is generic over tag=value encodings, and the boundary to SBE is the session, not the trait
 
-- **Status**: Proposed — 2026-09-19
+- **Status**: Accepted — 2026-09-19
 - **Date**: 2026-09-19
-- **Deciders**: Tran Manh Thang
+- **Deciders**: Tran Manh Thang, who delegated this decision
+  ("uỷ quyền toàn bộ cho bạn", 2026-09-19) to the PR B manager session rather than reading the
+  ADR himself. Recorded because a reader asking *who weighed this* deserves the honest answer:
+  PR A's architect proposed it, the PR B manager verified its two load-bearing code claims —
+  the five equality bounds at `crates/session/src/lib.rs:1487-1493` and the seven skeletons
+  `out.rs` builds (`0 1 2 3 4 5 A`) — and accepted it on that basis.
 - **Amends** [ADR-0079](ADR-0079-one-view-per-encoding-and-one-trait-over-them.md) decision 3
   (its text is not changed) and narrows the "behind the same trait surface" of its decision 4.
   Consistent with [ADR-0078](ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md)

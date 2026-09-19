@@ -855,7 +855,7 @@ wrong about.
 alone. [ADR-0079](decisions/ADR-0079-one-view-per-encoding-and-one-trait-over-them.md) decides
 how they share one engine;
 [ADR-0082](decisions/ADR-0082-the-session-is-generic-over-tag-value-encodings-and-the-boundary-to-sbe-is-the-session-not-the-trait.md)
-(**Proposed**, awaiting the owner) decides where the session's genericity stops. The plan is
+decides where the session's genericity stops. The plan is
 [phase-2-fixt-and-sbe](plans/2026-09-19-phase-2-fixt-and-sbe.md), PR A.
 
 **Each encoding keeps its own view type** (ADR-0079 decision 1). `MessageView` is unchanged —

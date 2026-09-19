@@ -579,7 +579,7 @@ The view handed to your handler points into the engine's own read buffer. It is 
 `[2026-09-19]` `Session`, `Connection` and `Engine` are generic over an `Encoding`
 ([DESIGN.md D16](DESIGN.md), ADR-0079; the session's half is
 [ADR-0082](decisions/ADR-0082-the-session-is-generic-over-tag-value-encodings-and-the-boundary-to-sbe-is-the-session-not-the-trait.md),
-**Proposed**). If you use the `fixbolt` crate you will not see it: **no `serve*` or
+). If you use the `fixbolt` crate you will not see it: **no `serve*` or
 `connect_and_serve*` signature changed**, `examples/acceptor.rs` compiles untouched, and
 `Handler` still hands you a `MessageView`. The parameter has a default, and the default is what
 you already had.
