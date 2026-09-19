@@ -1,6 +1,11 @@
 # ADR-0084 — A session message is checked against the layer that defines it, a group member's value waits for the count, and `fix50` is its own oracle
 
-- **Status**: Proposed — 2026-09-19
+- **Status**: Accepted — 2026-09-19
+- **Approved by**: the PR B manager session under the owner's blanket delegation
+  ("uỷ quyền toàn bộ cho bạn", 2026-09-19). The owner did not read it. Every figure in
+  *Context* was re-measured by the manager independently of the architect before this line
+  moved — including the drift lists, which the manager found undercounted on the first
+  draft and sent back (item 13).
 - **Date**: 2026-09-19
 - **Deciders**: Tran Manh Thang. Proposed by the architect on 2026-09-19 from measurements the
   PR B manager and developer had already made and the architect re-made; nobody has read it

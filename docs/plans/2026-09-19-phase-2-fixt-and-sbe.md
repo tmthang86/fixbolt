@@ -432,10 +432,17 @@ hơn trên nhánh riêng nếu chủ chấp nhận §7 đi sau vài ngày (chủ
   hai script mode xanh (bất biến 4 walk lại vì `serve*` đổi chữ ký); **A-desk trong band
   ADR-0031** trên bàn §9, quote `bench.sh --strict` hai worktree. Lệch band là dừng, không
   phải ghi chú.
-- **PR B**: `score_fixt` in ba số `60/60`; câu FAIL đảo chiều viết trước: `1d_InvalidLogon
-  NoDefaultApplVerID: expected DISCONNECT, engine sent Logon`. `wire_fixt` 60 / 60 trên Linux
-  CI. Interop `fixt` 7 / 7 — đây là ý kiến độc lập duy nhất (ADR-0042); `.def` và interop cùng
-  xanh mới đóng. `dict` build có feature tắt **không mở** `FIXT11.xml` (đổi tên file rồi build).
+- **PR B** *(sửa 2026-09-19 theo ADR-0084 — viết lại, **không** hạ)*: `score_fixt` in
+  `fix50 59/60 fix50sp1 60/60 fix50sp2 60/60` **và** khẳng định bằng nội dung rằng file duy nhất
+  lệch là `21_RepeatingGroupSpecifierWithValueOfZero.def:17`, engine trả `Reject 373=5 371=336`
+  (ADR-0084 quyết định 3); câu FAIL đảo chiều `1d_…` giữ nguyên. Số cũ là ba `60/60`; nó không
+  đạt được vì `336` có 0 giá trị enum trong `FIX50.xml` và 7 trong `FIX50SP2.xml`, nên corpus
+  `fix50` chấm bằng bảng SP2 hỏng đúng một file. `wire_fixt` 60 / 60 trên Linux CI. Interop
+  `fixt` 7 / 7 — đây là ý kiến độc lập duy nhất (ADR-0042); `.def` và interop cùng xanh mới
+  đóng. `dict` build có feature tắt **không mở** `FIXT11.xml` (đổi tên file rồi build).
+  **Thêm:** CI phải thật sự chạy test sau feature — `grep fix50sp2 .github/workflows/ci.yml`
+  hiện **không khớp gì**, nên bốn binary test FIXT chưa từng chạy trong CI (B7, và trang
+  `a-feature-gated-test-is-a-test-ci-never-runs.md`).
 - **PR C**: ba hex dump spec round trip byte một; `sbe-interop` 2 / 2 trong CI với Java do job
   cài; alloc `0` bốn case, chứng minh bằng injection; `no_std` chứng minh bằng build không
   `std` (C1 nêu cách CI có). Đảo chiều C3: đổi một byte trong hex group → đỏ đúng trường.
@@ -657,6 +664,34 @@ bỏ được ba subscript panic — chính script đó yêu cầu hạ trần t
 đoán 26.4 MB của ADR-0083; `vendor/quickfix` 14M → 39M. Ba fetch nguội mỗi bên: 3.70/3.37/3.45 s
 trước, 2.23/3.32/3.30 s sau — **thời gian thêm không phân biệt được với nhiễu mạng** trên máy này.
 ADR yêu cầu CI cho số riêng, vẫn giữ.
+
+**ADR-0084 (Accepted) — B4 dừng ở 173/180 và ba hàng nó đẻ ra**
+
+`score_fixt` đỏ **không phải lỗi B4**. Bảy file hỏng là ba câu hỏi ADR-0080 quyết định 2 chưa trả
+lời, manager tự đo lại từng cái: `14a`×3, `14i`×3, `21`×1. Ba hàng follow-on, **chưa làm**:
+
+| Hàng | Việc | Tier |
+|---|---|---|
+| **B4a** | `Tables::is_defined_tag_for(msg_type, tag)` + `TRANSPORT_DEFINED_TAGS` trong `generate_pair`; `scan_fields` đổi một lời gọi. Một message được validate theo tập tag của **tầng định nghĩa nó** — cả hai engine QuickFIX làm vậy | developer |
+| **B4b** | Hoãn `373=5/6` trên thành viên group tới sau `373=1` và `373=16` (chỗ QuickFIX/J đặt), **gộp cùng** luật per-token `enum_allows` của ADR-0083 — cùng một arm, cùng kiểu test tay, **đổi hành vi FIX 4.4**, không có `.def` nào canh | **senior developer** |
+| **B4c** | `score_fixt` đổi assertion sang `(179, 180)` + tuple ghim `21_…def:17` với `373=5 371=336`; sửa dòng *Cách kiểm chứng* (đã làm ở trên) | developer |
+
+**Số đo đáng nhớ:** enum giữa các service pack **trôi hai chiều**, không phải superset như
+ADR-0080 quyết định 3 viết. FIX50→SP2: 4 field free→enum, 5 mất giá trị, **1 enum→free** —
+`DeskOrderHandlingInst(1035)` **24 giá trị → 0**. SP1→SP2: 3 / 3 / **2** (thêm `1395` 3→0).
+Nghĩa là chấm `fix50` bằng bảng SP2 sai được **cả hai chiều**; assertion chỉ ghim được chiều chặt,
+và điều đó **chấp nhận được** vì **0/180** file `.def` mang `1035=` hoặc `1395=` (đã grep).
+
+**Một hàng kế hoạch chưa bao giờ được xây:** bảng traps nói B1 sinh `is_admin` từ `msgcat` và
+`is_admin(b"n")` phải true. Đo: **0** lần `is_admin` trong bảng sinh, **0** lần `build.rs` đọc
+`msgcat`, và `ADMIN` là const 7 phần tử **viết tay** ở `session/src/lib.rs:291`, **không có**
+`b"n"`. Nợ của B1 hay bị bỏ lặng — cần xác định, chưa xử lý.
+
+**Lỗ hổng CI, nghiêm trọng:** `grep fix50sp2 .github/workflows/ci.yml` **không khớp gì**. Bốn
+binary test FIXT (`dict/tests/fixt.rs`, `dict/tests/fixt_order.rs`, `session/tests/fixt.rs`,
+`session/tests/score_fixt.rs`) **chưa từng chạy trong CI**. Mọi số FIXT của PR này là lời khai
+của máy cloud. Bịt ở **B7**, kèm phép thử ngược: cố ý làm một test sau feature đỏ và xác nhận CI
+đỏ theo. Trang `a-feature-gated-test-is-a-test-ci-never-runs.md`.
 
 **Chưa làm, và vì sao**
 
