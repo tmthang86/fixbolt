@@ -471,25 +471,40 @@ jobs:
       - name: The fix50sp2 tests, and proof they were the ones that ran
         run: |
           set -o pipefail
-          tests_failed=0
-          checks_failed=0
+          tests_failed=""
+          checks_failed=""
           for p in fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine; do
             echo "=== ${p} --features fix50sp2 ==="
             status=0
             cargo test -p "${p}" --tests --features fix50sp2 --no-fail-fast --locked \
               2>&1 | tee "/tmp/fix50sp2-${p}.log" || status=$?
             if ! scripts/check-feature-gated-tests-ran.sh "${p}" fix50sp2 "/tmp/fix50sp2-${p}.log"; then
-              checks_failed=1
+              checks_failed="${checks_failed} ${p}"
             fi
             if [ "$status" -ne 0 ]; then
-              tests_failed=1
+              tests_failed="${tests_failed} ${p}"
             fi
           done
-          if [ "$checks_failed" -ne 0 ]; then
-            echo "::error title=A fix50sp2 test did not run::scripts/check-feature-gated-tests-ran.sh could not account for every test the fix50sp2 build lists. Read its FAIL lines above: R1 a listed test with no run status, R2 a built binary with no Running line, R3 a test that was ignored. See docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md."
+
+          # Name what failed, and quote the assertion, in the step that failed.
+          # `[measured 2026-09-19]` the first version of this step printed only
+          # `exit 1` after the LAST crate's `ok` line, so a red run read as
+          # "fixbolt-engine is fine, and something exited 1" and cost two CI
+          # rounds to locate. A gate that cannot say what it caught is a gate
+          # somebody will switch off. CLAUDE.md §10: read the output, not the
+          # exit status — that applies to the output this job itself writes.
+          for p in ${tests_failed}; do
+            echo "::group::${p} — the failing tests"
+            sed -n '/^failures:$/,/^test result: FAILED/p' "/tmp/fix50sp2-${p}.log" || true
+            echo "::endgroup::"
+          done
+
+          if [ -n "${checks_failed}" ]; then
+            echo "::error title=A fix50sp2 test did not run::Not accounted for in:${checks_failed}. scripts/check-feature-gated-tests-ran.sh could not account for every test the fix50sp2 build lists. Read its FAIL lines above: R1 a listed test with no run status, R2 a built binary with no Running line, R3 a test that was ignored. See docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md."
             exit 1
           fi
-          if [ "$tests_failed" -ne 0 ]; then
+          if [ -n "${tests_failed}" ]; then
+            echo "::error title=A fix50sp2 test failed::Failing crates:${tests_failed}. These tests PASS under \`cargo test --all\`, which does not enable the feature, so a failure here is a fix50sp2-only failure. The grouped output above names each one."
             exit 1
           fi
 
