@@ -25,6 +25,7 @@ the type system or by a test, this page says so.
 | [2](#2-the-engine-calls-you-on-its-hot-path) | What not to do in a handler |
 | [3](#3-messageview-borrows-the-engines-buffer) | Borrowed messages |
 | [3a](#3a-the-encoding-is-a-type-parameter-and-fix-44-tagvalue-is-the-default) | `Encoding`, `AcceptorFix44`, and what did not change |
+| [3b](#3b-sbe-is-a-codec-you-bring-the-transport) | `fixbolt::sbe`, your own schema, no session |
 | [4](#4-when-the-ring-fills-you-lose-the-connection) | `RingDispatch` and its failure mode |
 | [5](#5-time-enters-as-a-tick) | Time |
 | [5a](#5a-session-schedules-and-the-timezone-trap) | Schedules |
@@ -614,6 +615,55 @@ Three things to know before you write `E` yourself:
   encoding today means naming the engine alias with `E` filled in (`TcpAcceptorEngine<A, W, J,
   L, N, RX, TX, APP, TagValue<MyDict, N>>`) and driving `Engine` yourself, which means naming
   `fixbolt-engine` (§1a already asks that of a sharded deployment).
+
+---
+
+## 3b. SBE is a codec; you bring the transport
+
+`[2026-09-19]` `fixbolt::sbe` (`fixbolt-sbe`, re-exported behind the non-default feature `sbe`)
+decodes and encodes SBE 1.0 messages over tables generated from your own schema. It is **not**
+another mode of `serve*`: SBE carries no `BeginString`, no `MsgSeqNum`, no `Logon` — nothing the
+session state machine needs — so there is no session, no `serve_sbe`, and never will be one
+behind this feature (ADR-0078, ADR-0082 decision 4). `Sbe<S>` implements `codec::Encoding` so it
+can be measured the same way tag=value is, and `Session<Sbe<S>, _>` is a compile error at
+`Session`'s own bounds, proven on every build by a `compile_fail` doctest in
+`crates/library/src/lib.rs` (§3a above; [DESIGN.md D16](DESIGN.md)). What you get instead:
+[`sbe::SbeView`] to read a message and [`sbe::MessageWriter`] to write one, both over `&'static`
+tables compiled from a schema — you supply the socket, the framing, and the loop.
+
+**Bring your schema through your own `build.rs`.** `fixbolt-sbe-gen` is not re-exported by
+`fixbolt`; add it as your own build-dependency and call it directly:
+
+```rust
+// your crate's build.rs
+fn main() {
+    let xml = std::fs::read_to_string("schema/my-schema.xml").unwrap();
+    let rust = fixbolt_sbe_gen::generate(&xml).unwrap(); // Err(Unsupported(name)) on xi:include
+                                                          // or an out-of-scope construct — never
+                                                          // a silently wrong table
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    std::fs::write(out.join("schema.rs"), rust).unwrap();
+}
+```
+
+then `include!(concat!(env!("OUT_DIR"), "/schema.rs"))` in your own crate to get the unit struct
+implementing `sbe::Schema` and the tables it points at. A schema with a top-level `xi:include`
+(SBE's own `common-types.xml` convention) needs `generate_with_includes(xml, resolve)` instead,
+`resolve` being however you read the included file's text.
+
+**A const parameter the trait cannot infer.** `Encoding::Template<const P, const S>` carries
+tag=value's prefix and slot capacities; `Sbe<S>`'s template has no prefix, so calling
+`encode`/`Template` generically over `E: Encoding` means naming both — `0` for the encoding that
+ignores `P`
+([an-encoding-that-ignores-a-const-parameter-makes-every-caller-name-it](reference/an-encoding-that-ignores-a-const-parameter-makes-every-caller-name-it.md)).
+
+**An unknown template can be skipped only when the message is flat.** `S::message` returning
+`None` still lets you skip past the root block by the wire's own `blockLength` — but that is as
+far as the SBE spec's own bytes agree with their tables (RC4 §7;
+[the-sbe-rc4-example-dumps-disagree-with-their-own-tables](reference/the-sbe-rc4-example-dumps-disagree-with-their-own-tables.md)).
+Past the root block, an unknown template's groups and `varData` have no length the message
+itself carries: your framing (SOFH or otherwise) has to say where the whole message ends, or you
+cannot skip it at all.
 
 ---
 

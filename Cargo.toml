@@ -6,6 +6,8 @@ members = [
     "crates/dict",
     "crates/engine",
     "crates/library",
+    "crates/sbe",
+    "crates/sbe-gen",
     "crates/session",
     "tools/attr-scan",
     "tools/interop",

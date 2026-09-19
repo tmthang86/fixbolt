@@ -1,0 +1,35 @@
+[package]
+name = "fixbolt-sbe"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "SBE 1.0 decode and encode in place over schema tables, no allocation, no_std"
+
+# ADR-0081 decision 1: zero runtime dependencies from outside this workspace.
+# The one dependency is `fixbolt-codec` (itself zero-dependency and `no_std`),
+# and only behind `encoding`, which gates the `mod` declarations in lib.rs
+# (CLAUDE.md §2 rule 6): with `--no-default-features` this crate depends on
+# nothing at all. `scripts/check-no-optional-deps.sh` asserts both.
+[features]
+default = ["encoding"]
+# `impl codec::Encoding for Sbe<S>` (plan step C4, ADR-0079, ADR-0082).
+encoding = ["dep:fixbolt-codec"]
+
+[dependencies]
+fixbolt-codec = { path = "../codec", optional = true }
+
+[[bench]]
+name = "alloc"
+harness = false
+required-features = ["encoding"]
+
+[[bench]]
+name = "sbe"
+harness = false
+required-features = ["encoding"]
+
+[lints]
+workspace = true

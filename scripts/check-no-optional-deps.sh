@@ -61,6 +61,16 @@ CASES=(
   # until asked.
   "fixbolt-w2w:rustls"
   "fixbolt-w2w:rcgen"
+  # `[2026-09-19]` crates/sbe, phase 2 step C4. `impl codec::Encoding for
+  # Sbe<S>` brings `fixbolt-codec` in behind the `encoding` feature. The
+  # zero-dependency loop below allows any `fixbolt-*` crate, so it cannot see
+  # this one leak into a featureless build; asking by name can.
+  "fixbolt-sbe:fixbolt-codec"
+  # `[2026-09-19]` crates/library, phase 2 step C7. `fixbolt` re-exports
+  # `fixbolt-sbe` as `sbe` behind its own `sbe` feature — the same forwarding
+  # shape as the `fixbolt:libc` line above, and the same reason: asked per
+  # crate, because a sibling in the workspace would answer for it at scope.
+  "fixbolt:fixbolt-sbe"
 )
 
 rc=0
@@ -101,6 +111,58 @@ for case in "${CASES[@]}"; do
 
   # And the crate must actually build and test that way. A dependency that is
   # absent from a crate that does not compile proves nothing.
+  echo "== ${crate} --no-default-features must build and test =="
+  if ! cargo test -p "${crate}" --no-default-features >/dev/null 2>&1; then
+    echo "FAIL: ${crate} does not build or test with --no-default-features" >&2
+    cargo test -p "${crate}" --no-default-features 2>&1 | tail -20 >&2
+    rc=1
+  else
+    echo "ok — builds and tests"
+  fi
+done
+
+# Crates whose normal dependency graph must hold NOTHING from outside this
+# workspace, under any feature set. A `crate:dep` line above cannot say that:
+# it names one dependency that must be absent, and a zero-dependency crate has
+# no one dependency to name — the leak would be whichever crate someone adds.
+#
+# `[2026-09-19]` crates/sbe, phase 2 step C1. ADR-0081 decision 1: zero runtime
+# dependencies, `no_std` from the first commit. Workspace crates (`fixbolt-*`)
+# are allowed because step C4 makes `sbe` implement `fixbolt_codec::Encoding`;
+# anything else is a dependency the ADR did not decide.
+ZERO_DEP_CRATES=(
+  "fixbolt-sbe"
+)
+
+for crate in "${ZERO_DEP_CRATES[@]}"; do
+  for features in --no-default-features --all-features; do
+    echo "== ${crate} ${features} must pull nothing from outside the workspace =="
+    # `--prefix none` prints one package per line, `<name> v<version> [...]`;
+    # `-e normal` leaves dev- and build-dependencies out, as the loop above does.
+    if ! out="$(cargo tree -p "${crate}" "${features}" -e normal --prefix none 2>&1)"; then
+      echo "FAIL: cargo tree failed:" >&2
+      echo "${out}" >&2
+      rc=1
+      continue
+    fi
+    # The crate itself must be the first line — otherwise the tree is not the
+    # one asked about, and an empty foreign list would be a false green.
+    if ! head -1 <<<"${out}" | grep -qE "^${crate} v"; then
+      echo "FAIL: could not tell. cargo said:" >&2
+      echo "${out}" >&2
+      rc=1
+      continue
+    fi
+    foreign="$(grep -vE '^fixbolt(-[a-z0-9-]+)? v' <<<"${out}" || true)"
+    if [[ -n "${foreign}" ]]; then
+      echo "FAIL: ${crate} ${features} depends on crates outside this workspace:" >&2
+      echo "${foreign}" >&2
+      rc=1
+    else
+      echo "ok — $(wc -l <<<"${out}" | tr -d ' ') package(s), all in this workspace"
+    fi
+  done
+
   echo "== ${crate} --no-default-features must build and test =="
   if ! cargo test -p "${crate}" --no-default-features >/dev/null 2>&1; then
     echo "FAIL: ${crate} does not build or test with --no-default-features" >&2

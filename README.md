@@ -131,6 +131,9 @@ measurements behind it is in [docs/DESIGN.md](docs/DESIGN.md),
 ```
 crates/
   codec/         parse and serialise in place; no allocation, no dependencies
+  sbe/           SBE 1.0 over generated tables; no_std, forbids unsafe, a codec
+                 you bring your own transport to — no session (behind feature `sbe`)
+  sbe-gen/       generates the tables sbe reads from an SBE 1.0 schema
   dict/          FIX 4.4 tables generated from the QuickFIX XML at build time
   conformance/   runs the 59 acceptance definitions in process, no socket
   session/       the FIX session state machine: pure, no I/O, role as a type parameter

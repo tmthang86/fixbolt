@@ -12,7 +12,7 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 
 ## [Unreleased]
 
-**Nothing has been released.** Six crates now exist and none is published; the entries
+**Nothing has been released.** Eight crates now exist and none is published; the entries
 below describe what a first release would contain.
 
 ### Added
@@ -57,6 +57,27 @@ below describe what a first release would contain.
   `E` is a type a caller can name. `crates/codec/benches/alloc.rs` gains the `parse via Encoding`
   case, asserting 0 beside the direct parse. `docs/DESIGN.md` D16;
   `docs/plans/2026-09-19-phase-2-fixt-and-sbe.md` A1–A3.
+
+- **`fixbolt-sbe`, new crate.** SBE 1.0 decode and encode over `&'static` tables a schema
+  supplies (ADR-0081): `no_std`, `forbid(unsafe_code)`, zero dependencies with its default
+  feature `encoding` off. `Sbe<S>` implements `fixbolt_codec::Encoding` behind `encoding`
+  (on by default) — `View = SbeView` (24 bytes, `Copy`), `Field = FieldId`,
+  `Dict = SbeTables<S>` implementing `codec::Dictionary` only, `session_fields` always `None`
+  — and `MessageWriter`/`GroupWriter`/`EntryWriter`, the native writer groups and `varData` go
+  through. `docs/DESIGN.md` D16, §3; `docs/plans/2026-09-19-phase-2-fixt-and-sbe.md` C1, C4, C6.
+
+- **`fixbolt-sbe-gen`, new crate.** `generate(xml) -> Result<String, Error>` and
+  `generate_with_includes(xml, resolve)` turn an SBE 1.0 schema into the tables `fixbolt-sbe`
+  reads and a unit struct implementing `Schema`; a construct ADR-0081 decision 5 puts out of
+  scope is `Error::Unsupported(name)`, never a silently wrong table. Its one dependency is
+  `roxmltree`. `docs/plans/2026-09-19-phase-2-fixt-and-sbe.md` C2, C3.
+
+- **`fixbolt::sbe`, behind the new non-default feature `sbe`** — `fixbolt-sbe` re-exported,
+  gated at both the `mod` declaration and `Cargo.toml` (non-negotiable 6). `Session<Sbe<S>, _>`
+  is rejected by the compiler, not documented as a convention: a `compile_fail` doctest on the
+  re-export in `crates/library/src/lib.rs` proves it on every build of the feature (ADR-0082
+  decision 4). `examples/sbe_decode.rs` decodes a `Car` from fixed bytes with no socket.
+  `docs/plans/2026-09-19-phase-2-fixt-and-sbe.md` C7.
 
 - **`tools/w2w --listen`, `--connect` and `--interval`** (a tool, not a published crate).
   `--listen <addr>` runs only the engine half: it serves until the last connection closes after
