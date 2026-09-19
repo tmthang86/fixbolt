@@ -991,3 +991,86 @@ fn a_field_made_only_of_constants_reads_its_value_without_wire_bytes() -> Result
     assert_eq!(blk.value(&F)?, Some(Value::Char(b'C')));
     Ok(())
 }
+
+// --- the writer: the three dumps written back from their decoded values -------
+//
+// Step C4. Built without `encoding` too, so the writer is covered by
+// `--no-default-features`. The same oracle over the generated tables, with
+// nested groups, is `crates/sbe-gen/tests/encoding.rs`.
+
+/// Writes every element of every root field of `v`, as decoded, into `w`.
+fn copy_root(v: &SbeView<'_>, w: &mut crate::MessageWriter<'_>) -> Result<(), SbeError> {
+    let root = v.root::<Examples>()?;
+    for fl in v.layout::<Examples>()?.fields {
+        let Some(r) = root.field(fl)? else {
+            return Err(SbeError::FieldOutsideBlock);
+        };
+        for i in 0..fl.elements.len() {
+            w.put_element(fl, i, r.element(i)?)?;
+        }
+    }
+    Ok(())
+}
+
+/// The first offset where `got` and `want` differ, or their common length.
+fn first_difference(got: &[u8], want: &[u8]) -> Option<usize> {
+    got.iter()
+        .zip(want)
+        .position(|(g, w)| g != w)
+        .or((got.len() != want.len()).then_some(got.len().min(want.len())))
+}
+
+#[test]
+fn the_writer_reencodes_the_order_dump_from_its_decoded_values() -> Result<(), SbeError> {
+    let msg = sbe(&ORDER_DUMP);
+    let v = SbeView::decode::<Examples>(msg)?;
+    let mut out = [0xAAu8; 80];
+    let mut w = crate::MessageWriter::new::<Examples>(&mut out, 99)?;
+    copy_root(&v, &mut w)?;
+    let len = w.finish()?;
+    assert_eq!(first_difference(&out[..len], msg), None);
+    Ok(())
+}
+
+#[test]
+fn the_writer_reencodes_the_execution_dump_group_and_all() -> Result<(), SbeError> {
+    let msg = sbe(&EXEC_DUMP);
+    let v = SbeView::decode::<Examples>(msg)?;
+    let mut out = [0xAAu8; 96];
+    let mut w = crate::MessageWriter::new::<Examples>(&mut out, 98)?;
+    copy_root(&v, &mut w)?;
+    let mut g = v.tail::<Examples>()?.group(&ER_GROUPS[0])?;
+    w.group(&ER_GROUPS[0], |gw| {
+        while let Some(e) = g.next_entry()? {
+            gw.entry(|ew| {
+                for fl in &FILLS_FIELDS {
+                    let Some(r) = e.block().field(fl)? else {
+                        return Err(SbeError::FieldOutsideBlock);
+                    };
+                    for i in 0..fl.elements.len() {
+                        ew.put_element(fl, i, r.element(i)?)?;
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })?;
+    let len = w.finish()?;
+    assert_eq!(first_difference(&out[..len], msg), None);
+    Ok(())
+}
+
+#[test]
+fn the_writer_reencodes_the_business_reject_dump_var_data_and_all() -> Result<(), SbeError> {
+    let msg = sbe(&REJECT_DUMP);
+    let v = SbeView::decode::<Examples>(msg)?;
+    let mut out = [0xAAu8; 80];
+    let mut w = crate::MessageWriter::new::<Examples>(&mut out, 97)?;
+    copy_root(&v, &mut w)?;
+    let (text, _) = v.tail::<Examples>()?.var_data(&BMR_DATA[0])?;
+    w.var_data(&BMR_DATA[0], text.unwrap_or_default())?;
+    let len = w.finish()?;
+    assert_eq!(first_difference(&out[..len], msg), None);
+    Ok(())
+}

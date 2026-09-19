@@ -56,6 +56,24 @@ impl<'a> SbeView<'a> {
         })
     }
 
+    /// A view over `buf` from a header already decoded from it, **without**
+    /// re-checking that `buf` holds the root block. Every read still goes
+    /// through a bounds-checked slice, so a `buf` that does not hold what `h`
+    /// says reads as `Err`, never out of bounds. Used by the `Encoding` impl,
+    /// whose `view` cannot fail.
+    #[cfg(feature = "encoding")]
+    #[inline]
+    pub(crate) fn from_header(buf: &'a [u8], h: MessageHeader) -> Self {
+        Self {
+            buf,
+            // HEADER_LEN is 8; the cast is to the field's width, not a narrowing.
+            block_offset: HEADER_LEN as u16,
+            template_id: h.template_id,
+            schema_id: h.schema_id,
+            version: h.version,
+        }
+    }
+
     /// [`SbeView::new`] in `S`'s byte order.
     ///
     /// # Errors

@@ -213,6 +213,9 @@ dependencies = [
 [[package]]
 name = "fixbolt-sbe"
 version = "0.0.0"
+dependencies = [
+ "fixbolt-codec",
+]
 
 [[package]]
 name = "fixbolt-sbe-gen"

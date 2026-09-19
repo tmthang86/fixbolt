@@ -59,6 +59,28 @@ pub(crate) fn read_u8(buf: &[u8], at: usize) -> Result<u8, SbeError> {
     buf.get(at).copied().ok_or(SbeError::Truncated)
 }
 
+/// Copies `src` to `at`, or `BufferTooSmall` with nothing written.
+#[inline]
+pub(crate) fn write_slice(out: &mut [u8], at: usize, src: &[u8]) -> Result<(), SbeError> {
+    let end = at.checked_add(src.len()).ok_or(SbeError::BufferTooSmall)?;
+    // `get_mut(at..end)` is exactly `src.len()` long, so `copy_from_slice`
+    // cannot see a length mismatch.
+    out.get_mut(at..end)
+        .ok_or(SbeError::BufferTooSmall)?
+        .copy_from_slice(src);
+    Ok(())
+}
+
+/// Fills `len` bytes at `at` with `byte`, or `BufferTooSmall`.
+#[inline]
+pub(crate) fn fill(out: &mut [u8], at: usize, len: usize, byte: u8) -> Result<(), SbeError> {
+    let end = at.checked_add(len).ok_or(SbeError::BufferTooSmall)?;
+    out.get_mut(at..end)
+        .ok_or(SbeError::BufferTooSmall)?
+        .fill(byte);
+    Ok(())
+}
+
 /// Writes `v` at `at` in `order`, or `BufferTooSmall`.
 #[inline]
 pub(crate) fn write_u16(
@@ -67,12 +89,42 @@ pub(crate) fn write_u16(
     v: u16,
     order: ByteOrder,
 ) -> Result<(), SbeError> {
-    let end = at.checked_add(2).ok_or(SbeError::BufferTooSmall)?;
-    let dst = out.get_mut(at..end).ok_or(SbeError::BufferTooSmall)?;
     let src = match order {
         ByteOrder::Little => v.to_le_bytes(),
         ByteOrder::Big => v.to_be_bytes(),
     };
-    dst.copy_from_slice(&src);
+    write_slice(out, at, &src)
+}
+
+macro_rules! write_fn {
+    ($name:ident, $t:ty) => {
+        /// Writes `v` at `at` in `order`, or `BufferTooSmall`.
+        #[inline]
+        pub(crate) fn $name(
+            out: &mut [u8],
+            at: usize,
+            v: $t,
+            order: ByteOrder,
+        ) -> Result<(), SbeError> {
+            let src = match order {
+                ByteOrder::Little => v.to_le_bytes(),
+                ByteOrder::Big => v.to_be_bytes(),
+            };
+            write_slice(out, at, &src)
+        }
+    };
+}
+
+write_fn!(write_u32, u32);
+write_fn!(write_u64, u64);
+write_fn!(write_i16, i16);
+write_fn!(write_i32, i32);
+write_fn!(write_i64, i64);
+write_fn!(write_f32, f32);
+write_fn!(write_f64, f64);
+
+#[inline]
+pub(crate) fn write_u8(out: &mut [u8], at: usize, v: u8) -> Result<(), SbeError> {
+    *out.get_mut(at).ok_or(SbeError::BufferTooSmall)? = v;
     Ok(())
 }

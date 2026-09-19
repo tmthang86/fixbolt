@@ -23,4 +23,23 @@ pub enum SbeError {
     NoSuchElement,
     /// The output buffer is too small for what is being written.
     BufferTooSmall,
+    /// Writing: a field, group or `varData` id that the block being written
+    /// does not have.
+    UnknownField,
+    /// Writing: raw field bytes whose length is not the field's wire length.
+    WrongLength,
+    /// Writing: a value that the element cannot hold — the wrong [`Value`]
+    /// kind for its primitive, out of range for its width, an array of the
+    /// wrong length, `None` (null) for a required element, or a value other
+    /// than the schema's for a constant.
+    ///
+    /// [`Value`]: crate::Value
+    BadValue,
+    /// Writing: a group count or `varData` length that does not fit the width
+    /// the schema gives its `numInGroup` or `length`.
+    LengthOverflow,
+    /// Writing: a group or `varData` requested behind one already written.
+    /// SBE puts them on the wire in schema order, groups before `varData`, and
+    /// a forward-only writer cannot go back.
+    OutOfOrder,
 }

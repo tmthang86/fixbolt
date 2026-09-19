@@ -6,11 +6,20 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 publish = false
-description = "SBE 1.0 decode in place over schema tables, no allocation, no_std"
+description = "SBE 1.0 decode and encode in place over schema tables, no allocation, no_std"
 
-# No [dependencies] and no [dev-dependencies], on purpose (ADR-0081 decision 1:
-# zero runtime dependencies). `scripts/check-no-optional-deps.sh` asserts that
-# nothing from outside this workspace ever enters this crate's normal graph.
+# ADR-0081 decision 1: zero runtime dependencies from outside this workspace.
+# The one dependency is `fixbolt-codec` (itself zero-dependency and `no_std`),
+# and only behind `encoding`, which gates the `mod` declarations in lib.rs
+# (CLAUDE.md §2 rule 6): with `--no-default-features` this crate depends on
+# nothing at all. `scripts/check-no-optional-deps.sh` asserts both.
+[features]
+default = ["encoding"]
+# `impl codec::Encoding for Sbe<S>` (plan step C4, ADR-0079, ADR-0082).
+encoding = ["dep:fixbolt-codec"]
+
+[dependencies]
+fixbolt-codec = { path = "../codec", optional = true }
 
 [lints]
 workspace = true

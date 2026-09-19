@@ -61,6 +61,11 @@ CASES=(
   # until asked.
   "fixbolt-w2w:rustls"
   "fixbolt-w2w:rcgen"
+  # `[2026-09-19]` crates/sbe, phase 2 step C4. `impl codec::Encoding for
+  # Sbe<S>` brings `fixbolt-codec` in behind the `encoding` feature. The
+  # zero-dependency loop below allows any `fixbolt-*` crate, so it cannot see
+  # this one leak into a featureless build; asking by name can.
+  "fixbolt-sbe:fixbolt-codec"
 )
 
 rc=0

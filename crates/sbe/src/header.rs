@@ -12,7 +12,10 @@ use crate::wire::{self, ByteOrder};
 pub const HEADER_LEN: usize = 8;
 
 /// A decoded message header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Default` (all zero) because it is also the per-connection scratch of
+/// `Sbe<S>`'s `Encoding` impl, which must be `Default`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MessageHeader {
     /// Length of the root block on the wire, excluding the header, groups and
     /// `varData`. May exceed the schema's value when the encoder's schema

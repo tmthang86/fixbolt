@@ -30,10 +30,17 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod encode;
+// CLAUDE.md §2 rule 6: the feature gates the `mod` itself, so a build without
+// `encoding` never names `fixbolt_codec` and stays at zero dependencies.
+#[cfg(feature = "encoding")]
+pub mod encoding;
 pub mod error;
 pub mod group;
 pub mod header;
 pub mod schema;
+#[cfg(feature = "encoding")]
+pub mod tables;
 pub mod vardata;
 pub mod view;
 mod wire;
@@ -45,12 +52,21 @@ mod wire;
 )]
 mod tests;
 
+pub use encode::{EntryWriter, FieldId, GroupWriter, MessageWriter, SbeTemplate};
+#[cfg(feature = "encoding")]
+pub use encoding::Sbe;
 pub use error::SbeError;
+/// The trait `Sbe<S>` implements, and what its signatures name, so a caller
+/// can use `Sbe<S>` without a direct dependency on `fixbolt-codec`.
+#[cfg(feature = "encoding")]
+pub use fixbolt_codec::{Dictionary, Encoding, Parsed, SessionFields, Validation};
 pub use group::{Cursor, Entry, Group};
 pub use header::{HEADER_LEN, MessageHeader};
 pub use schema::{
     DimensionLayout, Element, FieldLayout, GroupLayout, LengthType, MessageLayout, Presence,
     Primitive, Schema, Value, VarDataLayout,
 };
+#[cfg(feature = "encoding")]
+pub use tables::SbeTables;
 pub use view::{Block, FieldRef, SbeView};
 pub use wire::ByteOrder;
