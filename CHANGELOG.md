@@ -174,7 +174,7 @@ below describe what a first release would contain.
   generic over **tag=value** encodings only — the `impl` binds `View`, `Scratch`,
   `Template<24, 320>`, `Field` and `ParseError` to `codec`'s types and requires
   `E::Dict: fixbolt_dict::Tables` — so an SBE encoding implements `Encoding` and `Session<Sbe<S>>`
-  does not compile (`docs/DESIGN.md` D16; ADR-0079; ADR-0082, Proposed).
+  does not compile (`docs/DESIGN.md` D16; ADR-0079; ADR-0082).
   `docs/plans/2026-09-19-phase-2-fixt-and-sbe.md` A2–A3.
 
 - **`SocketUseSSL` and `TlsRequireKernel` are valid on either role**, not acceptor-only.
