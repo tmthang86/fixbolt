@@ -139,7 +139,11 @@ The failure's own output names the mechanism, and it is not "slow":
 ```
 
 `expected 14, actual 8` followed by `expected 8, actual 14` is one comparison **shifted by a
-message**, and the extra message is a `35=5` the definition never asked for. Under contention a
+message**. `[corrected 2026-09-20]` the extra message is the **8-field** one — a `Heartbeat`
+(`8,9,35,34,49,52,56,10`) the definition never asked for; the `35=5|34=5` on the `unexpected
+output` line is the `Logout` the definition *did* ask for, displaced by one and now numbered
+five ([ADR-0091](../decisions/ADR-0091-the-socket-harness-race-is-the-loopback-stacks-not-the-schedulers-and-its-reversal-runs-on-macos.md),
+point 2, reading the same recorded output). Under contention a
 timer fires, the engine says something true and unrequested, and a positional comparator reports
 every line after it as wrong. The engine is not misbehaving; the oracle has no way to say "this
 message is allowed to appear anywhere".

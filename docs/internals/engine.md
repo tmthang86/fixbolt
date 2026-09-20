@@ -70,9 +70,12 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
   (`[2026-09-20]`, [ADR-0088](../decisions/ADR-0088-recovery-reaches-the-sharded-runtime-and-the-journal-crosses-the-channel-with-the-connection.md))
   guards `serve_sharded_hft_with_recovery`/`_with`: a `Recovery` answering on the acceptor
   thread hands `Start<J>` across the shard channel, and the resulting Logon reply carries the
-  sequence number recovery gave it, not `1`. `serve_sharded_hft_serves_a_session` in
-  `tests/shard.rs` stays green unmodified, which is the proof the fresh (`NoRecovery`) path
-  did not move
+  sequence number recovery gave it, not `1` — **and asks for no resend**, which is the assertion
+  that carries the *inbound* number: without it `next_in` could be replaced by a literal and no
+  test in the workspace would go red. `serve_sharded_hft_serves_a_session` in
+  `tests/shard_hft.rs` stays green unmodified, which is the proof the fresh (`NoRecovery`) path
+  did not move — `tests/shard.rs` is **not** that file and did change, because `Counter`
+  implements `Shardable` and gained the required `add_started`
 - `tests/tls*.rs` — `tls.rs`
 - `benches/alloc.rs` — non-negotiable 1; `benches/turn.rs`, `benches/dispatch.rs` — the
   per-turn and dispatch cost

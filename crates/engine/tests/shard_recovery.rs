@@ -122,11 +122,45 @@ fn logon_now(seq: u32) -> Vec<u8> {
     fixbolt_conformance::script::with_real_checksum(framed.as_bytes())
 }
 
-/// **The sharded door resumes the numbers a `Recovery` handed it.**
+/// Everything the engine still has to say inside `window`, `SOH` rendered `|`.
 ///
-/// `next_out: 5` is the number under test: it is not one, not the client's, and
-/// nothing in the session could have derived it — it can only have come from the
-/// acceptor thread, across the channel, into the shard thread's `Session`.
+/// A drain, not a read: the pass is the window closing empty, so a timeout is
+/// the expected ending and not a failure. The caller's own 5 s timeout is put
+/// back afterwards, because that one guards a reply that *is* owed.
+fn drain(client: &mut TcpStream, window: Duration) -> String {
+    client.set_read_timeout(Some(window)).expect("timeout");
+    let mut all = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match client.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => all.extend_from_slice(&buf[..n]),
+            // `WouldBlock` on Linux, `TimedOut` elsewhere, or the peer went
+            // away — every one of them means the engine said no more.
+            Err(_) => break,
+        }
+    }
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    String::from_utf8_lossy(&all).replace('\u{1}', "|")
+}
+
+/// **The sharded door resumes the numbers a `Recovery` handed it — both of them.**
+///
+/// `next_out: 5` is the outbound number under test: it is not one, not the
+/// client's, and nothing in the session could have derived it — it can only have
+/// come from the acceptor thread, across the channel, into the shard thread's
+/// `Session`.
+///
+/// `next_in: 3` is the inbound one, and **this test is the only thing in the
+/// workspace that reads it**. It is what makes the client's `34=3` in sequence;
+/// resumed with any other inbound number the same `Logon` is a gap, and the
+/// session answers it *and* a `ResendRequest`. So the absence of `35=2` is the
+/// assertion that carries `next_in` — without it, `r.next_in` in
+/// `crates/engine/src/lib.rs` could be replaced by a literal `1` and nothing
+/// here, in `shard_hft.rs`, or on the `serve_with_recovery` /
+/// `serve_hft_with_recovery` paths that share that code would go red.
 #[test]
 fn a_sharded_acceptor_resumes_the_numbers_recovery_hands_it() {
     let Some(plan) = one_shard() else {
@@ -181,6 +215,20 @@ fn a_sharded_acceptor_resumes_the_numbers_recovery_hands_it() {
     assert!(
         reply.contains("|49=ISLD|"),
         "and it answered as the acceptor the table names: {reply}"
+    );
+    assert!(
+        !reply.contains("|35=2|"),
+        "and it asked for no resend, because next_in: 3 made the client's 34=3 in sequence: {reply}"
+    );
+
+    // Once more over whatever else the engine has to say, because a resend need
+    // not share a segment with the Logon reply. Nothing is owed on a session
+    // whose `108=30` and 30 s window have not elapsed, so a window that closes
+    // empty is the pass.
+    let rest = drain(&mut client, Duration::from_millis(500));
+    assert!(
+        !rest.contains("|35=2|"),
+        "and no resend arrived in a later segment either: {rest}"
     );
 }
 

@@ -652,7 +652,12 @@ command exited 0 — see
   thread every `lo0` packet on the machine passes through, and a probe outside the repository
   measured 34–55 deliveries ≥ 1 ms per 20 000 on the Mac mini under ten concurrent copies
   (max 9.4 ms) against 0 in 220 000 on the desk (max 23 µs). **The fix above is by
-  construction**, not proven by a red-to-green reversal here. **What is owed**: on a macOS
+  construction**, not proven by a red-to-green reversal here. `[measured 2026-09-20]` and that
+  gap is now **observed rather than assumed**: a probe that made the harness's `framable()`
+  return `0` — which zeroes the inbound count and with it the `Tick` guard, deleting the whole
+  counted-settle mechanism in effect — still read `60 / 60`, `lifeline hit: 0`, `1 passed` on
+  the desk. So on Linux **nothing in this workspace goes red if the mechanism is removed**, and
+  the macOS run below is the only thing that can say it works. **What is owed**: on a macOS
   machine with `net.link.loopback.sched_model` = 0,
   `scripts/check-socket-corpus-under-contention.sh 5 10` on the tree before the harness change
   reading ≥ 1 red in 50, then 0 red in 50 and `lifeline hit: 0` on the tree after —

@@ -547,12 +547,27 @@ fn the_fifty_nine_definitions_pass_through_a_real_socket() {
 /// listener removed from the poll set, the run took **3.30 s and 3.34 s against a
 /// baseline of 3.28 s**. Neither is a difference.
 ///
-/// The reason is in the settle criterion. A step ends when the engine has moved
-/// nothing for `STEP_QUIET` = 1 ms, and the blocking timeout here is the floor,
-/// 5 ms. So **one block always satisfies the criterion**, whether it returned
-/// after 0.1 ms because data arrived or after 5 ms because it timed out — the
-/// harness cannot tell those apart, and the run time is `steps × 5 ms` either
-/// way. Raising the timeout does not help; it scales both arms together.
+/// The reason was in the settle criterion **of that day**. A step then ended
+/// when the engine had moved nothing for `STEP_QUIET` = 1 ms of wall time, and
+/// the blocking timeout here is the floor, 5 ms. So **one block always
+/// satisfied that criterion**, whether it returned after 0.1 ms because data
+/// arrived or after 5 ms because it timed out — the harness could not tell
+/// those apart, and the run time was `steps × 5 ms` either way. Raising the
+/// timeout did not help; it scaled both arms together.
+///
+/// `[changed 2026-09-20]` **that criterion is gone** (ADR-0087 decision 1). A
+/// step now ends on two counted facts: [`CountingLog`] says the engine has
+/// consumed every framable `I` line this harness sent it, and this harness has
+/// drained every record the engine wrote. [`STEP_QUIET`] applies only after
+/// both hold, and [`STEP_LIFELINE`] is not a settle at all.
+///
+/// **What proves that, rather than this comment asserting it**: the
+/// `assert_eq!(lifelines, 0)` below, reading [`LIFELINE_HITS`]. A step that
+/// gave up on a fact and settled on the 5 s lifeline is counted there and
+/// turns this case red — so a green here is a run in which every step waited
+/// on a counted record. The timing reversal above has **not** been re-run
+/// against the new criterion, and nothing in this file needs it to be: the
+/// wiring is proven elsewhere, as the next paragraph says.
 ///
 /// So the wiring is proven elsewhere, on purpose: `tests/standard.rs` reads the
 /// interest list directly rather than timing it, and
