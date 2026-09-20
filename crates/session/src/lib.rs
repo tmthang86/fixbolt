@@ -4361,6 +4361,9 @@ fn out_of_family_appl_ver_id<D: Tables, const N: usize>(
 /// *scan* steps over nested regions; this one bounds how deep the session
 /// layer *asks a question*. Two bounds, two owners, deliberately not one
 /// constant shared across a crate boundary — and neither is public API.
+// ab(session): A/B arm — never merge. Only `bad_nested_count` (the removed
+// descent) reads this now, so it is otherwise dead on this branch.
+#[allow(dead_code)]
 const MAX_GROUP_NESTING: usize = 8;
 
 /// `373=16`: a group counter that disagrees with the entries behind it.
@@ -4403,11 +4406,12 @@ fn bad_group_count<D: Tables, const N: usize>(
         if group.declared() != Some(group.counted()) {
             return Some((SessionText::IncorrectNumInGroupCount, tag_text(counter)));
         }
-        for entry in group {
-            if let Some(fault) = bad_nested_count::<D, N>(&entry, msg_type, counter, 1) {
-                return Some(fault);
-            }
-        }
+        // ab(session): A/B arm — never merge. The descent that asks `373=16`
+        // at every nested level (ADR-0086 decision 1) is removed here: the
+        // loop still walks `group`'s entries but no longer calls
+        // `bad_nested_count` on any of them. This is the ONE difference from
+        // `main` on this branch.
+        for _entry in group {}
     }
     None
 }
@@ -4434,6 +4438,10 @@ fn bad_group_count<D: Tables, const N: usize>(
 /// `benches/alloc.rs`'s `validate TradeCaptureReport (33 groups)` case, which
 /// walks a message with a populated nested group and must read `0` —
 /// `CLAUDE.md` §2.1 wants an allocator's count, not a reading of this comment.
+// ab(session): A/B arm — never merge. The only call site was the descent
+// removed from `bad_group_count`'s loop above, so this function (and its own
+// recursive call into itself) is unreachable on this branch.
+#[allow(dead_code)]
 fn bad_nested_count<'a, D: Tables, const N: usize>(
     entry: &GroupEntry<'a, N>,
     msg_type: &'a [u8],
