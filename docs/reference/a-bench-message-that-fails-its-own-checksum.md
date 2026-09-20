@@ -76,12 +76,11 @@ recorded trap gets a regression test:
 
 - `the_shared_bench_message_parses_clean_under_full_validation` — parses the fixture under
   `Validation::ALL`.
-- `no_bench_carries_its_own_copy_of_the_shared_message` — walks `crates/*/benches/**/*.rs` for
-  the marker `167=BOO\x0110=` and fails, naming the file, if it appears anywhere but
+- `no_bench_carries_its_own_copy_of_the_shared_message` — walks every `.rs` file recursively under
+  `crates/`, `tools/`, and `benches/` for the marker `167=BOO\x0110=` and fails, naming the file, if it appears anywhere but
   `fixture.rs`.
 
-Both carry an anti-vacuous half the ADR did not ask for: red if the walk scanned four files or
-fewer, red if `fixture.rs` itself lost the marker — so the singleness test cannot pass by
+Both carry an anti-vacuous half the ADR did not ask for: red if the walk found no files under `crates/` or `tools/`, or fewer than 100 in total, red if `fixture.rs` itself lost the marker — so the singleness test cannot pass by
 looking at nothing. [ADR-0089](../decisions/ADR-0089-a-shared-bench-fixture-has-one-source-included-by-path-and-a-test-that-parses-it.md).
 
 ## Related

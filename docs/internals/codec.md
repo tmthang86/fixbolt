@@ -45,7 +45,7 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
 - `tests/bench_fixture.rs` — guards `benches/fixture.rs`, run on every commit (not only in the
   `bench` CI job): `the_shared_bench_message_parses_clean_under_full_validation` parses the
   fixture under `Validation::ALL`; `no_bench_carries_its_own_copy_of_the_shared_message` walks
-  `crates/*/benches/**/*.rs` for the `167=BOO\x0110=` marker and names any bench that kept its
+  every `.rs` file recursively under `crates/`, `tools/`, and `benches/` for the `167=BOO\x0110=` marker and names any bench that kept its
   own copy — the fourth recurrence of
   [a-bench-message-that-fails-its-own-checksum](../reference/a-bench-message-that-fails-its-own-checksum.md)
   is what this closes
