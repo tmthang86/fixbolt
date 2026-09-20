@@ -1,4 +1,4 @@
-# ADR-0087 — Recovery reaches the sharded runtime, and the journal crosses the channel with the connection
+# ADR-0088 — Recovery reaches the sharded runtime, and the journal crosses the channel with the connection
 
 - **Status**: Accepted — 2026-09-20. The owner delegated the technical decisions of
   [the-desk-free-residue](../plans/2026-09-20-the-desk-free-residue.md) to the architect on

@@ -1,4 +1,4 @@
-# ADR-0088 — A shared bench fixture has one source, included by path, and a test that parses it
+# ADR-0089 — A shared bench fixture has one source, included by path, and a test that parses it
 
 - **Status**: Accepted — 2026-09-20. The owner delegated the technical decisions of
   [the-desk-free-residue](../plans/2026-09-20-the-desk-free-residue.md) to the architect on
