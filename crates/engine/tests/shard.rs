@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 
 use fixbolt_engine::affinity::{AffinityError, CoreId, ShardPlan, Topology};
 use fixbolt_engine::presession::{Identity, Limits, Pending, PendingSet, Progress, Table};
+use fixbolt_engine::recovery::Start;
 use fixbolt_engine::shard::{Route, ShardError, Shardable, Shards};
 use fixbolt_engine::transport::TcpTransport;
 use fixbolt_session::Config;
@@ -148,7 +149,24 @@ struct Counter {
 }
 
 impl Shardable for Counter {
-    fn add(&mut self, transport: TcpTransport, cfg: Config, prefix: &[u8]) -> bool {
+    // **`add_started`, not `add`, since ADR-0088.** The runtime calls this one:
+    // a journal now crosses the channel with the connection, decided on the
+    // acceptor thread. `Shardable::add` still exists and forwards here with
+    // `Start::Fresh(J::default())`, which is what the one-argument
+    // `Shards::hand` this file drives produces — asserted below rather than
+    // assumed, because "the fresh door still hands a fresh start" is exactly
+    // what would break silently if the two doors drifted apart.
+    fn add_started(
+        &mut self,
+        transport: TcpTransport,
+        cfg: Config,
+        prefix: &[u8],
+        start: Start<fixbolt_engine::journal::Store>,
+    ) -> bool {
+        assert!(
+            matches!(start, Start::Fresh(_)),
+            "Shards::hand routes a connection nobody resumed"
+        );
         assert!(!prefix.is_empty(), "a routed connection carries its Logon");
         // The registry chose it before the connection was handed over — a shard
         // never guesses whose socket it has (ADR-0030).

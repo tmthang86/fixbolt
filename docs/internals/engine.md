@@ -45,7 +45,15 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 
 ## Tests that guard it
 
-- `tests/wire.rs` — the 59 acceptance definitions over a real socket
+- `tests/wire.rs` — the 59 acceptance definitions over a real socket; `tests/wire_fixt.rs`
+  (`fix50sp2`) the FIXT 60. `[changed 2026-09-20]` Both settle a step on counted framed-message
+  facts — every message the engine consumed, every one the harness read — rather than on a
+  wall-clock quiet, so a slow answer can no longer be misread as "finished"
+  ([ADR-0087](../decisions/ADR-0087-a-socket-harness-settles-on-counted-records-and-the-clock-waits-for-the-engine.md),
+  [ADR-0091](../decisions/ADR-0091-the-socket-harness-race-is-the-loopback-stacks-not-the-schedulers-and-its-reversal-runs-on-macos.md)).
+  The old quiet becomes a 5 s lifeline, reported and asserted hit zero times.
+  `scripts/check-socket-corpus-under-contention.sh` runs both under concurrent copies in the
+  `gates` job and counts red/green — a count, not a §9 measurement.
 - `tests/presession.rs`, `tests/registry.rs`, `tests/pending.rs`, `tests/connection_size.rs`,
   `tests/buffer_size.rs` — `presession.rs`, `conn.rs`
 - `tests/backpressure.rs`, `tests/dispatch.rs`, `tests/frame.rs` — one module each
@@ -57,8 +65,17 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 - `tests/standard.rs`, `tests/hft_wire.rs`, `tests/hft_pinned.rs`, `tests/waker_sigpipe.rs`,
   `tests/listener_cadence.rs` — the mode split, machine-checked also by
   `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh`
-- `tests/affinity.rs`, `tests/shard.rs`, `tests/shard_hft.rs`, `tests/shard_wire.rs` —
-  `affinity.rs`, `shard.rs`
+- `tests/affinity.rs`, `tests/shard.rs`, `tests/shard_hft.rs`, `tests/shard_wire.rs`,
+  `tests/shard_recovery.rs` — `affinity.rs`, `shard.rs`. `shard_recovery.rs`
+  (`[2026-09-20]`, [ADR-0088](../decisions/ADR-0088-recovery-reaches-the-sharded-runtime-and-the-journal-crosses-the-channel-with-the-connection.md))
+  guards `serve_sharded_hft_with_recovery`/`_with`: a `Recovery` answering on the acceptor
+  thread hands `Start<J>` across the shard channel, and the resulting Logon reply carries the
+  sequence number recovery gave it, not `1` — **and asks for no resend**, which is the assertion
+  that carries the *inbound* number: without it `next_in` could be replaced by a literal and no
+  test in the workspace would go red. `serve_sharded_hft_serves_a_session` in
+  `tests/shard_hft.rs` stays green unmodified, which is the proof the fresh (`NoRecovery`) path
+  did not move — `tests/shard.rs` is **not** that file and did change, because `Counter`
+  implements `Shardable` and gained the required `add_started`
 - `tests/tls*.rs` — `tls.rs`
 - `benches/alloc.rs` — non-negotiable 1; `benches/turn.rs`, `benches/dispatch.rs` — the
   per-turn and dispatch cost

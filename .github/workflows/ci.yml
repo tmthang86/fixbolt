@@ -518,6 +518,32 @@ jobs:
             exit 1
           fi
 
+      # The two socket gates, run many times at once — ADR-0087 decision 5.
+      #
+      # `cargo test --all` above runs `wire` exactly once, on a runner doing
+      # nothing else, and a socket harness that is green that way has said
+      # nothing about a contended one. `[measured 2026-09-20]` the fix50sp2
+      # socket gate read 0 red in 40 sequential runs and **11 red in 50** as ten
+      # concurrent copies, on a branch and on `main` alike — the same commit
+      # green and red in the same minute, which is the reference page this step
+      # is named after:
+      # docs/reference/the-same-commit-went-red-and-green-in-the-same-minute.md.
+      #
+      # WHAT IT COUNTS, AND WHAT IT DOES NOT: passes and failures, not
+      # nanoseconds. Nothing here depends on the DESIGN.md §9 settings and no
+      # number from it may be quoted as latency (CLAUDE.md §2 non-negotiable
+      # 10). The size is what a small runner can carry, so the pressure here and
+      # the pressure on the §9 desk are different pressures: a green run bounds
+      # nothing, a red one is a real defect.
+      #
+      # THE EVIDENCE IS THE `N red in M` LINE, not this step's tick — and the
+      # `lifeline hit:` count beside it is the second half. A harness that
+      # settles on the 5 s lifeline rather than on a counted record has gone
+      # back to measuring the machine, and both test files assert that number at
+      # zero, so a slow green here is a red.
+      - name: The socket corpus under contention, both harnesses
+        run: scripts/check-socket-corpus-under-contention.sh 2 8
+
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —
   # `[measured 2026-08-30]` clippy::byte_char_slices did exactly that. Pinning
