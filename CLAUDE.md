@@ -190,7 +190,8 @@ reused. `Proposed` → `Accepted` → (`Superseded by ADR-NNNN` | `Deprecated`).
   see it green. Write the expected FAIL sentence down before running the reversal. A set of red
   reversals proves only what was tried.
 - **Benchmarks assert their bound.** A target that lives in a comment is a wish.
-- `vendor/` must be fetched (`scripts/fetch-quickfix-assets.sh`) before `cargo test --all` compiles.
+- `vendor/` must be fetched (`scripts/fetch-quickfix-assets.sh`) before `cargo test --all`
+  compiles, and `scripts/fetch-sbe-assets.sh` before `cargo clippy --all-targets` does.
 
 | When | Run |
 |---|---|

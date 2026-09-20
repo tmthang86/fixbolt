@@ -192,6 +192,19 @@ inherit the defect above: read `presession::identity_of` and `Route` before writ
 loop of your own. `serve()` is the single-threaded convenience and the wrong production shape
 for a gateway; read it as an example.
 
+**Resuming a sharded deployment.** `serve_sharded_hft_with_recovery` and
+`serve_sharded_hft_with_recovery_with` take a `Recovery` the same way `serve_with_recovery`
+does, but the two threads involved are not the same one: `recovery.recover`/`fresh` are asked
+on the **acceptor thread**, which is allowed to block, and the answer — `Start<J>`, fresh or
+resumed — then crosses the existing `mpsc` channel to the **shard thread** that builds the
+session. Two constraints follow from that trip, and the compiler enforces only the first:
+whatever journal type you use **must be `Send`**, because it rides the channel; and
+**`Recovery::recover`/`fresh` must never be made to block the engine thread** — they are asked
+before the connection ever reaches a shard, not from inside one. Getting this backwards — a
+`Recovery` implementation that itself dispatches work onto a shard, or a journal you make
+`!Send` and then wrap in something that compiles — is a deadlock or a stalled shard the type
+system will not catch for you.
+
 **How often `serve`/`serve_hft` ask the listener is a knob, and it trades latency for fewer
 `accept4` calls.** `Limits::listener_every` (`ListenerEveryTurns`, default 1) sets how many
 `pump` iterations pass between one poll of the listener and the next in the spin half; the
@@ -854,9 +867,12 @@ round trip is not**: every connection behind it waits, and the only backstop is 
 deadline, which refuses the socket without saying why. Returning `None` starts that session
 fresh, which is what plain `serve` does.
 
-**Two limits.** `serve_sharded_hft` has no recovery variant, so a sharded deployment cannot
-resume. And with an in-memory journal nothing persists `last_active_ms` for you; a
-`FileJournal` records it at logon and at an ordered shutdown (§6b).
+**One limit closed, one still open.** `[2026-09-20]` `serve_sharded_hft_with_recovery` (§1a) now
+asks a `Recovery` the same way, so a sharded deployment can resume. What it still cannot do is
+be **stopped in order** — `serve_sharded_hft*` has no ordered-shutdown seam, a design of its own
+that [ADR-0088](decisions/ADR-0088-recovery-reaches-the-sharded-runtime-and-the-journal-crosses-the-channel-with-the-connection.md)
+decision 5 left open (`STATUS.md` item 32). And with an in-memory journal nothing persists
+`last_active_ms` for you; a `FileJournal` records it at logon and at an ordered shutdown (§6b).
 
 ### What decides the reset
 
@@ -982,6 +998,11 @@ impl Recovery<FileJournal<64, 4096>> for OnDisk {
     }
 }
 ```
+
+**The same `Recovery` impl also answers the sharded doors.** `[2026-09-20]`
+`serve_sharded_hft_with_recovery` asks `fresh`/`recover` exactly this way, but on the acceptor
+thread rather than the shard thread the journal ends up on — see §1a for why that crossing
+requires `J: Send` and what it means for where these two methods may block.
 
 **`last_active()` is the field people skip, and it is the one that matters after a weekend.**
 The engine records the instant when a session logs on and when an ordered shutdown says
@@ -1574,8 +1595,10 @@ Stated so you do not discover it in production:
   ([ADR-0010](decisions/ADR-0010-a-reconnect-is-not-a-restart.md)). A session built with
   `Session::new` resets. Reading the journal back and choosing `new` or `resume` is your call
   (§5a, §6b), and getting it wrong is a sequence-number dispute rather than a compile error.
-- **Recovery does not reach the sharded runtime.** `serve_with_recovery` and
-  `serve_hft_with_recovery` exist; `serve_sharded_hft` has no variant (STATUS item 32 a).
+- **The sharded runtime cannot be stopped in order.** `[2026-09-20]` Recovery now does reach it
+  — `serve_sharded_hft_with_recovery` (§1a) — but there is no ordered-shutdown seam for
+  `serve_sharded_hft*` across its shard threads; a plain `Admin::shutdown` is the single-engine
+  answer and has no sharded counterpart yet (STATUS item 32).
 - **Its session schedule stops at the timezone.** Hours, weekday filter, week-long windows
   and the reset all work, in UTC. Resolving a venue's local time and rebuilding the `Schedule`
   when daylight saving moves it is yours (§5a). With an in-memory journal, persisting when a

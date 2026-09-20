@@ -153,4 +153,34 @@ message is allowed to appear anywhere".
 - **A shifted diff is a clock, not a corruption.** Two adjacent lines swapping their expected and
   actual is the signature of an inserted message, and it points at the timers, not the codec.
 
+## `[measured 2026-09-20, later]` The knob was the kernel, not the load — and the number had no machine on it
+
+The section above did not say which machine produced 11 / 50. It was the **Apple M5 macOS
+laptop** (the neighbouring commits `8e81aae`, `6e84ef1`, `9fdbeaa` say "on the laptop"; the
+desk's `journalctl --list-boots` shows it powered off from 16:23 the day before to 12:33). The
+step that then tried to reproduce it on the Linux desk ran ~670 runs over nine contention
+shapes — copies, pinning, spinners, a one-CPU cgroup — and a counting log on the unfixed harness:
+**0 red, 0 ticks while an answer was in flight in 122 runs** (`3233032`).
+
+The mechanism was right and the platform was wrong. The harness is single-threaded, so the
+race is between its 1 ms wall-clock quiet and the kernel's loopback delivery. Linux delivers a
+loopback `write()` inside the sender's syscall; XNU enqueues it for one shared DLIL input
+thread. A 30-line probe (ADR-0091, appendix B) run on both: Mac mini, ten concurrent copies,
+**34–55 deliveries ≥ 1 ms per 20 000, max 9.4 ms**; desk, **0 in 220 000, max 23 µs**. Ten
+copies of a socket suite load that one thread; spinners do not — which is why "concurrent
+copies" and "synthetic CPU load" were different experiments, and only one of them could have
+shown anything.
+
+- **A rate without its machine is not a rate.** `CLAUDE.md` §2 item 10 says so for performance
+  numbers; it is just as true of a flake count. The day this cost was spent hunting a race on
+  a kernel that cannot have it.
+- **"Contention" names a resource, or it names nothing.** CPU, a scheduler slot, an ephemeral
+  port, one kernel thread that every loopback packet crosses — each is a different experiment.
+  When a flake needs concurrent *copies* and not *load*, look for the shared thing in the
+  kernel's network path.
+- **A single-threaded socket harness is only as synchronous as its loopback.** On Linux
+  `write` then `read` sees the bytes; on macOS it sees `EAGAIN` 96 % of the time even idle.
+  A harness that settles on wall time inherits that difference; one that settles on counted
+  records (ADR-0087 decisions 1–2) does not.
+
 `[to testing-skills]`
