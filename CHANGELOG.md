@@ -17,6 +17,15 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`fixbolt_dict::Tables` gains `is_admin(msg_type: &[u8]) -> bool`**, generated in
+  `crates/dict/build.rs` from each `<message>`'s `msgcat`, with no default method — the reason
+  `is_defined_tag_for` already has: a default would hand a future third table FIX 4.4's admin
+  set without anyone deciding it. A `<message>` with no `msgcat` fails the build rather than
+  guessing. **A breaking change for any out-of-tree `Tables` implementation.** See
+  `docs/SESSION-BEHAVIOUR.md` §3b and §5b,
+  [ADR-0086](docs/decisions/ADR-0086-a-group-count-is-asked-at-every-depth-admin-is-two-questions-with-two-names-and-xmlnonfix-is-not-asked-the-appl-ver-id-rule.md)
+  decision 2.
+
 - **FIXT 1.1 / FIX 5.0 SP2, behind the off-by-default `fix50sp2` feature.**
   **`fixbolt_dict::Fixt11Fix50Sp2Tables`** — one dictionary built from two XML files, the
   transport's header/trailer/admin from `FIXT11.xml` and the application's fields, components,
@@ -215,6 +224,27 @@ below describe what a first release would contain.
   ADR-0076.
 
 ### Changed
+
+- **`373=16` is now asked at every group nesting depth, not only the top level.** A nested
+  group used to end the whole `SessionRejectReason 16` pass silently: `bad_group_count` used `?`
+  on the `Option` `MessageView::group` returns, inside a function that itself returns `Option`
+  meaning "no fault", and `MessageView::group` answers `None` for a nested counter because it is
+  a top-level lookup — so every counter behind the first nested group went unchecked. Measured:
+  12 of 45 sub-5000 counters on `AE` (`TradeCaptureReport`) are nested. The descent now stops at
+  `MAX_GROUP_NESTING = 8`, depth-first, wire order — a parent's lie is reported before its
+  child's; FIX 4.4 nests 4 deep, the FIXT 1.1 / FIX 5.0 SP2 pair 7. **Pre-existing, not
+  introduced by phase 2 PR B**; what this descent costs `validate` is unmeasured — no
+  `DESIGN.md` §9 machine ran. `docs/SESSION-BEHAVIOUR.md` §3b,
+  [ADR-0086](docs/decisions/ADR-0086-a-group-count-is-asked-at-every-depth-admin-is-two-questions-with-two-names-and-xmlnonfix-is-not-asked-the-appl-ver-id-rule.md)
+  decision 1.
+
+- **`35=n` (XMLnonFIX) is no longer subjected to ADR-0080 decision 3's `1128` rule.**
+  `out_of_family_appl_ver_id` now asks `Tables::is_admin` instead of the session's own routing
+  list, so `35=n` carrying an out-of-family `1128` draws no reply at all rather than
+  `Reject 373=5 371=1128`. Routing is unchanged — `35=n` still reaches
+  `Application::on_message` and is still journalled for resend. The former seven-entry `ADMIN`
+  const is renamed `SESSION_OWNED` and keeps answering routing only, never the dictionary's
+  question. `docs/SESSION-BEHAVIOUR.md` §5b, ADR-0086 decisions 2 and 3.
 
 - **BREAKING — `Session<R, N, APP>` is now `Session<E: Encoding, R, APP>`**, and `N` rides in
   `E`: `Session<Acceptor, 256>` is written `Session<TagValue<Fix44, 256>, Acceptor>` or

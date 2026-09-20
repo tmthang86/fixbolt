@@ -113,4 +113,44 @@ unreproducible to **9 runs in 20**, with the exact signature CI had produced.
   readiness race in a test helper". Keeping that sentence visible next to the answer is worth
   more than a page that was right the first time.
 
+## `[measured 2026-09-20]` A third one, and this time contention *was* the knob
+
+`the_sixty_fix50sp2_definitions_pass_through_a_real_socket` (`crates/engine/tests/wire_fixt.rs`)
+went red once inside a sweep and green on every run afterwards. The same three counts, one
+variable moved at a time:
+
+| Run shape | Red |
+|---|---|
+| 40 sequential, branch `plan/group-count-pass-and-is-admin` | **0 / 40** |
+| 50 as five rounds of ten concurrent copies, same branch | **11 / 50** |
+| 50 the same way, on `main` at `64ea6c2` — none of the branch's changes | **8 / 50** |
+
+So the branch did not cause it, and **sequential repetition could not have shown that**: forty
+green runs were compatible with both answers. The third row is what settles it, and it is the
+cheapest of the three to have run first.
+
+The failure's own output names the mechanism, and it is not "slow":
+
+```
+59 / 60
+  3b_InvalidChecksum.def:18 FieldCount { expected: 14, actual: 8 }
+  3b_InvalidChecksum.def:22 FieldCount { expected: 8, actual: 14 }
+  3b_InvalidChecksum.def:24 unexpected output: 8=FIXT.1.1|9=54|35=5|34=5|…
+```
+
+`expected 14, actual 8` followed by `expected 8, actual 14` is one comparison **shifted by a
+message**, and the extra message is a `35=5` the definition never asked for. Under contention a
+timer fires, the engine says something true and unrequested, and a positional comparator reports
+every line after it as wrong. The engine is not misbehaving; the oracle has no way to say "this
+message is allowed to appear anywhere".
+
+- **Contention is a knob you can turn locally.** The section above could not reproduce its race by
+  adding CPU load, which made "it only happens on CI" sound like a property of CI. Here ten
+  concurrent copies of one socket test reproduced it in minutes. Try it before concluding the
+  failing environment is unreachable.
+- **Count on the unchanged baseline too.** A rate on the branch alone answers "is it flaky", never
+  "did we cause it". Two rates, one variable apart, answer both.
+- **A shifted diff is a clock, not a corruption.** Two adjacent lines swapping their expected and
+  actual is the signature of an inserted message, and it points at the timers, not the codec.
+
 `[to testing-skills]`
