@@ -233,8 +233,13 @@ below describe what a first release would contain.
   12 of 45 sub-5000 counters on `AE` (`TradeCaptureReport`) are nested. The descent now stops at
   `MAX_GROUP_NESTING = 8`, depth-first, wire order — a parent's lie is reported before its
   child's; FIX 4.4 nests 4 deep, the FIXT 1.1 / FIX 5.0 SP2 pair 7. **Pre-existing, not
-  introduced by phase 2 PR B**; what this descent costs `validate` is unmeasured — no
-  `DESIGN.md` §9 machine ran. `docs/SESSION-BEHAVIOUR.md` §3b,
+  introduced by phase 2 PR B.** What this descent costs `validate` **has an instrument** —
+  `crates/session/benches/validate.rs`'s `validate TradeCaptureReport (33 groups)` case, which
+  times the pass over the fixture the descent walks — and `[measured 2026-09-20]` an A/B on the
+  development laptop (Apple M5, `NO BASELINE`) puts it at **about +2.6 µs, about +8 % of the
+  pass**. That figure is **not published**: `CLAUDE.md` §2 non-negotiable 10 wants a
+  `DESIGN.md` §9 machine and a baseline, and neither exists here, so the band is still owed.
+  `docs/SESSION-BEHAVIOUR.md` §3b,
   [ADR-0086](docs/decisions/ADR-0086-a-group-count-is-asked-at-every-depth-admin-is-two-questions-with-two-names-and-xmlnonfix-is-not-asked-the-appl-ver-id-rule.md)
   decision 1.
 

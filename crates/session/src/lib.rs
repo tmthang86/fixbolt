@@ -4339,9 +4339,13 @@ fn out_of_family_appl_ver_id<D: Tables, const N: usize>(
 
 /// How many levels of group nesting the `373=16` pass descends through.
 ///
-/// **Measured, not guessed, and the measurement runs on every build.**
-/// `tests::the_generated_tables_never_nest_deeper_than_the_walk_goes` folds
-/// `GROUP_KEYS` over both generated tables and prints the deepest chain each
+/// **Chosen, not measured — and what is measured on every build is the
+/// dictionaries against it.** The number itself is `fixbolt_codec::group`'s
+/// `MAX_DEPTH` (see below), picked there to bound a recursion rather than to
+/// fit a table, and taken here so the session asks as deep as the parser
+/// scans. What no build is allowed to leave unchecked is whether the generated
+/// tables stay under it: `tests::the_generated_tables_never_nest_deeper_than_the_walk_goes`
+/// folds `GROUP_KEYS` over both tables and prints the deepest chain each
 /// one holds: `[measured 2026-09-20]` FIX 4.4 nests **4** deep
 /// (`AB`, counter `555`) and the FIXT 1.1 / FIX 5.0 SP2 pair nests **7**
 /// (`b`, counter `296`). One level of headroom, and the day a regenerated
@@ -4416,6 +4420,13 @@ fn bad_group_count<D: Tables, const N: usize>(
 /// the flat `(msg_type, counter)` table hands the outer loop one. The way down
 /// is [`GroupEntry::group`], which scopes the search to this entry, so reading
 /// a nested counter off entry 2 cannot answer with entry 1's.
+///
+/// **The recursive step has its own guard, because the two-level tests do not
+/// reach it**: at depth 1 a fault is found and returned before the call below
+/// ever happens. `tests/group_member_values.rs::a_counter_three_levels_down_that_lies_is_rejected`
+/// sends `552 -> 453 -> 802` on a `NewOrderCross` with only the bottom counter
+/// lying, so naming it takes two descents; pass `parent` instead of `*member`
+/// below and that test is the one that goes red.
 ///
 /// **Nothing here allocates.** A [`GroupEntry`] is a `Copy` pair of positions
 /// into the index the parser already filled, `group_members` is a `&'static`

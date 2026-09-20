@@ -118,10 +118,19 @@ here.
   may appear anywhere". Counted and written up in
   [the-same-commit-went-red-and-green-in-the-same-minute](docs/reference/the-same-commit-went-red-and-green-in-the-same-minute.md);
   **not fixed**, and CI runners are contended by construction.
-* **What the nested-group descent costs `validate` is unmeasured.** No `DESIGN.md` §9 machine
-  ran for this work (ADR-0086 *Bad — and accepted*); the only nearby figure,
-  `validate TradeCaptureReport (33 groups)` at 47 793.4 ns/op, predates this change, is itself
-  `NO BASELINE` on an untuned Xeon, and says nothing about the descent specifically.
+* **What the nested-group descent costs `validate` is measured on the laptop, and that figure
+  is not publishable.** The instrument is not missing, which an earlier wording of this bullet
+  implied: `crates/session/benches/validate.rs`'s `validate TradeCaptureReport (33 groups)`
+  case times the whole `validate` pass over the very fixture the descent walks, so an A/B on
+  the descent itself is one edit away. `[measured 2026-09-20]` that A/B on the development
+  laptop — Apple M5, built with `scripts/check-bench-alignment.sh --flags`, both arms printing
+  `NO BASELINE` — reads **34 049.6** and **34 325.0** ns/op with the descent against **31 687.7**
+  and **31 549.4** with `bad_group_count`'s `for entry in group` body removed: **about +2.6 µs,
+  about +8 % of the pass**. Per `CLAUDE.md` §2 non-negotiable 10 that is **not a published
+  number and not the band**: no `DESIGN.md` §9 machine ran (ADR-0086 *Bad — and accepted*), the
+  machine has no line in `benches/baselines.tsv`, and two readings on an unpinned laptop cannot
+  carry a §9 claim. **The band is still owed.** The older nearby reading — 47 793.4 ns/op on an
+  untuned Xeon — predates this change and has nothing to be differenced against.
 * **`build.rs`'s `die()` on a `<message>` with no `msgcat` was never exercised.** `vendor/` is
   read-only on the machine this was built on, so the failure path exists only as code, not as
   an observed red.
@@ -254,7 +263,8 @@ Two bands are owed to the desk and neither can be resolved here:
   `MAX_GROUP_NESTING = 8` (measured: FIX 4.4 nests 4 deep, the FIXT pair 7). The class of defect
   this was, not only this instance, is written up in
   [the-question-mark-operator-turns-cannot-answer-into-no-fault](docs/reference/the-question-mark-operator-turns-cannot-answer-into-no-fault.md).
-  **What the descent costs `validate` stays unmeasured** — see *Start here* above.
+  **What the descent costs `validate` has a laptop A/B and no publishable band** — about
+  +2.6 µs, about +8 % of the pass, on a machine with no baseline; see *Not proven* above.
 * ~~**Two answers to "is this a session message?" in one validate pass.**~~ **Closed
   2026-09-20 by commit `6e84ef1`, under ADR-0086 decisions 2 and 3.**
   `out_of_family_appl_ver_id` now asks `Tables::is_admin`; the routing list — renamed

@@ -377,16 +377,30 @@ owned by the session crate, the one copy of the number.
 group** (`PRD.md` §4), and it is not nested — so the acceptance corpus proves the top-level case
 and nothing about nesting. The nested and depth-ordering behaviour above has no `.def` behind it
 and rests on `crates/session/tests/group_member_values.rs::a_counter_after_a_nested_group_is_still_checked`,
-`::a_nested_counter_that_lies_is_rejected` and `::a_parent_counter_is_named_before_its_child`.
+`::a_nested_counter_that_lies_is_rejected`, `::a_parent_counter_is_named_before_its_child` and
+`::a_counter_three_levels_down_that_lies_is_rejected`. The last of those is the only one that
+nests deeper than two: the other three answer at depth 1 or 2 and so never take the recursive
+step in `bad_nested_count`, which was therefore unguarded until `[added 2026-09-20]` a
+`NewOrderCross` carrying `552 -> 453 -> 802` — parents honest, bottom counter lying — was added.
 `--test score` reads `59 / 59` through all of it — including, checked by reversal, with the old
 `?` put back — which is itself the finding: none of the 59 definitions carries a nested group,
 so that number was never proof this pass worked on one.
 
 **Allocation is proved, not assumed.** `crates/session/benches/alloc.rs`'s `validate
 TradeCaptureReport (33 groups)` case walks a message with a populated nested group and must
-still read **0** (`CLAUDE.md` §2 item 1). **What this descent costs `validate` is unmeasured** —
-no `DESIGN.md` §9 machine ran for this change — and that is recorded in
-[STATUS.md](../STATUS.md)'s *Not proven*, not implied to be small.
+still read **0** (`CLAUDE.md` §2 item 1).
+
+**What this descent costs `validate` has an instrument, a laptop reading, and no publishable
+band.** The instrument is `crates/session/benches/validate.rs`'s `validate TradeCaptureReport
+(33 groups)` case — a timing case on the very fixture the descent walks, so removing
+`bad_group_count`'s `for entry in group` body and re-running it prices the descent directly.
+`[measured 2026-09-20]` on the development laptop (Apple M5, built with the flags
+`scripts/check-bench-alignment.sh --flags` prints, both arms `NO BASELINE`): 34 049.6 and
+34 325.0 ns/op with the descent, 31 687.7 and 31 549.4 without — **about +2.6 µs, about +8 % of
+the pass**. `CLAUDE.md` §2 non-negotiable 10 makes that **not a published number**: there is no
+`DESIGN.md` §9 machine behind it and no baseline line for the CPU, so it is an order of
+magnitude and not a band. The band is owed and is tracked in
+[STATUS.md](../STATUS.md)'s *Not proven* — the cost is not implied to be small.
 
 ---
 

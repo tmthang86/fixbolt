@@ -7,6 +7,24 @@
   below and hands their writing to the architect as step 0. **The owner approved the plan,
   not this text**; nobody has read this ADR yet. **Nothing here is built**: every test named
   below is *to be written in steps 1–4* of the plan, and none of them exists today.
+- **Addendum — 2026-09-20, later the same day; it revises no decision.** The two sentences
+  immediately above were true when the architect wrote them and are false now, and §5 forbids
+  editing an accepted ADR's substance — so they stay as written and this line says what is
+  true instead. **All four steps are built and committed**: `c8709a1` (step 1, a nested group
+  no longer ends the `373=16` pass), `8e81aae` (step 2, a nested counter that lies is rejected
+  and the parent is named first), `438228a` (step 3, `Tables::is_admin` generated from
+  `msgcat`), `6e84ef1` (step 4, `is_admin` at the `1128` call site and the routing list renamed
+  `SESSION_OWNED`). Every test named below exists and is green. One hole the plan did not
+  foresee was found by the senior review of that branch and closed in the same pass:
+  the three group tests all nest exactly **two** levels, so `bad_nested_count`'s recursive
+  step — decision 1's whole claim that *every* depth is asked — was never executed by any
+  test, and breaking it reddened nothing. `group_member_values.rs::a_counter_three_levels_down_that_lies_is_rejected`
+  (`552 -> 453 -> 802` on a `NewOrderCross`, parents honest, the bottom counter lying) is the
+  test that now takes that step, proved by reversal. Where this ADR says the cost to `validate`
+  is unmeasured, see `STATUS.md`'s *Not proven*: an instrument exists
+  (`crates/session/benches/validate.rs`'s `validate TradeCaptureReport (33 groups)`) and a
+  laptop A/B reads about +8 % of the pass, which `CLAUDE.md` §2 non-negotiable 10 does not let
+  anyone publish — the band is still owed.
 - **Date**: 2026-09-20
 - **Deciders**: Tran Manh Thang. Written by the architect from the approved plan. The
   architect re-read the upstream sources on 2026-09-20 (*What the search found*); the

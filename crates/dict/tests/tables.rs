@@ -157,14 +157,29 @@ fn fix44_calls_xmlnonfix_admin() {
     assert!(Fix44::is_admin(b"A"), "Logon(A) is msgcat='admin'");
     assert!(!Fix44::is_admin(b"D"), "NewOrderSingle(D) is msgcat='app'");
     // The count, so that a table answering `true` too widely is caught: eight
-    // admin messages out of the 93 FIX 4.4 defines.
+    // admin messages out of the 93 FIX 4.4 defines. **Every** one-byte and
+    // two-byte type that ASCII can spell is asked — 128 + 128 × 128 = 16 512 of
+    // them — not a sample of second bytes; a `MsgType` outside ASCII is not
+    // something `FIX44.xml` can declare.
     let mut admin = 0usize;
-    for a in 0u8..=127 {
-        for mt in [vec![a], vec![a, b'A'], vec![a, b'0']] {
-            if Fix44::is_admin(&mt) {
+    let mut asked = 0usize;
+    {
+        let mut ask = |mt: &[u8]| {
+            asked += 1;
+            if Fix44::is_admin(mt) {
                 admin += 1;
+            }
+        };
+        for a in 0u8..=127 {
+            ask(&[a]);
+            for b in 0u8..=127 {
+                ask(&[a, b]);
             }
         }
     }
+    assert_eq!(
+        asked, 16_512,
+        "every one- and two-byte ASCII type was asked"
+    );
     assert_eq!(admin, 8, "FIX44.xml carries msgcat='admin' eight times");
 }

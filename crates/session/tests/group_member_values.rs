@@ -542,3 +542,87 @@ fn a_parent_counter_is_named_before_its_child() {
         "naming NoPartyIDs, the parent, not the nested 802: {out:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The descent is walked, not merely entered: three levels, and the bottom one
+// lies.
+// ---------------------------------------------------------------------------
+
+/// A `NewOrderCross(s)` whose body is `body`, framed with a real `9=`/`10=`.
+///
+/// `s` and not `D`, because a `NewOrderSingle` cannot nest three deep: its
+/// deepest chain is `453 -> 802`, which is the two levels every test above
+/// uses. `NewOrderCross` wraps that same party group in `NoSides(552)`, so the
+/// chain becomes `552 -> 453 -> 802` with no new tags to learn — and it is the
+/// shortest three-level chain FIX 4.4 offers on a message whose required list
+/// is six tags long.
+fn new_order_cross(body: &str) -> Vec<u8> {
+    let fields = format!("35=s|34=2|49=TW44|52=20260828-12:00:00.000|56=ISLD|{body}")
+        .replace(' ', "")
+        .replace('~', " ");
+    let wire = format!("8=FIX.4.4|9={}|{fields}10=0|", fields.len()).replace('|', "\u{1}");
+    with_real_checksum(wire.as_bytes())
+}
+
+/// `FIX44.xml`'s six required tags for `s`, in the order `required(b"s")`
+/// returns them, so a fault below is never `373=1` by accident.
+const REQUIRED_CROSS: &str = "40=1|60=20260828-12:00:00.000|548=XID|549=1|550=0|";
+
+#[test]
+fn a_counter_three_levels_down_that_lies_is_rejected() {
+    // Every test above nests exactly two deep (`453 -> 802`), so the recursive
+    // step in `bad_nested_count` — the line that passes the *child's* counter
+    // down as the next parent — was never taken: at depth 2 the fault is found
+    // and returned before any third call happens. Replace `*member` with
+    // `parent` there and nothing in the suite goes red.
+    //
+    // This is the test that does. `552 -> 453 -> 802` on a `NewOrderCross`:
+    // one side, one party inside it, and that party's `802=3` sends two
+    // sub-IDs. Both parents are honest, so the only counter left to name is the
+    // one at the bottom, and naming it takes three descents.
+    //
+    // The premises first, verified rather than trusted — the chain is read off
+    // the same generated tables the walk reads.
+    assert_eq!(
+        <Fix44 as Dictionary>::group_delimiter(b"s", 552),
+        Some(54),
+        "NoSides(552) is the top-level group of a NewOrderCross"
+    );
+    assert!(
+        <Fix44 as Dictionary>::group_members(b"s", 552).contains(&453),
+        "NoPartyIDs(453) is a member of it, one level down"
+    );
+    assert!(
+        <Fix44 as Dictionary>::group_members(b"s", 453).contains(&802),
+        "and NoPartySubIDs(802) is a member of that, two levels down"
+    );
+    assert_eq!(
+        <Fix44 as Tables>::required(b"s"),
+        &[40, 60, 548, 549, 550, 552],
+        "so `REQUIRED_CROSS` plus the group is a complete NewOrderCross"
+    );
+
+    let mut s = logged_on();
+    let wire = new_order_cross(&format!(
+        "{REQUIRED_CROSS}552=1|54=1|11=ID|453=1|448=A|447=B|452=1|\
+         802=3|523=S1|803=1|523=S2|803=2|"
+    ));
+    let (link, out) = answer(&mut s, &wire);
+
+    assert_eq!(link, Link::Up, "a Reject does not end the session");
+    assert_eq!(
+        out.len(),
+        1,
+        "expected Reject 373=16 naming 802, engine sent no reject"
+    );
+    assert!(out[0].contains("|35=3|"), "and it is a Reject: {out:?}");
+    assert!(
+        out[0].contains("|373=16|"),
+        "IncorrectNumInGroupCount three levels down: {out:?}"
+    );
+    assert!(
+        out[0].contains("|371=802|"),
+        "naming NoPartySubIDs at the bottom of `552 -> 453 -> 802`, which is \
+         reached only by descending twice from the top-level counter: {out:?}"
+    );
+}

@@ -331,22 +331,37 @@ fn the_transport_files_admin_set_is_the_tables_admin_set() {
         );
     }
     // The set, not only the eight: a table answering `true` for everything
-    // would pass the loop above. Every one-byte and two-byte type the pair
-    // knows is asked, and the two answers must never part.
+    // would pass the loop above. **Every** one-byte and two-byte type that
+    // ASCII can spell is asked — 128 + 128 × 128 = 16 512 of them — and the two
+    // answers must never part. A `MsgType` outside ASCII is not something
+    // either XML file can declare, so the sweep is exhaustive over what the
+    // generated table can possibly answer `true` for.
     let mut admin = 0usize;
-    for a in 0u8..=127 {
-        for mt in [vec![a], vec![a, b'A'], vec![a, b'0']] {
+    let mut asked = 0usize;
+    {
+        let mut ask = |mt: &[u8]| {
             assert_eq!(
-                Fixt::is_admin(&mt),
-                is_transport_message(&mt),
+                Fixt::is_admin(mt),
+                is_transport_message(mt),
                 "msgcat='admin' and \"a message of FIXT11.xml\" part company on {}",
-                String::from_utf8_lossy(&mt)
+                String::from_utf8_lossy(mt)
             );
-            if Fixt::is_admin(&mt) {
+            asked += 1;
+            if Fixt::is_admin(mt) {
                 admin += 1;
+            }
+        };
+        for a in 0u8..=127 {
+            ask(&[a]);
+            for b in 0u8..=127 {
+                ask(&[a, b]);
             }
         }
     }
+    assert_eq!(
+        asked, 16_512,
+        "every one- and two-byte ASCII type was asked"
+    );
     assert_eq!(
         admin, 8,
         "FIXT11.xml has eight messages, all msgcat='admin'"
