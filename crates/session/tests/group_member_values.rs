@@ -472,3 +472,73 @@ fn a_counter_after_a_nested_group_is_still_checked() {
         "naming NoTradingSessions: {out:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A nested counter that lies is checked, and the parent is named first.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_nested_counter_that_lies_is_rejected() {
+    // Step 1 stopped a nested counter from ending the pass; it did not make
+    // the nested counter *count*. `802=3` with two `523` entries behind it is
+    // a `373=16` in QuickFIX/n and QuickFIX/J alike, and the specification
+    // exempts no depth. The parent `453=1` is honest, so the only thing left
+    // to name is the nested counter.
+    let mut s = logged_on();
+    let wire = new_order_single(&format!(
+        "{REQUIRED}453=1|448=A|447=B|452=1|802=3|523=S1|803=1|523=S2|803=2|"
+    ));
+    let (link, out) = answer(&mut s, &wire);
+
+    assert_eq!(link, Link::Up, "a Reject does not end the session");
+    assert_eq!(
+        out.len(),
+        1,
+        "expected Reject 373=16, engine sent no reject"
+    );
+    assert!(out[0].contains("|35=3|"), "and it is a Reject: {out:?}");
+    assert!(
+        out[0].contains("|373=16|"),
+        "IncorrectNumInGroupCount on the nested counter: {out:?}"
+    );
+    assert!(
+        out[0].contains("|371=802|"),
+        "naming NoPartySubIDs, the counter that lied: {out:?}"
+    );
+}
+
+#[test]
+fn a_parent_counter_is_named_before_its_child() {
+    // Both lie: `453=2` sends one party, and that party's `802=3` sends two
+    // sub-IDs. The descent is depth-first *after* the parent is judged, which
+    // is wire order — the nested group sits between the parent counter and the
+    // next top-level field — so `371=` is the parent's, and there is exactly
+    // one Reject.
+    //
+    // **This is an ordering guard, not a red test.** It was green before
+    // `bad_nested_count` existed, because the parent's lie is caught by the
+    // top-level check the engine already had; what it holds is that the
+    // descent did not get hoisted above that check. Proved by reversal rather
+    // than by a first red: hoist the `for entry in group` loop above
+    // `declared() != counted()` and this goes red naming `371=802`.
+    let mut s = logged_on();
+    let wire = new_order_single(&format!(
+        "{REQUIRED}453=2|448=A|447=B|452=1|802=3|523=S1|803=1|523=S2|803=2|"
+    ));
+    let (link, out) = answer(&mut s, &wire);
+
+    assert_eq!(link, Link::Up, "a Reject does not end the session");
+    assert_eq!(
+        out.len(),
+        1,
+        "exactly one Reject, not one per depth: {out:?}"
+    );
+    assert!(
+        out[0].contains("|373=16|"),
+        "IncorrectNumInGroupCount: {out:?}"
+    );
+    assert!(
+        out[0].contains("|371=453|"),
+        "naming NoPartyIDs, the parent, not the nested 802: {out:?}"
+    );
+}

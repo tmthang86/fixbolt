@@ -24,8 +24,8 @@ pub mod text;
 use core::marker::PhantomData;
 
 use fixbolt_codec::{
-    Dictionary, Encoding, FieldIndex, MessageView, ParseError, Parsed, Precision, SOH, Template,
-    TemplateBuilder, TimestampCache, Validation, as_u32, tag_text_at,
+    Dictionary, Encoding, FieldIndex, GroupEntry, MessageView, ParseError, Parsed, Precision, SOH,
+    Template, TemplateBuilder, TimestampCache, Validation, as_u32, tag_text_at,
 };
 use fixbolt_dict::{FieldType, Tables};
 
@@ -4301,11 +4301,38 @@ fn out_of_family_appl_ver_id<const N: usize>(
         .then(|| (SessionText::ValueIsIncorrect, tag_text(tag::APPL_VER_ID)))
 }
 
+/// How many levels of group nesting the `373=16` pass descends through.
+///
+/// **Measured, not guessed, and the measurement runs on every build.**
+/// `tests::the_generated_tables_never_nest_deeper_than_the_walk_goes` folds
+/// `GROUP_KEYS` over both generated tables and prints the deepest chain each
+/// one holds: `[measured 2026-09-20]` FIX 4.4 nests **4** deep
+/// (`AB`, counter `555`) and the FIXT 1.1 / FIX 5.0 SP2 pair nests **7**
+/// (`b`, counter `296`). One level of headroom, and the day a regenerated
+/// table spends it the test goes red rather than a lying counter going
+/// unasked — the shape ADR-0085 decision 3 built for `SEEN = 32`.
+///
+/// It is also the brake on the recursion itself: a dictionary whose member set
+/// contained its own counter would otherwise descend for ever, so this bounds
+/// the stack no matter what the generated table says.
+///
+/// **`fixbolt_codec::group`'s `MAX_DEPTH` is the same number and this does not
+/// read it.** That one is crate-private to `codec` and bounds how deep a
+/// *scan* steps over nested regions; this one bounds how deep the session
+/// layer *asks a question*. Two bounds, two owners, deliberately not one
+/// constant shared across a crate boundary — and neither is public API.
+const MAX_GROUP_NESTING: usize = 8;
+
 /// `373=16`: a group counter that disagrees with the entries behind it.
 ///
 /// `14i_RepeatingGroupCountNotEqual.def` declares `386=3` and sends two
 /// entries. This is the **only** repeating group the 59 definitions populate,
 /// and it is in a negative test — see `PRD.md` §4.
+///
+/// **Every depth is asked, not just the top level** (ADR-0086 decision 1).
+/// The specification exempts no nesting level and neither QuickFIX/n nor
+/// QuickFIX/J does; on `AE` twelve of the forty-five counters are nested ones,
+/// so a top-level-only pass is a hole through most of a venue's real traffic.
 fn bad_group_count<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
@@ -4327,8 +4354,70 @@ fn bad_group_count<D: Tables, const N: usize>(
         let Some(group) = view.group::<D>(msg_type, counter) else {
             continue;
         };
+        // **The parent is judged before the descent, and that is wire order.**
+        // A nested group sits between its parent's counter and the next
+        // top-level field, so depth-first *after* the parent is exactly the
+        // order a counterparty's bytes arrive in. Both lying means the parent
+        // is the one named. Held by
+        // `tests/group_member_values.rs::a_parent_counter_is_named_before_its_child`.
         if group.declared() != Some(group.counted()) {
             return Some((SessionText::IncorrectNumInGroupCount, tag_text(counter)));
+        }
+        for entry in group {
+            if let Some(fault) = bad_nested_count::<D, N>(&entry, msg_type, counter, 1) {
+                return Some(fault);
+            }
+        }
+    }
+    None
+}
+
+/// `373=16` for the groups nested inside one entry of the group `parent`
+/// opens, and inside theirs, down to [`MAX_GROUP_NESTING`].
+///
+/// [`MessageView::group`] is a *top-level* API — it steps over group regions
+/// while searching, so it answers `None` for every nested counter even though
+/// the flat `(msg_type, counter)` table hands the outer loop one. The way down
+/// is [`GroupEntry::group`], which scopes the search to this entry, so reading
+/// a nested counter off entry 2 cannot answer with entry 1's.
+///
+/// **Nothing here allocates.** A [`GroupEntry`] is a `Copy` pair of positions
+/// into the index the parser already filled, `group_members` is a `&'static`
+/// slice off the generated table, and the recursion is stack. Proved by
+/// `benches/alloc.rs`'s `validate TradeCaptureReport (33 groups)` case, which
+/// walks a message with a populated nested group and must read `0` —
+/// `CLAUDE.md` §2.1 wants an allocator's count, not a reading of this comment.
+fn bad_nested_count<'a, D: Tables, const N: usize>(
+    entry: &GroupEntry<'a, N>,
+    msg_type: &'a [u8],
+    parent: u32,
+    depth: usize,
+) -> Option<(SessionText, Option<Held<12>>)> {
+    // **At the bound the answer is "no fault", deliberately.** Under-reading
+    // rather than over-reading is the same choice `codec`'s scan makes at its
+    // own depth cap, and it is safe only because
+    // `tests::the_generated_tables_never_nest_deeper_than_the_walk_goes`
+    // measures both tables against this number on every build.
+    if depth >= MAX_GROUP_NESTING {
+        return None;
+    }
+    for member in D::group_members(msg_type, parent) {
+        if D::group_delimiter(msg_type, *member).is_none() {
+            continue;
+        }
+        // `continue`, not `?`, for the reason the outer loop gives: a counter
+        // this entry simply does not carry is a field the walk passes, not the
+        // end of the whole pass.
+        let Some(nested) = entry.group::<D>(msg_type, *member) else {
+            continue;
+        };
+        if nested.declared() != Some(nested.counted()) {
+            return Some((SessionText::IncorrectNumInGroupCount, tag_text(*member)));
+        }
+        for child in nested {
+            if let Some(fault) = bad_nested_count::<D, N>(&child, msg_type, *member, depth + 1) {
+                return Some(fault);
+            }
         }
     }
     None
@@ -4957,6 +5046,80 @@ mod tests {
                 sp2 > SeenCounters::SEEN,
                 "the fallback is only live because this table crosses the bound: {sp2} <= {}",
                 SeenCounters::SEEN
+            );
+        }
+    }
+
+    /// **`MAX_GROUP_NESTING = 8` is a bound, and the dictionaries say how much
+    /// of it is spent.** ADR-0086 decision 1.
+    ///
+    /// [`bad_nested_count`] stops at [`MAX_GROUP_NESTING`] and answers *no
+    /// fault* there, so a table that nested deeper than the walk goes would
+    /// hide a lying counter with no gate saying so. The depth is therefore
+    /// counted off the generated tables on every run and printed, the same way
+    /// the test above counts `SEEN`. `crates/dict` sits below this crate and
+    /// cannot see this constant, so the measurement lives here — one authored
+    /// copy of the number, next to the thing it bounds.
+    ///
+    /// The cycle brake in `depth` is not decoration: it is the very defect
+    /// `MAX_GROUP_NESTING` exists to survive, a member set containing its own
+    /// counter, and without it this test would hang instead of the engine.
+    #[test]
+    fn the_generated_tables_never_nest_deeper_than_the_walk_goes() {
+        /// Depth of the group `counter` opens on `msg_type`: 1 for a group
+        /// with no nested group in it, else 1 plus its deepest child.
+        fn depth<D: Dictionary>(msg_type: &[u8], counter: u32, seen: &mut Vec<u32>) -> usize {
+            if seen.contains(&counter) {
+                return 1;
+            }
+            seen.push(counter);
+            let d = D::group_members(msg_type, counter)
+                .iter()
+                .filter(|m| D::group_delimiter(msg_type, **m).is_some())
+                .map(|m| 1 + depth::<D>(msg_type, *m, seen))
+                .max()
+                .unwrap_or(1);
+            seen.pop();
+            d
+        }
+
+        fn deepest<D: Dictionary>(keys: &[(&[u8], u32)]) -> (usize, Vec<u8>, u32) {
+            let mut worst = (1usize, Vec::new(), 0u32);
+            for (msg_type, counter) in keys {
+                let d = depth::<D>(msg_type, *counter, &mut Vec::new());
+                if d > worst.0 {
+                    worst = (d, msg_type.to_vec(), *counter);
+                }
+            }
+            worst
+        }
+
+        let (fix44, mt, counter) = deepest::<fixbolt_dict::Fix44>(&fixbolt_dict::GROUP_KEYS);
+        println!(
+            "FIX 4.4: deepest group nesting {fix44} (msg_type {}, counter {counter}); \
+             MAX_GROUP_NESTING = {MAX_GROUP_NESTING}",
+            String::from_utf8_lossy(&mt)
+        );
+        assert!(
+            fix44 <= MAX_GROUP_NESTING,
+            "FIX 4.4 nests {fix44} deep and the walk stops at {MAX_GROUP_NESTING}, so a \
+             counter at the bottom is never asked — raise the bound and re-measure the \
+             allocation bench, do not delete this line"
+        );
+
+        #[cfg(feature = "fix50sp2")]
+        {
+            let (sp2, mt, counter) = deepest::<fixbolt_dict::Fixt11Fix50Sp2Tables>(
+                &fixbolt_dict::fixt11_fix50sp2::GROUP_KEYS,
+            );
+            println!(
+                "FIXT 1.1 / FIX 5.0 SP2: deepest group nesting {sp2} (msg_type {}, counter \
+                 {counter}); MAX_GROUP_NESTING = {MAX_GROUP_NESTING}",
+                String::from_utf8_lossy(&mt)
+            );
+            assert!(
+                sp2 <= MAX_GROUP_NESTING,
+                "the SP2 pair nests {sp2} deep, past the walk's {MAX_GROUP_NESTING}"
             );
         }
     }

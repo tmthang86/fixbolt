@@ -134,3 +134,66 @@ fn every_group_counter_is_a_num_in_group() {
         );
     }
 }
+
+/// Depth of the group `counter` opens on `msg_type`: 1 for a group with no
+/// nested group inside it, plus the deepest child otherwise.
+///
+/// `seen` is the cycle brake. A dictionary whose member set contains its own
+/// counter would otherwise recurse for ever — which is the very thing the
+/// session layer's depth bound exists to survive.
+fn depth<D: Dictionary>(msg_type: &[u8], counter: u32, seen: &mut Vec<u32>) -> usize {
+    if seen.contains(&counter) {
+        return 1;
+    }
+    seen.push(counter);
+    let d = D::group_members(msg_type, counter)
+        .iter()
+        .filter(|m| D::group_delimiter(msg_type, **m).is_some())
+        .map(|m| 1 + depth::<D>(msg_type, *m, seen))
+        .max()
+        .unwrap_or(1);
+    seen.pop();
+    d
+}
+
+fn deepest<D: Dictionary>(keys: &[(&[u8], u32)]) -> (usize, Vec<u8>, u32) {
+    let mut worst = (1usize, Vec::new(), 0u32);
+    for (mt, counter) in keys {
+        let d = depth::<D>(mt, *counter, &mut Vec::new());
+        if d > worst.0 {
+            worst = (d, mt.to_vec(), *counter);
+        }
+    }
+    worst
+}
+
+/// How deep the generated tables nest, printed for both dictionaries.
+///
+/// **This asserts only what `fixbolt-dict` can know on its own**: that the
+/// fold terminates over every `(msg_type, counter)` pair, and that a group is
+/// at least one level deep. Whether the number fits the session layer's walk
+/// is the session layer's question, and it is asked there —
+/// `crates/session/src/lib.rs::tests::the_generated_tables_never_nest_deeper_than_the_walk_goes`
+/// owns the bound and the only copy of it. Mirroring the number here would be
+/// two rules that will one day disagree.
+#[test]
+fn the_deepest_group_nesting_is_measured() {
+    let (d, mt, counter) = deepest::<Fix44>(&fixbolt_dict::GROUP_KEYS);
+    println!(
+        "FIX 4.4 deepest group nesting: {d} (msg_type {}, counter {counter})",
+        String::from_utf8_lossy(&mt)
+    );
+    assert!(d >= 1, "every group is at least one level deep");
+
+    #[cfg(feature = "fix50sp2")]
+    {
+        let (d, mt, counter) = deepest::<fixbolt_dict::Fixt11Fix50Sp2Tables>(
+            &fixbolt_dict::fixt11_fix50sp2::GROUP_KEYS,
+        );
+        println!(
+            "FIXT 1.1 / FIX 5.0 SP2 deepest group nesting: {d} (msg_type {}, counter {counter})",
+            String::from_utf8_lossy(&mt)
+        );
+        assert!(d >= 1, "every group is at least one level deep");
+    }
+}
