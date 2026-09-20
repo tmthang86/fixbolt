@@ -57,6 +57,32 @@ Both proven by reversal on 2026-09-19: `Validation::NONE` in the warm turns the 
 2026-09-05 page checked one sibling by name and the other two were never looked at. When a trap
 page says a fixture is shared by copy, the fix owes an inventory.
 
+## `[2026-09-20]` The fourth recurrence, closed by a gate rather than a byte
+
+Item 94 came back a fourth time: `alloc.rs` still carried `10=098` when this page's own fix
+landed elsewhere, because the 2026-09-05 and 2026-09-19 corrections each reached one file by
+hand and the family has four. Three rounds of correcting the literal by hand each closed one
+file of four and left the other three exactly as wrong as before.
+
+The fix this time is not a fifth correction. `crates/codec/benches/fixture.rs` is now the one
+source — `pub const NEW_ORDER_SINGLE` with `10=097` and `pub fn assert_valid()` — included by
+`#[path]` into all four benches (the `harness.rs` precedent; `codec/Cargo.toml` already sets
+`autobenches = false`), each calling `assert_valid()` before it times or counts anything, even
+the two that never parse the message. **The transferable rule: a fixture shared by copy across
+files is closed by removing the copies, not by correcting one.**
+
+Guarded by `crates/codec/tests/bench_fixture.rs`, run on every commit, per CLAUDE.md §4 — every
+recorded trap gets a regression test:
+
+- `the_shared_bench_message_parses_clean_under_full_validation` — parses the fixture under
+  `Validation::ALL`.
+- `no_bench_carries_its_own_copy_of_the_shared_message` — walks every `.rs` file recursively under
+  `crates/`, `tools/`, and `benches/` for the marker `167=BOO\x0110=` and fails, naming the file, if it appears anywhere but
+  `fixture.rs`.
+
+Both carry an anti-vacuous half the ADR did not ask for: red if the walk found no files under `crates/` or `tools/`, or fewer than 100 in total, red if `fixture.rs` itself lost the marker — so the singleness test cannot pass by
+looking at nothing. [ADR-0089](../decisions/ADR-0089-a-shared-bench-fixture-has-one-source-included-by-path-and-a-test-that-parses-it.md).
+
 ## Related
 
 - [a-benchmark-parsed-a-message-the-parser-rejects](a-benchmark-parsed-a-message-the-parser-rejects.md)

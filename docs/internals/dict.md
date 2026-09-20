@@ -36,3 +36,16 @@ FIX 5.0 SP2 pair; `fix50sp2` adds no dependency (`roxmltree` is already uncondit
   QuickFIX's own generated C++, per [DESIGN.md D3](../DESIGN.md)
 - `tests/fixt.rs`, `tests/fixt_order.rs` — the `fix50sp2` FIXT 1.1 / FIX 5.0 SP2 tables and
   `Fixt11Fix50Sp2Tables`
+- `scripts/check-dict-refuses-a-message-without-msgcat.sh` — the only gate that observes
+  `build.rs`'s three `die` arms actually fire: the missing-`msgcat` arm (`build.rs:801-807`) and
+  the unknown-category arm (`build.rs:797-800`), both in the one `match` at `build.rs:792-808`,
+  and the `admin_types.is_empty()` arm (`build.rs:1206-1211`).
+  It never touches `vendor/`: it copies `FIX44.xml` into `target/check-msgcat/`, damages three
+  copies with `sed`, and points `build.rs` at each through the `NANOFIX_FIX44_XML` override it
+  already reads (named at `build.rs:37-38`, resolved by `spec_path` at `build.rs:108-113`, with
+  `cargo:rerun-if-env-changed` printed at `build.rs:73`). Arm 0 (untouched) must build
+  clean — proof the harness can tell the difference — and arms 1–3 must fail carrying their die
+  sentence: no `msgcat` attribute, `msgcat="other"`, and no `<message>` left carrying
+  `msgcat='admin'` at all (the third reaches a second `die`, the `admin_types.is_empty()`
+  condition at `build.rs:1206`, rather than the first). Runs in the `gates` CI job on every
+  commit
