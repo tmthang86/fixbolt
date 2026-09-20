@@ -31,6 +31,11 @@
 # *Related* list, this ADR's own body, a plan's delivery log, a pull request
 # body — none of that is the first heading line, so grep for the bare string
 # separately, as the reference doc says.
+# It enumerates the directory's non-hidden entries: a dotfile (`.ADR-0091.md`)
+# is not looked at, on purpose — a macOS `.DS_Store` would otherwise turn this
+# check red for a reason that is not an ADR's.
+# It reads only `docs/decisions/`: an ADR filed anywhere else is not an ADR
+# this script knows about.
 set -euo pipefail
 
 # Plain indexed arrays rather than an associative array (`declare -A`) so
@@ -47,19 +52,37 @@ fi
 numbers=()
 files=()
 bad=0
+seen=0
 total=0
 h1_checked=0
 
-for path in "${DIR}"/ADR-*; do
-  [[ -f "${path}" ]] || continue
-  total=$((total + 1))
+# Every entry in the directory, not `ADR-*`. A glob that selects what it will
+# judge cannot see the file it does not select: `adr-0091-lowercase.md`, whose
+# H1 said `# ADR-0034`, was silently skipped by `ADR-*` and this script printed
+# `ok - 88 ADRs` with the collision sitting in the tree. So the loop enumerates
+# the directory and the *name* is one of the things judged.
+#
+# There is no exception list, because the corpus has never had an exception:
+# `docs/decisions/` holds 88 files on the day this was written and all 88 are
+# `ADR-NNNN-<slug>.md`. A README, a `_template.md` or an index page added later
+# must come with a deliberate exception added here, in the same commit.
+for path in "${DIR}"/*; do
+  [[ -e "${path}" ]] || continue
+  seen=$((seen + 1))
   name="$(basename "${path}")"
+
+  if [[ ! -f "${path}" ]]; then
+    echo "check-adr-numbers: ${path}: not a regular file; docs/decisions/ is flat" >&2
+    bad=1
+    continue
+  fi
 
   if [[ ! "${name}" =~ ^ADR-[0-9]{4}-.+\.md$ ]]; then
     echo "check-adr-numbers: ${path}: does not match ADR-NNNN-<slug>.md" >&2
     bad=1
     continue
   fi
+  total=$((total + 1))
 
   number="${name:0:8}"
 
@@ -98,9 +121,19 @@ for path in "${DIR}"/ADR-*; do
   fi
 done
 
+# A green that judged nothing is the other half of the same hole: a wrong
+# --dir, or a glob that matched no file at all, must not print `ok`.
+if [[ "${seen}" -eq 0 ]]; then
+  echo "check-adr-numbers: ${DIR} holds no files; this check judged nothing" >&2
+  exit 1
+fi
+
 if [[ "${bad}" -ne 0 ]]; then
   exit 1
 fi
 
 distinct="${#numbers[@]}"
-echo "ok - ${total} ADRs, ${distinct} distinct numbers, ${h1_checked} H1s checked"
+# `files seen` is in the line on purpose: it is the count the previous version
+# could not show, and the only way to read from the output that nothing in the
+# directory was skipped is to see it agree with the other three.
+echo "ok - ${seen} files seen, ${total} ADRs, ${distinct} distinct numbers, ${h1_checked} H1s checked"
