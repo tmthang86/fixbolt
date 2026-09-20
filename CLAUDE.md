@@ -79,7 +79,7 @@ the list. Each script's header states what it cannot see; read it before trustin
 | Rule | Check | Note |
 |---|---|---|
 | 1 | `crates/*/benches/alloc.rs`, run by the `bench` CI job via `scripts/bench.sh`, each case asserting its own path is live; `tools/w2w` counts allocations on both threads over its timed window and asserts zero | `cargo test` does not run a `harness = false` bench — only the job does |
-| 3 | `crates/conformance`, in process and over a socket | |
+| 3 | `crates/conformance`, in process and over a socket; behind `fix50sp2`, the FIXT corpus in the `gates` job, with `scripts/check-feature-gated-tests-ran.sh` proving the named tests ran | `cargo test --all` compiles none of the `fix50sp2` tests; the expected FIXT score and its one asserted divergence are in `docs/CONFORMANCE.md` §9 |
 | 4 | `scripts/check-no-kernel-sleep.sh` (`hft`), `scripts/check-standard-gives-the-core-back.sh` (`standard`), `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits` (initiator dial loop), `scripts/check-no-kernel-sleep-by-ctxt.sh` (`hft` voluntary-context-switch count, tracer-free, [ADR-0072](docs/decisions/ADR-0072-a-tracer-free-check-that-the-hft-engine-thread-never-sleeps.md)) | each script must also be tripped by the wrong mode; `hft` under TLS is unchecked |
 | 6 | `no-default-features` CI job **and** `scripts/check-no-optional-deps.sh`, per crate | cargo unifies features across one invocation — [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md) |
 | 7 | `scripts/check-lint-config.sh` (lints deny, proven by reversal); `scripts/check-indexing-debt.sh` (ratchet: the count may only go down); `scripts/check-no-crate-root-allow.sh` (no crate-root `allow`/`expect`, no `warn` lowering a denied lint); `scripts/check-scratch-fixtures.sh` (a scratch crate outside the tree gets the pinned toolchain) | known gaps of the scratch-fixture gate are open by decision, ADR-0061 |
@@ -111,6 +111,7 @@ Docs-as-code: Markdown, in this repo, changed **in the same commit** as the code
 | `docs/best-practices-standard.md` / `docs/best-practices-hft.md` | operational recommendations per mode |
 | `docs/hft-playbook.md` | tuning procedure: hardware, BIOS, kernel, NIC, app, acceptance |
 | `docs/DESIGN.md` | how the system is built, and the latency budget |
+| `docs/internals/` | one page per crate: which file holds what, the order to read them in, the test guarding each |
 | `docs/reference/` | protocol facts, prior art, measured costs, traps |
 | `docs/decisions/` | ADRs: who decided what, why, at what cost |
 | `docs/plans/` | what is about to be built |
@@ -119,7 +120,7 @@ Docs-as-code: Markdown, in this repo, changed **in the same commit** as the code
 | When you change… | You must update |
 |---|---|
 | Move work between phases, or change what a phase must deliver | `PRD.md` §2, and the ADR that moved it |
-| Add / remove / rename a crate | `DESIGN.md` §3 + `README.md` layout + `Cargo.toml` members |
+| Add / remove / rename a crate | `DESIGN.md` §3 + `README.md` layout + `Cargo.toml` members + its `docs/internals/` page |
 | The public API of any crate | `DESIGN.md`, the crate's rustdoc, `CHANGELOG.md` |
 | A constraint a user must honour and the compiler cannot check | `GUIDE.md` |
 | A user-visible constant, default, or config key | `docs/CONFIGURATION.md` |
@@ -194,7 +195,7 @@ reused. `Proposed` → `Accepted` → (`Superseded by ADR-NNNN` | `Deprecated`).
 | When | Run |
 |---|---|
 | Every step, every commit | `cargo test --all`, and `cargo test --no-default-features` |
-| Any session-layer change | The 59 acceptance definitions |
+| Any session-layer change | The 59 acceptance definitions, and the FIXT corpus with `--features fix50sp2` |
 | Any hot-path change | The Criterion suite **and** `benches/alloc.rs` |
 | Any dispatch, transport, or engine-thread change | `benches/dispatch.rs`, then `tools/w2w` on Linux |
 | Any change to the wait strategy, readiness, or mode split | **Both modes** — proven in one is proven in neither (ADR-0013) |

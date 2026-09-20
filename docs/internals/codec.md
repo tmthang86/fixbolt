@@ -16,6 +16,7 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
 | `timestamp.rs` | `SendingTime` formatted once a minute and patched per message, not reformatted from scratch |
 | `group.rs` | `GroupIter`, `GroupEntry` — reading repeating groups off the flat index, nested groups included |
 | `template.rs` | `Template` — outbound messages as a pre-sorted parts list, patched rather than rebuilt per send |
+| `encoding.rs` | `Encoding` — one trait over the wire encodings (ADR-0079), statically dispatched; `TagValue` is its tag=value impl, forwarding unchanged to `parse_into`/`MessageView::get`/`FieldIndex::view`/`Template::encode_with` |
 
 ## Read in this order
 
@@ -26,6 +27,7 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
 5. `checksum.rs`, `timestamp.rs` — the two per-field helpers `parse.rs` and `template.rs` share
 6. `group.rs` — reading repeating groups off the index
 7. `template.rs` — outbound: index to bytes
+8. `encoding.rs` — the trait `TagValue` names over 2–7, read last since it composes them
 
 ## Tests that guard it
 
@@ -35,5 +37,7 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
 - `tests/data_fields.rs`, `tests/data_encode.rs` — `DATA`-typed fields and their lengths
 - `tests/slot_order.rs`, `tests/roundtrip.rs`, `tests/timestamp.rs` — template field order and
   timestamp patching
+- `tests/encoding.rs` — `Encoding`/`TagValue`; `benches/alloc.rs` also counts a `parse via
+  Encoding` case, which must read 0 same as the direct path
 - `tests/bench_baselines.rs`, `tests/bench_verdict.rs` — the Criterion suite's own sanity
 - `benches/alloc.rs` — the counting allocator proving non-negotiable 1 (CLAUDE.md §2)
