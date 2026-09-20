@@ -160,6 +160,7 @@ jobs:
           echo "shallow      = $(git rev-parse --is-shallow-repository)"
           git log -1 --format='HEAD    = %H%nsubject = %s%nparents = %P'
       - run: scripts/check-links.py
+      - run: scripts/check-adr-numbers.sh
 
   # STATUS.md items 78 and 79 (ADR-0065): a feature combination no gate
   # builds. CI's clippy ran under the default set and under `--features

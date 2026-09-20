@@ -52,15 +52,11 @@ behind; it cannot catch prose that still says the old number, so grep for the ba
 
 ## What guards it
 
-**Nothing yet, and that is the honest answer.** `scripts/` has no ADR check, and a script no
-CI job runs is a check nobody reads (CLAUDE.md §10). Wiring one into `.github/workflows/ci.yml`
-belongs to whichever session owns that file under the parallel-work contract, so it is written
-down here and taken up there rather than added half-way.
-
-The guard, when it lands, is one line of shell — *the count of distinct `ADR-NNNN` prefixes in
-`docs/decisions/` equals the count of files* — and it belongs beside `check-links.py` in the
-`docs` job, because it is the same kind of claim: a fact about the document set that no test
-about behaviour will ever notice.
+`scripts/check-adr-numbers.sh` fails when two files in `docs/decisions/` share an `ADR-NNNN`
+prefix, or when a file does not match `ADR-NNNN-<slug>.md`; it runs in the `docs` job of
+`.github/workflows/ci.yml`, directly after `check-links.py`. It still cannot see a collision
+with a sibling branch that has not merged into the tree it reads — that is what the
+`for b in $(git branch -r ...)` loop above stays for.
 
 ## Related
 

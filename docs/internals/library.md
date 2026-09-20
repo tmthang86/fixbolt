@@ -5,7 +5,9 @@ application-facing API — `Handler`, `Incoming`, `Reply`, `App` — and a curat
 what an application needs from `engine`, `session` and `codec`. What is deliberately absent
 (`Engine`, `Dispatch`, `Transport`, `wait`, `shard`, `affinity`, `frame`, `ring`) is named in
 the same `DESIGN.md §3` row; reaching for one of those means depending on `fixbolt-engine`
-directly, not a gap in this crate.
+directly, not a gap in this crate. Behind the non-default `sbe` feature, `lib.rs` also
+re-exports `fixbolt_sbe` as `sbe` — a codec without a session (ADR-0078, ADR-0082 decision 4);
+no `serve_sbe` exists or will.
 
 ## Files, and what each keeps
 
@@ -28,4 +30,5 @@ directly, not a gap in this crate.
 - `tests/reply.rs` — `reply.rs`, including the fields a handler is refused from writing
 - `examples/acceptor.rs` (+ `examples/acceptor.cfg`, `examples/shared/`) — the worked example
   `docs/TUTORIAL.md` builds around
+- `tests/sbe_example.rs` — the `sbe` re-export, behind the `sbe` feature
 - `benches/alloc.rs`, `benches/cost.rs` — non-negotiable 1, and the adapter's own overhead
