@@ -366,3 +366,4 @@ Theo `CLAUDE.md` §4, đi từng hàng:
 | Bước | Commit | Gate và output (trích) | Chưa làm |
 |---|---|---|---|
 | 0 | — | ADR-0087/0088/0089 viết; `check-links.py`, `check-adr-numbers.sh` — xem báo cáo của architect | — |
+| 1 | `68d442e` | Câu chữ gate ở bảng *Chia việc* sai: `cargo bench -p fixbolt-engine --bench ring_full` được yêu cầu "in 0 mọi case", nhưng bench đó không in bộ đếm cấp phát nào cả. Gate thật của bất biến 1 phía `engine` là `--bench alloc`, đã chạy: `cargo bench -q -p fixbolt-engine --bench alloc` → tất cả 31 bộ đếm đọc 0 | — |

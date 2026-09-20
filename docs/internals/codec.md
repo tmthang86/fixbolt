@@ -17,6 +17,7 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
 | `group.rs` | `GroupIter`, `GroupEntry` — reading repeating groups off the flat index, nested groups included |
 | `template.rs` | `Template` — outbound messages as a pre-sorted parts list, patched rather than rebuilt per send |
 | `encoding.rs` | `Encoding` — one trait over the wire encodings (ADR-0079), statically dispatched; `TagValue` is its tag=value impl, forwarding unchanged to `parse_into`/`MessageView::get`/`FieldIndex::view`/`Template::encode_with` |
+| `benches/fixture.rs` | Not a bench target (`Cargo.toml`'s `autobenches = false`) — the one source of the shared `NewOrderSingle` bench message (`NEW_ORDER_SINGLE`, `10=097`) and `assert_valid()`, included by `#[path]` into `benches/alloc.rs`, `benches/parse.rs`, `engine/benches/dispatch.rs` and `engine/benches/ring_full.rs`, the same precedent `harness.rs` set ([ADR-0089](../decisions/ADR-0089-a-shared-bench-fixture-has-one-source-included-by-path-and-a-test-that-parses-it.md)) |
 
 ## Read in this order
 
@@ -41,3 +42,10 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
   Encoding` case, which must read 0 same as the direct path
 - `tests/bench_baselines.rs`, `tests/bench_verdict.rs` — the Criterion suite's own sanity
 - `benches/alloc.rs` — the counting allocator proving non-negotiable 1 (CLAUDE.md §2)
+- `tests/bench_fixture.rs` — guards `benches/fixture.rs`, run on every commit (not only in the
+  `bench` CI job): `the_shared_bench_message_parses_clean_under_full_validation` parses the
+  fixture under `Validation::ALL`; `no_bench_carries_its_own_copy_of_the_shared_message` walks
+  `crates/*/benches/**/*.rs` for the `167=BOO\x0110=` marker and names any bench that kept its
+  own copy — the fourth recurrence of
+  [a-bench-message-that-fails-its-own-checksum](../reference/a-bench-message-that-fails-its-own-checksum.md)
+  is what this closes
