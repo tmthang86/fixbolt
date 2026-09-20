@@ -3,7 +3,16 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-20** — **a nested group's lying counter is caught again, and "admin?" has
+Last updated: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
+built but has not run**: PRs [#87](https://github.com/tmthang86/fixbolt/pull/87) (merge `a451831`,
+closing commit `ed03886`, run
+[`35494930920`](https://github.com/tmthang86/fixbolt/actions/runs/35494930920), 14 of 14) and
+[#88](https://github.com/tmthang86/fixbolt/pull/88) (merge `76e53cb`, closing commit `9db3e95`, run
+[`35508301884`](https://github.com/tmthang86/fixbolt/actions/runs/35508301884), 14 of 14) are on
+`main`; [#89](https://github.com/tmthang86/fixbolt/pull/89) is the boot D branch, **draft, not
+merged, never measured**. Items **94**, **32 (a)**, **36** and the `build.rs` `die()` bullet close;
+the contended `fix50sp2` corpus does **not** — its figures were never taken on this desk. See
+*Start here* below. Before that: **2026-09-20** — **a nested group's lying counter is caught again, and "admin?" has
 two names instead of one**: PR [#86](https://github.com/tmthang86/fixbolt/pull/86), branch
 `plan/group-count-pass-and-is-admin`, **merged to `main` as `3f84a81`, and the merge commit
 itself is green**: run
@@ -80,6 +89,113 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 **`[2026-09-09, merged]` §9's last box, closed on the commit it asks about.** PR [#54](https://github.com/tmthang86/fixbolt/pull/54) merged as **`94b325d`**, no-ff. **CI green on the merge commit itself**, run [`34340173659`](https://github.com/tmthang86/fixbolt/actions/runs/34340173659), **13 jobs of 13** — the three neither desk can run for itself, `interop`, `bench` and `deny`, among them. The merged head `301cd2e` was **26 of 26** check runs across [`34320263926`](https://github.com/tmthang86/fixbolt/actions/runs/34320263926) and [`34320266574`](https://github.com/tmthang86/fixbolt/actions/runs/34320266574), and **`git diff 301cd2e 94b325d` is empty**, so the branch's green transfers to the merge exactly rather than by assumption.
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
+
+## Start here — 2026-09-20, later: four items closed, one number that named no machine, and a measurement boot that is built but has not run
+
+**Read this before booting the desk into the §9 line, and before trusting any figure dated
+2026-09-20 that does not name its machine.**
+
+Two pull requests merged, a third is open and unmeasured. Everything below was built by
+subagents and every gate quoted here was re-run by the manager on the commit it closes.
+
+### What closed
+
+* **Item 94 — the bench message has one source, and a gate refuses a fifth copy.**
+  `crates/codec/benches/fixture.rs` holds it; `crates/codec/tests/bench_fixture.rs` parses it and
+  walks every `.rs` under `crates/`, `tools/` and `benches/` for a copy. The fourth recurrence was
+  closed by a gate rather than a corrected byte, and the gate was itself attacked: a senior review
+  got past it with a backslash-newline wrap — **the very wrapping the four original copies used** —
+  and with `\u{1}`, a literal SOH, a file under `tools/`, and a `#[path]` include. All six now
+  fail by name. ADR-0089, commits `68d442e`, `863ff7e`.
+* **Item 32 (a) — a sharded deployment can resume.** `serve_sharded_hft_with_recovery[_with]`,
+  ADR-0088, commit `bd6be07`. **Sharded ordered shutdown stays open**; item 32 keeps that half.
+  The review then found that `next_in` could be replaced by a literal `1` with the whole workspace
+  green — that hole is closed by `9db3e95` and the path is shared with the single-engine doors.
+* **Item 36** — closed on 2026-09-19 by ADR-0076 plus `crates/conformance/src/mirror.rs`; the row
+  was merely never struck. **Item 89** likewise: `DEFAULT_LISTENER_EVERY` is **16**, measured at
+  boot C (`crates/engine/src/presession.rs:442`, ADR-0069).
+* **`build.rs`'s `die()` on a `<message>` with no `msgcat`** now has a reversal that runs in CI:
+  `scripts/check-dict-refuses-a-message-without-msgcat.sh`, four arms, `vendor/` never touched
+  (the XML is copied under `target/` and damaged there). Commit `61416be`.
+* **Two gate holes found along the way.** `scripts/check-adr-numbers.sh` read filenames only, so
+  two ADRs written the same day carried the wrong number in their own H1 and it said `ok`; it now
+  reads every heading and judges every file in `docs/decisions/`. Commit `0b97cf6`.
+
+### The one that did not close, and why it matters more than the four that did
+
+**`the_sixty_fix50sp2_definitions_pass_through_a_real_socket` was never load-dependent on this
+desk.** The step built to fix it hit its own hard stop: ~670 runs over nine contention shapes
+produced **0 red**, and a counting log on the unfixed harness recorded **0 debt events in 122
+runs**. The architect then found the reason, and it is a documentation failure rather than an
+engine one: `[measured 2026-09-20]` the original **11 red in 50** and **8 red in 50** were
+recorded at 08:51 while `journalctl --list-boots` says this desk was powered off from 2026-09-19
+16:23 until 2026-09-20 12:33. They came from the **Apple M5 laptop** — the neighbouring commits
+say so, the bullet that carried the counts did not. §2 item 10, and it cost a builder ~670 runs
+looking for a red that cannot exist on Linux.
+
+The race is real and is the loopback stack's, not the scheduler's: XNU hands `lo0` bytes to one
+shared DLIL input thread, Linux delivers them inside the sender's `write()`. Probe, ten
+concurrent copies of 20 000 iterations: **34–55 deliveries ≥ 1 ms per copy on Darwin, 0 in
+220 000 on Linux**, against a harness that settled on a 1 ms quiet interval. ADR-0091 supersedes
+ADR-0087 in part. The harness is **fixed by construction** (`3233032`) and the **reversal is owed
+on macOS** — ADR-0091 decision 2 says exactly what closes it.
+
+**And the fix cannot be falsified here**: forcing `framable()` to return `0`, which deletes the
+counting and the tick guard outright, still gives `60 / 60`, `lifeline hit: 0`, green. Observed,
+not predicted; `docs/CONFORMANCE.md` §9 records it.
+
+### Where the work is
+
+`main` is `76e53cb`. Branch `plan/boot-d`, PR [#89](https://github.com/tmthang86/fixbolt/pull/89),
+**draft and unmerged**, carries the pre-reboot half of
+[boot-d](docs/plans/2026-09-20-boot-d.md): `scripts/ab-rotation.sh` and its gate (`pass 12 fail
+0`), the `conntrack` field in `scripts/w2w-baseline.sh`, and a reference page for a trap that cost
+time today. Two A/B arms are pushed and **must never be merged**:
+`ab/parse-utc-fast-path` (`1825d8c`) and `ab/validate-no-descent` (`d6f79dc`, deliberately broken —
+its two red tests are the evidence).
+
+**Thirteen worktrees are pre-built** under `../fb-boot-d/` with `MANIFEST.txt`: every binary's
+sha256 recorded and verified against the file on disk, every worktree reporting the same
+`-C llvm-args=-align-all-functions=6`. `w1`/`w1s` pin `76e53cb`.
+
+### Next — the first executable action
+
+**The desk has not rebooted.** It is on the ordinary desktop grub line (`/proc/cmdline` carries no
+`isolcpus`). The next manager, or this one after the owner says go: follow
+[boot-d](docs/plans/2026-09-20-boot-d.md) step **D0** — restore the §9 grub line, `update-grub`,
+reboot, `fixbolt-machine on`, and require `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` to read
+`pass 16 fail 0 unknown 0` before a single number is taken. **Throw the first run away.**
+
+The owner has already answered the plan's two questions: **the flush arm of item 51 is NOT run**
+(step D1 is skipped — it would drop a remote session), and **the boot runs to its end** and the
+machine is powered off afterwards, as at boot C.
+
+### Do not
+
+* Do not publish, or compare against, any 2026-09-20 figure that does not name its machine —
+  that is the mistake this entry exists to record.
+* Do not merge `ab/parse-utc-fast-path` or `ab/validate-no-descent`. They are measurement arms.
+* Do not let the boot compile anything. `scripts/ab-rotation.sh` refuses a binary whose sha256
+  does not match `MANIFEST.txt` rather than rebuilding it, and that refusal is the design.
+* Do not treat a missing CI run as a green — a **conflicting** pull request produces no run at
+  all: [a-conflicting-pull-request-has-no-ci](docs/reference/a-conflicting-pull-request-has-no-ci.md).
+* Do not run a workspace-scoped `cargo fmt`, `sed -i` over a glob, or `cargo clippy --fix` while
+  another agent shares the checkout:
+  [two-agents-one-checkout](docs/reference/two-agents-one-checkout.md).
+
+### Not proven
+
+* **Nothing in boot D has been measured.** The driver has never run on the §9 desk; the band for
+  the ADR-0086 nested-group descent, the A-desk band ADR-0082 left empty, and items 93, 51, 85 and
+  52 are all still owed. The only figures that exist for the two A/B arms came from a loaded
+  laptop-class desk and are recorded nowhere as figures.
+* **The macOS reversal for ADR-0091 decision 2 has not run.** The Mac mini's checkout is at an old
+  `main` and has no `wire_fixt` binary; it must be built there first.
+* **PR [#89](https://github.com/tmthang86/fixbolt/pull/89) has no green CI run named here yet** —
+  it was opened as a draft at the first commit this time, and the closing commit's run id belongs
+  in this entry when it merges.
+
+---
 
 ## Start here — 2026-09-20: a nested group's lying counter is caught again, and "admin?" has two names instead of one
 
