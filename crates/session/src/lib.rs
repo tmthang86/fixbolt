@@ -282,13 +282,34 @@ impl Application for Silent {
     }
 }
 
-/// The seven message types the session layer answers itself.
+/// The seven message types **this engine's session layer answers itself**.
 ///
-/// Everything else is the application's. `7_ReceiveRejectMessage.def` is why
-/// `3` is in the list: a Reject arriving is read and not answered, and an
-/// application that echoed it would put a message on the wire the file does not
-/// expect.
-const ADMIN: [&[u8]; 7] = [b"0", b"1", b"2", b"3", b"4", b"5", b"A"];
+/// **This is a routing list, not the dictionary's answer, and the two are not
+/// the same set.** "Do the XML files call this message administrative?" is
+/// `Tables::is_admin`, generated from `msgcat`, and it holds **eight** types in
+/// both dictionaries. This holds seven. They differ by exactly `35=n`
+/// (XMLnonFIX), on purpose (ADR-0086 decision 2): every validation rule that
+/// means *this message is not the application's* asks the dictionary; this one
+/// answers only *does the session reply to it, or is it handed to
+/// `Application::on_message` and journalled for resend?*
+///
+/// **`35=n` is handed to the application, and that is a decision.** XMLnonFIX
+/// carries no session content a session layer could answer. QuickFIX C++ and
+/// QuickFIX/J agree — both call `35=n` an application message, their admin
+/// strings being `"0A12345"`; QuickFIX/n's is `"0A12345n"` and it routes `n` to
+/// `FromAdmin`. No `.def` in any corpus sends `35=n`, so **no gate but
+/// `tests/fixt.rs::xmlnonfix_still_reaches_the_application` can see this being
+/// "tidied" into `is_admin`** — and a message that stops being journalled is a
+/// message a future `ResendRequest` gap-fills over, which a counterparty sees
+/// and this repository would not.
+///
+/// The distance between the two lists is itself held by a test:
+/// `tests::every_admin_type_is_session_owned_except_xmlnonfix`.
+///
+/// `7_ReceiveRejectMessage.def` is why `3` is in the list: a Reject arriving is
+/// read and not answered, and an application that echoed it would put a message
+/// on the wire the file does not expect.
+const SESSION_OWNED: [&[u8]; 7] = [b"0", b"1", b"2", b"3", b"4", b"5", b"A"];
 
 /// Whether the connection survived the input.
 ///
@@ -3381,7 +3402,7 @@ where
                 // about the seven it does enumerate and this engine still
                 // refuses.
                 .or_else(|| {
-                    fixt.then(|| out_of_family_appl_ver_id::<N>(&view, mt))
+                    fixt.then(|| out_of_family_appl_ver_id::<E::Dict, N>(&view, mt))
                         .flatten()
                 })
                 .or_else(|| missing_required::<E::Dict, N>(&view, mt))
@@ -3404,7 +3425,10 @@ where
         // so the borrow of `self.idx` ends here and `send` can take `&mut self`.
         let msg_type = view.get(tag::MSG_TYPE).unwrap_or_default();
         // Read while the index is still borrowed, used after it is not.
-        let is_application = !ADMIN.contains(&msg_type);
+        // **Routing, so [`SESSION_OWNED`] and deliberately not
+        // `D::is_admin`** — ADR-0086 decision 2. `35=n` is admin to the
+        // dictionary and still the application's here.
+        let is_application = !SESSION_OWNED.contains(&msg_type);
         let is_logon = msg_type == msg::LOGON;
         let is_logout = msg_type == msg::LOGOUT;
         let is_test_request = msg_type == msg::TEST_REQUEST;
@@ -4279,7 +4303,13 @@ fn scan_group_members<D: Tables, const N: usize>(
 /// be speaking, and the table says nothing about that because the table is the
 /// XML. This is the rule that does. ADR-0080 decision 3.
 ///
-/// **Application messages only, and it is read and not obeyed.** A venue that
+/// **Application messages only — and which those are is the dictionary's
+/// answer, `msgcat`, not this engine's routing list.** ADR-0086 decision 3
+/// narrowed ADR-0080 decision 3 by exactly one message: `35=n` XMLnonFIX is
+/// `msgcat='admin'` in both files and is no longer asked this rule. Held by
+/// `tests/fixt.rs::an_xmlnonfix_message_is_not_asked_the_appl_ver_id_rule`.
+///
+/// **It is read and not obeyed.** A venue that
 /// sends an SP1 message on an SP2 session gets SP2 validation: three tables and
 /// a per-message switch is a branch per message for a case no `.def` exercises,
 /// and ADR-0080 declined it under *Bad — and accepted*. The header fields
@@ -4289,11 +4319,17 @@ fn scan_group_members<D: Tables, const N: usize>(
 ///
 /// Held by `tests/fixt.rs::an_appl_ver_id_outside_the_fix_50_family_is_rejected`
 /// and its neutral twin one line above it.
-fn out_of_family_appl_ver_id<const N: usize>(
+fn out_of_family_appl_ver_id<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
 ) -> Option<(SessionText, Option<Held<12>>)> {
-    if ADMIN.contains(&msg_type) {
+    // **The dictionary's `msgcat`, not [`SESSION_OWNED`]** — ADR-0086
+    // decision 3. "Is this message the application's, so that an application
+    // message rule applies?" is a question about the XML, and answering it
+    // from a routing list beside this call site is what left `35=n` a
+    // transport message for `373=0` and an application one for `1128`. It is
+    // now one layer for both.
+    if D::is_admin(msg_type) {
         return None;
     }
     let v = view.get(tag::APPL_VER_ID)?;
@@ -5120,6 +5156,81 @@ mod tests {
             assert!(
                 sp2 <= MAX_GROUP_NESTING,
                 "the SP2 pair nests {sp2} deep, past the walk's {MAX_GROUP_NESTING}"
+            );
+        }
+    }
+
+    /// **The two admin lists differ by exactly `n`, and a test says so rather
+    /// than a reader's memory.** ADR-0086 decision 2.
+    ///
+    /// [`SESSION_OWNED`] is this engine's routing list; `Tables::is_admin` is
+    /// the dictionaries' `msgcat`. They are deliberately not the same set, and
+    /// the whole cost of keeping two is that nothing but this test notices when
+    /// the distance between them changes. A dictionary that grew a ninth admin
+    /// message would otherwise fall silently to the application side — the
+    /// same class of quiet hole that a seven-entry list answering a dictionary
+    /// question already cost once.
+    ///
+    /// Every message type is one or two bytes in both tables, so the sweep over
+    /// printable ASCII below is exhaustive, not a sample.
+    #[test]
+    fn every_admin_type_is_session_owned_except_xmlnonfix() {
+        /// Every `msg_type` the dictionary calls admin that `SESSION_OWNED`
+        /// does not hold, in the order the sweep meets them.
+        fn gap<D: Tables>() -> Vec<String> {
+            let mut out = Vec::new();
+            let mut consider = |t: &[u8]| {
+                if D::is_admin(t) && !SESSION_OWNED.contains(&t) {
+                    out.push(String::from_utf8_lossy(t).into_owned());
+                }
+            };
+            for a in b' '..=b'~' {
+                consider(&[a]);
+                for b in b' '..=b'~' {
+                    consider(&[a, b]);
+                }
+            }
+            out
+        }
+
+        /// And the other direction: nothing this engine answers itself may be
+        /// a message the dictionary does not call admin.
+        fn not_admin<D: Tables>() -> Vec<String> {
+            SESSION_OWNED
+                .iter()
+                .filter(|t| !D::is_admin(t))
+                .map(|t| String::from_utf8_lossy(t).into_owned())
+                .collect()
+        }
+
+        let fix44 = gap::<fixbolt_dict::Fix44>();
+        println!("FIX 4.4: admin but not session-owned: {fix44:?}");
+        assert_eq!(
+            fix44,
+            vec!["n".to_string()],
+            "the only message FIX 4.4 calls admin that this session layer does not answer \
+             itself is XMLnonFIX — a new entry here is a message quietly going to the \
+             application, and it is a decision, not a tidy-up"
+        );
+        assert!(
+            not_admin::<fixbolt_dict::Fix44>().is_empty(),
+            "FIX 4.4 disagrees that these are admin, yet this session answers them: {:?}",
+            not_admin::<fixbolt_dict::Fix44>()
+        );
+
+        #[cfg(feature = "fix50sp2")]
+        {
+            let sp2 = gap::<fixbolt_dict::Fixt11Fix50Sp2Tables>();
+            println!("FIXT 1.1 / FIX 5.0 SP2: admin but not session-owned: {sp2:?}");
+            assert_eq!(
+                sp2,
+                vec!["n".to_string()],
+                "the FIXT pair's transport file has the same eight, and the gap is the same one"
+            );
+            assert!(
+                not_admin::<fixbolt_dict::Fixt11Fix50Sp2Tables>().is_empty(),
+                "the FIXT pair disagrees that these are admin: {:?}",
+                not_admin::<fixbolt_dict::Fixt11Fix50Sp2Tables>()
             );
         }
     }
