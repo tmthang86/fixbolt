@@ -27,15 +27,18 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fixbolt_codec::{
-    Dictionary, Encoding, FieldIndex, NoDict, ParseError, TagValue, TemplateBuilder,
-    TimestampCache, Validation, parse_into,
+    Dictionary, Encoding, FieldIndex, NoDict, Parsed, TagValue, TemplateBuilder, TimestampCache,
+    Validation, parse_into,
 };
 use fixbolt_dict::Fix44;
 
 #[cfg(feature = "fix50sp2")]
-use fixbolt_codec::Parsed;
-#[cfg(feature = "fix50sp2")]
 use fixbolt_dict::Fixt11Fix50Sp2Tables;
+
+/// The shared `NewOrderSingle`, ADR-0089: one source, included by path the way
+/// `harness.rs` is. Its `assert_valid()` runs before anything is counted.
+#[path = "fixture.rs"]
+mod fixture;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
@@ -86,9 +89,8 @@ fn count<F: FnOnce()>(f: F) -> usize {
 }
 
 fn main() {
-    let msg: &[u8] = b"8=FIX.4.4\x019=126\x0135=D\x0134=2\x0149=TW44\x01\
-52=00000000-00:00:00.000\x0156=ISLD\x0111=ID\x0121=1\x0138=002000.00\x0140=1\x01\
-54=1\x0155=INTC\x0160=00000000-00:00:00.000\x01167=BOO\x0110=098\x01";
+    fixture::assert_valid();
+    let msg: &[u8] = fixture::NEW_ORDER_SINGLE;
 
     // Everything is built before counting starts. What is measured is the hot
     // path — parse, encode, timestamp — not construction.
@@ -109,18 +111,17 @@ fn main() {
     // Warm anything lazy in the runtime before the counted section.
     //
     // The warm is also the `parse` case's liveness assert: a zero means nothing
-    // until something says the path ran. `msg` carries `10=098` against an
-    // actual checksum of 097, so `parse_into` ends in `BadCheckSum` — *after*
-    // pushing every field, which is why this case has always measured a whole
-    // message walk. Asserting that outcome states the fixture's flaw instead of
-    // depending on it silently, and reading a field back proves the index was
-    // really filled. See
+    // until something says the path ran. Until ADR-0089 this asserted
+    // `Err(BadCheckSum)`, because `msg` carried `10=098` against an actual
+    // checksum of 097 — the whole message was still walked, so the count was
+    // real, but the assertion *stated* the fixture's flaw instead of fixing it.
+    // The bytes now come from `benches/fixture.rs` and the parse completes.
+    // Reading a field back proves the index was really filled. See
     // `docs/reference/a-bench-message-that-fails-its-own-checksum.md`.
     let warm_parse = parse_into::<NoDict, 64>(msg, &mut idx, Validation::ALL);
-    assert_eq!(
-        warm_parse,
-        Err(ParseError::BadCheckSum),
-        "the parse path must actually run"
+    assert!(
+        matches!(warm_parse, Ok(Parsed::Complete { .. })),
+        "the parse path must actually run: {warm_parse:?}"
     );
     assert_eq!(
         idx.view(msg).get(55),
