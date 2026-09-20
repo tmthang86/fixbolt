@@ -17,6 +17,30 @@ below describe what a first release would contain.
 
 ### Added
 
+- **Recovery reaches the sharded runtime.**
+  **`fixbolt_engine::shard::serve_sharded_hft_with_recovery`** and
+  **`serve_sharded_hft_with_recovery_with`** ask a `Recovery` what each counterparty left
+  behind, on the acceptor thread — the one allowed to block — and carry the answer to the shard
+  thread that builds the session. A sharded `hft` deployment can now resume its sequence
+  numbers across a restart, which only the single-engine doors could do before.
+  **`fixbolt_engine::recovery::Start<J>`** (`Fresh(J)` / `Resumed(Resumed<J>)`) is what crosses
+  the channel with the connection, and **`Shards::hand_started`** is where it is handed over.
+  `serve_sharded_hft` and `serve_sharded_hft_with` are unchanged for callers and now delegate
+  through `NoRecovery`, so there is one serving loop rather than two.
+  [ADR-0088](docs/decisions/ADR-0088-recovery-reaches-the-sharded-runtime-and-the-journal-crosses-the-channel-with-the-connection.md);
+  `STATUS.md` item 32 (a), the recovery half. **The sharded runtime still cannot be stopped** —
+  the ordered-shutdown half of that item stays open (ADR-0088 decision 5).
+
+  **Two breaking changes for out-of-tree code.** `fixbolt_engine::shard::Shardable` gains a
+  required `add_started(transport, cfg, prefix, Start<J>)`, so a type implementing it must
+  supply one; `Shardable::add` stays and now forwards to it with `Start::Fresh(J::default())`,
+  its `J: Default` bound moved from the `impl … for Engine` header onto that method alone
+  ([ADR-0039](docs/decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md)
+  decision 2), which is what lets a journal with no honest `Default` — a `FileJournal` needs a
+  path — reach the sharded runtime at all. `Shards` gains a second parameter,
+  `Shards<PRE, J = Store>`: `Shards::<PRE>` still compiles, inference written around the old
+  one-parameter shape may not.
+
 - **`fixbolt_dict::Tables` gains `is_admin(msg_type: &[u8]) -> bool`**, generated in
   `crates/dict/build.rs` from each `<message>`'s `msgcat`, with no default method — the reason
   `is_defined_tag_for` already has: a default would hand a future third table FIX 4.4's admin

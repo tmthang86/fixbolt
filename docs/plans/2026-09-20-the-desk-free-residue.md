@@ -359,6 +359,38 @@ Theo `CLAUDE.md` §4, đi từng hàng:
 - **Nhánh FIXT của `die()` msgcat** — cùng một `match` trong `emit`; không chạy riêng, nói rõ
   trong header script.
 
+## Sửa 1 — 2026-09-20, sau khi bước 4 không tái hiện được vết đỏ
+
+Bước 4 dựng xong ADR-0087 quyết định 1–4 (commit `3233032`, worktree `fb-prb`) nhưng **không
+lấy được vết đỏ trên cây chưa sửa**: ~670 lần chạy, chín kiểu gây tranh chấp trên desk Linux, 0
+đỏ; log đếm trên harness chưa sửa: 0 lần `Tick` tới khi engine còn nợ câu trả lời trong 122 lần.
+Kiến trúc sư đã xét lại với bằng chứng và viết
+[ADR-0091](../decisions/ADR-0091-the-socket-harness-race-is-the-loopback-stacks-not-the-schedulers-and-its-reversal-runs-on-macos.md).
+Kết luận, nói ngắn:
+
+1. **Con số gốc (11/50, 8/50) đo trên laptop macOS**, không phải desk — desk đang tắt lúc đó
+   (`journalctl --list-boots`), và các commit cùng phiên ghi "on the laptop". Bullet gốc không
+   ghi máy; đó là lỗi đã trả giá một ngày.
+2. **Cơ chế ADR-0087 nêu là đúng** (output chỉ cho phép một cách giải thích: một `Tick` tới khi
+   câu trả lời còn trên đường), nhưng **độ trễ là của stack loopback, không phải scheduler**:
+   Linux giao byte loopback ngay trong syscall `write` của bên gửi; XNU xếp hàng cho một thread
+   `dlil` dùng chung. Probe đo trên cả hai máy: Mac mini mười bản đồng thời 34–55 lần trễ ≥ 1 ms
+   mỗi 20 000 (tối đa 9,4 ms) — vượt cửa sổ `STEP_QUIET = 1 ms`; desk 0 lần trong 220 000.
+3. **Phép đảo ngược của bước 4 chuyển sang máy macOS** (Mac mini qua cáp, hoặc laptop M5),
+   theo ADR-0091 quyết định 2, và là bằng chứng đóng bước. Trên Linux không đòi vết đỏ nữa.
+4. `assert_eq!(lifeline_hits, 0)` **giữ nguyên** (ADR-0091 quyết định 3).
+
+**Bảng *Chia việc*, hàng 4, cột *Test viết trước, câu FAIL chờ đợi*, đọc lại như sau:** trên
+**một máy macOS** có `net.link.loopback.sched_model` = 0, ghi dòng máy (`sysctl -n hw.model
+hw.ncpu; sw_vers -productVersion; sysctl net.link.loopback.sched_model`); trên cây trước
+`3233032` (hoặc `main` tại `64ea6c2`) chạy `scripts/check-socket-corpus-under-contention.sh 5 10`
+→ chờ `N red in 50`, N ≥ 1, kèm cặp `FieldCount { expected: 14, actual: 8 }` /
+`{ expected: 8, actual: 14 }`; trên `3233032` trở đi → `0 red in 50`, `lifeline hit: 0`. Nếu trên
+Mac cũng 0 đỏ: dừng, báo manager, ghi "không tái hiện trên cả hai nền tảng ngày 2026-09-20" và
+mục *Not proven* (a) giữ mở với điều kiện mở lại của ADR-0091 quyết định 4. Cột *Gate đóng bước*
+thêm: hai con số và dòng máy chép vào *Nhật ký* và `docs/CONFORMANCE.md` §9. Bước 6 cập nhật
+`STATUS.md` *Not proven* (a) theo ADR-0091 phụ lục A thay cho câu chữ ở *Cách kiểm chứng*.
+
 ## Nhật ký giao hàng
 
 *Điền khi đóng từng bước: commit, gate xanh (trích), CI run id, cái gì chưa làm và vì sao.*
@@ -367,3 +399,9 @@ Theo `CLAUDE.md` §4, đi từng hàng:
 |---|---|---|---|
 | 0 | — | ADR-0087/0088/0089 viết; `check-links.py`, `check-adr-numbers.sh` — xem báo cáo của architect | — |
 | 1 | `68d442e` | Câu chữ gate ở bảng *Chia việc* sai: `cargo bench -p fixbolt-engine --bench ring_full` được yêu cầu "in 0 mọi case", nhưng bench đó không in bộ đếm cấp phát nào cả. Gate thật của bất biến 1 phía `engine` là `--bench alloc`, đã chạy: `cargo bench -q -p fixbolt-engine --bench alloc` → tất cả 31 bộ đếm đọc 0 | — |
+| 5 | `bd6be07` | 7 + 2 + 2 passed (`shard_recovery`, `shard_hft`, `shard`), 0 failed; `serve_sharded_hft_serves_a_session` xanh không sửa một dòng; `cargo clippy --all-targets --features affinity -- -D warnings` sạch; `cargo test --all` không dòng FAILED | **Hai sai lệch so với brief, cả hai đều báo lên chứ không tự nuốt, manager đã chấp nhận.** **(1)** ADR-0088 quyết định 2 viết rằng blanket impl của `add_started` "forwards to `Engine::add_with_prefix_config_and_journal`" — câu đó không viết được, vì hàm đó nhận `fresh: FnOnce() -> J` và nhánh `Start::Resumed` không có journal thứ hai để đưa vào. Thân hàm chuyển sang một hàm `pub(crate)` mới, `add_with_prefix_config_and_start`, nhận thẳng `Start<J>`; hàm cũ ủy quyền cho hàm mới. Chữ ký công khai và hành vi không đổi. **(2)** `crates/engine/tests/shard.rs` **buộc phải sửa** — `Counter` có `impl Shardable`, nên phương thức bắt buộc mới là `error[E0046]` với nó. Đúng cái giá ADR-0088 đã ghi sẵn ở mục *Bad* (“a caller who implemented `Shardable` for a type of their own gains a required method”). Cho `add_started` một thân mặc định thì biên dịch trôi, nhưng khẳng định trong test sẽ lặng lẽ không bao giờ chạy tới — tệ hơn; nên test nay khẳng định `matches!(start, Start::Fresh(_))`, tức cửa cũ được **chứng minh** là trao một `Start` tươi. `tests/shard_wire.rs` không cần sửa gì. Đây cũng là lý do `tests/shard.rs` **không phải** file “xanh không sửa một dòng” — file đó là `tests/shard_hft.rs` |
+| 2 | `61416be` | `scripts/check-dict-refuses-a-message-without-msgcat.sh` → `ok — 4 arms, all as expected`, EXIT=0; đảo chiều (`None => die(…)` thành `None => {}` ở `build.rs:802`) → `FAIL — expected the build to refuse: no msgcat, but arm1 built clean`, EXIT=1; `build.rs` khôi phục byte-identical | Arm 3 chạm `die` **thứ hai** (`admin_types.is_empty()`, `build.rs:1206`) chứ không phải cái đang nhắm — ghi vào `docs/internals/dict.md` |
+| 3 | `3b574bd`, `ed03886` | `check-links.py` → `no dead internal links`. Ngoài bảng: `863ff7e` đóng 5 finding của senior review — sáu đòn tấn công gate bị bắt đủ tên, `check-adr-numbers.sh` → `ok - 88 files seen, 88 ADRs, 88 distinct numbers, 88 H1s checked` | Ghi chú `fetch-sbe-assets.sh` không có chỗ trong danh sách file của bước 3 → chuyển sang bước 6, đã làm (`CLAUDE.md` §7) |
+| PR A | `a451831` | **CI xanh trên chính commit đóng** `ed03886`: run [`35494930920`](https://github.com/tmthang86/fixbolt/actions/runs/35494930920), **14 job / 14**, không job nào khác `success`. Merge commit `a451831` cũng xanh: run [`35495485075`](https://github.com/tmthang86/fixbolt/actions/runs/35495485075) | — |
+| 4 | `3233032` | `wire_fixt` 60/60 `lifeline hit: 0`; `wire` 2 passed; `check-socket-corpus-under-contention.sh 3 10` → `0 red in 30` cả hai đích. Hai đảo chiều: đòi 61/60 → `2 red in 2`, EXIT=1; lifeline 1 µs → `lifeline hit: 1087` **trong khi vẫn 60/60** | **Chốt dừng cứng của plan đã nổ**: không tái hiện được đỏ trên bàn (~670 lần, 9 hình dạng tải; 0 debt event/122 lần đo thẳng). Architect phán quyết: [ADR-0091](../decisions/ADR-0091-the-socket-harness-race-is-the-loopback-stacks-not-the-schedulers-and-its-reversal-runs-on-macos.md) — số gốc 11/50 đo trên **laptop Apple M5** lúc bàn đang tắt, cuộc đua nằm ở tầng loopback (XNU một DLIL thread, Linux giao trong `write()`). Item **không đóng**: *fixed by construction, reversal owed on macOS* |
+| 6 | `77c3c93` | `check-links.py` → `no dead internal links`; `check-adr-numbers.sh` → `ok - 89 ADRs, 89 distinct numbers, 89 H1s checked` | Số dòng `docs/GUIDE.md` trong bảng *Chia việc* sai cả hai lần (đoạn *Two limits* ở §5a dòng 857-859, không phải §6b; bullet thứ hai ở §9) — người xây sửa đúng chỗ thật và báo lại |

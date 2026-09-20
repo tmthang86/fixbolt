@@ -573,11 +573,26 @@ accepted because 0 of the 180 `.def` files carry either tag.
 | | Result | Command |
 |---|---|---|
 | `fix50sp2`, acceptor, kernel sockets | **60 / 60** | `cargo test -p fixbolt-engine --features fix50sp2 --test wire_fixt` |
+| FIX 4.4, acceptor, kernel sockets | **59 / 59** | `cargo test -p fixbolt-engine --test wire` |
 
 The same harness as the 59 — real framer, real session, real application, only the clock
 injected. It read 60 / 60 on the first run because `TCP_NODELAY` on the client socket and the
 bounded-turns pump were carried over from `tests/wire.rs` rather than rediscovered; without the
 former the FIX 4.4 gate once scored 39 / 59 on Linux (§1).
+
+`[changed 2026-09-20]` **The harness settles a step on counted facts, not on a quiet
+interval.** A `CountingLog` counts every framed message the engine has consumed and every one
+the harness has read; `Input::Tick` waits for the first of those before it moves the simulated
+clock, so the runner can no longer read "nothing arrived in 1 ms" as "the engine has finished
+answering" — the mechanism
+[the-same-commit-went-red-and-green-in-the-same-minute](reference/the-same-commit-went-red-and-green-in-the-same-minute.md)
+and [ADR-0087](decisions/ADR-0087-a-socket-harness-settles-on-counted-records-and-the-clock-waits-for-the-engine.md)
+describe. The old 1 ms `STEP_QUIET` becomes a 5 s lifeline that is **reported** and asserted
+hit zero times — proven live by reversal: cutting the lifeline to 1 µs still scores 60 / 60
+while `lifeline hit: 1087`, so the hit count, not the score, is what can tell a real green from
+a slow one. `scripts/check-socket-corpus-under-contention.sh` runs both `wire` and `wire_fixt`
+under concurrent load in the `gates` job and counts pass/fail — a count, not a measurement
+(`CLAUDE.md` §2 non-negotiable 10) — and stays in CI as that counter.
 
 ### Against a real `libquickfix`, both directions
 
@@ -624,5 +639,29 @@ command exited 0 — see
   holding only a Ryzen. Whether validation through the larger table costs anything is **unmeasured**
   and owed to the §9 desk.
 * The three corpora are **acceptor-side only**. There is no FIXT mirror of §1's initiator corpus.
+* **The load-dependent flake this socket harness was rebuilt for was never reproduced on this
+  machine, and its reversal is owed on macOS.** `[measured 2026-09-20]` The original counts —
+  0 red in 40 sequential, 11 red in 50 and 8 red in 50 (on `main` at `64ea6c2`) as ten
+  concurrent copies — were measured on the **Apple M5 macOS laptop**, while the
+  `DESIGN.md` §9 desk (`tmt-B450-I-AORUS-PRO-WIFI`) was powered off. On the desk (Linux
+  `7.0.0-31-generic`, 16 logical CPUs), ~670 runs over nine contention shapes and a counting
+  log on the *unfixed* harness read **zero red and zero debt events in 122 runs**: the desk
+  cannot reproduce it. [ADR-0091](decisions/ADR-0091-the-socket-harness-race-is-the-loopback-stacks-not-the-schedulers-and-its-reversal-runs-on-macos.md)
+  traces why: the lateness is the loopback stack's, not the scheduler's — Linux delivers a
+  loopback `write()` inside the sender's own syscall, XNU queues it for one shared DLIL input
+  thread every `lo0` packet on the machine passes through, and a probe outside the repository
+  measured 34–55 deliveries ≥ 1 ms per 20 000 on the Mac mini under ten concurrent copies
+  (max 9.4 ms) against 0 in 220 000 on the desk (max 23 µs). **The fix above is by
+  construction**, not proven by a red-to-green reversal here. `[measured 2026-09-20]` and that
+  gap is now **observed rather than assumed**: a probe that made the harness's `framable()`
+  return `0` — which zeroes the inbound count and with it the `Tick` guard, deleting the whole
+  counted-settle mechanism in effect — still read `60 / 60`, `lifeline hit: 0`, `1 passed` on
+  the desk. So on Linux **nothing in this workspace goes red if the mechanism is removed**, and
+  the macOS run below is the only thing that can say it works. **What is owed**: on a macOS
+  machine with `net.link.loopback.sched_model` = 0,
+  `scripts/check-socket-corpus-under-contention.sh 5 10` on the tree before the harness change
+  reading ≥ 1 red in 50, then 0 red in 50 and `lifeline hit: 0` on the tree after —
+  `STATUS.md` *Not proven* carries the two
+  counts once quoted.
 
 ---

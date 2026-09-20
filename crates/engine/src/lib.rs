@@ -613,6 +613,55 @@ where
         state: Option<crate::recovery::Resumed<J>>,
         fresh: F,
     ) -> Result<ConnId, PrefixTooLong> {
+        // **The length check happens here as well as inside, and on purpose.**
+        // `fresh` is documented to be called only after the prefix has been
+        // checked, so a connection that is about to be refused does not open a
+        // file. Building the `Start` below calls it, so the check has to have
+        // run by then; the inner one is the one that refuses.
+        if prefix.len() > RX {
+            return Err(PrefixTooLong {
+                got: prefix.len(),
+                capacity: RX,
+            });
+        }
+        let start = match state {
+            Some(r) => crate::recovery::Start::Resumed(r),
+            None => crate::recovery::Start::Fresh(fresh()),
+        };
+        self.add_with_prefix_config_and_start(transport, cfg, prefix, start)
+    }
+
+    /// As [`Self::add_with_prefix_config_and_journal`], with the two answers
+    /// already collapsed into one [`crate::recovery::Start`].
+    ///
+    /// # Why this exists, and why it is the one holding the body
+    ///
+    /// `[2026-09-20]` because the sharded runtime decides `Fresh` or `Resumed`
+    /// on the **acceptor** thread and builds the session on a **shard** thread
+    /// (ADR-0088), so what it holds by then is a `Start<J>` and not a
+    /// `(state, fresh)` pair. Forwarding a `Start` to
+    /// [`Self::add_with_prefix_config_and_journal`] cannot be written: its
+    /// `fresh` is `FnOnce() -> J`, the `Resumed` arm has no second journal to
+    /// give it, and a closure that is never called still has to typecheck —
+    /// every way of writing one is a panic, an `unsafe`, or a `J: Default`
+    /// bound, and non-negotiables 7, 8 and ADR-0039 rule out all three. So the
+    /// body lives here and `..._journal` builds a `Start` and delegates, which
+    /// keeps **one** construction path rather than two.
+    ///
+    /// `pub(crate)`: [`crate::shard::Shardable::add_started`] is the only caller
+    /// besides the delegation above, and ADR-0088 decided no new public door on
+    /// [`Engine`].
+    ///
+    /// # Errors
+    ///
+    /// [`PrefixTooLong`] if the bytes already read will not fit `RX`.
+    pub(crate) fn add_with_prefix_config_and_start(
+        &mut self,
+        transport: T,
+        cfg: Config,
+        prefix: &[u8],
+        start: crate::recovery::Start<J>,
+    ) -> Result<ConnId, PrefixTooLong> {
         if prefix.len() > RX {
             return Err(PrefixTooLong {
                 got: prefix.len(),
@@ -621,15 +670,15 @@ where
         }
         let id = self.next_id;
         self.next_id += 1;
-        let (session, journal) = match state {
-            Some(r) => {
+        let (session, journal) = match start {
+            crate::recovery::Start::Resumed(r) => {
                 let s = match r.last_active_ms {
                     Some(at) => Session::resume_at(cfg, r.next_out, r.next_in, at),
                     None => Session::resume(cfg, r.next_out, r.next_in),
                 };
                 (s, r.journal)
             }
-            None => (Session::new(cfg), fresh()),
+            crate::recovery::Start::Fresh(j) => (Session::new(cfg), j),
         };
         let mut conn = Connection::new(id, transport, session, journal)
             .with_backpressure(self.backpressure)

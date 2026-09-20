@@ -1,6 +1,6 @@
 # ADR-0087 — A socket harness settles on counted records, and the clock does not move while the engine still owes an answer
 
-- **Status**: Accepted — 2026-09-20. The owner delegated the technical decisions of
+- **Status**: Accepted — 2026-09-20; **superseded in part by [ADR-0091](ADR-0091-the-socket-harness-race-is-the-loopback-stacks-not-the-schedulers-and-its-reversal-runs-on-macos.md)** the same day: the *Context* sentence naming a descheduled process, and decision 5's reversal clause, are withdrawn there — the race is the loopback stack's and reachable on macOS only; decisions 1–4 stand. The owner delegated the technical decisions of
   [the-desk-free-residue](../plans/2026-09-20-the-desk-free-residue.md) to the architect on
   2026-09-20; this ADR is written from that mandate, before the plan is built. **Nothing here
   is built**: every test and script named below is *to be written* in step 4 of that plan.
