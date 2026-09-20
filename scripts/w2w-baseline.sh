@@ -366,6 +366,41 @@ join_dump_verdict() { # join_dump_verdict <connect_dump> <listen_dump>
   return 0
 }
 
+# `[2026-09-18]` item 85, ADR-0068 decision 5: temperature and clock speed are
+# read once here, on this process, before any run starts — never on the
+# engine, which the script pins separately below. A file that cannot be read
+# (no such zone, no cpufreq node, permission) prints `n/a` for that one field;
+# it is evidence, not a gate, so it never fails the script.
+# Definition moved above the BASELINE_SOURCE_ONLY guard below so sourcing the
+# script defines it without running anything; the call site is unchanged.
+print_thermal_and_freq_header() {
+  local line="" zone type temp freq
+  for zone in /sys/class/thermal/thermal_zone*/temp; do
+    [ -e "$zone" ] || continue
+    type=$(cat "${zone%temp}type" 2>/dev/null || echo n/a)
+    temp=$(cat "$zone" 2>/dev/null || echo n/a)
+    line="$line thermal $type $temp"
+  done
+  freq=$(cat "/sys/devices/system/cpu/cpu${ENGINE_CORE}/cpufreq/cpuinfo_cur_freq" 2>/dev/null || echo n/a)
+  line="$line cpu${ENGINE_CORE}-freq $freq"
+  echo "${line# }"
+}
+
+# Item 51: a `notrack` rule on `lo` moved `TCP loopback, 8 in 8 out` from
+# 12594.4 to 12175.0 ns/op (about 420 ns, 3.3%) — a published figure depends
+# on whether conntrack was loaded and how many entries it held, so the header
+# carries the count beside uptime. A box with the module unloaded, or a
+# `nf_conntrack_count` this process cannot read, prints `n/a` and the run
+# goes on; this is evidence, not a gate (CLAUDE.md §2 item 10). Definition
+# moved above the BASELINE_SOURCE_ONLY guard for the same reason as
+# `print_thermal_and_freq_header` above.
+print_uptime_and_conntrack_header() {
+  local uptime_s conntrack_n
+  uptime_s=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
+  conntrack_n=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo n/a)
+  printf 'uptime %d:%02d   conntrack %s\n' "$((uptime_s/3600))" "$(((uptime_s%3600)/60))" "$conntrack_n"
+}
+
 # Sourced by the baseline summary test, which wants `median`, `dispersion`,
 # `extra_flag_refusal`, `missing_stamp_verdict` and `join_dump_verdict` (with
 # `dump_pick`/`dump_diff_pct`) and none of the probing or any run — same
@@ -545,28 +580,10 @@ else
   TREE_STR="$TREE_N paths: ${TREE_PATHS% }"
 fi
 echo "commit $HEAD_SHORT   tree $TREE_STR"
-UPTIME_S=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
-printf 'uptime %d:%02d\n' "$((UPTIME_S/3600))" "$(((UPTIME_S%3600)/60))"
+print_uptime_and_conntrack_header
 BIN_SHA=$(sha256sum "$BIN" 2>/dev/null | cut -c1-12)
 BIN_MTIME=$(date -Iseconds -r "$BIN" 2>/dev/null || echo unknown)
 echo "binary ${BIN_SHA:-unknown} $BIN_MTIME"
-# `[2026-09-18]` item 85, ADR-0068 decision 5: temperature and clock speed are
-# read once here, on this process, before any run starts — never on the
-# engine, which the script pins separately below. A file that cannot be read
-# (no such zone, no cpufreq node, permission) prints `n/a` for that one field;
-# it is evidence, not a gate, so it never fails the script.
-print_thermal_and_freq_header() {
-  local line="" zone type temp freq
-  for zone in /sys/class/thermal/thermal_zone*/temp; do
-    [ -e "$zone" ] || continue
-    type=$(cat "${zone%temp}type" 2>/dev/null || echo n/a)
-    temp=$(cat "$zone" 2>/dev/null || echo n/a)
-    line="$line thermal $type $temp"
-  done
-  freq=$(cat "/sys/devices/system/cpu/cpu${ENGINE_CORE}/cpufreq/cpuinfo_cur_freq" 2>/dev/null || echo n/a)
-  line="$line cpu${ENGINE_CORE}-freq $freq"
-  echo "${line# }"
-}
 print_thermal_and_freq_header
 if [ -n "$GENERATOR_SSH" ]; then
   # Best effort: an unreachable host or a remote shell with no `w2w` on its
