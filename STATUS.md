@@ -5,8 +5,11 @@ One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 
 Last updated: **2026-09-20** — **a nested group's lying counter is caught again, and "admin?" has
 two names instead of one**: PR [#86](https://github.com/tmthang86/fixbolt/pull/86), branch
-`plan/group-count-pass-and-is-admin`, closing commit `9fdbeaa`, **CI run
-[`35484818878`](https://github.com/tmthang86/fixbolt/actions/runs/35484818878), 14 jobs of 14**.
+`plan/group-count-pass-and-is-admin`, **merged to `main` as `3f84a81`, and the merge commit
+itself is green**: run
+[`35485601834`](https://github.com/tmthang86/fixbolt/actions/runs/35485601834), 14 jobs of 14.
+The closing commit `9fdbeaa` was 14 of 14 on run
+[`35484818878`](https://github.com/tmthang86/fixbolt/actions/runs/35484818878).
 [the-group-count-pass-and-is-admin](docs/plans/2026-09-20-the-group-count-pass-and-is-admin.md)
 is built to its end (`585e11c`, `c8709a1`, `438228a`, `8e81aae`, `6e84ef1`, `caaf14e`, `9fdbeaa`).
 A senior review found the gate could not see past nesting level 2 — the manager reproduced it,
