@@ -166,6 +166,20 @@ sha256 recorded and verified against the file on disk, every worktree reporting 
 reboot, `fixbolt-machine on`, and require `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` to read
 `pass 16 fail 0 unknown 0` before a single number is taken. **Throw the first run away.**
 
+**`[2026-09-20, end of session]` the owner deferred the boot to another day and the desk was
+powered off.** Nothing was measured. Everything boot D needs survives the shutdown: the 13
+worktrees under `../fb-boot-d/` with `MANIFEST.txt` (37 binaries, every sha256 verified against
+the file on disk), and the two arm branches on `origin`. Two things to check before D0 on the day
+it runs:
+
+* `w1`/`w1s` pin `76e53cb`, while `main` is now `ebf514a` (PR
+  [#89](https://github.com/tmthang86/fixbolt/pull/89)). `git diff 76e53cb ebf514a -- crates/` is
+  **empty** — #89 changed only `scripts/` and `docs/` — so every pre-built binary is still the
+  code it claims to be. Rebuild `w1`/`w1s` at the day's `main` only if `crates/` has moved by then.
+* `scripts/ab-rotation.sh` refuses any binary whose sha256 does not match the manifest, so a stale
+  worktree stops the arm rather than quietly measuring the wrong thing. Re-run the whole-manifest
+  sha256 check first; it is the cheapest way to learn the tree moved.
+
 The owner has already answered the plan's two questions: **the flush arm of item 51 is NOT run**
 (step D1 is skipped — it would drop a remote session), and **the boot runs to its end** and the
 machine is powered off afterwards, as at boot C.
