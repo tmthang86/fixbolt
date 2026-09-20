@@ -3,6 +3,10 @@
 #[path = "harness.rs"]
 mod harness;
 
+/// The shared `NewOrderSingle`, ADR-0089: one source, included by path.
+#[path = "fixture.rs"]
+mod fixture;
+
 use fixbolt_codec::{FieldIndex, NoDict, Parsed, Validation, parse_into};
 use std::hint::black_box;
 
@@ -19,10 +23,12 @@ use std::hint::black_box;
 // constraint.
 fn main() {
     harness::suite(|b| {
-        // The NewOrderSingle from reference/measured-costs.md.
-        let msg: &[u8] = b"8=FIX.4.4\x019=126\x0135=D\x0134=2\x0149=TW44\x01\
-52=00000000-00:00:00.000\x0156=ISLD\x0111=ID\x0121=1\x0138=002000.00\x0140=1\x01\
-54=1\x0155=INTC\x0160=00000000-00:00:00.000\x01167=BOO\x0110=097\x01";
+        // The NewOrderSingle from reference/measured-costs.md, now shared by
+        // every bench that measures it (ADR-0089). Byte-for-byte what this file
+        // has carried since the 2026-09-05 correction, so no case here changes
+        // its input.
+        fixture::assert_valid();
+        let msg: &[u8] = fixture::NEW_ORDER_SINGLE;
 
         let hb: &[u8] = b"8=FIX.4.4\x019=51\x0135=0\x0134=2\x0149=TW44\x01\
 52=00000000-00:00:00.000\x0156=ISLD\x0110=226\x01";
@@ -39,11 +45,14 @@ fn main() {
         // baseline it was compared against came from the same fixture.
         // Correcting it moved the case to 60-64 ns, over its own ceiling.
         // docs/reference/a-benchmark-parsed-a-message-the-parser-rejects.md.
-        for (what, m) in [("NewOrderSingle", msg), ("Heartbeat", hb)] {
-            let mut check: FieldIndex<64> = FieldIndex::new();
-            let r = parse_into::<NoDict, 64>(m, &mut check, Validation::ALL);
-            assert!(matches!(r, Ok(Parsed::Complete { .. })), "{what}: {r:?}");
-        }
+        // `msg` is asserted by `fixture::assert_valid()` above; `hb` lives
+        // only here, so it is asserted here.
+        let mut check: FieldIndex<64> = FieldIndex::new();
+        let hb_parse = parse_into::<NoDict, 64>(hb, &mut check, Validation::ALL);
+        assert!(
+            matches!(hb_parse, Ok(Parsed::Complete { .. })),
+            "Heartbeat: {hb_parse:?}"
+        );
 
         b.bench("parse NewOrderSingle (validated)", || {
             let r = parse_into::<NoDict, 64>(black_box(msg), &mut idx, Validation::ALL);

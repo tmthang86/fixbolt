@@ -27,6 +27,14 @@ const HDR2: fixbolt_session::Header<'static> = fixbolt_session::Header {
 #[path = "../../codec/benches/harness.rs"]
 mod harness;
 
+/// The shared `NewOrderSingle`, ADR-0089. Included by path for the same reason
+/// `harness.rs` is: one rule, one place. This bench hands the bytes to
+/// `deliver` and never reads the checksum digit — it calls `assert_valid()`
+/// anyway, because "this bench does not parse the message" is the sentence that
+/// kept a message failing its own checksum alive in four files for fifteen days.
+#[path = "../../codec/benches/fixture.rs"]
+mod fixture;
+
 use std::hint::black_box;
 use std::ops::Range;
 
@@ -71,10 +79,10 @@ impl Application for Mute {
 fn main() {
     harness::suite(|b| {
         // The NewOrderSingle from reference/measured-costs.md — the same shape
-        // every other benchmark in this repository is measured on.
-        let msg: &[u8] = b"8=FIX.4.4\x019=126\x0135=D\x0134=2\x0149=TW44\x01\
-52=00000000-00:00:00.000\x0156=ISLD\x0111=ID\x0121=1\x0138=002000.00\x0140=1\x01\
-54=1\x0155=INTC\x0160=00000000-00:00:00.000\x01167=BOO\x0110=098\x01";
+        // every other benchmark in this repository is measured on, and since
+        // ADR-0089 literally the same bytes.
+        fixture::assert_valid();
+        let msg: &[u8] = fixture::NEW_ORDER_SINGLE;
         let mut out = [0u8; 1024];
 
         let mut inline = InlineDispatch::new(Bounce);

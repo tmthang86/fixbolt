@@ -14,6 +14,13 @@
 //! session accepted, numbered and journalled, that the application never sees.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+/// The shared `NewOrderSingle`, ADR-0089. This bench hands the bytes to
+/// `deliver` and never reads the checksum digit — it calls `assert_valid()`
+/// anyway, because "this bench does not parse the message" is the sentence that
+/// kept a message failing its own checksum alive in four files for fifteen days.
+#[path = "../../codec/benches/fixture.rs"]
+mod fixture;
+
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -39,6 +46,7 @@ const CAPACITY: usize = 1 << 16;
 /// filled and both are reported, and whether the second is 64 times the first is
 /// something the reader can now see rather than infer.
 fn main() {
+    fixture::assert_valid();
     let a = fill(CAPACITY);
     println!();
     let b = fill(ring::DEFAULT_CAPACITY);
@@ -68,9 +76,7 @@ fn main() {
 ///
 /// Returns the duration and the nanoseconds per message.
 fn fill(capacity: usize) -> (std::time::Duration, u128) {
-    let msg: &[u8] = b"8=FIX.4.4\x019=126\x0135=D\x0134=2\x0149=TW44\x01\
-52=00000000-00:00:00.000\x0156=ISLD\x0111=ID\x0121=1\x0138=002000.00\x0140=1\x01\
-54=1\x0155=INTC\x0160=00000000-00:00:00.000\x01167=BOO\x0110=098\x01";
+    let msg: &[u8] = fixture::NEW_ORDER_SINGLE;
     let stamp = b"20260828-12:00:00.000";
     let mut out = [0u8; 1024];
 

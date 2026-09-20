@@ -395,6 +395,15 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
 
+      # `crates/dict/build.rs` dies when a <message> in the FIX XML carries no
+      # `msgcat` attribute, and that path had never once been observed to
+      # fire — code, not a reproduced red. CLAUDE.md §10 says a guard is
+      # proven by reversal; this is that reversal, run on every commit rather
+      # than once by hand. docs/plans/2026-09-20-the-desk-free-residue.md
+      # row 214, `Not proven (b)`.
+      - name: The dictionary generator refuses a message with no msgcat, and the two die arms beside it
+        run: scripts/check-dict-refuses-a-message-without-msgcat.sh
+
       # `affinity` is off by default and Linux-only (ADR-0015 decision 9), so
       # the two steps above never compile a line of it. Without this the module
       # and its five tests would be a gate nothing gates — the shape this
