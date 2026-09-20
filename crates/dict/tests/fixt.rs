@@ -301,3 +301,56 @@ fn enum_drift_between_service_packs_is_pinned_in_both_directions() {
         "MarketUpdateAction: 3 values in FIX50SP1.xml, 0 in FIX50SP2.xml"
     );
 }
+
+/// `is_admin` and `is_transport_message` name the **same eight** message types.
+///
+/// `[measured 2026-09-20]` every `<message>` in `FIXT11.xml` carries
+/// `msgcat='admin'` (8 of 8) and every one of the 156 in `FIX50SP2.xml` carries
+/// `msgcat='app'` (0 admin). So on the pair table the two questions have the
+/// same answer today — and that coincidence is exactly what must be pinned: the
+/// day the application file ships an admin message, or the transport file an
+/// app one, this test says so instead of letting two tables disagree silently.
+///
+/// The set includes `n` (XMLnonFIX), the element the hand-written seven-item
+/// list beside the call site was missing.
+#[test]
+fn the_transport_files_admin_set_is_the_tables_admin_set() {
+    use fixbolt_dict::fixt11_fix50sp2::is_transport_message;
+
+    const TRANSPORT: [&[u8]; 8] = [b"0", b"1", b"2", b"3", b"4", b"5", b"A", b"n"];
+    for mt in TRANSPORT {
+        assert!(
+            is_transport_message(mt),
+            "{} is a message of FIXT11.xml",
+            String::from_utf8_lossy(mt)
+        );
+        assert!(
+            Fixt::is_admin(mt),
+            "{} carries msgcat='admin'",
+            String::from_utf8_lossy(mt)
+        );
+    }
+    // The set, not only the eight: a table answering `true` for everything
+    // would pass the loop above. Every one-byte and two-byte type the pair
+    // knows is asked, and the two answers must never part.
+    let mut admin = 0usize;
+    for a in 0u8..=127 {
+        for mt in [vec![a], vec![a, b'A'], vec![a, b'0']] {
+            assert_eq!(
+                Fixt::is_admin(&mt),
+                is_transport_message(&mt),
+                "msgcat='admin' and \"a message of FIXT11.xml\" part company on {}",
+                String::from_utf8_lossy(&mt)
+            );
+            if Fixt::is_admin(&mt) {
+                admin += 1;
+            }
+        }
+    }
+    assert_eq!(
+        admin, 8,
+        "FIXT11.xml has eight messages, all msgcat='admin'"
+    );
+    // An application message of the pair is not admin.
+    assert!(!Fixt::is_admin(b"D"), "NewOrderSingle is msgcat='app'");
+}

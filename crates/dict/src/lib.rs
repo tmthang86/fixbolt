@@ -177,6 +177,17 @@ impl Tables for Fixt11Fix50Sp2Tables {
     fn is_msg_type(msg_type: &[u8]) -> bool {
         fixt11_fix50sp2::is_msg_type(msg_type)
     }
+
+    #[inline]
+    fn is_admin(msg_type: &[u8]) -> bool {
+        // `[measured 2026-09-20]` the admin set of the pair is the transport
+        // file's own `<messages>`: all 8 of `FIXT11.xml` carry `msgcat='admin'`
+        // and all 156 of `FIX50SP2.xml` carry `msgcat='app'`. The generated
+        // function still reads `msgcat` across both files rather than aliasing
+        // `is_transport_message`, so the day one file changes category the two
+        // answers part and `fixt.rs` says so.
+        fixt11_fix50sp2::is_admin(msg_type)
+    }
 }
 
 impl Fix44 {

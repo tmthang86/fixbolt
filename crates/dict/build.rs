@@ -773,6 +773,7 @@ fn emit(spec: &Spec<'_, '_>) -> String {
     let mut required: Vec<(String, Vec<u32>)> = Vec::new();
     let mut msg_consts: Vec<(String, String)> = Vec::new();
     let mut msg_types: BTreeSet<String> = BTreeSet::new();
+    let mut admin_types: BTreeSet<String> = BTreeSet::new();
     let mut allowed: Vec<(String, BTreeSet<u32>)> = Vec::new();
     for &m in &spec.messages {
         let (Some(name), Some(mt)) = (m.attribute("name"), m.attribute("msgtype")) else {
@@ -781,6 +782,29 @@ fn emit(spec: &Spec<'_, '_>) -> String {
         msg_consts.push((screaming(name), mt.to_string()));
         if !msg_types.insert(mt.to_string()) {
             die(&format!("two messages share msgtype {mt}"));
+        }
+
+        // `msgcat` is the dictionary's own answer to "is this administrative".
+        // A `<message>` without it stops the build, exactly as a missing `name`
+        // or `msgtype` does above: a default would be this generator inventing
+        // the answer, and the one place it must not be invented is the place
+        // `DESIGN.md` D3 points at.
+        match m.attribute("msgcat") {
+            Some("admin") => {
+                admin_types.insert(mt.to_string());
+            }
+            Some("app") => {}
+            Some(other) => die(&format!(
+                "message {name} ({mt}) has msgcat={other:?}; the only categories\n\
+                 this generator knows are 'admin' and 'app'."
+            )),
+            None => die(&format!(
+                "message {name} ({mt}) has no msgcat attribute.\n\
+                 `is_admin` is generated from it, so a message without one has no\n\
+                 answer — and guessing a default here is the hand-written list\n\
+                 beside a call site that DESIGN.md D3 forbids, only hidden in a\n\
+                 build script."
+            )),
         }
 
         let mut set = BTreeSet::new();
@@ -1172,6 +1196,40 @@ fn emit(spec: &Spec<'_, '_>) -> String {
          }}\n",
         msg_types.len(),
         msg_types
+            .iter()
+            .map(|mt| format!("b\"{mt}\""))
+            .collect::<Vec<_>>()
+            .join(" | "),
+    );
+
+    // ---- is_admin ----------------------------------------------------------
+    if admin_types.is_empty() {
+        die(&format!(
+            "{dialect}: not one <message> carries msgcat='admin'.\n\
+             A dictionary with no administrative message would make `is_admin`\n\
+             answer `false` for Logon itself. Refusing to emit it."
+        ));
+    }
+    let _ = writeln!(
+        o,
+        "/// Whether the dictionary files this table is built from call this\n\
+         /// message administrative — `msgcat='admin'`, read from the XML.\n\
+         ///\n\
+         /// {} of the {} {dialect} message types. Never a list beside a call\n\
+         /// site: `DESIGN.md` D3, and the reason this exists at all is that such\n\
+         /// a list had seven entries where the XML has eight.\n\
+         ///\n\
+         /// This is a question about the **dictionary**, not about which\n\
+         /// messages this engine's session layer answers by itself — those are\n\
+         /// two sets and they differ on `35=n`.\n\
+         #[inline]\n\
+         #[must_use]\n\
+         pub fn is_admin(msg_type: &[u8]) -> bool {{\n\
+         \x20   matches!(msg_type, {})\n\
+         }}\n",
+        admin_types.len(),
+        msg_types.len(),
+        admin_types
             .iter()
             .map(|mt| format!("b\"{mt}\""))
             .collect::<Vec<_>>()

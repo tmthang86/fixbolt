@@ -140,3 +140,31 @@ fn recursion_reaches_through_more_than_one_level() {
         "NoRelatedSym(146) is required in QuoteRequest, got {r:?}"
     );
 }
+
+/// FIX 4.4 calls `35=n` administrative, and the table says so.
+///
+/// `[measured 2026-09-20]` `FIX44.xml` carries `msgcat='admin'` on eight
+/// messages — `0 1 2 3 4 5 A` **and `n`** (XMLnonFIX, `FIX44.xml:1008`) — and
+/// `msgcat='app'` on the other 85. The hand-written list beside the call site
+/// in `crates/session` had seven; the dictionary has always had eight. That
+/// gap is the defect this function closes (`DESIGN.md` D3 — the answer comes
+/// from the generated table, never from a list at a call site).
+#[test]
+fn fix44_calls_xmlnonfix_admin() {
+    use fixbolt_dict::Tables as _;
+
+    assert!(Fix44::is_admin(b"n"), "XMLnonFIX(n) is msgcat='admin'");
+    assert!(Fix44::is_admin(b"A"), "Logon(A) is msgcat='admin'");
+    assert!(!Fix44::is_admin(b"D"), "NewOrderSingle(D) is msgcat='app'");
+    // The count, so that a table answering `true` too widely is caught: eight
+    // admin messages out of the 93 FIX 4.4 defines.
+    let mut admin = 0usize;
+    for a in 0u8..=127 {
+        for mt in [vec![a], vec![a, b'A'], vec![a, b'0']] {
+            if Fix44::is_admin(&mt) {
+                admin += 1;
+            }
+        }
+    }
+    assert_eq!(admin, 8, "FIX44.xml carries msgcat='admin' eight times");
+}
