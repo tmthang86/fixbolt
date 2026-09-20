@@ -411,3 +411,64 @@ fn a_hop_value_is_still_refused_once_the_hop_count_agrees() {
     );
     assert!(out[0].contains("|371=630|"), "naming HopRefID: {out:?}");
 }
+
+// ---------------------------------------------------------------------------
+// A nested counter must not end the `373=16` pass.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_nested_party_sub_group_is_the_shape_this_file_assumes() {
+    // The premise of the test below, verified rather than trusted:
+    // `NoPartySubIDs(802)` is a member of `NoPartyIDs(453)` **and** a counter
+    // in its own right, so the flat `(msg_type, counter)` table answers it on
+    // a `D` while `MessageView::group` — a top-level API
+    // (`crates/codec/src/group.rs:165-176`) — cannot build it.
+    assert_eq!(
+        <Fix44 as Dictionary>::group_members(b"D", 453),
+        &[448, 447, 452, 802],
+        "802 is a member of the party group"
+    );
+    assert_eq!(
+        <Fix44 as Dictionary>::group_delimiter(b"D", 802),
+        Some(523),
+        "and the flat table calls 802 a counter on a D all the same"
+    );
+    assert_eq!(
+        <Fix44 as Dictionary>::group_delimiter(b"D", 386),
+        Some(336),
+        "NoTradingSessions(386) is the top-level counter that follows it"
+    );
+}
+
+#[test]
+fn a_counter_after_a_nested_group_is_still_checked() {
+    // The defect this row exists for: `bad_group_count` used `?` on
+    // `view.group::<D>(..)`, and a `None` there means "no fault" for the whole
+    // message. `802` is nested, so the view answers `None` for it — and every
+    // counter *after* it went unchecked.
+    //
+    // Here the party group is well-formed and carries a nested `802=1`, and
+    // `386=3` below it declares three trading sessions while sending one.
+    // The answer must be `373=16` naming `386`.
+    let mut s = logged_on();
+    let wire = new_order_single(&format!(
+        "{REQUIRED}453=1|448=A|447=B|452=1|802=1|523=SUB|803=1|386=3|336=X|"
+    ));
+    let (link, out) = answer(&mut s, &wire);
+
+    assert_eq!(link, Link::Up, "a Reject does not end the session");
+    assert_eq!(
+        out.len(),
+        1,
+        "expected Reject 373=16, engine sent no reject"
+    );
+    assert!(out[0].contains("|35=3|"), "and it is a Reject: {out:?}");
+    assert!(
+        out[0].contains("|373=16|"),
+        "IncorrectNumInGroupCount on the counter behind the nested group: {out:?}"
+    );
+    assert!(
+        out[0].contains("|371=386|"),
+        "naming NoTradingSessions: {out:?}"
+    );
+}

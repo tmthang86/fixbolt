@@ -4311,11 +4311,22 @@ fn bad_group_count<D: Tables, const N: usize>(
     msg_type: &[u8],
 ) -> Option<(SessionText, Option<Held<12>>)> {
     for i in 0..view.len() {
-        let (counter, _) = view.field_at(i)?;
+        let Some((counter, _)) = view.field_at(i) else {
+            continue;
+        };
         if D::group_delimiter(msg_type, counter).is_none() {
             continue;
         }
-        let group = view.group::<D>(msg_type, counter)?;
+        // **`continue`, not `?`.** In a function returning `Option`, `?` on
+        // `None` ends the whole pass with "no fault" — and
+        // [`MessageView::group`] is a *top-level* API, so it answers `None`
+        // for every **nested** counter, which the flat `(msg_type, counter)`
+        // table hands this loop all the same. One nested group used to leave
+        // every counter behind it unchecked; held by
+        // `tests/group_member_values.rs::a_counter_after_a_nested_group_is_still_checked`.
+        let Some(group) = view.group::<D>(msg_type, counter) else {
+            continue;
+        };
         if group.declared() != Some(group.counted()) {
             return Some((SessionText::IncorrectNumInGroupCount, tag_text(counter)));
         }
