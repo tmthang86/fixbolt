@@ -422,5 +422,20 @@ của message gửi đi và Reject engine trả về, đọc bằng mắt, khôn
 
 ## Nhật ký giao hàng
 
-*(điền khi đóng từng bước: commit, gate nào xanh, output dán nguyên văn, reversal nào đã chạy và
-câu FAIL thật khác câu đã đoán ra sao, CI run id của commit đóng)*
+| Bước | Commit | Bằng chứng manager tự chạy lại |
+|---|---|---|
+| 0 | `585e11c` | ADR-0086 viết xong; `check-links.py` `no dead internal links`. Architect phát hiện ADR-0080 vẫn là `Proposed` dù đã merge — kế hoạch ghi nhầm là Accepted. Không quyết định nào sai, đã ghi vào ADR-0086 |
+| 1 | `c8709a1` | Đỏ trước: `expected Reject 373=16, engine sent no reject`. Reversal (đặt `?` lại): đúng câu đó, 16 passed 1 failed; khôi phục 17 passed. `--test score` 4 passed (assert 59/59). **Lệch kế hoạch**: fixture là `NewOrderSingle` với `802` lồng trong `453`, không phải `TradeCaptureReport` — file test đó toàn FIX 4.4 và `35=D`; có test tiền đề assert đúng là có lồng |
+| 3 | `438228a` | Đỏ trước: `error[E0599]: no associated function … named 'is_admin'`. Ba dạng `cargo test -p fixbolt-dict` (mặc định, `--features fix50sp2`, `--no-default-features`) đều ok. Hàm sinh ra: `matches!(msg_type, b"0"|…|b"A"|b"n")`, không cấp phát. `FIX50SP2.xml` đánh `app` cho cả 156 message, `FIXT11.xml` đánh `admin` cho cả 8 — `is_admin` trùng `is_transport_message` hôm nay, test ghim sự trùng hợp đó |
+| 2 | `8e81aae` | Đỏ trước: `expected Reject 373=16, engine sent no reject`. Hai reversal: nâng phần đi xuống lên trước phần kiểm cha → đỏ nêu `371=802` thay vì `371=453`; hạ trần xuống 1 → đỏ đúng câu ban đầu. Độ sâu do test in: FIX 4.4 4 tầng (`AB`/555), FIXT 7 tầng (`b`/296), trần 8. `group_member_values` 19 passed |
+| 4 | `6e84ef1` | Đỏ trước: `expected no reject, engine sent 373=5 371=1128`. Reversal (đặt `SESSION_OWNED` lại vào chỗ luật 1128): đúng câu đó; khôi phục 11 passed. Bytes thật: `35=n` mang `1128=4` trước bị `Reject 373=5 371=1128`, sau không trả gì, link vẫn up |
+| 5 | `caaf14e` | `check-links.py` sạch. Đo thêm trong lúc đóng bước: test socket `fix50sp2` **phụ thuộc tải và có sẵn trên `main`** — 0/40 chạy tuần tự trên nhánh này, 11/50 khi chạy 10 bản song song, **8/50 cùng cách trên `main` tại `64ea6c2`**. Dưới tải một timer bắn, engine phát `35=5` mà `.def` không hỏi, đẩy lệch comparator đúng một message. Đã đếm và ghi vào `docs/reference/`, **không sửa** |
+| review | `9fdbeaa` | Senior review, context sạch, tìm ra gate không nhìn được quá tầng lồng thứ 2. **Manager tái hiện**: truyền `parent` thay `*member` ở bước đệ quy → **không test nào đỏ**. `a_counter_three_levels_down_that_lies_is_rejected` (`552 → 453 → 802`) bịt lỗ: đỏ `expected Reject 373=16 naming 802, engine sent no reject`, khôi phục 20 passed. Ba finding còn lại cũng đã kiểm chứng và sửa: ADR-0086 ghi "Nothing here is built" (thêm phụ lục có ngày), câu "không đo được" sai về công cụ (`benches/validate.rs` có case; A/B trên laptop ≈ +2,6 µs ≈ +8%, **không công bố được** theo §2 luật 10), và rustdoc mâu thuẫn với docs về vì sao chọn 8 |
+
+**Đóng plan**: commit `9fdbeaa`, **CI run [`35484818878`](https://github.com/tmthang86/fixbolt/actions/runs/35484818878), 14 jobs of 14**.
+
+**Chuyển cho architect, không sửa ở đây**: `view.group` quét lại từ index 0 cho mỗi nested
+counter, nên lượt kiểm là O(số lần xuất hiện × số field). Đây là câu hỏi hình dạng, không phải lỗi.
+
+**Không chứng minh được**: không có máy `DESIGN.md` §9, nên băng số thật của phần đi xuống vẫn nợ;
+nhánh `die()` của `build.rs` khi thiếu `msgcat` chưa bao giờ chạy vì `vendor/` chỉ đọc.
