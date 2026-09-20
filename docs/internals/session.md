@@ -2,13 +2,16 @@
 
 Layer L2 in [DESIGN.md §3](../DESIGN.md#3-crates): the FIX session state machine. Pure — no
 socket, no clock, no allocation, no `format!` (CLAUDE.md §2 non-negotiable 2, D1). `Role` is
-a type parameter; time arrives as `Input::Tick`.
+a type parameter; time arrives as `Input::Tick`. `Session<E: Encoding, R: Role, const APP: usize>`
+is also generic over the tag=value encoding (ADR-0082); the state machine itself does not change
+with `E` — a FIXT 1.1 / FIX 5.0 SP2 session is the same machine with a different `E::Dict`, behind
+the `fix50sp2` feature.
 
 ## Files, and what each keeps
 
 | File | Keeps |
 |---|---|
-| `lib.rs` | `Session<Role>`, `Input`, the state machine itself, and the `Application` trait a caller implements |
+| `lib.rs` | `Session<E, R, APP>`, `Input`, the state machine itself, and the `Application` trait a caller implements |
 | `clock.rs` | Reading a FIX `UTCTimestamp`, and the milliseconds-since-`0000-01-01` epoch the session counts from (D13) |
 | `journal.rs` | The `Journal` trait: two questions the session asks (`keep these bytes at seq n`, `do you still have seq n`) and holds nothing itself |
 | `schedule.rs` | `Schedule` — when a session is open and when both ends restart at `34=1`, as UTC arithmetic only ([ADR-0033](../decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md)) |

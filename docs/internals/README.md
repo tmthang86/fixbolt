@@ -21,6 +21,7 @@ No measurements, no dates, no status live here — those belong to `STATUS.md`,
 |---|---|
 | [codec.md](codec.md) | Where parsing and serialising in place happens, and how the hot path stays allocation-free |
 | [dict.md](dict.md) | Where the FIX 4.4 tables come from, and what is generated versus hand-written |
+| [sbe.md](sbe.md) | Where SBE 1.0 decode/encode and its table generator live, and where the boundary to `codec::Encoding` sits |
 | [session.md](session.md) | Where the pure session state machine lives, and how it takes time without a clock |
 | [engine.md](engine.md) | Where the TCP acceptor/connector and its many modules sit, and what each owns |
 | [library.md](library.md) | Where the application-facing `fixbolt` API adapts the session layer |

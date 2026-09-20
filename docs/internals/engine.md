@@ -4,7 +4,8 @@ Layer L3 in [DESIGN.md §3](../DESIGN.md#3-crates): the TCP acceptor and connect
 thread that drives the session machines, the journal and the message log. The largest crate
 — [DESIGN.md's *What `engine` contains* table](../DESIGN.md#what-engine-contains) already names each module's
 decision (D1–D15, ADR numbers); this page adds the file names, a read order and the guarding
-tests, and does not repeat that table's *Decision* column.
+tests, and does not repeat that table's *Decision* column. `fix50sp2` is a pass-through feature
+only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is gated on it.
 
 ## Files, and what each keeps
 
