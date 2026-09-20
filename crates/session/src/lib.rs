@@ -24,8 +24,8 @@ pub mod text;
 use core::marker::PhantomData;
 
 use fixbolt_codec::{
-    Dictionary, Encoding, FieldIndex, MessageView, ParseError, Parsed, Precision, SOH, Template,
-    TemplateBuilder, TimestampCache, Validation, as_u32, tag_text_at,
+    Dictionary, Encoding, FieldIndex, GroupEntry, MessageView, ParseError, Parsed, Precision, SOH,
+    Template, TemplateBuilder, TimestampCache, Validation, as_u32, tag_text_at,
 };
 use fixbolt_dict::{FieldType, Tables};
 
@@ -282,13 +282,34 @@ impl Application for Silent {
     }
 }
 
-/// The seven message types the session layer answers itself.
+/// The seven message types **this engine's session layer answers itself**.
 ///
-/// Everything else is the application's. `7_ReceiveRejectMessage.def` is why
-/// `3` is in the list: a Reject arriving is read and not answered, and an
-/// application that echoed it would put a message on the wire the file does not
-/// expect.
-const ADMIN: [&[u8]; 7] = [b"0", b"1", b"2", b"3", b"4", b"5", b"A"];
+/// **This is a routing list, not the dictionary's answer, and the two are not
+/// the same set.** "Do the XML files call this message administrative?" is
+/// `Tables::is_admin`, generated from `msgcat`, and it holds **eight** types in
+/// both dictionaries. This holds seven. They differ by exactly `35=n`
+/// (XMLnonFIX), on purpose (ADR-0086 decision 2): every validation rule that
+/// means *this message is not the application's* asks the dictionary; this one
+/// answers only *does the session reply to it, or is it handed to
+/// `Application::on_message` and journalled for resend?*
+///
+/// **`35=n` is handed to the application, and that is a decision.** XMLnonFIX
+/// carries no session content a session layer could answer. QuickFIX C++ and
+/// QuickFIX/J agree — both call `35=n` an application message, their admin
+/// strings being `"0A12345"`; QuickFIX/n's is `"0A12345n"` and it routes `n` to
+/// `FromAdmin`. No `.def` in any corpus sends `35=n`, so **no gate but
+/// `tests/fixt.rs::xmlnonfix_still_reaches_the_application` can see this being
+/// "tidied" into `is_admin`** — and a message that stops being journalled is a
+/// message a future `ResendRequest` gap-fills over, which a counterparty sees
+/// and this repository would not.
+///
+/// The distance between the two lists is itself held by a test:
+/// `tests::every_admin_type_is_session_owned_except_xmlnonfix`.
+///
+/// `7_ReceiveRejectMessage.def` is why `3` is in the list: a Reject arriving is
+/// read and not answered, and an application that echoed it would put a message
+/// on the wire the file does not expect.
+const SESSION_OWNED: [&[u8]; 7] = [b"0", b"1", b"2", b"3", b"4", b"5", b"A"];
 
 /// Whether the connection survived the input.
 ///
@@ -3381,7 +3402,7 @@ where
                 // about the seven it does enumerate and this engine still
                 // refuses.
                 .or_else(|| {
-                    fixt.then(|| out_of_family_appl_ver_id::<N>(&view, mt))
+                    fixt.then(|| out_of_family_appl_ver_id::<E::Dict, N>(&view, mt))
                         .flatten()
                 })
                 .or_else(|| missing_required::<E::Dict, N>(&view, mt))
@@ -3404,7 +3425,10 @@ where
         // so the borrow of `self.idx` ends here and `send` can take `&mut self`.
         let msg_type = view.get(tag::MSG_TYPE).unwrap_or_default();
         // Read while the index is still borrowed, used after it is not.
-        let is_application = !ADMIN.contains(&msg_type);
+        // **Routing, so [`SESSION_OWNED`] and deliberately not
+        // `D::is_admin`** — ADR-0086 decision 2. `35=n` is admin to the
+        // dictionary and still the application's here.
+        let is_application = !SESSION_OWNED.contains(&msg_type);
         let is_logon = msg_type == msg::LOGON;
         let is_logout = msg_type == msg::LOGOUT;
         let is_test_request = msg_type == msg::TEST_REQUEST;
@@ -4279,7 +4303,13 @@ fn scan_group_members<D: Tables, const N: usize>(
 /// be speaking, and the table says nothing about that because the table is the
 /// XML. This is the rule that does. ADR-0080 decision 3.
 ///
-/// **Application messages only, and it is read and not obeyed.** A venue that
+/// **Application messages only — and which those are is the dictionary's
+/// answer, `msgcat`, not this engine's routing list.** ADR-0086 decision 3
+/// narrowed ADR-0080 decision 3 by exactly one message: `35=n` XMLnonFIX is
+/// `msgcat='admin'` in both files and is no longer asked this rule. Held by
+/// `tests/fixt.rs::an_xmlnonfix_message_is_not_asked_the_appl_ver_id_rule`.
+///
+/// **It is read and not obeyed.** A venue that
 /// sends an SP1 message on an SP2 session gets SP2 validation: three tables and
 /// a per-message switch is a branch per message for a case no `.def` exercises,
 /// and ADR-0080 declined it under *Bad — and accepted*. The header fields
@@ -4289,11 +4319,17 @@ fn scan_group_members<D: Tables, const N: usize>(
 ///
 /// Held by `tests/fixt.rs::an_appl_ver_id_outside_the_fix_50_family_is_rejected`
 /// and its neutral twin one line above it.
-fn out_of_family_appl_ver_id<const N: usize>(
+fn out_of_family_appl_ver_id<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
 ) -> Option<(SessionText, Option<Held<12>>)> {
-    if ADMIN.contains(&msg_type) {
+    // **The dictionary's `msgcat`, not [`SESSION_OWNED`]** — ADR-0086
+    // decision 3. "Is this message the application's, so that an application
+    // message rule applies?" is a question about the XML, and answering it
+    // from a routing list beside this call site is what left `35=n` a
+    // transport message for `373=0` and an application one for `1128`. It is
+    // now one layer for both.
+    if D::is_admin(msg_type) {
         return None;
     }
     let v = view.get(tag::APPL_VER_ID)?;
@@ -4301,23 +4337,134 @@ fn out_of_family_appl_ver_id<const N: usize>(
         .then(|| (SessionText::ValueIsIncorrect, tag_text(tag::APPL_VER_ID)))
 }
 
+/// How many levels of group nesting the `373=16` pass descends through.
+///
+/// **Chosen, not measured — and what is measured on every build is the
+/// dictionaries against it.** The number itself is `fixbolt_codec::group`'s
+/// `MAX_DEPTH` (see below), picked there to bound a recursion rather than to
+/// fit a table, and taken here so the session asks as deep as the parser
+/// scans. What no build is allowed to leave unchecked is whether the generated
+/// tables stay under it: `tests::the_generated_tables_never_nest_deeper_than_the_walk_goes`
+/// folds `GROUP_KEYS` over both tables and prints the deepest chain each
+/// one holds: `[measured 2026-09-20]` FIX 4.4 nests **4** deep
+/// (`AB`, counter `555`) and the FIXT 1.1 / FIX 5.0 SP2 pair nests **7**
+/// (`b`, counter `296`). One level of headroom, and the day a regenerated
+/// table spends it the test goes red rather than a lying counter going
+/// unasked — the shape ADR-0085 decision 3 built for `SEEN = 32`.
+///
+/// It is also the brake on the recursion itself: a dictionary whose member set
+/// contained its own counter would otherwise descend for ever, so this bounds
+/// the stack no matter what the generated table says.
+///
+/// **`fixbolt_codec::group`'s `MAX_DEPTH` is the same number and this does not
+/// read it.** That one is crate-private to `codec` and bounds how deep a
+/// *scan* steps over nested regions; this one bounds how deep the session
+/// layer *asks a question*. Two bounds, two owners, deliberately not one
+/// constant shared across a crate boundary — and neither is public API.
+const MAX_GROUP_NESTING: usize = 8;
+
 /// `373=16`: a group counter that disagrees with the entries behind it.
 ///
 /// `14i_RepeatingGroupCountNotEqual.def` declares `386=3` and sends two
 /// entries. This is the **only** repeating group the 59 definitions populate,
 /// and it is in a negative test — see `PRD.md` §4.
+///
+/// **Every depth is asked, not just the top level** (ADR-0086 decision 1).
+/// The specification exempts no nesting level and neither QuickFIX/n nor
+/// QuickFIX/J does; on `AE` twelve of the forty-five counters are nested ones,
+/// so a top-level-only pass is a hole through most of a venue's real traffic.
 fn bad_group_count<D: Tables, const N: usize>(
     view: &MessageView<'_, N>,
     msg_type: &[u8],
 ) -> Option<(SessionText, Option<Held<12>>)> {
     for i in 0..view.len() {
-        let (counter, _) = view.field_at(i)?;
+        let Some((counter, _)) = view.field_at(i) else {
+            continue;
+        };
         if D::group_delimiter(msg_type, counter).is_none() {
             continue;
         }
-        let group = view.group::<D>(msg_type, counter)?;
+        // **`continue`, not `?`.** In a function returning `Option`, `?` on
+        // `None` ends the whole pass with "no fault" — and
+        // [`MessageView::group`] is a *top-level* API, so it answers `None`
+        // for every **nested** counter, which the flat `(msg_type, counter)`
+        // table hands this loop all the same. One nested group used to leave
+        // every counter behind it unchecked; held by
+        // `tests/group_member_values.rs::a_counter_after_a_nested_group_is_still_checked`.
+        let Some(group) = view.group::<D>(msg_type, counter) else {
+            continue;
+        };
+        // **The parent is judged before the descent, and that is wire order.**
+        // A nested group sits between its parent's counter and the next
+        // top-level field, so depth-first *after* the parent is exactly the
+        // order a counterparty's bytes arrive in. Both lying means the parent
+        // is the one named. Held by
+        // `tests/group_member_values.rs::a_parent_counter_is_named_before_its_child`.
         if group.declared() != Some(group.counted()) {
             return Some((SessionText::IncorrectNumInGroupCount, tag_text(counter)));
+        }
+        for entry in group {
+            if let Some(fault) = bad_nested_count::<D, N>(&entry, msg_type, counter, 1) {
+                return Some(fault);
+            }
+        }
+    }
+    None
+}
+
+/// `373=16` for the groups nested inside one entry of the group `parent`
+/// opens, and inside theirs, down to [`MAX_GROUP_NESTING`].
+///
+/// [`MessageView::group`] is a *top-level* API — it steps over group regions
+/// while searching, so it answers `None` for every nested counter even though
+/// the flat `(msg_type, counter)` table hands the outer loop one. The way down
+/// is [`GroupEntry::group`], which scopes the search to this entry, so reading
+/// a nested counter off entry 2 cannot answer with entry 1's.
+///
+/// **The recursive step has its own guard, because the two-level tests do not
+/// reach it**: at depth 1 a fault is found and returned before the call below
+/// ever happens. `tests/group_member_values.rs::a_counter_three_levels_down_that_lies_is_rejected`
+/// sends `552 -> 453 -> 802` on a `NewOrderCross` with only the bottom counter
+/// lying, so naming it takes two descents; pass `parent` instead of `*member`
+/// below and that test is the one that goes red.
+///
+/// **Nothing here allocates.** A [`GroupEntry`] is a `Copy` pair of positions
+/// into the index the parser already filled, `group_members` is a `&'static`
+/// slice off the generated table, and the recursion is stack. Proved by
+/// `benches/alloc.rs`'s `validate TradeCaptureReport (33 groups)` case, which
+/// walks a message with a populated nested group and must read `0` —
+/// `CLAUDE.md` §2.1 wants an allocator's count, not a reading of this comment.
+fn bad_nested_count<'a, D: Tables, const N: usize>(
+    entry: &GroupEntry<'a, N>,
+    msg_type: &'a [u8],
+    parent: u32,
+    depth: usize,
+) -> Option<(SessionText, Option<Held<12>>)> {
+    // **At the bound the answer is "no fault", deliberately.** Under-reading
+    // rather than over-reading is the same choice `codec`'s scan makes at its
+    // own depth cap, and it is safe only because
+    // `tests::the_generated_tables_never_nest_deeper_than_the_walk_goes`
+    // measures both tables against this number on every build.
+    if depth >= MAX_GROUP_NESTING {
+        return None;
+    }
+    for member in D::group_members(msg_type, parent) {
+        if D::group_delimiter(msg_type, *member).is_none() {
+            continue;
+        }
+        // `continue`, not `?`, for the reason the outer loop gives: a counter
+        // this entry simply does not carry is a field the walk passes, not the
+        // end of the whole pass.
+        let Some(nested) = entry.group::<D>(msg_type, *member) else {
+            continue;
+        };
+        if nested.declared() != Some(nested.counted()) {
+            return Some((SessionText::IncorrectNumInGroupCount, tag_text(*member)));
+        }
+        for child in nested {
+            if let Some(fault) = bad_nested_count::<D, N>(&child, msg_type, *member, depth + 1) {
+                return Some(fault);
+            }
         }
     }
     None
@@ -4946,6 +5093,155 @@ mod tests {
                 sp2 > SeenCounters::SEEN,
                 "the fallback is only live because this table crosses the bound: {sp2} <= {}",
                 SeenCounters::SEEN
+            );
+        }
+    }
+
+    /// **`MAX_GROUP_NESTING = 8` is a bound, and the dictionaries say how much
+    /// of it is spent.** ADR-0086 decision 1.
+    ///
+    /// [`bad_nested_count`] stops at [`MAX_GROUP_NESTING`] and answers *no
+    /// fault* there, so a table that nested deeper than the walk goes would
+    /// hide a lying counter with no gate saying so. The depth is therefore
+    /// counted off the generated tables on every run and printed, the same way
+    /// the test above counts `SEEN`. `crates/dict` sits below this crate and
+    /// cannot see this constant, so the measurement lives here — one authored
+    /// copy of the number, next to the thing it bounds.
+    ///
+    /// The cycle brake in `depth` is not decoration: it is the very defect
+    /// `MAX_GROUP_NESTING` exists to survive, a member set containing its own
+    /// counter, and without it this test would hang instead of the engine.
+    #[test]
+    fn the_generated_tables_never_nest_deeper_than_the_walk_goes() {
+        /// Depth of the group `counter` opens on `msg_type`: 1 for a group
+        /// with no nested group in it, else 1 plus its deepest child.
+        fn depth<D: Dictionary>(msg_type: &[u8], counter: u32, seen: &mut Vec<u32>) -> usize {
+            if seen.contains(&counter) {
+                return 1;
+            }
+            seen.push(counter);
+            let d = D::group_members(msg_type, counter)
+                .iter()
+                .filter(|m| D::group_delimiter(msg_type, **m).is_some())
+                .map(|m| 1 + depth::<D>(msg_type, *m, seen))
+                .max()
+                .unwrap_or(1);
+            seen.pop();
+            d
+        }
+
+        fn deepest<D: Dictionary>(keys: &[(&[u8], u32)]) -> (usize, Vec<u8>, u32) {
+            let mut worst = (1usize, Vec::new(), 0u32);
+            for (msg_type, counter) in keys {
+                let d = depth::<D>(msg_type, *counter, &mut Vec::new());
+                if d > worst.0 {
+                    worst = (d, msg_type.to_vec(), *counter);
+                }
+            }
+            worst
+        }
+
+        let (fix44, mt, counter) = deepest::<fixbolt_dict::Fix44>(&fixbolt_dict::GROUP_KEYS);
+        println!(
+            "FIX 4.4: deepest group nesting {fix44} (msg_type {}, counter {counter}); \
+             MAX_GROUP_NESTING = {MAX_GROUP_NESTING}",
+            String::from_utf8_lossy(&mt)
+        );
+        assert!(
+            fix44 <= MAX_GROUP_NESTING,
+            "FIX 4.4 nests {fix44} deep and the walk stops at {MAX_GROUP_NESTING}, so a \
+             counter at the bottom is never asked — raise the bound and re-measure the \
+             allocation bench, do not delete this line"
+        );
+
+        #[cfg(feature = "fix50sp2")]
+        {
+            let (sp2, mt, counter) = deepest::<fixbolt_dict::Fixt11Fix50Sp2Tables>(
+                &fixbolt_dict::fixt11_fix50sp2::GROUP_KEYS,
+            );
+            println!(
+                "FIXT 1.1 / FIX 5.0 SP2: deepest group nesting {sp2} (msg_type {}, counter \
+                 {counter}); MAX_GROUP_NESTING = {MAX_GROUP_NESTING}",
+                String::from_utf8_lossy(&mt)
+            );
+            assert!(
+                sp2 <= MAX_GROUP_NESTING,
+                "the SP2 pair nests {sp2} deep, past the walk's {MAX_GROUP_NESTING}"
+            );
+        }
+    }
+
+    /// **The two admin lists differ by exactly `n`, and a test says so rather
+    /// than a reader's memory.** ADR-0086 decision 2.
+    ///
+    /// [`SESSION_OWNED`] is this engine's routing list; `Tables::is_admin` is
+    /// the dictionaries' `msgcat`. They are deliberately not the same set, and
+    /// the whole cost of keeping two is that nothing but this test notices when
+    /// the distance between them changes. A dictionary that grew a ninth admin
+    /// message would otherwise fall silently to the application side — the
+    /// same class of quiet hole that a seven-entry list answering a dictionary
+    /// question already cost once.
+    ///
+    /// Every message type is one or two bytes in both tables, so the sweep over
+    /// printable ASCII below is exhaustive, not a sample.
+    #[test]
+    fn every_admin_type_is_session_owned_except_xmlnonfix() {
+        /// Every `msg_type` the dictionary calls admin that `SESSION_OWNED`
+        /// does not hold, in the order the sweep meets them.
+        fn gap<D: Tables>() -> Vec<String> {
+            let mut out = Vec::new();
+            let mut consider = |t: &[u8]| {
+                if D::is_admin(t) && !SESSION_OWNED.contains(&t) {
+                    out.push(String::from_utf8_lossy(t).into_owned());
+                }
+            };
+            for a in b' '..=b'~' {
+                consider(&[a]);
+                for b in b' '..=b'~' {
+                    consider(&[a, b]);
+                }
+            }
+            out
+        }
+
+        /// And the other direction: nothing this engine answers itself may be
+        /// a message the dictionary does not call admin.
+        fn not_admin<D: Tables>() -> Vec<String> {
+            SESSION_OWNED
+                .iter()
+                .filter(|t| !D::is_admin(t))
+                .map(|t| String::from_utf8_lossy(t).into_owned())
+                .collect()
+        }
+
+        let fix44 = gap::<fixbolt_dict::Fix44>();
+        println!("FIX 4.4: admin but not session-owned: {fix44:?}");
+        assert_eq!(
+            fix44,
+            vec!["n".to_string()],
+            "the only message FIX 4.4 calls admin that this session layer does not answer \
+             itself is XMLnonFIX — a new entry here is a message quietly going to the \
+             application, and it is a decision, not a tidy-up"
+        );
+        assert!(
+            not_admin::<fixbolt_dict::Fix44>().is_empty(),
+            "FIX 4.4 disagrees that these are admin, yet this session answers them: {:?}",
+            not_admin::<fixbolt_dict::Fix44>()
+        );
+
+        #[cfg(feature = "fix50sp2")]
+        {
+            let sp2 = gap::<fixbolt_dict::Fixt11Fix50Sp2Tables>();
+            println!("FIXT 1.1 / FIX 5.0 SP2: admin but not session-owned: {sp2:?}");
+            assert_eq!(
+                sp2,
+                vec!["n".to_string()],
+                "the FIXT pair's transport file has the same eight, and the gap is the same one"
+            );
+            assert!(
+                not_admin::<fixbolt_dict::Fixt11Fix50Sp2Tables>().is_empty(),
+                "the FIXT pair disagrees that these are admin: {:?}",
+                not_admin::<fixbolt_dict::Fixt11Fix50Sp2Tables>()
             );
         }
     }

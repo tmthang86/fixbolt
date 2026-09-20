@@ -542,6 +542,13 @@ Theo `CLAUDE.md` §4; đây là danh sách **manager sửa**, dòng chính xác:
 | `1128` trên message session (cấm theo spec) không bị từ chối | ghi STATUS item, không xây; test doc B4 nói rõ |
 | Bàn §9 đang bisect C-91b → số A-desk vô nghĩa | A-desk chỉ chạy khi `STATUS.md` *Start here* nói bisect xong; memory rule |
 
+**Hàng `is_admin` ở trên: đóng 2026-09-20.**
+[the-group-count-pass-and-is-admin](2026-09-20-the-group-count-pass-and-is-admin.md) xây nó —
+`Tables::is_admin`, sinh từ `msgcat` — và
+[ADR-0086](../decisions/ADR-0086-a-group-count-is-asked-at-every-depth-admin-is-two-questions-with-two-names-and-xmlnonfix-is-not-asked-the-appl-ver-id-rule.md)
+quyết định 2 ghi rõ vì sao nó trả lời một câu hỏi khác với danh sách định tuyến của session
+(nay là `SESSION_OWNED`).
+
 ## Rủi ro
 
 | Rủi ro | Mức | Cách xử lý |

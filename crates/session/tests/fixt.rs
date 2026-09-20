@@ -15,7 +15,10 @@
 use fixbolt_codec::TagValue;
 use fixbolt_conformance::script::{FIXED_TIME_IN, FIXED_TIME_MILLIS};
 use fixbolt_dict::{Fix44, Fixt11Fix50Sp2Tables};
-use fixbolt_session::{Acceptor, Config, DictionaryChecks, DropReason, Session};
+use fixbolt_session::journal::NoJournal;
+use fixbolt_session::{
+    Acceptor, Application, Config, DictionaryChecks, DropReason, Header, Session,
+};
 
 /// The FIXT 1.1 / FIX 5.0 SP2 encoding, as `tests/score_fixt.rs` spells it.
 type Fixt = TagValue<Fixt11Fix50Sp2Tables, 256>;
@@ -144,6 +147,119 @@ fn an_appl_ver_id_outside_the_fix_50_family_is_rejected() {
     assert!(out.contains("|35=3|"), "expected a Reject:\n{out}");
     assert!(out.contains("|371=1128|"), "naming the field:\n{out}");
     assert!(out.contains("|373=5|"), "with `Value is incorrect`:\n{out}");
+}
+
+/// **`35=n` XMLnonFIX is *not* asked the `1128` rule.** ADR-0086 decision 3.
+///
+/// The rule of ADR-0080 decision 3 is an **application** message rule, and
+/// which messages are not application ones is the dictionary's answer, read
+/// from `msgcat` — `Tables::is_admin`, eight types in both dictionaries — and
+/// no longer a seven-entry list beside the call site that lacked `n`. So the
+/// very `1128=4` that earns `373=5 371=1128` on the `35=D` two tests above
+/// earns nothing here.
+///
+/// **There is no oracle**: no `.def` in the three corpora sends `35=n` at all,
+/// which is exactly why this test exists and why ADR-0086 wrote its expected
+/// failure down before it was run. `n` is a transport message for `373=0`
+/// already (ADR-0084 decision 1); this makes it one for `1128` too.
+#[test]
+fn an_xmlnonfix_message_is_not_asked_the_appl_ver_id_rule() {
+    let (out, next_in, link) = after_a_report(&xmlnonfix("1128=4|"));
+
+    let wire = readable(&out);
+    assert_eq!(link, fixbolt_session::Link::Up, "still up:\n{wire}");
+    assert!(
+        !wire.contains("|35=3|"),
+        "expected no reject, engine sent {}",
+        reason_and_tag(&wire)
+    );
+    // Silence alone would pass the line above even if the message had been
+    // dropped on the floor: the Logon was `34=1` and this `34=2`, so a session
+    // that took it now wants 3.
+    assert_eq!(next_in, 3, "it was taken, not merely not-rejected");
+}
+
+/// **Routing does not change: `35=n` still reaches the application.**
+/// ADR-0086 decision 2, and the test that decision names.
+///
+/// `SESSION_OWNED` — `ADMIN` renamed — stays at **seven** entries and `n` is
+/// not one of them, so an XMLnonFIX message is handed to `Application::on_message`
+/// and any reply is journalled, exactly as before. QuickFIX C++ and QuickFIX/J
+/// both answer `isApp() == true` for `35=n`; QuickFIX/n calls it admin. No
+/// `.def` arbitrates, so **no gate but this one can see the day somebody
+/// "tidies" 3407 into `D::is_admin`** and silently starts gap-filling over a
+/// message a venue sent.
+///
+/// It is green before the change as well as after — that is the point of it.
+#[test]
+fn xmlnonfix_still_reaches_the_application() {
+    /// Answers nothing, and remembers every message it was handed.
+    #[derive(Default)]
+    struct Recorder {
+        seen: Vec<String>,
+    }
+
+    impl Application for Recorder {
+        fn on_message(
+            &mut self,
+            msg: &[u8],
+            _hdr: Header<'_>,
+            _out: &mut [u8],
+        ) -> Option<core::ops::Range<usize>> {
+            self.seen
+                .push(String::from_utf8_lossy(msg).replace('\u{1}', "|"));
+            None
+        }
+    }
+
+    let mut s = fixt_acceptor();
+    let mut sink: Vec<Vec<u8>> = Vec::new();
+    let mut app = Recorder::default();
+    s.connect(|b: &[u8]| sink.push(b.to_vec()));
+    s.tick(FIXED_TIME_MILLIS, |b: &[u8]| sink.push(b.to_vec()));
+    let logon = msg(
+        "FIXT.1.1",
+        "35=A|34=1|49=TW50SP2|52=<T>|56=ISLD|98=0|108=30|1137=9|",
+    );
+    s.received_with(&logon, &mut app, &mut NoJournal, |b: &[u8]| {
+        sink.push(b.to_vec());
+    });
+    sink.clear();
+    app.seen.clear();
+
+    let link = s.received_with(&xmlnonfix(""), &mut app, &mut NoJournal, |b: &[u8]| {
+        sink.push(b.to_vec())
+    });
+
+    let wire = readable(&sink);
+    assert_eq!(link, fixbolt_session::Link::Up, "still up:\n{wire}");
+    assert!(
+        sink.is_empty(),
+        "the session answers nothing itself:\n{wire}"
+    );
+    assert_eq!(
+        app.seen.len(),
+        1,
+        "`35=n` belongs to the application, and exactly one arrived: {:?}",
+        app.seen
+    );
+    assert!(
+        app.seen[0].contains("|35=n|"),
+        "and it is the XMLnonFIX message, whole and untouched: {:?}",
+        app.seen
+    );
+    assert_eq!(s.next_in(), 3, "and it counted");
+}
+
+/// An XMLnonFIX message at `34=2`, with whatever extra header fields the
+/// caller names. `FIXT11.xml` declares `<message name="XMLnonFIX"
+/// msgtype="n" msgcat="admin"/>` — self-closing, so the standard header and
+/// trailer are the whole message.
+fn xmlnonfix(extra: &str) -> Vec<u8> {
+    msg(
+        "FIXT.1.1",
+        &format!("35=n|34=2|49=TW50SP2|52=<T>|56=ISLD|{extra}"),
+    )
 }
 
 /// Log on, then send the corpus's own `NewOrderSingle` with one extra header

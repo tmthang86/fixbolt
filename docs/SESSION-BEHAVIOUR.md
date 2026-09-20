@@ -338,6 +338,72 @@ and `::an_unframeable_socket_is_visible_through_the_engines_snapshot`.
 
 ---
 
+### 3b. A group's count is asked at every nesting depth `[added 2026-09-20]`
+
+**A lying counter no longer goes unasked just because a nested group sits in front of it.**
+`bad_group_count` used to call `?` on the `Option` `MessageView::group` returns, inside a
+function that itself returns `Option` meaning "no fault". `MessageView::group` is a
+**top-level** lookup — it steps over group regions while searching, so it answers `None` for a
+counter nested inside another group even though the flat `(msg_type, counter)` table hands the
+loop a nested counter exactly as it hands a top-level one. The `?` read that `None` as the
+whole pass's answer, so the first nested group on the wire silently ended checking for every
+counter behind it. Measured: 12 of the 45 sub-5000 counters on `AE` (`TradeCaptureReport`) are
+nested, so a real message from that family drew almost none of this check.
+[ADR-0086](decisions/ADR-0086-a-group-count-is-asked-at-every-depth-admin-is-two-questions-with-two-names-and-xmlnonfix-is-not-asked-the-appl-ver-id-rule.md)
+decision 1 closes it: the `?` is `let … else { continue; }`, matched to the pattern already
+used two functions below it (`in_a_group_before`, `in_a_group`), and every entry a group opens
+is walked down through `GroupEntry::group` — the existing, non-allocating way into a nested
+region — comparing `declared()` against `counted()` at every level. The class of defect this
+was, not only this instance, is written up in
+[the-question-mark-operator-turns-cannot-answer-into-no-fault](reference/the-question-mark-operator-turns-cannot-answer-into-no-fault.md).
+
+**The order is depth-first, immediately after the parent's own count — wire order.** A nested
+group sits between its parent's counter and the next top-level field, so that is the order a
+counterparty's bytes arrive in. When a parent and its child are both wrong, the counterparty
+reads `371=` of the **parent**.
+
+**The descent stops at `MAX_GROUP_NESTING = 8`.** Chosen, not measured, and a test measures the
+generated tables against it on every run rather than trusting the number:
+`crates/session/src/lib.rs::tests::the_generated_tables_never_nest_deeper_than_the_walk_goes`
+folds `GROUP_KEYS` and prints the real deepest chain each dictionary holds —
+`[measured 2026-09-20]` FIX 4.4 nests 4 deep (`AB`, counter `555`), the FIXT 1.1 / FIX 5.0 SP2
+pair nests 7 (`b`, counter `296`). One level of headroom; the day a regenerated table spends it,
+this test goes red rather than a lying counter going unasked.
+`crates/dict/tests/group_tables.rs::the_deepest_group_nesting_is_measured` folds the same tables
+from the `dict` crate's own side, asserting only that the fold terminates — the bound itself is
+owned by the session crate, the one copy of the number.
+
+**`14i_RepeatingGroupCountNotEqual.def` is the only one of the 59 that populates a repeating
+group** (`PRD.md` §4), and it is not nested — so the acceptance corpus proves the top-level case
+and nothing about nesting. The nested and depth-ordering behaviour above has no `.def` behind it
+and rests on `crates/session/tests/group_member_values.rs::a_counter_after_a_nested_group_is_still_checked`,
+`::a_nested_counter_that_lies_is_rejected`, `::a_parent_counter_is_named_before_its_child` and
+`::a_counter_three_levels_down_that_lies_is_rejected`. The last of those is the only one that
+nests deeper than two: the other three answer at depth 1 or 2 and so never take the recursive
+step in `bad_nested_count`, which was therefore unguarded until `[added 2026-09-20]` a
+`NewOrderCross` carrying `552 -> 453 -> 802` — parents honest, bottom counter lying — was added.
+`--test score` reads `59 / 59` through all of it — including, checked by reversal, with the old
+`?` put back — which is itself the finding: none of the 59 definitions carries a nested group,
+so that number was never proof this pass worked on one.
+
+**Allocation is proved, not assumed.** `crates/session/benches/alloc.rs`'s `validate
+TradeCaptureReport (33 groups)` case walks a message with a populated nested group and must
+still read **0** (`CLAUDE.md` §2 item 1).
+
+**What this descent costs `validate` has an instrument, a laptop reading, and no publishable
+band.** The instrument is `crates/session/benches/validate.rs`'s `validate TradeCaptureReport
+(33 groups)` case — a timing case on the very fixture the descent walks, so removing
+`bad_group_count`'s `for entry in group` body and re-running it prices the descent directly.
+`[measured 2026-09-20]` on the development laptop (Apple M5, built with the flags
+`scripts/check-bench-alignment.sh --flags` prints, both arms `NO BASELINE`): 34 049.6 and
+34 325.0 ns/op with the descent, 31 687.7 and 31 549.4 without — **about +2.6 µs, about +8 % of
+the pass**. `CLAUDE.md` §2 non-negotiable 10 makes that **not a published number**: there is no
+`DESIGN.md` §9 machine behind it and no baseline line for the CPU, so it is an order of
+magnitude and not a band. The band is owed and is tracked in
+[STATUS.md](../STATUS.md)'s *Not proven* — the cost is not implied to be small.
+
+---
+
 ## 4. Sequence numbers, gaps and resends
 
 - **A gap triggers a ResendRequest.** An inbound `34=` above the expected number means
@@ -522,7 +588,7 @@ Four behaviours differ at the boundary, and two of them have **no oracle** — s
 |---|---|---|
 | A Logon without `1137=` on a `FIXT.1.1` session | dropped, nothing sent — `DropReason::LogonWithoutDefaultApplVerId`, §1 | `tests/fixt.rs::a_logon_without_1137_is_dropped_and_nothing_is_sent`; `1d_InvalidLogonNoDefaultApplVerID.def` |
 | This engine's own Logon on a `FIXT.1.1` session | carries `1137=<DefaultApplVerID>`, placed by the generated tables and never by a call site (§2 item 5) | `tests/fixt.rs::a_fix_44_session_emits_no_1137`; interop `4k` reads the real bytes `8=FIXT.1.1\|…\|1137=9\|` off libquickfix's transcript |
-| `1128=` (ApplVerID) outside the FIX 5.0 family | `Reject` with `373=5 371=1128` | `tests/fixt.rs::an_appl_ver_id_outside_the_fix_50_family_is_rejected`, with its twin `…_in_the_fix_50_family_is_validated_normally` |
+| `1128=` (ApplVerID) outside the FIX 5.0 family | `Reject` with `373=5 371=1128`, application messages only (`Tables::is_admin`; `35=n` XMLnonFIX is exempt, ADR-0086 decision 3) | `tests/fixt.rs::an_appl_ver_id_outside_the_fix_50_family_is_rejected`, with its twin `…_in_the_fix_50_family_is_validated_normally`, and `::an_xmlnonfix_message_is_not_asked_the_appl_ver_id_rule` |
 | An admin message's body | validated against the **transport** dictionary (`FIXT11.xml`) alone, not the merged pair | `14a_BadField.def` in all three corpora; [ADR-0084](decisions/ADR-0084-a-session-message-is-checked-against-the-layer-that-defines-it-a-members-value-waits-for-the-count-and-fix50-is-its-own-oracle.md) decision 1 |
 
 ### The two with no oracle
@@ -534,22 +600,54 @@ of the specification with **no counterparty and no `.def` disagreeing or agreein
 * **what a counterparty's `1137` is used for after logon.** This engine stores it and does not
   re-validate against it; nothing in the corpora sends a message that would tell the two
   behaviours apart.
-* **`1128=` on a session-level message.** `[corrected 2026-09-19]` This page first said the rule
-  is "applied wherever `1128` appears". **That is the opposite of what the code does.**
-  `out_of_family_appl_ver_id` returns early on an admin message type, so the rule is applied to
-  **application messages only** — measured: `35=0` carrying `1128=4` produces no reply at all,
-  `35=D` carrying `1128=4` produces `Reject 373=5 371=1128`. No `.def` sends `1128` on a session
-  message, and no test covers it, so nothing in this repository holds the boundary either way.
+* **`1128=` on a session-level message.** `[corrected 2026-09-19, updated 2026-09-20]` This page
+  first said the rule is "applied wherever `1128` appears". **That was the opposite of what the
+  code did.** `out_of_family_appl_ver_id` returns early on an admin message type, so the rule is
+  applied to **application messages only** — measured: `35=0` carrying `1128=4` produces no reply
+  at all, `35=D` carrying `1128=4` produces `Reject 373=5 371=1128`. No `.def` sends `1128` on a
+  session message, and no test covers it, so nothing in this repository holds that boundary
+  either way.
 
-  Which message types count as "session-level" is itself unsettled here, and that is recorded
-  rather than smoothed over: the validate pass asks the question twice and gets two answers.
-  Generated `is_transport_message` names eight types including `n` (XMLnonFIX); the hand-written
-  `ADMIN` const in `crates/session/src/lib.rs` names seven and **omits `n`**. So `35=n` is checked
-  against the transport tag set *and* subjected to the application-only `1128` rule.
+  **Until [ADR-0086](decisions/ADR-0086-a-group-count-is-asked-at-every-depth-admin-is-two-questions-with-two-names-and-xmlnonfix-is-not-asked-the-appl-ver-id-rule.md),
+  which message types counted as "session-level" was itself unsettled here: the validate pass
+  asked the question twice and got two answers.** Generated `is_transport_message` named eight
+  types including `n` (XMLnonFIX); the hand-written `ADMIN` const in `crates/session/src/lib.rs`
+  named seven and **omitted `n`**. So `35=n` was checked against the transport tag set *and*
+  subjected to the application-only `1128` rule, in the same validate pass.
 
-Both are recorded as unproven in [STATUS.md](../STATUS.md) rather than presented as results.
-The interop `FIXT` arm ([CONFORMANCE.md](CONFORMANCE.md) §9) is the first independent opinion on
-any of this, and it exercises the first three rows, not these two.
+  **That is no longer true.** ADR-0086 decision 2 gives the two questions two names instead of
+  one hand-written list answering both: `out_of_family_appl_ver_id` now asks
+  `Tables::is_admin(msg_type)`, **generated** in `crates/dict/build.rs` from each `<message>`'s
+  `msgcat` (a `<message>` with none fails the build rather than guessing a default) — this is the
+  dictionary's own answer, not a list beside the call site (`DESIGN.md` D3). The renamed
+  `SESSION_OWNED` const (the same seven entries, `0 1 2 3 4 5 A`) keeps answering only its one
+  question — *does this session layer reply to the message itself, or hand it to the application
+  and journal it for resend* — at `is_application`'s single call site. **Decision 3: `35=n` is
+  now exempt from the `1128` rule**, matching the transport treatment `is_defined_tag_for`
+  already gave it — measured: `35=n` carrying `1128=4` drew `Reject 373=5 371=1128` before this
+  change and draws **nothing at all** after, link still up. Routing is unchanged: `35=n` still
+  reaches `Application::on_message` and is still journalled for resend, pinned by
+  `tests/fixt.rs::xmlnonfix_still_reaches_the_application`, green before and after. The distance
+  between the two lists — which message types the dictionary calls admin that `SESSION_OWNED`
+  does not hold — is itself held by a test,
+  `crates/session/src/lib.rs::tests::every_admin_type_is_session_owned_except_xmlnonfix`, rather
+  than a reader's memory.
+
+  **What stays unproven, and ADR-0086 leaves it open on purpose**: no `.def` in any corpus sends
+  `1128` on a session-level message at all, so beyond `35=n`'s now-settled case, which other
+  message types the rule should even consider "session-level" is still this engine's reading of
+  the specification — ADR-0080 decision 3's own open item, *"`1128` is not permitted on session
+  messages, and is not enforced"*, stays open, now covering `n` as well.
+
+  Held by `tests/fixt.rs::an_xmlnonfix_message_is_not_asked_the_appl_ver_id_rule` and
+  `::xmlnonfix_still_reaches_the_application`; `crates/dict/tests/fixt.rs::the_transport_files_admin_set_is_the_tables_admin_set`
+  and `crates/dict/tests/tables.rs::fix44_calls_xmlnonfix_admin`.
+
+The `1137` question above is fully unproven, as stated. The `1128` question is narrower than it
+was — `35=n` is now settled by ADR-0086 — and what remains of it is recorded as unproven in
+[STATUS.md](../STATUS.md) rather than presented as a result. The interop `FIXT` arm
+([CONFORMANCE.md](CONFORMANCE.md) §9) is the first independent opinion on any of this, and it
+exercises the first three rows, not these two.
 
 ---
 

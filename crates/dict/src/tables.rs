@@ -75,6 +75,24 @@ pub trait Tables: Dictionary {
     /// `&[]` both for a type that does not exist and for one that requires
     /// nothing.
     fn is_msg_type(msg_type: &[u8]) -> bool;
+
+    /// Whether the dictionary calls this message type administrative —
+    /// `msgcat='admin'` in the XML, generated, never a list written beside a
+    /// call site (`DESIGN.md` D3).
+    ///
+    /// It answers no `373=` code by itself; it is what a rule *about* the
+    /// session layer turns on — ADR-0080 decision 3's `1128` rule applies to
+    /// application messages only, and this is how that rule asks.
+    ///
+    /// There is deliberately **no default method**, for
+    /// [`Tables::is_defined_tag_for`]'s reason: a default would hand a future
+    /// third table FIX 4.4's admin set without anybody saying so.
+    ///
+    /// This is a question about the **dictionary**. "Does this engine's session
+    /// layer answer this message itself?" is a different question with a
+    /// different set — they differ on `35=n` (XMLnonFIX) — and it is not this
+    /// one.
+    fn is_admin(msg_type: &[u8]) -> bool;
 }
 
 impl Tables for crate::Fix44 {
@@ -118,6 +136,11 @@ impl Tables for crate::Fix44 {
     #[inline]
     fn is_msg_type(msg_type: &[u8]) -> bool {
         crate::is_msg_type(msg_type)
+    }
+
+    #[inline]
+    fn is_admin(msg_type: &[u8]) -> bool {
+        crate::is_admin(msg_type)
     }
 }
 

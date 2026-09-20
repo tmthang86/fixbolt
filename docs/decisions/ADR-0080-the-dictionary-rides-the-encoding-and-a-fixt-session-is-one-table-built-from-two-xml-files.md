@@ -1,6 +1,6 @@
 # ADR-0080 — The dictionary rides the encoding, and a FIXT session is one table built from two XML files
 
-- **Status**: Proposed — 2026-09-19
+- **Status**: Proposed — 2026-09-19 — **decision 3 narrowed by [ADR-0086](ADR-0086-a-group-count-is-asked-at-every-depth-admin-is-two-questions-with-two-names-and-xmlnonfix-is-not-asked-the-appl-ver-id-rule.md)**, which exempts `35=n` from the `1128` rule. Substance untouched, per §5.
 - **Date**: 2026-09-19
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0079](ADR-0079-one-view-per-encoding-and-one-trait-over-them.md)
