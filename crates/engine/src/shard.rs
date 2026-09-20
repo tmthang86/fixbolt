@@ -44,6 +44,7 @@ use crate::dispatch::Dispatch;
 #[cfg(feature = "standard")]
 use crate::msglog::MaybeLog;
 use crate::presession::{Pending, identity_of};
+use crate::recovery::Start;
 use crate::transport::{TcpTransport, Transport};
 use crate::wait::Waiting;
 use fixbolt_session::Role;
@@ -55,29 +56,56 @@ use fixbolt_session::journal::Journal as SessionJournal;
 /// [`Shards`] carries none of its nine type parameters, and so that a test can
 /// hand it something that is not an engine at all — which is how the assignment
 /// policy is tested without a socket in sight.
-pub trait Shardable: Send {
-    /// Take ownership of a connection this shard has been given, with the
-    /// bytes the pre-session stage already read off it.
+pub trait Shardable<J = crate::journal::Store>: Send {
+    /// Take ownership of a connection this shard has been given, with the bytes
+    /// the pre-session stage already read off it and the journal its session
+    /// starts from.
     ///
     /// `cfg` is the configuration the pre-session stage's registry chose for
     /// this counterparty — [ADR-0030]. It is **not** the engine's own: one shard
     /// engine holds as many counterparties as reach it.
+    ///
+    /// `start` is what the **acceptor** thread decided: a journal for a fresh
+    /// session, or a [`Resumed`](crate::recovery::Resumed) one with the numbers
+    /// to continue at. Deciding it there and carrying it here is the whole of
+    /// [ADR-0088] — this thread is an engine thread and `CLAUDE.md` §2
+    /// non-negotiable 4 forbids it to read a file.
     ///
     /// `false` if those bytes do not fit the engine's receive buffer, in which
     /// case the connection is dropped rather than served with part of its first
     /// message missing. A caller keeps `PRE <= RX` and this never happens.
     ///
     /// [ADR-0030]: ../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md
-    fn add(&mut self, transport: TcpTransport, cfg: fixbolt_session::Config, prefix: &[u8])
-    -> bool;
+    /// [ADR-0088]: ../../../docs/decisions/ADR-0088-recovery-reaches-the-sharded-runtime-and-the-journal-crosses-the-channel-with-the-connection.md
+    fn add_started(
+        &mut self,
+        transport: TcpTransport,
+        cfg: fixbolt_session::Config,
+        prefix: &[u8],
+        start: Start<J>,
+    ) -> bool;
+
+    /// [`add_started`](Self::add_started) for a session with nothing to
+    /// continue.
+    ///
+    /// The `J: Default` bound is **on this method rather than on the trait**,
+    /// which is where ADR-0039 decision 2 says such a bound belongs: on the
+    /// callers that want it, so a journal with no honest `Default` — a
+    /// `FileJournal` needs a path — does not lose the rest of the trait.
+    fn add(&mut self, transport: TcpTransport, cfg: fixbolt_session::Config, prefix: &[u8]) -> bool
+    where
+        J: Default,
+    {
+        self.add_started(transport, cfg, prefix, Start::Fresh(J::default()))
+    }
     /// One non-blocking pass. `true` if anything moved.
     fn turn(&mut self) -> bool;
     /// Nothing moved. Whatever this shard's mode does about that.
     fn idle(&mut self);
 }
 
-impl<R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L, const APP: usize> Shardable
-    for crate::Engine<TcpTransport, R, D, C, W, J, N, RX, TX, L, APP>
+impl<R, D, C, W, J, const N: usize, const RX: usize, const TX: usize, L, const APP: usize>
+    Shardable<J> for crate::Engine<TcpTransport, R, D, C, W, J, N, RX, TX, L, APP>
 where
     Self: Send,
     TcpTransport: Transport,
@@ -85,20 +113,22 @@ where
     D: Dispatch,
     C: Clock,
     W: Waiting,
-    // `Engine::add` builds a journal for the new connection, so this runtime
-    // can only carry engines whose journal has a default. `add_with_journal`
-    // is the escape hatch and it needs a journal per connection, which is not
-    // something an accept loop can supply.
-    J: SessionJournal + Default,
+    // **No `Default` here since ADR-0088.** It used to sit on this header
+    // because `Engine::add` built the new connection's journal itself, which
+    // shut every journal without an honest `Default` — a `FileJournal` needs a
+    // path — out of the whole sharded runtime. The journal now arrives with the
+    // connection, so the bound is on `Shardable::add` alone.
+    J: SessionJournal,
     L: crate::msglog::MessageLog,
 {
-    fn add(
+    fn add_started(
         &mut self,
         transport: TcpTransport,
         cfg: fixbolt_session::Config,
         prefix: &[u8],
+        start: Start<J>,
     ) -> bool {
-        crate::Engine::add_with_prefix_and_config(self, transport, cfg, prefix).is_ok()
+        crate::Engine::add_with_prefix_config_and_start(self, transport, cfg, prefix, start).is_ok()
     }
     fn turn(&mut self) -> bool {
         crate::Engine::turn(self)
@@ -205,14 +235,22 @@ const ABORT: u8 = 2;
 /// disconnects, which happens when the last [`Shards`] holding the sender is
 /// dropped; the engine goes with it, and so do the connections it owned. That
 /// is process shutdown, and it is the only shutdown this offers.
-pub struct Shards<const PRE: usize = 4096> {
-    senders: Vec<Sender<Pending<TcpTransport, PRE>>>,
+///
+/// `J` is the journal its engines hold, and it defaults to
+/// [`Store`](crate::journal::Store) so `Shards::<PRE>` keeps meaning what it
+/// meant before ADR-0088 gave the channel a journal to carry.
+pub struct Shards<const PRE: usize = 4096, J = crate::journal::Store> {
+    // **A pair, not a `Pending`, since ADR-0088.** What a shard thread needs to
+    // build a session is the connection *and* the journal it starts from, and
+    // the journal can only be decided on the acceptor thread — this channel is
+    // the one thing that already crosses between the two.
+    senders: Vec<Sender<(Pending<TcpTransport, PRE>, Start<J>)>>,
     cores: Vec<CoreId>,
     route: Box<dyn Route>,
     threads: Vec<JoinHandle<()>>,
 }
 
-impl<const PRE: usize> Shards<PRE> {
+impl<const PRE: usize, J> Shards<PRE, J> {
     /// Validate the plan, start one pinned thread per shard, and wait for every
     /// one of them to confirm its pin before any of them serves.
     ///
@@ -226,8 +264,14 @@ impl<const PRE: usize> Shards<PRE> {
     /// be spawned.
     pub fn start<E, F>(plan: &ShardPlan, make: F) -> Result<Self, ShardError>
     where
-        E: Shardable + 'static,
+        E: Shardable<J> + 'static,
         F: Fn(usize) -> E + Send + Sync + 'static,
+        // ADR-0088 decision 4: a `Start<J>` rides the channel, so the journal
+        // has to be able to cross a thread boundary. `Store` can; a
+        // `FileJournal` owns a file handle and can;
+        // `tests/shard_recovery.rs::the_start_that_crosses_the_channel_is_send`
+        // is where that is a compile-time fact rather than this sentence.
+        J: Send + 'static,
     {
         // ADR-0015 decision 6: before a single thread exists.
         plan.validate()?;
@@ -240,7 +284,7 @@ impl<const PRE: usize> Shards<PRE> {
         let mut threads = Vec::with_capacity(plan.shards().len());
 
         for (i, core) in plan.shards().iter().copied().enumerate() {
-            let (tx, rx) = mpsc::channel::<Pending<TcpTransport, PRE>>();
+            let (tx, rx) = mpsc::channel::<(Pending<TcpTransport, PRE>, Start<J>)>();
             senders.push(tx);
 
             let make = Arc::clone(&make);
@@ -276,7 +320,7 @@ impl<const PRE: usize> Shards<PRE> {
                         let mut moved = false;
                         loop {
                             match rx.try_recv() {
-                                Ok(p) => {
+                                Ok((p, start)) => {
                                     // The array moves; nothing is allocated to
                                     // carry a connection across the channel.
                                     // A `Pending` that reached a shard has
@@ -286,7 +330,15 @@ impl<const PRE: usize> Shards<PRE> {
                                     // than inventing an identity for it.
                                     let Some(cfg) = p.config() else { continue };
                                     let (t, buf, len) = p.into_parts();
-                                    let _ = engine.add(t, cfg, buf.get(..len).unwrap_or(&[]));
+                                    // **`add_started`, never `add`.** The
+                                    // journal was decided on the acceptor
+                                    // thread; this one may not read a file.
+                                    let _ = engine.add_started(
+                                        t,
+                                        cfg,
+                                        buf.get(..len).unwrap_or(&[]),
+                                        start,
+                                    );
                                     moved = true;
                                 }
                                 Err(TryRecvError::Empty) => break,
@@ -360,7 +412,32 @@ impl<const PRE: usize> Shards<PRE> {
     /// [`ShardError::NoIdentity`] if the first message named no `49=`/`56=`,
     /// [`ShardError::BadRoute`] if the policy names a shard that does not
     /// exist, [`ShardError::ThreadGone`] if that shard's thread has ended.
-    pub fn hand(&mut self, pending: Pending<TcpTransport, PRE>) -> Result<usize, ShardError> {
+    pub fn hand(&mut self, pending: Pending<TcpTransport, PRE>) -> Result<usize, ShardError>
+    where
+        J: Default,
+    {
+        self.hand_started(pending, Start::Fresh(J::default()))
+    }
+
+    /// [`hand`](Self::hand), carrying the journal the session starts from.
+    ///
+    /// The journal travels **with** the connection because the two decisions
+    /// are on two threads: what a counterparty left behind can only be read
+    /// where blocking is allowed, and the session is built where it is not
+    /// ([ADR-0088]).
+    ///
+    /// # Errors
+    ///
+    /// As [`hand`](Self::hand). A connection refused here takes its journal
+    /// with it and both are dropped — which for a journal on disk means a file
+    /// opened and closed for nothing, named in ADR-0088's *Consequences*.
+    ///
+    /// [ADR-0088]: ../../../docs/decisions/ADR-0088-recovery-reaches-the-sharded-runtime-and-the-journal-crosses-the-channel-with-the-connection.md
+    pub fn hand_started(
+        &mut self,
+        pending: Pending<TcpTransport, PRE>,
+        start: Start<J>,
+    ) -> Result<usize, ShardError> {
         let of = self.senders.len();
         let shard = {
             let id = identity_of(pending.bytes()).ok_or(ShardError::NoIdentity)?;
@@ -371,7 +448,7 @@ impl<const PRE: usize> Shards<PRE> {
             .get(shard)
             .ok_or(ShardError::BadRoute { shard, of })?;
         sender
-            .send(pending)
+            .send((pending, start))
             .map_err(|_| ShardError::ThreadGone(shard))?;
         Ok(shard)
     }
@@ -495,6 +572,119 @@ where
     A: fixbolt_session::Application + Send + 'static,
     F: Fn(usize) -> A + Send + Sync + 'static,
 {
+    // **One loop, not two.** ADR-0088 decision 3 gave the sharded doors the
+    // shape ADR-0034 decision 3 gave `serve`/`serve_with_recovery`: the fresh
+    // path *is* the resumed path with [`NoRecovery`](crate::recovery::NoRecovery)
+    // for an answer, so `serve_sharded_hft_serves_a_session` proves the loop
+    // that `serve_sharded_hft_with_recovery` runs.
+    serve_sharded_hft_with_recovery_with::<
+        N,
+        RX,
+        TX,
+        APP,
+        A,
+        crate::journal::Store,
+        crate::recovery::NoRecovery,
+        F,
+    >(
+        addr,
+        table,
+        plan,
+        capacity,
+        limits,
+        make_app,
+        crate::recovery::NoRecovery,
+        log_path,
+    )
+}
+
+/// [`serve_sharded_hft`], asking `recovery` what each counterparty left behind.
+///
+/// **The sharded half of `STATUS.md` item 32 (a).** `crate::serve_with_recovery`
+/// and [`crate::serve_hft_with_recovery`] let a single-engine deployment resume
+/// its sequence numbers across a restart; this is the same seam for a deployment
+/// that runs one pinned engine per core.
+///
+/// `recovery` is asked **on this thread**, once per connection, the moment the
+/// pre-session stage has named the counterparty — so an implementation may read
+/// a file ([ADR-0020]). What it answers crosses the channel to the shard thread
+/// with the connection, because that thread is an engine thread and `CLAUDE.md`
+/// §2 non-negotiable 4 forbids it to block. [ADR-0088].
+///
+/// A slow `Recovery` delays every pre-session connection behind it, and a
+/// journal is built before [`Shards::hand_started`] can refuse a connection —
+/// both are named in ADR-0088's *Consequences* and neither is bounded here.
+///
+/// # Errors
+///
+/// As [`serve_sharded_hft`].
+///
+/// [ADR-0088]: ../../../docs/decisions/ADR-0088-recovery-reaches-the-sharded-runtime-and-the-journal-crosses-the-channel-with-the-connection.md
+/// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
+// **Eight, and clippy's ceiling is seven.** The same deliberate parameter
+// ADR-0054 took for `serve_with_recovery` and the three doors beside it: a
+// `Serve` builder is the recorded alternative, deferred until an eleventh
+// parameter is wanted.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "standard")]
+pub fn serve_sharded_hft_with_recovery<A, J, V, F>(
+    addr: &str,
+    table: crate::presession::Table,
+    plan: &ShardPlan,
+    capacity: usize,
+    limits: crate::presession::Limits,
+    make_app: F,
+    recovery: V,
+    log_path: Option<&std::path::Path>,
+) -> Result<core::convert::Infallible, ShardError>
+where
+    A: fixbolt_session::Application + Send + 'static,
+    F: Fn(usize) -> A + Send + Sync + 'static,
+    J: SessionJournal + Send + 'static,
+    V: crate::recovery::Recovery<J>,
+{
+    serve_sharded_hft_with_recovery_with::<256, 4096, 8192, 1024, A, J, V, F>(
+        addr, table, plan, capacity, limits, make_app, recovery, log_path,
+    )
+}
+
+/// The same, with the three buffer sizes named by the caller. See
+/// [`crate::serve_with`] for what `N`, `RX` and `TX` mean and what they cost.
+///
+/// **This is the only sharded serving loop.** [`serve_sharded_hft_with`] is one
+/// call through [`NoRecovery`](crate::recovery::NoRecovery) into it.
+///
+/// # Errors
+///
+/// As [`serve_sharded_hft`].
+// Eight, as above.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "standard")]
+pub fn serve_sharded_hft_with_recovery_with<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A,
+    J,
+    V,
+    F,
+>(
+    addr: &str,
+    table: crate::presession::Table,
+    plan: &ShardPlan,
+    capacity: usize,
+    limits: crate::presession::Limits,
+    make_app: F,
+    mut recovery: V,
+    log_path: Option<&std::path::Path>,
+) -> Result<core::convert::Infallible, ShardError>
+where
+    A: fixbolt_session::Application + Send + 'static,
+    F: Fn(usize) -> A + Send + Sync + 'static,
+    J: SessionJournal + Send + 'static,
+    V: crate::recovery::Recovery<J>,
+{
     use crate::clock::{Clock, SystemClock};
     use crate::presession::PendingSet;
     use crate::transport::Interest;
@@ -546,9 +736,11 @@ where
     }
     let logs = std::sync::Mutex::new(opened);
 
-    let mut shards = Shards::<RX>::start(
+    let mut shards = Shards::<RX, J>::start(
         plan,
-        move |i| -> crate::HftAcceptorEngine<A, MaybeLog, N, RX, TX, APP> {
+        // `HftAcceptorEngine` with `J` in place of its `Store`: same shape,
+        // same `Spin`, and the journal the caller's `Recovery` answers with.
+        move |i| -> crate::TcpAcceptorEngine<A, crate::wait::Spin, J, MaybeLog, N, RX, TX, APP> {
             let taken = logs
                 .lock()
                 .ok()
@@ -559,14 +751,22 @@ where
             // only on the path this `#[cfg]` compiles, which is why it reached
             // CI rather than a local build. `[measured 2026-09-04]` run
             // 33859821622, the `affinity` job, E0283.
-            let bare: crate::HftAcceptorEngine<A, crate::msglog::NoLog, N, RX, TX, APP> =
-                crate::Engine::new(
-                    cfg,
-                    crate::dispatch::InlineDispatch::new(make_app(i)),
-                    SystemClock,
-                    crate::wait::Spin,
-                    capacity,
-                );
+            let bare: crate::TcpAcceptorEngine<
+                A,
+                crate::wait::Spin,
+                J,
+                crate::msglog::NoLog,
+                N,
+                RX,
+                TX,
+                APP,
+            > = crate::Engine::new(
+                cfg,
+                crate::dispatch::InlineDispatch::new(make_app(i)),
+                SystemClock,
+                crate::wait::Spin,
+                capacity,
+            );
             bare.with_shard(u16::try_from(i).unwrap_or(u16::MAX))
                 .with_log(MaybeLog(taken))
         },
@@ -592,7 +792,17 @@ where
         set.turn(now);
         while let Some(i) = set.settled() {
             let Some(p) = set.take(i) else { break };
-            match shards.hand(p) {
+            // **The one place recovery is asked**, and it is this thread — the
+            // acceptor's, which ADR-0020 allows to block. The identity is known
+            // now and was not a moment ago. A `Pending` that settled has a
+            // configuration; `None` cannot happen and drops the socket rather
+            // than inventing an identity for it.
+            let Some(cfg) = p.config() else { continue };
+            let start = match recovery.recover(&cfg) {
+                Some(resumed) => Start::Resumed(resumed),
+                None => Start::Fresh(recovery.fresh(&cfg)),
+            };
+            match shards.hand_started(p, start) {
                 Ok(_) => {}
                 // A `Logon` that named nobody, or a route that named a shard
                 // that does not exist: the connection is dropped. A dead shard

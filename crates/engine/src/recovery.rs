@@ -205,3 +205,38 @@ impl<J: Default, F: FnMut(&Config) -> Option<Resumed<J>>> Recovery<J> for FromFn
         J::default()
     }
 }
+
+/// How one connection's session begins: **fresh**, with a journal the
+/// deployment built, or **continued** from what a [`Recovery`] found.
+///
+/// # Why this type exists at all
+///
+/// `[2026-09-20]` because the two moments are on different threads. In the
+/// sharded runtime (`crate::shard`) the counterparty is named on the acceptor
+/// thread, which
+/// [ADR-0020](../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md)
+/// allows to block — so that is where a `Recovery` may read a file. The session
+/// is built on a shard thread, which in `hft` mode never blocks (`CLAUDE.md` §2
+/// non-negotiable 4). Whatever recovery produced therefore has to **travel**
+/// from the first thread to the second, with the connection, and this is what
+/// travels.
+/// [ADR-0088](../../../docs/decisions/ADR-0088-recovery-reaches-the-sharded-runtime-and-the-journal-crosses-the-channel-with-the-connection.md).
+///
+/// It is not `Option<Resumed<J>>`: that shape says nothing about where the
+/// **fresh** journal comes from, and a `FileJournal` has no honest
+/// [`Default`] to fall back on ([ADR-0039]). Both arms carry a journal, so no
+/// bound is needed on the thread that receives one.
+///
+/// `J: Send` is what lets it cross a channel, and
+/// `crates/engine/tests/shard_recovery.rs::the_start_that_crosses_the_channel_is_send`
+/// is where that is asserted rather than assumed.
+///
+/// [ADR-0039]: ../../../docs/decisions/ADR-0039-a-fresh-journal-is-the-deployments-to-build.md
+#[derive(Debug)]
+pub enum Start<J> {
+    /// Nothing to continue. The journal is the one [`Recovery::fresh`]
+    /// answered, already built on the thread that was allowed to build it.
+    Fresh(J),
+    /// A session that outlived the process, and the numbers to resume it at.
+    Resumed(Resumed<J>),
+}
