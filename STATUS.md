@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
+Last updated: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
 built but has not run**: PRs [#87](https://github.com/tmthang86/fixbolt/pull/87) (merge `a451831`,
 closing commit `ed03886`, run
 [`35494930920`](https://github.com/tmthang86/fixbolt/actions/runs/35494930920), 14 of 14) and
@@ -89,6 +89,87 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 **`[2026-09-09, merged]` §9's last box, closed on the commit it asks about.** PR [#54](https://github.com/tmthang86/fixbolt/pull/54) merged as **`94b325d`**, no-ff. **CI green on the merge commit itself**, run [`34340173659`](https://github.com/tmthang86/fixbolt/actions/runs/34340173659), **13 jobs of 13** — the three neither desk can run for itself, `interop`, `bench` and `deny`, among them. The merged head `301cd2e` was **26 of 26** check runs across [`34320263926`](https://github.com/tmthang86/fixbolt/actions/runs/34320263926) and [`34320266574`](https://github.com/tmthang86/fixbolt/actions/runs/34320266574), and **`git diff 301cd2e 94b325d` is empty**, so the branch's green transfers to the merge exactly rather than by assumption.
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
+
+## Start here — 2026-09-21: the §9 grub line is restored and the desk is rebooting into boot D
+
+**Nothing has been measured. This entry is written BEFORE the reboot, and the reboot is the last
+thing this session does.** The next manager starts at *Next — the first executable action* below.
+
+### What this session did, and all it did
+
+* Verified the boot D tree survived the 2026-09-20 shutdown: **37 of 37 binaries under
+  `../fb-boot-d/` match `MANIFEST.txt`** (`sha256sum -c --quiet`, exit 0, no line printed).
+* Verified the pre-built code is still the code it claims to be: `w1`/`w1s` pin `76e53cb`,
+  `main` is `8093ed8`, and **`git diff 76e53cb origin/main -- crates/` is empty** — PR
+  [#89](https://github.com/tmthang86/fixbolt/pull/89) touched only `scripts/` and `docs/`.
+  **No worktree needs rebuilding.**
+* Verified both measurement arms are still on `origin`: `ab/parse-utc-fast-path` (`1825d8c`),
+  `ab/validate-no-descent` (`d6f79dc`). Neither is ever merged.
+* Ran the **pre-reboot half of [boot-d](docs/plans/2026-09-20-boot-d.md) step D0**:
+
+  ```text
+  sudo -n cp /etc/default/grub /etc/default/grub.fixbolt-desktop-20260921
+  sudo -n cp /etc/default/grub.fixbolt-backup-20260919-bootc /etc/default/grub
+  GRUB_CMDLINE_LINUX_DEFAULT="quiet splash isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1"
+  GRUB_CMDLINE_LINUX=""
+  sudo -n update-grub   # done, Found linux image: /boot/vmlinuz-7.0.0-31-generic
+  ```
+
+  The line carries `isolcpus`, and **no `nohz_full`, no `mitigations=off`** — which is what boot D
+  asks for, and what item 51's published A/B compares against.
+  **`/etc/default/grub.fixbolt-desktop-20260921` is the ordinary desktop line**; restoring it is
+  the teardown when boot D ends.
+
+### Where the work is
+
+`main` is `8093ed8`, clean, **no open pull request**. The branch for boot D's write-ups does not
+exist yet — the next manager creates it, because the boot writes to `docs/reference/measured-costs.md`,
+`docs/DESIGN.md` §8 and this file, and `CLAUDE.md` §8 forbids implementing on `main`.
+
+### Next — the first executable action
+
+**Post-reboot half of D0, in this order, before a single number is taken:**
+
+```text
+cat /proc/cmdline                      # must carry isolcpus=6,7,14,15
+sudo -n fixbolt-machine on && sudo -n fixbolt-machine status
+sudo -n ethtool -C enp9s0 rx-usecs 0
+grep enp9s0 /proc/interrupts           # read the IRQ numbers, never copy 85-89
+#   echo 4 > /proc/irq/<each>/smp_affinity_list
+sudo -n ethtool --set-eee enp9s0 eee off
+ps -eo pcpu,comm --sort=-pcpu | head -5   # no llama-server, no chrome
+FIXBOLT_NIC=enp9s0 scripts/check-machine.sh   # must read: pass 16 fail 0 unknown 0
+cd ../fb-boot-d/w1s && cargo bench -q -p fixbolt-engine --bench density   # THROW THIS RUN AWAY
+```
+
+Then D2 → D3 → D4 → D5 per the plan's *Chia việc*. **D1 is skipped** — the owner decided the flush
+arm of item 51 is not run, because it would drop a remote session. The boot **runs to its end and
+the machine is powered off afterwards**, as at boot C.
+
+Re-run the whole-manifest sha256 check first thing after the reboot; it is the cheapest way to
+learn the tree moved under you.
+
+### Do not
+
+* Do not let the boot compile anything. `scripts/ab-rotation.sh` refuses a binary whose sha256
+  does not match `MANIFEST.txt` rather than rebuilding it, and that refusal is the design.
+* Do not merge `ab/parse-utc-fast-path` or `ab/validate-no-descent`.
+* Do not publish, or compare against, any 2026-09-20 figure that does not name its machine.
+* Do not take a number from the first run after a reboot — `gnome-shell` is still settling.
+* Do not skip `check-machine.sh` because the grub line looks right: the line is one of sixteen
+  checks, and the other fifteen reset at every boot.
+
+### Not proven
+
+* **Everything boot D exists to measure.** The ADR-0086 nested-group descent band, the A-desk band
+  ADR-0082 left empty, and items 93, 51, 85 and 52 are all still owed. No figure has been taken.
+* **The macOS reversal for ADR-0091 decision 2 has not run.** The Mac mini's checkout is at an old
+  `main` and has no `wire_fixt` binary; it must be built there first.
+* **The restored grub line has not been observed in `/proc/cmdline`.** `update-grub` succeeded;
+  that is a claim about the next boot, not an observation of it. The first command above is what
+  turns it into one.
+
+---
 
 ## Start here — 2026-09-20, later: four items closed, one number that named no machine, and a measurement boot that is built but has not run
 
