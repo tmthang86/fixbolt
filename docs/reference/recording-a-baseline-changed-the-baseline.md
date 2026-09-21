@@ -97,3 +97,40 @@ Three things follow, and none of them costs much:
    the `1.35` above are more useful to the next reader than a tidy row would have been, precisely
    because they do not match. A file where every row looks the same cannot tell you which row you
    should not trust.
+
+## n = 20 on the run-time table
+
+`[measured 2026-09-21, boot D step D3]` **The fix held, and the odd row is gone.**
+
+[ADR-0067](../decisions/ADR-0067-the-baselines-are-read-at-run-time-not-compiled-in.md) moved the
+table out of `.rodata` and made `harness.rs` read `benches/baselines.tsv` at run time, so
+recording a baseline no longer rebuilds the binary the baseline came from. That removes the
+mechanism this page is about — but removing a mechanism is a claim until something measures the
+case it used to break.
+
+Twenty runs of `journal put, 191 bytes, one slot` on the §9 desk (`pass 16 fail 0 unknown 0`),
+from a binary built **before** the boot and never rebuilt during it, run 1 discarded, 8 s apart,
+a quiet row read before each:
+
+```text
+7.4 ×17, 7.5, 8.0, 8.1      median 7.4    max/median 1.0946
+```
+
+Compare the three numbers this one case has produced on this one desk:
+
+| value | n | what the binary was |
+|---|---|---|
+| 8.2 | 20 | before seventeen lines were appended to a **compiled-in** table |
+| 6.3 | 8 | after they were, and after the value was corrected — a fixed point of the self-reference |
+| **7.4** | **20** | a **run-time** table (ADR-0067); the binary does not contain the baseline at all |
+
+So the line no longer needs the `1.35` that was buying cross-binary swing, and it no longer needs
+the honest, awkward `n = 8`. It reads `7.4 / 1.10 / n = 20`, the same shape as its neighbours, and
+`STATUS.md` item 52's remaining half — *whether the ladder rule can mean anything for a case this
+small* — closes: it can, once the case is measured against a binary that does not move when you
+write the answer down.
+
+**The lesson that survives is point 3 above, inverted.** The row was allowed to look wrong — a
+`1.35` and an `n = 8` among neighbours that all said `1.10 / 20` — for sixteen days and four
+merged pull requests, and that is exactly why the boot that could finally re-measure it knew
+which single row to go after.
