@@ -190,8 +190,10 @@ Ba ADR ở bước 0 giữ lý do và phương án bị loại; đây chỉ tóm
 `baseline …` hoặc `NO BASELINE for '`; verdict đọc từ mark (`in|over|under|none`). Dòng
 `… ns/op exceeds …`, `… is below …`, dòng `cases under their baseline:`, thân panic — không
 khớp. **`harness.rs` không sửa** (arm là binary cũ). Hình hàng được ghim bằng **fixture chụp
-thật** từ một bench binary (ép `OVER` + `UNDER` + `NO BASELINE` + in-band trong một lần chạy
-bằng hai dòng tạm trong `baselines.tsv`, rồi hoàn lại byte-identical).
+thật** từ một bench binary: bốn case, **ba dòng tạm** trong `baselines.tsv` — một ép `OVER`, một
+ép `UNDER`, một đặt case thứ ba **in-band** (số đọc từ lần chạy đầu, margin rộng) — case thứ tư
+để `NO BASELINE`; một lần chạy cho đủ **cả bốn** giá trị verdict `over/under/in/none`; rồi hoàn
+lại byte-identical (*Sửa 1* nói vì sao là ba dòng chứ không phải hai).
 (2) `run_suite` đọc `code=$?`, đếm hàng, đọc dòng `<k> of <m> case(s) over the machine baseline`
 của panic; ghi vào `timeline.txt` một dòng mỗi suite:
 `round N arm X suite S exit E rows R over O under U nobase M  ok|OVER|FAILED`. `OVER` (exit ≠ 0
@@ -203,7 +205,7 @@ chân `over baseline: <P> (arm, case) pairs` hoặc `over baseline: none`. Mode 
 `--reextract <evidence-dir>` dựng `<dir>/runs.reextracted.txt` từ `raw/*.txt`, **không bao giờ
 ghi đè `runs.txt`**.
 (4) `scripts/check-ab-rotation.sh` vào job `script-logic`. **Không** đụng
-`benches/baselines.tsv` ngoài hai dòng tạm ở bước 1 (hoàn lại trong cùng bước).
+`benches/baselines.tsv` ngoài ba dòng tạm ở bước 1 (hoàn lại trong cùng bước).
 
 **Item 98 — [ADR-0093](../decisions/ADR-0093-a-campaign-driver-is-committed-sudo-in-a-committed-script-names-what-root-can-find-and-a-timer-due-inside-the-window-is-a-fail-row.md).**
 *Chỗ để driver (quyết định 1)*: driver chiến dịch nằm trong `scripts/`, trên nhánh của kế hoạch,
@@ -252,7 +254,7 @@ sửa** (bước 3) — bước 1 không đụng `ci.yml`.
 | Bước | Ai | Kết quả | Được sửa | Không được sửa | §2 | Test viết trước, câu FAIL chờ đợi | Gate đóng bước | Phụ thuộc |
 |---|---|---|---|---|---|---|---|---|
 | **0** | architect (fable) | Kế hoạch này; ADR-0092, 0093, 0094 | `docs/plans/`, `docs/decisions/` | mọi thứ khác | — | — | `python3 scripts/check-links.py`; `scripts/check-adr-numbers.sh` | — |
-| **1** | developer (sonnet) | Item 97 (1)+(4a): `ab_extract` thuần, fixture chụp thật, test | `scripts/ab-rotation.sh` (thêm `ab_extract`, `run_suite` gọi nó — **không** đổi gì khác), `scripts/check-ab-rotation.sh` | `crates/`, `ci.yml`, `benches/baselines.tsv` (chỉ hai dòng tạm, hoàn lại trong bước) | — | Mục `=== ab_extract` với fixture thật (cách chụp ở *Cách kiểm chứng*). `same "4" "$(… \| wc -l)"` — FAIL chờ: `FAIL  want [4] got [6]  REVERSAL TARGET (rows): the harness's OVER/UNDER report lines and the panic body are not measurement rows` (con số `got` là con số awk cũ in ra, đọc chứ không đoán). Thêm: không tên case nào kết thúc bằng `:`; cột verdict đúng `over/under/none/none` | `scripts/check-ab-rotation.sh` → `pass N   fail 0`; `shellcheck -S info scripts/ab-rotation.sh scripts/check-ab-rotation.sh` (quote; nếu có cảnh báo **có sẵn** ở dòng không sửa → báo, không sửa) | 0 |
+| **1** | developer (sonnet) | Item 97 (1)+(4a): `ab_extract` thuần, fixture chụp thật, test | `scripts/ab-rotation.sh` (thêm `ab_extract`, `run_suite` gọi nó — **không** đổi gì khác), `scripts/check-ab-rotation.sh` | `crates/`, `ci.yml`, `benches/baselines.tsv` (chỉ ba dòng tạm, hoàn lại trong bước) | — | Mục `=== ab_extract` với fixture thật (cách chụp ở *Cách kiểm chứng*). `same "4" "$(… \| wc -l)"` — FAIL chờ: `FAIL  want [4] got [6]  REVERSAL TARGET (rows): the harness's OVER/UNDER report lines and the panic body are not measurement rows` (con số `got` là con số awk cũ in ra, đọc chứ không đoán). Thêm: không tên case nào kết thúc bằng `:`; cột verdict đúng `over/under/in/none` — **đủ bốn giá trị** (*Sửa 1*) | `scripts/check-ab-rotation.sh` → `pass N   fail 0`; `shellcheck -S info scripts/ab-rotation.sh scripts/check-ab-rotation.sh` (quote; nếu có cảnh báo **có sẵn** ở dòng không sửa → báo, không sửa) | 0 |
 | **2** | developer (sonnet) | Item 97 (2)+(3): exit status, dòng suite, `FAILED`, cột `over`, chân, `--reextract` | `scripts/ab-rotation.sh`, `scripts/check-ab-rotation.sh` | `crates/`, `ci.yml`, `check-machine.sh` | — | Fixture timeline có dòng suite `FAILED` và `round 3 incomplete`: `same "1\n2"` — FAIL chờ: `FAIL  want [1 2] got [1 2 3]  REVERSAL TARGET: a suite that exited non-zero without the harness's verdict line drops the round`. runs.txt 5 cột → cột `over` `2/2`; 4 cột → `?` — FAIL chờ: `FAIL  want [2/2] got [?]  REVERSAL TARGET (over): the verdict column reaches the summary`. `--reextract` trên `raw/` giả → 4 hàng | `scripts/check-ab-rotation.sh` xanh; **rehearsal thật** `ROUNDS=1` trên container (ba lần: sạch → `ok`; dòng tạm ép OVER → `exit 101 … OVER`, `round 1 complete`, chân `over baseline: 1 …`; dòng tsv **sai định dạng** → `rows 0 … FAILED`, `round 1 incomplete`); `git diff --exit-code benches/baselines.tsv` | 1 |
 | **3** | developer (sonnet) | Item 98a: gate `sudo` + verdict test + CI | `scripts/check-sudo-names-what-root-can-find.sh` (mới), `scripts/check-sudo-verdicts.sh` (mới), `.github/workflows/ci.yml` (job `gates`: một step sau `check-scratch-fixtures.sh`; job `script-logic`: `check-sudo-verdicts.sh` **và** `check-ab-rotation.sh`; danh sách `shellcheck -S info`: hai script mới) | `crates/`, `check-machine.sh`, `ab-rotation.sh`, mọi script khác | — | `check-sudo-verdicts.sh` với dòng boot D `sudo -n perf record -e cycles -F 4999 -o d.data -- cargo bench -q -p fixbolt-engine --bench density` — FAIL chờ khi R2 chưa viết: `FAIL  want [FAIL R2 cargo] got [ok]  REVERSAL TARGET: boot D's own line — perf passes R1, the workload after -- is what root cannot find`. Sáu dòng lời khuyên → `ok`. `sudo mytool` → `FAIL R1`. `sudo -E cargo bench` → FAIL. `sudo -n "$BIN"` → `ok` (G1) | `scripts/check-sudo-names-what-root-can-find.sh` trên cây → `ok — <N> scripts scanned, <M> sudo lines read, 0 findings` (đọc N, M); đảo chiều bằng file dưới `target/check-sudo/` (*Cách kiểm chứng*) → exit 1 đúng câu; `scripts/check-sudo-verdicts.sh` → `pass N fail 0`; `scripts/check-scratch-fixtures.sh` vẫn xanh; `shellcheck -S info` hai file mới sạch | 0. **Song song với 1** (file rời) |
 | **4** | developer (sonnet) | Item 98b: hàng `no timer due`, `timers_verdict`, preflight của driver, hàng §9 | `scripts/check-machine.sh`, `scripts/check-machine-verdicts.sh`, `scripts/ab-rotation.sh` (**chỉ** preflight), `docs/DESIGN.md` (**chỉ** một hàng §9, chữ ở *Cách kiểm chứng*) | `crates/`, `ci.yml`, phần khác của `DESIGN.md` | — | `check-machine-verdicts.sh` mục `=== timers_verdict`: JSON 4 timer (`next` = now+1 h; now+13 h; `null`; now−5 min), window 12 h → `FAIL` nêu **hai** unit — FAIL chờ: `FAIL  want [FAIL apt-daily-upgrade.timer …] got [PASS]  REVERSAL TARGET: a timer due in 1h inside a 12h window`; cùng JSON, window 0,5 h → `FAIL` nêu **một** (unit đã qua giờ); `[]` → `PASS`; JSON hỏng → `UNKNOWN` | `scripts/check-machine-verdicts.sh` → `pass N fail 0`; `scripts/check-machine.sh` trên container in hàng `? ? ?  no timer due  cannot reach PID 1 (…) [window 12h]` (quote); `AB_ROTATION` dry-run vẫn chạy; `scripts/check-sudo-names-what-root-can-find.sh` xanh (fix line dùng `systemctl`) | 2, 3 |
@@ -269,22 +271,34 @@ Song song: **1 ‖ 3**, rồi 2, rồi 4, rồi 5.
 1. `scripts/fetch-quickfix-assets.sh`; `RUSTFLAGS="$(scripts/check-bench-alignment.sh --flags)"
    cargo bench -p fixbolt-session --bench validate --no-run` (không feature — bốn case là đủ);
    lấy đường dẫn binary từ output (hoặc `--message-format=json` như `preflight()` làm).
-2. Chạy binary một lần: mọi hàng `NO BASELINE for '<cpu>'` — đọc `<cpu>`.
-3. Thêm **hai** dòng vào cuối `benches/baselines.tsv` (tab):
-   `<cpu>	validate NewOrderSingle	1.0	1.10	1	2026-09-22	fixture` (ép OVER) và
-   `<cpu>	validate Heartbeat	999999.0	1.10	1	2026-09-22	fixture` (ép UNDER).
+2. Chạy binary một lần: mọi hàng `NO BASELINE for '<cpu>'` — đọc `<cpu>` **và đọc số
+   `<X>` ns/op của `validate TestRequest, w2w bytes`** (case sẽ đặt in-band).
+3. Thêm **ba** dòng vào cuối `benches/baselines.tsv` (tab) — bốn case, mỗi giá trị verdict một
+   case, case thứ tư để trống:
+   `<cpu>	validate NewOrderSingle	1.0	1.10	1	2026-09-22	fixture` (ép OVER),
+   `<cpu>	validate Heartbeat	999999.0	1.10	1	2026-09-22	fixture` (ép UNDER),
+   `<cpu>	validate TestRequest, w2w bytes	<X>	1.35	1	2026-09-22	fixture` (**in-band**: số
+   vừa đọc, margin 1,35 là đỉnh thang của file — đủ rộng để lần chạy thứ hai rơi vào
+   `[X/1.35, X×1.35]` trên máy này; nếu không rơi vào, đọc lại số và chạy lại, không nới thêm).
+   `validate NewOrderSingle, w2w bytes` **không** có dòng → `NO BASELINE`.
 4. `"$BIN" > fixture.txt 2>&1; echo "exit=$?"` — chờ `exit=101`; file có: một hàng
-   `  OVER BASELINE`, một hàng `  UNDER BASELINE`, hai hàng `NO BASELINE for`, dòng
-   `cases without a baseline: 2 …`, dòng `cases under their baseline: 1  validate Heartbeat: … ns/op is
+   `  OVER BASELINE`, một hàng `  UNDER BASELINE`, **một hàng in-band** (` ns/op   baseline … =
+   [floor, ceiling]` và **không có mark** sau `]`), **một** hàng `NO BASELINE for`, dòng
+   `cases without a baseline: 1 …`, dòng `cases under their baseline: 1  validate Heartbeat: … ns/op is
    below …`, thân panic `1 of 4 case(s) over the machine baseline:` + `validate NewOrderSingle: … ns/op
-   exceeds …`. Dán **nguyên văn** vào heredoc của `check-ab-rotation.sh`, kèm dòng đầu ghi
-   lệnh, ngày, `<cpu>`, sha binary.
+   exceeds …`. Cột verdict mà `ab_extract` phải đọc ra: `over`, `under`, `in`, `none` — **đủ bốn**.
+   Dán **nguyên văn** vào heredoc của `check-ab-rotation.sh`, kèm dòng đầu ghi lệnh, ngày,
+   `<cpu>`, sha binary.
 5. `git checkout benches/baselines.tsv && git diff --exit-code benches/baselines.tsv` — quote.
 
 Viết test trước khi viết `ab_extract`: chạy `check-ab-rotation.sh` với `ab_extract` tạm là thân
-awk cũ → phải thấy đúng dòng FAIL ở bảng. Viết `ab_extract` → xanh. Đảo ngược lần nữa (đổi
-`   baseline` trong regex thành `  baseline`) → hàng in-band biến mất → FAIL `want [4] got [2]`;
-hoàn lại.
+awk cũ → phải thấy đúng dòng FAIL ở bảng. Viết `ab_extract` → xanh. Đảo ngược lần nữa: **làm
+hỏng mỏ neo** (đổi ba dấu cách sau ` ns/op` trong regex thành đúng hai) — kỳ vọng nêu bằng **cơ
+chế, không bằng con số**: mọi hàng mang ` ns/op   baseline` lẫn ` ns/op   NO BASELINE` đều
+không còn khớp, nên (a) số hàng đọc ra **nhỏ hơn 4** và (b) tên `validate TestRequest, w2w
+bytes` (hàng in-band) **vắng** trong danh sách tên — test `same` về hàng in-band phải đỏ. Con số
+`got` là con số regex hỏng in ra, đọc và quote; nó phụ thuộc vào cách làm hỏng (trên fixture của
+`854fbbb`, không có hàng in-band, manager đọc `got [1]`). Hoàn lại.
 
 **Bước 2 — rehearsal.** `RUSTFLAGS=… cargo bench -p fixbolt-session --bench validate --no-run
 --features "$(scripts/check-bench-alignment.sh --features-map | awk -F'\t' '$1=="fixbolt-session"{print $2}')"`
@@ -428,6 +442,41 @@ Theo `CLAUDE.md` §4, đi từng hàng:
 - **Đổi `quiet_status` của driver** theo hàng timer từng vòng — hàng quiet mỗi vòng đã đủ (boot D
   chứng minh); preflight một lần là đủ.
 - Mọi phép đo và mọi con số.
+
+## Sửa 1 — 2026-09-22, sau khi bước 1 chụp fixture và một phép đảo ngược không ra số như dự đoán
+
+**Cái gì sai.** Bản đầu của kế hoạch này tự mâu thuẫn: *Cách làm* điểm (1) đòi fixture có
+`OVER` + `UNDER` + `NO BASELINE` + **in-band**, nhưng *Cách kiểm chứng* bước 1 chỉ bảo thêm
+**hai** dòng tạm — và bench `validate` không feature có đúng **bốn** case, nên hai dòng ép OVER
+và UNDER để lại hai case `NO BASELINE`, **không thể** có hàng in-band. Fixture chụp ở `854fbbb`
+đọc cột verdict `over / under / none / none`: giá trị `in` — hàng **thường gặp nhất** trong mọi
+rotation thật, hàng mang mọi phép đo bình thường của boot D, hình ` ns/op   baseline … = [floor,
+ceiling]` **không mark** — không được ghim bởi gì cả, dù ADR-0092 quyết định 1 kể nó là một
+trong bốn giá trị.
+
+**Cái gì bắt được.** Không phải test xanh: `check-ab-rotation.sh` đọc `pass 15 fail 0`. Là
+**phép đảo ngược thứ hai ra số khác dự đoán**: kế hoạch viết `want [4] got [2]` với lý do "hàng
+in-band biến mất"; chạy thật cho `got [1]`, vì không có hàng in-band nào để mất. Người xây báo
+con số thật thay vì ép cho khớp — đúng `CLAUDE.md` §10, *read the output, not the exit status*.
+Manager tái hiện bằng tay rồi mới gửi về đây.
+
+**Sửa gì.** Ba chỗ trong file này, cùng nhau: *Cách làm* (1) nói **ba dòng tạm**, mỗi giá trị
+verdict một case; *Cách kiểm chứng* bước 1 mục 2–4 ghi cách đặt case thứ ba in-band (số đọc từ
+lần chạy đầu, margin 1,35 — đỉnh thang, không nới thêm) và nội dung file chờ đợi là **một** OVER,
+**một** UNDER, **một** in-band, **một** `NO BASELINE`; phép đảo ngược thứ hai nêu kỳ vọng bằng
+**cơ chế** (hàng in-band vắng tên, số hàng < 4) thay vì một con số, vì con số phụ thuộc vào cách
+làm hỏng regex và vào fixture. Fixture trong `scripts/check-ab-rotation.sh` được senior developer
+chụp lại theo mục 2–4 mới — việc đó **không** thuộc kiến trúc sư và không nằm trong file này.
+
+**Vì sao ghi ở đây, không ở `docs/reference/`.** Hình dạng đáng nhớ là: *một công thức kiểm chứng
+không sinh ra được đúng cái case mà phần thiết kế của nó đòi, và test xanh không thấy — chỉ một
+phép đảo ngược được **đọc** chứ không được coi là xanh mới thấy.* `docs/reference/` đã có trang
+cho hai nửa của nó (*reading-the-output-you-grepped-for*, *a-green-fraction-over-a-scenario-that-
+never-ran*); cái mới ở đây là ở **cấp kế hoạch** — hai mục của một kế hoạch nói hai điều khác
+nhau về cùng một fixture — và cái canh nó là luật đã có: viết câu FAIL trước, chạy, **so**. Không
+thêm trang; thêm một hàng vào *Bẫy đã lường trước* của mọi kế hoạch sau là việc của
+`_template.md`, và đó là quyết định của chủ dự án, không của bản sửa này. Manager ghi vào
+*Nhật ký* hàng 1 con số hai phép đảo ngược đã đọc.
 
 ## Nhật ký giao hàng
 
