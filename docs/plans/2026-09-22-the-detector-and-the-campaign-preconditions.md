@@ -1,6 +1,6 @@
 # Cái máy dò và điều kiện trước chiến dịch: ba lỗi gate và hai quyết định không cần bàn đo
 
-> **Loại:** Plan · **Ngày:** 2026-09-22 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-22 · **Trạng thái:** Đã duyệt (chủ dự án, 2026-09-22)
 > **Phạm vi:** phần dư của boot D mà máy §9 không liên quan — item **97** (nửa *parser*, không
 > phải nửa *chậm*), item **98** (a) gate cho bẫy `sudo`, (b) hàng timer trong `check-machine.sh`,
 > và chỗ để driver chiến dịch; item **96** chỉ *thiết kế* thí nghiệm, không chạy.
