@@ -4013,6 +4013,57 @@ other and **no cause is claimed for the difference**. It does mean the D2 column
 confirming C-91b's ordering, which is what it was recorded to do; the `perf diff` over the same
 files is what will say whether the segments are where C-91b put them.
 
+### Item 93 — five segments named
+
+The desktop-line `perf diff` job the section above left open, run on the D2 files by the rule of
+[ADR-0095](../decisions/ADR-0095-a-drift-is-read-at-re-record-time-not-by-a-wider-band-a-segment-is-named-by-a-rule-and-the-desk-runs-strict-at-every-boot.md)
+decision 3: four cross pairs plus the two same-binary pairs per segment, `ns = share x` that run's
+`engine turn, 1 busy sessions` ns/op, the same-binary `|Δshare|` as the noise floor, and a name
+only when one symbol is the largest `|Δns|` in **all four** cross pairs with the same sign and at
+least **twice** its own noise floor. The command shape, once, for segment (5) — every pair of every
+segment is written out in its seg file:
+
+```text
+cd target/boot-d-evidence
+perf diff -c delta-abs -s symbol -o 1 d2-f085f43-1.data d2-85460c1-1.data   # 11
+perf diff -c delta-abs -s symbol -o 1 d2-f085f43-2.data d2-85460c1-2.data   # 22
+perf diff -c delta-abs -s symbol -o 1 d2-f085f43-1.data d2-85460c1-2.data   # 12
+perf diff -c delta-abs -s symbol -o 1 d2-f085f43-2.data d2-85460c1-1.data   # 21
+perf diff -c delta-abs -s symbol -o 1 d2-f085f43-1.data d2-f085f43-2.data   # aa (noise)
+perf diff -c delta-abs -s symbol -o 1 d2-85460c1-1.data d2-85460c1-2.data   # bb (noise)
+```
+
+| segment | pair | verdict | function | Δns (1↔1) | noise floor | IPC a → b | table |
+|---|---|---|---|---|---|---|---|
+| (1) | `0149b26` → `792c2e7` | **accept, unnamed** | — (largest `|Δns|` alternates: `__memcmp_avx2_movbe` on 11/21, `Session::judge` on 22/12) | +25.4 (memcmp) | 0.90 vs its 1.31 — 1.5x, under the 2x bar | 2.8563 → 2.9827 | `target/boot-d-evidence/d2-analysis/seg1.txt` |
+| (2) | `792c2e7` → `28465e8` | **accept, unnamed** | — (no step to name: `turn_b − turn_a` = +0.7 ns, ΣΔns = −5.6 ns) | +23.3 (`scan_fields`), sign flips across pairs | 0.55 | 2.9827 → 3.0372 | `…/seg2.txt` |
+| (3) | `28465e8` → `588b350` | **fix, confirmed** | `fixbolt_session::clock::parse_utc` | **−33.1 ns** on the arm, per *Item 93, segment (3) — the mechanism is confirmed* above (`ab/parse-utc-fast-path`, rule declared before the boot, n = 20) | rule was a declared ≥ 25 / ≤ 10 ns line, not a perf noise floor |  3.0372 → 3.0465 | that section |
+| (4) | `1c36406` → `f085f43` | **accept, named** | `fixbolt_session::scan_fields::<64>` | +13.1 (+10.7 / +12.6 / +11.2 on the other three) | 0.11 vs its 0.48 — 4.4x | 3.0394 → 3.0226 | `…/seg4.txt` |
+| (5) | `f085f43` → `85460c1` | **accept, named** | `__memcmp_avx2_movbe` | +13.4 (+14.8 / +13.4 / +14.8) | 0.08 vs its 0.72 — 9x | 3.0226 → **2.9982** | `…/seg5.txt` |
+
+Three things the tables say that the verdict line does not.
+
+**The arithmetic checks out where there is something to check.** ΣΔns over all symbols against
+`turn_b − turn_a`: segment (1) +31.4 vs +31.2, (4) +16.6 vs +13.7, (5) +7.0 vs +8.7 — sign and
+order of magnitude, as decision 3 asks. Segment (2) is −5.6 vs +0.7, which is the same statement
+as its verdict: there is no step here to account for.
+
+**Neither named segment is a fix.** (4) names `scan_fields` while `Engine::turn` moves the other
+way by −7.1 ns over the same commit — the shape of inlining and code layout shifting between two
+symbols on one path, not an algorithmic change inside `scan_fields`, and no one-sentence code
+change can be stated honestly from a symbol-level diff. (5) names a libc symbol, so the change is
+in whoever calls it — and **these recordings carry no call-graph** (`perf record` header:
+`sample_type = IP|TID|TIME|PERIOD`, no `CALLCHAIN`), so the caller cannot be resolved from the
+files on disk. Per decision 3 both are recorded as *accept, named*, with the next step written
+down: `perf annotate` on `scan_fields` for (4), a re-record with `-g` for (5) — both boot jobs.
+
+**Segment (5) is the only one whose IPC falls** (3.0226 → 2.9982), which is what a segment that
+really got slower looks like; (1) and (2) both *raised* IPC while the turn rose, which is a
+reminder that these are whole-`density` recordings, not recordings of the one case. `share` is a
+share of the whole bench run; `ns = share x` the case's ns/op is ADR-0095's convention, not a
+claim that the case and the run have the same profile.
+
+
 ### D5 — item 89, the listener cadence profiled on the engine thread
 
 `w2w`, one process, `hft`, `admin`, engine on cpu6 and client on cpu7, `--messages 400000`,
