@@ -385,6 +385,9 @@ Theo `CLAUDE.md` §4, đi từng hàng:
 - [ ] *Bẫy đã ghi có test canh* → hai trang `docs/reference/` thêm `## Guarded by` (bước 5, cùng
       commit với gate là bước 3/4 — manager gộp khi commit, hoặc bước 5 đi cùng commit đóng).
 - [ ] *ADR* → 0092, 0093, 0094 (bước 0); ADR-0086/0090 **nhắc**, không sửa.
+- [ ] *Bẫy mới, đã trả giá ở bước 1* → `docs/reference/wc-l-counts-an-empty-capture-as-one-line.md`
+      (architect, *Sửa 1*), canh bởi `scripts/check-ab-rotation.sh` mục `=== ab_extract` từ
+      `85262e4`; bước 5 **không** cần thêm gì cho trang này.
 - [ ] `STATUS.md` hàng 96, 97, 98; *Not proven*; handoff *Start here* của manager (bước 5, 6).
 - [ ] `docs/CONFORMANCE.md`: **không** — không có kết quả conformance nào; số `N scripts, M sudo
       lines` là số đếm của gate, ghi ở *Nhật ký*.
@@ -456,9 +459,15 @@ trong bốn giá trị.
 
 **Cái gì bắt được.** Không phải test xanh: `check-ab-rotation.sh` đọc `pass 15 fail 0`. Là
 **phép đảo ngược thứ hai ra số khác dự đoán**: kế hoạch viết `want [4] got [2]` với lý do "hàng
-in-band biến mất"; chạy thật cho `got [1]`, vì không có hàng in-band nào để mất. Người xây báo
-con số thật thay vì ép cho khớp — đúng `CLAUDE.md` §10, *read the output, not the exit status*.
-Manager tái hiện bằng tay rồi mới gửi về đây.
+in-band biến mất"; chạy thật cho `got [1]`, vì không có hàng in-band nào để mất. **Và con số
+`1` đó cũng không phải số hàng**: phép đếm là `printf '%s\n' "$extracted" | wc -l`, mà `printf`
+tự thêm dấu xuống dòng cho một chuỗi rỗng, nên **0 hàng đếm thành 1** — `ab_extract` thực ra
+không đọc ra hàng nào cả (manager tái hiện: `printf '%s\n' "" | wc -l` → 1; `printf '%s' "" |
+grep -c .` → 0). Từ `85262e4` phép đếm là `printf '%s' "$extracted" | grep -c .` và phép đảo
+ngược đọc `got [0]`; bẫy này có trang riêng:
+[wc-l-counts-an-empty-capture-as-one-line](../reference/wc-l-counts-an-empty-capture-as-one-line.md).
+Người xây báo con số thật thay vì ép cho khớp — đúng `CLAUDE.md` §10, *read the output, not
+the exit status*. Manager tái hiện bằng tay rồi mới gửi về đây.
 
 **Sửa gì.** Ba chỗ trong file này, cùng nhau: *Cách làm* (1) nói **ba dòng tạm**, mỗi giá trị
 verdict một case; *Cách kiểm chứng* bước 1 mục 2–4 ghi cách đặt case thứ ba in-band (số đọc từ
