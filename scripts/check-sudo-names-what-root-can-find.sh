@@ -29,6 +29,14 @@
 #        is what catches an UNLISTED workload, e.g. `sudo perf record --
 #        mytool`, that R2 has no name for).
 #
+# All three read TOKENS, and what a token is, is unfuse_quotes() below: the
+# line is split on whitespace AND on the shell quote characters `'` and `"`,
+# which are delimiters and can never be part of a command name. Without that
+# second half, `sudo sh -c 'cargo bench -q'` and `sudo nice -n -20 'cargo'
+# bench` both read `ok` — see that function's own comment for the
+# measurement and check-sudo-verdicts.sh's "FUSED to a quote character"
+# section for the reversal.
+#
 # ALLOW is the pinned set of names this project has checked live under the
 # default Debian/Ubuntu secure_path (a gate that must run on a CI runner with
 # no root and no `perf` cannot resolve names against a live PATH — ADR-0093
@@ -57,7 +65,27 @@
 #        weight, not this gate.
 #   G2 — inside `sh -c '…'`, `bash -c '…'`, `env …`, `nice …` only R2 is
 #        applied to the quoted body, not R1: this gate reads tokens, not a
-#        shell inside a shell.
+#        shell inside a shell. R2 does reach the body, quoted or not, since
+#        unfuse_quotes() landed — ADR-0093's G2 text was written when it did
+#        not, and the fixtures for both halves are in
+#        check-sudo-verdicts.sh. R1 deliberately stays out: the first word
+#        of a body is not always its command (`cd /x && …`, `echo 0 > …`,
+#        `VAR=1 …`), and applying ALLOW to every word inside a body would
+#        flag ordinary arguments — `echo` is not on ALLOW and never will be.
+#        So an unresolvable NAME inside a body that is not one of R2's six
+#        toolchain names still passes unseen.
+#   G2b — a target word fused to a shell METACHARACTER rather than a quote
+#        is still unread, because R2's match is exact: `'true;cargo bench'`
+#        tokenises `true;cargo`, and `'cd /x&&cargo bench'` tokenises
+#        `/x&&cargo`, which is additionally skipped for carrying a `/`.
+#        Quote characters are unfused because they are delimiters in every
+#        shell context; `&`, `;` and `|` are NOT, because unfusing them
+#        also makes R2 read a pattern list (`grep -E "cargo|rustc"`) as a
+#        finding, and a gate with a false positive gets switched off within
+#        a week. Pinned by a fixture in check-sudo-verdicts.sh, so it is a
+#        measured statement and not a comment. (Named G2b rather than G6:
+#        ADR-0093's gap list stops at G5 and is the architect's to
+#        renumber.)
 #   G3 — prose (a plan cell, a comment) is not a script this gate scans;
 #        decision 1 is what moves a driver into a file this gate reads.
 #   G4 — ALLOW says nothing about whether the package is actually installed
@@ -193,12 +221,41 @@ sudo_rests() {
   done
 }
 
+# unfuse_quotes <text> — <text> with every `'` and `"` replaced by a space.
+# PURE. This is the ONE tokenisation rule R1, R2 and R3 all split on: a shell
+# quote character is a token DELIMITER and can never be part of a command
+# NAME, but `read -ra` splits on $IFS — whitespace — alone, and leaves a
+# quote fused to the word it touches.
+#
+# `[measured 2026-09-22]` without this, r2_hit_word() read
+# `sudo sh -c 'cargo bench -q'` as `ok`: the token was `'cargo`, and R2's
+# case arm is an EXACT match on `cargo`. So did `sudo nice -n -20 'cargo'
+# bench` — not a wrapped body at all, an ordinary line, with `nice` passing
+# R1 off ALLOW. And R1 had the mirror-image defect: `sudo 'tee' /sys/x` read
+# FAIL R1, because sudo_cmdword() handed r1_pass() the token `'tee'` and the
+# ALLOW comparison is exact too — a false positive on a line that is fine.
+# Both halves are fixed in one place rather than in three tokenisers;
+# check-sudo-verdicts.sh's "FUSED to a quote character" section is the
+# reversal for both directions.
+#
+# Replacing the quote with a space, rather than deleting it, is what makes
+# `-c'cargo bench'` reachable (it becomes `-c cargo bench`) instead of
+# `-ccargo`. What this does NOT reach: a token fused to a shell
+# METACHARACTER with no quote and no space — `sh -c 'true;cargo bench'`
+# tokenises `true;cargo`, which R2's exact match does not read. See gap G2b
+# in the KNOWN GAPS note at the top for why `;`, `&` and `|` are NOT
+# unfused as well.
+unfuse_quotes() {
+  local t="${1//\'/ }"
+  printf '%s' "${t//\"/ }"
+}
+
 # sudo_cmdword <rest> — the command word: the first token after skipping
 # sudo's own leading -n / -E / -u <user> / -- / VAR=value options.
 sudo_cmdword() {
   local rest="$1" t
   local -a toks
-  read -ra toks <<< "$rest"
+  read -ra toks <<< "$(unfuse_quotes "$rest")"
   local i=0 n=${#toks[@]}
   while (( i < n )); do
     t="${toks[$i]}"
@@ -222,7 +279,7 @@ sudo_cmdword() {
 perf_workload_after_dashdash() {
   local rest="$1" i
   local -a toks
-  read -ra toks <<< "$rest"
+  read -ra toks <<< "$(unfuse_quotes "$rest")"
   for (( i = 0; i < ${#toks[@]}; i++ )); do
     if [[ "${toks[$i]}" == "--" ]]; then
       printf '%s' "${toks[$((i + 1))]:-}"
@@ -231,7 +288,10 @@ perf_workload_after_dashdash() {
   done
 }
 
-# r1_pass <word> — R1's test on a single command word.
+# r1_pass <word> — R1's test on a single command word. The leading-quote
+# strip below is belt-and-braces: every word this gate feeds it now arrives
+# through unfuse_quotes(), so it cannot carry a fused quote, but the
+# function stays correct when handed a raw word by hand.
 r1_pass() {
   local w="$1" stripped a
   [[ -z "$w" ]] && return 1
@@ -250,7 +310,7 @@ r1_pass() {
 r2_hit_word() {
   local rest="$1" t
   local -a toks
-  read -ra toks <<< "$rest"
+  read -ra toks <<< "$(unfuse_quotes "$rest")"
   for t in "${toks[@]}"; do
     [[ "$t" == *"/"* ]] && continue
     case "$t" in

@@ -107,19 +107,88 @@ same "FAIL R2 cargo" "$(sudo_verdict 'sudo env PATH=$PATH cargo bench')" \
 same "ok" "$(sudo_verdict "sudo sh -c '/abs/bin --flag'")" \
   "G2 — sh -c body given an absolute path: passes, proves nothing about an unresolved NAME inside the body (R1 is not applied there)"
 
-# NOT added, and left for the architect/manager: the plan's own third G2
-# example, `sudo sh -c 'cargo bench -q'` -> `FAIL R2 cargo`. Reproduced
-# instead: sudo_verdict "sudo sh -c 'cargo bench -q'" reads "ok", not
-# "FAIL R2 cargo" — r2_hit_word()'s `read -ra` word-splits on whitespace
-# only, so a target word with NO space between it and an adjacent quote
-# character becomes one token, e.g. "'cargo" (quote fused to the word), and
-# that does not exact-match the case pattern `cargo`. A single leading
-# space fixes it (verified: "sudo sh -c ' cargo bench -q'" -> FAIL R2
-# cargo), but that is not how this idiom is normally written, and the same
-# hole reaches a bare, unwrapped line too: sudo_verdict "sudo 'cargo' bench"
-# reads FAIL R1, not FAIL R2, because R2's exact match fails the same way.
-# This is a real gap in R2 itself, broader than G2 as ADR-0093 currently
-# states it, not something this step's brief authorized fixing.
+echo
+echo "=== sudo_verdict — a target word FUSED to a quote character (R2's tokenisation)"
+
+# The plan's own third G2 example, and the whole family it belongs to.
+# `[measured 2026-09-22]` before unfuse_quotes() existed, r2_hit_word()
+# word-split with `read -ra` on WHITESPACE ONLY, so `sh -c 'cargo bench -q'`
+# tokenised as `'cargo` (quote fused to the word) and never exact-matched
+# R2's `cargo|cargo-*|rustc|rustup|rustdoc|w2w` case: the gate read `ok` on an
+# ordinary spelling of the very line it exists for. One leading space inside
+# the quotes (`sh -c ' cargo bench -q'`) happened to be caught — nobody
+# writes it that way, and spelling the fixture that way to make the gate
+# green is the fixture-edit failure mode CLAUDE.md §10 names.
+same "FAIL R2 cargo" "$(sudo_verdict "sudo sh -c 'cargo bench -q'")" \
+  "REVERSAL TARGET: sh -c body, single-quoted — the fused quote must not hide cargo" # check-sudo: fixture
+
+# Not a wrapped body at all: an ordinary line whose COMMAND WORD is quoted.
+# `nice`, `env`, `chrt`, `taskset`, `sh` and `bash` are all on ALLOW and all
+# natural prefixes for a benchmark run, so R1 passes on the prefix and R2 is
+# the only rule left to read the payload.
+same "FAIL R2 cargo" "$(sudo_verdict "sudo nice -n -20 'cargo' bench")" \
+  "REVERSAL TARGET: nice -n -20 'cargo' bench — R1 passes on nice, R2 must still read the quoted payload" # check-sudo: fixture
+
+same "FAIL R2 cargo" "$(sudo_verdict 'sudo sh -c "cargo bench -q"')" \
+  "the same body written with DOUBLE quotes" # check-sudo: fixture
+
+same "FAIL R2 cargo" "$(sudo_verdict "sudo 'cargo' bench")" \
+  "no wrapper, no options: quoting the command word must read FAIL R2 (the NAME), not merely FAIL R1" # check-sudo: fixture
+
+same "FAIL R2 cargo" \
+  "$(sudo_verdict "sudo -n perf record -e cycles -o d.data -- 'cargo' bench -q")" \
+  "boot D's line with the workload quoted — R2 reads it, instead of R3 falling back to FAIL R1" # check-sudo: fixture
+
+same "FAIL R2 w2w" "$(sudo_verdict "sudo bash -c \"nice -n -20 'w2w' --seconds 5\"")" \
+  "mixed quotes, nested wrapper: the double-quoted body and the single-quoted word inside it" # check-sudo: fixture
+
+# The OTHER direction, and the reason unfuse_quotes() is applied to R1's
+# tokeniser too and not only to R2's: a quoted command word that IS on ALLOW.
+# `[measured 2026-09-22]` before the fix this read `FAIL R1`, because
+# sudo_cmdword() handed r1_pass() the token `'tee'` and the ALLOW comparison
+# is an exact match — a FALSE POSITIVE on a line that is perfectly fine
+# (quoting a command name changes nothing about how root resolves it).
+same "ok" "$(sudo_verdict "sudo 'tee' /sys/devices/system/cpu/cpufreq/boost")" \
+  "REVERSAL TARGET: a quoted command word on ALLOW is not a finding — 'tee' is tee"
+
+# Why unfuse_quotes() REPLACES the quote with a space instead of deleting
+# it: with no whitespace anywhere between the option and the payload,
+# deletion would fuse them into `-ccargo` and R2 would miss it again.
+same "FAIL R2 cargo" "$(sudo_verdict "sudo sh -c'cargo bench -q'")" \
+  "no whitespace at all between -c and the payload — the quote is the only boundary there is" # check-sudo: fixture
+
+# R3's tokeniser needs the same unfusing, for the same reason R1's does:
+# perf's workload given as a quoted ALLOW name is not a finding. Before the
+# fix this read FAIL R1 on the token `'chrt'`.
+same "ok" "$(sudo_verdict "sudo -n perf record -o d.data -- 'chrt' -f 80 /abs/bin/density")" \
+  "R3: a quoted, ALLOW-listed workload after -- is not a finding"
+
+# The gap that REMAINS (gap G2b in the gate's header), pinned so it is a
+# measured statement and not a claim in a comment: a target word fused to a
+# shell METACHARACTER, with no quote and no space, is still missed — R2's
+# match is exact, and `/x&&cargo` is skipped for its `/` besides. Quote
+# characters are token delimiters in every shell context, so unfusing them
+# is safe; unfusing `&`, `;` and `|` as well would also make R2 read a
+# pattern list (`grep -E "cargo|rustc"`) as a finding, which is the false
+# positive that gets a gate switched off. Whoever widens the class owns
+# this line.
+same "ok" "$(sudo_verdict "sudo sh -c 'cd /x&&cargo bench -q'")" \
+  "KNOWN GAP, not a pass: a metacharacter-fused workload is still unread by R2"
+
+# No false positive the other way either: the absolute-path escape must keep
+# working INSIDE a quoted body. The token still carries a `/`, so R2 skips it.
+same "ok" "$(sudo_verdict "sudo sh -c '/abs/bin/cargo bench -q'")" \
+  "an absolute path inside a quoted body still passes — R2 skips any token with a /"
+
+echo
+echo "=== unfuse_quotes — the shared tokenisation rule R1, R2 and R3 all split on"
+
+same "sudo sh -c  cargo bench -q " "$(unfuse_quotes "sudo sh -c 'cargo bench -q'")" \
+  "every ' becomes a space, so the quote cannot fuse to the word after it" # check-sudo: fixture
+same " nice -n -20  w2w  --seconds 5" "$(unfuse_quotes " nice -n -20 \"w2w\" --seconds 5")" \
+  "every \" becomes a space too"
+same "tee /sys/x" "$(unfuse_quotes "tee /sys/x")" \
+  "text with no quote character is returned unchanged"
 
 echo
 echo "=== is_marked_fixture — the per-line marker, honoured only inside this file (ADR-0093 gap G5)"
