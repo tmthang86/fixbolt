@@ -150,6 +150,34 @@ carries the two `--strict` rows, and a plan without them is not approved.
   1.03 it asks for a 9% step, which the 12.32% of item 95 clears and a 4% step does not; a
   4% step then reads *not attributable*, and that is the honest outcome at this `n`.
 
+**First re-record, 2026-09-23** — step S4 of
+[plans/2026-09-22-closing-the-open-items-desk-free-then-s9.md](../plans/2026-09-22-closing-the-open-items-desk-free-then-s9.md),
+`measured-costs.md` *Boot E*. 15 lines of the Ryzen 7 3700X CPU row moved to `n = 21` medians
+read from `ms`: the four original `validate` cases +14.4…+16.1%, `validate NewOrderSingle, w2w
+bytes` +1.9%, the seven `engine turn, * busy sessions` cases +5.2…+6.1%, `engine turn, 1 busy,
+admin` +4.0%, and the three `engine turn, 1 busy, ring *` cases +7.1…+8.0% — every figure and its
+`git diff benches/baselines.tsv` line is in *Boot E*, S4. Two `validate` FIXT lines and four
+`fixbolt-sbe`/`sbe` lines were added new (no prior line for this CPU), not re-recorded. Decision
+2's rule held: every moved line traces to a named cause (item 95's PR-B bisect, item 93 segment
+(3)'s `parse_utc` fix, or a first-time record), and the commit body is the ledger.
+
+Two things this ADR's rule did not foresee:
+
+- **A bench with no `baselines.tsv` mechanism at all.** The two `wakeup` p50 cases
+  (`crates/engine/benches/wakeup.rs` lines 59–66, 153–159) read `no baseline for this CPU` in
+  every `--strict` run since item 89 (2026-09-18) landed, through both S3 and S4 this boot. The
+  rule assumes a line to compare against; these two have never had one, so `--strict` cannot be
+  read green on this desk until either a mechanism is added for them or they are declared
+  structurally exempt in `bench.sh` itself. Neither has happened; they are recorded here as an
+  open item, not folded into the ledger above.
+- **A case that moved between two `--strict` runs inside one boot, on the same pinned binary.**
+  `journal put, 191 bytes, one slot` read 7.4 ns/op in S3 (21:07–21:17 UTC) and 12.4 ns/op in S4
+  (21:44–21:54 UTC) and on four re-runs after, including under `taskset -c 6`; the sibling
+  `walking` journal cases and `check-machine.sh`'s verdict did not move. The rule has no
+  provision for a drift observed *within* a boot rather than *across* boots — this line was left
+  un-re-recorded and the surprise is carried forward as an open item rather than absorbed into
+  the margin.
+
 ## Sources
 
 - [perf-diff(1)](https://man7.org/linux/man-pages/man1/perf-diff.1.html) — symbol-name

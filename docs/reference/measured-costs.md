@@ -4111,6 +4111,172 @@ p50 figures are compared here as *tiers* rather than differenced.
 - **Anything about `standard` mode, TLS, or the wire.** This boot was loopback benches and one
   `w2w` arm; ADR-0013 decision 4 applies as ever.
 
+## Boot E, 2026-09-22/23: item 95 bisected at merge granularity, item 93 segment (3) confirmed on `main`, `--strict` observed red, and the first re-record
+
+`[measured 2026-09-22/23]` step S1–S4 of
+[plans/2026-09-22-closing-the-open-items-desk-free-then-s9.md](../plans/2026-09-22-closing-the-open-items-desk-free-then-s9.md).
+§9 desktop `tmt-B450-I-AORUS-PRO-WIFI`, Ryzen 7 3700X, grub line
+`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, mitigations on,
+`FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 17 fail 0 unknown 0` (17 rows — `no timer
+due` added since boot D), `fixbolt-machine` on, `rx-usecs 0`, IRQs on `cpu4`, EEE off, 14 systemd
+timers stopped (`target/s0-timers-stopped.txt`), rustc 1.98.0,
+`RUSTFLAGS -C llvm-args=-align-all-functions=6`, engine on `cpu6`, client on `cpu7`. Every arm's
+binary was prebuilt and sha256-pinned before the boot, in `../fb-s9e/MANIFEST.txt`; the boot
+compiled nothing (`Compiling` count 0 in both `--strict` runs below).
+
+### S1 — item 95, bisected at merge granularity
+
+`scripts/ab-rotation.sh`, `ROUNDS=20`, control arm `ms`, arms `wa` (`6fbe851`, pre-PR-B), `b1`
+(`e673e8f`, PR B), `b2` (`3f84a81`, #86), `b3` (`a451831`, #87), `w1` (`76e53cb`), `m` (`badc144`
+= `main` with the `parse_utc` fix, no feature), `ms` (`badc144`, `fix50sp2`). Ran 15:09–20:05 UTC;
+4 arm-rounds (1, 6, 11) were disqualified for busy ≥ 3% — the manager's own tool calls were the
+load on the desk during those rounds, not the benches. A second run S1b of 4 rounds (20:06–21:07
+UTC, 0 disqualified) was merged with a round offset of +20, giving `n = 21` for every (arm, case)
+in `target/boot-e-evidence/s1m/summary.txt`, which is the source for every S1 number below.
+(`target/boot-e-evidence/s1-summary-round10.txt`, `n = 8`, and `s1-summary-round20.txt`, `n = 17`,
+are the intermediate reads and are superseded by `s1m/summary.txt`.)
+
+`wa → b1 → b2 → b3 → w1 → m`, medians:
+
+| case | `wa` | `b1` | `b2` | `b3` | `w1` | `m` |
+|---|---|---|---|---|---|---|
+| validate Heartbeat | 166.8 | 190.8 | 188.1 | 188.0 | 189.0 | 188.7 |
+| validate TestRequest, w2w bytes | 220.6 | 239.5 | 240.5 | 243.0 | 240.4 | 242.5 |
+| validate NewOrderSingle | 950.3 | 1012.9 | 1008.1 | 1010.1 | 1009.2 | 1010.0 |
+
+(medians, `target/boot-e-evidence/s1m/summary.txt`, `n = 21` per arm)
+
+The step is between `wa` and `b1`, i.e. **inside PR B** (phase-2 B, FIXT 1.1 / FIX 5.0 SP2,
+merge `e673e8f`): `b1` through `m` are flat within noise on every case above. This is a bisect at
+**merge granularity only** — the commit inside PR B that moved the three `validate` cases is not
+named; PR B itself was not bisected commit by commit this boot.
+
+### S1, segment (3) of item 93, confirmed on `main`
+
+`w1`'s own density rows (boot D, *The band across PRs B, C, #85 and #86*, above) against `m`'s,
+read from `s1m/summary.txt`: `engine turn, 1 busy sessions` — `ms`/`m` **1745.8** ns against boot
+D's `w1` **1799.1** ns. `w1` is not the fix-vs-no-fix pair here (`w1` in S1 measured `validate`
+only, not density); the pair is `m` against boot D's `w1` line. Every `engine turn, *` case on
+`main` in S3's strict run below (`target/boot-e-evidence/s3-strict.txt`) shows **no** `engine
+turn` line in the `OVER BASELINE` list — the segment (3) `parse_utc` fix (merged before this boot)
+brought the turn back under the 2026-09-05 ceiling, even though the `validate` cases (item 95, a
+different mechanism, bisected above to PR B) stayed outside it.
+
+### S1c — `fixbolt-sbe`/`sbe`, from the `main` tree
+
+24 rounds, 21:29–21:33 UTC, 0 disqualified: `target/boot-e-evidence/s1c/summary.txt`, four
+medians at `n = 24` (`parse nested (header+root)`, `field`, `walk nested group + varData`,
+`encode NewOrderSingle`) — these four cases had no baseline line for this CPU before this boot.
+
+### S3 — `--strict` observed red
+
+`scripts/bench.sh --strict`, 21:07–21:17 UTC, on the pre-re-record lines,
+`target/boot-e-evidence/s3-strict.txt`: **3 `OVER BASELINE`** —
+
+- `validate NewOrderSingle` 1024.2 vs baseline 882.1
+- `validate Heartbeat` 193.5 vs baseline 169.5
+- `validate TestRequest, w2w bytes` 247.3 vs baseline 218.4
+
+— and `FAIL: --strict, and 8 case(s) had no baseline for this CPU`: 2 wakeup p50 cases that carry
+**no tsv mechanism by design** (`crates/engine/benches/wakeup.rs` lines 59–66 and 153–159) plus 4
+`fixbolt-sbe`/`sbe` cases and 2 `validate` FIXT cases, none of which had a line yet. So `--strict`
+has been structurally red on this desk since the wakeup bench landed (item 89, 2026-09-18); the
+last green `--strict` was boot B step B1 (2026-09-15).
+
+### S4 — the re-record, and the full drift ledger
+
+`benches/baselines.tsv` re-recorded from the `ms` `n = 21` medians in `s1m/summary.txt`: 15 lines
+of this CPU (all `engine turn, *` busy/admin/ring cases and the four original `validate` cases)
+moved to the new medians, margin from the ADR-0095 ladder (1.10 for all except
+`validate TradeCaptureReport (33 groups)` at **1.15**, because its `max/median` over the 21 runs
+is 1.123), date `2026-09-23`, verdict `pass 17 fail 0 unknown 0`. Two `validate` FIXT lines
+(`validate NewOrderSingle (FIXT tables)`, `validate TradeCaptureReport (33 groups)`) and the four
+`fixbolt-sbe`/`sbe` lines from S1c were added new — this CPU had no prior line for any of the six.
+`git diff benches/baselines.tsv` is the drift ledger, old → new, for the 15 re-recorded lines:
+
+| case | old (2026-09-05, unless noted) | new (2026-09-23, n = 21) | diff |
+|---|---|---|---|
+| validate NewOrderSingle | 882.1 | 1024.0 | **+16.1%** |
+| validate Heartbeat | 169.5 | 195.6 | **+15.4%** |
+| validate TestRequest, w2w bytes | 218.4 | 249.8 | **+14.4%** |
+| validate NewOrderSingle, w2w bytes (2026-09-15 origin) | 994.5 | 1013.0 | +1.9% |
+| engine turn, 1 busy sessions | 1659.8 | 1745.8 | +5.2% |
+| engine turn, 1 busy, admin (2026-09-15 origin) | 954.2 | 992.0 | +4.0% |
+| engine turn, 2 busy sessions | 3325.4 | 3516.0 | +5.7% |
+| engine turn, 4 busy sessions | 6686.0 | 7080.5 | +5.9% |
+| engine turn, 8 busy sessions | 13514.5 | 14287.2 | +5.7% |
+| engine turn, 16 busy sessions | 27369.5 | 29026.7 | +6.1% |
+| engine turn, 32 busy sessions | 56684.4 | 60018.3 | +5.9% |
+| engine turn, 64 busy sessions | 121009.1 | 127370.1 | +5.3% |
+| engine turn, 1 busy, ring 64 | 1635.5 | 1766.6 | +8.0% |
+| engine turn, 1 busy, ring 512 | 1654.8 | 1778.3 | +7.5% |
+| engine turn, 1 busy, ring 4096 | 1657.7 | 1775.9 | +7.1% |
+
+A second strict run, `target/boot-e-evidence/s4-strict.txt` (21:44–21:54 UTC): every re-recorded
+case now reads in band, `FAIL: --strict, and 2 case(s) had no baseline` — only the two structural
+wakeup cases remain — and **one new surprise**:
+
+**The journal one-slot surprise.** `journal put, 191 bytes, one slot` read **12.4 ns/op**, over
+its 7.4 ns baseline (recorded 2026-09-21), on the *same pinned binary* that read **7.4 ns/op** in
+S3 forty minutes earlier. Four re-runs after S4 (including one under `taskset -c 6`) all read
+12.4; the two `journal put, *, walking` cases did not move (8.8, 5.3, unchanged from their
+baselines) and `check-machine.sh` still read `pass 17 fail 0 unknown 0` throughout. Cause
+unknown — same binary, same machine, same isolated core, two different readings 40 minutes apart.
+This line is **not** re-recorded; it is left as an open item for `STATUS.md` to carry. Between S3
+and S4 the desk ran S2 (`perf record -g`, 5 rounds) and S1c, so the surprise sits after some
+`perf` activity on the machine but before a clean re-run confirmed or refuted that as a candidate.
+
+### Item 96 — the descent priced inside one binary
+
+`[measured 2026-09-22, boot E S2]` Five `perf record -e cycles -F 4999 -g` runs of the pinned
+`ms` `validate` binary (`../fb-s9e/MANIFEST.txt`, sha256 `e34e60f9…`), 21:18–21:28 UTC, `Total
+Lost Samples: 0`, ~615 K samples each; analysis in `target/boot-e-evidence/d96-analysis.txt`.
+The only descent symbol present is `bad_nested_count::<Fixt11Fix50Sp2Tables, 256>`
+(`bad_group_count` is inlined into `validate_with`, so ADR-0094's C3 holds); its share:
+
+| k | children % | self % |
+|---|---|---|
+| 1 | 2.97 | 2.96 |
+| 2 | 2.94 | 2.93 |
+| 3 | 2.84 | 2.83 |
+| 4 | 3.00 | 2.99 |
+| 5 | 2.94 | 2.92 |
+| median | **2.94** | **2.93** |
+
+C1 holds (3 symbols by `nm`). C2 holds trivially: the harness runs every case for the same
+1 410 000 calls (`harness.rs:305-318`), so the TCR case is 95.74 % of the run and 2.94 % clears
+it by 32×. **Price by ADR-0094 decision 1, verbatim:** `children% × case median` =
+2.94 % × 83 524.0 ns (median of the five profiled runs) = **2 455.6 ns**, self 2.93 % beside
+it, range over k 2 372–2 506 ns, i.e. **2.99 % of the unprofiled 82 063.5 ns**. The ADR's
+product assumes the case is 100 % of the process; normalised to the case's own 95.74 % it is
+2 564.4 ns (3.12 %). Both are **lower bounds**.
+
+**What this does not settle.** `-g` unwinds by frame pointer and the release build has none:
+every callchain is garbage (child frames decode as the FIX bytes on the stack), so
+`children ≡ self` for every symbol and the *inclusive* share decision 1 asks for was never
+measured. The descent's callees are where the time is — `SeenCounters::defers` 34.6 %,
+`group_members` 31.3 % + 4.6 % (two CGU copies, split by load address), `region_end` 5.7 %,
+`group::open` 3.9 % — and `defers` (ADR-0085, not the descent) calls the same 31.3 % copy, so
+nothing in this data divides it. The inclusive cost lies between ~3 % and ~48 % of the case.
+Boot D's two-binary −10.83 % and this 3 % floor do not contradict each other and neither
+closes item 96. The cheapest next step is one §9 record of the same pinned binary with
+`--call-graph dwarf` after `debug = 1` in a bench profile (debuginfo does not move layout) —
+an architect decision, ADR-0094's note. Two traps cost time here:
+[perf-report-hangs-on-debuginfod-and-refuses-a-root-owned-record](perf-report-hangs-on-debuginfod-and-refuses-a-root-owned-record.md).
+
+### The wakeup structural gap
+
+Both wakeup p50 cases (`crates/engine/benches/wakeup.rs`) have never had a `baselines.tsv`
+mechanism (lines 59–66, 153–159 name why) and so read `no baseline for this CPU` in every
+`--strict` run since item 89 landed (2026-09-18) through S4 above. This is a gap in the harness,
+not a regression, and is unrelated to the three lines S3 found genuinely over baseline.
+
+### The disqualification note
+
+S1's first 20-round run lost rounds 1, 6 and 11 to busy ≥ 3% — traced to the manager's own tool
+calls running on the desk while the rotation was in flight, not to background system load. The
+second run (S1b) was driven with the manager idle for its duration and lost 0 of 4 rounds.
+
 ## Boot C, 2026-09-18: the listener cadence, N ∈ {1, 16, 256}, two procedures
 
 `[measured 2026-09-18]` step 5 of

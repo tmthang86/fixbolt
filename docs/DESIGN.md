@@ -1712,7 +1712,7 @@ both are noise, and the remainder barely moved — ~2 804 to ~2 770 ns.**
 | Candidate | Verdict |
 |---|---|
 | Two kernel copies of a larger payload each way, and the client's blocking `read` on a bigger message | **Dead: ~25 ns, 0.9%.** And three of the four byte counts this table used to quote were wrong — `strace` on the release binary reads **83/87** administrative and **149/191** application, not "79 and ~70" against "149 and ~200" |
-| `Journal::put` of the outbound `ExecutionReport` | **Dead: 8.9 ns.** Confirmed in situ as well: one session, identical work, the ring swept 8 → 64 → 512 → 4 096 slots (4 KiB to 2 MiB) reads 1 659.8 / 1 635.5 / 1 654.8 / 1 657.7 — a 1.5% spread that is **not monotone** |
+| `Journal::put` of the outbound `ExecutionReport` | **Dead: 8.9 ns.** Confirmed in situ as well: one session, identical work, the ring swept 8 → 64 → 512 → 4 096 slots (4 KiB to 2 MiB) reads **1 745.8 / 1 766.6 / 1 778.3 / 1 775.9** `[measured 2026-09-23, Boot E, S4 re-record]` (2026-09-05 origin: 1 659.8 / 1 635.5 / 1 654.8 / 1 657.7) — a 1.9% spread that is **not monotone** |
 | The engine's framing and read-buffer management | **Open, and now holds almost all of it.** No benchmark isolates it |
 | The session's own `Heartbeat` serialise on the administrative side | **Open.** No committed case, so it is not subtracted in either direction |
 
