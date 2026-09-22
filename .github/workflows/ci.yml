@@ -74,6 +74,15 @@ jobs:
       # instance is fixed; this guards the class. Note it can only fail here
       # for a tree reason, never a machine one: the check reads text.
       - run: scripts/check-scratch-fixtures.sh
+      # ADR-0093 decision 2, plan docs/plans/2026-09-22-the-detector-and-the-
+      # campaign-preconditions.md step 3: does a `sudo` line in scripts/ hand
+      # root a command it can find, or a name that only exists on the
+      # CALLER's PATH? `sudo -n perf record … -- cargo bench …` in boot D's
+      # own plan cell ran five times, wrote a header-only .data file and
+      # exited 0 — `perf` is on root's secure_path, `~/.cargo/bin` is not,
+      # and nothing read the workload's own output.
+      # docs/reference/perf-record-exits-zero-when-sudo-cannot-find-the-workload.md
+      - run: scripts/check-sudo-names-what-root-can-find.sh
       # `[added 2026-09-12]` plan docs/plans/2026-09-12-gates-that-match-a-meaning.md,
       # section E: the three scripts this plan writes or rewrites are shell,
       # and shell is where a quoting bug (item 66b) lives. `ubuntu-latest`
@@ -89,7 +98,7 @@ jobs:
       # one defect class section E named as its reason to exist. Measured on
       # shellcheck 0.11.0, one probe per level: error 0, warning 0,
       # info SC2086, style SC2086. Plan revision Sửa 1.
-      - run: shellcheck -S info scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh
+      - run: shellcheck -S info scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh scripts/check-sudo-names-what-root-can-find.sh scripts/check-sudo-verdicts.sh
 
   # `[measured 2026-08-30]` scripts/check-ktls-available.sh printed
   # `config: CONFIG_TLS=m` and then "it was built without CONFIG_TLS" in the SAME
@@ -116,6 +125,19 @@ jobs:
       # `virt_verdict` and friends are, fed the 2026-09-14 trap's own numbers.
       - run: scripts/check-w2w-baseline-summary.sh
       - run: scripts/check-w2w-compare.sh
+      # ADR-0093 decision 2: the pure functions behind
+      # check-sudo-names-what-root-can-find.sh, fed boot D's own line, the
+      # six advisory strings already in check-machine.sh, and the R1/R2/G1
+      # fixtures the plan names — the same shape as the two checks above.
+      - run: scripts/check-sudo-verdicts.sh
+      # `[measured 2026-09-22]` this script has existed since step 1 of
+      # docs/plans/2026-09-22-the-detector-and-the-campaign-preconditions.md
+      # and had never run in CI — `grep check-ab-rotation .github/workflows/
+      # ci.yml` found nothing, the same hole check-w2w-compare.sh and
+      # check-w2w-baseline-summary.sh above were added here to close for
+      # their own siblings. It tests ab_median / ab_complete_rounds /
+      # ab_summary / ab_extract, the pure parts of scripts/ab-rotation.sh.
+      - run: scripts/check-ab-rotation.sh
       # `[measured 2026-09-10]` This runner CAN offload TLS, and that answer is
       # what made the `tls` job below buildable as written: kernel
       # `6.17.0-1022-azure`, `CONFIG_TLS=m`, module loaded, `/proc/net/tls_stat`
