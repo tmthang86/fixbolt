@@ -219,7 +219,10 @@ systemctl taskset tee update-grub`); **R2** bất kỳ token trần nào sau `su
 `cargo-*`, `rustc`, `rustup`, `rustdoc`, `w2w` → FAIL; **R3** lệnh `perf` có `--` → token sau `--`
 qua R1. 0 script quét = FAIL. Hàm thuần được `scripts/check-sudo-verdicts.sh` test bằng
 fixture (dòng thật của boot D, sáu dòng lời khuyên, dạng đường dẫn tuyệt đối, dạng `-E`). Cả hai
-vào CI (`gates`, `script-logic`, danh sách `shellcheck -S info`). *Hàng timer (quyết định 3)*:
+vào CI — gate đứng **ngay sau step `check-scratch-fixtures.sh`** (cùng job với tiền lệ của nó,
+hôm nay tên là `lint-config`), verdict test đứng **cạnh `check-machine-verdicts.sh`** (job
+`script-logic`), cả hai script vào danh sách `shellcheck -S info` của step đó (*Sửa 2*). *Hàng
+timer (quyết định 3)*:
 `check-machine.sh` thêm hàng `no timer due`: `systemctl list-timers --all --output=json` → `jq`
 → hàm thuần `timers_verdict <now_usec> <window_sec> <json>`; **FAIL** khi có `next ≤ now +
 window` (kể cả `next` đã qua), nêu tên unit + giờ địa phương + `left`, fix
@@ -256,7 +259,7 @@ sửa** (bước 3) — bước 1 không đụng `ci.yml`.
 | **0** | architect (fable) | Kế hoạch này; ADR-0092, 0093, 0094 | `docs/plans/`, `docs/decisions/` | mọi thứ khác | — | — | `python3 scripts/check-links.py`; `scripts/check-adr-numbers.sh` | — |
 | **1** | developer (sonnet) | Item 97 (1)+(4a): `ab_extract` thuần, fixture chụp thật, test | `scripts/ab-rotation.sh` (thêm `ab_extract`, `run_suite` gọi nó — **không** đổi gì khác), `scripts/check-ab-rotation.sh` | `crates/`, `ci.yml`, `benches/baselines.tsv` (chỉ ba dòng tạm, hoàn lại trong bước) | — | Mục `=== ab_extract` với fixture thật (cách chụp ở *Cách kiểm chứng*). `same "4" "$(… \| wc -l)"` — FAIL chờ: `FAIL  want [4] got [6]  REVERSAL TARGET (rows): the harness's OVER/UNDER report lines and the panic body are not measurement rows` (con số `got` là con số awk cũ in ra, đọc chứ không đoán). Thêm: không tên case nào kết thúc bằng `:`; cột verdict đúng `over/under/in/none` — **đủ bốn giá trị** (*Sửa 1*) | `scripts/check-ab-rotation.sh` → `pass N   fail 0`; `shellcheck -S info scripts/ab-rotation.sh scripts/check-ab-rotation.sh` (quote; nếu có cảnh báo **có sẵn** ở dòng không sửa → báo, không sửa) | 0 |
 | **2** | developer (sonnet) | Item 97 (2)+(3): exit status, dòng suite, `FAILED`, cột `over`, chân, `--reextract` | `scripts/ab-rotation.sh`, `scripts/check-ab-rotation.sh` | `crates/`, `ci.yml`, `check-machine.sh` | — | Fixture timeline có dòng suite `FAILED` và `round 3 incomplete`: `same "1\n2"` — FAIL chờ: `FAIL  want [1 2] got [1 2 3]  REVERSAL TARGET: a suite that exited non-zero without the harness's verdict line drops the round`. runs.txt 5 cột → cột `over` `2/2`; 4 cột → `?` — FAIL chờ: `FAIL  want [2/2] got [?]  REVERSAL TARGET (over): the verdict column reaches the summary`. `--reextract` trên `raw/` giả → 4 hàng | `scripts/check-ab-rotation.sh` xanh; **rehearsal thật** `ROUNDS=1` trên container (ba lần: sạch → `ok`; dòng tạm ép OVER → `exit 101 … OVER`, `round 1 complete`, chân `over baseline: 1 …`; dòng tsv **sai định dạng** → `rows 0 … FAILED`, `round 1 incomplete`); `git diff --exit-code benches/baselines.tsv` | 1 |
-| **3** | developer (sonnet) | Item 98a: gate `sudo` + verdict test + CI | `scripts/check-sudo-names-what-root-can-find.sh` (mới), `scripts/check-sudo-verdicts.sh` (mới), `.github/workflows/ci.yml` (job `gates`: một step sau `check-scratch-fixtures.sh`; job `script-logic`: `check-sudo-verdicts.sh` **và** `check-ab-rotation.sh`; danh sách `shellcheck -S info`: hai script mới) | `crates/`, `check-machine.sh`, `ab-rotation.sh`, mọi script khác | — | `check-sudo-verdicts.sh` với dòng boot D `sudo -n perf record -e cycles -F 4999 -o d.data -- cargo bench -q -p fixbolt-engine --bench density` — FAIL chờ khi R2 chưa viết: `FAIL  want [FAIL R2 cargo] got [ok]  REVERSAL TARGET: boot D's own line — perf passes R1, the workload after -- is what root cannot find`. Sáu dòng lời khuyên → `ok`. `sudo mytool` → `FAIL R1`. `sudo -E cargo bench` → FAIL. `sudo -n "$BIN"` → `ok` (G1) | `scripts/check-sudo-names-what-root-can-find.sh` trên cây → `ok — <N> scripts scanned, <M> sudo lines read, 0 findings` (đọc N, M); đảo chiều bằng file dưới `target/check-sudo/` (*Cách kiểm chứng*) → exit 1 đúng câu; `scripts/check-sudo-verdicts.sh` → `pass N fail 0`; `scripts/check-scratch-fixtures.sh` vẫn xanh; `shellcheck -S info` hai file mới sạch | 0. **Song song với 1** (file rời) |
+| **3** | developer (sonnet) | Item 98a: gate `sudo` + verdict test + CI | `scripts/check-sudo-names-what-root-can-find.sh` (mới), `scripts/check-sudo-verdicts.sh` (mới), `.github/workflows/ci.yml` (gate: một step **ngay sau step `check-scratch-fixtures.sh`**, job nào chứa step đó thì vào job đó — hôm nay là `lint-config`, *Sửa 2*; verdict test: cạnh step `check-machine-verdicts.sh` — job `script-logic` — cùng với `check-ab-rotation.sh`; danh sách `shellcheck -S info` của step cạnh `check-scratch-fixtures.sh`: hai script mới) | `crates/`, `check-machine.sh`, `ab-rotation.sh`, mọi script khác | — | `check-sudo-verdicts.sh` với dòng boot D `sudo -n perf record -e cycles -F 4999 -o d.data -- cargo bench -q -p fixbolt-engine --bench density` — FAIL chờ khi R2 chưa viết: `FAIL  want [FAIL R2 cargo] got [ok]  REVERSAL TARGET: boot D's own line — perf passes R1, the workload after -- is what root cannot find`. Sáu dòng lời khuyên → `ok`. `sudo mytool` → `FAIL R1`. `sudo -E cargo bench` → FAIL. `sudo -n "$BIN"` → `ok` (G1) | `scripts/check-sudo-names-what-root-can-find.sh` trên cây → `ok — <N> scripts scanned, <M> sudo lines read, 0 findings` (đọc N, M); đảo chiều bằng file dưới `target/check-sudo/` (*Cách kiểm chứng*) → exit 1 đúng câu; `scripts/check-sudo-verdicts.sh` → `pass N fail 0`; `scripts/check-scratch-fixtures.sh` vẫn xanh; `shellcheck -S info` hai file mới sạch | 0. **Song song với 1** (file rời) |
 | **4** | developer (sonnet) | Item 98b: hàng `no timer due`, `timers_verdict`, preflight của driver, hàng §9 | `scripts/check-machine.sh`, `scripts/check-machine-verdicts.sh`, `scripts/ab-rotation.sh` (**chỉ** preflight), `docs/DESIGN.md` (**chỉ** một hàng §9, chữ ở *Cách kiểm chứng*) | `crates/`, `ci.yml`, phần khác của `DESIGN.md` | — | `check-machine-verdicts.sh` mục `=== timers_verdict`: JSON 4 timer (`next` = now+1 h; now+13 h; `null`; now−5 min), window 12 h → `FAIL` nêu **hai** unit — FAIL chờ: `FAIL  want [FAIL apt-daily-upgrade.timer …] got [PASS]  REVERSAL TARGET: a timer due in 1h inside a 12h window`; cùng JSON, window 0,5 h → `FAIL` nêu **một** (unit đã qua giờ); `[]` → `PASS`; JSON hỏng → `UNKNOWN` | `scripts/check-machine-verdicts.sh` → `pass N fail 0`; `scripts/check-machine.sh` trên container in hàng `? ? ?  no timer due  cannot reach PID 1 (…) [window 12h]` (quote); `AB_ROTATION` dry-run vẫn chạy; `scripts/check-sudo-names-what-root-can-find.sh` xanh (fix line dùng `systemctl`) | 2, 3 |
 | **5** | developer (sonnet) | Tài liệu | `STATUS.md` (hàng 96, 97, 98; *Not proven*), hai trang `docs/reference/` (đoạn *Guarded by*), `docs/DESIGN.md` §6 đoạn *How the benchmarks are run* (ba câu về exit status/verdict/`--reextract`), `docs/hft-playbook.md` §6 (mục mới: driver trong `scripts/`, hàng timer, gate `sudo`) | `crates/`, `CLAUDE.md`, ADR đã Accepted | — | — | `python3 scripts/check-links.py` → `no dead internal links`; `scripts/check-adr-numbers.sh` | 1–4 |
 | **6** | manager | Gate toàn bộ tại commit đóng, senior review một lần, CI run id, merge, handoff *Start here* | — | — | — | — | tất cả | 5 |
@@ -486,6 +489,53 @@ nhau về cùng một fixture — và cái canh nó là luật đã có: viết 
 thêm trang; thêm một hàng vào *Bẫy đã lường trước* của mọi kế hoạch sau là việc của
 `_template.md`, và đó là quyết định của chủ dự án, không của bản sửa này. Manager ghi vào
 *Nhật ký* hàng 1 con số hai phép đảo ngược đã đọc.
+
+## Sửa 2 — 2026-09-22, sau khi bước 3 hạ cánh: một tên job sai, và một khoảng trống gate tự tạo
+
+**(a) Kế hoạch gọi sai tên job CI.** Hàng 3 của *Chia việc* (và brief chép từ đó) bảo đặt gate
+vào job **`gates`**, "một step sau `check-scratch-fixtures.sh`". Đọc `ci.yml`:
+`check-scratch-fixtures.sh` chạy trong job **`lint-config`** (`:76`); job tên `gates` có thật
+(`:376`) và không chạy script đó. Người xây **báo lên** thay vì tự giải, chọn job có tiền lệ thật;
+gate nay ở `lint-config` (`:85`), hai script vào danh sách `shellcheck -S info` của job đó
+(`:101`), `check-sudo-verdicts.sh` và `check-ab-rotation.sh` vào `script-logic` (`:129`). Đặt thế
+là đúng. Hàng 3 và *Cách làm* Item 98 nay **gọi tên step, không gọi tên job** — "ngay sau step
+`check-scratch-fixtures.sh`", "cạnh `check-machine-verdicts.sh`" — để đổi tên job không làm mục
+văn bản này mục nát. Không hàng nào khác của kế hoạch nhắc tên job.
+
+**(b) Gate loại chính file test của nó khỏi phạm vi, và ADR-0093 chưa nói.**
+`check-sudo-names-what-root-can-find.sh:79` loại **đúng một** file khỏi phạm vi mặc định:
+`scripts/check-sudo-verdicts.sh`, vì fixture của nó cố tình byte-identical với dòng xấu thật
+(dòng boot D trong đó), đưa vào `sudo_verdict()` dưới dạng chuỗi, không bao giờ chạy; lần quét
+đầu thấy 9 "phát hiện", toàn là fixture đọc lại chính mình. Loại là thật thà (tiền lệ:
+`check-scratch-fixtures.sh` gọi tên `check-links.py` ra khỏi phạm vi của nó). Hệ quả không được
+nói: **một dòng `sudo` xấu thật thêm vào `check-sudo-verdicts.sh` sẽ không bao giờ bị bắt.**
+ADR-0093 sửa tại chỗ (còn `Proposed`, `CLAUDE.md` §5): thêm **G5**, và làm mềm **G2** — R2-trong-
+`sh -c`/`env` được viết đúng spec nhưng **không có fixture nào**, vì không dòng thật nào trong cây
+đi qua đó và hàng 3 không gọi tên một cái.
+
+**Cách đóng G5, rẻ, và thêm fixture cho G2 — bước 3b** (developer, sonnet; chạy khi
+`scripts/check-sudo-*.sh` không còn ai viết):
+
+- *Được sửa*: `scripts/check-sudo-names-what-root-can-find.sh`, `scripts/check-sudo-verdicts.sh`.
+  *Không được sửa*: `ci.yml` (không đổi step), mọi script khác. §2: không.
+- *Cơ chế*: bỏ việc loại theo tên file; thay bằng một **dấu trên dòng** — comment đuôi
+  `# check-sudo: fixture` — mà scanner bỏ qua **chỉ trong `scripts/check-sudo-verdicts.sh`**
+  (dấu ở file khác không có tác dụng — không mở một cửa thoát chung). Mỗi dòng fixture xấu trong
+  file test mang dấu; một dòng xấu **không** mang dấu trong chính file đó bị bắt như mọi file
+  khác. Dòng `ok` của gate in thêm `K fixture lines skipped by marker` để số đó lộ trong review.
+- *Fixture G2 thêm vào verdict test*: `sudo sh -c 'cargo bench -q'` → `FAIL R2 cargo`;
+  `sudo env PATH=$PATH cargo bench` → `FAIL R2 cargo`; `sudo sh -c '/abs/bin --flag'` → `ok`
+  (R1 không áp cho thân `sh -c` — G2 vẫn là G2, nay có fixture nói đúng nó che gì).
+- *Test viết trước, câu FAIL chờ đợi*: trong `check-sudo-verdicts.sh`, một `same` cho hàm
+  `is_marked_fixture`/tương đương với dòng có dấu → `skip`; chưa viết → `FAIL  want [skip] got []`.
+  *Đảo ngược thật*: thêm tạm dòng `sudo -n perf record -o x.data -- cargo bench` **không dấu** vào
+  `check-sudo-verdicts.sh` → `scripts/check-sudo-names-what-root-can-find.sh` phải in
+  `check-sudo: FAIL — scripts/check-sudo-verdicts.sh:<n>: sudo hands 'cargo' to root by name; …
+  (R2) …`, exit 1; bỏ dòng → `ok — <N> scripts scanned, <M> sudo lines read, K fixture lines
+  skipped by marker, 0 findings` với N **tăng 1** so với trước (file test nay trong phạm vi).
+- *Gate đóng bước*: hai script xanh; `shellcheck -S info` sạch; `check-scratch-fixtures.sh` xanh.
+- ADR-0093 G5 ghi phương án này là *đề xuất*, không phải đã đóng; bước 3b đóng nó. Nếu bước 3b
+  không chạy trong PR này, G5 ở lại trong ADR đúng như đang viết và `STATUS.md` hàng 98 nói rõ.
 
 ## Nhật ký giao hàng
 

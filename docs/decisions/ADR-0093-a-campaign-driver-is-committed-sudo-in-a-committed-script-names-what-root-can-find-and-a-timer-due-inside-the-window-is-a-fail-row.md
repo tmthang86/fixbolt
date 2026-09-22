@@ -1,6 +1,12 @@
 # ADR-0093 — A campaign driver is committed, `sudo` in a committed script names what root can find, and a timer due inside the window is a `FAIL` row
 
 - **Status**: Proposed — 2026-09-22
+- **Revised 2026-09-22, same day, after the plan's step 3 landed (`ebe0525`)** — revised in
+  place as `CLAUDE.md` §5 allows for a `Proposed` ADR, the revision recorded here: decision 2
+  gains gap **G5** (the gate names its own verdict test out of scope, so a real bad line
+  *there* is never caught — with a proposed remedy, the plan's *Sửa 2* step 3b), **G2** is
+  softened to say it has no fixture, and the CI wording names the step the gate follows, not
+  a job name. No decision changes.
 - **Approved by**: nobody yet. Written by the architect for the plan
   [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md),
   step 0; the owner approved the *scope* of that plan on 2026-09-22, not this text.
@@ -187,8 +193,11 @@ line with the counts it read (`N scripts, M sudo lines, 0 findings`) so a green 
 it looked at. Its rules are pure functions sourced by a sibling
 `scripts/check-sudo-verdicts.sh`, which feeds them boot D's exact line, the six advisory
 lines above, the absolute-path form and the `-E` form, the way `check-machine-verdicts.sh`
-feeds `virt_verdict`; both scripts join the `shellcheck -S info` list and the `gates` /
-`script-logic` CI jobs.
+feeds `virt_verdict`. In CI the gate runs **immediately after the `check-scratch-fixtures.sh`
+step** (whichever job holds that step — `lint-config` at `ebe0525`), the verdict test runs
+**beside `check-machine-verdicts.sh`** (`script-logic`), and both scripts join the
+`shellcheck -S info` list of the step next to `check-scratch-fixtures.sh`. Named by step, not
+by job, so a renamed job does not make this sentence wrong.
 
 **On `main` at `0629111` the gate is green by construction**: every `sudo` there runs `tee`,
 `systemctl`, `sysctl`, `cpupower`, `modprobe` or `ethtool` — all on ALLOW — and no line
@@ -197,10 +206,29 @@ carries an R2 word. The plan's step quotes the count.
 **Known gaps, stated as ADR-0061 states its own**: **G1** a command word in a variable
 (`sudo -n "$BIN"`) passes R1 unread — the *intended* fix pattern uses exactly this, so the
 gate cannot forbid it; **G2** inside `sh -c '…'`, `bash -c '…'`, `env …`, `nice …` only R2 is
-applied, not R1; **G3** prose — a plan cell — is not a script, and boot D's trap was written
-in a plan cell first; decision 1 is what moves the line into a file the gate reads; **G4**
-ALLOW is static and says nothing about whether the package is installed on the machine that
-will run the line — that failure is loud (`command not found`, exit 127) and is not the trap.
+applied, not R1 — and, as built at `ebe0525`, **this path has no fixture**: no real line in
+the tree passes through it and the plan's step 3 named none, so R2-inside-a-wrapper is
+implemented to this text and **untested** until the plan's step 3b adds `sudo sh -c 'cargo
+bench'` and `sudo env PATH=$PATH cargo …` to the verdict test; **G3** prose — a plan cell — is
+not a script, and boot D's trap was written in a plan cell first; decision 1 is what moves the
+line into a file the gate reads; **G4** ALLOW is static and says nothing about whether the
+package is installed on the machine that will run the line — that failure is loud (`command
+not found`, exit 127) and is not the trap; **G5** *(added in the revision)* the gate names
+**exactly one file out of its default scope: `scripts/check-sudo-verdicts.sh`**
+(`check-sudo-names-what-root-can-find.sh:79`), because that file's fixtures are deliberately
+byte-identical to real bad lines — boot D's among them — handed to `sudo_verdict()` as string
+arguments and never executed; the gate's first self-scan read 9 "findings", all fixtures
+reading themselves back, and nothing structural tells such a string from a real advisory one
+(both are a quoted literal handed to a function). The exclusion follows
+`check-scratch-fixtures.sh` naming `check-links.py` out of its own scope. **Its consequence:
+a real bad `sudo` line added to `check-sudo-verdicts.sh` is never caught by the default
+scan.** An explicit path argument still reaches the file. **Proposed remedy, cheap, not yet
+built**: replace the by-name exclusion with a per-line marker — a trailing
+`# check-sudo: fixture` comment the scanner honours **only inside `check-sudo-verdicts.sh`**
+(so it is not a general escape hatch) — put the file back in default scope, count the marked
+lines on the gate's `ok` line so their number is visible in review, and prove it by adding an
+unmarked bad line to the verdict test and reading the gate go red on that file. This is the
+plan's *Sửa 2* step 3b; until it lands, G5 stands as written.
 
 ### 3. `check-machine.sh` gains a row `no timer due`, a `FAIL` inside a declared window, default 12 hours
 
@@ -277,8 +305,9 @@ will run the line — that failure is loud (`command not found`, exit 127) and i
 - **ALLOW is a list somebody maintains.** A new tool after `sudo` is red until added with
   evidence; that is the over-matching direction chosen on purpose, and the cost is one
   commit per new name.
-- **G1–G4 are real.** A `$BIN` after `sudo` is unread; a plan cell is unread; the gate is a
-  regex over lines, as ADR-0061 accepted for its sibling. The mitigation for G1 is decision
+- **G1–G5 are real.** A `$BIN` after `sudo` is unread; a plan cell is unread; the wrapper
+  path (G2) is untested until step 3b; the gate's own verdict test is out of its default scope
+  (G5) until step 3b; the gate is a regex over lines, as ADR-0061 accepted for its sibling. The mitigation for G1 is decision
   1's rule that the variable holds a manifest-pinned absolute path, held by the driver's own
   sha256 check, not by this gate.
 - **The timers row makes `check-machine.sh` red on any systemd desktop with default package
