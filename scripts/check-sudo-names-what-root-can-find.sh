@@ -76,21 +76,41 @@
 # script that forgot the extension but kept the shebang, and an extension
 # list is a thing somebody must remember to grow (STATUS.md items 62, 68).
 #
-# ONE NAMED EXCLUSION from that default scope: check-sudo-verdicts.sh. Its
-# fixtures are deliberately byte-identical to a real bad line — boot D's own
-# line among them — passed as a quoted STRING ARGUMENT to sudo_verdict(),
-# never executed. `[measured 2026-09-22]` this gate's own first run against
-# scripts/ found 9 "findings", every one of them a test fixture reading
-# itself back. There is no structural rule that tells a deliberately-bad
-# fixture string apart from a real advisory string — both are a quoted
-# literal handed to a function (row() for the six real ones; sudo_verdict()
-# here) — the difference is purely what the file is FOR, the same reason
-# check-scratch-fixtures.sh names check-links.py out of ITS scope by hand
-# rather than by a rule. An explicit path argument still reaches this file
-# (nothing here can hide it from a caller who names it on purpose).
-# With one or more path arguments, exactly those files are scanned instead —
-# used by the reversal fixtures under target/check-sudo/, which sit outside
-# scripts/ on purpose (evidence, not a driver — ADR-0093 decision 1).
+# NO FILE IS EXCLUDED FROM THAT DEFAULT SCOPE (ADR-0093 decision 2, gap G5,
+# closed). check-sudo-verdicts.sh used to be named out of scope by hand —
+# the same way check-scratch-fixtures.sh names check-links.py out of ITS own
+# scope — because its fixtures are deliberately byte-identical to a real bad
+# line (boot D's own line among them), passed as a quoted STRING ARGUMENT to
+# sudo_verdict(), never executed. `[measured 2026-09-22]` this gate's own
+# first run against scripts/ found 9 "findings" there, every one of them a
+# test fixture reading itself back. The consequence was never written down:
+# a REAL bad sudo line added to check-sudo-verdicts.sh was never caught by
+# the default scan, because nothing structural tells a deliberately-bad
+# fixture string apart from a real advisory one — both are a quoted literal
+# handed to a function (row() for the six real ones; sudo_verdict() here).
+#
+# The fix: a per-line trailing marker, `# check-sudo: fixture` — see
+# is_marked_fixture() below — HONOURED ONLY when the file being scanned is
+# check-sudo-verdicts.sh (matched by basename, so it holds however the path
+# argument is spelled). The same marker text sitting in any other file does
+# nothing at all: is_marked_fixture() is pure and answers only "does this
+# text end in the marker", and the scanning loop below is the sole place
+# that decides whether to ask it, keyed on the file's own name — so this is
+# not a general escape hatch. Every fixture line in check-sudo-verdicts.sh
+# that would otherwise read as a finding — a real bad line quoted as data,
+# or plain English prose that happens to contain the word `sudo` followed by
+# an unlisted word, since R1 cannot tell a comment from a command — carries
+# the marker; an UNMARKED bad line added to that same file is caught exactly
+# as it would be in any other file (the reversal in check-sudo-verdicts.sh's
+# own commit history is what proves this). The count of lines the marker
+# skipped is printed on the gate's own `ok` line, so it is visible in review
+# instead of hidden inside a silent exclusion.
+#
+# An explicit path argument always reaches whatever file it names (nothing
+# here can hide a file from a caller who names it on purpose). With one or
+# more path arguments, exactly those files are scanned instead — used by the
+# reversal fixtures under target/check-sudo/, which sit outside scripts/ on
+# purpose (evidence, not a driver — ADR-0093 decision 1).
 #
 # A live logical line joins a trailing single backslash onto the next
 # physical line first, so a workload hidden on the continuation is still
@@ -306,6 +326,24 @@ sudo_offending_rest() {
   done < <(sudo_rests "$line")
 }
 
+# The per-line fixture marker (ADR-0093 gap G5). A plain string, not
+# assembled like SUDO_WORD: it does not spell the word `sudo` contiguously
+# (it is inside the hyphenated token `check-sudo`, which sudo_rests' own
+# boundary class already reads as one token, not a match — see sudo_rests
+# below), so this literal does not trip the gate reading itself.
+FIXTURE_MARKER_PATTERN='(^|[[:space:]])# check-sudo: fixture[[:space:]]*$'
+
+# is_marked_fixture <text> — prints "skip" when <text> ends with the marker
+# (optional leading whitespace before the `#`, optional trailing
+# whitespace), prints nothing otherwise. PURE: whether this is consulted at
+# all, and for which file, is entirely the scanning loop's choice below —
+# this function does not know or care what file its argument came from.
+is_marked_fixture() {
+  if [[ "$1" =~ $FIXTURE_MARKER_PATTERN ]]; then
+    printf 'skip'
+  fi
+}
+
 # Sourced by the verdict test, which wants the pure functions and none of
 # the scanning below — the same shape check-machine.sh (MACHINE_SOURCE_ONLY)
 # and ab-rotation.sh (AB_ROTATION_SOURCE_ONLY) already use, `return` at top
@@ -330,8 +368,6 @@ else
   shopt -u nullglob
   for cand in "${CANDIDATES[@]}"; do
     [[ -f "$cand" ]] || continue
-    # Named exclusion, default scope only — see the SCOPE comment above.
-    [[ "$cand" == "scripts/check-sudo-verdicts.sh" ]] && continue
     if [[ "$cand" == *.sh ]]; then
       FILES+=("$cand")
       continue
@@ -351,10 +387,18 @@ fi
 
 findings=0
 sudo_lines=0
+marker_skipped=0
 
 for f in "${FILES[@]}"; do
   while IFS=$'\t' read -r lineno live text; do
     [[ "$live" -eq 1 ]] || continue
+    # The marker is honoured for exactly one file, by basename — see the
+    # SCOPE comment above. Anywhere else this text does nothing.
+    if [[ "$(basename -- "$f")" == "check-sudo-verdicts.sh" ]] \
+      && [[ "$(is_marked_fixture "$text")" == skip ]]; then
+      marker_skipped=$((marker_skipped + 1))
+      continue
+    fi
     mapfile -t occ < <(sudo_rests "$text")
     [[ "${#occ[@]}" -eq 0 ]] && continue
     sudo_lines=$((sudo_lines + 1))
@@ -385,7 +429,7 @@ for f in "${FILES[@]}"; do
 done
 
 if [[ "$findings" -eq 0 ]]; then
-  echo "check-sudo: ok — ${#FILES[@]} scripts scanned, ${sudo_lines} ${SUDO_WORD} lines read, 0 findings"
+  echo "check-sudo: ok — ${#FILES[@]} scripts scanned, ${sudo_lines} ${SUDO_WORD} lines read, ${marker_skipped} fixture lines skipped by marker, 0 findings"
   exit 0
 fi
 echo "check-sudo: ${findings} finding(s) — see the FAIL lines above" >&2
