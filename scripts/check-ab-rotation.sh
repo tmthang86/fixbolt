@@ -101,17 +101,19 @@ w0_line=$(printf '%s\n' "$out" | grep '^w0 ')
 wa_line=$(printf '%s\n' "$out" | grep '^wa ')
 
 # The case name ("parse NewOrderSingle (35 fields)") carries its own spaces,
-# so the five trailing columns (median, min/med, max/med, n, diff%) are read
-# relative to NF, never by a fixed column number.
-same "1660.2" "$(printf '%s\n' "$w0_line" | awk '{print $(NF-4)}')" \
+# so the six trailing columns (median, min/med, max/med, n, diff%, over) are
+# read relative to NF, never by a fixed column number. This fixture's
+# runs.txt has 4 columns (no verdict), so `over` reads "?" on every row —
+# ADR-0092 decision 3, exercised on its own further down.
+same "1660.2" "$(printf '%s\n' "$w0_line" | awk '{print $(NF-5)}')" \
   "control median is exactly the C-91 baseline figure, unmoved by anything in round 3"
-same "2" "$(printf '%s\n' "$w0_line" | awk '{print $(NF-1)}')" \
+same "2" "$(printf '%s\n' "$w0_line" | awk '{print $(NF-2)}')" \
   "control n is 2, not 3 — round 3 never had a control row to begin with"
-same "1817.2" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-4)}')" \
+same "1817.2" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-5)}')" \
   "REVERSAL TARGET (median): the outlier round-3 sample (9999.9) is excluded, not blended in"
-same "2" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-1)}')" \
+same "2" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-2)}')" \
   "REVERSAL TARGET (n): wa's own round-3 run is dropped even though wa itself was never DISQUALIFIED — w0 was"
-same "+9.5%" "$(printf '%s\n' "$wa_line" | awk '{print $NF}')" \
+same "+9.5%" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-1)}')" \
   "REVERSAL TARGET (diff%): 1817.2 vs control 1660.2 is +9.5%, C-91's own number — change this file's 9.5 to 8.5 and this line must go red"
 
 echo
@@ -180,6 +182,100 @@ same "1" "$(printf '%s\n' "$extracted" | cut -f5 | grep -c '^in$')" \
 same "w1	7	validate TestRequest, w2w bytes	311.4	in" \
   "$(printf '%s\n' "$extracted" | awk -F'\t' '$5=="in"')" \
   "the in-band row's whole record: name with its comma kept, figure taken from the token before ' ns/op', verdict 'in'"
+
+echo
+echo "=== ab_suite_verdict — ADR-0092 decision 2 (run_suite's per-suite state)"
+
+same "ok" "$(ab_suite_verdict 0 1 0 "")" \
+  "exit 0 with at least one row extracted is ok"
+same "FAILED" "$(ab_suite_verdict 0 0 0 "")" \
+  "exit 0 but zero rows measured nothing — FAILED, the same liveness rule bench.sh already uses"
+same "OVER" "$(ab_suite_verdict 101 4 1 4)" \
+  "exit 101, the harness's own '1 of 4' verdict line read back with m == rows (every case was printed before the assert) — the round stays complete"
+same "FAILED" "$(ab_suite_verdict 139 0 0 "")" \
+  "REVERSAL TARGET: a suite that exited non-zero (a crash, 139) without the harness's verdict line drops the round"
+same "FAILED" "$(ab_suite_verdict 101 4 1 3)" \
+  "the panic's own m (3) does not match the rows actually extracted (4) — the assert fired before every case was printed — FAILED, not OVER"
+same "FAILED" "$(ab_suite_verdict 1 0 0 "")" \
+  "exit 1 with zero rows — a malformed baselines.tsv line exits before any case runs (harness.rs read_baselines) — FAILED"
+
+echo
+echo "=== timeline round completion — a FAILED suite drops the whole round (decision 2)"
+
+# round 1 and 2: the arm's suite came back ok both times. round 3: the arm's
+# suite exited non-zero with no harness verdict line (a crash, not a panic on
+# an over-band case) — ab_suite_verdict must call that FAILED, and the round
+# trailer this driver would write follows that verdict exactly the way
+# run_suite does, so a wrong (or missing) ab_suite_verdict shows up here as
+# round 3 wrongly staying "complete". The per-arm 'busy … ok|DISQUALIFIED'
+# line and the round trailer keep their existing shape; only the new
+# 'round N arm X suite S …' line is new, and ab_complete_rounds does not
+# change to read it — decision 2's "must not change behaviour".
+v_ok=$(ab_suite_verdict 0 1 0 "")
+v_crash=$(ab_suite_verdict 139 0 0 "")
+cat >"$fixtures/timeline-failed.txt" <<EOF
+round 1 arm w0 busy 1% ok
+round 1 arm w0 suite fixbolt-codec/parse exit 0 rows 1 over 0 under 0 nobase 1  $v_ok
+round 1 complete
+round 2 arm w0 busy 1% ok
+round 2 arm w0 suite fixbolt-codec/parse exit 0 rows 1 over 0 under 0 nobase 1  $v_ok
+round 2 complete
+round 3 arm w0 busy 1% ok
+round 3 arm w0 suite fixbolt-codec/parse exit 139 rows 0 over 0 under 0 nobase 0  $v_crash
+round 3 $([ "$v_crash" = FAILED ] && echo incomplete || echo complete)
+EOF
+
+same "1
+2" "$(ab_complete_rounds "$fixtures/timeline-failed.txt")" \
+  "REVERSAL TARGET: a suite that exited non-zero without the harness's verdict line drops the round"
+
+echo
+echo "=== ab_summary — over column (ADR-0092 decision 3)"
+
+cat >"$fixtures/runs-over.txt" <<'EOF'
+w0	1	parse NewOrderSingle (35 fields)	1660.2	in
+wa	1	parse NewOrderSingle (35 fields)	1817.2	over
+w0	2	parse NewOrderSingle (35 fields)	1660.2	in
+wa	2	parse NewOrderSingle (35 fields)	1817.2	over
+EOF
+cat >"$fixtures/timeline-over.txt" <<'EOF'
+round 1 complete
+round 2 complete
+EOF
+
+out_over=$(ab_summary "$fixtures/runs-over.txt" "$fixtures/timeline-over.txt" w0)
+wa_over_line=$(printf '%s\n' "$out_over" | grep '^wa ')
+w0_over_line=$(printf '%s\n' "$out_over" | grep '^w0 ')
+
+same "2/2" "$(printf '%s\n' "$wa_over_line" | awk '{print $NF}')" \
+  "REVERSAL TARGET (over): the verdict column reaches the summary — wa was 'over' in both complete rounds"
+same "0/2" "$(printf '%s\n' "$w0_over_line" | awk '{print $NF}')" \
+  "the control's own case reads 'in' both rounds — 0 of 2 over"
+same "1" "$(printf '%s\n' "$out_over" | grep -c 'over baseline: 1 (arm, case) pairs')" \
+  "the footer names exactly one (arm, case) pair over baseline"
+
+echo
+echo "=== ab_summary — an old 4-column runs.txt reads ?, not a crash"
+
+out4=$(ab_summary "$fixtures/runs.txt" "$fixtures/timeline.txt" w0)
+same "?" "$(printf '%s\n' "$out4" | grep '^w0 ' | awk '{print $NF}')" \
+  "a 4-column runs.txt (no verdict column) prints ? in the over column rather than crashing under set -u"
+same "1" "$(printf '%s\n' "$out4" | grep -c 'over baseline: none')" \
+  "no 5-column row anywhere in this file — nothing can be counted as over, so the footer says none"
+
+echo
+echo "=== --reextract rebuilds runs.reextracted.txt from raw/*.txt, never touches runs.txt"
+
+evdir="$fixtures/evidence"
+mkdir -p "$evdir/raw"
+cp "$fixtures/harness-raw.txt" "$evdir/raw/7-w1-fixbolt-session_validate.txt"
+printf 'w1\t7\tsentinel — must not be touched\t0.0\tin\n' >"$evdir/runs.txt"
+AB_ROTATION_SOURCE_ONLY=0 "$here/ab-rotation.sh" --reextract "$evdir" >/dev/null
+
+same "4" "$(printf '%s' "$(cat "$evdir/runs.reextracted.txt" 2>/dev/null)" | grep -c .)" \
+  "the four rows of the captured fixture come back out of raw/*.txt with no cargo, no binary, no clock"
+same "w1	7	sentinel — must not be touched	0.0	in" "$(cat "$evdir/runs.txt")" \
+  "--reextract never overwrites runs.txt"
 
 echo
 echo "=== summary"
