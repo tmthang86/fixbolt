@@ -157,6 +157,24 @@ write-up of this boot dismissed the harness's own report as a parser artefact. I
   were re-run 07:00–11:40 with the package timers stopped (`stop`, not `disable`).
   [a-quiet-machine-check-cannot-see-a-timer-that-has-not-fired](docs/reference/a-quiet-machine-check-cannot-see-a-timer-that-has-not-fired.md).
 
+### What this pull request paid to learn about itself
+
+Three rounds of senior review raised **four blocking findings, nine should-fix and seven notes**,
+and the shape of them is the lesson. **Every number reproduced, at every pass** — the 20-round
+merge, every median in the four D4 tables, the D3 ladder verdicts, the D5 medians, the D2 table,
+all nine dispersion figures, the eight breached medians. **Every surviving error was in prose
+summarising those numbers**, and they concentrated in whatever was written last and fastest: the
+plan's delivery log, written at the end, carried six on its own. Two of them were the exact trap
+this PR documents twice — a terminal quoted from memory, once a `sed` command that could not
+produce the output beside it, once a `systemctl list-timers` table that disagreed with the real
+capture in two of its four rows.
+
+**So: in a measurement pull request, review effort belongs on the narration, with the figures
+spot-checked rather than re-derived.** And the failure mode to guard is not prose as such — it is
+**a sentence with no artefact behind it**. What made the narration checkable at all was that most
+claims named the file they came from; the ones that did not are where all four blocking findings
+lived. `[to testing-skills]`
+
 ### Where the work is
 
 Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90); the plan's
