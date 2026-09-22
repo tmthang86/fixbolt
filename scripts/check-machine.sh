@@ -248,6 +248,171 @@ pick_nic() {
   echo "$first"
 }
 
+# fmt_dur <non-negative whole seconds> -> "<H>h<MM>m" or "<M>m<SS>s"
+#
+# A plain, machine-independent duration formatter for timers_verdict below —
+# no `date`, so nothing here depends on the reader's locale or timezone.
+fmt_dur() {
+  local s="$1"
+  if [ "$s" -ge 3600 ]; then
+    printf '%dh%02dm' $((s / 3600)) $(((s % 3600) / 60))
+  else
+    printf '%dm%02ds' $((s / 60)) $((s % 60))
+  fi
+}
+
+# utc_stamp <epoch seconds> -> "YYYY-MM-DDTHH:MMZ", UTC, PURE.
+#
+# `date` is NOT used, and that is the whole point of this function. This was
+# `date -u -d "@$N" … || echo "epoch $N"`, and `-d` is a GNU extension: BSD
+# and macOS `date` spell it `-r N` and reject `-d`, so on the Mac mini (the
+# machine DESIGN.md §2's table already owes an ADR-0091 reversal on, and the
+# one CI can never speak for — CI is Ubuntu) the fallback fired, the value
+# read `epoch 1700003600`, and two of check-machine-verdicts.sh's four
+# timers_verdict assertions went red. A second output shape no fixture
+# pinned, on the machine no gate watches.
+#
+# The conversion is Howard Hinnant's `civil_from_days` (howardhinnant.
+# github.io/date_algorithms.html, the algorithm behind C++20's
+# <chrono>/`std::chrono::year_month_day`): shift the epoch to 0000-03-01 so
+# leap day is the last day of the year, then read the 400-year era, the year
+# of the era, and the day of the year off it — no lookup table, no leap-year
+# special case, correct for every proleptic-Gregorian date including the
+# non-leap centuries. Every division is integer (`int()`), which is what the
+# algorithm's own derivation assumes; awk's doubles hold these magnitudes
+# exactly (z stays under ~10^6).
+#
+# `[measured 2026-09-22]` checked against GNU `date -u -d @N` on 3015
+# values — 0, ±1 s, the epoch's own day boundaries, 2000-02-29,
+# 2020-03-01, 2024-02-29, 2038-01-19T03:14Z, 2100-01-01 (a non-leap
+# century), two negative epochs, and 3000 random points — 0 mismatches.
+# Pinned by check-machine-verdicts.sh's `=== utc_stamp` section.
+utc_stamp() {
+  awk -v n="$1" 'BEGIN {
+    days = int(n / 86400); sod = n - days * 86400
+    if (sod < 0) { days -= 1; sod += 86400 }
+    z = days + 719468
+    era = int((z >= 0 ? z : z - 146096) / 146097)
+    doe = z - era * 146097
+    yoe = int((doe - int(doe / 1460) + int(doe / 36524) - int(doe / 146096)) / 365)
+    y = yoe + era * 400
+    doy = doe - (365 * yoe + int(yoe / 4) - int(yoe / 100))
+    mp = int((5 * doy + 2) / 153)
+    d = doy - int((153 * mp + 2) / 5) + 1
+    m = (mp < 10) ? mp + 3 : mp - 9
+    if (m <= 2) y += 1
+    printf "%04d-%02d-%02dT%02d:%02dZ", y, m, d, int(sod / 3600), int((sod % 3600) / 60)
+  }'
+}
+
+# timer_window_sec <value> -> whole seconds, or nothing and exit 1.
+#
+# The `FIXBOLT_TIMER_WINDOW` knob is documented "in hours" and nowhere says
+# WHOLE hours — and timers_verdict's own fixture exercises a 0.5 h window —
+# so a fraction is accepted here and converted with awk, not with `$(( ))`.
+# `[measured 2026-09-22]` under this script's `set -u`,
+# `window_sec=$((TIMER_WINDOW_H * 3600))` killed the whole run mid-report,
+# before the kTLS rows and before the pass/fail/unknown summary, naming
+# neither the knob nor the row:
+#   FIXBOLT_TIMER_WINDOW=0.5  -> 0.5: syntax error: invalid arithmetic
+#                                operator (error token is ".5")
+#   FIXBOLT_TIMER_WINDOW=12h  -> 12h: value too great for base
+#   FIXBOLT_TIMER_WINDOW=abc  -> abc: unbound variable
+#   FIXBOLT_TIMER_WINDOW=" "  -> no error at all: a silent 0 s window
+#   FIXBOLT_TIMER_WINDOW=-1   -> no error at all: a silent -3600 s window
+# (An EMPTY value never did: `${FIXBOLT_TIMER_WINDOW:-12}` treats it as
+# unset and reads 12 — measured, against the expectation that it died too.)
+# The last two are the ones a validator has to catch as well: a window that
+# is silently wrong is worse than one that is refused, because the row still
+# prints PASS.
+#
+# Accepted: a non-negative decimal — `12`, `0.5`, `.5`, `12.`, `0`.
+# Refused: everything else, including whitespace, a sign, a suffix and
+# scientific notation. The caller turns a refusal into an UNKNOWN row.
+timer_window_sec() {
+  case "$1" in
+    '' | '.' | *[!0-9.]* | *.*.*) return 1 ;;
+  esac
+  awk -v h="$1" 'BEGIN { printf "%d", h * 3600 }'
+}
+
+# timers_verdict <now_usec> <window_sec> <json>
+#
+# `json` is `systemctl list-timers --all --output=json` verbatim: an array of
+# objects with `unit` and `next` (µs since the epoch, or `null` for a timer
+# `--all` lists but that is not scheduled — systemd's own
+# src/shared/format-table.c, ADR-0093 decision 3 "What the search found").
+# `now_usec` and `window_sec` are ARGUMENTS, never read from `date` in here —
+# the caller (the real row below) reads the clock exactly once; this function
+# stays pure so scripts/check-machine-verdicts.sh can test it with a FIXED
+# `now` and never see a flake from the second it happened to run in. It calls
+# no `date` at all, in any branch: the UTC stamp in its FAIL value comes from
+# utc_stamp() above, which computes the civil date itself — see that
+# function's comment for what `date -u -d @N` cost on a BSD `date`.
+#
+# Prints one line, three tab-separated fields: `VERDICT<TAB>VALUE<TAB>FIXCMD`
+# (FIXCMD empty unless VERDICT is FAIL) — the same shape row() already takes
+# as its own name/value/fixcmd arguments, so the row below is a straight
+# `read` of this function's output.
+#
+#   FAIL    any timer's `next` is <= now + window, INCLUDING a `next` already
+#           in the past (its service may still be running — over-reading is
+#           the safe direction, same as decision 2's R1). VALUE names every
+#           such unit, its next firing in UTC (not the reader's local
+#           timezone: a formatter that depended on it could not be pinned by
+#           a fixed-`now` test run on two machines in two timezones) and how
+#           far off it is; FIXCMD is `sudo -n systemctl stop <unit>` per
+#           unit, `; `-joined — stop, not disable, so the next boot restores
+#           it (docs/reference/a-quiet-machine-check-cannot-see-a-timer-that-
+#           has-not-fired.md).
+#   PASS    no timer's `next` falls inside the window. A `next` of `null`
+#           (an inactive timer `--all` still lists) is always ignored.
+#   UNKNOWN malformed JSON — not this function's problem to diagnose further;
+#           the caller already ruled out "no systemctl / no jq / can't reach
+#           PID 1" before calling this at all.
+#
+# The window is printed in VALUE on every verdict, PASS included: a reader
+# who sees `no timer due` still needs to know it was only asked about the
+# next `window_sec`, per the reference page's rule.
+timers_verdict() {
+  local now_usec="$1" window_sec="$2" json="$3"
+  local window_h due unit next_us left_sec when next_utc value fixcmd
+
+  window_h=$(awk -v s="$window_sec" 'BEGIN { printf "%.6g", s / 3600 }')
+
+  if ! printf '%s' "$json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    printf 'UNKNOWN\tmalformed systemctl list-timers JSON [window %sh]\t\n' "$window_h"
+    return 0
+  fi
+
+  due=$(printf '%s' "$json" | jq -r --argjson now "$now_usec" --argjson win "$((window_sec * 1000000))" '
+    .[] | select(.next != null) | select(.next <= ($now + $win)) |
+    [.unit, (.next | tostring)] | @tsv
+  ' 2>/dev/null)
+
+  if [ -z "$due" ]; then
+    printf 'PASS\tno timer due inside the window [window %sh]\t\n' "$window_h"
+    return 0
+  fi
+
+  value=""
+  fixcmd=""
+  while IFS=$'\t' read -r unit next_us; do
+    [ -z "$unit" ] && continue
+    left_sec=$(((next_us - now_usec) / 1000000))
+    if [ "$left_sec" -lt 0 ]; then
+      when="overdue $(fmt_dur $((-left_sec)))"
+    else
+      when="in $(fmt_dur "$left_sec")"
+    fi
+    next_utc=$(utc_stamp "$((next_us / 1000000))")
+    value="${value}${value:+, }${unit} next ${next_utc} (${when})"
+    fixcmd="${fixcmd}${fixcmd:+; }sudo -n systemctl stop ${unit}"
+  done <<<"$due"
+
+  printf 'FAIL\t%s [window %sh]\t%s\n' "$value" "$window_h" "$fixcmd"
+}
+
 # Sourced by the verdict test, which wants the functions and none of the probing.
 if [ "${MACHINE_SOURCE_ONLY:-0}" = 1 ]; then
   return 0 2>/dev/null || exit 0
@@ -544,6 +709,61 @@ else
   )
   row FAIL "machine is quiet" "${busy_pct}% CPU busy over ${QUIET_WINDOW}s — ${top:-unattributed}" \
     "close what is running; competing load moved this project's ring median 71%, against 0.8% for every tuning row combined"
+fi
+
+# --- no timer due ---------------------------------------------------------
+# ADR-0093 decision 3. The row above reads CPU busy for ONE second, now, and
+# says nothing about what systemd has already scheduled for four hours' time
+# — boot D lost rounds 13-20 to apt-daily-upgrade.timer at 06:51 while the
+# quiet row read green before AND after
+# (docs/reference/a-quiet-machine-check-cannot-see-a-timer-that-has-not-fired.md).
+# `systemctl list-timers --all --output=json` gives every timer's `next` in
+# µs since the epoch (or `null` for one `--all` lists that is not
+# scheduled); `timers_verdict` above does the pure comparison against `now`
+# and a window. UNKNOWN, not FAIL, when the question genuinely cannot be
+# asked here (no `systemctl`, no `jq`, or PID 1 unreachable — this
+# container's case: `systemctl` is systemd 255 but PID 1 is not systemd).
+#
+# THE WINDOW IS VALIDATED BEFORE ANYTHING ELSE, and a bad value costs one
+# UNKNOWN row rather than the rest of the report: `window_sec=$((
+# TIMER_WINDOW_H * 3600 ))` under this script's own `set -u` killed the run
+# HERE — before the kTLS rows, before the IRQ rows, before the
+# pass/fail/unknown summary — on `FIXBOLT_TIMER_WINDOW=0.5`, naming neither
+# the knob nor this row (`0.5: syntax error: invalid arithmetic operator`).
+# timer_window_sec() above accepts the fraction the knob's own documentation
+# always allowed (it says "in hours", never WHOLE hours, and
+# timers_verdict's fixture exercises 0.5 h) and refuses what is not a
+# number of hours at all — including ` ` and `-1`, which the arithmetic
+# accepted SILENTLY as a 0 s and a -3600 s window with the row still
+# printing PASS.
+TIMER_WINDOW_H=${FIXBOLT_TIMER_WINDOW:-12}
+if ! window_sec=$(timer_window_sec "$TIMER_WINDOW_H"); then
+  row UNKNOWN "no timer due" \
+    "FIXBOLT_TIMER_WINDOW='${TIMER_WINDOW_H}' is not a number of hours — no window was checked [window 12h is the default]" \
+    "unset FIXBOLT_TIMER_WINDOW, or set it to a non-negative number of hours (12, or 0.5 for thirty minutes)"
+elif ! command -v systemctl >/dev/null 2>&1; then
+  row UNKNOWN "no timer due" "systemctl not on PATH [window ${TIMER_WINDOW_H}h]" \
+    "install systemd, or set FIXBOLT_TIMER_WINDOW and check by hand"
+elif ! command -v jq >/dev/null 2>&1; then
+  row UNKNOWN "no timer due" "jq not on PATH [window ${TIMER_WINDOW_H}h]" \
+    "install jq, or check 'systemctl list-timers --all' by hand"
+else
+  lt_out=$(systemctl list-timers --all --output=json 2>&1)
+  lt_status=$?
+  if [ "$lt_status" -ne 0 ] || ! printf '%s' "$lt_out" | jq -e . >/dev/null 2>&1; then
+    lt_msg=$(printf '%s\n' "$lt_out" | head -1)
+    row UNKNOWN "no timer due" "cannot reach PID 1 (${lt_msg:-systemctl exited $lt_status}) [window ${TIMER_WINDOW_H}h]" \
+      "check 'systemctl list-timers --all' by hand on the real host"
+  else
+    now_usec=$(($(date +%s) * 1000000))
+    tv=$(timers_verdict "$now_usec" "$window_sec" "$lt_out")
+    IFS=$'\t' read -r tv_verdict tv_value tv_fix <<<"$tv"
+    case "$tv_verdict" in
+      PASS) row PASS "no timer due" "$tv_value" ;;
+      FAIL) row FAIL "no timer due" "$tv_value" "$tv_fix" ;;
+      *) row UNKNOWN "no timer due" "$tv_value" "check 'systemctl list-timers --all' by hand" ;;
+    esac
+  fi
 fi
 
 # --- kTLS ---------------------------------------------------------------------

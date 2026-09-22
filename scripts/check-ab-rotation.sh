@@ -101,18 +101,217 @@ w0_line=$(printf '%s\n' "$out" | grep '^w0 ')
 wa_line=$(printf '%s\n' "$out" | grep '^wa ')
 
 # The case name ("parse NewOrderSingle (35 fields)") carries its own spaces,
-# so the five trailing columns (median, min/med, max/med, n, diff%) are read
-# relative to NF, never by a fixed column number.
-same "1660.2" "$(printf '%s\n' "$w0_line" | awk '{print $(NF-4)}')" \
+# so the six trailing columns (median, min/med, max/med, n, diff%, over) are
+# read relative to NF, never by a fixed column number. This fixture's
+# runs.txt has 4 columns (no verdict), so `over` reads "?" on every row —
+# ADR-0092 decision 3, exercised on its own further down.
+same "1660.2" "$(printf '%s\n' "$w0_line" | awk '{print $(NF-5)}')" \
   "control median is exactly the C-91 baseline figure, unmoved by anything in round 3"
-same "2" "$(printf '%s\n' "$w0_line" | awk '{print $(NF-1)}')" \
+same "2" "$(printf '%s\n' "$w0_line" | awk '{print $(NF-2)}')" \
   "control n is 2, not 3 — round 3 never had a control row to begin with"
-same "1817.2" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-4)}')" \
+same "1817.2" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-5)}')" \
   "REVERSAL TARGET (median): the outlier round-3 sample (9999.9) is excluded, not blended in"
-same "2" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-1)}')" \
+same "2" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-2)}')" \
   "REVERSAL TARGET (n): wa's own round-3 run is dropped even though wa itself was never DISQUALIFIED — w0 was"
-same "+9.5%" "$(printf '%s\n' "$wa_line" | awk '{print $NF}')" \
+same "+9.5%" "$(printf '%s\n' "$wa_line" | awk '{print $(NF-1)}')" \
   "REVERSAL TARGET (diff%): 1817.2 vs control 1660.2 is +9.5%, C-91's own number — change this file's 9.5 to 8.5 and this line must go red"
+
+echo
+echo "=== ab_extract — ADR-0092 decision 1, fixture captured from a real bench binary"
+
+# Captured 2026-09-22 by the senior developer (opus), step 1 of
+# docs/plans/2026-09-22-the-detector-and-the-campaign-preconditions.md,
+# *Cách kiểm chứng* "Bước 1", on a cloud container. The binary is the one
+# built there by:
+#   RUSTFLAGS="$(scripts/check-bench-alignment.sh --flags)" \
+#     cargo bench -p fixbolt-session --bench validate --no-run \
+#     --message-format=json
+# THREE temporary lines were appended to benches/baselines.tsv — one forcing
+# OVER (baseline 1.0), one forcing UNDER (baseline 999999.0), one chosen from
+# this machine's own figure so the case lands IN BAND (309.6 x1.35, read from
+# a clean run of the same binary) — and the binary was then run once
+# directly: `"$BIN" > fixture.txt 2>&1` printing `exit=101`. The fourth case
+# was left with no line, so this one run carries all FOUR verdicts
+# ab_extract can emit: over, under, in, none (ADR-0092 decision 1). The three
+# lines were reverted straight after with `git checkout benches/baselines.tsv`,
+# `git diff --exit-code benches/baselines.tsv` exiting 0.
+# CPU: Intel(R) Xeon(R) Processor @ 2.80GHz
+# Binary: target/release/deps/validate-56b06784da3bc3fc
+#   sha256 4593d0717bdf72df1ca2cf5cb66a2a7bab156b06da4c88433b84888711f3f5ff
+# Pasted verbatim, not typed from memory — the trap the plan names twice.
+# The in-band row is the one with NO mark after `]`, and it is the commonest
+# row in a real rotation: every ordinary boot D measurement was one.
+cat >"$fixtures/harness-raw.txt" <<'EOF'
+machine   Intel(R) Xeon(R) Processor @ 2.80GHz
+validate NewOrderSingle              1220.0 ns/op   baseline 1.0 x1.10 = [0.9, 1.1]  OVER BASELINE
+validate Heartbeat                    246.0 ns/op   baseline 999999.0 x1.10 = [909090.0, 1099998.9]  UNDER BASELINE
+validate TestRequest, w2w bytes       311.4 ns/op   baseline 309.6 x1.35 = [229.3, 418.0]
+validate NewOrderSingle, w2w bytes   1236.6 ns/op   NO BASELINE for 'Intel(R) Xeon(R) Processor @ 2.80GHz'
+    to record, after check-machine.sh reads fail 0, append to benches/baselines.tsv (median of N>=20 runs, margin from the ladder in that file's header):
+    Intel(R) Xeon(R) Processor @ 2.80GHz	validate NewOrderSingle, w2w bytes	1236.6	<margin>	<n>	<date>	<verdict>
+cases without a baseline: 1  validate NewOrderSingle, w2w bytes
+cases under their baseline: 1  validate Heartbeat: 246.0 ns/op is below 909090.0 ns (baseline 999999.0 / 1.10) — re-record the baseline, or the benchmark stopped measuring
+
+thread 'main' (14322) panicked at crates/session/benches/../../codec/benches/harness.rs:405:9:
+1 of 4 case(s) over the machine baseline:
+validate NewOrderSingle: 1220.0 ns/op exceeds 1.1 ns (baseline 1.0 x 1.10)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: validate::harness::suite::<validate::main::{closure#0}>
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+EOF
+
+extracted=$(ab_extract w1 7 <"$fixtures/harness-raw.txt")
+
+# `printf '%s' | grep -c .` and not `printf '%s\n' | wc -l`: the latter reads
+# 1 for ZERO extracted rows, because printf adds the newline the empty string
+# does not have — the reading that made the anchor reversal print `got [1]`
+# where it should say `got [0]`. grep counts characters, so empty is 0.
+same "4" "$(printf '%s' "$extracted" | grep -c .)" \
+  "REVERSAL TARGET (rows): four cases in, four rows out — the harness's OVER/UNDER report lines, the 'cases under their baseline:' line and the panic body are not measurement rows"
+same "0" "$(printf '%s\n' "$extracted" | cut -f3 | grep -c ':$')" \
+  "no case name ends with ':' — the phantom rows the old awk welded a colon onto are gone"
+same "over
+under
+in
+none" "$(printf '%s\n' "$extracted" | cut -f5)" \
+  "verdict column reads over/under/in/none: validate NewOrderSingle (forced OVER), validate Heartbeat (forced UNDER), validate TestRequest, w2w bytes (forced IN BAND), validate NewOrderSingle, w2w bytes (no recorded baseline for this CPU)"
+same "1" "$(printf '%s\n' "$extracted" | cut -f5 | grep -c '^in$')" \
+  "exactly one in-band row: a row whose tail ends at ']' with no mark is a measurement, and the three-space anchor is what keeps it one"
+same "w1	7	validate TestRequest, w2w bytes	311.4	in" \
+  "$(printf '%s\n' "$extracted" | awk -F'\t' '$5=="in"')" \
+  "the in-band row's whole record: name with its comma kept, figure taken from the token before ' ns/op', verdict 'in'"
+
+echo
+echo "=== ab_extract — a figure wide enough to fill the harness's {best:>8.1} field"
+
+# HAND-WRITTEN, NOT A CAPTURE, and the only input in this file that is:
+# three synthetic rows exercising a WIDTH, not a run standing in for a real
+# one. Nobody should read them as evidence of what any binary printed.
+#
+# The plan's trap table names this case and the captured fixture above
+# cannot reach it: its widest figure is `1236.6`, six characters inside
+# `{best:>8.1}` (harness.rs:338 and :366), so two padding spaces are still
+# left in the field. Here the field is filled step by step: `82071.1` leaves
+# one space, `123456.7` is eight characters and leaves none at all, and
+# `1234567.8` is nine and OVERFLOWS the field — the state where a `>8`
+# width stops separating anything, and the only thing still holding the
+# name apart from the figure is the literal space in the harness's format
+# string. Each line was generated with Python's `"{:<34} {:>8.1f} ns/op
+# …"` — harness.rs's own format strings, character for character — rather
+# than typed, so the widths are the harness's and not a guess. A
+# whole-message case on a cold arm reads in this range.
+cat >"$fixtures/wide.txt" <<'EOF'
+validate WideOne                    82071.1 ns/op   baseline 80000.0 x1.35 = [59259.3, 108000.0]
+validate WideTwo                   123456.7 ns/op   NO BASELINE for 'Intel(R) Xeon(R) Processor @ 2.80GHz'
+validate WideThree                 1234567.8 ns/op   baseline 900000.0 x1.10 = [818181.8, 990000.0]  OVER BASELINE
+EOF
+
+wide=$(ab_extract w9 3 <"$fixtures/wide.txt")
+
+same "3" "$(printf '%s' "$wide" | grep -c .)" \
+  "REVERSAL TARGET: all three wide rows are read — a figure that fills or overflows the field is still the last token before ' ns/op'"
+same "w9	3	validate WideOne	82071.1	in" "$(printf '%s\n' "$wide" | sed -n 1p)" \
+  "one padding space left in the field: figure whole, name not fused to it"
+same "w9	3	validate WideTwo	123456.7	none" "$(printf '%s\n' "$wide" | sed -n 2p)" \
+  "eight characters exactly — the field is full and there is no padding space at all"
+same "w9	3	validate WideThree	1234567.8	over" "$(printf '%s\n' "$wide" | sed -n 3p)" \
+  "nine characters — the figure overflows {best:>8.1}, and the row still parses with its mark read"
+
+echo
+echo "=== ab_suite_verdict — ADR-0092 decision 2 (run_suite's per-suite state)"
+
+same "ok" "$(ab_suite_verdict 0 1 0 "")" \
+  "exit 0 with at least one row extracted is ok"
+same "FAILED" "$(ab_suite_verdict 0 0 0 "")" \
+  "exit 0 but zero rows measured nothing — FAILED, the same liveness rule bench.sh already uses"
+same "OVER" "$(ab_suite_verdict 101 4 1 4)" \
+  "exit 101, the harness's own '1 of 4' verdict line read back with m == rows (every case was printed before the assert) — the round stays complete"
+same "FAILED" "$(ab_suite_verdict 139 0 0 "")" \
+  "REVERSAL TARGET: a suite that exited non-zero (a crash, 139) without the harness's verdict line drops the round"
+same "FAILED" "$(ab_suite_verdict 101 4 1 3)" \
+  "the panic's own m (3) does not match the rows actually extracted (4) — the assert fired before every case was printed — FAILED, not OVER"
+same "FAILED" "$(ab_suite_verdict 1 0 0 "")" \
+  "exit 1 with zero rows — a malformed baselines.tsv line exits before any case runs (harness.rs read_baselines) — FAILED"
+
+echo
+echo "=== timeline round completion — a FAILED suite drops the whole round (decision 2)"
+
+# round 1 and 2: the arm's suite came back ok both times. round 3: the arm's
+# suite exited non-zero with no harness verdict line (a crash, not a panic on
+# an over-band case) — ab_suite_verdict must call that FAILED, and the round
+# trailer this driver would write follows that verdict exactly the way
+# run_suite does, so a wrong (or missing) ab_suite_verdict shows up here as
+# round 3 wrongly staying "complete". The per-arm 'busy … ok|DISQUALIFIED'
+# line and the round trailer keep their existing shape; only the new
+# 'round N arm X suite S …' line is new, and ab_complete_rounds does not
+# change to read it — decision 2's "must not change behaviour".
+v_ok=$(ab_suite_verdict 0 1 0 "")
+v_crash=$(ab_suite_verdict 139 0 0 "")
+cat >"$fixtures/timeline-failed.txt" <<EOF
+round 1 arm w0 busy 1% ok
+round 1 arm w0 suite fixbolt-codec/parse exit 0 rows 1 over 0 under 0 nobase 1  $v_ok
+round 1 complete
+round 2 arm w0 busy 1% ok
+round 2 arm w0 suite fixbolt-codec/parse exit 0 rows 1 over 0 under 0 nobase 1  $v_ok
+round 2 complete
+round 3 arm w0 busy 1% ok
+round 3 arm w0 suite fixbolt-codec/parse exit 139 rows 0 over 0 under 0 nobase 0  $v_crash
+round 3 $([ "$v_crash" = FAILED ] && echo incomplete || echo complete)
+EOF
+
+same "1
+2" "$(ab_complete_rounds "$fixtures/timeline-failed.txt")" \
+  "REVERSAL TARGET: a suite that exited non-zero without the harness's verdict line drops the round"
+
+echo
+echo "=== ab_summary — over column (ADR-0092 decision 3)"
+
+cat >"$fixtures/runs-over.txt" <<'EOF'
+w0	1	parse NewOrderSingle (35 fields)	1660.2	in
+wa	1	parse NewOrderSingle (35 fields)	1817.2	over
+w0	2	parse NewOrderSingle (35 fields)	1660.2	in
+wa	2	parse NewOrderSingle (35 fields)	1817.2	over
+EOF
+cat >"$fixtures/timeline-over.txt" <<'EOF'
+round 1 complete
+round 2 complete
+EOF
+
+out_over=$(ab_summary "$fixtures/runs-over.txt" "$fixtures/timeline-over.txt" w0)
+wa_over_line=$(printf '%s\n' "$out_over" | grep '^wa ')
+w0_over_line=$(printf '%s\n' "$out_over" | grep '^w0 ')
+
+same "2/2" "$(printf '%s\n' "$wa_over_line" | awk '{print $NF}')" \
+  "REVERSAL TARGET (over): the verdict column reaches the summary — wa was 'over' in both complete rounds"
+same "0/2" "$(printf '%s\n' "$w0_over_line" | awk '{print $NF}')" \
+  "the control's own case reads 'in' both rounds — 0 of 2 over"
+same "1" "$(printf '%s\n' "$out_over" | grep -c 'over baseline: 1 (arm, case) pairs')" \
+  "the footer names exactly one (arm, case) pair over baseline"
+
+echo
+echo "=== ab_summary — an old 4-column runs.txt reads ?, not a crash"
+
+out4=$(ab_summary "$fixtures/runs.txt" "$fixtures/timeline.txt" w0)
+same "?" "$(printf '%s\n' "$out4" | grep '^w0 ' | awk '{print $NF}')" \
+  "a 4-column runs.txt (no verdict column) prints ? in the over column rather than crashing under set -u"
+same "1" "$(printf '%s\n' "$out4" | grep -c 'over baseline: none')" \
+  "no 5-column row anywhere in this file — nothing can be counted as over, so the footer says none"
+
+echo
+echo "=== --reextract rebuilds runs.reextracted.txt from raw/*.txt, never touches runs.txt"
+
+evdir="$fixtures/evidence"
+mkdir -p "$evdir/raw"
+cp "$fixtures/harness-raw.txt" "$evdir/raw/7-w1-fixbolt-session_validate.txt"
+printf 'w1\t7\tsentinel — must not be touched\t0.0\tin\n' >"$evdir/runs.txt"
+AB_ROTATION_SOURCE_ONLY=0 "$here/ab-rotation.sh" --reextract "$evdir" >/dev/null
+
+same "4" "$(printf '%s' "$(cat "$evdir/runs.reextracted.txt" 2>/dev/null)" | grep -c .)" \
+  "the four rows of the captured fixture come back out of raw/*.txt with no cargo, no binary, no clock"
+same "w1	7	sentinel — must not be touched	0.0	in" "$(cat "$evdir/runs.txt")" \
+  "--reextract never overwrites runs.txt"
 
 echo
 echo "=== summary"

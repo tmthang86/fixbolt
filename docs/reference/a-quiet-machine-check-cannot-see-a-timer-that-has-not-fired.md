@@ -89,6 +89,18 @@ outright. A campaign that will cross a listed firing either stops the timer or e
 * **A green checklist is a statement about the second it was read in.** `pass 16 fail 0 unknown 0`
   was true at 21:16, true at 07:00, and true throughout the hour that produced nothing.
 
+## Guarded by
+
+`check-machine.sh`'s `no timer due` row
+([ADR-0093](../decisions/ADR-0093-a-campaign-driver-is-committed-sudo-in-a-committed-script-names-what-root-can-find-and-a-timer-due-inside-the-window-is-a-fail-row.md)
+decision 3), reading `systemctl list-timers --all --output=json` through the pure function
+`timers_verdict <now_usec> <window_sec> <json>`, tested in `scripts/check-machine-verdicts.sh`
+section `=== timers_verdict` against a fixture with a timer due inside the window, one outside
+it, one already past `next`, and `[]`. The window is `FIXBOLT_TIMER_WINDOW` hours, **default
+12** — the longest campaign on record at the time this row was written. `ab-rotation.sh` refuses
+to start a run on a `FAIL` from this row. **The row prints the window it used, so a 14-hour
+campaign under a 12-hour window is still unseen.**
+
 ## What this cost, and what it did not
 
 Five hours of wall clock and eight rounds, re-run afterwards with the timers stopped. It cost no

@@ -210,6 +210,19 @@ before and after: they must stay 0.
    least pacing is that avoids a skip was not measured**
    ([measured-costs.md](reference/measured-costs.md), boot B, section B6).
 
+5. **A measurement campaign's driver lives in `scripts/`, on the plan's branch, before the
+   reboot** — never in gitignored `target/`, which dies with the desk
+   ([ADR-0093](decisions/ADR-0093-a-campaign-driver-is-committed-sudo-in-a-committed-script-names-what-root-can-find-and-a-timer-due-inside-the-window-is-a-fail-row.md)
+   decision 1). Before a campaign longer than an hour, `scripts/check-machine.sh`'s `no timer
+   due` row must read clean: it FAILs on any systemd timer due inside `FIXBOLT_TIMER_WINDOW`
+   hours (default 12), naming the units, and `ab-rotation.sh` refuses to start on that FAIL
+   ([a-quiet-machine-check-cannot-see-a-timer-that-has-not-fired](reference/a-quiet-machine-check-cannot-see-a-timer-that-has-not-fired.md)).
+   Any `sudo` line a driver adds to `scripts/` is read by
+   `scripts/check-sudo-names-what-root-can-find.sh`, which FAILs a command root's `secure_path`
+   cannot resolve by name — the fix is an absolute path, never a bare `cargo`, `rustc` or
+   toolchain shim after `sudo`
+   ([perf-record-exits-zero-when-sudo-cannot-find-the-workload](reference/perf-record-exits-zero-when-sudo-cannot-find-the-workload.md)).
+
 **The measurement traps this project already paid for** are in [GUIDE.md §8](GUIDE.md). Read
 them rather than rediscover them. A score that moves with its own timeout is measuring the
 timeout, not the engine.

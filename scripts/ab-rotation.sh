@@ -58,11 +58,21 @@
 # `timeline.txt` gets one trailing `round N complete|incomplete` line, and
 # `--summary` counts only rows from `complete` rounds.
 #
-# EVIDENCE, per run (never averaged away):
+# EVIDENCE, per run (never averaged away) — every shape below is what this
+# script actually writes today, ADR-0092 decisions 1 and 2 included:
 #   manifest.txt   arm  suite  path  worktree-sha  features  binary  sha256
 #   timeline.txt   round N arm X busy B% ok|DISQUALIFIED   (one per arm/round)
+#                  round N arm X suite S exit E rows R over O under U
+#                    nobase M  ok|OVER|FAILED              (one per suite run,
+#                                                           ADR-0092 dec. 2)
 #                  round N complete|incomplete              (one per round)
-#   runs.txt       arm  round  case  ns                     (one per case)
+#   runs.txt       arm  round  case  ns  verdict            (one per case)
+#                  — FIVE tab-separated columns; `verdict` is ab_extract's
+#                  own reading of the harness's mark on that row:
+#                  `over` | `under` | `in` | `none` (ADR-0092 decision 1).
+#                  A runs.txt written before that decision has four columns
+#                  and no verdict at all; ab_summary reads one of those as
+#                  `?` in its `over` column rather than crashing.
 #   raw/N-arm-suite.txt   the suite's raw stdout for that round, kept whole
 #
 # INTERRUPTIBLE: every line above is appended as it is produced, not
@@ -94,9 +104,21 @@
 #                        would run, in order; touches no cargo, no file, no
 #                        binary. Never needs pre-built binaries.
 #   --summary <runs.txt> print the pure summary table (median, min/median,
-#                        max/median, n, diff% vs CONTROL) for an existing
-#                        runs.txt. Reads `$(dirname runs.txt)/timeline.txt`
-#                        unless TIMELINE is set. Needs CONTROL.
+#                        max/median, n, diff% vs CONTROL, and `over` = the
+#                        k/n of that pair's rows the harness marked over
+#                        baseline, `?` for a pre-ADR-0092 four-column file)
+#                        for an existing runs.txt, with a footer line naming
+#                        how many (arm, case) pairs have an `over` row at
+#                        all — or `none`. Reads
+#                        `$(dirname runs.txt)/timeline.txt` unless TIMELINE
+#                        is set. Needs CONTROL.
+#   --reextract <dir>   rebuild <dir>/runs.reextracted.txt from every
+#                        <dir>/raw/*.txt through the same ab_extract used
+#                        live, so evidence captured under an older parser
+#                        can be re-read without a reboot (ADR-0092
+#                        decision 3). File in, file out: no cargo, no
+#                        binary, no clock, and <dir>/runs.txt is never
+#                        opened for writing.
 #
 # GAP (default 8s, plan trap table: "Hai cargo bench sát nhau → run sau tự
 # loại 25-36% busy — driver GAP 8s"): a pause after an arm's suites finish,
@@ -132,10 +154,14 @@ ab_complete_rounds() { # ab_complete_rounds <timeline.txt>
 }
 
 # The summary table: for every (arm, case) pair that has at least one row in
-# a COMPLETE round, its median / min-over-median / max-over-median / n, and,
-# for every arm but CONTROL, the % difference of its median from CONTROL's
-# median on the same case (blank when CONTROL never ran that case). Pure —
-# two file paths and a name in, a table out.
+# a COMPLETE round, its median / min-over-median / max-over-median / n, the %
+# difference of its median from CONTROL's median on the same case (blank when
+# CONTROL never ran that case), and, ADR-0092 decision 3, an `over` column —
+# `k/n`, rows carrying verdict "over" among that pair's `n` — or `?` when any
+# row of the pair has no fifth (verdict) column at all, i.e. `runs.txt` was
+# written before this ADR. A trailing footer line names every (arm, case)
+# pair with at least one `over` row, or says `none`, so the finding cannot be
+# missed and can be grepped. Pure — two file paths and a name in, a table out.
 ab_summary() { # ab_summary <runs.txt> <timeline.txt> <control-arm>
   local runs=$1 timeline=$2 control=$3
   local goodfile
@@ -149,8 +175,8 @@ ab_summary() { # ab_summary <runs.txt> <timeline.txt> <control-arm>
   ' "$runs" 2>/dev/null)
   rm -f "$goodfile"
 
-  printf '%-10s %-46s %10s %11s %11s %5s %10s\n' \
-    "arm" "case" "median" "min/med" "max/med" "n" "diff%"
+  printf '%-10s %-46s %10s %11s %11s %5s %10s %8s\n' \
+    "arm" "case" "median" "min/med" "max/med" "n" "diff%" "over"
 
   if [ -z "$filtered" ]; then
     echo "(no complete rounds yet)"
@@ -160,9 +186,10 @@ ab_summary() { # ab_summary <runs.txt> <timeline.txt> <control-arm>
   local pairs
   pairs=$(printf '%s\n' "$filtered" | awk -F'\t' '!seen[$1 SUBSEP $3]++ { print $1 "\t" $3 }')
 
+  local over_pairs=0
   while IFS=$'\t' read -r arm kase; do
     [ -n "$arm" ] || continue
-    local vals n med min max minmed maxmed diff cvals cmed
+    local vals n med min max minmed maxmed diff cvals cmed verdicts missing overcol k
     vals=$(printf '%s\n' "$filtered" | awk -F'\t' -v a="$arm" -v c="$kase" '$1 == a && $3 == c { print $4 }')
     n=$(printf '%s\n' "$vals" | grep -c .)
     med=$(printf '%s\n' "$vals" | ab_median)
@@ -178,8 +205,95 @@ ab_summary() { # ab_summary <runs.txt> <timeline.txt> <control-arm>
         diff="$(awk -v c="$cmed" -v m="$med" 'BEGIN { printf "%+.1f", ((m - c) / c) * 100 }')%"
       fi
     fi
-    printf '%-10s %-46s %10.1f %11s %11s %5s %10s\n' "$arm" "$kase" "$med" "$minmed" "$maxmed" "$n" "$diff"
+
+    verdicts=$(printf '%s\n' "$filtered" | awk -F'\t' -v a="$arm" -v c="$kase" '$1 == a && $3 == c { print (NF >= 5 ? $5 : "NA") }')
+    missing=$(printf '%s\n' "$verdicts" | grep -c '^NA$')
+    if [ "$missing" -gt 0 ]; then
+      overcol="?"
+    else
+      k=$(printf '%s\n' "$verdicts" | grep -c '^over$')
+      overcol="$k/$n"
+      [ "$k" -gt 0 ] && over_pairs=$((over_pairs + 1))
+    fi
+
+    printf '%-10s %-46s %10.1f %11s %11s %5s %10s %8s\n' "$arm" "$kase" "$med" "$minmed" "$maxmed" "$n" "$diff" "$overcol"
   done <<<"$pairs"
+
+  if [ "$over_pairs" -gt 0 ]; then
+    printf 'over baseline: %s (arm, case) pairs\n' "$over_pairs"
+  else
+    echo "over baseline: none"
+  fi
+}
+
+# Extract measurement rows from one suite's raw stdout — ADR-0092 decision 1.
+# A row is exactly (harness.rs:305-360, :361):
+#   <name><spaces><figure> ns/op   baseline <b> x<m> = [<floor>, <ceiling>]<mark>
+#   <name><spaces><figure> ns/op   NO BASELINE for '<cpu>'
+# where <mark> is empty, "  OVER BASELINE" or "  UNDER BASELINE". The anchor
+# is the THREE spaces right after ` ns/op` and the word that follows them
+# (`baseline` or `NO`) — every other line containing ` ns/op` (the pushed
+# over/under report strings at harness.rs:344-358, the joined "cases under
+# their baseline:" line, and the panic body at harness.rs:406-411) has a
+# single space or other text there and fails the anchor, on purpose:
+# ADR-0092 Context item 2 measured the old `/ ns\/op/` match turning those
+# lines into phantom rows. `harness.rs` is not touched (ADR-0092 decision 1:
+# an arm is a binary built before this fix exists) — the row shape is pinned
+# by a fixture captured verbatim from a real bench binary, not typed here.
+# Pure: stdin in, TSV out (`arm round case ns verdict`), no file, no cargo,
+# no clock.
+ab_extract() { # ab_extract <arm> <round>  (stdin: one suite's raw stdout)
+  local arm=$1 round=$2
+  awk -v arm="$arm" -v rnd="$round" '
+    {
+      idx = index($0, " ns/op")
+      if (idx == 0) next
+      after = substr($0, idx + 6)
+      if (substr(after, 1, 3) != "   ") next
+      tail = substr(after, 4)
+      if (tail !~ /^(baseline |NO BASELINE for )/) next
+
+      line = substr($0, 1, idx - 1)
+      n = split(line, a, " ")
+      cname = ""
+      for (i = 1; i < n; i++) cname = (cname == "" ? a[i] : cname " " a[i])
+      ns = a[n]
+
+      verdict = "in"
+      if (tail ~ /  OVER BASELINE$/) verdict = "over"
+      else if (tail ~ /  UNDER BASELINE$/) verdict = "under"
+      else if (tail ~ /^NO BASELINE for /) verdict = "none"
+
+      printf "%s\t%s\t%s\t%s\t%s\n", arm, rnd, cname, ns, verdict
+    }
+  '
+}
+
+# The per-suite state one run_suite call ends in — ADR-0092 decision 2. Pure:
+# four numbers/strings in, one word out. `panic_m` is the harness's own <m>
+# from "<k> of <m> case(s) over the machine baseline:" (empty string when
+# that line was not printed at all).
+#   ok      exit 0 and at least one row was extracted.
+#   OVER    exit != 0, the harness's verdict line was present, and its <m>
+#           equals the rows actually extracted (every case was printed
+#           before the assert fired, harness.rs:56-63) — the round STAYS
+#           complete; these figures are real measurements (ADR-0092 fact 5).
+#   FAILED  anything else: a non-zero exit with no verdict line (a crash, not
+#           a panic on an over-band case), a verdict line whose <m> does not
+#           match rows (the assert fired before every case was printed), or
+#           zero rows whatever the exit (bench.sh's own liveness rule: a
+#           binary that printed no row measured nothing — also catches a
+#           harness row-shape drift, since ab_extract would then read 0).
+#           A FAILED suite drops the whole round, same as a busy arm.
+ab_suite_verdict() { # ab_suite_verdict <exit> <rows> <over> <panic_m>
+  local exit_code=$1 rows=$2 over=$3 panic_m=$4
+  if [ "$exit_code" = 0 ] && [ "$rows" -ge 1 ]; then
+    echo ok
+  elif [ "$exit_code" != 0 ] && [ -n "$panic_m" ] && [ "$panic_m" = "$rows" ] && [ "$over" -ge 1 ]; then
+    echo OVER
+  else
+    echo FAILED
+  fi
 }
 
 if [ "${AB_ROTATION_SOURCE_ONLY:-0}" = 1 ]; then
@@ -195,6 +309,7 @@ fi
 usage() {
   echo "usage: ROUNDS=n ARMS=\"name=path:suite[,suite@nofeat]… …\" CONTROL=name EVIDENCE=dir $(basename "$0") [--dry-run]" >&2
   echo "       CONTROL=name $(basename "$0") --summary <runs.txt>" >&2
+  echo "       $(basename "$0") --reextract <evidence-dir>" >&2
   exit 2
 }
 
@@ -208,6 +323,35 @@ if [ "${1:-}" = "--summary" ]; then
   : "${CONTROL:?CONTROL must name the control arm}"
   TIMELINE=${TIMELINE:-"$(dirname "$RUNS")/timeline.txt"}
   ab_summary "$RUNS" "$TIMELINE" "$CONTROL"
+  exit 0
+fi
+
+# ADR-0092 decision 3: rebuild <dir>/runs.reextracted.txt from the whole-run
+# raw stdout every run keeps (<dir>/raw/<round>-<arm>-<suite>.txt, module
+# header *EVIDENCE*), through the same ab_extract used live — so evidence
+# captured under an old parser (or before this ADR at all) can be re-read
+# honestly without a reboot. File-in, file-out: no cargo, no binary, no
+# clock, and `runs.txt` itself is never opened for writing.
+if [ "${1:-}" = "--reextract" ]; then
+  [ $# -ge 2 ] || usage
+  EVDIR=$2
+  RAWDIR="$EVDIR/raw"
+  [ -d "$RAWDIR" ] || {
+    echo "no such raw directory: $RAWDIR" >&2
+    exit 1
+  }
+  OUT="$EVDIR/runs.reextracted.txt"
+  : >"$OUT"
+  shopt -s nullglob
+  for rawfile in "$RAWDIR"/*.txt; do
+    base=$(basename "$rawfile" .txt)
+    round=${base%%-*}
+    rest=${base#*-}
+    arm=${rest%%-*}
+    ab_extract "$arm" "$round" <"$rawfile" >>"$OUT"
+  done
+  shopt -u nullglob
+  echo "reextracted -> $OUT"
   exit 0
 fi
 
@@ -433,6 +577,40 @@ preflight() {
 
 preflight
 
+# Refuse to start when check-machine.sh's "no timer due" row FAILs — ADR-0093
+# decision 3, ../reference/a-quiet-machine-check-cannot-see-a-timer-that-has-
+# not-fired.md: boot D lost rounds 13-20 to apt-daily-upgrade.timer at 06:51
+# while the per-round quiet row read green before AND after. One read, here,
+# before round 1 — same shape as the EVIDENCE=/tmp refusal above. Per round
+# this driver still reads only the quiet row (a timer that fires anyway is
+# caught there, per arm, exactly as boot D proved); this is a ONE-TIME gate on
+# a condition the quiet row cannot see coming. Never consulted by --dry-run,
+# which is already exited above and touches no machine. UNKNOWN (no
+# systemctl, no jq, can't reach PID 1 — this container's case) does NOT
+# refuse: only a FAIL, which means the row could ask and got a due timer back.
+timers_preflight() {
+  local out line reason
+  out=$("$HERE/check-machine.sh" 2>/dev/null || true)
+  line=$(printf '%s\n' "$out" | grep -E 'no timer due' || true)
+  case "$line" in
+    FAIL*)
+      reason=$(printf '%s\n' "$line" | sed -E 's/^.*no timer due[[:space:]]+//')
+      echo "REFUSING: check-machine.sh's 'no timer due' row FAILs:" >&2
+      echo "          $reason" >&2
+      echo "          A timer is due inside the campaign window. Stop it," >&2
+      echo "          per unit: sudo -n systemctl stop <unit> — stop, not" >&2
+      echo "          disable, so the next boot restores it — then re-run." >&2
+      exit 1
+      ;;
+    "? ? ?"*)
+      reason=$(printf '%s\n' "$line" | sed -E 's/^.*no timer due[[:space:]]+//')
+      echo "timers: unknown — ${reason}; not refusing" >&2
+      ;;
+  esac
+}
+
+timers_preflight
+
 # Read check-machine.sh's own "machine is quiet" row (its threshold, its
 # reading — one rule, one place) rather than a second copy of the busy-%
 # calculation. `|| true`: check-machine.sh exits non-zero on unrelated rows
@@ -449,24 +627,42 @@ quiet_status() { # quiet_status -> prints "<busy-or-unknown> <ok|DISQUALIFIED>"
   fi
 }
 
-run_suite() { # run_suite <round> <arm> <suite-token>
-  local round=$1 arm=$2 tok=$3 spec bnch pkg key bin safe rawfile out
+run_suite() { # run_suite <round> <arm> <suite-token> — prints its verdict word
+  local round=$1 arm=$2 tok=$3 spec bin safe rawfile out code
   spec=${tok%@nofeat}
   bin=${RESOLVED_BIN["$arm	$tok"]}
   safe=${spec//\//_}
   rawfile="$EVIDENCE/raw/${round}-${arm}-${safe}.txt"
   out=$("$bin" 2>&1)
+  code=$?
   printf '%s\n' "$out" >"$rawfile"
-  printf '%s\n' "$out" | awk -F' ns/op' -v arm="$arm" -v rnd="$round" '
-    / ns\/op/ {
-      line = $1
-      n = split(line, a, " ")
-      ns = a[n]
-      cname = ""
-      for (i = 1; i < n; i++) cname = (cname == "" ? a[i] : cname " " a[i])
-      printf "%s\t%s\t%s\t%s\n", arm, rnd, cname, ns
-    }
-  ' >>"$RUNS"
+
+  local extracted rows over under nobase panic_line panic_m status
+  extracted=$(printf '%s\n' "$out" | ab_extract "$arm" "$round")
+  if [ -n "$extracted" ]; then
+    printf '%s\n' "$extracted" >>"$RUNS"
+  fi
+
+  # `printf '%s' | grep -c .`, not `wc -l`: an empty $extracted must count as
+  # zero rows, not one — docs/reference/wc-l-counts-an-empty-capture-as-one-line.md.
+  rows=$(printf '%s' "$extracted" | grep -c .)
+  over=$(printf '%s\n' "$extracted" | awk -F'\t' '$5 == "over"' | grep -c .)
+  under=$(printf '%s\n' "$extracted" | awk -F'\t' '$5 == "under"' | grep -c .)
+  nobase=$(printf '%s\n' "$extracted" | awk -F'\t' '$5 == "none"' | grep -c .)
+
+  # The harness's own "<k> of <m> case(s) over the machine baseline:" line
+  # from a panicking finish() (harness.rs:405-411) — ADR-0092 decision 2 reads
+  # <m> back to check every case was printed before the assert fired.
+  panic_line=$(printf '%s\n' "$out" | grep -E '^[0-9]+ of [0-9]+ case\(s\) over the machine baseline:$' | head -1)
+  panic_m=""
+  [ -n "$panic_line" ] && panic_m=$(printf '%s' "$panic_line" | awk '{print $3}')
+
+  status=$(ab_suite_verdict "$code" "$rows" "$over" "$panic_m")
+
+  printf 'round %s arm %s suite %s exit %s rows %s over %s under %s nobase %s  %s\n' \
+    "$round" "$arm" "$spec" "$code" "$rows" "$over" "$under" "$nobase" "$status" >>"$TIMELINE"
+
+  printf '%s\n' "$status"
 }
 
 for ((round = 1; round <= ROUNDS; round++)); do
@@ -484,7 +680,10 @@ for ((round = 1; round <= ROUNDS; round++)); do
     if [ "$status" = ok ]; then
       IFS=',' read -ra toks <<<"${ARM_SUITES[$name]}"
       for tok in "${toks[@]}"; do
-        run_suite "$round" "$name" "$tok"
+        suite_status=$(run_suite "$round" "$name" "$tok")
+        # OVER keeps the round complete (ADR-0092 decision 2) — only FAILED
+        # drops it, the same as a busy/DISQUALIFIED arm.
+        [ "$suite_status" = "FAILED" ] && round_ok=0
       done
       sleep "$GAP"
     else
