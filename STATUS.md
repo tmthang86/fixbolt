@@ -105,7 +105,9 @@ ADR-0095 is `Proposed` on the branch.
   fix arm. **Segment (3) is merged**: PR [#94](https://github.com/tmthang86/fixbolt/pull/94),
   `main` `badc144`, closing commit `70695d3`, CI run
   [`35739307994`](https://github.com/tmthang86/fixbolt/actions/runs/35739307994) 14 / 14. Not
-  re-measured on `main` — that is S1.
+  re-measured on `main` — that is S1. **This branch's handoff commit `877629b` is green 14 / 14 on run
+  [`35742268276`](https://github.com/tmthang86/fixbolt/actions/runs/35742268276)**; the grub §9 line is
+  restored and `update-grub` ran; the commit after it only adds this sentence.
 * **The `no timer due` row** seen `FAIL` then `PASS` on this systemd host (`f49b8c9`).
 * **ADR-0091 decision 2's reversal ran on the Mac mini**: `27` / `12 red in 50` at `bd6be07`,
   `0 red in 50` on `main` (`fb0230b`, `docs/CONFORMANCE.md` §9). The same run found
