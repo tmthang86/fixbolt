@@ -1,30 +1,35 @@
 # ADR-0093 — A campaign driver is committed, `sudo` in a committed script names what root can find, and a timer due inside the window is a `FAIL` row
 
-- **Status**: Proposed — 2026-09-22
-- **Revised 2026-09-22, same day, after the plan's step 3 landed (`ebe0525`)** — revised in
-  place as `CLAUDE.md` §5 allows for a `Proposed` ADR, the revision recorded here: decision 2
-  gains gap **G5** (the gate names its own verdict test out of scope, so a real bad line
-  *there* is never caught — with a proposed remedy, the plan's *Sửa 2* step 3b), **G2** is
-  softened to say it has no fixture, and the CI wording names the step the gate follows, not
-  a job name. No decision changes. **Second pass, same day, after steps 3b, 2, 4 and the
-  tokeniser fix landed (`9e33aa9`, `c320b7a`, `99e8564`, `67e2898`)**, in this same block
-  rather than a second one: decision 3 says **UTC**, not local time, because the code does and
-  the reason is worth recording; decision 2 says **what a token is**; **G2's first half was
-  wrong, not merely untested** — R2 did *not* reach a wrapper body when a quote was fused to
-  the word, and R1 flagged clean lines for the same cause — and is replaced by what `67e2898`
-  fixed and what remains; **G5 is closed** by step 3b; **G6** (a word fused to a shell
-  metacharacter) is added. Still no decision changes. **Third pass, after the senior review
-  (`f537e4d`)**: the second pass's edit had dropped the R3 bullet and left a `sed` artefact in
-  its place — restored; the two parentheticals saying the script header calls G6 `G2b` are
-  deleted, the rename having landed in `f537e4d` itself. **Fourth pass, after `83b53e3`
-  closed the review's script findings**: R3 says which `--` it reads (F10); decision 3 records
-  how "never calls `date`" became true (`utc_stamp`, F8) and gains the knob's validation rule
-  with what feeding `$(( ))` really did (F9 — including two claims the manager's brief got
-  wrong and measurement corrected); **G7** (a wrapper taking its workload as an argument) is
-  added. Still no decision changes.
-- **Approved by**: nobody yet. Written by the architect for the plan
-  [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md),
-  step 0; the owner approved the *scope* of that plan on 2026-09-22, not this text.
+- **Status**: Accepted — 2026-09-22, at the merge of the plan's branch, **under the owner's
+  approval of the plan
+  [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md)
+  on 2026-09-22** (`bb71859`, one word), whose *Cách làm* states each of the three decisions
+  below in substance and links this file. That is the whole basis: **no delegation was granted
+  for this plan specifically**, and the owner has not read this text. The general delegation
+  of 2026-08-30 (`STATUS.md`, *On the delegation itself*: plan-writing, plan approval and
+  merging, with three named exclusions) is the precedent ADR-0088, ADR-0090 and ADR-0091 stand
+  on and is cited here only as that. One word from the owner reverses this status.
+- **Revised four times on 2026-09-22, all before acceptance, all in place while still
+  `Proposed`** (`CLAUDE.md` §5) — and the shape of the day is the thing to read, not the list:
+  **the three decisions never moved. What moved, four times, was what was known about the
+  gate's blind spots**, each time because someone ran the gate against a line and read what it
+  said. In order: *(1, after step 3, `ebe0525`)* the gate had named its own verdict test out of
+  scope — **G5**, with a remedy proposed; G2 was marked "no fixture"; the CI wording was made
+  to name a step rather than a job. *(2, after `9e33aa9`, `c320b7a`, `99e8564`, `67e2898`)*
+  G5 was **closed** by that remedy; G2's first half turned out **wrong, not untested** — R2 did
+  not reach a quoted wrapper body, and R1 flagged clean quoted lines, one tokenisation defect
+  with two signs — and was replaced by what was fixed and what remains; decision 2 gained the
+  definition of a token; **G6** (a word fused to `&`, `;`, `|`) was added, open by decision;
+  decision 3 was corrected from "local time" to **UTC** because the code was right. *(3, after
+  the senior review, `f537e4d`)* pass 2's own edit had deleted the R3 bullet and left a `sed`
+  artefact through three green gates and a green CI run — restored, and two stale `G2b`
+  parentheticals removed. *(4, after `83b53e3`)* R3 was made to say which `--` it reads (F10,
+  it had read `sudo`'s own); decision 3 recorded how "never calls `date`" became literally true
+  (`utc_stamp`, F8) and gained the knob's validation rule together with what feeding it to
+  `$(( ))` had really done (F9 — the row vanished and the report exited 0; two confident claims
+  in the brief were refuted by measurement); **G7** (a wrapper taking its workload as an
+  argument) was added. Net: G1–G4 as written, G5 closed, G6 and G7 open by decision, three
+  decisions unchanged. Frozen from here by §5; a fifth change is a new ADR.
 - **Date**: 2026-09-22
 - **Deciders**: Tran Manh Thang. Written by the architect (Fable). The `sudo` inventory of
   `scripts/` is the manager's, reproduced by the architect the same day; the `sudo` and

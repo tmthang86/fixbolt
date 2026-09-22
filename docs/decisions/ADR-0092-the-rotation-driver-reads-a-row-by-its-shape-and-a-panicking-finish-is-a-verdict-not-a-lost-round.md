@@ -1,13 +1,21 @@
 # ADR-0092 — The rotation driver reads a row by its shape, records the harness's verdict per row, and a panicking `finish` is a verdict, not a lost round
 
-- **Status**: Proposed — 2026-09-22
-- **Revised 2026-09-22, after the senior review of the plan's branch** — in place, as
-  `CLAUDE.md` §5 allows for a `Proposed` ADR: decision 1's fixture sentence said "two temporary
-  lines" where three are needed for an in-band row; corrected and the in-band case named. No
-  decision changes.
-- **Approved by**: nobody yet. Written by the architect for the plan
-  [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md),
-  step 0; the owner approved the *scope* of that plan on 2026-09-22, not this text.
+- **Status**: Accepted — 2026-09-22, at the merge of the plan's branch, **under the owner's
+  approval of the plan
+  [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md)
+  on 2026-09-22** (`bb71859`, one word), whose *Cách làm* states this ADR's decisions in
+  substance and links this file. That is the whole basis: **no delegation was granted for this
+  plan specifically**, and the owner has not read this text. The general delegation of
+  2026-08-30 (`STATUS.md`, *On the delegation itself*: plan-writing, plan approval and merging,
+  with three named exclusions) is the precedent ADR-0088, ADR-0090 and ADR-0091 stand on and is
+  cited here only as that. One word from the owner reverses this status.
+- **Revised once, 2026-09-22, before acceptance** — in place while still `Proposed`, as
+  `CLAUDE.md` §5 allows: decision 1's fixture sentence said the four row states are captured
+  "by appending two temporary lines". That sentence was **impossible, not imprecise**: on a
+  four-case bench two forced lines leave two cases unbaselined and no in-band row can exist —
+  the plan's *Sửa 1* records that the first capture (`854fbbb`) was made exactly that way and
+  pinned three of the four states, and `85262e4` re-captured with three lines. Corrected and
+  the in-band case named. No decision changed; frozen from here by §5.
 - **Date**: 2026-09-22
 - **Deciders**: Tran Manh Thang. Written by the architect (Fable) from facts the manager
   reproduced the same day on a cloud container (*Context*, items 1–4); the architect re-read

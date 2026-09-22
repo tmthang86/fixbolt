@@ -1,9 +1,15 @@
 # ADR-0094 — The ADR-0086 descent is priced by sample attribution inside one binary, not by a second binary
 
-- **Status**: Proposed — 2026-09-22
-- **Approved by**: nobody yet. Written by the architect for the plan
-  [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md),
-  step 0; it designs an experiment for a **future §9 boot** and that plan does not run it.
+- **Status**: Accepted — 2026-09-22, at the merge of the plan's branch, **under the owner's
+  approval of the plan
+  [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md)
+  on 2026-09-22** (`bb71859`, one word), whose *Cách làm* states this design in substance and
+  links this file. That is the whole basis: **no delegation was granted for this plan
+  specifically**, and the owner has not read this text. The general delegation of 2026-08-30
+  (`STATUS.md`, *On the delegation itself*) is the precedent ADR-0088, ADR-0090 and ADR-0091
+  stand on and is cited here only as that. One word from the owner reverses this status.
+  **Nothing here has run**: it designs an experiment for a **future §9 boot**, that plan does
+  not run it, and acceptance is of the design, not of a number. Not revised before acceptance.
 - **Date**: 2026-09-22
 - **Deciders**: Tran Manh Thang. Written by the architect (Fable) from `STATUS.md` item 96,
   ADR-0086's dated note and the layout reference page; the code facts are read from
