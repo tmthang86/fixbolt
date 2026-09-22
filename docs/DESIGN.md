@@ -1287,7 +1287,7 @@ measurements.
 ([ADR-0092](decisions/ADR-0092-the-rotation-driver-reads-a-row-by-its-shape-and-a-panicking-finish-is-a-verdict-not-a-lost-round.md)):
 a bench binary that panics because one of its own cases is over the machine's recorded baseline
 still carries its measurement rows, so `OVER` is its own state — the round stays `complete` — and
-is kept apart from `FAILED`, an exit that carries no rows at all, which drops the round the way a
+is kept apart from `FAILED` — any other outcome: a non-zero exit without the harness's own verdict line, a non-zero exit whose row count disagrees with the panic's `<m>`, or **zero rows at any exit, `0` included** — which drops the round the way a
 busy machine does. `--reextract <evidence-dir>` rebuilds `runs.reextracted.txt` from a round's
 raw captures under `<evidence-dir>/raw/` without re-running anything and without ever writing
 over `runs.txt`.

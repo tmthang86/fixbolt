@@ -1,6 +1,10 @@
 # ADR-0092 — The rotation driver reads a row by its shape, records the harness's verdict per row, and a panicking `finish` is a verdict, not a lost round
 
 - **Status**: Proposed — 2026-09-22
+- **Revised 2026-09-22, after the senior review of the plan's branch** — in place, as
+  `CLAUDE.md` §5 allows for a `Proposed` ADR: decision 1's fixture sentence said "two temporary
+  lines" where three are needed for an in-band row; corrected and the in-band case named. No
+  decision changes.
 - **Approved by**: nobody yet. Written by the architect for the plan
   [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md),
   step 0; the owner approved the *scope* of that plan on 2026-09-22, not this text.
@@ -123,9 +127,14 @@ but because of fact 7: the driver runs binaries built before any harness change,
 parser is the only place a fix protects every arm. One rule, one place (`CLAUDE.md` §1).
 The row shape thereby becomes a contract `ab-rotation.sh` depends on; it is pinned by a
 fixture **captured verbatim from a real bench binary** (all four row states, the under line and
-the panic body in one capture, produced by appending two temporary lines to
-`benches/baselines.tsv` — ADR-0067 makes that a run-time change — and reverting them
-byte-identical), not typed from memory. If the harness's format ever moves, the fixture does
+the panic body in one capture, produced by appending **three** temporary lines to
+`benches/baselines.tsv` — one forcing `OVER`, one forcing `UNDER`, and one putting a third
+case **in band** (`validate TestRequest, w2w bytes`, its figure read from a first run, margin
+1.35), the fourth case left with no line so it reads `NO BASELINE`; ADR-0067 makes that a
+run-time change — and reverting them byte-identical), not typed from memory. *(Revised
+2026-09-22: this sentence first said "two temporary lines", which cannot produce an in-band
+row on a four-case bench — the plan's *Sửa 1* records that the capture at `854fbbb` was made
+that way and pinned three of the four states; `85262e4` re-captured with three.)* If the harness's format ever moves, the fixture does
 not fail; decision 2's *zero rows* rule does, on the first real run.
 
 ### 2. The exit status is read, the harness's verdict is a state of its own, and a run that measured nothing is `FAILED`

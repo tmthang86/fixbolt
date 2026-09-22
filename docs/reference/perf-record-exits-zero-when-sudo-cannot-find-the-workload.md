@@ -68,11 +68,16 @@ line red.
 
 ## What replaced it here
 
-`target/boot-d-evidence/run-d2.sh` runs the **prebuilt bench binary** named in
-`../fb-boot-d/MANIFEST.txt` by absolute path, re-checking its sha256 before each run. This is
-closer to what [boot D](../plans/2026-09-20-boot-d.md) asks for than the plan's own D2 cell was:
-the boot is forbidden to compile anything, and invoking `cargo` at all was the only thing in
-that cell that could have.
+On the day, a driver under `target/boot-d-evidence/` was rewritten to run the **prebuilt bench
+binary** named in `../fb-boot-d/MANIFEST.txt` by absolute path, re-checking its sha256 before
+each run — closer to what [boot D](../plans/2026-09-20-boot-d.md) asks for than the plan's own
+D2 cell was, since the boot is forbidden to compile anything and invoking `cargo` at all was
+the only thing in that cell that could have. **That driver died with the desk and is not
+rebuilt.** The rule that replaced it is
+[ADR-0093](../decisions/ADR-0093-a-campaign-driver-is-committed-sudo-in-a-committed-script-names-what-root-can-find-and-a-timer-due-inside-the-window-is-a-fail-row.md)
+decision 1: a campaign driver is committed to `scripts/` on the plan's branch **before** the
+boot, named in the plan's *Chia việc*, and `target/` holds evidence only — never a driver.
+There it is read by decision 2's gate, which is what turns this page's rule into a check.
 
 Related: [a-doc-command-that-exits-zero-is-not-the-doc-gate](a-doc-command-that-exits-zero-is-not-the-doc-gate.md),
 [reading-the-output-you-grepped-for](reading-the-output-you-grepped-for.md),

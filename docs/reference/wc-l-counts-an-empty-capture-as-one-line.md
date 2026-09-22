@@ -82,7 +82,8 @@ usual way a known trap recurs.
 - `w2w-baseline.sh:578` — `printf '%s\n' "$TREE_STATUS" | wc -l`, the exact shape, **guarded**:
   the line sits inside `else` of `if [ -z "$TREE_STATUS" ]`, so the empty case never reaches
   it. Correct, and fragile by one moved line; not changed.
-- `check-sudo-verdicts.sh:101,121` — `f … | wc -l`, direct pipes from a function whose
+- `check-sudo-verdicts.sh:216,236` (`:101,121` when this page was written; the file grew at
+  `9e33aa9` and `67e2898`) — `f … | wc -l`, direct pipes from a function whose
   expected output is one line; an empty output there counts 0. Not the trap. (A file being
   written by a developer at the time of this page; read, not touched.)
 - `w2w-baseline.sh:331-332`, `fetch-quickfix-assets.sh:76,103-107`, `check-no-optional-deps.sh:162`

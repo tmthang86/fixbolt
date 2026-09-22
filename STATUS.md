@@ -218,11 +218,15 @@ of each. Segment (3) needs no profile; it needs `ab/parse-utc-fast-path` turned 
 * Do not delete `target/boot-d-evidence/`. It is 921 MB and it is the whole of item 93's input.
 * Do not compare any boot D figure with a boot C figure by differencing them. Boot D's D5 binary
   is not manifest-pinned and the two boots are different days; the write-up compares tiers.
-* Do not read the `--summary` rows whose case name ends in `:` as **medians** — they are the
-  bench's own `OVER BASELINE` report, which `scripts/ab-rotation.sh` mis-parses as a phantom case
-  with a phantom `n`. **But do not dismiss them either: their content is the boot's largest
-  finding** (item 97). The parser is the defect; the lines are data.
-* Do not run a long campaign without `systemctl list-timers --all` first.
+* Do not read a `--summary` row whose case name ends in `:` as a **median** — in a `runs.txt`
+  written **before `854fbbb`** (boot D's `d4m/` is one) such rows are the bench's own
+  `OVER BASELINE` report, which the old extractor recorded as a phantom case with a phantom `n`.
+  The parser was the defect and is fixed (ADR-0092; `check-ab-rotation.sh` asserts no case
+  name ends in `:`); the lines are still data — **their content is the boot's largest
+  finding** (item 97). To read old evidence honestly, `scripts/ab-rotation.sh --reextract
+  <dir>` rebuilds `runs.reextracted.txt` from `raw/` and never touches `runs.txt` — step 7a.
+* Do not run a long campaign without reading the `no timer due` row of `check-machine.sh`
+  (`FIXBOLT_TIMER_WINDOW`, default 12 h) — `ab-rotation.sh` now refuses to start on its `FAIL`.
 
 ### Not proven
 

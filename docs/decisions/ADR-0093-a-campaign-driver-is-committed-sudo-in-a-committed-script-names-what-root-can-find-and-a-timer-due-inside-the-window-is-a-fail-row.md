@@ -13,7 +13,10 @@
   wrong, not merely untested** — R2 did *not* reach a wrapper body when a quote was fused to
   the word, and R1 flagged clean lines for the same cause — and is replaced by what `67e2898`
   fixed and what remains; **G5 is closed** by step 3b; **G6** (a word fused to a shell
-  metacharacter, the script header's `G2b`) is added. Still no decision changes.
+  metacharacter) is added. Still no decision changes. **Third pass, after the senior review
+  (`f537e4d`)**: the second pass's edit had dropped the R3 bullet and left a `sed` artefact in
+  its place — restored; the two parentheticals saying the script header calls G6 `G2b` are
+  deleted, the rename having landed in `f537e4d` itself.
 - **Approved by**: nobody yet. Written by the architect for the plan
   [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md),
   step 0; the owner approved the *scope* of that plan on 2026-09-22, not this text.
@@ -192,7 +195,10 @@ advisory string alike (fact 3: over-reading is the safe direction) — is read b
   word `perf` passes R1 and the workload after `--` is what root could not find. It also
   catches `sudo sh -c 'cargo …'` and `sudo env PATH=$PATH cargo …` (which does not work under
   `secure_path` anyway).
-\1- **What a token is** *(added in the revision)*: the logical line is split on whitespace\n  **and on every `'` and `"`**, each quote replaced by a space, never deleted (`67e2898`,
+- **R3 — `perf`'s workload.** When the command word is `perf` and a `--` token follows, the
+  token after `--` is a command word too and must pass R1.
+- **What a token is** *(added in the revision)*: the logical line is split on whitespace
+  **and on every `'` and `"`**, each quote replaced by a space, never deleted (`67e2898`,
   `unfuse_quotes`, used at all three tokenisation sites). A shell quote is a delimiter in
   every context and can never be part of a command *name*, so unfusing cannot change what a
   legitimate command word is; deleting instead of replacing would turn `sh -c'cargo bench'`
@@ -247,7 +253,7 @@ skipped count is printed on the `ok` line (`32 scripts scanned … 11 fixture li
 marker` at `9e33aa9`, N up by exactly one from 31); proved in both directions — an unmarked
 `sudo -n perf record -o x.data -- cargo bench` appended to the verdict test was caught at
 `scripts/check-sudo-verdicts.sh:182`, and the marker helper's test was red before it existed
-(`want [skip] got []`). **G6** *(added in the revision; the script header calls it `G2b`)*: a
+(`want [skip] got []`). **G6** *(added in the revision)*: a
 target word fused to a shell **metacharacter** rather than a quote is still unread — `sudo sh
 -c 'cd /x&&cargo bench'`, `'true;cargo bench'`, `'echo x|cargo bench'` all read `ok`
 `[measured 2026-09-22, manager]` — because `&`, `;` and `|` are deliberately **not** unfused:
