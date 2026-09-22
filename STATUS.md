@@ -90,6 +90,119 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
 
+## Start here — 2026-09-22, later: the detector is fixed, item 98 is closed, and a senior review found two things seventeen commits of evidence did not
+
+**[the-detector-and-the-campaign-preconditions](docs/plans/2026-09-22-the-detector-and-the-campaign-preconditions.md)
+— CLOSED AND MERGED 2026-09-22**, every step. PR [#91](https://github.com/tmthang86/fixbolt/pull/91),
+merge `f0d3d97`, **closing commit `646d96e`, CI run
+[`35710478160`](https://github.com/tmthang86/fixbolt/actions/runs/35710478160), 14 jobs of 14** —
+`interop`, `bench` and `deny` among them, the three neither desk can run for itself. Nothing on
+this branch needed the §9 desk, and nothing on it published a number.
+
+### What closed
+
+* **Item 98 — CLOSED.** Both traps boot D recorded now have a gate.
+  `scripts/check-sudo-names-what-root-can-find.sh` reads *what `sudo` runs*, not where `sudo`
+  sits: R1 the command word, R2 a bare toolchain word anywhere on the logical line, R3 `perf`'s
+  workload after the `--` **that follows the command word**. `check-machine.sh` gains a
+  `no timer due` row — `systemctl list-timers --all --output=json` through a pure
+  `timers_verdict`, `FIXBOLT_TIMER_WINDOW` hours (default 12, boot D's own campaign was 12h10m),
+  `FAIL` on any timer due inside it, and `ab-rotation.sh` refuses to start on that `FAIL`.
+  ADR-0093 decision 1 also settles where a campaign driver lives: `scripts/`, committed before
+  the boot. The three dead files (`run-d2.sh`, `run-d3.sh`, `run-d5.sh`) are not rebuilt.
+* **Item 97's detector half is fixed, and the slowdown is untouched.** `ab_extract` anchors on a
+  measurement row's shape, so the harness's own `OVER`/`UNDER` report lines and its panic body are
+  no longer read as rows; `run_suite` reads the binary's exit status; `OVER` is its own state and
+  keeps the round `complete` while `FAILED` drops it; `--summary` has an `over` column and an
+  `over baseline:` footer; `--reextract` rebuilds from `raw/` without touching `runs.txt`.
+  **`benches/baselines.tsv` was never moved** — `git diff 0629111..646d96e -- benches/baselines.tsv`
+  is empty across all seventeen commits, and ADR-0090 decision 4 still reserves re-recording until
+  item 93 concludes. **Row 97 stays open** until step 7a re-reads the boot D evidence.
+* **Item 96 has a designed experiment, ADR-0094**, and it has not run.
+* **`scripts/check-ab-rotation.sh` now runs in CI.** It existed in the repository and ran in no
+  job at all, which is how everything it guards was unguarded.
+
+### What the senior review found, and why it matters more than the fixes
+
+Seventeen commits of this branch quoted their gate output, and a reviewer reproduced **every
+number at the commit it named**. That discipline did not catch either of the two blocking
+findings:
+
+* **F2 — the gate this branch adds read nothing.** A comment line ending in `\` swallowed the next
+  live line, so `sudo -n perf record -o x.data -- cargo bench -q` — boot D's own line, the line the
+  gate exists for — read `ok — 1 scripts scanned, 0 sudo lines read, 0 findings`, exit 0. Found by
+  a reviewer **writing a probe file**, not by reading the diff.
+* **F1 — a `sed` accident deleted ADR-0093's R3 bullet** and left a literal `\1` and `\n` in the
+  file, while decision 2's lead-in still said "three rules". `check-links.py`,
+  `check-adr-numbers.sh` and a full 14-of-14 CI run were all green over it, and the manager had
+  read that diff before committing it. Found by a reviewer **running `grep`**.
+
+Eleven more findings, all confirmed by reproduction: a `sudo` gate that flagged clean lines
+(`sudo 'tee' /sys/x` → `FAIL R1`) for the same tokenisation reason it missed real ones; a
+`timers_verdict` that called GNU-only `date -u -d` while its ADR said it never calls `date`, which
+would have gone red on the Mac mini while Ubuntu CI stayed green; a fractional
+`FIXBOLT_TIMER_WINDOW` that made the row **vanish from the report** with the script exiting 0 —
+and `ab-rotation.sh`'s preflight greps for that row, so a campaign could have started with no
+timer check and no message. Five stale sentences in documents that were true three commits
+earlier. **§10's line — "review of a diff catches almost nothing" — was demonstrated on this
+branch at the manager's expense.**
+
+### What this branch cost, and the four traps now written down
+
+Four numbers predicted in the plan were wrong, and the builder reported the real one every time;
+three of those four led to a real defect. New `docs/reference/` pages:
+[wc-l-counts-an-empty-capture-as-one-line](docs/reference/wc-l-counts-an-empty-capture-as-one-line.md)
+(a counter that says 1 when the answer is 0, so a reversal that produced nothing reads as though
+it produced something) and
+[a-shell-error-inside-an-if-drops-the-row-and-the-report-exits-zero](docs/reference/a-shell-error-inside-an-if-drops-the-row-and-the-report-exits-zero.md)
+(a gate that vanishes is worse than a gate that fails, because nothing reads a row that is not
+there). Both trap pages boot D wrote during the boot now carry a `## Guarded by` section, which
+neither had.
+
+The plan contradicted itself twice and both were found by builders following its text literally —
+*Sửa 1* (a fixture recipe that could not produce the case its own design section required) and
+*Sửa 2* (a CI instruction naming a job that does not run the step it named).
+
+### ADR-0092, ADR-0093 and ADR-0094 are Accepted on a thin basis, and say so
+
+All three were accepted at this merge **under the owner's approval of the plan on 2026-09-22**
+(`bb71859`, one word), whose *Cách làm* states each decision in substance. Each status block says,
+in its own words, that **no delegation was granted for this plan specifically, that the owner has
+not read the three texts, and that one word reverses the status.** The 2026-08-30 general
+delegation is cited only as the precedent ADR-0088, ADR-0090 and ADR-0091 stand on. ADR-0093 was
+revised four times in one day — the three decisions never moved; what moved was what was known
+about the gate's blind spots, each time because somebody ran the gate against a line and read what
+it said. §5 freezes it from here.
+
+### Next — the first executable action
+
+**Step 7a, and it needs the desk powered on but no §9 boot:**
+`scripts/ab-rotation.sh --reextract target/boot-d-evidence/d4m` then `--summary`. The `over`
+column must name item 97's eight breached medians. If it does not, stop and return to the
+architect — the whole point of the detector work is that those eight become machine-read instead
+of read by hand off a panic message.
+
+### Not proven
+
+* **Four of the five segments of item 93.** Recorded at boot D, not analysed. `perf diff` over
+  `target/boot-d-evidence/d2-<sha>-{1,2}.data` still wants running, on any grub line.
+* **What caused item 95's +12.32%**, and **what isolates the ADR-0086 descent** (item 96 — the
+  experiment is designed, not run).
+* **The macOS reversal for ADR-0091 decision 2.** Unchanged, and the Mac mini now owes a second
+  thing: the BSD `date` shape F8 exposed is fixed by a pure `utc_stamp`, but nothing on macOS has
+  run `scripts/check-machine-verdicts.sh` to see it.
+* **The `no timer due` row's `FAIL` and `PASS` shapes have never been seen on a real systemd
+  host.** This container is not systemd-init, so only `UNKNOWN` was exercised live; both other
+  shapes are proven against a fixed JSON fixture with a fixed `now`, and once against a stub.
+* **Gaps G6 and G7 of ADR-0093 are open by decision**, each pinned by an `ok`-expecting fixture: a
+  word fused to `&`, `;` or `|`, and an ALLOW-listed wrapper that takes its workload as an ordinary
+  argument. Closing either would make ordinary lines into findings, which is how a gate gets
+  switched off.
+* **Anything about `standard` mode, TLS, the wire, or any latency number.** This branch measured
+  nothing and published nothing.
+
+---
+
 ## Start here — 2026-09-22: boot D is measured, PR A closes, and two of the four comparisons produced an item instead of a number
 
 **Every figure below was taken on the §9 desk between 2026-09-21 23:36 and 2026-09-22 11:46, with
