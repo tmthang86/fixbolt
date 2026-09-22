@@ -4212,13 +4212,13 @@ is 1.123), date `2026-09-23`, verdict `pass 17 fail 0 unknown 0`. Two `validate`
 | engine turn, 1 busy, ring 512 | 1654.8 | 1778.3 | +7.5% |
 | engine turn, 1 busy, ring 4096 | 1657.7 | 1775.9 | +7.1% |
 
-A second strict run, `target/boot-e-evidence/s4-strict.txt` (21:44–21:54 UTC): every re-recorded
+A second strict run, `target/boot-e-evidence/s4-strict.txt` (21:34–21:44 UTC): every re-recorded
 case now reads in band, `FAIL: --strict, and 2 case(s) had no baseline` — only the two structural
 wakeup cases remain — and **one new surprise**:
 
 **The journal one-slot surprise.** `journal put, 191 bytes, one slot` read **12.4 ns/op**, over
 its 7.4 ns baseline (recorded 2026-09-21), on the *same pinned binary* that read **7.4 ns/op** in
-S3 forty minutes earlier. Four re-runs after S4 (including one under `taskset -c 6`) all read
+S3 twenty-seven minutes earlier (S3 21:07–21:17, S4 21:34–21:44 UTC). Four re-runs after S4 (including one under `taskset -c 6`) all read
 12.4; the two `journal put, *, walking` cases did not move (8.8, 5.3, unchanged from their
 baselines) and `check-machine.sh` still read `pass 17 fail 0 unknown 0` throughout. Cause
 unknown — same binary, same machine, same isolated core, two different readings 40 minutes apart.

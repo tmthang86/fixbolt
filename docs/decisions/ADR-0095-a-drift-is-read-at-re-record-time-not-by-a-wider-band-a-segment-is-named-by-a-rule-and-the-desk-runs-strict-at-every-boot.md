@@ -172,7 +172,7 @@ Two things this ADR's rule did not foresee:
   open item, not folded into the ledger above.
 - **A case that moved between two `--strict` runs inside one boot, on the same pinned binary.**
   `journal put, 191 bytes, one slot` read 7.4 ns/op in S3 (21:07–21:17 UTC) and 12.4 ns/op in S4
-  (21:44–21:54 UTC) and on four re-runs after, including under `taskset -c 6`; the sibling
+  (21:34–21:44 UTC) and on four re-runs after, including under `taskset -c 6`; the sibling
   `walking` journal cases and `check-machine.sh`'s verdict did not move. The rule has no
   provision for a drift observed *within* a boot rather than *across* boots — this line was left
   un-re-recorded and the surprise is carried forward as an open item rather than absorbed into
