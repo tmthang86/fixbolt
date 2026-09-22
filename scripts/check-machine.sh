@@ -88,8 +88,12 @@ irq_overlap() {
 # saying which — the row names its source, because a PASS over a name match that
 # missed a vector is a PASS about fewer IRQs than the NIC has.
 nic_irqs() {
-  local nic="$1" msi="$2" interrupts="$3" from_msi
-  from_msi=$(find "$msi" -mindepth 1 -maxdepth 1 -name '[0-9]*' -printf '%f\n' 2>/dev/null | sort -n)
+  local nic="$1" msi="$2" interrupts="$3" from_msi entry
+  from_msi=$(
+    for entry in "$msi"/[0-9]*; do
+      [ -e "$entry" ] && basename "$entry"
+    done 2>/dev/null | sort -n
+  )
   if [ -n "$from_msi" ]; then
     echo msi_irqs
     echo "$from_msi"
