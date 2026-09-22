@@ -555,6 +555,40 @@ preflight() {
 
 preflight
 
+# Refuse to start when check-machine.sh's "no timer due" row FAILs — ADR-0093
+# decision 3, ../reference/a-quiet-machine-check-cannot-see-a-timer-that-has-
+# not-fired.md: boot D lost rounds 13-20 to apt-daily-upgrade.timer at 06:51
+# while the per-round quiet row read green before AND after. One read, here,
+# before round 1 — same shape as the EVIDENCE=/tmp refusal above. Per round
+# this driver still reads only the quiet row (a timer that fires anyway is
+# caught there, per arm, exactly as boot D proved); this is a ONE-TIME gate on
+# a condition the quiet row cannot see coming. Never consulted by --dry-run,
+# which is already exited above and touches no machine. UNKNOWN (no
+# systemctl, no jq, can't reach PID 1 — this container's case) does NOT
+# refuse: only a FAIL, which means the row could ask and got a due timer back.
+timers_preflight() {
+  local out line reason
+  out=$("$HERE/check-machine.sh" 2>/dev/null || true)
+  line=$(printf '%s\n' "$out" | grep -E 'no timer due' || true)
+  case "$line" in
+    FAIL*)
+      reason=$(printf '%s\n' "$line" | sed -E 's/^.*no timer due[[:space:]]+//')
+      echo "REFUSING: check-machine.sh's 'no timer due' row FAILs:" >&2
+      echo "          $reason" >&2
+      echo "          A timer is due inside the campaign window. Stop it," >&2
+      echo "          per unit: sudo -n systemctl stop <unit> — stop, not" >&2
+      echo "          disable, so the next boot restores it — then re-run." >&2
+      exit 1
+      ;;
+    "? ? ?"*)
+      reason=$(printf '%s\n' "$line" | sed -E 's/^.*no timer due[[:space:]]+//')
+      echo "timers: unknown — ${reason}; not refusing" >&2
+      ;;
+  esac
+}
+
+timers_preflight
+
 # Read check-machine.sh's own "machine is quiet" row (its threshold, its
 # reading — one rule, one place) rather than a second copy of the busy-%
 # calculation. `|| true`: check-machine.sh exits non-zero on unrelated rows

@@ -201,6 +201,53 @@ same "enp8s0" "$(pick_nic "$net" enp8s0)" \
 rm -rf "$net"
 
 echo
+echo "=== timers_verdict"
+
+# Boot D lost rounds 13-20 to apt-daily-upgrade.timer at 06:51 while the quiet
+# row read green before and after (docs/reference/a-quiet-machine-check-
+# cannot-see-a-timer-that-has-not-fired.md) — ADR-0093 decision 3. `now` is a
+# FIXED constant, never `date`, so this test cannot become the flake CLAUDE.md
+# §10 warns about: timers_verdict must read the clock nowhere itself.
+#
+# now = 1700000000 s (2023-11-14T22:13:20Z) since the epoch, in microseconds.
+FIX_NOW=1700000000000000
+# Four timers, systemd's own list-timers --all --output=json shape (`next` in
+# µs, or `null` for one --all lists that is not scheduled):
+#   apt-daily-upgrade.timer         due in   1h  (now +  1h)
+#   fstrim.timer                    due in  13h  (now + 13h)
+#   man-db.timer                    not scheduled (next: null)
+#   systemd-tmpfiles-clean.timer    due 5m AGO    (now -  5m)
+FIX_TIMERS_JSON=$(cat <<JSON
+[
+  {"unit":"apt-daily-upgrade.timer","next":$((FIX_NOW + 3600 * 1000000))},
+  {"unit":"fstrim.timer","next":$((FIX_NOW + 13 * 3600 * 1000000))},
+  {"unit":"man-db.timer","next":null},
+  {"unit":"systemd-tmpfiles-clean.timer","next":$((FIX_NOW - 300 * 1000000))}
+]
+JSON
+)
+
+# window 43200s = 12h (the default FIXBOLT_TIMER_WINDOW): the 1h-out timer and
+# the already-overdue one both FAIL; the 13h-out one and the null one do not.
+same $'FAIL\tapt-daily-upgrade.timer next 2023-11-14T23:13Z (in 1h00m), systemd-tmpfiles-clean.timer next 2023-11-14T22:08Z (overdue 5m00s) [window 12h]\tsudo -n systemctl stop apt-daily-upgrade.timer; sudo -n systemctl stop systemd-tmpfiles-clean.timer' \
+  "$(timers_verdict "$FIX_NOW" 43200 "$FIX_TIMERS_JSON")" \
+  "REVERSAL TARGET: a timer due in 1h inside a 12h window (plus the one already overdue) — FAIL, naming both"
+
+# window 1800s = 0.5h: the 1h-out timer no longer qualifies; only the one
+# already past due (which is <= now+window at ANY positive window) still FAILs.
+same $'FAIL\tsystemd-tmpfiles-clean.timer next 2023-11-14T22:08Z (overdue 5m00s) [window 0.5h]\tsudo -n systemctl stop systemd-tmpfiles-clean.timer' \
+  "$(timers_verdict "$FIX_NOW" 1800 "$FIX_TIMERS_JSON")" \
+  "same JSON, a narrower 0.5h window: only the already-overdue unit still FAILs"
+
+same $'PASS\tno timer due inside the window [window 12h]\t' \
+  "$(timers_verdict "$FIX_NOW" 43200 '[]')" \
+  "no timers at all: PASS, and the window it checked is still named"
+
+same $'UNKNOWN\tmalformed systemctl list-timers JSON [window 12h]\t' \
+  "$(timers_verdict "$FIX_NOW" 43200 'not json')" \
+  "JSON jq cannot parse: UNKNOWN, never a false PASS"
+
+echo
 echo "=== summary"
 echo "pass $pass   fail $fail"
 [[ "$fail" -eq 0 ]]
