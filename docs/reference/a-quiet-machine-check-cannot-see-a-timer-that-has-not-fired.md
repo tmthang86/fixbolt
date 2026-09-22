@@ -11,7 +11,7 @@ is the right question for *"is something running?"* and it is no question at all
 something start in the next four hours?"*
 
 A campaign that runs for one hour never learns the difference. Boot C ran 20:37 → 02:45 and never
-found out. Boot D ran 23:36 → 11:50, and at **06:51** `apt-daily-upgrade.timer` fired:
+found out. Boot D ran 23:36 → 11:50, and at **06:51:31** `apt-daily-upgrade.service` started:
 
 ```text
 round 12 arm w0  busy  0% ok
@@ -25,6 +25,20 @@ round 20 incomplete
 Every one of rounds 13–20 was thrown away — correctly, by the driver's own quiet rule, which is
 the only reason the boot did not publish eight rounds of numbers taken against a machine running
 `apt`. **The rule that saved it is per-arm and per-round, not the one-off check at the start.**
+
+Two details the first draft of this page got wrong, both fixed by reading the evidence instead of
+remembering it. **Round 13 was not uniformly loaded**: its first three arms (`w0`, `wa`, `w1`) ran
+clean and were dropped *as a round*, which is exactly the rule that keeps every arm's `n` equal;
+only from round 14 did every arm read over the limit. And the load was **7% to 24%**, not the
+10–13% the first three lines of the log happened to show. **`apt-daily-upgrade.service` itself ran
+only 06:51:31 → 06:53:32** — `packagekit.service` stayed up until **06:58:34**, which is what the
+last five wasted rounds actually ran against. Naming one unit for a seven-minute window was a cause
+accepted because a knob moved with it (`CLAUDE.md` §10); the window is the finding, the unit list
+is the remedy.
+
+The `journalctl` window and the timer table were captured to
+`target/boot-d-evidence/d4-timer-evidence.txt` **after** the boot, because the first version of
+this page quoted a terminal that nothing had saved — a cause with no artefact behind it.
 
 ## The hour is the whole finding
 

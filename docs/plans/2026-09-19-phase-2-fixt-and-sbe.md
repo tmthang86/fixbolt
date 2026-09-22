@@ -883,12 +883,21 @@ arm, vì bàn còn ba phép so khác phải chia chung thời gian (ADR-0090). K
 này đòi: hai worktree dựng trước, xen kẽ, cùng cờ, band ADR-0031.
 
 - **`w0` `ece17e7` (trước A) → `wa` `6fbe851` (sau A): 22 case / 22 trong band.** PR A **đóng**.
-- **Cái giá, nói thẳng:** `engine turn` chậm **+4,1 … +5,1 %** ở mọi số phiên và mọi cỡ ring —
-  trong band 1,10 nhưng không phải không mất gì. `parse`/`serialize` lệch **≤ 0,2 %**, đúng
-  điều ADR-0079 quyết định 5 đòi; `validate` lại **nhanh hơn 0,5–5,9 %**.
+- **Cái giá, nói thẳng:** `engine turn` chậm **+4,14 … +5,11 % theo số phiên**, **+3,56 … +4,25 %
+  theo cỡ ring**, **+2,16 %** ở turn admin — trong band 1,10 nhưng không phải không mất gì.
+  `parse`/`serialize` lệch **≤ 0,35 %** (lớn nhất là `encode ExecutionReport (template)` −0,31 %,
+  một case của `serialize.rs`), đúng điều ADR-0079 quyết định 5 đòi; `validate` lại **nhanh hơn
+  0,5–5,9 %**. ADR-0082 *Consequences* có ghi chú đề ngày, vì câu "no hot-path cost is added" ở
+  đó sai.
 - Máy: bàn §9, `pass 16 fail 0 unknown 0`, mitigations **bật**, không biên dịch gì trong boot
   (sha256 mọi binary không đổi sau 20 vòng).
 - Số đầy đủ: `docs/reference/measured-costs.md` mục *Boot D … A-desk*; `DESIGN.md` D16 mang một
   câu và trỏ sang đó.
 
 Hàng **A-desk** do đó không còn là *needs-desk*. Còn nợ của phase 2 ở bàn: **C-desk**.
+
+- **Boot D còn tìm ra một thứ hàng A-desk không hỏi:** trên bàn §9, `main` `76e53cb` **vượt tám
+  dòng baseline đã ghi** — `validate NewOrderSingle` ×1,160, `validate Heartbeat` ×1,154,
+  `validate TestRequest, w2w bytes` ×1,136 (`w1s`), cộng hai case `density` trên `w1`. Không phải
+  lỗi của PR A (`w0` không vượt case nào, `wa` vượt 3/21 vòng `density`), nhưng nó nằm trong
+  khoảng `wa`→`w1`. Mở **item 97**.
