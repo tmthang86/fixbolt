@@ -24,10 +24,14 @@
 #        `cargo-*`, `rustc`, `rustup`, `rustdoc` or `w2w`: FAIL R2. This is
 #        the rule that reads boot D's own line — `perf` passes R1, `cargo`
 #        after `--` is caught here regardless of where it sits.
-#   R3 — when the command word is `perf` and a `--` token follows, the token
-#        right after `--` is a command word too and must also pass R1 (this
-#        is what catches an UNLISTED workload, e.g. `sudo perf record --
-#        mytool`, that R2 has no name for).
+#   R3 — when the command word is `perf` and a `--` token follows IT, the
+#        token right after that `--` is a command word too and must also
+#        pass R1 (this is what catches an UNLISTED workload, e.g. `sudo perf
+#        record -- mytool`, that R2 has no name for). "Follows it" is the
+#        whole rule: the `--` is searched for from the command word's own
+#        index, never from the start, or sudo's own `--` terminator in
+#        `sudo -- perf record -- mytool` is the one found and `perf` is
+#        "judged" as its own workload.
 #
 # All three read TOKENS, and what a token is, is unfuse_quotes() below: the
 # line is split on whitespace AND on the shell quote characters `'` and `"`,
@@ -84,6 +88,22 @@
 #        finding, and a gate with a false positive gets switched off within
 #        a week. Pinned by a fixture in check-sudo-verdicts.sh, so it is a
 #        measured statement and not a comment.
+#   G7 — a WRAPPER on ALLOW that takes a workload as an ordinary argument,
+#        with no `--` in sight, hides an unresolvable NAME from R1 the same
+#        way a quoted body does: `sudo -n taskset -c 3 mytool` and
+#        `sudo -n chrt -f 90 mytool` both read `ok` (`taskset`/`chrt` pass
+#        R1 off ALLOW; R3 is keyed on `perf`, which is the only wrapper in
+#        this project's lines that separates its workload with `--`). R2
+#        still reaches through every one of them — `sudo -n perf record -o
+#        d.data -- taskset -c 3 cargo bench` reads FAIL R2 cargo — so what
+#        is unseen is an unlisted NAME, never one of the six toolchain
+#        names. Extending R3 to these would mean knowing each wrapper's
+#        option ARITY (`-c 3`, `-f 90`, `-n -20` each carry a value, and
+#        `3` is on no ALLOW list), which is per-tool knowledge a
+#        line-level gate cannot keep correct — the same reason G2 declines
+#        to read a shell inside a shell, and guessing it turns ordinary
+#        arguments into findings. Pinned by fixtures in
+#        check-sudo-verdicts.sh, so it is a measured statement.
 #   G3 — prose (a plan cell, a comment) is not a script this gate scans;
 #        decision 1 is what moves a driver into a file this gate reads.
 #   G4 — ALLOW says nothing about whether the package is actually installed
@@ -142,7 +162,9 @@
 # physical line first, so a workload hidden on the continuation is still
 # read (plan trap table, "dòng nối \ giấu workload sang dòng sau"). A line
 # whose first non-whitespace character is `#` is a comment and is skipped —
-# is_live(), same rule check-scratch-fixtures.sh already uses.
+# is_live(), same rule check-scratch-fixtures.sh already uses — and a
+# comment does not continue onto the next physical line however it ends,
+# see join_logical_lines' own comment for what that cost.
 #
 # Zero scripts scanned is a FAIL, same reasoning as check-scratch-fixtures.sh
 # B4: a count of nothing is a broken invocation, not a clean tree.
@@ -172,6 +194,23 @@ is_live() {
 # per logical line, joining a trailing single backslash onto the next
 # physical line (the backslash itself is dropped, a space takes its place so
 # two tokens either side of the join never fuse).
+#
+# A COMMENT NEVER CONTINUES. The continuation test is `buf_live` AND a
+# trailing backslash, in that order, because `#` runs to the end of the
+# physical line in every shell — a backslash inside a comment continues
+# nothing. `[measured 2026-09-22]` while the backslash was tested first and
+# liveness only on the buffer's FIRST physical line, this file
+#
+#     # note \
+#     sudo -n perf record -o x.data -- cargo bench -q
+#
+# read `0 sudo lines read, 0 findings`, exit 0: the comment swallowed boot
+# D's own line into one non-live logical line and the gate never saw the
+# line it exists for. The same two lines with the comment removed read
+# `FAIL R2 cargo`. Comment lines ending in `\` already exist in this tree
+# (scripts/ab-rotation.sh:81-82, scripts/check-ab-rotation.sh:126-127) —
+# today the next line is itself a comment, so nothing true was being missed
+# yet. Pinned by check-sudo-verdicts.sh's join_logical_lines section.
 join_logical_lines() {
   local file="$1" line lineno=0 buf="" buf_start=0 buf_live=1 pending=0
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -182,7 +221,7 @@ join_logical_lines() {
       buf=""
       pending=1
     fi
-    if [[ "$line" == *\\ ]]; then
+    if [[ "$buf_live" -eq 1 ]] && [[ "$line" == *\\ ]]; then
       buf+="${line%\\} "
       continue
     fi
@@ -248,9 +287,15 @@ unfuse_quotes() {
   printf '%s' "${t//\"/ }"
 }
 
-# sudo_cmdword <rest> — the command word: the first token after skipping
-# sudo's own leading -n / -E / -u <user> / -- / VAR=value options.
-sudo_cmdword() {
+# sudo_cmdword_index <rest> — the INDEX, in unfuse_quotes()+word-split token
+# order, of the command word: the first token after skipping sudo's own
+# leading -n / -E / -u <user> / -- / VAR=value options. The token count (an
+# out-of-range index) when there is no command word at all, which
+# `${toks[$i]:-}` in every caller reads as the empty string.
+#
+# Split out of sudo_cmdword so R3 can start its `--` search AFTER it — see
+# perf_workload_after_dashdash.
+sudo_cmdword_index() {
   local rest="$1" t
   local -a toks
   read -ra toks <<< "$(unfuse_quotes "$rest")"
@@ -269,16 +314,33 @@ sudo_cmdword() {
         ;;
     esac
   done
-  printf '%s' "${toks[$i]:-}"
+  printf '%d' "$i"
 }
 
-# perf_workload_after_dashdash <rest> — R3: the token right after a `--` on
-# the same logical line, or empty when there is none.
-perf_workload_after_dashdash() {
+# sudo_cmdword <rest> — the command word itself: the token at
+# sudo_cmdword_index, or the empty string when the index is out of range.
+sudo_cmdword() {
   local rest="$1" i
   local -a toks
   read -ra toks <<< "$(unfuse_quotes "$rest")"
-  for (( i = 0; i < ${#toks[@]}; i++ )); do
+  i="$(sudo_cmdword_index "$rest")"
+  printf '%s' "${toks[$i]:-}"
+}
+
+# perf_workload_after_dashdash <rest> — R3: the token right after the first
+# `--` that follows the COMMAND WORD, or empty when there is none.
+#
+# `[measured 2026-09-22]` searching from token 0 instead read sudo's OWN
+# terminator: `sudo -- perf record -o x.data -- mytool` returned `perf`
+# (which passes R1 off ALLOW) and the real workload was never judged — the
+# whole line read `ok`. Starting at sudo_cmdword_index + 1 skips sudo's `--`
+# because the command word sits after it, so the next `--` found is perf's.
+perf_workload_after_dashdash() {
+  local rest="$1" i start
+  local -a toks
+  read -ra toks <<< "$(unfuse_quotes "$rest")"
+  start=$(( $(sudo_cmdword_index "$rest") + 1 ))
+  for (( i = start; i < ${#toks[@]}; i++ )); do
     if [[ "${toks[$i]}" == "--" ]]; then
       printf '%s' "${toks[$((i + 1))]:-}"
       return

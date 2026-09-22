@@ -58,11 +58,21 @@
 # `timeline.txt` gets one trailing `round N complete|incomplete` line, and
 # `--summary` counts only rows from `complete` rounds.
 #
-# EVIDENCE, per run (never averaged away):
+# EVIDENCE, per run (never averaged away) — every shape below is what this
+# script actually writes today, ADR-0092 decisions 1 and 2 included:
 #   manifest.txt   arm  suite  path  worktree-sha  features  binary  sha256
 #   timeline.txt   round N arm X busy B% ok|DISQUALIFIED   (one per arm/round)
+#                  round N arm X suite S exit E rows R over O under U
+#                    nobase M  ok|OVER|FAILED              (one per suite run,
+#                                                           ADR-0092 dec. 2)
 #                  round N complete|incomplete              (one per round)
-#   runs.txt       arm  round  case  ns                     (one per case)
+#   runs.txt       arm  round  case  ns  verdict            (one per case)
+#                  — FIVE tab-separated columns; `verdict` is ab_extract's
+#                  own reading of the harness's mark on that row:
+#                  `over` | `under` | `in` | `none` (ADR-0092 decision 1).
+#                  A runs.txt written before that decision has four columns
+#                  and no verdict at all; ab_summary reads one of those as
+#                  `?` in its `over` column rather than crashing.
 #   raw/N-arm-suite.txt   the suite's raw stdout for that round, kept whole
 #
 # INTERRUPTIBLE: every line above is appended as it is produced, not
@@ -94,9 +104,21 @@
 #                        would run, in order; touches no cargo, no file, no
 #                        binary. Never needs pre-built binaries.
 #   --summary <runs.txt> print the pure summary table (median, min/median,
-#                        max/median, n, diff% vs CONTROL) for an existing
-#                        runs.txt. Reads `$(dirname runs.txt)/timeline.txt`
-#                        unless TIMELINE is set. Needs CONTROL.
+#                        max/median, n, diff% vs CONTROL, and `over` = the
+#                        k/n of that pair's rows the harness marked over
+#                        baseline, `?` for a pre-ADR-0092 four-column file)
+#                        for an existing runs.txt, with a footer line naming
+#                        how many (arm, case) pairs have an `over` row at
+#                        all — or `none`. Reads
+#                        `$(dirname runs.txt)/timeline.txt` unless TIMELINE
+#                        is set. Needs CONTROL.
+#   --reextract <dir>   rebuild <dir>/runs.reextracted.txt from every
+#                        <dir>/raw/*.txt through the same ab_extract used
+#                        live, so evidence captured under an older parser
+#                        can be re-read without a reboot (ADR-0092
+#                        decision 3). File in, file out: no cargo, no
+#                        binary, no clock, and <dir>/runs.txt is never
+#                        opened for writing.
 #
 # GAP (default 8s, plan trap table: "Hai cargo bench sát nhau → run sau tự
 # loại 25-36% busy — driver GAP 8s"): a pause after an arm's suites finish,

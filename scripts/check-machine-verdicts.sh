@@ -248,6 +248,95 @@ same $'UNKNOWN\tmalformed systemctl list-timers JSON [window 12h]\t' \
   "JSON jq cannot parse: UNKNOWN, never a false PASS"
 
 echo
+echo "=== utc_stamp — the UTC stamp in that FAIL value, computed without 'date'"
+
+# timers_verdict's own comment says it never calls `date`, and until
+# 2026-09-22 the stamp above came from `date -u -d "@N" || echo "epoch N"`.
+# `-d` is GNU-only: on BSD/macOS `date` it is rejected, the fallback fires,
+# and the two FAIL assertions above go red on the Mac mini — the machine
+# DESIGN.md §2 already owes an ADR-0091 reversal on, and the one CI (Ubuntu)
+# can never speak for. utc_stamp() computes the civil date itself
+# (civil_from_days), so there is ONE output shape on every platform.
+#
+# Every expectation below is a WRITTEN-DOWN constant, never `date`'s answer:
+# a fixture that asked `date` would agree with whatever the local `date`
+# does, which is the thing being removed. The first two are the exact
+# stamps the timers_verdict assertions above depend on.
+same "2023-11-14T23:13Z" "$(utc_stamp 1700003600)" \
+  "the stamp apt-daily-upgrade.timer's FAIL row prints (now + 1h)"
+same "2023-11-14T22:08Z" "$(utc_stamp 1699999700)" \
+  "the stamp the already-overdue unit prints (now - 5m)"
+same "1970-01-01T00:00Z" "$(utc_stamp 0)" \
+  "the epoch itself"
+same "1970-01-01T23:59Z" "$(utc_stamp 86399)" \
+  "one second before the epoch's second day: the minute truncates, it never rounds up"
+same "1969-12-31T23:59Z" "$(utc_stamp -1)" \
+  "a negative epoch floors into the previous day rather than truncating toward zero"
+same "2000-02-29T00:00Z" "$(utc_stamp 951782400)" \
+  "2000-02-29 — a leap day in a leap century (divisible by 400)"
+same "2024-02-29T00:00Z" "$(utc_stamp 1709164800)" \
+  "2024-02-29 — an ordinary leap day"
+same "2100-01-01T00:00Z" "$(utc_stamp 4102444800)" \
+  "2100-01-01 — a century boundary, and one this era's arithmetic reaches before its century correction bites"
+# `[measured 2026-09-22]` the case that actually holds the century
+# correction: drop `int(doe / 36524)` from the era arithmetic and this reads
+# `2100-02-29T00:00Z` — a day that does not exist, because 2100 is divisible
+# by 100 and not by 400. 2100-01-01 above stays green under that same
+# reversal (its day-of-era is still under 36524), which is why both are
+# here: a leap rule is wrong only on the far side of the February it got
+# wrong.
+same "2100-03-01T00:00Z" "$(utc_stamp 4107542400)" \
+  "REVERSAL TARGET: 2100-03-01 — 2100 is NOT a leap year, and without the century term this reads 2100-02-29Z"
+same "2038-01-19T03:14Z" "$(utc_stamp 2147483647)" \
+  "2^31-1 seconds: no 32-bit wrap in the arithmetic"
+
+echo
+echo "=== timer_window_sec — FIXBOLT_TIMER_WINDOW, validated instead of fed to \$(( ))"
+
+# `[measured 2026-09-22]` `window_sec=$((TIMER_WINDOW_H * 3600))` under
+# check-machine.sh's own `set -u` killed the whole report MID-RUN on
+# `FIXBOLT_TIMER_WINDOW=0.5` — before the kTLS rows and before the
+# pass/fail/unknown summary — with `0.5: syntax error: invalid arithmetic
+# operator (error token is ".5")`, naming neither the knob nor the row.
+# `12h` died with `value too great for base`, `abc` with `unbound
+# variable`; ` ` and `-1` did not die at all, which is worse — a silent 0 s
+# and -3600 s window with the row still printing PASS. (An EMPTY value never
+# died: `${FIXBOLT_TIMER_WINDOW:-12}` reads it as unset and uses 12.)
+#
+# The knob is documented "in hours" in four places and none of them says
+# WHOLE hours, and timers_verdict's own 0.5h assertion above is a fraction,
+# so a fraction is ACCEPTED here and converted with awk.
+window_read() { # window_read <value> — what check-machine.sh gets for it
+  local out
+  if out=$(timer_window_sec "$1"); then printf 'accepted %s' "$out"; else printf 'refused'; fi
+}
+
+same "accepted 43200" "$(window_read 12)" \
+  "the default, 12 hours"
+same "accepted 1800" "$(window_read 0.5)" \
+  "REVERSAL TARGET: 0.5 — the value that used to kill the script mid-report is a valid half-hour window"
+same "accepted 1800" "$(window_read .5)" \
+  "a leading dot is still a number of hours"
+same "accepted 43200" "$(window_read 12.)" \
+  "and a trailing one"
+same "accepted 0" "$(window_read 0)" \
+  "0 hours is a real question — only an already-overdue timer answers it — so it is accepted, not refused"
+same "refused" "$(window_read '')" \
+  "an empty value never reaches this function (\${VAR:-12} reads it as unset), and is refused if it ever does"
+same "refused" "$(window_read ' ')" \
+  "REVERSAL TARGET: a space is refused rather than read as the silent 0s window \$(( )) gave it"
+same "refused" "$(window_read -1)" \
+  "REVERSAL TARGET: a negative window is refused rather than read as the silent -3600s window \$(( )) gave it"
+same "refused" "$(window_read abc)" \
+  "a word is refused, where \$(( )) died of 'unbound variable' under set -u"
+same "refused" "$(window_read 12h)" \
+  "a unit suffix is refused: this knob's value is already in hours"
+same "refused" "$(window_read 1.2.3)" \
+  "two decimal points is not a number"
+same "refused" "$(window_read 1e3)" \
+  "scientific notation is refused too — accepted spellings are decimal digits and at most one dot"
+
+echo
 echo "=== summary"
 echo "pass $pass   fail $fail"
 [[ "$fail" -eq 0 ]]

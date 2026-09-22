@@ -181,6 +181,51 @@ same "ok" "$(sudo_verdict "sudo sh -c '/abs/bin/cargo bench -q'")" \
   "an absolute path inside a quoted body still passes — R2 skips any token with a /"
 
 echo
+echo "=== R3 — the '--' that matters is the one AFTER the command word"
+
+# `[measured 2026-09-22]` perf_workload_after_dashdash() searched for the
+# FIRST `--` on the line, so `sudo -- perf record … -- mytool` handed R3
+# sudo's own terminator: the token after it is `perf`, which passes R1 off
+# ALLOW, and the real workload was never judged — the whole line read `ok`.
+# `sudo --` is not exotic: it is what you write when the command word could
+# be mistaken for an option, and boot D's line is one `--` away from it.
+same "FAIL R1" "$(sudo_verdict 'sudo -- perf record -o x.data -- mytool')" \
+  "REVERSAL TARGET: sudo's own -- terminator must not be read as perf's; the workload after the SECOND -- is what R3 judges" # check-sudo: fixture
+
+same "mytool" \
+  "$(sudo_r1_offender "$(sudo_offending_rest 'sudo -- perf record -o x.data -- mytool')")" \
+  "REVERSAL TARGET: and the word the message names is the workload (mytool), not the perf that passed R1" # check-sudo: fixture
+
+# The ordinary spelling is unchanged by that fix, and so is the ALLOW-listed
+# workload after a single --.
+same "FAIL R2 cargo" "$(sudo_verdict 'sudo -n perf record -o d.data -- cargo bench -q')" \
+  "one -- and no sudo terminator: unchanged, R2 reads the workload" # check-sudo: fixture
+
+echo
+echo "=== gap G7 — a wrapper on ALLOW that takes its workload as a plain argument"
+
+# Stated rather than papered over, the same way G6 is: `chrt`, `taskset` and
+# `nice` are on ALLOW (they are natural benchmark prefixes) and they take the
+# workload as an ORDINARY argument, with no `--` for R3 to key on. So an
+# UNLISTED name behind one of them passes unseen. Extending R3 to them needs
+# each wrapper's option arity (`-c 3`, `-f 90`, `-n -20` all carry a value,
+# and `3` is on no ALLOW list) — per-tool knowledge that turns ordinary
+# arguments into findings when it is guessed, which is the same reason G2
+# declines to read a shell inside a shell. Whoever closes this gap owns
+# these two lines.
+same "ok" "$(sudo_verdict 'sudo -n taskset -c 3 mytool')" \
+  "KNOWN GAP G7, not a pass: taskset passes R1 off ALLOW and 'mytool' behind it is unread" # check-sudo: fixture
+same "ok" "$(sudo_verdict 'sudo -n chrt -f 90 mytool')" \
+  "KNOWN GAP G7, not a pass: the same for chrt" # check-sudo: fixture
+
+# What the gap does NOT cost: R2 reaches through every wrapper, `--` or no
+# `--`, so none of the six toolchain names can hide behind one.
+same "FAIL R2 cargo" "$(sudo_verdict 'sudo -n perf record -o d.data -- taskset -c 3 cargo bench')" \
+  "the residue of G7 is unlisted NAMES only — a toolchain name behind a wrapper is still FAIL R2" # check-sudo: fixture
+same "FAIL R2 cargo" "$(sudo_verdict 'sudo -n chrt -f 90 cargo bench -q')" \
+  "and with no -- anywhere on the line either" # check-sudo: fixture
+
+echo
 echo "=== unfuse_quotes — the shared tokenisation rule R1, R2 and R3 all split on"
 
 same "sudo sh -c  cargo bench -q " "$(unfuse_quotes "sudo sh -c 'cargo bench -q'")" \
@@ -241,6 +286,28 @@ same "1" "$(join_logical_lines "$fixtures/continued.sh" | wc -l | tr -d ' ')" \
 printf '# sudo -n perf record -- cargo bench\nsudo tee /sys/x\n' > "$fixtures/commented.sh" # check-sudo: fixture
 same "2	1	sudo tee /sys/x" "$(join_logical_lines "$fixtures/commented.sh" | sed -n '2p')" \
   "the comment line is still emitted (so line numbers stay right) but marked not-live"
+
+# A COMMENT DOES NOT CONTINUE. `#` runs to the end of the physical line in
+# every shell, so a trailing backslash inside one joins nothing.
+# `[measured 2026-09-22]` while join_logical_lines tested the backslash
+# BEFORE liveness, this two-line file read `0 sudo lines read, 0 findings`
+# and exit 0 from the gate: the comment absorbed boot D's own line into one
+# non-live logical line, and the one line this gate exists for was never
+# read. Comment lines ending in `\` already live in scripts/ab-rotation.sh
+# (:81-82) and scripts/check-ab-rotation.sh (:126-127).
+printf '# note \\\nsudo -n perf record -o x.data -- cargo bench -q\n' \
+  > "$fixtures/commented-continued.sh" # check-sudo: fixture
+
+same "2" "$(join_logical_lines "$fixtures/commented-continued.sh" | wc -l | tr -d ' ')" \
+  "REVERSAL TARGET: a comment ending in a backslash is its own logical line — two physical lines, two logical lines, not one"
+
+same "2	1	sudo -n perf record -o x.data -- cargo bench -q" \
+  "$(join_logical_lines "$fixtures/commented-continued.sh" | sed -n '2p')" \
+  "REVERSAL TARGET: the live line after the backslash-ended comment keeps its own line number (2) and its own live flag (1)" # check-sudo: fixture
+
+same "FAIL R2 cargo" \
+  "$(sudo_verdict "$(join_logical_lines "$fixtures/commented-continued.sh" | sed -n '2p' | cut -f3-)")" \
+  "REVERSAL TARGET: and it is judged — the line the comment used to swallow reads FAIL R2 cargo" # check-sudo: fixture
 
 echo
 echo "=== summary"

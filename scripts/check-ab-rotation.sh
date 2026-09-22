@@ -184,6 +184,42 @@ same "w1	7	validate TestRequest, w2w bytes	311.4	in" \
   "the in-band row's whole record: name with its comma kept, figure taken from the token before ' ns/op', verdict 'in'"
 
 echo
+echo "=== ab_extract — a figure wide enough to fill the harness's {best:>8.1} field"
+
+# HAND-WRITTEN, NOT A CAPTURE, and the only input in this file that is:
+# three synthetic rows exercising a WIDTH, not a run standing in for a real
+# one. Nobody should read them as evidence of what any binary printed.
+#
+# The plan's trap table names this case and the captured fixture above
+# cannot reach it: its widest figure is `1236.6`, six characters inside
+# `{best:>8.1}` (harness.rs:338 and :366), so two padding spaces are still
+# left in the field. Here the field is filled step by step: `82071.1` leaves
+# one space, `123456.7` is eight characters and leaves none at all, and
+# `1234567.8` is nine and OVERFLOWS the field — the state where a `>8`
+# width stops separating anything, and the only thing still holding the
+# name apart from the figure is the literal space in the harness's format
+# string. Each line was generated with Python's `"{:<34} {:>8.1f} ns/op
+# …"` — harness.rs's own format strings, character for character — rather
+# than typed, so the widths are the harness's and not a guess. A
+# whole-message case on a cold arm reads in this range.
+cat >"$fixtures/wide.txt" <<'EOF'
+validate WideOne                    82071.1 ns/op   baseline 80000.0 x1.35 = [59259.3, 108000.0]
+validate WideTwo                   123456.7 ns/op   NO BASELINE for 'Intel(R) Xeon(R) Processor @ 2.80GHz'
+validate WideThree                 1234567.8 ns/op   baseline 900000.0 x1.10 = [818181.8, 990000.0]  OVER BASELINE
+EOF
+
+wide=$(ab_extract w9 3 <"$fixtures/wide.txt")
+
+same "3" "$(printf '%s' "$wide" | grep -c .)" \
+  "REVERSAL TARGET: all three wide rows are read — a figure that fills or overflows the field is still the last token before ' ns/op'"
+same "w9	3	validate WideOne	82071.1	in" "$(printf '%s\n' "$wide" | sed -n 1p)" \
+  "one padding space left in the field: figure whole, name not fused to it"
+same "w9	3	validate WideTwo	123456.7	none" "$(printf '%s\n' "$wide" | sed -n 2p)" \
+  "eight characters exactly — the field is full and there is no padding space at all"
+same "w9	3	validate WideThree	1234567.8	over" "$(printf '%s\n' "$wide" | sed -n 3p)" \
+  "nine characters — the figure overflows {best:>8.1}, and the row still parses with its mark read"
+
+echo
 echo "=== ab_suite_verdict — ADR-0092 decision 2 (run_suite's per-suite state)"
 
 same "ok" "$(ab_suite_verdict 0 1 0 "")" \
