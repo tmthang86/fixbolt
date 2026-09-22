@@ -50,7 +50,7 @@ These are not random daemons. They are **timers with a schedule**, and the sched
 before the campaign starts:
 
 ```text
-$ systemctl list-timers --all          # captured 2026-09-22 11:5x, after the boot
+$ systemctl list-timers --all          # captured 2026-09-22 12:04, after the boot
 NEXT                        LAST                         UNIT
 -                           Tue 2026-09-22 06:48:31 +07  fwupd-refresh.timer
 -                           Tue 2026-09-22 03:35:22 +07  apt-daily.timer

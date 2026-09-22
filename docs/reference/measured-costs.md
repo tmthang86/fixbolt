@@ -3825,7 +3825,7 @@ thread 'main' (59080) panicked at crates/session/benches/../../codec/benches/har
 (lines 5–13 are the four cases that passed and the two with no baseline; the two ranges are one
 command so the quote can be re-run exactly as written)
 
-Eight medians over n = 20 — five distinct `benches/baselines.tsv` lines, three of them breached by both arms — against the line each case carries:
+Eight medians over n = 20 — five distinct `benches/baselines.tsv` lines, three of them breached by both arms — against the line each case carries. (Medians here are computed from `d4m/runs.txt`; `--summary` truncates to one decimal, so the same `validate Heartbeat` median prints **195.6** in the ADR-0086 table below and **195.65** here.)
 
 | arm | case | median | recorded baseline | ceiling (×1.10) | × baseline |
 |---|---|---|---|---|---|

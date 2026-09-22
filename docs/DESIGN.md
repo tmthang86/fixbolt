@@ -935,7 +935,7 @@ SBE line; a band miss is a stop.
 `[measured 2026-09-22, boot D step D4]` **The guard was finally run on the §9 machine, and it
 holds: 22 cases of 22 in band, over n = 20 per arm, one rotation against a shared control.** The
 `parse` and `serialize` cases move by **0.35% or less** — the largest is `encode ExecutionReport
-(template)` at −0.31%, a `serialize.rs` case — and the two counting benches read 0, which is what
+(template)` at −0.31%, a `serialize.rs` case — and the three counting benches per arm (`codec`, `session`, `engine`) read 0 on every case, which is what
 decision 5 asks for outright. The engine turn is a different sentence: **+4.14…+5.11% by session
 count, +3.56…+4.25% by ring size, +2.16% on the admin turn**, inside the 1.10 band and not free.
 The `validate` cases go the other way, 0.5–5.9% faster.
