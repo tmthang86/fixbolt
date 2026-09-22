@@ -115,6 +115,58 @@ same "+9.5%" "$(printf '%s\n' "$wa_line" | awk '{print $NF}')" \
   "REVERSAL TARGET (diff%): 1817.2 vs control 1660.2 is +9.5%, C-91's own number — change this file's 9.5 to 8.5 and this line must go red"
 
 echo
+echo "=== ab_extract — ADR-0092 decision 1, fixture captured from a real bench binary"
+
+# Captured 2026-09-22 by the developer (sonnet), step 1 of
+# docs/plans/2026-09-22-the-detector-and-the-campaign-preconditions.md, on a
+# cloud container. Command:
+#   RUSTFLAGS="$(scripts/check-bench-alignment.sh --flags)" \
+#     cargo bench -p fixbolt-session --bench validate --no-run \
+#     --message-format=json
+#   then two temporary lines appended to benches/baselines.tsv (one case
+#   forced OVER, one forced UNDER) and the resolved binary run once directly
+#   — reverted straight after with `git checkout benches/baselines.tsv`,
+#   `git diff --exit-code benches/baselines.tsv` exiting 0.
+# CPU: Intel(R) Xeon(R) Processor @ 2.80GHz
+# Binary: target/release/deps/validate-56b06784da3bc3fc
+#   sha256 4593d0717bdf72df1ca2cf5cb66a2a7bab156b06da4c88433b84888711f3f5ff
+# Pasted verbatim, not typed from memory — the trap the plan names twice.
+cat >"$fixtures/harness-raw.txt" <<'EOF'
+machine   Intel(R) Xeon(R) Processor @ 2.80GHz
+validate NewOrderSingle              1219.3 ns/op   baseline 1.0 x1.10 = [0.9, 1.1]  OVER BASELINE
+validate Heartbeat                    246.1 ns/op   baseline 999999.0 x1.10 = [909090.0, 1099998.9]  UNDER BASELINE
+validate TestRequest, w2w bytes       311.0 ns/op   NO BASELINE for 'Intel(R) Xeon(R) Processor @ 2.80GHz'
+    to record, after check-machine.sh reads fail 0, append to benches/baselines.tsv (median of N>=20 runs, margin from the ladder in that file's header):
+    Intel(R) Xeon(R) Processor @ 2.80GHz	validate TestRequest, w2w bytes	311.0	<margin>	<n>	<date>	<verdict>
+validate NewOrderSingle, w2w bytes   1215.2 ns/op   NO BASELINE for 'Intel(R) Xeon(R) Processor @ 2.80GHz'
+    to record, after check-machine.sh reads fail 0, append to benches/baselines.tsv (median of N>=20 runs, margin from the ladder in that file's header):
+    Intel(R) Xeon(R) Processor @ 2.80GHz	validate NewOrderSingle, w2w bytes	1215.2	<margin>	<n>	<date>	<verdict>
+cases without a baseline: 2  validate TestRequest, w2w bytes, validate NewOrderSingle, w2w bytes
+cases under their baseline: 1  validate Heartbeat: 246.1 ns/op is below 909090.0 ns (baseline 999999.0 / 1.10) — re-record the baseline, or the benchmark stopped measuring
+
+thread 'main' (883) panicked at crates/session/benches/../../codec/benches/harness.rs:405:9:
+1 of 4 case(s) over the machine baseline:
+validate NewOrderSingle: 1219.3 ns/op exceeds 1.1 ns (baseline 1.0 x 1.10)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: validate::harness::suite::<validate::main::{closure#0}>
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+EOF
+
+extracted=$(ab_extract w1 7 <"$fixtures/harness-raw.txt")
+
+same "4" "$(printf '%s\n' "$extracted" | wc -l)" \
+  "REVERSAL TARGET (rows): the harness's OVER/UNDER report lines and the panic body are not measurement rows"
+same "0" "$(printf '%s\n' "$extracted" | cut -f3 | grep -c ':$')" \
+  "no case name ends with ':' — the phantom rows the old awk welded a colon onto are gone"
+same "over
+under
+none
+none" "$(printf '%s\n' "$extracted" | cut -f5)" \
+  "verdict column reads over/under/none/none: validate NewOrderSingle (forced OVER), validate Heartbeat (forced UNDER), the two cases with no recorded baseline for this CPU"
+
+echo
 echo "=== summary"
 echo "pass $pass   fail $fail"
 [[ "$fail" -eq 0 ]]

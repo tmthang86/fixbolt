@@ -182,6 +182,49 @@ ab_summary() { # ab_summary <runs.txt> <timeline.txt> <control-arm>
   done <<<"$pairs"
 }
 
+# Extract measurement rows from one suite's raw stdout — ADR-0092 decision 1.
+# A row is exactly (harness.rs:305-360, :361):
+#   <name><spaces><figure> ns/op   baseline <b> x<m> = [<floor>, <ceiling>]<mark>
+#   <name><spaces><figure> ns/op   NO BASELINE for '<cpu>'
+# where <mark> is empty, "  OVER BASELINE" or "  UNDER BASELINE". The anchor
+# is the THREE spaces right after ` ns/op` and the word that follows them
+# (`baseline` or `NO`) — every other line containing ` ns/op` (the pushed
+# over/under report strings at harness.rs:344-358, the joined "cases under
+# their baseline:" line, and the panic body at harness.rs:406-411) has a
+# single space or other text there and fails the anchor, on purpose:
+# ADR-0092 Context item 2 measured the old `/ ns\/op/` match turning those
+# lines into phantom rows. `harness.rs` is not touched (ADR-0092 decision 1:
+# an arm is a binary built before this fix exists) — the row shape is pinned
+# by a fixture captured verbatim from a real bench binary, not typed here.
+# Pure: stdin in, TSV out (`arm round case ns verdict`), no file, no cargo,
+# no clock.
+ab_extract() { # ab_extract <arm> <round>  (stdin: one suite's raw stdout)
+  local arm=$1 round=$2
+  awk -v arm="$arm" -v rnd="$round" '
+    {
+      idx = index($0, " ns/op")
+      if (idx == 0) next
+      after = substr($0, idx + 6)
+      if (substr(after, 1, 3) != "   ") next
+      tail = substr(after, 4)
+      if (tail !~ /^(baseline |NO BASELINE for )/) next
+
+      line = substr($0, 1, idx - 1)
+      n = split(line, a, " ")
+      cname = ""
+      for (i = 1; i < n; i++) cname = (cname == "" ? a[i] : cname " " a[i])
+      ns = a[n]
+
+      verdict = "in"
+      if (tail ~ /  OVER BASELINE$/) verdict = "over"
+      else if (tail ~ /  UNDER BASELINE$/) verdict = "under"
+      else if (tail ~ /^NO BASELINE for /) verdict = "none"
+
+      printf "%s\t%s\t%s\t%s\t%s\n", arm, rnd, cname, ns, verdict
+    }
+  '
+}
+
 if [ "${AB_ROTATION_SOURCE_ONLY:-0}" = 1 ]; then
   # shellcheck disable=SC2317 # reachable when sourced
   return 0 2>/dev/null || exit 0
@@ -457,16 +500,7 @@ run_suite() { # run_suite <round> <arm> <suite-token>
   rawfile="$EVIDENCE/raw/${round}-${arm}-${safe}.txt"
   out=$("$bin" 2>&1)
   printf '%s\n' "$out" >"$rawfile"
-  printf '%s\n' "$out" | awk -F' ns/op' -v arm="$arm" -v rnd="$round" '
-    / ns\/op/ {
-      line = $1
-      n = split(line, a, " ")
-      ns = a[n]
-      cname = ""
-      for (i = 1; i < n; i++) cname = (cname == "" ? a[i] : cname " " a[i])
-      printf "%s\t%s\t%s\t%s\n", arm, rnd, cname, ns
-    }
-  ' >>"$RUNS"
+  printf '%s\n' "$out" | ab_extract "$arm" "$round" >>"$RUNS"
 }
 
 for ((round = 1; round <= ROUNDS; round++)); do
