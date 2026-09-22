@@ -51,6 +51,34 @@ const LEN_SECONDS: usize = 17;
 /// [ADR-0058]: ../../../docs/decisions/ADR-0058-a-timestamp-is-read-at-every-precision-and-written-at-three.md
 const LEN_MAX: usize = 30;
 
+/// `LEN_SECONDS`, a `.`, and three digits — the millisecond form.
+///
+/// **This is a shortcut, not a row of a table, and the difference is the whole
+/// reason [ADR-0058] deleted the tables.** The set of widths this reader
+/// accepts is still `LEN_SECONDS`, or `LEN_SECONDS + 2 ..= LEN_MAX`, decided in
+/// one place below; naming 21 here removes no width and adds none. A width
+/// added to `dict`'s rule and forgotten here is still impossible, because there
+/// is still nothing here to forget — the arm falls through to the same rule.
+///
+/// Why these two and no others: 17 bytes is what the corpus's `I` lines carry
+/// and 21 is what its `E` lines carry, and 21 is what every `52=` on this
+/// engine's own wire is (`ADR-0057`, `TimestampPrecision` default 3).
+const LEN_MILLIS: usize = 21;
+
+/// The shortcut is inside the rule, and the compiler says so rather than the
+/// paragraph above.
+///
+/// Two things have to hold for `LEN_MILLIS` to be a shortcut rather than a
+/// table row: the general arm would have accepted that width anyway
+/// (`LEN_SECONDS + 2 ..= LEN_MAX`), and the fraction at that width is exactly
+/// three digits, because the arm reads hundreds, tens and units in place and
+/// has nothing to pad. Change `LEN_SECONDS`, `LEN_MAX` or `LEN_MILLIS` so that
+/// either stops being true and this fails to compile — a prose claim would
+/// only have gone quietly wrong (`CLAUDE.md` §4, *prose does not hold a
+/// constraint*).
+const _: () = assert!(LEN_MILLIS >= LEN_SECONDS + 2 && LEN_MILLIS <= LEN_MAX);
+const _: () = assert!(LEN_MILLIS - LEN_SECONDS - 1 == 3);
+
 /// Milliseconds since 0000-01-01T00:00:00Z, or `None` if `s` is not a
 /// `UTCTimestamp`.
 ///
@@ -82,24 +110,88 @@ const LEN_MAX: usize = 30;
 /// 21, 24 or 27 and the key is `TimestampPrecision` (ADR-0057). What is read
 /// here is deliberately wider than what is written — strict out, liberal in,
 /// [ADR-0058] decision 4.
+///
+/// # The two widths on a wire take a straight line, and a test says it is the same line
+///
+/// 17 and 21 bytes — what the acceptance corpus carries and what this engine's
+/// own `52=` is — skip the computed digit count, the tail slice, the `all` and
+/// the right-pad, and read their three millisecond digits where they lie.
+/// Every other width falls through to [ADR-0058]'s rule below, which is still
+/// the one place a width is accepted or refused.
+///
+/// **What proves the shortcut changes no answer is
+/// `tests/parse_utc_equivalence.rs`**, not this paragraph: it holds both arms
+/// against a transcription of the one-rule reader at every length up to 40, at
+/// every precision the rule accepts, over the calendar edges and under ~40 000
+/// noise inputs, and puts everything accepted to
+/// `fixbolt_dict::FieldType::UtcTimestamp` as well
+/// (`docs/reference/one-field-two-readers.md`).
 #[must_use]
 pub fn parse_utc(s: &[u8]) -> Option<u64> {
-    // Width picks the number of fractional digits, and a length outside the
-    // range is not a timestamp. `get` rather than `s[8]`: this file carried a
-    // file-wide `#![allow(clippy::indexing_slicing)]` until half A, and
-    // non-negotiable 7 is about a panic in a library crate, which a subscript
-    // is.
+    // **The two widths that are actually on a wire get a straight line, and
+    // every other width falls through to the rule.** `STATUS.md` item 93,
+    // bisect segment (3): widening this reader from four widths to a rule put a
+    // computed `frac_digits`, a slice, an `all`, a closure and a right-pad on
+    // the path every inbound `SendingTime` takes, and 17 and 21 bytes are what
+    // the corpus and this engine's own sender produce. The millisecond arm
+    // reads its three digits where they are; nothing is padded, because at 21
+    // bytes there is nothing missing to pad.
     //
-    // One rule, not a table of accepted widths. The table was the shape that
-    // let half A widen this reader and leave `dict`'s
-    // (`reference/one-field-two-readers.md`); a rule cannot be half-updated.
+    // The general arm below is ADR-0058's rule, unchanged and still the only
+    // place a width is accepted or refused. `LEN_MILLIS` names a shortcut
+    // inside that range, so it cannot drift from `dict`'s rule the way half A's
+    // table did (`reference/one-field-two-readers.md`);
+    // `tests/parse_utc_equivalence.rs` holds both arms to the answers the rule
+    // alone gave, at every length to 40 and under 40 000 noise inputs.
+    //
+    // `get` rather than `s[8]`: this file carried a file-wide
+    // `#![allow(clippy::indexing_slicing)]` until half A, and non-negotiable 7
+    // is about a panic in a library crate, which a subscript is.
     //
     // `LEN_SECONDS + 1` — a `.` with nothing after it — is **not** a width.
     // ADR-0058 decision 2: QuickFIX C++ takes it as `fraction = 0` and cannot
     // ever send one, so the divergence is unreachable from the oracle.
-    let frac_digits = match s.len() {
+    let milli: u32 = match s.len() {
         LEN_SECONDS => 0,
-        n if (LEN_SECONDS + 2..=LEN_MAX).contains(&n) => n - LEN_SECONDS - 1,
+        // `.` then exactly three digits, read in place. The digits are
+        // positional and all three are present, so hundreds, tens, units is the
+        // same arithmetic the general arm does with its padding — see the note
+        // there, which is where the trap is written down.
+        LEN_MILLIS => match s.get(LEN_SECONDS..LEN_MILLIS) {
+            Some(&[b'.', h, t, u])
+                if h.is_ascii_digit() && t.is_ascii_digit() && u.is_ascii_digit() =>
+            {
+                u32::from(h - b'0') * 100 + u32::from(t - b'0') * 10 + u32::from(u - b'0')
+            }
+            _ => return None,
+        },
+        n if (LEN_SECONDS + 2..=LEN_MAX).contains(&n) => {
+            if s.get(LEN_SECONDS) != Some(&b'.') {
+                return None;
+            }
+            let frac = s.get(LEN_SECONDS + 1..)?;
+            // Every fractional digit is checked, including the ones dropped
+            // below: `20260828-12:00:00.123abc` is not a timestamp whose tail
+            // happens to be unreadable, it is not a timestamp.
+            if !frac.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            // **Positional, not an integer, and this is the whole trap.** A
+            // fraction is a decimal fraction: `.1` is one tenth of a second, so
+            // a digit's place decides its value and a short fraction is padded
+            // on the right. Reading `.1` as the number 1 would give 1 ms
+            // instead of 100 — wrong by 99 ms, and invisible to every gate
+            // here, because a skew is judged against `max_skew_ms`, 120 000 by
+            // default.
+            //
+            // Two independent implementations agree: QuickFIX C++ multiplies
+            // the fraction by `PRECISION_FACTOR[digits]` (`FieldTypes.h:56`),
+            // and QuickFIX/n accumulates from `decimalBase = 0.1` downwards.
+            // Held by
+            // `tests/timestamp_widths.rs::a_single_fractional_digit_is_a_tenth_of_a_second`.
+            let digit = |i: usize| u32::from(frac.get(i).copied().unwrap_or(b'0') - b'0');
+            digit(0) * 100 + digit(1) * 10 + digit(2)
+        }
         _ => return None,
     };
     if s.get(8) != Some(&b'-') || s.get(11) != Some(&b':') || s.get(14) != Some(&b':') {
@@ -111,33 +203,6 @@ pub fn parse_utc(s: &[u8]) -> Option<u64> {
     let hour = num(s, 9, 2)?;
     let minute = num(s, 12, 2)?;
     let second = num(s, 15, 2)?;
-    let milli = if frac_digits == 0 {
-        0
-    } else {
-        if s.get(LEN_SECONDS) != Some(&b'.') {
-            return None;
-        }
-        let frac = s.get(LEN_SECONDS + 1..)?;
-        // Every fractional digit is checked, including the ones dropped below:
-        // `20260828-12:00:00.123abc` is not a timestamp whose tail happens to
-        // be unreadable, it is not a timestamp.
-        if !frac.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        // **Positional, not an integer, and this is the whole trap.** A
-        // fraction is a decimal fraction: `.1` is one tenth of a second, so a
-        // digit's place decides its value and a short fraction is padded on the
-        // right. Reading `.1` as the number 1 would give 1 ms instead of 100 —
-        // wrong by 99 ms, and invisible to every gate here, because a skew is
-        // judged against `max_skew_ms`, 120 000 by default.
-        //
-        // Two independent implementations agree: QuickFIX C++ multiplies the
-        // fraction by `PRECISION_FACTOR[digits]` (`FieldTypes.h:56`), and
-        // QuickFIX/n accumulates from `decimalBase = 0.1` downwards. Held by
-        // `tests/timestamp_widths.rs::a_single_fractional_digit_is_a_tenth_of_a_second`.
-        let digit = |i: usize| u32::from(frac.get(i).copied().unwrap_or(b'0') - b'0');
-        digit(0) * 100 + digit(1) * 10 + digit(2)
-    };
 
     if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
         return None;

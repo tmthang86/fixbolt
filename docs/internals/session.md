@@ -12,7 +12,7 @@ the `fix50sp2` feature.
 | File | Keeps |
 |---|---|
 | `lib.rs` | `Session<E, R, APP>`, `Input`, the state machine itself, and the `Application` trait a caller implements |
-| `clock.rs` | Reading a FIX `UTCTimestamp`, and the milliseconds-since-`0000-01-01` epoch the session counts from (D13) |
+| `clock.rs` | Reading a FIX `UTCTimestamp`, and the milliseconds-since-`0000-01-01` epoch the session counts from (D13). `parse_utc` gives the two widths a wire actually carries (17 and 21 bytes) a straight-line branch and leaves every other width to [ADR-0058](../decisions/ADR-0058-a-timestamp-is-read-at-every-precision-and-written-at-three.md)'s one rule; `tests/parse_utc_equivalence.rs` is what proves the shortcut answers what the rule alone answered |
 | `journal.rs` | The `Journal` trait: two questions the session asks (`keep these bytes at seq n`, `do you still have seq n`) and holds nothing itself |
 | `schedule.rs` | `Schedule` — when a session is open and when both ends restart at `34=1`, as UTC arithmetic only ([ADR-0033](../decisions/ADR-0033-a-schedule-is-utc-arithmetic-and-the-calendar-stays-outside.md)) |
 | `out.rs` | Every outbound message this layer builds, each a `Template` sorted by the generated tables — non-negotiable 5, field order never decided at a call site |
