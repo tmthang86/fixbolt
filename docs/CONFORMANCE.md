@@ -575,6 +575,20 @@ accepted because 0 of the 180 `.def` files carry either tag.
 | `fix50sp2`, acceptor, kernel sockets | **60 / 60** | `cargo test -p fixbolt-engine --features fix50sp2 --test wire_fixt` |
 | FIX 4.4, acceptor, kernel sockets | **59 / 59** | `cargo test -p fixbolt-engine --test wire` |
 
+**ADR-0091 decision 2's reversal, counts not latency**, machine: Mac mini,
+`Darwin 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:11:03 PDT 2026;
+root:xnu-12377.161.14~5/RELEASE_ARM64_T8132 arm64` (arm64, `net.link.loopback.sched_model: 0`),
+date 2026-09-22, command `scripts/check-socket-corpus-under-contention.sh 5 10 both` after
+`cargo test -p fixbolt-engine --features fix50sp2 --test wire --test wire_fixt --no-run`:
+
+| Tree | Commit | Result |
+|---|---|---|
+| pre-fix (parent of `3233032`) | `bd6be07`, `git worktree add ../fb-pre3233032 bd6be07` | `wire: 27 red in 50, lifeline hit: 0`; `wire_fixt: 12 red in 50, lifeline hit: 0`, including the pair `FieldCount { expected: 14, actual: 8 }` (e.g. `2g_PossDupNoOrigSendingTime.def:12`) |
+| `main` | `d32f8c5` | `wire: 0 red in 50, lifeline hit: 0`; `wire_fixt: 0 red in 50, lifeline hit: 0` |
+
+The race ADR-0091 confirms is reachable on this macOS loopback before the fix and unreachable
+on `main` after it — closing the reversal decision 2 required.
+
 The same harness as the 59 — real framer, real session, real application, only the clock
 injected. It read 60 / 60 on the first run because `TCP_NODELAY` on the client socket and the
 bounded-turns pump were carried over from `tests/wire.rs` rather than rediscovered; without the
