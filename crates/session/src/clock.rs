@@ -65,6 +65,20 @@ const LEN_MAX: usize = 30;
 /// engine's own wire is (`ADR-0057`, `TimestampPrecision` default 3).
 const LEN_MILLIS: usize = 21;
 
+/// The shortcut is inside the rule, and the compiler says so rather than the
+/// paragraph above.
+///
+/// Two things have to hold for `LEN_MILLIS` to be a shortcut rather than a
+/// table row: the general arm would have accepted that width anyway
+/// (`LEN_SECONDS + 2 ..= LEN_MAX`), and the fraction at that width is exactly
+/// three digits, because the arm reads hundreds, tens and units in place and
+/// has nothing to pad. Change `LEN_SECONDS`, `LEN_MAX` or `LEN_MILLIS` so that
+/// either stops being true and this fails to compile — a prose claim would
+/// only have gone quietly wrong (`CLAUDE.md` §4, *prose does not hold a
+/// constraint*).
+const _: () = assert!(LEN_MILLIS >= LEN_SECONDS + 2 && LEN_MILLIS <= LEN_MAX);
+const _: () = assert!(LEN_MILLIS - LEN_SECONDS - 1 == 3);
+
 /// Milliseconds since 0000-01-01T00:00:00Z, or `None` if `s` is not a
 /// `UTCTimestamp`.
 ///
