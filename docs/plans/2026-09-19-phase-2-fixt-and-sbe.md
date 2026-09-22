@@ -873,3 +873,22 @@ chi phí quét vị trí); `bad_group_count` bỏ cả lượt `373=16` khi gặ
   nằm trên `feat/phase-2-b`. `sinceVersion` chưa được thử qua bảng **sinh ra** (không schema
   mẫu nào khai báo nó); `check-no-crate-root-allow.sh` không chạy được trên Mac (bash 3.2), CI
   chạy nó.
+
+### `[2026-09-22]` A-desk — đo rồi, PR A đóng, và cái giá không phải là không
+
+Bước **A-desk** của bảng *Chia việc* đã chạy, trong boot D (`docs/plans/2026-09-20-boot-d.md`
+bước D4), không phải bằng `bench.sh --strict` hai lượt như hàng này viết mà bằng
+`scripts/ab-rotation.sh` — một vòng xoay xen kẽ sáu arm quanh một đối chứng chung, n = 20 mỗi
+arm, vì bàn còn ba phép so khác phải chia chung thời gian (ADR-0090). Kết quả cùng dạng mà hàng
+này đòi: hai worktree dựng trước, xen kẽ, cùng cờ, band ADR-0031.
+
+- **`w0` `ece17e7` (trước A) → `wa` `6fbe851` (sau A): 22 case / 22 trong band.** PR A **đóng**.
+- **Cái giá, nói thẳng:** `engine turn` chậm **+4,1 … +5,1 %** ở mọi số phiên và mọi cỡ ring —
+  trong band 1,10 nhưng không phải không mất gì. `parse`/`serialize` lệch **≤ 0,2 %**, đúng
+  điều ADR-0079 quyết định 5 đòi; `validate` lại **nhanh hơn 0,5–5,9 %**.
+- Máy: bàn §9, `pass 16 fail 0 unknown 0`, mitigations **bật**, không biên dịch gì trong boot
+  (sha256 mọi binary không đổi sau 20 vòng).
+- Số đầy đủ: `docs/reference/measured-costs.md` mục *Boot D … A-desk*; `DESIGN.md` D16 mang một
+  câu và trỏ sang đó.
+
+Hàng **A-desk** do đó không còn là *needs-desk*. Còn nợ của phase 2 ở bàn: **C-desk**.

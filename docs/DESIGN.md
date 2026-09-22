@@ -932,6 +932,14 @@ decision 5 is the guard that this costs the tag=value path nothing: `benches/par
 `serialize.rs` and `alloc.rs` inside the ADR-0031 band on the §9 machine, same commit, before any
 SBE line; a band miss is a stop.
 
+`[measured 2026-09-22, boot D step D4]` **The guard was finally run on the §9 machine, and it
+holds: 22 cases of 22 in band, over n = 20 per arm, one rotation against a shared control.** The
+`parse` and `serialize` cases move by **0.2% or less** and the two counting benches read 0, which
+is what decision 5 asks for outright. The engine turn is a different sentence: it is **4.1–5.1%
+slower** at every session count and every ring size, inside the 1.10 band and not free. The
+`validate` cases go the other way, 0.5–5.9% faster.
+[reference/measured-costs.md](reference/measured-costs.md) *Boot D … A-desk*.
+
 **`Session` is generic over tag=value encodings; `Session<Sbe<S>>` does not compile (ADR-0082).**
 `Session<E: Encoding, R: Role, const APP: usize>`: the index capacity `N` that used to be a
 parameter now rides in `E`, and the state machine does not change with `E` — a FIXT 1.1 /
