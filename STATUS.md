@@ -95,7 +95,9 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 Plan: [2026-09-22-closing-the-open-items-desk-free-then-s9](docs/plans/2026-09-22-closing-the-open-items-desk-free-then-s9.md),
 branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93).
 Boot E: 2026-09-22 22:00 → 2026-09-23 ~05:00 +07, `check-machine.sh` `pass 17 fail 0 unknown 0`,
-14 timers stopped, nothing compiled. Evidence: `target/boot-e-evidence/` (desk only).
+14 timers stopped, nothing compiled. **Closing commit `8153ba0`, CI run
+[`35789833310`](https://github.com/tmthang86/fixbolt/actions/runs/35789833310) 14 / 14; senior review
+(fresh context) found three wording defects and no number defect, fixed in that commit.** Evidence: `target/boot-e-evidence/` (desk only).
 
 ### What closed
 
