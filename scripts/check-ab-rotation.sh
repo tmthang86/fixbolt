@@ -117,36 +117,42 @@ same "+9.5%" "$(printf '%s\n' "$wa_line" | awk '{print $NF}')" \
 echo
 echo "=== ab_extract — ADR-0092 decision 1, fixture captured from a real bench binary"
 
-# Captured 2026-09-22 by the developer (sonnet), step 1 of
-# docs/plans/2026-09-22-the-detector-and-the-campaign-preconditions.md, on a
-# cloud container. Command:
+# Captured 2026-09-22 by the senior developer (opus), step 1 of
+# docs/plans/2026-09-22-the-detector-and-the-campaign-preconditions.md,
+# *Cách kiểm chứng* "Bước 1", on a cloud container. The binary is the one
+# built there by:
 #   RUSTFLAGS="$(scripts/check-bench-alignment.sh --flags)" \
 #     cargo bench -p fixbolt-session --bench validate --no-run \
 #     --message-format=json
-#   then two temporary lines appended to benches/baselines.tsv (one case
-#   forced OVER, one forced UNDER) and the resolved binary run once directly
-#   — reverted straight after with `git checkout benches/baselines.tsv`,
-#   `git diff --exit-code benches/baselines.tsv` exiting 0.
+# THREE temporary lines were appended to benches/baselines.tsv — one forcing
+# OVER (baseline 1.0), one forcing UNDER (baseline 999999.0), one chosen from
+# this machine's own figure so the case lands IN BAND (309.6 x1.35, read from
+# a clean run of the same binary) — and the binary was then run once
+# directly: `"$BIN" > fixture.txt 2>&1` printing `exit=101`. The fourth case
+# was left with no line, so this one run carries all FOUR verdicts
+# ab_extract can emit: over, under, in, none (ADR-0092 decision 1). The three
+# lines were reverted straight after with `git checkout benches/baselines.tsv`,
+# `git diff --exit-code benches/baselines.tsv` exiting 0.
 # CPU: Intel(R) Xeon(R) Processor @ 2.80GHz
 # Binary: target/release/deps/validate-56b06784da3bc3fc
 #   sha256 4593d0717bdf72df1ca2cf5cb66a2a7bab156b06da4c88433b84888711f3f5ff
 # Pasted verbatim, not typed from memory — the trap the plan names twice.
+# The in-band row is the one with NO mark after `]`, and it is the commonest
+# row in a real rotation: every ordinary boot D measurement was one.
 cat >"$fixtures/harness-raw.txt" <<'EOF'
 machine   Intel(R) Xeon(R) Processor @ 2.80GHz
-validate NewOrderSingle              1219.3 ns/op   baseline 1.0 x1.10 = [0.9, 1.1]  OVER BASELINE
-validate Heartbeat                    246.1 ns/op   baseline 999999.0 x1.10 = [909090.0, 1099998.9]  UNDER BASELINE
-validate TestRequest, w2w bytes       311.0 ns/op   NO BASELINE for 'Intel(R) Xeon(R) Processor @ 2.80GHz'
+validate NewOrderSingle              1220.0 ns/op   baseline 1.0 x1.10 = [0.9, 1.1]  OVER BASELINE
+validate Heartbeat                    246.0 ns/op   baseline 999999.0 x1.10 = [909090.0, 1099998.9]  UNDER BASELINE
+validate TestRequest, w2w bytes       311.4 ns/op   baseline 309.6 x1.35 = [229.3, 418.0]
+validate NewOrderSingle, w2w bytes   1236.6 ns/op   NO BASELINE for 'Intel(R) Xeon(R) Processor @ 2.80GHz'
     to record, after check-machine.sh reads fail 0, append to benches/baselines.tsv (median of N>=20 runs, margin from the ladder in that file's header):
-    Intel(R) Xeon(R) Processor @ 2.80GHz	validate TestRequest, w2w bytes	311.0	<margin>	<n>	<date>	<verdict>
-validate NewOrderSingle, w2w bytes   1215.2 ns/op   NO BASELINE for 'Intel(R) Xeon(R) Processor @ 2.80GHz'
-    to record, after check-machine.sh reads fail 0, append to benches/baselines.tsv (median of N>=20 runs, margin from the ladder in that file's header):
-    Intel(R) Xeon(R) Processor @ 2.80GHz	validate NewOrderSingle, w2w bytes	1215.2	<margin>	<n>	<date>	<verdict>
-cases without a baseline: 2  validate TestRequest, w2w bytes, validate NewOrderSingle, w2w bytes
-cases under their baseline: 1  validate Heartbeat: 246.1 ns/op is below 909090.0 ns (baseline 999999.0 / 1.10) — re-record the baseline, or the benchmark stopped measuring
+    Intel(R) Xeon(R) Processor @ 2.80GHz	validate NewOrderSingle, w2w bytes	1236.6	<margin>	<n>	<date>	<verdict>
+cases without a baseline: 1  validate NewOrderSingle, w2w bytes
+cases under their baseline: 1  validate Heartbeat: 246.0 ns/op is below 909090.0 ns (baseline 999999.0 / 1.10) — re-record the baseline, or the benchmark stopped measuring
 
-thread 'main' (883) panicked at crates/session/benches/../../codec/benches/harness.rs:405:9:
+thread 'main' (14322) panicked at crates/session/benches/../../codec/benches/harness.rs:405:9:
 1 of 4 case(s) over the machine baseline:
-validate NewOrderSingle: 1219.3 ns/op exceeds 1.1 ns (baseline 1.0 x 1.10)
+validate NewOrderSingle: 1220.0 ns/op exceeds 1.1 ns (baseline 1.0 x 1.10)
 stack backtrace:
    0: __rustc::rust_begin_unwind
    1: core::panicking::panic_fmt
@@ -156,15 +162,24 @@ EOF
 
 extracted=$(ab_extract w1 7 <"$fixtures/harness-raw.txt")
 
-same "4" "$(printf '%s\n' "$extracted" | wc -l)" \
-  "REVERSAL TARGET (rows): the harness's OVER/UNDER report lines and the panic body are not measurement rows"
+# `printf '%s' | grep -c .` and not `printf '%s\n' | wc -l`: the latter reads
+# 1 for ZERO extracted rows, because printf adds the newline the empty string
+# does not have — the reading that made the anchor reversal print `got [1]`
+# where it should say `got [0]`. grep counts characters, so empty is 0.
+same "4" "$(printf '%s' "$extracted" | grep -c .)" \
+  "REVERSAL TARGET (rows): four cases in, four rows out — the harness's OVER/UNDER report lines, the 'cases under their baseline:' line and the panic body are not measurement rows"
 same "0" "$(printf '%s\n' "$extracted" | cut -f3 | grep -c ':$')" \
   "no case name ends with ':' — the phantom rows the old awk welded a colon onto are gone"
 same "over
 under
-none
+in
 none" "$(printf '%s\n' "$extracted" | cut -f5)" \
-  "verdict column reads over/under/none/none: validate NewOrderSingle (forced OVER), validate Heartbeat (forced UNDER), the two cases with no recorded baseline for this CPU"
+  "verdict column reads over/under/in/none: validate NewOrderSingle (forced OVER), validate Heartbeat (forced UNDER), validate TestRequest, w2w bytes (forced IN BAND), validate NewOrderSingle, w2w bytes (no recorded baseline for this CPU)"
+same "1" "$(printf '%s\n' "$extracted" | cut -f5 | grep -c '^in$')" \
+  "exactly one in-band row: a row whose tail ends at ']' with no mark is a measurement, and the three-space anchor is what keeps it one"
+same "w1	7	validate TestRequest, w2w bytes	311.4	in" \
+  "$(printf '%s\n' "$extracted" | awk -F'\t' '$5=="in"')" \
+  "the in-band row's whole record: name with its comma kept, figure taken from the token before ' ns/op', verdict 'in'"
 
 echo
 echo "=== summary"
