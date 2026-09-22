@@ -16,7 +16,12 @@
   metacharacter) is added. Still no decision changes. **Third pass, after the senior review
   (`f537e4d`)**: the second pass's edit had dropped the R3 bullet and left a `sed` artefact in
   its place — restored; the two parentheticals saying the script header calls G6 `G2b` are
-  deleted, the rename having landed in `f537e4d` itself.
+  deleted, the rename having landed in `f537e4d` itself. **Fourth pass, after `83b53e3`
+  closed the review's script findings**: R3 says which `--` it reads (F10); decision 3 records
+  how "never calls `date`" became true (`utc_stamp`, F8) and gains the knob's validation rule
+  with what feeding `$(( ))` really did (F9 — including two claims the manager's brief got
+  wrong and measurement corrected); **G7** (a wrapper taking its workload as an argument) is
+  added. Still no decision changes.
 - **Approved by**: nobody yet. Written by the architect for the plan
   [the-detector-and-the-campaign-preconditions](../plans/2026-09-22-the-detector-and-the-campaign-preconditions.md),
   step 0; the owner approved the *scope* of that plan on 2026-09-22, not this text.
@@ -195,8 +200,12 @@ advisory string alike (fact 3: over-reading is the safe direction) — is read b
   word `perf` passes R1 and the workload after `--` is what root could not find. It also
   catches `sudo sh -c 'cargo …'` and `sudo env PATH=$PATH cargo …` (which does not work under
   `secure_path` anyway).
-- **R3 — `perf`'s workload.** When the command word is `perf` and a `--` token follows, the
-  token after `--` is a command word too and must pass R1.
+- **R3 — `perf`'s workload.** When the command word is `perf` and a `--` token follows **the
+  command word** — searched from after the command word's position, **never the first `--` on
+  the line**, because `sudo` has a `--` of its own: `sudo -- perf record … -- mytool` handed the
+  first R3 implementation `sudo`'s terminator, `perf` passed R1 off ALLOW, and `mytool` was
+  never judged (`[measured 2026-09-22, manager]`; fixed at `83b53e3`, F10, that line now reads
+  `FAIL R1` naming `mytool`) — the token after that `--` is a command word too and must pass R1.
 - **What a token is** *(added in the revision)*: the logical line is split on whitespace
   **and on every `'` and `"`**, each quote replaced by a space, never deleted (`67e2898`,
   `unfuse_quotes`, used at all three tokenisation sites). A shell quote is a delimiter in
@@ -261,7 +270,17 @@ unfusing `|` makes `sudo grep -E "cargo|rustc" /etc/x` tokenise to `grep -E  car
 /etc/x`, and R2 would then flag a grep pattern list as a toolchain invocation (verified by
 applying the substitution by hand) — the false positive that gets a gate switched off. Quote
 characters carry no such risk; metacharacters do. Pinned by an `ok`-expecting fixture in
-`check-sudo-verdicts.sh`, so it is a measured statement, not prose. Open by decision.
+`check-sudo-verdicts.sh`, so it is a measured statement, not prose. Open by decision. **G7**
+*(added in the revision, `83b53e3`)*: an ALLOW-listed **wrapper that takes its workload as an
+ordinary argument**, with no `--` — `sudo -n chrt -f 90 mytool`, `sudo -n taskset -c 3 mytool`,
+`nice -n -20 mytool` — hides an unresolvable **name** from R1, because R3 is keyed on `perf`,
+the only wrapper in this project's lines that separates its workload with `--`. Reaching it
+would need each tool's option **arity** (`-c 3`, `-f 90`, `-n -20` each carry a value, and `3`
+and `90` are on no ALLOW list) — the per-tool knowledge G2 already declines to keep, and
+guessing it turns ordinary arguments into findings. R2 still reaches the six toolchain names
+through every wrapper (`… -- taskset -c 3 cargo bench` → `FAIL R2 cargo`, verified), so the
+residue is **unlisted names only**. ALLOW was not widened. Pinned by fixtures in both
+directions in `check-sudo-verdicts.sh`. Open by decision.
 
 ### 3. `check-machine.sh` gains a row `no timer due`, a `FAIL` inside a declared window, default 12 hours
 
@@ -273,7 +292,14 @@ characters carry no such risk; metacharacters do. Pinned by an `ok`-expecting fi
   (elapsed and its service possibly still running; the quiet row's territory, but
   over-reading is the safe direction). The value names every such unit with its next firing **in UTC** and how far
   off it is (`in 12h00m`, `overdue 5m00s`) — UTC, not the reader's local time *(revised to
-  match `99e8564`)*: `timers_verdict` takes `now` as an argument and never calls `date`, which
+  match `99e8564`)*: `timers_verdict` takes `now` as an argument and never calls `date` — true as written since
+  `83b53e3`: the stamp itself is a pure `utc_stamp` in `awk` (Howard Hinnant's
+  `civil_from_days`), cross-checked against GNU `date -u -d @N` on 3 015 values with no
+  mismatch and spot-checked by the manager at epoch 0, `2000-02-29`, `2038-01-19`, `2100-03-01`
+  and both timer stamps; it replaced a `date -u -d @N` call, which is a GNU extension a BSD
+  `date` rejects, and whose `epoch <secs>` fallback was a **second output shape no fixture
+  pinned** — two `timers_verdict` assertions would have gone red on the Mac mini while Ubuntu
+  CI stayed green and said nothing — which
   is what lets `check-machine-verdicts.sh` pin it with a fixed epoch; a formatter keyed to the
   test runner's timezone cannot be pinned by an exact-match assertion and would push that test
   down to a substring check, and the operationally useful part — how far off — is
@@ -289,6 +315,22 @@ characters carry no such risk; metacharacters do. Pinned by an `ok`-expecting fi
   every verdict, `PASS` included, so a reader sees what it could *not* see: a timer at 13 h
   on a 14-hour campaign. A campaign declares its own window (`FIXBOLT_TIMER_WINDOW=14`); the
   default is for a check nobody parametrised.
+- **The knob is validated, not fed to `$(( ))`** *(added in the revision, `83b53e3`, F9)*: a
+  pure `timer_window_sec` accepts a non-negative decimal (`12`, `0.5`, `.5`, `12.`, `0`) and
+  refuses anything else with **one `UNKNOWN` row naming the knob**; an empty value is the
+  default (`${VAR:-12}` treats empty as unset — measured, `timer_window_sec ''` is refused and
+  the caller reads 12). Before this, `' '` and `-1` were accepted **silently** as a 0 s and a
+  −3 600 s window, and a fraction reached `$(( ))`, which cannot parse it — and what that did
+  is the reason the rule exists: on bash 5.2.21 a failing `$(( ))` inside an `if` abandons the
+  block at the failing line, so the `row` call after it never runs, the script continues past
+  the `if`, every later row prints, **and the script exits 0 with the `no timer due` row simply
+  absent**. `ab-rotation.sh`'s preflight greps for that row; an absent row matched no case, so
+  a bad knob let a campaign start with **no timer check and no message at all**. A gate that
+  vanishes is worse than one that fails, because nothing reads a row that is not there —
+  [reference/a-shell-error-inside-an-if-drops-the-row-and-the-report-exits-zero](../reference/a-shell-error-inside-an-if-drops-the-row-and-the-report-exits-zero.md).
+  The preflight now prints `timers: unknown — FIXBOLT_TIMER_WINDOW='abc' is not a number of
+  hours …; not refusing`. Since fractions are accepted, the knob's documented unit, hours, is
+  unchanged everywhere.
 - **`ab-rotation.sh` refuses to start** (preflight, before round 1, the same shape as its
   `/tmp` refusal) when that row reads `FAIL`, printing the units and the fix lines. Per round
   it still reads only the quiet row: a timer that fires anyway is caught there, per arm, as
