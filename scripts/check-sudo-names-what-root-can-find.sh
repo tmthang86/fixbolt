@@ -74,7 +74,7 @@
 #        flag ordinary arguments — `echo` is not on ALLOW and never will be.
 #        So an unresolvable NAME inside a body that is not one of R2's six
 #        toolchain names still passes unseen.
-#   G2b — a target word fused to a shell METACHARACTER rather than a quote
+#   G6 — a target word fused to a shell METACHARACTER rather than a quote
 #        is still unread, because R2's match is exact: `'true;cargo bench'`
 #        tokenises `true;cargo`, and `'cd /x&&cargo bench'` tokenises
 #        `/x&&cargo`, which is additionally skipped for carrying a `/`.
@@ -83,9 +83,7 @@
 #        also makes R2 read a pattern list (`grep -E "cargo|rustc"`) as a
 #        finding, and a gate with a false positive gets switched off within
 #        a week. Pinned by a fixture in check-sudo-verdicts.sh, so it is a
-#        measured statement and not a comment. (Named G2b rather than G6:
-#        ADR-0093's gap list stops at G5 and is the architect's to
-#        renumber.)
+#        measured statement and not a comment.
 #   G3 — prose (a plan cell, a comment) is not a script this gate scans;
 #        decision 1 is what moves a driver into a file this gate reads.
 #   G4 — ALLOW says nothing about whether the package is actually installed
@@ -242,7 +240,7 @@ sudo_rests() {
 # `-c'cargo bench'` reachable (it becomes `-c cargo bench`) instead of
 # `-ccargo`. What this does NOT reach: a token fused to a shell
 # METACHARACTER with no quote and no space — `sh -c 'true;cargo bench'`
-# tokenises `true;cargo`, which R2's exact match does not read. See gap G2b
+# tokenises `true;cargo`, which R2's exact match does not read. See gap G6
 # in the KNOWN GAPS note at the top for why `;`, `&` and `|` are NOT
 # unfused as well.
 unfuse_quotes() {

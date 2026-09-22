@@ -1283,6 +1283,15 @@ eight targets and the case is not measured in the same state. Back-to-back runs 
 previous suite inside `check-machine.sh`'s one-second window and disqualify their own
 measurements.
 
+`scripts/ab-rotation.sh` reads a suite's real exit status rather than the presence of output
+([ADR-0092](decisions/ADR-0092-the-rotation-driver-reads-a-row-by-its-shape-and-a-panicking-finish-is-a-verdict-not-a-lost-round.md)):
+a bench binary that panics because one of its own cases is over the machine's recorded baseline
+still carries its measurement rows, so `OVER` is its own state — the round stays `complete` — and
+is kept apart from `FAILED`, an exit that carries no rows at all, which drops the round the way a
+busy machine does. `--reextract <evidence-dir>` rebuilds `runs.reextracted.txt` from a round's
+raw captures under `<evidence-dir>/raw/` without re-running anything and without ever writing
+over `runs.txt`.
+
 ## 7. Build order
 
 Each step was a plan, a branch and a merge. **Steps 1–8 are complete as of 2026-09-02. Step 9 is

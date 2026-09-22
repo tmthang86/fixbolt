@@ -47,6 +47,25 @@ only "run 3/21 done" would have produced a complete, plausible, empty evidence s
   after `sudo`.** Give an absolute path to a binary that exists, or arrange not to need root.
 * On this desk root is needed at all only because `/proc/sys/kernel/perf_event_paranoid` is `4`.
 
+## Guarded by
+
+`scripts/check-sudo-names-what-root-can-find.sh`
+([ADR-0093](../decisions/ADR-0093-a-campaign-driver-is-committed-sudo-in-a-committed-script-names-what-root-can-find-and-a-timer-due-inside-the-window-is-a-fail-row.md)
+decision 2), since `ebe0525`: every `sudo` line in `scripts/` is read, tokenised, and judged —
+**R2** fails outright on a bare `cargo`, `cargo-*`, `rustc`, `rustup`, `rustdoc` or `w2w` token
+handed to root by name; **R1** requires every other bare command to carry a `/` or sit on a
+fixed `ALLOW` list; **R3** lets a `perf … -- <workload>` line's token after `--` stand in for the
+command R1/R2 judge, which is the exact shape of this page's trap. `scripts/check-sudo-verdicts.sh`
+pins boot D's own line as a fixture — `sudo -n perf record -e cycles -F 4999 -o d.data -- cargo
+bench -q -p fixbolt-engine --bench density` reads `FAIL R2 cargo` — and the two scripts are read
+side by side in CI. `unfuse_quotes` (`67e2898`) turns a quote-fused word into one R2 can read
+(`sudo sh -c 'cargo bench -q'` now also reads `FAIL R2 cargo`, where it used to read `ok`), and
+fixed a false positive with the same cause (`sudo 'tee' /sys/x` no longer reads `FAIL R1`).
+**What is still not guarded**: a word fused to a shell metacharacter — `&`, `;` or `|` — is
+missed on purpose (`sudo sh -c 'true;cargo bench'` reads `ok`), because unfusing `|` would make
+`sudo grep -E "cargo|rustc" /etc/x` tokenise as a toolchain invocation and turn a legitimate
+line red.
+
 ## What replaced it here
 
 `target/boot-d-evidence/run-d2.sh` runs the **prebuilt bench binary** named in

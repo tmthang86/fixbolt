@@ -225,7 +225,9 @@ hôm nay tên là `lint-config`), verdict test đứng **cạnh `check-machine-v
 timer (quyết định 3)*:
 `check-machine.sh` thêm hàng `no timer due`: `systemctl list-timers --all --output=json` → `jq`
 → hàm thuần `timers_verdict <now_usec> <window_sec> <json>`; **FAIL** khi có `next ≤ now +
-window` (kể cả `next` đã qua), nêu tên unit + giờ địa phương + `left`, fix
+window` (kể cả `next` đã qua), nêu tên unit + giờ nổ **theo UTC** + còn bao lâu (`in 12h00m` /
+`overdue 5m00s`; UTC chứ không phải giờ địa phương — hàm nhận `now` làm tham số, không gọi `date`,
+nên test ghim được bằng một epoch cố định; xem ADR-0093 quyết định 3, sửa lần hai), fix
 `sudo -n systemctl stop <unit>` (*stop, không disable*); **UNKNOWN** khi không có `systemctl`,
 không tới PID 1, hoặc thiếu `jq`; cửa sổ `FIXBOLT_TIMER_WINDOW` (giờ), **mặc định 12**, in ra ở
 mọi verdict. `ab-rotation.sh` preflight **từ chối chạy** khi hàng này FAIL (hình như từ chối
@@ -536,6 +538,13 @@ ADR-0093 sửa tại chỗ (còn `Proposed`, `CLAUDE.md` §5): thêm **G5**, và
 - *Gate đóng bước*: hai script xanh; `shellcheck -S info` sạch; `check-scratch-fixtures.sh` xanh.
 - ADR-0093 G5 ghi phương án này là *đề xuất*, không phải đã đóng; bước 3b đóng nó. Nếu bước 3b
   không chạy trong PR này, G5 ở lại trong ADR đúng như đang viết và `STATUS.md` hàng 98 nói rõ.
+  **Đã đóng tại `9e33aa9`** — cả hai chiều được đọc (xem *Nhật ký*); ADR-0093 G5 ghi "closed".
+- **Sau 3b, câu "G2 untested" của *Sửa 2* hoá ra sai**: R2 **không** tới thân `sh -c` khi dấu nháy
+  dính vào từ (`sudo sh -c 'cargo bench -q'` → ok), và R1 gắn cờ dòng sạch (`sudo 'tee' /sys/x` →
+  FAIL R1) — một lỗi tokenise chung cho cả ba luật, sửa tại `67e2898`. ADR-0093 sửa lần hai trong
+  cùng khối *Revised*: G2 nửa đầu **thay**, không làm mềm; thêm định nghĩa token; **G6** (từ dính
+  `&` `;` `|`, header script gọi là `G2b` — cần đổi tên trong script cho khớp, việc của developer);
+  quyết định 3 nói **UTC**.
 
 ## Nhật ký giao hàng
 
@@ -544,3 +553,28 @@ ADR-0093 sửa tại chỗ (còn `Proposed`, `CLAUDE.md` §5): thêm **G5**, và
 | Bước | Commit | Gate và output (trích) | Chưa làm |
 |---|---|---|---|
 | 0 | `b93bbf7` | ADR-0092/0093/0094 viết. Manager chạy lại gate **tại chính commit đóng**, đọc output: `python3 scripts/check-links.py` → `no dead internal links`, 2632 link, EXIT=0; `scripts/check-adr-numbers.sh` → `ok - 92 files seen, 92 ADRs, 92 distinct numbers, 92 H1s checked`, EXIT=0. Mốc cây sạch: `cargo test --all` → **exit 0 của `cargo`**, 127 suite `ok`, **839 passed**, 0 `FAILED`; `cargo test --no-default-features` → exit 0, **834 passed**. **CI xanh 14 job / 14 trên `b93bbf7`: run [`35696241608`](https://github.com/tmthang86/fixbolt/actions/runs/35696241608)** — `interop`, `bench`, `deny` trong số đó; không job nào khác `success`. PR [#91](https://github.com/tmthang86/fixbolt/pull/91) draft. Bốn sự kiện manager tự đo (hình dạng dòng báo cáo của harness; `set -uo pipefail` không đọc `$?`; sáu dòng `sudo` trong `scripts/` đều là chuỗi lời khuyên; bẫy sinh ra ở ô D2 của plan boot D) nằm ở *Những gì đã biết chắc* | Kế hoạch **chưa được duyệt** — không bước nào sau 0 được xây. Một bẫy manager tự sập chưa có trang `docs/reference/`: `cargo test --all \| tail -60` rồi đọc `$?` (status của `tail`) — §7 đã gọi tên sẵn, vẫn xảy ra; **không** thuộc phạm vi kế hoạch này, cần chủ dự án quyết có mở việc riêng không |
+| 1 | `854fbbb` | `check-ab-rotation.sh` → `pass 15 fail 0`; `shellcheck -S info` hai file → không output, exit 0; `git diff --exit-code benches/baselines.tsv` → sạch. Manager chạy tay trên fixture chụp thật (binary `validate-56b06784da3bc3fc`, sha `4593d071…`, CPU `Intel(R) Xeon(R) Processor @ 2.80GHz`): awk cũ → **6 hàng từ 4 phép đo**, hai hàng ma `cases under their baseline: 1 validate Heartbeat:` 246.1 và `validate NewOrderSingle:` 1219.3; `ab_extract` → 4 hàng `over/under/none/none`. Đảo ngược 1 `want [4] got [6]` **đúng dự đoán**; đảo ngược 2 đọc **`got [1]` trong khi dự đoán `[2]`** — người xây báo số thật | Fixture **không có hàng in-band** — hai mục của kế hoạch nói hai điều (→ *Sửa 1*, `44254b8`) |
+| *Sửa 1* | `44254b8` | `check-links.py`, `check-adr-numbers.sh` xanh | Chỉ sửa kế hoạch; fixture chụp lại ở hàng dưới |
+| 1 (chụp lại) | `85262e4` | `check-ab-rotation.sh` → `pass 17 fail 0`; `git diff --exit-code scripts/ab-rotation.sh` → sạch — **lỗ phủ, không phải bug**: `ab_extract` đọc đúng hàng in-band thật `validate TestRequest, w2w bytes  311.4 ns/op   baseline 309.6 x1.35 = [229.3, 418.0]`; cột verdict `over/under/in/none`. Đảo ngược 2 nay `want [4] got [0]`, `pass 13 fail 4`. **Con số `1` của đảo ngược trước là `wc -l` đếm chuỗi rỗng thành 1 — số thật là 0** (`printf '%s\n' "" \| wc -l` → 1; `printf '%s' "" \| grep -c .` → 0). Hai probe cho thấy `got [2]` **không thể** đạt bằng bất kỳ cách nới mỏ neo nào (nới hai dấu cách → 4; đòi mark → 3) | Trang tham chiếu + mệnh đề trong *Sửa 1* → `ee26862` |
+| *Bẫy `wc -l`* | `ee26862` | `check-links.py`, `check-adr-numbers.sh` xanh; manager đọc lại ba site tải trọng (`w2w-baseline.sh:578` — sống nhờ `else` của `-z`; `check-no-optional-deps.sh:162` — nhờ `head -1 … \|\| continue`; `check-sudo-verdicts.sh:101,121` — pipe thẳng) | Không script nào đổi |
+| 3 | `ebe0525` | Gate → `ok — 31 scripts scanned, 17 sudo lines read, 0 findings` (M = 17 đúng kiểm kê: 6 + 8 + 1 + 1 + 1); `check-sudo-verdicts.sh` → `pass 16 fail 0`; `check-scratch-fixtures.sh` → `ok — 32 scripts`; `shellcheck` sạch; `ci.yml` YAML OK; `check-ab-rotation.sh` → `pass 17` **nay chạy trong CI**. Đỏ trước xanh: R2/R3 stub → `want [FAIL R2 cargo] got [ok]`; file `target/check-sudo/` cho đủ ba câu FAIL nguyên văn. Hai bất ngờ người xây tự bắt: dấu gạch nối là ranh giới từ giả (`check-sudo` đọc thành `sudo`), gate đọc chính câu FAIL của nó | Kế hoạch gọi **sai job CI** (`gates` ≠ `lint-config`, → *Sửa 2*); **G2 không có fixture**; một file bị loại khỏi phạm vi (G5, → 3b) |
+| *Sửa 2* | `ba6bf04` | `check-links.py`, `check-adr-numbers.sh` xanh | ADR-0093 sửa tại chỗ: G5 thêm, G2 "untested" — **câu đó sai, xem `67e2898`** |
+| 3b | `9e33aa9` | Gate → `ok — 32 scripts scanned, 25 sudo lines read, 11 fixture lines skipped by marker, 0 findings` (N 31 → 32); `check-sudo-verdicts.sh` → `pass 20 fail 0`; `check-scratch-fixtures.sh` ok; `shellcheck` sạch. Hai chiều: dòng xấu **không dấu** thêm vào file test → `FAIL — scripts/check-sudo-verdicts.sh:182: sudo hands 'cargo' …`; helper dấu đỏ trước khi có: `want [skip] got []` | **Mở, manager tái hiện**: `sudo sh -c 'cargo bench -q'` → `ok` (false negative); người xây **từ chối** đổi fixture sang cách viết có dấu cách đầu để qua — đúng §10 → `67e2898` |
+| 2 | `c320b7a` | `check-ab-rotation.sh` → `pass 31 fail 0`; `shellcheck` sạch; `baselines.tsv` sạch. Manager tự chạy đảo ngược (`ab_suite_verdict` → `echo ok`) → `pass 25 fail 6`, đúng `want [1 2] got [1 2 3]` + năm assert đơn. Ba rehearsal thật khớp *Cách kiểm chứng*: k=1 `exit 0 rows 6 … ok`, `over baseline: none`; k=2 `exit 101 rows 6 over 1 nobase 5  OVER`, vòng `complete`, cột `1/1`; k=3 `exit 1 rows 0 … FAILED`, `round 1 incomplete`. Dự đoán `got [?]` — **thật `got [+9.5%]`** (trước khi có cột, `$NF` đọc `diff%`) | Không `wc -l` nào còn trong file. Container dùng chung: 27–33 % busy loại arm hai lần ở k=3 — ngưỡng 3 % làm việc của nó |
+| 4 | `99e8564` | `check-machine-verdicts.sh` → `pass 41 fail 0`; `check-links.py` xanh; hàng trên container nguyên văn: `? ? ?  no timer due   cannot reach PID 1 (…) [window 12h]`; driver: `timers: unknown — … not refusing`; `unknown` 5 → 6, verdict không đổi. Dự đoán `got [PASS]` — **thật `got []`** ×4 (hàm chưa tồn tại). **UTC, không phải giờ địa phương** — người xây giữ, ADR-0093 sửa theo | Nhánh FAIL chỉ chứng minh bằng fixture (không có PID 1 ở đây); hai cảnh báo shellcheck **có sẵn** (SC2317, SC1091), báo không sửa |
+| 3c (tokeniser) | `67e2898` | `check-sudo-verdicts.sh` → `pass 34 fail 0`; gate → `ok — 32 scripts, 32 sudo lines, 19 fixture lines skipped, 0 findings`; `check-scratch-fixtures.sh` ok; `shellcheck` năm file sạch. Trước sửa, manager đo: `sudo sh -c 'cargo bench -q'` → ok, `sudo nice -n -20 'cargo' bench` → ok (**false negative**), `sudo 'tee' /sys/x` → FAIL R1 (**false positive**, senior dev tìm ra). Một nguyên nhân: `read -ra` để dấu nháy dính vào từ. Sửa: `unfuse_quotes` (thay bằng dấu cách, không xoá) ở cả ba chỗ tokenise; bốn đảo ngược, manager tự chạy một: `pass 33 fail 1` đúng `want [ok] got [FAIL R1]`. Dự đoán **mười** đỏ — **thật bảy** (ba fixture cũ không phụ thuộc) | **G6** mở theo quyết định: từ dính `&` `;` `\|` không đọc (`'true;cargo bench'` → ok), vì tách `\|` làm `grep -E "cargo\|rustc"` thành finding; ghim bằng fixture chờ `ok`. ADR-0093 sửa lần hai |
+| 5 | — | *(đang xây)* | — |
+
+**Hình dạng của cả kế hoạch này, đọc từ bảng trên** — bốn điều đáng giữ lại:
+
+1. **Năm con số dự đoán, bốn sai, và người xây báo số thật cả năm lần**: `got [6]` (đúng);
+   `got [1]` thay vì `[2]` (và chính `1` cũng là `wc -l` nói dối, thật là 0); `got [+9.5%]` thay vì
+   `[?]`; `got []` thay vì `[PASS]`; **bảy** đỏ thay vì mười. Ba trong năm dẫn tới một lỗi thật
+   (hàng in-band thiếu, rồi `wc -l`; `[+9.5%]` và `[]` chỉ là dự đoán sai, không phải lỗi). Câu FAIL
+   viết trước rồi **so** là thứ bắt được chúng, không phải test xanh.
+2. **Kế hoạch tự mâu thuẫn hai lần**: hai mục nói hai điều về một fixture (*Sửa 1*); lệnh CI gọi
+   một job không chạy step nó nêu (*Sửa 2*). Cả hai do người xây phát hiện khi **làm theo đúng
+   chữ**, và báo lên thay vì tự sửa.
+3. **G5 do manager tìm ra khi kiểm chứng bước 3**, không phải do review.
+4. **False positive của R1 do senior developer tìm ra khi sửa false negative của R2** — cùng một
+   nguyên nhân, hai dấu; nửa nguy hiểm hơn là nửa không ai báo.

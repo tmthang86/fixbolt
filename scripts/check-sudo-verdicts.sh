@@ -163,7 +163,7 @@ same "FAIL R2 cargo" "$(sudo_verdict "sudo sh -c'cargo bench -q'")" \
 same "ok" "$(sudo_verdict "sudo -n perf record -o d.data -- 'chrt' -f 80 /abs/bin/density")" \
   "R3: a quoted, ALLOW-listed workload after -- is not a finding"
 
-# The gap that REMAINS (gap G2b in the gate's header), pinned so it is a
+# The gap that REMAINS (gap G6 in the gate's header), pinned so it is a
 # measured statement and not a claim in a comment: a target word fused to a
 # shell METACHARACTER, with no quote and no space, is still missed — R2's
 # match is exact, and `/x&&cargo` is skipped for its `/` besides. Quote
