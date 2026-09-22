@@ -221,6 +221,17 @@ Held by — **to be written in step 4**:
   proven* until paid. The top-level walk already re-opens each group from the flat index;
   the descent adds a `group_members` walk and a `group_delimiter` lookup per member per
   entry, on the same path ADR-0085 already calls quadratic.
+
+  `[measured 2026-09-22, boot D step D4 — a note, not a revision]` **Measured on the §9 desk
+  and still not attributable.** `validate TradeCaptureReport (33 groups)` reads **82 071.1
+  ns/op** over n = 20 on `main` (`76e53cb`, `fix50sp2`, `pass 16 fail 0 unknown 0`), against
+  **73 182.8** on an arm with the descent removed — a difference of 8 888.3 ns, 10.83%. The
+  experiment was built so that four group-free control cases would agree within 2% and license
+  that attribution; **three of them moved 2.9–5.8%**, so part of the difference is the other
+  binary's layout and this measurement cannot say how much. The cost stays owed in `STATUS.md`
+  *Not proven*; what is now known is the **magnitude on this desk**, and that an isolating
+  experiment has still to be designed.
+  [reference/measured-costs.md](../reference/measured-costs.md) *Boot D … The ADR-0086 descent band*.
 - **Recursion in a pure session layer, bounded only by a constant a test must hold.**
   `MAX_GROUP_NESTING = 8` is a chosen number. If
   `the_generated_tables_never_nest_deeper_than_the_walk_goes` is never written, or a

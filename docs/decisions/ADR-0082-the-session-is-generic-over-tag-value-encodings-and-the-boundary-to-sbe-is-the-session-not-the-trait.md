@@ -136,6 +136,16 @@ that `Session<E>` could be written with `E: Encoding` and `E::Dict: Tables` alon
   with the equality that failed named in the message.
 - No hot-path cost is added and none has to be re-measured beyond what ADR-0079 decision 5
   already requires of PR A.
+
+  `[measured 2026-09-22, boot D step D4 — a note, not a revision]` **That sentence is wrong as
+  written, and the measurement it invited is what shows it.** ADR-0079 decision 5's own test —
+  `parse`, `serialize` and the counting benches — passes handsomely: those cases move **0.35% or
+  less** and the allocation counters read 0. But the A-desk rotation covers the engine turn too,
+  and `w0` `ece17e7` → `wa` `6fbe851` over n = 20 per arm reads **+4.14…+5.11% by session count,
+  +3.56…+4.25% by ring size, +2.16% on the admin turn**. Every case is inside its ADR-0031 band,
+  so PR A closes on the rule it was given; what is not true is that no hot-path cost was added.
+  `validate` moved the other way, 0.5–5.9% faster.
+  [reference/measured-costs.md](../reference/measured-costs.md) *Boot D … A-desk*.
 - `sbe` stays zero-dependency (no `dict`), and C4 loses a dependency on A2.
 
 **Bad — and accepted**

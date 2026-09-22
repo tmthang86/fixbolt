@@ -3750,6 +3750,316 @@ rebuild) ended.
   **`[measured 2026-09-18]` answered by boot C, next section: −12.7 ‖ −13.0% on the application
   path at N = 16, +1.9 ‖ +1.7% on the administrative one, both reproduced.**
 
+## Boot D, 2026-09-21/22: one rotation, one control, and a band that was never taken
+
+`[measured 2026-09-21 23:36 — 2026-09-22 11:46]`
+[plans/2026-09-20-boot-d.md](../plans/2026-09-20-boot-d.md), steps D0, D2, D3, D4, D5. **D1 was
+not run** — the owner's answer to Q1 was no, because its `nft flush ruleset` arm would drop a
+remote session. Raw output lives on the desk under `target/boot-d-evidence/` (gitignored;
+`/tmp` is tmpfs here): `d4/`, `d4b/` and the merged `d4m/` for the rotation, `d2-*.data`/`.stat`
+for item 93, `d3-*.txt`, `d5-*` — 921 MB, 19 `perf.data` files, all of which the post-boot
+analysis still needs.
+
+### Settings in force for every figure below
+
+- Machine: the §9 desktop, AMD Ryzen 7 3700X, kernel `7.0.0-31-generic`, the boot-C grub line
+  restored from `/etc/default/grub.fixbolt-backup-20260919-bootc` — `isolcpus=6,7,14,15
+  rcu_nocbs=6,7,14,15 processor.max_cstate=1`, no `nohz_full`, **mitigations in force**,
+  `fixbolt-machine on`, `rx-usecs 0`, IRQs 85–89 on cpu4, EEE off.
+  `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → **`pass 16 fail 0 unknown 0`**, read before the
+  first number and again at 07:00 before the rotation resumed.
+- **Nothing was compiled during the boot.** Every arm is a git worktree built before the reboot
+  with `bench.sh`'s own `RUSTFLAGS` (`-C llvm-args=-align-all-functions=6`, ADR-0049) and its own
+  feature map; `scripts/ab-rotation.sh` re-hashes each binary against `MANIFEST.txt` and refuses a
+  mismatch rather than rebuilding it (ADR-0090 decision 2). All 17 binaries hashed the same after
+  20 rounds as before round 1.
+- The first bench run after the reboot was **discarded** before any of this, per the desk's rule.
+
+| arm | commit | features | what it is |
+|---|---|---|---|
+| `w0` | `ece17e7` | — | before phase-2 PR A |
+| `wa` | `6fbe851` | — | phase-2 PR A (`Session` generic over the encoding, ADR-0082) |
+| `w1` | `76e53cb` | — | `main` at the boot |
+| `w1s` | `76e53cb` | `fix50sp2` | `main`, the shared CONTROL |
+| `w2` | `1825d8c` | — | arm `ab/parse-utc-fast-path` |
+| `w3` | `d6f79dc` | `fix50sp2` | arm `ab/validate-no-descent` (deliberately broken; its two red tests are the point) |
+
+Twenty rounds, round-robin, order reversed on alternate rounds, one quiet row per arm per round,
+8 s between arms. Every comparison below is over **n = 20** and every arm shares that n.
+
+### The rotation lost eight rounds to a systemd timer, and re-ran them
+
+Rounds 1–12 ran 23:36 → 06:50 with every arm at busy 0–1%. At **06:51:31
+`apt-daily-upgrade.service` started**; it finished at 06:53:32 but `packagekit.service` stayed up
+until **06:58:34**, and across that window the quiet row read **7% to 24%**. Round 13's first three
+arms (`w0`, `wa`, `w1`) had already run clean before the load arrived and were disqualified **as a
+round**, not individually — which is the rule that keeps every arm's `n` equal; from round 14 every
+arm read over the limit directly. No row from rounds 13–20 of that first pass reaches any summary.
+Captured after the fact into `target/boot-d-evidence/d4-timer-evidence.txt` (`journalctl` for the
+window, and `systemctl list-timers --all`), because a cause read off a live terminal and not
+written down is not evidence. The package timers were stopped (`stop`, not `disable`), the checklist was
+re-read at `pass 16 fail 0 unknown 0`, and rounds 13–20 were re-run 07:00 → 11:40 into a second
+evidence directory and renumbered on merge. **Rounds 13–20 therefore sit in a different part of the
+machine's day than rounds 1–12** — the rotation's design is what makes that tolerable, since every
+arm shares every round, but it is recorded rather than smoothed over.
+[a-quiet-machine-check-cannot-see-a-timer-that-has-not-fired](a-quiet-machine-check-cannot-see-a-timer-that-has-not-fired.md).
+
+### `main` is over its recorded baselines on this desk, and the harness said so 20 times a round
+
+**This is the boot's largest result and it was nearly missed.** It is not a comparison between
+arms; it is each arm against `benches/baselines.tsv`, which is what `scripts/bench.sh --strict`
+checks and what CI's `bench` job would check if it ran on this hardware.
+
+The bench harness **panics** when a case is over its band, and it did so in the rotation's raw
+output in every round of the two arms that carry the boot's `main` (`76e53cb`):
+
+```text
+$ sed -n '2,4p;14,15p' target/boot-d-evidence/d4/raw/1-w1s-fixbolt-session_validate.txt
+validate NewOrderSingle              1024.3 ns/op   baseline 882.1 x1.10 = [801.9, 970.3]  OVER BASELINE
+validate Heartbeat                    197.1 ns/op   baseline 169.5 x1.10 = [154.1, 186.5]  OVER BASELINE
+validate TestRequest, w2w bytes       247.2 ns/op   baseline 218.4 x1.10 = [198.5, 240.2]  OVER BASELINE
+thread 'main' (59080) panicked at crates/session/benches/../../codec/benches/harness.rs:405:9:
+3 of 6 case(s) over the machine baseline:
+```
+
+(lines 5–13 are the four cases that passed and the two with no baseline; the two ranges are one
+command so the quote can be re-run exactly as written)
+
+Eight medians over n = 20 — five distinct `benches/baselines.tsv` lines, three of them breached by both arms — against the line each case carries. (Medians here are computed from `d4m/runs.txt`; `--summary` truncates to one decimal, so the same `validate Heartbeat` median prints **195.6** in the ADR-0086 table below and **195.65** here.)
+
+| arm | case | median | recorded baseline | ceiling (×1.10) | × baseline |
+|---|---|---|---|---|---|
+| `w1s` (`main`, `fix50sp2`) | validate NewOrderSingle | 1 023.5 | 882.1 | 970.3 | **1.160** |
+| `w1s` | validate Heartbeat | 195.65 | 169.5 | 186.5 | **1.154** |
+| `w1s` | validate TestRequest, w2w bytes | 248.1 | 218.4 | 240.2 | **1.136** |
+| `w1` (`main`, no feature) | validate NewOrderSingle | 1 008.9 | 882.1 | 970.3 | **1.144** |
+| `w1` | validate TestRequest, w2w bytes | 242.4 | 218.4 | 240.2 | **1.110** |
+| `w1` | validate Heartbeat | 187.8 | 169.5 | 186.5 | **1.108** |
+| `w1` | engine turn, 1 busy, ring 4096 | 1 860.3 | 1 657.7 | 1 823.5 | **1.122** |
+| `w1` | engine turn, 1 busy, ring 64 | 1 822.2 | 1 635.5 | 1 799.1 | **1.114** |
+
+Counted over all 21 attempts of each: `w1s`'s `validate` panicked **20 of 20** qualifying rounds,
+`w1`'s `validate` **21 of 21** and `w1`'s `density` **21 of 21**. `wa` breached on 3 of 21
+`density` rounds and 1 of 21 `validate`; `w0` never. **No case anywhere read UNDER its floor.**
+
+**So `scripts/bench.sh --strict` is red on `main` on the §9 desk today**, and has been since some
+commit in the `wa`→`w1` span — which is what item 95 is about, seen from the other side. The
+`--summary` tables above compare arms and are blind to this by construction: a median is in band
+relative to *another arm* while both sit over the recorded line.
+
+Two things follow that a reader should not have to infer:
+
+* **The baselines were not re-recorded here.** ADR-0090 decision 4 reserves that for when item 93
+  concludes, and re-recording now would write today's slowdown into the line that is supposed to
+  detect it. The breach is a finding, not a licence to move the target.
+* **`w1s` breaches `validate` but almost never `density`, while `w1` breaches both.** The two are
+  the same commit and differ only in `fix50sp2`. That is recorded, not explained.
+
+### A-desk — the band ADR-0082 left empty, measured at last
+
+`w0` → `wa`, every case the two share across `parse`, `serialize`, `validate` and `density`;
+medians over n = 20, in band = within the margin of that case's `benches/baselines.tsv` row
+(1.10 unless the row says otherwise), ADR-0031.
+
+| case | `w0` | `wa` (PR A) | diff |
+|---|---|---|---|
+| engine turn, 1 busy sessions | 1 721.7 | 1 809.7 | **+5.11%** |
+| engine turn, 2 busy sessions | 3 457.3 | 3 614.8 | +4.56% |
+| engine turn, 4 busy sessions | 6 948.5 | 7 264.4 | +4.55% |
+| engine turn, 8 busy sessions | 14 042.0 | 14 628.0 | +4.17% |
+| engine turn, 16 busy sessions | 28 572.8 | 29 756.0 | +4.14% |
+| engine turn, 32 busy sessions | 58 940.7 | 61 623.2 | +4.55% |
+| engine turn, 64 busy sessions | 124 604.0 | 130 146.0 | +4.45% |
+| engine turn, 1 busy, admin | 952.5 | 973.1 | +2.16% |
+| engine turn, 1 busy, ring 64 | 1 712.8 | 1 780.8 | +3.97% |
+| engine turn, 1 busy, ring 512 | 1 706.9 | 1 779.4 | +4.25% |
+| engine turn, 1 busy, ring 4096 | 1 730.2 | 1 791.8 | +3.56% |
+| validate Heartbeat | 177.6 | 167.2 | **−5.86%** |
+| validate NewOrderSingle | 959.0 | 954.0 | −0.52% |
+| validate NewOrderSingle, w2w bytes | 992.5 | 949.8 | −4.30% |
+| validate TestRequest, w2w bytes | 228.2 | 221.6 | −2.89% |
+| parse NewOrderSingle (validated) | 121.8 | 121.8 | +0.00% |
+| parse NewOrderSingle (no checks) | 115.4 | 115.2 | −0.17% |
+| parse Heartbeat (validated) | 59.5 | 59.6 | +0.17% |
+| encode ExecutionReport (template) | 226.6 | 225.9 | −0.31% |
+| SendingTime from the cache | 5.8 | 5.8 | +0.00% |
+| SendingTime from the cache, micros | 10.0 | 10.0 | +0.00% |
+| SendingTime from the cache, nanos | 12.7 | 12.7 | +0.00% |
+
+**Twenty-two cases of twenty-two are in band, so PR A closes on the verdict its plan row named.**
+The largest move is 5.11% against a 1.10 margin, i.e. the worst case sits **about half way to the
+ceiling**. Dispersion over the twenty runs: `max/median` is **1.000–1.028 on `w0`** and
+**1.000–1.072 on `wa`**. `wa`'s four widest cases are `encode ExecutionReport (template)` 1.072,
+`engine turn, 1 busy, ring 512` 1.063, `ring 4096` 1.060 and `ring 64` 1.057 — so the three ring
+diffs above, all in the +3.6…+4.3% band, sit on the noisiest cases `wa` has, and `w0`'s same three
+read 1.011–1.021. The session-count diffs rest on much tighter cases (1.007–1.014 on `wa`).
+
+That is the answer to the question `STATUS.md` recorded on 2026-09-19 night — *"nothing says PR A
+did not cost the tag=value path latency"* — and the answer is not "nothing". Stated at the
+precision the table supports:
+
+* **engine turn, by session count: +4.14% to +5.11%** (1, 2, 4, 8, 16, 32, 64 busy).
+* **engine turn, by ring size: +3.56% to +4.25%** — a smaller move than the session counts, not
+  the same one.
+* **engine turn, 1 busy, admin: +2.16%** — the smallest engine-turn case of the eleven.
+* **`parse`: +0.17% or better**, three cases. **`serialize`: 0.00% on the three `SendingTime`
+  cases and −0.31% on `encode ExecutionReport (template)`** — which is a `serialize.rs` case, so
+  "`parse`/`serialize` within 0.2%" would be wrong; within **0.35%** is right.
+* **`validate`: 0.5–5.9% faster**, all four cases.
+
+In band is not free; it is in band.
+
+### The band across PRs B, C, #85 and #86 — one case outside it
+
+`wa` → `w1`, i.e. everything merged after PR A up to the boot's `main`. Same features on both
+sides (neither carries `fix50sp2`).
+
+| case | `wa` | `w1` (`main`) | diff |
+|---|---|---|---|
+| validate Heartbeat | 167.2 | 187.8 | **+12.32% — outside 1.10** |
+| validate TestRequest, w2w bytes | 221.6 | 242.4 | +9.39% |
+| validate NewOrderSingle | 954.0 | 1 008.9 | +5.75% |
+| validate NewOrderSingle, w2w bytes | 949.8 | 997.0 | +4.97% |
+| engine turn, 1 busy, admin | 973.1 | 1 010.8 | +3.87% |
+| engine turn, 1 busy, ring 4096 | 1 791.8 | 1 860.3 | +3.82% |
+| engine turn, 1 busy, ring 64 | 1 780.8 | 1 822.2 | +2.32% |
+| engine turn, 1 busy, ring 512 | 1 779.4 | 1 805.8 | +1.48% |
+| engine turn, 1 busy sessions | 1 809.7 | 1 799.1 | −0.59% |
+| engine turn, 2/4/8/16/32/64 busy | — | — | +0.29% … +0.94% |
+
+**Read the dispersion beside these numbers.** `max/median` over the twenty runs is
+**1.008–1.135 on `w1`** against 1.000–1.072 on `wa`. **Ten of `w1`'s eleven engine-turn cases read
+1.120–1.135**, where `w1s` — the same commit, one feature apart — spans only **1.008–1.025** on
+the same eleven; the eleventh, `engine turn, 1 busy, admin`, reads 1.010. The four `validate` cases, which carry this table's finding, are tight on both
+(`w1` 1.008–1.035). Why one arm's engine turn is so much noisier than the other's is **not
+explained here**; it is a reason to treat `w1`'s turn diffs as weak and its `validate` diffs as
+the result.
+
+Per the plan's verdict rule this **opens an item and does not stop the boot**: these pull requests
+are merged and none of them promised this band beforehand. The shape is worth stating — the whole
+of the movement is in the **session's dictionary pass**, not in the engine turn, which is flat to
+within 1% at every session count.
+
+### Item 93, segment (3) — the mechanism is confirmed
+
+`w1` → `w2` (`ab/parse-utc-fast-path`), the three cases the plan named, n = 20 each:
+
+| case | `w1` | `w2` | diff |
+|---|---|---|---|
+| engine turn, 1 busy sessions | 1 799.1 | 1 766.0 | **−33.1 ns (−1.84%)** |
+| validate Heartbeat | 187.8 | 189.9 | +1.12% |
+| validate NewOrderSingle | 1 008.9 | 1 009.8 | +0.09% |
+
+The rule declared before the boot: **≥ 25 ns faster on the turn confirms the mechanism**, ≤ 10 ns
+refutes it, in between is *not distinguishable*. 33.1 ns clears it, and the two control cases move
+1.1% and 0.1% — the arm changes the parse path, and the parse path is where the turn moved.
+Segment (3) of the five-step drift therefore has a named cause and a branch that fixes it. The
+other four segments still need `perf diff` over the D2 recordings.
+
+### The ADR-0086 descent band — a number, and why it is not the number
+
+`w1s` → `w3` (`ab/validate-no-descent`), both `fix50sp2`:
+
+| case | `w1s` | `w3` | diff |
+|---|---|---|---|
+| validate TradeCaptureReport (33 groups) | 82 071.1 | 73 182.8 | **−8 888.3 ns (−10.83%)** |
+| validate NewOrderSingle | 1 023.5 | 1 037.9 | +1.41% |
+| validate Heartbeat | 195.6 | 206.9 | +5.78% |
+| validate TestRequest, w2w bytes | 248.1 | 258.9 | +4.35% |
+| validate NewOrderSingle, w2w bytes | 1 010.3 | 1 039.2 | +2.86% |
+
+The plan required the four control cases — messages with no repeating group, which never enter the
+descent — to agree within **2%**, precisely so that a difference on the group case could be
+attributed to the descent rather than to code layout. **Three of the four moved 2.9–5.8%.**
+
+A fifth group-free case the plan did not name sits in the same two binaries and behaves:
+`validate NewOrderSingle (FIXT tables)` reads **1 165.9 → 1 158.8, −0.61%**. So the layout
+difference is not uniform across the arm — four cases move 1.4–5.8% one way and a fifth barely
+moves — which is the character of a layout effect rather than an argument against one, and is
+another reason this pair cannot price the descent. Dispersion is not the explanation: `max/median`
+is 1.000–1.041 across `w1s`'s 24 cases and 1.007–1.030 across `w3`'s 6. So the
+−10.83% is recorded and **is not attributable**: some of it is the descent, some of it is a
+different binary's layout, and this experiment cannot say how much. The laptop figure it was meant
+to replace stays unreplaced. Deciding what would isolate it is the architect's, not this boot's.
+
+### Item 93 — the bisect, profiled at both ends of every segment (D2)
+
+Seven worktrees, `e1`…`e7`, two `perf record` and one `perf stat` each over
+`fixbolt-engine --bench density`; 21 runs, every one at busy ≤ 3%, ~65 MB and ~1.7 M samples per
+recording and **no run reported a lost sample**. Only the recording happened in the boot; the
+`perf diff` is a desktop-line job on the files above.
+
+The `engine turn, 1 busy sessions` line each run printed, for orientation only — one run apiece,
+not a baseline:
+
+| worktree | commit | `perf stat` run | `record` 1 | `record` 2 |
+|---|---|---|---|---|
+| `e1` | `0149b26` | 1 657.9 | 1 674.7 | 1 661.8 |
+| `e2` | `792c2e7` | 1 673.1 | 1 705.9 | 1 714.5 |
+| `e3` | `28465e8` | 1 690.1 | 1 706.6 | 1 680.9 |
+| `e4` | `588b350` | 1 674.0 | 1 709.8 | 1 707.4 |
+| `e5` | `1c36406` | 1 694.1 | 1 719.2 | 1 704.8 |
+| `e6` | `f085f43` | 1 701.1 | 1 732.9 | 1 718.1 |
+| `e7` | `85460c1` | 1 726.0 | 1 741.6 | 1 739.7 |
+
+`e1` → `e7` is **+4.1% (+68.1 ns)** on the `perf stat` column, and every value is inside the
+`x1.10` band of the 2026-09-05 line. **That is not the slope C-91b measured**, and the disagreement
+is the interesting part: C-91b read `0149b26` → `85460c1` as **1 660.2 → 1 817.2, +9.5% / +157 ns**
+(below, *C-91b*), more than twice this. The per-segment shape disagrees too — C-91b put `588b350`
+at **+33 ns**, the step that crosses the 5% line, while `e4` (`588b350`) reads **1 674.0 here,
+16 ns FASTER than `e3`**. Two different days, two different procedures (C-91b: 3-run medians under
+`bench.sh`; here: one run apiece under `perf`, which itself costs something), so neither refutes the
+other and **no cause is claimed for the difference**. It does mean the D2 column cannot be quoted as
+confirming C-91b's ordering, which is what it was recorded to do; the `perf diff` over the same
+files is what will say whether the segments are where C-91b put them.
+
+### D5 — item 89, the listener cadence profiled on the engine thread
+
+`w2w`, one process, `hft`, `admin`, engine on cpu6 and client on cpu7, `--messages 400000`,
+`perf` attached to the engine tid the tool prints itself, 4 s windows; 10 of 12 runs qualified
+(two dropped on the busy row).
+
+| N | p50 median | min … max | p99 median |
+|---|---|---|---|
+| 1 | **16 250 ns** | 16 211 … 16 311 | 21 200 |
+| 16 | **16 351 ns** | 16 311 … 16 381 | 21 872 |
+
+Each median pools **five runs: two or three under `perf record` and the rest under `perf stat`**,
+which are not the same load on the machine. They are pooled because `perf`'s own cost is what D5
+is willing to pay to see the profile at all, and the two sub-sets do not separate at this
+resolution — but they are pooled, and a reader should know it. **These p50s are not published
+figures**: the plan's own *measured but not published* table lists D5's p50 there, and this section
+keeps it.
+
+`engine-ctxt voluntary 0` and `allocs 0` on every run — non-negotiables 4 and 1, read per run, not
+assumed. The gap is **101 ns, 0.62%**, against boot C's 16 070 / 16 381 and its ~1.9%; both boots
+put N = 16 above N = 1 and both put the cost far below anything that would move a decision. The
+`perf diff` for the kernel symbols in the `recvfrom`/`sendto` path is post-boot work.
+
+**The binary is not one of the manifest-pinned arms.** `w1s`'s pre-built `w2w` was compiled
+without `--features affinity` and refuses to run unpinned rather than pretending — so D5 used
+`target/release/w2w` already on the desk from before boot C (sha256 `1cbe3f0…`, built 2026-09-19
+09:18, `main` at `f81e8a4`), which pins. **That is 93 crate files behind the boot's `main`** —
+`git diff --stat f81e8a4 76e53cb -- crates/` reads `93 files changed, 18026 insertions(+),
+477 deletions(-)`, and item 95 below found `validate` 12% slower inside that same span. So these
+p50s are **not a figure for `main`**; they are two arms of one binary against each other, which is
+all item 89 asks of them. Nothing was compiled to make D5 run, and its provenance
+is a file's timestamp rather than a manifest line; that is weaker, and it is why the two boots'
+p50 figures are compared here as *tiers* rather than differenced.
+
+### What boot D did not settle
+
+- **The four remaining segments of item 93.** Only segment (3) has a cause. The `perf diff`
+  and `perf annotate` work over the D2 files has not been done, and the files live only on this
+  desk.
+- **What isolates the ADR-0086 descent.** The control cases moved, so the −10.83% is not a
+  descent figure.
+- **The `validate Heartbeat` +12.32% between PR A and `main`.** Measured, not explained, and no
+  bisect has been run over it.
+- **D1, item 51's flush arm** — not run, by the owner's decision, not by a failure.
+- **Anything about `standard` mode, TLS, or the wire.** This boot was loopback benches and one
+  `w2w` arm; ADR-0013 decision 4 applies as ever.
+
 ## Boot C, 2026-09-18: the listener cadence, N ∈ {1, 16, 256}, two procedures
 
 `[measured 2026-09-18]` step 5 of
