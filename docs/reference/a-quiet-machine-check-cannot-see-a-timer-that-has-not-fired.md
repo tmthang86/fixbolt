@@ -38,7 +38,11 @@ is the remedy.
 
 The `journalctl` window and the timer table were captured to
 `target/boot-d-evidence/d4-timer-evidence.txt` **after** the boot, because the first version of
-this page quoted a terminal that nothing had saved — a cause with no artefact behind it.
+this page quoted a terminal that nothing had saved, and then **reconstructed a `list-timers` table
+from memory that disagreed with the real one in two of its four rows** — it showed `fwupd-refresh`
+and `apt-daily` as future firings when both had already fired that morning. A page about reading
+the output instead of remembering it had, in its own first draft, a remembered output. The block
+above is now the captured one.
 
 ## The hour is the whole finding
 
@@ -46,12 +50,18 @@ These are not random daemons. They are **timers with a schedule**, and the sched
 before the campaign starts:
 
 ```text
-$ systemctl list-timers --all
-Tue 2026-09-22 07:22:31   fwupd-refresh.timer
-Tue 2026-09-22 08:33:26   apt-daily.timer
-Wed 2026-09-23 05:07:09   man-db.timer
-Wed 2026-09-23 06:23:39   apt-daily-upgrade.timer     ← fired 06:51 today
+$ systemctl list-timers --all          # captured 2026-09-22 11:5x, after the boot
+NEXT                        LAST                         UNIT
+-                           Tue 2026-09-22 06:48:31 +07  fwupd-refresh.timer
+-                           Tue 2026-09-22 03:35:22 +07  apt-daily.timer
+-                           Tue 2026-09-22 06:37:37 +07  man-db.timer
+-                           Tue 2026-09-22 06:51:31 +07  apt-daily-upgrade.timer   ← the one that cost the rounds
 ```
+
+`NEXT` is empty on every row because these six were **stopped** once the loss was understood; the
+`LAST` column is what a campaign needed to read *beforehand*, when those rows still carried a
+`NEXT` inside the night. The full capture, with the `journalctl` window, is
+`target/boot-d-evidence/d4-timer-evidence.txt`.
 
 `apt-daily` and `apt-daily-upgrade` carry `RandomizedDelaySec=` of up to 12 hours on Ubuntu, so
 the *exact* minute is not predictable, but the window is, and `list-timers` prints the next one

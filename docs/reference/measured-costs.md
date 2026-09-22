@@ -3814,20 +3814,23 @@ The bench harness **panics** when a case is over its band, and it did so in the 
 output in every round of the two arms that carry the boot's `main` (`76e53cb`):
 
 ```text
-$ sed -n '2,4p' target/boot-d-evidence/d4/raw/1-w1s-fixbolt-session_validate.txt
+$ sed -n '2,4p;14,15p' target/boot-d-evidence/d4/raw/1-w1s-fixbolt-session_validate.txt
 validate NewOrderSingle              1024.3 ns/op   baseline 882.1 x1.10 = [801.9, 970.3]  OVER BASELINE
 validate Heartbeat                    197.1 ns/op   baseline 169.5 x1.10 = [154.1, 186.5]  OVER BASELINE
 validate TestRequest, w2w bytes       247.2 ns/op   baseline 218.4 x1.10 = [198.5, 240.2]  OVER BASELINE
-thread 'main' panicked at .../harness.rs:405:9:
+thread 'main' (59080) panicked at crates/session/benches/../../codec/benches/harness.rs:405:9:
 3 of 6 case(s) over the machine baseline:
 ```
 
-Medians over n = 20, against the line each case carries:
+(lines 5–13 are the four cases that passed and the two with no baseline; the two ranges are one
+command so the quote can be re-run exactly as written)
+
+Eight medians over n = 20 — five distinct `benches/baselines.tsv` lines, three of them breached by both arms — against the line each case carries:
 
 | arm | case | median | recorded baseline | ceiling (×1.10) | × baseline |
 |---|---|---|---|---|---|
 | `w1s` (`main`, `fix50sp2`) | validate NewOrderSingle | 1 023.5 | 882.1 | 970.3 | **1.160** |
-| `w1s` | validate Heartbeat | 195.7 | 169.5 | 186.5 | **1.154** |
+| `w1s` | validate Heartbeat | 195.65 | 169.5 | 186.5 | **1.154** |
 | `w1s` | validate TestRequest, w2w bytes | 248.1 | 218.4 | 240.2 | **1.136** |
 | `w1` (`main`, no feature) | validate NewOrderSingle | 1 008.9 | 882.1 | 970.3 | **1.144** |
 | `w1` | validate TestRequest, w2w bytes | 242.4 | 218.4 | 240.2 | **1.110** |
