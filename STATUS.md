@@ -188,6 +188,22 @@ post-boot analysis needs all of it**: `d2-*.data`/`.stat` (item 93's seven bisec
 `d4m/` (the merged 20-round rotation), `d5-*` (item 89), `d3-*.txt`. `/tmp` is tmpfs here, which
 is why none of it is there.
 
+### The merge, and the desk after it
+
+PR [#90](https://github.com/tmthang86/fixbolt/pull/90) is on `main` as **`60ea1a2`**; the closing
+commit `14b790c` was **14 of 14** on run
+[`35691216317`](https://github.com/tmthang86/fixbolt/actions/runs/35691216317), after `0608f1d`
+read 14 of 14 on [`35690301140`](https://github.com/tmthang86/fixbolt/actions/runs/35690301140).
+`interop`, `bench` and `deny` — the three neither desk can run for itself — are among the fourteen.
+
+**The desk was then torn down and powered off**: the ordinary desktop grub line restored from
+`/etc/default/grub.fixbolt-desktop-20260921`, `update-grub`, `fixbolt-machine off`, and the five
+package timers left `enabled` so the next boot restores them. **The desk comes back on the desktop
+line, not the §9 line** — a §9 campaign needs D0's first half run again.
+
+**`target/boot-d-evidence/` survives the shutdown** (it is on disk, not tmpfs) and is the input to
+everything below.
+
 ### Next — the first executable action
 
 **`perf diff -c delta-abs -s symbol` over `target/boot-d-evidence/d2-<sha>-{1,2}.data` for the
