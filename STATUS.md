@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
+Last updated: **2026-09-22, night** — **phase 1 of the closing plan is done on the desktop line: item 93 has five verdicts and its fix is on `main` (#94), 7a reads by machine, the timer row and the Mac reversal are seen, and the desk reboots into §9 for phase 2 with everything prebuilt**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
 built but has not run**: PRs [#87](https://github.com/tmthang86/fixbolt/pull/87) (merge `a451831`,
 closing commit `ed03886`, run
 [`35494930920`](https://github.com/tmthang86/fixbolt/actions/runs/35494930920), 14 of 14) and
@@ -89,6 +89,72 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 **`[2026-09-09, merged]` §9's last box, closed on the commit it asks about.** PR [#54](https://github.com/tmthang86/fixbolt/pull/54) merged as **`94b325d`**, no-ff. **CI green on the merge commit itself**, run [`34340173659`](https://github.com/tmthang86/fixbolt/actions/runs/34340173659), **13 jobs of 13** — the three neither desk can run for itself, `interop`, `bench` and `deny`, among them. The merged head `301cd2e` was **26 of 26** check runs across [`34320263926`](https://github.com/tmthang86/fixbolt/actions/runs/34320263926) and [`34320266574`](https://github.com/tmthang86/fixbolt/actions/runs/34320266574), and **`git diff 301cd2e 94b325d` is empty**, so the branch's green transfers to the merge exactly rather than by assumption.
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
+
+## Start here — 2026-09-22, night: phase 1 of the closing plan is done on the desktop line, and the desk reboots into §9 for phase 2
+
+Plan: [2026-09-22-closing-the-open-items-desk-free-then-s9](docs/plans/2026-09-22-closing-the-open-items-desk-free-then-s9.md),
+branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93)
+(draft). Approved by the manager under the owner's 2026-09-18 mandate; the owner's order today
+was "close every item that does not need the §9 machine, then reboot into §9 and close the rest".
+ADR-0095 is `Proposed` on the branch.
+
+### What closed in phase 1
+
+* **7a** — the fixed detector reads item 97's eight breached medians by machine (row 97).
+* **Item 93's four unnamed segments** have verdicts, all *accept* (row 93; `f49b8c9`). No new
+  fix arm. **Segment (3) is merged**: PR [#94](https://github.com/tmthang86/fixbolt/pull/94),
+  `main` `badc144`, closing commit `70695d3`, CI run
+  [`35739307994`](https://github.com/tmthang86/fixbolt/actions/runs/35739307994) 14 / 14. Not
+  re-measured on `main` — that is S1.
+* **The `no timer due` row** seen `FAIL` then `PASS` on this systemd host (`f49b8c9`).
+* **ADR-0091 decision 2's reversal ran on the Mac mini**: `27` / `12 red in 50` at `bd6be07`,
+  `0 red in 50` on `main` (`fb0230b`, `docs/CONFORMANCE.md` §9). The same run found
+  `check-machine-verdicts.sh` at `pass 62 fail 1` on macOS — `find -printf` is GNU-only; fixed
+  in `a2011ca`, `pass 63 fail 0` on both machines.
+* Three traps written down: a plan gate naming a feature the crate lacks (*Sửa 1*), a pre-SP2
+  `vendor/` failing SP2 gates silently ([reference](docs/reference/a-vendor-tree-fetched-before-sp2-fails-the-sp2-gates-silently.md)),
+  and D2's records carrying no call-graph (measured-costs, *five segments named*).
+
+### Where the work is — phase 2 is built, pinned and unmeasured
+
+`../fb-s9e/MANIFEST.txt`: 9 worktree binaries (`b1` `e673e8f`, `b2` `3f84a81`, `b3` `a451831`,
+`m` and `ms` `badc144`), absolute paths, sha256 read back 9 / 9; the main tree (this branch,
+crates identical to `main`) has all 20 bench targets prebuilt with the alignment flags so
+`scripts/bench.sh --strict` compiles nothing. C1 of ADR-0094 holds: `nm` on `ms`'s `validate`
+shows 3 `bad_nested_count` symbols. The boot D arms `wa` and `w1` under `../fb-boot-d/` are
+reused as S1 arms. Grub: the §9 line is restored from `grub.fixbolt-backup-20260919-bootc`
+before the reboot (step R of the plan); the desktop line is saved as
+`/etc/default/grub.fixbolt-desktop-20260922`.
+
+### Next — the first executable action
+
+**After the reboot, a new session: S0**, verbatim in the plan's section *Ranh giới — bước R*
+(the block after "Sau reboot, phiên mới"). Expect `cat /proc/cmdline` to carry
+`isolcpus=6,7,14,15`, and `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` to read
+**`pass 17 fail 0 unknown 0`** after `fixbolt-machine on`, the NIC rows, and stopping the timers
+its own `fix:` line names. Then S1 → S3 → S2 → S4 → S5 from the plan's *Pha 2* table, cutting
+from the bottom of *Danh sách cắt theo thời gian* if time runs out; S0 is never cut. Every
+`perf record` in S2 uses `-g` (D2's records did not, and it cost segment (5) its caller).
+
+### Do not
+
+* Do not move a baseline before S4's conditions hold (ADR-0090 decision 4: five verdicts, S1
+  n = 20 on `ms`).
+* Do not run `bench.sh --strict` expecting green: S3 expects **red** on the old lines (item 97).
+* Do not rebuild anything on the §9 line; if `cargo` prints `Compiling`, stop and write it down.
+* Do not use `sudo perf record -- cargo …`: sudo's `secure_path` has no cargo; give perf the
+  absolute binary path from the manifest.
+* Do not `disable` a timer; `stop` only, and restart the same list before handing the desk back.
+* Do not trust a `--reextract` of `d4m/`: it has no `raw/`; `d4` and `d4b` do.
+
+### Not proven
+
+* **Everything phase 2 measures**: item 95's cause, item 96's attribution, the segment-(3) fix on
+  `main`, and the re-recorded baselines. Nothing in phase 1 is a latency number.
+* **Gaps G6 and G7 of ADR-0093**, open by decision.
+* **`standard` mode, TLS, the wire**: untouched by this plan.
+
+---
 
 ## Start here — 2026-09-22, later: the detector is fixed, item 98 is closed, and a senior review found two things seventeen commits of evidence did not
 
