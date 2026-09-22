@@ -207,10 +207,10 @@ AMD Ryzen 7 3700X 8-Core Processor	presession, registry lookup of 40	100.8	1.10	
 AMD Ryzen 7 3700X 8-Core Processor	library, parse only	159.6	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	library, reply only	804.1	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	library, on_message	1028.6	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle	882.1	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	validate Heartbeat	169.5	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	validate TestRequest, w2w bytes	218.4	1.10	21	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle, w2w bytes	994.5	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle	1024.0	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	validate Heartbeat	195.6	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	validate TestRequest, w2w bytes	249.8	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle, w2w bytes	1013.0	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
 
 # `serialize Heartbeat (session)` had NO line for this CPU until now: every run printed
 # `NO BASELINE for 'AMD Ryzen 7 3700X 8-Core Processor'`, which is not red and is not green.
@@ -286,18 +286,24 @@ AMD Ryzen 7 3700X 8-Core Processor	journal put, 191 bytes, walking	8.9	1.10	20	2
 AMD Ryzen 7 3700X 8-Core Processor	journal put, 87 bytes, walking	5.3	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	journal put, 191 bytes, one slot	7.4	1.10	20	2026-09-21	pass 16 fail 0 unknown 0
 
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy sessions	1659.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, admin	954.2	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 2 busy sessions	3325.4	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 busy sessions	6686.0	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 8 busy sessions	13514.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 busy sessions	27369.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 32 busy sessions	56684.4	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 64 busy sessions	121009.1	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy sessions	1745.8	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, admin	992.0	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 2 busy sessions	3516.0	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 4 busy sessions	7080.5	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 8 busy sessions	14287.2	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 16 busy sessions	29026.7	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 32 busy sessions	60018.3	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 64 busy sessions	127370.1	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
 
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 64	1635.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 512	1654.8	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
-AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 4096	1657.7	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 64	1766.6	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 512	1778.3	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	engine turn, 1 busy, ring 4096	1775.9	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	validate NewOrderSingle (FIXT tables)	1168.1	1.10	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	validate TradeCaptureReport (33 groups)	82063.5	1.15	21	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	parse nested (header+root)	1.6	1.10	24	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	field	5.1	1.10	24	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	walk nested group + varData	159.5	1.10	24	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	encode NewOrderSingle	99.4	1.10	24	2026-09-23	pass 17 fail 0 unknown 0
 
 # `[measured 2026-09-14/15]` BOOT B, STEP B1 of docs/plans/2026-09-04-the-second-linux-desk.md.
 # The first run on the A1 binary (ADR-0067, table read at run time) with the §9 knobs on and the

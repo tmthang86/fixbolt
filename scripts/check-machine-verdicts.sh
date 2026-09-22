@@ -13,6 +13,15 @@
 # and "it was built without CONFIG_TLS" in the same run and blocked an open item for
 # a day. So the verdict is a pure function of (virt, steal) and is tested here, on
 # any machine, with no VM and no root.
+#
+# `[2026-09-22]` this fixture is also the reason `nic_irqs` in check-machine.sh no
+# longer shells out to `find -printf`: that flag is a GNU extension, BSD find errors
+# to /dev/null on it, and the Mac mini (macOS, BSD userland) read `pass 62 fail 1`
+# here with `from_msi` silently empty and the row falling back to name matching. Run
+# on the Mac over the direct Ethernet link (`docs/reference` — direct link to the
+# Mac mini) with both this file and check-machine.sh copied into the same directory,
+# since this script sources check-machine.sh by a path relative to its own: `pass 63
+# fail 0`, matching the Linux desk.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

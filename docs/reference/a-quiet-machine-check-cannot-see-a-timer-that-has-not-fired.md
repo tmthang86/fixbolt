@@ -101,6 +101,14 @@ it, one already past `next`, and `[]`. The window is `FIXBOLT_TIMER_WINDOW` hour
 to start a run on a `FAIL` from this row. **The row prints the window it used, so a 14-hour
 campaign under a 12-hour window is still unseen.**
 
+`[seen live 2026-09-22]` Both shapes on the desk (`tmt-B450-I-AORUS-PRO-WIFI`, systemd, desktop
+grub line): `FAIL   no timer due   sysstat-collect.timer next 2026-09-22T14:10Z (in 7m59s), …
+apt-daily-upgrade.timer next 2026-09-22T23:18Z (in 9h16m) [window 12h]` with twelve `stop`
+commands on its `fix:` line; after running that line verbatim, `PASS   no timer due   no timer
+due inside the window [window 12h]`; after `systemctl start` of the same twelve, `list-timers
+--all` counted 20 `.timer` units before and after. Until then only `UNKNOWN` had been seen on a
+live host (the CI container has no PID 1).
+
 ## What this cost, and what it did not
 
 Five hours of wall clock and eight rounds, re-run afterwards with the timers stopped. It cost no
