@@ -249,6 +249,21 @@ below describe what a first release would contain.
 
 ### Changed
 
+- **`parse_utc` reads the two widths that are actually on a wire in a straight line.** 17 bytes
+  (the corpus's `I` lines) and 21 (its `E` lines, and every `52=` this engine sends —
+  `TimestampPrecision` default 3) now skip the computed fractional-digit count, the tail slice,
+  the `all(is_ascii_digit)` closure and the right-pad that [ADR-0058]'s one rule puts on the path
+  every inbound `SendingTime` takes; the three millisecond digits are read where they lie. Every
+  other width still falls through to that rule, which remains the only place a width is accepted
+  or refused, so it cannot drift from `dict`'s
+  (`docs/reference/one-field-two-readers.md`). **No observable behaviour changes** —
+  `crates/session/tests/parse_utc_equivalence.rs` holds the new arm to what the one-rule reader
+  answered, at every length to 40, every precision the rule accepts, the calendar edges and
+  ~40 000 noise inputs, and puts everything accepted to `fixbolt_dict::FieldType::UtcTimestamp`
+  too. `[measured 2026-09-22, boot D, §9 desk]` `engine turn, 1 busy sessions` 1 799.1 → 1 766.0
+  ns, **33.1 ns faster**, n = 20 per side, `76e53cb` vs `1825d8c` — `STATUS.md` item 93, bisect
+  segment (3). Not re-measured on `main`.
+
 - **`373=16` is now asked at every group nesting depth, not only the top level.** A nested
   group used to end the whole `SessionRejectReason 16` pass silently: `bad_group_count` used `?`
   on the `Option` `MessageView::group` returns, inside a function that itself returns `Option`
