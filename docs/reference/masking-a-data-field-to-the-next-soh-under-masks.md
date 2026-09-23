@@ -28,7 +28,8 @@ delimiter; only the three DATA secrets (`96`, `1402`, `1404`) can.
 
 ## The rule chosen instead
 
-**Over-mask, never under-mask** (ADR-0110 decision 2, `CLAUDE.md` §4). The scan tracks the most
+**Over-mask, never under-mask — for a well-formed length pair** (ADR-0110 decision 2, `CLAUDE.md` §4;
+scope narrowed by plan *Sửa 2*, below). The scan tracks the most
 recent value of each DATA secret's LENGTH field (`95`, `1401`, `1403`) as it passes it, and masks
 the DATA field that follows over **the larger of** that declared length and the distance to the
 next SOH — clamped to the end of the buffer, so a length larger than what remains cannot walk
@@ -66,6 +67,25 @@ silently underneath the scanner.
 - **Reversal R4** (`docs/plans/2026-09-23-p3-redact-secrets.md`, *Chia việc* row 3): masking a
   DATA field only to the next SOH, dropping the declared length, was shown red against exactly
   this case before being restored.
+
+## Where the rule stops
+
+`[2026-09-23]` plan *Sửa 2*, from the senior review of PR #98. Two limits, one fixed, one
+recorded:
+
+- **Fixed — the message type was read from the first `35=` only.** A `Cut::Garbage` record can
+  hold several frames: an oversized `9=` makes `Framer::cut` hand the whole buffer over as one
+  record, and the log writes it as one `IN` line. With a Heartbeat's `35=0` first, the RawData of
+  a `UserRequest` behind it was logged in clear. `96` is now a secret when **any** `35=` in the
+  record is `A` or `BE`, or when there is none. Guarded by
+  `crates/engine/tests/secrets_stay_off_disk.rs::raw_data_behind_a_non_sign_on_msg_type_in_a_garbage_cut_is_masked_in_the_log`,
+  `crates/engine/tests/redact.rs::raw_data_of_a_logon_behind_another_msg_type_is_masked` and
+  `::a_later_msg_type_does_not_unmask_raw_data`.
+- **Recorded, not fixed — a DATA secret with no length field before it.** `1402` without
+  `1401`, or `96` before `95`, has no declared length to go on, and is masked to the next SOH
+  only. If its value holds an SOH, the rest reaches the log. Such a frame is malformed (D3: the
+  length field immediately precedes its DATA); the claim above is scoped to frames where it
+  does.
 
 ## The general shape
 

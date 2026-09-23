@@ -1096,7 +1096,7 @@ for two files is a configuration that cannot be honoured.
    checksum validation on will refuse those lines. **The password's length is still on disk**
    (`554=` followed by N stars) — chosen over rewriting `9=` to hide it, because that would mean
    the log no longer holds the bytes that arrived with one field changed. `96` RawData is only
-   masked on a `Logon` or `UserRequest`, or a frame with no readable `35=`; on `News`/`Email` it
+   masked when any `35=` in the record is a `Logon` or `UserRequest`, or there is none; on `News`/`Email` it
    is message content and is left alone. **A venue-specific secret tag (`5000+`) is not masked**
    — reopen this when a real deployment names one (ADR-0110). **Files written before this change
    still hold secrets in clear**: rotate the credential and delete or re-permission the old file;

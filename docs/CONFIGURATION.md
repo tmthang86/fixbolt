@@ -291,7 +291,7 @@ Set in code when the engine is built or started.
 | `MAX_ON_LOGON` | Most messages one session may originate from `Handler::on_logon` | `u32`, not configurable | `16` | compile-time constant | [`engine/src/lib.rs`](../crates/engine/src/lib.rs) |
 | `ORIGIN_CAPACITY` | Originated messages a `Sender` may have waiting for the engine's next turn | `usize`, not configurable | `64` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
 | `ORIGIN_LEN` | Largest message `Sender::send` will take | bytes, not configurable | `512` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
-| `redact::MASKED` | `[added 2026-09-23]` The fields `FileLog` masks and `FileJournal` never writes for: `554` Password, `925` NewPassword, `1402` EncryptedPassword, `1404` EncryptedNewPassword (every message), `96` RawData (`Logon`/`UserRequest` only, or a frame with no readable `35=`) | fixed list, not configurable | as listed | `fixbolt_engine::redact::MASKED` | [`redact.rs`](../crates/engine/src/redact.rs) |
+| `redact::MASKED` | `[added 2026-09-23]` The fields `FileLog` masks and `FileJournal` never writes for: `554` Password, `925` NewPassword, `1402` EncryptedPassword, `1404` EncryptedNewPassword (every message), `96` RawData (only when any `35=` in the record is `Logon`/`UserRequest`, or there is no `35=`) | fixed list, not configurable | as listed | `fixbolt_engine::redact::MASKED` | [`redact.rs`](../crates/engine/src/redact.rs) |
 
 ### The three origination numbers
 

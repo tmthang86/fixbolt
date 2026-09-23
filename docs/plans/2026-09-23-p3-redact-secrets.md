@@ -313,3 +313,49 @@ thì bench in `redact-mask 1000` và đỏ ở câu *"non-negotiable 1: the engi
 the byte path"*. Bảng *Chia việc* và *Cách kiểm chứng* đã sửa theo dạng này. Bẫy này đã từng gặp
 một lần (`docs/reference/measured-costs.md`, mục *An injected allocation the optimiser can delete
 proves nothing*); lần này ghi thêm vào đó.
+
+## Sửa 2 — 2026-09-23
+
+Senior review của PR #98 (commit `6899701`) tìm ra ba điều.
+
+**Phát hiện 1 — đã sửa.** Một frame hỏng có `9=` quá lớn làm `Framer::cut` trả `Cut::Garbage`
+cho cả buffer (`frame.rs:17`, `:166`), và engine ghi cả khối đó vào log thành **một** bản ghi
+`In` (`conn.rs:448`). Code cũ chỉ nhìn `35=` **đầu tiên** trong bản ghi. Nếu đó là `35=0`
+(Heartbeat) thì `96` RawData của một `BE`/`A` nằm phía sau trong cùng khối bị ghi nguyên văn
+(`554` thì vẫn được che). Dòng thử của người review:
+
+```text
+Framer<4096> fed `8=FIX.4.4|9=5000|35=0|34=5|10=000|` + a real BE with `95=9|96=RAWSECRET|554=PW|`,
+then FileLog::record(Direction::In, …) → `log file holds RAWSECRET=true 554=PW=false`
+```
+
+Hai test mới đỏ trước khi sửa:
+
+```text
+the message log holds the secret `rawUSERREQp3Wd` — S5 (96 on UserRequest)
+the RawData of the Logon inside the garbage survives: 8=FIX.4.4|9=5000|35=0|34=5|10=000|8=FIX.4.4|9=60|35=A|34=6|95=14|96=raw1|raw2-tail|98=0|554=*******|10=000|
+```
+
+**Cách sửa:** `96` bị che khi **bất kỳ** `35=` nào trong bản ghi là `A` hoặc `BE`, hoặc khi không
+có `35=` nào. Một `35=` khác đứng trước không còn miễn che, và một `35=` đứng sau không gỡ che được.
+Vẫn quét theo SOH, không cấp phát. Test canh:
+`secrets_stay_off_disk.rs::raw_data_behind_a_non_sign_on_msg_type_in_a_garbage_cut_is_masked_in_the_log`,
+`redact.rs::raw_data_of_a_logon_behind_another_msg_type_is_masked`,
+`redact.rs::a_later_msg_type_does_not_unmask_raw_data`. Không có test cũ nào đổi nghĩa.
+
+**Phát hiện 2 — hệ quả đã biết, không sửa.** Một trường DATA bí mật mà trường độ dài của nó bị
+thiếu hoặc đứng **sau** nó (`1402` không có `1401`, `96` đứng trước `95`) thì không có độ dài khai
+báo để dựa vào, nên chỉ được che tới SOH kế tiếp. Nếu giá trị của nó chứa SOH thì phần sau lọt vào
+log. Frame như vậy là frame sai (D3: trường độ dài phải đứng ngay trước trường DATA). Câu "không bao
+giờ che thiếu" giờ chỉ đúng với cặp độ dài viết đúng thứ tự. Đã sửa lời khẳng định ở `redact.rs`
+(doc module), `DESIGN.md` §3 (dòng `redact`) và
+`docs/reference/masking-a-data-field-to-the-next-soh-under-masks.md`. ADR-0110 đã Accepted nên
+không sửa nội dung; chỉ thêm một dòng dưới *Status* trỏ về mục này. `CHANGELOG.md`, `GUIDE.md`,
+`CONFIGURATION.md` sửa theo luật "bất kỳ `35=`".
+
+**Phát hiện 3 — ngoài phạm vi, không sửa ở đây** (manager mở một mục trong STATUS). Lỗi có sẵn
+trên `main`: luồng ghi của journal `Async` dừng hẳn khi gặp một bản ghi dài hơn 4096 byte
+(`journal.rs` `write_loop` dùng `buf [0u8;4096]`, và `ring::pop` trả `Some(0)` cho bản ghi quá cỡ
+thì bị hiểu là tín hiệu STOP; `journal.rs:793/798` ở nhánh này, `756/761` trên `main`). Dòng thử
+của người review: `FileJournal<8,8192>` `Async`, `put` 4200 byte rồi một bản tin nhỏ, mở lại →
+`get(1)=None get(2)=None highest_out=None`.

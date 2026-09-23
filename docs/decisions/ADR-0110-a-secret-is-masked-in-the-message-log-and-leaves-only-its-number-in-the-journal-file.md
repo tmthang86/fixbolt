@@ -1,6 +1,7 @@
 # ADR-0110 — A secret is masked in the message log and leaves only its number in the journal file
 
 - **Status**: Accepted — 2026-09-23 (by the manager under the owner's standing mandate, with the phase 3 row 3 plan). Proposed 2026-09-23
+- Amended in scope by plan Sửa 2 (2026-09-23): 96 is masked if any 35= in a record is A/BE; a malformed length pair is masked to the next SOH only.
 - **Date**: 2026-09-23
 - **Deciders**: written by the architect (Opus) for phase 3 row 3; accepted by the manager under
   the owner's standing mandate, or by the owner.

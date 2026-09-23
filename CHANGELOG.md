@@ -21,7 +21,7 @@ below describe what a first release would contain.
   **`fixbolt_engine::redact`** is a new public module: the constant **`MASKED`** names, in one
   place, every field the engine treats as a secret — `554` Password and `925` NewPassword
   (every message), `1402` EncryptedPassword and `1404` EncryptedNewPassword (every message), and
-  `96` RawData (only on a `Logon`/`UserRequest`, or a frame whose `35=` cannot be read). **`mask`**
+  `96` RawData (only when any `35=` in the record is a `Logon`/`UserRequest`, or there is no `35=`). **`mask`**
   overwrites a field's value bytes with `*` in place, length kept; **`carries_secret`** answers
   whether a message holds one. Both are pure functions over a borrowed slice — no allocation, no
   panic, no dictionary — proven by `benches/alloc.rs` cases `redact-mask` and `redact-scan`

@@ -118,6 +118,39 @@ fn raw_data_on_a_frame_with_no_msg_type_is_masked() {
     assert!(contains(&b, &wire("|96=******|")), "{}", show(&b));
 }
 
+/// A garbage buffer whose **first** `35=` is a Heartbeat and whose second frame
+/// is a Logon with an SOH inside `96`: any `35=A`/`BE` in the buffer makes `96`
+/// a secret. Plan *Sửa 2*, senior review of PR #98 finding 1.
+#[test]
+fn raw_data_of_a_logon_behind_another_msg_type_is_masked() {
+    let (b, _) = masked(
+        "8=FIX.4.4|9=5000|35=0|34=5|10=000|\
+         8=FIX.4.4|9=60|35=A|34=6|95=14|96=raw1|raw2-tail|98=0|554=hunter2|10=000|",
+    );
+    assert!(
+        !contains(&b, b"raw1") && !contains(&b, b"raw2-tail"),
+        "the RawData of the Logon inside the garbage survives: {}",
+        show(&b)
+    );
+    assert!(
+        contains(&b, &wire("|95=14|96=**************|98=0|")),
+        "{}",
+        show(&b)
+    );
+}
+
+/// The other order: a sign-on type first, then another. A later `35=` must not
+/// un-mask what an earlier one made secret.
+#[test]
+fn a_later_msg_type_does_not_unmask_raw_data() {
+    let (b, _) = masked("35=A|95=3|96=abc|35=0|95=3|96=def|");
+    assert!(
+        contains(&b, &wire("|96=***|35=0|95=3|96=***|")),
+        "{}",
+        show(&b)
+    );
+}
+
 #[test]
 fn only_the_whole_tag_554_is_masked() {
     let (b, n) = masked("8=FIX.4.4|9=30|35=D|1554=keep1|5540=keep2|55=keep3|554=gone|10=000|");

@@ -252,6 +252,54 @@ fn raw_data_on_a_frame_with_no_msg_type_is_masked_in_the_log() {
     assert!(found.is_empty(), "{}", found.join("; "));
 }
 
+/// **A garbage cut that swallows a sign-on keeps no RawData in clear.**
+///
+/// Senior review of PR #98, finding 1 (plan *Sửa 2*): an oversized `9=` makes
+/// `Framer::cut` return `Cut::Garbage` over the whole buffer, the engine logs
+/// that blob as one `In` record, and the first `35=` in it is a Heartbeat's.
+/// Deciding `96` from the first `35=` alone left the `UserRequest`'s RawData
+/// behind it in the file. Any `35=A`/`BE` in the record now decides.
+#[test]
+fn raw_data_behind_a_non_sign_on_msg_type_in_a_garbage_cut_is_masked_in_the_log() {
+    use fixbolt_engine::frame::{Cut, Framer};
+
+    let path = tmp("log-garbage-cut");
+    let mut blob = b"8=FIX.4.4\x019=5000\x0135=0\x0134=5\x0110=000\x01".to_vec();
+    blob.extend_from_slice(&user_request(6, b"TW44", b"ISLD", FIXED_STAMP));
+
+    let mut framer: Framer<4096> = Framer::new();
+    framer.spare()[..blob.len()].copy_from_slice(&blob);
+    framer.filled(blob.len());
+    // Pad to a full buffer: an oversized `9=` is garbage only once it cannot fit.
+    let pad = 4096 - blob.len();
+    framer.spare()[..pad].fill(b'x');
+    framer.filled(pad);
+    let Cut::Garbage(n) = framer.cut() else {
+        panic!(
+            "the premise: an oversized 9= is cut as garbage, saw {:?}",
+            framer.cut()
+        );
+    };
+    let record = framer.bytes(n);
+    assert!(
+        contains(record, S5),
+        "the premise: the garbage cut carries the UserRequest's RawData"
+    );
+    {
+        let mut log = FileLog::open(&path).expect("a writable path");
+        log.record(Direction::In, 63_900_000_000_000, 0, 7, record);
+        log.close();
+    }
+    let bytes = std::fs::read(&path).expect("the file is there");
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        contains(&bytes, b"\x0135=0\x01") && contains(&bytes, b"\x0135=BE\x01"),
+        "the premise: the log line holds both frames of the cut"
+    );
+    let found = leaks("message log", &bytes);
+    assert!(found.is_empty(), "{}", found.join("; "));
+}
+
 // ---------------------------------------------------------------------------
 // (c) The journal, on its own, under both policies.
 // ---------------------------------------------------------------------------

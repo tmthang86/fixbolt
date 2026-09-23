@@ -7,18 +7,34 @@
 //!
 //! # How a secret is found
 //!
-//! **Without a dictionary, and it may over-mask but never under-mask.** The
-//! scanner splits on SOH. A STRING value cannot hold an SOH, so every real
-//! `554=` or `925=` begins right after one and is found. The only error the
-//! split can make is to read bytes *inside* some other DATA field as a field of
-//! their own, and the only consequence of that is masking bytes that were not a
+//! **Without a dictionary, and it errs towards masking more.** The scanner
+//! splits on SOH. A STRING value cannot hold an SOH, so every real `554=` or
+//! `925=` begins right after one and is found. Reading bytes *inside* some
+//! other DATA field as a field of their own only masks bytes that were not a
 //! secret.
 //!
 //! A DATA secret is masked over **the larger of** its declared length (the most
 //! recent length field for it in the message) and the bytes up to the next SOH,
 //! then on to the SOH after that, clamped to the buffer. So a `96=` holding an
 //! SOH is masked whole, a lying length masks more rather than less, and the
-//! scan always resumes at a field boundary.
+//! scan always resumes at a field boundary. `96` counts as a secret when **any**
+//! `35=` in the record is `A` or `BE`, or when there is none.
+//!
+//! # What is not promised
+//!
+//! **Never under-masks — for a well-formed length pair.** A DATA secret whose
+//! length field is missing, or comes *after* it (`1402` without `1401`, `96`
+//! before `95`), has no declared length to go on and is masked to the next SOH
+//! only; if its value holds an SOH, the rest is left as it arrived. That frame
+//! is malformed (D3: the length field immediately precedes its DATA), and the
+//! gap is recorded in plan *Sửa 2*. What proves the rest: `tests/redact.rs`
+//! `a_raw_data_holding_an_soh_is_masked_whole`,
+//! `a_declared_length_past_the_end_is_clamped_not_a_panic`,
+//! `a_declared_length_that_lands_mid_field_masks_to_the_next_boundary`,
+//! `raw_data_of_a_logon_behind_another_msg_type_is_masked`,
+//! `a_later_msg_type_does_not_unmask_raw_data`; and
+//! `secrets_stay_off_disk.rs`
+//! `raw_data_behind_a_non_sign_on_msg_type_in_a_garbage_cut_is_masked_in_the_log`.
 //!
 //! # What it costs
 //!
@@ -50,9 +66,10 @@ pub enum Kind {
 pub enum Scope {
     /// Every message.
     Every,
-    /// Only a `Logon` (`35=A`) or a `UserRequest` (`35=BE`) — and any frame
-    /// whose `35=` cannot be read, because a garbage frame is not known to be
-    /// anything else.
+    /// Only in a record holding a `Logon` (`35=A`) or a `UserRequest`
+    /// (`35=BE`) **anywhere** — or no `35=` at all, because a garbage frame is
+    /// not known to be anything else. Any, not the first: one garbage record
+    /// can hold several frames (plan *Sửa 2*).
     SignOn,
 }
 
@@ -145,10 +162,7 @@ struct Scan {
 
 impl Scan {
     fn new(bytes: &[u8]) -> Self {
-        let sign_on = match msg_type(bytes) {
-            Some(t) => t == b"A" || t == b"BE",
-            None => true,
-        };
+        let sign_on = sign_on(bytes);
         Self {
             at: 0,
             sign_on,
@@ -224,11 +238,25 @@ fn next_soh(bytes: &[u8], from: usize) -> usize {
         .map_or(bytes.len(), |p| from.saturating_add(p))
 }
 
-/// The first `35=` value in `bytes`, split on SOH.
-fn msg_type(bytes: &[u8]) -> Option<&[u8]> {
-    bytes
-        .split(|b| *b == SOH)
-        .find_map(|f| f.strip_prefix(b"35="))
+/// Whether [`Scope::SignOn`] secrets count in `bytes`: **any** `35=A` or
+/// `35=BE` in it, or no `35=` at all.
+///
+/// Any, not the first: a `Cut::Garbage` record can hold several frames, and a
+/// Heartbeat's `35=0` in front of a `UserRequest` must not exempt the RawData
+/// behind it (plan *Sửa 2*, senior review of PR #98 finding 1). A later `35=`
+/// cannot un-mask either. Split on SOH like everything else here, so a `35=A`
+/// inside some other DATA value masks more — over-masking, allowed.
+fn sign_on(bytes: &[u8]) -> bool {
+    let mut typed = false;
+    for f in bytes.split(|b| *b == SOH) {
+        if let Some(t) = f.strip_prefix(b"35=") {
+            if t == b"A" || t == b"BE" {
+                return true;
+            }
+            typed = true;
+        }
+    }
+    !typed
 }
 
 /// A tag, all ASCII digits. `None` for anything else, or one that overflows.
