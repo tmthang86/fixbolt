@@ -447,6 +447,17 @@ fn acceptor(args: &[String]) -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     };
 
+    // `[2026-09-23]` ADR-0130's `acceptor-tls` arm. A file carrying
+    // `SocketUseSSL=Y` is served by `acceptor_tls` and never reaches the
+    // plaintext path below; every other file falls through to that path, which
+    // is otherwise unchanged — eight `scripts/interop.sh` scenarios are green
+    // through it. A build without `tls` that meets such a file is refused by
+    // `Settings::load` below, with its line, not served in plaintext.
+    #[cfg(all(feature = "tls", target_os = "linux"))]
+    if let Some(code) = acceptor_tls(&addr, &cfg) {
+        return code;
+    }
+
     // A mistyped key, a mistyped path or a file naming no counterparty all stop
     // here with the line and what was written — ADR-0040. An acceptor that
     // starts cleanly and serves nobody is indistinguishable from a firewall.
@@ -567,6 +578,140 @@ fn acceptor_with_recovery(
             println!("interop: FAIL serve_with_recovery on {addr}: {e}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+/// **`--role acceptor` over TLS** — ADR-0130's `acceptor-tls` arm, through
+/// [`fixbolt_engine::serve_tls_requiring`], the door a deployment brought up
+/// from a settings file uses.
+///
+/// `None` when the file asks for no TLS (or does not load — the plaintext path
+/// reloads it and says why, with the line), so the caller goes on unchanged.
+///
+/// **`TlsRequireKernel` is read from the file, not forced here.** The arm's
+/// claim is *"a `.cfg` with `TlsRequireKernel=Y` serves QuickFIX/J from the
+/// kernel"*, so the flag has to travel the same road an operator's does;
+/// `scripts/interop-qfj.sh` checks the file says `Y`, and reads
+/// `/proc/net/tls_stat` for what the engine cannot say about itself.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+fn acceptor_tls(addr: &str, cfg: &str) -> Option<std::process::ExitCode> {
+    use fixbolt::{Limits, Settings};
+
+    let settings = Settings::load(cfg).ok()?;
+    settings.tls()?;
+    let (table, tls) = match settings.into_tls_table() {
+        Ok(t) => t,
+        Err(e) => {
+            println!("interop: FAIL settings {cfg}: {e}");
+            return Some(std::process::ExitCode::FAILURE);
+        }
+    };
+    // Four operator mistakes, four sentences, each naming the key and the path
+    // — `fixbolt_engine::tls::load_pem`'s own contract. Printed as they come.
+    let (certs, key) = match fixbolt_engine::tls::load_pem(&tls) {
+        Ok(pair) => pair,
+        Err(e) => {
+            println!("interop: FAIL certificate {cfg}: {e}");
+            return Some(std::process::ExitCode::FAILURE);
+        }
+    };
+    let limits = match Limits::new(PENDING, 10_000) {
+        Ok(l) => l,
+        Err(e) => {
+            println!("interop: FAIL limits: {e}");
+            return Some(std::process::ExitCode::FAILURE);
+        }
+    };
+    println!(
+        "interop: fixbolt acceptor on {addr}, {} counterparties, TLS, TlsRequireKernel={}",
+        table.len(),
+        if tls.require_kernel() { "Y" } else { "N" }
+    );
+
+    // The same probe the plaintext path uses. It opens a TCP connection and
+    // closes it without a `ClientHello`. `[measured 2026-09-23]` it raises no
+    // event at all — the arm's event stream read `LoggedOn`, `Ended(PeerLogout)`
+    // and nothing else — so it can be neither a false `TlsFellBackToUserspace`
+    // nor an `EndedWithoutReason`; `scripts/interop-qfj.sh`'s `kernel`
+    // assertion would go red if that changed.
+    announce_when_listening(addr.to_owned());
+
+    let handles = fixbolt::Handles::new();
+    stop_on_stdin(handles.admin());
+    let events = Events::watch(&handles);
+
+    let served = fixbolt_engine::serve_tls_requiring(
+        addr,
+        table,
+        fixbolt::app(desk::Desk::default()),
+        CAPACITY,
+        limits,
+        fixbolt::NoLog,
+        handles,
+        certs,
+        key,
+        tls.require_kernel(),
+    );
+    events.finish();
+    Some(match served {
+        Ok(shutdown) => {
+            println!("interop: acceptor stopped: {shutdown:?}");
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            println!("interop: FAIL serve_tls on {addr}: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    })
+}
+
+/// Every engine event, printed as `interop: event <kind>`, and the loss count
+/// last.
+///
+/// `[2026-09-23]` ADR-0130 decision 5: a TLS arm asserts that **no**
+/// `TlsFellBackToUserspace` event was raised. A zero read off a stream that
+/// dropped events would be a zero about nothing, so [`Self::finish`] prints
+/// `interop: events lost <n>` and `scripts/interop-qfj.sh` requires `0`.
+///
+/// **Two readers, one ring, no double print.** [`fixbolt::Observer::events`]
+/// *removes* what it returns, so the poller and the final drain each print
+/// only what they took; the final drain exists because the poller sleeps 50 ms
+/// and the engine can raise its last event inside that window.
+#[cfg(all(feature = "standard", unix))]
+struct Events {
+    last: fixbolt::Observer,
+}
+
+#[cfg(all(feature = "standard", unix))]
+impl Events {
+    /// Take two observers off `handles` before the engine adopts them, and
+    /// start the poller on one.
+    fn watch(handles: &fixbolt::Handles) -> Self {
+        let poller = handles.observer();
+        std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            loop {
+                Self::print(&poller, &mut seen);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        Self {
+            last: handles.observer(),
+        }
+    }
+
+    fn print(observer: &fixbolt::Observer, seen: &mut Vec<fixbolt::Event>) {
+        seen.clear();
+        observer.events(seen);
+        for e in seen.iter() {
+            println!("interop: event {:?}", e.kind());
+        }
+    }
+
+    /// Drain what the poller has not, then say how many were never kept.
+    fn finish(self) {
+        Self::print(&self.last, &mut Vec::new());
+        println!("interop: events lost {}", self.last.events_lost());
     }
 }
 

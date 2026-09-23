@@ -1,5 +1,5 @@
 //! `--role dial` — this engine's **real initiator door**, driven from a
-//! settings file, for the `initiator-plain` (and later `initiator-tls`) arms
+//! settings file, for the `initiator-plain` and `initiator-tls` arms
 //! of `scripts/interop-qfj.sh`.
 //!
 //! # Why this is a fourth role and not a flag on `--role initiator`
@@ -33,7 +33,7 @@
 //! steps and reads *this* process's stdout for the one line that proves the
 //! engine came back through the front door.
 
-use fixbolt::{Config, Settings};
+use fixbolt::Settings;
 
 /// Stopped through `Admin::shutdown`, on stdin — the front door
 /// `scripts/interop-qfj.sh` uses for every long-running role in this binary.
@@ -46,24 +46,41 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
 
     // A mistyped key, a mistyped path, or a file describing an acceptor all
     // stop here with the line and what was written — the same argument
-    // `--role acceptor` already makes about `Settings::load`. `into_initiator`
-    // is the plaintext door; the TLS door (`into_tls_initiator`) is added in
-    // the plan's next step, behind the `tls` feature, on this exact call site.
-    let (session_cfg, addr, policy): (Config, String, fixbolt::reconnect::Policy) =
-        match Settings::load(&cfg_path).and_then(Settings::into_initiator) {
-            Ok(t) => t,
-            Err(e) => {
-                println!("interop: FAIL settings {cfg_path}: {e}");
-                return std::process::ExitCode::FAILURE;
-            }
-        };
+    // `--role acceptor` already makes about `Settings::load`. A file carrying
+    // `SocketUseSSL=Y` in a build without the `tls` feature stops here too:
+    // `Settings::load` refuses it with `NeedsFeature` rather than dialling the
+    // venue in plaintext.
+    let settings = match Settings::load(&cfg_path) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("interop: FAIL settings {cfg_path}: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    // `[2026-09-23]` the `initiator-tls` arm: the same role, the same file
+    // shape, the same `Desk`, one door different — ADR-0130's reason for
+    // building this role at all.
+    #[cfg(all(feature = "tls", target_os = "linux"))]
+    if settings.client_tls().is_some() {
+        return run_tls(&cfg_path, settings);
+    }
+
+    let (session_cfg, addr, policy) = match settings.into_initiator() {
+        Ok(t) => t,
+        Err(e) => {
+            println!("interop: FAIL settings {cfg_path}: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     println!("interop: fixbolt dial -> {addr}");
 
     let handles = fixbolt::Handles::new();
     crate::stop_on_stdin(handles.admin());
+    let events = crate::Events::watch(&handles);
 
-    match fixbolt::connect_and_serve::<_, fixbolt::Store, fixbolt::NoRecovery, fixbolt::NoLog>(
+    let served = fixbolt::connect_and_serve::<_, fixbolt::Store, fixbolt::NoRecovery, fixbolt::NoLog>(
         &addr,
         session_cfg,
         fixbolt::app(crate::desk::Desk::default()),
@@ -71,13 +88,81 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
         fixbolt::NoRecovery,
         fixbolt::NoLog,
         handles,
-    ) {
+    );
+    events.finish();
+    stopped(&addr, "connect_and_serve", served)
+}
+
+/// **`--role dial` over TLS** — [`fixbolt_engine::connect_and_serve_tls`],
+/// brought up from the file exactly as a deployment would: `into_tls_initiator`
+/// for the session, the address and the policy, then
+/// [`fixbolt_engine::tls::load_client_pem`] for the roots and the name the
+/// venue's certificate must carry.
+///
+/// **The name is `SocketConnectHost` as written** — the host part of the dial
+/// address `into_tls_initiator` hands back. `127.0.0.1` becomes
+/// `ServerName::IpAddress`, so the judge's certificate needs an IP SAN, which
+/// `scripts/interop-qfj.sh` §2 gives it. `TlsRequireKernel` travels inside
+/// `ClientTls`, read from the file, not forced here.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+fn run_tls(cfg_path: &str, settings: Settings) -> std::process::ExitCode {
+    let (session_cfg, addr, policy, tls_settings) = match settings.into_tls_initiator() {
+        Ok(t) => t,
+        Err(e) => {
+            println!("interop: FAIL settings {cfg_path}: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let host = addr.rsplit_once(':').map_or(addr.as_str(), |(h, _)| h);
+    let tls = match fixbolt_engine::tls::load_client_pem(&tls_settings, host) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("interop: FAIL certificate {cfg_path}: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    println!(
+        "interop: fixbolt dial -> {addr}, TLS, TlsRequireKernel={}",
+        if tls.require_kernel { "Y" } else { "N" }
+    );
+
+    let handles = fixbolt::Handles::new();
+    crate::stop_on_stdin(handles.admin());
+    let events = crate::Events::watch(&handles);
+
+    let served = fixbolt_engine::connect_and_serve_tls::<
+        _,
+        fixbolt::Store,
+        fixbolt::NoRecovery,
+        fixbolt::NoLog,
+    >(
+        &addr,
+        session_cfg,
+        fixbolt::app(crate::desk::Desk::default()),
+        policy,
+        fixbolt::NoRecovery,
+        fixbolt::NoLog,
+        handles,
+        tls,
+    );
+    events.finish();
+    stopped(&addr, "connect_and_serve_tls", served)
+}
+
+/// The one line `scripts/interop-qfj.sh` reads for `shutdown`, or the error.
+fn stopped(
+    addr: &str,
+    door: &str,
+    served: Result<fixbolt::Shutdown, fixbolt::ServeError>,
+) -> std::process::ExitCode {
+    match served {
         Ok(shutdown) => {
             println!("interop: dial stopped: {shutdown:?}");
             std::process::ExitCode::SUCCESS
         }
         Err(e) => {
-            println!("interop: FAIL connect_and_serve {addr}: {e}");
+            println!("interop: FAIL {door} {addr}: {e}");
             std::process::ExitCode::FAILURE
         }
     }

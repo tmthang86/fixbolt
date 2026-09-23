@@ -9,15 +9,17 @@
 # side of a Java shop's FIX gateway.
 #
 #   * qfj-acceptor-plain   — fixbolt ACCEPTOR  (fixbolt::serve),        QuickFIX/J initiator (Judge)
-#   * qfj-acceptor-tls     — fixbolt ACCEPTOR  (serve_tls_requiring),   QuickFIX/J initiator (Judge)   [plan step 3]
+#   * qfj-acceptor-tls     — fixbolt ACCEPTOR  (serve_tls_requiring),   QuickFIX/J initiator (Judge)
 #   * qfj-initiator-plain  — fixbolt INITIATOR (--role dial, real engine door), QuickFIX/J acceptor (Judge)
-#   * qfj-initiator-tls    — fixbolt INITIATOR (--role dial, TLS),      QuickFIX/J acceptor (Judge)    [plan step 3]
+#   * qfj-initiator-tls    — fixbolt INITIATOR (--role dial, connect_and_serve_tls), QuickFIX/J acceptor (Judge)
 #
-# This file builds the first two arms of that list (plan step 1 and step 2 —
-# plaintext only). The TLS arms and the four-arm summary line
-# (`interop-qfj: 7 / 7 acceptor plain + 7 / 7 acceptor TLS + ...`) are plan
-# step 3's job, on this same file — CLAUDE.md §1: one file, one writer at a
-# time, so this script grows rather than being rewritten.
+# The two TLS arms are the plaintext arms with one variable changed: the same
+# judge, the same seven steps, the same `Desk`, and a settings file that adds
+# `SocketUseSSL=Y` and `TlsRequireKernel=Y`. Each also asserts `kernel`:
+# `TlsTxSw` and `TlsRxSw` in /proc/net/tls_stat rose across the arm, fixbolt
+# printed no `TlsFellBackToUserspace` event and lost none, and the file said
+# `TlsRequireKernel=Y`. The four-arm summary line prints only when all four
+# arms ran and passed, and CI greps that line.
 #
 # `tools/interop-qfj/Judge.java` is this repository's own code (non-negotiable
 # 9: no QuickFIX source is copied) calling only QuickFIX/J's public API. It
@@ -59,7 +61,7 @@ declare -A JAR_SHA256=(
   [slf4j-api]="44508fd1576500688c790b190acdd16fec4f8c79a3e0b900afd70503cf055f55"
 )
 
-for tool in curl sha256sum javac java unzip cargo; do
+for tool in curl sha256sum javac java keytool openssl unzip cargo; do
   command -v "${tool}" >/dev/null || { echo "${tool} is required" >&2; exit 1; }
 done
 
@@ -71,7 +73,8 @@ BEFORE="$(cd "${REPO_ROOT}" && git status --porcelain --untracked-files=all | so
 # Config knobs, overridable for local iteration.
 PORT_ACCEPTOR_PLAIN="${INTEROP_QFJ_PORT1:-15660}"
 PORT_INITIATOR_PLAIN="${INTEROP_QFJ_PORT2:-15661}"
-# Reserved for plan step 3: PORT_ACCEPTOR_TLS 15662, PORT_INITIATOR_TLS 15663.
+PORT_ACCEPTOR_TLS="${INTEROP_QFJ_PORT3:-15662}"
+PORT_INITIATOR_TLS="${INTEROP_QFJ_PORT4:-15663}"
 DEADLINE="${INTEROP_QFJ_DEADLINE:-20}"
 
 # ---- 1. Five jars, pinned, and the compiled judge ---------------------------
@@ -124,8 +127,100 @@ javac -Xlint:all -cp "${CP}" -d "${CLASSES}" "${REPO_ROOT}/tools/interop-qfj/Jud
 
 JAVA_VERSION_LINE="$(java -version 2>&1 | head -1)"
 
-echo "==> building tools/interop"
-cargo build -q -p fixbolt-interop
+# `--features tls` for every arm, plaintext included: one binary, so the
+# plaintext and TLS arms differ in the settings file and nothing else. The
+# plaintext doors of that binary are the same code with or without the feature.
+echo "==> building tools/interop --features tls"
+cargo build -q -p fixbolt-interop --features tls
+
+# ---- 2. Certificates for this run, and nothing kept ------------------------
+#
+# ADR-0130 decision 6. A CA and two leaves, P-256, each leaf carrying an IP SAN
+# of 127.0.0.1: QuickFIX/J's initiator runs `EndpointIdentificationAlgorithm=
+# HTTPS` against fixbolt's leaf, and fixbolt's initiator verifies QFJ's leaf by
+# `SocketConnectHost=127.0.0.1` as `ServerName::IpAddress`. QFJ reads PKCS12
+# (`openssl pkcs12 -export` for the keystore, `keytool -importcert` for the
+# truststore); fixbolt reads PEM. The password protects nothing — the files
+# live under gitignored vendor/ for the length of one run and are regenerated
+# by the next.
+PKI="${RUN}/pki"
+PKI_PW="fixbolt-interop-run"
+make_pki() {
+  rm -rf "${PKI}"
+  mkdir -p "${PKI}"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    -keyout "${PKI}/ca.key" -out "${PKI}/ca.pem" -days 2 \
+    -subj "/CN=fixbolt interop-qfj run CA" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
+  # **`fixbolt-acceptor` also carries `DNS:localhost`, and it is a trap, not
+  # decoration** — measured 2026-09-23. QFJ 3.0.2's `InitiatorSslFilter`
+  # creates its `SSLEngine` with `InetSocketAddress.getHostName()` of the
+  # connect address, which reverse-resolves `127.0.0.1` to `localhost` through
+  # /etc/hosts; `EndpointIdentificationAlgorithm=HTTPS` then checks *that* name
+  # and the handshake failed with `SSLHandshakeException: (certificate_unknown)
+  # No name matching localhost found` against a leaf with only the IP SAN. The
+  # IP SAN stays, for a resolver that answers with the literal. `qfj-acceptor`
+  # keeps the IP SAN alone, so fixbolt's initiator is held to
+  # `ServerName::IpAddress` with nothing else to fall back on.
+  local leaf san
+  for leaf in fixbolt-acceptor qfj-acceptor; do
+    san="IP:127.0.0.1"
+    [[ "${leaf}" == "fixbolt-acceptor" ]] && san="IP:127.0.0.1,DNS:localhost"
+    openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+      -keyout "${PKI}/${leaf}.key" -out "${PKI}/${leaf}.csr" \
+      -subj "/CN=${leaf}" 2>/dev/null
+    printf '%s\n' \
+      "basicConstraints=critical,CA:FALSE" \
+      "keyUsage=critical,digitalSignature" \
+      "extendedKeyUsage=serverAuth,clientAuth" \
+      "subjectAltName=${san}" \
+      "subjectKeyIdentifier=hash" \
+      "authorityKeyIdentifier=keyid" > "${PKI}/${leaf}.ext"
+    openssl x509 -req -in "${PKI}/${leaf}.csr" -CA "${PKI}/ca.pem" -CAkey "${PKI}/ca.key" \
+      -set_serial "0x$(openssl rand -hex 8)" -days 2 \
+      -extfile "${PKI}/${leaf}.ext" -out "${PKI}/${leaf}.pem" 2>/dev/null
+  done
+  # QFJ's acceptor presents `qfj-acceptor`; QFJ's initiator is given the same
+  # keystore so it never goes looking for the `quickfixj.keystore` QFJ falls
+  # back to (fixbolt's acceptor asks for no client certificate, so it is never
+  # sent). Both QFJ roles trust only this run's CA.
+  openssl pkcs12 -export -in "${PKI}/qfj-acceptor.pem" -inkey "${PKI}/qfj-acceptor.key" \
+    -certfile "${PKI}/ca.pem" -name qfj -passout "pass:${PKI_PW}" \
+    -out "${PKI}/qfj-keystore.p12"
+  keytool -importcert -noprompt -alias fixbolt-interop-ca -file "${PKI}/ca.pem" \
+    -keystore "${PKI}/qfj-truststore.p12" -storetype PKCS12 \
+    -storepass "${PKI_PW}" >/dev/null 2>&1
+  echo "==> certificates for this run: CA + fixbolt-acceptor (IP:127.0.0.1, DNS:localhost) + qfj-acceptor (IP:127.0.0.1), P-256"
+}
+
+# The QuickFIX/J side of every TLS arm, pinned to what fixbolt offers — ADR-0130
+# decision 6: TLS 1.3 and TLS_AES_128_GCM_SHA256 only (`tls::server_config` and
+# `tls::client_config` narrow to exactly that, because kTLS carries fewer
+# suites than rustls negotiates). `INTEROP_QFJ_CIPHER` exists for reversal E.
+qfj_tls_lines() {
+  cat <<CFG
+SocketUseSSL=Y
+EnabledProtocols=TLSv1.3
+CipherSuites=${INTEROP_QFJ_CIPHER:-TLS_AES_128_GCM_SHA256}
+SocketKeyStore=${PKI}/qfj-keystore.p12
+SocketKeyStorePassword=${PKI_PW}
+KeyStoreType=PKCS12
+SocketTrustStore=${PKI}/qfj-truststore.p12
+SocketTrustStorePassword=${PKI_PW}
+TrustStoreType=PKCS12
+CFG
+}
+
+# ---- The kernel's own count --------------------------------------------------
+#
+# `TlsTxSw` / `TlsRxSw` count sockets the kernel installed software kTLS keys
+# on, per direction. The engine cannot write these numbers; that is why they
+# are the evidence. Empty when /proc/net/tls_stat does not exist (no `tls`
+# module), which the `kernel` assertion reads as red.
+tls_counter() {
+  awk -v k="$1" '$1 == k { print $2 }' /proc/net/tls_stat 2>/dev/null || true
+}
 
 # ---- Waiting on a line, bounded ---------------------------------------------
 #
@@ -142,10 +237,35 @@ wait_for_line() {
   return 1
 }
 
+FB_PID=""
+QFJ_PID=""
+cleanup() {
+  for pid in "${FB_PID}" "${QFJ_PID}"; do
+    [[ -n "${pid}" ]] || continue
+    kill "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT
+
+SHUTDOWN_OK=0
+CLEAN_OK=0
+KERNEL_OK=0
+
+dump_and_exit() {
+  local label="$1" judgelog="$2" fixboltlog="$3"
+  echo >&2
+  echo "---- [${label}] what fixbolt said ----" >&2
+  cat "${fixboltlog}" >&2
+  echo "---- [${label}] what the judge said ----" >&2
+  cat "${judgelog}" >&2
+  exit 1
+}
+
 # ---- Reading the output. This is the gate, not the exit code. --------------
 #
 # CLAUDE.md §10: a check proves nothing until something reads it. Every step
-# name, both extra assertions, and the summary line are grepped by name —
+# name, every extra assertion, and the summary line are grepped by name —
 # reversal C in the plan (misspell one name here) must turn this red even
 # though the judge itself printed PASS 7/7.
 assert_arm() {
@@ -164,6 +284,7 @@ assert_arm() {
 
   if grep -qE "${shutdown_pattern}" "${fixboltlog}"; then
     echo "${label}: shutdown     ok    $(grep -oE "${shutdown_pattern}.*" "${fixboltlog}" | head -1)"
+    SHUTDOWN_OK=$((SHUTDOWN_OK + 1))
   else
     echo "MISSING: fixbolt never returned through Admin::shutdown (${label})" >&2
     fail=1
@@ -176,54 +297,106 @@ assert_arm() {
   dirty="$(grep -cE '\|35=3\||\|35=j\|' "${judgelog}" || true)"
   if [[ "${dirty}" -eq 0 ]]; then
     echo "${label}: clean        ok    no 35=3, no 35=j"
+    CLEAN_OK=$((CLEAN_OK + 1))
   else
     echo "MISSING: ${label} clean — ${dirty} reject/business-reject line(s) seen" >&2
     fail=1
   fi
 
   if [[ "${fail}" -ne 0 ]]; then
-    echo >&2
-    echo "---- [${label}] what fixbolt said ----" >&2
-    cat "${fixboltlog}" >&2
-    echo "---- [${label}] what the judge said ----" >&2
-    cat "${judgelog}" >&2
-    exit 1
+    dump_and_exit "${label}" "${judgelog}" "${fixboltlog}"
   fi
 }
 
-FB_PID=""
-QFJ_PID=""
-cleanup() {
-  for pid in "${FB_PID}" "${QFJ_PID}"; do
-    [[ -n "${pid}" ]] || continue
-    kill "${pid}" 2>/dev/null || true
-    wait "${pid}" 2>/dev/null || true
-  done
+# `kernel`, TLS arms only — ADR-0130 decision 5. All required:
+#   * TlsTxSw and TlsRxSw each rose by at least 1 across the arm — the kernel
+#     took keys in both directions; a userspace session moves neither;
+#   * fixbolt printed 0 `interop: event TlsFellBackToUserspace` and
+#     `interop: events lost 0` — a zero read off a stream that dropped events
+#     would be a zero about nothing;
+#   * fixbolt printed 0 `interop: event EndedWithoutReason` — the plan's trap
+#     for QFJ's `close_notify` after Logout reaching kTLS as a non-data record;
+#   * the file fixbolt was brought up from says `TlsRequireKernel=Y`.
+# **What it cannot see**: the counters are machine-wide, so another process
+# setting up kTLS during the arm also moves them. A rise is necessary, not
+# sufficient, on a shared machine; the event stream is the per-process half.
+assert_kernel() {
+  local label="$1" judgelog="$2" fixboltlog="$3" cfg="$4"
+  local tx0="$5" tx1="$6" rx0="$7" rx1="$8" fail=0
+  local fell ended lost dtx="?" drx="?"
+  fell="$(grep -c '^interop: event TlsFellBackToUserspace' "${fixboltlog}" || true)"
+  ended="$(grep -c '^interop: event EndedWithoutReason' "${fixboltlog}" || true)"
+  lost="$(grep -oE '^interop: events lost [0-9]+' "${fixboltlog}" | awk '{print $4}' | tail -1 || true)"
+  if [[ -z "${tx0}" || -z "${tx1}" || -z "${rx0}" || -z "${rx1}" ]]; then
+    echo "MISSING: ${label} kernel — /proc/net/tls_stat unreadable (before: TlsTxSw='${tx0}' TlsRxSw='${rx0}', after: TlsTxSw='${tx1}' TlsRxSw='${rx1}')" >&2
+    fail=1
+  else
+    dtx=$((tx1 - tx0))
+    drx=$((rx1 - rx0))
+    if [[ "${dtx}" -lt 1 || "${drx}" -lt 1 ]]; then
+      echo "MISSING: ${label} kernel — TlsTxSw +${dtx}, TlsRxSw +${drx}; the kernel took no keys" >&2
+      fail=1
+    fi
+  fi
+  if [[ "${fell}" -ne 0 ]]; then
+    echo "MISSING: ${label} kernel — ${fell} TlsFellBackToUserspace event(s)" >&2
+    fail=1
+  fi
+  if [[ "${ended}" -ne 0 ]]; then
+    echo "MISSING: ${label} kernel — ${ended} EndedWithoutReason event(s)" >&2
+    fail=1
+  fi
+  if [[ "${lost}" != "0" ]]; then
+    echo "MISSING: ${label} kernel — events lost '${lost}', want a printed 0" >&2
+    fail=1
+  fi
+  if ! grep -qx 'TlsRequireKernel=Y' "${cfg}"; then
+    echo "MISSING: ${label} kernel — ${cfg} does not say TlsRequireKernel=Y" >&2
+    fail=1
+  fi
+  if [[ "${fail}" -ne 0 ]]; then
+    dump_and_exit "${label}" "${judgelog}" "${fixboltlog}"
+  fi
+  echo "${label}: kernel       ok    TlsTxSw +${dtx}, TlsRxSw +${drx}, 0 TlsFellBackToUserspace, 0 EndedWithoutReason, events lost 0, TlsRequireKernel=Y"
+  KERNEL_OK=$((KERNEL_OK + 1))
 }
-trap cleanup EXIT
 
-# ---- Arm: qfj-acceptor-plain -------------------------------------------------
+# ---- Arms: fixbolt ACCEPTOR (qfj-acceptor-plain, qfj-acceptor-tls) ----------
 #
 # fixbolt is the acceptor — the product this repository is positioned on
 # (ADR-0130 Consequences) — and Judge plays the QuickFIX/J initiator. `Desk`
-# sends two News on logon, same as against libquickfix.
-run_acceptor_plain() {
-  local label="qfj-acceptor-plain" port="${PORT_ACCEPTOR_PLAIN}" work
+# sends two News on logon, same as against libquickfix. `tls` is 0 or 1 and is
+# the only difference between the two arms.
+run_acceptor() {
+  local label="$1" port="$2" tls="$3" work tx0="" rx0="" tx1="" rx1=""
   work="${RUN}/${label}"
   rm -rf "${work}"
   mkdir -p "${work}/fbstore" "${work}/qfjstore"
 
-  cat > "${work}/fixbolt.cfg" <<CFG
+  {
+    cat <<CFG
 [DEFAULT]
 BeginString=FIX.4.4
 SenderCompID=FIXBOLT
+CFG
+    if [[ "${tls}" -eq 1 ]]; then
+      cat <<CFG
+SocketUseSSL=Y
+TlsRequireKernel=Y
+ServerCertificateFile=${PKI}/fixbolt-acceptor.pem
+ServerCertificateKeyFile=${PKI}/fixbolt-acceptor.key
+CFG
+    fi
+    cat <<CFG
 
 [SESSION]
 TargetCompID=QFJINI
 HeartBtInt=2
 CFG
+  } > "${work}/fixbolt.cfg"
 
-  cat > "${work}/qfj-initiator.cfg" <<CFG
+  {
+    cat <<CFG
 [DEFAULT]
 ConnectionType=initiator
 SocketConnectHost=127.0.0.1
@@ -238,12 +411,24 @@ EndTime=00:00:00
 UseDataDictionary=Y
 DataDictionary=${QFJ_DICT}
 FileStorePath=${work}/qfjstore
+CFG
+    if [[ "${tls}" -eq 1 ]]; then
+      qfj_tls_lines
+      echo "EndpointIdentificationAlgorithm=HTTPS"
+    fi
+    cat <<CFG
 
 [SESSION]
 BeginString=FIX.4.4
 SenderCompID=QFJINI
 TargetCompID=FIXBOLT
 CFG
+  } > "${work}/qfj-initiator.cfg"
+
+  if [[ "${tls}" -eq 1 ]]; then
+    tx0="$(tls_counter TlsTxSw)"
+    rx0="$(tls_counter TlsRxSw)"
+  fi
 
   echo
   echo "==> [${label}] fixbolt acceptor on ${port}"
@@ -255,7 +440,12 @@ CFG
   FB_PID=$!
   exec 9> "${work}/fixbolt.ctl"
 
-  if ! wait_for_line "${work}/fixbolt.log" "interop: listening"; then
+  # Either line ends the wait: an acceptor that refused to start (reversal D:
+  # `TlsRequireKernel=Y` on a kernel with no `tls` module) says so at once, and
+  # waiting out the deadline for a readiness line it will never print would
+  # only delay the sentence that matters.
+  if ! wait_for_line "${work}/fixbolt.log" "^interop: (listening|FAIL)" \
+    || ! grep -q "^interop: listening" "${work}/fixbolt.log"; then
     echo "[${label}] fixbolt's acceptor never became ready:" >&2
     cat "${work}/fixbolt.log" >&2
     exit 1
@@ -283,21 +473,29 @@ CFG
 
   assert_arm "${label}" "${work}/judge.log" "${work}/fixbolt.log" \
     '^interop: acceptor stopped: Shutdown \{'
+  if [[ "${tls}" -eq 1 ]]; then
+    tx1="$(tls_counter TlsTxSw)"
+    rx1="$(tls_counter TlsRxSw)"
+    assert_kernel "${label}" "${work}/judge.log" "${work}/fixbolt.log" "${work}/fixbolt.cfg" \
+      "${tx0}" "${tx1}" "${rx0}" "${rx1}"
+  fi
 }
 
-# ---- Arm: qfj-initiator-plain ------------------------------------------------
+# ---- Arms: fixbolt INITIATOR (qfj-initiator-plain, qfj-initiator-tls) -------
 #
 # fixbolt dials out through its real initiator door (`--role dial`,
-# `connect_and_serve`) — the plan's reason for building that role rather than
-# reusing the hand-rolled `--role initiator` session. Judge plays the
-# QuickFIX/J acceptor and drives every step from that side.
-run_initiator_plain() {
-  local label="qfj-initiator-plain" port="${PORT_INITIATOR_PLAIN}" work
+# `connect_and_serve` / `connect_and_serve_tls`) — the plan's reason for
+# building that role rather than reusing the hand-rolled `--role initiator`
+# session. Judge plays the QuickFIX/J acceptor and drives every step from that
+# side.
+run_initiator() {
+  local label="$1" port="$2" tls="$3" work tx0="" rx0="" tx1="" rx1=""
   work="${RUN}/${label}"
   rm -rf "${work}"
   mkdir -p "${work}/qfjstore"
 
-  cat > "${work}/qfj-acceptor.cfg" <<CFG
+  {
+    cat <<CFG
 [DEFAULT]
 ConnectionType=acceptor
 SocketAcceptPort=${port}
@@ -310,6 +508,12 @@ FileStorePath=${work}/qfjstore
 ResetOnLogon=Y
 ResetOnLogout=Y
 ResetOnDisconnect=Y
+CFG
+    if [[ "${tls}" -eq 1 ]]; then
+      qfj_tls_lines
+      echo "NeedClientAuth=N"
+    fi
+    cat <<CFG
 
 [SESSION]
 BeginString=FIX.4.4
@@ -317,24 +521,41 @@ SenderCompID=QFJACC
 TargetCompID=FIXBOLT
 HeartBtInt=2
 CFG
+  } > "${work}/qfj-acceptor.cfg"
 
   # `ReconnectInterval=30` — same argument scripts/interop.sh's 4b makes for
   # the C++ direction: fixbolt must not redial after the judge logs it out and
   # exits, or a second Logon would land in the same transcript the assertions
   # above read.
-  cat > "${work}/fixbolt-dial.cfg" <<CFG
+  {
+    cat <<CFG
 [DEFAULT]
 ConnectionType=initiator
 SocketConnectHost=127.0.0.1
 SocketConnectPort=${port}
 HeartBtInt=2
 ReconnectInterval=30
+CFG
+    if [[ "${tls}" -eq 1 ]]; then
+      cat <<CFG
+SocketUseSSL=Y
+TlsRequireKernel=Y
+CertificationAuthoritiesFile=${PKI}/ca.pem
+CFG
+    fi
+    cat <<CFG
 
 [SESSION]
 BeginString=FIX.4.4
 SenderCompID=FIXBOLT
 TargetCompID=QFJACC
 CFG
+  } > "${work}/fixbolt-dial.cfg"
+
+  if [[ "${tls}" -eq 1 ]]; then
+    tx0="$(tls_counter TlsTxSw)"
+    rx0="$(tls_counter TlsRxSw)"
+  fi
 
   echo
   echo "==> [${label}] QuickFIX/J acceptor on ${port}"
@@ -360,8 +581,22 @@ CFG
   exec 8> "${work}/fixbolt.ctl"
 
   # Judge drives every step from the acceptor side and has the only verdict;
-  # fixbolt's dial has none of its own to wait on.
-  if ! wait_for_line "${work}/judge.log" "^${label}: (PASS|FAIL) "; then
+  # fixbolt's dial has none of its own to wait on — except a refusal to start
+  # (reversal D: `TlsRequireKernel=Y` on a kernel with no `tls` module), which
+  # ends the wait at once with fixbolt's own sentence rather than after the
+  # judge has run out every step's deadline against nobody.
+  local ticks=$((DEADLINE * 10)) i=0
+  while [[ "${i}" -lt "${ticks}" ]]; do
+    grep -Eq "^${label}: (PASS|FAIL) " "${work}/judge.log" && break
+    if grep -q "^interop: FAIL" "${work}/fixbolt.log" 2>/dev/null; then
+      echo "[${label}] fixbolt's dial refused to start:" >&2
+      cat "${work}/fixbolt.log" >&2
+      exit 1
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if ! grep -Eq "^${label}: (PASS|FAIL) " "${work}/judge.log"; then
     echo "[${label}] the judge never reached a verdict within the deadline:" >&2
     echo "---- judge ----" >&2
     cat "${work}/judge.log" >&2
@@ -390,7 +625,7 @@ CFG
   # one hazard the plan already named for another it did not. This wait is
   # widened to match the engine's real, observed behaviour instead of
   # silently reinterpreting a pinned setting; the underlying latency belongs
-  # to `crates/engine`, which rows 1-2 do not touch — reported, not fixed,
+  # to `crates/engine`, which this plan does not touch — reported, not fixed,
   # here.
   local stopped="no"
   for _ in $(seq 1 400); do
@@ -407,32 +642,46 @@ CFG
 
   assert_arm "${label}" "${work}/judge.log" "${work}/fixbolt.log" \
     '^interop: dial stopped: Shutdown \{'
+  if [[ "${tls}" -eq 1 ]]; then
+    tx1="$(tls_counter TlsTxSw)"
+    rx1="$(tls_counter TlsRxSw)"
+    assert_kernel "${label}" "${work}/judge.log" "${work}/fixbolt.log" "${work}/fixbolt-dial.cfg" \
+      "${tx0}" "${tx1}" "${rx0}" "${rx1}"
+  fi
 }
 
 # ---- Which arms this invocation runs ----------------------------------------
 #
-# `INTEROP_QFJ_ARMS` lets a step under development run only its own arm. The
-# default below is every arm THIS script builds today; plan step 3 widens it
-# to all four when the TLS arms exist, and only then does the combined
-# `interop-qfj: 7 / 7 ... + 7 / 7 ...` line print — CI's grep is added in step
-# 4, once that line means what it says.
-IFS=',' read -r -a ARMS <<< "${INTEROP_QFJ_ARMS:-acceptor-plain,initiator-plain}"
+# `INTEROP_QFJ_ARMS` lets a step under development run only its own arms. The
+# default is all four, in the order the summary line names them, and only a
+# run of all four prints that line — CI greps it, so a partial invocation can
+# never be mistaken for the gate.
+IFS=',' read -r -a ARMS <<< "${INTEROP_QFJ_ARMS:-acceptor-plain,acceptor-tls,initiator-plain,initiator-tls}"
 
-ran_acceptor_plain=0
-ran_initiator_plain=0
+WANT_PKI=0
 for arm in "${ARMS[@]}"; do
   case "${arm}" in
-    acceptor-plain) run_acceptor_plain; ran_acceptor_plain=1 ;;
-    initiator-plain) run_initiator_plain; ran_initiator_plain=1 ;;
-    acceptor-tls | initiator-tls)
-      echo "arm '${arm}' is not built yet — plan step 3 adds TLS" >&2
-      exit 1
-      ;;
+    acceptor-plain | initiator-plain) ;;
+    acceptor-tls | initiator-tls) WANT_PKI=1 ;;
     *)
-      echo "unknown arm '${arm}' (acceptor-plain | initiator-plain)" >&2
+      echo "unknown arm '${arm}' (acceptor-plain | acceptor-tls | initiator-plain | initiator-tls)" >&2
       exit 1
       ;;
   esac
+done
+if [[ "${WANT_PKI}" -eq 1 ]]; then
+  make_pki
+fi
+
+declare -A RAN=()
+for arm in "${ARMS[@]}"; do
+  case "${arm}" in
+    acceptor-plain) run_acceptor qfj-acceptor-plain "${PORT_ACCEPTOR_PLAIN}" 0 ;;
+    acceptor-tls) run_acceptor qfj-acceptor-tls "${PORT_ACCEPTOR_TLS}" 1 ;;
+    initiator-plain) run_initiator qfj-initiator-plain "${PORT_INITIATOR_PLAIN}" 0 ;;
+    initiator-tls) run_initiator qfj-initiator-tls "${PORT_INITIATOR_TLS}" 1 ;;
+  esac
+  RAN[${arm}]=1
 done
 
 # ---- Last: what this run added, and what it means ---------------------------
@@ -445,9 +694,13 @@ if [[ "${BEFORE}" != "${AFTER}" ]]; then
 fi
 echo "==> the run added nothing git can see"
 
-# Not the plan's final four-arm line — that one names all four arms and lands
-# with plan step 3. This says plainly what actually ran, so a partial
-# invocation during development is never mistaken for the finished gate.
-if [[ "${ran_acceptor_plain}" -eq 1 && "${ran_initiator_plain}" -eq 1 ]]; then
-  echo "interop-qfj: (plaintext only, TLS arms land in plan step 3) 7 / 7 acceptor plain + 7 / 7 initiator plain against QuickFIX/J ${QFJ_VERSION} on ${JAVA_VERSION_LINE}"
+# The summary line, only when all four arms ran. Every arm that fails exits
+# above, so reaching here with all four means four passes — and the counters
+# are printed from what was asserted, not from that inference, so a future
+# path that forgets to exit still cannot print 4 / 4.
+if [[ -n "${RAN[acceptor-plain]:-}" && -n "${RAN[acceptor-tls]:-}" \
+  && -n "${RAN[initiator-plain]:-}" && -n "${RAN[initiator-tls]:-}" ]]; then
+  echo "interop-qfj: 7 / 7 acceptor plain + 7 / 7 acceptor TLS + 7 / 7 initiator plain + 7 / 7 initiator TLS (+ shutdown ${SHUTDOWN_OK} / 4, clean ${CLEAN_OK} / 4, kernel ${KERNEL_OK} / 2) against QuickFIX/J ${QFJ_VERSION} on ${JAVA_VERSION_LINE}"
+else
+  echo "interop-qfj: partial run (${ARMS[*]}) — the summary line prints only when all four arms run"
 fi
