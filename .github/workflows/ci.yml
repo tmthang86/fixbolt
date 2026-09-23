@@ -1122,6 +1122,12 @@ jobs:
             exit 1
           fi
 
+      # The probe is outside the workspace, so the workspace clippy job never lints it, and the
+      # lint table copied into spikes/fixp-probe/Cargo.toml would be a claim nobody runs (review of
+      # PR #102). It runs here, after the step above has fetched the schema its build.rs needs.
+      - name: Lint the detached probe with its own copy of the workspace lint table
+        run: cargo clippy --locked --manifest-path spikes/fixp-probe/Cargo.toml --all-targets -- -D warnings
+
       # Only on failure — the run above already tees the log to this step's own reader on a green
       # run, and CLAUDE.md §7 asks for the output to be read, not archived unconditionally.
       - if: failure()

@@ -63,9 +63,21 @@ REFEREE_READY_SECONDS="${FIXP_REFEREE_READY_SECONDS:-60}"
 # The referee is told to EXPECT these; the probe is told to SEND them (reject-credentials alone
 # sends a different credentials value). The script then holds each value the referee prints as
 # RECEIVED against what the probe was told to send.
-SESSION_ID=4242
-SESSION_VER_ID=1
-ENTERING_FIRM=77
+#
+# Every fixed-width field carries a value with NO ZERO BYTE at its declared width (the review of
+# PR #102: with enteringFirm 77 and onbehalfFirm null, an encoder writing Firm as uint16 stayed
+# green — the high bytes it dropped were zero anyway). A value that fills its width cannot survive
+# a narrowed encoder (the writer refuses it, or the bytes on the wire move), and a widened one
+# shifts every later field. keepAliveInterval alone cannot: Artio caps it at KEEPALIVE_MAX_MS.
+SESSION_ID=287454020                     # uint32 0x11223344
+SESSION_VER_ID=72623859790382856         # uint64 0x0102030405060708
+ENTERING_FIRM=555885348                  # uint32 0x21222324
+ONBEHALF_FIRM=825373492                  # uint32 0x31323334 (FirmOptional; 0 would be null)
+NEXT_SEQ_NO=1094861636                   # uint32 0x41424344 (Artio accepts any >= 1, and echoes it)
+COD_TYPE=1                               # uint8 CANCEL_ON_DISCONNECT_ONLY (the Terminate is a logout,
+                                         # so Artio never arms it here)
+COD_TIMEOUT_MS=5859837686836516696       # uint64 0x5152535455565758 (Artio clamps it; never armed)
+TERMINATION_CODE=1                       # uint8 TerminationCode.FINISHED
 CREDENTIALS="fixbolt-spike-credentials"
 CLIENT_IP="127.0.0.1"
 CLIENT_APP_NAME="fixbolt-fixp-probe"
@@ -80,7 +92,7 @@ KEEPALIVE_MIN_MS=1
 KEEPALIVE_MAX_MS=60000
 ACCEPTOR_KEEPALIVE_MS=30000
 
-for tool in curl sha256sum jar javac java git comm mktemp python3; do
+for tool in curl sha256sum javac java git comm mktemp python3; do
   command -v "${tool}" >/dev/null || { echo "${tool} is required" >&2; exit 1; }
 done
 
@@ -140,10 +152,14 @@ echo "==> all ${#PINNED_JARS[@]} jars match their pinned SHA-256"
 
 # ---- 2. The schema the referee actually decodes with, extracted and pinned the same way -------
 echo "==> extracting ${SCHEMA_PATH_IN_JAR} from ${CODECS_JAR}"
-EXTRACT_TMP="$(mktemp -d "${VENDOR_DIR}/extract.XXXXXX")"
-( cd "${EXTRACT_TMP}" && jar xf "${JAR_DIR}/${CODECS_JAR}" "${SCHEMA_PATH_IN_JAR}" )
-mv "${EXTRACT_TMP}/${SCHEMA_PATH_IN_JAR}" "${SCHEMA_FILE}"
-rm -rf "${EXTRACT_TMP}"
+# Read straight out of the jar (a zip) into its place — no scratch directory to extract into and
+# `cd` through, so nothing here is a directory scripts/check-scratch-fixtures.sh has to ask about.
+python3 - "${JAR_DIR}/${CODECS_JAR}" "${SCHEMA_PATH_IN_JAR}" "${SCHEMA_FILE}" <<'PY'
+import sys, zipfile
+jar, member, out = sys.argv[1:]
+with zipfile.ZipFile(jar) as z, open(out, "wb") as f:
+    f.write(z.read(member))
+PY
 
 SCHEMA_GOT="$(sha256sum "${SCHEMA_FILE}" | cut -d' ' -f1)"
 if [[ "${SCHEMA_GOT}" != "${SCHEMA_SHA256}" ]]; then
@@ -212,9 +228,11 @@ fi
 
 # ---- 5. Arms -------------------------------------------------------------------------------
 #
-# One arm, one run directory of its own, and the JVM's OWN CWD is that directory too — so any
-# incidental file a crashing JVM writes (hs_err_pid*.log and friends) lands under vendor/fixp/,
-# never at the repository root. The directory is removed whether the arm passes or fails, so two
+# One arm, one run directory of its own, and the JVM's fatal-error log is pointed into it
+# (-XX:ErrorFile) — so a crashing JVM's hs_err_pid*.log lands under gitignored vendor/fixp/, never
+# at the repository root, without the JVM's working directory having to be that scratch directory
+# (nothing enters one: scripts/check-scratch-fixtures.sh; anything else a JVM wrote to its working
+# directory would still be caught by the git-status check at the end). The directory is removed whether the arm passes or fails, so two
 # invocations of this script back to back never see Aeron or archive state left over from the one
 # before (the plan's "Thư mục Aeron / archive còn sót" trap) — this row's reversal at the process
 # level, proven separately from the jar/schema checksum reversal above.
@@ -229,7 +247,7 @@ run_referee_only() {
   echo "==> [referee-only] port=${PORT} aeron-dir=${run_dir}"
 
   set +e
-  ( cd "${run_dir}" && java "${JAVA_ADD_OPENS[@]}" -cp "${CLASSES_DIR}:${CLASSPATH}" Referee \
+  ( java "${JAVA_ADD_OPENS[@]}" "-XX:ErrorFile=${run_dir}/hs_err_pid%p.log" -cp "${CLASSES_DIR}:${CLASSPATH}" Referee \
       --port "${PORT}" \
       --archive-control-port "${ARCHIVE_CONTROL_PORT}" \
       --archive-response-port "${ARCHIVE_RESPONSE_PORT}" \
@@ -275,13 +293,81 @@ require() {
   return 1
 }
 
+# The tap's Negotiate lines. Values are the ones the probe was told to send; the two that the
+# reject-credentials arm and reversal B vary come in as arguments.
+require_wire_negotiate() {
+  local log="$1" credentials="$2" app_version="$3" bad=0
+  require "${log}" "referee: wire Negotiate.blockLength ok 28" || bad=1
+  require "${log}" "referee: wire Negotiate.schemaId ok 1" || bad=1
+  require "${log}" "referee: wire Negotiate.version ok 5" || bad=1
+  require "${log}" "referee: wire Negotiate.sessionID ok ${SESSION_ID}" || bad=1
+  require "${log}" "referee: wire Negotiate.sessionVerID ok ${SESSION_VER_ID}" || bad=1
+  require "${log}" "referee: wire Negotiate.enteringFirm ok ${ENTERING_FIRM}" || bad=1
+  require "${log}" "referee: wire Negotiate.onbehalfFirm ok ${ONBEHALF_FIRM}" || bad=1
+  if [[ "${credentials}" == "${CREDENTIALS}" ]]; then
+    require "${log}" "referee: wire Negotiate.credentials ok ${credentials}" || bad=1
+  else
+    require "${log}" "referee: wire Negotiate.credentials MISMATCH got ${credentials} want ${CREDENTIALS}" || bad=1
+  fi
+  require "${log}" "referee: wire Negotiate.clientIP ok ${CLIENT_IP}" || bad=1
+  require "${log}" "referee: wire Negotiate.clientAppName ok ${CLIENT_APP_NAME}" || bad=1
+  require "${log}" "referee: wire Negotiate.clientAppVersion ok ${app_version}" || bad=1
+  if ! grep -qE '^referee: wire Negotiate\.length ok [0-9]+$' "${log}"; then
+    echo "MISSING: 'referee: wire Negotiate.length ok <n>'" >&2
+    bad=1
+  fi
+  return "${bad}"
+}
+
+require_wire_establish_terminate() {
+  local log="$1" bad=0
+  require "${log}" "referee: wire Establish.blockLength ok 41" || bad=1
+  require "${log}" "referee: wire Establish.schemaId ok 1" || bad=1
+  require "${log}" "referee: wire Establish.version ok 5" || bad=1
+  require "${log}" "referee: wire Establish.sessionID ok ${SESSION_ID}" || bad=1
+  require "${log}" "referee: wire Establish.sessionVerID ok ${SESSION_VER_ID}" || bad=1
+  require "${log}" "referee: wire Establish.keepAliveInterval ok ${PROBE_KEEPALIVE_MS}" || bad=1
+  require "${log}" "referee: wire Establish.nextSeqNo ok ${NEXT_SEQ_NO}" || bad=1
+  require "${log}" "referee: wire Establish.cancelOnDisconnectType ok ${COD_TYPE}" || bad=1
+  require "${log}" "referee: wire Establish.codTimeoutWindow ok ${COD_TIMEOUT_MS}" || bad=1
+  require "${log}" "referee: wire Establish.credentials ok ${CREDENTIALS}" || bad=1
+  # framing 4 + SBE header 8 + block 41 + credentials' uint8 length prefix and bytes
+  require "${log}" "referee: wire Establish.length ok $(( 4 + 8 + 41 + 1 + ${#CREDENTIALS} ))" || bad=1
+  require "${log}" "referee: wire Terminate.blockLength ok 13" || bad=1
+  require "${log}" "referee: wire Terminate.schemaId ok 1" || bad=1
+  require "${log}" "referee: wire Terminate.version ok 5" || bad=1
+  require "${log}" "referee: wire Terminate.sessionID ok ${SESSION_ID}" || bad=1
+  require "${log}" "referee: wire Terminate.sessionVerID ok ${SESSION_VER_ID}" || bad=1
+  require "${log}" "referee: wire Terminate.terminationCode ok ${TERMINATION_CODE}" || bad=1
+  require "${log}" "referee: wire Terminate.length ok $(( 4 + 8 + 13 ))" || bad=1
+  return "${bad}"
+}
+
+# Each timestamp the probe says it sent must be the one the tap decoded.
+require_sent_timestamps() {
+  local ref_log="$1" probe_log="$2" arm="$3" bad=0 msg ts n=0
+  while read -r msg ts; do
+    n=$(( n + 1 ))
+    require "${ref_log}" "referee: wire ${msg}.timestamp ${ts}" || bad=1
+  done < <(sed -n "s/^${arm}: sent \([A-Za-z]*\)\.timestamp \([0-9]*\)\$/\1 \2/p" "${probe_log}")
+  if [[ "${n}" -eq 0 ]]; then
+    echo "MISSING: '${arm}: sent <Message>.timestamp <n>' in the probe's output" >&2
+    bad=1
+  fi
+  return "${bad}"
+}
+
 # One probe arm: the referee in the background with its own run directory, stop file and
 # expectations; the probe in the foreground; then the stop file, and both transcripts judged by
 # their lines.
 run_probe_arm() {
   local arm="$1"
-  local run_dir ref_log probe_log stop_file ref_pid ref_rc probe_rc start_s elapsed waited PORT
+  local run_dir ref_log probe_log stop_file ref_pid ref_rc probe_rc start_s elapsed waited PORT ARTIO_PORT
+  # Two ports: the referee's wire tap listens on PORT, where the probe connects, and relays to
+  # Artio's acceptor on ARTIO_PORT (Referee.java's class comment, "The wire tap").
   PORT="$(pick_port)"
+  ARTIO_PORT="$(pick_port)"
+  while [[ "${ARTIO_PORT}" == "${PORT}" ]]; do ARTIO_PORT="$(pick_port)"; done
   run_dir="$(mktemp -d "${VENDOR_DIR}/run.XXXXXX")"
   ref_log="${run_dir}/referee.log"
   probe_log="${run_dir}/probe.log"
@@ -293,11 +379,11 @@ run_probe_arm() {
   local sent_client_app_version="${CLIENT_APP_VERSION}"
 
   echo
-  echo "==> [${arm}] port=${PORT} aeron-dir=${run_dir}"
+  echo "==> [${arm}] port=${PORT} artio-port=${ARTIO_PORT} aeron-dir=${run_dir}"
   # Created before the referee starts, so the wait below never greps a file not yet there.
   : >"${ref_log}"
 
-  ( cd "${run_dir}" && exec java "${JAVA_ADD_OPENS[@]}" -cp "${CLASSES_DIR}:${CLASSPATH}" Referee \
+  ( exec java "${JAVA_ADD_OPENS[@]}" "-XX:ErrorFile=${run_dir}/hs_err_pid%p.log" -cp "${CLASSES_DIR}:${CLASSPATH}" Referee \
       --port "${PORT}" \
       --archive-control-port "${ARCHIVE_CONTROL_PORT}" \
       --archive-response-port "${ARCHIVE_RESPONSE_PORT}" \
@@ -314,7 +400,14 @@ run_probe_arm() {
       --expect-credentials "${CREDENTIALS}" \
       --expect-client-ip "${CLIENT_IP}" \
       --expect-client-app-name "${CLIENT_APP_NAME}" \
-      --expect-client-app-version "${CLIENT_APP_VERSION}" ) >>"${ref_log}" 2>&1 &
+      --expect-client-app-version "${CLIENT_APP_VERSION}" \
+      --artio-port "${ARTIO_PORT}" \
+      --expect-onbehalf-firm "${ONBEHALF_FIRM}" \
+      --expect-keepalive-ms "${PROBE_KEEPALIVE_MS}" \
+      --expect-next-seq-no "${NEXT_SEQ_NO}" \
+      --expect-cod-type "${COD_TYPE}" \
+      --expect-cod-timeout-ms "${COD_TIMEOUT_MS}" \
+      --expect-termination-code "${TERMINATION_CODE}" ) >>"${ref_log}" 2>&1 &
   ref_pid=$!
 
   # The probe starts only once a library is connected to acquire its connection.
@@ -345,7 +438,11 @@ run_probe_arm() {
       --client-app-name "${CLIENT_APP_NAME}" \
       --client-app-version "${sent_client_app_version}" \
       --keepalive-ms "${PROBE_KEEPALIVE_MS}" \
-      --server-keepalive-ms "${ACCEPTOR_KEEPALIVE_MS}" >"${probe_log}" 2>&1
+      --server-keepalive-ms "${ACCEPTOR_KEEPALIVE_MS}" \
+      --onbehalf-firm "${ONBEHALF_FIRM}" \
+      --next-seq-no "${NEXT_SEQ_NO}" \
+      --cod-type "${COD_TYPE}" \
+      --cod-timeout-ms "${COD_TIMEOUT_MS}" >"${probe_log}" 2>&1
     probe_rc=$?
     set -e
   else
@@ -383,9 +480,15 @@ run_probe_arm() {
   require "${ref_log}" "referee: field clientAppName ok ${CLIENT_APP_NAME}" || bad=1
   require "${ref_log}" "referee: field clientAppVersion ok ${sent_client_app_version}" || bad=1
 
+  # The wire tap's lines: every Negotiate field as Real Logic's NegotiateDecoder read it off the
+  # wire, the header, and the frame length against the decoder's own end of message.
+  require_wire_negotiate "${ref_log}" "${sent_credentials}" "${sent_client_app_version}" || bad=1
+  require_sent_timestamps "${ref_log}" "${probe_log}" "${arm}" || bad=1
+
   case "${arm}" in
     accept)
       require "${ref_log}" "referee: authentication accepted" || bad=1
+      require_wire_establish_terminate "${ref_log}" || bad=1
       local step passed=0
       for step in negotiate establish terminate echo eof; do
         if grep -qxF "accept: ${step} ok" "${probe_log}"; then

@@ -1014,11 +1014,11 @@ actually decodes with, not B3's currently published `8.4.2` (see
 ADR-0140 decision 5) has run against a merged commit; the manager fills the run id in when it
 does, per `CLAUDE.md` §9's rule that a laptop result is not a CI result.
 
-**Output, verbatim, from the command above on this desk:**
+**Output, verbatim, from the command above on this desk** (re-run 2026-09-24, after the review fixes below):
 
 ```
-==> [accept] PASS in 0s
-==> [reject-timestamp] PASS in 5s
+==> [accept] PASS in 1s
+==> [reject-timestamp] PASS in 6s
 ==> [reject-credentials] PASS in 1s
 
 ==> the run added nothing git can see
@@ -1039,6 +1039,48 @@ reject-timestamp: refused ok: NegotiateReject INVALID_TIMESTAMP(7)
 reject-credentials: refused ok: NegotiateReject CREDENTIALS(1)
 ```
 
+**The wire tap.** The seven fields above are what Artio's authentication context exposes; it
+carries neither `onbehalfFirm`, nor the header's `blockLength`, nor anything of `Establish` or
+`Terminate`. So the referee also listens in front of Artio, relays every byte, and decodes each
+frame the probe sends with Real Logic's generated `NegotiateDecoder`, `EstablishDecoder` and
+`TerminateDecoder` from the pinned jar, printing `referee: wire <Message>.<field> ok <value>` for
+every field, for `blockLength`, `schemaId` and `version`, and for the frame length against the
+decoder's own end of message; the script requires each line. A Negotiate mismatch makes the
+referee refuse; an Establish or Terminate mismatch closes the connection. The two timestamps have
+no expected value — the probe prints what it sent (`accept: sent Negotiate.timestamp <n>`) and the
+script requires the tap's `referee: wire Negotiate.timestamp <n>` to match.
+
+**What the probe reads from its own table, not from the wire.** `NegotiateResponse.serverFlow`
+and `clientFlow` (and `clientFlow` in `NegotiateReject`) are `presence="constant"` with a
+`valueRef`: they have no wire bytes, so `r.expect(SERVER_FLOW, …)` / `r.expect(CLIENT_FLOW, …)` in
+`spikes/fixp-probe/src/main.rs` (the `negotiate` step of `arm_accept`, and `arm_reject`) read the
+value from the table `fixbolt-sbe-gen` generated. They check that row 2's generator resolved each
+field's `valueRef` to the schema's `validValue` — nothing about what Artio sent.
+
+### A width mistake in the encoder, found by review and closed `[measured 2026-09-24]`
+
+The review of PR #102 generated the encoding tables from a copy of the schema with `Firm` as
+`uint16` instead of `uint32` and the run **stayed green**: the Negotiate went out with a
+`blockLength` of 26 instead of 28, but the test values then in use (`enteringFirm` 77,
+`onbehalfFirm` null, i.e. 0) had zero high bytes, and nothing after `enteringFirm` was judged.
+Two changes close it. Every fixed-width field now carries a value with no zero byte at its width
+(`sessionID` `0x11223344`, `sessionVerID` `0x0102030405060708`, `enteringFirm` `0x21222324`,
+`onbehalfFirm` `0x31323334`, `nextSeqNo` `0x41424344`, `codTimeoutWindow` `0x5152535455565758`),
+so a narrowed encoder cannot carry it and a widened one moves every later field; and the wire tap
+above judges every field and the `blockLength`. Reversals, each on the desk, schema copy used for
+encoding only, restored afterwards:
+
+```
+Firm as uint16:  accept: negotiate FAIL: put enteringFirm = 555885348: BadValue
+Firm as uint64:  referee: wire Negotiate.blockLength MISMATCH got 32 want 28
+                 referee: wire Negotiate.onbehalfFirm MISMATCH got 0 want 825373492
+                 accept: negotiate FAIL: NegotiateReject CREDENTIALS(1)
+```
+
+The first is the reviewer's exact sabotage; it now goes red in our own writer, before a byte is
+sent, because the value no longer fits. The second shows a width mistake that does reach the wire
+going red at the referee. Neither run printed the summary line.
+
 ### What is not proven here
 
 * **No FIXP session exists.** This is a straight-line probe — Negotiate, Establish, Terminate,
@@ -1056,10 +1098,15 @@ reject-credentials: refused ok: NegotiateReject CREDENTIALS(1)
 * **`EstablishAck.nextSeqNo` is Artio echoing the probe's own number back, not an
   independently-tracked sequence.** `InternalBinaryEntryPointConnection.onEstablish` passes the
   client's `Establish.nextSeqNo` straight through to `sendEstablishAck`
-  (`spikes/fixp-probe/src/main.rs`, the comment on `EXPECTED_ACK_NEXT_SEQ_NO`), so the probe
-  sending `1` and reading `1` back proves the field round-trips, not that Artio's own session
-  bookkeeping produced that number. The same is not true of `lastIncomingSeqNo`, which Artio
+  (`spikes/fixp-probe/src/main.rs`, the comment on `expected_ack_next_seq_no`) — observed: the
+  probe sends `1094861636` and reads `1094861636` back. That proves the field round-trips, not
+  that Artio's own session bookkeeping produced that number. The same is not true of `lastIncomingSeqNo`, which Artio
   computes from what it actually received.
+* **Two fixed-width fields cannot fill their width.** `Establish.keepAliveInterval` is a `uint64`
+  that Artio caps at 60 000 ms, so six of its eight bytes are zero on every run; and the two
+  timestamps are the clock, so any byte of them may be zero on a given run. A width mistake in
+  those two composites alone would still be caught by the fields after them, which do fill their
+  widths, and by the frame length — but not by the field's own value.
 * **No counterparty acceptance from B3 itself.** As with section 7's `libquickfix` interop, this
   spike is this repository's own reading of a public schema and a third party's implementation
   of it; it is not a B3 certification and does not substitute for one.

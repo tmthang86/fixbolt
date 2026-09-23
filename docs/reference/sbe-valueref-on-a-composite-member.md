@@ -82,12 +82,15 @@ different values (nanosecond = 9, millisecond = 3), and a `uint32` right behind 
 | `a_value_ref_to_a_valid_value_that_does_not_exist_is_refused_naming_value_ref` | the error names `valueRef` and the value |
 | `a_value_ref_whose_enum_encoding_differs_from_the_member_type_is_refused` | `primitiveType="uint16"` against a `uint8` enum is refused |
 | `a_value_ref_on_a_member_that_is_not_constant_is_refused` | `valueRef` without `presence="constant"` is refused |
+| `a_value_ref_constant_on_a_standalone_type_takes_the_named_valid_value_and_zero_wire_bytes` | a top-level `<type name="Unit" … presence="constant" valueRef="TimeUnit.microsecond"/>`, used by a field that says nothing about presence, is `Presence::Constant(Value::UInt(6))` with `len: 0`, and the block stays 20 — the "standing alone" half of the rule above (added by the review of PR #102, which asked for that half to be tested or dropped) |
 
 Reversals, each run and restored: resolving no `valueRef` on a `<type>` turns the first test red
 on `generate failed: schema error: constant '' is not an unsigned integer: cannot parse integer
 from empty string` (the three error tests go red too, on `error does not name valueRef`);
 removing the encoding check, or the presence check, turns its own test red on `generate
-accepted a schema it must refuse`.
+accepted a schema it must refuse`. For the standalone test, `[measured 2026-09-24]` resolving no
+`valueRef` in `resolve_presence` turned it red on `generate failed: schema error: constant '' is
+not an unsigned integer: cannot parse integer from empty string`.
 
 On the real schema, the same scratch crate after the change:
 
@@ -101,6 +104,19 @@ examples, Real Logic's `Car` and the padded fixture (`$OUT_DIR/examples_rc4.rs`,
 `padded.rs`) hash the same before and after.
 
 ## Not covered
+
+**Open, no test: a field's own `presence` silently overrides a constant `<type>`.** Found by the
+review of PR #102 and `[measured 2026-09-24]` reproduced with a throwaway test (not kept): the
+fixture above plus `<type name="Unit" primitiveType="uint8" presence="constant"
+valueRef="TimeUnit.microsecond"/>` and `<field id="4" name="unit" type="Unit"
+presence="required"/>` generates `FieldLayout { id: 4, name: "unit", offset: 20, len: 1, … presence:
+Presence::Required }` and `block_length: 21` — the type's constant and its `valueRef` are never
+looked at, because `field_presence_override` (`crates/sbe-gen/src/generator.rs`) answers from the
+field's attribute alone. So a schema that declares a constant type and a required field of it gets
+one wire byte nobody on the other end expects, with no error. What SBE 1.0 and `sbe-tool` do with
+this combination has not been checked; nothing in the Artio 5.6 schema hits it (its constant
+fields say `presence="constant"` themselves). Open item for `STATUS.md`; the fix, and its test,
+belong to whichever plan next touches `sbe-gen`.
 
 `presence` on a field whose type is a composite — the second gap B3's current schema 8.4.2
 hits — is still `Error::Unsupported`; ADR-0140 decision 4 leaves it to the FIXP ADR.

@@ -11,7 +11,10 @@ or `tools/` depends on it — see [the plan](../../docs/plans/2026-09-23-p3-fixp
   header itself (`u16` little-endian length including the header, then `0xEB50`).
 - **`referee/Referee.java`**: the referee, our own code on Artio's public API — Artio's Binary
   EntryPoint acceptor behind an authentication strategy that compares all seven Negotiate fields
-  with expected values and refuses on a mismatch.
+  with expected values and refuses on a mismatch, and a wire tap in front of it that decodes every
+  frame the probe sends with Real Logic's generated decoders and judges every field, the header's
+  `blockLength` and the frame length. The test values fill their declared widths (no zero byte),
+  so a field encoded too narrow or too wide cannot read back right by accident.
 
 ## Running it
 

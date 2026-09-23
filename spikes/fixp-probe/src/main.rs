@@ -100,15 +100,16 @@ const REJECT_CREDENTIALS: u64 = 1;
 const REJECT_INVALID_TIMESTAMP: u64 = 7;
 /// `TerminationCode.FINISHED` — sent by the probe, and echoed by Artio's `onTerminate`.
 const TERMINATION_FINISHED: u64 = 1;
-/// `CancelOnDisconnectType.DO_NOT_CANCEL_ON_DISCONNECT_OR_TERMINATE`.
-const COD_NONE: u64 = 0;
+const CODTIMEOUT_WINDOW: u16 = 35003;
+const ONBEHALF_FIRM: u16 = 35517;
 
-/// The probe's first application sequence number, sent in `Establish.nextSeqNo`.
-const OUR_NEXT_SEQ_NO: u64 = 1;
 /// `EstablishAck.nextSeqNo` the probe requires back. Artio 0.184 writes the **client's**
 /// `Establish.nextSeqNo` here (`InternalBinaryEntryPointConnection.onEstablish` passes its own
-/// `nextSeqNo` parameter to `sendEstablishAck`), so with 1 sent, 1 comes back.
-const EXPECTED_ACK_NEXT_SEQ_NO: u64 = 1;
+/// `nextSeqNo` parameter to `sendEstablishAck`) — observed: the script sends a value with no zero
+/// byte, not 1, and it comes back.
+fn expected_ack_next_seq_no(cfg: &Config) -> u64 {
+    cfg.next_seq_no
+}
 /// `EstablishAck.lastIncomingSeqNo`: nothing application-level was sent yet.
 const EXPECTED_ACK_LAST_INCOMING_SEQ_NO: u64 = 0;
 
@@ -144,6 +145,8 @@ struct Config {
     session_id: u64,
     session_ver_id: u64,
     entering_firm: u64,
+    /// `Negotiate.onbehalfFirm` — sent non-null so its four bytes are on the wire and judged.
+    onbehalf_firm: u64,
     credentials: String,
     client_ip: String,
     client_app_name: String,
@@ -153,13 +156,19 @@ struct Config {
     /// `EstablishAck.keepAliveInterval` expected back: the referee's own
     /// `acceptorFixPKeepaliveTimeoutInMs`, not an echo of ours.
     server_keepalive_ms: u64,
+    /// `Establish.nextSeqNo`.
+    next_seq_no: u64,
+    /// `Establish.cancelOnDisconnectType` (a `CancelOnDisconnectType` value).
+    cod_type: u64,
+    /// `Establish.codTimeoutWindow`, milliseconds.
+    cod_timeout_ms: u64,
 }
 
 fn usage() -> String {
     "usage: fixp-probe --arm accept|reject-timestamp|reject-credentials --addr HOST:PORT \
      --deadline-ms N --session-id N --session-ver-id N --entering-firm N --credentials S \
-     --client-ip S --client-app-name S --client-app-version S --keepalive-ms N \
-     --server-keepalive-ms N"
+     --onbehalf-firm N --client-ip S --client-app-name S --client-app-version S \
+     --keepalive-ms N --server-keepalive-ms N --next-seq-no N --cod-type N --cod-timeout-ms N"
         .to_string()
 }
 
@@ -176,6 +185,10 @@ fn parse_args() -> Result<Config, String> {
     let mut client_app_version = None;
     let mut keepalive_ms = None;
     let mut server_keepalive_ms = None;
+    let mut onbehalf_firm = None;
+    let mut next_seq_no = None;
+    let mut cod_type = None;
+    let mut cod_timeout_ms = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -212,6 +225,10 @@ fn parse_args() -> Result<Config, String> {
             "--client-app-version" => client_app_version = Some(value),
             "--keepalive-ms" => keepalive_ms = Some(num(&value)?),
             "--server-keepalive-ms" => server_keepalive_ms = Some(num(&value)?),
+            "--onbehalf-firm" => onbehalf_firm = Some(num(&value)?),
+            "--next-seq-no" => next_seq_no = Some(num(&value)?),
+            "--cod-type" => cod_type = Some(num(&value)?),
+            "--cod-timeout-ms" => cod_timeout_ms = Some(num(&value)?),
             other => return Err(format!("unknown argument {other:?}\n{}", usage())),
         }
     }
@@ -230,6 +247,10 @@ fn parse_args() -> Result<Config, String> {
         client_app_version: client_app_version.ok_or_else(|| need("--client-app-version"))?,
         keepalive_ms: keepalive_ms.ok_or_else(|| need("--keepalive-ms"))?,
         server_keepalive_ms: server_keepalive_ms.ok_or_else(|| need("--server-keepalive-ms"))?,
+        onbehalf_firm: onbehalf_firm.ok_or_else(|| need("--onbehalf-firm"))?,
+        next_seq_no: next_seq_no.ok_or_else(|| need("--next-seq-no"))?,
+        cod_type: cod_type.ok_or_else(|| need("--cod-type"))?,
+        cod_timeout_ms: cod_timeout_ms.ok_or_else(|| need("--cod-timeout-ms"))?,
     })
 }
 
@@ -325,8 +346,7 @@ fn send_negotiate(stream: &mut TcpStream, cfg: &Config, timestamp: u64) -> Resul
         put_uint(w, field(m, SESSION_VER_ID)?, cfg.session_ver_id)?;
         put_member_uint(w, field(m, TIMESTAMP)?, "time", timestamp)?;
         put_uint(w, field(m, ENTERING_FIRM)?, cfg.entering_firm)?;
-        // onbehalfFirm stays null: the writer initialises every optional element to its null
-        // value (FirmOptional's nullValue="0").
+        put_uint(w, field(m, ONBEHALF_FIRM)?, cfg.onbehalf_firm)?;
         put_var(w, var_data(m, CREDENTIALS)?, &cfg.credentials)?;
         put_var(w, var_data(m, CLIENT_IP)?, &cfg.client_ip)?;
         put_var(w, var_data(m, CLIENT_APP_NAME)?, &cfg.client_app_name)?;
@@ -340,9 +360,9 @@ fn send_establish(stream: &mut TcpStream, cfg: &Config, timestamp: u64) -> Resul
         put_uint(w, field(m, SESSION_VER_ID)?, cfg.session_ver_id)?;
         put_member_uint(w, field(m, TIMESTAMP)?, "time", timestamp)?;
         put_member_uint(w, field(m, KEEP_ALIVE_INTERVAL)?, "time", cfg.keepalive_ms)?;
-        put_uint(w, field(m, NEXT_SEQ_NO)?, OUR_NEXT_SEQ_NO)?;
-        put_uint(w, field(m, CANCEL_ON_DISCONNECT_TYPE)?, COD_NONE)?;
-        // codTimeoutWindow stays null (DeltaInMillis.time nullValue="0"): no cancel-on-disconnect.
+        put_uint(w, field(m, NEXT_SEQ_NO)?, cfg.next_seq_no)?;
+        put_uint(w, field(m, CANCEL_ON_DISCONNECT_TYPE)?, cfg.cod_type)?;
+        put_member_uint(w, field(m, CODTIMEOUT_WINDOW)?, "time", cfg.cod_timeout_ms)?;
         put_var(w, var_data(m, CREDENTIALS)?, &cfg.credentials)
     })
 }
@@ -593,6 +613,7 @@ fn arm_accept(cfg: &Config) -> Result<(), ()> {
     step(arm, "negotiate", {
         (|| {
             let ts = now_ns()?;
+            println!("{}: sent Negotiate.timestamp {ts}", arm.name());
             send_negotiate(&mut stream, cfg, ts)?;
             let r = decode(recv(&mut stream, &mut buf, cfg.deadline)?)?;
             expect_template(&r, NEGOTIATE_RESPONSE)?;
@@ -610,6 +631,7 @@ fn arm_accept(cfg: &Config) -> Result<(), ()> {
     step(arm, "establish", {
         (|| {
             let ts = now_ns()?;
+            println!("{}: sent Establish.timestamp {ts}", arm.name());
             send_establish(&mut stream, cfg, ts)?;
             let r = decode(recv(&mut stream, &mut buf, cfg.deadline)?)?;
             expect_template(&r, ESTABLISH_ACK)?;
@@ -617,7 +639,7 @@ fn arm_accept(cfg: &Config) -> Result<(), ()> {
             r.expect(SESSION_VER_ID, cfg.session_ver_id)?;
             r.expect_member(REQUEST_TIMESTAMP, "time", ts)?;
             r.expect_member(KEEP_ALIVE_INTERVAL, "time", cfg.server_keepalive_ms)?;
-            r.expect(NEXT_SEQ_NO, EXPECTED_ACK_NEXT_SEQ_NO)?;
+            r.expect(NEXT_SEQ_NO, expected_ack_next_seq_no(cfg))?;
             r.expect(LAST_INCOMING_SEQ_NO, EXPECTED_ACK_LAST_INCOMING_SEQ_NO)
         })()
     })?;
@@ -651,6 +673,7 @@ fn arm_reject(cfg: &Config, timestamp: u64, want_code: u64) -> Result<(), ()> {
     let mut buf = [0u8; 2048];
     let result = (|| {
         let mut stream = connect(cfg)?;
+        println!("{}: sent Negotiate.timestamp {timestamp}", arm.name());
         send_negotiate(&mut stream, cfg, timestamp)?;
         let r = decode(recv(&mut stream, &mut buf, cfg.deadline)?)?;
         if r.layout.template_id != NEGOTIATE_REJECT {

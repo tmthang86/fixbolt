@@ -349,8 +349,12 @@ below describe what a first release would contain.
   the `spikes/ktls` pattern) — and runs it against `spikes/fixp-probe/referee/Referee.java`, our
   own code on Artio's public API, in three arms: `accept` (five steps, `ok` each), and two
   refusals, `reject-timestamp` (Artio's own `INVALID_TIMESTAMP`) and `reject-credentials` (the
-  referee's own check). The job's own summary-grep step, not `scripts/fixp-spike.sh`'s exit
-  code, is what decides. Nothing in `crates/` or `tools/` depends on the probe or the referee,
+  referee's own check). The referee also sits in front of Artio as a wire tap that decodes every
+  client frame with Real Logic's generated decoders and judges every field, the header's
+  `blockLength` and the frame length, and every fixed-width field carries a value with no zero
+  byte — so a width mistake in the encoder cannot pass (the review of PR #102 showed `Firm` as
+  `uint16` passing before). The job also runs clippy on the detached probe. The job's own
+  summary-grep step, not `scripts/fixp-spike.sh`'s exit code, is what decides. Nothing in `crates/` or `tools/` depends on the probe or the referee,
   and no FIXP session exists yet (ADR-0078 decision 2, ADR-0097 decision 5).
   [docs/CONFORMANCE.md §11](docs/CONFORMANCE.md#11-fixp-spike-against-artio-measured-2026-09-23),
   [docs/reference/b3-binary-entrypoint-facts.md](docs/reference/b3-binary-entrypoint-facts.md).

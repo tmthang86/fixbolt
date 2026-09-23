@@ -135,3 +135,36 @@ fn a_value_ref_on_a_member_that_is_not_constant_is_refused() {
     ));
     assert!(e.contains("valueRef"), "error does not name valueRef: {e}");
 }
+
+/// The reference page's rule says "inside a composite or standing alone":
+/// this is the standing-alone half. A top-level `<type>` with
+/// `presence="constant" valueRef=…`, used by a field that says nothing about
+/// presence itself, is a constant with the named `validValue` and no wire
+/// bytes — the block stays 20 (review of PR #102 asked for the claim to be
+/// tested or dropped).
+#[test]
+fn a_value_ref_constant_on_a_standalone_type_takes_the_named_valid_value_and_zero_wire_bytes() {
+    let xml = with(
+        "  </types>",
+        "    <type name=\"Unit\" primitiveType=\"uint8\" presence=\"constant\" valueRef=\"TimeUnit.microsecond\"/>\n  </types>",
+    );
+    let from = "<field id=\"3\" name=\"after\" type=\"uint32\"/>";
+    assert_eq!(xml.matches(from).count(), 1);
+    let xml = xml.replacen(
+        from,
+        "<field id=\"3\" name=\"after\" type=\"uint32\"/>\n    <field id=\"4\" name=\"unit\" type=\"Unit\"/>",
+        1,
+    );
+    let source = generated(&xml);
+
+    let unit = "FieldLayout { id: 4, name: \"unit\", offset: 20, len: 0, since_version: 0, elements: &[\
+        Element { name: \"\", offset: 0, primitive: Primitive::UInt8, length: 1, presence: Presence::Constant(Value::UInt(6)) }] }";
+    assert!(
+        source.contains(unit),
+        "no `unit` layout as expected in:\n{source}"
+    );
+    assert!(
+        source.contains("MessageLayout { template_id: 1, name: \"Stamped\", block_length: 20,"),
+        "the standalone constant took wire bytes in:\n{source}"
+    );
+}
