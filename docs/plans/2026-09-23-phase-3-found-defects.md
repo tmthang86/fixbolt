@@ -530,3 +530,9 @@ ngoài rustls** ở *Nhật ký giao hàng*.
 Điền vào mỗi khi đóng một phase: đã dựng gì, ở đâu, gate nào xanh, cái gì chưa làm và vì sao.
 
 **Đây là phần sống sót qua nén context** — phiên sau đọc mục này trước tiên.
+
+## Sửa 1 — 2026-09-23
+
+- Khi làm D4, test so với `dict` tìm thêm một lỗi cũ: `as_i64` và `as_u32` dừng ngay ở chữ số làm tràn số, nên `9410947898048986560 ` (dấu cách ở cuối) bị báo `Overflow` trong khi `dict` coi đó là sai định dạng.
+- Manager quyết: gộp vào D4. Cả hai hàm phải báo `NotANumber` khi có byte không phải chữ số ở bất kỳ đâu, trước `Overflow` — cùng luật với `as_decimal` (ADR-0120: lỗi cú pháp thắng tràn số).
+- Test so với `dict` bỏ ngoại lệ `Overflow`, thành khớp đúng hai chiều; thêm test `a_syntax_fault_wins_over_overflow`; `CHANGELOG.md` ghi đây cũng là thay đổi phá vỡ.

@@ -218,46 +218,71 @@ pub enum ConvertError {
 }
 
 /// Read an unsigned decimal. No sign, no whitespace, no panic.
+///
+/// A syntax fault wins over an overflow: `99…9x` is `NotANumber`, never
+/// `Overflow`. Held by `crates/codec/tests/int.rs`,
+/// `a_syntax_fault_wins_over_overflow`.
 #[inline]
 pub fn as_u32(value: &[u8]) -> Result<u32, ConvertError> {
     if value.is_empty() {
         return Err(ConvertError::NotANumber);
     }
     let mut n: u32 = 0;
+    let mut overflow = false;
     for &b in value {
         let d = b.wrapping_sub(b'0');
         if d > 9 {
             return Err(ConvertError::NotANumber);
         }
-        n = n
-            .checked_mul(10)
-            .and_then(|n| n.checked_add(u32::from(d)))
-            .ok_or(ConvertError::Overflow)?;
+        // Keep scanning after an overflow: a bad byte later still has to win.
+        if !overflow {
+            match n.checked_mul(10).and_then(|n| n.checked_add(u32::from(d))) {
+                Some(m) => n = m,
+                None => overflow = true,
+            }
+        }
+    }
+    if overflow {
+        return Err(ConvertError::Overflow);
     }
     Ok(n)
 }
 
-/// Read a signed decimal.
+/// Read a signed decimal: a FIX `int`.
+///
+/// An optional leading `-`, then digits. A `+` is refused: FIX `int` has none,
+/// and the session's `int` rule (`fixbolt_dict::FieldType::Int`) refuses it
+/// too. A syntax fault wins over an overflow: `99…9x` is `NotANumber`, never
+/// `Overflow`, as in `as_decimal`. Held by `crates/codec/tests/int.rs`,
+/// `as_i64_agrees_with_the_dictionarys_int_rule` and
+/// `a_syntax_fault_wins_over_overflow`.
 #[inline]
 pub fn as_i64(value: &[u8]) -> Result<i64, ConvertError> {
     let (neg, digits) = match value.split_first() {
         Some((b'-', rest)) => (true, rest),
-        Some((b'+', rest)) => (false, rest),
         _ => (false, value),
     };
     if digits.is_empty() {
         return Err(ConvertError::NotANumber);
     }
     let mut n: i64 = 0;
+    let mut overflow = false;
     for &b in digits {
         let d = b.wrapping_sub(b'0');
         if d > 9 {
             return Err(ConvertError::NotANumber);
         }
-        n = n
-            .checked_mul(10)
-            .and_then(|n| n.checked_sub(i64::from(d)))
-            .ok_or(ConvertError::Overflow)?;
+        // Keep scanning after an overflow: a bad byte later still has to win,
+        // as it does in `as_decimal` (ADR-0120).
+        if !overflow {
+            match n.checked_mul(10).and_then(|n| n.checked_sub(i64::from(d))) {
+                Some(m) => n = m,
+                None => overflow = true,
+            }
+        }
+    }
+    if overflow {
+        return Err(ConvertError::Overflow);
     }
     if neg {
         Ok(n)
