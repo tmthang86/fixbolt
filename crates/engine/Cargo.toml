@@ -84,9 +84,11 @@ fixbolt-conformance = { path = "../conformance" }
 # first CI run after it was added. `time` is pinned past it in Cargo.lock, and
 # `scripts/check-every-crate-is-licensed.sh` exists because of the other nine.
 #
-# It also raises the Rust needed to RUN THE TESTS to 1.88, above the workspace's
-# declared `rust-version = "1.85"`. That declaration is about the published
-# crates and nothing in CI checks it, which is worth knowing before trusting it.
+# It also raised the Rust needed to RUN THE TESTS to 1.88, above the workspace's
+# declared `rust-version` of the time (1.85). That declaration is about the
+# published crates, and nothing in CI builds on it — clippy's
+# `incompatible_msrv` reads it, which is the only check it gets. It is 1.89
+# since 2026-09-24, for `File::try_lock` (ADR-0154 decision 1).
 rcgen = "0.14"
 rustls = { version = "0.23.43", default-features = false, features = [
     "std",

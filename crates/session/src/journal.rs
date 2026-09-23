@@ -141,6 +141,27 @@ pub trait Journal {
     /// Nothing is called on a journal after this except its `Drop`.
     fn retire(&mut self) {}
 
+    /// How many records this journal **kept in memory but failed to write to
+    /// its durable copy**, ever. Only rises.
+    ///
+    /// **Not a refusal.** [`Self::put`] still answered `true` for each of them,
+    /// and rightly: the message is held, [`Self::get`] returns it, and a
+    /// `ResendRequest` while this process runs is answered with a replay. What
+    /// is missing is the copy a *restart* reads — so the session's own counts
+    /// stay true and this number is the operator's, not the session's. A
+    /// journal with nothing durable behind it has nothing to miss, which is
+    /// the default.
+    ///
+    /// `fixbolt_engine::journal::FileJournal` counts every record its writer's
+    /// ring had no room for, and the engine reports increases as an event.
+    /// Like [`Self::retire`], the session never calls it: no syscall, no clock,
+    /// no allocation (non-negotiable 2).
+    /// [ADR-0154](../../../docs/decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)
+    /// decision 4.
+    fn unwritten(&self) -> u64 {
+        0
+    }
+
     /// The highest inbound sequence number this journal has been told about, or
     /// `None` if it has been told about none.
     ///

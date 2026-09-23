@@ -622,6 +622,13 @@ where
         // file. Building the `Start` below calls it, so the check has to have
         // run by then; the inner one is the one that refuses.
         if prefix.len() > RX {
+            // **Retired, then dropped** — ADR-0154 decision 5, the rule
+            // ADR-0153 decision 2 gives a `Connection`, for a journal that
+            // never became one. Dropping a `FileJournal` joins its writer; this
+            // runs on the engine thread, mid-serving. `fresh` is not called.
+            if let Some(mut r) = state {
+                r.journal.retire();
+            }
             return Err(PrefixTooLong {
                 got: prefix.len(),
                 capacity: RX,
@@ -666,6 +673,13 @@ where
         start: crate::recovery::Start<J>,
     ) -> Result<ConnId, PrefixTooLong> {
         if prefix.len() > RX {
+            // Retired before it is dropped, for the reason given in
+            // `add_with_prefix_config_and_journal` — this is the door the
+            // sharded runtime's engine threads come through. ADR-0154 decision 5.
+            match start {
+                crate::recovery::Start::Resumed(mut r) => r.journal.retire(),
+                crate::recovery::Start::Fresh(mut j) => j.retire(),
+            }
             return Err(PrefixTooLong {
                 got: prefix.len(),
                 capacity: RX,
@@ -1254,13 +1268,17 @@ where
             // carries what **this turn** did rather than the running total.
             // Only when somebody is observing: on an engine whose `observer()`
             // was never called this is two reads that never happen.
-            let (was_refused, was_beyond) = if self.observe.is_some() {
+            // The third, the journal's own: records its file missed (ADR-0154
+            // decision 4). The journal's, not the session's — the session
+            // was told `true`, and rightly.
+            let (was_refused, was_beyond, was_unwritten) = if self.observe.is_some() {
                 (
                     self.conns[i].session.puts_refused(),
                     self.conns[i].session.resend_beyond_journal(),
+                    self.conns.get(i).map_or(0, |c| c.journal.unwritten()),
                 )
             } else {
-                (0, 0)
+                (0, 0, 0)
             };
             let shard = self.shard;
             let Self { conns, log, .. } = self;
@@ -1305,6 +1323,21 @@ where
                         now,
                         crate::observe::EventKind::JournalRefused {
                             count: refused_now.saturating_sub(was_refused),
+                        },
+                    );
+                }
+                // Beside `JournalRefused`, and the same shape: one event for a
+                // turn that moved the count, carrying how far it moved.
+                let unwritten_now = self
+                    .conns
+                    .get(i)
+                    .map_or(was_unwritten, |c| c.journal.unwritten());
+                if unwritten_now != was_unwritten {
+                    shared.emit(
+                        id,
+                        now,
+                        crate::observe::EventKind::JournalUnwritten {
+                            count: unwritten_now.saturating_sub(was_unwritten),
                         },
                     );
                 }
@@ -2655,6 +2688,12 @@ fn dial_loop<
     // A connected socket whose handshake is not yet decided, and when it was
     // connected. Always `None` between turns for a plain transport.
     let mut handshaking: Option<(T, u64)> = None;
+    // The connection in `handshaking` is ready but its recovery said "not
+    // yet" (ADR-0154 decision 3), and the millisecond `ready` was last asked
+    // in — so it is asked at most once a millisecond, and the idle arm below
+    // waits on the clock rather than on a socket that has nothing to say.
+    let mut parked = false;
+    let mut asked_ms: Option<u64> = None;
     loop {
         let now = crate::clock::Clock::now_ms(&mut clock);
 
@@ -2698,7 +2737,23 @@ fn dial_loop<
             }
             if let Some((mut t, since)) = handshaking.take() {
                 match t.admission() {
+                    // **Parked while the recovery says "not yet"**, and never
+                    // waited for: ADR-0154 decisions 2 and 3. This loop's
+                    // `recover` runs on the thread that then serves, and a
+                    // journal whose last writer is still flushing would resume
+                    // the session from a file read short. Bounded by the same
+                    // `LogonTimeout` as the handshake, counted from the dial.
+                    Admission::Ready if !dial_ready(&mut recovery, &cfg, now, &mut asked_ms) => {
+                        if handshake_ms != 0 && now.saturating_sub(since) >= handshake_ms {
+                            (parked, asked_ms) = (false, None);
+                            policy.dropped(now);
+                        } else {
+                            parked = true;
+                            handshaking = Some((t, since));
+                        }
+                    }
                     Admission::Ready => {
+                        (parked, asked_ms) = (false, None);
                         // **Asked on every attempt, not only the first.** A
                         // reconnect is not a restart (ADR-0010), and whether
                         // this one continues is the recovery's answer, not this
@@ -2775,6 +2830,14 @@ fn dial_loop<
         if !moved {
             if engine.connections() > 0 {
                 engine.idle();
+            } else if parked {
+                // **A parked connection has nothing to say on its socket**: it
+                // is waiting on a journal writer, not on the venue. So the wait
+                // is on the clock, as the reconnect wait below is — waiting on
+                // a readable socket here would return at once for a venue that
+                // has already written, and `standard` would spin. Each wake
+                // asks `ready` again.
+                engine.idle_with(&[]);
             } else if let Some((t, _)) = handshaking.as_ref() {
                 // **Wait on the venue, never spin and never block on a read.**
                 // In `standard` this sleeps until the socket is readable or the
@@ -2802,6 +2865,23 @@ fn dial_loop<
             }
         }
     }
+}
+
+/// [`dial_loop`]'s question to the recovery, asked **at most once per
+/// millisecond** of `now_ms`: `false` without asking when it was already asked
+/// this millisecond. ADR-0154 decision 3.
+#[cfg(all(feature = "standard", unix))]
+fn dial_ready<J, V: crate::recovery::Recovery<J>>(
+    recovery: &mut V,
+    cfg: &Config,
+    now_ms: u64,
+    asked_ms: &mut Option<u64>,
+) -> bool {
+    if asked_ms.is_some_and(|at| now_ms <= at) {
+        return false;
+    }
+    *asked_ms = Some(now_ms);
+    recovery.ready(cfg)
 }
 
 /// As [`serve`], asking `recovery` what each counterparty left behind.
@@ -3407,10 +3487,16 @@ fn pump_loop<
     let listener = acceptor.source().map(Interest::readable);
     let mut extra: Vec<Interest> = Vec::with_capacity(limits.pending() + 1);
     let mut cadence = ListenerCadence::new(limits.listener_every());
+    // Settled connections whose recovery said "not yet" (ADR-0154 decision 3).
+    // They hold pre-session slots, so the listener is asked only while the two
+    // together are under the ceiling — which is also what keeps `park` from
+    // ever needing more room than this.
+    let mut parked: crate::recovery::Parking<presession::Pending<T, RX>> =
+        crate::recovery::Parking::with_capacity(limits.pending());
     loop {
         let mut moved = false;
         if cadence.poll_now() {
-            while set.len() < limits.pending() {
+            while set.len() + parked.len() < limits.pending() {
                 let Some(t) = acceptor.accept() else { break };
                 // `wrap` returning `None` closes the socket too — a TLS acceptor
                 // that cannot build a connection for it has nothing to say on it.
@@ -3438,21 +3524,28 @@ fn pump_loop<
             let Some(cfg) = pending.config() else {
                 continue;
             };
-            // **The one place recovery is asked.** The identity is known now
-            // and was not a moment ago — before the `Logon` there is nothing to
-            // look a journal up by (ADR-0020, ADR-0026). This is the acceptor
-            // thread, which is allowed to block, so an implementation may read
-            // a file; it is not the engine thread and this is not a turn.
-            let state = recovery.recover(&cfg);
-            let (t, buf, len) = pending.into_parts();
-            // A prefix that will not fit the engine's RX closes the socket
-            // (dropping the transport). It cannot be a message this engine could
-            // have read either way, and there is no session yet to tell.
-            // `fresh` is a closure rather than `J::default`, which is the
-            // whole of item 32 (b): a `FileJournal` has no honest `Default`.
-            let _ = engine.add_with_prefix_config_and_journal(t, cfg, &buf[..len], state, || {
-                recovery.fresh(&cfg)
-            });
+            // **Asked before `recover`, and "not yet" parks the connection
+            // rather than waiting for it** (ADR-0154 decisions 2 and 3): a
+            // counterparty that reconnects while its last session's journal
+            // writer is still flushing would otherwise be resumed from a file
+            // read short. Parking is not progress, so `standard` still idles
+            // and `hft` still never sleeps; the parked set is asked again below,
+            // at most once a millisecond.
+            if !recovery.ready(&cfg) {
+                let limit = crate::recovery::Parking::<()>::limit_ms(&cfg, limits.logon_ms());
+                // `Err` is unreachable under the admission rule above; dropping
+                // it closes the socket.
+                drop(parked.park(pending, cfg, now, limit));
+                continue;
+            }
+            admit_settled(engine, &mut recovery, pending, cfg);
+            moved = true;
+        }
+        // Parked past its `LogonTimeout`: closed unanswered, like a pre-session
+        // connection that never sent its `Logon`.
+        let _ = parked.expire(now);
+        while let Some((pending, cfg)) = parked.next_ready(now, &mut recovery) {
+            admit_settled(engine, &mut recovery, pending, cfg);
             moved = true;
         }
         moved |= engine.turn();
@@ -3473,6 +3566,50 @@ fn pump_loop<
             cadence.woke();
         }
     }
+}
+
+/// Hand a settled connection to the engine, with whatever `recovery` says its
+/// counterparty left behind. [`pump_loop`]'s one door into the engine, for a
+/// connection that settled this turn and for one that was parked.
+fn admit_settled<
+    T: crate::transport::Transport,
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    W: Waiting,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    engine: &mut AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
+    recovery: &mut V,
+    pending: presession::Pending<T, RX>,
+    cfg: Config,
+) {
+    // **Where recovery is asked.** The identity is known now and was not a
+    // moment ago — before the `Logon` there is nothing to look a journal up by
+    // (ADR-0020, ADR-0026).
+    //
+    // `[corrected 2026-09-24]` **This is the engine thread**, between turns,
+    // with other sessions being served: `serve*` runs the pre-session stage
+    // and the engine on one thread. This comment used to say it was the
+    // acceptor thread and allowed to block. It is not, so a `Recovery` that
+    // reads a file here costs every session this engine serves the time of
+    // that read — a pre-existing cost ADR-0154 records rather than fixes (the
+    // sharded runtime already asks on a separate acceptor thread, ADR-0088).
+    // What must never happen here is a *wait*, which is why `ready` is asked
+    // first and a busy journal parks the connection instead.
+    let state = recovery.recover(&cfg);
+    let (t, buf, len) = pending.into_parts();
+    // A prefix that will not fit the engine's RX closes the socket (dropping
+    // the transport). It cannot be a message this engine could have read
+    // either way, and there is no session yet to tell. `fresh` is a closure
+    // rather than `J::default`, which is the whole of item 32 (b): a
+    // `FileJournal` has no honest `Default`.
+    let _ = engine
+        .add_with_prefix_config_and_journal(t, cfg, &buf[..len], state, || recovery.fresh(&cfg));
 }
 
 /// Bytes read before a connection existed did not fit its receive buffer.

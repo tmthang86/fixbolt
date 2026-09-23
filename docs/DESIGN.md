@@ -412,7 +412,8 @@ on the thread non-negotiable 4 protects. Anything older than the ring is gap-fil
 legal and invisible to the counterparty's engine
 ([ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)),
 and since 2026-09-04 it is **counted and emitted**: `EventKind::ResendBeyondJournal { filled,
-oldest }` in messages, and `JournalRefused { count }` for a reply longer than a slot.
+oldest }` in messages, and `JournalRefused { count }` for a reply longer than a slot — and,
+since 2026-09-24, `JournalUnwritten { count }` for records the ring kept and the file missed.
 
 - **`SLOTS` is 4096** (it was 8 until 2026-09-04: the smallest power of two above what the
   corpus asks for, and an acceptor that had sent a hundred ExecutionReports replayed eight of
@@ -438,6 +439,31 @@ reaches the file up to 1 ms later
 ([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md),
 [the trap](reference/an-async-journal-record-longer-than-its-writers-buffer-stopped-the-writer.md),
 [the idle writer](reference/a-writer-thread-no-gate-watched-spun-a-core.md)).
+
+**A journal file has one appender, for the file's whole life** (2026-09-24,
+[ADR-0154](decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)).
+`FileJournal::open` takes an exclusive `File::try_lock` (`flock`) **before it reads the file**; the
+lock lives with the `File` — the writer thread's under `Async`, released after its last flush, or
+the journal's under `Fsync` — and is unlocked explicitly before the close, because a child
+process's momentary copy of the descriptor would otherwise keep it. A second `open` of the same
+path, in this process or another, fails at once with `WouldBlock`; it never waits. That is what
+makes ADR-0153's retire safe for a counterparty that reconnects at once: its recovery would
+otherwise read a file the retired writer had not finished (`[measured 2026-09-24]` 50 reconnects
+in 50 resumed from a short file). **`Recovery::ready`**, defaulted to `true`, is asked before `recover`, on the engine thread in
+`pump`, so it must answer without a system call: a recovery keeps each journal's
+`FileJournal::released()` handle — a flag the writer sets after closing its file — and answers
+with one atomic load (`journal::file_busy` opens the file and can sleep, so it is for tools and
+the sharded acceptor thread only,
+[ADR-0155](decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md)); *not yet* **parks** the connection — beside
+the pre-session set in `pump` and on the sharded acceptor thread, in the handshake slot in `dial` —
+asked again at most once per millisecond, dropped after its `LogonTimeout`. Parking is not
+progress: `standard` still idles, `hft` still never sleeps. **What the file missed is counted**:
+a push the writer's ring refused leaves `put` answering `true` (memory holds the message and
+replays it while the process runs) and raises `Journal::unwritten()`, which the engine reports as
+`EventKind::JournalUnwritten { count }`. A journal refused with its prefix, before it became a
+connection, is retired rather than dropped, and `PRE <= RX` for the sharded runtime is a
+compile-time assertion
+([the trap](reference/a-reconnect-reopened-a-journal-its-retired-writer-still-owned.md)).
 
 **A departing connection's journal is retired, not closed, and its writer is awaited only after
 serving.** `Connection` has a `Drop` that calls `Journal::retire` (a defaulted no-op in

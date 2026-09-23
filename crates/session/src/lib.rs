@@ -2354,11 +2354,12 @@ where
         emit: &mut F,
     ) -> Link {
         let link = self.tick_inner(now_ms, emit);
-        if link == Link::Up && self.owed.is_some() {
-            if let Err(why) = self.continue_replay(journal, emit) {
-                self.end(why.into());
-                return Link::Dropped;
-            }
+        if link == Link::Up
+            && self.owed.is_some()
+            && let Err(why) = self.continue_replay(journal, emit)
+        {
+            self.end(why.into());
+            return Link::Dropped;
         }
         link
     }
@@ -2635,11 +2636,12 @@ where
         // the rate its own traffic drives, and one that goes quiet gets it from
         // `tick_with`. Placed after `drain` so a held message that closes a gap
         // is delivered before the replay it may have been waiting behind.
-        if link != Link::Dropped && self.owed.is_some() {
-            if let Err(why) = self.continue_replay(journal, emit) {
-                self.end(why.into());
-                return Link::Dropped;
-            }
+        if link != Link::Dropped
+            && self.owed.is_some()
+            && let Err(why) = self.continue_replay(journal, emit)
+        {
+            self.end(why.into());
+            return Link::Dropped;
         }
         link
     }

@@ -73,7 +73,9 @@ pub trait Shardable<J = crate::journal::Store>: Send {
     ///
     /// `false` if those bytes do not fit the engine's receive buffer, in which
     /// case the connection is dropped rather than served with part of its first
-    /// message missing. A caller keeps `PRE <= RX` and this never happens.
+    /// message missing — its journal retired first, not joined (ADR-0154
+    /// decision 5). **For an engine this cannot happen**: [`Shards::start`]
+    /// refuses to compile with a `PRE` larger than [`Self::RX`].
     ///
     /// [ADR-0030]: ../../../docs/decisions/ADR-0030-one-engine-holds-many-counterparties.md
     /// [ADR-0088]: ../../../docs/decisions/ADR-0088-recovery-reaches-the-sharded-runtime-and-the-journal-crosses-the-channel-with-the-connection.md
@@ -84,6 +86,18 @@ pub trait Shardable<J = crate::journal::Store>: Send {
         prefix: &[u8],
         start: Start<J>,
     ) -> bool;
+
+    /// The most bytes [`Self::add_started`] can take as a prefix — an
+    /// engine's `RX`.
+    ///
+    /// `[2026-09-24]` **`PRE <= RX` is a compile-time assertion now, not a
+    /// promise.** It was a sentence on `add_started` that nothing held: a
+    /// `Shards::<PRE>` whose engines had a smaller `RX` compiled, and dropped
+    /// every connection whose `Logon` arrived longer than `RX`. [`Shards::start`]
+    /// asserts it with this constant. The default is unbounded, for a
+    /// `Shardable` that is not an engine and has no buffer to overflow.
+    /// ADR-0154 decision 5.
+    const RX: usize = usize::MAX;
 
     /// [`add_started`](Self::add_started) for a session with nothing to
     /// continue.
@@ -121,6 +135,8 @@ where
     J: SessionJournal,
     L: crate::msglog::MessageLog,
 {
+    const RX: usize = RX;
+
     fn add_started(
         &mut self,
         transport: TcpTransport,
@@ -273,6 +289,16 @@ impl<const PRE: usize, J> Shards<PRE, J> {
         // is where that is a compile-time fact rather than this sentence.
         J: Send + 'static,
     {
+        // A pre-session prefix of `PRE` bytes must fit the engine's `RX`, or
+        // every `Logon` longer than `RX` is dropped on the shard thread. A
+        // compile error at the instantiation, not a comment. ADR-0154
+        // decision 5.
+        const {
+            assert!(
+                PRE <= E::RX,
+                "Shards::<PRE> hands prefixes of up to PRE bytes to engines whose RX is smaller"
+            );
+        };
         // ADR-0015 decision 6: before a single thread exists.
         plan.validate()?;
 
@@ -784,11 +810,18 @@ where
     let mut poller = crate::poll::Poller::with_capacity(limits.pending() + 1);
     let mut interests: Vec<Interest> = Vec::with_capacity(limits.pending() + 1);
     let mut clock = SystemClock;
+    // Settled connections whose recovery said "not yet" — ADR-0154 decision 3,
+    // the same rule `serve*` follows, for one behaviour everywhere. This thread
+    // may block, but a wait here would stall every other counterparty's
+    // `Logon` behind one busy journal. They hold pre-session slots, which keeps
+    // `park` within the room taken here.
+    let mut parked: crate::recovery::Parking<Pending<TcpTransport, RX>> =
+        crate::recovery::Parking::with_capacity(limits.pending());
 
     loop {
         // Take on whatever is waiting. `admit` refuses when full, and the
         // refusal closes the socket rather than queueing it.
-        while set.len() < limits.pending() {
+        while set.len() + parked.len() < limits.pending() {
             let Some(t) = acceptor.accept() else { break };
             // Dropping the refusal closes the socket, which is what a caller
             // with nowhere to put a connection should do.
@@ -799,24 +832,21 @@ where
         set.turn(now);
         while let Some(i) = set.settled() {
             let Some(p) = set.take(i) else { break };
-            // **The one place recovery is asked**, and it is this thread — the
-            // acceptor's, which ADR-0020 allows to block. The identity is known
-            // now and was not a moment ago. A `Pending` that settled has a
-            // configuration; `None` cannot happen and drops the socket rather
-            // than inventing an identity for it.
+            // A `Pending` that settled has a configuration; `None` cannot
+            // happen and drops the socket rather than inventing an identity
+            // for it.
             let Some(cfg) = p.config() else { continue };
-            let start = match recovery.recover(&cfg) {
-                Some(resumed) => Start::Resumed(resumed),
-                None => Start::Fresh(recovery.fresh(&cfg)),
-            };
-            match shards.hand_started(p, start) {
-                Ok(_) => {}
-                // A `Logon` that named nobody, or a route that named a shard
-                // that does not exist: the connection is dropped. A dead shard
-                // thread is different — nothing here can recover from it.
-                Err(ShardError::ThreadGone(n)) => return Err(ShardError::ThreadGone(n)),
-                Err(_) => {}
+            // Asked before `recover`; "not yet" parks it (ADR-0154).
+            if !recovery.ready(&cfg) {
+                let limit = crate::recovery::Parking::<()>::limit_ms(&cfg, limits.logon_ms());
+                drop(parked.park(p, cfg, now, limit));
+                continue;
             }
+            start_and_hand(&mut shards, &mut recovery, p, cfg)?;
+        }
+        let _ = parked.expire(now);
+        while let Some((p, cfg)) = parked.next_ready(now, &mut recovery) {
+            start_and_hand(&mut shards, &mut recovery, p, cfg)?;
         }
 
         // Wait until something happens or the soonest deadline arrives —
@@ -829,9 +859,46 @@ where
         let timeout = set.earliest_deadline().map_or(1_000, |d| {
             i32::try_from(d.saturating_sub(now)).unwrap_or(i32::MAX)
         });
+        // A parked connection is asked again on the next millisecond, so the
+        // wait is no longer than that while one is parked.
+        let timeout = if parked.len() == 0 {
+            timeout
+        } else {
+            timeout.min(1)
+        };
         // Whatever it says, the loop above re-reads every socket anyway; a
         // failed wait costs one extra pass, and a poller that refused to
         // continue would be a hung acceptor.
         let _ = poller.wait(&interests, timeout);
+    }
+}
+
+/// Ask `recovery` what the counterparty left behind and hand the connection to
+/// its shard. The acceptor thread's one door, for a connection that settled
+/// this turn and for one that was parked.
+///
+/// **The one place recovery is asked**, and it is this thread — the
+/// acceptor's, which ADR-0020 allows to block. The identity is known now and
+/// was not a moment ago.
+///
+/// # Errors
+///
+/// [`ShardError::ThreadGone`] only: a `Logon` that named nobody, or a route
+/// that named a shard that does not exist, drops the connection. A dead shard
+/// thread is different — nothing here can recover from it.
+#[cfg(feature = "standard")]
+fn start_and_hand<const PRE: usize, J, V: crate::recovery::Recovery<J>>(
+    shards: &mut Shards<PRE, J>,
+    recovery: &mut V,
+    p: Pending<TcpTransport, PRE>,
+    cfg: fixbolt_session::Config,
+) -> Result<(), ShardError> {
+    let start = match recovery.recover(&cfg) {
+        Some(resumed) => Start::Resumed(resumed),
+        None => Start::Fresh(recovery.fresh(&cfg)),
+    };
+    match shards.hand_started(p, start) {
+        Err(ShardError::ThreadGone(n)) => Err(ShardError::ThreadGone(n)),
+        Ok(_) | Err(_) => Ok(()),
     }
 }
