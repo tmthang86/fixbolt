@@ -98,8 +98,8 @@ Boot F: 2026-09-23 on the §9 line (`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 proc
 mitigations on, kernel 7.0.0-31), `fixbolt-machine on`, timers stopped, `enp9s0` IRQs on 0–5,
 `rx-usecs 0`, EEE off; `check-machine.sh` `pass 17 fail 0 unknown 0` before every measuring step
 (P3's own header read 16/1 on the quiet row — [measured-costs](docs/reference/measured-costs.md) *Boot F, item 85*).
-One rebuild on cores 0–5 (F6, ADR-0096 decision 3). **Closing commit CLOSING-COMMIT-PENDING, CI run
-CI-RUN-PENDING.** Evidence: `target/boot-f-evidence/` (desk only). Commits: `06172b6` plan +
+One rebuild on cores 0–5 (F6, ADR-0096 decision 3). **Closing commit `4638076`, CI run
+[`35811192888`](https://github.com/tmthang86/fixbolt/actions/runs/35811192888) 14 / 14.** Evidence: `target/boot-f-evidence/` (desk only). Commits: `06172b6` plan +
 ADR-0096, `8c66123` item 89, `6b2833b` `Suite::figure` + fixed read buffer + comparator in CI,
 `2caadf4` ADR-0096 decisions 2 (revised) and 6, `5576694` the `sbe` re-record.
 
