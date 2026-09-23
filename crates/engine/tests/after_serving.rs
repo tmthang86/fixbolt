@@ -50,6 +50,7 @@
 // ---------------------------------------------------------------------------
 
 /// A scratch path that does not collide between tests or runs.
+#[cfg(all(feature = "standard", unix))]
 fn scratch_path(name: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!(
@@ -61,6 +62,7 @@ fn scratch_path(name: &str) -> std::path::PathBuf {
 }
 
 /// A `Logon`, stamped now — every engine here runs the real clock.
+#[cfg(all(feature = "standard", unix))]
 fn logon_now(seq: u32, sender: &str, target: &str) -> Vec<u8> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -79,6 +81,7 @@ fn logon_now(seq: u32, sender: &str, target: &str) -> Vec<u8> {
 /// A `NewOrderSingle`, stamped now, numbered `seq`. What the echo application
 /// answers with an outbound message of its own — the one journal `put`
 /// records.
+#[cfg(all(feature = "standard", unix))]
 fn order_now(seq: u32, sender: &str, target: &str) -> Vec<u8> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -97,6 +100,7 @@ fn order_now(seq: u32, sender: &str, target: &str) -> Vec<u8> {
 
 /// How many application replies (`35=D`) are on disk, as a real operator would
 /// read them — with `Reader`, not with the engine.
+#[cfg(all(feature = "standard", unix))]
 fn message_records_on_disk(path: &std::path::Path) -> usize {
     let Ok(reader) = fixbolt_engine::journal::Reader::open(path) else {
         return 0;
@@ -107,6 +111,7 @@ fn message_records_on_disk(path: &std::path::Path) -> usize {
         .count()
 }
 
+#[cfg(all(feature = "standard", unix))]
 const RECORDS_WANTED: u32 = 2_000;
 
 // ---------------------------------------------------------------------------
@@ -549,10 +554,10 @@ mod through_the_shard_runtime {
             }
             let now = Clock::now_ms(&mut clock);
             set.turn(now);
-            if let Some(i) = set.settled() {
-                if let Some(p) = set.take(i) {
-                    break p;
-                }
+            if let Some(i) = set.settled()
+                && let Some(p) = set.take(i)
+            {
+                break p;
             }
             std::thread::sleep(Duration::from_millis(1));
         };

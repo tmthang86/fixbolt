@@ -291,6 +291,7 @@ mod wire {
     }
 
     /// Everything the engine sends until it closes the socket.
+    #[cfg(feature = "standard")]
     pub fn read_to_end(s: &mut TcpStream) -> String {
         let mut seen = String::new();
         let mut buf = [0u8; 4096];
@@ -303,6 +304,7 @@ mod wire {
     }
 
     /// The highest `34=` in `text`.
+    #[cfg(feature = "standard")]
     pub fn max_seq(text: &str) -> Option<u32> {
         text.split("|34=")
             .skip(1)
@@ -311,6 +313,7 @@ mod wire {
     }
 
     /// `34=` of the first message in `text`.
+    #[cfg(feature = "standard")]
     pub fn first_seq(text: &str) -> u32 {
         let first = text.split("|10=").next().unwrap_or(text);
         let at = first.find("|34=").expect("a MsgSeqNum") + 4;
