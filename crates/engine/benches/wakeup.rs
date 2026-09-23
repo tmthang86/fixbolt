@@ -5,11 +5,11 @@
 //! §6 row 7 (item "engine tự cấu hình"). [ADR-0025]'s *Context* rests
 //! `hft`'s session ceiling of four on an "epoll-class wakeup" of **2-5 µs from
 //! the literature, never measured here** (ADR-0014 open question 1). This
-//! bench is the instrument; the number itself is taken at boot C on the
-//! `DESIGN.md` §9 desk and recorded in `benches/baselines.tsv` there, per
-//! `docs/plans/2026-09-18-closing-the-open-items.md` row **C-PRD7**. Until
-//! then every row below prints `NO BASELINE` and nothing here moves the 4 in
-//! [ADR-0025].
+//! bench is the instrument; each arm's p50 is banded against the line
+//! `benches/baselines.tsv` holds for the `DESIGN.md` §9 desk (recorded boot F,
+//! ADR-0096 decision 1 — see *Why the sampling is not `Suite::bench`* below).
+//! A machine with no line prints `NO BASELINE` for both arms. Nothing here
+//! moves the 4 in [ADR-0025].
 //!
 //! [ADR-0025]: ../../../docs/decisions/ADR-0025-hft-has-a-hard-session-ceiling-and-the-engine-advises-rather-than-applies.md
 //!
@@ -53,18 +53,29 @@
 //! and went unnoticed would print a wakeup number for the wrong pair of
 //! cores. Unset, the bench runs unpinned and says so.
 //!
-//! # Why not `harness.rs`
+//! # Why the sampling is not `Suite::bench`, and why the p50s still go through
+//! `harness.rs`
 //!
-//! `codec/benches/harness.rs` (`benches/turn.rs`'s harness) times a closure it
-//! calls itself, best-of-7, and compares one figure to a per-machine baseline.
-//! This bench needs the opposite shape: 20 000 *individual* cross-thread
-//! samples, because the wake latency is exactly the thing that closure-timing
-//! cannot see (the closure runs on one thread; the wait it would time spans
-//! two). So the percentile block below is written directly, in the row format
-//! `tools/w2w/src/main.rs`'s `print_figures` already uses (`min`, `p50`,
-//! `p99`, `p99.9`), and each arm is printed as its own `NO BASELINE` case
-//! rather than run through `Suite::bench` — there is no `baselines.tsv` entry
-//! for it to compare against until boot C.
+//! `codec/benches/harness.rs`'s `Suite::bench` (`benches/turn.rs`'s harness)
+//! times a closure it calls itself, best-of-7. This bench needs the opposite
+//! shape: 20 000 *individual* cross-thread samples, because the wake latency
+//! is exactly the thing that closure-timing cannot see (the closure runs on
+//! one thread; the wait it would time spans two). So the percentile block is
+//! sampled directly, in the row format `tools/w2w/src/main.rs`'s
+//! `print_figures` already uses (`min`, `p50`, `p99`, `p99.9`, `max`).
+//!
+//! The p50 of each arm is still a figure this project wants held to a band,
+//! and ADR-0096 decision 1 gives it a seam for that without a second
+//! comparator: `harness.rs` is pulled in by `#[path]`, exactly as
+//! `density.rs` pulls it in, and each arm's p50 is handed to `Suite::figure`
+//! — the same lookup, the same three outcomes (in band, `OVER BASELINE`,
+//! `UNDER BASELINE`, `NO BASELINE`), the same `cases without a baseline`
+//! count `scripts/bench.sh` greps, all reached through `Suite::finish` as
+//! every other case in this repository is. p99, p99.9, min and max are still
+//! printed directly and are **not** banded — at 20 000 samples the p99.9 is
+//! twenty samples, and a band over twenty samples is a wish. The two cases
+//! are recorded **unpinned** in `benches/baselines.tsv`, because that is the
+//! procedure `bench.sh --strict` runs.
 //!
 //! # `unsafe`
 //!
@@ -74,6 +85,19 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #![allow(clippy::indexing_slicing)]
+
+// Pulled in by `#[path]`, exactly as `crates/engine/benches/density.rs` pulls
+// it in, so the two p50 cases below are checked by the one comparator every
+// other bench in this repository uses (ADR-0096 decision 1) rather than a
+// second one invented here. At the crate root, not inside `mod linux`:
+// `#[path]` on a module nested inside an inline `mod` resolves relative to a
+// directory named after that inline module, which does not exist here.
+// `dead_code` is allowed because this crate calls only `suite` and
+// `Suite::figure`, never `Suite::bench` — the closure-timing shape this
+// module's doc explains this bench cannot use.
+#[allow(dead_code)]
+#[path = "../../codec/benches/harness.rs"]
+mod harness;
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -90,6 +114,8 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use super::harness;
+
     use std::os::unix::io::RawFd;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -101,7 +127,7 @@ mod linux {
 
     /// `cargo bench --bench wakeup -- --test` runs this many instead. 20 000
     /// blocking cross-thread round trips per arm is the right number for the
-    /// real sweep at boot C; it is not the right number for a smoke pass that
+    /// real sweep the baseline was recorded from; it is not the right number for a smoke pass that
     /// must finish in CI. 200 still runs the rendezvous, both threads and both
     /// arms at least once each, which is everything `--test` is for.
     const TEST_ITERATIONS: usize = 200;
@@ -143,20 +169,18 @@ mod linux {
         println!("wakeup: n = {n} per arm");
 
         let epoll = measure(n, Arm::Epoll, cores);
-        print_arm("wakeup epoll", &epoll);
-
         let poll = measure(n, Arm::Poll, cores);
-        print_arm("wakeup poll", &poll);
 
-        // The same grep-able summary line `codec/benches/harness.rs` prints,
-        // in the same format, because `scripts/bench.sh` reads exactly
-        // `^cases without a baseline: <n>` and counts it into its
-        // `cases w/o a baseline` row. Printing `NO BASELINE` per arm without
-        // this line left both arms invisible to that counter — "not red"
-        // reading as "green", which is the one thing that row exists to stop.
-        // Every arm here is baseline-less until boot C records one (plan row
-        // C-PRD7), so the count is the number of arms above.
-        println!("cases without a baseline: 2  wakeup epoll, wakeup poll");
+        // `harness::suite` is what reaches `Suite::finish` — the same seam
+        // every other bench in this repository is checked through, so a p50
+        // that regressed cannot go quietly missing from `cases without a
+        // baseline` / `cases under their baseline` the way the two
+        // hard-coded `NO BASELINE` lines used to (`scripts/bench.sh` greps
+        // both, and printing them by hand here left them uncounted).
+        harness::suite(|suite| {
+            print_arm(suite, "wakeup epoll", &epoll);
+            print_arm(suite, "wakeup poll", &poll);
+        });
     }
 
     /// `WAKEUP_CORES=<a>,<b>`, or `None` when unset. Exits the process with a
@@ -447,21 +471,17 @@ mod linux {
         samples
     }
 
-    /// `min`/`p50`/`p99`/`p99.9`/`max`, in the row format
-    /// `tools/w2w/src/main.rs`'s `print_figures` uses, prefixed `NO BASELINE`:
-    /// there is no `benches/baselines.tsv` entry for this case until boot C
-    /// (plan row C-PRD7) records one.
-    fn print_arm(name: &str, samples: &[u64]) {
+    /// The p50 checked against this machine's recorded baseline through
+    /// `harness::Suite::figure` — the case name is `"<name> p50"` — then
+    /// `min`/`p99`/`p99.9`/`max` printed directly afterwards and **not**
+    /// banded, in the row format `tools/w2w/src/main.rs`'s `print_figures`
+    /// uses: at 20 000 samples the p99.9 is twenty samples, and a band over
+    /// twenty samples is a wish (module doc).
+    fn print_arm(suite: &mut harness::Suite, name: &str, samples: &[u64]) {
         let mut s = samples.to_vec();
         s.sort_unstable();
         let pick = |q: f64| s[((s.len() as f64 - 1.0) * q) as usize];
-        // The p50 as `ns/op`: scripts/bench.sh reads that token as the proof a
-        // target measured something, and reports a silent target as FAIL.
-        println!(
-            "{name} p50   {:>9}.0 ns/op   NO BASELINE   n={}",
-            pick(0.50),
-            s.len()
-        );
+        suite.figure(&format!("{name} p50"), pick(0.50) as f64);
         println!("     min    {:>9} ns", s[0]);
         println!("     p50    {:>9} ns", pick(0.50));
         println!("     p99    {:>9} ns", pick(0.99));

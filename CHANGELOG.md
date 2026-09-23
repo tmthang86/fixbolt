@@ -242,10 +242,29 @@ below describe what a first release would contain.
   now default to 16 rather than 1 (ADR-0069).
 
 - **Bench cases `serialize Heartbeat (session)`** and **`crates/engine/benches/wakeup.rs`**, new;
-  both print `NO BASELINE` until measured on the §9 machine.
+  both printed `NO BASELINE` until measured on the §9 machine (the wakeup p50s are banded since
+  ADR-0096, below).
 
 - **`fixbolt_conformance::mirror`**, new: the eight-class mirrored-message taxonomy of
   ADR-0076.
+
+- **Bench harness `Suite::figure(name, ns)`**, new (ADR-0096 decision 1): a figure measured
+  outside `Suite::bench`'s closure timing meets the same per-machine band, prints the same
+  `baseline … = [floor, ceiling]` / `OVER BASELINE` / `UNDER BASELINE` / `NO BASELINE` line,
+  and counts into the same tallies `finish` asserts on; `Suite::bench` is now "best-of-7, then
+  `figure`". `crates/engine/benches/wakeup.rs` hands its two p50s (`wakeup epoll p50`,
+  `wakeup poll p50`) to it, replacing its hard-coded `NO BASELINE` lines, and
+  `benches/baselines.tsv` gains their Ryzen 7 3700X lines (unpinned, n = 19, margin 1.10), so a
+  wakeup p50 over its band now fails the bench run. p99, p99.9, min and max stay unbanded.
+
+- **Bench harness baseline read**: `load_baselines` and `cpu_model` read into a fixed
+  `String::with_capacity(1 << 20)` instead of a buffer sized to the file, so the length of
+  `benches/baselines.tsv` no longer moves the heap a bench's timed closures allocate from
+  (ADR-0096 decision 2, `STATUS.md` item 99).
+
+- **CI `gates` job** now runs `scripts/check-w2w-compare.sh` — the reversal of
+  `scripts/compare-w2w-procedures.sh`, which gained a 6 % FAIL / 4 % PASS case at each of p50,
+  p99 and p99.9 (ADR-0096 decision 4a).
 
 ### Changed
 

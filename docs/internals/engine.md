@@ -79,3 +79,12 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 - `tests/tls*.rs` — `tls.rs`
 - `benches/alloc.rs` — non-negotiable 1; `benches/turn.rs`, `benches/dispatch.rs` — the
   per-turn and dispatch cost
+- `benches/wakeup.rs` — cross-thread wake latency, `epoll_wait` and `poll` arms, 20 000
+  samples each (200 under `-- --test`). The sampling is its own, because closure timing on one
+  thread cannot see a wait that spans two; each arm's **p50** is handed to
+  `codec/benches/harness.rs`'s `Suite::figure` (pulled in by `#[path]`, as `turn.rs` and
+  `density.rs` do), so it meets the per-machine band in `benches/baselines.tsv` (`wakeup epoll
+  p50`, `wakeup poll p50`, recorded unpinned) and an over-band p50 fails the run like any other
+  case ([ADR-0096](../decisions/ADR-0096-a-figure-measured-elsewhere-meets-the-same-band-the-baseline-file-stays-out-of-the-heap-and-a-boot-may-rebuild-on-its-housekeeping-cores.md) decision 1). min, p99,
+  p99.9 and max are printed, not banded. The seam is guarded by the `figure_*` tests in
+  `crates/codec/tests/bench_verdict.rs`

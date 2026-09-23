@@ -331,3 +331,20 @@ AMD Ryzen 7 3700X 8-Core Processor	encode NewOrderSingle	99.4	1.10	24	2026-09-23
 #
 # D_in for STATUS.md item 49, same runs: `engine turn, 1 busy sessions` minus `engine turn, 1 busy,
 # admin`, paired per run, median 767.7 ns (734.3 .. 781.3); difference of the medians 765.5 ns.
+
+# `[measured 2026-09-23, boot F step F2]` ADR-0096 decision 1, `STATUS.md` item 100:
+# `crates/engine/benches/wakeup.rs`'s two p50 cases now go through `Suite::figure`, the same
+# comparator as every other case here, so each needs a line. Source: F2,
+# `target/boot-f-evidence/f23.txt` -- 20 unpinned runs of the pinned `wakeup` binary
+# (sha256 1a353b9837e52aacce7c3846ec58eb4db011171558991527dd6b0fc05f8730df), run 1 discarded
+# (first run after boot, gnome-shell not yet settled; same rule as the `journal` line above).
+# Median of runs 2-20 (n = 19): epoll p50 5089.0 ns/op (max 5109.0, max/median 1.0039), poll p50
+# 4939.0 ns/op (max 4999.0, max/median 1.0122). The ladder's smallest step at or above either is
+# 1.10, the floor every neighbour on this desk carries. Recorded UNPINNED, because that is the
+# procedure `bench.sh --strict` runs and a baseline must be read back by the same procedure that
+# recorded it; a pinned figure, if one is ever recorded, is a different case name (module doc).
+# n = 19 is one short of this header's N >= 20 (and of ADR-0096 decision 1's n >= 20): F2 ran 20
+# and discarded run 1. Boot F step F8 reads both lines again on the rebuilt binary and re-records
+# from there if either is out of band.
+AMD Ryzen 7 3700X 8-Core Processor	wakeup epoll p50	5089.0	1.10	19	2026-09-23	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	wakeup poll p50	4939.0	1.10	19	2026-09-23	pass 17 fail 0 unknown 0

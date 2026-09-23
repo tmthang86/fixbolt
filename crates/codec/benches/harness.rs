@@ -68,6 +68,7 @@
 //! baselines — forgetting is a compile error rather than a silent pass.
 
 use std::hint::black_box;
+use std::io::Read;
 use std::time::Instant;
 
 // The comparison rule, on its own so that `crates/codec/tests/bench_verdict.rs`
@@ -116,8 +117,33 @@ fn read_baselines() -> String {
 /// `verdict.rs` is tested from `tests/bench_verdict.rs`.
 ///
 /// `Ok` is the whole file; `Err` is the message `read_baselines` prints.
+///
+/// Reads into a `String::with_capacity(1 << 20)` rather than
+/// `std::fs::read_to_string` (which sizes its buffer to the file's own
+/// length), so the one long-lived allocation made before a bench's timed
+/// closures has the same size whatever the file's length, and the addresses
+/// the closures allocate afterwards stop depending on it. ADR-0096 decision 2,
+/// `STATUS.md` item 99 — the pinned `journal` binary's `one slot` case read
+/// 7.4 ns against a 24 226-byte file and 12.4 ns against a 24 897-byte one,
+/// same binary, same machine. **Not `mmap`, in practice**: ADR-0096 reasons
+/// that glibc serves 1 MiB by `mmap`, outside the brk heap, but [`suite`]
+/// calls [`cpu_model`] first, whose own 1 MiB buffer is `mmap`ed and then
+/// freed, and glibc's dynamic threshold rises to that freed chunk's size
+/// (1 052 672 bytes) — so this buffer is carved from brk. `[measured
+/// 2026-09-23]` `strace -e mmap,munmap,brk` of the `wakeup` bench binary:
+/// `mmap(NULL, 1052672)` + `munmap` around `/proc/cpuinfo`, then
+/// `brk(+0x100000)` around `benches/baselines.tsv`. A fixed-size brk block
+/// still leaves the later heap independent of the file's length; whether that
+/// holds on the desk is the plan's F8 sweep, not this comment. The capacity is
+/// asserted by `a_loaded_file_reads_into_a_fixed_one_mib_buffer` in
+/// `crates/codec/tests/bench_verdict.rs`. `read_to_string` never shrinks a
+/// buffer that started this large, so the capacity survives past this call
+/// into the value the test inspects.
 pub(crate) fn load_baselines(path: &str) -> Result<String, String> {
-    let content = std::fs::read_to_string(path)
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("cannot read baselines file {path}: {e}"))?;
+    let mut content = String::with_capacity(1 << 20);
+    file.read_to_string(&mut content)
         .map_err(|e| format!("cannot read baselines file {path}: {e}"))?;
     for (i, raw) in content.lines().enumerate() {
         let line = raw.trim_end();
@@ -220,7 +246,16 @@ struct Baseline {
 /// `NO BASELINE` outcome rather than in a pass.
 fn cpu_model() -> Option<String> {
     if cfg!(target_os = "linux") {
-        let info = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+        // ADR-0096 decision 2 names this buffer too. It is freed on return,
+        // so it leaves no long-lived block behind; its side effect is that
+        // freeing an `mmap`ed 1 MiB chunk raises glibc's dynamic mmap
+        // threshold to that size for the rest of the process, which is why
+        // `load_baselines`'s buffer lands in brk rather than `mmap` (see its
+        // doc). The returned `Option<String>` is a fresh, short `to_string()`
+        // of one field, not this buffer.
+        let mut file = std::fs::File::open("/proc/cpuinfo").ok()?;
+        let mut info = String::with_capacity(1 << 20);
+        file.read_to_string(&mut info).ok()?;
         info.lines()
             .find(|l| l.starts_with("model name"))
             .and_then(|l| l.split_once(':'))
@@ -303,6 +338,10 @@ impl Suite {
     /// recorded baseline for `name`.
     ///
     /// Recording rather than asserting is deliberate — see the module docs.
+    /// Measures best-of-7, `black_box`es the result so the timed loop cannot
+    /// be optimised away, then hands the figure to [`Suite::figure`], which
+    /// does the rest — the same rest for a number this measured and for one
+    /// measured elsewhere.
     pub fn bench<F: FnMut()>(&mut self, name: &str, mut f: F) {
         for _ in 0..10_000 {
             f();
@@ -317,6 +356,25 @@ impl Suite {
             let ns = t.elapsed().as_nanos() as f64 / f64::from(iters);
             best = best.min(ns);
         }
+        black_box(best);
+        self.figure(name, best);
+    }
+
+    /// Compare a figure this `Suite` did not measure itself against this
+    /// machine's recorded baseline for `name`, printing and counting it
+    /// exactly as [`Suite::bench`] does its own measurement.
+    ///
+    /// ADR-0096 decision 1: some cases cannot be timed by `bench`'s
+    /// closure-in-a-loop shape — `crates/engine/benches/wakeup.rs`'s two p50
+    /// cases are each a wake latency measured *across two threads*, which is
+    /// exactly what closure-timing on one thread cannot see. `figure` is the
+    /// seam that lets such a case still meet the same band, print the same
+    /// three outcomes (in band, `OVER BASELINE`, `UNDER BASELINE`, or `NO
+    /// BASELINE` with the paste-ready line), and count into the same
+    /// `cases without a baseline` / `cases under their baseline` totals
+    /// [`Suite::finish`] asserts on — one comparator, not a second one that
+    /// could drift from it.
+    pub fn figure(&mut self, name: &str, best: f64) {
         self.cases += 1;
 
         let baseline = match self.cpu.as_deref() {
@@ -373,7 +431,6 @@ impl Suite {
                 self.missing.push(name.to_string());
             }
         }
-        black_box(best);
     }
 
     fn finish(self) {
@@ -409,5 +466,37 @@ impl Suite {
             self.cases,
             self.over.join("\n")
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+impl Suite {
+    /// A `Suite` on a named CPU and an in-memory baselines file, for
+    /// `crates/codec/tests/bench_verdict.rs` only: [`suite`] reads `/proc/cpuinfo`
+    /// and the real `benches/baselines.tsv`, so a test through it would pass or
+    /// fail with the machine it ran on. A `cargo bench` binary is built without
+    /// `cfg(test)`, so none of these three is in one; `cargo clippy
+    /// --all-targets` checks the bench targets with `cfg(test)` on, where they
+    /// are unused — hence the `dead_code` allow on this `impl`.
+    pub(crate) fn for_test(cpu: &str, baselines: &str) -> Suite {
+        Suite {
+            cpu: Some(cpu.to_string()),
+            baselines: baselines.to_string(),
+            over: Vec::new(),
+            under: Vec::new(),
+            missing: Vec::new(),
+            cases: 0,
+        }
+    }
+
+    /// `(over, under, missing)` counts, the three tallies [`Suite::finish`] reads.
+    pub(crate) fn tallies(&self) -> (usize, usize, usize) {
+        (self.over.len(), self.under.len(), self.missing.len())
+    }
+
+    /// [`Suite::finish`], reachable from the test crate.
+    pub(crate) fn finish_for_test(self) {
+        self.finish();
     }
 }
