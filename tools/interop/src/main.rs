@@ -100,6 +100,11 @@ mod desk;
 // only behind `standard` on unix.
 #[cfg(all(feature = "standard", unix))]
 mod reconnect;
+// The fourth role — `--role dial`, ADR-0130's `initiator-plain` /
+// `initiator-tls` arms. Same gate, same reason: it calls
+// `fixbolt::connect_and_serve` through `desk::Desk`.
+#[cfg(all(feature = "standard", unix))]
+mod dial;
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -410,8 +415,11 @@ fn main() -> std::process::ExitCode {
         "initiator" => initiator(&args),
         "acceptor" => acceptor(&args),
         "reconnect" => reconnect_role(&args),
+        "dial" => dial_role(&args),
         other => {
-            println!("interop: FAIL unknown --role {other} (initiator | acceptor | reconnect)");
+            println!(
+                "interop: FAIL unknown --role {other} (initiator | acceptor | reconnect | dial)"
+            );
             std::process::ExitCode::FAILURE
         }
     }
@@ -656,6 +664,21 @@ fn reconnect_role(_args: &[String]) -> std::process::ExitCode {
     println!(
         "interop-reconnect: FAIL --role reconnect needs the `standard` feature on a unix target"
     );
+    std::process::ExitCode::FAILURE
+}
+
+/// **`--role dial`.** ADR-0130's `initiator-plain` / `initiator-tls` arms —
+/// see [`mod@dial`].
+#[cfg(all(feature = "standard", unix))]
+fn dial_role(args: &[String]) -> std::process::ExitCode {
+    dial::run(args)
+}
+
+/// Without `standard` on unix there is no `connect_and_serve`, so there is no
+/// role either. The same shape [`acceptor`] carries, for the same reason.
+#[cfg(not(all(feature = "standard", unix)))]
+fn dial_role(_args: &[String]) -> std::process::ExitCode {
+    println!("interop: FAIL --role dial needs the `standard` feature on a unix target");
     std::process::ExitCode::FAILURE
 }
 
