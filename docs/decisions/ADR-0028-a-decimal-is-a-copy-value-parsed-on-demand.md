@@ -1,6 +1,13 @@
 # ADR-0028 — A decimal is a `Copy` value parsed on demand, and the gap was real
 
 > **Status:** **Accepted — 2026-09-01.** Answers `PRD.md` open decision 10.
+> **Decision 1, and decision 2's signature (`view.decimal(tag) -> Result<Decimal, _>`),
+> superseded by [ADR-0120](ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md)**
+> (2026-09-23): `Decimal` is `{ mantissa: i64, exponent: i8 }`, not `{ value: i64, scale: u8 }`,
+> and it is read by the free function `as_decimal`, not a method on `MessageView`. Decision 2's
+> substance — parsed only when asked, nothing stored per message — and decisions 3, 4 and 5
+> stand, and ADR-0120 uses them. Text below is not edited beyond this line (precedent:
+> ADR-0100 → ADR-0045).
 >
 > **Decided by the owner, explicitly, on 2026-09-01**, together with ADR-0026 and ADR-0027.
 >

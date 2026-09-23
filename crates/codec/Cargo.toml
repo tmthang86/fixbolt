@@ -48,5 +48,9 @@ harness = false
 name = "alloc"
 harness = false
 
+[[bench]]
+name = "decimal"
+harness = false
+
 [lints]
 workspace = true
