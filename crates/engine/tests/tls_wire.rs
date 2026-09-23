@@ -282,3 +282,110 @@ fn serve_tls_brings_a_session_up_through_tls() {
         "serve_tls came back with an error: {stopped:?}"
     );
 }
+
+/// **A handshake `serve_tls` refuses is an event, not silence** — [ADR-0151]
+/// decision 4, plan `2026-09-23-phase-3-found-defects` row D3.
+///
+/// A peer that connects and leaves goes first and must raise nothing
+/// (decision 5); then a client with no cipher suite in common, which must be
+/// told `handshake_failure` on the wire and counted exactly once.
+///
+/// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+#[test]
+fn a_refused_handshake_is_an_event_not_silence() {
+    let addr = free_addr();
+    let (cert, key) = pki();
+    let handles = Handles::new();
+    let admin = handles.admin();
+    let serving_handles = handles.clone();
+    let serving = addr.clone();
+    let serving_cert = cert.clone();
+
+    let engine = std::thread::spawn(move || {
+        fixbolt_engine::serve_tls(
+            &serving,
+            Table::with_capacity(1).serving(cfg()),
+            EchoApp::default(),
+            4,
+            Limits::new(8, 30_000).expect("both above zero"),
+            fixbolt_engine::msglog::NoLog,
+            serving_handles,
+            vec![serving_cert],
+            key,
+        )
+    });
+
+    // A health check: connect, say nothing, leave.
+    let mut leaver = None;
+    for _ in 0..500 {
+        if let Ok(s) = TcpStream::connect(&addr) {
+            leaver = Some(s);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(leaver.expect("the serving loop never bound the address"));
+
+    // A counterparty with the wrong cipher suite.
+    let mut p = rustls::crypto::ring::default_provider();
+    p.cipher_suites
+        .retain(|cs| cs.suite() == rustls::CipherSuite::TLS13_AES_256_GCM_SHA384);
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert).expect("the certificate parses");
+    let wrong = Arc::new(
+        rustls::ClientConfig::builder_with_provider(Arc::new(p))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("TLS 1.3 is available")
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
+    let name = "localhost".try_into().expect("a valid server name");
+    let mut conn = rustls::ClientConnection::new(wrong, name).expect("a client");
+    let mut sock = TcpStream::connect(&addr).expect("the serving loop is up");
+    sock.set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("a read timeout, so a hang fails instead of hanging");
+    let heard = match conn.complete_io(&mut sock) {
+        Ok(_) => "the handshake completed".to_owned(),
+        Err(e) => e
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+            .map_or_else(|| format!("{e}"), |r| format!("{r:?}")),
+    };
+    eprintln!("wire (serve_tls): the client heard {heard}");
+    assert_eq!(
+        heard,
+        format!(
+            "{:?}",
+            rustls::Error::AlertReceived(rustls::AlertDescription::HandshakeFailure)
+        ),
+        "the counterparty was not told why"
+    );
+
+    let refused = EventKind::TlsHandshakeRefused { count: 1 };
+    let mut seen = wait_for_event(&handles, &refused, Duration::from_secs(5));
+    // Anything the leaver would have raised has had the same turns to arrive.
+    std::thread::sleep(Duration::from_millis(100));
+    seen.extend(wait_for_event(
+        &handles,
+        &EventKind::LoggedOn,
+        Duration::from_millis(50),
+    ));
+    let total: u64 = seen
+        .iter()
+        .map(|k| match k {
+            EventKind::TlsHandshakeRefused { count } => *count,
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(
+        total, 1,
+        "one refusal, and a peer that left is not one; the stream held {seen:?}"
+    );
+
+    admin.shutdown(2_000);
+    let stopped = engine.join().expect("the serving thread did not panic");
+    assert!(
+        stopped.is_ok(),
+        "serve_tls came back with an error: {stopped:?}"
+    );
+}

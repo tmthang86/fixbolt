@@ -691,7 +691,30 @@ offering the caller the choice. All of it is behind `--features tls`, on Linux.
 
 **The handshake is where the plan's Sửa 1 put it**, not in a pre-session stage:
 `PendingSet<T, R, PRE>` holds one transport *type* from `admit` to `take`, so a stage that
-changes the socket's type cannot be expressed. `presession.rs` was not modified.
+changes the socket's type cannot be expressed. `presession.rs` was not modified then; it
+has since gained one count, below, and still holds one transport type throughout.
+
+**A handshake TLS refuses is said on the wire and counted, `[2026-09-23]`**
+([ADR-0151](decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md),
+plan `2026-09-23-phase-3-found-defects` row D3). When `rustls` returns an error — no cipher
+suite in common, a peer's alert, bytes that are not TLS — `Handshake::pump` applies the
+`discard`, calls `process_tls_records` again at most four times to take the alert `rustls`
+queued (the unbuffered API hands a queued record out only on the *next* call, read from the
+0.23.45 source and not documented), flushes once without waiting, and returns the new
+`tls::Step::Refused`; `Step::Failed` keeps meaning a socket that failed or a peer that left.
+`Transport::handshake_refused()` (defaulted `false`, the shape of `tls_mode()`) answers `true`
+on a `TlsTransport` after `Refused`. The pre-session stage counts such a socket in the new
+`presession::Progress::tls_refused` rather than `gone`; `serve_tls*` hands the count to
+`Engine::note_tls_refused`, which raises `observe::EventKind::TlsHandshakeRefused { count }`
+under `ConnId::MAX` once per turn that saw any, and `dial` raises the same event with
+`count: 1` when a venue refuses. **A peer that connects and leaves stays in `gone` and raises
+nothing**, so a health check is not a refusal. Guarded by
+`tests/tls.rs::a_client_with_no_suite_in_common_is_sent_a_handshake_failure_alert` (the client
+reads `AlertReceived(HandshakeFailure)`, not `EOF`), `…::a_peer_that_leaves_mid_handshake_is_not_a_refusal`,
+`tests/tls_wire.rs::a_refused_handshake_is_an_event_not_silence` and
+`tests/tls_initiator_wire.rs::an_initiator_refused_by_its_venue_says_so`. None of it is on the
+hot path: it runs before any session exists, in the handshake carve-out above, and the event is
+one `Copy` value in the fixed ring.
 
 **The initiator side landed in Sửa 6, `[2026-09-13]`.** `connect_and_serve_tls` and
 `connect_and_serve_tls_with` dial over `tls::ClientTls`/`tls::Client`, generic `tls.rs`

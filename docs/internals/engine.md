@@ -29,7 +29,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 | `clock.rs` | Where the engine gets the time, as a trait — the seam the acceptance corpus drives |
 | `poll.rs`, `block.rs`, `wait.rs`, `waker.rs` | `standard` mode's idle turn: the `poll(2)` call, the policy around it, the mode split, and how another thread wakes a blocked engine |
 | `affinity.rs`, `shard.rs` | Pinning a thread to a core and proving it, and many engines each on one pinned core |
-| `tls.rs` | TLS as a second `Transport`: `rustls` handshake, kTLS steady state on Linux |
+| `tls.rs` | TLS as a second `Transport`: `rustls` handshake, kTLS steady state on Linux; a handshake TLS refuses sends its alert and ends as `Step::Refused`, apart from a peer that left (ADR-0151) |
 
 ## Read in this order
 

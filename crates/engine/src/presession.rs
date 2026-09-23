@@ -604,6 +604,21 @@ pub struct Progress {
     ///
     /// [ADR-0055]: ../../../docs/decisions/ADR-0055-max-message-size-is-not-a-key-and-rx-is-the-answer.md
     pub unframeable: usize,
+    /// Connections dropped because **TLS refused the handshake** — no cipher
+    /// suite in common, an alert from the peer, bytes that were not TLS: the
+    /// socket ended while its transport answered
+    /// [`Transport::handshake_refused`].
+    ///
+    /// `[2026-09-23]` [ADR-0151] decision 4. Its own count and not
+    /// [`Self::gone`], because the two are different operational facts: a
+    /// counterparty that will never get in until somebody changes a
+    /// configuration, against a peer that connected and left — which is what a
+    /// load balancer's health check does all day (decision 5). Always zero
+    /// behind a plain transport. `serve_tls` hands it to the engine, which
+    /// raises `EventKind::TlsHandshakeRefused`.
+    ///
+    /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+    pub tls_refused: usize,
 }
 
 /// One socket that has not said who it is.
@@ -780,6 +795,10 @@ impl<T: Transport, R: Registry, const PRE: usize> PendingSet<T, R, PRE> {
                     p.unframeable += 1;
                     self.slots.swap_remove(i);
                 }
+                Step::TlsRefused => {
+                    p.tls_refused += 1;
+                    self.slots.swap_remove(i);
+                }
             }
         }
         p
@@ -794,7 +813,15 @@ impl<T: Transport, R: Registry, const PRE: usize> PendingSet<T, R, PRE> {
                 Io::Idle => {}
                 // A peer that left, or a socket that failed, is gone either
                 // way: there is no session here to tell, and nothing to say.
-                Io::Closed | Io::Failed(_) => return Step::Gone,
+                // **Unless TLS refused it** (ADR-0151): the alert has already
+                // gone out, and the count is the only trace this end keeps.
+                Io::Closed | Io::Failed(_) => {
+                    return if slot.transport.handshake_refused() {
+                        Step::TlsRefused
+                    } else {
+                        Step::Gone
+                    };
+                }
             }
         }
         match slot.rx.cut() {
@@ -898,6 +925,8 @@ enum Step {
     /// The buffer filled without yielding a message: the first message is
     /// longer than the buffer, or its frame is not readable at all.
     Unframeable,
+    /// TLS refused the handshake (ADR-0151).
+    TlsRefused,
 }
 
 // --- choosing a shard --------------------------------------------------------

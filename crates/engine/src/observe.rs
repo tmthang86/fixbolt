@@ -783,6 +783,28 @@ pub enum EventKind {
         /// How many bytes were discarded.
         bytes: usize,
     },
+    /// TLS handshakes that ended because TLS refused them — no cipher suite in
+    /// common, an alert from the peer, bytes that were not TLS.
+    ///
+    /// `[2026-09-23]` [ADR-0151] decision 4. **Zero on a healthy engine.**
+    /// Raised under [`ConnId::MAX`], because no connection exists before the
+    /// handshake, and at most once per turn that saw any — the shape of
+    /// [`Self::OriginationUndeliverable`]. An acceptor counts every socket its
+    /// pre-session stage let go for this reason; an initiator raises it with
+    /// `count: 1` for each dial whose handshake was refused, by either end.
+    ///
+    /// **A peer that connects and leaves is not counted** (decision 5): a load
+    /// balancer's TCP health check is not a counterparty with the wrong cipher
+    /// suite, and counting both would bury the one that matters. This end
+    /// also puts the TLS alert on the wire before closing (decision 1), so the
+    /// counterparty's log names the reason too.
+    ///
+    /// [`ConnId::MAX`]: crate::ConnId
+    /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+    TlsHandshakeRefused {
+        /// How many handshakes were refused since the previous event.
+        count: u64,
+    },
 }
 
 /// One event, with enough context to act on it.

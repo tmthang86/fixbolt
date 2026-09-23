@@ -822,6 +822,35 @@ where
         self.unframeable_prelogon = self.unframeable_prelogon.saturating_add(n);
     }
 
+    /// Tell this engine how many TLS handshakes were refused in front of it —
+    /// `presession::Progress::tls_refused` on an acceptor, `1` for a dial whose
+    /// handshake was refused on an initiator.
+    ///
+    /// `[2026-09-23]` [ADR-0151] decision 4. Raises
+    /// [`crate::observe::EventKind::TlsHandshakeRefused`] under [`ConnId::MAX`] when
+    /// `n > 0` and somebody has called [`Self::observer`]; otherwise it does
+    /// nothing, and `n == 0` — every turn of a healthy acceptor — reads no
+    /// clock. The event is one `Copy` value pushed into the fixed ring, so
+    /// this allocates nothing (non-negotiable 1).
+    ///
+    /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+    pub fn note_tls_refused(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let Some(shared) = self.observe.as_ref() else {
+            return;
+        };
+        let now = crate::clock::Clock::now_ms(&mut self.clock);
+        shared.emit(
+            ConnId::MAX,
+            now,
+            crate::observe::EventKind::TlsHandshakeRefused {
+                count: u64::try_from(n).unwrap_or(u64::MAX),
+            },
+        );
+    }
+
     /// A handle another thread reads this engine's state through.
     ///
     /// **Calling this is what makes the engine observable at all.** Until then
@@ -2673,7 +2702,15 @@ fn dial<
                         policy.dropped(now);
                     }
                     Admission::Pending => handshaking = Some((t, since)),
-                    Admission::Failed => policy.dropped(now),
+                    Admission::Failed => {
+                        // ADR-0151 decision 4, the initiator's half: a venue
+                        // that refused the handshake is said, a venue that
+                        // vanished is not. Either way it is an ending.
+                        if t.handshake_refused() {
+                            engine.note_tls_refused(1);
+                        }
+                        policy.dropped(now);
+                    }
                 }
             }
         }
@@ -3300,6 +3337,9 @@ fn pump<
         // The pre-session stage is in front of the engine and keeps its own
         // counts; this is the one line that lets an operator see this one.
         engine.note_unframeable(p.unframeable);
+        // ADR-0151 decision 4: a handshake TLS refused is an event, where a
+        // peer that left (`p.gone`) is not.
+        engine.note_tls_refused(p.tls_refused);
         moved |= p != presession::Progress::default();
         while let Some(i) = set.settled() {
             let Some(pending) = set.take(i) else { break };

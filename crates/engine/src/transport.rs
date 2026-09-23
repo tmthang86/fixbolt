@@ -203,6 +203,25 @@ pub trait Transport {
         TlsMode::Plain
     }
 
+    /// Whether this transport ended because **TLS refused the handshake**,
+    /// as opposed to the socket failing or the peer leaving.
+    ///
+    /// `[2026-09-23]` [ADR-0151] decision 3, the shape [ADR-0060] gave
+    /// [`Self::tls_mode`]: a defaulted method, so every transport that knows
+    /// nothing about TLS answers `false` and none of them changed a line. The
+    /// pre-session stage asks it of a socket that has just ended, to count a
+    /// refusal apart from a peer that left (`presession::Progress::tls_refused`
+    /// against `gone`); `dial` asks it of a handshake that failed.
+    ///
+    /// **Meaningful only once the transport has reported `Closed` or `Failed`.**
+    /// Before that it is `false`.
+    ///
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+    fn handshake_refused(&self) -> bool {
+        false
+    }
+
     /// The handle to wait on. `Some` whenever [`Self::POLLABLE`].
     ///
     /// Has a default body so that a transport somebody else wrote keeps
