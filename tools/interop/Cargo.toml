@@ -30,9 +30,20 @@ publish = false
 # re-export (`GUIDE.md` §8c calls it by its full path for the same reason).
 # Forwarding to `fixbolt` alone would leave `fixbolt-engine/standard` off, and
 # the role would fail to compile for a reason that reads like a missing item.
+# `[2026-09-23]` **`tls`, and it is not in `default`.** ADR-0130's two TLS
+# arms call `fixbolt_engine::serve_tls_requiring` and
+# `fixbolt_engine::connect_and_serve_tls`, which exist only behind the engine's
+# `tls` feature — and that feature pulls `rustls`, `ring` and `ktls-core`. In
+# `default` it would put that tree into `scripts/interop.sh`'s build and into
+# every `cargo test --all`, for two arms only `scripts/interop-qfj.sh` runs.
+# It implies `standard` because both TLS doors are `standard`-mode entry
+# points. Every item it enables is `#[cfg]`-gated on the item itself
+# (non-negotiable 6); a build without it that meets `SocketUseSSL=Y` is refused
+# by `Settings::load` with the line and the sentence, not served in plaintext.
 [features]
 default = ["standard"]
 standard = ["fixbolt/standard", "fixbolt-engine/standard"]
+tls = ["standard", "fixbolt-engine/tls"]
 
 [dependencies]
 fixbolt = { path = "../../crates/library", default-features = false }

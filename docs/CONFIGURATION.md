@@ -454,3 +454,23 @@ target compiles the crate but exposes no way to bring a TLS listener up — [D11
 (§1) are unaffected by any of this: `TlsSettings` and `Settings::into_tls_table` are compiled in
 every feature set, which is what lets a build **without** `tls` refuse `SocketUseSSL=Y` with a
 sentence (`Problem::NeedsFeature`) instead of failing to compile at all.
+
+## 5. Build-time environment variables
+
+`crates/dict/build.rs` reads three FIX dictionaries to generate its tables. Each has a default
+and an override, read only at build time by `build.rs` — none of them is a `Settings` key and
+none is read at runtime.
+
+| Variable | Overrides | Default (relative to `crates/dict/`) |
+|---|---|---|
+| `NANOFIX_FIX44_XML` | The FIX 4.4 dictionary | `spec/FIX44.xml` — shipped inside the crate, byte-identical to QuickFIX at the pin `scripts/fetch-quickfix-assets.sh` uses ([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)) |
+| `NANOFIX_FIXT11_XML` | The FIXT 1.1 transport half of the `fix50sp2` pair | `spec/FIXT11.xml`, same terms |
+| `NANOFIX_FIX50SP2_XML` | The FIX 5.0 SP2 application half of the `fix50sp2` pair | `spec/FIX50SP2.xml`, same terms |
+
+The default needs nothing outside the crate: `cargo add fixbolt` builds `fixbolt-dict` — and
+everything built on it — with no `vendor/` checkout, no network access and no external
+toolchain. Setting an override points `build.rs` at a dictionary of your own instead — a
+customised FIX 4.4 dialect, or a fix for one of the QuickFIX dictionary quirks
+`crates/dict/spec/` ships as-is (see [ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
+*Consequences*). A path missing at build time fails the build loudly, by design — the
+generator never falls back to an empty table.

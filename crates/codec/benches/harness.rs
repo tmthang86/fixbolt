@@ -299,9 +299,24 @@ fn baseline_for(baselines: &str, cpu: &str, case: &str) -> Option<Baseline> {
 
 /// Run a set of timed cases, then check every baseline once they have all been
 /// measured and printed.
+///
+/// `FIXBOLT_BENCH_COUNT_ONLY=1` (checked once, here) makes every case run and
+/// print exactly as it always does, but [`Suite::figure`] skips the
+/// `benches/baselines.tsv` lookup and comparison entirely instead of pushing
+/// into `over`/`under`/`missing` — so [`Suite::finish`] has nothing to assert
+/// on and the process exits 0. Nothing else changes: `read_baselines` still
+/// runs (a malformed file is still a bug worth exiting on), and with the
+/// variable unset or not `"1"`, behaviour is exactly what it was before this
+/// switch existed. Added for ADR-0102 decision 2: the instruction-count tool
+/// (`scripts/bench-instructions.sh`) needs to run a bench binary at an
+/// arbitrary historical commit whose `benches/baselines.tsv` line no longer
+/// matches this desk's timings, without the harness's own `OVER BASELINE`
+/// assertion aborting the process before `perf` finishes counting it.
 pub fn suite<F: FnOnce(&mut Suite)>(f: F) {
     let cpu = cpu_model();
     let baselines = read_baselines();
+    let count_only =
+        std::env::var_os("FIXBOLT_BENCH_COUNT_ONLY").as_deref() == Some(std::ffi::OsStr::new("1"));
     match &cpu {
         Some(c) => println!("machine   {c}"),
         None => println!("machine   UNKNOWN — no baseline can be looked up"),
@@ -313,6 +328,7 @@ pub fn suite<F: FnOnce(&mut Suite)>(f: F) {
         under: Vec::new(),
         missing: Vec::new(),
         cases: 0,
+        count_only,
     };
     f(&mut suite);
     suite.finish();
@@ -331,6 +347,10 @@ pub struct Suite {
     under: Vec<String>,
     missing: Vec<String>,
     cases: usize,
+    /// `FIXBOLT_BENCH_COUNT_ONLY=1`, read once by [`suite`]. See its doc
+    /// comment. `false` for every `#[cfg(test)]` constructor, so the existing
+    /// verdict tests keep exercising the real comparison unconditionally.
+    count_only: bool,
 }
 
 impl Suite {
@@ -376,6 +396,14 @@ impl Suite {
     /// could drift from it.
     pub fn figure(&mut self, name: &str, best: f64) {
         self.cases += 1;
+
+        // ADR-0102 decision 2: run and print exactly as usual, but skip the
+        // baseline lookup and comparison — nothing is pushed into
+        // `over`/`under`/`missing`, so `finish` has nothing to assert on.
+        if self.count_only {
+            println!("{name:<34} {best:>8.1} ns/op   FIXBOLT_BENCH_COUNT_ONLY=1 (not compared)");
+            return;
+        }
 
         let baseline = match self.cpu.as_deref() {
             Some(cpu) => baseline_for(&self.baselines, cpu, name),
@@ -487,7 +515,19 @@ impl Suite {
             under: Vec::new(),
             missing: Vec::new(),
             cases: 0,
+            count_only: false,
         }
+    }
+
+    /// Same as [`Suite::for_test`], with `FIXBOLT_BENCH_COUNT_ONLY=1`'s effect
+    /// already applied — for testing that switch's own behaviour (an
+    /// over-band figure must not reach `over`, and `finish` must not panic)
+    /// without touching the real process environment, which every other test
+    /// in this binary shares.
+    pub(crate) fn for_test_count_only(cpu: &str, baselines: &str) -> Suite {
+        let mut s = Self::for_test(cpu, baselines);
+        s.count_only = true;
+        s
     }
 
     /// `(over, under, missing)` counts, the three tallies [`Suite::finish`] reads.
@@ -498,5 +538,64 @@ impl Suite {
     /// [`Suite::finish`], reachable from the test crate.
     pub(crate) fn finish_for_test(self) {
         self.finish();
+    }
+}
+
+// `FIXBOLT_BENCH_COUNT_ONLY=1`'s own tests, colocated with the switch rather
+// than in `crates/codec/tests/bench_verdict.rs` — this file is the harness
+// the manager's brief names, and these three prove the variable is honoured
+// without depending on `bench_verdict.rs`'s existing call sites, which do not
+// take a `count_only` argument and are left alone. Compiled wherever this
+// file is pulled in under `cfg(test)` (`bench_verdict.rs`, `bench_baselines.rs`,
+// `crates/engine/benches/density.rs`'s test build), same as the `impl Suite`
+// block above.
+// Cargo passes `--cfg test` to every `[[bench]]` target regardless of
+// `harness` (the same reason the `impl Suite` block above carries
+// `#[allow(dead_code)]`): a real `cargo build --release --bench <name>`
+// compiles this module and its `#[test]` functions as plain, unreachable
+// code, never runs them, and would otherwise warn on every one of them.
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+mod count_only_tests {
+    use super::Suite;
+
+    const BASELINES: &str = "TEST CPU\tcase\t100.0\t1.10\t20\t2026-09-23\tpass\n";
+
+    #[test]
+    fn an_over_band_figure_is_not_counted_and_does_not_fail_the_run() {
+        let mut s = Suite::for_test_count_only("TEST CPU", BASELINES);
+        // 200.0 ns is far over `100.0 * 1.10 = 110.0`: with the switch off
+        // this would push into `over` and `finish` would panic.
+        s.figure("case", 200.0);
+        assert_eq!(s.tallies(), (0, 0, 0));
+        s.finish_for_test(); // must not panic
+    }
+
+    #[test]
+    fn an_under_band_figure_is_also_not_counted() {
+        let mut s = Suite::for_test_count_only("TEST CPU", BASELINES);
+        s.figure("case", 1.0); // far under `100.0 / 1.10 = 90.9`
+        assert_eq!(s.tallies(), (0, 0, 0));
+        s.finish_for_test();
+    }
+
+    #[test]
+    fn a_missing_baseline_is_also_not_counted() {
+        let mut s = Suite::for_test_count_only("NO SUCH CPU", BASELINES);
+        s.figure("case", 100.0);
+        assert_eq!(s.tallies(), (0, 0, 0));
+        s.finish_for_test();
+    }
+
+    /// The control: `for_test` (the switch off) still fails an over-band
+    /// figure exactly as before — proving the three tests above pass
+    /// *because* of the switch, not because `figure`'s ordinary comparison
+    /// stopped working.
+    #[test]
+    #[should_panic(expected = "over the machine baseline")]
+    fn without_the_switch_an_over_band_figure_still_fails_the_run() {
+        let mut s = Suite::for_test("TEST CPU", BASELINES);
+        s.figure("case", 200.0);
+        s.finish_for_test();
     }
 }

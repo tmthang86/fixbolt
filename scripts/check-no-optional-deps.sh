@@ -52,6 +52,14 @@ CASES=(
   # `cargo test --all --no-default-features` must build it on a machine with no
   # CMake. Asked per crate, because at workspace scope a sibling answers for it.
   "fixbolt-interop:libc"
+  # `[2026-09-23]` ADR-0130 / row 3 of the QuickFIX/J interop plan. `tools/interop` grew a `tls`
+  # feature of its own (`tools/interop/Cargo.toml`) forwarding to `fixbolt-engine/tls`, for the
+  # two TLS arms `scripts/interop-qfj.sh` drives; it is not in `default`. Same forwarding shape,
+  # same reason, as the two `fixbolt-engine` lines above: asked per crate, because a sibling in
+  # the workspace answers for it at the workspace scope `cargo test --all --no-default-features`
+  # runs at.
+  "fixbolt-interop:rustls"
+  "fixbolt-interop:ktls-core"
   # `[2026-09-13]` tools/w2w grew `--tls` (step 6a of the `tls` plan), and its
   # `tls` feature names `rustls` and `rcgen` as optional **normal** dependencies
   # of its own — not only through `fixbolt-engine/tls`. `rcgen` in particular is

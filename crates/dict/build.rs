@@ -3,9 +3,14 @@
 //! **pair** `FIXT11.xml` + `FIX50SP2.xml` (ADR-0080 decision 2, as narrowed by
 //! ADR-0083).
 //!
-//! The dictionaries are not in this repository — ADR-0001 keeps them in
-//! gitignored `vendor/`. When one is absent the build fails loudly and names the
-//! script that fetches it. It never falls back to a stub: a dictionary that
+//! The dictionaries ship inside this crate, at `spec/`, byte-identical to
+//! QuickFIX at a pinned commit and held there under `NOTICE`
+//! ([ADR-0104](../../docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md));
+//! `NANOFIX_FIX44_XML`, `NANOFIX_FIXT11_XML` and `NANOFIX_FIX50SP2_XML`
+//! override the location for a caller who brings their own copy. No network
+//! access and no external toolchain are needed to build this crate
+//! (`CLAUDE.md` §2 non-negotiable 6). When a dictionary is absent the build
+//! fails loudly and says so. It never falls back to a stub: a dictionary that
 //! silently becomes empty is a parser that silently stops validating.
 //!
 //! Traps this generator is written against are recorded in
@@ -33,18 +38,20 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// `NANOFIX_FIX44_XML` overrides the location, for packagers and for CI runs
-/// that place the asset elsewhere.
+/// that place the asset elsewhere. The default is the copy shipped inside
+/// this crate at `spec/FIX44.xml` (ADR-0104) — a relative path resolved
+/// against the package root, which is where cargo runs a build script.
 const OVERRIDE: &str = "NANOFIX_FIX44_XML";
-const DEFAULT: &str = "../../vendor/quickfix/spec/FIX44.xml";
+const DEFAULT: &str = "spec/FIX44.xml";
 
 /// The transport half of a FIXT 1.1 session: header, trailer and the eight
 /// admin messages. Same override pattern as `NANOFIX_FIX44_XML`.
 const FIXT_OVERRIDE: &str = "NANOFIX_FIXT11_XML";
-const FIXT_DEFAULT: &str = "../../vendor/quickfix/spec/FIXT11.xml";
+const FIXT_DEFAULT: &str = "spec/FIXT11.xml";
 
 /// The application half: fields, components, groups and 156 messages.
 const SP2_OVERRIDE: &str = "NANOFIX_FIX50SP2_XML";
-const SP2_DEFAULT: &str = "../../vendor/quickfix/spec/FIX50SP2.xml";
+const SP2_DEFAULT: &str = "spec/FIX50SP2.xml";
 
 /// A DATA or XMLDATA field whose length field the `{name}Len` / `{name}Length`
 /// rule cannot find: `(data_tag, length_tag, data_name, length_name)`.
@@ -103,8 +110,8 @@ fn main() {
     write_generated("fixt11_fix50sp2.rs", &generate_pair(&transport, &app));
 }
 
-/// Where a dictionary lives: the override if it is set, the vendored copy
-/// otherwise.
+/// Where a dictionary lives: the override if it is set, the copy shipped in
+/// `spec/` otherwise.
 fn spec_path(var: &str, default: &str) -> PathBuf {
     match std::env::var(var) {
         Ok(p) => PathBuf::from(p),
@@ -112,14 +119,15 @@ fn spec_path(var: &str, default: &str) -> PathBuf {
     }
 }
 
-/// Reads a dictionary, or dies naming the script that fetches it.
+/// Reads a dictionary, or dies saying exactly what is missing.
 fn read_spec(path: &Path, what: &str, var: &str) -> String {
     if !path.exists() {
         die(&format!(
-            "{what} not found at {}\n\n  run scripts/fetch-quickfix-assets.sh\n\n\
-             It is not committed on purpose: the QuickFIX licence's attribution clause\n\
-             would come with it. See docs/decisions/ADR-0001-relationship-to-quickfix.md.\n\
-             Set {var} to use a copy from somewhere else.",
+            "{what} not found at {}\n\n  This file ships inside the fixbolt-dict crate, at\n\
+             crates/dict/spec/ (docs/decisions/ADR-0104-the-published-dictionary-is-\n\
+             quickfixs-xml-shipped-with-a-notice.md) — a missing copy means a broken\n\
+             checkout or a broken package, not something to fetch.\n\
+             Set {var} to build against a dictionary of your own instead.",
             path.display()
         ));
     }

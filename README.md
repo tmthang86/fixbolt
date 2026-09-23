@@ -61,13 +61,18 @@ Where each piece of work stands, day by day, is in [STATUS.md](STATUS.md).
 there is no `cargo add`. Clone the repository and run the bootstrap script first:
 
 ```sh
-scripts/fetch-quickfix-assets.sh    # required — nothing builds without it
+scripts/fetch-quickfix-assets.sh    # required for the tests and the conformance oracle —
+                                     # everything a user depends on builds without it
 cargo test --all
 ```
 
-The script fetches the FIX 4.4 XML dictionary and the 59 acceptance definitions into
-`vendor/`, which is gitignored. `crates/dict/build.rs` generates its tables from that XML, so
-**without the script the build fails**.
+`crates/dict` ships QuickFIX's FIX 4.4, FIXT 1.1 and FIX 5.0 SP2 dictionaries inside the crate
+itself, at `crates/dict/spec/`, under [`NOTICE`](NOTICE) — so `fixbolt-dict`, and everything
+built only on top of it, builds with nothing but this repository (ADR-0104). The bootstrap
+script is still required for everything else: it fetches the 59 acceptance definitions and
+QuickFIX's own generated C++ into `vendor/`, which is gitignored, and those are the oracle the
+rest of `cargo test --all` checks the tables against — **without the script the full test
+suite fails**, even though the crate that generates the tables does not need it.
 
 Then read, depending on what you want:
 
@@ -108,6 +113,14 @@ as *data*: the FIX XML dictionaries, the 59 FIX 4.4 acceptance tests, and `Sessi
 reference for behaviour. The reasoning and the licence analysis are in
 [ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md).
 
+The FIX 4.4, FIXT 1.1 and FIX 5.0 SP2 XML dictionaries are shipped inside `fixbolt-dict`,
+byte-identical to a pinned QuickFIX commit, under the QuickFIX Software License — see
+[`NOTICE`](NOTICE). **Anyone distributing a binary built with fixbolt carries QuickFIX-derived
+tables and owes that licence's attribution conditions**; `fixbolt_dict::NOTICE` (re-exported
+as `fixbolt::NOTICE`) is meant to be printed wherever such an application lists its
+third-party notices. The full reasoning is in
+[ADR-0104](docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md).
+
 The codec follows [`hffix`](https://jamesdbrock.github.io/hffix/) instead: parse and
 serialise in place in the I/O buffer, with no heap allocation on the hot path.
 
@@ -135,7 +148,8 @@ crates/
   sbe/           SBE 1.0 over generated tables; no_std, forbids unsafe, a codec
                  you bring your own transport to — no session (behind feature `sbe`)
   sbe-gen/       generates the tables sbe reads from an SBE 1.0 schema
-  dict/          FIX 4.4 tables generated from the QuickFIX XML at build time
+  dict/          FIX 4.4 tables generated at build time from QuickFIX's XML, shipped
+                 inside the crate under NOTICE (ADR-0104) — builds without vendor/
   conformance/   runs the 59 acceptance definitions in process, no socket
   session/       the FIX session state machine: pure, no I/O, role as a type parameter
   engine/        TCP acceptor and connector; the thread that drives the sessions
@@ -144,10 +158,14 @@ crates/
 tools/
   w2w/           wire-to-wire harness; the binary the two mode checks trace
   jrnl/          reads a journal file from outside the process that wrote it
-  interop/       both roles against a real libquickfix over kernel TCP. The C++
-                 counterparties are built by scripts/interop.sh and by CI, never by cargo
+  interop/       both roles against a real libquickfix over kernel TCP, and (--role dial,
+                 --features tls) against QuickFIX/J. The C++ counterparty is built by
+                 scripts/interop.sh and by CI, never by cargo
   attr-scan/     lexes a crate root with proc-macro2 and lists its inner attributes;
                  the eyes of scripts/check-no-crate-root-allow.sh. Nothing depends on it
+  interop-qfj/   not a crate: Judge.java, this repository's own judge against a real
+                 QuickFIX/J, both roles, plaintext and TLS. Built by scripts/interop-qfj.sh
+                 and by CI; the six jars it needs are fetched, checked and never committed
 benches/         baselines.tsv: one recorded timing baseline per (CPU model, case).
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets; nightly, outside the workspace
@@ -155,8 +173,9 @@ spikes/ktls/     answers ADR-0005's kTLS question and stops; nothing depends on 
 docs/            see the table above; decisions/ holds the ADRs, reference/ the
                  measured facts and traps, plans/ what is about to be built (Vietnamese),
                  internals/ a map of which file in which crate holds what
-vendor/          QuickFIX XML and acceptance definitions, fetched by script, gitignored,
-                 never committed
+vendor/          QuickFIX's acceptance definitions and generated C++ (the test oracle),
+                 fetched by script, gitignored, never committed — crates/dict/spec/ holds
+                 the three XML files that DO ship, byte-identical to vendor/'s own copy
 ```
 
 `docs/internals/` is that map, one page per crate: which file holds what, in what order to
