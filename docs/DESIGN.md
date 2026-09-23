@@ -423,6 +423,14 @@ oldest }` in messages, and `JournalRefused { count }` for a reply longer than a 
   consumer*. The corpus cannot see it, because no definition asks for more than three
   messages; `crates/engine/tests/backpressure.rs` does.
 
+**Under `Async` the writer thread's buffer holds the largest record the slot allows**
+(`RECORD_HEADER + LEN`, allocated once on the writer thread), and its stop signal is a one-byte
+`STOP` record no journal record can be; a record `pop` had to drop is skipped, never read as
+*stop*. Until 2026-09-23 a fixed 4 096-byte buffer and an empty stop record let one long message
+stop the writer for good
+([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md),
+[the trap](reference/an-async-journal-record-longer-than-its-writers-buffer-stopped-the-writer.md)).
+
 **The file is appended, not memory-mapped**: `mmap` means a dependency or `unsafe`, and the
 engine plan authorised neither ([ADR-0008](decisions/ADR-0008-journal-is-a-trait.md)). A
 record carries its own length, `seq(4) || len(4) || bytes`, and from format version 1 a CRC32,

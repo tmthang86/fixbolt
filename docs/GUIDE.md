@@ -973,6 +973,11 @@ Two constraints the type system cannot hold:
 
 - **`resend_batch × SLOT_LEN` must stay under `TX`.** The default is 8 × 512 = 4 KiB against
   8 KiB. Raise `SLOT_LEN` or lower `TX` and this is the number to re-check.
+- **Raising `SLOT_LEN` above 65 535 does not keep a message longer than 65 535 bytes.** A slot
+  records its length as a `u16`; such a message is refused and counted in `puts_refused`, and
+  can never be replayed
+  ([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+  decision 3).
 - **In `hft`, pre-build journals and call `add_with_journal`.** Plain `Engine::add` builds
   `J::default()`, a ~2 MiB allocation and 512 page faults **on the engine thread**
   ([best-practices-hft.md §6](best-practices-hft.md)).

@@ -398,6 +398,17 @@ below describe what a first release would contain.
 
 ### Fixed
 
+- **An `Async` `FileJournal` no longer stops writing at a message longer than 4 088 bytes.**
+  Its writer thread read into a fixed 4 096-byte buffer and took the ring's *"record dropped"*
+  answer for its stop signal, so with `LEN` raised above 4 088 one long message stopped every
+  later write to the file while `put` still answered `true`. The buffer is now sized by `LEN`
+  and the stop signal is a one-byte record no journal record can be.
+  **`MemJournal::put` now refuses a message longer than 65 535 bytes** (returns `false`,
+  counted as `JournalRefused`) instead of keeping it with a length of zero that `get` then
+  answered as absent. `Durability::Fsync` and the default `SLOT_LEN = 512` were never affected.
+  [ADR-0150](docs/decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+  decisions 1–3; `crates/engine/tests/journal.rs`.
+
 - **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered
   a peer's KeyUpdate with an `InternalError` alert unless its `tls13-key-update` feature was on;
   this engine had not enabled it. A long-lived session under kTLS — against any peer that
