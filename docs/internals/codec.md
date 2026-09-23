@@ -39,6 +39,10 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
   canonical form, and the two round-trip halves of ADR-0120 decision 5; `benches/decimal.rs` —
   two timing cases, `NO BASELINE` until plan step 7 records one on the §9 machine; the alloc
   case `decimal` in `benches/alloc.rs` (below) is the non-negotiable-1 proof for this path
+- `tests/int.rs` (5 tests) — `as_i64` refuses a leading `+` and agrees exactly with the
+  session's `FieldType::Int` rule over every short string of a small alphabet and 30 000 seeded
+  long values (accepted ⇔ `Ok` or `Overflow`, refused ⇒ `NotANumber`); `as_i64` and `as_u32`
+  let a syntax fault win over an overflow; `as_u32` refuses `+` too
 - `tests/parse_basics.rs`, `tests/defs.rs`, `tests/stream.rs` — inbound parsing, including
   incomplete frames
 - `tests/groups.rs`, `tests/group_roundtrip.rs` — repeating groups, nested included

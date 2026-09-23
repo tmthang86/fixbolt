@@ -31,12 +31,15 @@
 //! that number has no bytes and is gap-filled. ADR-0110 decision 4.
 
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use fixbolt_session::journal::Journal;
 
-use crate::ring::{Consumer, Producer};
+use crate::ring::{Consumer, Idle, Producer};
 
 /// How many messages a [`MemJournal`] keeps by default, and the ring inside a
 /// [`FileJournal`].
@@ -157,6 +160,14 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
             // ADR-0046.
             return false;
         }
+        // **A slot records its length as a `u16`**, so a message longer than
+        // 65 535 bytes is refused whatever `LEN` is. Until 2026-09-23 it was
+        // kept with a length of zero, `put` answered `true`, and `get` then
+        // answered `None` — a refusal nobody counted. ADR-0150 decision 3;
+        // `a_message_longer_than_a_u16_is_refused_not_kept_empty`.
+        let Ok(len) = u16::try_from(bytes.len()) else {
+            return false;
+        };
         // **Addressed by the number, not by a write cursor.** One slot can
         // hold one sequence number at a time, so `get` is an index and a
         // comparison rather than a scan of all `N` — which at 4096 slots is
@@ -170,7 +181,7 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
             return false;
         };
         slot.seq = seq;
-        slot.len = u16::try_from(bytes.len()).unwrap_or(0);
+        slot.len = len;
         slot.buf[..bytes.len()].copy_from_slice(bytes);
         self.high_water = Some(self.high_water.map_or(seq, |h| h.max(seq)));
         // A kept message spends its number too, so this is the same fact
@@ -287,11 +298,17 @@ pub enum Durability {
 pub struct FileJournal<const N: usize, const LEN: usize> {
     mem: MemJournal<N, LEN>,
     how: Durability,
-    /// `Fsync` writes here. `Async` leaves it `None` and uses the ring.
+    /// `Fsync` writes here, and this holds the file's lock. `Async` leaves it
+    /// `None`: the writer thread owns the file, and the lock with it.
     file: Option<File>,
     to_writer: Option<Producer>,
-    /// The writer thread, joined on drop so a test can read the file after.
+    /// The writer thread, joined on drop so a test can read the file after —
+    /// unless the journal was retired, which lets it go instead.
     writer: Option<std::thread::JoinHandle<()>>,
+    /// What the engine has told the writer: [`RUNNING`], [`RETIRED`] or
+    /// [`RETIRED_STOP_WHEN_DRY`]. `Async` only; allocated at open, so
+    /// [`Journal::retire`] allocates nothing. ADR-0153 decision 3.
+    told: Option<Arc<AtomicU8>>,
     /// Where that thread was observed running, if it was pinned.
     #[cfg(all(feature = "affinity", target_os = "linux"))]
     writer_core: Option<crate::affinity::CoreId>,
@@ -302,6 +319,13 @@ pub struct FileJournal<const N: usize, const LEN: usize> {
     last_active: Option<u64>,
     /// Which on-disk format this file is in. Decided at open, never changed.
     format: Format,
+    /// Records the writer's ring had no room for under [`Durability::Async`]:
+    /// kept in memory, never written to the file. Only rises. See
+    /// [`Journal::unwritten`]; ADR-0154 decision 4.
+    unwritten: u64,
+    /// Set once the file is closed — by the writer under `Async`, by `Drop`
+    /// under `Fsync`. Allocated at open. See [`Released`]; ADR-0155.
+    released: Arc<AtomicBool>,
     /// Records whose CRC did not match what was stored beside them.
     ///
     /// **Zero on a version-0 file, always**, because that format carries no
@@ -484,9 +508,31 @@ type WriterCore = Option<core::convert::Infallible>;
 impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
     /// Append to `path`, creating it if it is not there.
     ///
+    /// **One appender per file, for the file's whole life.** `open` takes an
+    /// exclusive lock on the file (`File::try_lock`, `flock` on Unix) *before*
+    /// it reads it, and the lock lives as long as the file does: with the
+    /// writer thread under [`Durability::Async`] — released when the writer
+    /// closes the file after its last flush, which for a
+    /// [retired](Journal::retire) journal is after the connection is gone —
+    /// and with this journal under [`Durability::Fsync`]. A second `open` of the
+    /// same path meanwhile, in this process or another, is refused **at once**;
+    /// it never waits. [ADR-0154] decision 1.
+    ///
+    /// **`WouldBlock` does not mean "no history".** It means the history is
+    /// still being written. A [`crate::recovery::Recovery`] that opens a
+    /// `FileJournal` keeps its [`Self::released`] handle and answers
+    /// [`crate::recovery::Recovery::ready`] with it, so the engine parks the
+    /// connection until the file is whole instead of asking `recover` too
+    /// early (ADR-0155).
+    ///
     /// # Errors
     ///
-    /// Whatever opening the file returns.
+    /// [`std::io::ErrorKind::WouldBlock`], naming the path, if another
+    /// appender holds the file; any other error the lock returns (a
+    /// filesystem that cannot lock is refused rather than shared unguarded);
+    /// or whatever opening or reading the file returns.
+    ///
+    /// [ADR-0154]: ../../../docs/decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md
     pub fn open(path: &Path, how: Durability) -> std::io::Result<Self> {
         Self::open_with(path, how, None)
     }
@@ -554,7 +600,20 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
         // already exists is read in whatever it is, and appended to in the
         // same, for ever. Only a file that is not there yet — or one that is
         // there and empty — gets a header.
-        let existing = std::fs::read(path).unwrap_or_default();
+        //
+        // **The lock before the read.** A file read while another appender is
+        // still writing it is a file read short: `[measured 2026-09-24]` a
+        // reconnect's recovery read `highest_out=Some(1)` of a journal whose
+        // retired writer had not yet flushed `Some(2)`, 50 reconnects in 50,
+        // and both writers then appended to one file. ADR-0154 decision 1.
+        let mut file = File::options()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)?;
+        take_the_file(&file, path)?;
+        let mut existing = Vec::new();
+        file.read_to_end(&mut existing)?;
         // A file that is not there yet is version 1; one that is there is
         // whatever its first five bytes say, for ever.
         let has_header = existing.get(..HEADER_V1.len()) == Some(HEADER_V1);
@@ -679,7 +738,6 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 torn = bytes.len() - at;
             }
         }
-        let mut file = File::options().create(true).append(true).open(path)?;
         // The header goes on a file that had nothing in it. Written before any
         // record, so a reader never sees a record without one.
         if format == Format::V1 && existing.is_empty() {
@@ -694,12 +752,15 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 file: None,
                 to_writer: None,
                 writer: None,
+                told: None,
                 #[cfg(all(feature = "affinity", target_os = "linux"))]
                 writer_core: None,
                 torn,
                 format,
                 corrupt,
                 last_active,
+                unwritten: 0,
+                released: Arc::new(AtomicBool::new(false)),
             },
         );
         this.mem = mem;
@@ -710,19 +771,57 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 // not journalled, which becomes a gap fill rather than a lie.
                 let (to_writer, from_engine) = crate::ring::pair(1 << 20);
                 this.to_writer = Some(to_writer);
+                // **`open` returns only once the writer holds its buffer.** The
+                // buffer is allocated on the writer thread (ADR-0150 decision
+                // 1, ADR-0037), and a writer that started late would allocate
+                // it whenever the scheduler got round to it — `[measured
+                // 2026-09-23]` inside `benches/alloc.rs`'s `mark-out-file-async`
+                // window, whose allocator is global, in 1 run of 6 under load.
+                // Waiting here makes every writer allocation happen before
+                // `open` returns: startup, not the engine's path.
+                let (ready, started) = std::sync::mpsc::sync_channel::<()>(1);
+                let told = Arc::new(AtomicU8::new(RUNNING));
+                this.told = Some(Arc::clone(&told));
+                let released = Arc::clone(&this.released);
+                let run = move || {
+                    let buf = vec![0u8; writer_buf(LEN)];
+                    let _ = ready.send(());
+                    drop(ready);
+                    write_until_told(file, from_engine, format, buf, &told);
+                    // `write_until_told` took the file by value and has
+                    // dropped it: **the lock went with it**, so the next
+                    // `open` of this path can read a whole file (ADR-0154).
+                    // Said now, after the close and before the count below,
+                    // so a recovery asking `Released` never hears "released"
+                    // while this thread still holds the file (ADR-0155).
+                    released.store(true, Ordering::Release);
+                    //
+                    // **The last act, after the file and the ring are gone.**
+                    // A writer the engine retired is one somebody will wait
+                    // for after serving; that wait ends when this reaches zero.
+                    // ADR-0153 decision 3.
+                    if told.load(Ordering::Acquire) != RUNNING {
+                        RETIRED_WRITERS.fetch_sub(1, Ordering::AcqRel);
+                    }
+                };
                 #[cfg(all(feature = "affinity", target_os = "linux"))]
                 if let Some(core) = core {
-                    let (handle, on) =
-                        crate::affinity::spawn_pinned("fixbolt-journal", core, move || {
-                            write_loop(file, from_engine, format)
-                        })?;
+                    let (handle, on) = crate::affinity::spawn_pinned("fixbolt-journal", core, run)?;
+                    // `Err` only if the writer ended before it said so, and
+                    // then there is nothing to wait for.
+                    let _ = started.recv();
                     this.writer = Some(handle);
                     this.writer_core = Some(on);
                     return Ok(this);
                 }
-                this.writer = Some(std::thread::spawn(move || {
-                    write_loop(file, from_engine, format)
-                }));
+                // Named as the pinned one is, so a test and an operator can
+                // find it in `/proc/<pid>/task/*/comm`. ADR-0150 decision 4.
+                this.writer = Some(
+                    std::thread::Builder::new()
+                        .name("fixbolt-journal".to_owned())
+                        .spawn(run)?,
+                );
+                let _ = started.recv();
             }
         }
         Ok(this)
@@ -767,11 +866,21 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
         self.corrupt
     }
 
+    /// A handle that says when this journal's file has been let go of —
+    /// by the writer, after its last flush and close, not by asking the
+    /// filesystem. Take it when the journal is opened and keep it beside the
+    /// path; see [`Released`]. An `Arc` clone: nothing is allocated.
+    #[must_use]
+    pub fn released(&self) -> Released {
+        Released(Arc::clone(&self.released))
+    }
+
     pub fn close(&mut self) {
-        // An empty record is the stop signal: `push(&[])` writes a zero length,
-        // which `write_loop` recognises and nothing else produces.
+        // A one-byte `STOP` record is the stop signal, which `write_loop`
+        // recognises and nothing else produces — every other record is at
+        // least `RECORD_HEADER` bytes. ADR-0150 decision 2.
         if let Some(p) = self.to_writer.as_mut() {
-            while !p.push(&[]) {
+            while !p.push(&[&[STOP]]) {
                 std::hint::spin_loop();
             }
         }
@@ -783,20 +892,247 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
 }
 
 impl<const N: usize, const LEN: usize> Drop for FileJournal<N, LEN> {
+    /// Joins the writer — **unless the journal was retired**, in which case
+    /// there is no writer left to join. ADR-0153 decision 5.
     fn drop(&mut self) {
         self.close();
+        // `Fsync` holds the file, and its lock, here; `Async`'s writer has
+        // already let go of its own.
+        if let Some(file) = self.file.take() {
+            release_the_file(&file);
+            drop(file);
+            // `Fsync`: the file is closed now (ADR-0155 decision 2).
+            self.released.store(true, Ordering::Release);
+        }
     }
 }
 
-/// The writer thread: everything the ring hands over, appended in order.
-fn write_loop(mut file: File, mut from_engine: Consumer, format: Format) {
-    let mut buf = [0u8; 4096];
+/// The writer has not been told anything: it stops at `STOP`, and nobody
+/// counts it.
+const RUNNING: u8 = 0;
+/// Retired, with `STOP` in its ring. It stops there, and uncounts itself.
+const RETIRED: u8 = 1;
+/// Retired while its ring was full, so no `STOP` could be pushed. It stops the
+/// first time the ring runs dry after reading this, and uncounts itself.
+const RETIRED_STOP_WHEN_DRY: u8 = 2;
+
+/// Writers a [`FileJournal`] retired that have not yet finished — **one count
+/// for the whole process**, shared by every engine in it (ADR-0153
+/// *Consequences*). Raised by [`Journal::retire`], lowered by the writer as the
+/// last thing it does.
+static RETIRED_WRITERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Every writer [`Journal::retire`] has let go in this process, finished or
+/// not. Only ever rises. See [`writers_retired`].
+static WRITERS_RETIRED: AtomicUsize = AtomicUsize::new(0);
+
+/// How many `Async` writers a [`FileJournal`] has retired in this process,
+/// ever — finished or not.
+///
+/// **Only ever rises**, so a caller can tell that a retire actually happened
+/// without racing the writer, which lowers the count
+/// [`wait_for_retired_writers`] waits on as soon as it is done.
+/// `benches/alloc.rs` case `retire` reads it to prove its path is live.
+#[must_use]
+pub fn writers_retired() -> usize {
+    WRITERS_RETIRED.load(Ordering::Relaxed)
+}
+
+/// Wait until every writer a retired [`FileJournal`] let go has written its
+/// last byte and closed its file, or until `timeout` passes. `true` if they
+/// all finished.
+///
+/// **Teardown only: this sleeps**, 1 ms between looks at the count, which is
+/// exactly what the engine thread may not do while it serves. Every `serve*`
+/// and `connect_and_serve*` function, and the shard's serve, calls it after
+/// its loop has returned. **A caller driving an [`crate::Engine`] directly
+/// must call it before the process exits**, or an `Async` journal can lose
+/// what its writer had not reached — the compiler cannot say so, `GUIDE.md`
+/// does. ADR-0153 decision 4.
+///
+/// The count is process-wide, so this also waits for writers another engine in
+/// the same process retired. That only makes it wait longer.
+#[must_use]
+pub fn wait_for_retired_writers(timeout: Duration) -> bool {
+    let start = Instant::now();
     loop {
-        match from_engine.pop(&mut buf) {
+        if RETIRED_WRITERS.load(Ordering::Acquire) == 0 {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Take the exclusive lock a [`FileJournal`] holds on its file for the file's
+/// whole life, or say who has it. ADR-0154 decision 1.
+fn take_the_file(file: &File, path: &Path) -> std::io::Result<()> {
+    match file.try_lock() {
+        Ok(()) => Ok(()),
+        Err(std::fs::TryLockError::WouldBlock) => Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            format!(
+                "journal {} is held by another appender: a writer still flushing, or another process",
+                path.display()
+            ),
+        )),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// Whether a [`FileJournal`]'s file has been let go of — **answered by the
+/// journal's own writer, not by the filesystem.**
+///
+/// A clone of one flag allocated when the journal was opened. It turns `true`
+/// once, and stays: under [`Durability::Async`] the writer thread stores it
+/// **after it has closed the file** (so after the lock of ADR-0154 decision 1
+/// is gone) and before it lowers the retired-writer count; under
+/// [`Durability::Fsync`] the journal's `Drop` stores it after dropping its
+/// file. [`Released::is_released`] is one atomic load — no system call, no
+/// allocation, nothing that can sleep — which is what lets a
+/// [`crate::recovery::Recovery::ready`] answer from it on the engine thread.
+///
+/// **What it is for.** A recovery keeps the handle of the journal it handed
+/// out for each counterparty and answers `ready` with `is_released()`; a
+/// reconnect whose last session's writer is still flushing is then parked,
+/// and admitted the first time the engine asks after the writer is done.
+/// [ADR-0155] decisions 2 and 3; `tests/one_appender.rs::ready_is_answered_by_the_writer_not_the_filesystem`.
+///
+/// [ADR-0155]: ../../../docs/decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md
+#[derive(Debug, Clone)]
+pub struct Released(Arc<AtomicBool>);
+
+impl Released {
+    /// `true` once the journal this came from has closed its file. One
+    /// `Acquire` load.
+    #[must_use]
+    pub fn is_released(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Let go of the lock [`take_the_file`] took, **explicitly, before the file is
+/// closed**.
+///
+/// Closing the descriptor would release it too — unless another copy of that
+/// descriptor exists, and one does, briefly, whenever any thread of this
+/// process spawns a child: the child holds a duplicate of every descriptor
+/// until its `exec` closes them (`O_CLOEXEC`), and a lock taken with `flock`
+/// belongs to the open file, not to the descriptor. Unlocking releases it for
+/// every copy at once. `[measured 2026-09-24]` `tests/one_appender.rs` saw
+/// `WouldBlock` from an `open` that `file_busy` had just called free, in 2 runs
+/// of 15, in a binary where a sibling test spawns a process; the spawn is the
+/// `[inferred]` cause — docs/reference/a-reconnect-reopened-a-journal-its-retired-writer-still-owned.md.
+/// ADR-0154 decision 1.
+fn release_the_file(file: &File) {
+    let _ = file.unlock();
+}
+
+/// Whether another appender holds the journal at `path` — so that
+/// [`FileJournal::open`] would refuse it with `WouldBlock` right now.
+///
+/// **Not for [`crate::recovery::Recovery::ready`] in the single-engine
+/// `serve*` loops**, which ask `ready` on the engine thread: `open(2)` walks a
+/// path and can sleep in the kernel (a directory lock, an allocation, metadata
+/// not in cache), and at once per millisecond per parked connection that is a
+/// sleep on the `hft` hot path. Answer `ready` from [`FileJournal::released`]
+/// instead. This is for tools and for the sharded runtime's acceptor thread,
+/// which may block. [ADR-0155] decision 4.
+///
+/// It never *waits for the lock*: open, `try_lock`, unlock, close. A path that does not exist, or cannot be opened, is not busy
+/// (`open` will say what is wrong with it). A free file is locked for the
+/// instant between the `try_lock` and the unlock, so a second process looking
+/// at exactly that moment may see it busy once.
+///
+/// [ADR-0155]: ../../../docs/decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md
+#[must_use]
+pub fn file_busy(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    match file.try_lock() {
+        // Free: it is this look's for an instant, and let go explicitly — see
+        // `release_the_file` for why closing is not enough.
+        Ok(()) => {
+            release_the_file(&file);
+            false
+        }
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(_)) => false,
+    }
+}
+
+/// The record that means *stop*, and nothing else: one byte.
+///
+/// **Not a zero-length record.** `Consumer::pop` reports a record longer than
+/// the buffer it was handed as `Some(0)`, and until 2026-09-23 the writer read
+/// that as this signal — so one message longer than its fixed 4 096-byte buffer
+/// stopped it for good while `put` kept answering `true`. Every record this
+/// journal writes is at least `RECORD_HEADER` (8) bytes, so one byte cannot be
+/// mistaken for one. The message log's `STOP` is the same rule. ADR-0150
+/// decision 2; `writer_tests::a_record_the_writer_cannot_hold_does_not_stop_it`.
+const STOP: u8 = 0xFF;
+
+/// The writer's buffer for a journal whose slot holds `len` bytes: the largest
+/// record the ring can carry, header included.
+///
+/// `MemJournal::put` refuses a message longer than `len` before the ring is
+/// touched, so every message record fits. The two marks are fixed-size and
+/// counted too, so a slot shorter than a mark does not drop the mark. ADR-0150
+/// decision 1; `an_async_journal_keeps_a_message_longer_than_four_kilobytes_and_all_that_follow`.
+const fn writer_buf(len: usize) -> usize {
+    let mut most = len;
+    if ACTIVITY_LEN > most {
+        most = ACTIVITY_LEN;
+    }
+    if OUTBOUND_LEN > most {
+        most = OUTBOUND_LEN;
+    }
+    RECORD_HEADER + most
+}
+
+/// The writer thread: everything the ring hands over, appended in order.
+///
+/// `buf` is `writer_buf(LEN)` bytes from `FileJournal`, allocated once on the
+/// writer thread before this is called — not the engine thread (ADR-0037), and
+/// a stack array sized by `LEN` needs an unstable feature. A test passes a
+/// smaller one to reach the `Some(0)` arm. ADR-0150 decision 1.
+///
+/// It returns at `STOP`, or — once `told` says [`RETIRED_STOP_WHEN_DRY`] — the
+/// first time the ring is found empty after that was read. ADR-0153 decision 3.
+fn write_until_told(
+    mut file: File,
+    mut from_engine: Consumer,
+    format: Format,
+    mut buf: Vec<u8>,
+    told: &AtomicU8,
+) {
+    // Spin briefly, then sleep 1 ms per empty poll: the writer gives its core
+    // back when there is nothing to write, in every mode. ADR-0150 decision 4.
+    let mut idle = Idle::new();
+    // Set once `told` has been read as `RETIRED_STOP_WHEN_DRY`. Everything the
+    // engine pushed happened before it said so, so after one more empty pop
+    // nothing is left to come.
+    let mut last_look = false;
+    loop {
+        let popped = from_engine.pop(&mut buf);
+        if popped.is_some() {
+            idle.reset();
+        }
+        match popped {
+            // **Not the stop signal.** `pop` says *"a record longer than this
+            // buffer was dropped"* this way. Unreachable from `FileJournal`,
+            // whose buffer holds its largest record; if it is reached anyway,
+            // one record is lost and the writer carries on, which is a gap
+            // fill on a resend rather than a journal that silently stops.
+            Some(0) => continue,
             // The stop signal. Everything before it has already been written,
             // because the ring is ordered.
-            Some(0) => {
+            Some(1) if buf.first() == Some(&STOP) => {
                 let _ = file.flush();
+                release_the_file(&file);
                 return;
             }
             Some(n) => {
@@ -829,9 +1165,21 @@ fn write_loop(mut file: File, mut from_engine: Consumer, format: Format) {
                     let _ = file.write_all(&crc32(&[record]).to_le_bytes());
                 }
             }
-            None => std::hint::spin_loop(),
+            None if last_look => {
+                let _ = file.flush();
+                release_the_file(&file);
+                return;
+            }
+            None if told.load(Ordering::Acquire) == RETIRED_STOP_WHEN_DRY => last_look = true,
+            None => idle.wait(),
         }
     }
+}
+
+/// The writer loop as a writer nobody retires runs it: until `STOP`.
+#[cfg(test)]
+fn write_loop(file: File, from_engine: Consumer, format: Format, buf: Vec<u8>) {
+    write_until_told(file, from_engine, format, buf, &AtomicU8::new(RUNNING));
 }
 
 impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
@@ -847,12 +1195,19 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
         match self.how {
             Durability::Async => {
                 if let Some(p) = self.to_writer.as_mut() {
-                    // A full ring is a message that is not journalled. It is
-                    // dropped rather than waited on: waiting would put a
+                    // A full ring is a message that does not reach the file.
+                    // It is dropped rather than waited on: waiting would put a
                     // disk's latency on the engine thread, which is the whole
-                    // thing `Async` exists to avoid.
+                    // thing `Async` exists to avoid. **Counted, and `put` still
+                    // answers `true`**: memory holds it and a resend while this
+                    // process runs replays it, so telling the session it was
+                    // not kept would make `puts_refused` lie. What is missing
+                    // is the restart's copy, and `unwritten` says so. ADR-0154
+                    // decision 4.
                     let n = u32::try_from(bytes.len()).unwrap_or(0);
-                    let _ = p.push(&[&seq.to_le_bytes(), &n.to_le_bytes(), bytes]);
+                    if !p.push(&[&seq.to_le_bytes(), &n.to_le_bytes(), bytes]) {
+                        self.unwritten += 1;
+                    }
                 }
             }
             Durability::Fsync => {
@@ -903,6 +1258,38 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
         self.mem.highest()
     }
 
+    /// Tell the writer to finish and let it go, **without waiting for it**.
+    ///
+    /// Called on the engine thread when a connection ends mid-serving
+    /// (`Connection`'s `Drop`), so it makes no syscall, allocates nothing and
+    /// never spins: `STOP` is pushed **once**, and if the ring is full the
+    /// writer is told instead to stop when it next finds the ring empty. The
+    /// writer's handle is dropped (the thread is detached) and it is counted
+    /// among the retired writers [`wait_for_retired_writers`] waits for after
+    /// serving. A second call, `Fsync`, or a journal already closed does
+    /// nothing. ADR-0153 decision 3.
+    fn retire(&mut self) {
+        let (Some(told), Some(writer)) = (self.told.as_ref(), self.writer.take()) else {
+            return;
+        };
+        // Counted **before** the writer can learn it was retired, so its
+        // uncounting can never come first.
+        RETIRED_WRITERS.fetch_add(1, Ordering::AcqRel);
+        WRITERS_RETIRED.fetch_add(1, Ordering::Relaxed);
+        // Told before `STOP` is pushed: a writer that pops `STOP` must already
+        // read `RETIRED`, or it would stop without uncounting itself.
+        told.store(RETIRED, Ordering::Release);
+        let pushed = self.to_writer.as_mut().is_some_and(|p| p.push(&[&[STOP]]));
+        if !pushed {
+            // After every record this journal pushed, so the writer that reads
+            // it and then finds the ring empty has written them all.
+            told.store(RETIRED_STOP_WHEN_DRY, Ordering::Release);
+        }
+        // Detached: nobody joins it; `wait_for_retired_writers` waits for it.
+        drop(writer);
+        self.to_writer = None;
+    }
+
     fn mark_active(&mut self, at_ms: u64) {
         self.last_active = Some(at_ms);
         // The same two tiers as everything else here. This is written at logon
@@ -913,11 +1300,15 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
             Durability::Async => {
                 if let Some(p) = self.to_writer.as_mut() {
                     let n = u32::try_from(ACTIVITY_LEN).unwrap_or(0);
-                    let _ = p.push(&[
+                    // A mark the ring had no room for is a hole in the file
+                    // like a message is, and counted the same way.
+                    if !p.push(&[
                         &ACTIVITY_MARK.to_le_bytes(),
                         &n.to_le_bytes(),
                         &at_ms.to_le_bytes(),
-                    ]);
+                    ]) {
+                        self.unwritten += 1;
+                    }
                 }
             }
             Durability::Fsync => {
@@ -950,8 +1341,10 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
         // nothing.
         match self.how {
             Durability::Async => {
-                if let Some(p) = self.to_writer.as_mut() {
-                    let _ = p.push(&[&seq.to_le_bytes(), &0u32.to_le_bytes()]);
+                if let Some(p) = self.to_writer.as_mut()
+                    && !p.push(&[&seq.to_le_bytes(), &0u32.to_le_bytes()])
+                {
+                    self.unwritten += 1;
                 }
             }
             Durability::Fsync => {
@@ -988,8 +1381,10 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
         // `Async` — the default — keeps it off the engine thread.
         match self.how {
             Durability::Async => {
-                if let Some(p) = self.to_writer.as_mut() {
-                    let _ = p.push(&[&outbound_mark(seq)]);
+                if let Some(p) = self.to_writer.as_mut()
+                    && !p.push(&[&outbound_mark(seq)])
+                {
+                    self.unwritten += 1;
                 }
             }
             Durability::Fsync => {
@@ -1007,6 +1402,15 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
 
     fn highest_out(&self) -> Option<u32> {
         self.mem.highest_out()
+    }
+
+    /// Records kept in memory whose push to the writer's ring found it full,
+    /// so the file never got them — messages and the three marks alike.
+    /// Always zero under [`Durability::Fsync`], which writes before it returns.
+    /// A counter bump on the engine thread: no syscall, no allocation
+    /// (`benches/alloc.rs`). ADR-0154 decision 4.
+    fn unwritten(&self) -> u64 {
+        self.unwritten
     }
 }
 
@@ -1303,5 +1707,94 @@ impl<'a> Iterator for Records<'a> {
                 bytes: self.bytes.get(at + RECORD_HEADER..end)?,
             })
         }
+    }
+}
+
+/// `write_loop` called directly, because the first half of ADR-0150 makes the
+/// case it guards unreachable through `FileJournal`.
+///
+/// Once the writer's buffer holds the largest record the slot allows, `pop`
+/// never answers `Some(0)` for a journal record, so a `write_loop` that went
+/// back to stopping on `Some(0)` would leave every test through the public API
+/// green. Here the buffer is small on purpose and the record that does not fit
+/// is put in front of one that does. ADR-0150 decision 2.
+#[cfg(test)]
+mod writer_tests {
+    use super::{Format, RECORD_HEADER, RETIRED_STOP_WHEN_DRY, STOP, write_loop, write_until_told};
+    use crate::ring::pair;
+    use std::sync::atomic::AtomicU8;
+
+    /// A writer retired while its ring was full had no `STOP` pushed. It stops
+    /// the first time it finds the ring empty — having written everything in
+    /// it. On this thread, so a writer that never stops hangs the test rather
+    /// than passing it. ADR-0153 decision 3.
+    #[test]
+    fn a_writer_retired_with_a_full_ring_stops_once_it_is_dry() -> std::io::Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "fixbolt-journal-writer-tests-dry-{}.log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let file = std::fs::File::create(&path)?;
+
+        let (mut to_writer, from_engine) = pair(1 << 12);
+        let mut expected = Vec::new();
+        for seq in 1u32..=3 {
+            let body = *b"35=0";
+            let len = u32::try_from(body.len()).unwrap_or(0).to_le_bytes();
+            assert!(to_writer.push(&[&seq.to_le_bytes(), &len, &body]));
+            expected.extend_from_slice(&seq.to_le_bytes());
+            expected.extend_from_slice(&len);
+            expected.extend_from_slice(&body);
+        }
+        let told = AtomicU8::new(RETIRED_STOP_WHEN_DRY);
+        write_until_told(file, from_engine, Format::V0, vec![0u8; 64], &told);
+
+        let on_disk = std::fs::read(&path)?;
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            on_disk, expected,
+            "a writer told to stop when dry wrote everything before it stopped"
+        );
+        Ok(())
+    }
+
+    /// `?` rather than `expect`: non-negotiable 7 is a workspace lint and this
+    /// module is inside the library crate.
+    #[test]
+    fn a_record_the_writer_cannot_hold_does_not_stop_it() -> std::io::Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "fixbolt-journal-writer-tests-{}.log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let file = std::fs::File::create(&path)?;
+
+        let small = RECORD_HEADER + 16;
+        let (mut to_writer, from_engine) = pair(1 << 12);
+        let too_long = [b'x'; 64];
+        let long_len = u32::try_from(too_long.len()).unwrap_or(0).to_le_bytes();
+        assert!(to_writer.push(&[&7u32.to_le_bytes(), &long_len, &too_long]));
+        let fits = *b"35=D";
+        let fits_len = u32::try_from(fits.len()).unwrap_or(0).to_le_bytes();
+        assert!(to_writer.push(&[&8u32.to_le_bytes(), &fits_len, &fits]));
+        assert!(to_writer.push(&[&[STOP]]));
+
+        // On this thread: the loop returns at `STOP`, so a writer that stops
+        // anywhere else returns early and leaves the file short, rather than
+        // hanging the test.
+        write_loop(file, from_engine, Format::V0, vec![0u8; small]);
+
+        let on_disk = std::fs::read(&path)?;
+        let _ = std::fs::remove_file(&path);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&8u32.to_le_bytes());
+        expected.extend_from_slice(&fits_len);
+        expected.extend_from_slice(&fits);
+        assert_eq!(
+            on_disk, expected,
+            "the writer stopped at the record it could not hold, and the one after it never reached the file"
+        );
+        Ok(())
     }
 }

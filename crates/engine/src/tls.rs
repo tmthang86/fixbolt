@@ -321,6 +321,14 @@ mod handshake {
     /// after it allocates.
     const HANDSHAKE_BUF: usize = 32 * 1024;
 
+    /// How many more times [`Handshake::refuse`] asks `rustls` for the alert it
+    /// queued. `[measured 2026-09-23]` on `rustls` 0.23.45 three calls are made
+    /// — `EncodeTlsData`, `TransmitTlsData`, then `BlockedHandshake`, which ends
+    /// the loop — and the fourth is headroom, not a retry: [ADR-0151] decision 1.
+    ///
+    /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+    const REFUSAL_CALLS: usize = 4;
+
     /// How far the handshake got on this call.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Step {
@@ -330,8 +338,20 @@ mod handshake {
         /// The handshake is complete and no TLS data is left queued, which is
         /// what `dangerous_into_kernel_connection` requires.
         Done,
-        /// It will not finish. The connection is over.
+        /// It will not finish because the socket failed or the peer left.
+        /// The connection is over.
         Failed(io::ErrorKind),
+        /// It will not finish because TLS itself said no: `rustls` reported an
+        /// error — no cipher suite in common, a peer's alert, a record that is
+        /// not TLS — and the alert `rustls` prepared for it has been offered to
+        /// the socket once, without waiting. The connection is over.
+        ///
+        /// `[2026-09-23]` [ADR-0151] decision 2. Kept apart from
+        /// [`Step::Failed`] so that a counterparty with the wrong cipher suite
+        /// is a different fact from a health check that connected and left.
+        ///
+        /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+        Refused,
     }
 
     /// A handshake in progress, on either [`Side`].
@@ -448,6 +468,78 @@ mod handshake {
             Ok(true)
         }
 
+        /// `rustls` refused the handshake: put out the alert it queued, once and
+        /// without waiting, and report [`Step::Refused`].
+        ///
+        /// `[2026-09-23]` [ADR-0151] decision 1. **This relies on `rustls`
+        /// behaviour its documentation does not describe**, read from the
+        /// 0.23.45 source: on an error `rustls` queues the alert (no suite in
+        /// common: `server/hs.rs:471`, `common_state.rs:562-572`) and returns
+        /// `Err`; the unbuffered API hands a queued record out only from the
+        /// **next** `process_tls_records` call, whose first branch pops
+        /// `sendable_tls` ahead of the one that re-reports the error
+        /// (`conn/unbuffered.rs:42-175`). Stopping at the first `Err` — which
+        /// this driver did until ADR-0151 — closed with the alert still queued,
+        /// and the counterparty's log said `EOF` instead of the reason.
+        /// `tests/tls.rs::a_client_with_no_suite_in_common_is_sent_a_handshake_failure_alert`
+        /// is what guards it across a `rustls` upgrade.
+        ///
+        /// **Bounded at [`REFUSAL_CALLS`] calls**, so a `rustls` that kept
+        /// answering with records could not keep this sweep here. The alert is
+        /// one `EncodeTlsData` and one `TransmitTlsData`; the call after that
+        /// answers `Err` or `BlockedHandshake`, either of which ends the loop.
+        ///
+        /// **One flush, never a wait.** A socket that says `Idle` loses the
+        /// alert: the connection is over either way, and waiting for the peer
+        /// to drain would be a blocking close on the thread that sweeps every
+        /// other handshake.
+        ///
+        /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+        fn refuse(&mut self, sock: &mut TcpTransport) -> Step {
+            for _ in 0..REFUSAL_CALLS {
+                let Some(input) = self.incoming.get_mut(..self.used) else {
+                    break;
+                };
+                let UnbufferedStatus { discard, state } =
+                    S::process_tls_records(&mut self.conn, input);
+                let more = match state {
+                    Ok(ConnectionState::EncodeTlsData(mut s)) => {
+                        match self
+                            .outgoing
+                            .get_mut(self.out_used..)
+                            .map(|room| s.encode(room))
+                        {
+                            Some(Ok(n)) => {
+                                self.out_used += n;
+                                true
+                            }
+                            // No room for the alert: it is dropped, as one the
+                            // socket would not take is.
+                            Some(Err(_)) | None => false,
+                        }
+                    }
+                    Ok(ConnectionState::TransmitTlsData(s)) => {
+                        s.done();
+                        true
+                    }
+                    _ => false,
+                };
+                if discard > 0 {
+                    if discard > self.used {
+                        break;
+                    }
+                    self.incoming.copy_within(discard..self.used, 0);
+                    self.used -= discard;
+                }
+                if !more {
+                    break;
+                }
+            }
+            // Whatever the socket says, the answer is the same: it is over.
+            let _ = self.flush(sock);
+            Step::Refused
+        }
+
         /// Drive the handshake as far as this socket allows, then return.
         ///
         /// Never blocks and never spins: every path out of the loop is either a
@@ -470,6 +562,7 @@ mod handshake {
 
                 let mut want_read = false;
                 let mut done = false;
+                let mut refused = false;
 
                 match state {
                     Ok(ConnectionState::EncodeTlsData(mut s)) => {
@@ -499,7 +592,12 @@ mod handshake {
                             }
                         }
                     }
-                    Ok(_) | Err(_) => return Step::Failed(io::ErrorKind::InvalidData),
+                    // TLS said no. `rustls` has queued the alert that says
+                    // why; `refuse` puts it out. Not returned from here: the
+                    // `discard` below must be applied first, because the next
+                    // `process_tls_records` call is given the buffer again.
+                    Err(_) => refused = true,
+                    Ok(_) => return Step::Failed(io::ErrorKind::InvalidData),
                 }
 
                 if discard > 0 {
@@ -508,6 +606,10 @@ mod handshake {
                     }
                     self.incoming.copy_within(discard..self.used, 0);
                     self.used -= discard;
+                }
+
+                if refused {
+                    return self.refuse(sock);
                 }
 
                 // **`discard == 0` is the second half of the condition and not
@@ -1178,6 +1280,9 @@ mod transport_impl {
         /// The kernel session's count of session tickets set aside — `Some`
         /// only on a client, and only once the keys are in the kernel.
         tickets: Option<Arc<AtomicU32>>,
+        /// Whether the handshake ended in [`Step::Refused`] rather than a
+        /// socket that failed — [`Transport::handshake_refused`]'s answer.
+        refused: bool,
     }
 
     impl<S: Side> TlsTransport<S> {
@@ -1207,6 +1312,7 @@ mod transport_impl {
                 early_at: 0,
                 fell_back: false,
                 tickets: None,
+                refused: false,
             }
         }
 
@@ -1260,6 +1366,11 @@ mod transport_impl {
                 Step::Failed(k) => {
                     self.stage = Stage::Broken(k);
                     return Err(k);
+                }
+                Step::Refused => {
+                    self.refused = true;
+                    self.stage = Stage::Broken(io::ErrorKind::InvalidData);
+                    return Err(io::ErrorKind::InvalidData);
                 }
                 Step::Done => {}
             }
@@ -1401,6 +1512,15 @@ mod transport_impl {
         /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
         fn tls_mode(&self) -> TlsMode {
             self.mode()
+        }
+
+        /// [ADR-0151] decision 3: `true` once the handshake ended in
+        /// [`Step::Refused`], and never for a peer that left or a socket that
+        /// failed — decision 5.
+        ///
+        /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+        fn handshake_refused(&self) -> bool {
+            self.refused
         }
 
         const POLLABLE: bool = cfg!(unix);

@@ -122,6 +122,46 @@ pub trait Journal {
         None
     }
 
+    /// This journal's connection has ended: finish on your own time, and do
+    /// not make the caller wait.
+    ///
+    /// **A default no-op**, like [`Self::mark_active`]: a journal with nothing
+    /// running beside it has nothing to finish. It makes no syscall, reads no
+    /// clock and allocates nothing, so the session layer stays pure
+    /// (non-negotiable 2) — the session never calls it; the engine does.
+    ///
+    /// The engine calls it on the engine thread when a connection is dropped,
+    /// **in the middle of serving other sessions**, so an implementation must
+    /// not block, sleep or spin there. A journal whose writes are finished by a
+    /// thread of its own tells that thread to stop and lets it go; whoever
+    /// runs the engine waits for such threads only once serving has ended.
+    /// `fixbolt_engine::journal::FileJournal` is the one that does;
+    /// [ADR-0153](../../../docs/decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md).
+    ///
+    /// Nothing is called on a journal after this except its `Drop`.
+    fn retire(&mut self) {}
+
+    /// How many records this journal **kept in memory but failed to write to
+    /// its durable copy**, ever. Only rises.
+    ///
+    /// **Not a refusal.** [`Self::put`] still answered `true` for each of them,
+    /// and rightly: the message is held, [`Self::get`] returns it, and a
+    /// `ResendRequest` while this process runs is answered with a replay. What
+    /// is missing is the copy a *restart* reads — so the session's own counts
+    /// stay true and this number is the operator's, not the session's. A
+    /// journal with nothing durable behind it has nothing to miss, which is
+    /// the default.
+    ///
+    /// `fixbolt_engine::journal::FileJournal` counts every record its writer's
+    /// ring had no room for, and the engine reports increases as an event.
+    /// Like [`Self::retire`], the session never calls it: no syscall, no clock,
+    /// no allocation (non-negotiable 2).
+    /// [ADR-0154](../../../docs/decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)
+    /// decision 4.
+    fn unwritten(&self) -> u64 {
+        0
+    }
+
     /// The highest inbound sequence number this journal has been told about, or
     /// `None` if it has been told about none.
     ///

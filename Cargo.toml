@@ -45,12 +45,13 @@ repository = "https://github.com/tmthang86/fixbolt"
 # No `homepage`: set equal to `repository` it is what cargo's
 # `redundant_homepage` lint names — `[measured 2026-09-23]` nightly cargo 1.100
 # warns "`package.homepage` is redundant with `package.repository`" once per crate.
-# ADR-0160 decision 3. `[measured 2026-09-23]` the packaged sources fail on
-# 1.85.0 (`E0658` in fixbolt-codec, and fixbolt-dict's build script) and build
-# on 1.88.0 with every feature on. The `package` CI job (plan
-# 2026-09-23-p3-packaging-and-first-release, row 6b) builds them on exactly this
-# toolchain; until that job exists this line is one day's measurement.
-rust-version = "1.88"
+#
+# 1.89 for `File::try_lock`: a journal file has one appender (ADR-0154
+# decision 1). clippy's `incompatible_msrv` holds every call to this line. The
+# `package` CI job (plan 2026-09-23-p3-packaging-and-first-release, row 6b)
+# builds the packaged sources on exactly this toolchain (ADR-0160 decision 3,
+# raised to 1.89 by ADR-0154).
+rust-version = "1.89"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

@@ -50,7 +50,9 @@ it built with every feature on. `[measured 2026-09-23]` `cargo +1.88.0 check -p
 fixbolt --all-features` and `-p fixbolt-engine --all-features` both finish.
 
 **Guard:** the `package` CI job (plan row 6b) builds the packaged sources on
-`+1.88.0`; its reversal is `rust-version = "1.85"` on `+1.85.0` → `E0658`.
+`+1.88.0` at the time of this measurement — now `1.89` (ADR-0154 decision 1,
+`File::try_lock`); its reversal is `rust-version = "1.85"` on `+1.85.0` →
+`E0658`.
 
 ## 4. Raising `rust-version` switches clippy lints on
 
@@ -165,10 +167,11 @@ too-high declaration is caught by the resolver before a byte is compiled; a
 dishonest, too-low one is caught by the compiler once it tries.
 
 **Guard:** `scripts/check-packaged-build.sh` builds the packaged sources on
-`+1.88.0` itself, so a manifest correctly declaring `1.88` cannot silently
-regress to needing more; there is no committed reversal for the dishonest
-direction, since ADR-0160 decision 3 depends on the declaration staying true
-rather than on a test that keeps re-lying about it.
+the declared MSRV itself — `1.88.0` at the time of this measurement, now
+`1.89.0` (ADR-0154 decision 1) — so a manifest correctly declaring it cannot
+silently regress to needing more; there is no committed reversal for the
+dishonest direction, since ADR-0160 decision 3 depends on the declaration
+staying true rather than on a test that keeps re-lying about it.
 
 ## 10. `cargo-semver-checks --workspace` already knows about `publish = false`, and a `0.0.0` baseline skips everything
 

@@ -89,7 +89,8 @@ fn cfg() -> Config {
 /// Static because `run` builds a fresh `ShardWire` per scenario and there is
 /// nowhere else that outlives them; [`alone`] serialises the two tests that
 /// read it.
-static DISPOSAL: [AtomicUsize; 7] = [
+static DISPOSAL: [AtomicUsize; 8] = [
+    AtomicUsize::new(0),
     AtomicUsize::new(0),
     AtomicUsize::new(0),
     AtomicUsize::new(0),
@@ -105,7 +106,7 @@ fn disposal_reset() {
     }
 }
 
-fn disposal_read() -> [usize; 7] {
+fn disposal_read() -> [usize; 8] {
     core::array::from_fn(|i| DISPOSAL[i].load(Ordering::Relaxed))
 }
 const N: usize = 256;
@@ -273,6 +274,7 @@ impl ShardWire {
             unknown,
             gone,
             unframeable,
+            tls_refused,
         } = self.pending.turn(0);
         DISPOSAL[0].fetch_add(settled, Ordering::Relaxed);
         DISPOSAL[1].fetch_add(timed_out, Ordering::Relaxed);
@@ -280,6 +282,7 @@ impl ShardWire {
         DISPOSAL[3].fetch_add(gone, Ordering::Relaxed);
         DISPOSAL[5].fetch_add(unknown, Ordering::Relaxed);
         DISPOSAL[6].fetch_add(unframeable, Ordering::Relaxed);
+        DISPOSAL[7].fetch_add(tls_refused, Ordering::Relaxed);
         while let Some(k) = self.pending.settled() {
             let Some(p) = self.pending.take(k) else { break };
             if self.shards.hand(p).is_err() {
@@ -562,6 +565,7 @@ fn two_shards_pass_all_fifty_nine_because_identity_decides_the_shard() {
         unrouted,
         unknown,
         unframeable,
+        tls_refused,
     ] = disposal_read();
     assert!(
         settled > 59,
@@ -572,6 +576,10 @@ fn two_shards_pass_all_fifty_nine_because_identity_decides_the_shard() {
         [0, 0],
         "no connection may expire or fail to route: [timed_out, unrouted]"
     );
+    // `[2026-09-23]` The fourth time the destructure above caught a new
+    // disposal reason: `Progress::tls_refused` (ADR-0151). This harness is
+    // plain TCP, where no handshake exists to refuse.
+    assert_eq!(tls_refused, 0, "a plain socket has no TLS to refuse");
     assert_eq!(
         not_logon, 1,
         "exactly one: 1e_NotLogonMessage.def, whose first message is 35=0 and \

@@ -939,6 +939,13 @@ Three policies, and the difference is which failure they survive:
 For reference, QuickFIX's `FileStore` flushes without `fsync`, so its durability class is
 `Async` ([reference/session-lifecycle-prior-art.md](reference/session-lifecycle-prior-art.md)).
 
+**Under `Async` a message can reach the file up to ~1 ms after `put` returns, on top of the
+write itself.** An idle writer thread sleeps 1 ms at a time rather than spinning, and nothing on
+the engine thread wakes it — the price of a writer that gives its core back
+([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md) decision 4). A process
+that exits without dropping the journal loses what was still in the ring either way; §8c's
+*drop the engine after `run` returns* is what closes that gap.
+
 **`Fsync` puts a disk on your hot path.** That is sometimes the right trade; it is not a
 default to reach for without measuring it. Since
 [ADR-0017](decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md) it costs in
@@ -976,6 +983,7 @@ The messages a resend cannot reach are not lost quietly:
 |---|---|---|
 | `SessionSnapshot::resend_beyond_journal` non-zero, or `EventKind::ResendBeyondJournal { filled, oldest }` | a counterparty asked for `filled` messages the ring no longer held and got gap fills; `oldest` is how far back it reached | raise `N`, or accept that disconnections longer than `N` messages lose data |
 | `SessionSnapshot::puts_refused` non-zero, or `EventKind::JournalRefused { count }` | your replies are longer than `SLOT_LEN`. They went out; they can never be replayed | raise `SLOT_LEN`, and re-check `resend_batch × SLOT_LEN < TX` |
+| `EventKind::JournalUnwritten { count }` (a `FileJournal` under `Async`) | the writer thread fell behind: its 1 MiB ring was full and `count` records — messages or marks — **never reached the file**. They went out, and a resend **before a restart** still replays them from memory; a recovery **after** a restart reads a file with holes, and gap-fills them | a slower disk than the engine, or a burst larger than the ring. Put the journal on a faster disk, pin its writer (`open_pinned`), or accept holes; `Durability::Fsync` never misses (and blocks instead). [ADR-0154](decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md) decision 4 |
 | **Nothing at all** — a counterparty says you never answered, and no counter moved | your reply did not fit `APP`, the application's layout scratch. `Application::on_message` returning `None` means *"nothing to say"*, so this is indistinguishable from silence by design | raise `APP` through `serve_with`; `[measured 2026-09-05]` the default is 1 KiB and it is the tightest ceiling here — [a-ceiling-has-more-than-one-floor](reference/a-ceiling-has-more-than-one-floor.md) |
 
 **`tools/jrnl` is how you get a message older than the ring**: by hand, from the file, off the
@@ -985,6 +993,11 @@ Two constraints the type system cannot hold:
 
 - **`resend_batch × SLOT_LEN` must stay under `TX`.** The default is 8 × 512 = 4 KiB against
   8 KiB. Raise `SLOT_LEN` or lower `TX` and this is the number to re-check.
+- **Raising `SLOT_LEN` above 65 535 does not keep a message longer than 65 535 bytes.** A slot
+  records its length as a `u16`; such a message is refused and counted in `puts_refused`, and
+  can never be replayed
+  ([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+  decision 3).
 - **In `hft`, pre-build journals and call `add_with_journal`.** Plain `Engine::add` builds
   `J::default()`, a ~2 MiB allocation and 512 page faults **on the engine thread**
   ([best-practices-hft.md §6](best-practices-hft.md)).
@@ -1021,9 +1034,21 @@ reachable without giving up the serving loop
 
 ```rust
 impl Recovery<FileJournal<64, 4096>> for OnDisk {
+    // Asked before `recover`, on the engine thread in `serve*`: one atomic
+    // load, never a system call. `false` parks the connection until the last
+    // session's writer has let go of the file. Without it, `open` in `fresh`
+    // answers `WouldBlock` on a quick reconnect.
+    fn ready(&mut self, cfg: &Config) -> bool {
+        // `handed_out`: the `Released` of the journal last opened for this
+        // counterparty. None yet → nothing of ours holds the file.
+        self.handed_out(cfg).map_or(true, Released::is_released)
+    }
+
     // Called when the counterparty left nothing. The engine cannot build a
-    // FileJournal for you: only you know the path.
-    fn fresh(&mut self, cfg: &Config) -> FileJournal<64, 4096> { /* open it */ }
+    // FileJournal for you: only you know the path. Keep its `released()`.
+    fn fresh(&mut self, cfg: &Config) -> FileJournal<64, 4096> {
+        /* open it, then: self.keep(cfg, journal.released()); */
+    }
 
     fn recover(&mut self, cfg: &Config) -> Option<Resumed<FileJournal<64, 4096>>> {
         // All three numbers, computed once, correctly. `None` means
@@ -1049,8 +1074,24 @@ Four things to know:
    existed.
 2. **A process killed between logon and shutdown reports the logon instant**, which after a
    long session may be a day stale. There is no periodic mark.
-3. **Nothing stops two processes opening the same file.** Both append and the records
-   interleave. One journal, one process.
+3. **One file has one appender, and the operating system holds it** (`[2026-09-24]`,
+   [ADR-0154](decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)).
+   `FileJournal::open` takes an exclusive lock before it reads the file and fails at once with
+   `ErrorKind::WouldBlock` while anyone else holds it — another process, or **this process's
+   own writer thread for a session that has just ended**, which is still flushing (ADR-0153
+   lets it). **`WouldBlock` does not mean "no history"**: it means the history is still being
+   written. Keep each journal's `FileJournal::released()` handle and answer `Recovery::ready`
+   with `Released::is_released()`, as above, and the engine parks a quick reconnect until the
+   writer says it has closed the file — at most once a millisecond it asks again, never
+   waiting, and a connection still parked after its `LogonTimeout` (or `Limits::logon_ms` when
+   that is zero; the handshake's limit for `connect_and_serve*`) is closed unanswered. A
+   recovery that instead reads `WouldBlock` as "start fresh" resets a session that has history.
+   **`ready` must not make a system call**: in `serve*` the engine asks it on its own thread, once
+   a millisecond per parked connection. `journal::file_busy(path)` gives the same answer by
+   opening the file — and `open(2)` can sleep in the kernel — so it is for tools and for the
+   sharded runtime's acceptor thread, never for `ready` in `serve*`
+   ([ADR-0155](decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md)). The lock is advisory: a program that ignores `flock` can
+   still write the file.
 4. **`NoRecovery` and `FromFn` require `J: Default`**, so neither can carry a `FileJournal`. A
    file-backed deployment writes a named type, which it has to anyway, since only it knows
    which path belongs to which counterparty.
@@ -1071,6 +1112,25 @@ restart still gets it back, `43=Y` and all. Guarded by
 `crates/engine/tests/secrets_stay_off_disk.rs`
 ([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md);
 [SESSION-BEHAVIOUR.md §4](SESSION-BEHAVIOUR.md)).
+
+**`[2026-09-24]` A session that ends does not make the engine wait for its journal's writer —
+and if you drive `Engine` yourself, you do the waiting.** When a connection leaves, the engine
+*retires* its journal (`Journal::retire`): a `FileJournal` under `Async` tells its writer thread
+to finish and lets it go, without joining it, because a join is a `futex` wait on the engine
+thread in the middle of serving everyone else. The writer finishes on its own time. **Every
+`serve*`, `connect_and_serve*` and sharded serve function waits for those writers after its loop
+has returned**, before it returns to you. **If you call `Engine::turn` or `Engine::run` yourself
+instead, call `fixbolt_engine::journal::wait_for_retired_writers(timeout)` after your loop and
+before the process exits** — otherwise a clean exit can lose what a writer had not yet written,
+the loss `Async` accepts on a crash and not on a clean stop. It returns `false` if the timeout
+passed first. Dropping the `Engine` retires every journal it still holds, so drop it *before*
+the wait. The compiler cannot hold this line; nothing but this paragraph and the rustdoc does.
+**`ready` and `recover` run on the engine thread in `serve*`**, between turns, while other
+sessions are being served — `ready` must not make a system call, and a `recover` that reads a file costs every
+one of them that read (a known cost, ADR-0154 *Consequences*; the sharded runtime asks both on
+its acceptor thread instead). A `FileJournal` you own and close yourself (`close()`, or dropping
+one nobody retired) still joins its writer, as before
+([ADR-0153](decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md); `crates/engine/tests/retire.rs`).
 
 ### 6c. The message log: both directions, refusals included
 
@@ -1339,7 +1399,8 @@ listed in [SESSION-BEHAVIOUR.md §1](SESSION-BEHAVIOUR.md).
    know.
 
 The kinds today: `LoggedOn`, `Ended`, `EndedWithoutReason`, `Administered` (§8c),
-`ResendBeyondJournal` and `JournalRefused` (§6), `MessageLogLost` and `MessageLogUnsent` (§6c).
+`ResendBeyondJournal` and `JournalRefused` (§6), `MessageLogLost` and `MessageLogUnsent` (§6c),
+`TlsHandshakeRefused` (§9's TLS constraint 1).
 Gap detected, resend issued and reject sent are **not** here: they are message-rate, and
 nothing message-rate goes on the hot path until its cost has been measured.
 
@@ -1570,6 +1631,12 @@ and only the second means you may have to reconcile sequence numbers by hand.
 5. **Your application is not consulted.** There is no "let the dispatcher drain" phase, so an
    out-of-band dispatcher can lose work it had already accepted.
 
+**An initiator waiting to redial stops too.** `connect_and_serve` between a lost connection and
+its next dial is asleep on the engine's 100 ms timeout, not on `ReconnectInterval`, so
+`admin.shutdown` returns it in about 100 ms with `sessions() == 0` — there is nobody to say
+goodbye to. Before 2026-09-23 it returned only when the redial timer fired
+(`crates/engine/tests/reconnect_wire.rs::a_dial_waiting_to_reconnect_stops_when_asked_not_when_the_timer_fires`).
+
 Two more entries from STATUS's *Not proven* matter here: **nothing authenticates the holder
 of an `Admin`** (who you pass that handle to is the whole of the access control), and
 **nothing stops accepting during a shutdown**, so a socket arriving in the grace period is
@@ -1684,6 +1751,17 @@ Stated so you do not discover it in production:
      measured ([ADR-0005](decisions/ADR-0005-tls.md) question 2): `[measured 2026-09-14]` the
      kernel takes this suite on `7.0.0-31-generic`; no other suite and no minimum kernel has been
      measured ([DESIGN.md](DESIGN.md) §9, the TLS row).
+     **`[2026-09-23]` Such a counterparty is told, and you are told.** The handshake ends with a
+     TLS `handshake_failure` alert on the wire rather than a bare close, so its log names the
+     reason, and the engine raises `EventKind::TlsHandshakeRefused { count }` under
+     `ConnId::MAX` — on an acceptor for every refused socket, at most once per turn; on an
+     initiator with `count: 1` when the venue refused it. **Watch for it: it is the only trace
+     a wrong cipher suite leaves on your side**, since no session ever existed to end.
+     **A peer that connects and leaves is not counted** — a load balancer's TCP health check
+     raises nothing and is counted in `presession::Progress::gone` as before, so the event is
+     not buried under probes. The alert is offered to the socket once and never waited for; on
+     a socket too full to take it the counterparty still sees only the close, and the event is
+     raised all the same ([ADR-0151](decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md)).
   2. **You are told when a session leaves the kernel, and you can refuse it.**
      `[2026-09-10]` `EventKind::TlsFellBackToUserspace` names the connection that fell back, and
      `TlsRequireKernel=Y` refuses twice on either role: `serve_tls_requiring` **will not bind**

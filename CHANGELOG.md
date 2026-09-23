@@ -49,6 +49,8 @@ pastes **this summary**, not the section below it, into the GitHub release.
 - **`fixbolt-codec`** — FIX 4.4 tag=value parse and serialise in place, `no_std`, zero
   dependencies, zero allocation on the hot path (proven by a counting-allocator bench). Adds
   `Decimal`/`as_decimal` for FIX floats and the `Encoding` trait tag=value implements.
+  **Breaking:** `as_i64` (and `as_u32`) now refuses a leading `+` and reports a syntax fault
+  before an overflow, agreeing with `as_decimal` and the dictionary's own `Int` type.
 - **`fixbolt-dict`** — FIX 4.4 tables generated at build time from QuickFIX's own XML, shipped
   inside the crate under `NOTICE` (no `vendor/`, no network); a second table for FIXT 1.1 / FIX
   5.0 SP2 behind the `fix50sp2` feature.
@@ -59,7 +61,12 @@ pastes **this summary**, not the section below it, into the GitHub release.
 - **`fixbolt-engine`** — the TCP acceptor/initiator and its engine thread, `standard` (blocks
   when idle) and `hft` (never sleeps in the kernel) modes, TLS with a kernel-TLS data path,
   sharding, recovery across a restart, a secret-redacting message log and journal, and the
-  `settings`/`presession`/`observe` surface a deployment configures and administers through.
+  `settings`/`presession`/`observe` surface a deployment configures and administers through. A
+  `FileJournal` now has one appender, a reconnect that would race it is parked rather than
+  refused outright, and a connection's journal is retired (its writer awaited only after the
+  serving loop, never on the engine thread) rather than dropped while serving. A TLS handshake
+  this end refuses is now an event of its own (`TlsHandshakeRefused`), distinct from a peer that
+  simply leaves.
 - **`fixbolt-sbe`** — SBE 1.0 decode/encode in place over schema-generated tables, `no_std`,
   `forbid(unsafe_code)`, zero dependencies with its `encoding` feature off. Deliberately not a
   FIX session encoding (`Session<Sbe<S>, _>` is a compile error, by design).
@@ -71,6 +78,69 @@ Not published (ADR-0160 decision 2): `fixbolt-conformance` (the QuickFIX/C++ int
 and `fixbolt-sbe-gen` (the SBE schema compiler — available by git, pinned to this release's tag).
 
 ### Added
+
+- **A journal file has one appender; a quick reconnect waits for it by being parked; what the
+  file missed is counted.** **`fixbolt_engine::recovery::Recovery::ready(&mut self, &Config) ->
+  bool`**, defaulted to `true`, is asked before every `recover`; `false` parks the connection —
+  never waited for, asked again at most once per millisecond, dropped after its `LogonTimeout`
+  (`Limits::logon_ms` when that is zero); it runs on the engine thread in `serve*` and must answer
+  without a system call. **`FileJournal::released(&self) -> journal::Released`** is how: a
+  `Clone` handle over a flag the writer thread sets after it has closed the file (the journal's
+  `Drop` under `Fsync`), and **`Released::is_released()`** is one atomic load — a recovery keeps
+  the handle of each journal it hands out and answers `ready` with it
+  ([ADR-0155](docs/decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md)).
+  **`fixbolt_engine::journal::file_busy(path) -> bool`** asks the filesystem the same question
+  (`open` + `try_lock`) and is for tools and the sharded acceptor thread only — `open(2)` can
+  sleep. **`fixbolt_session::journal::Journal::unwritten(&self)
+  -> u64`**, defaulted to `0`, counts records a journal kept in memory and failed to write to its
+  durable copy; `FileJournal` counts every push its writer's ring refused, and **`put` still
+  answers `true`** for them. **`observe::EventKind::JournalUnwritten { count: u64 }`** reports the
+  increases, once per turn that moved it. **`shard::Shardable::RX`**, an associated constant
+  defaulted to `usize::MAX` and set to an engine's `RX`, lets `Shards::start` assert `PRE <= RX`
+  at compile time. **Breaking:** `FileJournal::open` / `open_pinned` now **fail with
+  `io::ErrorKind::WouldBlock`** while another appender — another process, or this process's own
+  writer still flushing a retired journal — holds the file, and fail on a filesystem that cannot
+  lock; a read error on an existing file is now returned instead of being read as an empty file.
+  A `Recovery` that opens a `FileJournal` must implement `ready` (`docs/GUIDE.md` §6b) and must
+  not read `WouldBlock` as "no history". A `Shards::<PRE>` whose engines have an `RX` below `PRE`
+  no longer compiles. **MSRV 1.85 → 1.89**, for `File::try_lock`. A journal refused with its
+  prefix is now retired before it is dropped, not joined on the engine thread.
+  [ADR-0154](docs/decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md);
+  `crates/engine/tests/one_appender.rs`, `crates/engine/tests/journal.rs`.
+
+- **A connection's journal is retired when it leaves, and its writer is awaited after serving.**
+  **`fixbolt_session::journal::Journal::retire(&mut self)`**, defaulted to a no-op, is called by
+  the engine when a connection is dropped; `FileJournal` under `Async` answers by telling its
+  writer to finish and detaching it, without a syscall or a wait. **`fixbolt_engine::journal::
+  wait_for_retired_writers(timeout: Duration) -> bool`** waits for every writer retired so far —
+  a count shared by the whole process — and says whether they all finished. Every `serve*`,
+  `connect_and_serve*` and sharded serve function calls it after its loop; **a caller driving
+  `Engine` directly must call it before exiting**, or a clean exit can lose what an `Async`
+  writer had not reached (`docs/GUIDE.md` §6b). **`fixbolt_engine::journal::writers_retired() ->
+  usize`** counts every writer retired in the process, ever, and only rises. **Breaking for some callers:** `Connection`
+  now has a `Drop`, so a field can no longer be moved out of one, and `Connection` and `Engine`
+  now bound their journal parameter `J: Journal` on the struct itself (their methods already
+  did). [ADR-0153](docs/decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md); `crates/engine/tests/retire.rs`.
+
+- **A TLS handshake that is refused is an event, and says which kind of ending it was.**
+  Four additions, all behind `--features tls` except the two that every transport and every
+  acceptor sees:
+  **`observe::EventKind::TlsHandshakeRefused { count: u64 }`**, raised under `ConnId::MAX` at most
+  once per turn by `serve_tls*` (every socket its pre-session stage let go for this reason) and
+  by `connect_and_serve_tls*` (`count: 1` per dial the venue refused);
+  **`transport::Transport::handshake_refused(&self) -> bool`**, defaulted to `false`, `true` on a
+  `tls::TlsTransport` whose handshake TLS refused;
+  **`presession::Progress::tls_refused: usize`**, such sockets counted apart from `gone`;
+  **`tls::Step::Refused`**, what `Handshake::pump` now returns when `rustls` reports an error,
+  where `Step::Failed` keeps meaning a socket that failed or a peer that left. Also
+  **`Engine::note_tls_refused(n)`**, beside `note_unframeable`, for a caller that drives its own
+  pre-session stage. **A peer that connects and leaves — a health check — is still `gone` and
+  raises nothing.** **Breaking for some callers:** `Progress` and `Step` are not
+  `#[non_exhaustive]`, so a struct literal or an exhaustive destructure of `Progress`, or an
+  exhaustive `match` on `Step`, no longer compiles until it names the new field or variant.
+  `EventKind` is `#[non_exhaustive]` and `Transport`'s new method has a default, so neither
+  breaks anyone. [ADR-0151](docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md); `crates/engine/tests/tls.rs`, `tls_wire.rs`,
+  `tls_initiator_wire.rs`.
 
 - **A secret is masked in the message log and never written to the journal.**
   **`fixbolt_engine::redact`** is a new public module: the constant **`MASKED`** names, in one
@@ -416,6 +486,20 @@ and `fixbolt-sbe-gen` (the SBE schema compiler — available by git, pinned to t
 
 ### Changed
 
+- **Breaking: `as_i64` refuses a leading `+`.** `as_i64(b"+5")` was `Ok(5)` and is now
+  `Err(ConvertError::NotANumber)`; `+0`, `+` and `+-5` are refused the same way. FIX `int` is an
+  optional `-` and digits, with no `+`, and the session's own `int` check
+  (`fixbolt_dict::FieldType::Int`) already refused it — `as_i64` now agrees with it, as
+  `as_decimal` already agreed with FIX float. `-5`, `-0` and leading zeros read as before.
+  Nothing in this repository called `as_i64` with a `+`.
+  **Also breaking, for `as_i64` and `as_u32`: a syntax fault now wins over an overflow.** A value
+  whose digits overflow and that also holds a non-digit later, such as `9410947898048986560 ` (a
+  trailing space) or `99999999999x`, was `Err(Overflow)` and is now `Err(NotANumber)` — the
+  reader no longer stops at the digit that overflowed. This is the rule `as_decimal` already
+  follows (ADR-0120). An all-digit value too large for the type is still `Overflow`. Nothing in
+  this repository branches on the difference; no allocation added
+  (`benches/alloc.rs` unchanged). `crates/codec/tests/int.rs`; plan
+  `docs/plans/2026-09-23-phase-3-found-defects.md` row D4 and *Sửa 1*.
 - **`FileLog` and `FileJournal` no longer write a secret to disk in clear.** `FileLog` masks
   `redact::MASKED` fields on its writer thread before escaping, in place, length kept — `9=`,
   the LENGTH fields and `10=` are left as received, so a masked line still frames but
@@ -522,6 +606,51 @@ and `fixbolt-sbe-gen` (the SBE schema compiler — available by git, pinned to t
   `STATUS.md` item 75.
 
 ### Fixed
+
+- **A session with a `FileJournal` ending no longer makes the engine thread wait.** Removing a
+  finished connection dropped its journal on the engine thread, and the drop joined the `Async`
+  writer: a `futex` wait mid-serving — rule 4 broken in `hft`, a stall of every other session
+  in `standard`, up to the writer's 1 ms idle sleep each time. The journal is now retired and
+  its writer awaited after the serving loop.
+  [ADR-0153](docs/decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md); `crates/engine/tests/retire.rs`.
+
+- **The `Async` journal's writer thread and `FileLog`'s writer thread no longer burn a core
+  while idle.** On an empty ring the first spun (`spin_loop`) and the second `yield_now`ed, in
+  every mode — a core each on a `standard` engine that promises to give the core back. Both now
+  spin 1 024 empty polls, then sleep 1 ms per poll until a record arrives; the engine thread
+  never wakes them, so its path is unchanged in both modes. A record pushed to a sleeping writer
+  reaches the file up to 1 ms later. The unpinned writer threads are now named
+  `fixbolt-journal` and `fixbolt-msglog`, as the pinned ones already were.
+  [ADR-0150](docs/decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+  decision 4; `crates/engine/tests/writer_idle.rs`.
+
+- **An `Async` `FileJournal` no longer stops writing at a message longer than 4 088 bytes.**
+  Its writer thread read into a fixed 4 096-byte buffer and took the ring's *"record dropped"*
+  answer for its stop signal, so with `LEN` raised above 4 088 one long message stopped every
+  later write to the file while `put` still answered `true`. The buffer is now sized by `LEN`
+  and the stop signal is a one-byte record no journal record can be.
+  **`MemJournal::put` now refuses a message longer than 65 535 bytes** (returns `false`,
+  counted as `JournalRefused`) instead of keeping it with a length of zero that `get` then
+  answered as absent. `Durability::Fsync` and the default `SLOT_LEN = 512` were never affected.
+  [ADR-0150](docs/decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+  decisions 1–3; `crates/engine/tests/journal.rs`.
+
+- **A TLS acceptor that refuses a handshake now tells the counterparty why.** With no cipher
+  suite in common, `rustls` queues a `handshake_failure` alert and returns the error; its
+  unbuffered API hands the alert out only on the next call, which this engine never made, so the
+  counterparty read a bare close (`EOF` in its log) and this end raised nothing. The handshake
+  driver now takes the queued alert (at most four more calls) and flushes it once, without
+  waiting; a `rustls` client reads `AlertReceived(HandshakeFailure)`
+  (`crates/engine/tests/tls.rs::a_client_with_no_suite_in_common_is_sent_a_handshake_failure_alert`).
+  The same applies on the initiator's side. [ADR-0151](docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md).
+
+- **`connect_and_serve` hears `Admin::shutdown` while it waits to reconnect.** The wait between a
+  lost or refused connection and the next dial skipped the engine's turn, which is where a
+  shutdown is noticed, so the stop was heard only when the reconnect timer fired —
+  `[measured 2026-09-23]` 26 s late with `ReconnectInterval=30`. The wait now goes round through
+  the turn on every wake of `Block`'s 100 ms timeout, and still sleeps: the stop returns within
+  about one timeout, and the waiting thread stays under a 20%-of-a-core ceiling and is found
+  sleeping (`crates/engine/tests/reconnect_wire.rs`, both asserted). Same for `connect_and_serve_tls`.
 
 - **`fixbolt-sbe-gen` reads `valueRef` on a `<type>`, including a composite member.** A schema
   whose composite ends in `<type presence="constant" valueRef="Enum.Value"/>` — the SBE 1.0

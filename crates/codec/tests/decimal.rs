@@ -158,7 +158,8 @@ mod decimal {
     #[test]
     fn a_leading_plus_is_refused() {
         // The exact value `14f_IncorrectDataFormat.def` sends and expects
-        // refused with `373=6`. `as_i64` takes a `+`; this must not.
+        // refused with `373=6`. FIX float has no `+`, as FIX int has none
+        // (`as_i64` refuses it too, `tests/int.rs`).
         assert_eq!(parse(b"+200.00"), Err(NotANumber));
     }
 

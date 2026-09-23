@@ -123,11 +123,62 @@ impl<J: fixbolt_session::journal::Journal> Resumed<J> {
 /// Returning [`None`] means *"start fresh"* and is the ordinary answer for a
 /// counterparty with no history.
 pub trait Recovery<J> {
+    /// Can [`Recovery::recover`] be asked for this counterparty **yet**?
+    ///
+    /// Asked before every `recover`. `false` means *"not yet"*, never *"no
+    /// history"*: the engine **parks** the connection — beside the
+    /// pre-session set in the single-engine `serve*` loop and on the sharded
+    /// runtime's acceptor thread, in the handshake slot of
+    /// `connect_and_serve*` — counts it against the pre-session ceiling, and
+    /// asks again at most once per millisecond of its clock, never waiting in
+    /// between. A connection still parked after its `LogonTimeout`
+    /// ([`Config::logon_timeout_ms`], or the pre-session stage's own limit when
+    /// that is zero; the handshake's limit in `connect_and_serve*`) is dropped
+    /// unanswered, as one that never sent its `Logon` is.
+    ///
+    /// **A recovery that opens a `FileJournal` keeps the
+    /// [`released`](crate::journal::FileJournal::released) handle of the journal
+    /// it handed out for each counterparty, and answers with it.** A departing
+    /// connection's journal is retired without waiting for its writer
+    /// (ADR-0153), so a counterparty that reconnects at once can find the file
+    /// still being written; `FileJournal::open` then refuses it with
+    /// `WouldBlock` rather than read it short (ADR-0154). Without `ready`, that
+    /// `WouldBlock` reaches `recover` — and must not be read as "nothing was
+    /// left behind".
+    ///
+    /// ```ignore
+    /// fn ready(&mut self, cfg: &Config) -> bool {
+    ///     // No handle yet: nothing of ours holds the file.
+    ///     self.handed_out(cfg).map_or(true, Released::is_released)
+    /// }
+    /// ```
+    ///
+    /// **It must answer without a system call.** In the single-engine `serve*`
+    /// loops it runs on the engine thread, between turns, at most once per
+    /// millisecond per parked connection — in `hft`, on the hot path.
+    /// `journal::file_busy` is the wrong answer here: `open(2)` walks a path
+    /// and can sleep in the kernel. `Released::is_released` is one atomic load.
+    /// The default answers `true`, which is right for any recovery with nothing
+    /// that can be busy.
+    /// [ADR-0154](../../../docs/decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)
+    /// decision 3,
+    /// [ADR-0155](../../../docs/decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md)
+    /// decisions 1–3.
+    fn ready(&mut self, _cfg: &Config) -> bool {
+        true
+    }
+
     /// What did this counterparty leave behind?
     ///
-    /// Called on the acceptor thread, which ADR-0020 allows to block — so an
-    /// implementation may read a file. It is **not** called on the engine
-    /// thread and never on a turn.
+    /// Called once [`Recovery::ready`] has said yes. **Which thread asks
+    /// depends on the entry point**, and it is not always one that may block:
+    /// the sharded runtime asks on its acceptor thread, which ADR-0020 and
+    /// ADR-0088 allow to block; `connect_and_serve*` asks on its own thread
+    /// while no session is up; but the single-engine `serve*` loops ask **on the
+    /// engine thread, between turns, while other sessions are being served**.
+    /// A recovery that reads a file there costs every session that engine
+    /// serves the time of that read — a known cost, recorded in ADR-0154
+    /// *Consequences*, not a licence to wait on anything else.
     fn recover(&mut self, cfg: &Config) -> Option<Resumed<J>>;
 
     /// A journal for a counterparty with no history.
@@ -239,4 +290,113 @@ pub enum Start<J> {
     Fresh(J),
     /// A session that outlived the process, and the numbers to resume it at.
     Resumed(Resumed<J>),
+}
+
+/// Connections whose [`Recovery::ready`] answered *"not yet"*, held where they
+/// are rather than waited for.
+///
+/// [ADR-0154](../../../docs/decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)
+/// decision 3, for the two loops that take connections from a pre-session set:
+/// `pump` (the engine thread) and the sharded runtime's acceptor thread.
+/// `connect_and_serve*` holds its one connection in its handshake slot instead.
+///
+/// **Allocated once, to the pre-session ceiling, and never grown**: a caller
+/// admits a new socket only while `set.len() + parked.len()` is under that
+/// ceiling, so [`Parking::park`] can never need more room and nothing here
+/// allocates after construction (non-negotiable 1). Nothing here sleeps or
+/// makes a system call except through `ready` itself.
+pub(crate) struct Parking<P> {
+    slots: Vec<Parked<P>>,
+}
+
+/// One parked connection.
+struct Parked<P> {
+    item: P,
+    cfg: Config,
+    /// Dropped, unanswered, once the clock reaches this.
+    until_ms: u64,
+    /// The millisecond of the engine's clock `ready` was last asked in — so it
+    /// is asked **at most once per millisecond**, however fast the loop turns.
+    asked_ms: u64,
+}
+
+impl<P> Parking<P> {
+    /// Room for `n`, taken now.
+    pub(crate) fn with_capacity(n: usize) -> Self {
+        Self {
+            slots: Vec::with_capacity(n),
+        }
+    }
+
+    /// How many are parked.
+    pub(crate) fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// How long a connection for `cfg` may stay parked: its `LogonTimeout`,
+    /// or `fallback_ms` — the pre-session stage's limit — when that is zero
+    /// ("no limit" is not a promise a parked connection can be given: it holds
+    /// one of the pre-session stage's slots).
+    pub(crate) const fn limit_ms(cfg: &Config, fallback_ms: u64) -> u64 {
+        match cfg.logon_timeout_ms() {
+            0 => fallback_ms,
+            ms => ms,
+        }
+    }
+
+    /// Park `item`, whose recovery was just asked at `now_ms` and said no.
+    ///
+    /// # Errors
+    ///
+    /// The item back when every slot is taken — unreachable while the caller
+    /// keeps the admission rule above; dropping it closes the socket, which is
+    /// the answer the pre-session stage gives a connection it has no room for.
+    pub(crate) fn park(
+        &mut self,
+        item: P,
+        cfg: Config,
+        now_ms: u64,
+        limit_ms: u64,
+    ) -> Result<(), P> {
+        if self.slots.len() >= self.slots.capacity() {
+            return Err(item);
+        }
+        self.slots.push(Parked {
+            item,
+            cfg,
+            until_ms: now_ms.saturating_add(limit_ms),
+            asked_ms: now_ms,
+        });
+        Ok(())
+    }
+
+    /// Drop every connection parked past its limit, closing its socket
+    /// unanswered. Returns how many.
+    pub(crate) fn expire(&mut self, now_ms: u64) -> usize {
+        let before = self.slots.len();
+        self.slots.retain(|p| now_ms < p.until_ms);
+        before - self.slots.len()
+    }
+
+    /// The first parked connection whose recovery is ready now, taken out.
+    ///
+    /// Each is asked **at most once per millisecond** of `now_ms`; one already
+    /// asked this millisecond is passed over. So a loop that calls this every
+    /// turn — `hft` spins — costs `ready` once a millisecond per parked
+    /// connection, and a `standard` loop asks on each of its wakes.
+    pub(crate) fn next_ready<J, V: Recovery<J>>(
+        &mut self,
+        now_ms: u64,
+        recovery: &mut V,
+    ) -> Option<(P, Config)> {
+        let at = self.slots.iter_mut().position(|p| {
+            if now_ms <= p.asked_ms {
+                return false;
+            }
+            p.asked_ms = now_ms;
+            recovery.ready(&p.cfg)
+        })?;
+        let p = self.slots.swap_remove(at);
+        Some((p.item, p.cfg))
+    }
 }

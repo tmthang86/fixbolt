@@ -416,7 +416,8 @@ on the thread non-negotiable 4 protects. Anything older than the ring is gap-fil
 legal and invisible to the counterparty's engine
 ([ADR-0046](decisions/ADR-0046-the-ring-is-the-resend-store-and-a-replay-goes-in-batches.md)),
 and since 2026-09-04 it is **counted and emitted**: `EventKind::ResendBeyondJournal { filled,
-oldest }` in messages, and `JournalRefused { count }` for a reply longer than a slot.
+oldest }` in messages, and `JournalRefused { count }` for a reply longer than a slot — and,
+since 2026-09-24, `JournalUnwritten { count }` for records the ring kept and the file missed.
 
 - **`SLOTS` is 4096** (it was 8 until 2026-09-04: the smallest power of two above what the
   corpus asks for, and an acceptor that had sent a hundred ExecutionReports replayed eight of
@@ -430,6 +431,58 @@ oldest }` in messages, and `JournalRefused { count }` for a reply longer than a 
   in one call, and a resend larger than `TX` tripped D10 and ended the session as a *slow
   consumer*. The corpus cannot see it, because no definition asks for more than three
   messages; `crates/engine/tests/backpressure.rs` does.
+
+**Under `Async` the writer thread's buffer holds the largest record the slot allows**
+(`RECORD_HEADER + LEN`, allocated once on the writer thread), and its stop signal is a one-byte
+`STOP` record no journal record can be; a record `pop` had to drop is skipped, never read as
+*stop*. Until 2026-09-23 a fixed 4 096-byte buffer and an empty stop record let one long message
+stop the writer for good. **An idle writer sleeps**: after 1 024 consecutive empty polls
+(each a `spin_loop` hint) it sleeps 1 ms per poll until a record arrives, in every mode; the
+engine thread never wakes it, so its path is unchanged and a record pushed to a sleeping writer
+reaches the file up to 1 ms later
+([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md),
+[the trap](reference/an-async-journal-record-longer-than-its-writers-buffer-stopped-the-writer.md),
+[the idle writer](reference/a-writer-thread-no-gate-watched-spun-a-core.md)).
+
+**A journal file has one appender, for the file's whole life** (2026-09-24,
+[ADR-0154](decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)).
+`FileJournal::open` takes an exclusive `File::try_lock` (`flock`) **before it reads the file**; the
+lock lives with the `File` — the writer thread's under `Async`, released after its last flush, or
+the journal's under `Fsync` — and is unlocked explicitly before the close, because a child
+process's momentary copy of the descriptor would otherwise keep it. A second `open` of the same
+path, in this process or another, fails at once with `WouldBlock`; it never waits. That is what
+makes ADR-0153's retire safe for a counterparty that reconnects at once: its recovery would
+otherwise read a file the retired writer had not finished (`[measured 2026-09-24]` 50 reconnects
+in 50 resumed from a short file). **`Recovery::ready`**, defaulted to `true`, is asked before `recover`, on the engine thread in
+`pump`, so it must answer without a system call: a recovery keeps each journal's
+`FileJournal::released()` handle — a flag the writer sets after closing its file — and answers
+with one atomic load (`journal::file_busy` opens the file and can sleep, so it is for tools and
+the sharded acceptor thread only,
+[ADR-0155](decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md)); *not yet* **parks** the connection — beside
+the pre-session set in `pump` and on the sharded acceptor thread, in the handshake slot in `dial` —
+asked again at most once per millisecond, dropped after its `LogonTimeout`. Parking is not
+progress: `standard` still idles, `hft` still never sleeps. **What the file missed is counted**:
+a push the writer's ring refused leaves `put` answering `true` (memory holds the message and
+replays it while the process runs) and raises `Journal::unwritten()`, which the engine reports as
+`EventKind::JournalUnwritten { count }`. A journal refused with its prefix, before it became a
+connection, is retired rather than dropped, and `PRE <= RX` for the sharded runtime is a
+compile-time assertion
+([the trap](reference/a-reconnect-reopened-a-journal-its-retired-writer-still-owned.md)).
+
+**A departing connection's journal is retired, not closed, and its writer is awaited only after
+serving.** `Connection` has a `Drop` that calls `Journal::retire` (a defaulted no-op in
+`fixbolt_session`, so the session stays pure), so every way a connection leaves — `turn`'s
+`swap_remove`, a shutdown's `clear`, the engine's own drop — retires first. `FileJournal::retire`
+makes no syscall and never spins: it pushes `STOP` once (or, if the ring is full, tells the writer
+to stop when the ring runs dry), detaches the writer, and counts it among the process's retired
+writers; the writer uncounts itself as its last act. `journal::wait_for_retired_writers(timeout)`
+sleeps on that count, and every `serve*`, `connect_and_serve*` and sharded serve loop calls it
+**after** its loop has returned, with the shutdown grace (never under 1 s) as the timeout. A
+caller driving `Engine` directly must call it before exiting ([GUIDE.md §6b](GUIDE.md)).
+`[2026-09-23]` before this the drop joined the writer on the engine thread mid-serving — a
+`futex` wait in `hft`, a stall of every other session in `standard`
+([ADR-0153](decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md),
+[the trap](reference/a-connection-end-joined-its-journal-writer-on-the-engine-thread.md); `crates/engine/tests/retire.rs`).
 
 **The file is appended, not memory-mapped**: `mmap` means a dependency or `unsafe`, and the
 engine plan authorised neither ([ADR-0008](decisions/ADR-0008-journal-is-a-trait.md)). A
@@ -528,7 +581,11 @@ listener to the poller, so a connection is accepted on the connect rather than o
 timeout. A self-pipe wakes the poller for a reply produced on the application's thread, and
 the engine drains it after every wait, because an undrained pipe makes every subsequent `poll`
 return instantly: a working engine, burning a core. Pairing a blocking strategy with a
-transport that cannot name a source does not compile.
+transport that cannot name a source does not compile. `connect_and_serve`'s dial loop idles the
+same way while it waits to reconnect — on nothing but `Block`'s own timeout — and each wake goes
+through `turn`, so an `Admin::shutdown` is heard within one timeout rather than when the redial
+timer fires (`crates/engine/tests/reconnect_wire.rs`, the stop and the CPU both asserted;
+`dial` exists only in `standard`).
 
 **`wait::Yield` is neither mode.** It is `std::thread::yield_now()`, which yields the scheduler
 and does not block, so it burns its core without giving `hft` its tight poll. Its rustdoc says
@@ -549,6 +606,13 @@ runs the binary a second time in `standard` mode requiring that run to trip the 
 `scripts/check-standard-gives-the-core-back.sh` asserts four things at once, because CPU near
 zero is passable by three different broken engines (§6). `[measured 2026-08-30]` the 59
 definitions pass in `standard` too, with the engine blocking between steps.
+
+**Rule 4 holds when a session ends, not only while it runs.** A connection leaving mid-serving
+retires its journal instead of joining its writer (D7), so neither mode waits for a writer on the
+engine thread; the wait is teardown, after the serving loop, which ADR-0152 decision 1 allows.
+`crates/engine/tests/retire.rs` counts the engine thread's voluntary context switches while 20
+sessions with a `FileJournal` end: 0 in `hft`, no more than with a `MemJournal` in `standard`
+([ADR-0153](decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md)).
 
 ### D9 — Outbound messages are templates: a pre-sorted parts list, patched, not built
 
@@ -695,7 +759,30 @@ offering the caller the choice. All of it is behind `--features tls`, on Linux.
 
 **The handshake is where the plan's Sửa 1 put it**, not in a pre-session stage:
 `PendingSet<T, R, PRE>` holds one transport *type* from `admit` to `take`, so a stage that
-changes the socket's type cannot be expressed. `presession.rs` was not modified.
+changes the socket's type cannot be expressed. `presession.rs` was not modified then; it
+has since gained one count, below, and still holds one transport type throughout.
+
+**A handshake TLS refuses is said on the wire and counted, `[2026-09-23]`**
+([ADR-0151](decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md),
+plan `2026-09-23-phase-3-found-defects` row D3). When `rustls` returns an error — no cipher
+suite in common, a peer's alert, bytes that are not TLS — `Handshake::pump` applies the
+`discard`, calls `process_tls_records` again at most four times to take the alert `rustls`
+queued (the unbuffered API hands a queued record out only on the *next* call, read from the
+0.23.45 source and not documented), flushes once without waiting, and returns the new
+`tls::Step::Refused`; `Step::Failed` keeps meaning a socket that failed or a peer that left.
+`Transport::handshake_refused()` (defaulted `false`, the shape of `tls_mode()`) answers `true`
+on a `TlsTransport` after `Refused`. The pre-session stage counts such a socket in the new
+`presession::Progress::tls_refused` rather than `gone`; `serve_tls*` hands the count to
+`Engine::note_tls_refused`, which raises `observe::EventKind::TlsHandshakeRefused { count }`
+under `ConnId::MAX` once per turn that saw any, and `dial` raises the same event with
+`count: 1` when a venue refuses. **A peer that connects and leaves stays in `gone` and raises
+nothing**, so a health check is not a refusal. Guarded by
+`tests/tls.rs::a_client_with_no_suite_in_common_is_sent_a_handshake_failure_alert` (the client
+reads `AlertReceived(HandshakeFailure)`, not `EOF`), `…::a_peer_that_leaves_mid_handshake_is_not_a_refusal`,
+`tests/tls_wire.rs::a_refused_handshake_is_an_event_not_silence` and
+`tests/tls_initiator_wire.rs::an_initiator_refused_by_its_venue_says_so`. None of it is on the
+hot path: it runs before any session exists, in the handshake carve-out above, and the event is
+one `Copy` value in the fixed ring.
 
 **The initiator side landed in Sửa 6, `[2026-09-13]`.** `connect_and_serve_tls` and
 `connect_and_serve_tls_with` dial over `tls::ClientTls`/`tls::Client`, generic `tls.rs`
@@ -801,6 +888,10 @@ without branching on record kind inside the loop that must not branch. The full 
 **The mechanism is ADR-0007's, unchanged**: one `Producer::push` per message per direction
 into a ring, a writer thread that formats and appends, and losses dropped and counted rather
 than waited for. The writer is allowed to allocate, for the reason `journal::Reader` is.
+**It waits on an empty ring by the journal writer's rule** (`ring.rs` `Idle`): 1 024 empty
+polls spun, then 1 ms sleeps, never woken by the engine. It `yield_now`ed until 2026-09-23,
+which on an idle machine is a core burnt for nothing
+([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md) decision 4).
 
 **`NoLog` is the default and it compiles away.** `MessageLog::LOGS` is an associated
 constant, so an engine never given a log carries no branch, no field and no cost.
@@ -1367,7 +1458,7 @@ toolchain the manifest claims, over the feature sets a stranger can pick" — a 
 |---|---|---|
 | Every internal normal dependency of the six published crates is pinned `=`, and licence files reach each crate byte-identical to the root copies | **0 failures** | `scripts/check-release-versions.sh`, the `package` CI job. Reversal (6a): a caret requirement, or a one-byte edit to a copied `LICENSE-MIT`, both go red |
 | What a `.crate` actually contains, for each of the six | `fixbolt-dict` ships `NOTICE` + its three `spec/*.xml`; every crate ships `README.md`, `LICENSE-MIT`, `LICENSE-APACHE`; none ships `tests/`, `benches/`, `vendor` or a `.def` fixture | `scripts/check-package-contents.sh`, reading `cargo package --list -p <crate>` per crate — packages nothing to disk. `[measured 2026-09-23]` reversal: dropping `NOTICE` from `fixbolt-dict`'s `include` reads `FAIL fixbolt-dict: NOTICE missing from package`; adding `tests/**` to `fixbolt-codec`'s reads `FAIL fixbolt-codec: tests/ shipped (tests/<name>.rs)` once per file |
-| The packaged sources build, on the pinned toolchain and on the declared `rust-version`, over the feature sets a user can pick | **12 cases**: 9 on the pinned default toolchain (one feature at a time beside each crate's default, plus `fixbolt-codec` alone, plus each of `fixbolt`/`fixbolt-engine`/`fixbolt-sbe` with `default-features = false`), 3 on `+1.88.0` (the combined-everything build for `fixbolt` and for `fixbolt-engine`, plus `fixbolt --no-default-features`) | `scripts/check-packaged-build.sh`: a scratch crate per case, outside the workspace (its own `[workspace]`), depending on the crate under test through an ordinary version requirement that `[patch.crates-io]` redirects to `target/package/<name>-<version>/` — the directory the dry run above leaves behind, byte-identical to a `.crate` upload. `[measured 2026-09-23]` all 12 `Finished` on the desk, `cargo` 1.98.0 + `1.88.0`. Reversal: reverting the declared `rust-version` to `1.85` while the source still uses `1.88`-only syntax (post 6a', let chains) and building on `+1.88.0`'s sibling `+1.85.0` reads `error[E0658]: 'let' expressions in this position are unstable` in `fixbolt-codec`'s `src/template.rs` — the exact trap [publishing-a-workspace-to-crates-io](reference/publishing-a-workspace-to-crates-io.md) trap 3 found by hand |
+| The packaged sources build, on the pinned toolchain and on the declared `rust-version`, over the feature sets a user can pick | **12 cases**: 9 on the pinned default toolchain (one feature at a time beside each crate's default, plus `fixbolt-codec` alone, plus each of `fixbolt`/`fixbolt-engine`/`fixbolt-sbe` with `default-features = false`), 3 on `+1.89.0` (the combined-everything build for `fixbolt` and for `fixbolt-engine`, plus `fixbolt --no-default-features`) — declared `rust-version` is now `1.89` (ADR-0154 decision 1, `File::try_lock`), superseding the `1.88` this row measured against | `scripts/check-packaged-build.sh`: a scratch crate per case, outside the workspace (its own `[workspace]`), depending on the crate under test through an ordinary version requirement that `[patch.crates-io]` redirects to `target/package/<name>-<version>/` — the directory the dry run above leaves behind, byte-identical to a `.crate` upload. `[measured 2026-09-23]` all 12 `Finished` on the desk, `cargo` 1.98.0 + `1.88.0` (the then-declared MSRV). Reversal: reverting the declared `rust-version` to `1.85` while the source still uses `1.88`-only syntax (post 6a', let chains) and building on `+1.88.0`'s sibling `+1.85.0` reads `error[E0658]: 'let' expressions in this position are unstable` in `fixbolt-codec`'s `src/template.rs` — the exact trap [publishing-a-workspace-to-crates-io](reference/publishing-a-workspace-to-crates-io.md) trap 3 found by hand |
 | A stranger's binary against the packaged sources / against crates.io | a real Logon/Logout, from `docs/GETTING-STARTED.md`'s own pasted code | `scripts/stranger-check.sh --from packaged` (before publish, plan row 8a) and `--from registry --version <v>` (after, row 8b) — out of scope for rows 6b/6c |
 | The public API is compared against something real | not yet blocking | `cargo-semver-checks` 0.50.0, `--baseline-rev origin/main`, `continue-on-error: true`, the `semver` CI job (ADR-0160 decision 7). **Not meaningful until row 6a is on `main`**: compared against a `0.0.0`, `publish = false` baseline, every check reads `0 checks: 0 pass, 254 skip` per crate and the run is green regardless of what changed — `[measured 2026-09-23]`. Reversal, proven against a same-version baseline instead (an unmodified worktree at the same `0.1.0`, not `origin/main`): renaming `fixbolt_codec::checksum::checksum` reads `failure function_missing: pub fn removed or renamed`, naming both the function and its `fixbolt_codec::checksum` re-export, exit 100. No `--exclude` is needed for `fixbolt-conformance`, `fixbolt-sbe-gen` or `tools/*`: `cargo-semver-checks --workspace` already reads `publish = false` the same way `cargo publish --workspace` does and never mentions them |
 

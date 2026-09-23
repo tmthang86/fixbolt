@@ -142,6 +142,14 @@ or `serve_sharded_hft`'s `log_path`, which opens one file per shard before any s
 starts. An unpinned writer can land on the very core you isolated, which is what ADR-0015
 decision 8 exists to prevent, and it will not look like a logging problem when it happens.
 
+`[2026-09-23]` **Both writers — this one and the `Async` journal's — sleep when idle, in `hft`
+too**: 1 024 empty polls spun, then 1 ms sleeps, never woken by the engine thread, whose path is
+unchanged (`hft` engine thread still 0 voluntary context switches with both writers running,
+`scripts/check-no-kernel-sleep-by-ctxt.sh`). Pinning them is still the rule: a sleeping writer
+wakes a thousand times a second, and each wake on the engine's core is a preemption
+([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+decision 4).
+
 Sharded deployments get `messages.log.0`, `.1`, …, one per shard. Every engine numbers its
 connections from zero, so one shared file would write `conn=0` for as many sockets as there
 are shards.

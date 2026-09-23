@@ -584,3 +584,313 @@ fn the_userspace_fallback_carries_the_same_bytes_and_says_it_is_not_the_kernel()
     );
     assert!(!tls.is_ready(), "is_ready means the keys are in the kernel");
 }
+
+/// A client that shares no cipher suite with this acceptor: TLS 1.3,
+/// `AES-256-GCM` only, where the acceptor carries `AES-128-GCM` only.
+fn client_config_with_no_suite_in_common(
+    cert: rustls::pki_types::CertificateDer<'static>,
+) -> Arc<rustls::ClientConfig> {
+    let mut p = rustls::crypto::ring::default_provider();
+    p.cipher_suites
+        .retain(|cs| cs.suite() == rustls::CipherSuite::TLS13_AES_256_GCM_SHA384);
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert).expect("the certificate parses");
+    Arc::new(
+        rustls::ClientConfig::builder_with_provider(Arc::new(p))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("TLS 1.3 is available")
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
+}
+
+/// Connect a client with no suite in common and put its `ClientHello` on the
+/// wire before returning. Blocking, with a read timeout, so a missing answer
+/// fails with a sentence instead of hanging.
+fn refused_client(
+    addr: std::net::SocketAddr,
+    cert: rustls::pki_types::CertificateDer<'static>,
+) -> (rustls::ClientConnection, TcpStream) {
+    let name = "localhost".try_into().expect("a valid server name");
+    let mut conn = rustls::ClientConnection::new(client_config_with_no_suite_in_common(cert), name)
+        .expect("a client connection");
+    let mut sock = TcpStream::connect(addr).expect("the listener is up");
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .expect("a read timeout");
+    while conn.wants_write() {
+        conn.write_tls(&mut sock).expect("the ClientHello goes out");
+    }
+    (conn, sock)
+}
+
+/// What the client made of everything the acceptor put on the wire before it
+/// closed: the first error `rustls` reported, or a sentence saying there was
+/// none. Reads until EOF, so it must be called after the acceptor's socket is
+/// dropped.
+fn what_the_client_heard(conn: &mut rustls::ClientConnection, sock: &mut TcpStream) -> String {
+    let mut bytes = 0usize;
+    loop {
+        match conn.read_tls(sock) {
+            Ok(0) => {
+                return format!(
+                    "the acceptor closed without a TLS alert ({bytes} bytes before EOF)"
+                );
+            }
+            Ok(n) => {
+                bytes += n;
+                if let Err(e) = conn.process_new_packets() {
+                    return format!("{e:?}");
+                }
+            }
+            Err(e) => {
+                return format!("the acceptor neither answered nor closed: {e} ({bytes} bytes)");
+            }
+        }
+    }
+}
+
+/// **A handshake this acceptor refuses puts the alert on the wire** —
+/// [ADR-0151] decision 1, plan `2026-09-23-phase-3-found-defects` row D3.
+///
+/// `rustls` 0.23.45 queues `handshake_failure` when no suite is in common and
+/// then returns the error; the unbuffered API hands the queued alert out only
+/// on the **next** `process_tls_records` call (`conn/unbuffered.rs:42-175`, read
+/// from source — its documentation does not say so). A driver that stops at the
+/// first `Err` closes with the alert still queued, and the counterparty's log
+/// says `EOF` instead of the reason. **This test is what guards that
+/// undocumented behaviour** across a `rustls` upgrade.
+///
+/// Asserted twice: through [`Handshake::pump`], which must report
+/// [`Step::Refused`], and through `TlsTransport`, which must answer
+/// `handshake_refused() == true` — the question the pre-session stage asks.
+///
+/// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+#[test]
+fn a_client_with_no_suite_in_common_is_sent_a_handshake_failure_alert() {
+    use fixbolt_engine::tls::TlsTransport;
+    use fixbolt_engine::transport::{Io, Transport};
+
+    let (cert, key) = pki();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let addr = listener.local_addr().expect("an address");
+    let expected = format!(
+        "{:?}",
+        rustls::Error::AlertReceived(rustls::AlertDescription::HandshakeFailure)
+    );
+
+    // Through the driver.
+    let (mut client, mut csock) = refused_client(addr, cert.clone());
+    let (sock, _) = listener.accept().expect("the client connects");
+    let mut transport = TcpTransport::new(sock).expect("non-blocking");
+    let conn = rustls::server::UnbufferedServerConnection::new(server_config(
+        cert.clone(),
+        key.clone_key(),
+    ))
+    .expect("a server connection");
+    let mut hs = Handshake::new(conn);
+    let mut sweeps = 0usize;
+    let outcome = loop {
+        sweeps += 1;
+        assert!(sweeps < 100_000, "the refused handshake never ended");
+        match hs.pump(&mut transport) {
+            Step::Pending => std::thread::yield_now(),
+            other => break other,
+        }
+    };
+    drop(hs);
+    drop(transport);
+    let heard = what_the_client_heard(&mut client, &mut csock);
+    eprintln!("wire (Handshake::pump): the client heard {heard}");
+    assert_eq!(heard, expected, "the client was not told why");
+    assert_eq!(
+        outcome,
+        Step::Refused,
+        "a handshake TLS refused must be told apart from a socket that failed"
+    );
+
+    // Through the transport the pre-session stage holds.
+    let (mut client, mut csock) = refused_client(addr, cert.clone());
+    let (sock, _) = listener.accept().expect("the client connects");
+    let transport = TcpTransport::new(sock).expect("non-blocking");
+    let conn = rustls::server::UnbufferedServerConnection::new(server_config(cert, key))
+        .expect("a server connection");
+    let mut tls = TlsTransport::new(transport, Handshake::new(conn));
+    assert!(
+        !tls.handshake_refused(),
+        "nothing has been refused before the handshake has run"
+    );
+    let mut buf = [0u8; 256];
+    let mut sweeps = 0usize;
+    let ended = loop {
+        sweeps += 1;
+        assert!(sweeps < 100_000, "the refused handshake never ended");
+        match tls.recv(&mut buf) {
+            Io::Idle => std::thread::yield_now(),
+            other => break other,
+        }
+    };
+    assert!(
+        matches!(ended, Io::Failed(_)),
+        "a refused handshake must end the transport, got {ended:?}"
+    );
+    assert!(
+        tls.handshake_refused(),
+        "the transport ended by a refusal must say so"
+    );
+    drop(tls);
+    let heard = what_the_client_heard(&mut client, &mut csock);
+    eprintln!("wire (TlsTransport): the client heard {heard}");
+    assert_eq!(heard, expected, "the client was not told why");
+}
+
+/// **A peer that connects and leaves is not a refusal** — [ADR-0151]
+/// decision 5. A load balancer's TCP health check does exactly this, and
+/// counting it would bury the counterparty with the wrong cipher suite under
+/// every probe.
+///
+/// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+#[test]
+fn a_peer_that_leaves_mid_handshake_is_not_a_refusal() {
+    use fixbolt_engine::tls::TlsTransport;
+    use fixbolt_engine::transport::{Io, Transport};
+
+    let (cert, key) = pki();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let addr = listener.local_addr().expect("an address");
+    let hangup = std::thread::spawn(move || {
+        let sock = TcpStream::connect(addr).expect("connects");
+        drop(sock);
+    });
+
+    let (sock, _) = listener.accept().expect("the client connects");
+    let transport = TcpTransport::new(sock).expect("non-blocking");
+    let conn = rustls::server::UnbufferedServerConnection::new(server_config(cert, key))
+        .expect("a server connection");
+    let mut tls = TlsTransport::new(transport, Handshake::new(conn));
+
+    let mut buf = [0u8; 256];
+    let mut sweeps = 0usize;
+    let ended = loop {
+        sweeps += 1;
+        assert!(sweeps < 100_000, "a dead socket never ended the handshake");
+        match tls.recv(&mut buf) {
+            Io::Idle => std::thread::yield_now(),
+            other => break other,
+        }
+    };
+    assert!(
+        matches!(ended, Io::Failed(_) | Io::Closed),
+        "a peer that left must end the transport, got {ended:?}"
+    );
+    assert!(
+        !tls.handshake_refused(),
+        "a peer that connected and left was counted as a refusal"
+    );
+    let _ = hangup.join();
+}
+
+/// A client whose root store holds nothing — it cannot trust this acceptor's
+/// certificate, whoever signed it.
+fn client_config_that_does_not_trust_us() -> Arc<rustls::ClientConfig> {
+    let roots = rustls::RootCertStore::empty();
+    let mut cfg = rustls::ClientConfig::builder_with_provider(Arc::new(provider()))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("TLS 1.3 is available")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    cfg.enable_secret_extraction = true;
+    Arc::new(cfg)
+}
+
+/// **A peer that refuses our certificate is a refusal too** — [ADR-0151]
+/// decision 2 read literally: the driver's `Step::Refused` comes from
+/// `Err(_)` out of `process_tls_records`, and rustls reports a peer's alert
+/// the same way it reports one this end queued (`AlertReceived`, whichever
+/// side raised it). Sửa 5 note (c), plan
+/// `2026-09-23-phase-3-found-defects`: before this test, only the case where
+/// *this* end refuses (`a_client_with_no_suite_in_common_is_sent_a_handshake_failure_alert`,
+/// above) had one.
+///
+/// The client here has an empty root store, so it reads this acceptor's
+/// `Certificate` message, fails to verify it, and sends its own alert —
+/// unlike the no-common-suite case, this round trip needs the acceptor to
+/// answer the `ClientHello` first, so the client is driven on this thread
+/// exactly as [`InThreadClient`] drives the ordinary handshake, with its own
+/// small absorb/flush pair that tolerates the verification error instead of
+/// asserting it away.
+///
+/// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+#[test]
+fn a_peer_that_refuses_our_certificate_is_a_refusal() {
+    use fixbolt_engine::tls::TlsTransport;
+    use fixbolt_engine::transport::{Io, Transport};
+
+    let (cert, key) = pki();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let addr = listener.local_addr().expect("an address");
+
+    let name = "localhost".try_into().expect("a valid server name");
+    let mut client_conn =
+        rustls::ClientConnection::new(client_config_that_does_not_trust_us(), name)
+            .expect("a client connection");
+    let mut client_sock = TcpStream::connect(addr).expect("the listener is up");
+    client_sock.set_nonblocking(true).expect("non-blocking");
+
+    let (sock, _) = listener.accept().expect("the client connects");
+    let transport = TcpTransport::new(sock).expect("non-blocking");
+    let conn = rustls::server::UnbufferedServerConnection::new(server_config(cert, key))
+        .expect("a server connection");
+    let mut tls = TlsTransport::new(transport, Handshake::new(conn));
+    assert!(
+        !tls.handshake_refused(),
+        "nothing has been refused before the handshake has run"
+    );
+
+    let mut sweeps = 0usize;
+    let ended = loop {
+        sweeps += 1;
+        assert!(sweeps < 100_000, "the refused handshake never ended");
+
+        // The client's whole turn, before the acceptor gets another: absorb
+        // whatever arrived — an `Err` here (invalid certificate) is the point
+        // once our `Certificate` message has been read, not a bug to assert
+        // away — then flush whatever rustls queued in reply, which after
+        // that error is its own alert.
+        loop {
+            match client_conn.read_tls(&mut client_sock) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let _ = client_conn.process_new_packets();
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("read_tls: {e}"),
+            }
+        }
+        let mut wspins = 0usize;
+        while client_conn.wants_write() {
+            wspins += 1;
+            assert!(wspins < 100_000, "the client never flushed its alert");
+            match client_conn.write_tls(&mut client_sock) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::yield_now(),
+                Err(e) => panic!("write_tls: {e}"),
+            }
+        }
+
+        let mut buf = [0u8; 256];
+        match tls.recv(&mut buf) {
+            Io::Idle => std::thread::yield_now(),
+            other => break other,
+        }
+    };
+
+    assert!(
+        matches!(ended, Io::Failed(_)),
+        "a refused handshake must end the transport, got {ended:?}"
+    );
+    assert!(
+        tls.handshake_refused(),
+        "a peer that refused our certificate must be a refusal too — the \
+         alert did not have to be one this end queued"
+    );
+}

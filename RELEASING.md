@@ -20,7 +20,7 @@ Do not start unless all of these hold, on the commit about to be released:
   versions, exact-pinned internal dependencies, identical licence files — ADR-0160 decisions 1
   and 4), `cargo publish --workspace --dry-run`, six `Packaging` / six `Verifying`,
   `scripts/check-package-contents.sh`, `scripts/check-packaged-build.sh` on both the pinned
-  toolchain and `+1.88.0`. `scripts/stranger-check.sh --from packaged` is green — it built the
+  toolchain and `+1.89.0`. `scripts/stranger-check.sh --from packaged` is green — it built the
   exact bytes this release uploads and drove a Logon/Logout through
   `docs/GETTING-STARTED.md`'s own pasted code. ADR-0097 exit criteria 1–6 are all met.
 - `CHANGELOG.md`'s `## [0.1.0]` section reads true, and `## [Unreleased]` above it is empty.

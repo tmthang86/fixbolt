@@ -15,7 +15,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 | `transport.rs` | `Transport`, `TcpTransport`, `Loopback`, `Waiting`, the `Io` result type |
 | `frame.rs` | `Framer` — cutting a byte stream into messages by `9=`, nothing parsed |
 | `presession.rs` | `Identity`, `PendingSet`, `Registry`, `Table` — who owns a socket before a session exists |
-| `conn.rs` | One connection: socket, receive buffer, state machine, unsent bytes |
+| `conn.rs` | One connection: socket, receive buffer, state machine, unsent bytes; its `Drop` retires the journal (ADR-0153, `tests/retire.rs`) |
 | `backpressure.rs` | The queue a connection uses when the counterparty stops reading (D10) |
 | `dispatch.rs`, `ring.rs` | `InlineDispatch`, `RingDispatch` over an `AtomicU8` SPSC ring (D4) |
 | `journal.rs` | `MemJournal`, `FileJournal`, `Reader`, `Store` — the resend store |
@@ -29,7 +29,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 | `clock.rs` | Where the engine gets the time, as a trait — the seam the acceptance corpus drives |
 | `poll.rs`, `block.rs`, `wait.rs`, `waker.rs` | `standard` mode's idle turn: the `poll(2)` call, the policy around it, the mode split, and how another thread wakes a blocked engine |
 | `affinity.rs`, `shard.rs` | Pinning a thread to a core and proving it, and many engines each on one pinned core |
-| `tls.rs` | TLS as a second `Transport`: `rustls` handshake, kTLS steady state on Linux |
+| `tls.rs` | TLS as a second `Transport`: `rustls` handshake, kTLS steady state on Linux; a handshake TLS refuses sends its alert and ends as `Step::Refused`, apart from a peer that left (ADR-0151) |
 
 ## Read in this order
 

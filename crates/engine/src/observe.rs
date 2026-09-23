@@ -720,6 +720,23 @@ pub enum EventKind {
         /// How many were refused on this turn.
         count: u32,
     },
+    /// Journal records that were kept in memory but **never reached the
+    /// journal's file**.
+    ///
+    /// **Zero on a healthy acceptor.** A `FileJournal` under
+    /// `Durability::Async` hands each record to its writer through a 1 MiB
+    /// ring and drops it, rather than wait, when the ring is full — a disk
+    /// slower than the engine, or a burst larger than the ring. The message
+    /// still went out and is still replayable **while this process runs**
+    /// (`put` said `true`, and memory holds it); what is missing is the copy a
+    /// restart reads, so a recovery resumed from that file finds holes.
+    /// `GUIDE.md` §6.
+    /// [ADR-0154](../../../docs/decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)
+    /// decision 4.
+    JournalUnwritten {
+        /// How many records missed the file on this turn.
+        count: u64,
+    },
     /// Messages the message log did not manage to write.
     ///
     /// **Zero on a healthy engine, and it is not a session's fault.** A full
@@ -782,6 +799,28 @@ pub enum EventKind {
     MessageLogUnsent {
         /// How many bytes were discarded.
         bytes: usize,
+    },
+    /// TLS handshakes that ended because TLS refused them — no cipher suite in
+    /// common, an alert from the peer, bytes that were not TLS.
+    ///
+    /// `[2026-09-23]` [ADR-0151] decision 4. **Zero on a healthy engine.**
+    /// Raised under [`ConnId::MAX`], because no connection exists before the
+    /// handshake, and at most once per turn that saw any — the shape of
+    /// [`Self::OriginationUndeliverable`]. An acceptor counts every socket its
+    /// pre-session stage let go for this reason; an initiator raises it with
+    /// `count: 1` for each dial whose handshake was refused, by either end.
+    ///
+    /// **A peer that connects and leaves is not counted** (decision 5): a load
+    /// balancer's TCP health check is not a counterparty with the wrong cipher
+    /// suite, and counting both would bury the one that matters. This end
+    /// also puts the TLS alert on the wire before closing (decision 1), so the
+    /// counterparty's log names the reason too.
+    ///
+    /// [`ConnId::MAX`]: crate::ConnId
+    /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+    TlsHandshakeRefused {
+        /// How many handshakes were refused since the previous event.
+        count: u64,
     },
 }
 

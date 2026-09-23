@@ -60,7 +60,7 @@ use std::thread::JoinHandle;
 use fixbolt_codec::timestamp::{Precision, TimestampCache};
 
 use crate::dispatch::ConnId;
-use crate::ring::{Consumer, Producer};
+use crate::ring::{Consumer, Idle, Producer};
 
 /// Milliseconds between year zero and the Unix epoch.
 ///
@@ -86,11 +86,12 @@ const WRITER_BUF: usize = REC_HEADER + MAX_RECORD;
 
 /// The tag that means *stop*, and nothing else produces it.
 ///
-/// **Not a zero-length record.** `FileJournal` uses an empty `push` as its stop
-/// signal, which is safe there because its records can never exceed the
-/// writer's buffer. Here they can, and `Consumer::pop` reports *"dropped,
-/// oversized"* as `Some(0)` — the same value. A distinct tag keeps *stop* and
-/// *lost a record* from being the same event.
+/// **Not a zero-length record.** `Consumer::pop` reports *"dropped,
+/// oversized"* as `Some(0)`, and a zero-length stop record would be the same
+/// value. A distinct tag keeps *stop* and *lost a record* from being the same
+/// event. `FileJournal` used an empty `push` as its stop signal until
+/// 2026-09-23, and a record longer than its writer's buffer stopped it for good;
+/// it now uses a one-byte `STOP` too (ADR-0150 decision 2).
 const STOP: u8 = 0xFF;
 
 /// Which way a message was going.
@@ -311,9 +312,15 @@ impl FileLog {
         let lost = Arc::new(AtomicU64::new(0));
         let writer = if spawn {
             let counted = Arc::clone(&lost);
-            Some(std::thread::spawn(move || {
-                write_loop(file, from_engine, &counted);
-            }))
+            // Named as the pinned one is, so a test and an operator can find
+            // it in `/proc/<pid>/task/*/comm`. ADR-0150 decision 4.
+            Some(
+                std::thread::Builder::new()
+                    .name("fixbolt-msglog".to_owned())
+                    .spawn(move || {
+                        write_loop(file, from_engine, &counted);
+                    })?,
+            )
         } else {
             None
         };
@@ -418,14 +425,23 @@ fn write_loop(mut file: File, mut from_engine: Consumer, lost: &AtomicU64) {
     // still sees everything, and a busy engine does not pay a `write` syscall
     // per message on the writer either.
     let mut dirty = false;
+    // Spin briefly, then sleep 1 ms per empty poll — the journal writer's rule.
+    // `yield_now` was here until 2026-09-23 and is not a wait: on an idle
+    // machine the thread is run again at once, a core for nothing. ADR-0150
+    // decision 4.
+    let mut idle = Idle::new();
     loop {
-        match from_engine.pop(&mut buf) {
+        let popped = from_engine.pop(&mut buf);
+        if popped.is_some() {
+            idle.reset();
+        }
+        match popped {
             None => {
                 if dirty {
                     let _ = file.flush();
                     dirty = false;
                 }
-                std::thread::yield_now();
+                idle.wait();
             }
             // Not the stop signal: `pop` says *"a record was dropped because it
             // did not fit"* this way, and the stop signal is a `STOP` tag.
