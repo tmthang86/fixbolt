@@ -788,3 +788,109 @@ fn a_peer_that_leaves_mid_handshake_is_not_a_refusal() {
     );
     let _ = hangup.join();
 }
+
+/// A client whose root store holds nothing — it cannot trust this acceptor's
+/// certificate, whoever signed it.
+fn client_config_that_does_not_trust_us() -> Arc<rustls::ClientConfig> {
+    let roots = rustls::RootCertStore::empty();
+    let mut cfg = rustls::ClientConfig::builder_with_provider(Arc::new(provider()))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("TLS 1.3 is available")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    cfg.enable_secret_extraction = true;
+    Arc::new(cfg)
+}
+
+/// **A peer that refuses our certificate is a refusal too** — [ADR-0151]
+/// decision 2 read literally: the driver's `Step::Refused` comes from
+/// `Err(_)` out of `process_tls_records`, and rustls reports a peer's alert
+/// the same way it reports one this end queued (`AlertReceived`, whichever
+/// side raised it). Sửa 5 note (c), plan
+/// `2026-09-23-phase-3-found-defects`: before this test, only the case where
+/// *this* end refuses (`a_client_with_no_suite_in_common_is_sent_a_handshake_failure_alert`,
+/// above) had one.
+///
+/// The client here has an empty root store, so it reads this acceptor's
+/// `Certificate` message, fails to verify it, and sends its own alert —
+/// unlike the no-common-suite case, this round trip needs the acceptor to
+/// answer the `ClientHello` first, so the client is driven on this thread
+/// exactly as [`InThreadClient`] drives the ordinary handshake, with its own
+/// small absorb/flush pair that tolerates the verification error instead of
+/// asserting it away.
+///
+/// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+#[test]
+fn a_peer_that_refuses_our_certificate_is_a_refusal() {
+    use fixbolt_engine::tls::TlsTransport;
+    use fixbolt_engine::transport::{Io, Transport};
+
+    let (cert, key) = pki();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let addr = listener.local_addr().expect("an address");
+
+    let name = "localhost".try_into().expect("a valid server name");
+    let mut client_conn =
+        rustls::ClientConnection::new(client_config_that_does_not_trust_us(), name)
+            .expect("a client connection");
+    let mut client_sock = TcpStream::connect(addr).expect("the listener is up");
+    client_sock.set_nonblocking(true).expect("non-blocking");
+
+    let (sock, _) = listener.accept().expect("the client connects");
+    let transport = TcpTransport::new(sock).expect("non-blocking");
+    let conn = rustls::server::UnbufferedServerConnection::new(server_config(cert, key))
+        .expect("a server connection");
+    let mut tls = TlsTransport::new(transport, Handshake::new(conn));
+    assert!(
+        !tls.handshake_refused(),
+        "nothing has been refused before the handshake has run"
+    );
+
+    let mut sweeps = 0usize;
+    let ended = loop {
+        sweeps += 1;
+        assert!(sweeps < 100_000, "the refused handshake never ended");
+
+        // The client's whole turn, before the acceptor gets another: absorb
+        // whatever arrived — an `Err` here (invalid certificate) is the point
+        // once our `Certificate` message has been read, not a bug to assert
+        // away — then flush whatever rustls queued in reply, which after
+        // that error is its own alert.
+        loop {
+            match client_conn.read_tls(&mut client_sock) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let _ = client_conn.process_new_packets();
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("read_tls: {e}"),
+            }
+        }
+        let mut wspins = 0usize;
+        while client_conn.wants_write() {
+            wspins += 1;
+            assert!(wspins < 100_000, "the client never flushed its alert");
+            match client_conn.write_tls(&mut client_sock) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::yield_now(),
+                Err(e) => panic!("write_tls: {e}"),
+            }
+        }
+
+        let mut buf = [0u8; 256];
+        match tls.recv(&mut buf) {
+            Io::Idle => std::thread::yield_now(),
+            other => break other,
+        }
+    };
+
+    assert!(
+        matches!(ended, Io::Failed(_)),
+        "a refused handshake must end the transport, got {ended:?}"
+    );
+    assert!(
+        tls.handshake_refused(),
+        "a peer that refused our certificate must be a refusal too — the \
+         alert did not have to be one this end queued"
+    );
+}
