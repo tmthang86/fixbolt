@@ -985,7 +985,7 @@ jobs:
   # QuickFIX/J is a second family entirely — a JVM, a different codebase — judging this engine
   # in BOTH roles, plaintext AND TLS, which the criterion's own wording asks for and `interop`
   # never has (its TLS side has no counterparty but this engine itself). `scripts/interop-qfj.sh`
-  # fetches five jars pinned by SHA-256 into gitignored vendor/quickfixj/, compiles this
+  # fetches six jars pinned by SHA-256 into gitignored vendor/quickfixj/, compiles this
   # repository's own judge (`tools/interop-qfj/Judge.java`, QuickFIX/J's public API only,
   # non-negotiable 9), and runs four arms: this engine as acceptor and as initiator (`--role
   # dial`, the real engine door, not the pure session `interop` above drives), each in plaintext
@@ -997,6 +997,10 @@ jobs:
   interop-qfj:
     name: Both roles, plaintext and TLS, against QuickFIX/J
     runs-on: ubuntu-latest
+    # A hung arm must end as a red job, not as six hours of runner. Every wait in the script is
+    # bounded (DEADLINE, the 40 s dial stop), so a green run is minutes; 20 is the ceiling the
+    # senior review of PR #100 named, with room for a cold `cargo build --features tls`.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v6

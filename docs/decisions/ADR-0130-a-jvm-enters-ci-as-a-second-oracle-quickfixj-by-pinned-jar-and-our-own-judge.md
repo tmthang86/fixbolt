@@ -1,6 +1,7 @@
 # ADR-0130 — A JVM enters CI as a second oracle: QuickFIX/J by pinned jar, judged by a harness of our own, the initiator through the engine
 
 - **Status**: Accepted — 2026-09-23 (by the manager under the owner's standing mandate, with the phase 3 row 5 plan). Proposed 2026-09-23
+- **Partially superseded**: decision 1's jar list only, by [ADR-0131](ADR-0131-the-quickfixj-oracle-gets-a-logger-slf4j-simple-is-the-sixth-pinned-jar.md) (2026-09-23): six jars, adding `slf4j-simple` 2.0.18; the rest of this ADR stands
 - **Date**: 2026-09-23
 - **Deciders**: Tran Manh Thang (approval by the manager under the owner's standing mandate of
   2026-09-18). Written by the architect (Opus) from ADR-0097 decision 7 criterion 6,

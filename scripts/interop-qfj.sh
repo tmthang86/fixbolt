@@ -41,17 +41,24 @@ RUN="${REPO_ROOT}/vendor/interop-qfj-run"
 
 QFJ_VERSION="3.0.2"
 
-# The five jars ADR-0130 Decision 1 names, and the SHA-256 this script pins
-# each one to. `fetch_pinned_jar` refuses to run anything if a fetched byte
+# The five jars ADR-0130 Decision 1 names, plus `slf4j-simple`, and the
+# SHA-256 this script pins each one to. `[2026-09-23, senior review of PR
+# #100]` `slf4j-simple` is the sixth: without a provider SLF4J falls back to
+# its no-operation logger, and every error QuickFIX/J, MINA and the JSSE layer
+# log through SLF4J — a failed TLS handshake on the QFJ acceptor side, which
+# has no session to report it to `RawLog` — vanished from the transcript.
+# Pinned the same way (Maven Central's `.sha1` checked, then the SHA-256
+# recorded here). `fetch_pinned_jar` refuses to run anything if a fetched byte
 # does not match — reversal in the plan's Chia việc bước 1: flip one hex digit
 # below, see `CHECKSUM MISMATCH` before a single process starts, restore.
-JARS=(quickfixj-core quickfixj-base quickfixj-messages-fix44 mina-core slf4j-api)
+JARS=(quickfixj-core quickfixj-base quickfixj-messages-fix44 mina-core slf4j-api slf4j-simple)
 declare -A JAR_PATH=(
   [quickfixj-core]="org/quickfixj/quickfixj-core/${QFJ_VERSION}/quickfixj-core-${QFJ_VERSION}.jar"
   [quickfixj-base]="org/quickfixj/quickfixj-base/${QFJ_VERSION}/quickfixj-base-${QFJ_VERSION}.jar"
   [quickfixj-messages-fix44]="org/quickfixj/quickfixj-messages-fix44/${QFJ_VERSION}/quickfixj-messages-fix44-${QFJ_VERSION}.jar"
   [mina-core]="org/apache/mina/mina-core/2.2.9/mina-core-2.2.9.jar"
   [slf4j-api]="org/slf4j/slf4j-api/2.0.18/slf4j-api-2.0.18.jar"
+  [slf4j-simple]="org/slf4j/slf4j-simple/2.0.18/slf4j-simple-2.0.18.jar"
 )
 declare -A JAR_SHA256=(
   [quickfixj-core]="0eda0b8470846eb088126013da20d574f5eef02ed8d04604ca276ad4e6b33008"
@@ -59,6 +66,7 @@ declare -A JAR_SHA256=(
   [quickfixj-messages-fix44]="b07529e6c3f70b2eea8ddabeae03688b093bc769a8bd7a202f1c5bbc9b6e6993"
   [mina-core]="09b4b5e416834e5281dd0dfccac1a10413d6f42c89f133b1c43641e34f33e840"
   [slf4j-api]="44508fd1576500688c790b190acdd16fec4f8c79a3e0b900afd70503cf055f55"
+  [slf4j-simple]="8268bd018a5709b07209e0d8ca6221a37584ba1bc12ba985b8335a82c648bdd0"
 )
 
 for tool in curl sha256sum javac java keytool openssl unzip cargo; do
@@ -99,7 +107,7 @@ fetch_pinned_jar() {
   fi
 }
 
-echo "==> quickfixj ${QFJ_VERSION}: 5 jars, every SHA-256 as pinned"
+echo "==> quickfixj ${QFJ_VERSION}: ${#JARS[@]} jars, every SHA-256 as pinned"
 for j in "${JARS[@]}"; do
   fetch_pinned_jar "${j}" "${JAR_PATH[${j}]}" "${JAR_SHA256[${j}]}"
 done
@@ -126,6 +134,21 @@ echo "==> javac tools/interop-qfj/Judge.java"
 javac -Xlint:all -cp "${CP}" -d "${CLASSES}" "${REPO_ROOT}/tools/interop-qfj/Judge.java"
 
 JAVA_VERSION_LINE="$(java -version 2>&1 | head -1)"
+
+# `slf4j-simple`, told to print WARN and above to stdout — the same stream the
+# judge's own lines go to, so a QFJ/MINA/JSSE error lands in `judge.log` in
+# order and whole (`PrintStream.println` is synchronised), and never inside a
+# step line. Its lines start `[thread] WARN` / `ERROR`, so no `^<label>: `
+# grep in this script can match one.
+# `INTEROP_QFJ_JUDGE_ARGS` (e.g. `--invert-resend`, reversal B) split into
+# words once, here, so an empty value passes no argument at all.
+read -r -a JUDGE_ARGS <<< "${INTEROP_QFJ_JUDGE_ARGS:-}"
+
+JAVA_LOG=(
+  -Dorg.slf4j.simpleLogger.logFile=System.out
+  -Dorg.slf4j.simpleLogger.defaultLogLevel=warn
+  -Dorg.slf4j.simpleLogger.showShortLogName=true
+)
 
 # `--features tls` for every arm, plaintext included: one binary, so the
 # plaintext and TLS arms differ in the settings file and nothing else. The
@@ -210,6 +233,24 @@ SocketTrustStore=${PKI}/qfj-truststore.p12
 SocketTrustStorePassword=${PKI_PW}
 TrustStoreType=PKCS12
 CFG
+}
+
+# ---- Nobody else on this arm's port -----------------------------------------
+#
+# `[measured 2026-09-23]` under load, one run of `qfj-acceptor-plain` read
+# `interop: listening on 127.0.0.1:15660` and then `interop: FAIL serve …
+# Address already in use`: another worktree's script (a different plan's
+# `FIXP_REFEREE_PORT`, default 15660) held the port, and fixbolt's readiness
+# probe connected to *that* listener. The judge then failed all seven steps
+# for a reason that had nothing to do with either engine — the plan's own trap
+# "va cổng trông y hệt lỗi giao thức". So each arm first asks whether anything
+# already accepts on its port, and says so in those words.
+require_free_port() {
+  local label="$1" port="$2"
+  if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+    echo "[${label}] PORT IN USE: something outside this run already accepts on 127.0.0.1:${port} — not an engine result; free the port or set INTEROP_QFJ_PORT1..4" >&2
+    exit 1
+  fi
 }
 
 # ---- The kernel's own count --------------------------------------------------
@@ -430,6 +471,7 @@ CFG
     rx0="$(tls_counter TlsRxSw)"
   fi
 
+  require_free_port "${label}" "${port}"
   echo
   echo "==> [${label}] fixbolt acceptor on ${port}"
   mkfifo "${work}/fixbolt.ctl"
@@ -453,8 +495,8 @@ CFG
 
   echo "==> [${label}] QuickFIX/J initiator, judging"
   set +e
-  java -cp "${CP}${CLASSES}" Judge initiator "${work}/qfj-initiator.cfg" "${label}" \
-    ${INTEROP_QFJ_JUDGE_ARGS:-} 2>&1 | tee "${work}/judge.log"
+  java "${JAVA_LOG[@]}" -cp "${CP}${CLASSES}" Judge initiator "${work}/qfj-initiator.cfg" "${label}" \
+    "${JUDGE_ARGS[@]}" 2>&1 | tee "${work}/judge.log"
   set -e
 
   echo "stop" >&9 || true
@@ -557,11 +599,12 @@ CFG
     rx0="$(tls_counter TlsRxSw)"
   fi
 
+  require_free_port "${label}" "${port}"
   echo
   echo "==> [${label}] QuickFIX/J acceptor on ${port}"
   set +e
-  java -cp "${CP}${CLASSES}" Judge acceptor "${work}/qfj-acceptor.cfg" "${label}" \
-    ${INTEROP_QFJ_JUDGE_ARGS:-} > "${work}/judge.log" 2>&1 &
+  java "${JAVA_LOG[@]}" -cp "${CP}${CLASSES}" Judge acceptor "${work}/qfj-acceptor.cfg" "${label}" \
+    "${JUDGE_ARGS[@]}" > "${work}/judge.log" 2>&1 &
   QFJ_PID=$!
   set -e
 

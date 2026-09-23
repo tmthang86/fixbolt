@@ -139,7 +139,7 @@ public final class Judge {
                     score.step(name, false, "no quickfix.Session was created from " + cfgPath);
                 }
             } else {
-                runSteps(role, sid, rawLog, score, invertResend);
+                runSteps(role, sid, app, rawLog, score, invertResend);
             }
         } finally {
             try {
@@ -155,10 +155,10 @@ public final class Judge {
 
     /** The seven steps, run in order, each printed whether or not the ones before it passed. */
     private static void runSteps(
-        String role, SessionID sid, RawLog rawLog, Scorer score, boolean invertResend) {
+        String role, SessionID sid, JudgeApp app, RawLog rawLog, Scorer score, boolean invertResend) {
         final Cursor cur = new Cursor(rawLog);
 
-        final StepResult logon = stepLogon(cur, sid, role);
+        final StepResult logon = stepLogon(cur, sid, role, app);
         score.step("logon", logon.ok, logon.saw);
 
         final int[] seqs = new int[2];
@@ -194,26 +194,48 @@ public final class Judge {
     // reply. That is checked only in that direction: a Judge acceptor's
     // reply to a fixbolt-initiated Logon carries whatever fixbolt's own
     // settings ask for, not Judge's.
-    private static StepResult stepLogon(Cursor cur, SessionID sid, String role) {
+    //
+    // **Seeing fixbolt's Logon come in is not the end of the logon, and this
+    // step used to say it was.** `[measured 2026-09-23, senior review of PR
+    // #100]` As the QuickFIX/J acceptor, QFJ handles fixbolt's inbound 35=A on
+    // its own session thread: `ResetOnLogon=Y` resets (closes and reopens) the
+    // message store, then it answers with its own 35=A, then it calls
+    // `Application.onLogon`. This step returned on the inbound line alone, so
+    // step 2's `sendOrder` could run on Judge's thread while that reset was
+    // still in flight — `Error reading/writing in MessageStore … Stream Closed`
+    // at `sendOrder`, and `order` / `resend` red. 2 of 14 initiator-arm runs
+    // under 24 busy loops on 16 cores. The same shape as the gap-fill race
+    // below: wait for **evidence** QFJ is done — `onLogon`, which QFJ calls
+    // only once both Logons are exchanged — inside the same 5 s budget.
+    private static StepResult stepLogon(Cursor cur, SessionID sid, String role, JudgeApp app) {
+        final long stop = System.currentTimeMillis() + 5_000;
         final String them = sid.getTargetCompID();
         final String us = sid.getSenderCompID();
         final String line = cur.await(5_000, l -> l.startsWith("in ") && l.contains("|35=A|"));
         if (line == null) {
             return new StepResult(false, "no 35=A from " + them + " within 5 s");
         }
+        while (!app.loggedOn() && System.currentTimeMillis() < stop) {
+            sleep(10);
+        }
+        final boolean onLogon = app.loggedOn();
         final boolean idsOk = line.contains("|49=" + them + "|") && line.contains("|56=" + us + "|");
         final boolean resetOk = !"initiator".equals(role) || line.contains("|141=Y|");
         return new StepResult(
-            idsOk && resetOk,
+            idsOk && resetOk && onLogon,
             "35=A 49=" + tag(line, 49) + " 56=" + tag(line, 56)
-                + " 141=" + tag(line, 141) + " 108=" + tag(line, 108));
+                + " 141=" + tag(line, 141) + " 108=" + tag(line, 108)
+                + ", onLogon: " + (onLogon ? "yes" : "no"));
     }
 
     // ---- Step 2: order ------------------------------------------------------
     //
     // Two NewOrderSingle, ClOrdID QFJ-ORD-1 / QFJ-ORD-2. fixbolt's `desk::Desk`
-    // fills both and echoes `11=`; this is what pairs a reply with the order
-    // that asked for it, and what step 5 replays by sequence number.
+    // acknowledges each as **New** — `150=0` ExecType, `39=0` OrdStatus, nothing
+    // filled — and echoes `11=`; the echo is what pairs a reply with the order
+    // that asked for it, and what step 5 replays by sequence number. An
+    // ExecutionReport of any other kind with the right `11=` is not the answer
+    // `Desk` sends, so it does not pass.
     private static StepResult stepOrder(Cursor cur, SessionID sid, int[] outSeqs) {
         try {
             sendOrder(sid, "QFJ-ORD-1");
@@ -233,8 +255,17 @@ public final class Judge {
         if (s2 != null) {
             outSeqs[1] = s2;
         }
-        final boolean ok = s1 != null && s2 != null;
-        return new StepResult(ok, "35=8 at 34=[" + s1 + ", " + s2 + "], 11= matched");
+        final boolean isNew = isNewAck(r1) && isNewAck(r2);
+        final boolean ok = s1 != null && s2 != null && isNew;
+        return new StepResult(ok, "35=8 at 34=[" + s1 + ", " + s2 + "], 11= matched, 150=0 39=0: "
+            + (isNew ? "yes" : "no (150=" + (r1 == null ? null : tag(r1, 150)) + "/"
+                + (r2 == null ? null : tag(r2, 150)) + " 39=" + (r1 == null ? null : tag(r1, 39))
+                + "/" + (r2 == null ? null : tag(r2, 39)) + ")"));
+    }
+
+    /** A `35=8` that says **New**: `150=0` and `39=0`, what `desk::Desk` sends. */
+    private static boolean isNewAck(String line) {
+        return line != null && "0".equals(tag(line, 150)) && "0".equals(tag(line, 39));
     }
 
     // ---- Step 3: heartbeat ---------------------------------------------------
@@ -272,6 +303,14 @@ public final class Judge {
     // reversal B — which this assertion must fail rather than accept a
     // different-shaped legal answer for (docs/reference/a-resend-answer-has-two-legal-shapes.md
     // documents the analogous C++ trap).
+    //
+    // **Each replayed message is also held to its own `122=`.** `[2026-09-23,
+    // senior review of PR #100]` a reviewer removed `122=` from the session's
+    // resend rebuild and this step still printed `ok`: only `clean` went red,
+    // because QFJ then rejected the replay. A resend step that cannot see a
+    // broken resend on its own line is reading the sequence numbers and nothing
+    // else. Per message: `43=Y`, `122=` present, and `122=` no later than that
+    // message's own `52=` — the original send cannot postdate the replay.
     private static StepResult stepResend(Cursor cur, SessionID sid, int a, int b, boolean invert) {
         final int begin = invert ? b : a;
         final int end = invert ? a : b;
@@ -292,8 +331,51 @@ public final class Judge {
         Collections.sort(seqs);
         final List<Integer> want = new ArrayList<>(Arrays.asList(a, b));
         Collections.sort(want);
+        final List<String> badOrig = new ArrayList<>();
+        for (String l : replies) {
+            final String orig = tag(l, 122);
+            final String sent = tag(l, 52);
+            final Instant o = fixTime(orig);
+            final Instant t = fixTime(sent);
+            if (o == null || t == null || o.isAfter(t)) {
+                badOrig.add("34=" + seqOf(l) + " 122=" + orig + " 52=" + sent);
+            }
+        }
+        final boolean origOk = !replies.isEmpty() && badOrig.isEmpty();
         return new StepResult(
-            seqs.equals(want), "35=8 43=Y replayed at 34=" + seqs + ", wanted " + want);
+            seqs.equals(want) && origOk,
+            "35=8 43=Y replayed at 34=" + seqs + ", wanted " + want + ", 122= <= 52=: "
+                + (origOk ? "yes" : "no " + badOrig));
+    }
+
+    /**
+     * A FIX UTCTimestamp (`yyyyMMdd-HH:mm:ss`, optionally `.` and 1-9 fraction
+     * digits) as an {@link Instant}, or `null` if absent or malformed — which
+     * the caller reads as a failure, never as a pass.
+     */
+    private static Instant fixTime(String v) {
+        if (v == null || v.length() < 17) {
+            return null;
+        }
+        try {
+            final Instant whole = DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss")
+                .withZone(ZoneOffset.UTC)
+                .parse(v.substring(0, 17), Instant::from);
+            if (v.length() == 17) {
+                return whole;
+            }
+            if (v.charAt(17) != '.' || v.length() > 27) {
+                return null;
+            }
+            final String frac = v.substring(18);
+            if (frac.isEmpty() || !frac.chars().allMatch(Character::isDigit)) {
+                return null;
+            }
+            final long nanos = Long.parseLong((frac + "000000000").substring(0, 9));
+            return whole.plusNanos(nanos);
+        } catch (java.time.format.DateTimeParseException e) {
+            return null;
+        }
     }
 
     // ---- Step 6: gapfill -------------------------------------------------------
@@ -320,9 +402,17 @@ public final class Judge {
     // `35=4` `123=Y` line in this file's own RawLog — before sending anything
     // else; QuickFIX/J's send happens inside the same call stack that handles
     // the ResendRequest, so it is available within milliseconds.
+    //
+    // `[2026-09-23, senior review of PR #100]` fixbolt's `35=2` is also held to
+    // the gap it is about: `7=` must be `n`, the first number Judge skipped. A
+    // ResendRequest for any other start would still be answered by QFJ and the
+    // session would still survive, so without this the step could not tell a
+    // correct gap detection from a wrong one. `16=` is not checked: `0` and
+    // `n + 2` are both legal answers in FIX 4.4.
     private static StepResult stepGapfill(Cursor cur, Session session, SessionID sid) {
+        final int n;
         try {
-            final int n = session.getExpectedSenderNum();
+            n = session.getExpectedSenderNum();
             session.setNextSenderMsgSeqNum(n + 3);
         } catch (IOException e) {
             return new StepResult(false, "could not bump the outbound sequence number: " + e);
@@ -332,8 +422,10 @@ public final class Judge {
         } catch (SessionNotFound e) {
             return new StepResult(false, "could not send: " + e);
         }
-        final boolean sawResend =
-            cur.await(8_000, l -> l.startsWith("in ") && l.contains("|35=2|")) != null;
+        final String resendLine = cur.await(8_000, l -> l.startsWith("in ") && l.contains("|35=2|"));
+        final boolean sawResend = resendLine != null;
+        final String beginSeq = sawResend ? tag(resendLine, 7) : null;
+        final boolean beginOk = String.valueOf(n).equals(beginSeq);
         final boolean sawGapFillSent = !sawResend || cur.await(
             3_000, l -> l.startsWith("out ") && l.contains("|35=4|") && l.contains("|123=Y|")) != null;
         try {
@@ -344,8 +436,9 @@ public final class Judge {
         final boolean survived = cur.await(
             8_000, l -> l.startsWith("in ") && l.contains("|35=0|") && l.contains("|112=QFJ-TR-3|")) != null;
         return new StepResult(
-            sawResend && sawGapFillSent && survived,
+            sawResend && beginOk && sawGapFillSent && survived,
             "35=2 in: " + (sawResend ? "yes" : "no")
+                + " 7=" + beginSeq + " (gap starts at " + n + ")"
                 + ", gap fill sent: " + (sawGapFillSent ? "yes" : "no")
                 + ", then 35=0 112=QFJ-TR-3: " + (survived ? "yes" : "no"));
     }
@@ -660,12 +753,14 @@ public final class Judge {
 
     /**
      * The counterparty QuickFIX/J drives on our behalf. Every judgement in this
-     * file reads {@link RawLog} instead, so this class exists only to learn the
+     * file reads {@link RawLog} instead, so this class exists to learn the
      * {@link SessionID} QuickFIX/J assigned — available from {@link #onCreate},
-     * before any connection is even attempted.
+     * before any connection is even attempted — and when QuickFIX/J considers
+     * the logon finished ({@link #onLogon}), which step 1 waits for.
      */
     private static final class JudgeApp implements Application {
         private volatile SessionID sessionId;
+        private volatile boolean loggedOn;
 
         @Override
         public void onCreate(SessionID sessionID) {
@@ -675,6 +770,7 @@ public final class Judge {
         @Override
         public void onLogon(SessionID sessionID) {
             sessionId = sessionID;
+            loggedOn = true;
         }
 
         @Override
@@ -702,6 +798,11 @@ public final class Judge {
 
         SessionID sessionId() {
             return sessionId;
+        }
+
+        /** Whether QuickFIX/J has called {@link #onLogon} — step 1's evidence the logon is finished. */
+        boolean loggedOn() {
+            return loggedOn;
         }
     }
 }

@@ -151,7 +151,7 @@ tools/
                  the eyes of scripts/check-no-crate-root-allow.sh. Nothing depends on it
   interop-qfj/   not a crate: Judge.java, this repository's own judge against a real
                  QuickFIX/J, both roles, plaintext and TLS. Built by scripts/interop-qfj.sh
-                 and by CI; the five jars it needs are fetched, checked and never committed
+                 and by CI; the six jars it needs are fetched, checked and never committed
 benches/         baselines.tsv: one recorded timing baseline per (CPU model, case).
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets; nightly, outside the workspace

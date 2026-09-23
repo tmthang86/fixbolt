@@ -11,7 +11,8 @@
 //! [ADR-0130](../../../docs/decisions/ADR-0130-a-jvm-enters-ci-as-a-second-oracle-quickfixj-by-pinned-jar-and-our-own-judge.md),
 //! whose plan says why the `initiator-plain` arm has to run the engine's own
 //! door: TLS on the initiator side exists **only** inside
-//! [`fixbolt::connect_and_serve_tls`], and plaintext has to be the same
+//! `fixbolt_engine::connect_and_serve_tls` (behind the `tls` feature, and not
+//! re-exported by the `fixbolt` facade), and plaintext has to be the same
 //! kind of run as TLS — the same settings file, the same application, the
 //! same `--role dial` — or a TLS-only failure could not be told apart from a
 //! difference in how the two arms were driven.
