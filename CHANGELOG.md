@@ -53,6 +53,25 @@ below describe what a first release would contain.
   `benches/baselines.tsv`, so a binary whose case is `OVER` its line runs to the end instead of
   panicking. `scripts/bench-instructions.sh` sets it for both arms. Unset, nothing changes.
   [ADR-0102](docs/decisions/ADR-0102-a-line-that-moves-while-its-instruction-count-does-not-is-a-layout-move-and-the-count-is-read-off-the-desk.md).
+
+- **QuickFIX/J judges this engine in both roles, plaintext and TLS — a second, blocking CI
+  gate beside the `libquickfix` one.** [ADR-0130](docs/decisions/ADR-0130-a-jvm-enters-ci-as-a-second-oracle-quickfixj-by-pinned-jar-and-our-own-judge.md),
+  ADR-0097 exit criterion 6. `scripts/interop-qfj.sh` fetches five QuickFIX/J 3.0.2 jars, each
+  pinned by SHA-256, into gitignored `vendor/quickfixj/`, compiles this repository's own judge
+  (`tools/interop-qfj/Judge.java`, QuickFIX/J's public API only, no QuickFIX source), and runs
+  four arms: this engine as acceptor and as initiator, each in plaintext and over kTLS. CI job
+  `interop-qfj` is blocking.
+  **`tools/interop` gains `--role dial`**, the engine's real initiator door
+  (`fixbolt::connect_and_serve` / `fixbolt_engine::connect_and_serve_tls`) driven from a
+  settings file — unlike `--role initiator`, which drives the pure session by hand and has no
+  TLS. **A new `tls` feature** on `fixbolt-interop`, off by default, forwarding to
+  `fixbolt-engine/tls`; `scripts/check-no-optional-deps.sh` asks `rustls` and `ktls-core` are
+  both absent from a build with it off. Each TLS arm also asserts `kernel`:
+  `/proc/net/tls_stat`'s `TlsTxSw`/`TlsRxSw` rose, and this engine printed no
+  `TlsFellBackToUserspace` event — the kernel's own counter is the witness a userspace fallback
+  cannot fake. See [CONFORMANCE.md §10](docs/CONFORMANCE.md) for the command, the machine and
+  the CI run id.
+
 - **Recovery reaches the sharded runtime.**
   **`fixbolt_engine::shard::serve_sharded_hft_with_recovery`** and
   **`serve_sharded_hft_with_recovery_with`** ask a `Recovery` what each counterparty left
