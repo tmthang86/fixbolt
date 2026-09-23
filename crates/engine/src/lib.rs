@@ -36,6 +36,9 @@ pub mod origin;
 pub mod presession;
 pub mod reconnect;
 pub mod recovery;
+// ADR-0110: public so a user's own `MessageLog` and the allocation bench can
+// call it. No `cfg`: it pulls in no dependency and no feature.
+pub mod redact;
 pub mod settings;
 #[cfg(all(feature = "affinity", target_os = "linux"))]
 pub mod shard;

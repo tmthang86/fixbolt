@@ -1487,6 +1487,47 @@ fn main() {
          and the file"
     );
 
+    // ---- redact-mask / redact-scan: ADR-0110's two functions --------------
+    //
+    // `mask` runs on the message log's writer and `carries_secret` on the
+    // journal's writer under `Async` and on the engine thread under `Fsync`.
+    // The writers are allowed to allocate (ADR-0037); these two do not, and the
+    // `Fsync` call is on the engine thread, where nothing may. Each case asserts
+    // its own path ran: `mask` found every secret and none survived, and
+    // `carries_secret` said yes every time.
+    let redact_logon = wire(
+        "35=A\x0134=1\x0195=9\x0196=raw\x01bytes\x0198=0\x01108=30\x01553=u\x01554=hunter2\x01",
+    );
+    let redact_request = wire(
+        "35=BE\x0134=2\x0195=4\x0196=abcd\x01553=u\x01554=pw\x01923=R\x01924=3\x01925=newpw\x01",
+    );
+    let mut redact_buf = redact_logon.clone();
+    let mut redact_masked = 0usize;
+    let redact_mask_allocs = count(|| {
+        for _ in 0..1_000 {
+            redact_buf.copy_from_slice(&redact_logon);
+            redact_masked += fixbolt_engine::redact::mask(std::hint::black_box(&mut redact_buf));
+        }
+    });
+    assert!(
+        redact_masked == 2_000 && !redact_buf.windows(7).any(|w| w == b"hunter2"),
+        "redact-mask found {redact_masked} secrets over 1000 Logons, not 2000, \
+         or the password survived — its zero is about a path that did not run"
+    );
+    let mut redact_found = 0usize;
+    let redact_scan_allocs = count(|| {
+        for _ in 0..1_000 {
+            if fixbolt_engine::redact::carries_secret(std::hint::black_box(&redact_request)) {
+                redact_found += 1;
+            }
+        }
+    });
+    assert!(
+        redact_found == 1_000,
+        "redact-scan saw a secret {redact_found} times in 1000 UserRequests, not \
+         1000 — its zero is about a path that did not run"
+    );
+
     println!(
         "allocations: mark-out-mem {mark_mem_allocs} \
          mark-out-file-async {mark_file_allocs} \
@@ -1503,7 +1544,8 @@ fn main() {
          log-record {log_record_allocs} log-idle {log_idle_allocs} \
          log-busy {log_busy_allocs} origin-idle {origin_idle_allocs} \
          origin-busy {origin_busy_allocs} adopt-idle {adopt_idle_allocs} \
-         logon-first {logon_first_allocs}"
+         logon-first {logon_first_allocs} \
+         redact-mask {redact_mask_allocs} redact-scan {redact_scan_allocs}"
     );
     assert_eq!(
         [
@@ -1537,9 +1579,11 @@ fn main() {
             logon_first_allocs,
             mark_mem_allocs,
             mark_file_allocs,
-            journal_async_busy_allocs
+            journal_async_busy_allocs,
+            redact_mask_allocs,
+            redact_scan_allocs
         ],
-        [0; 31],
+        [0; 33],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

@@ -71,6 +71,36 @@ confidence-threshold = 0.93
 # the fastest way to teach somebody to stop reading it.
 unused-allowed-license = "allow"
 
+# `fixbolt-dict` alone, not the global `allow` list above: ADR-0104 ships
+# three QuickFIX XML files inside that one crate, under `NOTICE`, and its
+# `license` field is `(MIT OR Apache-2.0) AND LicenseRef-QuickFIX-1.0`
+# (docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md
+# decision 6). No other crate in this workspace carries QuickFIX data, so
+# widening the global list would let a licence this workspace does not
+# otherwise accept ride in on any future dependency — an `exceptions` entry
+# keeps the concession exactly as narrow as the thing that earned it.
+#
+# `[measured 2026-09-23]` `LicenseRef-QuickFIX-1.0` has no SPDX identifier
+# (ADR-0104 *Research*): cargo-deny's `check licenses` rejected it outright —
+# `LicenseRef-QuickFIX-1.0 is not an SPDX license … rejected: license is not
+# explicitly allowed` — because it is not in `allow` above and this workspace
+# had never told cargo-deny about it at all. No `[[licenses.clarify]]` is
+# needed alongside this: that table is for a crate whose licence cargo-deny
+# cannot read at all (no machine-readable `license` field, or one that must
+# be derived from scanning `LICENSE` files by hash) — `fixbolt-dict`'s
+# `Cargo.toml` already declares the exact SPDX expression, so cargo-deny
+# reads it directly; the only thing missing was permission to accept a
+# `LicenseRef-*` id at all for this one crate.
+# <https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html#the-exceptions-field>
+# (the `exceptions` field: "meant to allow additional licenses only for
+# particular crates … a clear distinction between licenses which you are
+# fine with everywhere, versus ones which you want to be more selective
+# about" — and the same page's `clarify` section, which this is deliberately
+# not using).
+[[licenses.exceptions]]
+allow = ["LicenseRef-QuickFIX-1.0"]
+crate = "fixbolt-dict"
+
 [bans]
 # `warn`, not `deny`: two versions of one crate is a build-size and
 # compile-time problem, not a correctness or licensing one, and this workspace

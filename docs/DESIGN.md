@@ -102,9 +102,9 @@ Added one at a time, each behind an approved plan. All of them exist.
 
 | Crate | Layer | Owns | Depends on |
 |---|---|---|---|
-| `codec` | L1 | Parse and serialise in place. The hot path. `no_std`-compatible is the goal; zero dependencies is the rule. `encoding`: the `Encoding` trait and `TagValue<D, N>`, its tag=value implementation, which forwards unchanged to `parse_into`, `MessageView` and `Template` (D16) | — |
+| `codec` | L1 | Parse and serialise in place. The hot path. `no_std`-compatible is the goal; zero dependencies is the rule. `encoding`: the `Encoding` trait and `TagValue<D, N>`, its tag=value implementation, which forwards unchanged to `parse_into`, `MessageView` and `Template` (D16). `decimal`: `Decimal` (16 bytes, `Copy`, mantissa × 10^exponent) and the free function `as_decimal`, read from a field's bytes on demand exactly as `as_i64` is (ADR-0120) | — |
 | `sbe` | L1 | SBE 1.0 decode and encode over `&'static` tables a schema's `Schema` impl supplies: header, `SbeView` (24 bytes, `Copy`), group cursor, `varData`. `#![no_std]`, `#![forbid(unsafe_code)]`. Behind the default feature `encoding`: `Sbe<S>: codec::Encoding`, and the writer (`MessageWriter`/`GroupWriter`/`EntryWriter`) that lets `encode` fill a root block and groups/`varData` fill themselves (D16) | `codec`, only under the default feature `encoding`; none with it off |
-| `dict` | build | Code generation from the FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the validation tables (defined tags, message types, per-message tag sets, field types, enum values). `tables`: `Tables`, the nine functions the session calls, implemented for `Fix44`; the alias `Fix44TagValue` (D16). `[2026-09-19]` behind the off-by-default `fix50sp2` feature it emits a **second table**, `Fixt11Fix50Sp2Tables`, built from two XML files at once — transport from `FIXT11.xml`, application from `FIX50SP2.xml` (ADR-0080). The eighth function, `is_defined_tag_for`, exists because an admin message's body is checked against the transport file alone (ADR-0084). `[2026-09-20]` the ninth, `is_admin(msg_type)`, is generated from each `<message>`'s `msgcat`, no default method, and answers ADR-0080 decision 3's `1128` exemption rather than a hand-written list beside the call site (ADR-0086 decision 2) | `codec`; it implements `codec::Dictionary` |
+| `dict` | build | Code generation from the FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the validation tables (defined tags, message types, per-message tag sets, field types, enum values). The three QuickFIX XML files it generates from ship **inside the crate**, at `spec/`, byte-identical to a pinned commit, under `NOTICE` — the sole exception to "no QuickFIX source is copied" (ADR-0104), made so this crate, and everything built on it, needs nothing but crates.io. `tables`: `Tables`, the nine functions the session calls, implemented for `Fix44`; the alias `Fix44TagValue` (D16). `[2026-09-19]` behind the off-by-default `fix50sp2` feature it emits a **second table**, `Fixt11Fix50Sp2Tables`, built from two XML files at once — transport from `FIXT11.xml`, application from `FIX50SP2.xml` (ADR-0080). The eighth function, `is_defined_tag_for`, exists because an admin message's body is checked against the transport file alone (ADR-0084). `[2026-09-20]` the ninth, `is_admin(msg_type)`, is generated from each `<message>`'s `msgcat`, no default method, and answers ADR-0080 decision 3's `1128` exemption rather than a hand-written list beside the call site (ADR-0086 decision 2) | `codec`; it implements `codec::Dictionary` |
 | `sbe-gen` | build | `generate(xml)` / `generate_with_includes(xml, resolve)`: an SBE 1.0 schema to the `&'static` tables `sbe` reads, plus a unit struct implementing `sbe::Schema`. A construct outside ADR-0081 decision 5's scope is `Error::Unsupported(name)`, never a silently wrong table | `roxmltree`; dev-depends on `fixbolt-sbe` to compile the tables its own tests read |
 | `session` | L2 | The FIX session state machine. Pure, no I/O, `Role` as a type parameter. Time enters as `Tick` in milliseconds since 0000-01-01 (D13). Module `schedule` holds when a session is open and when both ends restart at `34=1` (ADR-0033) | `codec`, `dict` |
 | `engine` | L3 | TCP acceptor and connector, drives the session machines, owns the journal and the message log. `transport` is a module here until something needs it to be a crate | `session`; `libc` **only** under the `standard` or `affinity` feature |
@@ -134,6 +134,7 @@ The crate is the largest, and its modules are the record of what was built when:
 | `reconnect` | `Policy`: doubling backoff to a ceiling, no jitter; `connect_and_serve` | [ADR-0043](decisions/ADR-0043-backoff-without-jitter-and-a-reconnect-asks-recovery-every-time.md) |
 | shutdown | `Admin::shutdown`, `Shutdown`, `Session::begin_logout`, `State::LoggingOut`, `DropReason::EngineShutdown`; `run`, `serve` and `serve_hft` **return** | [ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md) |
 | `msglog` | `MessageLog`, `NoLog` (compiles away), `FileLog`, `FileLog::open_pinned`: both directions, refusals included, one line per message | D14 |
+| `redact` | `MASKED` — the five fields that never reach disk in clear (`554`, `925`, `1402`, `1404` always; `96` only when any `35=` in the record is `Logon`/`UserRequest`, or there is no `35=`); `mask` (overwrite in place, length kept), `carries_secret`. Two pure functions over a borrowed slice, no dictionary: splits on SOH, and a DATA field's declared length wins over the next SOH found, so a value that legally contains one (D3) cannot leave part of a secret unmasked **when its length field precedes it**; a DATA secret with no preceding length field is masked to the next SOH only (plan *Sửa 2*; `tests/redact.rs::a_raw_data_holding_an_soh_is_masked_whole`, `::raw_data_of_a_logon_behind_another_msg_type_is_masked`). `[2026-09-23]` public, called by `msglog` and `journal` | [ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md) |
 | `origin` | `Sender` (`Send + Sync`, a third capability on `observe`'s `Arc`), the fixed origination queue, `ORIGIN_CAPACITY` and `ORIGIN_LEN`. Drained at the top of a turn beside `Command`; `Engine::speak_first` is the other door and lives in `lib.rs` | D15, [ADR-0048](decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md) |
 | `ring`, `dispatch` | `RingDispatch` over an SPSC ring of `AtomicU8`, safe Rust, no dependency; `InlineDispatch` | D4, [ADR-0007](decisions/ADR-0007-spsc-ring-without-unsafe.md), [ADR-0011](decisions/ADR-0011-a-full-ring-disconnects.md) |
 
@@ -304,6 +305,12 @@ session layer's decision.
 `TagValue::View<'a>` and forwards to it unchanged; a second encoding brings a second view type
 of its own rather than widening this one.
 
+`[added 2026-09-23]` A typed value is read the same way: a price is
+`as_decimal(view.get(44)?)`, a free function beside `as_i64`, not a method on `MessageView`. The
+index is unchanged and nothing is decoded because a message arrived — `Decimal { mantissa: i64,
+exponent: i8 }` is produced only when the caller asks, 16 bytes, `Copy`. ADR-0120 (which revises
+ADR-0028 decisions 1 and 2).
+
 ### D3 — Field ordering comes from generated tables, never from hand-written code
 
 The QuickFIX acceptance comparator compares fields **positionally**: a correct FIX message
@@ -323,7 +330,10 @@ entry over in reverse and round-trips 357 top-level positions byte for byte.
 checked against QuickFIX's generated C++: `[measured]` the delimiter agrees on 730 / 730 groups
 and QuickFIX's order is an exact subsequence of this crate's on 730 / 730
 (`crates/dict/tests/interop_quickfix_order.rs`). Swapping two adjacent members in every group
-leaves the round trip green and turns that test red, which is why it exists.
+leaves the round trip green and turns that test red, which is why it exists. `[2026-09-23]` the
+generator's input moved from gitignored `vendor/` to `crates/dict/spec/`, shipped inside the
+crate under `NOTICE` (ADR-0104) — the generated tables are unchanged, proven by the emitted
+`.rs` hashing identical to the pre-switch commit, so this section's numbers still hold.
 
 **A DATA field is written immediately behind its length field, and the encoder writes that
 length.** A DATA value may legally contain `0x01`, so a reader takes its length from the field
@@ -449,7 +459,13 @@ engine, and `Recovery` is the seam the serving loop asks
 
 **The journal is not a message log.** It keeps outbound application **messages** for resend and,
 of everything else, only **numbers** — one inbound, one outbound. No administrative traffic and
-no refused frame is in it; that is D14.
+no refused frame is in it; that is D14. **`[2026-09-23]` Nor does it keep an application message
+that carries a secret** `engine::redact::MASKED` names: the file gets the ADR-0053 outbound mark
+for its number instead of the message record, and a resumed session gap-fills that number rather
+than replaying a credential. The in-memory ring still holds the message verbatim, so a
+`ResendRequest` inside the same process replays it unaffected
+([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md)
+decision 4; [SESSION-BEHAVIOUR.md §4](SESSION-BEHAVIOUR.md)).
 
 ### D8 — In `hft` the engine thread busy-polls; in `standard` it blocks
 
@@ -785,6 +801,14 @@ than waited for. The writer is allowed to allocate, for the reason `journal::Rea
 **`NoLog` is the default and it compiles away.** `MessageLog::LOGS` is an associated
 constant, so an engine never given a log carries no branch, no field and no cost.
 
+**`[2026-09-23]` The writer masks a secret before it escapes.** Every value byte of a field
+`engine::redact::MASKED` names becomes `*`, length kept, on the writer thread, in the writer's
+own buffer — `9=`, the LENGTH fields and `10=` are left exactly as received, so a masked line
+still frames but deliberately no longer checksums, the mark that it was altered. The engine
+thread's `record` call is unchanged
+([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md)
+decision 3).
+
 ### D15 — An application can speak first, through two doors, and neither is told a sequence number
 
 `[added 2026-09-05]` Until this decision **every application message this engine could send was
@@ -1104,7 +1128,7 @@ below).
 | Allocations on the hot path, codec | **0** | `crates/codec/benches/alloc.rs`, counting allocator. `[2026-09-19]` the `parse via Encoding` case counts the same parse through `Encoding::parse` beside the direct `parse_into` case, and each asserts its own path is live (D16) |
 | Allocations on the hot path, sbe `[2026-09-19]` | **0** on four paths: parse nested (header+root), field (through `Encoding::field`), walk nested group + `varData`, encode NewOrderSingle (through `Encoding::encode` with an `SbeTemplate`) | `crates/sbe/benches/alloc.rs`, counting allocator, injection-proven the same way as `codec`'s. `benches/sbe.rs` times the same four through the shared harness and prints `NO BASELINE`; no timing baseline has been recorded yet (D16, step 9) |
 | Allocations on the hot path, session | **0** on sixteen paths: accept, refuse, tick, beat, answer, gap, fill, deliver, resend, logon_out, originate, ordered, clock, text, schedule-open, schedule-shut | `crates/session/benches/alloc.rs`. The refusal path is counted apart because a hostile counterparty controls it and a `format!` is easiest to reach for there. `[measured 2026-09-02]` injecting one into `ordered` reads 10 000 |
-| Allocations on the hot path, engine | **0** on thirty-one paths (`cargo bench -p fixbolt-engine --bench alloc`'s `allocations:` line, 2026-09-14): **mark-out-mem, mark-out-file-async, journal-async-busy**, idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle, registry-lookup, observe-idle, observe-asked, events-idle, events-busy, admin-idle, admin-busy, shutdown, reconnect, log-record, log-idle, log-busy, **origin-idle, origin-busy**, adopt-idle, **logon-first** | `crates/engine/benches/alloc.rs`. `busy` asserts the session is still logged on at the end of the count, because an earlier version measured a connection dropped at message two. `log-record` calls `MessageLog::record` a thousand times with no engine in the window; `[measured 2026-09-04]` making it allocate once reads 1000. `[measured 2026-09-05]` the two ADR-0048 cases read **2000** and **16** under an injected `format!`; `logon-first` is sixteen exact calls rather than thousands because `speak_first` runs once per session and the fixture cannot cycle sessions — one `Config` means a second concurrent session is refused as a duplicate, and a dropped `Loopback` peer signals no EOF, so an early version of that case read `1 sends over 500 sessions`. What no bench here proves is that the writer thread allocates nothing while the engine runs; `tools/w2w` is where a both-threads number belongs |
+| Allocations on the hot path, engine | **0** on thirty-three paths (`cargo bench -p fixbolt-engine --bench alloc`'s `allocations:` line, 2026-09-14, `[2026-09-23]` +2): **mark-out-mem, mark-out-file-async, journal-async-busy**, idle, send, recv, frame, turn, shard-turn, busy, ring, interests, pending-idle, pending-busy, pending-cycle, registry-lookup, observe-idle, observe-asked, events-idle, events-busy, admin-idle, admin-busy, shutdown, reconnect, log-record, log-idle, log-busy, **origin-idle, origin-busy**, adopt-idle, **logon-first**, **redact-mask, redact-scan** | `crates/engine/benches/alloc.rs`. `busy` asserts the session is still logged on at the end of the count, because an earlier version measured a connection dropped at message two. `log-record` calls `MessageLog::record` a thousand times with no engine in the window; `[measured 2026-09-04]` making it allocate once reads 1000. `[measured 2026-09-05]` the two ADR-0048 cases read **2000** and **16** under an injected `format!`; `logon-first` is sixteen exact calls rather than thousands because `speak_first` runs once per session and the fixture cannot cycle sessions — one `Config` means a second concurrent session is refused as a duplicate, and a dropped `Loopback` peer signals no EOF, so an early version of that case read `1 sends over 500 sessions`. `[2026-09-23]` **`redact-mask`/`redact-scan`** are ADR-0110's `mask`/`carries_secret`, each called 1 000 times over a fixture carrying a secret; each case asserts its own path actually found it (`redact-mask` masked 2 000 fields over the Logon it ran twice, `redact-scan` saw a secret all 1 000 times), so their zero is not read off a path that never ran — injecting `std::hint::black_box(Vec::with_capacity(1))` into `mask` reads 1 000, not 0 (docs/plans/2026-09-23-p3-redact-secrets.md reversal R5; a version without `black_box` was optimised away and proved nothing, `docs/reference/measured-costs.md`). What no bench here proves is that the writer thread allocates nothing while the engine runs; `tools/w2w` is where a both-threads number belongs |
 | A peer's TLS 1.3 KeyUpdate allocates exactly what rustls's key schedule forces, and nothing else `[2026-09-13]` | engine and ktls-core: **0**; rustls: **two** boxes of **exactly 184** bytes per direction rekeyed — **four** under `update_requested`, **two** under `update_not_requested`, of this lock's rustls 0.23.44 and ring 0.17.14 — asserted `==`, not `<=` — the second named carve-out from non-negotiable 1 | `crates/engine/tests/tls_key_update.rs::a_key_update_allocates_only_the_boxes_rustls_key_schedule_forces` (`update_requested`, 4 boxes) and `::a_key_update_without_update_requested_rekeys_one_direction_and_allocates_two_boxes` (`update_not_requested`, 2 boxes), each run reading the same count ([ADR-0063](decisions/ADR-0063-a-peers-key-update-is-the-second-named-carve-out-and-a-ticket-is-not-read.md)). A ceiling (`<= 4`) was what step 6c shipped under a name that said "nothing"; an exact count is the assertion that forces a re-read on the next rustls or ring bump |
 | A client's session tickets allocate nothing after the handover `[2026-09-13]` | **0** over the ticket window, **and** `tickets_ignored() == 2`, so an absent ticket cannot pass as an unallocating one | `crates/engine/tests/tls_key_update.rs::a_session_ticket_after_the_handover_allocates_nothing`. `[measured 2026-09-13]` `Resumption::disabled()` alone left this at 16 allocations (`Window { count: 16, largest: 354 }`); the newtype `tls::side::Ticketless` is the whole of the fix (ADR-0063 Revision) |
 
@@ -1307,6 +1331,23 @@ is kept apart from `FAILED` — any other outcome: a non-zero exit without the h
 busy machine does. `--reextract <evidence-dir>` rebuilds `runs.reextracted.txt` from a round's
 raw captures under `<evidence-dir>/raw/` without re-running anything and without ever writing
 over `runs.txt`.
+
+**A line that moves after a commit that did not touch its code is first counted, not timed**
+([ADR-0102](decisions/ADR-0102-a-line-that-moves-while-its-instruction-count-does-not-is-a-layout-move-and-the-count-is-read-off-the-desk.md)).
+Every `Suite::bench::<F>` is inlined into one `harness::suite::<closure>` per bench file, so an
+edit to the harness, or a case added to the file, moves every other case's timed loop. ADR-0049
+pins a function's start and nothing inside it. The band cannot tell that from a regression:
+`[measured 2026-09-23, a diagnostic from the desk on its desktop grub line — not the §9 line,
+not a published figure]` `6b2833b` moved `walk nested group + varData` about +10 % in ns/op while
+the binary retired 0.032 % *fewer* instructions. `scripts/bench-instructions.sh A B` compares the binary a
+line was recorded with against the current one by `instructions:u`, run with
+`FIXBOLT_BENCH_COUNT_ONLY=1` so a binary whose case is `OVER` its line still runs to the end (`same-work` at ≤ 0.1 %,
+`work-changed` above, `unstable` if an arm's own spread exceeds 0.01 %). The count is independent
+of layout and valid on either grub line, but it needs a PMU, so it runs on the desk. CI runs only
+its stub self-test, `scripts/check-bench-instructions.sh`, in `gates`. `same-work`, with no other
+case of the binary moving the opposite way, makes *layout* a named cause for the re-record
+ADR-0095 decision 2 demands; `work-changed` sends the case to the code. Every re-record keeps its
+binary in `target/baseline-bins/` so the next comparison has its first arm.
 
 ## 7. Build order
 
