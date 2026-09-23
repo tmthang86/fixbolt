@@ -1,6 +1,6 @@
 # ADR-0152 — Non-negotiable 4 judges the engine thread's serving window; its teardown may wait for its writers
 
-- **Status**: **Accepted — 2026-09-23** (manager, owner's standing mandate, with plan Sửa 2). Proposed 2026-09-23. Written by the architect (Opus) for *Sửa 2* of
+- **Status**: **Accepted — 2026-09-23** (manager, owner's standing mandate, with plan Sửa 2). **Partly superseded (on acceptance) by [ADR-0153](ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md)**: *Context* §3 and the premise of decision 1 — a journal writer's join is **not** teardown-only; decisions 2–5 (the window) stand. Proposed 2026-09-23. Written by the architect (Opus) for *Sửa 2* of
   [docs/plans/2026-09-23-phase-3-found-defects.md](../plans/2026-09-23-phase-3-found-defects.md).
   Accepting that revision accepts this ADR.
 - **Date**: 2026-09-23

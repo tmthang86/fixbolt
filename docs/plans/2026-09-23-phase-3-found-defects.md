@@ -593,6 +593,97 @@ chỉ dời chỗ chờ, thêm một thread thư viện phải giữ, không đ�
 
 **Thay đổi ở hàng C:** các lệnh chế độ có `W2W_EXTRA` chỉ được coi là xanh khi đã có W.
 
+## Sửa 3 — engine thread ngủ **giữa lúc phục vụ** khi một phiên có journal kết thúc (2026-09-23)
+
+**Chuyện gì xảy ra.** Hàng W đã dựng đúng ADR-0152 (worktree `fb-w`, nhánh
+`fix/w-serving-window`, chưa commit; các đảo ngược đỏ như dự tính). Nhưng với thread ghi, script
+đỏ **2/8** lần, và **3/12** lần trace tay đọc `inside=1 outside=1`. Chỉ `futex` của message log là
+lúc dọn dẹp. `futex` của **journal** xảy ra **khi một kết nối đóng, bên trong `turn()`**:
+`self.conns.swap_remove(i)` (`crates/engine/src/lib.rs:1351`) huỷ `FileJournal` của kết nối đó →
+`close()` → `join` thread ghi (`journal.rs:770-788`). Thứ tự trên tid engine: `recvfrom = 0`,
+`close(7)`, `futex`, `munmap(…, 1052672)`, rồi mới tới dấu `serve-close`. Rơi trong hay ngoài cửa
+sổ là do EOF hay lệnh dừng tới trước.
+
+**Nghĩa là:** engine `hft` **thật sự ngủ trong kernel giữa lúc phục vụ** mỗi khi một phiên có
+`FileJournal` kết thúc — vi phạm điều 4 thật, có từ trước D5 (D5 có thể làm nó dài thêm tới
+~1 ms vì thread ghi có thể đang ngủ). Ở `standard`, đó là một lần kẹt tới ~1 ms cho mọi phiên khác
+trên cùng thread. **Tiền đề của ADR-0152 quyết định 1 sai** ("join chỉ xảy ra lúc dọn dẹp"); cơ chế
+cửa sổ thì đúng — chính nó bắt được lỗi này.
+
+**Quyết định** — [ADR-0153](../decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md)
+(**Proposed**; khi được chấp nhận thì thay phần "join chỉ lúc dọn dẹp" của ADR-0152, giữ nguyên
+cơ chế cửa sổ). ADR-0152 đã *Accepted* nên không sửa nội dung, chỉ thêm một dòng trạng thái trỏ
+sang ADR-0153 (`CLAUDE.md` §5).
+
+1. **Engine không bao giờ chờ thread ghi của journal trong lúc phục vụ, ở cả hai chế độ.** Journal
+   của kết nối rời đi được **cho nghỉ** (`retire`), không đóng.
+2. Trait `fixbolt_session::journal::Journal` thêm `fn retire(&mut self) {}` (mặc định không làm
+   gì — session vẫn thuần). `Connection` (`crates/engine/src/conn.rs:49`) có `Drop` gọi
+   `self.journal.retire()` → **mọi** đường huỷ kết nối (`swap_remove`, `clear` ở `lib.rs:1065`,
+   huỷ engine) đều cho nghỉ trước, không chỗ nào quên được.
+3. `FileJournal::retire`: không syscall, không quay vòng — đẩy `STOP` **một lần**; ring đầy thì bật
+   cờ dừng mà thread ghi đọc khi ring cạn; lấy `JoinHandle` ra và thả (tách rời); tăng bộ đếm toàn
+   tiến trình "thread ghi đã cho nghỉ, chưa xong". Thread ghi, sau lần flush cuối, giảm bộ đếm như
+   việc cuối cùng. `Drop` sau đó không còn handle để `join`.
+4. **Chỗ chờ dời ra sau vòng phục vụ:** `fixbolt_engine::journal::wait_for_retired_writers(timeout)
+   -> bool` — ngủ 1 ms giữa các lần nhìn bộ đếm tới khi về 0 hoặc hết giờ. Mọi hàm chạy vòng phục
+   vụ (`serve*`, `connect_and_serve*`, serve của shard) gọi nó **sau khi vòng trả về** (dọn dẹp,
+   ADR-0152 cho phép), timeout = thời gian ân hạn lúc tắt. Ai tự lái `Engine` phải tự gọi —
+   `GUIDE.md` ghi.
+5. `FileJournal::close()` và `Drop` của journal **chưa** cho nghỉ vẫn `join` như cũ (test, tool,
+   người gọi tự đóng journal của mình).
+
+Loại (chi tiết ở ADR-0153): đánh thức thread ghi ngay khi `STOP` (vẫn là một lần `futex`, ngắn
+không phải là không); thread dọn dẹp nhận qua channel (`mpsc` cấp phát và `futex` wake); tách rời
+không có chỗ chờ (mất dữ liệu khi thoát sạch); cho mọi `Drop` không chặn (đổi nghĩa `Drop` với mọi
+chủ sở hữu, test hiện có đọc file ngay sau `drop`). Nguồn: Chronicle Core
+`BackgroundResourceReleaser`, Aeron `FREE_LOG_BUFFER`, tài liệu `JoinHandle` của Rust — trích ở
+ADR-0153 *Context* §3.
+
+**Hàng mới: J (cho nghỉ journal, không chờ)**
+
+| Hàng | Kết quả | Người làm | Chạm vào | Không chạm | Phụ thuộc |
+|---|---|---|---|---|---|
+| J | engine không `futex` khi một phiên có `FileJournal` kết thúc giữa lúc phục vụ; dữ liệu vẫn xuống đĩa trước khi serve trả về | senior developer (`opus`) — engine thread, điều 1/2/3/4, **cùng worker D1/D5** nếu còn (giữ context `journal.rs`) | `crates/session/src/journal.rs` (chỉ thêm `retire` mặc định + rustdoc), `crates/engine/src/journal.rs`, `crates/engine/src/conn.rs` (`Drop`), `crates/engine/src/lib.rs` (chỉ lời gọi `wait_for_retired_writers` sau vòng của các hàm serve), `crates/engine/src/shard.rs` (cùng lời gọi), `crates/engine/tests/retire.rs` (mới) | `tools/`, `scripts/` (của W), `ring.rs`, `msglog.rs`, `crates/codec/` | nền là commit D5 (`bc98fcb`); `lib.rs` **sau khi D2 và D3 đã commit** (một file, một người viết) |
+
+- **Test đỏ trước** (`crates/engine/tests/retire.rs`, `#[cfg(target_os = "linux")]`):
+  - `a_session_with_a_file_journal_ends_without_the_engine_thread_waiting`: engine `hft`
+    (`wait::Spin`) trên `transport::Loopback`, 20 kết nối lần lượt, mỗi cái có `FileJournal`
+    `Async` riêng, logon rồi phía kia đóng; đọc `voluntary_ctxt_switches` của **chính thread chạy
+    turn** (`/proc/thread-self/status`) trước và sau đoạn các phiên kết thúc; khẳng định **0**.
+    **Đỏ hôm nay**: mỗi `join` là một lần tự nhường, câu FAIL *"the engine thread made N voluntary
+    switches while sessions with a FileJournal ended — a writer join on the serving path"*. Khẳng
+    định kèm: số kết nối về 0 (đoạn đo thật sự có phiên kết thúc).
+  - Cùng test với engine `standard` (`Block`), khẳng định số lần tự nhường **không tăng thêm** so
+    với cùng kịch bản dùng `MemJournal` (đo cả hai trong test) — `standard` được ngủ khi rảnh,
+    nhưng không được chờ thread ghi.
+  - `a_retired_journal_reaches_the_disk_before_the_wait_returns`: `put` 10 000 message,
+    `retire`, `wait_for_retired_writers(5 s) == true`, mở lại file → đủ 10 000.
+  - `a_journal_closed_by_its_owner_still_joins`: `close()` trên journal chưa cho nghỉ vẫn chờ xong
+    (test `async_reaches_the_disk_once_the_writer_has_caught_up` hiện có cũng canh — không sửa).
+- **Đảo ngược** (ghi câu FAIL trước): (1) `FileJournal::retire` để trống (dùng mặc định) → test 1
+  đỏ; (2) `wait_for_retired_writers` trả `true` ngay → test 3 đỏ (thiếu message); (3) bỏ `Drop`
+  của `Connection` → test 1 đỏ.
+- **Gate:** `cargo test -p fixbolt-engine --test retire --test journal --test on_disk --test secrets_stay_off_disk --test shutdown --test engine_recovery --test shard_recovery`;
+  `cargo test -p fixbolt-session` và `cargo test -p fixbolt-conformance` (59/59 — trait session
+  đổi, điều 3); `cargo test --no-default-features`; `cargo clippy --all-targets -- -D warnings`
+  và `--features tls`; `cargo bench -p fixbolt-engine --bench alloc` (điều 1: `retire` không cấp
+  phát); **cả hai chế độ, trên Linux, trên commit có cả W và J**:
+  `W2W_EXTRA="--journal file-async --log file" scripts/check-no-kernel-sleep.sh` **10/10 lần
+  xanh** (trích từng lần; dòng *outside the serving window* chỉ còn `futex` của message log),
+  cùng `W2W_EXTRA` với `scripts/check-no-kernel-sleep-by-ctxt.sh` và
+  `scripts/check-standard-gives-the-core-back.sh`.
+- **Xong khi:** bốn test xanh, ba đảo ngược đỏ đúng câu, 10/10 script, test cũ xanh **không sửa**.
+- **Tài liệu (cùng commit):** `DESIGN.md` §4 D7 (journal của phiên rời đi được cho nghỉ, chờ ở
+  dọn dẹp) và D8 (điều 4 giữ khi phiên kết thúc); `docs/GUIDE.md` (ai tự lái `Engine` phải gọi
+  `wait_for_retired_writers` trước khi thoát); `CHANGELOG.md` *Added* (`Journal::retire`,
+  `wait_for_retired_writers`) + *Fixed*; `docs/reference/a-connection-end-joined-its-journal-writer-on-the-engine-thread.md`
+  (mới — bẫy: ADR-0152 tưởng join chỉ lúc dọn dẹp; cửa sổ bắt được); `docs/internals/engine.md`
+  (`conn.rs` có `Drop`); ADR-0153 → *Accepted*.
+
+**Thứ tự đóng:** W **chỉ đóng sau J** — gate 10/10 của W là gate của J. D5 vẫn đóng sau W. Hàng C
+chạy lại mọi script chế độ với `W2W_EXTRA` trên commit cuối.
+
 ## Nhật ký giao hàng
 
 Điền vào mỗi khi đóng một phase: đã dựng gì, ở đâu, gate nào xanh, cái gì chưa làm và vì sao.
