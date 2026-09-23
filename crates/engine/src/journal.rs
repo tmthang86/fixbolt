@@ -36,7 +36,7 @@ use std::path::Path;
 
 use fixbolt_session::journal::Journal;
 
-use crate::ring::{Consumer, Producer};
+use crate::ring::{Consumer, Idle, Producer};
 
 /// How many messages a [`MemJournal`] keeps by default, and the ring inside a
 /// [`FileJournal`].
@@ -718,19 +718,39 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 // not journalled, which becomes a gap fill rather than a lie.
                 let (to_writer, from_engine) = crate::ring::pair(1 << 20);
                 this.to_writer = Some(to_writer);
+                // **`open` returns only once the writer holds its buffer.** The
+                // buffer is allocated on the writer thread (ADR-0150 decision
+                // 1, ADR-0037), and a writer that started late would allocate
+                // it whenever the scheduler got round to it — `[measured
+                // 2026-09-23]` inside `benches/alloc.rs`'s `mark-out-file-async`
+                // window, whose allocator is global, in 1 run of 6 under load.
+                // Waiting here makes every writer allocation happen before
+                // `open` returns: startup, not the engine's path.
+                let (ready, started) = std::sync::mpsc::sync_channel::<()>(1);
+                let run = move || {
+                    let buf = vec![0u8; writer_buf(LEN)];
+                    let _ = ready.send(());
+                    drop(ready);
+                    write_loop(file, from_engine, format, buf);
+                };
                 #[cfg(all(feature = "affinity", target_os = "linux"))]
                 if let Some(core) = core {
-                    let (handle, on) =
-                        crate::affinity::spawn_pinned("fixbolt-journal", core, move || {
-                            write_loop(file, from_engine, format, writer_buf(LEN))
-                        })?;
+                    let (handle, on) = crate::affinity::spawn_pinned("fixbolt-journal", core, run)?;
+                    // `Err` only if the writer ended before it said so, and
+                    // then there is nothing to wait for.
+                    let _ = started.recv();
                     this.writer = Some(handle);
                     this.writer_core = Some(on);
                     return Ok(this);
                 }
-                this.writer = Some(std::thread::spawn(move || {
-                    write_loop(file, from_engine, format, writer_buf(LEN))
-                }));
+                // Named as the pinned one is, so a test and an operator can
+                // find it in `/proc/<pid>/task/*/comm`. ADR-0150 decision 4.
+                this.writer = Some(
+                    std::thread::Builder::new()
+                        .name("fixbolt-journal".to_owned())
+                        .spawn(run)?,
+                );
+                let _ = started.recv();
             }
         }
         Ok(this)
@@ -828,14 +848,20 @@ const fn writer_buf(len: usize) -> usize {
 
 /// The writer thread: everything the ring hands over, appended in order.
 ///
-/// `buf_len` is `writer_buf(LEN)` from `FileJournal`; a test passes a smaller
-/// one to reach the `Some(0)` arm. **Allocated here, once, before the loop** —
-/// this is the writer thread, not the engine thread (ADR-0037), and a stack
-/// array sized by `LEN` needs an unstable feature. ADR-0150 decision 1.
-fn write_loop(mut file: File, mut from_engine: Consumer, format: Format, buf_len: usize) {
-    let mut buf = vec![0u8; buf_len];
+/// `buf` is `writer_buf(LEN)` bytes from `FileJournal`, allocated once on the
+/// writer thread before this is called — not the engine thread (ADR-0037), and
+/// a stack array sized by `LEN` needs an unstable feature. A test passes a
+/// smaller one to reach the `Some(0)` arm. ADR-0150 decision 1.
+fn write_loop(mut file: File, mut from_engine: Consumer, format: Format, mut buf: Vec<u8>) {
+    // Spin briefly, then sleep 1 ms per empty poll: the writer gives its core
+    // back when there is nothing to write, in every mode. ADR-0150 decision 4.
+    let mut idle = Idle::new();
     loop {
-        match from_engine.pop(&mut buf) {
+        let popped = from_engine.pop(&mut buf);
+        if popped.is_some() {
+            idle.reset();
+        }
+        match popped {
             // **Not the stop signal.** `pop` says *"a record longer than this
             // buffer was dropped"* this way. Unreachable from `FileJournal`,
             // whose buffer holds its largest record; if it is reached anyway,
@@ -878,7 +904,7 @@ fn write_loop(mut file: File, mut from_engine: Consumer, format: Format, buf_len
                     let _ = file.write_all(&crc32(&[record]).to_le_bytes());
                 }
             }
-            None => std::hint::spin_loop(),
+            None => idle.wait(),
         }
     }
 }
@@ -1392,7 +1418,7 @@ mod writer_tests {
         // On this thread: the loop returns at `STOP`, so a writer that stops
         // anywhere else returns early and leaves the file short, rather than
         // hanging the test.
-        write_loop(file, from_engine, Format::V0, small);
+        write_loop(file, from_engine, Format::V0, vec![0u8; small]);
 
         let on_disk = std::fs::read(&path)?;
         let _ = std::fs::remove_file(&path);

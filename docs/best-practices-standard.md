@@ -124,6 +124,13 @@ allocation: `SLOTS × (SLOT_LEN + 8)` ≈ **2 MiB** at the defaults.
 a core with the engine costs nothing anyone will notice, and the file is the first thing
 asked for when a counterparty disputes a fill.
 
+`[2026-09-23]` **That sentence was not true of the writers until this date**: the log's writer
+`yield_now`ed and the `Async` journal's spun on an empty ring, a core each on an idle engine.
+Both now sleep 1 ms at a time after 1 024 empty polls (`crates/engine/tests/writer_idle.rs`),
+so `standard`'s promise to give the core back holds for the whole process, not only the engine
+thread ([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+decision 4).
+
 ```ini
 FileLogPath=/var/log/fixbolt/messages.log
 ```

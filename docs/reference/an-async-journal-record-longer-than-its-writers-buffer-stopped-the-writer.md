@@ -54,3 +54,16 @@ refusal to be counted.
 no journal record reaches `Some(0)`, so a writer that went back to stopping on it would leave
 every public-API test green. A guard whose case the fix makes unreachable has to be tested below
 the fix.
+
+## A cost the fix paid, found one step later
+
+Moving the buffer from a stack array to a `Vec` made it an allocation, and `benches/alloc.rs`
+counts with a **global** allocator. Case `mark-out-file-async` opens a `FileJournal` under
+`Async` and counts at once, so when the writer thread started late its startup allocations
+landed inside the window. `[measured 2026-09-23, desk at load average ~30]` HEAD with this fix
+alone read `mark-out-file-async 1` in 1 run of 6. With D5's named writer, 2 in 2 runs of 4. **Not
+an engine-thread allocation, but a gate that goes red by chance is a gate nobody believes.**
+`FileJournal::open` now returns only after the writer holds its buffer (a one-slot
+`sync_channel`, at startup). After that, 8 runs of 8 read 0 at the same load, with the bench
+unchanged. The rule: **a thread a constructor spawns finishes allocating before the constructor
+returns**, or every counting window that opens after it races that thread.
