@@ -441,14 +441,13 @@ fn tag(wire: &[u8], want: u32) -> Option<&[u8]> {
     while at < wire.len() {
         let end = wire[at..].iter().position(|b| *b == 1)? + at;
         let field = &wire[at..end];
-        if let Some(eq) = field.iter().position(|b| *b == b'=') {
-            if core::str::from_utf8(&field[..eq])
+        if let Some(eq) = field.iter().position(|b| *b == b'=')
+            && core::str::from_utf8(&field[..eq])
                 .ok()
                 .and_then(|t| t.parse::<u32>().ok())
                 == Some(want)
-            {
-                return Some(&field[eq + 1..]);
-            }
+        {
+            return Some(&field[eq + 1..]);
         }
         at = end + 1;
     }

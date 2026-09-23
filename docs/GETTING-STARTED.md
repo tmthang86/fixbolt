@@ -1,22 +1,32 @@
 # Getting Started with fixbolt
 
-Run a FIX 4.4 acceptor in three steps: a configuration file, a handler, and one call to start
-the engine. Every snippet here is taken from code the test suite runs:
-
-- [`crates/library/examples/acceptor.cfg`](../crates/library/examples/acceptor.cfg) — the configuration
-- [`crates/library/examples/shared/order_handler.rs`](../crates/library/examples/shared/order_handler.rs) — the handler
-- [`crates/library/examples/acceptor.rs`](../crates/library/examples/acceptor.rs) — the entry point
-- [`crates/library/tests/end_to_end.rs`](../crates/library/tests/end_to_end.rs) — drives the example through a real socket
-
-> **Not on crates.io yet.** Every crate is `version = "0.0.0"` and `publish = false`. Depend
-> on `fixbolt` by path inside this workspace or as a git dependency. `cargo add fixbolt` will
-> not work.
-
-Before anything else, fetch the FIX dictionary the build needs:
+Run a FIX 4.4 acceptor in two steps: a configuration file, and one file of Rust that wires up a
+handler and starts the engine. Both blocks below are pasted **verbatim** into a fresh crate and
+run against a real socket by `scripts/stranger-check.sh` — a client sharing no code with this
+repository logs on, logs out, and stops the acceptor — so this page cannot drift from working
+code the way prose next to an example can.
 
 ```sh
-scripts/fetch-quickfix-assets.sh
+cargo add fixbolt@0.1.0
 ```
+
+> **Not on crates.io yet.** The six published crates are already `0.1.0` in this repository
+> ([ADR-0160](decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)),
+> but nothing has been uploaded until the owner runs `cargo publish` (`RELEASING.md`) — and the
+> `v0.1.0` git tag does not exist until that same step. Until both are true, depend on a commit or
+> branch of this repository instead of the line above:
+>
+> ```toml
+> fixbolt = { git = "https://github.com/tmthang86/fixbolt", rev = "<a commit sha from this repository>" }
+> ```
+>
+> This whole note, and the line above, go away the day the crate is actually on crates.io — at
+> that point `cargo add fixbolt@0.1.0` is the whole story.
+
+`fixbolt-dict` ships QuickFIX's FIX 4.4 dictionary inside the crate itself (`spec/FIX44.xml`,
+under [`NOTICE`](../NOTICE)), so there is nothing else to fetch and no `vendor/` checkout: `cargo
+add fixbolt` (or the git line above) is the whole install, with nothing but crates.io — or git —
+reachable ([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)).
 
 ---
 
@@ -25,6 +35,7 @@ scripts/fetch-quickfix-assets.sh
 `fixbolt` reads counterparties and session settings from an INI-style file in the same shape
 as QuickFIX's, so an existing QuickFIX configuration will look familiar.
 
+<!-- stranger-check: acceptor.cfg -->
 ```ini
 [DEFAULT]
 BeginString=FIX.4.4
@@ -58,18 +69,24 @@ Every key is described in [CONFIGURATION.md](CONFIGURATION.md).
 
 ---
 
-## Step 2: the handler
+## Step 2: the handler and the entry point
 
 Your code implements the [`Handler`](../crates/library/src/app.rs) trait. By the time
 `on_message` is called, the message has been framed, indexed and validated, and every
 administrative message (`35=0, 1, 2, 3, 4, 5, A`) has already been answered by the session
 layer. Only application messages reach you.
 
+This is a whole `main.rs` — the handler, and the call to `fixbolt::serve` that loads Step 1's
+configuration file and runs it — because that is what `scripts/stranger-check.sh` builds and
+runs: paste it into a fresh binary crate's `src/main.rs` next to Step 1's file saved as
+`acceptor.cfg`, and `cargo run` gives you a working acceptor on `127.0.0.1:9876`.
+
+<!-- stranger-check: main.rs -->
 ```rust
-use fixbolt::{Answer, Handler, Incoming, Reply};
+use fixbolt::{Answer, Handler, Incoming, Limits, Reply, Settings};
 
 #[derive(Default)]
-pub struct Desk {
+struct Desk {
     fills: u32,
 }
 
@@ -88,29 +105,30 @@ impl Handler for Desk {
 
         self.fills += 1;
         let mut buf = [0u8; 16];
-        let exec_id = format_exec_id(self.fills, &mut buf);
+        let exec_id = exec_id(self.fills, &mut buf);
 
         // Build an ExecutionReport (35=8) that fills the order.
         reply
             .message(b"8")
-            .field(37, exec_id)                  // OrderID
-            .field(17, exec_id)                  // ExecID
-            .field(150, b"F")                    // ExecType = Trade
-            .field(39, b"2")                     // OrdStatus = Filled
-            .field(11, cl_ord_id)                // ClOrdID, echoed
+            .field(37, exec_id)                    // OrderID
+            .field(17, exec_id)                    // ExecID
+            .field(150, b"F")                      // ExecType = Trade
+            .field(39, b"2")                       // OrdStatus = Filled
+            .field(11, cl_ord_id)                  // ClOrdID, echoed
             .field(55, msg.get(55).unwrap_or(b"")) // Symbol
             .field(54, msg.get(54).unwrap_or(b"")) // Side
-            .field(38, qty)                      // OrderQty
-            .field(32, qty)                      // LastQty
-            .field(31, price)                    // LastPx
-            .field(14, qty)                      // CumQty
-            .field(151, b"0")                    // LeavesQty
-            .field(6, price)                     // AvgPx
+            .field(38, qty)                        // OrderQty
+            .field(32, qty)                        // LastQty
+            .field(31, price)                      // LastPx
+            .field(14, qty)                        // CumQty
+            .field(151, b"0")                      // LeavesQty
+            .field(6, price)                       // AvgPx
             .send()
     }
 }
 
-fn format_exec_id(n: u32, buf: &mut [u8; 16]) -> &[u8] {
+/// `EXEC-<n>` into `buf`, with no allocation.
+fn exec_id(n: u32, buf: &mut [u8; 16]) -> &[u8] {
     buf[..5].copy_from_slice(b"EXEC-");
     let mut digits = [0u8; 10];
     let mut v = n;
@@ -128,32 +146,16 @@ fn format_exec_id(n: u32, buf: &mut [u8; 16]) -> &[u8] {
     buf[5..5 + len].copy_from_slice(&digits[i..]);
     &buf[..5 + len]
 }
-```
-
-Two things to know about the handler:
-
-- **You never write the header or trailer.** Tags `8`, `9`, `10`, `34`, `49`, `52` and `56`
-  are written by [`Reply`](../crates/library/src/reply.rs). Fields you name are emitted in the
-  dictionary's order no matter which order you call `.field(...)` in.
-- **It runs on the engine thread.** Do not block, query a database, or wait on the network
-  inside `on_message`. A stalled handler stalls heartbeats and every other session on that
-  thread ([GUIDE.md §2](GUIDE.md)).
-
----
-
-## Step 3: start the engine
-
-Load the settings into a table and call `fixbolt::serve`:
-
-```rust
-use fixbolt::{Limits, Settings};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = "crates/library/examples/acceptor.cfg";
-    let addr = "127.0.0.1:9876";
+    // Both arguments are yours to change: Step 1's file need not be named
+    // "acceptor.cfg", and the address need not be this one.
+    let mut args = std::env::args().skip(1);
+    let cfg = args.next().unwrap_or_else(|| "acceptor.cfg".to_owned());
+    let addr = args.next().unwrap_or_else(|| "127.0.0.1:9876".to_owned());
 
     // 1. Load the configuration into a table of counterparties.
-    let table = Settings::load(cfg)?.into_table()?;
+    let table = Settings::load(&cfg)?.into_table()?;
     println!("serving {} counterparties on {addr}", table.len());
 
     // 2. The handles, made BEFORE the engine. `serve` returns nothing until it
@@ -162,13 +164,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let admin = handles.admin();
     std::thread::spawn(move || {
         // Wire this to whatever your deployment uses to say "shut down" — a
-        // signal handler, an admin socket, a message on a queue.
+        // signal handler, an admin socket, a message on a queue. Here, one
+        // line on stdin, so this file needs no extra dependency to
+        // demonstrate that `serve` comes back on its own.
+        let mut line = String::new();
+        let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
         admin.shutdown(5_000);
     });
 
     // 3. Start the acceptor.
     let shutdown = fixbolt::serve(
-        addr,
+        &addr,
         table,
         fixbolt::app(Desk::default()),
         64,                       // connections held at once
@@ -181,6 +187,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+Two things to know about the handler:
+
+- **You never write the header or trailer.** Tags `8`, `9`, `10`, `34`, `49`, `52` and `56`
+  are written by [`Reply`](../crates/library/src/reply.rs). Fields you name are emitted in the
+  dictionary's order no matter which order you call `.field(...)` in.
+- **It runs on the engine thread.** Do not block, query a database, or wait on the network
+  inside `on_message`. A stalled handler stalls heartbeats and every other session on that
+  thread ([GUIDE.md §2](GUIDE.md)).
 
 The two numbers after the handler are yours to choose; there are no defaults for them:
 
@@ -221,15 +236,32 @@ what keeps it true.
 
 ---
 
-## Run the example
+## Run it
+
+Save Step 1 as `acceptor.cfg` next to Step 2's `src/main.rs`, then:
 
 ```sh
-cargo run --example acceptor -- crates/library/examples/acceptor.cfg 127.0.0.1:9876
+cargo run
 ```
 
-The acceptor binds to `127.0.0.1:9876`, loads `TW44` and `BANZAI`, and waits for a FIX
-client. [`crates/library/tests/end_to_end.rs`](../crates/library/tests/end_to_end.rs) runs
-exactly this over a real TCP socket, so the example is tested rather than merely compiled.
+The acceptor binds to `127.0.0.1:9876`, loads `TW44` and `BANZAI`, and waits for a FIX client.
+Send it a `Logon` naming `56=ISLD` and `49=TW44`, and it answers with one of its own; type a
+line and press enter to stop it.
+
+Two things prove this page cannot silently drift from working code:
+
+- **`scripts/stranger-check.sh --from packaged`** (and, once fixbolt is on crates.io, `--from
+  registry --version 0.1.0`) pastes exactly the two blocks above into a fresh crate outside this
+  repository, builds it against the same bytes a `.crate` upload contains, and drives a real
+  Logon/Logout through it with a client that shares no code with fixbolt
+  (`scripts/stranger-logon.py`) — ADR-0097 exit criterion 7.
+- **[`crates/library/examples/acceptor.rs`](../crates/library/examples/acceptor.rs)** and
+  **[`crates/library/examples/shared/order_handler.rs`](../crates/library/examples/shared/order_handler.rs)**
+  are the same handler and the same entry point, built and tested inside this workspace by
+  [`crates/library/tests/end_to_end.rs`](../crates/library/tests/end_to_end.rs) on every
+  `cargo test`. If you are reading this repository's own source rather than a downloaded crate,
+  `cargo run --example acceptor -- crates/library/examples/acceptor.cfg 127.0.0.1:9876` runs the
+  in-tree copy.
 
 Next: [TUTORIAL.md](TUTORIAL.md) walks through the same code in more detail and shows the
 bytes on the wire.

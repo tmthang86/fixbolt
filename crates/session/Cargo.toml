@@ -1,12 +1,18 @@
 [package]
 name = "fixbolt-session"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
 description = "The FIX 4.4 session state machine. Pure: no socket, no clock, no allocation"
+readme = "README.md"
+keywords = ["fix", "fix-protocol", "session", "state-machine", "trading"]
+categories = ["finance", "network-programming"]
+# ADR-0160 decision 4: an allowlist. Tests and benches are not shipped — their
+# path-only dev-dependencies are stripped from the `.crate` and half of them
+# read `vendor/`, so they cannot build from it.
+include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 # Pass-through only: this crate compiles no second table of its own. The feature
 # turns on `dict`'s FIXT 1.1 / FIX 5.0 SP2 tables so `tests/score_fixt.rs` and
@@ -15,8 +21,8 @@ description = "The FIX 4.4 session state machine. Pure: no socket, no clock, no 
 fix50sp2 = ["fixbolt-dict/fix50sp2"]
 
 [dependencies]
-fixbolt-codec = { path = "../codec" }
-fixbolt-dict = { path = "../dict" }
+fixbolt-codec = { version = "=0.1.0", path = "../codec" }
+fixbolt-dict = { version = "=0.1.0", path = "../dict" }
 
 # The 59 acceptance definitions are this crate's gate (CLAUDE.md §2 rule 3), so
 # the runner is a dev-dependency and the score is a test. conformance does not
@@ -48,3 +54,9 @@ harness = false
 [[bench]]
 name = "heartbeat"
 harness = false
+
+# ADR-0160 decision 8: docs.rs builds a named feature list, never
+# `all-features`. docs.rs passes `--cfg docsrs` itself, which turns on
+# `feature(doc_cfg)` at the crate root so each gated item shows its feature.
+[package.metadata.docs.rs]
+features = ["fix50sp2"]

@@ -140,7 +140,7 @@ checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
 name = "fixbolt"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fixbolt-codec",
  "fixbolt-dict",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "fixbolt-codec"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fixbolt-conformance",
  "fixbolt-dict",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "fixbolt-dict"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fixbolt-codec",
  "roxmltree",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "fixbolt-engine"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fixbolt-codec",
  "fixbolt-conformance",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "fixbolt-sbe"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fixbolt-codec",
 ]
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "fixbolt-session"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fixbolt-codec",
  "fixbolt-conformance",

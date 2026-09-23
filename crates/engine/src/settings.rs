@@ -2117,10 +2117,10 @@ mod doc_table {
             }
             let mut quoted = line.split('"');
             let _before = quoted.next();
-            if let Some(name) = quoted.next() {
-                if !name.is_empty() {
-                    out.push(name);
-                }
+            if let Some(name) = quoted.next()
+                && !name.is_empty()
+            {
+                out.push(name);
             }
         }
         assert!(
