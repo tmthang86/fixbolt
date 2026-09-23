@@ -268,16 +268,20 @@ implements.** Everything else is a subagent with one role, one model, and a brie
 
 | Role | Runs as | Model | Owns | Does not |
 |---|---|---|---|---|
-| **Manager** | main session | Opus | the branch (§8), splitting the approved plan into steps, choosing the model per step, **verifying every finding** (below), running the gates (§7), the delivery log, the pull request, every word the owner reads | write code, write the design, or change the plan |
-| **Architect** | subagent, background | Fable | `DESIGN.md`, ADRs, `docs/reference/`, the plan (§1) — **written to disk**. **Internet research before any decision** — when designing, and again whenever a problem is hard or the way to solve it is not already clear: prior art, the spec, what sibling engines measured, how others solved it; the plan's *Những gì đã biết chắc* and every ADR cite what was found or say the search found nothing | touch `crates/`; decide from memory |
-| **Senior reviewer** | subagent, fresh context, **escalation only** | Fable | a finding the senior developer could not close: open after one fix round, disputed between reviewer and author, or needing the spec, the design and the code held at once. Its verdict on that finding is final | write the fix — it goes back to the senior developer with the verdict; review a whole PR |
-| **Senior developer** | subagent, fresh context | Opus | reviewing a step against the plan and gates, fixing verified findings, any step touching `codec`, `session`, `engine` or `transport` | re-design — a design problem goes to the architect through the manager |
-| **Developer** | subagent | Sonnet | one step with named files and named tests | choose a design, or touch a file the brief did not name |
-| **Runner** | subagent | Haiku | a mechanical task with one right answer: run and quote, grep, fetch `vendor/`, repair doc links | anything that needs judgement |
+| **Manager** | main session | Opus 5.5 (`opus`) | the branch (§8), splitting the approved plan into steps, choosing the model per step, **verifying every finding** (below), running the gates (§7), the delivery log, the pull request, every word the owner reads | write code, write the design, or change the plan |
+| **Architect** | subagent, background | Opus 5.5 (`opus`) | `DESIGN.md`, ADRs, `docs/reference/`, the plan (§1) — **written to disk**. **Internet research before any decision** — when designing, and again whenever a problem is hard or the way to solve it is not already clear: prior art, the spec, what sibling engines measured, how others solved it; the plan's *Những gì đã biết chắc* and every ADR cite what was found or say the search found nothing | touch `crates/`; decide from memory |
+| **Senior reviewer** | subagent, fresh context, **escalation only** | Opus 5.5 (`opus`) | a finding the senior developer could not close: open after one fix round, disputed between reviewer and author, or needing the spec, the design and the code held at once | write the fix — it goes back to the senior developer with the verdict; review a whole PR |
+| **Senior developer** | subagent, fresh context | Opus 5.5 (`opus`) | reviewing a step against the plan and gates, fixing verified findings, any step touching `codec`, `session`, `engine` or `transport` | re-design — a design problem goes to the architect through the manager |
+| **Developer** | subagent | Sonnet 5 (`sonnet`) | one step with named files and named tests | choose a design, or touch a file the brief did not name |
+| **Runner** | subagent | Haiku 4.5 (`haiku`) | a mechanical task with one right answer: run and quote, grep, fetch `vendor/`, repair doc links | anything that needs judgement |
+| **Fable escalation** | subagent, fresh context, **last escalation only** | Fable 5.1 (`fable`) | what Opus could not settle: a design problem the architect could not solve (it cannot find the cause or choose between the options, or its design turned out wrong in the build, §1), or a finding the senior reviewer could not settle (it cannot reach a verdict, or the author disputes the verdict with evidence). Briefed with the problem, what Opus found and tried, both sides' evidence, and the draft or plan row on disk by section. Its verdict on a finding is final; its design replaces the draft and still waits for the owner's approval | touch `crates/`; write the fix; review a whole plan or pull request; start over without reading what was already found |
 
 **Routing reads the step, not its label**, and routes *up* on any one signal: more than one module
 or an invariant spanning modules; a spec the developer would have to interpret; a wrong answer that
 costs more than a re-run; reasoning the brief cannot spell out. The architect is never a worker.
+The version in the table is what the alias resolves to today; a brief names the alias. **Fable is
+the last escalation only** — for a design or a finding Opus could not settle — one Fable call per
+problem, never per plan or per pull request.
 
 ### Delegation
 
@@ -305,11 +309,13 @@ costs more than a re-run; reasoning the brief cannot spell out. The architect is
   manager writes it into `docs/reference/` in the same commit (§4).
 - **A reviewer is a different lens, not a second copy**: a fresh context given the plan, not the
   manager's reasoning. One senior review per step that touches §2, one per pull request otherwise.
-- **Review escalates too.** A finding the Opus reviewer cannot close — open after one fix round,
-  disputed, or needing spec + design + code held together — goes to the Fable reviewer, fresh
-  context, briefed with the finding, both sides' evidence and the plan row. One Fable review per
-  finding, never per PR; *confirmed* → senior developer, *refuted* → evidence in the PR, *design*
-  → architect.
+- **Review escalates too.** A finding the senior developer cannot close — open after one fix
+  round, disputed, or needing spec + design + code held together — goes to the senior reviewer
+  (Opus), fresh context, briefed with the finding, both sides' evidence and the plan row;
+  *confirmed* → senior developer, *refuted* → evidence in the PR, *design* → architect. If it cannot
+  reach a verdict, or the author disputes it with evidence, the finding goes to Fable with the same
+  brief plus the reviewer's reasoning; Fable's verdict is final. One Fable review per finding,
+  never per PR.
 - **Escalate, do not re-brief.** A developer that reports ambiguity or exceeds its brief goes one
   tier up. The same model is never briefed a third time on one step.
 - **The owner sees only what the manager writes**, in Vietnamese, with evidence — never "the agent
