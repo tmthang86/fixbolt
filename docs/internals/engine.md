@@ -21,6 +21,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 | `journal.rs` | `MemJournal`, `FileJournal`, `Reader`, `Store` — the resend store |
 | `recovery.rs` | `Recovery`, `Resumed`, `NoRecovery`, `FromFn` — asked once the counterparty is known |
 | `msglog.rs` | `MessageLog`, `FileLog` — every message seen or sent, both directions, one line each |
+| `redact.rs` | `MASKED`, `mask`, `carries_secret` — what never reaches disk in clear, and the SOH-splitting scan that finds it, called from `msglog.rs` and `journal.rs`. `[2026-09-23]` |
 | `observe.rs` | `Handles`, `Observer`, `Event`, `Admin` — the operator's on-request view |
 | `origin.rs` | `Sender`, the fixed origination queue — a message an application starts from another thread |
 | `settings.rs` | `Settings`, `Problem` — the QuickFIX-shaped configuration file |
@@ -35,7 +36,8 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 1. `lib.rs`, `transport.rs`, `frame.rs` — the shape of one turn
 2. `presession.rs`, `conn.rs` — how a socket becomes a session
 3. `backpressure.rs`, `dispatch.rs`/`ring.rs` — what happens to an outbound message
-4. `journal.rs`, `recovery.rs`, `msglog.rs` — persistence and what a reconnect sees
+4. `journal.rs`, `recovery.rs`, `msglog.rs`, `redact.rs` — persistence, what a reconnect sees,
+   and what neither file may hold
 5. `observe.rs`, `origin.rs`, `settings.rs`, `reconnect.rs`, `clock.rs` — operator-facing and
    configuration seams
 6. `poll.rs` → `block.rs` → `wait.rs` → `waker.rs` — `standard` mode's idle turn, in the order
@@ -59,6 +61,9 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 - `tests/backpressure.rs`, `tests/dispatch.rs`, `tests/frame.rs` — one module each
 - `tests/journal.rs`, `tests/journal_reader.rs`, `tests/on_disk.rs`, `tests/recovery.rs`,
   `tests/engine_recovery.rs`, `tests/msglog.rs` — persistence and recovery
+- `tests/redact.rs`, `tests/secrets_stay_off_disk.rs` — `redact.rs`, and the two write paths that
+  call it (`msglog.rs`, `journal.rs` under both `Durability`); `benches/alloc.rs` cases
+  `redact-mask`/`redact-scan` hold non-negotiable 1 for it. `[2026-09-23]`, ADR-0110
 - `tests/observe.rs`, `tests/events.rs`, `tests/admin.rs`, `tests/originate.rs`,
   `tests/settings.rs`, `tests/settings_roles.rs`, `tests/reconnect.rs`,
   `tests/reconnect_wire.rs`, `tests/shutdown.rs` — operator and config seams
