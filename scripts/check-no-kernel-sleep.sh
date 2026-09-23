@@ -60,6 +60,24 @@
 # `aa-exec -p unconfined -- env W2W_EXTRA=... scripts/check-no-kernel-sleep.sh`
 # must exit 2 with that sentence. A namespace has no `enp9s0`: tracing on a real
 # NIC is `sudo -n strace -f -u "$USER"` at the desk (docs/hft-playbook.md §6).
+#
+# `[2026-09-23]` ADR-0152, row W of docs/plans/2026-09-23-phase-3-found-defects.md
+# (Sửa 2): **only the serving window is judged.** Non-negotiable 4 governs the
+# engine thread from the start of its serving loop to that loop's return;
+# setup before it and teardown after it may block, and teardown must, to let
+# the `--journal file-async` and `--log file` writers drain. tools/w2w marks
+# the window with two lookups of paths that do not exist,
+# `/fixbolt-w2w-serve-open` and `/fixbolt-w2w-serve-close` (its module note
+# "The serving window"); `serving_window` finds them on the engine tid **by the
+# path string**, never by the syscall's name (`statx` or `newfstatat`, by
+# libc), and every count below — sleepers and socket calls alike — is taken
+# strictly between them. A marker missing or seen twice is a FAIL: nothing can
+# be judged. A sleeper outside the window is PRINTED, "outside the serving
+# window, not judged:", and never fails the run. **What this no longer sees:**
+# a sleeper added to setup or teardown fails nothing — it is only printed; and
+# the window is two lines in a tool, so a w2w change that moved either marker
+# moves what is judged. It is not cut at the last socket call: a window defined
+# by what it judges would miss a sleep after the last message.
 set -uo pipefail
 
 # `W2W_EXTRA` with `--wire-timestamps` runs this whole script again inside a user
@@ -126,7 +144,33 @@ wire_arm_ran() {
   done
 }
 
-# Syscalls, by name, that the engine thread made during one run.
+# The two marker paths tools/w2w looks up around its serving loop (`SERVE_OPEN`
+# and `SERVE_CLOSE` in tools/w2w/src/main.rs). Matched with the closing quote
+# strace prints after a path, so a longer path that merely starts the same way
+# is not a marker.
+SERVE_OPEN='/fixbolt-w2w-serve-open"'
+SERVE_CLOSE='/fixbolt-w2w-serve-close"'
+
+# Prints "<open line> <close line>" — the trace's line numbers of the engine
+# tid's two markers — or fails, naming how many of each it saw. Exactly one
+# of each, open first, or nothing can be judged.
+serving_window() {
+  local tr="$1" tid="$2" window n_open n_close open close
+  window="$(awk -v t="${tid}" -v o="${SERVE_OPEN}" -v c="${SERVE_CLOSE}" '
+    $1 == t && index($0, o) { no++; lo = NR }
+    $1 == t && index($0, c) { nc++; lc = NR }
+    END { print no + 0, nc + 0, lo + 0, lc + 0 }' "${tr}")"
+  read -r n_open n_close open close <<<"${window}"
+  if [[ "${n_open}" -ne 1 || "${n_close}" -ne 1 || "${open}" -ge "${close}" ]]; then
+    echo "FAIL: the serving window is not marked exactly once — nothing can be judged" >&2
+    echo "      (engine tid ${tid}: ${n_open} serve-open, ${n_close} serve-close marker(s); tools/w2w must make one of each, open first)" >&2
+    return 1
+  fi
+  echo "${open} ${close}"
+}
+
+# Syscalls, by name, that the engine thread made inside its serving window
+# during one run. Sleepers outside the window are printed, not returned.
 engine_syscalls() {
   local out="${TMP}/out.$1" tr="${TMP}/tr.$1" tid
   # shellcheck disable=SC2086 # deliberate: $2 carries zero or more w2w flags
@@ -149,7 +193,17 @@ engine_syscalls() {
   [[ -n "${tid}" ]] || { echo "no engine-tid in output" >&2; return 1; }
   wire_arm_ran "${out}" || return 1
   echo "${tid}" > "${TMP}/tid.$1"
-  awk -v t="${tid}" '$1==t {print $2}' "${tr}" | grep -oE '^[a-z_0-9]+' | sort | uniq -c | sort -rn
+  local open close outside
+  read -r open close <<<"$(serving_window "${tr}" "${tid}")"
+  [[ -n "${close:-}" ]] || return 1
+  # ADR-0152 decision 3: printed, never hidden, never judged.
+  outside="$(awk -v t="${tid}" -v a="${open}" -v b="${close}" '$1==t && (NR<a || NR>b) {print $2}' "${tr}" \
+    | grep -oE '^[a-z_0-9]+' | grep -xE "${SLEEPERS}" | sort | uniq -c | sort -rn | tr -s ' ' | paste -sd',' - || true)"
+  if [[ -n "${outside}" ]]; then
+    echo "outside the serving window, not judged:${outside} (${2:-})" >&2
+  fi
+  awk -v t="${tid}" -v a="${open}" -v b="${close}" '$1==t && NR>a && NR<b {print $2}' "${tr}" \
+    | grep -oE '^[a-z_0-9]+' | sort | uniq -c | sort -rn
 }
 
 # What `tls:` says in a run's captured output — read back the same way
