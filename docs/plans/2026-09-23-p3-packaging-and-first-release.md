@@ -264,6 +264,41 @@ Theo bảng `CLAUDE.md` §4:
 4. **Điểm dừng 7b**: sau khi 6a–7a (và 8a) vào `main` với CI xanh, manager dừng, báo anh, và
    **không** tự publish.
 
+## Sửa 1 — 2026-09-23
+
+Manager duyệt theo uỷ quyền thường trực, trong lúc làm 6a.
+
+1. **Nâng `rust-version` lên 1.88 bật thêm ba lint của clippy.** Clippy coi `rust-version` là
+   phiên bản Rust thấp nhất phải hỗ trợ, và giấu những lint mà cách sửa cần compiler mới hơn.
+   Đo trên desk, clippy 0.1.98, chỉ đổi đúng một dòng: `rust-version = "1.85"` → 0 cảnh báo;
+   `"1.88"` → **15 cảnh báo ở 9 file** (`collapsible_if`, `manual_is_multiple_of`,
+   `chunks_exact_to_as_chunks`), nằm cả trong `crates/session/src`, `crates/engine/src`,
+   `crates/conformance/src` — những file bảng *Chia việc* cấm 6a đụng. Nên thêm **bước 6a'**
+   (senior developer): chạy `cargo clippy --fix` áp đúng 15 gợi ý của clippy (let chain,
+   `is_multiple_of`, `as_chunks`), không đổi hành vi; rồi chạy lại các gate canh những crate
+   đó: clippy `-D warnings` ba kiểu (mặc định, `--all-features`, `--no-default-features`),
+   59 / 59 qua `score` và `wire` (cả hai mode), bộ FIXT (`score_fixt`, `wire_fixt` với
+   `--features fix50sp2`), bench `alloc` của session và engine như `scripts/bench.sh` chạy (tất
+   cả 0), `cargo test --all`, `--no-default-features`, `check-indexing-debt.sh` (không tăng).
+2. **README của từng crate chuyển từ 7a sang 6a'.** Gate của 6b (`check-package-contents.sh`)
+   đòi mỗi crate có `README.md`, mà 6b chạy trước 7a. Nên 6a' viết một README ngắn, đúng sự
+   thật cho năm crate còn thiếu (crate là gì, lệnh cài một dòng, link về README gốc và
+   `GETTING-STARTED`, dòng giấy phép — dict nhắc `NOTICE`), thêm mục cài đặt và giấy phép vào
+   README của `fixbolt`, và đặt `readme = "README.md"` cho cả sáu. 7a chỉ còn trau chuốt nội
+   dung. `scripts/check-links.py` mở rộng miễn trừ "phải dùng đường dẫn tương đối" — vốn chỉ
+   dành cho `crates/library/README.md` — sang cả sáu README được publish, cùng lý do (link
+   tương đối vào `docs/` gãy trên crates.io); kiểm "file phải tồn tại" vẫn giữ, đã đảo ngược.
+3. **Ba chỗ lệch so với *Cách làm*, đã được chấp nhận:**
+   - **Không có `homepage`.** Cargo nightly 1.100 cảnh báo ở từng crate: `package.homepage is
+     redundant with package.repository`.
+   - **`readme`**: lúc đầu bỏ khoá này vì README chưa có (cargo từ chối `readme` trỏ vào file
+     không tồn tại); nay đã có README nên khoá được đặt lại theo mục 2.
+   - **Sửa một comment** trong `[dev-dependencies]` của `crates/engine/Cargo.toml`, vì nó vẫn
+     ghi phiên bản khai báo là 1.85. Chỉ sửa comment, không đổi dependency nào.
+
 ## Nhật ký giao hàng
 
-*(chưa có)*
+| Bước | Commit | Bằng chứng |
+|---|---|---|
+| 6a | *(manager commit)* | `check-release-versions.sh` đỏ trước khi sửa manifest: 37 dòng FAIL, trong đó có câu viết trước `FAIL fixbolt-dict: dependency fixbolt-codec has no version requirement`; sau đó xanh `OK — 6 crates at 0.1.0 …`. Hai lần đảo ngược: `"0.1.0"` → `… is not "=0.1.0"`; sửa một byte `crates/codec/LICENSE-MIT` → `LICENSE-MIT copies differ`. Trên bản chép không có `vendor/`: `cargo publish --workspace --dry-run --allow-dirty` exit 0, sáu `Packaging` và sáu `Verifying`. `cargo +1.88.0 check -p fixbolt --all-features` và `-p fixbolt-engine --all-features` đều `Finished`. Mô phỏng docs.rs (`--cfg docsrs -D warnings`, nightly) cho sáu crate đều exit 0 |
+| 6a' | *(manager commit)* | Tìm ra nguyên nhân bằng cách chỉ đổi một biến: 1.85 → 0 cảnh báo, 1.88 → 15. Sau `clippy --fix`: clippy ba kiểu exit 0; `score` 4 passed, `wire` 2 passed (cả hai mode), `score_fixt` 2 passed, `wire_fixt` 1 passed; `alloc` của session và engine toàn 0; `check-indexing-debt` 176, trần 176. Đo lại dry run có README, xem báo cáo của bước |

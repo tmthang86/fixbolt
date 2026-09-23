@@ -1,12 +1,18 @@
 [package]
 name = "fixbolt-codec"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
 description = "FIX 4.4 parse and serialise in place, no allocation on the hot path"
+readme = "README.md"
+keywords = ["fix", "fix-protocol", "parser", "zero-copy", "trading"]
+categories = ["finance", "parser-implementations", "encoding", "no-std"]
+# ADR-0160 decision 4: an allowlist. Tests and benches are not shipped — their
+# path-only dev-dependencies are stripped from the `.crate` and half of them
+# read `vendor/`, so they cannot build from it.
+include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 # benches/harness.rs is a module the bench targets include by #[path], not a
 # bench. Cargo's autodiscovery made it a target of its own: `cargo bench --bench
 # harness` reported "0 measured" and exited 0 — a green result from a target
@@ -54,3 +60,11 @@ harness = false
 
 [lints]
 workspace = true
+
+# ADR-0160 decision 8: docs.rs builds a named feature list, never
+# `all-features`. docs.rs passes `--cfg docsrs` itself, which turns on
+# `feature(doc_cfg)` at the crate root so each gated item shows its feature.
+[package.metadata.docs.rs]
+# Defaults only. `fix50sp2` here is dev-only (it reaches `fixbolt-dict`, a
+# dev-dependency) and cargo publishes it as an empty feature.
+features = []

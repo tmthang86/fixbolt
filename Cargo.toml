@@ -29,10 +29,23 @@ exclude = ["fuzz", "spikes/ktls"]
 # See CLAUDE.md §1 — Rule Zero.
 
 [workspace.package]
+# ADR-0160 decision 1: the six published crates release in lockstep at this one
+# version and inherit it; every internal normal dependency pins it exactly
+# (`version = "=<this>"`). `scripts/check-release-versions.sh` holds both. The
+# unpublished members (`publish = false`) keep their own `0.0.0`.
+version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tmthang86/fixbolt"
-rust-version = "1.85"
+# No `homepage`: set equal to `repository` it is what cargo's
+# `redundant_homepage` lint names — `[measured 2026-09-23]` nightly cargo 1.100
+# warns "`package.homepage` is redundant with `package.repository`" once per crate.
+# ADR-0160 decision 3. `[measured 2026-09-23]` the packaged sources fail on
+# 1.85.0 (`E0658` in fixbolt-codec, and fixbolt-dict's build script) and build
+# on 1.88.0 with every feature on. The `package` CI job (plan
+# 2026-09-23-p3-packaging-and-first-release, row 6b) builds them on exactly this
+# toolchain; until that job exists this line is one day's measurement.
+rust-version = "1.88"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

@@ -98,7 +98,11 @@ Three principles follow, each learned in order:
 
 ## 3. Crates
 
-Added one at a time, each behind an approved plan. All of them exist.
+Added one at a time, each behind an approved plan. All of them exist. Six are published
+to crates.io, in lockstep at one version — `codec`, `sbe`, `dict`, `session`, `engine` and
+`library` (package `fixbolt`); `sbe-gen`, `conformance` and every `tools/*` crate are
+`publish = false`
+([ADR-0160](decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)).
 
 | Crate | Layer | Owns | Depends on |
 |---|---|---|---|

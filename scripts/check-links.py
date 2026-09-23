@@ -191,6 +191,15 @@ OWN_REPO = ("github.com", "tmthang86", "fixbolt")
 # below — rule (c) must not wave it through as "another repository".
 FORMER_NAMES = ("nanofixengine",)
 
+# The README of each crate published to crates.io (ADR-0160). Each is shipped in
+# its `.crate` and rendered on crates.io and docs.rs, where a relative link into
+# the repository's `docs/` breaks — so these, like `crates/library/README.md`
+# before them, may (and must) name repository files by absolute URL. The
+# exemption waives rule (a)'s "must be relative" only, never "must exist".
+PUBLISHED_READMES = frozenset(
+    f"crates/{c}/README.md" for c in ("codec", "dict", "session", "engine", "sbe", "library")
+)
+
 # The path segment that marks a github.com URL as a file link rather than a
 # link to the repo, an issue, a PR, or anything else GitHub serves at a path.
 GITHUB_FILE_VERBS = ("blob", "tree", "raw", "commit", "blame")
@@ -484,7 +493,7 @@ def main():
                     # rule (a)/(b), README's exemption included — that
                     # exemption waives "must be relative", never "must
                     # exist", which was already tested above.
-                    if rel == "crates/library/README.md":
+                    if rel in PUBLISHED_READMES:
                         checked += 1
                         continue
                     absolute.append((rel, line, target, path))
@@ -499,7 +508,7 @@ def main():
                     # crates/library/README.md is included into rustdoc via include_str!
                     # and published to crates.io and docs.rs, where relative paths into docs/
                     # break. It must use absolute GitHub URLs.
-                    if rel == "crates/library/README.md":
+                    if rel in PUBLISHED_READMES:
                         checked += 1
                         continue
                     line = text[: match.start()].count("\n") + 1

@@ -192,12 +192,12 @@ fn relabel_full(wire: &[u8], sender: &[u8], target_sub: Option<&[u8]>) -> Vec<u8
             out.extend_from_slice(field);
         }
         out.push(1);
-        if field.starts_with(b"56=") {
-            if let Some(sub) = target_sub {
-                out.extend_from_slice(b"57=");
-                out.extend_from_slice(sub);
-                out.push(1);
-            }
+        if field.starts_with(b"56=")
+            && let Some(sub) = target_sub
+        {
+            out.extend_from_slice(b"57=");
+            out.extend_from_slice(sub);
+            out.push(1);
         }
     }
     let mut msg = head;

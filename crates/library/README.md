@@ -102,3 +102,14 @@ is the decision, the measurement and the follow-up it names.
 ([ADR-0002](https://github.com/tmthang86/fixbolt/blob/main/docs/decisions/ADR-0002-engine-library-split.md)). A
 handler that blocks stops heartbeats, sequence numbers and every other
 session on that thread. [docs/GUIDE.md](https://github.com/tmthang86/fixbolt/blob/main/docs/GUIDE.md) §2 is the long version.
+
+## Install
+
+```sh
+cargo add fixbolt
+```
+
+## Licence
+
+Dual-licensed under [MIT](https://github.com/tmthang86/fixbolt/blob/main/LICENSE-MIT) or
+[Apache-2.0](https://github.com/tmthang86/fixbolt/blob/main/LICENSE-APACHE), at your option.

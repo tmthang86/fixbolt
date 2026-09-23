@@ -13,6 +13,7 @@
 //! runnable **through a real socket** without a background thread, a sleep, or
 //! a timing window — `crates/engine/tests/wire.rs` drives `turn` by hand and is
 //! as deterministic as the in-process gate.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // ADR-0015 decision 9, and non-negotiable 6 again: the feature gates the `mod`
 // declaration, not only the manifest. `cfg(target_os = "linux")` on top of it

@@ -292,11 +292,11 @@ impl FileLog {
     /// could not be called from `Drop`, and then a process that ended without
     /// calling it would write nothing and count nothing.
     pub fn close(&mut self) {
-        if self.writer.is_some() {
-            if let Some(p) = self.to_writer.as_mut() {
-                while !p.push(&[&[STOP]]) {
-                    std::hint::spin_loop();
-                }
+        if self.writer.is_some()
+            && let Some(p) = self.to_writer.as_mut()
+        {
+            while !p.push(&[&[STOP]]) {
+                std::hint::spin_loop();
             }
         }
         if let Some(h) = self.writer.take() {
@@ -454,10 +454,10 @@ fn write_loop(mut file: File, mut from_engine: Consumer, lost: &AtomicU64) {
                 // frames and deliberately no longer checksums. An `Open` record
                 // is a peer address, not a message. ADR-0110 decision 3;
                 // `secrets_stay_off_disk.rs` is the gate.
-                if dir != Direction::Open {
-                    if let Some(message) = buf.get_mut(REC_HEADER..n) {
-                        crate::redact::mask(message);
-                    }
+                if dir != Direction::Open
+                    && let Some(message) = buf.get_mut(REC_HEADER..n)
+                {
+                    crate::redact::mask(message);
                 }
                 let payload = &buf[REC_HEADER..n];
 

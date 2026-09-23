@@ -29,6 +29,7 @@
 //! in the schema.
 #![no_std]
 #![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod encode;
 // CLAUDE.md §2 rule 6: the feature gates the `mod` itself, so a build without
