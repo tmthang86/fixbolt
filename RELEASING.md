@@ -16,12 +16,13 @@ Do not start unless all of these hold, on the commit about to be released:
 
 - `main` is clean (`git status --short` prints nothing) and this is the commit CI is green for
   — name the CI run id before continuing.
-- The `package` job is green on that commit: `cargo publish --workspace --dry-run`, six
-  `Packaging` / six `Verifying`, `scripts/check-package-contents.sh`,
-  `scripts/check-packaged-build.sh` on both the pinned toolchain and `+1.88.0`.
-  `scripts/stranger-check.sh --from packaged` is green — it built the exact bytes this release
-  uploads and drove a Logon/Logout through `docs/GETTING-STARTED.md`'s own pasted code.
-  ADR-0097 exit criteria 1–6 are all met.
+- The `package` job is green on that commit: `scripts/check-release-versions.sh` (lockstep
+  versions, exact-pinned internal dependencies, identical licence files — ADR-0160 decisions 1
+  and 4), `cargo publish --workspace --dry-run`, six `Packaging` / six `Verifying`,
+  `scripts/check-package-contents.sh`, `scripts/check-packaged-build.sh` on both the pinned
+  toolchain and `+1.88.0`. `scripts/stranger-check.sh --from packaged` is green — it built the
+  exact bytes this release uploads and drove a Logon/Logout through
+  `docs/GETTING-STARTED.md`'s own pasted code. ADR-0097 exit criteria 1–6 are all met.
 - `CHANGELOG.md`'s `## [0.1.0]` section reads true, and `## [Unreleased]` above it is empty.
 
 ## 1. A clean checkout, at the right commit
@@ -40,7 +41,8 @@ working tree, so nothing local (an untracked file, a stray `target/`) can leak i
 Create a crates.io API token with:
 
 - Scope: **`publish-new` and `publish-update` only** — no `yank`, no account-wide token reused
-  from another project.
+  from another project. This token cannot yank anything (step 8 needs a separate one, made only
+  if that day comes).
 - Name pattern: **`fixbolt*`** — the token cannot touch a crate this project does not own.
 - Expiry: a few days out, not "never".
 
@@ -58,10 +60,13 @@ pasted here or anywhere in this repository.
 cargo publish --workspace --dry-run
 ```
 
-Read all six `Packaging` and six `Verifying` lines — codec, dict, sbe, session, engine, fixbolt,
-in that dependency order — and confirm no warning is new since the `package` CI job's own dry
-run on this commit. **No `--allow-dirty`**: a real publish never gets it either, and a checkout
-that is not already clean is not ready.
+Read all six `Packaging` and six `Verifying` lines and confirm no warning is new since the
+`package` CI job's own dry run on this commit. **The order these print in is not the upload
+order** (step 4) — the dry run packages and verifies in the order this workspace measured on
+2026-09-23: codec, dict, session, engine, sbe, fixbolt
+(`docs/reference/publishing-a-workspace-to-crates-io.md`) — a Packaging/Verifying line missing or
+reordered from that is itself worth reading twice before continuing. **No `--allow-dirty`**: a
+real publish never gets it either, and a checkout that is not already clean is not ready.
 
 ## 4. The real publish
 
@@ -69,9 +74,11 @@ that is not already clean is not ready.
 cargo publish --workspace
 ```
 
-Cargo publishes in dependency order on its own — codec → dict, sbe → session → engine →
-fixbolt — waiting for the index to pick up each crate before uploading the one that depends on
-it. This can take a few minutes; let it run.
+**This upload order is topological, not the dry run's order.** Cargo waits for each crate's own
+dependencies to be visible on the index before uploading it, so the real order is: `codec` first
+(nothing else must wait on it); then `dict` and `sbe`, in either order (both need only `codec`);
+then `session` (needs `codec` and `dict`); then `engine` (needs `session`); then `fixbolt` last
+(needs all five). This can take a few minutes; let it run.
 
 ## 5. After each crate: read it back
 
@@ -103,8 +110,22 @@ combination): switch to the documented fallback (ADR-0104 decision 6) —
 license-file = "NOTICE"   # instead of license = "(MIT OR Apache-2.0) AND LicenseRef-QuickFIX-1.0"
 ```
 
-commit, then publish `fixbolt-dict` and everything above it again. All of this is still `0.1.0`
-— nothing that reached this point has been uploaded as anything else yet.
+**This is still a manifest edit, and `CLAUDE.md` §8 still applies: never on `main`.** Branch,
+commit the fix, open the pull request, and wait for CI to go green on it — the same gate every
+other change to this repository meets — before publishing anything else:
+
+```sh
+git checkout -b fix/dict-licence-fallback
+git commit -am "fix(dict): fall back to license-file, crates.io refused the LicenseRef expression"
+git push -u origin fix/dict-licence-fallback
+gh pr create --fill   # wait for CI green, then merge to main
+git checkout main && git pull
+```
+
+Once that commit is on `main` and green, publish `fixbolt-dict` and continue **up from the
+first crate that is still missing** (`cargo info <name>@0.1.0` from step 6's check above says
+which that is) — never re-publish a crate that already landed. All of this is still `0.1.0`:
+nothing that reached this point has been uploaded as anything else yet.
 
 ## 7. Tag and release
 
@@ -113,14 +134,24 @@ git tag -a v0.1.0 -m 'fixbolt 0.1.0'
 git push origin v0.1.0
 ```
 
-Create a GitHub release from the `## [0.1.0]` section of `CHANGELOG.md`.
+Create a GitHub release from `CHANGELOG.md`'s `### Summary` under `## [0.1.0]` — not the full
+section below it, which is one entry per change made while building toward this release and runs
+long by design (`CLAUDE.md` §7). Link to the full section for anyone who wants it.
 
 ## 8. If something already published is wrong
 
-**Yank**, starting from the crate nothing else depends on downward — `fixbolt` first, then
-`fixbolt-engine`, `fixbolt-sbe`, `fixbolt-session`, `fixbolt-dict`, `fixbolt-codec` last (the
-reverse of the dependency order step 4 uploaded in, because a dependency cannot be pulled out
-from under something that still resolves to it):
+The step 2 token cannot do this — **make a second, `yank`-scoped token first, only now that it
+is actually needed** (same `fixbolt*` name pattern, same short expiry), and `cargo login` with
+it.
+
+**Yank all six.** Unlike deletion below, crates.io does **not** refuse to yank a crate that
+something else still depends on — yanking only stops a *new* `Cargo.lock` from selecting that
+version; it does not touch a lockfile that has already resolved to it, and it deletes nothing.
+Order therefore does not protect a partially-yanked family the way it does for deletion: because
+every internal dependency is pinned exactly to `=0.1.0` (ADR-0160 decision 1), yanking even one
+of the six already makes a fresh `cargo add fixbolt` fail to resolve. Yank `fixbolt` first anyway
+— it is the common entry point, so a stranger typing `cargo add fixbolt` sees the failure at
+once — then the five underneath, in whatever order is convenient:
 
 ```sh
 cargo yank --version 0.1.0 fixbolt

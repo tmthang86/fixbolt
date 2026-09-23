@@ -438,6 +438,7 @@ def main():
 
     absolute = []
     missing = []
+    must_be_absolute = []
     ignored_bare = 0
     foreign_named = 0
     own_checked = 0
@@ -526,6 +527,23 @@ def main():
             if not os.path.exists(resolved):
                 line = text[: match.start()].count("\n") + 1
                 dead.append((rel, line, target))
+                continue
+            # Senior review of PR #104: the exemption above (`absolute.append`
+            # skipped for `rel in PUBLISHED_READMES`) only ever WAIVED the
+            # "must be relative" message for a link that was already
+            # absolute — it never asked whether a *relative* link in one of
+            # these six files can survive being published. `crates.io` and
+            # `docs.rs` render a README as the crate's own front page, with no
+            # access to anything above the crate's own directory (only
+            # `include`'s allowlist ships in the `.crate` — ADR-0160 decision
+            # 4) — so a relative link that climbs out of the crate directory
+            # (any leading `..` segment) is dead the moment it is published,
+            # even though it resolves perfectly well inside this checkout.
+            # `crates/library/README.md:87` citing `../../docs/decisions/...`
+            # was exactly this: real inside the repo, 404 on docs.rs.
+            if rel in PUBLISHED_READMES and target.split("#")[0].startswith(".."):
+                line = text[: match.start()].count("\n") + 1
+                must_be_absolute.append((rel, line, target))
 
     floor_broken = own_checked < OWN_REPO_FLOOR
 
@@ -562,6 +580,20 @@ def main():
         for rel, line, target in dead:
             print(f"  {rel}:{line}  →  {target}", file=sys.stderr)
 
+    if must_be_absolute:
+        print(
+            f"\nFAIL: {len(must_be_absolute)} relative link(s) in a published README "
+            "climb out of the crate directory — dead on crates.io/docs.rs",
+            file=sys.stderr,
+        )
+        for rel, line, target in must_be_absolute:
+            print(f"  {rel}:{line}  →  {target}", file=sys.stderr)
+            print(
+                "      published READMEs render outside this repository tree; "
+                "use an absolute GitHub URL instead",
+                file=sys.stderr,
+            )
+
     if floor_broken:
         print(
             f"\nFAIL: the own-repository URL rule checked {own_checked} URLs, below its floor "
@@ -570,7 +602,7 @@ def main():
             file=sys.stderr,
         )
 
-    if dead or absolute or missing or floor_broken:
+    if dead or absolute or missing or floor_broken or must_be_absolute:
         return 1
 
     print("no dead internal links")

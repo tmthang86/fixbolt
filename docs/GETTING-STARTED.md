@@ -10,15 +10,18 @@ code the way prose next to an example can.
 cargo add fixbolt@0.1.0
 ```
 
-> **Not on crates.io yet.** Every crate here is still `version = "0.0.0"` and `publish = false`
-> until the owner runs `cargo publish` (`RELEASING.md`). Until then, depend on the release tag by
-> git instead of the line above:
+> **Not on crates.io yet.** The six published crates are already `0.1.0` in this repository
+> ([ADR-0160](decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)),
+> but nothing has been uploaded until the owner runs `cargo publish` (`RELEASING.md`) — and the
+> `v0.1.0` git tag does not exist until that same step. Until both are true, depend on a commit or
+> branch of this repository instead of the line above:
 >
 > ```toml
-> fixbolt = { git = "https://github.com/tmthang86/fixbolt", tag = "v0.1.0" }
+> fixbolt = { git = "https://github.com/tmthang86/fixbolt", rev = "<a commit sha from this repository>" }
 > ```
 >
-> This whole note goes away the day the crate is actually on crates.io.
+> This whole note, and the line above, go away the day the crate is actually on crates.io — at
+> that point `cargo add fixbolt@0.1.0` is the whole story.
 
 `fixbolt-dict` ships QuickFIX's FIX 4.4 dictionary inside the crate itself (`spec/FIX44.xml`,
 under [`NOTICE`](../NOTICE)), so there is nothing else to fetch and no `vendor/` checkout: `cargo

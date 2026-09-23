@@ -646,13 +646,16 @@ tables compiled from a schema — you supply the socket, the framing, and the lo
 
 **Bring your schema through your own `build.rs`.** `fixbolt-sbe-gen` is not re-exported by
 `fixbolt`, and it is **not published on crates.io** (ADR-0160 decision 2 — `Q8` keeps it
-`publish = false` alongside `fixbolt-conformance`). Add it as a build-dependency pinned to the
-release tag instead of `cargo add`:
+`publish = false` alongside `fixbolt-conformance`, permanently — publishing it later is additive,
+not a plan). Add it as a build-dependency pinned to a release tag instead of `cargo add`:
 
 ```toml
 [build-dependencies]
 fixbolt-sbe-gen = { git = "https://github.com/tmthang86/fixbolt", tag = "v0.1.0" }
 ```
+
+(`v0.1.0` exists once `RELEASING.md` has run; before that, pin a commit instead —
+`rev = "<sha>"` — the same as `docs/GETTING-STARTED.md` does for `fixbolt` itself.)
 
 then call it directly from your own `build.rs`:
 

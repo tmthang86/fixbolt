@@ -84,7 +84,7 @@ fail 0 unknown 1]` one twelve-field reply through `App::on_message` costs
 template that was built **once** — `DESIGN.md` D9's shape — costs **238 ns** on
 the same box. So this layer is about **3.4× the fast path**, roughly 570 ns
 more per reply, and that is a fact about the convenience rather than about
-the engine ([ADR-0051](../../docs/decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md);
+the engine ([ADR-0051](https://github.com/tmthang86/fixbolt/blob/main/docs/decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md);
 this paragraph said *50×* against a *40 ns* that had no committed benchmark).
 
 For a great many FIX applications a microsecond is nothing. For an `hft`
@@ -113,3 +113,10 @@ cargo add fixbolt
 
 Dual-licensed under [MIT](https://github.com/tmthang86/fixbolt/blob/main/LICENSE-MIT) or
 [Apache-2.0](https://github.com/tmthang86/fixbolt/blob/main/LICENSE-APACHE), at your option.
+
+**A binary built with this crate carries QuickFIX-derived tables**, through
+[`fixbolt-dict`](https://crates.io/crates/fixbolt-dict), and owes that licence's conditions 2
+and 3 — the attribution clause reaches every binary built with `fixbolt`, not only `fixbolt-dict`
+itself ([ADR-0104](https://github.com/tmthang86/fixbolt/blob/main/docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
+Consequences). `fixbolt::NOTICE` is the text to print wherever your own binary already lists its
+third-party notices — that satisfies condition 3's "in the software itself" clause.

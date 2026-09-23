@@ -40,6 +40,36 @@ The first release: six crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session
 written while every crate was still `0.0.0` and unpublished, and describes what this first
 version contains.
 
+### Summary
+
+The full detail below runs long — one entry per change made while building toward this first
+release, never trimmed as `CLAUDE.md` §7's evidence discipline asks. `RELEASING.md` step 7
+pastes **this summary**, not the section below it, into the GitHub release.
+
+- **`fixbolt-codec`** — FIX 4.4 tag=value parse and serialise in place, `no_std`, zero
+  dependencies, zero allocation on the hot path (proven by a counting-allocator bench). Adds
+  `Decimal`/`as_decimal` for FIX floats and the `Encoding` trait tag=value implements.
+- **`fixbolt-dict`** — FIX 4.4 tables generated at build time from QuickFIX's own XML, shipped
+  inside the crate under `NOTICE` (no `vendor/`, no network); a second table for FIXT 1.1 / FIX
+  5.0 SP2 behind the `fix50sp2` feature.
+- **`fixbolt-session`** — the pure session state machine: logon, heartbeats, sequence numbers,
+  resend/gap-fill, rejects, logout; 59/59 against the QuickFIX FIX 4.4 acceptance corpus, plus
+  the FIXT 1.1 / FIX 5.0 SP2 corpus behind `fix50sp2`. Sub-millisecond timestamp precision,
+  `NextExpectedMsgSeqNum`/`LastMsgSeqNumProcessed`, an initiator role beside the acceptor.
+- **`fixbolt-engine`** — the TCP acceptor/initiator and its engine thread, `standard` (blocks
+  when idle) and `hft` (never sleeps in the kernel) modes, TLS with a kernel-TLS data path,
+  sharding, recovery across a restart, a secret-redacting message log and journal, and the
+  `settings`/`presession`/`observe` surface a deployment configures and administers through.
+- **`fixbolt-sbe`** — SBE 1.0 decode/encode in place over schema-generated tables, `no_std`,
+  `forbid(unsafe_code)`, zero dependencies with its `encoding` feature off. Deliberately not a
+  FIX session encoding (`Session<Sbe<S>, _>` is a compile error, by design).
+- **`fixbolt`** — the application-facing facade: one crate to depend on, `Handler`/`Reply` so an
+  application never writes the header or trailer itself, and re-exports of `Decimal`, `Limits`,
+  `Settings`, `Handles`/`Admin`/`Observer`, and — behind the `sbe` feature — `fixbolt::sbe`.
+
+Not published (ADR-0160 decision 2): `fixbolt-conformance` (the QuickFIX/C++ interop harness)
+and `fixbolt-sbe-gen` (the SBE schema compiler — available by git, pinned to this release's tag).
+
 ### Added
 
 - **A secret is masked in the message log and never written to the journal.**

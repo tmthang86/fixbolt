@@ -63,12 +63,13 @@ Where each piece of work stands, day by day, is in [STATUS.md](STATUS.md).
 cargo add fixbolt@0.1.0
 ```
 
-**Not on crates.io yet.** Every crate here is still `version = "0.0.0"` and `publish = false`
-until the owner runs `cargo publish` ([`RELEASING.md`](RELEASING.md)). Until then, depend on the
-release tag by git instead:
+**Not on crates.io yet.** The six published crates are already `0.1.0` in this repository, but
+nothing has been uploaded until the owner runs `cargo publish` ([`RELEASING.md`](RELEASING.md))
+— and the `v0.1.0` git tag does not exist until that same step. Until both are true, depend on a
+commit or branch of this repository instead:
 
 ```toml
-fixbolt = { git = "https://github.com/tmthang86/fixbolt", tag = "v0.1.0" }
+fixbolt = { git = "https://github.com/tmthang86/fixbolt", rev = "<a commit sha from this repository>" }
 ```
 
 `crates/dict` ships QuickFIX's FIX 4.4, FIXT 1.1 and FIX 5.0 SP2 dictionaries inside the crate

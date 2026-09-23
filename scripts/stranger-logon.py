@@ -18,6 +18,12 @@ acceptor process itself is stopped by `stranger-check.sh`, not by this
 script — a peer `Logout` ends that one session, not the process listening
 for more.
 
+Each reply is checked three ways, not only for `35=`: its own `10=` checksum
+is recomputed and compared (a wrong checksum this script's own substring
+match on `35=` would never notice), and `56=` must read back `TW44` — this
+script's own identity, echoed from the request's `49=` — proving the reply
+was addressed to the stranger and not merely present on the wire.
+
 Usage: stranger-logon.py <host> <port>
 
 Exit 0 and "LOGON OK" then "LOGOUT OK" on stdout when both round trips
@@ -66,22 +72,69 @@ def logout(seq: int, target: str = TARGET) -> bytes:
     )
 
 
-def read_one(sock: socket.socket) -> str:
-    """One read, SOH rendered as `|` for a readable `in` check. Empty string
-    means the peer closed the socket without answering."""
+def read_one(sock: socket.socket) -> bytes:
+    """One read, raw bytes. Empty means the peer closed the socket without
+    answering."""
     sock.settimeout(TIMEOUT_S)
     try:
-        data = sock.recv(8192)
+        return sock.recv(8192)
     except socket.timeout:
-        return ""
+        return b""
     except ConnectionResetError:
-        return ""
-    return data.decode("latin-1").replace(SOH, "|")
+        return b""
+
+
+def parse_fields(raw: bytes) -> dict:
+    """`{tag: value}` over `SOH`-delimited `tag=value` pairs, first message
+    only (this script never receives more than one at a time). The first
+    occurrence of a repeated tag wins — good enough for the three tags this
+    script reads (`35`, `56`, `10`); a `MessageView` this is not."""
+    fields = {}
+    for pair in raw.split(SOH.encode("ascii")):
+        if b"=" not in pair:
+            continue
+        tag, _, value = pair.partition(b"=")
+        tag_str = tag.decode("latin-1")
+        if tag_str not in fields:
+            fields[tag_str] = value.decode("latin-1")
+    return fields
+
+
+def checksum_ok(raw: bytes) -> bool:
+    """Recomputes `10=` the same way `frame()` writes it, over the bytes
+    that actually arrived — the one check a `35=` substring match can never
+    make, because a corrupted body can still carry the right message type."""
+    tenth = raw.rfind(b"10=")
+    if tenth == -1 or tenth == 0:
+        return False
+    body = raw[:tenth]
+    trailer = raw[tenth:].rstrip(SOH.encode("ascii"))
+    try:
+        claimed = int(trailer.split(b"=", 1)[1])
+    except (IndexError, ValueError):
+        return False
+    return sum(body) % 256 == claimed
 
 
 def fail(message: str) -> "None":
     print(f"FAIL: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def expect(raw: bytes, msg_type: str, what: str) -> None:
+    """All three checks together: an answer arrived, its `10=` is honest, its
+    `35=` is what was asked for, and its `56=` names this script back — the
+    reply was addressed to `TW44`, not merely present on the wire."""
+    readable = raw.decode("latin-1").replace(SOH, "|")
+    if not raw:
+        fail(f"no {what} answer within {TIMEOUT_S:g} s (got {readable!r})")
+    if not checksum_ok(raw):
+        fail(f"the {what} answer's checksum does not match its own bytes (got {readable!r})")
+    fields = parse_fields(raw)
+    if fields.get("35") != msg_type:
+        fail(f"no {what} answer within {TIMEOUT_S:g} s (got {readable!r})")
+    if fields.get("56") != SENDER:
+        fail(f"the {what} answer's 56= reads {fields.get('56')!r}, not {SENDER!r} (got {readable!r})")
 
 
 def main() -> None:
@@ -94,15 +147,11 @@ def main() -> None:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
         sock.sendall(logon(1))
-        reply = read_one(sock)
-        if "|35=A|" not in reply:
-            fail(f"no Logon answer within {TIMEOUT_S:g} s (got {reply!r})")
+        expect(read_one(sock), "A", "Logon")
         print("LOGON OK")
 
         sock.sendall(logout(2))
-        reply = read_one(sock)
-        if "|35=5|" not in reply:
-            fail(f"no Logout answer within {TIMEOUT_S:g} s (got {reply!r})")
+        expect(read_one(sock), "5", "Logout")
         print("LOGOUT OK")
 
 

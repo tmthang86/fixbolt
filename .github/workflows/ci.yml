@@ -1001,6 +1001,13 @@ jobs:
       # out of scope for this plan step — checked here instead, once, rather
       # than left silently unchecked.
       - run: shellcheck -S info scripts/check-package-contents.sh scripts/check-packaged-build.sh scripts/stranger-check.sh
+      # ADR-0160 decisions 1 and 4, plan row 6a: before anything is packaged,
+      # the manifests themselves must be lockstep — every internal normal
+      # dependency pinned `=<version>`, every published crate inheriting the
+      # workspace version, the two licence files byte-identical. Written at
+      # 6a but never wired into CI (senior review of PR #104): a manifest
+      # edit that broke this ran green here until now.
+      - run: scripts/check-release-versions.sh
       # No --allow-dirty: a real `cargo publish` never gets it either
       # (RELEASING.md step 3), and CI's checkout is clean by construction.
       # This is the step that leaves target/package/<name>-<version>/

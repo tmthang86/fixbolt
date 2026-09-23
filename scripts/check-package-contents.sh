@@ -20,10 +20,14 @@
 #      from the `.crate` — carrying one anyway is dead weight a stranger pays
 #      to download, and the `.def` corpus is QuickFIX's own test data, never
 #      committed here in the first place (CLAUDE.md §2 non-negotiable 9).
-#   4. Exactly six crates are published — the same count, and the same names,
-#      `check-release-versions.sh` already asserts against the manifests. A
-#      seventh crate silently switched to `publish = true` would pass every
-#      other check in this file and still be wrong.
+#   4. Exactly six crates are published — the same count, and the same names.
+#      `check-release-versions.sh` asserts this too, against the manifests
+#      directly; this script asks the same question its own way, by reading
+#      every OTHER workspace member's `publish` key, so a seventh crate
+#      silently switched to `publish = true` fails HERE as well as there
+#      (senior review of PR #104: the header used to claim this check without
+#      the code making it — a member reading `publish = true` by mistake
+#      would have passed every assertion this script actually ran).
 #
 # WHAT IT CANNOT SEE: whether the packaged sources actually BUILD — that is
 # `scripts/check-packaged-build.sh` and the `package` CI job's dry run, which
@@ -123,6 +127,50 @@ done
 
 if [[ "${crates_checked}" -ne "${#PUBLISHED[@]}" ]]; then
   fails+=("FAIL: expected ${#PUBLISHED[@]} published crates checked, got ${crates_checked}")
+fi
+
+# --- no seventh crate: every OTHER workspace member must be publish = false -
+# Independent of check-release-versions.sh, and reading the manifests
+# directly rather than trusting `cargo package --list` above to have noticed
+# — that loop only ever iterates the six names already in PUBLISHED, so it
+# cannot see a member that was never on that list at all.
+extra_published="$(python3 - "${ROOT}" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+root = pathlib.Path(sys.argv[1])
+published = {
+    "fixbolt-codec",
+    "fixbolt-dict",
+    "fixbolt-session",
+    "fixbolt-engine",
+    "fixbolt-sbe",
+    "fixbolt",
+}
+
+with open(root / "Cargo.toml", "rb") as f:
+    ws = tomllib.load(f)
+
+for member in ws.get("workspace", {}).get("members", []):
+    manifest_path = root / member / "Cargo.toml"
+    try:
+        with open(manifest_path, "rb") as f:
+            manifest = tomllib.load(f)
+    except OSError:
+        continue
+    package = manifest.get("package", {})
+    name = package.get("name", member)
+    if name in published:
+        continue
+    if package.get("publish") is not False:
+        print(f"{name} ({member}): publish = {package.get('publish')!r}, not false")
+PY
+)"
+if [[ -n "${extra_published}" ]]; then
+  while IFS= read -r line; do
+    fails+=("FAIL: a seventh publishable crate — ${line}")
+  done <<<"${extra_published}"
 fi
 
 if [[ "${#fails[@]}" -gt 0 ]]; then

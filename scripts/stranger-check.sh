@@ -47,8 +47,12 @@
 # run (bad arguments, cargo missing).
 #
 # Usage:
-#   scripts/stranger-check.sh --from packaged
+#   scripts/stranger-check.sh --from packaged [--allow-dirty]
 #   scripts/stranger-check.sh --from registry --version 0.1.0
+#
+# `--from packaged` refuses a stale target/package/ (built from a commit
+# other than HEAD) or a dirty working tree (unless --allow-dirty, local
+# iteration only) — see the freshness check below, before anything is built.
 #
 # `--from registry` is EXPECTED RED until the owner has run `cargo publish`
 # (ADR-0097 exit criterion 5, `RELEASING.md`): `cargo add` cannot resolve a
@@ -61,6 +65,7 @@ cd "${ROOT}" || exit 2
 
 MODE=""
 REGISTRY_VERSION=""
+ALLOW_DIRTY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from)
@@ -70,6 +75,10 @@ while [[ $# -gt 0 ]]; do
     --version)
       REGISTRY_VERSION="${2:-}"
       shift 2
+      ;;
+    --allow-dirty)
+      ALLOW_DIRTY=1
+      shift
       ;;
     *)
       echo "stranger-check: FAIL — unknown argument: $1" >&2
@@ -129,6 +138,48 @@ if [[ "${MODE}" == "packaged" ]]; then
     echo "    Run 'cargo publish --workspace --dry-run' first (no --allow-dirty" >&2
     echo "    on a clean checkout)." >&2
     exit 2
+  fi
+
+  # --- target/package/ must be built from THIS commit, not a stale one ------
+  # A dry run leaves these directories behind; nothing removes them when
+  # `crates/` changes underneath, so a green run against yesterday's bytes
+  # proves nothing about today's source (senior review of PR #104: editing
+  # crates/library/src/lib.rs without re-packaging must go red, not silently
+  # patch in stale sources). `.cargo_vcs_info.json` inside each packaged
+  # crate records the commit `cargo package` ran at; a dirty tree is refused
+  # outright (unless --allow-dirty, local iteration only) because it can
+  # differ from HEAD in ways no commit sha records.
+  if [[ "${ALLOW_DIRTY}" -ne 1 ]] && [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then
+    echo "stranger-check: FAIL — the working tree is dirty. A dirty tree can" >&2
+    echo "    differ from HEAD in ways .cargo_vcs_info.json's commit sha cannot" >&2
+    echo "    record, so a match against HEAD would prove nothing. Commit or" >&2
+    echo "    stash first, or pass --allow-dirty for local iteration only." >&2
+    exit 1
+  fi
+  head_sha="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -z "${head_sha}" ]]; then
+    echo "stranger-check: FAIL — could not read 'git rev-parse HEAD' (not a git checkout?)" >&2
+    exit 2
+  fi
+  stale=()
+  for name in "${PUBLISHED[@]}"; do
+    info="${ROOT}/target/package/${name}-${WORKSPACE_VERSION}/.cargo_vcs_info.json"
+    if [[ ! -f "${info}" ]]; then
+      stale+=("${name}: no .cargo_vcs_info.json — re-run the dry run")
+      continue
+    fi
+    sha="$(python3 -c 'import json, sys
+print(json.load(open(sys.argv[1]))["git"]["sha1"])' "${info}" 2>/dev/null || true)"
+    if [[ "${sha}" != "${head_sha}" ]]; then
+      stale+=("${name}: packaged at ${sha:-<unreadable>}, HEAD is ${head_sha}")
+    fi
+  done
+  if [[ "${#stale[@]}" -gt 0 ]]; then
+    echo "stranger-check: FAIL — target/package/ is stale (built from a commit" >&2
+    echo "    other than HEAD, per .cargo_vcs_info.json):" >&2
+    printf '    %s\n' "${stale[@]}" >&2
+    echo "    Run 'cargo publish --workspace --dry-run' again on this commit." >&2
+    exit 1
   fi
 fi
 

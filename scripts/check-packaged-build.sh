@@ -41,14 +41,36 @@
 # Exit 0 when every case's `cargo build` finishes; 1 on any FAIL (the
 # scratch directory of a failing case is left behind and named, for reading
 # the error — every other scratch directory is removed as its case passes);
-# 2 when the script itself cannot run (packaged sources missing).
+# 2 when the script itself cannot run (packaged sources missing or stale).
+#
+# **A stale `target/package/` is a false green.** `cargo publish --workspace
+# --dry-run` leaves those directories behind; nothing deletes them when the
+# source changes underneath, so a case run against yesterday's packaged
+# bytes reports on code that is no longer in `crates/`. `.cargo_vcs_info.json`
+# inside each packaged crate records the commit `cargo package` ran at
+# (`{"git":{"sha1":"..."}}`); this script refuses unless every one of the six
+# matches `git rev-parse HEAD` here — and, since a dirty working tree can
+# differ from HEAD in ways no commit records, refuses a dirty tree outright
+# unless `--allow-dirty` is passed (local iteration only: a dirty tree still
+# proves nothing about what HEAD's packaged bytes are).
 #
 # Runs standalone, but only meaningfully AFTER a dry run has populated
-# target/package/: scripts/check-packaged-build.sh
+# target/package/: scripts/check-packaged-build.sh [--allow-dirty]
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}" || exit 2
+
+ALLOW_DIRTY=0
+for arg in "$@"; do
+  case "${arg}" in
+    --allow-dirty) ALLOW_DIRTY=1 ;;
+    *)
+      echo "check-packaged-build: FAIL — unknown argument: ${arg}" >&2
+      exit 2
+      ;;
+  esac
+done
 
 PUBLISHED=(fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine fixbolt-sbe fixbolt)
 
@@ -85,6 +107,40 @@ if [[ "${#missing[@]}" -gt 0 ]]; then
   echo "    on a clean checkout) — that is what leaves these directories," >&2
   echo "    byte-identical to what a .crate upload would contain." >&2
   exit 2
+fi
+
+# --- the packaged sources must be built from THIS commit, not a stale one --
+if [[ "${ALLOW_DIRTY}" -ne 1 ]] && [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then
+  echo "check-packaged-build: FAIL — the working tree is dirty. A dirty tree" >&2
+  echo "    can differ from HEAD in ways .cargo_vcs_info.json's commit sha" >&2
+  echo "    cannot record, so a match against HEAD would prove nothing. Commit" >&2
+  echo "    or stash first, or pass --allow-dirty for local iteration only." >&2
+  exit 1
+fi
+HEAD_SHA="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
+if [[ -z "${HEAD_SHA}" ]]; then
+  echo "check-packaged-build: FAIL — could not read 'git rev-parse HEAD' (not a git checkout?)" >&2
+  exit 2
+fi
+stale=()
+for name in "${PUBLISHED[@]}"; do
+  info="${ROOT}/target/package/${name}-${VERSION}/.cargo_vcs_info.json"
+  if [[ ! -f "${info}" ]]; then
+    stale+=("${name}: no .cargo_vcs_info.json — re-run the dry run")
+    continue
+  fi
+  sha="$(python3 -c 'import json, sys
+print(json.load(open(sys.argv[1]))["git"]["sha1"])' "${info}" 2>/dev/null || true)"
+  if [[ "${sha}" != "${HEAD_SHA}" ]]; then
+    stale+=("${name}: packaged at ${sha:-<unreadable>}, HEAD is ${HEAD_SHA}")
+  fi
+done
+if [[ "${#stale[@]}" -gt 0 ]]; then
+  echo "check-packaged-build: FAIL — target/package/ is stale (built from a" >&2
+  echo "    commit other than HEAD, per .cargo_vcs_info.json):" >&2
+  printf '    %s\n' "${stale[@]}" >&2
+  echo "    Run 'cargo publish --workspace --dry-run' again on this commit." >&2
+  exit 1
 fi
 
 # One [patch.crates-io] block, reused by every case: it redirects ALL six
