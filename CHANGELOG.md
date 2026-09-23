@@ -311,6 +311,20 @@ below describe what a first release would contain.
 
 ### Changed
 
+- **Breaking: `as_i64` refuses a leading `+`.** `as_i64(b"+5")` was `Ok(5)` and is now
+  `Err(ConvertError::NotANumber)`; `+0`, `+` and `+-5` are refused the same way. FIX `int` is an
+  optional `-` and digits, with no `+`, and the session's own `int` check
+  (`fixbolt_dict::FieldType::Int`) already refused it — `as_i64` now agrees with it, as
+  `as_decimal` already agreed with FIX float. `-5`, `-0` and leading zeros read as before.
+  Nothing in this repository called `as_i64` with a `+`.
+  **Also breaking, for `as_i64` and `as_u32`: a syntax fault now wins over an overflow.** A value
+  whose digits overflow and that also holds a non-digit later, such as `9410947898048986560 ` (a
+  trailing space) or `99999999999x`, was `Err(Overflow)` and is now `Err(NotANumber)` — the
+  reader no longer stops at the digit that overflowed. This is the rule `as_decimal` already
+  follows (ADR-0120). An all-digit value too large for the type is still `Overflow`. Nothing in
+  this repository branches on the difference; no allocation added
+  (`benches/alloc.rs` unchanged). `crates/codec/tests/int.rs`; plan
+  `docs/plans/2026-09-23-phase-3-found-defects.md` row D4 and *Sửa 1*.
 - **`FileLog` and `FileJournal` no longer write a secret to disk in clear.** `FileLog` masks
   `redact::MASKED` fields on its writer thread before escaping, in place, length kept — `9=`,
   the LENGTH fields and `10=` are left as received, so a masked line still frames but
