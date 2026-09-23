@@ -1,5 +1,6 @@
 # ADR-0095 — A cumulative drift is read at re-record time, not by a wider band; a segment is named by a rule, not by an eye; and the desk runs `bench.sh --strict` at every measurement boot
 
+- **Amended by [ADR-0096](ADR-0096-a-figure-measured-elsewhere-meets-the-same-band-the-baseline-file-stays-out-of-the-heap-and-a-boot-may-rebuild-on-its-housekeeping-cores.md) decision 6** — 2026-09-23: decision 3's named symbol must move in the sign of `turn_b − turn_a`; the substance below is untouched, per `CLAUDE.md` §5. The evidence is item 89's D5 diff, where the rule as written named a symbol of the opposite sign.
 - **Status**: Proposed — 2026-09-22. Written for
   [closing-the-open-items-desk-free-then-s9](../plans/2026-09-22-closing-the-open-items-desk-free-then-s9.md);
   becomes *Accepted* at that plan's merge under the owner's standing mandate, and one word from

@@ -180,9 +180,17 @@ layout của bench do kích thước file baseline đặt* — lần thứ hai c
 là bước tiếp theo, và không sửa gì trong `crates/`.
 
 Sửa (chỉ khi H1 xác nhận, desk-free, bước F5): `load_baselines` và `cpu_model` đọc vào `String`
-có `with_capacity(1 << 20)` — trên glibc, cấp phát ≥ 128 KiB đi qua `mmap`, không nằm trong brk
-heap, nên heap sau đó **không phụ thuộc** kích thước file (ADR-0096 quyết định 2). Bằng chứng
-đảo: quét k lại trên binary mới (F8) phải **phẳng**. `--strict` không cần luật mới: sau sửa, nếu
+có `with_capacity(1 << 20)` — buffer có **kích thước cố định**, không đổi theo độ dài file, nên
+heap sau đó **không phụ thuộc** kích thước file (ADR-0096 quyết định 2, đã sửa 2026-09-23).
+*Sửa lại lời giải thích*: bản đầu nói buffer 1 MiB đi qua `mmap`, ngoài brk heap — **sai** với
+binary này. `cpu_model` chạy trước, buffer 1 MiB của nó được `mmap` rồi giải phóng; glibc thấy
+một khối `mmap` được giải phóng thì **nâng ngưỡng mmap** lên bằng cỡ khối đó (1 052 672 byte,
+`mallopt(3)`), nên buffer của `load_baselines` sau đó lấy từ brk (`strace` đọc `brk(+0x100000)`
+quanh `benches/baselines.tsv`). Điều đó không làm hỏng cách sửa: cái case nhạy là *kích thước*
+khối đứng trước, không phải khối nằm ở brk hay `mmap`. Tác dụng phụ: ngưỡng đã nâng giữ nguyên
+đến hết tiến trình bench (cấp phát 128 KiB–1 MiB sau đó cũng từ brk); không đường đo nào cấp
+phát nên chỉ ảnh hưởng chỗ đặt các khối set-up. Bằng chứng đảo: quét k lại trên binary mới (F8)
+phải **phẳng** — đó mới là cái chứng minh, không phải lý thuyết về allocator. `--strict` không cần luật mới: sau sửa, nếu
 `one slot` đọc ngoài band [6.7, 8.1] trên binary mới thì re-record **có nguyên nhân** (ADR-0095
 quyết định 2, trích ADR-0096) — đây không phải "dời baseline cho xanh", vì nguyên nhân và bằng
 chứng đảo đi trước con số.
