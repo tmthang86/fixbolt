@@ -36,7 +36,7 @@ use std::path::Path;
 
 use fixbolt_session::journal::Journal;
 
-use crate::ring::{Consumer, Producer};
+use crate::ring::{Consumer, Idle, Producer};
 
 /// How many messages a [`MemJournal`] keeps by default, and the ring inside a
 /// [`FileJournal`].
@@ -157,6 +157,14 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
             // ADR-0046.
             return false;
         }
+        // **A slot records its length as a `u16`**, so a message longer than
+        // 65 535 bytes is refused whatever `LEN` is. Until 2026-09-23 it was
+        // kept with a length of zero, `put` answered `true`, and `get` then
+        // answered `None` — a refusal nobody counted. ADR-0150 decision 3;
+        // `a_message_longer_than_a_u16_is_refused_not_kept_empty`.
+        let Ok(len) = u16::try_from(bytes.len()) else {
+            return false;
+        };
         // **Addressed by the number, not by a write cursor.** One slot can
         // hold one sequence number at a time, so `get` is an index and a
         // comparison rather than a scan of all `N` — which at 4096 slots is
@@ -170,7 +178,7 @@ impl<const N: usize, const LEN: usize> Journal for MemJournal<N, LEN> {
             return false;
         };
         slot.seq = seq;
-        slot.len = u16::try_from(bytes.len()).unwrap_or(0);
+        slot.len = len;
         slot.buf[..bytes.len()].copy_from_slice(bytes);
         self.high_water = Some(self.high_water.map_or(seq, |h| h.max(seq)));
         // A kept message spends its number too, so this is the same fact
@@ -710,19 +718,39 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 // not journalled, which becomes a gap fill rather than a lie.
                 let (to_writer, from_engine) = crate::ring::pair(1 << 20);
                 this.to_writer = Some(to_writer);
+                // **`open` returns only once the writer holds its buffer.** The
+                // buffer is allocated on the writer thread (ADR-0150 decision
+                // 1, ADR-0037), and a writer that started late would allocate
+                // it whenever the scheduler got round to it — `[measured
+                // 2026-09-23]` inside `benches/alloc.rs`'s `mark-out-file-async`
+                // window, whose allocator is global, in 1 run of 6 under load.
+                // Waiting here makes every writer allocation happen before
+                // `open` returns: startup, not the engine's path.
+                let (ready, started) = std::sync::mpsc::sync_channel::<()>(1);
+                let run = move || {
+                    let buf = vec![0u8; writer_buf(LEN)];
+                    let _ = ready.send(());
+                    drop(ready);
+                    write_loop(file, from_engine, format, buf);
+                };
                 #[cfg(all(feature = "affinity", target_os = "linux"))]
                 if let Some(core) = core {
-                    let (handle, on) =
-                        crate::affinity::spawn_pinned("fixbolt-journal", core, move || {
-                            write_loop(file, from_engine, format)
-                        })?;
+                    let (handle, on) = crate::affinity::spawn_pinned("fixbolt-journal", core, run)?;
+                    // `Err` only if the writer ended before it said so, and
+                    // then there is nothing to wait for.
+                    let _ = started.recv();
                     this.writer = Some(handle);
                     this.writer_core = Some(on);
                     return Ok(this);
                 }
-                this.writer = Some(std::thread::spawn(move || {
-                    write_loop(file, from_engine, format)
-                }));
+                // Named as the pinned one is, so a test and an operator can
+                // find it in `/proc/<pid>/task/*/comm`. ADR-0150 decision 4.
+                this.writer = Some(
+                    std::thread::Builder::new()
+                        .name("fixbolt-journal".to_owned())
+                        .spawn(run)?,
+                );
+                let _ = started.recv();
             }
         }
         Ok(this)
@@ -768,10 +796,11 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
     }
 
     pub fn close(&mut self) {
-        // An empty record is the stop signal: `push(&[])` writes a zero length,
-        // which `write_loop` recognises and nothing else produces.
+        // A one-byte `STOP` record is the stop signal, which `write_loop`
+        // recognises and nothing else produces — every other record is at
+        // least `RECORD_HEADER` bytes. ADR-0150 decision 2.
         if let Some(p) = self.to_writer.as_mut() {
-            while !p.push(&[]) {
+            while !p.push(&[&[STOP]]) {
                 std::hint::spin_loop();
             }
         }
@@ -788,14 +817,60 @@ impl<const N: usize, const LEN: usize> Drop for FileJournal<N, LEN> {
     }
 }
 
+/// The record that means *stop*, and nothing else: one byte.
+///
+/// **Not a zero-length record.** `Consumer::pop` reports a record longer than
+/// the buffer it was handed as `Some(0)`, and until 2026-09-23 the writer read
+/// that as this signal — so one message longer than its fixed 4 096-byte buffer
+/// stopped it for good while `put` kept answering `true`. Every record this
+/// journal writes is at least `RECORD_HEADER` (8) bytes, so one byte cannot be
+/// mistaken for one. The message log's `STOP` is the same rule. ADR-0150
+/// decision 2; `writer_tests::a_record_the_writer_cannot_hold_does_not_stop_it`.
+const STOP: u8 = 0xFF;
+
+/// The writer's buffer for a journal whose slot holds `len` bytes: the largest
+/// record the ring can carry, header included.
+///
+/// `MemJournal::put` refuses a message longer than `len` before the ring is
+/// touched, so every message record fits. The two marks are fixed-size and
+/// counted too, so a slot shorter than a mark does not drop the mark. ADR-0150
+/// decision 1; `an_async_journal_keeps_a_message_longer_than_four_kilobytes_and_all_that_follow`.
+const fn writer_buf(len: usize) -> usize {
+    let mut most = len;
+    if ACTIVITY_LEN > most {
+        most = ACTIVITY_LEN;
+    }
+    if OUTBOUND_LEN > most {
+        most = OUTBOUND_LEN;
+    }
+    RECORD_HEADER + most
+}
+
 /// The writer thread: everything the ring hands over, appended in order.
-fn write_loop(mut file: File, mut from_engine: Consumer, format: Format) {
-    let mut buf = [0u8; 4096];
+///
+/// `buf` is `writer_buf(LEN)` bytes from `FileJournal`, allocated once on the
+/// writer thread before this is called — not the engine thread (ADR-0037), and
+/// a stack array sized by `LEN` needs an unstable feature. A test passes a
+/// smaller one to reach the `Some(0)` arm. ADR-0150 decision 1.
+fn write_loop(mut file: File, mut from_engine: Consumer, format: Format, mut buf: Vec<u8>) {
+    // Spin briefly, then sleep 1 ms per empty poll: the writer gives its core
+    // back when there is nothing to write, in every mode. ADR-0150 decision 4.
+    let mut idle = Idle::new();
     loop {
-        match from_engine.pop(&mut buf) {
+        let popped = from_engine.pop(&mut buf);
+        if popped.is_some() {
+            idle.reset();
+        }
+        match popped {
+            // **Not the stop signal.** `pop` says *"a record longer than this
+            // buffer was dropped"* this way. Unreachable from `FileJournal`,
+            // whose buffer holds its largest record; if it is reached anyway,
+            // one record is lost and the writer carries on, which is a gap
+            // fill on a resend rather than a journal that silently stops.
+            Some(0) => continue,
             // The stop signal. Everything before it has already been written,
             // because the ring is ordered.
-            Some(0) => {
+            Some(1) if buf.first() == Some(&STOP) => {
                 let _ = file.flush();
                 return;
             }
@@ -829,7 +904,7 @@ fn write_loop(mut file: File, mut from_engine: Consumer, format: Format) {
                     let _ = file.write_all(&crc32(&[record]).to_le_bytes());
                 }
             }
-            None => std::hint::spin_loop(),
+            None => idle.wait(),
         }
     }
 }
@@ -1303,5 +1378,58 @@ impl<'a> Iterator for Records<'a> {
                 bytes: self.bytes.get(at + RECORD_HEADER..end)?,
             })
         }
+    }
+}
+
+/// `write_loop` called directly, because the first half of ADR-0150 makes the
+/// case it guards unreachable through `FileJournal`.
+///
+/// Once the writer's buffer holds the largest record the slot allows, `pop`
+/// never answers `Some(0)` for a journal record, so a `write_loop` that went
+/// back to stopping on `Some(0)` would leave every test through the public API
+/// green. Here the buffer is small on purpose and the record that does not fit
+/// is put in front of one that does. ADR-0150 decision 2.
+#[cfg(test)]
+mod writer_tests {
+    use super::{Format, RECORD_HEADER, STOP, write_loop};
+    use crate::ring::pair;
+
+    /// `?` rather than `expect`: non-negotiable 7 is a workspace lint and this
+    /// module is inside the library crate.
+    #[test]
+    fn a_record_the_writer_cannot_hold_does_not_stop_it() -> std::io::Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "fixbolt-journal-writer-tests-{}.log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let file = std::fs::File::create(&path)?;
+
+        let small = RECORD_HEADER + 16;
+        let (mut to_writer, from_engine) = pair(1 << 12);
+        let too_long = [b'x'; 64];
+        let long_len = u32::try_from(too_long.len()).unwrap_or(0).to_le_bytes();
+        assert!(to_writer.push(&[&7u32.to_le_bytes(), &long_len, &too_long]));
+        let fits = *b"35=D";
+        let fits_len = u32::try_from(fits.len()).unwrap_or(0).to_le_bytes();
+        assert!(to_writer.push(&[&8u32.to_le_bytes(), &fits_len, &fits]));
+        assert!(to_writer.push(&[&[STOP]]));
+
+        // On this thread: the loop returns at `STOP`, so a writer that stops
+        // anywhere else returns early and leaves the file short, rather than
+        // hanging the test.
+        write_loop(file, from_engine, Format::V0, vec![0u8; small]);
+
+        let on_disk = std::fs::read(&path)?;
+        let _ = std::fs::remove_file(&path);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&8u32.to_le_bytes());
+        expected.extend_from_slice(&fits_len);
+        expected.extend_from_slice(&fits);
+        assert_eq!(
+            on_disk, expected,
+            "the writer stopped at the record it could not hold, and the one after it never reached the file"
+        );
+        Ok(())
     }
 }

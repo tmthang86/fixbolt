@@ -367,6 +367,58 @@ fn async_reaches_the_disk_once_the_writer_has_caught_up() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A slot raised above 4 096 bytes is kept under `Async` too, and so is
+/// everything after it.
+///
+/// `[2026-09-23]` the writer thread read the ring into a fixed 4 096-byte
+/// buffer, `pop` reports a record longer than that as `Some(0)`, and the writer
+/// read `Some(0)` as its stop signal: one long message and the writer was gone
+/// for good, while `put` kept answering `true`. ADR-0150 decisions 1 and 2.
+#[test]
+fn an_async_journal_keeps_a_message_longer_than_four_kilobytes_and_all_that_follow() {
+    let path = std::env::temp_dir().join(format!(
+        "fixbolt-journal-async-long-{}.log",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    let long = vec![b'x'; 4200];
+    let mut j: FileJournal<8, 8192> = FileJournal::open(&path, Durability::Async).expect("open");
+    assert!(j.put(1, &long), "the slot holds 8 192 bytes");
+    assert!(j.put(2, b"8=FIX.4.4\x0135=0\x01"), "a small one after it");
+    j.close();
+    drop(j);
+
+    let back: FileJournal<8, 8192> = FileJournal::open(&path, Durability::Fsync).expect("reopen");
+    let got = (
+        back.get(1).map(<[u8]>::len),
+        back.get(2).is_some(),
+        back.highest_out(),
+    );
+    drop(back);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        got,
+        (Some(4200), true, Some(2)),
+        "the writer stopped at the 4 200-byte record and nothing after it reached the file"
+    );
+}
+
+/// The length a slot records is a `u16`, so a message longer than 65 535 bytes
+/// is refused — counted as ADR-0046 requires — rather than kept with a length
+/// of zero and then answered as absent. ADR-0150 decision 3.
+#[test]
+fn a_message_longer_than_a_u16_is_refused_not_kept_empty() {
+    let long = vec![b'x'; 66_000];
+    let mut j: MemJournal<2, 70_000> = MemJournal::new();
+    let kept = j.put(1, &long);
+    assert_eq!(
+        (kept, j.get(1).is_some()),
+        (false, false),
+        "put said it kept a message that get then could not return"
+    );
+}
+
 /// A message longer than a slot is refused rather than truncated, whichever
 /// journal is fitted — a truncated replay is a message that does not checksum.
 #[test]

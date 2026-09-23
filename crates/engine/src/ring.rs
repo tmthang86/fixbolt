@@ -119,6 +119,56 @@ pub struct Consumer {
 /// comparison rather than improve one.
 pub const DEFAULT_CAPACITY: usize = 1 << 22;
 
+/// Empty polls a writer thread spins through before it starts to sleep.
+///
+/// Each is a `spin_loop` hint and no syscall, so a burst that arrives within a
+/// few microseconds of the last is caught at once. `[derived, not measured]`:
+/// ADR-0150 decision 4.
+pub(crate) const IDLE_SPINS: u32 = 1024;
+
+/// How long a writer thread sleeps per empty poll once [`IDLE_SPINS`] have
+/// passed. `[derived, not measured]` against the rings it drains: the
+/// journal's 1 MiB ring fills in 1 ms only above ~1 GB/s of records. ADR-0150
+/// decision 4.
+pub(crate) const IDLE_SLEEP: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// **How a writer thread waits on an empty ring**, the one rule both writers
+/// (`journal.rs` and `msglog.rs` `write_loop`) share.
+///
+/// Spin [`IDLE_SPINS`] times, then `std::thread::sleep(IDLE_SLEEP)` per empty
+/// poll until a record arrives; any record resets the count. **In every mode**:
+/// the writer is not the engine thread, so non-negotiable 4 does not govern it,
+/// and until 2026-09-23 the journal's writer spun and the log's `yield_now`ed
+/// on an idle ring — a core each on a `standard` engine that promises to give
+/// the core back. **The engine thread never wakes the writer** (no `unpark`,
+/// no futex on the push side), so the producer's path is unchanged; a record
+/// pushed while the writer sleeps waits at most one `IDLE_SLEEP`.
+/// `crates/engine/tests/writer_idle.rs` is the gate.
+pub(crate) struct Idle {
+    empty: u32,
+}
+
+impl Idle {
+    pub(crate) const fn new() -> Self {
+        Self { empty: 0 }
+    }
+
+    /// A record arrived: the next empty poll starts spinning again.
+    pub(crate) const fn reset(&mut self) {
+        self.empty = 0;
+    }
+
+    /// The ring was empty: spin, or sleep once the spins are spent.
+    pub(crate) fn wait(&mut self) {
+        if self.empty < IDLE_SPINS {
+            self.empty += 1;
+            std::hint::spin_loop();
+        } else {
+            std::thread::sleep(IDLE_SLEEP);
+        }
+    }
+}
+
 /// A ring, as a producer and a consumer that share one buffer.
 #[must_use]
 pub fn pair(capacity: usize) -> (Producer, Consumer) {

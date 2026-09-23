@@ -423,6 +423,18 @@ oldest }` in messages, and `JournalRefused { count }` for a reply longer than a 
   consumer*. The corpus cannot see it, because no definition asks for more than three
   messages; `crates/engine/tests/backpressure.rs` does.
 
+**Under `Async` the writer thread's buffer holds the largest record the slot allows**
+(`RECORD_HEADER + LEN`, allocated once on the writer thread), and its stop signal is a one-byte
+`STOP` record no journal record can be; a record `pop` had to drop is skipped, never read as
+*stop*. Until 2026-09-23 a fixed 4 096-byte buffer and an empty stop record let one long message
+stop the writer for good. **An idle writer sleeps**: after 1 024 consecutive empty polls
+(each a `spin_loop` hint) it sleeps 1 ms per poll until a record arrives, in every mode; the
+engine thread never wakes it, so its path is unchanged and a record pushed to a sleeping writer
+reaches the file up to 1 ms later
+([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md),
+[the trap](reference/an-async-journal-record-longer-than-its-writers-buffer-stopped-the-writer.md),
+[the idle writer](reference/a-writer-thread-no-gate-watched-spun-a-core.md)).
+
 **The file is appended, not memory-mapped**: `mmap` means a dependency or `unsafe`, and the
 engine plan authorised neither ([ADR-0008](decisions/ADR-0008-journal-is-a-trait.md)). A
 record carries its own length, `seq(4) || len(4) || bytes`, and from format version 1 a CRC32,
@@ -793,6 +805,10 @@ without branching on record kind inside the loop that must not branch. The full 
 **The mechanism is ADR-0007's, unchanged**: one `Producer::push` per message per direction
 into a ring, a writer thread that formats and appends, and losses dropped and counted rather
 than waited for. The writer is allowed to allocate, for the reason `journal::Reader` is.
+**It waits on an empty ring by the journal writer's rule** (`ring.rs` `Idle`): 1 024 empty
+polls spun, then 1 ms sleeps, never woken by the engine. It `yield_now`ed until 2026-09-23,
+which on an idle machine is a core burnt for nothing
+([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md) decision 4).
 
 **`NoLog` is the default and it compiles away.** `MessageLog::LOGS` is an associated
 constant, so an engine never given a log carries no branch, no field and no cost.

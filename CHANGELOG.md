@@ -398,6 +398,27 @@ below describe what a first release would contain.
 
 ### Fixed
 
+- **The `Async` journal's writer thread and `FileLog`'s writer thread no longer burn a core
+  while idle.** On an empty ring the first spun (`spin_loop`) and the second `yield_now`ed, in
+  every mode — a core each on a `standard` engine that promises to give the core back. Both now
+  spin 1 024 empty polls, then sleep 1 ms per poll until a record arrives; the engine thread
+  never wakes them, so its path is unchanged in both modes. A record pushed to a sleeping writer
+  reaches the file up to 1 ms later. The unpinned writer threads are now named
+  `fixbolt-journal` and `fixbolt-msglog`, as the pinned ones already were.
+  [ADR-0150](docs/decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+  decision 4; `crates/engine/tests/writer_idle.rs`.
+
+- **An `Async` `FileJournal` no longer stops writing at a message longer than 4 088 bytes.**
+  Its writer thread read into a fixed 4 096-byte buffer and took the ring's *"record dropped"*
+  answer for its stop signal, so with `LEN` raised above 4 088 one long message stopped every
+  later write to the file while `put` still answered `true`. The buffer is now sized by `LEN`
+  and the stop signal is a one-byte record no journal record can be.
+  **`MemJournal::put` now refuses a message longer than 65 535 bytes** (returns `false`,
+  counted as `JournalRefused`) instead of keeping it with a length of zero that `get` then
+  answered as absent. `Durability::Fsync` and the default `SLOT_LEN = 512` were never affected.
+  [ADR-0150](docs/decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+  decisions 1–3; `crates/engine/tests/journal.rs`.
+
 - **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered
   a peer's KeyUpdate with an `InternalError` alert unless its `tls13-key-update` feature was on;
   this engine had not enabled it. A long-lived session under kTLS — against any peer that

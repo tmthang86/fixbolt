@@ -927,6 +927,13 @@ Three policies, and the difference is which failure they survive:
 For reference, QuickFIX's `FileStore` flushes without `fsync`, so its durability class is
 `Async` ([reference/session-lifecycle-prior-art.md](reference/session-lifecycle-prior-art.md)).
 
+**Under `Async` a message can reach the file up to ~1 ms after `put` returns, on top of the
+write itself.** An idle writer thread sleeps 1 ms at a time rather than spinning, and nothing on
+the engine thread wakes it — the price of a writer that gives its core back
+([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md) decision 4). A process
+that exits without dropping the journal loses what was still in the ring either way; §8c's
+*drop the engine after `run` returns* is what closes that gap.
+
 **`Fsync` puts a disk on your hot path.** That is sometimes the right trade; it is not a
 default to reach for without measuring it. Since
 [ADR-0017](decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md) it costs in
@@ -973,6 +980,11 @@ Two constraints the type system cannot hold:
 
 - **`resend_batch × SLOT_LEN` must stay under `TX`.** The default is 8 × 512 = 4 KiB against
   8 KiB. Raise `SLOT_LEN` or lower `TX` and this is the number to re-check.
+- **Raising `SLOT_LEN` above 65 535 does not keep a message longer than 65 535 bytes.** A slot
+  records its length as a `u16`; such a message is refused and counted in `puts_refused`, and
+  can never be replayed
+  ([ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
+  decision 3).
 - **In `hft`, pre-build journals and call `add_with_journal`.** Plain `Engine::add` builds
   `J::default()`, a ~2 MiB allocation and 512 page faults **on the engine thread**
   ([best-practices-hft.md §6](best-practices-hft.md)).
