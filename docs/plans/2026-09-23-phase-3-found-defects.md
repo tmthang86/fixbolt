@@ -923,3 +923,5 @@ ngược bằng `sleep(1 ms)` đọc 455 µs trên 50 ms, vẫn đỏ. Manager q
 - Khi làm D4, test so với `dict` tìm thêm một lỗi cũ: `as_i64` và `as_u32` dừng ngay ở chữ số làm tràn số, nên `9410947898048986560 ` (dấu cách ở cuối) bị báo `Overflow` trong khi `dict` coi đó là sai định dạng.
 - Manager quyết: gộp vào D4. Cả hai hàm phải báo `NotANumber` khi có byte không phải chữ số ở bất kỳ đâu, trước `Overflow` — cùng luật với `as_decimal` (ADR-0120: lỗi cú pháp thắng tràn số).
 - Test so với `dict` bỏ ngoại lệ `Overflow`, thành khớp đúng hai chiều; thêm test `a_syntax_fault_wins_over_overflow`; `CHANGELOG.md` ghi đây cũng là thay đổi phá vỡ.
+
+* `[2026-09-24]` **Merged**: PR #103 as `fc89d36`; the head `c0f2e33` was green on CI run [`35914609335`](https://github.com/tmthang86/fixbolt/actions/runs/35914609335), 18/19 with the advisory `semver` job red (it compares against an unpublished 0.1.0 on `main`). Open items 102–111 in `STATUS.md` carry what this plan found and did not close.
