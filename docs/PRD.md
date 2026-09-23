@@ -108,12 +108,90 @@ FIXP is deferred to its own phase 3 plan and its own ADR, opened only when there
 venue and an oracle for it ([ADR-0078](decisions/ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md)
 decision 2). FAST and FIXML are out of scope for phase 2.
 
-### Phase 3: not scoped
+### Phase 3: dependable by a stranger — *Accepted — ADR-0097, 2026-09-23*
 
-Listed so that scope creep has to argue with a document: kernel bypass (Onload first, `ef_vi`
-second, DPDK never; STATUS item 14), SIMD SOH scan and checksum (declined by
-[ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)),
-clustering, HA, replication.
+**Approved by the owner on 2026-09-23, not yet built.** Decided by
+[ADR-0097](decisions/ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md)
+with all eight of its recommendations as proposed; the plan is
+[plans/2026-09-23-phase-3-scope.md](plans/2026-09-23-phase-3-scope.md). The published crates are
+`fixbolt-codec`, `-dict`, `-session`, `-engine`, `-sbe` and `fixbolt`; the owner runs
+`cargo publish`. The candidates it leaves out — kernel bypass, SIMD, clustering, HA,
+replication — stay where §5 and ADR-0045 / ADR-0074 put them.
+
+Scope: make the engine something a stranger can `cargo add`, read, trust and upgrade. It moves
+§3's largest gap — a track record of zero — the only way that gap moves, by being downloadable.
+`[measured 2026-09-23]` it is not downloadable today: every crate is `0.0.0` / `publish = false`,
+and `fixbolt-dict`'s build reads QuickFIX's XML from gitignored `vendor/`, so a published crate
+could not build.
+
+| Item | Note |
+|---|---|
+| A dictionary a published crate can build | Its own ADR first: Apache-2.0 FIX Orchestra files with QuickFIX's XML kept as the oracle (recommended), or QuickFIX-derived tables with a `NOTICE` ([ADR-0001](decisions/ADR-0001-relationship-to-quickfix.md) decision 5) |
+| No credential reaches disk | `554=` / `96=` redacted in the message log and journal. The admission hook (`Registry::admit`) already exists |
+| `Decimal` | [ADR-0028](decisions/ADR-0028-a-decimal-is-a-copy-value-parsed-on-demand.md), accepted 2026-09-01, not built |
+| A second engine family in the interop gate | QuickFIX/J, both roles, plaintext and TLS — §3 gap 2 is that TLS has never spoken to another engine |
+| Packaging and an API gate | `cargo publish --workspace --dry-run` with no `vendor/`; `cargo-semver-checks` from the first release |
+| First publish, `0.1.0` | Not `1.0`: the `1.0` condition (one outside deployment, one clean minor) is written into `CHANGELOG.md` and is not a phase-3 criterion |
+| FIXP oracle spike, *conditional* | Only if the owner names a target venue (B3 Binary EntryPoint is the candidate; Artio's acceptor is the second implementation). Its output is the FIXP ADR, not a session machine ([ADR-0078](decisions/ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md) decision 2) |
+
+**Not in phase 3, by name:** HA, replication, clustering, hot standby; kernel bypass, Onload,
+`ef_vi`, AF_XDP, DPDK; `io_uring` / `recvmmsg`
+([ADR-0074](decisions/ADR-0074-kernel-bypass-io-uring-and-the-logon-hop-stay-unmeasured-by-decision.md));
+SIMD ([ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md));
+FAST, FIXML, SBE inside FIXT; database stores; metrics exporters and dashboards; a FIXP session
+machine; a `1.0` release; sharded ordered shutdown (stays a `STATUS.md` item). §5 is unchanged.
+
+**Phase 3 exit criteria.** Each is a command that passes or fails on the closing
+commit, with a CI run id.
+
+| # | Criterion | Gate |
+|---|---|---|
+| 1 | Builds with no `vendor/` | `cargo build -p fixbolt-dict` and `cargo build -p fixbolt --no-default-features` on a checkout with `vendor/` absent |
+| 2 | Tables agree with the oracle | the dictionary agreement test: 912 / 912 tags, 12 524 / 12 524 pairs, 1 708 / 1 708 enums, or each divergence named by content; `--test score` still 59 / 59 |
+| 3 | Packages as published | `cargo publish --workspace --dry-run` in CI with no `vendor/` |
+| 4 | No credential reaches disk | a test writes a Logon with `554=` / `96=` through the message log and `FileJournal` and fails on finding the secret; proven by reversal |
+| 5 | `Decimal` | `cargo test -p fixbolt-codec decimal`; its `benches/alloc.rs` case reads 0, proven by injection |
+| 6 | Second engine family | `scripts/interop.sh` against QuickFIX/J, both roles, 7 / 7, plaintext and TLS, blocking in CI |
+| 7 | A stranger can depend on it | a scratch crate outside the tree, `cargo add fixbolt@0.1.0`, `GETTING-STARTED.md`'s code verbatim, one Logon / Logout; exits 0 |
+| 8 | The API is watched | `cargo semver-checks --baseline-version 0.1.0`, blocking in CI |
+| — | Phases 1 and 2 still hold | 59 / 59 in process and on a socket; FIXT 179 / 180 with its pinned divergence; `libquickfix` interop 7 / 7; allocation benches 0 |
+
+### Phase 4: the owner's five items, each behind a kill line — *Proposed — ADR-0098, awaiting owner approval*
+
+**Nothing below is approved or built, and nothing starts before phase 3 closes.** Proposed by
+[ADR-0098](decisions/ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md),
+with [ADR-0099](decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md)
+(supersedes ADR-0077 decision 2 and ADR-0074 decision 1) and
+[ADR-0100](decisions/ADR-0100-simd-is-reopened-as-an-experiment-whose-kill-line-is-written-before-the-code.md)
+(supersedes ADR-0045 decision 1); explained for the owner in
+[plans/2026-09-23-phase-4-scope.md](plans/2026-09-23-phase-4-scope.md). The owner chose the
+contents; ADR-0098 decides how each enters without breaking an accepted decision, and writes the
+line that removes it if it does not pay. A removed item is a completed item.
+
+| Order | Item | Enters how | Kept only if (§9 desk, same boot, two procedures) |
+|---|---|---|---|
+| 1 | Metrics exporter + Grafana dashboard | new crate `fixbolt-metrics`, own thread, reads `Snapshot` and the event stream; no async runtime | engine-thread allocations 0 under a 10 Hz scrape; wire p50 / p99 within the band, scrape on vs off |
+| 2 | SQLite-backed store | new crate `fixbolt-store-sqlite`, `FileJournal` `Async`'s shape: ring on the engine thread, batched commits on a writer thread; no synchronous-durability mode | engine-thread allocations 0; wire p50 within the band of `FileJournal` `Async`; 50 000 msg/s for 60 s with no dropped record |
+| 3 | `io_uring` transport | kernel TCP still, so no supersession — ADR-0074 decision 2's trigger (an interval-0 NIC figure) fired on 2026-09-18; feature `io-uring`, off by default, refuses to start rather than fall back | NIC wire p50 ≥ 3 % better in both procedures, or idle turn at N = 16 ≥ 25 % better |
+| 4 | Kernel bypass: Onload over AF_XDP on the I211 | ADR-0099; no engine code; `hft` only, plaintext only; compared generator-side against a same-boot kernel twin | generator-side p50 ≥ 10 % better in both procedures, p99 no worse, zero-copy bound, `--test wire` 59 / 59 under `onload` |
+| 5 | SIMD (SWAR first) in `codec` | ADR-0100; measured last because its denominator comes from items 3–4 | codec cases ≥ 15 % better **and** parse ≥ 2 % of the fastest surviving round trip or density at N = 64 ≥ 3 % better |
+
+**Not in phase 4:** a native AF_XDP transport or any userspace TCP stack; `ef_vi` (no hardware);
+DPDK (never); `io_uring` zero-copy receive; SQPOLL in `standard`; Postgres unless its own ADR is
+accepted (the `postgres` crate carries a Tokio runtime); a web UI of this project's own; HA.
+
+**Phase 4 exit criteria (proposed).** Each a command that passes or fails on the closing commit,
+with a CI run id; the measured rows quote `scripts/check-machine.sh` from the desk.
+
+| # | Criterion | Gate |
+|---|---|---|
+| 1 | Nothing new built by default | `cargo build --workspace --no-default-features`; `scripts/check-no-optional-deps.sh` |
+| 2 | `io_uring` verdict applied | kept: `--features io-uring --test wire` 59 / 59, both mode scripts pass and are tripped by the wrong mode, alloc 0; killed: feature absent, pair in `measured-costs.md` |
+| 3 | Bypass verdict applied | kept: second labelled row in `DESIGN.md` §8 beside its kernel twin, 59 / 59 under `onload`; killed: negative pair in `measured-costs.md` |
+| 4 | SIMD verdict applied | `bench.sh --strict` A/B quoted; kept: differential fuzz and Miri on the SWAR arm green; killed: code absent |
+| 5 | The store recovers | `cargo test -p fixbolt-store-sqlite` with a crash-and-recover test; engine-thread alloc 0; the throughput run quoted |
+| 6 | The exporter stays off the hot path | `cargo test -p fixbolt-metrics`; alloc 0 under scrape; scrape on / off pair within the band |
+| — | Phases 1–3 hold | 59 / 59, FIXT 179 / 180, interop 7 / 7 with both peers, `cargo semver-checks` |
 
 ### Phase 1 exit criteria
 
@@ -253,13 +331,18 @@ criteria 2, 3, 4 and 6 exist because of this paragraph.
 
 Out unless a new ADR reverses them:
 
-- **Kernel bypass** (DPDK, OpenOnload, `ef_vi`). Not before an ordinary TCP path has been
+- **Kernel bypass** (DPDK, OpenOnload, `ef_vi`). *Proposed to narrow by ADR-0098 / ADR-0099,
+  awaiting owner approval: Onload over AF_XDP would leave this list as a measured second row
+  beside a kernel figure; DPDK stays never and `ef_vi` stays out without hardware. Until
+  approved, the bullet stands as written.* Not before an ordinary TCP path has been
   measured and found to be the limit; [DESIGN.md §8](DESIGN.md) puts that limit at 10–20 µs.
   If an ADR ever reverses this, the order is fixed: Onload (engine unchanged), then `ef_vi` as
   a second `Transport`, DPDK never because it ships no TCP stack. Plaintext only; it excludes
   TLS (D11). STATUS item 14.
 - **Clustering, HA, replication.**
-- **Metrics dashboards, web UIs.**
+- **Metrics dashboards, web UIs.** *Proposed to narrow by ADR-0098, awaiting owner approval: a
+  Prometheus-format exporter and a committed Grafana dashboard would leave this list; a web UI of
+  this project's own would stay. Until approved, the bullet stands as written.*
 - **Code generation for languages other than Rust.**
 - **Matching engine, order book, risk.** This is a protocol engine.
 - **Record retention, immutability, tamper evidence and search.**
