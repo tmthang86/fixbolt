@@ -11,7 +11,9 @@ session core, chosen by a type parameter
 the design guarantees rather than one it hopes for.
 
 **Positioning.** A FIX 4.4 acceptor on kernel TCP whose latency is a published, reproduced
-number ([ADR-0077](decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)
+number; a kernel-bypass figure appears only as a second, labelled row beside a kernel-TCP figure
+from the same boot, naming its stack ([ADR-0099](decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md), which supersedes
+[ADR-0077](decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)
 decision 2). The acceptor is
 the headline because that is where the gap is: as of 2026-08-27 the Rust ecosystem has no
 production-proven FIX acceptor and already has two initiators

@@ -1,8 +1,8 @@
 # fixbolt — Engineering Rules
 
 A FIX 4.4 engine in **Rust**, acceptor-first, positioned as **a FIX acceptor on kernel TCP
-whose latency is a published, reproduced number** ([ADR-0077](docs/decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)
-decision 2). Not a port of QuickFIX ([ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md)).
+whose latency is a published, reproduced number; a kernel-bypass figure appears only as a second,
+labelled row beside a kernel-TCP figure from the same boot** ([ADR-0099](docs/decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md)). Not a port of QuickFIX ([ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md)).
 The design is **[docs/DESIGN.md](docs/DESIGN.md)** — D1–D10 are the decisions, §8 is the
 latency budget, §9 is the OS checklist. Where the work stands is **[STATUS.md](STATUS.md)**, never
 this file — read it before picking up work, update it when a plan phase closes.

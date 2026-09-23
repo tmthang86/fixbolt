@@ -1,8 +1,9 @@
 # fixbolt
 
 A FIX 4.4 protocol engine written in Rust. It is built to be **a FIX acceptor on ordinary
-kernel TCP whose latency is a published, reproduced number**
-([ADR-0077](docs/decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)),
+kernel TCP whose latency is a published, reproduced number** — a kernel-bypass figure, where
+one exists, is only a second, labelled row beside a kernel-TCP figure from the same boot
+([ADR-0099](docs/decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md)),
 which is the part of the protocol the Rust ecosystem does not yet cover with anything
 production-proven.
 
