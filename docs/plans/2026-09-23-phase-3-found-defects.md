@@ -824,6 +824,87 @@ bị từ chối; trait `Journal` thêm `fn unwritten(&self) -> u64 { 0 }`; engi
 **Thứ tự:** K → L (cùng worker, chung file); M và T song song với K. Hàng C chạy lại mọi gate
 trên commit cuối, cả hai chế độ, với `W2W_EXTRA`. Manager viết ba mục mở vào `STATUS.md` ở hàng C.
 
+## Sửa 6 — `file_busy` trên engine thread, và một test đếm lần tự nhường bị chập chờn (2026-09-24)
+
+**Chuyện gì xảy ra.** Hàng K+L đã dựng xong ở worktree `fb-k` (chưa commit, mọi gate xanh), còn một
+rủi ro: `a_parked_reconnect_costs_the_engine_thread_no_wait` (engine `hft`, 0 lần tự nhường CPU
+trong lúc một kết nối bị để chờ) đọc **1** lần và **7** lần trong ~300 lần chạy khi máy đang build
+song song; ~200 lần chạy dưới tracer `sched_switch` không bắt được lần nào. Nghi phạm (chưa chứng
+minh): `journal::file_busy` — `open` + `try_lock` + unlock + `close` — mà `Recovery::ready` gọi
+trên engine thread trong `pump`, tối đa mỗi 1 ms khi có kết nối để chờ.
+
+**(a) Syscall hệ thống file mỗi ms trên engine thread `hft` có chấp nhận được không? — Không.**
+Điều 4 cấm engine thread `hft` ngủ trong kernel trên hot path, và lấy `read` chặn làm ví dụ.
+`open(2)` phải dò đường dẫn: giữ khoá thư mục/inode, và có thể chờ I/O khi metadata chưa có trong
+cache — **có thể ngủ**, và có ngủ hay không tuỳ tải của máy, đúng như độ chập chờn đã thấy. Kết nối
+để chờ nằm cạnh các phiên đang chạy trong `pump`, nên đây là hot path. Việc `recover` đọc file trên
+engine thread trong `pump` là chuyện có từ trước (đã ghi cho `STATUS.md`), không phải lý do để thêm
+một lần đọc định kỳ.
+
+**Quyết định** — [ADR-0155](../decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md)
+(**Proposed**; thay **nửa sau của quyết định 2** trong ADR-0154 — "`file_busy` trả lời `ready`".
+ADR-0154 đã *Accepted* nên không sửa nội dung, chỉ thêm một câu ở dòng trạng thái, `CLAUDE.md` §5):
+
+1. `Recovery::ready` **phải trả lời không cần syscall** — rustdoc nói rõ, vì engine hỏi nó trên
+   engine thread trong `pump`.
+2. **Chính thread ghi báo khi nó đã nhả file.** `FileJournal::released(&self) -> Released`: một
+   handle `Clone` bọc `Arc<AtomicBool>`, cấp phát **lúc `open`**. Thread ghi đặt `true` (Release)
+   **sau khi đã đóng `File`** (tức khoá của ADR-0154 đã nhả), trước khi giảm bộ đếm thread ghi đã
+   cho nghỉ. Với `Fsync` và với `close()` có `join`: đặt khi `File` của journal bị huỷ.
+   `is_released()` là một lần load Acquire.
+3. **Recovery giữ handle của journal nó đã trao** cho mỗi đối tác; `ready()` = `is_released()`
+   (chưa có handle → sẵn sàng). Không thêm sổ đăng ký toàn tiến trình theo đường dẫn — tra cứu nó
+   cần khoá hoặc cấp phát trên engine thread, còn recovery vốn đã biết đường dẫn của mình.
+4. `file_busy` giữ lại nhưng **không dùng trên engine thread** (cho tool và acceptor thread của
+   shard; rustdoc nói vậy). Tiến trình **khác** giữ file thì `open` vẫn từ chối bằng `try_lock` của
+   chính nó (ADR-0154 quyết định 1) — đó là lỗi triển khai, phải báo to, không để chờ.
+
+**(b) Test phải khẳng định gì để không chập chờn mà vẫn cắn.** Lần tự nhường có thể đến từ page
+fault lớn hay thu hồi bộ nhớ khi máy build song song — thứ code đang test không gây ra. `== 0` trên
+máy bận là khẳng định về cái máy. ADR-0072 giữ phép đo đó cho một lần chạy riêng trên máy yên, không
+cho `cargo test`. Nên tách làm hai:
+
+- **Test 1 (tất định, chứng minh "không đụng hệ thống file"):**
+  `ready_is_answered_by_the_writer_not_the_filesystem` — `FileJournal` `Async`, `put`, `retire`,
+  lấy `released()` **trước**; **xoá file journal** ngay khi thread ghi còn chưa xong → `is_released()`
+  vẫn `false`; sau `wait_for_retired_writers` → `true` (file vẫn đã bị xoá). Câu trả lời không thể
+  đến từ hệ thống file. **Đảo ngược:** trả lời bằng `!file_busy(path)` → đỏ ngay ở khẳng định đầu
+  (file đã xoá thì `file_busy` nói "rảnh" khi thread ghi còn sống): *"ready said released while the
+  writer was still writing — it asked the filesystem"*.
+- **Test 2 (engine, thay test chập chờn):** `a_parked_reconnect_does_not_slow_the_engine_thread` —
+  engine `hft` trên `Loopback`, một phiên đang chạy, một kết nối bị để chờ bằng recovery thử có
+  `ready()` đọc một `AtomicBool` do test giữ. Khẳng định: (i) trong 50 ms để chờ, số turn của engine
+  **≥ 10 000** (spin thì cỡ µs/turn; ngủ 1 ms mỗi lần hỏi thì ≤ ~50) và phiên kia vẫn được trả lời;
+  (ii) `ready` được hỏi **≤ số ms đã trôi + 1** lần và ≥ 1 lần; (iii) bật cờ → kết nối được nhận
+  **trong turn kế tiếp** lần hỏi sau đó. **Bỏ** khẳng định 0 lần tự nhường. **Đảo ngược:** để chờ
+  bằng `thread::sleep(1 ms)` → (i) đỏ; hỏi `ready` mỗi turn thay vì mỗi ms → (ii) đỏ.
+- Điều "engine thread không ngủ khi để chờ" giờ dựa vào cơ chế (một lần load) + test 1; script
+  strace có cửa sổ **không** chạy qua kịch bản để chờ — ghi rõ ở *Nhật ký giao hàng*, không giấu.
+
+**Hàng P** — senior developer (`opus`), **cùng worker K+L**, trong worktree `fb-k`, trước khi K+L
+được commit (P sửa đúng những file đó).
+
+| Chạm vào | Không chạm | Phụ thuộc |
+|---|---|---|
+| `crates/engine/src/journal.rs` (`Released`, `released()`, đặt cờ sau khi đóng `File` ở cả ba đường; rustdoc `file_busy`), `crates/engine/src/recovery.rs` (rustdoc `ready`: không syscall, kèm mẫu), `tools/interop/src/reconnect.rs` (giữ handle, `ready` = `is_released()`), `crates/engine/tests/one_appender.rs` (test 1 mới; thay test chập chờn bằng test 2) | `crates/engine/src/lib.rs` (cách để chờ không đổi), `crates/session/`, `scripts/` | K+L trong `fb-k` |
+
+- **Đỏ trước:** test 1 viết trước, chạy với `ready` hiện tại (qua `file_busy`) → đỏ với câu trên.
+  Test 2 chạy trên code hiện tại phải **xanh** (cơ chế để chờ không đổi) — hai đảo ngược của nó là
+  bằng chứng nó cắn.
+- **Gate:** `cargo test -p fixbolt-engine --test one_appender` **chạy 200 lần liên tiếp trong lúc
+  máy build song song** (`for i in $(seq 200); do … || break; done`, trích số lần đạt) — 200/200;
+  `cargo test -p fixbolt-engine --test retire --test journal --test reconnect_wire`; interop build
+  + arm reconnect nếu có; `cargo clippy --all-targets -- -D warnings`; `cargo test --no-default-features`;
+  `cargo bench -p fixbolt-engine --bench alloc` (`is_released` không cấp phát); cả hai chế độ:
+  `W2W_EXTRA="--journal file-async --log file"` với ba script chế độ (engine thread và cách chờ không
+  đổi, nhưng thread ghi đổi thứ tự đóng file).
+- **Xong khi:** test 1 đỏ-rồi-xanh, hai đảo ngược của test 2 đỏ đúng câu, 200/200, gate trích nguyên văn.
+- **Tài liệu:** `docs/GUIDE.md` (recovery giữ `Released` cho mỗi đối tác; `ready` không được
+  syscall; `file_busy` không dùng trên engine thread); `CHANGELOG.md` (`FileJournal::released`,
+  `Released`); `DESIGN.md` §4 D7 một câu; `docs/reference/a-readiness-probe-that-opened-a-file-on-the-engine-thread.md`
+  (mới — bẫy: probe đúng về logic nhưng là syscall có thể ngủ; test đếm tự nhường chập chờn vì máy);
+  ADR-0155 → *Accepted*.
+
 ## Nhật ký giao hàng
 
 Điền vào mỗi khi đóng một phase: đã dựng gì, ở đâu, gate nào xanh, cái gì chưa làm và vì sao.

@@ -1,6 +1,6 @@
 # ADR-0154 — A journal file has one appender; a reconnect waits for it by parking, never by sleeping; and what the file missed is counted
 
-- **Status**: **Accepted — 2026-09-24** (manager, owner's standing mandate, with plan Sửa 5; the rust-version bump to 1.89 supersedes ADR-0160's MSRV 1.88 when both are on main — whichever merges second reconciles). Proposed 2026-09-24. Written by the architect (Opus) for *Sửa 5* of
+- **Status**: **Accepted — 2026-09-24** — **decision 2's second half (`file_busy` answers `Recovery::ready`) is superseded, on acceptance, by [ADR-0155](ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md)**; decisions 1, 3–5 stand. (manager, owner's standing mandate, with plan Sửa 5; the rust-version bump to 1.89 supersedes ADR-0160's MSRV 1.88 when both are on main — whichever merges second reconciles). Proposed 2026-09-24. Written by the architect (Opus) for *Sửa 5* of
   [docs/plans/2026-09-23-phase-3-found-defects.md](../plans/2026-09-23-phase-3-found-defects.md),
   answering the senior review of PR #103 (HEAD `0f1f8a5`). Amends
   [ADR-0153](ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md)
