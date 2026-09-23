@@ -690,6 +690,140 @@ chạy lại mọi script chế độ với `W2W_EXTRA` trên commit cuối.
 - Lý do: `Admin::shutdown(0)` chỉ muốn cắt phía đối tác ngay, chứ không muốn journal của chính mình bị cắt ngang. Shard và các đường thoát vì lỗi thì không có thời gian ân hạn nào. Chờ 0 giây sẽ mất dữ liệu `Async` khi thoát sạch — đúng cái ADR-0153 đã loại.
 - Hàm chờ trả về ngay khi các thread ghi xong, nên mức sàn không tốn gì khi chúng nhanh. Con số 1 giây chưa đo (`[unmeasured]`); manager chấp nhận ngày 2026-09-24.
 
+## Sửa 5 — review cấp cao PR #103 (HEAD `0f1f8a5`), 2026-09-24
+
+Một phát hiện **chặn** (thiết kế của ADR-0153 thiếu một trường hợp), hai **nên sửa**, bốn **ghi
+chú**. Quyết định nằm ở
+[ADR-0154](../decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)
+(**Proposed**; bổ sung ADR-0153, không đổi quyết định nào của nó).
+
+### 1. (Chặn) Kết nối lại mở lại file khi thread ghi cũ chưa xong
+
+**Đã xác nhận bằng đọc code + probe của reviewer:** thread ghi đã cho nghỉ còn đang flush (~1 ms,
+vì có thể đang ngủ) thì một `FileJournal::open` mới trên cùng file đọc `highest_out` cũ
+(*"reopen saw highest_out=Some(1), wanted Some(2)"*, 50/50) và hai thread ghi cùng nối vào một
+file — bản ghi và CRC là hai lần `write_all` (`journal.rs:988`, `:994`) nên có thể xen nhau. Đối
+tác logon lại trong ~1 ms sẽ nhận `MsgSeqNum` đã thấy rồi. Trước J, `join` lúc `drop` chặn được
+chuyện này — bằng cách bắt engine thread chờ.
+
+**Chỗ mở lại file:** trong `Recovery` do deployment viết. Engine gọi nó ở `pump` (`serve*` một
+thread) **ngay trong vòng quay engine** (`lib.rs:3446`) — tức là engine thread, giữa lúc phục vụ,
+dù comment ở đó và rustdoc của `Recovery::recover` nói "acceptor thread"; ở `dial` (`lib.rs:2714`,
+chỉ `standard`, lúc engine không giữ kết nối nào); và ở shard, trên acceptor thread (được chặn,
+ADR-0088). Nên cách sửa **không được chờ** trên engine thread.
+
+**Quyết định (ADR-0154 quyết định 1–3):**
+
+- `FileJournal::open` lấy khoá độc quyền `File::try_lock` (`flock` `LOCK_EX|LOCK_NB`) **trước khi
+  đọc file**; khoá sống cùng `File` — của thread ghi (`Async`, nhả khi nó đóng file sau lần flush
+  cuối) hoặc của journal (`Fsync`). Đang bị giữ → `open` **trả lỗi ngay** `WouldBlock`, không chờ.
+  Chặn luôn cả hai **tiến trình** cùng ghi một file (hiểm hoạ có sẵn). `rust-version` 1.85 → 1.89.
+- `Recovery` thêm `fn ready(&mut self, cfg) -> bool { true }`; `journal::file_busy(path)` trả lời
+  mà không chặn. Engine hỏi `ready` trước `recover`.
+- Chưa sẵn sàng → kết nối được **để chờ tại chỗ** (trong tập pre-session ở `pump`, trong ô
+  handshake ở `dial`, cùng luật ở shard), hỏi lại **tối đa mỗi 1 ms** theo đồng hồ engine; không
+  tính là "có tiến triển" nên `standard` vẫn ngủ khi rảnh, `hft` vẫn không ngủ. Quá
+  `LogonTimeout` → bỏ, đếm là timed out.
+- Loại: `open` chờ khoá (ngủ trên engine thread); danh sách đường dẫn trong tiến trình (không thấy
+  tiến trình khác, cần `Mutex`); trao journal cũ cho lần mở sau (cấp phát + xoá kiểu trên engine
+  thread); khoá theo từng bản ghi kiểu Chronicle Queue (khoá cả vòng đời file đã đủ). Nguồn:
+  tài liệu `File::try_lock` của Rust, Chronicle Queue `TableStoreWriteLock` — ở ADR-0154 §4.
+
+**Hàng K (một người ghi mỗi file)** — senior developer (`opus`), **cùng worker J** nếu còn.
+
+| Chạm vào | Không chạm | Phụ thuộc |
+|---|---|---|
+| `crates/engine/src/journal.rs` (khoá, `file_busy`), `crates/engine/src/recovery.rs` (`ready` + sửa rustdoc "acceptor thread"), `crates/engine/src/lib.rs` (`pump`, `dial`: để chờ + hỏi lại theo nhịp; sửa comment `:3440-3445`), `crates/engine/src/shard.rs` (cùng luật), `tools/interop/src/reconnect.rs` (cài `ready`), `Cargo.toml` (`rust-version`), `crates/engine/tests/one_appender.rs` (mới) | `crates/session/`, `ring.rs`, `msglog.rs`, `scripts/` | commit J (`4bb69c9`) |
+
+- **Test đỏ trước** (`tests/one_appender.rs`):
+  - `a_journal_file_has_one_appender`: `FileJournal` `Async`, `put`, `mark_out(2)`, `retire`,
+    `drop`, mở lại ngay → **hôm nay `Ok`** (đỏ: *"a second appender opened the file while the
+    first had not finished"*); sau sửa: `Err(WouldBlock)`; sau `wait_for_retired_writers` thì mở
+    được và `highest_out() == Some(2)`.
+  - `a_reconnect_resumes_from_the_finished_file`: `serve_with_recovery` với recovery dùng
+    `FileJournal` + `ready` qua `file_busy`; 50 lần: phiên gửi, phía kia ngắt, logon lại **ngay**
+    → `MsgSeqNum` đầu tiên của phiên mới luôn = số cuối + 1. **Hôm nay đỏ** (probe: 50/50 sai).
+  - `a_parked_reconnect_costs_the_engine_thread_no_wait`: engine `hft` trên `Loopback`, một phiên
+    khác đang chạy, một kết nối bị để chờ → `voluntary_ctxt_switches` của thread đó = **0**; phiên
+    đang chạy vẫn được trả lời; kết nối để chờ quá `LogonTimeout` thì bị bỏ.
+  - `a_second_process_cannot_append`: tiến trình con (`std::process::Command` chạy chính binary test
+    với biến môi trường) mở cùng file → `WouldBlock`.
+- **Đảo ngược:** (1) bỏ `try_lock` → test 1 và 4 đỏ; (2) `ready` luôn `true` → test 2 đỏ; (3) để
+  chờ bằng `sleep` thay vì để tại chỗ → test 3 đỏ.
+- **Gate:** `cargo test -p fixbolt-engine --test one_appender --test retire --test journal --test on_disk --test reconnect_wire --test shard_recovery --test engine_recovery`;
+  `cargo test -p fixbolt-interop` (nếu có test); `cargo clippy --all-targets -- -D warnings` (bắt
+  `incompatible_msrv`) và `--features tls`; `cargo test --no-default-features`;
+  `cargo bench -p fixbolt-engine --bench alloc`; **cả hai chế độ** (cách chờ của `pump`/`dial` đổi):
+  `W2W_EXTRA="--journal file-async --log file"` với `check-no-kernel-sleep.sh` (10/10),
+  `check-no-kernel-sleep-by-ctxt.sh`, `check-standard-gives-the-core-back.sh`; nếu nhánh interop
+  đã vào `main`, chạy arm reconnect của `scripts/interop-qfj.sh`.
+- **Tài liệu:** `DESIGN.md` §4 D7; `docs/GUIDE.md` (recovery mở `FileJournal` phải cài `ready`;
+  `WouldBlock` không có nghĩa "không có lịch sử"); `CHANGELOG.md` (`Recovery::ready`,
+  `journal::file_busy`, lỗi mới của `open`, MSRV 1.89); `docs/reference/a-reconnect-reopened-a-journal-its-retired-writer-still-owned.md`
+  (mới); ADR-0154 → *Accepted*.
+
+### 2. (Nên sửa) Chưa test nào chứng minh các hàm serve chờ thread ghi sau vòng phục vụ
+
+`after_serving` (`lib.rs:3370-3373`) làm thành không làm gì thì `cargo test -p fixbolt-engine
+--features standard` vẫn 372/0. **Hàng M** — senior developer (`opus`), **song song** với K (chỉ
+file test mới).
+
+- Chạm vào: `crates/engine/tests/after_serving.rs` (mới). Không chạm: `crates/engine/src/`.
+- **Test** (mỗi họ hàm serve một test, recovery với `fresh` mở `FileJournal` `Async`, ứng dụng
+  echo 2 000 lệnh để journal có việc, rồi `Admin::shutdown(0)`):
+  `serve_with_recovery_returns_after_its_writers_finished`,
+  `connect_and_serve_with_recovery_returns_after_its_writers_finished`,
+  `shard_serve_returns_after_its_writers_finished`. Ngay khi hàm trả về, **không** gọi gì thêm:
+  `journal::wait_for_retired_writers(Duration::ZERO) == true` và file có đủ 2 000 bản ghi. Lặp 5
+  lần mỗi test để lần đỏ không phụ thuộc may rủi.
+- Hôm nay xanh (J đã có `after_serving`) — đây là **đảo ngược bắt buộc**: `after_serving` thành
+  rỗng → cả ba đỏ, câu *"serve returned while N retired writers were still writing"*. Trích lần đỏ
+  đó rồi trả lại.
+- **Gate:** `cargo test -p fixbolt-engine --test after_serving` (trích `running 3 tests`),
+  clippy.
+
+### 3. (Nên sửa) Ring đầy → `put` vẫn trả `true`, mất im lặng
+
+**Đã xác nhận bằng đọc code** (`journal.rs:~1031`, `let _ = p.push(…)`); probe: 40 × 60 KB, 28/40
+xuống đĩa. **Hợp đồng của session** (`crates/session/src/lib.rs:3083`, `:3890`;
+`crates/session/src/journal.rs:22-40`): `false` = "không giữ, mọi `ResendRequest` sau này sẽ gap
+fill", đếm vào `puts_refused`. Ở đây bộ nhớ **vẫn giữ** message (`get` trả lời; resend trong lúc
+chạy vẫn replay đúng) — chỉ file thiếu, chỉ hại sau khi khởi động lại.
+
+**Quyết định (ADR-0154 quyết định 4):** `put` **vẫn trả `true`**; `FileJournal` đếm lần đẩy ring
+bị từ chối; trait `Journal` thêm `fn unwritten(&self) -> u64 { 0 }`; engine báo phần tăng bằng
+`EventKind::JournalUnwritten { count }`, cùng cách báo `JournalRefused` (`lib.rs:1306`).
+
+**Hàng L** — senior developer (`opus`), **sau K, cùng worker** (chung `journal.rs`, `lib.rs`).
+
+- Chạm vào: `crates/session/src/journal.rs` (chỉ `unwritten` mặc định + rustdoc),
+  `crates/engine/src/journal.rs`, `crates/engine/src/observe.rs` (variant),
+  `crates/engine/src/lib.rs` (phát event, cạnh `JournalRefused`), `crates/engine/tests/journal.rs`.
+- **Test đỏ trước:** `a_full_ring_is_counted_not_silent`: thread ghi đang ngủ, 40 × 60 KB `put` →
+  mọi `put` vẫn `true`, `unwritten() == 40 − (số trên đĩa)` và > 0. Để đỏ lúc chạy chứ không phải
+  lỗi biên dịch: thêm method trả 0 trước, chạy → đỏ. Test engine
+  `a_full_journal_ring_is_an_event`: event `JournalUnwritten` với đúng số đó.
+- **Đảo ngược:** không tăng bộ đếm → hai test đỏ.
+- **Gate:** `cargo test -p fixbolt-engine --test journal --test observe`; `cargo test -p fixbolt-session`
+  và `cargo test -p fixbolt-conformance` (59/59 — trait session đổi); `cargo bench -p fixbolt-engine --bench alloc`
+  (đếm không cấp phát); clippy; `--no-default-features`.
+- **Tài liệu:** `DESIGN.md` §4 D7; `docs/GUIDE.md` §6a (con số tăng nghĩa là gì: đĩa chậm hoặc ring
+  1 MiB nhỏ so với đợt dồn); `CHANGELOG.md`; `docs/SESSION-BEHAVIOUR.md` **không** (resend không
+  đổi).
+
+### 4. Ghi chú — cái nào làm ngay, cái nào thành mục mở
+
+| Ghi chú | Quyết định |
+|---|---|
+| (a) Đường từ chối prefix quá dài (`lib.rs:668-673`) huỷ journal `Resumed` chưa từng thành `Connection` → `join` trên engine thread | **Làm ngay, trong hàng L** (cùng worker, cùng `lib.rs`): cho nghỉ trước khi huỷ (ADR-0154 quyết định 5). Test `a_refused_prefix_retires_its_journal`: prefix > `RX` với journal `Resumed` `FileJournal` → 0 lần tự nhường trên thread đó, `wait_for_retired_writers(1 s) == true`. Đảo ngược: bỏ lời cho nghỉ → đỏ. Kèm: `PRE <= RX` ở `shard.rs:76` thành `const` assert (hôm nay chỉ là lời hứa trong comment) |
+| (a) Panic tháo ngăn xếp qua `after_serving` → thread ghi không được chờ, mất dữ liệu `Async` khi thoát | **Mục mở `STATUS.md`** + một câu trong `GUIDE.md`: thư viện không panic (điều 7), chỉ callback ứng dụng có thể; bắt panic là quyết định API riêng |
+| (b) D2: `shutdown` trong lúc `connect()` chặn chỉ được nghe khi SYN hết giờ (~2 phút), `lib.rs:3603` | **Mục mở `STATUS.md`**: có từ trước; sửa đúng là `connect` không chặn, tức đổi transport — cần plan riêng và chứng minh hai chế độ. Ghi vào trang reference của D2 nếu nó đã ở `main` |
+| (c) D3: chưa có test phía acceptor cho lần từ chối **do alert của peer** | **Làm ngay — hàng T**, senior developer (`opus`), song song, chỉ `crates/engine/tests/tls.rs` + `tls_wire.rs`. Quyết định: alert của peer (vd. client không tin chứng chỉ của ta) **cũng** là handshake bị từ chối và **được đếm** — người vận hành cần biết client không tin chứng chỉ mình. Test `a_peer_that_refuses_our_certificate_is_a_refusal`: client với root store không chứa CA của ta → acceptor `handshake_refused() == true`, event `TlsHandshakeRefused { count: 1 }`. Nếu hôm nay đỏ thì sửa `tls.rs` trong cùng hàng; đảo ngược: coi `AlertReceived` là `Failed` → đỏ. Gate: lệnh TLS + `check-feature-gated-tests-ran.sh` như hàng D3. Tài liệu: ADR-0151 không đổi nội dung; `GUIDE.md` một câu |
+| Có từ trước, lộ ra khi đọc cho mục 1: `recover` đọc file **trên engine thread** trong `pump` (hft) | **Mục mở `STATUS.md`** (ADR-0154 *Consequences*): chuyển recovery khỏi engine thread ở `serve*` một thread là thay đổi kiến trúc (ADR-0088 đã làm cho shard) |
+
+**Thứ tự:** K → L (cùng worker, chung file); M và T song song với K. Hàng C chạy lại mọi gate
+trên commit cuối, cả hai chế độ, với `W2W_EXTRA`. Manager viết ba mục mở vào `STATUS.md` ở hàng C.
+
 ## Nhật ký giao hàng
 
 Điền vào mỗi khi đóng một phase: đã dựng gì, ở đâu, gate nào xanh, cái gì chưa làm và vì sao.
