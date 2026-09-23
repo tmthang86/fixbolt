@@ -739,9 +739,9 @@ sharing`). Three consecutive runs, all green; the summary line, unchanged across
 interop-qfj: 7 / 7 acceptor plain + 7 / 7 acceptor TLS + 7 / 7 initiator plain + 7 / 7 initiator TLS (+ shutdown 4 / 4, clean 4 / 4, kernel 2 / 2) against QuickFIX/J 3.0.2 on openjdk version "21.0.12.1" 2026-08-18
 ```
 
-**CI run id: `<pending>`.** The blocking job `interop-qfj` (`.github/workflows/ci.yml`) has not
-yet run to a merge commit as this page is written; the manager fills the run id in the same
-commit that names it, per `CLAUDE.md` §9's last box — a desk run is not what closes this row.
+**CI run id: [`35892604235`](https://github.com/tmthang86/fixbolt/actions/runs/35892604235)**, on the
+merge commit `d4bea77` of PR #100 — the blocking job `interop-qfj` green there (the PR head `c82e1f0`
+was green on run [`35891171782`](https://github.com/tmthang86/fixbolt/actions/runs/35891171782), 16/16).
 
 ### The four transcripts, verbatim, from the desk run above
 
@@ -1010,9 +1010,9 @@ inside `artio-binary-entrypoint-codecs-0.184.jar`, `semanticVersion="5.6"`, SHA-
 actually decodes with, not B3's currently published `8.4.2` (see
 [docs/reference/b3-binary-entrypoint-facts.md](reference/b3-binary-entrypoint-facts.md)).
 
-**CI run id:** `<pending>` — this section is written before the `fixp-spike` job (blocking,
-ADR-0140 decision 5) has run against a merged commit; the manager fills the run id in when it
-does, per `CLAUDE.md` §9's rule that a laptop result is not a CI result.
+**CI run id:** [`35896491354`](https://github.com/tmthang86/fixbolt/actions/runs/35896491354), on the
+merge commit `7cedb3f` of PR #102 — the blocking `fixp-spike` job green there (the PR head `35df0e9`
+was green on run [`35895278756`](https://github.com/tmthang86/fixbolt/actions/runs/35895278756), 17/17).
 
 **Output, verbatim, from the command above on this desk** (re-run 2026-09-24, after the review fixes below):
 
