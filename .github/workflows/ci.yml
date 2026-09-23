@@ -588,6 +588,23 @@ jobs:
       - name: The w2w procedure comparator, and its own reversal
         run: scripts/check-w2w-compare.sh
 
+      # ADR-0102 decision 1: a timed line that moves while its instruction
+      # count does not is a layout move, not a regression — but only if the
+      # same-work / work-changed / unstable verdict is read at the
+      # thresholds the decision actually names (0.1% between arms, 0.01%
+      # within one arm), not at whatever a script happens to compute today.
+      # This is `scripts/bench-instructions.sh`'s own self-test: a stub
+      # `perf` drives it through all three verdicts plus a missing-counter
+      # and a workload-exit-1 refusal, with no real hardware counters and no
+      # `sudo` — safe on this runner, where the PMU is usually unavailable
+      # (decision 1's own note), unlike the real-counter run that only
+      # happens on the desk. Belongs on this gate for the same reason
+      # check-w2w-compare.sh does just above: the rule that decides whether a
+      # re-record's cause is named *layout* is exactly as load-bearing as
+      # `cargo test` and clippy.
+      - name: The instruction-count verdict rule, and its own reversal
+        run: scripts/check-bench-instructions.sh
+
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —
   # `[measured 2026-08-30]` clippy::byte_char_slices did exactly that. Pinning
