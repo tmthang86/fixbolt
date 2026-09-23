@@ -1737,3 +1737,21 @@ decision 5).
 no constant can do that for you. See the licence's full text in [`NOTICE`](../NOTICE) at the
 repository root, and [ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
 for the reasoning.
+
+**If you run `cargo-deny` (or another SPDX-strict licence checker) on a tree that depends on
+`fixbolt`, it will refuse `fixbolt-dict`'s `license` field on its own.**
+`LicenseRef-QuickFIX-1.0` has no SPDX identifier — nothing does, for the QuickFIX Software
+License — and `cargo-deny`'s `check licenses` rejects any `LicenseRef-*` id that is not
+explicitly permitted, even one a crate's own `Cargo.toml` declares outright. `[measured
+2026-09-23]` the fix is a per-crate exception, not a change to your own global allow list:
+
+```toml
+[[licenses.exceptions]]
+allow = ["LicenseRef-QuickFIX-1.0"]
+crate = "fixbolt-dict"
+```
+
+This repository's own [`deny.toml`](../deny.toml) carries the same exception, for the same
+reason. `[[licenses.clarify]]` is a different table, for a crate whose licence `cargo-deny`
+cannot read at all; it is not needed here, since `fixbolt-dict`'s `license` field already
+states the exact SPDX expression.

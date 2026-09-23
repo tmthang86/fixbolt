@@ -238,6 +238,7 @@ thứ hai. Không bước nào tự commit — manager chạy lại gate và com
 | crates.io từ chối `LicenseRef-QuickFIX-1.0` lúc publish thật | chưa có test nào chạm được — ghi ở *Rủi ro*; phương án dự phòng `license-file = "NOTICE"` |
 | Chữ "QuickFIX" dùng như lời quảng bá trong README / mô tả crate (điều kiện 4) | kiểm tay ở 2e và ở senior review; không có máy nào kiểm được |
 | Người lạ phát hành binary mà không biết mình mang bảng từ QuickFIX | `docs/GUIDE.md` (2e); `fixbolt::NOTICE` (2c) |
+| **`cargo-deny` từ chối một `LicenseRef-*` trừ khi crate đó được liệt vào `[[licenses.exceptions]]`** — CI run `35881989172` trên `84fd459` đỏ ở đúng chỗ này (`crates/dict/Cargo.toml:14 … LicenseRef-QuickFIX-1.0 is not an SPDX license … rejected: license is not explicitly allowed`), và **không gate cục bộ nào của kế hoạch này chạy `cargo deny`** — `cargo test`, `clippy`, `check-dict-spec-pin.sh` đều xanh trong khi job `deny` của CI đỏ | `deny.toml` `[[licenses.exceptions]]` cho riêng `fixbolt-dict`; đảo ngược: xoá mục đó → `cargo deny --all-features check` in `licenses FAILED`, thêm lại → `licenses ok`. Ai chạy `cargo-deny` trên cây nguồn của mình cũng gặp y hệt — `docs/GUIDE.md` §10 nói rõ dòng exception cần thêm |
 
 ## Rủi ro
 
@@ -341,3 +342,18 @@ bằng `grep`. Sửa trong cùng worktree `fb-p3r1`, chưa commit (manager gộp
   `vendor/` chạy ở job `gates`, không phải `dict-no-vendor`) và dòng 463 (thêm `--locked`);
   `docs/decisions/ADR-0001-*.md` dòng trạng thái (`Proposed …` → `Accepted 2026-09-23`, chỉ dòng
   trạng thái).
+
+**CI run `35881989172` trên `84fd459` đỏ một job: `deny` (licenses)**. `cargo-deny` từ chối
+`LicenseRef-QuickFIX-1.0` — không có mã SPDX, và không crate nào từng cho nó vào
+`[[licenses.exceptions]]` (khác với `[[licenses.clarify]]`, mục đó chỉ cần khi cargo-deny
+không tự đọc được `license` field, không phải trường hợp ở đây). advisories, bans, sources vẫn
+xanh. Sửa trong cùng worktree, chưa commit: `deny.toml` thêm `[[licenses.exceptions]]` cho
+riêng `fixbolt-dict`, trích ADR-0104 quyết định 6 và
+<https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html#the-exceptions-field>,
+**không** đụng danh sách `allow` chung. Chạy `cargo deny --all-features check` (0.20.2, giống
+CI hệt) tại chỗ: trước khi sửa `licenses FAILED`, sau khi sửa
+`advisories ok, bans ok, licenses ok, sources ok`; đảo ngược (xoá mục exception) lại ra
+`licenses FAILED`, thêm lại thì xanh. **Bẫy ghi vào bảng trên**: không gate cục bộ nào của kế
+hoạch này chạy `cargo deny` — `cargo test`, `clippy`, `check-dict-spec-pin.sh` xanh không nói
+gì về job `deny`. `docs/GUIDE.md` §10 đã thêm một câu cho người chạy `cargo-deny` trên cây
+nguồn của mình.
