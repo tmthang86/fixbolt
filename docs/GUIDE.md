@@ -645,7 +645,16 @@ can be measured the same way tag=value is, and `Session<Sbe<S>, _>` is a compile
 tables compiled from a schema — you supply the socket, the framing, and the loop.
 
 **Bring your schema through your own `build.rs`.** `fixbolt-sbe-gen` is not re-exported by
-`fixbolt`; add it as your own build-dependency and call it directly:
+`fixbolt`, and it is **not published on crates.io** (ADR-0160 decision 2 — `Q8` keeps it
+`publish = false` alongside `fixbolt-conformance`). Add it as a build-dependency pinned to the
+release tag instead of `cargo add`:
+
+```toml
+[build-dependencies]
+fixbolt-sbe-gen = { git = "https://github.com/tmthang86/fixbolt", tag = "v0.1.0" }
+```
+
+then call it directly from your own `build.rs`:
 
 ```rust
 // your crate's build.rs

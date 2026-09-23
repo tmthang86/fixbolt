@@ -979,15 +979,15 @@ jobs:
       # steps later.
       - name: install the declared MSRV (1.88.0) alongside the pinned default
         run: rustup toolchain install 1.88.0 --profile minimal
-      # `[measured 2026-09-23]` these two scripts are new; nothing else in
-      # this file's shellcheck step (lint-config job) names them, and that
-      # job is out of scope for this plan step — checked here instead, once,
-      # rather than left silently unchecked.
-      - run: shellcheck -S info scripts/check-package-contents.sh scripts/check-packaged-build.sh
+      # `[measured 2026-09-23]` these scripts are new; nothing else in this
+      # file's shellcheck step (lint-config job) names them, and that job is
+      # out of scope for this plan step — checked here instead, once, rather
+      # than left silently unchecked.
+      - run: shellcheck -S info scripts/check-package-contents.sh scripts/check-packaged-build.sh scripts/stranger-check.sh
       # No --allow-dirty: a real `cargo publish` never gets it either
       # (RELEASING.md step 3), and CI's checkout is clean by construction.
       # This is the step that leaves target/package/<name>-<version>/
-      # populated for the two checks below — the exact bytes a `.crate`
+      # populated for the three checks below — the exact bytes a `.crate`
       # upload would contain (ADR-0160 decision 6).
       - run: cargo publish --workspace --dry-run
       # Read the `Packaging` / `Verifying` lines above, not only this exit
@@ -998,6 +998,14 @@ jobs:
       # MSRV. Depends on the dry run immediately above having populated
       # target/package/ — it says so itself if that directory is missing.
       - run: scripts/check-packaged-build.sh
+      # ADR-0097 exit criterion 7, plan row 8a: the packaged sources, over a
+      # real socket, against a client that shares no code with this
+      # repository (scripts/stranger-logon.py) — the last, and closest to
+      # real, thing this job proves before the owner ever runs `cargo
+      # publish` for real. Builds a crate outside this workspace against
+      # target/package/ (the dry run above), pastes docs/GETTING-STARTED.md's
+      # own code into it verbatim, and drives one Logon/Logout through it.
+      - run: scripts/stranger-check.sh --from packaged
 
   # ADR-0160 decision 7, plan row 6c. Advisory until the first publish exists
   # (ADR-0097 exit criterion 8 is what makes it block, at row 8b): there is no

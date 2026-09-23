@@ -12,8 +12,33 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 
 ## [Unreleased]
 
-**Nothing has been released.** Eight crates now exist and none is published; the entries
-below describe what a first release would contain.
+Nothing yet. The six published crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`,
+`fixbolt-engine`, `fixbolt-sbe`, `fixbolt`) release in lockstep at one version
+([ADR-0160](docs/decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)
+decision 1), so a change here waits for the next version rather than shipping alone.
+
+## Conditions to reach `1.0`
+
+`0.1.0` is a promise about an API no stranger has used yet
+([ADR-0097](docs/decisions/ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md)
+decision 3). `1.0` is not a phase exit criterion, because no command proves it — but it is not
+declared until all of these are true:
+
+- **A deployment this repository did not write**, running against a real counterparty, reported
+  publicly (a blog post, a talk, an issue thread — anything the owner did not author).
+- **At least one minor release (`0.y → 0.y+1`) with no `cargo-semver-checks` exemption** —
+  proof that a breaking-change gate, not merely a promise, has already stood between a real
+  change and a real user at least once.
+
+Neither condition is a phase-3 exit criterion; both are read off this file, not off `STATUS.md`,
+because a released API's promise belongs beside the releases it binds.
+
+## [0.1.0] — date filled in when the owner publishes (`RELEASING.md`)
+
+The first release: six crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`,
+`fixbolt-engine`, `fixbolt-sbe`, `fixbolt`), `0.1.0`, lockstep (ADR-0160). Everything below was
+written while every crate was still `0.0.0` and unpublished, and describes what this first
+version contains.
 
 ### Added
 
