@@ -6,6 +6,7 @@
   not decide anything about a FIXP session: that is the FIXP ADR the spike's last row writes
   ([ADR-0097](ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md)
   decision 5).
+- **Corrected in fact (2026-09-23)**: *Context* and *Consequences* say `sbe.xsd` allows `valueRef` only on `<field>`; it also allows it on `<type>` (`encodedDataType`, `presenceAttributes`, marked deprecated). Only the prose attribute table omits it. The decision is unchanged — see [sbe-valueref-on-a-composite-member](../reference/sbe-valueref-on-a-composite-member.md).
 - **Date**: 2026-09-23
 - **Deciders**: proposed by the architect; accepted by the manager under the owner's standing
   mandate, or by the owner.

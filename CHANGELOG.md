@@ -398,6 +398,17 @@ below describe what a first release would contain.
 
 ### Fixed
 
+- **`fixbolt-sbe-gen` reads `valueRef` on a `<type>`, including a composite member.** A schema
+  whose composite ends in `<type presence="constant" valueRef="Enum.Value"/>` — the SBE 1.0
+  Standard's own timestamp examples, and B3 Binary EntryPoint as Artio ships it — failed with
+  the misleading `constant '' is not an unsigned integer`; it now resolves to the named
+  `<validValue>` at 0 wire bytes, as a `<field>`'s `valueRef` already did. As `sbe-tool` does,
+  `generate` refuses a `valueRef` whose `presence` is not `constant`, or whose enum is not
+  encoded as the `<type>`'s `primitiveType`; every unresolvable `valueRef` error, on a field or
+  a type, now names `valueRef '<ref>'`. Tables for schemas without such a member are
+  byte-identical. `crates/sbe-gen/tests/value_ref_on_composite_member.rs`;
+  [the trap](docs/reference/sbe-valueref-on-a-composite-member.md); ADR-0140 decision 4.
+
 - **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered
   a peer's KeyUpdate with an `InternalError` alert unless its `tls13-key-update` feature was on;
   this engine had not enabled it. A long-lived session under kTLS — against any peer that
