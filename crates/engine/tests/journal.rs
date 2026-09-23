@@ -987,3 +987,395 @@ fn count_of(haystack: &[u8], needle: &[u8]) -> usize {
         .filter(|w| *w == needle)
         .count()
 }
+
+// ---------------------------------------------------------------------------
+// What the file missed is counted — ADR-0154 decisions 4 and 5, plan
+// `docs/plans/2026-09-23-phase-3-found-defects.md` *Sửa 5*, row L.
+//
+// `[2026-09-24]` `FileJournal::put` under `Async` pushed each record to its
+// writer's 1 MiB ring with `let _ = p.push(..)`: a full ring dropped the record
+// and `put` still said `true`. The senior review's probe: the writer asleep,
+// 40 puts of 60 KB, every one `true`, 28 of 40 on disk, nothing counted
+// anywhere. `true` stays right — memory holds the message and a resend while
+// the process runs replays it — but the file has holes a restart will read,
+// and nobody was told.
+// ---------------------------------------------------------------------------
+
+/// How big each message in the burst is: a few of them fill the writer's
+/// 1 MiB ring, and each fits a slot.
+const BIG: usize = 60 * 1024;
+/// How many go in the burst: 12 MB through a 1 MiB ring.
+const BURST: u32 = 200;
+/// A slot that holds one `BIG` message, and only four of them: the ring wraps,
+/// so after the first four puts no put touches a page for the first time, and
+/// each is two copies of 60 KB — far quicker than the writer's write and CRC of
+/// the same bytes. The ring overflows on every run, not on a slow one.
+type BigFile = FileJournal<4, { BIG + 1024 }>;
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "fixbolt-journal-unwritten-{name}-{}.log",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
+fn messages_on_disk(path: &std::path::Path) -> u64 {
+    fixbolt_engine::journal::Reader::open(path)
+        .expect("read")
+        .records()
+        .filter(|r| matches!(r, fixbolt_engine::journal::Record::Message { .. }))
+        .count() as u64
+}
+
+/// **A full ring is counted, not silent.** Two hundred 60 KB puts in a row,
+/// faster than the writer can take them, every one `true`, and `unwritten()`
+/// is exactly the number the file does not have.
+#[test]
+fn a_full_ring_is_counted_not_silent() {
+    let path = scratch("counted");
+    let body = vec![b'x'; BIG];
+    let mut j = BigFile::open(&path, Durability::Async).expect("open");
+    for seq in 1..=BURST {
+        assert!(
+            j.put(seq, &body),
+            "put {seq} said it was not kept; memory holds it, so it was"
+        );
+    }
+    let unwritten = j.unwritten();
+    j.close();
+    drop(j);
+    let on_disk = messages_on_disk(&path);
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        on_disk < u64::from(BURST),
+        "the premise: the ring overflowed ({on_disk} of {BURST} on disk)"
+    );
+    assert_eq!(
+        unwritten,
+        u64::from(BURST) - on_disk,
+        "{on_disk} of {BURST} messages reached the file and the journal counted {unwritten} as unwritten"
+    );
+}
+
+/// The engine's half: whatever a journal counts as unwritten reaches the
+/// observer, as `JournalUnwritten`, adding up to exactly the journal's count.
+///
+/// **A journal that misses on purpose**, not a `FileJournal` racing its writer:
+/// the ring's arithmetic is [`a_full_ring_is_counted_not_silent`]'s, and what is
+/// asked here is only whether the engine reads the count and reports its
+/// increases — a question a race would answer on some runs.
+mod through_the_engine {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use fixbolt_conformance::script::FIXED_TIME_MILLIS;
+    use fixbolt_engine::clock::ManualClock;
+    use fixbolt_engine::dispatch::InlineDispatch;
+    use fixbolt_engine::journal::{MemJournal, SLOT_LEN};
+    use fixbolt_engine::observe::EventKind;
+    use fixbolt_engine::transport::{Io, Loopback, Transport};
+    use fixbolt_engine::wait::Spin;
+    use fixbolt_engine::{Config, Engine};
+    use fixbolt_session::journal::Journal;
+
+    use super::{EchoApp, inputs, order};
+
+    /// How many orders the counterparty sends.
+    const ORDERS: u32 = 40;
+
+    /// Keeps everything in memory and says every other message missed its
+    /// file, remembering the last count the engine read.
+    struct HalfMissed {
+        inner: MemJournal<64, SLOT_LEN>,
+        puts: u64,
+        seen: Arc<AtomicU64>,
+    }
+
+    impl Journal for HalfMissed {
+        fn put(&mut self, seq: u32, bytes: &[u8]) -> bool {
+            self.puts += 1;
+            self.inner.put(seq, bytes)
+        }
+        fn get(&self, seq: u32) -> Option<&[u8]> {
+            self.inner.get(seq)
+        }
+        fn highest(&self) -> Option<u32> {
+            self.inner.highest()
+        }
+        fn oldest(&self) -> Option<u32> {
+            self.inner.oldest()
+        }
+        fn mark_in(&mut self, seq: u32) {
+            self.inner.mark_in(seq);
+        }
+        fn highest_in(&self) -> Option<u32> {
+            self.inner.highest_in()
+        }
+        fn mark_out(&mut self, seq: u32) {
+            self.inner.mark_out(seq);
+        }
+        fn highest_out(&self) -> Option<u32> {
+            self.inner.highest_out()
+        }
+        fn unwritten(&self) -> u64 {
+            let n = self.puts / 2;
+            self.seen.store(n, Ordering::Relaxed);
+            n
+        }
+    }
+
+    fn drain(peer: &mut Loopback) -> String {
+        let mut out = String::new();
+        let mut buf = [0u8; 8192];
+        while let Io::Ready(k) = peer.recv(&mut buf) {
+            if k == 0 {
+                break;
+            }
+            out.push_str(&String::from_utf8_lossy(&buf[..k]).replace('\u{1}', "|"));
+        }
+        out
+    }
+
+    #[test]
+    fn a_full_journal_ring_is_an_event() {
+        let seen = Arc::new(AtomicU64::new(0));
+        let mut e: Engine<
+            Loopback,
+            fixbolt_session::Acceptor,
+            InlineDispatch<EchoApp>,
+            ManualClock,
+            Spin,
+            HalfMissed,
+            256,
+            4096,
+            8192,
+        > = Engine::new(
+            Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+            InlineDispatch::new(EchoApp),
+            ManualClock::at(FIXED_TIME_MILLIS),
+            Spin,
+            2,
+        );
+        let observer = e.observer();
+        let (mut peer, side) = Loopback::pair();
+        e.add_with_journal(
+            side,
+            HalfMissed {
+                inner: MemJournal::new(),
+                puts: 0,
+                seen: Arc::clone(&seen),
+            },
+        );
+        let _ = peer.send(&inputs("4b_ReceivedTestRequest.def")[0]);
+        e.turn();
+        let logon = drain(&mut peer);
+        assert!(logon.contains("|35=A|"), "the premise: logged on: {logon}");
+
+        // Four orders a turn, so the count moves on ten turns.
+        let mut echoed = 0;
+        for batch in 0..ORDERS / 4 {
+            for k in 0..4 {
+                let _ = peer.send(&order(2 + batch * 4 + k));
+            }
+            e.turn();
+            echoed += drain(&mut peer).matches("|35=D|").count();
+        }
+        assert_eq!(
+            echoed, ORDERS as usize,
+            "the premise: every order was echoed"
+        );
+
+        let mut events = Vec::new();
+        observer.events(&mut events);
+        let reported: Vec<u64> = events
+            .iter()
+            .filter_map(|x| match x.kind() {
+                EventKind::JournalUnwritten { count } => Some(count),
+                _ => None,
+            })
+            .collect();
+        let counted = seen.load(Ordering::Relaxed);
+        assert_eq!(
+            counted,
+            u64::from(ORDERS) / 2,
+            "the premise: the journal counted"
+        );
+        assert_eq!(
+            reported.iter().sum::<u64>(),
+            counted,
+            "the journal counted {counted} records its file missed, the events said {reported:?}"
+        );
+        assert_eq!(
+            reported.len(),
+            (ORDERS / 4) as usize,
+            "one event per turn that moved the count, not one per record: {reported:?}"
+        );
+    }
+}
+
+/// **A journal refused with its prefix is retired, not joined** — ADR-0154
+/// decision 5. A connection whose pre-session bytes will not fit `RX` is
+/// refused before it becomes a `Connection`, so `Connection`'s retiring `Drop`
+/// never runs for it: its resumed `FileJournal` was dropped plain, and a plain
+/// drop joins the writer — a futex wait on the engine thread, mid-serving.
+#[cfg(target_os = "linux")]
+mod a_refused_prefix {
+    use std::time::Duration;
+
+    use fixbolt_conformance::script::FIXED_TIME_MILLIS;
+    use fixbolt_engine::clock::ManualClock;
+    use fixbolt_engine::dispatch::InlineDispatch;
+    use fixbolt_engine::journal::{Durability, FileJournal, wait_for_retired_writers};
+    use fixbolt_engine::recovery::Resumed;
+    use fixbolt_engine::transport::Loopback;
+    use fixbolt_engine::wait::Spin;
+    use fixbolt_engine::{Config, Engine};
+    use fixbolt_session::journal::Journal;
+
+    use super::{EchoApp, scratch};
+
+    const RX: usize = 4096;
+    type Disk = FileJournal<16, 512>;
+
+    /// This thread's voluntary context switches so far.
+    fn voluntary_switches() -> u64 {
+        std::fs::read_to_string("/proc/thread-self/status")
+            .expect("/proc is mounted")
+            .lines()
+            .find_map(|l| l.strip_prefix("voluntary_ctxt_switches:"))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("the kernel reports voluntary_ctxt_switches")
+    }
+
+    /// A resumed journal whose writer has work in hand: the drop that joined
+    /// it would have had to wait.
+    fn busy_journal(name: &str) -> (Disk, std::path::PathBuf) {
+        let path = scratch(name);
+        let mut j = Disk::open(&path, Durability::Async).expect("open");
+        for seq in 1..=2_000 {
+            j.mark_in(seq);
+        }
+        j.mark_out(7);
+        (j, path)
+    }
+
+    #[test]
+    fn a_refused_prefix_retires_its_journal() {
+        let (journal, path) = busy_journal("refused-prefix");
+        let mut e: Engine<
+            Loopback,
+            fixbolt_session::Acceptor,
+            InlineDispatch<EchoApp>,
+            ManualClock,
+            Spin,
+            Disk,
+            256,
+            RX,
+            8192,
+        > = Engine::new(
+            Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+            InlineDispatch::new(EchoApp),
+            ManualClock::at(FIXED_TIME_MILLIS),
+            Spin,
+            2,
+        );
+        let (_peer, side) = Loopback::pair();
+        let too_long = vec![b'x'; RX + 1];
+        let resumed = Resumed {
+            journal,
+            next_out: 8,
+            next_in: 2_001,
+            last_active_ms: None,
+        };
+
+        let before = voluntary_switches();
+        let refused = e.add_with_prefix_config_and_journal(
+            side,
+            Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+            &too_long,
+            Some(resumed),
+            || panic!("a connection being refused opens no fresh journal"),
+        );
+        let after = voluntary_switches();
+
+        assert!(
+            refused.is_err(),
+            "the premise: a prefix longer than RX is refused"
+        );
+        let finished = wait_for_retired_writers(Duration::from_secs(1));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            after - before,
+            0,
+            "the engine thread made {} voluntary context switches refusing a prefix — \
+             a resumed journal joined rather than retired",
+            after - before
+        );
+        assert!(finished, "the retired writer finished within 1 s");
+    }
+
+    /// The same, through the sharded runtime's door (`Shardable::add_started`),
+    /// which reaches the engine by `Start` rather than by `(state, fresh)`.
+    #[cfg(feature = "affinity")]
+    #[test]
+    fn a_refused_prefix_through_a_shard_retires_its_journal() {
+        use fixbolt_engine::recovery::Start;
+        use fixbolt_engine::shard::Shardable;
+        use fixbolt_engine::transport::TcpTransport;
+
+        let (journal, path) = busy_journal("refused-prefix-shard");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let client =
+            std::net::TcpStream::connect(listener.local_addr().expect("addr")).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        let transport = TcpTransport::new(server).expect("transport");
+        let mut e: Engine<
+            TcpTransport,
+            fixbolt_session::Acceptor,
+            InlineDispatch<EchoApp>,
+            ManualClock,
+            Spin,
+            Disk,
+            256,
+            RX,
+            8192,
+        > = Engine::new(
+            Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+            InlineDispatch::new(EchoApp),
+            ManualClock::at(FIXED_TIME_MILLIS),
+            Spin,
+            2,
+        );
+        let too_long = vec![b'x'; RX + 1];
+        let start = Start::Resumed(Resumed {
+            journal,
+            next_out: 8,
+            next_in: 2_001,
+            last_active_ms: None,
+        });
+
+        let before = voluntary_switches();
+        let added = Shardable::add_started(
+            &mut e,
+            transport,
+            Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
+            &too_long,
+            start,
+        );
+        let after = voluntary_switches();
+
+        drop(client);
+        assert!(!added, "the premise: a prefix longer than RX is refused");
+        let finished = wait_for_retired_writers(Duration::from_secs(1));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            after - before,
+            0,
+            "the shard's engine thread made {} voluntary context switches refusing a prefix",
+            after - before
+        );
+        assert!(finished, "the retired writer finished within 1 s");
+    }
+}

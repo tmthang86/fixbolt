@@ -720,6 +720,23 @@ pub enum EventKind {
         /// How many were refused on this turn.
         count: u32,
     },
+    /// Journal records that were kept in memory but **never reached the
+    /// journal's file**.
+    ///
+    /// **Zero on a healthy acceptor.** A `FileJournal` under
+    /// `Durability::Async` hands each record to its writer through a 1 MiB
+    /// ring and drops it, rather than wait, when the ring is full — a disk
+    /// slower than the engine, or a burst larger than the ring. The message
+    /// still went out and is still replayable **while this process runs**
+    /// (`put` said `true`, and memory holds it); what is missing is the copy a
+    /// restart reads, so a recovery resumed from that file finds holes.
+    /// `GUIDE.md` §6.
+    /// [ADR-0154](../../../docs/decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)
+    /// decision 4.
+    JournalUnwritten {
+        /// How many records missed the file on this turn.
+        count: u64,
+    },
     /// Messages the message log did not manage to write.
     ///
     /// **Zero on a healthy engine, and it is not a session's fault.** A full

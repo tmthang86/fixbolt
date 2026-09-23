@@ -53,7 +53,9 @@ fn f(layout: &'static fixbolt_sbe::MessageLayout, id: u16) -> &'static fixbolt_s
 /// rule for a numeric, non-`char` array).
 fn u32_array_le(bytes: &[u8]) -> Vec<u32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

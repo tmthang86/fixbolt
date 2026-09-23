@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fixbolt::{Answer, GroupData, GroupEntryData, Handler, Incoming, Peer, Reply};
-use fixbolt_engine::journal::{Durability, FileJournal, Store};
+use fixbolt_engine::journal::{Durability, FileJournal, Released, Store};
 use fixbolt_engine::msglog::NoLog;
 use fixbolt_engine::reconnect::Policy;
 use fixbolt_engine::recovery::{NoRecovery, Recovery, Resumed};
@@ -158,6 +158,9 @@ pub(crate) struct OnDisk {
     /// type now, and a line reading `interop-reconnect: resuming` out of an
     /// acceptor names the wrong scenario in a transcript the script greps.
     tag: &'static str,
+    /// The handle of the journal last handed to the engine: says when its
+    /// writer has let go of the file (ADR-0155). `None` until one is opened.
+    released: Option<Released>,
 }
 
 impl OnDisk {
@@ -169,6 +172,7 @@ impl OnDisk {
             path: path.to_path_buf(),
             how,
             tag,
+            released: None,
         })
     }
 
@@ -180,9 +184,12 @@ impl OnDisk {
     /// once, so reaching this arm means the filesystem changed under a running
     /// gate — which is not a result, and a gate that carries on from it would
     /// report a reconnect failure that was really a disk failure.
-    fn open(&self) -> Disk {
+    fn open(&mut self) -> Disk {
         match FileJournal::open(&self.path, self.how) {
-            Ok(j) => j,
+            Ok(j) => {
+                self.released = Some(j.released());
+                j
+            }
             Err(e) => {
                 println!("{}: FAIL journal {}: {e}", self.tag, self.path.display());
                 std::process::exit(1)
@@ -192,6 +199,17 @@ impl OnDisk {
 }
 
 impl Recovery<Disk> for OnDisk {
+    /// `[2026-09-24]` **Not yet, while the last session's writer still holds
+    /// the file.** A departing session's journal is retired without waiting
+    /// for its writer (ADR-0153), and `FileJournal::open` refuses a file its
+    /// writer still holds (ADR-0154) — without this, a quick reconnect would
+    /// reach [`Self::open`] and exit on `WouldBlock`. The engine parks the
+    /// connection instead and asks again. Answered by the writer's own handle,
+    /// one atomic load, never by the filesystem (ADR-0155).
+    fn ready(&mut self, _cfg: &Config) -> bool {
+        self.released.as_ref().is_none_or(Released::is_released)
+    }
+
     fn fresh(&mut self, _cfg: &Config) -> Disk {
         self.open()
     }
@@ -294,11 +312,11 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     };
     // `Durability::Async` as the plan says. The journal is re-opened by
-    // `recover` on every attempt while the process keeps running, so what is
-    // being taken on trust is that the previous `FileJournal` has been dropped
-    // — and its writer thread joined — before the next one opens the same path.
-    // If that turns out to be false the `next_out` assertion is what sees it,
-    // and the plan's trap 5 says what to do about it.
+    // `recover` on every attempt while the process keeps running. `[2026-09-24]`
+    // what used to be taken on trust here — that the previous `FileJournal`'s
+    // writer had finished before the next `open` — is now enforced: `open`
+    // refuses a file a writer still holds, and `OnDisk::ready` parks the
+    // attempt until that writer says it has let go (ADR-0154, ADR-0155).
     let recovery = match OnDisk::probe(Path::new(&path), Durability::Async, "interop-reconnect") {
         Ok(r) => r,
         Err(e) => {

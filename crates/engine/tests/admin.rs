@@ -141,10 +141,10 @@ impl Running {
     fn wait_logged_on(&self) -> fixbolt_engine::dispatch::ConnId {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if let Some(s) = self.observer.request() {
-                if let Some(on) = s.sessions().iter().find(|x| x.logged_on()) {
-                    return on.id();
-                }
+            if let Some(s) = self.observer.request()
+                && let Some(on) = s.sessions().iter().find(|x| x.logged_on())
+            {
+                return on.id();
             }
             std::thread::sleep(Duration::from_millis(2));
         }

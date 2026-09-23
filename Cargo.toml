@@ -32,7 +32,9 @@ exclude = ["fuzz", "spikes/ktls"]
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tmthang86/fixbolt"
-rust-version = "1.85"
+# 1.89 for `File::try_lock`: a journal file has one appender (ADR-0154
+# decision 1). clippy's `incompatible_msrv` holds every call to this line.
+rust-version = "1.89"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

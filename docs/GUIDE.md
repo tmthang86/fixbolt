@@ -971,6 +971,7 @@ The messages a resend cannot reach are not lost quietly:
 |---|---|---|
 | `SessionSnapshot::resend_beyond_journal` non-zero, or `EventKind::ResendBeyondJournal { filled, oldest }` | a counterparty asked for `filled` messages the ring no longer held and got gap fills; `oldest` is how far back it reached | raise `N`, or accept that disconnections longer than `N` messages lose data |
 | `SessionSnapshot::puts_refused` non-zero, or `EventKind::JournalRefused { count }` | your replies are longer than `SLOT_LEN`. They went out; they can never be replayed | raise `SLOT_LEN`, and re-check `resend_batch × SLOT_LEN < TX` |
+| `EventKind::JournalUnwritten { count }` (a `FileJournal` under `Async`) | the writer thread fell behind: its 1 MiB ring was full and `count` records — messages or marks — **never reached the file**. They went out, and a resend **before a restart** still replays them from memory; a recovery **after** a restart reads a file with holes, and gap-fills them | a slower disk than the engine, or a burst larger than the ring. Put the journal on a faster disk, pin its writer (`open_pinned`), or accept holes; `Durability::Fsync` never misses (and blocks instead). [ADR-0154](decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md) decision 4 |
 | **Nothing at all** — a counterparty says you never answered, and no counter moved | your reply did not fit `APP`, the application's layout scratch. `Application::on_message` returning `None` means *"nothing to say"*, so this is indistinguishable from silence by design | raise `APP` through `serve_with`; `[measured 2026-09-05]` the default is 1 KiB and it is the tightest ceiling here — [a-ceiling-has-more-than-one-floor](reference/a-ceiling-has-more-than-one-floor.md) |
 
 **`tools/jrnl` is how you get a message older than the ring**: by hand, from the file, off the
@@ -1021,9 +1022,21 @@ reachable without giving up the serving loop
 
 ```rust
 impl Recovery<FileJournal<64, 4096>> for OnDisk {
+    // Asked before `recover`, on the engine thread in `serve*`: one atomic
+    // load, never a system call. `false` parks the connection until the last
+    // session's writer has let go of the file. Without it, `open` in `fresh`
+    // answers `WouldBlock` on a quick reconnect.
+    fn ready(&mut self, cfg: &Config) -> bool {
+        // `handed_out`: the `Released` of the journal last opened for this
+        // counterparty. None yet → nothing of ours holds the file.
+        self.handed_out(cfg).map_or(true, Released::is_released)
+    }
+
     // Called when the counterparty left nothing. The engine cannot build a
-    // FileJournal for you: only you know the path.
-    fn fresh(&mut self, cfg: &Config) -> FileJournal<64, 4096> { /* open it */ }
+    // FileJournal for you: only you know the path. Keep its `released()`.
+    fn fresh(&mut self, cfg: &Config) -> FileJournal<64, 4096> {
+        /* open it, then: self.keep(cfg, journal.released()); */
+    }
 
     fn recover(&mut self, cfg: &Config) -> Option<Resumed<FileJournal<64, 4096>>> {
         // All three numbers, computed once, correctly. `None` means
@@ -1049,8 +1062,24 @@ Four things to know:
    existed.
 2. **A process killed between logon and shutdown reports the logon instant**, which after a
    long session may be a day stale. There is no periodic mark.
-3. **Nothing stops two processes opening the same file.** Both append and the records
-   interleave. One journal, one process.
+3. **One file has one appender, and the operating system holds it** (`[2026-09-24]`,
+   [ADR-0154](decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md)).
+   `FileJournal::open` takes an exclusive lock before it reads the file and fails at once with
+   `ErrorKind::WouldBlock` while anyone else holds it — another process, or **this process's
+   own writer thread for a session that has just ended**, which is still flushing (ADR-0153
+   lets it). **`WouldBlock` does not mean "no history"**: it means the history is still being
+   written. Keep each journal's `FileJournal::released()` handle and answer `Recovery::ready`
+   with `Released::is_released()`, as above, and the engine parks a quick reconnect until the
+   writer says it has closed the file — at most once a millisecond it asks again, never
+   waiting, and a connection still parked after its `LogonTimeout` (or `Limits::logon_ms` when
+   that is zero; the handshake's limit for `connect_and_serve*`) is closed unanswered. A
+   recovery that instead reads `WouldBlock` as "start fresh" resets a session that has history.
+   **`ready` must not make a system call**: in `serve*` the engine asks it on its own thread, once
+   a millisecond per parked connection. `journal::file_busy(path)` gives the same answer by
+   opening the file — and `open(2)` can sleep in the kernel — so it is for tools and for the
+   sharded runtime's acceptor thread, never for `ready` in `serve*`
+   ([ADR-0155](decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md)). The lock is advisory: a program that ignores `flock` can
+   still write the file.
 4. **`NoRecovery` and `FromFn` require `J: Default`**, so neither can carry a `FileJournal`. A
    file-backed deployment writes a named type, which it has to anyway, since only it knows
    which path belongs to which counterparty.
@@ -1084,8 +1113,11 @@ before the process exits** — otherwise a clean exit can lose what a writer had
 the loss `Async` accepts on a crash and not on a clean stop. It returns `false` if the timeout
 passed first. Dropping the `Engine` retires every journal it still holds, so drop it *before*
 the wait. The compiler cannot hold this line; nothing but this paragraph and the rustdoc does.
-A `FileJournal` you own and close yourself (`close()`, or dropping one nobody retired) still
-joins its writer, as before
+**`ready` and `recover` run on the engine thread in `serve*`**, between turns, while other
+sessions are being served — `ready` must not make a system call, and a `recover` that reads a file costs every
+one of them that read (a known cost, ADR-0154 *Consequences*; the sharded runtime asks both on
+its acceptor thread instead). A `FileJournal` you own and close yourself (`close()`, or dropping
+one nobody retired) still joins its writer, as before
 ([ADR-0153](decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md); `crates/engine/tests/retire.rs`).
 
 ### 6c. The message log: both directions, refusals included

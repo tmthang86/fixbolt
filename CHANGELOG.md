@@ -17,6 +17,35 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A journal file has one appender; a quick reconnect waits for it by being parked; what the
+  file missed is counted.** **`fixbolt_engine::recovery::Recovery::ready(&mut self, &Config) ->
+  bool`**, defaulted to `true`, is asked before every `recover`; `false` parks the connection —
+  never waited for, asked again at most once per millisecond, dropped after its `LogonTimeout`
+  (`Limits::logon_ms` when that is zero); it runs on the engine thread in `serve*` and must answer
+  without a system call. **`FileJournal::released(&self) -> journal::Released`** is how: a
+  `Clone` handle over a flag the writer thread sets after it has closed the file (the journal's
+  `Drop` under `Fsync`), and **`Released::is_released()`** is one atomic load — a recovery keeps
+  the handle of each journal it hands out and answers `ready` with it
+  ([ADR-0155](docs/decisions/ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md)).
+  **`fixbolt_engine::journal::file_busy(path) -> bool`** asks the filesystem the same question
+  (`open` + `try_lock`) and is for tools and the sharded acceptor thread only — `open(2)` can
+  sleep. **`fixbolt_session::journal::Journal::unwritten(&self)
+  -> u64`**, defaulted to `0`, counts records a journal kept in memory and failed to write to its
+  durable copy; `FileJournal` counts every push its writer's ring refused, and **`put` still
+  answers `true`** for them. **`observe::EventKind::JournalUnwritten { count: u64 }`** reports the
+  increases, once per turn that moved it. **`shard::Shardable::RX`**, an associated constant
+  defaulted to `usize::MAX` and set to an engine's `RX`, lets `Shards::start` assert `PRE <= RX`
+  at compile time. **Breaking:** `FileJournal::open` / `open_pinned` now **fail with
+  `io::ErrorKind::WouldBlock`** while another appender — another process, or this process's own
+  writer still flushing a retired journal — holds the file, and fail on a filesystem that cannot
+  lock; a read error on an existing file is now returned instead of being read as an empty file.
+  A `Recovery` that opens a `FileJournal` must implement `ready` (`docs/GUIDE.md` §6b) and must
+  not read `WouldBlock` as "no history". A `Shards::<PRE>` whose engines have an `RX` below `PRE`
+  no longer compiles. **MSRV 1.85 → 1.89**, for `File::try_lock`. A journal refused with its
+  prefix is now retired before it is dropped, not joined on the engine thread.
+  [ADR-0154](docs/decisions/ADR-0154-a-journal-file-has-one-appender-a-reconnect-waits-for-it-by-parking-and-what-the-file-missed-is-counted.md);
+  `crates/engine/tests/one_appender.rs`, `crates/engine/tests/journal.rs`.
+
 - **A connection's journal is retired when it leaves, and its writer is awaited after serving.**
   **`fixbolt_session::journal::Journal::retire(&mut self)`**, defaulted to a no-op, is called by
   the engine when a connection is dropped; `FileJournal` under `Async` answers by telling its
