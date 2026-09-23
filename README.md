@@ -57,8 +57,38 @@ Where each piece of work stands, day by day, is in [STATUS.md](STATUS.md).
 
 ## Getting started
 
-**Nothing is published yet.** Every crate is `version = "0.0.0"` and `publish = false`, so
-there is no `cargo add`. Clone the repository and run the bootstrap script first:
+### As a user: install the crate
+
+```sh
+cargo add fixbolt@0.1.0
+```
+
+**Not on crates.io yet.** The six published crates are already `0.1.0` in this repository, but
+nothing has been uploaded until the owner runs `cargo publish` ([`RELEASING.md`](RELEASING.md))
+— and the `v0.1.0` git tag does not exist until that same step. Until both are true, depend on a
+commit or branch of this repository instead:
+
+```toml
+fixbolt = { git = "https://github.com/tmthang86/fixbolt", rev = "<a commit sha from this repository>" }
+```
+
+`crates/dict` ships QuickFIX's FIX 4.4, FIXT 1.1 and FIX 5.0 SP2 dictionaries inside the crate
+itself, at `crates/dict/spec/`, under [`NOTICE`](NOTICE) — so `fixbolt-dict`, and everything
+built on top of it (including `fixbolt`), builds with **nothing but crates.io** (or git, until
+then) reachable: no `vendor/` checkout, no external toolchain (ADR-0104). Two steps to a running
+acceptor: [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
+
+### Support level
+
+This is a **single-owner, spare-time project**, not a company or a team. Issues and pull
+requests are read, but there is no SLA and no on-call. `docs/PRD.md` says what is built and what
+is not; `CHANGELOG.md`'s *Conditions to reach 1.0* says what has to be true — a deployment this
+repository did not write, reported publicly, and one minor release with no `semver-checks`
+exemption — before this project calls itself `1.0`.
+
+### As a contributor: build the workspace
+
+Clone the repository and run the bootstrap script first:
 
 ```sh
 scripts/fetch-quickfix-assets.sh    # required for the tests and the conformance oracle —
@@ -66,13 +96,10 @@ scripts/fetch-quickfix-assets.sh    # required for the tests and the conformance
 cargo test --all
 ```
 
-`crates/dict` ships QuickFIX's FIX 4.4, FIXT 1.1 and FIX 5.0 SP2 dictionaries inside the crate
-itself, at `crates/dict/spec/`, under [`NOTICE`](NOTICE) — so `fixbolt-dict`, and everything
-built only on top of it, builds with nothing but this repository (ADR-0104). The bootstrap
-script is still required for everything else: it fetches the 59 acceptance definitions and
-QuickFIX's own generated C++ into `vendor/`, which is gitignored, and those are the oracle the
-rest of `cargo test --all` checks the tables against — **without the script the full test
-suite fails**, even though the crate that generates the tables does not need it.
+The bootstrap script fetches the 59 acceptance definitions and QuickFIX's own generated C++
+into `vendor/`, which is gitignored, and those are the oracle the rest of `cargo test --all`
+checks the tables against — **without the script the full test suite fails**, even though the
+crate that generates the tables does not need it.
 
 Then read, depending on what you want:
 
@@ -170,6 +197,11 @@ benches/         baselines.tsv: one recorded timing baseline per (CPU model, cas
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets; nightly, outside the workspace
 spikes/ktls/     answers ADR-0005's kTLS question and stops; nothing depends on it
+spikes/fixp-probe/
+                 a Rust probe speaks Artio's Binary EntryPoint schema (B3, 5.6) against our own
+                 referee (Referee.java, Artio's public API only); scripts/fixp-spike.sh's three
+                 arms are CI job `fixp-spike`, BLOCKING (ADR-0140) — nothing in crates/ or tools/
+                 depends on it, and no FIXP session is built here (ADR-0097 decision 5)
 docs/            see the table above; decisions/ holds the ADRs, reference/ the
                  measured facts and traps, plans/ what is about to be built (Vietnamese),
                  internals/ a map of which file in which crate holds what

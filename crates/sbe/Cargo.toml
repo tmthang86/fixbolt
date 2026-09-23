@@ -1,12 +1,18 @@
 [package]
 name = "fixbolt-sbe"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
 description = "SBE 1.0 decode and encode in place over schema tables, no allocation, no_std"
+readme = "README.md"
+keywords = ["sbe", "binary-encoding", "zero-copy", "low-latency", "trading"]
+categories = ["encoding", "finance", "no-std"]
+# ADR-0160 decision 4: an allowlist. Tests and benches are not shipped — their
+# path-only dev-dependencies are stripped from the `.crate` and half of them
+# read `vendor/`, so they cannot build from it.
+include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 # ADR-0081 decision 1: zero runtime dependencies from outside this workspace.
 # The one dependency is `fixbolt-codec` (itself zero-dependency and `no_std`),
@@ -19,7 +25,7 @@ default = ["encoding"]
 encoding = ["dep:fixbolt-codec"]
 
 [dependencies]
-fixbolt-codec = { path = "../codec", optional = true }
+fixbolt-codec = { version = "=0.1.0", path = "../codec", optional = true }
 
 [[bench]]
 name = "alloc"
@@ -33,3 +39,10 @@ required-features = ["encoding"]
 
 [lints]
 workspace = true
+
+# ADR-0160 decision 8: docs.rs builds a named feature list, never
+# `all-features`. docs.rs passes `--cfg docsrs` itself, which turns on
+# `feature(doc_cfg)` at the crate root so each gated item shows its feature.
+[package.metadata.docs.rs]
+# Defaults only (`encoding`).
+features = []

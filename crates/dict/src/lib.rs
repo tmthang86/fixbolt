@@ -5,6 +5,7 @@
 //! is committed inside this crate, under `NOTICE`, as ADR-0001 decision 5 and
 //! [ADR-0104](../../../docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
 //! explain.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod field_type;
 mod tables;

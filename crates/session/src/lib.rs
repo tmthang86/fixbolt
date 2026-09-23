@@ -14,6 +14,7 @@
 //!
 //! [`docs/plans/2026-08-28-session-layer.md`]: https://github.com/
 #![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod clock;
 pub mod journal;

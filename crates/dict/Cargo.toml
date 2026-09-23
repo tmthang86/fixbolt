@@ -1,6 +1,6 @@
 [package]
 name = "fixbolt-dict"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 # Not `license.workspace = true`: this is the only crate in the workspace
 # that ships QuickFIX-derived data (crates/dict/spec/, under NOTICE), so it
@@ -14,8 +14,14 @@ edition.workspace = true
 license = "(MIT OR Apache-2.0) AND LicenseRef-QuickFIX-1.0"
 repository.workspace = true
 rust-version.workspace = true
-publish = false
 description = "FIX 4.4 tables generated from QuickFIX's XML dictionary, shipped under NOTICE (ADR-0104)"
+readme = "README.md"
+keywords = ["fix", "fix-protocol", "fix44", "dictionary", "trading"]
+categories = ["finance", "parser-implementations"]
+# ADR-0160 decision 4: an allowlist. Tests and benches are not shipped — their
+# path-only dev-dependencies are stripped from the `.crate` and half of them
+# read `vendor/`, so they cannot build from it.
+include = ["src/**", "build.rs", "spec/**", "NOTICE", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 # `fix50sp2` adds **no dependency**: `roxmltree` is already an unconditional
 # build-dependency and the feature only decides whether `build.rs` reads a
@@ -26,10 +32,16 @@ description = "FIX 4.4 tables generated from QuickFIX's XML dictionary, shipped 
 fix50sp2 = []
 
 [dependencies]
-fixbolt-codec = { path = "../codec" }
+fixbolt-codec = { version = "=0.1.0", path = "../codec" }
 
 [build-dependencies]
 roxmltree = "=0.20.0"
 
 [lints]
 workspace = true
+
+# ADR-0160 decision 8: docs.rs builds a named feature list, never
+# `all-features`. docs.rs passes `--cfg docsrs` itself, which turns on
+# `feature(doc_cfg)` at the crate root so each gated item shows its feature.
+[package.metadata.docs.rs]
+features = ["fix50sp2"]

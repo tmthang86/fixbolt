@@ -1,12 +1,18 @@
 [package]
 name = "fixbolt-engine"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
 description = "TCP acceptor and connector, a thread that never sleeps in the kernel"
+readme = "README.md"
+keywords = ["fix", "fix-protocol", "acceptor", "low-latency", "trading"]
+categories = ["finance", "network-programming"]
+# ADR-0160 decision 4: an allowlist. Tests and benches are not shipped — their
+# path-only dev-dependencies are stripped from the `.crate` and half of them
+# read `vendor/`, so they cannot build from it.
+include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 # ADR-0014 decision 1. `standard` is the default mode, so its feature is on by
 # default — and the consequence is a property worth having rather than an
@@ -41,9 +47,9 @@ fix50sp2 = ["fixbolt-dict/fix50sp2", "fixbolt-session/fix50sp2"]
 tls = ["dep:rustls", "dep:ktls-core", "dep:libc"]
 
 [dependencies]
-fixbolt-codec = { path = "../codec" }
-fixbolt-dict = { path = "../dict" }
-fixbolt-session = { path = "../session" }
+fixbolt-codec = { version = "=0.1.0", path = "../codec" }
+fixbolt-dict = { version = "=0.1.0", path = "../dict" }
+fixbolt-session = { version = "=0.1.0", path = "../session" }
 
 # The first external dependency this crate has ever had, and it arrives behind a
 # feature. `std` exposes no readiness API (ADR-0013), so blocking until a socket
@@ -88,7 +94,8 @@ fixbolt-conformance = { path = "../conformance" }
 # declared `rust-version` of the time (1.85). That declaration is about the
 # published crates, and nothing in CI builds on it — clippy's
 # `incompatible_msrv` reads it, which is the only check it gets. It is 1.89
-# since 2026-09-24, for `File::try_lock` (ADR-0154 decision 1).
+# since 2026-09-24, for `File::try_lock` (ADR-0154 decision 1) — a source
+# requirement, so it now covers the published crate too, not only the tests.
 rcgen = "0.14"
 rustls = { version = "0.23.43", default-features = false, features = [
     "std",
@@ -150,3 +157,9 @@ harness = false
 [[bench]]
 name = "wakeup"
 harness = false
+
+# ADR-0160 decision 8: docs.rs builds a named feature list, never
+# `all-features`. docs.rs passes `--cfg docsrs` itself, which turns on
+# `feature(doc_cfg)` at the crate root so each gated item shows its feature.
+[package.metadata.docs.rs]
+features = ["standard", "affinity", "tls", "fix50sp2"]

@@ -23,17 +23,34 @@ members = [
 # spikes/ktls pulls rustls and ring; cargo unifies features across one
 # invocation, and this repository has already been burned once by exactly that
 # (docs/reference/feature-flags-unify-across-a-workspace.md).
-exclude = ["fuzz", "spikes/ktls"]
+#
+# spikes/fixp-probe is a spike too, and has a sharper reason: its build.rs reads a
+# B3 schema that scripts/fixp-spike.sh fetches into gitignored vendor/fixp/ and
+# that is never committed (ADR-0140 decision 3). Inside the workspace,
+# `cargo test --all` would fail on every machine that has not run that script.
+exclude = ["fuzz", "spikes/ktls", "spikes/fixp-probe"]
 
 # Crates are added one at a time, each behind an approved plan in docs/plans/.
 # See CLAUDE.md §1 — Rule Zero.
 
 [workspace.package]
+# ADR-0160 decision 1: the six published crates release in lockstep at this one
+# version and inherit it; every internal normal dependency pins it exactly
+# (`version = "=<this>"`). `scripts/check-release-versions.sh` holds both. The
+# unpublished members (`publish = false`) keep their own `0.0.0`.
+version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tmthang86/fixbolt"
+# No `homepage`: set equal to `repository` it is what cargo's
+# `redundant_homepage` lint names — `[measured 2026-09-23]` nightly cargo 1.100
+# warns "`package.homepage` is redundant with `package.repository`" once per crate.
+#
 # 1.89 for `File::try_lock`: a journal file has one appender (ADR-0154
-# decision 1). clippy's `incompatible_msrv` holds every call to this line.
+# decision 1). clippy's `incompatible_msrv` holds every call to this line. The
+# `package` CI job (plan 2026-09-23-p3-packaging-and-first-release, row 6b)
+# builds the packaged sources on exactly this toolchain (ADR-0160 decision 3,
+# raised to 1.89 by ADR-0154).
 rust-version = "1.89"
 
 [workspace.lints.rust]

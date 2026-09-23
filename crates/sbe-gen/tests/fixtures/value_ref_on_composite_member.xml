@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Written for this repository (not copied from any venue or from the SBE
+  standard): the smallest schema that puts `presence="constant"
+  valueRef="Enum.Value"` on a <type> inside a <composite>, the shape the SBE
+  1.0 Standard's own timestamp examples use (02FieldEncoding.md:884) and
+  sbe.xsd allows, although the prose <type> attribute table
+  (04MessageSchema.md:142-155) omits it. Read by
+  tests/value_ref_on_composite_member.rs.
+
+  Two composites name two different validValues of one enum, so a generator
+  that took the first, the last or the text of the element would be caught;
+  `after` sits right behind the timestamp, so a constant that took wire
+  bytes would move it.
+-->
+<messageSchema id="42" version="0" byteOrder="littleEndian" package="valueref">
+  <types>
+    <composite name="messageHeader">
+      <type name="blockLength" primitiveType="uint16"/>
+      <type name="templateId" primitiveType="uint16"/>
+      <type name="schemaId" primitiveType="uint16"/>
+      <type name="version" primitiveType="uint16"/>
+    </composite>
+    <enum name="TimeUnit" encodingType="uint8">
+      <validValue name="second">0</validValue>
+      <validValue name="millisecond">3</validValue>
+      <validValue name="microsecond">6</validValue>
+      <validValue name="nanosecond">9</validValue>
+    </enum>
+    <composite name="TimestampNanos">
+      <type name="time" primitiveType="uint64"/>
+      <type name="unit" primitiveType="uint8" presence="constant" valueRef="TimeUnit.nanosecond"/>
+    </composite>
+    <composite name="TimestampMillis">
+      <type name="time" primitiveType="uint64"/>
+      <type name="unit" primitiveType="uint8" presence="constant" valueRef="TimeUnit.millisecond"/>
+    </composite>
+  </types>
+  <message id="1" name="Stamped">
+    <field id="1" name="sent" type="TimestampNanos"/>
+    <field id="2" name="received" type="TimestampMillis"/>
+    <field id="3" name="after" type="uint32"/>
+  </message>
+</messageSchema>

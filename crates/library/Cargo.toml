@@ -1,12 +1,18 @@
 [package]
 name = "fixbolt"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
 description = "The application-facing API: a handler, a reply, and one place to depend on"
+readme = "README.md"
+keywords = ["fix", "fix-protocol", "acceptor", "low-latency", "trading"]
+categories = ["finance", "network-programming"]
+# ADR-0160 decision 4: an allowlist. Tests and benches are not shipped — their
+# path-only dev-dependencies are stripped from the `.crate` and half of them
+# read `vendor/`, so they cannot build from it.
+include = ["src/**", "examples/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 # `DESIGN.md` §3 L4. This crate has a `[features]` block and `tools/jrnl` does
 # not, and the difference is the rule rather than an inconsistency: `jrnl` reads
@@ -32,13 +38,13 @@ standard = ["fixbolt-engine/standard"]
 sbe = ["dep:fixbolt-sbe"]
 
 [dependencies]
-fixbolt-codec = { path = "../codec" }
-fixbolt-dict = { path = "../dict" }
-fixbolt-engine = { path = "../engine", default-features = false }
-fixbolt-sbe = { path = "../sbe", optional = true, default-features = false, features = [
+fixbolt-codec = { version = "=0.1.0", path = "../codec" }
+fixbolt-dict = { version = "=0.1.0", path = "../dict" }
+fixbolt-engine = { version = "=0.1.0", path = "../engine", default-features = false }
+fixbolt-sbe = { version = "=0.1.0", path = "../sbe", optional = true, default-features = false, features = [
     "encoding",
 ] }
-fixbolt-session = { path = "../session" }
+fixbolt-session = { version = "=0.1.0", path = "../session" }
 
 [lints]
 workspace = true
@@ -54,3 +60,9 @@ harness = false
 [[example]]
 name = "sbe_decode"
 required-features = ["sbe"]
+
+# ADR-0160 decision 8: docs.rs builds a named feature list, never
+# `all-features`. docs.rs passes `--cfg docsrs` itself, which turns on
+# `feature(doc_cfg)` at the crate root so each gated item shows its feature.
+[package.metadata.docs.rs]
+features = ["standard", "sbe"]
