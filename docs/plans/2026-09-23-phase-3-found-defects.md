@@ -525,6 +525,74 @@ ngoài rustls** ở *Nhật ký giao hàng*.
   file đó nằm trên nhánh khác; khi cả hai đã vào `main`, đó là một sửa nhỏ riêng.
 - `#[non_exhaustive]` cho `Progress` và `Step`.
 
+## Sửa 2 — script `check-no-kernel-sleep.sh` đỏ khi có thread ghi (2026-09-23)
+
+**Chuyện gì xảy ra.** Builder của D5 (commit `bc98fcb`, nhánh `fix/d1-journal`) chạy ba script
+chế độ **có** thread ghi (`W2W_EXTRA="--journal file-async --log file"`), đúng như hàng D5 đòi.
+`check-no-kernel-sleep-by-ctxt.sh` xanh (0 lần tự nhường CPU), `check-standard-gives-the-core-back.sh`
+xanh, nhưng `check-no-kernel-sleep.sh` **đỏ**: `FAIL: the engine thread slept in the kernel:  2 futex`
+(cả với `--tls ktls`). Hai lần `futex` đó nằm **sau** lần gọi socket cuối cùng của engine thread,
+mỗi lần theo sau là `munmap` đúng cỡ một ring (1 052 672 B của journal, 4 198 400 B của message
+log): engine thread đang **dọn dẹp lúc tắt** — huỷ `FileJournal`/`FileLog`, và `close()` của chúng
+chờ thread ghi xong (`join`). Binary trước D5 (`016f2a5`) cũng đọc đúng `2 futex` 5/5 lần →
+**có từ trước**, chỉ chưa ai thấy vì chưa script nào chạy với thread ghi.
+
+**Vì sao hai script cho hai kết quả** (đọc header của cả hai): `check-no-kernel-sleep.sh` đếm
+**mọi** syscall engine thread từng làm, từ lúc sinh tới lúc chết (hàm `engine_syscalls`, dòng
+129-155) — cả khởi động, phục vụ, lẫn dọn dẹp. `-by-ctxt.sh` thì **đã có cửa sổ** từ đầu: w2w
+đọc bộ đếm ngay trước và ngay sau vòng đo (ADR-0072 quyết định 1).
+
+**Quyết định** — phương án (c) + (a), ghi trong
+[ADR-0152](../decisions/ADR-0152-non-negotiable-4-judges-the-engine-threads-serving-window-and-its-teardown-may-wait-for-its-writers.md)
+(**Proposed**, vì nó nói rõ điều 4 bao phủ tới đâu):
+
+1. Điều 4 ("không ngủ trong kernel **trên hot path**") áp cho engine thread **từ lúc vào vòng
+   phục vụ tới lúc vòng đó trả về**. Khởi động trước đó và dọn dẹp sau đó được phép chặn; dọn
+   dẹp **phải** chờ thread ghi xả hết, nếu không message đã nhận sẽ không xuống đĩa.
+2. `tools/w2w` đánh dấu cửa sổ bằng hai syscall không gì khác làm: tra metadata của hai đường dẫn
+   không tồn tại, `fixbolt-w2w-serve-open` ngay trước vòng phục vụ và `fixbolt-w2w-serve-close`
+   ngay sau khi vòng trả về, **trước khi huỷ bất cứ thứ gì** (`drop` tường minh sau dấu thứ hai).
+3. Script chỉ đếm `SLEEPERS` và lời gọi socket **giữa hai dấu** trên tid engine; khớp theo
+   **chuỗi đường dẫn**, không theo tên syscall (`statx` hay `newfstatat` tuỳ libc).
+4. Sleeper ngoài cửa sổ được **in ra**, không giấu: *"outside the serving window, not judged: …"*.
+5. Thiếu dấu hoặc dấu xuất hiện hai lần → **đỏ**: *"FAIL: the serving window is not marked exactly
+   once — nothing can be judged"*.
+6. **Không** cắt ở lần gọi socket cuối: cửa sổ định nghĩa bằng chính thứ nó đo sẽ bỏ sót một lần
+   ngủ nằm trong vòng nhưng sau message cuối.
+
+Loại: (b) tách rời thread ghi — mất message đã nhận khi tiến trình thoát; (b) join ở thread khác —
+chỉ dời chỗ chờ, thêm một thread thư viện phải giữ, không được gì.
+
+**Hàng mới: W (cửa sổ phục vụ)**
+
+| Hàng | Kết quả | Người làm | Chạm vào | Không chạm | Phụ thuộc |
+|---|---|---|---|---|---|
+| W | `check-no-kernel-sleep.sh` chỉ phán trong cửa sổ phục vụ, in phần ngoài cửa sổ; w2w đánh dấu cửa sổ ở mọi chế độ và nhánh TLS | senior developer (`opus`) — gate của điều 4; sai thì gate nói dối | `tools/w2w/src/main.rs` (hai dấu + `drop` tường minh, ở mọi đường engine thread chạy vòng phục vụ), `scripts/check-no-kernel-sleep.sh` | `crates/`, `-by-ctxt.sh`, `check-standard-gives-the-core-back.sh`, CI | 0; **chạy song song với D5 được** (file rời). D5 chỉ đóng sau khi W đã commit |
+
+- **Đỏ trước:** trên commit hiện tại, `W2W_EXTRA="--journal file-async --log file" scripts/check-no-kernel-sleep.sh`
+  đỏ với `2 futex` (đã có, trích lại nguyên văn).
+- **Gate:** `cargo build -p fixbolt-w2w --release --features tls`; script chạy **ba lần** và trích
+  nguyên văn: không `W2W_EXTRA` (xanh, như CI), với `W2W_EXTRA="--journal file-async --log file"`
+  (xanh, và **phải in** dòng `outside the serving window, not judged:` có `futex`), và nửa đỏ
+  `--mode standard` vẫn đỏ **trong** cửa sổ ở cả hai lần; `bash -n` và
+  `shellcheck -S info scripts/check-no-kernel-sleep.sh`; `cargo clippy -p fixbolt-w2w --all-targets --features tls -- -D warnings`;
+  `scripts/check-no-kernel-sleep-by-ctxt.sh` và `scripts/check-standard-gives-the-core-back.sh`
+  vẫn xanh (w2w đổi).
+- **Đảo ngược** (ghi câu FAIL trước): (1) dời dấu `serve-close` xuống **sau** `drop` → đỏ
+  `2 futex` — chứng minh đúng hai lần chờ lúc dọn dẹp, và chỉ chúng, bị loại khỏi phán xét;
+  (2) xoá dấu `serve-open` → đỏ *"not marked exactly once"*; (3) nửa đỏ `--mode standard` có sẵn
+  là đảo ngược cho "sleeper trong cửa sổ vẫn bị bắt".
+- **Xong khi:** ba lần chạy và ba đảo ngược trích nguyên văn; D5 chạy lại gate chế độ của nó trên
+  commit có W và xanh cả ba script.
+- **Tài liệu (cùng commit):** header của script (một đoạn `[2026-09-23]` nói cửa sổ là gì, và nó
+  không thấy gì: khởi động không còn bị phán); `tools/w2w` rustdoc đầu file (hai dấu); `DESIGN.md`
+  §4 D8 (điều 4 phủ vòng phục vụ; dọn dẹp chờ thread ghi); `docs/reference/a-teardown-join-read-as-a-hot-path-sleep.md`
+  (mới — bẫy: gate đếm cả vòng đời thread); ADR-0152 → *Accepted*. **`CLAUDE.md` §2 bảng Machine
+  checks, dòng điều 4**: thêm ghi chú "the strace check judges the serving window; teardown is
+  printed, not judged" — file luật, **manager sửa**, nói rõ đã sửa luật nào.
+
+**Thay đổi ở hàng C:** các lệnh chế độ có `W2W_EXTRA` chỉ được coi là xanh khi đã có W.
+
 ## Nhật ký giao hàng
 
 Điền vào mỗi khi đóng một phase: đã dựng gì, ở đâu, gate nào xanh, cái gì chưa làm và vì sao.
