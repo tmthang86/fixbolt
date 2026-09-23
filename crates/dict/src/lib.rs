@@ -1,8 +1,10 @@
 //! FIX 4.4 tables, generated from `spec/FIX44.xml` (shipped in this crate, under
 //! `NOTICE`) at build time.
 //!
-//! Nothing here is hand-written. See `build.rs`, and ADR-0001 for why the XML is
-//! data rather than something copied into this repository.
+//! Nothing here is hand-written. See `build.rs` for the generator; the XML itself
+//! is committed inside this crate, under `NOTICE`, as ADR-0001 decision 5 and
+//! [ADR-0104](../../../docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
+//! explain.
 
 mod field_type;
 mod tables;

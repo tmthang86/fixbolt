@@ -199,7 +199,7 @@ thứ hai. Không bước nào tự commit — manager chạy lại gate và com
 | 2a | Ba file XML vào `crates/dict/spec/`, hai bản `NOTICE`, script pin, bước CI | developer (sonnet) | Sửa: `crates/dict/spec/FIX44.xml`, `FIXT11.xml`, `FIX50SP2.xml` (chép từ `vendor/quickfix/spec/`), `crates/dict/NOTICE`, `NOTICE`, `.gitattributes`, `scripts/check-dict-spec-pin.sh` (mới), `scripts/fetch-quickfix-assets.sh` (chỉ comment đầu file, dòng 4–6: "NEVER committed" → trừ ba file này), `.github/workflows/ci.yml` (một bước chạy script pin trong job đang chạy các `scripts/check-*.sh`). **Không**: `build.rs`, mọi `Cargo.toml`, `crates/*/src`, `crates/*/tests` | `scripts/check-dict-spec-pin.sh` exit 0 khi có `vendor/`, và exit 0 với `FIXBOLT_VENDOR=/nonexistent` (in "vendor absent: sha256 only"); `cmp NOTICE crates/dict/NOTICE` im lặng; `shellcheck -S info` sạch; giấy phép trong `NOTICE` trùng từng dòng với `LICENSE` của QuickFIX ở pin | chạy script trước khi chép file → đỏ `missing crates/dict/spec/FIX44.xml`; lật một byte trong bản chép tạm → đỏ `sha256 mismatch`; sửa một bản `NOTICE` → đỏ `NOTICE copies differ` (viết ba câu này ra trước khi chạy), rồi trả lại | plan duyệt lại |
 | 2b | `build.rs` đọc `spec/`; `license`; test đọc XML ship | developer (sonnet) — bảng không đổi, hash là bằng chứng; senior review ở cuối PR | Sửa: `crates/dict/build.rs` (ba hằng `DEFAULT`, comment của chúng, câu báo lỗi thiếu file, doc đầu file), `crates/dict/Cargo.toml` (`license`, `description`), `crates/dict/src/lib.rs` (chỉ rustdoc dòng 1 và 31), `crates/dict/tests/common/mod.rs` và `crates/dict/tests/enums.rs` (chỗ `read("spec/…")` đọc XML → đọc `crates/dict/spec/`; chỗ đọc `src/C++` giữ ở `vendor/`). **Không**: logic sinh bảng trong `build.rs`, `crates/session/`, `crates/codec/`, `crates/engine/`, file `.def` | hash `fix44.rs` và `fixt11_fix50sp2.rs` trong `out_dir` (lấy từ `cargo build -p fixbolt-dict --features fix50sp2 --message-format=json`, dòng `build-script-executed`) **trùng** commit cha; `cargo test -p fixbolt-dict`; `cargo test -p fixbolt-dict --features fix50sp2`; `cargo test -p fixbolt-session --test score` 59 / 59; `cargo test -p fixbolt-engine --test wire` 59 / 59; `cargo test -p fixbolt-session --features fix50sp2 --test score_fixt` và `cargo test -p fixbolt-engine --features fix50sp2 --test wire_fixt` đúng số `CONFORMANCE.md` §9; `cargo test --all`; `cargo test --no-default-features`; `cargo clippy --all-targets -- -D warnings` | trên một `git worktree` của nhánh **không** fetch `vendor/`: `cargo build -p fixbolt-dict` đỏ trước khi sửa (trích câu `die` gọi tên script fetch), xanh sau khi sửa | 2a |
 | 2c | `fixbolt_dict::NOTICE`, `fixbolt::NOTICE` | developer (sonnet) | Sửa: `crates/dict/src/lib.rs` (một `pub const` + rustdoc), `crates/library/src/lib.rs` (một `pub use` + rustdoc), `crates/dict/tests/notice.rs` (mới). **Không**: `build.rs`, crate khác | `cargo test -p fixbolt-dict --test notice`: `NOTICE` chứa nguyên văn câu ghi công của điều kiện 3, chứa câu của điều kiện 5, chứa pin `386ce46e917ae494ab6e90b1be90fd421cdbe3f9`; `cargo doc -p fixbolt --no-deps` không cảnh báo; `cargo test --all`; clippy | `notice.rs` viết trước khi có `const` → không biên dịch được, trích lỗi; rồi xoá câu ghi công khỏi một bản tạm của `NOTICE` → test đỏ đúng assertion câu ghi công | 2a |
-| 2d | Job CI không `vendor/`; chứng minh trọng tài đã chạy | developer (sonnet) | Sửa: `.github/workflows/ci.yml`, `scripts/check-feature-gated-tests-ran.sh` (nhận `-` = feature mặc định). **Không**: `crates/` | trên PR, job mới xanh: `test ! -e vendor`, `cargo build -p fixbolt-dict`, `cargo build -p fixbolt-dict --features fix50sp2`, `cargo build -p fixbolt --no-default-features`, `cargo build -p fixbolt-engine --features fix50sp2`, `scripts/check-dict-spec-pin.sh` đều exit 0; ở job có `vendor/`: `check-feature-gated-tests-ran.sh fixbolt-dict - LOG` và `… fixbolt-dict fix50sp2 LOG` exit 0; `shellcheck` sạch; manager ghi run id | chạy `cargo test -p fixbolt-dict -- --skip interop` vào LOG → script đỏ ở R1 (viết câu FAIL trước) | 2b |
+| 2d | Job CI không `vendor/`; chứng minh trọng tài đã chạy | developer (sonnet) | Sửa: `.github/workflows/ci.yml`, `scripts/check-feature-gated-tests-ran.sh` (nhận `-` = feature mặc định). **Không**: `crates/` | trên PR, job mới xanh: `test ! -e vendor`, `cargo build -p fixbolt-dict`, `cargo build -p fixbolt-dict --features fix50sp2`, `cargo build -p fixbolt --no-default-features`, `cargo build -p fixbolt-engine --features fix50sp2`, `scripts/check-dict-spec-pin.sh` đều exit 0; ở job có `vendor/`: `check-feature-gated-tests-ran.sh fixbolt-dict - LOG` và `… fixbolt-dict fix50sp2 LOG` exit 0; `shellcheck` sạch; manager ghi run id | chạy `cargo test -p fixbolt-dict --tests -- --skip the_only_group_quickfix_has_no_message_for_is_the_header_one` vào LOG → script đỏ ở R1 (viết câu FAIL trước: `FAIL R1 — the_only_group_quickfix_has_no_message_for_is_the_header_one is in the fixbolt-dict (default features) build (listed by crates/dict/tests/interop_quickfix_order.rs, 1×) and the log records it running 0×`). **Sửa sau senior review**: `--skip interop` lọc theo tên hàm test, không theo tên file/binary — không có hàm nào tên chứa "interop", nên câu lệnh cũ không bỏ qua test nào và không bao giờ đỏ; tên hàm thật ở trên đã đỏ đúng chỗ, trích nguyên văn ở trên | 2b |
 | 2e | Tài liệu theo `CLAUDE.md` §4 | developer (sonnet) | Sửa: `README.md` (mục giấy phép nhắc `NOTICE`), `docs/GUIDE.md` (ai phát hành binary có fixbolt phải làm điều kiện 2 và 3; dùng `fixbolt::NOTICE`), `docs/CONFIGURATION.md` (mặc định của ba biến `NANOFIX_*_XML`), `docs/internals/dict.md`, `docs/DESIGN.md` §3 (nguồn của `dict`) và §4 D3 (một câu về nguồn), `docs/CONFORMANCE.md` §2 (bảng sinh từ `crates/dict/spec/` ở pin), `CHANGELOG.md` (`NOTICE`, `license`, `fixbolt::NOTICE`). **Không**: `CLAUDE.md` (manager sửa sau khi anh xem), `STATUS.md` (manager), `crates/` | `python3 scripts/check-links.py` sạch; `scripts/check-adr-numbers.sh` sạch; không câu nào dùng "QuickFIX" để quảng bá (điều kiện 4) — manager đọc lại | — | 2b, 2c, 2d |
 
 ## Cách kiểm chứng
@@ -304,3 +304,40 @@ thay bằng:
 
 *(Chưa có mục đóng phase. Hàng 1: 1a và 1b build ở commit `4eaeb53`, kết quả C; 1c viết trong
 *Sửa 1*.)*
+
+**Hàng 2 (2a–2e): build ở commit `66d6990`** (PR #99). Ba file XML QuickFIX chép nguyên byte vào
+`crates/dict/spec/`, hai bản `NOTICE` giống hệt, `scripts/check-dict-spec-pin.sh` mới, `build.rs`
+đọc `spec/` thay vì `vendor/`, `license` của `fixbolt-dict` đổi thành
+`(MIT OR Apache-2.0) AND LicenseRef-QuickFIX-1.0`, `fixbolt_dict::NOTICE` + `fixbolt::NOTICE`,
+job CI `dict-no-vendor`, `scripts/check-feature-gated-tests-ran.sh` nhận `FEATURE = -`, tài liệu
+sửa theo §4. Gate đã chạy: `cargo test --all` và `cargo test --no-default-features` đều 129
+`test result: ok`, 0 `FAILED`; 59/59 cả hai đường (`score`, `wire`); FIXT `score_fixt` /
+`wire_fixt` đúng số `CONFORMANCE.md` §9 (179/180, 60/60); hash `fix44.rs` và
+`fixt11_fix50sp2.rs` trùng commit cha; build không `vendor/` (rsync ra ngoài cây, xoá sau) xanh
+cho `fixbolt-dict`, `--features fix50sp2`, `fixbolt --no-default-features`,
+`fixbolt-engine --features fix50sp2`; `cargo clippy --all-targets -- -D warnings` sạch;
+`cargo fmt --check` sạch; `check-no-optional-deps.sh`, `check-links.py`, `check-adr-numbers.sh`
+sạch.
+
+**Senior review sau `66d6990`**: không có điểm chặn merge; manager xác nhận tay các mục 2, 4, 5
+bằng `grep`. Sửa trong cùng worktree `fb-p3r1`, chưa commit (manager gộp ở đợt kế tiếp):
+- Hàng 2d ở trên: câu lệnh đảo ngược cũ `--skip interop` không lọc được test nào — `--skip` khớp
+  theo **tên hàm test**, không theo tên file/binary, và không hàm nào ở đây tên chứa "interop".
+  Thay bằng tên hàm thật `the_only_group_quickfix_has_no_message_for_is_the_header_one`
+  (`crates/dict/tests/interop_quickfix_order.rs`); đã chạy lại và trích đúng câu `FAIL R1` ở ô
+  trên.
+- `scripts/check-dict-spec-pin.sh` từng trỏ tới một script đảo ngược chưa hề tồn tại
+  (`check-dict-spec-pin-reversal.sh`) — script đó nay được viết thật: bốn nhánh (thiếu file, lật
+  một byte, hai bản `NOTICE` lệch, một file lạ trong `spec/`), mỗi nhánh phục hồi bằng `trap` kể
+  cả khi đỏ, chạy trong job CI `lint-config` cạnh script chính.
+- `scripts/check-dict-spec-pin.sh` thêm một phép kiểm: `crates/dict/spec/` phải có **đúng ba
+  file**, không hơn — một file lạ (vd. `FIX42.xml`) giờ là đỏ, khớp câu ở đầu script và
+  `CLAUDE.md` §2 mục 9.
+- Sửa câu chữ (không đổi hành vi): `crates/dict/src/lib.rs` dòng 4–5 (XML giờ được commit dưới
+  `NOTICE`, không còn "never copied"); `README.md` dòng 64 (script fetch cần cho test và trọng
+  tài, không cần để **build**); `docs/GUIDE.md` gần dòng 1719 (in `NOTICE` lúc chạy thoả điều
+  kiện 3; điều kiện 2 cần văn bản đi kèm tài liệu/vật liệu phát hành cùng binary — nói cả hai,
+  đúng như ADR-0104 quyết định 5); `.github/workflows/ci.yml` gần dòng 82 (phép so byte với
+  `vendor/` chạy ở job `gates`, không phải `dict-no-vendor`) và dòng 463 (thêm `--locked`);
+  `docs/decisions/ADR-0001-*.md` dòng trạng thái (`Proposed …` → `Accepted 2026-09-23`, chỉ dòng
+  trạng thái).

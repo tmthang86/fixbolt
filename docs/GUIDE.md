@@ -1715,13 +1715,22 @@ QuickFIX Software License's conditions 2 and 3**, not this project:
 
 `fixbolt_dict::NOTICE` — re-exported as [`fixbolt::NOTICE`](../crates/library/src/lib.rs) — is
 the full text: the acknowledgment sentence, the pinned commit, and the license in full.
-Printing it wherever your application already lists its third-party notices (an `--about`
-flag, a `/notices` page, a packaged `NOTICE` file next to the binary) satisfies both
-conditions in one place:
+**The two conditions are not the same obligation, and printing this constant only closes one
+of them.** Condition 3 explicitly allows the acknowledgment to live *"in the software itself,
+if and wherever such third-party acknowledgments normally appear"* — so printing it from an
+`--about` flag or a `/notices` page satisfies condition 3 on its own:
 
 ```rust
 println!("{}", fixbolt::NOTICE);
 ```
+
+Condition 2 carries no such "in the software itself" clause: it asks for the copyright notice,
+the license's conditions and its disclaimer to be reproduced **in the documentation or other
+materials that ship with the binary** — a bundled `NOTICE` file, a README, installer or
+packaging materials. A distributor owes both: printing `fixbolt::NOTICE` at runtime for
+condition 3, and including that same text in whatever accompanies the binary for condition 2
+([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
+decision 5).
 
 **What this does not cover:** condition 4 and 5's naming restriction (never call your product
 "QuickFIX", never use the name to endorse it) is about how *you* present your own product, and

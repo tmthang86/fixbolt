@@ -61,7 +61,8 @@ Where each piece of work stands, day by day, is in [STATUS.md](STATUS.md).
 there is no `cargo add`. Clone the repository and run the bootstrap script first:
 
 ```sh
-scripts/fetch-quickfix-assets.sh    # required — nothing but fixbolt-dict builds without it
+scripts/fetch-quickfix-assets.sh    # required for the tests and the conformance oracle —
+                                     # everything a user depends on builds without it
 cargo test --all
 ```
 
