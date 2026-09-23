@@ -261,4 +261,43 @@ Theo bảng §4, từng hàng:
 
 ## Nhật ký giao hàng
 
-*(Điền khi đóng từng bước.)*
+Mọi bước chạy trên bàn ở dòng grub desktop, 2026-09-23. Evidence ở
+`/home/tmt/Projects/fb-p2close/target/p2close-evidence/` (gitignored, chỉ trên bàn). Số thời gian
+dưới đây là chẩn đoán, không phải con số công bố; số lệnh là số đếm.
+
+- **P0 — xong.** Nhánh `plan/closing-phase-2`, PR draft
+  [#101](https://github.com/tmthang86/fixbolt/pull/101); commit đầu `66745d9` (plan + ADR-0102 +
+  ADR-0103 `Proposed`).
+- **P1 — xong, item 101 đóng: nguyên nhân là bố cục.** sha256 `89bcc880…` / `1719ddc4…`.
+  `harness::suite` 0x4138 → 0x2ff4 byte, cộng thêm `Suite::figure` 0x8f5. Năm cặp xen kẽ:
+  `instructions:u` lệch −0.0317 %, còn `walk nested group + varData` 152.2 … 161.0 → 174.2 …
+  175.3 ns. Không case `sbe` nào khác lệch ngược chiều; một run mới có `field` đọc 6.4 `OVER` —
+  run lẻ bị nhiễu, không phải chênh số lệnh. Quét môi trường với ASLR tắt: 152.9 … 160.8 và
+  174.2 … 181.3 ở mọi `k`. Đã chép binary của boot F vào `nanofixengine/target/baseline-bins/`.
+- **P2 — xong, commit `5507238`.** Self-test `pass 24 fail 0`. Đảo ngược (0.1 % → 1 %):
+  `pass 21 fail 3`, trong đó có đúng dòng đã viết trước
+  (`FAIL  want [work-changed] got [same-work]  work-changed case: verdict line`); khôi phục thì
+  xanh. **Lỗi tìm thấy và đã sửa:** `PERF="sudo -n perf"` bị coi là một token; đã thêm ca hồi quy.
+  Chạy thật trên cặp `sbe`: `0.031643%`, `same-work`.
+- **P3 — xong, item 95: `179ab51` mang bước chậm.** Mục tiêu 1 848.10 lệnh/vòng.
+  `179ab51` +2 409.01 (130.4 %). `d7be83d` lấy lại −875.01 (−47.4 %). `31507b5` −165.93 (−9.0 %).
+  Mọi commit khác `same-work`. Cả khoảng `wa → b1`: +1 362.07 (73.7 %) — đó là thêm việc, không
+  phải bố cục. Có 2 trong 13 binary dùng lại từ `fb-boot-d` và `fb-s9e`, sau khi fingerprint của
+  cargo khớp. Bảng: `p3-table.txt`.
+- **P4 — xong, nhưng phải đổi công cụ hai lần; item 99 phần dư đóng.** `ltrace` không bắt được gì,
+  vì binary là `BIND_NOW`/full RELRO (đúng rủi ro plan đã nêu). Manager chọn thay bằng perf uprobe
+  trên `malloc`/`calloc`/`realloc` của libc. Cách đọc đầu tiên nói "`perf record` phá
+  `setarch -R`". Senior developer ở P5 đọc lại theo cột `comm`: địa chỉ ngẫu nhiên là của chính
+  tiến trình `setarch` (nó cấp phát trước khi tắt ASLR); còn tiến trình bench có kích thước **và
+  địa chỉ** giống hệt ở 7/8 giá trị `k`. Ở `k = 640` có thêm 9 lần cấp phát từ đường báo cáo;
+  mọi lần cấp phát chung có cùng địa chỉ. Bản đảo ngược `6b2833b^`: `0x6141` → `0x6548`, heap
+  phía sau dời 0x400. Hai bẫy ghi ở
+  [tracing-a-rust-binarys-allocations](../reference/tracing-a-rust-binarys-allocations-ltrace-sees-nothing-and-perf-records-the-wrapper-too.md).
+- **P5 — xong (docs, chưa commit).** Ghi *Outcome* vào ADR-0102; `measured-costs.md` có mục mới
+  *Desk-free, 2026-09-23* và dòng ADR-0103 trong *Boot F, Item 96*;
+  `recording-a-baseline-changed-the-baseline.md` có mục *The third time, in the harness's own
+  code*; thêm trang reference mới cho hai bẫy; một đoạn trong `DESIGN.md` §6; một mục trong
+  `CHANGELOG.md`. ADR-0102/0103 vẫn `Proposed`; `STATUS.md` chưa đụng.
+- **Chưa làm:** P6 (review, `STATUS.md`, Accepted, dòng trỏ vào ADR-0094, CI, merge). Cơ chế
+  bên trong của item 101 (căn lề code hay vị trí static) không tách, theo chủ ý của ADR-0102 q.3.
+  Khoảng ~26 % còn lại của bước item 95 chưa quy được cho commit nào.

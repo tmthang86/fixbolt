@@ -4495,6 +4495,112 @@ The read needed a workaround for a perf unwinder trap:
 [perf-dwarf-unwind-fails-on-an-lld-linked-pie](perf-dwarf-unwind-fails-on-an-lld-linked-pie.md).
 The manager did not re-run the read; the agent's independent `perf script` re-aggregation is the check.
 
+`[added 2026-09-23, closing phase 2 — no new run]` **The "≥" above is corrected by
+[ADR-0103](../decisions/ADR-0103-the-descents-price-is-exact-for-its-symbol-and-bracketed-for-its-driver-correcting-adr-0094-c3.md).**
+With no level of the descent inlined, **7 021.6 ns is exact** for what ADR-0094 decision 1
+defined (`bad_nested_count` inclusive × the case median). The descent **together with** the
+inlined `bad_group_count` loop that drives it is bracketed by adding `validate_with::<…, 256>`'s
+self share (7.51 / 7.28 / 7.48 %, same three profiles): **[7 021.6, 13 232.8] ns**, 8.5 … 16.0 %
+of the case. The upper end is loose on purpose (that self share holds all of `validate_with`'s
+own work) and is not tightened.
+
+## Desk-free, 2026-09-23: item 101 named by count, item 99's residue by trace, PR B's step counted
+
+`[measured 2026-09-23]` rows P1–P4 of
+[plans/2026-09-23-closing-phase-2.md](../plans/2026-09-23-closing-phase-2.md), under
+[ADR-0102](../decisions/ADR-0102-a-line-that-moves-while-its-instruction-count-does-not-is-a-layout-move-and-the-count-is-read-off-the-desk.md).
+The §9 desktop `tmt-B450-I-AORUS-PRO-WIFI`, Ryzen 7 3700X, kernel 7.0.0-31, on the **desktop grub
+line** (no `isolcpus`, no `rcu_nocbs`, mitigations on, `fixbolt-machine` not switched on,
+`check-machine.sh` not run), every run `taskset -c 6`, `perf` 7.0.14 as `sudo -n perf`
+(`kernel.perf_event_paranoid = 4`). **Every ns/op below is a diagnostic from an unisolated
+machine and is not a published figure** (`CLAUDE.md` §2 non-negotiable 10); the instruction counts
+are counts, valid on either grub line. Evidence: `target/p2close-evidence/` in the plan's worktree
+(gitignored, desk only).
+
+### Item 101 — the same work, a different layout
+
+The pre-`6b2833b` `sbe` binary (sha256 `89bcc880…`) against the post-`6b2833b` one (sha256
+`1719ddc4…`), five interleaved pairs of `sudo -n perf stat -x, -e instructions:u,cycles:u -o <f>
+-- taskset -c 6 <bin>` (`p1-3-table-raw.txt`):
+
+| arm | `instructions:u` | `cycles:u` | `walk nested group + varData` ns/op |
+|---|---|---|---|
+| pre | 4 408 882 961 … 4 408 883 746 | 1.384 … 1.434 G | 152.2 / 158.3 / 160.2 / 160.4 / 161.0 |
+| post | 4 407 487 868 … 4 407 559 228 | 1.504 … 1.553 G | 174.2 / 174.4 / 174.7 / 174.8 / 175.3 |
+
+`scripts/bench-instructions.sh` on the same pair (`p2-real-run.txt`, n = 3): spreads 0.000011 % /
+0.000006 %, between arms **0.031643 %**, verdict **`same-work`**. The other `sbe` cases did not
+move the opposite way: `field` 5.0 … 5.1 → 5.0 … 5.1 (one post run read 6.4 `OVER BASELINE`,
+whose instruction count 4 407 559 228 is inside the 0.01 % same-arm bound — a timing flake of the
+unisolated line), `encode NewOrderSingle` 98.6 … 98.9 → 98.8 … 99.6, `parse nested (header+root)`
+1.6 throughout. `nm -C -S --defined-only` (`p1-2-nm.txt`): `sbe::harness::suite::<…>` **0x4138 →
+0x2ff4** bytes, plus a new 0x8f5-byte `Suite::figure`. Under `setarch x86_64 -R` with an unused
+environment variable of `k ∈ {0 … 2048}` bytes (`p1-4-env-sweep.txt`): pre 152.9 … 160.8, post
+174.2 … 181.3 at every `k` — the stack's position moves neither arm.
+
+**Named (ADR-0102 decision 3): the binary's own layout, moved by `6b2833b`'s outlining of
+`Suite::figure` out of the one function that holds every case's timed loop.** Not the heap, not
+the mmap threshold, not the stack. Code alignment against the placement of the statics beside it
+is not separated. No line moved (`5576694`'s 176.5 stands).
+
+### Item 99's residue — the allocation sequence does not depend on the file's length
+
+The `journal` bench built from this branch's harness and from `6b2833b^` (a scratch worktree), its
+compiled-in `benches/baselines.tsv` padded by `k ∈ {0, 16, 624, 640, 784, 800, 816, 1024}` bytes,
+restored after. `ltrace` recorded nothing of the program's own allocations
+([tracing-a-rust-binarys-allocations](tracing-a-rust-binarys-allocations-ltrace-sees-nothing-and-perf-records-the-wrapper-too.md));
+the instrument that worked was `perf` uprobes on glibc's `malloc`/`calloc`/`realloc` and their
+returns (`p4-perf/`, `p4-findings.txt`):
+
+```sh
+sudo -n perf record -e 'probe_libc:*' -o cur-<k>.data -- setarch x86_64 -R taskset -c 6 <journal bin>
+```
+
+Each recording holds three processes — `setarch`, `taskset`, and the bench (`journal-0d5a61a`),
+56 probe events (entries and returns) of the bench's own at every `k` but one. **Read by process, the bench's own sequence of
+requested sizes *and returned addresses* is byte-identical at k = 0, 16, 624, 784, 800, 816 and
+1024** — ASLR-off addresses (`0x5555555be010` …; the two 1 MiB buffers at `0x7ffff7e6c010`, `mmap`ed
+and freed, and `0x5555555bed50`, from brk, as ADR-0096 decision 2's revision says; the 2 MiB
+blocks at `0x7ffff79f7010` and `0x5555556bee30`). At k = 640 the sequence carries
+18 more events — nine allocations, between two cases and at exit (sizes 0x46 → 0x8c, a `String`
+doubling, then 0x60; six small ones at exit) — the shape of the comparator's report path after a timed case, i.e. that run read a case
+outside its band on the unisolated line, and every event it shares with k = 0 has the same
+address. **The reversal** (`6b2833b^`): the bench's own sequence differs where the file is read,
+`size=0x6141` (24 897 bytes) at k = 0 against `size=0x6548` (25 928 = 24 897 + 1024 + 7 bytes of
+`# pad ` and newline) at k = 1024, and the next heap addresses move by 0x400 (`0x5555555c5ea0` →
+`0x5555555c62a0`). So the claim ADR-0096 decision 2 needed — the heap after the read buffer does
+not depend on the file's length — holds on this harness and fails without it, and F8's 1.12 is the
+case's single-run dispersion, not a function of `k` (ADR-0102 decision 5).
+
+### PR B's step — one commit adds the work, a later one takes part of it back
+
+The default-feature `validate` bench (the four FIX 4.4 cases) built with the bench alignment flag
+at thirteen commits, `scripts/bench-instructions.sh -n 3` against each commit's first parent
+(`p3-table.txt`, `p3-all-pairs.txt`; two of the thirteen binaries reused from `fb-boot-d` (`wa`)
+and `fb-s9e` (`b1`) after their cargo fingerprints matched):
+
+| commit | `instructions:u` (min of 3) | ΔI vs first parent | ΔI per iteration | verdict |
+|---|---|---|---|---|
+| `6fbe851` (`wa`) | 38 650 979 914 | — | — | — |
+| `31507b5` (main → PR B merge) | 38 417 020 138 | −233 959 776 | −165.93 | `work-changed` |
+| `4992966` | 38 417 019 917 | −221 | 0.00 | `same-work` |
+| `179ab51` *a group member's value is asked after the count* | 41 813 724 604 | **+3 396 704 687** | **+2 409.01** | `work-changed` |
+| `a331971`, `fbdf1aa`, `29cf3c3`, `064d90a` | 41 813 724 166 … 447 | ≤ 281 each | 0.00 | `same-work` |
+| `d7be83d` *the overflow fallback asks the question the array answers* | 40 579 965 486 | −1 233 758 774 | −875.01 | `work-changed` |
+| `eb8e7ae`, `24e0e6e` | 40 579 965 882 … 969 534 | ≤ 4 048 each | 0.00 | `same-work` |
+| `29be3bd` (`main` before the merge) | 38 650 980 671 | +757 vs `wa` | 0.00 | `same-work` |
+| `e673e8f` (PR B merge, `b1`) | 40 571 501 639 | +1 920 520 968 vs `29be3bd`; −8 464 243 vs `24e0e6e` | +1 362.07; −6.00 | `work-changed`; `same-work` |
+
+ΔI per iteration is ΔI / 1 410 000 (every case runs 10 000 + 7 × 200 000 calls) summed over the
+four cases. The rule (ADR-0102 decision 6): boot E's `wa → b1` step is 163.8 ns per iteration
+summed; × 3.6 GHz × `wa`'s IPC 3.134065 (`38 650 979 914 / 12 332 539 113`) = **1 848.10
+instructions**; carries at ≥ 924.05, layout at ≤ 184.81. **`179ab51` carries the step** (+2 409.01,
+130.4 % of the target). `d7be83d` takes back −875.01 (−47.4 %, opposite sign). The whole span
+`wa → b1` is +1 362.07 per iteration, **73.7 %** of the target: most of item 95's step is work
+the session layer does since `179ab51`, not layout. The remaining ~26 % is not attributed; the 3.6
+GHz clock in the conversion is the part's base clock, not a measured frequency, so that remainder
+is an order and not a number.
+
 ## Boot C, 2026-09-18: the listener cadence, N ∈ {1, 16, 256}, two procedures
 
 `[measured 2026-09-18]` step 5 of

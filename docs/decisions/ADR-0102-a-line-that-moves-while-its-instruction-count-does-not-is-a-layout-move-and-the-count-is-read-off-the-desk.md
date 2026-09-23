@@ -1,6 +1,6 @@
 # ADR-0102 — A timed line that moves while its instruction count does not is a layout move, and the count is read off the §9 line
 
-- **Status**: Proposed — 2026-09-23. Written for
+- **Status**: Accepted — 2026-09-23 (by the manager under the owner's standing mandate, at P6 of the closing-phase-2 plan). Proposed 2026-09-23. Written for
   [closing-phase-2](../plans/2026-09-23-closing-phase-2.md); becomes *Accepted* at that plan's
   merge under the owner's standing mandate (2026-09-18), and one word from the owner reverses it.
   Decisions 1–5 state their verdict rules **before** the plan's rows run; the outcomes are
@@ -302,8 +302,44 @@ bought back is not this ADR's question; it is a plan of its own, as item 95's cl
 
 ## Outcome
 
-*(Appended by the plan's step P5 with the numbers of P1, P3 and P4; the rules above do not
-change.)*
+`[2026-09-23, plan rows P1–P4, desk on the desktop grub line; the tables are in
+[measured-costs](../reference/measured-costs.md) *Desk-free, 2026-09-23*]` The rules above were
+applied as written. None was changed after its run.
+
+- **Decision 1 (the instrument).** `scripts/bench-instructions.sh` and its stub self-test
+  `scripts/check-bench-instructions.sh` are committed (`5507238`) and run in CI's `gates` job. The
+  self-test reads `pass 24 fail 0`. Its reversal (threshold 0.1 % → 1 %) went red on
+  `work-changed case: verdict line`, and restoring the threshold made it green again. One bug was
+  found and fixed while building it: `PERF="sudo -n perf"` had been taken as one token, and the
+  self-test now has a regression case for it.
+- **Decision 3 — item 101: closed, *layout*.** Five interleaved pairs: `instructions:u`
+  4 408 882 961 … 4 408 883 746 (pre-`6b2833b`) against 4 407 487 868 … 4 407 559 228 (post).
+  The script reads **0.031643 %, `same-work`**. `walk nested group + varData` read 152.2 … 161.0
+  (pre) and 174.2 … 175.3 ns (post). No other `sbe` case moved the opposite way. `harness::suite`
+  went 0x4138 → 0x2ff4 bytes, plus a 0x8f5-byte `Suite::figure`. The environment sweep with ASLR
+  off read 152.9 … 160.8 (pre) and 174.2 … 181.3 (post) at every `k`. **Verdict: the binary's own
+  layout, moved by `6b2833b`'s outlining of `Suite::figure`; not the heap, the mmap threshold or
+  the stack.** No line moved.
+- **Decision 5 — item 99's residue: closed, the decision stands.** With ASLR off, the bench
+  process's own allocation sizes **and returned addresses** are byte-identical at k = 0, 16, 624,
+  784, 800, 816 and 1024. At k = 640 there are nine extra allocations from a reporting path, and
+  every allocation that run shares with the others has the same address. The reversal at
+  `6b2833b^` requests `0x6141` (24 897 bytes) at k = 0 and `0x6548` (25 928 bytes) at k = 1024,
+  and the heap after it moves by 0x400. **Verdict: the heap after the read buffer does not depend
+  on the file's length, so F8's 1.12 is single-run dispersion.** Two traps cost the step an
+  instrument each. `ltrace` sees nothing of a `BIND_NOW` binary. A `perf record` of `setarch -R`
+  also records `setarch`'s own randomised process, which was first misread as "`perf` defeats
+  `setarch -R`". Both are in
+  [tracing-a-rust-binarys-allocations](../reference/tracing-a-rust-binarys-allocations-ltrace-sees-nothing-and-perf-records-the-wrapper-too.md).
+- **Decision 6 — item 95's commit: named.** The target was 163.8 ns × 3.6 GHz × IPC_wa 3.134065 =
+  1 848.10 instructions per iteration, with bars at 924.05 and 184.81. **Verdict: `179ab51` (*a
+  group member's value is asked after the count*) carries the step: +2 409.01 instructions per
+  iteration, 130.4 % of the target.** `d7be83d` takes back −875.01 (−47.4 %, opposite sign).
+  `31507b5`, the merge that brought PR B's first five commits onto `wa`, adds −165.93 (−9.0 %).
+  Every other commit reads `same-work`. The whole span `wa → b1` is +1 362.07, **73.7 %** of the
+  target. That is work, not layout. The remaining ~26 % is not attributed, because the 3.6 GHz in
+  the conversion is the base clock, not a measured frequency.
+- **Decisions 2 and 4** did not run. They are rules for the next re-record and are unchanged.
 
 ## Sources
 

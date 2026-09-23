@@ -17,6 +17,13 @@ below describe what a first release would contain.
 
 ### Added
 
+- **`scripts/bench-instructions.sh A B`** — compares two bench binaries by `instructions:u`
+  (`perf stat`, `n` interleaved runs, one pinned core) and prints `same-work`, `work-changed` or
+  `unstable`. It tells a timed line moved by code layout from one moved by added work, which the
+  timing band cannot. It reads `perf` as `${PERF:-perf}` and holds no `sudo`. It refuses a missing,
+  zero or `<not counted>` counter and a workload that exits non-zero. Its verdict logic is tested
+  by `scripts/check-bench-instructions.sh` with a stub `perf`, in the `gates` job.
+  [ADR-0102](docs/decisions/ADR-0102-a-line-that-moves-while-its-instruction-count-does-not-is-a-layout-move-and-the-count-is-read-off-the-desk.md).
 - **Recovery reaches the sharded runtime.**
   **`fixbolt_engine::shard::serve_sharded_hft_with_recovery`** and
   **`serve_sharded_hft_with_recovery_with`** ask a `Recovery` what each counterparty left

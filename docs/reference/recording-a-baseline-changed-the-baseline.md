@@ -169,3 +169,31 @@ case small enough to see its own addresses** — removing the expectation from t
 the self-reference from link time to run time, and each fix to a layout term is a new layout
 for every other case in the process. Point 1 above caught both: the gate was run after the
 change and allowed to go red.
+
+## The third time, in the harness's own code
+
+`[measured 2026-09-23, desk on the desktop grub line — a diagnostic; the count is a count]`
+**The neighbour did not move through the heap.** `walk nested group + varData` reads a message
+held in a stack array and static schema tables, and allocates nothing on its path, so the fixed
+1 MiB block of the second time had nothing to act on in that case. What `6b2833b` also did was
+move the comparator out of `Suite::bench` into `Suite::figure`, which the compiler kept out of
+line. Every `Suite::bench::<F>` is inlined into one function, `harness::suite::<closure>`, which
+therefore holds **every case's timed loop**. In the `sbe` binary that function went from 16 696
+to 12 276 bytes, and every loop inside it moved. ADR-0049 pins a function's start, not a loop's
+offset inside it.
+
+Proven by the layout-free counter, not by timing ([ADR-0102](../decisions/ADR-0102-a-line-that-moves-while-its-instruction-count-does-not-is-a-layout-move-and-the-count-is-read-off-the-desk.md)):
+the two binaries retire **the same instructions to 0.032 %**, and the new one retires fewer. The
+walk case is still +10 % slower in `cycles:u`, and moving the stack with ASLR off and an
+environment sweep moves neither arm ([measured-costs](measured-costs.md) *Desk-free, 2026-09-23*).
+The same session closed the second time's open residue. With ASLR off, the bench's own sequence of
+allocation sizes and addresses is identical at every padding `k` on this harness, and moves by the
+padding on `6b2833b^`, so the 1.12 was single-run dispersion, not a staircase.
+
+What this adds to *The general shape*: **the harness is code in every case's binary, and one
+function holds all of a bench file's timed loops**. So an edit to the harness, or a case added to
+a bench file, is a layout change for every case in that file. The band cannot tell that from a
+regression; `scripts/bench-instructions.sh` can, and a line that moved while its count did not is
+re-recorded with the cause *layout* (ADR-0102 decision 2). The structural fix, a separate
+`#[inline(never)]` timed function per case, is named in ADR-0102 decision 4 and waits for the next
+full re-record, because building it is itself one more new layout for every line.

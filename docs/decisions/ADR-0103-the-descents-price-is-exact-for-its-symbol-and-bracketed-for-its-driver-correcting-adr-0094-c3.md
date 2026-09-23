@@ -1,6 +1,6 @@
 # ADR-0103 — The descent's price is exact for its symbol and bracketed for the loop that drives it; ADR-0094's reason for "≥" was wrong
 
-- **Status**: Proposed — 2026-09-23. Written for
+- **Status**: Accepted — 2026-09-23 (by the manager under the owner's standing mandate, at P6 of the closing-phase-2 plan). Proposed 2026-09-23. Written for
   [closing-phase-2](../plans/2026-09-23-closing-phase-2.md); becomes *Accepted* at that plan's
   merge under the owner's standing mandate (2026-09-18), and one word from the owner reverses it.
   It **amends [ADR-0094](ADR-0094-the-descent-is-priced-by-attribution-inside-one-binary-not-by-a-second-binary.md)

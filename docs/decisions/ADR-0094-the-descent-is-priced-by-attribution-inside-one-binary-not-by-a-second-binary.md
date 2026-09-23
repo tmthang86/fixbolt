@@ -10,6 +10,7 @@
   stand on and is cited here only as that. One word from the owner reverses this status.
   **Nothing here has run**: it designs an experiment for a **future §9 boot**, that plan does
   not run it, and acceptance is of the design, not of a number. Not revised before acceptance.
+- **Corrected in part**: the stated reason for decision C3's "≥" is corrected by [ADR-0103](ADR-0103-the-descents-price-is-exact-for-its-symbol-and-bracketed-for-its-driver-correcting-adr-0094-c3.md) (2026-09-23); this ADR's substance is unchanged.
 - **Date**: 2026-09-22
 - **Deciders**: Tran Manh Thang. Written by the architect (Fable) from `STATUS.md` item 96,
   ADR-0086's dated note and the layout reference page; the code facts are read from
