@@ -947,6 +947,101 @@ jobs:
       # does fetch it.
       - run: scripts/check-dict-spec-pin.sh
 
+  # ADR-0160 decision 6: before the first publish, the PACKAGED SOURCES are
+  # the stranger. Plan docs/plans/2026-09-23-p3-packaging-and-first-release.md
+  # row 6b, ADR-0097 exit criterion 3 ("packaged as it would be at publish
+  # time"). `cargo publish --workspace --dry-run` proves the six crates build
+  # against EACH OTHER'S packaged sources, but only with DEFAULT features —
+  # docs/reference/publishing-a-workspace-to-crates-io.md trap 7 says so in
+  # words, and `check-packaged-build.sh` says so by building twelve other
+  # combinations from the exact same bytes. Same shape as `dict-no-vendor`
+  # above: this job's whole point is a runner that never fetched `vendor/`,
+  # because a real crates.io user and docs.rs never see it either.
+  package:
+    name: The six crates package, dry-run publish, and build from nothing but the .crate contents (no vendor/)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - name: vendor/ must not exist on this runner
+        run: |
+          if [ -e vendor ]; then
+            echo "::error title=vendor/ is present::This job exists to prove the six crates package and build WITHOUT vendor/ (ADR-0160 decision 6). Something put a vendor/ directory on this runner before this step; find it and remove it rather than trusting this job's green." >&2
+            exit 1
+          fi
+      # ADR-0160 decision 3: `rust-version = "1.88"` is prose until something
+      # actually builds AT it. `check-packaged-build.sh` names `+1.88.0`
+      # explicitly (reference page trap 3's reversal: the same source built
+      # on 1.85.0 gives `error[E0658]` in fixbolt-codec's `src/template.rs`,
+      # its let chains). Installed here, as a named step, rather than left to
+      # rustup's on-demand fetch inside the check script — a missing
+      # toolchain is then this step failing, not a swallowed retry three
+      # steps later.
+      - name: install the declared MSRV (1.88.0) alongside the pinned default
+        run: rustup toolchain install 1.88.0 --profile minimal
+      # `[measured 2026-09-23]` these two scripts are new; nothing else in
+      # this file's shellcheck step (lint-config job) names them, and that
+      # job is out of scope for this plan step — checked here instead, once,
+      # rather than left silently unchecked.
+      - run: shellcheck -S info scripts/check-package-contents.sh scripts/check-packaged-build.sh
+      # No --allow-dirty: a real `cargo publish` never gets it either
+      # (RELEASING.md step 3), and CI's checkout is clean by construction.
+      # This is the step that leaves target/package/<name>-<version>/
+      # populated for the two checks below — the exact bytes a `.crate`
+      # upload would contain (ADR-0160 decision 6).
+      - run: cargo publish --workspace --dry-run
+      # Read the `Packaging` / `Verifying` lines above, not only this exit
+      # status: what `include` lets through, ADR-0160 decision 4.
+      - run: scripts/check-package-contents.sh
+      # What the packaged bytes actually build into, over the feature sets a
+      # user can pick, on this job's pinned toolchain and on the declared
+      # MSRV. Depends on the dry run immediately above having populated
+      # target/package/ — it says so itself if that directory is missing.
+      - run: scripts/check-packaged-build.sh
+
+  # ADR-0160 decision 7, plan row 6c. Advisory until the first publish exists
+  # (ADR-0097 exit criterion 8 is what makes it block, at row 8b): there is no
+  # crates.io baseline yet, so `--baseline-rev origin/main` is what "something
+  # real" means today. **The first run of this job on this very PR compares
+  # against `origin/main` BEFORE row 6a merged there** — every one of the six
+  # crates was still `version = "0.0.0"`, `publish = false` on that commit, so
+  # cargo-semver-checks reads a 0.0.0 → 0.1.0 jump as a major change and skips
+  # every structural check (`0 checks: 0 pass, 254 skip` per crate,
+  # `[measured 2026-09-23]`) — a green run here on THIS PR proves nothing yet.
+  # The first MEANINGFUL run is the first PR opened after row 6a (and this
+  # job) land on `main`, once both sides of the diff are at a real version.
+  # Reversal proof for the mechanism itself (not reproducible against
+  # `origin/main` today, for the same 0.0.0-skips-everything reason): renaming
+  # `fixbolt_codec::checksum::checksum` and comparing against an unmodified
+  # worktree at the same 0.1.0, `[measured 2026-09-23]`, read
+  # `failure function_missing: pub fn removed or renamed`, named both
+  # `fixbolt_codec::checksum::checksum` and its re-export
+  # `fixbolt_codec::checksum`, and exited 100 — proving the pinned 0.50.0
+  # actually catches the defect class this job exists for.
+  #
+  # `cargo semver-checks --workspace` with no `--exclude`
+  # `[measured 2026-09-23]` already checks exactly the six published crates
+  # and never mentions `fixbolt-conformance`, `fixbolt-sbe-gen` or
+  # `tools/*` — those are `publish = false` (ADR-0160 decision 2) and
+  # cargo-semver-checks reads that the same way `cargo publish --workspace`
+  # does. No `--exclude` is needed; if a future crate is added without
+  # `publish = false` and should stay unchecked, name it here and update
+  # docs/reference/publishing-a-workspace-to-crates-io.md.
+  semver:
+    name: cargo-semver-checks against origin/main (advisory until the first publish, ADR-0097 exit criterion 8)
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # cargo-semver-checks diffs against a real commit; the shallow
+          # checkout actions/checkout@v5 takes by default does not carry
+          # origin/main's history on a branch that forked from it earlier.
+          fetch-depth: 0
+      - run: cargo install --locked cargo-semver-checks --version 0.50.0
+      - run: cargo semver-checks --workspace --baseline-rev origin/main
+
   # PHASE 1 EXIT CRITERION 4, and the only gate in this file with an opinion
   # that did not come from this repository.
   #

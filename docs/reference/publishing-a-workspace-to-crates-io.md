@@ -119,14 +119,98 @@ Sizes `[measured 2026-09-23]`, compressed, with the `include` allowlist: codec
 34.2 KiB, dict 226.1 KiB, session 96.1 KiB, engine 231.8 KiB, sbe 36.8 KiB,
 fixbolt 25.6 KiB (limit 10 MB).
 
+## 8. A crate that has never been published can still be built as itself, through `[patch.crates-io]`
+
+Trap 7 above is the closest thing to "build the packaged sources" that `cargo
+publish --workspace --dry-run` offers, and it only ever builds default
+features. To build the exact same bytes under a feature a real user might
+pick — the `package` CI job's actual job, plan row 6b — a second crate outside
+the workspace can depend on, say, `fixbolt-engine = { version = "=0.1.0",
+features = ["tls"] }` as an ordinary registry dependency, and
+`[patch.crates-io]` redirects that name to `target/package/fixbolt-engine-0.1.0/`
+— the directory the dry run above already left behind. `[measured 2026-09-23]`
+this works even though `fixbolt-engine` has never been uploaded and `cargo
+info fixbolt-engine` would 404: cargo never needs the registry to actually
+hold the crate once a patch satisfies the same name and a compatible version,
+it only needs the registry *index* reachable (`Updating crates.io index`
+still runs). The whole six-crate dependency graph resolves and compiles this
+way, patched all at once, whether or not the case under test reaches every
+one of them.
+
+**Guard:** `scripts/check-packaged-build.sh`, the technique behind every one
+of its 12 cases.
+
+## 9. cargo's MSRV-aware resolver refuses before it compiles, once the manifest tells the truth
+
+Trap 3 found `error[E0658]` on 1.85.0 while every manifest still said
+`rust-version = "1.85"` — a lie the resolver had no reason to doubt, so it let
+rustc find the lie itself. Once `rust-version = "1.88"` is the honest
+declaration (ADR-0160 decision 3), asking cargo 1.98.0 to build the same
+packaged sources on `+1.85.0` **never reaches rustc at all**:
+
+```
+error: rustc 1.85.0 is not supported by the following packages:
+  fixbolt@0.1.0 requires rustc 1.88
+  fixbolt-codec@0.1.0 requires rustc 1.88
+  …
+```
+
+`[measured 2026-09-23]` reverting the *declaration* back to `1.85` while the
+`src/` files still use `1.88`-only syntax (the let chains 6a' introduced)
+reopens the resolver's door — the version now matches what was asked for —
+and the original `error[E0658]: 'let' expressions in this position are
+unstable` reappears in `fixbolt-codec`'s `src/template.rs`. **Two different
+red messages guard the same fact from two different lies**: an honest,
+too-high declaration is caught by the resolver before a byte is compiled; a
+dishonest, too-low one is caught by the compiler once it tries.
+
+**Guard:** `scripts/check-packaged-build.sh` builds the packaged sources on
+`+1.88.0` itself, so a manifest correctly declaring `1.88` cannot silently
+regress to needing more; there is no committed reversal for the dishonest
+direction, since ADR-0160 decision 3 depends on the declaration staying true
+rather than on a test that keeps re-lying about it.
+
+## 10. `cargo-semver-checks --workspace` already knows about `publish = false`, and a `0.0.0` baseline skips everything
+
+No `--exclude` is needed to keep `fixbolt-conformance`, `fixbolt-sbe-gen` or
+`tools/*` out of `cargo semver-checks --workspace --baseline-rev origin/main`
+(plan row 6c): `[measured 2026-09-23]` it reads `publish = false`
+(ADR-0160 decision 2) the same way `cargo publish --workspace` does and never
+mentions them, on either side of the diff.
+
+The sharper trap is the other direction. Before row 6a merges to `main`, every
+one of the six crates is `0.0.0` there — comparing against `0.1.0` is, in
+semver terms, a **major** version change, and cargo-semver-checks treats a
+major bump as "anything goes": every one of its 254 lints is *skipped*, not
+*passed* (`Checked [0.000s] 0 checks: 0 pass, 254 skip` per crate,
+`[measured 2026-09-23]`), and the job exits 0 regardless of what the API
+actually did. A green run of the `semver` job on a PR opened **before** row 6a
+lands proves nothing; the first meaningful comparison is the first PR opened
+**after** it does, once both sides of `--baseline-rev origin/main` read
+`0.1.0` and a real structural diff runs.
+
+**Guard:** none inside the job itself — it is advisory
+(`continue-on-error: true`) until ADR-0097 exit criterion 8, by design
+(ADR-0160 decision 7). The `semver` job's own comment in `ci.yml` names this
+so the first few runs are read correctly; the reversal that proves the
+*mechanism* (renaming `fixbolt_codec::checksum::checksum`) was run against an
+unmodified worktree at the same `0.1.0`, not against `origin/main`, for
+exactly this reason — see `DESIGN.md` §6 *Packaging*.
+
 ## Sources
 
 - The Cargo book: *Publishing on crates.io*; *The manifest format* (`readme`,
   `include`, `rust-version`, `homepage`); *Specifying dependencies*, "Multiple
-  locations".
+  locations" and "Overriding dependencies" (`[patch]`).
 - cargo PR #15525 (`cargo publish --workspace`).
 - Clippy's lint list for 1.98.0: `collapsible_if`, `manual_is_multiple_of`,
   `chunks_exact_to_as_chunks` (each names its MSRV).
+- cargo's own `rust-version`-aware dependency resolution, observed here on
+  1.98.0: the source of trap 9's pre-compile refusal. Not independently dated
+  against upstream cargo history — the observation is the measurement below,
+  not a claim about when it landed.
+- `cargo-semver-checks` 0.50.0 docs and lint list (`function_missing.ron`);
+  its own README on how a `0.y → 0.y'` comparison is scored.
 - The measurements above; plan
   [2026-09-23-p3-packaging-and-first-release](../plans/2026-09-23-p3-packaging-and-first-release.md)
-  *Những gì đã biết chắc* facts 1–5 and 8.
+  *Những gì đã biết chắc* facts 1–5 and 8, *Chia việc* rows 6b and 6c.

@@ -1334,6 +1334,24 @@ busy machine does. `--reextract <evidence-dir>` rebuilds `runs.reextracted.txt` 
 raw captures under `<evidence-dir>/raw/` without re-running anything and without ever writing
 over `runs.txt`.
 
+### Packaging
+
+[ADR-0160](decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md).
+Plan [2026-09-23-p3-packaging-and-first-release](plans/2026-09-23-p3-packaging-and-first-release.md)
+rows 6a–6c. These gates ask a question the correctness and allocation gates above cannot: not
+"does the tree build", but "does what a `.crate` upload would actually contain build, on the
+toolchain the manifest claims, over the feature sets a stranger can pick" — a `cargo publish
+--workspace --dry-run` alone only builds each crate's *default* features
+([publishing-a-workspace-to-crates-io](reference/publishing-a-workspace-to-crates-io.md) trap 7).
+
+| Gate | Target | Proven by |
+|---|---|---|
+| Every internal normal dependency of the six published crates is pinned `=`, and licence files reach each crate byte-identical to the root copies | **0 failures** | `scripts/check-release-versions.sh`, the `package` CI job. Reversal (6a): a caret requirement, or a one-byte edit to a copied `LICENSE-MIT`, both go red |
+| What a `.crate` actually contains, for each of the six | `fixbolt-dict` ships `NOTICE` + its three `spec/*.xml`; every crate ships `README.md`, `LICENSE-MIT`, `LICENSE-APACHE`; none ships `tests/`, `benches/`, `vendor` or a `.def` fixture | `scripts/check-package-contents.sh`, reading `cargo package --list -p <crate>` per crate — packages nothing to disk. `[measured 2026-09-23]` reversal: dropping `NOTICE` from `fixbolt-dict`'s `include` reads `FAIL fixbolt-dict: NOTICE missing from package`; adding `tests/**` to `fixbolt-codec`'s reads `FAIL fixbolt-codec: tests/ shipped (tests/<name>.rs)` once per file |
+| The packaged sources build, on the pinned toolchain and on the declared `rust-version`, over the feature sets a user can pick | **12 cases**: 9 on the pinned default toolchain (one feature at a time beside each crate's default, plus `fixbolt-codec` alone, plus each of `fixbolt`/`fixbolt-engine`/`fixbolt-sbe` with `default-features = false`), 3 on `+1.88.0` (the combined-everything build for `fixbolt` and for `fixbolt-engine`, plus `fixbolt --no-default-features`) | `scripts/check-packaged-build.sh`: a scratch crate per case, outside the workspace (its own `[workspace]`), depending on the crate under test through an ordinary version requirement that `[patch.crates-io]` redirects to `target/package/<name>-<version>/` — the directory the dry run above leaves behind, byte-identical to a `.crate` upload. `[measured 2026-09-23]` all 12 `Finished` on the desk, `cargo` 1.98.0 + `1.88.0`. Reversal: reverting the declared `rust-version` to `1.85` while the source still uses `1.88`-only syntax (post 6a', let chains) and building on `+1.88.0`'s sibling `+1.85.0` reads `error[E0658]: 'let' expressions in this position are unstable` in `fixbolt-codec`'s `src/template.rs` — the exact trap [publishing-a-workspace-to-crates-io](reference/publishing-a-workspace-to-crates-io.md) trap 3 found by hand |
+| A stranger's binary against the packaged sources / against crates.io | a real Logon/Logout, from `docs/GETTING-STARTED.md`'s own pasted code | `scripts/stranger-check.sh --from packaged` (before publish, plan row 8a) and `--from registry --version <v>` (after, row 8b) — out of scope for rows 6b/6c |
+| The public API is compared against something real | not yet blocking | `cargo-semver-checks` 0.50.0, `--baseline-rev origin/main`, `continue-on-error: true`, the `semver` CI job (ADR-0160 decision 7). **Not meaningful until row 6a is on `main`**: compared against a `0.0.0`, `publish = false` baseline, every check reads `0 checks: 0 pass, 254 skip` per crate and the run is green regardless of what changed — `[measured 2026-09-23]`. Reversal, proven against a same-version baseline instead (an unmodified worktree at the same `0.1.0`, not `origin/main`): renaming `fixbolt_codec::checksum::checksum` reads `failure function_missing: pub fn removed or renamed`, naming both the function and its `fixbolt_codec::checksum` re-export, exit 100. No `--exclude` is needed for `fixbolt-conformance`, `fixbolt-sbe-gen` or `tools/*`: `cargo-semver-checks --workspace` already reads `publish = false` the same way `cargo publish --workspace` does and never mentions them |
+
 ## 7. Build order
 
 Each step was a plan, a branch and a merge. **Steps 1–8 are complete as of 2026-09-02. Step 9 is
