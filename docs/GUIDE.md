@@ -1026,6 +1026,18 @@ checksum stops the read exactly as a torn tail does; `corrupt_records()` is the 
 `Reader` and on `FileJournal` alike. A file written before that, or any file that existed
 when this version first opened it, has no checksums and never will: one file, one format.
 
+**`[2026-09-23]` An application message carrying a secret is never in the file, not even
+masked.** If your application sends a `UserRequest` (or anything else naming a field
+`fixbolt_engine::redact::MASKED` lists), the file gets the number's outbound mark in place of
+the message — the same record `mark_out` writes for a `Logon` or a `Heartbeat`. A resumed
+session backed by that file therefore **gap-fills that number rather than replaying it** to the
+counterparty, the same way it already gap-fills administrative traffic. Inside the same process
+nothing changes: the in-memory ring keeps the message verbatim, so a `ResendRequest` before a
+restart still gets it back, `43=Y` and all. Guarded by
+`crates/engine/tests/secrets_stay_off_disk.rs`
+([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md);
+[SESSION-BEHAVIOUR.md §4](SESSION-BEHAVIOUR.md)).
+
 ### 6c. The message log: both directions, refusals included
 
 The journal answers *"what did we send, by sequence number"*. It cannot answer *"what did we
@@ -1050,7 +1062,7 @@ for two files is a configuration that cannot be honoured.
 
 `grep -v '^#'` is the messages; lines starting with `#` are the writer's own notes.
 
-**Seven things the type system cannot tell you:**
+**Eight things the type system cannot tell you:**
 
 1. **`OUT` means *queued*, not *sent*.** The line is written when the message reaches the
    outbound buffer, which is the only moment the engine can name it. A socket that dies takes
@@ -1077,6 +1089,20 @@ for two files is a configuration that cannot be honoured.
    from [DESIGN.md §6](DESIGN.md), not a measurement of this module. What **is** measured is
    that it allocates nothing: `benches/alloc.rs` cases `log-record`, `log-idle` and
    `log-busy`.
+8. **`[2026-09-23]` A password and the other fields `fixbolt_engine::redact::MASKED` names are
+   masked with `*` on the writer thread, length kept — always on, no configuration key.** A
+   masked line still frames (`9=`, `95=` and `10=` are left as received) but deliberately no
+   longer checksums, which is the mark that it was altered; a tool that re-parses this file with
+   checksum validation on will refuse those lines. **The password's length is still on disk**
+   (`554=` followed by N stars) — chosen over rewriting `9=` to hide it, because that would mean
+   the log no longer holds the bytes that arrived with one field changed. `96` RawData is only
+   masked when any `35=` in the record is a `Logon` or `UserRequest`, or there is none; on `News`/`Email` it
+   is message content and is left alone. **A venue-specific secret tag (`5000+`) is not masked**
+   — reopen this when a real deployment names one (ADR-0110). **Files written before this change
+   still hold secrets in clear**: rotate the credential and delete or re-permission the old file;
+   nothing here rewrites it. Guarded by `crates/engine/tests/secrets_stay_off_disk.rs` and
+   `crates/engine/tests/redact.rs`
+   ([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md)).
 
 In `hft`, give the writer thread a core that is not the engine's: `FileLog::open_pinned`. An
 unpinned writer can land on the very core the engine was isolated onto.

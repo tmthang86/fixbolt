@@ -17,6 +17,18 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A secret is masked in the message log and never written to the journal.**
+  **`fixbolt_engine::redact`** is a new public module: the constant **`MASKED`** names, in one
+  place, every field the engine treats as a secret — `554` Password and `925` NewPassword
+  (every message), `1402` EncryptedPassword and `1404` EncryptedNewPassword (every message), and
+  `96` RawData (only when any `35=` in the record is a `Logon`/`UserRequest`, or there is no `35=`). **`mask`**
+  overwrites a field's value bytes with `*` in place, length kept; **`carries_secret`** answers
+  whether a message holds one. Both are pure functions over a borrowed slice — no allocation, no
+  panic, no dictionary — proven by `benches/alloc.rs` cases `redact-mask` and `redact-scan`
+  (`crates/engine/tests/redact.rs`, `crates/engine/tests/secrets_stay_off_disk.rs`).
+  [ADR-0110](docs/decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md);
+  `STATUS.md` phase 3 row 3, ADR-0097 exit criterion 4.
+
 - **Recovery reaches the sharded runtime.**
   **`fixbolt_engine::shard::serve_sharded_hft_with_recovery`** and
   **`serve_sharded_hft_with_recovery_with`** ask a `Recovery` what each counterparty left
@@ -267,6 +279,16 @@ below describe what a first release would contain.
   p99 and p99.9 (ADR-0096 decision 4(a)); the comparator itself is unchanged.
 
 ### Changed
+
+- **`FileLog` and `FileJournal` no longer write a secret to disk in clear.** `FileLog` masks
+  `redact::MASKED` fields on its writer thread before escaping, in place, length kept — `9=`,
+  the LENGTH fields and `10=` are left as received, so a masked line still frames but
+  deliberately no longer checksums. `FileJournal` never writes a message record for an
+  application message that carries one, under either `Durability`: the file gets the
+  ADR-0053 outbound mark for that number instead, so a resumed session gap-fills it rather than
+  replaying a credential; the in-memory ring is unaffected, so an in-process `ResendRequest`
+  still replays it. `NoLog`, `MemJournal` and a caller's own `MessageLog`/`Journal` are
+  unchanged. No configuration key turns this off, by decision (ADR-0110).
 
 - **`parse_utc` reads the two widths that are actually on a wire in a straight line.** 17 bytes
   (the corpus's `I` lines) and 21 (its `E` lines, and every `52=` this engine sends —

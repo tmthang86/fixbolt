@@ -291,6 +291,7 @@ Set in code when the engine is built or started.
 | `MAX_ON_LOGON` | Most messages one session may originate from `Handler::on_logon` | `u32`, not configurable | `16` | compile-time constant | [`engine/src/lib.rs`](../crates/engine/src/lib.rs) |
 | `ORIGIN_CAPACITY` | Originated messages a `Sender` may have waiting for the engine's next turn | `usize`, not configurable | `64` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
 | `ORIGIN_LEN` | Largest message `Sender::send` will take | bytes, not configurable | `512` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
+| `redact::MASKED` | `[added 2026-09-23]` The fields `FileLog` masks and `FileJournal` never writes for: `554` Password, `925` NewPassword, `1402` EncryptedPassword, `1404` EncryptedNewPassword (every message), `96` RawData (only when any `35=` in the record is `Logon`/`UserRequest`, or there is no `35=`) | fixed list, not configurable | as listed | `fixbolt_engine::redact::MASKED` | [`redact.rs`](../crates/engine/src/redact.rs) |
 
 ### The three origination numbers
 
@@ -309,6 +310,18 @@ the caller's is work nobody has asked for yet.
   for a resend is a message that should not go out. A message over it is refused at
   `Sender::send`, which answers `false` — unlike the reply scratch, this ceiling does not fail
   as silence.
+
+### Why `redact::MASKED` has no key
+
+`[added 2026-09-23]` Every other row in this table can be turned off or resized. This one
+cannot: there is no `Settings` key and no `Config` method that disables masking. **Deliberately**
+— an off switch for credential masking is a foot-gun sitting in a configuration file an operator
+copies from a forum post, and once it exists someone eventually ships it flipped. A deployment
+that genuinely needs the raw bytes on disk can implement `MessageLog` or `Journal` itself — both
+are public traits — and owns that choice in its own code, not in a file a stranger can edit.
+`NoLog` and `MemJournal` are unaffected either way: they hold nothing on disk to mask.
+([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md)
+decision 6.)
 
 ### Sizing the resend ring
 
