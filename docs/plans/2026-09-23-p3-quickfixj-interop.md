@@ -386,6 +386,95 @@ dòng đỏ của từng reversal, nguyên văn.
 - macOS: TLS của fixbolt chỉ có trên Linux.
 - Sửa bất cứ gì trong `crates/`.
 
+## Sửa 1 — 2026-09-23
+
+Ba điều đọc code hôm nay mới thấy, cả ba xảy ra khi làm bước 3 và bước 4/5; không cái nào đổi
+hình bước 1–2 đã giao.
+
+**1. Lá chứng chỉ `fixbolt-acceptor` mang thêm `DNS:localhost`, lệch chữ "IP SAN" của ADR-0130
+quyết định 6 — có chủ đích, có bằng chứng `javap`.** Quyết định 6 viết "an IP SAN of
+`127.0.0.1`" cho cả hai lá. Chạy thật, lá chỉ có `IP:127.0.0.1` làm nhãn `qfj-acceptor-tls` đỏ ở
+bước `logon` với lỗi bắt tay JSSE nhắc tới `localhost`, không phải `127.0.0.1`. `javap -p -c`
+trên `quickfix.mina.ssl.InitiatorSslFilter` (trong `quickfixj-core-3.0.2.jar`) cho thấy
+`createEngine` gọi `InetSocketAddress.getHostName()` rồi đưa chuỗi đó vào
+`SSLContext.createSSLEngine(String, int)`:
+
+```
+8: aload_2
+9: invokevirtual #4   // Method java/net/InetSocketAddress.getHostName:()Ljava/lang/String;
+...
+16: invokevirtual #6  // Method javax/net/ssl/SSLContext.createSSLEngine:(Ljava/lang/String;I)Ljavax/net/ssl/SSLEngine;
+```
+
+`getHostName()` gọi trên một `InetSocketAddress` dựng từ chuỗi IP sẽ **phân giải ngược** —
+trên máy nào có `/etc/hosts` trả `127.0.0.1` về `localhost` (mọi desk và mọi runner CI bình
+thường), chuỗi đưa vào là `"localhost"`, và `EndpointIdentificationAlgorithm=HTTPS` kiểm chứng
+chỉ theo đúng chuỗi đó chứ không theo địa chỉ đã quay số. Manager duyệt: `qfj-acceptor` (fixbolt
+làm initiator kiểm) giữ nguyên chữ quyết định 6, chỉ `fixbolt-acceptor` (QFJ làm initiator kiểm)
+thêm `DNS:localhost` bên cạnh `IP:127.0.0.1` — cả hai bên đều được thoả bằng một chứng chỉ.
+Viết đầy đủ ở
+[docs/reference/quickfixj-verifies-the-host-name-not-the-dial-address.md](../reference/quickfixj-verifies-the-host-name-not-the-dial-address.md).
+
+**2. Lời từ chối `NeedsFeature` — chữ thật, không phải diễn giải.** Khi file cấu hình có
+`SocketUseSSL=Y` mà build không bật feature `tls`, `Settings::load` trả `Problem::NeedsFeature`,
+và `Display` của nó (`crates/engine/src/settings.rs:466`) in nguyên văn:
+
+> `this engine was built without the feature this key needs`
+
+`tools/interop/src/dial.rs` không tự viết lời riêng cho ca này — nó chỉ in `interop: FAIL
+settings <file>: <e>`, và `<e>` là chuỗi trên. Ghi lại vì `--role dial` là chỗ đầu tiên một
+người ngoài đọc thấy câu này qua một công cụ dòng lệnh thay vì qua `SettingsError` được test đọc
+trực tiếp.
+
+**3. `tls_stat` là bộ đếm toàn máy — cần chứ không đủ, và `docs/CONFORMANCE.md` §10 nói rõ.**
+`/proc/net/tls_stat`'s `TlsTxSw`/`TlsRxSw` không phân biệt theo tiến trình hay socket; khẳng
+định `kernel` đọc chúng tăng là bằng chứng **cần** rằng kernel có nhận khoá trong lần chạy đó,
+không phải bằng chứng **đủ** rằng chính khoá của lần chạy đó — trên một máy đang chạy việc khác
+cũng dựng kTLS cùng lúc, số đó có thể tăng vì lý do khác. Trên desk lúc chạy gate này không có
+phiên nào khác đang đo, và trên runner CI cũng không có gì khác dựng kTLS cùng lúc, nên rủi ro
+không thành hiện thực trong ba lần chạy — nhưng câu chữ ở `docs/CONFORMANCE.md` §10 ghi giới
+hạn thật của phép đo chứ không nói "bằng chứng kín".
+
 ## Nhật ký giao hàng
 
-*(chưa bắt đầu)*
+- **2026-09-23 — bước 0, 1, 2 giao** (commit `38eef9d`, nhánh `plan/p3-quickfixj-interop`):
+  JDK cài qua `sudo -n apt-get install -y openjdk-21-jdk-headless`; `tools/interop-qfj/Judge.java`
+  (cả hai vai), `scripts/interop-qfj.sh` §1/§3–§5 hai nhãn `qfj-acceptor-plain` và
+  `qfj-initiator-plain`, `tools/interop/src/dial.rs` (vai `--role dial`, plaintext). Gate:
+  `INTEROP_QFJ_ARMS=acceptor-plain,initiator-plain scripts/interop-qfj.sh` xanh
+  (`qfj-acceptor-plain: PASS 7/7`, `qfj-initiator-plain: PASS 7/7`, `the run added nothing git
+  can see`); `scripts/interop.sh` (libquickfix) vẫn xanh nguyên dòng tổng kết cũ. Reversal A
+  (bỏ echo `11=` trong `desk.rs`) → `order FAIL` ở cả hai nhãn QFJ **và**
+  `interop-acceptor: order FAIL` bên libquickfix (cùng một `Desk`); B (`--invert-resend`) →
+  `resend FAIL`; C (grep sai tên bước) → `MISSING OR FAILED STEP`; sửa một hex trong SHA-256
+  ghim → `CHECKSUM MISMATCH` trước khi chạy gì. Bẫy tìm thấy: judge đua với luồng gap-fill riêng
+  của QFJ (sửa bằng cách chờ `35=4 123=Y` trên dây trước khi gửi tiếp) — viết ở
+  [docs/reference/a-judges-verdict-can-race-the-oracle-it-judges.md](../reference/a-judges-verdict-can-race-the-oracle-it-judges.md).
+  Việc để lại: docs (internals/tools.md, CONFORMANCE.md, reference) — dồn vào bước 4–5.
+- **2026-09-23 — bước 3 giao** (commit `010b42b`): `tools/interop/Cargo.toml` thêm feature
+  `tls`; `tools/interop/src/main.rs` nhánh TLS vai `acceptor`; `tools/interop/src/dial.rs` nhánh
+  TLS; `scripts/interop-qfj.sh` §2 sinh chứng chỉ, hai nhãn `qfj-acceptor-tls` và
+  `qfj-initiator-tls`, khẳng định `kernel`. Gate: bốn nhãn `scripts/interop-qfj.sh` xanh (dòng
+  tổng kết `7 / 7 × 4 + shutdown 4/4 + clean 4/4 + kernel 2/2`); `cargo build -p fixbolt-interop
+  --features tls`; `cargo clippy -p fixbolt-interop --all-targets --features tls -- -D
+  warnings`. Reversal D (`sudo -n modprobe -r tls` → hai nhãn TLS đỏ với lời từ chối
+  `TlsRequireKernel=Y`; `modprobe tls` → xanh lại); E (`CipherSuites=TLS_AES_256_GCM_SHA384`
+  phía QFJ → `logon FAIL`, JSSE báo không có cipher chung). Việc để lại, ghi rõ chứ không giấu:
+  docs vẫn chưa cập nhật (đúng như thông báo trong commit), và hai phát hiện mới — (b) lá chứng
+  chỉ cần `DNS:localhost` (Sửa 1 mục 1), (c) bắt tay không có cipher chung khiến acceptor của
+  fixbolt đóng im lặng, không alert không event.
+- **2026-09-23 — bước 4 giao, do phiên này build** (chưa commit — manager chạy gate và commit):
+  job CI `interop-qfj` (`.github/workflows/ci.yml`), chặn merge, chép bước kTLS từ job `tls`,
+  Temurin 21 qua `actions/setup-java@v6`, đọc dòng tổng kết ở bước riêng chứ không tin mã thoát;
+  `scripts/check-no-optional-deps.sh` thêm `fixbolt-interop:rustls` và
+  `fixbolt-interop:ktls-core` (cùng hình `fixbolt-engine`/`fixbolt-w2w` đã có); `README.md`,
+  `CHANGELOG.md`, `docs/DESIGN.md` §3 và §6, `docs/internals/tools.md`. Gate: ba lần chạy liền
+  `scripts/interop-qfj.sh` trên desk, cả ba dòng tổng kết giống hệt nhau (quote ở
+  `docs/CONFORMANCE.md` §10); `python3 -c 'import yaml,sys;yaml.safe_load(open(".github/workflows/ci.yml"))'`
+  qua; reversal G (đổi dòng grep tổng kết trong job thành thiếu `initiator TLS` → bước *Assert
+  the summary line* đỏ, rồi khôi phục) — quote ở báo cáo của bước này. CI run id: `<pending>` —
+  manager điền khi PR mở và job chạy.
+- **2026-09-23 — bước 5 giao cùng phiên** (chưa commit): `docs/CONFORMANCE.md` §10 (lệnh, máy,
+  JDK, bốn khối output nguyên văn từ desk, CI run id còn `<pending>`); bốn trang
+  `docs/reference/` cho bốn bẫy (a)–(d), mỗi trang nêu rõ có test canh hay không; Sửa 1 này;
+  một dòng trạng thái thêm vào ADR-0130 trỏ tới Sửa 1.

@@ -981,6 +981,80 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # ADR-0097 exit criterion 6, ADR-0130. `libquickfix` above is one independent opinion;
+  # QuickFIX/J is a second family entirely — a JVM, a different codebase — judging this engine
+  # in BOTH roles, plaintext AND TLS, which the criterion's own wording asks for and `interop`
+  # never has (its TLS side has no counterparty but this engine itself). `scripts/interop-qfj.sh`
+  # fetches five jars pinned by SHA-256 into gitignored vendor/quickfixj/, compiles this
+  # repository's own judge (`tools/interop-qfj/Judge.java`, QuickFIX/J's public API only,
+  # non-negotiable 9), and runs four arms: this engine as acceptor and as initiator (`--role
+  # dial`, the real engine door, not the pure session `interop` above drives), each in plaintext
+  # and over kTLS. The two TLS arms need a runner that can offload TLS, which `interop` never
+  # asks for — so this job asks first, in its own words, exactly as the `tls` job above does.
+  #
+  # BLOCKING, same reasoning as `interop`: a criterion nobody can fail is not a criterion —
+  # PRD.md §2.
+  interop-qfj:
+    name: Both roles, plaintext and TLS, against QuickFIX/J
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      # Copied from the `tls` job above: an environment that cannot offload TLS must fail in its
+      # own words, not as a `kernel` assertion inside scripts/interop-qfj.sh that reads like an
+      # engine defect.
+      - name: This runner must be able to offload TLS
+        run: |
+          verdict="$(scripts/check-ktls-available.sh | tail -n +1 | grep -E '^(READY|NOT_BUILT|OTHER|NOT_LOADED)' | head -1)"
+          echo "verdict: ${verdict:-<none>}"
+          if [ "$verdict" != "READY" ]; then
+            echo "::error title=This runner cannot offload TLS::scripts/check-ktls-available.sh did not say READY. The two TLS arms of scripts/interop-qfj.sh assert that the kernel took the keys, and on this runner that cannot mean anything. This is the environment, not the engine — see the tls job's own step above."
+            exit 1
+          fi
+      # tools/interop needs vendor/ to build (dict's generated tables read the FIX44.xml this
+      # pins) — the same reason the `interop` job above runs it before scripts/interop.sh.
+      - run: scripts/fetch-quickfix-assets.sh
+      - name: Fetch QuickFIX/J, run four arms, read the output
+        run: |
+          set -o pipefail
+          scripts/interop-qfj.sh 2>&1 | tee "$RUNNER_TEMP/interop-qfj.log"
+      # CLAUDE.md §10: a check proves nothing until something reads it. The script itself already
+      # exits non-zero on any missed step or assertion, but this step is what a future edit to it
+      # is held against — an edit that let it exit 0 without ever printing the four-arm line would
+      # otherwise pass silently. Plan reversal G: misspell one number in the pattern below and
+      # this step must go red even on an unmodified, green script run.
+      - name: Assert the summary line
+        run: |
+          grep -qE '^interop-qfj: 7 / 7 acceptor plain \+ 7 / 7 acceptor TLS \+ 7 / 7 initiator plain \+ 7 / 7 initiator TLS' "$RUNNER_TEMP/interop-qfj.log"
+
+      - if: always()
+        name: Publish every transcript on the run page
+        run: |
+          {
+            echo '## Interop against QuickFIX/J, both roles, plaintext and TLS'
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/interop-qfj.log" 2>/dev/null || echo '(no output)'
+            echo '```'
+            for label in qfj-acceptor-plain qfj-acceptor-tls qfj-initiator-plain qfj-initiator-tls; do
+              echo
+              echo "### ${label}"
+              echo
+              echo '#### fixbolt'
+              echo '```'
+              cat "vendor/interop-qfj-run/${label}/fixbolt.log" 2>/dev/null || echo '(no output)'
+              echo '```'
+              echo
+              echo '#### the judge'
+              echo '```'
+              cat "vendor/interop-qfj-run/${label}/judge.log" 2>/dev/null || echo '(no output)'
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # STATUS.md open item 20. Eight bench targets asserted ceilings and counts —
   # and a ninth that Cargo had auto-discovered from benches/harness.rs, which
   # contains no case and reported "0 measured", exit 0. NOTHING RAN ANY OF THEM: `cargo test --all` does not run a `harness = false` bench

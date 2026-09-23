@@ -17,6 +17,10 @@
   [ADR-0097](ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md)
   decision 7 criterion 6.
 - **Plan**: [plans/2026-09-23-p3-quickfixj-interop](../plans/2026-09-23-p3-quickfixj-interop.md)
+- **Note**: section "Sửa 1 — 2026-09-23" of [that plan](../plans/2026-09-23-p3-quickfixj-interop.md)
+  (2026-09-23, manager-accepted) records a build-time deviation from decision 6's "an IP SAN of
+  `127.0.0.1`" wording — the `fixbolt-acceptor` leaf also carries `DNS:localhost`, with the
+  `javap` evidence for why. This ADR's substance is unchanged; the plan is the record.
 
 ## Context
 
